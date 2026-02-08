@@ -1,13 +1,23 @@
+//! Virtual memory manager using two-level x86 paging with recursive mapping.
+//!
+//! Sets up identity-mapped lower memory, higher-half kernel mapping at `0xC0000000`,
+//! and per-process user page directories. Uses PDE 1023 as a recursive self-map
+//! to allow in-place page table manipulation.
+
 use crate::boot_info::BootInfo;
 use crate::memory::address::{PhysAddr, VirtAddr};
 use crate::memory::physical;
 use crate::memory::FRAME_SIZE;
 use core::arch::asm;
 
+/// Page table entry flag: page is present in physical memory.
 const PAGE_PRESENT: u32 = 1 << 0;
+/// Page table entry flag: page is writable.
 const PAGE_WRITABLE: u32 = 1 << 1;
+/// Page table entry flag: page is accessible from Ring 3 (user mode).
 const PAGE_USER: u32 = 1 << 2;
 
+/// Number of entries in a page directory or page table (1024 for 32-bit x86).
 const ENTRIES_PER_TABLE: usize = 1024;
 
 // Kernel virtual base address (higher-half)

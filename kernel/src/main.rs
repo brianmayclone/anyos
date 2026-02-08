@@ -2,6 +2,9 @@
 #![no_main]
 #![feature(alloc_error_handler)]
 #![allow(dead_code, static_mut_refs)]
+//! Kernel entry point and initialization sequence.
+//!
+//! Initializes all subsystems in 10 phases, from serial output to the desktop environment.
 
 extern crate alloc;
 
@@ -22,6 +25,10 @@ mod ui;
 
 use boot_info::BootInfo;
 
+/// Kernel entry point called from assembly after boot.
+///
+/// Receives the physical address of the [`BootInfo`] struct from the stage 2
+/// bootloader and drives initialization through 10 sequential phases.
 #[no_mangle]
 pub extern "C" fn kernel_main(boot_info_addr: u32) -> ! {
     // Phase 1: Early output (serial only — silent boot for end users)
@@ -285,11 +292,13 @@ fn irq_lapic_timer(_irq: u8) {
     crate::task::scheduler::schedule();
 }
 
+/// Keyboard IRQ handler: reads scancode from PS/2 port 0x60.
 fn irq_keyboard(_irq: u8) {
     let scancode = unsafe { crate::arch::x86::port::inb(0x60) };
     crate::drivers::input::keyboard::handle_scancode(scancode);
 }
 
+/// Mouse IRQ handler: reads byte from PS/2 port 0x60.
 fn irq_mouse(_irq: u8) {
     let byte = unsafe { crate::arch::x86::port::inb(0x60) };
     crate::drivers::input::mouse::handle_byte(byte);

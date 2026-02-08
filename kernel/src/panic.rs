@@ -1,3 +1,8 @@
+//! Kernel panic and allocation error handlers.
+//!
+//! Displays panic information on serial, framebuffer, and VGA text outputs,
+//! then halts the CPU.
+
 use core::panic::PanicInfo;
 
 #[panic_handler]

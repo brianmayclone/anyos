@@ -1,12 +1,8 @@
-/// GPU Driver Abstraction
-///
-/// Provides a unified trait for GPU drivers (Bochs VGA, VMware SVGA II, etc.)
-/// with support for 2D acceleration, hardware cursor, double-buffering,
-/// and runtime resolution changes.
-///
-/// GPU drivers are registered dynamically via PCI detection in the HAL.
-/// If no GPU driver is registered, the compositor falls back to direct
-/// software-only framebuffer rendering.
+//! GPU driver trait and global GPU instance.
+//!
+//! Provides a unified [`GpuDriver`] trait for GPU drivers (Bochs VGA, VMware SVGA II, etc.)
+//! with support for 2D acceleration, hardware cursor, double-buffering, and runtime
+//! resolution changes. Drivers are registered dynamically via PCI detection in the HAL.
 
 pub mod bochs_vga;
 pub mod vmware_svga;
@@ -92,6 +88,7 @@ pub trait GpuDriver: Send {
 // Global GPU instance
 // ──────────────────────────────────────────────
 
+/// Global GPU driver instance, set during PCI probe.
 static GPU: Spinlock<Option<Box<dyn GpuDriver>>> = Spinlock::new(None);
 
 /// Register a GPU driver (called from HAL driver factory during PCI probe).

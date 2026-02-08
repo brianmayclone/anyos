@@ -1,10 +1,11 @@
+//! Device filesystem (/dev) -- maps file operations to kernel device drivers.
+//! Provides virtual files like /dev/null, /dev/zero, and /dev/console.
+
 use crate::fs::file::{DirEntry, FileType};
 use alloc::string::String;
 use alloc::vec::Vec;
 
-/// Device filesystem - provides /dev/* entries
-/// Maps file operations to device drivers
-
+/// Device filesystem instance holding registered device entries.
 pub struct DevFs {
     devices: Vec<DeviceEntry>,
 }
@@ -16,6 +17,7 @@ struct DeviceEntry {
 }
 
 impl DevFs {
+    /// Create a new DevFs with the standard devices (null, zero, console).
     pub fn new() -> Self {
         let mut devfs = DevFs {
             devices: Vec::new(),
@@ -29,6 +31,7 @@ impl DevFs {
         devfs
     }
 
+    /// Register a new device with optional read and write callbacks.
     pub fn register(
         &mut self,
         name: &str,
@@ -42,6 +45,7 @@ impl DevFs {
         });
     }
 
+    /// List all registered device entries.
     pub fn list(&self) -> Vec<DirEntry> {
         self.devices
             .iter()
@@ -53,6 +57,7 @@ impl DevFs {
             .collect()
     }
 
+    /// Read from a named device into `buf`. Returns `None` if not found or not readable.
     pub fn read(&self, name: &str, buf: &mut [u8]) -> Option<usize> {
         self.devices
             .iter()
@@ -60,6 +65,7 @@ impl DevFs {
             .and_then(|d| d.read_fn.map(|f| f(buf)))
     }
 
+    /// Write `buf` to a named device. Returns `None` if not found or not writable.
     pub fn write(&self, name: &str, buf: &[u8]) -> Option<usize> {
         self.devices
             .iter()

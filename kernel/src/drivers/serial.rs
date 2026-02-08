@@ -1,14 +1,23 @@
+//! COM1 serial port driver for debug output.
+//!
+//! Provides 115200 baud 8N1 serial I/O via port 0x3F8, plus a 32 KiB kernel
+//! log ring buffer that captures all serial output for later retrieval.
+
 use crate::arch::x86::port::{inb, outb};
 use core::fmt;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+/// COM1 I/O base port address.
 const COM1: u16 = 0x3F8;
 
+/// Zero-sized type implementing `fmt::Write` for serial output.
 pub struct SerialPort;
 
 static mut SERIAL_INITIALIZED: bool = false;
 
 // ── Kernel log ring buffer (pre-heap, interrupt-safe) ──────────────────────
+
+/// Size of the kernel log ring buffer in bytes.
 const LOG_BUF_SIZE: usize = 32 * 1024; // 32 KiB
 static mut LOG_BUF: [u8; LOG_BUF_SIZE] = [0u8; LOG_BUF_SIZE];
 static LOG_WRITE_POS: AtomicUsize = AtomicUsize::new(0);
@@ -39,6 +48,7 @@ pub fn read_log(dst: &mut [u8]) -> usize {
     copy_len
 }
 
+/// Initialize COM1 at 115200 baud, 8N1, with FIFO enabled.
 pub fn init() {
     unsafe {
         outb(COM1 + 1, 0x00); // Disable all interrupts
@@ -57,6 +67,7 @@ fn is_transmit_empty() -> bool {
     unsafe { inb(COM1 + 5) & 0x20 != 0 }
 }
 
+/// Write a single byte to the serial port, also capturing it in the log ring buffer.
 pub fn write_byte(byte: u8) {
     unsafe {
         if !SERIAL_INITIALIZED {

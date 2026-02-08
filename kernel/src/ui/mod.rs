@@ -1,3 +1,6 @@
+//! User interface subsystem: desktop window management, decorations, dock,
+//! menu bar, theming, and widget toolkit.
+
 pub mod desktop;
 pub mod dock;
 pub mod event;

@@ -1,9 +1,8 @@
-/// Bochs VGA / QEMU Standard VGA driver
-///
-/// Uses DISPI (Display Interface) registers via I/O ports 0x01CE/0x01CF
-/// for mode switching and double-buffering via virtual height + Y offset.
-///
-/// Loaded dynamically via PCI detection (vendor 0x1234, device 0x1111).
+//! Bochs VGA / QEMU Standard VGA driver.
+//!
+//! Uses DISPI (Display Interface) registers via I/O ports 0x01CE/0x01CF
+//! for mode switching and double-buffering via virtual height + Y offset.
+//! Loaded dynamically via PCI detection (vendor 0x1234, device 0x1111).
 
 use super::GpuDriver;
 use alloc::boxed::Box;
@@ -40,6 +39,7 @@ fn dispi_read(index: u16) -> u16 {
     }
 }
 
+/// Bochs VGA GPU driver state, tracking framebuffer address and double-buffer page.
 pub struct BochsVgaGpu {
     fb_phys: u32,
     width: u32,

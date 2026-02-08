@@ -1,12 +1,9 @@
-/// VMware SVGA II GPU driver
-///
-/// PCI device: vendor 0x15AD, device 0x0405
-/// Provides 2D acceleration (RECT_FILL, RECT_COPY), hardware cursor,
-/// and FIFO command queue for GPU communication.
-///
-/// References:
-/// - VMware SVGA Device Developer Kit
-/// - QEMU hw/display/vmware_vga.c
+//! VMware SVGA II GPU driver.
+//!
+//! PCI device: vendor 0x15AD, device 0x0405. Provides 2D acceleration
+//! (RECT_FILL, RECT_COPY), hardware cursor, and FIFO command queue for
+//! GPU communication. References: VMware SVGA Device Developer Kit,
+//! QEMU hw/display/vmware_vga.c.
 
 use super::GpuDriver;
 use alloc::boxed::Box;
@@ -70,6 +67,7 @@ const SVGA_CMD_DEFINE_CURSOR: u32 = 19;
 const FIFO_VIRT_BASE: u32 = 0xD002_0000;
 const FIFO_MAP_PAGES: usize = 64; // 256 KiB
 
+/// VMware SVGA II GPU driver state, including I/O base, FIFO mapping, and capabilities.
 pub struct VmwareSvgaGpu {
     io_base: u16,
     fb_phys: u32,

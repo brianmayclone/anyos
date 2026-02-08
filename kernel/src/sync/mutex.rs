@@ -1,3 +1,8 @@
+//! Sleeping mutex that blocks the calling thread instead of spinning.
+//!
+//! Currently falls back to spin-waiting. Future phases will integrate with the
+//! scheduler to put blocked threads to sleep and wake them on unlock.
+
 use crate::sync::spinlock::Spinlock;
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
@@ -18,11 +23,16 @@ struct MutexInner {
 unsafe impl<T: Send> Sync for Mutex<T> {}
 unsafe impl<T: Send> Send for Mutex<T> {}
 
+/// RAII guard for a held [`Mutex`].
+///
+/// Provides `Deref`/`DerefMut` access to the protected data. Releases the
+/// mutex when dropped.
 pub struct MutexGuard<'a, T> {
     mutex: &'a Mutex<T>,
 }
 
 impl<T> Mutex<T> {
+    /// Create a new unlocked mutex wrapping the given data.
     pub const fn new(data: T) -> Self {
         Mutex {
             inner: Spinlock::new(MutexInner { locked: false }),
@@ -30,6 +40,7 @@ impl<T> Mutex<T> {
         }
     }
 
+    /// Acquire the mutex, blocking until it becomes available.
     pub fn lock(&self) -> MutexGuard<T> {
         loop {
             {

@@ -1,6 +1,12 @@
+//! ATA PIO disk driver for the primary IDE controller.
+//!
+//! Supports 28-bit LBA sector read/write via I/O ports 0x1F0-0x1F7.
+//! Detects the primary master drive via IDENTIFY and provides sector-level access.
+
 use crate::arch::x86::port::{inb, inw, outb};
 
 // ATA PIO ports (primary controller)
+/// ATA data register (16-bit read/write).
 const ATA_DATA: u16 = 0x1F0;
 const ATA_ERROR: u16 = 0x1F1;
 const ATA_SECTOR_COUNT: u16 = 0x1F2;
@@ -22,6 +28,7 @@ const CMD_READ_SECTORS: u8 = 0x20;
 const CMD_WRITE_SECTORS: u8 = 0x30;
 const CMD_IDENTIFY: u8 = 0xEC;
 
+/// Detected ATA drive information (model, sector count, master/slave).
 pub struct AtaDrive {
     pub present: bool,
     pub slave: bool,
@@ -55,6 +62,7 @@ fn wait_drq() {
     }
 }
 
+/// Detect and identify the primary master ATA drive.
 pub fn init() {
     // Try to identify the primary master drive
     unsafe {

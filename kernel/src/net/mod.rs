@@ -1,5 +1,5 @@
-/// Network stack coordinator.
-/// Provides global network configuration, packet polling, and sub-module access.
+//! Network stack coordinator.
+//! Provides global network configuration, packet polling, and sub-module access.
 
 pub mod types;
 pub mod checksum;
@@ -15,6 +15,7 @@ pub mod tcp;
 use types::{Ipv4Addr, MacAddr, NetConfig};
 use crate::sync::spinlock::Spinlock;
 
+/// Global network configuration protected by a spinlock.
 static NET_CONFIG: Spinlock<NetConfig> = Spinlock::new(NetConfig::new());
 
 /// Initialize the network stack. Call after E1000 driver is initialized.

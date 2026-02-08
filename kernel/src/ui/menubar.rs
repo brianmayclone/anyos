@@ -1,3 +1,7 @@
+//! macOS-style global menu bar at the top of the screen. Displays the Apple
+//! menu, active application name, dropdown menus (File, Edit, View, Window),
+//! and a real-time clock.
+
 use alloc::string::String;
 use alloc::vec::Vec;
 use crate::drivers::rtc;
@@ -45,6 +49,7 @@ pub struct MenuBar {
 }
 
 impl MenuBar {
+    /// Create a new menu bar with default menus for the given screen width.
     pub fn new(screen_width: u32) -> Self {
         let mut bar = MenuBar {
             width: screen_width,
@@ -59,11 +64,13 @@ impl MenuBar {
         bar
     }
 
+    /// Set the active application name displayed in the menu bar.
     pub fn set_app_name(&mut self, name: &str) {
         self.app_name = String::from(name);
         self.recalc_positions();
     }
 
+    /// Returns true if any dropdown menu is currently open.
     pub fn is_menu_open(&self) -> bool {
         self.active_menu.is_some()
     }

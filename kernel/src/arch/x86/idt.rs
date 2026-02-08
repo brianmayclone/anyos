@@ -1,7 +1,14 @@
+//! Interrupt Descriptor Table (IDT) for exception and IRQ handling.
+//!
+//! Sets up 256 entries: CPU exceptions (ISR 0-31), hardware IRQs remapped
+//! to INT 32-55, and the `int 0x80` syscall trap gate (DPL 3).
+
 use core::arch::asm;
 use core::mem::size_of;
 
+/// Total IDT entries (covers the full x86 interrupt vector range).
 const IDT_ENTRIES: usize = 256;
+/// GDT selector for Ring 0 code segment.
 const KERNEL_CODE_SEG: u16 = 0x08;
 
 #[repr(C, packed)]
@@ -70,6 +77,7 @@ extern "C" {
     fn syscall_entry();
 }
 
+/// Populate the IDT with exception, IRQ, and syscall gates, then load via `lidt`.
 pub fn init() {
     // CPU Exceptions (ISR 0-31)
     set_gate(0,  isr0 , KERNEL_CODE_SEG, GATE_INTERRUPT_32);
@@ -212,6 +220,11 @@ fn try_kill_faulting_thread(signal: u32) -> bool {
     false
 }
 
+/// High-level CPU exception handler called from assembly ISR stubs.
+///
+/// Handles division-by-zero, invalid opcode, double fault, GPF, and page
+/// faults. For user-mode faults the offending thread is terminated; for
+/// kernel faults the CPU is halted after diagnostic output.
 #[no_mangle]
 pub extern "C" fn isr_handler(frame: &InterruptFrame) {
     let is_user_mode = frame.cs & 3 != 0;
@@ -322,6 +335,11 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
     }
 }
 
+/// Hardware IRQ dispatcher called from assembly IRQ stubs.
+///
+/// Sends EOI (to APIC or PIC) before dispatching to the registered
+/// handler, since handlers like the scheduler may context-switch and
+/// never return.
 #[no_mangle]
 pub extern "C" fn irq_handler(frame: &InterruptFrame) {
     let irq = (frame.int_no - 32) as u8;

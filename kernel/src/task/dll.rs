@@ -18,9 +18,15 @@ pub const DLL_PDE_START: usize = 16;  // 0x04000000 >> 22
 pub const DLL_PDE_END: usize = 31;    // 0x07FFFFFF >> 22
 
 /// A loaded DLL: name, base virtual address, and backing physical frames.
+///
+/// Physical frames are allocated once at load time and shared (read-only)
+/// across all user processes.
 pub struct LoadedDll {
+    /// Short filename (null-terminated) extracted from the load path.
     pub name: [u8; 32],
+    /// Virtual address where this DLL is mapped in every user process.
     pub base_vaddr: u32,
+    /// Physical frames holding the DLL code/data, in page order.
     pub pages: Vec<PhysAddr>,
 }
 

@@ -1,3 +1,6 @@
+//! macOS-style dock rendered at the bottom of the screen. Displays application
+//! shortcuts with icons, running indicators, and click-to-launch/focus behavior.
+
 use alloc::string::String;
 use alloc::vec::Vec;
 use crate::graphics::color::Color;
@@ -15,7 +18,7 @@ pub enum DockAction {
     Launch(String, String),
 }
 
-/// A dock item (app shortcut)
+/// A dock item representing an application shortcut with optional icon.
 pub struct DockItem {
     pub name: String,
     pub bin_path: String,
@@ -23,7 +26,7 @@ pub struct DockItem {
     pub running: bool,
 }
 
-/// macOS-like dock at the bottom of the screen
+/// macOS-like application dock with icon rendering and click handling.
 pub struct Dock {
     screen_width: u32,
     items: Vec<DockItem>,
@@ -31,6 +34,7 @@ pub struct Dock {
 }
 
 impl Dock {
+    /// Create a new dock with default application items.
     pub fn new(screen_width: u32) -> Self {
         let mut dock = Dock {
             screen_width,
@@ -111,6 +115,7 @@ impl Dock {
         }
     }
 
+    /// Render the dock onto the given surface, including icons and running indicators.
     pub fn render(&self, surface: &mut Surface) {
         let item_count = self.items.len() as u32;
         if item_count == 0 {

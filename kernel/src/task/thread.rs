@@ -1,3 +1,8 @@
+//! Thread data structure and lifecycle state management.
+//!
+//! Each thread has a unique TID, a kernel stack, a saved CPU context for context switching,
+//! and optional per-process state (page directory, heap break, arguments).
+
 use crate::memory::address::PhysAddr;
 use crate::task::context::CpuContext;
 use alloc::boxed::Box;
@@ -5,14 +10,20 @@ use alloc::vec;
 
 static mut NEXT_TID: u32 = 1;
 
+/// Execution state of a thread in the scheduler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadState {
+    /// Eligible to be picked by the scheduler.
     Ready,
+    /// Currently executing on the CPU.
     Running,
+    /// Waiting for an event (e.g. waitpid) and not schedulable.
     Blocked,
+    /// Finished execution; awaiting reaping by the scheduler.
     Terminated,
 }
 
+/// A kernel or user thread with its own stack, saved context, and process metadata.
 pub struct Thread {
     pub tid: u32,
     pub state: ThreadState,
@@ -35,9 +46,14 @@ pub struct Thread {
     pub cpu_ticks: u32,
 }
 
+/// Size of each thread's kernel-mode stack.
 const KERNEL_STACK_SIZE: usize = 16 * 1024; // 16 KiB per thread
 
 impl Thread {
+    /// Create a new kernel thread that will begin executing at `entry`.
+    ///
+    /// The thread is initialized in the `Ready` state with its own kernel stack
+    /// and a CPU context pointing to the entry function.
     pub fn new(entry: extern "C" fn(), priority: u8, name: &str) -> Self {
         let tid = unsafe {
             let t = NEXT_TID;
@@ -85,10 +101,12 @@ impl Thread {
         }
     }
 
+    /// Return the top (highest address) of this thread's kernel stack.
     pub fn kernel_stack_top(&self) -> u32 {
         self.kernel_stack.as_ptr() as u32 + self.kernel_stack.len() as u32
     }
 
+    /// Return the thread name as a UTF-8 string slice.
     pub fn name_str(&self) -> &str {
         let len = self.name.iter().position(|&b| b == 0).unwrap_or(32);
         core::str::from_utf8(&self.name[..len]).unwrap_or("???")

@@ -1,6 +1,8 @@
-// =============================================================================
-// CPU Monitor — kernel thread that tracks CPU load and writes to a named pipe
-// =============================================================================
+//! CPU utilization monitor kernel thread.
+//!
+//! Samples scheduler tick counters every ~100 ms, computes the CPU busy percentage,
+//! and writes the result to the `sys:cpu_load` named pipe for consumption by userspace
+//! (e.g. the Settings or system monitor application).
 
 use crate::ipc::pipe;
 use crate::task::scheduler;

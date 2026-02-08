@@ -1,6 +1,9 @@
+//! UI event types for mouse, keyboard, window lifecycle, and hit-test results
+//! used by the desktop window manager to dispatch input.
+
 use crate::drivers::input::keyboard::KeyEvent;
 
-/// UI Event types
+/// UI event dispatched to windows and widgets.
 #[derive(Debug, Clone, Copy)]
 pub enum Event {
     /// Mouse moved to absolute position

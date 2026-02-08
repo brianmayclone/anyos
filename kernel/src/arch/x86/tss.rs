@@ -1,3 +1,9 @@
+//! Task State Segment (TSS) for Ring 3 to Ring 0 stack switching.
+//!
+//! The TSS stores the kernel stack pointer (`esp0`) that the CPU loads
+//! automatically when an interrupt or syscall occurs in user mode. The
+//! scheduler updates `esp0` on every context switch.
+
 use core::arch::asm;
 use core::mem::size_of;
 
@@ -85,6 +91,7 @@ static mut TSS: Tss = Tss {
     iomap_base: 0,
 };
 
+/// Initialize the TSS, install its descriptor in the GDT, and load the task register.
 pub fn init() {
     unsafe {
         // Set the I/O map base to the size of the TSS (no I/O bitmap)

@@ -1,12 +1,16 @@
-/// Network types: MAC address, IPv4 address, and global network configuration.
+//! Network types: MAC address, IPv4 address, and global network configuration.
 
+/// A 6-byte IEEE 802 MAC (hardware) address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MacAddr(pub [u8; 6]);
 
 impl MacAddr {
+    /// The broadcast MAC address (ff:ff:ff:ff:ff:ff).
     pub const BROADCAST: MacAddr = MacAddr([0xFF; 6]);
+    /// The zero MAC address (00:00:00:00:00:00).
     pub const ZERO: MacAddr = MacAddr([0; 6]);
 
+    /// Returns the underlying 6-byte array.
     pub fn as_bytes(&self) -> &[u8; 6] {
         &self.0
     }
@@ -19,25 +23,32 @@ impl core::fmt::Display for MacAddr {
     }
 }
 
+/// A 4-byte IPv4 address in network byte order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ipv4Addr(pub [u8; 4]);
 
 impl Ipv4Addr {
+    /// The all-zeros address (0.0.0.0).
     pub const ZERO: Ipv4Addr = Ipv4Addr([0, 0, 0, 0]);
+    /// The limited broadcast address (255.255.255.255).
     pub const BROADCAST: Ipv4Addr = Ipv4Addr([255, 255, 255, 255]);
 
+    /// Construct an IPv4 address from four octets.
     pub fn new(a: u8, b: u8, c: u8, d: u8) -> Self {
         Ipv4Addr([a, b, c, d])
     }
 
+    /// Returns the underlying 4-byte array.
     pub fn as_bytes(&self) -> &[u8; 4] {
         &self.0
     }
 
+    /// Convert to a big-endian `u32` for arithmetic operations.
     pub fn to_u32(self) -> u32 {
         u32::from_be_bytes(self.0)
     }
 
+    /// Construct from a big-endian `u32`.
     pub fn from_u32(val: u32) -> Self {
         Ipv4Addr(val.to_be_bytes())
     }
@@ -97,6 +108,7 @@ pub struct NetConfig {
 }
 
 impl NetConfig {
+    /// Create a zeroed-out default network configuration.
     pub const fn new() -> Self {
         NetConfig {
             ip: Ipv4Addr::ZERO,

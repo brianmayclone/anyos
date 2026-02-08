@@ -1,4 +1,5 @@
-/// ARP (Address Resolution Protocol) — resolves IPv4 addresses to MAC addresses.
+//! ARP (Address Resolution Protocol) -- resolves IPv4 addresses to MAC addresses.
+//! Maintains a cache table and supports both request/reply handling.
 
 use alloc::collections::BTreeMap;
 use super::types::{MacAddr, Ipv4Addr};
@@ -17,6 +18,7 @@ fn table() -> &'static Spinlock<Option<BTreeMap<u32, (MacAddr, u32)>>> {
     &ARP_TABLE
 }
 
+/// Initialize the ARP table. Must be called before any ARP operations.
 pub fn init() {
     let mut t = ARP_TABLE.lock();
     *t = Some(BTreeMap::new());

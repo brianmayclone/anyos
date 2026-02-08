@@ -1,8 +1,14 @@
+//! ARGB8888 pixel surface with drawing primitives and alpha-blended blitting.
+//! Serves as the fundamental bitmap type for all rendering in the compositor.
+
 use crate::graphics::color::Color;
 use crate::graphics::rect::Rect;
 use alloc::vec::Vec;
 
-/// A pixel surface (ARGB8888 bitmap)
+/// A pixel surface backed by an ARGB8888 bitmap buffer.
+///
+/// Provides pixel-level drawing, rectangular fills, and compositing (blit)
+/// operations with automatic fast paths for fully opaque surfaces.
 pub struct Surface {
     pub width: u32,
     pub height: u32,
@@ -12,6 +18,7 @@ pub struct Surface {
 }
 
 impl Surface {
+    /// Create a new surface filled with transparent black (0x00000000).
     pub fn new(width: u32, height: u32) -> Self {
         let size = (width * height) as usize;
         Surface {
@@ -22,6 +29,7 @@ impl Surface {
         }
     }
 
+    /// Create a new surface filled with the given color. Sets `opaque` if alpha is 255.
     pub fn new_with_color(width: u32, height: u32, color: Color) -> Self {
         let size = (width * height) as usize;
         Surface {
@@ -32,6 +40,7 @@ impl Surface {
         }
     }
 
+    /// Set a pixel with alpha blending. Out-of-bounds coordinates are silently ignored.
     pub fn put_pixel(&mut self, x: i32, y: i32, color: Color) {
         if x >= 0 && x < self.width as i32 && y >= 0 && y < self.height as i32 {
             let idx = (y as u32 * self.width + x as u32) as usize;
@@ -44,6 +53,7 @@ impl Surface {
         }
     }
 
+    /// Read a pixel. Returns `Color::TRANSPARENT` for out-of-bounds coordinates.
     pub fn get_pixel(&self, x: i32, y: i32) -> Color {
         if x >= 0 && x < self.width as i32 && y >= 0 && y < self.height as i32 {
             let idx = (y as u32 * self.width + x as u32) as usize;
@@ -53,6 +63,7 @@ impl Surface {
         }
     }
 
+    /// Fill the entire surface with a solid color (no blending).
     pub fn fill(&mut self, color: Color) {
         let val = color.to_u32();
         for pixel in self.pixels.iter_mut() {
@@ -60,6 +71,8 @@ impl Surface {
         }
     }
 
+    /// Fill a rectangle with the given color. Opaque colors use direct writes;
+    /// semi-transparent colors are alpha-blended per pixel.
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         let x0 = rect.x.max(0) as u32;
         let y0 = rect.y.max(0) as u32;

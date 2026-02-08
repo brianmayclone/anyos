@@ -1,3 +1,7 @@
+//! Window structure with macOS-style chrome (title bar, traffic-light buttons),
+//! client-area content surface, hit testing for resize edges and decorations,
+//! and maximize/restore support.
+
 use alloc::string::String;
 use crate::graphics::font;
 use crate::graphics::rect::Rect;
@@ -12,7 +16,7 @@ pub const MIN_HEIGHT: u32 = 60;
 /// Grab zone in pixels for resize edges
 pub const RESIZE_BORDER: i32 = 5;
 
-/// Window state
+/// Current window display state (normal, minimized, or maximized).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowState {
     Normal,
@@ -20,7 +24,10 @@ pub enum WindowState {
     Maximized,
 }
 
-/// A window with decorations
+/// A window with macOS-style decorations (title bar, traffic-light buttons).
+///
+/// Contains both a client-area `content` surface for application drawing
+/// and an internal `surface` that composites decorations over the content.
 pub struct Window {
     pub id: u32,
     pub title: String,
@@ -49,6 +56,7 @@ pub struct Window {
 }
 
 impl Window {
+    /// Create a new window at the given position with the given client-area size.
     pub fn new(id: u32, title: &str, x: i32, y: i32, width: u32, height: u32) -> Self {
         let full_height = height + Theme::TITLEBAR_HEIGHT;
         Window {

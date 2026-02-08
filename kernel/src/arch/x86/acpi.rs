@@ -30,11 +30,15 @@ pub struct IsoInfo {
     pub flags: u16,
 }
 
-/// Parsed ACPI information
+/// Parsed ACPI information extracted from the MADT.
 pub struct AcpiInfo {
+    /// Physical base address of the Local APIC MMIO registers.
     pub lapic_address: u32,
+    /// List of processors discovered in the MADT.
     pub processors: Vec<ProcessorInfo>,
+    /// List of I/O APICs discovered in the MADT.
     pub io_apics: Vec<IoApicInfo>,
+    /// Interrupt Source Overrides (ISA IRQ remappings).
     pub isos: Vec<IsoInfo>,
 }
 

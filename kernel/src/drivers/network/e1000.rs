@@ -1,6 +1,8 @@
-/// Intel E1000 (82540EM) NIC driver.
-/// MMIO-based, with DMA ring buffers for RX/TX.
-/// Used by QEMU with `-device e1000`.
+//! Intel E1000 (82540EM) NIC driver.
+//!
+//! MMIO-based Ethernet controller with DMA ring buffers for RX/TX.
+//! Supports IRQ-driven and polled packet reception, transmit via descriptor rings,
+//! and MAC address reading from EEPROM/RAL registers. Used with QEMU `-device e1000`.
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -73,8 +75,11 @@ const RDESC_STA_EOP: u8   = 1 << 1;  // End of Packet
 // Each descriptor is exactly 16 bytes with repr(C), no padding needed.
 // ──────────────────────────────────────────────
 
+/// Number of receive descriptors in the RX ring.
 const NUM_RX_DESC: usize = 32;
+/// Number of transmit descriptors in the TX ring.
 const NUM_TX_DESC: usize = 32;
+/// Size of each receive buffer in bytes.
 const RX_BUFFER_SIZE: usize = 2048;
 
 #[repr(C)]
@@ -100,14 +105,14 @@ struct TxDescriptor {
     special: u16,      // Special field
 }
 
-// Re-export MAC type alias for convenience
+/// 6-byte MAC address type alias.
 pub type MacBytes = [u8; 6];
 
 // ──────────────────────────────────────────────
 // E1000 Driver State
 // ──────────────────────────────────────────────
 
-/// MMIO base address in virtual memory for the E1000
+/// Virtual address where the E1000 MMIO region is mapped (128 KiB).
 const E1000_MMIO_VIRT: u32 = 0xD000_0000;
 
 struct E1000 {

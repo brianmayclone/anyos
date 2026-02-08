@@ -1,3 +1,6 @@
+//! Virtual File System (VFS) -- unified interface for file descriptors, open/read/write/close.
+//! Delegates to the mounted FAT16 filesystem and manages the global open file table.
+
 use crate::fs::fat::FatFs;
 use crate::fs::file::{DirEntry, FileDescriptor, FileFlags, FileType, OpenFile, SeekFrom};
 use crate::sync::spinlock::Spinlock;
@@ -5,6 +8,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+/// Maximum number of simultaneously open file descriptors.
 const MAX_OPEN_FILES: usize = 256;
 
 /// FAT16 partition start sector (must match mkimage.py --fs-start)
@@ -25,9 +29,12 @@ struct MountPoint {
     device_id: u32,
 }
 
+/// Supported filesystem types for mount points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FsType {
+    /// FAT12/16/32 filesystem on disk.
     Fat,
+    /// In-memory device filesystem (/dev).
     DevFs,
 }
 
@@ -41,17 +48,28 @@ pub trait Filesystem {
     fn delete(&self, parent_inode: u32, name: &str) -> Result<(), FsError>;
 }
 
+/// Filesystem operation error codes.
 #[derive(Debug)]
 pub enum FsError {
+    /// File or directory not found.
     NotFound,
+    /// Insufficient permissions for the operation.
     PermissionDenied,
+    /// A file or directory with that name already exists.
     AlreadyExists,
+    /// Expected a directory but found a file.
     NotADirectory,
+    /// Expected a file but found a directory.
     IsADirectory,
+    /// No free clusters or directory entry slots remaining.
     NoSpace,
+    /// Low-level disk I/O failure.
     IoError,
+    /// Malformed or empty path.
     InvalidPath,
+    /// Open file table is full.
     TooManyOpenFiles,
+    /// File descriptor is not valid or not open.
     BadFd,
 }
 
@@ -70,6 +88,7 @@ fn split_parent_name(path: &str) -> Result<(&str, &str), FsError> {
     }
 }
 
+/// Initialize the VFS, reserving file descriptors 0-2 for stdin/stdout/stderr.
 pub fn init() {
     let mut vfs = VFS.lock();
     *vfs = Some(VfsState {
@@ -88,6 +107,7 @@ pub fn init() {
     crate::serial_println!("[OK] VFS initialized");
 }
 
+/// Mount a filesystem at the given path. For FAT, reads the BPB from disk.
 pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().expect("VFS not initialized");
@@ -111,6 +131,7 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
     });
 }
 
+/// Open a file by path with the given flags. Returns a file descriptor on success.
 pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
@@ -178,6 +199,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
     Ok(fd)
 }
 
+/// Close an open file descriptor, releasing its slot in the open file table.
 pub fn close(fd: FileDescriptor) -> Result<(), FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
@@ -194,6 +216,7 @@ pub fn close(fd: FileDescriptor) -> Result<(), FsError> {
     Err(FsError::BadFd)
 }
 
+/// Read bytes from an open file into `buf`. Returns the number of bytes read (0 at EOF).
 pub fn read(fd: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
@@ -221,6 +244,7 @@ pub fn read(fd: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
     Ok(bytes_read)
 }
 
+/// Write bytes from `buf` to an open file. Returns the number of bytes written.
 pub fn write(fd: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;

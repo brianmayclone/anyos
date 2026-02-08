@@ -1,3 +1,8 @@
+//! VESA VBE framebuffer information storage.
+//!
+//! Captures framebuffer address, dimensions, pitch, and bit depth from the
+//! boot info structure. Used by the compositor and GPU drivers for display setup.
+
 use crate::boot_info::BootInfo;
 
 /// Framebuffer information from VESA VBE mode

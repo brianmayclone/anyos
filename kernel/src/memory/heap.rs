@@ -1,27 +1,41 @@
+//! Kernel heap allocator using a linked-list free list.
+//!
+//! Provides a `GlobalAlloc` implementation backed by demand-paged virtual memory.
+//! Starts with 16 MiB and grows on demand up to 128 MiB, allocating physical
+//! frames and mapping them into the kernel's virtual address space.
+
 use crate::memory::address::VirtAddr;
 use crate::memory::physical;
 use crate::memory::virtual_mem;
 use crate::memory::FRAME_SIZE;
 use core::alloc::{GlobalAlloc, Layout};
 
-// Kernel heap: starting at virtual 0xC0400000
+/// Virtual address where the kernel heap begins.
 const HEAP_START: u32 = 0xC040_0000;
-const HEAP_INITIAL_SIZE: usize = 16 * 1024 * 1024; // 16 MiB
-const HEAP_MAX_SIZE: usize = 128 * 1024 * 1024;    // 128 MiB max (VA limit before MMIO at 0xD0000000)
-const GROW_CHUNK: usize = 1024 * 1024;              // Grow in 1 MiB increments
+/// Initial heap size mapped at boot (16 MiB).
+const HEAP_INITIAL_SIZE: usize = 16 * 1024 * 1024;
+/// Maximum heap size before hitting MMIO region at 0xD0000000 (128 MiB).
+const HEAP_MAX_SIZE: usize = 128 * 1024 * 1024;
+/// Minimum growth increment when expanding the heap (1 MiB).
+const GROW_CHUNK: usize = 1024 * 1024;
 
 #[global_allocator]
 static HEAP_ALLOCATOR: LockedHeap = LockedHeap::new();
 
+/// Global kernel heap allocator protected by an atomic spinlock.
 struct LockedHeap {
-    // Simple spinlock around the heap state
     lock: core::sync::atomic::AtomicBool,
 }
 
-// Heap free block header
+/// Header for a free block in the linked-list free list.
+///
+/// Stored in-place at the start of each free region. Blocks are kept
+/// sorted by address to enable coalescing on deallocation.
 #[repr(C)]
 struct FreeBlock {
+    /// Total size of this free block in bytes (including the header).
     size: usize,
+    /// Pointer to the next free block, or null if this is the last.
     next: *mut FreeBlock,
 }
 
@@ -350,6 +364,9 @@ pub fn validate_heap() {
     }
 }
 
+/// Initialize the kernel heap by mapping physical frames and creating the initial free list.
+///
+/// Must be called after physical and virtual memory are initialized.
 pub fn init() {
     let pages = HEAP_INITIAL_SIZE / FRAME_SIZE;
 

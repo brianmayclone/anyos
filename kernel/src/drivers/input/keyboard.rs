@@ -1,3 +1,8 @@
+//! PS/2 keyboard driver with scancode set 1 to keycode translation.
+//!
+//! Processes IRQ1 scancodes into [`KeyEvent`]s with modifier tracking (Shift,
+//! Ctrl, Alt, CapsLock) and buffers up to 64 events for consumption by the compositor.
+
 use crate::arch::x86::port::inb;
 use alloc::collections::VecDeque;
 use crate::sync::spinlock::Spinlock;
@@ -11,6 +16,7 @@ pub struct KeyEvent {
     pub modifiers: Modifiers,
 }
 
+/// Logical key identifiers translated from PS/2 scancodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     Char(char),
@@ -39,6 +45,7 @@ pub enum Key {
     Unknown,
 }
 
+/// State of keyboard modifier keys (Shift, Ctrl, Alt, CapsLock).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Modifiers {
     pub shift: bool,
@@ -47,6 +54,7 @@ pub struct Modifiers {
     pub caps_lock: bool,
 }
 
+/// Ring buffer of pending keyboard events, capacity 64.
 static KEY_BUFFER: Spinlock<VecDeque<KeyEvent>> = Spinlock::new(VecDeque::new());
 static MODIFIERS: Spinlock<Modifiers> = Spinlock::new(Modifiers {
     shift: false,

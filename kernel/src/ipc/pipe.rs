@@ -1,12 +1,8 @@
-// =============================================================================
-// Named Kernel Pipes — byte buffer IPC with string names for discoverability
-// =============================================================================
-//
-// Pipes can be used for:
-//   1. stdout/stdin routing between parent and child processes
-//   2. Named IPC between applications (any process can open a pipe by name)
-//   3. Debug inspection (list all open pipes via `pipes` command)
-//
+//! Named kernel pipes -- byte-buffer IPC with string names for discoverability.
+//!
+//! Pipes serve as unidirectional byte streams identified by human-readable names.
+//! Any process can open, read from, or write to a pipe by name, making them useful
+//! for stdout/stdin routing, application-level IPC, and system monitoring channels.
 
 use alloc::vec::Vec;
 use crate::sync::spinlock::Spinlock;
@@ -91,11 +87,15 @@ pub fn close(pipe_id: u32) {
     pipes.retain(|p| p.id != pipe_id);
 }
 
-/// Pipe info for listing.
+/// Snapshot of a pipe's state for debug listing and inspection.
 pub struct PipeInfo {
+    /// Unique pipe identifier.
     pub id: u32,
+    /// Pipe name as a null-terminated byte array.
     pub name: [u8; MAX_PIPE_NAME],
+    /// Length of the name in bytes (excluding null terminator).
     pub name_len: usize,
+    /// Number of bytes currently in the pipe's buffer.
     pub buffered: usize,
 }
 

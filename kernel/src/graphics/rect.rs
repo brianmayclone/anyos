@@ -1,4 +1,7 @@
-/// Rectangle type for graphics operations
+//! Axis-aligned rectangle with intersection, union, and subtraction operations
+//! used throughout the compositor and UI for damage tracking and hit testing.
+
+/// Axis-aligned rectangle defined by origin (x, y) and size (width, height).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
     pub x: i32,
@@ -8,22 +11,27 @@ pub struct Rect {
 }
 
 impl Rect {
+    /// Create a rectangle from origin and dimensions.
     pub const fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
         Rect { x, y, width, height }
     }
 
+    /// X coordinate of the right edge (exclusive).
     pub fn right(&self) -> i32 {
         self.x + self.width as i32
     }
 
+    /// Y coordinate of the bottom edge (exclusive).
     pub fn bottom(&self) -> i32 {
         self.y + self.height as i32
     }
 
+    /// Test whether a point lies within this rectangle.
     pub fn contains(&self, px: i32, py: i32) -> bool {
         px >= self.x && px < self.right() && py >= self.y && py < self.bottom()
     }
 
+    /// Test whether this rectangle overlaps with another.
     pub fn intersects(&self, other: &Rect) -> bool {
         self.x < other.right()
             && self.right() > other.x
@@ -31,6 +39,7 @@ impl Rect {
             && self.bottom() > other.y
     }
 
+    /// Compute the overlapping region, or `None` if the rectangles don't overlap.
     pub fn intersection(&self, other: &Rect) -> Option<Rect> {
         let x = self.x.max(other.x);
         let y = self.y.max(other.y);
@@ -44,6 +53,7 @@ impl Rect {
         }
     }
 
+    /// Compute the smallest rectangle enclosing both rectangles.
     pub fn union(&self, other: &Rect) -> Rect {
         let x = self.x.min(other.x);
         let y = self.y.min(other.y);
@@ -52,14 +62,17 @@ impl Rect {
         Rect::new(x, y, (right - x) as u32, (bottom - y) as u32)
     }
 
+    /// Returns true if either dimension is zero.
     pub fn is_empty(&self) -> bool {
         self.width == 0 || self.height == 0
     }
 
+    /// Return a copy translated by (dx, dy).
     pub fn offset(&self, dx: i32, dy: i32) -> Rect {
         Rect::new(self.x + dx, self.y + dy, self.width, self.height)
     }
 
+    /// Return a copy shrunk inward by `amount` pixels on each side.
     pub fn inset(&self, amount: i32) -> Rect {
         Rect::new(
             self.x + amount,

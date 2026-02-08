@@ -1,3 +1,7 @@
+//! Font rendering with automatic selection between the proportional Cape Coral
+//! font and the fallback 8x16 bitmap font. Provides both default-size and
+//! explicit-size drawing and measurement APIs.
+
 use crate::graphics::color::Color;
 use crate::graphics::surface::Surface;
 

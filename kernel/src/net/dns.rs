@@ -1,4 +1,5 @@
-/// DNS resolver — resolves hostnames to IPv4 addresses via UDP port 53.
+//! DNS resolver -- resolves hostnames to IPv4 addresses via UDP queries to port 53.
+//! Supports A record lookups with a fixed transaction ID and 5-second timeout.
 
 use alloc::vec::Vec;
 use super::types::Ipv4Addr;

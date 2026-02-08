@@ -1,3 +1,6 @@
+//! RGBA icon loading and rendering. Icons are stored as raw binary files
+//! with a simple header (width, height) followed by RGBA pixel data.
+
 use alloc::vec::Vec;
 use crate::graphics::surface::Surface;
 

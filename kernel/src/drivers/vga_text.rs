@@ -1,9 +1,18 @@
+//! VGA text mode driver for the 80x25 color console.
+//!
+//! Writes directly to the VGA text buffer at 0xB8000 with support for
+//! scrolling, color attributes, cursor positioning, and `fmt::Write` output.
+
 use core::fmt;
 
+/// Physical address of the VGA text mode framebuffer.
 const VGA_BUFFER: u32 = 0xB8000;
+/// Number of character columns on screen.
 const VGA_WIDTH: usize = 80;
+/// Number of character rows on screen.
 const VGA_HEIGHT: usize = 25;
 
+/// Standard 16-color VGA text mode palette.
 #[repr(u8)]
 #[derive(Copy, Clone)]
 #[allow(dead_code)]
@@ -34,14 +43,17 @@ static mut COL: usize = 0;
 static mut ROW: usize = 0;
 static mut ATTR: u8 = 0x0F; // White on black
 
+/// Initialize the VGA text console by clearing the screen.
 pub fn init() {
     clear();
 }
 
+/// Set the foreground and background color for subsequent text output.
 pub fn set_color(fg: Color, bg: Color) {
     unsafe { ATTR = color_code(fg, bg); }
 }
 
+/// Clear the entire VGA text screen and reset cursor to top-left.
 pub fn clear() {
     let buffer = VGA_BUFFER as *mut u16;
     let blank = 0x0F00 | b' ' as u16; // White on black, space
@@ -77,6 +89,7 @@ fn scroll() {
     }
 }
 
+/// Write a single character to the VGA console, handling newlines, tabs, and scrolling.
 pub fn put_char(c: u8) {
     unsafe {
         match c {
@@ -111,6 +124,7 @@ pub fn put_char(c: u8) {
     }
 }
 
+/// Erase the character before the cursor position.
 pub fn backspace() {
     unsafe {
         if COL > 0 {
@@ -123,6 +137,7 @@ pub fn backspace() {
     }
 }
 
+/// Clear from the current cursor position to the end of the line.
 pub fn clear_to_eol() {
     unsafe {
         let blank = (ATTR as u16) << 8 | b' ' as u16;
@@ -134,12 +149,14 @@ pub fn clear_to_eol() {
     }
 }
 
+/// Write a string to the VGA console.
 pub fn put_str(s: &str) {
     for byte in s.bytes() {
         put_char(byte);
     }
 }
 
+/// Zero-sized type implementing `fmt::Write` for VGA text output.
 pub struct VgaWriter;
 
 impl fmt::Write for VgaWriter {

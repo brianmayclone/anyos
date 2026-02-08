@@ -1,4 +1,5 @@
-/// UDP (User Datagram Protocol) — connectionless transport.
+//! UDP (User Datagram Protocol) -- connectionless datagram transport.
+//! Supports port binding, non-blocking and blocking receive, and raw sends for DHCP.
 
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
@@ -9,6 +10,7 @@ use crate::sync::spinlock::Spinlock;
 
 const UDP_HEADER_LEN: usize = 8;
 
+/// A received UDP datagram with source address/port and payload.
 pub struct UdpDatagram {
     pub src_ip: Ipv4Addr,
     pub src_port: u16,
@@ -18,6 +20,7 @@ pub struct UdpDatagram {
 /// Port bindings: port -> queue of received datagrams
 static UDP_PORTS: Spinlock<Option<BTreeMap<u16, VecDeque<UdpDatagram>>>> = Spinlock::new(None);
 
+/// Initialize the UDP subsystem. Must be called before binding ports.
 pub fn init() {
     let mut ports = UDP_PORTS.lock();
     *ports = Some(BTreeMap::new());

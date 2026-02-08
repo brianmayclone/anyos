@@ -1,3 +1,9 @@
+//! Preemptive round-robin scheduler with priority support.
+//!
+//! Driven by the PIT timer interrupt, the scheduler picks the highest-priority ready thread
+//! on each tick and performs a context switch. Threads can be spawned, blocked, waited on,
+//! and killed. The idle context (kernel_main's `hlt` loop) runs when no threads are ready.
+
 use crate::memory::address::PhysAddr;
 use crate::sync::spinlock::Spinlock;
 use crate::task::context::CpuContext;
@@ -18,10 +24,15 @@ static TOTAL_SCHED_TICKS: AtomicU32 = AtomicU32::new(0);
 /// Idle scheduler ticks (incremented when no thread is running).
 static IDLE_SCHED_TICKS: AtomicU32 = AtomicU32::new(0);
 
+/// Core scheduler state: thread list, ready queue, and the idle context.
 pub struct Scheduler {
+    /// All threads known to the scheduler (running, ready, blocked, terminated).
     threads: Vec<Thread>,
-    ready_queue: VecDeque<usize>, // Indices into threads
+    /// Indices into `threads` for threads eligible to run, in FIFO order.
+    ready_queue: VecDeque<usize>,
+    /// Index of the currently executing thread, or `None` if idle.
     current: Option<usize>,
+    /// CPU context to return to when no threads are runnable (kernel_main's hlt loop).
     idle_context: CpuContext,
 }
 
@@ -106,6 +117,7 @@ impl Scheduler {
     }
 }
 
+/// Initialize the global scheduler. Must be called once before any threads are spawned.
 pub fn init() {
     let mut sched = SCHEDULER.lock();
     *sched = Some(Scheduler::new());
@@ -122,6 +134,8 @@ pub fn idle_sched_ticks() -> u32 {
     IDLE_SCHED_TICKS.load(Ordering::Relaxed)
 }
 
+/// Create a new kernel thread and add it to the ready queue.
+/// Returns the assigned TID. Emits an `EVT_PROCESS_SPAWNED` event.
 pub fn spawn(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
     let tid = {
         let thread = Thread::new(entry, priority, name);
@@ -596,7 +610,7 @@ pub fn current_thread_stdout_pipe() -> u32 {
     0
 }
 
-/// Thread information for `ps` command
+/// Snapshot of a thread's state, used by the `ps` / sysinfo syscall.
 pub struct ThreadInfo {
     pub tid: u32,
     pub priority: u8,

@@ -24,7 +24,7 @@ const REDIR_MASKED: u64    = 1 << 16;
 const REDIR_LEVEL: u64     = 1 << 15;   // Level-triggered
 const REDIR_ACTIVELOW: u64 = 1 << 13;   // Active-low polarity
 
-/// Stored I/O APIC configuration
+/// Maximum number of redirection entries reported by the I/O APIC.
 static mut IOAPIC_MAX_ENTRIES: u32 = 0;
 
 /// ISO overrides: for each ISA IRQ (0-15), store the actual GSI it maps to.

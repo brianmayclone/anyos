@@ -1,9 +1,17 @@
+//! Physical frame allocator using a bitmap.
+//!
+//! Manages 4 KiB physical frames up to 128 MiB of RAM. The bitmap tracks
+//! free/used state for each frame, initialized from the BIOS E820 memory map.
+
 use crate::boot_info::{BootInfo, E820_TYPE_USABLE};
 use crate::memory::address::PhysAddr;
 use crate::memory::FRAME_SIZE;
 
-const MAX_MEMORY: usize = 128 * 1024 * 1024; // Support up to 128 MiB
+/// Maximum supported physical memory (128 MiB).
+const MAX_MEMORY: usize = 128 * 1024 * 1024;
+/// Total number of frames that can be tracked in the bitmap.
 const MAX_FRAMES: usize = MAX_MEMORY / FRAME_SIZE;
+/// Size of the bitmap in bytes (1 bit per frame).
 const BITMAP_SIZE: usize = MAX_FRAMES / 8;
 
 // Kernel virtual base (must match link.ld and boot.asm)
@@ -37,6 +45,10 @@ fn is_used(frame: usize) -> bool {
     unsafe { BITMAP[frame / 8] & (1 << (frame % 8)) != 0 }
 }
 
+/// Initialize the physical frame allocator from the E820 memory map.
+///
+/// Marks usable regions as free, then reserves the first 2 MiB (legacy/bootloader area)
+/// and the kernel's code, BSS, and stack regions.
 pub fn init(boot_info: &BootInfo) {
     let memory_map = unsafe { boot_info.memory_map() };
 
@@ -127,6 +139,9 @@ pub fn init(boot_info: &BootInfo) {
     );
 }
 
+/// Allocate a single 4 KiB physical frame, returning its physical address.
+///
+/// Uses a linear scan of the bitmap (first-fit). Returns `None` if no frames are available.
 pub fn alloc_frame() -> Option<PhysAddr> {
     unsafe {
         for i in 0..TOTAL_FRAMES {
@@ -140,6 +155,7 @@ pub fn alloc_frame() -> Option<PhysAddr> {
     }
 }
 
+/// Free a previously allocated physical frame, returning it to the pool.
 pub fn free_frame(addr: PhysAddr) {
     let frame = addr.frame_index();
     if is_used(frame) {
@@ -148,14 +164,17 @@ pub fn free_frame(addr: PhysAddr) {
     }
 }
 
+/// Returns the number of free physical frames currently available.
 pub fn free_frame_count() -> usize {
     unsafe { FREE_FRAMES }
 }
 
+/// Returns the number of free physical frames (alias for [`free_frame_count`]).
 pub fn free_frames() -> usize {
     unsafe { FREE_FRAMES }
 }
 
+/// Returns the total number of physical frames tracked by the allocator.
 pub fn total_frames() -> usize {
     unsafe { TOTAL_FRAMES }
 }

@@ -37,11 +37,14 @@ const ICR_LEVEL: u32   = 1 << 14;
 const ICR_ASSERT: u32  = 1 << 15;
 const ICR_DEASSERT: u32 = 0;
 
-// Interrupt vectors for APIC
-pub const VECTOR_TIMER: u8    = 48;  // LAPIC timer
-pub const VECTOR_SPURIOUS: u8 = 255; // Spurious interrupt
-pub const VECTOR_IPI_HALT: u8 = 253; // IPI: halt processor
-pub const VECTOR_IPI_TLB: u8  = 252; // IPI: TLB shootdown
+/// Interrupt vector for the LAPIC periodic timer (INT 48).
+pub const VECTOR_TIMER: u8    = 48;
+/// Interrupt vector for spurious interrupts (INT 255).
+pub const VECTOR_SPURIOUS: u8 = 255;
+/// IPI vector used to halt a remote processor.
+pub const VECTOR_IPI_HALT: u8 = 253;
+/// IPI vector used for TLB shootdown across cores.
+pub const VECTOR_IPI_TLB: u8  = 252;
 
 /// Virtual address where LAPIC MMIO is mapped
 const LAPIC_VIRT_BASE: u32 = 0xD010_0000;

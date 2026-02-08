@@ -1,11 +1,15 @@
-/// PCI bus configuration space scanner.
-/// Enumerates all PCI devices via I/O ports 0xCF8/0xCFC.
+//! PCI bus enumeration and configuration space access.
+//!
+//! Scans all 256 PCI buses to discover devices, reads their BARs and capabilities,
+//! and provides lookup functions by class/subclass or vendor/device ID.
 
 use crate::arch::x86::port::{inl, outl};
 use crate::sync::spinlock::Spinlock;
 use alloc::vec::Vec;
 
+/// PCI configuration address port (write bus/device/function/register here).
 const PCI_CONFIG_ADDRESS: u16 = 0x0CF8;
+/// PCI configuration data port (read/write the selected register here).
 const PCI_CONFIG_DATA: u16 = 0x0CFC;
 
 /// A discovered PCI device
@@ -26,6 +30,7 @@ pub struct PciDevice {
     pub bars: [u32; 6],
 }
 
+/// Global list of all discovered PCI devices, populated by [`scan_all`].
 static PCI_DEVICES: Spinlock<Vec<PciDevice>> = Spinlock::new(Vec::new());
 
 /// Build PCI config address: enable bit | bus | device | function | register (dword-aligned)
@@ -37,6 +42,7 @@ fn pci_config_address(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
         | ((offset as u32) & 0xFC)
 }
 
+/// Read a 32-bit value from PCI configuration space.
 pub fn pci_config_read32(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
     let address = pci_config_address(bus, device, function, offset);
     unsafe {
@@ -45,16 +51,19 @@ pub fn pci_config_read32(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
     }
 }
 
+/// Read a 16-bit value from PCI configuration space.
 pub fn pci_config_read16(bus: u8, device: u8, function: u8, offset: u8) -> u16 {
     let dword = pci_config_read32(bus, device, function, offset & 0xFC);
     ((dword >> ((offset & 2) * 8)) & 0xFFFF) as u16
 }
 
+/// Read an 8-bit value from PCI configuration space.
 pub fn pci_config_read8(bus: u8, device: u8, function: u8, offset: u8) -> u8 {
     let dword = pci_config_read32(bus, device, function, offset & 0xFC);
     ((dword >> ((offset & 3) * 8)) & 0xFF) as u8
 }
 
+/// Write a 32-bit value to PCI configuration space.
 pub fn pci_config_write32(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
     let address = pci_config_address(bus, device, function, offset);
     unsafe {

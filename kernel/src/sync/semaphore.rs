@@ -1,3 +1,8 @@
+//! Counting semaphore for resource-count-based synchronization.
+//!
+//! Currently uses spin-waiting when the count is zero. Future phases will
+//! integrate with the scheduler for blocking wait and wake-on-signal.
+
 use crate::sync::spinlock::Spinlock;
 
 /// Counting semaphore.
@@ -12,6 +17,7 @@ struct SemaphoreInner {
 }
 
 impl Semaphore {
+    /// Create a new semaphore with the given initial count.
     pub const fn new(initial: i32) -> Self {
         Semaphore {
             inner: Spinlock::new(SemaphoreInner { count: initial }),
@@ -40,6 +46,9 @@ impl Semaphore {
         // TODO Phase 2: wake one thread from wait queue
     }
 
+    /// Try to decrement the semaphore without blocking.
+    ///
+    /// Returns `true` if the count was positive and was decremented, `false` otherwise.
     pub fn try_wait(&self) -> bool {
         let mut inner = self.inner.lock();
         if inner.count > 0 {

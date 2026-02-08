@@ -1,4 +1,5 @@
-/// IPv4 packet handling: build and parse IPv4 headers, route outgoing packets.
+//! IPv4 packet handling: build and parse IPv4 headers, route outgoing packets.
+//! Performs next-hop resolution via ARP before handing frames to the Ethernet layer.
 
 use alloc::vec::Vec;
 use super::types::{Ipv4Addr, MacAddr};
@@ -6,10 +7,14 @@ use super::checksum;
 use super::ethernet;
 
 const IPV4_HEADER_LEN: usize = 20;
+/// IP protocol number for ICMP.
 pub const PROTO_ICMP: u8 = 1;
+/// IP protocol number for UDP.
 pub const PROTO_UDP: u8 = 17;
+/// IP protocol number for TCP.
 pub const PROTO_TCP: u8 = 6;
 
+/// A parsed IPv4 packet with a reference to its payload.
 pub struct Ipv4Packet<'a> {
     pub src: Ipv4Addr,
     pub dst: Ipv4Addr,

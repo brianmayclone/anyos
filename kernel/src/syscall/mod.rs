@@ -1,3 +1,9 @@
+//! System call interface (`int 0x80`) -- dispatch, number definitions, and register layout.
+//!
+//! User programs invoke syscalls via `int 0x80` with the syscall number in EAX and up to
+//! five arguments in EBX, ECX, EDX, ESI, EDI. The assembly stub (`syscall_entry.asm`) saves
+//! registers and calls [`syscall_dispatch`], which routes to the appropriate handler.
+
 pub mod handlers;
 pub mod table;
 
@@ -116,7 +122,10 @@ pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x01;
 pub const WIN_FLAG_BORDERLESS: u32 = 0x02;
 pub const WIN_FLAG_ALWAYS_ON_TOP: u32 = 0x04;
 
-/// Registers as passed from syscall_entry.asm
+/// Register frame pushed by `syscall_entry.asm` before calling [`syscall_dispatch`].
+///
+/// The layout matches the pushad order plus segment registers and the CPU-pushed
+/// interrupt frame (EIP, CS, EFLAGS).
 #[repr(C)]
 pub struct SyscallRegs {
     // Segment registers (pushed by stub)
@@ -139,6 +148,7 @@ pub struct SyscallRegs {
     pub eflags: u32,
 }
 
+/// Register the `int 0x80` syscall trap gate and log readiness.
 pub fn init() {
     crate::serial_println!("[OK] Syscall interface initialized (int 0x80)");
 }

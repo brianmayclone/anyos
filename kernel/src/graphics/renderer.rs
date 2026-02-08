@@ -1,3 +1,6 @@
+//! High-level 2D renderer providing geometric primitives (lines, circles,
+//! rounded rectangles, gradients) on top of a borrowed [`Surface`].
+
 use crate::graphics::color::Color;
 use crate::graphics::rect::Rect;
 use crate::graphics::surface::Surface;
@@ -22,18 +25,22 @@ pub struct Renderer<'a> {
 }
 
 impl<'a> Renderer<'a> {
+    /// Wrap a surface for drawing. The renderer borrows the surface mutably.
     pub fn new(surface: &'a mut Surface) -> Self {
         Renderer { surface }
     }
 
+    /// Fill the entire surface with a solid color.
     pub fn clear(&mut self, color: Color) {
         self.surface.fill(color);
     }
 
+    /// Fill a rectangle with a solid color.
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         self.surface.fill_rect(rect, color);
     }
 
+    /// Draw a rectangular outline with the given border thickness.
     pub fn draw_rect(&mut self, rect: Rect, color: Color, thickness: u32) {
         let t = thickness as i32;
         // Top edge
@@ -52,6 +59,7 @@ impl<'a> Renderer<'a> {
         );
     }
 
+    /// Draw a line between two points using Bresenham's algorithm.
     pub fn draw_line(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, color: Color) {
         // Bresenham's line algorithm
         let dx = (x1 - x0).abs();
@@ -79,6 +87,7 @@ impl<'a> Renderer<'a> {
         }
     }
 
+    /// Draw a circle outline using the midpoint circle algorithm.
     pub fn draw_circle(&mut self, cx: i32, cy: i32, radius: i32, color: Color) {
         // Midpoint circle algorithm
         let mut x = radius;
@@ -105,6 +114,7 @@ impl<'a> Renderer<'a> {
         }
     }
 
+    /// Fill a solid circle centered at (cx, cy).
     pub fn fill_circle(&mut self, cx: i32, cy: i32, radius: i32, color: Color) {
         for dy in -radius..=radius {
             let dx = isqrt(radius * radius - dy * dy);
@@ -116,6 +126,7 @@ impl<'a> Renderer<'a> {
         }
     }
 
+    /// Fill a rectangle with rounded corners of the given radius.
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: i32, color: Color) {
         let r = radius.min(rect.width as i32 / 2).min(rect.height as i32 / 2);
         if r <= 0 {

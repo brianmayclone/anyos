@@ -1,7 +1,14 @@
+//! Syscall number-to-name mapping table.
+//!
+//! Provides a static lookup table used for debug logging and introspection of
+//! syscall numbers.
+
 use super::*;
 
+/// Function signature for a generic three-argument syscall handler.
 pub type SyscallFn = fn(u32, u32, u32) -> u32;
 
+/// Static table mapping syscall numbers to their human-readable names.
 pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_EXIT, "exit"),
     (SYS_WRITE, "write"),

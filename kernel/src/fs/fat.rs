@@ -1,11 +1,13 @@
+//! FAT16 filesystem driver with VFAT long filename (LFN) support.
+//! Reads and writes files/directories on an ATA-backed FAT16 partition.
+
 use crate::fs::file::{DirEntry, FileType};
 use crate::fs::vfs::FsError;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-/// FAT filesystem structures
-
+/// FAT16 BIOS Parameter Block (BPB) layout at the start of the partition.
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct FatBootSector {
@@ -25,6 +27,7 @@ pub struct FatBootSector {
     pub total_sectors_32: u32,
 }
 
+/// A 32-byte FAT directory entry (8.3 short name format).
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct FatDirEntry {
@@ -43,13 +46,19 @@ pub struct FatDirEntry {
     pub file_size: u32,
 }
 
-// FAT directory entry attributes
+/// FAT directory entry attribute: read-only file.
 pub const ATTR_READ_ONLY: u8 = 0x01;
+/// FAT directory entry attribute: hidden file.
 pub const ATTR_HIDDEN: u8 = 0x02;
+/// FAT directory entry attribute: system file.
 pub const ATTR_SYSTEM: u8 = 0x04;
+/// FAT directory entry attribute: volume label.
 pub const ATTR_VOLUME_ID: u8 = 0x08;
+/// FAT directory entry attribute: subdirectory.
 pub const ATTR_DIRECTORY: u8 = 0x10;
+/// FAT directory entry attribute: archive (modified since backup).
 pub const ATTR_ARCHIVE: u8 = 0x20;
+/// FAT directory entry attribute mask for VFAT long filename entries.
 pub const ATTR_LONG_NAME: u8 = 0x0F;
 
 const FAT16_EOC: u16 = 0xFFF8;
@@ -191,6 +200,7 @@ struct FoundEntry {
     is_dir: bool,
 }
 
+/// In-memory representation of a mounted FAT filesystem with cached BPB parameters.
 pub struct FatFs {
     pub device_id: u32,
     pub fat_type: FatType,
@@ -206,10 +216,14 @@ pub struct FatFs {
     pub num_fats: u32,
 }
 
+/// FAT variant detected from the cluster count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FatType {
+    /// FAT12 (fewer than 4085 clusters).
     Fat12,
+    /// FAT16 (4085 to 65524 clusters).
     Fat16,
+    /// FAT32 (65525 or more clusters).
     Fat32,
 }
 
@@ -414,6 +428,7 @@ impl FatFs {
         Err(FsError::NoSpace)
     }
 
+    /// Free an entire cluster chain starting at `start_cluster`.
     pub fn free_chain(&self, start_cluster: u32) -> Result<(), FsError> {
         if start_cluster < 2 {
             return Ok(());
@@ -434,6 +449,7 @@ impl FatFs {
     // File read/write
     // =====================================================================
 
+    /// Read up to `buf.len()` bytes from a file starting at the given cluster and byte offset.
     pub fn read_file(&self, start_cluster: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
         if start_cluster < 2 {
             return Ok(0);
@@ -476,6 +492,7 @@ impl FatFs {
         Ok(bytes_read)
     }
 
+    /// Read an entire file into a new `Vec<u8>`.
     pub fn read_file_all(&self, start_cluster: u32, file_size: u32) -> Result<Vec<u8>, FsError> {
         if file_size == 0 || start_cluster < 2 {
             return Ok(Vec::new());
@@ -486,6 +503,8 @@ impl FatFs {
         Ok(buf)
     }
 
+    /// Write data to a file at the given offset, allocating clusters as needed.
+    /// Returns `(first_cluster, new_size)`.
     pub fn write_file(&self, start_cluster: u32, offset: u32, data: &[u8], old_size: u32) -> Result<(u32, u32), FsError> {
         if data.is_empty() {
             return Ok((start_cluster, old_size));
@@ -829,6 +848,7 @@ impl FatFs {
     // Directory operations
     // =====================================================================
 
+    /// List all directory entries (files and subdirectories) in the given directory cluster.
     pub fn read_dir(&self, cluster: u32) -> Result<Vec<DirEntry>, FsError> {
         let mut entries = Vec::new();
         let raw = self.read_dir_raw(cluster)?;
@@ -1087,6 +1107,8 @@ impl FatFs {
     // Directory entry deletion (LFN-aware)
     // =====================================================================
 
+    /// Delete the 8.3 and any associated LFN entries for a file by name.
+    /// Returns `(start_cluster, file_size)` of the deleted entry.
     pub fn delete_entry(&self, parent_cluster: u32, name: &str) -> Result<(u32, u32), FsError> {
         if parent_cluster == 0 {
             let root_size = (self.root_dir_sectors * 512) as usize;
@@ -1155,6 +1177,7 @@ impl FatFs {
     // Directory entry update (LFN-aware lookup)
     // =====================================================================
 
+    /// Update the size and starting cluster of an existing directory entry.
     pub fn update_entry(&self, parent_cluster: u32, name: &str, new_size: u32, new_cluster: u32) -> Result<(), FsError> {
         if parent_cluster == 0 {
             let root_size = (self.root_dir_sectors * 512) as usize;
@@ -1204,6 +1227,7 @@ impl FatFs {
     // High-level file operations
     // =====================================================================
 
+    /// Create a new empty file in the given parent directory.
     pub fn create_file(&self, parent_cluster: u32, name: &str) -> Result<(), FsError> {
         let dir_data = self.read_dir_raw(parent_cluster)?;
         if self.find_entry_in_buf(&dir_data, name).is_some() {
@@ -1212,6 +1236,7 @@ impl FatFs {
         self.create_entry(parent_cluster, name, ATTR_ARCHIVE, 0, 0)
     }
 
+    /// Create a new subdirectory with `.` and `..` entries. Returns the new cluster.
     pub fn create_dir(&self, parent_cluster: u32, name: &str) -> Result<u32, FsError> {
         let dir_data = self.read_dir_raw(parent_cluster)?;
         if self.find_entry_in_buf(&dir_data, name).is_some() {
@@ -1232,6 +1257,7 @@ impl FatFs {
         Ok(cluster)
     }
 
+    /// Delete a file: remove the directory entry and free its cluster chain.
     pub fn delete_file(&self, parent_cluster: u32, name: &str) -> Result<(), FsError> {
         let (start_cluster, _size) = self.delete_entry(parent_cluster, name)?;
         if start_cluster >= 2 {
@@ -1240,6 +1266,7 @@ impl FatFs {
         Ok(())
     }
 
+    /// Truncate a file to zero length: free its cluster chain and update the directory entry.
     pub fn truncate_file(&self, parent_cluster: u32, name: &str) -> Result<(), FsError> {
         let dir_data = self.read_dir_raw(parent_cluster)?;
         let found = self.find_entry_in_buf(&dir_data, name)

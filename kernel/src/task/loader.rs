@@ -1,3 +1,7 @@
+//! User program loader: reads ELF or flat binaries from the filesystem, creates an
+//! isolated per-process page directory, maps code/stack/DLL pages, and spawns a kernel
+//! trampoline thread that transitions to Ring 3 via `iret`.
+
 use crate::memory::address::VirtAddr;
 use crate::memory::physical;
 use crate::memory::virtual_mem;
@@ -21,8 +25,10 @@ const PAGE_USER: u32 = 0x04;
 /// Max concurrent pending programs (no heap allocation needed).
 const MAX_PENDING: usize = 16;
 
-/// Pending user program info per TID, consumed by the trampoline.
-/// Uses a fixed-size array to avoid heap allocation inside Spinlock.
+/// Slot holding the entry point and stack pointer for a newly spawned user thread.
+///
+/// The trampoline thread looks up its TID in this table to learn where to jump
+/// after the context switch into the new address space.
 struct PendingSlot {
     tid: u32,
     entry: u32,
@@ -51,7 +57,7 @@ static PENDING_PROGRAMS: Spinlock<[PendingSlot; MAX_PENDING]> =
 const ELF_MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
 const PT_LOAD: u32 = 1;
 
-/// ELF32 file header (52 bytes)
+/// ELF32 file header layout (52 bytes, packed to match on-disk format).
 #[repr(C, packed)]
 struct Elf32Header {
     e_ident: [u8; 16],
@@ -70,7 +76,7 @@ struct Elf32Header {
     e_shstrndx: u16,
 }
 
-/// ELF32 program header (32 bytes)
+/// ELF32 program header layout (32 bytes, packed to match on-disk format).
 #[repr(C, packed)]
 struct Elf32Phdr {
     p_type: u32,
@@ -190,21 +196,20 @@ fn load_elf(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<El
             let memsz = phdr.p_memsz as usize;
             let offset = phdr.p_offset as usize;
 
-            // Copy file data
+            // Zero all allocated pages first. alloc_frame() returns unzeroed
+            // frames that may contain stale data from previous use. This
+            // prevents info leaks between processes and ensures BSS is clean
+            // even if there are page-alignment gaps.
+            let page_start = (vaddr & !0xFFF) as usize;
+            let page_end = (vaddr as usize + memsz + 0xFFF) & !0xFFF;
+            core::ptr::write_bytes(page_start as *mut u8, 0, page_end - page_start);
+
+            // Copy file data over the zeroed pages
             if filesz > 0 && offset + filesz <= data.len() {
                 core::ptr::copy_nonoverlapping(
                     data.as_ptr().add(offset),
                     vaddr as *mut u8,
                     filesz,
-                );
-            }
-
-            // Zero BSS (memsz - filesz)
-            if memsz > filesz {
-                core::ptr::write_bytes(
-                    (vaddr as *mut u8).add(filesz),
-                    0,
-                    memsz - filesz,
                 );
             }
         }
@@ -306,12 +311,12 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             let old_cr3 = virtual_mem::current_cr3();
             core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u32());
 
+            // Zero all code pages first (alloc_frame returns unzeroed frames)
             let dest = PROGRAM_LOAD_ADDR as *mut u8;
+            core::ptr::write_bytes(dest, 0, (code_pages * PAGE_SIZE) as usize);
+
+            // Copy program data over zeroed pages
             core::ptr::copy_nonoverlapping(data.as_ptr(), dest, data.len());
-            let remainder = (code_pages * PAGE_SIZE) as usize - data.len();
-            if remainder > 0 {
-                core::ptr::write_bytes(dest.add(data.len()), 0, remainder);
-            }
 
             core::ptr::write_bytes(stack_bottom as *mut u8, 0, (USER_STACK_PAGES * PAGE_SIZE) as usize);
 

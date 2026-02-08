@@ -1,5 +1,5 @@
-/// DHCP client — obtains IP configuration from a DHCP server.
-/// Implements the 4-step handshake: DISCOVER → OFFER → REQUEST → ACK.
+//! DHCP client -- obtains IP configuration from a DHCP server.
+//! Implements the 4-step handshake: DISCOVER -> OFFER -> REQUEST -> ACK.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -15,6 +15,7 @@ const DHCP_ACK: u8 = 5;
 
 const DHCP_MAGIC: [u8; 4] = [99, 130, 83, 99];
 
+/// The network configuration obtained from a successful DHCP exchange.
 pub struct DhcpResult {
     pub ip: Ipv4Addr,
     pub mask: Ipv4Addr,

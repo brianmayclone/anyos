@@ -1,3 +1,8 @@
+//! CMOS Real-Time Clock (RTC) driver.
+//!
+//! Reads the current date and time from the MC146818 RTC via I/O ports 0x70/0x71.
+//! Handles BCD-to-binary conversion and 12-hour to 24-hour format.
+
 use crate::arch::x86::port::{inb, outb};
 
 /// Time from RTC
@@ -78,6 +83,7 @@ pub fn read_datetime() -> (u16, u8, u8, u8, u8, u8) {
     (t.year, t.month, t.day, t.hours, t.minutes, t.seconds)
 }
 
+/// Initialize the RTC driver and log the current date/time.
 pub fn init() {
     let time = read_time();
     crate::serial_println!(

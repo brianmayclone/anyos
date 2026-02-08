@@ -1,6 +1,8 @@
-// =============================================================================
-// Syscall Handlers — complete implementation for .anyOS
-// =============================================================================
+//! Syscall handler implementations for all supported system calls.
+//!
+//! Each `pub fn sys_*` corresponds to one syscall number and is called from
+//! [`super::syscall_dispatch`]. Handlers validate user pointers, perform the
+//! requested kernel operation, and return a result code in EAX.
 
 use alloc::string::String;
 

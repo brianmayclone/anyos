@@ -1,3 +1,9 @@
+//! Global Descriptor Table (GDT) for segment-based memory protection.
+//!
+//! Defines six entries: null, kernel code/data (Ring 0), user code/data
+//! (Ring 3), and the TSS descriptor. All segments use a flat 4 GiB address
+//! space.
+
 use core::arch::asm;
 use core::mem::size_of;
 
@@ -18,6 +24,7 @@ struct GdtDescriptor {
     offset: u32,
 }
 
+/// Number of GDT entries: null + kernel code + kernel data + user code + user data + TSS.
 const GDT_ENTRIES: usize = 6;
 
 static mut GDT: [GdtEntry; GDT_ENTRIES] = [GdtEntry {
@@ -106,6 +113,7 @@ pub fn clear_tss_busy_bit() {
     }
 }
 
+/// Initialize the GDT with kernel/user segments and load it via `lgdt`.
 pub fn init() {
     unsafe {
         // Entry 0: Null descriptor

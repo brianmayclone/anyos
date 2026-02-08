@@ -1,4 +1,6 @@
-/// ARGB8888 color representation
+//! ARGB8888 color type with alpha blending and a macOS-inspired dark palette.
+
+/// ARGB8888 color representation with 8 bits per channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Color {
     pub a: u8,
@@ -8,14 +10,17 @@ pub struct Color {
 }
 
 impl Color {
+    /// Create a fully opaque color from RGB components.
     pub const fn new(r: u8, g: u8, b: u8) -> Self {
         Color { a: 255, r, g, b }
     }
 
+    /// Create a color with explicit alpha, red, green, and blue components.
     pub const fn with_alpha(a: u8, r: u8, g: u8, b: u8) -> Self {
         Color { a, r, g, b }
     }
 
+    /// Decode a color from a packed 0xAARRGGBB u32.
     pub const fn from_u32(argb: u32) -> Self {
         Color {
             a: ((argb >> 24) & 0xFF) as u8,
@@ -25,6 +30,7 @@ impl Color {
         }
     }
 
+    /// Encode this color as a packed 0xAARRGGBB u32.
     pub const fn to_u32(self) -> u32 {
         (self.a as u32) << 24 | (self.r as u32) << 16 | (self.g as u32) << 8 | self.b as u32
     }

@@ -1,3 +1,8 @@
+//! Double-buffered window compositor with damage-based recompositing.
+//!
+//! Manages Z-ordered layers, software and hardware cursors, GPU-accelerated
+//! RECT_COPY moves, and optional hardware page flipping.
+
 use alloc::vec::Vec;
 use crate::graphics::color::Color;
 use crate::graphics::rect::Rect;
@@ -24,6 +29,7 @@ pub struct Layer {
 }
 
 impl Layer {
+    /// Create a new layer at the given position and dimensions.
     pub fn new(id: u32, x: i32, y: i32, width: u32, height: u32) -> Self {
         Layer {
             id,
@@ -35,6 +41,7 @@ impl Layer {
         }
     }
 
+    /// Return the screen-space bounding rectangle of this layer.
     pub fn bounds(&self) -> Rect {
         Rect::new(self.x, self.y, self.surface.width, self.surface.height)
     }
@@ -85,6 +92,7 @@ pub struct Compositor {
 }
 
 impl Compositor {
+    /// Create a new compositor targeting the given framebuffer.
     pub fn new(width: u32, height: u32, framebuffer_addr: u32, framebuffer_pitch: u32) -> Self {
         Compositor {
             back_buffer: Surface::new_with_color(width, height, Color::MACOS_BG),
@@ -226,6 +234,7 @@ impl Compositor {
         }
     }
 
+    /// Return the current cursor position as (x, y).
     pub fn cursor_position(&self) -> (i32, i32) {
         (self.cursor_x, self.cursor_y)
     }

@@ -1,13 +1,22 @@
+//! Per-process address space and metadata management.
+//!
+//! Each process owns a page directory, a list of thread IDs, and lifecycle state.
+//! This module handles creation and teardown of process-level resources.
+
 use alloc::vec::Vec;
 
 static mut NEXT_PID: u32 = 1;
 
+/// Lifecycle state of a process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessState {
+    /// Process is running or has runnable threads.
     Active,
+    /// Process has exited but has not been fully reaped.
     Zombie,
 }
 
+/// A process with its own address space, consisting of one or more threads.
 pub struct Process {
     pub pid: u32,
     pub parent_pid: u32,
@@ -18,6 +27,8 @@ pub struct Process {
 }
 
 impl Process {
+    /// Create a new process with the given name and page directory physical address.
+    /// Assigns a unique PID automatically.
     pub fn new(name: &str, page_directory: u32) -> Self {
         let pid = unsafe {
             let p = NEXT_PID;
@@ -40,6 +51,7 @@ impl Process {
         }
     }
 
+    /// Return the process name as a UTF-8 string slice.
     pub fn name_str(&self) -> &str {
         let len = self.name.iter().position(|&b| b == 0).unwrap_or(64);
         core::str::from_utf8(&self.name[..len]).unwrap_or("???")

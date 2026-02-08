@@ -1,6 +1,11 @@
+//! Dark theme color and dimension constants used throughout the UI.
+//! Defines colors for desktop, menu bar, window chrome, dock, widgets, and menus,
+//! as well as standard font sizes.
+
 use crate::graphics::color::Color;
 
-/// macOS-inspired dark theme constants
+/// Central collection of macOS-inspired dark theme constants for colors,
+/// dimensions, border radii, and font sizes.
 pub struct Theme;
 
 impl Theme {

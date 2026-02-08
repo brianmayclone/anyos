@@ -1,6 +1,7 @@
-/// Hardware Abstraction Layer (HAL)
-/// Provides a unified interface for device drivers via traits and a central registry.
-/// Includes automatic PCI-to-driver matching for device detection at boot.
+//! Hardware Abstraction Layer (HAL).
+//!
+//! Provides a unified [`Driver`] trait and a central device registry. Includes automatic
+//! PCI-to-driver matching for device detection at boot, plus legacy device registration.
 
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -12,6 +13,7 @@ use crate::drivers::pci::PciDevice;
 // Driver trait + types
 // ──────────────────────────────────────────────
 
+/// Classification of device drivers by hardware category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriverType {
     Block,
@@ -26,6 +28,7 @@ pub enum DriverType {
     Unknown,
 }
 
+/// Errors returned by driver operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriverError {
     NotSupported,
@@ -39,39 +42,58 @@ pub enum DriverError {
 
 // ── Ioctl command ranges by device class ──
 
-// Display ioctls (0x0100-0x01FF)
-pub const IOCTL_DISPLAY_GET_MODE: u32 = 0x0100;      // Returns w|(h<<16)
-pub const IOCTL_DISPLAY_FLIP: u32 = 0x0101;          // Flip double buffer
-pub const IOCTL_DISPLAY_IS_DBLBUF: u32 = 0x0102;     // Returns 1 if double-buffered
-pub const IOCTL_DISPLAY_GET_PITCH: u32 = 0x0103;      // Returns pitch in bytes
-pub const IOCTL_DISPLAY_SET_MODE: u32 = 0x0104;       // arg = w | (h << 16)
-pub const IOCTL_DISPLAY_LIST_MODES: u32 = 0x0105;     // Returns count of supported modes
-pub const IOCTL_DISPLAY_HAS_ACCEL: u32 = 0x0106;      // Returns 1 if 2D accel available
-pub const IOCTL_DISPLAY_HAS_HW_CURSOR: u32 = 0x0107;  // Returns 1 if HW cursor available
+/// Display ioctl: get current mode as `width | (height << 16)`.
+pub const IOCTL_DISPLAY_GET_MODE: u32 = 0x0100;
+/// Display ioctl: flip the double buffer.
+pub const IOCTL_DISPLAY_FLIP: u32 = 0x0101;
+/// Display ioctl: returns 1 if double-buffered.
+pub const IOCTL_DISPLAY_IS_DBLBUF: u32 = 0x0102;
+/// Display ioctl: returns pitch in bytes.
+pub const IOCTL_DISPLAY_GET_PITCH: u32 = 0x0103;
+/// Display ioctl: set mode, arg = `width | (height << 16)`.
+pub const IOCTL_DISPLAY_SET_MODE: u32 = 0x0104;
+/// Display ioctl: returns count of supported modes.
+pub const IOCTL_DISPLAY_LIST_MODES: u32 = 0x0105;
+/// Display ioctl: returns 1 if 2D acceleration is available.
+pub const IOCTL_DISPLAY_HAS_ACCEL: u32 = 0x0106;
+/// Display ioctl: returns 1 if hardware cursor is available.
+pub const IOCTL_DISPLAY_HAS_HW_CURSOR: u32 = 0x0107;
 
-// Audio ioctls (0x0200-0x02FF)
+/// Audio ioctl: get sample rate.
 pub const IOCTL_AUDIO_GET_SAMPLE_RATE: u32 = 0x0200;
+/// Audio ioctl: set volume level.
 pub const IOCTL_AUDIO_SET_VOLUME: u32 = 0x0201;
+/// Audio ioctl: get current volume level.
 pub const IOCTL_AUDIO_GET_VOLUME: u32 = 0x0202;
 
-// Network ioctls (0x0300-0x03FF)
+/// Network ioctl: get MAC address.
 pub const IOCTL_NET_GET_MAC: u32 = 0x0300;
+/// Network ioctl: get link status.
 pub const IOCTL_NET_GET_LINK: u32 = 0x0301;
 
-// Sensor ioctls (0x0400-0x04FF)
+/// Sensor ioctl: read sensor value.
 pub const IOCTL_SENSOR_READ: u32 = 0x0400;
+/// Sensor ioctl: get sensor type identifier.
 pub const IOCTL_SENSOR_GET_TYPE: u32 = 0x0401;
 
-// Output ioctls (0x0500-0x05FF)
+/// Output ioctl: get output device status.
 pub const IOCTL_OUTPUT_STATUS: u32 = 0x0500;
+/// Output ioctl: flush output buffer.
 pub const IOCTL_OUTPUT_FLUSH: u32 = 0x0501;
 
+/// Unified device driver interface for the HAL registry.
 pub trait Driver: Send {
+    /// Human-readable driver name.
     fn name(&self) -> &str;
+    /// The category of this driver.
     fn driver_type(&self) -> DriverType;
+    /// Initialize the driver hardware. Called once during HAL probe.
     fn init(&mut self) -> Result<(), DriverError>;
+    /// Read data from the device at the given byte offset.
     fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize, DriverError>;
+    /// Write data to the device at the given byte offset.
     fn write(&self, offset: usize, buf: &[u8]) -> Result<usize, DriverError>;
+    /// Perform a device-specific control operation.
     fn ioctl(&mut self, cmd: u32, arg: u32) -> Result<u32, DriverError>;
 }
 

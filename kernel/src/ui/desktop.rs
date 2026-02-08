@@ -1,3 +1,7 @@
+//! Desktop environment and window manager. Owns the compositor, manages
+//! window creation/focus/close, dispatches mouse and keyboard events, and
+//! runs the main compositor event loop as a scheduled kernel task.
+
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
 use alloc::string::String;
@@ -21,13 +25,19 @@ use crate::sync::spinlock::Spinlock;
 
 static DESKTOP: Spinlock<Option<Desktop>> = Spinlock::new(None);
 
-// Window event types (shared with userland via stdlib)
+/// Window event type: key pressed.
 pub const EVENT_KEY_DOWN: u32 = 1;
+/// Window event type: key released.
 pub const EVENT_KEY_UP: u32 = 2;
+/// Window event type: window resized (data: new width, height).
 pub const EVENT_RESIZE: u32 = 3;
+/// Window event type: mouse button pressed (data: x, y, button).
 pub const EVENT_MOUSE_DOWN: u32 = 4;
+/// Window event type: mouse button released.
 pub const EVENT_MOUSE_UP: u32 = 5;
+/// Window event type: mouse moved.
 pub const EVENT_MOUSE_MOVE: u32 = 6;
+/// Window event type: scroll wheel.
 pub const EVENT_MOUSE_SCROLL: u32 = 7;
 
 /// Initialize the global Desktop with framebuffer parameters.
@@ -203,7 +213,8 @@ pub extern "C" fn desktop_task_entry() {
     }
 }
 
-/// Desktop window manager
+/// Desktop window manager. Owns the compositor, window list, menu bar,
+/// per-window event queues, and mouse interaction state.
 pub struct Desktop {
     pub compositor: Compositor,
     pub windows: Vec<Window>,
@@ -249,6 +260,7 @@ enum InteractionState {
 }
 
 impl Desktop {
+    /// Create a new desktop with the given screen dimensions and framebuffer.
     pub fn new(width: u32, height: u32, fb_addr: u32, fb_pitch: u32) -> Self {
         let mut compositor = Compositor::new(width, height, fb_addr, fb_pitch);
 

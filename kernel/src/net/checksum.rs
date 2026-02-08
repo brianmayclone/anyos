@@ -1,5 +1,9 @@
-/// Internet checksum (RFC 1071) — ones-complement sum of 16-bit words.
+//! Internet checksum (RFC 1071) -- ones-complement sum of 16-bit words.
+//! Used by IP, ICMP, TCP, and UDP headers.
 
+/// Compute the Internet checksum over a byte slice.
+///
+/// Returns the ones-complement of the ones-complement sum of all 16-bit words.
 pub fn internet_checksum(data: &[u8]) -> u16 {
     let mut sum: u32 = 0;
     let mut i = 0;
@@ -24,7 +28,9 @@ pub fn internet_checksum(data: &[u8]) -> u16 {
     !(sum as u16)
 }
 
-/// Pseudo-header checksum for TCP/UDP
+/// Compute the pseudo-header partial sum for TCP/UDP checksum calculation.
+///
+/// The caller must add the segment data to this sum and fold to 16 bits.
 pub fn pseudo_header_checksum(src: &[u8; 4], dst: &[u8; 4], protocol: u8, length: u16) -> u32 {
     let mut sum: u32 = 0;
     sum += ((src[0] as u32) << 8) | (src[1] as u32);

@@ -1,3 +1,9 @@
+//! 8259 Programmable Interrupt Controller (PIC) driver.
+//!
+//! Remaps IRQs 0-15 to INT 32-47 and provides masking and EOI helpers.
+//! Superseded by the I/O APIC when ACPI is available, but kept as a
+//! fallback for legacy mode.
+
 use crate::arch::x86::port::{inb, outb, io_wait};
 
 const PIC1_CMD: u16 = 0x20;
@@ -12,6 +18,7 @@ const ICW4_8086: u8 = 0x01;
 const PIC1_OFFSET: u8 = 32;  // IRQ 0-7  -> INT 32-39
 const PIC2_OFFSET: u8 = 40;  // IRQ 8-15 -> INT 40-47
 
+/// Remap both PICs and mask all IRQs. Individual IRQs are unmasked later.
 pub fn init() {
     unsafe {
         // Save current masks
@@ -50,6 +57,7 @@ pub fn init() {
     }
 }
 
+/// Unmask (enable) a specific IRQ line on the appropriate PIC.
 pub fn unmask(irq: u8) {
     unsafe {
         if irq < 8 {
@@ -65,6 +73,7 @@ pub fn unmask(irq: u8) {
     }
 }
 
+/// Send End-of-Interrupt to the PIC(s) for the given IRQ.
 pub fn send_eoi(irq: u8) {
     unsafe {
         if irq >= 8 {

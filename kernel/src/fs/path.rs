@@ -1,7 +1,10 @@
+//! Path manipulation utilities -- normalize, parent, and filename extraction.
+
 use alloc::string::String;
 use alloc::vec::Vec;
 
-/// Parse a path into components, handling "." and ".."
+/// Normalize a path by resolving `.` and `..` components.
+/// Returns an absolute path if the input was absolute, otherwise relative.
 pub fn normalize(path: &str) -> String {
     let mut components: Vec<&str> = Vec::new();
     let absolute = path.starts_with('/');

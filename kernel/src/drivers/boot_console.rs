@@ -1,7 +1,8 @@
-/// Boot splash — displays the color boot logo on the VESA framebuffer
-/// during boot, similar to Apple's boot screen.
-/// No heap required, renders directly to framebuffer memory.
-/// In error/panic mode, falls back to text display.
+//! Boot splash screen and early error console.
+//!
+//! Displays a centered boot logo on the VESA framebuffer during startup.
+//! No heap required -- renders directly to framebuffer memory. Falls back
+//! to a bitmap text console for panic/error output on a dark red background.
 
 use crate::graphics::font::{FONT_WIDTH, FONT_HEIGHT};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -23,6 +24,7 @@ static BOOT_LOGO: &[u8] = include_bytes!("../graphics/boot_logo.bin");
 /// Font data for error mode text (same as graphics::font)
 static FONT_DATA: &[u8] = include_bytes!("../graphics/font_8x16.bin");
 
+/// Initialize the boot splash screen from the framebuffer and display the logo.
 pub fn init() {
     if let Some(fb) = crate::drivers::framebuffer::info() {
         FB_ADDR.store(fb.addr, Ordering::Relaxed);

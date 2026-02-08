@@ -1,3 +1,8 @@
+//! PS/2 mouse driver with IntelliMouse scroll wheel support.
+//!
+//! Processes IRQ12 byte streams into [`MouseEvent`]s with button state tracking.
+//! Supports 3-byte standard packets and 4-byte IntelliMouse packets (scroll wheel).
+
 use crate::arch::x86::port::{inb, outb};
 use crate::sync::spinlock::Spinlock;
 use alloc::collections::VecDeque;
@@ -12,6 +17,7 @@ pub struct MouseEvent {
     pub event_type: MouseEventType,
 }
 
+/// Type of mouse event that occurred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseEventType {
     Move,
@@ -20,6 +26,7 @@ pub enum MouseEventType {
     Scroll,
 }
 
+/// State of the three mouse buttons.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MouseButtons {
     pub left: bool,
@@ -27,6 +34,7 @@ pub struct MouseButtons {
     pub middle: bool,
 }
 
+/// Ring buffer of pending mouse events, capacity 64.
 static MOUSE_BUFFER: Spinlock<VecDeque<MouseEvent>> = Spinlock::new(VecDeque::new());
 static MOUSE_STATE: Spinlock<MouseState> = Spinlock::new(MouseState {
     cycle: 0,

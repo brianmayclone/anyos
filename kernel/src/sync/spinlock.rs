@@ -1,7 +1,18 @@
+//! IRQ-safe spinlock with automatic interrupt disable/restore.
+//!
+//! Disables interrupts before acquiring the lock and restores the previous
+//! interrupt state on drop, preventing deadlocks from IRQ handlers trying
+//! to acquire an already-held lock on a single-core system.
+
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
+/// An IRQ-safe spinlock protecting data of type `T`.
+///
+/// Automatically disables interrupts while held and restores the previous
+/// interrupt state when the guard is dropped. Safe to use from both normal
+/// code and interrupt handlers (via [`try_lock`](Spinlock::try_lock)).
 pub struct Spinlock<T> {
     lock: AtomicBool,
     data: UnsafeCell<T>,
@@ -10,6 +21,10 @@ pub struct Spinlock<T> {
 unsafe impl<T: Send> Sync for Spinlock<T> {}
 unsafe impl<T: Send> Send for Spinlock<T> {}
 
+/// RAII guard for a held [`Spinlock`].
+///
+/// Provides `Deref`/`DerefMut` access to the protected data. On drop, releases
+/// the lock and restores the interrupt state that was saved at acquisition time.
 pub struct SpinlockGuard<'a, T> {
     lock: &'a Spinlock<T>,
     irq_was_enabled: bool,
@@ -42,6 +57,7 @@ fn sti() {
 }
 
 impl<T> Spinlock<T> {
+    /// Create a new unlocked spinlock wrapping the given data.
     pub const fn new(data: T) -> Self {
         Spinlock {
             lock: AtomicBool::new(false),
@@ -49,6 +65,9 @@ impl<T> Spinlock<T> {
         }
     }
 
+    /// Acquire the lock, spinning until it becomes available.
+    ///
+    /// Disables interrupts before spinning to prevent single-core deadlocks.
     pub fn lock(&self) -> SpinlockGuard<T> {
         // Save interrupt state and disable interrupts BEFORE acquiring the lock.
         // This prevents deadlock: if we hold the lock and a timer/device IRQ fires,
@@ -72,6 +91,10 @@ impl<T> Spinlock<T> {
         SpinlockGuard { lock: self, irq_was_enabled: was_enabled }
     }
 
+    /// Try to acquire the lock without blocking.
+    ///
+    /// Returns `Some(guard)` if the lock was acquired, `None` otherwise.
+    /// Restores interrupt state on failure.
     pub fn try_lock(&self) -> Option<SpinlockGuard<T>> {
         let was_enabled = interrupts_enabled();
         cli();

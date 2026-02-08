@@ -1,14 +1,16 @@
-/// Ethernet frame handling: parse incoming frames and build outgoing ones.
+//! Ethernet frame handling: parse incoming frames and build outgoing ones.
 
 use alloc::vec::Vec;
 use super::types::MacAddr;
 
+/// EtherType value for ARP frames.
 pub const ETHERTYPE_ARP: u16  = 0x0806;
+/// EtherType value for IPv4 frames.
 pub const ETHERTYPE_IPV4: u16 = 0x0800;
 
 const ETH_HEADER_LEN: usize = 14;
 
-/// Parse an Ethernet frame header
+/// A parsed Ethernet frame with references into the original packet buffer.
 pub struct EthFrame<'a> {
     pub dst: MacAddr,
     pub src: MacAddr,
@@ -16,6 +18,7 @@ pub struct EthFrame<'a> {
     pub payload: &'a [u8],
 }
 
+/// Parse raw bytes into an Ethernet frame. Returns `None` if too short.
 pub fn parse(data: &[u8]) -> Option<EthFrame<'_>> {
     if data.len() < ETH_HEADER_LEN {
         return None;

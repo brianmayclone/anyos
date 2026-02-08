@@ -1,7 +1,7 @@
-/// TCP (Transmission Control Protocol) — connection-oriented transport.
-///
-/// Supports active open only (no listen/accept). Uses stop-and-wait for sending.
-/// Fixed 16-slot connection table. Designed for FTP client use.
+//! TCP (Transmission Control Protocol) -- connection-oriented, reliable transport.
+//!
+//! Supports active open only (no listen/accept). Uses stop-and-wait for sending.
+//! Fixed 16-slot connection table with retransmission and TIME_WAIT cleanup.
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -25,6 +25,7 @@ const RETRANSMIT_TICKS: u32 = 300; // 3 seconds at 100Hz
 const MAX_RETRANSMITS: u32 = 5;
 const TIME_WAIT_TICKS: u32 = 200; // 2 seconds at 100Hz
 
+/// TCP connection state machine states per RFC 793.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TcpState {
     Closed,
@@ -116,6 +117,7 @@ struct TcpSegment {
 static TCP_CONNECTIONS: Spinlock<Option<[Option<Tcb>; 16]>> = Spinlock::new(None);
 static NEXT_PORT: Spinlock<u16> = Spinlock::new(49152);
 
+/// Initialize the TCP connection table. Must be called before `connect()`.
 pub fn init() {
     let mut conns = TCP_CONNECTIONS.lock();
     // Initialize array with const - can't use Default for Option<Tcb>

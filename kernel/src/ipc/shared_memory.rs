@@ -1,3 +1,9 @@
+//! Shared memory regions for zero-copy IPC between processes.
+//!
+//! A shared region is a set of physical frames that can be mapped into multiple
+//! process address spaces. Reference counting ensures frames are freed only when
+//! all users have released the region.
+
 use crate::memory::address::{PhysAddr, VirtAddr};
 use crate::memory::physical;
 use crate::memory::FRAME_SIZE;
@@ -6,11 +12,17 @@ use alloc::vec::Vec;
 
 static SHARED_REGIONS: Spinlock<Vec<SharedRegion>> = Spinlock::new(Vec::new());
 
+/// A reference-counted shared memory region backed by physical frames.
 pub struct SharedRegion {
+    /// Unique region identifier.
     pub id: u32,
+    /// Backing physical frames in page order.
     pub physical_frames: Vec<PhysAddr>,
+    /// Total size in bytes (page-aligned).
     pub size: usize,
+    /// Number of active mappings; frames are freed when this reaches zero.
     pub ref_count: u32,
+    /// PID of the process that created the region.
     pub owner_pid: u32,
 }
 

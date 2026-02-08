@@ -1,4 +1,5 @@
-/// ICMP (Internet Control Message Protocol) — ping echo request/reply.
+//! ICMP (Internet Control Message Protocol) -- handles echo request/reply (ping).
+//! Responds to incoming pings and provides a blocking `ping()` API with timeout.
 
 use alloc::vec::Vec;
 use super::types::Ipv4Addr;
@@ -20,6 +21,7 @@ struct PingReply {
 
 static PING_REPLIES: Spinlock<Option<alloc::vec::Vec<PingReply>>> = Spinlock::new(None);
 
+/// Initialize the ICMP subsystem (allocates the ping reply buffer).
 pub fn init() {
     let mut replies = PING_REPLIES.lock();
     *replies = Some(alloc::vec::Vec::new());

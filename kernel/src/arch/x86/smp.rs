@@ -10,12 +10,16 @@ use alloc::vec::Vec;
 /// Maximum number of CPUs supported
 pub const MAX_CPUS: usize = 16;
 
-/// Per-CPU data visible to that CPU
+/// Per-CPU metadata: CPU index, LAPIC ID, BSP flag, and initialization state.
 #[repr(C)]
 pub struct PerCpu {
+    /// Logical CPU index (0 = BSP, 1+ = APs).
     pub cpu_id: u8,
+    /// Hardware LAPIC ID for this CPU.
     pub lapic_id: u8,
+    /// `true` for the Bootstrap Processor.
     pub is_bsp: bool,
+    /// `true` once this CPU has completed initialization.
     pub initialized: bool,
 }
 

@@ -1,3 +1,8 @@
+//! Thread CPU context for cooperative/preemptive context switching.
+//!
+//! Defines the register state saved and restored by `context_switch.asm` and provides
+//! the FFI declaration for the assembly-level context switch routine.
+
 /// CPU context saved/restored during a context switch.
 /// Must match the layout expected by context_switch.asm.
 #[repr(C)]

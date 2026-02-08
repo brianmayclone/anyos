@@ -1,3 +1,10 @@
+//! System and module event bus for publish/subscribe IPC.
+//!
+//! Two independent buses exist: the **system bus** (kernel-only emitters, e.g. process
+//! lifecycle and hardware events) and the **module bus** (named channels that any process
+//! can create, subscribe to, and emit events on). Each subscriber has a bounded per-sub
+//! queue; oldest events are dropped when the queue is full.
+
 use crate::sync::spinlock::Spinlock;
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
@@ -6,7 +13,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 // ── Event type constants ──
 
-// System events (0x0001 - 0x00FF) — only kernel can emit
+// System events (0x0001 - 0x00FF) -- only kernel can emit
 pub const EVT_DEVICE_ATTACHED: u32 = 0x0001;
 pub const EVT_DEVICE_DETACHED: u32 = 0x0002;
 pub const EVT_NETWORK_LINK_UP: u32 = 0x0005;
@@ -27,20 +34,23 @@ pub const EVT_NOTIFICATION: u32 = 0x0103;
 /// Maximum events queued per subscription before dropping oldest.
 const MAX_QUEUE_DEPTH: usize = 64;
 
-/// Wire format: 5 u32 words = 20 bytes.
-/// words[0] = event_type, words[1..4] = payload
+/// Fixed-size event payload: 5 x u32 words = 20 bytes.
+///
+/// `words[0]` holds the event type; `words[1..5]` carry type-specific payload data.
 #[derive(Clone, Copy)]
 pub struct EventData {
     pub words: [u32; 5],
 }
 
 impl EventData {
+    /// Construct a new event with the given type and four payload words.
     pub fn new(event_type: u32, p1: u32, p2: u32, p3: u32, p4: u32) -> Self {
         EventData {
             words: [event_type, p1, p2, p3, p4],
         }
     }
 
+    /// Return the event type code (first word).
     pub fn event_type(&self) -> u32 {
         self.words[0]
     }
