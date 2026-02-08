@@ -311,6 +311,99 @@ pub fn sys_stat(path_ptr: u32, buf_ptr: u32) -> u32 {
     u32::MAX
 }
 
+/// sys_lseek - Seek within an open file.
+/// arg1=fd, arg2=offset (signed i32), arg3=whence (0=SET, 1=CUR, 2=END)
+/// Returns new position, or u32::MAX on error.
+pub fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
+    if fd < 3 { return 0; }
+    match crate::fs::vfs::lseek(fd, offset as i32, whence) {
+        Ok(pos) => pos,
+        Err(_) => u32::MAX,
+    }
+}
+
+/// sys_fstat - Get file information by fd.
+/// arg1=fd, arg2=stat_buf_ptr: output [type:u32, size:u32, position:u32] = 12 bytes
+/// Returns 0 on success, u32::MAX on error.
+pub fn sys_fstat(fd: u32, buf_ptr: u32) -> u32 {
+    if buf_ptr == 0 { return u32::MAX; }
+    if fd < 3 {
+        // stdin/stdout/stderr: character device, size 0
+        unsafe {
+            let buf = buf_ptr as *mut u32;
+            *buf = 2; // device
+            *buf.add(1) = 0;
+            *buf.add(2) = 0;
+        }
+        return 0;
+    }
+    match crate::fs::vfs::fstat(fd) {
+        Ok((file_type, size, position)) => {
+            unsafe {
+                let buf = buf_ptr as *mut u32;
+                *buf = match file_type {
+                    crate::fs::file::FileType::Regular => 0,
+                    crate::fs::file::FileType::Directory => 1,
+                    crate::fs::file::FileType::Device => 2,
+                };
+                *buf.add(1) = size;
+                *buf.add(2) = position;
+            }
+            0
+        }
+        Err(_) => u32::MAX,
+    }
+}
+
+/// sys_getcwd - Get current working directory.
+/// arg1=buf_ptr, arg2=buf_size. Returns length written.
+pub fn sys_getcwd(buf_ptr: u32, buf_size: u32) -> u32 {
+    if buf_ptr == 0 || buf_size == 0 { return u32::MAX; }
+    // For now, CWD is always "/"
+    let cwd = b"/\0";
+    let copy_len = cwd.len().min(buf_size as usize);
+    unsafe {
+        core::ptr::copy_nonoverlapping(cwd.as_ptr(), buf_ptr as *mut u8, copy_len);
+    }
+    1 // length of "/"
+}
+
+/// sys_isatty - Check if a file descriptor refers to a terminal.
+/// Returns 1 for stdin/stdout/stderr, 0 otherwise.
+pub fn sys_isatty(fd: u32) -> u32 {
+    if fd <= 2 { 1 } else { 0 }
+}
+
+/// sys_mkdir - Create a directory. arg1=path_ptr (null-terminated).
+pub fn sys_mkdir(path_ptr: u32) -> u32 {
+    if path_ptr == 0 { return u32::MAX; }
+    let path = unsafe { read_user_str(path_ptr) };
+    match crate::fs::vfs::mkdir(path) {
+        Ok(()) => 0,
+        Err(_) => u32::MAX,
+    }
+}
+
+/// sys_unlink - Delete a file. arg1=path_ptr (null-terminated).
+pub fn sys_unlink(path_ptr: u32) -> u32 {
+    if path_ptr == 0 { return u32::MAX; }
+    let path = unsafe { read_user_str(path_ptr) };
+    match crate::fs::vfs::delete(path) {
+        Ok(()) => 0,
+        Err(_) => u32::MAX,
+    }
+}
+
+/// sys_truncate - Truncate a file to zero. arg1=path_ptr (null-terminated).
+pub fn sys_truncate(path_ptr: u32) -> u32 {
+    if path_ptr == 0 { return u32::MAX; }
+    let path = unsafe { read_user_str(path_ptr) };
+    match crate::fs::vfs::truncate(path) {
+        Ok(()) => 0,
+        Err(_) => u32::MAX,
+    }
+}
+
 // =========================================================================
 // System Information (SYS_TIME, SYS_UPTIME, SYS_SYSINFO)
 // =========================================================================
@@ -515,6 +608,52 @@ pub fn sys_net_dns(hostname_ptr: u32, result_ptr: u32) -> u32 {
         }
         Err(_) => u32::MAX,
     }
+}
+
+// =========================================================================
+// TCP Networking (SYS_TCP_*)
+// =========================================================================
+
+/// sys_tcp_connect - Connect to a remote host.
+/// arg1=params_ptr: [ip:4, port:u16, pad:u16, timeout:u32] = 12 bytes
+/// Returns socket_id or u32::MAX on error.
+pub fn sys_tcp_connect(params_ptr: u32) -> u32 {
+    if params_ptr == 0 { return u32::MAX; }
+    let params = unsafe { core::slice::from_raw_parts(params_ptr as *const u8, 12) };
+    let ip = crate::net::types::Ipv4Addr([params[0], params[1], params[2], params[3]]);
+    let port = u16::from_le_bytes([params[4], params[5]]);
+    let timeout = u32::from_le_bytes([params[8], params[9], params[10], params[11]]);
+    let timeout_ticks = if timeout == 0 { 1000 } else { timeout / 10 }; // ms to ticks (100Hz)
+    crate::net::tcp::connect(ip, port, timeout_ticks)
+}
+
+/// sys_tcp_send - Send data on TCP connection.
+/// arg1=socket_id, arg2=buf_ptr, arg3=len
+/// Returns bytes sent or u32::MAX on error.
+pub fn sys_tcp_send(socket_id: u32, buf_ptr: u32, len: u32) -> u32 {
+    if buf_ptr == 0 || len == 0 { return 0; }
+    let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
+    crate::net::tcp::send(socket_id, buf, 1000) // 10s timeout
+}
+
+/// sys_tcp_recv - Receive data from TCP connection.
+/// arg1=socket_id, arg2=buf_ptr, arg3=len
+/// Returns bytes received, 0=EOF, u32::MAX=error.
+pub fn sys_tcp_recv(socket_id: u32, buf_ptr: u32, len: u32) -> u32 {
+    if buf_ptr == 0 || len == 0 { return u32::MAX; }
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
+    crate::net::tcp::recv(socket_id, buf, 3000) // 30s timeout
+}
+
+/// sys_tcp_close - Close TCP connection. arg1=socket_id.
+pub fn sys_tcp_close(socket_id: u32) -> u32 {
+    crate::net::tcp::close(socket_id)
+}
+
+/// sys_tcp_status - Get TCP connection state. arg1=socket_id.
+/// Returns state enum as u32, or u32::MAX if not found.
+pub fn sys_tcp_status(socket_id: u32) -> u32 {
+    crate::net::tcp::status(socket_id)
 }
 
 /// sys_net_arp - Get ARP table. arg1=buf_ptr, arg2=buf_size

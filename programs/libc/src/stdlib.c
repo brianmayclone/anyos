@@ -1,0 +1,173 @@
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+/* Simple malloc: sbrk-based with free-list */
+typedef struct block_header {
+    size_t size;        /* payload size (not including header) */
+    int free;
+    struct block_header *next;
+} block_header_t;
+
+#define HEADER_SIZE (sizeof(block_header_t))
+#define ALIGN(x) (((x) + 7) & ~7)
+
+static block_header_t *free_list = NULL;
+
+void *malloc(size_t size) {
+    if (size == 0) return NULL;
+    size = ALIGN(size);
+
+    /* Search free list */
+    block_header_t *prev = NULL;
+    block_header_t *curr = free_list;
+    while (curr) {
+        if (curr->free && curr->size >= size) {
+            curr->free = 0;
+            return (void *)((char *)curr + HEADER_SIZE);
+        }
+        prev = curr;
+        curr = curr->next;
+    }
+
+    /* Allocate from sbrk */
+    size_t total = HEADER_SIZE + size;
+    void *p = sbrk(total);
+    if (p == (void *)-1) return NULL;
+
+    block_header_t *blk = (block_header_t *)p;
+    blk->size = size;
+    blk->free = 0;
+    blk->next = NULL;
+
+    if (prev) prev->next = blk;
+    else free_list = blk;
+
+    return (void *)((char *)blk + HEADER_SIZE);
+}
+
+void *calloc(size_t nmemb, size_t size) {
+    size_t total = nmemb * size;
+    void *p = malloc(total);
+    if (p) memset(p, 0, total);
+    return p;
+}
+
+void *realloc(void *ptr, size_t size) {
+    if (!ptr) return malloc(size);
+    if (size == 0) { free(ptr); return NULL; }
+
+    block_header_t *blk = (block_header_t *)((char *)ptr - HEADER_SIZE);
+    if (blk->size >= size) return ptr;
+
+    void *new_ptr = malloc(size);
+    if (!new_ptr) return NULL;
+    memcpy(new_ptr, ptr, blk->size);
+    free(ptr);
+    return new_ptr;
+}
+
+void free(void *ptr) {
+    if (!ptr) return;
+    block_header_t *blk = (block_header_t *)((char *)ptr - HEADER_SIZE);
+    blk->free = 1;
+}
+
+void exit(int status) {
+    _exit(status);
+    __builtin_unreachable();
+}
+
+void abort(void) {
+    _exit(134);
+    __builtin_unreachable();
+}
+
+int atoi(const char *nptr) {
+    return (int)strtol(nptr, NULL, 10);
+}
+
+long atol(const char *nptr) {
+    return strtol(nptr, NULL, 10);
+}
+
+long strtol(const char *nptr, char **endptr, int base) {
+    const char *s = nptr;
+    long result = 0;
+    int neg = 0;
+
+    while (*s == ' ' || *s == '\t' || *s == '\n') s++;
+    if (*s == '-') { neg = 1; s++; }
+    else if (*s == '+') s++;
+
+    if (base == 0) {
+        if (*s == '0') {
+            s++;
+            if (*s == 'x' || *s == 'X') { base = 16; s++; }
+            else base = 8;
+        } else base = 10;
+    } else if (base == 16 && *s == '0' && (*(s+1) == 'x' || *(s+1) == 'X')) {
+        s += 2;
+    }
+
+    while (*s) {
+        int digit;
+        if (*s >= '0' && *s <= '9') digit = *s - '0';
+        else if (*s >= 'a' && *s <= 'f') digit = *s - 'a' + 10;
+        else if (*s >= 'A' && *s <= 'F') digit = *s - 'A' + 10;
+        else break;
+        if (digit >= base) break;
+        result = result * base + digit;
+        s++;
+    }
+
+    if (endptr) *endptr = (char *)s;
+    return neg ? -result : result;
+}
+
+unsigned long strtoul(const char *nptr, char **endptr, int base) {
+    return (unsigned long)strtol(nptr, endptr, base);
+}
+
+int abs(int j) { return j < 0 ? -j : j; }
+long labs(long j) { return j < 0 ? -j : j; }
+
+char *getenv(const char *name) {
+    (void)name;
+    return NULL; /* no environment */
+}
+
+static unsigned int _rand_seed = 1;
+
+int rand(void) {
+    _rand_seed = _rand_seed * 1103515245 + 12345;
+    return (int)((_rand_seed >> 16) & 0x7FFFFFFF);
+}
+
+void srand(unsigned int seed) {
+    _rand_seed = seed;
+}
+
+long long strtoll(const char *nptr, char **endptr, int base) {
+    return (long long)strtol(nptr, endptr, base);
+}
+
+unsigned long long strtoull(const char *nptr, char **endptr, int base) {
+    return (unsigned long long)strtoul(nptr, endptr, base);
+}
+
+void qsort(void *base, size_t nmemb, size_t size, int (*compar)(const void *, const void *)) {
+    /* Simple insertion sort for small sets */
+    char *b = base;
+    char tmp[256]; /* max element size */
+    if (size > sizeof(tmp)) return;
+    for (size_t i = 1; i < nmemb; i++) {
+        memcpy(tmp, b + i * size, size);
+        size_t j = i;
+        while (j > 0 && compar(b + (j - 1) * size, tmp) > 0) {
+            memcpy(b + j * size, b + (j - 1) * size, size);
+            j--;
+        }
+        memcpy(b + j * size, tmp, size);
+    }
+}

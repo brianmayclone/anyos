@@ -61,6 +61,23 @@ pub const SYS_PIPE_CLOSE: u32 = 47;
 pub const SYS_PIPE_WRITE: u32 = 48;
 pub const SYS_PIPE_OPEN: u32 = 49;
 
+// Filesystem (extended)
+pub const SYS_MKDIR: u32 = 90;
+pub const SYS_UNLINK: u32 = 91;
+pub const SYS_TRUNCATE: u32 = 92;
+
+// Filesystem (POSIX-like)
+pub const SYS_LSEEK: u32 = 105;
+pub const SYS_FSTAT: u32 = 106;
+pub const SYS_ISATTY: u32 = 108;
+
+// TCP networking
+pub const SYS_TCP_CONNECT: u32 = 100;
+pub const SYS_TCP_SEND: u32 = 101;
+pub const SYS_TCP_RECV: u32 = 102;
+pub const SYS_TCP_CLOSE: u32 = 103;
+pub const SYS_TCP_STATUS: u32 = 104;
+
 // DLL
 pub const SYS_DLL_LOAD: u32 = 80;
 
@@ -160,6 +177,13 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         // Filesystem
         SYS_READDIR => handlers::sys_readdir(arg1, arg2, arg3),
         SYS_STAT => handlers::sys_stat(arg1, arg2),
+        SYS_GETCWD => handlers::sys_getcwd(arg1, arg2),
+        SYS_MKDIR => handlers::sys_mkdir(arg1),
+        SYS_UNLINK => handlers::sys_unlink(arg1),
+        SYS_TRUNCATE => handlers::sys_truncate(arg1),
+        SYS_LSEEK => handlers::sys_lseek(arg1, arg2, arg3),
+        SYS_FSTAT => handlers::sys_fstat(arg1, arg2),
+        SYS_ISATTY => handlers::sys_isatty(arg1),
 
         // System info
         SYS_TIME => handlers::sys_time(arg1),
@@ -173,6 +197,13 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         SYS_NET_DHCP => handlers::sys_net_dhcp(arg1),
         SYS_NET_DNS => handlers::sys_net_dns(arg1, arg2),
         SYS_NET_ARP => handlers::sys_net_arp(arg1, arg2),
+
+        // TCP
+        SYS_TCP_CONNECT => handlers::sys_tcp_connect(arg1),
+        SYS_TCP_SEND => handlers::sys_tcp_send(arg1, arg2, arg3),
+        SYS_TCP_RECV => handlers::sys_tcp_recv(arg1, arg2, arg3),
+        SYS_TCP_CLOSE => handlers::sys_tcp_close(arg1),
+        SYS_TCP_STATUS => handlers::sys_tcp_status(arg1),
 
         // Pipes
         SYS_PIPE_CREATE => handlers::sys_pipe_create(arg1),

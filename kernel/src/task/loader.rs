@@ -3,9 +3,8 @@ use crate::memory::physical;
 use crate::memory::virtual_mem;
 use crate::sync::spinlock::Spinlock;
 
-/// User programs are loaded at this virtual address (128 MiB).
-/// Each process has its own page directory, so multiple programs
-/// can coexist at the same virtual address in different address spaces.
+/// Default load address for flat binaries (128 MiB).
+/// ELF binaries use their own vaddr from program headers.
 const PROGRAM_LOAD_ADDR: u32 = 0x0800_0000;
 
 /// User stack is allocated below this address (192 MiB).
@@ -45,6 +44,185 @@ static PENDING_PROGRAMS: Spinlock<[PendingSlot; MAX_PENDING]> =
         PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
     ]);
 
+// =========================================================================
+// ELF32 structures
+// =========================================================================
+
+const ELF_MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
+const PT_LOAD: u32 = 1;
+
+/// ELF32 file header (52 bytes)
+#[repr(C, packed)]
+struct Elf32Header {
+    e_ident: [u8; 16],
+    e_type: u16,
+    e_machine: u16,
+    e_version: u32,
+    e_entry: u32,
+    e_phoff: u32,
+    e_shoff: u32,
+    e_flags: u32,
+    e_ehsize: u16,
+    e_phentsize: u16,
+    e_phnum: u16,
+    e_shentsize: u16,
+    e_shnum: u16,
+    e_shstrndx: u16,
+}
+
+/// ELF32 program header (32 bytes)
+#[repr(C, packed)]
+struct Elf32Phdr {
+    p_type: u32,
+    p_offset: u32,
+    p_vaddr: u32,
+    p_paddr: u32,
+    p_filesz: u32,
+    p_memsz: u32,
+    p_flags: u32,
+    p_align: u32,
+}
+
+/// Result of loading an ELF: entry point and brk address.
+struct ElfLoadResult {
+    entry: u32,
+    brk: u32,
+}
+
+/// Load an ELF32 binary into a user page directory.
+/// Returns the entry point and the brk (end of last segment, page-aligned).
+fn load_elf(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<ElfLoadResult, &'static str> {
+    if data.len() < 52 {
+        return Err("ELF file too small");
+    }
+
+    let hdr = unsafe { &*(data.as_ptr() as *const Elf32Header) };
+
+    // Verify magic
+    if hdr.e_ident[0..4] != ELF_MAGIC {
+        return Err("Invalid ELF magic");
+    }
+    // Must be ELF32 (class 1)
+    if hdr.e_ident[4] != 1 {
+        return Err("Not ELF32");
+    }
+    // Must be little-endian
+    if hdr.e_ident[5] != 1 {
+        return Err("Not little-endian ELF");
+    }
+
+    let entry = hdr.e_entry;
+    let ph_off = hdr.e_phoff as usize;
+    let ph_size = hdr.e_phentsize as usize;
+    let ph_num = hdr.e_phnum as usize;
+
+    crate::serial_println!("  ELF: entry={:#010x}, {} program headers", entry, ph_num);
+
+    let mut max_vaddr_end: u32 = 0;
+
+    // Iterate program headers and load PT_LOAD segments
+    for i in 0..ph_num {
+        let ph_offset = ph_off + i * ph_size;
+        if ph_offset + ph_size > data.len() {
+            return Err("ELF program header out of bounds");
+        }
+        let phdr = unsafe { &*(data.as_ptr().add(ph_offset) as *const Elf32Phdr) };
+
+        if phdr.p_type != PT_LOAD {
+            continue;
+        }
+
+        let vaddr = phdr.p_vaddr;
+        let memsz = phdr.p_memsz;
+        let filesz = phdr.p_filesz;
+        let offset = phdr.p_offset;
+
+        if memsz == 0 {
+            continue;
+        }
+
+        crate::serial_println!(
+            "  ELF PT_LOAD: vaddr={:#010x} filesz={:#x} memsz={:#x}",
+            vaddr, filesz, memsz
+        );
+
+        // Validate: vaddr must be in user space (not kernel)
+        if vaddr >= 0xC000_0000 {
+            return Err("ELF segment in kernel space");
+        }
+
+        // Allocate pages for this segment
+        let page_start = vaddr & !0xFFF;
+        let page_end = (vaddr + memsz + PAGE_SIZE - 1) & !0xFFF;
+        let num_pages = (page_end - page_start) / PAGE_SIZE;
+
+        for p in 0..num_pages {
+            let page_virt = VirtAddr::new(page_start + p * PAGE_SIZE);
+            // Only map if not already mapped (segments can overlap pages)
+            if !virtual_mem::is_mapped_in_pd(pd_phys, page_virt) {
+                let phys = physical::alloc_frame()
+                    .ok_or("Failed to allocate frame for ELF segment")?;
+                virtual_mem::map_page_in_pd(pd_phys, page_virt, phys, PAGE_WRITABLE | PAGE_USER);
+            }
+        }
+
+        let seg_end = vaddr + memsz;
+        if seg_end > max_vaddr_end {
+            max_vaddr_end = seg_end;
+        }
+    }
+
+    // Now switch to user PD and copy data
+    unsafe {
+        let old_cr3 = virtual_mem::current_cr3();
+        core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u32());
+
+        for i in 0..ph_num {
+            let ph_offset = ph_off + i * ph_size;
+            let phdr = &*(data.as_ptr().add(ph_offset) as *const Elf32Phdr);
+
+            if phdr.p_type != PT_LOAD || phdr.p_memsz == 0 {
+                continue;
+            }
+
+            let vaddr = phdr.p_vaddr;
+            let filesz = phdr.p_filesz as usize;
+            let memsz = phdr.p_memsz as usize;
+            let offset = phdr.p_offset as usize;
+
+            // Copy file data
+            if filesz > 0 && offset + filesz <= data.len() {
+                core::ptr::copy_nonoverlapping(
+                    data.as_ptr().add(offset),
+                    vaddr as *mut u8,
+                    filesz,
+                );
+            }
+
+            // Zero BSS (memsz - filesz)
+            if memsz > filesz {
+                core::ptr::write_bytes(
+                    (vaddr as *mut u8).add(filesz),
+                    0,
+                    memsz - filesz,
+                );
+            }
+        }
+
+        core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
+    }
+
+    // brk starts at end of last segment, page-aligned up
+    let brk = (max_vaddr_end + PAGE_SIZE - 1) & !0xFFF;
+
+    Ok(ElfLoadResult { entry, brk })
+}
+
+/// Check if data starts with ELF magic bytes.
+fn is_elf(data: &[u8]) -> bool {
+    data.len() >= 4 && data[0..4] == ELF_MAGIC
+}
+
 /// Load a flat binary from the filesystem and run it in Ring 3.
 /// Creates a per-process page directory with isolated user-space mappings.
 /// Returns the TID of the spawned thread.
@@ -52,7 +230,7 @@ pub fn load_and_run(path: &str, name: &str) -> Result<u32, &'static str> {
     load_and_run_with_args(path, name, "")
 }
 
-/// Load a flat binary and run it with command-line arguments.
+/// Load a flat binary or ELF and run it with command-line arguments.
 pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32, &'static str> {
     // Read the binary from the filesystem
     let data = crate::fs::vfs::read_file_to_vec(path)
@@ -68,57 +246,87 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     let pd_phys = virtual_mem::create_user_page_directory()
         .ok_or("Failed to create user page directory")?;
 
-    // Allocate and map code pages in the user's page directory
-    let code_pages = (data.len() as u32 + PAGE_SIZE - 1) / PAGE_SIZE;
-    for i in 0..code_pages {
-        let virt = VirtAddr::new(PROGRAM_LOAD_ADDR + i * PAGE_SIZE);
-        let phys = physical::alloc_frame()
-            .ok_or("Failed to allocate frame for program code")?;
-        virtual_mem::map_page_in_pd(pd_phys, virt, phys, PAGE_WRITABLE | PAGE_USER);
-    }
+    let (entry_point, brk);
 
-    // Allocate and map stack pages in the user's page directory
-    let stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
-    for i in 0..USER_STACK_PAGES {
-        let virt = VirtAddr::new(stack_bottom + i * PAGE_SIZE);
-        let phys = physical::alloc_frame()
-            .ok_or("Failed to allocate frame for user stack")?;
-        virtual_mem::map_page_in_pd(pd_phys, virt, phys, PAGE_WRITABLE | PAGE_USER);
-    }
+    if is_elf(&data) {
+        // ---- ELF binary path ----
+        crate::serial_println!("  Detected ELF binary");
 
-    // Map all loaded DLLs into the new process page directory
-    crate::task::dll::map_all_dlls_into(pd_phys);
-
-    // Temporarily switch to user PD to copy program data and zero stack.
-    // This works because the user PD has all kernel mappings cloned,
-    // so kernel heap (where `data` lives) is still accessible.
-    unsafe {
-        let old_cr3 = virtual_mem::current_cr3();
-        core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u32());
-
-        // Copy program binary to load address
-        let dest = PROGRAM_LOAD_ADDR as *mut u8;
-        core::ptr::copy_nonoverlapping(data.as_ptr(), dest, data.len());
-        // Zero-fill remainder of last page
-        let remainder = (code_pages * PAGE_SIZE) as usize - data.len();
-        if remainder > 0 {
-            core::ptr::write_bytes(dest.add(data.len()), 0, remainder);
+        // Allocate and map stack pages
+        let stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
+        for i in 0..USER_STACK_PAGES {
+            let virt = VirtAddr::new(stack_bottom + i * PAGE_SIZE);
+            let phys = physical::alloc_frame()
+                .ok_or("Failed to allocate frame for user stack")?;
+            virtual_mem::map_page_in_pd(pd_phys, virt, phys, PAGE_WRITABLE | PAGE_USER);
         }
 
-        // Zero the user stack
-        core::ptr::write_bytes(stack_bottom as *mut u8, 0, (USER_STACK_PAGES * PAGE_SIZE) as usize);
+        // Map DLLs
+        crate::task::dll::map_all_dlls_into(pd_phys);
 
-        // Switch back to kernel PD
-        core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
+        // Load ELF segments (allocates pages, copies data)
+        let elf_result = load_elf(&data, pd_phys)?;
+        entry_point = elf_result.entry;
+        brk = elf_result.brk;
+
+        // Zero user stack
+        unsafe {
+            let old_cr3 = virtual_mem::current_cr3();
+            core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u32());
+            core::ptr::write_bytes(stack_bottom as *mut u8, 0, (USER_STACK_PAGES * PAGE_SIZE) as usize);
+            core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
+        }
+
+        crate::serial_println!(
+            "  ELF: PD={:#010x}, entry={:#010x}, brk={:#010x}, stack={:#010x}-{:#010x}",
+            pd_phys.as_u32(), entry_point, brk,
+            stack_bottom, USER_STACK_TOP
+        );
+    } else {
+        // ---- Flat binary path ----
+        let code_pages = (data.len() as u32 + PAGE_SIZE - 1) / PAGE_SIZE;
+        for i in 0..code_pages {
+            let virt = VirtAddr::new(PROGRAM_LOAD_ADDR + i * PAGE_SIZE);
+            let phys = physical::alloc_frame()
+                .ok_or("Failed to allocate frame for program code")?;
+            virtual_mem::map_page_in_pd(pd_phys, virt, phys, PAGE_WRITABLE | PAGE_USER);
+        }
+
+        let stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
+        for i in 0..USER_STACK_PAGES {
+            let virt = VirtAddr::new(stack_bottom + i * PAGE_SIZE);
+            let phys = physical::alloc_frame()
+                .ok_or("Failed to allocate frame for user stack")?;
+            virtual_mem::map_page_in_pd(pd_phys, virt, phys, PAGE_WRITABLE | PAGE_USER);
+        }
+
+        crate::task::dll::map_all_dlls_into(pd_phys);
+
+        unsafe {
+            let old_cr3 = virtual_mem::current_cr3();
+            core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u32());
+
+            let dest = PROGRAM_LOAD_ADDR as *mut u8;
+            core::ptr::copy_nonoverlapping(data.as_ptr(), dest, data.len());
+            let remainder = (code_pages * PAGE_SIZE) as usize - data.len();
+            if remainder > 0 {
+                core::ptr::write_bytes(dest.add(data.len()), 0, remainder);
+            }
+
+            core::ptr::write_bytes(stack_bottom as *mut u8, 0, (USER_STACK_PAGES * PAGE_SIZE) as usize);
+
+            core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
+        }
+
+        entry_point = PROGRAM_LOAD_ADDR;
+        brk = PROGRAM_LOAD_ADDR + code_pages * PAGE_SIZE;
+
+        crate::serial_println!(
+            "  PD={:#010x}, {} code pages at {:#010x}, {} stack pages at {:#010x}-{:#010x}, brk={:#010x}",
+            pd_phys.as_u32(), code_pages, PROGRAM_LOAD_ADDR,
+            USER_STACK_PAGES, stack_bottom, USER_STACK_TOP, brk
+        );
     }
-
-    let brk = PROGRAM_LOAD_ADDR + code_pages * PAGE_SIZE;
-
-    crate::serial_println!(
-        "  PD={:#010x}, {} code pages at {:#010x}, {} stack pages at {:#010x}-{:#010x}, brk={:#010x}",
-        pd_phys.as_u32(), code_pages, PROGRAM_LOAD_ADDR,
-        USER_STACK_PAGES, stack_bottom, USER_STACK_TOP, brk
-    );
 
     // Disable interrupts to prevent the timer from scheduling the new thread
     // before we set its CR3 to the user PD (would page fault at 0x08000000).
@@ -138,7 +346,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         let slot = slots.iter_mut().find(|s| !s.used)
             .expect("Too many pending programs");
         slot.tid = tid;
-        slot.entry = PROGRAM_LOAD_ADDR;
+        slot.entry = entry_point;
         slot.user_stack = USER_STACK_TOP;
         slot.used = true;
     }

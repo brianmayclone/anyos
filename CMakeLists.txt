@@ -122,6 +122,9 @@ set(SYSROOT_DIR "${CMAKE_BINARY_DIR}/sysroot")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/bin")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/system")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/system/lib")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/include")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/include/sys")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/lib")
 
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/bin/hello
@@ -249,6 +252,16 @@ add_rust_user_program(ifconfig   ${CMAKE_SOURCE_DIR}/programs/ifconfig)
 add_rust_user_program(arp        ${CMAKE_SOURCE_DIR}/programs/arp)
 add_rust_user_program(sysinfo    ${CMAKE_SOURCE_DIR}/programs/sysinfo)
 add_rust_user_program(dmesg      ${CMAKE_SOURCE_DIR}/programs/dmesg)
+add_rust_user_program(mkdir      ${CMAKE_SOURCE_DIR}/programs/mkdir)
+add_rust_user_program(rm         ${CMAKE_SOURCE_DIR}/programs/rm)
+add_rust_user_program(touch      ${CMAKE_SOURCE_DIR}/programs/touch)
+add_rust_user_program(cp         ${CMAKE_SOURCE_DIR}/programs/cp)
+add_rust_user_program(mv         ${CMAKE_SOURCE_DIR}/programs/mv)
+add_rust_user_program(date       ${CMAKE_SOURCE_DIR}/programs/date)
+add_rust_user_program(sleep      ${CMAKE_SOURCE_DIR}/programs/sleep)
+add_rust_user_program(hostname   ${CMAKE_SOURCE_DIR}/programs/hostname)
+add_rust_user_program(ftp        ${CMAKE_SOURCE_DIR}/programs/ftp)
+add_rust_user_program(wget       ${CMAKE_SOURCE_DIR}/programs/wget)
 
 set(SYSTEM_BINS "")
 add_rust_system_program(init        ${CMAKE_SOURCE_DIR}/programs/system/init)
@@ -256,6 +269,7 @@ add_rust_system_program(terminal    ${CMAKE_SOURCE_DIR}/programs/system/terminal
 add_rust_system_program(taskmanager ${CMAKE_SOURCE_DIR}/programs/system/taskmanager)
 add_rust_system_program(settings    ${CMAKE_SOURCE_DIR}/programs/system/settings)
 add_rust_system_program(finder      ${CMAKE_SOURCE_DIR}/programs/system/finder)
+add_rust_system_program(notepad     ${CMAKE_SOURCE_DIR}/programs/system/notepad)
 
 # Build dock program (nested path: /system/compositor/dock)
 set(DOCK_SRC_DIR ${CMAKE_SOURCE_DIR}/programs/system/compositor/dock)
@@ -326,6 +340,136 @@ add_custom_command(
   COMMENT "Generating dock icons"
 )
 
+# ============================================================
+# C Library (libc.a + crt0.o for C programs)
+# ============================================================
+set(LIBC_DIR "${CMAKE_SOURCE_DIR}/programs/libc")
+set(LIBC_A "${LIBC_DIR}/libc.a")
+set(LIBC_CRT0 "${LIBC_DIR}/obj/crt0.o")
+
+add_custom_command(
+  OUTPUT ${LIBC_A} ${LIBC_CRT0}
+  COMMAND make -C ${LIBC_DIR} clean
+  COMMAND make -C ${LIBC_DIR}
+  DEPENDS
+    ${LIBC_DIR}/Makefile
+    ${LIBC_DIR}/src/crt0.S
+    ${LIBC_DIR}/src/syscall.S
+    ${LIBC_DIR}/src/string.c
+    ${LIBC_DIR}/src/stdlib.c
+    ${LIBC_DIR}/src/stdio.c
+    ${LIBC_DIR}/src/unistd.c
+    ${LIBC_DIR}/src/ctype.c
+    ${LIBC_DIR}/src/signal.c
+    ${LIBC_DIR}/src/setjmp.S
+    ${LIBC_DIR}/src/stat.c
+    ${LIBC_DIR}/src/time.c
+    ${LIBC_DIR}/src/math.c
+    ${LIBC_DIR}/src/mman.c
+  COMMENT "Building C library (libc.a + crt0.o)"
+)
+
+# Create empty crti.o, crtn.o stubs and empty libtcc1.a for TCC
+set(LIBC_CRTI "${LIBC_DIR}/obj/crti.o")
+set(LIBC_CRTN "${LIBC_DIR}/obj/crtn.o")
+set(LIBC_LIBTCC1 "${LIBC_DIR}/libtcc1.a")
+add_custom_command(
+  OUTPUT ${LIBC_CRTI} ${LIBC_CRTN} ${LIBC_LIBTCC1}
+  COMMAND i686-elf-gcc -m32 -c ${LIBC_DIR}/src/crti.S -o ${LIBC_CRTI}
+  COMMAND i686-elf-gcc -m32 -c ${LIBC_DIR}/src/crtn.S -o ${LIBC_CRTN}
+  COMMAND i686-elf-ar rcs ${LIBC_LIBTCC1}
+  DEPENDS ${LIBC_A} ${LIBC_DIR}/src/crti.S ${LIBC_DIR}/src/crtn.S
+  COMMENT "Creating CRT stubs and libtcc1.a for TCC"
+)
+
+# Copy libc artifacts to sysroot
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/lib/libc.a ${SYSROOT_DIR}/lib/crt0.o
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_A} ${SYSROOT_DIR}/lib/libc.a
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_CRT0} ${SYSROOT_DIR}/lib/crt0.o
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_CRT0} ${SYSROOT_DIR}/lib/crt1.o
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_CRTI} ${SYSROOT_DIR}/lib/crti.o
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_CRTN} ${SYSROOT_DIR}/lib/crtn.o
+  DEPENDS ${LIBC_A} ${LIBC_CRT0} ${LIBC_CRTI} ${LIBC_CRTN}
+  COMMENT "Installing libc.a and crt0.o to sysroot"
+)
+
+# Copy libc headers to sysroot
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/include/.stamp
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${LIBC_DIR}/include ${SYSROOT_DIR}/include
+  COMMAND ${CMAKE_COMMAND} -E touch ${SYSROOT_DIR}/include/.stamp
+  DEPENDS ${LIBC_A}
+  COMMENT "Installing C headers to sysroot"
+)
+
+# ============================================================
+# TCC (Tiny C Compiler for anyOS)
+# ============================================================
+set(TCC_DIR "${CMAKE_SOURCE_DIR}/third_party/tcc-0.9.27")
+set(TCC_OBJ "${TCC_DIR}/tcc.o")
+set(TCC_ELF "${TCC_DIR}/tcc.elf")
+
+set(TCC_CFLAGS
+  -DONE_SOURCE=1
+  -DTCC_TARGET_I386
+  -DCONFIG_TCC_STATIC
+  -DCONFIG_TCCBOOT
+  "-DCONFIG_TCCDIR=\"/lib/tcc\""
+  "-DCONFIG_TCC_SYSINCLUDEPATHS=\"/include\""
+  "-DCONFIG_TCC_LIBPATHS=\"/lib\""
+  "-DCONFIG_TCC_CRTPREFIX=\"/lib\""
+  "-DCONFIG_TCC_ELFINTERP=\"\""
+  "-DTCC_VERSION=\"0.9.27\""
+)
+
+add_custom_command(
+  OUTPUT ${TCC_OBJ}
+  COMMAND i686-elf-gcc
+    ${TCC_CFLAGS}
+    -I${TCC_DIR}
+    -I${LIBC_DIR}/include
+    -ffreestanding -nostdlib -nostdinc -fno-builtin -fno-stack-protector
+    -O2 -m32 -w
+    -c ${TCC_DIR}/tcc.c -o ${TCC_OBJ}
+  DEPENDS ${LIBC_A} ${TCC_DIR}/tcc.c ${TCC_DIR}/tcc.h ${TCC_DIR}/libtcc.c
+  COMMENT "Compiling TCC for anyOS"
+)
+
+add_custom_command(
+  OUTPUT ${TCC_ELF}
+  COMMAND i686-elf-gcc
+    -nostdlib -static -m32
+    -T ${LIBC_DIR}/link.ld
+    -o ${TCC_ELF}
+    ${LIBC_CRT0}
+    ${TCC_OBJ}
+    ${LIBC_A}
+    -lgcc
+  DEPENDS ${TCC_OBJ} ${LIBC_A} ${LIBC_CRT0} ${LIBC_DIR}/link.ld
+  COMMENT "Linking TCC for anyOS"
+)
+
+# Copy TCC to sysroot
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/bin/cc
+  COMMAND ${CMAKE_COMMAND} -E copy ${TCC_ELF} ${SYSROOT_DIR}/bin/cc
+  DEPENDS ${TCC_ELF}
+  COMMENT "Installing TCC as /bin/cc"
+)
+
+# Copy TCC internal headers
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/lib/tcc/include")
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/lib/tcc/include/.stamp
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${TCC_DIR}/include ${SYSROOT_DIR}/lib/tcc/include
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_DIR}/link.ld ${SYSROOT_DIR}/lib/tcc/link.ld
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_LIBTCC1} ${SYSROOT_DIR}/lib/tcc/libtcc1.a
+  COMMAND ${CMAKE_COMMAND} -E touch ${SYSROOT_DIR}/lib/tcc/include/.stamp
+  DEPENDS ${TCC_ELF} ${LIBC_LIBTCC1}
+  COMMENT "Installing TCC headers to sysroot"
+)
+
 add_custom_target(programs DEPENDS
   ${SYSROOT_DIR}/bin/hello
   ${RUST_USER_BINS}
@@ -333,6 +477,11 @@ add_custom_target(programs DEPENDS
   ${DLL_BINS}
   ${SYSROOT_DIR}/.stamp
   ${ICONS_DIR}/terminal.icon
+  ${SYSROOT_DIR}/lib/libc.a
+  ${SYSROOT_DIR}/lib/crt0.o
+  ${SYSROOT_DIR}/include/.stamp
+  ${SYSROOT_DIR}/bin/cc
+  ${SYSROOT_DIR}/lib/tcc/include/.stamp
 )
 
 # ============================================================
@@ -357,6 +506,11 @@ add_custom_command(
     ${SYSTEM_BINS}
     ${DLL_BINS}
     ${SYSROOT_DIR}/.stamp
+    ${SYSROOT_DIR}/lib/libc.a
+    ${SYSROOT_DIR}/lib/crt0.o
+    ${SYSROOT_DIR}/include/.stamp
+    ${SYSROOT_DIR}/bin/cc
+    ${SYSROOT_DIR}/lib/tcc/include/.stamp
   COMMENT "Creating bootable disk image (64 MiB, FAT16 filesystem)"
 )
 

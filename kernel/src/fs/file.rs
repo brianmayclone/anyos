@@ -59,8 +59,9 @@ pub struct OpenFile {
     pub flags: FileFlags,
     pub position: u32,
     pub size: u32,
-    pub fs_id: u32,     // Which filesystem this belongs to
-    pub inode: u32,     // Filesystem-specific identifier
+    pub fs_id: u32,        // Which filesystem this belongs to
+    pub inode: u32,        // Filesystem-specific identifier (start cluster for FAT)
+    pub parent_cluster: u32, // Parent directory cluster (0 = root)
 }
 
 #[derive(Debug, Clone)]

@@ -1,0 +1,158 @@
+#include <string.h>
+#include <stdlib.h>
+
+void *memcpy(void *dest, const void *src, size_t n) {
+    unsigned char *d = dest;
+    const unsigned char *s = src;
+    while (n--) *d++ = *s++;
+    return dest;
+}
+
+void *memmove(void *dest, const void *src, size_t n) {
+    unsigned char *d = dest;
+    const unsigned char *s = src;
+    if (d < s) {
+        while (n--) *d++ = *s++;
+    } else {
+        d += n; s += n;
+        while (n--) *--d = *--s;
+    }
+    return dest;
+}
+
+void *memset(void *s, int c, size_t n) {
+    unsigned char *p = s;
+    while (n--) *p++ = (unsigned char)c;
+    return s;
+}
+
+int memcmp(const void *s1, const void *s2, size_t n) {
+    const unsigned char *a = s1, *b = s2;
+    while (n--) {
+        if (*a != *b) return *a - *b;
+        a++; b++;
+    }
+    return 0;
+}
+
+void *memchr(const void *s, int c, size_t n) {
+    const unsigned char *p = s;
+    while (n--) {
+        if (*p == (unsigned char)c) return (void *)p;
+        p++;
+    }
+    return NULL;
+}
+
+size_t strlen(const char *s) {
+    const char *p = s;
+    while (*p) p++;
+    return p - s;
+}
+
+int strcmp(const char *s1, const char *s2) {
+    while (*s1 && *s1 == *s2) { s1++; s2++; }
+    return *(unsigned char *)s1 - *(unsigned char *)s2;
+}
+
+int strncmp(const char *s1, const char *s2, size_t n) {
+    while (n && *s1 && *s1 == *s2) { s1++; s2++; n--; }
+    if (n == 0) return 0;
+    return *(unsigned char *)s1 - *(unsigned char *)s2;
+}
+
+char *strcpy(char *dest, const char *src) {
+    char *d = dest;
+    while ((*d++ = *src++));
+    return dest;
+}
+
+char *strncpy(char *dest, const char *src, size_t n) {
+    char *d = dest;
+    while (n && (*d++ = *src++)) n--;
+    while (n--) *d++ = '\0';
+    return dest;
+}
+
+char *strcat(char *dest, const char *src) {
+    char *d = dest + strlen(dest);
+    while ((*d++ = *src++));
+    return dest;
+}
+
+char *strncat(char *dest, const char *src, size_t n) {
+    char *d = dest + strlen(dest);
+    while (n-- && (*d = *src++)) d++;
+    *d = '\0';
+    return dest;
+}
+
+char *strchr(const char *s, int c) {
+    while (*s) {
+        if (*s == (char)c) return (char *)s;
+        s++;
+    }
+    return (c == '\0') ? (char *)s : NULL;
+}
+
+char *strrchr(const char *s, int c) {
+    const char *last = NULL;
+    while (*s) {
+        if (*s == (char)c) last = s;
+        s++;
+    }
+    if (c == '\0') return (char *)s;
+    return (char *)last;
+}
+
+char *strstr(const char *haystack, const char *needle) {
+    size_t nlen = strlen(needle);
+    if (nlen == 0) return (char *)haystack;
+    while (*haystack) {
+        if (strncmp(haystack, needle, nlen) == 0) return (char *)haystack;
+        haystack++;
+    }
+    return NULL;
+}
+
+char *strdup(const char *s) {
+    size_t len = strlen(s) + 1;
+    char *d = malloc(len);
+    if (d) memcpy(d, s, len);
+    return d;
+}
+
+static const char *_strerror_msgs[] = {
+    "Success", "Operation not permitted", "No such file or directory",
+    "No such process", "Interrupted", "I/O error"
+};
+
+char *strerror(int errnum) {
+    if (errnum >= 0 && errnum <= 5) return (char *)_strerror_msgs[errnum];
+    return "Unknown error";
+}
+
+size_t strspn(const char *s, const char *accept) {
+    size_t count = 0;
+    while (*s && strchr(accept, *s)) { s++; count++; }
+    return count;
+}
+
+size_t strcspn(const char *s, const char *reject) {
+    size_t count = 0;
+    while (*s && !strchr(reject, *s)) { s++; count++; }
+    return count;
+}
+
+static char *_strtok_last = NULL;
+char *strtok(char *str, const char *delim) {
+    if (str) _strtok_last = str;
+    if (!_strtok_last) return NULL;
+    _strtok_last += strspn(_strtok_last, delim);
+    if (*_strtok_last == '\0') { _strtok_last = NULL; return NULL; }
+    char *token = _strtok_last;
+    _strtok_last += strcspn(_strtok_last, delim);
+    if (*_strtok_last) *_strtok_last++ = '\0';
+    else _strtok_last = NULL;
+    return token;
+}

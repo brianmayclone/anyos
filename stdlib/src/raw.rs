@@ -28,6 +28,9 @@ pub(crate) const SYS_GETARGS: u32 = 28;
 // Filesystem
 pub(crate) const SYS_READDIR: u32 = 23;
 pub(crate) const SYS_STAT: u32 = 24;
+pub(crate) const SYS_MKDIR: u32 = 90;
+pub(crate) const SYS_UNLINK: u32 = 91;
+pub(crate) const SYS_TRUNCATE: u32 = 92;
 
 // System information
 pub(crate) const SYS_TIME: u32 = 30;
@@ -66,6 +69,19 @@ pub(crate) const SYS_SCREEN_SIZE: u32 = 72;
 
 // DLL
 pub(crate) const SYS_DLL_LOAD: u32 = 80;
+
+// Filesystem (POSIX-like)
+pub(crate) const SYS_GETCWD: u32 = 25;
+pub(crate) const SYS_LSEEK: u32 = 105;
+pub(crate) const SYS_FSTAT: u32 = 106;
+pub(crate) const SYS_ISATTY: u32 = 108;
+
+// TCP networking
+pub(crate) const SYS_TCP_CONNECT: u32 = 100;
+pub(crate) const SYS_TCP_SEND: u32 = 101;
+pub(crate) const SYS_TCP_RECV: u32 = 102;
+pub(crate) const SYS_TCP_CLOSE: u32 = 103;
+pub(crate) const SYS_TCP_STATUS: u32 = 104;
 
 // Event bus
 pub(crate) const SYS_EVT_SYS_SUBSCRIBE: u32 = 60;

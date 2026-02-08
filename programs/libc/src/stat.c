@@ -1,0 +1,44 @@
+#include <sys/stat.h>
+#include <errno.h>
+#include <string.h>
+
+extern int _syscall(int num, int a1, int a2, int a3, int a4);
+
+#define SYS_STAT   24
+#define SYS_FSTAT  106
+#define SYS_MKDIR  90
+
+int stat(const char *path, struct stat *buf) {
+    unsigned int info[2]; /* type, size */
+    int ret = _syscall(SYS_STAT, (int)path, (int)info, 0, 0);
+    if (ret == -1) { errno = ENOENT; return -1; }
+    if (buf) {
+        memset(buf, 0, sizeof(*buf));
+        buf->st_mode = (info[0] == 1) ? S_IFDIR | 0755 : S_IFREG | 0644;
+        buf->st_size = info[1];
+        buf->st_nlink = 1;
+    }
+    return 0;
+}
+
+int fstat(int fd, struct stat *buf) {
+    unsigned int info[3]; /* type, size, position */
+    int ret = _syscall(SYS_FSTAT, fd, (int)info, 0, 0);
+    if (ret == -1) { errno = EBADF; return -1; }
+    if (buf) {
+        memset(buf, 0, sizeof(*buf));
+        if (info[0] == 0) buf->st_mode = S_IFREG | 0644;
+        else if (info[0] == 1) buf->st_mode = S_IFDIR | 0755;
+        else buf->st_mode = S_IFCHR | 0666;
+        buf->st_size = info[1];
+        buf->st_nlink = 1;
+    }
+    return 0;
+}
+
+int mkdir(const char *path, unsigned int mode) {
+    (void)mode;
+    int ret = _syscall(SYS_MKDIR, (int)path, 0, 0, 0);
+    if (ret == -1) { errno = EIO; return -1; }
+    return 0;
+}

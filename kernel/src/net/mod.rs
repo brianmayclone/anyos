@@ -10,6 +10,7 @@ pub mod icmp;
 pub mod udp;
 pub mod dhcp;
 pub mod dns;
+pub mod tcp;
 
 use types::{Ipv4Addr, MacAddr, NetConfig};
 use crate::sync::spinlock::Spinlock;
@@ -30,6 +31,7 @@ pub fn init() {
     arp::init();
     icmp::init();
     udp::init();
+    tcp::init();
 
     crate::serial_println!("[OK] Network stack initialized (MAC={})", mac);
 }
@@ -68,4 +70,7 @@ pub fn poll() {
     while let Some(packet) = crate::drivers::e1000::recv_packet() {
         ethernet::handle_frame(&packet);
     }
+
+    // TCP retransmission and TIME_WAIT cleanup
+    tcp::check_retransmissions();
 }

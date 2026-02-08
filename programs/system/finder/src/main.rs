@@ -56,6 +56,11 @@ impl FileEntry {
     }
 }
 
+struct MimeEntry {
+    ext: String,
+    app: String,
+}
+
 struct AppState {
     cwd: String,
     entries: Vec<FileEntry>,
@@ -68,6 +73,8 @@ struct AppState {
     // Navigation history
     history: Vec<String>,
     history_pos: usize, // index into history; history[history_pos] == cwd
+    // Mimetype associations
+    mimetypes: Vec<MimeEntry>,
 }
 
 // ============================================================================
@@ -171,38 +178,101 @@ fn navigate_forward(state: &mut AppState) {
 }
 
 // ============================================================================
+// Mimetype associations
+// ============================================================================
+
+fn load_mimetypes() -> Vec<MimeEntry> {
+    let fd = fs::open("/system/mimetypes.conf", 0);
+    if fd == u32::MAX {
+        return Vec::new();
+    }
+
+    let mut data = Vec::new();
+    let mut buf = [0u8; 256];
+    loop {
+        let n = fs::read(fd, &mut buf);
+        if n == 0 || n == u32::MAX {
+            break;
+        }
+        data.extend_from_slice(&buf[..n as usize]);
+    }
+    fs::close(fd);
+
+    let text = match core::str::from_utf8(&data) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut entries = Vec::new();
+    for line in text.split('\n') {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(sep) = line.find('|') {
+            let ext = line[..sep].trim();
+            let app = line[sep + 1..].trim();
+            if !ext.is_empty() && !app.is_empty() {
+                entries.push(MimeEntry {
+                    ext: String::from(ext),
+                    app: String::from(app),
+                });
+            }
+        }
+    }
+    entries
+}
+
+fn lookup_mimetype<'a>(mimes: &'a [MimeEntry], ext: &str) -> Option<&'a str> {
+    for entry in mimes {
+        if entry.ext == ext {
+            return Some(&entry.app);
+        }
+    }
+    None
+}
+
+// ============================================================================
 // Open / launch
 // ============================================================================
+
+fn build_full_path(cwd: &str, name: &str) -> String {
+    if cwd == "/" {
+        let mut s = String::from("/");
+        s.push_str(name);
+        s
+    } else {
+        let mut s = String::from(cwd);
+        s.push('/');
+        s.push_str(name);
+        s
+    }
+}
 
 fn open_entry(state: &mut AppState, idx: usize) {
     let entry = &state.entries[idx];
     let name = entry.name_str();
 
     if entry.entry_type == TYPE_DIR {
-        // Navigate into directory
-        let new_path = if state.cwd == "/" {
-            let mut s = String::from("/");
-            s.push_str(name);
-            s
-        } else {
-            let mut s = state.cwd.clone();
-            s.push('/');
-            s.push_str(name);
-            s
-        };
+        let new_path = build_full_path(&state.cwd, name);
         navigate(state, &new_path);
     } else {
-        // Try to launch as a program
-        let full_path = if state.cwd == "/" {
-            let mut s = String::from("/");
-            s.push_str(name);
-            s
-        } else {
-            let mut s = state.cwd.clone();
-            s.push('/');
-            s.push_str(name);
-            s
+        let full_path = build_full_path(&state.cwd, name);
+
+        // Check mimetype association by file extension
+        let ext = match name.rfind('.') {
+            Some(pos) => &name[pos + 1..],
+            None => "",
         };
+
+        if !ext.is_empty() {
+            if let Some(app) = lookup_mimetype(&state.mimetypes, ext) {
+                process::spawn(app, &full_path);
+                return;
+            }
+        }
+
+        // Default: try to execute
         process::spawn(&full_path, "");
     }
 }
@@ -382,8 +452,10 @@ fn render_file_list(win: u32, state: &AppState, win_w: u32, win_h: u32) {
                     0xFF9B59B6 // Purple for DLLs
                 } else if name.ends_with(".icon") {
                     colors::WARNING // Yellow for icons
-                } else if name.ends_with(".txt") {
-                    colors::TEXT_SECONDARY // Gray for text
+                } else if name.ends_with(".txt") || name.ends_with(".conf")
+                    || name.ends_with(".log") || name.ends_with(".md")
+                    || name.ends_with(".ini") {
+                    colors::TEXT_SECONDARY // Gray for text/config files
                 } else {
                     colors::SUCCESS // Green for executables
                 }
@@ -482,6 +554,8 @@ fn main() {
 
     let (mut win_w, mut win_h) = window::get_size(win).unwrap_or((620, 440));
 
+    let mimetypes = load_mimetypes();
+
     let mut state = AppState {
         cwd: String::from("/"),
         entries: Vec::new(),
@@ -492,6 +566,7 @@ fn main() {
         last_click_tick: 0,
         history: Vec::new(),
         history_pos: 0,
+        mimetypes,
     };
 
     // Initial directory load

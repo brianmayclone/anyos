@@ -146,6 +146,7 @@ pub fn handle_ipv4(data: &[u8]) {
 
     match pkt.protocol {
         PROTO_ICMP => super::icmp::handle_icmp(&pkt),
+        PROTO_TCP => super::tcp::handle_tcp(&pkt),
         PROTO_UDP => super::udp::handle_udp(&pkt),
         _ => {}
     }

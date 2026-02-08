@@ -37,3 +37,48 @@ pub fn dns(hostname: &str, result: &mut [u8; 4]) -> u32 {
 pub fn arp(buf: &mut [u8]) -> u32 {
     syscall2(SYS_NET_ARP, buf.as_mut_ptr() as u32, buf.len() as u32)
 }
+
+// =========================================================================
+// TCP
+// =========================================================================
+
+/// TCP connect to remote host. Returns socket_id or u32::MAX on error.
+/// timeout is in milliseconds (0 = default 10s).
+pub fn tcp_connect(ip: &[u8; 4], port: u16, timeout_ms: u32) -> u32 {
+    #[repr(C)]
+    struct TcpConnectParams {
+        ip: [u8; 4],
+        port: u16,
+        _pad: u16,
+        timeout: u32,
+    }
+    let params = TcpConnectParams {
+        ip: *ip,
+        port,
+        _pad: 0,
+        timeout: timeout_ms,
+    };
+    syscall1(SYS_TCP_CONNECT, &params as *const _ as u32)
+}
+
+/// Send data on a TCP connection. Returns bytes sent or u32::MAX on error.
+pub fn tcp_send(socket_id: u32, data: &[u8]) -> u32 {
+    syscall3(SYS_TCP_SEND, socket_id, data.as_ptr() as u32, data.len() as u32)
+}
+
+/// Receive data from a TCP connection.
+/// Returns bytes received, 0=EOF (remote closed), u32::MAX=error/timeout.
+pub fn tcp_recv(socket_id: u32, buf: &mut [u8]) -> u32 {
+    syscall3(SYS_TCP_RECV, socket_id, buf.as_mut_ptr() as u32, buf.len() as u32)
+}
+
+/// Close a TCP connection. Returns 0.
+pub fn tcp_close(socket_id: u32) -> u32 {
+    syscall1(SYS_TCP_CLOSE, socket_id)
+}
+
+/// Get TCP connection state. Returns state enum as u32.
+/// 0=Closed, 1=SynSent, 2=Established, etc. u32::MAX=not found.
+pub fn tcp_status(socket_id: u32) -> u32 {
+    syscall1(SYS_TCP_STATUS, socket_id)
+}

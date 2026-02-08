@@ -55,6 +55,21 @@ pub enum FsError {
     BadFd,
 }
 
+/// Split a path into (parent_dir, filename).
+/// "/system/hello.txt" → ("/system", "hello.txt")
+/// "/hello.txt" → ("/", "hello.txt")
+fn split_parent_name(path: &str) -> Result<(&str, &str), FsError> {
+    let path = path.trim_end_matches('/');
+    if path.is_empty() || path == "/" {
+        return Err(FsError::InvalidPath);
+    }
+    match path.rfind('/') {
+        Some(0) => Ok(("/", &path[1..])),
+        Some(pos) => Ok((&path[..pos], &path[pos + 1..])),
+        None => Err(FsError::InvalidPath),
+    }
+}
+
 pub fn init() {
     let mut vfs = VFS.lock();
     *vfs = Some(VfsState {
@@ -104,25 +119,59 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
         return Err(FsError::TooManyOpenFiles);
     }
 
-    // Look up file in FAT filesystem
-    let (inode, file_type, size) = if let Some(ref fat) = state.fat_fs {
-        fat.lookup(path)?
-    } else {
-        return Err(FsError::NotFound);
+    let fat = state.fat_fs.as_ref().ok_or(FsError::IoError)?;
+
+    // Try to look up the file
+    let lookup_result = fat.lookup(path);
+
+    let (inode, file_type, size, parent_cluster) = match lookup_result {
+        Ok((inode, file_type, size)) => {
+            // File exists
+            if flags.truncate && flags.write {
+                // Truncate: need parent info
+                let (parent_path, filename) = split_parent_name(path)?;
+                let (parent_cluster, _, _) = fat.lookup(parent_path)?;
+                fat.truncate_file(parent_cluster, filename)?;
+                (0u32, file_type, 0u32, parent_cluster)
+            } else {
+                // Get parent cluster for potential writes
+                let parent_cluster = if flags.write {
+                    let (parent_path, _) = split_parent_name(path)?;
+                    fat.lookup(parent_path).map(|(c, _, _)| c).unwrap_or(0)
+                } else {
+                    0
+                };
+                (inode, file_type, size, parent_cluster)
+            }
+        }
+        Err(FsError::NotFound) if flags.create => {
+            // File doesn't exist but create flag is set
+            let (parent_path, filename) = split_parent_name(path)?;
+            let (parent_cluster, parent_type, _) = fat.lookup(parent_path)?;
+            if parent_type != FileType::Directory {
+                return Err(FsError::NotADirectory);
+            }
+            fat.create_file(parent_cluster, filename)?;
+            (0u32, FileType::Regular, 0u32, parent_cluster)
+        }
+        Err(e) => return Err(e),
     };
 
     let fd = state.next_fd;
     state.next_fd += 1;
+
+    let position = if flags.append { size } else { 0 };
 
     let file = OpenFile {
         fd,
         path: String::from(path),
         file_type,
         flags,
-        position: 0,
+        position,
         size,
         fs_id: 0,
-        inode, // start cluster for FAT
+        inode,
+        parent_cluster,
     };
 
     state.open_files.push(Some(file));
@@ -173,9 +222,45 @@ pub fn read(fd: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
 }
 
 pub fn write(fd: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
-    let _vfs = VFS.lock();
-    // Write is not yet supported for FAT16 (read-only for now)
-    let _ = (fd, buf);
+    let mut vfs = VFS.lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
+
+    // Find open file
+    let file = state.open_files.iter_mut()
+        .flatten()
+        .find(|f| f.fd == fd)
+        .ok_or(FsError::BadFd)?;
+
+    if !file.flags.write {
+        return Err(FsError::PermissionDenied);
+    }
+
+    let old_inode = file.inode;
+    let old_size = file.size;
+    let position = file.position;
+    let parent_cluster = file.parent_cluster;
+
+    // Extract filename from path for directory entry update
+    let path_clone = file.path.clone();
+    let filename = path_clone.rsplit('/').next().unwrap_or("");
+
+    let fat = state.fat_fs.as_ref().ok_or(FsError::IoError)?;
+    let (new_cluster, new_size) = fat.write_file(old_inode, position, buf, old_size)?;
+
+    // Update directory entry if cluster or size changed
+    if new_cluster != old_inode || new_size != old_size {
+        fat.update_entry(parent_cluster, filename, new_size, new_cluster)?;
+    }
+
+    // Update open file metadata
+    let file = state.open_files.iter_mut()
+        .flatten()
+        .find(|f| f.fd == fd)
+        .ok_or(FsError::BadFd)?;
+    file.inode = new_cluster;
+    file.size = new_size;
+    file.position = position + buf.len() as u32;
+
     Ok(buf.len())
 }
 
@@ -209,4 +294,93 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
     } else {
         Err(FsError::NotFound)
     }
+}
+
+/// Delete a file or empty directory at the given path.
+pub fn delete(path: &str) -> Result<(), FsError> {
+    let vfs = VFS.lock();
+    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+    let fat = state.fat_fs.as_ref().ok_or(FsError::IoError)?;
+
+    let (parent_path, filename) = split_parent_name(path)?;
+    let (parent_cluster, _, _) = fat.lookup(parent_path)?;
+    fat.delete_file(parent_cluster, filename)
+}
+
+/// Create a directory at the given path.
+pub fn mkdir(path: &str) -> Result<(), FsError> {
+    let vfs = VFS.lock();
+    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+    let fat = state.fat_fs.as_ref().ok_or(FsError::IoError)?;
+
+    let (parent_path, dirname) = split_parent_name(path)?;
+    let (parent_cluster, parent_type, _) = fat.lookup(parent_path)?;
+    if parent_type != FileType::Directory {
+        return Err(FsError::NotADirectory);
+    }
+    fat.create_dir(parent_cluster, dirname)?;
+    Ok(())
+}
+
+/// Seek within an open file. Returns new position.
+pub fn lseek(fd: FileDescriptor, offset: i32, whence: u32) -> Result<u32, FsError> {
+    let mut vfs = VFS.lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
+
+    let file = state.open_files.iter_mut()
+        .flatten()
+        .find(|f| f.fd == fd)
+        .ok_or(FsError::BadFd)?;
+
+    let new_pos = match whence {
+        0 => {
+            // SEEK_SET
+            if offset < 0 { return Err(FsError::InvalidPath); }
+            offset as u32
+        }
+        1 => {
+            // SEEK_CUR
+            if offset < 0 {
+                file.position.checked_sub((-offset) as u32).ok_or(FsError::InvalidPath)?
+            } else {
+                file.position + offset as u32
+            }
+        }
+        2 => {
+            // SEEK_END
+            if offset < 0 {
+                file.size.checked_sub((-offset) as u32).ok_or(FsError::InvalidPath)?
+            } else {
+                file.size + offset as u32
+            }
+        }
+        _ => return Err(FsError::InvalidPath),
+    };
+
+    file.position = new_pos;
+    Ok(new_pos)
+}
+
+/// Get file info by fd. Returns (file_type, size, position).
+pub fn fstat(fd: FileDescriptor) -> Result<(FileType, u32, u32), FsError> {
+    let vfs = VFS.lock();
+    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+
+    let file = state.open_files.iter()
+        .flatten()
+        .find(|f| f.fd == fd)
+        .ok_or(FsError::BadFd)?;
+
+    Ok((file.file_type, file.size, file.position))
+}
+
+/// Truncate a file to zero length.
+pub fn truncate(path: &str) -> Result<(), FsError> {
+    let vfs = VFS.lock();
+    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+    let fat = state.fat_fs.as_ref().ok_or(FsError::IoError)?;
+
+    let (parent_path, filename) = split_parent_name(path)?;
+    let (parent_cluster, _, _) = fat.lookup(parent_path)?;
+    fat.truncate_file(parent_cluster, filename)
 }

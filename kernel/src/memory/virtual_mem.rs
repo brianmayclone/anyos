@@ -257,6 +257,30 @@ pub fn map_page_in_pd(pd_phys: PhysAddr, virt: VirtAddr, phys: PhysAddr, flags: 
     }
 }
 
+/// Check if a virtual address is mapped in a specific page directory.
+/// Temporarily switches CR3.
+pub fn is_mapped_in_pd(pd_phys: PhysAddr, virt: VirtAddr) -> bool {
+    unsafe {
+        let old_cr3 = current_cr3();
+        asm!("mov cr3, {}", in(reg) pd_phys.as_u32());
+
+        let pde_idx = (virt.as_u32() >> 22) as usize;
+        let pte_idx = ((virt.as_u32() >> 12) & 0x3FF) as usize;
+
+        let pd = 0xFFFFF000 as *const u32;
+        let pde = pd.add(pde_idx).read_volatile();
+        let mapped = if pde & PAGE_PRESENT != 0 {
+            let pt = (0xFFC00000 + pde_idx * FRAME_SIZE) as *const u32;
+            pt.add(pte_idx).read_volatile() & PAGE_PRESENT != 0
+        } else {
+            false
+        };
+
+        asm!("mov cr3, {}", in(reg) old_cr3);
+        mapped
+    }
+}
+
 /// Destroy a user page directory: free all user-space pages, page tables, and the PD.
 /// Must NOT be the currently active page directory.
 pub fn destroy_user_page_directory(pd_phys: PhysAddr) {

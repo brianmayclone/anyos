@@ -22,6 +22,119 @@ PT_LOAD = 1
 SECTOR_SIZE = 512
 
 
+# =====================================================================
+# VFAT Long Filename (LFN) helpers
+# =====================================================================
+
+def lfn_checksum(name83: bytes) -> int:
+    """Compute the VFAT LFN checksum from an 8.3 name (11 bytes)."""
+    s = 0
+    for b in name83:
+        s = (((s & 1) << 7) + (s >> 1) + b) & 0xFF
+    return s
+
+
+def needs_lfn(filename: str) -> bool:
+    """Check if a filename needs LFN entries (doesn't fit 8.3)."""
+    if len(filename) > 12 or len(filename) == 0:
+        return True
+    if filename.startswith('.') and filename not in ('.', '..'):
+        return True
+    if filename.count('.') > 1:
+        return True
+    if '.' in filename:
+        base, ext = filename.rsplit('.', 1)
+    else:
+        base, ext = filename, ''
+    if len(base) > 8 or len(ext) > 3:
+        return True
+    for c in filename:
+        if c in ' +,;=[]':
+            return True
+    # Check for lowercase (Windows creates LFN for mixed case)
+    if filename != filename.upper():
+        return True
+    return False
+
+
+_short_name_counters = {}  # tracks numeric tails per base+ext
+
+def generate_short_name(filename: str) -> bytes:
+    """Generate a unique 8.3 short name from a long filename."""
+    name = filename.upper()
+    if '.' in name:
+        base, ext = name.rsplit('.', 1)
+    else:
+        base, ext = name, ''
+
+    # Filter invalid chars
+    base = ''.join(c for c in base if c not in ' .+,;=[]')
+    ext = ''.join(c for c in ext if c not in ' .')
+
+    # Truncate
+    base = base[:6]
+    ext = ext[:3]
+
+    # Track collision by (base, ext) pair
+    key = (base, ext)
+    counter = _short_name_counters.get(key, 0) + 1
+    _short_name_counters[key] = counter
+
+    tail = f'~{counter}'
+    max_base = 8 - len(tail)
+    short_base = base[:max_base] + tail
+    short = short_base.ljust(8)
+    ext = ext.ljust(3)
+    return (short + ext).encode('ascii')
+
+
+def make_lfn_entries(filename: str, name83: bytes) -> list:
+    """Create LFN directory entries. Returns list of 32-byte entries in disk order."""
+    chk = lfn_checksum(name83)
+
+    # Convert to UTF-16LE code units
+    utf16 = [ord(c) for c in filename]
+    num_entries = (len(utf16) + 12) // 13
+
+    entries = []
+    for seq in range(1, num_entries + 1):
+        entry = bytearray(32)
+        is_last = (seq == num_entries)
+        entry[0] = seq | (0x40 if is_last else 0)
+        entry[11] = 0x0F  # ATTR_LONG_NAME
+        entry[12] = 0     # type
+        entry[13] = chk
+        entry[26] = 0     # first cluster lo
+        entry[27] = 0
+
+        start = (seq - 1) * 13
+        chars = []
+        for j in range(13):
+            idx = start + j
+            if idx < len(utf16):
+                chars.append(utf16[idx])
+            elif idx == len(utf16):
+                chars.append(0x0000)
+            else:
+                chars.append(0xFFFF)
+
+        # Store chars 1-5 at offset 1
+        for j in range(5):
+            struct.pack_into('<H', entry, 1 + j * 2, chars[j])
+        # Store chars 6-11 at offset 14
+        for j in range(6):
+            struct.pack_into('<H', entry, 14 + j * 2, chars[5 + j])
+        # Store chars 12-13 at offset 28
+        for j in range(2):
+            struct.pack_into('<H', entry, 28 + j * 2, chars[11 + j])
+
+        entries.append(bytes(entry))
+
+    # Reverse so last entry (0x40) comes first on disk
+    entries.reverse()
+    return entries
+
+
 def elf_to_flat_binary(elf_data, base_paddr):
     """
     Parse an ELF32 file and extract PT_LOAD segments into a flat binary.
@@ -263,10 +376,36 @@ class Fat16Formatter:
         ext = ext[:3].ljust(3)
         return (base + ext).encode('ascii')
 
+    def _write_root_entry_at(self, index, entry_data):
+        """Write a 32-byte entry at a specific root directory index."""
+        entry_offset = index * 32
+        sector_in_root = entry_offset // SECTOR_SIZE
+        offset_in_sector = entry_offset % SECTOR_SIZE
+
+        sector = self.first_root_dir_sector + sector_in_root
+        sector_data = bytearray(self._read_sector(sector))
+        sector_data[offset_in_sector:offset_in_sector + 32] = entry_data
+        self._write_sector(sector, sector_data)
+
     def add_root_dir_entry(self, filename, first_cluster, file_size, is_directory=False):
-        """Add a directory entry to the root directory."""
+        """Add a directory entry to the root directory, with LFN if needed."""
+        use_lfn = needs_lfn(filename)
+
+        if use_lfn:
+            name83 = generate_short_name(filename)
+        else:
+            name83 = self._make_83_name(filename)
+
+        # Write LFN entries first
+        if use_lfn:
+            lfn_entries = make_lfn_entries(filename, name83)
+            for lfn_entry in lfn_entries:
+                self._write_root_entry_at(self.next_root_entry, lfn_entry)
+                self.next_root_entry += 1
+
+        # Write the 8.3 entry
         entry = bytearray(32)
-        entry[0:11] = self._make_83_name(filename)
+        entry[0:11] = name83
 
         attr = 0x10 if is_directory else 0x20  # DIRECTORY or ARCHIVE
         entry[11] = attr
@@ -278,20 +417,22 @@ class Fat16Formatter:
         # File size
         struct.pack_into('<I', entry, 28, file_size if not is_directory else 0)
 
-        # Write to root directory
-        entry_offset = self.next_root_entry * 32
-        sector_in_root = entry_offset // SECTOR_SIZE
-        offset_in_sector = entry_offset % SECTOR_SIZE
-
-        sector = self.first_root_dir_sector + sector_in_root
-        sector_data = bytearray(self._read_sector(sector))
-        sector_data[offset_in_sector:offset_in_sector + 32] = entry
-        self._write_sector(sector, sector_data)
-
+        self._write_root_entry_at(self.next_root_entry, entry)
         self.next_root_entry += 1
 
     def add_subdir_entry(self, parent_cluster, filename, first_cluster, file_size, is_directory=False):
-        """Add a directory entry to a subdirectory cluster."""
+        """Add a directory entry to a subdirectory cluster, with LFN if needed."""
+        use_lfn = needs_lfn(filename)
+
+        if use_lfn:
+            name83 = generate_short_name(filename)
+            lfn_entries = make_lfn_entries(filename, name83)
+            total_needed = len(lfn_entries) + 1
+        else:
+            name83 = self._make_83_name(filename)
+            lfn_entries = []
+            total_needed = 1
+
         # Read existing directory data
         cluster_size = self.sectors_per_cluster * SECTOR_SIZE
         dir_data = bytearray(cluster_size)
@@ -300,18 +441,39 @@ class Fat16Formatter:
             s_data = self._read_sector(sector + s)
             dir_data[s * SECTOR_SIZE:(s + 1) * SECTOR_SIZE] = s_data
 
-        # Find first empty entry
+        # Find N consecutive free entries
+        found_start = -1
+        consecutive = 0
         for i in range(0, cluster_size, 32):
             if dir_data[i] == 0x00 or dir_data[i] == 0xE5:
-                entry = bytearray(32)
-                entry[0:11] = self._make_83_name(filename)
-                attr = 0x10 if is_directory else 0x20
-                entry[11] = attr
-                struct.pack_into('<H', entry, 26, first_cluster & 0xFFFF)
-                struct.pack_into('<H', entry, 20, 0)
-                struct.pack_into('<I', entry, 28, file_size if not is_directory else 0)
-                dir_data[i:i + 32] = entry
-                break
+                if consecutive == 0:
+                    found_start = i
+                consecutive += 1
+                if consecutive >= total_needed:
+                    break
+            else:
+                consecutive = 0
+                found_start = -1
+
+        if found_start < 0 or consecutive < total_needed:
+            print(f"  WARNING: No room in subdir for {filename}")
+            return
+
+        # Write LFN entries
+        pos = found_start
+        for lfn_entry in lfn_entries:
+            dir_data[pos:pos + 32] = lfn_entry
+            pos += 32
+
+        # Write 8.3 entry
+        entry = bytearray(32)
+        entry[0:11] = name83
+        attr = 0x10 if is_directory else 0x20
+        entry[11] = attr
+        struct.pack_into('<H', entry, 26, first_cluster & 0xFFFF)
+        struct.pack_into('<H', entry, 20, 0)
+        struct.pack_into('<I', entry, 28, file_size if not is_directory else 0)
+        dir_data[pos:pos + 32] = entry
 
         # Write back
         for s in range(self.sectors_per_cluster):

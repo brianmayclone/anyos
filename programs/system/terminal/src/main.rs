@@ -280,7 +280,27 @@ impl Shell {
                 // Re-parse cmd and args from the (possibly trimmed) line
                 let mut bg_parts = cmd_line.splitn(2, ' ');
                 let bg_cmd = bg_parts.next().unwrap_or("");
-                let bg_args = bg_parts.next().unwrap_or("");
+                let raw_args = bg_parts.next().unwrap_or("");
+
+                // Resolve arguments relative to cwd
+                let resolved;
+                let bg_args = if raw_args.is_empty() {
+                    // Commands that default to cwd when no args given
+                    match bg_cmd {
+                        "ls" => self.cwd.as_str(),
+                        _ => "",
+                    }
+                } else if !raw_args.starts_with('/') {
+                    // Resolve relative path against cwd
+                    resolved = if self.cwd == "/" {
+                        format!("/{}", raw_args)
+                    } else {
+                        format!("{}/{}", self.cwd, raw_args)
+                    };
+                    &resolved
+                } else {
+                    raw_args
+                };
 
                 let path = format!("/bin/{}", bg_cmd);
 
