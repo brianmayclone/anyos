@@ -4,7 +4,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use crate::apps::shell::{Shell, ShellOutput};
-use crate::drivers::keyboard::{Key, KeyEvent};
+use crate::drivers::input::keyboard::{Key, KeyEvent};
 use crate::graphics::color::Color;
 use crate::graphics::surface::Surface;
 

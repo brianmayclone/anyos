@@ -36,8 +36,20 @@ fn main() {
     let mut sound_toggle = UiToggle::new(0, 0, true);
     let mut notif_toggle = UiToggle::new(0, 0, true);
 
-    // Display page slider
+    // Display page slider + resolution radio
     let mut brightness = UiSlider::new(0, 0, 200, 0, 100, 80);
+    let mut res_radio = UiRadioGroup::new(0, 0, 24);
+
+    // Fetch available resolutions
+    let resolutions = window::list_resolutions();
+    let (cur_w, cur_h) = window::screen_size();
+    // Find current resolution index
+    for (i, &(rw, rh)) in resolutions.iter().enumerate() {
+        if rw == cur_w && rh == cur_h {
+            res_radio.selected = i;
+            break;
+        }
+    }
 
     let mut event = [0u32; 5];
     let mut needs_redraw = true;
@@ -61,7 +73,7 @@ fn main() {
                 }
                 window::EVENT_MOUSE_DOWN => {
                     // Update component positions before hit testing
-                    update_positions(&sidebar, &mut sound_toggle, &mut notif_toggle, &mut brightness, win_w);
+                    update_positions(&sidebar, &mut sound_toggle, &mut notif_toggle, &mut brightness, &mut res_radio, resolutions.len(), win_w);
 
                     // Let each component handle the event
                     if sidebar.handle_event(&ui_event, PAGE_NAMES.len()).is_some() {
@@ -81,6 +93,20 @@ fn main() {
                         if brightness.handle_event(&ui_event).is_some() {
                             needs_redraw = true;
                         }
+                        if let Some(idx) = res_radio.handle_event(&ui_event, resolutions.len()) {
+                            if idx < resolutions.len() {
+                                let (rw, rh) = resolutions[idx];
+                                if window::set_resolution(rw, rh) {
+                                    // Resolution changed — update window size tracking
+                                    if let Some((nw, nh)) = window::get_size(win) {
+                                        win_w = nw;
+                                        win_h = nh;
+                                        sidebar.h = win_h;
+                                    }
+                                }
+                                needs_redraw = true;
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -89,8 +115,8 @@ fn main() {
 
         if needs_redraw {
             // Update positions for rendering
-            update_positions(&sidebar, &mut sound_toggle, &mut notif_toggle, &mut brightness, win_w);
-            render(win, &sidebar, &sound_toggle, &notif_toggle, &brightness, win_w, win_h);
+            update_positions(&sidebar, &mut sound_toggle, &mut notif_toggle, &mut brightness, &mut res_radio, resolutions.len(), win_w);
+            render(win, &sidebar, &sound_toggle, &notif_toggle, &brightness, &res_radio, &resolutions, win_w, win_h);
             window::present(win);
             needs_redraw = false;
         }
@@ -105,6 +131,8 @@ fn update_positions(
     sound: &mut UiToggle,
     notif: &mut UiToggle,
     brightness: &mut UiSlider,
+    res_radio: &mut UiRadioGroup,
+    num_resolutions: usize,
     win_w: u32,
 ) {
     let cx = SIDEBAR_W as i32 + 20;
@@ -120,10 +148,17 @@ fn update_positions(
     notif.x = toggle_x;
     notif.y = card_y + PAD + ROW_H * 2 + 5;
 
-    // Brightness slider (Display page, row 1)
+    // Brightness slider (Display page)
+    let brightness_row_y = card_y + PAD + ROW_H * 2;
     brightness.x = cx + PAD + 100;
-    brightness.y = card_y + PAD + ROW_H + 6;
+    brightness.y = brightness_row_y + 6;
     brightness.w = (cw - PAD * 2 - 100) as u32;
+
+    // Resolution radio group (Display page, inside second card)
+    let res_card_y = card_y + PAD * 2 + ROW_H * 3 + 16;
+    res_radio.x = cx + PAD;
+    res_radio.y = res_card_y + PAD + ROW_H + 4;
+    res_radio.spacing = 24;
 }
 
 // ============================================================================
@@ -136,6 +171,8 @@ fn render(
     sound: &UiToggle,
     notif: &UiToggle,
     brightness: &UiSlider,
+    res_radio: &UiRadioGroup,
+    resolutions: &[(u32, u32)],
     win_w: u32, win_h: u32,
 ) {
     window::fill_rect(win, 0, 0, win_w as u16, win_h as u16, colors::WINDOW_BG);
@@ -149,7 +186,7 @@ fn render(
 
     match sidebar_c.selected {
         PAGE_GENERAL => render_general(win, sound, notif, cx, cw),
-        PAGE_DISPLAY => render_display(win, brightness, cx, cw),
+        PAGE_DISPLAY => render_display(win, brightness, res_radio, resolutions, cx, cw),
         PAGE_NETWORK => render_network(win, cx, cw),
         PAGE_ABOUT => render_about(win, cx, cw),
         _ => {}
@@ -180,25 +217,57 @@ fn render_general(win: u32, sound: &UiToggle, notif: &UiToggle, cx: i32, cw: u32
     notif.render(win);
 }
 
-fn render_display(win: u32, brightness: &UiSlider, cx: i32, cw: u32) {
+fn render_display(win: u32, brightness: &UiSlider, res_radio: &UiRadioGroup, resolutions: &[(u32, u32)], cx: i32, cw: u32) {
     label(win, cx, 20, "Display", colors::TEXT, FontSize::Title, TextAlign::Left);
 
+    // Card 1: GPU & Brightness info
     let card_y = 54;
-    card(win, cx, card_y, cw, (PAD * 2 + ROW_H * 2) as u32);
+    card(win, cx, card_y, cw, (PAD * 2 + ROW_H * 3) as u32);
 
-    // Row 0: Resolution
+    // Row 0: GPU Driver
     let ry = card_y + PAD;
+    label(win, cx + PAD, ry + 12, "GPU Driver", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    let gpu_name = window::gpu_name();
+    label(win, cx + PAD + 120, ry + 12, &gpu_name, colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+
+    // Row 1: Current Resolution
+    let ry = ry + ROW_H;
+    divider_h(win, cx + PAD, ry, cw - PAD as u32 * 2);
     label(win, cx + PAD, ry + 12, "Resolution", colors::TEXT, FontSize::Normal, TextAlign::Left);
     let (sw, sh) = window::screen_size();
     let mut buf = [0u8; 32];
     let res = fmt_resolution(&mut buf, sw, sh);
     label(win, cx + PAD + 120, ry + 12, res, colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
 
-    // Row 1: Brightness
+    // Row 2: Brightness
     let ry = ry + ROW_H;
     divider_h(win, cx + PAD, ry, cw - PAD as u32 * 2);
     label(win, cx + PAD, ry + 12, "Brightness", colors::TEXT, FontSize::Normal, TextAlign::Left);
     brightness.render(win);
+
+    // Card 2: Resolution picker
+    let res_card_y = card_y + PAD * 2 + ROW_H * 3 + 16;
+    let num_res = resolutions.len();
+    let res_card_h = (PAD * 2 + ROW_H + num_res as i32 * 24) as u32;
+    card(win, cx, res_card_y, cw, res_card_h);
+
+    let ry = res_card_y + PAD;
+    label(win, cx + PAD, ry + 4, "Change Resolution", colors::TEXT, FontSize::Normal, TextAlign::Left);
+
+    // Build resolution label strings for the radio group
+    let mut label_bufs: [[u8; 32]; 16] = [[0u8; 32]; 16];
+    let mut label_lens: [usize; 16] = [0; 16];
+    let count = num_res.min(16);
+    for i in 0..count {
+        let (rw, rh) = resolutions[i];
+        let s = fmt_resolution(&mut label_bufs[i], rw, rh);
+        label_lens[i] = s.len();
+    }
+    let mut labels: [&str; 16] = [""; 16];
+    for i in 0..count {
+        labels[i] = unsafe { core::str::from_utf8_unchecked(&label_bufs[i][..label_lens[i]]) };
+    }
+    res_radio.render(win, &labels[..count]);
 }
 
 fn render_network(win: u32, cx: i32, cw: u32) {

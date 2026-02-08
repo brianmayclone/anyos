@@ -3,7 +3,7 @@
 
 use alloc::string::ToString;
 use crate::apps::shell::{Shell, ShellOutput};
-use crate::drivers::keyboard::{self, Key};
+use crate::drivers::input::keyboard::{self, Key};
 use crate::drivers::vga_text;
 
 /// VGA text output adapter for the shell

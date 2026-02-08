@@ -106,6 +106,9 @@ pub const SYS_WIN_BLIT: u32 = 59;
 pub const SYS_WIN_LIST: u32 = 70;
 pub const SYS_WIN_FOCUS: u32 = 71;
 pub const SYS_SCREEN_SIZE: u32 = 72;
+pub const SYS_SET_RESOLUTION: u32 = 110;
+pub const SYS_LIST_RESOLUTIONS: u32 = 111;
+pub const SYS_GPU_INFO: u32 = 112;
 
 // Window creation flags
 pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x01;
@@ -240,6 +243,11 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         SYS_WIN_LIST => handlers::sys_win_list(arg1, arg2),
         SYS_WIN_FOCUS => handlers::sys_win_focus(arg1),
         SYS_SCREEN_SIZE => handlers::sys_screen_size(arg1),
+
+        // Display / GPU
+        SYS_SET_RESOLUTION => handlers::sys_set_resolution(arg1, arg2),
+        SYS_LIST_RESOLUTIONS => handlers::sys_list_resolutions(arg1, arg2),
+        SYS_GPU_INFO => handlers::sys_gpu_info(arg1, arg2),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

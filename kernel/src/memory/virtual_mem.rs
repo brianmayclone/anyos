@@ -83,8 +83,9 @@ pub fn init(boot_info: &BootInfo) {
     let fb_height = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_height).read_unaligned() };
 
     if fb_addr != 0 && fb_pitch != 0 && fb_height != 0 {
-        // Map 2x framebuffer size for Bochs VGA double-buffering
-        let fb_size = fb_pitch * fb_height * 2;
+        // Map full 16 MiB VRAM to support runtime resolution changes with double-buffering.
+        // Bochs VGA and VMware SVGA both have >= 16 MiB VRAM on QEMU.
+        let fb_size = 16 * 1024 * 1024;
         let fb_start = fb_addr & !0xFFF; // Page-align down
         let fb_end = (fb_addr + fb_size + 0xFFF) & !0xFFF; // Page-align up
 

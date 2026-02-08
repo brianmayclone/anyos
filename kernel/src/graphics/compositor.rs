@@ -54,6 +54,10 @@ pub struct Compositor {
     hw_double_buffer: bool,
     /// Previous frame's damage regions (for HW double-buffer page sync)
     prev_damage: Vec<Rect>,
+    /// GPU has hardware cursor — skip SW cursor drawing
+    hw_cursor_active: bool,
+    /// GPU has 2D acceleration
+    gpu_accel: bool,
 }
 
 impl Compositor {
@@ -72,6 +76,8 @@ impl Compositor {
             hw_double_buffer: false,
             prev_damage: Vec::new(),
             cursor_visible: true,
+            hw_cursor_active: false,
+            gpu_accel: false,
         }
     }
 
@@ -150,12 +156,21 @@ impl Compositor {
 
     /// Update cursor position
     pub fn move_cursor(&mut self, x: i32, y: i32) {
-        // Damage old cursor area
-        self.damage_cursor();
-        self.cursor_x = x.max(0).min(self.width as i32 - 1);
-        self.cursor_y = y.max(0).min(self.height as i32 - 1);
-        // Damage new cursor area
-        self.damage_cursor();
+        if self.hw_cursor_active {
+            // Move hardware cursor — no SW damage needed
+            self.cursor_x = x.max(0).min(self.width as i32 - 1);
+            self.cursor_y = y.max(0).min(self.height as i32 - 1);
+            crate::drivers::gpu::with_gpu(|g| {
+                g.move_cursor(self.cursor_x as u32, self.cursor_y as u32);
+            });
+        } else {
+            // Software cursor: damage old position
+            self.damage_cursor();
+            self.cursor_x = x.max(0).min(self.width as i32 - 1);
+            self.cursor_y = y.max(0).min(self.height as i32 - 1);
+            // Damage new position
+            self.damage_cursor();
+        }
     }
 
     pub fn cursor_position(&self) -> (i32, i32) {
@@ -284,8 +299,8 @@ impl Compositor {
                 }
             }
 
-            // Draw cursor if it intersects this damage rect
-            if self.cursor_visible {
+            // Draw software cursor if it intersects this damage rect (skip if HW cursor active)
+            if self.cursor_visible && !self.hw_cursor_active {
                 let cursor_rect = Rect::new(self.cursor_x - 1, self.cursor_y - 1, 16, 20);
                 if cursor_rect.intersects(damage_rect) {
                     self.draw_cursor();
@@ -294,6 +309,20 @@ impl Compositor {
 
             // Flush this damage rect to framebuffer
             self.flush_region(*damage_rect);
+        }
+
+        // Notify GPU of all updated regions in a single batched UPDATE.
+        // One FIFO command per frame is much faster than one per damage rect.
+        if !self.hw_double_buffer && !clipped.is_empty() {
+            let mut bounds = clipped[0];
+            for r in &clipped[1..] {
+                bounds = bounds.union(r);
+            }
+            crate::drivers::gpu::with_gpu(|g| {
+                let x = bounds.x.max(0) as u32;
+                let y = bounds.y.max(0) as u32;
+                g.update_rect(x, y, bounds.width, bounds.height);
+            });
         }
 
         // Save current damage for next frame's back-page catch-up
@@ -309,26 +338,118 @@ impl Compositor {
 
         // Hardware page flip if double-buffering is active
         if self.hw_double_buffer {
-            crate::drivers::bochs_vga::flip();
+            crate::drivers::gpu::with_gpu(|g| {
+                g.flip();
+            });
             // Update framebuffer_addr to the new back page
-            if let Some(back) = crate::drivers::bochs_vga::back_buffer_phys() {
+            if let Some(back) = crate::drivers::gpu::with_gpu(|g| g.back_buffer_phys()).flatten() {
                 self.framebuffer_addr = back;
             }
         }
     }
 
-    /// Enable hardware double-buffering (call after bochs_vga::init).
+    /// Enable hardware double-buffering via GPU driver.
     pub fn enable_hw_double_buffer(&mut self) {
-        if let Some(back) = crate::drivers::bochs_vga::back_buffer_phys() {
-            self.framebuffer_addr = back;
+        let back = crate::drivers::gpu::with_gpu(|g| g.back_buffer_phys()).flatten();
+        if let Some(back_addr) = back {
+            self.framebuffer_addr = back_addr;
             self.hw_double_buffer = true;
             // Do an initial full flush to the back page, then flip
             self.flush_all();
-            crate::drivers::bochs_vga::flip();
+            crate::drivers::gpu::with_gpu(|g| g.flip());
             // Point to the new back page for future rendering
-            if let Some(new_back) = crate::drivers::bochs_vga::back_buffer_phys() {
+            if let Some(new_back) = crate::drivers::gpu::with_gpu(|g| g.back_buffer_phys()).flatten() {
                 self.framebuffer_addr = new_back;
             }
+        }
+    }
+
+    /// Enable hardware cursor via GPU driver.
+    pub fn enable_hw_cursor(&mut self) {
+        self.hw_cursor_active = true;
+        self.cursor_visible = true;
+        // Define cursor shape and position
+        crate::drivers::gpu::with_gpu(|g| {
+            // Build a simple white arrow cursor with black outline (12x18)
+            let mut pixels = [0u32; 12 * 18];
+            static CURSOR_BODY: [u16; 18] = [
+                0b1000000000000000, 0b1100000000000000, 0b1110000000000000,
+                0b1111000000000000, 0b1111100000000000, 0b1111110000000000,
+                0b1111111000000000, 0b1111111100000000, 0b1111111110000000,
+                0b1111111111000000, 0b1111111111100000, 0b1111110000000000,
+                0b1110011000000000, 0b1100011000000000, 0b1000001100000000,
+                0b0000001100000000, 0b0000000110000000, 0b0000000000000000,
+            ];
+            static CURSOR_OUTLINE: [u16; 18] = [
+                0b1100000000000000, 0b1010000000000000, 0b1001000000000000,
+                0b1000100000000000, 0b1000010000000000, 0b1000001000000000,
+                0b1000000100000000, 0b1000000010000000, 0b1000000001000000,
+                0b1000000000100000, 0b1000000000010000, 0b1000001110000000,
+                0b1001000100000000, 0b1010000100000000, 0b1100000010000000,
+                0b0000000010000000, 0b0000000001100000, 0b0000000000000000,
+            ];
+            for row in 0..18 {
+                let body = CURSOR_BODY[row];
+                let outline = CURSOR_OUTLINE[row];
+                for col in 0..12 {
+                    let mask = 0x8000u16 >> col;
+                    let idx = row * 12 + col;
+                    if outline & mask != 0 {
+                        pixels[idx] = 0xFF000000; // black outline, fully opaque
+                    } else if body & mask != 0 {
+                        pixels[idx] = 0xFFFFFFFF; // white body, fully opaque
+                    }
+                    // else: transparent (0x00000000)
+                }
+            }
+            g.define_cursor(12, 18, 0, 0, &pixels);
+            g.show_cursor(true);
+            g.move_cursor(self.cursor_x as u32, self.cursor_y as u32);
+        });
+    }
+
+    /// Set GPU acceleration flag.
+    pub fn set_gpu_accel(&mut self, enabled: bool) {
+        self.gpu_accel = enabled;
+    }
+
+    /// Change display resolution via GPU driver.
+    /// Reallocates the back buffer and updates framebuffer state.
+    /// Returns true on success.
+    pub fn change_resolution(&mut self, width: u32, height: u32) -> bool {
+        let result = crate::drivers::gpu::with_gpu(|g| {
+            g.set_mode(width, height, 32)
+        });
+
+        if let Some(Some((new_w, new_h, new_pitch, new_fb))) = result {
+            self.width = new_w;
+            self.height = new_h;
+            self.framebuffer_pitch = new_pitch;
+            self.back_buffer = Surface::new_with_color(new_w, new_h, Color::MACOS_BG);
+
+            if self.hw_double_buffer {
+                // Re-enable double buffer with new mode
+                if let Some(back) = crate::drivers::gpu::with_gpu(|g| g.back_buffer_phys()).flatten() {
+                    self.framebuffer_addr = back;
+                } else {
+                    self.framebuffer_addr = new_fb;
+                }
+            } else {
+                self.framebuffer_addr = new_fb;
+            }
+
+            // Reset damage tracking
+            self.damage.clear();
+            self.prev_damage.clear();
+            self.damage.push(Rect::new(0, 0, new_w, new_h));
+
+            // Clamp cursor to new screen bounds
+            self.cursor_x = self.cursor_x.min(new_w as i32 - 1);
+            self.cursor_y = self.cursor_y.min(new_h as i32 - 1);
+
+            true
+        } else {
+            false
         }
     }
 

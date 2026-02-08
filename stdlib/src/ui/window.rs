@@ -141,3 +141,35 @@ pub fn screen_size() -> (u32, u32) {
     syscall1(SYS_SCREEN_SIZE, buf.as_mut_ptr() as u32);
     (buf[0], buf[1])
 }
+
+/// Set display resolution. Returns true on success.
+pub fn set_resolution(width: u32, height: u32) -> bool {
+    syscall2(SYS_SET_RESOLUTION, width, height) == 0
+}
+
+/// List supported display resolutions. Returns a Vec of (width, height).
+pub fn list_resolutions() -> alloc::vec::Vec<(u32, u32)> {
+    let mut buf = [0u32; 32]; // 16 modes max, 2 u32 each
+    let count = syscall2(SYS_LIST_RESOLUTIONS, buf.as_mut_ptr() as u32, (buf.len() * 4) as u32);
+    let mut modes = alloc::vec::Vec::new();
+    for i in 0..count as usize {
+        if i * 2 + 1 < buf.len() {
+            modes.push((buf[i * 2], buf[i * 2 + 1]));
+        }
+    }
+    modes
+}
+
+/// Get GPU driver name. Returns empty string if no GPU driver is registered.
+pub fn gpu_name() -> alloc::string::String {
+    let mut buf = [0u8; 64];
+    let len = syscall2(SYS_GPU_INFO, buf.as_mut_ptr() as u32, buf.len() as u32);
+    if len > 0 {
+        let actual_len = (len as usize).min(63);
+        alloc::string::String::from(
+            core::str::from_utf8(&buf[..actual_len]).unwrap_or("Unknown")
+        )
+    } else {
+        alloc::string::String::from("Software (VESA VBE)")
+    }
+}

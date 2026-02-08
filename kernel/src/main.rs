@@ -95,7 +95,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u32) -> ! {
 
     // Phase 5: Drivers
     drivers::rtc::init();
-    drivers::ata::init();
+    drivers::storage::ata::init();
     drivers::framebuffer::init(boot_info);
     drivers::boot_console::init(); // Show boot splash (color logo)
 
@@ -108,7 +108,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u32) -> ! {
     drivers::hal::print_devices();
 
     // Phase 5c: E1000 NIC + Network Stack
-    if drivers::e1000::init() {
+    if drivers::network::e1000::init() {
         net::init();
     }
 
@@ -148,7 +148,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u32) -> ! {
     }
 
     // Phase 8: Initialize mouse
-    drivers::mouse::init();
+    drivers::input::mouse::init();
 
     serial_println!("");
     serial_println!(".anyOS initialization complete.");
@@ -192,18 +192,47 @@ pub extern "C" fn kernel_main(boot_info_addr: u32) -> ! {
     if let Some(fb) = drivers::framebuffer::info() {
         serial_println!("Starting graphical desktop ({}x{})...", fb.width, fb.height);
 
-        // Initialize Bochs VGA double-buffering
-        drivers::bochs_vga::init(fb.addr, fb.width, fb.height, fb.pitch);
+        // GPU driver may already be registered via HAL PCI probe (Phase 5b).
+        // If not, initialize Bochs VGA as fallback using boot framebuffer info.
+        if !drivers::gpu::is_available() {
+            serial_println!("  No GPU driver via PCI, using Bochs VGA fallback...");
+            drivers::gpu::bochs_vga::init(fb.addr, fb.width, fb.height, fb.pitch);
+        }
+
+        // Query GPU for mode info, else fall back to boot framebuffer
+        let (width, height, pitch, fb_addr) = drivers::gpu::with_gpu(|g| g.get_mode())
+            .unwrap_or((fb.width, fb.height, fb.pitch, fb.addr));
 
         // Initialize global desktop
-        ui::desktop::init(fb.width, fb.height, fb.addr, fb.pitch);
+        ui::desktop::init(width, height, fb_addr, pitch);
 
-        // Set up compositor
+        // Configure compositor with GPU capabilities
         ui::desktop::with_desktop(|desktop| {
-            // Enable hardware double-buffering if available
-            if drivers::bochs_vga::is_double_buffered() {
+            let has_dblbuf = drivers::gpu::with_gpu(|g| g.has_double_buffer()).unwrap_or(false);
+            let has_hw_cursor = drivers::gpu::with_gpu(|g| g.has_hw_cursor()).unwrap_or(false);
+            let has_accel = drivers::gpu::with_gpu(|g| g.has_accel()).unwrap_or(false);
+
+            if let Some(name) = drivers::gpu::with_gpu(|g| {
+                let mut n = alloc::string::String::new();
+                n.push_str(g.name());
+                n
+            }) {
+                serial_println!("[OK] GPU driver: {}", name);
+            }
+
+            if has_dblbuf {
                 desktop.enable_hw_double_buffer();
                 serial_println!("[OK] Hardware double-buffering enabled");
+            }
+
+            if has_hw_cursor {
+                desktop.compositor.enable_hw_cursor();
+                serial_println!("[OK] Hardware cursor enabled");
+            }
+
+            if has_accel {
+                desktop.compositor.set_gpu_accel(true);
+                serial_println!("[OK] GPU 2D acceleration enabled");
             }
 
             // Initial full compose + present
@@ -258,10 +287,10 @@ fn irq_lapic_timer(_irq: u8) {
 
 fn irq_keyboard(_irq: u8) {
     let scancode = unsafe { crate::arch::x86::port::inb(0x60) };
-    crate::drivers::keyboard::handle_scancode(scancode);
+    crate::drivers::input::keyboard::handle_scancode(scancode);
 }
 
 fn irq_mouse(_irq: u8) {
     let byte = unsafe { crate::arch::x86::port::inb(0x60) };
-    crate::drivers::mouse::handle_byte(byte);
+    crate::drivers::input::mouse::handle_byte(byte);
 }

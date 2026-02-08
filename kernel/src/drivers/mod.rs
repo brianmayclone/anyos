@@ -1,12 +1,11 @@
-pub mod ata;
-pub mod bochs_vga;
 pub mod boot_console;
-pub mod e1000;
 pub mod framebuffer;
+pub mod gpu;
 pub mod hal;
-pub mod keyboard;
-pub mod mouse;
+pub mod input;
+pub mod network;
 pub mod pci;
 pub mod rtc;
 pub mod serial;
+pub mod storage;
 pub mod vga_text;

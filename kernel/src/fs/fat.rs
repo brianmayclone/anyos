@@ -217,7 +217,7 @@ impl FatFs {
     /// Create a new FAT filesystem by reading the BPB from the ATA device.
     pub fn new(device_id: u32, partition_start_lba: u32) -> Result<Self, FsError> {
         let mut buf = [0u8; 512];
-        if !crate::drivers::ata::read_sectors(partition_start_lba, 1, &mut buf) {
+        if !crate::drivers::storage::ata::read_sectors(partition_start_lba, 1, &mut buf) {
             crate::serial_println!("  FAT: Failed to read boot sector at LBA {}", partition_start_lba);
             return Err(FsError::IoError);
         }
@@ -296,7 +296,7 @@ impl FatFs {
         let mut lba = abs_lba;
         while remaining > 0 {
             let batch = remaining.min(255) as u8;
-            if !crate::drivers::ata::read_sectors(lba, batch, &mut buf[offset..]) {
+            if !crate::drivers::storage::ata::read_sectors(lba, batch, &mut buf[offset..]) {
                 return Err(FsError::IoError);
             }
             offset += batch as usize * 512;
@@ -313,7 +313,7 @@ impl FatFs {
         let mut lba = abs_lba;
         while remaining > 0 {
             let batch = remaining.min(255) as u8;
-            if !crate::drivers::ata::write_sectors(lba, batch, &buf[offset..]) {
+            if !crate::drivers::storage::ata::write_sectors(lba, batch, &buf[offset..]) {
                 return Err(FsError::IoError);
             }
             offset += batch as usize * 512;

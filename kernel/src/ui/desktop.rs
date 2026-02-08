@@ -2,8 +2,8 @@ use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::drivers::keyboard::{self, Key};
-use crate::drivers::mouse::{self, MouseEventType};
+use crate::drivers::input::keyboard::{self, Key};
+use crate::drivers::input::mouse::{self, MouseEventType};
 use crate::graphics::color::Color;
 use crate::graphics::compositor::Compositor;
 use crate::graphics::font;
@@ -72,7 +72,7 @@ fn encode_key(key: &Key) -> u32 {
 }
 
 /// Encode modifiers into a bitmask for userland events.
-fn encode_modifiers(m: &crate::drivers::keyboard::Modifiers) -> u32 {
+fn encode_modifiers(m: &crate::drivers::input::keyboard::Modifiers) -> u32 {
     let mut flags = 0u32;
     if m.shift { flags |= 1; }
     if m.ctrl { flags |= 2; }
@@ -89,8 +89,8 @@ pub extern "C" fn desktop_task_entry() {
 
     // Flush stale mouse/keyboard events from PS/2 hardware initialization
     // (init acknowledgment bytes can be misinterpreted as button clicks)
-    while crate::drivers::mouse::read_event().is_some() {}
-    while crate::drivers::keyboard::read_event().is_some() {}
+    while crate::drivers::input::mouse::read_event().is_some() {}
+    while crate::drivers::input::keyboard::read_event().is_some() {}
 
     crate::serial_println!("  Compositor task running");
     loop {
@@ -99,7 +99,7 @@ pub extern "C" fn desktop_task_entry() {
             let mut guard = DESKTOP.lock();
             if let Some(desktop) = guard.as_mut() {
                 // Process mouse events
-                while let Some(event) = crate::drivers::mouse::read_event() {
+                while let Some(event) = crate::drivers::input::mouse::read_event() {
                     let (cx, cy) = desktop.compositor.cursor_position();
                     let new_x = cx + event.dx;
                     let new_y = cy + event.dy;
@@ -876,5 +876,42 @@ impl Desktop {
     /// Enable hardware double-buffering via Bochs VGA.
     pub fn enable_hw_double_buffer(&mut self) {
         self.compositor.enable_hw_double_buffer();
+    }
+
+    /// Change display resolution. Resizes desktop, menubar, and notifies windows.
+    pub fn change_resolution(&mut self, width: u32, height: u32) -> bool {
+        if !self.compositor.change_resolution(width, height) {
+            return false;
+        }
+
+        self.screen_width = width;
+        self.screen_height = height;
+
+        // Recreate desktop background layer at new size
+        self.compositor.remove_layer(self.desktop_layer);
+        self.desktop_layer = self.compositor.create_layer(0, 0, width, height);
+
+        // Recreate menubar layer at new width
+        self.compositor.remove_layer(self.menubar_layer);
+        self.menubar_layer = self.compositor.create_layer(0, 0, width, Theme::MENUBAR_HEIGHT);
+        self.menubar = MenuBar::new(width);
+
+        // Redraw desktop and menubar
+        self.draw_desktop_background();
+        self.draw_menubar();
+
+        // Notify all windows of resolution change
+        let wids: Vec<u32> = self.windows.iter().map(|w| w.id).collect();
+        for wid in &wids {
+            if let Some(w) = self.windows.iter().find(|w| w.id == *wid) {
+                self.push_user_event(*wid, [EVENT_RESIZE, w.width, w.height, 0, 0]);
+            }
+        }
+
+        // Full invalidate
+        self.invalidate();
+
+        crate::serial_println!("[OK] Resolution changed to {}x{}", width, height);
+        true
     }
 }

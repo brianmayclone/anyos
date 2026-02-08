@@ -62,5 +62,5 @@ pub fn handle_frame(data: &[u8]) {
 pub fn send_frame(dst: MacAddr, ethertype: u16, payload: &[u8]) {
     let our_mac = super::config().mac;
     let frame = build_frame(dst, our_mac, ethertype, payload);
-    crate::drivers::e1000::transmit(&frame);
+    crate::drivers::network::e1000::transmit(&frame);
 }

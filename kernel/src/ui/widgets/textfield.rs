@@ -1,5 +1,5 @@
 use alloc::string::String;
-use crate::drivers::keyboard::Key;
+use crate::drivers::input::keyboard::Key;
 use crate::graphics::color::Color;
 use crate::graphics::font;
 use crate::graphics::rect::Rect;

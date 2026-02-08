@@ -529,7 +529,7 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u32) -> u32 {
     match cmd {
         0 => {
             let cfg = crate::net::config();
-            let link_up = crate::drivers::e1000::is_link_up();
+            let link_up = crate::drivers::network::e1000::is_link_up();
             unsafe {
                 let buf = buf_ptr as *mut u8;
                 core::ptr::copy_nonoverlapping(cfg.ip.0.as_ptr(), buf, 4);
@@ -942,6 +942,80 @@ pub fn sys_screen_size(buf_ptr: u32) -> u32 {
             0
         }
         None => u32::MAX,
+    }
+}
+
+// =========================================================================
+// Display / GPU
+// =========================================================================
+
+/// sys_set_resolution - Change display resolution
+pub fn sys_set_resolution(width: u32, height: u32) -> u32 {
+    if width == 0 || height == 0 || width > 4096 || height > 4096 {
+        return u32::MAX;
+    }
+    match crate::ui::desktop::with_desktop(|desktop| {
+        desktop.change_resolution(width, height)
+    }) {
+        Some(true) => 0,
+        _ => u32::MAX,
+    }
+}
+
+/// sys_list_resolutions - List supported display resolutions.
+/// Writes (width, height) pairs as u32 pairs to buf. Returns number of modes.
+pub fn sys_list_resolutions(buf_ptr: u32, buf_len: u32) -> u32 {
+    let modes = crate::drivers::gpu::with_gpu(|g| {
+        let m = g.supported_modes();
+        // Copy to a fixed-size buffer to return outside the lock
+        let mut result = [(0u32, 0u32); 16];
+        let count = m.len().min(16);
+        for i in 0..count {
+            result[i] = m[i];
+        }
+        (result, count)
+    });
+
+    match modes {
+        Some((mode_list, count)) => {
+            if buf_ptr != 0 && buf_len > 0 {
+                let max_entries = (buf_len as usize / 8).min(count); // 8 bytes per (u32, u32)
+                unsafe {
+                    let buf = buf_ptr as *mut u32;
+                    for i in 0..max_entries {
+                        *buf.add(i * 2) = mode_list[i].0;
+                        *buf.add(i * 2 + 1) = mode_list[i].1;
+                    }
+                }
+            }
+            count as u32
+        }
+        None => 0, // No GPU driver registered
+    }
+}
+
+/// sys_gpu_info - Get GPU driver info. Writes driver name to buf. Returns name length.
+pub fn sys_gpu_info(buf_ptr: u32, buf_len: u32) -> u32 {
+    let name = crate::drivers::gpu::with_gpu(|g| {
+        let mut s = alloc::string::String::new();
+        s.push_str(g.name());
+        s
+    });
+
+    match name {
+        Some(n) => {
+            if buf_ptr != 0 && buf_len > 0 {
+                let bytes = n.as_bytes();
+                let copy_len = bytes.len().min(buf_len as usize - 1);
+                unsafe {
+                    let buf = core::slice::from_raw_parts_mut(buf_ptr as *mut u8, copy_len + 1);
+                    buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
+                    buf[copy_len] = 0; // null-terminate
+                }
+            }
+            n.len() as u32
+        }
+        None => 0,
     }
 }
 

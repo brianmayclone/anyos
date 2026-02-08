@@ -432,7 +432,7 @@ impl Shell {
     fn cmd_ifconfig(&self, out: &mut dyn ShellOutput) {
         use alloc::format;
         let cfg = crate::net::config();
-        let link = if crate::drivers::e1000::is_link_up() { "UP" } else { "DOWN" };
+        let link = if crate::drivers::network::e1000::is_link_up() { "UP" } else { "DOWN" };
 
         out.write_line(&format!("eth0: link {}", link));
         out.write_line(&format!("  MAC:     {}", cfg.mac));

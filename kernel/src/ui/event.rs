@@ -1,4 +1,4 @@
-use crate::drivers::keyboard::KeyEvent;
+use crate::drivers::input::keyboard::KeyEvent;
 
 /// UI Event types
 #[derive(Debug, Clone, Copy)]

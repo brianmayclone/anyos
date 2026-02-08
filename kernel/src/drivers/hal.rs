@@ -40,10 +40,14 @@ pub enum DriverError {
 // ── Ioctl command ranges by device class ──
 
 // Display ioctls (0x0100-0x01FF)
-pub const IOCTL_DISPLAY_GET_MODE: u32 = 0x0100;   // Returns w|(h<<16)
-pub const IOCTL_DISPLAY_FLIP: u32 = 0x0101;       // Flip double buffer
-pub const IOCTL_DISPLAY_IS_DBLBUF: u32 = 0x0102;  // Returns 1 if double-buffered
-pub const IOCTL_DISPLAY_GET_PITCH: u32 = 0x0103;   // Returns pitch in bytes
+pub const IOCTL_DISPLAY_GET_MODE: u32 = 0x0100;      // Returns w|(h<<16)
+pub const IOCTL_DISPLAY_FLIP: u32 = 0x0101;          // Flip double buffer
+pub const IOCTL_DISPLAY_IS_DBLBUF: u32 = 0x0102;     // Returns 1 if double-buffered
+pub const IOCTL_DISPLAY_GET_PITCH: u32 = 0x0103;      // Returns pitch in bytes
+pub const IOCTL_DISPLAY_SET_MODE: u32 = 0x0104;       // arg = w | (h << 16)
+pub const IOCTL_DISPLAY_LIST_MODES: u32 = 0x0105;     // Returns count of supported modes
+pub const IOCTL_DISPLAY_HAS_ACCEL: u32 = 0x0106;      // Returns 1 if 2D accel available
+pub const IOCTL_DISPLAY_HAS_HW_CURSOR: u32 = 0x0107;  // Returns 1 if HW cursor available
 
 // Audio ioctls (0x0200-0x02FF)
 pub const IOCTL_AUDIO_GET_SAMPLE_RATE: u32 = 0x0200;
@@ -235,13 +239,15 @@ fn make_device_path(dtype: DriverType, index: usize) -> String {
 // Stub Drivers
 // ──────────────────────────────────────────────
 
-/// QEMU/Bochs VGA driver (vendor 1234:1111)
-struct BochsVgaDriver {
-    pci: PciDevice,
+/// GPU display driver (wraps gpu::GpuDriver trait)
+/// Used for both Bochs VGA and VMware SVGA II — routes ioctls through gpu::with_gpu()
+struct GpuDisplayDriver {
+    _pci: PciDevice,
+    driver_name: &'static str,
 }
 
-impl Driver for BochsVgaDriver {
-    fn name(&self) -> &str { "Bochs/QEMU VGA" }
+impl Driver for GpuDisplayDriver {
+    fn name(&self) -> &str { self.driver_name }
     fn driver_type(&self) -> DriverType { DriverType::Display }
     fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
     fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
@@ -250,28 +256,45 @@ impl Driver for BochsVgaDriver {
     fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize, DriverError> {
         Err(DriverError::NotSupported)
     }
-    fn ioctl(&mut self, cmd: u32, _arg: u32) -> Result<u32, DriverError> {
+    fn ioctl(&mut self, cmd: u32, arg: u32) -> Result<u32, DriverError> {
         match cmd {
             IOCTL_DISPLAY_GET_MODE => {
-                if let Some((w, h, _, _)) = crate::drivers::bochs_vga::display_info() {
+                crate::drivers::gpu::with_gpu(|g| {
+                    let (w, h, _, _) = g.get_mode();
                     Ok(w | (h << 16))
-                } else {
-                    Err(DriverError::NotInitialized)
-                }
+                }).unwrap_or(Err(DriverError::NotInitialized))
             }
             IOCTL_DISPLAY_FLIP => {
-                crate::drivers::bochs_vga::flip();
+                crate::drivers::gpu::with_gpu(|g| g.flip());
                 Ok(0)
             }
             IOCTL_DISPLAY_IS_DBLBUF => {
-                Ok(crate::drivers::bochs_vga::is_double_buffered() as u32)
+                Ok(crate::drivers::gpu::with_gpu(|g| g.has_double_buffer() as u32).unwrap_or(0))
             }
             IOCTL_DISPLAY_GET_PITCH => {
-                if let Some((_, _, pitch, _)) = crate::drivers::bochs_vga::display_info() {
+                crate::drivers::gpu::with_gpu(|g| {
+                    let (_, _, pitch, _) = g.get_mode();
                     Ok(pitch)
-                } else {
-                    Err(DriverError::NotInitialized)
-                }
+                }).unwrap_or(Err(DriverError::NotInitialized))
+            }
+            IOCTL_DISPLAY_SET_MODE => {
+                let w = arg & 0xFFFF;
+                let h = (arg >> 16) & 0xFFFF;
+                crate::drivers::gpu::with_gpu(|g| {
+                    match g.set_mode(w, h, 32) {
+                        Some(_) => Ok(0u32),
+                        None => Err(DriverError::NotSupported),
+                    }
+                }).unwrap_or(Err(DriverError::NotInitialized))
+            }
+            IOCTL_DISPLAY_LIST_MODES => {
+                Ok(crate::drivers::gpu::with_gpu(|g| g.supported_modes().len() as u32).unwrap_or(0))
+            }
+            IOCTL_DISPLAY_HAS_ACCEL => {
+                Ok(crate::drivers::gpu::with_gpu(|g| g.has_accel() as u32).unwrap_or(0))
+            }
+            IOCTL_DISPLAY_HAS_HW_CURSOR => {
+                Ok(crate::drivers::gpu::with_gpu(|g| g.has_hw_cursor() as u32).unwrap_or(0))
             }
             _ => Err(DriverError::NotSupported),
         }
@@ -314,7 +337,7 @@ impl Driver for IdeDriver {
         let lba = offset / 512;
         let sectors = (buf.len() + 511) / 512;
         if sectors > 255 { return Err(DriverError::InvalidArgument); }
-        if crate::drivers::ata::read_sectors(lba as u32, sectors as u8, buf) {
+        if crate::drivers::storage::ata::read_sectors(lba as u32, sectors as u8, buf) {
             Ok(sectors * 512)
         } else {
             Err(DriverError::IoError)
@@ -324,7 +347,7 @@ impl Driver for IdeDriver {
         let lba = offset / 512;
         let sectors = (buf.len() + 511) / 512;
         if sectors > 255 { return Err(DriverError::InvalidArgument); }
-        if crate::drivers::ata::write_sectors(lba as u32, sectors as u8, buf) {
+        if crate::drivers::storage::ata::write_sectors(lba as u32, sectors as u8, buf) {
             Ok(sectors * 512)
         } else {
             Err(DriverError::IoError)
@@ -371,7 +394,7 @@ impl Driver for EthernetDriver {
         Err(DriverError::NotSupported)
     }
     fn write(&self, _offset: usize, buf: &[u8]) -> Result<usize, DriverError> {
-        if crate::drivers::e1000::transmit(buf) {
+        if crate::drivers::network::e1000::transmit(buf) {
             Ok(buf.len())
         } else {
             Err(DriverError::IoError)
@@ -511,7 +534,16 @@ static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
     // Most specific: vendor/device match
     PciDriverEntry {
         match_rule: PciMatch::VendorDevice { vendor: 0x1234, device: 0x1111 },
-        factory: |pci| Some(Box::new(BochsVgaDriver { pci: pci.clone() })),
+        factory: |pci| Some(Box::new(GpuDisplayDriver { _pci: pci.clone(), driver_name: "Bochs/QEMU VGA" })),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x15AD, device: 0x0405 },
+        factory: |pci| {
+            // Initialize VMware SVGA II GPU driver
+            crate::drivers::gpu::vmware_svga::init_and_register(pci);
+            Some(Box::new(GpuDisplayDriver { _pci: pci.clone(), driver_name: "VMware SVGA II" }))
+        },
         specificity: 2,
     },
     // Class-based matches

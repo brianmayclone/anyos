@@ -540,6 +540,20 @@ add_custom_target(run
   COMMENT "Launching anyOS in QEMU"
 )
 
+add_custom_target(run-vmware
+  COMMAND ${QEMU_EXECUTABLE}
+    -drive format=raw,file=${DISK_IMAGE}
+    -m 128M
+    -smp cpus=4
+    -serial stdio
+    -vga vmware
+    -netdev user,id=net0 -device e1000,netdev=net0
+    -no-reboot -no-shutdown
+  DEPENDS ${DISK_IMAGE}
+  USES_TERMINAL
+  COMMENT "Launching anyOS in QEMU with VMware SVGA II"
+)
+
 add_custom_target(debug
   COMMAND ${QEMU_EXECUTABLE}
     -drive format=raw,file=${DISK_IMAGE}

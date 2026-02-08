@@ -70,6 +70,11 @@ pub(crate) const SYS_SCREEN_SIZE: u32 = 72;
 // DLL
 pub(crate) const SYS_DLL_LOAD: u32 = 80;
 
+// Display / GPU
+pub(crate) const SYS_SET_RESOLUTION: u32 = 110;
+pub(crate) const SYS_LIST_RESOLUTIONS: u32 = 111;
+pub(crate) const SYS_GPU_INFO: u32 = 112;
+
 // Filesystem (POSIX-like)
 pub(crate) const SYS_GETCWD: u32 = 25;
 pub(crate) const SYS_LSEEK: u32 = 105;

@@ -20,7 +20,7 @@ static NET_CONFIG: Spinlock<NetConfig> = Spinlock::new(NetConfig::new());
 /// Initialize the network stack. Call after E1000 driver is initialized.
 pub fn init() {
     // Get MAC from E1000
-    let mac_bytes = crate::drivers::e1000::get_mac().unwrap_or([0; 6]);
+    let mac_bytes = crate::drivers::network::e1000::get_mac().unwrap_or([0; 6]);
     let mac = MacAddr(mac_bytes);
 
     {
@@ -61,13 +61,13 @@ pub fn set_config(ip: Ipv4Addr, mask: Ipv4Addr, gateway: Ipv4Addr, dns: Ipv4Addr
 /// Call this from any context that needs to process network traffic.
 pub fn poll() {
     // Process all pending RX packets
-    while let Some(packet) = crate::drivers::e1000::recv_packet() {
+    while let Some(packet) = crate::drivers::network::e1000::recv_packet() {
         ethernet::handle_frame(&packet);
     }
 
     // Also do a hardware RX ring poll in case IRQs were missed
-    crate::drivers::e1000::poll_rx();
-    while let Some(packet) = crate::drivers::e1000::recv_packet() {
+    crate::drivers::network::e1000::poll_rx();
+    while let Some(packet) = crate::drivers::network::e1000::recv_packet() {
         ethernet::handle_frame(&packet);
     }
 
