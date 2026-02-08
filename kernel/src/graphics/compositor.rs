@@ -369,25 +369,37 @@ impl Compositor {
                         && hint.old_bounds.height == hint.new_bounds.height;
 
                     if layer_opaque && same_size {
-                        // Clip to screen for the actual RECT_COPY region
+                        // Clip to screen for the actual region
                         let old_r = hint.old_bounds.intersection(&screen_rect);
                         let new_r = hint.new_bounds.intersection(&screen_rect);
 
                         if let (Some(old_r), Some(new_r)) = (old_r, new_r) {
-                            // RECT_COPY the intersection (min of both visible areas)
-                            let copy_w = old_r.width.min(new_r.width);
-                            let copy_h = old_r.height.min(new_r.height);
+                            // QEMU's SVGA RECT_COPY uses forward-only iteration,
+                            // which corrupts overlapping regions (top-left smear).
+                            // Use RECT_COPY only when old and new don't overlap;
+                            // otherwise fall back to optimized back-buffer flush.
+                            let overlaps = old_r.intersects(&new_r);
 
-                            let did_copy = crate::drivers::gpu::with_gpu(|g| {
-                                g.accel_copy_rect(
-                                    old_r.x as u32, old_r.y as u32,
-                                    new_r.x as u32, new_r.y as u32,
-                                    copy_w, copy_h,
-                                )
-                            }).unwrap_or(false);
+                            let did_copy = if !overlaps {
+                                let copy_w = old_r.width.min(new_r.width);
+                                let copy_h = old_r.height.min(new_r.height);
+                                crate::drivers::gpu::with_gpu(|g| {
+                                    g.accel_copy_rect(
+                                        old_r.x as u32, old_r.y as u32,
+                                        new_r.x as u32, new_r.y as u32,
+                                        copy_w, copy_h,
+                                    )
+                                }).unwrap_or(false)
+                            } else {
+                                false
+                            };
+
+                            used_accel = true;
 
                             if did_copy {
-                                used_accel = true;
+                                // Non-overlapping RECT_COPY succeeded
+                                let copy_w = old_r.width.min(new_r.width);
+                                let copy_h = old_r.height.min(new_r.height);
                                 let copied_dest = Rect::new(new_r.x, new_r.y, copy_w, copy_h);
 
                                 // 1. Flush exposed area (old position minus new position)
@@ -397,7 +409,6 @@ impl Compositor {
                                 }
 
                                 // 2. Flush parts of new_r not covered by RECT_COPY
-                                //    (window moved from off-screen to more on-screen)
                                 if copy_w < new_r.width || copy_h < new_r.height {
                                     let (uncovered, unc_count) = new_r.subtract(&copied_dest);
                                     for i in 0..unc_count {
@@ -405,10 +416,7 @@ impl Compositor {
                                     }
                                 }
 
-                                // 3. Correct above-layer artifacts: RECT_COPY moved raw
-                                //    framebuffer pixels which include composited above-layers
-                                //    (e.g. dock). Flush their intersection with the copied
-                                //    destination from the (correct) back buffer.
+                                // 3. Correct above-layer artifacts
                                 let layer_count = self.layers.len();
                                 for li in pos + 1..layer_count {
                                     if self.layers[li].visible {
@@ -417,12 +425,21 @@ impl Compositor {
                                         }
                                     }
                                 }
+                            } else {
+                                // Overlapping or RECT_COPY failed: flush from back buffer.
+                                // Only flush new position + exposed strips (not full old+new).
+                                self.flush_region(new_r);
 
-                                // 4. Flush any damage rects not part of the move
-                                for rect in &clipped {
-                                    if !hint.old_bounds.intersects(rect) && !hint.new_bounds.intersects(rect) {
-                                        self.flush_region(*rect);
-                                    }
+                                let (exposed, exp_count) = old_r.subtract(&new_r);
+                                for i in 0..exp_count {
+                                    self.flush_region(exposed[i]);
+                                }
+                            }
+
+                            // Flush any damage rects not part of the move
+                            for rect in &clipped {
+                                if !hint.old_bounds.intersects(rect) && !hint.new_bounds.intersects(rect) {
+                                    self.flush_region(*rect);
                                 }
                             }
                         }
