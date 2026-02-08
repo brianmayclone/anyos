@@ -485,6 +485,12 @@ fn render_file_list(win: u32, state: &AppState, win_w: u32, win_h: u32) {
             label(win, size_col_x, ry + 6, "--", dim_color, FontSize::Normal, TextAlign::Left);
         }
     }
+
+    // Scrollbar
+    let file_area_h = (win_h as i32 - file_area_y).max(0) as u32;
+    let content_h = (state.entries.len() as u32) * (ROW_H as u32);
+    let scroll_pixels = state.scroll_offset * (ROW_H as u32);
+    scrollbar(win, list_x, file_area_y, list_w, file_area_h, content_h, scroll_pixels);
 }
 
 // ============================================================================
@@ -668,6 +674,10 @@ fn main() {
                     win_w = event[1];
                     win_h = event[2];
                     needs_redraw = true;
+                }
+                window::EVENT_WINDOW_CLOSE => {
+                    window::destroy(win);
+                    return;
                 }
                 _ => {}
             }

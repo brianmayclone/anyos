@@ -34,8 +34,8 @@ pub const TOGGLE_ON: u32       = 0xFF30D158;
 pub const TOGGLE_OFF: u32      = 0xFF636366;
 pub const TOGGLE_THUMB: u32    = 0xFFFFFFFF;
 
-pub const SCROLLBAR: u32       = 0xFF646464;
-pub const SCROLLBAR_TRACK: u32 = 0xFF2D2D2D;
+pub const SCROLLBAR: u32       = 0xFF8E8E93;
+pub const SCROLLBAR_TRACK: u32 = 0xFF3A3A3C;
 
 pub const CHECK_MARK: u32      = 0xFFFFFFFF;
 

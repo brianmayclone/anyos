@@ -53,6 +53,8 @@ fn main() {
 
     let mut event = [0u32; 5];
     let mut needs_redraw = true;
+    let mut scroll_y: u32 = 0;
+    let mut prev_page = sidebar.selected;
 
     loop {
         while window::get_event(win, &mut event) == 1 {
@@ -73,7 +75,7 @@ fn main() {
                 }
                 window::EVENT_MOUSE_DOWN => {
                     // Update component positions before hit testing
-                    update_positions(&sidebar, &mut sound_toggle, &mut notif_toggle, &mut brightness, &mut res_radio, resolutions.len(), win_w);
+                    update_positions(&sidebar, &mut sound_toggle, &mut notif_toggle, &mut brightness, &mut res_radio, resolutions.len(), win_w, scroll_y);
 
                     // Let each component handle the event
                     if sidebar.handle_event(&ui_event, PAGE_NAMES.len()).is_some() {
@@ -109,14 +111,35 @@ fn main() {
                         }
                     }
                 }
+                7 => { // EVENT_MOUSE_SCROLL
+                    let dz = event[1] as i32;
+                    let content_h = page_content_height(sidebar.selected, resolutions.len());
+                    let max_scroll = content_h.saturating_sub(win_h);
+                    if dz < 0 {
+                        scroll_y = scroll_y.saturating_sub((-dz) as u32 * 30);
+                    } else if dz > 0 {
+                        scroll_y = (scroll_y + dz as u32 * 30).min(max_scroll);
+                    }
+                    needs_redraw = true;
+                }
+                window::EVENT_WINDOW_CLOSE => {
+                    window::destroy(win);
+                    return;
+                }
                 _ => {}
             }
         }
 
+        // Reset scroll when switching pages
+        if sidebar.selected != prev_page {
+            scroll_y = 0;
+            prev_page = sidebar.selected;
+        }
+
         if needs_redraw {
             // Update positions for rendering
-            update_positions(&sidebar, &mut sound_toggle, &mut notif_toggle, &mut brightness, &mut res_radio, resolutions.len(), win_w);
-            render(win, &sidebar, &sound_toggle, &notif_toggle, &brightness, &res_radio, &resolutions, win_w, win_h);
+            update_positions(&sidebar, &mut sound_toggle, &mut notif_toggle, &mut brightness, &mut res_radio, resolutions.len(), win_w, scroll_y);
+            render(win, &sidebar, &sound_toggle, &notif_toggle, &brightness, &res_radio, &resolutions, win_w, win_h, scroll_y);
             window::present(win);
             needs_redraw = false;
         }
@@ -125,7 +148,7 @@ fn main() {
     }
 }
 
-/// Compute component positions based on current window size.
+/// Compute component positions based on current window size and scroll offset.
 fn update_positions(
     sidebar: &UiSidebar,
     sound: &mut UiToggle,
@@ -134,10 +157,12 @@ fn update_positions(
     res_radio: &mut UiRadioGroup,
     num_resolutions: usize,
     win_w: u32,
+    scroll_y: u32,
 ) {
     let cx = SIDEBAR_W as i32 + 20;
     let cw = win_w as i32 - SIDEBAR_W as i32 - 40;
-    let card_y = 54;
+    let sy = scroll_y as i32;
+    let card_y = 54 - sy;
     let toggle_x = cx + cw - PAD - 52;
 
     // Sound toggle (General page, row 1)
@@ -161,6 +186,21 @@ fn update_positions(
     res_radio.spacing = 24;
 }
 
+/// Content height for each page (for scrollbar calculation).
+fn page_content_height(page: usize, num_resolutions: usize) -> u32 {
+    match page {
+        PAGE_GENERAL => (54 + PAD * 2 + ROW_H * 3 + 20) as u32,
+        PAGE_DISPLAY => {
+            let card1_h = PAD * 2 + ROW_H * 3;
+            let card2_h = PAD * 2 + ROW_H + num_resolutions as i32 * 24;
+            (54 + card1_h + 32 + card2_h + 20) as u32
+        }
+        PAGE_NETWORK => (54 + PAD * 2 + ROW_H * 6 + 20) as u32,
+        PAGE_ABOUT => (54 + PAD * 2 + ROW_H * 5 + 20) as u32,
+        _ => 400,
+    }
+}
+
 // ============================================================================
 // Rendering
 // ============================================================================
@@ -174,6 +214,7 @@ fn render(
     res_radio: &UiRadioGroup,
     resolutions: &[(u32, u32)],
     win_w: u32, win_h: u32,
+    scroll_y: u32,
 ) {
     window::fill_rect(win, 0, 0, win_w as u16, win_h as u16, colors::WINDOW_BG);
 
@@ -183,20 +224,27 @@ fn render(
     // Content
     let cx = SIDEBAR_W as i32 + 20;
     let cw = (win_w - SIDEBAR_W - 40) as u32;
+    let sy = scroll_y as i32;
 
     match sidebar_c.selected {
-        PAGE_GENERAL => render_general(win, sound, notif, cx, cw),
-        PAGE_DISPLAY => render_display(win, brightness, res_radio, resolutions, cx, cw),
-        PAGE_NETWORK => render_network(win, cx, cw),
-        PAGE_ABOUT => render_about(win, cx, cw),
+        PAGE_GENERAL => render_general(win, sound, notif, cx, cw, sy),
+        PAGE_DISPLAY => render_display(win, brightness, res_radio, resolutions, cx, cw, sy),
+        PAGE_NETWORK => render_network(win, cx, cw, sy),
+        PAGE_ABOUT => render_about(win, cx, cw, sy),
         _ => {}
     }
+
+    // Scrollbar
+    let content_h = page_content_height(sidebar_c.selected, resolutions.len());
+    let sb_x = SIDEBAR_W as i32;
+    let sb_w = win_w - SIDEBAR_W;
+    scrollbar(win, sb_x, 0, sb_w, win_h, content_h, scroll_y);
 }
 
-fn render_general(win: u32, sound: &UiToggle, notif: &UiToggle, cx: i32, cw: u32) {
-    label(win, cx, 20, "General", colors::TEXT, FontSize::Title, TextAlign::Left);
+fn render_general(win: u32, sound: &UiToggle, notif: &UiToggle, cx: i32, cw: u32, sy: i32) {
+    label(win, cx, 20 - sy, "General", colors::TEXT, FontSize::Title, TextAlign::Left);
 
-    let card_y = 54;
+    let card_y = 54 - sy;
     card(win, cx, card_y, cw, (PAD * 2 + ROW_H * 3) as u32);
 
     // Row 0: Device Name
@@ -217,11 +265,11 @@ fn render_general(win: u32, sound: &UiToggle, notif: &UiToggle, cx: i32, cw: u32
     notif.render(win);
 }
 
-fn render_display(win: u32, brightness: &UiSlider, res_radio: &UiRadioGroup, resolutions: &[(u32, u32)], cx: i32, cw: u32) {
-    label(win, cx, 20, "Display", colors::TEXT, FontSize::Title, TextAlign::Left);
+fn render_display(win: u32, brightness: &UiSlider, res_radio: &UiRadioGroup, resolutions: &[(u32, u32)], cx: i32, cw: u32, sy: i32) {
+    label(win, cx, 20 - sy, "Display", colors::TEXT, FontSize::Title, TextAlign::Left);
 
     // Card 1: GPU & Brightness info
-    let card_y = 54;
+    let card_y = 54 - sy;
     card(win, cx, card_y, cw, (PAD * 2 + ROW_H * 3) as u32);
 
     // Row 0: GPU Driver
@@ -270,8 +318,8 @@ fn render_display(win: u32, brightness: &UiSlider, res_radio: &UiRadioGroup, res
     res_radio.render(win, &labels[..count]);
 }
 
-fn render_network(win: u32, cx: i32, cw: u32) {
-    label(win, cx, 20, "Network", colors::TEXT, FontSize::Title, TextAlign::Left);
+fn render_network(win: u32, cx: i32, cw: u32, sy: i32) {
+    label(win, cx, 20 - sy, "Network", colors::TEXT, FontSize::Title, TextAlign::Left);
 
     let mut net_buf = [0u8; 24];
     net::get_config(&mut net_buf);
@@ -283,7 +331,7 @@ fn render_network(win: u32, cx: i32, cw: u32) {
     let mac = [net_buf[16], net_buf[17], net_buf[18], net_buf[19], net_buf[20], net_buf[21]];
     let link_up = net_buf[22] != 0;
 
-    let card_y = 54;
+    let card_y = 54 - sy;
     card(win, cx, card_y, cw, (PAD * 2 + ROW_H * 6) as u32);
 
     let lx = cx + PAD;
@@ -321,10 +369,10 @@ fn render_network(win: u32, cx: i32, cw: u32) {
     let mut b = [0u8; 20]; label(win, vx, ry + 12, fmt_mac(&mut b, &mac), colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
 }
 
-fn render_about(win: u32, cx: i32, cw: u32) {
-    label(win, cx, 20, "About", colors::TEXT, FontSize::Title, TextAlign::Left);
+fn render_about(win: u32, cx: i32, cw: u32, sy: i32) {
+    label(win, cx, 20 - sy, "About", colors::TEXT, FontSize::Title, TextAlign::Left);
 
-    let card_y = 54;
+    let card_y = 54 - sy;
     card(win, cx, card_y, cw, (PAD * 2 + ROW_H * 5) as u32);
 
     let lx = cx + PAD;

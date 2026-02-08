@@ -730,9 +730,9 @@ pub fn sys_win_create(title_ptr: u32, pos_packed: u32, size_packed: u32, flags: 
     }
 }
 
-/// sys_win_destroy - Close/destroy a window.
+/// sys_win_destroy - Actually destroy a window and free resources.
 pub fn sys_win_destroy(window_id: u32) -> u32 {
-    crate::ui::desktop::with_desktop(|desktop| desktop.close_window(window_id));
+    crate::ui::desktop::with_desktop(|desktop| desktop.destroy_window(window_id));
     0
 }
 

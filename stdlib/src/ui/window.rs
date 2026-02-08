@@ -9,6 +9,7 @@ pub const EVENT_RESIZE: u32 = 3;
 pub const EVENT_MOUSE_DOWN: u32 = 4;
 pub const EVENT_MOUSE_UP: u32 = 5;
 pub const EVENT_MOUSE_MOVE: u32 = 6;
+pub const EVENT_WINDOW_CLOSE: u32 = 8;
 
 // Window creation flags
 pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x01;

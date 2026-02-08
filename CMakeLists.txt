@@ -125,6 +125,7 @@ file(MAKE_DIRECTORY "${SYSROOT_DIR}/system/lib")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/include")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/include/sys")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/lib")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/src")
 
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/bin/hello
@@ -328,6 +329,7 @@ add_custom_command(
     ${SYSROOT_DIR}
   COMMAND ${CMAKE_COMMAND} -E touch ${SYSROOT_DIR}/.stamp
   DEPENDS ${CMAKE_SOURCE_DIR}/tools/sysroot
+          ${CMAKE_SOURCE_DIR}/tools/sysroot/src/hello.c
   COMMENT "Populating sysroot from tools/sysroot"
 )
 

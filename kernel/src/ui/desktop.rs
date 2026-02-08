@@ -39,6 +39,8 @@ pub const EVENT_MOUSE_UP: u32 = 5;
 pub const EVENT_MOUSE_MOVE: u32 = 6;
 /// Window event type: scroll wheel.
 pub const EVENT_MOUSE_SCROLL: u32 = 7;
+/// Window event type: window close requested (user clicked X).
+pub const EVENT_WINDOW_CLOSE: u32 = 8;
 
 /// Initialize the global Desktop with framebuffer parameters.
 pub fn init(width: u32, height: u32, fb_addr: u32, fb_pitch: u32) {
@@ -470,8 +472,15 @@ impl Desktop {
         id
     }
 
-    /// Close a window
+    /// Request a window to close (sends EVENT_WINDOW_CLOSE to the app).
+    /// The app should call window::destroy() when it receives this event.
     pub fn close_window(&mut self, id: u32) {
+        self.push_user_event(id, [EVENT_WINDOW_CLOSE, 0, 0, 0, 0]);
+    }
+
+    /// Actually destroy a window and free all resources.
+    /// Called from sys_win_destroy (when the app responds to close) or zombie cleanup.
+    pub fn destroy_window(&mut self, id: u32) {
         if let Some(pos) = self.windows.iter().position(|w| w.id == id) {
             let window = self.windows.remove(pos);
             self.compositor.remove_layer(window.layer_id);
@@ -506,7 +515,7 @@ impl Desktop {
             .map(|w| w.id)
             .collect();
         for id in ids {
-            self.close_window(id);
+            self.destroy_window(id);
         }
     }
 
@@ -707,16 +716,18 @@ impl Desktop {
         }
 
         // Check if clicking on a window
-        // Iterate windows back-to-front (top window first via compositor layer order)
+        // Use compositor's z-order to find the topmost layer at (x,y)
         let mut clicked_window = None;
         let mut hit = HitTest::None;
 
-        for window in self.windows.iter().rev() {
-            let h = window.hit_test(x, y);
-            if h != HitTest::None {
-                clicked_window = Some(window.id);
-                hit = h;
-                break;
+        if let Some(layer_id) = self.compositor.layer_at(x, y) {
+            // Find the window that owns this layer
+            if let Some(window) = self.windows.iter().find(|w| w.layer_id == layer_id) {
+                let h = window.hit_test(x, y);
+                if h != HitTest::None {
+                    clicked_window = Some(window.id);
+                    hit = h;
+                }
             }
         }
 
@@ -863,19 +874,19 @@ impl Desktop {
         }
 
         // Forward mouse up to the topmost window containing the cursor
-        for window in self.windows.iter().rev() {
-            if window.bounds().contains(x, y) {
+        if let Some(layer_id) = self.compositor.layer_at(x, y) {
+            if let Some(window) = self.windows.iter().find(|w| w.layer_id == layer_id) {
+                let wid = window.id;
                 let lx = (x - window.x) as u32;
-                let ly = if window.borderless {
-                    (y - window.y) as u32
+                if window.borderless {
+                    let ly = (y - window.y) as u32;
+                    self.push_user_event(wid, [EVENT_MOUSE_UP, lx, ly, 0, 0]);
                 } else {
                     let raw = y - window.y - Theme::TITLEBAR_HEIGHT as i32;
-                    if raw < 0 { break; } // click was in title bar, not content
-                    raw as u32
-                };
-                let wid = window.id;
-                self.push_user_event(wid, [EVENT_MOUSE_UP, lx, ly, 0, 0]);
-                break;
+                    if raw >= 0 {
+                        self.push_user_event(wid, [EVENT_MOUSE_UP, lx, raw as u32, 0, 0]);
+                    }
+                }
             }
         }
 
@@ -960,25 +971,24 @@ impl Desktop {
                 // Update cursor shape based on hover position over topmost window
                 use crate::graphics::compositor::CursorShape;
                 let mut shape = CursorShape::Arrow;
-                for window in self.windows.iter().rev() {
-                    let hit = window.hit_test(x, y);
-                    match hit {
-                        HitTest::ResizeLeft | HitTest::ResizeRight => {
-                            shape = CursorShape::ResizeHorizontal;
+                if let Some(layer_id) = self.compositor.layer_at(x, y) {
+                    if let Some(window) = self.windows.iter().find(|w| w.layer_id == layer_id) {
+                        match window.hit_test(x, y) {
+                            HitTest::ResizeLeft | HitTest::ResizeRight => {
+                                shape = CursorShape::ResizeHorizontal;
+                            }
+                            HitTest::ResizeBottom => {
+                                shape = CursorShape::ResizeVertical;
+                            }
+                            HitTest::ResizeBottomRight => {
+                                shape = CursorShape::ResizeNWSE;
+                            }
+                            HitTest::ResizeBottomLeft => {
+                                shape = CursorShape::ResizeNESW;
+                            }
+                            _ => {}
                         }
-                        HitTest::ResizeBottom => {
-                            shape = CursorShape::ResizeVertical;
-                        }
-                        HitTest::ResizeBottomRight => {
-                            shape = CursorShape::ResizeNWSE;
-                        }
-                        HitTest::ResizeBottomLeft => {
-                            shape = CursorShape::ResizeNESW;
-                        }
-                        HitTest::None => continue, // check windows below
-                        _ => break, // on window but not a resize zone
                     }
-                    break;
                 }
                 self.compositor.set_cursor_shape(shape);
             }

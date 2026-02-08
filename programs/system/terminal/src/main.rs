@@ -40,6 +40,7 @@ const KEY_END: u32 = 0x122;
 const EVENT_KEY_DOWN: u32 = 1;
 const EVENT_RESIZE: u32 = 3;
 const EVENT_MOUSE_SCROLL: u32 = 7;
+const EVENT_WINDOW_CLOSE: u32 = 8;
 
 // Modifier flags
 const MOD_CTRL: u32 = 2;
@@ -602,7 +603,10 @@ fn main() {
         // Poll events
         let got = window::get_event(win_id, &mut event);
         if got == 1 {
-            if event[0] == EVENT_RESIZE {
+            if event[0] == EVENT_WINDOW_CLOSE {
+                window::destroy(win_id);
+                return;
+            } else if event[0] == EVENT_RESIZE {
                 win_w = event[1];
                 win_h = event[2];
                 let new_cols = (win_w / CELL_W as u32) as usize;

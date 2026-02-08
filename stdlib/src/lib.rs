@@ -21,6 +21,19 @@ pub use alloc::string::String;
 pub use alloc::vec::Vec;
 pub use alloc::{format, vec};
 
+/// Trait for main function return types (() or u32 exit code).
+pub trait MainReturn {
+    fn to_exit_code(self) -> u32;
+}
+
+impl MainReturn for () {
+    fn to_exit_code(self) -> u32 { 0 }
+}
+
+impl MainReturn for u32 {
+    fn to_exit_code(self) -> u32 { self }
+}
+
 /// Entry point macro for .anyOS user programs.
 ///
 /// Generates `_start` entry point and `extern crate alloc`.
@@ -31,7 +44,8 @@ pub use alloc::{format, vec};
 /// #![no_std]
 /// #![no_main]
 /// anyos_std::entry!(main);
-/// fn main() { ... }
+/// fn main() { ... }           // returns exit code 0
+/// fn main() -> u32 { 42 }    // returns exit code 42
 /// ```
 #[macro_export]
 macro_rules! entry {
@@ -41,8 +55,8 @@ macro_rules! entry {
         #[no_mangle]
         pub extern "C" fn _start() -> ! {
             $crate::heap::init();
-            $main();
-            $crate::process::exit(0);
+            let code = $crate::MainReturn::to_exit_code($main());
+            $crate::process::exit(code);
         }
     };
 }

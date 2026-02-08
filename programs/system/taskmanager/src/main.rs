@@ -318,6 +318,10 @@ fn main() {
                 break;
             }
 
+            if event[0] == EVENT_WINDOW_CLOSE {
+                break;
+            }
+
             if event[0] == EVENT_RESIZE {
                 win_w = event[1];
                 win_h = event[2];

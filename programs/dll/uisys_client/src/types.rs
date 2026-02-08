@@ -56,19 +56,23 @@ pub const EVENT_RESIZE: u32 = 3;
 pub const EVENT_MOUSE_DOWN: u32 = 4;
 pub const EVENT_MOUSE_UP: u32 = 5;
 pub const EVENT_MOUSE_MOVE: u32 = 6;
+pub const EVENT_WINDOW_CLOSE: u32 = 8;
 
-// Key codes
+// Key codes (must match kernel encode_key in desktop.rs)
 pub const KEY_ENTER: u32 = 0x100;
 pub const KEY_BACKSPACE: u32 = 0x101;
 pub const KEY_TAB: u32 = 0x102;
 pub const KEY_ESCAPE: u32 = 0x103;
-pub const KEY_DELETE: u32 = 0x104;
+pub const KEY_SPACE: u32 = 0x104;
 pub const KEY_UP: u32 = 0x105;
 pub const KEY_DOWN: u32 = 0x106;
 pub const KEY_LEFT: u32 = 0x107;
 pub const KEY_RIGHT: u32 = 0x108;
-pub const KEY_HOME: u32 = 0x109;
-pub const KEY_END: u32 = 0x10A;
+pub const KEY_DELETE: u32 = 0x120;
+pub const KEY_HOME: u32 = 0x121;
+pub const KEY_END: u32 = 0x122;
+pub const KEY_PAGE_UP: u32 = 0x123;
+pub const KEY_PAGE_DOWN: u32 = 0x124;
 
 #[derive(Clone, Copy)]
 pub struct UiEvent {
