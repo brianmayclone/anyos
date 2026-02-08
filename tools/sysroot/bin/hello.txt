@@ -1,0 +1,2 @@
+Hello from .anyOS filesystem!
+This file was loaded from /bin/hello.txt on a FAT16 partition.

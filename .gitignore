@@ -1,0 +1,8 @@
+target/
+build/
+*.img
+*.bin
+*.o
+*.elf
+/kernel/target/
+.DS_Store

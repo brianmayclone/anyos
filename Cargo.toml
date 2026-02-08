@@ -1,0 +1,25 @@
+[workspace]
+members = ["kernel"]
+exclude = [
+  "stdlib",
+  "programs/hello_rust",
+  "programs/ping",
+  "programs/dhcp",
+  "programs/dns",
+  "programs/ls",
+  "programs/cat",
+  "programs/ifconfig",
+  "programs/arp",
+  "programs/sysinfo",
+  "programs/dmesg",
+  "programs/system/terminal",
+  "programs/system/taskmanager",
+  "programs/system/compositor/dock",
+]
+resolver = "2"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

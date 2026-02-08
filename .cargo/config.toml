@@ -1,0 +1,7 @@
+[build]
+target = "i686-anyos.json"
+
+[unstable]
+build-std = ["core", "alloc"]
+build-std-features = ["compiler-builtins-mem"]
+json-target-spec = true
