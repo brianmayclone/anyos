@@ -1,3 +1,5 @@
+//! Scrollable list view widget with single-item selection and highlight.
+
 use alloc::string::String;
 use alloc::vec::Vec;
 use crate::graphics::color::Color;
@@ -7,6 +9,7 @@ use crate::graphics::renderer::Renderer;
 use crate::graphics::surface::Surface;
 use crate::ui::theme::Theme;
 
+/// A scrollable list of text items with single-selection highlighting.
 pub struct ListView {
     pub rect: Rect,
     pub items: Vec<String>,
@@ -16,6 +19,7 @@ pub struct ListView {
 }
 
 impl ListView {
+    /// Create a new empty list view at the given position and size.
     pub fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
         ListView {
             rect: Rect::new(x, y, width, height),
@@ -26,14 +30,17 @@ impl ListView {
         }
     }
 
+    /// Append a text item to the list.
     pub fn add_item(&mut self, text: &str) {
         self.items.push(String::from(text));
     }
 
+    /// Number of items that fit in the visible area without scrolling.
     pub fn visible_items(&self) -> usize {
         (self.rect.height / self.item_height) as usize
     }
 
+    /// Handle a click at (x, y). Selects the item under the cursor and returns its index.
     pub fn click(&mut self, x: i32, y: i32) -> Option<usize> {
         if !self.rect.contains(x, y) {
             return None;
@@ -48,12 +55,14 @@ impl ListView {
         }
     }
 
+    /// Scroll up by one item.
     pub fn scroll_up(&mut self) {
         if self.scroll_offset > 0 {
             self.scroll_offset -= 1;
         }
     }
 
+    /// Scroll down by one item.
     pub fn scroll_down(&mut self) {
         let max_scroll = self.items.len().saturating_sub(self.visible_items());
         if self.scroll_offset < max_scroll {
@@ -61,6 +70,7 @@ impl ListView {
         }
     }
 
+    /// Render the list view onto the given surface, including selection highlight.
     pub fn render(&self, surface: &mut Surface) {
         let mut renderer = Renderer::new(surface);
 

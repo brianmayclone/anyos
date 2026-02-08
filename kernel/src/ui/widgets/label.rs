@@ -36,10 +36,12 @@ impl Label {
         self.text = String::from(text);
     }
 
+    /// Render the label onto the given surface.
     pub fn render(&self, surface: &mut Surface) {
         font::draw_string_sized(surface, self.x, self.y, &self.text, self.color, Theme::WIDGET_FONT_SIZE);
     }
 
+    /// Measure the pixel dimensions of the label text.
     pub fn size(&self) -> (u32, u32) {
         font::measure_string_sized(&self.text, Theme::WIDGET_FONT_SIZE)
     }

@@ -1,3 +1,6 @@
+//! Single-line text input field with cursor, keyboard editing, placeholder
+//! text, and focus-dependent border highlighting.
+
 use alloc::string::String;
 use crate::drivers::input::keyboard::Key;
 use crate::graphics::color::Color;
@@ -7,6 +10,7 @@ use crate::graphics::renderer::Renderer;
 use crate::graphics::surface::Surface;
 use crate::ui::theme::Theme;
 
+/// A single-line text input field with cursor and placeholder support.
 pub struct TextField {
     pub rect: Rect,
     pub text: String,
@@ -17,6 +21,7 @@ pub struct TextField {
 }
 
 impl TextField {
+    /// Create a new empty text field at the given position and size.
     pub fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
         TextField {
             rect: Rect::new(x, y, width, height),
@@ -28,11 +33,13 @@ impl TextField {
         }
     }
 
+    /// Builder method: set placeholder text shown when the field is empty and unfocused.
     pub fn with_placeholder(mut self, placeholder: &str) -> Self {
         self.placeholder = String::from(placeholder);
         self
     }
 
+    /// Process a key press: insert characters, handle backspace/delete, and move cursor.
     pub fn handle_key(&mut self, key: Key) {
         match key {
             Key::Char(ch) => {
@@ -66,6 +73,7 @@ impl TextField {
         }
     }
 
+    /// Render the text field onto the given surface, including text and cursor.
     pub fn render(&self, surface: &mut Surface) {
         let border_color = if self.focused {
             Theme::INPUT_BORDER_FOCUS
@@ -109,6 +117,7 @@ impl TextField {
         }
     }
 
+    /// Returns true if the point (x, y) is inside the text field bounds.
     pub fn contains(&self, x: i32, y: i32) -> bool {
         self.rect.contains(x, y)
     }

@@ -1,3 +1,6 @@
+//! Dropdown context menu widget with action items, keyboard shortcuts,
+//! separators, and hover highlighting.
+
 use alloc::string::String;
 use alloc::vec::Vec;
 use crate::graphics::color::Color;
@@ -7,11 +10,13 @@ use crate::graphics::renderer::Renderer;
 use crate::graphics::surface::Surface;
 use crate::ui::theme::Theme;
 
+/// A single entry in a dropdown menu.
 pub enum MenuItem {
     Action { label: String, shortcut: Option<String> },
     Separator,
 }
 
+/// A dropdown menu containing action items and separators.
 pub struct Menu {
     pub x: i32,
     pub y: i32,
@@ -22,6 +27,7 @@ pub struct Menu {
 }
 
 impl Menu {
+    /// Create a new empty menu positioned at (x, y).
     pub fn new(x: i32, y: i32) -> Self {
         Menu {
             x,
@@ -33,6 +39,7 @@ impl Menu {
         }
     }
 
+    /// Add a clickable action item with an optional keyboard shortcut display string.
     pub fn add_action(&mut self, label: &str, shortcut: Option<&str>) {
         self.items.push(MenuItem::Action {
             label: String::from(label),
@@ -48,10 +55,12 @@ impl Menu {
         }
     }
 
+    /// Add a visual separator line between menu items.
     pub fn add_separator(&mut self) {
         self.items.push(MenuItem::Separator);
     }
 
+    /// Compute the total pixel height of the menu (including padding).
     pub fn total_height(&self) -> u32 {
         let mut h = Theme::MENU_PADDING * 2;
         for item in &self.items {
@@ -63,10 +72,12 @@ impl Menu {
         h
     }
 
+    /// Return the bounding rectangle of the menu.
     pub fn bounds(&self) -> Rect {
         Rect::new(self.x, self.y, self.width, self.total_height())
     }
 
+    /// Hit test: returns the index of the action item at (px, py), or None.
     pub fn hit_test(&self, px: i32, py: i32) -> Option<usize> {
         if !self.bounds().contains(px, py) {
             return None;
@@ -94,6 +105,7 @@ impl Menu {
         None
     }
 
+    /// Render the menu with shadow, background, items, and hover highlight.
     pub fn render(&self, surface: &mut Surface) {
         if !self.visible {
             return;

@@ -1,3 +1,5 @@
+//! Modal dialog widget with a title, message, and up to three action buttons.
+
 use alloc::string::String;
 use crate::graphics::color::Color;
 use crate::graphics::font;
@@ -7,6 +9,7 @@ use crate::graphics::surface::Surface;
 use crate::ui::theme::Theme;
 use crate::ui::widgets::button::Button;
 
+/// A modal dialog box with title, message, and action buttons.
 pub struct Dialog {
     pub title: String,
     pub message: String,
@@ -18,6 +21,7 @@ pub struct Dialog {
 }
 
 impl Dialog {
+    /// Create a new dialog with the given title and message body.
     pub fn new(title: &str, message: &str) -> Self {
         Dialog {
             title: String::from(title),
@@ -30,11 +34,13 @@ impl Dialog {
         }
     }
 
+    /// Center the dialog on screen.
     pub fn center(&mut self, screen_width: u32, screen_height: u32) {
         self.x = (screen_width as i32 - self.width as i32) / 2;
         self.y = (screen_height as i32 - self.height as i32) / 2;
     }
 
+    /// Add a button to the dialog. Returns the button index (0-2).
     pub fn add_button(&mut self, label: &str, primary: bool) -> usize {
         for (i, slot) in self.buttons.iter_mut().enumerate() {
             if slot.is_none() {
@@ -53,6 +59,7 @@ impl Dialog {
         0
     }
 
+    /// Render the dialog (with shadow, background, title, message, and buttons).
     pub fn render(&self, surface: &mut Surface) {
         let mut renderer = Renderer::new(surface);
 

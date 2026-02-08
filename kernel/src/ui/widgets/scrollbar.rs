@@ -1,8 +1,11 @@
+//! Scrollbar widget (vertical or horizontal) with proportional thumb sizing.
+
 use crate::graphics::rect::Rect;
 use crate::graphics::renderer::Renderer;
 use crate::graphics::surface::Surface;
 use crate::ui::theme::Theme;
 
+/// A scrollbar with a proportionally-sized thumb indicating scroll position.
 pub struct Scrollbar {
     pub rect: Rect,
     pub total_items: u32,
@@ -12,6 +15,7 @@ pub struct Scrollbar {
 }
 
 impl Scrollbar {
+    /// Create a vertical scrollbar at the given position and height.
     pub fn vertical(x: i32, y: i32, height: u32) -> Self {
         Scrollbar {
             rect: Rect::new(x, y, Theme::SCROLLBAR_WIDTH, height),
@@ -22,6 +26,7 @@ impl Scrollbar {
         }
     }
 
+    /// Create a horizontal scrollbar at the given position and width.
     pub fn horizontal(x: i32, y: i32, width: u32) -> Self {
         Scrollbar {
             rect: Rect::new(x, y, width, Theme::SCROLLBAR_WIDTH),
@@ -32,6 +37,7 @@ impl Scrollbar {
         }
     }
 
+    /// Set the total and visible item counts (determines thumb size).
     pub fn set_range(&mut self, total: u32, visible: u32) {
         self.total_items = total;
         self.visible_items = visible;
@@ -75,6 +81,7 @@ impl Scrollbar {
         }
     }
 
+    /// Render the scrollbar track and thumb onto the given surface.
     pub fn render(&self, surface: &mut Surface) {
         let mut renderer = Renderer::new(surface);
 
