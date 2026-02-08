@@ -3,13 +3,7 @@
 _start:
     /* Clear frame pointer for backtraces */
     xorl %ebp, %ebp
-    /* Call main(argc=0, argv=NULL) */
-    pushl $0     /* argv */
-    pushl $0     /* argc */
-    call main
-    addl $8, %esp
-    /* Call exit(return_value) */
-    pushl %eax
-    call exit
-    /* Should not reach here */
+    /* __libc_start_main parses args and calls main(argc, argv) */
+    call __libc_start_main
+    /* Should not reach here (__libc_start_main calls exit) */
     hlt

@@ -88,34 +88,44 @@ impl Framebuffer {
     }
 
     fn fill_rounded_rect(&mut self, x: i32, y: i32, w: u32, h: u32, r: i32, color: u32) {
-        // Draw body
-        self.fill_rect(x + r, y, w - 2 * r as u32, h, color);
-        self.fill_rect(x, y + r, w, h - 2 * r as u32, color);
-
-        // Draw corners
-        for corner in 0..4 {
-            let (cx, cy) = match corner {
-                0 => (x + r, y + r),                         // top-left
-                1 => (x + w as i32 - r - 1, y + r),          // top-right
-                2 => (x + r, y + h as i32 - r - 1),          // bottom-left
-                _ => (x + w as i32 - r - 1, y + h as i32 - r - 1), // bottom-right
-            };
-            for dy in -r..=r {
-                for dx in -r..=r {
-                    if dx * dx + dy * dy <= r * r {
-                        let px = cx + dx;
-                        let py = cy + dy;
-                        if px >= 0 && px < self.width as i32 && py >= 0 && py < self.height as i32 {
-                            let idx = (py as u32 * self.width + px as u32) as usize;
-                            let a = (color >> 24) & 0xFF;
-                            if a >= 255 {
-                                self.pixels[idx] = color;
-                            } else if a > 0 {
-                                self.pixels[idx] = alpha_blend(color, self.pixels[idx]);
-                            }
-                        }
-                    }
+        let ru = r as u32;
+        if ru == 0 || w < ru * 2 || h < ru * 2 {
+            self.fill_rect(x, y, w, h, color);
+            return;
+        }
+        // 3 non-overlapping rects to avoid double-alpha-blending
+        if h > ru * 2 {
+            self.fill_rect(x, y + r, w, h - ru * 2, color);
+        }
+        if w > ru * 2 {
+            self.fill_rect(x + r, y, w - ru * 2, ru, color);
+            self.fill_rect(x + r, y + h as i32 - r, w - ru * 2, ru, color);
+        }
+        // Corner fills using pixel-center test for accuracy
+        // Write pixels directly (no alpha_blend) to avoid stacking on already-transparent bg
+        let r2x4 = (2 * r) * (2 * r);
+        for dy in 0..ru {
+            let cy = 2 * dy as i32 + 1 - 2 * r;
+            let cy2 = cy * cy;
+            let mut fill_start = ru;
+            for dx in 0..ru {
+                let cx = 2 * dx as i32 + 1 - 2 * r;
+                if cx * cx + cy2 <= r2x4 {
+                    fill_start = dx;
+                    break;
                 }
+            }
+            let fill_width = ru - fill_start;
+            if fill_width > 0 {
+                let fs = fill_start as i32;
+                // Top-left: arc curves from top-edge to left-edge
+                self.fill_rect(x + fs, y + dy as i32, fill_width, 1, color);
+                // Top-right: mirror horizontally — fill from left side of quadrant
+                self.fill_rect(x + (w - ru) as i32, y + dy as i32, fill_width, 1, color);
+                // Bottom-left: mirror vertically — reverse row order
+                self.fill_rect(x + fs, y + (h as i32 - 1 - dy as i32), fill_width, 1, color);
+                // Bottom-right: mirror both axes
+                self.fill_rect(x + (w - ru) as i32, y + (h as i32 - 1 - dy as i32), fill_width, 1, color);
             }
         }
     }

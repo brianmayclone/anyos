@@ -837,6 +837,8 @@ pub fn sys_win_get_size(window_id: u32, buf_ptr: u32) -> u32 {
 }
 
 /// sys_win_blit - Blit ARGB pixel data (u32 per pixel, 0xAARRGGBB) to window content surface.
+/// Copies pixels directly (no alpha blending). The caller provides pre-composited
+/// ARGB data; alpha blending with layers below happens in the compositor.
 /// params_ptr: [x:i16, y:i16, w:u16, h:u16, data_ptr:u32] = 12 bytes
 pub fn sys_win_blit(window_id: u32, params_ptr: u32) -> u32 {
     if params_ptr == 0 { return u32::MAX; }
@@ -857,29 +859,13 @@ pub fn sys_win_blit(window_id: u32, params_ptr: u32) -> u32 {
             for row in 0..h as i32 {
                 let sy = y + row;
                 if sy < 0 || sy >= surface.height as i32 { continue; }
+                let dst_row_start = (sy as u32 * surface.width) as usize;
+                let src_row_start = (row as u32 * w) as usize;
                 for col in 0..w as i32 {
                     let sx = x + col;
                     if sx < 0 || sx >= surface.width as i32 { continue; }
-                    let pixel = src[(row as u32 * w + col as u32) as usize];
-                    let a = (pixel >> 24) & 0xFF;
-                    if a == 0 { continue; }
-                    let dst_off = (sy as u32 * surface.width + sx as u32) as usize;
-                    if a >= 255 {
-                        surface.pixels[dst_off] = pixel;
-                    } else {
-                        let r = (pixel >> 16) & 0xFF;
-                        let g = (pixel >> 8) & 0xFF;
-                        let b = pixel & 0xFF;
-                        let dst = surface.pixels[dst_off];
-                        let dr = (dst >> 16) & 0xFF;
-                        let dg = (dst >> 8) & 0xFF;
-                        let db = dst & 0xFF;
-                        let inv = 255 - a;
-                        let or = (r * a + dr * inv) / 255;
-                        let og = (g * a + dg * inv) / 255;
-                        let ob = (b * a + db * inv) / 255;
-                        surface.pixels[dst_off] = (0xFF << 24) | (or << 16) | (og << 8) | ob;
-                    }
+                    surface.pixels[dst_row_start + sx as usize] =
+                        src[src_row_start + col as usize];
                 }
             }
             win.mark_dirty();

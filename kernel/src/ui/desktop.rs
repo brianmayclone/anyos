@@ -548,7 +548,7 @@ impl Desktop {
                     // Sizes match, copy directly
                     let win_surface = self.windows[win_idx].surface();
                     layer_surface.pixels.copy_from_slice(&win_surface.pixels);
-                    layer_surface.opaque = !is_borderless;
+                    layer_surface.opaque = false;
                     false
                 } else {
                     true
@@ -568,7 +568,7 @@ impl Desktop {
             if let Some(layer_surface) = self.compositor.get_layer_surface(new_layer_id) {
                 let win_surface = self.windows[win_idx].surface();
                 layer_surface.pixels.copy_from_slice(&win_surface.pixels);
-                layer_surface.opaque = !is_borderless;
+                layer_surface.opaque = false;
             }
         }
     }
@@ -749,15 +749,74 @@ impl Desktop {
         }
     }
 
+    fn draw_resize_outline(&mut self, ox: i32, oy: i32, ow: u32, oh: u32) {
+        self.compositor.set_resize_outline(Rect::new(ox, oy, ow, oh));
+    }
+
+    fn remove_resize_outline(&mut self) {
+        self.compositor.clear_resize_outline();
+    }
+
     fn handle_mouse_up(&mut self, x: i32, y: i32) {
-        // If we were resizing, send EVENT_RESIZE to the app
-        if let Some(InteractionState::Resizing { window_id, .. }) = &self.interaction {
+        use crate::ui::window::{MIN_WIDTH, MIN_HEIGHT};
+
+        // If we were resizing, apply the final resize now
+        if let Some(InteractionState::Resizing {
+            window_id, edge, initial_x, initial_y, initial_w, initial_h, anchor_mx, anchor_my,
+        }) = &self.interaction {
             let wid = *window_id;
-            if let Some(window) = self.windows.iter().find(|w| w.id == wid) {
-                let w = window.width;
-                let h = window.height;
-                self.push_user_event(wid, [EVENT_RESIZE, w, h, 0, 0]);
+            let edge = *edge;
+            let ix = *initial_x;
+            let iy = *initial_y;
+            let iw = *initial_w;
+            let ih = *initial_h;
+            let dx = x - anchor_mx;
+            let dy = y - anchor_my;
+
+            let (mut new_x, new_y, mut new_w, mut new_h) = (ix, iy, iw, ih);
+
+            match edge {
+                HitTest::ResizeRight => {
+                    new_w = ((iw as i32 + dx).max(MIN_WIDTH as i32)) as u32;
+                }
+                HitTest::ResizeBottom => {
+                    new_h = ((ih as i32 + dy).max(MIN_HEIGHT as i32)) as u32;
+                }
+                HitTest::ResizeLeft => {
+                    let proposed_w = (iw as i32 - dx).max(MIN_WIDTH as i32) as u32;
+                    new_x = ix + iw as i32 - proposed_w as i32;
+                    new_w = proposed_w;
+                }
+                HitTest::ResizeBottomRight => {
+                    new_w = ((iw as i32 + dx).max(MIN_WIDTH as i32)) as u32;
+                    new_h = ((ih as i32 + dy).max(MIN_HEIGHT as i32)) as u32;
+                }
+                HitTest::ResizeBottomLeft => {
+                    let proposed_w = (iw as i32 - dx).max(MIN_WIDTH as i32) as u32;
+                    new_x = ix + iw as i32 - proposed_w as i32;
+                    new_w = proposed_w;
+                    new_h = ((ih as i32 + dy).max(MIN_HEIGHT as i32)) as u32;
+                }
+                _ => {}
             }
+
+            // Remove the resize outline
+            self.remove_resize_outline();
+
+            // Apply the actual resize
+            if let Some(window) = self.windows.iter_mut().find(|w| w.id == wid) {
+                window.x = new_x;
+                window.y = new_y;
+                if window.width != new_w || window.height != new_h {
+                    window.resize(new_w, new_h);
+                }
+                let layer_id = window.layer_id;
+                self.compositor.move_layer(layer_id, new_x, new_y);
+            }
+            self.render_window(wid);
+
+            // Send EVENT_RESIZE to the app
+            self.push_user_event(wid, [EVENT_RESIZE, new_w, new_h, 0, 0]);
         }
 
         // Forward mouse up to the topmost window containing the cursor
@@ -829,7 +888,7 @@ impl Desktop {
                     }
                     HitTest::ResizeLeft => {
                         let proposed_w = (iw as i32 - dx).max(MIN_WIDTH as i32) as u32;
-                        new_x = ix + iw as i32 - proposed_w as i32; // pin right edge
+                        new_x = ix + iw as i32 - proposed_w as i32;
                         new_w = proposed_w;
                     }
                     HitTest::ResizeBottomRight => {
@@ -845,16 +904,11 @@ impl Desktop {
                     _ => {}
                 }
 
-                if let Some(window) = self.windows.iter_mut().find(|w| w.id == wid) {
-                    window.x = new_x;
-                    window.y = new_y;
-                    if window.width != new_w || window.height != new_h {
-                        window.resize(new_w, new_h);
-                    }
-                    let layer_id = window.layer_id;
-                    self.compositor.move_layer(layer_id, new_x, new_y);
-                }
-                self.render_window(wid);
+                // Draw resize outline overlay (don't actually resize the window)
+                let is_borderless = self.windows.iter().find(|w| w.id == wid)
+                    .map(|w| w.borderless).unwrap_or(false);
+                let outline_h = if is_borderless { new_h } else { new_h + Theme::TITLEBAR_HEIGHT };
+                self.draw_resize_outline(new_x, new_y, new_w, outline_h);
             }
             None => {}
         }

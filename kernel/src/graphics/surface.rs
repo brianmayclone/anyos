@@ -137,31 +137,50 @@ impl Surface {
 
     /// Blit a region of the source surface.
     /// Automatically uses fast path for opaque sources.
+    /// Non-opaque path uses row-based blitting with inline alpha checks.
     pub fn blit_rect(&mut self, src: &Surface, src_rect: Rect, dx: i32, dy: i32) {
         if src.opaque {
             self.blit_rect_opaque(src, src_rect, dx, dy);
             return;
         }
-        for sy in 0..src_rect.height as i32 {
-            let ty = dy + sy;
-            if ty < 0 || ty >= self.height as i32 {
-                continue;
-            }
-            for sx in 0..src_rect.width as i32 {
-                let tx = dx + sx;
-                if tx < 0 || tx >= self.width as i32 {
-                    continue;
-                }
-                let src_x = src_rect.x + sx;
-                let src_y = src_rect.y + sy;
-                if src_x >= 0
-                    && src_x < src.width as i32
-                    && src_y >= 0
-                    && src_y < src.height as i32
-                {
-                    let src_idx = (src_y as u32 * src.width + src_x as u32) as usize;
-                    let color = Color::from_u32(src.pixels[src_idx]);
-                    self.put_pixel(tx, ty, color);
+        // Clip source rect to source surface bounds
+        let sr_x0 = src_rect.x.max(0) as u32;
+        let sr_y0 = src_rect.y.max(0) as u32;
+        let sr_x1 = (src_rect.right() as u32).min(src.width);
+        let sr_y1 = (src_rect.bottom() as u32).min(src.height);
+        if sr_x0 >= sr_x1 || sr_y0 >= sr_y1 { return; }
+
+        let mut copy_x = dx + (sr_x0 as i32 - src_rect.x);
+        let mut copy_y = dy + (sr_y0 as i32 - src_rect.y);
+        let mut src_sx = sr_x0;
+        let mut src_sy = sr_y0;
+        let mut copy_w = (sr_x1 - sr_x0) as i32;
+        let mut copy_h = (sr_y1 - sr_y0) as i32;
+
+        if copy_x < 0 { src_sx += (-copy_x) as u32; copy_w += copy_x; copy_x = 0; }
+        if copy_y < 0 { src_sy += (-copy_y) as u32; copy_h += copy_y; copy_y = 0; }
+        if copy_x + copy_w > self.width as i32 { copy_w = self.width as i32 - copy_x; }
+        if copy_y + copy_h > self.height as i32 { copy_h = self.height as i32 - copy_y; }
+        if copy_w <= 0 || copy_h <= 0 { return; }
+
+        let cw = copy_w as usize;
+        for row in 0..copy_h as u32 {
+            let sy = src_sy + row;
+            let dy_row = copy_y as u32 + row;
+            let src_start = (sy * src.width + src_sx) as usize;
+            let dst_start = (dy_row * self.width + copy_x as u32) as usize;
+            let src_row = &src.pixels[src_start..src_start + cw];
+            let dst_row = &mut self.pixels[dst_start..dst_start + cw];
+
+            for i in 0..cw {
+                let sp = src_row[i];
+                let a = sp >> 24;
+                if a >= 255 {
+                    dst_row[i] = sp;
+                } else if a > 0 {
+                    let sc = Color::from_u32(sp);
+                    let dc = Color::from_u32(dst_row[i]);
+                    dst_row[i] = sc.blend_over(dc).to_u32();
                 }
             }
         }

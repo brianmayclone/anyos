@@ -366,6 +366,7 @@ add_custom_command(
     ${LIBC_DIR}/src/time.c
     ${LIBC_DIR}/src/math.c
     ${LIBC_DIR}/src/mman.c
+    ${LIBC_DIR}/src/start.c
   COMMENT "Building C library (libc.a + crt0.o)"
 )
 

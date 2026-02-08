@@ -30,20 +30,9 @@ pub extern "C" fn radio_render(
             theme::CHECK_MARK,
         );
     } else {
-        // Empty circle with border
+        // Empty circle with rounded border
         draw::fill_rounded_rect(win, x, y, RADIO_SIZE, RADIO_SIZE, r, theme::CONTROL_BG);
-        draw::draw_border(win, x, y, RADIO_SIZE, RADIO_SIZE, theme::INPUT_BORDER);
-        // Re-draw inner area to hide square corners of border inside the circle
-        let inset = 1u32;
-        draw::fill_rounded_rect(
-            win,
-            x + inset as i32,
-            y + inset as i32,
-            RADIO_SIZE - inset * 2,
-            RADIO_SIZE - inset * 2,
-            r - inset,
-            theme::CONTROL_BG,
-        );
+        draw::draw_rounded_border(win, x, y, RADIO_SIZE, RADIO_SIZE, r, theme::INPUT_BORDER);
     }
 
     // Label text

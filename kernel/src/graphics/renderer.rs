@@ -118,45 +118,66 @@ impl<'a> Renderer<'a> {
 
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: i32, color: Color) {
         let r = radius.min(rect.width as i32 / 2).min(rect.height as i32 / 2);
+        if r <= 0 {
+            self.surface.fill_rect(rect, color);
+            return;
+        }
+        let ru = r as u32;
 
-        // Fill center rectangle (excluding corners)
-        self.surface.fill_rect(
-            Rect::new(rect.x + r, rect.y, rect.width - 2 * r as u32, rect.height),
-            color,
-        );
-        // Fill left and right strips
-        self.surface.fill_rect(
-            Rect::new(rect.x, rect.y + r, r as u32, rect.height - 2 * r as u32),
-            color,
-        );
-        self.surface.fill_rect(
-            Rect::new(rect.right() - r, rect.y + r, r as u32, rect.height - 2 * r as u32),
-            color,
-        );
+        // 3 non-overlapping body rects
+        if rect.height > ru * 2 {
+            self.surface.fill_rect(
+                Rect::new(rect.x, rect.y + r, rect.width, rect.height - ru * 2),
+                color,
+            );
+        }
+        if rect.width > ru * 2 {
+            self.surface.fill_rect(
+                Rect::new(rect.x + r, rect.y, rect.width - ru * 2, ru),
+                color,
+            );
+            self.surface.fill_rect(
+                Rect::new(rect.x + r, rect.bottom() - r, rect.width - ru * 2, ru),
+                color,
+            );
+        }
 
-        // Fill corners with quarter circles
+        // Corner fills using pixel-center test for accuracy
+        let r2x4 = (2 * r) * (2 * r);
         for dy in 0..r {
-            let dx = isqrt(r * r - dy * dy);
-            // Top-left
-            self.surface.fill_rect(
-                Rect::new(rect.x + r - dx, rect.y + r - dy, dx as u32, 1),
-                color,
-            );
-            // Top-right
-            self.surface.fill_rect(
-                Rect::new(rect.right() - r, rect.y + r - dy, dx as u32, 1),
-                color,
-            );
-            // Bottom-left
-            self.surface.fill_rect(
-                Rect::new(rect.x + r - dx, rect.bottom() - r + dy, dx as u32, 1),
-                color,
-            );
-            // Bottom-right
-            self.surface.fill_rect(
-                Rect::new(rect.right() - r, rect.bottom() - r + dy, dx as u32, 1),
-                color,
-            );
+            let cy = 2 * dy + 1 - 2 * r;
+            let cy2 = cy * cy;
+            let mut fill_start = r;
+            for dx in 0..r {
+                let cx = 2 * dx + 1 - 2 * r;
+                if cx * cx + cy2 <= r2x4 {
+                    fill_start = dx;
+                    break;
+                }
+            }
+            let fill_width = (r - fill_start) as u32;
+            if fill_width > 0 {
+                // Top-left
+                self.surface.fill_rect(
+                    Rect::new(rect.x + fill_start, rect.y + dy, fill_width, 1),
+                    color,
+                );
+                // Top-right: mirror horizontally
+                self.surface.fill_rect(
+                    Rect::new(rect.right() - r, rect.y + dy, fill_width, 1),
+                    color,
+                );
+                // Bottom-left: mirror vertically
+                self.surface.fill_rect(
+                    Rect::new(rect.x + fill_start, rect.bottom() - 1 - dy, fill_width, 1),
+                    color,
+                );
+                // Bottom-right: mirror both
+                self.surface.fill_rect(
+                    Rect::new(rect.right() - r, rect.bottom() - 1 - dy, fill_width, 1),
+                    color,
+                );
+            }
         }
     }
 

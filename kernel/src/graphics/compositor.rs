@@ -68,6 +68,8 @@ pub struct Compositor {
     gpu_accel: bool,
     /// Pending GPU RECT_COPY hint for accelerated window move
     accel_move: Option<AccelMoveHint>,
+    /// Resize outline overlay (drawn during compose, zero allocation)
+    resize_outline: Option<Rect>,
 }
 
 impl Compositor {
@@ -89,6 +91,7 @@ impl Compositor {
             hw_cursor_active: false,
             gpu_accel: false,
             accel_move: None,
+            resize_outline: None,
         }
     }
 
@@ -229,6 +232,23 @@ impl Compositor {
         self.accel_move = None;
     }
 
+    /// Set a resize outline overlay (drawn during compose, no allocation)
+    pub fn set_resize_outline(&mut self, rect: Rect) {
+        // Damage old outline position
+        if let Some(old) = self.resize_outline {
+            self.damage.push(old);
+        }
+        self.damage.push(rect);
+        self.resize_outline = Some(rect);
+    }
+
+    /// Clear the resize outline overlay
+    pub fn clear_resize_outline(&mut self) {
+        if let Some(old) = self.resize_outline.take() {
+            self.damage.push(old);
+        }
+    }
+
     /// Mark a layer as dirty
     pub fn invalidate_layer(&mut self, id: u32) {
         if let Some(layer) = self.layers.iter_mut().find(|l| l.id == id) {
@@ -329,6 +349,7 @@ impl Compositor {
                 if !self.layers[layer_idx].visible {
                     continue;
                 }
+
                 let layer_bounds = self.layers[layer_idx].bounds();
                 if let Some(intersection) = layer_bounds.intersection(damage_rect) {
                     // Blit only the clipped region for efficiency
@@ -344,6 +365,29 @@ impl Compositor {
                         intersection.x,
                         intersection.y,
                     );
+                }
+            }
+
+            // Draw resize outline if it intersects this damage rect
+            if let Some(outline) = self.resize_outline {
+                if outline.intersects(damage_rect) {
+                    let border = Color::from_u32(0x80FFFFFF);
+                    // Top
+                    if let Some(r) = Rect::new(outline.x, outline.y, outline.width, 2).intersection(damage_rect) {
+                        self.back_buffer.fill_rect(r, border);
+                    }
+                    // Bottom
+                    if let Some(r) = Rect::new(outline.x, outline.bottom() - 2, outline.width, 2).intersection(damage_rect) {
+                        self.back_buffer.fill_rect(r, border);
+                    }
+                    // Left
+                    if let Some(r) = Rect::new(outline.x, outline.y, 2, outline.height).intersection(damage_rect) {
+                        self.back_buffer.fill_rect(r, border);
+                    }
+                    // Right
+                    if let Some(r) = Rect::new(outline.right() - 2, outline.y, 2, outline.height).intersection(damage_rect) {
+                        self.back_buffer.fill_rect(r, border);
+                    }
                 }
             }
 

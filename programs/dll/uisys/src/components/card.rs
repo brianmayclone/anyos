@@ -11,6 +11,6 @@ pub extern "C" fn card_render(win: u32, x: i32, y: i32, w: u32, h: u32) {
     // Background
     draw::fill_rounded_rect(win, x, y, w, h, CARD_CORNER, theme::CARD_BG);
 
-    // Border
-    draw::draw_border(win, x, y, w, h, theme::CARD_BORDER);
+    // Rounded border matching the fill shape
+    draw::draw_rounded_border(win, x, y, w, h, CARD_CORNER, theme::CARD_BORDER);
 }
