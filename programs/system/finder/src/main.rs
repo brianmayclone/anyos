@@ -22,6 +22,7 @@ const SIDEBAR_HEADER_H: u32 = 28;
 const SIDEBAR_ITEM_H: u32 = 32;
 const ROW_H: i32 = 28;
 const ICON_SIZE: u32 = 16;
+const EVENT_MOUSE_SCROLL: u32 = 7;
 
 // Sidebar locations
 const LOCATIONS: [(&str, &str); 5] = [
@@ -267,13 +268,15 @@ fn open_entry(state: &mut AppState, idx: usize) {
 
         if !ext.is_empty() {
             if let Some(app) = lookup_mimetype(&state.mimetypes, ext) {
-                process::spawn(app, &full_path);
+                // Args must include program name as argv[0]
+                let args = anyos_std::format!("{} {}", app, full_path);
+                process::spawn(app, &args);
                 return;
             }
         }
 
         // Default: try to execute
-        process::spawn(&full_path, "");
+        process::spawn(&full_path, &full_path);
     }
 }
 
@@ -612,6 +615,12 @@ fn main() {
                                 Some(0) | None => state.selected = Some(0),
                                 Some(i) => state.selected = Some(i - 1),
                             }
+                            // Scroll to keep selection visible
+                            if let Some(sel) = state.selected {
+                                if (sel as u32) < state.scroll_offset {
+                                    state.scroll_offset = sel as u32;
+                                }
+                            }
                             needs_redraw = true;
                         }
                         0x106 => { // Down arrow
@@ -620,6 +629,14 @@ fn main() {
                                 None => state.selected = Some(0),
                                 Some(i) if i < max => state.selected = Some(i + 1),
                                 _ => {}
+                            }
+                            // Scroll to keep selection visible
+                            if let Some(sel) = state.selected {
+                                let file_area_h = win_h as i32 - TOOLBAR_H as i32 - ROW_H;
+                                let max_visible = (file_area_h / ROW_H) as usize;
+                                if sel >= state.scroll_offset as usize + max_visible {
+                                    state.scroll_offset = (sel - max_visible + 1) as u32;
+                                }
                             }
                             needs_redraw = true;
                         }
@@ -632,6 +649,20 @@ fn main() {
                     if handle_click(&mut state, mx, my, win_w, win_h) {
                         needs_redraw = true;
                     }
+                }
+                EVENT_MOUSE_SCROLL => {
+                    let dz = event[1] as i32;
+                    let file_area_h = win_h as i32 - TOOLBAR_H as i32 - ROW_H;
+                    let max_visible = (file_area_h / ROW_H) as usize;
+                    let max_scroll = state.entries.len().saturating_sub(max_visible) as u32;
+                    if dz < 0 {
+                        // Scroll up
+                        state.scroll_offset = state.scroll_offset.saturating_sub((-dz) as u32);
+                    } else if dz > 0 {
+                        // Scroll down
+                        state.scroll_offset = (state.scroll_offset + dz as u32).min(max_scroll);
+                    }
+                    needs_redraw = true;
                 }
                 window::EVENT_RESIZE => {
                     win_w = event[1];

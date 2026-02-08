@@ -10,6 +10,16 @@ use alloc::string::String;
 // Helpers
 // =========================================================================
 
+/// Make a relative path absolute by prepending "/" (cwd is always "/").
+/// Returns the input unchanged if already absolute.
+fn resolve_path(path: &str) -> String {
+    if path.starts_with('/') {
+        String::from(path)
+    } else {
+        alloc::format!("/{}", path)
+    }
+}
+
 /// Read a null-terminated string from user memory (max 256 bytes).
 unsafe fn read_user_str(ptr: u32) -> &'static str {
     let p = ptr as *const u8;
@@ -122,7 +132,8 @@ pub fn sys_open(path_ptr: u32, flags: u32, _arg3: u32) -> u32 {
         create: (flags & 4) != 0,
         truncate: (flags & 8) != 0,
     };
-    match crate::fs::vfs::open(path, file_flags) {
+    let resolved = resolve_path(path);
+    match crate::fs::vfs::open(&resolved, file_flags) {
         Ok(fd) => fd,
         Err(_) => u32::MAX,
     }
@@ -262,9 +273,9 @@ pub fn sys_getargs(buf_ptr: u32, buf_size: u32) -> u32 {
 /// Each entry: [type:u8, name_len:u8, pad:u16, size:u32, name:56bytes] = 64 bytes
 /// Returns number of entries, or u32::MAX on error.
 pub fn sys_readdir(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
-    let path = unsafe { read_user_str(path_ptr) };
+    let path = resolve_path(unsafe { read_user_str(path_ptr) });
 
-    match crate::fs::vfs::read_dir(path) {
+    match crate::fs::vfs::read_dir(&path) {
         Ok(entries) => {
             let entry_size = 64u32;
             if buf_ptr != 0 && buf_size > 0 {
@@ -300,10 +311,11 @@ pub fn sys_readdir(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
 /// arg1=path_ptr (null-terminated), arg2=stat_buf_ptr: output [type:u32, size:u32] = 8 bytes
 /// Returns 0 on success, u32::MAX on error.
 pub fn sys_stat(path_ptr: u32, buf_ptr: u32) -> u32 {
-    let path = unsafe { read_user_str(path_ptr) };
+    let raw_path = unsafe { read_user_str(path_ptr) };
+    let path = resolve_path(raw_path);
 
     // Check directory first
-    if let Ok(entries) = crate::fs::vfs::read_dir(path) {
+    if let Ok(entries) = crate::fs::vfs::read_dir(&path) {
         if buf_ptr != 0 {
             unsafe {
                 let buf = buf_ptr as *mut u32;
@@ -315,7 +327,7 @@ pub fn sys_stat(path_ptr: u32, buf_ptr: u32) -> u32 {
     }
 
     // Try as a file
-    if let Ok(data) = crate::fs::vfs::read_file_to_vec(path) {
+    if let Ok(data) = crate::fs::vfs::read_file_to_vec(&path) {
         if buf_ptr != 0 {
             unsafe {
                 let buf = buf_ptr as *mut u32;
@@ -395,8 +407,8 @@ pub fn sys_isatty(fd: u32) -> u32 {
 /// sys_mkdir - Create a directory. arg1=path_ptr (null-terminated).
 pub fn sys_mkdir(path_ptr: u32) -> u32 {
     if path_ptr == 0 { return u32::MAX; }
-    let path = unsafe { read_user_str(path_ptr) };
-    match crate::fs::vfs::mkdir(path) {
+    let path = resolve_path(unsafe { read_user_str(path_ptr) });
+    match crate::fs::vfs::mkdir(&path) {
         Ok(()) => 0,
         Err(_) => u32::MAX,
     }
@@ -405,8 +417,8 @@ pub fn sys_mkdir(path_ptr: u32) -> u32 {
 /// sys_unlink - Delete a file. arg1=path_ptr (null-terminated).
 pub fn sys_unlink(path_ptr: u32) -> u32 {
     if path_ptr == 0 { return u32::MAX; }
-    let path = unsafe { read_user_str(path_ptr) };
-    match crate::fs::vfs::delete(path) {
+    let path = resolve_path(unsafe { read_user_str(path_ptr) });
+    match crate::fs::vfs::delete(&path) {
         Ok(()) => 0,
         Err(_) => u32::MAX,
     }
@@ -415,8 +427,8 @@ pub fn sys_unlink(path_ptr: u32) -> u32 {
 /// sys_truncate - Truncate a file to zero. arg1=path_ptr (null-terminated).
 pub fn sys_truncate(path_ptr: u32) -> u32 {
     if path_ptr == 0 { return u32::MAX; }
-    let path = unsafe { read_user_str(path_ptr) };
-    match crate::fs::vfs::truncate(path) {
+    let path = resolve_path(unsafe { read_user_str(path_ptr) });
+    match crate::fs::vfs::truncate(&path) {
         Ok(()) => 0,
         Err(_) => u32::MAX,
     }

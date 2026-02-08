@@ -1,5 +1,5 @@
-/// Shared shell with built-in commands.
-/// Used by both the graphical terminal and the text-mode fallback.
+//! Interactive shell with built-in commands (help, ls, cat, ping, dhcp, etc.).
+//! Shared by both the graphical terminal and the VGA text-mode fallback.
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -14,6 +14,8 @@ pub trait ShellOutput {
     fn clear(&mut self);
 }
 
+/// Interactive command-line shell with input editing, command history, and
+/// built-in commands for system inspection and network diagnostics.
 pub struct Shell {
     input: String,
     cursor: usize,
@@ -22,6 +24,7 @@ pub struct Shell {
 }
 
 impl Shell {
+    /// Create a new shell with empty input and history.
     pub fn new() -> Self {
         Shell {
             input: String::new(),
@@ -31,18 +34,22 @@ impl Shell {
         }
     }
 
+    /// Return the current input line.
     pub fn input(&self) -> &str {
         &self.input
     }
 
+    /// Return the current cursor position within the input line.
     pub fn cursor(&self) -> usize {
         self.cursor
     }
 
+    /// Return the shell prompt string.
     pub fn prompt() -> &'static str {
         "anyos> "
     }
 
+    /// Insert a character at the cursor position and advance the cursor.
     pub fn insert_char(&mut self, c: char) {
         if self.cursor >= self.input.len() {
             self.input.push(c);
@@ -53,6 +60,7 @@ impl Shell {
         self.history_index = None;
     }
 
+    /// Delete the character before the cursor.
     pub fn backspace(&mut self) {
         if self.cursor > 0 {
             self.cursor -= 1;
@@ -60,32 +68,38 @@ impl Shell {
         }
     }
 
+    /// Delete the character at the cursor position.
     pub fn delete(&mut self) {
         if self.cursor < self.input.len() {
             self.input.remove(self.cursor);
         }
     }
 
+    /// Move cursor one position to the left.
     pub fn move_left(&mut self) {
         if self.cursor > 0 {
             self.cursor -= 1;
         }
     }
 
+    /// Move cursor one position to the right.
     pub fn move_right(&mut self) {
         if self.cursor < self.input.len() {
             self.cursor += 1;
         }
     }
 
+    /// Move cursor to the beginning of the input line.
     pub fn home(&mut self) {
         self.cursor = 0;
     }
 
+    /// Move cursor to the end of the input line.
     pub fn end(&mut self) {
         self.cursor = self.input.len();
     }
 
+    /// Navigate to the previous command in history.
     pub fn history_up(&mut self) {
         if self.history.is_empty() {
             return;
@@ -103,6 +117,7 @@ impl Shell {
         self.cursor = self.input.len();
     }
 
+    /// Navigate to the next command in history, or clear input if at the end.
     pub fn history_down(&mut self) {
         match self.history_index {
             None => return,

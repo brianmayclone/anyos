@@ -1,5 +1,5 @@
-/// Text-mode fallback terminal.
-/// Uses VGA text mode (80x25) when no graphical framebuffer is available.
+//! Text-mode fallback terminal using VGA text mode (80x25).
+//! Used when no graphical framebuffer is available.
 
 use alloc::string::ToString;
 use crate::apps::shell::{Shell, ShellOutput};
@@ -28,11 +28,13 @@ impl ShellOutput for VgaShellOutput {
     }
 }
 
+/// VGA text-mode terminal that drives a shell via keyboard input.
 pub struct TextTerminal {
     shell: Shell,
 }
 
 impl TextTerminal {
+    /// Create a new text terminal with a fresh shell instance.
     pub fn new() -> Self {
         TextTerminal {
             shell: Shell::new(),

@@ -1,5 +1,6 @@
-/// Graphical terminal emulator.
-/// Renders a character grid into a window surface with scrollback.
+//! Graphical terminal emulator.
+//! Renders a character grid into a window surface with scrollback, cursor
+//! display, shell integration, and command history navigation.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -8,12 +9,18 @@ use crate::drivers::input::keyboard::{Key, KeyEvent};
 use crate::graphics::color::Color;
 use crate::graphics::surface::Surface;
 
+/// Cell width in pixels (matches 8x16 bitmap font).
 const CELL_W: u32 = 8;
+/// Cell height in pixels.
 const CELL_H: u32 = 16;
+/// Maximum number of lines retained in the scrollback buffer.
 const MAX_SCROLLBACK: usize = 500;
 
+/// Default foreground text color (light gray).
 const FG_DEFAULT: Color = Color::new(204, 204, 204);
+/// Prompt foreground color (green).
 const FG_PROMPT: Color = Color::new(100, 255, 100);
+/// Terminal background color (dark blue-gray).
 const BG_DEFAULT: Color = Color::new(30, 30, 40);
 
 #[derive(Clone, Copy)]
@@ -29,6 +36,7 @@ impl Default for Cell {
     }
 }
 
+/// Character grid buffer with scrollback, cursor tracking, and colored text output.
 pub struct TerminalBuffer {
     lines: Vec<Vec<Cell>>,
     cols: usize,
@@ -153,7 +161,8 @@ impl<'a> ShellOutput for TerminalOutputAdapter<'a> {
     }
 }
 
-/// Graphical terminal - owns a TerminalBuffer and Shell
+/// Graphical terminal emulator that owns a character buffer and shell.
+/// Handles keyboard input, command execution, and renders to a pixel surface.
 pub struct GraphicalTerminal {
     buffer: TerminalBuffer,
     shell: Shell,
@@ -163,6 +172,7 @@ pub struct GraphicalTerminal {
 }
 
 impl GraphicalTerminal {
+    /// Create a new terminal sized to fit the given pixel dimensions.
     pub fn new(width: u32, height: u32) -> Self {
         let cols = (width / CELL_W) as usize;
         let rows = (height / CELL_H) as usize;
@@ -189,10 +199,12 @@ impl GraphicalTerminal {
         term
     }
 
+    /// Returns true if the terminal content has changed and needs re-rendering.
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }
 
+    /// Process a key event. Returns false if the shell requested exit.
     pub fn handle_key(&mut self, event: KeyEvent) -> bool {
         if !event.pressed {
             return true;

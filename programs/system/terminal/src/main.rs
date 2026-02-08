@@ -319,7 +319,21 @@ impl Shell {
                     raw_args
                 };
 
-                let path = format!("/bin/{}", bg_cmd);
+                // Resolve command path:
+                // - Absolute paths (/foo/bar) used as-is
+                // - Relative paths (./foo, ../foo) resolved against cwd
+                // - Bare names looked up in /bin/
+                let path = if bg_cmd.starts_with('/') {
+                    String::from(bg_cmd)
+                } else if bg_cmd.starts_with("./") || bg_cmd.starts_with("../") {
+                    if self.cwd == "/" {
+                        format!("/{}", bg_cmd.trim_start_matches("./"))
+                    } else {
+                        format!("{}/{}", self.cwd, bg_cmd)
+                    }
+                } else {
+                    format!("/bin/{}", bg_cmd)
+                };
 
                 // Build full args string with program name as argv[0]
                 let full_args_buf;
