@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -25,6 +26,8 @@ const COLOR_WHITE: u32 = 0xFFFFFFFF;
 const COLOR_TRANSPARENT: u32 = 0x00000000;
 const COLOR_HIGHLIGHT: u32 = 0x19FFFFFF; // 10% white
 
+const CONFIG_PATH: &str = "/system/dock/programs.conf";
+
 // ── Icon data ──
 struct Icon {
     width: u32,
@@ -33,9 +36,9 @@ struct Icon {
 }
 
 struct DockItem {
-    name: &'static str,
-    bin_path: &'static str,
-    icon_path: &'static str,
+    name: String,
+    bin_path: String,
+    icon_path: String,
     icon: Option<Icon>,
     running: bool,
 }
@@ -215,6 +218,82 @@ fn load_icon(path: &str) -> Option<Icon> {
     Some(Icon { width, height, pixels })
 }
 
+// ── Config file parsing ──
+
+/// Load dock items from /system/dock/programs.conf
+/// Format: one item per line: name|path|icon
+/// Lines starting with '#' are comments, empty lines are skipped.
+fn load_dock_config() -> Vec<DockItem> {
+    let mut items = Vec::new();
+
+    // Read config file
+    let mut stat_buf = [0u32; 2];
+    if fs::stat(CONFIG_PATH, &mut stat_buf) != 0 {
+        return items;
+    }
+    let file_size = stat_buf[1] as usize;
+    if file_size == 0 || file_size > 4096 {
+        return items;
+    }
+
+    let fd = fs::open(CONFIG_PATH, 0);
+    if fd == u32::MAX {
+        return items;
+    }
+
+    let mut data = vec![0u8; file_size];
+    let bytes_read = fs::read(fd, &mut data) as usize;
+    fs::close(fd);
+
+    if bytes_read == 0 {
+        return items;
+    }
+
+    // Parse line by line
+    let text = match core::str::from_utf8(&data[..bytes_read]) {
+        Ok(s) => s,
+        Err(_) => return items,
+    };
+
+    for line in text.split('\n') {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        // Split by '|': name|path|icon
+        let mut parts = line.splitn(3, '|');
+        let name = match parts.next() {
+            Some(s) => s.trim(),
+            None => continue,
+        };
+        let path = match parts.next() {
+            Some(s) => s.trim(),
+            None => continue,
+        };
+        let icon = match parts.next() {
+            Some(s) => s.trim(),
+            None => continue,
+        };
+
+        if name.is_empty() || path.is_empty() {
+            continue;
+        }
+
+        items.push(DockItem {
+            name: String::from(name),
+            bin_path: String::from(path),
+            icon_path: String::from(icon),
+            icon: None,
+            running: false,
+        });
+    }
+
+    items
+}
+
+// ── Rendering ──
+
 fn render_dock(fb: &mut Framebuffer, items: &[DockItem], screen_width: u32) {
     fb.clear();
 
@@ -291,7 +370,6 @@ fn dock_hit_test(x: i32, y: i32, screen_width: u32, items: &[DockItem]) -> Optio
 }
 
 /// Parse window list buffer and check if a window with the given title exists.
-/// Returns Some(window_id) if found, None otherwise.
 fn find_window_by_title(title: &str, buf: &[u8], count: u32) -> Option<u32> {
     for i in 0..count as usize {
         let off = i * 64;
@@ -312,7 +390,7 @@ fn update_running_state(items: &mut [DockItem], win_buf: &[u8], win_count: u32) 
     let mut changed = false;
     for item in items.iter_mut() {
         let was_running = item.running;
-        item.running = find_window_by_title(item.name, win_buf, win_count).is_some();
+        item.running = find_window_by_title(&item.name, win_buf, win_count).is_some();
         if item.running != was_running {
             changed = true;
         }
@@ -337,34 +415,12 @@ fn main() {
         return;
     }
 
-    // Set up dock items
-    let mut items: Vec<DockItem> = vec![
-        DockItem {
-            name: "Terminal",
-            bin_path: "/system/terminal",
-            icon_path: "/system/icons/terminal.icon",
-            icon: None,
-            running: false,
-        },
-        DockItem {
-            name: "Activity Monitor",
-            bin_path: "/system/taskmanager",
-            icon_path: "/system/icons/taskmanager.icon",
-            icon: None,
-            running: false,
-        },
-        DockItem {
-            name: "Settings",
-            bin_path: "/system/settings",
-            icon_path: "/system/icons/settings.icon",
-            icon: None,
-            running: false,
-        },
-    ];
+    // Load dock items from config file
+    let mut items = load_dock_config();
 
     // Load icons
     for item in &mut items {
-        item.icon = load_icon(item.icon_path);
+        item.icon = load_icon(&item.icon_path);
     }
 
     // Create local framebuffer
@@ -391,11 +447,11 @@ fn main() {
                     if let Some(item) = items.get(idx) {
                         // Check if already running — focus it
                         let win_count = window::list_windows(&mut win_buf);
-                        if let Some(wid) = find_window_by_title(item.name, &win_buf, win_count) {
+                        if let Some(wid) = find_window_by_title(&item.name, &win_buf, win_count) {
                             window::focus(wid);
                         } else {
                             // Launch the program
-                            process::spawn(item.bin_path, "");
+                            process::spawn(&item.bin_path, "");
                         }
                     }
                 }

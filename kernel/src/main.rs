@@ -165,23 +165,27 @@ pub extern "C" fn kernel_main(boot_info_addr: u32) -> ! {
         }
     }
 
-    // Phase 8c: Test user-mode program execution
+    // Phase 8c: Load shared DLLs from filesystem
+    match task::dll::load_dll("/system/lib/uisys.dll", 0x0400_0000) {
+        Ok(pages) => serial_println!("[OK] uisys.dll: {} pages", pages),
+        Err(e) => serial_println!("[WARN] uisys.dll not loaded: {}", e),
+    }
+
+    // Phase 8d: Run init process (benchmark + init.conf services)
     serial_println!("");
-    serial_println!("--- User-mode self-test ---");
-    for prog in &[("hello", "/bin/hello"), ("hello_rust", "/bin/hello_rust")] {
-        serial_println!("  [{}]", prog.0);
-        match task::loader::load_and_run(prog.1, prog.0) {
-            Ok(tid) => {
-                serial_println!("  Spawned user program (TID={}), waiting...", tid);
-                let exit_code = task::scheduler::waitpid(tid);
-                serial_println!("  Exited with code {}", exit_code);
-            }
-            Err(e) => {
-                serial_println!("  Failed to load {}: {}", prog.1, e);
-            }
+    serial_println!("--- Running /system/init ---");
+    match task::loader::load_and_run("/system/init", "init") {
+        Ok(tid) => {
+            serial_println!("  Init spawned (TID={}), waiting...", tid);
+            let exit_code = task::scheduler::waitpid(tid);
+            serial_println!("  Init exited (code={})", exit_code);
+        }
+        Err(e) => {
+            serial_println!("  WARN: Failed to load /system/init: {}", e);
+            serial_println!("  System may not be fully configured.");
         }
     }
-    serial_println!("--- End self-test ---");
+    serial_println!("--- Init complete ---");
     serial_println!("");
 
     // Phase 9: Start graphical desktop if framebuffer is available
@@ -214,19 +218,16 @@ pub extern "C" fn kernel_main(boot_info_addr: u32) -> ! {
         // Spawn compositor as a scheduled kernel task (priority 200 = high)
         task::scheduler::spawn(ui::desktop::desktop_task_entry, 200, "compositor");
 
+        // Spawn CPU monitor kernel thread (writes CPU load to sys:cpu_load pipe)
+        task::scheduler::spawn(task::cpu_monitor::start, 10, "cpu_monitor");
+
         // Launch dock FIRST (always-on-top, so it stays above other windows)
         match task::loader::load_and_run("/system/compositor/dock", "dock") {
             Ok(tid) => serial_println!("[OK] Dock launched (TID {})", tid),
             Err(e) => serial_println!("[WARN] Failed to launch dock: {}", e),
         }
 
-        // Launch terminal AFTER compositor so the event loop is running
-        match task::loader::load_and_run("/system/terminal", "terminal") {
-            Ok(tid) => serial_println!("[OK] Terminal launched (TID {})", tid),
-            Err(e) => serial_println!("[WARN] Failed to launch terminal: {}", e),
-        }
-
-        serial_println!("Compositor, dock and terminal spawned, entering scheduler...");
+        serial_println!("Compositor and dock spawned, entering scheduler...");
         // scheduler::run() re-enables interrupts (sti) and enters the idle loop
         task::scheduler::run();
     }

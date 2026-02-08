@@ -11,4 +11,9 @@ name = "taskmanager"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "uisys_client",
 ]
+
+[[package]]
+name = "uisys_client"
+version = "0.1.0"

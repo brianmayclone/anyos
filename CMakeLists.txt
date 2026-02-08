@@ -121,6 +121,7 @@ add_custom_command(
 set(SYSROOT_DIR "${CMAKE_BINARY_DIR}/sysroot")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/bin")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/system")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/system/lib")
 
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/bin/hello
@@ -136,6 +137,7 @@ set(STDLIB_DEPS
   ${CMAKE_SOURCE_DIR}/stdlib/Cargo.toml
   ${CMAKE_SOURCE_DIR}/stdlib/src/lib.rs
   ${CMAKE_SOURCE_DIR}/stdlib/src/raw.rs
+  ${CMAKE_SOURCE_DIR}/stdlib/src/dll.rs
   ${CMAKE_SOURCE_DIR}/stdlib/src/process.rs
   ${CMAKE_SOURCE_DIR}/stdlib/src/fs.rs
   ${CMAKE_SOURCE_DIR}/stdlib/src/sys.rs
@@ -204,6 +206,38 @@ function(add_rust_system_program NAME SRC_DIR)
   set(SYSTEM_BINS ${SYSTEM_BINS} ${SYSROOT_DIR}/system/${NAME} PARENT_SCOPE)
 endfunction()
 
+# Variant for DLLs (placed in /system/lib/)
+function(add_dll NAME SRC_DIR)
+  set(DLL_ELF "${CMAKE_BINARY_DIR}/dll/${NAME}/i686-anyos/debug/${NAME}.elf")
+  add_custom_command(
+    OUTPUT ${DLL_ELF}
+    COMMAND ${CARGO_EXECUTABLE} build
+      --manifest-path ${SRC_DIR}/Cargo.toml
+      --target ${CMAKE_SOURCE_DIR}/i686-anyos.json
+      --target-dir ${CMAKE_BINARY_DIR}/dll/${NAME}
+    DEPENDS
+      ${SRC_DIR}/Cargo.toml
+      ${SRC_DIR}/build.rs
+      ${SRC_DIR}/src/main.rs
+      ${SRC_DIR}/link.ld
+      ${CMAKE_SOURCE_DIR}/i686-anyos.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Building DLL: ${NAME}"
+  )
+  add_custom_command(
+    OUTPUT ${SYSROOT_DIR}/system/lib/${NAME}.dll
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+      ${DLL_ELF}
+      ${SYSROOT_DIR}/system/lib/${NAME}.dll
+    DEPENDS ${DLL_ELF}
+    COMMENT "Converting ${NAME} ELF to DLL flat binary"
+  )
+  set(DLL_BINS ${DLL_BINS} ${SYSROOT_DIR}/system/lib/${NAME}.dll PARENT_SCOPE)
+endfunction()
+
+set(DLL_BINS "")
+add_dll(uisys ${CMAKE_SOURCE_DIR}/programs/dll/uisys)
+
 set(RUST_USER_BINS "")
 add_rust_user_program(hello_rust ${CMAKE_SOURCE_DIR}/programs/hello_rust)
 add_rust_user_program(ping       ${CMAKE_SOURCE_DIR}/programs/ping)
@@ -217,8 +251,11 @@ add_rust_user_program(sysinfo    ${CMAKE_SOURCE_DIR}/programs/sysinfo)
 add_rust_user_program(dmesg      ${CMAKE_SOURCE_DIR}/programs/dmesg)
 
 set(SYSTEM_BINS "")
+add_rust_system_program(init        ${CMAKE_SOURCE_DIR}/programs/system/init)
 add_rust_system_program(terminal    ${CMAKE_SOURCE_DIR}/programs/system/terminal)
 add_rust_system_program(taskmanager ${CMAKE_SOURCE_DIR}/programs/system/taskmanager)
+add_rust_system_program(settings    ${CMAKE_SOURCE_DIR}/programs/system/settings)
+add_rust_system_program(finder      ${CMAKE_SOURCE_DIR}/programs/system/finder)
 
 # Build dock program (nested path: /system/compositor/dock)
 set(DOCK_SRC_DIR ${CMAKE_SOURCE_DIR}/programs/system/compositor/dock)
@@ -248,7 +285,7 @@ add_custom_command(
 )
 list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/system/compositor/dock)
 
-# Also place taskmanager in /bin/ so the terminal shell can launch it
+# Also place taskmanager and finder in /bin/ so the terminal shell can launch them
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/bin/taskmanager
   COMMAND ${CMAKE_COMMAND} -E copy
@@ -258,6 +295,16 @@ add_custom_command(
   COMMENT "Copying taskmanager to /bin/"
 )
 list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/bin/taskmanager)
+
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/bin/finder
+  COMMAND ${CMAKE_COMMAND} -E copy
+    ${SYSROOT_DIR}/system/finder
+    ${SYSROOT_DIR}/bin/finder
+  DEPENDS ${SYSROOT_DIR}/system/finder
+  COMMENT "Copying finder to /bin/"
+)
+list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/bin/finder)
 
 # Copy any extra sysroot files from tools/sysroot
 add_custom_command(
@@ -273,7 +320,7 @@ add_custom_command(
 # Generate dock icons
 set(ICONS_DIR ${SYSROOT_DIR}/system/icons)
 add_custom_command(
-  OUTPUT ${ICONS_DIR}/terminal.icon ${ICONS_DIR}/taskmanager.icon ${ICONS_DIR}/settings.icon
+  OUTPUT ${ICONS_DIR}/terminal.icon ${ICONS_DIR}/taskmanager.icon ${ICONS_DIR}/settings.icon ${ICONS_DIR}/finder.icon
   COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_icons.py ${ICONS_DIR}
   DEPENDS ${CMAKE_SOURCE_DIR}/tools/gen_icons.py
   COMMENT "Generating dock icons"
@@ -283,6 +330,7 @@ add_custom_target(programs DEPENDS
   ${SYSROOT_DIR}/bin/hello
   ${RUST_USER_BINS}
   ${SYSTEM_BINS}
+  ${DLL_BINS}
   ${SYSROOT_DIR}/.stamp
   ${ICONS_DIR}/terminal.icon
 )
@@ -307,6 +355,7 @@ add_custom_command(
     ${SYSROOT_DIR}/bin/hello
     ${RUST_USER_BINS}
     ${SYSTEM_BINS}
+    ${DLL_BINS}
     ${SYSROOT_DIR}/.stamp
   COMMENT "Creating bootable disk image (64 MiB, FAT16 filesystem)"
 )

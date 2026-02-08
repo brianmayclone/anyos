@@ -7,7 +7,8 @@ use core::alloc::{GlobalAlloc, Layout};
 // Kernel heap: starting at virtual 0xC0400000
 const HEAP_START: u32 = 0xC040_0000;
 const HEAP_INITIAL_SIZE: usize = 16 * 1024 * 1024; // 16 MiB
-const HEAP_MAX_SIZE: usize = 32 * 1024 * 1024;     // 32 MiB max
+const HEAP_MAX_SIZE: usize = 128 * 1024 * 1024;    // 128 MiB max (VA limit before MMIO at 0xD0000000)
+const GROW_CHUNK: usize = 1024 * 1024;              // Grow in 1 MiB increments
 
 #[global_allocator]
 static HEAP_ALLOCATOR: LockedHeap = LockedHeap::new();
@@ -26,6 +27,7 @@ struct FreeBlock {
 
 static mut HEAP_FREE_LIST: *mut FreeBlock = core::ptr::null_mut();
 static mut HEAP_INITIALIZED: bool = false;
+static mut HEAP_COMMITTED: usize = 0; // Bytes actually mapped
 
 impl LockedHeap {
     const fn new() -> Self {
@@ -62,7 +64,16 @@ unsafe impl GlobalAlloc for LockedHeap {
         }
 
         self.acquire();
-        let result = alloc_inner(layout);
+        let mut result = alloc_inner(layout);
+
+        // If allocation failed, try growing the heap and retry
+        if result.is_null() {
+            let needed = align_up(layout.size().max(core::mem::size_of::<FreeBlock>()), layout.align().max(8));
+            if grow_heap(needed) {
+                result = alloc_inner(layout);
+            }
+        }
+
         self.release();
         result
     }
@@ -116,6 +127,124 @@ unsafe fn alloc_inner(layout: Layout) -> *mut u8 {
     core::ptr::null_mut()
 }
 
+/// Grow the heap by mapping additional physical pages.
+/// Called while the heap lock is held. Returns true if growth succeeded.
+unsafe fn grow_heap(min_bytes: usize) -> bool {
+    // Compute growth amount: at least min_bytes, rounded up to GROW_CHUNK
+    let growth = align_up(min_bytes.max(GROW_CHUNK), FRAME_SIZE);
+
+    // Check limits
+    let new_committed = HEAP_COMMITTED + growth;
+    if new_committed > HEAP_MAX_SIZE {
+        // Try to grow as much as we can
+        let remaining = HEAP_MAX_SIZE.saturating_sub(HEAP_COMMITTED);
+        if remaining < min_bytes {
+            return false; // Can't grow enough
+        }
+        return grow_heap_exact(remaining);
+    }
+
+    // Check physical memory availability (keep 256 frames = 1 MiB reserve)
+    let pages_needed = growth / FRAME_SIZE;
+    if physical::free_frames() < pages_needed + 256 {
+        // Try smaller growth
+        let available = physical::free_frames().saturating_sub(256);
+        if available * FRAME_SIZE < min_bytes {
+            return false;
+        }
+        return grow_heap_exact(available * FRAME_SIZE);
+    }
+
+    grow_heap_exact(growth)
+}
+
+/// Map exactly `growth` bytes of new heap pages and add to free list.
+unsafe fn grow_heap_exact(growth: usize) -> bool {
+    let growth = align_up(growth, FRAME_SIZE);
+    if growth == 0 {
+        return false;
+    }
+
+    let pages = growth / FRAME_SIZE;
+    let base = HEAP_START as usize + HEAP_COMMITTED;
+
+    // Map new pages
+    for i in 0..pages {
+        let virt = VirtAddr::new((base + i * FRAME_SIZE) as u32);
+        match physical::alloc_frame() {
+            Some(phys) => virtual_mem::map_page(virt, phys, 0x03), // Present + Writable
+            None => {
+                // Out of physical memory — unmap what we already mapped
+                // (in practice this shouldn't happen since we checked free_frames)
+                return false;
+            }
+        }
+    }
+
+    // Add the new region as a free block, inserted into the sorted free list
+    let new_block = base as *mut FreeBlock;
+    (*new_block).size = growth;
+
+    // Insert at correct position in sorted free list (by address)
+    let mut prev: *mut FreeBlock = core::ptr::null_mut();
+    let mut current = HEAP_FREE_LIST;
+    while !current.is_null() && (current as usize) < base {
+        prev = current;
+        current = (*current).next;
+    }
+
+    (*new_block).next = current;
+    if prev.is_null() {
+        HEAP_FREE_LIST = new_block;
+    } else {
+        (*prev).next = new_block;
+    }
+
+    // Coalesce with previous block if adjacent
+    if !prev.is_null() {
+        if (prev as *mut u8).add((*prev).size) == new_block as *mut u8 {
+            (*prev).size += (*new_block).size;
+            (*prev).next = (*new_block).next;
+            // new_block is now part of prev; check if we can also coalesce with next
+            if !(*prev).next.is_null() {
+                let next = (*prev).next;
+                if (prev as *mut u8).add((*prev).size) == next as *mut u8 {
+                    (*prev).size += (*next).size;
+                    (*prev).next = (*next).next;
+                }
+            }
+        } else {
+            // Try coalesce new_block with next
+            if !(*new_block).next.is_null() {
+                let next = (*new_block).next;
+                if (new_block as *mut u8).add((*new_block).size) == next as *mut u8 {
+                    (*new_block).size += (*next).size;
+                    (*new_block).next = (*next).next;
+                }
+            }
+        }
+    } else {
+        // new_block is the head; try coalesce with next
+        if !(*new_block).next.is_null() {
+            let next = (*new_block).next;
+            if (new_block as *mut u8).add((*new_block).size) == next as *mut u8 {
+                (*new_block).size += (*next).size;
+                (*new_block).next = (*next).next;
+            }
+        }
+    }
+
+    HEAP_COMMITTED = HEAP_COMMITTED + growth;
+
+    crate::serial_println!(
+        "  Heap grew: {} KiB committed ({} MiB max)",
+        HEAP_COMMITTED / 1024,
+        HEAP_MAX_SIZE / (1024 * 1024)
+    );
+
+    true
+}
+
 unsafe fn dealloc_inner(ptr: *mut u8, layout: Layout) {
     let size = align_up(layout.size().max(core::mem::size_of::<FreeBlock>()), layout.align().max(8));
 
@@ -161,6 +290,20 @@ fn align_up(value: usize, align: usize) -> usize {
     (value + align - 1) & !(align - 1)
 }
 
+/// Returns (used_bytes, total_committed_bytes) for the kernel heap.
+pub fn heap_stats() -> (usize, usize) {
+    unsafe {
+        let committed = HEAP_COMMITTED;
+        let mut total_free = 0usize;
+        let mut current = HEAP_FREE_LIST;
+        while !current.is_null() {
+            total_free += (*current).size;
+            current = (*current).next;
+        }
+        (committed.saturating_sub(total_free), committed)
+    }
+}
+
 /// Walk the free list and validate heap integrity. Prints results to serial.
 pub fn validate_heap() {
     unsafe {
@@ -169,7 +312,7 @@ pub fn validate_heap() {
         let mut total_free = 0usize;
         let mut count = 0usize;
         let heap_start = HEAP_START as usize;
-        let heap_end = heap_start + HEAP_INITIAL_SIZE;
+        let heap_end = heap_start + HEAP_COMMITTED;
 
         while !current.is_null() {
             let addr = current as usize;
@@ -202,8 +345,8 @@ pub fn validate_heap() {
             }
         }
 
-        crate::serial_println!("  Heap check: {} free block(s), {} KiB free / {} KiB total",
-            count, total_free / 1024, HEAP_INITIAL_SIZE / 1024);
+        crate::serial_println!("  Heap check: {} free block(s), {} KiB free / {} KiB committed",
+            count, total_free / 1024, HEAP_COMMITTED / 1024);
     }
 }
 
@@ -223,13 +366,15 @@ pub fn init() {
         (*block).size = HEAP_INITIAL_SIZE;
         (*block).next = core::ptr::null_mut();
         HEAP_FREE_LIST = block;
+        HEAP_COMMITTED = HEAP_INITIAL_SIZE;
         HEAP_INITIALIZED = true;
     }
 
     crate::serial_println!(
-        "Kernel heap initialized: {:#010x} - {:#010x} ({} KiB)",
+        "Kernel heap initialized: {:#010x} - {:#010x} ({} KiB, max {} MiB)",
         HEAP_START,
         HEAP_START + HEAP_INITIAL_SIZE as u32,
-        HEAP_INITIAL_SIZE / 1024
+        HEAP_INITIAL_SIZE / 1024,
+        HEAP_MAX_SIZE / (1024 * 1024)
     );
 }

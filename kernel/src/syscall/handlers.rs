@@ -26,6 +26,12 @@ unsafe fn read_user_str(ptr: u32) -> &'static str {
 pub fn sys_exit(status: u32) -> u32 {
     crate::serial_println!("sys_exit({})", status);
 
+    // Destroy windows owned by this thread
+    let tid = crate::task::scheduler::current_tid();
+    crate::ui::desktop::with_desktop(|desktop| {
+        desktop.close_windows_by_owner(tid);
+    });
+
     if let Some(pd_phys) = crate::task::scheduler::current_thread_page_directory() {
         unsafe {
             let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
@@ -36,6 +42,19 @@ pub fn sys_exit(status: u32) -> u32 {
 
     crate::task::scheduler::exit_current(status);
     0 // unreachable
+}
+
+/// sys_kill - Kill a thread by TID
+pub fn sys_kill(tid: u32) -> u32 {
+    if tid == 0 { return u32::MAX; }
+    crate::serial_println!("sys_kill({})", tid);
+
+    // Destroy windows owned by this thread BEFORE killing it
+    crate::ui::desktop::with_desktop(|desktop| {
+        desktop.close_windows_by_owner(tid);
+    });
+
+    crate::task::scheduler::kill_thread(tid)
 }
 
 /// sys_write - Write to a file descriptor
@@ -333,26 +352,32 @@ pub fn sys_dmesg(buf_ptr: u32, buf_size: u32) -> u32 {
 }
 
 /// sys_sysinfo - Get system information.
-/// arg1=cmd: 0=memory, 1=threads, 2=cpus
+/// arg1=cmd: 0=memory, 1=threads, 2=cpus, 3=cpu_load
 /// arg2=buf_ptr, arg3=buf_size
 pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
     match cmd {
         0 => {
-            // Memory: [total_frames:u32, free_frames:u32] = 8 bytes
+            // Memory: [total_frames:u32, free_frames:u32, heap_used:u32, heap_total:u32] = 16 bytes
             if buf_ptr != 0 && buf_size >= 8 {
                 unsafe {
                     let buf = buf_ptr as *mut u32;
                     *buf = crate::memory::physical::total_frames() as u32;
                     *buf.add(1) = crate::memory::physical::free_frames() as u32;
+                    if buf_size >= 16 {
+                        let (heap_used, heap_total) = crate::memory::heap::heap_stats();
+                        *buf.add(2) = heap_used as u32;
+                        *buf.add(3) = heap_total as u32;
+                    }
                 }
             }
             0
         }
         1 => {
-            // Thread list: [tid:u32, prio:u8, state:u8, pad:u16, name:24bytes] = 32 bytes each
+            // Thread list: 36 bytes each
+            // [tid:u32, prio:u8, state:u8, pad:u16, name:24bytes, cpu_ticks:u32]
             let threads = crate::task::scheduler::list_threads();
             if buf_ptr != 0 && buf_size > 0 {
-                let entry_size = 32usize;
+                let entry_size = 36usize;
                 let max = (buf_size as usize) / entry_size;
                 let buf = unsafe {
                     core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize)
@@ -370,11 +395,31 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
                     let n = name_bytes.len().min(23);
                     buf[off + 8..off + 8 + n].copy_from_slice(&name_bytes[..n]);
                     buf[off + 8 + n] = 0;
+                    // cpu_ticks at offset 32
+                    buf[off + 32..off + 36].copy_from_slice(&t.cpu_ticks.to_le_bytes());
                 }
             }
             threads.len() as u32
         }
         2 => crate::arch::x86::smp::cpu_count() as u32,
+        3 => {
+            // CPU load: [cpu_pct:u32, uptime_ticks:u32] = 8 bytes
+            if buf_ptr != 0 && buf_size >= 8 {
+                let total = crate::task::scheduler::total_sched_ticks();
+                let idle = crate::task::scheduler::idle_sched_ticks();
+                let pct = if total > 0 {
+                    100u32.saturating_sub(idle.saturating_mul(100) / total)
+                } else {
+                    0
+                };
+                unsafe {
+                    let buf = buf_ptr as *mut u32;
+                    *buf = pct;
+                    *buf.add(1) = crate::arch::x86::pit::get_ticks();
+                }
+            }
+            0
+        }
         _ => u32::MAX,
     }
 }
@@ -507,8 +552,9 @@ pub fn sys_win_create(title_ptr: u32, pos_packed: u32, size_packed: u32, flags: 
     let w = if w == 0 { 400 } else { w };
     let h = if h == 0 { 300 } else { h };
 
+    let owner_tid = crate::task::scheduler::current_tid();
     match crate::ui::desktop::with_desktop(|desktop| {
-        desktop.create_window(title, x, y, w, h, flags)
+        desktop.create_window_with_owner(title, x, y, w, h, flags, owner_tid)
     }) {
         Some(id) => id,
         None => u32::MAX,
@@ -828,6 +874,22 @@ pub fn sys_pipe_open(name_ptr: u32) -> u32 {
     if name_ptr == 0 { return 0; }
     let name = unsafe { read_user_str(name_ptr) };
     crate::ipc::pipe::open(name)
+}
+
+// =========================================================================
+// DLL (SYS_DLL_LOAD)
+// =========================================================================
+
+/// sys_dll_load - Load/map a DLL into the current process.
+/// arg1=path_ptr (null-terminated), arg2=path_len (unused, null-terminated).
+/// Returns base virtual address of the DLL, or 0 on failure.
+pub fn sys_dll_load(path_ptr: u32, _path_len: u32) -> u32 {
+    if path_ptr == 0 { return 0; }
+    let path = unsafe { read_user_str(path_ptr) };
+    match crate::task::dll::get_dll_base(path) {
+        Some(base) => base,
+        None => 0,
+    }
 }
 
 pub fn sys_devclose(_handle: u32) -> u32 { 0 }

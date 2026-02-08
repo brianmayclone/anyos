@@ -188,6 +188,50 @@ def draw_monitor_symbol(pixels):
                 set_pixel(pixels, x, y, cr, cg, cb, 255)
 
 
+def draw_finder_symbol(pixels):
+    """Draw a macOS Finder-style folder icon."""
+    fg = (255, 255, 255)
+
+    # Folder body
+    body_x, body_y = 10, 18
+    body_w, body_h = 28, 22
+
+    # Folder tab on top-left
+    tab_x, tab_y = 10, 14
+    tab_w, tab_h = 14, 5
+
+    # Draw tab
+    for y in range(tab_y, tab_y + tab_h):
+        for x in range(tab_x, tab_x + tab_w):
+            r = min(2, min(x - tab_x, tab_x + tab_w - 1 - x))
+            if y < tab_y + 2 and r < 2:
+                dist = math.sqrt((2 - r) ** 2 + (tab_y + 2 - y) ** 2)
+                if dist > 2.5:
+                    continue
+            set_pixel(pixels, x, y, *fg, 230)
+
+    # Draw folder body with rounded bottom corners
+    for y in range(body_y, body_y + body_h):
+        for x in range(body_x, body_x + body_w):
+            # Rounded bottom corners
+            if y >= body_y + body_h - 3:
+                r = min(x - body_x, body_x + body_w - 1 - x)
+                dy = y - (body_y + body_h - 3)
+                if r < 3 and dy > 0:
+                    dist = math.sqrt((3 - r - 0.5) ** 2 + (dy - 0.5) ** 2)
+                    if dist > 3:
+                        continue
+            set_pixel(pixels, x, y, *fg, 230)
+
+    # Draw a small magnifying glass in the center (Finder = search)
+    glass_cx, glass_cy = 22, 28
+    glass_r = 5
+    draw_filled_circle(pixels, glass_cx, glass_cy, glass_r, 50, 130, 220, 200)
+    draw_filled_circle(pixels, glass_cx, glass_cy, glass_r - 1.5, 80, 160, 240, 200)
+    # Handle
+    draw_line_aa(pixels, glass_cx + 3.5, glass_cy + 3.5, glass_cx + 7, glass_cy + 7, 50, 130, 220, thickness=2.0)
+
+
 def draw_settings_symbol(pixels):
     """Draw a macOS-style gear icon."""
     cx, cy = SIZE / 2, SIZE / 2
@@ -254,6 +298,8 @@ def main():
         'taskmanager': ((45, 55, 80), (20, 28, 50), draw_monitor_symbol),
         # Settings: medium-dark grey (like macOS System Preferences)
         'settings': ((130, 130, 135), (85, 85, 90), draw_settings_symbol),
+        # Finder: blue (like macOS Finder)
+        'finder': ((40, 120, 220), (20, 70, 160), draw_finder_symbol),
     }
 
     for name, (top, bot, sym_func) in icons.items():

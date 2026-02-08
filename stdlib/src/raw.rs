@@ -21,6 +21,7 @@ pub(crate) const SYS_YIELD: u32 = 7;
 pub(crate) const SYS_SLEEP: u32 = 8;
 pub(crate) const SYS_SBRK: u32 = 9;
 pub(crate) const SYS_WAITPID: u32 = 12;
+pub(crate) const SYS_KILL: u32 = 13;
 pub(crate) const SYS_SPAWN: u32 = 27;
 pub(crate) const SYS_GETARGS: u32 = 28;
 
@@ -62,6 +63,9 @@ pub(crate) const SYS_WIN_BLIT: u32 = 59;
 pub(crate) const SYS_WIN_LIST: u32 = 70;
 pub(crate) const SYS_WIN_FOCUS: u32 = 71;
 pub(crate) const SYS_SCREEN_SIZE: u32 = 72;
+
+// DLL
+pub(crate) const SYS_DLL_LOAD: u32 = 80;
 
 // Event bus
 pub(crate) const SYS_EVT_SYS_SUBSCRIBE: u32 = 60;

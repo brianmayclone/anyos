@@ -77,6 +77,14 @@ pub fn read(pipe_id: u32, buf: &mut [u8]) -> u32 {
     }
 }
 
+/// Clear a pipe's buffer (for overwrite-style pipes like cpu_load).
+pub fn clear(pipe_id: u32) {
+    let mut pipes = PIPES.lock();
+    if let Some(pipe) = pipes.iter_mut().find(|p| p.id == pipe_id) {
+        pipe.buffer.clear();
+    }
+}
+
 /// Close and destroy a pipe, freeing its buffer.
 pub fn close(pipe_id: u32) {
     let mut pipes = PIPES.lock();

@@ -1,0 +1,48 @@
+// =============================================================================
+// CPU Monitor — kernel thread that tracks CPU load and writes to a named pipe
+// =============================================================================
+
+use crate::ipc::pipe;
+use crate::task::scheduler;
+
+static mut CPU_PIPE_ID: u32 = 0;
+
+/// Entry point for the cpu_monitor kernel thread.
+pub extern "C" fn start() {
+    crate::serial_println!("  cpu_monitor started");
+
+    // Create the named pipe for CPU load data
+    let pipe_id = pipe::create("sys:cpu_load");
+    unsafe { CPU_PIPE_ID = pipe_id; }
+
+    let mut prev_total = scheduler::total_sched_ticks();
+    let mut prev_idle = scheduler::idle_sched_ticks();
+
+    loop {
+        // Sleep ~100ms (10 ticks at 100 Hz)
+        let start = crate::arch::x86::pit::get_ticks();
+        while crate::arch::x86::pit::get_ticks().wrapping_sub(start) < 10 {
+            scheduler::schedule();
+        }
+
+        let total = scheduler::total_sched_ticks();
+        let idle = scheduler::idle_sched_ticks();
+
+        let delta_total = total.wrapping_sub(prev_total);
+        let delta_idle = idle.wrapping_sub(prev_idle);
+
+        let cpu_pct = if delta_total > 0 {
+            100u32.saturating_sub(delta_idle.saturating_mul(100) / delta_total)
+        } else {
+            0
+        };
+
+        prev_total = total;
+        prev_idle = idle;
+
+        // Write cpu_pct as 4 bytes LE to the pipe (overwrite: clear then write)
+        pipe::clear(pipe_id);
+        let bytes = cpu_pct.to_le_bytes();
+        pipe::write(pipe_id, &bytes);
+    }
+}

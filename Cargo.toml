@@ -12,9 +12,14 @@ exclude = [
   "programs/arp",
   "programs/sysinfo",
   "programs/dmesg",
+  "programs/system/init",
   "programs/system/terminal",
   "programs/system/taskmanager",
+  "programs/system/settings",
+  "programs/system/finder",
   "programs/system/compositor/dock",
+  "programs/dll/uisys",
+  "programs/dll/uisys_client",
 ]
 resolver = "2"
 

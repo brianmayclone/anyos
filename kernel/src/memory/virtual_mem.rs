@@ -268,24 +268,26 @@ pub fn destroy_user_page_directory(pd_phys: PhysAddr) {
 
         let pd = 0xFFFFF000 as *const u32;
 
-        // Walk user-space PDEs (8-767) and free mapped pages + page tables
+        // Walk user-space PDEs (8-767) and free mapped pages + page tables.
+        // DLL shared pages (PDEs 16-31, vaddr 0x04000000-0x07FFFFFF) are
+        // managed by task::dll — free their page tables but NOT the frames.
         for pde_idx in 8..768 {
             let pde = pd.add(pde_idx).read_volatile();
             if pde & PAGE_PRESENT == 0 {
                 continue;
             }
 
-            // Walk all PTEs in this page table
+            let is_dll = pde_idx >= 16 && pde_idx <= 31;
+
             let pt = (0xFFC00000 + pde_idx * FRAME_SIZE) as *const u32;
             for pte_idx in 0..ENTRIES_PER_TABLE {
                 let pte = pt.add(pte_idx).read_volatile();
-                if pte & PAGE_PRESENT != 0 {
-                    // Free the physical frame mapped by this PTE
+                if pte & PAGE_PRESENT != 0 && !is_dll {
                     physical::free_frame(PhysAddr::new(pte & !0xFFF));
                 }
             }
 
-            // Free the page table frame itself
+            // Free the page table frame itself (always per-process)
             physical::free_frame(PhysAddr::new(pde & !0xFFF));
         }
 

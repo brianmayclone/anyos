@@ -4,6 +4,7 @@ use crate::task::context::CpuContext;
 use crate::task::thread::{Thread, ThreadState};
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 static SCHEDULER: Spinlock<Option<Scheduler>> = Spinlock::new(None);
 
@@ -11,6 +12,11 @@ static SCHEDULER: Spinlock<Option<Scheduler>> = Spinlock::new(None);
 /// Updated by schedule() before context switch. Read by exception handler
 /// without acquiring any locks (safe for use in fault handlers).
 static mut DEBUG_CURRENT_TID: u32 = 0;
+
+/// Total scheduler ticks (incremented every schedule() call).
+static TOTAL_SCHED_TICKS: AtomicU32 = AtomicU32::new(0);
+/// Idle scheduler ticks (incremented when no thread is running).
+static IDLE_SCHED_TICKS: AtomicU32 = AtomicU32::new(0);
 
 pub struct Scheduler {
     threads: Vec<Thread>,
@@ -106,6 +112,16 @@ pub fn init() {
     crate::serial_println!("[OK] Scheduler initialized");
 }
 
+/// Get total scheduler ticks (for CPU load calculation).
+pub fn total_sched_ticks() -> u32 {
+    TOTAL_SCHED_TICKS.load(Ordering::Relaxed)
+}
+
+/// Get idle scheduler ticks (for CPU load calculation).
+pub fn idle_sched_ticks() -> u32 {
+    IDLE_SCHED_TICKS.load(Ordering::Relaxed)
+}
+
 pub fn spawn(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
     let tid = {
         let thread = Thread::new(entry, priority, name);
@@ -128,6 +144,9 @@ pub fn schedule() {
     // Extract context switch parameters under the lock, then release before switching
     let switch_info: Option<(*mut CpuContext, *const CpuContext)>;
 
+    // Increment total ticks counter
+    TOTAL_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+
     let mut guard = match SCHEDULER.try_lock() {
         Some(s) => s,
         None => return, // Scheduler is busy, skip this tick
@@ -141,6 +160,16 @@ pub fn schedule() {
 
         // Reap terminated threads to free kernel stacks and page directories
         sched.reap_terminated();
+
+        // Track CPU ticks for the currently running thread
+        if let Some(current_idx) = sched.current {
+            if sched.threads[current_idx].state == ThreadState::Running {
+                sched.threads[current_idx].cpu_ticks += 1;
+            }
+        } else {
+            // No thread running = idle
+            IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+        }
 
         // Put current thread back to ready
         if let Some(current_idx) = sched.current {
@@ -179,7 +208,10 @@ pub fn schedule() {
                 Some((idle_ctx, new_ctx))
             }
         } else {
-            // No ready threads. If the current thread is no longer runnable
+            // No ready threads — count as idle
+            IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+
+            // If the current thread is no longer runnable
             // (e.g. Terminated or Blocked), switch back to the idle context
             // so that kernel_main can resume (e.g. waitpid polling).
             if let Some(current_idx) = sched.current {
@@ -362,6 +394,87 @@ pub fn exit_current(code: u32) {
     }
 }
 
+/// Kill a thread by TID. Returns 0 on success, u32::MAX on error.
+/// Cannot kill the compositor thread (TID 3) or idle (TID 0).
+pub fn kill_thread(tid: u32) -> u32 {
+    if tid == 0 {
+        return u32::MAX; // Can't kill idle
+    }
+
+    let mut pd_to_destroy: Option<PhysAddr> = None;
+    let mut is_current = false;
+
+    {
+        let mut guard = SCHEDULER.lock();
+        let sched = guard.as_mut().expect("Scheduler not initialized");
+
+        // Find the target thread
+        let target_idx = match sched.threads.iter().position(|t| t.tid == tid) {
+            Some(idx) => idx,
+            None => return u32::MAX, // Not found
+        };
+
+        // Protect system threads: compositor (TID 3) and cpu_monitor
+        if tid == 3 {
+            return u32::MAX;
+        }
+
+        // Check if killing current thread
+        is_current = sched.current == Some(target_idx);
+
+        // Mark as terminated
+        sched.threads[target_idx].state = ThreadState::Terminated;
+        sched.threads[target_idx].exit_code = Some(u32::MAX - 1); // killed
+
+        // Remove from ready queue
+        sched.ready_queue.retain(|&idx| idx != target_idx);
+
+        // If this is a user process, remember PD for cleanup
+        if let Some(pd) = sched.threads[target_idx].page_directory {
+            pd_to_destroy = Some(pd);
+            sched.threads[target_idx].page_directory = None;
+        }
+
+        // Wake any thread that is waiting on us
+        if let Some(waiter_tid) = sched.threads[target_idx].waiting_tid {
+            if let Some(waiter_idx) = sched.threads.iter().position(|t| t.tid == waiter_tid) {
+                if sched.threads[waiter_idx].state == ThreadState::Blocked {
+                    sched.threads[waiter_idx].state = ThreadState::Ready;
+                    if !sched.ready_queue.contains(&waiter_idx) {
+                        sched.ready_queue.push_back(waiter_idx);
+                    }
+                }
+            }
+        }
+
+        if is_current {
+            sched.current = None;
+        }
+    }
+
+    // Destroy user page directory outside the scheduler lock
+    if let Some(pd) = pd_to_destroy {
+        // Switch to kernel CR3 first if killing current
+        if is_current {
+            let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
+            unsafe { core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3); }
+        }
+        crate::memory::virtual_mem::destroy_user_page_directory(pd);
+    }
+
+    crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
+        crate::ipc::event_bus::EVT_PROCESS_EXITED, tid, u32::MAX - 1, 0, 0,
+    ));
+
+    // If we killed the current thread, switch away
+    if is_current {
+        schedule();
+        loop { unsafe { core::arch::asm!("hlt"); } }
+    }
+
+    0
+}
+
 /// Wait for a thread to terminate and return its exit code.
 /// If called from a scheduled thread, properly blocks and yields CPU.
 /// If called from the idle context (kernel_main), busy-waits.
@@ -473,6 +586,7 @@ pub struct ThreadInfo {
     pub priority: u8,
     pub state: &'static str,
     pub name: alloc::string::String,
+    pub cpu_ticks: u32,
 }
 
 /// List all live threads (for `ps` command). Terminated threads are excluded.
@@ -495,6 +609,7 @@ pub fn list_threads() -> Vec<ThreadInfo> {
                 priority: thread.priority,
                 state: state_str,
                 name: alloc::string::String::from(thread.name_str()),
+                cpu_ticks: thread.cpu_ticks,
             });
         }
     }

@@ -380,10 +380,16 @@ impl Desktop {
 
     /// Create a new window. flags: bit 0 = non-resizable, bit 1 = borderless, bit 2 = always-on-top.
     pub fn create_window(&mut self, title: &str, x: i32, y: i32, width: u32, height: u32, flags: u32) -> u32 {
+        self.create_window_with_owner(title, x, y, width, height, flags, 0)
+    }
+
+    /// Create a new window owned by a specific thread.
+    pub fn create_window_with_owner(&mut self, title: &str, x: i32, y: i32, width: u32, height: u32, flags: u32, owner_tid: u32) -> u32 {
         let id = self.next_window_id;
         self.next_window_id += 1;
 
         let mut window = Window::new(id, title, x, y, width, height);
+        window.owner_tid = owner_tid;
         if flags & 1 != 0 {
             window.resizable = false;
         }
@@ -455,6 +461,18 @@ impl Desktop {
                     self.draw_menubar();
                 }
             }
+        }
+    }
+
+    /// Close all windows owned by a specific thread (zombie cleanup on kill).
+    pub fn close_windows_by_owner(&mut self, tid: u32) {
+        // Collect window IDs to close (can't mutably iterate and close simultaneously)
+        let ids: Vec<u32> = self.windows.iter()
+            .filter(|w| w.owner_tid == tid)
+            .map(|w| w.id)
+            .collect();
+        for id in ids {
+            self.close_window(id);
         }
     }
 
@@ -715,14 +733,15 @@ impl Desktop {
                     }
                 }
                 HitTest::Client => {
-                    // For borderless windows, send mouse events to the app
+                    // Send mouse events to the app (content-area local coords)
                     if let Some(window) = self.windows.iter().find(|w| w.id == wid) {
-                        if window.borderless {
-                            // Local coordinates relative to window
-                            let lx = (x - window.x) as u32;
-                            let ly = (y - window.y) as u32;
-                            self.push_user_event(wid, [EVENT_MOUSE_DOWN, lx, ly, 1, 0]);
-                        }
+                        let lx = (x - window.x) as u32;
+                        let ly = if window.borderless {
+                            (y - window.y) as u32
+                        } else {
+                            (y - window.y - Theme::TITLEBAR_HEIGHT as i32) as u32
+                        };
+                        self.push_user_event(wid, [EVENT_MOUSE_DOWN, lx, ly, 1, 0]);
                     }
                 }
                 HitTest::None => {}
@@ -741,11 +760,17 @@ impl Desktop {
             }
         }
 
-        // Forward mouse up to borderless windows
+        // Forward mouse up to the topmost window containing the cursor
         for window in self.windows.iter().rev() {
-            if window.borderless && window.bounds().contains(x, y) {
+            if window.bounds().contains(x, y) {
                 let lx = (x - window.x) as u32;
-                let ly = (y - window.y) as u32;
+                let ly = if window.borderless {
+                    (y - window.y) as u32
+                } else {
+                    let raw = y - window.y - Theme::TITLEBAR_HEIGHT as i32;
+                    if raw < 0 { break; } // click was in title bar, not content
+                    raw as u32
+                };
                 let wid = window.id;
                 self.push_user_event(wid, [EVENT_MOUSE_UP, lx, ly, 0, 0]);
                 break;

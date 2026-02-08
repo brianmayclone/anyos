@@ -29,6 +29,11 @@ pub fn waitpid(tid: u32) -> u32 {
     syscall1(SYS_WAITPID, tid)
 }
 
+/// Kill a thread by TID. Returns 0 on success, u32::MAX on failure.
+pub fn kill(tid: u32) -> u32 {
+    syscall1(SYS_KILL, tid)
+}
+
 /// Spawn a new process. Returns TID or u32::MAX on error.
 pub fn spawn(path: &str, args: &str) -> u32 {
     spawn_piped(path, args, 0)

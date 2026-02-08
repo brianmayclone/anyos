@@ -36,6 +36,8 @@ pub struct Window {
     pub borderless: bool,
     /// Always on top (e.g. dock, overlays)
     pub always_on_top: bool,
+    /// Owner thread ID (for cleanup when process is killed)
+    pub owner_tid: u32,
     /// The content surface (client area only)
     pub content: Surface,
     /// The full surface (decorations + content)
@@ -62,6 +64,7 @@ impl Window {
             resizable: true,
             borderless: false,
             always_on_top: false,
+            owner_tid: 0,
             content: Surface::new_with_color(width, height, Theme::WINDOW_BG),
             surface: Surface::new(width, full_height),
             dirty: true,

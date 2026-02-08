@@ -86,6 +86,9 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         virtual_mem::map_page_in_pd(pd_phys, virt, phys, PAGE_WRITABLE | PAGE_USER);
     }
 
+    // Map all loaded DLLs into the new process page directory
+    crate::task::dll::map_all_dlls_into(pd_phys);
+
     // Temporarily switch to user PD to copy program data and zero stack.
     // This works because the user PD has all kernel mappings cloned,
     // so kernel heap (where `data` lives) is still accessible.

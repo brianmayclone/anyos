@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyos_std = { path = "../../../stdlib" }
+uisys_client = { path = "../../dll/uisys_client" }
 
 [profile.dev]
 panic = "abort"

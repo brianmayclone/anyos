@@ -61,6 +61,9 @@ pub const SYS_PIPE_CLOSE: u32 = 47;
 pub const SYS_PIPE_WRITE: u32 = 48;
 pub const SYS_PIPE_OPEN: u32 = 49;
 
+// DLL
+pub const SYS_DLL_LOAD: u32 = 80;
+
 // Event bus
 pub const SYS_EVT_SYS_SUBSCRIBE: u32 = 60;
 pub const SYS_EVT_SYS_POLL: u32 = 61;
@@ -141,6 +144,7 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         SYS_SLEEP => handlers::sys_sleep(arg1),
         SYS_SBRK => handlers::sys_sbrk(arg1 as i32),
         SYS_WAITPID => handlers::sys_waitpid(arg1),
+        SYS_KILL => handlers::sys_kill(arg1),
         SYS_SPAWN => handlers::sys_spawn(arg1, arg2, arg3, arg4),
         SYS_GETARGS => handlers::sys_getargs(arg1, arg2),
 
@@ -176,6 +180,9 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         SYS_PIPE_CLOSE => handlers::sys_pipe_close(arg1),
         SYS_PIPE_WRITE => handlers::sys_pipe_write(arg1, arg2, arg3),
         SYS_PIPE_OPEN => handlers::sys_pipe_open(arg1),
+
+        // DLL
+        SYS_DLL_LOAD => handlers::sys_dll_load(arg1, arg2),
 
         // Event bus
         SYS_EVT_SYS_SUBSCRIBE => handlers::sys_evt_sys_subscribe(arg1),
