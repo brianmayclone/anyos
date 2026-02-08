@@ -28,6 +28,7 @@ pub const EVENT_RESIZE: u32 = 3;
 pub const EVENT_MOUSE_DOWN: u32 = 4;
 pub const EVENT_MOUSE_UP: u32 = 5;
 pub const EVENT_MOUSE_MOVE: u32 = 6;
+pub const EVENT_MOUSE_SCROLL: u32 = 7;
 
 /// Initialize the global Desktop with framebuffer parameters.
 pub fn init(width: u32, height: u32, fb_addr: u32, fb_pitch: u32) {
@@ -98,7 +99,8 @@ pub extern "C" fn desktop_task_entry() {
         {
             let mut guard = DESKTOP.lock();
             if let Some(desktop) = guard.as_mut() {
-                // Process mouse events
+                // Process mouse events — batch moves into one final position
+                let mut pending_move = false;
                 while let Some(event) = crate::drivers::input::mouse::read_event() {
                     let (cx, cy) = desktop.compositor.cursor_position();
                     let new_x = cx + event.dx;
@@ -109,15 +111,35 @@ pub extern "C" fn desktop_task_entry() {
 
                     match event.event_type {
                         MouseEventType::ButtonDown => {
+                            // Flush any pending move before button events
+                            if pending_move {
+                                desktop.handle_mouse_move(mx, my);
+                                pending_move = false;
+                            }
                             desktop.handle_mouse_down(mx, my);
                         }
                         MouseEventType::ButtonUp => {
+                            if pending_move {
+                                desktop.handle_mouse_move(mx, my);
+                                pending_move = false;
+                            }
                             desktop.handle_mouse_up(mx, my);
                         }
                         MouseEventType::Move => {
-                            desktop.handle_mouse_move(mx, my);
+                            // Defer move — only process the final position
+                            pending_move = true;
+                        }
+                        MouseEventType::Scroll => {
+                            // Dispatch scroll event to focused window
+                            if let Some(wid) = desktop.focused_window {
+                                desktop.push_user_event(wid, [EVENT_MOUSE_SCROLL, event.dz as u32, 0, 0, 0]);
+                            }
                         }
                     }
+                }
+                if pending_move {
+                    let (mx, my) = desktop.compositor.cursor_position();
+                    desktop.handle_mouse_move(mx, my);
                 }
 
                 // Process keyboard events — forward to focused window's event queue
@@ -613,6 +635,12 @@ impl Desktop {
                 MouseEventType::Move => {
                     self.handle_mouse_move(mx, my);
                 }
+                MouseEventType::Scroll => {
+                    // Dispatch scroll to focused window
+                    if let Some(wid) = self.focused_window {
+                        self.push_user_event(wid, [EVENT_MOUSE_SCROLL, event.dz as u32, 0, 0, 0]);
+                    }
+                }
             }
         }
 
@@ -706,6 +734,9 @@ impl Desktop {
                         self.compositor.move_layer(layer_id, wx, wy);
                     }
                     self.render_window(wid);
+                    if let Some(window) = self.windows.iter().find(|w| w.id == wid) {
+                        self.push_user_event(wid, [EVENT_RESIZE, window.width, window.height, 0, 0]);
+                    }
                 }
                 HitTest::TitleBar => {
                     // Start drag
@@ -836,6 +867,9 @@ impl Desktop {
             }
         }
 
+        // Reset cursor to arrow after resize ends
+        self.compositor.set_cursor_shape(crate::graphics::compositor::CursorShape::Arrow);
+
         self.interaction = None;
     }
 
@@ -910,7 +944,32 @@ impl Desktop {
                 let outline_h = if is_borderless { new_h } else { new_h + Theme::TITLEBAR_HEIGHT };
                 self.draw_resize_outline(new_x, new_y, new_w, outline_h);
             }
-            None => {}
+            None => {
+                // Update cursor shape based on hover position over topmost window
+                use crate::graphics::compositor::CursorShape;
+                let mut shape = CursorShape::Arrow;
+                for window in self.windows.iter().rev() {
+                    let hit = window.hit_test(x, y);
+                    match hit {
+                        HitTest::ResizeLeft | HitTest::ResizeRight => {
+                            shape = CursorShape::ResizeHorizontal;
+                        }
+                        HitTest::ResizeBottom => {
+                            shape = CursorShape::ResizeVertical;
+                        }
+                        HitTest::ResizeBottomRight => {
+                            shape = CursorShape::ResizeNWSE;
+                        }
+                        HitTest::ResizeBottomLeft => {
+                            shape = CursorShape::ResizeNESW;
+                        }
+                        HitTest::None => continue, // check windows below
+                        _ => break, // on window but not a resize zone
+                    }
+                    break;
+                }
+                self.compositor.set_cursor_shape(shape);
+            }
         }
     }
 

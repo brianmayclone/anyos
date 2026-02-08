@@ -1,3 +1,13 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * Email: c.moeller.ffo@gmail.com, brianmayclone@googlemail.com
+ *
+ * This project is open source and community-driven.
+ * Contributions are welcome! See README.md for details.
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
 /* __libc_start_main — Parse args from kernel and call main(argc, argv). */
 
 extern int _syscall(int num, int a1, int a2, int a3, int a4);

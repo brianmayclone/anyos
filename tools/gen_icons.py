@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+# Copyright (c) 2024-2026 Christian Moeller
+# Email: c.moeller.ffo@gmail.com, brianmayclone@googlemail.com
+#
+# This project is open source and community-driven.
+# Contributions are welcome! See README.md for details.
+#
+# SPDX-License-Identifier: MIT
+
 """Generate macOS/iOS-style dock icons as raw RGBA files for anyOS.
 
 Format: [width:u32 LE][height:u32 LE][RGBA pixel data (width*height*4 bytes)]

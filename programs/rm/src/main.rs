@@ -4,9 +4,8 @@
 anyos_std::entry!(main);
 
 fn main() {
-    let args_buf = &mut [0u8; 256];
-    let args_len = anyos_std::process::getargs(args_buf);
-    let args = core::str::from_utf8(&args_buf[..args_len]).unwrap_or("");
+    let mut args_buf = [0u8; 256];
+    let args = anyos_std::process::args(&mut args_buf);
     let path = args.trim();
 
     if path.is_empty() {

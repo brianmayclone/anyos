@@ -15,6 +15,7 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_FORK, "fork"),
     (SYS_EXEC, "exec"),
     (SYS_WAITPID, "waitpid"),
+    (SYS_TRY_WAITPID, "try_waitpid"),
     (SYS_KILL, "kill"),
     (SYS_MMAP, "mmap"),
     (SYS_MUNMAP, "munmap"),

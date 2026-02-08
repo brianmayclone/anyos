@@ -39,6 +39,7 @@ const KEY_END: u32 = 0x122;
 // Event types
 const EVENT_KEY_DOWN: u32 = 1;
 const EVENT_RESIZE: u32 = 3;
+const EVENT_MOUSE_SCROLL: u32 = 7;
 
 // Modifier flags
 const MOD_CTRL: u32 = 2;
@@ -140,6 +141,22 @@ impl TerminalBuffer {
         self.cursor_col = 0;
         self.scroll_offset = 0;
     }
+
+    fn scroll_up(&mut self, lines: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
+    }
+
+    fn scroll_down(&mut self, lines: usize) {
+        let max_offset = self.lines.len().saturating_sub(self.visible_rows);
+        self.scroll_offset = (self.scroll_offset + lines).min(max_offset);
+    }
+}
+
+// ─── Foreground process tracker ──────────────────────────────────────────────
+
+struct ForegroundProcess {
+    tid: u32,
+    pipe_id: u32,
 }
 
 // ─── Shell ───────────────────────────────────────────────────────────────────
@@ -215,8 +232,8 @@ impl Shell {
         }
     }
 
-    /// Execute command. Returns false if shell should exit.
-    fn submit(&mut self, buf: &mut TerminalBuffer) -> bool {
+    /// Execute command. Returns (should_continue, optional foreground process).
+    fn submit(&mut self, buf: &mut TerminalBuffer) -> (bool, Option<ForegroundProcess>) {
         let line = self.input.trim_matches(|c: char| c == ' ').to_string();
         buf.write_char('\n');
 
@@ -234,7 +251,7 @@ impl Shell {
         self.history_index = None;
 
         if line.is_empty() {
-            return true;
+            return (true, None);
         }
 
         let mut parts = line.splitn(2, ' ');
@@ -259,7 +276,7 @@ impl Shell {
                 buf.write_str(&self.cwd);
                 buf.write_char('\n');
             }
-            "exit" => return false,
+            "exit" => return (false, None),
             "reboot" => {
                 buf.current_color = COLOR_FG;
                 buf.write_str("Rebooting...\n");
@@ -304,9 +321,18 @@ impl Shell {
 
                 let path = format!("/bin/{}", bg_cmd);
 
+                // Build full args string with program name as argv[0]
+                let full_args_buf;
+                let full_args = if bg_args.is_empty() {
+                    bg_cmd
+                } else {
+                    full_args_buf = format!("{} {}", bg_cmd, bg_args);
+                    &full_args_buf
+                };
+
                 if background {
                     // Background: spawn without pipe or waiting
-                    let tid = process::spawn(&path, bg_args);
+                    let tid = process::spawn(&path, full_args);
                     if tid == u32::MAX {
                         buf.current_color = COLOR_FG;
                         buf.write_str("Unknown command: ");
@@ -318,11 +344,11 @@ impl Shell {
                         buf.write_str(&msg);
                     }
                 } else {
-                    // Foreground: capture output via pipe and wait
+                    // Foreground: capture output via pipe, poll in main loop
                     let pipe_name = format!("term:stdout:{}", bg_cmd);
                     let pipe_id = ipc::pipe_create(&pipe_name);
 
-                    let tid = process::spawn_piped(&path, bg_args, pipe_id);
+                    let tid = process::spawn_piped(&path, full_args, pipe_id);
                     if tid == u32::MAX {
                         ipc::pipe_close(pipe_id);
                         buf.current_color = COLOR_FG;
@@ -330,33 +356,13 @@ impl Shell {
                         buf.write_str(bg_cmd);
                         buf.write_str("\nType 'help' for available commands.\n");
                     } else {
-                        let exit_code = process::waitpid(tid);
-
-                        let mut read_buf = [0u8; 512];
-                        loop {
-                            let n = ipc::pipe_read(pipe_id, &mut read_buf);
-                            if n == 0 || n == u32::MAX {
-                                break;
-                            }
-                            buf.current_color = COLOR_FG;
-                            if let Ok(s) = core::str::from_utf8(&read_buf[..n as usize]) {
-                                buf.write_str(s);
-                            }
-                        }
-
-                        ipc::pipe_close(pipe_id);
-
-                        if exit_code != 0 {
-                            buf.current_color = COLOR_DIM;
-                            let msg = format!("Process exited with code {}\n", exit_code);
-                            buf.write_str(&msg);
-                        }
+                        return (true, Some(ForegroundProcess { tid, pipe_id }));
                     }
                 }
             }
         }
 
-        true
+        (true, None)
     }
 
     fn cmd_help(&self, buf: &mut TerminalBuffer) {
@@ -527,8 +533,58 @@ fn main() {
 
     let mut dirty = false;
     let mut event = [0u32; 5];
+    let mut fg_proc: Option<ForegroundProcess> = None;
 
     loop {
+        // Poll foreground process pipe for real-time output
+        if let Some(ref fp) = fg_proc {
+            let mut read_buf = [0u8; 512];
+            loop {
+                let n = ipc::pipe_read(fp.pipe_id, &mut read_buf);
+                if n == 0 || n == u32::MAX {
+                    break;
+                }
+                buf.current_color = COLOR_FG;
+                if let Ok(s) = core::str::from_utf8(&read_buf[..n as usize]) {
+                    buf.write_str(s);
+                }
+                dirty = true;
+            }
+
+            // Check if process exited (non-blocking)
+            let status = process::try_waitpid(fp.tid);
+            if status != process::STILL_RUNNING {
+                // Drain remaining pipe data
+                loop {
+                    let n = ipc::pipe_read(fp.pipe_id, &mut read_buf);
+                    if n == 0 || n == u32::MAX {
+                        break;
+                    }
+                    buf.current_color = COLOR_FG;
+                    if let Ok(s) = core::str::from_utf8(&read_buf[..n as usize]) {
+                        buf.write_str(s);
+                    }
+                }
+                let pipe_id = fp.pipe_id;
+                let exit_code = status;
+                fg_proc = None;
+                ipc::pipe_close(pipe_id);
+
+                if exit_code != 0 && exit_code != u32::MAX {
+                    buf.current_color = COLOR_DIM;
+                    let msg = format!("Process exited with code {}\n", exit_code);
+                    buf.write_str(&msg);
+                }
+
+                // Show prompt again
+                buf.current_color = COLOR_PROMPT;
+                let prompt = shell.prompt();
+                buf.write_str(&prompt);
+                buf.current_color = COLOR_FG;
+                dirty = true;
+            }
+        }
+
         // Poll events
         let got = window::get_event(win_id, &mut event);
         if got == 1 {
@@ -540,21 +596,33 @@ fn main() {
                 buf.cols = new_cols;
                 buf.visible_rows = new_rows;
                 dirty = true;
-            } else if event[0] == EVENT_KEY_DOWN {
+            } else if event[0] == EVENT_MOUSE_SCROLL {
+                let dz = event[1] as i32;
+                if dz < 0 {
+                    buf.scroll_up(3);
+                } else if dz > 0 {
+                    buf.scroll_down(3);
+                }
+                dirty = true;
+            } else if event[0] == EVENT_KEY_DOWN && fg_proc.is_none() {
                 let key_code = event[1];
                 let char_val = event[2];
                 let mods = event[3];
 
                 match key_code {
                     KEY_ENTER => {
-                        let should_continue = shell.submit(&mut buf);
+                        let (should_continue, new_fg) = shell.submit(&mut buf);
                         if !should_continue {
                             break;
                         }
-                        buf.current_color = COLOR_PROMPT;
-                        let prompt = shell.prompt();
-                        buf.write_str(&prompt);
-                        buf.current_color = COLOR_FG;
+                        if let Some(fp) = new_fg {
+                            fg_proc = Some(fp);
+                        } else {
+                            buf.current_color = COLOR_PROMPT;
+                            let prompt = shell.prompt();
+                            buf.write_str(&prompt);
+                            buf.current_color = COLOR_FG;
+                        }
                         dirty = true;
                     }
                     KEY_BACKSPACE => {

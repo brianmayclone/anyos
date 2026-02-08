@@ -7,6 +7,7 @@ use alloc::collections::VecDeque;
 pub struct MouseEvent {
     pub dx: i32,
     pub dy: i32,
+    pub dz: i32, // scroll wheel: -1 = scroll up, +1 = scroll down
     pub buttons: MouseButtons,
     pub event_type: MouseEventType,
 }
@@ -16,6 +17,7 @@ pub enum MouseEventType {
     Move,
     ButtonDown,
     ButtonUp,
+    Scroll,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -28,14 +30,16 @@ pub struct MouseButtons {
 static MOUSE_BUFFER: Spinlock<VecDeque<MouseEvent>> = Spinlock::new(VecDeque::new());
 static MOUSE_STATE: Spinlock<MouseState> = Spinlock::new(MouseState {
     cycle: 0,
-    bytes: [0; 3],
+    bytes: [0; 4],
     buttons: MouseButtons { left: false, right: false, middle: false },
+    has_scroll: false,
 });
 
 struct MouseState {
     cycle: u8,
-    bytes: [u8; 3],
+    bytes: [u8; 4],
     buttons: MouseButtons,
+    has_scroll: bool,
 }
 
 fn mouse_wait_input() {
@@ -66,7 +70,7 @@ fn mouse_read() -> u8 {
     unsafe { inb(0x60) }
 }
 
-/// Initialize PS/2 mouse
+/// Initialize PS/2 mouse with IntelliMouse scroll wheel support
 pub fn init() {
     // Enable auxiliary mouse device
     mouse_wait_input();
@@ -86,16 +90,39 @@ pub fn init() {
     mouse_write(0xF6);
     mouse_read(); // ACK
 
+    // Enable IntelliMouse scroll wheel: magic sequence
+    // Set sample rate to 200, then 100, then 80, then read device ID
+    mouse_write(0xF3); mouse_read(); // Set sample rate
+    mouse_write(200);  mouse_read();
+    mouse_write(0xF3); mouse_read();
+    mouse_write(100);  mouse_read();
+    mouse_write(0xF3); mouse_read();
+    mouse_write(80);   mouse_read();
+
+    // Read device ID — 0x03 means IntelliMouse (4-byte packets with scroll)
+    mouse_write(0xF2); mouse_read(); // ACK
+    let device_id = mouse_read();
+    let has_scroll = device_id == 0x03;
+
+    if has_scroll {
+        MOUSE_STATE.lock().has_scroll = true;
+    }
+
     // Enable data reporting
     mouse_write(0xF4);
     mouse_read(); // ACK
 
-    crate::serial_println!("[OK] PS/2 mouse initialized");
+    if has_scroll {
+        crate::serial_println!("[OK] PS/2 mouse initialized (IntelliMouse, scroll wheel)");
+    } else {
+        crate::serial_println!("[OK] PS/2 mouse initialized");
+    }
 }
 
 /// Called from IRQ12 handler
 pub fn handle_byte(byte: u8) {
     let mut state = MOUSE_STATE.lock();
+    let packet_size: u8 = if state.has_scroll { 4 } else { 3 };
 
     match state.cycle {
         0 => {
@@ -112,68 +139,87 @@ pub fn handle_byte(byte: u8) {
         }
         2 => {
             state.bytes[2] = byte;
-            state.cycle = 0;
-
-            let b = state.bytes;
-
-            // Decode movement
-            let mut dx = b[1] as i32;
-            let mut dy = b[2] as i32;
-
-            // Apply sign extension
-            if b[0] & 0x10 != 0 {
-                dx -= 256;
-            }
-            if b[0] & 0x20 != 0 {
-                dy -= 256;
-            }
-            // PS/2 mouse Y is inverted
-            dy = -dy;
-
-            // Decode buttons
-            let new_buttons = MouseButtons {
-                left: b[0] & 0x01 != 0,
-                right: b[0] & 0x02 != 0,
-                middle: b[0] & 0x04 != 0,
-            };
-
-            // Determine event type
-            let event_type = if new_buttons.left != state.buttons.left
-                || new_buttons.right != state.buttons.right
-                || new_buttons.middle != state.buttons.middle
-            {
-                if new_buttons.left && !state.buttons.left
-                    || new_buttons.right && !state.buttons.right
-                    || new_buttons.middle && !state.buttons.middle
-                {
-                    MouseEventType::ButtonDown
-                } else {
-                    MouseEventType::ButtonUp
-                }
+            if packet_size == 3 {
+                state.cycle = 0;
+                process_packet(&mut state, 0);
             } else {
-                MouseEventType::Move
-            };
-
-            state.buttons = new_buttons;
-
-            let event = MouseEvent {
-                dx,
-                dy,
-                buttons: new_buttons,
-                event_type,
-            };
-
-            drop(state);
-
-            let mut buf = MOUSE_BUFFER.lock();
-            if buf.len() < 64 {
-                buf.push_back(event);
+                state.cycle = 3;
             }
-            return;
+        }
+        3 => {
+            state.bytes[3] = byte;
+            state.cycle = 0;
+            // Byte 3 is scroll wheel delta (signed)
+            let dz = byte as i8 as i32;
+            process_packet(&mut state, dz);
         }
         _ => {
             state.cycle = 0;
         }
+    }
+}
+
+fn process_packet(state: &mut MouseState, dz: i32) {
+    let b = state.bytes;
+
+    // Decode movement
+    let mut dx = b[1] as i32;
+    let mut dy = b[2] as i32;
+
+    // Apply sign extension
+    if b[0] & 0x10 != 0 {
+        dx -= 256;
+    }
+    if b[0] & 0x20 != 0 {
+        dy -= 256;
+    }
+    // PS/2 mouse Y is inverted
+    dy = -dy;
+
+    // Decode buttons
+    let new_buttons = MouseButtons {
+        left: b[0] & 0x01 != 0,
+        right: b[0] & 0x02 != 0,
+        middle: b[0] & 0x04 != 0,
+    };
+
+    // Determine event type
+    let event_type = if dz != 0 {
+        MouseEventType::Scroll
+    } else if new_buttons.left != state.buttons.left
+        || new_buttons.right != state.buttons.right
+        || new_buttons.middle != state.buttons.middle
+    {
+        if new_buttons.left && !state.buttons.left
+            || new_buttons.right && !state.buttons.right
+            || new_buttons.middle && !state.buttons.middle
+        {
+            MouseEventType::ButtonDown
+        } else {
+            MouseEventType::ButtonUp
+        }
+    } else {
+        MouseEventType::Move
+    };
+
+    state.buttons = new_buttons;
+
+    let event = MouseEvent {
+        dx,
+        dy,
+        dz,
+        buttons: new_buttons,
+        event_type,
+    };
+
+    // Must drop state lock before taking buffer lock
+    // (caller holds state lock, so we need to use a different approach)
+    // Actually we can just grab the buffer lock here since we don't hold any other lock
+    // that MOUSE_BUFFER depends on — but we DO hold MOUSE_STATE. Since these are
+    // independent locks and no code path holds both in reverse order, this is safe.
+    let mut buf = MOUSE_BUFFER.lock();
+    if buf.len() < 64 {
+        buf.push_back(event);
     }
 }
 

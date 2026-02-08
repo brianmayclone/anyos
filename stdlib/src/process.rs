@@ -29,6 +29,13 @@ pub fn waitpid(tid: u32) -> u32 {
     syscall1(SYS_WAITPID, tid)
 }
 
+/// Non-blocking check if process exited.
+/// Returns exit code if terminated, u32::MAX if not found, STILL_RUNNING if alive.
+pub const STILL_RUNNING: u32 = u32::MAX - 1;
+pub fn try_waitpid(tid: u32) -> u32 {
+    syscall1(SYS_TRY_WAITPID, tid)
+}
+
 /// Kill a thread by TID. Returns 0 on success, u32::MAX on failure.
 pub fn kill(tid: u32) -> u32 {
     syscall1(SYS_KILL, tid)
@@ -57,7 +64,19 @@ pub fn spawn_piped(path: &str, args: &str, pipe_id: u32) -> u32 {
     syscall3(SYS_SPAWN, path_buf.as_ptr() as u32, pipe_id, args_ptr)
 }
 
-/// Get command-line arguments. Returns the args length.
+/// Get command-line arguments (raw). Returns the args length.
+/// The raw args string includes argv[0] (the program name).
 pub fn getargs(buf: &mut [u8]) -> usize {
     syscall2(SYS_GETARGS, buf.as_mut_ptr() as u32, buf.len() as u32) as usize
+}
+
+/// Get command-line arguments, skipping argv[0] (the program name).
+/// Returns the argument portion of the args string (after the first space).
+pub fn args(buf: &mut [u8; 256]) -> &str {
+    let len = getargs(buf);
+    let all = core::str::from_utf8(&buf[..len]).unwrap_or("");
+    match all.find(' ') {
+        Some(idx) => all[idx + 1..].trim_start(),
+        None => "",
+    }
 }

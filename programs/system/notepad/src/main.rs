@@ -26,8 +26,7 @@ const TEXT_COLOR: u32 = 0xFFE6E6E6;
 fn main() {
     // Get file path from arguments
     let mut args_buf = [0u8; 256];
-    let args_len = anyos_std::process::getargs(&mut args_buf);
-    let path = core::str::from_utf8(&args_buf[..args_len]).unwrap_or("").trim();
+    let path = anyos_std::process::args(&mut args_buf).trim();
 
     if path.is_empty() {
         anyos_std::println!("notepad: no file specified");

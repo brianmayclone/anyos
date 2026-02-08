@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+# Copyright (c) 2024-2026 Christian Moeller
+# Email: c.moeller.ffo@gmail.com, brianmayclone@googlemail.com
+#
+# This project is open source and community-driven.
+# Contributions are welcome! See README.md for details.
+#
+# SPDX-License-Identifier: MIT
+
 """Convert an ELF executable to a flat binary image.
 
 Reads PT_LOAD segments from the ELF and produces a contiguous binary

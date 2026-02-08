@@ -60,14 +60,18 @@ pub fn sys_kill(tid: u32) -> u32 {
 /// sys_write - Write to a file descriptor
 /// fd=1 -> stdout (pipe if configured, else serial), fd=2 -> stderr (same), fd>=3 -> VFS file
 pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
+    if buf_ptr == 0 || len == 0 {
+        return 0;
+    }
+    if len > 0x1000_0000 {
+        return u32::MAX;
+    }
     if fd == 1 || fd == 2 {
         let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
         let pipe_id = crate::task::scheduler::current_thread_stdout_pipe();
         if pipe_id != 0 {
-            // Redirect to pipe AND serial (serial for kernel debug visibility)
             crate::ipc::pipe::write(pipe_id, buf);
         }
-        // Always write to serial as well (for debug)
         for &byte in buf {
             crate::drivers::serial::write_byte(byte);
         }
@@ -89,6 +93,12 @@ pub fn sys_read(fd: u32, buf_ptr: u32, len: u32) -> u32 {
     if fd == 0 {
         0 // stdin: not yet implemented
     } else if fd >= 3 {
+        if buf_ptr == 0 || len == 0 {
+            return 0;
+        }
+        if len > 0x1000_0000 {
+            return u32::MAX;
+        }
         let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
         match crate::fs::vfs::read(fd, buf) {
             Ok(n) => n as u32,
@@ -196,6 +206,12 @@ pub fn sys_sbrk(increment: i32) -> u32 {
 /// sys_waitpid - Wait for a process to exit. Returns exit code.
 pub fn sys_waitpid(tid: u32) -> u32 {
     crate::task::scheduler::waitpid(tid)
+}
+
+/// sys_try_waitpid - Non-blocking check if process exited.
+/// Returns exit code if terminated, or u32::MAX-1 if still running.
+pub fn sys_try_waitpid(tid: u32) -> u32 {
+    crate::task::scheduler::try_waitpid(tid)
 }
 
 /// sys_spawn - Spawn a new process from a filesystem path.

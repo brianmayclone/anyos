@@ -327,20 +327,18 @@ impl Window {
                 self.saved_rect = Some(Rect::new(self.x, self.y, self.width, self.height));
                 self.x = 0;
                 self.y = Theme::MENUBAR_HEIGHT as i32;
-                self.width = screen_width;
-                self.height = screen_height - Theme::MENUBAR_HEIGHT - Theme::TITLEBAR_HEIGHT;
+                let new_w = screen_width;
+                let new_h = screen_height - Theme::MENUBAR_HEIGHT - Theme::TITLEBAR_HEIGHT;
+                self.resize(new_w, new_h);
                 self.state = WindowState::Maximized;
-                self.dirty = true;
             }
             WindowState::Maximized => {
                 if let Some(rect) = self.saved_rect {
                     self.x = rect.x;
                     self.y = rect.y;
-                    self.width = rect.width;
-                    self.height = rect.height;
+                    self.resize(rect.width, rect.height);
                 }
                 self.state = WindowState::Normal;
-                self.dirty = true;
             }
             WindowState::Minimized => {}
         }

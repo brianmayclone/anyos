@@ -3,6 +3,16 @@ use crate::graphics::color::Color;
 use crate::graphics::rect::Rect;
 use crate::graphics::surface::Surface;
 
+/// Cursor shape for different interaction zones
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorShape {
+    Arrow,
+    ResizeHorizontal, // ↔ left/right edges
+    ResizeVertical,   // ↕ bottom edge
+    ResizeNWSE,       // ↘ bottom-right corner
+    ResizeNESW,       // ↙ bottom-left corner
+}
+
 /// Window layer in the compositor
 pub struct Layer {
     pub id: u32,
@@ -70,6 +80,8 @@ pub struct Compositor {
     accel_move: Option<AccelMoveHint>,
     /// Resize outline overlay (drawn during compose, zero allocation)
     resize_outline: Option<Rect>,
+    /// Current cursor shape (for HW cursor shape switching)
+    current_cursor: CursorShape,
 }
 
 impl Compositor {
@@ -92,6 +104,7 @@ impl Compositor {
             gpu_accel: false,
             accel_move: None,
             resize_outline: None,
+            current_cursor: CursorShape::Arrow,
         }
     }
 
@@ -592,6 +605,241 @@ impl Compositor {
             g.define_cursor(12, 18, 0, 0, &pixels);
             g.show_cursor(true);
             g.move_cursor(self.cursor_x as u32, self.cursor_y as u32);
+        });
+    }
+
+    /// Change hardware cursor shape. No-op if shape is already set or no HW cursor.
+    pub fn set_cursor_shape(&mut self, shape: CursorShape) {
+        if !self.hw_cursor_active || shape == self.current_cursor {
+            return;
+        }
+        self.current_cursor = shape;
+
+        crate::drivers::gpu::with_gpu(|g| {
+            match shape {
+                CursorShape::Arrow => {
+                    // Standard arrow cursor (12x18, hotspot 0,0)
+                    let mut pixels = [0u32; 12 * 18];
+                    static BODY: [u16; 18] = [
+                        0b1000000000000000, 0b1100000000000000, 0b1110000000000000,
+                        0b1111000000000000, 0b1111100000000000, 0b1111110000000000,
+                        0b1111111000000000, 0b1111111100000000, 0b1111111110000000,
+                        0b1111111111000000, 0b1111111111100000, 0b1111110000000000,
+                        0b1110011000000000, 0b1100011000000000, 0b1000001100000000,
+                        0b0000001100000000, 0b0000000110000000, 0b0000000000000000,
+                    ];
+                    static OUTLINE: [u16; 18] = [
+                        0b1100000000000000, 0b1010000000000000, 0b1001000000000000,
+                        0b1000100000000000, 0b1000010000000000, 0b1000001000000000,
+                        0b1000000100000000, 0b1000000010000000, 0b1000000001000000,
+                        0b1000000000100000, 0b1000000000010000, 0b1000001110000000,
+                        0b1001000100000000, 0b1010000100000000, 0b1100000010000000,
+                        0b0000000010000000, 0b0000000001100000, 0b0000000000000000,
+                    ];
+                    for row in 0..18 {
+                        for col in 0..12 {
+                            let mask = 0x8000u16 >> col;
+                            let idx = row * 12 + col;
+                            if OUTLINE[row] & mask != 0 {
+                                pixels[idx] = 0xFF000000;
+                            } else if BODY[row] & mask != 0 {
+                                pixels[idx] = 0xFFFFFFFF;
+                            }
+                        }
+                    }
+                    g.define_cursor(12, 18, 0, 0, &pixels);
+                }
+                CursorShape::ResizeHorizontal => {
+                    // ↔ horizontal resize cursor (16x10, hotspot 8,5)
+                    let mut pixels = [0u32; 16 * 10];
+                    // Horizontal double-arrow: two arrows pointing left and right
+                    static H_BODY: [u16; 10] = [
+                        0b0000000000000000,
+                        0b0000100000100000,
+                        0b0001100000110000,
+                        0b0011111111111000,
+                        0b0111111111111100,
+                        0b0111111111111100,
+                        0b0011111111111000,
+                        0b0001100000110000,
+                        0b0000100000100000,
+                        0b0000000000000000,
+                    ];
+                    static H_OUTLINE: [u16; 10] = [
+                        0b0000100000100000,
+                        0b0001010000010000,
+                        0b0010011111001000,
+                        0b0100000000000100,
+                        0b1000000000000010,
+                        0b1000000000000010,
+                        0b0100000000000100,
+                        0b0010011111001000,
+                        0b0001010000010000,
+                        0b0000100000100000,
+                    ];
+                    for row in 0..10 {
+                        for col in 0..16 {
+                            let mask = 0x8000u16 >> col;
+                            let idx = row * 16 + col;
+                            if H_OUTLINE[row] & mask != 0 {
+                                pixels[idx] = 0xFF000000;
+                            } else if H_BODY[row] & mask != 0 {
+                                pixels[idx] = 0xFFFFFFFF;
+                            }
+                        }
+                    }
+                    g.define_cursor(16, 10, 8, 5, &pixels);
+                }
+                CursorShape::ResizeVertical => {
+                    // ↕ vertical resize cursor (10x16, hotspot 5,8)
+                    let mut pixels = [0u32; 10 * 16];
+                    static V_BODY: [u16; 16] = [
+                        0b0000000000000000,
+                        0b0001000000000000,
+                        0b0011100000000000,
+                        0b0111110000000000,
+                        0b0011100000000000,
+                        0b0011100000000000,
+                        0b0011100000000000,
+                        0b0011100000000000,
+                        0b0011100000000000,
+                        0b0011100000000000,
+                        0b0011100000000000,
+                        0b0111110000000000,
+                        0b0011100000000000,
+                        0b0001000000000000,
+                        0b0000000000000000,
+                        0b0000000000000000,
+                    ];
+                    static V_OUTLINE: [u16; 16] = [
+                        0b0001000000000000,
+                        0b0010100000000000,
+                        0b0100010000000000,
+                        0b1000001000000000,
+                        0b0100010000000000,
+                        0b0100010000000000,
+                        0b0100010000000000,
+                        0b0100010000000000,
+                        0b0100010000000000,
+                        0b0100010000000000,
+                        0b0100010000000000,
+                        0b1000001000000000,
+                        0b0100010000000000,
+                        0b0010100000000000,
+                        0b0001000000000000,
+                        0b0000000000000000,
+                    ];
+                    for row in 0..16 {
+                        for col in 0..10 {
+                            let mask = 0x8000u16 >> col;
+                            let idx = row * 10 + col;
+                            if V_OUTLINE[row] & mask != 0 {
+                                pixels[idx] = 0xFF000000;
+                            } else if V_BODY[row] & mask != 0 {
+                                pixels[idx] = 0xFFFFFFFF;
+                            }
+                        }
+                    }
+                    g.define_cursor(10, 16, 5, 8, &pixels);
+                }
+                CursorShape::ResizeNWSE => {
+                    // ↘ diagonal NW-SE cursor (14x14, hotspot 7,7)
+                    let mut pixels = [0u32; 14 * 14];
+                    static NWSE_BODY: [u16; 14] = [
+                        0b0000000000000000,
+                        0b0111110000000000,
+                        0b0011110000000000,
+                        0b0001110000000000,
+                        0b0001110000000000,
+                        0b0000111000000000,
+                        0b0000011100000000,
+                        0b0000001110000000,
+                        0b0000001110000000,
+                        0b0000000111000000,
+                        0b0000000111000000,
+                        0b0000000111000000,
+                        0b0000011111000000,
+                        0b0000000000000000,
+                    ];
+                    static NWSE_OUTLINE: [u16; 14] = [
+                        0b0111111000000000,
+                        0b1000001000000000,
+                        0b0100001000000000,
+                        0b0010001000000000,
+                        0b0010000100000000,
+                        0b0001000010000000,
+                        0b0000100001000000,
+                        0b0000010000100000,
+                        0b0000010001000000,
+                        0b0000001000100000,
+                        0b0000001000100000,
+                        0b0000010000100000,
+                        0b0000100000100000,
+                        0b0000011111100000,
+                    ];
+                    for row in 0..14 {
+                        for col in 0..14 {
+                            let mask = 0x8000u16 >> col;
+                            let idx = row * 14 + col;
+                            if NWSE_OUTLINE[row] & mask != 0 {
+                                pixels[idx] = 0xFF000000;
+                            } else if NWSE_BODY[row] & mask != 0 {
+                                pixels[idx] = 0xFFFFFFFF;
+                            }
+                        }
+                    }
+                    g.define_cursor(14, 14, 7, 7, &pixels);
+                }
+                CursorShape::ResizeNESW => {
+                    // ↙ diagonal NE-SW cursor (14x14, hotspot 7,7)
+                    // Mirror of NWSE horizontally
+                    let mut pixels = [0u32; 14 * 14];
+                    static NESW_BODY: [u16; 14] = [
+                        0b0000000000000000,
+                        0b0000001111100000,
+                        0b0000001111000000,
+                        0b0000001110000000,
+                        0b0000001110000000,
+                        0b0000011100000000,
+                        0b0000111000000000,
+                        0b0001110000000000,
+                        0b0001110000000000,
+                        0b0011100000000000,
+                        0b0011100000000000,
+                        0b0011100000000000,
+                        0b0011111000000000,
+                        0b0000000000000000,
+                    ];
+                    static NESW_OUTLINE: [u16; 14] = [
+                        0b0000011111100000,
+                        0b0000010000010000,
+                        0b0000010000100000,
+                        0b0000010001000000,
+                        0b0000100001000000,
+                        0b0001000010000000,
+                        0b0010000100000000,
+                        0b0100001000000000,
+                        0b0000101000000000,
+                        0b0001000100000000,
+                        0b0001000100000000,
+                        0b0001000010000000,
+                        0b0001000001000000,
+                        0b0011111100000000,
+                    ];
+                    for row in 0..14 {
+                        for col in 0..14 {
+                            let mask = 0x8000u16 >> col;
+                            let idx = row * 14 + col;
+                            if NESW_OUTLINE[row] & mask != 0 {
+                                pixels[idx] = 0xFF000000;
+                            } else if NESW_BODY[row] & mask != 0 {
+                                pixels[idx] = 0xFFFFFFFF;
+                            }
+                        }
+                    }
+                    g.define_cursor(14, 14, 7, 7, &pixels);
+                }
+            }
         });
     }
 

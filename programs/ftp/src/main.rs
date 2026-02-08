@@ -399,8 +399,7 @@ fn parse_ip(s: &str) -> Option<[u8; 4]> {
 
 fn main() {
     let mut args_buf = [0u8; 256];
-    let args_len = anyos_std::process::getargs(&mut args_buf);
-    let args = core::str::from_utf8(&args_buf[..args_len]).unwrap_or("").trim();
+    let args = anyos_std::process::args(&mut args_buf).trim();
 
     if args.is_empty() {
         println!("Usage: ftp <host> [command] [args...]");

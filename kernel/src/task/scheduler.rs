@@ -533,6 +533,22 @@ pub fn waitpid(tid: u32) -> u32 {
     }
 }
 
+/// Non-blocking check if a thread has terminated.
+/// Returns exit code if terminated, u32::MAX if not found, u32::MAX-1 if still running.
+pub fn try_waitpid(tid: u32) -> u32 {
+    let mut guard = SCHEDULER.lock();
+    let sched = guard.as_mut().expect("Scheduler not initialized");
+    if let Some(target) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        if target.state == ThreadState::Terminated {
+            let code = target.exit_code.unwrap_or(0);
+            target.exit_code = None;
+            return code;
+        }
+        return u32::MAX - 1; // Still running
+    }
+    u32::MAX // Not found
+}
+
 /// Set command-line arguments for a thread (before it starts running).
 pub fn set_thread_args(tid: u32, args: &str) {
     let mut guard = SCHEDULER.lock();

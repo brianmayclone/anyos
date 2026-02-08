@@ -40,6 +40,7 @@ pub const SYS_CHDIR: u32 = 26;
 // Process spawning
 pub const SYS_SPAWN: u32 = 27;
 pub const SYS_GETARGS: u32 = 28;
+pub const SYS_TRY_WAITPID: u32 = 29;
 
 // System information
 pub const SYS_TIME: u32 = 30;
@@ -167,6 +168,7 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         SYS_KILL => handlers::sys_kill(arg1),
         SYS_SPAWN => handlers::sys_spawn(arg1, arg2, arg3, arg4),
         SYS_GETARGS => handlers::sys_getargs(arg1, arg2),
+        SYS_TRY_WAITPID => handlers::sys_try_waitpid(arg1),
 
         // Device management
         SYS_DEVLIST => handlers::sys_devlist(arg1, arg2),
