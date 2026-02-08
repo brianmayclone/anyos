@@ -229,49 +229,69 @@ impl GpuDriver for VmwareSvgaGpu {
             return;
         }
 
-        // DEFINE_CURSOR command:
-        // opcode, id, hotx, hoty, w, h, depth_and, depth_xor, and_mask..., xor_mask...
-        // For 32bpp ARGB cursor: depth_and=1, depth_xor=32
-        // and_mask: 1bpp transparency mask (1=transparent, 0=opaque)
-        // xor_mask: 32bpp ARGB pixel data
+        // Use monochrome cursor (bpp=1) — both AND and XOR masks are 1-bit bitmaps.
+        // QEMU skips field 6 (andMaskDepth) and uses field 7 as cursor.bpp.
+        // For bpp=1: cursor_set_mono(foreground=0xFFFFFF, background=0x000000, image=XOR, mask=AND)
+        // Windows/SVGA convention:
+        //   AND=0 + XOR=1 → opaque foreground (white)
+        //   AND=0 + XOR=0 → opaque background (black)
+        //   AND=1 + XOR=0 → transparent
+        let bitmap_u32s = ((w + 31) / 32 * h) as usize; // SVGA_BITMAP_SIZE
+        let bpl = ((w + 7) / 8) as usize; // bytes per line in cursor_set_mono
 
-        let and_mask_size = ((w + 31) / 32) * h; // in u32 words
-        let xor_mask_size = w * h; // in u32 words (32bpp)
+        let mut cmd = alloc::vec![SVGA_CMD_DEFINE_CURSOR, 0, hotx, hoty, w, h, 1, 1];
 
-        let mut cmd = alloc::vec![SVGA_CMD_DEFINE_CURSOR, 0, hotx, hoty, w, h, 1, 32];
+        // Build AND mask (transparency) and XOR mask (color) as tightly-packed bytes.
+        // cursor_set_mono reads bytes with stride bpl = ceil(w/8).
+        // Windows/SVGA cursor convention: AND=1 → transparent, AND=0 → opaque.
+        let total_bytes = bitmap_u32s * 4;
+        let mut and_bytes = alloc::vec![0xFFu8; total_bytes]; // all transparent by default
+        let mut xor_bytes = alloc::vec![0u8; total_bytes];
 
-        // Generate AND mask from alpha channel.
-        // QEMU reads mask as uint8_t*: mask[col/8] & (0x80 >> (col%8)).
-        // On little-endian, byte 0 of a u32 holds bits 0-7, byte 1 holds bits 8-15, etc.
-        // (col % 32) ^ 7 maps pixel column to the correct bit position so that
-        // byte 0 = pixels 0-7, byte 1 = pixels 8-15, etc.
-        for row in 0..h {
-            let mut and_word: u32 = 0;
-            for col in 0..w {
-                let idx = (row * w + col) as usize;
-                let alpha = if idx < pixels.len() { (pixels[idx] >> 24) & 0xFF } else { 0 };
-                if alpha < 128 {
-                    // Transparent pixel
-                    and_word |= 1 << ((col % 32) ^ 7);
-                }
-                if col % 32 == 31 || col == w - 1 {
-                    cmd.push(and_word);
-                    and_word = 0;
+        for row in 0..h as usize {
+            for col in 0..w as usize {
+                let idx = row * w as usize + col;
+                let pixel = if idx < pixels.len() { pixels[idx] } else { 0 };
+                let alpha = (pixel >> 24) & 0xFF;
+
+                if alpha >= 128 {
+                    let byte_idx = row * bpl + col / 8;
+                    let bit = 0x80u8 >> (col % 8);
+                    // AND mask: CLEAR bit for opaque pixels (AND=0 → opaque)
+                    and_bytes[byte_idx] &= !bit;
+                    // XOR mask: bit=1 means foreground (white), bit=0 means background (black)
+                    let r = (pixel >> 16) & 0xFF;
+                    let g = (pixel >> 8) & 0xFF;
+                    let b = pixel & 0xFF;
+                    if r > 128 || g > 128 || b > 128 {
+                        xor_bytes[byte_idx] |= bit;
+                    }
                 }
             }
         }
 
-        // XOR mask: pixel data with alpha stripped (QEMU uses mask & 0xFFFFFF)
-        for row in 0..h {
-            for col in 0..w {
-                let idx = (row * w + col) as usize;
-                let pixel = if idx < pixels.len() { pixels[idx] & 0x00FFFFFF } else { 0 };
-                cmd.push(pixel);
-            }
+        // Pack AND mask bytes into u32 words (little-endian) for FIFO
+        for i in 0..bitmap_u32s {
+            let off = i * 4;
+            let word = and_bytes[off] as u32
+                | ((and_bytes.get(off + 1).copied().unwrap_or(0) as u32) << 8)
+                | ((and_bytes.get(off + 2).copied().unwrap_or(0) as u32) << 16)
+                | ((and_bytes.get(off + 3).copied().unwrap_or(0) as u32) << 24);
+            cmd.push(word);
+        }
+
+        // Pack XOR mask bytes into u32 words (little-endian) for FIFO
+        for i in 0..bitmap_u32s {
+            let off = i * 4;
+            let word = xor_bytes[off] as u32
+                | ((xor_bytes.get(off + 1).copied().unwrap_or(0) as u32) << 8)
+                | ((xor_bytes.get(off + 2).copied().unwrap_or(0) as u32) << 16)
+                | ((xor_bytes.get(off + 3).copied().unwrap_or(0) as u32) << 24);
+            cmd.push(word);
         }
 
         self.fifo_write_cmd(&cmd);
-        self.sync(); // Ensure QEMU processes the cursor definition before show/move
+        self.sync();
     }
 
     fn move_cursor(&mut self, x: u32, y: u32) {

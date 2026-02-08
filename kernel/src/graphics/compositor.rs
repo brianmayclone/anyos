@@ -30,6 +30,14 @@ impl Layer {
     }
 }
 
+/// Hint for GPU-accelerated layer move (RECT_COPY optimization).
+/// Stored between move_layer() and compose() to avoid redundant VRAM writes.
+struct AccelMoveHint {
+    layer_id: u32,
+    old_bounds: Rect,
+    new_bounds: Rect,
+}
+
 /// Double-buffered compositor with z-ordered layers
 pub struct Compositor {
     /// Back buffer (composited image)
@@ -58,6 +66,8 @@ pub struct Compositor {
     hw_cursor_active: bool,
     /// GPU has 2D acceleration
     gpu_accel: bool,
+    /// Pending GPU RECT_COPY hint for accelerated window move
+    accel_move: Option<AccelMoveHint>,
 }
 
 impl Compositor {
@@ -78,6 +88,7 @@ impl Compositor {
             cursor_visible: true,
             hw_cursor_active: false,
             gpu_accel: false,
+            accel_move: None,
         }
     }
 
@@ -115,13 +126,39 @@ impl Compositor {
     /// Move a layer to a new position
     pub fn move_layer(&mut self, id: u32, x: i32, y: i32) {
         if let Some(layer) = self.layers.iter_mut().find(|l| l.id == id) {
-            // Damage old position
-            self.damage.push(layer.bounds());
+            let old_bounds = layer.bounds();
             layer.x = x;
             layer.y = y;
-            layer.dirty = true;
-            // Damage new position
-            self.damage.push(layer.bounds());
+            let new_bounds = layer.bounds();
+
+            if self.gpu_accel {
+                // GPU accel path: coalesce all moves into one hint (2 damage rects
+                // instead of 2*N). compose() will derive damage from the hint.
+                let mut coalesced = false;
+                if let Some(ref mut hint) = self.accel_move {
+                    if hint.layer_id == id {
+                        // Same layer moved again this frame — update destination only
+                        hint.new_bounds = new_bounds;
+                        coalesced = true;
+                    }
+                }
+                if !coalesced {
+                    // Flush any previous hint for a different layer
+                    if let Some(prev) = self.accel_move.take() {
+                        self.damage.push(prev.old_bounds);
+                        self.damage.push(prev.new_bounds);
+                    }
+                    self.accel_move = Some(AccelMoveHint {
+                        layer_id: id,
+                        old_bounds,
+                        new_bounds,
+                    });
+                }
+            } else {
+                // No GPU accel — push damage directly
+                self.damage.push(old_bounds);
+                self.damage.push(new_bounds);
+            }
         }
     }
 
@@ -189,6 +226,7 @@ impl Compositor {
     /// Mark entire screen as damaged (full recomposite)
     pub fn invalidate_all(&mut self) {
         self.damage.push(Rect::new(0, 0, self.width, self.height));
+        self.accel_move = None;
     }
 
     /// Mark a layer as dirty
@@ -215,6 +253,12 @@ impl Compositor {
     /// Composite all layers into the back buffer and flush to the framebuffer.
     /// Uses individual damage regions to minimize work.
     pub fn compose(&mut self) {
+        // Derive move damage from accel hint (coalesced: just 2 rects for any number of moves)
+        if let Some(ref hint) = self.accel_move {
+            self.damage.push(hint.old_bounds);
+            self.damage.push(hint.new_bounds);
+        }
+
         // Always add dirty layer bounds to damage list
         for i in 0..self.layers.len() {
             if self.layers[i].dirty {
@@ -231,6 +275,7 @@ impl Compositor {
                 }
                 self.prev_damage.clear();
             }
+            self.accel_move = None;
             return;
         }
 
@@ -242,6 +287,8 @@ impl Compositor {
             }
             self.damage.clear();
             self.damage.push(bounds);
+            // Merged damage invalidates RECT_COPY optimization
+            self.accel_move = None;
         }
 
         // Clip all damage rects to screen and collect
@@ -252,6 +299,7 @@ impl Compositor {
 
         if clipped.is_empty() {
             self.damage.clear();
+            self.accel_move = None;
             // HW double-buffer: still need to sync prev_damage to current back page
             if self.hw_double_buffer && !self.prev_damage.is_empty() {
                 for rect in &self.prev_damage {
@@ -271,7 +319,7 @@ impl Compositor {
             }
         }
 
-        // Process each damage rect independently
+        // ── Phase 1: SW composite all damage to back buffer ──
         for damage_rect in &clipped {
             // Clear the damaged region with background color
             self.back_buffer.fill_rect(*damage_rect, Color::MACOS_BG);
@@ -306,9 +354,87 @@ impl Compositor {
                     self.draw_cursor();
                 }
             }
+        }
 
-            // Flush this damage rect to framebuffer
-            self.flush_region(*damage_rect);
+        // ── Phase 2: Flush to framebuffer (with optional RECT_COPY acceleration) ──
+        let accel_hint = self.accel_move.take();
+        let mut used_accel = false;
+
+        if !self.hw_double_buffer {
+            if let Some(ref hint) = accel_hint {
+                if let Some(pos) = self.layers.iter().position(|l| l.id == hint.layer_id) {
+                    let layer_opaque = self.layers[pos].surface.opaque;
+                    // Pure translation: same width/height
+                    let same_size = hint.old_bounds.width == hint.new_bounds.width
+                        && hint.old_bounds.height == hint.new_bounds.height;
+
+                    if layer_opaque && same_size {
+                        // Clip to screen for the actual RECT_COPY region
+                        let old_r = hint.old_bounds.intersection(&screen_rect);
+                        let new_r = hint.new_bounds.intersection(&screen_rect);
+
+                        if let (Some(old_r), Some(new_r)) = (old_r, new_r) {
+                            // RECT_COPY the intersection (min of both visible areas)
+                            let copy_w = old_r.width.min(new_r.width);
+                            let copy_h = old_r.height.min(new_r.height);
+
+                            let did_copy = crate::drivers::gpu::with_gpu(|g| {
+                                g.accel_copy_rect(
+                                    old_r.x as u32, old_r.y as u32,
+                                    new_r.x as u32, new_r.y as u32,
+                                    copy_w, copy_h,
+                                )
+                            }).unwrap_or(false);
+
+                            if did_copy {
+                                used_accel = true;
+                                let copied_dest = Rect::new(new_r.x, new_r.y, copy_w, copy_h);
+
+                                // 1. Flush exposed area (old position minus new position)
+                                let (exposed, exp_count) = old_r.subtract(&new_r);
+                                for i in 0..exp_count {
+                                    self.flush_region(exposed[i]);
+                                }
+
+                                // 2. Flush parts of new_r not covered by RECT_COPY
+                                //    (window moved from off-screen to more on-screen)
+                                if copy_w < new_r.width || copy_h < new_r.height {
+                                    let (uncovered, unc_count) = new_r.subtract(&copied_dest);
+                                    for i in 0..unc_count {
+                                        self.flush_region(uncovered[i]);
+                                    }
+                                }
+
+                                // 3. Correct above-layer artifacts: RECT_COPY moved raw
+                                //    framebuffer pixels which include composited above-layers
+                                //    (e.g. dock). Flush their intersection with the copied
+                                //    destination from the (correct) back buffer.
+                                let layer_count = self.layers.len();
+                                for li in pos + 1..layer_count {
+                                    if self.layers[li].visible {
+                                        if let Some(fix_rect) = self.layers[li].bounds().intersection(&copied_dest) {
+                                            self.flush_region(fix_rect);
+                                        }
+                                    }
+                                }
+
+                                // 4. Flush any damage rects not part of the move
+                                for rect in &clipped {
+                                    if !hint.old_bounds.intersects(rect) && !hint.new_bounds.intersects(rect) {
+                                        self.flush_region(*rect);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !used_accel {
+            for rect in &clipped {
+                self.flush_region(*rect);
+            }
         }
 
         // Notify GPU of all updated regions in a single batched UPDATE.
@@ -428,19 +554,56 @@ impl Compositor {
             self.back_buffer = Surface::new_with_color(new_w, new_h, Color::MACOS_BG);
 
             if self.hw_double_buffer {
-                // Re-enable double buffer with new mode
-                if let Some(back) = crate::drivers::gpu::with_gpu(|g| g.back_buffer_phys()).flatten() {
-                    self.framebuffer_addr = back;
+                // Re-check if double buffering is still available at the new resolution
+                // (may be lost if VRAM is too small for 2x height at larger modes)
+                let still_dbl = crate::drivers::gpu::with_gpu(|g| g.has_double_buffer()).unwrap_or(false);
+                if still_dbl {
+                    if let Some(back) = crate::drivers::gpu::with_gpu(|g| g.back_buffer_phys()).flatten() {
+                        self.framebuffer_addr = back;
+                    } else {
+                        self.framebuffer_addr = new_fb;
+                        self.hw_double_buffer = false;
+                    }
                 } else {
                     self.framebuffer_addr = new_fb;
+                    self.hw_double_buffer = false;
+                    crate::serial_println!("  Compositor: double-buffering lost at {}x{}", new_w, new_h);
                 }
             } else {
                 self.framebuffer_addr = new_fb;
+                // Check if double buffering became available (switching to smaller mode)
+                let now_dbl = crate::drivers::gpu::with_gpu(|g| g.has_double_buffer()).unwrap_or(false);
+                if now_dbl {
+                    if let Some(back) = crate::drivers::gpu::with_gpu(|g| g.back_buffer_phys()).flatten() {
+                        self.framebuffer_addr = back;
+                        self.hw_double_buffer = true;
+                        // Flush current content to the front page so display is correct
+                        // while the back page gets composited in the next frame
+                        let front_fb = new_fb;
+                        let pitch_u32 = (new_pitch / 4) as usize;
+                        let fb = front_fb as *mut u32;
+                        for y in 0..new_h {
+                            let src_off = (y * new_w) as usize;
+                            let dst_off = y as usize * pitch_u32;
+                            let row_len = new_w as usize;
+                            let src = &self.back_buffer.pixels[src_off..src_off + row_len];
+                            let dst = unsafe { core::slice::from_raw_parts_mut(fb.add(dst_off), row_len) };
+                            dst.copy_from_slice(src);
+                        }
+                        crate::drivers::gpu::with_gpu(|g| g.flip());
+                        // Update to new back page after flip
+                        if let Some(new_back) = crate::drivers::gpu::with_gpu(|g| g.back_buffer_phys()).flatten() {
+                            self.framebuffer_addr = new_back;
+                        }
+                        crate::serial_println!("  Compositor: double-buffering re-enabled at {}x{}", new_w, new_h);
+                    }
+                }
             }
 
             // Reset damage tracking
             self.damage.clear();
             self.prev_damage.clear();
+            self.accel_move = None;
             self.damage.push(Rect::new(0, 0, new_w, new_h));
 
             // Clamp cursor to new screen bounds

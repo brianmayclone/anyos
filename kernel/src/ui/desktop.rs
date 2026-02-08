@@ -911,6 +911,11 @@ impl Desktop {
         // Full invalidate
         self.invalidate();
 
+        // Notify system event bus so userspace (dock, etc.) can adapt
+        crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
+            crate::ipc::event_bus::EVT_RESOLUTION_CHANGED, width, height, 0, 0,
+        ));
+
         crate::serial_println!("[OK] Resolution changed to {}x{}", width, height);
         true
     }

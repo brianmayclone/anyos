@@ -68,4 +68,40 @@ impl Rect {
             (self.height as i32 - 2 * amount).max(0) as u32,
         )
     }
+
+    /// Subtract `other` from `self`, returning exposed regions.
+    /// Returns up to 4 non-overlapping rects (top, bottom, left, right strips).
+    pub fn subtract(&self, other: &Rect) -> ([Rect; 4], usize) {
+        let mut result = [Rect::new(0, 0, 0, 0); 4];
+        let mut count = 0;
+
+        if let Some(inter) = self.intersection(other) {
+            // Top strip
+            if inter.y > self.y {
+                result[count] = Rect::new(self.x, self.y, self.width, (inter.y - self.y) as u32);
+                count += 1;
+            }
+            // Bottom strip
+            if inter.bottom() < self.bottom() {
+                result[count] = Rect::new(self.x, inter.bottom(), self.width, (self.bottom() - inter.bottom()) as u32);
+                count += 1;
+            }
+            // Left strip (middle height only)
+            if inter.x > self.x {
+                result[count] = Rect::new(self.x, inter.y, (inter.x - self.x) as u32, inter.height);
+                count += 1;
+            }
+            // Right strip (middle height only)
+            if inter.right() < self.right() {
+                result[count] = Rect::new(inter.right(), inter.y, (self.right() - inter.right()) as u32, inter.height);
+                count += 1;
+            }
+        } else {
+            // No intersection — entire self is exposed
+            result[0] = *self;
+            count = 1;
+        }
+
+        (result, count)
+    }
 }

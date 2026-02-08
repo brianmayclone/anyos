@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 use anyos_std::ui::window;
 use anyos_std::process;
 use anyos_std::fs;
+use anyos_std::ipc;
 
 anyos_std::entry!(main);
 
@@ -25,6 +26,9 @@ const DOCK_BG: u32 = 0xC0303035;
 const COLOR_WHITE: u32 = 0xFFFFFFFF;
 const COLOR_TRANSPARENT: u32 = 0x00000000;
 const COLOR_HIGHLIGHT: u32 = 0x19FFFFFF; // 10% white
+
+// System event type (must match kernel EVT_RESOLUTION_CHANGED)
+const EVT_RESOLUTION_CHANGED: u32 = 0x0040;
 
 const CONFIG_PATH: &str = "/system/dock/programs.conf";
 
@@ -400,17 +404,19 @@ fn update_running_state(items: &mut [DockItem], win_buf: &[u8], win_count: u32) 
 
 fn main() {
     // Get screen dimensions
-    let (screen_width, screen_height) = window::screen_size();
+    let (mut screen_width, mut screen_height) = window::screen_size();
     if screen_width == 0 || screen_height == 0 {
         return;
     }
 
-    let win_y = (screen_height - DOCK_TOTAL_H) as u16;
     let flags = window::WIN_FLAG_BORDERLESS
               | window::WIN_FLAG_NOT_RESIZABLE
               | window::WIN_FLAG_ALWAYS_ON_TOP;
 
-    let win = window::create_ex("Dock", 0, win_y, screen_width as u16, DOCK_TOTAL_H as u16, flags);
+    let mut win = window::create_ex(
+        "Dock", 0, (screen_height - DOCK_TOTAL_H) as u16,
+        screen_width as u16, DOCK_TOTAL_H as u16, flags,
+    );
     if win == u32::MAX {
         return;
     }
@@ -431,12 +437,41 @@ fn main() {
     window::blit(win, 0, 0, screen_width as u16, DOCK_TOTAL_H as u16, &fb.pixels);
     window::present(win);
 
+    // Subscribe to resolution change events
+    let evt_sub = ipc::evt_sys_subscribe(EVT_RESOLUTION_CHANGED);
+
     // Main loop
     let mut tick: u32 = 0;
     let mut win_buf = vec![0u8; 64 * 32]; // up to 32 windows
 
     loop {
-        // Process events
+        // Check for resolution changes
+        let mut sys_evt = [0u32; 5];
+        while ipc::evt_sys_poll(evt_sub, &mut sys_evt) {
+            if sys_evt[0] == EVT_RESOLUTION_CHANGED {
+                let new_w = sys_evt[1];
+                let new_h = sys_evt[2];
+                if new_w > 0 && new_h > 0 && (new_w != screen_width || new_h != screen_height) {
+                    screen_width = new_w;
+                    screen_height = new_h;
+
+                    // Destroy old window and create new one at correct position/size
+                    window::destroy(win);
+                    win = window::create_ex(
+                        "Dock", 0, (screen_height - DOCK_TOTAL_H) as u16,
+                        screen_width as u16, DOCK_TOTAL_H as u16, flags,
+                    );
+
+                    // Recreate framebuffer at new width
+                    fb = Framebuffer::new(screen_width, DOCK_TOTAL_H);
+                    render_dock(&mut fb, &items, screen_width);
+                    window::blit(win, 0, 0, screen_width as u16, DOCK_TOTAL_H as u16, &fb.pixels);
+                    window::present(win);
+                }
+            }
+        }
+
+        // Process window events
         let mut event = [0u32; 5];
         while window::get_event(win, &mut event) == 1 {
             if event[0] == window::EVENT_MOUSE_DOWN {
