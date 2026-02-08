@@ -38,13 +38,19 @@ pub enum FsType {
     DevFs,
 }
 
-/// Filesystem driver trait
+/// Trait that all filesystem drivers must implement for the VFS.
 pub trait Filesystem {
+    /// Read bytes from a file identified by inode at the given offset.
     fn read(&self, inode: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError>;
+    /// Write bytes to a file identified by inode at the given offset.
     fn write(&self, inode: u32, offset: u32, buf: &[u8]) -> Result<usize, FsError>;
+    /// Look up a path and return `(inode, file_type, size)`.
     fn lookup(&self, path: &str) -> Result<(u32, FileType, u32), FsError>;
+    /// List entries in a directory identified by inode.
     fn readdir(&self, inode: u32) -> Result<Vec<DirEntry>, FsError>;
+    /// Create a new file or directory under the given parent inode.
     fn create(&self, parent_inode: u32, name: &str, file_type: FileType) -> Result<u32, FsError>;
+    /// Delete a file or directory by name under the given parent inode.
     fn delete(&self, parent_inode: u32, name: &str) -> Result<(), FsError>;
 }
 

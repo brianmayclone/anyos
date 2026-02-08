@@ -1,3 +1,6 @@
+//! Rounded-rect button widget with normal, hover, and pressed states.
+//! Supports primary (accent-colored) and secondary (gray) styles.
+
 use alloc::string::String;
 use crate::graphics::color::Color;
 use crate::graphics::font;
@@ -6,6 +9,7 @@ use crate::graphics::renderer::Renderer;
 use crate::graphics::surface::Surface;
 use crate::ui::theme::Theme;
 
+/// Visual state of a button for rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonState {
     Normal,
@@ -13,14 +17,17 @@ pub enum ButtonState {
     Pressed,
 }
 
+/// A clickable button with a text label and rounded corners.
 pub struct Button {
     pub rect: Rect,
     pub label: String,
     pub state: ButtonState,
-    pub primary: bool, // Blue accent button
+    /// When true, renders with the blue accent color instead of gray.
+    pub primary: bool,
 }
 
 impl Button {
+    /// Create a new button at the given position with the given label.
     pub fn new(x: i32, y: i32, width: u32, height: u32, label: &str) -> Self {
         Button {
             rect: Rect::new(x, y, width, height),
@@ -30,11 +37,13 @@ impl Button {
         }
     }
 
+    /// Builder method: mark this button as primary (accent-colored).
     pub fn primary(mut self) -> Self {
         self.primary = true;
         self
     }
 
+    /// Render the button onto the given surface.
     pub fn render(&self, surface: &mut Surface) {
         let bg = if self.primary {
             match self.state {
@@ -65,6 +74,7 @@ impl Button {
         font::draw_string_sized(surface, tx, ty, &self.label, Color::WHITE, size);
     }
 
+    /// Returns true if the point (x, y) is inside the button bounds.
     pub fn contains(&self, x: i32, y: i32) -> bool {
         self.rect.contains(x, y)
     }

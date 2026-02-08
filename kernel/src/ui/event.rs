@@ -32,6 +32,7 @@ pub enum Event {
     Tick,
 }
 
+/// Mouse button identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseButton {
     Left,

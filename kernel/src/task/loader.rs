@@ -141,7 +141,7 @@ fn load_elf(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<El
         let vaddr = phdr.p_vaddr;
         let memsz = phdr.p_memsz;
         let filesz = phdr.p_filesz;
-        let offset = phdr.p_offset;
+        let _offset = phdr.p_offset;
 
         if memsz == 0 {
             continue;
