@@ -33,8 +33,8 @@ anyOS uses a custom two-stage bootloader written in NASM assembly.
 3. **VESA VBE** -- Sets graphics mode to 1024x768x32bpp (or best available)
 4. **Protected Mode** -- Sets up GDT, switches CPU to 32-bit protected mode
 5. **Kernel Loading** -- Reads kernel flat binary from disk to physical address `0x100000`
-6. **Paging** -- Enables 4 MB PSE pages: identity-maps first 8 MB, maps kernel to `0xC0000000` (higher-half), maps framebuffer
-7. **Jump to Kernel** -- Transfers control to `0xC0100000` (kernel entry point)
+6. **Paging** -- Enables 4-level paging (PML4): identity-maps first 128 MiB, maps kernel to higher-half (`0xFFFFFFFF80000000`), maps framebuffer
+7. **Jump to Kernel** -- Transfers control to `0xFFFFFFFF80100000` (kernel entry point)
 
 ### Boot Info
 
@@ -61,13 +61,14 @@ Stage 2 passes a `BootInfo` struct at a known address containing:
 ### Virtual Memory (Kernel)
 
 ```
-0x00000000 - 0x01FFFFFF    Identity-mapped (first 32 MB, for DMA/legacy)
-0xC0000000 - 0xC0FFFFFF    Kernel code + data (higher-half mapping)
-0xC1000000+                 Kernel heap (grows via linked-list allocator)
-0xD0000000 - 0xD001FFFF    E1000 MMIO (128 KiB)
-0xD0020000 - 0xD002FFFF    VMware SVGA FIFO (256 KiB)
-0xFD000000 - 0xFDFFFFFF    Framebuffer (identity-mapped via 4K pages)
-0xFFC00000 - 0xFFFFFFFF    Recursive page directory self-mapping
+0x00000000_00000000 - 0x00000000_07FFFFFF    Identity-mapped (first 128 MiB, for DMA/legacy)
+0xFFFFFFFF_80000000 - 0xFFFFFFFF_80FFFFFF    Kernel code + data (higher-half mapping)
+0xFFFFFFFF_81000000+                         Kernel heap (grows via linked-list allocator)
+0xFFFFFFFF_D0000000 - 0xFFFFFFFF_D001FFFF    E1000 MMIO (128 KiB)
+0xFFFFFFFF_D0020000 - 0xFFFFFFFF_D005FFFF    VMware SVGA FIFO (256 KiB)
+0xFFFFFFFF_D0060000 - 0xFFFFFFFF_D0067FFF    AHCI MMIO (32 KiB)
+0xFD000000 - 0xFDFFFFFF                      Framebuffer (16 MiB, mapped via 4K pages)
+PML4[510] recursive self-mapping              Page table access
 ```
 
 ### Virtual Memory (User Process)
@@ -77,15 +78,16 @@ Stage 2 passes a `BootInfo` struct at a known address containing:
 0x08000000 - 0x080XXXXX    Program text + data + BSS
 0x080XXXXX - 0x0BFEFFFF    Heap (grows via sbrk)
 0x0BFF0000 - 0x0BFFFFFF    User stack (64 KiB, grows downward)
-0xC0000000+                 Kernel space (not accessible from Ring 3)
+0xFFFFFFFF80000000+          Kernel space (not accessible from Ring 3)
 ```
 
 ### Paging
 
-- **2-level paging**: Page Directory (1024 PDEs) + Page Tables (1024 PTEs each)
+- **4-level paging**: PML4 → PDPT → PD → PT (x86_64 long mode)
 - **4 KiB pages** for fine-grained mapping
-- **Recursive mapping**: PDE 1023 points to the page directory itself, enabling access to page tables at `0xFFC00000`
-- Each process has its own page directory; kernel PDEs are cloned into every process
+- **Recursive mapping**: PML4[510] points to the PML4 itself, enabling access to all paging structures
+- Kernel at PML4[511], PDPT[510] (higher-half `0xFFFFFFFF80000000`)
+- Each process has its own PML4; kernel entries are cloned into every process
 
 ---
 
@@ -110,7 +112,8 @@ Stage 2 passes a `BootInfo` struct at a known address containing:
     |   |virtual  | |GPU  | |loader   |   |
     |   |heap     | |E1000| |thread   |   |
     |   +---------+ |ATA  | |process  |   |
-    |               |input| +---------+   |
+    |               |AHCI | +---------+   |
+    |               |input|               |
     +--+  +--+      +-----+              |
     |GDT| |IDT|                           |
     |TSS| |PIC|   +-------+  +-----+     |
@@ -136,7 +139,7 @@ The kernel initializes subsystems in 10 phases:
 3. **GDT + IDT** -- CPU descriptor tables, interrupt handlers
 4. **Physical Memory** -- Frame allocator from E820 map
 5. **Virtual Memory** -- Page tables, kernel heap
-6. **PCI + HAL** -- Bus enumeration, driver binding (GPU, NIC, ATA)
+6. **PCI + HAL** -- Bus enumeration, driver binding (GPU, NIC, ATA/AHCI)
 7. **Interrupts** -- PIC/APIC setup, keyboard, mouse, timer (100 Hz PIT)
 8. **Scheduler** -- Thread system, idle task
 9. **Graphics** -- Compositor, desktop environment, GPU acceleration
@@ -151,12 +154,12 @@ The kernel initializes subsystems in 10 phases:
 - Each "process" is one or more **kernel threads** sharing the same page directory
 - **Round-robin** scheduler with 10ms time slices (PIT at 100 Hz)
 - Thread states: `Ready`, `Running`, `Sleeping`, `Blocked`, `Dead`
-- Context switch saves/restores: EAX-EDI, ESP, EBP, EIP, EFLAGS, CR3
+- Context switch saves/restores: RAX-RDI, R8-R15, RSP, RBP, RIP, RFLAGS, CR3
 
 ### Ring 3 User Mode
 
 - **GDT segments**: Kernel Code (0x08), Kernel Data (0x10), User Code (0x1B), User Data (0x23), TSS (0x28)
-- **Syscalls**: `int 0x80` trap gate (DPL=3), args in EAX (number), EBX-EDI (params)
+- **Syscalls**: `int 0x80` trap gate (DPL=3), args in EAX (number), EBX-EDI (params) (32-bit compat mode)
 - **TSS**: ESP0 updated on every context switch for kernel stack
 - **Per-process address spaces**: Each process gets a cloned page directory
 
@@ -212,7 +215,9 @@ GPU auto-detection happens during PCI enumeration. The compositor uses whichever
 - **8 sectors/cluster** (4 KiB clusters)
 - **VFAT long filenames**: LFN entries with UTF-16 to ASCII conversion
 - **Operations**: read, write, create, delete, mkdir, readdir, stat, seek
-- **ATA PIO driver**: 28-bit LBA, sector read/write via I/O ports
+- **Storage dispatch**: Routes I/O to the active backend (auto-detected at boot)
+  - **ATA PIO**: 28-bit LBA, sector read/write via I/O ports (legacy IDE, default)
+  - **AHCI DMA**: SATA DMA transfers via MMIO + bounce buffer (ICH9 AHCI, `--ahci` flag)
 
 ### Virtual File System (VFS)
 
