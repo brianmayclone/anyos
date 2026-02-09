@@ -275,6 +275,7 @@ add_rust_system_program(settings    ${CMAKE_SOURCE_DIR}/programs/system/settings
 add_rust_system_program(finder      ${CMAKE_SOURCE_DIR}/programs/system/finder)
 add_rust_system_program(notepad     ${CMAKE_SOURCE_DIR}/programs/system/notepad)
 add_rust_system_program(imgview     ${CMAKE_SOURCE_DIR}/programs/system/imgview)
+add_rust_system_program(videoplayer ${CMAKE_SOURCE_DIR}/programs/system/videoplayer)
 
 # Build dock program (nested path: /system/compositor/dock)
 set(DOCK_SRC_DIR ${CMAKE_SOURCE_DIR}/programs/system/compositor/dock)

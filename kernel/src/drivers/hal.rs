@@ -597,6 +597,15 @@ static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
         },
         specificity: 2,
     },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1050 },
+        factory: |pci| {
+            // Initialize VirtIO GPU driver
+            crate::drivers::gpu::virtio_gpu::init_and_register(pci);
+            Some(Box::new(GpuDisplayDriver { _pci: pci.clone(), driver_name: "VirtIO GPU" }))
+        },
+        specificity: 2,
+    },
     // Class-based matches
     PciDriverEntry {
         match_rule: PciMatch::Class { class: 0x01, subclass: 0x01 },

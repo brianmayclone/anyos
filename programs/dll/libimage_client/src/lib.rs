@@ -1,18 +1,19 @@
 // Copyright (c) 2024-2026 Christian Moeller
 // SPDX-License-Identifier: MIT
 
-//! Client library for libimage.dll — image decoding shared library.
+//! Client library for libimage.dll — image and video decoding shared library.
 //!
 //! Provides safe Rust wrappers around the raw DLL export functions.
-//! User programs depend on this crate to decode BMP, PNG, JPEG, and GIF images.
+//! User programs depend on this crate to decode BMP, PNG, JPEG, GIF images
+//! and MJV (Motion JPEG Video) files.
 
 #![no_std]
 
 pub mod raw;
 
-pub use raw::{ImageInfo, FMT_UNKNOWN, FMT_BMP, FMT_PNG, FMT_JPEG, FMT_GIF};
+pub use raw::{ImageInfo, VideoInfo, FMT_UNKNOWN, FMT_BMP, FMT_PNG, FMT_JPEG, FMT_GIF, FMT_MJV};
 
-/// Error type for image operations.
+/// Error type for image/video operations.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ImageError {
     InvalidData,
@@ -31,6 +32,8 @@ fn err_from_code(code: i32) -> ImageError {
         other => ImageError::Unknown(other),
     }
 }
+
+// ── Image API ──────────────────────────────────────
 
 /// Probe an image file to determine format and dimensions.
 ///
@@ -82,6 +85,61 @@ pub fn format_name(format: u32) -> &'static str {
         FMT_PNG => "PNG",
         FMT_JPEG => "JPEG",
         FMT_GIF => "GIF",
+        FMT_MJV => "MJV",
         _ => "Unknown",
+    }
+}
+
+// ── Video API ──────────────────────────────────────
+
+/// Probe a video file to determine format and metadata.
+///
+/// Returns `Some(VideoInfo)` on success, or `None` if the format is unrecognized.
+/// The `scratch_needed` field tells you how large a scratch buffer to allocate
+/// for `video_decode_frame()`.
+pub fn video_probe(data: &[u8]) -> Option<VideoInfo> {
+    let mut info = VideoInfo {
+        width: 0,
+        height: 0,
+        fps: 0,
+        num_frames: 0,
+        scratch_needed: 0,
+    };
+    let ret = (raw::exports().video_probe)(data.as_ptr(), data.len() as u32, &mut info);
+    if ret == 0 {
+        Some(info)
+    } else {
+        None
+    }
+}
+
+/// Decode a single video frame into ARGB8888 pixels.
+///
+/// - `data`: the raw video file bytes (entire .mjv file)
+/// - `num_frames`: total frame count (from `video_probe`)
+/// - `frame_idx`: zero-based frame index to decode
+/// - `pixels`: output buffer, must have at least `width * height` elements
+/// - `scratch`: working memory buffer, must have at least `scratch_needed` bytes
+pub fn video_decode_frame(
+    data: &[u8],
+    num_frames: u32,
+    frame_idx: u32,
+    pixels: &mut [u32],
+    scratch: &mut [u8],
+) -> Result<(), ImageError> {
+    let ret = (raw::exports().video_decode_frame)(
+        data.as_ptr(),
+        data.len() as u32,
+        num_frames,
+        frame_idx,
+        pixels.as_mut_ptr(),
+        pixels.len() as u32,
+        scratch.as_mut_ptr(),
+        scratch.len() as u32,
+    );
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(err_from_code(ret))
     }
 }

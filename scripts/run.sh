@@ -8,9 +8,10 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU
-# Usage: ./run.sh [--vmware | --std] [--ahci] [--audio]
+# Usage: ./run.sh [--vmware | --std | --virtio] [--ahci] [--audio]
 #   --vmware   VMware SVGA II (2D acceleration, HW cursor)
 #   --std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
+#   --virtio   VirtIO GPU (modern transport, ARGB cursor)
 #   --ahci     Use AHCI (SATA DMA) instead of legacy IDE for disk I/O
 #   --audio    Enable AC'97 audio device
 
@@ -53,7 +54,7 @@ for arg in "$@"; do
             AUDIO_LABEL=", audio: AC'97"
             ;;
         *)
-            echo "Usage: $0 [--vmware | --std] [--ahci] [--audio]"
+            echo "Usage: $0 [--vmware | --std | --virtio] [--ahci] [--audio]"
             exit 1
             ;;
     esac

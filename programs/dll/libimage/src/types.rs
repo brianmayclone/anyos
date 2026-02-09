@@ -32,3 +32,23 @@ impl ImageInfo {
         Self { width: 0, height: 0, format: FMT_UNKNOWN, scratch_needed: 0 }
     }
 }
+
+/// Video format: Motion JPEG Video (.mjv).
+pub const FMT_MJV: u32 = 10;
+
+/// Video metadata returned by `video_probe`.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct VideoInfo {
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub num_frames: u32,
+    pub scratch_needed: u32,
+}
+
+impl VideoInfo {
+    pub const fn zero() -> Self {
+        Self { width: 0, height: 0, fps: 0, num_frames: 0, scratch_needed: 0 }
+    }
+}

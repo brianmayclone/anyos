@@ -15,3 +15,4 @@ pub mod rtc;
 pub mod serial;
 pub mod storage;
 pub mod vga_text;
+pub mod virtio;

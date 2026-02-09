@@ -185,15 +185,29 @@ impl Surface {
             let src_row = &src.pixels[src_start..src_start + cw];
             let dst_row = &mut self.pixels[dst_start..dst_start + cw];
 
-            for i in 0..cw {
-                let sp = src_row[i];
-                let a = sp >> 24;
-                if a >= 255 {
-                    dst_row[i] = sp;
-                } else if a > 0 {
-                    let sc = Color::from_u32(sp);
-                    let dc = Color::from_u32(dst_row[i]);
-                    dst_row[i] = sc.blend_over(dc).to_u32();
+            // Opaque span batching: scan for runs of fully opaque pixels and
+            // bulk-copy them (memcpy), only doing per-pixel alpha blending for
+            // the few transparent pixels (typically just rounded corners).
+            let mut i = 0;
+            while i < cw {
+                // Find contiguous opaque span
+                let span_start = i;
+                while i < cw && (src_row[i] >> 24) >= 255 {
+                    i += 1;
+                }
+                if i > span_start {
+                    dst_row[span_start..i].copy_from_slice(&src_row[span_start..i]);
+                }
+                // Handle non-opaque pixels individually
+                while i < cw && (src_row[i] >> 24) < 255 {
+                    let sp = src_row[i];
+                    let a = sp >> 24;
+                    if a > 0 {
+                        let sc = Color::from_u32(sp);
+                        let dc = Color::from_u32(dst_row[i]);
+                        dst_row[i] = sc.blend_over(dc).to_u32();
+                    }
+                    i += 1;
                 }
             }
         }

@@ -321,6 +321,30 @@ impl Compositor {
             return;
         }
 
+        // Merge overlapping damage rects to avoid duplicate compositing work.
+        // During a drag, old_bounds and new_bounds overlap ~90% for small moves;
+        // merging halves Phase 1 SW composite and Phase 2 flush cost.
+        if self.damage.len() > 1 {
+            let mut merged = true;
+            while merged {
+                merged = false;
+                let mut i = 0;
+                while i < self.damage.len() {
+                    let mut j = i + 1;
+                    while j < self.damage.len() {
+                        if self.damage[i].intersects(&self.damage[j]) {
+                            self.damage[i] = self.damage[i].union(&self.damage[j]);
+                            self.damage.swap_remove(j);
+                            merged = true;
+                        } else {
+                            j += 1;
+                        }
+                    }
+                    i += 1;
+                }
+            }
+        }
+
         // If too many damage rects, merge to single bounding rect
         if self.damage.len() > Self::MAX_DAMAGE_RECTS {
             let mut bounds = self.damage[0];

@@ -13,6 +13,7 @@ pub mod jpeg;
 pub mod jpeg_tables;
 pub mod gif;
 pub mod lzw;
+pub mod video;
 
 /// Dummy entry point (never called — DLL has no entry).
 #[no_mangle]

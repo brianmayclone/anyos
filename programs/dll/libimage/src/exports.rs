@@ -3,18 +3,31 @@
 
 //! Export table for libimage.dll.
 
-use crate::types::ImageInfo;
+use crate::types::{ImageInfo, VideoInfo};
 
-const NUM_EXPORTS: u32 = 2;
+const NUM_EXPORTS: u32 = 4;
 
 /// Export function table — must be first in the binary (`.exports` section).
+///
+/// ABI layout (x86_64, `#[repr(C)]`):
+///   offset  0: magic [u8; 4]
+///   offset  4: version u32
+///   offset  8: num_exports u32
+///   offset 12: _pad u32
+///   offset 16: video_probe fn ptr (8 bytes)
+///   offset 24: video_decode_frame fn ptr (8 bytes)
+///   offset 32: image_probe fn ptr (8 bytes)  ← same offset as before
+///   offset 40: image_decode fn ptr (8 bytes) ← same offset as before
 #[repr(C)]
 pub struct LibimageExports {
     pub magic: [u8; 4],
     pub version: u32,
     pub num_exports: u32,
-    pub _reserved: [u32; 5],
-    // Export functions
+    pub _pad: u32,
+    // Video exports (new)
+    pub video_probe: extern "C" fn(*const u8, u32, *mut VideoInfo) -> i32,
+    pub video_decode_frame: extern "C" fn(*const u8, u32, u32, u32, *mut u32, u32, *mut u8, u32) -> i32,
+    // Image exports (unchanged offsets)
     pub image_probe: extern "C" fn(*const u8, u32, *mut ImageInfo) -> i32,
     pub image_decode: extern "C" fn(*const u8, u32, *mut u32, u32, *mut u8, u32) -> i32,
 }
@@ -26,10 +39,54 @@ pub static LIBIMAGE_EXPORTS: LibimageExports = LibimageExports {
     magic: *b"DLIB",
     version: 1,
     num_exports: NUM_EXPORTS,
-    _reserved: [0; 5],
+    _pad: 0,
+    video_probe: video_probe_export,
+    video_decode_frame: video_decode_frame_export,
     image_probe: image_probe,
     image_decode: image_decode,
 };
+
+// ── Video exports ──────────────────────────────────────
+
+/// Probe a video file and return metadata.
+extern "C" fn video_probe_export(data: *const u8, len: u32, info: *mut VideoInfo) -> i32 {
+    if data.is_null() || info.is_null() || len < 32 {
+        return crate::types::ERR_INVALID_DATA;
+    }
+    let data = unsafe { core::slice::from_raw_parts(data, len as usize) };
+    let out = unsafe { &mut *info };
+
+    match crate::video::probe(data) {
+        Some(i) => {
+            *out = i;
+            crate::types::ERR_OK
+        }
+        None => crate::types::ERR_UNSUPPORTED,
+    }
+}
+
+/// Decode a single video frame into ARGB8888 pixels.
+extern "C" fn video_decode_frame_export(
+    data: *const u8, len: u32,
+    num_frames: u32, frame_idx: u32,
+    out_pixels: *mut u32, out_len: u32,
+    scratch: *mut u8, scratch_len: u32,
+) -> i32 {
+    if data.is_null() || out_pixels.is_null() || len < 32 {
+        return crate::types::ERR_INVALID_DATA;
+    }
+    let data = unsafe { core::slice::from_raw_parts(data, len as usize) };
+    let out = unsafe { core::slice::from_raw_parts_mut(out_pixels, out_len as usize) };
+    let scratch = if scratch.is_null() || scratch_len == 0 {
+        &mut [][..]
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(scratch, scratch_len as usize) }
+    };
+
+    crate::video::decode_frame(data, num_frames, frame_idx, out, scratch)
+}
+
+// ── Image exports ──────────────────────────────────────
 
 /// Probe an image buffer and return metadata.
 ///
