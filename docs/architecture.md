@@ -12,6 +12,7 @@ This document describes the internal architecture of anyOS, from boot to desktop
 - [Filesystem](#filesystem)
 - [Networking](#networking)
 - [Syscall Interface](#syscall-interface)
+- [Audio](#audio)
 - [DLL System](#dll-system)
 
 ---
@@ -267,6 +268,58 @@ GPU auto-detection happens during PCI enumeration. The compositor uses whichever
 
 ---
 
+## Audio
+
+### AC'97 Driver
+
+anyOS includes an Intel AC'97 audio codec driver for PCM playback.
+
+| Property | Value |
+|----------|-------|
+| **PCI Device** | Intel 82801AA (8086:2415) |
+| **PCI Class** | 0x04 (Multimedia), Subclass 0x01 (Audio) |
+| **Register Access** | I/O ports (BAR0 = mixer, BAR1 = bus master) |
+| **Sample Rate** | 48,000 Hz (AC'97 native) |
+| **Format** | 16-bit signed little-endian stereo (4 bytes/frame) |
+| **DMA** | 32-entry Buffer Descriptor List, 4 KiB per buffer |
+
+**Key registers:**
+
+- **NAMBAR** (BAR0): Native Audio Mixer -- volume, sample rate, codec control
+- **NABMBAR** (BAR1): Native Audio Bus Master -- DMA control, buffer descriptors, status
+
+**Playback flow:**
+
+1. User program calls `audio_write()` syscall with PCM data
+2. Kernel copies data into identity-mapped DMA buffers
+3. Buffer Descriptor List (BDL) entry updated with address + sample count
+4. Last Valid Index (LVI) advanced to tell hardware about new data
+5. Hardware DMAs buffer data to DAC, generates audio output
+6. IRQ fires on buffer completion, acknowledges status
+
+**DMA memory layout:**
+
+| Structure | Size | Location |
+|-----------|------|----------|
+| BDL (32 entries x 8 bytes) | 256 bytes | 1 physical frame |
+| Audio buffers (32 x 4 KiB) | 128 KiB | 32 physical frames |
+
+All DMA structures are in identity-mapped memory (physical < 128 MiB).
+
+**QEMU:** `-device AC97,audiodev=audio0 -audiodev coreaudio,id=audio0` (macOS)
+
+### WAV File Support
+
+The standard library includes a WAV parser that handles format conversion:
+
+- **Input:** PCM WAV files (RIFF/WAVE, format tag 1)
+- **Supported:** 8-bit/16-bit, mono/stereo, any sample rate
+- **Output:** Resampled to 48 kHz 16-bit stereo (nearest-neighbor)
+- 8-bit unsigned samples converted to 16-bit signed
+- Mono channels duplicated to stereo
+
+---
+
 ## Syscall Interface
 
 Syscalls use `int 0x80` with the following register convention:
@@ -289,6 +342,7 @@ There are 100+ syscalls organized by category:
 - **IPC** (45-49, 60-68): pipes, event bus, module channels
 - **Window Manager** (50-59, 70-72): create, destroy, draw, events, screen info
 - **DLL** (80): dll_load
+- **Audio** (120-121): audio_write, audio_ctl
 - **Display** (110-112): set_resolution, list_resolutions, gpu_info
 
 See [stdlib API](stdlib-api.md) for the complete reference.
@@ -315,3 +369,20 @@ The main UI system DLL provides 73 exported functions implementing 30 UI compone
 - And more...
 
 See [uisys API](uisys-api.md) for the complete component reference.
+
+### libimage.dll
+
+Image decoding library at virtual address `0x04100000`. Decodes image files into ARGB8888 pixel buffers. Callers provide all memory (no heap in the DLL).
+
+| Format | Magic Bytes | Features |
+|--------|-------------|----------|
+| **BMP** | `BM` | 24-bit and 32-bit uncompressed, bottom-up row order |
+| **PNG** | `\x89PNG` | 8-bit RGB/RGBA/grayscale, DEFLATE decompression, filter reconstruction |
+| **JPEG** | `\xFF\xD8` | Baseline DCT (SOF0), 4:2:0/4:2:2/4:4:4 chroma subsampling, fixed-point IDCT |
+| **GIF** | `GIF87a`/`GIF89a` | LZW decompression, transparency, interlacing (first frame only) |
+
+**API:** Two exported functions via `LibimageExports` struct:
+- `image_probe(data, len, info)` -- Detect format, get dimensions and scratch buffer size
+- `image_decode(data, len, pixels, pixel_count, scratch, scratch_len)` -- Decode to ARGB8888
+
+See [libimage API](libimage-api.md) for the complete reference.

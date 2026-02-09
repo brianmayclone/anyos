@@ -19,6 +19,7 @@ The **anyos_std** crate is the standard library for user-space Rust programs on 
 - [net -- Networking](#net----networking)
 - [ipc -- Inter-Process Communication](#ipc----inter-process-communication)
 - [ui::window -- Window Management](#uiwindow----window-management)
+- [audio -- Audio Playback](#audio----audio-playback)
 - [dll -- Dynamic Library Loading](#dll----dynamic-library-loading)
 - [Syscall Numbers](#syscall-numbers)
 
@@ -516,6 +517,87 @@ fn main() {
 
 ---
 
+## `audio` -- Audio Playback
+
+Provides functions to write PCM audio data, control volume, and play WAV files. Audio output is 48 kHz, 16-bit signed stereo (native AC'97 format).
+
+### Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `audio_write` | `fn audio_write(pcm_data: &[u8]) -> u32` | Write raw PCM data to audio output. Returns bytes accepted. |
+| `audio_stop` | `fn audio_stop()` | Stop audio playback. |
+| `audio_set_volume` | `fn audio_set_volume(vol: u8)` | Set master volume (0 = mute, 100 = max). |
+| `audio_get_volume` | `fn audio_get_volume() -> u8` | Get current master volume (0-100). |
+| `audio_is_playing` | `fn audio_is_playing() -> bool` | Check if audio playback is active. |
+| `audio_is_available` | `fn audio_is_available() -> bool` | Check if audio hardware is available. |
+| `play_wav` | `fn play_wav(data: &[u8]) -> Result<(), &'static str>` | Parse and play a WAV file from raw bytes. |
+
+### PCM Format
+
+Raw PCM data passed to `audio_write()` must be:
+- **Sample rate:** 48,000 Hz
+- **Bit depth:** 16-bit signed little-endian
+- **Channels:** Stereo (interleaved L, R)
+- **Frame size:** 4 bytes (2 bytes left + 2 bytes right)
+
+### WAV Support
+
+`play_wav()` handles format conversion automatically:
+- **Input:** RIFF/WAVE PCM format (audio format tag 1)
+- **Bit depths:** 8-bit unsigned, 16-bit signed
+- **Channels:** Mono (duplicated to stereo) or stereo
+- **Sample rate:** Any (resampled to 48 kHz via nearest-neighbor)
+
+### Example: Playing a WAV File
+
+```rust
+use anyos_std::*;
+
+fn main() {
+    if !audio::audio_is_available() {
+        println!("No audio device");
+        return;
+    }
+
+    let fd = fs::open("/sounds/alert.wav", 0);
+    if fd == u32::MAX { return; }
+
+    let mut data = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = fs::read(fd, &mut buf);
+        if n == 0 || n == u32::MAX { break; }
+        data.extend_from_slice(&buf[..n as usize]);
+    }
+    fs::close(fd);
+
+    match audio::play_wav(&data) {
+        Ok(()) => {
+            while audio::audio_is_playing() {
+                process::yield_cpu();
+            }
+            println!("Done.");
+        }
+        Err(e) => println!("Error: {}", e),
+    }
+}
+```
+
+### Example: Volume Control
+
+```rust
+use anyos_std::audio;
+
+// Set volume to 50%
+audio::audio_set_volume(50);
+
+// Read current volume
+let vol = audio::audio_get_volume();
+```
+
+---
+
 ## `dll` -- Dynamic Library Loading
 
 ### Functions
@@ -631,6 +713,13 @@ All syscalls use `int 0x80` with EAX = syscall number and EBX-EDI for arguments.
 | Number | Name | Description |
 |--------|------|-------------|
 | 80 | SYS_DLL_LOAD | Load DLL |
+
+### Audio (120-121)
+
+| Number | Name | Args | Description |
+|--------|------|------|-------------|
+| 120 | SYS_AUDIO_WRITE | buf_ptr, buf_len | Write PCM data (16-bit LE stereo 48 kHz). Returns bytes accepted. |
+| 121 | SYS_AUDIO_CTL | cmd, arg | Audio control: 0=stop, 1=set_volume(arg), 2=get_volume, 3=is_playing, 4=is_available |
 
 ### Display (110-112)
 

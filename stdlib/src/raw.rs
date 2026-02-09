@@ -79,6 +79,10 @@ pub(crate) const SYS_SCREEN_SIZE: u32 = 72;
 // DLL
 pub(crate) const SYS_DLL_LOAD: u32 = 80;
 
+// Audio
+pub(crate) const SYS_AUDIO_WRITE: u32 = 120;
+pub(crate) const SYS_AUDIO_CTL: u32 = 121;
+
 // Display / GPU
 pub(crate) const SYS_SET_RESOLUTION: u32 = 110;
 pub(crate) const SYS_LIST_RESOLUTIONS: u32 = 111;

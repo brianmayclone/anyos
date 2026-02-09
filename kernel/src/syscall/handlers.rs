@@ -1036,6 +1036,41 @@ pub fn sys_gpu_info(buf_ptr: u32, buf_len: u32) -> u32 {
 }
 
 // =========================================================================
+// Audio
+// =========================================================================
+
+/// SYS_AUDIO_WRITE: Write PCM data to audio output.
+/// arg1 = pointer to PCM data buffer, arg2 = length in bytes.
+/// Returns number of bytes written.
+pub fn sys_audio_write(buf_ptr: u32, buf_len: u32) -> u32 {
+    if buf_ptr == 0 || buf_len == 0 {
+        return 0;
+    }
+    let data = unsafe {
+        core::slice::from_raw_parts(buf_ptr as *const u8, buf_len as usize)
+    };
+    crate::drivers::audio::write_pcm(data) as u32
+}
+
+/// SYS_AUDIO_CTL: Audio control operations.
+/// arg1 = command, arg2 = argument.
+///   0 = stop playback
+///   1 = set volume (arg2 = 0-100)
+///   2 = get volume (returns 0-100)
+///   3 = get status (returns 1 if playing, 0 if not)
+///   4 = is available (returns 1 if audio hw present)
+pub fn sys_audio_ctl(cmd: u32, arg: u32) -> u32 {
+    match cmd {
+        0 => { crate::drivers::audio::stop(); 0 }
+        1 => { crate::drivers::audio::set_volume(arg as u8); 0 }
+        2 => crate::drivers::audio::get_volume() as u32,
+        3 => if crate::drivers::audio::is_playing() { 1 } else { 0 },
+        4 => if crate::drivers::audio::is_available() { 1 } else { 0 },
+        _ => u32::MAX,
+    }
+}
+
+// =========================================================================
 // Device management (existing)
 // =========================================================================
 

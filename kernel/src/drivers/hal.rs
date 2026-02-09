@@ -441,21 +441,38 @@ impl Driver for EthernetDriver {
 
 /// Audio controller stub
 struct AudioDriver {
-    _pci: PciDevice,
+    pci: PciDevice,
+    initialized: bool,
 }
 
 impl Driver for AudioDriver {
-    fn name(&self) -> &str { "Audio Controller (stub)" }
+    fn name(&self) -> &str {
+        if self.initialized { "Intel AC'97 Audio" } else { "Audio Controller (no device)" }
+    }
     fn driver_type(&self) -> DriverType { DriverType::Audio }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn init(&mut self) -> Result<(), DriverError> {
+        crate::drivers::audio::ac97::init_from_pci(&self.pci);
+        self.initialized = crate::drivers::audio::ac97::is_available();
+        Ok(())
+    }
     fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
         Err(DriverError::NotSupported)
     }
-    fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize, DriverError> {
-        Err(DriverError::NotSupported)
+    fn write(&self, _offset: usize, buf: &[u8]) -> Result<usize, DriverError> {
+        if !self.initialized { return Err(DriverError::NotSupported); }
+        Ok(crate::drivers::audio::write_pcm(buf))
     }
-    fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
-        Err(DriverError::NotSupported)
+    fn ioctl(&mut self, cmd: u32, arg: u32) -> Result<u32, DriverError> {
+        if !self.initialized { return Err(DriverError::NotSupported); }
+        match cmd {
+            IOCTL_AUDIO_GET_SAMPLE_RATE => Ok(48000),
+            IOCTL_AUDIO_SET_VOLUME => {
+                crate::drivers::audio::set_volume(arg as u8);
+                Ok(0)
+            }
+            IOCTL_AUDIO_GET_VOLUME => Ok(crate::drivers::audio::get_volume() as u32),
+            _ => Err(DriverError::NotSupported),
+        }
     }
 }
 
@@ -607,12 +624,12 @@ static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
     },
     PciDriverEntry {
         match_rule: PciMatch::Class { class: 0x04, subclass: 0x01 },
-        factory: |pci| Some(Box::new(AudioDriver { _pci: pci.clone() })),
+        factory: |pci| Some(Box::new(AudioDriver { pci: pci.clone(), initialized: false })),
         specificity: 1,
     },
     PciDriverEntry {
         match_rule: PciMatch::Class { class: 0x04, subclass: 0x03 },
-        factory: |pci| Some(Box::new(AudioDriver { _pci: pci.clone() })),
+        factory: |pci| Some(Box::new(AudioDriver { pci: pci.clone(), initialized: false })),
         specificity: 1,
     },
     PciDriverEntry {

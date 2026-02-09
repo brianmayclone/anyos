@@ -1,0 +1,87 @@
+// Copyright (c) 2024-2026 Christian Moeller
+// SPDX-License-Identifier: MIT
+
+//! Client library for libimage.dll — image decoding shared library.
+//!
+//! Provides safe Rust wrappers around the raw DLL export functions.
+//! User programs depend on this crate to decode BMP, PNG, JPEG, and GIF images.
+
+#![no_std]
+
+pub mod raw;
+
+pub use raw::{ImageInfo, FMT_UNKNOWN, FMT_BMP, FMT_PNG, FMT_JPEG, FMT_GIF};
+
+/// Error type for image operations.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum ImageError {
+    InvalidData,
+    Unsupported,
+    BufferTooSmall,
+    ScratchTooSmall,
+    Unknown(i32),
+}
+
+fn err_from_code(code: i32) -> ImageError {
+    match code {
+        -1 => ImageError::InvalidData,
+        -2 => ImageError::Unsupported,
+        -3 => ImageError::BufferTooSmall,
+        -4 => ImageError::ScratchTooSmall,
+        other => ImageError::Unknown(other),
+    }
+}
+
+/// Probe an image file to determine format and dimensions.
+///
+/// Returns `Some(ImageInfo)` on success, or `None` if the format is unrecognized.
+/// The `scratch_needed` field tells you how large a scratch buffer to allocate
+/// for `decode()`.
+pub fn probe(data: &[u8]) -> Option<ImageInfo> {
+    let mut info = ImageInfo {
+        width: 0,
+        height: 0,
+        format: FMT_UNKNOWN,
+        scratch_needed: 0,
+    };
+    let ret = (raw::exports().image_probe)(data.as_ptr(), data.len() as u32, &mut info);
+    if ret == 0 {
+        Some(info)
+    } else {
+        None
+    }
+}
+
+/// Decode an image into ARGB8888 pixels.
+///
+/// - `data`: the raw image file bytes
+/// - `pixels`: output buffer, must have at least `width * height` elements
+/// - `scratch`: working memory buffer, must have at least `scratch_needed` bytes
+///
+/// Call `probe()` first to determine the required buffer sizes.
+pub fn decode(data: &[u8], pixels: &mut [u32], scratch: &mut [u8]) -> Result<(), ImageError> {
+    let ret = (raw::exports().image_decode)(
+        data.as_ptr(),
+        data.len() as u32,
+        pixels.as_mut_ptr(),
+        pixels.len() as u32,
+        scratch.as_mut_ptr(),
+        scratch.len() as u32,
+    );
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(err_from_code(ret))
+    }
+}
+
+/// Get the format name as a string.
+pub fn format_name(format: u32) -> &'static str {
+    match format {
+        FMT_BMP => "BMP",
+        FMT_PNG => "PNG",
+        FMT_JPEG => "JPEG",
+        FMT_GIF => "GIF",
+        _ => "Unknown",
+    }
+}

@@ -18,6 +18,7 @@ exclude = [
   "programs/system/settings",
   "programs/system/finder",
   "programs/system/notepad",
+  "programs/system/imgview",
   "programs/system/compositor/dock",
   "programs/mkdir",
   "programs/rm",
@@ -29,8 +30,11 @@ exclude = [
   "programs/hostname",
   "programs/ftp",
   "programs/wget",
+  "programs/play",
   "programs/dll/uisys",
   "programs/dll/uisys_client",
+  "programs/dll/libimage",
+  "programs/dll/libimage_client",
 ]
 resolver = "2"
 

@@ -120,6 +120,10 @@ pub const SYS_SET_RESOLUTION: u32 = 110;
 pub const SYS_LIST_RESOLUTIONS: u32 = 111;
 pub const SYS_GPU_INFO: u32 = 112;
 
+// Audio syscalls
+pub const SYS_AUDIO_WRITE: u32 = 120;
+pub const SYS_AUDIO_CTL: u32 = 121;
+
 // Window creation flags
 pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x01;
 pub const WIN_FLAG_BORDERLESS: u32 = 0x02;
@@ -271,6 +275,10 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         SYS_SET_RESOLUTION => handlers::sys_set_resolution(arg1, arg2),
         SYS_LIST_RESOLUTIONS => handlers::sys_list_resolutions(arg1, arg2),
         SYS_GPU_INFO => handlers::sys_gpu_info(arg1, arg2),
+
+        // Audio
+        SYS_AUDIO_WRITE => handlers::sys_audio_write(arg1, arg2),
+        SYS_AUDIO_CTL => handlers::sys_audio_ctl(arg1, arg2),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

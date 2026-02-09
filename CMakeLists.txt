@@ -241,6 +241,7 @@ endfunction()
 
 set(DLL_BINS "")
 add_dll(uisys ${CMAKE_SOURCE_DIR}/programs/dll/uisys)
+add_dll(libimage ${CMAKE_SOURCE_DIR}/programs/dll/libimage)
 
 set(RUST_USER_BINS "")
 add_rust_user_program(hello_rust ${CMAKE_SOURCE_DIR}/programs/hello_rust)
@@ -263,6 +264,7 @@ add_rust_user_program(sleep      ${CMAKE_SOURCE_DIR}/programs/sleep)
 add_rust_user_program(hostname   ${CMAKE_SOURCE_DIR}/programs/hostname)
 add_rust_user_program(ftp        ${CMAKE_SOURCE_DIR}/programs/ftp)
 add_rust_user_program(wget       ${CMAKE_SOURCE_DIR}/programs/wget)
+add_rust_user_program(play       ${CMAKE_SOURCE_DIR}/programs/play)
 
 set(SYSTEM_BINS "")
 add_rust_system_program(init        ${CMAKE_SOURCE_DIR}/programs/system/init)
@@ -271,6 +273,7 @@ add_rust_system_program(taskmanager ${CMAKE_SOURCE_DIR}/programs/system/taskmana
 add_rust_system_program(settings    ${CMAKE_SOURCE_DIR}/programs/system/settings)
 add_rust_system_program(finder      ${CMAKE_SOURCE_DIR}/programs/system/finder)
 add_rust_system_program(notepad     ${CMAKE_SOURCE_DIR}/programs/system/notepad)
+add_rust_system_program(imgview     ${CMAKE_SOURCE_DIR}/programs/system/imgview)
 
 # Build dock program (nested path: /system/compositor/dock)
 set(DOCK_SRC_DIR ${CMAKE_SOURCE_DIR}/programs/system/compositor/dock)
@@ -585,6 +588,21 @@ add_custom_target(run-ahci-vmware
   DEPENDS ${DISK_IMAGE}
   USES_TERMINAL
   COMMENT "Launching anyOS in QEMU with AHCI + VMware SVGA II"
+)
+
+add_custom_target(run-audio
+  COMMAND ${QEMU_EXECUTABLE}
+    -drive format=raw,file=${DISK_IMAGE}
+    -m 128M
+    -smp cpus=4
+    -serial stdio
+    -vga std
+    -netdev user,id=net0 -device e1000,netdev=net0
+    -device AC97,audiodev=audio0 -audiodev coreaudio,id=audio0
+    -no-reboot -no-shutdown
+  DEPENDS ${DISK_IMAGE}
+  USES_TERMINAL
+  COMMENT "Launching anyOS in QEMU with AC'97 audio"
 )
 
 add_custom_target(debug

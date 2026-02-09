@@ -177,6 +177,10 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         Ok(pages) => serial_println!("[OK] uisys.dll: {} pages", pages),
         Err(e) => serial_println!("[WARN] uisys.dll not loaded: {}", e),
     }
+    match task::dll::load_dll("/system/lib/libimage.dll", 0x0410_0000) {
+        Ok(pages) => serial_println!("[OK] libimage.dll: {} pages", pages),
+        Err(e) => serial_println!("[WARN] libimage.dll not loaded: {}", e),
+    }
 
     // Phase 8d: Run init process (benchmark + init.conf services)
     serial_println!("");
