@@ -53,9 +53,9 @@ fi
 # Force kernel rebuild if --clean
 if [ "$CLEAN" -eq 1 ]; then
     echo "Cleaning kernel build artifacts..."
-    rm -rf "${BUILD_DIR}/kernel/i686-anyos/debug/anyos_kernel.elf" \
-           "${BUILD_DIR}/kernel/i686-anyos/debug/.fingerprint/anyos_kernel-"* \
-           "${BUILD_DIR}/kernel/i686-anyos/debug/incremental/anyos_kernel-"* \
+    rm -rf "${BUILD_DIR}/kernel/x86_64-anyos/debug/anyos_kernel.elf" \
+           "${BUILD_DIR}/kernel/x86_64-anyos/debug/.fingerprint/anyos_kernel-"* \
+           "${BUILD_DIR}/kernel/x86_64-anyos/debug/incremental/anyos_kernel-"* \
            2>/dev/null
 fi
 

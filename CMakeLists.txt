@@ -5,13 +5,13 @@ project(anyOS NONE)
 # Configuration
 # ============================================================
 set(NASM_EXECUTABLE "nasm")
-set(QEMU_EXECUTABLE "qemu-system-i386")
+set(QEMU_EXECUTABLE "qemu-system-x86_64")
 set(CARGO_EXECUTABLE "$ENV{HOME}/.cargo/bin/cargo")
 
 option(ANYOS_DEBUG_VERBOSE "Enable verbose debug output" OFF)
 
 set(DISK_IMAGE "${CMAKE_BINARY_DIR}/anyos.img")
-set(KERNEL_ELF "${CMAKE_BINARY_DIR}/kernel/i686-anyos/debug/anyos_kernel.elf")
+set(KERNEL_ELF "${CMAKE_BINARY_DIR}/kernel/x86_64-anyos/debug/anyos_kernel.elf")
 
 # ============================================================
 # 1. Bootloader Stage 1 (MBR)
@@ -63,7 +63,7 @@ foreach(ASM_SRC ${KERNEL_ASM_SOURCES})
   set(ASM_OBJ ${CMAKE_BINARY_DIR}/kernel_asm_${ASM_NAME}.o)
   add_custom_command(
     OUTPUT ${ASM_OBJ}
-    COMMAND ${NASM_EXECUTABLE} -f elf32
+    COMMAND ${NASM_EXECUTABLE} -f elf64
       -o ${ASM_OBJ}
       ${ASM_SRC}
     DEPENDS ${ASM_SRC}
@@ -101,7 +101,7 @@ add_custom_command(
     "ANYOS_AP_TRAMPOLINE=${AP_TRAMPOLINE_BIN}"
     ${CARGO_EXECUTABLE} build
     --manifest-path ${CMAKE_SOURCE_DIR}/kernel/Cargo.toml
-    --target ${CMAKE_SOURCE_DIR}/i686-anyos.json
+    --target ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
     --target-dir ${CMAKE_BINARY_DIR}/kernel
     ${CARGO_FEATURES_ARG}
   DEPENDS
@@ -110,7 +110,7 @@ add_custom_command(
     ${CMAKE_SOURCE_DIR}/kernel/Cargo.toml
     ${CMAKE_SOURCE_DIR}/kernel/build.rs
     ${CMAKE_SOURCE_DIR}/kernel/link.ld
-    ${CMAKE_SOURCE_DIR}/i686-anyos.json
+    ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   COMMENT "Building kernel with Cargo"
 )
@@ -152,16 +152,16 @@ set(STDLIB_DEPS
   ${CMAKE_SOURCE_DIR}/stdlib/src/ui/mod.rs
   ${CMAKE_SOURCE_DIR}/stdlib/src/ui/window.rs
   ${CMAKE_SOURCE_DIR}/stdlib/link.ld
-  ${CMAKE_SOURCE_DIR}/i686-anyos.json
+  ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
 )
 
 function(add_rust_user_program NAME SRC_DIR)
-  set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/i686-anyos/debug/${NAME}.elf")
+  set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos/debug/${NAME}.elf")
   add_custom_command(
     OUTPUT ${ELF}
     COMMAND ${CARGO_EXECUTABLE} build
       --manifest-path ${SRC_DIR}/Cargo.toml
-      --target ${CMAKE_SOURCE_DIR}/i686-anyos.json
+      --target ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
       --target-dir ${CMAKE_BINARY_DIR}/programs/${NAME}
     DEPENDS
       ${SRC_DIR}/Cargo.toml
@@ -184,12 +184,12 @@ endfunction()
 
 # Variant for system programs (placed in /system/ instead of /bin/)
 function(add_rust_system_program NAME SRC_DIR)
-  set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/i686-anyos/debug/${NAME}.elf")
+  set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos/debug/${NAME}.elf")
   add_custom_command(
     OUTPUT ${ELF}
     COMMAND ${CARGO_EXECUTABLE} build
       --manifest-path ${SRC_DIR}/Cargo.toml
-      --target ${CMAKE_SOURCE_DIR}/i686-anyos.json
+      --target ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
       --target-dir ${CMAKE_BINARY_DIR}/programs/${NAME}
     DEPENDS
       ${SRC_DIR}/Cargo.toml
@@ -212,19 +212,19 @@ endfunction()
 
 # Variant for DLLs (placed in /system/lib/)
 function(add_dll NAME SRC_DIR)
-  set(DLL_ELF "${CMAKE_BINARY_DIR}/dll/${NAME}/i686-anyos/debug/${NAME}.elf")
+  set(DLL_ELF "${CMAKE_BINARY_DIR}/dll/${NAME}/x86_64-anyos/debug/${NAME}.elf")
   add_custom_command(
     OUTPUT ${DLL_ELF}
     COMMAND ${CARGO_EXECUTABLE} build
       --manifest-path ${SRC_DIR}/Cargo.toml
-      --target ${CMAKE_SOURCE_DIR}/i686-anyos.json
+      --target ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
       --target-dir ${CMAKE_BINARY_DIR}/dll/${NAME}
     DEPENDS
       ${SRC_DIR}/Cargo.toml
       ${SRC_DIR}/build.rs
       ${SRC_DIR}/src/main.rs
       ${SRC_DIR}/link.ld
-      ${CMAKE_SOURCE_DIR}/i686-anyos.json
+      ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Building DLL: ${NAME}"
   )
@@ -274,12 +274,12 @@ add_rust_system_program(notepad     ${CMAKE_SOURCE_DIR}/programs/system/notepad)
 
 # Build dock program (nested path: /system/compositor/dock)
 set(DOCK_SRC_DIR ${CMAKE_SOURCE_DIR}/programs/system/compositor/dock)
-set(DOCK_ELF "${CMAKE_BINARY_DIR}/programs/dock/i686-anyos/debug/dock.elf")
+set(DOCK_ELF "${CMAKE_BINARY_DIR}/programs/dock/x86_64-anyos/debug/dock.elf")
 add_custom_command(
   OUTPUT ${DOCK_ELF}
   COMMAND ${CARGO_EXECUTABLE} build
     --manifest-path ${DOCK_SRC_DIR}/Cargo.toml
-    --target ${CMAKE_SOURCE_DIR}/i686-anyos.json
+    --target ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
     --target-dir ${CMAKE_BINARY_DIR}/programs/dock
   DEPENDS
     ${DOCK_SRC_DIR}/Cargo.toml

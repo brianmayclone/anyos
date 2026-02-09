@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use crate::arch::x86::acpi::{IoApicInfo, IsoInfo};
 
 /// Virtual address where I/O APIC MMIO is mapped
-const IOAPIC_VIRT_BASE: u32 = 0xD011_0000;
+const IOAPIC_VIRT_BASE: u64 = 0xD011_0000;
 
 // I/O APIC registers (accessed indirectly via IOREGSEL/IOWIN)
 const IOAPIC_REGSEL: u32 = 0x00;  // Register select
@@ -46,7 +46,7 @@ pub fn init(io_apic_info: &[IoApicInfo], isos: &[IsoInfo]) {
 
     virtual_mem::map_page(
         VirtAddr::new(IOAPIC_VIRT_BASE),
-        PhysAddr::new(info.address),
+        PhysAddr::new(info.address as u64),
         0x03, // PAGE_PRESENT | PAGE_WRITABLE
     );
 
@@ -173,8 +173,8 @@ pub fn set_destination(gsi: u32, lapic_id: u8) {
 
 fn read_reg(reg: u32) -> u32 {
     unsafe {
-        let regsel = (IOAPIC_VIRT_BASE + IOAPIC_REGSEL) as *mut u32;
-        let iowin = (IOAPIC_VIRT_BASE + IOAPIC_IOWIN) as *mut u32;
+        let regsel = (IOAPIC_VIRT_BASE + IOAPIC_REGSEL as u64) as *mut u32;
+        let iowin = (IOAPIC_VIRT_BASE + IOAPIC_IOWIN as u64) as *mut u32;
         core::ptr::write_volatile(regsel, reg);
         core::ptr::read_volatile(iowin)
     }
@@ -182,8 +182,8 @@ fn read_reg(reg: u32) -> u32 {
 
 fn write_reg(reg: u32, value: u32) {
     unsafe {
-        let regsel = (IOAPIC_VIRT_BASE + IOAPIC_REGSEL) as *mut u32;
-        let iowin = (IOAPIC_VIRT_BASE + IOAPIC_IOWIN) as *mut u32;
+        let regsel = (IOAPIC_VIRT_BASE + IOAPIC_REGSEL as u64) as *mut u32;
+        let iowin = (IOAPIC_VIRT_BASE + IOAPIC_IOWIN as u64) as *mut u32;
         core::ptr::write_volatile(regsel, reg);
         core::ptr::write_volatile(iowin, value);
     }

@@ -1,5 +1,5 @@
 [build]
-target = "i686-anyos.json"
+target = "x86_64-anyos.json"
 
 [unstable]
 build-std = ["core", "alloc"]

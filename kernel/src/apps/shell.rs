@@ -167,7 +167,7 @@ impl Shell {
             "help" => self.cmd_help(out),
             "echo" => out.write_line(args),
             "clear" => out.clear(),
-            "uname" => out.write_line(".anyOS v0.1 i686"),
+            "uname" => out.write_line(".anyOS v0.1 x86_64"),
             "mem" => self.cmd_mem(out),
             "ps" => self.cmd_ps(out),
             "time" => self.cmd_time(out),

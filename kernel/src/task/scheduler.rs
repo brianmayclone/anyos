@@ -203,7 +203,7 @@ pub fn schedule() {
             // Update lock-free debug TID
             unsafe { DEBUG_CURRENT_TID = sched.threads[next_idx].tid; }
 
-            // Update TSS ESP0 for the new thread's kernel stack
+            // Update TSS RSP0 for the new thread's kernel stack
             let kstack_top = sched.threads[next_idx].kernel_stack_top();
             crate::arch::x86::tss::set_kernel_stack(kstack_top);
 
@@ -251,16 +251,16 @@ pub fn schedule() {
     guard.release_no_irq_restore();
 
     // Context switch with the lock released AND interrupts still disabled.
-    // context_switch.asm restores the target thread's EFLAGS (which includes IF).
+    // context_switch.asm restores the target thread's RFLAGS (which includes IF).
     if let Some((old_ctx, new_ctx)) = switch_info {
-        // Safety check: validate EIP before switching
-        let new_eip = unsafe { (*new_ctx).eip };
-        let new_esp = unsafe { (*new_ctx).esp };
+        // Safety check: validate RIP before switching
+        let new_rip = unsafe { (*new_ctx).rip };
+        let new_rsp = unsafe { (*new_ctx).rsp };
         let new_cr3 = unsafe { (*new_ctx).cr3 };
-        if new_eip < 0xC010_0000 {
+        if new_rip < 0xFFFF_FFFF_8010_0000 {
             crate::serial_println!(
-                "BUG: context_switch to bad EIP={:#010x} ESP={:#010x} CR3={:#010x}",
-                new_eip, new_esp, new_cr3,
+                "BUG: context_switch to bad RIP={:#018x} RSP={:#018x} CR3={:#018x}",
+                new_rip, new_rsp, new_cr3,
             );
             // Recover: re-acquire lock and fix scheduler state
             {
@@ -328,9 +328,18 @@ pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u32) {
     let sched = guard.as_mut().expect("Scheduler not initialized");
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.page_directory = Some(pd);
-        thread.context.cr3 = pd.as_u32();
+        thread.context.cr3 = pd.as_u64();
         thread.is_user = true;
         thread.brk = brk;
+    }
+}
+
+/// Set the architecture mode (Native64/Compat32) for a thread.
+pub fn set_thread_arch_mode(tid: u32, mode: crate::task::thread::ArchMode) {
+    let mut guard = SCHEDULER.lock();
+    let sched = guard.as_mut().expect("Scheduler not initialized");
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        thread.arch_mode = mode;
     }
 }
 
@@ -617,6 +626,8 @@ pub struct ThreadInfo {
     pub state: &'static str,
     pub name: alloc::string::String,
     pub cpu_ticks: u32,
+    /// Architecture mode: 0 = Native64, 1 = Compat32.
+    pub arch_mode: u8,
 }
 
 /// List all live threads (for `ps` command). Terminated threads are excluded.
@@ -640,6 +651,7 @@ pub fn list_threads() -> Vec<ThreadInfo> {
                 state: state_str,
                 name: alloc::string::String::from(thread.name_str()),
                 cpu_ticks: thread.cpu_ticks,
+                arch_mode: thread.arch_mode as u8,
             });
         }
     }

@@ -269,7 +269,7 @@ impl Shell {
             "clear" => buf.clear(),
             "uname" => {
                 buf.current_color = COLOR_FG;
-                buf.write_str(".anyOS v0.1 i686\n");
+                buf.write_str(".anyOS v0.1 x86_64\n");
             }
             "cd" => self.cmd_cd(args, buf),
             "pwd" => {

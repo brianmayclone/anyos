@@ -1,4 +1,4 @@
-//! x86 (i686) architecture support.
+//! x86-64 architecture support.
 //!
 //! Provides GDT, IDT, TSS, PIC/APIC interrupt controllers, PIT timer,
 //! I/O port access, IRQ management, ACPI parsing, and SMP startup.

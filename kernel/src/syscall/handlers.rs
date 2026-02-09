@@ -199,7 +199,7 @@ pub fn sys_sbrk(increment: i32) -> u32 {
         let mut addr = old_page_end;
         while addr < new_page_end {
             if let Some(phys) = physical::alloc_frame() {
-                virtual_mem::map_page(VirtAddr::new(addr), phys, 0x02 | 0x04);
+                virtual_mem::map_page(VirtAddr::new(addr as u64), phys, 0x02 | 0x04);
                 unsafe { core::ptr::write_bytes(addr as *mut u8, 0, page_size as usize); }
             } else {
                 return u32::MAX;
@@ -497,7 +497,7 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
         }
         1 => {
             // Thread list: 36 bytes each
-            // [tid:u32, prio:u8, state:u8, pad:u16, name:24bytes, cpu_ticks:u32]
+            // [tid:u32, prio:u8, state:u8, arch:u8, pad:u8, name:24bytes, cpu_ticks:u32]
             let threads = crate::task::scheduler::list_threads();
             if buf_ptr != 0 && buf_size > 0 {
                 let entry_size = 36usize;
@@ -512,7 +512,7 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
                     buf[off + 5] = match t.state {
                         "ready" => 0, "running" => 1, "blocked" => 2, "dead" => 3, _ => 255,
                     };
-                    buf[off + 6] = 0;
+                    buf[off + 6] = t.arch_mode; // 0=x86_64, 1=x86
                     buf[off + 7] = 0;
                     let name_bytes = t.name.as_bytes();
                     let n = name_bytes.len().min(23);
@@ -1116,7 +1116,7 @@ pub fn sys_dll_load(path_ptr: u32, _path_len: u32) -> u32 {
     if path_ptr == 0 { return 0; }
     let path = unsafe { read_user_str(path_ptr) };
     match crate::task::dll::get_dll_base(path) {
-        Some(base) => base,
+        Some(base) => base as u32,
         None => 0,
     }
 }

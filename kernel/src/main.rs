@@ -30,7 +30,7 @@ use boot_info::BootInfo;
 /// Receives the physical address of the [`BootInfo`] struct from the stage 2
 /// bootloader and drives initialization through 10 sequential phases.
 #[no_mangle]
-pub extern "C" fn kernel_main(boot_info_addr: u32) -> ! {
+pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     // Phase 1: Early output (serial only — silent boot for end users)
     drivers::serial::init();
     serial_println!("");

@@ -3,6 +3,14 @@
 //! This module contains the inline-assembly `int 0x80` wrappers and
 //! the syscall number constants.  Higher-level modules (process, fs,
 //! net, …) build on these.
+//!
+//! INT 0x80 convention (matches kernel/asm/syscall_entry.asm):
+//!   RAX = syscall number
+//!   RBX = arg1, RCX = arg2, RDX = arg3, RSI = arg4, RDI = arg5
+//!   Return value in RAX
+//!
+//! NOTE: LLVM reserves RBX on x86_64 (callee-saved base register).
+//! We work around this by manually saving/restoring RBX inside the asm block.
 
 use core::arch::asm;
 
@@ -101,76 +109,87 @@ pub(crate) const SYS_EVT_CHAN_UNSUBSCRIBE: u32 = 67;
 pub(crate) const SYS_EVT_CHAN_DESTROY: u32 = 68;
 
 // =========================================================================
-// Raw syscall helpers
+// Raw syscall helpers (x86-64 INT 0x80)
+//
+// RBX is reserved by LLVM on x86_64, so we manually push/pop it
+// inside the asm block and use a temp register to load arg1 into RBX.
 // =========================================================================
 
 #[inline(always)]
 pub(crate) fn syscall0(num: u32) -> u32 {
-    let ret: u32;
+    let ret: u64;
     unsafe {
         asm!("int 0x80",
-            inlateout("eax") num => ret,
-            lateout("ebx") _, lateout("ecx") _, lateout("edx") _,
+            inlateout("rax") num as u64 => ret,
         );
     }
-    ret
+    ret as u32
 }
 
 #[inline(always)]
-pub(crate) fn syscall1(num: u32, a1: u32) -> u32 {
-    let ret: u32;
-    unsafe {
-        asm!("int 0x80",
-            inlateout("eax") num => ret,
-            in("ebx") a1,
-            lateout("ecx") _, lateout("edx") _,
-        );
-    }
-    ret
-}
-
-#[inline(always)]
-pub(crate) fn syscall2(num: u32, a1: u32, a2: u32) -> u32 {
-    let ret: u32;
-    unsafe {
-        asm!("int 0x80",
-            inlateout("eax") num => ret,
-            in("ebx") a1, in("ecx") a2,
-            lateout("edx") _,
-        );
-    }
-    ret
-}
-
-#[inline(always)]
-pub(crate) fn syscall3(num: u32, a1: u32, a2: u32, a3: u32) -> u32 {
-    let ret: u32;
-    unsafe {
-        asm!("int 0x80",
-            inlateout("eax") num => ret,
-            in("ebx") a1, in("ecx") a2, in("edx") a3,
-        );
-    }
-    ret
-}
-
-#[inline(always)]
-pub(crate) fn syscall5(num: u32, a1: u32, a2: u32, a3: u32, a4: u32, a5: u32) -> u32 {
-    let ret: u32;
+pub(crate) fn syscall1(num: u32, a1: u64) -> u32 {
+    let ret: u64;
     unsafe {
         asm!(
-            "push esi",
-            "push edi",
-            "mov esi, {a4}",
-            "mov edi, {a5}",
+            "push rbx",
+            "mov rbx, {a1}",
             "int 0x80",
-            "pop edi",
-            "pop esi",
-            a4 = in(reg) a4,
-            a5 = in(reg) a5,
-            inlateout("eax") num => ret,
-            in("ebx") a1, in("ecx") a2, in("edx") a3,
+            "pop rbx",
+            a1 = in(reg) a1,
+            inlateout("rax") num as u64 => ret,
         );
     }
-    ret
+    ret as u32
+}
+
+#[inline(always)]
+pub(crate) fn syscall2(num: u32, a1: u64, a2: u64) -> u32 {
+    let ret: u64;
+    unsafe {
+        asm!(
+            "push rbx",
+            "mov rbx, {a1}",
+            "int 0x80",
+            "pop rbx",
+            a1 = in(reg) a1,
+            inlateout("rax") num as u64 => ret,
+            in("rcx") a2,
+        );
+    }
+    ret as u32
+}
+
+#[inline(always)]
+pub(crate) fn syscall3(num: u32, a1: u64, a2: u64, a3: u64) -> u32 {
+    let ret: u64;
+    unsafe {
+        asm!(
+            "push rbx",
+            "mov rbx, {a1}",
+            "int 0x80",
+            "pop rbx",
+            a1 = in(reg) a1,
+            inlateout("rax") num as u64 => ret,
+            in("rcx") a2, in("rdx") a3,
+        );
+    }
+    ret as u32
+}
+
+#[inline(always)]
+pub(crate) fn syscall5(num: u32, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> u32 {
+    let ret: u64;
+    unsafe {
+        asm!(
+            "push rbx",
+            "mov rbx, {a1}",
+            "int 0x80",
+            "pop rbx",
+            a1 = in(reg) a1,
+            inlateout("rax") num as u64 => ret,
+            in("rcx") a2, in("rdx") a3,
+            in("rsi") a4, in("rdi") a5,
+        );
+    }
+    ret as u32
 }

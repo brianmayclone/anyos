@@ -22,9 +22,10 @@ const HEADER_Y_OFFSET: i32 = STATS_H + TOOLBAR_H;
 // Column X positions
 const COL_TID: i32 = 10;
 const COL_NAME: i32 = 60;
-const COL_STATE: i32 = 200;
-const COL_CPU: i32 = 290;
-const COL_PRIO: i32 = 370;
+const COL_STATE: i32 = 190;
+const COL_ARCH: i32 = 280;
+const COL_CPU: i32 = 340;
+const COL_PRIO: i32 = 410;
 
 // Selected row highlight color
 const SEL_BG: u32 = 0xFF0A4A8A;
@@ -37,6 +38,7 @@ struct TaskEntry {
     name_len: usize,
     state: u8,
     priority: u8,
+    arch: u8,       // 0=x86_64, 1=x86
     cpu_ticks: u32,
 }
 
@@ -61,11 +63,12 @@ fn fetch_tasks(buf: &mut [u8; 36 * 64]) -> Vec<TaskEntry> {
         let tid = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
         let prio = buf[off + 4];
         let state = buf[off + 5];
+        let arch = buf[off + 6]; // 0=x86_64, 1=x86
         let mut name = [0u8; 24];
         name.copy_from_slice(&buf[off + 8..off + 32]);
         let name_len = name.iter().position(|&b| b == 0).unwrap_or(24);
         let cpu_ticks = u32::from_le_bytes([buf[off + 32], buf[off + 33], buf[off + 34], buf[off + 35]]);
-        result.push(TaskEntry { tid, name, name_len, state, priority: prio, cpu_ticks });
+        result.push(TaskEntry { tid, name, name_len, state, priority: prio, arch, cpu_ticks });
     }
     result
 }
@@ -161,6 +164,7 @@ fn render(
     label(win_id, COL_TID, y + 3, "TID", colors::TEXT, FontSize::Small, TextAlign::Left);
     label(win_id, COL_NAME, y + 3, "Process", colors::TEXT, FontSize::Small, TextAlign::Left);
     label(win_id, COL_STATE, y + 3, "State", colors::TEXT, FontSize::Small, TextAlign::Left);
+    label(win_id, COL_ARCH, y + 3, "Arch", colors::TEXT, FontSize::Small, TextAlign::Left);
     label(win_id, COL_CPU, y + 3, "CPU", colors::TEXT, FontSize::Small, TextAlign::Left);
     label(win_id, COL_PRIO, y + 3, "Priority", colors::TEXT, FontSize::Small, TextAlign::Left);
     y += ROW_H;
@@ -199,6 +203,11 @@ fn render(
 
         // State
         status_indicator(win_id, COL_STATE, y + 3, state_kind, state_str);
+
+        // Architecture
+        let arch_str = if task.arch == 1 { "x86" } else { "x86_64" };
+        let arch_color = if task.arch == 1 { 0xFFFF9500 } else { colors::TEXT_SECONDARY };
+        label(win_id, COL_ARCH, y + 3, arch_str, arch_color, FontSize::Small, TextAlign::Left);
 
         // CPU ticks (as percentage of total if > 0)
         let mut cpubuf = [0u8; 12];
@@ -284,12 +293,12 @@ fn fmt_process_count<'a>(buf: &'a mut [u8; 16], count: usize) -> &'a str {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
-    let win_id = window::create("Activity Monitor", 150, 80, 450, 380);
+    let win_id = window::create("Activity Monitor", 120, 80, 500, 380);
     if win_id == u32::MAX {
         return;
     }
 
-    let (mut win_w, mut win_h) = window::get_size(win_id).unwrap_or((450, 380));
+    let (mut win_w, mut win_h) = window::get_size(win_id).unwrap_or((500, 380));
 
     // Open CPU load pipe
     let cpu_pipe_id = ipc::pipe_open("sys:cpu_load");

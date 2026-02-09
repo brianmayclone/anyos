@@ -25,18 +25,37 @@ def elf2bin(elf_path: str, bin_path: str) -> None:
         print(f"Error: {elf_path} is not an ELF file", file=sys.stderr)
         sys.exit(1)
 
-    # Parse ELF header (32-bit little-endian)
-    e_phoff = struct.unpack_from("<I", data, 28)[0]
-    e_phentsize = struct.unpack_from("<H", data, 42)[0]
-    e_phnum = struct.unpack_from("<H", data, 44)[0]
+    # Detect ELF class: 1 = 32-bit, 2 = 64-bit
+    ei_class = data[4]
+
+    if ei_class == 2:
+        # ELF64: e_phoff at offset 32 (8 bytes), e_phentsize at 54, e_phnum at 56
+        e_phoff = struct.unpack_from("<Q", data, 32)[0]
+        e_phentsize = struct.unpack_from("<H", data, 54)[0]
+        e_phnum = struct.unpack_from("<H", data, 56)[0]
+    else:
+        # ELF32: e_phoff at offset 28 (4 bytes), e_phentsize at 42, e_phnum at 44
+        e_phoff = struct.unpack_from("<I", data, 28)[0]
+        e_phentsize = struct.unpack_from("<H", data, 42)[0]
+        e_phnum = struct.unpack_from("<H", data, 44)[0]
 
     # Collect PT_LOAD segments
     segments = []
     for i in range(e_phnum):
         off = e_phoff + i * e_phentsize
-        p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz = struct.unpack_from(
-            "<IIIIII", data, off
-        )
+        if ei_class == 2:
+            # ELF64 Phdr: p_type(4), p_flags(4), p_offset(8), p_vaddr(8),
+            #             p_paddr(8), p_filesz(8), p_memsz(8), p_align(8)
+            p_type = struct.unpack_from("<I", data, off)[0]
+            p_offset, p_vaddr, p_paddr, p_filesz, p_memsz = struct.unpack_from(
+                "<QQQQQ", data, off + 8
+            )
+        else:
+            # ELF32 Phdr: p_type(4), p_offset(4), p_vaddr(4), p_paddr(4),
+            #             p_filesz(4), p_memsz(4), p_flags(4), p_align(4)
+            p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz = struct.unpack_from(
+                "<IIIIII", data, off
+            )
         if p_type == 1:  # PT_LOAD
             segments.append((p_vaddr, p_offset, p_filesz, p_memsz))
 

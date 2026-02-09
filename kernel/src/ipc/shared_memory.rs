@@ -75,7 +75,7 @@ pub fn map_region(region_id: u32, base_virt: VirtAddr) -> bool {
     };
 
     for (i, frame) in region.physical_frames.iter().enumerate() {
-        let virt = VirtAddr::new(base_virt.as_u32() + (i * FRAME_SIZE) as u32);
+        let virt = VirtAddr::new(base_virt.as_u64() + (i * FRAME_SIZE) as u64);
         crate::memory::virtual_mem::map_page(virt, *frame, 0x07); // Present + Writable + User
     }
 

@@ -1,8 +1,11 @@
 //! System call interface (`int 0x80`) -- dispatch, number definitions, and register layout.
 //!
-//! User programs invoke syscalls via `int 0x80` with the syscall number in EAX and up to
-//! five arguments in EBX, ECX, EDX, ESI, EDI. The assembly stub (`syscall_entry.asm`) saves
+//! User programs invoke syscalls via `int 0x80` with the syscall number in RAX and up to
+//! five arguments in RBX, RCX, RDX, RSI, RDI. The assembly stub (`syscall_entry.asm`) saves
 //! registers and calls [`syscall_dispatch`], which routes to the appropriate handler.
+//!
+//! For 32-bit compat processes the convention is the same (EAX, EBX, ECX, EDX, ESI, EDI)
+//! with registers zero-extended to 64-bit by the CPU on transition to long mode.
 
 pub mod handlers;
 pub mod table;
@@ -124,28 +127,32 @@ pub const WIN_FLAG_ALWAYS_ON_TOP: u32 = 0x04;
 
 /// Register frame pushed by `syscall_entry.asm` before calling [`syscall_dispatch`].
 ///
-/// The layout matches the pushad order plus segment registers and the CPU-pushed
-/// interrupt frame (EIP, CS, EFLAGS).
+/// The layout matches the individual GPR pushes (no pushad in 64-bit mode) plus the
+/// CPU-pushed interrupt frame (RIP, CS, RFLAGS, RSP, SS — always pushed in long mode).
 #[repr(C)]
 pub struct SyscallRegs {
-    // Segment registers (pushed by stub)
-    pub gs: u32,
-    pub fs: u32,
-    pub es: u32,
-    pub ds: u32,
-    // pushad order: edi, esi, ebp, esp, ebx, edx, ecx, eax
-    pub edi: u32,
-    pub esi: u32,
-    pub ebp: u32,
-    pub _esp: u32,
-    pub ebx: u32,
-    pub edx: u32,
-    pub ecx: u32,
-    pub eax: u32,
-    // CPU-pushed
-    pub eip: u32,
-    pub cs: u32,
-    pub eflags: u32,
+    // Pushed by stub (last push = lowest address = first field)
+    pub r15: u64,
+    pub r14: u64,
+    pub r13: u64,
+    pub r12: u64,
+    pub r11: u64,
+    pub r10: u64,
+    pub r9: u64,
+    pub r8: u64,
+    pub rbp: u64,
+    pub rdi: u64,
+    pub rsi: u64,
+    pub rdx: u64,
+    pub rcx: u64,
+    pub rbx: u64,
+    pub rax: u64,
+    // CPU-pushed (INT 0x80)
+    pub rip: u64,
+    pub cs: u64,
+    pub rflags: u64,
+    pub rsp: u64,
+    pub ss: u64,
 }
 
 /// Register the `int 0x80` syscall trap gate and log readiness.
@@ -153,15 +160,19 @@ pub fn init() {
     crate::serial_println!("[OK] Syscall interface initialized (int 0x80)");
 }
 
-/// Called from syscall_entry.asm
+/// Called from syscall_entry.asm.
+///
+/// INT 0x80 convention: RAX=num, RBX=arg1, RCX=arg2, RDX=arg3, RSI=arg4, RDI=arg5.
+/// For 32-bit compat processes the same registers are used (zero-extended by CPU).
+/// All handler args remain u32 for now; they will be widened to u64 in Phase 6.
 #[no_mangle]
 pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
-    let syscall_num = regs.eax;
-    let arg1 = regs.ebx;
-    let arg2 = regs.ecx;
-    let arg3 = regs.edx;
-    let arg4 = regs.esi;
-    let arg5 = regs.edi;
+    let syscall_num = regs.rax as u32;
+    let arg1 = regs.rbx as u32;
+    let arg2 = regs.rcx as u32;
+    let arg3 = regs.rdx as u32;
+    let arg4 = regs.rsi as u32;
+    let arg5 = regs.rdi as u32;
 
     match syscall_num {
         // Process management

@@ -385,7 +385,7 @@ fn render_about(win: u32, cx: i32, cw: u32, sy: i32) {
     let ry = ry + ROW_H;
     divider_h(win, lx, ry, cw - PAD as u32 * 2);
     label(win, lx, ry + 12, "Kernel", colors::TEXT, FontSize::Normal, TextAlign::Left);
-    label(win, vx, ry + 12, "i686-anyos", colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+    label(win, vx, ry + 12, "x86_64-anyos", colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
 
     let ry = ry + ROW_H;
     divider_h(win, lx, ry, cw - PAD as u32 * 2);

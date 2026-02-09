@@ -42,20 +42,18 @@ static BSP_LAPIC_ID: AtomicU8 = AtomicU8::new(0);
 const AP_TRAMPOLINE_PHYS: u32 = 0x8000;
 
 /// Communication area between BSP and AP (below trampoline)
-/// Layout at 0x7000:
-///   0x7F00: u32 — stack pointer for the AP
-///   0x7F04: u32 — page directory (CR3) for the AP
-///   0x7F08: u32 — GDT pointer (linear address of GDT descriptor)
-///   0x7F0C: u32 — entry point (Rust function pointer)
-///   0x7F10: u8  — AP ready flag (set by AP when initialized)
-///   0x7F14: u32 — cpu_id assigned to the AP
-const AP_COMM_BASE: u32 = 0x7F00;
-const AP_COMM_STACK: u32 = AP_COMM_BASE;
-const AP_COMM_CR3: u32   = AP_COMM_BASE + 4;
-const AP_COMM_GDT: u32   = AP_COMM_BASE + 8;
-const AP_COMM_ENTRY: u32 = AP_COMM_BASE + 12;
-const AP_COMM_READY: u32 = AP_COMM_BASE + 16;
-const AP_COMM_CPUID: u32 = AP_COMM_BASE + 20;
+/// Layout at 0x7F00 (64-bit):
+///   0x7F00: u64 — stack pointer for the AP (virtual address)
+///   0x7F08: u64 — CR3 (PML4 physical address)
+///   0x7F10: u64 — entry point (Rust function pointer, virtual address)
+///   0x7F18: u8  — AP ready flag (set by AP when initialized)
+///   0x7F1C: u32 — cpu_id assigned to the AP
+const AP_COMM_BASE: u64 = 0x7F00;
+const AP_COMM_STACK: u64 = AP_COMM_BASE;
+const AP_COMM_CR3: u64   = AP_COMM_BASE + 8;
+const AP_COMM_ENTRY: u64 = AP_COMM_BASE + 16;
+const AP_COMM_READY: u64 = AP_COMM_BASE + 24;
+const AP_COMM_CPUID: u64 = AP_COMM_BASE + 28;
 
 /// Initialize BSP's per-CPU data.
 pub fn init_bsp() {
@@ -101,18 +99,16 @@ pub fn start_aps(processors: &[ProcessorInfo]) {
             continue;
         }
 
-        // Set up communication area
+        // Set up communication area (64-bit values)
         unsafe {
-            core::ptr::write_volatile(AP_COMM_STACK as *mut u32, stack_top);
-            core::ptr::write_volatile(AP_COMM_CR3 as *mut u32, cr3);
-            // GDT: APs share the kernel GDT (it's in a static)
-            // The trampoline will load the GDT from a local descriptor embedded in it
-            core::ptr::write_volatile(AP_COMM_ENTRY as *mut u32, ap_entry as u32);
+            core::ptr::write_volatile(AP_COMM_STACK as *mut u64, stack_top);
+            core::ptr::write_volatile(AP_COMM_CR3 as *mut u64, cr3);
+            core::ptr::write_volatile(AP_COMM_ENTRY as *mut u64, ap_entry as u64);
             core::ptr::write_volatile(AP_COMM_READY as *mut u8, 0);
             core::ptr::write_volatile(AP_COMM_CPUID as *mut u32, cpu_id as u32);
         }
 
-        crate::serial_println!("  SMP: stack_top={:#010x}, CR3={:#010x}", stack_top, cr3);
+        crate::serial_println!("  SMP: stack_top={:#018x}, CR3={:#018x}", stack_top, cr3);
 
         // Send INIT IPI
         crate::arch::x86::apic::send_init(proc_info.apic_id);
@@ -163,7 +159,7 @@ pub fn start_aps(processors: &[ProcessorInfo]) {
         cpu_count(), AP_STARTED.load(Ordering::SeqCst));
 }
 
-/// AP entry point — called by trampoline after switching to protected mode.
+/// AP entry point — called by trampoline after switching to long mode.
 /// Runs on the AP's own stack. Must never return.
 extern "C" fn ap_entry() -> ! {
     // Load the kernel's GDT (replace trampoline's minimal GDT)
@@ -210,9 +206,9 @@ fn install_trampoline() {
 /// Allocate a 16 KiB stack for an AP. Returns the virtual address of the stack TOP.
 /// Uses the kernel heap so the returned address is a valid higher-half virtual address,
 /// accessible in any context that uses the kernel page directory.
-fn alloc_ap_stack_top() -> u32 {
+fn alloc_ap_stack_top() -> u64 {
     let stack = alloc::vec![0u8; 16 * 1024];
-    let top = stack.as_ptr() as u32 + stack.len() as u32;
+    let top = stack.as_ptr() as u64 + stack.len() as u64;
     core::mem::forget(stack); // intentional leak — AP stack lives forever
     top
 }

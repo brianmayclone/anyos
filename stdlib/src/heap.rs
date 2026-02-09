@@ -6,13 +6,13 @@ static ALLOCATOR: BumpAlloc = BumpAlloc;
 struct BumpAlloc;
 
 /// Next allocation position (grows upward).
-static mut HEAP_POS: u32 = 0;
+static mut HEAP_POS: u64 = 0;
 /// Current end of mapped heap pages (kernel break).
-static mut HEAP_END: u32 = 0;
+static mut HEAP_END: u64 = 0;
 
 /// Initialize the heap allocator. Must be called before any allocation.
 pub fn init() {
-    let brk = crate::process::sbrk(0);
+    let brk = crate::process::sbrk(0) as u64;
     unsafe {
         HEAP_POS = brk;
         HEAP_END = brk;
@@ -21,8 +21,8 @@ pub fn init() {
 
 unsafe impl GlobalAlloc for BumpAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let align = layout.align() as u32;
-        let size = layout.size() as u32;
+        let align = layout.align() as u64;
+        let size = layout.size() as u64;
 
         // Align current position
         let aligned = (HEAP_POS + align - 1) & !(align - 1);
@@ -34,7 +34,7 @@ unsafe impl GlobalAlloc for BumpAlloc {
             // Round up to page size (4 KiB) for efficiency
             let grow = (needed + 4095) & !4095;
             let result = crate::process::sbrk(grow as i32);
-            if result == u32::MAX {
+            if result == u32::MAX as usize {
                 return core::ptr::null_mut();
             }
             HEAP_END += grow;

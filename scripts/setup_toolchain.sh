@@ -49,7 +49,7 @@ if ! command -v ninja &> /dev/null; then
 fi
 
 # Check for QEMU
-if ! command -v qemu-system-i386 &> /dev/null; then
+if ! command -v qemu-system-x86_64 &> /dev/null; then
     echo "Installing QEMU..."
     if command -v brew &> /dev/null; then
         brew install qemu
@@ -65,6 +65,6 @@ echo "  rustc: $(rustc +nightly --version)"
 echo "  nasm:  $(nasm --version)"
 echo "  cmake: $(cmake --version | head -1)"
 echo "  ninja: $(ninja --version)"
-echo "  qemu:  $(qemu-system-i386 --version | head -1)"
+echo "  qemu:  $(qemu-system-x86_64 --version | head -1)"
 echo ""
 echo "Toolchain setup complete!"

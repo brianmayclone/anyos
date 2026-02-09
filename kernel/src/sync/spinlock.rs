@@ -33,9 +33,9 @@ pub struct SpinlockGuard<'a, T> {
 /// Check if interrupts are currently enabled (EFLAGS.IF bit 9).
 #[inline(always)]
 fn interrupts_enabled() -> bool {
-    let flags: u32;
+    let flags: u64;
     unsafe {
-        core::arch::asm!("pushfd; pop {}", out(reg) flags, options(nomem, preserves_flags));
+        core::arch::asm!("pushfq; pop {}", out(reg) flags, options(nomem, preserves_flags));
     }
     flags & (1 << 9) != 0
 }

@@ -10,6 +10,15 @@ use alloc::vec;
 
 static mut NEXT_TID: u32 = 1;
 
+/// Architecture mode for user-space threads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchMode {
+    /// Native 64-bit long mode (CS=0x2B).
+    Native64 = 0,
+    /// 32-bit compatibility mode under long mode (CS=0x1B).
+    Compat32 = 1,
+}
+
 /// Execution state of a thread in the scheduler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadState {
@@ -44,6 +53,8 @@ pub struct Thread {
     pub stdout_pipe: u32,
     /// CPU ticks consumed by this thread (incremented each scheduler tick while running).
     pub cpu_ticks: u32,
+    /// Architecture mode for user threads (Native64 or Compat32).
+    pub arch_mode: ArchMode,
 }
 
 /// Size of each thread's kernel-mode stack.
@@ -65,15 +76,18 @@ impl Thread {
         // would create a 16 KiB temporary on the current stack — fatal when
         // called from a syscall where the kernel stack is only 16 KiB).
         let stack: Box<[u8]> = vec![0u8; KERNEL_STACK_SIZE].into_boxed_slice();
-        let stack_top = stack.as_ptr() as u32 + KERNEL_STACK_SIZE as u32;
+        let stack_top = stack.as_ptr() as u64 + KERNEL_STACK_SIZE as u64;
 
         // Set up initial context so that when we "switch" to this thread,
-        // it starts executing at `entry`
+        // it starts executing at `entry`.
+        // RSP is set to stack_top - 8 for proper 16-byte ABI alignment:
+        // the push+ret in context_switch results in RSP = (stack_top - 8)
+        // at function entry, which satisfies RSP % 16 == 8.
         let mut context = CpuContext::default();
-        context.eip = entry as *const () as u32;
-        context.esp = stack_top;
-        context.ebp = stack_top;
-        context.eflags = 0x202; // IF (interrupts enabled) + reserved bit 1
+        context.rip = entry as *const () as u64;
+        context.rsp = stack_top - 8;
+        context.rbp = stack_top;
+        context.rflags = 0x202; // IF (interrupts enabled) + reserved bit 1
         // Use the current page directory (all kernel threads share same address space)
         unsafe { core::arch::asm!("mov {}, cr3", out(reg) context.cr3); }
 
@@ -98,12 +112,13 @@ impl Thread {
             args: [0u8; 256],
             stdout_pipe: 0,
             cpu_ticks: 0,
+            arch_mode: ArchMode::Native64,
         }
     }
 
     /// Return the top (highest address) of this thread's kernel stack.
-    pub fn kernel_stack_top(&self) -> u32 {
-        self.kernel_stack.as_ptr() as u32 + self.kernel_stack.len() as u32
+    pub fn kernel_stack_top(&self) -> u64 {
+        self.kernel_stack.as_ptr() as u64 + self.kernel_stack.len() as u64
     }
 
     /// Return the thread name as a UTF-8 string slice.

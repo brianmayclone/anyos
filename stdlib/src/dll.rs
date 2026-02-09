@@ -9,5 +9,5 @@ pub fn dll_load(path: &str) -> u32 {
     let plen = path.len().min(256);
     path_buf[..plen].copy_from_slice(&path.as_bytes()[..plen]);
     path_buf[plen] = 0;
-    syscall2(SYS_DLL_LOAD, path_buf.as_ptr() as u32, plen as u32)
+    syscall2(SYS_DLL_LOAD, path_buf.as_ptr() as u64, plen as u64)
 }

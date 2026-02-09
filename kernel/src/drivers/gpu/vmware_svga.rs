@@ -64,7 +64,7 @@ const SVGA_CMD_RECT_COPY: u32 = 3;
 const SVGA_CMD_DEFINE_CURSOR: u32 = 19;
 
 // Virtual address for FIFO mapping (after E1000 MMIO at 0xD000_0000, 128K)
-const FIFO_VIRT_BASE: u32 = 0xD002_0000;
+const FIFO_VIRT_BASE: u64 = 0xD002_0000;
 const FIFO_MAP_PAGES: usize = 64; // 256 KiB
 
 /// VMware SVGA II GPU driver state, including I/O base, FIFO mapping, and capabilities.
@@ -73,7 +73,7 @@ pub struct VmwareSvgaGpu {
     fb_phys: u32,
     fifo_phys: u32,
     fifo_size: u32,
-    fifo_virt: u32,
+    fifo_virt: u64,
     capabilities: u32,
     width: u32,
     height: u32,
@@ -136,7 +136,7 @@ impl VmwareSvgaGpu {
             }
 
             unsafe {
-                let ptr = (self.fifo_virt + next_cmd) as *mut u32;
+                let ptr = (self.fifo_virt + next_cmd as u64) as *mut u32;
                 core::ptr::write_volatile(ptr, word);
             }
 
@@ -403,8 +403,8 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     let pages = (gpu.fifo_size as usize + 4095) / 4096;
     let pages = pages.min(FIFO_MAP_PAGES);
     for i in 0..pages {
-        let virt = VirtAddr::new(FIFO_VIRT_BASE + (i as u32) * 4096);
-        let phys = crate::memory::address::PhysAddr::new(fifo_phys + (i as u32) * 4096);
+        let virt = VirtAddr::new(FIFO_VIRT_BASE + (i as u64) * 4096);
+        let phys = crate::memory::address::PhysAddr::new(fifo_phys as u64 + (i as u64) * 4096);
         crate::memory::virtual_mem::map_page(virt, phys, 0x03); // R/W, present
     }
     gpu.fifo_virt = FIFO_VIRT_BASE;

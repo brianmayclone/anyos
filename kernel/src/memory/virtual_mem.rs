@@ -1,8 +1,11 @@
-//! Virtual memory manager using two-level x86 paging with recursive mapping.
+//! Virtual memory manager using four-level x86-64 paging with recursive mapping.
 //!
-//! Sets up identity-mapped lower memory, higher-half kernel mapping at `0xC0000000`,
-//! and per-process user page directories. Uses PDE 1023 as a recursive self-map
-//! to allow in-place page table manipulation.
+//! The bootloader sets up initial 2 MiB page mappings. This module takes over,
+//! creating fine-grained 4 KiB page management with PML4 entry 510 as a recursive
+//! self-map for in-place page table manipulation.
+//!
+//! Kernel space: PML4[256..511] (upper canonical half, 0xFFFF800000000000+)
+//! User space:   PML4[0..255]   (lower canonical half, 0x0000000000000000+)
 
 use crate::boot_info::BootInfo;
 use crate::memory::address::{PhysAddr, VirtAddr};
@@ -11,258 +14,403 @@ use crate::memory::FRAME_SIZE;
 use core::arch::asm;
 
 /// Page table entry flag: page is present in physical memory.
-const PAGE_PRESENT: u32 = 1 << 0;
+const PAGE_PRESENT: u64 = 1 << 0;
 /// Page table entry flag: page is writable.
-const PAGE_WRITABLE: u32 = 1 << 1;
+const PAGE_WRITABLE: u64 = 1 << 1;
 /// Page table entry flag: page is accessible from Ring 3 (user mode).
-const PAGE_USER: u32 = 1 << 2;
+const PAGE_USER: u64 = 1 << 2;
 
-/// Number of entries in a page directory or page table (1024 for 32-bit x86).
-const ENTRIES_PER_TABLE: usize = 1024;
+/// Number of entries in a page table (512 for x86-64).
+const ENTRIES_PER_TABLE: usize = 512;
 
-// Kernel virtual base address (higher-half)
-const KERNEL_VIRT_BASE: u32 = 0xC000_0000;
+/// Mask to extract the physical address from a page table entry (bits 12..51).
+const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 
-// Page directory physical address (allocated during init)
-static mut PAGE_DIRECTORY_PHYS: u32 = 0;
+/// Kernel higher-half virtual base (must match link.ld).
+const KERNEL_VIRT_BASE: u64 = 0xFFFF_FFFF_8000_0000;
 
-/// Initialize virtual memory with identity mapping + higher-half kernel mapping.
+/// Recursive mapping index in PML4 (entry 510).
+/// PML4[510] points to the PML4 itself, providing access to all page tables.
+const RECURSIVE_INDEX: usize = 510;
+
+// ---- Recursive mapping virtual address computation ----
+//
+// With PML4[510] = self-reference, we can construct virtual addresses that
+// map to any level of the page table hierarchy:
+//
+// To access PTE for vaddr:
+//   recursive_pt_addr(vaddr) = sign_extend(510 << 39 | pml4i << 30 | pdpti << 21 | pdi << 12) + pti*8
+//
+// To access PDE for vaddr:
+//   recursive_pd_addr(vaddr) = sign_extend(510 << 39 | 510 << 30 | pml4i << 21 | pdpti << 12) + pdi*8
+//
+// To access PDPTE for vaddr:
+//   recursive_pdpt_addr(vaddr) = sign_extend(510 << 39 | 510 << 30 | 510 << 21 | pml4i << 12) + pdpti*8
+//
+// To access PML4E:
+//   recursive_pml4_addr = sign_extend(510 << 39 | 510 << 30 | 510 << 21 | 510 << 12) = 0xFFFF_FF7F_BFDF_E000
+
+/// Base address for accessing the PML4 table via recursive mapping.
+const RECURSIVE_PML4_BASE: u64 = 0xFFFF_FF7F_BFDF_E000;
+
+/// Sign-extend a 48-bit address to 64-bit canonical form.
+fn sign_extend(addr: u64) -> u64 {
+    // If bit 47 is set, fill bits 48-63 with 1s
+    if addr & (1u64 << 47) != 0 {
+        addr | 0xFFFF_0000_0000_0000
+    } else {
+        addr & 0x0000_FFFF_FFFF_FFFF
+    }
+}
+
+/// Compute virtual address to access the page table (level 1) entry for `vaddr`.
+fn recursive_pt_base(vaddr: VirtAddr) -> u64 {
+    let pml4i = vaddr.pml4_index() as u64;
+    let pdpti = vaddr.pdpt_index() as u64;
+    let pdi = vaddr.pd_index() as u64;
+    sign_extend(
+        (RECURSIVE_INDEX as u64) << 39 | pml4i << 30 | pdpti << 21 | pdi << 12,
+    )
+}
+
+/// Compute virtual address to access the page directory (level 2) entry for `vaddr`.
+fn recursive_pd_base(vaddr: VirtAddr) -> u64 {
+    let pml4i = vaddr.pml4_index() as u64;
+    let pdpti = vaddr.pdpt_index() as u64;
+    sign_extend(
+        (RECURSIVE_INDEX as u64) << 39
+            | (RECURSIVE_INDEX as u64) << 30
+            | pml4i << 21
+            | pdpti << 12,
+    )
+}
+
+/// Compute virtual address to access the PDPT (level 3) entry for `vaddr`.
+fn recursive_pdpt_base(vaddr: VirtAddr) -> u64 {
+    let pml4i = vaddr.pml4_index() as u64;
+    sign_extend(
+        (RECURSIVE_INDEX as u64) << 39
+            | (RECURSIVE_INDEX as u64) << 30
+            | (RECURSIVE_INDEX as u64) << 21
+            | pml4i << 12,
+    )
+}
+
+// PML4 physical address (set during init, used for kernel_cr3)
+static mut PML4_PHYS: u64 = 0;
+
+/// Initialize virtual memory: transition from bootloader's 2MB page tables to
+/// fine-grained 4K pages with recursive mapping.
 ///
-/// Since the kernel is running at physical addresses when this is first called
-/// (bootloader jumped to 0x100000), we need to:
-/// 1. Create a page directory
-/// 2. Identity-map the first 4 MiB (so current code keeps running)
-/// 3. Map 0xC0000000-0xC03FFFFF -> physical 0x00000000-0x003FFFFF (higher-half)
-/// 4. Enable paging
-///
-/// After paging is enabled, the kernel should be accessed via 0xC0100000+.
-/// For Phase 1, we keep it simple: identity-map first 8 MiB and map them to 0xC0000000+ too.
+/// The bootloader already set up 4-level paging with 2MB pages. We:
+/// 1. Allocate a new PML4 with recursive mapping at entry 510
+/// 2. Re-map the kernel higher-half region with 4K pages
+/// 3. Re-map identity-mapped low memory with 4K pages
+/// 4. Map the framebuffer
+/// 5. Switch CR3 to the new PML4
 pub fn init(boot_info: &BootInfo) {
-    // Allocate page directory (must be 4K-aligned)
-    let pd_phys = physical::alloc_frame().expect("Failed to allocate page directory");
+    // Allocate new PML4
+    let pml4_phys = physical::alloc_frame().expect("Failed to allocate PML4");
+    // We're running with the bootloader's page tables which identity-map low memory,
+    // so we can access physical addresses directly (they're < 16 MiB).
+    let pml4 = pml4_phys.as_u64() as *mut u64;
 
-    // Zero it out
-    let pd = pd_phys.as_u32() as *mut u32;
+    // Zero the PML4
     for i in 0..ENTRIES_PER_TABLE {
-        unsafe { pd.add(i).write_volatile(0); }
+        unsafe { pml4.add(i).write_volatile(0); }
     }
 
-    // Identity-map first 8 MiB using 4K pages (2 page tables)
-    for mb in 0..8u32 {
-        let pt_phys = physical::alloc_frame().expect("Failed to allocate page table");
-        let pt = pt_phys.as_u32() as *mut u32;
+    // Identity-map first 8 MiB using 4K pages
+    // This covers the bootloader area, kernel physical code, boot page tables
+    for mb in 0..8u64 {
+        let base = mb * 0x0020_0000; // 2 MiB per iteration
+        // Each 2 MiB range needs: PDPT entry, PD entry, PT with 512 entries
 
-        // Fill page table: map each page to its physical address
-        for i in 0..ENTRIES_PER_TABLE {
-            let phys = mb * (4 * 1024 * 1024) + (i as u32) * FRAME_SIZE as u32;
+        // Ensure PDPT exists for PML4[0]
+        let pdpt_phys = ensure_table_entry(pml4, 0, PAGE_PRESENT | PAGE_WRITABLE);
+        let pdpt = pdpt_phys as *mut u64;
+
+        // PD index for this 2MB chunk
+        let pdpt_idx = (base >> 30) as usize; // Should be 0 for < 1 GiB
+        let pd_phys = ensure_table_entry(pdpt, pdpt_idx, PAGE_PRESENT | PAGE_WRITABLE);
+        let pd = pd_phys as *mut u64;
+
+        let pd_idx = ((base >> 21) & 0x1FF) as usize;
+        let pt_phys = ensure_table_entry(pd, pd_idx, PAGE_PRESENT | PAGE_WRITABLE);
+        let pt = pt_phys as *mut u64;
+
+        // Fill PT with 512 4K page entries
+        for pte in 0..ENTRIES_PER_TABLE {
+            let phys = base + (pte as u64) * FRAME_SIZE as u64;
             unsafe {
-                pt.add(i).write_volatile(phys | PAGE_PRESENT | PAGE_WRITABLE);
+                pt.add(pte).write_volatile(phys | PAGE_PRESENT | PAGE_WRITABLE);
             }
         }
-
-        // Set PDE for identity mapping
-        let pde_index = (mb * 4 * 1024 * 1024 / (4 * 1024 * 1024)) as usize;
-        unsafe {
-            pd.add(pde_index).write_volatile(pt_phys.as_u32() | PAGE_PRESENT | PAGE_WRITABLE);
-        }
     }
 
-    // Map higher-half: 0xC0000000 -> physical 0x00000000 (8 MiB)
-    // The higher-half PDE indices start at 0xC0000000 >> 22 = 768
-    let hh_start_pde = (KERNEL_VIRT_BASE >> 22) as usize;
-    for mb in 0..8u32 {
-        let pt_phys = physical::alloc_frame().expect("Failed to allocate page table for higher-half");
-        let pt = pt_phys.as_u32() as *mut u32;
+    // Map higher-half kernel: PML4[511] → same physical memory as identity map
+    // Kernel is at virtual 0xFFFFFFFF80000000 → PML4[511], PDPT[510], PD[0..3]
+    // (0xFFFFFFFF80000000: PML4 idx = 511, PDPT idx = 510, PD idx = 0)
+    {
+        // Ensure PDPT for PML4[511]
+        let pdpt_phys = ensure_table_entry(pml4, 511, PAGE_PRESENT | PAGE_WRITABLE);
+        let pdpt = pdpt_phys as *mut u64;
 
-        for i in 0..ENTRIES_PER_TABLE {
-            let phys = mb * (4 * 1024 * 1024) + (i as u32) * FRAME_SIZE as u32;
-            unsafe {
-                pt.add(i).write_volatile(phys | PAGE_PRESENT | PAGE_WRITABLE);
-            }
-        }
+        // Ensure PD for PDPT[510]
+        let pd_phys = ensure_table_entry(pdpt, 510, PAGE_PRESENT | PAGE_WRITABLE);
+        let pd = pd_phys as *mut u64;
 
-        unsafe {
-            pd.add(hh_start_pde + mb as usize)
-                .write_volatile(pt_phys.as_u32() | PAGE_PRESENT | PAGE_WRITABLE);
-        }
-    }
+        // Map 8 MiB of kernel (4 PD entries, each covering 2 MiB via a page table)
+        for mb in 0..4u64 {
+            let pt_phys_alloc = physical::alloc_frame().expect("Failed to allocate kernel PT");
+            let pt = pt_phys_alloc.as_u64() as *mut u64;
 
-    // Identity-map framebuffer region if available (MMIO, not from physical allocator)
-    let fb_addr = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_addr).read_unaligned() };
-    let fb_pitch = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_pitch).read_unaligned() };
-    let fb_height = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_height).read_unaligned() };
-
-    if fb_addr != 0 && fb_pitch != 0 && fb_height != 0 {
-        // Map full 16 MiB VRAM to support runtime resolution changes with double-buffering.
-        // Bochs VGA and VMware SVGA both have >= 16 MiB VRAM on QEMU.
-        let fb_size = 16 * 1024 * 1024;
-        let fb_start = fb_addr & !0xFFF; // Page-align down
-        let fb_end = (fb_addr + fb_size + 0xFFF) & !0xFFF; // Page-align up
-
-        let start_pde = (fb_start >> 22) as usize;
-        let end_pde = ((fb_end - 1) >> 22) as usize;
-
-        for pde_idx in start_pde..=end_pde {
-            let pt_phys = physical::alloc_frame().expect("Failed to allocate FB page table");
-            let pt = pt_phys.as_u32() as *mut u32;
-
-            let pde_base = (pde_idx as u32) << 22;
-            for pte_idx in 0..ENTRIES_PER_TABLE {
-                let page_addr = pde_base + (pte_idx as u32) * FRAME_SIZE as u32;
+            for pte in 0..ENTRIES_PER_TABLE {
+                let phys = mb * 0x0020_0000 + (pte as u64) * FRAME_SIZE as u64;
                 unsafe {
-                    if page_addr >= fb_start && page_addr < fb_end {
-                        pt.add(pte_idx).write_volatile(page_addr | PAGE_PRESENT | PAGE_WRITABLE);
-                    } else {
-                        pt.add(pte_idx).write_volatile(0);
-                    }
+                    pt.add(pte).write_volatile(phys | PAGE_PRESENT | PAGE_WRITABLE);
                 }
             }
 
             unsafe {
-                pd.add(pde_idx).write_volatile(pt_phys.as_u32() | PAGE_PRESENT | PAGE_WRITABLE);
+                pd.add(mb as usize)
+                    .write_volatile(pt_phys_alloc.as_u64() | PAGE_PRESENT | PAGE_WRITABLE);
             }
+        }
+    }
+
+    // Identity-map framebuffer region
+    let fb_addr = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_addr).read_unaligned() } as u64;
+    let fb_pitch = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_pitch).read_unaligned() } as u64;
+    let fb_height = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_height).read_unaligned() } as u64;
+
+    if fb_addr != 0 && fb_pitch != 0 && fb_height != 0 {
+        // Map full 16 MiB VRAM
+        let fb_size: u64 = 16 * 1024 * 1024;
+        let fb_start = fb_addr & !0xFFF;
+        let fb_end = (fb_addr + fb_size + 0xFFF) & !0xFFF;
+
+        // Map each 4K page of the framebuffer
+        let mut addr = fb_start;
+        while addr < fb_end {
+            let virt = VirtAddr::new(addr);
+            // Ensure all 4 levels exist
+            let pdpt_phys = ensure_table_entry(pml4, virt.pml4_index(), PAGE_PRESENT | PAGE_WRITABLE);
+            let pdpt = pdpt_phys as *mut u64;
+            let pd_phys = ensure_table_entry(pdpt, virt.pdpt_index(), PAGE_PRESENT | PAGE_WRITABLE);
+            let pd = pd_phys as *mut u64;
+            let pt_phys = ensure_table_entry(pd, virt.pd_index(), PAGE_PRESENT | PAGE_WRITABLE);
+            let pt = pt_phys as *mut u64;
+
+            unsafe {
+                pt.add(virt.pt_index()).write_volatile(addr | PAGE_PRESENT | PAGE_WRITABLE);
+            }
+
+            addr += FRAME_SIZE as u64;
         }
 
         crate::serial_println!(
             "Framebuffer mapped: {:#010x}-{:#010x} ({} pages)",
-            fb_start, fb_end, (fb_end - fb_start) / FRAME_SIZE as u32
+            fb_start, fb_end, (fb_end - fb_start) / FRAME_SIZE as u64
         );
     }
 
-    // Set up recursive mapping: last PDE points to the page directory itself
-    // This allows accessing page tables through virtual address 0xFFC00000
+    // Set up recursive mapping: PML4[510] → PML4 itself
     unsafe {
-        pd.add(1023).write_volatile(pd_phys.as_u32() | PAGE_PRESENT | PAGE_WRITABLE);
+        pml4.add(RECURSIVE_INDEX)
+            .write_volatile(pml4_phys.as_u64() | PAGE_PRESENT | PAGE_WRITABLE);
     }
 
-    // Store page directory address
-    unsafe { PAGE_DIRECTORY_PHYS = pd_phys.as_u32(); }
+    // Store PML4 physical address
+    unsafe { PML4_PHYS = pml4_phys.as_u64(); }
 
-    // Load CR3 and enable paging
+    // Switch CR3 to new PML4
     unsafe {
         asm!(
-            "mov cr3, {pd}",
-            "mov {tmp}, cr0",
-            "or {tmp}, 0x80000000",
-            "mov cr0, {tmp}",
-            pd = in(reg) pd_phys.as_u32(),
-            tmp = out(reg) _,
+            "mov cr3, {}",
+            in(reg) pml4_phys.as_u64(),
+            options(nostack, preserves_flags),
         );
     }
 
-    crate::serial_println!("Paging enabled (identity + higher-half at 0xC0000000)");
+    crate::serial_println!("4-level paging enabled (identity + higher-half at {:#018x})", KERNEL_VIRT_BASE);
 }
 
-/// Map a single 4K page: virtual -> physical
-pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u32) {
-    let pde_idx = virt.page_directory_index();
-    let pte_idx = virt.page_table_index();
-
-    // Access page directory via recursive mapping
-    let pd = 0xFFFFF000 as *mut u32;
-
+/// Ensure a page table entry at `index` in `table` exists.
+/// If not present, allocates a new frame, zeros it, and installs it.
+/// Returns the physical address of the child table.
+fn ensure_table_entry(table: *mut u64, index: usize, flags: u64) -> u64 {
     unsafe {
-        let pde = pd.add(pde_idx).read_volatile();
-
-        // If page table doesn't exist, allocate one
-        if pde & PAGE_PRESENT == 0 {
-            let new_pt = physical::alloc_frame().expect("Failed to allocate page table");
-            pd.add(pde_idx).write_volatile(new_pt.as_u32() | PAGE_PRESENT | PAGE_WRITABLE | flags);
-
-            // Zero the new page table via recursive mapping
-            let pt_virt = (0xFFC00000 + pde_idx * FRAME_SIZE) as *mut u32;
-            for i in 0..ENTRIES_PER_TABLE {
-                pt_virt.add(i).write_volatile(0);
-            }
+        let entry = table.add(index).read_volatile();
+        if entry & PAGE_PRESENT != 0 {
+            return entry & ADDR_MASK;
         }
 
-        // Access page table via recursive mapping
-        let pt = (0xFFC00000 + pde_idx * FRAME_SIZE) as *mut u32;
-        pt.add(pte_idx).write_volatile(phys.as_u32() | flags | PAGE_PRESENT);
+        let new_frame = physical::alloc_frame().expect("Failed to allocate page table frame");
+        let new_addr = new_frame.as_u64();
 
-        // Invalidate TLB for this page
-        asm!("invlpg [{}]", in(reg) virt.as_u32(), options(nostack, preserves_flags));
+        // Zero the new table
+        let new_table = new_addr as *mut u64;
+        for i in 0..ENTRIES_PER_TABLE {
+            new_table.add(i).write_volatile(0);
+        }
+
+        table.add(index).write_volatile(new_addr | flags);
+        new_addr
     }
 }
 
-/// Unmap a single 4K page
-pub fn unmap_page(virt: VirtAddr) {
-    let pde_idx = virt.page_directory_index();
-    let pte_idx = virt.page_table_index();
-
-    let pd = 0xFFFFF000 as *mut u32;
+/// Map a single 4K page: virtual -> physical.
+///
+/// Uses recursive mapping via PML4[510] to access page table structures.
+pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) {
+    let pml4_ptr = RECURSIVE_PML4_BASE as *mut u64;
+    let pml4i = virt.pml4_index();
+    let pdpti = virt.pdpt_index();
+    let pdi = virt.pd_index();
+    let pti = virt.pt_index();
 
     unsafe {
-        let pde = pd.add(pde_idx).read_volatile();
+        // Ensure PDPT exists
+        let pml4e = pml4_ptr.add(pml4i).read_volatile();
+        if pml4e & PAGE_PRESENT == 0 {
+            let new_frame = physical::alloc_frame().expect("Failed to allocate PDPT");
+            pml4_ptr.add(pml4i).write_volatile(new_frame.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER));
+            // Zero the new PDPT via recursive mapping
+            let pdpt_base = recursive_pdpt_base(virt) as *mut u8;
+            // Flush TLB for the recursive address so we can access the new table
+            asm!("invlpg [{}]", in(reg) pdpt_base, options(nostack, preserves_flags));
+            core::ptr::write_bytes(pdpt_base, 0, FRAME_SIZE);
+        }
+
+        // Ensure PD exists
+        let pdpt_ptr = recursive_pdpt_base(virt) as *mut u64;
+        let pdpte = pdpt_ptr.add(pdpti).read_volatile();
+        if pdpte & PAGE_PRESENT == 0 {
+            let new_frame = physical::alloc_frame().expect("Failed to allocate PD");
+            pdpt_ptr.add(pdpti).write_volatile(new_frame.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER));
+            let pd_base = recursive_pd_base(virt) as *mut u8;
+            asm!("invlpg [{}]", in(reg) pd_base, options(nostack, preserves_flags));
+            core::ptr::write_bytes(pd_base, 0, FRAME_SIZE);
+        }
+
+        // Ensure PT exists
+        let pd_ptr = recursive_pd_base(virt) as *mut u64;
+        let pde = pd_ptr.add(pdi).read_volatile();
+        if pde & PAGE_PRESENT == 0 {
+            let new_frame = physical::alloc_frame().expect("Failed to allocate PT");
+            pd_ptr.add(pdi).write_volatile(new_frame.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER));
+            let pt_base = recursive_pt_base(virt) as *mut u8;
+            asm!("invlpg [{}]", in(reg) pt_base, options(nostack, preserves_flags));
+            core::ptr::write_bytes(pt_base, 0, FRAME_SIZE);
+        }
+
+        // Set the PTE
+        let pt_ptr = recursive_pt_base(virt) as *mut u64;
+        pt_ptr.add(pti).write_volatile(phys.as_u64() | flags | PAGE_PRESENT);
+
+        // Invalidate TLB for the mapped page
+        asm!("invlpg [{}]", in(reg) virt.as_u64(), options(nostack, preserves_flags));
+    }
+}
+
+/// Unmap a single 4K page.
+pub fn unmap_page(virt: VirtAddr) {
+    let pml4i = virt.pml4_index();
+    let pdpti = virt.pdpt_index();
+    let pdi = virt.pd_index();
+    let pti = virt.pt_index();
+
+    unsafe {
+        // Check PML4
+        let pml4_ptr = RECURSIVE_PML4_BASE as *mut u64;
+        let pml4e = pml4_ptr.add(pml4i).read_volatile();
+        if pml4e & PAGE_PRESENT == 0 {
+            return;
+        }
+
+        // Check PDPT
+        let pdpt_ptr = recursive_pdpt_base(virt) as *mut u64;
+        let pdpte = pdpt_ptr.add(pdpti).read_volatile();
+        if pdpte & PAGE_PRESENT == 0 {
+            return;
+        }
+
+        // Check PD
+        let pd_ptr = recursive_pd_base(virt) as *mut u64;
+        let pde = pd_ptr.add(pdi).read_volatile();
         if pde & PAGE_PRESENT == 0 {
             return;
         }
 
-        let pt = (0xFFC00000 + pde_idx * FRAME_SIZE) as *mut u32;
-        pt.add(pte_idx).write_volatile(0);
+        // Clear PTE
+        let pt_ptr = recursive_pt_base(virt) as *mut u64;
+        pt_ptr.add(pti).write_volatile(0);
 
-        asm!("invlpg [{}]", in(reg) virt.as_u32(), options(nostack, preserves_flags));
+        asm!("invlpg [{}]", in(reg) virt.as_u64(), options(nostack, preserves_flags));
     }
 }
 
-/// Get the kernel page directory's physical address.
-pub fn kernel_cr3() -> u32 {
-    unsafe { PAGE_DIRECTORY_PHYS }
+/// Get the kernel PML4's physical address.
+pub fn kernel_cr3() -> u64 {
+    unsafe { PML4_PHYS }
 }
 
-/// Get the current page directory's physical address.
-pub fn current_cr3() -> u32 {
-    let cr3: u32;
+/// Get the current page table root physical address (CR3).
+pub fn current_cr3() -> u64 {
+    let cr3: u64;
     unsafe { asm!("mov {}, cr3", out(reg) cr3); }
     cr3
 }
 
-/// Create a new page directory for a user process.
-/// Clones all kernel-space mappings (identity map + higher-half + framebuffer).
-/// User-space PDEs (8-767) are left empty for per-process mappings.
-/// Returns the physical address of the new page directory.
+/// Create a new PML4 for a user process.
+/// Clones all kernel-space PML4 entries (256-511) from the current PML4.
+/// User-space entries (0-255) are left empty for per-process mappings.
+/// PML4[510] is set to the NEW PML4's own address for recursive mapping.
+/// Returns the physical address of the new PML4.
 pub fn create_user_page_directory() -> Option<PhysAddr> {
-    let new_pd_phys = physical::alloc_frame()?;
+    let new_pml4_phys = physical::alloc_frame()?;
 
-    // Map the new PD at a temporary virtual address so we can write to it
-    let temp_virt = VirtAddr::new(0xC1F0_0000);
-    map_page(temp_virt, new_pd_phys, PAGE_WRITABLE);
+    // Map the new PML4 at a temporary virtual address so we can write to it.
+    // Use a known-free kernel address in the higher-half region.
+    let temp_virt = VirtAddr::new(0xFFFF_FFFF_81F0_0000);
+    map_page(temp_virt, new_pml4_phys, PAGE_WRITABLE);
 
-    let new_pd = temp_virt.as_u32() as *mut u32;
-    let cur_pd = 0xFFFFF000 as *const u32; // Current PD via recursive mapping
+    let new_pml4 = temp_virt.as_u64() as *mut u64;
+    let cur_pml4 = RECURSIVE_PML4_BASE as *const u64;
 
     unsafe {
-        // Copy identity-mapping PDEs (0-7, covers first 32 MiB)
-        for i in 0..8 {
-            new_pd.add(i).write_volatile(cur_pd.add(i).read_volatile());
+        // Clear user-space entries (0-255)
+        for i in 0..256 {
+            new_pml4.add(i).write_volatile(0);
         }
 
-        // Clear user-space PDEs (8-767)
-        for i in 8..768 {
-            new_pd.add(i).write_volatile(0);
+        // Copy kernel-space entries (256-511) from current PML4.
+        // Skip 510 (recursive mapping) — we'll set it to point to the new PML4.
+        for i in 256..ENTRIES_PER_TABLE {
+            if i == RECURSIVE_INDEX {
+                continue;
+            }
+            new_pml4.add(i).write_volatile(cur_pml4.add(i).read_volatile());
         }
 
-        // Copy kernel higher-half PDEs (768-1022, includes framebuffer)
-        for i in 768..1023 {
-            new_pd.add(i).write_volatile(cur_pd.add(i).read_volatile());
-        }
-
-        // PDE 1023: recursive mapping points to the NEW PD itself
-        new_pd.add(1023).write_volatile(new_pd_phys.as_u32() | PAGE_PRESENT | PAGE_WRITABLE);
+        // PML4[510]: recursive mapping points to the NEW PML4 itself
+        new_pml4.add(RECURSIVE_INDEX)
+            .write_volatile(new_pml4_phys.as_u64() | PAGE_PRESENT | PAGE_WRITABLE);
     }
 
     // Unmap the temporary page
     unmap_page(temp_virt);
 
-    Some(new_pd_phys)
+    Some(new_pml4_phys)
 }
 
 /// Map a page in a specific page directory (not necessarily the current one).
-/// Temporarily switches CR3 to the target PD.
-pub fn map_page_in_pd(pd_phys: PhysAddr, virt: VirtAddr, phys: PhysAddr, flags: u32) {
+/// Temporarily switches CR3 to the target PML4.
+pub fn map_page_in_pd(pd_phys: PhysAddr, virt: VirtAddr, phys: PhysAddr, flags: u64) {
     unsafe {
         let old_cr3 = current_cr3();
-        asm!("mov cr3, {}", in(reg) pd_phys.as_u32());
+        asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
         map_page(virt, phys, flags);
         asm!("mov cr3, {}", in(reg) old_cr3);
     }
@@ -273,16 +421,25 @@ pub fn map_page_in_pd(pd_phys: PhysAddr, virt: VirtAddr, phys: PhysAddr, flags: 
 pub fn is_mapped_in_pd(pd_phys: PhysAddr, virt: VirtAddr) -> bool {
     unsafe {
         let old_cr3 = current_cr3();
-        asm!("mov cr3, {}", in(reg) pd_phys.as_u32());
+        asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
 
-        let pde_idx = (virt.as_u32() >> 22) as usize;
-        let pte_idx = ((virt.as_u32() >> 12) & 0x3FF) as usize;
-
-        let pd = 0xFFFFF000 as *const u32;
-        let pde = pd.add(pde_idx).read_volatile();
-        let mapped = if pde & PAGE_PRESENT != 0 {
-            let pt = (0xFFC00000 + pde_idx * FRAME_SIZE) as *const u32;
-            pt.add(pte_idx).read_volatile() & PAGE_PRESENT != 0
+        let pml4_ptr = RECURSIVE_PML4_BASE as *const u64;
+        let pml4e = pml4_ptr.add(virt.pml4_index()).read_volatile();
+        let mapped = if pml4e & PAGE_PRESENT != 0 {
+            let pdpt_ptr = recursive_pdpt_base(virt) as *const u64;
+            let pdpte = pdpt_ptr.add(virt.pdpt_index()).read_volatile();
+            if pdpte & PAGE_PRESENT != 0 {
+                let pd_ptr = recursive_pd_base(virt) as *const u64;
+                let pde = pd_ptr.add(virt.pd_index()).read_volatile();
+                if pde & PAGE_PRESENT != 0 {
+                    let pt_ptr = recursive_pt_base(virt) as *const u64;
+                    pt_ptr.add(virt.pt_index()).read_volatile() & PAGE_PRESENT != 0
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
         } else {
             false
         };
@@ -292,44 +449,89 @@ pub fn is_mapped_in_pd(pd_phys: PhysAddr, virt: VirtAddr) -> bool {
     }
 }
 
-/// Destroy a user page directory: free all user-space pages, page tables, and the PD.
+/// Destroy a user PML4: free all user-space pages, page tables, and the PML4.
 /// Must NOT be the currently active page directory.
-pub fn destroy_user_page_directory(pd_phys: PhysAddr) {
+pub fn destroy_user_page_directory(pml4_phys: PhysAddr) {
     unsafe {
         let old_cr3 = current_cr3();
 
-        // Switch to the target PD so recursive mapping works on it
-        asm!("mov cr3, {}", in(reg) pd_phys.as_u32());
+        // Switch to the target PML4 so recursive mapping works on it
+        asm!("mov cr3, {}", in(reg) pml4_phys.as_u64());
 
-        let pd = 0xFFFFF000 as *const u32;
+        let pml4_ptr = RECURSIVE_PML4_BASE as *const u64;
 
-        // Walk user-space PDEs (8-767) and free mapped pages + page tables.
-        // DLL shared pages (PDEs 16-31, vaddr 0x04000000-0x07FFFFFF) are
-        // managed by task::dll — free their page tables but NOT the frames.
-        for pde_idx in 8..768 {
-            let pde = pd.add(pde_idx).read_volatile();
-            if pde & PAGE_PRESENT == 0 {
+        // Walk user-space PML4 entries (0-255) and free mapped pages + tables.
+        // DLL shared pages (vaddr 0x04000000-0x07FFFFFF, PML4[0] region)
+        // have their frames managed by task::dll — free page tables but NOT frames.
+        for pml4i in 0..256 {
+            let pml4e = pml4_ptr.add(pml4i).read_volatile();
+            if pml4e & PAGE_PRESENT == 0 {
                 continue;
             }
 
-            let is_dll = pde_idx >= 16 && pde_idx <= 31;
+            let pdpt_base = sign_extend(
+                (RECURSIVE_INDEX as u64) << 39
+                    | (RECURSIVE_INDEX as u64) << 30
+                    | (RECURSIVE_INDEX as u64) << 21
+                    | (pml4i as u64) << 12,
+            );
+            let pdpt_ptr = pdpt_base as *const u64;
 
-            let pt = (0xFFC00000 + pde_idx * FRAME_SIZE) as *const u32;
-            for pte_idx in 0..ENTRIES_PER_TABLE {
-                let pte = pt.add(pte_idx).read_volatile();
-                if pte & PAGE_PRESENT != 0 && !is_dll {
-                    physical::free_frame(PhysAddr::new(pte & !0xFFF));
+            for pdpti in 0..ENTRIES_PER_TABLE {
+                let pdpte = pdpt_ptr.add(pdpti).read_volatile();
+                if pdpte & PAGE_PRESENT == 0 {
+                    continue;
                 }
+
+                let pd_base = sign_extend(
+                    (RECURSIVE_INDEX as u64) << 39
+                        | (RECURSIVE_INDEX as u64) << 30
+                        | (pml4i as u64) << 21
+                        | (pdpti as u64) << 12,
+                );
+                let pd_ptr = pd_base as *const u64;
+
+                for pdi in 0..ENTRIES_PER_TABLE {
+                    let pde = pd_ptr.add(pdi).read_volatile();
+                    if pde & PAGE_PRESENT == 0 {
+                        continue;
+                    }
+
+                    // Check if this is in the DLL virtual address range
+                    // DLLs at 0x04000000-0x07FFFFFF: PML4[0], PDPT[0], PD[32..63]
+                    let is_dll = pml4i == 0 && pdpti == 0 && pdi >= 32 && pdi <= 63;
+
+                    let pt_base = sign_extend(
+                        (RECURSIVE_INDEX as u64) << 39
+                            | (pml4i as u64) << 30
+                            | (pdpti as u64) << 21
+                            | (pdi as u64) << 12,
+                    );
+                    let pt_ptr = pt_base as *const u64;
+
+                    for pti in 0..ENTRIES_PER_TABLE {
+                        let pte = pt_ptr.add(pti).read_volatile();
+                        if pte & PAGE_PRESENT != 0 && !is_dll {
+                            physical::free_frame(PhysAddr::new(pte & ADDR_MASK));
+                        }
+                    }
+
+                    // Free the page table frame
+                    physical::free_frame(PhysAddr::new(pde & ADDR_MASK));
+                }
+
+                // Free the PD frame
+                physical::free_frame(PhysAddr::new(pdpte & ADDR_MASK));
             }
 
-            // Free the page table frame itself (always per-process)
-            physical::free_frame(PhysAddr::new(pde & !0xFFF));
+            // Free the PDPT frame
+            physical::free_frame(PhysAddr::new(pml4e & ADDR_MASK));
         }
 
-        // Switch back to the previous PD
+        // Switch back to previous PML4
         asm!("mov cr3, {}", in(reg) old_cr3);
     }
 
-    // Free the page directory frame
-    physical::free_frame(pd_phys);
+    // Free the PML4 frame itself
+    physical::free_frame(pml4_phys);
 }

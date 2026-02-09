@@ -113,23 +113,23 @@ pub type MacBytes = [u8; 6];
 // ──────────────────────────────────────────────
 
 /// Virtual address where the E1000 MMIO region is mapped (128 KiB).
-const E1000_MMIO_VIRT: u32 = 0xD000_0000;
+const E1000_MMIO_VIRT: u64 = 0xD000_0000;
 
 struct E1000 {
-    mmio_base: u32,       // Virtual address of MMIO region
+    mmio_base: u64,       // Virtual address of MMIO region
     mac: [u8; 6],
 
     // RX ring
-    rx_descs_phys: u32,   // Physical address of RX descriptor ring
-    rx_descs_virt: u32,   // Virtual address of RX descriptor ring
-    rx_bufs_phys: [u32; NUM_RX_DESC], // Physical addr of each RX buffer
+    rx_descs_phys: u32,   // Physical address of RX descriptor ring (32-bit DMA)
+    rx_descs_virt: u64,   // Virtual address of RX descriptor ring
+    rx_bufs_phys: [u32; NUM_RX_DESC], // Physical addr of each RX buffer (32-bit DMA)
     rx_tail: u16,
 
     // TX ring
-    tx_descs_phys: u32,   // Physical address of TX descriptor ring
-    tx_descs_virt: u32,   // Virtual address of TX descriptor ring
-    tx_bufs_phys: [u32; NUM_TX_DESC], // Physical addr of each TX buffer
-    tx_bufs_virt: [u32; NUM_TX_DESC], // Virtual addr of each TX buffer (for memcpy)
+    tx_descs_phys: u32,   // Physical address of TX descriptor ring (32-bit DMA)
+    tx_descs_virt: u64,   // Virtual address of TX descriptor ring
+    tx_bufs_phys: [u32; NUM_TX_DESC], // Physical addr of each TX buffer (32-bit DMA)
+    tx_bufs_virt: [u64; NUM_TX_DESC], // Virtual addr of each TX buffer (for memcpy)
     tx_tail: u16,
 
     // Received packets queue
@@ -145,13 +145,13 @@ static E1000_STATE: Spinlock<Option<E1000>> = Spinlock::new(None);
 // MMIO helpers
 // ──────────────────────────────────────────────
 
-unsafe fn mmio_read(base: u32, reg: u32) -> u32 {
-    let addr = (base + reg) as *const u32;
+unsafe fn mmio_read(base: u64, reg: u32) -> u32 {
+    let addr = (base + reg as u64) as *const u32;
     core::ptr::read_volatile(addr)
 }
 
-unsafe fn mmio_write(base: u32, reg: u32, value: u32) {
-    let addr = (base + reg) as *mut u32;
+unsafe fn mmio_write(base: u64, reg: u32, value: u32) {
+    let addr = (base + reg as u64) as *mut u32;
     core::ptr::write_volatile(addr, value);
 }
 
@@ -188,8 +188,8 @@ pub fn init() -> bool {
     let mmio_virt = E1000_MMIO_VIRT;
     let mmio_pages = 32; // 128 KiB = 32 pages
     for i in 0..mmio_pages {
-        let phys = PhysAddr::new(bar0 + (i as u32) * FRAME_SIZE as u32);
-        let virt = VirtAddr::new(mmio_virt + (i as u32) * FRAME_SIZE as u32);
+        let phys = PhysAddr::new(bar0 as u64 + (i as u64) * FRAME_SIZE as u64);
+        let virt = VirtAddr::new(mmio_virt + (i as u64) * FRAME_SIZE as u64);
         virtual_mem::map_page(virt, phys, 0x03); // Present + Writable, no cache
     }
 
@@ -250,7 +250,7 @@ pub fn init() -> bool {
     let rx_desc_frame = physical::alloc_frame().expect("E1000: failed to alloc RX desc ring");
     let rx_descs_phys = rx_desc_frame.as_u32();
     // Identity-mapped region (< 8MiB) so virt == phys for these DMA pages
-    let rx_descs_virt = rx_descs_phys;
+    let rx_descs_virt = rx_desc_frame.as_u64();
 
     // Zero out the descriptor ring
     unsafe {
@@ -264,12 +264,12 @@ pub fn init() -> bool {
         rx_bufs_phys[i] = buf_frame.as_u32();
         // Zero the buffer
         unsafe {
-            core::ptr::write_bytes(buf_frame.as_u32() as *mut u8, 0, FRAME_SIZE);
+            core::ptr::write_bytes(buf_frame.as_u64() as *mut u8, 0, FRAME_SIZE);
         }
         // Write descriptor
         unsafe {
             let desc_ptr = (rx_descs_virt as *mut RxDescriptor).add(i);
-            (*desc_ptr).buffer_addr = buf_frame.as_u32() as u64;
+            (*desc_ptr).buffer_addr = buf_frame.as_u64();
             (*desc_ptr).status = 0;
         }
     }
@@ -277,22 +277,22 @@ pub fn init() -> bool {
     // --- Allocate TX descriptor ring and buffers ---
     let tx_desc_frame = physical::alloc_frame().expect("E1000: failed to alloc TX desc ring");
     let tx_descs_phys = tx_desc_frame.as_u32();
-    let tx_descs_virt = tx_descs_phys;
+    let tx_descs_virt = tx_desc_frame.as_u64();
 
     unsafe {
         core::ptr::write_bytes(tx_descs_virt as *mut u8, 0, FRAME_SIZE);
     }
 
     let mut tx_bufs_phys = [0u32; NUM_TX_DESC];
-    let mut tx_bufs_virt = [0u32; NUM_TX_DESC];
+    let mut tx_bufs_virt = [0u64; NUM_TX_DESC];
     for i in 0..NUM_TX_DESC {
         let buf_frame = physical::alloc_frame().expect("E1000: failed to alloc TX buffer");
         tx_bufs_phys[i] = buf_frame.as_u32();
-        tx_bufs_virt[i] = buf_frame.as_u32(); // Identity-mapped
+        tx_bufs_virt[i] = buf_frame.as_u64(); // Identity-mapped
         unsafe {
-            core::ptr::write_bytes(buf_frame.as_u32() as *mut u8, 0, FRAME_SIZE);
+            core::ptr::write_bytes(buf_frame.as_u64() as *mut u8, 0, FRAME_SIZE);
             let desc_ptr = (tx_descs_virt as *mut TxDescriptor).add(i);
-            (*desc_ptr).buffer_addr = buf_frame.as_u32() as u64;
+            (*desc_ptr).buffer_addr = buf_frame.as_u64();
             (*desc_ptr).status = TDESC_STA_DD; // Mark as done (available for use)
             (*desc_ptr).cmd = 0;
         }
@@ -479,7 +479,7 @@ fn process_rx_ring(e1000: &mut E1000) {
         // Read the packet
         let length = unsafe { core::ptr::read_volatile(&(*desc_ptr).length) } as usize;
         if length > 0 && length <= RX_BUFFER_SIZE && (status & RDESC_STA_EOP != 0) {
-            let buf_phys = e1000.rx_bufs_phys[idx];
+            let buf_phys = e1000.rx_bufs_phys[idx] as u64;
             let buf_ptr = buf_phys as *const u8; // Identity-mapped
 
             let mut packet = Vec::with_capacity(length);

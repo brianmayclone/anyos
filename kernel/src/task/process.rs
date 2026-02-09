@@ -21,7 +21,7 @@ pub struct Process {
     pub pid: u32,
     pub parent_pid: u32,
     pub state: ProcessState,
-    pub page_directory: u32, // Physical address of page directory
+    pub page_directory: u64, // Physical address of PML4
     pub thread_ids: Vec<u32>,
     pub name: [u8; 64],
 }
@@ -29,7 +29,7 @@ pub struct Process {
 impl Process {
     /// Create a new process with the given name and page directory physical address.
     /// Assigns a unique PID automatically.
-    pub fn new(name: &str, page_directory: u32) -> Self {
+    pub fn new(name: &str, page_directory: u64) -> Self {
         let pid = unsafe {
             let p = NEXT_PID;
             NEXT_PID += 1;

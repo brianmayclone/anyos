@@ -5,7 +5,13 @@ use crate::raw::*;
 
 pub fn exit(code: u32) -> ! {
     unsafe {
-        asm!("int 0x80", in("eax") SYS_EXIT, in("ebx") code, options(noreturn));
+        asm!(
+            "mov rbx, {code}",
+            "int 0x80",
+            code = in(reg) code as u64,
+            in("rax") SYS_EXIT as u64,
+            options(noreturn)
+        );
     }
 }
 
@@ -18,27 +24,27 @@ pub fn yield_cpu() {
 }
 
 pub fn sleep(ms: u32) {
-    syscall1(SYS_SLEEP, ms);
+    syscall1(SYS_SLEEP, ms as u64);
 }
 
-pub fn sbrk(increment: i32) -> u32 {
-    syscall1(SYS_SBRK, increment as u32)
+pub fn sbrk(increment: i32) -> usize {
+    syscall1(SYS_SBRK, increment as i64 as u64) as usize
 }
 
 pub fn waitpid(tid: u32) -> u32 {
-    syscall1(SYS_WAITPID, tid)
+    syscall1(SYS_WAITPID, tid as u64)
 }
 
 /// Non-blocking check if process exited.
 /// Returns exit code if terminated, u32::MAX if not found, STILL_RUNNING if alive.
 pub const STILL_RUNNING: u32 = u32::MAX - 1;
 pub fn try_waitpid(tid: u32) -> u32 {
-    syscall1(SYS_TRY_WAITPID, tid)
+    syscall1(SYS_TRY_WAITPID, tid as u64)
 }
 
 /// Kill a thread by TID. Returns 0 on success, u32::MAX on failure.
 pub fn kill(tid: u32) -> u32 {
-    syscall1(SYS_KILL, tid)
+    syscall1(SYS_KILL, tid as u64)
 }
 
 /// Spawn a new process. Returns TID or u32::MAX on error.
@@ -60,14 +66,14 @@ pub fn spawn_piped(path: &str, args: &str, pipe_id: u32) -> u32 {
     args_buf[..alen].copy_from_slice(&args.as_bytes()[..alen]);
     args_buf[alen] = 0;
 
-    let args_ptr = if args.is_empty() { 0u32 } else { args_buf.as_ptr() as u32 };
-    syscall3(SYS_SPAWN, path_buf.as_ptr() as u32, pipe_id, args_ptr)
+    let args_ptr = if args.is_empty() { 0u64 } else { args_buf.as_ptr() as u64 };
+    syscall3(SYS_SPAWN, path_buf.as_ptr() as u64, pipe_id as u64, args_ptr)
 }
 
 /// Get command-line arguments (raw). Returns the args length.
 /// The raw args string includes argv[0] (the program name).
 pub fn getargs(buf: &mut [u8]) -> usize {
-    syscall2(SYS_GETARGS, buf.as_mut_ptr() as u32, buf.len() as u32) as usize
+    syscall2(SYS_GETARGS, buf.as_mut_ptr() as u64, buf.len() as u64) as usize
 }
 
 /// Get command-line arguments, skipping argv[0] (the program name).

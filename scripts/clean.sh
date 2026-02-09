@@ -36,7 +36,7 @@ echo "Cleaning build artifacts..."
 
 # Kernel
 echo "  Kernel..."
-rm -rf "${BUILD_DIR}/kernel/i686-anyos" 2>/dev/null
+rm -rf "${BUILD_DIR}/kernel/x86_64-anyos" 2>/dev/null
 
 # DLLs (e.g. uisys)
 echo "  DLLs..."
@@ -45,16 +45,16 @@ rm -rf "${BUILD_DIR}/dll" 2>/dev/null
 # User programs (in build/programs/<name>/)
 echo "  User programs..."
 for dir in "${BUILD_DIR}/programs"/*/; do
-    [ -d "$dir" ] && rm -rf "${dir}i686-anyos" 2>/dev/null
+    [ -d "$dir" ] && rm -rf "${dir}x86_64-anyos" 2>/dev/null
 done
 
 # System programs (in build/programs/compositor/ etc.)
 echo "  System programs..."
 for dir in "${BUILD_DIR}/programs"/*/; do
-    [ -d "$dir" ] && rm -rf "${dir}i686-anyos" 2>/dev/null
+    [ -d "$dir" ] && rm -rf "${dir}x86_64-anyos" 2>/dev/null
     # Nested dirs (e.g. programs/compositor/dock/)
     for subdir in "${dir}"*/; do
-        [ -d "$subdir" ] && rm -rf "${subdir}i686-anyos" 2>/dev/null
+        [ -d "$subdir" ] && rm -rf "${subdir}x86_64-anyos" 2>/dev/null
     done
 done
 

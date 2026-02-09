@@ -10,11 +10,11 @@ use crate::memory::virtual_mem;
 use crate::memory::FRAME_SIZE;
 use core::alloc::{GlobalAlloc, Layout};
 
-/// Virtual address where the kernel heap begins.
-const HEAP_START: u32 = 0xC040_0000;
+/// Virtual address where the kernel heap begins (higher-half, after kernel code area).
+const HEAP_START: u64 = 0xFFFF_FFFF_8040_0000;
 /// Initial heap size mapped at boot (16 MiB).
 const HEAP_INITIAL_SIZE: usize = 16 * 1024 * 1024;
-/// Maximum heap size before hitting MMIO region at 0xD0000000 (128 MiB).
+/// Maximum heap size (128 MiB) — fits within the 1 GiB PML4[511]/PDPT[510] window.
 const HEAP_MAX_SIZE: usize = 128 * 1024 * 1024;
 /// Minimum growth increment when expanding the heap (1 MiB).
 const GROW_CHUNK: usize = 1024 * 1024;
@@ -184,7 +184,7 @@ unsafe fn grow_heap_exact(growth: usize) -> bool {
 
     // Map new pages
     for i in 0..pages {
-        let virt = VirtAddr::new((base + i * FRAME_SIZE) as u32);
+        let virt = VirtAddr::new((base + i * FRAME_SIZE) as u64);
         match physical::alloc_frame() {
             Some(phys) => virtual_mem::map_page(virt, phys, 0x03), // Present + Writable
             None => {
@@ -372,7 +372,7 @@ pub fn init() {
 
     // Map heap pages
     for i in 0..pages {
-        let virt = VirtAddr::new(HEAP_START + (i * FRAME_SIZE) as u32);
+        let virt = VirtAddr::new(HEAP_START + (i * FRAME_SIZE) as u64);
         let phys = physical::alloc_frame().expect("Failed to allocate heap frame");
         virtual_mem::map_page(virt, phys, 0x03); // Present + Writable
     }
@@ -388,9 +388,9 @@ pub fn init() {
     }
 
     crate::serial_println!(
-        "Kernel heap initialized: {:#010x} - {:#010x} ({} KiB, max {} MiB)",
+        "Kernel heap initialized: {:#018x} - {:#018x} ({} KiB, max {} MiB)",
         HEAP_START,
-        HEAP_START + HEAP_INITIAL_SIZE as u32,
+        HEAP_START + HEAP_INITIAL_SIZE as u64,
         HEAP_INITIAL_SIZE / 1024,
         HEAP_MAX_SIZE / (1024 * 1024)
     );

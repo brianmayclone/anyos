@@ -145,7 +145,7 @@ def make_lfn_entries(filename: str, name83: bytes) -> list:
 
 def elf_to_flat_binary(elf_data, base_paddr):
     """
-    Parse an ELF32 file and extract PT_LOAD segments into a flat binary.
+    Parse an ELF32 or ELF64 file and extract PT_LOAD segments into a flat binary.
     The flat binary is laid out so that byte 0 corresponds to base_paddr.
     """
     # Verify ELF magic
@@ -153,17 +153,25 @@ def elf_to_flat_binary(elf_data, base_paddr):
         print("ERROR: Kernel is not a valid ELF file", file=sys.stderr)
         sys.exit(1)
 
-    # Parse ELF32 header
-    (e_type, e_machine, e_version, e_entry, e_phoff, e_shoff,
-     e_flags, e_ehsize, e_phentsize, e_phnum, e_shentsize, e_shnum,
-     e_shstrndx) = struct.unpack_from("<HHIIIIIHHHHHH", elf_data, 16)
-
+    # Detect ELF class: 1 = 32-bit, 2 = 64-bit
     ei_class = elf_data[4]
-    if ei_class != 1:
-        print("ERROR: Kernel ELF is not 32-bit (ELF32)", file=sys.stderr)
+
+    if ei_class == 2:
+        # ELF64 header
+        (e_type, e_machine, e_version, e_entry, e_phoff, e_shoff,
+         e_flags, e_ehsize, e_phentsize, e_phnum, e_shentsize, e_shnum,
+         e_shstrndx) = struct.unpack_from("<HHIQQQIHHHHHH", elf_data, 16)
+        print(f"  ELF64 entry point: 0x{e_entry:016X}")
+    elif ei_class == 1:
+        # ELF32 header
+        (e_type, e_machine, e_version, e_entry, e_phoff, e_shoff,
+         e_flags, e_ehsize, e_phentsize, e_phnum, e_shentsize, e_shnum,
+         e_shstrndx) = struct.unpack_from("<HHIIIIIHHHHHH", elf_data, 16)
+        print(f"  ELF32 entry point: 0x{e_entry:08X}")
+    else:
+        print(f"ERROR: Unknown ELF class {ei_class}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"  ELF entry point: 0x{e_entry:08X}")
     print(f"  Program headers: {e_phnum} entries at offset {e_phoff}")
 
     # Parse program headers to find max extent
@@ -171,15 +179,23 @@ def elf_to_flat_binary(elf_data, base_paddr):
     segments = []
     for i in range(e_phnum):
         ph_offset = e_phoff + i * e_phentsize
-        (p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz,
-         p_flags, p_align) = struct.unpack_from("<IIIIIIII", elf_data, ph_offset)
+
+        if ei_class == 2:
+            # ELF64 Phdr: p_type(4), p_flags(4), p_offset(8), p_vaddr(8),
+            #             p_paddr(8), p_filesz(8), p_memsz(8), p_align(8)
+            (p_type, p_flags, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz,
+             p_align) = struct.unpack_from("<IIQQQQQQ", elf_data, ph_offset)
+        else:
+            # ELF32 Phdr
+            (p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz,
+             p_flags, p_align) = struct.unpack_from("<IIIIIIII", elf_data, ph_offset)
 
         if p_type == PT_LOAD and p_filesz > 0:
             segments.append((p_paddr, p_offset, p_filesz, p_memsz, p_vaddr))
             end = p_paddr + p_memsz
             if end > max_paddr_end:
                 max_paddr_end = end
-            print(f"  PT_LOAD: paddr=0x{p_paddr:08X} vaddr=0x{p_vaddr:08X} "
+            print(f"  PT_LOAD: paddr=0x{p_paddr:08X} vaddr=0x{p_vaddr:016X} "
                   f"filesz=0x{p_filesz:X} memsz=0x{p_memsz:X}")
 
     if not segments:

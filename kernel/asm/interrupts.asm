@@ -1,12 +1,15 @@
 ; =============================================================================
-; interrupts.asm - ISR and IRQ stub entries for .anyOS kernel
+; interrupts.asm - ISR and IRQ stub entries for .anyOS kernel (x86-64)
 ; =============================================================================
 ; These stubs save CPU state and call Rust handlers:
-;   isr_handler(frame: &InterruptFrame)
-;   irq_handler(frame: &InterruptFrame)
+;   isr_handler(frame: &InterruptFrame)   — arg in RDI (System V ABI)
+;   irq_handler(frame: &InterruptFrame)   — arg in RDI (System V ABI)
+;
+; In 64-bit mode there is no pushad/popad; all GPRs are pushed individually.
+; The CPU always pushes SS and RSP on interrupt (even same-privilege).
 ; =============================================================================
 
-[BITS 32]
+[BITS 64]
 
 ; Rust handlers (defined in kernel/src/arch/x86/idt.rs)
 extern isr_handler
@@ -20,8 +23,8 @@ extern irq_handler
 %macro ISR_NOERRCODE 1
 global isr%1
 isr%1:
-    push dword 0            ; Push dummy error code
-    push dword %1           ; Push interrupt number
+    push qword 0            ; Push dummy error code
+    push qword %1           ; Push interrupt number
     jmp isr_common_stub
 %endmacro
 
@@ -29,8 +32,8 @@ isr%1:
 %macro ISR_ERRCODE 1
 global isr%1
 isr%1:
-    ; Error code already pushed by CPU
-    push dword %1           ; Push interrupt number
+    ; Error code already pushed by CPU (64-bit)
+    push qword %1           ; Push interrupt number
     jmp isr_common_stub
 %endmacro
 
@@ -69,13 +72,13 @@ ISR_NOERRCODE 30    ; Reserved
 ISR_NOERRCODE 31    ; Reserved
 
 ; =============================================================================
-; IRQ stubs - Hardware Interrupts (INT 32-47)
+; IRQ stubs - Hardware Interrupts (INT 32-55)
 ; =============================================================================
 %macro IRQ 2
 global irq%1
 irq%1:
-    push dword 0            ; Dummy error code
-    push dword %2           ; Interrupt number (32 + IRQ#)
+    push qword 0            ; Dummy error code
+    push qword %2           ; Interrupt number (32 + IRQ#)
     jmp irq_common_stub
 %endmacro
 
@@ -107,71 +110,100 @@ IRQ 22, 54      ; Reserved
 IRQ 23, 55      ; LAPIC Spurious
 
 ; =============================================================================
-; Common ISR stub - saves state, calls Rust isr_handler, restores state
+; Common ISR stub - saves all GPRs, calls Rust isr_handler, restores state
 ; =============================================================================
 isr_common_stub:
-    ; Save all general-purpose registers
-    pushad
+    ; Save all general-purpose registers (no pushad in 64-bit mode)
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
 
-    ; Save segment registers
-    push ds
-    push es
-    push fs
-    push gs
-
-    ; Load kernel data segment
+    ; Load kernel data segment (needed when entering from compat mode)
     mov ax, 0x10
     mov ds, ax
     mov es, ax
-    mov fs, ax
-    mov gs, ax
 
-    ; Pass pointer to stack frame as argument
-    push esp
+    ; Pass pointer to InterruptFrame as first arg (System V ABI: RDI)
+    mov rdi, rsp
     call isr_handler
-    add esp, 4
 
-    ; Restore segment registers
-    pop gs
-    pop fs
-    pop es
-    pop ds
-
-    ; Restore general-purpose registers
-    popad
+    ; Restore all general-purpose registers
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
 
     ; Remove interrupt number and error code from stack
-    add esp, 8
+    add rsp, 16
 
-    ; Return from interrupt
-    iretd
+    ; Return from interrupt (64-bit IRET)
+    iretq
 
 ; =============================================================================
-; Common IRQ stub - saves state, calls Rust irq_handler, restores state
+; Common IRQ stub - saves all GPRs, calls Rust irq_handler, restores state
 ; =============================================================================
 irq_common_stub:
-    pushad
-
-    push ds
-    push es
-    push fs
-    push gs
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
 
     mov ax, 0x10
     mov ds, ax
     mov es, ax
-    mov fs, ax
-    mov gs, ax
 
-    push esp
+    mov rdi, rsp
     call irq_handler
-    add esp, 4
 
-    pop gs
-    pop fs
-    pop es
-    pop ds
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
 
-    popad
-    add esp, 8
-    iretd
+    add rsp, 16
+    iretq

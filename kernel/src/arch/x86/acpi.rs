@@ -74,23 +74,25 @@ const MADT_ISO: u8 = 2;   // Interrupt Source Override
 const MADT_LAPIC_NMI: u8 = 4;
 
 /// Virtual address window for temporarily mapping ACPI tables.
-const ACPI_MAP_BASE: u32 = 0xD020_0000;
+const ACPI_MAP_BASE: u64 = 0xD020_0000;
 /// Maximum ACPI table region we map (256 KiB = 64 pages)
 const ACPI_MAP_PAGES: usize = 64;
 
 /// Map a physical address range into the ACPI virtual window.
 /// Returns the virtual address corresponding to `phys_addr`.
-fn acpi_map(phys_addr: u32, size: u32) -> u32 {
+fn acpi_map(phys_addr: u32, size: u32) -> u64 {
     use crate::memory::address::{PhysAddr, VirtAddr};
     use crate::memory::virtual_mem;
 
+    let phys_addr = phys_addr as u64;
+    let size = size as u64;
     let page_start = phys_addr & !0xFFF;
     let page_end = (phys_addr + size + 0xFFF) & !0xFFF;
     let num_pages = ((page_end - page_start) / 0x1000) as usize;
 
     for i in 0..core::cmp::min(num_pages, ACPI_MAP_PAGES) {
-        let virt = ACPI_MAP_BASE + (i as u32) * 0x1000;
-        let phys = page_start + (i as u32) * 0x1000;
+        let virt = ACPI_MAP_BASE + (i as u64) * 0x1000;
+        let phys = page_start + (i as u64) * 0x1000;
         virtual_mem::map_page(
             VirtAddr::new(virt),
             PhysAddr::new(phys),
@@ -108,7 +110,7 @@ fn acpi_unmap(num_pages: usize) {
     use crate::memory::virtual_mem;
 
     for i in 0..core::cmp::min(num_pages, ACPI_MAP_PAGES) {
-        let virt = ACPI_MAP_BASE + (i as u32) * 0x1000;
+        let virt = ACPI_MAP_BASE + (i as u64) * 0x1000;
         virtual_mem::unmap_page(VirtAddr::new(virt));
     }
 }
@@ -141,7 +143,7 @@ pub fn init() -> Option<AcpiInfo> {
     crate::serial_println!("  ACPI: RSDT has {} table entries", num_entries);
 
     // Walk RSDT entries to find MADT (signature "APIC")
-    let entries_base = (rsdt_virt + header_size) as *const u32;
+    let entries_base = (rsdt_virt + header_size as u64) as *const u32;
 
     for i in 0..num_entries {
         let table_phys = unsafe { entries_base.add(i as usize).read_unaligned() };
@@ -152,7 +154,7 @@ pub fn init() -> Option<AcpiInfo> {
         let rsdt_page = rsdt_phys & !0xFFF;
         let table_virt = if table_page >= rsdt_page && table_page < rsdt_page + 0x10000 {
             // Table is within the RSDT mapping window
-            ACPI_MAP_BASE + (table_phys - rsdt_page)
+            ACPI_MAP_BASE + (table_phys - rsdt_page) as u64
         } else {
             // Table is elsewhere — remap
             acpi_map(table_phys, 0x1000)
@@ -231,8 +233,8 @@ fn validate_rsdp_checksum(rsdp: *const Rsdp) -> bool {
 }
 
 /// Parse the MADT (Multiple APIC Description Table).
-fn parse_madt(madt_virt: u32, table_len: u32) -> Option<AcpiInfo> {
-    let header_size = core::mem::size_of::<AcpiSdtHeader>() as u32;
+fn parse_madt(madt_virt: u64, table_len: u32) -> Option<AcpiInfo> {
+    let header_size = core::mem::size_of::<AcpiSdtHeader>() as u64;
 
     // MADT has LAPIC address at offset 36 (header_size = 36 for SDT header)
     // Then flags at offset 40
@@ -247,12 +249,12 @@ fn parse_madt(madt_virt: u32, table_len: u32) -> Option<AcpiInfo> {
 
     // Parse MADT entries starting at offset header_size + 8
     let entries_start = madt_virt + header_size + 8;
-    let entries_end = madt_virt + table_len;
+    let entries_end = madt_virt + table_len as u64;
     let mut off = entries_start;
 
     while off + 2 <= entries_end {
         let entry_type = unsafe { (off as *const u8).read() };
-        let entry_len = unsafe { ((off + 1) as *const u8).read() } as u32;
+        let entry_len = unsafe { ((off + 1) as *const u8).read() } as u64;
 
         if entry_len < 2 { break; }
 

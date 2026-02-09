@@ -1,10 +1,10 @@
 ; =============================================================================
-; hello.bin - First user-mode program for .anyOS
+; hello.bin - First user-mode program for .anyOS (x86-64)
 ; =============================================================================
-; Flat binary, runs in Ring 3
+; Flat binary, runs in Ring 3 (64-bit long mode)
 ; Uses int 0x80 for system calls:
-;   EAX = syscall number
-;   EBX = arg1, ECX = arg2, EDX = arg3
+;   RAX = syscall number
+;   RBX = arg1, RCX = arg2, RDX = arg3
 ;
 ; Syscall numbers:
 ;   1 = exit(status)
@@ -12,117 +12,117 @@
 ;   6 = getpid()
 ; =============================================================================
 
-bits 32
+bits 64
 org 0x08000000      ; Must match PROGRAM_LOAD_ADDR in loader.rs
 
 _start:
     ; --- Print "Hello from .anyOS user mode!" ---
-    mov eax, 2          ; SYS_WRITE
-    mov ebx, 1          ; fd = stdout
-    mov ecx, msg_hello  ; buffer pointer
-    mov edx, msg_hello_len ; length
+    mov rax, 2          ; SYS_WRITE
+    mov rbx, 1          ; fd = stdout
+    lea rcx, [rel msg_hello]  ; buffer pointer (RIP-relative)
+    mov rdx, msg_hello_len    ; length
     int 0x80
 
     ; --- Get our PID ---
-    mov eax, 6          ; SYS_GETPID
+    mov rax, 6          ; SYS_GETPID
     int 0x80
-    ; PID is now in EAX
+    ; PID is now in RAX
 
     ; --- Print "PID = " ---
-    push eax            ; save PID
-    mov eax, 2          ; SYS_WRITE
-    mov ebx, 1          ; fd = stdout
-    mov ecx, msg_pid    ; "PID = "
-    mov edx, msg_pid_len
+    push rax            ; save PID
+    mov rax, 2          ; SYS_WRITE
+    mov rbx, 1          ; fd = stdout
+    lea rcx, [rel msg_pid]
+    mov rdx, msg_pid_len
     int 0x80
 
     ; --- Convert PID to decimal and print ---
-    pop eax             ; restore PID
-    call print_u32
+    pop rax             ; restore PID
+    call print_u64
 
     ; --- Print newline ---
-    mov eax, 2
-    mov ebx, 1
-    mov ecx, msg_nl
-    mov edx, 1
+    mov rax, 2
+    mov rbx, 1
+    lea rcx, [rel msg_nl]
+    mov rdx, 1
     int 0x80
 
     ; --- Print goodbye message ---
-    mov eax, 2
-    mov ebx, 1
-    mov ecx, msg_bye
-    mov edx, msg_bye_len
+    mov rax, 2
+    mov rbx, 1
+    lea rcx, [rel msg_bye]
+    mov rdx, msg_bye_len
     int 0x80
 
     ; --- Exit with code 0 ---
-    mov eax, 1          ; SYS_EXIT
-    mov ebx, 0          ; exit code
+    mov rax, 1          ; SYS_EXIT
+    mov rbx, 0          ; exit code
     int 0x80
 
     ; Should never reach here
     jmp $
 
-; print_u32: Print the unsigned 32-bit integer in EAX as decimal to stdout
-print_u32:
-    push ebp
-    mov ebp, esp
-    sub esp, 12         ; buffer for digits (max 10 digits for u32)
-    lea edi, [ebp - 12]
-    mov ecx, 0          ; digit count
+; print_u64: Print the unsigned 64-bit integer in RAX as decimal to stdout
+print_u64:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 24         ; buffer for digits (max 20 digits for u64)
+    lea rdi, [rbp - 24]
+    xor rcx, rcx        ; digit count
 
     ; Handle zero case
-    test eax, eax
+    test rax, rax
     jnz .convert
-    mov byte [edi], '0'
-    mov ecx, 1
+    mov byte [rdi], '0'
+    mov rcx, 1
     jmp .print
 
 .convert:
     ; Convert digits (least significant first)
-    push esi
-    lea esi, [ebp - 12]
-    mov ecx, 0
+    push rsi
+    lea rsi, [rbp - 24]
+    xor rcx, rcx
 .digit_loop:
-    xor edx, edx
-    mov ebx, 10
-    div ebx             ; EAX = quotient, EDX = remainder
+    xor rdx, rdx
+    mov rbx, 10
+    div rbx             ; RAX = quotient, RDX = remainder
     add dl, '0'
-    mov [esi + ecx], dl
-    inc ecx
-    test eax, eax
+    mov [rsi + rcx], dl
+    inc rcx
+    test rax, rax
     jnz .digit_loop
-    pop esi
+    pop rsi
 
     ; Reverse digits in place
-    lea edi, [ebp - 12]
-    mov esi, ecx
-    dec esi             ; esi = last index
-    xor ebx, ebx        ; ebx = first index
+    lea rdi, [rbp - 24]
+    mov rsi, rcx
+    dec rsi             ; rsi = last index
+    xor rbx, rbx        ; rbx = first index
 .reverse:
-    cmp ebx, esi
+    cmp rbx, rsi
     jge .print
-    mov al, [edi + ebx]
-    mov ah, [edi + esi]
-    mov [edi + ebx], ah
-    mov [edi + esi], al
-    inc ebx
-    dec esi
+    mov al, [rdi + rbx]
+    mov ah, [rdi + rsi]
+    mov [rdi + rbx], ah
+    mov [rdi + rsi], al
+    inc rbx
+    dec rsi
     jmp .reverse
 
 .print:
     ; Write the digits
-    mov edx, ecx        ; length
-    lea ecx, [ebp - 12] ; buffer
-    mov eax, 2           ; SYS_WRITE
-    mov ebx, 1           ; fd = stdout
+    mov rdx, rcx        ; length
+    lea rcx, [rbp - 24] ; buffer
+    mov rax, 2           ; SYS_WRITE
+    mov rbx, 1           ; fd = stdout
     int 0x80
 
-    mov esp, ebp
-    pop ebp
+    mov rsp, rbp
+    pop rbp
     ret
 
 ; Data section (part of the flat binary)
-msg_hello:    db "Hello from .anyOS user mode!", 0x0A
+msg_hello:    db "Hello from .anyOS user mode! (64-bit)", 0x0A
 msg_hello_len equ $ - msg_hello
 
 msg_pid:      db "PID = "

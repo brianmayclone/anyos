@@ -47,7 +47,7 @@ pub const VECTOR_IPI_HALT: u8 = 253;
 pub const VECTOR_IPI_TLB: u8  = 252;
 
 /// Virtual address where LAPIC MMIO is mapped
-const LAPIC_VIRT_BASE: u32 = 0xD010_0000;
+const LAPIC_VIRT_BASE: u64 = 0xD010_0000;
 
 static LAPIC_PHYS: AtomicU32 = AtomicU32::new(0);
 static LAPIC_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -62,7 +62,7 @@ pub fn init_bsp(lapic_phys: u32) {
 
     virtual_mem::map_page(
         VirtAddr::new(LAPIC_VIRT_BASE),
-        PhysAddr::new(lapic_phys),
+        PhysAddr::new(lapic_phys as u64),
         0x03, // PAGE_PRESENT | PAGE_WRITABLE
     );
 
@@ -237,14 +237,14 @@ unsafe fn wait_icr_idle() {
 /// Read a LAPIC register.
 #[inline(always)]
 unsafe fn read(reg: u32) -> u32 {
-    let addr = LAPIC_VIRT_BASE + reg;
+    let addr = LAPIC_VIRT_BASE + reg as u64;
     core::ptr::read_volatile(addr as *const u32)
 }
 
 /// Write a LAPIC register.
 #[inline(always)]
 unsafe fn write(reg: u32, value: u32) {
-    let addr = LAPIC_VIRT_BASE + reg;
+    let addr = LAPIC_VIRT_BASE + reg as u64;
     core::ptr::write_volatile(addr as *mut u32, value);
 }
 

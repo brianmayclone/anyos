@@ -90,7 +90,7 @@ ninja run
 
 The default `run` target uses:
 ```
-qemu-system-i386 -drive format=raw,file=anyos.img -m 128M -smp cpus=4 \
+qemu-system-x86_64 -drive format=raw,file=anyos.img -m 128M -smp cpus=4 \
   -serial stdio -vga std -netdev user,id=net0 -device e1000,netdev=net0
 ```
 

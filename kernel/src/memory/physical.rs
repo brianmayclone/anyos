@@ -15,10 +15,10 @@ const MAX_FRAMES: usize = MAX_MEMORY / FRAME_SIZE;
 const BITMAP_SIZE: usize = MAX_FRAMES / 8;
 
 // Kernel virtual base (must match link.ld and boot.asm)
-const KERNEL_VIRT_BASE: u32 = 0xC000_0000;
+const KERNEL_VIRT_BASE: u64 = 0xFFFF_FFFF_8000_0000;
 
 // Kernel stack placed above BSS (must match KERNEL_STACK_SIZE in boot.asm)
-const KERNEL_STACK_SIZE: u32 = 0x10000; // 64 KiB
+const KERNEL_STACK_SIZE: u64 = 0x10000; // 64 KiB
 
 extern "C" {
     static _kernel_end: u8;
@@ -77,10 +77,10 @@ pub fn init(boot_info: &BootInfo) {
             continue;
         }
 
-        let start = PhysAddr::new(entry.base_addr as u32).frame_align_up();
-        let end = PhysAddr::new((entry.base_addr + entry.length) as u32).frame_align_down();
+        let start = PhysAddr::new(entry.base_addr).frame_align_up();
+        let end = PhysAddr::new(entry.base_addr + entry.length).frame_align_down();
 
-        if start.as_u32() >= end.as_u32() {
+        if start.as_u64() >= end.as_u64() {
             continue;
         }
 
@@ -108,21 +108,21 @@ pub fn init(boot_info: &BootInfo) {
 
     // - Kernel region (including BSS which is not in the flat binary)
     //   _kernel_end from linker script is a virtual address; convert to physical
-    let kernel_start = PhysAddr::new(boot_info.kernel_phys_start).frame_align_down();
+    let kernel_start = PhysAddr::new(boot_info.kernel_phys_start as u64).frame_align_down();
     let linker_kernel_end_phys = unsafe {
-        (&_kernel_end as *const u8 as u32) - KERNEL_VIRT_BASE
+        (&_kernel_end as *const u8 as u64) - KERNEL_VIRT_BASE
     };
     // Use the larger of BootInfo's kernel_phys_end and the linker's _kernel_end
-    let kernel_end_phys = if linker_kernel_end_phys > boot_info.kernel_phys_end {
+    let kernel_end_phys = if linker_kernel_end_phys > boot_info.kernel_phys_end as u64 {
         linker_kernel_end_phys
     } else {
-        boot_info.kernel_phys_end
+        boot_info.kernel_phys_end as u64
     };
     // Reserve BSS + kernel stack area (stack is placed above BSS in boot.asm)
     let kernel_end = PhysAddr::new(kernel_end_phys + KERNEL_STACK_SIZE).frame_align_up();
     crate::serial_println!(
         "Reserving kernel region: {:#010x} - {:#010x} (includes BSS + stack)",
-        kernel_start.as_u32(), kernel_end.as_u32()
+        kernel_start.as_u64(), kernel_end.as_u64()
     );
     for frame in kernel_start.frame_index()..kernel_end.frame_index() {
         if frame < MAX_FRAMES && !is_used(frame) {
@@ -148,7 +148,7 @@ pub fn alloc_frame() -> Option<PhysAddr> {
             if !is_used(i) {
                 set_used(i);
                 FREE_FRAMES -= 1;
-                return Some(PhysAddr::new((i * FRAME_SIZE) as u32));
+                return Some(PhysAddr::new((i * FRAME_SIZE) as u64));
             }
         }
         None

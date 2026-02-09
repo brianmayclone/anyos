@@ -1,5 +1,5 @@
 //! Architecture-specific modules.
 //!
-//! Currently only the i686 (x86 32-bit) target is supported.
+//! Currently only the x86-64 target is supported (with i686 compatibility mode).
 
 pub mod x86;

@@ -40,9 +40,9 @@ for arg in "$@"; do
 done
 
 echo "Starting anyOS in debug mode with $VGA_LABEL (-vga $VGA)"
-echo "Connect GDB with: gdb -ex 'target remote :1234' -ex 'symbol-file build/kernel/i686-anyos/debug/anyos_kernel'"
+echo "Connect GDB with: gdb -ex 'target remote :1234' -ex 'symbol-file build/kernel/x86_64-anyos/debug/anyos_kernel'"
 
-qemu-system-i386 \
+qemu-system-x86_64 \
     -drive format=raw,file="$IMAGE" \
     -m 128M \
     -smp cpus=4 \

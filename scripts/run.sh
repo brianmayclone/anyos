@@ -43,7 +43,7 @@ done
 
 echo "Starting anyOS with $VGA_LABEL (-vga $VGA)"
 
-qemu-system-i386 \
+qemu-system-x86_64 \
     -drive format=raw,file="$IMAGE" \
     -m 128M \
     -smp cpus=4 \
