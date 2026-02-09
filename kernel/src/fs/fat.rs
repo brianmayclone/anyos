@@ -231,7 +231,7 @@ impl FatFs {
     /// Create a new FAT filesystem by reading the BPB from the ATA device.
     pub fn new(device_id: u32, partition_start_lba: u32) -> Result<Self, FsError> {
         let mut buf = [0u8; 512];
-        if !crate::drivers::storage::ata::read_sectors(partition_start_lba, 1, &mut buf) {
+        if !crate::drivers::storage::read_sectors(partition_start_lba, 1, &mut buf) {
             crate::serial_println!("  FAT: Failed to read boot sector at LBA {}", partition_start_lba);
             return Err(FsError::IoError);
         }
@@ -305,34 +305,16 @@ impl FatFs {
 
     fn read_sectors(&self, relative_lba: u32, count: u32, buf: &mut [u8]) -> Result<(), FsError> {
         let abs_lba = self.partition_start_lba + relative_lba;
-        let mut offset = 0usize;
-        let mut remaining = count;
-        let mut lba = abs_lba;
-        while remaining > 0 {
-            let batch = remaining.min(255) as u8;
-            if !crate::drivers::storage::ata::read_sectors(lba, batch, &mut buf[offset..]) {
-                return Err(FsError::IoError);
-            }
-            offset += batch as usize * 512;
-            lba += batch as u32;
-            remaining -= batch as u32;
+        if !crate::drivers::storage::read_sectors(abs_lba, count, buf) {
+            return Err(FsError::IoError);
         }
         Ok(())
     }
 
     fn write_sectors(&self, relative_lba: u32, count: u32, buf: &[u8]) -> Result<(), FsError> {
         let abs_lba = self.partition_start_lba + relative_lba;
-        let mut offset = 0usize;
-        let mut remaining = count;
-        let mut lba = abs_lba;
-        while remaining > 0 {
-            let batch = remaining.min(255) as u8;
-            if !crate::drivers::storage::ata::write_sectors(lba, batch, &buf[offset..]) {
-                return Err(FsError::IoError);
-            }
-            offset += batch as usize * 512;
-            lba += batch as u32;
-            remaining -= batch as u32;
+        if !crate::drivers::storage::write_sectors(abs_lba, count, buf) {
+            return Err(FsError::IoError);
         }
         Ok(())
     }

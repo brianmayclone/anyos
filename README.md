@@ -24,6 +24,7 @@ The OS boots into a graphical desktop environment with:
 - **SMP support** (multi-core via APIC/IOAPIC)
 - **Physical + virtual memory manager** with kernel heap allocator
 - **FAT16 filesystem** with VFAT long filename support
+- **Storage dispatch**: ATA PIO (legacy IDE) and **AHCI** (SATA DMA) backends
 - **ELF loader** for user programs
 
 ### Graphics & UI
@@ -84,6 +85,8 @@ ninja run
 | `ninja` | Build the complete OS (bootloader + kernel + programs + disk image) |
 | `ninja run` | Build and launch in QEMU with Bochs VGA |
 | `ninja run-vmware` | Build and launch with VMware SVGA II (hardware acceleration) |
+| `ninja run-ahci` | Build and launch with AHCI (SATA DMA) disk I/O, Bochs VGA |
+| `ninja run-ahci-vmware` | Build and launch with AHCI + VMware SVGA II |
 | `ninja debug` | Launch with GDB server on localhost:1234 |
 
 ### QEMU Configuration
@@ -100,6 +103,14 @@ Key flags:
 - `-serial stdio` -- Kernel serial output to terminal
 - `-m 128M` -- 128 MB RAM (minimum recommended)
 
+For AHCI (SATA DMA) disk I/O instead of legacy ATA PIO:
+```
+-drive id=hd0,if=none,format=raw,file=anyos.img \
+  -device ich9-ahci,id=ahci -device ide-hd,drive=hd0,bus=ahci.0
+```
+
+Or use `./scripts/run.sh --ahci [--vmware | --std]` for quick testing.
+
 ## Project Structure
 
 ```
@@ -111,7 +122,7 @@ anyos/
     asm/                 Context switch, interrupts, syscall entry
     src/
       arch/x86/          GDT, IDT, APIC, PIT, paging
-      drivers/           PCI, GPU, keyboard, mouse, E1000, ATA, serial
+      drivers/           PCI, GPU, keyboard, mouse, E1000, ATA, AHCI, serial
       fs/                FAT16, VFS, devfs
       graphics/          Compositor, surface, font rendering
       ipc/               Pipes, event bus, shared memory

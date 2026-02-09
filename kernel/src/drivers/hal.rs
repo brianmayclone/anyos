@@ -380,20 +380,32 @@ impl Driver for IdeDriver {
     }
 }
 
-/// SATA controller stub
+/// AHCI/SATA controller driver (wraps ahci.rs DMA backend)
 struct SataDriver {
     _pci: PciDevice,
 }
 
 impl Driver for SataDriver {
-    fn name(&self) -> &str { "SATA Controller (stub)" }
+    fn name(&self) -> &str { "AHCI SATA Controller" }
     fn driver_type(&self) -> DriverType { DriverType::Block }
     fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
-    fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
-        Err(DriverError::NotSupported)
+    fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize, DriverError> {
+        let lba = offset / 512;
+        let sectors = (buf.len() + 511) / 512;
+        if crate::drivers::storage::read_sectors(lba as u32, sectors as u32, buf) {
+            Ok(sectors * 512)
+        } else {
+            Err(DriverError::IoError)
+        }
     }
-    fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize, DriverError> {
-        Err(DriverError::NotSupported)
+    fn write(&self, offset: usize, buf: &[u8]) -> Result<usize, DriverError> {
+        let lba = offset / 512;
+        let sectors = (buf.len() + 511) / 512;
+        if crate::drivers::storage::write_sectors(lba as u32, sectors as u32, buf) {
+            Ok(sectors * 512)
+        } else {
+            Err(DriverError::IoError)
+        }
     }
     fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
         Err(DriverError::NotSupported)
@@ -576,7 +588,11 @@ static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
     },
     PciDriverEntry {
         match_rule: PciMatch::Class { class: 0x01, subclass: 0x06 },
-        factory: |pci| Some(Box::new(SataDriver { _pci: pci.clone() })),
+        factory: |pci| {
+            // Initialize AHCI SATA controller
+            crate::drivers::storage::ahci::init_and_register(pci);
+            Some(Box::new(SataDriver { _pci: pci.clone() }))
+        },
         specificity: 1,
     },
     PciDriverEntry {

@@ -8,9 +8,10 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU
-# Usage: ./run.sh [--vmware | --std]
+# Usage: ./run.sh [--vmware | --std] [--ahci]
 #   --vmware   VMware SVGA II (2D acceleration, HW cursor)
 #   --std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
+#   --ahci     Use AHCI (SATA DMA) instead of legacy IDE for disk I/O
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMAGE="${SCRIPT_DIR}/../build/anyos.img"
@@ -23,6 +24,8 @@ fi
 
 VGA="std"
 VGA_LABEL="Bochs VGA (standard)"
+DRIVE_FLAGS="-drive format=raw,file=\"$IMAGE\""
+DRIVE_LABEL="IDE (PIO)"
 
 for arg in "$@"; do
     case "$arg" in
@@ -34,17 +37,21 @@ for arg in "$@"; do
             VGA="std"
             VGA_LABEL="Bochs VGA (standard)"
             ;;
+        --ahci)
+            DRIVE_FLAGS="-drive id=hd0,if=none,format=raw,file=\"$IMAGE\" -device ich9-ahci,id=ahci -device ide-hd,drive=hd0,bus=ahci.0"
+            DRIVE_LABEL="AHCI (DMA)"
+            ;;
         *)
-            echo "Usage: $0 [--vmware | --std]"
+            echo "Usage: $0 [--vmware | --std] [--ahci]"
             exit 1
             ;;
     esac
 done
 
-echo "Starting anyOS with $VGA_LABEL (-vga $VGA)"
+echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL"
 
-qemu-system-x86_64 \
-    -drive format=raw,file="$IMAGE" \
+eval qemu-system-x86_64 \
+    $DRIVE_FLAGS \
     -m 128M \
     -smp cpus=4 \
     -serial stdio \

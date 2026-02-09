@@ -174,6 +174,38 @@ pub fn free_frames() -> usize {
     unsafe { FREE_FRAMES }
 }
 
+/// Allocate `count` physically contiguous 4 KiB frames.
+///
+/// Scans the bitmap for a run of `count` consecutive free frames (first-fit).
+/// Returns the physical address of the first frame, or `None` if unavailable.
+pub fn alloc_contiguous(count: usize) -> Option<PhysAddr> {
+    if count == 0 {
+        return None;
+    }
+    unsafe {
+        let mut run_start = 0usize;
+        let mut run_len = 0usize;
+        for i in 0..TOTAL_FRAMES {
+            if !is_used(i) {
+                if run_len == 0 {
+                    run_start = i;
+                }
+                run_len += 1;
+                if run_len >= count {
+                    for j in run_start..run_start + count {
+                        set_used(j);
+                        FREE_FRAMES -= 1;
+                    }
+                    return Some(PhysAddr::new((run_start * FRAME_SIZE) as u64));
+                }
+            } else {
+                run_len = 0;
+            }
+        }
+        None
+    }
+}
+
 /// Returns the total number of physical frames tracked by the allocator.
 pub fn total_frames() -> usize {
     unsafe { TOTAL_FRAMES }

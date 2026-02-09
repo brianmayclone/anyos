@@ -557,6 +557,36 @@ add_custom_target(run-vmware
   COMMENT "Launching anyOS in QEMU with VMware SVGA II"
 )
 
+add_custom_target(run-ahci
+  COMMAND ${QEMU_EXECUTABLE}
+    -drive id=hd0,if=none,format=raw,file=${DISK_IMAGE}
+    -device ich9-ahci,id=ahci -device ide-hd,drive=hd0,bus=ahci.0
+    -m 128M
+    -smp cpus=4
+    -serial stdio
+    -vga std
+    -netdev user,id=net0 -device e1000,netdev=net0
+    -no-reboot -no-shutdown
+  DEPENDS ${DISK_IMAGE}
+  USES_TERMINAL
+  COMMENT "Launching anyOS in QEMU with AHCI (SATA DMA)"
+)
+
+add_custom_target(run-ahci-vmware
+  COMMAND ${QEMU_EXECUTABLE}
+    -drive id=hd0,if=none,format=raw,file=${DISK_IMAGE}
+    -device ich9-ahci,id=ahci -device ide-hd,drive=hd0,bus=ahci.0
+    -m 128M
+    -smp cpus=4
+    -serial stdio
+    -vga vmware
+    -netdev user,id=net0 -device e1000,netdev=net0
+    -no-reboot -no-shutdown
+  DEPENDS ${DISK_IMAGE}
+  USES_TERMINAL
+  COMMENT "Launching anyOS in QEMU with AHCI + VMware SVGA II"
+)
+
 add_custom_target(debug
   COMMAND ${QEMU_EXECUTABLE}
     -drive format=raw,file=${DISK_IMAGE}
