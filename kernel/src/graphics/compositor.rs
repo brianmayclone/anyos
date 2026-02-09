@@ -469,9 +469,22 @@ impl Compositor {
                                 let copied_dest = Rect::new(new_r.x, new_r.y, copy_w, copy_h);
 
                                 // 1. Flush exposed area (old position minus new position)
+                                //    Use GPU fill for background-only exposed strips.
                                 let (exposed, exp_count) = old_r.subtract(&new_r);
                                 for i in 0..exp_count {
-                                    self.flush_region(exposed[i]);
+                                    if self.is_background_only(&exposed[i]) {
+                                        crate::drivers::gpu::with_gpu(|g| {
+                                            g.accel_fill_rect(
+                                                exposed[i].x.max(0) as u32,
+                                                exposed[i].y.max(0) as u32,
+                                                exposed[i].width,
+                                                exposed[i].height,
+                                                Color::MACOS_BG.to_u32(),
+                                            );
+                                        });
+                                    } else {
+                                        self.flush_region(exposed[i]);
+                                    }
                                 }
 
                                 // 2. Flush parts of new_r not covered by RECT_COPY
@@ -516,7 +529,20 @@ impl Compositor {
 
         if !used_accel {
             for rect in &clipped {
-                self.flush_region(*rect);
+                if self.gpu_accel && self.is_background_only(rect) {
+                    // Pure background — GPU RECT_FILL directly, skip memcpy
+                    crate::drivers::gpu::with_gpu(|g| {
+                        g.accel_fill_rect(
+                            rect.x.max(0) as u32,
+                            rect.y.max(0) as u32,
+                            rect.width,
+                            rect.height,
+                            Color::MACOS_BG.to_u32(),
+                        );
+                    });
+                } else {
+                    self.flush_region(*rect);
+                }
             }
         }
 
@@ -1007,6 +1033,28 @@ impl Compositor {
                 }
             }
         }
+    }
+
+    /// Check if a screen region contains only background (no visible layers or overlays).
+    /// Used by compose() to decide whether to GPU-fill instead of memcpy from back buffer.
+    fn is_background_only(&self, rect: &Rect) -> bool {
+        for layer in &self.layers {
+            if layer.visible && layer.bounds().intersects(rect) {
+                return false;
+            }
+        }
+        if let Some(outline) = self.resize_outline {
+            if outline.intersects(rect) {
+                return false;
+            }
+        }
+        if self.cursor_visible && !self.hw_cursor_active {
+            let cursor_rect = Rect::new(self.cursor_x - 1, self.cursor_y - 1, 16, 20);
+            if cursor_rect.intersects(rect) {
+                return false;
+            }
+        }
+        true
     }
 
     /// Flush a region from the back buffer to the physical framebuffer.
