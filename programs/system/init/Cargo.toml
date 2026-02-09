@@ -9,6 +9,7 @@ libimage_client = { path = "../../dll/libimage_client" }
 
 [profile.dev]
 panic = "abort"
+opt-level = 2
 
 [profile.release]
 panic = "abort"

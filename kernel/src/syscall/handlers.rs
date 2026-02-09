@@ -1243,6 +1243,16 @@ pub fn sys_set_wallpaper(params_ptr: u32) -> u32 {
     0
 }
 
+pub fn sys_boot_ready() -> u32 {
+    use core::sync::atomic::{AtomicBool, Ordering};
+    static CALLED: AtomicBool = AtomicBool::new(false);
+    if CALLED.swap(true, Ordering::SeqCst) {
+        return u32::MAX; // already called once
+    }
+    crate::ui::desktop::signal_boot_ready();
+    0
+}
+
 // =========================================================================
 // Device management (existing)
 // =========================================================================

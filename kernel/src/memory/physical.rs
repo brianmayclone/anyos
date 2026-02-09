@@ -1,14 +1,14 @@
 //! Physical frame allocator using a bitmap.
 //!
-//! Manages 4 KiB physical frames up to 128 MiB of RAM. The bitmap tracks
+//! Manages 4 KiB physical frames up to 1 GiB of RAM. The bitmap tracks
 //! free/used state for each frame, initialized from the BIOS E820 memory map.
 
 use crate::boot_info::{BootInfo, E820_TYPE_USABLE};
 use crate::memory::address::PhysAddr;
 use crate::memory::FRAME_SIZE;
 
-/// Maximum supported physical memory (128 MiB).
-const MAX_MEMORY: usize = 128 * 1024 * 1024;
+/// Maximum supported physical memory (1 GiB).
+const MAX_MEMORY: usize = 1024 * 1024 * 1024;
 /// Total number of frames that can be tracked in the bitmap.
 const MAX_FRAMES: usize = MAX_MEMORY / FRAME_SIZE;
 /// Size of the bitmap in bytes (1 bit per frame).

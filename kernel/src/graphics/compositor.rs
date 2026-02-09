@@ -239,6 +239,12 @@ impl Compositor {
         (self.cursor_x, self.cursor_y)
     }
 
+    /// Set cursor position directly (used when syncing from boot-splash atomics).
+    pub fn set_cursor_position(&mut self, x: i32, y: i32) {
+        self.cursor_x = x.max(0).min(self.width as i32 - 1);
+        self.cursor_y = y.max(0).min(self.height as i32 - 1);
+    }
+
     fn damage_cursor(&mut self) {
         self.damage.push(Rect::new(
             self.cursor_x - 1,

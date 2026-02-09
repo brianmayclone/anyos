@@ -540,7 +540,7 @@ add_custom_target(image ALL DEPENDS ${DISK_IMAGE} programs)
 add_custom_target(run
   COMMAND ${QEMU_EXECUTABLE}
     -drive format=raw,file=${DISK_IMAGE}
-    -m 128M
+    -m 1024M
     -smp cpus=4
     -serial stdio
     -vga std
@@ -554,7 +554,7 @@ add_custom_target(run
 add_custom_target(run-vmware
   COMMAND ${QEMU_EXECUTABLE}
     -drive format=raw,file=${DISK_IMAGE}
-    -m 128M
+    -m 1024M
     -smp cpus=4
     -serial stdio
     -vga vmware
@@ -569,7 +569,7 @@ add_custom_target(run-ahci
   COMMAND ${QEMU_EXECUTABLE}
     -drive id=hd0,if=none,format=raw,file=${DISK_IMAGE}
     -device ich9-ahci,id=ahci -device ide-hd,drive=hd0,bus=ahci.0
-    -m 128M
+    -m 1024M
     -smp cpus=4
     -serial stdio
     -vga std
@@ -584,7 +584,7 @@ add_custom_target(run-ahci-vmware
   COMMAND ${QEMU_EXECUTABLE}
     -drive id=hd0,if=none,format=raw,file=${DISK_IMAGE}
     -device ich9-ahci,id=ahci -device ide-hd,drive=hd0,bus=ahci.0
-    -m 128M
+    -m 1024M
     -smp cpus=4
     -serial stdio
     -vga vmware
@@ -598,7 +598,7 @@ add_custom_target(run-ahci-vmware
 add_custom_target(run-audio
   COMMAND ${QEMU_EXECUTABLE}
     -drive format=raw,file=${DISK_IMAGE}
-    -m 128M
+    -m 1024M
     -smp cpus=4
     -serial stdio
     -vga std
@@ -613,7 +613,7 @@ add_custom_target(run-audio
 add_custom_target(debug
   COMMAND ${QEMU_EXECUTABLE}
     -drive format=raw,file=${DISK_IMAGE}
-    -m 128M
+    -m 1024M
     -smp cpus=4
     -serial stdio
     -vga std

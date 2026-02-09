@@ -9,6 +9,7 @@ pub mod virtio_gpu;
 pub mod vmware_svga;
 
 use alloc::boxed::Box;
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use crate::sync::spinlock::Spinlock;
 
 /// Common display resolutions supported by QEMU VGA devices
@@ -112,4 +113,65 @@ where
 /// Check if a GPU driver is registered.
 pub fn is_available() -> bool {
     GPU.lock().is_some()
+}
+
+// ──────────────────────────────────────────────
+// Boot splash cursor: IRQ-time HW cursor updates
+// ──────────────────────────────────────────────
+
+static SPLASH_CURSOR_ACTIVE: AtomicBool = AtomicBool::new(false);
+static SPLASH_CURSOR_X: AtomicI32 = AtomicI32::new(0);
+static SPLASH_CURSOR_Y: AtomicI32 = AtomicI32::new(0);
+static SPLASH_SCREEN_W: AtomicU32 = AtomicU32::new(1024);
+static SPLASH_SCREEN_H: AtomicU32 = AtomicU32::new(768);
+
+/// Enable boot-splash cursor mode. The mouse IRQ handler will directly
+/// update the HW cursor position via GPU I/O registers, bypassing the
+/// compositor. This ensures lag-free cursor movement during boot.
+pub fn enable_splash_cursor(screen_w: u32, screen_h: u32) {
+    SPLASH_SCREEN_W.store(screen_w, Ordering::Relaxed);
+    SPLASH_SCREEN_H.store(screen_h, Ordering::Relaxed);
+    SPLASH_CURSOR_X.store((screen_w / 2) as i32, Ordering::Relaxed);
+    SPLASH_CURSOR_Y.store((screen_h / 2) as i32, Ordering::Relaxed);
+    SPLASH_CURSOR_ACTIVE.store(true, Ordering::Release);
+}
+
+/// Disable boot-splash cursor mode (called when transitioning to full desktop).
+pub fn disable_splash_cursor() {
+    SPLASH_CURSOR_ACTIVE.store(false, Ordering::Release);
+}
+
+/// Called from mouse IRQ handler when a complete packet is assembled.
+/// Updates the HW cursor position directly at IRQ time if splash mode is active.
+/// Returns true if handled (splash active), false otherwise (normal compositor path).
+pub fn splash_cursor_move(dx: i32, dy: i32) -> bool {
+    if !SPLASH_CURSOR_ACTIVE.load(Ordering::Acquire) {
+        return false;
+    }
+    let sw = SPLASH_SCREEN_W.load(Ordering::Relaxed) as i32;
+    let sh = SPLASH_SCREEN_H.load(Ordering::Relaxed) as i32;
+
+    // Atomically update cursor position
+    let old_x = SPLASH_CURSOR_X.load(Ordering::Relaxed);
+    let old_y = SPLASH_CURSOR_Y.load(Ordering::Relaxed);
+    let new_x = (old_x + dx).max(0).min(sw - 1);
+    let new_y = (old_y + dy).max(0).min(sh - 1);
+    SPLASH_CURSOR_X.store(new_x, Ordering::Relaxed);
+    SPLASH_CURSOR_Y.store(new_y, Ordering::Relaxed);
+
+    // Update HW cursor via GPU (try_lock to avoid deadlock from IRQ context)
+    if let Some(mut gpu) = GPU.try_lock() {
+        if let Some(g) = gpu.as_mut() {
+            g.move_cursor(new_x as u32, new_y as u32);
+        }
+    }
+    true
+}
+
+/// Get the current splash cursor position (used by compositor on transition).
+pub fn splash_cursor_position() -> (i32, i32) {
+    (
+        SPLASH_CURSOR_X.load(Ordering::Relaxed),
+        SPLASH_CURSOR_Y.load(Ordering::Relaxed),
+    )
 }

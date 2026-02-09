@@ -190,6 +190,8 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
 }
 
 /// Apply PNG filter reconstruction and convert to ARGB8888.
+/// Dispatches to a specialized routine per color type to avoid per-pixel
+/// match overhead on color_type and channel index.
 fn reconstruct_and_convert(
     scanlines: &[u8],
     width: usize,
@@ -198,107 +200,164 @@ fn reconstruct_and_convert(
     color_type: u8,
     out: &mut [u32],
 ) -> i32 {
-    let row_bytes = width * pixel_bytes;
-    let scanline_size = row_bytes + 1; // filter byte + pixel data
+    match color_type {
+        CT_RGB  => reconstruct_rgb(scanlines, width, height, out),
+        CT_RGBA => reconstruct_rgba(scanlines, width, height, out),
+        CT_GRAY => reconstruct_gray(scanlines, width, height, out),
+        _ => ERR_UNSUPPORTED,
+    }
+}
 
-    // We process row-by-row, keeping previous row in a buffer on the stack.
-    // For max width 16384 * 4 bpp = 64K, which exceeds stack limits.
-    // Instead we do two passes: first reconstruct in-place, then convert.
-    // But scanlines is immutable... We'll work directly with output.
+/// RGB reconstruction — inline channel extraction via shift+mask.
+fn reconstruct_rgb(scanlines: &[u8], width: usize, height: usize, out: &mut [u32]) -> i32 {
+    let row_bytes = width * 3;
+    let scanline_size = row_bytes + 1;
 
-    // Since we can't modify scanlines and have no heap, do filtering + conversion
-    // in one pass. Keep prev_row as the first few bytes of the output (reinterpreted).
-    // Actually, we'll just process carefully using the output buffer as working storage.
-
-    // Use out[] as temp storage: each row's filtered bytes go into out[y*width..] reinterpreted.
-    // This works because out has width*height u32s = 4*width*height bytes, and we need
-    // pixel_bytes*width*height bytes for reconstruction.
-
-    // Process each row, referencing previous row's output pixels.
     for y in 0..height {
         let src_off = y * scanline_size;
         let filter = scanlines[src_off];
         let row_data = &scanlines[src_off + 1..src_off + 1 + row_bytes];
 
+        let mut prev_r: u8 = 0;
+        let mut prev_g: u8 = 0;
+        let mut prev_b: u8 = 0;
+
         for x in 0..width {
-            let px_off = x * pixel_bytes;
+            let px_off = x * 3;
+            let raw_r = row_data[px_off];
+            let raw_g = row_data[px_off + 1];
+            let raw_b = row_data[px_off + 2];
 
-            // Get raw bytes for this pixel
-            let mut channels = [0u8; 4];
-            for c in 0..pixel_bytes {
-                let raw = row_data[px_off + c];
-
-                // a = pixel to the left (same row, already reconstructed)
-                let a = if x > 0 {
-                    // Extract from already-written output pixel
-                    get_channel_from_argb(out[y * width + x - 1], color_type, c)
-                } else {
-                    0
-                };
-
-                // b = pixel above (previous row)
-                let b = if y > 0 {
-                    get_channel_from_argb(out[(y - 1) * width + x], color_type, c)
-                } else {
-                    0
-                };
-
-                // c = pixel above-left
-                let c_val = if x > 0 && y > 0 {
-                    get_channel_from_argb(out[(y - 1) * width + x - 1], color_type, c)
-                } else {
-                    0
-                };
-
-                channels[c] = match filter {
-                    0 => raw,                                   // None
-                    1 => raw.wrapping_add(a),                   // Sub
-                    2 => raw.wrapping_add(b),                   // Up
-                    3 => raw.wrapping_add(((a as u16 + b as u16) / 2) as u8), // Average
-                    4 => raw.wrapping_add(paeth(a, b, c_val)),  // Paeth
-                    _ => raw,
-                };
-            }
-
-            // Convert to ARGB8888
-            out[y * width + x] = match color_type {
-                CT_GRAY => {
-                    let g = channels[0] as u32;
-                    0xFF000000 | (g << 16) | (g << 8) | g
-                }
-                CT_RGB => {
-                    0xFF000000 | ((channels[0] as u32) << 16) | ((channels[1] as u32) << 8) | (channels[2] as u32)
-                }
-                CT_RGBA => {
-                    ((channels[3] as u32) << 24) | ((channels[0] as u32) << 16) | ((channels[1] as u32) << 8) | (channels[2] as u32)
-                }
-                _ => 0,
+            let (above_r, above_g, above_b) = if y > 0 {
+                let p = out[(y - 1) * width + x];
+                (((p >> 16) & 0xFF) as u8, ((p >> 8) & 0xFF) as u8, (p & 0xFF) as u8)
+            } else {
+                (0, 0, 0)
             };
+
+            let (r, g, b) = match filter {
+                0 => (raw_r, raw_g, raw_b),
+                1 => (
+                    raw_r.wrapping_add(prev_r),
+                    raw_g.wrapping_add(prev_g),
+                    raw_b.wrapping_add(prev_b),
+                ),
+                2 => (
+                    raw_r.wrapping_add(above_r),
+                    raw_g.wrapping_add(above_g),
+                    raw_b.wrapping_add(above_b),
+                ),
+                3 => (
+                    raw_r.wrapping_add(((prev_r as u16 + above_r as u16) / 2) as u8),
+                    raw_g.wrapping_add(((prev_g as u16 + above_g as u16) / 2) as u8),
+                    raw_b.wrapping_add(((prev_b as u16 + above_b as u16) / 2) as u8),
+                ),
+                4 => {
+                    let (al_r, al_g, al_b) = if x > 0 && y > 0 {
+                        let p = out[(y - 1) * width + x - 1];
+                        (((p >> 16) & 0xFF) as u8, ((p >> 8) & 0xFF) as u8, (p & 0xFF) as u8)
+                    } else {
+                        (0, 0, 0)
+                    };
+                    (
+                        raw_r.wrapping_add(paeth(prev_r, above_r, al_r)),
+                        raw_g.wrapping_add(paeth(prev_g, above_g, al_g)),
+                        raw_b.wrapping_add(paeth(prev_b, above_b, al_b)),
+                    )
+                }
+                _ => (raw_r, raw_g, raw_b),
+            };
+
+            prev_r = r;
+            prev_g = g;
+            prev_b = b;
+            out[y * width + x] = 0xFF000000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
         }
     }
-
     ERR_OK
 }
 
-/// Extract a raw channel value from an ARGB8888 pixel (for filter reconstruction).
-fn get_channel_from_argb(argb: u32, color_type: u8, channel: usize) -> u8 {
-    match color_type {
-        CT_GRAY => (argb & 0xFF) as u8,
-        CT_RGB => match channel {
-            0 => ((argb >> 16) & 0xFF) as u8, // R
-            1 => ((argb >> 8) & 0xFF) as u8,  // G
-            2 => (argb & 0xFF) as u8,         // B
-            _ => 0,
-        },
-        CT_RGBA => match channel {
-            0 => ((argb >> 16) & 0xFF) as u8, // R
-            1 => ((argb >> 8) & 0xFF) as u8,  // G
-            2 => (argb & 0xFF) as u8,         // B
-            3 => ((argb >> 24) & 0xFF) as u8, // A
-            _ => 0,
-        },
-        _ => 0,
+/// RGBA reconstruction.
+fn reconstruct_rgba(scanlines: &[u8], width: usize, height: usize, out: &mut [u32]) -> i32 {
+    let row_bytes = width * 4;
+    let scanline_size = row_bytes + 1;
+
+    for y in 0..height {
+        let src_off = y * scanline_size;
+        let filter = scanlines[src_off];
+        let row_data = &scanlines[src_off + 1..src_off + 1 + row_bytes];
+
+        let mut prev: [u8; 4] = [0; 4];
+
+        for x in 0..width {
+            let px_off = x * 4;
+            let raw = [row_data[px_off], row_data[px_off + 1], row_data[px_off + 2], row_data[px_off + 3]];
+
+            let above = if y > 0 {
+                let p = out[(y - 1) * width + x];
+                [((p >> 16) & 0xFF) as u8, ((p >> 8) & 0xFF) as u8, (p & 0xFF) as u8, ((p >> 24) & 0xFF) as u8]
+            } else {
+                [0; 4]
+            };
+
+            let mut ch = [0u8; 4];
+            match filter {
+                0 => { ch = raw; }
+                1 => { for i in 0..4 { ch[i] = raw[i].wrapping_add(prev[i]); } }
+                2 => { for i in 0..4 { ch[i] = raw[i].wrapping_add(above[i]); } }
+                3 => { for i in 0..4 { ch[i] = raw[i].wrapping_add(((prev[i] as u16 + above[i] as u16) / 2) as u8); } }
+                4 => {
+                    let al = if x > 0 && y > 0 {
+                        let p = out[(y - 1) * width + x - 1];
+                        [((p >> 16) & 0xFF) as u8, ((p >> 8) & 0xFF) as u8, (p & 0xFF) as u8, ((p >> 24) & 0xFF) as u8]
+                    } else {
+                        [0; 4]
+                    };
+                    for i in 0..4 { ch[i] = raw[i].wrapping_add(paeth(prev[i], above[i], al[i])); }
+                }
+                _ => { ch = raw; }
+            }
+
+            prev = ch;
+            out[y * width + x] = ((ch[3] as u32) << 24) | ((ch[0] as u32) << 16) | ((ch[1] as u32) << 8) | (ch[2] as u32);
+        }
     }
+    ERR_OK
+}
+
+/// Grayscale reconstruction.
+fn reconstruct_gray(scanlines: &[u8], width: usize, height: usize, out: &mut [u32]) -> i32 {
+    let scanline_size = width + 1;
+
+    for y in 0..height {
+        let src_off = y * scanline_size;
+        let filter = scanlines[src_off];
+        let row_data = &scanlines[src_off + 1..src_off + 1 + width];
+
+        let mut prev_g: u8 = 0;
+
+        for x in 0..width {
+            let raw = row_data[x];
+            let above = if y > 0 { (out[(y - 1) * width + x] & 0xFF) as u8 } else { 0 };
+
+            let g = match filter {
+                0 => raw,
+                1 => raw.wrapping_add(prev_g),
+                2 => raw.wrapping_add(above),
+                3 => raw.wrapping_add(((prev_g as u16 + above as u16) / 2) as u8),
+                4 => {
+                    let al = if x > 0 && y > 0 { (out[(y - 1) * width + x - 1] & 0xFF) as u8 } else { 0 };
+                    raw.wrapping_add(paeth(prev_g, above, al))
+                }
+                _ => raw,
+            };
+
+            prev_g = g;
+            let g32 = g as u32;
+            out[y * width + x] = 0xFF000000 | (g32 << 16) | (g32 << 8) | g32;
+        }
+    }
+    ERR_OK
 }
 
 /// Paeth predictor.

@@ -26,3 +26,9 @@ pub fn sysinfo(cmd: u32, buf: &mut [u8]) -> u32 {
 pub fn dmesg(buf: &mut [u8]) -> u32 {
     syscall2(SYS_DMESG, buf.as_mut_ptr() as u64, buf.len() as u64)
 }
+
+/// Signal to the kernel that the boot/init phase is complete.
+/// The compositor transitions from boot splash to full desktop.
+pub fn boot_ready() {
+    syscall0(SYS_BOOT_READY);
+}

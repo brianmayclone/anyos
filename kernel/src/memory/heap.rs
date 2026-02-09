@@ -1,7 +1,7 @@
 //! Kernel heap allocator using a linked-list free list.
 //!
 //! Provides a `GlobalAlloc` implementation backed by demand-paged virtual memory.
-//! Starts with 16 MiB and grows on demand up to 128 MiB, allocating physical
+//! Starts with 16 MiB and grows on demand up to 512 MiB, allocating physical
 //! frames and mapping them into the kernel's virtual address space.
 
 use crate::memory::address::VirtAddr;
@@ -14,8 +14,8 @@ use core::alloc::{GlobalAlloc, Layout};
 const HEAP_START: u64 = 0xFFFF_FFFF_8040_0000;
 /// Initial heap size mapped at boot (16 MiB).
 const HEAP_INITIAL_SIZE: usize = 16 * 1024 * 1024;
-/// Maximum heap size (128 MiB) — fits within the 1 GiB PML4[511]/PDPT[510] window.
-const HEAP_MAX_SIZE: usize = 128 * 1024 * 1024;
+/// Maximum heap size (512 MiB) — fits within the 1 GiB PML4[511]/PDPT[510] window.
+const HEAP_MAX_SIZE: usize = 512 * 1024 * 1024;
 /// Minimum growth increment when expanding the heap (1 MiB).
 const GROW_CHUNK: usize = 1024 * 1024;
 

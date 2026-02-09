@@ -184,6 +184,9 @@ fn process_packet(state: &mut MouseState, dz: i32) {
     // PS/2 mouse Y is inverted
     dy = -dy;
 
+    // Boot splash: update HW cursor directly from IRQ (lag-free)
+    crate::drivers::gpu::splash_cursor_move(dx, dy);
+
     // Decode buttons
     let new_buttons = MouseButtons {
         left: b[0] & 0x01 != 0,

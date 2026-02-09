@@ -187,20 +187,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         Err(e) => serial_println!("[WARN] libfont.dll not loaded: {}", e),
     }
 
-    // Phase 8d: Run init process (benchmark + init.conf services)
-    match task::loader::load_and_run("/system/init", "init") {
-        Ok(tid) => {
-            serial_println!("  Init spawned (TID={}), waiting...", tid);
-            let exit_code = task::scheduler::waitpid(tid);
-            serial_println!("  Init exited (code={})", exit_code);
-        }
-        Err(e) => {
-            serial_println!("  WARN: Failed to load /system/init: {}", e);
-            serial_println!("  System may not be fully configured.");
-        }
-    }
-
     // Phase 9: Start graphical desktop if framebuffer is available
+    // NOTE: Init process is spawned AFTER desktop init (Phase 9d below)
+    // so that wallpaper loading and other UI syscalls can reach the compositor.
     if let Some(fb) = drivers::framebuffer::info() {
         // GPU driver may already be registered via HAL PCI probe (Phase 5b).
         // If not, initialize Bochs VGA as fallback using boot framebuffer info.
@@ -237,7 +226,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
 
             if has_hw_cursor {
                 desktop.compositor.enable_hw_cursor();
-                serial_println!("[OK] Hardware cursor enabled");
+                // Enable boot-splash cursor: IRQ handler updates HW cursor directly
+                drivers::gpu::enable_splash_cursor(width, height);
+                serial_println!("[OK] Hardware cursor enabled (splash mode)");
             }
 
             if has_accel {
@@ -246,28 +237,37 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
                 serial_println!("[OK] GPU 2D acceleration enabled");
             }
 
-            // Initial full compose + present
-            desktop.invalidate();
-            desktop.update();
+            // Skip initial compose — boot splash logo stays on framebuffer.
+            // The compositor will compose+present after init signals boot ready.
         });
 
         // Disable interrupts while spawning threads to prevent the compositor
-        // from being scheduled before the terminal is loaded.
+        // from being scheduled before init is loaded.
         unsafe { core::arch::asm!("cli"); }
 
         // Spawn compositor as a scheduled kernel task (priority 200 = high)
+        // It enters boot-splash mode first: only tracks HW cursor, no compositing.
         task::scheduler::spawn(ui::desktop::desktop_task_entry, 200, "compositor");
 
         // Spawn CPU monitor kernel thread (writes CPU load to sys:cpu_load pipe)
         task::scheduler::spawn(task::cpu_monitor::start, 10, "cpu_monitor");
 
-        // Launch dock FIRST (always-on-top, so it stays above other windows)
-        match task::loader::load_and_run("/system/compositor/dock", "dock") {
-            Ok(tid) => serial_println!("[OK] Dock launched (TID {})", tid),
-            Err(e) => serial_println!("[WARN] Failed to launch dock: {}", e),
+        // NOTE: Dock is launched by the compositor task AFTER boot splash completes.
+        // This ensures the desktop (with wallpaper) appears before the dock.
+
+        // Phase 9d: Run init process (benchmark + wallpaper + boot_ready signal).
+        // Runs concurrently — compositor stays in splash mode until init calls boot_ready.
+        match task::loader::load_and_run("/system/init", "init") {
+            Ok(tid) => serial_println!("[OK] Init spawned (TID={})", tid),
+            Err(e) => {
+                serial_println!("  WARN: Failed to load /system/init: {}", e);
+                serial_println!("  System may not be fully configured.");
+                // No init → signal boot ready immediately so desktop still appears
+                ui::desktop::signal_boot_ready();
+            }
         }
 
-        serial_println!("Compositor and dock spawned, entering scheduler...");
+        serial_println!("Compositor and init spawned, entering scheduler...");
         // scheduler::run() re-enables interrupts (sti) and enters the idle loop
         task::scheduler::run();
     }

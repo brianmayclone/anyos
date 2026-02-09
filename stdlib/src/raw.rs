@@ -111,6 +111,7 @@ pub(crate) const SYS_WIN_DRAW_TEXT_EX: u32 = 133;
 pub(crate) const SYS_WIN_FILL_ROUNDED_RECT: u32 = 134;
 pub(crate) const SYS_GPU_HAS_ACCEL: u32 = 135;
 pub(crate) const SYS_SET_WALLPAPER: u32 = 136;
+pub(crate) const SYS_BOOT_READY: u32 = 137;
 
 // Event bus
 pub(crate) const SYS_EVT_SYS_SUBSCRIBE: u32 = 60;

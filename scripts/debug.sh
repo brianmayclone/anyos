@@ -44,7 +44,7 @@ echo "Connect GDB with: gdb -ex 'target remote :1234' -ex 'symbol-file build/ker
 
 qemu-system-x86_64 \
     -drive format=raw,file="$IMAGE" \
-    -m 128M \
+    -m 1024M \
     -smp cpus=4 \
     -serial stdio \
     -vga "$VGA" \

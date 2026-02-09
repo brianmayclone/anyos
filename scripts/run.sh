@@ -64,7 +64,7 @@ echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL
 
 eval qemu-system-x86_64 \
     $DRIVE_FLAGS \
-    -m 128M \
+    -m 1024M \
     -smp cpus=4 \
     -serial stdio \
     -vga "$VGA" \

@@ -431,31 +431,30 @@ impl<'a> Renderer<'a> {
             self.surface.put_pixel(rect.x + w - 1, py, color);
         }
         if r <= 0 { return; }
-        // AA corner arcs using distance-based coverage (same 2× coordinate
-        // system as the filled variant for consistency).
+        // AA corner arcs: outline ring at the arc boundary, clipped to the
+        // fill's outer extent so we never draw beyond the window shape.
         let r2x4 = (2 * r) * (2 * r);
-        let transition = 2 * r;
+        let fill_transition = 3 * r; // must match fill_rounded_rect_aa
+        let half_width = 2 * r; // outline ring half-width in 2× coords (~1px)
         for dy in 0..r {
-            let cy = 2 * dy + 1 - 2 * r; // pixel-center in 2× space
+            let cy = 2 * dy + 1 - 2 * r;
             let cy2 = cy * cy;
             for dx in 0..r {
                 let cx = 2 * dx + 1 - 2 * r;
                 let dist_sq = cx * cx + cy2;
 
-                // We want an outline at the arc boundary.
-                // Pixels near the circle edge (dist ≈ r) get coverage;
-                // those clearly inside or outside are skipped.
-                // "Ring" of ~1px width: outer boundary check
-                if dist_sq >= r2x4 + transition * 2 {
-                    continue; // well outside
+                // Clip to fill boundary (don't draw outside the filled shape)
+                if dist_sq >= r2x4 + fill_transition {
+                    continue;
                 }
-                if dist_sq <= r2x4 - transition * 2 {
-                    continue; // well inside
+                // Skip pixels well inside the shape (not part of outline)
+                if dist_sq <= r2x4 - half_width * 2 {
+                    continue;
                 }
 
-                // Coverage for outline: peak at dist_sq == r2x4, fading out
+                // Coverage: peak at the arc boundary, fading symmetrically
                 let err = dist_sq - r2x4;
-                let alpha = 255 - (err.abs() * 255 / (transition * 2)).min(255);
+                let alpha = 255 - (err.abs() * 255 / (half_width * 2)).min(255);
                 if alpha <= 0 { continue; }
                 let a = (alpha.min(255) as u32 * color.a as u32 / 255) as u8;
                 let aa_color = Color::with_alpha(a, color.r, color.g, color.b);

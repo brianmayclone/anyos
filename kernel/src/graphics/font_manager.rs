@@ -504,26 +504,23 @@ fn draw_glyph_subpixel(surface: &mut Surface, x: i32, y: i32, glyph: &CachedGlyp
                 continue;
             }
 
-            // LCD color fringe reduction: 3-tap horizontal FIR filter across
-            // neighbouring subpixels.  Weights [1, 2, 1] / 4 smooths colour
-            // transitions while preserving most subpixel positioning benefit.
+            // LCD color fringe reduction: 5-tap horizontal FIR filter.
+            // Weights [1, 2, 4, 2, 1] / 10 — wider kernel significantly
+            // reduces visible red/blue halos while preserving subpixel
+            // positioning benefit.
             let get = |i: usize| -> u32 {
                 if i < stride { cov_row[i] as u32 } else { 0 }
             };
-            // For the R subpixel (ci): neighbours are ci-1 and ci+1
-            let r_filt = if ci > 0 {
-                (get(ci - 1) + r_raw * 2 + g_raw + 2) / 4
-            } else {
-                (r_raw * 3 + g_raw + 2) / 4
+            let ci_i = ci as isize;
+            let getl = |i: isize| -> u32 {
+                if i >= 0 && (i as usize) < stride { cov_row[i as usize] as u32 } else { 0 }
             };
-            // For the G subpixel (ci+1): neighbours are ci and ci+2
-            let g_filt = (r_raw + g_raw * 2 + b_raw + 2) / 4;
-            // For the B subpixel (ci+2): neighbours are ci+1 and ci+3
-            let b_filt = if ci + 3 < stride {
-                (g_raw + b_raw * 2 + get(ci + 3) + 2) / 4
-            } else {
-                (g_raw + b_raw * 3 + 2) / 4
-            };
+            // R subpixel (ci): neighbors at ci-2, ci-1, ci+1(=g), ci+2(=b)
+            let r_filt = (getl(ci_i - 2) + getl(ci_i - 1) * 2 + r_raw * 4 + g_raw * 2 + b_raw + 5) / 10;
+            // G subpixel (ci+1): neighbors at ci-1, ci(=r), ci+2(=b), ci+3
+            let g_filt = (getl(ci_i - 1) + r_raw * 2 + g_raw * 4 + b_raw * 2 + get(ci + 3) + 5) / 10;
+            // B subpixel (ci+2): neighbors at ci(=r), ci+1(=g), ci+3, ci+4
+            let b_filt = (r_raw + g_raw * 2 + b_raw * 4 + get(ci + 3) * 2 + get(ci + 4) + 5) / 10;
 
             surface.put_pixel_subpixel(px, py, r_filt as u8, g_filt as u8, b_filt as u8, color);
         }

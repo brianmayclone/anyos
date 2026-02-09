@@ -6,6 +6,7 @@ use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
 use crate::drivers::input::keyboard::{self, Key};
 use crate::drivers::input::mouse::{self, MouseEventType};
 use crate::graphics::color::Color;
@@ -24,6 +25,14 @@ use crate::sync::spinlock::Spinlock;
 // ──────────────────────────────────────────────
 
 static DESKTOP: Spinlock<Option<Desktop>> = Spinlock::new(None);
+
+/// Set by SYS_BOOT_READY syscall (from init) to signal boot splash is done.
+static BOOT_SPLASH_DONE: AtomicBool = AtomicBool::new(false);
+
+/// Signal that the boot splash phase is complete (called from syscall handler).
+pub fn signal_boot_ready() {
+    BOOT_SPLASH_DONE.store(true, Ordering::Release);
+}
 
 /// Window event type: key pressed.
 pub const EVENT_KEY_DOWN: u32 = 1;
@@ -105,7 +114,55 @@ pub extern "C" fn desktop_task_entry() {
     while crate::drivers::input::mouse::read_event().is_some() {}
     while crate::drivers::input::keyboard::read_event().is_some() {}
 
-    crate::serial_println!("  Compositor task running");
+    crate::serial_println!("  Compositor task running (boot splash active)");
+
+    // ── Boot splash phase: keep boot logo on screen, only track HW cursor ──
+    loop {
+        if BOOT_SPLASH_DONE.load(Ordering::Acquire) {
+            break;
+        }
+        // Drain mouse events to update HW cursor position (boot logo stays on FB)
+        {
+            let mut guard = DESKTOP.lock();
+            if let Some(desktop) = guard.as_mut() {
+                while let Some(event) = crate::drivers::input::mouse::read_event() {
+                    let (cx, cy) = desktop.compositor.cursor_position();
+                    let new_x = cx + event.dx;
+                    let new_y = cy + event.dy;
+                    desktop.compositor.move_cursor(new_x, new_y);
+                }
+            }
+        }
+        // Drain keyboard events (discard during splash)
+        while crate::drivers::input::keyboard::read_event().is_some() {}
+        unsafe { core::arch::asm!("hlt"); }
+    }
+
+    // ── Transition: boot splash done, activate desktop ──
+    crate::serial_println!("  Boot splash done, activating desktop");
+
+    // Disable IRQ-time cursor updates and sync position to compositor
+    let (splash_cx, splash_cy) = crate::drivers::gpu::splash_cursor_position();
+    crate::drivers::gpu::disable_splash_cursor();
+
+    {
+        let mut guard = DESKTOP.lock();
+        if let Some(desktop) = guard.as_mut() {
+            desktop.boot_splash = false;
+            // Sync cursor position from boot-splash atomics
+            desktop.compositor.set_cursor_position(splash_cx, splash_cy);
+            // Wallpaper was set by init during splash phase — just invalidate everything
+            desktop.compositor.invalidate_all();
+        }
+    }
+
+    // Launch dock AFTER boot splash (desktop is now visible with wallpaper)
+    match crate::task::loader::load_and_run("/system/compositor/dock", "dock") {
+        Ok(tid) => crate::serial_println!("[OK] Dock launched (TID {})", tid),
+        Err(e) => crate::serial_println!("[WARN] Failed to launch dock: {}", e),
+    }
+
+    // ── Normal compositor event loop ──
     loop {
         let mut launch: Option<(String, String)> = None;
         {
@@ -241,6 +298,16 @@ pub struct Desktop {
     pending_launch: Option<(String, String)>,
     /// Frame counter for periodic redraws (clock)
     frame_count: u32,
+    /// Boot splash mode — skip compositing until init signals ready
+    boot_splash: bool,
+    /// Stored wallpaper source pixels (original size) for re-scaling on resolution change
+    wallpaper: Option<WallpaperData>,
+}
+
+struct WallpaperData {
+    width: u32,
+    height: u32,
+    pixels: Vec<u32>,
 }
 
 enum InteractionState {
@@ -287,6 +354,8 @@ impl Desktop {
             user_event_queues: BTreeMap::new(),
             pending_launch: None,
             frame_count: 0,
+            boot_splash: true,
+            wallpaper: None,
         };
 
         desktop.draw_desktop_background();
@@ -997,7 +1066,11 @@ impl Desktop {
 
     /// Force a full redraw
     pub fn invalidate(&mut self) {
-        self.draw_desktop_background();
+        if self.wallpaper.is_some() {
+            self.apply_wallpaper();
+        } else {
+            self.draw_desktop_background();
+        }
         self.draw_menubar();
         self.update_menu_overlay();
         for i in 0..self.windows.len() {
@@ -1014,28 +1087,46 @@ impl Desktop {
     }
 
     /// Set desktop wallpaper from decoded ARGB pixel data.
-    /// Scales/copies the wallpaper onto the desktop background layer.
+    /// Stores the original pixels for re-scaling on resolution change.
     pub fn set_wallpaper(&mut self, w: u32, h: u32, pixels: &[u32]) {
+        // Store original pixels for re-scaling on resolution change
+        self.wallpaper = Some(WallpaperData {
+            width: w,
+            height: h,
+            pixels: Vec::from(pixels),
+        });
+        self.apply_wallpaper();
+        crate::serial_println!("[OK] Wallpaper set ({}x{})", w, h);
+    }
+
+    /// Scale and blit the stored wallpaper onto the desktop layer.
+    fn apply_wallpaper(&mut self) {
+        let (w, h) = match self.wallpaper {
+            Some(ref wp) => (wp.width, wp.height),
+            None => return,
+        };
         if let Some(surface) = self.compositor.get_layer_surface(self.desktop_layer) {
             let sw = surface.width;
             let sh = surface.height;
+            // Borrow pixels through raw pointer to avoid double borrow
+            let pixels_ptr = self.wallpaper.as_ref().unwrap().pixels.as_ptr();
+            let pixels_len = self.wallpaper.as_ref().unwrap().pixels.len();
 
-            // Simple nearest-neighbor scale to fill the desktop
+            // Nearest-neighbor scale to fill the desktop
             for dy in 0..sh {
                 let sy = (dy * h / sh) as usize;
                 let dst_row = (dy * sw) as usize;
                 for dx in 0..sw {
                     let sx = (dx * w / sw) as usize;
                     let idx = sy * w as usize + sx;
-                    if idx < pixels.len() {
-                        surface.pixels[dst_row + dx as usize] = pixels[idx] | 0xFF000000;
+                    if idx < pixels_len {
+                        surface.pixels[dst_row + dx as usize] = unsafe { *pixels_ptr.add(idx) } | 0xFF000000;
                     }
                 }
             }
             surface.opaque = true;
         }
         self.compositor.invalidate_all();
-        crate::serial_println!("[OK] Wallpaper set ({}x{})", w, h);
     }
 
     /// Change display resolution. Resizes desktop, menubar, and notifies windows.
@@ -1056,8 +1147,12 @@ impl Desktop {
         self.menubar_layer = self.compositor.create_layer(0, 0, width, Theme::MENUBAR_HEIGHT);
         self.menubar = MenuBar::new(width);
 
-        // Redraw desktop and menubar
-        self.draw_desktop_background();
+        // Redraw desktop background (gradient or wallpaper) and menubar
+        if self.wallpaper.is_some() {
+            self.apply_wallpaper();
+        } else {
+            self.draw_desktop_background();
+        }
         self.draw_menubar();
 
         // Notify all windows of resolution change

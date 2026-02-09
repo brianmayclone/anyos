@@ -133,6 +133,7 @@ pub const SYS_WIN_DRAW_TEXT_EX: u32 = 133;
 pub const SYS_WIN_FILL_ROUNDED_RECT: u32 = 134;
 pub const SYS_GPU_HAS_ACCEL: u32 = 135;
 pub const SYS_SET_WALLPAPER: u32 = 136;
+pub const SYS_BOOT_READY: u32 = 137;
 
 // Window creation flags
 pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x01;
@@ -299,6 +300,7 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         SYS_WIN_FILL_ROUNDED_RECT => handlers::sys_win_fill_rounded_rect(arg1, arg2),
         SYS_GPU_HAS_ACCEL => handlers::sys_gpu_has_accel(),
         SYS_SET_WALLPAPER => handlers::sys_set_wallpaper(arg1),
+        SYS_BOOT_READY => handlers::sys_boot_ready(),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

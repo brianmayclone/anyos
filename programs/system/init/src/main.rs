@@ -208,6 +208,9 @@ fn main() {
     // ── Phase 2b: Load wallpaper ──
     load_wallpaper();
 
+    // ── Phase 2c: Signal boot ready (compositor transitions from splash to desktop) ──
+    sys::boot_ready();
+
     // ── Phase 3: Run init config ──
     run_init_conf();
 }
@@ -291,7 +294,7 @@ fn load_wallpaper() {
         libimage_client::scale_image(
             &pixels, info.width, info.height,
             &mut dst, sw, sh,
-            libimage_client::MODE_CONTAIN,
+            libimage_client::MODE_COVER,
         );
         anyos_std::ui::window::set_wallpaper(sw, sh, &dst, 0);
     }
