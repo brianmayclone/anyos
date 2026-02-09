@@ -5,3 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyos_std = { path = "../../../../stdlib" }
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
