@@ -82,6 +82,18 @@ ap_lm_entry:
     mov     gs, ax
     mov     ss, ax
 
+    ; Enable FPU + SSE: clear EM (bit 2) and TS (bit 3), set MP (bit 1) and NE (bit 5)
+    mov     rax, cr0
+    and     eax, ~((1 << 2) | (1 << 3))
+    or      eax, (1 << 1) | (1 << 5)
+    mov     cr0, rax
+
+    mov     rax, cr4
+    or      eax, (1 << 9) | (1 << 10)
+    mov     cr4, rax
+
+    fninit
+
     ; Load 64-bit stack pointer from communication area
     mov     rsp, [0x7F00]
 

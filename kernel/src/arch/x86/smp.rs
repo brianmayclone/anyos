@@ -177,6 +177,9 @@ extern "C" fn ap_entry() -> ! {
     let cpu_id = unsafe { core::ptr::read_volatile(AP_COMM_CPUID as *const u32) } as u8;
     crate::serial_println!("  SMP: AP#{} entry point reached, LAPIC initialized", cpu_id);
 
+    // Configure SYSCALL/SYSRET MSRs for this AP
+    crate::arch::x86::syscall_msr::init_ap(cpu_id as usize);
+
     // Signal BSP that we're ready
     unsafe {
         core::ptr::write_volatile(AP_COMM_READY as *mut u8, 1);

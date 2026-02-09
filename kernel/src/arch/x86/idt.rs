@@ -297,6 +297,18 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
             loop { unsafe { core::arch::asm!("cli; hlt"); } }
         }
+        7 => {
+            // #NM — Device Not Available (CR0.TS set or no FPU)
+            // Should not occur since we clear TS at boot and use eager FPU switching.
+            crate::serial_println!("EXCEPTION: #NM Device Not Available at RIP={:#018x} CS={:#x}", frame.rip, frame.cs);
+            if is_user_mode {
+                crate::serial_println!("  User process fault — terminating thread");
+                crate::task::scheduler::exit_current(135);
+            }
+            if try_kill_faulting_thread(135) { return; }
+            crate::serial_println!("  FATAL: unexpected #NM in kernel — halting");
+            loop { unsafe { core::arch::asm!("cli; hlt"); } }
+        }
         8 => {
             crate::serial_println!("EXCEPTION: Double fault!");
             crate::serial_println!("  FATAL: unrecoverable — halting");
@@ -336,6 +348,37 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 crate::task::scheduler::exit_current(139);
             }
             if try_kill_faulting_thread(139) { return; }
+            crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
+            loop { unsafe { core::arch::asm!("cli; hlt"); } }
+        }
+        16 => {
+            // #MF — x87 Floating-Point Exception
+            crate::serial_println!("EXCEPTION: #MF x87 FP Exception at RIP={:#018x} CS={:#x}", frame.rip, frame.cs);
+            if is_user_mode {
+                crate::serial_println!("  User process fault — terminating thread");
+                crate::task::scheduler::exit_current(136);
+            }
+            if try_kill_faulting_thread(136) { return; }
+            crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
+            loop { unsafe { core::arch::asm!("cli; hlt"); } }
+        }
+        19 => {
+            // #XM — SIMD Floating-Point Exception
+            let mxcsr: u32;
+            unsafe {
+                let mut tmp = [0u32; 1];
+                core::arch::asm!("stmxcsr [{}]", in(reg) tmp.as_mut_ptr(), options(nostack, preserves_flags));
+                mxcsr = tmp[0];
+            }
+            crate::serial_println!(
+                "EXCEPTION: #XM SIMD FP Exception at RIP={:#018x} CS={:#x} MXCSR={:#010x}",
+                frame.rip, frame.cs, mxcsr
+            );
+            if is_user_mode {
+                crate::serial_println!("  User process fault — terminating thread");
+                crate::task::scheduler::exit_current(136);
+            }
+            if try_kill_faulting_thread(136) { return; }
             crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
             loop { unsafe { core::arch::asm!("cli; hlt"); } }
         }

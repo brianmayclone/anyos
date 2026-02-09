@@ -1,13 +1,14 @@
 //! Raw syscall primitives — private to the crate.
 //!
-//! This module contains the inline-assembly `int 0x80` wrappers and
+//! This module contains the inline-assembly SYSCALL wrappers and
 //! the syscall number constants.  Higher-level modules (process, fs,
 //! net, …) build on these.
 //!
-//! INT 0x80 convention (matches kernel/asm/syscall_entry.asm):
+//! SYSCALL convention (matches kernel/asm/syscall_fast.asm):
 //!   RAX = syscall number
-//!   RBX = arg1, RCX = arg2, RDX = arg3, RSI = arg4, RDI = arg5
+//!   RBX = arg1, R10 = arg2, RDX = arg3, RSI = arg4, RDI = arg5
 //!   Return value in RAX
+//!   Clobbers: RCX (← user RIP), R11 (← user RFLAGS)
 //!
 //! NOTE: LLVM reserves RBX on x86_64 (callee-saved base register).
 //! We work around this by manually saving/restoring RBX inside the asm block.
@@ -113,7 +114,14 @@ pub(crate) const SYS_EVT_CHAN_UNSUBSCRIBE: u32 = 67;
 pub(crate) const SYS_EVT_CHAN_DESTROY: u32 = 68;
 
 // =========================================================================
-// Raw syscall helpers (x86-64 INT 0x80)
+// Raw syscall helpers (x86-64 SYSCALL instruction)
+//
+// SYSCALL convention:
+//   RAX = syscall number
+//   RBX = arg1, R10 = arg2 (not RCX — SYSCALL clobbers RCX/R11),
+//   RDX = arg3, RSI = arg4, RDI = arg5
+//   Return value in RAX
+//   Clobbers: RCX (← user RIP), R11 (← user RFLAGS)
 //
 // RBX is reserved by LLVM on x86_64, so we manually push/pop it
 // inside the asm block and use a temp register to load arg1 into RBX.
@@ -123,8 +131,10 @@ pub(crate) const SYS_EVT_CHAN_DESTROY: u32 = 68;
 pub(crate) fn syscall0(num: u32) -> u32 {
     let ret: u64;
     unsafe {
-        asm!("int 0x80",
+        asm!("syscall",
             inlateout("rax") num as u64 => ret,
+            out("rcx") _,
+            out("r11") _,
         );
     }
     ret as u32
@@ -137,10 +147,12 @@ pub(crate) fn syscall1(num: u32, a1: u64) -> u32 {
         asm!(
             "push rbx",
             "mov rbx, {a1}",
-            "int 0x80",
+            "syscall",
             "pop rbx",
             a1 = in(reg) a1,
             inlateout("rax") num as u64 => ret,
+            out("rcx") _,
+            out("r11") _,
         );
     }
     ret as u32
@@ -153,11 +165,13 @@ pub(crate) fn syscall2(num: u32, a1: u64, a2: u64) -> u32 {
         asm!(
             "push rbx",
             "mov rbx, {a1}",
-            "int 0x80",
+            "syscall",
             "pop rbx",
             a1 = in(reg) a1,
             inlateout("rax") num as u64 => ret,
-            in("rcx") a2,
+            in("r10") a2,
+            out("rcx") _,
+            out("r11") _,
         );
     }
     ret as u32
@@ -170,11 +184,13 @@ pub(crate) fn syscall3(num: u32, a1: u64, a2: u64, a3: u64) -> u32 {
         asm!(
             "push rbx",
             "mov rbx, {a1}",
-            "int 0x80",
+            "syscall",
             "pop rbx",
             a1 = in(reg) a1,
             inlateout("rax") num as u64 => ret,
-            in("rcx") a2, in("rdx") a3,
+            in("r10") a2, in("rdx") a3,
+            out("rcx") _,
+            out("r11") _,
         );
     }
     ret as u32
@@ -187,12 +203,14 @@ pub(crate) fn syscall5(num: u32, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) ->
         asm!(
             "push rbx",
             "mov rbx, {a1}",
-            "int 0x80",
+            "syscall",
             "pop rbx",
             a1 = in(reg) a1,
             inlateout("rax") num as u64 => ret,
-            in("rcx") a2, in("rdx") a3,
+            in("r10") a2, in("rdx") a3,
             in("rsi") a4, in("rdi") a5,
+            out("rcx") _,
+            out("r11") _,
         );
     }
     ret as u32

@@ -55,6 +55,7 @@ set(KERNEL_ASM_SOURCES
   ${CMAKE_SOURCE_DIR}/kernel/asm/interrupts.asm
   ${CMAKE_SOURCE_DIR}/kernel/asm/context_switch.asm
   ${CMAKE_SOURCE_DIR}/kernel/asm/syscall_entry.asm
+  ${CMAKE_SOURCE_DIR}/kernel/asm/syscall_fast.asm
 )
 
 set(KERNEL_ASM_OBJECTS "")
@@ -156,12 +157,12 @@ set(STDLIB_DEPS
 )
 
 function(add_rust_user_program NAME SRC_DIR)
-  set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos/debug/${NAME}.elf")
+  set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos-user/debug/${NAME}.elf")
   add_custom_command(
     OUTPUT ${ELF}
     COMMAND ${CARGO_EXECUTABLE} build
       --manifest-path ${SRC_DIR}/Cargo.toml
-      --target ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
+      --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
       --target-dir ${CMAKE_BINARY_DIR}/programs/${NAME}
     DEPENDS
       ${SRC_DIR}/Cargo.toml
@@ -184,12 +185,12 @@ endfunction()
 
 # Variant for system programs (placed in /system/ instead of /bin/)
 function(add_rust_system_program NAME SRC_DIR)
-  set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos/debug/${NAME}.elf")
+  set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos-user/debug/${NAME}.elf")
   add_custom_command(
     OUTPUT ${ELF}
     COMMAND ${CARGO_EXECUTABLE} build
       --manifest-path ${SRC_DIR}/Cargo.toml
-      --target ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
+      --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
       --target-dir ${CMAKE_BINARY_DIR}/programs/${NAME}
     DEPENDS
       ${SRC_DIR}/Cargo.toml
@@ -212,19 +213,19 @@ endfunction()
 
 # Variant for DLLs (placed in /system/lib/)
 function(add_dll NAME SRC_DIR)
-  set(DLL_ELF "${CMAKE_BINARY_DIR}/dll/${NAME}/x86_64-anyos/debug/${NAME}.elf")
+  set(DLL_ELF "${CMAKE_BINARY_DIR}/dll/${NAME}/x86_64-anyos-user/debug/${NAME}.elf")
   add_custom_command(
     OUTPUT ${DLL_ELF}
     COMMAND ${CARGO_EXECUTABLE} build
       --manifest-path ${SRC_DIR}/Cargo.toml
-      --target ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
+      --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
       --target-dir ${CMAKE_BINARY_DIR}/dll/${NAME}
     DEPENDS
       ${SRC_DIR}/Cargo.toml
       ${SRC_DIR}/build.rs
       ${SRC_DIR}/src/main.rs
       ${SRC_DIR}/link.ld
-      ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
+      ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Building DLL: ${NAME}"
   )

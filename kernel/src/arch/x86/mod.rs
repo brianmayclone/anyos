@@ -5,6 +5,7 @@
 
 pub mod acpi;
 pub mod apic;
+pub mod cpuid;
 pub mod gdt;
 pub mod idt;
 pub mod ioapic;
@@ -13,4 +14,5 @@ pub mod pic;
 pub mod pit;
 pub mod port;
 pub mod smp;
+pub mod syscall_msr;
 pub mod tss;

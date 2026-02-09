@@ -7,7 +7,7 @@
 use crate::memory::address::PhysAddr;
 use crate::sync::spinlock::Spinlock;
 use crate::task::context::CpuContext;
-use crate::task::thread::{Thread, ThreadState};
+use crate::task::thread::{FxState, Thread, ThreadState};
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -34,6 +34,8 @@ pub struct Scheduler {
     current: Option<usize>,
     /// CPU context to return to when no threads are runnable (kernel_main's hlt loop).
     idle_context: CpuContext,
+    /// FPU/SSE state for the idle context.
+    idle_fpu_state: FxState,
 }
 
 impl Scheduler {
@@ -43,6 +45,7 @@ impl Scheduler {
             ready_queue: VecDeque::new(),
             current: None,
             idle_context: CpuContext::default(),
+            idle_fpu_state: FxState::new_default(),
         }
     }
 
@@ -156,7 +159,8 @@ pub fn spawn(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
 /// Called from the timer interrupt to perform preemptive scheduling.
 pub fn schedule() {
     // Extract context switch parameters under the lock, then release before switching
-    let switch_info: Option<(*mut CpuContext, *const CpuContext)>;
+    // Tuple: (old_cpu_ctx, new_cpu_ctx, old_fpu_ptr, new_fpu_ptr)
+    let switch_info: Option<(*mut CpuContext, *const CpuContext, *mut u8, *const u8)>;
 
     // Increment total ticks counter
     TOTAL_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
@@ -203,15 +207,18 @@ pub fn schedule() {
             // Update lock-free debug TID
             unsafe { DEBUG_CURRENT_TID = sched.threads[next_idx].tid; }
 
-            // Update TSS RSP0 for the new thread's kernel stack
+            // Update TSS RSP0 and SYSCALL per-CPU kernel RSP
             let kstack_top = sched.threads[next_idx].kernel_stack_top();
             crate::arch::x86::tss::set_kernel_stack(kstack_top);
+            crate::arch::x86::syscall_msr::set_kernel_rsp(kstack_top);
 
             if let Some(prev_idx) = prev_idx {
                 if prev_idx != next_idx {
                     let old_ctx = &mut sched.threads[prev_idx].context as *mut CpuContext;
                     let new_ctx = &sched.threads[next_idx].context as *const CpuContext;
-                    Some((old_ctx, new_ctx))
+                    let old_fpu = sched.threads[prev_idx].fpu_state.data.as_mut_ptr();
+                    let new_fpu = sched.threads[next_idx].fpu_state.data.as_ptr();
+                    Some((old_ctx, new_ctx, old_fpu, new_fpu))
                 } else {
                     None // Same thread, no switch needed
                 }
@@ -219,7 +226,9 @@ pub fn schedule() {
                 // First thread ever - switch from idle
                 let idle_ctx = &mut sched.idle_context as *mut CpuContext;
                 let new_ctx = &sched.threads[next_idx].context as *const CpuContext;
-                Some((idle_ctx, new_ctx))
+                let old_fpu = sched.idle_fpu_state.data.as_mut_ptr();
+                let new_fpu = sched.threads[next_idx].fpu_state.data.as_ptr();
+                Some((idle_ctx, new_ctx, old_fpu, new_fpu))
             }
         } else {
             // No ready threads — count as idle
@@ -233,7 +242,9 @@ pub fn schedule() {
                     sched.current = None;
                     let old_ctx = &mut sched.threads[current_idx].context as *mut CpuContext;
                     let idle_ctx = &sched.idle_context as *const CpuContext;
-                    Some((old_ctx, idle_ctx))
+                    let old_fpu = sched.threads[current_idx].fpu_state.data.as_mut_ptr();
+                    let new_fpu = sched.idle_fpu_state.data.as_ptr();
+                    Some((old_ctx, idle_ctx, old_fpu, new_fpu))
                 } else {
                     None
                 }
@@ -252,7 +263,7 @@ pub fn schedule() {
 
     // Context switch with the lock released AND interrupts still disabled.
     // context_switch.asm restores the target thread's RFLAGS (which includes IF).
-    if let Some((old_ctx, new_ctx)) = switch_info {
+    if let Some((old_ctx, new_ctx, old_fpu, new_fpu)) = switch_info {
         // Safety check: validate RIP before switching
         let new_rip = unsafe { (*new_ctx).rip };
         let new_rsp = unsafe { (*new_ctx).rsp };
@@ -277,6 +288,11 @@ pub fn schedule() {
                 }
             }
             return;
+        }
+        // Save current FPU/SSE state, load new thread's FPU/SSE state
+        unsafe {
+            core::arch::asm!("fxsave [{}]", in(reg) old_fpu, options(nostack, preserves_flags));
+            core::arch::asm!("fxrstor [{}]", in(reg) new_fpu, options(nostack, preserves_flags));
         }
         unsafe { crate::task::context::context_switch(old_ctx, new_ctx); }
     }

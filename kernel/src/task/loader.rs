@@ -513,7 +513,10 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             .expect("Too many pending programs");
         slot.tid = tid;
         slot.entry = entry_point;
-        slot.user_stack = USER_STACK_TOP;
+        // Subtract 8 from stack top: x86_64 ABI requires RSP % 16 == 8 at
+        // function entry (as if `call` pushed an 8-byte return address). Since
+        // _start is entered via iret (no call), we simulate this alignment.
+        slot.user_stack = USER_STACK_TOP - 8;
         slot.is_compat32 = is_compat32;
         slot.used = true;
     }

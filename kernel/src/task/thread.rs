@@ -32,6 +32,32 @@ pub enum ThreadState {
     Terminated,
 }
 
+/// Saved FPU/SSE state for FXSAVE/FXRSTOR (512 bytes, 16-byte aligned).
+#[repr(C, align(16))]
+pub struct FxState {
+    pub data: [u8; 512],
+}
+
+impl FxState {
+    /// Create a new FxState with default values (all exceptions masked).
+    pub fn new_default() -> Self {
+        let mut s = FxState { data: [0u8; 512] };
+        // FCW (x87 control word) at offset 0: 0x037F = all x87 exceptions masked
+        s.data[0] = 0x7F;
+        s.data[1] = 0x03;
+        // MXCSR (SSE control/status) at offset 24: 0x1F80 = all SSE exceptions masked
+        s.data[24] = 0x80;
+        s.data[25] = 0x1F;
+        s
+    }
+}
+
+impl Default for FxState {
+    fn default() -> Self {
+        Self::new_default()
+    }
+}
+
 /// A kernel or user thread with its own stack, saved context, and process metadata.
 pub struct Thread {
     pub tid: u32,
@@ -55,6 +81,8 @@ pub struct Thread {
     pub cpu_ticks: u32,
     /// Architecture mode for user threads (Native64 or Compat32).
     pub arch_mode: ArchMode,
+    /// Saved FPU/SSE register state (512 bytes, FXSAVE format).
+    pub fpu_state: FxState,
 }
 
 /// Size of each thread's kernel-mode stack.
@@ -113,6 +141,7 @@ impl Thread {
             stdout_pipe: 0,
             cpu_ticks: 0,
             arch_mode: ArchMode::Native64,
+            fpu_state: FxState::new_default(),
         }
     }
 

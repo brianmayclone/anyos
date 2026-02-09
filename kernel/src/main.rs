@@ -68,6 +68,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     arch::x86::pic::init();
     serial_println!("[OK] PIC remapped (IRQ 0-15 -> INT 32-47)");
 
+    arch::x86::cpuid::detect();
+    arch::x86::syscall_msr::init_bsp();
+
     arch::x86::pit::init(100); // 100 Hz timer
     serial_println!("[OK] PIT configured at 100 Hz");
 
