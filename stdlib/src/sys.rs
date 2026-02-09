@@ -7,9 +7,14 @@ pub fn time(buf: &mut [u8; 8]) -> u32 {
     syscall1(SYS_TIME, buf.as_mut_ptr() as u64)
 }
 
-/// Get uptime in PIT ticks (100 Hz).
+/// Get uptime in PIT ticks.
 pub fn uptime() -> u32 {
     syscall0(SYS_UPTIME)
+}
+
+/// Get the PIT tick rate in Hz (e.g. 100 = 100 ticks/second).
+pub fn tick_hz() -> u32 {
+    syscall0(SYS_TICK_HZ)
 }
 
 /// Get system info. cmd: 0=memory, 1=threads, 2=cpus.

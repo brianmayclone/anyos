@@ -242,7 +242,9 @@ pub fn is_bsp() -> bool {
 }
 
 fn delay_ms(ms: u32) {
-    let ticks = ms / 10; // PIT is at 100Hz = 10ms per tick
+    let pit_hz = crate::arch::x86::pit::TICK_HZ;
+    let ms_per_tick = 1000 / pit_hz;
+    let ticks = ms / ms_per_tick;
     let ticks = if ticks == 0 { 1 } else { ticks };
     let start = crate::arch::x86::pit::get_ticks();
     while crate::arch::x86::pit::get_ticks().wrapping_sub(start) < ticks {

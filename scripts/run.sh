@@ -40,6 +40,10 @@ for arg in "$@"; do
             VGA="std"
             VGA_LABEL="Bochs VGA (standard)"
             ;;
+        --virtio)
+            VGA="virtio"
+            VGA_LABEL="Virtio GPU (paravirtualized)"
+            ;;
         --ahci)
             DRIVE_FLAGS="-drive id=hd0,if=none,format=raw,file=\"$IMAGE\" -device ich9-ahci,id=ahci -device ide-hd,drive=hd0,bus=ahci.0"
             DRIVE_LABEL="AHCI (DMA)"

@@ -121,7 +121,8 @@ pub fn calibrate_timer(target_hz: u32) {
     // Use PIT channel 2 for calibration: count down from max over a known period
     // Alternatively, use the PIT tick counter we already have.
     //
-    // Simple approach: measure LAPIC ticks over 10ms using PIT ticks (100Hz = 10ms/tick)
+    // Simple approach: measure LAPIC ticks over 1 PIT tick, then scale.
+    let pit_hz = crate::arch::x86::pit::TICK_HZ;
     unsafe {
         // Set timer divider to 16
         write(LAPIC_TIMER_DIV, 0x03); // divide by 16
@@ -130,7 +131,7 @@ pub fn calibrate_timer(target_hz: u32) {
         write(LAPIC_TIMER_INIT, 0xFFFFFFFF);
         write(LAPIC_TIMER, TIMER_MASKED | VECTOR_TIMER as u32); // one-shot, masked
 
-        // Wait 10ms using PIT (1 tick at 100Hz)
+        // Wait 1 PIT tick (1000/pit_hz ms)
         let start = crate::arch::x86::pit::get_ticks();
         while crate::arch::x86::pit::get_ticks().wrapping_sub(start) < 1 {
             core::hint::spin_loop();
@@ -143,13 +144,13 @@ pub fn calibrate_timer(target_hz: u32) {
         write(LAPIC_TIMER, TIMER_MASKED);
 
         // Calculate initial count for desired frequency
-        // elapsed ticks in 10ms → ticks_per_second = elapsed * 100
+        // elapsed ticks in 1 PIT tick → ticks_per_second = elapsed * pit_hz
         // initial_count = ticks_per_second / target_hz
-        let ticks_per_second = elapsed as u64 * 100;
+        let ticks_per_second = elapsed as u64 * pit_hz as u64;
         let initial_count = (ticks_per_second / target_hz as u64) as u32;
 
-        crate::serial_println!("  LAPIC timer: {} ticks/10ms, initial_count={} for {}Hz",
-            elapsed, initial_count, target_hz);
+        crate::serial_println!("  LAPIC timer: {} ticks/{}ms, initial_count={} for {}Hz",
+            elapsed, 1000 / pit_hz, initial_count, target_hz);
 
         // Store calibrated value for APs
         TIMER_INITIAL_COUNT.store(initial_count, Ordering::SeqCst);

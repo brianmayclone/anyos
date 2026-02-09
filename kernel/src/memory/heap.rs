@@ -82,7 +82,7 @@ unsafe impl GlobalAlloc for LockedHeap {
 
         // If allocation failed, try growing the heap and retry
         if result.is_null() {
-            let needed = align_up(layout.size().max(core::mem::size_of::<FreeBlock>()), layout.align().max(8));
+            let needed = align_up(layout.size().max(core::mem::size_of::<FreeBlock>()), layout.align().max(16));
             if grow_heap(needed) {
                 result = alloc_inner(layout);
             }
@@ -100,7 +100,7 @@ unsafe impl GlobalAlloc for LockedHeap {
 }
 
 unsafe fn alloc_inner(layout: Layout) -> *mut u8 {
-    let size = align_up(layout.size().max(core::mem::size_of::<FreeBlock>()), layout.align().max(8));
+    let size = align_up(layout.size().max(core::mem::size_of::<FreeBlock>()), layout.align().max(16));
 
     // First-fit search
     let mut prev: *mut FreeBlock = core::ptr::null_mut();
@@ -260,7 +260,7 @@ unsafe fn grow_heap_exact(growth: usize) -> bool {
 }
 
 unsafe fn dealloc_inner(ptr: *mut u8, layout: Layout) {
-    let size = align_up(layout.size().max(core::mem::size_of::<FreeBlock>()), layout.align().max(8));
+    let size = align_up(layout.size().max(core::mem::size_of::<FreeBlock>()), layout.align().max(16));
 
     let block = ptr as *mut FreeBlock;
     (*block).size = size;

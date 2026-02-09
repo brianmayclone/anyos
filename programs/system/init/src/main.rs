@@ -12,7 +12,7 @@ anyos_std::entry!(main);
 // ─── CPU Benchmark ──────────────────────────────────────────────────────────
 
 /// Simple integer benchmark: counts how many iterations of a mixed
-/// arithmetic workload complete in the given number of PIT ticks (100Hz).
+/// arithmetic workload complete in the given number of PIT ticks.
 fn benchmark_cpu(duration_ticks: u32) -> u32 {
     let start = sys::uptime();
     let mut iterations: u32 = 0;
@@ -158,13 +158,15 @@ fn main() {
     println!("=== .anyOS Init ===");
     println!("");
 
+    let hz = sys::tick_hz();
+
     // ── Phase 1: CPU Benchmark (2 seconds) ──
     println!("Running CPU benchmark (2s)...");
-    let cpu_score = benchmark_cpu(200); // 200 ticks = 2 seconds at 100Hz
+    let cpu_score = benchmark_cpu(hz * 2);
 
     // ── Phase 2: Memory Benchmark (1 second) ──
     println!("Running memory benchmark (1s)...");
-    let mem_score = benchmark_memory(100); // 100 ticks = 1 second
+    let mem_score = benchmark_memory(hz);
 
     // ── Report results ──
     println!("");

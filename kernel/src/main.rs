@@ -71,8 +71,8 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     arch::x86::cpuid::detect();
     arch::x86::syscall_msr::init_bsp();
 
-    arch::x86::pit::init(100); // 100 Hz timer
-    serial_println!("[OK] PIT configured at 100 Hz");
+    arch::x86::pit::init();
+    serial_println!("[OK] PIT configured at {} Hz", arch::x86::pit::TICK_HZ);
 
     // Phase 3: Memory
     memory::physical::init(boot_info);
@@ -291,12 +291,12 @@ fn irq_pit_tick(_irq: u8) {
 /// PIT IRQ 0 (legacy PIC mode): timekeeping AND scheduling (no LAPIC timer).
 fn irq_pit_tick_and_schedule(_irq: u8) {
     crate::arch::x86::pit::tick();
-    crate::task::scheduler::schedule();
+    crate::task::scheduler::schedule_tick();
 }
 
 /// LAPIC timer IRQ 16: scheduling only (no tick counting).
 fn irq_lapic_timer(_irq: u8) {
-    crate::task::scheduler::schedule();
+    crate::task::scheduler::schedule_tick();
 }
 
 /// Keyboard IRQ handler: reads scancode from PS/2 port 0x60.

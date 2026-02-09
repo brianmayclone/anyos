@@ -121,7 +121,8 @@ fn render(
 
     // Uptime
     let ticks = sys::uptime();
-    let secs = ticks / 100;
+    let hz = sys::tick_hz();
+    let secs = if hz > 0 { ticks / hz } else { 0 };
     let mins = secs / 60;
     let mut ubuf = [0u8; 24];
     let ustr = fmt_uptime(&mut ubuf, mins, secs % 60);
@@ -209,10 +210,10 @@ fn render(
         let arch_color = if task.arch == 1 { 0xFFFF9500 } else { colors::TEXT_SECONDARY };
         label(win_id, COL_ARCH, y + 3, arch_str, arch_color, FontSize::Small, TextAlign::Left);
 
-        // CPU ticks (as percentage of total if > 0)
+        // CPU ticks as percentage of uptime (wall-clock time)
         let mut cpubuf = [0u8; 12];
         let cpu_str = if total_ticks > 0 && task.cpu_ticks > 0 {
-            let pct_x10 = (task.cpu_ticks as u64 * 1000 / total_ticks as u64) as u32;
+            let pct_x10 = (task.cpu_ticks as u64 * 1000 / total_ticks as u64).min(1000) as u32;
             fmt_pct(&mut cpubuf, pct_x10)
         } else {
             "0.0%"
@@ -315,7 +316,7 @@ fn main() {
     let tasks = fetch_tasks(&mut thread_buf);
     let mem = fetch_memory();
     let cpu_pct = fetch_cpu_load(cpu_pipe_id);
-    let total_ticks: u32 = tasks.iter().map(|t| t.cpu_ticks).sum();
+    let total_ticks: u32 = sys::uptime();
     render(win_id, &tasks, &mem, cpu_pct, selected, total_ticks, &kill_btn, win_w, win_h);
 
     loop {
@@ -372,9 +373,10 @@ fn main() {
             }
         }
 
-        // Auto-refresh every ~500ms (50 ticks at 100Hz)
+        // Auto-refresh every ~500ms
+        let refresh_ticks = sys::tick_hz() / 2;
         let now = sys::uptime();
-        if now.wrapping_sub(last_update) >= 50 {
+        if now.wrapping_sub(last_update) >= refresh_ticks {
             let tasks = fetch_tasks(&mut thread_buf);
             // Clamp selection if task list shrank
             if let Some(sel) = selected {
@@ -384,7 +386,7 @@ fn main() {
             }
             let mem = fetch_memory();
             let cpu_pct = fetch_cpu_load(cpu_pipe_id);
-            let total_ticks: u32 = tasks.iter().map(|t| t.cpu_ticks).sum();
+            let total_ticks: u32 = sys::uptime();
             render(win_id, &tasks, &mem, cpu_pct, selected, total_ticks, &kill_btn, win_w, win_h);
             last_update = now;
         }

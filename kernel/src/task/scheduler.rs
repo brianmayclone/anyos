@@ -156,14 +156,27 @@ pub fn spawn(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
     tid
 }
 
-/// Called from the timer interrupt to perform preemptive scheduling.
+/// Called from the timer interrupt (PIT or LAPIC) to perform preemptive scheduling.
+/// Increments CPU accounting counters (total ticks, idle ticks, per-thread cpu_ticks).
+pub fn schedule_tick() {
+    schedule_inner(true);
+}
+
+/// Voluntary yield: reschedule without incrementing CPU accounting counters.
+/// Used by kernel threads (cpu_monitor busy-loop), syscalls (yield, sleep), etc.
 pub fn schedule() {
+    schedule_inner(false);
+}
+
+fn schedule_inner(from_timer: bool) {
     // Extract context switch parameters under the lock, then release before switching
     // Tuple: (old_cpu_ctx, new_cpu_ctx, old_fpu_ptr, new_fpu_ptr)
     let switch_info: Option<(*mut CpuContext, *const CpuContext, *mut u8, *const u8)>;
 
-    // Increment total ticks counter
-    TOTAL_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+    // Only increment counters on timer-driven scheduling
+    if from_timer {
+        TOTAL_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+    }
 
     let mut guard = match SCHEDULER.try_lock() {
         Some(s) => s,
@@ -179,14 +192,16 @@ pub fn schedule() {
         // Reap terminated threads to free kernel stacks and page directories
         sched.reap_terminated();
 
-        // Track CPU ticks for the currently running thread
-        if let Some(current_idx) = sched.current {
-            if sched.threads[current_idx].state == ThreadState::Running {
-                sched.threads[current_idx].cpu_ticks += 1;
+        // Track CPU ticks for the currently running thread (timer-driven only)
+        if from_timer {
+            if let Some(current_idx) = sched.current {
+                if sched.threads[current_idx].state == ThreadState::Running {
+                    sched.threads[current_idx].cpu_ticks += 1;
+                }
+            } else {
+                // No thread running = idle
+                IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
             }
-        } else {
-            // No thread running = idle
-            IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
         }
 
         // Put current thread back to ready
@@ -231,8 +246,10 @@ pub fn schedule() {
                 Some((idle_ctx, new_ctx, old_fpu, new_fpu))
             }
         } else {
-            // No ready threads — count as idle
-            IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+            // No ready threads — count as idle (timer-driven only)
+            if from_timer {
+                IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+            }
 
             // If the current thread is no longer runnable
             // (e.g. Terminated or Blocked), switch back to the idle context

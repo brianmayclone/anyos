@@ -166,7 +166,8 @@ pub fn sys_sleep(ms: u32) -> u32 {
     if ms == 0 {
         return 0;
     }
-    let ticks = ms / 10;
+    let pit_hz = crate::arch::x86::pit::TICK_HZ;
+    let ticks = (ms as u64 * pit_hz as u64 / 1000) as u32;
     let ticks = if ticks == 0 { 1 } else { ticks };
     let start = crate::arch::x86::pit::get_ticks();
     while crate::arch::x86::pit::get_ticks().wrapping_sub(start) < ticks {
@@ -459,9 +460,14 @@ pub fn sys_time(buf_ptr: u32) -> u32 {
     0
 }
 
-/// sys_uptime - Get system uptime in PIT ticks (100 Hz).
+/// sys_uptime - Get system uptime in PIT ticks (see `pit::TICK_HZ`).
 pub fn sys_uptime() -> u32 {
     crate::arch::x86::pit::get_ticks()
+}
+
+/// sys_tick_hz - Get the PIT tick rate in Hz.
+pub fn sys_tick_hz() -> u32 {
+    crate::arch::x86::pit::TICK_HZ
 }
 
 /// sys_dmesg - Read kernel log ring buffer.

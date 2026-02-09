@@ -37,8 +37,8 @@ const LOCATIONS: [(&str, &str); 5] = [
 const TYPE_FILE: u8 = 0;
 const TYPE_DIR: u8 = 1;
 
-// Double-click timing (in PIT ticks at 100Hz)
-const DBLCLICK_TICKS: u32 = 40; // 400ms
+// Double-click timing: 400ms in PIT ticks (computed at runtime via tick_hz())
+static mut DBLCLICK_TICKS: u32 = 40;
 
 // ============================================================================
 // Data structures
@@ -324,7 +324,7 @@ fn handle_click(state: &mut AppState, mx: i32, my: i32, win_w: u32, win_h: u32) 
 
         // Double-click detection
         if let Some(last_idx) = state.last_click_idx {
-            if last_idx == row && now.wrapping_sub(state.last_click_tick) < DBLCLICK_TICKS {
+            if last_idx == row && now.wrapping_sub(state.last_click_tick) < unsafe { DBLCLICK_TICKS } {
                 // Double-click!
                 state.last_click_idx = None;
                 open_entry(state, row);
@@ -556,6 +556,12 @@ fn write_u32(buf: &mut [u8], pos: usize, val: u32) -> usize {
 // ============================================================================
 
 fn main() {
+    // Initialize double-click timing from tick rate
+    let hz = anyos_std::sys::tick_hz();
+    if hz > 0 {
+        unsafe { DBLCLICK_TICKS = hz * 400 / 1000; }
+    }
+
     let win = window::create("Finder", 100, 60, 620, 440);
     if win == u32::MAX {
         return;

@@ -40,8 +40,9 @@ fn main() {
             );
         } else {
             received += 1;
-            // RTT is in PIT ticks (100 Hz = 10ms per tick)
-            let ms = rtt * 10;
+            // RTT is in PIT ticks; convert to milliseconds
+            let hz = anyos_std::sys::tick_hz();
+            let ms = if hz > 0 { rtt * 1000 / hz } else { 0 };
             anyos_std::println!(
                 "  seq={}: Reply from {}.{}.{}.{} time={}ms",
                 seq, ip[0], ip[1], ip[2], ip[3], ms

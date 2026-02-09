@@ -24,7 +24,8 @@ fn main() {
 
     // Uptime
     let ticks = anyos_std::sys::uptime();
-    let secs = ticks / 100;
+    let hz = anyos_std::sys::tick_hz();
+    let secs = if hz > 0 { ticks / hz } else { 0 };
     let mins = secs / 60;
     anyos_std::println!("Uptime     : {}m {}s ({} ticks)", mins, secs % 60, ticks);
 

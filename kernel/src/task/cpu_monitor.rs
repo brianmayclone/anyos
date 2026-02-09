@@ -21,9 +21,10 @@ pub extern "C" fn start() {
     let mut prev_idle = scheduler::idle_sched_ticks();
 
     loop {
-        // Sleep ~100ms (10 ticks at 100 Hz)
+        // Sleep ~100ms
+        let sleep_ticks = crate::arch::x86::pit::TICK_HZ / 10;
         let start = crate::arch::x86::pit::get_ticks();
-        while crate::arch::x86::pit::get_ticks().wrapping_sub(start) < 10 {
+        while crate::arch::x86::pit::get_ticks().wrapping_sub(start) < sleep_ticks {
             scheduler::schedule();
         }
 
