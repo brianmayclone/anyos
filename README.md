@@ -1,6 +1,6 @@
 # anyOS
 
-A 32-bit x86 operating system built from scratch in **Rust** and **NASM assembly**, featuring a macOS-inspired dark GUI with a window compositor, network stack, and on-disk C compiler.
+A 64-bit x86_64 operating system built from scratch in **Rust** and **NASM assembly**, featuring a macOS-inspired dark GUI with a window compositor, network stack, and on-disk C compiler.
 
 This is a **learning project** created purely for fun and education. It demonstrates how operating systems work under the hood -- from bootloader to desktop environment -- all without relying on any existing OS or standard library.
 
@@ -17,7 +17,7 @@ The OS boots into a graphical desktop environment with:
 ## Features
 
 ### Kernel
-- **32-bit x86** protected mode with paging (4 KiB pages)
+- **64-bit x86_64** long mode with 4-level paging (4 KiB pages)
 - **Preemptive multitasking** with round-robin scheduler
 - **Per-process address spaces** (isolated page directories)
 - **Ring 3 user mode** with syscall interface (`int 0x80`)

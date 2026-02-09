@@ -74,7 +74,7 @@ const MADT_ISO: u8 = 2;   // Interrupt Source Override
 const MADT_LAPIC_NMI: u8 = 4;
 
 /// Virtual address window for temporarily mapping ACPI tables.
-const ACPI_MAP_BASE: u64 = 0xD020_0000;
+const ACPI_MAP_BASE: u64 = 0xFFFF_FFFF_D020_0000;
 /// Maximum ACPI table region we map (256 KiB = 64 pages)
 const ACPI_MAP_PAGES: usize = 64;
 

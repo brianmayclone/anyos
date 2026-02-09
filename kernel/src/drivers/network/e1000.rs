@@ -113,7 +113,7 @@ pub type MacBytes = [u8; 6];
 // ──────────────────────────────────────────────
 
 /// Virtual address where the E1000 MMIO region is mapped (128 KiB).
-const E1000_MMIO_VIRT: u64 = 0xD000_0000;
+const E1000_MMIO_VIRT: u64 = 0xFFFF_FFFF_D000_0000;
 
 struct E1000 {
     mmio_base: u64,       // Virtual address of MMIO region

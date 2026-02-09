@@ -120,9 +120,9 @@ pub fn init(boot_info: &BootInfo) {
         unsafe { pml4.add(i).write_volatile(0); }
     }
 
-    // Identity-map first 8 MiB using 4K pages
-    // This covers the bootloader area, kernel physical code, boot page tables
-    for mb in 0..8u64 {
+    // Identity-map first 128 MiB using 4K pages
+    // Covers bootloader area, kernel, boot page tables, and DMA buffers
+    for mb in 0..64u64 {
         let base = mb * 0x0020_0000; // 2 MiB per iteration
         // Each 2 MiB range needs: PDPT entry, PD entry, PT with 512 entries
 
@@ -370,18 +370,50 @@ pub fn current_cr3() -> u64 {
 /// Returns the physical address of the new PML4.
 pub fn create_user_page_directory() -> Option<PhysAddr> {
     let new_pml4_phys = physical::alloc_frame()?;
+    let new_pdpt_phys = physical::alloc_frame()?; // PDPT for PML4[0]
+    let new_pd_phys = physical::alloc_frame()?;   // PD for PML4[0]→PDPT[0]
 
-    // Map the new PML4 at a temporary virtual address so we can write to it.
-    // Use a known-free kernel address in the higher-half region.
-    let temp_virt = VirtAddr::new(0xFFFF_FFFF_81F0_0000);
-    map_page(temp_virt, new_pml4_phys, PAGE_WRITABLE);
+    // Temp virtual addresses to write into the new page tables
+    let temp_pml4 = VirtAddr::new(0xFFFF_FFFF_81F0_0000);
+    let temp_pdpt = VirtAddr::new(0xFFFF_FFFF_81F0_1000);
+    let temp_pd   = VirtAddr::new(0xFFFF_FFFF_81F0_2000);
 
-    let new_pml4 = temp_virt.as_u64() as *mut u64;
+    map_page(temp_pml4, new_pml4_phys, PAGE_WRITABLE);
+    map_page(temp_pdpt, new_pdpt_phys, PAGE_WRITABLE);
+    map_page(temp_pd,   new_pd_phys,   PAGE_WRITABLE);
+
+    let new_pml4 = temp_pml4.as_u64() as *mut u64;
+    let new_pdpt_ptr = temp_pdpt.as_u64() as *mut u64;
+    let new_pd_ptr = temp_pd.as_u64() as *mut u64;
     let cur_pml4 = RECURSIVE_PML4_BASE as *const u64;
 
     unsafe {
-        // Clear user-space entries (0-255)
-        for i in 0..256 {
+        // Zero the new PDPT and PD
+        for i in 0..ENTRIES_PER_TABLE {
+            new_pdpt_ptr.add(i).write_volatile(0);
+            new_pd_ptr.add(i).write_volatile(0);
+        }
+
+        // Copy identity-map PD entries [0..31] from kernel (covers first 64 MiB).
+        // These are kernel-only (no PAGE_USER), so Ring 3 can't access them.
+        // Entries [32+] left empty for DLLs (0x04000000+) and user programs.
+        let kernel_pd = recursive_pd_base(VirtAddr::new(0)) as *const u64;
+        for i in 0..32 {
+            new_pd_ptr.add(i).write_volatile(kernel_pd.add(i).read_volatile());
+        }
+
+        // Wire PDPT[0] → new PD (PAGE_USER so user program pages in PD[64+] work)
+        new_pdpt_ptr.write_volatile(
+            new_pd_phys.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER,
+        );
+
+        // Wire PML4[0] → new PDPT (PAGE_USER for same reason)
+        new_pml4.write_volatile(
+            new_pdpt_phys.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER,
+        );
+
+        // Clear remaining user-space entries (1-255)
+        for i in 1..256 {
             new_pml4.add(i).write_volatile(0);
         }
 
@@ -399,8 +431,10 @@ pub fn create_user_page_directory() -> Option<PhysAddr> {
             .write_volatile(new_pml4_phys.as_u64() | PAGE_PRESENT | PAGE_WRITABLE);
     }
 
-    // Unmap the temporary page
-    unmap_page(temp_virt);
+    // Unmap temp pages
+    unmap_page(temp_pml4);
+    unmap_page(temp_pdpt);
+    unmap_page(temp_pd);
 
     Some(new_pml4_phys)
 }
@@ -500,6 +534,14 @@ pub fn destroy_user_page_directory(pml4_phys: PhysAddr) {
                     // Check if this is in the DLL virtual address range
                     // DLLs at 0x04000000-0x07FFFFFF: PML4[0], PDPT[0], PD[32..63]
                     let is_dll = pml4i == 0 && pdpti == 0 && pdi >= 32 && pdi <= 63;
+
+                    // Identity-map entries (PD[0..31]) share PTs with the kernel.
+                    // Don't free their PT frames or the physical pages they map.
+                    let is_identity_map = pml4i == 0 && pdpti == 0 && pdi < 32;
+
+                    if is_identity_map {
+                        continue; // Skip entirely — kernel owns these PTs
+                    }
 
                     let pt_base = sign_extend(
                         (RECURSIVE_INDEX as u64) << 39

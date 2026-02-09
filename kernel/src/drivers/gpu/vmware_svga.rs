@@ -63,8 +63,8 @@ const SVGA_CMD_RECT_FILL: u32 = 2;
 const SVGA_CMD_RECT_COPY: u32 = 3;
 const SVGA_CMD_DEFINE_CURSOR: u32 = 19;
 
-// Virtual address for FIFO mapping (after E1000 MMIO at 0xD000_0000, 128K)
-const FIFO_VIRT_BASE: u64 = 0xD002_0000;
+// Virtual address for FIFO mapping (kernel higher-half MMIO region)
+const FIFO_VIRT_BASE: u64 = 0xFFFF_FFFF_D002_0000;
 const FIFO_MAP_PAGES: usize = 64; // 256 KiB
 
 /// VMware SVGA II GPU driver state, including I/O base, FIFO mapping, and capabilities.

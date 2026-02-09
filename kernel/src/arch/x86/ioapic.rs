@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use crate::arch::x86::acpi::{IoApicInfo, IsoInfo};
 
 /// Virtual address where I/O APIC MMIO is mapped
-const IOAPIC_VIRT_BASE: u64 = 0xD011_0000;
+const IOAPIC_VIRT_BASE: u64 = 0xFFFF_FFFF_D011_0000;
 
 // I/O APIC registers (accessed indirectly via IOREGSEL/IOWIN)
 const IOAPIC_REGSEL: u32 = 0x00;  // Register select

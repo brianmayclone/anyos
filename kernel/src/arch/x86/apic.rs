@@ -47,7 +47,7 @@ pub const VECTOR_IPI_HALT: u8 = 253;
 pub const VECTOR_IPI_TLB: u8  = 252;
 
 /// Virtual address where LAPIC MMIO is mapped
-const LAPIC_VIRT_BASE: u64 = 0xD010_0000;
+const LAPIC_VIRT_BASE: u64 = 0xFFFF_FFFF_D010_0000;
 
 static LAPIC_PHYS: AtomicU32 = AtomicU32::new(0);
 static LAPIC_INITIALIZED: AtomicBool = AtomicBool::new(false);
