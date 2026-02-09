@@ -146,7 +146,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
         return Err(FsError::TooManyOpenFiles);
     }
 
-    let fat = state.fat_fs.as_ref().ok_or(FsError::IoError)?;
+    let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
 
     // Try to look up the file
     let lookup_result = fat.lookup(path);
@@ -274,7 +274,7 @@ pub fn write(fd: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
     let path_clone = file.path.clone();
     let filename = path_clone.rsplit('/').next().unwrap_or("");
 
-    let fat = state.fat_fs.as_ref().ok_or(FsError::IoError)?;
+    let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
     let (new_cluster, new_size) = fat.write_file(old_inode, position, buf, old_size)?;
 
     // Update directory entry if cluster or size changed
@@ -328,9 +328,9 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
 
 /// Delete a file or empty directory at the given path.
 pub fn delete(path: &str) -> Result<(), FsError> {
-    let vfs = VFS.lock();
-    let state = vfs.as_ref().ok_or(FsError::IoError)?;
-    let fat = state.fat_fs.as_ref().ok_or(FsError::IoError)?;
+    let mut vfs = VFS.lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
+    let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
 
     let (parent_path, filename) = split_parent_name(path)?;
     let (parent_cluster, _, _) = fat.lookup(parent_path)?;
@@ -339,9 +339,9 @@ pub fn delete(path: &str) -> Result<(), FsError> {
 
 /// Create a directory at the given path.
 pub fn mkdir(path: &str) -> Result<(), FsError> {
-    let vfs = VFS.lock();
-    let state = vfs.as_ref().ok_or(FsError::IoError)?;
-    let fat = state.fat_fs.as_ref().ok_or(FsError::IoError)?;
+    let mut vfs = VFS.lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
+    let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
 
     let (parent_path, dirname) = split_parent_name(path)?;
     let (parent_cluster, parent_type, _) = fat.lookup(parent_path)?;
@@ -406,9 +406,9 @@ pub fn fstat(fd: FileDescriptor) -> Result<(FileType, u32, u32), FsError> {
 
 /// Truncate a file to zero length.
 pub fn truncate(path: &str) -> Result<(), FsError> {
-    let vfs = VFS.lock();
-    let state = vfs.as_ref().ok_or(FsError::IoError)?;
-    let fat = state.fat_fs.as_ref().ok_or(FsError::IoError)?;
+    let mut vfs = VFS.lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
+    let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
 
     let (parent_path, filename) = split_parent_name(path)?;
     let (parent_cluster, _, _) = fat.lookup(parent_path)?;

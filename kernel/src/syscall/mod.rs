@@ -125,6 +125,15 @@ pub const SYS_GPU_INFO: u32 = 112;
 pub const SYS_AUDIO_WRITE: u32 = 120;
 pub const SYS_AUDIO_CTL: u32 = 121;
 
+// Font / AA drawing / wallpaper
+pub const SYS_FONT_LOAD: u32 = 130;
+pub const SYS_FONT_UNLOAD: u32 = 131;
+pub const SYS_FONT_MEASURE: u32 = 132;
+pub const SYS_WIN_DRAW_TEXT_EX: u32 = 133;
+pub const SYS_WIN_FILL_ROUNDED_RECT: u32 = 134;
+pub const SYS_GPU_HAS_ACCEL: u32 = 135;
+pub const SYS_SET_WALLPAPER: u32 = 136;
+
 // Window creation flags
 pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x01;
 pub const WIN_FLAG_BORDERLESS: u32 = 0x02;
@@ -281,6 +290,15 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         // Audio
         SYS_AUDIO_WRITE => handlers::sys_audio_write(arg1, arg2),
         SYS_AUDIO_CTL => handlers::sys_audio_ctl(arg1, arg2),
+
+        // Font / AA drawing / wallpaper
+        SYS_FONT_LOAD => handlers::sys_font_load(arg1, arg2),
+        SYS_FONT_UNLOAD => handlers::sys_font_unload(arg1),
+        SYS_FONT_MEASURE => handlers::sys_font_measure(arg1),
+        SYS_WIN_DRAW_TEXT_EX => handlers::sys_win_draw_text_ex(arg1, arg2),
+        SYS_WIN_FILL_ROUNDED_RECT => handlers::sys_win_fill_rounded_rect(arg1, arg2),
+        SYS_GPU_HAS_ACCEL => handlers::sys_gpu_has_accel(),
+        SYS_SET_WALLPAPER => handlers::sys_set_wallpaper(arg1),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

@@ -1013,6 +1013,31 @@ impl Desktop {
         self.compositor.enable_hw_double_buffer();
     }
 
+    /// Set desktop wallpaper from decoded ARGB pixel data.
+    /// Scales/copies the wallpaper onto the desktop background layer.
+    pub fn set_wallpaper(&mut self, w: u32, h: u32, pixels: &[u32]) {
+        if let Some(surface) = self.compositor.get_layer_surface(self.desktop_layer) {
+            let sw = surface.width;
+            let sh = surface.height;
+
+            // Simple nearest-neighbor scale to fill the desktop
+            for dy in 0..sh {
+                let sy = (dy * h / sh) as usize;
+                let dst_row = (dy * sw) as usize;
+                for dx in 0..sw {
+                    let sx = (dx * w / sw) as usize;
+                    let idx = sy * w as usize + sx;
+                    if idx < pixels.len() {
+                        surface.pixels[dst_row + dx as usize] = pixels[idx] | 0xFF000000;
+                    }
+                }
+            }
+            surface.opaque = true;
+        }
+        self.compositor.invalidate_all();
+        crate::serial_println!("[OK] Wallpaper set ({}x{})", w, h);
+    }
+
     /// Change display resolution. Resizes desktop, menubar, and notifies windows.
     pub fn change_resolution(&mut self, width: u32, height: u32) -> bool {
         if !self.compositor.change_resolution(width, height) {

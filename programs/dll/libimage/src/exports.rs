@@ -5,7 +5,7 @@
 
 use crate::types::{ImageInfo, VideoInfo};
 
-const NUM_EXPORTS: u32 = 4;
+const NUM_EXPORTS: u32 = 5;
 
 /// Export function table — must be first in the binary (`.exports` section).
 ///
@@ -30,6 +30,8 @@ pub struct LibimageExports {
     // Image exports (unchanged offsets)
     pub image_probe: extern "C" fn(*const u8, u32, *mut ImageInfo) -> i32,
     pub image_decode: extern "C" fn(*const u8, u32, *mut u32, u32, *mut u8, u32) -> i32,
+    // Scale export
+    pub scale_image: extern "C" fn(*const u32, u32, u32, *mut u32, u32, u32, u32) -> i32,
 }
 
 #[link_section = ".exports"]
@@ -44,6 +46,7 @@ pub static LIBIMAGE_EXPORTS: LibimageExports = LibimageExports {
     video_decode_frame: video_decode_frame_export,
     image_probe: image_probe,
     image_decode: image_decode,
+    scale_image: scale_image_export,
 };
 
 // ── Video exports ──────────────────────────────────────
@@ -157,4 +160,15 @@ extern "C" fn image_decode(
     }
 
     crate::types::ERR_UNSUPPORTED
+}
+
+// ── Scale export ──────────────────────────────────────
+
+/// Scale an ARGB8888 image using bilinear interpolation.
+extern "C" fn scale_image_export(
+    src: *const u32, src_w: u32, src_h: u32,
+    dst: *mut u32, dst_w: u32, dst_h: u32,
+    mode: u32,
+) -> i32 {
+    crate::scale::scale_image(src, src_w, src_h, dst, dst_w, dst_h, mode)
 }

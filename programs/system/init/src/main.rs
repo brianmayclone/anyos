@@ -155,8 +155,6 @@ fn fmt_u32(buf: &mut [u8], val: u32) -> usize {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
-    println!("=== .anyOS Init ===");
-    println!("");
 
     let hz = sys::tick_hz();
 
@@ -169,8 +167,6 @@ fn main() {
     let mem_score = benchmark_memory(hz);
 
     // ── Report results ──
-    println!("");
-    println!("Benchmark results:");
 
     let mut line = [0u8; 80];
     let mut p: usize;
@@ -209,11 +205,95 @@ fn main() {
         ipc::pipe_write(pipe_id, &info[..ip]);
     }
 
-    println!("");
+    // ── Phase 2b: Load wallpaper ──
+    load_wallpaper();
 
     // ── Phase 3: Run init config ──
     run_init_conf();
+}
 
-    println!("");
-    println!("=== Init complete ===");
+// ─── Wallpaper Loading ──────────────────────────────────────────────────────
+
+/// Try to load and set a desktop wallpaper from /media/wallpapers/default.png.
+/// The image is scaled to contain within the screen resolution using bilinear
+/// interpolation via libimage.
+fn load_wallpaper() {
+    let path = "/media/wallpapers/default.png";
+
+    let fd = fs::open(path, 0);
+    if fd == u32::MAX {
+        println!("init: wallpaper not found ({})", path);
+        return;
+    }
+
+    // Get file size via fstat: [type:u32, size:u32, position:u32]
+    let mut stat_buf = [0u32; 3];
+    if fs::fstat(fd, &mut stat_buf) == u32::MAX {
+        fs::close(fd);
+        return;
+    }
+    let file_size = stat_buf[1] as usize;
+    if file_size == 0 || file_size > 2 * 1024 * 1024 {
+        fs::close(fd);
+        return;
+    }
+
+    // Read file data
+    let mut data = alloc::vec![0u8; file_size];
+    let bytes_read = fs::read(fd, &mut data) as usize;
+    fs::close(fd);
+    if bytes_read == 0 {
+        return;
+    }
+
+    // Probe image
+    let info = match libimage_client::probe(&data[..bytes_read]) {
+        Some(i) => i,
+        None => {
+            println!("init: wallpaper format not recognized");
+            return;
+        }
+    };
+
+    println!("init: wallpaper '{}' ({}x{}, {})",
+        path, info.width, info.height,
+        libimage_client::format_name(info.format));
+
+    // Safety: reject images that would need >16 MB of decoded pixel data
+    let pixel_count = (info.width * info.height) as usize;
+    if pixel_count > 4 * 1024 * 1024 {
+        println!("init: wallpaper too large ({}x{}, {} Mpx), max 4M pixels",
+            info.width, info.height, pixel_count / 1_000_000);
+        return;
+    }
+    let mut pixels = alloc::vec![0u32; pixel_count];
+    let mut scratch = alloc::vec![0u8; info.scratch_needed as usize];
+
+    // Decode
+    if libimage_client::decode(&data[..bytes_read], &mut pixels, &mut scratch).is_err() {
+        println!("init: failed to decode wallpaper");
+        return;
+    }
+
+    // Get screen size and scale to contain
+    let (sw, sh) = anyos_std::ui::window::screen_size();
+    if sw == 0 || sh == 0 {
+        return;
+    }
+
+    if info.width == sw && info.height == sh {
+        // Perfect fit — send directly
+        anyos_std::ui::window::set_wallpaper(sw, sh, &pixels, 0);
+    } else {
+        // Scale to contain within screen using bilinear interpolation
+        let dst_count = (sw * sh) as usize;
+        let mut dst = alloc::vec![0u32; dst_count];
+        libimage_client::scale_image(
+            &pixels, info.width, info.height,
+            &mut dst, sw, sh,
+            libimage_client::MODE_CONTAIN,
+        );
+        anyos_std::ui::window::set_wallpaper(sw, sh, &dst, 0);
+    }
+    println!("init: wallpaper set");
 }

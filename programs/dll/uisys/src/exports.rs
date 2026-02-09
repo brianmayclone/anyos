@@ -3,6 +3,7 @@
 //! This struct IS the public ABI. New functions are appended, never reordered.
 
 use crate::components::*;
+use crate::draw;
 
 /// The export table. Must be `#[repr(C)]` and placed in `.exports` section.
 #[repr(C)]
@@ -143,10 +144,16 @@ pub struct UisysExports {
     // --- IconButton (2) ---
     pub iconbutton_render: extern "C" fn(u32, i32, i32, u32, u8, u32),
     pub iconbutton_hit_test: extern "C" fn(i32, i32, u32, i32, i32) -> u32,
+
+    // --- v2 exports (4) ---
+    pub gpu_has_accel: extern "C" fn() -> u32,
+    pub fill_rounded_rect_aa: extern "C" fn(u32, i32, i32, u32, u32, u32, u32),
+    pub draw_text_with_font: extern "C" fn(u32, i32, i32, u32, u32, u16, *const u8, u32),
+    pub font_measure: extern "C" fn(u32, u16, *const u8, u32, *mut u32, *mut u32) -> u32,
 }
 
 // Total export function count
-const NUM_EXPORTS: u32 = 73;
+const NUM_EXPORTS: u32 = 77;
 
 /// The global export instance, placed at the very start of the binary.
 #[link_section = ".exports"]
@@ -288,4 +295,10 @@ pub static UISYS_EXPORTS: UisysExports = UisysExports {
     // IconButton
     iconbutton_render: iconbutton::iconbutton_render,
     iconbutton_hit_test: iconbutton::iconbutton_hit_test,
+
+    // v2 exports
+    gpu_has_accel: draw::gpu_has_accel_export,
+    fill_rounded_rect_aa: draw::fill_rounded_rect_aa,
+    draw_text_with_font: draw::draw_text_with_font,
+    font_measure: draw::font_measure_export,
 };

@@ -201,14 +201,23 @@ impl Window {
 
         let size = Theme::WINDOW_TITLE_FONT_SIZE;
 
+        let use_aa = crate::graphics::font_manager::gpu_accel_enabled();
         let mut renderer = Renderer::new(&mut self.surface);
 
         // Draw window background with rounded top corners
-        renderer.fill_rounded_rect(
-            Rect::new(0, 0, self.width, total_h),
-            Theme::WINDOW_BORDER_RADIUS,
-            Theme::WINDOW_BG,
-        );
+        if use_aa {
+            renderer.fill_rounded_rect_aa(
+                Rect::new(0, 0, self.width, total_h),
+                Theme::WINDOW_BORDER_RADIUS,
+                Theme::WINDOW_BG,
+            );
+        } else {
+            renderer.fill_rounded_rect(
+                Rect::new(0, 0, self.width, total_h),
+                Theme::WINDOW_BORDER_RADIUS,
+                Theme::WINDOW_BG,
+            );
+        }
 
         // Draw title bar
         let titlebar_color = if self.focused {
@@ -216,11 +225,19 @@ impl Window {
         } else {
             Theme::TITLEBAR_BG_INACTIVE
         };
-        renderer.fill_rounded_rect(
-            Rect::new(0, 0, self.width, Theme::TITLEBAR_HEIGHT + Theme::WINDOW_BORDER_RADIUS as u32),
-            Theme::WINDOW_BORDER_RADIUS,
-            titlebar_color,
-        );
+        if use_aa {
+            renderer.fill_rounded_rect_aa(
+                Rect::new(0, 0, self.width, Theme::TITLEBAR_HEIGHT + Theme::WINDOW_BORDER_RADIUS as u32),
+                Theme::WINDOW_BORDER_RADIUS,
+                titlebar_color,
+            );
+        } else {
+            renderer.fill_rounded_rect(
+                Rect::new(0, 0, self.width, Theme::TITLEBAR_HEIGHT + Theme::WINDOW_BORDER_RADIUS as u32),
+                Theme::WINDOW_BORDER_RADIUS,
+                titlebar_color,
+            );
+        }
         // Square off the bottom of the title bar
         renderer.fill_rect(
             Rect::new(0, Theme::TITLEBAR_HEIGHT as i32 - Theme::WINDOW_BORDER_RADIUS, self.width, Theme::WINDOW_BORDER_RADIUS as u32),
@@ -255,6 +272,24 @@ impl Window {
         // Blit content into the window surface below the title bar
         self.surface.blit(&self.content, 0, Theme::TITLEBAR_HEIGHT as i32);
 
+        // Draw 1px rounded outline for visual window separation
+        {
+            let mut renderer = Renderer::new(&mut self.surface);
+            if use_aa {
+                renderer.draw_rounded_rect_aa(
+                    Rect::new(0, 0, self.width, total_h),
+                    Theme::WINDOW_BORDER_RADIUS,
+                    Theme::WINDOW_OUTLINE,
+                );
+            } else {
+                renderer.draw_rect(
+                    Rect::new(0, 0, self.width, total_h),
+                    Theme::WINDOW_OUTLINE,
+                    1,
+                );
+            }
+        }
+
         self.dirty = false;
         &self.surface
     }
@@ -262,39 +297,26 @@ impl Window {
     fn draw_traffic_lights(&mut self) {
         let btn_y = Theme::BUTTON_Y_CENTER;
         let r = Theme::BUTTON_RADIUS;
+        let use_aa = crate::graphics::font_manager::gpu_accel_enabled();
         let mut renderer = Renderer::new(&mut self.surface);
 
         if self.focused {
-            // Close (red)
-            renderer.fill_circle(
-                Theme::BUTTON_LEFT_MARGIN,
-                btn_y,
-                r,
-                Theme::BUTTON_CLOSE,
-            );
-            // Minimize (yellow)
-            renderer.fill_circle(
-                Theme::BUTTON_LEFT_MARGIN + Theme::BUTTON_SPACING,
-                btn_y,
-                r,
-                Theme::BUTTON_MINIMIZE,
-            );
-            // Maximize (green)
-            renderer.fill_circle(
-                Theme::BUTTON_LEFT_MARGIN + 2 * Theme::BUTTON_SPACING,
-                btn_y,
-                r,
-                Theme::BUTTON_MAXIMIZE,
-            );
+            if use_aa {
+                renderer.fill_circle_aa(Theme::BUTTON_LEFT_MARGIN, btn_y, r, Theme::BUTTON_CLOSE);
+                renderer.fill_circle_aa(Theme::BUTTON_LEFT_MARGIN + Theme::BUTTON_SPACING, btn_y, r, Theme::BUTTON_MINIMIZE);
+                renderer.fill_circle_aa(Theme::BUTTON_LEFT_MARGIN + 2 * Theme::BUTTON_SPACING, btn_y, r, Theme::BUTTON_MAXIMIZE);
+            } else {
+                renderer.fill_circle(Theme::BUTTON_LEFT_MARGIN, btn_y, r, Theme::BUTTON_CLOSE);
+                renderer.fill_circle(Theme::BUTTON_LEFT_MARGIN + Theme::BUTTON_SPACING, btn_y, r, Theme::BUTTON_MINIMIZE);
+                renderer.fill_circle(Theme::BUTTON_LEFT_MARGIN + 2 * Theme::BUTTON_SPACING, btn_y, r, Theme::BUTTON_MAXIMIZE);
+            }
         } else {
-            // Inactive buttons (gray)
             for i in 0..3 {
-                renderer.fill_circle(
-                    Theme::BUTTON_LEFT_MARGIN + i * Theme::BUTTON_SPACING,
-                    btn_y,
-                    r,
-                    Theme::BUTTON_INACTIVE,
-                );
+                if use_aa {
+                    renderer.fill_circle_aa(Theme::BUTTON_LEFT_MARGIN + i * Theme::BUTTON_SPACING, btn_y, r, Theme::BUTTON_INACTIVE);
+                } else {
+                    renderer.fill_circle(Theme::BUTTON_LEFT_MARGIN + i * Theme::BUTTON_SPACING, btn_y, r, Theme::BUTTON_INACTIVE);
+                }
             }
         }
     }

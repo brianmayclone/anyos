@@ -243,6 +243,7 @@ endfunction()
 set(DLL_BINS "")
 add_dll(uisys ${CMAKE_SOURCE_DIR}/programs/dll/uisys)
 add_dll(libimage ${CMAKE_SOURCE_DIR}/programs/dll/libimage)
+add_dll(libfont ${CMAKE_SOURCE_DIR}/programs/dll/libfont)
 
 set(RUST_USER_BINS "")
 add_rust_user_program(hello_rust ${CMAKE_SOURCE_DIR}/programs/hello_rust)
@@ -335,6 +336,8 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E touch ${SYSROOT_DIR}/.stamp
   DEPENDS ${CMAKE_SOURCE_DIR}/tools/sysroot
           ${CMAKE_SOURCE_DIR}/tools/sysroot/src/hello.c
+          ${CMAKE_SOURCE_DIR}/tools/sysroot/system/fonts/sfpro.ttf
+          ${CMAKE_SOURCE_DIR}/tools/sysroot/media/wallpapers/default.png
   COMMENT "Populating sysroot from tools/sysroot"
 )
 

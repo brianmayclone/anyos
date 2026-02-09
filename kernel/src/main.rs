@@ -34,9 +34,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     // Phase 1: Early output (serial only — silent boot for end users)
     drivers::serial::init();
     serial_println!("");
-    serial_println!("==============================");
     serial_println!("  .anyOS Kernel v0.1");
-    serial_println!("==============================");
 
     drivers::vga_text::init();
 
@@ -126,6 +124,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     fs::vfs::init();
     fs::vfs::mount("/", fs::vfs::FsType::Fat, 0);
 
+    // Initialize TTF font manager (loads /system/fonts/system.ttf from disk)
+    graphics::font_manager::init();
+
     task::scheduler::init();
 
     // Phase 7: Register IRQ handlers and enable interrupts
@@ -160,9 +161,6 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     // Phase 8: Initialize mouse
     drivers::input::mouse::init();
 
-    serial_println!("");
-    serial_println!(".anyOS initialization complete.");
-
     // Emit boot complete event
     ipc::event_bus::system_emit(ipc::event_bus::EventData::new(
         ipc::event_bus::EVT_BOOT_COMPLETE, 0, 0, 0, 0,
@@ -184,10 +182,12 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         Ok(pages) => serial_println!("[OK] libimage.dll: {} pages", pages),
         Err(e) => serial_println!("[WARN] libimage.dll not loaded: {}", e),
     }
+    match task::dll::load_dll("/system/lib/libfont.dll", 0x0420_0000) {
+        Ok(pages) => serial_println!("[OK] libfont.dll: {} pages", pages),
+        Err(e) => serial_println!("[WARN] libfont.dll not loaded: {}", e),
+    }
 
     // Phase 8d: Run init process (benchmark + init.conf services)
-    serial_println!("");
-    serial_println!("--- Running /system/init ---");
     match task::loader::load_and_run("/system/init", "init") {
         Ok(tid) => {
             serial_println!("  Init spawned (TID={}), waiting...", tid);
@@ -199,13 +199,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             serial_println!("  System may not be fully configured.");
         }
     }
-    serial_println!("--- Init complete ---");
-    serial_println!("");
 
     // Phase 9: Start graphical desktop if framebuffer is available
     if let Some(fb) = drivers::framebuffer::info() {
-        serial_println!("Starting graphical desktop ({}x{})...", fb.width, fb.height);
-
         // GPU driver may already be registered via HAL PCI probe (Phase 5b).
         // If not, initialize Bochs VGA as fallback using boot framebuffer info.
         if !drivers::gpu::is_available() {
@@ -246,6 +242,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
 
             if has_accel {
                 desktop.compositor.set_gpu_accel(true);
+                graphics::font_manager::set_gpu_accel(true);
                 serial_println!("[OK] GPU 2D acceleration enabled");
             }
 

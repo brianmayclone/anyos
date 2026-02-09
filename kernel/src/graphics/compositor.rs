@@ -907,6 +907,11 @@ impl Compositor {
         self.gpu_accel = enabled;
     }
 
+    /// Check if GPU acceleration is currently enabled.
+    pub fn gpu_accel(&self) -> bool {
+        self.gpu_accel
+    }
+
     /// Change display resolution via GPU driver.
     /// Reallocates the back buffer and updates framebuffer state.
     /// Returns true on success.

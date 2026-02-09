@@ -23,51 +23,27 @@ pub fn draw_text_mono(win: u32, x: i32, y: i32, color: u32, text: &[u8]) {
     syscall::win_draw_text_mono(win, x, y, color, text.as_ptr());
 }
 
-/// Draw a filled rounded rectangle using pixel-center tests for correct corners.
+/// Draw a filled rounded rectangle via kernel AA syscall.
+/// The kernel performs anti-aliased corner rendering, giving all components AA for free.
 pub fn fill_rounded_rect(win: u32, x: i32, y: i32, w: u32, h: u32, r: u32, color: u32) {
-    if r == 0 || w < r * 2 || h < r * 2 {
-        fill_rect(win, x, y, w, h, color);
-        return;
-    }
-    // Main body (full width, reduced height — no overlap with strips)
-    if h > r * 2 {
-        fill_rect(win, x, y + r as i32, w, h - r * 2, color);
-    }
-    // Top strip (narrower, between corners)
-    if w > r * 2 {
-        fill_rect(win, x + r as i32, y, w - r * 2, r, color);
-        // Bottom strip
-        fill_rect(win, x + r as i32, y + (h - r) as i32, w - r * 2, r, color);
-    }
-    // Corner fills using pixel-center test:
-    // Pixel (dx, dy) in corner [0..r) is inside if its center is within the arc.
-    // Test: (2*dx + 1 - 2*r)² + (2*dy + 1 - 2*r)² ≤ (2*r)²
-    let r2x4 = (2 * r as i32) * (2 * r as i32);
-    for dy in 0..r {
-        let cy = 2 * dy as i32 + 1 - 2 * r as i32;
-        let cy2 = cy * cy;
-        // Find leftmost pixel inside the arc (scan left to right)
-        let mut fill_start = r;
-        for dx in 0..r {
-            let cx = 2 * dx as i32 + 1 - 2 * r as i32;
-            if cx * cx + cy2 <= r2x4 {
-                fill_start = dx;
-                break;
-            }
-        }
-        let fill_width = r - fill_start;
-        if fill_width > 0 {
-            let fs = fill_start as i32;
-            // Top-left: arc curves from top-edge to left-edge
-            fill_rect(win, x + fs, y + dy as i32, fill_width, 1, color);
-            // Top-right: mirror horizontally — fill from left side of quadrant
-            fill_rect(win, x + (w - r) as i32, y + dy as i32, fill_width, 1, color);
-            // Bottom-left: mirror vertically — reverse row order
-            fill_rect(win, x + fs, y + (h as i32 - 1 - dy as i32), fill_width, 1, color);
-            // Bottom-right: mirror both axes
-            fill_rect(win, x + (w - r) as i32, y + (h as i32 - 1 - dy as i32), fill_width, 1, color);
-        }
-    }
+    // Pack params: [x:i16, y:i16, w:u16, h:u16, radius:u16, _pad:u16, color:u32] = 16 bytes
+    let params: [u8; 16] = unsafe {
+        let mut p = [0u8; 16];
+        let px = x as i16;
+        let py = y as i16;
+        let pw = w as u16;
+        let ph = h as u16;
+        let pr = r as u16;
+        core::ptr::copy_nonoverlapping(px.to_le_bytes().as_ptr(), p.as_mut_ptr(), 2);
+        core::ptr::copy_nonoverlapping(py.to_le_bytes().as_ptr(), p.as_mut_ptr().add(2), 2);
+        core::ptr::copy_nonoverlapping(pw.to_le_bytes().as_ptr(), p.as_mut_ptr().add(4), 2);
+        core::ptr::copy_nonoverlapping(ph.to_le_bytes().as_ptr(), p.as_mut_ptr().add(6), 2);
+        core::ptr::copy_nonoverlapping(pr.to_le_bytes().as_ptr(), p.as_mut_ptr().add(8), 2);
+        // _pad at offset 10 is already zero
+        core::ptr::copy_nonoverlapping(color.to_le_bytes().as_ptr(), p.as_mut_ptr().add(12), 4);
+        p
+    };
+    syscall::win_fill_rounded_rect(win, params.as_ptr() as u32);
 }
 
 /// Draw a 1px border rectangle.
@@ -121,6 +97,73 @@ pub fn draw_rounded_border(win: u32, x: i32, y: i32, w: u32, h: u32, r: u32, col
             fill_rect(win, x + (w - 1 - fill_start) as i32, y + (h - 1 - dy) as i32, 1, 1, color);
         }
     }
+}
+
+/// Draw text with explicit font and size selection.
+pub fn draw_text_ex(win: u32, x: i32, y: i32, color: u32, font_id: u16, size: u16, text: *const u8) {
+    // Pack params: [x:i16, y:i16, color:u32, font_id:u16, size:u16, text_ptr:u32] = 16 bytes
+    let params: [u8; 16] = unsafe {
+        let mut p = [0u8; 16];
+        let px = x as i16;
+        let py = y as i16;
+        core::ptr::copy_nonoverlapping(px.to_le_bytes().as_ptr(), p.as_mut_ptr(), 2);
+        core::ptr::copy_nonoverlapping(py.to_le_bytes().as_ptr(), p.as_mut_ptr().add(2), 2);
+        core::ptr::copy_nonoverlapping(color.to_le_bytes().as_ptr(), p.as_mut_ptr().add(4), 4);
+        core::ptr::copy_nonoverlapping(font_id.to_le_bytes().as_ptr(), p.as_mut_ptr().add(8), 2);
+        core::ptr::copy_nonoverlapping(size.to_le_bytes().as_ptr(), p.as_mut_ptr().add(10), 2);
+        let tp = text as u32;
+        core::ptr::copy_nonoverlapping(tp.to_le_bytes().as_ptr(), p.as_mut_ptr().add(12), 4);
+        p
+    };
+    syscall::win_draw_text_ex(win, params.as_ptr() as u32);
+}
+
+/// Measure text extent with a specific font.
+/// Returns 0 on success, non-zero on error.
+pub fn measure_text(font_id: u16, size: u16, text: *const u8, text_len: u32, out_w: *mut u32, out_h: *mut u32) -> u32 {
+    // Pack params: [font_id:u16, size:u16, text_ptr:u32, text_len:u32, out_w_ptr:u32, out_h_ptr:u32] = 20 bytes
+    let params: [u8; 20] = unsafe {
+        let mut p = [0u8; 20];
+        core::ptr::copy_nonoverlapping(font_id.to_le_bytes().as_ptr(), p.as_mut_ptr(), 2);
+        core::ptr::copy_nonoverlapping(size.to_le_bytes().as_ptr(), p.as_mut_ptr().add(2), 2);
+        let tp = text as u32;
+        core::ptr::copy_nonoverlapping(tp.to_le_bytes().as_ptr(), p.as_mut_ptr().add(4), 4);
+        core::ptr::copy_nonoverlapping(text_len.to_le_bytes().as_ptr(), p.as_mut_ptr().add(8), 4);
+        let wp = out_w as u32;
+        core::ptr::copy_nonoverlapping(wp.to_le_bytes().as_ptr(), p.as_mut_ptr().add(12), 4);
+        let hp = out_h as u32;
+        core::ptr::copy_nonoverlapping(hp.to_le_bytes().as_ptr(), p.as_mut_ptr().add(16), 4);
+        p
+    };
+    syscall::font_measure(params.as_ptr() as u32)
+}
+
+/// Query whether GPU acceleration is available.
+pub fn gpu_has_accel() -> u32 {
+    syscall::gpu_has_accel()
+}
+
+// --- v2 extern "C" exports ---
+
+/// Exported: fill a rounded rectangle with kernel-side AA.
+/// Same signature as internal `fill_rounded_rect` but exposed as a named export.
+pub extern "C" fn fill_rounded_rect_aa(win: u32, x: i32, y: i32, w: u32, h: u32, r: u32, color: u32) {
+    fill_rounded_rect(win, x, y, w, h, r, color);
+}
+
+/// Exported: draw text with explicit font and size.
+pub extern "C" fn draw_text_with_font(win: u32, x: i32, y: i32, color: u32, size: u32, font_id: u16, text: *const u8, _text_len: u32) {
+    draw_text_ex(win, x, y, color, font_id, size as u16, text);
+}
+
+/// Exported: measure text with a specific font.
+pub extern "C" fn font_measure_export(font_id: u32, size: u16, text: *const u8, text_len: u32, out_w: *mut u32, out_h: *mut u32) -> u32 {
+    measure_text(font_id as u16, size, text, text_len, out_w, out_h)
+}
+
+/// Exported: query GPU acceleration availability.
+pub extern "C" fn gpu_has_accel_export() -> u32 {
+    gpu_has_accel()
 }
 
 /// Integer square root.

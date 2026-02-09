@@ -140,6 +140,12 @@ pub struct UisysExports {
     // IconButton (2)
     pub iconbutton_render: extern "C" fn(u32, i32, i32, u32, u8, u32),
     pub iconbutton_hit_test: extern "C" fn(i32, i32, u32, i32, i32) -> u32,
+
+    // v2 exports (4)
+    pub gpu_has_accel: extern "C" fn() -> u32,
+    pub fill_rounded_rect_aa: extern "C" fn(u32, i32, i32, u32, u32, u32, u32),
+    pub draw_text_with_font: extern "C" fn(u32, i32, i32, u32, u32, u16, *const u8, u32),
+    pub font_measure: extern "C" fn(u32, u16, *const u8, u32, *mut u32, *mut u32) -> u32,
 }
 
 /// Get a reference to the export table at the fixed DLL base address.

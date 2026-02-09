@@ -87,12 +87,14 @@ pub fn measure_string_bitmap(text: &str) -> (u32, u32) {
     (max_width, lines * FONT_HEIGHT)
 }
 
-// ─── Unified font API (uses Cape Coral when available, bitmap fallback) ──
+// ─── Unified font API ────────────────────────────────────────────────
+// Priority: TTF font_manager → Cape Coral → bitmap fallback
 
 /// Draw a single character at (x, y) on the surface.
-/// Uses the system proportional font if available.
 pub fn draw_char(surface: &mut Surface, x: i32, y: i32, ch: char, color: Color) {
-    if super::cc_font::is_ready() {
+    if super::font_manager::is_ready() {
+        super::font_manager::draw_char(surface, x, y, ch, color, 0, 13);
+    } else if super::cc_font::is_ready() {
         super::cc_font::draw_char(surface, x, y, ch, color, 13);
     } else {
         draw_char_bitmap(surface, x, y, ch, color);
@@ -100,9 +102,10 @@ pub fn draw_char(surface: &mut Surface, x: i32, y: i32, ch: char, color: Color) 
 }
 
 /// Draw a string at (x, y) on the surface.
-/// Uses the system proportional font if available.
 pub fn draw_string(surface: &mut Surface, x: i32, y: i32, text: &str, color: Color) {
-    if super::cc_font::is_ready() {
+    if super::font_manager::is_ready() {
+        super::font_manager::draw_string(surface, x, y, text, color, 0, 13);
+    } else if super::cc_font::is_ready() {
         super::cc_font::draw_string(surface, x, y, text, color, 13);
     } else {
         draw_string_bitmap(surface, x, y, text, color);
@@ -110,9 +113,10 @@ pub fn draw_string(surface: &mut Surface, x: i32, y: i32, text: &str, color: Col
 }
 
 /// Measure the pixel dimensions of a text string.
-/// Uses the system proportional font if available.
 pub fn measure_string(text: &str) -> (u32, u32) {
-    if super::cc_font::is_ready() {
+    if super::font_manager::is_ready() {
+        super::font_manager::measure_string(text, 0, 13)
+    } else if super::cc_font::is_ready() {
         super::cc_font::measure_string(text, 13)
     } else {
         measure_string_bitmap(text)
@@ -121,7 +125,9 @@ pub fn measure_string(text: &str) -> (u32, u32) {
 
 /// Get line height at the default size.
 pub fn line_height() -> u32 {
-    if super::cc_font::is_ready() {
+    if super::font_manager::is_ready() {
+        super::font_manager::line_height(0, 13)
+    } else if super::cc_font::is_ready() {
         super::cc_font::line_height(13)
     } else {
         FONT_HEIGHT
@@ -132,7 +138,9 @@ pub fn line_height() -> u32 {
 
 /// Draw a single character with explicit font size. Returns advance width.
 pub fn draw_char_sized(surface: &mut Surface, x: i32, y: i32, ch: char, color: Color, size: u16) -> u32 {
-    if super::cc_font::is_ready() {
+    if super::font_manager::is_ready() {
+        super::font_manager::draw_char(surface, x, y, ch, color, 0, size)
+    } else if super::cc_font::is_ready() {
         super::cc_font::draw_char(surface, x, y, ch, color, size)
     } else {
         draw_char_bitmap(surface, x, y, ch, color);
@@ -142,7 +150,9 @@ pub fn draw_char_sized(surface: &mut Surface, x: i32, y: i32, ch: char, color: C
 
 /// Draw a string with explicit font size.
 pub fn draw_string_sized(surface: &mut Surface, x: i32, y: i32, text: &str, color: Color, size: u16) {
-    if super::cc_font::is_ready() {
+    if super::font_manager::is_ready() {
+        super::font_manager::draw_string(surface, x, y, text, color, 0, size);
+    } else if super::cc_font::is_ready() {
         super::cc_font::draw_string(surface, x, y, text, color, size);
     } else {
         draw_string_bitmap(surface, x, y, text, color);
@@ -151,7 +161,9 @@ pub fn draw_string_sized(surface: &mut Surface, x: i32, y: i32, text: &str, colo
 
 /// Measure string dimensions with explicit font size.
 pub fn measure_string_sized(text: &str, size: u16) -> (u32, u32) {
-    if super::cc_font::is_ready() {
+    if super::font_manager::is_ready() {
+        super::font_manager::measure_string(text, 0, size)
+    } else if super::cc_font::is_ready() {
         super::cc_font::measure_string(text, size)
     } else {
         measure_string_bitmap(text)
@@ -160,7 +172,9 @@ pub fn measure_string_sized(text: &str, size: u16) -> (u32, u32) {
 
 /// Get line height for a specific font size.
 pub fn line_height_sized(size: u16) -> u32 {
-    if super::cc_font::is_ready() {
+    if super::font_manager::is_ready() {
+        super::font_manager::line_height(0, size)
+    } else if super::cc_font::is_ready() {
         super::cc_font::line_height(size)
     } else {
         FONT_HEIGHT

@@ -55,9 +55,20 @@ pub fn probe(data: &[u8]) -> Option<ImageInfo> {
         return None;
     }
 
-    // Scratch: 32K deflate window + decompressed scanlines + row buffer
-    let scanline_bytes = (width as usize * pixel_bytes + 1) * height as usize;
-    let scratch = 32768 + scanline_bytes + width as usize * pixel_bytes + 1024;
+    // Count total IDAT compressed data size (decode needs this in scratch)
+    let mut idat_total = 0usize;
+    let mut cpos = 8usize;
+    while cpos + 12 <= data.len() {
+        let clen = read_u32_be(data, cpos) as usize;
+        if &data[cpos + 4..cpos + 8] == b"IDAT" {
+            idat_total += clen;
+        }
+        cpos += 12 + clen;
+    }
+
+    // Scratch: 32K deflate window + decompressed scanlines + IDAT compressed data
+    let decompressed_size = (width as usize * pixel_bytes + 1) * height as usize;
+    let scratch = 32768 + decompressed_size + idat_total.max(1024);
 
     Some(ImageInfo {
         width,

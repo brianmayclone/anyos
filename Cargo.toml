@@ -36,6 +36,8 @@ exclude = [
   "programs/dll/uisys_client",
   "programs/dll/libimage",
   "programs/dll/libimage_client",
+  "programs/dll/libfont",
+  "programs/dll/libfont_client",
 ]
 resolver = "2"
 

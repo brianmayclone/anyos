@@ -13,6 +13,13 @@ pub mod raw;
 
 pub use raw::{ImageInfo, VideoInfo, FMT_UNKNOWN, FMT_BMP, FMT_PNG, FMT_JPEG, FMT_GIF, FMT_MJV};
 
+/// Scale mode: stretch to fill, ignoring aspect ratio.
+pub const MODE_SCALE: u32 = 0;
+/// Scale mode: fit within destination, maintaining aspect ratio (letterboxed).
+pub const MODE_CONTAIN: u32 = 1;
+/// Scale mode: fill destination, maintaining aspect ratio (cropped).
+pub const MODE_COVER: u32 = 2;
+
 /// Error type for image/video operations.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ImageError {
@@ -142,4 +149,41 @@ pub fn video_decode_frame(
     } else {
         Err(err_from_code(ret))
     }
+}
+
+// ── Scale API ──────────────────────────────────────
+
+/// Scale an ARGB8888 image using bilinear interpolation.
+///
+/// - `src`: source pixel buffer (`src_w * src_h` elements)
+/// - `dst`: destination pixel buffer (`dst_w * dst_h` elements)
+/// - `mode`: one of [`MODE_SCALE`], [`MODE_CONTAIN`], or [`MODE_COVER`]
+///
+/// Returns `true` on success, `false` on error (e.g. wrong buffer size or
+/// invalid mode).
+pub fn scale_image(
+    src: &[u32],
+    src_w: u32,
+    src_h: u32,
+    dst: &mut [u32],
+    dst_w: u32,
+    dst_h: u32,
+    mode: u32,
+) -> bool {
+    if (src_w as usize) * (src_h as usize) > src.len() {
+        return false;
+    }
+    if (dst_w as usize) * (dst_h as usize) > dst.len() {
+        return false;
+    }
+    let ret = (raw::exports().scale_image)(
+        src.as_ptr(),
+        src_w,
+        src_h,
+        dst.as_mut_ptr(),
+        dst_w,
+        dst_h,
+        mode,
+    );
+    ret == 0
 }

@@ -1077,6 +1077,173 @@ pub fn sys_audio_ctl(cmd: u32, arg: u32) -> u32 {
 }
 
 // =========================================================================
+// Font / AA Drawing / Wallpaper
+// =========================================================================
+
+/// SYS_FONT_LOAD: Load a TTF font from a file path.
+/// arg1 = path_ptr, arg2 = path_len. Returns font_id or u32::MAX on error.
+pub fn sys_font_load(path_ptr: u32, path_len: u32) -> u32 {
+    if path_ptr == 0 || path_len == 0 || path_len > 256 {
+        return u32::MAX;
+    }
+    let path = unsafe {
+        let bytes = core::slice::from_raw_parts(path_ptr as *const u8, path_len as usize);
+        match core::str::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(_) => return u32::MAX,
+        }
+    };
+    match crate::graphics::font_manager::load_font(path) {
+        Some(id) => id as u32,
+        None => u32::MAX,
+    }
+}
+
+/// SYS_FONT_UNLOAD: Unload a previously loaded font.
+pub fn sys_font_unload(font_id: u32) -> u32 {
+    crate::graphics::font_manager::unload_font(font_id as u16);
+    0
+}
+
+/// SYS_FONT_MEASURE: Measure text dimensions.
+/// params_ptr: [font_id:u16, size:u16, text_ptr:u32, text_len:u32, out_w_ptr:u32, out_h_ptr:u32] = 20 bytes
+pub fn sys_font_measure(params_ptr: u32) -> u32 {
+    if params_ptr == 0 { return u32::MAX; }
+    let p = params_ptr as *const u8;
+    let (font_id, size, text_ptr, text_len, out_w_ptr, out_h_ptr) = unsafe {
+        (
+            u16::from_le_bytes([*p, *p.add(1)]),
+            u16::from_le_bytes([*p.add(2), *p.add(3)]),
+            u32::from_le_bytes([*p.add(4), *p.add(5), *p.add(6), *p.add(7)]),
+            u32::from_le_bytes([*p.add(8), *p.add(9), *p.add(10), *p.add(11)]),
+            u32::from_le_bytes([*p.add(12), *p.add(13), *p.add(14), *p.add(15)]),
+            u32::from_le_bytes([*p.add(16), *p.add(17), *p.add(18), *p.add(19)]),
+        )
+    };
+    if text_ptr == 0 || text_len == 0 || text_len > 4096 { return u32::MAX; }
+    let text = unsafe {
+        let bytes = core::slice::from_raw_parts(text_ptr as *const u8, text_len as usize);
+        match core::str::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(_) => return u32::MAX,
+        }
+    };
+    let (w, h) = crate::graphics::font_manager::measure_string(text, font_id, size);
+    if out_w_ptr != 0 {
+        unsafe { *(out_w_ptr as *mut u32) = w; }
+    }
+    if out_h_ptr != 0 {
+        unsafe { *(out_h_ptr as *mut u32) = h; }
+    }
+    0
+}
+
+/// SYS_WIN_DRAW_TEXT_EX: Draw text with explicit font_id and size.
+/// params_ptr: [x:i16, y:i16, color:u32, font_id:u16, size:u16, text_ptr:u32] = 16 bytes
+pub fn sys_win_draw_text_ex(window_id: u32, params_ptr: u32) -> u32 {
+    if params_ptr == 0 { return u32::MAX; }
+    let (x, y, color, font_id, size, text) = unsafe {
+        let p = params_ptr as *const u8;
+        let x = i16::from_le_bytes([*p, *p.add(1)]) as i32;
+        let y = i16::from_le_bytes([*p.add(2), *p.add(3)]) as i32;
+        let color = u32::from_le_bytes([*p.add(4), *p.add(5), *p.add(6), *p.add(7)]);
+        let font_id = u16::from_le_bytes([*p.add(8), *p.add(9)]);
+        let size = u16::from_le_bytes([*p.add(10), *p.add(11)]);
+        let text_ptr = u32::from_le_bytes([*p.add(12), *p.add(13), *p.add(14), *p.add(15)]);
+        (x, y, color, font_id, size, read_user_str(text_ptr))
+    };
+    crate::ui::desktop::with_desktop(|desktop| {
+        if let Some(window) = desktop.window_content(window_id) {
+            if crate::graphics::font_manager::is_ready() {
+                crate::graphics::font_manager::draw_string(
+                    &mut window.content, x, y, text,
+                    crate::graphics::color::Color::from_u32(color),
+                    font_id, size,
+                );
+            } else {
+                crate::graphics::font::draw_string_sized(
+                    &mut window.content, x, y, text,
+                    crate::graphics::color::Color::from_u32(color),
+                    size,
+                );
+            }
+            window.mark_dirty();
+        }
+    });
+    0
+}
+
+/// SYS_WIN_FILL_ROUNDED_RECT: Fill an AA rounded rect in window content.
+/// params_ptr: [x:i16, y:i16, w:u16, h:u16, radius:u16, _pad:u16, color:u32] = 16 bytes
+pub fn sys_win_fill_rounded_rect(window_id: u32, params_ptr: u32) -> u32 {
+    if params_ptr == 0 { return u32::MAX; }
+    let (x, y, w, h, radius, color) = unsafe {
+        let p = params_ptr as *const u8;
+        (
+            i16::from_le_bytes([*p, *p.add(1)]) as i32,
+            i16::from_le_bytes([*p.add(2), *p.add(3)]) as i32,
+            u16::from_le_bytes([*p.add(4), *p.add(5)]) as u32,
+            u16::from_le_bytes([*p.add(6), *p.add(7)]) as u32,
+            u16::from_le_bytes([*p.add(8), *p.add(9)]) as i32,
+            u32::from_le_bytes([*p.add(12), *p.add(13), *p.add(14), *p.add(15)]),
+        )
+    };
+    let use_aa = crate::graphics::font_manager::gpu_accel_enabled();
+    crate::ui::desktop::with_desktop(|desktop| {
+        if let Some(window) = desktop.window_content(window_id) {
+            let rect = crate::graphics::rect::Rect::new(x, y, w, h);
+            let c = crate::graphics::color::Color::from_u32(color);
+            let mut renderer = crate::graphics::renderer::Renderer::new(&mut window.content);
+            if use_aa {
+                renderer.fill_rounded_rect_aa(rect, radius, c);
+            } else {
+                renderer.fill_rounded_rect(rect, radius, c);
+            }
+            window.mark_dirty();
+        }
+    });
+    0
+}
+
+/// SYS_GPU_HAS_ACCEL: Query if GPU acceleration is available.
+pub fn sys_gpu_has_accel() -> u32 {
+    if crate::graphics::font_manager::gpu_accel_enabled() { 1 } else { 0 }
+}
+
+/// SYS_SET_WALLPAPER: Set desktop wallpaper from decoded pixel data.
+/// params_ptr: [w:u32, h:u32, pixels_ptr:u32, pixel_count:u32, mode:u32] = 20 bytes
+pub fn sys_set_wallpaper(params_ptr: u32) -> u32 {
+    if params_ptr == 0 { return u32::MAX; }
+    let (w, h, pixels_ptr, pixel_count, _mode) = unsafe {
+        let p = params_ptr as *const u8;
+        (
+            u32::from_le_bytes([*p, *p.add(1), *p.add(2), *p.add(3)]),
+            u32::from_le_bytes([*p.add(4), *p.add(5), *p.add(6), *p.add(7)]),
+            u32::from_le_bytes([*p.add(8), *p.add(9), *p.add(10), *p.add(11)]),
+            u32::from_le_bytes([*p.add(12), *p.add(13), *p.add(14), *p.add(15)]),
+            u32::from_le_bytes([*p.add(16), *p.add(17), *p.add(18), *p.add(19)]),
+        )
+    };
+    if pixels_ptr == 0 || w == 0 || h == 0 || pixel_count == 0 {
+        crate::serial_println!("sys_set_wallpaper: invalid params (ptr={:#x} w={} h={} count={})",
+            pixels_ptr, w, h, pixel_count);
+        return u32::MAX;
+    }
+    let expected = (w * h) as usize;
+    if pixel_count as usize != expected {
+        crate::serial_println!("sys_set_wallpaper: count mismatch ({} != {})", pixel_count, expected);
+        return u32::MAX;
+    }
+    let pixels = unsafe {
+        core::slice::from_raw_parts(pixels_ptr as *const u32, expected)
+    };
+    crate::ui::desktop::with_desktop(|desktop| {
+        desktop.set_wallpaper(w, h, pixels);
+    });
+    0
+}
+
+// =========================================================================
 // Device management (existing)
 // =========================================================================
 

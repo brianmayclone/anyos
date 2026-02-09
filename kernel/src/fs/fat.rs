@@ -214,6 +214,8 @@ pub struct FatFs {
     pub partition_start_lba: u32,
     pub fat_size_16: u32,
     pub num_fats: u32,
+    /// Cached FAT table — avoids per-cluster disk reads during file I/O.
+    fat_cache: Vec<u8>,
 }
 
 /// FAT variant detected from the cluster count.
@@ -283,6 +285,17 @@ impl FatFs {
             first_fat_sector, first_root_dir_sector, first_data_sector, total_sectors
         );
 
+        // Cache the entire FAT table in memory for fast cluster chain lookups.
+        // FAT16 on a 64 MB disk = ~128 sectors = 64 KB — trivially fits in RAM.
+        let fat_cache_size = (fat_size_16 * 512) as usize;
+        let mut fat_cache = vec![0u8; fat_cache_size];
+        let abs_fat_lba = partition_start_lba + first_fat_sector;
+        if !crate::drivers::storage::read_sectors(abs_fat_lba, fat_size_16, &mut fat_cache) {
+            crate::serial_println!("  FAT: Failed to cache FAT table");
+            return Err(FsError::IoError);
+        }
+        crate::serial_println!("  FAT: cached {} KB FAT table in memory", fat_cache_size / 1024);
+
         Ok(FatFs {
             device_id,
             fat_type,
@@ -296,6 +309,7 @@ impl FatFs {
             partition_start_lba,
             fat_size_16,
             num_fats,
+            fat_cache,
         })
     }
 
@@ -324,16 +338,13 @@ impl FatFs {
     }
 
     fn next_cluster(&self, cluster: u32) -> Option<u32> {
-        let fat_offset = cluster * 2;
-        let fat_sector = self.first_fat_sector + fat_offset / 512;
-        let offset_in_sector = (fat_offset % 512) as usize;
-        let mut sector_buf = [0u8; 512];
-        if self.read_sectors(fat_sector, 1, &mut sector_buf).is_err() {
+        let fat_offset = (cluster * 2) as usize;
+        if fat_offset + 1 >= self.fat_cache.len() {
             return None;
         }
         let value = u16::from_le_bytes([
-            sector_buf[offset_in_sector],
-            sector_buf[offset_in_sector + 1],
+            self.fat_cache[fat_offset],
+            self.fat_cache[fat_offset + 1],
         ]);
         if value >= FAT16_EOC || value == 0 {
             None
@@ -365,41 +376,44 @@ impl FatFs {
     // FAT table operations
     // =====================================================================
 
-    fn write_fat_entry(&self, cluster: u32, value: u16) -> Result<(), FsError> {
-        let fat_offset = cluster * 2;
-        let fat_sector_rel = fat_offset / 512;
-        let offset_in_sector = (fat_offset % 512) as usize;
+    fn write_fat_entry(&mut self, cluster: u32, value: u16) -> Result<(), FsError> {
+        let fat_offset = (cluster * 2) as usize;
+
+        // Update in-memory cache
+        if fat_offset + 1 < self.fat_cache.len() {
+            self.fat_cache[fat_offset] = value as u8;
+            self.fat_cache[fat_offset + 1] = (value >> 8) as u8;
+        }
+
+        // Write through to disk (both FAT copies)
+        let fat_sector_rel = fat_offset as u32 / 512;
+        let sector_start = (fat_sector_rel * 512) as usize;
+        // Use cached sector data directly — no need to re-read from disk
         let mut sector_buf = [0u8; 512];
+        sector_buf.copy_from_slice(&self.fat_cache[sector_start..sector_start + 512]);
 
         let fat1_sector = self.first_fat_sector + fat_sector_rel;
-        self.read_sectors(fat1_sector, 1, &mut sector_buf)?;
-        sector_buf[offset_in_sector] = value as u8;
-        sector_buf[offset_in_sector + 1] = (value >> 8) as u8;
         self.write_sectors(fat1_sector, 1, &sector_buf)?;
 
         if self.num_fats > 1 {
             let fat2_sector = self.first_fat_sector + self.fat_size_16 + fat_sector_rel;
-            self.read_sectors(fat2_sector, 1, &mut sector_buf)?;
-            sector_buf[offset_in_sector] = value as u8;
-            sector_buf[offset_in_sector + 1] = (value >> 8) as u8;
             self.write_sectors(fat2_sector, 1, &sector_buf)?;
         }
         Ok(())
     }
 
     fn read_fat_entry(&self, cluster: u32) -> Result<u16, FsError> {
-        let fat_offset = cluster * 2;
-        let fat_sector = self.first_fat_sector + fat_offset / 512;
-        let offset_in_sector = (fat_offset % 512) as usize;
-        let mut sector_buf = [0u8; 512];
-        self.read_sectors(fat_sector, 1, &mut sector_buf)?;
+        let fat_offset = (cluster * 2) as usize;
+        if fat_offset + 1 >= self.fat_cache.len() {
+            return Err(FsError::IoError);
+        }
         Ok(u16::from_le_bytes([
-            sector_buf[offset_in_sector],
-            sector_buf[offset_in_sector + 1],
+            self.fat_cache[fat_offset],
+            self.fat_cache[fat_offset + 1],
         ]))
     }
 
-    fn alloc_cluster(&self) -> Result<u32, FsError> {
+    fn alloc_cluster(&mut self) -> Result<u32, FsError> {
         for cluster in 2..self.total_clusters + 2 {
             let entry = self.read_fat_entry(cluster)?;
             if entry == 0x0000 {
@@ -411,7 +425,7 @@ impl FatFs {
     }
 
     /// Free an entire cluster chain starting at `start_cluster`.
-    pub fn free_chain(&self, start_cluster: u32) -> Result<(), FsError> {
+    pub fn free_chain(&mut self, start_cluster: u32) -> Result<(), FsError> {
         if start_cluster < 2 {
             return Ok(());
         }
@@ -432,15 +446,19 @@ impl FatFs {
     // =====================================================================
 
     /// Read up to `buf.len()` bytes from a file starting at the given cluster and byte offset.
+    ///
+    /// Optimized: batches contiguous clusters into single multi-sector reads
+    /// and uses the in-memory FAT cache for O(1) cluster chain lookups.
     pub fn read_file(&self, start_cluster: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
-        if start_cluster < 2 {
+        if start_cluster < 2 || buf.is_empty() {
             return Ok(0);
         }
-        let cluster_size = self.sectors_per_cluster * 512;
+        let spc = self.sectors_per_cluster;
+        let cluster_size = spc * 512;
         let mut cluster = start_cluster;
-        let mut bytes_skipped = 0u32;
-        let mut bytes_read = 0usize;
 
+        // Skip clusters before our offset (O(1) per lookup with FAT cache)
+        let mut bytes_skipped = 0u32;
         while bytes_skipped + cluster_size <= offset {
             bytes_skipped += cluster_size;
             match self.next_cluster(cluster) {
@@ -449,28 +467,63 @@ impl FatFs {
             }
         }
 
-        let mut cluster_buf = vec![0u8; cluster_size as usize];
+        let mut bytes_read = 0usize;
+
         loop {
-            self.read_cluster(cluster, &mut cluster_buf)?;
-            let start_in_cluster = if bytes_skipped < offset {
+            // Scan ahead for contiguous clusters to batch into one read
+            let run_start_cluster = cluster;
+            let run_start_lba = self.cluster_to_lba(run_start_cluster);
+            let mut run_clusters: u32 = 1;
+            let mut last_cluster = cluster;
+
+            while let Some(next) = self.next_cluster(last_cluster) {
+                // Check if next cluster is physically contiguous
+                if next == last_cluster + 1 {
+                    run_clusters += 1;
+                    last_cluster = next;
+                } else {
+                    break;
+                }
+            }
+
+            // Read all contiguous clusters in one I/O operation
+            let run_bytes = (run_clusters * cluster_size) as usize;
+            let start_in_run = if bytes_skipped < offset {
                 (offset - bytes_skipped) as usize
             } else {
                 0
             };
-            bytes_skipped += cluster_size;
-            let available = cluster_size as usize - start_in_cluster;
+            let available = run_bytes - start_in_run;
             let to_copy = available.min(buf.len() - bytes_read);
-            buf[bytes_read..bytes_read + to_copy]
-                .copy_from_slice(&cluster_buf[start_in_cluster..start_in_cluster + to_copy]);
+
+            // Read directly into output buffer when possible (aligned, full run)
+            if start_in_run == 0 && to_copy == run_bytes {
+                let total_sectors = run_clusters * spc;
+                self.read_sectors(run_start_lba, total_sectors,
+                    &mut buf[bytes_read..bytes_read + run_bytes])?;
+            } else {
+                // Partial run — read into temp buffer
+                let mut tmp = vec![0u8; run_bytes];
+                let total_sectors = run_clusters * spc;
+                self.read_sectors(run_start_lba, total_sectors, &mut tmp)?;
+                buf[bytes_read..bytes_read + to_copy]
+                    .copy_from_slice(&tmp[start_in_run..start_in_run + to_copy]);
+            }
+
             bytes_read += to_copy;
+            bytes_skipped += run_clusters * cluster_size;
+
             if bytes_read >= buf.len() {
                 break;
             }
-            match self.next_cluster(cluster) {
+
+            // Advance to the next (non-contiguous) cluster
+            match self.next_cluster(last_cluster) {
                 Some(next) => cluster = next,
                 None => break,
             }
         }
+
         Ok(bytes_read)
     }
 
@@ -487,7 +540,7 @@ impl FatFs {
 
     /// Write data to a file at the given offset, allocating clusters as needed.
     /// Returns `(first_cluster, new_size)`.
-    pub fn write_file(&self, start_cluster: u32, offset: u32, data: &[u8], old_size: u32) -> Result<(u32, u32), FsError> {
+    pub fn write_file(&mut self, start_cluster: u32, offset: u32, data: &[u8], old_size: u32) -> Result<(u32, u32), FsError> {
         if data.is_empty() {
             return Ok((start_cluster, old_size));
         }
@@ -1007,7 +1060,7 @@ impl FatFs {
     }
 
     /// Create a new directory entry (with LFN entries if needed).
-    pub fn create_entry(&self, parent_cluster: u32, name: &str, attr: u8, first_cluster: u32, size: u32) -> Result<(), FsError> {
+    pub fn create_entry(&mut self, parent_cluster: u32, name: &str, attr: u8, first_cluster: u32, size: u32) -> Result<(), FsError> {
         let use_lfn = needs_lfn(name);
         let name83 = if use_lfn {
             Self::generate_short_name(name)
@@ -1210,7 +1263,7 @@ impl FatFs {
     // =====================================================================
 
     /// Create a new empty file in the given parent directory.
-    pub fn create_file(&self, parent_cluster: u32, name: &str) -> Result<(), FsError> {
+    pub fn create_file(&mut self, parent_cluster: u32, name: &str) -> Result<(), FsError> {
         let dir_data = self.read_dir_raw(parent_cluster)?;
         if self.find_entry_in_buf(&dir_data, name).is_some() {
             return Err(FsError::AlreadyExists);
@@ -1219,7 +1272,7 @@ impl FatFs {
     }
 
     /// Create a new subdirectory with `.` and `..` entries. Returns the new cluster.
-    pub fn create_dir(&self, parent_cluster: u32, name: &str) -> Result<u32, FsError> {
+    pub fn create_dir(&mut self, parent_cluster: u32, name: &str) -> Result<u32, FsError> {
         let dir_data = self.read_dir_raw(parent_cluster)?;
         if self.find_entry_in_buf(&dir_data, name).is_some() {
             return Err(FsError::AlreadyExists);
@@ -1240,7 +1293,7 @@ impl FatFs {
     }
 
     /// Delete a file: remove the directory entry and free its cluster chain.
-    pub fn delete_file(&self, parent_cluster: u32, name: &str) -> Result<(), FsError> {
+    pub fn delete_file(&mut self, parent_cluster: u32, name: &str) -> Result<(), FsError> {
         let (start_cluster, _size) = self.delete_entry(parent_cluster, name)?;
         if start_cluster >= 2 {
             self.free_chain(start_cluster)?;
@@ -1249,7 +1302,7 @@ impl FatFs {
     }
 
     /// Truncate a file to zero length: free its cluster chain and update the directory entry.
-    pub fn truncate_file(&self, parent_cluster: u32, name: &str) -> Result<(), FsError> {
+    pub fn truncate_file(&mut self, parent_cluster: u32, name: &str) -> Result<(), FsError> {
         let dir_data = self.read_dir_raw(parent_cluster)?;
         let found = self.find_entry_in_buf(&dir_data, name)
             .ok_or(FsError::NotFound)?;

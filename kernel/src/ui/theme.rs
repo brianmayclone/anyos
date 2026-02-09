@@ -27,6 +27,7 @@ impl Theme {
     pub const WINDOW_BG: Color = Color::MACOS_WINDOW_BG;
     pub const WINDOW_BORDER: Color = Color::MACOS_BORDER;
     pub const WINDOW_BORDER_RADIUS: i32 = 10;
+    pub const WINDOW_OUTLINE: Color = Color::with_alpha(60, 255, 255, 255);
     pub const WINDOW_SHADOW_COLOR: Color = Color::with_alpha(80, 0, 0, 0);
     pub const WINDOW_SHADOW_OFFSET: i32 = 4;
 

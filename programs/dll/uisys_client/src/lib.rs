@@ -85,3 +85,32 @@ pub(crate) fn nul_copy(s: &str, buf: &mut [u8]) -> u32 {
     buf[len] = 0;
     len as u32
 }
+
+// --- v2 API ---
+
+/// Query whether GPU acceleration (VMware SVGA II) is available.
+pub fn gpu_has_accel() -> bool {
+    (raw::exports().gpu_has_accel)() != 0
+}
+
+/// Draw a filled rounded rectangle with kernel-side anti-aliasing.
+pub fn fill_rounded_rect_aa(win: u32, x: i32, y: i32, w: u32, h: u32, r: u32, color: u32) {
+    (raw::exports().fill_rounded_rect_aa)(win, x, y, w, h, r, color);
+}
+
+/// Draw text with an explicit font ID and size.
+pub fn draw_text_with_font(win: u32, x: i32, y: i32, color: u32, size: u32, font_id: u16, text: &str) {
+    let mut buf = [0u8; 256];
+    let len = nul_copy(text, &mut buf);
+    (raw::exports().draw_text_with_font)(win, x, y, color, size, font_id, buf.as_ptr(), len);
+}
+
+/// Measure text extent using a specific font.
+/// Returns (width, height) in pixels.
+pub fn font_measure(font_id: u16, size: u16, text: &str) -> (u32, u32) {
+    let bytes = text.as_bytes();
+    let mut w = 0u32;
+    let mut h = 0u32;
+    (raw::exports().font_measure)(font_id as u32, size, bytes.as_ptr(), bytes.len() as u32, &mut w, &mut h);
+    (w, h)
+}

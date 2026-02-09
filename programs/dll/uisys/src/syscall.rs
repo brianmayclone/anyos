@@ -1,10 +1,50 @@
-//! Minimal syscall wrappers for DLL use (int 0x80, x86-64).
+//! Minimal syscall wrappers for DLL use (SYSCALL instruction, x86-64).
+//!
+//! Convention (matches kernel syscall_fast_entry):
+//!   RAX = syscall number, RBX = arg1, R10 = arg2, RDX = arg3
+//!   Return in RAX.  Clobbers: RCX (← user RIP), R11 (← user RFLAGS).
 
 use core::arch::asm;
 
 const SYS_WIN_FILL_RECT: u32 = 54;
 const SYS_WIN_DRAW_TEXT: u32 = 55;
 const SYS_WIN_DRAW_TEXT_MONO: u32 = 58;
+const SYS_FONT_MEASURE: u32 = 132;
+const SYS_WIN_DRAW_TEXT_EX: u32 = 133;
+const SYS_WIN_FILL_ROUNDED_RECT: u32 = 134;
+const SYS_GPU_HAS_ACCEL: u32 = 135;
+
+#[inline(always)]
+fn syscall0(num: u32) -> u32 {
+    let ret: u64;
+    unsafe {
+        asm!(
+            "syscall",
+            inlateout("rax") num as u64 => ret,
+            out("rcx") _,
+            out("r11") _,
+        );
+    }
+    ret as u32
+}
+
+#[inline(always)]
+fn syscall1(num: u32, a1: u64) -> u32 {
+    let ret: u64;
+    unsafe {
+        asm!(
+            "push rbx",
+            "mov rbx, {a1}",
+            "syscall",
+            "pop rbx",
+            a1 = in(reg) a1,
+            inlateout("rax") num as u64 => ret,
+            out("rcx") _,
+            out("r11") _,
+        );
+    }
+    ret as u32
+}
 
 #[inline(always)]
 fn syscall2(num: u32, a1: u64, a2: u64) -> u32 {
@@ -13,11 +53,13 @@ fn syscall2(num: u32, a1: u64, a2: u64) -> u32 {
         asm!(
             "push rbx",
             "mov rbx, {a1}",
-            "int 0x80",
+            "syscall",
             "pop rbx",
             a1 = in(reg) a1,
             inlateout("rax") num as u64 => ret,
-            in("rcx") a2,
+            in("r10") a2,
+            out("rcx") _,
+            out("r11") _,
         );
     }
     ret as u32
@@ -76,4 +118,31 @@ pub fn win_draw_text_mono(win: u32, x: i32, y: i32, color: u32, text: *const u8)
         p
     };
     syscall2(SYS_WIN_DRAW_TEXT_MONO, win as u64, params.as_ptr() as u64);
+}
+
+/// Fill a rounded rectangle via kernel AA syscall.
+/// params: [x:i16, y:i16, w:u16, h:u16, radius:u16, _pad:u16, color:u32] = 16 bytes
+#[inline(always)]
+pub fn win_fill_rounded_rect(win_id: u32, params_ptr: u32) -> u32 {
+    syscall2(SYS_WIN_FILL_ROUNDED_RECT, win_id as u64, params_ptr as u64)
+}
+
+/// Draw text with explicit font selection.
+/// params: [x:i16, y:i16, color:u32, font_id:u16, size:u16, text_ptr:u32] = 16 bytes
+#[inline(always)]
+pub fn win_draw_text_ex(win_id: u32, params_ptr: u32) -> u32 {
+    syscall2(SYS_WIN_DRAW_TEXT_EX, win_id as u64, params_ptr as u64)
+}
+
+/// Measure text extent with a specific font.
+/// params: [font_id:u16, size:u16, text_ptr:u32, text_len:u32, out_w_ptr:u32, out_h_ptr:u32] = 20 bytes
+#[inline(always)]
+pub fn font_measure(params_ptr: u32) -> u32 {
+    syscall1(SYS_FONT_MEASURE, params_ptr as u64)
+}
+
+/// Query GPU acceleration availability.
+#[inline(always)]
+pub fn gpu_has_accel() -> u32 {
+    syscall0(SYS_GPU_HAS_ACCEL)
 }

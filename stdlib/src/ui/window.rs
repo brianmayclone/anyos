@@ -166,6 +166,86 @@ pub fn list_resolutions() -> alloc::vec::Vec<(u32, u32)> {
     modes
 }
 
+/// Load a TTF font from a file path. Returns font_id or None.
+pub fn font_load(path: &str) -> Option<u32> {
+    let result = syscall2(SYS_FONT_LOAD, path.as_ptr() as u64, path.len() as u64);
+    if result == u32::MAX { None } else { Some(result) }
+}
+
+/// Unload a previously loaded font.
+pub fn font_unload(font_id: u32) {
+    syscall1(SYS_FONT_UNLOAD, font_id as u64);
+}
+
+/// Measure text dimensions with a specific font and size.
+pub fn font_measure(font_id: u16, size: u16, text: &str) -> (u32, u32) {
+    let mut out_w: u32 = 0;
+    let mut out_h: u32 = 0;
+    let mut params = [0u8; 20];
+    params[0..2].copy_from_slice(&font_id.to_le_bytes());
+    params[2..4].copy_from_slice(&size.to_le_bytes());
+    let text_ptr = text.as_ptr() as u32;
+    let text_len = text.len() as u32;
+    params[4..8].copy_from_slice(&text_ptr.to_le_bytes());
+    params[8..12].copy_from_slice(&text_len.to_le_bytes());
+    let w_ptr = &mut out_w as *mut u32 as u32;
+    let h_ptr = &mut out_h as *mut u32 as u32;
+    params[12..16].copy_from_slice(&w_ptr.to_le_bytes());
+    params[16..20].copy_from_slice(&h_ptr.to_le_bytes());
+    syscall1(SYS_FONT_MEASURE, params.as_ptr() as u64);
+    (out_w, out_h)
+}
+
+/// Draw text with explicit font_id and size.
+pub fn draw_text_ex(window_id: u32, x: i16, y: i16, color: u32, font_id: u16, size: u16, text: &str) -> u32 {
+    let mut text_buf = [0u8; 257];
+    let len = text.len().min(256);
+    text_buf[..len].copy_from_slice(&text.as_bytes()[..len]);
+    text_buf[len] = 0;
+
+    // params: [x:i16, y:i16, color:u32, font_id:u16, size:u16, text_ptr:u32] = 16 bytes
+    let mut params = [0u8; 16];
+    params[0..2].copy_from_slice(&x.to_le_bytes());
+    params[2..4].copy_from_slice(&y.to_le_bytes());
+    params[4..8].copy_from_slice(&color.to_le_bytes());
+    params[8..10].copy_from_slice(&font_id.to_le_bytes());
+    params[10..12].copy_from_slice(&size.to_le_bytes());
+    let text_ptr = text_buf.as_ptr() as u32;
+    params[12..16].copy_from_slice(&text_ptr.to_le_bytes());
+    syscall2(SYS_WIN_DRAW_TEXT_EX, window_id as u64, params.as_ptr() as u64)
+}
+
+/// Fill a rounded rectangle (auto-AA on hardware-accelerated GPUs).
+pub fn fill_rounded_rect(window_id: u32, x: i16, y: i16, w: u16, h: u16, radius: u16, color: u32) -> u32 {
+    let mut params = [0u8; 16];
+    params[0..2].copy_from_slice(&x.to_le_bytes());
+    params[2..4].copy_from_slice(&y.to_le_bytes());
+    params[4..6].copy_from_slice(&w.to_le_bytes());
+    params[6..8].copy_from_slice(&h.to_le_bytes());
+    params[8..10].copy_from_slice(&radius.to_le_bytes());
+    params[10..12].copy_from_slice(&0u16.to_le_bytes()); // padding
+    params[12..16].copy_from_slice(&color.to_le_bytes());
+    syscall2(SYS_WIN_FILL_ROUNDED_RECT, window_id as u64, params.as_ptr() as u64)
+}
+
+/// Query if GPU hardware acceleration is available.
+pub fn gpu_has_accel() -> bool {
+    syscall0(SYS_GPU_HAS_ACCEL) != 0
+}
+
+/// Set the desktop wallpaper from decoded ARGB pixel data.
+pub fn set_wallpaper(w: u32, h: u32, pixels: &[u32], mode: u32) -> u32 {
+    let mut params = [0u8; 20];
+    params[0..4].copy_from_slice(&w.to_le_bytes());
+    params[4..8].copy_from_slice(&h.to_le_bytes());
+    let ptr = pixels.as_ptr() as u32;
+    params[8..12].copy_from_slice(&ptr.to_le_bytes());
+    let count = (w * h) as u32;
+    params[12..16].copy_from_slice(&count.to_le_bytes());
+    params[16..20].copy_from_slice(&mode.to_le_bytes());
+    syscall1(SYS_SET_WALLPAPER, params.as_ptr() as u64)
+}
+
 /// Get GPU driver name. Returns empty string if no GPU driver is registered.
 pub fn gpu_name() -> alloc::string::String {
     let mut buf = [0u8; 64];

@@ -53,6 +53,28 @@ impl Surface {
         }
     }
 
+    /// Set a pixel without alpha blending (raw write). OOB silently ignored.
+    pub fn set_pixel_raw(&mut self, x: i32, y: i32, color: Color) {
+        if x >= 0 && x < self.width as i32 && y >= 0 && y < self.height as i32 {
+            let idx = (y as u32 * self.width + x as u32) as usize;
+            self.pixels[idx] = color.to_u32();
+        }
+    }
+
+    /// Set a pixel with LCD subpixel rendering. Each RGB channel gets its
+    /// own coverage value, producing sharper text on LCD displays.
+    pub fn put_pixel_subpixel(&mut self, x: i32, y: i32, r_cov: u8, g_cov: u8, b_cov: u8, color: Color) {
+        if x < 0 || x >= self.width as i32 || y < 0 || y >= self.height as i32 {
+            return;
+        }
+        let idx = (y as u32 * self.width + x as u32) as usize;
+        let dst = Color::from_u32(self.pixels[idx]);
+        let r = (color.r as u32 * r_cov as u32 + dst.r as u32 * (255 - r_cov as u32)) / 255;
+        let g = (color.g as u32 * g_cov as u32 + dst.g as u32 * (255 - g_cov as u32)) / 255;
+        let b = (color.b as u32 * b_cov as u32 + dst.b as u32 * (255 - b_cov as u32)) / 255;
+        self.pixels[idx] = Color::new(r as u8, g as u8, b as u8).to_u32();
+    }
+
     /// Read a pixel. Returns `Color::TRANSPARENT` for out-of-bounds coordinates.
     pub fn get_pixel(&self, x: i32, y: i32) -> Color {
         if x >= 0 && x < self.width as i32 && y >= 0 && y < self.height as i32 {
