@@ -24,9 +24,10 @@ pub extern "C" fn tooltip_render(
         return;
     }
 
-    let text_w = text_len * theme::CHAR_WIDTH;
+    let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize) };
+    let (text_w, text_h) = draw::text_size(text_slice);
     let w = text_w + TOOLTIP_PAD_H * 2;
-    let h = theme::CHAR_HEIGHT + TOOLTIP_PAD_V * 2;
+    let h = text_h + TOOLTIP_PAD_V * 2;
 
     // Background
     draw::fill_rounded_rect(win, x, y, w, h, TOOLTIP_CORNER, TOOLTIP_BG);
@@ -35,8 +36,8 @@ pub extern "C" fn tooltip_render(
     draw::draw_border(win, x, y, w, h, TOOLTIP_BORDER);
 
     // Text
-    let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize + 1) };
+    let text_with_nul = unsafe { core::slice::from_raw_parts(text, text_len as usize + 1) };
     let text_x = x + TOOLTIP_PAD_H as i32;
     let text_y = y + TOOLTIP_PAD_V as i32;
-    draw::draw_text_mono(win, text_x, text_y, theme::TEXT, text_slice);
+    draw::draw_text(win, text_x, text_y, theme::TEXT, text_with_nul);
 }

@@ -19,8 +19,8 @@ pub extern "C" fn tag_render(
 ) {
     if text.is_null() || text_len == 0 { return; }
 
-    let char_w = 7u32;
-    let text_w = text_len * char_w;
+    let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize) };
+    let (text_w, th) = draw::text_size(text_slice);
     let close_extra = if show_close != 0 { CLOSE_SIZE + CLOSE_MARGIN } else { 0 };
     let w = TAG_PADDING_H + text_w + close_extra + TAG_PADDING_H;
 
@@ -28,20 +28,17 @@ pub extern "C" fn tag_render(
     draw::fill_rounded_rect(win, x, y, w, TAG_HEIGHT, TAG_CORNER, bg_color);
 
     // Text
-    let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize + 1) };
+    let text_with_nul = unsafe { core::slice::from_raw_parts(text, text_len as usize + 1) };
     let text_x = x + TAG_PADDING_H as i32;
-    let text_y = y + (TAG_HEIGHT as i32 - 16) / 2;
-    draw::draw_text(win, text_x, text_y, text_color, text_slice);
+    let text_y = y + (TAG_HEIGHT as i32 - th as i32) / 2;
+    draw::draw_text(win, text_x, text_y, text_color, text_with_nul);
 
     // Close button "x"
     if show_close != 0 {
         let cx = x + (w - TAG_PADDING_H - CLOSE_SIZE) as i32;
         let cy = y + (TAG_HEIGHT as i32 - CLOSE_SIZE as i32) / 2;
-        // Draw a simple "x" using two small diagonal lines approximated with rects
         let mid = CLOSE_SIZE as i32 / 2;
-        // Horizontal dash
         draw::fill_rect(win, cx + 3, cy + mid, CLOSE_SIZE - 6, 1, text_color);
-        // Vertical dash
         draw::fill_rect(win, cx + mid, cy + 3, 1, CLOSE_SIZE - 6, text_color);
     }
 }
@@ -52,8 +49,7 @@ pub extern "C" fn tag_hit_test(
     text_len: u32, show_close: u32,
     mx: i32, my: i32,
 ) -> u32 {
-    let char_w = 7u32;
-    let text_w = text_len * char_w;
+    let text_w = text_len * 7; // approximate for hit testing
     let close_extra = if show_close != 0 { CLOSE_SIZE + CLOSE_MARGIN } else { 0 };
     let w = (TAG_PADDING_H + text_w + close_extra + TAG_PADDING_H) as i32;
     let h = TAG_HEIGHT as i32;
@@ -66,8 +62,7 @@ pub extern "C" fn tag_close_hit_test(
     text_len: u32,
     mx: i32, my: i32,
 ) -> u32 {
-    let char_w = 7u32;
-    let text_w = text_len * char_w;
+    let text_w = text_len * 7; // approximate for hit testing
     let w = TAG_PADDING_H + text_w + CLOSE_SIZE + CLOSE_MARGIN + TAG_PADDING_H;
     let cx = x + (w - TAG_PADDING_H - CLOSE_SIZE) as i32;
     let cy = y + (TAG_HEIGHT as i32 - CLOSE_SIZE as i32) / 2;

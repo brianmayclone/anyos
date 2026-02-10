@@ -21,7 +21,6 @@ mod panic;
 mod sync;
 mod syscall;
 mod task;
-mod ui;
 
 use boot_info::BootInfo;
 
@@ -186,10 +185,16 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         Ok(pages) => serial_println!("[OK] libfont.dll: {} pages", pages),
         Err(e) => serial_println!("[WARN] libfont.dll not loaded: {}", e),
     }
+    match task::dll::load_dll("/system/lib/librender.dll", 0x0430_0000) {
+        Ok(pages) => serial_println!("[OK] librender.dll: {} pages", pages),
+        Err(e) => serial_println!("[WARN] librender.dll not loaded: {}", e),
+    }
+    match task::dll::load_dll("/system/lib/libcompositor.dll", 0x0438_0000) {
+        Ok(pages) => serial_println!("[OK] libcompositor.dll: {} pages", pages),
+        Err(e) => serial_println!("[WARN] libcompositor.dll not loaded: {}", e),
+    }
 
-    // Phase 9: Start graphical desktop if framebuffer is available
-    // NOTE: Init process is spawned AFTER desktop init (Phase 9d below)
-    // so that wallpaper loading and other UI syscalls can reach the compositor.
+    // Phase 9: Start userspace compositor + init process
     if let Some(fb) = drivers::framebuffer::info() {
         // GPU driver may already be registered via HAL PCI probe (Phase 5b).
         // If not, initialize Bochs VGA as fallback using boot framebuffer info.
@@ -198,77 +203,48 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             drivers::gpu::bochs_vga::init(fb.addr, fb.width, fb.height, fb.pitch);
         }
 
-        // Query GPU for mode info, else fall back to boot framebuffer
-        let (width, height, pitch, fb_addr) = drivers::gpu::with_gpu(|g| g.get_mode())
-            .unwrap_or((fb.width, fb.height, fb.pitch, fb.addr));
+        // Log GPU info
+        if let Some(name) = drivers::gpu::with_gpu(|g| {
+            let mut n = alloc::string::String::new();
+            n.push_str(g.name());
+            n
+        }) {
+            serial_println!("[OK] GPU driver: {}", name);
+        }
 
-        // Initialize global desktop
-        ui::desktop::init(width, height, fb_addr, pitch);
+        let has_accel = drivers::gpu::with_gpu(|g| g.has_accel()).unwrap_or(false);
+        if has_accel {
+            graphics::font_manager::set_gpu_accel(true);
+            serial_println!("[OK] GPU 2D acceleration enabled");
+        }
 
-        // Configure compositor with GPU capabilities
-        ui::desktop::with_desktop(|desktop| {
-            let has_dblbuf = drivers::gpu::with_gpu(|g| g.has_double_buffer()).unwrap_or(false);
-            let has_hw_cursor = drivers::gpu::with_gpu(|g| g.has_hw_cursor()).unwrap_or(false);
-            let has_accel = drivers::gpu::with_gpu(|g| g.has_accel()).unwrap_or(false);
+        let has_hw_cursor = drivers::gpu::with_gpu(|g| g.has_hw_cursor()).unwrap_or(false);
+        if has_hw_cursor {
+            drivers::gpu::enable_splash_cursor(fb.width, fb.height);
+            serial_println!("[OK] Hardware cursor enabled (splash mode)");
+        }
 
-            if let Some(name) = drivers::gpu::with_gpu(|g| {
-                let mut n = alloc::string::String::new();
-                n.push_str(g.name());
-                n
-            }) {
-                serial_println!("[OK] GPU driver: {}", name);
-            }
-
-            if has_dblbuf {
-                desktop.enable_hw_double_buffer();
-                serial_println!("[OK] Hardware double-buffering enabled");
-            }
-
-            if has_hw_cursor {
-                desktop.compositor.enable_hw_cursor();
-                // Enable boot-splash cursor: IRQ handler updates HW cursor directly
-                drivers::gpu::enable_splash_cursor(width, height);
-                serial_println!("[OK] Hardware cursor enabled (splash mode)");
-            }
-
-            if has_accel {
-                desktop.compositor.set_gpu_accel(true);
-                graphics::font_manager::set_gpu_accel(true);
-                serial_println!("[OK] GPU 2D acceleration enabled");
-            }
-
-            // Skip initial compose — boot splash logo stays on framebuffer.
-            // The compositor will compose+present after init signals boot ready.
-        });
-
-        // Disable interrupts while spawning threads to prevent the compositor
-        // from being scheduled before init is loaded.
+        // Disable interrupts while spawning threads
         unsafe { core::arch::asm!("cli"); }
 
-        // Spawn compositor as a scheduled kernel task (priority 200 = high)
-        // It enters boot-splash mode first: only tracks HW cursor, no compositing.
-        task::scheduler::spawn(ui::desktop::desktop_task_entry, 200, "compositor");
-
-        // Spawn CPU monitor kernel thread (writes CPU load to sys:cpu_load pipe)
+        // Spawn CPU monitor kernel thread
         task::scheduler::spawn(task::cpu_monitor::start, 10, "cpu_monitor");
 
-        // NOTE: Dock is launched by the compositor task AFTER boot splash completes.
-        // This ensures the desktop (with wallpaper) appears before the dock.
+        // Launch userspace compositor (highest user priority)
+        match task::loader::load_and_run("/system/compositor/compositor", "compositor") {
+            Ok(tid) => serial_println!("[OK] Userspace compositor spawned (TID={})", tid),
+            Err(e) => serial_println!("  WARN: Failed to load compositor: {}", e),
+        }
 
-        // Phase 9d: Run init process (benchmark + wallpaper + boot_ready signal).
-        // Runs concurrently — compositor stays in splash mode until init calls boot_ready.
+        // Launch init process (runs benchmarks, loads wallpaper, starts programs)
         match task::loader::load_and_run("/system/init", "init") {
             Ok(tid) => serial_println!("[OK] Init spawned (TID={})", tid),
             Err(e) => {
                 serial_println!("  WARN: Failed to load /system/init: {}", e);
-                serial_println!("  System may not be fully configured.");
-                // No init → signal boot ready immediately so desktop still appears
-                ui::desktop::signal_boot_ready();
             }
         }
 
-        serial_println!("Compositor and init spawned, entering scheduler...");
-        // scheduler::run() re-enables interrupts (sti) and enters the idle loop
+        serial_println!("Userspace compositor and init spawned, entering scheduler...");
         task::scheduler::run();
     }
 

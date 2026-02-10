@@ -1,5 +1,6 @@
 //! UDP (User Datagram Protocol) -- connectionless datagram transport.
-//! Supports port binding, non-blocking and blocking receive, and raw sends for DHCP.
+//! Supports port binding, non-blocking and blocking receive, raw sends for DHCP,
+//! per-port options (broadcast, receive timeout), and multicast/broadcast destinations.
 
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
@@ -9,6 +10,11 @@ use super::ipv4::Ipv4Packet;
 use crate::sync::spinlock::Spinlock;
 
 const UDP_HEADER_LEN: usize = 8;
+const MAX_QUEUE_LEN: usize = 128;
+
+// Socket option constants (match stdlib)
+pub const SO_BROADCAST: u32 = 1;
+pub const SO_RCVTIMEO: u32 = 2;
 
 /// A received UDP datagram with source address/port and payload.
 pub struct UdpDatagram {
@@ -17,8 +23,25 @@ pub struct UdpDatagram {
     pub data: Vec<u8>,
 }
 
-/// Port bindings: port -> queue of received datagrams
-static UDP_PORTS: Spinlock<Option<BTreeMap<u16, VecDeque<UdpDatagram>>>> = Spinlock::new(None);
+/// Per-port configuration and receive queue.
+struct PortConfig {
+    queue: VecDeque<UdpDatagram>,
+    broadcast: bool,
+    timeout_ms: u32,
+}
+
+impl PortConfig {
+    fn new() -> Self {
+        PortConfig {
+            queue: VecDeque::new(),
+            broadcast: false,
+            timeout_ms: 0,
+        }
+    }
+}
+
+/// Port bindings: port -> config + queue of received datagrams
+static UDP_PORTS: Spinlock<Option<BTreeMap<u16, PortConfig>>> = Spinlock::new(None);
 
 /// Initialize the UDP subsystem. Must be called before binding ports.
 pub fn init() {
@@ -26,11 +49,17 @@ pub fn init() {
     *ports = Some(BTreeMap::new());
 }
 
-/// Bind to a UDP port (creates a receive queue)
-pub fn bind(port: u16) {
+/// Bind to a UDP port (creates a receive queue). Returns true if newly bound.
+pub fn bind(port: u16) -> bool {
     let mut ports = UDP_PORTS.lock();
     if let Some(map) = ports.as_mut() {
-        map.entry(port).or_insert_with(VecDeque::new);
+        if map.contains_key(&port) {
+            return false; // already bound
+        }
+        map.insert(port, PortConfig::new());
+        true
+    } else {
+        false
     }
 }
 
@@ -42,8 +71,60 @@ pub fn unbind(port: u16) {
     }
 }
 
-/// Send a UDP datagram
+/// Set a per-port option. Returns true on success.
+pub fn set_opt(port: u16, opt: u32, val: u32) -> bool {
+    let mut ports = UDP_PORTS.lock();
+    if let Some(map) = ports.as_mut() {
+        if let Some(cfg) = map.get_mut(&port) {
+            match opt {
+                SO_BROADCAST => { cfg.broadcast = val != 0; true }
+                SO_RCVTIMEO => { cfg.timeout_ms = val; true }
+                _ => false,
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
+/// Get the receive timeout for a bound port (ms). Returns 0 if not bound or non-blocking.
+pub fn get_timeout_ms(port: u16) -> u32 {
+    let ports = UDP_PORTS.lock();
+    if let Some(map) = ports.as_ref() {
+        if let Some(cfg) = map.get(&port) {
+            return cfg.timeout_ms;
+        }
+    }
+    0
+}
+
+/// Check if broadcast is enabled on a port.
+pub fn is_broadcast_enabled(port: u16) -> bool {
+    let ports = UDP_PORTS.lock();
+    if let Some(map) = ports.as_ref() {
+        if let Some(cfg) = map.get(&port) {
+            return cfg.broadcast;
+        }
+    }
+    false
+}
+
+/// Send a UDP datagram. For broadcast destinations, the source port must have
+/// SO_BROADCAST enabled (or `force_broadcast` must be true for internal callers).
 pub fn send(dst_ip: Ipv4Addr, src_port: u16, dst_port: u16, data: &[u8]) -> bool {
+    // Check broadcast permission
+    if dst_ip == Ipv4Addr::BROADCAST || dst_ip.is_broadcast_for(super::config().mask) {
+        if !is_broadcast_enabled(src_port) {
+            return false;
+        }
+    }
+    send_unchecked(dst_ip, src_port, dst_port, data)
+}
+
+/// Internal send without broadcast permission check (for kernel-internal callers like DHCP).
+pub fn send_unchecked(dst_ip: Ipv4Addr, src_port: u16, dst_port: u16, data: &[u8]) -> bool {
     let total_len = UDP_HEADER_LEN + data.len();
     let mut udp = Vec::with_capacity(total_len);
 
@@ -81,8 +162,8 @@ pub fn send_raw(src_ip: Ipv4Addr, dst_ip: Ipv4Addr, dst_mac: super::types::MacAd
 pub fn recv(port: u16) -> Option<UdpDatagram> {
     let mut ports = UDP_PORTS.lock();
     if let Some(map) = ports.as_mut() {
-        if let Some(queue) = map.get_mut(&port) {
-            return queue.pop_front();
+        if let Some(cfg) = map.get_mut(&port) {
+            return cfg.queue.pop_front();
         }
     }
     None
@@ -122,9 +203,9 @@ pub fn handle_udp(pkt: &Ipv4Packet<'_>) {
 
     let mut ports = UDP_PORTS.lock();
     if let Some(map) = ports.as_mut() {
-        if let Some(queue) = map.get_mut(&dst_port) {
-            if queue.len() < 128 {
-                queue.push_back(UdpDatagram {
+        if let Some(cfg) = map.get_mut(&dst_port) {
+            if cfg.queue.len() < MAX_QUEUE_LEN {
+                cfg.queue.push_back(UdpDatagram {
                     src_ip: pkt.src,
                     src_port,
                     data: Vec::from(payload),

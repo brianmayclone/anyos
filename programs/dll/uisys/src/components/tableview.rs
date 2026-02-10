@@ -44,7 +44,8 @@ pub extern "C" fn tableview_render_row(
     if !text.is_null() && text_len > 0 {
         let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize + 1) };
         let text_x = x + 8;
-        let text_y = y + (row_height as i32 - theme::CHAR_HEIGHT as i32) / 2;
+        let (_, th) = draw::text_size(&text_slice[..text_len as usize]);
+        let text_y = y + (row_height as i32 - th as i32) / 2;
         let fg = if selected != 0 { 0xFFFFFFFF } else { theme::TEXT };
         draw::draw_text(win, text_x, text_y, fg, text_slice);
     }
@@ -78,7 +79,8 @@ pub extern "C" fn tableview_render_header(
     if !text.is_null() && text_len > 0 {
         let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize + 1) };
         let text_x = x + 8;
-        let text_y = y + (h as i32 - theme::CHAR_HEIGHT as i32) / 2;
+        let (_, th) = draw::text_size(&text_slice[..text_len as usize]);
+        let text_y = y + (h as i32 - th as i32) / 2;
         draw::draw_text(win, text_x, text_y, theme::TEXT_SECONDARY, text_slice);
     }
 }

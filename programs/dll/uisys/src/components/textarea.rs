@@ -40,7 +40,9 @@ pub extern "C" fn textarea_render(
     }
 
     let content_x = x + gutter_w as i32 + TEXT_PAD;
-    let line_h = theme::CHAR_HEIGHT;
+    // Use TTF font height for line spacing
+    let (_, line_h) = draw::text_size(b"Ay");
+    let line_h = line_h.max(1);
     let visible_lines = h / line_h;
     let first_visible_line = scroll_offset / line_h;
 
@@ -55,21 +57,18 @@ pub extern "C" fn textarea_render(
         // Line number 1
         if show_line_nums != 0 {
             let num_buf = b"1\0";
-            let num_x = x + (gutter_w as i32 - theme::CHAR_WIDTH as i32) - 4;
-            draw::draw_text_mono(win, num_x, y + 2, theme::TEXT_SECONDARY, num_buf);
+            let (nw, _) = draw::text_size(b"1");
+            let num_x = x + gutter_w as i32 - nw as i32 - 4;
+            draw::draw_text(win, num_x, y + 2, theme::TEXT_SECONDARY, num_buf);
         }
         return;
     }
 
     let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize) };
 
-    // Walk the text to find line starts
-    let mut line_num = 0u32;
-    let mut line_start = 0u32;
+    // Determine cursor line and column
     let mut cursor_line = 0u32;
     let mut cursor_col = 0u32;
-
-    // Determine cursor line and column
     {
         let mut ln = 0u32;
         let mut col = 0u32;
@@ -92,6 +91,7 @@ pub extern "C" fn textarea_render(
     }
 
     // Render visible lines
+    let mut line_num = 0u32;
     let mut i = 0u32;
     while i < text_len {
         // Find end of current line
@@ -111,9 +111,9 @@ pub extern "C" fn textarea_render(
                     let display_num = line_num + 1;
                     let mut num_buf = [0u8; 8];
                     let num_len = format_u32(display_num, &mut num_buf);
-                    let num_x = x + gutter_w as i32
-                        - (num_len as i32 * theme::CHAR_WIDTH as i32) - 4;
-                    draw::draw_text_mono(
+                    let (nw, _) = draw::text_size(&num_buf[..num_len]);
+                    let num_x = x + gutter_w as i32 - nw as i32 - 4;
+                    draw::draw_text(
                         win, num_x, draw_y,
                         theme::TEXT_SECONDARY, &num_buf[..num_len + 1],
                     );
@@ -122,23 +122,23 @@ pub extern "C" fn textarea_render(
                 // Line text
                 let line_len = line_end - i;
                 if line_len > 0 {
-                    // Build a null-terminated slice for this line
-                    // We can only pass the slice if there's a NUL after it, so we use
-                    // draw_text_mono which reads text_len bytes from pointer.
-                    // For safety, we limit what we draw.
-                    let max_chars = ((w - gutter_w) / theme::CHAR_WIDTH).min(line_len);
-                    if max_chars > 0 {
-                        let line_slice = &text_slice[i as usize..(i + max_chars) as usize];
-                        draw::draw_text_mono(
-                            win, content_x, draw_y,
-                            theme::TEXT, line_slice,
-                        );
-                    }
+                    let line_slice = &text_slice[i as usize..line_end as usize];
+                    draw::draw_text(
+                        win, content_x, draw_y,
+                        theme::TEXT, line_slice,
+                    );
                 }
 
                 // Cursor on this line
                 if focused != 0 && line_num == cursor_line {
-                    let cx = content_x + cursor_col as i32 * theme::CHAR_WIDTH as i32;
+                    let cx = if cursor_col > 0 {
+                        let line_start = i as usize;
+                        let cursor_byte = line_start + cursor_col as usize;
+                        let before_cursor = &text_slice[line_start..cursor_byte.min(line_end as usize)];
+                        content_x + draw::text_width_n(before_cursor, before_cursor.len()) as i32
+                    } else {
+                        content_x
+                    };
                     draw::fill_rect(win, cx, draw_y, 1, line_h, theme::TEXT);
                 }
             }

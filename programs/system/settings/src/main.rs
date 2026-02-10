@@ -26,6 +26,20 @@ fn main() {
     let win = window::create("Settings", 180, 100, 560, 400);
     if win == u32::MAX { return; }
 
+    // Set up menu bar
+    let mut mb = window::MenuBarBuilder::new()
+        .menu("File")
+            .item(1, "Close", 0)
+        .end_menu()
+        .menu("View")
+            .item(10, "General", 0)
+            .item(11, "Display", 0)
+            .item(12, "Network", 0)
+            .item(13, "About", 0)
+        .end_menu();
+    let data = mb.build();
+    window::set_menu(win, data);
+
     let (mut win_w, mut win_h) = window::get_size(win).unwrap_or((560, 400));
 
     // --- Components with built-in event handling ---
@@ -121,6 +135,17 @@ fn main() {
                         scroll_y = (scroll_y + dz as u32 * 30).min(max_scroll);
                     }
                     needs_redraw = true;
+                }
+                window::EVENT_MENU_ITEM => {
+                    let item_id = event[2];
+                    match item_id {
+                        1 => { window::destroy(win); return; } // Close
+                        10 => { sidebar.selected = PAGE_GENERAL; needs_redraw = true; }
+                        11 => { sidebar.selected = PAGE_DISPLAY; needs_redraw = true; }
+                        12 => { sidebar.selected = PAGE_NETWORK; needs_redraw = true; }
+                        13 => { sidebar.selected = PAGE_ABOUT; needs_redraw = true; }
+                        _ => {}
+                    }
                 }
                 window::EVENT_WINDOW_CLOSE => {
                     window::destroy(win);

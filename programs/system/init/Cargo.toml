@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 anyos_std = { path = "../../../stdlib" }
-libimage_client = { path = "../../dll/libimage_client" }
 
 [profile.dev]
 panic = "abort"

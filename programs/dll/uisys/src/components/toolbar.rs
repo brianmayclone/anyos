@@ -36,9 +36,9 @@ pub extern "C" fn toolbar_render_button(
     // Label (centered)
     if !label.is_null() && label_len > 0 {
         let label_slice = unsafe { core::slice::from_raw_parts(label, label_len as usize + 1) };
-        let text_w = label_len as i32 * 7;
-        let text_x = x + (w as i32 - text_w) / 2;
-        let text_y = y + (h as i32 - theme::CHAR_HEIGHT as i32) / 2;
+        let (tw, th) = draw::text_size(&label_slice[..label_len as usize]);
+        let text_x = x + (w as i32 - tw as i32) / 2;
+        let text_y = y + (h as i32 - th as i32) / 2;
         draw::draw_text(win, text_x, text_y, fg, label_slice);
     }
 }

@@ -13,7 +13,11 @@ pub extern "C" fn groupbox_render(
     title: *const u8, title_len: u32,
 ) {
     let has_title = !title.is_null() && title_len > 0;
-    let title_w = if has_title { title_len * 7 + LABEL_PAD * 2 } else { 0 };
+    let title_w = if has_title {
+        let ts = unsafe { core::slice::from_raw_parts(title, title_len as usize) };
+        let (tw, _) = draw::text_size(ts);
+        tw + LABEL_PAD * 2
+    } else { 0 };
 
     // Draw the border rectangle
     draw::draw_border(win, x, y + 8, w, h - 8, theme::CARD_BORDER);

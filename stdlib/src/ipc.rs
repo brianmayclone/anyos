@@ -85,3 +85,64 @@ pub fn evt_chan_unsubscribe(channel_id: u32, sub_id: u32) {
 pub fn evt_chan_destroy(channel_id: u32) {
     syscall1(SYS_EVT_CHAN_DESTROY, channel_id as u64);
 }
+
+// ─── Shared Memory ──────────────────────────────────────────────────
+
+/// Create a shared memory region. Returns shm_id (>0) or 0 on failure.
+pub fn shm_create(size: u32) -> u32 {
+    syscall1(SYS_SHM_CREATE, size as u64)
+}
+
+/// Map a shared memory region into the caller's address space.
+/// Returns virtual address or 0 on failure.
+pub fn shm_map(shm_id: u32) -> u32 {
+    syscall1(SYS_SHM_MAP, shm_id as u64)
+}
+
+/// Unmap a shared memory region. Returns 0 on success.
+pub fn shm_unmap(shm_id: u32) -> u32 {
+    syscall1(SYS_SHM_UNMAP, shm_id as u64)
+}
+
+/// Destroy a shared memory region (owner only). Returns 0 on success.
+pub fn shm_destroy(shm_id: u32) -> u32 {
+    syscall1(SYS_SHM_DESTROY, shm_id as u64)
+}
+
+// ─── Compositor-Privileged ──────────────────────────────────────────
+
+/// Register calling process as the compositor. Returns 0 on success.
+pub fn register_compositor() -> u32 {
+    syscall0(SYS_REGISTER_COMPOSITOR)
+}
+
+/// Framebuffer mapping info returned by [`map_framebuffer`].
+#[repr(C)]
+pub struct FbMapInfo {
+    pub fb_addr: u32,
+    pub width: u32,
+    pub height: u32,
+    pub pitch: u32,
+}
+
+/// Map the GPU framebuffer into the compositor's address space.
+/// Returns Some(FbMapInfo) on success, None on failure.
+pub fn map_framebuffer() -> Option<FbMapInfo> {
+    let mut info = FbMapInfo { fb_addr: 0, width: 0, height: 0, pitch: 0 };
+    let ret = syscall1(SYS_MAP_FRAMEBUFFER, &mut info as *mut FbMapInfo as u64);
+    if ret == 0 { Some(info) } else { None }
+}
+
+/// Submit GPU acceleration commands. Returns number of commands executed.
+/// Each command is [u32; 9]: { cmd_type, args[0..8] }.
+pub fn gpu_command(cmds: &[[u32; 9]]) -> u32 {
+    if cmds.is_empty() { return 0; }
+    syscall2(SYS_GPU_COMMAND, cmds.as_ptr() as u64, cmds.len() as u64)
+}
+
+/// Poll raw input events. Returns number of events written to buf.
+/// Each event is [u32; 5]: { event_type, arg0, arg1, arg2, arg3 }.
+pub fn input_poll(buf: &mut [[u32; 5]]) -> u32 {
+    if buf.is_empty() { return 0; }
+    syscall2(SYS_INPUT_POLL, buf.as_mut_ptr() as u64, buf.len() as u64)
+}

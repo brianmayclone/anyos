@@ -225,6 +225,16 @@ fn main() {
         return;
     }
 
+    // Set up menu bar
+    let mut mb = window::MenuBarBuilder::new()
+        .menu("File")
+            .item(1, "Save", 0)
+            .separator()
+            .item(2, "Close", 0)
+        .end_menu();
+    let data = mb.build();
+    window::set_menu(win, data);
+
     let (mut win_w, mut win_h) = window::get_size(win).unwrap_or((600, 400));
 
     let content_h = (editor.line_count() as u32) * (LINE_H as u32);
@@ -370,6 +380,14 @@ fn main() {
                         sb.scroll = (sb.scroll + step).min(sb.max_scroll());
                     }
                     needs_redraw = true;
+                }
+                window::EVENT_MENU_ITEM => {
+                    let item_id = ev.p2;
+                    match item_id {
+                        1 => { editor.save(); needs_redraw = true; } // Save
+                        2 => { window::destroy(win); return; }       // Close
+                        _ => {}
+                    }
                 }
                 EVENT_WINDOW_CLOSE => {
                     window::destroy(win);

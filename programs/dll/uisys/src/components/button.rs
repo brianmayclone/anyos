@@ -21,9 +21,9 @@ pub extern "C" fn button_render(
     // Label text (centered)
     if !label.is_null() && label_len > 0 {
         let label_slice = unsafe { core::slice::from_raw_parts(label, label_len as usize + 1) };
-        let text_w = label_len as i32 * 7; // approx proportional width
-        let text_x = x + (w as i32 - text_w) / 2;
-        let text_y = y + (h as i32 - 16) / 2;
+        let (tw, th) = draw::text_size(&label_slice[..label_len as usize]);
+        let text_x = x + (w as i32 - tw as i32) / 2;
+        let text_y = y + (h as i32 - th as i32) / 2;
         draw::draw_text(win, text_x, text_y, fg, label_slice);
     }
 }
@@ -46,9 +46,14 @@ pub extern "C" fn button_measure(
     out_w: *mut u32, out_h: *mut u32,
 ) {
     if out_w.is_null() || out_h.is_null() { return; }
-    let text_w = label_len * 7;
+    let (tw, _) = if !label.is_null() && label_len > 0 {
+        let label_slice = unsafe { core::slice::from_raw_parts(label, label_len as usize) };
+        draw::text_size(label_slice)
+    } else {
+        (0, 0)
+    };
     unsafe {
-        *out_w = text_w + theme::BUTTON_PADDING_H * 2;
+        *out_w = tw + theme::BUTTON_PADDING_H * 2;
         *out_h = theme::BUTTON_HEIGHT;
     }
 }

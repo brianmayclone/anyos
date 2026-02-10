@@ -567,6 +567,26 @@ fn main() {
         return;
     }
 
+    // Set up menu bar
+    let mut mb = window::MenuBarBuilder::new()
+        .menu("File")
+            .item(1, "Open", 0)
+            .separator()
+            .item(2, "Close", 0)
+        .end_menu()
+        .menu("Go")
+            .item(10, "Root", 0)
+            .item(11, "Programs", 0)
+            .item(12, "System", 0)
+            .item(13, "Libraries", 0)
+            .item(14, "Icons", 0)
+            .separator()
+            .item(20, "Back", 0)
+            .item(21, "Forward", 0)
+        .end_menu();
+    let data = mb.build();
+    window::set_menu(win, data);
+
     let (mut win_w, mut win_h) = window::get_size(win).unwrap_or((620, 440));
 
     let mimetypes = load_mimetypes();
@@ -680,6 +700,28 @@ fn main() {
                     win_w = event[1];
                     win_h = event[2];
                     needs_redraw = true;
+                }
+                window::EVENT_MENU_ITEM => {
+                    let item_id = event[2];
+                    match item_id {
+                        1 => { // Open
+                            if let Some(idx) = state.selected {
+                                if idx < state.entries.len() {
+                                    open_entry(&mut state, idx);
+                                    needs_redraw = true;
+                                }
+                            }
+                        }
+                        2 => { window::destroy(win); return; } // Close
+                        10 => { navigate(&mut state, "/"); needs_redraw = true; }
+                        11 => { navigate(&mut state, "/bin"); needs_redraw = true; }
+                        12 => { navigate(&mut state, "/system"); needs_redraw = true; }
+                        13 => { navigate(&mut state, "/system/lib"); needs_redraw = true; }
+                        14 => { navigate(&mut state, "/system/icons"); needs_redraw = true; }
+                        20 => { navigate_back(&mut state); needs_redraw = true; }
+                        21 => { navigate_forward(&mut state); needs_redraw = true; }
+                        _ => {}
+                    }
                 }
                 window::EVENT_WINDOW_CLOSE => {
                     window::destroy(win);

@@ -299,6 +299,18 @@ fn main() {
         return;
     }
 
+    // Set up menu bar
+    let mut mb = window::MenuBarBuilder::new()
+        .menu("File")
+            .item(1, "Close", 0)
+        .end_menu()
+        .menu("Process")
+            .item(10, "Kill Process", 0)
+            .item(11, "Refresh", 0)
+        .end_menu();
+    let data = mb.build();
+    window::set_menu(win_id, data);
+
     let (mut win_w, mut win_h) = window::get_size(win_id).unwrap_or((500, 380));
 
     // Open CPU load pipe
@@ -326,6 +338,25 @@ fn main() {
 
             if ev.is_key_down() && ev.key_code() == KEY_ESCAPE {
                 break;
+            }
+
+            if event[0] == window::EVENT_MENU_ITEM {
+                let item_id = event[2];
+                match item_id {
+                    1 => { break; } // Close
+                    10 => { // Kill Process
+                        if let Some(sel_idx) = selected {
+                            let tasks = fetch_tasks(&mut thread_buf);
+                            if sel_idx < tasks.len() && tasks[sel_idx].tid > 3 {
+                                process::kill(tasks[sel_idx].tid);
+                                selected = None;
+                                last_update = 0;
+                            }
+                        }
+                    }
+                    11 => { last_update = 0; } // Refresh
+                    _ => {}
+                }
             }
 
             if event[0] == EVENT_WINDOW_CLOSE {

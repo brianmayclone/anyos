@@ -1,0 +1,13 @@
+[package]
+name = "compositor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyos_std = { path = "../../../../stdlib" }
+librender_client = { path = "../../../dll/librender_client" }
+libimage_client = { path = "../../../dll/libimage_client" }
+
+[profile.dev]
+panic = "abort"
+opt-level = 2

@@ -44,7 +44,8 @@ pub extern "C" fn contextmenu_render_item(
     if !label.is_null() && label_len > 0 {
         let label_slice = unsafe { core::slice::from_raw_parts(label, label_len as usize + 1) };
         let text_x = x + ITEM_PADDING_H;
-        let text_y = y + (h as i32 - theme::CHAR_HEIGHT as i32) / 2;
+        let (_, th) = draw::text_size(&label_slice[..label_len as usize]);
+        let text_y = y + (h as i32 - th as i32) / 2;
         let fg = if highlighted != 0 { 0xFFFFFFFF } else { theme::TEXT };
         draw::draw_text(win, text_x, text_y, fg, label_slice);
     }

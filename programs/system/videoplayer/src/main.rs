@@ -81,6 +81,18 @@ fn main() {
         return;
     }
 
+    // Set up menu bar
+    let mut mb = window::MenuBarBuilder::new()
+        .menu("File")
+            .item(1, "Close", 0)
+        .end_menu()
+        .menu("Playback")
+            .item(10, "Play/Pause", 0)
+            .item(11, "Loop", 0)
+        .end_menu();
+    let data_menu = mb.build();
+    window::set_menu(win, data_menu);
+
     let (mut cur_w, mut cur_h) = window::get_size(win).unwrap_or((win_w, win_h));
 
     // Playback state
@@ -151,6 +163,25 @@ fn main() {
                         decode_and_blit(win, &data, &info, current_frame, &mut pixels, &mut scratch, cur_w);
                         draw_chrome(win, cur_w, cur_h, filename, &info, current_frame, playing);
                         window::present(win);
+                    }
+                }
+                window::EVENT_MENU_ITEM => {
+                    let item_id = ev.p2;
+                    match item_id {
+                        1 => { window::destroy(win); return; } // Close
+                        10 => { // Play/Pause toggle
+                            if playing {
+                                pause_elapsed = anyos_std::sys::uptime().wrapping_sub(start_tick);
+                                playing = false;
+                            } else {
+                                start_tick = anyos_std::sys::uptime().wrapping_sub(pause_elapsed);
+                                playing = true;
+                            }
+                            draw_chrome(win, cur_w, cur_h, filename, &info, current_frame, playing);
+                            window::present(win);
+                        }
+                        11 => { looping = !looping; } // Toggle loop
+                        _ => {}
                     }
                 }
                 EVENT_WINDOW_CLOSE => {

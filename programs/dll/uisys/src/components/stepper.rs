@@ -34,10 +34,10 @@ pub extern "C" fn stepper_render(
     // Format value
     let mut buf = [0u8; 16];
     let text_len = format_i32(value, &mut buf);
-    let text_w = text_len as i32 * 8;
-    let text_x = val_x + (VALUE_WIDTH as i32 - text_w) / 2;
-    let text_y = y + (STEPPER_BTN_H as i32 - 16) / 2;
-    draw::draw_text_mono(win, text_x, text_y, theme::TEXT, &buf[..text_len + 1]);
+    let (text_w, th) = draw::text_size(&buf[..text_len]);
+    let text_x = val_x + (VALUE_WIDTH as i32 - text_w as i32) / 2;
+    let text_y = y + (STEPPER_BTN_H as i32 - th as i32) / 2;
+    draw::draw_text(win, text_x, text_y, theme::TEXT, &buf[..text_len + 1]);
 
     // Plus button
     let plus_x = x + STEPPER_BTN_W as i32 + VALUE_WIDTH as i32;
@@ -90,7 +90,6 @@ fn format_i32(val: i32, buf: &mut [u8; 16]) -> usize {
     let negative = val < 0;
     let mut abs_val = if negative {
         if val == i32::MIN {
-            // Handle overflow: i32::MIN absolute value
             2147483648u32
         } else {
             (-val) as u32

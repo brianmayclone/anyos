@@ -49,9 +49,11 @@ pub extern "C" fn segmented_render(
 
             if len > 0 {
                 let label_slice = unsafe { core::slice::from_raw_parts(label_ptr, len as usize + 1) };
-                let text_w = len as i32 * 7;
-                let text_x = seg_x + (seg_w as i32 - text_w) / 2;
-                let text_y = y + (h as i32 - 16) / 2;
+                let (tw, th) = draw::text_size(unsafe {
+                    core::slice::from_raw_parts(label_ptr, len as usize)
+                });
+                let text_x = seg_x + (seg_w as i32 - tw as i32) / 2;
+                let text_y = y + (h as i32 - th as i32) / 2;
                 let fg = if is_selected { theme::TEXT } else { theme::TEXT_SECONDARY };
                 draw::draw_text(win, text_x, text_y, fg, label_slice);
             }

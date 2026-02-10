@@ -1,151 +1,438 @@
 //! Window manager — create, draw, events, present.
+//!
+//! Uses the userspace compositor via libcompositor.dll (at 0x0438_0000).
+//! Drawing functions operate directly on shared-memory pixel buffers.
+//!
+//! The external "window ID" returned by `create()` is actually a pointer to a
+//! `WinSurface` struct, which is compatible with the uisys DLL's surface-mode
+//! rendering (win >= 0x0100_0000 → direct pixel writes via librender).
 
 use crate::raw::*;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 
-// Window event types
+// ── Public constants (unchanged API) ────────────────────────────────────────
+
 pub const EVENT_KEY_DOWN: u32 = 1;
 pub const EVENT_KEY_UP: u32 = 2;
 pub const EVENT_RESIZE: u32 = 3;
 pub const EVENT_MOUSE_DOWN: u32 = 4;
 pub const EVENT_MOUSE_UP: u32 = 5;
 pub const EVENT_MOUSE_MOVE: u32 = 6;
+pub const EVENT_MOUSE_SCROLL: u32 = 7;
 pub const EVENT_WINDOW_CLOSE: u32 = 8;
+pub const EVENT_MENU_ITEM: u32 = 9;
 
-// Window creation flags
 pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x01;
 pub const WIN_FLAG_BORDERLESS: u32 = 0x02;
 pub const WIN_FLAG_ALWAYS_ON_TOP: u32 = 0x04;
 
-/// Create a window. Returns window_id or u32::MAX.
+// ── Compositor DLL bindings (libcompositor.dll at 0x0438_0000) ──────────────
+
+const LIBCOMPOSITOR_BASE: usize = 0x0438_0000;
+
+#[repr(C)]
+struct DllExports {
+    magic: [u8; 4],
+    version: u32,
+    num_exports: u32,
+    _pad: u32,
+    init: extern "C" fn(out_sub_id: *mut u32) -> u32,
+    create_window: extern "C" fn(
+        channel_id: u32,
+        sub_id: u32,
+        width: u32,
+        height: u32,
+        flags: u32,
+        out_shm_id: *mut u32,
+        out_surface: *mut *mut u32,
+    ) -> u32,
+    destroy_window: extern "C" fn(channel_id: u32, window_id: u32, shm_id: u32),
+    present: extern "C" fn(channel_id: u32, window_id: u32, shm_id: u32),
+    poll_event: extern "C" fn(
+        channel_id: u32,
+        sub_id: u32,
+        window_id: u32,
+        buf: *mut [u32; 5],
+    ) -> u32,
+    set_title:
+        extern "C" fn(channel_id: u32, window_id: u32, title_ptr: *const u8, title_len: u32),
+    screen_size: extern "C" fn(out_w: *mut u32, out_h: *mut u32),
+    set_wallpaper: extern "C" fn(pixels: *const u32, width: u32, height: u32),
+    move_window: extern "C" fn(channel_id: u32, window_id: u32, x: i32, y: i32),
+    set_menu:
+        extern "C" fn(channel_id: u32, window_id: u32, menu_data: *const u8, menu_len: u32),
+    add_status_icon: extern "C" fn(channel_id: u32, icon_id: u32, pixels: *const u32),
+    remove_status_icon: extern "C" fn(channel_id: u32, icon_id: u32),
+}
+
+#[inline(always)]
+fn dll() -> &'static DllExports {
+    unsafe { &*(LIBCOMPOSITOR_BASE as *const DllExports) }
+}
+
+// ── Internal state ──────────────────────────────────────────────────────────
+
+/// Surface descriptor matching uisys DLL's `draw::WinSurface` layout.
+/// When uisys receives the pointer to this struct as a "window ID", it
+/// detects `win >= 0x0100_0000` and uses librender for direct rendering.
+#[repr(C)]
+pub struct WinSurface {
+    pub pixels: *mut u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+struct WinInfo {
+    comp_id: u32,
+    shm_id: u32,
+    surface: WinSurface,
+    ext_id: u32, // = &self.surface as u32 — external "window ID"
+}
+
+struct CompState {
+    channel_id: u32,
+    sub_id: u32,
+    windows: Vec<Box<WinInfo>>,
+}
+
+// Single-threaded user programs — static mut is safe.
+static mut COMP: Option<CompState> = None;
+
+fn ensure_init() -> bool {
+    unsafe {
+        if COMP.is_some() {
+            return true;
+        }
+        let mut sub_id: u32 = 0;
+        let channel_id = (dll().init)(&mut sub_id);
+        if channel_id == 0 {
+            return false;
+        }
+        COMP = Some(CompState {
+            channel_id,
+            sub_id,
+            windows: Vec::new(),
+        });
+        true
+    }
+}
+
+#[inline(always)]
+fn state() -> &'static mut CompState {
+    unsafe { COMP.as_mut().unwrap() }
+}
+
+fn find_win(ext_id: u32) -> Option<&'static WinInfo> {
+    let st = unsafe { COMP.as_ref()? };
+    st.windows.iter().find(|w| w.ext_id == ext_id).map(|b| &**b)
+}
+
+fn find_win_mut(ext_id: u32) -> Option<&'static mut WinInfo> {
+    let st = unsafe { COMP.as_mut()? };
+    st.windows
+        .iter_mut()
+        .find(|w| w.ext_id == ext_id)
+        .map(|b| &mut **b)
+}
+
+// ── 8x16 bitmap font for draw_text / draw_text_mono ────────────────────────
+
+const FONT_W: u32 = 8;
+const FONT_H: u32 = 16;
+static MONO_FONT: &[u8] = include_bytes!("font_8x16.bin");
+
+// ── Public API ──────────────────────────────────────────────────────────────
+
+/// Create a window. Returns a window handle (surface pointer as u32), or u32::MAX on failure.
 pub fn create(title: &str, x: u16, y: u16, w: u16, h: u16) -> u32 {
     create_ex(title, x, y, w, h, 0)
 }
 
-/// Create a window with flags. Returns window_id or u32::MAX.
-/// flags: bit 0 = WIN_FLAG_NOT_RESIZABLE, bit 1 = WIN_FLAG_BORDERLESS, bit 2 = WIN_FLAG_ALWAYS_ON_TOP
+/// Create a window with flags. Returns a window handle or u32::MAX.
 pub fn create_ex(title: &str, x: u16, y: u16, w: u16, h: u16, flags: u32) -> u32 {
-    let mut title_buf = [0u8; 129];
-    let len = title.len().min(128);
-    title_buf[..len].copy_from_slice(&title.as_bytes()[..len]);
-    title_buf[len] = 0;
-    let pos = (x as u32) | ((y as u32) << 16);
-    let size = (w as u32) | ((h as u32) << 16);
-    syscall5(SYS_WIN_CREATE, title_buf.as_ptr() as u64, pos as u64, size as u64, flags as u64, 0)
+    if !ensure_init() {
+        return u32::MAX;
+    }
+    let st = state();
+    let mut shm_id: u32 = 0;
+    let mut surface_ptr: *mut u32 = core::ptr::null_mut();
+    let comp_id = (dll().create_window)(
+        st.channel_id,
+        st.sub_id,
+        w as u32,
+        h as u32,
+        flags,
+        &mut shm_id,
+        &mut surface_ptr,
+    );
+    if comp_id == 0 || surface_ptr.is_null() {
+        return u32::MAX;
+    }
+
+    // Set title
+    let bytes = title.as_bytes();
+    (dll().set_title)(st.channel_id, comp_id, bytes.as_ptr(), bytes.len() as u32);
+
+    // Move to requested position
+    (dll().move_window)(st.channel_id, comp_id, x as i32, y as i32);
+
+    // Allocate stable WinInfo on heap (Box ensures address doesn't move)
+    let mut info = Box::new(WinInfo {
+        comp_id,
+        shm_id,
+        surface: WinSurface {
+            pixels: surface_ptr,
+            width: w as u32,
+            height: h as u32,
+        },
+        ext_id: 0,
+    });
+    let ext_id = &info.surface as *const WinSurface as u32;
+    info.ext_id = ext_id;
+    st.windows.push(info);
+    ext_id
 }
 
 /// Destroy a window.
 pub fn destroy(window_id: u32) -> u32 {
-    syscall1(SYS_WIN_DESTROY, window_id as u64)
+    if unsafe { COMP.is_none() } {
+        return u32::MAX;
+    }
+    let st = state();
+    if let Some(idx) = st.windows.iter().position(|w| w.ext_id == window_id) {
+        let win = &st.windows[idx];
+        (dll().destroy_window)(st.channel_id, win.comp_id, win.shm_id);
+        st.windows.swap_remove(idx);
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Set window title.
 pub fn set_title(window_id: u32, title: &str) -> u32 {
-    let mut buf = [0u8; 129];
-    let len = title.len().min(128);
-    buf[..len].copy_from_slice(&title.as_bytes()[..len]);
-    buf[len] = 0;
-    syscall3(SYS_WIN_SET_TITLE, window_id as u64, buf.as_ptr() as u64, 0)
+    if unsafe { COMP.is_none() } {
+        return u32::MAX;
+    }
+    let st = state();
+    if let Some(win) = st.windows.iter().find(|w| w.ext_id == window_id) {
+        let bytes = title.as_bytes();
+        (dll().set_title)(st.channel_id, win.comp_id, bytes.as_ptr(), bytes.len() as u32);
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Poll window event. Returns 1 if event received, 0 if none.
 /// Event format: [type:u32, p1:u32, p2:u32, p3:u32, p4:u32]
 pub fn get_event(window_id: u32, event: &mut [u32; 5]) -> u32 {
-    syscall2(SYS_WIN_GET_EVENT, window_id as u64, event.as_mut_ptr() as u64)
+    if unsafe { COMP.is_none() } {
+        return 0;
+    }
+    let st = state();
+    let comp_id = match st.windows.iter().find(|w| w.ext_id == window_id) {
+        Some(w) => w.comp_id,
+        None => return 0,
+    };
+    let mut buf = [0u32; 5];
+    let ok = (dll().poll_event)(st.channel_id, st.sub_id, comp_id, &mut buf);
+    if ok != 0 {
+        // Translate: compositor [type, win_id, a1, a2, a3] → old [type, a1, a2, a3, 0]
+        event[0] = match buf[0] {
+            0x3001 => EVENT_KEY_DOWN,
+            0x3002 => EVENT_KEY_UP,
+            0x3003 => EVENT_MOUSE_DOWN,
+            0x3004 => EVENT_MOUSE_UP,
+            0x3005 => EVENT_MOUSE_SCROLL,
+            0x3006 => EVENT_RESIZE,
+            0x3007 => EVENT_WINDOW_CLOSE,
+            0x3008 => EVENT_MENU_ITEM,
+            _ => buf[0],
+        };
+        event[1] = buf[2];
+        event[2] = buf[3];
+        event[3] = buf[4];
+        event[4] = 0;
+
+        // Update stored dimensions on resize
+        if buf[0] == 0x3006 {
+            if let Some(win) = find_win_mut(window_id) {
+                win.surface.width = buf[2];
+                win.surface.height = buf[3];
+            }
+        }
+        1
+    } else {
+        0
+    }
 }
 
 /// Fill a rectangle in a window.
 pub fn fill_rect(window_id: u32, x: i16, y: i16, w: u16, h: u16, color: u32) -> u32 {
-    let mut params = [0u8; 12];
-    params[0..2].copy_from_slice(&x.to_le_bytes());
-    params[2..4].copy_from_slice(&y.to_le_bytes());
-    params[4..6].copy_from_slice(&w.to_le_bytes());
-    params[6..8].copy_from_slice(&h.to_le_bytes());
-    params[8..12].copy_from_slice(&color.to_le_bytes());
-    syscall2(SYS_WIN_FILL_RECT, window_id as u64, params.as_ptr() as u64)
+    let win = match find_win(window_id) {
+        Some(w) => w,
+        None => return u32::MAX,
+    };
+    let sw = win.surface.width as i32;
+    let sh = win.surface.height as i32;
+    let x0 = (x as i32).max(0) as u32;
+    let y0 = (y as i32).max(0) as u32;
+    let x1 = (x as i32 + w as i32).max(0).min(sw) as u32;
+    let y1 = (y as i32 + h as i32).max(0).min(sh) as u32;
+    if x0 >= x1 || y0 >= y1 {
+        return 0;
+    }
+    let stride = win.surface.width;
+    for row in y0..y1 {
+        let start = (row * stride + x0) as usize;
+        let count = (x1 - x0) as usize;
+        unsafe {
+            let slice = core::slice::from_raw_parts_mut(win.surface.pixels.add(start), count);
+            slice.fill(color);
+        }
+    }
+    0
 }
 
-/// Draw text in a window.
+/// Draw text using the system TTF font (sfpro.ttf at 13px).
 pub fn draw_text(window_id: u32, x: i16, y: i16, color: u32, text: &str) -> u32 {
-    let mut text_buf = [0u8; 257];
-    let len = text.len().min(256);
-    text_buf[..len].copy_from_slice(&text.as_bytes()[..len]);
-    text_buf[len] = 0;
-
-    // params: [x:i16, y:i16, color:u32, text_ptr:u64] = 16 bytes
-    // Kernel reads text_ptr as u32 from bytes 8-11 (lower 32 bits, works for <4GB pointers)
-    let mut params = [0u8; 16];
-    params[0..2].copy_from_slice(&x.to_le_bytes());
-    params[2..4].copy_from_slice(&y.to_le_bytes());
-    params[4..8].copy_from_slice(&color.to_le_bytes());
-    let text_ptr = text_buf.as_ptr() as u64;
-    params[8..16].copy_from_slice(&text_ptr.to_le_bytes());
-    syscall2(SYS_WIN_DRAW_TEXT, window_id as u64, params.as_ptr() as u64)
+    let win = match find_win(window_id) {
+        Some(w) => w,
+        None => return u32::MAX,
+    };
+    font_render_buf(
+        0, // system font
+        13, // default size
+        unsafe {
+            core::slice::from_raw_parts_mut(
+                win.surface.pixels,
+                (win.surface.width * win.surface.height) as usize,
+            )
+        },
+        win.surface.width,
+        win.surface.height,
+        x as i32,
+        y as i32,
+        color,
+        text,
+    )
 }
 
-/// Draw text in a window using the monospace bitmap font (8x16 fixed-width).
-/// Suitable for terminal output and code display.
+/// Draw text using the 8x16 monospace bitmap font.
 pub fn draw_text_mono(window_id: u32, x: i16, y: i16, color: u32, text: &str) -> u32 {
-    let mut text_buf = [0u8; 257];
-    let len = text.len().min(256);
-    text_buf[..len].copy_from_slice(&text.as_bytes()[..len]);
-    text_buf[len] = 0;
-
-    // params: [x:i16, y:i16, color:u32, text_ptr:u64] = 16 bytes
-    let mut params = [0u8; 16];
-    params[0..2].copy_from_slice(&x.to_le_bytes());
-    params[2..4].copy_from_slice(&y.to_le_bytes());
-    params[4..8].copy_from_slice(&color.to_le_bytes());
-    let text_ptr = text_buf.as_ptr() as u64;
-    params[8..16].copy_from_slice(&text_ptr.to_le_bytes());
-    syscall2(SYS_WIN_DRAW_TEXT_MONO, window_id as u64, params.as_ptr() as u64)
+    let win = match find_win(window_id) {
+        Some(w) => w,
+        None => return u32::MAX,
+    };
+    let sw = win.surface.width as i32;
+    let sh = win.surface.height as i32;
+    let stride = win.surface.width;
+    let mut cx = x as i32;
+    let cy = y as i32;
+    for &ch in text.as_bytes() {
+        let c = ch as u32;
+        if c >= 32 && c <= 126 {
+            let idx = (c - 32) as usize;
+            let glyph_off = idx * FONT_H as usize;
+            for row in 0..FONT_H as i32 {
+                let py = cy + row;
+                if py < 0 || py >= sh {
+                    continue;
+                }
+                let byte = MONO_FONT[glyph_off + row as usize];
+                for col in 0..FONT_W as i32 {
+                    if byte & (0x80 >> col) != 0 {
+                        let px = cx + col;
+                        if px >= 0 && px < sw {
+                            unsafe {
+                                *win.surface
+                                    .pixels
+                                    .add((py as u32 * stride + px as u32) as usize) = color;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        cx += FONT_W as i32;
+    }
+    0
 }
 
 /// Present (flush) window drawing to compositor.
 pub fn present(window_id: u32) -> u32 {
-    syscall1(SYS_WIN_PRESENT, window_id as u64)
-}
-
-/// Get window content size. Returns [width, height].
-pub fn get_size(window_id: u32) -> Option<(u32, u32)> {
-    let mut buf = [0u32; 2];
-    if syscall2(SYS_WIN_GET_SIZE, window_id as u64, buf.as_mut_ptr() as u64) == 0 {
-        Some((buf[0], buf[1]))
+    if unsafe { COMP.is_none() } {
+        return u32::MAX;
+    }
+    let st = state();
+    if let Some(win) = st.windows.iter().find(|w| w.ext_id == window_id) {
+        (dll().present)(st.channel_id, win.comp_id, win.shm_id);
+        0
     } else {
-        None
+        u32::MAX
     }
 }
 
-/// Blit ARGB pixel data (u32 per pixel, 0xAARRGGBB) to window content surface.
+/// Get window content size. Returns (width, height).
+pub fn get_size(window_id: u32) -> Option<(u32, u32)> {
+    find_win(window_id).map(|w| (w.surface.width, w.surface.height))
+}
+
+/// Blit ARGB pixel data to window content surface.
 pub fn blit(window_id: u32, x: i16, y: i16, w: u16, h: u16, data: &[u32]) -> u32 {
-    // params: [x:i16, y:i16, w:u16, h:u16, data_ptr:u64] = 16 bytes
-    // Kernel reads data_ptr as u32 from bytes 8-11 (lower 32 bits, works for <4GB pointers)
-    let mut params = [0u8; 16];
-    params[0..2].copy_from_slice(&x.to_le_bytes());
-    params[2..4].copy_from_slice(&y.to_le_bytes());
-    params[4..6].copy_from_slice(&w.to_le_bytes());
-    params[6..8].copy_from_slice(&h.to_le_bytes());
-    let data_ptr = data.as_ptr() as u64;
-    params[8..16].copy_from_slice(&data_ptr.to_le_bytes());
-    syscall2(SYS_WIN_BLIT, window_id as u64, params.as_ptr() as u64)
+    let win = match find_win(window_id) {
+        Some(w) => w,
+        None => return u32::MAX,
+    };
+    let sw = win.surface.width as i32;
+    let sh = win.surface.height as i32;
+    let stride = win.surface.width;
+    for row in 0..h as i32 {
+        let py = y as i32 + row;
+        if py < 0 || py >= sh {
+            continue;
+        }
+        let x0 = (x as i32).max(0);
+        let x1 = (x as i32 + w as i32).min(sw);
+        if x0 >= x1 {
+            continue;
+        }
+        let src_off = (row * w as i32 + (x0 - x as i32)) as usize;
+        let dst_off = (py as u32 * stride + x0 as u32) as usize;
+        let count = (x1 - x0) as usize;
+        if src_off + count <= data.len() {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    data.as_ptr().add(src_off),
+                    win.surface.pixels.add(dst_off),
+                    count,
+                );
+            }
+        }
+    }
+    0
 }
 
 /// List open windows. Returns number of windows.
-/// Each entry in buf is 64 bytes: [id:u32, title_len:u32, title:56bytes]
-pub fn list_windows(buf: &mut [u8]) -> u32 {
-    let max_entries = (buf.len() / 64) as u32;
-    syscall2(SYS_WIN_LIST, buf.as_mut_ptr() as u64, max_entries as u64)
+pub fn list_windows(_buf: &mut [u8]) -> u32 {
+    // TODO: implement via compositor IPC
+    0
 }
 
 /// Focus/raise a window by ID.
-pub fn focus(window_id: u32) -> u32 {
-    syscall1(SYS_WIN_FOCUS, window_id as u64)
+pub fn focus(_window_id: u32) -> u32 {
+    // TODO: implement via compositor IPC
+    0
 }
 
 /// Get screen dimensions. Returns (width, height).
 pub fn screen_size() -> (u32, u32) {
-    let mut buf = [0u32; 2];
-    syscall1(SYS_SCREEN_SIZE, buf.as_mut_ptr() as u64);
-    (buf[0], buf[1])
+    let mut w: u32 = 0;
+    let mut h: u32 = 0;
+    (dll().screen_size)(&mut w, &mut h);
+    (w, h)
 }
 
 /// Set display resolution. Returns true on success.
@@ -153,10 +440,11 @@ pub fn set_resolution(width: u32, height: u32) -> bool {
     syscall2(SYS_SET_RESOLUTION, width as u64, height as u64) == 0
 }
 
-/// List supported display resolutions. Returns a Vec of (width, height).
+/// List supported display resolutions.
 pub fn list_resolutions() -> alloc::vec::Vec<(u32, u32)> {
-    let mut buf = [0u32; 32]; // 16 modes max, 2 u32 each
-    let count = syscall2(SYS_LIST_RESOLUTIONS, buf.as_mut_ptr() as u64, (buf.len() * 4) as u64);
+    let mut buf = [0u32; 32];
+    let count =
+        syscall2(SYS_LIST_RESOLUTIONS, buf.as_mut_ptr() as u64, (buf.len() * 4) as u64);
     let mut modes = alloc::vec::Vec::new();
     for i in 0..count as usize {
         if i * 2 + 1 < buf.len() {
@@ -169,7 +457,11 @@ pub fn list_resolutions() -> alloc::vec::Vec<(u32, u32)> {
 /// Load a TTF font from a file path. Returns font_id or None.
 pub fn font_load(path: &str) -> Option<u32> {
     let result = syscall2(SYS_FONT_LOAD, path.as_ptr() as u64, path.len() as u64);
-    if result == u32::MAX { None } else { Some(result) }
+    if result == u32::MAX {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 /// Unload a previously loaded font.
@@ -196,36 +488,128 @@ pub fn font_measure(font_id: u16, size: u16, text: &str) -> (u32, u32) {
     (out_w, out_h)
 }
 
-/// Draw text with explicit font_id and size.
-pub fn draw_text_ex(window_id: u32, x: i16, y: i16, color: u32, font_id: u16, size: u16, text: &str) -> u32 {
-    let mut text_buf = [0u8; 257];
-    let len = text.len().min(256);
-    text_buf[..len].copy_from_slice(&text.as_bytes()[..len]);
-    text_buf[len] = 0;
-
-    // params: [x:i16, y:i16, color:u32, font_id:u16, size:u16, text_ptr:u32] = 16 bytes
-    let mut params = [0u8; 16];
-    params[0..2].copy_from_slice(&x.to_le_bytes());
-    params[2..4].copy_from_slice(&y.to_le_bytes());
-    params[4..8].copy_from_slice(&color.to_le_bytes());
-    params[8..10].copy_from_slice(&font_id.to_le_bytes());
-    params[10..12].copy_from_slice(&size.to_le_bytes());
-    let text_ptr = text_buf.as_ptr() as u32;
-    params[12..16].copy_from_slice(&text_ptr.to_le_bytes());
-    syscall2(SYS_WIN_DRAW_TEXT_EX, window_id as u64, params.as_ptr() as u64)
+/// Draw text with explicit font_id and size (TTF rendering via kernel).
+pub fn draw_text_ex(
+    window_id: u32,
+    x: i16,
+    y: i16,
+    color: u32,
+    font_id: u16,
+    size: u16,
+    text: &str,
+) -> u32 {
+    let win = match find_win(window_id) {
+        Some(w) => w,
+        None => return u32::MAX,
+    };
+    font_render_buf(
+        font_id,
+        size,
+        unsafe {
+            core::slice::from_raw_parts_mut(
+                win.surface.pixels,
+                (win.surface.width * win.surface.height) as usize,
+            )
+        },
+        win.surface.width,
+        win.surface.height,
+        x as i32,
+        y as i32,
+        color,
+        text,
+    )
 }
 
-/// Fill a rounded rectangle (auto-AA on hardware-accelerated GPUs).
-pub fn fill_rounded_rect(window_id: u32, x: i16, y: i16, w: u16, h: u16, radius: u16, color: u32) -> u32 {
-    let mut params = [0u8; 16];
-    params[0..2].copy_from_slice(&x.to_le_bytes());
-    params[2..4].copy_from_slice(&y.to_le_bytes());
-    params[4..6].copy_from_slice(&w.to_le_bytes());
-    params[6..8].copy_from_slice(&h.to_le_bytes());
-    params[8..10].copy_from_slice(&radius.to_le_bytes());
-    params[10..12].copy_from_slice(&0u16.to_le_bytes()); // padding
-    params[12..16].copy_from_slice(&color.to_le_bytes());
-    syscall2(SYS_WIN_FILL_ROUNDED_RECT, window_id as u64, params.as_ptr() as u64)
+/// Render TTF text directly into a raw ARGB pixel buffer.
+pub fn font_render_buf(
+    font_id: u16,
+    size: u16,
+    buf: &mut [u32],
+    buf_w: u32,
+    buf_h: u32,
+    x: i32,
+    y: i32,
+    color: u32,
+    text: &str,
+) -> u32 {
+    let mut params = [0u8; 36];
+    let buf_ptr = buf.as_mut_ptr() as u32;
+    params[0..4].copy_from_slice(&buf_ptr.to_le_bytes());
+    params[4..8].copy_from_slice(&buf_w.to_le_bytes());
+    params[8..12].copy_from_slice(&buf_h.to_le_bytes());
+    params[12..16].copy_from_slice(&x.to_le_bytes());
+    params[16..20].copy_from_slice(&y.to_le_bytes());
+    params[20..24].copy_from_slice(&color.to_le_bytes());
+    params[24..26].copy_from_slice(&font_id.to_le_bytes());
+    params[26..28].copy_from_slice(&size.to_le_bytes());
+    let text_ptr = text.as_ptr() as u32;
+    let text_len = text.len() as u32;
+    params[28..32].copy_from_slice(&text_ptr.to_le_bytes());
+    params[32..36].copy_from_slice(&text_len.to_le_bytes());
+    syscall1(SYS_FONT_RENDER_BUF, params.as_ptr() as u64)
+}
+
+/// Fill a rounded rectangle.
+pub fn fill_rounded_rect(
+    window_id: u32,
+    x: i16,
+    y: i16,
+    w: u16,
+    h: u16,
+    radius: u16,
+    color: u32,
+) -> u32 {
+    let win = match find_win(window_id) {
+        Some(w) => w,
+        None => return u32::MAX,
+    };
+    let sw = win.surface.width as i32;
+    let sh = win.surface.height as i32;
+    let stride = win.surface.width;
+    let r = radius as i32;
+    let rx = x as i32;
+    let ry = y as i32;
+    let rw = w as i32;
+    let rh = h as i32;
+
+    for row in 0..rh {
+        let py = ry + row;
+        if py < 0 || py >= sh {
+            continue;
+        }
+
+        let mut x_start = rx;
+        let mut x_end = rx + rw;
+
+        // Top corners
+        if row < r {
+            let dy = r - 1 - row;
+            let dx = r - isqrt((r * r - dy * dy) as u32) as i32;
+            x_start = rx + dx;
+            x_end = rx + rw - dx;
+        }
+        // Bottom corners
+        else if row >= rh - r {
+            let dy = row - (rh - r);
+            let dx = r - isqrt((r * r - dy * dy) as u32) as i32;
+            x_start = rx + dx;
+            x_end = rx + rw - dx;
+        }
+
+        x_start = x_start.max(0);
+        x_end = x_end.min(sw);
+        if x_start >= x_end {
+            continue;
+        }
+
+        let start = (py as u32 * stride + x_start as u32) as usize;
+        let count = (x_end - x_start) as usize;
+        unsafe {
+            let slice = core::slice::from_raw_parts_mut(win.surface.pixels.add(start), count);
+            slice.fill(color);
+        }
+    }
+    0
 }
 
 /// Query if GPU hardware acceleration is available.
@@ -234,28 +618,179 @@ pub fn gpu_has_accel() -> bool {
 }
 
 /// Set the desktop wallpaper from decoded ARGB pixel data.
-pub fn set_wallpaper(w: u32, h: u32, pixels: &[u32], mode: u32) -> u32 {
-    let mut params = [0u8; 20];
-    params[0..4].copy_from_slice(&w.to_le_bytes());
-    params[4..8].copy_from_slice(&h.to_le_bytes());
-    let ptr = pixels.as_ptr() as u32;
-    params[8..12].copy_from_slice(&ptr.to_le_bytes());
-    let count = (w * h) as u32;
-    params[12..16].copy_from_slice(&count.to_le_bytes());
-    params[16..20].copy_from_slice(&mode.to_le_bytes());
-    syscall1(SYS_SET_WALLPAPER, params.as_ptr() as u64)
+pub fn set_wallpaper(w: u32, h: u32, pixels: &[u32], _mode: u32) -> u32 {
+    (dll().set_wallpaper)(pixels.as_ptr(), w, h);
+    0
 }
 
-/// Get GPU driver name. Returns empty string if no GPU driver is registered.
+/// Get GPU driver name.
 pub fn gpu_name() -> alloc::string::String {
     let mut buf = [0u8; 64];
     let len = syscall2(SYS_GPU_INFO, buf.as_mut_ptr() as u64, buf.len() as u64);
     if len > 0 {
         let actual_len = (len as usize).min(63);
-        alloc::string::String::from(
-            core::str::from_utf8(&buf[..actual_len]).unwrap_or("Unknown")
-        )
+        alloc::string::String::from(core::str::from_utf8(&buf[..actual_len]).unwrap_or("Unknown"))
     } else {
         alloc::string::String::from("Software (VESA VBE)")
     }
+}
+
+/// Get the raw surface pointer for a window.
+pub fn surface_ptr(window_id: u32) -> *mut u32 {
+    find_win(window_id)
+        .map(|w| w.surface.pixels)
+        .unwrap_or(core::ptr::null_mut())
+}
+
+/// Get surface info (pointer, width, height) for direct rendering.
+pub fn surface_info(window_id: u32) -> Option<(*mut u32, u32, u32)> {
+    find_win(window_id).map(|w| (w.surface.pixels, w.surface.width, w.surface.height))
+}
+
+// ── Menu Bar ────────────────────────────────────────────────────────────────
+
+/// Set a window's menu bar definition. `data` is a binary blob from `MenuBarBuilder::build()`.
+pub fn set_menu(window_id: u32, data: &[u8]) {
+    if unsafe { COMP.is_none() } {
+        return;
+    }
+    let st = state();
+    if let Some(win) = st.windows.iter().find(|w| w.ext_id == window_id) {
+        (dll().set_menu)(st.channel_id, win.comp_id, data.as_ptr(), data.len() as u32);
+    }
+}
+
+const MENU_MAGIC: u32 = 0x4D454E55; // 'MENU'
+
+/// Item flags for menu items.
+pub const MENU_FLAG_DISABLED: u32 = 0x01;
+pub const MENU_FLAG_SEPARATOR: u32 = 0x02;
+pub const MENU_FLAG_CHECKED: u32 = 0x04;
+
+/// Builder for constructing a binary menu bar definition.
+///
+/// ```rust,ignore
+/// let mut mb = MenuBarBuilder::new();
+/// let data = mb
+///     .menu("File").item(1, "New", 0).item(2, "Open", 0).separator().item(5, "Quit", 0).end_menu()
+///     .menu("Edit").item(10, "Cut", 0).item(11, "Copy", 0).item(12, "Paste", 0).end_menu()
+///     .build();
+/// window::set_menu(win, data);
+/// ```
+pub struct MenuBarBuilder {
+    buf: [u8; 4096],
+    pos: usize,
+    num_menus: usize,
+    num_menus_offset: usize,
+}
+
+/// Intermediate builder for adding items to a single menu.
+pub struct MenuBuilder {
+    inner: MenuBarBuilder,
+    num_items: usize,
+    num_items_offset: usize,
+}
+
+impl MenuBarBuilder {
+    pub fn new() -> Self {
+        let mut b = MenuBarBuilder {
+            buf: [0u8; 4096],
+            pos: 0,
+            num_menus: 0,
+            num_menus_offset: 0,
+        };
+        b.write_u32(MENU_MAGIC);
+        b.num_menus_offset = b.pos;
+        b.write_u32(0); // placeholder
+        b
+    }
+
+    /// Start a new top-level menu with the given title.
+    pub fn menu(mut self, title: &str) -> MenuBuilder {
+        let bytes = title.as_bytes();
+        let len = bytes.len().min(64);
+        self.write_u32(len as u32);
+        self.write_bytes(&bytes[..len]);
+        self.align4();
+        let num_items_offset = self.pos;
+        self.write_u32(0); // placeholder
+        self.num_menus += 1;
+        MenuBuilder {
+            inner: self,
+            num_items: 0,
+            num_items_offset,
+        }
+    }
+
+    /// Finalize and return the binary menu data slice.
+    pub fn build(&mut self) -> &[u8] {
+        let nm = self.num_menus as u32;
+        self.buf[self.num_menus_offset..self.num_menus_offset + 4]
+            .copy_from_slice(&nm.to_le_bytes());
+        &self.buf[..self.pos]
+    }
+
+    fn write_u32(&mut self, val: u32) {
+        if self.pos + 4 <= self.buf.len() {
+            self.buf[self.pos..self.pos + 4].copy_from_slice(&val.to_le_bytes());
+            self.pos += 4;
+        }
+    }
+
+    fn write_bytes(&mut self, data: &[u8]) {
+        let end = (self.pos + data.len()).min(self.buf.len());
+        let count = end - self.pos;
+        self.buf[self.pos..self.pos + count].copy_from_slice(&data[..count]);
+        self.pos += count;
+    }
+
+    fn align4(&mut self) {
+        while self.pos % 4 != 0 && self.pos < self.buf.len() {
+            self.buf[self.pos] = 0;
+            self.pos += 1;
+        }
+    }
+}
+
+impl MenuBuilder {
+    /// Add a menu item.
+    pub fn item(mut self, item_id: u32, label: &str, flags: u32) -> Self {
+        self.inner.write_u32(item_id);
+        self.inner.write_u32(flags);
+        let bytes = label.as_bytes();
+        let len = bytes.len().min(64);
+        self.inner.write_u32(len as u32);
+        self.inner.write_bytes(&bytes[..len]);
+        self.inner.align4();
+        self.num_items += 1;
+        self
+    }
+
+    /// Add a separator line.
+    pub fn separator(self) -> Self {
+        self.item(0, "", MENU_FLAG_SEPARATOR)
+    }
+
+    /// Finish this menu and return to the MenuBarBuilder.
+    pub fn end_menu(mut self) -> MenuBarBuilder {
+        let ni = self.num_items as u32;
+        self.inner.buf[self.num_items_offset..self.num_items_offset + 4]
+            .copy_from_slice(&ni.to_le_bytes());
+        self.inner
+    }
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+fn isqrt(n: u32) -> u32 {
+    if n == 0 {
+        return 0;
+    }
+    let mut x = n;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
 }

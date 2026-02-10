@@ -5,10 +5,10 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use anyos_std::ui::window;
 use anyos_std::process;
 use anyos_std::fs;
-use anyos_std::ipc;
+
+use libcompositor_client::{CompositorClient, WindowHandle};
 
 anyos_std::entry!(main);
 
@@ -26,9 +26,6 @@ const DOCK_BG: u32 = 0xC0303035;
 const COLOR_WHITE: u32 = 0xFFFFFFFF;
 const COLOR_TRANSPARENT: u32 = 0x00000000;
 const COLOR_HIGHLIGHT: u32 = 0x19FFFFFF; // 10% white
-
-// System event type (must match kernel EVT_RESOLUTION_CHANGED)
-const EVT_RESOLUTION_CHANGED: u32 = 0x0040;
 
 const CONFIG_PATH: &str = "/system/dock/programs.conf";
 
@@ -383,58 +380,43 @@ fn dock_hit_test(x: i32, y: i32, screen_width: u32, items: &[DockItem]) -> Optio
     }
 }
 
-/// Parse window list buffer and check if a window with the given title exists.
-fn find_window_by_title(title: &str, buf: &[u8], count: u32) -> Option<u32> {
-    for i in 0..count as usize {
-        let off = i * 64;
-        if off + 64 > buf.len() { break; }
-        let id = u32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]]);
-        let tlen = u32::from_le_bytes([buf[off+4], buf[off+5], buf[off+6], buf[off+7]]) as usize;
-        let tlen = tlen.min(56);
-        if let Ok(win_title) = core::str::from_utf8(&buf[off+8..off+8+tlen]) {
-            if win_title == title {
-                return Some(id);
-            }
-        }
-    }
-    None
-}
-
-fn update_running_state(items: &mut [DockItem], win_buf: &[u8], win_count: u32) -> bool {
-    let mut changed = false;
-    for item in items.iter_mut() {
-        let was_running = item.running;
-        item.running = find_window_by_title(&item.name, win_buf, win_count).is_some();
-        if item.running != was_running {
-            changed = true;
-        }
-    }
-    changed
+/// Copy local framebuffer pixels into the SHM window surface.
+fn blit_to_surface(fb: &Framebuffer, win: &WindowHandle) {
+    let count = (fb.width * fb.height) as usize;
+    let surface = unsafe { core::slice::from_raw_parts_mut(win.surface(), count) };
+    let copy_len = count.min(fb.pixels.len()).min(surface.len());
+    surface[..copy_len].copy_from_slice(&fb.pixels[..copy_len]);
 }
 
 fn main() {
-    // Get screen dimensions
-    let (mut screen_width, mut screen_height) = window::screen_size();
+    // Connect to compositor
+    let client = match CompositorClient::init() {
+        Some(c) => c,
+        None => return,
+    };
+
+    let (screen_width, screen_height) = client.screen_size();
     if screen_width == 0 || screen_height == 0 {
         return;
     }
 
-    let flags = window::WIN_FLAG_BORDERLESS
-              | window::WIN_FLAG_NOT_RESIZABLE
-              | window::WIN_FLAG_ALWAYS_ON_TOP;
+    // Borderless, not resizable, always on top
+    let flags: u32 = 0x01 | 0x02 | 0x04;
 
-    let mut win = window::create_ex(
-        "Dock", 0, (screen_height - DOCK_TOTAL_H) as u16,
-        screen_width as u16, DOCK_TOTAL_H as u16, flags,
-    );
-    if win == u32::MAX {
-        return;
-    }
+    let win = match client.create_window(screen_width, DOCK_TOTAL_H, flags) {
+        Some(w) => w,
+        None => return,
+    };
+
+    // Position at bottom of screen
+    client.move_window(&win, 0, (screen_height - DOCK_TOTAL_H) as i32);
+    client.set_title(&win, "Dock");
 
     // Load dock items from config file
-    let mut items = load_dock_config();
+    let items = load_dock_config();
 
     // Load icons
+    let mut items = items;
     for item in &mut items {
         item.icon = load_icon(&item.icon_path);
     }
@@ -444,73 +426,22 @@ fn main() {
 
     // Initial render
     render_dock(&mut fb, &items, screen_width);
-    window::blit(win, 0, 0, screen_width as u16, DOCK_TOTAL_H as u16, &fb.pixels);
-    window::present(win);
-
-    // Subscribe to resolution change events
-    let evt_sub = ipc::evt_sys_subscribe(EVT_RESOLUTION_CHANGED);
+    blit_to_surface(&fb, &win);
+    client.present(&win);
 
     // Main loop
-    let mut tick: u32 = 0;
-    let mut win_buf = vec![0u8; 64 * 32]; // up to 32 windows
-
     loop {
-        // Check for resolution changes
-        let mut sys_evt = [0u32; 5];
-        while ipc::evt_sys_poll(evt_sub, &mut sys_evt) {
-            if sys_evt[0] == EVT_RESOLUTION_CHANGED {
-                let new_w = sys_evt[1];
-                let new_h = sys_evt[2];
-                if new_w > 0 && new_h > 0 && (new_w != screen_width || new_h != screen_height) {
-                    screen_width = new_w;
-                    screen_height = new_h;
-
-                    // Destroy old window and create new one at correct position/size
-                    window::destroy(win);
-                    win = window::create_ex(
-                        "Dock", 0, (screen_height - DOCK_TOTAL_H) as u16,
-                        screen_width as u16, DOCK_TOTAL_H as u16, flags,
-                    );
-
-                    // Recreate framebuffer at new width
-                    fb = Framebuffer::new(screen_width, DOCK_TOTAL_H);
-                    render_dock(&mut fb, &items, screen_width);
-                    window::blit(win, 0, 0, screen_width as u16, DOCK_TOTAL_H as u16, &fb.pixels);
-                    window::present(win);
-                }
-            }
-        }
-
         // Process window events
-        let mut event = [0u32; 5];
-        while window::get_event(win, &mut event) == 1 {
-            if event[0] == window::EVENT_MOUSE_DOWN {
-                let lx = event[1] as i32;
-                let ly = event[2] as i32;
+        while let Some(event) = client.poll_event(&win) {
+            if event.event_type == libcompositor_client::EVT_MOUSE_DOWN {
+                let lx = event.arg1 as i32;
+                let ly = event.arg2 as i32;
 
                 if let Some(idx) = dock_hit_test(lx, ly, screen_width, &items) {
                     if let Some(item) = items.get(idx) {
-                        // Check if already running — focus it
-                        let win_count = window::list_windows(&mut win_buf);
-                        if let Some(wid) = find_window_by_title(&item.name, &win_buf, win_count) {
-                            window::focus(wid);
-                        } else {
-                            // Launch the program
-                            process::spawn(&item.bin_path, "");
-                        }
+                        process::spawn(&item.bin_path, "");
                     }
                 }
-            }
-        }
-
-        // Periodically update running indicators (~every 1 second at 20Hz)
-        tick = tick.wrapping_add(1);
-        if tick % 20 == 0 {
-            let win_count = window::list_windows(&mut win_buf);
-            if update_running_state(&mut items, &win_buf, win_count) {
-                render_dock(&mut fb, &items, screen_width);
-                window::blit(win, 0, 0, screen_width as u16, DOCK_TOTAL_H as u16, &fb.pixels);
-                window::present(win);
             }
         }
 

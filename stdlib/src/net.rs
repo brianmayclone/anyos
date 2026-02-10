@@ -82,3 +82,55 @@ pub fn tcp_close(socket_id: u32) -> u32 {
 pub fn tcp_status(socket_id: u32) -> u32 {
     syscall1(SYS_TCP_STATUS, socket_id as u64)
 }
+
+// =========================================================================
+// UDP
+// =========================================================================
+
+/// Bind to a UDP port (creates receive queue). Returns 0 on success.
+pub fn udp_bind(port: u16) -> u32 {
+    syscall1(SYS_UDP_BIND, port as u64)
+}
+
+/// Unbind a UDP port. Returns 0.
+pub fn udp_unbind(port: u16) -> u32 {
+    syscall1(SYS_UDP_UNBIND, port as u64)
+}
+
+/// Send a UDP datagram. Returns bytes sent or u32::MAX on error.
+/// flags: bit 0 = force broadcast (bypass SO_BROADCAST check).
+pub fn udp_sendto(dst_ip: &[u8; 4], dst_port: u16, src_port: u16, data: &[u8], flags: u32) -> u32 {
+    #[repr(C)]
+    struct UdpSendParams {
+        dst_ip: [u8; 4],
+        dst_port: u16,
+        src_port: u16,
+        data_ptr: u32,
+        data_len: u32,
+        flags: u32,
+    }
+    let params = UdpSendParams {
+        dst_ip: *dst_ip,
+        dst_port,
+        src_port,
+        data_ptr: data.as_ptr() as u32,
+        data_len: data.len() as u32,
+        flags,
+    };
+    syscall1(SYS_UDP_SENDTO, &params as *const _ as u64)
+}
+
+/// Receive a UDP datagram on a bound port.
+/// Buffer receives: [src_ip:4, src_port:u16, payload_len:u16, payload...].
+/// Returns total bytes written (8 + payload), 0=no data/timeout, u32::MAX=error.
+pub fn udp_recvfrom(port: u16, buf: &mut [u8]) -> u32 {
+    syscall3(SYS_UDP_RECVFROM, port as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
+}
+
+/// Set UDP socket option on a bound port.
+/// opt=1: SO_BROADCAST (val=1 enable, 0 disable).
+/// opt=2: SO_RCVTIMEO (val=timeout in ms, 0=non-blocking).
+/// Returns 0 on success, u32::MAX on error.
+pub fn udp_set_opt(port: u16, opt: u32, val: u32) -> u32 {
+    syscall3(SYS_UDP_SET_OPT, port as u64, opt as u64, val as u64)
+}

@@ -13,6 +13,7 @@ const SYS_FONT_MEASURE: u32 = 132;
 const SYS_WIN_DRAW_TEXT_EX: u32 = 133;
 const SYS_WIN_FILL_ROUNDED_RECT: u32 = 134;
 const SYS_GPU_HAS_ACCEL: u32 = 135;
+const SYS_FONT_RENDER_BUF: u32 = 160;
 
 #[inline(always)]
 fn syscall0(num: u32) -> u32 {
@@ -139,6 +140,13 @@ pub fn win_draw_text_ex(win_id: u32, params_ptr: u32) -> u32 {
 #[inline(always)]
 pub fn font_measure(params_ptr: u32) -> u32 {
     syscall1(SYS_FONT_MEASURE, params_ptr as u64)
+}
+
+/// Render TTF text to a user pixel buffer.
+/// params: 36-byte packed struct (see SYS_FONT_RENDER_BUF definition).
+#[inline(always)]
+pub fn font_render_buf(params_ptr: u32) -> u32 {
+    syscall1(SYS_FONT_RENDER_BUF, params_ptr as u64)
 }
 
 /// Query GPU acceleration availability.

@@ -11,4 +11,9 @@ name = "dock"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libcompositor_client",
 ]
+
+[[package]]
+name = "libcompositor_client"
+version = "0.1.0"

@@ -14,6 +14,12 @@ impl MacAddr {
     pub fn as_bytes(&self) -> &[u8; 6] {
         &self.0
     }
+
+    /// Convert a multicast IP to its corresponding multicast MAC (RFC 1112).
+    /// Low 23 bits of IP mapped to 01:00:5E:xx:xx:xx.
+    pub fn from_multicast_ip(ip: Ipv4Addr) -> MacAddr {
+        MacAddr([0x01, 0x00, 0x5E, ip.0[1] & 0x7F, ip.0[2], ip.0[3]])
+    }
 }
 
 impl core::fmt::Display for MacAddr {
@@ -81,6 +87,11 @@ impl Ipv4Addr {
         if !has_digit || idx != 3 { return None; }
         parts[3] = num as u8;
         Some(Ipv4Addr(parts))
+    }
+
+    /// Check if this is a multicast address (224.0.0.0 - 239.255.255.255).
+    pub fn is_multicast(&self) -> bool {
+        self.0[0] >= 224 && self.0[0] <= 239
     }
 
     /// Check if this is a broadcast address for the given subnet

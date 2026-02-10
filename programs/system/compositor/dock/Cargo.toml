@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyos_std = { path = "../../../../stdlib" }
+libcompositor_client = { path = "../../../dll/libcompositor_client" }
 
 [profile.dev]
 panic = "abort"

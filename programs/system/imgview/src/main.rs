@@ -93,6 +93,14 @@ fn main() {
         return;
     }
 
+    // Set up menu bar
+    let mut mb = window::MenuBarBuilder::new()
+        .menu("File")
+            .item(1, "Close", 0)
+        .end_menu();
+    let data = mb.build();
+    window::set_menu(win, data);
+
     let (mut cur_w, mut cur_h) = window::get_size(win).unwrap_or((win_w, win_h));
 
     // Scroll state
@@ -179,6 +187,13 @@ fn main() {
                             clamp_scroll(&mut scroll_x, &mut scroll_y, img_w, img_h, cur_w, cur_h);
                             needs_redraw = true;
                         }
+                        _ => {}
+                    }
+                }
+                window::EVENT_MENU_ITEM => {
+                    let item_id = ev.p2;
+                    match item_id {
+                        1 => { window::destroy(win); return; } // Close
                         _ => {}
                     }
                 }

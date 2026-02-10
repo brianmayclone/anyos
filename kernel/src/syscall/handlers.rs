@@ -36,13 +36,15 @@ unsafe fn read_user_str(ptr: u32) -> &'static str {
 
 /// sys_exit - Terminate the current process
 pub fn sys_exit(status: u32) -> u32 {
-    crate::serial_println!("sys_exit({})", status);
-
-    // Destroy windows owned by this thread
     let tid = crate::task::scheduler::current_tid();
-    crate::ui::desktop::with_desktop(|desktop| {
-        desktop.close_windows_by_owner(tid);
-    });
+    crate::serial_println!("sys_exit({}) TID={}", status, tid);
+
+    // Clean up shared memory mappings while still in user PD context.
+    // Must happen BEFORE switching CR3, so unmap_page operates on the
+    // correct page tables via recursive mapping.
+    if crate::task::scheduler::current_thread_page_directory().is_some() {
+        crate::ipc::shared_memory::cleanup_process(tid);
+    }
 
     if let Some(pd_phys) = crate::task::scheduler::current_thread_page_directory() {
         unsafe {
@@ -60,12 +62,6 @@ pub fn sys_exit(status: u32) -> u32 {
 pub fn sys_kill(tid: u32) -> u32 {
     if tid == 0 { return u32::MAX; }
     crate::serial_println!("sys_kill({})", tid);
-
-    // Destroy windows owned by this thread BEFORE killing it
-    crate::ui::desktop::with_desktop(|desktop| {
-        desktop.close_windows_by_owner(tid);
-    });
-
     crate::task::scheduler::kill_thread(tid)
 }
 
@@ -692,6 +688,105 @@ pub fn sys_tcp_status(socket_id: u32) -> u32 {
     crate::net::tcp::status(socket_id)
 }
 
+// =========================================================================
+// UDP Networking (SYS_UDP_*)
+// =========================================================================
+
+/// sys_udp_bind - Bind to a UDP port (creates receive queue).
+/// arg1=port. Returns 0 on success, u32::MAX if already bound or invalid.
+pub fn sys_udp_bind(port: u32) -> u32 {
+    if port == 0 || port > 65535 { return u32::MAX; }
+    if crate::net::udp::bind(port as u16) { 0 } else { u32::MAX }
+}
+
+/// sys_udp_unbind - Unbind a UDP port.
+/// arg1=port. Returns 0.
+pub fn sys_udp_unbind(port: u32) -> u32 {
+    if port > 65535 { return u32::MAX; }
+    crate::net::udp::unbind(port as u16);
+    0
+}
+
+/// sys_udp_sendto - Send a UDP datagram.
+/// arg1=params_ptr: [dst_ip:4, dst_port:u16, src_port:u16, data_ptr:u32, data_len:u32, flags:u32] = 20 bytes
+/// flags: bit 0 = force broadcast (bypass SO_BROADCAST check).
+/// Returns bytes sent or u32::MAX on error.
+pub fn sys_udp_sendto(params_ptr: u32) -> u32 {
+    if params_ptr == 0 { return u32::MAX; }
+    let params = unsafe { core::slice::from_raw_parts(params_ptr as *const u8, 20) };
+
+    let dst_ip = crate::net::types::Ipv4Addr([params[0], params[1], params[2], params[3]]);
+    let dst_port = u16::from_le_bytes([params[4], params[5]]);
+    let src_port = u16::from_le_bytes([params[6], params[7]]);
+    let data_ptr = u32::from_le_bytes([params[8], params[9], params[10], params[11]]);
+    let data_len = u32::from_le_bytes([params[12], params[13], params[14], params[15]]);
+    let flags = u32::from_le_bytes([params[16], params[17], params[18], params[19]]);
+
+    if data_ptr == 0 || data_len == 0 { return 0; }
+    if data_len > 1472 { return u32::MAX; } // Max UDP payload (1500 - 20 IP - 8 UDP)
+
+    let data = unsafe { core::slice::from_raw_parts(data_ptr as *const u8, data_len as usize) };
+
+    let ok = if flags & 1 != 0 {
+        // Force broadcast flag — skip SO_BROADCAST check
+        crate::net::udp::send_unchecked(dst_ip, src_port, dst_port, data)
+    } else {
+        crate::net::udp::send(dst_ip, src_port, dst_port, data)
+    };
+
+    if ok { data_len } else { u32::MAX }
+}
+
+/// sys_udp_recvfrom - Receive a UDP datagram on a bound port.
+/// arg1=port, arg2=buf_ptr, arg3=buf_len.
+/// Writes header [src_ip:4, src_port:u16, payload_len:u16] (8 bytes) then payload.
+/// Returns total bytes written (8 + payload), 0 = no data/timeout, u32::MAX = error.
+pub fn sys_udp_recvfrom(port: u32, buf_ptr: u32, buf_len: u32) -> u32 {
+    if port == 0 || port > 65535 || buf_ptr == 0 || buf_len < 8 {
+        return u32::MAX;
+    }
+
+    let port16 = port as u16;
+    let timeout_ms = crate::net::udp::get_timeout_ms(port16);
+
+    let dgram = if timeout_ms == 0 {
+        // Non-blocking: poll once then try
+        crate::net::poll();
+        crate::net::udp::recv(port16)
+    } else {
+        let timeout_ticks = timeout_ms / 10; // ms to 100Hz ticks
+        crate::net::udp::recv_timeout(port16, if timeout_ticks == 0 { 1 } else { timeout_ticks })
+    };
+
+    match dgram {
+        Some(d) => {
+            let payload_len = d.data.len().min((buf_len as usize).saturating_sub(8));
+            let total = 8 + payload_len;
+            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize) };
+
+            // Header: src_ip (4 bytes)
+            buf[0..4].copy_from_slice(&d.src_ip.0);
+            // Header: src_port (u16 LE)
+            buf[4..6].copy_from_slice(&d.src_port.to_le_bytes());
+            // Header: payload_len (u16 LE)
+            buf[6..8].copy_from_slice(&(payload_len as u16).to_le_bytes());
+            // Payload
+            buf[8..8 + payload_len].copy_from_slice(&d.data[..payload_len]);
+
+            total as u32
+        }
+        None => 0,
+    }
+}
+
+/// sys_udp_set_opt - Set a per-port socket option.
+/// arg1=port, arg2=opt (1=SO_BROADCAST, 2=SO_RCVTIMEO), arg3=val.
+/// Returns 0 on success, u32::MAX on error.
+pub fn sys_udp_set_opt(port: u32, opt: u32, val: u32) -> u32 {
+    if port == 0 || port > 65535 { return u32::MAX; }
+    if crate::net::udp::set_opt(port as u16, opt, val) { 0 } else { u32::MAX }
+}
+
 /// sys_net_arp - Get ARP table. arg1=buf_ptr, arg2=buf_size
 /// Each entry: [ip:4, mac:6, pad:2] = 12 bytes. Returns entry count.
 pub fn sys_net_arp(buf_ptr: u32, buf_size: u32) -> u32 {
@@ -711,251 +806,29 @@ pub fn sys_net_arp(buf_ptr: u32, buf_size: u32) -> u32 {
 }
 
 // =========================================================================
-// Window Manager (SYS_WIN_*)
+// Window Manager (SYS_WIN_*) — STUBS
+// Kernel compositor removed; apps should use libcompositor + userspace compositor.
+// These stubs return u32::MAX (error) for all window operations.
 // =========================================================================
 
-/// sys_win_create - Create a new window.
-/// arg1=title_ptr, arg2=x|(y<<16), arg3=w|(h<<16), arg4=flags, arg5=0
-/// flags: bit 0 = non-resizable
-/// Returns window_id or u32::MAX.
-pub fn sys_win_create(title_ptr: u32, pos_packed: u32, size_packed: u32, flags: u32, _a5: u32) -> u32 {
-    let title = if title_ptr != 0 { unsafe { read_user_str(title_ptr) } } else { "Window" };
-    let x = (pos_packed & 0xFFFF) as i32;
-    let y = ((pos_packed >> 16) & 0xFFFF) as i32;
-    let w = size_packed & 0xFFFF;
-    let h = (size_packed >> 16) & 0xFFFF;
-    let w = if w == 0 { 400 } else { w };
-    let h = if h == 0 { 300 } else { h };
+pub fn sys_win_create(_: u32, _: u32, _: u32, _: u32, _: u32) -> u32 { u32::MAX }
+pub fn sys_win_destroy(_: u32) -> u32 { u32::MAX }
+pub fn sys_win_set_title(_: u32, _: u32, _: u32) -> u32 { u32::MAX }
+pub fn sys_win_get_event(_: u32, _: u32) -> u32 { 0 }
+pub fn sys_win_fill_rect(_: u32, _: u32) -> u32 { u32::MAX }
+pub fn sys_win_draw_text(_: u32, _: u32) -> u32 { u32::MAX }
+pub fn sys_win_draw_text_mono(_: u32, _: u32) -> u32 { u32::MAX }
+pub fn sys_win_present(_: u32) -> u32 { 0 }
+pub fn sys_win_get_size(_: u32, _: u32) -> u32 { u32::MAX }
+pub fn sys_win_blit(_: u32, _: u32) -> u32 { u32::MAX }
+pub fn sys_win_list(_: u32, _: u32) -> u32 { 0 }
+pub fn sys_win_focus(_: u32) -> u32 { u32::MAX }
 
-    let owner_tid = crate::task::scheduler::current_tid();
-    match crate::ui::desktop::with_desktop(|desktop| {
-        desktop.create_window_with_owner(title, x, y, w, h, flags, owner_tid)
-    }) {
-        Some(id) => id,
-        None => u32::MAX,
-    }
-}
-
-/// sys_win_destroy - Actually destroy a window and free resources.
-pub fn sys_win_destroy(window_id: u32) -> u32 {
-    crate::ui::desktop::with_desktop(|desktop| desktop.destroy_window(window_id));
-    0
-}
-
-/// sys_win_set_title - Set window title.
-pub fn sys_win_set_title(window_id: u32, title_ptr: u32, _len: u32) -> u32 {
-    if title_ptr == 0 { return u32::MAX; }
-    let title = unsafe { read_user_str(title_ptr) };
-    crate::ui::desktop::with_desktop(|desktop| {
-        if let Some(w) = desktop.window_content(window_id) {
-            w.title = String::from(title);
-            w.mark_dirty();
-        }
-    });
-    0
-}
-
-/// sys_win_get_event - Poll for a window event.
-/// arg1=window_id, arg2=event_buf_ptr (20 bytes: [type:u32, p1-p4:u32])
-/// Returns 1 if event, 0 if none.
-pub fn sys_win_get_event(window_id: u32, buf_ptr: u32) -> u32 {
-    if buf_ptr == 0 { return u32::MAX; }
-    match crate::ui::desktop::with_desktop(|desktop| {
-        desktop.poll_user_event(window_id)
-    }) {
-        Some(Some(event)) => {
-            unsafe {
-                let buf = buf_ptr as *mut u32;
-                for i in 0..5 { *buf.add(i) = event[i]; }
-            }
-            1
-        }
-        _ => 0,
-    }
-}
-
-/// sys_win_fill_rect - Fill rectangle in window content.
-/// arg1=window_id, arg2=params_ptr: [x:i16, y:i16, w:u16, h:u16, color:u32] = 12 bytes
-pub fn sys_win_fill_rect(window_id: u32, params_ptr: u32) -> u32 {
-    if params_ptr == 0 { return u32::MAX; }
-    let (x, y, w, h, color) = unsafe {
-        let p = params_ptr as *const u8;
-        (
-            i16::from_le_bytes([*p, *p.add(1)]) as i32,
-            i16::from_le_bytes([*p.add(2), *p.add(3)]) as i32,
-            u16::from_le_bytes([*p.add(4), *p.add(5)]) as u32,
-            u16::from_le_bytes([*p.add(6), *p.add(7)]) as u32,
-            u32::from_le_bytes([*p.add(8), *p.add(9), *p.add(10), *p.add(11)]),
-        )
-    };
-    crate::ui::desktop::with_desktop(|desktop| {
-        if let Some(window) = desktop.window_content(window_id) {
-            let rect = crate::graphics::rect::Rect::new(x, y, w, h);
-            window.content.fill_rect(rect, crate::graphics::color::Color::from_u32(color));
-            window.mark_dirty();
-        }
-    });
-    0
-}
-
-/// sys_win_draw_text - Draw text in window content.
-/// arg1=window_id, arg2=params_ptr: [x:i16, y:i16, color:u32, text_ptr:u32] = 12 bytes
-pub fn sys_win_draw_text(window_id: u32, params_ptr: u32) -> u32 {
-    if params_ptr == 0 { return u32::MAX; }
-    let (x, y, color, text) = unsafe {
-        let p = params_ptr as *const u8;
-        let x = i16::from_le_bytes([*p, *p.add(1)]) as i32;
-        let y = i16::from_le_bytes([*p.add(2), *p.add(3)]) as i32;
-        let color = u32::from_le_bytes([*p.add(4), *p.add(5), *p.add(6), *p.add(7)]);
-        let text_ptr = u32::from_le_bytes([*p.add(8), *p.add(9), *p.add(10), *p.add(11)]);
-        (x, y, color, read_user_str(text_ptr))
-    };
-    crate::ui::desktop::with_desktop(|desktop| {
-        if let Some(window) = desktop.window_content(window_id) {
-            crate::graphics::font::draw_string(
-                &mut window.content, x, y, text,
-                crate::graphics::color::Color::from_u32(color),
-            );
-            window.mark_dirty();
-        }
-    });
-    0
-}
-
-/// sys_win_draw_text_mono - Draw text using the monospace bitmap font (8x16).
-/// Same parameter format as sys_win_draw_text.
-pub fn sys_win_draw_text_mono(window_id: u32, params_ptr: u32) -> u32 {
-    if params_ptr == 0 { return u32::MAX; }
-    let (x, y, color, text) = unsafe {
-        let p = params_ptr as *const u8;
-        let x = i16::from_le_bytes([*p, *p.add(1)]) as i32;
-        let y = i16::from_le_bytes([*p.add(2), *p.add(3)]) as i32;
-        let color = u32::from_le_bytes([*p.add(4), *p.add(5), *p.add(6), *p.add(7)]);
-        let text_ptr = u32::from_le_bytes([*p.add(8), *p.add(9), *p.add(10), *p.add(11)]);
-        (x, y, color, read_user_str(text_ptr))
-    };
-    crate::ui::desktop::with_desktop(|desktop| {
-        if let Some(window) = desktop.window_content(window_id) {
-            crate::graphics::font::draw_string_bitmap(
-                &mut window.content, x, y, text,
-                crate::graphics::color::Color::from_u32(color),
-            );
-            window.mark_dirty();
-        }
-    });
-    0
-}
-
-/// sys_win_present - Flush window to compositor.
-pub fn sys_win_present(window_id: u32) -> u32 {
-    crate::ui::desktop::with_desktop(|desktop| {
-        desktop.render_window(window_id);
-    });
-    0
-}
-
-/// sys_win_get_size - Get window content size. arg2=buf_ptr: [w:u32, h:u32]
-pub fn sys_win_get_size(window_id: u32, buf_ptr: u32) -> u32 {
-    if buf_ptr == 0 { return u32::MAX; }
-    match crate::ui::desktop::with_desktop(|desktop| {
-        desktop.window_content(window_id).map(|w| (w.width, w.height))
-    }) {
-        Some(Some((w, h))) => {
-            unsafe {
-                let buf = buf_ptr as *mut u32;
-                *buf = w;
-                *buf.add(1) = h;
-            }
-            0
-        }
-        _ => u32::MAX,
-    }
-}
-
-/// sys_win_blit - Blit ARGB pixel data (u32 per pixel, 0xAARRGGBB) to window content surface.
-/// Copies pixels directly (no alpha blending). The caller provides pre-composited
-/// ARGB data; alpha blending with layers below happens in the compositor.
-/// params_ptr: [x:i16, y:i16, w:u16, h:u16, data_ptr:u32] = 12 bytes
-pub fn sys_win_blit(window_id: u32, params_ptr: u32) -> u32 {
-    if params_ptr == 0 { return u32::MAX; }
-    let params = unsafe { core::slice::from_raw_parts(params_ptr as *const u8, 12) };
-    let x = i16::from_le_bytes([params[0], params[1]]) as i32;
-    let y = i16::from_le_bytes([params[2], params[3]]) as i32;
-    let w = u16::from_le_bytes([params[4], params[5]]) as u32;
-    let h = u16::from_le_bytes([params[6], params[7]]) as u32;
-    let data_ptr = u32::from_le_bytes([params[8], params[9], params[10], params[11]]);
-
-    if data_ptr == 0 || w == 0 || h == 0 { return u32::MAX; }
-    let pixel_count = (w * h) as usize;
-    let src = unsafe { core::slice::from_raw_parts(data_ptr as *const u32, pixel_count) };
-
-    crate::ui::desktop::with_desktop(|desktop| {
-        if let Some(win) = desktop.window_content(window_id) {
-            let surface = &mut win.content;
-            for row in 0..h as i32 {
-                let sy = y + row;
-                if sy < 0 || sy >= surface.height as i32 { continue; }
-                let dst_row_start = (sy as u32 * surface.width) as usize;
-                let src_row_start = (row as u32 * w) as usize;
-                for col in 0..w as i32 {
-                    let sx = x + col;
-                    if sx < 0 || sx >= surface.width as i32 { continue; }
-                    surface.pixels[dst_row_start + sx as usize] =
-                        src[src_row_start + col as usize];
-                }
-            }
-            win.mark_dirty();
-        }
-    });
-    0
-}
-
-/// sys_win_list - List open windows. buf_ptr: array of 64-byte entries.
-/// Each entry: [id:u32, title_len:u32, title:56bytes]
-/// Returns number of windows.
-pub fn sys_win_list(buf_ptr: u32, max_entries: u32) -> u32 {
-    match crate::ui::desktop::with_desktop(|desktop| {
-        let count = desktop.windows.len();
-        if buf_ptr != 0 && max_entries > 0 {
-            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, (max_entries as usize) * 64) };
-            for (i, w) in desktop.windows.iter().enumerate().take(max_entries as usize) {
-                let off = i * 64;
-                // id
-                buf[off..off + 4].copy_from_slice(&w.id.to_le_bytes());
-                // title_len
-                let title_bytes = w.title.as_bytes();
-                let tlen = title_bytes.len().min(56);
-                buf[off + 4..off + 8].copy_from_slice(&(tlen as u32).to_le_bytes());
-                // title
-                buf[off + 8..off + 8 + tlen].copy_from_slice(&title_bytes[..tlen]);
-                // zero-fill remainder
-                for b in &mut buf[off + 8 + tlen..off + 64] { *b = 0; }
-            }
-        }
-        count as u32
-    }) {
-        Some(c) => c,
-        None => 0,
-    }
-}
-
-/// sys_win_focus - Focus/raise a window by ID.
-pub fn sys_win_focus(window_id: u32) -> u32 {
-    match crate::ui::desktop::with_desktop(|desktop| {
-        desktop.focus_window_by_id(window_id)
-    }) {
-        Some(_) => 0,
-        None => u32::MAX,
-    }
-}
-
-/// sys_screen_size - Get screen dimensions. buf_ptr: [width:u32, height:u32]
+/// sys_screen_size - Get screen dimensions from GPU driver.
 pub fn sys_screen_size(buf_ptr: u32) -> u32 {
     if buf_ptr == 0 { return u32::MAX; }
-    match crate::ui::desktop::with_desktop(|desktop| {
-        (desktop.screen_width, desktop.screen_height)
-    }) {
-        Some((w, h)) => {
+    match crate::drivers::gpu::with_gpu(|g| g.get_mode()) {
+        Some((w, h, _pitch, _addr)) => {
             unsafe {
                 let buf = buf_ptr as *mut u32;
                 *buf = w;
@@ -963,7 +836,20 @@ pub fn sys_screen_size(buf_ptr: u32) -> u32 {
             }
             0
         }
-        None => u32::MAX,
+        None => {
+            // Fallback to boot framebuffer info
+            match crate::drivers::framebuffer::info() {
+                Some(fb) => {
+                    unsafe {
+                        let buf = buf_ptr as *mut u32;
+                        *buf = fb.width;
+                        *buf.add(1) = fb.height;
+                    }
+                    0
+                }
+                None => u32::MAX,
+            }
+        }
     }
 }
 
@@ -971,15 +857,13 @@ pub fn sys_screen_size(buf_ptr: u32) -> u32 {
 // Display / GPU
 // =========================================================================
 
-/// sys_set_resolution - Change display resolution
+/// sys_set_resolution - Change display resolution via GPU driver.
 pub fn sys_set_resolution(width: u32, height: u32) -> u32 {
     if width == 0 || height == 0 || width > 4096 || height > 4096 {
         return u32::MAX;
     }
-    match crate::ui::desktop::with_desktop(|desktop| {
-        desktop.change_resolution(width, height)
-    }) {
-        Some(true) => 0,
+    match crate::drivers::gpu::with_gpu(|g| g.set_mode(width, height, 32)) {
+        Some(Some(_)) => 0,
         _ => u32::MAX,
     }
 }
@@ -1138,118 +1022,72 @@ pub fn sys_font_measure(params_ptr: u32) -> u32 {
     0
 }
 
-/// SYS_WIN_DRAW_TEXT_EX: Draw text with explicit font_id and size.
-/// params_ptr: [x:i16, y:i16, color:u32, font_id:u16, size:u16, text_ptr:u32] = 16 bytes
-pub fn sys_win_draw_text_ex(window_id: u32, params_ptr: u32) -> u32 {
-    if params_ptr == 0 { return u32::MAX; }
-    let (x, y, color, font_id, size, text) = unsafe {
-        let p = params_ptr as *const u8;
-        let x = i16::from_le_bytes([*p, *p.add(1)]) as i32;
-        let y = i16::from_le_bytes([*p.add(2), *p.add(3)]) as i32;
-        let color = u32::from_le_bytes([*p.add(4), *p.add(5), *p.add(6), *p.add(7)]);
-        let font_id = u16::from_le_bytes([*p.add(8), *p.add(9)]);
-        let size = u16::from_le_bytes([*p.add(10), *p.add(11)]);
-        let text_ptr = u32::from_le_bytes([*p.add(12), *p.add(13), *p.add(14), *p.add(15)]);
-        (x, y, color, font_id, size, read_user_str(text_ptr))
-    };
-    crate::ui::desktop::with_desktop(|desktop| {
-        if let Some(window) = desktop.window_content(window_id) {
-            if crate::graphics::font_manager::is_ready() {
-                crate::graphics::font_manager::draw_string(
-                    &mut window.content, x, y, text,
-                    crate::graphics::color::Color::from_u32(color),
-                    font_id, size,
-                );
-            } else {
-                crate::graphics::font::draw_string_sized(
-                    &mut window.content, x, y, text,
-                    crate::graphics::color::Color::from_u32(color),
-                    size,
-                );
-            }
-            window.mark_dirty();
-        }
-    });
-    0
-}
+/// SYS_WIN_DRAW_TEXT_EX — stub (kernel compositor removed).
+pub fn sys_win_draw_text_ex(_: u32, _: u32) -> u32 { u32::MAX }
 
-/// SYS_WIN_FILL_ROUNDED_RECT: Fill an AA rounded rect in window content.
-/// params_ptr: [x:i16, y:i16, w:u16, h:u16, radius:u16, _pad:u16, color:u32] = 16 bytes
-pub fn sys_win_fill_rounded_rect(window_id: u32, params_ptr: u32) -> u32 {
-    if params_ptr == 0 { return u32::MAX; }
-    let (x, y, w, h, radius, color) = unsafe {
-        let p = params_ptr as *const u8;
-        (
-            i16::from_le_bytes([*p, *p.add(1)]) as i32,
-            i16::from_le_bytes([*p.add(2), *p.add(3)]) as i32,
-            u16::from_le_bytes([*p.add(4), *p.add(5)]) as u32,
-            u16::from_le_bytes([*p.add(6), *p.add(7)]) as u32,
-            u16::from_le_bytes([*p.add(8), *p.add(9)]) as i32,
-            u32::from_le_bytes([*p.add(12), *p.add(13), *p.add(14), *p.add(15)]),
-        )
-    };
-    let use_aa = crate::graphics::font_manager::gpu_accel_enabled();
-    crate::ui::desktop::with_desktop(|desktop| {
-        if let Some(window) = desktop.window_content(window_id) {
-            let rect = crate::graphics::rect::Rect::new(x, y, w, h);
-            let c = crate::graphics::color::Color::from_u32(color);
-            let mut renderer = crate::graphics::renderer::Renderer::new(&mut window.content);
-            if use_aa {
-                renderer.fill_rounded_rect_aa(rect, radius, c);
-            } else {
-                renderer.fill_rounded_rect(rect, radius, c);
-            }
-            window.mark_dirty();
-        }
-    });
-    0
-}
+/// SYS_WIN_FILL_ROUNDED_RECT — stub (kernel compositor removed).
+pub fn sys_win_fill_rounded_rect(_: u32, _: u32) -> u32 { u32::MAX }
 
 /// SYS_GPU_HAS_ACCEL: Query if GPU acceleration is available.
 pub fn sys_gpu_has_accel() -> u32 {
     if crate::graphics::font_manager::gpu_accel_enabled() { 1 } else { 0 }
 }
 
-/// SYS_SET_WALLPAPER: Set desktop wallpaper from decoded pixel data.
-/// params_ptr: [w:u32, h:u32, pixels_ptr:u32, pixel_count:u32, mode:u32] = 20 bytes
-pub fn sys_set_wallpaper(params_ptr: u32) -> u32 {
+/// SYS_SET_WALLPAPER — stub (userspace compositor manages wallpaper).
+pub fn sys_set_wallpaper(_: u32) -> u32 { 0 }
+
+/// SYS_BOOT_READY — no-op (userspace compositor manages its own boot sequence).
+pub fn sys_boot_ready() -> u32 { 0 }
+
+/// SYS_FONT_RENDER_BUF: Render TTF text to a user-provided ARGB pixel buffer.
+/// params_ptr: [buf_ptr:u32, buf_w:u32, buf_h:u32, x:i32, y:i32, color:u32,
+///              font_id:u16, size:u16, text_ptr:u32, text_len:u32] = 36 bytes
+pub fn sys_font_render_buf(params_ptr: u32) -> u32 {
     if params_ptr == 0 { return u32::MAX; }
-    let (w, h, pixels_ptr, pixel_count, _mode) = unsafe {
-        let p = params_ptr as *const u8;
+    let p = params_ptr as *const u8;
+    let (buf_ptr, buf_w, buf_h, x, y, color, font_id, size, text_ptr, text_len) = unsafe {
         (
             u32::from_le_bytes([*p, *p.add(1), *p.add(2), *p.add(3)]),
             u32::from_le_bytes([*p.add(4), *p.add(5), *p.add(6), *p.add(7)]),
             u32::from_le_bytes([*p.add(8), *p.add(9), *p.add(10), *p.add(11)]),
-            u32::from_le_bytes([*p.add(12), *p.add(13), *p.add(14), *p.add(15)]),
-            u32::from_le_bytes([*p.add(16), *p.add(17), *p.add(18), *p.add(19)]),
+            i32::from_le_bytes([*p.add(12), *p.add(13), *p.add(14), *p.add(15)]),
+            i32::from_le_bytes([*p.add(16), *p.add(17), *p.add(18), *p.add(19)]),
+            u32::from_le_bytes([*p.add(20), *p.add(21), *p.add(22), *p.add(23)]),
+            u16::from_le_bytes([*p.add(24), *p.add(25)]),
+            u16::from_le_bytes([*p.add(26), *p.add(27)]),
+            u32::from_le_bytes([*p.add(28), *p.add(29), *p.add(30), *p.add(31)]),
+            u32::from_le_bytes([*p.add(32), *p.add(33), *p.add(34), *p.add(35)]),
         )
     };
-    if pixels_ptr == 0 || w == 0 || h == 0 || pixel_count == 0 {
-        crate::serial_println!("sys_set_wallpaper: invalid params (ptr={:#x} w={} h={} count={})",
-            pixels_ptr, w, h, pixel_count);
-        return u32::MAX;
-    }
-    let expected = (w * h) as usize;
-    if pixel_count as usize != expected {
-        crate::serial_println!("sys_set_wallpaper: count mismatch ({} != {})", pixel_count, expected);
-        return u32::MAX;
-    }
-    let pixels = unsafe {
-        core::slice::from_raw_parts(pixels_ptr as *const u32, expected)
-    };
-    crate::ui::desktop::with_desktop(|desktop| {
-        desktop.set_wallpaper(w, h, pixels);
-    });
-    0
-}
+    if buf_ptr == 0 || buf_w == 0 || buf_h == 0 { return u32::MAX; }
+    if text_ptr == 0 || text_len == 0 || text_len > 4096 { return u32::MAX; }
 
-pub fn sys_boot_ready() -> u32 {
-    use core::sync::atomic::{AtomicBool, Ordering};
-    static CALLED: AtomicBool = AtomicBool::new(false);
-    if CALLED.swap(true, Ordering::SeqCst) {
-        return u32::MAX; // already called once
-    }
-    crate::ui::desktop::signal_boot_ready();
+    let text = unsafe {
+        let bytes = core::slice::from_raw_parts(text_ptr as *const u8, text_len as usize);
+        match core::str::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(_) => return u32::MAX,
+        }
+    };
+
+    let pixel_count = (buf_w as usize) * (buf_h as usize);
+    let pixel_slice = unsafe {
+        core::slice::from_raw_parts_mut(buf_ptr as *mut u32, pixel_count)
+    };
+    // Wrap user buffer in a temporary Surface (no allocation)
+    let pixels_vec = unsafe { alloc::vec::Vec::from_raw_parts(pixel_slice.as_mut_ptr(), pixel_count, pixel_count) };
+    let mut surface = crate::graphics::surface::Surface {
+        width: buf_w,
+        height: buf_h,
+        pixels: pixels_vec,
+        opaque: false,
+    };
+
+    let col = crate::graphics::color::Color::from_u32(color);
+    crate::graphics::font_manager::draw_string(&mut surface, x, y, text, col, font_id, size);
+
+    // Don't free the user buffer
+    core::mem::forget(surface.pixels);
     0
 }
 
@@ -1438,4 +1276,287 @@ pub fn sys_evt_chan_unsubscribe(chan_id: u32, sub_id: u32) -> u32 {
 pub fn sys_evt_chan_destroy(chan_id: u32) -> u32 {
     event_bus::channel_destroy(chan_id);
     0
+}
+
+// =========================================================================
+// Shared memory (SYS_SHM_CREATE, SYS_SHM_MAP, SYS_SHM_UNMAP, SYS_SHM_DESTROY)
+// =========================================================================
+
+/// Create a shared memory region. ebx=size (bytes, rounded up to page).
+/// Returns shm_id (>0) on success, 0 on failure.
+pub fn sys_shm_create(size: u32) -> u32 {
+    let tid = crate::task::scheduler::current_tid();
+    match crate::ipc::shared_memory::create(size as usize, tid) {
+        Some(id) => id,
+        None => 0,
+    }
+}
+
+/// Map a shared memory region into the caller's address space.
+/// ebx=shm_id. Returns virtual address (u32) or 0 on failure.
+pub fn sys_shm_map(shm_id: u32) -> u32 {
+    crate::ipc::shared_memory::map_into_current(shm_id) as u32
+}
+
+/// Unmap a shared memory region from the caller's address space.
+/// ebx=shm_id. Returns 0 on success, u32::MAX on failure.
+pub fn sys_shm_unmap(shm_id: u32) -> u32 {
+    if crate::ipc::shared_memory::unmap_from_current(shm_id) {
+        0
+    } else {
+        u32::MAX
+    }
+}
+
+/// Destroy a shared memory region (owner only).
+/// ebx=shm_id. Returns 0 on success, u32::MAX on failure.
+pub fn sys_shm_destroy(shm_id: u32) -> u32 {
+    let tid = crate::task::scheduler::current_tid();
+    if crate::ipc::shared_memory::destroy(shm_id, tid) {
+        0
+    } else {
+        u32::MAX
+    }
+}
+
+// =========================================================================
+// Compositor-privileged syscalls
+// =========================================================================
+
+use core::sync::atomic::{AtomicU32, Ordering};
+
+/// TID of the registered compositor process. 0 = none registered.
+static COMPOSITOR_TID: AtomicU32 = AtomicU32::new(0);
+
+/// Check if the current thread is the registered compositor.
+fn is_compositor() -> bool {
+    let tid = crate::task::scheduler::current_tid();
+    tid != 0 && COMPOSITOR_TID.load(Ordering::Relaxed) == tid
+}
+
+/// Register calling process as the compositor. First caller wins.
+/// Returns 0 on success, u32::MAX if already registered.
+pub fn sys_register_compositor() -> u32 {
+    let tid = crate::task::scheduler::current_tid();
+    if COMPOSITOR_TID.compare_exchange(0, tid, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+        // Disable boot splash cursor — compositor owns cursor from now on
+        crate::drivers::gpu::disable_splash_cursor();
+        crate::serial_println!("[OK] Compositor registered (TID={})", tid);
+        0
+    } else {
+        u32::MAX // Already registered
+    }
+}
+
+/// Map the GPU framebuffer into the compositor's address space.
+/// ebx=out_info_ptr (pointer to FbMapInfo struct, 16 bytes).
+/// Returns 0 on success, u32::MAX on failure.
+///
+/// FbMapInfo layout: { fb_vaddr: u32, width: u32, height: u32, pitch: u32 }
+pub fn sys_map_framebuffer(out_info_ptr: u32) -> u32 {
+    if !is_compositor() {
+        return u32::MAX;
+    }
+
+    // Get framebuffer info from GPU driver
+    let (width, height, pitch, fb_phys) = match crate::drivers::gpu::with_gpu(|g| g.get_mode()) {
+        Some(m) => m,
+        None => return u32::MAX,
+    };
+
+    // Map 16 MiB of VRAM into the compositor's address space at 0x20000000
+    // (covers all resolutions up to 1920x1080 double-buffered)
+    let fb_user_base: u64 = 0x2000_0000;
+    let fb_map_size: usize = 16 * 1024 * 1024;
+    let pages = fb_map_size / crate::memory::FRAME_SIZE;
+
+    for i in 0..pages {
+        let phys_addr = crate::memory::address::PhysAddr::new(
+            fb_phys as u64 + (i * crate::memory::FRAME_SIZE) as u64,
+        );
+        let virt_addr = crate::memory::address::VirtAddr::new(
+            fb_user_base + (i * crate::memory::FRAME_SIZE) as u64,
+        );
+        // Present + Writable + User + Write-Through (0x0F)
+        crate::memory::virtual_mem::map_page(virt_addr, phys_addr, 0x0F);
+    }
+
+    // Write FbMapInfo struct to user memory
+    if out_info_ptr != 0 {
+        let info = unsafe { &mut *(out_info_ptr as *mut [u32; 4]) };
+        info[0] = fb_user_base as u32;
+        info[1] = width;
+        info[2] = height;
+        info[3] = pitch;
+    }
+
+    crate::serial_println!(
+        "[OK] Framebuffer mapped to compositor at {:#010x} ({}x{}, pitch={}, phys={:#x})",
+        fb_user_base, width, height, pitch, fb_phys
+    );
+    0
+}
+
+/// Submit GPU acceleration commands from the compositor.
+/// ebx=cmd_buf_ptr, ecx=cmd_count.
+/// Returns number of commands executed, or u32::MAX on error.
+///
+/// Each command is 36 bytes: { cmd_type: u32, args: [u32; 8] }
+/// Command types: 1=UPDATE, 2=FILL_RECT, 3=COPY_RECT, 4=CURSOR_MOVE,
+///                5=CURSOR_SHOW, 6=DEFINE_CURSOR, 7=FLIP
+pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
+    if !is_compositor() {
+        return u32::MAX;
+    }
+    if cmd_count == 0 || cmd_buf_ptr == 0 {
+        return 0;
+    }
+
+    let count = cmd_count.min(256) as usize; // Cap at 256 commands per call
+    let cmds = unsafe {
+        core::slice::from_raw_parts(cmd_buf_ptr as *const [u32; 9], count)
+    };
+
+    let mut executed = 0u32;
+    for cmd in cmds {
+        let cmd_type = cmd[0];
+        let ok = crate::drivers::gpu::with_gpu(|g| {
+            match cmd_type {
+                1 => { // UPDATE(x, y, w, h)
+                    g.update_rect(cmd[1], cmd[2], cmd[3], cmd[4]);
+                    true
+                }
+                2 => { // FILL_RECT(x, y, w, h, color)
+                    g.accel_fill_rect(cmd[1], cmd[2], cmd[3], cmd[4], cmd[5])
+                }
+                3 => { // COPY_RECT(sx, sy, dx, dy, w, h)
+                    g.accel_copy_rect(cmd[1], cmd[2], cmd[3], cmd[4], cmd[5], cmd[6])
+                }
+                4 => { // CURSOR_MOVE(x, y)
+                    g.move_cursor(cmd[1], cmd[2]);
+                    true
+                }
+                5 => { // CURSOR_SHOW(visible)
+                    g.show_cursor(cmd[1] != 0);
+                    true
+                }
+                6 => { // DEFINE_CURSOR(w, h, hotx, hoty, pixels_ptr_lo, pixels_ptr_hi, pixel_count)
+                    let w = cmd[1];
+                    let h = cmd[2];
+                    let hotx = cmd[3];
+                    let hoty = cmd[4];
+                    let ptr = (cmd[5] as u64) | ((cmd[6] as u64) << 32);
+                    let count = cmd[7] as usize;
+                    if w == 0 || h == 0 || count == 0 || ptr == 0 {
+                        false
+                    } else if count != (w * h) as usize {
+                        false
+                    } else {
+                        let pixels = unsafe {
+                            core::slice::from_raw_parts(ptr as *const u32, count)
+                        };
+                        g.define_cursor(w, h, hotx, hoty, pixels);
+                        true
+                    }
+                }
+                7 => { // FLIP
+                    g.flip();
+                    true
+                }
+                _ => false,
+            }
+        });
+        if ok == Some(true) {
+            executed += 1;
+        }
+    }
+
+    executed
+}
+
+/// Poll raw input events for the compositor.
+/// ebx=buf_ptr (array of RawInputEvent), ecx=max_events.
+/// Returns number of events written.
+///
+/// RawInputEvent layout (20 bytes): { event_type: u32, arg0-arg3: u32 }
+/// Event types:
+///   1 = KEY_DOWN:     arg0=scancode, arg1=char_value, arg2=modifiers
+///   2 = KEY_UP:       arg0=scancode, arg1=char_value, arg2=modifiers
+///   3 = MOUSE_MOVE:   arg0=dx(i32), arg1=dy(i32)
+///   4 = MOUSE_BUTTON: arg0=buttons, arg1=1(down)/0(up)
+///   5 = MOUSE_SCROLL: arg0=dz(i32)
+pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
+    if !is_compositor() {
+        return u32::MAX;
+    }
+    if buf_ptr == 0 || max_events == 0 {
+        return 0;
+    }
+
+    let max = max_events.min(256) as usize;
+    let events = unsafe {
+        core::slice::from_raw_parts_mut(buf_ptr as *mut [u32; 5], max)
+    };
+    let mut count = 0usize;
+
+    // Drain keyboard events
+    while count < max {
+        match crate::drivers::input::keyboard::read_event() {
+            Some(key_evt) => {
+                let event_type: u32 = if key_evt.pressed { 1 } else { 2 };
+                let char_val = match key_evt.key {
+                    crate::drivers::input::keyboard::Key::Char(c) => c as u32,
+                    crate::drivers::input::keyboard::Key::Enter => 0x0D,
+                    crate::drivers::input::keyboard::Key::Backspace => 0x08,
+                    crate::drivers::input::keyboard::Key::Tab => 0x09,
+                    crate::drivers::input::keyboard::Key::Escape => 0x1B,
+                    crate::drivers::input::keyboard::Key::Space => 0x20,
+                    crate::drivers::input::keyboard::Key::Delete => 0x7F,
+                    _ => 0,
+                };
+                let mods = (key_evt.modifiers.shift as u32)
+                    | ((key_evt.modifiers.ctrl as u32) << 1)
+                    | ((key_evt.modifiers.alt as u32) << 2)
+                    | ((key_evt.modifiers.caps_lock as u32) << 3);
+
+                events[count] = [event_type, key_evt.scancode as u32, char_val, mods, 0];
+                count += 1;
+            }
+            None => break,
+        }
+    }
+
+    // Drain mouse events
+    while count < max {
+        match crate::drivers::input::mouse::read_event() {
+            Some(mouse_evt) => {
+                use crate::drivers::input::mouse::MouseEventType;
+                let (event_type, arg0, arg1, arg2, arg3) = match mouse_evt.event_type {
+                    MouseEventType::Move => {
+                        (3u32, mouse_evt.dx as u32, mouse_evt.dy as u32, 0, 0)
+                    }
+                    MouseEventType::ButtonDown => {
+                        let btns = (mouse_evt.buttons.left as u32)
+                            | ((mouse_evt.buttons.right as u32) << 1)
+                            | ((mouse_evt.buttons.middle as u32) << 2);
+                        (4, btns, 1, mouse_evt.dx as u32, mouse_evt.dy as u32)
+                    }
+                    MouseEventType::ButtonUp => {
+                        let btns = (mouse_evt.buttons.left as u32)
+                            | ((mouse_evt.buttons.right as u32) << 1)
+                            | ((mouse_evt.buttons.middle as u32) << 2);
+                        (4, btns, 0, mouse_evt.dx as u32, mouse_evt.dy as u32)
+                    }
+                    MouseEventType::Scroll => {
+                        (5, mouse_evt.dz as u32, 0, 0, 0)
+                    }
+                };
+                events[count] = [event_type, arg0, arg1, arg2, arg3];
+                count += 1;
+            }
+            None => break,
+        }
+    }
+
+    count as u32
 }

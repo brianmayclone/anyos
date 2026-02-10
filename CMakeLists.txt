@@ -244,6 +244,8 @@ set(DLL_BINS "")
 add_dll(uisys ${CMAKE_SOURCE_DIR}/programs/dll/uisys)
 add_dll(libimage ${CMAKE_SOURCE_DIR}/programs/dll/libimage)
 add_dll(libfont ${CMAKE_SOURCE_DIR}/programs/dll/libfont)
+add_dll(librender ${CMAKE_SOURCE_DIR}/programs/dll/librender)
+add_dll(libcompositor ${CMAKE_SOURCE_DIR}/programs/dll/libcompositor)
 
 set(RUST_USER_BINS "")
 add_rust_user_program(hello_rust ${CMAKE_SOURCE_DIR}/programs/hello_rust)
@@ -277,6 +279,34 @@ add_rust_system_program(finder      ${CMAKE_SOURCE_DIR}/programs/system/finder)
 add_rust_system_program(notepad     ${CMAKE_SOURCE_DIR}/programs/system/notepad)
 add_rust_system_program(imgview     ${CMAKE_SOURCE_DIR}/programs/system/imgview)
 add_rust_system_program(videoplayer ${CMAKE_SOURCE_DIR}/programs/system/videoplayer)
+
+# Build compositor binary (nested path: /system/compositor/compositor)
+set(COMPOSITOR_SRC_DIR ${CMAKE_SOURCE_DIR}/programs/system/compositor/compositor)
+set(COMPOSITOR_ELF "${CMAKE_BINARY_DIR}/programs/compositor/x86_64-anyos-user/debug/compositor.elf")
+add_custom_command(
+  OUTPUT ${COMPOSITOR_ELF}
+  COMMAND ${CARGO_EXECUTABLE} build
+    --manifest-path ${COMPOSITOR_SRC_DIR}/Cargo.toml
+    --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
+    --target-dir ${CMAKE_BINARY_DIR}/programs/compositor
+  DEPENDS
+    ${COMPOSITOR_SRC_DIR}/Cargo.toml
+    ${COMPOSITOR_SRC_DIR}/build.rs
+    ${COMPOSITOR_SRC_DIR}/src/main.rs
+    ${STDLIB_DEPS}
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Building system program: compositor"
+)
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/system/compositor/compositor
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/system/compositor
+  COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+    ${COMPOSITOR_ELF}
+    ${SYSROOT_DIR}/system/compositor/compositor
+  DEPENDS ${COMPOSITOR_ELF}
+  COMMENT "Converting compositor ELF to flat binary"
+)
+list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/system/compositor/compositor)
 
 # Build dock program (nested path: /system/compositor/dock)
 set(DOCK_SRC_DIR ${CMAKE_SOURCE_DIR}/programs/system/compositor/dock)

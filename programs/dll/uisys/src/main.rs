@@ -4,6 +4,7 @@
 mod syscall;
 mod theme;
 mod draw;
+mod font_bitmap;
 mod components;
 mod exports;
 

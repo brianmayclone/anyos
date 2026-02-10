@@ -24,18 +24,20 @@ pub extern "C" fn searchfield_render(
     let border_color = if focused != 0 { theme::INPUT_FOCUS } else { theme::INPUT_BORDER };
     draw::draw_border(win, x, y, w, h, border_color);
 
-    // Magnifying glass icon (simple "o-" shape)
+    // Magnifying glass icon (simple "Q" glyph placeholder)
+    let (_, icon_h) = draw::text_size(b"Q");
     let icon_x = x + FIELD_PAD + 2;
-    let icon_y = y + (h as i32 - theme::CHAR_HEIGHT as i32) / 2;
-    let icon = b"Q\0"; // Placeholder glyph for search icon
-    draw::draw_text_mono(win, icon_x, icon_y, theme::TEXT_SECONDARY, icon);
+    let icon_y = y + (h as i32 - icon_h as i32) / 2;
+    let icon = b"Q\0";
+    draw::draw_text(win, icon_x, icon_y, theme::TEXT_SECONDARY, icon);
 
     let text_x = x + ICON_WIDTH + FIELD_PAD;
-    let text_y = y + (h as i32 - theme::CHAR_HEIGHT as i32) / 2;
+    let (_, th) = draw::text_size(b"Ay");
+    let text_y = y + (h as i32 - th as i32) / 2;
 
     if text_len > 0 && !text.is_null() {
         let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize + 1) };
-        draw::draw_text_mono(win, text_x, text_y, theme::TEXT, text_slice);
+        draw::draw_text(win, text_x, text_y, theme::TEXT, text_slice);
     } else {
         // Placeholder
         let ph = b"Search\0";
@@ -44,8 +46,13 @@ pub extern "C" fn searchfield_render(
 
     // Cursor
     if focused != 0 {
-        let cursor_x = text_x + cursor_pos as i32 * theme::CHAR_WIDTH as i32;
-        draw::fill_rect(win, cursor_x, text_y, 1, theme::CHAR_HEIGHT, theme::TEXT);
+        let cursor_x = if text_len > 0 && cursor_pos > 0 && !text.is_null() {
+            let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize) };
+            text_x + draw::text_width_n(text_slice, cursor_pos as usize) as i32
+        } else {
+            text_x
+        };
+        draw::fill_rect(win, cursor_x, text_y, 1, th, theme::TEXT);
     }
 }
 

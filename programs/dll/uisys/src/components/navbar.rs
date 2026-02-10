@@ -26,19 +26,19 @@ pub extern "C" fn navbar_render(
 
     // Back button
     if show_back != 0 {
-        // "< " chevron in accent color
         let back_text = b"< Back\0";
         let back_x = x + 12;
-        let back_y = y + (h as i32 - theme::CHAR_HEIGHT as i32) / 2;
+        let (_, bh) = draw::text_size(b"< Back");
+        let back_y = y + (h as i32 - bh as i32) / 2;
         draw::draw_text(win, back_x, back_y, theme::ACCENT, back_text);
     }
 
     // Title (centered)
     if !title.is_null() && title_len > 0 {
         let title_slice = unsafe { core::slice::from_raw_parts(title, title_len as usize + 1) };
-        let text_w = title_len as i32 * 7; // proportional estimate
-        let text_x = x + (w as i32 - text_w) / 2;
-        let text_y = y + (h as i32 - theme::CHAR_HEIGHT as i32) / 2;
+        let (tw, th) = draw::text_size(&title_slice[..title_len as usize]);
+        let text_x = x + (w as i32 - tw as i32) / 2;
+        let text_y = y + (h as i32 - th as i32) / 2;
         draw::draw_text(win, text_x, text_y, theme::TEXT, title_slice);
     }
 }

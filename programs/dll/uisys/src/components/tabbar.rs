@@ -51,9 +51,11 @@ pub extern "C" fn tabbar_render(
                 let label_slice = unsafe {
                     core::slice::from_raw_parts(label_ptr, label_len as usize + 1)
                 };
-                let text_w = label_len as i32 * 7;
-                let text_x = tab_x + (tab_w as i32 - text_w) / 2;
-                let text_y = y + (h as i32 - theme::CHAR_HEIGHT as i32) / 2;
+                let (tw, th) = draw::text_size(unsafe {
+                    core::slice::from_raw_parts(label_ptr, label_len as usize)
+                });
+                let text_x = tab_x + (tab_w as i32 - tw as i32) / 2;
+                let text_y = y + (h as i32 - th as i32) / 2;
                 let fg = if is_selected { theme::ACCENT } else { theme::TEXT_SECONDARY };
                 draw::draw_text(win, text_x, text_y, fg, label_slice);
             }

@@ -24,10 +24,9 @@ pub extern "C" fn imageview_render(
     if data_ptr.is_null() || data_w == 0 || data_h == 0 {
         // Placeholder: draw a centered "No Image" label
         let label = b"No Image\0";
-        let label_len = 8;
-        let text_w = label_len * 7;
-        let text_x = x + (w as i32 - text_w) / 2;
-        let text_y = y + (h as i32 - theme::CHAR_HEIGHT as i32) / 2;
+        let (tw, th) = draw::text_size(b"No Image");
+        let text_x = x + (w as i32 - tw as i32) / 2;
+        let text_y = y + (h as i32 - th as i32) / 2;
         draw::draw_text(win, text_x, text_y, theme::TEXT_DISABLED, label);
 
         // Cross lines for empty placeholder

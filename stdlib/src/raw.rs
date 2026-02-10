@@ -112,6 +112,26 @@ pub(crate) const SYS_WIN_FILL_ROUNDED_RECT: u32 = 134;
 pub(crate) const SYS_GPU_HAS_ACCEL: u32 = 135;
 pub(crate) const SYS_SET_WALLPAPER: u32 = 136;
 pub(crate) const SYS_BOOT_READY: u32 = 137;
+pub(crate) const SYS_FONT_RENDER_BUF: u32 = 160;
+
+// Shared memory
+pub(crate) const SYS_SHM_CREATE: u32 = 140;
+pub(crate) const SYS_SHM_MAP: u32 = 141;
+pub(crate) const SYS_SHM_UNMAP: u32 = 142;
+pub(crate) const SYS_SHM_DESTROY: u32 = 143;
+
+// Compositor-privileged
+pub(crate) const SYS_MAP_FRAMEBUFFER: u32 = 144;
+pub(crate) const SYS_GPU_COMMAND: u32 = 145;
+pub(crate) const SYS_INPUT_POLL: u32 = 146;
+pub(crate) const SYS_REGISTER_COMPOSITOR: u32 = 147;
+
+// UDP networking
+pub(crate) const SYS_UDP_BIND: u32 = 150;
+pub(crate) const SYS_UDP_UNBIND: u32 = 151;
+pub(crate) const SYS_UDP_SENDTO: u32 = 152;
+pub(crate) const SYS_UDP_RECVFROM: u32 = 153;
+pub(crate) const SYS_UDP_SET_OPT: u32 = 154;
 
 // Event bus
 pub(crate) const SYS_EVT_SYS_SUBSCRIBE: u32 = 60;

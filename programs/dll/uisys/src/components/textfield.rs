@@ -22,7 +22,8 @@ pub extern "C" fn textfield_render(
     draw::draw_border(win, x, y, w, h, border_color);
 
     let text_x = x + 6;
-    let text_y = y + (h as i32 - 16) / 2;
+    let (_, th) = draw::text_size(b"Ay");
+    let text_y = y + (h as i32 - th as i32) / 2;
 
     if text_len > 0 {
         if password {
@@ -33,20 +34,25 @@ pub extern "C" fn textfield_render(
                 buf[i] = b'*';
             }
             buf[len] = 0;
-            draw::draw_text_mono(win, text_x, text_y, theme::TEXT, &buf[..len + 1]);
+            draw::draw_text(win, text_x, text_y, theme::TEXT, &buf[..len + 1]);
         } else {
             let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize + 1) };
-            draw::draw_text_mono(win, text_x, text_y, theme::TEXT, text_slice);
+            draw::draw_text(win, text_x, text_y, theme::TEXT, text_slice);
         }
     } else if !placeholder.is_null() && placeholder_len > 0 {
         let ph_slice = unsafe { core::slice::from_raw_parts(placeholder, placeholder_len as usize + 1) };
-        draw::draw_text_mono(win, text_x, text_y, theme::TEXT_SECONDARY, ph_slice);
+        draw::draw_text(win, text_x, text_y, theme::TEXT_SECONDARY, ph_slice);
     }
 
-    // Cursor (blinking handled by caller via flags or timer)
+    // Cursor
     if focused {
-        let cursor_x = text_x + cursor_pos as i32 * 8;
-        draw::fill_rect(win, cursor_x, text_y, 1, 16, theme::TEXT);
+        let cursor_x = if text_len > 0 && cursor_pos > 0 && !text.is_null() {
+            let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize) };
+            text_x + draw::text_width_n(text_slice, cursor_pos as usize) as i32
+        } else {
+            text_x
+        };
+        draw::fill_rect(win, cursor_x, text_y, 1, th, theme::TEXT);
     }
 }
 
@@ -65,6 +71,8 @@ pub extern "C" fn textfield_cursor_from_click(
     let text_x = x + 6;
     let offset = mx - text_x;
     if offset < 0 { return 0; }
-    let pos = (offset / 8) as u32;
-    if pos > text_len { text_len } else { pos }
+    // With proportional font, approximate: use half the average char width
+    // For now, estimate based on average ~7px per char at 13px
+    let approx_pos = (offset / 7) as u32;
+    if approx_pos > text_len { text_len } else { approx_pos }
 }

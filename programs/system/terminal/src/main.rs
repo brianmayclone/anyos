@@ -524,6 +524,17 @@ fn main() {
         return;
     }
 
+    // Set up menu bar
+    let mut mb = window::MenuBarBuilder::new()
+        .menu("Shell")
+            .item(1, "Clear", 0)
+            .item(2, "Help", 0)
+            .separator()
+            .item(3, "Close", 0)
+        .end_menu();
+    let data = mb.build();
+    window::set_menu(win_id, data);
+
     let (mut win_w, mut win_h) = window::get_size(win_id).unwrap_or((640, 400));
     let cols = (win_w / CELL_W as u32) as usize;
     let rows = (win_h / CELL_H as u32) as usize;
@@ -606,6 +617,31 @@ fn main() {
             if event[0] == EVENT_WINDOW_CLOSE {
                 window::destroy(win_id);
                 return;
+            } else if event[0] == window::EVENT_MENU_ITEM {
+                let item_id = event[2];
+                match item_id {
+                    1 => { // Clear
+                        buf.clear();
+                        buf.current_color = COLOR_PROMPT;
+                        let prompt = shell.prompt();
+                        buf.write_str(&prompt);
+                        buf.current_color = COLOR_FG;
+                        dirty = true;
+                    }
+                    2 => { // Help
+                        shell.cmd_help(&mut buf);
+                        buf.current_color = COLOR_PROMPT;
+                        let prompt = shell.prompt();
+                        buf.write_str(&prompt);
+                        buf.current_color = COLOR_FG;
+                        dirty = true;
+                    }
+                    3 => { // Close
+                        window::destroy(win_id);
+                        return;
+                    }
+                    _ => {}
+                }
             } else if event[0] == EVENT_RESIZE {
                 win_w = event[1];
                 win_h = event[2];

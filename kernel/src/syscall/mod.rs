@@ -135,6 +135,28 @@ pub const SYS_GPU_HAS_ACCEL: u32 = 135;
 pub const SYS_SET_WALLPAPER: u32 = 136;
 pub const SYS_BOOT_READY: u32 = 137;
 
+// Shared memory
+pub const SYS_SHM_CREATE: u32 = 140;
+pub const SYS_SHM_MAP: u32 = 141;
+pub const SYS_SHM_UNMAP: u32 = 142;
+pub const SYS_SHM_DESTROY: u32 = 143;
+
+// Font buffer rendering
+pub const SYS_FONT_RENDER_BUF: u32 = 160;
+
+// UDP networking
+pub const SYS_UDP_BIND: u32 = 150;
+pub const SYS_UDP_UNBIND: u32 = 151;
+pub const SYS_UDP_SENDTO: u32 = 152;
+pub const SYS_UDP_RECVFROM: u32 = 153;
+pub const SYS_UDP_SET_OPT: u32 = 154;
+
+// Compositor-privileged syscalls
+pub const SYS_MAP_FRAMEBUFFER: u32 = 144;
+pub const SYS_GPU_COMMAND: u32 = 145;
+pub const SYS_INPUT_POLL: u32 = 146;
+pub const SYS_REGISTER_COMPOSITOR: u32 = 147;
+
 // Window creation flags
 pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x01;
 pub const WIN_FLAG_BORDERLESS: u32 = 0x02;
@@ -247,6 +269,16 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         SYS_TCP_CLOSE => handlers::sys_tcp_close(arg1),
         SYS_TCP_STATUS => handlers::sys_tcp_status(arg1),
 
+        // UDP
+        SYS_UDP_BIND => handlers::sys_udp_bind(arg1),
+        SYS_UDP_UNBIND => handlers::sys_udp_unbind(arg1),
+        SYS_UDP_SENDTO => handlers::sys_udp_sendto(arg1),
+        SYS_UDP_RECVFROM => handlers::sys_udp_recvfrom(arg1, arg2, arg3),
+        SYS_UDP_SET_OPT => handlers::sys_udp_set_opt(arg1, arg2, arg3),
+
+        // Font buffer rendering
+        SYS_FONT_RENDER_BUF => handlers::sys_font_render_buf(arg1),
+
         // Pipes
         SYS_PIPE_CREATE => handlers::sys_pipe_create(arg1),
         SYS_PIPE_READ => handlers::sys_pipe_read(arg1, arg2, arg3),
@@ -301,6 +333,18 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         SYS_GPU_HAS_ACCEL => handlers::sys_gpu_has_accel(),
         SYS_SET_WALLPAPER => handlers::sys_set_wallpaper(arg1),
         SYS_BOOT_READY => handlers::sys_boot_ready(),
+
+        // Shared memory
+        SYS_SHM_CREATE => handlers::sys_shm_create(arg1),
+        SYS_SHM_MAP => handlers::sys_shm_map(arg1),
+        SYS_SHM_UNMAP => handlers::sys_shm_unmap(arg1),
+        SYS_SHM_DESTROY => handlers::sys_shm_destroy(arg1),
+
+        // Compositor-privileged
+        SYS_MAP_FRAMEBUFFER => handlers::sys_map_framebuffer(arg1),
+        SYS_GPU_COMMAND => handlers::sys_gpu_command(arg1, arg2),
+        SYS_INPUT_POLL => handlers::sys_input_poll(arg1, arg2),
+        SYS_REGISTER_COMPOSITOR => handlers::sys_register_compositor(),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

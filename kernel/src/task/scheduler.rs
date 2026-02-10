@@ -19,6 +19,7 @@ static SCHEDULER: Spinlock<Option<Scheduler>> = Spinlock::new(None);
 /// without acquiring any locks (safe for use in fault handlers).
 static mut DEBUG_CURRENT_TID: u32 = 0;
 
+
 /// Total scheduler ticks (incremented every schedule() call).
 static TOTAL_SCHED_TICKS: AtomicU32 = AtomicU32::new(0);
 /// Idle scheduler ticks (incremented when no thread is running).
@@ -279,7 +280,7 @@ fn schedule_inner(from_timer: bool) {
     guard.release_no_irq_restore();
 
     // Context switch with the lock released AND interrupts still disabled.
-    // context_switch.asm restores the target thread's RFLAGS (which includes IF).
+    // context_switch.asm clears IF in restored RFLAGS to prevent races.
     if let Some((old_ctx, new_ctx, old_fpu, new_fpu)) = switch_info {
         // Safety check: validate RIP before switching
         let new_rip = unsafe { (*new_ctx).rip };
@@ -304,6 +305,8 @@ fn schedule_inner(from_timer: bool) {
                     }
                 }
             }
+            // Re-enable interrupts before returning (don't leave IF=0)
+            unsafe { core::arch::asm!("sti"); }
             return;
         }
         // Save current FPU/SSE state, load new thread's FPU/SSE state
@@ -313,6 +316,13 @@ fn schedule_inner(from_timer: bool) {
         }
         unsafe { crate::task::context::context_switch(old_ctx, new_ctx); }
     }
+
+    // Re-enable interrupts. try_lock disabled IF, release_no_irq_restore kept
+    // it disabled through context_switch. For timer-preempted paths this is
+    // harmless (IRET will also restore IF). For voluntary schedule() calls
+    // (e.g. sys_sleep) this is CRITICAL — without it, IF stays 0 permanently,
+    // timer ticks stop, and sleep() loops forever.
+    unsafe { core::arch::asm!("sti"); }
 }
 
 /// Get the current thread's TID.

@@ -21,6 +21,7 @@ exclude = [
   "programs/system/imgview",
   "programs/system/videoplayer",
   "programs/system/compositor/dock",
+  "programs/system/compositor/compositor",
   "programs/mkdir",
   "programs/rm",
   "programs/touch",
@@ -38,6 +39,10 @@ exclude = [
   "programs/dll/libimage_client",
   "programs/dll/libfont",
   "programs/dll/libfont_client",
+  "programs/dll/librender",
+  "programs/dll/librender_client",
+  "programs/dll/libcompositor",
+  "programs/dll/libcompositor_client",
 ]
 resolver = "2"
 

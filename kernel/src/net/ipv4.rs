@@ -89,7 +89,7 @@ pub fn send_ipv4(dst: Ipv4Addr, protocol: u8, payload: &[u8]) -> bool {
     packet.extend_from_slice(payload);
 
     // Resolve destination MAC
-    let next_hop = if cfg.is_local(dst) || dst == Ipv4Addr::BROADCAST {
+    let next_hop = if cfg.is_local(dst) || dst == Ipv4Addr::BROADCAST || dst.is_multicast() {
         dst
     } else {
         cfg.gateway
@@ -97,6 +97,8 @@ pub fn send_ipv4(dst: Ipv4Addr, protocol: u8, payload: &[u8]) -> bool {
 
     let dst_mac = if dst == Ipv4Addr::BROADCAST {
         MacAddr::BROADCAST
+    } else if dst.is_multicast() {
+        MacAddr::from_multicast_ip(dst)
     } else {
         match super::arp::resolve(next_hop, 200) { // 2 second timeout at 100Hz
             Some(mac) => mac,

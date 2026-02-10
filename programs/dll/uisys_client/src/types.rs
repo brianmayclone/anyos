@@ -57,6 +57,7 @@ pub const EVENT_MOUSE_DOWN: u32 = 4;
 pub const EVENT_MOUSE_UP: u32 = 5;
 pub const EVENT_MOUSE_MOVE: u32 = 6;
 pub const EVENT_WINDOW_CLOSE: u32 = 8;
+pub const EVENT_MENU_ITEM: u32 = 9;
 
 // Key codes (must match kernel encode_key in desktop.rs)
 pub const KEY_ENTER: u32 = 0x100;

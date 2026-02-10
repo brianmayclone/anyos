@@ -11,9 +11,4 @@ name = "init"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
- "libimage_client",
 ]
-
-[[package]]
-name = "libimage_client"
-version = "0.1.0"
