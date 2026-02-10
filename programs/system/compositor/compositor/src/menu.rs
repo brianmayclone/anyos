@@ -32,6 +32,15 @@ pub const MENU_FLAG_DISABLED: u32 = 0x01;
 pub const MENU_FLAG_SEPARATOR: u32 = 0x02;
 pub const MENU_FLAG_CHECKED: u32 = 0x04;
 
+// ── Well-known App Menu Item IDs ─────────────────────────────────────────────
+
+/// "About <App>" menu item ID (auto-generated app menu).
+pub const APP_MENU_ABOUT: u32 = 0xFFF0;
+/// "Hide <App>" menu item ID (auto-generated app menu).
+pub const APP_MENU_HIDE: u32 = 0xFFF1;
+/// "Quit <App>" menu item ID (auto-generated app menu).
+pub const APP_MENU_QUIT: u32 = 0xFFF2;
+
 // ── Data Structures ──────────────────────────────────────────────────────────
 
 pub struct MenuItem {
@@ -215,7 +224,21 @@ impl MenuBar {
     // ── Menu Registration ────────────────────────────────────────────────
 
     /// Register/update menu bar for a window.
-    pub fn set_menu(&mut self, window_id: u32, def: MenuBarDef) {
+    /// Automatically prepends an app-name menu (About/Hide/Quit) using `app_name`.
+    pub fn set_menu(&mut self, window_id: u32, mut def: MenuBarDef, app_name: &str) {
+        // Auto-prepend app-name menu (macOS style)
+        let app_menu = Menu {
+            title: String::from(app_name),
+            items: Vec::from([
+                MenuItem { item_id: APP_MENU_ABOUT, flags: 0, label: String::from("About") },
+                MenuItem { item_id: 0, flags: MENU_FLAG_SEPARATOR, label: String::new() },
+                MenuItem { item_id: APP_MENU_HIDE, flags: 0, label: String::from("Hide") },
+                MenuItem { item_id: 0, flags: MENU_FLAG_SEPARATOR, label: String::new() },
+                MenuItem { item_id: APP_MENU_QUIT, flags: 0, label: String::from("Quit") },
+            ]),
+        };
+        def.menus.insert(0, app_menu);
+
         if let Some(entry) = self.window_menus.iter_mut().find(|(id, _)| *id == window_id) {
             entry.1 = def;
         } else {

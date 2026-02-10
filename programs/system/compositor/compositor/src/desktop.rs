@@ -1066,13 +1066,42 @@ impl Desktop {
             if self.menu_bar.is_dropdown_open() {
                 if self.menu_bar.is_in_dropdown(self.mouse_x, self.mouse_y) {
                     if let Some(item_id) = self.menu_bar.hit_test_dropdown(self.mouse_x, self.mouse_y) {
-                        // Send menu item event to the focused window
                         if let Some(win_id) = self.focused_window {
-                            let menu_idx = self.menu_bar.open_dropdown
-                                .as_ref()
-                                .map(|d| d.menu_idx as u32)
-                                .unwrap_or(0);
-                            self.push_event(win_id, [EVENT_MENU_ITEM, menu_idx, item_id, 0, 0]);
+                            match item_id {
+                                menu::APP_MENU_QUIT => {
+                                    // Send close event to the window
+                                    self.push_event(win_id, [EVENT_WINDOW_CLOSE, 0, 0, 0, 0]);
+                                }
+                                menu::APP_MENU_HIDE => {
+                                    // Hide: unfocus and move off-screen (simple hide)
+                                    if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
+                                        let layer_id = self.windows[idx].layer_id;
+                                        // Save current position, then move off-screen
+                                        self.windows[idx].saved_bounds = Some(Rect::new(
+                                            self.windows[idx].x,
+                                            self.windows[idx].y,
+                                            self.windows[idx].content_width,
+                                            self.windows[idx].full_height(),
+                                        ));
+                                        self.compositor.move_layer(layer_id, -10000, -10000);
+                                    }
+                                    // Focus the next window
+                                    let next = self.windows.iter().rev()
+                                        .find(|w| w.id != win_id && w.x >= 0)
+                                        .map(|w| w.id);
+                                    if let Some(nid) = next {
+                                        self.focus_window(nid);
+                                    }
+                                }
+                                _ => {
+                                    // Forward all other items (including APP_MENU_ABOUT) to the app
+                                    let menu_idx = self.menu_bar.open_dropdown
+                                        .as_ref()
+                                        .map(|d| d.menu_idx as u32)
+                                        .unwrap_or(0);
+                                    self.push_event(win_id, [EVENT_MENU_ITEM, menu_idx, item_id, 0, 0]);
+                                }
+                            }
                         }
                     }
                     // Close dropdown after click
@@ -1814,7 +1843,13 @@ impl Desktop {
                     core::slice::from_raw_parts(shm_addr as *const u8, 4096)
                 };
                 if let Some(def) = MenuBarDef::parse(data) {
-                    self.menu_bar.set_menu(window_id, def);
+                    // Get window title to use as the app-name menu
+                    let app_name = self.windows.iter()
+                        .find(|w| w.id == window_id)
+                        .map(|w| w.title.as_str())
+                        .unwrap_or("App");
+                    let app_name_owned = String::from(app_name);
+                    self.menu_bar.set_menu(window_id, def, &app_name_owned);
                     if self.focused_window == Some(window_id) {
                         self.draw_menubar();
                         self.compositor.add_damage(Rect::new(
