@@ -5,33 +5,26 @@
 
 use crate::types::{ImageInfo, VideoInfo};
 
-const NUM_EXPORTS: u32 = 5;
+const NUM_EXPORTS: u32 = 7;
 
 /// Export function table — must be first in the binary (`.exports` section).
-///
-/// ABI layout (x86_64, `#[repr(C)]`):
-///   offset  0: magic [u8; 4]
-///   offset  4: version u32
-///   offset  8: num_exports u32
-///   offset 12: _pad u32
-///   offset 16: video_probe fn ptr (8 bytes)
-///   offset 24: video_decode_frame fn ptr (8 bytes)
-///   offset 32: image_probe fn ptr (8 bytes)  ← same offset as before
-///   offset 40: image_decode fn ptr (8 bytes) ← same offset as before
 #[repr(C)]
 pub struct LibimageExports {
     pub magic: [u8; 4],
     pub version: u32,
     pub num_exports: u32,
     pub _pad: u32,
-    // Video exports (new)
+    // Video exports
     pub video_probe: extern "C" fn(*const u8, u32, *mut VideoInfo) -> i32,
     pub video_decode_frame: extern "C" fn(*const u8, u32, u32, u32, *mut u32, u32, *mut u8, u32) -> i32,
-    // Image exports (unchanged offsets)
+    // Image exports
     pub image_probe: extern "C" fn(*const u8, u32, *mut ImageInfo) -> i32,
     pub image_decode: extern "C" fn(*const u8, u32, *mut u32, u32, *mut u8, u32) -> i32,
     // Scale export
     pub scale_image: extern "C" fn(*const u32, u32, u32, *mut u32, u32, u32, u32) -> i32,
+    // ICO size-aware exports (appended — existing offsets unchanged)
+    pub ico_probe_size: extern "C" fn(*const u8, u32, u32, *mut ImageInfo) -> i32,
+    pub ico_decode_size: extern "C" fn(*const u8, u32, u32, *mut u32, u32, *mut u8, u32) -> i32,
 }
 
 #[link_section = ".exports"]
@@ -47,6 +40,8 @@ pub static LIBIMAGE_EXPORTS: LibimageExports = LibimageExports {
     image_probe: image_probe,
     image_decode: image_decode,
     scale_image: scale_image_export,
+    ico_probe_size: ico_probe_size_export,
+    ico_decode_size: ico_decode_size_export,
 };
 
 // ── Video exports ──────────────────────────────────────
@@ -184,4 +179,45 @@ extern "C" fn scale_image_export(
     mode: u32,
 ) -> i32 {
     crate::scale::scale_image(src, src_w, src_h, dst, dst_w, dst_h, mode)
+}
+
+// ── ICO size-aware exports ───────────────────────────
+
+/// Probe an ICO file selecting the best entry for a preferred size.
+extern "C" fn ico_probe_size_export(
+    data: *const u8, len: u32, preferred_size: u32, info: *mut ImageInfo,
+) -> i32 {
+    if data.is_null() || info.is_null() || len < 6 {
+        return crate::types::ERR_INVALID_DATA;
+    }
+    let data = unsafe { core::slice::from_raw_parts(data, len as usize) };
+    let out = unsafe { &mut *info };
+
+    match crate::ico::probe_for_size(data, preferred_size) {
+        Some(i) => {
+            *out = i;
+            crate::types::ERR_OK
+        }
+        None => crate::types::ERR_UNSUPPORTED,
+    }
+}
+
+/// Decode an ICO file selecting the best entry for a preferred size.
+extern "C" fn ico_decode_size_export(
+    data: *const u8, len: u32, preferred_size: u32,
+    out_pixels: *mut u32, out_len: u32,
+    scratch: *mut u8, scratch_len: u32,
+) -> i32 {
+    if data.is_null() || out_pixels.is_null() || len < 6 {
+        return crate::types::ERR_INVALID_DATA;
+    }
+    let data = unsafe { core::slice::from_raw_parts(data, len as usize) };
+    let out = unsafe { core::slice::from_raw_parts_mut(out_pixels, out_len as usize) };
+    let scratch = if scratch.is_null() || scratch_len == 0 {
+        &mut [][..]
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(scratch, scratch_len as usize) }
+    };
+
+    crate::ico::decode_for_size(data, preferred_size, out, scratch)
 }

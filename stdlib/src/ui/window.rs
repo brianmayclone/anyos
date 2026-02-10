@@ -66,6 +66,14 @@ struct DllExports {
     remove_status_icon: extern "C" fn(channel_id: u32, icon_id: u32),
     update_menu_item:
         extern "C" fn(channel_id: u32, window_id: u32, item_id: u32, new_flags: u32),
+    resize_shm: extern "C" fn(
+        channel_id: u32,
+        window_id: u32,
+        old_shm_id: u32,
+        new_width: u32,
+        new_height: u32,
+        out_new_shm_id: *mut u32,
+    ) -> *mut u32,
 }
 
 #[inline(always)]
@@ -258,11 +266,29 @@ pub fn get_event(window_id: u32, event: &mut [u32; 5]) -> u32 {
         event[3] = buf[4];
         event[4] = 0;
 
-        // Update stored dimensions on resize
+        // Update stored dimensions on resize — must reallocate SHM
         if buf[0] == 0x3006 {
+            let new_w = buf[2];
+            let new_h = buf[3];
             if let Some(win) = find_win_mut(window_id) {
-                win.surface.width = buf[2];
-                win.surface.height = buf[3];
+                // Only reallocate if dimensions actually changed
+                if new_w != win.surface.width || new_h != win.surface.height {
+                    let mut new_shm_id: u32 = 0;
+                    let new_ptr = (dll().resize_shm)(
+                        st.channel_id,
+                        win.comp_id,
+                        win.shm_id,
+                        new_w,
+                        new_h,
+                        &mut new_shm_id,
+                    );
+                    if !new_ptr.is_null() && new_shm_id != 0 {
+                        win.shm_id = new_shm_id;
+                        win.surface.pixels = new_ptr;
+                    }
+                }
+                win.surface.width = new_w;
+                win.surface.height = new_h;
             }
         }
         1

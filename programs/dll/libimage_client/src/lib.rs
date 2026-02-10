@@ -85,6 +85,35 @@ pub fn decode(data: &[u8], pixels: &mut [u32], scratch: &mut [u8]) -> Result<(),
     }
 }
 
+/// Probe an ICO file, selecting the best entry for a preferred display size.
+///
+/// For example, `probe_ico_size(data, 48)` picks the closest entry to 48x48.
+/// Falls back to the next-larger entry when no exact match exists.
+pub fn probe_ico_size(data: &[u8], preferred_size: u32) -> Option<ImageInfo> {
+    let mut info = ImageInfo {
+        width: 0,
+        height: 0,
+        format: FMT_UNKNOWN,
+        scratch_needed: 0,
+    };
+    let ret = (raw::exports().ico_probe_size)(
+        data.as_ptr(), data.len() as u32, preferred_size, &mut info,
+    );
+    if ret == 0 { Some(info) } else { None }
+}
+
+/// Decode an ICO file, selecting the best entry for a preferred display size.
+pub fn decode_ico_size(
+    data: &[u8], preferred_size: u32, pixels: &mut [u32], scratch: &mut [u8],
+) -> Result<(), ImageError> {
+    let ret = (raw::exports().ico_decode_size)(
+        data.as_ptr(), data.len() as u32, preferred_size,
+        pixels.as_mut_ptr(), pixels.len() as u32,
+        scratch.as_mut_ptr(), scratch.len() as u32,
+    );
+    if ret == 0 { Ok(()) } else { Err(err_from_code(ret)) }
+}
+
 /// Get the format name as a string.
 pub fn format_name(format: u32) -> &'static str {
     match format {

@@ -206,9 +206,13 @@ fn load_ico_icon(path: &str) -> Option<Icon> {
         return None;
     }
 
-    let info = match libimage_client::probe(&data) {
+    // Use size-aware ICO probe/decode to pick the best entry for dock size
+    let info = match libimage_client::probe_ico_size(&data, DOCK_ICON_SIZE) {
         Some(i) => i,
-        None => return None,
+        None => match libimage_client::probe(&data) {
+            Some(i) => i,
+            None => return None,
+        },
     };
 
     let src_w = info.width;
@@ -220,7 +224,12 @@ fn load_ico_icon(path: &str) -> Option<Icon> {
     let mut scratch: Vec<u8> = Vec::new();
     scratch.resize(info.scratch_needed as usize, 0);
 
-    if libimage_client::decode(&data, &mut pixels, &mut scratch).is_err() {
+    let decode_ok = if info.format == libimage_client::FMT_ICO {
+        libimage_client::decode_ico_size(&data, DOCK_ICON_SIZE, &mut pixels, &mut scratch).is_ok()
+    } else {
+        libimage_client::decode(&data, &mut pixels, &mut scratch).is_ok()
+    };
+    if !decode_ok {
         return None;
     }
 

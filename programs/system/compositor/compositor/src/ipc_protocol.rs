@@ -82,6 +82,11 @@ pub const CMD_UPDATE_MENU_ITEM: u32 = 0x1009;
 /// If a window with the given owner TID exists, focus and raise it.
 pub const CMD_FOCUS_BY_TID: u32 = 0x100A;
 
+/// Notify compositor of a new (resized) SHM for a window.
+/// [CMD, window_id, new_shm_id, new_width, new_height]
+/// App creates the new SHM, compositor maps it and unmaps the old one.
+pub const CMD_RESIZE_SHM: u32 = 0x100B;
+
 // ── Compositor → App: Menu & Status Icon Events ─────────────────────────────
 
 /// Menu item selected: [EVT, window_id, menu_index, item_id, 0]

@@ -16,9 +16,10 @@ const CMD_SET_MENU: u32 = 0x1006;
 const CMD_ADD_STATUS_ICON: u32 = 0x1007;
 const CMD_REMOVE_STATUS_ICON: u32 = 0x1008;
 const CMD_UPDATE_MENU_ITEM: u32 = 0x1009;
+const CMD_RESIZE_SHM: u32 = 0x100B;
 const RESP_WINDOW_CREATED: u32 = 0x2001;
 
-const NUM_EXPORTS: u32 = 13;
+const NUM_EXPORTS: u32 = 14;
 
 #[repr(C)]
 pub struct LibcompositorExports {
@@ -84,6 +85,17 @@ pub struct LibcompositorExports {
     /// Update a menu item's flags (enable/disable/check).
     pub update_menu_item:
         extern "C" fn(channel_id: u32, window_id: u32, item_id: u32, new_flags: u32),
+
+    /// Resize a window's SHM buffer (creates new SHM, notifies compositor).
+    /// Returns the new SHM surface pointer (null on failure).
+    pub resize_shm: extern "C" fn(
+        channel_id: u32,
+        window_id: u32,
+        old_shm_id: u32,
+        new_width: u32,
+        new_height: u32,
+        out_new_shm_id: *mut u32,
+    ) -> *mut u32,
 }
 
 #[link_section = ".exports"]
@@ -107,6 +119,7 @@ pub static LIBCOMPOSITOR_EXPORTS: LibcompositorExports = LibcompositorExports {
     add_status_icon: export_add_status_icon,
     remove_status_icon: export_remove_status_icon,
     update_menu_item: export_update_menu_item,
+    resize_shm: export_resize_shm,
 };
 
 // ── Export Implementations ───────────────────────────────────────────────────
@@ -339,4 +352,42 @@ extern "C" fn export_update_menu_item(
 ) {
     let cmd: [u32; 5] = [CMD_UPDATE_MENU_ITEM, window_id, item_id, new_flags, 0];
     syscall::evt_chan_emit(channel_id, &cmd);
+}
+
+extern "C" fn export_resize_shm(
+    channel_id: u32,
+    window_id: u32,
+    old_shm_id: u32,
+    new_width: u32,
+    new_height: u32,
+    out_new_shm_id: *mut u32,
+) -> *mut u32 {
+    // Create new SHM region for the resized content area
+    let shm_size = new_width * new_height * 4;
+    let new_shm_id = syscall::shm_create(shm_size);
+    if new_shm_id == 0 {
+        return core::ptr::null_mut();
+    }
+
+    // Map new SHM
+    let new_shm_addr = syscall::shm_map(new_shm_id);
+    if new_shm_addr == 0 {
+        syscall::shm_destroy(new_shm_id);
+        return core::ptr::null_mut();
+    }
+
+    // Tell compositor about the new SHM
+    let cmd: [u32; 5] = [CMD_RESIZE_SHM, window_id, new_shm_id, new_width, new_height];
+    syscall::evt_chan_emit(channel_id, &cmd);
+
+    // Unmap and destroy old SHM
+    if old_shm_id > 0 {
+        syscall::shm_unmap(old_shm_id);
+        syscall::shm_destroy(old_shm_id);
+    }
+
+    unsafe {
+        *out_new_shm_id = new_shm_id;
+    }
+    new_shm_addr as *mut u32
 }

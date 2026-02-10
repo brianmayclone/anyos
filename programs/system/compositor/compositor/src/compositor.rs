@@ -134,10 +134,16 @@ impl Layer {
         Rect::new(self.x, self.y, self.width, self.height)
     }
 
-    /// Bounds including shadow offset (8px spread, 4px down).
+    /// Bounds including shadow (spread on all sides + vertical offset).
     pub fn shadow_bounds(&self) -> Rect {
         if self.has_shadow {
-            Rect::new(self.x - 4, self.y, self.width + 8, self.height + 8)
+            let s = SHADOW_SPREAD;
+            Rect::new(
+                self.x + SHADOW_OFFSET_X - s,
+                self.y + SHADOW_OFFSET_Y - s,
+                (self.width as i32 + s * 2) as u32,
+                (self.height as i32 + s * 2) as u32,
+            )
         } else {
             self.bounds()
         }
@@ -156,9 +162,13 @@ impl Layer {
 // ── Shadow Constants ────────────────────────────────────────────────────────
 
 const SHADOW_OFFSET_X: i32 = 0;
-const SHADOW_OFFSET_Y: i32 = 4;
-const SHADOW_SPREAD: i32 = 4;
-const SHADOW_COLOR: u32 = 0x40000000; // 25% black
+const SHADOW_OFFSET_Y: i32 = 6;
+/// Total spread (number of concentric rings) for the soft shadow.
+const SHADOW_SPREAD: i32 = 16;
+/// Shadow alpha for the focused window (innermost ring).
+const SHADOW_ALPHA_FOCUSED: u32 = 50;
+/// Shadow alpha for unfocused windows (innermost ring).
+const SHADOW_ALPHA_UNFOCUSED: u32 = 25;
 
 // ── Compositor ──────────────────────────────────────────────────────────────
 
@@ -196,6 +206,9 @@ pub struct Compositor {
 
     /// Resize outline (drawn as overlay during resize operations)
     pub resize_outline: Option<Rect>,
+
+    /// The currently focused layer (gets stronger shadow)
+    pub focused_layer_id: Option<u32>,
 }
 
 impl Compositor {
@@ -218,6 +231,7 @@ impl Compositor {
             gpu_cmds: Vec::with_capacity(32),
             hw_cursor: false,
             resize_outline: None,
+            focused_layer_id: None,
         }
     }
 
@@ -333,6 +347,26 @@ impl Compositor {
                 self.layers.push(layer);
                 self.damage.push(bounds);
             }
+        }
+    }
+
+    /// Set the focused layer (gets stronger shadow).
+    pub fn set_focused_layer(&mut self, id: Option<u32>) {
+        if self.focused_layer_id != id {
+            // Damage old and new focused layers (shadow intensity changed)
+            if let Some(old_id) = self.focused_layer_id {
+                if let Some(idx) = self.layer_index(old_id) {
+                    let bounds = self.layers[idx].damage_bounds();
+                    self.damage.push(bounds);
+                }
+            }
+            if let Some(new_id) = id {
+                if let Some(idx) = self.layer_index(new_id) {
+                    let bounds = self.layers[idx].damage_bounds();
+                    self.damage.push(bounds);
+                }
+            }
+            self.focused_layer_id = id;
         }
     }
 
@@ -567,24 +601,69 @@ impl Compositor {
         }
     }
 
-    /// Draw shadow for a layer into the back buffer (within damage rect).
+    /// Draw a soft gradient shadow for a layer into the back buffer (within damage rect).
+    ///
+    /// Produces a macOS-style soft shadow by computing per-pixel distance to the
+    /// layer's rounded rectangle and mapping it to alpha via a smooth falloff.
+    /// Focused windows get a stronger shadow than unfocused ones.
     fn draw_shadow_to_bb(&mut self, rect: &Rect, layer_idx: usize) {
         let layer = &self.layers[layer_idx];
+        let layer_id = layer.id;
+        let lx = layer.x + SHADOW_OFFSET_X;
+        let ly = layer.y + SHADOW_OFFSET_Y;
+        let lw = layer.width as i32;
+        let lh = layer.height as i32;
+        let spread = SHADOW_SPREAD;
+        let corner_r = 8i32; // must match the window corner radius
+
+        // Determine shadow intensity based on focus
+        let base_alpha = if self.focused_layer_id == Some(layer_id) {
+            SHADOW_ALPHA_FOCUSED
+        } else {
+            SHADOW_ALPHA_UNFOCUSED
+        };
+
+        // The full shadow bounding box
         let shadow_rect = Rect::new(
-            layer.x + SHADOW_OFFSET_X - SHADOW_SPREAD,
-            layer.y + SHADOW_OFFSET_Y,
-            layer.width + (SHADOW_SPREAD * 2) as u32,
-            layer.height + SHADOW_SPREAD as u32,
+            lx - spread,
+            ly - spread,
+            (lw + spread * 2) as u32,
+            (lh + spread * 2) as u32,
         );
+
         if let Some(overlap) = rect.intersect(&shadow_rect) {
             let bb_stride = self.fb_width as usize;
             for row in 0..overlap.height as usize {
-                let y = overlap.y as usize + row;
+                let py = overlap.y + row as i32;
                 for col in 0..overlap.width as usize {
-                    let x = overlap.x as usize + col;
-                    let di = y * bb_stride + x;
+                    let px = overlap.x + col as i32;
+
+                    // Compute signed distance from (px,py) to the rounded rect
+                    // defined by (lx, ly, lw, lh) with corner radius corner_r.
+                    let dist = rounded_rect_sdf(px, py, lx, ly, lw, lh, corner_r);
+
+                    // Only draw shadow outside the rect (dist > 0)
+                    if dist <= 0 {
+                        continue;
+                    }
+
+                    // Smooth falloff: alpha decreases quadratically with distance
+                    if dist >= spread {
+                        continue;
+                    }
+                    let t = dist as u32; // 0..spread
+                    let s = spread as u32;
+                    // Quadratic falloff: alpha = base * (1 - t/s)^2
+                    let inv = s - t; // s..0
+                    let a = (base_alpha * inv * inv) / (s * s);
+                    if a == 0 {
+                        continue;
+                    }
+
+                    let di = py as usize * bb_stride + px as usize;
                     if di < self.back_buffer.len() {
-                        self.back_buffer[di] = alpha_blend(SHADOW_COLOR, self.back_buffer[di]);
+                        let shadow_px = a << 24; // pure black with computed alpha
+                        self.back_buffer[di] = alpha_blend(shadow_px, self.back_buffer[di]);
                     }
                 }
             }
@@ -743,6 +822,69 @@ impl Compositor {
 }
 
 // ── Color Utilities ─────────────────────────────────────────────────────────
+
+/// Signed distance from point (px,py) to a rounded rectangle.
+/// Returns negative values inside, positive outside, 0 on the edge.
+/// Uses integer arithmetic (no floating point).
+#[inline]
+fn rounded_rect_sdf(px: i32, py: i32, rx: i32, ry: i32, rw: i32, rh: i32, r: i32) -> i32 {
+    // Clamp r to half the smallest dimension
+    let r = r.min(rw / 2).min(rh / 2).max(0);
+
+    // Distance from point to the inner rect (shrunk by radius)
+    let inner_x0 = rx + r;
+    let inner_y0 = ry + r;
+    let inner_x1 = rx + rw - r;
+    let inner_y1 = ry + rh - r;
+
+    // Compute distance to the inner rect
+    let dx = if px < inner_x0 {
+        inner_x0 - px
+    } else if px >= inner_x1 {
+        px - inner_x1 + 1
+    } else {
+        0
+    };
+    let dy = if py < inner_y0 {
+        inner_y0 - py
+    } else if py >= inner_y1 {
+        py - inner_y1 + 1
+    } else {
+        0
+    };
+
+    if dx == 0 && dy == 0 {
+        // Inside the inner rect — compute distance to edge (negative)
+        let to_left = px - rx;
+        let to_right = rx + rw - 1 - px;
+        let to_top = py - ry;
+        let to_bottom = ry + rh - 1 - py;
+        let min_edge = to_left.min(to_right).min(to_top).min(to_bottom);
+        -min_edge
+    } else if dx > 0 && dy > 0 {
+        // In a corner region — use Euclidean distance to corner
+        isqrt_u32((dx * dx + dy * dy) as u32) as i32 - r
+    } else {
+        // Along an edge — simple distance
+        let d = dx.max(dy);
+        d - r
+    }
+}
+
+/// Integer square root (for u32).
+#[inline]
+fn isqrt_u32(n: u32) -> u32 {
+    if n == 0 {
+        return 0;
+    }
+    let mut x = n;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
+}
 
 /// Alpha-blend src over dst (both ARGB8888).
 #[inline]

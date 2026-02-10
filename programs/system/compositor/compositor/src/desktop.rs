@@ -285,6 +285,9 @@ pub struct WindowInfo {
     pub shm_id: u32,
     /// SHM pixel pointer (null = local window)
     pub shm_ptr: *mut u32,
+    /// SHM buffer dimensions (may lag behind content_width/height during resize)
+    pub shm_width: u32,
+    pub shm_height: u32,
 }
 
 impl WindowInfo {
@@ -686,8 +689,12 @@ impl Desktop {
         let opaque = borderless; // Decorated windows have transparent rounded corners
         let layer_id = self.compositor.add_layer(x, y, content_w, full_h, opaque);
 
-        // No shadow for windows
-        let _ = borderless;
+        // Enable shadow for decorated (non-borderless) windows
+        if !borderless {
+            if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
+                layer.has_shadow = true;
+            }
+        }
 
         let win = WindowInfo {
             id,
@@ -705,6 +712,8 @@ impl Desktop {
             maximized: false,
             shm_id: 0,
             shm_ptr: core::ptr::null_mut(),
+            shm_width: 0,
+            shm_height: 0,
         };
 
         self.windows.push(win);
@@ -727,6 +736,7 @@ impl Desktop {
             // Focus the next top window
             if self.focused_window == Some(id) {
                 self.focused_window = None;
+                self.compositor.set_focused_layer(None);
                 if let Some(last) = self.windows.last() {
                     let next_id = last.id;
                     self.focus_window(next_id);
@@ -773,6 +783,7 @@ impl Desktop {
             self.windows[idx].focused = true;
             self.focused_window = Some(id);
             let layer_id = self.windows[idx].layer_id;
+            self.compositor.set_focused_layer(Some(layer_id));
             self.compositor.raise_layer(layer_id);
 
             // Keep windows vector in sync with compositor z-order:
@@ -1250,23 +1261,36 @@ impl Desktop {
                     } else {
                         nh.saturating_sub(TITLE_BAR_HEIGHT)
                     };
+                    let is_ipc = self.windows[idx].owner_tid != 0
+                        && !self.windows[idx].shm_ptr.is_null();
+                    let win_id = resize.window_id;
+
+                    // Move to new position
                     self.windows[idx].x = nx;
                     self.windows[idx].y = ny;
-                    self.windows[idx].content_width = nw;
-                    self.windows[idx].content_height = content_h;
-
                     let layer_id = self.windows[idx].layer_id;
-                    let full_h = self.windows[idx].full_height();
                     self.compositor.move_layer(layer_id, nx, ny);
-                    self.compositor.resize_layer(layer_id, nw, full_h);
 
-                    let win_id = resize.window_id;
-                    self.render_window(win_id);
-
-                    self.push_event(
-                        win_id,
-                        [EVENT_RESIZE, nw, content_h, 0, 0],
-                    );
+                    if is_ipc {
+                        // IPC window: send resize event but defer layer/content
+                        // resize until the app sends CMD_RESIZE_SHM with the
+                        // new SHM buffer. This prevents reading beyond the old SHM.
+                        self.push_event(
+                            win_id,
+                            [EVENT_RESIZE, nw, content_h, 0, 0],
+                        );
+                    } else {
+                        // Local window: resize immediately
+                        self.windows[idx].content_width = nw;
+                        self.windows[idx].content_height = content_h;
+                        let full_h = self.windows[idx].full_height();
+                        self.compositor.resize_layer(layer_id, nw, full_h);
+                        self.render_window(win_id);
+                        self.push_event(
+                            win_id,
+                            [EVENT_RESIZE, nw, content_h, 0, 0],
+                        );
+                    }
                 }
             }
 
@@ -1658,8 +1682,12 @@ impl Desktop {
             false,
         );
 
-        // No shadow for IPC windows
-        let _ = borderless;
+        // Enable shadow for decorated (non-borderless) IPC windows
+        if !borderless {
+            if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
+                layer.has_shadow = true;
+            }
+        }
 
         let win = WindowInfo {
             id,
@@ -1677,6 +1705,8 @@ impl Desktop {
             maximized: false,
             shm_id,
             shm_ptr,
+            shm_width: content_w,
+            shm_height: content_h,
         };
 
         self.windows.push(win);
@@ -1701,26 +1731,48 @@ impl Desktop {
 
         let layer_id = self.windows[win_idx].layer_id;
         let cw = self.windows[win_idx].content_width;
-        let ch = self.windows[win_idx].content_height;
         let borderless = self.windows[win_idx].is_borderless();
         let content_y = if borderless { 0 } else { TITLE_BAR_HEIGHT };
 
+        // Use SHM dimensions (not content dims) to avoid reading beyond the SHM buffer
+        let shm_w = self.windows[win_idx].shm_width;
+        let shm_h = self.windows[win_idx].shm_height;
+        if shm_w == 0 || shm_h == 0 {
+            return; // SHM not yet allocated
+        }
+
+        // Copy the overlapping region (min of SHM dims and content dims)
+        let copy_w = shm_w.min(cw);
+        let copy_h = shm_h.min(self.windows[win_idx].content_height);
+
         if let Some(pixels) = self.compositor.layer_pixels(layer_id) {
             let stride = cw;
-            let src_count = (cw * ch) as usize;
+            let src_count = (shm_w * shm_h) as usize;
             let src_slice = unsafe { core::slice::from_raw_parts(shm_ptr, src_count) };
 
-            // Copy SHM content into the layer at content_y offset
-            for row in 0..ch {
-                let src_off = (row * cw) as usize;
+            // Copy SHM content into the layer at content_y offset.
+            // For decorated windows: skip fully transparent (alpha=0) pixels
+            // so the window body/border drawn by render_window() is preserved.
+            // Borderless windows (dock, etc.) use fast memcpy to support transparency.
+            for row in 0..copy_h {
+                let src_off = (row * shm_w) as usize;
                 let dst_off = ((content_y + row) * stride) as usize;
-                let w = cw as usize;
+                let w = copy_w as usize;
                 let src_end = (src_off + w).min(src_slice.len());
                 let dst_end = (dst_off + w).min(pixels.len());
-                let copy_w = (src_end - src_off).min(dst_end - dst_off);
-                if copy_w > 0 {
-                    pixels[dst_off..dst_off + copy_w]
-                        .copy_from_slice(&src_slice[src_off..src_off + copy_w]);
+                let safe_w = (src_end - src_off).min(dst_end - dst_off);
+                if safe_w > 0 {
+                    if borderless {
+                        pixels[dst_off..dst_off + safe_w]
+                            .copy_from_slice(&src_slice[src_off..src_off + safe_w]);
+                    } else {
+                        for col in 0..safe_w {
+                            let src_px = src_slice[src_off + col];
+                            if (src_px >> 24) > 0 {
+                                pixels[dst_off + col] = src_px;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1924,6 +1976,49 @@ impl Desktop {
                             self.menu_bar.render_dropdown(&mut self.compositor);
                         }
                     }
+                }
+                None
+            }
+            proto::CMD_RESIZE_SHM => {
+                let window_id = cmd[1];
+                let new_shm_id = cmd[2];
+                let new_w = cmd[3];
+                let new_h = cmd[4];
+
+                if new_shm_id == 0 || new_w == 0 || new_h == 0 {
+                    return None;
+                }
+
+                if let Some(idx) = self.windows.iter().position(|w| w.id == window_id) {
+                    let old_shm_id = self.windows[idx].shm_id;
+                    let old_shm_ptr = self.windows[idx].shm_ptr;
+
+                    // Map the new SHM
+                    let new_shm_addr = anyos_std::ipc::shm_map(new_shm_id);
+                    if new_shm_addr == 0 {
+                        return None;
+                    }
+
+                    // Unmap old SHM if present
+                    if !old_shm_ptr.is_null() && old_shm_id != 0 {
+                        anyos_std::ipc::shm_unmap(old_shm_id);
+                    }
+
+                    // Update window info
+                    self.windows[idx].shm_id = new_shm_id;
+                    self.windows[idx].shm_ptr = new_shm_addr as *mut u32;
+                    self.windows[idx].shm_width = new_w;
+                    self.windows[idx].shm_height = new_h;
+                    self.windows[idx].content_width = new_w;
+                    self.windows[idx].content_height = new_h;
+
+                    // Resize the compositor layer
+                    let layer_id = self.windows[idx].layer_id;
+                    let full_h = self.windows[idx].full_height();
+                    self.compositor.resize_layer(layer_id, new_w, full_h);
+
+                    // Re-render window decorations and present SHM content
+                    self.render_window(window_id);
                 }
                 None
             }

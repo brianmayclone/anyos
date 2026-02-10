@@ -15,6 +15,7 @@ anyos_std::entry!(main);
 // ─── Constants ───────────────────────────────────────────────────────────────
 const CELL_W: u16 = 8;
 const CELL_H: u16 = 16;
+const TEXT_PAD: u16 = 4;
 const MAX_SCROLLBACK: usize = 500;
 
 // Colors (ARGB)
@@ -472,7 +473,7 @@ fn render_terminal(win_id: u32, buf: &TerminalBuffer, win_w: u32, win_h: u32) {
     // Build text line by line and draw
     for (screen_y, line_idx) in (start_row..end_row).enumerate() {
         let line = &buf.lines[line_idx];
-        let py = (screen_y as u16) * CELL_H;
+        let py = TEXT_PAD + (screen_y as u16) * CELL_H;
 
         // Group characters by color for efficient drawing
         let mut run_start = 0;
@@ -484,7 +485,7 @@ fn render_terminal(win_id: u32, buf: &TerminalBuffer, win_w: u32, win_h: u32) {
                 break;
             }
             if color != run_color && !text_buf.is_empty() {
-                let px = (run_start as u16) * CELL_W;
+                let px = TEXT_PAD + (run_start as u16) * CELL_W;
                 window::draw_text_mono(win_id, px as i16, py as i16, run_color, &text_buf);
                 text_buf.clear();
                 run_start = col;
@@ -497,7 +498,7 @@ fn render_terminal(win_id: u32, buf: &TerminalBuffer, win_w: u32, win_h: u32) {
             text_buf.push(ch);
         }
         if !text_buf.is_empty() {
-            let px = (run_start as u16) * CELL_W;
+            let px = TEXT_PAD + (run_start as u16) * CELL_W;
             window::draw_text_mono(win_id, px as i16, py as i16, run_color, &text_buf);
         }
     }
@@ -505,8 +506,8 @@ fn render_terminal(win_id: u32, buf: &TerminalBuffer, win_w: u32, win_h: u32) {
     // Draw cursor (inverted block)
     let cursor_screen_row = buf.cursor_row as i32 - buf.scroll_offset as i32;
     if cursor_screen_row >= 0 && (cursor_screen_row as usize) < buf.visible_rows {
-        let cx = (buf.cursor_col as u16) * CELL_W;
-        let cy = (cursor_screen_row as u16) * CELL_H;
+        let cx = TEXT_PAD + (buf.cursor_col as u16) * CELL_W;
+        let cy = TEXT_PAD + (cursor_screen_row as u16) * CELL_H;
         // Draw a white cursor block
         window::fill_rect(win_id, cx as i16, cy as i16, CELL_W, CELL_H, 0xFFCCCCCC);
     }
@@ -536,8 +537,8 @@ fn main() {
     window::set_menu(win_id, data);
 
     let (mut win_w, mut win_h) = window::get_size(win_id).unwrap_or((640, 400));
-    let cols = (win_w / CELL_W as u32) as usize;
-    let rows = (win_h / CELL_H as u32) as usize;
+    let cols = (win_w.saturating_sub(TEXT_PAD as u32 * 2) / CELL_W as u32) as usize;
+    let rows = (win_h.saturating_sub(TEXT_PAD as u32 * 2) / CELL_H as u32) as usize;
 
     let mut buf = TerminalBuffer::new(cols, rows);
     let mut shell = Shell::new();
@@ -645,8 +646,8 @@ fn main() {
             } else if event[0] == EVENT_RESIZE {
                 win_w = event[1];
                 win_h = event[2];
-                let new_cols = (win_w / CELL_W as u32) as usize;
-                let new_rows = (win_h / CELL_H as u32) as usize;
+                let new_cols = (win_w.saturating_sub(TEXT_PAD as u32 * 2) / CELL_W as u32) as usize;
+                let new_rows = (win_h.saturating_sub(TEXT_PAD as u32 * 2) / CELL_H as u32) as usize;
                 buf.cols = new_cols;
                 buf.visible_rows = new_rows;
                 dirty = true;
