@@ -743,6 +743,19 @@ impl Desktop {
         }
     }
 
+    /// Destroy all windows owned by a given thread (process exit cleanup).
+    pub fn on_process_exit(&mut self, tid: u32) {
+        // Collect window IDs owned by this TID
+        let window_ids: Vec<u32> = self.windows.iter()
+            .filter(|w| w.owner_tid == tid)
+            .map(|w| w.id)
+            .collect();
+        // Destroy each window
+        for id in window_ids {
+            self.destroy_window(id);
+        }
+    }
+
     /// Focus a window (bring to front and set focused style).
     pub fn focus_window(&mut self, id: u32) {
         // Unfocus previous

@@ -37,7 +37,7 @@ pub extern "C" fn radio_render(
 
     // Label text
     if !label.is_null() && label_len > 0 {
-        let label_slice = unsafe { core::slice::from_raw_parts(label, label_len as usize + 1) };
+        let label_slice = unsafe { core::slice::from_raw_parts(label, label_len as usize) };
         let text_x = x + RADIO_SIZE as i32 + 8;
         let text_y = y + (RADIO_SIZE as i32 - 16) / 2;
         draw::draw_text(win, text_x, text_y, theme::TEXT, label_slice);

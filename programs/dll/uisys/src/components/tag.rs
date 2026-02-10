@@ -28,10 +28,9 @@ pub extern "C" fn tag_render(
     draw::fill_rounded_rect(win, x, y, w, TAG_HEIGHT, TAG_CORNER, bg_color);
 
     // Text
-    let text_with_nul = unsafe { core::slice::from_raw_parts(text, text_len as usize + 1) };
     let text_x = x + TAG_PADDING_H as i32;
     let text_y = y + (TAG_HEIGHT as i32 - th as i32) / 2;
-    draw::draw_text(win, text_x, text_y, text_color, text_with_nul);
+    draw::draw_text(win, text_x, text_y, text_color, text_slice);
 
     // Close button "x"
     if show_close != 0 {

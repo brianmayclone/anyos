@@ -25,8 +25,8 @@ pub extern "C" fn alert_render(
 
     // Title
     if !title.is_null() && title_len > 0 {
-        let title_slice = unsafe { core::slice::from_raw_parts(title, title_len as usize + 1) };
-        let (tw, _) = draw::text_size(&title_slice[..title_len as usize]);
+        let title_slice = unsafe { core::slice::from_raw_parts(title, title_len as usize) };
+        let (tw, _) = draw::text_size(title_slice);
         let text_x = x + (w as i32 - tw as i32) / 2;
         let text_y = y + ALERT_PADDING as i32;
         draw::draw_text(win, text_x, text_y, theme::TEXT, title_slice);
@@ -34,8 +34,8 @@ pub extern "C" fn alert_render(
 
     // Message
     if !message.is_null() && message_len > 0 {
-        let msg_slice = unsafe { core::slice::from_raw_parts(message, message_len as usize + 1) };
-        let (tw, _) = draw::text_size(&msg_slice[..message_len as usize]);
+        let msg_slice = unsafe { core::slice::from_raw_parts(message, message_len as usize) };
+        let (tw, _) = draw::text_size(msg_slice);
         let text_x = x + (w as i32 - tw as i32) / 2;
         let text_y = y + ALERT_PADDING as i32 + 24;
         draw::draw_text(win, text_x, text_y, theme::TEXT_SECONDARY, msg_slice);
@@ -57,8 +57,8 @@ pub extern "C" fn alert_render_button(
 
     // Label (centered)
     if !label.is_null() && label_len > 0 {
-        let label_slice = unsafe { core::slice::from_raw_parts(label, label_len as usize + 1) };
-        let (tw, th) = draw::text_size(&label_slice[..label_len as usize]);
+        let label_slice = unsafe { core::slice::from_raw_parts(label, label_len as usize) };
+        let (tw, th) = draw::text_size(label_slice);
         let text_x = x + (w as i32 - tw as i32) / 2;
         let text_y = y + (h as i32 - th as i32) / 2;
         draw::draw_text(win, text_x, text_y, fg, label_slice);

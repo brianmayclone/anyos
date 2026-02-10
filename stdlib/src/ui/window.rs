@@ -64,6 +64,8 @@ struct DllExports {
         extern "C" fn(channel_id: u32, window_id: u32, menu_data: *const u8, menu_len: u32),
     add_status_icon: extern "C" fn(channel_id: u32, icon_id: u32, pixels: *const u32),
     remove_status_icon: extern "C" fn(channel_id: u32, icon_id: u32),
+    update_menu_item:
+        extern "C" fn(channel_id: u32, window_id: u32, item_id: u32, new_flags: u32),
 }
 
 #[inline(always)]
@@ -657,6 +659,17 @@ pub fn set_menu(window_id: u32, data: &[u8]) {
     let st = state();
     if let Some(win) = st.windows.iter().find(|w| w.ext_id == window_id) {
         (dll().set_menu)(st.channel_id, win.comp_id, data.as_ptr(), data.len() as u32);
+    }
+}
+
+/// Update the flags of a single menu item (enable/disable/check).
+pub fn update_menu_item(window_id: u32, item_id: u32, new_flags: u32) {
+    if unsafe { COMP.is_none() } {
+        return;
+    }
+    let st = state();
+    if let Some(win) = st.windows.iter().find(|w| w.ext_id == window_id) {
+        (dll().update_menu_item)(st.channel_id, win.comp_id, item_id, new_flags);
     }
 }
 

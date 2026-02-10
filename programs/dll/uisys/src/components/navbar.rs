@@ -26,17 +26,17 @@ pub extern "C" fn navbar_render(
 
     // Back button
     if show_back != 0 {
-        let back_text = b"< Back\0";
+        let back_text = b"< Back";
         let back_x = x + 12;
-        let (_, bh) = draw::text_size(b"< Back");
+        let (_, bh) = draw::text_size(back_text);
         let back_y = y + (h as i32 - bh as i32) / 2;
         draw::draw_text(win, back_x, back_y, theme::ACCENT, back_text);
     }
 
     // Title (centered)
     if !title.is_null() && title_len > 0 {
-        let title_slice = unsafe { core::slice::from_raw_parts(title, title_len as usize + 1) };
-        let (tw, th) = draw::text_size(&title_slice[..title_len as usize]);
+        let title_slice = unsafe { core::slice::from_raw_parts(title, title_len as usize) };
+        let (tw, th) = draw::text_size(title_slice);
         let text_x = x + (w as i32 - tw as i32) / 2;
         let text_y = y + (h as i32 - th as i32) / 2;
         draw::draw_text(win, text_x, text_y, theme::TEXT, title_slice);

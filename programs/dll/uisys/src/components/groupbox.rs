@@ -31,7 +31,7 @@ pub extern "C" fn groupbox_render(
         draw::fill_rect(win, label_x, y + 8, title_w, 1, theme::WINDOW_BG);
 
         // Draw title text
-        let title_slice = unsafe { core::slice::from_raw_parts(title, title_len as usize + 1) };
+        let title_slice = unsafe { core::slice::from_raw_parts(title, title_len as usize) };
         let text_x = label_x + LABEL_PAD as i32;
         let text_y = y;
         draw::draw_text(win, text_x, text_y, theme::TEXT_SECONDARY, title_slice);

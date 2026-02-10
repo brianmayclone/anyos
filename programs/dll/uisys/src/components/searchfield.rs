@@ -28,7 +28,7 @@ pub extern "C" fn searchfield_render(
     let (_, icon_h) = draw::text_size(b"Q");
     let icon_x = x + FIELD_PAD + 2;
     let icon_y = y + (h as i32 - icon_h as i32) / 2;
-    let icon = b"Q\0";
+    let icon = b"Q";
     draw::draw_text(win, icon_x, icon_y, theme::TEXT_SECONDARY, icon);
 
     let text_x = x + ICON_WIDTH + FIELD_PAD;
@@ -36,11 +36,11 @@ pub extern "C" fn searchfield_render(
     let text_y = y + (h as i32 - th as i32) / 2;
 
     if text_len > 0 && !text.is_null() {
-        let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize + 1) };
+        let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize) };
         draw::draw_text(win, text_x, text_y, theme::TEXT, text_slice);
     } else {
         // Placeholder
-        let ph = b"Search\0";
+        let ph = b"Search";
         draw::draw_text(win, text_x, text_y, theme::TEXT_DISABLED, ph);
     }
 

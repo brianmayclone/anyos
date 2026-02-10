@@ -69,6 +69,9 @@ fn main() {
     let compositor_sub = ipc::evt_chan_subscribe(compositor_channel, 0);
     println!("compositor: event channel created (id={})", compositor_channel);
 
+    // Step 4b: Subscribe to system events (process exit notifications)
+    let sys_sub = ipc::evt_sys_subscribe(0);
+
     // Step 5: Spawn the dock
     let _dock_tid = process::spawn("/system/compositor/dock", "");
     println!("compositor: dock spawned");
@@ -109,6 +112,16 @@ fn main() {
                 if let Some(response) = desktop.handle_ipc_command(&ipc_buf) {
                     ipc::evt_chan_emit(compositor_channel, &response);
                 }
+                needs_compose = true;
+            }
+        }
+
+        // Poll system events (process exit notifications)
+        let mut sys_buf = [0u32; 5];
+        while ipc::evt_sys_poll(sys_sub, &mut sys_buf) {
+            if sys_buf[0] == 0x0021 { // EVT_PROCESS_EXITED
+                let exited_tid = sys_buf[1];
+                desktop.on_process_exit(exited_tid);
                 needs_compose = true;
             }
         }

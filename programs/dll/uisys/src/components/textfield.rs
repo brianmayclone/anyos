@@ -33,14 +33,13 @@ pub extern "C" fn textfield_render(
             for i in 0..len {
                 buf[i] = b'*';
             }
-            buf[len] = 0;
-            draw::draw_text(win, text_x, text_y, theme::TEXT, &buf[..len + 1]);
+            draw::draw_text(win, text_x, text_y, theme::TEXT, &buf[..len]);
         } else {
-            let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize + 1) };
+            let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize) };
             draw::draw_text(win, text_x, text_y, theme::TEXT, text_slice);
         }
     } else if !placeholder.is_null() && placeholder_len > 0 {
-        let ph_slice = unsafe { core::slice::from_raw_parts(placeholder, placeholder_len as usize + 1) };
+        let ph_slice = unsafe { core::slice::from_raw_parts(placeholder, placeholder_len as usize) };
         draw::draw_text(win, text_x, text_y, theme::TEXT_SECONDARY, ph_slice);
     }
 

@@ -37,9 +37,9 @@ pub extern "C" fn sidebar_render_item(
 
     // Item text
     if !text.is_null() && text_len > 0 {
-        let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize + 1) };
+        let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize) };
         let text_x = x + padding;
-        let (_, th) = draw::text_size(&text_slice[..text_len as usize]);
+        let (_, th) = draw::text_size(text_slice);
         let text_y = y + (h as i32 - th as i32) / 2;
         let fg = if selected != 0 { 0xFFFFFFFF } else { theme::TEXT };
         draw::draw_text(win, text_x, text_y, fg, text_slice);
@@ -52,9 +52,9 @@ pub extern "C" fn sidebar_render_header(
     text: *const u8, text_len: u32,
 ) {
     if !text.is_null() && text_len > 0 {
-        let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize + 1) };
+        let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize) };
         let text_x = x + 12;
-        let (_, th) = draw::text_size(&text_slice[..text_len as usize]);
+        let (_, th) = draw::text_size(text_slice);
         let text_y = y + (HEADER_HEIGHT as i32 - th as i32) / 2;
         draw::draw_text(win, text_x, text_y, theme::TEXT_SECONDARY, text_slice);
     }

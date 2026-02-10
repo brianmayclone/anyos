@@ -32,9 +32,9 @@ pub enum TextAlign {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FontSize {
-    Small = 13,
-    Normal = 16,
-    Large = 20,
+    Small = 11,
+    Normal = 13,
+    Large = 17,
     Title = 24,
 }
 

@@ -36,8 +36,7 @@ pub extern "C" fn tooltip_render(
     draw::draw_border(win, x, y, w, h, TOOLTIP_BORDER);
 
     // Text
-    let text_with_nul = unsafe { core::slice::from_raw_parts(text, text_len as usize + 1) };
     let text_x = x + TOOLTIP_PAD_H as i32;
     let text_y = y + TOOLTIP_PAD_V as i32;
-    draw::draw_text(win, text_x, text_y, theme::TEXT, text_with_nul);
+    draw::draw_text(win, text_x, text_y, theme::TEXT, text_slice);
 }
