@@ -311,6 +311,9 @@ fn main() {
     let data = mb.build();
     window::set_menu(win_id, data);
 
+    // "Kill Process" starts disabled (no selection yet)
+    window::disable_menu_item(win_id, 10);
+
     let (mut win_w, mut win_h) = window::get_size(win_id).unwrap_or((500, 380));
 
     // Open CPU load pipe
@@ -350,6 +353,7 @@ fn main() {
                             if sel_idx < tasks.len() && tasks[sel_idx].tid > 3 {
                                 process::kill(tasks[sel_idx].tid);
                                 selected = None;
+                                window::disable_menu_item(win_id, 10);
                                 last_update = 0;
                             }
                         }
@@ -383,6 +387,7 @@ fn main() {
                             if tid > 3 {
                                 process::kill(tid);
                                 selected = None;
+                                window::disable_menu_item(win_id, 10);
                                 last_update = 0; // Force redraw
                             }
                         }
@@ -393,10 +398,19 @@ fn main() {
                     if my >= row_start_y {
                         let row_idx = ((my - row_start_y) / ROW_H) as usize;
                         let tasks = fetch_tasks(&mut thread_buf);
+                        let old_sel = selected;
                         if row_idx < tasks.len() {
                             selected = Some(row_idx);
                         } else {
                             selected = None;
+                        }
+                        // Update "Kill Process" menu state
+                        if old_sel != selected {
+                            if selected.is_some() {
+                                window::enable_menu_item(win_id, 10);
+                            } else {
+                                window::disable_menu_item(win_id, 10);
+                            }
                         }
                         last_update = 0; // Force redraw
                     }

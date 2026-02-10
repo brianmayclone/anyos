@@ -70,7 +70,7 @@ pub struct Event {
 
 /// Compositor client connection.
 pub struct CompositorClient {
-    channel_id: u32,
+    pub channel_id: u32,
     sub_id: u32,
 }
 

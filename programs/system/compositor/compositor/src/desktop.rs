@@ -774,6 +774,13 @@ impl Desktop {
             self.focused_window = Some(id);
             let layer_id = self.windows[idx].layer_id;
             self.compositor.raise_layer(layer_id);
+
+            // Keep windows vector in sync with compositor z-order:
+            // move focused window to the end so hit-testing (which iterates
+            // .rev()) checks the topmost window first.
+            let win = self.windows.remove(idx);
+            self.windows.push(win);
+
             self.render_window(id);
 
             // Update menu bar for the newly focused window
@@ -837,6 +844,11 @@ impl Desktop {
                 // Draw window body (rounded rect)
                 fill_rounded_rect(
                     pixels, stride, full_h, 0, 0, cw, full_h, 8, COLOR_WINDOW_BG,
+                );
+
+                // 1px rounded outline around the entire window
+                draw_rounded_rect_outline(
+                    pixels, stride, full_h, 0, 0, cw, full_h, 8, COLOR_WINDOW_BORDER,
                 );
 
                 // Title bar (rounded top corners)
@@ -1068,16 +1080,16 @@ impl Desktop {
                     if let Some(item_id) = self.menu_bar.hit_test_dropdown(self.mouse_x, self.mouse_y) {
                         if let Some(win_id) = self.focused_window {
                             match item_id {
-                                menu::APP_MENU_QUIT => {
+                                crate::menu::APP_MENU_QUIT => {
                                     // Send close event to the window
                                     self.push_event(win_id, [EVENT_WINDOW_CLOSE, 0, 0, 0, 0]);
                                 }
-                                menu::APP_MENU_HIDE => {
+                                crate::menu::APP_MENU_HIDE => {
                                     // Hide: unfocus and move off-screen (simple hide)
                                     if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
                                         let layer_id = self.windows[idx].layer_id;
                                         // Save current position, then move off-screen
-                                        self.windows[idx].saved_bounds = Some(Rect::new(
+                                        self.windows[idx].saved_bounds = Some((
                                             self.windows[idx].x,
                                             self.windows[idx].y,
                                             self.windows[idx].content_width,
@@ -1915,6 +1927,26 @@ impl Desktop {
                 }
                 None
             }
+            proto::CMD_FOCUS_BY_TID => {
+                let owner_tid = cmd[1];
+                // Find a window owned by this TID and focus it
+                if let Some(win_id) = self.windows.iter()
+                    .find(|w| w.owner_tid == owner_tid)
+                    .map(|w| w.id)
+                {
+                    // Un-hide if hidden (saved_bounds with off-screen position)
+                    if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
+                        if let Some((sx, sy, _sw, _sh)) = self.windows[idx].saved_bounds.take() {
+                            let layer_id = self.windows[idx].layer_id;
+                            self.windows[idx].x = sx;
+                            self.windows[idx].y = sy;
+                            self.compositor.move_layer(layer_id, sx, sy);
+                        }
+                    }
+                    self.focus_window(win_id);
+                }
+                None
+            }
             _ => None,
         }
     }
@@ -2047,6 +2079,76 @@ fn fill_rounded_rect(
                 color,
             );
         }
+    }
+}
+
+/// Draw a 1px outline of a rounded rectangle.
+fn draw_rounded_rect_outline(
+    pixels: &mut [u32],
+    stride: u32,
+    buf_h: u32,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    r: u32,
+    color: u32,
+) {
+    if w < 2 || h < 2 {
+        return;
+    }
+    let r = r.min(w / 2).min(h / 2);
+
+    // Helper to set a single pixel
+    let mut set_px = |px: i32, py: i32| {
+        if px >= 0 && py >= 0 && (px as u32) < stride && (py as u32) < buf_h {
+            let idx = (py as u32 * stride + px as u32) as usize;
+            if idx < pixels.len() {
+                pixels[idx] = color;
+            }
+        }
+    };
+
+    // Top edge (between rounded corners)
+    for dx in r as i32..(w - r) as i32 {
+        set_px(x + dx, y);
+    }
+    // Bottom edge
+    for dx in r as i32..(w - r) as i32 {
+        set_px(x + dx, y + h as i32 - 1);
+    }
+    // Left edge
+    for dy in r as i32..(h - r) as i32 {
+        set_px(x, y + dy);
+    }
+    // Right edge
+    for dy in r as i32..(h - r) as i32 {
+        set_px(x + w as i32 - 1, y + dy);
+    }
+
+    // Corner arcs using the same pixel-center test
+    let r2x4 = (2 * r as i32) * (2 * r as i32);
+    for dy in 0..r {
+        let cy = 2 * dy as i32 + 1 - 2 * r as i32;
+        let cy2 = cy * cy;
+        // Find the leftmost filled pixel for this row
+        let mut fill_start = r;
+        for dx in 0..r {
+            let cx = 2 * dx as i32 + 1 - 2 * r as i32;
+            if cx * cx + cy2 <= r2x4 {
+                fill_start = dx;
+                break;
+            }
+        }
+        let fs = fill_start as i32;
+        // Top-left corner: leftmost pixel of the arc row
+        set_px(x + fs, y + dy as i32);
+        // Top-right corner: rightmost pixel of the arc row
+        set_px(x + w as i32 - 1 - fs, y + dy as i32);
+        // Bottom-left corner
+        set_px(x + fs, y + h as i32 - 1 - dy as i32);
+        // Bottom-right corner
+        set_px(x + w as i32 - 1 - fs, y + h as i32 - 1 - dy as i32);
     }
 }
 

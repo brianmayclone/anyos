@@ -36,12 +36,16 @@ struct Icon {
     pixels: Vec<u32>, // ARGB
 }
 
+const CMD_FOCUS_BY_TID: u32 = 0x100A;
+const STILL_RUNNING: u32 = u32::MAX - 1;
+
 struct DockItem {
     name: String,
     bin_path: String,
     icon_path: String,
     icon: Option<Icon>,
     running: bool,
+    tid: u32, // TID of spawned process (0 = not running)
 }
 
 // ── Local framebuffer ──
@@ -297,6 +301,7 @@ fn load_dock_config() -> Vec<DockItem> {
             icon_path: String::from(icon),
             icon: None,
             running: false,
+            tid: 0,
         });
     }
 
@@ -412,11 +417,13 @@ fn main() {
     client.move_window(&win, 0, (screen_height - DOCK_TOTAL_H) as i32);
     client.set_title(&win, "Dock");
 
+    // Subscribe to system events (process exit notifications)
+    let sys_sub = anyos_std::ipc::evt_sys_subscribe(0);
+
     // Load dock items from config file
-    let items = load_dock_config();
+    let mut items = load_dock_config();
 
     // Load icons
-    let mut items = items;
     for item in &mut items {
         item.icon = load_icon(&item.icon_path);
     }
@@ -429,6 +436,8 @@ fn main() {
     blit_to_surface(&fb, &win);
     client.present(&win);
 
+    let mut needs_redraw = false;
+
     // Main loop
     loop {
         // Process window events
@@ -438,11 +447,59 @@ fn main() {
                 let ly = event.arg2 as i32;
 
                 if let Some(idx) = dock_hit_test(lx, ly, screen_width, &items) {
-                    if let Some(item) = items.get(idx) {
-                        process::spawn(&item.bin_path, "");
+                    if let Some(item) = items.get_mut(idx) {
+                        if item.tid != 0 {
+                            // Check if still running
+                            let status = process::try_waitpid(item.tid);
+                            if status == STILL_RUNNING {
+                                // App is running — tell compositor to focus its window
+                                let cmd: [u32; 5] = [CMD_FOCUS_BY_TID, item.tid, 0, 0, 0];
+                                anyos_std::ipc::evt_chan_emit(client.channel_id, &cmd);
+                            } else {
+                                // App exited — spawn new instance
+                                item.running = false;
+                                item.tid = 0;
+                                let tid = process::spawn(&item.bin_path, "");
+                                if tid != 0 {
+                                    item.tid = tid;
+                                    item.running = true;
+                                }
+                                needs_redraw = true;
+                            }
+                        } else {
+                            // Not running — spawn it
+                            let tid = process::spawn(&item.bin_path, "");
+                            if tid != 0 {
+                                item.tid = tid;
+                                item.running = true;
+                                needs_redraw = true;
+                            }
+                        }
                     }
                 }
             }
+        }
+
+        // Poll system events for process exits
+        let mut sys_buf = [0u32; 5];
+        while anyos_std::ipc::evt_sys_poll(sys_sub, &mut sys_buf) {
+            if sys_buf[0] == 0x0021 { // EVT_PROCESS_EXITED
+                let exited_tid = sys_buf[1];
+                for item in &mut items {
+                    if item.tid == exited_tid {
+                        item.running = false;
+                        item.tid = 0;
+                        needs_redraw = true;
+                    }
+                }
+            }
+        }
+
+        if needs_redraw {
+            render_dock(&mut fb, &items, screen_width);
+            blit_to_surface(&fb, &win);
+            client.present(&win);
+            needs_redraw = false;
         }
 
         process::sleep(50); // ~20 Hz

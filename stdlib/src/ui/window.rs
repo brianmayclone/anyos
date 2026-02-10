@@ -673,6 +673,16 @@ pub fn update_menu_item(window_id: u32, item_id: u32, new_flags: u32) {
     }
 }
 
+/// Enable a menu item (clear the DISABLED flag).
+pub fn enable_menu_item(window_id: u32, item_id: u32) {
+    update_menu_item(window_id, item_id, 0);
+}
+
+/// Disable a menu item (set the DISABLED flag).
+pub fn disable_menu_item(window_id: u32, item_id: u32) {
+    update_menu_item(window_id, item_id, MENU_FLAG_DISABLED);
+}
+
 const MENU_MAGIC: u32 = 0x4D454E55; // 'MENU'
 
 /// Item flags for menu items.

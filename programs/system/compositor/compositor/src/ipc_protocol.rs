@@ -77,6 +77,11 @@ pub const CMD_REMOVE_STATUS_ICON: u32 = 0x1008;
 /// No SHM required — fits in 5 words.
 pub const CMD_UPDATE_MENU_ITEM: u32 = 0x1009;
 
+/// Focus a window by its owner TID.
+/// [CMD, owner_tid, 0, 0, 0]
+/// If a window with the given owner TID exists, focus and raise it.
+pub const CMD_FOCUS_BY_TID: u32 = 0x100A;
+
 // ── Compositor → App: Menu & Status Icon Events ─────────────────────────────
 
 /// Menu item selected: [EVT, window_id, menu_index, item_id, 0]

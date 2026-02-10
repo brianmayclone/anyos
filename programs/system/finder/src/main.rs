@@ -178,6 +178,28 @@ fn navigate_forward(state: &mut AppState) {
     }
 }
 
+/// Update menu item enable/disable states based on current app state.
+fn update_menu_states(win: u32, state: &AppState) {
+    // "Open" (id=1): enabled only when something is selected
+    if state.selected.is_some() {
+        window::enable_menu_item(win, 1);
+    } else {
+        window::disable_menu_item(win, 1);
+    }
+    // "Back" (id=20): enabled only when history allows going back
+    if state.history_pos > 0 {
+        window::enable_menu_item(win, 20);
+    } else {
+        window::disable_menu_item(win, 20);
+    }
+    // "Forward" (id=21): enabled only when history allows going forward
+    if state.history_pos + 1 < state.history.len() {
+        window::enable_menu_item(win, 21);
+    } else {
+        window::disable_menu_item(win, 21);
+    }
+}
+
 // ============================================================================
 // Mimetype associations
 // ============================================================================
@@ -608,6 +630,9 @@ fn main() {
     state.entries = read_directory("/");
     state.history.push(String::from("/"));
 
+    // Set initial menu states (Open disabled, Back disabled, Forward disabled)
+    update_menu_states(win, &state);
+
     let mut event = [0u32; 5];
     let mut needs_redraw = true;
 
@@ -732,6 +757,7 @@ fn main() {
         }
 
         if needs_redraw {
+            update_menu_states(win, &state);
             render(win, &state, win_w, win_h);
             window::present(win);
             needs_redraw = false;
