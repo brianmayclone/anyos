@@ -11,6 +11,7 @@ use anyos_std::ui::window;
 anyos_std::entry!(main);
 
 use uisys_client::*;
+use libimage_client;
 
 // ============================================================================
 // Layout
@@ -60,6 +61,112 @@ impl FileEntry {
 struct MimeEntry {
     ext: String,
     app: String,
+    icon_path: String,
+}
+
+// ============================================================================
+// Icon cache
+// ============================================================================
+
+const ICON_DISPLAY_SIZE: u32 = 16;
+
+struct CachedIcon {
+    path: String,
+    pixels: [u32; 256], // 16x16 ARGB
+}
+
+struct IconCache {
+    entries: Vec<CachedIcon>,
+}
+
+impl IconCache {
+    fn new() -> Self {
+        Self { entries: Vec::new() }
+    }
+
+    fn get(&self, path: &str) -> Option<&[u32; 256]> {
+        for e in &self.entries {
+            if e.path == path {
+                return Some(&e.pixels);
+            }
+        }
+        None
+    }
+
+    fn get_or_load(&mut self, path: &str) -> Option<&[u32; 256]> {
+        // Check if already cached
+        for i in 0..self.entries.len() {
+            if self.entries[i].path == path {
+                return Some(&self.entries[i].pixels);
+            }
+        }
+
+        // Load and decode the icon file
+        let fd = fs::open(path, 0);
+        if fd == u32::MAX {
+            return None;
+        }
+
+        // Read file data (icons are small, 32KB should be plenty)
+        let mut data = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = fs::read(fd, &mut buf);
+            if n == 0 || n == u32::MAX {
+                break;
+            }
+            data.extend_from_slice(&buf[..n as usize]);
+        }
+        fs::close(fd);
+
+        if data.is_empty() {
+            return None;
+        }
+
+        // Probe the image
+        let info = match libimage_client::probe(&data) {
+            Some(i) => i,
+            None => return None,
+        };
+
+        let src_w = info.width;
+        let src_h = info.height;
+        let src_pixels = (src_w as usize) * (src_h as usize);
+
+        // Allocate decode buffer + scratch
+        let mut pixels: Vec<u32> = Vec::new();
+        pixels.resize(src_pixels, 0);
+        let mut scratch: Vec<u8> = Vec::new();
+        scratch.resize(info.scratch_needed as usize, 0);
+
+        // Decode
+        if libimage_client::decode(&data, &mut pixels, &mut scratch).is_err() {
+            return None;
+        }
+
+        // Scale to 16x16
+        let mut icon_pixels = [0u32; 256];
+        if src_w == ICON_DISPLAY_SIZE && src_h == ICON_DISPLAY_SIZE {
+            // Already the right size, just copy
+            icon_pixels.copy_from_slice(&pixels[..256]);
+        } else {
+            // Downscale using bilinear interpolation
+            libimage_client::scale_image(
+                &pixels, src_w, src_h,
+                &mut icon_pixels, ICON_DISPLAY_SIZE, ICON_DISPLAY_SIZE,
+                libimage_client::MODE_SCALE,
+            );
+        }
+
+        self.entries.push(CachedIcon {
+            path: String::from(path),
+            pixels: icon_pixels,
+        });
+
+        // Return reference to the just-pushed entry
+        let last = self.entries.len() - 1;
+        Some(&self.entries[last].pixels)
+    }
 }
 
 struct AppState {
@@ -76,6 +183,8 @@ struct AppState {
     history_pos: usize, // index into history; history[history_pos] == cwd
     // Mimetype associations
     mimetypes: Vec<MimeEntry>,
+    // Icon cache
+    icon_cache: IconCache,
 }
 
 // ============================================================================
@@ -234,11 +343,18 @@ fn load_mimetypes() -> Vec<MimeEntry> {
         }
         if let Some(sep) = line.find('|') {
             let ext = line[..sep].trim();
-            let app = line[sep + 1..].trim();
-            if !ext.is_empty() && !app.is_empty() {
+            let rest = &line[sep + 1..];
+            // Parse app|icon_path (icon_path optional)
+            let (app, icon_path) = if let Some(sep2) = rest.find('|') {
+                (rest[..sep2].trim(), rest[sep2 + 1..].trim())
+            } else {
+                (rest.trim(), "")
+            };
+            if !ext.is_empty() {
                 entries.push(MimeEntry {
                     ext: String::from(ext),
                     app: String::from(app),
+                    icon_path: String::from(icon_path),
                 });
             }
         }
@@ -246,10 +362,10 @@ fn load_mimetypes() -> Vec<MimeEntry> {
     entries
 }
 
-fn lookup_mimetype<'a>(mimes: &'a [MimeEntry], ext: &str) -> Option<&'a str> {
+fn lookup_mimetype<'a>(mimes: &'a [MimeEntry], ext: &str) -> Option<&'a MimeEntry> {
     for entry in mimes {
         if entry.ext == ext {
-            return Some(&entry.app);
+            return Some(entry);
         }
     }
     None
@@ -289,11 +405,13 @@ fn open_entry(state: &mut AppState, idx: usize) {
         };
 
         if !ext.is_empty() {
-            if let Some(app) = lookup_mimetype(&state.mimetypes, ext) {
-                // Args must include program name as argv[0]
-                let args = anyos_std::format!("{} {}", app, full_path);
-                process::spawn(app, &args);
-                return;
+            if let Some(mime) = lookup_mimetype(&state.mimetypes, ext) {
+                if !mime.app.is_empty() {
+                    // Args must include program name as argv[0]
+                    let args = anyos_std::format!("{} {}", mime.app, full_path);
+                    process::spawn(&mime.app, &args);
+                    return;
+                }
             }
         }
 
@@ -383,7 +501,7 @@ fn handle_toolbar_click(state: &mut AppState, mx: i32, _my: i32) -> bool {
 // Rendering
 // ============================================================================
 
-fn render(win: u32, state: &AppState, win_w: u32, win_h: u32) {
+fn render(win: u32, state: &mut AppState, win_w: u32, win_h: u32) {
     // Background
     window::fill_rect(win, 0, 0, win_w as u16, win_h as u16, colors::WINDOW_BG);
 
@@ -428,7 +546,47 @@ fn render_toolbar(win: u32, state: &AppState, win_w: u32) {
     label(win, win_w as i32 - text_w - 12, 10, count_str, colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
 }
 
-fn render_file_list(win: u32, state: &AppState, win_w: u32, win_h: u32) {
+fn get_extension(name: &str) -> Option<&str> {
+    match name.rfind('.') {
+        Some(pos) if pos + 1 < name.len() => Some(&name[pos + 1..]),
+        _ => None,
+    }
+}
+
+fn lookup_icon_path<'a>(mimes: &'a [MimeEntry], ext: &str) -> Option<&'a str> {
+    for entry in mimes {
+        if entry.ext == ext && !entry.icon_path.is_empty() {
+            return Some(&entry.icon_path);
+        }
+    }
+    None
+}
+
+/// Alpha-blend icon pixels against a solid background color, then blit.
+fn blit_icon_alpha(win: u32, x: i16, y: i16, pixels: &[u32; 256], bg: u32) {
+    let mut buf = [0u32; 256];
+    let bg_r = (bg >> 16) & 0xFF;
+    let bg_g = (bg >> 8) & 0xFF;
+    let bg_b = bg & 0xFF;
+    for i in 0..256 {
+        let px = pixels[i];
+        let a = (px >> 24) & 0xFF;
+        if a >= 255 {
+            buf[i] = px | 0xFF000000;
+        } else if a == 0 {
+            buf[i] = bg | 0xFF000000;
+        } else {
+            let inv = 255 - a;
+            let r = (((px >> 16) & 0xFF) * a + bg_r * inv) / 255;
+            let g = (((px >> 8) & 0xFF) * a + bg_g * inv) / 255;
+            let b = ((px & 0xFF) * a + bg_b * inv) / 255;
+            buf[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
+        }
+    }
+    window::blit(win, x, y, ICON_DISPLAY_SIZE as u16, ICON_DISPLAY_SIZE as u16, &buf);
+}
+
+fn render_file_list(win: u32, state: &mut AppState, win_w: u32, win_h: u32) {
     let list_x = SIDEBAR_W as i32;
     let list_y = TOOLBAR_H as i32;
     let list_w = win_w - SIDEBAR_W;
@@ -465,32 +623,47 @@ fn render_file_list(win: u32, state: &AppState, win_w: u32, win_h: u32) {
         let text_color = if state.selected == Some(entry_idx) { 0xFFFFFFFF } else { colors::TEXT };
         let dim_color = if state.selected == Some(entry_idx) { 0xFFDDDDDD } else { colors::TEXT_SECONDARY };
 
-        // Icon (simple colored square representing file type)
+        // Icon — load from icon cache, fallback to colored square
         let icon_x = list_x + 12;
         let icon_y = ry + (ROW_H - ICON_SIZE as i32) / 2;
-        let icon_color = match entry.entry_type {
-            TYPE_DIR => colors::ACCENT,        // Blue folder
-            _ => {
-                // Check extension/type
-                let name = entry.name_str();
-                if name.ends_with(".dll") {
-                    0xFF9B59B6 // Purple for DLLs
-                } else if name.ends_with(".icon") {
-                    colors::WARNING // Yellow for icons
-                } else if name.ends_with(".txt") || name.ends_with(".conf")
-                    || name.ends_with(".log") || name.ends_with(".md")
-                    || name.ends_with(".ini") {
-                    colors::TEXT_SECONDARY // Gray for text/config files
-                } else {
-                    colors::SUCCESS // Green for executables
-                }
+
+        // Determine icon path for this entry
+        let name = entry.name_str();
+        let entry_type = entry.entry_type;
+        let icon_path: Option<&str> = if entry_type == TYPE_DIR {
+            Some("/system/media/icons/folder.ico")
+        } else {
+            match get_extension(name) {
+                Some(ext) => lookup_icon_path(&state.mimetypes, ext),
+                None => None,
             }
         };
-        window::fill_rect(win, icon_x as i16, icon_y as i16, ICON_SIZE as u16, ICON_SIZE as u16, icon_color);
+        let icon_path = icon_path.unwrap_or("/system/media/icons/default.ico");
 
-        // Folder icon: draw a tab shape on top
-        if entry.entry_type == TYPE_DIR {
-            window::fill_rect(win, icon_x as i16, (icon_y - 2) as i16, 8, 3, icon_color);
+        // Row background color for alpha blending
+        let row_bg = if state.selected == Some(entry_idx) {
+            colors::ACCENT
+        } else if i % 2 == 1 {
+            0xFF252525
+        } else {
+            colors::WINDOW_BG
+        };
+
+        // Try to load and blit the icon
+        let mut icon_drawn = false;
+        if let Some(pixels) = state.icon_cache.get_or_load(icon_path) {
+            blit_icon_alpha(win, icon_x as i16, icon_y as i16, pixels, row_bg);
+            icon_drawn = true;
+        }
+
+        if !icon_drawn {
+            // Fallback: colored square
+            let icon_color = if entry_type == TYPE_DIR {
+                colors::ACCENT
+            } else {
+                colors::SUCCESS
+            };
+            window::fill_rect(win, icon_x as i16, icon_y as i16, ICON_SIZE as u16, ICON_SIZE as u16, icon_color);
         }
 
         // Name
@@ -624,6 +797,7 @@ fn main() {
         history: Vec::new(),
         history_pos: 0,
         mimetypes,
+        icon_cache: IconCache::new(),
     };
 
     // Initial directory load
@@ -758,7 +932,7 @@ fn main() {
 
         if needs_redraw {
             update_menu_states(win, &state);
-            render(win, &state, win_w, win_h);
+            render(win, &mut state, win_w, win_h);
             window::present(win);
             needs_redraw = false;
         }

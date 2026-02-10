@@ -33,6 +33,7 @@ pub const FMT_BMP: u32 = 1;
 pub const FMT_PNG: u32 = 2;
 pub const FMT_JPEG: u32 = 3;
 pub const FMT_GIF: u32 = 4;
+pub const FMT_ICO: u32 = 5;
 pub const FMT_MJV: u32 = 10;
 
 /// Export function table — must match the DLL's `LibimageExports` layout exactly.

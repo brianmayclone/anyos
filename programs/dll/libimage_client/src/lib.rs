@@ -11,7 +11,7 @@
 
 pub mod raw;
 
-pub use raw::{ImageInfo, VideoInfo, FMT_UNKNOWN, FMT_BMP, FMT_PNG, FMT_JPEG, FMT_GIF, FMT_MJV};
+pub use raw::{ImageInfo, VideoInfo, FMT_UNKNOWN, FMT_BMP, FMT_PNG, FMT_JPEG, FMT_GIF, FMT_ICO, FMT_MJV};
 
 /// Scale mode: stretch to fill, ignoring aspect ratio.
 pub const MODE_SCALE: u32 = 0;

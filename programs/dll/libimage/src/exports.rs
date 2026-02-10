@@ -119,6 +119,10 @@ extern "C" fn image_probe(data: *const u8, len: u32, info: *mut ImageInfo) -> i3
         *out = i;
         return crate::types::ERR_OK;
     }
+    if let Some(i) = crate::ico::probe(data) {
+        *out = i;
+        return crate::types::ERR_OK;
+    }
 
     crate::types::ERR_UNSUPPORTED
 }
@@ -157,6 +161,15 @@ extern "C" fn image_decode(
     }
     if data.len() >= 6 && (data[0..6] == *b"GIF87a" || data[0..6] == *b"GIF89a") {
         return crate::gif::decode(data, out, scratch);
+    }
+    // ICO: reserved=0, type=1(ICO) or 2(CUR), count>0
+    if data.len() >= 6 {
+        let reserved = u16::from_le_bytes([data[0], data[1]]);
+        let ico_type = u16::from_le_bytes([data[2], data[3]]);
+        let count = u16::from_le_bytes([data[4], data[5]]);
+        if reserved == 0 && (ico_type == 1 || ico_type == 2) && count > 0 && count < 256 {
+            return crate::ico::decode(data, out, scratch);
+        }
     }
 
     crate::types::ERR_UNSUPPORTED

@@ -12,6 +12,7 @@ pub mod deflate;
 pub mod jpeg;
 pub mod jpeg_tables;
 pub mod gif;
+pub mod ico;
 pub mod lzw;
 pub mod video;
 pub mod scale;
