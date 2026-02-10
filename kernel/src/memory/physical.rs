@@ -1,17 +1,23 @@
 //! Physical frame allocator using a bitmap.
 //!
-//! Manages 4 KiB physical frames up to 1 GiB of RAM. The bitmap tracks
+//! Manages 4 KiB physical frames up to 64 GiB of RAM. The bitmap tracks
 //! free/used state for each frame, initialized from the BIOS E820 memory map.
+//! All operations are protected by an IRQ-safe spinlock for SMP safety.
+//!
+//! The bitmap is a static array in BSS (2 MiB), so it costs nothing until
+//! the pages containing it are demand-faulted. With QEMU `-m 1024M`, only
+//! the first 32 KiB of the bitmap is actually used.
 
 use crate::boot_info::{BootInfo, E820_TYPE_USABLE};
 use crate::memory::address::PhysAddr;
 use crate::memory::FRAME_SIZE;
+use crate::sync::spinlock::Spinlock;
 
-/// Maximum supported physical memory (1 GiB).
-const MAX_MEMORY: usize = 1024 * 1024 * 1024;
+/// Maximum supported physical memory (64 GiB).
+const MAX_MEMORY: usize = 64 * 1024 * 1024 * 1024;
 /// Total number of frames that can be tracked in the bitmap.
 const MAX_FRAMES: usize = MAX_MEMORY / FRAME_SIZE;
-/// Size of the bitmap in bytes (1 bit per frame).
+/// Size of the bitmap in bytes (1 bit per frame, 2 MiB for 64 GiB).
 const BITMAP_SIZE: usize = MAX_FRAMES / 8;
 
 // Kernel virtual base (must match link.ld and boot.asm)
@@ -24,26 +30,39 @@ extern "C" {
     static _kernel_end: u8;
 }
 
-// Bitmap: 1 = used, 0 = free
-static mut BITMAP: [u8; BITMAP_SIZE] = [0xFF; BITMAP_SIZE]; // All used initially
-static mut TOTAL_FRAMES: usize = 0;
-static mut FREE_FRAMES: usize = 0;
+/// Physical frame allocator state.
+///
+/// Field order matters: `total_frames`/`free_frames` are placed BEFORE the
+/// 2 MiB bitmap so they sit at the start of BSS, far from the kernel stack
+/// (which starts at `_bss_end` and grows downward). Without this ordering,
+/// the bitmap pushes these fields to the end of BSS where stack overflow
+/// during init can silently corrupt them.
+#[repr(C)]
+struct FrameAllocator {
+    total_frames: usize,
+    free_frames: usize,
+    bitmap: [u8; BITMAP_SIZE],
+}
 
-fn set_used(frame: usize) {
-    unsafe {
-        BITMAP[frame / 8] |= 1 << (frame % 8);
+impl FrameAllocator {
+    fn set_used(&mut self, frame: usize) {
+        self.bitmap[frame / 8] |= 1 << (frame % 8);
+    }
+
+    fn set_free(&mut self, frame: usize) {
+        self.bitmap[frame / 8] &= !(1 << (frame % 8));
+    }
+
+    fn is_used(&self, frame: usize) -> bool {
+        self.bitmap[frame / 8] & (1 << (frame % 8)) != 0
     }
 }
 
-fn set_free(frame: usize) {
-    unsafe {
-        BITMAP[frame / 8] &= !(1 << (frame % 8));
-    }
-}
-
-fn is_used(frame: usize) -> bool {
-    unsafe { BITMAP[frame / 8] & (1 << (frame % 8)) != 0 }
-}
+static ALLOCATOR: Spinlock<FrameAllocator> = Spinlock::new(FrameAllocator {
+    bitmap: [0; BITMAP_SIZE], // Zero-init → lives in BSS (no binary bloat for 2 MiB)
+    total_frames: 0,
+    free_frames: 0,
+});
 
 /// Initialize the physical frame allocator from the E820 memory map.
 ///
@@ -52,23 +71,35 @@ fn is_used(frame: usize) -> bool {
 pub fn init(boot_info: &BootInfo) {
     let memory_map = unsafe { boot_info.memory_map() };
 
-    // First pass: find total memory
-    let mut max_addr: u64 = 0;
+    let mut alloc = ALLOCATOR.lock();
+
+    // First pass: find highest usable address to size the bitmap.
+    // Only consider USABLE entries — reserved MMIO regions (IOAPIC, LAPIC, etc.)
+    // can have addresses far above actual RAM and would bloat total_frames.
+    let mut max_usable_addr: u64 = 0;
     for entry in memory_map {
-        let end = entry.base_addr + entry.length;
-        if end > max_addr {
-            max_addr = end;
+        if entry.entry_type == E820_TYPE_USABLE {
+            let end = entry.base_addr + entry.length;
+            if end > max_usable_addr {
+                max_usable_addr = end;
+            }
         }
     }
 
     // Cap at MAX_MEMORY
-    if max_addr > MAX_MEMORY as u64 {
-        max_addr = MAX_MEMORY as u64;
+    if max_usable_addr > MAX_MEMORY as u64 {
+        max_usable_addr = MAX_MEMORY as u64;
     }
 
-    unsafe {
-        TOTAL_FRAMES = (max_addr as usize) / FRAME_SIZE;
-        FREE_FRAMES = 0;
+    alloc.total_frames = (max_usable_addr as usize) / FRAME_SIZE;
+    alloc.free_frames = 0;
+
+    // Fill bitmap with 0xFF (all used) for the actual RAM range only.
+    // The bitmap is zero-initialized in BSS — we only touch the bytes
+    // corresponding to real physical memory, not the full 2 MiB.
+    let bitmap_bytes_needed = (alloc.total_frames + 7) / 8;
+    for byte in alloc.bitmap[..bitmap_bytes_needed].iter_mut() {
+        *byte = 0xFF;
     }
 
     // Mark usable regions as free
@@ -89,8 +120,8 @@ pub fn init(boot_info: &BootInfo) {
 
         for frame in start_frame..end_frame {
             if frame < MAX_FRAMES {
-                set_free(frame);
-                unsafe { FREE_FRAMES += 1; }
+                alloc.set_free(frame);
+                alloc.free_frames += 1;
             }
         }
     }
@@ -100,9 +131,9 @@ pub fn init(boot_info: &BootInfo) {
     //   kernel at 1MB, and kernel stack growing down from physical 0x200000)
     let first_mb_frames = (2 * 1024 * 1024) / FRAME_SIZE;
     for frame in 0..first_mb_frames {
-        if !is_used(frame) {
-            set_used(frame);
-            unsafe { FREE_FRAMES -= 1; }
+        if !alloc.is_used(frame) {
+            alloc.set_used(frame);
+            alloc.free_frames -= 1;
         }
     }
 
@@ -125,17 +156,17 @@ pub fn init(boot_info: &BootInfo) {
         kernel_start.as_u64(), kernel_end.as_u64()
     );
     for frame in kernel_start.frame_index()..kernel_end.frame_index() {
-        if frame < MAX_FRAMES && !is_used(frame) {
-            set_used(frame);
-            unsafe { FREE_FRAMES -= 1; }
+        if frame < MAX_FRAMES && !alloc.is_used(frame) {
+            alloc.set_used(frame);
+            alloc.free_frames -= 1;
         }
     }
 
     crate::serial_println!(
         "Physical memory: {} MiB total, {} frames free ({} MiB)",
-        unsafe { TOTAL_FRAMES } * FRAME_SIZE / (1024 * 1024),
-        unsafe { FREE_FRAMES },
-        unsafe { FREE_FRAMES } * FRAME_SIZE / (1024 * 1024)
+        alloc.total_frames * FRAME_SIZE / (1024 * 1024),
+        alloc.free_frames,
+        alloc.free_frames * FRAME_SIZE / (1024 * 1024)
     );
 }
 
@@ -143,35 +174,36 @@ pub fn init(boot_info: &BootInfo) {
 ///
 /// Uses a linear scan of the bitmap (first-fit). Returns `None` if no frames are available.
 pub fn alloc_frame() -> Option<PhysAddr> {
-    unsafe {
-        for i in 0..TOTAL_FRAMES {
-            if !is_used(i) {
-                set_used(i);
-                FREE_FRAMES -= 1;
-                return Some(PhysAddr::new((i * FRAME_SIZE) as u64));
-            }
+    let mut alloc = ALLOCATOR.lock();
+    let total = alloc.total_frames;
+    for i in 0..total {
+        if !alloc.is_used(i) {
+            alloc.set_used(i);
+            alloc.free_frames -= 1;
+            return Some(PhysAddr::new((i * FRAME_SIZE) as u64));
         }
-        None
     }
+    None
 }
 
 /// Free a previously allocated physical frame, returning it to the pool.
 pub fn free_frame(addr: PhysAddr) {
+    let mut alloc = ALLOCATOR.lock();
     let frame = addr.frame_index();
-    if is_used(frame) {
-        set_free(frame);
-        unsafe { FREE_FRAMES += 1; }
+    if alloc.is_used(frame) {
+        alloc.set_free(frame);
+        alloc.free_frames += 1;
     }
 }
 
 /// Returns the number of free physical frames currently available.
 pub fn free_frame_count() -> usize {
-    unsafe { FREE_FRAMES }
+    ALLOCATOR.lock().free_frames
 }
 
 /// Returns the number of free physical frames (alias for [`free_frame_count`]).
 pub fn free_frames() -> usize {
-    unsafe { FREE_FRAMES }
+    ALLOCATOR.lock().free_frames
 }
 
 /// Allocate `count` physically contiguous 4 KiB frames.
@@ -182,31 +214,31 @@ pub fn alloc_contiguous(count: usize) -> Option<PhysAddr> {
     if count == 0 {
         return None;
     }
-    unsafe {
-        let mut run_start = 0usize;
-        let mut run_len = 0usize;
-        for i in 0..TOTAL_FRAMES {
-            if !is_used(i) {
-                if run_len == 0 {
-                    run_start = i;
-                }
-                run_len += 1;
-                if run_len >= count {
-                    for j in run_start..run_start + count {
-                        set_used(j);
-                        FREE_FRAMES -= 1;
-                    }
-                    return Some(PhysAddr::new((run_start * FRAME_SIZE) as u64));
-                }
-            } else {
-                run_len = 0;
+    let mut alloc = ALLOCATOR.lock();
+    let total = alloc.total_frames;
+    let mut run_start = 0usize;
+    let mut run_len = 0usize;
+    for i in 0..total {
+        if !alloc.is_used(i) {
+            if run_len == 0 {
+                run_start = i;
             }
+            run_len += 1;
+            if run_len >= count {
+                for j in run_start..run_start + count {
+                    alloc.set_used(j);
+                    alloc.free_frames -= 1;
+                }
+                return Some(PhysAddr::new((run_start * FRAME_SIZE) as u64));
+            }
+        } else {
+            run_len = 0;
         }
-        None
     }
+    None
 }
 
 /// Returns the total number of physical frames tracked by the allocator.
 pub fn total_frames() -> usize {
-    unsafe { TOTAL_FRAMES }
+    ALLOCATOR.lock().total_frames
 }

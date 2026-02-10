@@ -330,6 +330,17 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
         14 => {
             let cr2: u64;
             unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2); }
+
+            // Demand paging: if page not present and address is in committed heap range,
+            // allocate a frame and map it transparently, then retry the instruction.
+            let err_not_present = (frame.err_code & 1) == 0;
+            if err_not_present {
+                if crate::memory::virtual_mem::handle_heap_demand_page(cr2) {
+                    return; // Page mapped — retry faulting instruction via iretq
+                }
+            }
+
+            // Not a demand-pageable fault — treat as error
             crate::serial_println!(
                 "EXCEPTION: Page Fault addr={:#018x} RIP={:#018x} err={:#x}",
                 cr2, frame.rip, frame.err_code
@@ -342,6 +353,41 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 "  RSI={:#018x} RDI={:#018x} RBP={:#018x}",
                 frame.rsi, frame.rdi, frame.rbp
             );
+            // Diagnostic: walk page tables for faulting address
+            {
+                let cr3_val: u64;
+                unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3_val); }
+                crate::serial_println!("  CR3={:#018x}", cr3_val);
+                // Walk via recursive mapping (PML4[510])
+                unsafe {
+                    let pml4_base = 0xFFFF_FF7F_BFDF_E000u64 as *const u64;
+                    let pml4i = ((cr2 >> 39) & 0x1FF) as usize;
+                    let pdpti = ((cr2 >> 30) & 0x1FF) as usize;
+                    let pdi   = ((cr2 >> 21) & 0x1FF) as usize;
+                    let pti   = ((cr2 >> 12) & 0x1FF) as usize;
+                    let pml4e = pml4_base.add(pml4i).read_volatile();
+                    crate::serial_println!("  PML4[{}]={:#018x} {}", pml4i, pml4e,
+                        if pml4e & 1 != 0 { "PRESENT" } else { "NOT PRESENT" });
+                    if pml4e & 1 != 0 {
+                        let pdpt_base = crate::memory::virtual_mem::debug_recursive_pdpt(cr2);
+                        let pdpte = (pdpt_base as *const u64).add(pdpti).read_volatile();
+                        crate::serial_println!("  PDPT[{}]={:#018x} {}", pdpti, pdpte,
+                            if pdpte & 1 != 0 { "PRESENT" } else { "NOT PRESENT" });
+                        if pdpte & 1 != 0 {
+                            let pd_base = crate::memory::virtual_mem::debug_recursive_pd(cr2);
+                            let pde = (pd_base as *const u64).add(pdi).read_volatile();
+                            crate::serial_println!("  PD[{}]={:#018x} {}", pdi, pde,
+                                if pde & 1 != 0 { "PRESENT" } else { "NOT PRESENT" });
+                            if pde & 1 != 0 {
+                                let pt_base = crate::memory::virtual_mem::debug_recursive_pt(cr2);
+                                let pte = (pt_base as *const u64).add(pti).read_volatile();
+                                crate::serial_println!("  PT[{}]={:#018x} {}", pti, pte,
+                                    if pte & 1 != 0 { "PRESENT" } else { "NOT PRESENT" });
+                            }
+                        }
+                    }
+                }
+            }
             if is_user_mode {
                 crate::serial_println!("  User RSP={:#018x} SS={:#x}", frame.rsp, frame.ss);
                 crate::serial_println!("  User process fault — terminating thread");

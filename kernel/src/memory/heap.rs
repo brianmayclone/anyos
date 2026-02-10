@@ -1,23 +1,36 @@
-//! Kernel heap allocator using a linked-list free list.
+//! Kernel heap allocator using a linked-list free list with demand paging.
 //!
-//! Provides a `GlobalAlloc` implementation backed by demand-paged virtual memory.
-//! Starts with 16 MiB and grows on demand up to 512 MiB, allocating physical
-//! frames and mapping them into the kernel's virtual address space.
+//! The heap reserves a 512 MiB virtual address range but only maps a small initial
+//! region at boot. Growth just advances a committed watermark — physical frames are
+//! allocated lazily by the page fault handler when memory is first accessed.
 
 use crate::memory::address::VirtAddr;
 use crate::memory::physical;
 use crate::memory::virtual_mem;
 use crate::memory::FRAME_SIZE;
 use core::alloc::{GlobalAlloc, Layout};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// Virtual address where the kernel heap begins (higher-half, after kernel code area).
-const HEAP_START: u64 = 0xFFFF_FFFF_8040_0000;
-/// Initial heap size mapped at boot (16 MiB).
-const HEAP_INITIAL_SIZE: usize = 16 * 1024 * 1024;
+/// Virtual address where the kernel heap begins.
+///
+/// Must be ABOVE the kernel's higher-half mapping (which covers physical 0-16 MiB
+/// at virtual KERNEL_VIRT_BASE..KERNEL_VIRT_BASE+16MiB). Placed at 32 MiB offset
+/// from KERNEL_VIRT_BASE to leave room for kernel code, data, BSS, and stack growth.
+const HEAP_START: u64 = 0xFFFF_FFFF_8200_0000;
+/// Size of the region pre-mapped at boot (4 MiB — enough for early init).
+const HEAP_INITIAL_MAPPED: usize = 4 * 1024 * 1024;
+/// Initial committed size (32 MiB — rest is demand-paged on first access).
+const HEAP_INITIAL_SIZE: usize = 32 * 1024 * 1024;
 /// Maximum heap size (512 MiB) — fits within the 1 GiB PML4[511]/PDPT[510] window.
 const HEAP_MAX_SIZE: usize = 512 * 1024 * 1024;
-/// Minimum growth increment when expanding the heap (1 MiB).
-const GROW_CHUNK: usize = 1024 * 1024;
+/// Minimum growth increment when expanding the heap (4 MiB).
+const GROW_CHUNK: usize = 4 * 1024 * 1024;
+
+/// Committed heap size in bytes. Readable by the page fault handler without
+/// acquiring the heap lock. Pages in [HEAP_START, HEAP_START + HEAP_COMMITTED)
+/// are valid heap addresses — if not yet mapped, the page fault handler
+/// allocates a frame on demand.
+pub static HEAP_COMMITTED: AtomicUsize = AtomicUsize::new(0);
 
 #[global_allocator]
 static HEAP_ALLOCATOR: LockedHeap = LockedHeap::new();
@@ -41,7 +54,6 @@ struct FreeBlock {
 
 static mut HEAP_FREE_LIST: *mut FreeBlock = core::ptr::null_mut();
 static mut HEAP_INITIALIZED: bool = false;
-static mut HEAP_COMMITTED: usize = 0; // Bytes actually mapped
 
 impl LockedHeap {
     const fn new() -> Self {
@@ -141,17 +153,20 @@ unsafe fn alloc_inner(layout: Layout) -> *mut u8 {
     core::ptr::null_mut()
 }
 
-/// Grow the heap by mapping additional physical pages.
+/// Grow the heap by advancing the committed watermark.
+/// Physical frames are NOT allocated here — they are demand-paged on first access.
 /// Called while the heap lock is held. Returns true if growth succeeded.
 unsafe fn grow_heap(min_bytes: usize) -> bool {
     // Compute growth amount: at least min_bytes, rounded up to GROW_CHUNK
     let growth = align_up(min_bytes.max(GROW_CHUNK), FRAME_SIZE);
 
+    let current_committed = HEAP_COMMITTED.load(Ordering::Acquire);
+
     // Check limits
-    let new_committed = HEAP_COMMITTED + growth;
+    let new_committed = current_committed + growth;
     if new_committed > HEAP_MAX_SIZE {
         // Try to grow as much as we can
-        let remaining = HEAP_MAX_SIZE.saturating_sub(HEAP_COMMITTED);
+        let remaining = HEAP_MAX_SIZE.saturating_sub(current_committed);
         if remaining < min_bytes {
             return false; // Can't grow enough
         }
@@ -172,30 +187,25 @@ unsafe fn grow_heap(min_bytes: usize) -> bool {
     grow_heap_exact(growth)
 }
 
-/// Map exactly `growth` bytes of new heap pages and add to free list.
+/// Advance the committed watermark by `growth` bytes and add a free block.
+/// No physical frame allocation happens here — pages are demand-faulted on access.
 unsafe fn grow_heap_exact(growth: usize) -> bool {
     let growth = align_up(growth, FRAME_SIZE);
     if growth == 0 {
         return false;
     }
 
-    let pages = growth / FRAME_SIZE;
-    let base = HEAP_START as usize + HEAP_COMMITTED;
+    let old_committed = HEAP_COMMITTED.load(Ordering::Acquire);
+    let new_committed = old_committed + growth;
 
-    // Map new pages
-    for i in 0..pages {
-        let virt = VirtAddr::new((base + i * FRAME_SIZE) as u64);
-        match physical::alloc_frame() {
-            Some(phys) => virtual_mem::map_page(virt, phys, 0x03), // Present + Writable
-            None => {
-                // Out of physical memory — unmap what we already mapped
-                // (in practice this shouldn't happen since we checked free_frames)
-                return false;
-            }
-        }
-    }
+    // Advance the committed watermark (makes these addresses valid for demand paging)
+    HEAP_COMMITTED.store(new_committed, Ordering::Release);
 
-    // Add the new region as a free block, inserted into the sorted free list
+    let base = HEAP_START as usize + old_committed;
+
+    // Insert the new region as a free block, inserted into the sorted free list.
+    // Writing to `base` will trigger a demand page fault if the page isn't mapped yet —
+    // the page fault handler (ISR 14) allocates a frame and maps it transparently.
     let new_block = base as *mut FreeBlock;
     (*new_block).size = growth;
 
@@ -248,11 +258,9 @@ unsafe fn grow_heap_exact(growth: usize) -> bool {
         }
     }
 
-    HEAP_COMMITTED = HEAP_COMMITTED + growth;
-
     crate::serial_println!(
-        "  Heap grew: {} KiB committed ({} MiB max)",
-        HEAP_COMMITTED / 1024,
+        "  Heap committed: {} KiB ({} MiB max)",
+        new_committed / 1024,
         HEAP_MAX_SIZE / (1024 * 1024)
     );
 
@@ -307,7 +315,7 @@ fn align_up(value: usize, align: usize) -> usize {
 /// Returns (used_bytes, total_committed_bytes) for the kernel heap.
 pub fn heap_stats() -> (usize, usize) {
     unsafe {
-        let committed = HEAP_COMMITTED;
+        let committed = HEAP_COMMITTED.load(Ordering::Acquire);
         let mut total_free = 0usize;
         let mut current = HEAP_FREE_LIST;
         while !current.is_null() {
@@ -326,7 +334,7 @@ pub fn validate_heap() {
         let mut total_free = 0usize;
         let mut count = 0usize;
         let heap_start = HEAP_START as usize;
-        let heap_end = heap_start + HEAP_COMMITTED;
+        let heap_end = heap_start + HEAP_COMMITTED.load(Ordering::Acquire);
 
         while !current.is_null() {
             let addr = current as usize;
@@ -360,37 +368,43 @@ pub fn validate_heap() {
         }
 
         crate::serial_println!("  Heap check: {} free block(s), {} KiB free / {} KiB committed",
-            count, total_free / 1024, HEAP_COMMITTED / 1024);
+            count, total_free / 1024, HEAP_COMMITTED.load(Ordering::Acquire) / 1024);
     }
 }
 
-/// Initialize the kernel heap by mapping physical frames and creating the initial free list.
+/// Initialize the kernel heap with demand paging.
 ///
+/// Maps a small initial region (4 MiB) and commits a larger virtual range (32 MiB).
+/// Pages beyond the initial mapped region are demand-faulted by the page fault handler.
 /// Must be called after physical and virtual memory are initialized.
 pub fn init() {
-    let pages = HEAP_INITIAL_SIZE / FRAME_SIZE;
-
-    // Map heap pages
-    for i in 0..pages {
+    // Map only the initial region (4 MiB = 1024 pages)
+    let mapped_pages = HEAP_INITIAL_MAPPED / FRAME_SIZE;
+    for i in 0..mapped_pages {
         let virt = VirtAddr::new(HEAP_START + (i * FRAME_SIZE) as u64);
         let phys = physical::alloc_frame().expect("Failed to allocate heap frame");
         virtual_mem::map_page(virt, phys, 0x03); // Present + Writable
     }
 
-    // Initialize free list with one big block
+    // Commit the full initial size (rest will be demand-paged on access)
+    HEAP_COMMITTED.store(HEAP_INITIAL_SIZE, Ordering::Release);
+
+    // Initialize free list with one big block spanning HEAP_INITIAL_SIZE.
+    // Only the first 4 MiB of this block is pre-mapped; the rest will be
+    // demand-faulted when the allocator splits or traverses the block.
     unsafe {
         let block = HEAP_START as *mut FreeBlock;
         (*block).size = HEAP_INITIAL_SIZE;
         (*block).next = core::ptr::null_mut();
         HEAP_FREE_LIST = block;
-        HEAP_COMMITTED = HEAP_INITIAL_SIZE;
         HEAP_INITIALIZED = true;
     }
 
     crate::serial_println!(
-        "Kernel heap initialized: {:#018x} - {:#018x} ({} KiB, max {} MiB)",
+        "Kernel heap initialized: {:#018x} - {:#018x} ({} KiB mapped, {} KiB committed, max {} MiB)",
         HEAP_START,
         HEAP_START + HEAP_INITIAL_SIZE as u64,
+        HEAP_INITIAL_MAPPED / 1024,
         HEAP_INITIAL_SIZE / 1024,
         HEAP_MAX_SIZE / (1024 * 1024)
     );

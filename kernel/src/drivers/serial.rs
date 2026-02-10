@@ -105,7 +105,11 @@ macro_rules! serial_print {
 #[macro_export]
 macro_rules! serial_println {
     () => { $crate::serial_print!("\n") };
-    ($($arg:tt)*) => { $crate::serial_print!("{}\n", format_args!($($arg)*)) };
+    ($($arg:tt)*) => {{
+        let _ticks = $crate::arch::x86::pit::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+        let _ms = _ticks as u64 * 10; // PIT at 100 Hz → 10 ms per tick
+        $crate::serial_print!("[{}] {}\n", _ms, format_args!($($arg)*));
+    }};
 }
 
 #[cfg(feature = "debug_verbose")]

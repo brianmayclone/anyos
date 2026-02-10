@@ -96,6 +96,39 @@ fn recursive_pdpt_base(vaddr: VirtAddr) -> u64 {
     )
 }
 
+/// Debug helper: get recursive PDPT base for a virtual address (used by page fault diagnostics).
+pub fn debug_recursive_pdpt(vaddr: u64) -> u64 {
+    let pml4i = ((vaddr >> 39) & 0x1FF) as u64;
+    sign_extend(
+        (RECURSIVE_INDEX as u64) << 39
+            | (RECURSIVE_INDEX as u64) << 30
+            | (RECURSIVE_INDEX as u64) << 21
+            | pml4i << 12,
+    )
+}
+
+/// Debug helper: get recursive PD base for a virtual address (used by page fault diagnostics).
+pub fn debug_recursive_pd(vaddr: u64) -> u64 {
+    let pml4i = ((vaddr >> 39) & 0x1FF) as u64;
+    let pdpti = ((vaddr >> 30) & 0x1FF) as u64;
+    sign_extend(
+        (RECURSIVE_INDEX as u64) << 39
+            | (RECURSIVE_INDEX as u64) << 30
+            | pml4i << 21
+            | pdpti << 12,
+    )
+}
+
+/// Debug helper: get recursive PT base for a virtual address (used by page fault diagnostics).
+pub fn debug_recursive_pt(vaddr: u64) -> u64 {
+    let pml4i = ((vaddr >> 39) & 0x1FF) as u64;
+    let pdpti = ((vaddr >> 30) & 0x1FF) as u64;
+    let pdi = ((vaddr >> 21) & 0x1FF) as u64;
+    sign_extend(
+        (RECURSIVE_INDEX as u64) << 39 | pml4i << 30 | pdpti << 21 | pdi << 12,
+    )
+}
+
 // PML4 physical address (set during init, used for kernel_cr3)
 static mut PML4_PHYS: u64 = 0;
 
@@ -160,8 +193,9 @@ pub fn init(boot_info: &BootInfo) {
         let pd_phys = ensure_table_entry(pdpt, 510, PAGE_PRESENT | PAGE_WRITABLE);
         let pd = pd_phys as *mut u64;
 
-        // Map 8 MiB of kernel (4 PD entries, each covering 2 MiB via a page table)
-        for mb in 0..4u64 {
+        // Map 16 MiB of kernel (8 PD entries, each covering 2 MiB via a page table)
+        // Extra room for large BSS (e.g. 2 MiB physical allocator bitmap)
+        for mb in 0..8u64 {
             let pt_phys_alloc = physical::alloc_frame().expect("Failed to allocate kernel PT");
             let pt = pt_phys_alloc.as_u64() as *mut u64;
 
@@ -578,4 +612,39 @@ pub fn destroy_user_page_directory(pml4_phys: PhysAddr) {
 
     // Free the PML4 frame itself
     physical::free_frame(pml4_phys);
+}
+
+/// Handle a demand-page fault for the kernel heap.
+///
+/// Called from the page fault handler (ISR 14) when a "not present" fault occurs.
+/// If the faulting address is within the committed heap range, allocates a physical
+/// frame, maps it, zeroes it, and returns `true` so the faulting instruction can retry.
+///
+/// Returns `false` if the address is not in the committed heap range (real fault).
+pub fn handle_heap_demand_page(vaddr: u64) -> bool {
+    let heap_start = 0xFFFF_FFFF_8200_0000u64;
+    let committed = crate::memory::heap::HEAP_COMMITTED
+        .load(core::sync::atomic::Ordering::Acquire);
+    let heap_end = heap_start + committed as u64;
+
+    if vaddr < heap_start || vaddr >= heap_end {
+        return false;
+    }
+
+    // Allocate a physical frame
+    let phys = match physical::alloc_frame() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    // Map the page (Present + Writable, kernel-only)
+    let page_addr = VirtAddr::new(vaddr & !0xFFF);
+    map_page(page_addr, phys, 0x03);
+
+    // Zero the page (demand-paged pages must be zeroed for security/correctness)
+    unsafe {
+        core::ptr::write_bytes(page_addr.as_u64() as *mut u8, 0, FRAME_SIZE);
+    }
+
+    true
 }
