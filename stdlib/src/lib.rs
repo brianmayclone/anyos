@@ -9,6 +9,7 @@ pub mod audio;
 pub mod dll;
 pub mod fs;
 pub mod heap;
+pub mod icons;
 pub mod io;
 pub mod ipc;
 pub mod net;

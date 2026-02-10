@@ -12,8 +12,13 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "libcompositor_client",
+ "libimage_client",
 ]
 
 [[package]]
 name = "libcompositor_client"
+version = "0.1.0"
+
+[[package]]
+name = "libimage_client"
 version = "0.1.0"

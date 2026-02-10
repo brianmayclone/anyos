@@ -5,6 +5,7 @@ use anyos_std::String;
 use anyos_std::Vec;
 
 use anyos_std::fs;
+use anyos_std::icons;
 use anyos_std::process;
 use anyos_std::ui::window;
 
@@ -56,12 +57,6 @@ impl FileEntry {
     fn name_str(&self) -> &str {
         core::str::from_utf8(&self.name[..self.name_len]).unwrap_or("???")
     }
-}
-
-struct MimeEntry {
-    ext: String,
-    app: String,
-    icon_path: String,
 }
 
 // ============================================================================
@@ -182,7 +177,7 @@ struct AppState {
     history: Vec<String>,
     history_pos: usize, // index into history; history[history_pos] == cwd
     // Mimetype associations
-    mimetypes: Vec<MimeEntry>,
+    mimetypes: icons::MimeDb,
     // Icon cache
     icon_cache: IconCache,
 }
@@ -310,68 +305,6 @@ fn update_menu_states(win: u32, state: &AppState) {
 }
 
 // ============================================================================
-// Mimetype associations
-// ============================================================================
-
-fn load_mimetypes() -> Vec<MimeEntry> {
-    let fd = fs::open("/system/mimetypes.conf", 0);
-    if fd == u32::MAX {
-        return Vec::new();
-    }
-
-    let mut data = Vec::new();
-    let mut buf = [0u8; 256];
-    loop {
-        let n = fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX {
-            break;
-        }
-        data.extend_from_slice(&buf[..n as usize]);
-    }
-    fs::close(fd);
-
-    let text = match core::str::from_utf8(&data) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-
-    let mut entries = Vec::new();
-    for line in text.split('\n') {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if let Some(sep) = line.find('|') {
-            let ext = line[..sep].trim();
-            let rest = &line[sep + 1..];
-            // Parse app|icon_path (icon_path optional)
-            let (app, icon_path) = if let Some(sep2) = rest.find('|') {
-                (rest[..sep2].trim(), rest[sep2 + 1..].trim())
-            } else {
-                (rest.trim(), "")
-            };
-            if !ext.is_empty() {
-                entries.push(MimeEntry {
-                    ext: String::from(ext),
-                    app: String::from(app),
-                    icon_path: String::from(icon_path),
-                });
-            }
-        }
-    }
-    entries
-}
-
-fn lookup_mimetype<'a>(mimes: &'a [MimeEntry], ext: &str) -> Option<&'a MimeEntry> {
-    for entry in mimes {
-        if entry.ext == ext {
-            return Some(entry);
-        }
-    }
-    None
-}
-
-// ============================================================================
 // Open / launch
 // ============================================================================
 
@@ -405,13 +338,11 @@ fn open_entry(state: &mut AppState, idx: usize) {
         };
 
         if !ext.is_empty() {
-            if let Some(mime) = lookup_mimetype(&state.mimetypes, ext) {
-                if !mime.app.is_empty() {
-                    // Args must include program name as argv[0]
-                    let args = anyos_std::format!("{} {}", mime.app, full_path);
-                    process::spawn(&mime.app, &args);
-                    return;
-                }
+            if let Some(app) = state.mimetypes.app_for_ext(ext) {
+                // Args must include program name as argv[0]
+                let args = anyos_std::format!("{} {}", app, full_path);
+                process::spawn(app, &args);
+                return;
             }
         }
 
@@ -515,10 +446,29 @@ fn render(win: u32, state: &mut AppState, win_w: u32, win_h: u32) {
     sidebar_bg(win, 0, content_y, SIDEBAR_W, content_h);
     sidebar_header(win, 0, content_y, SIDEBAR_W, "LOCATIONS");
 
+    const SIDEBAR_SELECTION: u32 = 0xFF0A54C4;
     let y0 = content_y + SIDEBAR_HEADER_H as i32;
     for (i, &(name, _)) in LOCATIONS.iter().enumerate() {
         let iy = y0 + i as i32 * SIDEBAR_ITEM_H as i32;
-        sidebar_item(win, 0, iy, SIDEBAR_W, name, i == state.sidebar_sel);
+        let selected = i == state.sidebar_sel;
+
+        // Selection highlight (matches uisys sidebar component)
+        if selected {
+            fill_rounded_rect_aa(win, 4, iy + 1, SIDEBAR_W - 8, SIDEBAR_ITEM_H - 2, 4, SIDEBAR_SELECTION);
+        }
+
+        // Folder icon
+        let icon_y = iy + (SIDEBAR_ITEM_H as i32 - ICON_DISPLAY_SIZE as i32) / 2;
+        let bg = if selected { SIDEBAR_SELECTION } else { colors::SIDEBAR_BG };
+        if let Some(pixels) = state.icon_cache.get_or_load(icons::FOLDER_ICON) {
+            blit_icon_alpha(win, 10, icon_y as i16, pixels, bg);
+        }
+
+        // Label
+        let text_x = 10 + ICON_DISPLAY_SIZE as i32 + 6;
+        let text_y = iy + (SIDEBAR_ITEM_H as i32 - 14) / 2;
+        let fg = if selected { 0xFFFFFFFF } else { colors::TEXT };
+        label(win, text_x, text_y, name, fg, FontSize::Normal, TextAlign::Left);
     }
 
     // File list
@@ -551,15 +501,6 @@ fn get_extension(name: &str) -> Option<&str> {
         Some(pos) if pos + 1 < name.len() => Some(&name[pos + 1..]),
         _ => None,
     }
-}
-
-fn lookup_icon_path<'a>(mimes: &'a [MimeEntry], ext: &str) -> Option<&'a str> {
-    for entry in mimes {
-        if entry.ext == ext && !entry.icon_path.is_empty() {
-            return Some(&entry.icon_path);
-        }
-    }
-    None
 }
 
 /// Alpha-blend icon pixels against a solid background color, then blit.
@@ -630,15 +571,14 @@ fn render_file_list(win: u32, state: &mut AppState, win_w: u32, win_h: u32) {
         // Determine icon path for this entry
         let name = entry.name_str();
         let entry_type = entry.entry_type;
-        let icon_path: Option<&str> = if entry_type == TYPE_DIR {
-            Some("/system/media/icons/folder.ico")
+        let icon_path = if entry_type == TYPE_DIR {
+            icons::FOLDER_ICON
         } else {
             match get_extension(name) {
-                Some(ext) => lookup_icon_path(&state.mimetypes, ext),
-                None => None,
+                Some(ext) => state.mimetypes.icon_for_ext(ext),
+                None => icons::DEFAULT_FILE_ICON,
             }
         };
-        let icon_path = icon_path.unwrap_or("/system/media/icons/default.ico");
 
         // Row background color for alpha blending
         let row_bg = if state.selected == Some(entry_idx) {
@@ -784,7 +724,7 @@ fn main() {
 
     let (mut win_w, mut win_h) = window::get_size(win).unwrap_or((620, 440));
 
-    let mimetypes = load_mimetypes();
+    let mimetypes = icons::MimeDb::load();
 
     let mut state = AppState {
         cwd: String::from("/"),

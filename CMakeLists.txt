@@ -150,6 +150,7 @@ set(STDLIB_DEPS
   ${CMAKE_SOURCE_DIR}/stdlib/src/ipc.rs
   ${CMAKE_SOURCE_DIR}/stdlib/src/io.rs
   ${CMAKE_SOURCE_DIR}/stdlib/src/heap.rs
+  ${CMAKE_SOURCE_DIR}/stdlib/src/icons.rs
   ${CMAKE_SOURCE_DIR}/stdlib/src/ui/mod.rs
   ${CMAKE_SOURCE_DIR}/stdlib/src/ui/window.rs
   ${CMAKE_SOURCE_DIR}/stdlib/link.ld
@@ -372,15 +373,6 @@ add_custom_command(
   COMMENT "Populating sysroot from tools/sysroot"
 )
 
-# Generate dock icons
-set(ICONS_DIR ${SYSROOT_DIR}/system/icons)
-add_custom_command(
-  OUTPUT ${ICONS_DIR}/terminal.icon ${ICONS_DIR}/taskmanager.icon ${ICONS_DIR}/settings.icon ${ICONS_DIR}/finder.icon
-  COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_icons.py ${ICONS_DIR}
-  DEPENDS ${CMAKE_SOURCE_DIR}/tools/gen_icons.py
-  COMMENT "Generating dock icons"
-)
-
 # ============================================================
 # C Library (libc.a + crt0.o for C programs)
 # ============================================================
@@ -518,7 +510,6 @@ add_custom_target(programs DEPENDS
   ${SYSTEM_BINS}
   ${DLL_BINS}
   ${SYSROOT_DIR}/.stamp
-  ${ICONS_DIR}/terminal.icon
   ${SYSROOT_DIR}/lib/libc.a
   ${SYSROOT_DIR}/lib/crt0.o
   ${SYSROOT_DIR}/include/.stamp

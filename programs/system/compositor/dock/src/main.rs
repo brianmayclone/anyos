@@ -7,8 +7,10 @@ use alloc::vec::Vec;
 
 use anyos_std::process;
 use anyos_std::fs;
+use anyos_std::icons;
 
 use libcompositor_client::{CompositorClient, WindowHandle};
+use libimage_client;
 
 anyos_std::entry!(main);
 
@@ -42,7 +44,6 @@ const STILL_RUNNING: u32 = u32::MAX - 1;
 struct DockItem {
     name: String,
     bin_path: String,
-    icon_path: String,
     icon: Option<Icon>,
     running: bool,
     tid: u32, // TID of spawned process (0 = not running)
@@ -184,64 +185,69 @@ fn alpha_blend(src: u32, dst: u32) -> u32 {
     (oa << 24) | (or << 16) | (og << 8) | ob
 }
 
-fn load_icon(path: &str) -> Option<Icon> {
-    // Get file size
-    let mut stat_buf = [0u32; 2];
-    if fs::stat(path, &mut stat_buf) != 0 {
-        return None;
-    }
-    let file_size = stat_buf[1] as usize;
-    if file_size < 8 {
-        return None;
-    }
-
-    // Open and read file
-    let fd = fs::open(path, 0); // read-only
+fn load_ico_icon(path: &str) -> Option<Icon> {
+    let fd = fs::open(path, 0);
     if fd == u32::MAX {
         return None;
     }
 
-    let mut data = vec![0u8; file_size];
-    let bytes_read = fs::read(fd, &mut data);
+    let mut data = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = fs::read(fd, &mut buf);
+        if n == 0 || n == u32::MAX {
+            break;
+        }
+        data.extend_from_slice(&buf[..n as usize]);
+    }
     fs::close(fd);
 
-    if (bytes_read as usize) < 8 {
+    if data.is_empty() {
         return None;
     }
 
-    // Parse header: [width:u32 LE][height:u32 LE][RGBA pixel data]
-    let width = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-    let height = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
-    let pixel_count = (width * height) as usize;
-    let expected_size = 8 + pixel_count * 4;
+    let info = match libimage_client::probe(&data) {
+        Some(i) => i,
+        None => return None,
+    };
 
-    if bytes_read as usize != expected_size {
+    let src_w = info.width;
+    let src_h = info.height;
+    let src_pixels = (src_w as usize) * (src_h as usize);
+
+    let mut pixels: Vec<u32> = Vec::new();
+    pixels.resize(src_pixels, 0);
+    let mut scratch: Vec<u8> = Vec::new();
+    scratch.resize(info.scratch_needed as usize, 0);
+
+    if libimage_client::decode(&data, &mut pixels, &mut scratch).is_err() {
         return None;
     }
 
-    // Convert RGBA bytes to ARGB u32
-    let mut pixels = Vec::with_capacity(pixel_count);
-    for i in 0..pixel_count {
-        let off = 8 + i * 4;
-        let r = data[off] as u32;
-        let g = data[off + 1] as u32;
-        let b = data[off + 2] as u32;
-        let a = data[off + 3] as u32;
-        pixels.push((a << 24) | (r << 16) | (g << 8) | b);
+    // Scale to dock icon size
+    if src_w == DOCK_ICON_SIZE && src_h == DOCK_ICON_SIZE {
+        return Some(Icon { width: DOCK_ICON_SIZE, height: DOCK_ICON_SIZE, pixels });
     }
 
-    Some(Icon { width, height, pixels })
+    let dst_count = (DOCK_ICON_SIZE * DOCK_ICON_SIZE) as usize;
+    let mut dst_pixels = vec![0u32; dst_count];
+    libimage_client::scale_image(
+        &pixels, src_w, src_h,
+        &mut dst_pixels, DOCK_ICON_SIZE, DOCK_ICON_SIZE,
+        libimage_client::MODE_SCALE,
+    );
+
+    Some(Icon { width: DOCK_ICON_SIZE, height: DOCK_ICON_SIZE, pixels: dst_pixels })
 }
 
 // ── Config file parsing ──
 
 /// Load dock items from /system/dock/programs.conf
-/// Format: one item per line: name|path|icon
+/// Format: one item per line: name|path
 /// Lines starting with '#' are comments, empty lines are skipped.
 fn load_dock_config() -> Vec<DockItem> {
     let mut items = Vec::new();
 
-    // Read config file
     let mut stat_buf = [0u32; 2];
     if fs::stat(CONFIG_PATH, &mut stat_buf) != 0 {
         return items;
@@ -264,7 +270,6 @@ fn load_dock_config() -> Vec<DockItem> {
         return items;
     }
 
-    // Parse line by line
     let text = match core::str::from_utf8(&data[..bytes_read]) {
         Ok(s) => s,
         Err(_) => return items,
@@ -276,17 +281,13 @@ fn load_dock_config() -> Vec<DockItem> {
             continue;
         }
 
-        // Split by '|': name|path|icon
-        let mut parts = line.splitn(3, '|');
+        // Split by '|': name|path
+        let mut parts = line.splitn(2, '|');
         let name = match parts.next() {
             Some(s) => s.trim(),
             None => continue,
         };
         let path = match parts.next() {
-            Some(s) => s.trim(),
-            None => continue,
-        };
-        let icon = match parts.next() {
             Some(s) => s.trim(),
             None => continue,
         };
@@ -298,7 +299,6 @@ fn load_dock_config() -> Vec<DockItem> {
         items.push(DockItem {
             name: String::from(name),
             bin_path: String::from(path),
-            icon_path: String::from(icon),
             icon: None,
             running: false,
             tid: 0,
@@ -423,9 +423,10 @@ fn main() {
     // Load dock items from config file
     let mut items = load_dock_config();
 
-    // Load icons
+    // Load icons (derive path from binary name)
     for item in &mut items {
-        item.icon = load_icon(&item.icon_path);
+        let icon_path = icons::app_icon_path(&item.bin_path);
+        item.icon = load_ico_icon(&icon_path);
     }
 
     // Create local framebuffer

@@ -72,19 +72,28 @@ fn read_entry(data: &[u8], index: usize) -> Option<IcoEntry> {
 
 /// Select the best entry index: prefer 16x16, then smallest >= 16, then first.
 fn best_entry_index(data: &[u8], count: u16) -> usize {
+    best_entry_for_size(data, count, 16)
+}
+
+/// Select the best entry index for a given preferred size.
+/// Prefers exact match, then next-larger (downscale > upscale), then closest.
+fn best_entry_for_size(data: &[u8], count: u16, preferred: u32) -> usize {
     let mut best_idx = 0;
-    let mut best_w = u32::MAX;
-    let mut found_exact = false;
+    let mut best_diff: i32 = i32::MAX;
 
     for i in 0..count as usize {
         if let Some(e) = read_entry(data, i) {
-            // Exact 16x16 match
-            if e.width == 16 && e.height == 16 {
+            if e.width == preferred && e.height == preferred {
                 return i;
             }
-            // Prefer smallest entry >= 16
-            if e.width >= 16 && e.width < best_w && !found_exact {
-                best_w = e.width;
+            // Prefer entries >= preferred (downscaling is better than upscaling)
+            let diff = if e.width >= preferred {
+                (e.width as i32 - preferred as i32)
+            } else {
+                (preferred as i32 - e.width as i32) + 1000
+            };
+            if diff < best_diff {
+                best_diff = diff;
                 best_idx = i;
             }
         }
@@ -99,8 +108,13 @@ fn is_png_data(data: &[u8]) -> bool {
 
 /// Probe an ICO file and return metadata for the best entry.
 pub fn probe(data: &[u8]) -> Option<ImageInfo> {
+    probe_for_size(data, 16)
+}
+
+/// Probe an ICO file, selecting the best entry for `preferred_size`.
+pub fn probe_for_size(data: &[u8], preferred_size: u32) -> Option<ImageInfo> {
     let (count, _) = parse_directory(data)?;
-    let idx = best_entry_index(data, count);
+    let idx = best_entry_for_size(data, count, preferred_size);
     let entry = read_entry(data, idx)?;
 
     let off = entry.data_offset as usize;
@@ -112,13 +126,11 @@ pub fn probe(data: &[u8]) -> Option<ImageInfo> {
     let embedded = &data[off..off + size];
 
     let scratch_needed = if is_png_data(embedded) {
-        // Delegate to PNG probe for scratch calculation
         match crate::png::probe(embedded) {
             Some(info) => info.scratch_needed,
             None => return None,
         }
     } else {
-        // BMP-in-ICO: no scratch needed
         0
     };
 
@@ -132,12 +144,17 @@ pub fn probe(data: &[u8]) -> Option<ImageInfo> {
 
 /// Decode the best entry of an ICO file into ARGB8888 pixels.
 pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
+    decode_for_size(data, 16, out, scratch)
+}
+
+/// Decode the best entry for `preferred_size` of an ICO file into ARGB8888 pixels.
+pub fn decode_for_size(data: &[u8], preferred_size: u32, out: &mut [u32], scratch: &mut [u8]) -> i32 {
     let (count, _) = match parse_directory(data) {
         Some(v) => v,
         None => return ERR_INVALID_DATA,
     };
 
-    let idx = best_entry_index(data, count);
+    let idx = best_entry_for_size(data, count, preferred_size);
     let entry = match read_entry(data, idx) {
         Some(e) => e,
         None => return ERR_INVALID_DATA,
@@ -161,7 +178,6 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
         return crate::png::decode(embedded, out, scratch);
     }
 
-    // BMP-in-ICO: raw DIB data (no BM file header)
     decode_bmp_dib(embedded, w, h, out)
 }
 
