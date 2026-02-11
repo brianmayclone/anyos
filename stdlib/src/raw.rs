@@ -126,6 +126,9 @@ pub(crate) const SYS_GPU_COMMAND: u32 = 145;
 pub(crate) const SYS_INPUT_POLL: u32 = 146;
 pub(crate) const SYS_REGISTER_COMPOSITOR: u32 = 147;
 
+// Screen capture
+pub(crate) const SYS_CAPTURE_SCREEN: u32 = 161;
+
 // UDP networking
 pub(crate) const SYS_UDP_BIND: u32 = 150;
 pub(crate) const SYS_UDP_UNBIND: u32 = 151;

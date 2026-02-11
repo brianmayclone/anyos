@@ -158,9 +158,12 @@ pub const SYS_GPU_COMMAND: u32 = 145;
 pub const SYS_INPUT_POLL: u32 = 146;
 pub const SYS_REGISTER_COMPOSITOR: u32 = 147;
 
-// Window creation flags
-pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x01;
-pub const WIN_FLAG_BORDERLESS: u32 = 0x02;
+// Screen capture
+pub const SYS_CAPTURE_SCREEN: u32 = 161;
+
+// Window creation flags (must match compositor/src/desktop.rs)
+pub const WIN_FLAG_BORDERLESS: u32 = 0x01;
+pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x02;
 pub const WIN_FLAG_ALWAYS_ON_TOP: u32 = 0x04;
 
 /// Register frame pushed by `syscall_entry.asm` before calling [`syscall_dispatch`].
@@ -347,6 +350,9 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         SYS_GPU_COMMAND => handlers::sys_gpu_command(arg1, arg2),
         SYS_INPUT_POLL => handlers::sys_input_poll(arg1, arg2),
         SYS_REGISTER_COMPOSITOR => handlers::sys_register_compositor(),
+
+        // Screen capture
+        SYS_CAPTURE_SCREEN => handlers::sys_capture_screen(arg1, arg2, arg3),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

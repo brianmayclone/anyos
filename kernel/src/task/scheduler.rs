@@ -25,6 +25,17 @@ static TOTAL_SCHED_TICKS: AtomicU32 = AtomicU32::new(0);
 /// Idle scheduler ticks (incremented when no thread is running).
 static IDLE_SCHED_TICKS: AtomicU32 = AtomicU32::new(0);
 
+/// Per-CPU total ticks (incremented on each timer tick, per CPU).
+static PER_CPU_TOTAL: [AtomicU32; crate::arch::x86::smp::MAX_CPUS] = {
+    const INIT: AtomicU32 = AtomicU32::new(0);
+    [INIT; crate::arch::x86::smp::MAX_CPUS]
+};
+/// Per-CPU idle ticks (incremented when that CPU has no thread to run).
+static PER_CPU_IDLE: [AtomicU32; crate::arch::x86::smp::MAX_CPUS] = {
+    const INIT: AtomicU32 = AtomicU32::new(0);
+    [INIT; crate::arch::x86::smp::MAX_CPUS]
+};
+
 /// Core scheduler state: thread list, ready queue, and the idle context.
 pub struct Scheduler {
     /// All threads known to the scheduler (running, ready, blocked, terminated).
@@ -138,6 +149,24 @@ pub fn idle_sched_ticks() -> u32 {
     IDLE_SCHED_TICKS.load(Ordering::Relaxed)
 }
 
+/// Get per-CPU total ticks.
+pub fn per_cpu_total_ticks(cpu: usize) -> u32 {
+    if cpu < crate::arch::x86::smp::MAX_CPUS {
+        PER_CPU_TOTAL[cpu].load(Ordering::Relaxed)
+    } else {
+        0
+    }
+}
+
+/// Get per-CPU idle ticks.
+pub fn per_cpu_idle_ticks(cpu: usize) -> u32 {
+    if cpu < crate::arch::x86::smp::MAX_CPUS {
+        PER_CPU_IDLE[cpu].load(Ordering::Relaxed)
+    } else {
+        0
+    }
+}
+
 /// Create a new kernel thread and add it to the ready queue.
 /// Returns the assigned TID. Emits an `EVT_PROCESS_SPAWNED` event.
 pub fn spawn(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
@@ -188,9 +217,18 @@ fn schedule_inner(from_timer: bool) {
     // Tuple: (old_cpu_ctx, new_cpu_ctx, old_fpu_ptr, new_fpu_ptr)
     let switch_info: Option<(*mut CpuContext, *const CpuContext, *mut u8, *const u8)>;
 
+    // Read CPU ID once (LAPIC MMIO + loop scan) and reuse throughout
+    let cpu_id: usize = if from_timer {
+        let c = crate::arch::x86::smp::current_cpu_id() as usize;
+        if c < crate::arch::x86::smp::MAX_CPUS { c } else { 0 }
+    } else {
+        0
+    };
+
     // Only increment counters on timer-driven scheduling
     if from_timer {
         TOTAL_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+        PER_CPU_TOTAL[cpu_id].fetch_add(1, Ordering::Relaxed);
     }
 
     let mut guard = match SCHEDULER.try_lock() {
@@ -228,6 +266,8 @@ fn schedule_inner(from_timer: bool) {
         }
 
         // Track CPU ticks for the currently running thread (timer-driven only)
+        // Also track idle: if no thread is currently running, this tick is idle.
+        // (The "no ready threads" path below must NOT double-count.)
         if from_timer {
             if let Some(current_idx) = sched.current {
                 if sched.threads[current_idx].state == ThreadState::Running {
@@ -236,6 +276,7 @@ fn schedule_inner(from_timer: bool) {
             } else {
                 // No thread running = idle
                 IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+                PER_CPU_IDLE[cpu_id].fetch_add(1, Ordering::Relaxed);
             }
         }
 
@@ -281,9 +322,11 @@ fn schedule_inner(from_timer: bool) {
                 Some((idle_ctx, new_ctx, old_fpu, new_fpu))
             }
         } else {
-            // No ready threads — count as idle (timer-driven only)
-            if from_timer {
+            // No ready threads — count as idle only if a thread WAS running
+            // (if sched.current was None, idle was already counted above)
+            if from_timer && sched.current.is_some() {
                 IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+                PER_CPU_IDLE[cpu_id].fetch_add(1, Ordering::Relaxed);
             }
 
             // If the current thread is no longer runnable

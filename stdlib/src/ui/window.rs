@@ -23,8 +23,8 @@ pub const EVENT_MOUSE_SCROLL: u32 = 7;
 pub const EVENT_WINDOW_CLOSE: u32 = 8;
 pub const EVENT_MENU_ITEM: u32 = 9;
 
-pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x01;
-pub const WIN_FLAG_BORDERLESS: u32 = 0x02;
+pub const WIN_FLAG_BORDERLESS: u32 = 0x01;
+pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x02;
 pub const WIN_FLAG_ALWAYS_ON_TOP: u32 = 0x04;
 
 /// System font — regular weight (SF Pro).

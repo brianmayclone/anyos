@@ -32,3 +32,16 @@ pub fn dmesg(buf: &mut [u8]) -> u32 {
 pub fn boot_ready() {
     syscall0(SYS_BOOT_READY);
 }
+
+/// Capture the current screen contents into a pixel buffer.
+/// Returns (width, height) on success, None on failure.
+/// The buffer must be large enough for width*height u32 pixels.
+pub fn capture_screen(buf: &mut [u32], info: &mut [u32; 2]) -> bool {
+    let ret = syscall3(
+        SYS_CAPTURE_SCREEN,
+        buf.as_mut_ptr() as u64,
+        (buf.len() * 4) as u64,
+        info.as_mut_ptr() as u64,
+    );
+    ret == 0
+}

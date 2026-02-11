@@ -494,8 +494,11 @@ pub fn map_page_in_pd(pd_phys: PhysAddr, virt: VirtAddr, phys: PhysAddr, flags: 
 
 /// Check if a virtual address is mapped in a specific page directory.
 /// Temporarily switches CR3 to the target PML4.
+///
+/// Interrupts are disabled for the duration: same race as `map_page_in_pd`.
 pub fn is_mapped_in_pd(pd_phys: PhysAddr, virt: VirtAddr) -> bool {
     unsafe {
+        asm!("cli", options(nomem, nostack));
         let old_cr3 = current_cr3();
         asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
 
@@ -521,6 +524,7 @@ pub fn is_mapped_in_pd(pd_phys: PhysAddr, virt: VirtAddr) -> bool {
         };
 
         asm!("mov cr3, {}", in(reg) old_cr3);
+        asm!("sti", options(nomem, nostack));
         mapped
     }
 }

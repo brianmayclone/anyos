@@ -200,8 +200,10 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
         }
     }
 
-    // Switch to user PD and copy data
+    // Switch to user PD and copy data (interrupts disabled to prevent
+    // timer-driven context switch while CR3 points at the target PD)
     unsafe {
+        core::arch::asm!("cli", options(nomem, nostack));
         let old_cr3 = virtual_mem::current_cr3();
         core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
 
@@ -234,6 +236,7 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
         }
 
         core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
+        core::arch::asm!("sti", options(nomem, nostack));
     }
 
     let brk = (max_vaddr_end + PAGE_SIZE - 1) & !0xFFF;
@@ -305,6 +308,7 @@ fn load_elf32(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
     }
 
     unsafe {
+        core::arch::asm!("cli", options(nomem, nostack));
         let old_cr3 = virtual_mem::current_cr3();
         core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
 
@@ -335,6 +339,7 @@ fn load_elf32(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
         }
 
         core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
+        core::arch::asm!("sti", options(nomem, nostack));
     }
 
     let brk = (max_vaddr_end + PAGE_SIZE - 1) & !0xFFF;
@@ -405,10 +410,12 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
 
         // Zero user stack
         unsafe {
+            core::arch::asm!("cli", options(nomem, nostack));
             let old_cr3 = virtual_mem::current_cr3();
             core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
             core::ptr::write_bytes(stack_bottom as *mut u8, 0, (USER_STACK_PAGES * PAGE_SIZE) as usize);
             core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
+            core::arch::asm!("sti", options(nomem, nostack));
         }
 
         crate::serial_println!(
@@ -436,10 +443,12 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         is_compat32 = true;
 
         unsafe {
+            core::arch::asm!("cli", options(nomem, nostack));
             let old_cr3 = virtual_mem::current_cr3();
             core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
             core::ptr::write_bytes(stack_bottom as *mut u8, 0, (USER_STACK_PAGES * PAGE_SIZE) as usize);
             core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
+            core::arch::asm!("sti", options(nomem, nostack));
         }
 
         crate::serial_println!(
@@ -470,6 +479,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         crate::task::dll::map_all_dlls_into(pd_phys);
 
         unsafe {
+            core::arch::asm!("cli", options(nomem, nostack));
             let old_cr3 = virtual_mem::current_cr3();
             core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
 
@@ -479,6 +489,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             core::ptr::write_bytes(stack_bottom as *mut u8, 0, (USER_STACK_PAGES * PAGE_SIZE) as usize);
 
             core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
+            core::arch::asm!("sti", options(nomem, nostack));
         }
 
         entry_point = PROGRAM_LOAD_ADDR;

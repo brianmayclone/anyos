@@ -527,19 +527,29 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
         }
         2 => crate::arch::x86::smp::cpu_count() as u32,
         3 => {
-            // CPU load: [cpu_pct:u32, uptime_ticks:u32] = 8 bytes
-            if buf_ptr != 0 && buf_size >= 8 {
-                let total = crate::task::scheduler::total_sched_ticks();
-                let idle = crate::task::scheduler::idle_sched_ticks();
-                let pct = if total > 0 {
-                    100u32.saturating_sub(idle.saturating_mul(100) / total)
-                } else {
-                    0
-                };
+            // CPU load (extended):
+            //   [0] total_sched_ticks (u32)
+            //   [1] total_idle_ticks  (u32)
+            //   [2] num_cpus          (u32)
+            //   [3] reserved          (u32)
+            //   [4..4+num_cpus*2] per_cpu_total[i], per_cpu_idle[i] pairs
+            // Minimum 16 bytes for header, +8 per CPU
+            let num_cpus = crate::arch::x86::smp::cpu_count() as usize;
+            if buf_ptr != 0 && buf_size >= 16 {
                 unsafe {
                     let buf = buf_ptr as *mut u32;
-                    *buf = pct;
-                    *buf.add(1) = crate::arch::x86::pit::get_ticks();
+                    *buf = crate::task::scheduler::total_sched_ticks();
+                    *buf.add(1) = crate::task::scheduler::idle_sched_ticks();
+                    *buf.add(2) = num_cpus as u32;
+                    *buf.add(3) = 0;
+                    // Per-CPU data if buffer is large enough
+                    for i in 0..num_cpus {
+                        let off = 4 + i * 2;
+                        if (off + 2) * 4 <= buf_size as usize {
+                            *buf.add(off) = crate::task::scheduler::per_cpu_total_ticks(i);
+                            *buf.add(off + 1) = crate::task::scheduler::per_cpu_idle_ticks(i);
+                        }
+                    }
                 }
             }
             0
@@ -1578,4 +1588,59 @@ pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
     }
 
     count as u32
+}
+
+/// SYS_CAPTURE_SCREEN: Capture the current framebuffer contents to a user buffer.
+/// arg1 = buf_ptr (pointer to u32 ARGB pixels)
+/// arg2 = buf_size (buffer size in bytes)
+/// arg3 = info_ptr (pointer to write [width: u32, height: u32])
+/// Returns: 0 on success, 1 = no GPU, 2 = buffer too small.
+pub fn sys_capture_screen(buf_ptr: u32, buf_size: u32, info_ptr: u32) -> u32 {
+    let (width, height, pitch, fb_phys) = match crate::drivers::gpu::with_gpu(|g| g.get_mode()) {
+        Some(m) => m,
+        None => return 1,
+    };
+
+    let needed = width * height * 4;
+    if buf_size < needed {
+        return 2;
+    }
+
+    // Write dimensions to info struct
+    if info_ptr != 0 {
+        unsafe {
+            let info = info_ptr as *mut u32;
+            *info = width;
+            *info.add(1) = height;
+        }
+    }
+
+    // Map framebuffer physical pages into the current process at 0x30000000
+    // (read-only user access: PAGE_PRESENT | PAGE_USER)
+    let fb_map_base: u64 = 0x3000_0000;
+    let fb_total_bytes = height as usize * pitch as usize;
+    let fb_pages = (fb_total_bytes + 0xFFF) / 0x1000;
+
+    for i in 0..fb_pages {
+        let phys = crate::memory::address::PhysAddr::new(
+            fb_phys as u64 + (i * 0x1000) as u64,
+        );
+        let virt = crate::memory::address::VirtAddr::new(
+            fb_map_base + (i * 0x1000) as u64,
+        );
+        crate::memory::virtual_mem::map_page(virt, phys, 0x05);
+    }
+
+    // Copy pixels row by row (pitch may differ from width*4)
+    unsafe {
+        let src = fb_map_base as *const u8;
+        let dst = buf_ptr as *mut u8;
+        for y in 0..height as usize {
+            let src_row = src.add(y * pitch as usize);
+            let dst_row = dst.add(y * width as usize * 4);
+            core::ptr::copy_nonoverlapping(src_row, dst_row, width as usize * 4);
+        }
+    }
+
+    0
 }
