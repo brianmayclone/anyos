@@ -26,6 +26,7 @@ const PORT_CLBU: u64 = 0x04;
 const PORT_FB: u64 = 0x08;
 const PORT_FBU: u64 = 0x0C;
 const PORT_IS: u64 = 0x10;
+const PORT_IE: u64 = 0x14;
 const PORT_CMD: u64 = 0x18;
 const PORT_TFD: u64 = 0x20;
 const PORT_SIG: u64 = 0x24;
@@ -106,6 +107,8 @@ struct FisRegH2D {
     _reserved: [u8; 6],
 }
 
+const GHC_IE: u32 = 1 << 1;
+
 // ── Controller State ────────────────────────────────
 
 struct AhciController {
@@ -117,9 +120,16 @@ struct AhciController {
     bounce_phys: u64,
     bounce_virt: u64,   // = bounce_phys (identity-mapped)
     total_sectors: u64,
+    irq: u8,
 }
 
 static mut AHCI: Option<AhciController> = None;
+
+/// TID of the thread currently waiting for AHCI I/O completion.
+/// 0 means no thread is waiting.
+static AHCI_WAITER: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// Set to true by the IRQ handler when the command completes.
+static AHCI_IRQ_FIRED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 // ── MMIO Helpers ────────────────────────────────────
 
@@ -196,7 +206,47 @@ unsafe fn start_port(base: u64, port: u32) {
     port_write(base, port, PORT_CMD, cmd);
 }
 
-// ── Command Issue (polled, slot 0 only) ─────────────
+// ── IRQ Handler ─────────────────────────────────────
+
+fn ahci_irq_handler(_irq: u8) {
+    use core::sync::atomic::Ordering;
+
+    let ahci = match unsafe { AHCI.as_ref() } {
+        Some(a) => a,
+        None => return,
+    };
+
+    unsafe {
+        // Check HBA global interrupt status
+        let hba_is = mmio_read32(ahci.mmio_base, REG_IS);
+        if hba_is & (1 << ahci.active_port) == 0 {
+            return; // Not our port
+        }
+
+        // Clear port interrupt status
+        let port_is = port_read(ahci.mmio_base, ahci.active_port, PORT_IS);
+        port_write(ahci.mmio_base, ahci.active_port, PORT_IS, port_is);
+
+        // Clear HBA global interrupt status
+        mmio_write32(ahci.mmio_base, REG_IS, hba_is);
+
+        // Only signal completion when the command is actually done (CI bit 0 clear)
+        let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
+        if ci & 1 != 0 {
+            return; // Command still in progress — mid-transfer interrupt, ignore
+        }
+    }
+
+    // Command complete — signal and wake
+    AHCI_IRQ_FIRED.store(true, Ordering::Release);
+
+    let tid = AHCI_WAITER.load(Ordering::Acquire);
+    if tid != 0 {
+        crate::task::scheduler::wake_thread(tid);
+    }
+}
+
+// ── Command Issue (IRQ-driven, slot 0 only) ─────────
 
 unsafe fn issue_command(
     ahci: &AhciController,
@@ -251,14 +301,67 @@ unsafe fn issue_command(
     // Clear port interrupt status
     port_write(ahci.mmio_base, ahci.active_port, PORT_IS, 0xFFFF_FFFF);
 
+    // Reset IRQ completion flag
+    AHCI_IRQ_FIRED.store(false, core::sync::atomic::Ordering::Release);
+
     // Issue command (slot 0)
     port_write(ahci.mmio_base, ahci.active_port, PORT_CI, 1);
 
-    // Poll for completion
+    // Fast path: brief spin — QEMU DMA completes in microseconds
+    for _ in 0..50_000 {
+        let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
+        if ci & 1 == 0 {
+            let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
+            if tfd & 0x01 != 0 {
+                crate::serial_println!("AHCI: command error, TFD={:#x}", tfd);
+                return false;
+            }
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+
+    // Slow path: block and wait for IRQ (real hardware with actual latency)
+    let tid = crate::task::scheduler::current_tid();
+    if tid > 0 && ahci.irq > 0 {
+        AHCI_WAITER.store(tid, core::sync::atomic::Ordering::Release);
+
+        let start = crate::arch::x86::pit::get_ticks();
+        loop {
+            if AHCI_IRQ_FIRED.load(core::sync::atomic::Ordering::Acquire) {
+                let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
+                if ci & 1 == 0 {
+                    break;
+                }
+                AHCI_IRQ_FIRED.store(false, core::sync::atomic::Ordering::Release);
+            }
+            if crate::arch::x86::pit::get_ticks().wrapping_sub(start) > 2000 {
+                AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
+                crate::serial_println!("AHCI: IRQ timeout, falling back to poll");
+                return poll_completion(ahci);
+            }
+            crate::task::scheduler::block_current_thread();
+        }
+
+        AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
+
+        let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
+        if tfd & 0x01 != 0 {
+            crate::serial_println!("AHCI: command error, TFD={:#x}", tfd);
+            return false;
+        }
+        return true;
+    }
+
+    // Fallback: extended poll (boot thread or no IRQ)
+    poll_completion(ahci)
+}
+
+/// Polled completion check (used during boot or as IRQ timeout fallback).
+unsafe fn poll_completion(ahci: &AhciController) -> bool {
     for _ in 0..10_000_000 {
         let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
         if ci & 1 == 0 {
-            // Check for errors in Task File Data
             let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
             if tfd & 0x01 != 0 {
                 crate::serial_println!("AHCI: command error, TFD={:#x}", tfd);
@@ -267,7 +370,6 @@ unsafe fn issue_command(
             return true;
         }
 
-        // Check for Task File Error Status
         let is = port_read(ahci.mmio_base, ahci.active_port, PORT_IS);
         if is & (1 << 30) != 0 {
             crate::serial_println!("AHCI: task file error, IS={:#x}", is);
@@ -525,6 +627,9 @@ pub fn init_and_register(pci: &PciDevice) {
         // Start the port
         start_port(mmio_base, active_port);
 
+        // Get PCI interrupt line for IRQ-driven I/O
+        let irq = pci.interrupt_line;
+
         // Store controller state
         AHCI = Some(AhciController {
             mmio_base,
@@ -535,9 +640,10 @@ pub fn init_and_register(pci: &PciDevice) {
             bounce_phys,
             bounce_virt: bounce_phys, // identity-mapped
             total_sectors: 0,
+            irq,
         });
 
-        // Issue IDENTIFY DEVICE
+        // Issue IDENTIFY DEVICE (polled — scheduler not yet running)
         let identify_ok = issue_command(
             AHCI.as_ref().unwrap(),
             ATA_CMD_IDENTIFY,
@@ -580,6 +686,31 @@ pub fn init_and_register(pci: &PciDevice) {
             );
         } else {
             crate::serial_println!("  AHCI: IDENTIFY DEVICE failed");
+        }
+
+        // Enable interrupt-driven I/O
+        if irq > 0 && irq < 32 {
+            // Only enable command-completion + error interrupts
+            // (NOT PIO Setup / DMA Setup which fire mid-transfer)
+            let port_ie = (1u32 << 0)  // D2H Register FIS Interrupt (command complete)
+                        | (1 << 30)    // Task File Error Status
+                        | (1 << 31);   // Host Bus Fatal Error
+            port_write(mmio_base, active_port, PORT_IE, port_ie);
+
+            // Enable HBA global interrupts
+            let ghc = mmio_read32(mmio_base, REG_GHC);
+            mmio_write32(mmio_base, REG_GHC, ghc | GHC_IE);
+
+            // Register shared IRQ handler (IRQ 11 may be shared with E1000)
+            crate::arch::x86::irq::register_irq_chain(irq, ahci_irq_handler);
+            if crate::arch::x86::apic::is_initialized() {
+                crate::arch::x86::ioapic::unmask_irq(irq);
+            } else {
+                crate::arch::x86::pic::unmask(irq);
+            }
+            crate::serial_println!("  AHCI: IRQ {} registered (interrupt-driven I/O)", irq);
+        } else {
+            crate::serial_println!("  AHCI: No valid IRQ ({}), using polled I/O", irq);
         }
 
         // Switch storage backend to AHCI

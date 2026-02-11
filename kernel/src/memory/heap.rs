@@ -3,6 +3,10 @@
 //! The heap reserves a 512 MiB virtual address range but only maps a small initial
 //! region at boot. Growth just advances a committed watermark — physical frames are
 //! allocated lazily by the page fault handler when memory is first accessed.
+//!
+//! The lock is IRQ-safe: interrupts are disabled while the heap lock is held.
+//! This prevents deadlock when `reap_terminated()` frees a kernel stack from
+//! within the timer ISR while the preempted thread was holding the heap lock.
 
 use crate::memory::address::VirtAddr;
 use crate::memory::physical;
@@ -35,7 +39,11 @@ pub static HEAP_COMMITTED: AtomicUsize = AtomicUsize::new(0);
 #[global_allocator]
 static HEAP_ALLOCATOR: LockedHeap = LockedHeap::new();
 
-/// Global kernel heap allocator protected by an atomic spinlock.
+/// Global kernel heap allocator protected by an IRQ-safe atomic spinlock.
+///
+/// Interrupts are disabled while the lock is held to prevent deadlock:
+/// if a timer ISR fires while the heap lock is held, `reap_terminated()` could
+/// try to free a kernel stack, re-entering the allocator and deadlocking.
 struct LockedHeap {
     lock: core::sync::atomic::AtomicBool,
 }
@@ -62,7 +70,15 @@ impl LockedHeap {
         }
     }
 
-    fn acquire(&self) {
+    /// Acquire the heap lock with interrupts disabled.
+    /// Returns the saved RFLAGS so `release` can restore the interrupt state.
+    fn acquire(&self) -> u64 {
+        let flags: u64;
+        unsafe {
+            core::arch::asm!("pushfq; pop {}", out(reg) flags, options(nomem, preserves_flags));
+            core::arch::asm!("cli", options(nomem, nostack));
+        }
+
         while self
             .lock
             .compare_exchange_weak(
@@ -75,11 +91,19 @@ impl LockedHeap {
         {
             core::hint::spin_loop();
         }
+
+        flags
     }
 
-    fn release(&self) {
+    /// Release the heap lock and restore the saved interrupt state.
+    fn release(&self, flags: u64) {
         self.lock
             .store(false, core::sync::atomic::Ordering::Release);
+
+        // Restore caller's interrupt state
+        if flags & 0x200 != 0 {
+            unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+        }
     }
 }
 
@@ -89,7 +113,7 @@ unsafe impl GlobalAlloc for LockedHeap {
             return core::ptr::null_mut();
         }
 
-        self.acquire();
+        let flags = self.acquire();
         let mut result = alloc_inner(layout);
 
         // If allocation failed, try growing the heap and retry
@@ -100,15 +124,23 @@ unsafe impl GlobalAlloc for LockedHeap {
             }
         }
 
-        self.release();
+        self.release(flags);
         result
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        self.acquire();
+        let flags = self.acquire();
         dealloc_inner(ptr, layout);
-        self.release();
+        self.release(flags);
     }
+}
+
+/// Check if an address is within the committed heap range.
+#[inline]
+fn is_in_heap(addr: usize) -> bool {
+    let heap_start = HEAP_START as usize;
+    let heap_end = heap_start + HEAP_COMMITTED.load(Ordering::Relaxed);
+    addr >= heap_start && addr < heap_end
 }
 
 unsafe fn alloc_inner(layout: Layout) -> *mut u8 {
@@ -119,6 +151,15 @@ unsafe fn alloc_inner(layout: Layout) -> *mut u8 {
     let mut current = HEAP_FREE_LIST;
 
     while !current.is_null() {
+        // Validate current pointer is within heap bounds
+        if !is_in_heap(current as usize) {
+            crate::serial_println!(
+                "HEAP CORRUPT in alloc: current={:#x} outside heap, prev={:#x}",
+                current as usize, prev as usize
+            );
+            return core::ptr::null_mut();
+        }
+
         let block_size = (*current).size;
 
         if block_size >= size {
@@ -270,6 +311,15 @@ unsafe fn grow_heap_exact(growth: usize) -> bool {
 unsafe fn dealloc_inner(ptr: *mut u8, layout: Layout) {
     let size = align_up(layout.size().max(core::mem::size_of::<FreeBlock>()), layout.align().max(16));
 
+    // Validate: pointer must be within heap bounds
+    if !is_in_heap(ptr as usize) {
+        crate::serial_println!(
+            "HEAP BUG: dealloc ptr={:#x} size={:#x} outside heap bounds!",
+            ptr as usize, size
+        );
+        return; // Leak instead of corrupting
+    }
+
     let block = ptr as *mut FreeBlock;
     (*block).size = size;
 
@@ -278,6 +328,27 @@ unsafe fn dealloc_inner(ptr: *mut u8, layout: Layout) {
     let mut current = HEAP_FREE_LIST;
 
     while !current.is_null() && (current as usize) < (block as usize) {
+        // Validate current pointer
+        if !is_in_heap(current as usize) {
+            crate::serial_println!(
+                "HEAP CORRUPT in dealloc walk: current={:#x} prev={:#x} block={:#x} size={:#x}",
+                current as usize, prev as usize, block as usize, size
+            );
+            // Corruption detected — insert block at head to avoid walking further
+            (*block).next = HEAP_FREE_LIST;
+            HEAP_FREE_LIST = block;
+            return;
+        }
+
+        // Double-free guard: check if block is already in the free list
+        if current == block {
+            crate::serial_println!(
+                "HEAP BUG: double free at {:#x} size={:#x}!",
+                ptr as usize, size
+            );
+            return; // Skip the free entirely
+        }
+
         prev = current;
         current = (*current).next;
     }
@@ -313,15 +384,22 @@ fn align_up(value: usize, align: usize) -> usize {
 }
 
 /// Returns (used_bytes, total_committed_bytes) for the kernel heap.
+///
+/// Acquires the heap lock to read the free list consistently.
 pub fn heap_stats() -> (usize, usize) {
     unsafe {
+        let flags = HEAP_ALLOCATOR.acquire();
         let committed = HEAP_COMMITTED.load(Ordering::Acquire);
         let mut total_free = 0usize;
         let mut current = HEAP_FREE_LIST;
         while !current.is_null() {
+            if !is_in_heap(current as usize) {
+                break; // Corrupt — stop walking
+            }
             total_free += (*current).size;
             current = (*current).next;
         }
+        HEAP_ALLOCATOR.release(flags);
         (committed.saturating_sub(total_free), committed)
     }
 }
@@ -329,6 +407,7 @@ pub fn heap_stats() -> (usize, usize) {
 /// Walk the free list and validate heap integrity. Prints results to serial.
 pub fn validate_heap() {
     unsafe {
+        let flags = HEAP_ALLOCATOR.acquire();
         let mut current = HEAP_FREE_LIST;
         let mut prev_end: usize = 0;
         let mut total_free = 0usize;
@@ -343,16 +422,19 @@ pub fn validate_heap() {
             if addr < heap_start || addr >= heap_end {
                 crate::serial_println!("HEAP CORRUPT: block #{} at {:#x} outside heap bounds [{:#x}..{:#x}]",
                     count, addr, heap_start, heap_end);
+                HEAP_ALLOCATOR.release(flags);
                 return;
             }
             if size == 0 || addr + size > heap_end {
                 crate::serial_println!("HEAP CORRUPT: block #{} at {:#x} size {:#x} extends past heap end {:#x}",
                     count, addr, size, heap_end);
+                HEAP_ALLOCATOR.release(flags);
                 return;
             }
             if addr < prev_end {
                 crate::serial_println!("HEAP CORRUPT: block #{} at {:#x} overlaps previous ending at {:#x}",
                     count, addr, prev_end);
+                HEAP_ALLOCATOR.release(flags);
                 return;
             }
 
@@ -363,12 +445,14 @@ pub fn validate_heap() {
 
             if count > 10000 {
                 crate::serial_println!("HEAP CORRUPT: free list has >10000 entries (loop?)");
+                HEAP_ALLOCATOR.release(flags);
                 return;
             }
         }
 
         crate::serial_println!("  Heap check: {} free block(s), {} KiB free / {} KiB committed",
             count, total_free / 1024, HEAP_COMMITTED.load(Ordering::Acquire) / 1024);
+        HEAP_ALLOCATOR.release(flags);
     }
 }
 

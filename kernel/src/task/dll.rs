@@ -109,13 +109,26 @@ pub fn load_dll(path: &str, base_vaddr: u64) -> Result<u32, &'static str> {
 
 /// Map all loaded DLLs into a process page directory.
 /// Pages are mapped as Present | User (read-only, executable).
+///
+/// The LOADED_DLLS spinlock is held only while collecting page info
+/// (microseconds). Actual page mapping runs after the lock is dropped
+/// so that timer/mouse/keyboard interrupts keep firing during spawn.
 pub fn map_all_dlls_into(pd_phys: PhysAddr) {
-    let dlls = LOADED_DLLS.lock();
-    for dll in dlls.iter() {
-        for (i, &frame) in dll.pages.iter().enumerate() {
-            let virt = VirtAddr::new(dll.base_vaddr + (i as u64) * PAGE_SIZE);
-            virtual_mem::map_page_in_pd(pd_phys, virt, frame, PAGE_USER);
+    // Phase 1: Under lock — collect (virt, phys) pairs (no I/O, no CR3 switches)
+    let page_maps: Vec<(VirtAddr, PhysAddr)> = {
+        let dlls = LOADED_DLLS.lock();
+        let mut v = Vec::new();
+        for dll in dlls.iter() {
+            for (i, &frame) in dll.pages.iter().enumerate() {
+                v.push((VirtAddr::new(dll.base_vaddr + (i as u64) * PAGE_SIZE), frame));
+            }
         }
+        v
+    }; // Lock dropped — interrupts re-enabled
+
+    // Phase 2: Map pages without holding the lock
+    for &(virt, phys) in &page_maps {
+        virtual_mem::map_page_in_pd(pd_phys, virt, phys, PAGE_USER);
     }
 }
 

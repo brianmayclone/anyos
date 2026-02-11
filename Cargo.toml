@@ -20,6 +20,7 @@ exclude = [
   "programs/system/notepad",
   "programs/system/imgview",
   "programs/system/videoplayer",
+  "programs/system/diagnostics",
   "programs/system/compositor/dock",
   "programs/system/compositor/compositor",
   "programs/mkdir",

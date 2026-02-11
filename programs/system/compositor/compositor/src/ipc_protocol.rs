@@ -32,6 +32,10 @@ pub const RESP_WINDOW_CREATED: u32 = 0x2001;
 /// Window destroyed: [RESP, window_id, app_tid, 0, 0]
 pub const RESP_WINDOW_DESTROYED: u32 = 0x2002;
 
+/// Menu set acknowledged: [RESP, window_id, 0, app_tid, 0]
+/// Sent after the compositor has parsed the menu SHM, so the app can free it.
+pub const RESP_MENU_SET: u32 = 0x2003;
+
 // ── Compositor → App Input Events ────────────────────────────────────────────
 
 /// Key down: [EVT, window_id, scancode, char_code, modifiers]

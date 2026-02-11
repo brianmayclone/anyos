@@ -496,7 +496,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     unsafe { core::arch::asm!("pushfq; pop {}", out(reg) flags); }
     unsafe { core::arch::asm!("cli"); }
 
-    let tid = crate::task::scheduler::spawn(user_thread_trampoline, 200, name);
+    let tid = crate::task::scheduler::spawn(user_thread_trampoline, 100, name);
     crate::task::scheduler::set_thread_user_info(tid, pd_phys, brk as u32);
 
     // Set architecture mode for compat32 threads

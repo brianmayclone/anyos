@@ -477,17 +477,23 @@ pub fn create_user_page_directory() -> Option<PhysAddr> {
 
 /// Map a page in a specific page directory (not necessarily the current one).
 /// Temporarily switches CR3 to the target PML4.
+///
+/// Interrupts are disabled for the duration: a context switch while CR3 is
+/// temporarily switched would cause the scheduler to restore a different CR3,
+/// making `map_page` silently modify the wrong process's page tables.
 pub fn map_page_in_pd(pd_phys: PhysAddr, virt: VirtAddr, phys: PhysAddr, flags: u64) {
     unsafe {
+        asm!("cli", options(nomem, nostack));
         let old_cr3 = current_cr3();
         asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
         map_page(virt, phys, flags);
         asm!("mov cr3, {}", in(reg) old_cr3);
+        asm!("sti", options(nomem, nostack));
     }
 }
 
 /// Check if a virtual address is mapped in a specific page directory.
-/// Temporarily switches CR3.
+/// Temporarily switches CR3 to the target PML4.
 pub fn is_mapped_in_pd(pd_phys: PhysAddr, virt: VirtAddr) -> bool {
     unsafe {
         let old_cr3 = current_cr3();

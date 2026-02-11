@@ -142,6 +142,14 @@ fn render(
 
         // Memory bar (left half) + CPU bar (right half)
         let half_w = ((win_w as i32 - PAD * 3) / 2) as u32;
+
+        // Debug: check surface pointer before progress calls
+        if let Some((ptr, _, _)) = window::surface_info(win_id) {
+            if (ptr as u64) < 0x1000 {
+                anyos_std::println!("[taskman] BAD pixels={:#x} before progress!", ptr as u64);
+            }
+        }
+
         if total_kb > 0 {
             let mem_pct = (used_kb as u64 * 100 / total_kb as u64) as u32;
             progress(win_id, PAD, 40, half_w, 8, mem_pct);
@@ -297,6 +305,11 @@ fn main() {
     let win_id = window::create("Activity Monitor", 120, 80, 500, 380);
     if win_id == u32::MAX {
         return;
+    }
+
+    // Debug: print window surface info
+    if let Some((ptr, sw, sh)) = window::surface_info(win_id) {
+        anyos_std::println!("[taskman] win_id={:#x} pixels={:#x} {}x{}", win_id, ptr as u64, sw, sh);
     }
 
     // Set up menu bar

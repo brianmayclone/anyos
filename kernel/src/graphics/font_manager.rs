@@ -8,20 +8,28 @@ use crate::graphics::color::Color;
 use crate::graphics::surface::Surface;
 use crate::graphics::ttf::TtfFont;
 use crate::graphics::ttf_rasterizer;
-use crate::sync::spinlock::Spinlock;
+use crate::sync::mutex::Mutex;
 
 /// Global flag: GPU acceleration is enabled (set by compositor).
 /// Font manager reads this to decide greyscale vs LCD subpixel rendering.
 static GPU_ACCEL: AtomicBool = AtomicBool::new(false);
 
 /// Global font manager singleton.
-static FONT_MGR: Spinlock<Option<FontManager>> = Spinlock::new(None);
+/// Uses Mutex (not Spinlock) so interrupts stay enabled during rendering,
+/// preventing mouse/timer stalls when font syscalls take 1-10ms.
+static FONT_MGR: Mutex<Option<FontManager>> = Mutex::new(None);
 
 /// Maximum number of cached glyphs before LRU eviction.
 const MAX_CACHE_SIZE: usize = 512;
 
-/// System font ID (always 0).
+/// System font ID — regular weight (always 0).
 pub const SYSTEM_FONT_ID: u16 = 0;
+/// System font — bold weight.
+pub const SYSTEM_FONT_BOLD: u16 = 1;
+/// System font — thin weight.
+pub const SYSTEM_FONT_THIN: u16 = 2;
+/// System font — italic.
+pub const SYSTEM_FONT_ITALIC: u16 = 3;
 
 struct LoadedFont {
     ttf: TtfFont,
@@ -75,6 +83,12 @@ impl FontManager {
             .get(font_id as usize)
             .and_then(|slot| slot.as_ref())
             .map(|f| &f.ttf)
+    }
+
+    /// Get font by ID with automatic fallback to system font (ID 0).
+    fn get_font_or_fallback(&self, font_id: u16) -> Option<&TtfFont> {
+        self.get_font(font_id)
+            .or_else(|| if font_id != SYSTEM_FONT_ID { self.get_font(SYSTEM_FONT_ID) } else { None })
     }
 
     fn remove_font(&mut self, font_id: u16) {
@@ -201,6 +215,34 @@ pub fn init() {
         }
     }
 
+    // Load font variants (bold, thin, italic) — IDs 1, 2, 3
+    let variants: [(&str, &str); 3] = [
+        ("/system/fonts/sfpro-bold.ttf", "sfpro-bold"),
+        ("/system/fonts/sfpro-thin.ttf", "sfpro-thin"),
+        ("/system/fonts/sfpro-italic.ttf", "sfpro-italic"),
+    ];
+    for (path, label) in &variants {
+        match crate::fs::vfs::read_file_to_vec(path) {
+            Ok(data) => {
+                if let Some(ttf) = TtfFont::parse(data) {
+                    let id = mgr.add_font(ttf);
+                    crate::serial_println!("[OK] Font: {} loaded (font_id={})", label, id);
+                } else {
+                    // Parse failed — push None to keep indexing consistent
+                    mgr.fonts.push(None);
+                    crate::serial_println!("[WARN] Font: failed to parse {}", label);
+                }
+            }
+            Err(_) => {
+                // Variant not present on disk — leave the slot empty
+                // so subsequent IDs stay correct.  add_font won't be called,
+                // but we push a None to keep indexing consistent.
+                mgr.fonts.push(None);
+                crate::serial_println!("[INFO] Font: {} not found, skipped", label);
+            }
+        }
+    }
+
     let mut guard = FONT_MGR.lock();
     *guard = Some(mgr);
 }
@@ -239,7 +281,7 @@ pub fn unload_font(font_id: u16) {
 pub fn line_height(font_id: u16, size: u16) -> u32 {
     let guard = FONT_MGR.lock();
     if let Some(ref mgr) = *guard {
-        if let Some(ttf) = mgr.get_font(font_id) {
+        if let Some(ttf) = mgr.get_font_or_fallback(font_id) {
             let ascent = ttf.ascent.unsigned_abs() as u32;
             let descent = ttf.descent.unsigned_abs() as u32;
             let line_gap = ttf.line_gap.max(0) as u32;
@@ -253,7 +295,7 @@ pub fn line_height(font_id: u16, size: u16) -> u32 {
 pub fn measure_string(text: &str, font_id: u16, size: u16) -> (u32, u32) {
     let guard = FONT_MGR.lock();
     if let Some(ref mgr) = *guard {
-        if let Some(ttf) = mgr.get_font(font_id) {
+        if let Some(ttf) = mgr.get_font_or_fallback(font_id) {
             let mut width = 0u32;
             let mut max_width = 0u32;
             let mut lines = 1u32;
@@ -312,8 +354,10 @@ pub fn draw_string(
         None => return,
     };
     // Extract font metadata in limited scope (drop immutable borrow before mutable ops)
+    // Fall back to system font if requested font_id isn't loaded.
+    let actual_font_id = if mgr.get_font(font_id).is_some() { font_id } else { SYSTEM_FONT_ID };
     let (upm, ascent_px, lh, tab_advance) = {
-        let ttf = match mgr.get_font(font_id) {
+        let ttf = match mgr.get_font(actual_font_id) {
             Some(t) => t,
             None => return,
         };
@@ -342,7 +386,7 @@ pub fn draw_string(
 
         // Get glyph info in limited scope (borrow dropped before mutable methods)
         let (gid, advance_px) = {
-            let ttf = match mgr.get_font(font_id) {
+            let ttf = match mgr.get_font(actual_font_id) {
                 Some(t) => t,
                 None => continue,
             };
@@ -352,12 +396,12 @@ pub fn draw_string(
         };
 
         // Try cache first
-        let cache_idx = mgr.find_cached(font_id, gid, size, subpixel);
+        let cache_idx = mgr.find_cached(actual_font_id, gid, size, subpixel);
         let idx = if let Some(i) = cache_idx {
             i
         } else {
             // Rasterize and cache
-            match mgr.rasterize_and_cache(font_id, gid, size, subpixel) {
+            match mgr.rasterize_and_cache(actual_font_id, gid, size, subpixel) {
                 Some(i) => i,
                 None => {
                     cx += advance_px as i32;
@@ -400,8 +444,9 @@ pub fn draw_char(
         None => return size as u32 / 2,
     };
     // Extract font data in limited scope (drop immutable borrow before mutable ops)
+    let actual_font_id = if mgr.get_font(font_id).is_some() { font_id } else { SYSTEM_FONT_ID };
     let (upm, ascent_px, gid, advance_px) = {
-        let ttf = match mgr.get_font(font_id) {
+        let ttf = match mgr.get_font(actual_font_id) {
             Some(t) => t,
             None => return size as u32 / 2,
         };
@@ -413,11 +458,11 @@ pub fn draw_char(
         (upm, ascent_px, gid, advance_px)
     };
 
-    let cache_idx = mgr.find_cached(font_id, gid, size, subpixel);
+    let cache_idx = mgr.find_cached(actual_font_id, gid, size, subpixel);
     let idx = if let Some(i) = cache_idx {
         i
     } else {
-        match mgr.rasterize_and_cache(font_id, gid, size, subpixel) {
+        match mgr.rasterize_and_cache(actual_font_id, gid, size, subpixel) {
             Some(i) => i,
             None => return advance_px,
         }

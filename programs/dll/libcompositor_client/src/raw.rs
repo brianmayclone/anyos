@@ -53,6 +53,15 @@ pub struct LibcompositorExports {
 
     pub update_menu_item:
         extern "C" fn(channel_id: u32, window_id: u32, item_id: u32, new_flags: u32),
+
+    pub resize_shm: extern "C" fn(
+        channel_id: u32,
+        window_id: u32,
+        old_shm_id: u32,
+        new_width: u32,
+        new_height: u32,
+        out_new_shm_id: *mut u32,
+    ) -> *mut u32,
 }
 
 /// Get a reference to the libcompositor export table.

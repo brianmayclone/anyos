@@ -8,6 +8,7 @@ use crate::compositor::{alpha_blend, Compositor, Rect};
 // ── Theme Constants ──────────────────────────────────────────────────────────
 
 const FONT_ID: u16 = 0;
+const FONT_ID_BOLD: u16 = 1;
 const FONT_SIZE: u16 = 13;
 
 pub const MENUBAR_HEIGHT: u32 = 24;
@@ -308,7 +309,9 @@ impl MenuBar {
         let mut x: i32 = MENU_TITLE_START_X;
 
         for (idx, menu) in def.menus.iter().enumerate() {
-            let (tw, _) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, &menu.title);
+            // App name (first menu) uses bold font, like macOS
+            let font = if idx == 0 { FONT_ID_BOLD } else { FONT_ID };
+            let (tw, _) = anyos_std::ui::window::font_measure(font, FONT_SIZE, &menu.title);
             let padding: u32 = 16;
             let total_w = tw + padding;
             self.title_layouts.push(MenuTitleLayout {
@@ -346,13 +349,16 @@ impl MenuBar {
                 }
             }
 
+            // App name (first menu) is bold, rest are regular
+            let font = if layout.menu_idx == 0 { FONT_ID_BOLD } else { FONT_ID };
+
             // Render title text centered in its region
             let (tw, th) =
-                anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, &menu.title);
+                anyos_std::ui::window::font_measure(font, FONT_SIZE, &menu.title);
             let tx = layout.x + (layout.width as i32 - tw as i32) / 2;
             let ty = ((MENUBAR_HEIGHT as i32 - th as i32) / 2).max(0);
             anyos_std::ui::window::font_render_buf(
-                FONT_ID,
+                font,
                 FONT_SIZE,
                 pixels,
                 stride,

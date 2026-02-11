@@ -754,6 +754,49 @@ pub fn sleep_until(wake_at: u32) {
     schedule();
 }
 
+/// Block the current thread unconditionally (no wake condition).
+///
+/// The caller must arrange for [`wake_thread`] to be called later to unblock
+/// the thread.  Used by [`crate::sync::mutex::Mutex`] and
+/// [`crate::sync::semaphore::Semaphore`] for scheduler-integrated blocking.
+pub fn block_current_thread() {
+    {
+        let mut guard = SCHEDULER.lock();
+        let sched = guard.as_mut().expect("Scheduler not initialized");
+        if let Some(idx) = sched.current {
+            sched.threads[idx].state = ThreadState::Blocked;
+        }
+    }
+    schedule();
+}
+
+/// Set the priority of a thread by TID.
+pub fn set_thread_priority(tid: u32, priority: u8) {
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(idx) = sched.threads.iter().position(|t| t.tid == tid) {
+            sched.threads[idx].priority = priority;
+        }
+    }
+}
+
+/// Wake a blocked thread by TID, moving it back to the ready queue.
+///
+/// If the thread is not in `Blocked` state this is a no-op.
+pub fn wake_thread(tid: u32) {
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(idx) = sched.threads.iter().position(|t| t.tid == tid) {
+            if sched.threads[idx].state == ThreadState::Blocked {
+                sched.threads[idx].state = ThreadState::Ready;
+                if !sched.ready_queue.contains(&idx) {
+                    sched.ready_queue.push_back(idx);
+                }
+            }
+        }
+    }
+}
+
 /// Enter the scheduler loop (called from kernel_main, becomes idle thread)
 pub fn run() -> ! {
     unsafe { core::arch::asm!("sti"); }

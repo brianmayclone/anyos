@@ -512,29 +512,33 @@ impl FatFs {
         let mut bytes_read = 0usize;
 
         loop {
-            // Scan ahead for contiguous clusters to batch into one read
-            let run_start_cluster = cluster;
-            let run_start_lba = self.cluster_to_lba(run_start_cluster);
-            let mut run_clusters: u32 = 1;
-            let mut last_cluster = cluster;
-
-            while let Some(next) = self.next_cluster(last_cluster) {
-                // Check if next cluster is physically contiguous
-                if next == last_cluster + 1 {
-                    run_clusters += 1;
-                    last_cluster = next;
-                } else {
-                    break;
-                }
-            }
-
-            // Read all contiguous clusters in one I/O operation
-            let run_bytes = (run_clusters * cluster_size) as usize;
+            // How many bytes we still need, plus any intra-cluster offset
             let start_in_run = if bytes_skipped < offset {
                 (offset - bytes_skipped) as usize
             } else {
                 0
             };
+            let bytes_needed = buf.len() - bytes_read + start_in_run;
+            let max_clusters = ((bytes_needed as u32 + cluster_size - 1) / cluster_size).max(1);
+
+            // Scan ahead for contiguous clusters, capped to what we need
+            let run_start_cluster = cluster;
+            let run_start_lba = self.cluster_to_lba(run_start_cluster);
+            let mut run_clusters: u32 = 1;
+            let mut last_cluster = cluster;
+
+            while run_clusters < max_clusters {
+                match self.next_cluster(last_cluster) {
+                    Some(next) if next == last_cluster + 1 => {
+                        run_clusters += 1;
+                        last_cluster = next;
+                    }
+                    _ => break,
+                }
+            }
+
+            // Read only the clusters we need
+            let run_bytes = (run_clusters * cluster_size) as usize;
             let available = run_bytes - start_in_run;
             let to_copy = available.min(buf.len() - bytes_read);
 

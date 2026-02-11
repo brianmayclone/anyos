@@ -8,11 +8,11 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU
-# Usage: ./run.sh [--vmware | --std | --virtio] [--ahci] [--audio]
+# Usage: ./run.sh [--vmware | --std | --virtio] [--ide] [--audio]
 #   --vmware   VMware SVGA II (2D acceleration, HW cursor)
 #   --std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
 #   --virtio   VirtIO GPU (modern transport, ARGB cursor)
-#   --ahci     Use AHCI (SATA DMA) instead of legacy IDE for disk I/O
+#   --ide      Use legacy IDE (PIO) instead of AHCI (DMA) for disk I/O
 #   --audio    Enable AC'97 audio device
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,8 +26,8 @@ fi
 
 VGA="std"
 VGA_LABEL="Bochs VGA (standard)"
-DRIVE_FLAGS="-drive format=raw,file=\"$IMAGE\""
-DRIVE_LABEL="IDE (PIO)"
+DRIVE_FLAGS="-drive id=hd0,if=none,format=raw,file=\"$IMAGE\" -device ich9-ahci,id=ahci -device ide-hd,drive=hd0,bus=ahci.0"
+DRIVE_LABEL="AHCI (DMA)"
 AUDIO_FLAGS=""
 AUDIO_LABEL=""
 
@@ -45,16 +45,16 @@ for arg in "$@"; do
             VGA="virtio"
             VGA_LABEL="Virtio GPU (paravirtualized)"
             ;;
-        --ahci)
-            DRIVE_FLAGS="-drive id=hd0,if=none,format=raw,file=\"$IMAGE\" -device ich9-ahci,id=ahci -device ide-hd,drive=hd0,bus=ahci.0"
-            DRIVE_LABEL="AHCI (DMA)"
+        --ide)
+            DRIVE_FLAGS="-drive format=raw,file=\"$IMAGE\""
+            DRIVE_LABEL="IDE (PIO)"
             ;;
         --audio)
             AUDIO_FLAGS="-device AC97,audiodev=audio0 -audiodev coreaudio,id=audio0"
             AUDIO_LABEL=", audio: AC'97"
             ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio] [--ahci] [--audio]"
+            echo "Usage: $0 [--vmware | --std | --virtio] [--ide] [--audio]"
             exit 1
             ;;
     esac

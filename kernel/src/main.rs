@@ -152,6 +152,10 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     unsafe { core::arch::asm!("sti"); }
     serial_println!("[OK] Interrupts enabled (timer + keyboard + mouse)");
 
+    // Switch serial output from blocking to async (IRQ 4 driven TX buffer)
+    drivers::serial::enable_async();
+    serial_println!("[OK] Serial TX now async (IRQ 4)");
+
     // Phase 7b: Calibrate LAPIC timer (needs PIT IRQ running, so after sti)
     if acpi_info.is_some() {
         arch::x86::apic::calibrate_timer(1000);

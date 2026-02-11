@@ -1,23 +1,28 @@
-//! Sleeping mutex that blocks the calling thread instead of spinning.
+//! Yielding mutex — gives up the current time slice instead of spinning
+//! with interrupts disabled, so other threads (including the compositor)
+//! keep running while the caller waits.
 //!
-//! Currently falls back to spin-waiting. Future phases will integrate with the
-//! scheduler to put blocked threads to sleep and wake them on unlock.
+//! Internally a brief [`Spinlock`] protects the `locked` flag.  When the
+//! mutex is contended the thread does a voluntary `schedule()` (yield)
+//! which puts it back in the ready queue.  The timer will reschedule it,
+//! and it retries the lock.  This avoids the lost-wakeup race inherent
+//! in block/wake designs and requires zero heap allocation.
+//!
+//! **Must NOT be used from interrupt handlers** — only from preemptible
+//! kernel context (syscalls, kernel threads).
 
 use crate::sync::spinlock::Spinlock;
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 
-/// A sleeping mutex that blocks the current thread if the lock is held.
-/// In Phase 1, this falls back to spinning. In Phase 2+, it will integrate
-/// with the scheduler to put threads to sleep.
+/// A yielding mutex that gives up its time slice when contended.
+///
+/// Interrupts stay enabled between retries, so timer/mouse/keyboard
+/// events are processed normally even during long-held locks (e.g. VFS
+/// disk I/O).
 pub struct Mutex<T> {
-    inner: Spinlock<MutexInner>,
+    inner: Spinlock<bool>,
     data: UnsafeCell<T>,
-}
-
-struct MutexInner {
-    locked: bool,
-    // TODO Phase 2: wait queue of blocked thread IDs
 }
 
 unsafe impl<T: Send> Sync for Mutex<T> {}
@@ -25,8 +30,8 @@ unsafe impl<T: Send> Send for Mutex<T> {}
 
 /// RAII guard for a held [`Mutex`].
 ///
-/// Provides `Deref`/`DerefMut` access to the protected data. Releases the
-/// mutex when dropped.
+/// Provides `Deref`/`DerefMut` access to the protected data.  Releases
+/// the mutex when dropped.
 pub struct MutexGuard<'a, T> {
     mutex: &'a Mutex<T>,
 }
@@ -35,23 +40,25 @@ impl<T> Mutex<T> {
     /// Create a new unlocked mutex wrapping the given data.
     pub const fn new(data: T) -> Self {
         Mutex {
-            inner: Spinlock::new(MutexInner { locked: false }),
+            inner: Spinlock::new(false),
             data: UnsafeCell::new(data),
         }
     }
 
-    /// Acquire the mutex, blocking until it becomes available.
+    /// Acquire the mutex, yielding the current time slice if contended.
     pub fn lock(&self) -> MutexGuard<T> {
         loop {
             {
-                let mut inner = self.inner.lock();
-                if !inner.locked {
-                    inner.locked = true;
+                let mut locked = self.inner.lock();
+                if !*locked {
+                    *locked = true;
                     return MutexGuard { mutex: self };
                 }
-            }
-            // TODO Phase 2: yield to scheduler instead of spinning
-            core::hint::spin_loop();
+            } // Spinlock released — interrupts re-enabled
+
+            // Yield our time slice so other threads (including the lock
+            // holder) can run.  We stay Ready and will be rescheduled.
+            crate::task::scheduler::schedule();
         }
     }
 }
@@ -71,8 +78,7 @@ impl<'a, T> DerefMut for MutexGuard<'a, T> {
 
 impl<'a, T> Drop for MutexGuard<'a, T> {
     fn drop(&mut self) {
-        let mut inner = self.mutex.inner.lock();
-        inner.locked = false;
-        // TODO Phase 2: wake first thread in wait queue
+        let mut locked = self.mutex.inner.lock();
+        *locked = false;
     }
 }

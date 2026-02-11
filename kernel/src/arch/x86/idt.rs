@@ -243,7 +243,16 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
 
     match frame.int_no {
         0 => {
-            crate::serial_println!("EXCEPTION: Division by zero at RIP={:#018x} CS={:#x}", frame.rip, frame.cs);
+            let dbg_tid = crate::task::scheduler::debug_current_tid();
+            crate::serial_println!("EXCEPTION: Division by zero at RIP={:#018x} CS={:#x} (TID={})", frame.rip, frame.cs, dbg_tid);
+            crate::serial_println!(
+                "  RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
+                frame.rax, frame.rbx, frame.rcx, frame.rdx
+            );
+            crate::serial_println!(
+                "  RSI={:#018x} RDI={:#018x} RBP={:#018x} RSP={:#018x}",
+                frame.rsi, frame.rdi, frame.rbp, frame.rsp
+            );
             if is_user_mode {
                 crate::serial_println!("  User process fault — terminating thread");
                 crate::task::scheduler::exit_current(136);

@@ -40,7 +40,8 @@ pub const MENUBAR_HEIGHT: u32 = 24;
 const TITLE_BAR_HEIGHT: u32 = 28;
 
 // ── System Font ────────────────────────────────────────────────────────────
-const FONT_ID: u16 = 0;   // System font (sfpro.ttf), loaded by kernel at boot
+const FONT_ID: u16 = 0;      // System font — regular weight
+const FONT_ID_BOLD: u16 = 1; // System font — bold weight
 const FONT_SIZE: u16 = 13;
 const TITLE_BTN_SIZE: u32 = 12;
 const TITLE_BTN_Y: u32 = 8;
@@ -669,11 +670,11 @@ impl Desktop {
                 pixels[(MENUBAR_HEIGHT * w + x) as usize] = COLOR_MENUBAR_BORDER;
             }
 
-            // "anyOS" brand text (left) — TTF system font
-            let (_, fh) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, "anyOS");
+            // "anyOS" brand text (left) — bold system font
+            let (_, fh) = anyos_std::ui::window::font_measure(FONT_ID_BOLD, FONT_SIZE, "anyOS");
             let fy = ((MENUBAR_HEIGHT as i32 - fh as i32) / 2).max(0);
             anyos_std::ui::window::font_render_buf(
-                FONT_ID, FONT_SIZE, pixels, w, h, 10, fy, COLOR_MENUBAR_TEXT, "anyOS",
+                FONT_ID_BOLD, FONT_SIZE, pixels, w, h, 10, fy, COLOR_MENUBAR_TEXT, "anyOS",
             );
 
             // App menu titles (after "anyOS")
@@ -813,7 +814,7 @@ impl Desktop {
         };
 
         self.windows.push(win);
-        self.render_window(id);
+        // focus_window() calls render_window() internally — no need to render twice.
         self.focus_window(id);
 
         id
@@ -860,17 +861,19 @@ impl Desktop {
         for id in window_ids {
             self.destroy_window(id);
         }
+        // Remove the app's subscription mapping
+        self.app_subs.retain(|(t, _)| *t != tid);
     }
 
     /// Focus a window (bring to front and set focused style).
     pub fn focus_window(&mut self, id: u32) {
-        // Unfocus previous
+        // Unfocus previous — only repaint title bar (not entire window body)
         if let Some(old_id) = self.focused_window {
             if old_id != id {
                 if let Some(idx) = self.windows.iter().position(|w| w.id == old_id) {
                     self.windows[idx].focused = false;
                     let win_id = self.windows[idx].id;
-                    self.render_window(win_id);
+                    self.render_titlebar(win_id);
                 }
             }
         }
@@ -1016,16 +1019,6 @@ impl Desktop {
                     COLOR_TITLEBAR_TEXT, &title_clone,
                 );
 
-                // Content area fill
-                let content_y = TITLE_BAR_HEIGHT;
-                for y in content_y..full_h {
-                    for x in 0..cw {
-                        let idx = (y * stride + x) as usize;
-                        if idx < pixels.len() && pixels[idx] == COLOR_WINDOW_BG {
-                            // Already filled by rounded rect — keep it
-                        }
-                    }
-                }
             }
         }
 
@@ -1037,6 +1030,82 @@ impl Desktop {
         if self.windows[win_idx].owner_tid != 0 && !self.windows[win_idx].shm_ptr.is_null() {
             self.present_ipc_window(window_id);
         }
+    }
+
+    /// Lightweight title-bar-only repaint for focus/unfocus changes.
+    /// Avoids clearing + refilling the entire window body and SHM copy,
+    /// which is the most expensive part of render_window().
+    fn render_titlebar(&mut self, window_id: u32) {
+        let win_idx = match self.windows.iter().position(|w| w.id == window_id) {
+            Some(i) => i,
+            None => return,
+        };
+
+        let layer_id = self.windows[win_idx].layer_id;
+        let cw = self.windows[win_idx].content_width;
+        let focused = self.windows[win_idx].focused;
+        let title_clone = self.windows[win_idx].title.clone();
+        let full_h = self.windows[win_idx].full_height();
+
+        if self.windows[win_idx].is_borderless() {
+            return; // no title bar on borderless windows
+        }
+
+        if let Some(pixels) = self.compositor.layer_pixels(layer_id) {
+            let stride = cw;
+
+            // Redraw title bar background (keeps rounded top corners)
+            let tb_color = if focused {
+                COLOR_TITLEBAR_FOCUSED
+            } else {
+                COLOR_TITLEBAR_UNFOCUSED
+            };
+            fill_rounded_rect_top(pixels, stride, 0, 0, cw, TITLE_BAR_HEIGHT, 8, tb_color);
+
+            // Title bar bottom border
+            let border_y = TITLE_BAR_HEIGHT - 1;
+            for x in 0..cw {
+                let idx = (border_y * stride + x) as usize;
+                if idx < pixels.len() {
+                    pixels[idx] = COLOR_WINDOW_BORDER;
+                }
+            }
+
+            // Traffic light buttons
+            let now = anyos_std::sys::uptime();
+            let base_colors: [u32; 3] = if focused {
+                [COLOR_CLOSE_BTN, COLOR_MIN_BTN, COLOR_MAX_BTN]
+            } else {
+                [COLOR_BTN_UNFOCUSED, COLOR_BTN_UNFOCUSED, COLOR_BTN_UNFOCUSED]
+            };
+            for (i, &base) in base_colors.iter().enumerate() {
+                let aid = button_anim_id(window_id, i as u8);
+                let color = if let Some(t) = self.btn_anims.value(aid, now) {
+                    let target = if self.btn_pressed == Some((window_id, i as u8)) {
+                        button_press_color(i as u8)
+                    } else {
+                        button_hover_color(i as u8)
+                    };
+                    anyos_std::anim::color_blend(base, target, t as u32)
+                } else {
+                    base
+                };
+                let cx = 8 + i as i32 * TITLE_BTN_SPACING as i32 + TITLE_BTN_SIZE as i32 / 2;
+                let cy = TITLE_BTN_Y as i32 + TITLE_BTN_SIZE as i32 / 2;
+                fill_circle(pixels, stride, full_h, cx, cy, (TITLE_BTN_SIZE / 2) as i32, color);
+            }
+
+            // Title text (centered)
+            let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, &title_clone);
+            let tx = (cw as i32 - tw as i32) / 2;
+            let ty = ((TITLE_BAR_HEIGHT as i32 - th as i32) / 2).max(0);
+            anyos_std::ui::window::font_render_buf(
+                FONT_ID, FONT_SIZE, pixels, stride, full_h, tx, ty,
+                COLOR_TITLEBAR_TEXT, &title_clone,
+            );
+        }
+
+        self.compositor.mark_layer_dirty(layer_id);
     }
 
     // ── Input Handling ──────────────────────────────────────────────────
@@ -1339,7 +1408,13 @@ impl Desktop {
                     return;
                 }
 
-                // Clicked outside dropdown — close it (fall through to normal handling)
+                // Clicked outside dropdown
+                if self.mouse_y < MENUBAR_HEIGHT as i32 {
+                    // Click is on menubar — let handle_menubar_click() deal with toggle
+                    self.handle_menubar_click();
+                    return;
+                }
+                // Clicked outside dropdown AND menubar — close it
                 self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
                 self.draw_menubar();
                 self.compositor.add_damage(Rect::new(
@@ -1347,7 +1422,7 @@ impl Desktop {
                 ));
             }
 
-            // Check menubar click
+            // Check menubar click (no dropdown was open)
             if self.mouse_y < MENUBAR_HEIGHT as i32 {
                 self.handle_menubar_click();
                 return;
@@ -1945,7 +2020,7 @@ impl Desktop {
         };
 
         self.windows.push(win);
-        self.render_window(id);
+        // focus_window() calls render_window() internally — no need to render twice.
         self.focus_window(id);
 
         id
@@ -2178,7 +2253,13 @@ impl Desktop {
                     }
                 }
                 anyos_std::ipc::shm_unmap(shm_id);
-                None
+                // Acknowledge so the app knows it can free the SHM
+                let owner_tid = self.windows.iter()
+                    .find(|w| w.id == window_id)
+                    .map(|w| w.owner_tid)
+                    .unwrap_or(0);
+                let target = self.get_sub_id_for_tid(owner_tid);
+                Some((target, [proto::RESP_MENU_SET, window_id, 0, owner_tid, 0]))
             }
             proto::CMD_ADD_STATUS_ICON => {
                 let app_tid = cmd[1];

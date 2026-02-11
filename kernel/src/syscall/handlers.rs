@@ -1358,7 +1358,9 @@ pub fn sys_register_compositor() -> u32 {
     if COMPOSITOR_TID.compare_exchange(0, tid, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
         // Disable boot splash cursor — compositor owns cursor from now on
         crate::drivers::gpu::disable_splash_cursor();
-        crate::serial_println!("[OK] Compositor registered (TID={})", tid);
+        // Boost compositor to realtime priority so UI never stutters
+        crate::task::scheduler::set_thread_priority(tid, 250);
+        crate::serial_println!("[OK] Compositor registered (TID={}, priority=250)", tid);
         0
     } else {
         u32::MAX // Already registered

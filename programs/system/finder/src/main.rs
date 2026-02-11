@@ -568,15 +568,22 @@ fn render_file_list(win: u32, state: &mut AppState, win_w: u32, win_h: u32) {
         let icon_x = list_x + 12;
         let icon_y = ry + (ROW_H - ICON_SIZE as i32) / 2;
 
-        // Determine icon path for this entry
+        // Determine icon path for this entry.
+        // App icons (from /system/media/icons/apps/) take priority over mimetype icons.
         let name = entry.name_str();
         let entry_type = entry.entry_type;
-        let icon_path = if entry_type == TYPE_DIR {
+        let app_icon_buf: alloc::string::String;
+        let icon_path: &str = if entry_type == TYPE_DIR {
             icons::FOLDER_ICON
         } else {
-            match get_extension(name) {
-                Some(ext) => state.mimetypes.icon_for_ext(ext),
-                None => icons::DEFAULT_FILE_ICON,
+            app_icon_buf = icons::app_icon_path(&build_full_path(&state.cwd, name));
+            if app_icon_buf.as_str() != icons::DEFAULT_APP_ICON {
+                app_icon_buf.as_str()
+            } else {
+                match get_extension(name) {
+                    Some(ext) => state.mimetypes.icon_for_ext(ext),
+                    None => icons::DEFAULT_FILE_ICON,
+                }
             }
         };
 

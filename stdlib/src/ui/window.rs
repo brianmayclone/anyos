@@ -27,6 +27,15 @@ pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x01;
 pub const WIN_FLAG_BORDERLESS: u32 = 0x02;
 pub const WIN_FLAG_ALWAYS_ON_TOP: u32 = 0x04;
 
+/// System font — regular weight (SF Pro).
+pub const FONT_REGULAR: u16 = 0;
+/// System font — bold weight.
+pub const FONT_BOLD: u16 = 1;
+/// System font — thin weight.
+pub const FONT_THIN: u16 = 2;
+/// System font — italic.
+pub const FONT_ITALIC: u16 = 3;
+
 // ── Compositor DLL bindings (libcompositor.dll at 0x0438_0000) ──────────────
 
 const LIBCOMPOSITOR_BASE: usize = 0x0438_0000;

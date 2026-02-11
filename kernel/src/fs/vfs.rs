@@ -3,7 +3,7 @@
 
 use crate::fs::fat::FatFs;
 use crate::fs::file::{DirEntry, FileDescriptor, FileFlags, FileType, OpenFile, SeekFrom};
-use crate::sync::spinlock::Spinlock;
+use crate::sync::mutex::Mutex;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -14,7 +14,7 @@ const MAX_OPEN_FILES: usize = 256;
 /// FAT16 partition start sector (must match mkimage.py --fs-start)
 const FAT16_PARTITION_LBA: u32 = 4096;
 
-static VFS: Spinlock<Option<VfsState>> = Spinlock::new(None);
+static VFS: Mutex<Option<VfsState>> = Mutex::new(None);
 
 struct VfsState {
     open_files: Vec<Option<OpenFile>>,
@@ -312,10 +312,12 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
 
 /// Read an entire file into a Vec<u8>.
 ///
-/// The VFS spinlock is held only during metadata lookup and cluster-chain
-/// traversal (in-memory FAT cache, microseconds).  Actual disk I/O runs
-/// *after* the lock is released so that timer, mouse, and keyboard interrupts
-/// continue to fire normally — preventing UI freezes during large reads.
+/// Phase 1 holds the VFS Mutex during lookup (directory traversal, may do
+/// disk I/O) and cluster-chain plan building (in-memory FAT cache).
+/// Phase 2 releases the lock and performs the actual data read.
+///
+/// Because the VFS uses a scheduler-integrated [`Mutex`] (not a spinlock),
+/// interrupts remain enabled even during Phase 1 disk I/O.
 pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
     // Phase 1: Under VFS lock — lookup + build read plan (no disk I/O)
     let plan = {

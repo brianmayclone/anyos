@@ -184,10 +184,12 @@ extern "C" fn export_create_window(
     ];
     syscall::evt_chan_emit(channel_id, &cmd);
 
-    // Poll for RESP_WINDOW_CREATED (spin with sleep, max 500ms)
+    // Poll for RESP_WINDOW_CREATED — drain ALL queued events per iteration
+    // to avoid stalling behind mouse/keyboard events for other windows.
     let mut response = [0u32; 5];
-    for _ in 0..50 {
-        if syscall::evt_chan_poll(channel_id, sub_id, &mut response) {
+    for _ in 0..100 {
+        // Drain entire queue looking for our response
+        while syscall::evt_chan_poll(channel_id, sub_id, &mut response) {
             if response[0] == RESP_WINDOW_CREATED && response[3] == tid {
                 let window_id = response[1];
                 unsafe {
@@ -196,8 +198,9 @@ extern "C" fn export_create_window(
                 }
                 return window_id;
             }
+            // Not our response — discard and try next
         }
-        syscall::sleep(10);
+        syscall::sleep(5);
     }
 
     // Timeout — clean up
@@ -306,8 +309,9 @@ extern "C" fn export_set_menu(
     let cmd: [u32; 5] = [CMD_SET_MENU, window_id, shm_id, 0, 0];
     syscall::evt_chan_emit(channel_id, &cmd);
 
-    // Wait for compositor to read the SHM, then free it
-    syscall::sleep(20);
+    // Wait for compositor to read the SHM, then free it.
+    // 32ms ≈ 2 compositor frames — enough for the compositor to process.
+    syscall::sleep(32);
     syscall::shm_unmap(shm_id);
     syscall::shm_destroy(shm_id);
 }
@@ -340,7 +344,7 @@ extern "C" fn export_add_status_icon(channel_id: u32, icon_id: u32, pixels: *con
     syscall::evt_chan_emit(channel_id, &cmd);
 
     // Wait for compositor to read the SHM, then free it
-    syscall::sleep(20);
+    syscall::sleep(32);
     syscall::shm_unmap(shm_id);
     syscall::shm_destroy(shm_id);
 }

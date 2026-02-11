@@ -281,6 +281,7 @@ add_rust_system_program(finder      ${CMAKE_SOURCE_DIR}/programs/system/finder)
 add_rust_system_program(notepad     ${CMAKE_SOURCE_DIR}/programs/system/notepad)
 add_rust_system_program(imgview     ${CMAKE_SOURCE_DIR}/programs/system/imgview)
 add_rust_system_program(videoplayer ${CMAKE_SOURCE_DIR}/programs/system/videoplayer)
+add_rust_system_program(diagnostics ${CMAKE_SOURCE_DIR}/programs/system/diagnostics)
 
 # Build compositor binary (nested path: /system/compositor/compositor)
 set(COMPOSITOR_SRC_DIR ${CMAKE_SOURCE_DIR}/programs/system/compositor/compositor)
@@ -369,8 +370,12 @@ add_custom_command(
   DEPENDS ${CMAKE_SOURCE_DIR}/tools/sysroot
           ${CMAKE_SOURCE_DIR}/tools/sysroot/src/hello.c
           ${CMAKE_SOURCE_DIR}/tools/sysroot/system/fonts/sfpro.ttf
+          ${CMAKE_SOURCE_DIR}/tools/sysroot/system/fonts/sfpro-bold.ttf
+          ${CMAKE_SOURCE_DIR}/tools/sysroot/system/fonts/sfpro-thin.ttf
+          ${CMAKE_SOURCE_DIR}/tools/sysroot/system/fonts/sfpro-italic.ttf
           ${CMAKE_SOURCE_DIR}/tools/sysroot/media/wallpapers/default.png
           ${CMAKE_SOURCE_DIR}/tools/sysroot/system/media/icons
+          ${CMAKE_SOURCE_DIR}/tools/sysroot/system/testdata.bin
   COMMENT "Populating sysroot from tools/sysroot"
 )
 

@@ -1,58 +1,54 @@
-//! Counting semaphore for resource-count-based synchronization.
+//! Counting semaphore with yield-based waiting.
 //!
-//! Currently uses spin-waiting when the count is zero. Future phases will
-//! integrate with the scheduler for blocking wait and wake-on-signal.
+//! When the count is zero, [`wait`] yields the current time slice and
+//! retries, keeping interrupts enabled between attempts.  No heap
+//! allocation is needed.
+//!
+//! **Must NOT be used from interrupt handlers** — only from preemptible
+//! kernel context (syscalls, kernel threads).
 
 use crate::sync::spinlock::Spinlock;
 
 /// Counting semaphore.
-/// In Phase 1 this spins; in Phase 2+ it will integrate with the scheduler.
 pub struct Semaphore {
-    inner: Spinlock<SemaphoreInner>,
-}
-
-struct SemaphoreInner {
-    count: i32,
-    // TODO Phase 2: wait queue
+    inner: Spinlock<i32>,
 }
 
 impl Semaphore {
     /// Create a new semaphore with the given initial count.
     pub const fn new(initial: i32) -> Self {
         Semaphore {
-            inner: Spinlock::new(SemaphoreInner { count: initial }),
+            inner: Spinlock::new(initial),
         }
     }
 
-    /// Decrement (wait/P operation). Blocks if count <= 0.
+    /// Decrement (wait/P operation). Yields if count <= 0.
     pub fn wait(&self) {
         loop {
             {
-                let mut inner = self.inner.lock();
-                if inner.count > 0 {
-                    inner.count -= 1;
+                let mut count = self.inner.lock();
+                if *count > 0 {
+                    *count -= 1;
                     return;
                 }
             }
-            // TODO Phase 2: block on scheduler
-            core::hint::spin_loop();
+            crate::task::scheduler::schedule();
         }
     }
 
-    /// Increment (signal/V operation). Wakes one waiting thread.
+    /// Increment (signal/V operation).
     pub fn signal(&self) {
-        let mut inner = self.inner.lock();
-        inner.count += 1;
-        // TODO Phase 2: wake one thread from wait queue
+        let mut count = self.inner.lock();
+        *count += 1;
     }
 
     /// Try to decrement the semaphore without blocking.
     ///
     /// Returns `true` if the count was positive and was decremented, `false` otherwise.
     pub fn try_wait(&self) -> bool {
-        let mut inner = self.inner.lock();
-        if inner.count > 0 {
-            inner.count -= 1;
+        let mut count = self.inner.lock();
+        if *count > 0 {
+            *count -= 1;
             true
         } else {
             false
