@@ -32,7 +32,7 @@ pub const EVT_DATA_READY: u32 = 0x0101;
 pub const EVT_NOTIFICATION: u32 = 0x0103;
 
 /// Maximum events queued per subscription before dropping oldest.
-const MAX_QUEUE_DEPTH: usize = 64;
+const MAX_QUEUE_DEPTH: usize = 512;
 
 /// Fixed-size event payload: 5 x u32 words = 20 bytes.
 ///
@@ -155,7 +155,7 @@ pub fn channel_subscribe(channel_id: u32, filter: u32) -> u32 {
     sub_id
 }
 
-/// Emit an event to a module channel.
+/// Emit an event to a module channel (broadcast to all matching subscribers).
 pub fn channel_emit(channel_id: u32, event: EventData) {
     let mut bus = MODULE_BUS.lock();
     if let Some(channel) = bus.get_mut(&channel_id) {
@@ -165,6 +165,26 @@ pub fn channel_emit(channel_id: u32, event: EventData) {
                     sub.queue.pop_front();
                 }
                 sub.queue.push_back(event);
+            }
+        }
+    }
+}
+
+/// Emit an event to a specific subscriber on a module channel (unicast).
+///
+/// Used by the compositor to deliver window events only to the owning app,
+/// preventing other apps from receiving keyboard/mouse events for windows
+/// they don't own.
+pub fn channel_emit_to(channel_id: u32, target_sub_id: u32, event: EventData) {
+    let mut bus = MODULE_BUS.lock();
+    if let Some(channel) = bus.get_mut(&channel_id) {
+        for sub in channel.subs.iter_mut() {
+            if sub.id == target_sub_id {
+                if sub.queue.len() >= MAX_QUEUE_DEPTH {
+                    sub.queue.pop_front();
+                }
+                sub.queue.push_back(event);
+                return;
             }
         }
     }

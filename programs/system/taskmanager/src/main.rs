@@ -436,7 +436,7 @@ fn main() {
             last_update = now;
         }
 
-        process::yield_cpu();
+        process::sleep(16); // ~60 Hz poll rate, not busy-wait
     }
 
     window::destroy(win_id);

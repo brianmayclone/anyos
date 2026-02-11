@@ -157,7 +157,8 @@ pub fn sys_yield() -> u32 {
     0
 }
 
-/// sys_sleep - Sleep for N milliseconds (busy-wait with yield)
+/// sys_sleep - Sleep for N milliseconds (blocking sleep with timer wake).
+/// The thread is blocked and does not consume CPU until the timer wakes it.
 pub fn sys_sleep(ms: u32) -> u32 {
     if ms == 0 {
         return 0;
@@ -165,10 +166,8 @@ pub fn sys_sleep(ms: u32) -> u32 {
     let pit_hz = crate::arch::x86::pit::TICK_HZ;
     let ticks = (ms as u64 * pit_hz as u64 / 1000) as u32;
     let ticks = if ticks == 0 { 1 } else { ticks };
-    let start = crate::arch::x86::pit::get_ticks();
-    while crate::arch::x86::pit::get_ticks().wrapping_sub(start) < ticks {
-        crate::task::scheduler::schedule();
-    }
+    let wake_at = crate::arch::x86::pit::get_ticks().wrapping_add(ticks);
+    crate::task::scheduler::sleep_until(wake_at);
     0
 }
 
@@ -863,7 +862,16 @@ pub fn sys_set_resolution(width: u32, height: u32) -> u32 {
         return u32::MAX;
     }
     match crate::drivers::gpu::with_gpu(|g| g.set_mode(width, height, 32)) {
-        Some(Some(_)) => 0,
+        Some(Some(_)) => {
+            // Notify all subscribers about the resolution change
+            crate::ipc::event_bus::system_emit(
+                crate::ipc::event_bus::EventData::new(
+                    crate::ipc::event_bus::EVT_RESOLUTION_CHANGED,
+                    width, height, 0, 0,
+                ),
+            );
+            0
+        }
         _ => u32::MAX,
     }
 }
@@ -1275,6 +1283,15 @@ pub fn sys_evt_chan_unsubscribe(chan_id: u32, sub_id: u32) -> u32 {
 /// Destroy a module channel. ebx=chan_id.
 pub fn sys_evt_chan_destroy(chan_id: u32) -> u32 {
     event_bus::channel_destroy(chan_id);
+    0
+}
+
+/// Emit to a specific subscriber (unicast). ebx=chan_id, r10=sub_id, rdx=event_ptr.
+pub fn sys_evt_chan_emit_to(chan_id: u32, sub_id: u32, event_ptr: u32) -> u32 {
+    if event_ptr == 0 { return u32::MAX; }
+    let words = unsafe { core::slice::from_raw_parts(event_ptr as *const u32, 5) };
+    let evt = EventData { words: [words[0], words[1], words[2], words[3], words[4]] };
+    event_bus::channel_emit_to(chan_id, sub_id, evt);
     0
 }
 

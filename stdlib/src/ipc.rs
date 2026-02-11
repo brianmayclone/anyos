@@ -66,9 +66,14 @@ pub fn evt_chan_subscribe(channel_id: u32, filter: u32) -> u32 {
     syscall2(SYS_EVT_CHAN_SUBSCRIBE, channel_id as u64, filter as u64)
 }
 
-/// Emit an event to a module channel.
+/// Emit an event to a module channel (broadcast to all subscribers).
 pub fn evt_chan_emit(channel_id: u32, event: &[u32; 5]) {
     syscall2(SYS_EVT_CHAN_EMIT, channel_id as u64, event.as_ptr() as u64);
+}
+
+/// Emit an event to a specific subscriber on a module channel (unicast).
+pub fn evt_chan_emit_to(channel_id: u32, sub_id: u32, event: &[u32; 5]) {
+    syscall3(SYS_EVT_CHAN_EMIT_TO, channel_id as u64, sub_id as u64, event.as_ptr() as u64);
 }
 
 /// Poll for next event on a module channel subscription.

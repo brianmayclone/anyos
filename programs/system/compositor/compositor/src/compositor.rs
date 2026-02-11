@@ -100,6 +100,21 @@ impl Rect {
     }
 }
 
+// ── Shadow Cache ────────────────────────────────────────────────────────────
+
+/// Pre-computed shadow alpha values for a given layer size.
+/// Avoids expensive per-pixel SDF + isqrt computation every frame.
+struct ShadowCache {
+    /// Alpha values (0–255 normalized) for each pixel in the shadow bitmap.
+    /// Layout: row-major, width = layer_w + 2*SHADOW_SPREAD.
+    alphas: Vec<u8>,
+    cache_w: u32,
+    cache_h: u32,
+    /// Layer dimensions this was computed for (invalidated on resize).
+    layer_w: u32,
+    layer_h: u32,
+}
+
 // ── Layer ───────────────────────────────────────────────────────────────────
 
 pub struct Layer {
@@ -117,6 +132,8 @@ pub struct Layer {
     pub visible: bool,
     pub has_shadow: bool,
     pub dirty: bool,
+    /// Cached shadow alpha bitmap (computed lazily, invalidated on resize).
+    shadow_cache: Option<ShadowCache>,
 }
 
 impl Layer {
@@ -262,6 +279,7 @@ impl Compositor {
             visible: true,
             has_shadow: false,
             dirty: true,
+            shadow_cache: None,
         });
         id
     }
@@ -293,6 +311,7 @@ impl Compositor {
             visible: true,
             has_shadow: false,
             dirty: true,
+            shadow_cache: None,
         });
         id
     }
@@ -396,6 +415,7 @@ impl Compositor {
             self.layers[idx].width = new_w;
             self.layers[idx].height = new_h;
             self.layers[idx].pixels = vec![0u32; (new_w * new_h) as usize];
+            self.layers[idx].shadow_cache = None;
             self.layers[idx].dirty = true;
         }
     }
@@ -603,18 +623,26 @@ impl Compositor {
 
     /// Draw a soft gradient shadow for a layer into the back buffer (within damage rect).
     ///
-    /// Produces a macOS-style soft shadow by computing per-pixel distance to the
-    /// layer's rounded rectangle and mapping it to alpha via a smooth falloff.
-    /// Focused windows get a stronger shadow than unfocused ones.
+    /// Uses a cached alpha bitmap (computed lazily per layer size) instead of
+    /// per-pixel SDF + isqrt, which was the primary performance bottleneck when
+    /// windows overlapped.
     fn draw_shadow_to_bb(&mut self, rect: &Rect, layer_idx: usize) {
-        let layer = &self.layers[layer_idx];
-        let layer_id = layer.id;
-        let lx = layer.x + SHADOW_OFFSET_X;
-        let ly = layer.y + SHADOW_OFFSET_Y;
-        let lw = layer.width as i32;
-        let lh = layer.height as i32;
+        let layer_id = self.layers[layer_idx].id;
+        let layer_w = self.layers[layer_idx].width;
+        let layer_h = self.layers[layer_idx].height;
+        let lx = self.layers[layer_idx].x + SHADOW_OFFSET_X;
+        let ly = self.layers[layer_idx].y + SHADOW_OFFSET_Y;
         let spread = SHADOW_SPREAD;
-        let corner_r = 8i32; // must match the window corner radius
+
+        // Ensure shadow cache exists and matches current layer dimensions
+        let needs_recompute = match &self.layers[layer_idx].shadow_cache {
+            Some(c) => c.layer_w != layer_w || c.layer_h != layer_h,
+            None => true,
+        };
+        if needs_recompute {
+            let cache = compute_shadow_cache(layer_w, layer_h);
+            self.layers[layer_idx].shadow_cache = Some(cache);
+        }
 
         // Determine shadow intensity based on focus
         let base_alpha = if self.focused_layer_id == Some(layer_id) {
@@ -627,43 +655,51 @@ impl Compositor {
         let shadow_rect = Rect::new(
             lx - spread,
             ly - spread,
-            (lw + spread * 2) as u32,
-            (lh + spread * 2) as u32,
+            (layer_w as i32 + spread * 2) as u32,
+            (layer_h as i32 + spread * 2) as u32,
         );
 
         if let Some(overlap) = rect.intersect(&shadow_rect) {
             let bb_stride = self.fb_width as usize;
+            let shadow_ox = lx - spread;
+            let shadow_oy = ly - spread;
+
+            // Split borrow: read cache from layers, write to back_buffer
+            let cache = self.layers[layer_idx].shadow_cache.as_ref().unwrap();
+            let cache_w = cache.cache_w as usize;
+            let cache_alphas = cache.alphas.as_ptr();
+            let cache_len = cache.alphas.len();
+            let bb = &mut self.back_buffer;
+
             for row in 0..overlap.height as usize {
                 let py = overlap.y + row as i32;
+                let cy = (py - shadow_oy) as usize;
+                let cache_row_off = cy * cache_w;
+                let bb_row_off = py as usize * bb_stride;
+
                 for col in 0..overlap.width as usize {
                     let px = overlap.x + col as i32;
+                    let cx = (px - shadow_ox) as usize;
 
-                    // Compute signed distance from (px,py) to the rounded rect
-                    // defined by (lx, ly, lw, lh) with corner radius corner_r.
-                    let dist = rounded_rect_sdf(px, py, lx, ly, lw, lh, corner_r);
-
-                    // Only draw shadow outside the rect (dist > 0)
-                    if dist <= 0 {
+                    let cache_idx = cache_row_off + cx;
+                    if cache_idx >= cache_len {
+                        break;
+                    }
+                    let cache_a = unsafe { *cache_alphas.add(cache_idx) } as u32;
+                    if cache_a == 0 {
                         continue;
                     }
 
-                    // Smooth falloff: alpha decreases quadratically with distance
-                    if dist >= spread {
-                        continue;
-                    }
-                    let t = dist as u32; // 0..spread
-                    let s = spread as u32;
-                    // Quadratic falloff: alpha = base * (1 - t/s)^2
-                    let inv = s - t; // s..0
-                    let a = (base_alpha * inv * inv) / (s * s);
+                    // Scale normalized alpha (0-255) by base_alpha
+                    let a = (cache_a * base_alpha + 127) / 255;
                     if a == 0 {
                         continue;
                     }
 
-                    let di = py as usize * bb_stride + px as usize;
-                    if di < self.back_buffer.len() {
+                    let di = bb_row_off + px as usize;
+                    if di < bb.len() {
                         let shadow_px = a << 24; // pure black with computed alpha
-                        self.back_buffer[di] = alpha_blend(shadow_px, self.back_buffer[di]);
+                        bb[di] = alpha_blend(shadow_px, bb[di]);
                     }
                 }
             }
@@ -819,9 +855,71 @@ impl Compositor {
         self.damage
             .push(Rect::new(0, 0, self.fb_width, self.fb_height));
     }
+
+    /// Resize the compositor for a new screen resolution.
+    /// Reallocates the back buffer and updates dimensions. Layers are NOT touched.
+    pub fn resize_fb(&mut self, new_width: u32, new_height: u32, new_pitch: u32) {
+        self.fb_width = new_width;
+        self.fb_height = new_height;
+        self.fb_pitch = new_pitch;
+        let pixel_count = (new_width * new_height) as usize;
+        self.back_buffer = vec![0u32; pixel_count];
+        // Disable double-buffering — VRAM may be too small for 2x height at new res
+        self.hw_double_buffer = false;
+        self.current_page = 0;
+        self.prev_damage.clear();
+        self.damage.clear();
+    }
 }
 
 // ── Color Utilities ─────────────────────────────────────────────────────────
+
+/// Pre-compute shadow alpha values for a layer of given dimensions.
+/// The result is a bitmap of (layer_w + 2*spread) x (layer_h + 2*spread) alpha values
+/// representing the shadow intensity at each pixel, normalized to 0-255.
+fn compute_shadow_cache(layer_w: u32, layer_h: u32) -> ShadowCache {
+    let spread = SHADOW_SPREAD;
+    let lw = layer_w as i32;
+    let lh = layer_h as i32;
+    let corner_r = 8i32; // must match the window corner radius
+    let s = spread as u32;
+
+    let cache_w = (lw + spread * 2) as u32;
+    let cache_h = (lh + spread * 2) as u32;
+    let mut alphas = vec![0u8; (cache_w * cache_h) as usize];
+
+    // The virtual layer starts at (spread, spread) within the cache bitmap
+    let lx = spread;
+    let ly = spread;
+
+    for row in 0..cache_h {
+        let py = row as i32;
+        for col in 0..cache_w {
+            let px = col as i32;
+
+            let dist = rounded_rect_sdf(px, py, lx, ly, lw, lh, corner_r);
+
+            // Only outside the rect (dist > 0) and within spread
+            if dist <= 0 || dist >= spread {
+                continue;
+            }
+
+            let t = dist as u32;
+            let inv = s - t;
+            // Normalized alpha: quadratic falloff scaled to 0-255
+            let a = (255 * inv * inv) / (s * s);
+            alphas[(row * cache_w + col) as usize] = a.min(255) as u8;
+        }
+    }
+
+    ShadowCache {
+        alphas,
+        cache_w,
+        cache_h,
+        layer_w,
+        layer_h,
+    }
+}
 
 /// Signed distance from point (px,py) to a rounded rectangle.
 /// Returns negative values inside, positive outside, 0 on the edge.

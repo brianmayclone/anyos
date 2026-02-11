@@ -28,6 +28,14 @@ const COLOR_MIN_BTN: u32 = 0xFFFEBD2E;
 const COLOR_MAX_BTN: u32 = 0xFF27C93F;
 const COLOR_BTN_UNFOCUSED: u32 = 0xFF5A5A5E;
 
+// Hover (lighter) and press (darker) button colours for animation blending
+const COLOR_CLOSE_HOVER: u32 = 0xFFFF7B73;
+const COLOR_MIN_HOVER: u32 = 0xFFFECE56;
+const COLOR_MAX_HOVER: u32 = 0xFF3DD654;
+const COLOR_CLOSE_PRESS: u32 = 0xFFCC4C45;
+const COLOR_MIN_PRESS: u32 = 0xFFCB9724;
+const COLOR_MAX_PRESS: u32 = 0xFF1FA030;
+
 pub const MENUBAR_HEIGHT: u32 = 24;
 const TITLE_BAR_HEIGHT: u32 = 28;
 
@@ -414,6 +422,31 @@ struct ResizeState {
     edge: HitTest,
 }
 
+// ── Button Animation Helpers ────────────────────────────────────────────────
+
+/// Compute a unique animation ID for a window button.
+/// Encodes window_id and button index (0=close, 1=min, 2=max) into one u32.
+fn button_anim_id(window_id: u32, btn: u8) -> u32 {
+    window_id.wrapping_mul(4).wrapping_add(btn as u32)
+}
+
+/// Look up hover and press target colours for a button index.
+fn button_hover_color(btn: u8) -> u32 {
+    match btn {
+        0 => COLOR_CLOSE_HOVER,
+        1 => COLOR_MIN_HOVER,
+        _ => COLOR_MAX_HOVER,
+    }
+}
+
+fn button_press_color(btn: u8) -> u32 {
+    match btn {
+        0 => COLOR_CLOSE_PRESS,
+        1 => COLOR_MIN_PRESS,
+        _ => COLOR_MAX_PRESS,
+    }
+}
+
 // ── Desktop ─────────────────────────────────────────────────────────────────
 
 pub struct Desktop {
@@ -457,6 +490,18 @@ pub struct Desktop {
 
     // Menu bar system
     menu_bar: MenuBar,
+
+    // Button hover/press animation
+    /// Which window button the cursor is currently over: (window_id, btn_index 0=close 1=min 2=max)
+    btn_hover: Option<(u32, u8)>,
+    /// Which button is currently pressed
+    btn_pressed: Option<(u32, u8)>,
+    /// Animation set for button colour transitions
+    btn_anims: anyos_std::anim::AnimSet,
+    /// Whether GPU acceleration is available (cached at init)
+    has_gpu_accel: bool,
+    /// Per-app subscription IDs for targeted event delivery: (tid, sub_id)
+    app_subs: Vec<(u32, u32)>,
 }
 
 impl Desktop {
@@ -495,6 +540,11 @@ impl Desktop {
             current_cursor: CursorShape::Arrow,
             hw_arrow_pixels: arrow_pixels,
             menu_bar: MenuBar::new(),
+            btn_hover: None,
+            btn_pressed: None,
+            btn_anims: anyos_std::anim::AnimSet::new(),
+            has_gpu_accel: anyos_std::ui::window::gpu_has_accel(),
+            app_subs: Vec::with_capacity(16),
         }
     }
 
@@ -636,6 +686,52 @@ impl Desktop {
             self.menu_bar.render_status_icons(pixels, w);
         }
         self.compositor.mark_layer_dirty(self.menubar_layer_id);
+    }
+
+    /// Handle a resolution change event. Resizes all desktop layers and redraws.
+    pub fn handle_resolution_change(&mut self, new_w: u32, new_h: u32) {
+        if new_w == self.screen_width && new_h == self.screen_height {
+            return;
+        }
+        anyos_std::println!(
+            "compositor: resolution changed {}x{} -> {}x{}",
+            self.screen_width, self.screen_height, new_w, new_h
+        );
+
+        // Re-query framebuffer info to get the correct pitch
+        let pitch = match anyos_std::ipc::map_framebuffer() {
+            Some(info) => info.pitch,
+            None => new_w * 4, // fallback
+        };
+
+        // Update screen dimensions
+        self.screen_width = new_w;
+        self.screen_height = new_h;
+
+        // Clamp mouse position to new screen bounds
+        self.mouse_x = self.mouse_x.min(new_w as i32 - 1);
+        self.mouse_y = self.mouse_y.min(new_h as i32 - 1);
+
+        // Resize compositor back buffer
+        self.compositor.resize_fb(new_w, new_h, pitch);
+
+        // Resize background layer
+        self.compositor.resize_layer(self.bg_layer_id, new_w, new_h);
+
+        // Resize menubar layer
+        self.compositor
+            .resize_layer(self.menubar_layer_id, new_w, MENUBAR_HEIGHT + 1);
+
+        // Redraw wallpaper (falls back to gradient)
+        if !self.load_wallpaper("/media/wallpapers/default.png") {
+            self.draw_gradient_background();
+        }
+
+        // Redraw menubar
+        self.draw_menubar();
+
+        // Damage everything
+        self.compositor.damage_all();
     }
 
     // draw_clock_to_menubar is a free function below (avoids borrow checker issues)
@@ -838,13 +934,21 @@ impl Desktop {
         let title_clone = self.windows[win_idx].title.clone();
         let full_h = self.windows[win_idx].full_height();
 
+        // Borderless IPC windows: no chrome to draw — just restore SHM content directly.
+        if borderless && self.windows[win_idx].owner_tid != 0 {
+            if !self.windows[win_idx].shm_ptr.is_null() {
+                self.present_ipc_window(window_id);
+            }
+            return;
+        }
+
         if let Some(pixels) = self.compositor.layer_pixels(layer_id) {
             let stride = cw;
 
             if borderless {
-                // Borderless: just fill with window bg
+                // Borderless local windows: clear to transparent
                 for p in pixels.iter_mut() {
-                    *p = COLOR_WINDOW_BG;
+                    *p = 0x00000000;
                 }
             } else {
                 // Clear to transparent (for rounded corners)
@@ -879,13 +983,25 @@ impl Desktop {
                     }
                 }
 
-                // Traffic light buttons
-                let btn_colors = if focused {
+                // Traffic light buttons — with animated hover/press colour blend
+                let now = anyos_std::sys::uptime();
+                let base_colors: [u32; 3] = if focused {
                     [COLOR_CLOSE_BTN, COLOR_MIN_BTN, COLOR_MAX_BTN]
                 } else {
                     [COLOR_BTN_UNFOCUSED, COLOR_BTN_UNFOCUSED, COLOR_BTN_UNFOCUSED]
                 };
-                for (i, &color) in btn_colors.iter().enumerate() {
+                for (i, &base) in base_colors.iter().enumerate() {
+                    let aid = button_anim_id(window_id, i as u8);
+                    let color = if let Some(t) = self.btn_anims.value(aid, now) {
+                        let target = if self.btn_pressed == Some((window_id, i as u8)) {
+                            button_press_color(i as u8)
+                        } else {
+                            button_hover_color(i as u8)
+                        };
+                        anyos_std::anim::color_blend(base, target, t as u32)
+                    } else {
+                        base
+                    };
                     let cx = 8 + i as i32 * TITLE_BTN_SPACING as i32 + TITLE_BTN_SIZE as i32 / 2;
                     let cy = TITLE_BTN_Y as i32 + TITLE_BTN_SIZE as i32 / 2;
                     fill_circle(pixels, stride, full_h, cx, cy, (TITLE_BTN_SIZE / 2) as i32, color);
@@ -1079,6 +1195,93 @@ impl Desktop {
             }
             self.set_cursor_shape(shape);
         }
+
+        // Track button hover for animated colour transitions
+        if self.has_gpu_accel && self.dragging.is_none() && self.resizing.is_none() {
+            let new_hover = self.get_button_under_cursor();
+            if new_hover != self.btn_hover {
+                let now = anyos_std::sys::uptime();
+                // Blend-out on old button
+                if let Some((old_wid, old_btn)) = self.btn_hover {
+                    let aid = button_anim_id(old_wid, old_btn);
+                    self.btn_anims.start(aid, 1000, 0, 150, anyos_std::anim::Easing::EaseOut);
+                    self.render_window(old_wid);
+                }
+                // Blend-in on new button
+                if let Some((new_wid, new_btn)) = new_hover {
+                    let aid = button_anim_id(new_wid, new_btn);
+                    self.btn_anims.start(aid, 0, 1000, 150, anyos_std::anim::Easing::EaseOut);
+                    self.render_window(new_wid);
+                }
+                self.btn_hover = new_hover;
+            }
+        }
+
+        // Forward mouse move to topmost IPC window under cursor (for hover effects)
+        if self.dragging.is_none() && self.resizing.is_none() {
+            for win in self.windows.iter().rev() {
+                if win.owner_tid != 0 {
+                    let ht = win.hit_test(self.mouse_x, self.mouse_y);
+                    if ht != HitTest::None {
+                        let lx = self.mouse_x - win.x;
+                        let mut ly = self.mouse_y - win.y;
+                        if !win.is_borderless() {
+                            ly -= TITLE_BAR_HEIGHT as i32;
+                        }
+                        self.push_event(
+                            win.id,
+                            [EVENT_MOUSE_MOVE, lx as u32, ly as u32, 0, 0],
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns (window_id, btn_index) of the button under the cursor, if any.
+    /// btn_index: 0=close, 1=min, 2=max.
+    fn get_button_under_cursor(&self) -> Option<(u32, u8)> {
+        let mx = self.mouse_x;
+        let my = self.mouse_y;
+        for win in self.windows.iter().rev() {
+            let ht = win.hit_test(mx, my);
+            match ht {
+                HitTest::CloseButton => return Some((win.id, 0)),
+                HitTest::MinButton => return Some((win.id, 1)),
+                HitTest::MaxButton => return Some((win.id, 2)),
+                HitTest::None => continue,
+                _ => return None, // cursor is over this window but not a button
+            }
+        }
+        None
+    }
+
+    /// Tick active button animations. Returns true if any animation was active
+    /// (caller should recompose).
+    pub fn tick_animations(&mut self) -> bool {
+        let now = anyos_std::sys::uptime();
+        if !self.btn_anims.has_active(now) {
+            return false;
+        }
+        // Re-render windows with active button animations
+        let mut wids = Vec::new();
+        for win in &self.windows {
+            if win.focused {
+                let w = win.id;
+                for btn in 0u8..3 {
+                    let aid = button_anim_id(w, btn);
+                    if self.btn_anims.is_active(aid, now) && !wids.contains(&w) {
+                        wids.push(w);
+                    }
+                }
+            }
+        }
+        for wid in &wids {
+            self.render_window(*wid);
+        }
+        self.btn_anims.remove_done(now);
+        !wids.is_empty()
     }
 
     fn handle_mouse_button(&mut self, buttons: u32, down: bool) {
@@ -1174,6 +1377,13 @@ impl Desktop {
 
                 match hit_test {
                     HitTest::CloseButton => {
+                        // Animate press colour
+                        if self.has_gpu_accel {
+                            self.btn_pressed = Some((win_id, 0));
+                            let aid = button_anim_id(win_id, 0);
+                            self.btn_anims.start(aid, 0, 1000, 100, anyos_std::anim::Easing::EaseOut);
+                            self.render_window(win_id);
+                        }
                         self.push_event(win_id, [EVENT_WINDOW_CLOSE, 0, 0, 0, 0]);
                     }
                     HitTest::TitleBar => {
@@ -1186,7 +1396,22 @@ impl Desktop {
                             });
                         }
                     }
+                    HitTest::MinButton => {
+                        if self.has_gpu_accel {
+                            self.btn_pressed = Some((win_id, 1));
+                            let aid = button_anim_id(win_id, 1);
+                            self.btn_anims.start(aid, 0, 1000, 100, anyos_std::anim::Easing::EaseOut);
+                            self.render_window(win_id);
+                        }
+                        // Minimize handling is elsewhere
+                    }
                     HitTest::MaxButton => {
+                        if self.has_gpu_accel {
+                            self.btn_pressed = Some((win_id, 2));
+                            let aid = button_anim_id(win_id, 2);
+                            self.btn_anims.start(aid, 0, 1000, 100, anyos_std::anim::Easing::EaseOut);
+                            self.render_window(win_id);
+                        }
                         self.toggle_maximize(win_id);
                     }
                     HitTest::Content => {
@@ -1226,6 +1451,15 @@ impl Desktop {
         } else {
             // Mouse up
             self.mouse_buttons = 0;
+
+            // Clear button press animation
+            if let Some((wid, btn)) = self.btn_pressed.take() {
+                if self.has_gpu_accel {
+                    let aid = button_anim_id(wid, btn);
+                    self.btn_anims.start(aid, 1000, 0, 150, anyos_std::anim::Easing::EaseOut);
+                    self.render_window(wid);
+                }
+            }
 
             // End drag
             if self.dragging.is_some() {
@@ -1673,7 +1907,8 @@ impl Desktop {
 
         // For IPC windows, we create a regular layer and store the SHM reference
         // in the WindowInfo. During present, we copy SHM content into the layer.
-        // IPC windows are never opaque — apps may use alpha for transparency (e.g. dock).
+        // Always non-opaque: borderless windows (dock) may use alpha transparency,
+        // and decorated windows have transparent rounded corners.
         let layer_id = self.compositor.add_layer(
             100, // default position — apps can move later
             MENUBAR_HEIGHT as i32 + 40,
@@ -1763,9 +1998,11 @@ impl Desktop {
                 let safe_w = (src_end - src_off).min(dst_end - dst_off);
                 if safe_w > 0 {
                     if borderless {
+                        // Borderless: fast memcpy (dock needs alpha transparency)
                         pixels[dst_off..dst_off + safe_w]
                             .copy_from_slice(&src_slice[src_off..src_off + safe_w]);
                     } else {
+                        // Decorated: skip alpha=0 to preserve window chrome
                         for col in 0..safe_w {
                             let src_px = src_slice[src_off + col];
                             if (src_px >> 24) > 0 {
@@ -1789,12 +2026,22 @@ impl Desktop {
 
     /// Forward all queued window events to apps via the event channel.
     /// Returns the events that need to be emitted (caller does the actual emit).
-    pub fn drain_ipc_events(&mut self) -> Vec<[u32; 5]> {
+    /// Drain per-window event queues into IPC events.
+    ///
+    /// Returns `(target_sub_id, event)` pairs.  When `target_sub_id` is `Some`,
+    /// the event should be delivered via unicast (`evt_chan_emit_to`); when `None`,
+    /// it falls back to broadcast (`evt_chan_emit`).
+    pub fn drain_ipc_events(&mut self) -> Vec<(Option<u32>, [u32; 5])> {
         let mut out = Vec::new();
         for win in &mut self.windows {
             if win.owner_tid == 0 {
                 continue; // local window, not IPC
             }
+            // Look up the target subscriber for this window's owner
+            let target_sub = self.app_subs.iter()
+                .find(|(t, _)| *t == win.owner_tid)
+                .map(|(_, s)| *s);
+
             while let Some(evt) = win.events.pop_front() {
                 // Map internal event types to IPC protocol event types
                 let ipc_type = match evt[0] {
@@ -1807,17 +2054,24 @@ impl Desktop {
                     EVENT_WINDOW_CLOSE => proto::EVT_WINDOW_CLOSE,
                     EVENT_MENU_ITEM => proto::EVT_MENU_ITEM,
                     EVENT_STATUS_ICON_CLICK => proto::EVT_STATUS_ICON_CLICK,
+                    EVENT_MOUSE_MOVE => proto::EVT_MOUSE_MOVE,
                     _ => continue,
                 };
-                out.push([ipc_type, win.id, evt[1], evt[2], evt[3]]);
+                out.push((target_sub, [ipc_type, win.id, evt[1], evt[2], evt[3]]));
             }
         }
         out
     }
 
+    /// Look up the event channel subscription ID for an app by TID.
+    pub fn get_sub_id_for_tid(&self, tid: u32) -> Option<u32> {
+        self.app_subs.iter().find(|(t, _)| *t == tid).map(|(_, s)| *s)
+    }
+
     /// Process an IPC command from an app.
-    /// Returns an optional response event to emit back.
-    pub fn handle_ipc_command(&mut self, cmd: &[u32; 5]) -> Option<[u32; 5]> {
+    /// Returns an optional `(target_sub_id, response)` pair.
+    /// When `target_sub_id` is `Some`, the response is unicast to that subscriber.
+    pub fn handle_ipc_command(&mut self, cmd: &[u32; 5]) -> Option<(Option<u32>, [u32; 5])> {
         match cmd[0] {
             proto::CMD_CREATE_WINDOW => {
                 let app_tid = cmd[1];
@@ -1846,7 +2100,8 @@ impl Desktop {
                     shm_addr as *mut u32,
                 );
 
-                Some([proto::RESP_WINDOW_CREATED, win_id, shm_id, app_tid, 0])
+                let target = self.get_sub_id_for_tid(app_tid);
+                Some((target, [proto::RESP_WINDOW_CREATED, win_id, shm_id, app_tid, 0]))
             }
             proto::CMD_DESTROY_WINDOW => {
                 let window_id = cmd[1];
@@ -1858,7 +2113,8 @@ impl Desktop {
                         anyos_std::ipc::shm_unmap(shm_id);
                     }
                     self.destroy_window(window_id);
-                    Some([proto::RESP_WINDOW_DESTROYED, window_id, app_tid, 0, 0])
+                    let target = self.get_sub_id_for_tid(app_tid);
+                    Some((target, [proto::RESP_WINDOW_DESTROYED, window_id, app_tid, 0, 0]))
                 } else {
                     None
                 }
@@ -2019,6 +2275,17 @@ impl Desktop {
 
                     // Re-render window decorations and present SHM content
                     self.render_window(window_id);
+                }
+                None
+            }
+            proto::CMD_REGISTER_SUB => {
+                let app_tid = cmd[1];
+                let sub_id = cmd[2];
+                // Store or update the TID → sub_id mapping
+                if let Some(entry) = self.app_subs.iter_mut().find(|(t, _)| *t == app_tid) {
+                    entry.1 = sub_id;
+                } else {
+                    self.app_subs.push((app_tid, sub_id));
                 }
                 None
             }

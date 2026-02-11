@@ -229,7 +229,7 @@ fn process_packet(state: &mut MouseState, dz: i32) {
     // that MOUSE_BUFFER depends on — but we DO hold MOUSE_STATE. Since these are
     // independent locks and no code path holds both in reverse order, this is safe.
     let mut buf = MOUSE_BUFFER.lock();
-    if buf.len() < 64 {
+    if buf.len() < 256 {
         buf.push_back(event);
     }
 }

@@ -154,7 +154,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
 
     // Phase 7b: Calibrate LAPIC timer (needs PIT IRQ running, so after sti)
     if acpi_info.is_some() {
-        arch::x86::apic::calibrate_timer(100);
+        arch::x86::apic::calibrate_timer(1000);
     }
 
     // Phase 8: Initialize mouse

@@ -17,6 +17,7 @@ const CMD_ADD_STATUS_ICON: u32 = 0x1007;
 const CMD_REMOVE_STATUS_ICON: u32 = 0x1008;
 const CMD_UPDATE_MENU_ITEM: u32 = 0x1009;
 const CMD_RESIZE_SHM: u32 = 0x100B;
+const CMD_REGISTER_SUB: u32 = 0x100C;
 const RESP_WINDOW_CREATED: u32 = 0x2001;
 
 const NUM_EXPORTS: u32 = 14;
@@ -136,6 +137,13 @@ extern "C" fn export_init(out_sub_id: *mut u32) -> u32 {
     unsafe {
         *out_sub_id = sub_id;
     }
+
+    // Register our subscription ID with the compositor so it can use
+    // targeted (unicast) event delivery instead of broadcasting to all apps.
+    let tid = syscall::get_tid();
+    let cmd: [u32; 5] = [CMD_REGISTER_SUB, tid, sub_id, 0, 0];
+    syscall::evt_chan_emit(channel_id, &cmd);
+
     channel_id
 }
 
@@ -221,18 +229,17 @@ extern "C" fn export_poll_event(
     buf: *mut [u32; 5],
 ) -> u32 {
     let mut tmp = [0u32; 5];
-    // Poll events, looking for ones matching our window_id
-    // Events from compositor have format: [type, target_window_id, ...]
-    if syscall::evt_chan_poll(channel_id, sub_id, &mut tmp) {
-        // Check if this event is for our window (type >= 0x3000 = input events)
+    // Drain the subscription queue until we find an event for our window.
+    // Non-matching events (for other windows) are discarded from OUR copy
+    // of the queue — each subscriber has an independent queue, so this is safe.
+    while syscall::evt_chan_poll(channel_id, sub_id, &mut tmp) {
         if tmp[0] >= 0x3000 && tmp[1] == window_id {
             unsafe {
                 *buf = tmp;
             }
             return 1;
         }
-        // Not for us — can't put it back, just drop it.
-        // In practice, per-window filtering should be done by the client.
+        // Not for our window — discard and try the next event
     }
     0
 }

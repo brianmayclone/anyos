@@ -179,7 +179,7 @@ pub fn handle_scancode(scancode: u8) {
     };
 
     let mut buf = KEY_BUFFER.lock();
-    if buf.len() < 64 {
+    if buf.len() < 256 {
         buf.push_back(event);
     }
 }

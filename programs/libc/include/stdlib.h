@@ -35,6 +35,10 @@ void srand(unsigned int seed);
 long long strtoll(const char *nptr, char **endptr, int base);
 unsigned long long strtoull(const char *nptr, char **endptr, int base);
 double strtod(const char *nptr, char **endptr);
+float strtof(const char *nptr, char **endptr);
+double atof(const char *nptr);
+
+int system(const char *command);
 
 #define RAND_MAX 0x7FFFFFFF
 

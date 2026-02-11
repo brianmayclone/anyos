@@ -221,7 +221,7 @@ fn main() {
             }
         }
 
-        anyos_std::process::yield_cpu();
+        anyos_std::process::sleep(16); // ~60 Hz poll rate, not busy-wait
     }
 }
 

@@ -143,6 +143,7 @@ pub(crate) const SYS_EVT_CHAN_EMIT: u32 = 65;
 pub(crate) const SYS_EVT_CHAN_POLL: u32 = 66;
 pub(crate) const SYS_EVT_CHAN_UNSUBSCRIBE: u32 = 67;
 pub(crate) const SYS_EVT_CHAN_DESTROY: u32 = 68;
+pub(crate) const SYS_EVT_CHAN_EMIT_TO: u32 = 69;
 
 // =========================================================================
 // Raw syscall helpers (x86-64 SYSCALL instruction)

@@ -83,6 +83,8 @@ pub struct Thread {
     pub arch_mode: ArchMode,
     /// Saved FPU/SSE register state (512 bytes, FXSAVE format).
     pub fpu_state: FxState,
+    /// PIT tick at which a sleeping thread should be woken (None = not sleeping).
+    pub wake_at_tick: Option<u32>,
 }
 
 /// Size of each thread's kernel-mode stack.
@@ -142,6 +144,7 @@ impl Thread {
             cpu_ticks: 0,
             arch_mode: ArchMode::Native64,
             fpu_state: FxState::new_default(),
+            wake_at_tick: None,
         }
     }
 

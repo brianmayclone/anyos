@@ -21,6 +21,7 @@ const SYS_EVT_CHAN_CREATE: u64 = 63;
 const SYS_EVT_CHAN_SUBSCRIBE: u64 = 64;
 const SYS_EVT_CHAN_EMIT: u64 = 65;
 const SYS_EVT_CHAN_POLL: u64 = 66;
+const SYS_EVT_CHAN_EMIT_TO: u64 = 69;
 
 #[inline(always)]
 unsafe fn syscall0(n: u64) -> u64 {
@@ -134,4 +135,8 @@ pub fn evt_chan_emit(channel_id: u32, event: *const [u32; 5]) {
 
 pub fn evt_chan_poll(channel_id: u32, sub_id: u32, buf: *mut [u32; 5]) -> bool {
     unsafe { syscall3(SYS_EVT_CHAN_POLL, channel_id as u64, sub_id as u64, buf as u64) != 0 }
+}
+
+pub fn evt_chan_emit_to(channel_id: u32, sub_id: u32, event: *const [u32; 5]) {
+    unsafe { syscall3(SYS_EVT_CHAN_EMIT_TO, channel_id as u64, sub_id as u64, event as u64); }
 }

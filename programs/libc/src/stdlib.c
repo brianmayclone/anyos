@@ -181,3 +181,12 @@ void qsort(void *base, size_t nmemb, size_t size, int (*compar)(const void *, co
         memcpy(b + j * size, tmp, size);
     }
 }
+
+double atof(const char *nptr) {
+    return strtod(nptr, NULL);
+}
+
+int system(const char *command) {
+    (void)command;
+    return -1; /* not supported */
+}

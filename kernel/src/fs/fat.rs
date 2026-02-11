@@ -229,6 +229,48 @@ pub enum FatType {
     Fat32,
 }
 
+/// Pre-computed plan for reading a file's data sectors.
+///
+/// Built from the in-memory FAT cache (no disk I/O) while the VFS lock is
+/// held.  Once the lock is dropped (re-enabling interrupts), [`execute`]
+/// performs the actual sector reads so that timer, mouse, and keyboard
+/// interrupts continue to fire normally.
+pub struct FileReadPlan {
+    /// Contiguous (absolute_lba, sector_count) runs covering the file.
+    pub runs: Vec<(u32, u32)>,
+    /// Actual file size in bytes (sectors may extend past this).
+    pub file_size: u32,
+}
+
+impl FileReadPlan {
+    /// Execute the read plan — reads sectors directly from the storage backend.
+    ///
+    /// **Must be called WITHOUT the VFS lock held** so that interrupts remain
+    /// enabled during disk I/O.
+    pub fn execute(&self) -> Result<Vec<u8>, FsError> {
+        if self.file_size == 0 {
+            return Ok(Vec::new());
+        }
+        // Total sector bytes may exceed file_size (last cluster is partial).
+        let total_sector_bytes: usize =
+            self.runs.iter().map(|(_, sc)| *sc as usize * 512).sum();
+        let mut buf = vec![0u8; total_sector_bytes];
+        let mut offset = 0usize;
+
+        for &(abs_lba, sector_count) in &self.runs {
+            let bytes = sector_count as usize * 512;
+            if !crate::drivers::storage::read_sectors(abs_lba, sector_count,
+                    &mut buf[offset..offset + bytes]) {
+                return Err(FsError::IoError);
+            }
+            offset += bytes;
+        }
+
+        buf.truncate(self.file_size as usize);
+        Ok(buf)
+    }
+}
+
 impl FatFs {
     /// Create a new FAT filesystem by reading the BPB from the ATA device.
     pub fn new(device_id: u32, partition_start_lba: u32) -> Result<Self, FsError> {
@@ -536,6 +578,46 @@ impl FatFs {
         let bytes_read = self.read_file(start_cluster, 0, &mut buf)?;
         buf.truncate(bytes_read);
         Ok(buf)
+    }
+
+    /// Build a read plan for the given file by walking the in-memory FAT cache.
+    ///
+    /// This collects contiguous (absolute_lba, sector_count) runs without
+    /// touching the disk, so it is safe to call while holding the VFS spinlock.
+    pub fn get_file_read_plan(&self, start_cluster: u32, file_size: u32) -> FileReadPlan {
+        let spc = self.sectors_per_cluster;
+        let mut runs = Vec::new();
+
+        if file_size == 0 || start_cluster < 2 {
+            return FileReadPlan { runs, file_size };
+        }
+
+        let mut cluster = start_cluster;
+        loop {
+            let run_start_lba = self.partition_start_lba + self.cluster_to_lba(cluster);
+            let mut run_clusters: u32 = 1;
+            let mut last_cluster = cluster;
+
+            // Extend the run with physically contiguous clusters
+            while let Some(next) = self.next_cluster(last_cluster) {
+                if next == last_cluster + 1 {
+                    run_clusters += 1;
+                    last_cluster = next;
+                } else {
+                    break;
+                }
+            }
+
+            runs.push((run_start_lba, run_clusters * spc));
+
+            // Advance to the next (non-contiguous) cluster, or stop
+            match self.next_cluster(last_cluster) {
+                Some(next) => cluster = next,
+                None => break,
+            }
+        }
+
+        FileReadPlan { runs, file_size }
     }
 
     /// Write data to a file at the given offset, allocating clusters as needed.

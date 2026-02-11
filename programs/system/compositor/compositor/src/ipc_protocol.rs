@@ -87,6 +87,12 @@ pub const CMD_FOCUS_BY_TID: u32 = 0x100A;
 /// App creates the new SHM, compositor maps it and unmaps the old one.
 pub const CMD_RESIZE_SHM: u32 = 0x100B;
 
+/// Register an app's subscription ID for targeted event delivery.
+/// [CMD, app_tid, sub_id, 0, 0]
+/// Sent by the DLL during init so the compositor can use unicast emit
+/// instead of broadcasting window events to all subscribers.
+pub const CMD_REGISTER_SUB: u32 = 0x100C;
+
 // ── Compositor → App: Menu & Status Icon Events ─────────────────────────────
 
 /// Menu item selected: [EVT, window_id, menu_index, item_id, 0]
@@ -94,6 +100,9 @@ pub const EVT_MENU_ITEM: u32 = 0x3008;
 
 /// Status icon clicked: [EVT, 0, app_tid, icon_id, 0]
 pub const EVT_STATUS_ICON_CLICK: u32 = 0x3009;
+
+/// Mouse move: [EVT, window_id, local_x, local_y, 0]
+pub const EVT_MOUSE_MOVE: u32 = 0x300A;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

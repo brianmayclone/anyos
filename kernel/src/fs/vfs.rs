@@ -311,19 +311,29 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
 }
 
 /// Read an entire file into a Vec<u8>.
+///
+/// The VFS spinlock is held only during metadata lookup and cluster-chain
+/// traversal (in-memory FAT cache, microseconds).  Actual disk I/O runs
+/// *after* the lock is released so that timer, mouse, and keyboard interrupts
+/// continue to fire normally — preventing UI freezes during large reads.
 pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
-    let vfs = VFS.lock();
-    let state = vfs.as_ref().ok_or(FsError::IoError)?;
-
-    if let Some(ref fat) = state.fat_fs {
-        let (cluster, file_type, size) = fat.lookup(path)?;
-        if file_type == FileType::Directory {
-            return Err(FsError::IsADirectory);
+    // Phase 1: Under VFS lock — lookup + build read plan (no disk I/O)
+    let plan = {
+        let vfs = VFS.lock();
+        let state = vfs.as_ref().ok_or(FsError::IoError)?;
+        if let Some(ref fat) = state.fat_fs {
+            let (cluster, file_type, size) = fat.lookup(path)?;
+            if file_type == FileType::Directory {
+                return Err(FsError::IsADirectory);
+            }
+            fat.get_file_read_plan(cluster, size)
+        } else {
+            return Err(FsError::NotFound);
         }
-        fat.read_file_all(cluster, size)
-    } else {
-        Err(FsError::NotFound)
-    }
+    }; // VFS lock dropped — interrupts re-enabled
+
+    // Phase 2: Without lock — perform disk I/O with interrupts enabled
+    plan.execute()
 }
 
 /// Delete a file or empty directory at the given path.

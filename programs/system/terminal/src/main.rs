@@ -735,7 +735,7 @@ fn main() {
                 render_terminal(win_id, &buf, win_w, win_h);
                 dirty = false;
             }
-            process::yield_cpu();
+            process::sleep(8); // ~125 Hz poll for pipe output
         }
     }
 

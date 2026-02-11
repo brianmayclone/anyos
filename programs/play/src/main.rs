@@ -53,7 +53,7 @@ fn main() {
         Ok(()) => {
             // Wait for playback to finish
             while anyos_std::audio::audio_is_playing() {
-                anyos_std::process::yield_cpu();
+                anyos_std::process::sleep(10); // poll audio status, not busy-wait
             }
             anyos_std::println!("Done.");
         }

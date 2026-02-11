@@ -84,7 +84,7 @@ fn main() {
 
     // ── Main Compositor Loop ────────────────────────────────────────────────
 
-    let mut events_buf = [[0u32; 5]; 64];
+    let mut events_buf = [[0u32; 5]; 256];
     let mut ipc_buf = [0u32; 5];
     let mut frame_count: u32 = 0;
 
@@ -109,27 +109,48 @@ fn main() {
                 break;
             }
             if ipc_buf[0] >= 0x1000 && ipc_buf[0] < 0x2000 {
-                if let Some(response) = desktop.handle_ipc_command(&ipc_buf) {
-                    ipc::evt_chan_emit(compositor_channel, &response);
+                if let Some((target_sub, response)) = desktop.handle_ipc_command(&ipc_buf) {
+                    // Send response to the requesting app (unicast if sub_id known)
+                    if let Some(sub_id) = target_sub {
+                        ipc::evt_chan_emit_to(compositor_channel, sub_id, &response);
+                    } else {
+                        ipc::evt_chan_emit(compositor_channel, &response);
+                    }
                 }
                 needs_compose = true;
             }
         }
 
-        // Poll system events (process exit notifications)
+        // Poll system events (process exit, resolution change)
         let mut sys_buf = [0u32; 5];
         while ipc::evt_sys_poll(sys_sub, &mut sys_buf) {
             if sys_buf[0] == 0x0021 { // EVT_PROCESS_EXITED
                 let exited_tid = sys_buf[1];
                 desktop.on_process_exit(exited_tid);
                 needs_compose = true;
+            } else if sys_buf[0] == 0x0040 { // EVT_RESOLUTION_CHANGED
+                let new_w = sys_buf[1];
+                let new_h = sys_buf[2];
+                desktop.handle_resolution_change(new_w, new_h);
+                needs_compose = true;
             }
         }
 
-        // Forward queued window events to apps via event channel
+        // Forward queued window events to apps via targeted delivery
         let ipc_events = desktop.drain_ipc_events();
-        for evt in &ipc_events {
-            ipc::evt_chan_emit(compositor_channel, evt);
+        for (target_sub, evt) in &ipc_events {
+            if let Some(sub_id) = target_sub {
+                // Unicast: only the owning app receives this event
+                ipc::evt_chan_emit_to(compositor_channel, *sub_id, evt);
+            } else {
+                // Fallback: broadcast (app didn't register its sub_id)
+                ipc::evt_chan_emit(compositor_channel, evt);
+            }
+        }
+
+        // Tick button animations — if any are active, force recompose
+        if desktop.tick_animations() {
+            needs_compose = true;
         }
 
         // Update clock every ~60 frames (~1 second at 60Hz)

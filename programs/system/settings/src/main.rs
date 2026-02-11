@@ -169,7 +169,7 @@ fn main() {
             needs_redraw = false;
         }
 
-        process::yield_cpu();
+        process::sleep(16); // ~60 Hz poll rate, not busy-wait
     }
 }
 
@@ -433,7 +433,8 @@ fn render_about(win: u32, cx: i32, cw: u32, sy: i32) {
     divider_h(win, lx, ry, cw - PAD as u32 * 2);
     label(win, lx, ry + 12, "Uptime", colors::TEXT, FontSize::Normal, TextAlign::Left);
     let mut b = [0u8; 32];
-    label(win, vx, ry + 12, fmt_uptime(&mut b, sys::uptime() / 100), colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+    let hz = sys::tick_hz().max(1);
+    label(win, vx, ry + 12, fmt_uptime(&mut b, sys::uptime() / hz), colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
 }
 
 // ============================================================================

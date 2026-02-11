@@ -150,6 +150,7 @@ set(STDLIB_DEPS
   ${CMAKE_SOURCE_DIR}/stdlib/src/ipc.rs
   ${CMAKE_SOURCE_DIR}/stdlib/src/io.rs
   ${CMAKE_SOURCE_DIR}/stdlib/src/heap.rs
+  ${CMAKE_SOURCE_DIR}/stdlib/src/anim.rs
   ${CMAKE_SOURCE_DIR}/stdlib/src/icons.rs
   ${CMAKE_SOURCE_DIR}/stdlib/src/ui/mod.rs
   ${CMAKE_SOURCE_DIR}/stdlib/src/ui/window.rs
@@ -504,6 +505,31 @@ add_custom_command(
   COMMENT "Installing TCC headers to sysroot"
 )
 
+# ============================================================
+# DOOM (doomgeneric, cross-compiled C program)
+# ============================================================
+set(DOOM_DIR "${CMAKE_SOURCE_DIR}/programs/doom")
+set(DOOM_ELF "${DOOM_DIR}/doom.elf")
+
+add_custom_command(
+  OUTPUT ${DOOM_ELF}
+  COMMAND make -C ${DOOM_DIR} clean
+  COMMAND make -C ${DOOM_DIR} LIBC_DIR=${LIBC_DIR}
+  DEPENDS ${LIBC_A} ${LIBC_CRT0}
+  COMMENT "Building DOOM for anyOS"
+)
+
+set(DOOM_WAD "${CMAKE_SOURCE_DIR}/tools/sysroot/apps/doom/doom.wad")
+
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/apps/doom/doom ${SYSROOT_DIR}/apps/doom/doom.wad
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/apps/doom
+  COMMAND ${CMAKE_COMMAND} -E copy ${DOOM_ELF} ${SYSROOT_DIR}/apps/doom/doom
+  COMMAND ${CMAKE_COMMAND} -E copy ${DOOM_WAD} ${SYSROOT_DIR}/apps/doom/doom.wad
+  DEPENDS ${DOOM_ELF} ${DOOM_WAD}
+  COMMENT "Installing DOOM + WAD to sysroot"
+)
+
 add_custom_target(programs DEPENDS
   ${SYSROOT_DIR}/bin/hello
   ${RUST_USER_BINS}
@@ -515,6 +541,7 @@ add_custom_target(programs DEPENDS
   ${SYSROOT_DIR}/include/.stamp
   ${SYSROOT_DIR}/bin/cc
   ${SYSROOT_DIR}/lib/tcc/include/.stamp
+  ${SYSROOT_DIR}/apps/doom/doom
 )
 
 # ============================================================
@@ -544,6 +571,7 @@ add_custom_command(
     ${SYSROOT_DIR}/include/.stamp
     ${SYSROOT_DIR}/bin/cc
     ${SYSROOT_DIR}/lib/tcc/include/.stamp
+    ${SYSROOT_DIR}/apps/doom/doom
   COMMENT "Creating bootable disk image (64 MiB, FAT16 filesystem)"
 )
 

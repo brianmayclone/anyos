@@ -102,6 +102,7 @@ pub const SYS_EVT_CHAN_EMIT: u32 = 65;
 pub const SYS_EVT_CHAN_POLL: u32 = 66;
 pub const SYS_EVT_CHAN_UNSUBSCRIBE: u32 = 67;
 pub const SYS_EVT_CHAN_DESTROY: u32 = 68;
+pub const SYS_EVT_CHAN_EMIT_TO: u32 = 69;
 
 // Window manager / GUI
 pub const SYS_WIN_CREATE: u32 = 50;
@@ -299,6 +300,7 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         SYS_EVT_CHAN_POLL => handlers::sys_evt_chan_poll(arg1, arg2, arg3),
         SYS_EVT_CHAN_UNSUBSCRIBE => handlers::sys_evt_chan_unsubscribe(arg1, arg2),
         SYS_EVT_CHAN_DESTROY => handlers::sys_evt_chan_destroy(arg1),
+        SYS_EVT_CHAN_EMIT_TO => handlers::sys_evt_chan_emit_to(arg1, arg2, arg3),
 
         // Window manager
         SYS_WIN_CREATE => handlers::sys_win_create(arg1, arg2, arg3, arg4, arg5),

@@ -13,8 +13,9 @@
 
 extern int _syscall(int num, int a1, int a2, int a3, int a4);
 
-#define SYS_TIME   30
-#define SYS_UPTIME 31
+#define SYS_TIME    30
+#define SYS_UPTIME  31
+#define SYS_TICK_HZ 34
 
 static struct tm _tm;
 
@@ -59,8 +60,11 @@ size_t strftime(char *s, size_t max, const char *format, const struct tm *tm) {
 
 int gettimeofday(struct timeval *tv, struct timezone *tz) {
     if (tv) {
-        tv->tv_sec = _syscall(SYS_UPTIME, 0, 0, 0, 0) / 100;
-        tv->tv_usec = (_syscall(SYS_UPTIME, 0, 0, 0, 0) % 100) * 10000;
+        unsigned int ticks = (unsigned int)_syscall(SYS_UPTIME, 0, 0, 0, 0);
+        unsigned int hz = (unsigned int)_syscall(SYS_TICK_HZ, 0, 0, 0, 0);
+        if (hz == 0) hz = 1000;
+        tv->tv_sec = ticks / hz;
+        tv->tv_usec = (ticks % hz) * (1000000 / hz);
     }
     if (tz) {
         tz->tz_minuteswest = 0;

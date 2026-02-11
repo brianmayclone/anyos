@@ -150,8 +150,22 @@ pub fn spawn(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
         tid
     };
 
+    // Pack the first 12 chars of the thread name into 3 u32 words (little-endian)
+    // so that subscribers (e.g. the dock) can identify the process.
+    let name_bytes = name.as_bytes();
+    let mut p2: u32 = 0;
+    let mut p3: u32 = 0;
+    let mut p4: u32 = 0;
+    for i in 0..name_bytes.len().min(12) {
+        let word = match i / 4 {
+            0 => &mut p2,
+            1 => &mut p3,
+            _ => &mut p4,
+        };
+        *word |= (name_bytes[i] as u32) << ((i % 4) * 8);
+    }
     crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
-        crate::ipc::event_bus::EVT_PROCESS_SPAWNED, tid, 0, 0, 0,
+        crate::ipc::event_bus::EVT_PROCESS_SPAWNED, tid, p2, p3, p4,
     ));
 
     tid
@@ -192,6 +206,26 @@ fn schedule_inner(from_timer: bool) {
 
         // Reap terminated threads to free kernel stacks and page directories
         sched.reap_terminated();
+
+        // Wake blocked threads whose sleep timer has expired (timer-driven only)
+        if from_timer {
+            let current_tick = crate::arch::x86::pit::get_ticks();
+            for idx in 0..sched.threads.len() {
+                if sched.threads[idx].state == ThreadState::Blocked {
+                    if let Some(wake_tick) = sched.threads[idx].wake_at_tick {
+                        // Wrapping-safe comparison: wake_tick has passed if
+                        // current_tick - wake_tick < 0x8000_0000 (within half the u32 range)
+                        if current_tick.wrapping_sub(wake_tick) < 0x8000_0000 {
+                            sched.threads[idx].state = ThreadState::Ready;
+                            sched.threads[idx].wake_at_tick = None;
+                            if !sched.ready_queue.contains(&idx) {
+                                sched.ready_queue.push_back(idx);
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Track CPU ticks for the currently running thread (timer-driven only)
         if from_timer {
@@ -699,6 +733,25 @@ pub fn list_threads() -> Vec<ThreadInfo> {
         }
     }
     result
+}
+
+/// Block the current thread until the given PIT tick count is reached.
+/// The thread is moved to Blocked state and will be woken by the timer
+/// interrupt handler in schedule_inner() when the tick count passes.
+/// This is much more efficient than busy-wait sleeping because the thread
+/// does not consume CPU time or scheduling overhead while blocked.
+pub fn sleep_until(wake_at: u32) {
+    {
+        let mut guard = SCHEDULER.lock();
+        let sched = guard.as_mut().expect("Scheduler not initialized");
+        if let Some(current_idx) = sched.current {
+            sched.threads[current_idx].wake_at_tick = Some(wake_at);
+            sched.threads[current_idx].state = ThreadState::Blocked;
+        }
+    }
+    // Yield to let another thread run. The blocked thread will be skipped by
+    // pick_next() and only rescheduled when the timer wakes it.
+    schedule();
 }
 
 /// Enter the scheduler loop (called from kernel_main, becomes idle thread)

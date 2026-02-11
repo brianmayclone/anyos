@@ -1,6 +1,6 @@
 //! 8254 Programmable Interval Timer (PIT) driver.
 //!
-//! Configures channel 0 in square-wave mode at [`TICK_HZ`] (100 Hz).
+//! Configures channel 0 in square-wave mode at [`TICK_HZ`] (1000 Hz).
 //! Maintains an atomic tick counter for timekeeping and LAPIC timer calibration.
 
 use crate::arch::x86::port::outb;
@@ -13,7 +13,8 @@ const PIT_FREQUENCY: u32 = 1193182;
 
 /// Configured scheduler tick rate in Hz. All code that converts between
 /// PIT ticks and wall-clock time must use this constant.
-pub const TICK_HZ: u32 = 100;
+/// 1000 Hz = 1ms tick granularity (up from 100 Hz / 10ms).
+pub const TICK_HZ: u32 = 1000;
 
 /// Monotonically increasing tick counter, incremented by the IRQ 0 handler.
 pub static TICK_COUNT: AtomicU32 = AtomicU32::new(0);
