@@ -501,13 +501,10 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         );
     }
 
-    // Disable interrupts to prevent the timer from scheduling the new thread
-    // before we set its CR3 to the user PD (would page fault at 0x08000000).
-    let flags: u64;
-    unsafe { core::arch::asm!("pushfq; pop {}", out(reg) flags); }
-    unsafe { core::arch::asm!("cli"); }
-
-    let tid = crate::task::scheduler::spawn(user_thread_trampoline, 100, name);
+    // Spawn in Blocked state — the thread cannot be picked up by any CPU
+    // (including APs) until we explicitly wake it.  This prevents the SMP race
+    // where an AP runs the trampoline before we store pending-program data.
+    let tid = crate::task::scheduler::spawn_blocked(user_thread_trampoline, 100, name);
     crate::task::scheduler::set_thread_user_info(tid, pd_phys, brk as u32);
 
     // Set architecture mode for compat32 threads
@@ -535,14 +532,10 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         crate::task::scheduler::set_thread_args(tid, args);
     }
 
-    crate::serial_println!("  Spawn complete: TID={}, about to restore interrupts (flags={:#x})", tid, flags);
+    crate::serial_println!("  Spawn complete: TID={}, all setup done — waking thread", tid);
 
-    // Restore caller's interrupt state
-    if flags & 0x200 != 0 {
-        unsafe { core::arch::asm!("sti"); }
-    }
-
-    crate::serial_println!("  load_and_run returning TID={}", tid);
+    // All setup complete (CR3, pending data, args). Now make the thread runnable.
+    crate::task::scheduler::wake_thread(tid);
 
     Ok(tid)
 }

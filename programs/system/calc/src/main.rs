@@ -487,6 +487,6 @@ fn main() {
             render(win, &calc, pressed);
             window::present(win);
         }
-        anyos_std::process::yield_cpu();
+        anyos_std::process::sleep(16);
     }
 }

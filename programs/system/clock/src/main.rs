@@ -338,6 +338,6 @@ fn main() {
             window::present(win);
         }
 
-        anyos_std::process::yield_cpu();
+        anyos_std::process::sleep(16);
     }
 }

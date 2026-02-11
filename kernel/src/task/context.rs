@@ -6,7 +6,7 @@
 /// CPU context saved/restored during a context switch.
 /// Must match the layout expected by context_switch.asm (152 bytes total).
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct CpuContext {
     pub rax: u64,
     pub rbx: u64,

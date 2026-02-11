@@ -422,6 +422,6 @@ fn main() {
             window::present(win);
             dirty = false;
         }
-        process::yield_cpu();
+        process::sleep(16);
     }
 }

@@ -68,6 +68,11 @@ syscall_fast_entry:
     mov es, ax
 
     ; === Phase 4: Call Rust syscall dispatcher ===
+    ; Re-enable interrupts — SFMASK cleared IF on SYSCALL entry, but syscall
+    ; handlers need interrupts for AHCI completion, timer preemption, etc.
+    ; (INT 0x80 uses a trap gate that keeps IF=1, so this is consistent.)
+    sti
+
     mov rdi, rsp                    ; arg0 = &SyscallRegs
     call syscall_dispatch
 
@@ -100,7 +105,10 @@ syscall_fast_entry:
     bt rcx, 47
     jc .fallback_iretq
 
-    ; Load user RSP and return
+    ; Disable interrupts for the critical RSP→SYSRET window: after loading
+    ; user RSP we are still in Ring 0, so an interrupt would push its frame
+    ; onto the user stack. SYSRET atomically restores RFLAGS (IF=1 from R11).
+    cli
     mov rsp, [rsp + 24]
     o64 sysret
 

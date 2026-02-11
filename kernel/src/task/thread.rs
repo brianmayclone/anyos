@@ -85,6 +85,8 @@ pub struct Thread {
     pub fpu_state: FxState,
     /// PIT tick at which a sleeping thread should be woken (None = not sleeping).
     pub wake_at_tick: Option<u32>,
+    /// PIT tick at which this thread was terminated (for auto-reap grace period).
+    pub terminated_at_tick: Option<u32>,
 }
 
 /// Size of each thread's kernel-mode stack.
@@ -145,6 +147,7 @@ impl Thread {
             arch_mode: ArchMode::Native64,
             fpu_state: FxState::new_default(),
             wake_at_tick: None,
+            terminated_at_tick: None,
         }
     }
 

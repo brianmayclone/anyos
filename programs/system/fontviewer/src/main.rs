@@ -252,6 +252,6 @@ fn main() {
             window::present(win);
             dirty = false;
         }
-        anyos_std::process::yield_cpu();
+        anyos_std::process::sleep(16);
     }
 }

@@ -105,9 +105,15 @@ pub fn init_ap() {
         write(LAPIC_LINT0, TIMER_MASKED);
         write(LAPIC_LINT1, TIMER_MASKED);
 
-        // Don't start LAPIC timer on APs — the scheduler is single-CPU for now.
-        // APs idle in a hlt loop until SMP-aware scheduling is implemented.
-        write(LAPIC_TIMER, TIMER_MASKED);
+        // Start LAPIC timer using calibrated count from BSP
+        let count = timer_initial_count();
+        if count > 0 {
+            start_timer_with_count(count);
+            crate::serial_println!("  LAPIC: AP id={} timer started (count={})", lapic_id(), count);
+        } else {
+            write(LAPIC_TIMER, TIMER_MASKED);
+            crate::serial_println!("  LAPIC: AP id={} timer masked (BSP not yet calibrated)", lapic_id());
+        }
     }
 
     let id = lapic_id();

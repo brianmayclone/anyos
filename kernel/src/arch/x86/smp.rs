@@ -168,17 +168,19 @@ extern "C" fn ap_entry() -> ! {
     // Load the kernel's IDT (AP starts with no valid IDT)
     crate::arch::x86::idt::reload();
 
-    // Load TSS (shared with BSP, needed for Ring 3 → Ring 0 transitions)
-    crate::arch::x86::tss::reload_tr();
+    // Read CPU ID before any LAPIC init (trampoline wrote it)
+    let cpu_id = unsafe { core::ptr::read_volatile(AP_COMM_CPUID as *const u32) } as usize;
 
-    // Initialize this AP's LAPIC
+    // Initialize per-CPU TSS (each AP gets its own TSS for correct RSP0)
+    crate::arch::x86::tss::init_for_cpu(cpu_id);
+
+    // Initialize this AP's LAPIC (starts periodic timer for scheduling)
     crate::arch::x86::apic::init_ap();
 
-    let cpu_id = unsafe { core::ptr::read_volatile(AP_COMM_CPUID as *const u32) } as u8;
-    crate::serial_println!("  SMP: AP#{} entry point reached, LAPIC initialized", cpu_id);
+    crate::serial_println!("  SMP: AP#{} entry point reached, LAPIC+TSS initialized", cpu_id);
 
     // Configure SYSCALL/SYSRET MSRs for this AP
-    crate::arch::x86::syscall_msr::init_ap(cpu_id as usize);
+    crate::arch::x86::syscall_msr::init_ap(cpu_id);
 
     // Signal BSP that we're ready
     unsafe {

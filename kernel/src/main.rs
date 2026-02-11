@@ -123,9 +123,6 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     fs::vfs::init();
     fs::vfs::mount("/", fs::vfs::FsType::Fat, 0);
 
-    // Initialize TTF font manager (loads /system/fonts/system.ttf from disk)
-    graphics::font_manager::init();
-
     task::scheduler::init();
 
     // Phase 7: Register IRQ handlers and enable interrupts
@@ -176,7 +173,10 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         }
     }
 
-    // Phase 8c: Load shared DLLs from filesystem
+    // Phase 8c: Load TTF fonts from disk (after scheduler + VFS + interrupts)
+    graphics::font_manager::init();
+
+    // Phase 8d: Load shared DLLs from filesystem
     match task::dll::load_dll("/system/lib/uisys.dll", 0x0400_0000) {
         Ok(pages) => serial_println!("[OK] uisys.dll: {} pages", pages),
         Err(e) => serial_println!("[WARN] uisys.dll not loaded: {}", e),
