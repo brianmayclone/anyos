@@ -71,22 +71,23 @@ unsafe fn read_user_str(ptr: u32) -> &'static str {
 
 /// sys_exit - Terminate the current process
 pub fn sys_exit(status: u32) -> u32 {
-    let tid = crate::task::scheduler::current_tid();
+    // Single atomic lock acquisition — no TOCTOU gaps between reads
+    let (tid, pd, can_destroy) = crate::task::scheduler::current_exit_info();
     crate::serial_println!("sys_exit({}) TID={}", status, tid);
 
     // Clean up shared memory mappings while still in user PD context.
     // Must happen BEFORE switching CR3, so unmap_page operates on the
     // correct page tables via recursive mapping.
-    if crate::task::scheduler::current_thread_page_directory().is_some() {
+    if pd.is_some() {
         crate::ipc::shared_memory::cleanup_process(tid);
     }
 
-    if let Some(pd_phys) = crate::task::scheduler::current_thread_page_directory() {
-        // Only destroy the PD if this thread owns it AND no siblings are still alive.
-        // - pd_shared=true (child): never destroy, parent owns it
-        // - pd_shared=false (owner): only destroy if no live siblings share the PD
-        let can_destroy = !crate::task::scheduler::current_thread_pd_shared()
-            && !crate::task::scheduler::has_live_pd_siblings();
+    // Clean up environment variables for this process
+    if let Some(pd_phys) = pd {
+        crate::task::env::cleanup(pd_phys.as_u64());
+    }
+
+    if let Some(pd_phys) = pd {
         unsafe {
             let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
             core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3);

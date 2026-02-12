@@ -16,6 +16,37 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 static SCHEDULER: Spinlock<Option<Scheduler>> = Spinlock::new(None);
 
+/// Deferred page directory destruction queue.
+/// When kill_thread() kills a thread running on another CPU, the PD can't be
+/// destroyed immediately (the other CPU might still be mid-syscall accessing
+/// user pages). Instead, the PD is queued here and destroyed on CPU 0's next
+/// timer tick — by which time the killed thread has been descheduled.
+struct DeferredPdQueue {
+    entries: [Option<PhysAddr>; 16],
+}
+impl DeferredPdQueue {
+    const fn new() -> Self {
+        Self { entries: [None; 16] }
+    }
+    fn push(&mut self, pd: PhysAddr) {
+        for slot in self.entries.iter_mut() {
+            if slot.is_none() {
+                *slot = Some(pd);
+                return;
+            }
+        }
+        // Queue full — destroy synchronously (last resort, risky)
+        crate::serial_println!("WARNING: deferred PD queue full, destroying synchronously");
+        crate::memory::virtual_mem::destroy_user_page_directory(pd);
+    }
+    fn drain(&mut self) -> [Option<PhysAddr>; 16] {
+        let result = self.entries;
+        self.entries = [None; 16];
+        result
+    }
+}
+static DEFERRED_PD_DESTROY: Spinlock<DeferredPdQueue> = Spinlock::new(DeferredPdQueue::new());
+
 /// Per-CPU lock-free TID: tracks the currently running thread TID on each CPU.
 /// Updated by schedule() before context switch. Read by exception handlers
 /// without acquiring any locks (safe for use in fault handlers).
@@ -31,6 +62,9 @@ static PER_CPU_IS_USER: [AtomicBool; MAX_CPUS] = {
     const INIT: AtomicBool = AtomicBool::new(false);
     [INIT; MAX_CPUS]
 };
+
+/// Round-robin counter for tie-breaking in least_loaded_cpu().
+static ROUND_ROBIN_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// Total scheduler ticks (incremented every schedule() call).
 static TOTAL_SCHED_TICKS: AtomicU32 = AtomicU32::new(0);
@@ -127,15 +161,25 @@ impl Scheduler {
     }
 
     /// Pick the CPU with the shortest ready queue for load balancing.
+    /// On ties, round-robin using a monotonic counter to avoid always picking CPU 0.
     fn least_loaded_cpu(&self) -> usize {
         let n = self.num_cpus();
         let mut best_cpu = 0;
         let mut best_len = usize::MAX;
+        let mut tie_count = 0u32;
+        let rr = ROUND_ROBIN_COUNTER.fetch_add(1, Ordering::Relaxed);
         for cpu in 0..n {
             let len = self.per_cpu[cpu].ready_queue.len();
             if len < best_len {
                 best_len = len;
                 best_cpu = cpu;
+                tie_count = 1;
+            } else if len == best_len {
+                tie_count += 1;
+                // Deterministic round-robin among tied CPUs
+                if rr % tie_count == 0 {
+                    best_cpu = cpu;
+                }
             }
         }
         best_cpu
@@ -273,15 +317,13 @@ impl Scheduler {
         best_tid
     }
 
-    /// Internal: wake a blocked thread, enqueuing on its last CPU's ready queue.
+    /// Internal: wake a blocked thread, enqueuing on the least-loaded CPU.
     fn wake_thread_inner(&mut self, tid: u32) {
         if let Some(idx) = self.find_idx(tid) {
             if self.threads[idx].state == ThreadState::Blocked {
                 self.threads[idx].state = ThreadState::Ready;
-                let target_cpu = self.threads[idx].last_cpu;
-                let n = self.num_cpus();
-                let cpu = if target_cpu < n { target_cpu } else { 0 };
-                self.enqueue_on_cpu(tid, cpu);
+                let target_cpu = self.least_loaded_cpu();
+                self.enqueue_on_cpu(tid, target_cpu);
             }
         }
     }
@@ -477,6 +519,16 @@ fn schedule_inner(from_timer: bool) {
     // but we only use it for the early-return counter path (which is from_timer only).
     let cpu_id_early = get_cpu_id();
 
+    // CPU 0 processes deferred PD destruction from remote kill_thread() calls.
+    // Done BEFORE acquiring the scheduler lock — destroy_user_page_directory
+    // may temporarily switch CR3 and must not be called under the scheduler lock.
+    if from_timer && cpu_id_early == 0 {
+        let pds = DEFERRED_PD_DESTROY.lock().drain();
+        for pd in pds.iter().flatten() {
+            crate::memory::virtual_mem::destroy_user_page_directory(*pd);
+        }
+    }
+
     // Extract context switch parameters under the lock, then release before switching
     let switch_info: Option<(*mut CpuContext, *const CpuContext, *mut u8, *const u8)>;
 
@@ -512,25 +564,24 @@ fn schedule_inner(from_timer: bool) {
             None => return, // guard drops normally (restores IF)
         };
 
-        // Only CPU 0 (BSP) reaps terminated threads and wakes sleepers
+        // CPU 0 reaps terminated threads
         if cpu_id == 0 {
             sched.reap_terminated();
+        }
 
-            // Wake blocked threads whose sleep timer has expired
-            if from_timer {
-                let current_tick = crate::arch::x86::pit::get_ticks();
-                for i in 0..sched.threads.len() {
-                    if sched.threads[i].state == ThreadState::Blocked {
-                        if let Some(wake_tick) = sched.threads[i].wake_at_tick {
-                            if current_tick.wrapping_sub(wake_tick) < 0x8000_0000 {
-                                let tid = sched.threads[i].tid;
-                                let target_cpu = sched.threads[i].last_cpu;
-                                let n = sched.num_cpus();
-                                let cpu = if target_cpu < n { target_cpu } else { 0 };
-                                sched.threads[i].state = ThreadState::Ready;
-                                sched.threads[i].wake_at_tick = None;
-                                sched.enqueue_on_cpu(tid, cpu);
-                            }
+        // All CPUs wake sleepers whose timer has expired, distributing to least-loaded CPU.
+        // Previously only CPU 0 did this, which funneled all woken threads back to CPU 0.
+        if from_timer {
+            let current_tick = crate::arch::x86::pit::get_ticks();
+            for i in 0..sched.threads.len() {
+                if sched.threads[i].state == ThreadState::Blocked {
+                    if let Some(wake_tick) = sched.threads[i].wake_at_tick {
+                        if current_tick.wrapping_sub(wake_tick) < 0x8000_0000 {
+                            let tid = sched.threads[i].tid;
+                            let target_cpu = sched.least_loaded_cpu();
+                            sched.threads[i].state = ThreadState::Ready;
+                            sched.threads[i].wake_at_tick = None;
+                            sched.enqueue_on_cpu(tid, target_cpu);
                         }
                     }
                 }
@@ -986,6 +1037,35 @@ pub fn has_live_pd_siblings() -> bool {
     false
 }
 
+/// Atomically get all info needed for sys_exit in a single lock acquisition.
+/// Returns (tid, pd, can_destroy_pd) — eliminates TOCTOU races from
+/// calling current_tid / current_thread_page_directory / pd_shared / has_live_pd_siblings
+/// as separate locked operations with timer-preemptible gaps.
+pub fn current_exit_info() -> (u32, Option<PhysAddr>, bool) {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
+            if let Some(idx) = sched.find_idx(tid) {
+                let pd = sched.threads[idx].page_directory;
+                let pd_shared = sched.threads[idx].pd_shared;
+                let has_siblings = if let Some(pd_addr) = pd {
+                    pd_shared || sched.threads.iter().any(|t| {
+                        t.tid != tid
+                            && t.page_directory == Some(pd_addr)
+                            && t.state != ThreadState::Terminated
+                    })
+                } else {
+                    false
+                };
+                let can_destroy = pd.is_some() && !pd_shared && !has_siblings;
+                return (tid, pd, can_destroy);
+            }
+        }
+    }
+    (0, None, false)
+}
+
 /// Get the current thread's program break address.
 pub fn current_thread_brk() -> u32 {
     let guard = SCHEDULER.lock();
@@ -1112,6 +1192,7 @@ pub fn kill_thread(tid: u32) -> u32 {
 
     let mut pd_to_destroy: Option<PhysAddr> = None;
     let mut is_current = false;
+    let mut running_on_other_cpu = false;
 
     {
         let mut guard = SCHEDULER.lock();
@@ -1129,6 +1210,11 @@ pub fn kill_thread(tid: u32) -> u32 {
         }
 
         is_current = sched.per_cpu[cpu_id].current_tid == Some(tid);
+
+        // Check if the thread is currently executing on another CPU
+        running_on_other_cpu = !is_current && sched.per_cpu.iter().enumerate().any(|(i, cpu)| {
+            i != cpu_id && cpu.current_tid == Some(tid)
+        });
 
         sched.threads[target_idx].state = ThreadState::Terminated;
         sched.threads[target_idx].exit_code = Some(u32::MAX - 1);
@@ -1173,11 +1259,20 @@ pub fn kill_thread(tid: u32) -> u32 {
     }
 
     if let Some(pd) = pd_to_destroy {
-        if is_current {
-            let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
-            unsafe { core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3); }
+        if running_on_other_cpu {
+            // CRITICAL: Thread is still executing on another CPU — the other CPU
+            // might be mid-syscall reading/writing user pages. Destroying the PD
+            // now would corrupt the other CPU's page table walks.
+            // Defer destruction to CPU 0's next timer tick (by which time the
+            // killed thread will have been descheduled).
+            DEFERRED_PD_DESTROY.lock().push(pd);
+        } else {
+            if is_current {
+                let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
+                unsafe { core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3); }
+            }
+            crate::memory::virtual_mem::destroy_user_page_directory(pd);
         }
-        crate::memory::virtual_mem::destroy_user_page_directory(pd);
     }
 
     crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
@@ -1382,31 +1477,109 @@ pub struct ThreadInfo {
 }
 
 /// List all live threads (for `ps` command).
+///
+/// Collects lightweight data under the scheduler lock (no heap allocation),
+/// then builds the Vec outside the lock. This prevents holding the scheduler
+/// lock while the heap allocator's lock is acquired — eliminating a lock chain
+/// (SCHEDULER → HEAP) that can cause all-CPU deadlock if the heap is contended
+/// or its free list is corrupted.
 pub fn list_threads() -> Vec<ThreadInfo> {
-    let guard = SCHEDULER.lock();
-    let mut result = Vec::new();
-    if let Some(sched) = guard.as_ref() {
-        for thread in &sched.threads {
-            if thread.state == ThreadState::Terminated {
-                continue;
+    // Phase 1: collect raw data under the lock — stack-only, no heap allocs.
+    const MAX_SNAP: usize = 64;
+    struct ThreadSnap {
+        tid: u32,
+        priority: u8,
+        state: u8,       // 0=ready, 1=running, 2=blocked
+        arch_mode: u8,
+        cpu_ticks: u32,
+        name: [u8; 32],
+        name_len: u8,
+    }
+    let mut buf = [const {
+        ThreadSnap { tid: 0, priority: 0, state: 0, arch_mode: 0, cpu_ticks: 0, name: [0; 32], name_len: 0 }
+    }; MAX_SNAP];
+    let mut count = 0;
+
+    {
+        let guard = SCHEDULER.lock();
+        if let Some(sched) = guard.as_ref() {
+            for thread in &sched.threads {
+                if thread.state == ThreadState::Terminated { continue; }
+                if count >= MAX_SNAP { break; }
+                let state_num = match thread.state {
+                    ThreadState::Ready => 0u8,
+                    ThreadState::Running => 1,
+                    ThreadState::Blocked => 2,
+                    ThreadState::Terminated => unreachable!(),
+                };
+                let name_str = thread.name_str();
+                let len = name_str.len().min(32);
+                let mut name_buf = [0u8; 32];
+                name_buf[..len].copy_from_slice(&name_str.as_bytes()[..len]);
+                buf[count] = ThreadSnap {
+                    tid: thread.tid,
+                    priority: thread.priority,
+                    state: state_num,
+                    arch_mode: thread.arch_mode as u8,
+                    cpu_ticks: thread.cpu_ticks,
+                    name: name_buf,
+                    name_len: len as u8,
+                };
+                count += 1;
             }
-            let state_str = match thread.state {
-                ThreadState::Ready => "ready",
-                ThreadState::Running => "running",
-                ThreadState::Blocked => "blocked",
-                ThreadState::Terminated => unreachable!(),
-            };
-            result.push(ThreadInfo {
-                tid: thread.tid,
-                priority: thread.priority,
-                state: state_str,
-                name: alloc::string::String::from(thread.name_str()),
-                cpu_ticks: thread.cpu_ticks,
-                arch_mode: thread.arch_mode as u8,
-            });
         }
+    } // SCHEDULER lock released here — before any heap allocation
+
+    // Phase 2: build Vec from stack buffer (heap allocations happen here, lock-free).
+    let mut result = Vec::with_capacity(count);
+    for i in 0..count {
+        let snap = &buf[i];
+        let state_str = match snap.state {
+            0 => "ready",
+            1 => "running",
+            _ => "blocked",
+        };
+        let name = alloc::string::String::from(
+            core::str::from_utf8(&snap.name[..snap.name_len as usize]).unwrap_or("?")
+        );
+        result.push(ThreadInfo {
+            tid: snap.tid,
+            priority: snap.priority,
+            state: state_str,
+            name,
+            cpu_ticks: snap.cpu_ticks,
+            arch_mode: snap.arch_mode,
+        });
     }
     result
+}
+
+/// Check if the scheduler lock is held by the given CPU.
+/// Used by the fault handler to detect deadlock before force-recovery.
+pub fn is_scheduler_locked_by_cpu(cpu: u32) -> bool {
+    SCHEDULER.is_held_by_cpu(cpu)
+}
+
+/// Check if the scheduler lock is currently held (by any CPU).
+/// Lock-free diagnostic — safe to call from IRQ context.
+pub fn is_scheduler_locked() -> bool {
+    SCHEDULER.is_locked()
+}
+
+/// Force-release the scheduler lock held by a faulting thread.
+///
+/// Called from the ISR fault handler when a user thread faults while this CPU
+/// holds the scheduler lock. Without this, the lock remains permanently held
+/// and ALL CPUs deadlock on the next schedule() call.
+///
+/// After force-releasing, the caller should proceed to kill the faulting thread
+/// via `try_exit_current()`, which will re-acquire the lock cleanly.
+///
+/// # Safety
+/// Must only be called when `is_scheduler_locked_by_cpu(cpu)` returns true.
+pub unsafe fn force_unlock_scheduler() {
+    SCHEDULER.force_unlock();
+    crate::serial_println!("  RECOVERED: force-released scheduler lock");
 }
 
 /// Enter the scheduler loop (called from kernel_main, becomes idle thread).

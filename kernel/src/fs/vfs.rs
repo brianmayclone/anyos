@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 const MAX_OPEN_FILES: usize = 256;
 
 /// FAT16 partition start sector (must match mkimage.py --fs-start)
-const FAT16_PARTITION_LBA: u32 = 4096;
+const FAT16_PARTITION_LBA: u32 = 8192;
 
 static VFS: Mutex<Option<VfsState>> = Mutex::new(None);
 

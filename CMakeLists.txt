@@ -11,7 +11,7 @@ set(CARGO_EXECUTABLE "$ENV{HOME}/.cargo/bin/cargo")
 option(ANYOS_DEBUG_VERBOSE "Enable verbose debug output" OFF)
 
 set(DISK_IMAGE "${CMAKE_BINARY_DIR}/anyos.img")
-set(KERNEL_ELF "${CMAKE_BINARY_DIR}/kernel/x86_64-anyos/debug/anyos_kernel.elf")
+set(KERNEL_ELF "${CMAKE_BINARY_DIR}/kernel/x86_64-anyos/release/anyos_kernel.elf")
 
 # ============================================================
 # 1. Bootloader Stage 1 (MBR)
@@ -100,7 +100,7 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E env
     "ANYOS_ASM_OBJECTS=${KERNEL_ASM_OBJECTS_STR}"
     "ANYOS_AP_TRAMPOLINE=${AP_TRAMPOLINE_BIN}"
-    ${CARGO_EXECUTABLE} build
+    ${CARGO_EXECUTABLE} build --release
     --manifest-path ${CMAKE_SOURCE_DIR}/kernel/Cargo.toml
     --target ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
     --target-dir ${CMAKE_BINARY_DIR}/kernel
@@ -159,10 +159,10 @@ set(STDLIB_DEPS
 )
 
 function(add_rust_user_program NAME SRC_DIR)
-  set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos-user/debug/${NAME}.elf")
+  set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos-user/release/${NAME}.elf")
   add_custom_command(
     OUTPUT ${ELF}
-    COMMAND ${CARGO_EXECUTABLE} build
+    COMMAND ${CARGO_EXECUTABLE} build --release
       --manifest-path ${SRC_DIR}/Cargo.toml
       --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
       --target-dir ${CMAKE_BINARY_DIR}/programs/${NAME}
@@ -187,10 +187,10 @@ endfunction()
 
 # Variant for system programs (placed in /system/ instead of /bin/)
 function(add_rust_system_program NAME SRC_DIR)
-  set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos-user/debug/${NAME}.elf")
+  set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos-user/release/${NAME}.elf")
   add_custom_command(
     OUTPUT ${ELF}
-    COMMAND ${CARGO_EXECUTABLE} build
+    COMMAND ${CARGO_EXECUTABLE} build --release
       --manifest-path ${SRC_DIR}/Cargo.toml
       --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
       --target-dir ${CMAKE_BINARY_DIR}/programs/${NAME}
@@ -215,10 +215,10 @@ endfunction()
 
 # Variant for DLLs (placed in /system/lib/)
 function(add_dll NAME SRC_DIR)
-  set(DLL_ELF "${CMAKE_BINARY_DIR}/dll/${NAME}/x86_64-anyos-user/debug/${NAME}.elf")
+  set(DLL_ELF "${CMAKE_BINARY_DIR}/dll/${NAME}/x86_64-anyos-user/release/${NAME}.elf")
   add_custom_command(
     OUTPUT ${DLL_ELF}
-    COMMAND ${CARGO_EXECUTABLE} build
+    COMMAND ${CARGO_EXECUTABLE} build --release
       --manifest-path ${SRC_DIR}/Cargo.toml
       --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
       --target-dir ${CMAKE_BINARY_DIR}/dll/${NAME}
@@ -305,10 +305,10 @@ add_rust_user_program(set        ${CMAKE_SOURCE_DIR}/programs/set)
 add_rust_user_program(export     ${CMAKE_SOURCE_DIR}/programs/export)
 
 # true/false: package names are true_cmd/false_cmd (Rust keywords) but binaries named true/false
-set(TRUE_ELF "${CMAKE_BINARY_DIR}/programs/true_cmd/x86_64-anyos-user/debug/true_cmd.elf")
+set(TRUE_ELF "${CMAKE_BINARY_DIR}/programs/true_cmd/x86_64-anyos-user/release/true_cmd.elf")
 add_custom_command(
   OUTPUT ${TRUE_ELF}
-  COMMAND ${CARGO_EXECUTABLE} build
+  COMMAND ${CARGO_EXECUTABLE} build --release
     --manifest-path ${CMAKE_SOURCE_DIR}/programs/true/Cargo.toml
     --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
     --target-dir ${CMAKE_BINARY_DIR}/programs/true_cmd
@@ -330,10 +330,10 @@ add_custom_command(
 )
 list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/bin/true)
 
-set(FALSE_ELF "${CMAKE_BINARY_DIR}/programs/false_cmd/x86_64-anyos-user/debug/false_cmd.elf")
+set(FALSE_ELF "${CMAKE_BINARY_DIR}/programs/false_cmd/x86_64-anyos-user/release/false_cmd.elf")
 add_custom_command(
   OUTPUT ${FALSE_ELF}
-  COMMAND ${CARGO_EXECUTABLE} build
+  COMMAND ${CARGO_EXECUTABLE} build --release
     --manifest-path ${CMAKE_SOURCE_DIR}/programs/false/Cargo.toml
     --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
     --target-dir ${CMAKE_BINARY_DIR}/programs/false_cmd
@@ -372,10 +372,10 @@ add_rust_system_program(screenshot  ${CMAKE_SOURCE_DIR}/programs/system/screensh
 
 # Build compositor binary (nested path: /system/compositor/compositor)
 set(COMPOSITOR_SRC_DIR ${CMAKE_SOURCE_DIR}/programs/system/compositor/compositor)
-set(COMPOSITOR_ELF "${CMAKE_BINARY_DIR}/programs/compositor/x86_64-anyos-user/debug/compositor.elf")
+set(COMPOSITOR_ELF "${CMAKE_BINARY_DIR}/programs/compositor/x86_64-anyos-user/release/compositor.elf")
 add_custom_command(
   OUTPUT ${COMPOSITOR_ELF}
-  COMMAND ${CARGO_EXECUTABLE} build
+  COMMAND ${CARGO_EXECUTABLE} build --release
     --manifest-path ${COMPOSITOR_SRC_DIR}/Cargo.toml
     --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
     --target-dir ${CMAKE_BINARY_DIR}/programs/compositor
@@ -400,10 +400,10 @@ list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/system/compositor/compositor)
 
 # Build dock program (nested path: /system/compositor/dock)
 set(DOCK_SRC_DIR ${CMAKE_SOURCE_DIR}/programs/system/compositor/dock)
-set(DOCK_ELF "${CMAKE_BINARY_DIR}/programs/dock/x86_64-anyos/debug/dock.elf")
+set(DOCK_ELF "${CMAKE_BINARY_DIR}/programs/dock/x86_64-anyos/release/dock.elf")
 add_custom_command(
   OUTPUT ${DOCK_ELF}
-  COMMAND ${CARGO_EXECUTABLE} build
+  COMMAND ${CARGO_EXECUTABLE} build --release
     --manifest-path ${DOCK_SRC_DIR}/Cargo.toml
     --target ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
     --target-dir ${CMAKE_BINARY_DIR}/programs/dock
@@ -648,7 +648,7 @@ add_custom_command(
     --output ${DISK_IMAGE}
     --image-size 64
     --sysroot ${SYSROOT_DIR}
-    --fs-start 4096
+    --fs-start 8192
   DEPENDS
     ${CMAKE_BINARY_DIR}/stage1.bin
     ${CMAKE_BINARY_DIR}/stage2.bin

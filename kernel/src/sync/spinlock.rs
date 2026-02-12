@@ -6,15 +6,23 @@
 
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+/// No CPU owns this lock.
+const NO_OWNER: u32 = u32::MAX;
 
 /// An IRQ-safe spinlock protecting data of type `T`.
 ///
 /// Automatically disables interrupts while held and restores the previous
 /// interrupt state when the guard is dropped. Safe to use from both normal
 /// code and interrupt handlers (via [`try_lock`](Spinlock::try_lock)).
+///
+/// Tracks the owning CPU ID for deadlock recovery: if a user thread faults
+/// while this CPU holds the lock, the fault handler can force-release it
+/// instead of deadlocking the entire system.
 pub struct Spinlock<T> {
     lock: AtomicBool,
+    owner_cpu: AtomicU32,
     data: UnsafeCell<T>,
 }
 
@@ -56,11 +64,24 @@ fn sti() {
     }
 }
 
+/// Read the LAPIC ID directly via MMIO (lock-free, no function calls, no loops).
+/// Returns bits [31:24] of the LAPIC ID register as a unique per-CPU value.
+/// Before LAPIC is initialized (early boot), returns 0 (BSP only).
+#[inline(always)]
+fn cpu_id() -> u32 {
+    if !crate::arch::x86::apic::is_initialized() {
+        return 0;
+    }
+    const LAPIC_ID_ADDR: *const u32 = 0xFFFF_FFFF_D010_0020 as *const u32;
+    unsafe { LAPIC_ID_ADDR.read_volatile() >> 24 }
+}
+
 impl<T> Spinlock<T> {
     /// Create a new unlocked spinlock wrapping the given data.
     pub const fn new(data: T) -> Self {
         Spinlock {
             lock: AtomicBool::new(false),
+            owner_cpu: AtomicU32::new(NO_OWNER),
             data: UnsafeCell::new(data),
         }
     }
@@ -88,6 +109,7 @@ impl<T> Spinlock<T> {
             }
         }
 
+        self.owner_cpu.store(cpu_id(), Ordering::Relaxed);
         SpinlockGuard { lock: self, irq_was_enabled: was_enabled }
     }
 
@@ -104,6 +126,7 @@ impl<T> Spinlock<T> {
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
+            self.owner_cpu.store(cpu_id(), Ordering::Relaxed);
             Some(SpinlockGuard { lock: self, irq_was_enabled: was_enabled })
         } else {
             // Failed to acquire — restore interrupt state
@@ -112,6 +135,29 @@ impl<T> Spinlock<T> {
             }
             None
         }
+    }
+
+    /// Check if this lock is currently held by the given CPU.
+    #[inline]
+    pub fn is_held_by_cpu(&self, cpu: u32) -> bool {
+        self.owner_cpu.load(Ordering::Relaxed) == cpu
+    }
+
+    /// Check if this lock is currently held (by any CPU).
+    #[inline]
+    pub fn is_locked(&self) -> bool {
+        self.lock.load(Ordering::Relaxed)
+    }
+
+    /// Force-release the lock unconditionally. Used by the fault handler to
+    /// recover from a user-thread fault that occurred while this CPU held the lock.
+    ///
+    /// # Safety
+    /// Caller must ensure this CPU actually holds the lock (check `is_held_by_cpu` first).
+    /// The protected data may be in a partially-modified state.
+    pub unsafe fn force_unlock(&self) {
+        self.owner_cpu.store(NO_OWNER, Ordering::Relaxed);
+        self.lock.store(false, Ordering::Release);
     }
 }
 
@@ -153,6 +199,7 @@ impl<'a, T> SpinlockGuard<'a, T> {
     /// Interrupts remain disabled after this call.
     /// Used by schedule() to keep IF=0 from lock acquisition through context_switch.
     pub fn release_no_irq_restore(self) {
+        self.lock.owner_cpu.store(NO_OWNER, Ordering::Relaxed);
         self.lock.lock.store(false, Ordering::Release);
         core::mem::forget(self); // Skip Drop (which would restore IF)
     }
@@ -160,6 +207,7 @@ impl<'a, T> SpinlockGuard<'a, T> {
 
 impl<'a, T> Drop for SpinlockGuard<'a, T> {
     fn drop(&mut self) {
+        self.lock.owner_cpu.store(NO_OWNER, Ordering::Relaxed);
         self.lock.lock.store(false, Ordering::Release);
         // Restore interrupt state AFTER releasing the lock.
         // For nested locks: inner lock saves IF=0, restores IF=0 → still disabled.

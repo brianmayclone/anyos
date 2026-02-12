@@ -135,6 +135,13 @@ unsafe impl GlobalAlloc for LockedHeap {
     }
 }
 
+/// Check if the heap lock is currently held (lock-free diagnostic).
+/// Used by the timer heartbeat to detect if the heap is part of a deadlock chain.
+#[inline]
+pub fn is_heap_locked() -> bool {
+    HEAP_ALLOCATOR.lock.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// Check if an address is within the committed heap range.
 #[inline]
 fn is_in_heap(addr: usize) -> bool {
@@ -146,17 +153,22 @@ fn is_in_heap(addr: usize) -> bool {
 unsafe fn alloc_inner(layout: Layout) -> *mut u8 {
     let size = align_up(layout.size().max(core::mem::size_of::<FreeBlock>()), layout.align().max(16));
 
-    // First-fit search
+    // First-fit search with cycle detection (max iteration guard).
+    // A corrupted free list with cycles would loop forever under the heap lock
+    // with IF=0, causing ALL CPUs to deadlock when they need allocations.
+    const MAX_ITER: usize = 100_000;
     let mut prev: *mut FreeBlock = core::ptr::null_mut();
     let mut current = HEAP_FREE_LIST;
+    let mut iter = 0usize;
 
     while !current.is_null() {
+        iter += 1;
+        if iter > MAX_ITER {
+            return core::ptr::null_mut(); // Probable cycle — bail out
+        }
+
         // Validate current pointer is within heap bounds
         if !is_in_heap(current as usize) {
-            crate::serial_println!(
-                "HEAP CORRUPT in alloc: current={:#x} outside heap, prev={:#x}",
-                current as usize, prev as usize
-            );
             return core::ptr::null_mut();
         }
 
@@ -299,12 +311,6 @@ unsafe fn grow_heap_exact(growth: usize) -> bool {
         }
     }
 
-    crate::serial_println!(
-        "  Heap committed: {} KiB ({} MiB max)",
-        new_committed / 1024,
-        HEAP_MAX_SIZE / (1024 * 1024)
-    );
-
     true
 }
 
@@ -313,27 +319,30 @@ unsafe fn dealloc_inner(ptr: *mut u8, layout: Layout) {
 
     // Validate: pointer must be within heap bounds
     if !is_in_heap(ptr as usize) {
-        crate::serial_println!(
-            "HEAP BUG: dealloc ptr={:#x} size={:#x} outside heap bounds!",
-            ptr as usize, size
-        );
         return; // Leak instead of corrupting
     }
 
     let block = ptr as *mut FreeBlock;
     (*block).size = size;
 
-    // Insert sorted by address for coalescing
+    // Insert sorted by address for coalescing.
+    // Max iteration guard prevents infinite loop on corrupted free list.
+    const MAX_ITER: usize = 100_000;
     let mut prev: *mut FreeBlock = core::ptr::null_mut();
     let mut current = HEAP_FREE_LIST;
+    let mut iter = 0usize;
 
     while !current.is_null() && (current as usize) < (block as usize) {
+        iter += 1;
+        if iter > MAX_ITER {
+            // Probable cycle — insert at head to avoid infinite loop
+            (*block).next = HEAP_FREE_LIST;
+            HEAP_FREE_LIST = block;
+            return;
+        }
+
         // Validate current pointer
         if !is_in_heap(current as usize) {
-            crate::serial_println!(
-                "HEAP CORRUPT in dealloc walk: current={:#x} prev={:#x} block={:#x} size={:#x}",
-                current as usize, prev as usize, block as usize, size
-            );
             // Corruption detected — insert block at head to avoid walking further
             (*block).next = HEAP_FREE_LIST;
             HEAP_FREE_LIST = block;
@@ -342,10 +351,6 @@ unsafe fn dealloc_inner(ptr: *mut u8, layout: Layout) {
 
         // Double-free guard: check if block is already in the free list
         if current == block {
-            crate::serial_println!(
-                "HEAP BUG: double free at {:#x} size={:#x}!",
-                ptr as usize, size
-            );
             return; // Skip the free entirely
         }
 

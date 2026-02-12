@@ -39,8 +39,14 @@ fi
 # Force full rebuild if --clean
 if [ "$CLEAN" -eq 1 ]; then
     echo "Cleaning build..."
-    exec "${SCRIPT_DIR}/clean.sh"
+    "${SCRIPT_DIR}/clean.sh"
+    # Re-configure CMake after clean (build.ninja was deleted)
+    echo "Configuring build..."
+    cmake -B "$BUILD_DIR" -G Ninja "$PROJECT_DIR"
 fi
+
+# Suppress Rust warnings and notes — only show errors
+export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Awarnings"
 
 # Build
 echo "Building anyOS..."

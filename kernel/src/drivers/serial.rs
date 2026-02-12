@@ -89,6 +89,11 @@ pub fn output_lock_release(saved: (u64, bool)) {
     }
 }
 
+/// Check if the serial output lock is currently held (lock-free diagnostic).
+pub fn is_output_locked() -> bool {
+    OUTPUT_LOCK.load(Ordering::Relaxed)
+}
+
 /// Enter panic mode: halt all other CPUs, switch to blocking serial TX,
 /// and force-release the output lock so crash diagnostics can be printed.
 ///

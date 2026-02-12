@@ -5,9 +5,60 @@
 
 use core::arch::asm;
 use core::mem::size_of;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Total IDT entries (covers the full x86 interrupt vector range).
 const IDT_ENTRIES: usize = 256;
+
+/// Per-CPU timer heartbeat counters for freeze diagnostics.
+/// Uses direct UART port I/O to avoid serial output lock — if the serial lock
+/// is part of the deadlock chain, serial_println heartbeats would also freeze.
+const HEARTBEAT_INTERVAL: u32 = 1000;
+static HEARTBEAT_COUNTER: [AtomicU32; 8] = {
+    const INIT: AtomicU32 = AtomicU32::new(0);
+    [INIT; 8]
+};
+
+/// Write a single byte to COM1 (0x3F8) blocking until UART is ready.
+/// Completely lock-free — safe to call from any context.
+#[inline]
+fn uart_putc(c: u8) {
+    unsafe {
+        // Wait for Transmit Holding Register Empty (bit 5 of LSR)
+        while crate::arch::x86::port::inb(0x3FD) & 0x20 == 0 {
+            core::hint::spin_loop();
+        }
+        crate::arch::x86::port::outb(0x3F8, c);
+    }
+}
+
+/// Write a string directly to UART (lock-free).
+#[inline]
+fn uart_puts(s: &[u8]) {
+    for &c in s {
+        if c == b'\n' { uart_putc(b'\r'); }
+        uart_putc(c);
+    }
+}
+
+/// Write a decimal number directly to UART (lock-free).
+fn uart_put_dec(mut n: u32) {
+    if n == 0 {
+        uart_putc(b'0');
+        return;
+    }
+    let mut buf = [0u8; 10];
+    let mut i = 0;
+    while n > 0 {
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        i += 1;
+    }
+    while i > 0 {
+        i -= 1;
+        uart_putc(buf[i]);
+    }
+}
 /// GDT selector for Ring 0 code segment.
 const KERNEL_CODE_SEG: u16 = 0x08;
 
@@ -284,6 +335,15 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
             crate::serial_println!("    (no valid frames — RBP={:#018x})", frame.rbp);
         }
         crate::serial_println!("--- End Crash Report ---");
+
+        // If THIS CPU holds the scheduler lock (fault occurred inside a syscall
+        // that was holding the lock), force-release it first. Without this, the
+        // lock remains permanently held and ALL CPUs deadlock.
+        let cpu = crate::arch::x86::apic::lapic_id() as u32;
+        if crate::task::scheduler::is_scheduler_locked_by_cpu(cpu) {
+            unsafe { crate::task::scheduler::force_unlock_scheduler(); }
+        }
+
         // Spin-retry: the scheduler lock may be held briefly by another CPU.
         // We MUST NOT return false here — doing so would either:
         //   (a) iretq back to the faulting instruction → infinite fault loop, or
@@ -295,9 +355,7 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
             }
             core::hint::spin_loop();
         }
-        // Still can't get the lock after 100K attempts → deadlocked (this CPU
-        // holds the scheduler lock and faulted inside schedule_inner). Halt this
-        // CPU safely — the faulting thread is effectively dead.
+        // Still can't get the lock after 100K attempts — halt this CPU.
         crate::serial_println!("  CRITICAL: scheduler lock deadlocked — halting CPU");
         crate::drivers::serial::enter_panic_mode();
         loop { unsafe { core::arch::asm!("cli; hlt"); } }
@@ -627,6 +685,39 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
 #[no_mangle]
 pub extern "C" fn irq_handler(frame: &InterruptFrame) {
     let irq = (frame.int_no - 32) as u8;
+
+    // Timer heartbeat: lock-free UART diagnostics every HEARTBEAT_INTERVAL ticks.
+    // Uses direct port I/O to bypass the serial output lock — if the serial lock
+    // is part of the deadlock chain, this heartbeat will still fire.
+    if irq == 16 {
+        let cpu_id = crate::arch::x86::apic::lapic_id() as usize;
+        if cpu_id < 8 {
+            let count = HEARTBEAT_COUNTER[cpu_id].fetch_add(1, Ordering::Relaxed) + 1;
+            if count % HEARTBEAT_INTERVAL == 0 {
+                // Format: "HB C<cpu> T<tick> tid=<tid> sched=<held> ser=<held>\n"
+                uart_puts(b"HB C");
+                uart_put_dec(cpu_id as u32);
+                uart_puts(b" T");
+                uart_put_dec(count);
+                uart_puts(b" tid=");
+                let tid = crate::task::scheduler::debug_current_tid();
+                uart_put_dec(tid);
+                // Check if the scheduler lock is currently held
+                if crate::task::scheduler::is_scheduler_locked() {
+                    uart_puts(b" SCHED=HELD");
+                }
+                // Check serial output lock state
+                if crate::drivers::serial::is_output_locked() {
+                    uart_puts(b" SER=HELD");
+                }
+                // Check heap lock state
+                if crate::memory::heap::is_heap_locked() {
+                    uart_puts(b" HEAP=HELD");
+                }
+                uart_putc(b'\n');
+            }
+        }
+    }
 
     // Real-time stack overflow detection: check if the interrupted RSP is
     // within the current thread's kernel stack bounds. This catches overflows
