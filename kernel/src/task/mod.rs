@@ -6,6 +6,7 @@
 pub mod context;
 pub mod cpu_monitor;
 pub mod dll;
+pub mod env;
 pub mod loader;
 pub mod process;
 pub mod scheduler;

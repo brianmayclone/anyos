@@ -133,6 +133,15 @@ pub(crate) const SYS_CAPTURE_SCREEN: u32 = 161;
 pub(crate) const SYS_THREAD_CREATE: u32 = 170;
 pub(crate) const SYS_SET_PRIORITY: u32 = 171;
 
+// Device / Pipe listing
+pub(crate) const SYS_DEVLIST: u32 = 16;
+pub(crate) const SYS_PIPE_LIST: u32 = 180;
+
+// Environment variables
+pub(crate) const SYS_SETENV: u32 = 182;
+pub(crate) const SYS_GETENV: u32 = 183;
+pub(crate) const SYS_LISTENV: u32 = 184;
+
 // UDP networking
 pub(crate) const SYS_UDP_BIND: u32 = 150;
 pub(crate) const SYS_UDP_UNBIND: u32 = 151;

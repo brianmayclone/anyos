@@ -965,6 +965,27 @@ pub fn current_thread_pd_shared() -> bool {
     false
 }
 
+/// Check if any OTHER live thread shares the same page directory as the current thread.
+/// Used by sys_exit to decide whether it's safe to destroy the PD.
+pub fn has_live_pd_siblings() -> bool {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
+            if let Some(idx) = sched.find_idx(tid) {
+                if let Some(pd) = sched.threads[idx].page_directory {
+                    return sched.threads.iter().any(|t| {
+                        t.tid != tid
+                            && t.page_directory == Some(pd)
+                            && t.state != ThreadState::Terminated
+                    });
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Get the current thread's program break address.
 pub fn current_thread_brk() -> u32 {
     let guard = SCHEDULER.lock();
@@ -1117,9 +1138,28 @@ pub fn kill_thread(tid: u32) -> u32 {
         // Remove from all ready queues
         sched.remove_from_all_queues(tid);
 
+        // Only destroy PD if this thread owns it (not shared with siblings).
+        // Shared PD threads (pd_shared=true) must NOT destroy the PD — siblings
+        // are still using it. Also check that no OTHER thread shares this PD.
         if let Some(pd) = sched.threads[target_idx].page_directory {
-            pd_to_destroy = Some(pd);
-            sched.threads[target_idx].page_directory = None;
+            if sched.threads[target_idx].pd_shared {
+                // Child thread: don't destroy the shared PD
+                sched.threads[target_idx].page_directory = None;
+            } else {
+                // Owner thread: only destroy if no siblings are still alive
+                let has_live_siblings = sched.threads.iter().any(|t| {
+                    t.tid != tid
+                        && t.page_directory == Some(pd)
+                        && t.state != ThreadState::Terminated
+                });
+                if has_live_siblings {
+                    // Siblings still running — don't destroy PD yet
+                    sched.threads[target_idx].page_directory = None;
+                } else {
+                    pd_to_destroy = Some(pd);
+                    sched.threads[target_idx].page_directory = None;
+                }
+            }
         }
 
         // Wake any thread waiting on us

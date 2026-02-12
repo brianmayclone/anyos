@@ -20,8 +20,43 @@ fn resolve_path(path: &str) -> String {
     }
 }
 
+/// Validate that a user pointer is in user address space (below kernel half).
+/// Returns false if the pointer is NULL, in kernel space, or if ptr+len overflows.
+#[inline]
+fn is_valid_user_ptr(ptr: u64, len: u64) -> bool {
+    if ptr == 0 {
+        return false;
+    }
+    // User space is below 0x0000_8000_0000_0000 (canonical lower half)
+    let end = ptr.checked_add(len);
+    match end {
+        Some(e) => e <= 0x0000_8000_0000_0000,
+        None => false, // overflow
+    }
+}
+
 /// Read a null-terminated string from user memory (max 256 bytes).
+/// Returns None if the pointer is invalid.
+fn read_user_str_safe(ptr: u32) -> Option<&'static str> {
+    if !is_valid_user_ptr(ptr as u64, 1) {
+        return None;
+    }
+    let p = ptr as *const u8;
+    let mut len = 0usize;
+    unsafe {
+        while len < 256 && *p.add(len) != 0 {
+            len += 1;
+        }
+        Some(core::str::from_utf8_unchecked(core::slice::from_raw_parts(p, len)))
+    }
+}
+
+/// Read a null-terminated string from user memory (max 256 bytes).
+/// Returns "" if the pointer is invalid (NULL or kernel space).
 unsafe fn read_user_str(ptr: u32) -> &'static str {
+    if !is_valid_user_ptr(ptr as u64, 1) {
+        return "";
+    }
     let p = ptr as *const u8;
     let mut len = 0usize;
     while len < 256 && *p.add(len) != 0 {
@@ -47,20 +82,17 @@ pub fn sys_exit(status: u32) -> u32 {
     }
 
     if let Some(pd_phys) = crate::task::scheduler::current_thread_page_directory() {
-        // Only destroy the page directory if this thread owns it (not shared with siblings).
-        // Intra-process child threads have pd_shared=true — they share the parent's PD.
-        if !crate::task::scheduler::current_thread_pd_shared() {
-            unsafe {
-                let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
-                core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3);
-            }
+        // Only destroy the PD if this thread owns it AND no siblings are still alive.
+        // - pd_shared=true (child): never destroy, parent owns it
+        // - pd_shared=false (owner): only destroy if no live siblings share the PD
+        let can_destroy = !crate::task::scheduler::current_thread_pd_shared()
+            && !crate::task::scheduler::has_live_pd_siblings();
+        unsafe {
+            let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
+            core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3);
+        }
+        if can_destroy {
             crate::memory::virtual_mem::destroy_user_page_directory(pd_phys);
-        } else {
-            // Shared PD: just switch to kernel CR3 so we don't run on the user PD after exit
-            unsafe {
-                let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
-                core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3);
-            }
         }
     }
 
@@ -81,7 +113,7 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
     if buf_ptr == 0 || len == 0 {
         return 0;
     }
-    if len > 0x1000_0000 {
+    if len > 0x1000_0000 || !is_valid_user_ptr(buf_ptr as u64, len as u64) {
         return u32::MAX;
     }
     if fd == 1 || fd == 2 {
@@ -118,7 +150,7 @@ pub fn sys_read(fd: u32, buf_ptr: u32, len: u32) -> u32 {
         if buf_ptr == 0 || len == 0 {
             return 0;
         }
-        if len > 0x1000_0000 {
+        if len > 0x1000_0000 || !is_valid_user_ptr(buf_ptr as u64, len as u64) {
             return u32::MAX;
         }
         let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
@@ -134,7 +166,10 @@ pub fn sys_read(fd: u32, buf_ptr: u32, len: u32) -> u32 {
 /// sys_open - Open a file. arg1=path_ptr (null-terminated), arg2=flags, arg3=unused
 /// Returns file descriptor or u32::MAX on error.
 pub fn sys_open(path_ptr: u32, flags: u32, _arg3: u32) -> u32 {
-    let path = unsafe { read_user_str(path_ptr) };
+    let path = match read_user_str_safe(path_ptr) {
+        Some(s) => s,
+        None => return u32::MAX,
+    };
     let file_flags = crate::fs::file::FileFlags {
         read: true,
         write: (flags & 1) != 0,
@@ -273,7 +308,7 @@ pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, _arg4: u32) -> 
 /// sys_getargs - Get command-line arguments for the current process.
 /// arg1=buf_ptr, arg2=buf_size. Returns bytes written.
 pub fn sys_getargs(buf_ptr: u32, buf_size: u32) -> u32 {
-    if buf_ptr == 0 || buf_size == 0 {
+    if buf_ptr == 0 || buf_size == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
         return 0;
     }
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
@@ -294,7 +329,9 @@ pub fn sys_readdir(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
     match crate::fs::vfs::read_dir(&path) {
         Ok(entries) => {
             let entry_size = 64u32;
-            if buf_ptr != 0 && buf_size > 0 {
+            if buf_ptr != 0 && buf_size > 0
+                && is_valid_user_ptr(buf_ptr as u64, buf_size as u64)
+            {
                 let max_entries = (buf_size / entry_size) as usize;
                 let buf = unsafe {
                     core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize)
@@ -1136,19 +1173,43 @@ pub fn sys_font_render_buf(params_ptr: u32) -> u32 {
 // Device management (existing)
 // =========================================================================
 
+/// sys_devlist - List devices. Each entry is 64 bytes:
+///   [0..32]  path (null-terminated)
+///   [32..56] driver name (null-terminated, 24 bytes)
+///   [56]     driver_type (0=Block,1=Char,2=Network,3=Display,4=Input,5=Audio,6=Output,7=Sensor,8=Bus,9=Unknown)
+///   [57..64] padding (zeroed)
 pub fn sys_devlist(buf_ptr: u32, buf_size: u32) -> u32 {
     let devices = crate::drivers::hal::list_devices();
     let count = devices.len();
-    if buf_ptr != 0 && buf_size > 0 {
+    if buf_ptr != 0 && buf_size > 0 && is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
         let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
-        let entry_size = 32usize;
+        let entry_size = 64usize;
         let max_entries = buf_size as usize / entry_size;
-        for (i, (path, _, _)) in devices.iter().enumerate().take(max_entries.min(count)) {
+        for (i, (path, name, dtype)) in devices.iter().enumerate().take(max_entries.min(count)) {
             let offset = i * entry_size;
+            // Zero the entry first
+            for b in &mut buf[offset..offset + entry_size] { *b = 0; }
+            // Path [0..32]
             let path_bytes = path.as_bytes();
-            let copy_len = path_bytes.len().min(entry_size - 1);
-            buf[offset..offset + copy_len].copy_from_slice(&path_bytes[..copy_len]);
-            buf[offset + copy_len] = 0;
+            let plen = path_bytes.len().min(31);
+            buf[offset..offset + plen].copy_from_slice(&path_bytes[..plen]);
+            // Driver name [32..56]
+            let name_bytes = name.as_bytes();
+            let nlen = name_bytes.len().min(23);
+            buf[offset + 32..offset + 32 + nlen].copy_from_slice(&name_bytes[..nlen]);
+            // Driver type [56]
+            buf[offset + 56] = match dtype {
+                crate::drivers::hal::DriverType::Block => 0,
+                crate::drivers::hal::DriverType::Char => 1,
+                crate::drivers::hal::DriverType::Network => 2,
+                crate::drivers::hal::DriverType::Display => 3,
+                crate::drivers::hal::DriverType::Input => 4,
+                crate::drivers::hal::DriverType::Audio => 5,
+                crate::drivers::hal::DriverType::Output => 6,
+                crate::drivers::hal::DriverType::Sensor => 7,
+                crate::drivers::hal::DriverType::Bus => 8,
+                crate::drivers::hal::DriverType::Unknown => 9,
+            };
         }
     }
     count as u32
@@ -1177,7 +1238,7 @@ pub fn sys_pipe_create(name_ptr: u32) -> u32 {
 
 /// sys_pipe_read - Read from a pipe. Returns bytes read, or u32::MAX if not found.
 pub fn sys_pipe_read(pipe_id: u32, buf_ptr: u32, len: u32) -> u32 {
-    if buf_ptr == 0 || len == 0 { return 0; }
+    if buf_ptr == 0 || len == 0 || !is_valid_user_ptr(buf_ptr as u64, len as u64) { return 0; }
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
     crate::ipc::pipe::read(pipe_id, buf)
 }
@@ -1190,7 +1251,7 @@ pub fn sys_pipe_close(pipe_id: u32) -> u32 {
 
 /// sys_pipe_write - Write data to a pipe. Returns bytes written.
 pub fn sys_pipe_write(pipe_id: u32, buf_ptr: u32, len: u32) -> u32 {
-    if buf_ptr == 0 || len == 0 { return 0; }
+    if buf_ptr == 0 || len == 0 || !is_valid_user_ptr(buf_ptr as u64, len as u64) { return 0; }
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
     crate::ipc::pipe::write(pipe_id, buf)
 }
@@ -1200,6 +1261,35 @@ pub fn sys_pipe_open(name_ptr: u32) -> u32 {
     if name_ptr == 0 { return 0; }
     let name = unsafe { read_user_str(name_ptr) };
     crate::ipc::pipe::open(name)
+}
+
+/// sys_pipe_list - List all open pipes. Each entry is 80 bytes:
+///   [0..4]   pipe_id (u32 LE)
+///   [4..8]   buffered_bytes (u32 LE)
+///   [8..72]  name (64 bytes, null-terminated)
+///   [72..80] padding (zeroed)
+/// Returns total pipe count.
+pub fn sys_pipe_list(buf_ptr: u32, buf_size: u32) -> u32 {
+    let pipes = crate::ipc::pipe::list();
+    let count = pipes.len();
+    if buf_ptr != 0 && buf_size > 0 && is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
+        let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
+        let entry_size = 80usize;
+        let max_entries = buf_size as usize / entry_size;
+        for (i, pipe) in pipes.iter().enumerate().take(max_entries.min(count)) {
+            let offset = i * entry_size;
+            // Zero the entry first
+            for b in &mut buf[offset..offset + entry_size] { *b = 0; }
+            // pipe_id [0..4]
+            buf[offset..offset + 4].copy_from_slice(&pipe.id.to_le_bytes());
+            // buffered [4..8]
+            buf[offset + 4..offset + 8].copy_from_slice(&(pipe.buffered as u32).to_le_bytes());
+            // name [8..72]
+            let nlen = pipe.name_len.min(63);
+            buf[offset + 8..offset + 8 + nlen].copy_from_slice(&pipe.name[..nlen]);
+        }
+    }
+    count as u32
 }
 
 // =========================================================================
@@ -1257,7 +1347,7 @@ pub fn sys_evt_sys_subscribe(filter: u32) -> u32 {
 /// Poll system event. ebx=sub_id, ecx=buf_ptr (20 bytes). Returns 1 if event, 0 if empty.
 pub fn sys_evt_sys_poll(sub_id: u32, buf_ptr: u32) -> u32 {
     if let Some(evt) = event_bus::system_poll(sub_id) {
-        if buf_ptr != 0 {
+        if buf_ptr != 0 && is_valid_user_ptr(buf_ptr as u64, 20) {
             let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u32, 5) };
             buf.copy_from_slice(&evt.words);
         }
@@ -1297,7 +1387,7 @@ pub fn sys_evt_chan_emit(chan_id: u32, event_ptr: u32) -> u32 {
 /// Poll module channel. ebx=chan_id, ecx=sub_id, edx=buf_ptr. Returns 1/0.
 pub fn sys_evt_chan_poll(chan_id: u32, sub_id: u32, buf_ptr: u32) -> u32 {
     if let Some(evt) = event_bus::channel_poll(chan_id, sub_id) {
-        if buf_ptr != 0 {
+        if buf_ptr != 0 && is_valid_user_ptr(buf_ptr as u64, 20) {
             let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u32, 5) };
             buf.copy_from_slice(&evt.words);
         }
@@ -1488,6 +1578,10 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
     }
 
     let count = cmd_count.min(256) as usize; // Cap at 256 commands per call
+    let byte_size = count * 36; // 9 u32s * 4 bytes each
+    if !is_valid_user_ptr(cmd_buf_ptr as u64, byte_size as u64) {
+        return 0;
+    }
     let cmds = unsafe {
         core::slice::from_raw_parts(cmd_buf_ptr as *const [u32; 9], count)
     };
@@ -1573,6 +1667,10 @@ pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
     }
 
     let max = max_events.min(256) as usize;
+    let byte_size = max * 20; // 5 u32s * 4 bytes each
+    if !is_valid_user_ptr(buf_ptr as u64, byte_size as u64) {
+        return 0;
+    }
     let events = unsafe {
         core::slice::from_raw_parts_mut(buf_ptr as *mut [u32; 5], max)
     };
@@ -1749,4 +1847,84 @@ pub fn sys_capture_screen(buf_ptr: u32, buf_size: u32, info_ptr: u32) -> u32 {
     }
 
     0
+}
+
+// =========================================================================
+// Environment Variables (SYS_SETENV, SYS_GETENV, SYS_LISTENV)
+// =========================================================================
+
+/// sys_setenv - Set an environment variable.
+/// arg1 = key_ptr (null-terminated), arg2 = val_ptr (null-terminated, or 0 to unset).
+/// Returns 0 on success.
+pub fn sys_setenv(key_ptr: u32, val_ptr: u32) -> u32 {
+    if key_ptr == 0 { return u32::MAX; }
+    let key = unsafe { read_user_str(key_ptr) };
+    if key.is_empty() { return u32::MAX; }
+
+    let pd = match crate::task::scheduler::current_thread_page_directory() {
+        Some(pd) => pd.as_u64(),
+        None => return u32::MAX,
+    };
+
+    if val_ptr == 0 {
+        crate::task::env::unset(pd, key);
+    } else {
+        let val = unsafe { read_user_str(val_ptr) };
+        crate::task::env::set(pd, key, val);
+    }
+    0
+}
+
+/// sys_getenv - Get an environment variable.
+/// arg1 = key_ptr (null-terminated), arg2 = val_buf_ptr, arg3 = val_buf_size.
+/// Returns length of value (bytes written, excluding null terminator), or u32::MAX if not found.
+pub fn sys_getenv(key_ptr: u32, val_buf_ptr: u32, val_buf_size: u32) -> u32 {
+    if key_ptr == 0 { return u32::MAX; }
+    let key = unsafe { read_user_str(key_ptr) };
+    if key.is_empty() { return u32::MAX; }
+
+    let pd = match crate::task::scheduler::current_thread_page_directory() {
+        Some(pd) => pd.as_u64(),
+        None => return u32::MAX,
+    };
+
+    match crate::task::env::get(pd, key) {
+        Some(val) => {
+            let val_bytes = val.as_bytes();
+            let copy_len = val_bytes.len().min(val_buf_size as usize);
+            if val_buf_ptr != 0 && val_buf_size > 0
+                && is_valid_user_ptr(val_buf_ptr as u64, val_buf_size as u64)
+            {
+                let buf = unsafe {
+                    core::slice::from_raw_parts_mut(val_buf_ptr as *mut u8, val_buf_size as usize)
+                };
+                buf[..copy_len].copy_from_slice(&val_bytes[..copy_len]);
+                if copy_len < val_buf_size as usize {
+                    buf[copy_len] = 0;
+                }
+            }
+            val_bytes.len() as u32
+        }
+        None => u32::MAX,
+    }
+}
+
+/// sys_listenv - List all environment variables.
+/// arg1 = buf_ptr, arg2 = buf_size.
+/// Format: "KEY=VALUE\0KEY2=VALUE2\0..." packed entries.
+/// Returns total bytes needed (may exceed buf_size).
+pub fn sys_listenv(buf_ptr: u32, buf_size: u32) -> u32 {
+    let pd = match crate::task::scheduler::current_thread_page_directory() {
+        Some(pd) => pd.as_u64(),
+        None => return 0,
+    };
+
+    if buf_ptr == 0 || buf_size == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
+        // Just return the needed size
+        let mut dummy = [0u8; 0];
+        return crate::task::env::list(pd, &mut dummy) as u32;
+    }
+
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
+    crate::task::env::list(pd, buf) as u32
 }

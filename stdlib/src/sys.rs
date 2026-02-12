@@ -45,3 +45,23 @@ pub fn capture_screen(buf: &mut [u32], info: &mut [u32; 2]) -> bool {
     );
     ret == 0
 }
+
+/// List devices. Each 64-byte entry:
+///   [0..32]  path (null-terminated)
+///   [32..56] driver name (null-terminated)
+///   [56]     driver_type (0=Block,1=Char,2=Network,3=Display,4=Input,5=Audio,6=Output,7=Sensor,8=Bus,9=Unknown)
+///   [57..64] padding
+/// Returns total device count.
+pub fn devlist(buf: &mut [u8]) -> u32 {
+    syscall2(SYS_DEVLIST, buf.as_mut_ptr() as u64, buf.len() as u64)
+}
+
+/// List all open pipes. Each 80-byte entry:
+///   [0..4]   pipe_id (u32 LE)
+///   [4..8]   buffered_bytes (u32 LE)
+///   [8..72]  name (64 bytes, null-terminated)
+///   [72..80] padding
+/// Returns total pipe count.
+pub fn pipe_list(buf: &mut [u8]) -> u32 {
+    syscall2(SYS_PIPE_LIST, buf.as_mut_ptr() as u64, buf.len() as u64)
+}

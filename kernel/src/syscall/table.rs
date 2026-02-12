@@ -33,4 +33,5 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_DEVWRITE, "devwrite"),
     (SYS_DEVIOCTL, "devioctl"),
     (SYS_IRQWAIT, "irqwait"),
+    (SYS_PIPE_LIST, "pipe_list"),
 ];

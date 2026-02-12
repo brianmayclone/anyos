@@ -278,6 +278,9 @@ impl Shell {
                 buf.write_str(&self.cwd);
                 buf.write_char('\n');
             }
+            "set" => self.cmd_set(args, buf),
+            "export" => self.cmd_export(args, buf),
+            "unset" => self.cmd_unset(args, buf),
             "exit" => return (false, None),
             "reboot" => {
                 buf.current_color = COLOR_FG;
@@ -301,22 +304,13 @@ impl Shell {
                 let bg_cmd = bg_parts.next().unwrap_or("");
                 let raw_args = bg_parts.next().unwrap_or("");
 
-                // Resolve arguments relative to cwd
-                let resolved;
+                // Pass arguments as-is — programs resolve relative paths
+                // via PWD env var. Only special-case: ls defaults to cwd.
                 let bg_args = if raw_args.is_empty() {
-                    // Commands that default to cwd when no args given
                     match bg_cmd {
                         "ls" => self.cwd.as_str(),
                         _ => "",
                     }
-                } else if !raw_args.starts_with('/') {
-                    // Resolve relative path against cwd
-                    resolved = if self.cwd == "/" {
-                        format!("/{}", raw_args)
-                    } else {
-                        format!("{}/{}", self.cwd, raw_args)
-                    };
-                    &resolved
                 } else {
                     raw_args
                 };
@@ -392,6 +386,9 @@ impl Shell {
         buf.write_str("    clear    Clear screen\n");
         buf.write_str("    cd       Change directory\n");
         buf.write_str("    pwd      Print working directory\n");
+        buf.write_str("    set      Set environment variable\n");
+        buf.write_str("    export   Export environment variable\n");
+        buf.write_str("    unset    Remove environment variable\n");
         buf.write_str("    uname    System identification\n");
         buf.write_str("    exit     Exit terminal\n");
         buf.write_str("\n");
@@ -407,6 +404,102 @@ impl Shell {
         buf.write_str("    dmesg    Kernel boot log\n");
         buf.write_str("\n");
         buf.write_str("  Tip: append & to run in background\n");
+    }
+
+    fn cmd_set(&self, args: &str, buf: &mut TerminalBuffer) {
+        let args = args.trim();
+        if args.is_empty() {
+            // List all variables
+            let mut env_buf = [0u8; 4096];
+            let total = anyos_std::env::list(&mut env_buf);
+            let len = (total as usize).min(env_buf.len());
+            let mut offset = 0;
+            buf.current_color = COLOR_FG;
+            while offset < len {
+                let end = env_buf[offset..len].iter().position(|&b| b == 0).unwrap_or(len - offset);
+                if end == 0 { break; }
+                if let Ok(entry) = core::str::from_utf8(&env_buf[offset..offset + end]) {
+                    buf.write_str(entry);
+                    buf.write_char('\n');
+                }
+                offset += end + 1;
+            }
+            return;
+        }
+        if let Some(eq_pos) = args.find('=') {
+            let key = &args[..eq_pos];
+            let value = &args[eq_pos + 1..];
+            if key.is_empty() {
+                buf.current_color = COLOR_FG;
+                buf.write_str("set: invalid variable name\n");
+                return;
+            }
+            anyos_std::env::set(key, value);
+        } else {
+            // Show value of a single variable
+            let mut val_buf = [0u8; 256];
+            let len = anyos_std::env::get(args, &mut val_buf);
+            buf.current_color = COLOR_FG;
+            if len != u32::MAX {
+                let val = core::str::from_utf8(&val_buf[..len as usize]).unwrap_or("");
+                buf.write_str(args);
+                buf.write_char('=');
+                buf.write_str(val);
+                buf.write_char('\n');
+            } else {
+                buf.write_str("set: '");
+                buf.write_str(args);
+                buf.write_str("' not set\n");
+            }
+        }
+    }
+
+    fn cmd_export(&self, args: &str, buf: &mut TerminalBuffer) {
+        let args = args.trim();
+        if args.is_empty() {
+            // List all with "export" prefix
+            let mut env_buf = [0u8; 4096];
+            let total = anyos_std::env::list(&mut env_buf);
+            let len = (total as usize).min(env_buf.len());
+            let mut offset = 0;
+            buf.current_color = COLOR_FG;
+            while offset < len {
+                let end = env_buf[offset..len].iter().position(|&b| b == 0).unwrap_or(len - offset);
+                if end == 0 { break; }
+                if let Ok(entry) = core::str::from_utf8(&env_buf[offset..offset + end]) {
+                    buf.write_str("export ");
+                    buf.write_str(entry);
+                    buf.write_char('\n');
+                }
+                offset += end + 1;
+            }
+            return;
+        }
+        // Same as set — all env vars are "exported" (inherited by child processes)
+        if let Some(eq_pos) = args.find('=') {
+            let key = &args[..eq_pos];
+            let value = &args[eq_pos + 1..];
+            if !key.is_empty() {
+                anyos_std::env::set(key, value);
+            }
+        } else {
+            // Mark existing var as exported (no-op since all are exported)
+            let mut val_buf = [0u8; 256];
+            let len = anyos_std::env::get(args, &mut val_buf);
+            if len == u32::MAX {
+                anyos_std::env::set(args, "");
+            }
+        }
+    }
+
+    fn cmd_unset(&self, args: &str, buf: &mut TerminalBuffer) {
+        let key = args.trim();
+        if key.is_empty() {
+            buf.current_color = COLOR_FG;
+            buf.write_str("Usage: unset VARIABLE\n");
+            return;
+        }
+        anyos_std::env::unset(key);
     }
 
     fn cmd_cd(&mut self, args: &str, buf: &mut TerminalBuffer) {
@@ -458,6 +551,7 @@ impl Shell {
         }
 
         self.cwd = new_path;
+        anyos_std::env::set("PWD", &self.cwd);
     }
 }
 
@@ -542,6 +636,13 @@ fn main() {
 
     let mut buf = TerminalBuffer::new(cols, rows);
     let mut shell = Shell::new();
+
+    // Set initial environment variables
+    anyos_std::env::set("PWD", "/");
+    anyos_std::env::set("HOME", "/");
+    anyos_std::env::set("USER", "root");
+    anyos_std::env::set("SHELL", "/system/terminal");
+    anyos_std::env::set("PATH", "/bin:/system");
 
     // Welcome message
     buf.current_color = COLOR_TITLE;

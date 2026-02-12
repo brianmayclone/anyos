@@ -8,6 +8,7 @@ mod raw;
 pub mod anim;
 pub mod audio;
 pub mod dll;
+pub mod env;
 pub mod fs;
 pub mod heap;
 pub mod icons;

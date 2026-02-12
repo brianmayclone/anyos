@@ -165,6 +165,14 @@ pub const SYS_CAPTURE_SCREEN: u32 = 161;
 pub const SYS_THREAD_CREATE: u32 = 170;
 pub const SYS_SET_PRIORITY: u32 = 171;
 
+// Pipe listing
+pub const SYS_PIPE_LIST: u32 = 180;
+
+// Environment variables
+pub const SYS_SETENV: u32 = 182;
+pub const SYS_GETENV: u32 = 183;
+pub const SYS_LISTENV: u32 = 184;
+
 // Window creation flags (must match compositor/src/desktop.rs)
 pub const WIN_FLAG_BORDERLESS: u32 = 0x01;
 pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x02;
@@ -361,6 +369,14 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         // Threading
         SYS_THREAD_CREATE => handlers::sys_thread_create(arg1, arg2, arg3, arg4, arg5),
         SYS_SET_PRIORITY => handlers::sys_set_priority(arg1, arg2),
+
+        // Pipe listing
+        SYS_PIPE_LIST => handlers::sys_pipe_list(arg1, arg2),
+
+        // Environment variables
+        SYS_SETENV => handlers::sys_setenv(arg1, arg2),
+        SYS_GETENV => handlers::sys_getenv(arg1, arg2, arg3),
+        SYS_LISTENV => handlers::sys_listenv(arg1, arg2),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

@@ -271,6 +271,89 @@ add_rust_user_program(hostname   ${CMAKE_SOURCE_DIR}/programs/hostname)
 add_rust_user_program(ftp        ${CMAKE_SOURCE_DIR}/programs/ftp)
 add_rust_user_program(wget       ${CMAKE_SOURCE_DIR}/programs/wget)
 add_rust_user_program(play       ${CMAKE_SOURCE_DIR}/programs/play)
+add_rust_user_program(pipes      ${CMAKE_SOURCE_DIR}/programs/pipes)
+add_rust_user_program(devlist    ${CMAKE_SOURCE_DIR}/programs/devlist)
+add_rust_user_program(echo       ${CMAKE_SOURCE_DIR}/programs/echo)
+add_rust_user_program(ps         ${CMAKE_SOURCE_DIR}/programs/ps)
+add_rust_user_program(kill       ${CMAKE_SOURCE_DIR}/programs/kill)
+add_rust_user_program(free       ${CMAKE_SOURCE_DIR}/programs/free)
+add_rust_user_program(uptime     ${CMAKE_SOURCE_DIR}/programs/uptime)
+add_rust_user_program(uname      ${CMAKE_SOURCE_DIR}/programs/uname)
+add_rust_user_program(pwd        ${CMAKE_SOURCE_DIR}/programs/pwd)
+add_rust_user_program(wc         ${CMAKE_SOURCE_DIR}/programs/wc)
+add_rust_user_program(hexdump    ${CMAKE_SOURCE_DIR}/programs/hexdump)
+add_rust_user_program(head       ${CMAKE_SOURCE_DIR}/programs/head)
+add_rust_user_program(tail       ${CMAKE_SOURCE_DIR}/programs/tail)
+add_rust_user_program(clear      ${CMAKE_SOURCE_DIR}/programs/clear)
+add_rust_user_program(env        ${CMAKE_SOURCE_DIR}/programs/env)
+add_rust_user_program(grep       ${CMAKE_SOURCE_DIR}/programs/grep)
+add_rust_user_program(find       ${CMAKE_SOURCE_DIR}/programs/find)
+add_rust_user_program(sort       ${CMAKE_SOURCE_DIR}/programs/sort)
+add_rust_user_program(uniq       ${CMAKE_SOURCE_DIR}/programs/uniq)
+add_rust_user_program(rev        ${CMAKE_SOURCE_DIR}/programs/rev)
+add_rust_user_program(stat       ${CMAKE_SOURCE_DIR}/programs/stat)
+add_rust_user_program(df         ${CMAKE_SOURCE_DIR}/programs/df)
+add_rust_user_program(cal        ${CMAKE_SOURCE_DIR}/programs/cal)
+add_rust_user_program(seq        ${CMAKE_SOURCE_DIR}/programs/seq)
+add_rust_user_program(yes        ${CMAKE_SOURCE_DIR}/programs/yes)
+add_rust_user_program(whoami     ${CMAKE_SOURCE_DIR}/programs/whoami)
+add_rust_user_program(which      ${CMAKE_SOURCE_DIR}/programs/which)
+add_rust_user_program(strings    ${CMAKE_SOURCE_DIR}/programs/strings)
+add_rust_user_program(base64     ${CMAKE_SOURCE_DIR}/programs/base64)
+add_rust_user_program(xxd        ${CMAKE_SOURCE_DIR}/programs/xxd)
+add_rust_user_program(set        ${CMAKE_SOURCE_DIR}/programs/set)
+add_rust_user_program(export     ${CMAKE_SOURCE_DIR}/programs/export)
+
+# true/false: package names are true_cmd/false_cmd (Rust keywords) but binaries named true/false
+set(TRUE_ELF "${CMAKE_BINARY_DIR}/programs/true_cmd/x86_64-anyos-user/debug/true_cmd.elf")
+add_custom_command(
+  OUTPUT ${TRUE_ELF}
+  COMMAND ${CARGO_EXECUTABLE} build
+    --manifest-path ${CMAKE_SOURCE_DIR}/programs/true/Cargo.toml
+    --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
+    --target-dir ${CMAKE_BINARY_DIR}/programs/true_cmd
+  DEPENDS
+    ${CMAKE_SOURCE_DIR}/programs/true/Cargo.toml
+    ${CMAKE_SOURCE_DIR}/programs/true/build.rs
+    ${CMAKE_SOURCE_DIR}/programs/true/src/main.rs
+    ${STDLIB_DEPS}
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Building Rust user program: true"
+)
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/bin/true
+  COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+    ${TRUE_ELF}
+    ${SYSROOT_DIR}/bin/true
+  DEPENDS ${TRUE_ELF}
+  COMMENT "Converting true ELF to flat binary"
+)
+list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/bin/true)
+
+set(FALSE_ELF "${CMAKE_BINARY_DIR}/programs/false_cmd/x86_64-anyos-user/debug/false_cmd.elf")
+add_custom_command(
+  OUTPUT ${FALSE_ELF}
+  COMMAND ${CARGO_EXECUTABLE} build
+    --manifest-path ${CMAKE_SOURCE_DIR}/programs/false/Cargo.toml
+    --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
+    --target-dir ${CMAKE_BINARY_DIR}/programs/false_cmd
+  DEPENDS
+    ${CMAKE_SOURCE_DIR}/programs/false/Cargo.toml
+    ${CMAKE_SOURCE_DIR}/programs/false/build.rs
+    ${CMAKE_SOURCE_DIR}/programs/false/src/main.rs
+    ${STDLIB_DEPS}
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Building Rust user program: false"
+)
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/bin/false
+  COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+    ${FALSE_ELF}
+    ${SYSROOT_DIR}/bin/false
+  DEPENDS ${FALSE_ELF}
+  COMMENT "Converting false ELF to flat binary"
+)
+list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/bin/false)
 
 set(SYSTEM_BINS "")
 add_rust_system_program(init        ${CMAKE_SOURCE_DIR}/programs/system/init)

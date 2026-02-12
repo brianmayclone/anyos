@@ -52,8 +52,8 @@ fn main() {
         anyos_std::println!("\nCPUs       : {}", cpus);
     }
 
-    // Thread info (cmd=1): array of 32-byte entries [tid:u32, prio:u8, state:u8, pad:u16, name:24bytes]
-    let mut thread_buf = [0u8; 32 * 32]; // max 32 threads
+    // Thread info (cmd=1): 36-byte entries [tid:u32, prio:u8, state:u8, arch:u8, pad:u8, name:24bytes, cpu_ticks:u32]
+    let mut thread_buf = [0u8; 36 * 64]; // max 64 threads
     let ret = anyos_std::sys::sysinfo(1, &mut thread_buf);
     if ret != u32::MAX {
         let count = ret;
@@ -62,7 +62,7 @@ fn main() {
         anyos_std::println!("  {}", "--------------------------------------");
 
         for i in 0..count as usize {
-            let entry = &thread_buf[i * 32..(i + 1) * 32];
+            let entry = &thread_buf[i * 36..(i + 1) * 36];
             let tid = u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]);
             let prio = entry[4];
             let state = entry[5];
@@ -74,8 +74,7 @@ fn main() {
                 0 => "Ready",
                 1 => "Running",
                 2 => "Blocked",
-                3 => "Terminated",
-                4 => "Dead",
+                3 => "Dead",
                 _ => "Unknown",
             };
 
