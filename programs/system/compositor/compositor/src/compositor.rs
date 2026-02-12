@@ -284,6 +284,36 @@ impl Compositor {
         id
     }
 
+    /// Add a new layer with pre-allocated pixels (avoids allocation under lock).
+    pub fn add_layer_with_pixels(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        opaque: bool,
+        pixels: Vec<u32>,
+    ) -> u32 {
+        let id = self.next_layer_id;
+        self.next_layer_id += 1;
+        self.layers.push(Layer {
+            id,
+            x,
+            y,
+            width: w,
+            height: h,
+            pixels,
+            shm_ptr: core::ptr::null_mut(),
+            shm_id: 0,
+            opaque,
+            visible: true,
+            has_shadow: false,
+            dirty: true,
+            shadow_cache: None,
+        });
+        id
+    }
+
     /// Add a new layer backed by a shared memory region (SHM).
     /// The compositor reads pixels from the SHM pointer during compositing.
     pub fn add_shm_layer(

@@ -398,9 +398,11 @@ pub fn spawn_blocked(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
 /// The new thread shares the caller's page directory (same CR3) and starts executing
 /// at `entry_rip` with its stack at `user_rsp`. Returns the TID of the new thread,
 /// or 0 on error.
-pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &str) -> u32 {
+///
+/// `priority`: 0 = inherit from parent, 1-255 = explicit priority.
+pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &str, priority: u8) -> u32 {
     // Read caller's state under the lock
-    let (pd, arch_mode, brk) = {
+    let (pd, arch_mode, brk, parent_pri) = {
         let guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
         let sched = match guard.as_ref() {
@@ -420,11 +422,14 @@ pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &st
             Some(pd) => pd,
             None => return 0, // Must be a user process
         };
-        (pd, thread.arch_mode, thread.brk)
+        (pd, thread.arch_mode, thread.brk, thread.priority)
     };
 
+    // Priority: 0 = inherit from parent, otherwise use explicit value
+    let effective_pri = if priority == 0 { parent_pri } else { priority };
+
     // Spawn a new kernel thread in Blocked state (uses the loader's trampoline).
-    let tid = spawn_blocked(crate::task::loader::thread_create_trampoline, 100, name);
+    let tid = spawn_blocked(crate::task::loader::thread_create_trampoline, effective_pri, name);
 
     // Configure the new thread: share the page directory, mark as user, set pd_shared.
     {

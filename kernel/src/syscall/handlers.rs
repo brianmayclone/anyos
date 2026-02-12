@@ -90,9 +90,13 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
         if pipe_id != 0 {
             crate::ipc::pipe::write(pipe_id, buf);
         }
+        // Acquire the serial output lock so entire messages are atomic —
+        // without this, user-space println! bytes interleave with kernel serial_println!
+        let lock_state = crate::drivers::serial::output_lock_acquire();
         for &byte in buf {
             crate::drivers::serial::write_byte(byte);
         }
+        crate::drivers::serial::output_lock_release(lock_state);
         len
     } else if fd >= 3 {
         let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
@@ -1637,9 +1641,9 @@ pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
 }
 
 /// SYS_THREAD_CREATE: Create a new thread in the current process.
-/// arg1 = entry_rip, arg2 = user_rsp, arg3 = name_ptr, arg4 = name_len
+/// arg1 = entry_rip, arg2 = user_rsp, arg3 = name_ptr, arg4 = name_len, arg5 = priority (0=inherit)
 /// Returns TID of new thread, or 0 on error.
-pub fn sys_thread_create(entry_rip: u32, user_rsp: u32, name_ptr: u32, name_len: u32) -> u32 {
+pub fn sys_thread_create(entry_rip: u32, user_rsp: u32, name_ptr: u32, name_len: u32, priority: u32) -> u32 {
     let entry = entry_rip as u64;
     let rsp = user_rsp as u64;
 
@@ -1665,9 +1669,31 @@ pub fn sys_thread_create(entry_rip: u32, user_rsp: u32, name_ptr: u32, name_len:
     }
     let name = core::str::from_utf8(&name_buf[..len]).unwrap_or("thread");
 
-    let tid = crate::task::scheduler::create_thread_in_current_process(entry, rsp, name);
-    crate::serial_println!("sys_thread_create: entry={:#x} rsp={:#x} name={} -> TID={}", entry, rsp, name, tid);
+    // Priority: 0 means inherit from parent (handled by scheduler), 1-255 = explicit
+    let pri = if priority > 0 && priority <= 255 { priority as u8 } else { 0 };
+
+    let tid = crate::task::scheduler::create_thread_in_current_process(entry, rsp, name, pri);
+    crate::serial_println!("sys_thread_create: entry={:#x} rsp={:#x} name={} pri={} -> TID={}", entry, rsp, name, pri, tid);
     tid
+}
+
+/// SYS_SET_PRIORITY: Change the priority of a thread.
+/// arg1 = tid (0 = self), arg2 = new priority (1-255)
+/// Returns 0 on success, u32::MAX on error.
+pub fn sys_set_priority(tid: u32, priority: u32) -> u32 {
+    if priority == 0 || priority > 255 {
+        return u32::MAX;
+    }
+    let target_tid = if tid == 0 {
+        crate::task::scheduler::current_tid()
+    } else {
+        tid
+    };
+    if target_tid == 0 {
+        return u32::MAX;
+    }
+    crate::task::scheduler::set_thread_priority(target_tid, priority as u8);
+    0
 }
 
 /// SYS_CAPTURE_SCREEN: Capture the current framebuffer contents to a user buffer.

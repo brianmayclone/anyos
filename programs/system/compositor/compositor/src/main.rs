@@ -43,6 +43,13 @@ fn acquire_lock() {
     }
 }
 
+/// Try to acquire the lock without blocking. Returns true if acquired.
+fn try_lock() -> bool {
+    DESKTOP_LOCK
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_ok()
+}
+
 fn release_lock() {
     DESKTOP_LOCK.store(false, Ordering::Release);
 }
@@ -55,21 +62,41 @@ unsafe fn desktop_ref() -> &'static mut desktop::Desktop {
 // ── Render Thread ───────────────────────────────────────────────────────────
 
 /// Render thread entry point — composites and flushes at ~60 Hz.
+///
+/// Animations and clock are ticked here (not in the management thread) so they
+/// stay smooth even when the management thread is busy with IPC / shm_map.
+///
+/// CRITICAL: Uses try_lock() — NEVER blocks on the management thread.
+/// If the lock is held (e.g. during window creation), the render thread
+/// simply retries after a short sleep. The previous frame stays on-screen
+/// so the user sees no glitch — just a held frame for 2ms instead of
+/// a 200ms stall.
 fn render_thread_entry() {
     println!("compositor: render thread running");
     let mut frame: u32 = 0;
     loop {
-        acquire_lock();
-        let desktop = unsafe { desktop_ref() };
-        desktop.compose();
-        release_lock();
+        if try_lock() {
+            let desktop = unsafe { desktop_ref() };
+            // Tick animations + clock before compositing so updated state is
+            // reflected in the same frame — no extra lock round-trip needed.
+            desktop.tick_animations();
+            if frame % 60 == 0 {
+                desktop.update_clock();
+            }
+            desktop.compose();
+            release_lock();
 
-        frame = frame.wrapping_add(1);
-        if frame % 120 == 0 {
-            println!("compositor: render frame {}", frame);
+            frame = frame.wrapping_add(1);
+            if frame % 120 == 0 {
+                println!("compositor: render frame {}", frame);
+            }
+
+            process::sleep(16);
+        } else {
+            // Lock contended — management thread is doing work (e.g. window creation).
+            // Don't block: sleep briefly and retry. Previous frame stays on screen.
+            process::yield_cpu();
         }
-
-        process::sleep(16);
     }
 }
 
@@ -150,11 +177,19 @@ fn main() {
     core::mem::forget(render_stack_vec); // Leak — render thread runs forever
     // RSP must be STACK_TOP - 8 for x86_64 ABI alignment
     let render_stack_top = render_stack_base + render_stack_size - 8;
-    let render_tid = process::thread_create(render_thread_entry, render_stack_top, "compositor/gpu");
+    // Render thread gets high priority (250) for smooth 60 Hz compositing.
+    // Management thread gets lower priority (150) — IPC/window ops can tolerate latency.
+    let render_tid = process::thread_create_with_priority(
+        render_thread_entry, render_stack_top, "compositor/gpu", 250,
+    );
     println!(
-        "compositor: render thread spawned (TID={}, stack=0x{:X})",
+        "compositor: render thread spawned (TID={}, stack=0x{:X}, priority=250)",
         render_tid, render_stack_base
     );
+
+    // Lower management thread priority so render thread gets preferential scheduling
+    process::set_priority(0, 150);
+    println!("compositor: management thread priority set to 150");
 
     println!("compositor: entering main loop (multi-threaded)");
 
@@ -162,13 +197,11 @@ fn main() {
 
     let mut events_buf = [[0u32; 5]; 256];
     let mut ipc_buf = [0u32; 5];
-    let mut frame_count: u32 = 0;
-
     loop {
         // Poll raw input events (no lock needed — just reading from kernel)
         let event_count = ipc::input_poll(&mut events_buf) as usize;
 
-        // Process input under lock
+        // Process input under lock (skip entirely if no events — avoids lock contention)
         if event_count > 0 {
             acquire_lock();
             let desktop = unsafe { desktop_ref() };
@@ -176,12 +209,6 @@ fn main() {
             desktop.process_input(&events_buf, event_count);
             desktop.damage_cursor();
             // Flush HW cursor move commands while holding lock
-            desktop.compositor.flush_gpu();
-            release_lock();
-        } else {
-            // Still flush any queued HW cursor commands
-            acquire_lock();
-            let desktop = unsafe { desktop_ref() };
             desktop.compositor.flush_gpu();
             release_lock();
         }
@@ -193,20 +220,77 @@ fn main() {
             }
             if ipc_buf[0] >= 0x1000 && ipc_buf[0] < 0x2000 {
                 let response = match ipc_buf[0] {
-                    // CMD_CREATE_WINDOW: shm_map OUTSIDE lock (potentially slow)
+                    // CMD_CREATE_WINDOW: heavy work OUTSIDE lock, fast attach UNDER lock
                     ipc_protocol::CMD_CREATE_WINDOW => {
-                        let shm_id = ipc_buf[4] >> 16;
-                        let shm_addr = if shm_id > 0 {
-                            ipc::shm_map(shm_id)
+                        let app_tid = ipc_buf[1];
+                        let width = ipc_buf[2];
+                        let height = ipc_buf[3];
+                        let shm_id_and_flags = ipc_buf[4];
+                        let shm_id = shm_id_and_flags >> 16;
+                        let flags = shm_id_and_flags & 0xFFFF;
+
+                        if shm_id == 0 || width == 0 || height == 0 {
+                            None
                         } else {
-                            0
-                        };
-                        acquire_lock();
-                        let desktop = unsafe { desktop_ref() };
-                        let resp =
-                            desktop.handle_create_window_pre_mapped(&ipc_buf, shm_addr as usize);
-                        release_lock();
-                        resp
+                            // ── OUTSIDE LOCK: expensive operations ──
+                            let shm_addr = ipc::shm_map(shm_id);
+                            if shm_addr == 0 {
+                                None
+                            } else {
+                                let borderless = flags & desktop::WIN_FLAG_BORDERLESS != 0;
+                                let full_h = if borderless {
+                                    height
+                                } else {
+                                    height + desktop::TITLE_BAR_HEIGHT
+                                };
+
+                                // Pre-allocate pixel buffer (~1 MB for typical window)
+                                let mut pre_pixels =
+                                    alloc::vec![0u32; (width * full_h) as usize];
+
+                                // Pre-render window chrome (title bar, buttons, body)
+                                if !borderless {
+                                    desktop::pre_render_chrome(
+                                        &mut pre_pixels, width, full_h, "Window", true,
+                                    );
+                                    // Copy initial SHM content into content area
+                                    desktop::copy_shm_to_pixels(
+                                        &mut pre_pixels,
+                                        width,
+                                        desktop::TITLE_BAR_HEIGHT,
+                                        shm_addr as *const u32,
+                                        width,
+                                        height,
+                                    );
+                                }
+
+                                // ── UNDER LOCK: fast metadata-only operations ──
+                                acquire_lock();
+                                let desktop = unsafe { desktop_ref() };
+                                let win_id = desktop.create_ipc_window_fast(
+                                    app_tid,
+                                    width,
+                                    height,
+                                    flags,
+                                    shm_id,
+                                    shm_addr as *mut u32,
+                                    pre_pixels,
+                                );
+                                let target = desktop.get_sub_id_for_tid(app_tid);
+                                release_lock();
+
+                                Some((
+                                    target,
+                                    [
+                                        ipc_protocol::RESP_WINDOW_CREATED,
+                                        win_id,
+                                        shm_id,
+                                        app_tid,
+                                        0,
+                                    ],
+                                ))
+                            }
+                        }
                     }
                     // CMD_RESIZE_SHM: shm_map OUTSIDE lock (potentially slow)
                     ipc_protocol::CMD_RESIZE_SHM => {
@@ -280,19 +364,9 @@ fn main() {
             }
         }
 
-        // Tick animations + clock under lock
-        {
-            acquire_lock();
-            let desktop = unsafe { desktop_ref() };
-            desktop.tick_animations();
-            frame_count = frame_count.wrapping_add(1);
-            if frame_count % 60 == 0 {
-                desktop.update_clock();
-            }
-            release_lock();
-        }
-
-        // NOTE: compose() is handled by the render thread — not called here.
+        // NOTE: tick_animations(), update_clock(), and compose() are all handled
+        // by the render thread — not called here. This ensures smooth 60 Hz
+        // animations even when this thread is busy with IPC / shm_map.
 
         // Sleep to maintain ~60 Hz management frame rate
         process::sleep(16);

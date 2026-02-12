@@ -78,14 +78,29 @@ pub fn spawn_piped(path: &str, args: &str, pipe_id: u32) -> u32 {
 /// `name` is a human-readable thread name (max 31 chars, shown in task manager/logs).
 ///
 /// Returns the TID of the new thread, or 0 on error.
+/// The new thread inherits the parent's priority.
 pub fn thread_create(entry: fn(), stack_top: usize, name: &str) -> u32 {
-    syscall4(
+    thread_create_with_priority(entry, stack_top, name, 0)
+}
+
+/// Create a new thread with an explicit priority (1-255, higher = more CPU time).
+/// Priority 0 inherits from the parent thread.
+pub fn thread_create_with_priority(entry: fn(), stack_top: usize, name: &str, priority: u8) -> u32 {
+    syscall5(
         SYS_THREAD_CREATE,
         entry as u64,
         stack_top as u64,
         name.as_ptr() as u64,
         name.len() as u64,
+        priority as u64,
     )
+}
+
+/// Set the priority of a thread (1-255, higher = more CPU time).
+/// `tid` = 0 means the calling thread itself.
+/// Returns 0 on success.
+pub fn set_priority(tid: u32, priority: u8) -> u32 {
+    syscall2(SYS_SET_PRIORITY, tid as u64, priority as u64)
 }
 
 /// Get command-line arguments (raw). Returns the args length.

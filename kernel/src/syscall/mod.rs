@@ -163,6 +163,7 @@ pub const SYS_CAPTURE_SCREEN: u32 = 161;
 
 // Threading
 pub const SYS_THREAD_CREATE: u32 = 170;
+pub const SYS_SET_PRIORITY: u32 = 171;
 
 // Window creation flags (must match compositor/src/desktop.rs)
 pub const WIN_FLAG_BORDERLESS: u32 = 0x01;
@@ -358,7 +359,8 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         SYS_CAPTURE_SCREEN => handlers::sys_capture_screen(arg1, arg2, arg3),
 
         // Threading
-        SYS_THREAD_CREATE => handlers::sys_thread_create(arg1, arg2, arg3, arg4),
+        SYS_THREAD_CREATE => handlers::sys_thread_create(arg1, arg2, arg3, arg4, arg5),
+        SYS_SET_PRIORITY => handlers::sys_set_priority(arg1, arg2),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

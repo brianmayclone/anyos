@@ -131,6 +131,7 @@ pub(crate) const SYS_CAPTURE_SCREEN: u32 = 161;
 
 // Threading
 pub(crate) const SYS_THREAD_CREATE: u32 = 170;
+pub(crate) const SYS_SET_PRIORITY: u32 = 171;
 
 // UDP networking
 pub(crate) const SYS_UDP_BIND: u32 = 150;

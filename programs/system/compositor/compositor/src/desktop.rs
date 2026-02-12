@@ -37,7 +37,7 @@ const COLOR_MIN_PRESS: u32 = 0xFFCB9724;
 const COLOR_MAX_PRESS: u32 = 0xFF1FA030;
 
 pub const MENUBAR_HEIGHT: u32 = 24;
-const TITLE_BAR_HEIGHT: u32 = 28;
+pub const TITLE_BAR_HEIGHT: u32 = 28;
 
 // ── System Font ────────────────────────────────────────────────────────────
 const FONT_ID: u16 = 0;      // System font — regular weight
@@ -2026,6 +2026,106 @@ impl Desktop {
         id
     }
 
+    /// Create an IPC window using pre-rendered pixels (fast path — no allocation under lock).
+    /// The caller already allocated the pixel buffer and rendered chrome outside the lock.
+    pub fn create_ipc_window_fast(
+        &mut self,
+        app_tid: u32,
+        content_w: u32,
+        content_h: u32,
+        flags: u32,
+        shm_id: u32,
+        shm_ptr: *mut u32,
+        pre_pixels: Vec<u32>,
+    ) -> u32 {
+        let id = self.next_window_id;
+        self.next_window_id += 1;
+
+        let borderless = flags & WIN_FLAG_BORDERLESS != 0;
+        let full_h = if borderless {
+            content_h
+        } else {
+            content_h + TITLE_BAR_HEIGHT
+        };
+
+        // Use pre-rendered pixels — NO allocation under lock!
+        let layer_id = self.compositor.add_layer_with_pixels(
+            100,
+            MENUBAR_HEIGHT as i32 + 40,
+            content_w,
+            full_h,
+            false,
+            pre_pixels,
+        );
+
+        if !borderless {
+            if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
+                layer.has_shadow = true;
+            }
+        }
+
+        let win = WindowInfo {
+            id,
+            layer_id,
+            title: String::from("Window"),
+            x: 100,
+            y: MENUBAR_HEIGHT as i32 + 40,
+            content_width: content_w,
+            content_height: content_h,
+            flags,
+            owner_tid: app_tid,
+            events: VecDeque::with_capacity(32),
+            focused: false,
+            saved_bounds: None,
+            maximized: false,
+            shm_id,
+            shm_ptr,
+            shm_width: content_w,
+            shm_height: content_h,
+        };
+
+        self.windows.push(win);
+        // Lightweight focus — skip re-rendering the window (already pre-rendered)
+        self.focus_window_no_render(id);
+
+        id
+    }
+
+    /// Focus a window without re-rendering it (used when chrome was pre-rendered).
+    fn focus_window_no_render(&mut self, id: u32) {
+        // Unfocus previous — only repaint title bar (lightweight)
+        if let Some(old_id) = self.focused_window {
+            if old_id != id {
+                if let Some(idx) = self.windows.iter().position(|w| w.id == old_id) {
+                    self.windows[idx].focused = false;
+                    let win_id = self.windows[idx].id;
+                    self.render_titlebar(win_id);
+                }
+            }
+        }
+
+        if let Some(idx) = self.windows.iter().position(|w| w.id == id) {
+            self.windows[idx].focused = true;
+            self.focused_window = Some(id);
+            let layer_id = self.windows[idx].layer_id;
+            self.compositor.set_focused_layer(Some(layer_id));
+            self.compositor.raise_layer(layer_id);
+
+            let win = self.windows.remove(idx);
+            self.windows.push(win);
+
+            // Mark dirty so it gets composited — but DON'T call render_window()
+            self.compositor.mark_layer_dirty(layer_id);
+
+            if self.menu_bar.on_focus_change(Some(id)) {
+                self.draw_menubar();
+                self.compositor.add_damage(Rect::new(
+                    0, 0, self.screen_width, MENUBAR_HEIGHT + 1,
+                ));
+            }
+        }
+    }
+
     /// Handle a "present" command for an IPC window.
     /// Copies the app's SHM content into the window layer's content area.
     pub fn present_ipc_window(&mut self, window_id: u32) {
@@ -2513,6 +2613,97 @@ fn draw_clock_to_menubar(pixels: &mut [u32], stride: u32) {
         anyos_std::ui::window::font_render_buf(
             FONT_ID, FONT_SIZE, pixels, stride, h, tx, fy, COLOR_MENUBAR_TEXT, s,
         );
+    }
+}
+
+// ── Pre-render: Window Chrome (called OUTSIDE lock) ─────────────────────────
+
+/// Pre-render window chrome (title bar, buttons, body) into a pixel buffer.
+/// This is the expensive part of window creation — allocation + pixel rendering.
+/// Called outside the Desktop lock so the render thread keeps compositing.
+pub fn pre_render_chrome(
+    pixels: &mut [u32],
+    stride: u32,
+    full_h: u32,
+    title: &str,
+    focused: bool,
+) {
+    // Clear to transparent (for rounded corners)
+    for p in pixels.iter_mut() {
+        *p = 0x00000000;
+    }
+
+    // Draw window body (rounded rect)
+    fill_rounded_rect(pixels, stride, full_h, 0, 0, stride, full_h, 8, COLOR_WINDOW_BG);
+
+    // 1px rounded outline around the entire window
+    draw_rounded_rect_outline(pixels, stride, full_h, 0, 0, stride, full_h, 8, COLOR_WINDOW_BORDER);
+
+    // Title bar (rounded top corners)
+    let tb_color = if focused {
+        COLOR_TITLEBAR_FOCUSED
+    } else {
+        COLOR_TITLEBAR_UNFOCUSED
+    };
+    fill_rounded_rect_top(pixels, stride, 0, 0, stride, TITLE_BAR_HEIGHT, 8, tb_color);
+
+    // Title bar bottom border
+    let border_y = TITLE_BAR_HEIGHT - 1;
+    for x in 0..stride {
+        let idx = (border_y * stride + x) as usize;
+        if idx < pixels.len() {
+            pixels[idx] = COLOR_WINDOW_BORDER;
+        }
+    }
+
+    // Traffic light buttons (no hover/press animations for a brand-new window)
+    let base_colors: [u32; 3] = if focused {
+        [COLOR_CLOSE_BTN, COLOR_MIN_BTN, COLOR_MAX_BTN]
+    } else {
+        [COLOR_BTN_UNFOCUSED, COLOR_BTN_UNFOCUSED, COLOR_BTN_UNFOCUSED]
+    };
+    for (i, &color) in base_colors.iter().enumerate() {
+        let cx = 8 + i as i32 * TITLE_BTN_SPACING as i32 + TITLE_BTN_SIZE as i32 / 2;
+        let cy = TITLE_BTN_Y as i32 + TITLE_BTN_SIZE as i32 / 2;
+        fill_circle(pixels, stride, full_h, cx, cy, (TITLE_BTN_SIZE / 2) as i32, color);
+    }
+
+    // Title text (centered)
+    let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, title);
+    let tx = (stride as i32 - tw as i32) / 2;
+    let ty = ((TITLE_BAR_HEIGHT as i32 - th as i32) / 2).max(0);
+    anyos_std::ui::window::font_render_buf(
+        FONT_ID, FONT_SIZE, pixels, stride, full_h, tx, ty,
+        COLOR_TITLEBAR_TEXT, title,
+    );
+}
+
+/// Copy SHM content into a pre-rendered pixel buffer at the content area offset.
+/// Called outside the Desktop lock.
+pub fn copy_shm_to_pixels(
+    pixels: &mut [u32],
+    stride: u32,
+    content_y: u32,
+    shm_ptr: *const u32,
+    shm_w: u32,
+    shm_h: u32,
+) {
+    if shm_ptr.is_null() || shm_w == 0 || shm_h == 0 {
+        return;
+    }
+    let src_count = (shm_w * shm_h) as usize;
+    let src_slice = unsafe { core::slice::from_raw_parts(shm_ptr, src_count) };
+    let copy_w = shm_w.min(stride) as usize;
+    for row in 0..shm_h {
+        let src_off = (row * shm_w) as usize;
+        let dst_off = ((content_y + row) * stride) as usize;
+        let src_end = (src_off + copy_w).min(src_slice.len());
+        let dst_end = (dst_off + copy_w).min(pixels.len());
+        let safe_w = (src_end - src_off).min(dst_end - dst_off);
+        if safe_w > 0 {
+            pixels[dst_off..dst_off + safe_w]
+                .copy_from_slice(&src_slice[src_off..src_off + safe_w]);
+        }
     }
 }
 
