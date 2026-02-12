@@ -26,6 +26,11 @@
 [BITS 64]
 
 extern syscall_dispatch
+extern LAPIC_TO_PERCPU
+
+; LAPIC virtual address: LAPIC_VIRT_BASE(0xFFFFFFFFD0100000) + LAPIC_ID(0x20)
+; In x86-64 kernel code model, this address fits in sign-extended 32-bit.
+%define LAPIC_ID_ADDR 0xFFFFFFFFD0100020
 
 global syscall_fast_entry
 syscall_fast_entry:
@@ -33,6 +38,19 @@ syscall_fast_entry:
     swapgs                          ; GS.base = kernel per-CPU data
     mov [gs:8], rsp                 ; per_cpu.user_rsp = user RSP
     mov rsp, [gs:0]                 ; RSP = per_cpu.kernel_rsp
+
+    ; === Phase 1b: Verify PERCPU ownership ===
+    ; KERNEL_GS_BASE can get corrupted (QEMU TCG MSR state leak between vCPUs).
+    ; If [gs:16] (PERCPU.lapic_id) doesn't match this CPU's hardware LAPIC ID,
+    ; we loaded the wrong kernel_rsp. Undo, repair, and retry.
+    push rax                        ; save syscall number (on maybe-wrong stack — safe,
+                                    ;   stack top is unused by any running code)
+    mov rax, LAPIC_ID_ADDR
+    mov eax, [rax]                  ; read LAPIC ID register (UC MMIO, per-CPU)
+    shr eax, 24                     ; EAX = this CPU's LAPIC ID (bits 31:24)
+    cmp al, byte [gs:16]            ; compare with PERCPU.lapic_id
+    jne .repair_percpu              ; mismatch — wrong PERCPU, need to fix
+    pop rax                         ; correct — restore syscall number
 
     ; === Phase 2: Build SyscallRegs frame (matching INT 0x80 layout) ===
     ; CPU-pushed interrupt frame (emulated for SYSCALL)
@@ -115,3 +133,61 @@ syscall_fast_entry:
 .fallback_iretq:
     ; Non-canonical RIP — use IRETQ (safe for any address)
     iretq
+
+; =============================================================================
+; PERCPU repair path — entered when KERNEL_GS_BASE points to wrong CPU's PERCPU
+; =============================================================================
+; At entry:
+;   EAX = our LAPIC ID (from hardware MMIO read)
+;   RSP = wrong kernel stack (original RAX pushed on top)
+;   GS_BASE = wrong PERCPU address (from SWAPGS with corrupted KERNEL_GS_BASE)
+;   KERNEL_GS_BASE = user's original GS value
+;   RCX = user RIP, R11 = user RFLAGS, all other regs = user values
+;
+; Strategy: undo the SWAPGS + stack switch, fix KERNEL_GS_BASE via a
+; LAPIC_ID → PERCPU lookup table, then retry the entire entry sequence.
+
+.repair_percpu:
+    ; Step 1: Undo — restore user state
+    pop rax                         ; restore syscall number from wrong stack
+    mov rsp, [gs:8]                 ; restore user RSP (value is correct in any slot)
+    swapgs                          ; undo SWAPGS: GS_BASE←user_gs, KGS←wrong_percpu
+
+    ; Step 2: Fix KERNEL_GS_BASE using LAPIC_TO_PERCPU lookup table.
+    ; We need ECX, EAX, EDX for wrmsr — push clobbered user regs to user stack.
+    ; (User stack is valid — the user was executing code at SYSCALL.)
+    push rax                        ; save syscall number
+    push rcx                        ; save user RIP
+    push rdx                        ; save user arg3
+
+    ; Re-read LAPIC ID (RAX was overwritten by pop)
+    mov rax, LAPIC_ID_ADDR
+    mov eax, [rax]
+    shr eax, 24
+    movzx eax, al                   ; EAX = LAPIC ID (zero-extended for table index)
+
+    ; Look up correct PERCPU address
+    lea rcx, [rel LAPIC_TO_PERCPU]
+    mov rcx, [rcx + rax*8]          ; RCX = &PERCPU[correct_cpu_id]
+    test rcx, rcx
+    jz .repair_fatal                ; shouldn't happen — no PERCPU for this LAPIC ID
+
+    ; wrmsr(MSR_KERNEL_GS_BASE = 0xC0000102, correct_percpu_addr)
+    mov rax, rcx                    ; RAX = correct PERCPU address
+    mov rdx, rcx
+    shr rdx, 32                     ; EDX:EAX = correct PERCPU address (64-bit)
+    mov ecx, 0xC0000102             ; ECX = MSR_KERNEL_GS_BASE
+    wrmsr                           ; Fix the corrupted MSR
+
+    ; Step 3: Restore user regs and retry
+    pop rdx                         ; restore user arg3
+    pop rcx                         ; restore user RIP
+    pop rax                         ; restore syscall number
+    jmp syscall_fast_entry          ; retry — SWAPGS will now load correct PERCPU
+
+.repair_fatal:
+    ; No PERCPU entry found — halt (should never happen after init)
+    cli
+.repair_halt:
+    hlt
+    jmp .repair_halt

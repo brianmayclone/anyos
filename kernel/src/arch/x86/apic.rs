@@ -41,10 +41,10 @@ const ICR_DEASSERT: u32 = 0;
 pub const VECTOR_TIMER: u8    = 48;
 /// Interrupt vector for spurious interrupts (INT 255).
 pub const VECTOR_SPURIOUS: u8 = 255;
-/// IPI vector used to halt a remote processor.
-pub const VECTOR_IPI_HALT: u8 = 253;
-/// IPI vector used for TLB shootdown across cores.
-pub const VECTOR_IPI_TLB: u8  = 252;
+/// IPI vector used to halt a remote processor (INT 53 = IRQ 21).
+pub const VECTOR_IPI_HALT: u8 = 53;
+/// IPI vector used for TLB shootdown across cores (INT 52 = IRQ 20).
+pub const VECTOR_IPI_TLB: u8  = 52;
 
 /// Virtual address where LAPIC MMIO is mapped
 const LAPIC_VIRT_BASE: u64 = 0xFFFF_FFFF_D010_0000;

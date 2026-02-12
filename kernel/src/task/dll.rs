@@ -132,6 +132,39 @@ pub fn map_all_dlls_into(pd_phys: PhysAddr) {
     }
 }
 
+/// Handle a demand-page fault for DLL pages.
+///
+/// Called from the page fault handler (ISR 14) when a user process accesses
+/// an unmapped page in the DLL virtual range (0x04000000-0x07FFFFFF).
+/// Looks up the shared physical frame and maps it into the current PD
+/// (via recursive mapping — CR3 is already the faulting process's PD).
+///
+/// Returns `true` if the page was mapped (retry the instruction), `false`
+/// if the address is not covered by any loaded DLL (real fault).
+pub fn handle_dll_demand_page(vaddr: u64) -> bool {
+    // Quick range check — DLL region is 0x04000000-0x07FFFFFF
+    if vaddr < 0x0400_0000 || vaddr >= 0x0800_0000 {
+        return false;
+    }
+
+    let page_base = vaddr & !0xFFF;
+
+    let dlls = LOADED_DLLS.lock();
+    for dll in dlls.iter() {
+        let dll_end = dll.base_vaddr + (dll.pages.len() as u64) * PAGE_SIZE;
+        if page_base >= dll.base_vaddr && page_base < dll_end {
+            let page_idx = ((page_base - dll.base_vaddr) / PAGE_SIZE) as usize;
+            let phys = dll.pages[page_idx];
+            // Map with Present | User (read-only, executable).
+            // We're already running with the faulting process's CR3,
+            // so map_page uses recursive mapping on the correct PD.
+            virtual_mem::map_page(VirtAddr::new(page_base), phys, PAGE_USER);
+            return true;
+        }
+    }
+    false
+}
+
 /// Get the base address of a loaded DLL by path name.
 pub fn get_dll_base(path: &str) -> Option<u64> {
     let name = path.rsplit('/').next().unwrap_or(path);

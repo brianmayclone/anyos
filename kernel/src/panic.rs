@@ -7,26 +7,18 @@ use core::panic::PanicInfo;
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    unsafe { core::arch::asm!("cli"); }
+    // Enter panic mode: halt other CPUs, switch to blocking serial,
+    // force-release serial lock to prevent deadlock.
+    crate::drivers::serial::enter_panic_mode();
 
     crate::serial_println!("=== KERNEL PANIC ===");
     crate::serial_println!("{}", info);
 
-    // Switch framebuffer to error display
-    crate::drivers::boot_console::enter_error_mode();
-    {
-        use core::fmt::Write;
-        let _ = write!(crate::drivers::boot_console::ErrorWriter, "KERNEL PANIC\n\n{}\n", info);
-    }
-
-    crate::drivers::vga_text::set_color(
-        crate::drivers::vga_text::Color::White,
-        crate::drivers::vga_text::Color::Red,
-    );
-    crate::vga_println!("KERNEL PANIC: {}", info);
+    // Show Red Screen of Death on the framebuffer
+    crate::drivers::rsod::show_panic(&format_args!("{}", info));
 
     loop {
-        unsafe { core::arch::asm!("hlt"); }
+        unsafe { core::arch::asm!("cli; hlt"); }
     }
 }
 

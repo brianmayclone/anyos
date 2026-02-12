@@ -274,7 +274,7 @@ impl Shell {
 
     fn cmd_uptime(&self, out: &mut dyn ShellOutput) {
         let ticks = crate::arch::x86::pit::get_ticks();
-        let secs = ticks / 100;
+        let secs = ticks / crate::arch::x86::pit::TICK_HZ;
         let mins = secs / 60;
         let hours = mins / 60;
         use alloc::format;
@@ -386,7 +386,7 @@ impl Shell {
         for seq in 0..4u16 {
             match crate::net::icmp::ping(ip, seq, 200) {
                 Some((rtt, ttl)) => {
-                    let ms = rtt * 10; // 100Hz timer, each tick is 10ms
+                    let ms = rtt * 1000 / crate::arch::x86::pit::TICK_HZ;
                     out.write_line(&format!(
                         "Reply from {}: seq={} ttl={} time={}ms",
                         ip, seq, ttl, ms

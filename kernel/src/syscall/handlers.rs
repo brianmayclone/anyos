@@ -47,11 +47,21 @@ pub fn sys_exit(status: u32) -> u32 {
     }
 
     if let Some(pd_phys) = crate::task::scheduler::current_thread_page_directory() {
-        unsafe {
-            let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
-            core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3);
+        // Only destroy the page directory if this thread owns it (not shared with siblings).
+        // Intra-process child threads have pd_shared=true — they share the parent's PD.
+        if !crate::task::scheduler::current_thread_pd_shared() {
+            unsafe {
+                let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
+                core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3);
+            }
+            crate::memory::virtual_mem::destroy_user_page_directory(pd_phys);
+        } else {
+            // Shared PD: just switch to kernel CR3 so we don't run on the user PD after exit
+            unsafe {
+                let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
+                core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3);
+            }
         }
-        crate::memory::virtual_mem::destroy_user_page_directory(pd_phys);
     }
 
     crate::task::scheduler::exit_current(status);
@@ -194,14 +204,20 @@ pub fn sys_sbrk(increment: i32) -> u32 {
 
         let mut addr = old_page_end;
         while addr < new_page_end {
-            if let Some(phys) = physical::alloc_frame() {
-                virtual_mem::map_page(VirtAddr::new(addr as u64), phys, 0x02 | 0x04);
-                unsafe { core::ptr::write_bytes(addr as *mut u8, 0, page_size as usize); }
-            } else {
-                return u32::MAX;
+            // Skip pages already mapped (another thread sharing this PD may have mapped them)
+            if !virtual_mem::is_page_mapped(VirtAddr::new(addr as u64)) {
+                if let Some(phys) = physical::alloc_frame() {
+                    virtual_mem::map_page(VirtAddr::new(addr as u64), phys, 0x02 | 0x04);
+                    unsafe { core::ptr::write_bytes(addr as *mut u8, 0, page_size as usize); }
+                } else {
+                    return u32::MAX;
+                }
             }
             addr += page_size;
         }
+
+        // set_current_thread_brk also syncs brk across all sibling threads
+        // sharing the same page directory (with cli to prevent timer deadlock).
         crate::task::scheduler::set_current_thread_brk(new_brk);
         old_brk
     } else {
@@ -664,7 +680,8 @@ pub fn sys_tcp_connect(params_ptr: u32) -> u32 {
     let ip = crate::net::types::Ipv4Addr([params[0], params[1], params[2], params[3]]);
     let port = u16::from_le_bytes([params[4], params[5]]);
     let timeout = u32::from_le_bytes([params[8], params[9], params[10], params[11]]);
-    let timeout_ticks = if timeout == 0 { 1000 } else { timeout / 10 }; // ms to ticks (100Hz)
+    let pit_hz = crate::arch::x86::pit::TICK_HZ;
+    let timeout_ticks = if timeout == 0 { pit_hz } else { timeout * pit_hz / 1000 };
     crate::net::tcp::connect(ip, port, timeout_ticks)
 }
 
@@ -763,7 +780,7 @@ pub fn sys_udp_recvfrom(port: u32, buf_ptr: u32, buf_len: u32) -> u32 {
         crate::net::poll();
         crate::net::udp::recv(port16)
     } else {
-        let timeout_ticks = timeout_ms / 10; // ms to 100Hz ticks
+        let timeout_ticks = timeout_ms * crate::arch::x86::pit::TICK_HZ / 1000;
         crate::net::udp::recv_timeout(port16, if timeout_ticks == 0 { 1 } else { timeout_ticks })
     };
 
@@ -873,6 +890,8 @@ pub fn sys_set_resolution(width: u32, height: u32) -> u32 {
     }
     match crate::drivers::gpu::with_gpu(|g| g.set_mode(width, height, 32)) {
         Some(Some(_)) => {
+            // Update kernel-side cursor bounds for the new resolution
+            crate::drivers::gpu::update_cursor_bounds(width, height);
             // Notify all subscribers about the resolution change
             crate::ipc::event_bus::system_emit(
                 crate::ipc::event_bus::EventData::new(
@@ -1350,15 +1369,34 @@ pub fn sys_shm_destroy(shm_id: u32) -> u32 {
 // Compositor-privileged syscalls
 // =========================================================================
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// TID of the registered compositor process. 0 = none registered.
 static COMPOSITOR_TID: AtomicU32 = AtomicU32::new(0);
 
-/// Check if the current thread is the registered compositor.
+/// Page directory (CR3) of the registered compositor. 0 = none.
+/// Used to identify compositor child threads (render thread etc.)
+/// that share the same address space.
+static COMPOSITOR_PD: AtomicU64 = AtomicU64::new(0);
+
+/// Check if the current thread belongs to the compositor process.
+/// Returns true if the calling thread is the compositor's management thread
+/// OR any child thread sharing the same page directory (e.g. render thread).
+///
+/// Lock-free: reads CR3 directly instead of acquiring the SCHEDULER lock.
+/// This is critical because the render thread calls GPU commands at 60Hz
+/// and each call checks is_compositor() — lock contention would be severe.
 fn is_compositor() -> bool {
-    let tid = crate::task::scheduler::current_tid();
-    tid != 0 && COMPOSITOR_TID.load(Ordering::Relaxed) == tid
+    let comp_pd = COMPOSITOR_PD.load(Ordering::Relaxed);
+    if comp_pd == 0 {
+        return false;
+    }
+    let current_cr3: u64;
+    unsafe {
+        core::arch::asm!("mov {}, cr3", out(reg) current_cr3);
+    }
+    // CR3 bits [12..] are the physical page directory address; mask off flags in low 12 bits
+    (current_cr3 & !0xFFF) == comp_pd
 }
 
 /// Register calling process as the compositor. First caller wins.
@@ -1366,8 +1404,12 @@ fn is_compositor() -> bool {
 pub fn sys_register_compositor() -> u32 {
     let tid = crate::task::scheduler::current_tid();
     if COMPOSITOR_TID.compare_exchange(0, tid, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
-        // Disable boot splash cursor — compositor owns cursor from now on
-        crate::drivers::gpu::disable_splash_cursor();
+        // Store the compositor's page directory so child threads (render thread)
+        // are also recognized as compositor by is_compositor().
+        if let Some(pd) = crate::task::scheduler::current_thread_page_directory() {
+            COMPOSITOR_PD.store(pd.as_u64(), Ordering::SeqCst);
+        }
+
         // Boost compositor to realtime priority so UI never stutters
         crate::task::scheduler::set_thread_priority(tid, 250);
         crate::serial_println!("[OK] Compositor registered (TID={}, priority=250)", tid);
@@ -1462,7 +1504,11 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
                     g.accel_copy_rect(cmd[1], cmd[2], cmd[3], cmd[4], cmd[5], cmd[6])
                 }
                 4 => { // CURSOR_MOVE(x, y)
-                    g.move_cursor(cmd[1], cmd[2]);
+                    // When kernel-side cursor tracking is active (IRQ-driven),
+                    // skip compositor CURSOR_MOVE to avoid dual-tracking jitter.
+                    if !crate::drivers::gpu::is_splash_cursor_active() {
+                        g.move_cursor(cmd[1], cmd[2]);
+                    }
                     true
                 }
                 5 => { // CURSOR_SHOW(visible)
@@ -1588,6 +1634,40 @@ pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
     }
 
     count as u32
+}
+
+/// SYS_THREAD_CREATE: Create a new thread in the current process.
+/// arg1 = entry_rip, arg2 = user_rsp, arg3 = name_ptr, arg4 = name_len
+/// Returns TID of new thread, or 0 on error.
+pub fn sys_thread_create(entry_rip: u32, user_rsp: u32, name_ptr: u32, name_len: u32) -> u32 {
+    let entry = entry_rip as u64;
+    let rsp = user_rsp as u64;
+
+    // Basic validation: entry must be in user space, rsp must be in user space and aligned
+    if entry == 0 || entry >= 0x0000_8000_0000_0000 {
+        return 0;
+    }
+    if rsp == 0 || rsp >= 0x0000_8000_0000_0000 || rsp & 7 != 0 {
+        return 0;
+    }
+
+    // Read thread name from user space (max 31 chars)
+    let mut name_buf = [0u8; 32];
+    let len = (name_len as usize).min(31);
+    if name_ptr != 0 && len > 0 {
+        let src = name_ptr as *const u8;
+        // Validate pointer is in user space
+        if (src as u64) < 0x0000_8000_0000_0000 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(src, name_buf.as_mut_ptr(), len);
+            }
+        }
+    }
+    let name = core::str::from_utf8(&name_buf[..len]).unwrap_or("thread");
+
+    let tid = crate::task::scheduler::create_thread_in_current_process(entry, rsp, name);
+    crate::serial_println!("sys_thread_create: entry={:#x} rsp={:#x} name={} -> TID={}", entry, rsp, name, tid);
+    tid
 }
 
 /// SYS_CAPTURE_SCREEN: Capture the current framebuffer contents to a user buffer.

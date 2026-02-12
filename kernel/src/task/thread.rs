@@ -87,10 +87,19 @@ pub struct Thread {
     pub wake_at_tick: Option<u32>,
     /// PIT tick at which this thread was terminated (for auto-reap grace period).
     pub terminated_at_tick: Option<u32>,
+    /// True if this thread shares its page directory with another thread (intra-process child).
+    /// When true, sys_exit must NOT destroy the page directory.
+    pub pd_shared: bool,
+    /// Last CPU this thread ran on (for affinity when re-queuing after wake/unblock).
+    pub last_cpu: usize,
 }
 
 /// Size of each thread's kernel-mode stack.
-const KERNEL_STACK_SIZE: usize = 32 * 1024; // 32 KiB per thread
+const KERNEL_STACK_SIZE: usize = 128 * 1024; // 128 KiB per thread
+
+/// Magic canary value placed at the bottom of each kernel stack.
+/// If this gets overwritten, the stack has overflowed.
+pub const STACK_CANARY: u64 = 0xDEAD_BEEF_CAFE_BABE;
 
 impl Thread {
     /// Create a new kernel thread that will begin executing at `entry`.
@@ -109,6 +118,11 @@ impl Thread {
         // called from a syscall where the kernel stack is only 16 KiB).
         let stack: Box<[u8]> = vec![0u8; KERNEL_STACK_SIZE].into_boxed_slice();
         let stack_top = stack.as_ptr() as u64 + KERNEL_STACK_SIZE as u64;
+
+        // Write canary at the bottom of the stack to detect overflow
+        unsafe {
+            *(stack.as_ptr() as *mut u64) = STACK_CANARY;
+        }
 
         // Set up initial context so that when we "switch" to this thread,
         // it starts executing at `entry`.
@@ -148,12 +162,24 @@ impl Thread {
             fpu_state: FxState::new_default(),
             wake_at_tick: None,
             terminated_at_tick: None,
+            pd_shared: false,
+            last_cpu: 0,
         }
     }
 
     /// Return the top (highest address) of this thread's kernel stack.
     pub fn kernel_stack_top(&self) -> u64 {
         self.kernel_stack.as_ptr() as u64 + self.kernel_stack.len() as u64
+    }
+
+    /// Return the bottom (lowest address) of this thread's kernel stack.
+    pub fn kernel_stack_bottom(&self) -> u64 {
+        self.kernel_stack.as_ptr() as u64
+    }
+
+    /// Check if the stack canary is intact. Returns false if the stack overflowed.
+    pub fn check_stack_canary(&self) -> bool {
+        unsafe { *(self.kernel_stack.as_ptr() as *const u64) == STACK_CANARY }
     }
 
     /// Return the thread name as a UTF-8 string slice.

@@ -129,6 +129,9 @@ pub(crate) const SYS_REGISTER_COMPOSITOR: u32 = 147;
 // Screen capture
 pub(crate) const SYS_CAPTURE_SCREEN: u32 = 161;
 
+// Threading
+pub(crate) const SYS_THREAD_CREATE: u32 = 170;
+
 // UDP networking
 pub(crate) const SYS_UDP_BIND: u32 = 150;
 pub(crate) const SYS_UDP_UNBIND: u32 = 151;
@@ -224,6 +227,26 @@ pub(crate) fn syscall3(num: u32, a1: u64, a2: u64, a3: u64) -> u32 {
             a1 = in(reg) a1,
             inlateout("rax") num as u64 => ret,
             in("r10") a2, in("rdx") a3,
+            out("rcx") _,
+            out("r11") _,
+        );
+    }
+    ret as u32
+}
+
+#[inline(always)]
+pub(crate) fn syscall4(num: u32, a1: u64, a2: u64, a3: u64, a4: u64) -> u32 {
+    let ret: u64;
+    unsafe {
+        asm!(
+            "push rbx",
+            "mov rbx, {a1}",
+            "syscall",
+            "pop rbx",
+            a1 = in(reg) a1,
+            inlateout("rax") num as u64 => ret,
+            in("r10") a2, in("rdx") a3,
+            in("rsi") a4,
             out("rcx") _,
             out("r11") _,
         );

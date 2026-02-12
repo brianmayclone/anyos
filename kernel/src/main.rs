@@ -66,7 +66,6 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     serial_println!("[OK] PIC remapped (IRQ 0-15 -> INT 32-47)");
 
     arch::x86::cpuid::detect();
-    arch::x86::syscall_msr::init_bsp();
 
     arch::x86::pit::init();
     serial_println!("[OK] PIT configured at {} Hz", arch::x86::pit::TICK_HZ);
@@ -96,6 +95,8 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         arch::x86::ioapic::init(&info.io_apics, &info.isos);
         arch::x86::ioapic::disable_legacy_pic();
         arch::x86::smp::init_bsp();
+        arch::x86::smp::register_halt_ipi();
+        arch::x86::syscall_msr::init_bsp();
     } else {
         serial_println!("  ACPI not found, using legacy PIC");
     }
@@ -157,6 +158,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     if acpi_info.is_some() {
         arch::x86::apic::calibrate_timer(1000);
     }
+
+    // Phase 7c: Calibrate TSC for accurate timekeeping (recovers missed PIT ticks)
+    arch::x86::pit::calibrate_tsc();
 
     // Phase 8: Initialize mouse
     drivers::input::mouse::init();

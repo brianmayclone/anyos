@@ -12,7 +12,7 @@
 
 use crate::arch::x86::port::{inb, outb};
 use core::fmt;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 /// COM1 I/O base port address.
 const COM1: u16 = 0x3F8;
@@ -23,6 +23,95 @@ pub struct SerialPort;
 static mut SERIAL_INITIALIZED: bool = false;
 /// When true, `write_byte` uses the async TX buffer + IRQ 4 path.
 static ASYNC_TX: AtomicBool = AtomicBool::new(false);
+
+// ── SMP output lock (ensures entire messages are atomic) ────────────────
+
+/// Protects serial output so entire formatted messages from one CPU
+/// are not interleaved with output from another CPU.
+static OUTPUT_LOCK: AtomicBool = AtomicBool::new(false);
+/// CPU that currently holds the output lock (0xFF = nobody).
+static OUTPUT_LOCK_CPU: AtomicU8 = AtomicU8::new(0xFF);
+/// When true, we're in a panic/fatal exception — skip lock contention,
+/// other CPUs should already be halted.
+static PANIC_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Acquire the serial output lock (IRQ-safe, reentrant per-CPU).
+///
+/// Returns `(saved_rflags, was_reentrant)`. The caller MUST pass this to
+/// [`output_lock_release`] when the message is complete.
+///
+/// Reentrancy: if the same CPU already holds the lock (e.g. an exception
+/// fired inside `serial_println!`), the lock is NOT re-acquired — the
+/// exception's output may corrupt the in-progress message, but this is
+/// preferable to deadlocking and losing crash diagnostics entirely.
+pub fn output_lock_acquire() -> (u64, bool) {
+    let flags: u64;
+    unsafe {
+        core::arch::asm!("pushfq; pop {}", out(reg) flags, options(nomem, preserves_flags));
+        core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+    }
+
+    // Check panic mode BEFORE calling current_cpu_id(), because that reads
+    // LAPIC MMIO which may not be mapped in the current CR3 during a crash.
+    if PANIC_MODE.load(Ordering::Relaxed) {
+        // Panic mode: force-take (other CPUs should be halted)
+        OUTPUT_LOCK.store(true, Ordering::Relaxed);
+        OUTPUT_LOCK_CPU.store(0, Ordering::Relaxed);
+        return (flags, false);
+    }
+
+    let cpu = crate::arch::x86::smp::current_cpu_id();
+
+    // Reentrant: same CPU already holds the lock (exception during serial output)
+    if OUTPUT_LOCK.load(Ordering::Relaxed) && OUTPUT_LOCK_CPU.load(Ordering::Relaxed) == cpu {
+        return (flags, true);
+    }
+
+    while OUTPUT_LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+    OUTPUT_LOCK_CPU.store(cpu, Ordering::Relaxed);
+    (flags, false)
+}
+
+/// Release the serial output lock and restore interrupt state.
+pub fn output_lock_release(saved: (u64, bool)) {
+    let (flags, reentrant) = saved;
+    if !reentrant {
+        OUTPUT_LOCK_CPU.store(0xFF, Ordering::Relaxed);
+        OUTPUT_LOCK.store(false, Ordering::Release);
+    }
+    if flags & 0x200 != 0 {
+        unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+    }
+}
+
+/// Enter panic mode: halt all other CPUs, switch to blocking serial TX,
+/// and force-release the output lock so crash diagnostics can be printed.
+///
+/// Called by the panic handler and fatal exception handlers.
+pub fn enter_panic_mode() {
+    // Prevent reentrant calls
+    if PANIC_MODE.swap(true, Ordering::SeqCst) {
+        return; // Already in panic mode (another CPU got here first)
+    }
+
+    // Disable interrupts on this CPU
+    unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
+
+    // Force-release the output lock (previous holder may be dead)
+    OUTPUT_LOCK.store(false, Ordering::Release);
+    OUTPUT_LOCK_CPU.store(0xFF, Ordering::Release);
+
+    // Switch to blocking TX — async buffer may be lost during panic
+    ASYNC_TX.store(false, Ordering::Release);
+
+    // Halt all other CPUs via IPI so they stop outputting
+    crate::arch::x86::smp::halt_other_cpus();
+}
 
 // ── Kernel log ring buffer (pre-heap, interrupt-safe) ──────────────────────
 
@@ -217,7 +306,9 @@ impl fmt::Write for SerialPort {
 macro_rules! serial_print {
     ($($arg:tt)*) => {{
         use core::fmt::Write;
+        let _lock_state = $crate::drivers::serial::output_lock_acquire();
         let _ = write!($crate::drivers::serial::SerialPort, $($arg)*);
+        $crate::drivers::serial::output_lock_release(_lock_state);
     }};
 }
 
@@ -225,9 +316,12 @@ macro_rules! serial_print {
 macro_rules! serial_println {
     () => { $crate::serial_print!("\n") };
     ($($arg:tt)*) => {{
+        use core::fmt::Write;
+        let _lock_state = $crate::drivers::serial::output_lock_acquire();
         let _ticks = $crate::arch::x86::pit::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
-        let _ms = _ticks as u64 * 10; // PIT at 100 Hz → 10 ms per tick
-        $crate::serial_print!("[{}] {}\n", _ms, format_args!($($arg)*));
+        let _ms = _ticks as u64 * 1000 / $crate::arch::x86::pit::TICK_HZ as u64;
+        let _ = write!($crate::drivers::serial::SerialPort, "[{}] {}\n", _ms, format_args!($($arg)*));
+        $crate::drivers::serial::output_lock_release(_lock_state);
     }};
 }
 

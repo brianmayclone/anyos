@@ -2394,6 +2394,83 @@ impl Desktop {
         }
     }
 
+    // ── Pre-mapped IPC handlers (for multi-threaded compositor) ────────
+
+    /// Handle CMD_CREATE_WINDOW with a pre-mapped SHM address.
+    /// The caller already called shm_map() outside the lock.
+    pub fn handle_create_window_pre_mapped(
+        &mut self,
+        cmd: &[u32; 5],
+        shm_addr: usize,
+    ) -> Option<(Option<u32>, [u32; 5])> {
+        let app_tid = cmd[1];
+        let width = cmd[2];
+        let height = cmd[3];
+        let shm_id_and_flags = cmd[4];
+        let shm_id = shm_id_and_flags >> 16;
+        let flags = shm_id_and_flags & 0xFFFF;
+
+        if shm_id == 0 || width == 0 || height == 0 || shm_addr == 0 {
+            return None;
+        }
+
+        let win_id = self.create_ipc_window(
+            app_tid,
+            width,
+            height,
+            flags,
+            shm_id,
+            shm_addr as *mut u32,
+        );
+
+        let target = self.get_sub_id_for_tid(app_tid);
+        Some((target, [proto::RESP_WINDOW_CREATED, win_id, shm_id, app_tid, 0]))
+    }
+
+    /// Handle CMD_RESIZE_SHM with a pre-mapped new SHM address.
+    /// The caller already called shm_map() for the new SHM outside the lock.
+    pub fn handle_resize_shm_pre_mapped(
+        &mut self,
+        cmd: &[u32; 5],
+        new_shm_addr: usize,
+    ) -> Option<(Option<u32>, [u32; 5])> {
+        let window_id = cmd[1];
+        let new_shm_id = cmd[2];
+        let new_w = cmd[3];
+        let new_h = cmd[4];
+
+        if new_shm_id == 0 || new_w == 0 || new_h == 0 || new_shm_addr == 0 {
+            return None;
+        }
+
+        if let Some(idx) = self.windows.iter().position(|w| w.id == window_id) {
+            let old_shm_id = self.windows[idx].shm_id;
+            let old_shm_ptr = self.windows[idx].shm_ptr;
+
+            // Unmap old SHM (fast, safe under lock — render thread not compositing)
+            if !old_shm_ptr.is_null() && old_shm_id != 0 {
+                anyos_std::ipc::shm_unmap(old_shm_id);
+            }
+
+            // Update window info
+            self.windows[idx].shm_id = new_shm_id;
+            self.windows[idx].shm_ptr = new_shm_addr as *mut u32;
+            self.windows[idx].shm_width = new_w;
+            self.windows[idx].shm_height = new_h;
+            self.windows[idx].content_width = new_w;
+            self.windows[idx].content_height = new_h;
+
+            // Resize the compositor layer
+            let layer_id = self.windows[idx].layer_id;
+            let full_h = self.windows[idx].full_height();
+            self.compositor.resize_layer(layer_id, new_w, full_h);
+
+            // Re-render window decorations
+            self.render_window(window_id);
+        }
+        None
+    }
+
     // ── Accessors ───────────────────────────────────────────────────────
 
     pub fn window_count(&self) -> usize {

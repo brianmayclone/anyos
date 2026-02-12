@@ -115,6 +115,11 @@ pub fn is_available() -> bool {
     GPU.lock().is_some()
 }
 
+/// Non-blocking GPU lock (for use during panic/RSOD where deadlock must be avoided).
+pub fn try_lock_gpu() -> Option<crate::sync::spinlock::SpinlockGuard<'static, Option<Box<dyn GpuDriver>>>> {
+    GPU.try_lock()
+}
+
 // ──────────────────────────────────────────────
 // Boot splash cursor: IRQ-time HW cursor updates
 // ──────────────────────────────────────────────
@@ -136,9 +141,26 @@ pub fn enable_splash_cursor(screen_w: u32, screen_h: u32) {
     SPLASH_CURSOR_ACTIVE.store(true, Ordering::Release);
 }
 
-/// Disable boot-splash cursor mode (called when transitioning to full desktop).
+/// Disable kernel-side HW cursor tracking.
 pub fn disable_splash_cursor() {
     SPLASH_CURSOR_ACTIVE.store(false, Ordering::Release);
+}
+
+/// Check if kernel-side cursor tracking is active.
+pub fn is_splash_cursor_active() -> bool {
+    SPLASH_CURSOR_ACTIVE.load(Ordering::Acquire)
+}
+
+/// Update the screen dimensions for kernel-side cursor clamping.
+/// Called on resolution change so the cursor stays within bounds.
+pub fn update_cursor_bounds(screen_w: u32, screen_h: u32) {
+    SPLASH_SCREEN_W.store(screen_w, Ordering::Relaxed);
+    SPLASH_SCREEN_H.store(screen_h, Ordering::Relaxed);
+    // Clamp current position to new bounds
+    let x = SPLASH_CURSOR_X.load(Ordering::Relaxed);
+    let y = SPLASH_CURSOR_Y.load(Ordering::Relaxed);
+    SPLASH_CURSOR_X.store(x.min(screen_w as i32 - 1).max(0), Ordering::Relaxed);
+    SPLASH_CURSOR_Y.store(y.min(screen_h as i32 - 1).max(0), Ordering::Relaxed);
 }
 
 /// Called from mouse IRQ handler when a complete packet is assembled.

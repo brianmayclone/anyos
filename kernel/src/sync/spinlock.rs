@@ -118,13 +118,33 @@ impl<T> Spinlock<T> {
 impl<'a, T> Deref for SpinlockGuard<'a, T> {
     type Target = T;
     fn deref(&self) -> &T {
-        unsafe { &*self.lock.data.get() }
+        let ptr = self.lock.data.get();
+        let addr = ptr as usize;
+        let align = core::mem::align_of::<T>();
+        if addr % align != 0 {
+            crate::serial_println!(
+                "BUG: Spinlock Deref misaligned ptr={:#x} align={} lock={:#x}",
+                addr, align, self.lock as *const _ as usize,
+            );
+            loop { unsafe { core::arch::asm!("cli; hlt"); } }
+        }
+        unsafe { &*ptr }
     }
 }
 
 impl<'a, T> DerefMut for SpinlockGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut T {
-        unsafe { &mut *self.lock.data.get() }
+        let ptr = self.lock.data.get();
+        let addr = ptr as usize;
+        let align = core::mem::align_of::<T>();
+        if addr % align != 0 {
+            crate::serial_println!(
+                "BUG: Spinlock DerefMut misaligned ptr={:#x} align={} lock={:#x}",
+                addr, align, self.lock as *const _ as usize,
+            );
+            loop { unsafe { core::arch::asm!("cli; hlt"); } }
+        }
+        unsafe { &mut *ptr }
     }
 }
 

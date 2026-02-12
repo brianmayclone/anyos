@@ -11,6 +11,7 @@ pub mod hal;
 pub mod input;
 pub mod network;
 pub mod pci;
+pub mod rsod;
 pub mod rtc;
 pub mod serial;
 pub mod storage;

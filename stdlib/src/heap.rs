@@ -1,13 +1,17 @@
 use core::alloc::{GlobalAlloc, Layout};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 #[global_allocator]
 static ALLOCATOR: BumpAlloc = BumpAlloc;
 
 struct BumpAlloc;
 
-/// Next allocation position (grows upward).
+/// Spinlock protecting HEAP_POS and HEAP_END for thread safety.
+static HEAP_LOCK: AtomicBool = AtomicBool::new(false);
+
+/// Next allocation position (grows upward). Protected by HEAP_LOCK.
 static mut HEAP_POS: u64 = 0;
-/// Current end of mapped heap pages (kernel break).
+/// Current end of mapped heap pages (kernel break). Protected by HEAP_LOCK.
 static mut HEAP_END: u64 = 0;
 
 /// Initialize the heap allocator. Must be called before any allocation.
@@ -21,6 +25,14 @@ pub fn init() {
 
 unsafe impl GlobalAlloc for BumpAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // Acquire spinlock
+        while HEAP_LOCK
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+
         let align = layout.align() as u64;
         let size = layout.size() as u64;
 
@@ -35,12 +47,14 @@ unsafe impl GlobalAlloc for BumpAlloc {
             let grow = (needed + 4095) & !4095;
             let result = crate::process::sbrk(grow as i32);
             if result == u32::MAX as usize {
+                HEAP_LOCK.store(false, Ordering::Release);
                 return core::ptr::null_mut();
             }
             HEAP_END += grow;
         }
 
         HEAP_POS = new_pos;
+        HEAP_LOCK.store(false, Ordering::Release);
         aligned as *mut u8
     }
 

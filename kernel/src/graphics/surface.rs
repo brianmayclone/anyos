@@ -40,10 +40,20 @@ impl Surface {
         }
     }
 
+    /// Compute pixel index with full safety check (coordinates AND pixel buffer length).
+    /// Returns None if out of bounds or if pixels buffer is inconsistent with dimensions.
+    #[inline(always)]
+    fn pixel_idx(&self, x: i32, y: i32) -> Option<usize> {
+        if x < 0 || x >= self.width as i32 || y < 0 || y >= self.height as i32 {
+            return None;
+        }
+        let idx = (y as u32 * self.width + x as u32) as usize;
+        if idx >= self.pixels.len() { None } else { Some(idx) }
+    }
+
     /// Set a pixel with alpha blending. Out-of-bounds coordinates are silently ignored.
     pub fn put_pixel(&mut self, x: i32, y: i32, color: Color) {
-        if x >= 0 && x < self.width as i32 && y >= 0 && y < self.height as i32 {
-            let idx = (y as u32 * self.width + x as u32) as usize;
+        if let Some(idx) = self.pixel_idx(x, y) {
             if color.a == 255 {
                 self.pixels[idx] = color.to_u32();
             } else if color.a > 0 {
@@ -55,8 +65,7 @@ impl Surface {
 
     /// Set a pixel without alpha blending (raw write). OOB silently ignored.
     pub fn set_pixel_raw(&mut self, x: i32, y: i32, color: Color) {
-        if x >= 0 && x < self.width as i32 && y >= 0 && y < self.height as i32 {
-            let idx = (y as u32 * self.width + x as u32) as usize;
+        if let Some(idx) = self.pixel_idx(x, y) {
             self.pixels[idx] = color.to_u32();
         }
     }
@@ -64,10 +73,10 @@ impl Surface {
     /// Set a pixel with LCD subpixel rendering. Each RGB channel gets its
     /// own coverage value, producing sharper text on LCD displays.
     pub fn put_pixel_subpixel(&mut self, x: i32, y: i32, r_cov: u8, g_cov: u8, b_cov: u8, color: Color) {
-        if x < 0 || x >= self.width as i32 || y < 0 || y >= self.height as i32 {
-            return;
-        }
-        let idx = (y as u32 * self.width + x as u32) as usize;
+        let idx = match self.pixel_idx(x, y) {
+            Some(i) => i,
+            None => return,
+        };
         let dst = Color::from_u32(self.pixels[idx]);
         let r = (color.r as u32 * r_cov as u32 + dst.r as u32 * (255 - r_cov as u32)) / 255;
         let g = (color.g as u32 * g_cov as u32 + dst.g as u32 * (255 - g_cov as u32)) / 255;
@@ -77,11 +86,9 @@ impl Surface {
 
     /// Read a pixel. Returns `Color::TRANSPARENT` for out-of-bounds coordinates.
     pub fn get_pixel(&self, x: i32, y: i32) -> Color {
-        if x >= 0 && x < self.width as i32 && y >= 0 && y < self.height as i32 {
-            let idx = (y as u32 * self.width + x as u32) as usize;
-            Color::from_u32(self.pixels[idx])
-        } else {
-            Color::TRANSPARENT
+        match self.pixel_idx(x, y) {
+            Some(idx) => Color::from_u32(self.pixels[idx]),
+            None => Color::TRANSPARENT,
         }
     }
 
@@ -100,11 +107,13 @@ impl Surface {
         let y0 = rect.y.max(0) as u32;
         let x1 = (rect.right() as u32).min(self.width);
         let y1 = (rect.bottom() as u32).min(self.height);
+        let plen = self.pixels.len();
 
         let val = color.to_u32();
         for y in y0..y1 {
             let row_start = (y * self.width + x0) as usize;
             let row_end = (y * self.width + x1) as usize;
+            if row_end > plen { break; }
             if color.a == 255 {
                 for pixel in &mut self.pixels[row_start..row_end] {
                     *pixel = val;
@@ -160,11 +169,14 @@ impl Surface {
             (src.height - sy0).min(self.height - dy0)
         };
 
+        let dst_plen = self.pixels.len();
+        let src_plen = src.pixels.len();
         for row in 0..copy_h {
             let src_y = sy0 + row;
             let dst_y = dy0 + row;
             let src_start = (src_y * src.width + sx0) as usize;
             let dst_start = (dst_y * self.width + dx0) as usize;
+            if src_start + copy_w > src_plen || dst_start + copy_w > dst_plen { break; }
             self.pixels[dst_start..dst_start + copy_w]
                 .copy_from_slice(&src.pixels[src_start..src_start + copy_w]);
         }
@@ -204,6 +216,7 @@ impl Surface {
             let dy_row = copy_y as u32 + row;
             let src_start = (sy * src.width + src_sx) as usize;
             let dst_start = (dy_row * self.width + copy_x as u32) as usize;
+            if src_start + cw > src.pixels.len() || dst_start + cw > self.pixels.len() { break; }
             let src_row = &src.pixels[src_start..src_start + cw];
             let dst_row = &mut self.pixels[dst_start..dst_start + cw];
 
@@ -285,6 +298,7 @@ impl Surface {
             let dy_row = copy_y as u32 + row;
             let src_start = (sy * src.width + src_sx) as usize;
             let dst_start = (dy_row * self.width + copy_x as u32) as usize;
+            if src_start + copy_w > src.pixels.len() || dst_start + copy_w > self.pixels.len() { break; }
             self.pixels[dst_start..dst_start + copy_w]
                 .copy_from_slice(&src.pixels[src_start..src_start + copy_w]);
         }

@@ -137,15 +137,10 @@ pub fn start_aps(processors: &[ProcessorInfo]) {
         };
 
         if ready {
-            // Register this CPU
-            unsafe {
-                CPU_DATA[cpu_id as usize] = PerCpu {
-                    cpu_id,
-                    lapic_id: proc_info.apic_id,
-                    is_bsp: false,
-                    initialized: true,
-                };
-            }
+            // CPU_DATA[cpu_id] was already written by the AP itself in ap_entry()
+            // (before signaling ready and enabling interrupts). No redundant BSP
+            // write here — doing so would race with the AP's LAPIC timer which
+            // may already be calling current_cpu_id() → reading CPU_DATA.
             AP_STARTED.fetch_add(1, Ordering::SeqCst);
             CPU_COUNT.store(cpu_id + 1, Ordering::SeqCst);
             crate::serial_println!("  SMP: AP (APIC_ID={}) started as CPU#{}", proc_info.apic_id, cpu_id);
@@ -181,6 +176,20 @@ extern "C" fn ap_entry() -> ! {
 
     // Configure SYSCALL/SYSRET MSRs for this AP
     crate::arch::x86::syscall_msr::init_ap(cpu_id);
+
+    // Register ourselves in CPU_DATA BEFORE signaling ready and enabling
+    // interrupts.  This prevents a race where the LAPIC timer fires and
+    // schedule_inner → current_cpu_id() can't find our LAPIC ID in
+    // CPU_DATA (BSP hasn't written it yet), causing the fallback to
+    // return 0 and making us act as CPU 0 (wrong per-CPU data, TSS, etc.).
+    unsafe {
+        CPU_DATA[cpu_id] = PerCpu {
+            cpu_id: cpu_id as u8,
+            lapic_id: crate::arch::x86::apic::lapic_id(),
+            is_bsp: false,
+            initialized: true,
+        };
+    }
 
     // Signal BSP that we're ready
     unsafe {
@@ -224,23 +233,60 @@ pub fn cpu_count() -> u8 {
 }
 
 /// Get the current CPU's index (0 = BSP).
+///
+/// Scans ALL `MAX_CPUS` entries (not just `cpu_count()`) because an AP may
+/// have registered itself in `CPU_DATA` before the BSP incremented the count.
 pub fn current_cpu_id() -> u8 {
     if !crate::arch::x86::apic::is_initialized() {
         return 0; // Before APIC init, always BSP
     }
     let lapic_id = crate::arch::x86::apic::lapic_id();
-    let count = cpu_count();
-    for i in 0..count as usize {
-        if unsafe { CPU_DATA[i].lapic_id } == lapic_id {
+    for i in 0..MAX_CPUS {
+        if unsafe { CPU_DATA[i].initialized && CPU_DATA[i].lapic_id == lapic_id } {
             return i as u8;
         }
     }
-    0 // fallback
+    0 // fallback — should only happen on BSP before init_bsp
 }
 
 /// Check if the current CPU is the BSP.
 pub fn is_bsp() -> bool {
     current_cpu_id() == 0
+}
+
+/// Register the halt IPI handler (IRQ 21 = INT 53).
+/// Must be called after IDT is initialized.
+pub fn register_halt_ipi() {
+    crate::arch::x86::irq::register_irq(21, halt_ipi_handler);
+}
+
+/// IRQ 21 handler: halt this CPU permanently.
+/// Triggered by `halt_other_cpus()` via IPI during panic/fatal exception.
+fn halt_ipi_handler(_irq: u8) {
+    unsafe { core::arch::asm!("cli"); }
+    loop {
+        unsafe { core::arch::asm!("hlt"); }
+    }
+}
+
+/// Halt all other CPUs by sending a halt IPI to each one.
+/// Used during panic/fatal exception to prevent cascading crashes
+/// and serial output interleaving.
+pub fn halt_other_cpus() {
+    if !crate::arch::x86::apic::is_initialized() {
+        return; // Single CPU or APIC not ready
+    }
+
+    let my_cpu = current_cpu_id();
+    let count = cpu_count();
+
+    for i in 0..count as usize {
+        if i as u8 == my_cpu {
+            continue;
+        }
+        let lapic_id = unsafe { CPU_DATA[i].lapic_id };
+        crate::arch::x86::apic::send_ipi(lapic_id, crate::arch::x86::apic::VECTOR_IPI_HALT);
+    }
 }
 
 fn delay_ms(ms: u32) {

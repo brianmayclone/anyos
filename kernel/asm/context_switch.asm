@@ -68,6 +68,12 @@ context_switch:
     mov rax, cr3
     mov [rdi + 144], rax
 
+    ; Mark old context as fully saved. Other CPUs check this flag in
+    ; pick_next() before restoring a thread — prevents racing on a
+    ; partially-saved CpuContext. x86 TSO guarantees all prior stores
+    ; (register saves above) are visible before this store.
+    mov qword [rdi + 152], 1
+
     ; --- Load new context from [RSI] ---
 
     ; Load CR3 if different (avoid TLB flush if same address space)

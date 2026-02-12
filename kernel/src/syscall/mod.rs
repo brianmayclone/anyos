@@ -161,6 +161,9 @@ pub const SYS_REGISTER_COMPOSITOR: u32 = 147;
 // Screen capture
 pub const SYS_CAPTURE_SCREEN: u32 = 161;
 
+// Threading
+pub const SYS_THREAD_CREATE: u32 = 170;
+
 // Window creation flags (must match compositor/src/desktop.rs)
 pub const WIN_FLAG_BORDERLESS: u32 = 0x01;
 pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x02;
@@ -215,7 +218,7 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
     let arg4 = regs.rsi as u32;
     let arg5 = regs.rdi as u32;
 
-    match syscall_num {
+    let result = match syscall_num {
         // Process management
         SYS_EXIT => handlers::sys_exit(arg1),
         SYS_WRITE => handlers::sys_write(arg1, arg2, arg3),
@@ -354,9 +357,17 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         // Screen capture
         SYS_CAPTURE_SCREEN => handlers::sys_capture_screen(arg1, arg2, arg3),
 
+        // Threading
+        SYS_THREAD_CREATE => handlers::sys_thread_create(arg1, arg2, arg3, arg4),
+
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);
             u32::MAX
         }
-    }
+    };
+
+    // Post-syscall stack canary check: catch overflows before returning to user
+    crate::task::scheduler::check_current_stack_canary(syscall_num);
+
+    result
 }

@@ -105,6 +105,15 @@ pub fn set_kernel_stack_for_cpu(cpu_id: usize, rsp0: u64) {
     }
 }
 
+/// Read the TSS RSP0 for a given CPU (diagnostic use).
+pub fn get_kernel_stack_for_cpu(cpu_id: usize) -> u64 {
+    if cpu_id < MAX_CPUS {
+        unsafe { TSS_ARRAY[cpu_id].rsp0 }
+    } else {
+        0
+    }
+}
+
 /// Update the kernel stack pointer (RSP0) in CPU 0's TSS.
 /// Backward-compatible wrapper used by existing scheduler code.
 pub fn set_kernel_stack(rsp0: u64) {

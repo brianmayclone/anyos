@@ -215,19 +215,30 @@ pub struct InterruptFrame {
 /// Try to recover from a fault by killing the current thread.
 /// Returns true if the thread was killed (never actually returns to caller
 /// because exit_current switches context). Returns false if unrecoverable.
+///
+/// Uses LOCK-FREE scheduler queries (debug_current_tid, debug_is_current_user)
+/// to prevent deadlock: a page fault could fire while the scheduler lock is held
+/// (e.g., demand paging on heap memory accessed from schedule_inner). Using
+/// SCHEDULER.lock() in that scenario would deadlock on a single CPU with IF=0.
+///
+/// Also uses try_exit_current (try_lock) instead of exit_current to avoid
+/// deadlock when the scheduler lock is already held by this CPU.
 fn try_kill_faulting_thread(signal: u32) -> bool {
-    let tid = crate::task::scheduler::current_tid();
-    // TID 0 = idle context, TID 1-2 are typically desktop/critical threads
+    let tid = crate::task::scheduler::debug_current_tid();
+    // TID 0 = idle context
     if tid == 0 {
         return false; // Can't kill idle context
     }
-    if crate::task::scheduler::is_current_thread_user() {
-        let name = crate::task::scheduler::current_thread_name();
-        let name_len = name.iter().position(|&b| b == 0).unwrap_or(32);
-        let name_str = core::str::from_utf8(&name[..name_len]).unwrap_or("???");
-        crate::serial_println!("  Killing faulting thread '{}' (TID={}, signal={})", name_str, tid, signal);
-        crate::task::scheduler::exit_current(signal);
-        // exit_current never returns
+    if crate::task::scheduler::debug_is_current_user() {
+        crate::serial_println!("  Killing faulting user thread (TID={}, signal={})", tid, signal);
+        // Use try_exit to avoid deadlock if scheduler lock is held by this CPU
+        if crate::task::scheduler::try_exit_current(signal) {
+            // try_exit_current calls schedule() and never returns on success
+            unreachable!();
+        }
+        // Couldn't acquire scheduler lock — can't kill, fall through to kernel panic
+        crate::serial_println!("  WARNING: scheduler lock held — cannot kill thread");
+        return false;
     }
     false
 }
@@ -236,7 +247,7 @@ fn try_kill_faulting_thread(signal: u32) -> bool {
 ///
 /// Handles division-by-zero, invalid opcode, double fault, GPF, and page
 /// faults. For user-mode faults the offending thread is terminated; for
-/// kernel faults the CPU is halted after diagnostic output.
+/// kernel faults panic mode is entered (halts other CPUs) and this CPU halts.
 #[no_mangle]
 pub extern "C" fn isr_handler(frame: &InterruptFrame) {
     let is_user_mode = frame.cs & 3 != 0;
@@ -244,6 +255,14 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
     match frame.int_no {
         0 => {
             let dbg_tid = crate::task::scheduler::debug_current_tid();
+            if is_user_mode {
+                crate::serial_println!("EXCEPTION: Division by zero at RIP={:#018x} CS={:#x} (TID={})", frame.rip, frame.cs, dbg_tid);
+                crate::serial_println!("  User process fault — terminating thread");
+                crate::task::scheduler::exit_current(136);
+            }
+            if try_kill_faulting_thread(136) { return; }
+            // Fatal kernel fault — enter panic mode to halt other CPUs
+            crate::drivers::serial::enter_panic_mode();
             crate::serial_println!("EXCEPTION: Division by zero at RIP={:#018x} CS={:#x} (TID={})", frame.rip, frame.cs, dbg_tid);
             crate::serial_println!(
                 "  RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
@@ -253,16 +272,21 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 "  RSI={:#018x} RDI={:#018x} RBP={:#018x} RSP={:#018x}",
                 frame.rsi, frame.rdi, frame.rbp, frame.rsp
             );
-            if is_user_mode {
-                crate::serial_println!("  User process fault — terminating thread");
-                crate::task::scheduler::exit_current(136);
-            }
-            if try_kill_faulting_thread(136) { return; }
             crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
+            crate::drivers::rsod::show_exception(frame, "Division by Zero (#DE)");
             loop { unsafe { core::arch::asm!("cli; hlt"); } }
         }
         6 => {
             let dbg_tid = crate::task::scheduler::debug_current_tid();
+            if is_user_mode {
+                crate::serial_println!("EXCEPTION: Invalid opcode at RIP={:#018x} CS={:#x} (TID={})", frame.rip, frame.cs, dbg_tid);
+                crate::serial_println!("  User RSP={:#018x}", frame.rsp);
+                crate::serial_println!("  User process fault — terminating thread");
+                crate::task::scheduler::exit_current(132);
+            }
+            if try_kill_faulting_thread(132) { return; }
+            // Fatal kernel fault — enter panic mode to halt other CPUs
+            crate::drivers::serial::enter_panic_mode();
             crate::serial_println!("EXCEPTION: Invalid opcode at RIP={:#018x} CS={:#x} (debug_tid={})", frame.rip, frame.cs, dbg_tid);
             crate::serial_println!(
                 "  RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
@@ -280,60 +304,99 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 "  R12={:#018x} R13={:#018x} R14={:#018x} R15={:#018x}",
                 frame.r12, frame.r13, frame.r14, frame.r15
             );
-            // Dump stack
-            let stack_ptr = frame.rsp as *const u64;
-            crate::serial_println!("  Stack dump (from RSP):");
-            for i in 0..16 {
-                let val = unsafe { stack_ptr.add(i as usize).read_volatile() };
-                crate::serial_println!("    [RSP+{:#04x}] = {:#018x}", i * 8, val);
+            // Stack location diagnostics
+            {
+                let frame_addr = frame as *const InterruptFrame as u64;
+                let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
+                let (stack_bottom, stack_top) = crate::task::scheduler::get_stack_bounds(cpu_id);
+                crate::serial_println!("  Frame addr={:#018x} CPU={}", frame_addr, cpu_id);
+                crate::serial_println!("  Expected stack=[{:#018x}..{:#018x}]", stack_bottom, stack_top);
+                if stack_bottom != 0 && (frame_addr < stack_bottom || frame_addr > stack_top) {
+                    crate::serial_println!("  CRITICAL: Frame is OUTSIDE kernel stack bounds!");
+                }
+            }
+            // Dump stack (only if RSP is aligned and in kernel range)
+            if frame.rsp >= 0xFFFF_FFFF_8000_0000 && frame.rsp < 0xFFFF_FFFF_F000_0000 && frame.rsp & 7 == 0 {
+                let stack_ptr = frame.rsp as *const u64;
+                crate::serial_println!("  Stack dump (from RSP):");
+                for i in 0..16 {
+                    let val = unsafe { stack_ptr.add(i as usize).read_volatile() };
+                    crate::serial_println!("    [RSP+{:#04x}] = {:#018x}", i * 8, val);
+                }
             }
             // Walk RBP chain for stack trace
             crate::serial_println!("  RBP chain:");
             let mut bp = frame.rbp;
             for _ in 0..8 {
                 if bp < 0xFFFF_FFFF_8000_0000 || bp > 0xFFFF_FFFF_D100_0000 { break; }
+                if bp & 7 != 0 { break; } // Misaligned — corrupt frame pointer
                 let ret_addr = unsafe { *((bp + 8) as *const u64) };
                 let prev_bp = unsafe { *(bp as *const u64) };
                 crate::serial_println!("    RBP={:#018x} RET={:#018x}", bp, ret_addr);
                 bp = prev_bp;
             }
-            if is_user_mode {
-                crate::serial_println!("  User RSP={:#018x}", frame.rsp);
-                crate::serial_println!("  User process fault — terminating thread");
-                crate::task::scheduler::exit_current(132);
-            }
-            if try_kill_faulting_thread(132) { return; }
             crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
+            crate::drivers::rsod::show_exception(frame, "Invalid Opcode (#UD)");
             loop { unsafe { core::arch::asm!("cli; hlt"); } }
         }
         7 => {
             // #NM — Device Not Available (CR0.TS set or no FPU)
-            // Should not occur since we clear TS at boot and use eager FPU switching.
-            crate::serial_println!("EXCEPTION: #NM Device Not Available at RIP={:#018x} CS={:#x}", frame.rip, frame.cs);
             if is_user_mode {
+                crate::serial_println!("EXCEPTION: #NM Device Not Available at RIP={:#018x} CS={:#x}", frame.rip, frame.cs);
                 crate::serial_println!("  User process fault — terminating thread");
                 crate::task::scheduler::exit_current(135);
             }
             if try_kill_faulting_thread(135) { return; }
+            crate::drivers::serial::enter_panic_mode();
+            crate::serial_println!("EXCEPTION: #NM Device Not Available at RIP={:#018x} CS={:#x}", frame.rip, frame.cs);
             crate::serial_println!("  FATAL: unexpected #NM in kernel — halting");
+            crate::drivers::rsod::show_exception(frame, "Device Not Available (#NM)");
             loop { unsafe { core::arch::asm!("cli; hlt"); } }
         }
         8 => {
+            crate::drivers::serial::enter_panic_mode();
             crate::serial_println!("EXCEPTION: Double fault!");
             crate::serial_println!("  FATAL: unrecoverable — halting");
+            crate::drivers::rsod::show_exception(frame, "Double Fault (#DF)");
             loop { unsafe { core::arch::asm!("cli; hlt"); } }
         }
         13 => {
-            crate::serial_println!(
-                "EXCEPTION: General Protection Fault err={:#x} RIP={:#018x} CS={:#x}",
-                frame.err_code, frame.rip, frame.cs
-            );
             if is_user_mode {
+                crate::serial_println!(
+                    "EXCEPTION: General Protection Fault err={:#x} RIP={:#018x} CS={:#x}",
+                    frame.err_code, frame.rip, frame.cs
+                );
                 crate::serial_println!("  User process fault — terminating thread");
                 crate::task::scheduler::exit_current(139);
             }
             if try_kill_faulting_thread(139) { return; }
+            crate::drivers::serial::enter_panic_mode();
+            crate::serial_println!(
+                "EXCEPTION: General Protection Fault err={:#x} RIP={:#018x} CS={:#x}",
+                frame.err_code, frame.rip, frame.cs
+            );
+            crate::serial_println!(
+                "  RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
+                frame.rax, frame.rbx, frame.rcx, frame.rdx
+            );
+            crate::serial_println!(
+                "  RSI={:#018x} RDI={:#018x} RBP={:#018x} RSP={:#018x}",
+                frame.rsi, frame.rdi, frame.rbp, frame.rsp
+            );
+            // Stack location diagnostics
+            {
+                let frame_addr = frame as *const InterruptFrame as u64;
+                let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
+                let tid = crate::task::scheduler::debug_current_tid();
+                let (stack_bottom, stack_top) = crate::task::scheduler::get_stack_bounds(cpu_id);
+                crate::serial_println!("  Frame addr={:#018x} CPU={} TID={}", frame_addr, cpu_id, tid);
+                crate::serial_println!("  Expected stack=[{:#018x}..{:#018x}]", stack_bottom, stack_top);
+                if stack_bottom != 0 && (frame_addr < stack_bottom || frame_addr > stack_top) {
+                    crate::serial_println!("  CRITICAL: Frame is OUTSIDE kernel stack bounds!");
+                }
+            }
             crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
+            crate::drivers::rsod::show_exception(frame, "General Protection Fault (#GP)");
             loop { unsafe { core::arch::asm!("cli; hlt"); } }
         }
         14 => {
@@ -349,7 +412,33 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 }
             }
 
-            // Not a demand-pageable fault — treat as error
+            // DLL demand paging: if a user process accesses an unmapped DLL page,
+            // map the shared physical frame on-demand and retry the instruction.
+            if err_not_present && is_user_mode {
+                if crate::task::dll::handle_dll_demand_page(cr2) {
+                    return; // DLL page mapped — retry faulting instruction via iretq
+                }
+            }
+
+            // User-mode page fault: print diagnostics and kill the thread
+            if is_user_mode {
+                crate::serial_println!(
+                    "EXCEPTION: Page Fault addr={:#018x} RIP={:#018x} err={:#x}",
+                    cr2, frame.rip, frame.err_code
+                );
+                crate::serial_println!(
+                    "  CS={:#x} RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
+                    frame.cs, frame.rax, frame.rbx, frame.rcx, frame.rdx
+                );
+                crate::serial_println!("  User RSP={:#018x} SS={:#x}", frame.rsp, frame.ss);
+                crate::serial_println!("  User process fault — terminating thread");
+                crate::task::scheduler::exit_current(139);
+            }
+            if try_kill_faulting_thread(139) { return; }
+
+            // Fatal kernel page fault — enter panic mode (halt other CPUs)
+            // so diagnostics are not interleaved with other crashes
+            crate::drivers::serial::enter_panic_mode();
             crate::serial_println!(
                 "EXCEPTION: Page Fault addr={:#018x} RIP={:#018x} err={:#x}",
                 cr2, frame.rip, frame.err_code
@@ -362,59 +451,74 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 "  RSI={:#018x} RDI={:#018x} RBP={:#018x}",
                 frame.rsi, frame.rdi, frame.rbp
             );
-            // Diagnostic: walk page tables for faulting address
+            crate::serial_println!(
+                "  R8={:#018x}  R9={:#018x}  R10={:#018x} R11={:#018x}",
+                frame.r8, frame.r9, frame.r10, frame.r11
+            );
+            crate::serial_println!(
+                "  R12={:#018x} R13={:#018x} R14={:#018x} R15={:#018x}",
+                frame.r12, frame.r13, frame.r14, frame.r15
+            );
+
+            // Corruption diagnostics: detect if the interrupt frame is corrupt
+            let valid_cs = matches!(frame.cs, 0x08 | 0x1B | 0x23 | 0x2B);
+            if !valid_cs {
+                crate::serial_println!("  WARNING: CS={:#018x} is NOT a valid segment selector!", frame.cs);
+                crate::serial_println!("  This indicates the kernel stack was corrupted when the CPU");
+                crate::serial_println!("  pushed the exception frame (stack overflow into adjacent heap?)");
+            }
+
+            // Stack location diagnostics
             {
-                let cr3_val: u64;
-                unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3_val); }
-                crate::serial_println!("  CR3={:#018x}", cr3_val);
-                // Walk via recursive mapping (PML4[510])
-                unsafe {
-                    let pml4_base = 0xFFFF_FF7F_BFDF_E000u64 as *const u64;
-                    let pml4i = ((cr2 >> 39) & 0x1FF) as usize;
-                    let pdpti = ((cr2 >> 30) & 0x1FF) as usize;
-                    let pdi   = ((cr2 >> 21) & 0x1FF) as usize;
-                    let pti   = ((cr2 >> 12) & 0x1FF) as usize;
-                    let pml4e = pml4_base.add(pml4i).read_volatile();
-                    crate::serial_println!("  PML4[{}]={:#018x} {}", pml4i, pml4e,
-                        if pml4e & 1 != 0 { "PRESENT" } else { "NOT PRESENT" });
-                    if pml4e & 1 != 0 {
-                        let pdpt_base = crate::memory::virtual_mem::debug_recursive_pdpt(cr2);
-                        let pdpte = (pdpt_base as *const u64).add(pdpti).read_volatile();
-                        crate::serial_println!("  PDPT[{}]={:#018x} {}", pdpti, pdpte,
-                            if pdpte & 1 != 0 { "PRESENT" } else { "NOT PRESENT" });
-                        if pdpte & 1 != 0 {
-                            let pd_base = crate::memory::virtual_mem::debug_recursive_pd(cr2);
-                            let pde = (pd_base as *const u64).add(pdi).read_volatile();
-                            crate::serial_println!("  PD[{}]={:#018x} {}", pdi, pde,
-                                if pde & 1 != 0 { "PRESENT" } else { "NOT PRESENT" });
-                            if pde & 1 != 0 {
-                                let pt_base = crate::memory::virtual_mem::debug_recursive_pt(cr2);
-                                let pte = (pt_base as *const u64).add(pti).read_volatile();
-                                crate::serial_println!("  PT[{}]={:#018x} {}", pti, pte,
-                                    if pte & 1 != 0 { "PRESENT" } else { "NOT PRESENT" });
-                            }
-                        }
+                let frame_addr = frame as *const InterruptFrame as u64;
+                let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
+                let tid = crate::task::scheduler::debug_current_tid();
+                let (stack_bottom, stack_top) = crate::task::scheduler::get_stack_bounds(cpu_id);
+                crate::serial_println!("  Frame addr={:#018x} CPU={} TID={}", frame_addr, cpu_id, tid);
+                crate::serial_println!("  Expected stack=[{:#018x}..{:#018x}]", stack_bottom, stack_top);
+                if stack_bottom != 0 {
+                    if frame_addr < stack_bottom || frame_addr > stack_top {
+                        crate::serial_println!("  CRITICAL: Frame is OUTSIDE kernel stack bounds!");
+                        crate::serial_println!("  This confirms stack overflow or use-after-free.");
+                    } else {
+                        let used = stack_top - frame_addr;
+                        let total = stack_top - stack_bottom;
+                        let pct = if total > 0 { used * 100 / total } else { 0 };
+                        crate::serial_println!("  Stack usage: {} / {} bytes ({}%)",
+                            used, total, pct);
                     }
                 }
             }
-            if is_user_mode {
-                crate::serial_println!("  User RSP={:#018x} SS={:#x}", frame.rsp, frame.ss);
-                crate::serial_println!("  User process fault — terminating thread");
-                crate::task::scheduler::exit_current(139);
+
+            // Print CR3 and page table indices (no recursive mapping dereference —
+            // accessing recursive addresses causes recursive faults if PML4[510]
+            // is not set up in the current CR3, e.g. during early boot or CR3 corruption).
+            {
+                let cr3_val: u64;
+                unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3_val); }
+                let pml4i = ((cr2 >> 39) & 0x1FF) as usize;
+                let pdpti = ((cr2 >> 30) & 0x1FF) as usize;
+                let pdi   = ((cr2 >> 21) & 0x1FF) as usize;
+                let pti   = ((cr2 >> 12) & 0x1FF) as usize;
+                crate::serial_println!("  CR3={:#018x} PML4[{}] PDPT[{}] PD[{}] PT[{}]",
+                    cr3_val, pml4i, pdpti, pdi, pti);
             }
-            if try_kill_faulting_thread(139) { return; }
             crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
+            crate::drivers::rsod::show_exception(frame, "Page Fault (#PF)");
             loop { unsafe { core::arch::asm!("cli; hlt"); } }
         }
         16 => {
             // #MF — x87 Floating-Point Exception
-            crate::serial_println!("EXCEPTION: #MF x87 FP Exception at RIP={:#018x} CS={:#x}", frame.rip, frame.cs);
             if is_user_mode {
+                crate::serial_println!("EXCEPTION: #MF x87 FP Exception at RIP={:#018x} CS={:#x}", frame.rip, frame.cs);
                 crate::serial_println!("  User process fault — terminating thread");
                 crate::task::scheduler::exit_current(136);
             }
             if try_kill_faulting_thread(136) { return; }
+            crate::drivers::serial::enter_panic_mode();
+            crate::serial_println!("EXCEPTION: #MF x87 FP Exception at RIP={:#018x} CS={:#x}", frame.rip, frame.cs);
             crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
+            crate::drivers::rsod::show_exception(frame, "x87 FP Exception (#MF)");
             loop { unsafe { core::arch::asm!("cli; hlt"); } }
         }
         19 => {
@@ -425,16 +529,22 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 core::arch::asm!("stmxcsr [{}]", in(reg) tmp.as_mut_ptr(), options(nostack, preserves_flags));
                 mxcsr = tmp[0];
             }
-            crate::serial_println!(
-                "EXCEPTION: #XM SIMD FP Exception at RIP={:#018x} CS={:#x} MXCSR={:#010x}",
-                frame.rip, frame.cs, mxcsr
-            );
             if is_user_mode {
+                crate::serial_println!(
+                    "EXCEPTION: #XM SIMD FP Exception at RIP={:#018x} CS={:#x} MXCSR={:#010x}",
+                    frame.rip, frame.cs, mxcsr
+                );
                 crate::serial_println!("  User process fault — terminating thread");
                 crate::task::scheduler::exit_current(136);
             }
             if try_kill_faulting_thread(136) { return; }
+            crate::drivers::serial::enter_panic_mode();
+            crate::serial_println!(
+                "EXCEPTION: #XM SIMD FP Exception at RIP={:#018x} CS={:#x} MXCSR={:#010x}",
+                frame.rip, frame.cs, mxcsr
+            );
             crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
+            crate::drivers::rsod::show_exception(frame, "SIMD FP Exception (#XM)");
             loop { unsafe { core::arch::asm!("cli; hlt"); } }
         }
         _ => {
@@ -456,12 +566,58 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
 pub extern "C" fn irq_handler(frame: &InterruptFrame) {
     let irq = (frame.int_no - 32) as u8;
 
+    // Real-time stack overflow detection: check if the interrupted RSP is
+    // within the current thread's kernel stack bounds. This catches overflows
+    // BEFORE the stack corrupts adjacent heap memory (which causes mysterious
+    // crashes with corrupted interrupt frames — CS/RIP contain heap data).
+    // Only check when a kernel thread is active (not idle, not user mode).
+    // Skip when CPU is idle (PER_CPU_HAS_THREAD=false) — the idle context
+    // runs on the boot stack, not a heap-allocated thread stack.
+    let is_kernel_thread = frame.cs & 3 == 0;
+    let mut stack_overflow = false;
+    if is_kernel_thread {
+        let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
+        if crate::task::scheduler::cpu_has_active_thread(cpu_id) {
+            if !crate::task::scheduler::check_rsp_in_bounds(cpu_id, frame.rsp) {
+                let (bottom, top) = crate::task::scheduler::get_stack_bounds(cpu_id);
+                let stack_size = top.wrapping_sub(bottom);
+                // Only flag as real overflow if RSP is within one stack-size below
+                // the bottom. If RSP is much further away (e.g., on the AP idle
+                // stack after context_switch), the check is a false positive —
+                // the CPU is running on a different stack, not an overflowed one.
+                let delta_below = bottom.wrapping_sub(frame.rsp);
+                if delta_below <= stack_size && frame.rsp < bottom {
+                    let tid = crate::task::scheduler::debug_current_tid();
+                    let tss_rsp0 = crate::arch::x86::tss::get_kernel_stack_for_cpu(cpu_id);
+                    let percpu_krsp = crate::arch::x86::syscall_msr::get_kernel_rsp(cpu_id);
+                    crate::serial_println!(
+                        "STACK OVERFLOW in IRQ! CPU{} TID={} RSP={:#018x} stack=[{:#018x}..{:#018x}]",
+                        cpu_id, tid, frame.rsp, bottom, top,
+                    );
+                    crate::serial_println!(
+                        "  TSS.RSP0={:#018x} PERCPU[{}].krsp={:#018x} delta={}",
+                        tss_rsp0, cpu_id, percpu_krsp, bottom.wrapping_sub(frame.rsp),
+                    );
+                    stack_overflow = true;
+                    crate::task::scheduler::try_exit_current(139);
+                }
+            }
+        }
+    }
+
     // Send EOI before dispatch — handlers (e.g. scheduler) may context_switch
     // and never return, so EOI must be sent first to allow further interrupts.
     if crate::arch::x86::apic::is_initialized() {
         crate::arch::x86::apic::eoi();
     } else {
         crate::arch::x86::pic::send_eoi(irq);
+    }
+
+    // CRITICAL: Skip dispatch when stack overflow detected. Continuing with
+    // schedule() on a corrupted stack would write past the allocation boundary
+    // and corrupt adjacent heap memory (other threads' contexts, page tables, etc).
+    if stack_overflow {
+        return;
     }
 
     // Dispatch to dynamically registered handler

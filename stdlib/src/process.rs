@@ -70,6 +70,24 @@ pub fn spawn_piped(path: &str, args: &str, pipe_id: u32) -> u32 {
     syscall3(SYS_SPAWN, path_buf.as_ptr() as u64, pipe_id as u64, args_ptr)
 }
 
+/// Create a new thread in the current process, sharing the same address space.
+///
+/// `entry` is a function pointer for the new thread's entry point.
+/// `stack_top` is the top of a user-allocated stack (must be 8-byte aligned,
+/// and the caller should subtract 8 from the true top for ABI alignment).
+/// `name` is a human-readable thread name (max 31 chars, shown in task manager/logs).
+///
+/// Returns the TID of the new thread, or 0 on error.
+pub fn thread_create(entry: fn(), stack_top: usize, name: &str) -> u32 {
+    syscall4(
+        SYS_THREAD_CREATE,
+        entry as u64,
+        stack_top as u64,
+        name.as_ptr() as u64,
+        name.len() as u64,
+    )
+}
+
 /// Get command-line arguments (raw). Returns the args length.
 /// The raw args string includes argv[0] (the program name).
 pub fn getargs(buf: &mut [u8]) -> usize {

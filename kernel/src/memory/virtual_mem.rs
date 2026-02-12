@@ -385,6 +385,39 @@ pub fn unmap_page(virt: VirtAddr) {
     }
 }
 
+/// Check if a virtual address is mapped in the current page directory.
+/// Walks the 4-level page table via recursive mapping.
+pub fn is_page_mapped(virt: VirtAddr) -> bool {
+    let pml4i = virt.pml4_index();
+    let pdpti = virt.pdpt_index();
+    let pdi = virt.pd_index();
+    let pti = virt.pt_index();
+
+    unsafe {
+        let pml4_ptr = RECURSIVE_PML4_BASE as *const u64;
+        let pml4e = pml4_ptr.add(pml4i).read_volatile();
+        if pml4e & PAGE_PRESENT == 0 {
+            return false;
+        }
+
+        let pdpt_ptr = recursive_pdpt_base(virt) as *const u64;
+        let pdpte = pdpt_ptr.add(pdpti).read_volatile();
+        if pdpte & PAGE_PRESENT == 0 {
+            return false;
+        }
+
+        let pd_ptr = recursive_pd_base(virt) as *const u64;
+        let pde = pd_ptr.add(pdi).read_volatile();
+        if pde & PAGE_PRESENT == 0 {
+            return false;
+        }
+
+        let pt_ptr = recursive_pt_base(virt) as *const u64;
+        let pte = pt_ptr.add(pti).read_volatile();
+        pte & PAGE_PRESENT != 0
+    }
+}
+
 /// Get the kernel PML4's physical address.
 pub fn kernel_cr3() -> u64 {
     unsafe { PML4_PHYS }
@@ -535,6 +568,13 @@ pub fn destroy_user_page_directory(pml4_phys: PhysAddr) {
     unsafe {
         let old_cr3 = current_cr3();
 
+        // Save flags and disable interrupts — CRITICAL for SMP safety.
+        // Without cli, a timer interrupt during the CR3 switch causes the scheduler
+        // to save the wrong CR3, corrupting page tables of other processes.
+        let rflags: u64;
+        asm!("pushfq; pop {}", out(reg) rflags);
+        asm!("cli");
+
         // Switch to the target PML4 so recursive mapping works on it
         asm!("mov cr3, {}", in(reg) pml4_phys.as_u64());
 
@@ -618,6 +658,9 @@ pub fn destroy_user_page_directory(pml4_phys: PhysAddr) {
 
         // Switch back to previous PML4
         asm!("mov cr3, {}", in(reg) old_cr3);
+
+        // Restore interrupt flag
+        asm!("push {}; popfq", in(reg) rflags);
     }
 
     // Free the PML4 frame itself

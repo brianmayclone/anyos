@@ -400,8 +400,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             virtual_mem::map_page_in_pd(pd_phys, virt, phys, PAGE_WRITABLE | PAGE_USER);
         }
 
-        // Map DLLs
-        crate::task::dll::map_all_dlls_into(pd_phys);
+        // DLLs are mapped on-demand via page fault handler (handle_dll_demand_page)
 
         // Load ELF64 segments
         let elf_result = load_elf64(&data, pd_phys)?;
@@ -435,7 +434,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             virtual_mem::map_page_in_pd(pd_phys, virt, phys, PAGE_WRITABLE | PAGE_USER);
         }
 
-        crate::task::dll::map_all_dlls_into(pd_phys);
+        // DLLs are mapped on-demand via page fault handler (handle_dll_demand_page)
 
         let elf_result = load_elf32(&data, pd_phys)?;
         entry_point = elf_result.entry;
@@ -476,7 +475,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             virtual_mem::map_page_in_pd(pd_phys, virt, phys, PAGE_WRITABLE | PAGE_USER);
         }
 
-        crate::task::dll::map_all_dlls_into(pd_phys);
+        // DLLs are mapped on-demand via page fault handler (handle_dll_demand_page)
 
         unsafe {
             core::arch::asm!("cli", options(nomem, nostack));
@@ -564,6 +563,49 @@ extern "C" fn user_thread_trampoline() {
     } else {
         crate::serial_println!(
             "  User trampoline: entering Ring 3 at {:#018x}, stack={:#018x}",
+            entry, user_stack
+        );
+        unsafe { jump_to_user_mode(entry, user_stack); }
+    }
+}
+
+/// Store a pending entry point and user stack for a new intra-process thread.
+/// Called by `scheduler::create_thread_in_current_process()`.
+pub fn store_pending_thread(tid: u32, entry: u64, user_stack: u64) {
+    let mut slots = PENDING_PROGRAMS.lock();
+    let slot = slots.iter_mut().find(|s| !s.used)
+        .expect("Too many pending programs");
+    slot.tid = tid;
+    slot.entry = entry;
+    slot.user_stack = user_stack;
+    slot.is_compat32 = false;
+    slot.used = true;
+}
+
+/// Trampoline for intra-process threads created via SYS_THREAD_CREATE.
+/// Identical to `user_thread_trampoline` — looks up the pending slot and jumps to user mode.
+pub extern "C" fn thread_create_trampoline() {
+    let tid = crate::task::scheduler::current_tid();
+    let (entry, user_stack, compat32) = {
+        let mut slots = PENDING_PROGRAMS.lock();
+        let slot = slots.iter_mut().find(|s| s.used && s.tid == tid)
+            .expect("No pending program for thread_create trampoline");
+        let e = slot.entry;
+        let s = slot.user_stack;
+        let c = slot.is_compat32;
+        slot.used = false;
+        (e, s, c)
+    };
+
+    if compat32 {
+        crate::serial_println!(
+            "  Thread trampoline (compat32): entering Ring 3 at {:#010x}, stack={:#010x}",
+            entry, user_stack
+        );
+        unsafe { jump_to_user_mode_compat32(entry, user_stack); }
+    } else {
+        crate::serial_println!(
+            "  Thread trampoline: entering Ring 3 at {:#018x}, stack={:#018x}",
             entry, user_stack
         );
         unsafe { jump_to_user_mode(entry, user_stack); }
