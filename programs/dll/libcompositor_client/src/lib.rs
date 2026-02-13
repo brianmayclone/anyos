@@ -194,6 +194,29 @@ impl CompositorClient {
     pub fn update_menu_item(&self, handle: &WindowHandle, item_id: u32, new_flags: u32) {
         (raw::exports().update_menu_item)(self.channel_id, handle.id, item_id, new_flags);
     }
+
+    /// Resize a window's shared memory surface to new dimensions.
+    /// Updates the WindowHandle in-place with the new SHM id, surface pointer,
+    /// and dimensions. Returns true on success.
+    pub fn resize_window(&self, handle: &mut WindowHandle, new_width: u32, new_height: u32) -> bool {
+        let mut new_shm_id: u32 = 0;
+        let new_surface = (raw::exports().resize_shm)(
+            self.channel_id,
+            handle.id,
+            handle.shm_id,
+            new_width,
+            new_height,
+            &mut new_shm_id,
+        );
+        if new_surface.is_null() || new_shm_id == 0 {
+            return false;
+        }
+        handle.shm_id = new_shm_id;
+        handle.surface_ptr = new_surface;
+        handle.width = new_width;
+        handle.height = new_height;
+        true
+    }
 }
 
 /// Convenience: get screen size without a client connection.

@@ -380,16 +380,20 @@ fn unpack_event_name(w2: u32, w3: u32, w4: u32) -> String {
 // ── Rendering ──
 
 /// Compute bounce Y-offset for an icon being launched.
-/// 3 bounces over 2000ms with decreasing amplitude (12, 8, 4 pixels).
+/// 3 bounces over 2000ms with decreasing amplitude (16, 10, 5 pixels).
+/// Uses a sine-approximation curve for smooth, natural motion.
 fn bounce_offset(elapsed_ms: u32) -> i32 {
     if elapsed_ms >= 2000 { return 0; }
     let bounce_dur = 667u32;
     let bounce_idx = (elapsed_ms / bounce_dur).min(2);
     let t_in_bounce = elapsed_ms - bounce_idx * bounce_dur;
-    let peak: i32 = match bounce_idx { 0 => 12, 1 => 8, _ => 4 };
-    let half = bounce_dur / 2;
-    let dt = if t_in_bounce <= half { t_in_bounce } else { bounce_dur - t_in_bounce };
-    (peak * dt as i32 / half as i32)
+    let peak: i32 = match bounce_idx { 0 => 16, 1 => 10, _ => 5 };
+    // Sine approximation: map t_in_bounce [0..bounce_dur] to a half-sine [0..pi]
+    // sin(pi * t / dur) ≈ parabolic: 4t(dur-t) / dur^2 (smooth at 0 and peak)
+    let t = t_in_bounce as i64;
+    let d = bounce_dur as i64;
+    let sine_approx = (4 * t * (d - t) * 1000 / (d * d)) as i32; // 0..1000
+    peak * sine_approx / 1000
 }
 
 struct RenderState<'a> {
@@ -545,7 +549,7 @@ fn main() {
     // Borderless, not resizable, always on top
     let flags: u32 = 0x01 | 0x02 | 0x04;
 
-    let win = match client.create_window(screen_width, DOCK_TOTAL_H, flags) {
+    let mut win = match client.create_window(screen_width, DOCK_TOTAL_H, flags) {
         Some(w) => w,
         None => return,
     };
@@ -565,6 +569,10 @@ fn main() {
         let icon_path = icons::app_icon_path(&item.bin_path);
         item.icon = load_ico_icon(&icon_path);
     }
+
+    // Mutable screen dimensions (updated on resolution change)
+    let mut screen_width = screen_width;
+    let mut screen_height = screen_height;
 
     // Create local framebuffer
     let mut fb = Framebuffer::new(screen_width, DOCK_TOTAL_H);
@@ -703,6 +711,24 @@ fn main() {
                     });
                     needs_redraw = true;
                 }
+            } else if sys_buf[0] == 0x0040 { // EVT_RESOLUTION_CHANGED
+                let new_w = sys_buf[1];
+                let new_h = sys_buf[2];
+                if new_w != screen_width || new_h != screen_height {
+                    screen_width = new_w;
+                    screen_height = new_h;
+
+                    // Resize the dock window to span the new screen width
+                    if client.resize_window(&mut win, screen_width, DOCK_TOTAL_H) {
+                        // Recreate local framebuffer at new width
+                        fb = Framebuffer::new(screen_width, DOCK_TOTAL_H);
+
+                        // Reposition to bottom of new screen
+                        client.move_window(&win, 0, (screen_height - DOCK_TOTAL_H) as i32);
+
+                        needs_redraw = true;
+                    }
+                }
             } else if sys_buf[0] == 0x0021 { // EVT_PROCESS_EXITED
                 let exited_tid = sys_buf[1];
                 // For pinned items: clear running state. For transient: remove.
@@ -754,8 +780,8 @@ fn main() {
             needs_redraw = false;
         }
 
-        // Faster polling during animations, slower when idle
-        let sleep_ms = if anims.has_active(now) || !bounce_items.is_empty() { 16 } else { 50 };
+        // Faster polling during animations, moderate when idle
+        let sleep_ms = if anims.has_active(now) || !bounce_items.is_empty() { 8 } else { 32 };
         process::sleep(sleep_ms);
     }
 }
