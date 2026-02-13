@@ -584,16 +584,28 @@ fn schedule_inner(from_timer: bool) {
         PER_CPU_TOTAL[cpu_id_early].fetch_add(1, Ordering::Relaxed);
     }
 
-    let mut guard = match SCHEDULER.try_lock() {
-        Some(s) => s,
-        None => {
-            // Lock contended — still count idle if this CPU has no running thread
-            if from_timer && !PER_CPU_HAS_THREAD[cpu_id_early].load(Ordering::Relaxed) {
-                IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
-                PER_CPU_IDLE[cpu_id_early].fetch_add(1, Ordering::Relaxed);
+    // For timer-driven scheduling (from_timer=true), use try_lock to avoid
+    // blocking the IRQ handler — if the lock is contended, skip this tick.
+    // For voluntary scheduling (from_timer=false, e.g. sleep_until), the
+    // current thread is already marked Blocked and MUST be descheduled.
+    // Using try_lock here would return immediately on contention, leaving
+    // a Blocked thread running — causing sleep(5) to return instantly on SMP.
+    // Blocking lock() is safe: voluntary callers aren't in interrupt context,
+    // and lock() disables IF before spinning, preventing deadlock.
+    let mut guard = if from_timer {
+        match SCHEDULER.try_lock() {
+            Some(s) => s,
+            None => {
+                // Lock contended — still count idle if this CPU has no running thread
+                if !PER_CPU_HAS_THREAD[cpu_id_early].load(Ordering::Relaxed) {
+                    IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+                    PER_CPU_IDLE[cpu_id_early].fetch_add(1, Ordering::Relaxed);
+                }
+                return;
             }
-            return;
         }
+    } else {
+        SCHEDULER.lock()
     };
 
     // CRITICAL: Re-read CPU ID now that interrupts are disabled (lock acquired).
@@ -675,12 +687,27 @@ fn schedule_inner(from_timer: bool) {
                             "SCHED FIX: CPU{} current_tid={} but RSP {:#x} in TID={} — correcting",
                             cpu_id, current_tid, current_rsp, at,
                         );
-                        sched.per_cpu[cpu_id].current_tid = Some(at);
                         if let Some(ai) = sched.find_idx(at) {
-                            if sched.threads[ai].state != ThreadState::Running {
-                                sched.threads[ai].state = ThreadState::Running;
+                            if sched.threads[ai].state == ThreadState::Terminated {
+                                // Don't resurrect a dead thread — this happens when
+                                // bad_rsp_recovery() killed a thread but RSP is still
+                                // on its stack (before the RSP switch to idle stack).
+                                // Fall back to idle instead.
+                                crate::serial_println!(
+                                    "SCHED FIX: TID={} is Terminated — using idle instead",
+                                    at,
+                                );
+                                sched.per_cpu[cpu_id].current_tid = Some(sched.idle_tid[cpu_id]);
+                            } else {
+                                sched.per_cpu[cpu_id].current_tid = Some(at);
+                                if sched.threads[ai].state != ThreadState::Running {
+                                    sched.threads[ai].state = ThreadState::Running;
+                                }
+                                sched.threads[ai].last_cpu = cpu_id;
                             }
-                            sched.threads[ai].last_cpu = cpu_id;
+                        } else {
+                            // Thread was reaped — RSP is on freed memory, use idle
+                            sched.per_cpu[cpu_id].current_tid = Some(sched.idle_tid[cpu_id]);
                         }
                     } else {
                         // RSP not in any thread — we're on idle/boot stack
@@ -1322,6 +1349,11 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
     // and without EOI the LAPIC won't deliver further interrupts to this CPU.
     crate::arch::x86::apic::eoi();
 
+    // Capture the idle thread's kernel stack top so we can switch RSP to it
+    // after releasing the lock. Without this, the idle loop runs on the dead
+    // thread's stack — causing SCHED FIX to resurrect the terminated thread.
+    let mut idle_stack_top: u64 = 0;
+
     // Try to mark the current thread as terminated and repair TSS.RSP0
     // in a single lock acquisition. If the lock is contended, we still
     // enter idle (the scheduler will clean up on the next tick).
@@ -1355,6 +1387,7 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
                     let kstack_top = sched.threads[idx].kernel_stack_top();
                     crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, kstack_top);
                     crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, kstack_top);
+                    idle_stack_top = kstack_top;
                     crate::serial_println!(
                         "  RSP0 repaired to idle stack 0x{:x} for CPU {}",
                         kstack_top, cpu_id
@@ -1368,6 +1401,7 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
             if stack_top >= 0xFFFF_FFFF_8000_0000 {
                 crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, stack_top);
                 crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, stack_top);
+                idle_stack_top = stack_top;
             }
         }
     }
@@ -1384,12 +1418,30 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
         core::arch::asm!("mov cr3, {}", in(reg) kcr3, options(nostack));
     }
 
-    // Enter idle loop — interrupts re-enabled, scheduler will pick this
-    // CPU up on the next timer tick.
+    // CRITICAL: Switch RSP to the idle thread's stack before entering the
+    // idle loop. Without this, the loop runs on the killed thread's stack.
+    // When reap_terminated() frees that stack, we'd be executing on freed
+    // memory. Worse, SCHED FIX detects RSP in the dead thread's range and
+    // resurrects it — causing RIP=garbage crashes.
     crate::serial_println!("  CPU {} entering idle loop", cpu_id);
-    unsafe { core::arch::asm!("sti"); }
-    loop {
-        unsafe { core::arch::asm!("hlt"); }
+    if idle_stack_top >= 0xFFFF_FFFF_8000_0000 {
+        unsafe {
+            core::arch::asm!(
+                "mov rsp, {0}",
+                "sti",
+                "2: hlt",
+                "jmp 2b",
+                in(reg) idle_stack_top,
+                options(noreturn)
+            );
+        }
+    } else {
+        // Last resort: couldn't determine idle stack. Stay on current stack
+        // and hope scheduler fixes it on next tick.
+        unsafe { core::arch::asm!("sti"); }
+        loop {
+            unsafe { core::arch::asm!("hlt"); }
+        }
     }
 }
 

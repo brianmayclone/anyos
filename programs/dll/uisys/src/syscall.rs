@@ -6,6 +6,7 @@
 
 use core::arch::asm;
 
+const SYS_GET_THEME: u32 = 190;
 const SYS_WIN_FILL_RECT: u32 = 54;
 const SYS_WIN_DRAW_TEXT: u32 = 55;
 const SYS_WIN_DRAW_TEXT_MONO: u32 = 58;
@@ -153,4 +154,10 @@ pub fn font_render_buf(params_ptr: u32) -> u32 {
 #[inline(always)]
 pub fn gpu_has_accel() -> u32 {
     syscall0(SYS_GPU_HAS_ACCEL)
+}
+
+/// Get current UI theme. Returns 0 for dark, 1 for light.
+#[inline(always)]
+pub fn get_theme() -> u32 {
+    syscall0(SYS_GET_THEME)
 }

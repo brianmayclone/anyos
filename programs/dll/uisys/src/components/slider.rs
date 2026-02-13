@@ -29,12 +29,12 @@ pub extern "C" fn slider_render(
     let thumb_x = x + (THUMB_SIZE / 2) as i32 + frac as i32;
 
     // Track background (full length)
-    draw::fill_rounded_rect(win, x, track_y, w, TRACK_HEIGHT, TRACK_HEIGHT / 2, theme::TOGGLE_OFF);
+    draw::fill_rounded_rect(win, x, track_y, w, TRACK_HEIGHT, TRACK_HEIGHT / 2, theme::TOGGLE_OFF());
 
     // Filled portion (left of thumb) in accent color
     let filled_w = (thumb_x - x) as u32;
     if filled_w > 0 {
-        draw::fill_rounded_rect(win, x, track_y, filled_w, TRACK_HEIGHT, TRACK_HEIGHT / 2, theme::ACCENT);
+        draw::fill_rounded_rect(win, x, track_y, filled_w, TRACK_HEIGHT, TRACK_HEIGHT / 2, theme::ACCENT());
     }
 
     // Thumb circle
@@ -47,7 +47,7 @@ pub extern "C" fn slider_render(
         THUMB_SIZE,
         THUMB_SIZE,
         THUMB_SIZE / 2,
-        theme::TOGGLE_THUMB,
+        theme::TOGGLE_THUMB(),
     );
 }
 

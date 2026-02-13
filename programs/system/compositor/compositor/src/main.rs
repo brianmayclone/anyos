@@ -161,16 +161,12 @@ fn main() {
     // Step 4b: Subscribe to system events (process exit notifications)
     let sys_sub = ipc::evt_sys_subscribe(0);
 
-    // Step 5: Spawn the dock
-    let _dock_tid = process::spawn("/system/compositor/dock", "");
-    println!("compositor: dock spawned");
-
     desktop.compose();
 
-    // Step 6: Signal boot ready so the kernel knows desktop is up
+    // Step 5: Signal boot ready so the kernel knows desktop is up
     anyos_std::sys::boot_ready();
 
-    // Step 7: Move Desktop to global and spawn render thread
+    // Step 6: Move Desktop to global and spawn render thread
     unsafe {
         DESKTOP_PTR = alloc::boxed::Box::into_raw(desktop);
     }
@@ -198,6 +194,11 @@ fn main() {
     // Lower management thread priority so render thread gets preferential scheduling
     process::set_priority(0, 150);
     println!("compositor: management thread priority set to 150");
+
+    // Step 7: Spawn the dock now that everything is ready (event channel,
+    // render thread, management loop about to start).
+    let _dock_tid = process::spawn("/system/compositor/dock", "");
+    println!("compositor: dock spawned");
 
     println!("compositor: entering main loop (multi-threaded)");
 
@@ -351,6 +352,9 @@ fn main() {
                     let new_w = sys_buf[1];
                     let new_h = sys_buf[2];
                     desktop.handle_resolution_change(new_w, new_h);
+                } else if sys_buf[0] == 0x0050 {
+                    // EVT_THEME_CHANGED
+                    desktop.on_theme_change();
                 }
                 release_lock();
             }

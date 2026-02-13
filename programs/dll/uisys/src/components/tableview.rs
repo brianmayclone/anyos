@@ -13,9 +13,9 @@ pub extern "C" fn tableview_render(
     _num_rows: u32, _selected_row: u32, _scroll_offset: u32, _row_height: u32,
 ) {
     // Background
-    draw::fill_rect(win, x, y, w, h, theme::WINDOW_BG);
+    draw::fill_rect(win, x, y, w, h, theme::WINDOW_BG());
     // Border
-    draw::draw_border(win, x, y, w, h, theme::CARD_BORDER);
+    draw::draw_border(win, x, y, w, h, theme::CARD_BORDER());
 }
 
 /// Render a single table row.
@@ -29,16 +29,16 @@ pub extern "C" fn tableview_render_row(
 ) {
     // Row background
     let bg = if selected != 0 {
-        theme::SELECTION
+        theme::SELECTION()
     } else if alt != 0 {
-        theme::CARD_BG
+        theme::CARD_BG()
     } else {
-        theme::WINDOW_BG
+        theme::WINDOW_BG()
     };
     draw::fill_rect(win, x, y, w, row_height, bg);
 
     // Bottom separator
-    draw::fill_rect(win, x, y + row_height as i32 - 1, w, 1, theme::SEPARATOR);
+    draw::fill_rect(win, x, y + row_height as i32 - 1, w, 1, theme::SEPARATOR());
 
     // Text
     if !text.is_null() && text_len > 0 {
@@ -46,7 +46,7 @@ pub extern "C" fn tableview_render_row(
         let text_x = x + 8;
         let (_, th) = draw::text_size(text_slice);
         let text_y = y + (row_height as i32 - th as i32) / 2;
-        let fg = if selected != 0 { 0xFFFFFFFF } else { theme::TEXT };
+        let fg = if selected != 0 { 0xFFFFFFFF } else { theme::TEXT() };
         draw::draw_text(win, text_x, text_y, fg, text_slice);
     }
 }
@@ -70,10 +70,10 @@ pub extern "C" fn tableview_render_header(
     text: *const u8, text_len: u32,
 ) {
     // Header background (slightly elevated)
-    draw::fill_rect(win, x, y, w, h, theme::SIDEBAR_BG);
+    draw::fill_rect(win, x, y, w, h, theme::SIDEBAR_BG());
 
     // Bottom separator
-    draw::fill_rect(win, x, y + h as i32 - 1, w, 1, theme::SEPARATOR);
+    draw::fill_rect(win, x, y + h as i32 - 1, w, 1, theme::SEPARATOR());
 
     // Header text
     if !text.is_null() && text_len > 0 {
@@ -81,6 +81,6 @@ pub extern "C" fn tableview_render_header(
         let text_x = x + 8;
         let (_, th) = draw::text_size(text_slice);
         let text_y = y + (h as i32 - th as i32) / 2;
-        draw::draw_text(win, text_x, text_y, theme::TEXT_SECONDARY, text_slice);
+        draw::draw_text(win, text_x, text_y, theme::TEXT_SECONDARY(), text_slice);
     }
 }

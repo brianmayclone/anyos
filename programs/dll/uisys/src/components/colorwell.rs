@@ -11,7 +11,7 @@ const BORDER_WIDTH: u32 = 1;
 /// color: the fill color to display (0xAARRGGBB).
 pub extern "C" fn colorwell_render(win: u32, x: i32, y: i32, size: u32, color: u32) {
     // Outer border
-    draw::fill_rounded_rect(win, x, y, size, size, WELL_CORNER, theme::INPUT_BORDER);
+    draw::fill_rounded_rect(win, x, y, size, size, WELL_CORNER, theme::INPUT_BORDER());
 
     // Inner color fill (inset by border width)
     let inner = BORDER_WIDTH;

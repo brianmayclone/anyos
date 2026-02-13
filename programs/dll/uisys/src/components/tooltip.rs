@@ -38,5 +38,5 @@ pub extern "C" fn tooltip_render(
     // Text
     let text_x = x + TOOLTIP_PAD_H as i32;
     let text_y = y + TOOLTIP_PAD_V as i32;
-    draw::draw_text(win, text_x, text_y, theme::TEXT, text_slice);
+    draw::draw_text(win, text_x, text_y, theme::TEXT(), text_slice);
 }

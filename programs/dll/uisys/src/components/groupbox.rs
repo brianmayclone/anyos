@@ -20,20 +20,20 @@ pub extern "C" fn groupbox_render(
     } else { 0 };
 
     // Draw the border rectangle
-    draw::draw_border(win, x, y + 8, w, h - 8, theme::CARD_BORDER);
+    draw::draw_border(win, x, y + 8, w, h - 8, theme::CARD_BORDER());
 
     // Draw rounded corners (fill small rects at corners for visual polish)
-    draw::fill_rounded_rect(win, x, y + 8, GROUPBOX_CORNER, GROUPBOX_CORNER, GROUPBOX_CORNER / 2, theme::CARD_BORDER);
+    draw::fill_rounded_rect(win, x, y + 8, GROUPBOX_CORNER, GROUPBOX_CORNER, GROUPBOX_CORNER / 2, theme::CARD_BORDER());
 
     if has_title {
         // Clear the top border where the label will sit
         let label_x = x + LABEL_INSET;
-        draw::fill_rect(win, label_x, y + 8, title_w, 1, theme::WINDOW_BG);
+        draw::fill_rect(win, label_x, y + 8, title_w, 1, theme::WINDOW_BG());
 
         // Draw title text
         let title_slice = unsafe { core::slice::from_raw_parts(title, title_len as usize) };
         let text_x = label_x + LABEL_PAD as i32;
         let text_y = y;
-        draw::draw_text(win, text_x, text_y, theme::TEXT_SECONDARY, title_slice);
+        draw::draw_text(win, text_x, text_y, theme::TEXT_SECONDARY(), title_slice);
     }
 }

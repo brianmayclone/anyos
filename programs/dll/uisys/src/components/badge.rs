@@ -10,7 +10,7 @@ pub extern "C" fn badge_render(win: u32, x: i32, y: i32, count: u32, dot_mode: u
     if dot_mode != 0 {
         // Small 10px dot
         let size = 10u32;
-        draw::fill_rounded_rect(win, x, y, size, size, size / 2, theme::BADGE_RED);
+        draw::fill_rounded_rect(win, x, y, size, size, size / 2, theme::BADGE_RED());
         return;
     }
 
@@ -25,12 +25,12 @@ pub extern "C" fn badge_render(win: u32, x: i32, y: i32, count: u32, dot_mode: u
     let w = if text_w + 10 > h as i32 { (text_w + 10) as u32 } else { h };
 
     // Red pill background
-    draw::fill_rounded_rect(win, x, y, w, h, h / 2, theme::BADGE_RED);
+    draw::fill_rounded_rect(win, x, y, w, h, h / 2, theme::BADGE_RED());
 
     // White centered text
     let text_x = x + (w as i32 - text_w) / 2;
     let text_y = y + (h as i32 - 16) / 2;
-    draw::draw_text(win, text_x, text_y, theme::CHECK_MARK, &buf[..text_len + 1]);
+    draw::draw_text(win, text_x, text_y, theme::CHECK_MARK(), &buf[..text_len + 1]);
 }
 
 /// Format a u32 into a decimal string (null-terminated).

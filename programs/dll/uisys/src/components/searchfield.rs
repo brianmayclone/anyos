@@ -18,10 +18,10 @@ pub extern "C" fn searchfield_render(
     cursor_pos: u32, focused: u32,
 ) {
     // Background
-    draw::fill_rounded_rect(win, x, y, w, h, h / 2, theme::INPUT_BG);
+    draw::fill_rounded_rect(win, x, y, w, h, h / 2, theme::INPUT_BG());
 
     // Border
-    let border_color = if focused != 0 { theme::INPUT_FOCUS } else { theme::INPUT_BORDER };
+    let border_color = if focused != 0 { theme::INPUT_FOCUS() } else { theme::INPUT_BORDER() };
     draw::draw_border(win, x, y, w, h, border_color);
 
     // Magnifying glass icon (simple "Q" glyph placeholder)
@@ -29,7 +29,7 @@ pub extern "C" fn searchfield_render(
     let icon_x = x + FIELD_PAD + 2;
     let icon_y = y + (h as i32 - icon_h as i32) / 2;
     let icon = b"Q";
-    draw::draw_text(win, icon_x, icon_y, theme::TEXT_SECONDARY, icon);
+    draw::draw_text(win, icon_x, icon_y, theme::TEXT_SECONDARY(), icon);
 
     let text_x = x + ICON_WIDTH + FIELD_PAD;
     let (_, th) = draw::text_size(b"Ay");
@@ -37,11 +37,11 @@ pub extern "C" fn searchfield_render(
 
     if text_len > 0 && !text.is_null() {
         let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize) };
-        draw::draw_text(win, text_x, text_y, theme::TEXT, text_slice);
+        draw::draw_text(win, text_x, text_y, theme::TEXT(), text_slice);
     } else {
         // Placeholder
         let ph = b"Search";
-        draw::draw_text(win, text_x, text_y, theme::TEXT_DISABLED, ph);
+        draw::draw_text(win, text_x, text_y, theme::TEXT_DISABLED(), ph);
     }
 
     // Cursor
@@ -52,7 +52,7 @@ pub extern "C" fn searchfield_render(
         } else {
             text_x
         };
-        draw::fill_rect(win, cursor_x, text_y, 1, th, theme::TEXT);
+        draw::fill_rect(win, cursor_x, text_y, 1, th, theme::TEXT());
     }
 }
 

@@ -11,7 +11,7 @@ pub extern "C" fn toggle_render(win: u32, x: i32, y: i32, on: u32) {
     let thumb = theme::TOGGLE_THUMB_SIZE;
 
     // Track background
-    let track_color = if on != 0 { theme::TOGGLE_ON } else { theme::TOGGLE_OFF };
+    let track_color = if on != 0 { theme::TOGGLE_ON() } else { theme::TOGGLE_OFF() };
     draw::fill_rounded_rect(win, x, y, w, h, h / 2, track_color);
 
     // Thumb position
@@ -24,7 +24,7 @@ pub extern "C" fn toggle_render(win: u32, x: i32, y: i32, on: u32) {
     let thumb_y = y + margin as i32;
 
     // Thumb circle (approximated as rounded rect)
-    draw::fill_rounded_rect(win, thumb_x, thumb_y, thumb, thumb, thumb / 2, theme::TOGGLE_THUMB);
+    draw::fill_rounded_rect(win, thumb_x, thumb_y, thumb, thumb, thumb / 2, theme::TOGGLE_THUMB());
 }
 
 /// Hit test for toggle.

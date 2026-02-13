@@ -216,7 +216,8 @@ pub fn sys_sleep(ms: u32) -> u32 {
     let pit_hz = crate::arch::x86::pit::TICK_HZ;
     let ticks = (ms as u64 * pit_hz as u64 / 1000) as u32;
     let ticks = if ticks == 0 { 1 } else { ticks };
-    let wake_at = crate::arch::x86::pit::get_ticks().wrapping_add(ticks);
+    let now = crate::arch::x86::pit::get_ticks();
+    let wake_at = now.wrapping_add(ticks);
     crate::task::scheduler::sleep_until(wake_at);
     0
 }
@@ -1117,6 +1118,27 @@ pub fn sys_set_wallpaper(_: u32) -> u32 { 0 }
 
 /// SYS_BOOT_READY — no-op (userspace compositor manages its own boot sequence).
 pub fn sys_boot_ready() -> u32 { 0 }
+
+// ── Theme ──
+
+/// Global theme state: 0 = Dark (default), 1 = Light.
+static SYSTEM_THEME: AtomicU32 = AtomicU32::new(0);
+
+/// SYS_GET_THEME — returns current theme (0=dark, 1=light).
+pub fn sys_get_theme() -> u32 {
+    SYSTEM_THEME.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// SYS_SET_THEME — set theme (0=dark, 1=light). Emits EVT_THEME_CHANGED if changed.
+pub fn sys_set_theme(theme: u32) -> u32 {
+    let theme = theme.min(1);
+    let old = SYSTEM_THEME.swap(theme, core::sync::atomic::Ordering::Relaxed);
+    if old != theme {
+        use crate::ipc::event_bus::{self, EventData, EVT_THEME_CHANGED};
+        event_bus::system_emit(EventData::new(EVT_THEME_CHANGED, theme, old, 0, 0));
+    }
+    0
+}
 
 /// SYS_FONT_RENDER_BUF: Render TTF text to a user-provided ARGB pixel buffer.
 /// params_ptr: [buf_ptr:u32, buf_w:u32, buf_h:u32, x:i32, y:i32, color:u32,

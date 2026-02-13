@@ -96,19 +96,34 @@ impl UiEvent {
     pub fn char_val(&self) -> u32 { self.p2 }
 }
 
-/// Theme color constants matching the DLL's built-in palette.
+/// Theme color functions matching the DLL's built-in palette.
+/// Colors are dynamic — they change based on the system theme (dark/light).
 pub mod colors {
-    pub const WINDOW_BG: u32       = 0xFF1E1E1E;
-    pub const TEXT: u32             = 0xFFE6E6E6;
-    pub const TEXT_SECONDARY: u32   = 0xFF969696;
-    pub const TEXT_DISABLED: u32    = 0xFF5A5A5A;
-    pub const ACCENT: u32          = 0xFF007AFF;
-    pub const ACCENT_HOVER: u32    = 0xFF0A84FF;
-    pub const DESTRUCTIVE: u32     = 0xFFFF3B30;
-    pub const SUCCESS: u32         = 0xFF30D158;
-    pub const WARNING: u32         = 0xFFFFD60A;
-    pub const CONTROL_BG: u32      = 0xFF3C3C3C;
-    pub const SEPARATOR: u32       = 0xFF3D3D3D;
-    pub const SIDEBAR_BG: u32      = 0xFF252525;
-    pub const CARD_BG: u32         = 0xFF2A2A2A;
+    #[inline(always)]
+    fn is_light() -> bool {
+        let ret: u64;
+        unsafe {
+            core::arch::asm!(
+                "syscall",
+                inlateout("rax") 190u64 => ret,  // SYS_GET_THEME
+                out("rcx") _,
+                out("r11") _,
+            );
+        }
+        ret != 0
+    }
+
+    pub fn WINDOW_BG() -> u32       { if is_light() { 0xFFF5F5F7 } else { 0xFF1E1E1E } }
+    pub fn TEXT() -> u32             { if is_light() { 0xFF1D1D1F } else { 0xFFE6E6E6 } }
+    pub fn TEXT_SECONDARY() -> u32   { if is_light() { 0xFF86868B } else { 0xFF969696 } }
+    pub fn TEXT_DISABLED() -> u32    { if is_light() { 0xFFC7C7CC } else { 0xFF5A5A5A } }
+    pub fn ACCENT() -> u32          { 0xFF007AFF }
+    pub fn ACCENT_HOVER() -> u32    { 0xFF0A84FF }
+    pub fn DESTRUCTIVE() -> u32     { 0xFFFF3B30 }
+    pub fn SUCCESS() -> u32         { if is_light() { 0xFF34C759 } else { 0xFF30D158 } }
+    pub fn WARNING() -> u32         { if is_light() { 0xFFFF9F0A } else { 0xFFFFD60A } }
+    pub fn CONTROL_BG() -> u32      { if is_light() { 0xFFE5E5EA } else { 0xFF3C3C3C } }
+    pub fn SEPARATOR() -> u32       { if is_light() { 0xFFC6C6C8 } else { 0xFF3D3D3D } }
+    pub fn SIDEBAR_BG() -> u32      { if is_light() { 0xFFF2F2F7 } else { 0xFF252525 } }
+    pub fn CARD_BG() -> u32         { if is_light() { 0xFFFFFFFF } else { 0xFF2A2A2A } }
 }

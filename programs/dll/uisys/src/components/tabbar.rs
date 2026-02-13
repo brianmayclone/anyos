@@ -18,10 +18,10 @@ pub extern "C" fn tabbar_render(
     }
 
     // Background
-    draw::fill_rect(win, x, y, w, h, theme::SIDEBAR_BG);
+    draw::fill_rect(win, x, y, w, h, theme::SIDEBAR_BG());
 
     // Top separator
-    draw::fill_rect(win, x, y, w, 1, theme::SEPARATOR);
+    draw::fill_rect(win, x, y, w, 1, theme::SEPARATOR());
 
     let tab_w = w / num_tabs;
 
@@ -31,7 +31,7 @@ pub extern "C" fn tabbar_render(
 
         // Active indicator (small bar at top of selected tab)
         if is_selected {
-            draw::fill_rect(win, tab_x, y, tab_w, 2, theme::ACCENT);
+            draw::fill_rect(win, tab_x, y, tab_w, 2, theme::ACCENT());
         }
 
         // Tab label
@@ -54,7 +54,7 @@ pub extern "C" fn tabbar_render(
                 let (tw, th) = draw::text_size(label_slice);
                 let text_x = tab_x + (tab_w as i32 - tw as i32) / 2;
                 let text_y = y + (h as i32 - th as i32) / 2;
-                let fg = if is_selected { theme::ACCENT } else { theme::TEXT_SECONDARY };
+                let fg = if is_selected { theme::ACCENT() } else { theme::TEXT_SECONDARY() };
                 draw::draw_text(win, text_x, text_y, fg, label_slice);
             }
         }

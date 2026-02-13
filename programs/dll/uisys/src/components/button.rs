@@ -61,15 +61,15 @@ pub extern "C" fn button_measure(
 fn button_colors(style: u8, state: u8) -> (u32, u32) {
     if state == 3 {
         // Disabled
-        return (theme::CONTROL_BG, theme::TEXT_DISABLED);
+        return (theme::CONTROL_BG(), theme::TEXT_DISABLED());
     }
     match style {
         1 => {
             // Primary (blue)
             let bg = match state {
-                1 => theme::ACCENT_HOVER,
+                1 => theme::ACCENT_HOVER(),
                 2 => 0xFF005EC4,
-                _ => theme::ACCENT,
+                _ => theme::ACCENT(),
             };
             (bg, 0xFFFFFFFF)
         }
@@ -78,27 +78,27 @@ fn button_colors(style: u8, state: u8) -> (u32, u32) {
             let bg = match state {
                 1 => 0xFFFF5044,
                 2 => 0xFFCC2F26,
-                _ => theme::DESTRUCTIVE,
+                _ => theme::DESTRUCTIVE(),
             };
             (bg, 0xFFFFFFFF)
         }
         3 => {
             // Plain (text-only)
             let fg = match state {
-                1 => theme::ACCENT_HOVER,
+                1 => theme::ACCENT_HOVER(),
                 2 => 0xFF005EC4,
-                _ => theme::ACCENT,
+                _ => theme::ACCENT(),
             };
             (0, fg)
         }
         _ => {
             // Default (gray)
             let bg = match state {
-                1 => theme::CONTROL_HOVER,
-                2 => theme::CONTROL_PRESSED,
-                _ => theme::CONTROL_BG,
+                1 => theme::CONTROL_HOVER(),
+                2 => theme::CONTROL_PRESSED(),
+                _ => theme::CONTROL_BG(),
             };
-            (bg, theme::TEXT)
+            (bg, theme::TEXT())
         }
     }
 }

@@ -19,7 +19,7 @@ pub extern "C" fn iconbutton_render(
 
     // Subtle border for normal/hover states
     if state < 3 {
-        draw::draw_border(win, x, y, size, size, theme::CARD_BORDER);
+        draw::draw_border(win, x, y, size, size, theme::CARD_BORDER());
     }
 }
 
@@ -34,9 +34,9 @@ pub extern "C" fn iconbutton_hit_test(
 
 fn iconbutton_colors(state: u8) -> (u32, u32) {
     match state {
-        1 => (theme::CONTROL_HOVER, theme::TEXT),
-        2 => (theme::CONTROL_PRESSED, theme::TEXT),
-        3 => (theme::CONTROL_PRESSED, theme::TEXT_DISABLED),
-        _ => (theme::CONTROL_BG, theme::TEXT),
+        1 => (theme::CONTROL_HOVER(), theme::TEXT()),
+        2 => (theme::CONTROL_PRESSED(), theme::TEXT()),
+        3 => (theme::CONTROL_PRESSED(), theme::TEXT_DISABLED()),
+        _ => (theme::CONTROL_BG(), theme::TEXT()),
     }
 }

@@ -47,6 +47,7 @@ fn main() {
     let content_x = SIDEBAR_W as i32 + 20;
 
     // General page toggles
+    let mut dark_toggle = UiToggle::new(0, 0, sys::get_theme() == 0);
     let mut sound_toggle = UiToggle::new(0, 0, true);
     let mut notif_toggle = UiToggle::new(0, 0, true);
 
@@ -89,7 +90,7 @@ fn main() {
                 }
                 window::EVENT_MOUSE_DOWN => {
                     // Update component positions before hit testing
-                    update_positions(&sidebar, &mut sound_toggle, &mut notif_toggle, &mut brightness, &mut res_radio, resolutions.len(), win_w, scroll_y);
+                    update_positions(&sidebar, &mut dark_toggle, &mut sound_toggle, &mut notif_toggle, &mut brightness, &mut res_radio, resolutions.len(), win_w, scroll_y);
 
                     // Let each component handle the event
                     if sidebar.handle_event(&ui_event, PAGE_NAMES.len()).is_some() {
@@ -97,6 +98,10 @@ fn main() {
                     }
 
                     if sidebar.selected == PAGE_GENERAL {
+                        if dark_toggle.handle_event(&ui_event).is_some() {
+                            sys::set_theme(if dark_toggle.on { 0 } else { 1 });
+                            needs_redraw = true;
+                        }
                         if sound_toggle.handle_event(&ui_event).is_some() {
                             needs_redraw = true;
                         }
@@ -163,8 +168,8 @@ fn main() {
 
         if needs_redraw {
             // Update positions for rendering
-            update_positions(&sidebar, &mut sound_toggle, &mut notif_toggle, &mut brightness, &mut res_radio, resolutions.len(), win_w, scroll_y);
-            render(win, &sidebar, &sound_toggle, &notif_toggle, &brightness, &res_radio, &resolutions, win_w, win_h, scroll_y);
+            update_positions(&sidebar, &mut dark_toggle, &mut sound_toggle, &mut notif_toggle, &mut brightness, &mut res_radio, resolutions.len(), win_w, scroll_y);
+            render(win, &sidebar, &dark_toggle, &sound_toggle, &notif_toggle, &brightness, &res_radio, &resolutions, win_w, win_h, scroll_y);
             window::present(win);
             needs_redraw = false;
         }
@@ -176,6 +181,7 @@ fn main() {
 /// Compute component positions based on current window size and scroll offset.
 fn update_positions(
     sidebar: &UiSidebar,
+    dark: &mut UiToggle,
     sound: &mut UiToggle,
     notif: &mut UiToggle,
     brightness: &mut UiSlider,
@@ -190,13 +196,17 @@ fn update_positions(
     let card_y = 54 - sy;
     let toggle_x = cx + cw - PAD - 52;
 
-    // Sound toggle (General page, row 1)
-    sound.x = toggle_x;
-    sound.y = card_y + PAD + ROW_H + 5;
+    // Dark Mode toggle (General page, row 1)
+    dark.x = toggle_x;
+    dark.y = card_y + PAD + ROW_H + 5;
 
-    // Notifications toggle (General page, row 2)
+    // Sound toggle (General page, row 2)
+    sound.x = toggle_x;
+    sound.y = card_y + PAD + ROW_H * 2 + 5;
+
+    // Notifications toggle (General page, row 3)
     notif.x = toggle_x;
-    notif.y = card_y + PAD + ROW_H * 2 + 5;
+    notif.y = card_y + PAD + ROW_H * 3 + 5;
 
     // Brightness slider (Display page)
     let brightness_row_y = card_y + PAD + ROW_H * 2;
@@ -214,7 +224,7 @@ fn update_positions(
 /// Content height for each page (for scrollbar calculation).
 fn page_content_height(page: usize, num_resolutions: usize) -> u32 {
     match page {
-        PAGE_GENERAL => (54 + PAD * 2 + ROW_H * 3 + 20) as u32,
+        PAGE_GENERAL => (54 + PAD * 2 + ROW_H * 4 + 20) as u32,
         PAGE_DISPLAY => {
             let card1_h = PAD * 2 + ROW_H * 3;
             let card2_h = PAD * 2 + ROW_H + num_resolutions as i32 * 24;
@@ -233,6 +243,7 @@ fn page_content_height(page: usize, num_resolutions: usize) -> u32 {
 fn render(
     win: u32,
     sidebar_c: &UiSidebar,
+    dark: &UiToggle,
     sound: &UiToggle,
     notif: &UiToggle,
     brightness: &UiSlider,
@@ -241,7 +252,7 @@ fn render(
     win_w: u32, win_h: u32,
     scroll_y: u32,
 ) {
-    window::fill_rect(win, 0, 0, win_w as u16, win_h as u16, colors::WINDOW_BG);
+    window::fill_rect(win, 0, 0, win_w as u16, win_h as u16, colors::WINDOW_BG());
 
     // Sidebar with built-in rendering
     sidebar_c.render(win, "SETTINGS", &PAGE_NAMES);
@@ -252,7 +263,7 @@ fn render(
     let sy = scroll_y as i32;
 
     match sidebar_c.selected {
-        PAGE_GENERAL => render_general(win, sound, notif, cx, cw, sy),
+        PAGE_GENERAL => render_general(win, dark, sound, notif, cx, cw, sy),
         PAGE_DISPLAY => render_display(win, brightness, res_radio, resolutions, cx, cw, sy),
         PAGE_NETWORK => render_network(win, cx, cw, sy),
         PAGE_ABOUT => render_about(win, cx, cw, sy),
@@ -266,32 +277,38 @@ fn render(
     scrollbar(win, sb_x, 0, sb_w, win_h, content_h, scroll_y);
 }
 
-fn render_general(win: u32, sound: &UiToggle, notif: &UiToggle, cx: i32, cw: u32, sy: i32) {
-    label(win, cx, 20 - sy, "General", colors::TEXT, FontSize::Title, TextAlign::Left);
+fn render_general(win: u32, dark: &UiToggle, sound: &UiToggle, notif: &UiToggle, cx: i32, cw: u32, sy: i32) {
+    label(win, cx, 20 - sy, "General", colors::TEXT(), FontSize::Title, TextAlign::Left);
 
     let card_y = 54 - sy;
-    card(win, cx, card_y, cw, (PAD * 2 + ROW_H * 3) as u32);
+    card(win, cx, card_y, cw, (PAD * 2 + ROW_H * 4) as u32);
 
     // Row 0: Device Name
     let ry = card_y + PAD;
-    label(win, cx + PAD, ry + 12, "Device Name", colors::TEXT, FontSize::Normal, TextAlign::Left);
-    label(win, cx + PAD + 140, ry + 12, "anyOS Computer", colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+    label(win, cx + PAD, ry + 12, "Device Name", colors::TEXT(), FontSize::Normal, TextAlign::Left);
+    label(win, cx + PAD + 140, ry + 12, "anyOS Computer", colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 
-    // Row 1: Sound
+    // Row 1: Dark Mode
     let ry = ry + ROW_H;
     divider_h(win, cx + PAD, ry, cw - PAD as u32 * 2);
-    label(win, cx + PAD, ry + 12, "Sound", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win, cx + PAD, ry + 12, "Dark Mode", colors::TEXT(), FontSize::Normal, TextAlign::Left);
+    dark.render(win);
+
+    // Row 2: Sound
+    let ry = ry + ROW_H;
+    divider_h(win, cx + PAD, ry, cw - PAD as u32 * 2);
+    label(win, cx + PAD, ry + 12, "Sound", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     sound.render(win);
 
-    // Row 2: Notifications
+    // Row 3: Notifications
     let ry = ry + ROW_H;
     divider_h(win, cx + PAD, ry, cw - PAD as u32 * 2);
-    label(win, cx + PAD, ry + 12, "Notifications", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win, cx + PAD, ry + 12, "Notifications", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     notif.render(win);
 }
 
 fn render_display(win: u32, brightness: &UiSlider, res_radio: &UiRadioGroup, resolutions: &[(u32, u32)], cx: i32, cw: u32, sy: i32) {
-    label(win, cx, 20 - sy, "Display", colors::TEXT, FontSize::Title, TextAlign::Left);
+    label(win, cx, 20 - sy, "Display", colors::TEXT(), FontSize::Title, TextAlign::Left);
 
     // Card 1: GPU & Brightness info
     let card_y = 54 - sy;
@@ -299,23 +316,23 @@ fn render_display(win: u32, brightness: &UiSlider, res_radio: &UiRadioGroup, res
 
     // Row 0: GPU Driver
     let ry = card_y + PAD;
-    label(win, cx + PAD, ry + 12, "GPU Driver", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win, cx + PAD, ry + 12, "GPU Driver", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     let gpu_name = window::gpu_name();
-    label(win, cx + PAD + 120, ry + 12, &gpu_name, colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+    label(win, cx + PAD + 120, ry + 12, &gpu_name, colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 
     // Row 1: Current Resolution
     let ry = ry + ROW_H;
     divider_h(win, cx + PAD, ry, cw - PAD as u32 * 2);
-    label(win, cx + PAD, ry + 12, "Resolution", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win, cx + PAD, ry + 12, "Resolution", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     let (sw, sh) = window::screen_size();
     let mut buf = [0u8; 32];
     let res = fmt_resolution(&mut buf, sw, sh);
-    label(win, cx + PAD + 120, ry + 12, res, colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+    label(win, cx + PAD + 120, ry + 12, res, colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 
     // Row 2: Brightness
     let ry = ry + ROW_H;
     divider_h(win, cx + PAD, ry, cw - PAD as u32 * 2);
-    label(win, cx + PAD, ry + 12, "Brightness", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win, cx + PAD, ry + 12, "Brightness", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     brightness.render(win);
 
     // Card 2: Resolution picker
@@ -325,7 +342,7 @@ fn render_display(win: u32, brightness: &UiSlider, res_radio: &UiRadioGroup, res
     card(win, cx, res_card_y, cw, res_card_h);
 
     let ry = res_card_y + PAD;
-    label(win, cx + PAD, ry + 4, "Change Resolution", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win, cx + PAD, ry + 4, "Change Resolution", colors::TEXT(), FontSize::Normal, TextAlign::Left);
 
     // Build resolution label strings for the radio group
     let mut label_bufs: [[u8; 32]; 16] = [[0u8; 32]; 16];
@@ -344,7 +361,7 @@ fn render_display(win: u32, brightness: &UiSlider, res_radio: &UiRadioGroup, res
 }
 
 fn render_network(win: u32, cx: i32, cw: u32, sy: i32) {
-    label(win, cx, 20 - sy, "Network", colors::TEXT, FontSize::Title, TextAlign::Left);
+    label(win, cx, 20 - sy, "Network", colors::TEXT(), FontSize::Title, TextAlign::Left);
 
     let mut net_buf = [0u8; 24];
     net::get_config(&mut net_buf);
@@ -363,39 +380,39 @@ fn render_network(win: u32, cx: i32, cw: u32, sy: i32) {
     let vx = cx + PAD + 130;
 
     let ry = card_y + PAD;
-    label(win, lx, ry + 12, "Status", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win, lx, ry + 12, "Status", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     let kind = if link_up { StatusKind::Online } else { StatusKind::Offline };
     let text = if link_up { "Connected" } else { "Disconnected" };
     status_indicator(win, vx, ry + 12, kind, text);
 
     let ry = ry + ROW_H;
     divider_h(win, lx, ry, cw - PAD as u32 * 2);
-    label(win, lx, ry + 12, "IP Address", colors::TEXT, FontSize::Normal, TextAlign::Left);
-    let mut b = [0u8; 20]; label(win, vx, ry + 12, fmt_ip(&mut b, &ip), colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+    label(win, lx, ry + 12, "IP Address", colors::TEXT(), FontSize::Normal, TextAlign::Left);
+    let mut b = [0u8; 20]; label(win, vx, ry + 12, fmt_ip(&mut b, &ip), colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 
     let ry = ry + ROW_H;
     divider_h(win, lx, ry, cw - PAD as u32 * 2);
-    label(win, lx, ry + 12, "Subnet Mask", colors::TEXT, FontSize::Normal, TextAlign::Left);
-    let mut b = [0u8; 20]; label(win, vx, ry + 12, fmt_ip(&mut b, &mask), colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+    label(win, lx, ry + 12, "Subnet Mask", colors::TEXT(), FontSize::Normal, TextAlign::Left);
+    let mut b = [0u8; 20]; label(win, vx, ry + 12, fmt_ip(&mut b, &mask), colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 
     let ry = ry + ROW_H;
     divider_h(win, lx, ry, cw - PAD as u32 * 2);
-    label(win, lx, ry + 12, "Gateway", colors::TEXT, FontSize::Normal, TextAlign::Left);
-    let mut b = [0u8; 20]; label(win, vx, ry + 12, fmt_ip(&mut b, &gw), colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+    label(win, lx, ry + 12, "Gateway", colors::TEXT(), FontSize::Normal, TextAlign::Left);
+    let mut b = [0u8; 20]; label(win, vx, ry + 12, fmt_ip(&mut b, &gw), colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 
     let ry = ry + ROW_H;
     divider_h(win, lx, ry, cw - PAD as u32 * 2);
-    label(win, lx, ry + 12, "DNS Server", colors::TEXT, FontSize::Normal, TextAlign::Left);
-    let mut b = [0u8; 20]; label(win, vx, ry + 12, fmt_ip(&mut b, &dns_ip), colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+    label(win, lx, ry + 12, "DNS Server", colors::TEXT(), FontSize::Normal, TextAlign::Left);
+    let mut b = [0u8; 20]; label(win, vx, ry + 12, fmt_ip(&mut b, &dns_ip), colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 
     let ry = ry + ROW_H;
     divider_h(win, lx, ry, cw - PAD as u32 * 2);
-    label(win, lx, ry + 12, "MAC Address", colors::TEXT, FontSize::Normal, TextAlign::Left);
-    let mut b = [0u8; 20]; label(win, vx, ry + 12, fmt_mac(&mut b, &mac), colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+    label(win, lx, ry + 12, "MAC Address", colors::TEXT(), FontSize::Normal, TextAlign::Left);
+    let mut b = [0u8; 20]; label(win, vx, ry + 12, fmt_mac(&mut b, &mac), colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 }
 
 fn render_about(win: u32, cx: i32, cw: u32, sy: i32) {
-    label(win, cx, 20 - sy, "About", colors::TEXT, FontSize::Title, TextAlign::Left);
+    label(win, cx, 20 - sy, "About", colors::TEXT(), FontSize::Title, TextAlign::Left);
 
     let card_y = 54 - sy;
     card(win, cx, card_y, cw, (PAD * 2 + ROW_H * 5) as u32);
@@ -404,37 +421,37 @@ fn render_about(win: u32, cx: i32, cw: u32, sy: i32) {
     let vx = cx + PAD + 130;
 
     let ry = card_y + PAD;
-    label(win, lx, ry + 12, "OS", colors::TEXT, FontSize::Normal, TextAlign::Left);
-    label(win, vx, ry + 12, "anyOS 1.0", colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+    label(win, lx, ry + 12, "OS", colors::TEXT(), FontSize::Normal, TextAlign::Left);
+    label(win, vx, ry + 12, "anyOS 1.0", colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 
     let ry = ry + ROW_H;
     divider_h(win, lx, ry, cw - PAD as u32 * 2);
-    label(win, lx, ry + 12, "Kernel", colors::TEXT, FontSize::Normal, TextAlign::Left);
-    label(win, vx, ry + 12, "x86_64-anyos", colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+    label(win, lx, ry + 12, "Kernel", colors::TEXT(), FontSize::Normal, TextAlign::Left);
+    label(win, vx, ry + 12, "x86_64-anyos", colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 
     let ry = ry + ROW_H;
     divider_h(win, lx, ry, cw - PAD as u32 * 2);
-    label(win, lx, ry + 12, "CPUs", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win, lx, ry + 12, "CPUs", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     let cpu_count = sys::sysinfo(2, &mut [0u8; 4]);
     let mut b = [0u8; 8];
-    label(win, vx, ry + 12, fmt_u32(&mut b, cpu_count), colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+    label(win, vx, ry + 12, fmt_u32(&mut b, cpu_count), colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 
     let ry = ry + ROW_H;
     divider_h(win, lx, ry, cw - PAD as u32 * 2);
-    label(win, lx, ry + 12, "Memory", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win, lx, ry + 12, "Memory", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     let mut mem = [0u8; 8];
     sys::sysinfo(0, &mut mem);
     let total = u32::from_le_bytes([mem[0], mem[1], mem[2], mem[3]]);
     let free = u32::from_le_bytes([mem[4], mem[5], mem[6], mem[7]]);
     let mut b = [0u8; 32];
-    label(win, vx, ry + 12, fmt_mem(&mut b, (total * 4) / 1024, (free * 4) / 1024), colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+    label(win, vx, ry + 12, fmt_mem(&mut b, (total * 4) / 1024, (free * 4) / 1024), colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 
     let ry = ry + ROW_H;
     divider_h(win, lx, ry, cw - PAD as u32 * 2);
-    label(win, lx, ry + 12, "Uptime", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win, lx, ry + 12, "Uptime", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     let mut b = [0u8; 32];
     let hz = sys::tick_hz().max(1);
-    label(win, vx, ry + 12, fmt_uptime(&mut b, sys::uptime() / hz), colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+    label(win, vx, ry + 12, fmt_uptime(&mut b, sys::uptime() / hz), colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 }
 
 // ============================================================================

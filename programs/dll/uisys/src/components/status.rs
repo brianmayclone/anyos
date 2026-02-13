@@ -12,10 +12,10 @@ pub extern "C" fn status_render(
     label: *const u8, label_len: u32,
 ) {
     let color = match status {
-        0 => theme::SUCCESS,
-        1 => theme::WARNING,
-        2 => theme::DESTRUCTIVE,
-        _ => theme::TEXT_DISABLED,
+        0 => theme::SUCCESS(),
+        1 => theme::WARNING(),
+        2 => theme::DESTRUCTIVE(),
+        _ => theme::TEXT_DISABLED(),
     };
 
     // Status dot (circle)
@@ -27,6 +27,6 @@ pub extern "C" fn status_render(
         let label_slice = unsafe { core::slice::from_raw_parts(label, label_len as usize) };
         let text_x = x + DOT_SIZE as i32 + 6;
         let text_y = y + (DOT_SIZE as i32 - 16) / 2;
-        draw::draw_text(win, text_x, text_y, theme::TEXT, label_slice);
+        draw::draw_text(win, text_x, text_y, theme::TEXT(), label_slice);
     }
 }

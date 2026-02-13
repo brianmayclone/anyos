@@ -12,9 +12,9 @@ const HEADER_HEIGHT: u32 = 28;
 pub extern "C" fn sidebar_render_bg(
     win: u32, x: i32, y: i32, w: u32, h: u32,
 ) {
-    draw::fill_rect(win, x, y, w, h, theme::SIDEBAR_BG);
+    draw::fill_rect(win, x, y, w, h, theme::SIDEBAR_BG());
     // Right-edge separator
-    draw::fill_rect(win, x + w as i32 - 1, y, 1, h, theme::SEPARATOR);
+    draw::fill_rect(win, x + w as i32 - 1, y, 1, h, theme::SEPARATOR());
 }
 
 /// Render a sidebar navigation item.
@@ -31,7 +31,7 @@ pub extern "C" fn sidebar_render_item(
     if selected != 0 {
         draw::fill_rounded_rect(
             win, x + 4, y + 1, w - 8, h - 2,
-            4, theme::SELECTION,
+            4, theme::SELECTION(),
         );
     }
 
@@ -41,7 +41,7 @@ pub extern "C" fn sidebar_render_item(
         let text_x = x + padding;
         let (_, th) = draw::text_size(text_slice);
         let text_y = y + (h as i32 - th as i32) / 2;
-        let fg = if selected != 0 { 0xFFFFFFFF } else { theme::TEXT };
+        let fg = if selected != 0 { 0xFFFFFFFF } else { theme::TEXT() };
         draw::draw_text(win, text_x, text_y, fg, text_slice);
     }
 }
@@ -56,7 +56,7 @@ pub extern "C" fn sidebar_render_header(
         let text_x = x + 12;
         let (_, th) = draw::text_size(text_slice);
         let text_y = y + (HEADER_HEIGHT as i32 - th as i32) / 2;
-        draw::draw_text(win, text_x, text_y, theme::TEXT_SECONDARY, text_slice);
+        draw::draw_text(win, text_x, text_y, theme::TEXT_SECONDARY(), text_slice);
     }
 }
 

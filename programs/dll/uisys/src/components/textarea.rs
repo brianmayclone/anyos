@@ -21,21 +21,21 @@ pub extern "C" fn textarea_render(
     show_line_nums: u32, focused: u32,
 ) {
     // Background
-    draw::fill_rect(win, x, y, w, h, theme::INPUT_BG);
+    draw::fill_rect(win, x, y, w, h, theme::INPUT_BG());
 
     // Border
-    let border_color = if focused != 0 { theme::INPUT_FOCUS } else { theme::INPUT_BORDER };
+    let border_color = if focused != 0 { theme::INPUT_FOCUS() } else { theme::INPUT_BORDER() };
     draw::draw_border(win, x, y, w, h, border_color);
 
     let gutter_w = if show_line_nums != 0 { GUTTER_WIDTH } else { 0 };
 
     // Gutter background
     if show_line_nums != 0 {
-        draw::fill_rect(win, x + 1, y + 1, gutter_w, h - 2, theme::SIDEBAR_BG);
+        draw::fill_rect(win, x + 1, y + 1, gutter_w, h - 2, theme::SIDEBAR_BG());
         // Gutter separator
         draw::fill_rect(
             win, x + gutter_w as i32, y + 1,
-            1, h - 2, theme::SEPARATOR,
+            1, h - 2, theme::SEPARATOR(),
         );
     }
 
@@ -51,7 +51,7 @@ pub extern "C" fn textarea_render(
         if focused != 0 {
             draw::fill_rect(
                 win, content_x, y + 2,
-                1, line_h, theme::TEXT,
+                1, line_h, theme::TEXT(),
             );
         }
         // Line number 1
@@ -59,7 +59,7 @@ pub extern "C" fn textarea_render(
             let num_buf = b"1\0";
             let (nw, _) = draw::text_size(b"1");
             let num_x = x + gutter_w as i32 - nw as i32 - 4;
-            draw::draw_text(win, num_x, y + 2, theme::TEXT_SECONDARY, num_buf);
+            draw::draw_text(win, num_x, y + 2, theme::TEXT_SECONDARY(), num_buf);
         }
         return;
     }
@@ -115,7 +115,7 @@ pub extern "C" fn textarea_render(
                     let num_x = x + gutter_w as i32 - nw as i32 - 4;
                     draw::draw_text(
                         win, num_x, draw_y,
-                        theme::TEXT_SECONDARY, &num_buf[..num_len + 1],
+                        theme::TEXT_SECONDARY(), &num_buf[..num_len + 1],
                     );
                 }
 
@@ -125,7 +125,7 @@ pub extern "C" fn textarea_render(
                     let line_slice = &text_slice[i as usize..line_end as usize];
                     draw::draw_text(
                         win, content_x, draw_y,
-                        theme::TEXT, line_slice,
+                        theme::TEXT(), line_slice,
                     );
                 }
 
@@ -139,7 +139,7 @@ pub extern "C" fn textarea_render(
                     } else {
                         content_x
                     };
-                    draw::fill_rect(win, cx, draw_y, 1, line_h, theme::TEXT);
+                    draw::fill_rect(win, cx, draw_y, 1, line_h, theme::TEXT());
                 }
             }
         }

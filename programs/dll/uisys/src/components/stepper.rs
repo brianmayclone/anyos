@@ -19,8 +19,8 @@ pub extern "C" fn stepper_render(
     let plus_enabled = value < max;
 
     // Minus button
-    let minus_bg = if minus_enabled { theme::CONTROL_BG } else { theme::CONTROL_PRESSED };
-    let minus_fg = if minus_enabled { theme::TEXT } else { theme::TEXT_DISABLED };
+    let minus_bg = if minus_enabled { theme::CONTROL_BG() } else { theme::CONTROL_PRESSED() };
+    let minus_fg = if minus_enabled { theme::TEXT() } else { theme::TEXT_DISABLED() };
     draw::fill_rounded_rect(win, x, y, STEPPER_BTN_W, STEPPER_BTN_H, STEPPER_CORNER, minus_bg);
     // Draw "-" sign
     let dash_w = 10u32;
@@ -30,19 +30,19 @@ pub extern "C" fn stepper_render(
 
     // Value display
     let val_x = x + STEPPER_BTN_W as i32;
-    draw::fill_rect(win, val_x, y, VALUE_WIDTH, STEPPER_BTN_H, theme::INPUT_BG);
+    draw::fill_rect(win, val_x, y, VALUE_WIDTH, STEPPER_BTN_H, theme::INPUT_BG());
     // Format value
     let mut buf = [0u8; 16];
     let text_len = format_i32(value, &mut buf);
     let (text_w, th) = draw::text_size(&buf[..text_len]);
     let text_x = val_x + (VALUE_WIDTH as i32 - text_w as i32) / 2;
     let text_y = y + (STEPPER_BTN_H as i32 - th as i32) / 2;
-    draw::draw_text(win, text_x, text_y, theme::TEXT, &buf[..text_len + 1]);
+    draw::draw_text(win, text_x, text_y, theme::TEXT(), &buf[..text_len + 1]);
 
     // Plus button
     let plus_x = x + STEPPER_BTN_W as i32 + VALUE_WIDTH as i32;
-    let plus_bg = if plus_enabled { theme::CONTROL_BG } else { theme::CONTROL_PRESSED };
-    let plus_fg = if plus_enabled { theme::TEXT } else { theme::TEXT_DISABLED };
+    let plus_bg = if plus_enabled { theme::CONTROL_BG() } else { theme::CONTROL_PRESSED() };
+    let plus_fg = if plus_enabled { theme::TEXT() } else { theme::TEXT_DISABLED() };
     draw::fill_rounded_rect(win, plus_x, y, STEPPER_BTN_W, STEPPER_BTN_H, STEPPER_CORNER, plus_bg);
     // Draw "+" sign
     let bar_w = 10u32;

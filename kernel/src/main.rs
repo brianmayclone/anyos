@@ -159,7 +159,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         arch::x86::apic::calibrate_timer(1000);
     }
 
-    // Phase 7c: Calibrate TSC for accurate timekeeping (recovers missed PIT ticks)
+    // Phase 7c: Calibrate TSC against PIT for missed-tick recovery
     arch::x86::pit::calibrate_tsc();
 
     // Phase 8: Initialize mouse

@@ -166,7 +166,7 @@ fn render(
     win_h: u32,
 ) {
     // Clear background
-    window::fill_rect(win_id, 0, 0, win_w as u16, win_h as u16, colors::WINDOW_BG);
+    window::fill_rect(win_id, 0, 0, win_w as u16, win_h as u16, colors::WINDOW_BG());
 
     // ── System Stats Header ──
     card(win_id, 0, 0, win_w, STATS_H as u32);
@@ -180,7 +180,7 @@ fn render(
     let mins = secs / 60;
     let mut ubuf = [0u8; 24];
     let ustr = fmt_uptime(&mut ubuf, mins, secs % 60);
-    label(win_id, win_w as i32 - (ustr.len() as i32 * 7) - PAD, 4, ustr, colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+    label(win_id, win_w as i32 - (ustr.len() as i32 * 7) - PAD, 4, ustr, colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 
     // Memory + CPU info text
     if let Some(ref mem) = mem {
@@ -192,7 +192,7 @@ fn render(
 
         let mut mbuf = [0u8; 80];
         let ms = fmt_mem_line(&mut mbuf, used_kb / 1024, total_kb / 1024, heap_kb, heap_total_kb);
-        label(win_id, PAD, 22, ms, colors::TEXT, FontSize::Normal, TextAlign::Left);
+        label(win_id, PAD, 22, ms, colors::TEXT(), FontSize::Normal, TextAlign::Left);
 
         // Memory bar (full width)
         let bar_w = (win_w as i32 - PAD * 2) as u32;
@@ -217,7 +217,7 @@ fn render(
         // Label "CPU N: X%"
         let mut lbuf = [0u8; 16];
         let ls = fmt_core_label(&mut lbuf, i as u32, cpu.core_pct[i]);
-        label(win_id, bx, 48, ls, colors::TEXT_SECONDARY, FontSize::Small, TextAlign::Left);
+        label(win_id, bx, 48, ls, colors::TEXT_SECONDARY(), FontSize::Small, TextAlign::Left);
         // Bar
         progress(win_id, bx, 60, per_core_w, 5, cpu.core_pct[i]);
     }
@@ -229,18 +229,18 @@ fn render(
     // Task count + overall CPU
     let mut cbuf = [0u8; 32];
     let cs = fmt_process_cpu(&mut cbuf, tasks.len(), cpu.overall_pct);
-    label(win_id, win_w as i32 - (cs.len() as i32 * 7) - PAD, STATS_H + 8, cs, colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+    label(win_id, win_w as i32 - (cs.len() as i32 * 7) - PAD, STATS_H + 8, cs, colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 
     let mut y = HEADER_Y_OFFSET;
 
     // ── Column Headers ──
     window::fill_rect(win_id, 0, y as i16, win_w as u16, ROW_H as u16, 0xFF4A4A4A);
-    label(win_id, COL_TID, y + 3, "TID", colors::TEXT, FontSize::Small, TextAlign::Left);
-    label(win_id, COL_NAME, y + 3, "Process", colors::TEXT, FontSize::Small, TextAlign::Left);
-    label(win_id, COL_STATE, y + 3, "State", colors::TEXT, FontSize::Small, TextAlign::Left);
-    label(win_id, COL_ARCH, y + 3, "Arch", colors::TEXT, FontSize::Small, TextAlign::Left);
-    label(win_id, COL_CPU, y + 3, "CPU", colors::TEXT, FontSize::Small, TextAlign::Left);
-    label(win_id, COL_PRIO, y + 3, "Priority", colors::TEXT, FontSize::Small, TextAlign::Left);
+    label(win_id, COL_TID, y + 3, "TID", colors::TEXT(), FontSize::Small, TextAlign::Left);
+    label(win_id, COL_NAME, y + 3, "Process", colors::TEXT(), FontSize::Small, TextAlign::Left);
+    label(win_id, COL_STATE, y + 3, "State", colors::TEXT(), FontSize::Small, TextAlign::Left);
+    label(win_id, COL_ARCH, y + 3, "Arch", colors::TEXT(), FontSize::Small, TextAlign::Left);
+    label(win_id, COL_CPU, y + 3, "CPU", colors::TEXT(), FontSize::Small, TextAlign::Left);
+    label(win_id, COL_PRIO, y + 3, "Priority", colors::TEXT(), FontSize::Small, TextAlign::Left);
     y += ROW_H;
 
     // ── Task Rows ──
@@ -257,7 +257,7 @@ fn render(
             window::fill_rect(win_id, 0, y as i16, win_w as u16, ROW_H as u16, 0xFF333333);
         }
 
-        let text_color = if selected == Some(i) { 0xFFFFFFFF } else { colors::TEXT };
+        let text_color = if selected == Some(i) { 0xFFFFFFFF } else { colors::TEXT() };
 
         let (state_str, state_kind) = match task.state {
             0 => ("Ready", StatusKind::Warning),
@@ -281,7 +281,7 @@ fn render(
 
         // Architecture
         let arch_str = if task.arch == 1 { "x86" } else { "x86_64" };
-        let arch_color = if task.arch == 1 { 0xFFFF9500 } else { colors::TEXT_SECONDARY };
+        let arch_color = if task.arch == 1 { 0xFFFF9500 } else { colors::TEXT_SECONDARY() };
         label(win_id, COL_ARCH, y + 3, arch_str, arch_color, FontSize::Small, TextAlign::Left);
 
         // CPU ticks as percentage of total scheduler ticks (all cores)
@@ -292,11 +292,11 @@ fn render(
         } else {
             "0.0%"
         };
-        label(win_id, COL_CPU, y + 3, cpu_str, colors::TEXT_SECONDARY, FontSize::Small, TextAlign::Left);
+        label(win_id, COL_CPU, y + 3, cpu_str, colors::TEXT_SECONDARY(), FontSize::Small, TextAlign::Left);
 
         // Priority
         let mut pbuf = [0u8; 12];
-        label(win_id, COL_PRIO, y + 3, fmt_u32(&mut pbuf, task.priority as u32), colors::TEXT_SECONDARY, FontSize::Small, TextAlign::Left);
+        label(win_id, COL_PRIO, y + 3, fmt_u32(&mut pbuf, task.priority as u32), colors::TEXT_SECONDARY(), FontSize::Small, TextAlign::Left);
 
         y += ROW_H;
     }

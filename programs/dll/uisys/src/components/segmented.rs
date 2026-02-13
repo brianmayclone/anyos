@@ -20,7 +20,7 @@ pub extern "C" fn segmented_render(
     if num_segments == 0 { return; }
 
     // Outer rounded background
-    draw::fill_rounded_rect(win, x, y, w, h, CORNER, theme::CONTROL_PRESSED);
+    draw::fill_rounded_rect(win, x, y, w, h, CORNER, theme::CONTROL_PRESSED());
 
     let seg_w = w / num_segments;
 
@@ -31,7 +31,7 @@ pub extern "C" fn segmented_render(
         if is_selected {
             // Selected segment: lighter background
             let sel_corner = if i == 0 || i == num_segments - 1 { CORNER } else { 4 };
-            draw::fill_rounded_rect(win, seg_x + 2, y + 2, seg_w - 4, h - 4, sel_corner, theme::CONTROL_BG);
+            draw::fill_rounded_rect(win, seg_x + 2, y + 2, seg_w - 4, h - 4, sel_corner, theme::CONTROL_BG());
         }
 
         // Draw label text centered in segment
@@ -52,7 +52,7 @@ pub extern "C" fn segmented_render(
                 let (tw, th) = draw::text_size(label_slice);
                 let text_x = seg_x + (seg_w as i32 - tw as i32) / 2;
                 let text_y = y + (h as i32 - th as i32) / 2;
-                let fg = if is_selected { theme::TEXT } else { theme::TEXT_SECONDARY };
+                let fg = if is_selected { theme::TEXT() } else { theme::TEXT_SECONDARY() };
                 draw::draw_text(win, text_x, text_y, fg, label_slice);
             }
         }

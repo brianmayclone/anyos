@@ -13,26 +13,26 @@ pub extern "C" fn checkbox_render(
 
     if state == 1 || state == 2 {
         // Filled blue background
-        draw::fill_rounded_rect(win, x, y, size, size, 3, theme::ACCENT);
+        draw::fill_rounded_rect(win, x, y, size, size, 3, theme::ACCENT());
 
         if state == 1 {
             // Checkmark: draw two small lines
             // Simplified checkmark using filled rects
             let cx = x + 4;
             let cy = y + (size as i32) / 2;
-            draw::fill_rect(win, cx, cy, 3, 2, theme::CHECK_MARK);
-            draw::fill_rect(win, cx + 2, cy - 3, 2, 5, theme::CHECK_MARK);
-            draw::fill_rect(win, cx + 4, cy - 5, 2, 5, theme::CHECK_MARK);
-            draw::fill_rect(win, cx + 6, cy - 7, 2, 4, theme::CHECK_MARK);
+            draw::fill_rect(win, cx, cy, 3, 2, theme::CHECK_MARK());
+            draw::fill_rect(win, cx + 2, cy - 3, 2, 5, theme::CHECK_MARK());
+            draw::fill_rect(win, cx + 4, cy - 5, 2, 5, theme::CHECK_MARK());
+            draw::fill_rect(win, cx + 6, cy - 7, 2, 4, theme::CHECK_MARK());
         } else {
             // Indeterminate: dash
             let dash_y = y + (size as i32 - 2) / 2;
-            draw::fill_rect(win, x + 4, dash_y, size - 8, 2, theme::CHECK_MARK);
+            draw::fill_rect(win, x + 4, dash_y, size - 8, 2, theme::CHECK_MARK());
         }
     } else {
         // Empty box with border
-        draw::fill_rounded_rect(win, x, y, size, size, 3, theme::CONTROL_BG);
-        draw::draw_border(win, x, y, size, size, theme::INPUT_BORDER);
+        draw::fill_rounded_rect(win, x, y, size, size, 3, theme::CONTROL_BG());
+        draw::draw_border(win, x, y, size, size, theme::INPUT_BORDER());
     }
 
     // Label text
@@ -40,7 +40,7 @@ pub extern "C" fn checkbox_render(
         let label_slice = unsafe { core::slice::from_raw_parts(label, label_len as usize) };
         let text_x = x + size as i32 + 8;
         let text_y = y + (size as i32 - 16) / 2;
-        draw::draw_text(win, text_x, text_y, theme::TEXT, label_slice);
+        draw::draw_text(win, text_x, text_y, theme::TEXT(), label_slice);
     }
 }
 

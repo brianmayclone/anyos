@@ -10,23 +10,33 @@ use crate::ipc_protocol as proto;
 use crate::keys::encode_scancode;
 use crate::menu::{MenuBar, MenuBarDef, MenuBarHit};
 
-// ── Theme Constants (macOS dark) ────────────────────────────────────────────
+// ── Theme Constants ─────────────────────────────────────────────────────────
 
-const COLOR_DESKTOP_BG: u32 = 0xFF1E1E1E;
-const COLOR_MENUBAR_BG: u32 = 0xE6303035;
-const COLOR_MENUBAR_BORDER: u32 = 0xFF404045;
-const COLOR_MENUBAR_TEXT: u32 = 0xFFE0E0E0;
+const COLOR_DESKTOP_BG: u32 = 0xFF1E1E1E; // wallpaper covers this anyway
 
-const COLOR_TITLEBAR_FOCUSED: u32 = 0xFF3C3C3C;
-const COLOR_TITLEBAR_UNFOCUSED: u32 = 0xFF2A2A2A;
-const COLOR_TITLEBAR_TEXT: u32 = 0xFFE0E0E0;
-const COLOR_WINDOW_BG: u32 = 0xFF1E1E1E;
-const COLOR_WINDOW_BORDER: u32 = 0xFF4A4A4E;
+#[inline(always)]
+fn color_menubar_bg() -> u32     { if anyos_std::sys::get_theme() != 0 { 0xE6F6F6F6 } else { 0xE6303035 } }
+#[inline(always)]
+fn color_menubar_border() -> u32 { if anyos_std::sys::get_theme() != 0 { 0xFFD1D1D6 } else { 0xFF404045 } }
+#[inline(always)]
+fn color_menubar_text() -> u32   { if anyos_std::sys::get_theme() != 0 { 0xFF1D1D1F } else { 0xFFE0E0E0 } }
+#[inline(always)]
+fn color_titlebar_focused() -> u32  { if anyos_std::sys::get_theme() != 0 { 0xFFE8E8E8 } else { 0xFF3C3C3C } }
+#[inline(always)]
+fn color_titlebar_unfocused() -> u32 { if anyos_std::sys::get_theme() != 0 { 0xFFF0F0F0 } else { 0xFF2A2A2A } }
+#[inline(always)]
+fn color_titlebar_text() -> u32  { if anyos_std::sys::get_theme() != 0 { 0xFF1D1D1F } else { 0xFFE0E0E0 } }
+#[inline(always)]
+fn color_window_bg() -> u32      { if anyos_std::sys::get_theme() != 0 { 0xFFF5F5F7 } else { 0xFF1E1E1E } }
+#[inline(always)]
+fn color_window_border() -> u32  { if anyos_std::sys::get_theme() != 0 { 0xFFD1D1D6 } else { 0xFF4A4A4E } }
+#[inline(always)]
+fn color_btn_unfocused() -> u32  { if anyos_std::sys::get_theme() != 0 { 0xFFC7C7CC } else { 0xFF5A5A5E } }
 
+// Traffic light buttons — same in both themes (matches macOS)
 const COLOR_CLOSE_BTN: u32 = 0xFFFF5F56;
 const COLOR_MIN_BTN: u32 = 0xFFFEBD2E;
 const COLOR_MAX_BTN: u32 = 0xFF27C93F;
-const COLOR_BTN_UNFOCUSED: u32 = 0xFF5A5A5E;
 
 // Hover (lighter) and press (darker) button colours for animation blending
 const COLOR_CLOSE_HOVER: u32 = 0xFFFF7B73;
@@ -687,19 +697,19 @@ impl Desktop {
             // Fill background
             for y in 0..MENUBAR_HEIGHT {
                 for x in 0..w {
-                    pixels[(y * w + x) as usize] = COLOR_MENUBAR_BG;
+                    pixels[(y * w + x) as usize] = color_menubar_bg();
                 }
             }
             // Bottom border
             for x in 0..w {
-                pixels[(MENUBAR_HEIGHT * w + x) as usize] = COLOR_MENUBAR_BORDER;
+                pixels[(MENUBAR_HEIGHT * w + x) as usize] = color_menubar_border();
             }
 
             // "anyOS" brand text (left) — bold system font
             let (_, fh) = anyos_std::ui::window::font_measure(FONT_ID_BOLD, FONT_SIZE, "anyOS");
             let fy = ((MENUBAR_HEIGHT as i32 - fh as i32) / 2).max(0);
             anyos_std::ui::window::font_render_buf(
-                FONT_ID_BOLD, FONT_SIZE, pixels, w, h, 10, fy, COLOR_MENUBAR_TEXT, "anyOS",
+                FONT_ID_BOLD, FONT_SIZE, pixels, w, h, 10, fy, color_menubar_text(), "anyOS",
             );
 
             // App menu titles (after "anyOS")
@@ -892,6 +902,24 @@ impl Desktop {
         self.app_subs.retain(|(t, _)| *t != tid);
     }
 
+    /// Called when system theme changes — re-render all window chrome and menubar.
+    pub fn on_theme_change(&mut self) {
+        // Re-render menubar
+        self.draw_menubar();
+
+        // Re-render all window title bars
+        let win_ids: Vec<u32> = self.windows.iter()
+            .filter(|w| !w.is_borderless())
+            .map(|w| w.id)
+            .collect();
+        for id in win_ids {
+            self.render_window(id);
+        }
+
+        // Damage entire screen so everything gets recomposed
+        self.compositor.damage_all();
+    }
+
     /// Focus a window (bring to front and set focused style).
     pub fn focus_window(&mut self, id: u32) {
         // Unfocus previous — only repaint title bar (not entire window body)
@@ -988,19 +1016,19 @@ impl Desktop {
 
                 // Draw window body (rounded rect)
                 fill_rounded_rect(
-                    pixels, stride, full_h, 0, 0, cw, full_h, 8, COLOR_WINDOW_BG,
+                    pixels, stride, full_h, 0, 0, cw, full_h, 8, color_window_bg(),
                 );
 
                 // 1px rounded outline around the entire window
                 draw_rounded_rect_outline(
-                    pixels, stride, full_h, 0, 0, cw, full_h, 8, COLOR_WINDOW_BORDER,
+                    pixels, stride, full_h, 0, 0, cw, full_h, 8, color_window_border(),
                 );
 
                 // Title bar (rounded top corners)
                 let tb_color = if focused {
-                    COLOR_TITLEBAR_FOCUSED
+                    color_titlebar_focused()
                 } else {
-                    COLOR_TITLEBAR_UNFOCUSED
+                    color_titlebar_unfocused()
                 };
                 fill_rounded_rect_top(pixels, stride, 0, 0, cw, TITLE_BAR_HEIGHT, 8, tb_color);
 
@@ -1009,7 +1037,7 @@ impl Desktop {
                 for x in 0..cw {
                     let idx = (border_y * stride + x) as usize;
                     if idx < pixels.len() {
-                        pixels[idx] = COLOR_WINDOW_BORDER;
+                        pixels[idx] = color_window_border();
                     }
                 }
 
@@ -1018,7 +1046,7 @@ impl Desktop {
                 let base_colors: [u32; 3] = if focused {
                     [COLOR_CLOSE_BTN, COLOR_MIN_BTN, COLOR_MAX_BTN]
                 } else {
-                    [COLOR_BTN_UNFOCUSED, COLOR_BTN_UNFOCUSED, COLOR_BTN_UNFOCUSED]
+                    [color_btn_unfocused(), color_btn_unfocused(), color_btn_unfocused()]
                 };
                 for (i, &base) in base_colors.iter().enumerate() {
                     let aid = button_anim_id(window_id, i as u8);
@@ -1043,7 +1071,7 @@ impl Desktop {
                 let ty = ((TITLE_BAR_HEIGHT as i32 - th as i32) / 2).max(0);
                 anyos_std::ui::window::font_render_buf(
                     FONT_ID, FONT_SIZE, pixels, stride, full_h, tx, ty,
-                    COLOR_TITLEBAR_TEXT, &title_clone,
+                    color_titlebar_text(), &title_clone,
                 );
 
             }
@@ -1052,7 +1080,7 @@ impl Desktop {
         self.compositor.mark_layer_dirty(layer_id);
 
         // Restore SHM content for IPC windows (render_window fills the entire
-        // layer including the content area with COLOR_WINDOW_BG; for app windows
+        // layer including the content area with color_window_bg(); for app windows
         // we must re-apply the latest SHM content over the content area).
         if self.windows[win_idx].owner_tid != 0 && !self.windows[win_idx].shm_ptr.is_null() {
             self.present_ipc_window(window_id);
@@ -1083,9 +1111,9 @@ impl Desktop {
 
             // Redraw title bar background (keeps rounded top corners)
             let tb_color = if focused {
-                COLOR_TITLEBAR_FOCUSED
+                color_titlebar_focused()
             } else {
-                COLOR_TITLEBAR_UNFOCUSED
+                color_titlebar_unfocused()
             };
             fill_rounded_rect_top(pixels, stride, 0, 0, cw, TITLE_BAR_HEIGHT, 8, tb_color);
 
@@ -1094,7 +1122,7 @@ impl Desktop {
             for x in 0..cw {
                 let idx = (border_y * stride + x) as usize;
                 if idx < pixels.len() {
-                    pixels[idx] = COLOR_WINDOW_BORDER;
+                    pixels[idx] = color_window_border();
                 }
             }
 
@@ -1103,7 +1131,7 @@ impl Desktop {
             let base_colors: [u32; 3] = if focused {
                 [COLOR_CLOSE_BTN, COLOR_MIN_BTN, COLOR_MAX_BTN]
             } else {
-                [COLOR_BTN_UNFOCUSED, COLOR_BTN_UNFOCUSED, COLOR_BTN_UNFOCUSED]
+                [color_btn_unfocused(), color_btn_unfocused(), color_btn_unfocused()]
             };
             for (i, &base) in base_colors.iter().enumerate() {
                 let aid = button_anim_id(window_id, i as u8);
@@ -1128,7 +1156,7 @@ impl Desktop {
             let ty = ((TITLE_BAR_HEIGHT as i32 - th as i32) / 2).max(0);
             anyos_std::ui::window::font_render_buf(
                 FONT_ID, FONT_SIZE, pixels, stride, full_h, tx, ty,
-                COLOR_TITLEBAR_TEXT, &title_clone,
+                color_titlebar_text(), &title_clone,
             );
         }
 
@@ -2633,12 +2661,12 @@ fn draw_clock_to_menubar(pixels: &mut [u32], stride: u32) {
         // Clear clock area first
         for y in 0..MENUBAR_HEIGHT {
             for x in (tx - 4).max(0) as u32..stride {
-                pixels[(y * stride + x) as usize] = COLOR_MENUBAR_BG;
+                pixels[(y * stride + x) as usize] = color_menubar_bg();
             }
         }
 
         anyos_std::ui::window::font_render_buf(
-            FONT_ID, FONT_SIZE, pixels, stride, h, tx, fy, COLOR_MENUBAR_TEXT, s,
+            FONT_ID, FONT_SIZE, pixels, stride, h, tx, fy, color_menubar_text(), s,
         );
     }
 }
@@ -2661,16 +2689,16 @@ pub fn pre_render_chrome(
     }
 
     // Draw window body (rounded rect)
-    fill_rounded_rect(pixels, stride, full_h, 0, 0, stride, full_h, 8, COLOR_WINDOW_BG);
+    fill_rounded_rect(pixels, stride, full_h, 0, 0, stride, full_h, 8, color_window_bg());
 
     // 1px rounded outline around the entire window
-    draw_rounded_rect_outline(pixels, stride, full_h, 0, 0, stride, full_h, 8, COLOR_WINDOW_BORDER);
+    draw_rounded_rect_outline(pixels, stride, full_h, 0, 0, stride, full_h, 8, color_window_border());
 
     // Title bar (rounded top corners)
     let tb_color = if focused {
-        COLOR_TITLEBAR_FOCUSED
+        color_titlebar_focused()
     } else {
-        COLOR_TITLEBAR_UNFOCUSED
+        color_titlebar_unfocused()
     };
     fill_rounded_rect_top(pixels, stride, 0, 0, stride, TITLE_BAR_HEIGHT, 8, tb_color);
 
@@ -2679,7 +2707,7 @@ pub fn pre_render_chrome(
     for x in 0..stride {
         let idx = (border_y * stride + x) as usize;
         if idx < pixels.len() {
-            pixels[idx] = COLOR_WINDOW_BORDER;
+            pixels[idx] = color_window_border();
         }
     }
 
@@ -2687,7 +2715,7 @@ pub fn pre_render_chrome(
     let base_colors: [u32; 3] = if focused {
         [COLOR_CLOSE_BTN, COLOR_MIN_BTN, COLOR_MAX_BTN]
     } else {
-        [COLOR_BTN_UNFOCUSED, COLOR_BTN_UNFOCUSED, COLOR_BTN_UNFOCUSED]
+        [color_btn_unfocused(), color_btn_unfocused(), color_btn_unfocused()]
     };
     for (i, &color) in base_colors.iter().enumerate() {
         let cx = 8 + i as i32 * TITLE_BTN_SPACING as i32 + TITLE_BTN_SIZE as i32 / 2;
@@ -2701,7 +2729,7 @@ pub fn pre_render_chrome(
     let ty = ((TITLE_BAR_HEIGHT as i32 - th as i32) / 2).max(0);
     anyos_std::ui::window::font_render_buf(
         FONT_ID, FONT_SIZE, pixels, stride, full_h, tx, ty,
-        COLOR_TITLEBAR_TEXT, title,
+        color_titlebar_text(), title,
     );
 }
 

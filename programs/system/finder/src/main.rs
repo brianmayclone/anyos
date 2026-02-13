@@ -434,7 +434,7 @@ fn handle_toolbar_click(state: &mut AppState, mx: i32, _my: i32) -> bool {
 
 fn render(win: u32, state: &mut AppState, win_w: u32, win_h: u32) {
     // Background
-    window::fill_rect(win, 0, 0, win_w as u16, win_h as u16, colors::WINDOW_BG);
+    window::fill_rect(win, 0, 0, win_w as u16, win_h as u16, colors::WINDOW_BG());
 
     // Toolbar
     render_toolbar(win, state, win_w);
@@ -459,7 +459,7 @@ fn render(win: u32, state: &mut AppState, win_w: u32, win_h: u32) {
 
         // Folder icon
         let icon_y = iy + (SIDEBAR_ITEM_H as i32 - ICON_DISPLAY_SIZE as i32) / 2;
-        let bg = if selected { SIDEBAR_SELECTION } else { colors::SIDEBAR_BG };
+        let bg = if selected { SIDEBAR_SELECTION } else { colors::SIDEBAR_BG() };
         if let Some(pixels) = state.icon_cache.get_or_load(icons::FOLDER_ICON) {
             blit_icon_alpha(win, 10, icon_y as i16, pixels, bg);
         }
@@ -467,7 +467,7 @@ fn render(win: u32, state: &mut AppState, win_w: u32, win_h: u32) {
         // Label
         let text_x = 10 + ICON_DISPLAY_SIZE as i32 + 6;
         let text_y = iy + (SIDEBAR_ITEM_H as i32 - 14) / 2;
-        let fg = if selected { 0xFFFFFFFF } else { colors::TEXT };
+        let fg = if selected { 0xFFFFFFFF } else { colors::TEXT() };
         label(win, text_x, text_y, name, fg, FontSize::Normal, TextAlign::Left);
     }
 
@@ -487,13 +487,13 @@ fn render_toolbar(win: u32, state: &AppState, win_w: u32) {
     toolbar_button(win, 72, 2, 60, TOOLBAR_H - 4, ">", fwd_state);
 
     // Path display
-    label(win, 140, 10, &state.cwd, colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win, 140, 10, &state.cwd, colors::TEXT(), FontSize::Normal, TextAlign::Left);
 
     // Item count on right
     let mut buf = [0u8; 16];
     let count_str = fmt_item_count(&mut buf, state.entries.len());
     let text_w = count_str.len() as i32 * 7;
-    label(win, win_w as i32 - text_w - 12, 10, count_str, colors::TEXT_SECONDARY, FontSize::Normal, TextAlign::Left);
+    label(win, win_w as i32 - text_w - 12, 10, count_str, colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 }
 
 fn get_extension(name: &str) -> Option<&str> {
@@ -534,10 +534,10 @@ fn render_file_list(win: u32, state: &mut AppState, win_w: u32, win_h: u32) {
 
     // Column header
     window::fill_rect(win, list_x as i16, list_y as i16, list_w as u16, ROW_H as u16, 0xFF333333);
-    label(win, list_x + 12 + ICON_SIZE as i32 + 8, list_y + 6, "Name", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win, list_x + 12 + ICON_SIZE as i32 + 8, list_y + 6, "Name", colors::TEXT(), FontSize::Normal, TextAlign::Left);
 
     let size_col_x = list_x + list_w as i32 - 100;
-    label(win, size_col_x, list_y + 6, "Size", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win, size_col_x, list_y + 6, "Size", colors::TEXT(), FontSize::Normal, TextAlign::Left);
 
     divider_h(win, list_x, list_y + ROW_H - 1, list_w);
 
@@ -555,14 +555,14 @@ fn render_file_list(win: u32, state: &mut AppState, win_w: u32, win_h: u32) {
 
         // Selection highlight
         if state.selected == Some(entry_idx) {
-            window::fill_rect(win, list_x as i16, ry as i16, list_w as u16, ROW_H as u16, colors::ACCENT);
+            window::fill_rect(win, list_x as i16, ry as i16, list_w as u16, ROW_H as u16, colors::ACCENT());
         } else if i % 2 == 1 {
             // Alternating row background
             window::fill_rect(win, list_x as i16, ry as i16, list_w as u16, ROW_H as u16, 0xFF252525);
         }
 
-        let text_color = if state.selected == Some(entry_idx) { 0xFFFFFFFF } else { colors::TEXT };
-        let dim_color = if state.selected == Some(entry_idx) { 0xFFDDDDDD } else { colors::TEXT_SECONDARY };
+        let text_color = if state.selected == Some(entry_idx) { 0xFFFFFFFF } else { colors::TEXT() };
+        let dim_color = if state.selected == Some(entry_idx) { 0xFFDDDDDD } else { colors::TEXT_SECONDARY() };
 
         // Icon — load from icon cache, fallback to colored square
         let icon_x = list_x + 12;
@@ -589,11 +589,11 @@ fn render_file_list(win: u32, state: &mut AppState, win_w: u32, win_h: u32) {
 
         // Row background color for alpha blending
         let row_bg = if state.selected == Some(entry_idx) {
-            colors::ACCENT
+            colors::ACCENT()
         } else if i % 2 == 1 {
             0xFF252525
         } else {
-            colors::WINDOW_BG
+            colors::WINDOW_BG()
         };
 
         // Try to load and blit the icon
@@ -606,9 +606,9 @@ fn render_file_list(win: u32, state: &mut AppState, win_w: u32, win_h: u32) {
         if !icon_drawn {
             // Fallback: colored square
             let icon_color = if entry_type == TYPE_DIR {
-                colors::ACCENT
+                colors::ACCENT()
             } else {
-                colors::SUCCESS
+                colors::SUCCESS()
             };
             window::fill_rect(win, icon_x as i16, icon_y as i16, ICON_SIZE as u16, ICON_SIZE as u16, icon_color);
         }

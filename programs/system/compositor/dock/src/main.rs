@@ -6,6 +6,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use anyos_std::anim::{AnimSet, Easing};
+use anyos_std::println;
 use anyos_std::process;
 use anyos_std::fs;
 use anyos_std::icons;
@@ -26,11 +27,15 @@ const DOCK_BORDER_RADIUS: i32 = 16;
 const DOCK_H_PADDING: u32 = 12;
 
 // Colors (ARGB u32)
-const DOCK_BG: u32 = 0xC0303035;
+#[inline(always)]
+fn dock_bg() -> u32 { if anyos_std::sys::get_theme() != 0 { 0xC0F0F0F5 } else { 0xC0303035 } }
 const COLOR_WHITE: u32 = 0xFFFFFFFF;
 const COLOR_TRANSPARENT: u32 = 0x00000000;
 const COLOR_HIGHLIGHT: u32 = 0x19FFFFFF; // 10% white
-const TOOLTIP_BG: u32 = 0xE6303035; // dark bg, ~90% opaque
+#[inline(always)]
+fn tooltip_bg() -> u32 { if anyos_std::sys::get_theme() != 0 { 0xE6F0F0F5 } else { 0xE6303035 } }
+#[inline(always)]
+fn tooltip_text() -> u32 { if anyos_std::sys::get_theme() != 0 { 0xFF1D1D1F } else { 0xFFFFFFFF } }
 const TOOLTIP_PAD: u32 = 8; // horizontal padding inside tooltip pill
 
 // System font (sfpro.ttf, loaded by kernel at boot)
@@ -417,7 +422,7 @@ fn render_dock(fb: &mut Framebuffer, items: &[DockItem], screen_width: u32, rs: 
     let dock_y = DOCK_MARGIN as i32;
 
     // Glass pill background
-    fb.fill_rounded_rect(dock_x, dock_y, total_width, DOCK_HEIGHT, DOCK_BORDER_RADIUS, DOCK_BG);
+    fb.fill_rounded_rect(dock_x, dock_y, total_width, DOCK_HEIGHT, DOCK_BORDER_RADIUS, dock_bg());
 
     // Top highlight line for depth
     fb.fill_rect(
@@ -489,12 +494,12 @@ fn render_dock(fb: &mut Framebuffer, items: &[DockItem], screen_width: u32, rs: 
             let pill_x = icon_center_x - pill_w as i32 / 2;
             let pill_y = dock_y - pill_h as i32 - 4;
 
-            fb.fill_rounded_rect(pill_x, pill_y, pill_w, pill_h, 6, TOOLTIP_BG);
+            fb.fill_rounded_rect(pill_x, pill_y, pill_w, pill_h, 6, tooltip_bg());
 
             // Draw text centered in the pill
             let text_x = pill_x + TOOLTIP_PAD as i32;
             let text_y = pill_y + ((pill_h as i32 - th as i32) / 2);
-            fb.draw_text(text_x, text_y, name, COLOR_WHITE);
+            fb.draw_text(text_x, text_y, name, tooltip_text());
         }
     }
 }
@@ -536,22 +541,32 @@ fn blit_to_surface(fb: &Framebuffer, win: &WindowHandle) {
 
 fn main() {
     // Connect to compositor
+    println!("dock: connecting to compositor...");
     let client = match CompositorClient::init() {
         Some(c) => c,
-        None => return,
+        None => {
+            println!("dock: FAILED to init compositor client");
+            return;
+        }
     };
 
     let (screen_width, screen_height) = client.screen_size();
+    println!("dock: screen_size={}x{}", screen_width, screen_height);
     if screen_width == 0 || screen_height == 0 {
+        println!("dock: FAILED — screen size is zero");
         return;
     }
 
     // Borderless, not resizable, always on top
     let flags: u32 = 0x01 | 0x02 | 0x04;
 
+    println!("dock: creating window ({}x{}, flags=0x{:x})", screen_width, DOCK_TOTAL_H, flags);
     let mut win = match client.create_window(screen_width, DOCK_TOTAL_H, flags) {
         Some(w) => w,
-        None => return,
+        None => {
+            println!("dock: FAILED to create window");
+            return;
+        }
     };
 
     // Position at bottom of screen
@@ -729,6 +744,8 @@ fn main() {
                         needs_redraw = true;
                     }
                 }
+            } else if sys_buf[0] == 0x0050 { // EVT_THEME_CHANGED
+                needs_redraw = true;
             } else if sys_buf[0] == 0x0021 { // EVT_PROCESS_EXITED
                 let exited_tid = sys_buf[1];
                 // For pinned items: clear running state. For transient: remove.

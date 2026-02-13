@@ -15,7 +15,7 @@ pub extern "C" fn splitview_render(
     split_x: u32,
 ) {
     let divider_x = x + split_x as i32;
-    draw::fill_rect(win, divider_x, y, DIVIDER_WIDTH, h, theme::SEPARATOR);
+    draw::fill_rect(win, divider_x, y, DIVIDER_WIDTH, h, theme::SEPARATOR());
 }
 
 /// Hit test for the divider drag handle.

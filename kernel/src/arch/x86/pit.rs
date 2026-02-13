@@ -1,11 +1,14 @@
 //! 8254 Programmable Interval Timer (PIT) driver.
 //!
 //! Configures channel 0 in square-wave mode at [`TICK_HZ`] (1000 Hz).
-//! Maintains an atomic tick counter for timekeeping. Uses the CPU's TSC
-//! (Time Stamp Counter) to recover missed ticks: when interrupts are
-//! disabled (scheduler lock, heap lock, etc.), PIT IRQs can be delayed
-//! or missed. The TSC runs independently and lets us compute the true
-//! elapsed tick count on each IRQ.
+//! Maintains an atomic tick counter for timekeeping. Uses per-tick TSC
+//! delta measurement to recover ticks lost when interrupts are disabled.
+//!
+//! Key insight: instead of computing absolute ticks from a boot-time TSC
+//! baseline (which drifts because QEMU's TSC frequency changes after boot
+//! calibration), we re-anchor the TSC on every PIT IRQ and only measure
+//! the delta since the LAST IRQ. This prevents drift accumulation while
+//! still recovering missed ticks from interrupt-disabled windows.
 
 use crate::arch::x86::port::outb;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -20,15 +23,13 @@ const PIT_FREQUENCY: u32 = 1193182;
 /// 1000 Hz = 1ms tick granularity (up from 100 Hz / 10ms).
 pub const TICK_HZ: u32 = 1000;
 
-/// Monotonically increasing tick counter, corrected via TSC when available.
+/// Monotonically increasing tick counter.
 pub static TICK_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// TSC frequency in Hz (0 = not yet calibrated).
 static TSC_HZ: AtomicU64 = AtomicU64::new(0);
-/// TSC value at calibration start (anchor point for tick computation).
-static TSC_BASE: AtomicU64 = AtomicU64::new(0);
-/// TICK_COUNT value at calibration start.
-static TICK_BASE: AtomicU32 = AtomicU32::new(0);
+/// TSC value at the last PIT IRQ (re-anchored every tick).
+static LAST_TSC: AtomicU64 = AtomicU64::new(0);
 
 /// Read the CPU's Time Stamp Counter.
 #[inline(always)]
@@ -53,26 +54,21 @@ pub fn init() {
     }
 }
 
-/// Calibrate the TSC against the PIT for accurate timekeeping.
-///
-/// Must be called after PIT and IRQ handlers are initialized, with
-/// interrupts enabled. Measures TSC ticks over 500 PIT periods (~500ms
-/// at 1000 Hz) to compute TSC frequency accurately. A longer calibration
-/// window reduces the impact of PIT jitter (especially under QEMU
-/// virtualization) on the measured TSC frequency.
+/// Calibrate TSC frequency against the PIT. Called once after PIT and IRQs
+/// are running. Uses a short 100-tick (100ms) window — accuracy only needs
+/// to be within ~20% since we use per-tick re-anchoring (not absolute).
 pub fn calibrate_tsc() {
-    // Wait for a PIT tick edge (synchronize to PIT phase)
+    // Wait for PIT tick edge (synchronize to PIT phase)
     let start_tick = TICK_COUNT.load(Ordering::Relaxed);
     while TICK_COUNT.load(Ordering::Relaxed) == start_tick {
         core::hint::spin_loop();
     }
 
-    // Record starting point
     let tsc_start = rdtsc();
     let tick_start = TICK_COUNT.load(Ordering::Relaxed);
 
-    // Wait for 500 PIT ticks (~500ms at 1000 Hz)
-    while TICK_COUNT.load(Ordering::Relaxed).wrapping_sub(tick_start) < 500 {
+    // Wait 100 PIT ticks (~100ms at 1000 Hz)
+    while TICK_COUNT.load(Ordering::Relaxed).wrapping_sub(tick_start) < 100 {
         core::hint::spin_loop();
     }
 
@@ -80,12 +76,9 @@ pub fn calibrate_tsc() {
     let ticks_elapsed = TICK_COUNT.load(Ordering::Relaxed).wrapping_sub(tick_start);
 
     let tsc_delta = tsc_end - tsc_start;
-    // TSC Hz = tsc_delta / (ticks_elapsed / TICK_HZ) = tsc_delta * TICK_HZ / ticks_elapsed
     let tsc_hz_value = tsc_delta * TICK_HZ as u64 / ticks_elapsed as u64;
 
-    // Store calibration anchor
-    TSC_BASE.store(tsc_start, Ordering::Release);
-    TICK_BASE.store(tick_start, Ordering::Release);
+    LAST_TSC.store(tsc_end, Ordering::Relaxed);
     TSC_HZ.store(tsc_hz_value, Ordering::Release);
 
     crate::serial_println!(
@@ -98,27 +91,31 @@ pub fn calibrate_tsc() {
 
 /// Update the tick counter. Called from the PIT IRQ handler.
 ///
-/// When the TSC is calibrated, computes the true tick count from TSC
-/// rather than simply incrementing by 1. This recovers ticks lost when
-/// interrupts were disabled (scheduler lock, heap lock, etc.).
+/// Always increments by 1 for the current IRQ. Then uses TSC delta since
+/// the last IRQ to detect missed ticks (from interrupt-disabled windows)
+/// and adds bounded catch-up. Re-anchors TSC on every call so measurement
+/// errors don't accumulate over time.
 pub fn tick() {
+    // Always count this IRQ
+    TICK_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    // TSC-based catch-up for missed ticks
     let tsc_hz = TSC_HZ.load(Ordering::Relaxed);
     if tsc_hz > 0 {
-        // TSC-based accurate tick count
         let tsc_now = rdtsc();
-        let tsc_base = TSC_BASE.load(Ordering::Relaxed);
-        let tick_base = TICK_BASE.load(Ordering::Relaxed);
-        let elapsed_tsc = tsc_now.wrapping_sub(tsc_base);
-        let expected_ticks = tick_base + (elapsed_tsc * TICK_HZ as u64 / tsc_hz) as u32;
-
-        // Only advance, never go backwards
-        let current = TICK_COUNT.load(Ordering::Relaxed);
-        if expected_ticks > current {
-            TICK_COUNT.store(expected_ticks, Ordering::Relaxed);
+        let last = LAST_TSC.swap(tsc_now, Ordering::Relaxed);
+        if last > 0 {
+            let delta = tsc_now.wrapping_sub(last);
+            // How many ticks worth of time passed since last IRQ?
+            let expected = (delta * TICK_HZ as u64 / tsc_hz) as u32;
+            // We already added 1. If expected > 1, we missed (expected-1) ticks.
+            if expected > 1 {
+                // Bounded catch-up: at most 50 ticks (50ms) per IRQ.
+                // This prevents runaway if TSC is wildly off.
+                let missed = (expected - 1).min(50);
+                TICK_COUNT.fetch_add(missed, Ordering::Relaxed);
+            }
         }
-    } else {
-        // Pre-calibration: simple increment
-        TICK_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 }
 

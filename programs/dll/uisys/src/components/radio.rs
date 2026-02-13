@@ -16,7 +16,7 @@ pub extern "C" fn radio_render(
 
     if selected != 0 {
         // Filled blue circle
-        draw::fill_rounded_rect(win, x, y, RADIO_SIZE, RADIO_SIZE, r, theme::ACCENT);
+        draw::fill_rounded_rect(win, x, y, RADIO_SIZE, RADIO_SIZE, r, theme::ACCENT());
         // White inner dot
         let dot_offset = (RADIO_SIZE - INNER_DOT) / 2;
         let dot_r = INNER_DOT / 2;
@@ -27,12 +27,12 @@ pub extern "C" fn radio_render(
             INNER_DOT,
             INNER_DOT,
             dot_r,
-            theme::CHECK_MARK,
+            theme::CHECK_MARK(),
         );
     } else {
         // Empty circle with rounded border
-        draw::fill_rounded_rect(win, x, y, RADIO_SIZE, RADIO_SIZE, r, theme::CONTROL_BG);
-        draw::draw_rounded_border(win, x, y, RADIO_SIZE, RADIO_SIZE, r, theme::INPUT_BORDER);
+        draw::fill_rounded_rect(win, x, y, RADIO_SIZE, RADIO_SIZE, r, theme::CONTROL_BG());
+        draw::draw_rounded_border(win, x, y, RADIO_SIZE, RADIO_SIZE, r, theme::INPUT_BORDER());
     }
 
     // Label text
@@ -40,7 +40,7 @@ pub extern "C" fn radio_render(
         let label_slice = unsafe { core::slice::from_raw_parts(label, label_len as usize) };
         let text_x = x + RADIO_SIZE as i32 + 8;
         let text_y = y + (RADIO_SIZE as i32 - 16) / 2;
-        draw::draw_text(win, text_x, text_y, theme::TEXT, label_slice);
+        draw::draw_text(win, text_x, text_y, theme::TEXT(), label_slice);
     }
 }
 

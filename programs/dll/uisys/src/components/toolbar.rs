@@ -8,10 +8,10 @@ pub extern "C" fn toolbar_render(
     win: u32, x: i32, y: i32, w: u32, h: u32,
 ) {
     // Background
-    draw::fill_rect(win, x, y, w, h, theme::SIDEBAR_BG);
+    draw::fill_rect(win, x, y, w, h, theme::SIDEBAR_BG());
 
     // Bottom separator
-    draw::fill_rect(win, x, y + h as i32 - 1, w, 1, theme::SEPARATOR);
+    draw::fill_rect(win, x, y + h as i32 - 1, w, 1, theme::SEPARATOR());
 }
 
 /// Render a toolbar button.
@@ -22,10 +22,10 @@ pub extern "C" fn toolbar_render_button(
     state: u8,
 ) {
     let (bg, fg) = match state {
-        1 => (theme::CONTROL_HOVER, theme::TEXT),
-        2 => (theme::CONTROL_PRESSED, theme::TEXT),
-        3 => (0u32, theme::TEXT_DISABLED),
-        _ => (0u32, theme::TEXT),
+        1 => (theme::CONTROL_HOVER(), theme::TEXT()),
+        2 => (theme::CONTROL_PRESSED(), theme::TEXT()),
+        3 => (0u32, theme::TEXT_DISABLED()),
+        _ => (0u32, theme::TEXT()),
     };
 
     // Button background (only if hover/pressed)

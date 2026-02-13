@@ -18,10 +18,10 @@ pub extern "C" fn alert_render(
     draw::fill_rounded_rect(win, x + 2, y + 2, w, h, ALERT_CORNER, 0xFF0A0A0A);
 
     // Dialog background
-    draw::fill_rounded_rect(win, x, y, w, h, ALERT_CORNER, theme::CARD_BG);
+    draw::fill_rounded_rect(win, x, y, w, h, ALERT_CORNER, theme::CARD_BG());
 
     // Border
-    draw::draw_border(win, x, y, w, h, theme::CARD_BORDER);
+    draw::draw_border(win, x, y, w, h, theme::CARD_BORDER());
 
     // Title
     if !title.is_null() && title_len > 0 {
@@ -29,7 +29,7 @@ pub extern "C" fn alert_render(
         let (tw, _) = draw::text_size(title_slice);
         let text_x = x + (w as i32 - tw as i32) / 2;
         let text_y = y + ALERT_PADDING as i32;
-        draw::draw_text(win, text_x, text_y, theme::TEXT, title_slice);
+        draw::draw_text(win, text_x, text_y, theme::TEXT(), title_slice);
     }
 
     // Message
@@ -38,7 +38,7 @@ pub extern "C" fn alert_render(
         let (tw, _) = draw::text_size(msg_slice);
         let text_x = x + (w as i32 - tw as i32) / 2;
         let text_y = y + ALERT_PADDING as i32 + 24;
-        draw::draw_text(win, text_x, text_y, theme::TEXT_SECONDARY, msg_slice);
+        draw::draw_text(win, text_x, text_y, theme::TEXT_SECONDARY(), msg_slice);
     }
 }
 
@@ -71,9 +71,9 @@ fn alert_button_colors(style: u8, state: u8) -> (u32, u32) {
         1 => {
             // Primary (blue)
             let bg = match state {
-                1 => theme::ACCENT_HOVER,
+                1 => theme::ACCENT_HOVER(),
                 2 => 0xFF005EC4,
-                _ => theme::ACCENT,
+                _ => theme::ACCENT(),
             };
             (bg, 0xFFFFFFFF)
         }
@@ -82,18 +82,18 @@ fn alert_button_colors(style: u8, state: u8) -> (u32, u32) {
             let bg = match state {
                 1 => 0xFFFF5044,
                 2 => 0xFFCC2F26,
-                _ => theme::DESTRUCTIVE,
+                _ => theme::DESTRUCTIVE(),
             };
             (bg, 0xFFFFFFFF)
         }
         _ => {
             // Default (gray)
             let bg = match state {
-                1 => theme::CONTROL_HOVER,
-                2 => theme::CONTROL_PRESSED,
-                _ => theme::CONTROL_BG,
+                1 => theme::CONTROL_HOVER(),
+                2 => theme::CONTROL_PRESSED(),
+                _ => theme::CONTROL_BG(),
             };
-            (bg, theme::TEXT)
+            (bg, theme::TEXT())
         }
     }
 }

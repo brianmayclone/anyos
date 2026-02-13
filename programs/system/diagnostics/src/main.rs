@@ -428,7 +428,7 @@ fn render_main(
     btn_start: &UiToolbarButton,
     btn_stress: &UiToolbarButton,
 ) {
-    window::fill_rect(win_id, 0, 0, WIN_W as u16, WIN_H as u16, colors::WINDOW_BG);
+    window::fill_rect(win_id, 0, 0, WIN_W as u16, WIN_H as u16, colors::WINDOW_BG());
 
     // Title bar
     card(win_id, 0, 0, WIN_W, 36);
@@ -439,10 +439,10 @@ fn render_main(
             btn_start.render(win_id, "Start");
             btn_stress.render(win_id, "Stress Test");
 
-            label(win_id, PAD, 50, "Press Start to run benchmarks,", colors::TEXT, FontSize::Normal, TextAlign::Left);
-            label(win_id, PAD, 70, "or Stress Test for a continuous loop.", colors::TEXT, FontSize::Normal, TextAlign::Left);
-            label(win_id, PAD, 96, "Stress Test runs syscalls in a loop until", colors::TEXT_SECONDARY, FontSize::Small, TextAlign::Left);
-            label(win_id, PAD, 112, "you press Stop. Results go to serial.", colors::TEXT_SECONDARY, FontSize::Small, TextAlign::Left);
+            label(win_id, PAD, 50, "Press Start to run benchmarks,", colors::TEXT(), FontSize::Normal, TextAlign::Left);
+            label(win_id, PAD, 70, "or Stress Test for a continuous loop.", colors::TEXT(), FontSize::Normal, TextAlign::Left);
+            label(win_id, PAD, 96, "Stress Test runs syscalls in a loop until", colors::TEXT_SECONDARY(), FontSize::Small, TextAlign::Left);
+            label(win_id, PAD, 112, "you press Stop. Results go to serial.", colors::TEXT_SECONDARY(), FontSize::Small, TextAlign::Left);
         }
         Mode::Bench => {
             let pct = if bench.total_tests > 0 {
@@ -450,7 +450,7 @@ fn render_main(
             } else { 0 };
             let mut pbuf = [0u8; 40];
             let ps = fmt_running(&mut pbuf, bench.current_test, bench.total_tests);
-            label(win_id, PAD, 50, ps, colors::TEXT, FontSize::Normal, TextAlign::Left);
+            label(win_id, PAD, 50, ps, colors::TEXT(), FontSize::Normal, TextAlign::Left);
             progress(win_id, PAD, 72, WIN_W - PAD as u32 * 2, 10, pct);
         }
         Mode::BenchDone => {
@@ -476,9 +476,9 @@ fn render_bench_results(win_id: u32, state: &BenchState) {
     let mut y: i32 = 42;
 
     window::fill_rect(win_id, 0, y as i16, WIN_W as u16, ROW_H as u16, 0xFF4A4A4A);
-    label(win_id, PAD, y + 2, "Test", colors::TEXT, FontSize::Small, TextAlign::Left);
-    label(win_id, 280, y + 2, "Time", colors::TEXT, FontSize::Small, TextAlign::Left);
-    label(win_id, 370, y + 2, "Iters", colors::TEXT, FontSize::Small, TextAlign::Left);
+    label(win_id, PAD, y + 2, "Test", colors::TEXT(), FontSize::Small, TextAlign::Left);
+    label(win_id, 280, y + 2, "Time", colors::TEXT(), FontSize::Small, TextAlign::Left);
+    label(win_id, 370, y + 2, "Iters", colors::TEXT(), FontSize::Small, TextAlign::Left);
     y += ROW_H;
 
     for i in 0..state.count {
@@ -488,7 +488,7 @@ fn render_bench_results(win_id: u32, state: &BenchState) {
                 window::fill_rect(win_id, 0, y as i16, WIN_W as u16, ROW_H as u16, 0xFF333333);
             }
             let name = unsafe { core::str::from_utf8_unchecked(&r.name[..r.name_len]) };
-            label(win_id, PAD, y + 2, name, colors::TEXT, FontSize::Small, TextAlign::Left);
+            label(win_id, PAD, y + 2, name, colors::TEXT(), FontSize::Small, TextAlign::Left);
 
             let mut vbuf = [0u8; 24];
             let vs = fmt_us(&mut vbuf, r.value_us);
@@ -496,7 +496,7 @@ fn render_bench_results(win_id: u32, state: &BenchState) {
 
             let mut ibuf = [0u8; 12];
             let is = fmt_u32(&mut ibuf, r.iterations);
-            label(win_id, 370, y + 2, is, colors::TEXT_SECONDARY, FontSize::Small, TextAlign::Left);
+            label(win_id, 370, y + 2, is, colors::TEXT_SECONDARY(), FontSize::Small, TextAlign::Left);
 
             y += ROW_H;
         }
@@ -526,28 +526,28 @@ fn render_stress_status(win_id: u32, stress: &StressState, hz: u32) {
     let x_value = 200;
 
     // Iterations
-    label(win_id, x_label, y, "Iterations:", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win_id, x_label, y, "Iterations:", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     let mut buf = [0u8; 12];
     let s = fmt_u32(&mut buf, stress.iterations);
     label(win_id, x_value, y, s, 0xFF00C8FF, FontSize::Normal, TextAlign::Left);
     y += 24;
 
     // Total syscalls
-    label(win_id, x_label, y, "Total syscalls:", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win_id, x_label, y, "Total syscalls:", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     let mut buf2 = [0u8; 12];
     let s = fmt_u32(&mut buf2, stress.total_syscalls as u32);
     label(win_id, x_value, y, s, 0xFF00C8FF, FontSize::Normal, TextAlign::Left);
     y += 24;
 
     // Elapsed time
-    label(win_id, x_label, y, "Elapsed:", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win_id, x_label, y, "Elapsed:", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     let mut tbuf = [0u8; 24];
     let ts = fmt_elapsed(&mut tbuf, elapsed);
-    label(win_id, x_value, y, ts, colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win_id, x_value, y, ts, colors::TEXT(), FontSize::Normal, TextAlign::Left);
     y += 24;
 
     // Errors
-    label(win_id, x_label, y, "Errors:", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win_id, x_label, y, "Errors:", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     let mut ebuf = [0u8; 12];
     let es = fmt_u32(&mut ebuf, stress.errors);
     let err_color = if stress.errors == 0 { 0xFF00FF80 } else { 0xFFFF4040 };
@@ -570,25 +570,25 @@ fn render_stress_results(win_id: u32, stress: &StressState, hz: u32) {
     let x_label = PAD + 10;
     let x_value = 200;
 
-    label(win_id, x_label, y, "Iterations:", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win_id, x_label, y, "Iterations:", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     let mut buf = [0u8; 12];
     let s = fmt_u32(&mut buf, stress.iterations);
     label(win_id, x_value, y, s, 0xFF00C8FF, FontSize::Normal, TextAlign::Left);
     y += 24;
 
-    label(win_id, x_label, y, "Total syscalls:", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win_id, x_label, y, "Total syscalls:", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     let mut buf2 = [0u8; 12];
     let s = fmt_u32(&mut buf2, stress.total_syscalls as u32);
     label(win_id, x_value, y, s, 0xFF00C8FF, FontSize::Normal, TextAlign::Left);
     y += 24;
 
-    label(win_id, x_label, y, "Duration:", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win_id, x_label, y, "Duration:", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     let mut tbuf = [0u8; 24];
     let ts = fmt_elapsed(&mut tbuf, elapsed);
-    label(win_id, x_value, y, ts, colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win_id, x_value, y, ts, colors::TEXT(), FontSize::Normal, TextAlign::Left);
     y += 24;
 
-    label(win_id, x_label, y, "Errors:", colors::TEXT, FontSize::Normal, TextAlign::Left);
+    label(win_id, x_label, y, "Errors:", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     let mut ebuf = [0u8; 12];
     let es = fmt_u32(&mut ebuf, stress.errors);
     let err_color = if stress.errors == 0 { 0xFF00FF80 } else { 0xFFFF4040 };

@@ -20,10 +20,10 @@ pub extern "C" fn contextmenu_render_bg(
     draw::fill_rounded_rect(win, x + 1, y + 1, w, h, MENU_CORNER, 0xFF0A0A0A);
 
     // Background
-    draw::fill_rounded_rect(win, x, y, w, h, MENU_CORNER, theme::CARD_BG);
+    draw::fill_rounded_rect(win, x, y, w, h, MENU_CORNER, theme::CARD_BG());
 
     // Border
-    draw::draw_border(win, x, y, w, h, theme::CARD_BORDER);
+    draw::draw_border(win, x, y, w, h, theme::CARD_BORDER());
 }
 
 /// Render a single context menu item.
@@ -37,7 +37,7 @@ pub extern "C" fn contextmenu_render_item(
 
     // Highlight background
     if highlighted != 0 {
-        draw::fill_rect(win, x + 4, y, w - 8, h, theme::ACCENT);
+        draw::fill_rect(win, x + 4, y, w - 8, h, theme::ACCENT());
     }
 
     // Label text
@@ -46,7 +46,7 @@ pub extern "C" fn contextmenu_render_item(
         let text_x = x + ITEM_PADDING_H;
         let (_, th) = draw::text_size(label_slice);
         let text_y = y + (h as i32 - th as i32) / 2;
-        let fg = if highlighted != 0 { 0xFFFFFFFF } else { theme::TEXT };
+        let fg = if highlighted != 0 { 0xFFFFFFFF } else { theme::TEXT() };
         draw::draw_text(win, text_x, text_y, fg, label_slice);
     }
 }
@@ -56,7 +56,7 @@ pub extern "C" fn contextmenu_render_separator(
     win: u32, x: i32, y: i32, w: u32,
 ) {
     let sep_y = y + (SEPARATOR_HEIGHT as i32) / 2;
-    draw::fill_rect(win, x + 8, sep_y, w - 16, 1, theme::SEPARATOR);
+    draw::fill_rect(win, x + 8, sep_y, w - 16, 1, theme::SEPARATOR());
 }
 
 /// Hit test for a context menu item.

@@ -19,10 +19,10 @@ pub extern "C" fn navbar_render(
     let h = NAVBAR_HEIGHT;
 
     // Background
-    draw::fill_rect(win, x, y, w, h, theme::SIDEBAR_BG);
+    draw::fill_rect(win, x, y, w, h, theme::SIDEBAR_BG());
 
     // Bottom separator
-    draw::fill_rect(win, x, y + h as i32 - 1, w, 1, theme::SEPARATOR);
+    draw::fill_rect(win, x, y + h as i32 - 1, w, 1, theme::SEPARATOR());
 
     // Back button
     if show_back != 0 {
@@ -30,7 +30,7 @@ pub extern "C" fn navbar_render(
         let back_x = x + 12;
         let (_, bh) = draw::text_size(back_text);
         let back_y = y + (h as i32 - bh as i32) / 2;
-        draw::draw_text(win, back_x, back_y, theme::ACCENT, back_text);
+        draw::draw_text(win, back_x, back_y, theme::ACCENT(), back_text);
     }
 
     // Title (centered)
@@ -39,7 +39,7 @@ pub extern "C" fn navbar_render(
         let (tw, th) = draw::text_size(title_slice);
         let text_x = x + (w as i32 - tw as i32) / 2;
         let text_y = y + (h as i32 - th as i32) / 2;
-        draw::draw_text(win, text_x, text_y, theme::TEXT, title_slice);
+        draw::draw_text(win, text_x, text_y, theme::TEXT(), title_slice);
     }
 }
 

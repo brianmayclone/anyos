@@ -23,14 +23,14 @@ pub extern "C" fn scrollview_render_scrollbar(
     let bar_x = x + _w as i32 - SCROLLBAR_WIDTH as i32;
 
     // Track
-    draw::fill_rect(win, bar_x, y, SCROLLBAR_WIDTH, h, theme::SCROLLBAR_TRACK);
+    draw::fill_rect(win, bar_x, y, SCROLLBAR_WIDTH, h, theme::SCROLLBAR_TRACK());
 
     // Thumb
     let (thumb_y, thumb_h) = thumb_pos_and_size(h, content_h, scroll_offset);
     draw::fill_rounded_rect(
         win, bar_x + 1, y + thumb_y as i32,
         SCROLLBAR_WIDTH - 2, thumb_h,
-        (SCROLLBAR_WIDTH - 2) / 2, theme::SCROLLBAR,
+        (SCROLLBAR_WIDTH - 2) / 2, theme::SCROLLBAR(),
     );
 }
 

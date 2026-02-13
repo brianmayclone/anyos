@@ -15,10 +15,10 @@ pub extern "C" fn textfield_render(
     let password = (flags & 2) != 0;
 
     // Background
-    draw::fill_rounded_rect(win, x, y, w, h, 4, theme::INPUT_BG);
+    draw::fill_rounded_rect(win, x, y, w, h, 4, theme::INPUT_BG());
 
     // Border
-    let border_color = if focused { theme::INPUT_FOCUS } else { theme::INPUT_BORDER };
+    let border_color = if focused { theme::INPUT_FOCUS() } else { theme::INPUT_BORDER() };
     draw::draw_border(win, x, y, w, h, border_color);
 
     let text_x = x + 6;
@@ -33,14 +33,14 @@ pub extern "C" fn textfield_render(
             for i in 0..len {
                 buf[i] = b'*';
             }
-            draw::draw_text(win, text_x, text_y, theme::TEXT, &buf[..len]);
+            draw::draw_text(win, text_x, text_y, theme::TEXT(), &buf[..len]);
         } else {
             let text_slice = unsafe { core::slice::from_raw_parts(text, text_len as usize) };
-            draw::draw_text(win, text_x, text_y, theme::TEXT, text_slice);
+            draw::draw_text(win, text_x, text_y, theme::TEXT(), text_slice);
         }
     } else if !placeholder.is_null() && placeholder_len > 0 {
         let ph_slice = unsafe { core::slice::from_raw_parts(placeholder, placeholder_len as usize) };
-        draw::draw_text(win, text_x, text_y, theme::TEXT_SECONDARY, ph_slice);
+        draw::draw_text(win, text_x, text_y, theme::TEXT_SECONDARY(), ph_slice);
     }
 
     // Cursor
@@ -51,7 +51,7 @@ pub extern "C" fn textfield_render(
         } else {
             text_x
         };
-        draw::fill_rect(win, cursor_x, text_y, 1, th, theme::TEXT);
+        draw::fill_rect(win, cursor_x, text_y, 1, th, theme::TEXT());
     }
 }
 
