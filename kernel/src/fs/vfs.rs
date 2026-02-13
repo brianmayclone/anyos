@@ -1,6 +1,7 @@
 //! Virtual File System (VFS) -- unified interface for file descriptors, open/read/write/close.
 //! Delegates to the mounted FAT16 filesystem and manages the global open file table.
 
+use crate::fs::devfs::DevFs;
 use crate::fs::fat::FatFs;
 use crate::fs::file::{DirEntry, FileDescriptor, FileFlags, FileType, OpenFile, SeekFrom};
 use crate::sync::mutex::Mutex;
@@ -21,6 +22,7 @@ struct VfsState {
     next_fd: FileDescriptor,
     mount_points: Vec<MountPoint>,
     fat_fs: Option<FatFs>,
+    devfs: Option<DevFs>,
 }
 
 struct MountPoint {
@@ -94,6 +96,16 @@ fn split_parent_name(path: &str) -> Result<(&str, &str), FsError> {
     }
 }
 
+/// Check if a path targets the /dev filesystem.
+fn is_dev_path(path: &str) -> bool {
+    path == "/dev" || path.starts_with("/dev/")
+}
+
+/// Extract the device name from a /dev path (strips "/dev/" prefix).
+fn dev_name(path: &str) -> &str {
+    if path.len() > 5 { &path[5..] } else { "" }
+}
+
 /// Initialize the VFS, reserving file descriptors 0-2 for stdin/stdout/stderr.
 pub fn init() {
     let mut vfs = VFS.lock();
@@ -102,6 +114,7 @@ pub fn init() {
         next_fd: 3, // 0=stdin, 1=stdout, 2=stderr
         mount_points: Vec::new(),
         fat_fs: None,
+        devfs: None,
     });
 
     // Reserve fd 0, 1, 2
@@ -137,15 +150,66 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
     });
 }
 
+/// Mount the device filesystem at /dev, bridging built-in virtual devices
+/// with HAL-registered hardware devices.
+pub fn mount_devfs() {
+    let mut vfs = VFS.lock();
+    let state = vfs.as_mut().expect("VFS not initialized");
+    let mut devfs = DevFs::new();
+    devfs.populate_from_hal();
+    state.devfs = Some(devfs);
+    state.mount_points.push(MountPoint {
+        path: String::from("/dev"),
+        fs_type: FsType::DevFs,
+        device_id: 0,
+    });
+    crate::serial_println!("  Mounted DevFs at '/dev'");
+}
+
 /// Open a file by path with the given flags. Returns a file descriptor on success.
 pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
-    if state.open_files.len() >= MAX_OPEN_FILES {
+    // Count actually occupied slots (not None holes left by close())
+    let active_count = state.open_files.iter().filter(|e| e.is_some()).count();
+    if active_count >= MAX_OPEN_FILES {
         return Err(FsError::TooManyOpenFiles);
     }
 
+    // --- DevFs path ---
+    if is_dev_path(path) {
+        let name = dev_name(path);
+        if name.is_empty() {
+            return Err(FsError::IsADirectory);
+        }
+        let devfs = state.devfs.as_ref().ok_or(FsError::NotFound)?;
+        let idx = devfs.lookup(name).ok_or(FsError::NotFound)?;
+
+        let fd = state.next_fd;
+        state.next_fd += 1;
+
+        let file = OpenFile {
+            fd,
+            path: String::from(path),
+            file_type: FileType::Device,
+            flags,
+            position: 0,
+            size: 0,
+            fs_id: 1, // DevFs
+            inode: idx as u32,
+            parent_cluster: 0,
+        };
+
+        if let Some(slot) = state.open_files.iter_mut().find(|e| e.is_none()) {
+            *slot = Some(file);
+        } else {
+            state.open_files.push(Some(file));
+        }
+        return Ok(fd);
+    }
+
+    // --- FAT path ---
     let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
 
     // Try to look up the file
@@ -201,7 +265,12 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
         parent_cluster,
     };
 
-    state.open_files.push(Some(file));
+    // Reuse a None slot left by close(), or append if none available
+    if let Some(slot) = state.open_files.iter_mut().find(|e| e.is_none()) {
+        *slot = Some(file);
+    } else {
+        state.open_files.push(Some(file));
+    }
     Ok(fd)
 }
 
@@ -233,6 +302,14 @@ pub fn read(fd: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
         .find(|f| f.fd == fd)
         .ok_or(FsError::BadFd)?;
 
+    // --- DevFs file ---
+    if file.fs_id == 1 {
+        let name = dev_name(&file.path);
+        let devfs = state.devfs.as_ref().ok_or(FsError::IoError)?;
+        return devfs.read(name, buf).ok_or(FsError::IoError);
+    }
+
+    // --- FAT file ---
     if file.position >= file.size {
         return Ok(0); // EOF
     }
@@ -265,6 +342,14 @@ pub fn write(fd: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
         return Err(FsError::PermissionDenied);
     }
 
+    // --- DevFs file ---
+    if file.fs_id == 1 {
+        let name = dev_name(&file.path);
+        let devfs = state.devfs.as_ref().ok_or(FsError::IoError)?;
+        return devfs.write(name, buf).ok_or(FsError::IoError);
+    }
+
+    // --- FAT file ---
     let old_inode = file.inode;
     let old_size = file.size;
     let position = file.position;
@@ -299,12 +384,30 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
     let vfs = VFS.lock();
     let state = vfs.as_ref().ok_or(FsError::IoError)?;
 
+    // --- /dev directory ---
+    if path == "/dev" || path == "/dev/" {
+        let devfs = state.devfs.as_ref().ok_or(FsError::NotFound)?;
+        return Ok(devfs.list());
+    }
+
+    // --- FAT path ---
     if let Some(ref fat) = state.fat_fs {
         let (cluster, file_type, _size) = fat.lookup(path)?;
         if file_type != FileType::Directory {
             return Err(FsError::NotADirectory);
         }
-        fat.read_dir(cluster)
+        let mut entries = fat.read_dir(cluster)?;
+        // If listing root, add "dev" as a virtual directory entry
+        if path == "/" {
+            if state.devfs.is_some() {
+                entries.push(DirEntry {
+                    name: String::from("dev"),
+                    file_type: FileType::Directory,
+                    size: 0,
+                });
+            }
+        }
+        Ok(entries)
     } else {
         Err(FsError::NotFound)
     }
@@ -319,6 +422,11 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
 /// Because the VFS uses a scheduler-integrated [`Mutex`] (not a spinlock),
 /// interrupts remain enabled even during Phase 1 disk I/O.
 pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
+    // Device files are streaming — can't read to vec
+    if is_dev_path(path) {
+        return Err(FsError::PermissionDenied);
+    }
+
     // Phase 1: Under VFS lock — lookup + build read plan (no disk I/O)
     let plan = {
         let vfs = VFS.lock();
@@ -340,6 +448,7 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
 
 /// Delete a file or empty directory at the given path.
 pub fn delete(path: &str) -> Result<(), FsError> {
+    if is_dev_path(path) { return Err(FsError::PermissionDenied); }
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
     let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
@@ -351,6 +460,7 @@ pub fn delete(path: &str) -> Result<(), FsError> {
 
 /// Create a directory at the given path.
 pub fn mkdir(path: &str) -> Result<(), FsError> {
+    if is_dev_path(path) { return Err(FsError::PermissionDenied); }
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
     let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
@@ -373,6 +483,11 @@ pub fn lseek(fd: FileDescriptor, offset: i32, whence: u32) -> Result<u32, FsErro
         .flatten()
         .find(|f| f.fd == fd)
         .ok_or(FsError::BadFd)?;
+
+    // Device files don't support seeking
+    if file.fs_id == 1 {
+        return Ok(0);
+    }
 
     let new_pos = match whence {
         0 => {
@@ -418,6 +533,7 @@ pub fn fstat(fd: FileDescriptor) -> Result<(FileType, u32, u32), FsError> {
 
 /// Truncate a file to zero length.
 pub fn truncate(path: &str) -> Result<(), FsError> {
+    if is_dev_path(path) { return Err(FsError::PermissionDenied); }
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
     let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;

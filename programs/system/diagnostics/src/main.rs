@@ -345,8 +345,9 @@ fn bench_process_spawn(state: &mut BenchState, hz: u32) {
 // ── Stress test (one iteration) ─────────────────────────────────────────────
 
 /// Run one iteration of the stress test: a mix of syscalls that exercises
-/// different kernel paths. Returns (syscall_count, error_count).
-fn stress_iteration(hz: u32) -> (u32, u32) {
+/// different kernel paths, uisys DLL function pointers, and compositor IPC.
+/// Returns (syscall_count, error_count).
+fn stress_iteration(hz: u32, win_id: u32) -> (u32, u32) {
     let mut calls: u32 = 0;
     let mut errors: u32 = 0;
 
@@ -401,6 +402,135 @@ fn stress_iteration(hz: u32) -> (u32, u32) {
     // 7. getpid (fast syscall, exercises current_tid)
     for _ in 0..50 {
         let _ = process::getpid();
+        calls += 1;
+    }
+
+    // 8. uisys DLL components — exercises DLL shared page function pointers +
+    //    kernel drawing syscalls (SYS_WIN_FILL_RECT, SYS_WIN_DRAW_TEXT, etc.)
+    //    Draws into the lower region of the window (overwritten by next render).
+    {
+        let y0: i32 = 300;
+
+        // window::fill_rect — direct compositor syscall
+        window::fill_rect(win_id, 0, y0 as i16, WIN_W as u16, 140, colors::WINDOW_BG());
+        calls += 1;
+
+        // label — DLL label_render → SYS_WIN_DRAW_TEXT_EX
+        label(win_id, 10, y0, "Stress", colors::TEXT(), FontSize::Small, TextAlign::Left);
+        calls += 1;
+        label(win_id, 60, y0, "Testing", colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
+        calls += 1;
+
+        // label_measure — DLL label_measure → SYS_FONT_MEASURE
+        let _ = label_measure("Measure test string", FontSize::Normal);
+        calls += 1;
+
+        // label_ellipsis — DLL label_render_ellipsis
+        label_ellipsis(win_id, 10, y0 + 18, "A long label truncated with ellipsis", colors::TEXT(), FontSize::Small, 200);
+        calls += 1;
+
+        // button — DLL button_render (3 styles)
+        button(win_id, 10, y0 + 36, 80, 28, "OK", ButtonStyle::Primary, ButtonState::Normal);
+        calls += 1;
+        button(win_id, 100, y0 + 36, 80, 28, "Cancel", ButtonStyle::Default, ButtonState::Hover);
+        calls += 1;
+        button(win_id, 190, y0 + 36, 80, 28, "Delete", ButtonStyle::Destructive, ButtonState::Normal);
+        calls += 1;
+
+        // button_measure + button_hit_test — DLL-only (no kernel syscall)
+        let _ = button_measure("Measure");
+        calls += 1;
+        let _ = button_hit_test(10, y0 + 36, 80, 28, 50, y0 + 50);
+        calls += 1;
+
+        // toggle — DLL toggle_render
+        toggle(win_id, 280, y0 + 36, true);
+        calls += 1;
+        toggle(win_id, 340, y0 + 36, false);
+        calls += 1;
+
+        // checkbox — DLL checkbox_render
+        checkbox(win_id, 10, y0 + 70, CheckboxState::Checked, "Opt A");
+        calls += 1;
+        checkbox(win_id, 100, y0 + 70, CheckboxState::Unchecked, "Opt B");
+        calls += 1;
+
+        // radio — DLL radio_render
+        radio(win_id, 200, y0 + 70, true, "Yes");
+        calls += 1;
+        radio(win_id, 270, y0 + 70, false, "No");
+        calls += 1;
+
+        // slider — DLL slider_render
+        slider(win_id, 10, y0 + 94, 200, 0, 100, 42, 20);
+        calls += 1;
+
+        // progress — DLL progress_render
+        progress(win_id, 220, y0 + 94, 150, 8, 66);
+        calls += 1;
+
+        // badge — DLL badge_render
+        badge(win_id, 400, y0, 99);
+        calls += 1;
+        badge_dot(win_id, 440, y0);
+        calls += 1;
+
+        // stepper — DLL stepper_render
+        stepper(win_id, 380, y0 + 36, 7, 0, 10);
+        calls += 1;
+
+        // divider — DLL divider_render_h / _v
+        divider_h(win_id, 10, y0 + 116, 460);
+        calls += 1;
+        divider_v(win_id, 240, y0, 116);
+        calls += 1;
+
+        // status_indicator — DLL status_render
+        status_indicator(win_id, 10, y0 + 120, StatusKind::Online, "OK");
+        calls += 1;
+        status_indicator(win_id, 80, y0 + 120, StatusKind::Error, "Fail");
+        calls += 1;
+
+        // colorwell — DLL colorwell_render
+        colorwell(win_id, 170, y0 + 120, 16, 0xFF007AFF);
+        calls += 1;
+
+        // card — DLL card_render
+        card(win_id, 200, y0 + 118, 80, 24);
+        calls += 1;
+
+        // groupbox — DLL groupbox_render
+        groupbox(win_id, 300, y0 + 70, 160, 50, "Group");
+        calls += 1;
+
+        // tooltip — DLL tooltip_render
+        tooltip(win_id, 300, y0 + 118, "Tooltip text");
+        calls += 1;
+
+        // iconbutton — DLL iconbutton_render (circle + square)
+        iconbutton(win_id, 420, y0 + 70, 24, 0, 0xFF007AFF);
+        calls += 1;
+        iconbutton(win_id, 450, y0 + 70, 24, 1, 0xFFFF3B30);
+        calls += 1;
+
+        // fill_rounded_rect_aa — DLL → kernel AA fill syscall
+        fill_rounded_rect_aa(win_id, 10, y0 + 136, 120, 20, 6, 0xFF3C3C3C);
+        calls += 1;
+
+        // draw_text_with_font — DLL → kernel font render syscall
+        draw_text_with_font(win_id, 150, y0 + 136, 0xFFFFFFFF, 13, 0, "Font test");
+        calls += 1;
+
+        // font_measure — DLL → kernel font measure syscall
+        let _ = font_measure(0, 13, "Measure me");
+        calls += 1;
+
+        // gpu_has_accel — DLL → kernel GPU query syscall
+        let _ = gpu_has_accel();
+        calls += 1;
+
+        // window::get_size — compositor query
+        let _ = window::get_size(win_id);
         calls += 1;
     }
 
@@ -674,7 +804,7 @@ fn main() {
     loop {
         if mode == Mode::Stress {
             // In stress mode: run one iteration, then check for stop events
-            let (calls, errs) = stress_iteration(hz);
+            let (calls, errs) = stress_iteration(hz, win_id);
             stress.iterations += 1;
             stress.total_syscalls += calls as u64;
             stress.errors += errs;
@@ -749,6 +879,10 @@ fn main() {
                     }
                     _ => {}
                 }
+            }
+
+            if event[0] == 0x0050 {
+                render_main(win_id, mode, &bench, &stress, hz, &btn_start, &btn_stress);
             }
 
             if ev.is_mouse_down() {

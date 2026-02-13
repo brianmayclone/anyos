@@ -93,9 +93,14 @@ const LIGHT: ThemeColors = ThemeColors {
     check_mark:     0xFFFFFFFF,
 };
 
+/// Address of the `theme` field in the UisysExports struct (DLL base + 12).
+/// Written by compositor, shared across all processes via DLL shared pages.
+const THEME_ADDR: *const u32 = 0x0400_000C as *const u32;
+
 #[inline(always)]
 fn colors() -> &'static ThemeColors {
-    if crate::syscall::get_theme() == 0 { &DARK } else { &LIGHT }
+    let theme = unsafe { core::ptr::read_volatile(THEME_ADDR) };
+    if theme == 0 { &DARK } else { &LIGHT }
 }
 
 // --- Color accessors (dynamic, theme-aware) ---

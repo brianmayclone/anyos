@@ -10,28 +10,41 @@ use crate::ipc_protocol as proto;
 use crate::keys::encode_scancode;
 use crate::menu::{MenuBar, MenuBarDef, MenuBarHit};
 
-// ── Theme Constants ─────────────────────────────────────────────────────────
+// ── Theme ───────────────────────────────────────────────────────────────────
 
 const COLOR_DESKTOP_BG: u32 = 0xFF1E1E1E; // wallpaper covers this anyway
 
+/// Address of the `theme` field in the uisys.dll export struct.
+/// DLL pages are shared physical frames — compositor writes, all apps read.
+const UISYS_THEME_ADDR: *mut u32 = 0x0400_000C as *mut u32;
+
+/// Read the current theme (0 = dark, 1 = light) from the shared DLL page.
 #[inline(always)]
-fn color_menubar_bg() -> u32     { if anyos_std::sys::get_theme() != 0 { 0xE6F6F6F6 } else { 0xE6303035 } }
+fn is_light() -> bool { unsafe { core::ptr::read_volatile(UISYS_THEME_ADDR) != 0 } }
+
+/// Set the theme by writing to the shared DLL page (visible to all processes).
+pub fn set_theme(value: u32) {
+    unsafe { core::ptr::write_volatile(UISYS_THEME_ADDR, value) };
+}
+
 #[inline(always)]
-fn color_menubar_border() -> u32 { if anyos_std::sys::get_theme() != 0 { 0xFFD1D1D6 } else { 0xFF404045 } }
+fn color_menubar_bg() -> u32     { if is_light() { 0xE6F6F6F6 } else { 0xE6303035 } }
 #[inline(always)]
-fn color_menubar_text() -> u32   { if anyos_std::sys::get_theme() != 0 { 0xFF1D1D1F } else { 0xFFE0E0E0 } }
+fn color_menubar_border() -> u32 { if is_light() { 0xFFD1D1D6 } else { 0xFF404045 } }
 #[inline(always)]
-fn color_titlebar_focused() -> u32  { if anyos_std::sys::get_theme() != 0 { 0xFFE8E8E8 } else { 0xFF3C3C3C } }
+fn color_menubar_text() -> u32   { if is_light() { 0xFF1D1D1F } else { 0xFFE0E0E0 } }
 #[inline(always)]
-fn color_titlebar_unfocused() -> u32 { if anyos_std::sys::get_theme() != 0 { 0xFFF0F0F0 } else { 0xFF2A2A2A } }
+fn color_titlebar_focused() -> u32  { if is_light() { 0xFFE8E8E8 } else { 0xFF3C3C3C } }
 #[inline(always)]
-fn color_titlebar_text() -> u32  { if anyos_std::sys::get_theme() != 0 { 0xFF1D1D1F } else { 0xFFE0E0E0 } }
+fn color_titlebar_unfocused() -> u32 { if is_light() { 0xFFF0F0F0 } else { 0xFF2A2A2A } }
 #[inline(always)]
-fn color_window_bg() -> u32      { if anyos_std::sys::get_theme() != 0 { 0xFFF5F5F7 } else { 0xFF1E1E1E } }
+fn color_titlebar_text() -> u32  { if is_light() { 0xFF1D1D1F } else { 0xFFE0E0E0 } }
 #[inline(always)]
-fn color_window_border() -> u32  { if anyos_std::sys::get_theme() != 0 { 0xFFD1D1D6 } else { 0xFF4A4A4E } }
+fn color_window_bg() -> u32      { if is_light() { 0xFFF5F5F7 } else { 0xFF1E1E1E } }
 #[inline(always)]
-fn color_btn_unfocused() -> u32  { if anyos_std::sys::get_theme() != 0 { 0xFFC7C7CC } else { 0xFF5A5A5E } }
+fn color_window_border() -> u32  { if is_light() { 0xFFD1D1D6 } else { 0xFF4A4A4E } }
+#[inline(always)]
+fn color_btn_unfocused() -> u32  { if is_light() { 0xFFC7C7CC } else { 0xFF5A5A5E } }
 
 // Traffic light buttons — same in both themes (matches macOS)
 const COLOR_CLOSE_BTN: u32 = 0xFFFF5F56;

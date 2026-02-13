@@ -82,6 +82,13 @@ static PER_CPU_IDLE: [AtomicU32; MAX_CPUS] = {
     [INIT; MAX_CPUS]
 };
 
+/// Per-CPU busy ticks not yet attributed to a thread (due to lock contention).
+/// Drained and added to the running thread's cpu_ticks when the lock is next acquired.
+static PER_CPU_CONTENDED_BUSY: [AtomicU32; MAX_CPUS] = {
+    const INIT: AtomicU32 = AtomicU32::new(0);
+    [INIT; MAX_CPUS]
+};
+
 /// Per-CPU flag: true when a thread is actively running on this CPU.
 /// Used to correctly count idle ticks even when the scheduler lock is contended.
 static PER_CPU_HAS_THREAD: [AtomicBool; MAX_CPUS] = {
@@ -588,24 +595,35 @@ fn schedule_inner(from_timer: bool) {
     // blocking the IRQ handler — if the lock is contended, skip this tick.
     // For voluntary scheduling (from_timer=false, e.g. sleep_until), the
     // current thread is already marked Blocked and MUST be descheduled.
-    // Using try_lock here would return immediately on contention, leaving
-    // a Blocked thread running — causing sleep(5) to return instantly on SMP.
-    // Blocking lock() is safe: voluntary callers aren't in interrupt context,
-    // and lock() disables IF before spinning, preventing deadlock.
+    // We spin on try_lock() instead of using lock(): try_lock restores IF
+    // on failure, so LAPIC timer interrupts can still fire between attempts.
+    // Using lock() would keep IF=0 during the entire spin, causing timekeeping
+    // drift (~30% tick loss) since LAPIC timer ticks are missed on this CPU.
     let mut guard = if from_timer {
         match SCHEDULER.try_lock() {
             Some(s) => s,
             None => {
-                // Lock contended — still count idle if this CPU has no running thread
+                // Lock contended — attribute tick to idle or running thread
                 if !PER_CPU_HAS_THREAD[cpu_id_early].load(Ordering::Relaxed) {
                     IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
                     PER_CPU_IDLE[cpu_id_early].fetch_add(1, Ordering::Relaxed);
+                } else {
+                    // Thread is running but we can't access its cpu_ticks without the lock.
+                    // Accumulate here; drained when lock is next acquired.
+                    PER_CPU_CONTENDED_BUSY[cpu_id_early].fetch_add(1, Ordering::Relaxed);
                 }
                 return;
             }
         }
     } else {
-        SCHEDULER.lock()
+        // Spin with try_lock: each failed attempt restores IF (allowing
+        // timer IRQs to fire on this CPU), then retries with IF=0.
+        loop {
+            match SCHEDULER.try_lock() {
+                Some(s) => break s,
+                None => core::hint::spin_loop(),
+            }
+        }
     };
 
     // CRITICAL: Re-read CPU ID now that interrupts are disabled (lock acquired).
@@ -641,6 +659,20 @@ fn schedule_inner(from_timer: bool) {
                             sched.threads[i].wake_at_tick = None;
                             sched.enqueue_on_cpu(tid, target_cpu);
                         }
+                    }
+                }
+            }
+        }
+
+        // Drain contended-busy ticks accumulated while lock was held by another CPU.
+        // These ticks were counted in PER_CPU_TOTAL but couldn't be attributed to
+        // the running thread without the lock. Attribute them now.
+        let missed = PER_CPU_CONTENDED_BUSY[cpu_id].swap(0, Ordering::Relaxed);
+        if missed > 0 {
+            if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
+                if current_tid != sched.idle_tid[cpu_id] {
+                    if let Some(idx) = sched.find_idx(current_tid) {
+                        sched.threads[idx].cpu_ticks += missed;
                     }
                 }
             }

@@ -232,14 +232,18 @@ extern "C" fn export_poll_event(
     buf: *mut [u32; 5],
 ) -> u32 {
     let mut tmp = [0u32; 5];
-    // Drain the subscription queue until we find an event for our window.
+    // Drain the subscription queue until we find an event for our window
+    // or a broadcast event (theme change, etc.).
     // Non-matching events (for other windows) are discarded from OUR copy
     // of the queue — each subscriber has an independent queue, so this is safe.
     while syscall::evt_chan_poll(channel_id, sub_id, &mut tmp) {
         if tmp[0] >= 0x3000 && tmp[1] == window_id {
-            unsafe {
-                *buf = tmp;
-            }
+            // Window-specific event (mouse, key, resize, etc.)
+            unsafe { *buf = tmp; }
+            return 1;
+        } else if tmp[0] < 0x1000 {
+            // Broadcast event (theme change, etc.) — no window_id filter
+            unsafe { *buf = tmp; }
             return 1;
         }
         // Not for our window — discard and try the next event

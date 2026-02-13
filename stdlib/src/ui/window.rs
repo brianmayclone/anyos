@@ -491,6 +491,20 @@ pub fn list_resolutions() -> alloc::vec::Vec<(u32, u32)> {
     modes
 }
 
+/// Get current theme. Returns 0 (dark) or 1 (light).
+/// Reads from the shared uisys.dll page (zero syscalls).
+pub fn get_theme() -> u32 {
+    unsafe { core::ptr::read_volatile(0x0400_000C as *const u32) }
+}
+
+/// Set the system theme. Sends CMD_SET_THEME (0x100D) to compositor.
+/// theme: 0 = dark, 1 = light.
+pub fn set_theme(theme: u32) {
+    if !ensure_init() { return; }
+    let st = state();
+    crate::ipc::evt_chan_emit(st.channel_id, &[0x100D, theme, 0, 0, 0]);
+}
+
 /// Load a TTF font from a file path. Returns font_id or None.
 pub fn font_load(path: &str) -> Option<u32> {
     let result = syscall2(SYS_FONT_LOAD, path.as_ptr() as u64, path.len() as u64);

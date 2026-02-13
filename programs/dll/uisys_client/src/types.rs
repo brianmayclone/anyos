@@ -98,19 +98,14 @@ impl UiEvent {
 
 /// Theme color functions matching the DLL's built-in palette.
 /// Colors are dynamic — they change based on the system theme (dark/light).
+/// Theme value is read from uisys.dll shared page (zero syscalls).
 pub mod colors {
+    /// Address of the `theme` field in UisysExports (DLL base 0x04000000 + 12).
+    const THEME_ADDR: *const u32 = 0x0400_000C as *const u32;
+
     #[inline(always)]
     fn is_light() -> bool {
-        let ret: u64;
-        unsafe {
-            core::arch::asm!(
-                "syscall",
-                inlateout("rax") 190u64 => ret,  // SYS_GET_THEME
-                out("rcx") _,
-                out("r11") _,
-            );
-        }
-        ret != 0
+        unsafe { core::ptr::read_volatile(THEME_ADDR) != 0 }
     }
 
     pub fn WINDOW_BG() -> u32       { if is_light() { 0xFFF5F5F7 } else { 0xFF1E1E1E } }

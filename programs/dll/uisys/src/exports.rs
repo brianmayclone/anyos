@@ -12,7 +12,11 @@ pub struct UisysExports {
     pub magic: [u8; 4],
     pub version: u32,
     pub num_exports: u32,
-    pub _reserved: [u32; 5],
+    /// Current theme: 0 = dark (default), 1 = light.
+    /// Written by compositor (DLL pages are shared physical frames).
+    /// Read by theme.rs via volatile pointer (no syscall needed).
+    pub theme: u32,
+    pub _reserved: [u32; 4],
 
     // --- Label (4) ---
     pub label_render: extern "C" fn(u32, i32, i32, *const u8, u32, u32, u16, u8),
@@ -163,7 +167,8 @@ pub static UISYS_EXPORTS: UisysExports = UisysExports {
     magic: *b"DLIB",
     version: 1,
     num_exports: NUM_EXPORTS,
-    _reserved: [0; 5],
+    theme: 0,
+    _reserved: [0; 4],
 
     // Label
     label_render: label::label_render,

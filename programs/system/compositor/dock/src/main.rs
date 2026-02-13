@@ -27,15 +27,19 @@ const DOCK_BORDER_RADIUS: i32 = 16;
 const DOCK_H_PADDING: u32 = 12;
 
 // Colors (ARGB u32)
+/// Read theme from uisys.dll shared page (DLL base + 12).
+const THEME_ADDR: *const u32 = 0x0400_000C as *const u32;
 #[inline(always)]
-fn dock_bg() -> u32 { if anyos_std::sys::get_theme() != 0 { 0xC0F0F0F5 } else { 0xC0303035 } }
+fn is_light() -> bool { unsafe { core::ptr::read_volatile(THEME_ADDR) != 0 } }
+#[inline(always)]
+fn dock_bg() -> u32 { if is_light() { 0xC0F0F0F5 } else { 0xC0303035 } }
 const COLOR_WHITE: u32 = 0xFFFFFFFF;
 const COLOR_TRANSPARENT: u32 = 0x00000000;
 const COLOR_HIGHLIGHT: u32 = 0x19FFFFFF; // 10% white
 #[inline(always)]
-fn tooltip_bg() -> u32 { if anyos_std::sys::get_theme() != 0 { 0xE6F0F0F5 } else { 0xE6303035 } }
+fn tooltip_bg() -> u32 { if is_light() { 0xE6F0F0F5 } else { 0xE6303035 } }
 #[inline(always)]
-fn tooltip_text() -> u32 { if anyos_std::sys::get_theme() != 0 { 0xFF1D1D1F } else { 0xFFFFFFFF } }
+fn tooltip_text() -> u32 { if is_light() { 0xFF1D1D1F } else { 0xFFFFFFFF } }
 const TOOLTIP_PAD: u32 = 8; // horizontal padding inside tooltip pill
 
 // System font (sfpro.ttf, loaded by kernel at boot)
@@ -634,6 +638,9 @@ fn main() {
                     hovered_idx = new_hover;
                     needs_redraw = true;
                 }
+            } else if event.event_type == 0x0050 {
+                // EVT_THEME_CHANGED (from compositor channel)
+                needs_redraw = true;
             } else if event.event_type == libcompositor_client::EVT_MOUSE_DOWN {
                 let lx = event.arg1 as i32;
                 let ly = event.arg2 as i32;
@@ -744,8 +751,6 @@ fn main() {
                         needs_redraw = true;
                     }
                 }
-            } else if sys_buf[0] == 0x0050 { // EVT_THEME_CHANGED
-                needs_redraw = true;
             } else if sys_buf[0] == 0x0021 { // EVT_PROCESS_EXITED
                 let exited_tid = sys_buf[1];
                 // For pinned items: clear running state. For transient: remove.

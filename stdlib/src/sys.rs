@@ -56,16 +56,6 @@ pub fn devlist(buf: &mut [u8]) -> u32 {
     syscall2(SYS_DEVLIST, buf.as_mut_ptr() as u64, buf.len() as u64)
 }
 
-/// Get current UI theme. Returns 0 for dark, 1 for light.
-pub fn get_theme() -> u32 {
-    syscall0(SYS_GET_THEME)
-}
-
-/// Set UI theme. 0 = dark, 1 = light. Returns 0 on success.
-pub fn set_theme(theme: u32) -> u32 {
-    syscall1(SYS_SET_THEME, theme as u64)
-}
-
 /// List all open pipes. Each 80-byte entry:
 ///   [0..4]   pipe_id (u32 LE)
 ///   [4..8]   buffered_bytes (u32 LE)

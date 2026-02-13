@@ -8,7 +8,8 @@ pub struct UisysExports {
     pub magic: [u8; 4],
     pub version: u32,
     pub num_exports: u32,
-    pub _reserved: [u32; 5],
+    pub theme: u32,
+    pub _reserved: [u32; 4],
 
     // Label (4)
     pub label_render: extern "C" fn(u32, i32, i32, *const u8, u32, u32, u16, u8),

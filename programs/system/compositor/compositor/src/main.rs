@@ -316,6 +316,26 @@ fn main() {
                         release_lock();
                         resp
                     }
+                    // CMD_SET_THEME: write to shared DLL page + repaint
+                    ipc_protocol::CMD_SET_THEME => {
+                        let new_theme = ipc_buf[1].min(1);
+                        let old_theme = unsafe {
+                            core::ptr::read_volatile(0x0400_000C as *const u32)
+                        };
+                        if new_theme != old_theme {
+                            desktop::set_theme(new_theme);
+                            acquire_lock();
+                            let desktop = unsafe { desktop_ref() };
+                            desktop.on_theme_change();
+                            release_lock();
+                            // Broadcast theme change to all apps on the compositor channel
+                            ipc::evt_chan_emit(compositor_channel, &[
+                                ipc_protocol::EVT_THEME_CHANGED,
+                                new_theme, old_theme, 0, 0,
+                            ]);
+                        }
+                        None
+                    }
                     // All other commands: handle under lock (fast)
                     _ => {
                         acquire_lock();
@@ -352,9 +372,6 @@ fn main() {
                     let new_w = sys_buf[1];
                     let new_h = sys_buf[2];
                     desktop.handle_resolution_change(new_w, new_h);
-                } else if sys_buf[0] == 0x0050 {
-                    // EVT_THEME_CHANGED
-                    desktop.on_theme_change();
                 }
                 release_lock();
             }

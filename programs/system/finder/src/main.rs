@@ -873,6 +873,7 @@ fn main() {
                     window::destroy(win);
                     return;
                 }
+                0x0050 => { needs_redraw = true; }
                 _ => {}
             }
         }

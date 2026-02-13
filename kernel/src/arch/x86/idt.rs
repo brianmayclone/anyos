@@ -5,7 +5,7 @@
 
 use core::arch::asm;
 use core::mem::size_of;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Total IDT entries (covers the full x86 interrupt vector range).
 const IDT_ENTRIES: usize = 256;
@@ -833,16 +833,39 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
 pub extern "C" fn irq_handler(frame: &InterruptFrame) {
     let irq = (frame.int_no - 32) as u8;
 
-    // LAPIC timer (IRQ 16): timekeeping + per-tick safety checks.
+    // LAPIC timer (IRQ 16): per-tick safety checks + debug tick-rate output.
     if irq == 16 {
         let cpu_id = crate::arch::x86::apic::lapic_id() as usize;
-        // CPU 0: LAPIC-based timekeeping (replaces PIT IRQ 0 after calibration).
-        // LAPIC timer is more reliable than PIT through IOAPIC.
-        if cpu_id == 0
-            && crate::arch::x86::pit::LAPIC_TIMEKEEPING.load(Ordering::Relaxed)
-        {
-            crate::arch::x86::pit::TICK_COUNT.fetch_add(1, Ordering::Relaxed);
+
+        // === DEBUG: Compare TSC-based uptime vs PIT IRQ ticks (every ~5s) ===
+        // PIT TICK_COUNT is an independent clock (IRQ-based, loses ~2.7%).
+        // If TSC drifts, the gap between tsc_uptime and pit_uptime changes.
+        // Stable TSC → pit stays consistently ~2.7% behind.
+        if cpu_id == 0 {
+            static LAPIC_TICK_CTR: AtomicU32 = AtomicU32::new(0);
+            let ctr = LAPIC_TICK_CTR.fetch_add(1, Ordering::Relaxed) + 1;
+            if ctr % 5000 == 0 {
+                let tsc_ticks = crate::arch::x86::pit::get_ticks();
+                let pit_ticks = crate::arch::x86::pit::TICK_COUNT.load(Ordering::Relaxed);
+
+                // Drift = how far PIT is behind TSC (in per-mille)
+                // Stable: ~27 per-mille (2.7%). If TSC drifts, this changes.
+                let drift_pm = if tsc_ticks > 0 {
+                    ((tsc_ticks - pit_ticks) as u64 * 1000 / tsc_ticks as u64) as u32
+                } else {
+                    0
+                };
+
+                uart_puts(b"[TICK] tsc=");
+                uart_put_dec(tsc_ticks / 1000);
+                uart_puts(b"s pit=");
+                uart_put_dec(pit_ticks / 1000);
+                uart_puts(b"s drift=");
+                uart_put_dec(drift_pm);
+                uart_puts(b"pm\n");
+            }
         }
+        // === END DEBUG ===
         if cpu_id < 8 {
             // TSS.RSP0 corruption check on EVERY timer tick.
             // When a user thread is running on this CPU, TSS.RSP0 must point to

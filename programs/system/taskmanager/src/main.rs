@@ -29,6 +29,7 @@ const COL_PRIO: i32 = 410;
 // Selected row highlight color
 const SEL_BG: u32 = 0xFF0A4A8A;
 const MAX_CPUS: usize = 16;
+const MAX_TASKS: usize = 64;
 
 // ─── Data Structures ─────────────────────────────────────────────────────────
 
@@ -39,7 +40,14 @@ struct TaskEntry {
     state: u8,
     priority: u8,
     arch: u8,       // 0=x86_64, 1=x86
-    cpu_ticks: u32,
+    cpu_pct_x10: u32, // CPU% × 10 (e.g. 125 = 12.5%)
+}
+
+/// Tracks previous cpu_ticks per TID for delta computation.
+struct PrevTicks {
+    entries: [(u32, u32); MAX_TASKS], // (tid, cpu_ticks)
+    count: usize,
+    prev_total: u32,
 }
 
 struct MemInfo {
@@ -77,12 +85,15 @@ impl CpuState {
 
 // ─── Data Fetching ───────────────────────────────────────────────────────────
 
-fn fetch_tasks(buf: &mut [u8; 36 * 64]) -> Vec<TaskEntry> {
+fn fetch_tasks(buf: &mut [u8; 36 * 64], prev: &mut PrevTicks, total_sched_ticks: u32) -> Vec<TaskEntry> {
     let mut result = Vec::new();
     let count = sys::sysinfo(1, buf);
     if count == u32::MAX {
         return result;
     }
+
+    let dt = total_sched_ticks.wrapping_sub(prev.prev_total);
+
     for i in 0..count as usize {
         let off = i * 36;
         if off + 36 > buf.len() { break; }
@@ -94,8 +105,37 @@ fn fetch_tasks(buf: &mut [u8; 36 * 64]) -> Vec<TaskEntry> {
         name.copy_from_slice(&buf[off + 8..off + 32]);
         let name_len = name.iter().position(|&b| b == 0).unwrap_or(24);
         let cpu_ticks = u32::from_le_bytes([buf[off + 32], buf[off + 33], buf[off + 34], buf[off + 35]]);
-        result.push(TaskEntry { tid, name, name_len, state, priority: prio, arch, cpu_ticks });
+
+        // Find previous ticks for this TID
+        let prev_ticks = prev.entries[..prev.count]
+            .iter()
+            .find(|e| e.0 == tid)
+            .map(|e| e.1)
+            .unwrap_or(cpu_ticks); // First time: delta = 0
+
+        let d_ticks = cpu_ticks.wrapping_sub(prev_ticks);
+        let cpu_pct_x10 = if dt > 0 && d_ticks > 0 {
+            (d_ticks as u64 * 1000 / dt as u64).min(1000) as u32
+        } else {
+            0
+        };
+
+        result.push(TaskEntry { tid, name, name_len, state, priority: prio, arch, cpu_pct_x10 });
     }
+
+    // Save current snapshot for next delta
+    prev.count = 0;
+    for i in 0..count as usize {
+        if prev.count >= MAX_TASKS { break; }
+        let off = i * 36;
+        if off + 36 > buf.len() { break; }
+        let tid = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
+        let cpu_ticks = u32::from_le_bytes([buf[off + 32], buf[off + 33], buf[off + 34], buf[off + 35]]);
+        prev.entries[prev.count] = (tid, cpu_ticks);
+        prev.count += 1;
+    }
+    prev.prev_total = total_sched_ticks;
+
     result
 }
 
@@ -244,7 +284,6 @@ fn render(
     y += ROW_H;
 
     // ── Task Rows ──
-    let total_ticks = cpu.total_sched_ticks;
     for (i, task) in tasks.iter().enumerate() {
         if y + ROW_H > win_h as i32 {
             break;
@@ -284,11 +323,10 @@ fn render(
         let arch_color = if task.arch == 1 { 0xFFFF9500 } else { colors::TEXT_SECONDARY() };
         label(win_id, COL_ARCH, y + 3, arch_str, arch_color, FontSize::Small, TextAlign::Left);
 
-        // CPU ticks as percentage of total scheduler ticks (all cores)
+        // CPU% (delta-based, computed in fetch_tasks)
         let mut cpubuf = [0u8; 12];
-        let cpu_str = if total_ticks > 0 && task.cpu_ticks > 0 {
-            let pct_x10 = (task.cpu_ticks as u64 * 1000 / total_ticks as u64).min(1000) as u32;
-            fmt_pct(&mut cpubuf, pct_x10)
+        let cpu_str = if task.cpu_pct_x10 > 0 {
+            fmt_pct(&mut cpubuf, task.cpu_pct_x10)
         } else {
             "0.0%"
         };
@@ -414,12 +452,13 @@ fn main() {
     let mut last_update: u32 = 0;
     let mut selected: Option<usize> = None;
     let mut cpu_state = CpuState::new();
+    let mut prev_ticks = PrevTicks { entries: [(0, 0); MAX_TASKS], count: 0, prev_total: 0 };
 
     // Seed CPU state with initial snapshot (first delta will be from here)
     fetch_cpu(&mut cpu_state);
 
-    // Initial render
-    let tasks = fetch_tasks(&mut thread_buf);
+    // Initial render (seed prev_ticks too)
+    let tasks = fetch_tasks(&mut thread_buf, &mut prev_ticks, cpu_state.total_sched_ticks);
     let mem = fetch_memory();
     render(win_id, &tasks, &mem, &cpu_state, selected, &kill_btn, win_w, win_h);
 
@@ -438,7 +477,7 @@ fn main() {
                     1 => { break; } // Close
                     10 => { // Kill Process
                         if let Some(sel_idx) = selected {
-                            let tasks = fetch_tasks(&mut thread_buf);
+                            let tasks = fetch_tasks(&mut thread_buf, &mut prev_ticks, cpu_state.total_sched_ticks);
                             if sel_idx < tasks.len() && tasks[sel_idx].tid > 3 {
                                 process::kill(tasks[sel_idx].tid);
                                 selected = None;
@@ -462,6 +501,10 @@ fn main() {
                 last_update = 0; // Force redraw
             }
 
+            if event[0] == 0x0050 {
+                last_update = 0; // Force redraw on theme change
+            }
+
             // Handle mouse click on task rows
             if ev.is_mouse_down() {
                 let (_mx, my) = ev.mouse_pos();
@@ -469,7 +512,7 @@ fn main() {
                 // Check kill button
                 if kill_btn.handle_event(&ev) {
                     if let Some(sel_idx) = selected {
-                        let tasks = fetch_tasks(&mut thread_buf);
+                        let tasks = fetch_tasks(&mut thread_buf, &mut prev_ticks, cpu_state.total_sched_ticks);
                         if sel_idx < tasks.len() {
                             let tid = tasks[sel_idx].tid;
                             if tid > 3 {
@@ -485,7 +528,7 @@ fn main() {
                     let row_start_y = HEADER_Y_OFFSET + ROW_H;
                     if my >= row_start_y {
                         let row_idx = ((my - row_start_y) / ROW_H) as usize;
-                        let tasks = fetch_tasks(&mut thread_buf);
+                        let tasks = fetch_tasks(&mut thread_buf, &mut prev_ticks, cpu_state.total_sched_ticks);
                         let old_sel = selected;
                         if row_idx < tasks.len() {
                             selected = Some(row_idx);
@@ -509,14 +552,14 @@ fn main() {
         let refresh_ticks = sys::tick_hz() / 2;
         let now = sys::uptime();
         if now.wrapping_sub(last_update) >= refresh_ticks {
-            let tasks = fetch_tasks(&mut thread_buf);
+            fetch_cpu(&mut cpu_state); // Must be before fetch_tasks for accurate deltas
+            let tasks = fetch_tasks(&mut thread_buf, &mut prev_ticks, cpu_state.total_sched_ticks);
             if let Some(sel) = selected {
                 if sel >= tasks.len() {
                     selected = if tasks.is_empty() { None } else { Some(tasks.len() - 1) };
                 }
             }
             let mem = fetch_memory();
-            fetch_cpu(&mut cpu_state);
             render(win_id, &tasks, &mem, &cpu_state, selected, &kill_btn, win_w, win_h);
             last_update = now;
         }

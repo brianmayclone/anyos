@@ -47,7 +47,7 @@ fn main() {
     let content_x = SIDEBAR_W as i32 + 20;
 
     // General page toggles
-    let mut dark_toggle = UiToggle::new(0, 0, sys::get_theme() == 0);
+    let mut dark_toggle = UiToggle::new(0, 0, window::get_theme() == 0);
     let mut sound_toggle = UiToggle::new(0, 0, true);
     let mut notif_toggle = UiToggle::new(0, 0, true);
 
@@ -99,7 +99,7 @@ fn main() {
 
                     if sidebar.selected == PAGE_GENERAL {
                         if dark_toggle.handle_event(&ui_event).is_some() {
-                            sys::set_theme(if dark_toggle.on { 0 } else { 1 });
+                            window::set_theme(if dark_toggle.on { 0 } else { 1 });
                             needs_redraw = true;
                         }
                         if sound_toggle.handle_event(&ui_event).is_some() {
@@ -155,6 +155,11 @@ fn main() {
                 window::EVENT_WINDOW_CLOSE => {
                     window::destroy(win);
                     return;
+                }
+                0x0050 => {
+                    // EVT_THEME_CHANGED — update toggle state and redraw
+                    dark_toggle.on = window::get_theme() == 0;
+                    needs_redraw = true;
                 }
                 _ => {}
             }

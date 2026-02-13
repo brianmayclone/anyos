@@ -150,10 +150,6 @@ pub(crate) const SYS_UDP_SENDTO: u32 = 152;
 pub(crate) const SYS_UDP_RECVFROM: u32 = 153;
 pub(crate) const SYS_UDP_SET_OPT: u32 = 154;
 
-// Theme
-pub(crate) const SYS_GET_THEME: u32 = 190;
-pub(crate) const SYS_SET_THEME: u32 = 191;
-
 // Event bus
 pub(crate) const SYS_EVT_SYS_SUBSCRIBE: u32 = 60;
 pub(crate) const SYS_EVT_SYS_POLL: u32 = 61;

@@ -23,7 +23,6 @@ pub const EVT_BOOT_COMPLETE: u32 = 0x0010;
 pub const EVT_PROCESS_SPAWNED: u32 = 0x0020;
 pub const EVT_PROCESS_EXITED: u32 = 0x0021;
 pub const EVT_RESOLUTION_CHANGED: u32 = 0x0040;
-pub const EVT_THEME_CHANGED: u32 = 0x0050;
 pub const EVT_OUT_OF_MEMORY: u32 = 0x0030;
 pub const EVT_DISK_ERROR: u32 = 0x0031;
 

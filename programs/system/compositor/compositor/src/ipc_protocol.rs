@@ -97,6 +97,15 @@ pub const CMD_RESIZE_SHM: u32 = 0x100B;
 /// instead of broadcasting window events to all subscribers.
 pub const CMD_REGISTER_SUB: u32 = 0x100C;
 
+/// Set system theme (dark/light).
+/// [CMD, theme_value, 0, 0, 0]   theme_value: 0=dark, 1=light
+/// Compositor writes to shared DLL page and triggers repaint.
+pub const CMD_SET_THEME: u32 = 0x100D;
+
+/// Theme changed notification (compositor → apps via channel).
+/// [EVT, new_theme, old_theme, 0, 0]
+pub const EVT_THEME_CHANGED: u32 = 0x0050;
+
 // ── Compositor → App: Menu & Status Icon Events ─────────────────────────────
 
 /// Menu item selected: [EVT, window_id, menu_index, item_id, 0]
