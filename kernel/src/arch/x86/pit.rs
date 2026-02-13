@@ -11,7 +11,7 @@
 //! still recovering missed ticks from interrupt-disabled windows.
 
 use crate::arch::x86::port::outb;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 const PIT_CHANNEL0: u16 = 0x40;
 const PIT_CMD: u16 = 0x43;
@@ -25,6 +25,12 @@ pub const TICK_HZ: u32 = 1000;
 
 /// Monotonically increasing tick counter.
 pub static TICK_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// When true, LAPIC timer on CPU 0 drives TICK_COUNT instead of PIT IRQ 0.
+/// Set after TSC calibration is complete. The LAPIC timer is more reliable
+/// because it doesn't go through the IOAPIC (edge-triggered, loses edges
+/// when interrupts are disabled on CPU 0).
+pub static LAPIC_TIMEKEEPING: AtomicBool = AtomicBool::new(false);
 
 /// TSC frequency in Hz (0 = not yet calibrated).
 static TSC_HZ: AtomicU64 = AtomicU64::new(0);

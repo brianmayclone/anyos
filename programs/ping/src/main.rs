@@ -8,17 +8,30 @@ fn main() {
     let args = anyos_std::process::args(&mut args_buf);
 
     if args.is_empty() {
-        anyos_std::println!("Usage: ping <ip>");
+        anyos_std::println!("Usage: ping <host>");
         anyos_std::println!("  Example: ping 10.0.2.2");
+        anyos_std::println!("  Example: ping google.com");
         return;
     }
 
-    // Parse IP address from args
-    let ip = match parse_ipv4(args.trim()) {
+    let target = args.trim();
+
+    // Try parsing as IP address first, then fall back to DNS resolution
+    let ip = match parse_ipv4(target) {
         Some(ip) => ip,
         None => {
-            anyos_std::println!("Invalid IP address: {}", args);
-            return;
+            // Not a valid IP — try DNS resolution
+            let mut resolved = [0u8; 4];
+            let ret = anyos_std::net::dns(target, &mut resolved);
+            if ret != 0 {
+                anyos_std::println!("ping: cannot resolve {}: DNS lookup failed", target);
+                return;
+            }
+            anyos_std::println!(
+                "PING {} ({}.{}.{}.{})",
+                target, resolved[0], resolved[1], resolved[2], resolved[3]
+            );
+            resolved
         }
     };
 

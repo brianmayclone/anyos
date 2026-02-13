@@ -162,6 +162,16 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     // Phase 7c: Calibrate TSC against PIT for missed-tick recovery
     arch::x86::pit::calibrate_tsc();
 
+    // Phase 7d: Switch timekeeping from PIT IRQ to LAPIC timer (CPU 0).
+    // PIT IRQ 0 is edge-triggered through the IOAPIC and loses ~2.7% of edges
+    // when CPU 0 has interrupts disabled (scheduler lock, etc.). The LAPIC timer
+    // is local to the CPU and doesn't suffer from this.
+    if acpi_info.is_some() {
+        arch::x86::ioapic::mask_irq(0); // Stop PIT IRQ delivery
+        arch::x86::pit::LAPIC_TIMEKEEPING.store(true, core::sync::atomic::Ordering::Release);
+        serial_println!("[OK] Timekeeping: LAPIC timer (PIT IRQ masked)");
+    }
+
     // Phase 8: Initialize mouse
     drivers::input::mouse::init();
 

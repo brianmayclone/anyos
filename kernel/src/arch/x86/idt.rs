@@ -10,15 +10,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 /// Total IDT entries (covers the full x86 interrupt vector range).
 const IDT_ENTRIES: usize = 256;
 
-/// Per-CPU timer heartbeat counters for freeze diagnostics.
-/// Uses direct UART port I/O to avoid serial output lock — if the serial lock
-/// is part of the deadlock chain, serial_println heartbeats would also freeze.
-const HEARTBEAT_INTERVAL: u32 = 500;
-static HEARTBEAT_COUNTER: [AtomicU32; 8] = {
-    const INIT: AtomicU32 = AtomicU32::new(0);
-    [INIT; 8]
-};
-
 /// Write a single byte to COM1 (0x3F8) blocking until UART is ready.
 /// Completely lock-free — safe to call from any context.
 #[inline]
@@ -842,68 +833,17 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
 pub extern "C" fn irq_handler(frame: &InterruptFrame) {
     let irq = (frame.int_no - 32) as u8;
 
-    // Timer heartbeat: lock-free UART diagnostics every HEARTBEAT_INTERVAL ticks.
-    // Uses direct port I/O to bypass the serial output lock — if the serial lock
-    // is part of the deadlock chain, this heartbeat will still fire.
+    // LAPIC timer (IRQ 16): timekeeping + per-tick safety checks.
     if irq == 16 {
         let cpu_id = crate::arch::x86::apic::lapic_id() as usize;
+        // CPU 0: LAPIC-based timekeeping (replaces PIT IRQ 0 after calibration).
+        // LAPIC timer is more reliable than PIT through IOAPIC.
+        if cpu_id == 0
+            && crate::arch::x86::pit::LAPIC_TIMEKEEPING.load(Ordering::Relaxed)
+        {
+            crate::arch::x86::pit::TICK_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
         if cpu_id < 8 {
-            let count = HEARTBEAT_COUNTER[cpu_id].fetch_add(1, Ordering::Relaxed) + 1;
-            if count % HEARTBEAT_INTERVAL == 0 {
-                // Format: "HB C<cpu> T<tick> tid=<tid> sched=<held> ser=<held>\n"
-                uart_puts(b"HB C");
-                uart_put_dec(cpu_id as u32);
-                uart_puts(b" T");
-                uart_put_dec(count);
-                uart_puts(b" tid=");
-                let tid = crate::task::scheduler::debug_current_tid();
-                uart_put_dec(tid);
-                // Report all held locks — compact format to minimize UART time.
-                // Only prints locks that are currently held.
-                if crate::task::scheduler::is_scheduler_locked() {
-                    uart_puts(b" SCHED");
-                }
-                if crate::drivers::serial::is_output_locked() {
-                    uart_puts(b" SER");
-                }
-                if crate::memory::heap::is_heap_locked() {
-                    uart_puts(b" HEAP");
-                }
-                if crate::memory::physical::is_allocator_locked() {
-                    uart_puts(b" PHYS");
-                }
-                if crate::ipc::event_bus::is_any_bus_locked() {
-                    uart_puts(b" EBUS");
-                }
-                if crate::ipc::shared_memory::is_shm_locked() {
-                    uart_puts(b" SHM");
-                }
-                if crate::ipc::pipe::is_pipe_locked() {
-                    uart_puts(b" PIPE");
-                }
-                if crate::drivers::gpu::is_gpu_locked() {
-                    uart_puts(b" GPU");
-                }
-                uart_putc(b'\n');
-
-                // Time drift diagnostic: compare LAPIC-based real time vs PIT uptime.
-                // LAPIC timer fires at ~1000 Hz per CPU, so count/1000 = real seconds.
-                // PIT ticks / TICK_HZ = reported uptime seconds.
-                // If these diverge, PIT ticks are being lost.
-                if cpu_id == 0 {
-                    let lapic_secs = count / 1000;
-                    let pit_ticks = crate::arch::x86::pit::get_ticks();
-                    let pit_secs = pit_ticks / crate::arch::x86::pit::TICK_HZ;
-                    uart_puts(b"  TIME: real=");
-                    uart_put_dec(lapic_secs);
-                    uart_puts(b"s uptime=");
-                    uart_put_dec(pit_secs);
-                    uart_puts(b"s (pit_ticks=");
-                    uart_put_dec(pit_ticks);
-                    uart_puts(b")\n");
-                }
-            }
-
             // TSS.RSP0 corruption check on EVERY timer tick.
             // When a user thread is running on this CPU, TSS.RSP0 must point to
             // a valid kernel stack. The CPU reads RSP0 on any ring 3→0 interrupt

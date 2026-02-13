@@ -149,6 +149,16 @@ pub fn unmask(gsi: u32) {
     write_redir(gsi, entry & !REDIR_MASKED);
 }
 
+/// Disable (mask) an ISA IRQ on the I/O APIC, respecting ISO overrides.
+pub fn mask_irq(irq: u8) {
+    let gsi = if (irq as usize) < 16 {
+        unsafe { IRQ_TO_GSI[irq as usize] }
+    } else {
+        irq as u32
+    };
+    mask(gsi);
+}
+
 /// Disable (mask) a specific GSI/IRQ on the I/O APIC.
 pub fn mask(gsi: u32) {
     let max = unsafe { IOAPIC_MAX_ENTRIES };
