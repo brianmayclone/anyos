@@ -33,6 +33,21 @@ pub fn dns(hostname: &str, result: &mut [u8; 4]) -> u32 {
     syscall2(SYS_NET_DNS, host_buf.as_ptr() as u64, result.as_mut_ptr() as u64)
 }
 
+/// Disable the NIC.
+pub fn disable_nic() -> u32 {
+    syscall2(SYS_NET_CONFIG, 2, 0)
+}
+
+/// Enable the NIC.
+pub fn enable_nic() -> u32 {
+    syscall2(SYS_NET_CONFIG, 3, 0)
+}
+
+/// Check if the NIC is enabled. Returns true if enabled.
+pub fn is_nic_enabled() -> bool {
+    syscall2(SYS_NET_CONFIG, 4, 0) == 1
+}
+
 /// Get ARP table. Each entry 12 bytes: [ip:4, mac:6, pad:2]. Returns count.
 pub fn arp(buf: &mut [u8]) -> u32 {
     syscall2(SYS_NET_ARP, buf.as_mut_ptr() as u64, buf.len() as u64)

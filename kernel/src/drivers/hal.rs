@@ -476,13 +476,14 @@ impl Driver for AudioDriver {
     }
 }
 
-/// USB controller stub
-struct UsbDriver {
+/// USB host controller driver — dispatches to UHCI/EHCI based on prog_if.
+struct UsbControllerDriver {
     _pci: PciDevice,
+    controller_name: &'static str,
 }
 
-impl Driver for UsbDriver {
-    fn name(&self) -> &str { "USB Controller (stub)" }
+impl Driver for UsbControllerDriver {
+    fn name(&self) -> &str { self.controller_name }
     fn driver_type(&self) -> DriverType { DriverType::Bus }
     fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
     fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
@@ -643,7 +644,17 @@ static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
     },
     PciDriverEntry {
         match_rule: PciMatch::Class { class: 0x0C, subclass: 0x03 },
-        factory: |pci| Some(Box::new(UsbDriver { _pci: pci.clone() })),
+        factory: |pci| {
+            crate::drivers::usb::init(pci);
+            let name = match pci.prog_if {
+                0x00 => "UHCI USB 1.1",
+                0x20 => "EHCI USB 2.0",
+                0x10 => "OHCI USB 1.1",
+                0x30 => "xHCI USB 3.0",
+                _ => "USB Controller",
+            };
+            Some(Box::new(UsbControllerDriver { _pci: pci.clone(), controller_name: name }))
+        },
         specificity: 1,
     },
     PciDriverEntry {
@@ -669,7 +680,7 @@ fn matches_pci(rule: &PciMatch, dev: &PciDevice) -> bool {
 pub fn probe_and_bind_all() {
     let pci_devices = crate::drivers::pci::devices();
     let mut bound = 0u32;
-    let mut type_counters = [0usize; 8]; // indexed by DriverType discriminant
+    let mut type_counters = [0usize; 10]; // indexed by DriverType discriminant (10 variants)
 
     crate::serial_println!("  HAL: Probing {} PCI device(s) for drivers...", pci_devices.len());
 

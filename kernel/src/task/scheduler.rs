@@ -1736,6 +1736,29 @@ pub fn current_thread_stdout_pipe() -> u32 {
     0
 }
 
+/// Set a thread's stdin pipe ID.
+pub fn set_thread_stdin_pipe(tid: u32, pipe_id: u32) {
+    let mut guard = SCHEDULER.lock();
+    let sched = guard.as_mut().expect("Scheduler not initialized");
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        thread.stdin_pipe = pipe_id;
+    }
+}
+
+/// Get the current thread's stdin pipe ID.
+pub fn current_thread_stdin_pipe() -> u32 {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
+            if let Some(idx) = sched.find_idx(tid) {
+                return sched.threads[idx].stdin_pipe;
+            }
+        }
+    }
+    0
+}
+
 // =============================================================================
 // Priority / wake / thread info
 // =============================================================================

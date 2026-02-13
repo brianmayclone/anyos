@@ -104,13 +104,18 @@ fn run_init_conf() {
                 continue;
             }
 
-            if let Ok(path) = core::str::from_utf8(trimmed) {
-                println!("init: spawning '{}'", path);
+            if let Ok(entry) = core::str::from_utf8(trimmed) {
+                // Suffix '&' means background (don't wait)
+                let (path, background) = if entry.ends_with('&') {
+                    (entry[..entry.len() - 1].trim_end(), true)
+                } else {
+                    (entry, false)
+                };
+                println!("init: spawning '{}'{}", path, if background { " [bg]" } else { "" });
                 let tid = process::spawn(path, "");
                 if tid == u32::MAX {
                     println!("init: FAILED to spawn '{}'", path);
-                } else {
-                    // Wait for the program to finish
+                } else if !background {
                     let code = process::waitpid(tid);
                     println!("init: '{}' exited (code={})", path, code);
                 }

@@ -77,6 +77,8 @@ pub struct Thread {
     pub args: [u8; 256],
     /// Pipe ID for stdout redirection (0 = no pipe, write to serial).
     pub stdout_pipe: u32,
+    /// Pipe ID for stdin redirection (0 = no pipe, stdin not available).
+    pub stdin_pipe: u32,
     /// CPU ticks consumed by this thread (incremented each scheduler tick while running).
     pub cpu_ticks: u32,
     /// Architecture mode for user threads (Native64 or Compat32).
@@ -159,6 +161,7 @@ impl Thread {
             brk: 0,
             args: [0u8; 256],
             stdout_pipe: 0,
+            stdin_pipe: 0,
             cpu_ticks: 0,
             arch_mode: ArchMode::Native64,
             fpu_state: FxState::new_default(),

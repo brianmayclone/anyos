@@ -440,6 +440,41 @@ pub fn get_mac() -> Option<[u8; 6]> {
     state.as_ref().map(|e| e.mac)
 }
 
+/// Disable the E1000 NIC (stop RX/TX). Returns true if state changed.
+pub fn set_enabled(enabled: bool) -> bool {
+    let state = E1000_STATE.lock();
+    if let Some(e) = state.as_ref() {
+        unsafe {
+            if enabled {
+                // Re-enable RX and TX
+                let rctl = mmio_read(e.mmio_base, REG_RCTL);
+                mmio_write(e.mmio_base, REG_RCTL, rctl | RCTL_EN);
+                let tctl = mmio_read(e.mmio_base, REG_TCTL);
+                mmio_write(e.mmio_base, REG_TCTL, tctl | TCTL_EN);
+            } else {
+                // Disable RX and TX
+                let rctl = mmio_read(e.mmio_base, REG_RCTL);
+                mmio_write(e.mmio_base, REG_RCTL, rctl & !RCTL_EN);
+                let tctl = mmio_read(e.mmio_base, REG_TCTL);
+                mmio_write(e.mmio_base, REG_TCTL, tctl & !TCTL_EN);
+            }
+        }
+        true
+    } else {
+        false
+    }
+}
+
+/// Check if the E1000 NIC RX is enabled.
+pub fn is_enabled() -> bool {
+    let state = E1000_STATE.lock();
+    if let Some(e) = state.as_ref() {
+        unsafe { mmio_read(e.mmio_base, REG_RCTL) & RCTL_EN != 0 }
+    } else {
+        false
+    }
+}
+
 /// Check if the E1000 is initialized and link is up.
 pub fn is_link_up() -> bool {
     let state = E1000_STATE.lock();

@@ -8,12 +8,13 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU
-# Usage: ./run.sh [--vmware | --std | --virtio] [--ide] [--audio]
+# Usage: ./run.sh [--vmware | --std | --virtio] [--ide] [--audio] [--usb]
 #   --vmware   VMware SVGA II (2D acceleration, HW cursor)
 #   --std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
 #   --virtio   VirtIO GPU (modern transport, ARGB cursor)
 #   --ide      Use legacy IDE (PIO) instead of AHCI (DMA) for disk I/O
 #   --audio    Enable AC'97 audio device
+#   --usb      Enable USB controller with keyboard + mouse devices
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMAGE="${SCRIPT_DIR}/../build/anyos.img"
@@ -30,6 +31,8 @@ DRIVE_FLAGS="-drive id=hd0,if=none,format=raw,file=\"$IMAGE\" -device ich9-ahci,
 DRIVE_LABEL="AHCI (DMA)"
 AUDIO_FLAGS=""
 AUDIO_LABEL=""
+USB_FLAGS=""
+USB_LABEL=""
 
 for arg in "$@"; do
     case "$arg" in
@@ -53,14 +56,18 @@ for arg in "$@"; do
             AUDIO_FLAGS="-device AC97,audiodev=audio0 -audiodev coreaudio,id=audio0"
             AUDIO_LABEL=", audio: AC'97"
             ;;
+        --usb)
+            USB_FLAGS="-usb -device usb-kbd -device usb-mouse"
+            USB_LABEL=", USB: keyboard + mouse"
+            ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio] [--ide] [--audio]"
+            echo "Usage: $0 [--vmware | --std | --virtio] [--ide] [--audio] [--usb]"
             exit 1
             ;;
     esac
 done
 
-echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL"
+echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL$USB_LABEL"
 
 eval qemu-system-x86_64 \
     $DRIVE_FLAGS \
@@ -70,5 +77,7 @@ eval qemu-system-x86_64 \
     -vga "$VGA" \
     -netdev user,id=net0 -device e1000,netdev=net0 \
     $AUDIO_FLAGS \
+    $USB_FLAGS \
     -no-reboot \
     -no-shutdown
+    

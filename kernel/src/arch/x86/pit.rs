@@ -127,6 +127,17 @@ pub fn tsc_hz() -> u64 {
     TSC_HZ.load(Ordering::Relaxed)
 }
 
+/// Busy-wait for the specified number of milliseconds.
+/// Uses tick-based polling so the CPU stays responsive to NMIs.
+pub fn delay_ms(ms: u32) {
+    let ticks = (ms * TICK_HZ) / 1000;
+    let ticks = if ticks == 0 { 1 } else { ticks };
+    let start = get_ticks();
+    while get_ticks().wrapping_sub(start) < ticks {
+        core::hint::spin_loop();
+    }
+}
+
 /// Return real elapsed milliseconds since boot, computed from TSC.
 /// Independent calculation from `get_ticks()` — useful for cross-checking.
 #[inline]

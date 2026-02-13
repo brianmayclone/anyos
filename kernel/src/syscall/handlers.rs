@@ -143,10 +143,21 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
 }
 
 /// sys_read - Read from a file descriptor
-/// fd=0 -> stdin (not yet implemented), fd>=3 -> VFS file
+/// fd=0 -> stdin (reads from stdin_pipe if set), fd>=3 -> VFS file
 pub fn sys_read(fd: u32, buf_ptr: u32, len: u32) -> u32 {
     if fd == 0 {
-        0 // stdin: not yet implemented
+        let pipe = crate::task::scheduler::current_thread_stdin_pipe();
+        if pipe != 0 {
+            if buf_ptr == 0 || len == 0 {
+                return 0;
+            }
+            if len > 0x1000_0000 || !is_valid_user_ptr(buf_ptr as u64, len as u64) {
+                return u32::MAX;
+            }
+            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
+            return crate::ipc::pipe::read(pipe, buf) as u32;
+        }
+        0 // no stdin pipe
     } else if fd >= 3 {
         if buf_ptr == 0 || len == 0 {
             return 0;
@@ -281,21 +292,24 @@ pub fn sys_try_waitpid(tid: u32) -> u32 {
 }
 
 /// sys_spawn - Spawn a new process from a filesystem path.
-/// arg1=path_ptr, arg2=stdout_pipe_id (0=none), arg3=args_ptr (0=none), arg4=unused
+/// arg1=path_ptr, arg2=stdout_pipe_id (0=none), arg3=args_ptr (0=none), arg4=stdin_pipe_id (0=none)
 /// Returns TID or u32::MAX on error.
-pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, _arg4: u32) -> u32 {
+pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32) -> u32 {
     let path = unsafe { read_user_str(path_ptr) };
     let args = if args_ptr != 0 {
         unsafe { read_user_str(args_ptr) }
     } else {
         ""
     };
-    crate::serial_println!("sys_spawn: path='{}' pipe={} args_ptr={:#x}", path, stdout_pipe, args_ptr);
+    crate::serial_println!("sys_spawn: path='{}' pipe={} args_ptr={:#x} stdin_pipe={}", path, stdout_pipe, args_ptr, stdin_pipe);
     let name = path.rsplit('/').next().unwrap_or(path);
     match crate::task::loader::load_and_run_with_args(path, name, args) {
         Ok(tid) => {
             if stdout_pipe != 0 {
                 crate::task::scheduler::set_thread_stdout_pipe(tid, stdout_pipe);
+            }
+            if stdin_pipe != 0 {
+                crate::task::scheduler::set_thread_stdin_pipe(tid, stdin_pipe);
             }
             crate::serial_println!("sys_spawn: returning TID={}", tid);
             tid
@@ -657,6 +671,20 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u32) -> u32 {
                 );
             }
             0
+        }
+        2 => {
+            // Disable NIC
+            crate::drivers::network::e1000::set_enabled(false);
+            0
+        }
+        3 => {
+            // Enable NIC
+            crate::drivers::network::e1000::set_enabled(true);
+            0
+        }
+        4 => {
+            // Query enabled state
+            if crate::drivers::network::e1000::is_enabled() { 1 } else { 0 }
         }
         _ => u32::MAX,
     }

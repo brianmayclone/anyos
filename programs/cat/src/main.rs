@@ -8,7 +8,8 @@ fn main() {
     let args = anyos_std::process::args(&mut args_buf);
 
     if args.is_empty() {
-        anyos_std::println!("Usage: cat <file>");
+        // No file argument — read from stdin (pipe input)
+        read_and_print(0);
         return;
     }
 
@@ -21,7 +22,11 @@ fn main() {
         return;
     }
 
-    // Read and print in chunks
+    read_and_print(fd);
+    anyos_std::fs::close(fd);
+}
+
+fn read_and_print(fd: u32) {
     let mut buf = [0u8; 512];
     loop {
         let n = anyos_std::fs::read(fd, &mut buf);
@@ -37,6 +42,4 @@ fn main() {
             }
         }
     }
-
-    anyos_std::fs::close(fd);
 }

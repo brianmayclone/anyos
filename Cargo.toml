@@ -25,6 +25,7 @@ exclude = [
   "programs/system/fontviewer",
   "programs/system/clock",
   "programs/system/screenshot",
+  "programs/system/netmon",
   "programs/system/compositor/dock",
   "programs/system/compositor/compositor",
   "programs/mkdir",

@@ -159,6 +159,9 @@ impl TerminalBuffer {
 struct ForegroundProcess {
     tid: u32,
     pipe_id: u32,
+    /// Intermediate pipe IDs from a pipeline (cmd1 | cmd2 | cmd3).
+    /// Closed when the pipeline exits.
+    extra_pipes: Vec<u32>,
 }
 
 // ─── Shell ───────────────────────────────────────────────────────────────────
@@ -290,6 +293,14 @@ impl Shell {
                 process::exit(0);
             }
             _ => {
+                // Check for pipeline: "cmd1 | cmd2 | cmd3"
+                if line.contains('|') {
+                    if let Some(fp) = self.execute_pipeline(&line, buf) {
+                        return (true, Some(fp));
+                    }
+                    return (true, None);
+                }
+
                 // Check for background suffix: "cmd &"
                 let (cmd_line, background) = if line.ends_with(" &") || line.ends_with("\t&") {
                     (&line[..line.len() - 2], true)
@@ -366,13 +377,101 @@ impl Shell {
                         buf.write_str(bg_cmd);
                         buf.write_str("\nType 'help' for available commands.\n");
                     } else {
-                        return (true, Some(ForegroundProcess { tid, pipe_id }));
+                        return (true, Some(ForegroundProcess { tid, pipe_id, extra_pipes: Vec::new() }));
                     }
                 }
             }
         }
 
         (true, None)
+    }
+
+    /// Execute a pipeline (cmd1 | cmd2 | cmd3).
+    /// Returns a ForegroundProcess tracking the last command + display pipe.
+    fn execute_pipeline(&mut self, line: &str, buf: &mut TerminalBuffer) -> Option<ForegroundProcess> {
+        let segments: Vec<&str> = line.split('|').map(|s| s.trim()).collect();
+        if segments.len() < 2 {
+            return None;
+        }
+
+        let n = segments.len();
+        let mut pipes = Vec::new();
+
+        // Create N pipes: pipes[0..n-2] are intermediate, pipes[n-1] is the display pipe
+        for i in 0..n {
+            let name = format!("term:pipe:{}", i);
+            let pipe_id = ipc::pipe_create(&name);
+            pipes.push(pipe_id);
+        }
+
+        let display_pipe = pipes[n - 1];
+        let mut last_tid = 0u32;
+
+        for (i, segment) in segments.iter().enumerate() {
+            let mut parts = segment.splitn(2, ' ');
+            let cmd = parts.next().unwrap_or("").trim();
+            let raw_args = parts.next().unwrap_or("").trim();
+
+            if cmd.is_empty() {
+                continue;
+            }
+
+            // Default args for specific commands
+            let effective_args = if raw_args.is_empty() {
+                match cmd {
+                    "ls" => self.cwd.as_str(),
+                    _ => "",
+                }
+            } else {
+                raw_args
+            };
+
+            // Resolve command path
+            let path = if cmd.starts_with('/') {
+                String::from(cmd)
+            } else if cmd.starts_with("./") || cmd.starts_with("../") {
+                if self.cwd == "/" {
+                    format!("/{}", cmd.trim_start_matches("./"))
+                } else {
+                    format!("{}/{}", self.cwd, cmd)
+                }
+            } else {
+                format!("/bin/{}", cmd)
+            };
+
+            // Build full args with program name as argv[0]
+            let full_args = if effective_args.is_empty() {
+                String::from(cmd)
+            } else {
+                format!("{} {}", cmd, effective_args)
+            };
+
+            let stdin_pipe = if i > 0 { pipes[i - 1] } else { 0 };
+            let stdout_pipe = pipes[i];
+
+            let tid = process::spawn_piped_full(&path, &full_args, stdout_pipe, stdin_pipe);
+            if tid == u32::MAX {
+                buf.current_color = COLOR_FG;
+                buf.write_str("pipe: unknown command: ");
+                buf.write_str(cmd);
+                buf.write_char('\n');
+                // Clean up all pipes
+                for &p in &pipes {
+                    ipc::pipe_close(p);
+                }
+                return None;
+            }
+            last_tid = tid;
+        }
+
+        // Intermediate pipes (not the display pipe) — cleaned up on exit
+        let extra_pipes: Vec<u32> = pipes[..n - 1].to_vec();
+
+        Some(ForegroundProcess {
+            tid: last_tid,
+            pipe_id: display_pipe,
+            extra_pipes,
+        })
     }
 
     fn cmd_help(&self, buf: &mut TerminalBuffer) {
@@ -404,6 +503,7 @@ impl Shell {
         buf.write_str("    dmesg    Kernel boot log\n");
         buf.write_str("\n");
         buf.write_str("  Tip: append & to run in background\n");
+        buf.write_str("  Tip: use | to pipe output: ls | cat\n");
     }
 
     fn cmd_set(&self, args: &str, buf: &mut TerminalBuffer) {
@@ -693,10 +793,16 @@ fn main() {
                         buf.write_str(s);
                     }
                 }
+                // Copy out pipe IDs before dropping fg_proc
                 let pipe_id = fp.pipe_id;
+                let extra_pipes: Vec<u32> = fp.extra_pipes.clone();
                 let exit_code = status;
                 fg_proc = None;
                 ipc::pipe_close(pipe_id);
+                // Close intermediate pipes from pipeline
+                for &p in &extra_pipes {
+                    ipc::pipe_close(p);
+                }
 
                 if exit_code != 0 && exit_code != u32::MAX {
                     buf.current_color = COLOR_DIM;

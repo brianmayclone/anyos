@@ -15,5 +15,6 @@ pub mod rsod;
 pub mod rtc;
 pub mod serial;
 pub mod storage;
+pub mod usb;
 pub mod vga_text;
 pub mod virtio;

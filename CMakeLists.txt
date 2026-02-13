@@ -369,6 +369,7 @@ add_rust_system_program(calc        ${CMAKE_SOURCE_DIR}/programs/system/calc)
 add_rust_system_program(fontviewer  ${CMAKE_SOURCE_DIR}/programs/system/fontviewer)
 add_rust_system_program(clock       ${CMAKE_SOURCE_DIR}/programs/system/clock)
 add_rust_system_program(screenshot  ${CMAKE_SOURCE_DIR}/programs/system/screenshot)
+add_rust_system_program(netmon      ${CMAKE_SOURCE_DIR}/programs/system/netmon)
 
 # Build compositor binary (nested path: /system/compositor/compositor)
 set(COMPOSITOR_SRC_DIR ${CMAKE_SOURCE_DIR}/programs/system/compositor/compositor)
@@ -765,6 +766,39 @@ add_custom_target(run-audio
   DEPENDS ${DISK_IMAGE}
   USES_TERMINAL
   COMMENT "Launching anyOS in QEMU with AC'97 audio"
+)
+
+add_custom_target(run-usb
+  COMMAND ${QEMU_EXECUTABLE}
+    -drive format=raw,file=${DISK_IMAGE}
+    -m 1024M
+    -smp cpus=4
+    -serial stdio
+    -vga vmware
+    -netdev user,id=net0 -device e1000,netdev=net0
+    -usb -device usb-kbd -device usb-mouse
+    -no-reboot -no-shutdown
+  DEPENDS ${DISK_IMAGE}
+  USES_TERMINAL
+  COMMENT "Launching anyOS in QEMU with UHCI USB keyboard + mouse"
+)
+
+add_custom_target(run-usb-ehci
+  COMMAND ${QEMU_EXECUTABLE}
+    -drive format=raw,file=${DISK_IMAGE}
+    -m 1024M
+    -smp cpus=4
+    -serial stdio
+    -vga vmware
+    -netdev user,id=net0 -device e1000,netdev=net0
+    -device ich9-usb-ehci1,id=ehci
+    -device ich9-usb-uhci1,masterbus=ehci.0,firstport=0,multifunction=on
+    -device usb-kbd,bus=ehci.0,port=1
+    -device usb-mouse,bus=ehci.0,port=2
+    -no-reboot -no-shutdown
+  DEPENDS ${DISK_IMAGE}
+  USES_TERMINAL
+  COMMENT "Launching anyOS in QEMU with EHCI USB keyboard + mouse"
 )
 
 add_custom_target(debug

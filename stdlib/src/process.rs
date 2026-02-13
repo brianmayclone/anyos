@@ -70,6 +70,24 @@ pub fn spawn_piped(path: &str, args: &str, pipe_id: u32) -> u32 {
     syscall3(SYS_SPAWN, path_buf.as_ptr() as u64, pipe_id as u64, args_ptr)
 }
 
+/// Spawn a new process with both stdout and stdin redirected to pipes.
+/// stdout_pipe=0 means no stdout pipe, stdin_pipe=0 means no stdin pipe.
+/// Returns TID or u32::MAX on error.
+pub fn spawn_piped_full(path: &str, args: &str, stdout_pipe: u32, stdin_pipe: u32) -> u32 {
+    let mut path_buf = [0u8; 257];
+    let plen = path.len().min(256);
+    path_buf[..plen].copy_from_slice(&path.as_bytes()[..plen]);
+    path_buf[plen] = 0;
+
+    let mut args_buf = [0u8; 257];
+    let alen = args.len().min(256);
+    args_buf[..alen].copy_from_slice(&args.as_bytes()[..alen]);
+    args_buf[alen] = 0;
+
+    let args_ptr = if args.is_empty() { 0u64 } else { args_buf.as_ptr() as u64 };
+    syscall4(SYS_SPAWN, path_buf.as_ptr() as u64, stdout_pipe as u64, args_ptr, stdin_pipe as u64)
+}
+
 /// Create a new thread in the current process, sharing the same address space.
 ///
 /// `entry` is a function pointer for the new thread's entry point.

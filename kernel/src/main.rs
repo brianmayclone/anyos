@@ -108,23 +108,18 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     drivers::boot_console::init(); // Show boot splash (color logo)
 
     // Phase 5b: HAL + PCI device enumeration
+    // Note: probe_and_bind_all() is deferred to after TSC calibration
+    // because USB controller init uses delay_ms() which needs working timers.
     drivers::hal::init();
     drivers::pci::scan_all();
     drivers::pci::print_devices();
-    drivers::hal::probe_and_bind_all();
-    drivers::hal::register_legacy_devices();
-    drivers::hal::print_devices();
 
     // Phase 5c: E1000 NIC + Network Stack
     if drivers::network::e1000::init() {
         net::init();
     }
 
-    // Phase 6: Subsystems
-    fs::vfs::init();
-    fs::vfs::mount("/", fs::vfs::FsType::Fat, 0);
-    fs::vfs::mount_devfs();
-
+    // Phase 6: Scheduler (before interrupts, does not need filesystem)
     task::scheduler::init();
 
     // Phase 7: Register IRQ handlers and enable interrupts
@@ -162,6 +157,18 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
 
     // Phase 7c: Calibrate TSC against PIT for missed-tick recovery
     arch::x86::pit::calibrate_tsc();
+
+    // Phase 7d: HAL driver binding (deferred from Phase 5b).
+    // USB controller init uses delay_ms() which requires working timers
+    // (TSC calibrated or PIT IRQs running — both available now).
+    drivers::hal::probe_and_bind_all();
+    drivers::hal::register_legacy_devices();
+    drivers::hal::print_devices();
+
+    // Phase 7e: Filesystem (after HAL probe — AHCI storage driver must be initialized first)
+    fs::vfs::init();
+    fs::vfs::mount("/", fs::vfs::FsType::Fat, 0);
+    fs::vfs::mount_devfs();
 
     // Phase 8: Initialize mouse
     drivers::input::mouse::init();
@@ -239,6 +246,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         // Spawn CPU monitor kernel thread
         task::scheduler::spawn(task::cpu_monitor::start, 10, "cpu_monitor");
 
+        // Spawn USB hot-plug poll thread (low priority)
+        task::scheduler::spawn(usb_poll_thread, 50, "usb_poll");
+
         // Launch userspace compositor (highest user priority)
         match task::loader::load_and_run("/system/compositor/compositor", "compositor") {
             Ok(tid) => serial_println!("[OK] Userspace compositor spawned (TID={})", tid),
@@ -291,4 +301,12 @@ fn irq_keyboard(_irq: u8) {
 fn irq_mouse(_irq: u8) {
     let byte = unsafe { crate::arch::x86::port::inb(0x60) };
     crate::drivers::input::mouse::handle_byte(byte);
+}
+
+/// USB hot-plug polling thread. Checks all USB controller ports every 500ms.
+extern "C" fn usb_poll_thread() {
+    loop {
+        crate::arch::x86::pit::delay_ms(500);
+        crate::drivers::usb::poll_all_controllers();
+    }
 }
