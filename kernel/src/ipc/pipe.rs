@@ -99,6 +99,11 @@ pub struct PipeInfo {
     pub buffered: usize,
 }
 
+/// Lock-free check if the pipe lock is currently held.
+pub fn is_pipe_locked() -> bool {
+    PIPES.is_locked()
+}
+
 /// List all open pipes (for debug/inspection).
 pub fn list() -> Vec<PipeInfo> {
     let pipes = PIPES.lock();

@@ -157,6 +157,7 @@ pub const SYS_MAP_FRAMEBUFFER: u32 = 144;
 pub const SYS_GPU_COMMAND: u32 = 145;
 pub const SYS_INPUT_POLL: u32 = 146;
 pub const SYS_REGISTER_COMPOSITOR: u32 = 147;
+pub const SYS_CURSOR_TAKEOVER: u32 = 148;
 
 // Screen capture
 pub const SYS_CAPTURE_SCREEN: u32 = 161;
@@ -362,6 +363,7 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         SYS_GPU_COMMAND => handlers::sys_gpu_command(arg1, arg2),
         SYS_INPUT_POLL => handlers::sys_input_poll(arg1, arg2),
         SYS_REGISTER_COMPOSITOR => handlers::sys_register_compositor(),
+        SYS_CURSOR_TAKEOVER => handlers::sys_cursor_takeover(),
 
         // Screen capture
         SYS_CAPTURE_SCREEN => handlers::sys_capture_screen(arg1, arg2, arg3),

@@ -214,3 +214,8 @@ pub fn channel_destroy(channel_id: u32) {
     let mut bus = MODULE_BUS.lock();
     bus.remove(&channel_id);
 }
+
+/// Lock-free check if SYSTEM_BUS or MODULE_BUS lock is currently held.
+pub fn is_any_bus_locked() -> bool {
+    SYSTEM_BUS.is_locked() || MODULE_BUS.is_locked()
+}

@@ -83,6 +83,8 @@ fn render_thread_entry() {
             if frame % 60 == 0 {
                 desktop.update_clock();
             }
+            // Process deferred wallpaper reload (after resolution change)
+            desktop.process_deferred_wallpaper();
             desktop.compose();
             release_lock();
 
@@ -135,9 +137,15 @@ fn main() {
     ));
     desktop.init();
 
-    // Step 3b: Enable hardware cursor
+    // Step 3b: Take over cursor from kernel splash mode.
+    // The kernel tracked cursor position via IRQ during boot. We must:
+    // 1. Read the splash cursor position so our logical cursor matches the HW cursor
+    // 2. Disable splash mode so our CURSOR_MOVE GPU commands take effect
+    // 3. Drain stale mouse events (already applied by splash handler)
+    let (splash_x, splash_y) = ipc::cursor_takeover();
+    desktop.set_cursor_pos(splash_x, splash_y);
     desktop.init_hw_cursor();
-    println!("compositor: HW cursor enabled");
+    println!("compositor: HW cursor enabled (pos={},{})", splash_x, splash_y);
 
     // Initial full-screen compose
     desktop.compositor.damage_all();

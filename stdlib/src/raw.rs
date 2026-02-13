@@ -125,6 +125,7 @@ pub(crate) const SYS_MAP_FRAMEBUFFER: u32 = 144;
 pub(crate) const SYS_GPU_COMMAND: u32 = 145;
 pub(crate) const SYS_INPUT_POLL: u32 = 146;
 pub(crate) const SYS_REGISTER_COMPOSITOR: u32 = 147;
+pub(crate) const SYS_CURSOR_TAKEOVER: u32 = 148;
 
 // Screen capture
 pub(crate) const SYS_CAPTURE_SCREEN: u32 = 161;

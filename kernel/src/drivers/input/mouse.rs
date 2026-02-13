@@ -243,3 +243,8 @@ pub fn read_event() -> Option<MouseEvent> {
 pub fn has_event() -> bool {
     !MOUSE_BUFFER.lock().is_empty()
 }
+
+/// Drain all pending mouse events (used during splash→compositor transition).
+pub fn clear_buffer() {
+    MOUSE_BUFFER.lock().clear();
+}

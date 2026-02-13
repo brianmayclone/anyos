@@ -268,7 +268,7 @@ fn render(
         };
 
         // TID
-        let mut tbuf = [0u8; 8];
+        let mut tbuf = [0u8; 12];
         label(win_id, COL_TID, y + 3, fmt_u32(&mut tbuf, task.tid), text_color, FontSize::Small, TextAlign::Left);
 
         // Name
@@ -295,7 +295,7 @@ fn render(
         label(win_id, COL_CPU, y + 3, cpu_str, colors::TEXT_SECONDARY, FontSize::Small, TextAlign::Left);
 
         // Priority
-        let mut pbuf = [0u8; 8];
+        let mut pbuf = [0u8; 12];
         label(win_id, COL_PRIO, y + 3, fmt_u32(&mut pbuf, task.priority as u32), colors::TEXT_SECONDARY, FontSize::Small, TextAlign::Left);
 
         y += ROW_H;
@@ -306,9 +306,9 @@ fn render(
 
 // ─── Formatting ──────────────────────────────────────────────────────────────
 
-fn fmt_u32<'a>(buf: &'a mut [u8; 8], val: u32) -> &'a str {
+fn fmt_u32<'a>(buf: &'a mut [u8; 12], val: u32) -> &'a str {
     if val == 0 { buf[0] = b'0'; return unsafe { core::str::from_utf8_unchecked(&buf[..1]) }; }
-    let mut v = val; let mut tmp = [0u8; 8]; let mut n = 0;
+    let mut v = val; let mut tmp = [0u8; 12]; let mut n = 0;
     while v > 0 { tmp[n] = b'0' + (v % 10) as u8; v /= 10; n += 1; }
     for i in 0..n { buf[i] = tmp[n - 1 - i]; }
     unsafe { core::str::from_utf8_unchecked(&buf[..n]) }
@@ -319,7 +319,7 @@ fn fmt_pct<'a>(buf: &'a mut [u8; 12], pct_x10: u32) -> &'a str {
     let whole = pct_x10 / 10;
     let frac = pct_x10 % 10;
     let mut p = 0;
-    let mut t = [0u8; 8];
+    let mut t = [0u8; 12];
     let s = fmt_u32(&mut t, whole);
     buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
     buf[p] = b'.'; p += 1;
@@ -331,7 +331,7 @@ fn fmt_pct<'a>(buf: &'a mut [u8; 12], pct_x10: u32) -> &'a str {
 fn fmt_uptime<'a>(buf: &'a mut [u8; 24], mins: u32, secs: u32) -> &'a str {
     let mut p = 0;
     buf[p..p + 8].copy_from_slice(b"Uptime: "); p += 8;
-    let mut t = [0u8; 8];
+    let mut t = [0u8; 12];
     let s = fmt_u32(&mut t, mins); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
     buf[p..p + 2].copy_from_slice(b"m "); p += 2;
     let s = fmt_u32(&mut t, secs); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
@@ -341,7 +341,7 @@ fn fmt_uptime<'a>(buf: &'a mut [u8; 24], mins: u32, secs: u32) -> &'a str {
 
 fn fmt_mem_line<'a>(buf: &'a mut [u8; 80], used_mb: u32, total_mb: u32, heap_kb: u32, heap_total_kb: u32) -> &'a str {
     let mut p = 0;
-    let mut t = [0u8; 8];
+    let mut t = [0u8; 12];
     buf[p..p + 5].copy_from_slice(b"Mem: "); p += 5;
     let s = fmt_u32(&mut t, used_mb); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
     buf[p] = b'/'; p += 1;
@@ -357,7 +357,7 @@ fn fmt_mem_line<'a>(buf: &'a mut [u8; 80], used_mb: u32, total_mb: u32, heap_kb:
 /// Format "CPU N: X%" label for a core bar
 fn fmt_core_label<'a>(buf: &'a mut [u8; 16], core_id: u32, pct: u32) -> &'a str {
     let mut p = 0;
-    let mut t = [0u8; 8];
+    let mut t = [0u8; 12];
     let s = fmt_u32(&mut t, core_id);
     buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
     buf[p..p + 2].copy_from_slice(b": "); p += 2;
@@ -369,7 +369,7 @@ fn fmt_core_label<'a>(buf: &'a mut [u8; 16], core_id: u32, pct: u32) -> &'a str 
 
 /// Format "N proc  CPU:X%"
 fn fmt_process_cpu<'a>(buf: &'a mut [u8; 32], count: usize, cpu_pct: u32) -> &'a str {
-    let mut t = [0u8; 8];
+    let mut t = [0u8; 12];
     let mut p = 0;
     let s = fmt_u32(&mut t, count as u32);
     buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();

@@ -67,11 +67,31 @@ pub fn output_lock_acquire() -> (u64, bool) {
         return (flags, true);
     }
 
+    let mut spin_count: u32 = 0;
     while OUTPUT_LOCK
         .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
         core::hint::spin_loop();
+        spin_count += 1;
+        if spin_count == 10_000_000 {
+            // Probable deadlock — print via direct UART (bypasses this lock)
+            unsafe {
+                let msg = b"\r\n!!! SER_LOCK TIMEOUT cpu=";
+                for &c in msg { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+                outb(0x3F8, b'0' + cpu);
+                let msg2 = b" owner=";
+                for &c in msg2 { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+                let owner = OUTPUT_LOCK_CPU.load(Ordering::Relaxed);
+                if owner == 0xFF {
+                    let m = b"NONE";
+                    for &c in m { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+                } else {
+                    outb(0x3F8, b'0' + owner);
+                }
+                outb(0x3F8, b'\r'); while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, b'\n');
+            }
+        }
     }
     OUTPUT_LOCK_CPU.store(cpu, Ordering::Relaxed);
     (flags, false)

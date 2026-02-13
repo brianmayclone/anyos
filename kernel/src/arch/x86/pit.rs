@@ -56,8 +56,10 @@ pub fn init() {
 /// Calibrate the TSC against the PIT for accurate timekeeping.
 ///
 /// Must be called after PIT and IRQ handlers are initialized, with
-/// interrupts enabled. Measures TSC ticks over 50 PIT periods (~50ms
-/// at 1000 Hz) to compute TSC frequency.
+/// interrupts enabled. Measures TSC ticks over 500 PIT periods (~500ms
+/// at 1000 Hz) to compute TSC frequency accurately. A longer calibration
+/// window reduces the impact of PIT jitter (especially under QEMU
+/// virtualization) on the measured TSC frequency.
 pub fn calibrate_tsc() {
     // Wait for a PIT tick edge (synchronize to PIT phase)
     let start_tick = TICK_COUNT.load(Ordering::Relaxed);
@@ -69,8 +71,8 @@ pub fn calibrate_tsc() {
     let tsc_start = rdtsc();
     let tick_start = TICK_COUNT.load(Ordering::Relaxed);
 
-    // Wait for 50 PIT ticks (~50ms at 1000 Hz)
-    while TICK_COUNT.load(Ordering::Relaxed).wrapping_sub(tick_start) < 50 {
+    // Wait for 500 PIT ticks (~500ms at 1000 Hz)
+    while TICK_COUNT.load(Ordering::Relaxed).wrapping_sub(tick_start) < 500 {
         core::hint::spin_loop();
     }
 

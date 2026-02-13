@@ -151,3 +151,13 @@ pub fn input_poll(buf: &mut [[u32; 5]]) -> u32 {
     if buf.is_empty() { return 0; }
     syscall2(SYS_INPUT_POLL, buf.as_mut_ptr() as u64, buf.len() as u64)
 }
+
+/// Take over cursor from kernel splash mode. Compositor-only.
+/// Returns the splash cursor position (x, y) and disables kernel cursor tracking.
+/// All pending mouse events from boot are drained to prevent double-application.
+pub fn cursor_takeover() -> (i32, i32) {
+    let packed = syscall0(SYS_CURSOR_TAKEOVER);
+    let x = (packed >> 16) as i16 as i32;
+    let y = packed as u16 as i32;
+    (x, y)
+}

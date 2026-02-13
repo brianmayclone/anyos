@@ -707,6 +707,21 @@ add_custom_target(run-vmware
   COMMENT "Launching anyOS in QEMU with VMware SVGA II"
 )
 
+add_custom_target(run-vmware-debug
+  COMMAND ${QEMU_EXECUTABLE}
+    -drive format=raw,file=${DISK_IMAGE}
+    -m 1024M
+    -smp cpus=4
+    -serial stdio
+    -vga vmware
+    -netdev user,id=net0 -device e1000,netdev=net0
+    -no-reboot -no-shutdown
+    -s
+  DEPENDS ${DISK_IMAGE}
+  USES_TERMINAL
+  COMMENT "Launching anyOS in QEMU with VMware SVGA II + GDB server on :1234"
+)
+
 add_custom_target(run-ahci
   COMMAND ${QEMU_EXECUTABLE}
     -drive id=hd0,if=none,format=raw,file=${DISK_IMAGE}

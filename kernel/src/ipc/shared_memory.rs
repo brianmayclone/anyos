@@ -240,6 +240,11 @@ fn maybe_free_region(regions: &mut Vec<SharedRegion>, idx: usize) {
     }
 }
 
+/// Lock-free check if the shared memory lock is currently held.
+pub fn is_shm_locked() -> bool {
+    SHARED_REGIONS.is_locked()
+}
+
 /// Find a free virtual address for a new SHM mapping for the given TID.
 ///
 /// Scans all existing mappings for this TID and returns the next page-aligned

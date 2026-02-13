@@ -34,23 +34,25 @@ extern LAPIC_TO_PERCPU
 
 global syscall_fast_entry
 syscall_fast_entry:
-    ; === Phase 1: Stack switch via SWAPGS (interrupts disabled by SFMASK) ===
+    ; === Phase 1a: SWAPGS and save user RSP ===
     swapgs                          ; GS.base = kernel per-CPU data
     mov [gs:8], rsp                 ; per_cpu.user_rsp = user RSP
-    mov rsp, [gs:0]                 ; RSP = per_cpu.kernel_rsp
 
-    ; === Phase 1b: Verify PERCPU ownership ===
+    ; === Phase 1b: Verify PERCPU ownership BEFORE stack switch ===
     ; KERNEL_GS_BASE can get corrupted (QEMU TCG MSR state leak between vCPUs).
     ; If [gs:16] (PERCPU.lapic_id) doesn't match this CPU's hardware LAPIC ID,
-    ; we loaded the wrong kernel_rsp. Undo, repair, and retry.
-    push rax                        ; save syscall number (on maybe-wrong stack — safe,
-                                    ;   stack top is unused by any running code)
+    ; we would load the WRONG kernel_rsp and fault. Check now while still on
+    ; user stack (safe — user was executing code, stack is valid).
+    mov [gs:24], rax                ; save syscall number to PERCPU scratch (no stack needed)
     mov rax, LAPIC_ID_ADDR
     mov eax, [rax]                  ; read LAPIC ID register (UC MMIO, per-CPU)
     shr eax, 24                     ; EAX = this CPU's LAPIC ID (bits 31:24)
     cmp al, byte [gs:16]            ; compare with PERCPU.lapic_id
-    jne .repair_percpu              ; mismatch — wrong PERCPU, need to fix
-    pop rax                         ; correct — restore syscall number
+    jne .repair_percpu              ; mismatch — fix MSR before touching kernel stack
+    mov rax, [gs:24]                ; correct — restore syscall number
+
+    ; === Phase 1c: Switch to kernel stack (PERCPU ownership verified) ===
+    mov rsp, [gs:0]                 ; RSP = per_cpu.kernel_rsp
 
     ; === Phase 2: Build SyscallRegs frame (matching INT 0x80 layout) ===
     ; CPU-pushed interrupt frame (emulated for SYSCALL)
@@ -139,28 +141,29 @@ syscall_fast_entry:
 ; =============================================================================
 ; At entry:
 ;   EAX = our LAPIC ID (from hardware MMIO read)
-;   RSP = wrong kernel stack (original RAX pushed on top)
+;   RSP = user RSP (still on user stack — never switched to kernel stack!)
 ;   GS_BASE = wrong PERCPU address (from SWAPGS with corrupted KERNEL_GS_BASE)
 ;   KERNEL_GS_BASE = user's original GS value
+;   [gs:24] = original RAX (syscall number) saved to wrong PERCPU's scratch
 ;   RCX = user RIP, R11 = user RFLAGS, all other regs = user values
 ;
-; Strategy: undo the SWAPGS + stack switch, fix KERNEL_GS_BASE via a
-; LAPIC_ID → PERCPU lookup table, then retry the entire entry sequence.
+; Strategy: restore RAX from PERCPU scratch, undo SWAPGS, fix KERNEL_GS_BASE
+; via LAPIC_ID → PERCPU lookup table, then retry the entire entry sequence.
+; Since we never switched to the kernel stack, no kernel state was corrupted.
 
 .repair_percpu:
-    ; Step 1: Undo — restore user state
-    pop rax                         ; restore syscall number from wrong stack
-    mov rsp, [gs:8]                 ; restore user RSP (value is correct in any slot)
-    swapgs                          ; undo SWAPGS: GS_BASE←user_gs, KGS←wrong_percpu
+    ; Step 1: Restore RAX and undo SWAPGS
+    mov rax, [gs:24]                ; restore syscall number from PERCPU scratch
+    swapgs                          ; undo: GS_BASE ← user_gs, KGS ← wrong_percpu
 
-    ; Step 2: Fix KERNEL_GS_BASE using LAPIC_TO_PERCPU lookup table.
-    ; We need ECX, EAX, EDX for wrmsr — push clobbered user regs to user stack.
+    ; Step 2: Fix KERNEL_GS_BASE using LAPIC_TO_PERCPU lookup.
+    ; Need ECX, EAX, EDX for wrmsr — save clobbered regs on user stack.
     ; (User stack is valid — the user was executing code at SYSCALL.)
     push rax                        ; save syscall number
     push rcx                        ; save user RIP
     push rdx                        ; save user arg3
 
-    ; Re-read LAPIC ID (RAX was overwritten by pop)
+    ; Re-read LAPIC ID (EAX was restored to syscall number above)
     mov rax, LAPIC_ID_ADDR
     mov eax, [rax]
     shr eax, 24

@@ -30,11 +30,14 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 ///   [gs:0]  = kernel_rsp
 ///   [gs:8]  = user_rsp (scratch for SYSCALL entry)
 ///   [gs:16] = lapic_id (for ownership verification in syscall_fast_entry)
+///   [gs:24] = scratch_rax (used by pre-stack-switch LAPIC check)
 #[repr(C, align(64))]
 struct SyscallPerCpu {
     kernel_rsp: u64,
     user_rsp: u64,
     lapic_id: u8,
+    _pad: [u8; 7],
+    scratch_rax: u64,
 }
 
 static mut PERCPU: [SyscallPerCpu; MAX_CPUS] = {
@@ -42,6 +45,8 @@ static mut PERCPU: [SyscallPerCpu; MAX_CPUS] = {
         kernel_rsp: 0,
         user_rsp: 0,
         lapic_id: 0xFF,
+        _pad: [0; 7],
+        scratch_rax: 0,
     };
     [INIT; MAX_CPUS]
 };

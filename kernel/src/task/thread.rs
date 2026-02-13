@@ -92,6 +92,8 @@ pub struct Thread {
     pub pd_shared: bool,
     /// Last CPU this thread ran on (for affinity when re-queuing after wake/unblock).
     pub last_cpu: usize,
+    /// True for per-CPU idle threads (never reaped, never killed, never enqueued).
+    pub is_idle: bool,
 }
 
 /// Size of each thread's kernel-mode stack.
@@ -164,6 +166,7 @@ impl Thread {
             terminated_at_tick: None,
             pd_shared: false,
             last_cpu: 0,
+            is_idle: false,
         }
     }
 

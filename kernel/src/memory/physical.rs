@@ -201,6 +201,11 @@ pub fn free_frame_count() -> usize {
     ALLOCATOR.lock().free_frames
 }
 
+/// Lock-free check if the physical frame allocator lock is currently held.
+pub fn is_allocator_locked() -> bool {
+    ALLOCATOR.is_locked()
+}
+
 /// Returns the number of free physical frames (alias for [`free_frame_count`]).
 pub fn free_frames() -> usize {
     ALLOCATOR.lock().free_frames

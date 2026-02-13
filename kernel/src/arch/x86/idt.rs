@@ -13,7 +13,7 @@ const IDT_ENTRIES: usize = 256;
 /// Per-CPU timer heartbeat counters for freeze diagnostics.
 /// Uses direct UART port I/O to avoid serial output lock — if the serial lock
 /// is part of the deadlock chain, serial_println heartbeats would also freeze.
-const HEARTBEAT_INTERVAL: u32 = 1000;
+const HEARTBEAT_INTERVAL: u32 = 500;
 static HEARTBEAT_COUNTER: [AtomicU32; 8] = {
     const INIT: AtomicU32 = AtomicU32::new(0);
     [INIT; 8]
@@ -52,6 +52,28 @@ fn uart_put_dec(mut n: u32) {
     while n > 0 {
         buf[i] = b'0' + (n % 10) as u8;
         n /= 10;
+        i += 1;
+    }
+    while i > 0 {
+        i -= 1;
+        uart_putc(buf[i]);
+    }
+}
+
+/// Write a 64-bit hex number directly to UART (lock-free).
+fn uart_put_hex(n: u64) {
+    uart_puts(b"0x");
+    if n == 0 {
+        uart_putc(b'0');
+        return;
+    }
+    let mut buf = [0u8; 16];
+    let mut val = n;
+    let mut i = 0usize;
+    while val > 0 && i < 16 {
+        let d = (val & 0xF) as u8;
+        buf[i] = if d < 10 { b'0' + d } else { b'a' + d - 10 };
+        val >>= 4;
         i += 1;
     }
     while i > 0 {
@@ -99,12 +121,16 @@ const GATE_TRAP: u8 = 0x8F;      // Present, DPL=0, 64-bit trap gate
 const GATE_TRAP_DPL3: u8 = 0xEF; // Present, DPL=3, 64-bit trap gate (for syscalls)
 
 fn set_gate(num: usize, handler: unsafe extern "C" fn(), selector: u16, type_attr: u8) {
+    set_gate_ist(num, handler, selector, type_attr, 0);
+}
+
+fn set_gate_ist(num: usize, handler: unsafe extern "C" fn(), selector: u16, type_attr: u8, ist: u8) {
     let handler = handler as *const () as u64;
     unsafe {
         IDT[num] = IdtEntry {
             offset_low: (handler & 0xFFFF) as u16,
             selector,
-            ist: 0,
+            ist: ist & 0x7, // IST index in bits 0-2
             type_attr,
             offset_mid: ((handler >> 16) & 0xFFFF) as u16,
             offset_high: ((handler >> 32) & 0xFFFFFFFF) as u32,
@@ -146,7 +172,7 @@ pub fn init() {
     set_gate(5,  isr5 , KERNEL_CODE_SEG, GATE_INTERRUPT);
     set_gate(6,  isr6 , KERNEL_CODE_SEG, GATE_INTERRUPT);
     set_gate(7,  isr7 , KERNEL_CODE_SEG, GATE_INTERRUPT);
-    set_gate(8,  isr8 , KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate_ist(8, isr8, KERNEL_CODE_SEG, GATE_INTERRUPT, 1); // #DF uses IST1
     set_gate(9,  isr9 , KERNEL_CODE_SEG, GATE_INTERRUPT);
     set_gate(10, isr10, KERNEL_CODE_SEG, GATE_INTERRUPT);
     set_gate(11, isr11, KERNEL_CODE_SEG, GATE_INTERRUPT);
@@ -370,6 +396,64 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
 /// kernel faults panic mode is entered (halts other CPUs) and this CPU halts.
 #[no_mangle]
 pub extern "C" fn isr_handler(frame: &InterruptFrame) {
+    // CRITICAL: Detect corrupt RSP before doing ANYTHING that uses the stack.
+    // If TSS.RSP0 was 0/corrupt, `frame` points to near-zero addresses and
+    // ANY function call or serial_println! will loop forever with IF=0.
+    // Check the frame pointer itself — it must be in kernel higher-half.
+    let frame_addr = frame as *const InterruptFrame as u64;
+    if frame_addr < 0xFFFF_FFFF_8000_0000 || frame_addr > 0xFFFF_FFFF_F000_0000 {
+        // Stack is garbage — print via lock-free direct UART and halt.
+        // DO NOT call any Rust functions (they need a valid stack).
+        unsafe {
+            use crate::arch::x86::port::{inb, outb};
+            let msg = b"\r\n!!! FATAL: ISR entered with corrupt RSP frame=";
+            for &c in msg { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            // Print frame address in hex
+            let mut n = frame_addr;
+            let mut buf = [0u8; 16];
+            let mut i = 0usize;
+            loop {
+                let d = (n & 0xF) as u8;
+                buf[i] = if d < 10 { b'0' + d } else { b'a' + d - 10 };
+                n >>= 4;
+                i += 1;
+                if n == 0 || i >= 16 { break; }
+            }
+            let prefix = b"0x";
+            for &c in prefix { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            while i > 0 {
+                i -= 1;
+                while inb(0x3FD) & 0x20 == 0 {}
+                outb(0x3F8, buf[i]);
+            }
+            let msg2 = b" - halting CPU\r\n";
+            for &c in msg2 { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            // Print TSS.RSP0 for this CPU
+            let rsp0 = crate::arch::x86::tss::get_kernel_stack_for_cpu(0);
+            let msg3 = b"  TSS.RSP0=";
+            for &c in msg3 { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            n = rsp0;
+            i = 0;
+            loop {
+                let d = (n & 0xF) as u8;
+                buf[i] = if d < 10 { b'0' + d } else { b'a' + d - 10 };
+                n >>= 4;
+                i += 1;
+                if n == 0 || i >= 16 { break; }
+            }
+            for &c in prefix { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            while i > 0 {
+                i -= 1;
+                while inb(0x3FD) & 0x20 == 0 {}
+                outb(0x3F8, buf[i]);
+            }
+            let nl = b"\r\n";
+            for &c in nl { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            // Halt this CPU cleanly — let other CPUs continue
+            loop { core::arch::asm!("cli; hlt"); }
+        }
+    }
+
     let is_user_mode = frame.cs & 3 != 0;
 
     match frame.int_no {
@@ -395,6 +479,68 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
             crate::drivers::rsod::show_exception(frame, "Division by Zero (#DE)");
             loop { unsafe { core::arch::asm!("cli; hlt"); } }
+        }
+        1 => {
+            // #DB Debug Exception — check if hardware watchpoint (DR0) fired.
+            // We use DR0 to watch TSS.RSP0 for corruption: ANY write to that
+            // address (including wild pointers) triggers this handler.
+            let dr6: u64;
+            unsafe { core::arch::asm!("mov {}, dr6", out(reg) dr6, options(nostack, nomem)); }
+
+            if dr6 & 1 != 0 {
+                // DR0 watchpoint hit — something wrote to TSS.RSP0.
+                // frame.rip is the instruction AFTER the write (x86 data breakpoints
+                // fire after the instruction completes).
+                let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
+                let tss_rsp0 = crate::arch::x86::tss::get_kernel_stack_for_cpu(cpu_id);
+                let tid = crate::task::scheduler::debug_current_tid();
+
+                // Check if the new RSP0 value is corrupt (user-space range or zero)
+                let is_bad = tss_rsp0 == 0 || tss_rsp0 < 0xFFFF_FFFF_8000_0000;
+
+                // Only log bad writes to reduce noise (legitimate writes happen on
+                // every context switch). To see ALL writes, change to `true`.
+                if is_bad {
+                    crate::serial_println!(
+                        "!!! TSS.RSP0 WATCHPOINT: BAD write detected! RIP={:#018x} RSP0={:#018x} CPU{} TID={}",
+                        frame.rip, tss_rsp0, cpu_id, tid
+                    );
+                    crate::serial_println!(
+                        "    RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
+                        frame.rax, frame.rbx, frame.rcx, frame.rdx
+                    );
+                    crate::serial_println!(
+                        "    RSI={:#018x} RDI={:#018x} RBP={:#018x} RSP={:#018x}",
+                        frame.rsi, frame.rdi, frame.rbp, frame.rsp
+                    );
+                    crate::serial_println!(
+                        "    R8={:#018x} R9={:#018x} R10={:#018x} R11={:#018x}",
+                        frame.r8, frame.r9, frame.r10, frame.r11
+                    );
+                    // Immediately repair TSS.RSP0 from per-CPU stack top
+                    let (_, stack_top) = crate::task::scheduler::get_stack_bounds(cpu_id);
+                    if stack_top >= 0xFFFF_FFFF_8000_0000 {
+                        crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, stack_top);
+                        crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, stack_top);
+                        crate::serial_println!(
+                            "    REPAIRED RSP0={:#018x}", stack_top
+                        );
+                    }
+                }
+
+                // Clear DR6 to acknowledge the breakpoint
+                unsafe { core::arch::asm!("xor {tmp}, {tmp}; mov dr6, {tmp}", tmp = out(reg) _, options(nostack)); }
+                return;
+            }
+
+            // Not a watchpoint — handle as normal debug exception
+            if is_user_mode {
+                crate::task::scheduler::exit_current(129);
+                return;
+            }
+            // Clear DR6 and continue (single-step or breakpoint)
+            unsafe { core::arch::asm!("xor {tmp}, {tmp}; mov dr6, {tmp}", tmp = out(reg) _, options(nostack)); }
+            return;
         }
         6 => {
             let dbg_tid = crate::task::scheduler::debug_current_tid();
@@ -475,7 +621,17 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
         }
         8 => {
             crate::drivers::serial::enter_panic_mode();
-            crate::serial_println!("EXCEPTION: Double fault!");
+            let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
+            let tss_rsp0 = crate::arch::x86::tss::get_kernel_stack_for_cpu(cpu_id);
+            let percpu_krsp = crate::arch::x86::syscall_msr::get_kernel_rsp(cpu_id);
+            crate::serial_println!(
+                "EXCEPTION: Double fault! CPU={} TSS.RSP0={:#018x} PERCPU.krsp={:#018x}",
+                cpu_id, tss_rsp0, percpu_krsp,
+            );
+            crate::serial_println!(
+                "  frame.RSP={:#018x} frame.RIP={:#018x} frame.CS={:#06x}",
+                frame.rsp, frame.rip, frame.cs,
+            );
             crate::serial_println!("  FATAL: unrecoverable — halting");
             crate::drivers::rsod::show_exception(frame, "Double Fault (#DF)");
             loop { unsafe { core::arch::asm!("cli; hlt"); } }
@@ -702,19 +858,79 @@ pub extern "C" fn irq_handler(frame: &InterruptFrame) {
                 uart_puts(b" tid=");
                 let tid = crate::task::scheduler::debug_current_tid();
                 uart_put_dec(tid);
-                // Check if the scheduler lock is currently held
+                // Report all held locks — compact format to minimize UART time.
+                // Only prints locks that are currently held.
                 if crate::task::scheduler::is_scheduler_locked() {
-                    uart_puts(b" SCHED=HELD");
+                    uart_puts(b" SCHED");
                 }
-                // Check serial output lock state
                 if crate::drivers::serial::is_output_locked() {
-                    uart_puts(b" SER=HELD");
+                    uart_puts(b" SER");
                 }
-                // Check heap lock state
                 if crate::memory::heap::is_heap_locked() {
-                    uart_puts(b" HEAP=HELD");
+                    uart_puts(b" HEAP");
+                }
+                if crate::memory::physical::is_allocator_locked() {
+                    uart_puts(b" PHYS");
+                }
+                if crate::ipc::event_bus::is_any_bus_locked() {
+                    uart_puts(b" EBUS");
+                }
+                if crate::ipc::shared_memory::is_shm_locked() {
+                    uart_puts(b" SHM");
+                }
+                if crate::ipc::pipe::is_pipe_locked() {
+                    uart_puts(b" PIPE");
+                }
+                if crate::drivers::gpu::is_gpu_locked() {
+                    uart_puts(b" GPU");
                 }
                 uart_putc(b'\n');
+
+                // Time drift diagnostic: compare LAPIC-based real time vs PIT uptime.
+                // LAPIC timer fires at ~1000 Hz per CPU, so count/1000 = real seconds.
+                // PIT ticks / TICK_HZ = reported uptime seconds.
+                // If these diverge, PIT ticks are being lost.
+                if cpu_id == 0 {
+                    let lapic_secs = count / 1000;
+                    let pit_ticks = crate::arch::x86::pit::get_ticks();
+                    let pit_secs = pit_ticks / crate::arch::x86::pit::TICK_HZ;
+                    uart_puts(b"  TIME: real=");
+                    uart_put_dec(lapic_secs);
+                    uart_puts(b"s uptime=");
+                    uart_put_dec(pit_secs);
+                    uart_puts(b"s (pit_ticks=");
+                    uart_put_dec(pit_ticks);
+                    uart_puts(b")\n");
+                }
+            }
+
+            // TSS.RSP0 corruption check on EVERY timer tick.
+            // When a user thread is running on this CPU, TSS.RSP0 must point to
+            // a valid kernel stack. The CPU reads RSP0 on any ring 3→0 interrupt
+            // transition — if it's 0 or corrupt, the CPU loads RSP=0, pushes the
+            // interrupt frame to near-zero, and we get an unrecoverable #DF.
+            // Checking here catches corruption BEFORE the next user-mode interrupt.
+            if crate::task::scheduler::cpu_has_active_thread(cpu_id) {
+                let tss_rsp0 = crate::arch::x86::tss::get_kernel_stack_for_cpu(cpu_id);
+                if tss_rsp0 == 0 || tss_rsp0 < 0xFFFF_FFFF_8000_0000 {
+                    let tid = crate::task::scheduler::debug_current_tid();
+                    uart_puts(b"\n!!!TSS.RSP0 CORRUPT cpu=");
+                    uart_put_dec(cpu_id as u32);
+                    uart_puts(b" rsp0=");
+                    uart_put_hex(tss_rsp0);
+                    uart_puts(b" tid=");
+                    uart_put_dec(tid);
+                    uart_putc(b'\n');
+                    // Attempt repair: use the per-CPU stack bounds (set by scheduler)
+                    let (_, stack_top) = crate::task::scheduler::get_stack_bounds(cpu_id);
+                    if stack_top >= 0xFFFF_FFFF_8000_0000 {
+                        crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, stack_top);
+                        crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, stack_top);
+                        uart_puts(b"  REPAIRED RSP0=");
+                        uart_put_hex(stack_top);
+                        uart_putc(b'\n');
+                    }
+                }
             }
         }
     }

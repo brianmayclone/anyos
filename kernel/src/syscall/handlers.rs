@@ -1514,6 +1514,21 @@ pub fn sys_register_compositor() -> u32 {
     }
 }
 
+/// Take over cursor from kernel splash mode. Compositor-only.
+/// Disables the kernel's IRQ-driven cursor tracking, drains stale mouse events,
+/// and returns the splash cursor position packed as (x << 16) | (y & 0xFFFF).
+/// The compositor uses this to initialize its logical cursor to match the HW cursor.
+pub fn sys_cursor_takeover() -> u32 {
+    if !is_compositor() {
+        return 0;
+    }
+    let (x, y) = crate::drivers::gpu::splash_cursor_position();
+    crate::drivers::gpu::disable_splash_cursor();
+    crate::drivers::input::mouse::clear_buffer();
+    crate::serial_println!("Compositor cursor takeover: splash pos ({}, {})", x, y);
+    ((x as u16 as u32) << 16) | (y as u16 as u32)
+}
+
 /// Map the GPU framebuffer into the compositor's address space.
 /// ebx=out_info_ptr (pointer to FbMapInfo struct, 16 bytes).
 /// Returns 0 on success, u32::MAX on failure.

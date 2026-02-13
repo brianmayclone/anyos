@@ -79,6 +79,7 @@ impl LockedHeap {
             core::arch::asm!("cli", options(nomem, nostack));
         }
 
+        let mut spin_count: u32 = 0;
         while self
             .lock
             .compare_exchange_weak(
@@ -90,6 +91,15 @@ impl LockedHeap {
             .is_err()
         {
             core::hint::spin_loop();
+            spin_count += 1;
+            if spin_count == 10_000_000 {
+                // Probable deadlock — print via direct UART (bypasses all locks)
+                unsafe {
+                    use crate::arch::x86::port::{inb, outb};
+                    let msg = b"\r\n!!! HEAP_LOCK TIMEOUT\r\n";
+                    for &c in msg { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+                }
+            }
         }
 
         flags

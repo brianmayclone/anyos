@@ -11,6 +11,64 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 /// No CPU owns this lock.
 const NO_OWNER: u32 = u32::MAX;
 
+/// After this many inner-loop iterations, print a deadlock diagnostic via
+/// direct UART.  10M iterations × ~10-40 ns/PAUSE ≈ 100-400 ms — long enough
+/// that normal contention never triggers it, short enough to fire before
+/// the system appears frozen.
+const SPIN_TIMEOUT: u32 = 10_000_000;
+
+// ── Lock-free UART helpers (bypass ALL software locks) ──────────────────
+
+/// Write one byte directly to COM1, polling the Transmit Holding Register.
+#[inline(never)]
+fn diag_putc(c: u8) {
+    unsafe {
+        while crate::arch::x86::port::inb(0x3FD) & 0x20 == 0 {
+            core::hint::spin_loop();
+        }
+        crate::arch::x86::port::outb(0x3F8, c);
+    }
+}
+
+fn diag_puts(s: &[u8]) {
+    for &c in s {
+        if c == b'\n' { diag_putc(b'\r'); }
+        diag_putc(c);
+    }
+}
+
+fn diag_hex(mut n: u64) {
+    diag_puts(b"0x");
+    if n == 0 { diag_putc(b'0'); return; }
+    let mut buf = [0u8; 16];
+    let mut i = 0usize;
+    while n > 0 {
+        let d = (n & 0xF) as u8;
+        buf[i] = if d < 10 { b'0' + d } else { b'a' + d - 10 };
+        n >>= 4;
+        i += 1;
+    }
+    while i > 0 {
+        i -= 1;
+        diag_putc(buf[i]);
+    }
+}
+
+fn diag_dec(mut n: u32) {
+    if n == 0 { diag_putc(b'0'); return; }
+    let mut buf = [0u8; 10];
+    let mut i = 0usize;
+    while n > 0 {
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        i += 1;
+    }
+    while i > 0 {
+        i -= 1;
+        diag_putc(buf[i]);
+    }
+}
+
 /// An IRQ-safe spinlock protecting data of type `T`.
 ///
 /// Automatically disables interrupts while held and restores the previous
@@ -89,6 +147,8 @@ impl<T> Spinlock<T> {
     /// Acquire the lock, spinning until it becomes available.
     ///
     /// Disables interrupts before spinning to prevent single-core deadlocks.
+    /// If spinning exceeds `SPIN_TIMEOUT` iterations, prints a diagnostic
+    /// via direct UART (lock-free) to identify the deadlocking lock and CPUs.
     pub fn lock(&self) -> SpinlockGuard<T> {
         // Save interrupt state and disable interrupts BEFORE acquiring the lock.
         // This prevents deadlock: if we hold the lock and a timer/device IRQ fires,
@@ -96,16 +156,35 @@ impl<T> Spinlock<T> {
         let was_enabled = interrupts_enabled();
         cli();
 
+        let mut spin_count: u32 = 0;
+        let mut reported = false;
+
         while self
             .lock
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            // On single-core with interrupts disabled, spinning here means deadlock
-            // (we can never release because we're the only core and IRQs are off).
-            // On multi-core, the other core will eventually release.
             while self.lock.load(Ordering::Relaxed) {
                 core::hint::spin_loop();
+                spin_count += 1;
+
+                if !reported && spin_count >= SPIN_TIMEOUT {
+                    reported = true;
+                    let lock_addr = self as *const _ as u64;
+                    let me = cpu_id();
+                    let owner = self.owner_cpu.load(Ordering::Relaxed);
+                    diag_puts(b"\n!!! SPIN TIMEOUT lock=");
+                    diag_hex(lock_addr);
+                    diag_puts(b" cpu=");
+                    diag_dec(me);
+                    diag_puts(b" owner=");
+                    if owner == NO_OWNER {
+                        diag_puts(b"NONE");
+                    } else {
+                        diag_dec(owner);
+                    }
+                    diag_putc(b'\n');
+                }
             }
         }
 

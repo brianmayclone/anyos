@@ -503,6 +503,8 @@ pub struct Desktop {
     has_gpu_accel: bool,
     /// Per-app subscription IDs for targeted event delivery: (tid, sub_id)
     app_subs: Vec<(u32, u32)>,
+    /// Deferred wallpaper reload after resolution change
+    wallpaper_pending: bool,
 }
 
 impl Desktop {
@@ -546,10 +548,20 @@ impl Desktop {
             btn_anims: anyos_std::anim::AnimSet::new(),
             has_gpu_accel: anyos_std::ui::window::gpu_has_accel(),
             app_subs: Vec::with_capacity(16),
+            wallpaper_pending: false,
         }
     }
 
     // ── Initialization ──────────────────────────────────────────────────
+
+    /// Set the initial cursor position (used during compositor startup to sync
+    /// with the kernel's splash cursor position).
+    pub fn set_cursor_pos(&mut self, x: i32, y: i32) {
+        self.mouse_x = x.clamp(0, self.screen_width as i32 - 1);
+        self.mouse_y = y.clamp(0, self.screen_height as i32 - 1);
+        self.prev_cursor_x = self.mouse_x;
+        self.prev_cursor_y = self.mouse_y;
+    }
 
     /// Draw the initial desktop (background + menubar).
     pub fn init(&mut self) {
@@ -559,6 +571,19 @@ impl Desktop {
         }
         self.draw_menubar();
         self.compositor.damage_all();
+    }
+
+    /// Process deferred wallpaper reload (after resolution change).
+    /// Called from the render thread to spread the large allocations across
+    /// a separate stack, avoiding heap corruption near the management thread's data.
+    pub fn process_deferred_wallpaper(&mut self) {
+        if !self.wallpaper_pending {
+            return;
+        }
+        self.wallpaper_pending = false;
+        if self.load_wallpaper("/media/wallpapers/default.png") {
+            self.compositor.damage_all();
+        }
     }
 
     /// Load a wallpaper image and draw it to the background layer.
@@ -723,10 +748,12 @@ impl Desktop {
         self.compositor
             .resize_layer(self.menubar_layer_id, new_w, MENUBAR_HEIGHT + 1);
 
-        // Redraw wallpaper (falls back to gradient)
-        if !self.load_wallpaper("/media/wallpapers/default.png") {
-            self.draw_gradient_background();
-        }
+        // Use gradient background during resolution change to avoid the large
+        // heap allocations from wallpaper decode+scale (2 MB file + 5 MB pixels
+        // + 5 MB scaled) which can cause heap corruption near the render thread's
+        // stack. Wallpaper will be loaded asynchronously after the change settles.
+        self.draw_gradient_background();
+        self.wallpaper_pending = true;
 
         // Redraw menubar
         self.draw_menubar();

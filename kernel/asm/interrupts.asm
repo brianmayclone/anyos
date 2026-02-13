@@ -14,6 +14,7 @@
 ; Rust handlers (defined in kernel/src/arch/x86/idt.rs)
 extern isr_handler
 extern irq_handler
+extern bad_rsp_recovery
 
 ; =============================================================================
 ; ISR stubs - CPU Exceptions (INT 0-31)
@@ -130,6 +131,15 @@ isr_common_stub:
     push r14
     push r15
 
+    ; Safety net: validate RSP is in kernel higher-half (bit 63 set).
+    ; On Ring 3→0 transitions the CPU loads RSP from TSS.RSP0. If RSP0
+    ; was transiently corrupt (small positive value), the CPU and our
+    ; pushes above wrote into identity-mapped low memory — corrupting
+    ; BIOS data, page tables, or AP trampoline. Detect and halt NOW
+    ; before the Rust handler causes more damage.
+    test rsp, rsp
+    jns .bad_rsp
+
     ; Load kernel data segment (needed when entering from compat mode)
     mov ax, 0x10
     mov ds, ax
@@ -162,6 +172,49 @@ isr_common_stub:
     ; Return from interrupt (64-bit IRET)
     iretq
 
+.bad_rsp:
+    cli
+    ; Write "!ISR RSP\n" to serial (0x3F8) — lock-free, no stack needed
+    mov dx, 0x3F8
+    mov al, '!'
+    out dx, al
+    mov al, 'I'
+    out dx, al
+    mov al, 'S'
+    out dx, al
+    mov al, 'R'
+    out dx, al
+    mov al, ' '
+    out dx, al
+    mov al, 'R'
+    out dx, al
+    mov al, 'S'
+    out dx, al
+    mov al, 'P'
+    out dx, al
+    mov al, 10
+    out dx, al
+    ; --- RECOVERY: switch to valid kernel stack and call Rust handler ---
+    ; This fires on Ring 3→0 transition with corrupt TSS.RSP0.
+    ; At this point: KERNEL_GS_BASE = PERCPU (not swapped yet).
+    ; SWAPGS gives us access to PERCPU.kernel_rsp at [gs:0].
+    swapgs
+    mov rsp, [gs:0]             ; RSP = per-CPU kernel_rsp (idle thread stack)
+    swapgs                      ; restore GS for normal kernel operation
+    ; Validate the loaded RSP is in kernel higher-half
+    test rsp, rsp
+    jns .recovery_failed
+    ; Set up kernel data segments
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    ; Call Rust recovery: kills current thread, sends EOI, enters idle loop.
+    ; bad_rsp_recovery() is a divergent function (never returns).
+    call bad_rsp_recovery
+.recovery_failed:
+    hlt
+    jmp .recovery_failed
+
 ; =============================================================================
 ; Common IRQ stub - saves all GPRs, calls Rust irq_handler, restores state
 ; =============================================================================
@@ -181,6 +234,10 @@ irq_common_stub:
     push r13
     push r14
     push r15
+
+    ; Safety net: same RSP validation as ISR stub (see comment above)
+    test rsp, rsp
+    jns .bad_rsp
 
     mov ax, 0x10
     mov ds, ax
@@ -207,3 +264,39 @@ irq_common_stub:
 
     add rsp, 16
     iretq
+
+.bad_rsp:
+    cli
+    ; Write "!IRQ RSP\n" to serial (0x3F8) — lock-free
+    mov dx, 0x3F8
+    mov al, '!'
+    out dx, al
+    mov al, 'I'
+    out dx, al
+    mov al, 'R'
+    out dx, al
+    mov al, 'Q'
+    out dx, al
+    mov al, ' '
+    out dx, al
+    mov al, 'R'
+    out dx, al
+    mov al, 'S'
+    out dx, al
+    mov al, 'P'
+    out dx, al
+    mov al, 10
+    out dx, al
+    ; --- RECOVERY: same as ISR bad_rsp above ---
+    swapgs
+    mov rsp, [gs:0]             ; RSP = per-CPU kernel_rsp
+    swapgs
+    test rsp, rsp
+    jns .irq_recovery_failed
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    call bad_rsp_recovery
+.irq_recovery_failed:
+    hlt
+    jmp .irq_recovery_failed

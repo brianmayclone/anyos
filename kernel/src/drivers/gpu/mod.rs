@@ -115,6 +115,11 @@ pub fn is_available() -> bool {
     GPU.lock().is_some()
 }
 
+/// Lock-free check if the GPU lock is currently held.
+pub fn is_gpu_locked() -> bool {
+    GPU.is_locked()
+}
+
 /// Non-blocking GPU lock (for use during panic/RSOD where deadlock must be avoided).
 pub fn try_lock_gpu() -> Option<crate::sync::spinlock::SpinlockGuard<'static, Option<Box<dyn GpuDriver>>>> {
     GPU.try_lock()

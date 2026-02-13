@@ -191,6 +191,9 @@ extern "C" fn ap_entry() -> ! {
         };
     }
 
+    // Register this CPU's idle thread in the scheduler
+    crate::task::scheduler::register_ap_idle(cpu_id);
+
     // Signal BSP that we're ready
     unsafe {
         core::ptr::write_volatile(AP_COMM_READY as *mut u8, 1);
