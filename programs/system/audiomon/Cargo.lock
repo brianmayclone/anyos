@@ -7,8 +7,18 @@ name = "anyos_std"
 version = "0.1.0"
 
 [[package]]
-name = "hello_rust"
+name = "audiomon"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libcompositor_client",
+ "uisys_client",
 ]
+
+[[package]]
+name = "libcompositor_client"
+version = "0.1.0"
+
+[[package]]
+name = "uisys_client"
+version = "0.1.0"

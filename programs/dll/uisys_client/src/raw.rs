@@ -125,7 +125,7 @@ pub struct UisysExports {
     pub imageview_render: extern "C" fn(u32, i32, i32, u32, u32, *const u32, u32, u32),
 
     // StatusIndicator (1)
-    pub status_render: extern "C" fn(u32, i32, i32, u8, *const u8, u32),
+    pub status_render: extern "C" fn(u32, i32, i32, u8, *const u8, u32, u16),
 
     // ColorWell (1)
     pub colorwell_render: extern "C" fn(u32, i32, i32, u32, u32),

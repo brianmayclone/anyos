@@ -2,7 +2,6 @@
 members = ["kernel"]
 exclude = [
   "stdlib",
-  "programs/hello_rust",
   "programs/ping",
   "programs/dhcp",
   "programs/dns",

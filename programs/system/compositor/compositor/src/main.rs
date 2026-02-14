@@ -402,7 +402,7 @@ fn main() {
                         ipc::evt_chan_emit(compositor_channel, &response);
                     }
 
-                    // Broadcast window lifecycle event for dock filtering
+                    // Broadcast window lifecycle events for dock filtering
                     if response[0] == ipc_protocol::RESP_WINDOW_CREATED {
                         ipc::evt_chan_emit(compositor_channel, &[
                             ipc_protocol::EVT_WINDOW_OPENED,
@@ -410,6 +410,16 @@ fn main() {
                             response[1], // win_id
                             0, 0,
                         ]);
+                    } else if response[0] == ipc_protocol::RESP_WINDOW_DESTROYED {
+                        let app_tid = response[2];
+                        let remaining_windows = response[3];
+                        if remaining_windows == 0 {
+                            // App has no more windows — tell dock to remove it
+                            ipc::evt_chan_emit(compositor_channel, &[
+                                ipc_protocol::EVT_WINDOW_CLOSED,
+                                app_tid, 0, 0, 0,
+                            ]);
+                        }
                     }
                 }
             }

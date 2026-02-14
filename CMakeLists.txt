@@ -128,15 +128,6 @@ file(MAKE_DIRECTORY "${SYSROOT_DIR}/include/sys")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/lib")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/src")
 
-add_custom_command(
-  OUTPUT ${SYSROOT_DIR}/bin/hello
-  COMMAND ${NASM_EXECUTABLE} -f bin
-    -o ${SYSROOT_DIR}/bin/hello
-    ${CMAKE_SOURCE_DIR}/programs/hello.asm
-  DEPENDS ${CMAKE_SOURCE_DIR}/programs/hello.asm
-  COMMENT "Assembling user program: hello"
-)
-
 # --- Helper: build a Rust user program ---
 set(STDLIB_DEPS
   ${CMAKE_SOURCE_DIR}/stdlib/Cargo.toml
@@ -250,7 +241,6 @@ add_dll(librender ${CMAKE_SOURCE_DIR}/programs/dll/librender)
 add_dll(libcompositor ${CMAKE_SOURCE_DIR}/programs/dll/libcompositor)
 
 set(RUST_USER_BINS "")
-add_rust_user_program(hello_rust ${CMAKE_SOURCE_DIR}/programs/hello_rust)
 add_rust_user_program(ping       ${CMAKE_SOURCE_DIR}/programs/ping)
 add_rust_user_program(dhcp       ${CMAKE_SOURCE_DIR}/programs/dhcp)
 add_rust_user_program(dns        ${CMAKE_SOURCE_DIR}/programs/dns)
@@ -625,7 +615,6 @@ add_custom_command(
 )
 
 add_custom_target(programs DEPENDS
-  ${SYSROOT_DIR}/bin/hello
   ${RUST_USER_BINS}
   ${SYSTEM_BINS}
   ${DLL_BINS}
@@ -655,7 +644,6 @@ add_custom_command(
     ${CMAKE_BINARY_DIR}/stage1.bin
     ${CMAKE_BINARY_DIR}/stage2.bin
     ${KERNEL_ELF}
-    ${SYSROOT_DIR}/bin/hello
     ${RUST_USER_BINS}
     ${SYSTEM_BINS}
     ${DLL_BINS}

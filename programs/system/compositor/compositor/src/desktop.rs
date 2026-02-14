@@ -2371,8 +2371,9 @@ impl Desktop {
                         anyos_std::ipc::shm_unmap(shm_id);
                     }
                     self.destroy_window(window_id);
+                    let remaining = self.windows.iter().filter(|w| w.owner_tid == app_tid).count() as u32;
                     let target = self.get_sub_id_for_tid(app_tid);
-                    Some((target, [proto::RESP_WINDOW_DESTROYED, window_id, app_tid, 0, 0]))
+                    Some((target, [proto::RESP_WINDOW_DESTROYED, window_id, app_tid, remaining, 0]))
                 } else {
                     None
                 }

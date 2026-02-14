@@ -1,10 +1,15 @@
 #![no_std]
 #![no_main]
 
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+
 use anyos_std::sys;
 use anyos_std::process;
 use anyos_std::ui::window;
-use anyos_std::Vec;
+use anyos_std::fs;
+use anyos_std::icons;
 
 anyos_std::entry!(main);
 
@@ -18,13 +23,16 @@ const STATS_H: i32 = 70;
 const TOOLBAR_H: i32 = 32;
 const HEADER_Y_OFFSET: i32 = STATS_H + TOOLBAR_H;
 
-// Column X positions
+const ICON_SIZE: u32 = 16;
+
+// Column X positions (icon at COL_NAME, text at COL_NAME_TEXT)
 const COL_TID: i32 = 10;
 const COL_NAME: i32 = 60;
-const COL_STATE: i32 = 190;
-const COL_ARCH: i32 = 280;
-const COL_CPU: i32 = 340;
-const COL_PRIO: i32 = 410;
+const COL_NAME_TEXT: i32 = COL_NAME + ICON_SIZE as i32 + 4;
+const COL_STATE: i32 = 210;
+const COL_ARCH: i32 = 300;
+const COL_CPU: i32 = 360;
+const COL_PRIO: i32 = 430;
 
 // Selected row highlight color
 const SEL_BG: u32 = 0xFF0A4A8A;
@@ -81,6 +89,75 @@ impl CpuState {
             prev_core_idle: [0; MAX_CPUS],
         }
     }
+}
+
+// ─── Icon Cache ──────────────────────────────────────────────────────────────
+
+struct IconEntry {
+    name: String,
+    pixels: Vec<u32>, // ICON_SIZE * ICON_SIZE ARGB, empty = no icon found
+}
+
+fn load_app_icon(name: &str) -> Vec<u32> {
+    let bin_path = alloc::format!("/bin/{}", name);
+    let icon_path = icons::app_icon_path(&bin_path);
+
+    let fd = fs::open(&icon_path, 0);
+    if fd == u32::MAX { return Vec::new(); }
+
+    let mut data = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = fs::read(fd, &mut buf);
+        if n == 0 || n == u32::MAX { break; }
+        data.extend_from_slice(&buf[..n as usize]);
+    }
+    fs::close(fd);
+
+    if data.is_empty() { return Vec::new(); }
+
+    let info = match libimage_client::probe_ico_size(&data, ICON_SIZE) {
+        Some(i) => i,
+        None => match libimage_client::probe(&data) {
+            Some(i) => i,
+            None => return Vec::new(),
+        },
+    };
+
+    let src_w = info.width;
+    let src_h = info.height;
+    let mut pixels = vec![0u32; (src_w * src_h) as usize];
+    let mut scratch = vec![0u8; info.scratch_needed as usize];
+
+    let ok = if info.format == libimage_client::FMT_ICO {
+        libimage_client::decode_ico_size(&data, ICON_SIZE, &mut pixels, &mut scratch).is_ok()
+    } else {
+        libimage_client::decode(&data, &mut pixels, &mut scratch).is_ok()
+    };
+    if !ok { return Vec::new(); }
+
+    if src_w == ICON_SIZE && src_h == ICON_SIZE { return pixels; }
+
+    let mut dst = vec![0u32; (ICON_SIZE * ICON_SIZE) as usize];
+    libimage_client::scale_image(
+        &pixels, src_w, src_h,
+        &mut dst, ICON_SIZE, ICON_SIZE,
+        libimage_client::MODE_SCALE,
+    );
+    dst
+}
+
+fn ensure_icon_cached(cache: &mut Vec<IconEntry>, name: &str) {
+    if cache.iter().any(|e| e.name == name) { return; }
+    let pixels = load_app_icon(name);
+    cache.push(IconEntry { name: String::from(name), pixels });
+}
+
+fn find_icon<'a>(cache: &'a [IconEntry], name: &str) -> Option<&'a [u32]> {
+    cache.iter()
+        .find(|e| e.name == name)
+        .map(|e| e.pixels.as_slice())
+        .filter(|p| !p.is_empty())
 }
 
 // ─── Data Fetching ───────────────────────────────────────────────────────────
@@ -153,8 +230,6 @@ fn fetch_memory() -> Option<MemInfo> {
 }
 
 fn fetch_cpu(state: &mut CpuState) {
-    // sysinfo(3) layout: [total_sched:u32, total_idle:u32, num_cpus:u32, pad:u32,
-    //                      per_cpu_total[0]:u32, per_cpu_idle[0]:u32, ...]
     let mut buf = [0u8; 16 + 8 * MAX_CPUS];
     sys::sysinfo(3, &mut buf);
 
@@ -164,7 +239,6 @@ fn fetch_cpu(state: &mut CpuState) {
     state.num_cpus = ncpu.max(1).min(MAX_CPUS as u32);
     state.total_sched_ticks = total;
 
-    // Overall CPU% from delta
     let dt = total.wrapping_sub(state.prev_total);
     let di = idle.wrapping_sub(state.prev_idle);
     state.overall_pct = if dt > 0 {
@@ -175,7 +249,6 @@ fn fetch_cpu(state: &mut CpuState) {
     state.prev_total = total;
     state.prev_idle = idle;
 
-    // Per-core CPU% from deltas
     for i in 0..(state.num_cpus as usize).min(MAX_CPUS) {
         let off = 16 + i * 8;
         if off + 8 > buf.len() { break; }
@@ -202,6 +275,8 @@ fn render(
     cpu: &CpuState,
     selected: Option<usize>,
     kill_btn: &UiToolbarButton,
+    icon_cache: &[IconEntry],
+    scroll_offset: usize,
     win_w: u32,
     win_h: u32,
 ) {
@@ -234,7 +309,6 @@ fn render(
         let ms = fmt_mem_line(&mut mbuf, used_kb / 1024, total_kb / 1024, heap_kb, heap_total_kb);
         label(win_id, PAD, 22, ms, colors::TEXT(), FontSize::Normal, TextAlign::Left);
 
-        // Memory bar (full width)
         let bar_w = (win_w as i32 - PAD * 2) as u32;
         if total_kb > 0 {
             let mem_pct = (used_kb as u64 * 100 / total_kb as u64) as u32;
@@ -254,11 +328,9 @@ fn render(
 
     for i in 0..ncpu {
         let bx = PAD + i as i32 * (per_core_w as i32 + gap);
-        // Label "CPU N: X%"
         let mut lbuf = [0u8; 16];
         let ls = fmt_core_label(&mut lbuf, i as u32, cpu.core_pct[i]);
         label(win_id, bx, 48, ls, colors::TEXT_SECONDARY(), FontSize::Small, TextAlign::Left);
-        // Bar
         progress(win_id, bx, 60, per_core_w, 5, cpu.core_pct[i]);
     }
 
@@ -266,7 +338,6 @@ fn render(
     toolbar(win_id, 0, STATS_H, win_w, TOOLBAR_H as u32);
     kill_btn.render(win_id, "Kill Process");
 
-    // Task count + overall CPU
     let mut cbuf = [0u8; 32];
     let cs = fmt_process_cpu(&mut cbuf, tasks.len(), cpu.overall_pct);
     label(win_id, win_w as i32 - (cs.len() as i32 * 7) - PAD, STATS_H + 8, cs, colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
@@ -276,29 +347,29 @@ fn render(
     // ── Column Headers ──
     window::fill_rect(win_id, 0, y as i16, win_w as u16, ROW_H as u16, 0xFF4A4A4A);
     label(win_id, COL_TID, y + 3, "TID", colors::TEXT(), FontSize::Small, TextAlign::Left);
-    label(win_id, COL_NAME, y + 3, "Process", colors::TEXT(), FontSize::Small, TextAlign::Left);
+    label(win_id, COL_NAME_TEXT, y + 3, "Process", colors::TEXT(), FontSize::Small, TextAlign::Left);
     label(win_id, COL_STATE, y + 3, "State", colors::TEXT(), FontSize::Small, TextAlign::Left);
     label(win_id, COL_ARCH, y + 3, "Arch", colors::TEXT(), FontSize::Small, TextAlign::Left);
     label(win_id, COL_CPU, y + 3, "CPU", colors::TEXT(), FontSize::Small, TextAlign::Left);
     label(win_id, COL_PRIO, y + 3, "Priority", colors::TEXT(), FontSize::Small, TextAlign::Left);
     y += ROW_H;
 
-    // ── Task Rows ──
-    for (i, task) in tasks.iter().enumerate() {
+    // ── Task Rows (with scroll) ──
+    for (global_i, task) in tasks.iter().enumerate().skip(scroll_offset) {
         if y + ROW_H > win_h as i32 {
             break;
         }
 
         // Selection highlight or alternating background
-        if selected == Some(i) {
+        if selected == Some(global_i) {
             window::fill_rect(win_id, 0, y as i16, win_w as u16, ROW_H as u16, SEL_BG);
-        } else if i % 2 == 1 {
+        } else if global_i % 2 == 1 {
             window::fill_rect(win_id, 0, y as i16, win_w as u16, ROW_H as u16, 0xFF333333);
         }
 
-        let text_color = if selected == Some(i) { 0xFFFFFFFF } else { colors::TEXT() };
+        let text_color = if selected == Some(global_i) { 0xFFFFFFFF } else { colors::TEXT() };
 
-        let (state_str, state_kind) = match task.state {
+        let (state_text, state_kind) = match task.state {
             0 => ("Ready", StatusKind::Warning),
             1 => ("Running", StatusKind::Online),
             2 => ("Blocked", StatusKind::Error),
@@ -310,20 +381,24 @@ fn render(
         let mut tbuf = [0u8; 12];
         label(win_id, COL_TID, y + 3, fmt_u32(&mut tbuf, task.tid), text_color, FontSize::Small, TextAlign::Left);
 
-        // Name
+        // Icon + Name
         if let Ok(name) = core::str::from_utf8(&task.name[..task.name_len]) {
-            label(win_id, COL_NAME, y + 3, name, text_color, FontSize::Small, TextAlign::Left);
+            if let Some(pixels) = find_icon(icon_cache, name) {
+                let icon_y = y + (ROW_H - ICON_SIZE as i32) / 2;
+                window::blit(win_id, COL_NAME as i16, icon_y as i16, ICON_SIZE as u16, ICON_SIZE as u16, pixels);
+            }
+            label(win_id, COL_NAME_TEXT, y + 3, name, text_color, FontSize::Small, TextAlign::Left);
         }
 
-        // State
-        status_indicator(win_id, COL_STATE, y + 3, state_kind, state_str);
+        // State (using sized variant to match table font)
+        status_indicator_sized(win_id, COL_STATE, y + 3, state_kind, state_text, FontSize::Small);
 
         // Architecture
         let arch_str = if task.arch == 1 { "x86" } else { "x86_64" };
         let arch_color = if task.arch == 1 { 0xFFFF9500 } else { colors::TEXT_SECONDARY() };
         label(win_id, COL_ARCH, y + 3, arch_str, arch_color, FontSize::Small, TextAlign::Left);
 
-        // CPU% (delta-based, computed in fetch_tasks)
+        // CPU%
         let mut cpubuf = [0u8; 12];
         let cpu_str = if task.cpu_pct_x10 > 0 {
             fmt_pct(&mut cpubuf, task.cpu_pct_x10)
@@ -339,6 +414,17 @@ fn render(
         y += ROW_H;
     }
 
+    // ── Scroll indicator ──
+    let table_h = win_h as i32 - HEADER_Y_OFFSET - ROW_H;
+    let max_visible = (table_h / ROW_H).max(1) as usize;
+    if tasks.len() > max_visible {
+        let bar_x = win_w as i32 - 4;
+        let bar_top = HEADER_Y_OFFSET + ROW_H;
+        let thumb_h = ((max_visible as i32 * table_h) / tasks.len() as i32).max(12);
+        let thumb_y = bar_top + (scroll_offset as i32 * table_h / tasks.len() as i32);
+        window::fill_rect(win_id, bar_x as i16, thumb_y as i16, 3, thumb_h as u16, 0x60FFFFFF);
+    }
+
     window::present(win_id);
 }
 
@@ -352,7 +438,6 @@ fn fmt_u32<'a>(buf: &'a mut [u8; 12], val: u32) -> &'a str {
     unsafe { core::str::from_utf8_unchecked(&buf[..n]) }
 }
 
-/// Format pct_x10 (e.g. 125 = 12.5%) as "12.5%"
 fn fmt_pct<'a>(buf: &'a mut [u8; 12], pct_x10: u32) -> &'a str {
     let whole = pct_x10 / 10;
     let frac = pct_x10 % 10;
@@ -392,7 +477,6 @@ fn fmt_mem_line<'a>(buf: &'a mut [u8; 80], used_mb: u32, total_mb: u32, heap_kb:
     unsafe { core::str::from_utf8_unchecked(&buf[..p]) }
 }
 
-/// Format "CPU N: X%" label for a core bar
 fn fmt_core_label<'a>(buf: &'a mut [u8; 16], core_id: u32, pct: u32) -> &'a str {
     let mut p = 0;
     let mut t = [0u8; 12];
@@ -405,7 +489,6 @@ fn fmt_core_label<'a>(buf: &'a mut [u8; 16], core_id: u32, pct: u32) -> &'a str 
     unsafe { core::str::from_utf8_unchecked(&buf[..p]) }
 }
 
-/// Format "N proc  CPU:X%"
 fn fmt_process_cpu<'a>(buf: &'a mut [u8; 32], count: usize, cpu_pct: u32) -> &'a str {
     let mut t = [0u8; 12];
     let mut p = 0;
@@ -422,12 +505,11 @@ fn fmt_process_cpu<'a>(buf: &'a mut [u8; 32], count: usize, cpu_pct: u32) -> &'a
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
-    let win_id = window::create("Activity Monitor", 120, 80, 500, 400);
+    let win_id = window::create("Activity Monitor", 100, 60, 540, 420);
     if win_id == u32::MAX {
         return;
     }
 
-    // Set up menu bar
     let mut mb = window::MenuBarBuilder::new()
         .menu("File")
             .item(1, "Close", 0)
@@ -438,13 +520,9 @@ fn main() {
         .end_menu();
     let data = mb.build();
     window::set_menu(win_id, data);
-
-    // "Kill Process" starts disabled (no selection yet)
     window::disable_menu_item(win_id, 10);
 
-    let (mut win_w, mut win_h) = window::get_size(win_id).unwrap_or((500, 400));
-
-    // Kill button in the toolbar
+    let (mut win_w, mut win_h) = window::get_size(win_id).unwrap_or((540, 420));
     let kill_btn = UiToolbarButton::new(PAD, STATS_H + 4, 100, 24);
 
     let mut thread_buf = [0u8; 36 * 64];
@@ -453,17 +531,22 @@ fn main() {
     let mut selected: Option<usize> = None;
     let mut cpu_state = CpuState::new();
     let mut prev_ticks = PrevTicks { entries: [(0, 0); MAX_TASKS], count: 0, prev_total: 0 };
+    let mut scroll_offset: usize = 0;
+    let mut icon_cache: Vec<IconEntry> = Vec::new();
 
-    // Seed CPU state with initial snapshot (first delta will be from here)
     fetch_cpu(&mut cpu_state);
 
-    // Initial render (seed prev_ticks too)
+    // Initial fetch and render
     let tasks = fetch_tasks(&mut thread_buf, &mut prev_ticks, cpu_state.total_sched_ticks);
+    for task in &tasks {
+        if let Ok(name) = core::str::from_utf8(&task.name[..task.name_len]) {
+            ensure_icon_cached(&mut icon_cache, name);
+        }
+    }
     let mem = fetch_memory();
-    render(win_id, &tasks, &mem, &cpu_state, selected, &kill_btn, win_w, win_h);
+    render(win_id, &tasks, &mem, &cpu_state, selected, &kill_btn, &icon_cache, scroll_offset, win_w, win_h);
 
     loop {
-        // Check for events
         if window::get_event(win_id, &mut event) == 1 {
             let ev = UiEvent::from_raw(&event);
 
@@ -472,10 +555,9 @@ fn main() {
             }
 
             if event[0] == window::EVENT_MENU_ITEM {
-                let item_id = event[2];
-                match item_id {
-                    1 => { break; } // Close
-                    10 => { // Kill Process
+                match event[2] {
+                    1 => { break; }
+                    10 => {
                         if let Some(sel_idx) = selected {
                             let tasks = fetch_tasks(&mut thread_buf, &mut prev_ticks, cpu_state.total_sched_ticks);
                             if sel_idx < tasks.len() && tasks[sel_idx].tid > 3 {
@@ -486,52 +568,55 @@ fn main() {
                             }
                         }
                     }
-                    11 => { last_update = 0; } // Refresh
+                    11 => { last_update = 0; }
                     _ => {}
                 }
             }
 
-            if event[0] == EVENT_WINDOW_CLOSE {
-                break;
-            }
+            if event[0] == EVENT_WINDOW_CLOSE { break; }
 
             if event[0] == EVENT_RESIZE {
                 win_w = event[1];
                 win_h = event[2];
-                last_update = 0; // Force redraw
+                last_update = 0;
             }
 
-            if event[0] == 0x0050 {
-                last_update = 0; // Force redraw on theme change
+            if event[0] == 0x0050 { last_update = 0; }
+
+            // Scroll
+            if event[0] == window::EVENT_MOUSE_SCROLL {
+                let dz = event[1] as i32;
+                if dz < 0 {
+                    scroll_offset = scroll_offset.saturating_sub(3);
+                } else if dz > 0 {
+                    scroll_offset = scroll_offset.saturating_add(3);
+                }
+                last_update = 0;
             }
 
-            // Handle mouse click on task rows
+            // Mouse click on task rows
             if ev.is_mouse_down() {
                 let (_mx, my) = ev.mouse_pos();
 
-                // Check kill button
                 if kill_btn.handle_event(&ev) {
                     if let Some(sel_idx) = selected {
                         let tasks = fetch_tasks(&mut thread_buf, &mut prev_ticks, cpu_state.total_sched_ticks);
-                        if sel_idx < tasks.len() {
-                            let tid = tasks[sel_idx].tid;
-                            if tid > 3 {
-                                process::kill(tid);
-                                selected = None;
-                                window::disable_menu_item(win_id, 10);
-                                last_update = 0;
-                            }
+                        if sel_idx < tasks.len() && tasks[sel_idx].tid > 3 {
+                            process::kill(tasks[sel_idx].tid);
+                            selected = None;
+                            window::disable_menu_item(win_id, 10);
+                            last_update = 0;
                         }
                     }
                 } else {
-                    // Check if clicked on a task row
                     let row_start_y = HEADER_Y_OFFSET + ROW_H;
                     if my >= row_start_y {
-                        let row_idx = ((my - row_start_y) / ROW_H) as usize;
+                        let vis_row = ((my - row_start_y) / ROW_H) as usize;
+                        let global_row = vis_row + scroll_offset;
                         let tasks = fetch_tasks(&mut thread_buf, &mut prev_ticks, cpu_state.total_sched_ticks);
                         let old_sel = selected;
-                        if row_idx < tasks.len() {
-                            selected = Some(row_idx);
+                        if global_row < tasks.len() {
+                            selected = Some(global_row);
                         } else {
                             selected = None;
                         }
@@ -552,15 +637,33 @@ fn main() {
         let refresh_ticks = sys::tick_hz() / 2;
         let now = sys::uptime();
         if now.wrapping_sub(last_update) >= refresh_ticks {
-            fetch_cpu(&mut cpu_state); // Must be before fetch_tasks for accurate deltas
+            fetch_cpu(&mut cpu_state);
             let tasks = fetch_tasks(&mut thread_buf, &mut prev_ticks, cpu_state.total_sched_ticks);
+
+            // Ensure icons are cached for all tasks
+            for task in &tasks {
+                if let Ok(name) = core::str::from_utf8(&task.name[..task.name_len]) {
+                    ensure_icon_cached(&mut icon_cache, name);
+                }
+            }
+
             if let Some(sel) = selected {
                 if sel >= tasks.len() {
                     selected = if tasks.is_empty() { None } else { Some(tasks.len() - 1) };
                 }
             }
+
+            // Clamp scroll offset
+            let table_h = win_h as i32 - HEADER_Y_OFFSET - ROW_H;
+            let max_visible = (table_h / ROW_H).max(1) as usize;
+            if tasks.len() > max_visible {
+                scroll_offset = scroll_offset.min(tasks.len() - max_visible);
+            } else {
+                scroll_offset = 0;
+            }
+
             let mem = fetch_memory();
-            render(win_id, &tasks, &mem, &cpu_state, selected, &kill_btn, win_w, win_h);
+            render(win_id, &tasks, &mem, &cpu_state, selected, &kill_btn, &icon_cache, scroll_offset, win_w, win_h);
             last_update = now;
         }
 

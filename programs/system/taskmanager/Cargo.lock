@@ -7,10 +7,15 @@ name = "anyos_std"
 version = "0.1.0"
 
 [[package]]
+name = "libimage_client"
+version = "0.1.0"
+
+[[package]]
 name = "taskmanager"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libimage_client",
  "uisys_client",
 ]
 

@@ -386,6 +386,29 @@ fn unpack_event_name(w2: u32, w3: u32, w4: u32) -> String {
     String::from(core::str::from_utf8(&buf[..len]).unwrap_or(""))
 }
 
+/// Query thread name by TID via sysinfo(1,...) — same interface the task manager uses.
+/// Each entry is 36 bytes: [tid:4, prio:1, state:1, arch:1, pad:1, name:24, ticks:4].
+fn query_thread_name(tid: u32) -> Option<String> {
+    let mut buf = [0u8; 36 * 64];
+    let count = anyos_std::sys::sysinfo(1, &mut buf);
+    if count == u32::MAX { return None; }
+    for i in 0..count as usize {
+        let off = i * 36;
+        if off + 36 > buf.len() { break; }
+        let entry_tid = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
+        if entry_tid == tid {
+            let name_bytes = &buf[off + 8..off + 32];
+            let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(24);
+            if name_len > 0 {
+                return Some(String::from(
+                    core::str::from_utf8(&name_bytes[..name_len]).unwrap_or(""),
+                ));
+            }
+        }
+    }
+    None
+}
+
 // ── Rendering ──
 
 /// Compute bounce Y-offset for an icon being launched.
@@ -649,10 +672,11 @@ fn main() {
                 let app_tid = event.window_id; // word[1] = app_tid
                 // Skip our own window and already-tracked items
                 if app_tid != own_tid && !items.iter().any(|it| it.tid == app_tid) {
-                    // Look up name from spawn cache
+                    // Look up name: spawn cache → sysinfo query → fallback
                     let name = tid_names.iter()
                         .find(|(t, _)| *t == app_tid)
                         .map(|(_, n)| n.clone())
+                        .or_else(|| query_thread_name(app_tid))
                         .unwrap_or_else(|| alloc::format!("app-{}", app_tid));
                     // Skip system names
                     if !SYSTEM_NAMES.iter().any(|&s| s == name.as_str()) {
@@ -733,14 +757,16 @@ fn main() {
                 let spawned_tid = sys_buf[1];
                 let name = unpack_event_name(sys_buf[2], sys_buf[3], sys_buf[4]);
 
-                // Skip system threads
-                if name.is_empty() || SYSTEM_NAMES.iter().any(|&s| s == name.as_str()) {
-                    continue;
-                }
+                if name.is_empty() { continue; }
 
-                // Cache TID→name for EVT_WINDOW_OPENED lookup
+                // Always cache TID→name (needed for EVT_WINDOW_OPENED name lookup)
                 if !tid_names.iter().any(|(t, _)| *t == spawned_tid) {
                     tid_names.push((spawned_tid, name.clone()));
+                }
+
+                // Skip system threads for dock item creation
+                if SYSTEM_NAMES.iter().any(|&s| s == name.as_str()) {
+                    continue;
                 }
 
                 // Match pinned items by binary basename (show running dot immediately)
