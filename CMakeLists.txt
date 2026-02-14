@@ -804,3 +804,86 @@ add_custom_target(debug
   USES_TERMINAL
   COMMENT "Launching anyOS in QEMU (debug mode, GDB on :1234)"
 )
+
+# ============================================================
+# UEFI Boot Support
+# ============================================================
+set(UEFI_BOOTLOADER_EFI "${CMAKE_BINARY_DIR}/bootx64.efi")
+set(UEFI_DISK_IMAGE "${CMAKE_BINARY_DIR}/anyos-uefi.img")
+set(OVMF_FW "/opt/homebrew/share/qemu/edk2-x86_64-code.fd")
+
+# Build UEFI bootloader
+add_custom_command(
+  OUTPUT ${UEFI_BOOTLOADER_EFI}
+  COMMAND ${CARGO_EXECUTABLE} build --release
+    --manifest-path ${CMAKE_SOURCE_DIR}/bootloader/uefi/Cargo.toml
+    --target-dir ${CMAKE_BINARY_DIR}/uefi-boot
+    --target x86_64-unknown-uefi
+    -Zbuild-std=core,alloc
+    -Zbuild-std-features=compiler-builtins-mem
+  COMMAND ${CMAKE_COMMAND} -E copy
+    ${CMAKE_BINARY_DIR}/uefi-boot/x86_64-unknown-uefi/release/anyos-uefi-boot.efi
+    ${UEFI_BOOTLOADER_EFI}
+  DEPENDS
+    ${CMAKE_SOURCE_DIR}/bootloader/uefi/Cargo.toml
+    ${CMAKE_SOURCE_DIR}/bootloader/uefi/src/main.rs
+  COMMENT "Building UEFI bootloader"
+)
+
+# Create UEFI disk image (GPT + ESP + FAT16 data partition)
+add_custom_command(
+  OUTPUT ${UEFI_DISK_IMAGE}
+  COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/mkimage.py --uefi
+    --bootloader ${UEFI_BOOTLOADER_EFI}
+    --kernel ${KERNEL_ELF}
+    --output ${UEFI_DISK_IMAGE}
+    --image-size 64
+    --sysroot ${SYSROOT_DIR}
+  DEPENDS
+    ${UEFI_BOOTLOADER_EFI}
+    ${KERNEL_ELF}
+    ${RUST_USER_BINS}
+    ${SYSTEM_BINS}
+    ${DLL_BINS}
+    ${SYSROOT_DIR}/.stamp
+    ${SYSROOT_DIR}/lib/libc.a
+    ${SYSROOT_DIR}/lib/crt0.o
+    ${SYSROOT_DIR}/include/.stamp
+    ${SYSROOT_DIR}/bin/cc
+    ${SYSROOT_DIR}/lib/tcc/include/.stamp
+    ${SYSROOT_DIR}/apps/doom/doom
+  COMMENT "Creating UEFI bootable disk image (GPT + ESP + FAT16)"
+)
+
+add_custom_target(uefi-bootloader DEPENDS ${UEFI_BOOTLOADER_EFI})
+add_custom_target(uefi-image DEPENDS ${UEFI_DISK_IMAGE} programs)
+
+add_custom_target(run-uefi
+  COMMAND ${QEMU_EXECUTABLE}
+    -drive if=pflash,format=raw,readonly=on,file=${OVMF_FW}
+    -drive format=raw,file=${UEFI_DISK_IMAGE}
+    -m 1024M
+    -smp cpus=4
+    -serial stdio
+    -vga vmware
+    -netdev user,id=net0 -device e1000,netdev=net0
+    -no-reboot -no-shutdown
+  DEPENDS ${UEFI_DISK_IMAGE}
+  USES_TERMINAL
+  COMMENT "Launching anyOS in QEMU with UEFI (OVMF + VMware SVGA)"
+)
+
+add_custom_target(run-uefi-std
+  COMMAND ${QEMU_EXECUTABLE}
+    -drive if=pflash,format=raw,readonly=on,file=${OVMF_FW}
+    -drive format=raw,file=${UEFI_DISK_IMAGE}
+    -m 1024M
+    -smp cpus=4
+    -serial stdio
+    -vga std
+    -netdev user,id=net0 -device e1000,netdev=net0
+    -no-reboot -no-shutdown
+  DEPENDS ${UEFI_DISK_IMAGE}
+  USES_TERMINAL
+  COMMENT "Launching anyOS in QEMU with UEFI (OVMF + Bochs VGA)"
+)

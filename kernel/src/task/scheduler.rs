@@ -1811,6 +1811,10 @@ pub struct ThreadInfo {
     pub cpu_ticks: u32,
     /// Architecture mode: 0 = Native64, 1 = Compat32.
     pub arch_mode: u8,
+    /// Cumulative bytes read from disk files.
+    pub io_read_bytes: u64,
+    /// Cumulative bytes written to disk files.
+    pub io_write_bytes: u64,
 }
 
 /// List all live threads (for `ps` command).
@@ -1829,11 +1833,13 @@ pub fn list_threads() -> Vec<ThreadInfo> {
         state: u8,       // 0=ready, 1=running, 2=blocked
         arch_mode: u8,
         cpu_ticks: u32,
+        io_read_bytes: u64,
+        io_write_bytes: u64,
         name: [u8; 32],
         name_len: u8,
     }
     let mut buf = [const {
-        ThreadSnap { tid: 0, priority: 0, state: 0, arch_mode: 0, cpu_ticks: 0, name: [0; 32], name_len: 0 }
+        ThreadSnap { tid: 0, priority: 0, state: 0, arch_mode: 0, cpu_ticks: 0, io_read_bytes: 0, io_write_bytes: 0, name: [0; 32], name_len: 0 }
     }; MAX_SNAP];
     let mut count = 0;
 
@@ -1864,6 +1870,8 @@ pub fn list_threads() -> Vec<ThreadInfo> {
                     state: state_num,
                     arch_mode: thread.arch_mode as u8,
                     cpu_ticks: thread.cpu_ticks,
+                    io_read_bytes: thread.io_read_bytes,
+                    io_write_bytes: thread.io_write_bytes,
                     name: name_buf,
                     name_len: len as u8,
                 };
@@ -1891,6 +1899,8 @@ pub fn list_threads() -> Vec<ThreadInfo> {
             name,
             cpu_ticks: snap.cpu_ticks,
             arch_mode: snap.arch_mode,
+            io_read_bytes: snap.io_read_bytes,
+            io_write_bytes: snap.io_write_bytes,
         });
     }
     result
@@ -1906,6 +1916,35 @@ pub fn is_scheduler_locked_by_cpu(cpu: u32) -> bool {
 /// Lock-free diagnostic — safe to call from IRQ context.
 pub fn is_scheduler_locked() -> bool {
     SCHEDULER.is_locked()
+}
+
+/// Record disk-file read bytes for the current thread.
+pub fn record_io_read(bytes: u64) {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
+            if let Some(t) = sched.threads.iter().find(|t| t.tid == tid) {
+                // Safety: we hold the scheduler lock, only one CPU touches this thread.
+                let t = &**t as *const Thread as *mut Thread;
+                unsafe { (*t).io_read_bytes += bytes; }
+            }
+        }
+    }
+}
+
+/// Record disk-file write bytes for the current thread.
+pub fn record_io_write(bytes: u64) {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
+            if let Some(t) = sched.threads.iter().find(|t| t.tid == tid) {
+                let t = &**t as *const Thread as *mut Thread;
+                unsafe { (*t).io_write_bytes += bytes; }
+            }
+        }
+    }
 }
 
 /// Force-release the scheduler lock held by a faulting thread.

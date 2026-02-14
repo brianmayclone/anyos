@@ -147,6 +147,9 @@ fill_boot_info:
     add eax, KERNEL_LOAD_PHYS
     mov [di + 36], eax
 
+    ; rsdp_addr = 0 (BIOS path discovers RSDP by scanning memory)
+    mov dword [di + 40], 0
+
     popa
     ret
 

@@ -98,6 +98,10 @@ pub struct Thread {
     pub is_idle: bool,
     /// True for critical system threads (compositor) that must not be killed by RSP recovery.
     pub critical: bool,
+    /// Cumulative bytes read from disk files (fd >= 3).
+    pub io_read_bytes: u64,
+    /// Cumulative bytes written to disk files (fd >= 3).
+    pub io_write_bytes: u64,
 }
 
 /// Size of each thread's kernel-mode stack.
@@ -173,6 +177,8 @@ impl Thread {
             last_cpu: 0,
             is_idle: false,
             critical: false,
+            io_read_bytes: 0,
+            io_write_bytes: 0,
         }
     }
 

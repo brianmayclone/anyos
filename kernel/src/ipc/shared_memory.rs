@@ -52,7 +52,14 @@ pub fn create(size: usize, owner_tid: u32) -> Option<u32> {
     let mut frames = Vec::new();
     for _ in 0..pages {
         match physical::alloc_frame() {
-            Some(frame) => frames.push(frame),
+            Some(frame) => {
+                // Zero the frame via identity mapping to prevent information leaks
+                // and avoid garbage pixels in new window surfaces.
+                unsafe {
+                    core::ptr::write_bytes(frame.as_u64() as *mut u8, 0, FRAME_SIZE);
+                }
+                frames.push(frame);
+            }
             None => {
                 for f in &frames {
                     physical::free_frame(*f);

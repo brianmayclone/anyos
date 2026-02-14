@@ -870,6 +870,11 @@ impl Compositor {
 
     pub fn flush_gpu(&mut self) {
         if !self.gpu_cmds.is_empty() {
+            // Ensure all Write-Combining framebuffer stores are committed to VRAM
+            // before the GPU processes UPDATE/FLIP commands. Without this barrier,
+            // the CPU's WC buffers may not be flushed, causing the GPU to read
+            // stale framebuffer data (rendering artifacts / partial updates).
+            unsafe { core::arch::asm!("sfence", options(nostack, preserves_flags)); }
             ipc::gpu_command(&self.gpu_cmds);
             self.gpu_cmds.clear();
         }

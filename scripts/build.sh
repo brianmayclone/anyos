@@ -8,23 +8,33 @@
 # SPDX-License-Identifier: MIT
 
 # Build anyOS
-# Usage: ./build.sh [--clean] 
+# Usage: ./build.sh [--clean] [--uefi] [--all]
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="${SCRIPT_DIR}/.."
 BUILD_DIR="${PROJECT_DIR}/build"
 
 CLEAN=0
+BUILD_UEFI=0
+BUILD_ALL=0
 
 for arg in "$@"; do
     case "$arg" in
         --clean)
             CLEAN=1
             ;;
+        --uefi)
+            BUILD_UEFI=1
+            ;;
+        --all)
+            BUILD_ALL=1
+            ;;
         *)
-            echo "Usage: $0 [--clean]"
+            echo "Usage: $0 [--clean] [--uefi] [--all]"
             echo ""
             echo "  --clean    Force full rebuild of all components"
+            echo "  --uefi     Build UEFI disk image (in addition to BIOS)"
+            echo "  --all      Build both BIOS and UEFI disk images"
             exit 1
             ;;
     esac
@@ -48,14 +58,30 @@ fi
 # Suppress Rust warnings and notes — only show errors
 export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Awarnings"
 
-# Build
-echo "Building anyOS..."
+# Build BIOS image (default target)
+echo "Building anyOS (BIOS)..."
 ninja -C "$BUILD_DIR"
 BUILD_RC=$?
 
 if [ $BUILD_RC -ne 0 ]; then
-    echo "Build failed!"
+    echo "BIOS build failed!"
     exit $BUILD_RC
 fi
 
-echo "Build successful."
+echo "BIOS build successful."
+
+# Build UEFI image if requested
+if [ "$BUILD_UEFI" -eq 1 ] || [ "$BUILD_ALL" -eq 1 ]; then
+    echo "Building anyOS (UEFI)..."
+    ninja -C "$BUILD_DIR" uefi-image
+    UEFI_RC=$?
+
+    if [ $UEFI_RC -ne 0 ]; then
+        echo "UEFI build failed!"
+        exit $UEFI_RC
+    fi
+
+    echo "UEFI build successful."
+fi
+
+echo "Build complete."

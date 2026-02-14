@@ -121,42 +121,45 @@ pub fn init_ap() {
 }
 
 /// Calibrate and start the LAPIC timer for periodic scheduling.
-/// Uses the PIT to measure the LAPIC timer frequency, then sets up
-/// periodic mode at approximately `target_hz` interrupts per second.
+///
+/// Uses the TSC (already calibrated via PIT channel 2) to measure the
+/// LAPIC timer decrement rate over a 10ms window. This avoids depending
+/// on PIT IRQ delivery which is unreliable in UEFI/APIC mode.
 pub fn calibrate_timer(target_hz: u32) {
-    // Use PIT channel 2 for calibration: count down from max over a known period
-    // Alternatively, use the PIT tick counter we already have.
-    //
-    // Simple approach: measure LAPIC ticks over 1 PIT tick, then scale.
-    let pit_hz = crate::arch::x86::pit::TICK_HZ;
+    let tsc_hz = crate::arch::x86::pit::tsc_hz();
+    if tsc_hz == 0 {
+        crate::serial_println!("  LAPIC timer: WARNING - TSC not calibrated, skipping");
+        return;
+    }
+
     unsafe {
         // Set timer divider to 16
         write(LAPIC_TIMER_DIV, 0x03); // divide by 16
 
-        // Set initial count to max
+        // Set initial count to max, masked one-shot mode
         write(LAPIC_TIMER_INIT, 0xFFFFFFFF);
-        write(LAPIC_TIMER, TIMER_MASKED | VECTOR_TIMER as u32); // one-shot, masked
+        write(LAPIC_TIMER, TIMER_MASKED | VECTOR_TIMER as u32);
 
-        // Wait 1 PIT tick (1000/pit_hz ms)
-        let start = crate::arch::x86::pit::get_ticks();
-        while crate::arch::x86::pit::get_ticks().wrapping_sub(start) < 1 {
+        // Wait exactly 10ms using TSC (accurate, no IRQ dependency)
+        let wait_cycles = tsc_hz / 100; // 10ms = 1/100 second
+        let tsc_start = crate::arch::x86::pit::rdtsc();
+        while crate::arch::x86::pit::rdtsc().wrapping_sub(tsc_start) < wait_cycles {
             core::hint::spin_loop();
         }
 
-        // Read how many ticks elapsed
+        // Read how many LAPIC ticks elapsed in 10ms
         let elapsed = 0xFFFFFFFF - read(LAPIC_TIMER_CURRENT);
 
         // Stop timer
         write(LAPIC_TIMER, TIMER_MASKED);
 
         // Calculate initial count for desired frequency
-        // elapsed ticks in 1 PIT tick → ticks_per_second = elapsed * pit_hz
-        // initial_count = ticks_per_second / target_hz
-        let ticks_per_second = elapsed as u64 * pit_hz as u64;
+        // elapsed ticks in 10ms → ticks_per_second = elapsed * 100
+        let ticks_per_second = elapsed as u64 * 100;
         let initial_count = (ticks_per_second / target_hz as u64) as u32;
 
-        crate::serial_println!("  LAPIC timer: {} ticks/{}ms, initial_count={} for {}Hz",
-            elapsed, 1000 / pit_hz, initial_count, target_hz);
+        crate::serial_println!("  LAPIC timer: {} ticks/10ms, initial_count={} for {}Hz",
+            elapsed, initial_count, target_hz);
 
         // Store calibrated value for APs
         TIMER_INITIAL_COUNT.store(initial_count, Ordering::SeqCst);

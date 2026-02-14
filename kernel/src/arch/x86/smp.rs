@@ -163,6 +163,9 @@ extern "C" fn ap_entry() -> ! {
     // Load the kernel's IDT (AP starts with no valid IDT)
     crate::arch::x86::idt::reload();
 
+    // Program PAT MSR (must match BSP — all CPUs need identical PAT config)
+    crate::arch::x86::pat::init();
+
     // Read CPU ID before any LAPIC init (trampoline wrote it)
     let cpu_id = unsafe { core::ptr::read_volatile(AP_COMM_CPUID as *const u32) } as usize;
 

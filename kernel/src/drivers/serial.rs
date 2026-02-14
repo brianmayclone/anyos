@@ -147,9 +147,9 @@ static LOG_WRITE_POS: AtomicUsize = AtomicUsize::new(0);
 static LOG_TOTAL_WRITTEN: AtomicUsize = AtomicUsize::new(0);
 
 fn log_push_byte(byte: u8) {
-    let pos = LOG_WRITE_POS.load(Ordering::Relaxed);
-    unsafe { LOG_BUF[pos] = byte; }
-    LOG_WRITE_POS.store((pos + 1) % LOG_BUF_SIZE, Ordering::Relaxed);
+    let pos = LOG_WRITE_POS.load(Ordering::Relaxed) & (LOG_BUF_SIZE - 1);
+    unsafe { *LOG_BUF.as_mut_ptr().add(pos) = byte; }
+    LOG_WRITE_POS.store((pos + 1) & (LOG_BUF_SIZE - 1), Ordering::Relaxed);
     LOG_TOTAL_WRITTEN.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -165,8 +165,8 @@ pub fn read_log(dst: &mut [u8]) -> usize {
     let copy_len = available.min(dst.len());
 
     for i in 0..copy_len {
-        let idx = (start + i) % LOG_BUF_SIZE;
-        dst[i] = unsafe { LOG_BUF[idx] };
+        let idx = (start + i) & (LOG_BUF_SIZE - 1);
+        dst[i] = unsafe { *LOG_BUF.as_ptr().add(idx) };
     }
     copy_len
 }
@@ -183,12 +183,12 @@ static TX_TAIL: AtomicUsize = AtomicUsize::new(0);
 /// Push one byte into the TX ring buffer.  Returns false if full (byte dropped).
 #[inline]
 fn tx_push(byte: u8) -> bool {
-    let head = TX_HEAD.load(Ordering::Relaxed);
-    let next = (head + 1) % TX_BUF_SIZE;
-    if next == TX_TAIL.load(Ordering::Acquire) {
+    let head = TX_HEAD.load(Ordering::Relaxed) & (TX_BUF_SIZE - 1);
+    let next = (head + 1) & (TX_BUF_SIZE - 1);
+    if next == TX_TAIL.load(Ordering::Acquire) & (TX_BUF_SIZE - 1) {
         return false; // full — drop
     }
-    unsafe { TX_BUF[head] = byte; }
+    unsafe { *TX_BUF.as_mut_ptr().add(head) = byte; }
     TX_HEAD.store(next, Ordering::Release);
     true
 }
@@ -196,18 +196,29 @@ fn tx_push(byte: u8) -> bool {
 /// Pop one byte from the TX ring buffer.  Returns None if empty.
 #[inline]
 fn tx_pop() -> Option<u8> {
-    let tail = TX_TAIL.load(Ordering::Relaxed);
-    if tail == TX_HEAD.load(Ordering::Acquire) {
+    let tail = TX_TAIL.load(Ordering::Relaxed) & (TX_BUF_SIZE - 1);
+    if tail == TX_HEAD.load(Ordering::Acquire) & (TX_BUF_SIZE - 1) {
         return None;
     }
-    let byte = unsafe { TX_BUF[tail] };
-    TX_TAIL.store((tail + 1) % TX_BUF_SIZE, Ordering::Release);
+    let byte = unsafe { *TX_BUF.as_ptr().add(tail) };
+    TX_TAIL.store((tail + 1) & (TX_BUF_SIZE - 1), Ordering::Release);
     Some(byte)
 }
 
-/// Drain the TX buffer into the UART FIFO (up to `n` bytes).
-/// Called from both `kick_tx` (with interrupts disabled) and from the ISR.
-fn drain_tx(max: usize) {
+/// Atomic guard: only one CPU at a time may call `tx_pop()` (via `try_drain`).
+/// Prevents the dual-consumer race between `kick_tx` and the ISR on different CPUs.
+static DRAINING: AtomicBool = AtomicBool::new(false);
+
+/// Drain up to `max` bytes from the TX ring buffer into the UART FIFO.
+/// Uses `DRAINING` to ensure only one CPU pops from the buffer at a time.
+/// If another CPU is already draining, returns immediately.
+fn try_drain(max: usize) {
+    if DRAINING
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        return; // another CPU is draining — skip
+    }
     for _ in 0..max {
         if !is_transmit_empty() {
             break;
@@ -220,6 +231,7 @@ fn drain_tx(max: usize) {
                     let ier = inb(COM1 + 1);
                     outb(COM1 + 1, ier & !0x02);
                 }
+                DRAINING.store(false, Ordering::Release);
                 return;
             }
         }
@@ -231,21 +243,21 @@ fn drain_tx(max: usize) {
             outb(COM1 + 1, ier | 0x02);
         }
     }
+    DRAINING.store(false, Ordering::Release);
 }
 
-/// Kick-start the TX interrupt chain if the UART is idle.
-/// Briefly disables interrupts to avoid racing with the ISR.
+/// Kick-start the TX drain.  Sends up to 16 bytes directly (works even when
+/// interrupts are disabled on this CPU), and ensures the THRE interrupt is
+/// enabled so the ISR handles the rest.
 #[inline]
 fn kick_tx() {
+    try_drain(16);
+    // Ensure THRE is enabled even if try_drain was skipped (another CPU had the lock)
     unsafe {
-        let flags: u64;
-        core::arch::asm!("pushfq; pop {}", out(reg) flags, options(nomem, preserves_flags));
-        core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
-
-        // Send up to 16 bytes into the FIFO right now (non-blocking).
-        drain_tx(16);
-
-        core::arch::asm!("push {}; popfq", in(reg) flags, options(nomem, nostack));
+        let ier = inb(COM1 + 1);
+        if ier & 0x02 == 0 {
+            outb(COM1 + 1, ier | 0x02);
+        }
     }
 }
 
@@ -312,7 +324,7 @@ fn serial_irq_handler(_irq: u8) {
     // Read IIR to acknowledge the interrupt source
     let _iir = unsafe { inb(COM1 + 2) };
     // Drain up to 16 bytes (UART FIFO depth) per interrupt
-    drain_tx(16);
+    try_drain(16);
 }
 
 impl fmt::Write for SerialPort {
@@ -343,7 +355,7 @@ macro_rules! serial_println {
     ($($arg:tt)*) => {{
         use core::fmt::Write;
         let _lock_state = $crate::drivers::serial::output_lock_acquire();
-        let _ticks = $crate::arch::x86::pit::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+        let _ticks = $crate::arch::x86::pit::get_ticks();
         let _ms = _ticks as u64 * 1000 / $crate::arch::x86::pit::TICK_HZ as u64;
         let _ = write!($crate::drivers::serial::SerialPort, "[{}] {}\n", _ms, format_args!($($arg)*));
         $crate::drivers::serial::output_lock_release(_lock_state);

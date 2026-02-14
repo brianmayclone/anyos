@@ -10,18 +10,25 @@
 """
 mkimage.py - Create bootable disk image for anyOS
 
-Disk layout:
-  Sector 0:       Stage 1 (MBR, 512 bytes)
-  Sectors 1-63:   Stage 2 (padded to 63 * 512 bytes)
-  Sectors 64+:    Kernel flat binary (extracted from ELF PT_LOAD segments)
-  Sector fs_start+: FAT16 filesystem (optional, if --sysroot is given)
-  Total:          64 MiB image
+Supports two modes:
+  BIOS mode (default):
+    Sector 0:       Stage 1 (MBR, 512 bytes)
+    Sectors 1-63:   Stage 2 (padded to 63 * 512 bytes)
+    Sectors 64+:    Kernel flat binary (extracted from ELF PT_LOAD segments)
+    Sector fs_start+: FAT16 filesystem (optional, if --sysroot is given)
+
+  UEFI mode (--uefi):
+    GPT partition table with:
+      Partition 1: EFI System Partition (FAT16, 3 MiB) containing BOOTX64.EFI
+      Partition 2: anyOS Data (FAT16) containing sysroot + /system/kernel.bin
 """
 
 import argparse
 import os
 import struct
 import sys
+import uuid
+import zlib
 
 # ELF constants
 ELF_MAGIC = b'\x7fELF'
@@ -217,14 +224,17 @@ def elf_to_flat_binary(elf_data, base_paddr):
 class Fat16Formatter:
     """Creates a FAT16 filesystem in the disk image."""
 
-    def __init__(self, image, fs_start_sector, fs_sector_count):
+    def __init__(self, image, fs_start_sector, fs_sector_count, sectors_per_cluster=8):
+        global _short_name_counters
+        _short_name_counters = {}
+
         self.image = image
         self.fs_start = fs_start_sector
         self.fs_sectors = fs_sector_count
 
         # FAT16 parameters
         self.bytes_per_sector = 512
-        self.sectors_per_cluster = 8  # 4 KiB clusters
+        self.sectors_per_cluster = sectors_per_cluster
         self.reserved_sectors = 1     # Just the boot sector
         self.num_fats = 2
         self.root_entry_count = 512   # 512 entries * 32 bytes = 16 KiB = 32 sectors
@@ -612,20 +622,122 @@ class Fat16Formatter:
                 )
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Create anyOS disk image")
-    parser.add_argument("--stage1", required=True, help="Path to stage1.bin")
-    parser.add_argument("--stage2", required=True, help="Path to stage2.bin")
-    parser.add_argument("--kernel", required=True, help="Path to kernel ELF")
-    parser.add_argument("--output", required=True, help="Output disk image path")
-    parser.add_argument("--image-size", type=int, default=64, help="Image size in MiB")
-    parser.add_argument("--sysroot", default=None, help="Path to sysroot directory to populate filesystem")
-    parser.add_argument("--fs-start", type=int, default=2048, help="Start sector for FAT16 filesystem")
-    args = parser.parse_args()
+# =====================================================================
+# GPT (GUID Partition Table) helpers
+# =====================================================================
 
-    image_size = args.image_size * 1024 * 1024  # Convert to bytes
+GPT_SIGNATURE = b'EFI PART'
+GPT_REVISION = 0x00010000
+GPT_HEADER_SIZE = 92
+GPT_ENTRY_SIZE = 128
+GPT_ENTRY_COUNT = 128  # Standard: 128 entries = 32 sectors
 
-    # Read input files
+# Well-known partition type GUIDs
+ESP_TYPE_GUID = uuid.UUID("C12A7328-F81F-11D2-BA4B-00A0C93EC93B")
+BASIC_DATA_TYPE_GUID = uuid.UUID("EBD0A0A2-B9E5-4433-87C0-68B6B72699C7")
+
+
+def guid_to_bytes(guid):
+    """Convert UUID to GPT mixed-endian bytes (first 3 fields LE, rest BE)."""
+    return guid.bytes_le
+
+
+def write_protective_mbr(image, total_sectors):
+    """Write a protective MBR for GPT."""
+    mbr = bytearray(512)
+    # Partition entry 1 at offset 446
+    mbr[446] = 0x00  # Boot indicator (not bootable)
+    mbr[447] = 0x00  # CHS start
+    mbr[448] = 0x02
+    mbr[449] = 0x00
+    mbr[450] = 0xEE  # GPT protective type
+    mbr[451] = 0xFF  # CHS end
+    mbr[452] = 0xFF
+    mbr[453] = 0xFF
+    struct.pack_into('<I', mbr, 454, 1)  # Start LBA = 1
+    max_sectors = min(total_sectors - 1, 0xFFFFFFFF)
+    struct.pack_into('<I', mbr, 458, max_sectors)
+    mbr[510] = 0x55
+    mbr[511] = 0xAA
+    image[0:512] = mbr
+
+
+def create_gpt(image, total_sectors, partitions):
+    """Create GPT header and partition entries.
+
+    partitions: list of (type_guid, unique_guid, first_lba, last_lba, name)
+    """
+    disk_guid = uuid.uuid4()
+    entry_sectors = (GPT_ENTRY_COUNT * GPT_ENTRY_SIZE + 511) // 512  # = 32
+
+    # Build partition entries
+    entries = bytearray(GPT_ENTRY_COUNT * GPT_ENTRY_SIZE)
+    for i, (type_guid, unique_guid, first_lba, last_lba, name) in enumerate(partitions):
+        off = i * GPT_ENTRY_SIZE
+        entries[off:off + 16] = guid_to_bytes(type_guid)
+        entries[off + 16:off + 32] = guid_to_bytes(unique_guid)
+        struct.pack_into('<Q', entries, off + 32, first_lba)
+        struct.pack_into('<Q', entries, off + 40, last_lba)
+        struct.pack_into('<Q', entries, off + 48, 0)  # Attributes
+        name_bytes = name.encode('utf-16-le')[:72]
+        entries[off + 56:off + 56 + len(name_bytes)] = name_bytes
+
+    entries_crc = zlib.crc32(entries) & 0xFFFFFFFF
+
+    first_usable_lba = 2 + entry_sectors  # = 34
+    last_usable_lba = total_sectors - 1 - entry_sectors - 1
+
+    def make_header(my_lba, alt_lba, entries_lba):
+        hdr = bytearray(512)
+        hdr[0:8] = GPT_SIGNATURE
+        struct.pack_into('<I', hdr, 8, GPT_REVISION)
+        struct.pack_into('<I', hdr, 12, GPT_HEADER_SIZE)
+        struct.pack_into('<I', hdr, 16, 0)  # CRC32 placeholder
+        struct.pack_into('<I', hdr, 20, 0)  # Reserved
+        struct.pack_into('<Q', hdr, 24, my_lba)
+        struct.pack_into('<Q', hdr, 32, alt_lba)
+        struct.pack_into('<Q', hdr, 40, first_usable_lba)
+        struct.pack_into('<Q', hdr, 48, last_usable_lba)
+        hdr[56:72] = guid_to_bytes(disk_guid)
+        struct.pack_into('<Q', hdr, 72, entries_lba)
+        struct.pack_into('<I', hdr, 80, GPT_ENTRY_COUNT)
+        struct.pack_into('<I', hdr, 84, GPT_ENTRY_SIZE)
+        struct.pack_into('<I', hdr, 88, entries_crc)
+        # Calculate header CRC32 (over first GPT_HEADER_SIZE bytes with CRC field zeroed)
+        header_crc = zlib.crc32(bytes(hdr[:GPT_HEADER_SIZE])) & 0xFFFFFFFF
+        struct.pack_into('<I', hdr, 16, header_crc)
+        return hdr
+
+    # Primary header at LBA 1, entries at LBA 2
+    primary = make_header(1, total_sectors - 1, 2)
+    image[512:1024] = primary
+    entries_offset = 2 * 512
+    image[entries_offset:entries_offset + len(entries)] = entries
+
+    # Backup entries just before backup header
+    backup_entries_lba = total_sectors - 1 - entry_sectors
+    backup_entries_offset = backup_entries_lba * 512
+    image[backup_entries_offset:backup_entries_offset + len(entries)] = entries
+
+    # Backup header at last LBA
+    backup = make_header(total_sectors - 1, 1, backup_entries_lba)
+    backup_offset = (total_sectors - 1) * 512
+    image[backup_offset:backup_offset + 512] = backup
+
+    print(f"  GPT: disk_guid={disk_guid}")
+    print(f"  GPT: first_usable={first_usable_lba}, last_usable={last_usable_lba}")
+    for i, (_, _, first, last, name) in enumerate(partitions):
+        print(f"  GPT: partition {i + 1}: '{name}' LBA {first}-{last} ({(last - first + 1) * 512 // 1024} KiB)")
+
+
+# =====================================================================
+# Image creation: BIOS mode
+# =====================================================================
+
+def create_bios_image(args):
+    """Create a BIOS-bootable disk image (MBR + Stage 1/2 + kernel sectors)."""
+    image_size = args.image_size * 1024 * 1024
+
     with open(args.stage1, "rb") as f:
         stage1 = f.read()
     if len(stage1) != SECTOR_SIZE:
@@ -642,8 +754,7 @@ def main():
     with open(args.kernel, "rb") as f:
         kernel_elf = f.read()
 
-    # Convert ELF to flat binary (segments placed at their physical addresses)
-    KERNEL_LMA = 0x00100000  # Must match link.ld KERNEL_LMA
+    KERNEL_LMA = 0x00100000
     print(f"Kernel ELF: {len(kernel_elf)} bytes")
     kernel = elf_to_flat_binary(kernel_elf, KERNEL_LMA)
 
@@ -654,54 +765,176 @@ def main():
     print(f"Stage 2: {len(stage2)} bytes ({(len(stage2) + SECTOR_SIZE - 1) // SECTOR_SIZE} sectors)")
     print(f"Kernel:  {len(kernel)} bytes ({kernel_sectors} sectors, starting at sector {kernel_start_sector})")
 
-    # Check kernel doesn't overlap filesystem
     kernel_end_sector = kernel_start_sector + kernel_sectors
     if kernel_end_sector > args.fs_start:
         print(f"ERROR: Kernel ends at sector {kernel_end_sector}, which overlaps "
               f"filesystem at sector {args.fs_start}", file=sys.stderr)
         sys.exit(1)
 
-    # Patch stage2 with kernel location info
     if len(stage2) >= 8:
         stage2_bytes = bytearray(stage2)
         struct.pack_into("<H", stage2_bytes, 2, kernel_sectors)
         struct.pack_into("<I", stage2_bytes, 4, kernel_start_sector)
         stage2 = bytes(stage2_bytes)
 
-    # Create image
     image = bytearray(image_size)
-
-    # Write Stage 1 at sector 0
     image[0:len(stage1)] = stage1
 
-    # Write Stage 2 at sector 1
     stage2_offset = SECTOR_SIZE
     image[stage2_offset:stage2_offset + len(stage2)] = stage2
 
-    # Write kernel flat binary at sector 64
     kernel_offset = kernel_start_sector * SECTOR_SIZE
     image[kernel_offset:kernel_offset + len(kernel)] = kernel
 
-    # Create FAT16 filesystem
     fs_sector_count = (image_size // SECTOR_SIZE) - args.fs_start
     print(f"\nFAT16 filesystem:")
     print(f"  Start sector: {args.fs_start} (offset 0x{args.fs_start * SECTOR_SIZE:X})")
-    print(f"  Size: {fs_sector_count} sectors ({fs_sector_count * SECTOR_SIZE // (1024*1024)} MiB)")
+    print(f"  Size: {fs_sector_count} sectors ({fs_sector_count * SECTOR_SIZE // (1024 * 1024)} MiB)")
 
     fat = Fat16Formatter(image, args.fs_start, fs_sector_count)
     fat.write_boot_sector()
     fat.init_fat()
 
-    # Populate filesystem from sysroot
     if args.sysroot:
         print(f"  Populating from sysroot: {args.sysroot}")
         fat.populate_from_sysroot(args.sysroot)
+
+    with open(args.output, "wb") as f:
+        f.write(image)
+
+    print(f"\nDisk image created: {args.output} ({args.image_size} MiB)")
+
+
+# =====================================================================
+# Image creation: UEFI mode
+# =====================================================================
+
+def create_uefi_image(args):
+    """Create a UEFI-bootable disk image (GPT + ESP + FAT16 data partition)."""
+    if not args.bootloader:
+        print("ERROR: --bootloader required for UEFI mode", file=sys.stderr)
+        sys.exit(1)
+
+    image_size = args.image_size * 1024 * 1024
+    total_sectors = image_size // SECTOR_SIZE
+
+    # Read EFI bootloader
+    with open(args.bootloader, 'rb') as f:
+        efi_data = f.read()
+
+    # If --kernel is given, convert ELF to flat binary and inject into sysroot
+    kernel_flat = None
+    if args.kernel:
+        with open(args.kernel, 'rb') as f:
+            kernel_elf = f.read()
+        KERNEL_LMA = 0x00100000
+        print(f"Kernel ELF: {len(kernel_elf)} bytes")
+        kernel_flat = elf_to_flat_binary(kernel_elf, KERNEL_LMA)
+
+    print(f"\nUEFI image: {args.image_size} MiB ({total_sectors} sectors)")
+    print(f"EFI bootloader: {len(efi_data)} bytes")
+    if kernel_flat:
+        print(f"Kernel flat binary: {len(kernel_flat)} bytes")
+
+    # Partition layout
+    esp_start = 2048
+    esp_sectors = 6144  # 3 MiB (data partition must start at LBA 8192 to match kernel FAT16_PARTITION_LBA)
+    esp_end = esp_start + esp_sectors - 1
+
+    data_start = esp_start + esp_sectors  # 8192 — matches kernel's FAT16_PARTITION_LBA
+    entry_sectors = (GPT_ENTRY_COUNT * GPT_ENTRY_SIZE + 511) // 512
+    data_end = total_sectors - 1 - entry_sectors - 1  # before backup GPT
+    data_sectors = data_end - data_start + 1
+
+    print(f"\nPartition layout:")
+    print(f"  ESP:  sectors {esp_start}-{esp_end} ({esp_sectors * 512 // 1024} KiB)")
+    print(f"  Data: sectors {data_start}-{data_end} ({data_sectors * 512 // (1024 * 1024)} MiB)")
+
+    # Create image
+    image = bytearray(image_size)
+
+    # Write protective MBR
+    write_protective_mbr(image, total_sectors)
+
+    # Write GPT
+    partitions = [
+        (ESP_TYPE_GUID, uuid.uuid4(), esp_start, esp_end, "EFI System"),
+        (BASIC_DATA_TYPE_GUID, uuid.uuid4(), data_start, data_end, "anyOS Data"),
+    ]
+    create_gpt(image, total_sectors, partitions)
+
+    # Format ESP as FAT16 (1 sector/cluster for small partition)
+    print(f"\nESP filesystem:")
+    esp_fat = Fat16Formatter(image, esp_start, esp_sectors, sectors_per_cluster=1)
+    esp_fat.write_boot_sector()
+    esp_fat.init_fat()
+
+    # Create /EFI/BOOT/BOOTX64.EFI in ESP
+    efi_dir = esp_fat.create_directory(None, "EFI", is_root_parent=True)
+    boot_dir = esp_fat.create_directory(efi_dir, "BOOT", is_root_parent=False)
+    esp_fat.add_file(boot_dir, "BOOTX64.EFI", efi_data, is_root_parent=False)
+
+    # Format data partition as FAT16
+    print(f"\nData filesystem:")
+    data_fat = Fat16Formatter(image, data_start, data_sectors)
+    data_fat.write_boot_sector()
+    data_fat.init_fat()
+
+    # If kernel flat binary available, write it to sysroot temporarily
+    kernel_tmp_path = None
+    if kernel_flat and args.sysroot:
+        system_dir = os.path.join(args.sysroot, "system")
+        os.makedirs(system_dir, exist_ok=True)
+        kernel_tmp_path = os.path.join(system_dir, "kernel.bin")
+        with open(kernel_tmp_path, 'wb') as f:
+            f.write(kernel_flat)
+        print(f"  Wrote kernel.bin to sysroot ({len(kernel_flat)} bytes)")
+
+    # Populate data partition from sysroot
+    if args.sysroot:
+        print(f"  Populating from sysroot: {args.sysroot}")
+        data_fat.populate_from_sysroot(args.sysroot)
+
+    # Clean up temporary kernel.bin from sysroot
+    if kernel_tmp_path and os.path.exists(kernel_tmp_path):
+        os.remove(kernel_tmp_path)
 
     # Write image
     with open(args.output, "wb") as f:
         f.write(image)
 
-    print(f"\nDisk image created: {args.output} ({args.image_size} MiB)")
+    print(f"\nUEFI disk image created: {args.output} ({args.image_size} MiB)")
+
+
+# =====================================================================
+# Main entry point
+# =====================================================================
+
+def main():
+    parser = argparse.ArgumentParser(description="Create anyOS disk image")
+    parser.add_argument("--uefi", action="store_true",
+                        help="Create UEFI (GPT+ESP) image instead of BIOS (MBR)")
+    parser.add_argument("--bootloader", default=None,
+                        help="Path to UEFI bootloader .efi file (required for --uefi)")
+    parser.add_argument("--stage1", default=None, help="Path to stage1.bin (BIOS mode)")
+    parser.add_argument("--stage2", default=None, help="Path to stage2.bin (BIOS mode)")
+    parser.add_argument("--kernel", default=None, help="Path to kernel ELF")
+    parser.add_argument("--output", required=True, help="Output disk image path")
+    parser.add_argument("--image-size", type=int, default=64, help="Image size in MiB")
+    parser.add_argument("--sysroot", default=None,
+                        help="Path to sysroot directory to populate filesystem")
+    parser.add_argument("--fs-start", type=int, default=2048,
+                        help="Start sector for FAT16 filesystem (BIOS mode only)")
+    args = parser.parse_args()
+
+    if args.uefi:
+        create_uefi_image(args)
+    else:
+        if not args.stage1 or not args.stage2 or not args.kernel:
+            print("ERROR: --stage1, --stage2, and --kernel are required for BIOS mode",
+                  file=sys.stderr)
+            sys.exit(1)
+        create_bios_image(args)
 
 
 if __name__ == "__main__":

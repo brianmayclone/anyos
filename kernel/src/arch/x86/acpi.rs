@@ -116,13 +116,14 @@ fn acpi_unmap(num_pages: usize) {
 }
 
 /// Discover ACPI tables and parse MADT for SMP information.
-pub fn init() -> Option<AcpiInfo> {
-    let rsdp = find_rsdp()?;
-
-    crate::serial_println!("  ACPI: RSDP found at {:#010x}, RSDT at {:#010x}",
-        rsdp as *const _ as u32, unsafe { core::ptr::addr_of!((*rsdp).rsdt_address).read_unaligned() });
+///
+/// If `rsdp_hint` is non-zero, it is used as the physical address of the RSDP
+/// (provided by the UEFI bootloader). Otherwise the BIOS ROM area is scanned.
+pub fn init(rsdp_hint: u32) -> Option<AcpiInfo> {
+    let rsdp = find_rsdp(rsdp_hint)?;
 
     let rsdt_phys = unsafe { core::ptr::addr_of!((*rsdp).rsdt_address).read_unaligned() };
+    crate::serial_println!("  ACPI: RSDP found, RSDT at {:#010x}", rsdt_phys);
 
     // Map the RSDT region (map 16 pages = 64 KiB to cover RSDT + nearby tables)
     let rsdt_virt = acpi_map(rsdt_phys, 0x10000);
@@ -142,24 +143,27 @@ pub fn init() -> Option<AcpiInfo> {
 
     crate::serial_println!("  ACPI: RSDT has {} table entries", num_entries);
 
-    // Walk RSDT entries to find MADT (signature "APIC")
+    // Pre-read all RSDT entry addresses into a local array BEFORE any
+    // remapping. acpi_map() reuses the same virtual window, so remapping
+    // for a table at a different physical location destroys the RSDT mapping
+    // and makes entries_base point to garbage on subsequent iterations.
     let entries_base = (rsdt_virt + header_size as u64) as *const u32;
+    let mut table_addrs = [0u32; 32]; // max 32 RSDT entries
+    let count = core::cmp::min(num_entries as usize, table_addrs.len());
+    for i in 0..count {
+        table_addrs[i] = unsafe { entries_base.add(i).read_unaligned() };
+    }
 
-    for i in 0..num_entries {
-        let table_phys = unsafe { entries_base.add(i as usize).read_unaligned() };
+    // Now we can safely remap the ACPI window for each table
+    acpi_unmap(16);
 
-        // Check if this table is within our current mapping
-        // If not, map it separately
-        let table_page = table_phys & !0xFFF;
-        let rsdt_page = rsdt_phys & !0xFFF;
-        let table_virt = if table_page >= rsdt_page && table_page < rsdt_page + 0x10000 {
-            // Table is within the RSDT mapping window
-            ACPI_MAP_BASE + (table_phys - rsdt_page) as u64
-        } else {
-            // Table is elsewhere — remap
-            acpi_map(table_phys, 0x1000)
-        };
+    for i in 0..count {
+        let table_phys = table_addrs[i];
+        if table_phys == 0 {
+            continue;
+        }
 
+        let table_virt = acpi_map(table_phys, 0x1000);
         let table = table_virt as *const AcpiSdtHeader;
         let table_sig = unsafe { core::ptr::addr_of!((*table).signature).read_unaligned() };
 
@@ -173,16 +177,34 @@ pub fn init() -> Option<AcpiInfo> {
             acpi_unmap(ACPI_MAP_PAGES);
             return result;
         }
+
+        acpi_unmap(1);
     }
 
-    acpi_unmap(16);
     crate::serial_println!("  ACPI: MADT not found");
     None
 }
 
 /// Search for the RSDP structure.
-/// Searches EBDA and the 0xE0000-0xFFFFF BIOS ROM area.
-fn find_rsdp() -> Option<*const Rsdp> {
+/// If `hint` is non-zero, use it directly (UEFI-provided address).
+/// Otherwise searches EBDA and the 0xE0000-0xFFFFF BIOS ROM area.
+fn find_rsdp(hint: u32) -> Option<*const Rsdp> {
+    // If bootloader provided the RSDP address, use it directly.
+    // The RSDP may be above the 128 MiB identity map (e.g. OVMF places it
+    // at ~1 GiB), so we map it through the ACPI virtual window.
+    if hint != 0 {
+        let rsdp_virt = acpi_map(hint, core::mem::size_of::<Rsdp>() as u32);
+        let rsdp = rsdp_virt as *const Rsdp;
+        let sig = unsafe { core::ptr::addr_of!((*rsdp).signature).read_unaligned() };
+        if sig == RSDP_SIGNATURE && validate_rsdp_checksum(rsdp) {
+            crate::serial_println!("  ACPI: Using RSDP from bootloader at phys {:#010x} (virt {:#018x})", hint, rsdp_virt);
+            // Don't unmap — caller (init) will use rsdp pointer and remap as needed
+            return Some(rsdp);
+        }
+        crate::serial_println!("  ACPI: Bootloader RSDP hint {:#010x} invalid, falling back to scan", hint);
+        acpi_unmap(1);
+    }
+
     // Search the main BIOS area (0x000E0000 - 0x000FFFFF)
     let start = 0x000E0000usize;
     let end = 0x00100000usize;

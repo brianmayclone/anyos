@@ -837,32 +837,15 @@ pub extern "C" fn irq_handler(frame: &InterruptFrame) {
     if irq == 16 {
         let cpu_id = crate::arch::x86::apic::lapic_id() as usize;
 
-        // === DEBUG: Compare TSC-based uptime vs PIT IRQ ticks (every ~5s) ===
-        // PIT TICK_COUNT is an independent clock (IRQ-based, loses ~2.7%).
-        // If TSC drifts, the gap between tsc_uptime and pit_uptime changes.
-        // Stable TSC → pit stays consistently ~2.7% behind.
+        // === DEBUG: Show TSC-based uptime every ~5s (LAPIC timer fires at 1000Hz) ===
         if cpu_id == 0 {
             static LAPIC_TICK_CTR: AtomicU32 = AtomicU32::new(0);
             let ctr = LAPIC_TICK_CTR.fetch_add(1, Ordering::Relaxed) + 1;
             if ctr % 5000 == 0 {
-                let tsc_ticks = crate::arch::x86::pit::get_ticks();
-                let pit_ticks = crate::arch::x86::pit::TICK_COUNT.load(Ordering::Relaxed);
-
-                // Drift = how far PIT is behind TSC (in per-mille)
-                // Stable: ~27 per-mille (2.7%). If TSC drifts, this changes.
-                let drift_pm = if tsc_ticks > 0 {
-                    ((tsc_ticks - pit_ticks) as u64 * 1000 / tsc_ticks as u64) as u32
-                } else {
-                    0
-                };
-
-                uart_puts(b"[TICK] tsc=");
-                uart_put_dec(tsc_ticks / 1000);
-                uart_puts(b"s pit=");
-                uart_put_dec(pit_ticks / 1000);
-                uart_puts(b"s drift=");
-                uart_put_dec(drift_pm);
-                uart_puts(b"pm\n");
+                let uptime_ms = crate::arch::x86::pit::get_ticks();
+                uart_puts(b"[TICK] uptime=");
+                uart_put_dec((uptime_ms / 1000) as u32);
+                uart_puts(b"s\n");
             }
         }
         // === END DEBUG ===

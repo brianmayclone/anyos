@@ -14,7 +14,7 @@ pub fn segmented(win: u32, x: i32, y: i32, w: u32, h: u32, items: &[&str], selec
         let n = nul_copy(item, &mut buf[pos..]) as usize;
         pos += n + 1;
     }
-    (exports().segmented_render)(win, x, y, w, h, buf.as_ptr(), pos as u32, offsets.as_ptr(), selected as u32);
+    (exports().segmented_render)(win, x, y, w, h, buf.as_ptr(), items.len().min(16) as u32, offsets.as_ptr(), selected as u32);
 }
 
 pub fn segmented_hit_test(x: i32, y: i32, w: u32, h: u32, num_segments: usize, mx: i32, my: i32) -> Option<usize> {

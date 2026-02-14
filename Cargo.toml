@@ -83,6 +83,7 @@ exclude = [
   "programs/dll/librender_client",
   "programs/dll/libcompositor",
   "programs/dll/libcompositor_client",
+  "bootloader/uefi",
 ]
 resolver = "2"
 

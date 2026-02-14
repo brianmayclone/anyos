@@ -373,9 +373,8 @@ pub fn show_exception(frame: &InterruptFrame, exception_name: &str) {
 
 /// Write system info (uptime, CPU count, memory)
 fn write_system_info(w: &mut RsodWriter) {
-    let ticks = crate::arch::x86::pit::TICK_COUNT.load(Ordering::Relaxed);
-    let tick_hz = crate::arch::x86::pit::TICK_HZ;
-    let uptime_secs = ticks / tick_hz;
+    let ticks = crate::arch::x86::pit::get_ticks();
+    let uptime_secs = (ticks / 1000) as u32;
     let uptime_mins = uptime_secs / 60;
     let uptime_hours = uptime_mins / 60;
     let cpu_count = crate::arch::x86::smp::cpu_count();

@@ -134,7 +134,10 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
     } else if fd >= 3 {
         let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
         match crate::fs::vfs::write(fd, buf) {
-            Ok(n) => n as u32,
+            Ok(n) => {
+                crate::task::scheduler::record_io_write(n as u64);
+                n as u32
+            }
             Err(_) => u32::MAX,
         }
     } else {
@@ -167,7 +170,10 @@ pub fn sys_read(fd: u32, buf_ptr: u32, len: u32) -> u32 {
         }
         let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
         match crate::fs::vfs::read(fd, buf) {
-            Ok(n) => n as u32,
+            Ok(n) => {
+                crate::task::scheduler::record_io_read(n as u64);
+                n as u32
+            }
             Err(_) => u32::MAX,
         }
     } else {
@@ -570,11 +576,12 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
             0
         }
         1 => {
-            // Thread list: 36 bytes each
-            // [tid:u32, prio:u8, state:u8, arch:u8, pad:u8, name:24bytes, cpu_ticks:u32]
+            // Thread list: 52 bytes each
+            // [tid:u32, prio:u8, state:u8, arch:u8, pad:u8, name:24bytes,
+            //  cpu_ticks:u32, io_read_bytes:u64, io_write_bytes:u64]
             let threads = crate::task::scheduler::list_threads();
             if buf_ptr != 0 && buf_size > 0 {
-                let entry_size = 36usize;
+                let entry_size = 52usize;
                 let max = (buf_size as usize) / entry_size;
                 let buf = unsafe {
                     core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize)
@@ -594,6 +601,9 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
                     buf[off + 8 + n] = 0;
                     // cpu_ticks at offset 32
                     buf[off + 32..off + 36].copy_from_slice(&t.cpu_ticks.to_le_bytes());
+                    // io_read_bytes at offset 36, io_write_bytes at offset 44
+                    buf[off + 36..off + 44].copy_from_slice(&t.io_read_bytes.to_le_bytes());
+                    buf[off + 44..off + 52].copy_from_slice(&t.io_write_bytes.to_le_bytes());
                 }
             }
             threads.len() as u32
@@ -626,6 +636,56 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
                 }
             }
             0
+        }
+        4 => {
+            // Hardware info: 96-byte struct
+            //   [0..48]  CPU brand string (null-terminated)
+            //   [48..64] CPU vendor string (null-terminated)
+            //   [64..68] TSC frequency in MHz (u32 LE)
+            //   [68..72] CPU count (u32 LE)
+            //   [72..76] Boot mode: 0=BIOS, 1=UEFI (u32 LE)
+            //   [76..80] Total physical memory in MiB (u32 LE)
+            //   [80..84] Free physical memory in MiB (u32 LE)
+            //   [84..88] Framebuffer width (u32 LE)
+            //   [88..92] Framebuffer height (u32 LE)
+            //   [92..96] Framebuffer BPP (u32 LE)
+            if buf_ptr == 0 || buf_size < 96 { return u32::MAX; }
+            if !is_valid_user_ptr(buf_ptr as u64, 96) { return u32::MAX; }
+            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, 96) };
+            buf.fill(0);
+
+            // CPU brand (48 bytes) and vendor (16 bytes)
+            let brand = crate::arch::x86::cpuid::brand();
+            let vendor = crate::arch::x86::cpuid::vendor();
+            buf[0..48].copy_from_slice(brand);
+            buf[48..64].copy_from_slice(vendor);
+
+            // TSC MHz
+            let tsc_mhz = (crate::arch::x86::pit::tsc_hz() / 1_000_000) as u32;
+            buf[64..68].copy_from_slice(&tsc_mhz.to_le_bytes());
+
+            // CPU count
+            let ncpu = crate::arch::x86::smp::cpu_count() as u32;
+            buf[68..72].copy_from_slice(&ncpu.to_le_bytes());
+
+            // Boot mode
+            let bmode = crate::boot_mode() as u32;
+            buf[72..76].copy_from_slice(&bmode.to_le_bytes());
+
+            // Physical memory in MiB
+            let total_mib = (crate::memory::physical::total_frames() as u32 * 4) / 1024;
+            let free_mib = (crate::memory::physical::free_frames() as u32 * 4) / 1024;
+            buf[76..80].copy_from_slice(&total_mib.to_le_bytes());
+            buf[80..84].copy_from_slice(&free_mib.to_le_bytes());
+
+            // Framebuffer info
+            if let Some(fb) = crate::drivers::framebuffer::info() {
+                buf[84..88].copy_from_slice(&(fb.width as u32).to_le_bytes());
+                buf[88..92].copy_from_slice(&(fb.height as u32).to_le_bytes());
+                buf[92..96].copy_from_slice(&(fb.bpp as u32).to_le_bytes());
+            }
+
+            96
         }
         _ => u32::MAX,
     }

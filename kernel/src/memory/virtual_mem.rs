@@ -19,6 +19,9 @@ const PAGE_PRESENT: u64 = 1 << 0;
 const PAGE_WRITABLE: u64 = 1 << 1;
 /// Page table entry flag: page is accessible from Ring 3 (user mode).
 const PAGE_USER: u64 = 1 << 2;
+/// Page table entry flag: Page-level Write-Through.
+/// With PAT1 reprogrammed to WC, PWT=1 selects Write-Combining.
+const PAGE_PWT: u64 = 1 << 3;
 
 /// Number of entries in a page table (512 for x86-64).
 const ENTRIES_PER_TABLE: usize = 512;
@@ -237,14 +240,16 @@ pub fn init(boot_info: &BootInfo) {
             let pt = pt_phys as *mut u64;
 
             unsafe {
-                pt.add(virt.pt_index()).write_volatile(addr | PAGE_PRESENT | PAGE_WRITABLE);
+                // PAGE_PWT selects PAT1 = Write-Combining (programmed in pat::init).
+                // Without WC, every pixel write goes directly to the bus (~100x slower).
+                pt.add(virt.pt_index()).write_volatile(addr | PAGE_PRESENT | PAGE_WRITABLE | PAGE_PWT);
             }
 
             addr += FRAME_SIZE as u64;
         }
 
         crate::serial_println!(
-            "Framebuffer mapped: {:#010x}-{:#010x} ({} pages)",
+            "Framebuffer mapped: {:#010x}-{:#010x} ({} pages, WC)",
             fb_start, fb_end, (fb_end - fb_start) / FRAME_SIZE as u64
         );
     }
@@ -516,12 +521,14 @@ pub fn create_user_page_directory() -> Option<PhysAddr> {
 /// making `map_page` silently modify the wrong process's page tables.
 pub fn map_page_in_pd(pd_phys: PhysAddr, virt: VirtAddr, phys: PhysAddr, flags: u64) {
     unsafe {
+        let rflags: u64;
+        asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
         asm!("cli", options(nomem, nostack));
         let old_cr3 = current_cr3();
         asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
         map_page(virt, phys, flags);
         asm!("mov cr3, {}", in(reg) old_cr3);
-        asm!("sti", options(nomem, nostack));
+        asm!("push {}; popfq", in(reg) rflags, options(nomem));
     }
 }
 
@@ -531,6 +538,8 @@ pub fn map_page_in_pd(pd_phys: PhysAddr, virt: VirtAddr, phys: PhysAddr, flags: 
 /// Interrupts are disabled for the duration: same race as `map_page_in_pd`.
 pub fn is_mapped_in_pd(pd_phys: PhysAddr, virt: VirtAddr) -> bool {
     unsafe {
+        let rflags: u64;
+        asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
         asm!("cli", options(nomem, nostack));
         let old_cr3 = current_cr3();
         asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
@@ -557,7 +566,7 @@ pub fn is_mapped_in_pd(pd_phys: PhysAddr, virt: VirtAddr) -> bool {
         };
 
         asm!("mov cr3, {}", in(reg) old_cr3);
-        asm!("sti", options(nomem, nostack));
+        asm!("push {}; popfq", in(reg) rflags, options(nomem));
         mapped
     }
 }

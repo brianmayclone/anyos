@@ -23,6 +23,15 @@ mod syscall;
 mod task;
 
 use boot_info::BootInfo;
+use core::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
+
+/// Boot mode: 0 = Legacy BIOS, 1 = UEFI.
+static BOOT_MODE: AtomicU8 = AtomicU8::new(0);
+
+/// Get the boot mode (0 = BIOS, 1 = UEFI).
+pub fn boot_mode() -> u8 {
+    BOOT_MODE.load(AtomicOrdering::Relaxed)
+}
 
 /// Kernel entry point called from assembly after boot.
 ///
@@ -45,6 +54,10 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     } else {
         serial_println!("BootInfo validated (magic OK)");
     }
+
+    let bmode = unsafe { core::ptr::addr_of!((*boot_info).boot_mode).read_unaligned() };
+    BOOT_MODE.store(bmode, AtomicOrdering::Relaxed);
+    serial_println!("Boot mode: {}", if bmode == 1 { "UEFI" } else { "BIOS" });
 
     let kstart = unsafe { core::ptr::addr_of!((*boot_info).kernel_phys_start).read_unaligned() };
     let kend = unsafe { core::ptr::addr_of!((*boot_info).kernel_phys_end).read_unaligned() };
@@ -70,7 +83,12 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     arch::x86::pit::init();
     serial_println!("[OK] PIT configured at {} Hz", arch::x86::pit::TICK_HZ);
 
+    // Calibrate TSC early using PIT channel 2 polled readback (no IRQs needed).
+    // Must be done before LAPIC timer calibration which depends on TSC.
+    arch::x86::pit::calibrate_tsc();
+
     // Phase 3: Memory
+    arch::x86::pat::init(); // Program PAT before mapping framebuffer with WC
     memory::physical::init(boot_info);
     memory::virtual_mem::init(boot_info);
     memory::heap::init();
@@ -89,7 +107,8 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     graphics::cc_font::init();
 
     // Phase 4b: ACPI + APIC (requires heap for Vec, so after memory init)
-    let acpi_info = arch::x86::acpi::init();
+    let rsdp_addr = unsafe { core::ptr::addr_of!((*boot_info).rsdp_addr).read_unaligned() };
+    let acpi_info = arch::x86::acpi::init(rsdp_addr);
     if let Some(ref info) = acpi_info {
         arch::x86::apic::init_bsp(info.lapic_address);
         arch::x86::ioapic::init(&info.io_apics, &info.isos);
@@ -111,16 +130,20 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     // Note: probe_and_bind_all() is deferred to after TSC calibration
     // because USB controller init uses delay_ms() which needs working timers.
     drivers::hal::init();
+    drivers::boot_console::tick_spinner();
     drivers::pci::scan_all();
     drivers::pci::print_devices();
+    drivers::boot_console::tick_spinner();
 
     // Phase 5c: E1000 NIC + Network Stack
     if drivers::network::e1000::init() {
         net::init();
     }
+    drivers::boot_console::tick_spinner();
 
     // Phase 6: Scheduler (before interrupts, does not need filesystem)
     task::scheduler::init();
+    drivers::boot_console::tick_spinner();
 
     // Phase 7: Register IRQ handlers and enable interrupts
     arch::x86::irq::register_irq(1, irq_keyboard);
@@ -150,13 +173,11 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     drivers::serial::enable_async();
     serial_println!("[OK] Serial TX now async (IRQ 4)");
 
-    // Phase 7b: Calibrate LAPIC timer (needs PIT IRQ running, so after sti)
+    // Phase 7b: Calibrate LAPIC timer using TSC (already calibrated in Phase 2).
+    // Uses TSC-based 10ms measurement — no PIT IRQ dependency.
     if acpi_info.is_some() {
         arch::x86::apic::calibrate_timer(1000);
     }
-
-    // Phase 7c: Calibrate TSC against PIT for missed-tick recovery
-    arch::x86::pit::calibrate_tsc();
 
     // Phase 7d: HAL driver binding (deferred from Phase 5b).
     // USB controller init uses delay_ms() which requires working timers
@@ -240,6 +261,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             serial_println!("[OK] Hardware cursor enabled (splash mode)");
         }
 
+        // Stop boot spinner — compositor will take over the framebuffer
+        drivers::boot_console::stop_spinner();
+
         // Disable interrupts while spawning threads
         unsafe { core::arch::asm!("cli"); }
 
@@ -275,14 +299,16 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
 
 // IRQ handler functions for dynamic IRQ dispatch
 
-/// PIT IRQ 0 (APIC mode): timekeeping only. LAPIC timer handles scheduling.
+/// PIT IRQ 0 (APIC mode): timekeeping + boot spinner animation.
 fn irq_pit_tick(_irq: u8) {
     crate::arch::x86::pit::tick();
+    crate::drivers::boot_console::tick_spinner();
 }
 
-/// PIT IRQ 0 (legacy PIC mode): timekeeping AND scheduling (no LAPIC timer).
+/// PIT IRQ 0 (legacy PIC mode): timekeeping, spinner, AND scheduling.
 fn irq_pit_tick_and_schedule(_irq: u8) {
     crate::arch::x86::pit::tick();
+    crate::drivers::boot_console::tick_spinner();
     crate::task::scheduler::schedule_tick();
 }
 

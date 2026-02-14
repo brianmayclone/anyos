@@ -10,6 +10,7 @@ pub mod gdt;
 pub mod idt;
 pub mod ioapic;
 pub mod irq;
+pub mod pat;
 pub mod pic;
 pub mod pit;
 pub mod port;

@@ -8,6 +8,10 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 static DETECTED: AtomicBool = AtomicBool::new(false);
 static mut FEATURES: CpuFeatures = CpuFeatures::empty();
+/// 12-byte vendor string from CPUID leaf 0 (e.g. "GenuineIntel"), null-padded to 16.
+static mut CPU_VENDOR: [u8; 16] = [0; 16];
+/// 48-byte brand string from CPUID leaves 0x80000002-4 (e.g. "QEMU Virtual CPU...").
+static mut CPU_BRAND: [u8; 48] = [0; 48];
 
 /// CPU feature flags detected via CPUID.
 #[derive(Debug, Clone, Copy)]
@@ -97,6 +101,15 @@ fn cpuid(leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
 pub fn detect() {
     let mut f = CpuFeatures::empty();
 
+    // Leaf 0: vendor string (EBX-EDX-ECX = 12 bytes, e.g. "GenuineIntel")
+    let (_max_leaf0, vbx, vcx, vdx) = cpuid(0, 0);
+    unsafe {
+        CPU_VENDOR[0..4].copy_from_slice(&vbx.to_le_bytes());
+        CPU_VENDOR[4..8].copy_from_slice(&vdx.to_le_bytes());
+        CPU_VENDOR[8..12].copy_from_slice(&vcx.to_le_bytes());
+        // bytes 12..16 stay zero (null padding)
+    }
+
     // Leaf 1: basic feature flags
     let (_eax, _ebx, ecx, edx) = cpuid(1, 0);
     f.fpu = edx & (1 << 0) != 0;
@@ -122,6 +135,20 @@ pub fn detect() {
         f.syscall = edx & (1 << 11) != 0;
     }
 
+    // Extended leaves 0x80000002-4: brand string (3 × 16 = 48 bytes)
+    if max_ext >= 0x80000004 {
+        unsafe {
+            for i in 0u32..3 {
+                let (a, b, c, d) = cpuid(0x80000002 + i, 0);
+                let off = (i as usize) * 16;
+                CPU_BRAND[off..off + 4].copy_from_slice(&a.to_le_bytes());
+                CPU_BRAND[off + 4..off + 8].copy_from_slice(&b.to_le_bytes());
+                CPU_BRAND[off + 8..off + 12].copy_from_slice(&c.to_le_bytes());
+                CPU_BRAND[off + 12..off + 16].copy_from_slice(&d.to_le_bytes());
+            }
+        }
+    }
+
     // Leaf 7 subleaf 0: structured extended features
     let max_leaf = cpuid(0, 0).0;
     if max_leaf >= 7 {
@@ -137,6 +164,17 @@ pub fn detect() {
     // Store and mark detected
     unsafe { FEATURES = f; }
     DETECTED.store(true, Ordering::Release);
+
+    // Log vendor and brand
+    let vendor_str = unsafe {
+        let len = CPU_VENDOR.iter().position(|&b| b == 0).unwrap_or(16);
+        core::str::from_utf8_unchecked(&CPU_VENDOR[..len])
+    };
+    let brand_str = unsafe {
+        let len = CPU_BRAND.iter().position(|&b| b == 0).unwrap_or(48);
+        core::str::from_utf8_unchecked(&CPU_BRAND[..len])
+    };
+    crate::serial_println!("  CPU: {} / {}", vendor_str, brand_str);
 
     // Log results
     crate::serial_println!("[OK] CPUID features detected:");
@@ -169,4 +207,14 @@ pub fn detect() {
 pub fn features() -> CpuFeatures {
     assert!(DETECTED.load(Ordering::Acquire), "CPUID not yet detected");
     unsafe { FEATURES }
+}
+
+/// 12-byte vendor string from CPUID leaf 0, null-padded to 16 bytes.
+pub fn vendor() -> &'static [u8; 16] {
+    unsafe { &CPU_VENDOR }
+}
+
+/// 48-byte brand string from CPUID leaves 0x80000002-4.
+pub fn brand() -> &'static [u8; 48] {
+    unsafe { &CPU_BRAND }
 }

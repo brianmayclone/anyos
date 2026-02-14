@@ -19,9 +19,13 @@ pub struct BootInfo {
     pub framebuffer_height: u32,
     pub framebuffer_bpp: u8,
     pub boot_drive: u8,
-    pub _padding: [u8; 2],
+    /// Boot mode: 0 = Legacy BIOS, 1 = UEFI.
+    pub boot_mode: u8,
+    pub _padding: u8,
     pub kernel_phys_start: u32,
     pub kernel_phys_end: u32,
+    /// Physical address of the ACPI RSDP (set by UEFI bootloader, 0 for BIOS).
+    pub rsdp_addr: u32,
 }
 
 /// Magic value (`"ANYO"` in ASCII) used to validate the boot info struct.
