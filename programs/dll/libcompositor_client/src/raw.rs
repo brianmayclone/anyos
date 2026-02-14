@@ -62,6 +62,12 @@ pub struct LibcompositorExports {
         new_height: u32,
         out_new_shm_id: *mut u32,
     ) -> *mut u32,
+
+    pub tray_poll_event: extern "C" fn(
+        channel_id: u32,
+        sub_id: u32,
+        buf: *mut [u32; 5],
+    ) -> u32,
 }
 
 /// Get a reference to the libcompositor export table.

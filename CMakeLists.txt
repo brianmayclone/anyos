@@ -370,6 +370,7 @@ add_rust_system_program(fontviewer  ${CMAKE_SOURCE_DIR}/programs/system/fontview
 add_rust_system_program(clock       ${CMAKE_SOURCE_DIR}/programs/system/clock)
 add_rust_system_program(screenshot  ${CMAKE_SOURCE_DIR}/programs/system/screenshot)
 add_rust_system_program(netmon      ${CMAKE_SOURCE_DIR}/programs/system/netmon)
+add_rust_system_program(audiomon    ${CMAKE_SOURCE_DIR}/programs/system/audiomon)
 
 # Build compositor binary (nested path: /system/compositor/compositor)
 set(COMPOSITOR_SRC_DIR ${CMAKE_SOURCE_DIR}/programs/system/compositor/compositor)

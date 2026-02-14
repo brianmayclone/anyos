@@ -797,3 +797,25 @@ pub fn poll_ports() {
         }
     }
 }
+
+/// Public control transfer for HID polling. Locks EHCI_CTRL internally.
+/// Returns the data read from the device on success.
+pub fn hid_control_transfer(
+    dev_addr: u8,
+    speed: UsbSpeed,
+    max_packet: u16,
+    setup: &SetupPacket,
+    data_in: bool,
+    data_len: u16,
+) -> Result<alloc::vec::Vec<u8>, &'static str> {
+    let guard = EHCI_CTRL.lock();
+    let ctrl = guard.as_ref().ok_or("EHCI not initialized")?;
+    let bytes = control_transfer(ctrl, dev_addr, speed, max_packet, setup, data_in, data_len)?;
+    if data_in && bytes > 0 {
+        let mut buf = alloc::vec![0u8; bytes];
+        read_transfer_data(ctrl, &mut buf, bytes);
+        Ok(buf)
+    } else {
+        Ok(alloc::vec::Vec::new())
+    }
+}

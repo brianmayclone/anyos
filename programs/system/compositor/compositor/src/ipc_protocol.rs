@@ -117,6 +117,14 @@ pub const EVT_STATUS_ICON_CLICK: u32 = 0x3009;
 /// Mouse move: [EVT, window_id, local_x, local_y, 0]
 pub const EVT_MOUSE_MOVE: u32 = 0x300A;
 
+/// Window opened (broadcast): [EVT, app_tid, win_id, 0, 0]
+/// Emitted when any app creates a window. Used by dock for filtering.
+pub const EVT_WINDOW_OPENED: u32 = 0x0060;
+
+/// Window closed (broadcast): [EVT, exited_tid, 0, 0, 0]
+/// Emitted when a process with windows exits.
+pub const EVT_WINDOW_CLOSED: u32 = 0x0061;
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Pack up to 12 ASCII characters into 3 u32 words.

@@ -102,10 +102,53 @@ fn render_thread_entry() {
     }
 }
 
+// ── Compositor Config File ──────────────────────────────────────────────────
+
+/// Read /system/compositor/compositor.conf and spawn each listed program.
+fn launch_compositor_conf() {
+    use anyos_std::fs;
+
+    let conf_path = "/system/compositor/compositor.conf";
+    let fd = fs::open(conf_path, 0);
+    if fd == u32::MAX {
+        println!("compositor: no compositor.conf found");
+        return;
+    }
+
+    let mut buf = [0u8; 1024];
+    let n = fs::read(fd, &mut buf) as usize;
+    fs::close(fd);
+
+    if n == 0 {
+        return;
+    }
+
+    let text = match core::str::from_utf8(&buf[..n]) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    for line in text.split('\n') {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let tid = process::spawn(line, "");
+        if tid != 0 {
+            println!("compositor: launched '{}' (TID={})", line, tid);
+        } else {
+            println!("compositor: FAILED to launch '{}'", line);
+        }
+    }
+}
+
 // ── Main (Management Thread) ────────────────────────────────────────────────
 
 fn main() {
     println!("compositor: starting userspace compositor...");
+
+    // Mark this process as critical — kernel RSP recovery will NOT kill it
+    anyos_std::sys::set_critical();
 
     // Step 1: Register as the system compositor
     if ipc::register_compositor() != 0 {
@@ -179,8 +222,10 @@ fn main() {
     let render_stack_vec = alloc::vec![0u8; render_stack_size];
     let render_stack_base = render_stack_vec.as_ptr() as usize;
     core::mem::forget(render_stack_vec); // Leak — render thread runs forever
-    // RSP must be STACK_TOP - 8 for x86_64 ABI alignment
-    let render_stack_top = render_stack_base + render_stack_size - 8;
+    // x86_64 ABI: RSP%16 == 8 at function entry (as if `call` pushed RA).
+    // The allocator may return 8-byte or 16-byte aligned addresses, so we
+    // must explicitly align: round down to 16, then subtract 8.
+    let render_stack_top = ((render_stack_base + render_stack_size) & !0xF) - 8;
     // Render thread gets high priority (250) for smooth 60 Hz compositing.
     // Management thread gets lower priority (150) — IPC/window ops can tolerate latency.
     let render_tid = process::thread_create_with_priority(
@@ -199,6 +244,9 @@ fn main() {
     // render thread, management loop about to start).
     let _dock_tid = process::spawn("/system/compositor/dock", "");
     println!("compositor: dock spawned");
+
+    // Step 7b: Launch programs from compositor.conf (after dock)
+    launch_compositor_conf();
 
     println!("compositor: entering main loop (multi-threaded)");
 
@@ -353,6 +401,16 @@ fn main() {
                     } else {
                         ipc::evt_chan_emit(compositor_channel, &response);
                     }
+
+                    // Broadcast window lifecycle event for dock filtering
+                    if response[0] == ipc_protocol::RESP_WINDOW_CREATED {
+                        ipc::evt_chan_emit(compositor_channel, &[
+                            ipc_protocol::EVT_WINDOW_OPENED,
+                            response[3], // app_tid
+                            response[1], // win_id
+                            0, 0,
+                        ]);
+                    }
                 }
             }
         }
@@ -367,13 +425,21 @@ fn main() {
                     // EVT_PROCESS_EXITED
                     let exited_tid = sys_buf[1];
                     desktop.on_process_exit(exited_tid);
+                    release_lock();
+                    // Broadcast window closed event outside lock (for dock filtering)
+                    ipc::evt_chan_emit(compositor_channel, &[
+                        ipc_protocol::EVT_WINDOW_CLOSED,
+                        exited_tid, 0, 0, 0,
+                    ]);
                 } else if sys_buf[0] == 0x0040 {
                     // EVT_RESOLUTION_CHANGED
                     let new_w = sys_buf[1];
                     let new_h = sys_buf[2];
                     desktop.handle_resolution_change(new_w, new_h);
+                    release_lock();
+                } else {
+                    release_lock();
                 }
-                release_lock();
             }
         }
 

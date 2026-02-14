@@ -20,7 +20,7 @@ const CMD_RESIZE_SHM: u32 = 0x100B;
 const CMD_REGISTER_SUB: u32 = 0x100C;
 const RESP_WINDOW_CREATED: u32 = 0x2001;
 
-const NUM_EXPORTS: u32 = 14;
+const NUM_EXPORTS: u32 = 15;
 
 #[repr(C)]
 pub struct LibcompositorExports {
@@ -97,6 +97,14 @@ pub struct LibcompositorExports {
         new_height: u32,
         out_new_shm_id: *mut u32,
     ) -> *mut u32,
+
+    /// Poll for any event (unfiltered — no window_id check).
+    /// Returns 1 if event available, 0 if not.
+    pub tray_poll_event: extern "C" fn(
+        channel_id: u32,
+        sub_id: u32,
+        buf: *mut [u32; 5],
+    ) -> u32,
 }
 
 #[link_section = ".exports"]
@@ -121,6 +129,7 @@ pub static LIBCOMPOSITOR_EXPORTS: LibcompositorExports = LibcompositorExports {
     remove_status_icon: export_remove_status_icon,
     update_menu_item: export_update_menu_item,
     resize_shm: export_resize_shm,
+    tray_poll_event: export_tray_poll_event,
 };
 
 // ── Export Implementations ───────────────────────────────────────────────────
@@ -405,4 +414,18 @@ extern "C" fn export_resize_shm(
         *out_new_shm_id = new_shm_id;
     }
     new_shm_addr as *mut u32
+}
+
+extern "C" fn export_tray_poll_event(
+    channel_id: u32,
+    sub_id: u32,
+    buf: *mut [u32; 5],
+) -> u32 {
+    let mut tmp = [0u32; 5];
+    if syscall::evt_chan_poll(channel_id, sub_id, &mut tmp) {
+        unsafe { *buf = tmp; }
+        1
+    } else {
+        0
+    }
 }

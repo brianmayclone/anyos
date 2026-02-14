@@ -303,10 +303,20 @@ fn irq_mouse(_irq: u8) {
     crate::drivers::input::mouse::handle_byte(byte);
 }
 
-/// USB hot-plug polling thread. Checks all USB controller ports every 500ms.
+/// USB polling thread: HID input every 10ms, port hot-plug every 500ms.
 extern "C" fn usb_poll_thread() {
+    let mut port_counter: u32 = 0;
     loop {
-        crate::arch::x86::pit::delay_ms(500);
-        crate::drivers::usb::poll_all_controllers();
+        // Poll HID devices (keyboard/mouse reports)
+        crate::drivers::usb::hid::poll_all();
+
+        // Poll USB ports for hot-plug every 500ms (every 50 iterations of 10ms)
+        port_counter += 1;
+        if port_counter >= 50 {
+            port_counter = 0;
+            crate::drivers::usb::poll_all_controllers();
+        }
+
+        crate::arch::x86::pit::delay_ms(10);
     }
 }

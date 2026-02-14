@@ -374,7 +374,7 @@ fn load_dock_config() -> Vec<DockItem> {
 // ── System event name unpacking ──
 
 /// System thread names that should NOT appear in the dock.
-const SYSTEM_NAMES: &[&str] = &["compositor", "dock", "cpu_monitor", "init"];
+const SYSTEM_NAMES: &[&str] = &["compositor", "dock", "cpu_monitor", "init", "netmon", "audiomon", "compositor/gpu"];
 
 /// Unpack a process name from EVT_PROCESS_SPAWNED words[2..5] (3 u32 LE packed).
 fn unpack_event_name(w2: u32, w3: u32, w4: u32) -> String {
@@ -579,6 +579,7 @@ fn main() {
 
     // Subscribe to system events (process exit notifications)
     let sys_sub = anyos_std::ipc::evt_sys_subscribe(0);
+    let own_tid = anyos_std::process::getpid();
 
     // Load dock items from config file
     let mut items = load_dock_config();
@@ -601,6 +602,8 @@ fn main() {
     let mut anims = AnimSet::new();
     let mut bounce_items: Vec<(usize, u32)> = Vec::new();
     let has_gpu = anyos_std::ui::window::gpu_has_accel();
+    // TID→name cache: populated from EVT_PROCESS_SPAWNED, consumed by EVT_WINDOW_OPENED
+    let mut tid_names: Vec<(u32, String)> = Vec::new();
 
     // Initial render
     let rs = RenderState {
@@ -641,6 +644,44 @@ fn main() {
             } else if event.event_type == 0x0050 {
                 // EVT_THEME_CHANGED (from compositor channel)
                 needs_redraw = true;
+            } else if event.event_type == 0x0060 {
+                // EVT_WINDOW_OPENED: create transient dock item for the app
+                let app_tid = event.window_id; // word[1] = app_tid
+                // Skip our own window and already-tracked items
+                if app_tid != own_tid && !items.iter().any(|it| it.tid == app_tid) {
+                    // Look up name from spawn cache
+                    let name = tid_names.iter()
+                        .find(|(t, _)| *t == app_tid)
+                        .map(|(_, n)| n.clone())
+                        .unwrap_or_else(|| alloc::format!("app-{}", app_tid));
+                    // Skip system names
+                    if !SYSTEM_NAMES.iter().any(|&s| s == name.as_str()) {
+                        let bin_path = alloc::format!("/bin/{}", name);
+                        let icon_path = icons::app_icon_path(&bin_path);
+                        let icon = load_ico_icon(&icon_path);
+                        items.push(DockItem {
+                            name,
+                            bin_path,
+                            icon,
+                            running: true,
+                            tid: app_tid,
+                            pinned: false,
+                        });
+                        needs_redraw = true;
+                    }
+                }
+            } else if event.event_type == 0x0061 {
+                // EVT_WINDOW_CLOSED: remove transient dock item
+                let exited_tid = event.window_id; // word[1] = exited_tid
+                let mut i = 0;
+                while i < items.len() {
+                    if items[i].tid == exited_tid && !items[i].pinned {
+                        items.remove(i);
+                        needs_redraw = true;
+                    } else {
+                        i += 1;
+                    }
+                }
             } else if event.event_type == libcompositor_client::EVT_MOUSE_DOWN {
                 let lx = event.arg1 as i32;
                 let ly = event.arg2 as i32;
@@ -697,42 +738,25 @@ fn main() {
                     continue;
                 }
 
-                // Check if this TID is already tracked by a pinned item
-                let already_tracked = items.iter().any(|it| it.tid == spawned_tid);
-                if already_tracked {
-                    continue;
+                // Cache TID→name for EVT_WINDOW_OPENED lookup
+                if !tid_names.iter().any(|(t, _)| *t == spawned_tid) {
+                    tid_names.push((spawned_tid, name.clone()));
                 }
 
-                // Check if a pinned item matches by binary basename
-                let mut matched_pinned = false;
+                // Match pinned items by binary basename (show running dot immediately)
                 for item in &mut items {
-                    if item.pinned {
+                    if item.pinned && item.tid == 0 {
                         let basename = item.bin_path.rsplit('/').next().unwrap_or("");
                         if basename == name.as_str() {
                             item.tid = spawned_tid;
                             item.running = true;
-                            matched_pinned = true;
                             needs_redraw = true;
                             break;
                         }
                     }
                 }
-
-                // If no pinned item matched, create a transient dock item
-                if !matched_pinned {
-                    let bin_path = alloc::format!("/bin/{}", name);
-                    let icon_path = icons::app_icon_path(&bin_path);
-                    let icon = load_ico_icon(&icon_path);
-                    items.push(DockItem {
-                        name: name,
-                        bin_path: bin_path,
-                        icon,
-                        running: true,
-                        tid: spawned_tid,
-                        pinned: false,
-                    });
-                    needs_redraw = true;
-                }
+                // NOTE: Transient dock items are created on EVT_WINDOW_OPENED (0x0060),
+                // not here. This filters out background services without windows.
             } else if sys_buf[0] == 0x0040 { // EVT_RESOLUTION_CHANGED
                 let new_w = sys_buf[1];
                 let new_h = sys_buf[2];
@@ -753,22 +777,17 @@ fn main() {
                 }
             } else if sys_buf[0] == 0x0021 { // EVT_PROCESS_EXITED
                 let exited_tid = sys_buf[1];
-                // For pinned items: clear running state. For transient: remove.
-                let mut i = 0;
-                while i < items.len() {
-                    if items[i].tid == exited_tid {
-                        if items[i].pinned {
-                            items[i].running = false;
-                            items[i].tid = 0;
-                            i += 1;
-                        } else {
-                            items.remove(i);
-                        }
+                // For pinned items: clear running state only.
+                // Transient items are removed via EVT_WINDOW_CLOSED (0x0061).
+                for item in &mut items {
+                    if item.tid == exited_tid && item.pinned {
+                        item.running = false;
+                        item.tid = 0;
                         needs_redraw = true;
-                    } else {
-                        i += 1;
                     }
                 }
+                // Clean up TID→name cache
+                tid_names.retain(|(t, _)| *t != exited_tid);
             }
         }
 

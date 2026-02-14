@@ -96,6 +96,8 @@ pub struct Thread {
     pub last_cpu: usize,
     /// True for per-CPU idle threads (never reaped, never killed, never enqueued).
     pub is_idle: bool,
+    /// True for critical system threads (compositor) that must not be killed by RSP recovery.
+    pub critical: bool,
 }
 
 /// Size of each thread's kernel-mode stack.
@@ -170,6 +172,7 @@ impl Thread {
             pd_shared: false,
             last_cpu: 0,
             is_idle: false,
+            critical: false,
         }
     }
 

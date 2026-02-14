@@ -16,4 +16,9 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "libcompositor_client",
+ "uisys_client",
 ]
+
+[[package]]
+name = "uisys_client"
+version = "0.1.0"

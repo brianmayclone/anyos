@@ -199,19 +199,19 @@ fn update_positions(
     let cw = win_w as i32 - SIDEBAR_W as i32 - 40;
     let sy = scroll_y as i32;
     let card_y = 54 - sy;
-    let toggle_x = cx + cw - PAD - 52;
+    let toggle_x = cx + cw - PAD - 36;
 
     // Dark Mode toggle (General page, row 1)
     dark.x = toggle_x;
-    dark.y = card_y + PAD + ROW_H + 5;
+    dark.y = card_y + PAD + ROW_H + 10;
 
     // Sound toggle (General page, row 2)
     sound.x = toggle_x;
-    sound.y = card_y + PAD + ROW_H * 2 + 5;
+    sound.y = card_y + PAD + ROW_H * 2 + 10;
 
     // Notifications toggle (General page, row 3)
     notif.x = toggle_x;
-    notif.y = card_y + PAD + ROW_H * 3 + 5;
+    notif.y = card_y + PAD + ROW_H * 3 + 10;
 
     // Brightness slider (Display page)
     let brightness_row_y = card_y + PAD + ROW_H * 2;

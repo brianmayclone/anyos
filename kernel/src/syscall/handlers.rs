@@ -638,10 +638,9 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
 /// sys_net_config - Get or set network configuration.
 /// arg1=cmd (0=get, 1=set), arg2=buf_ptr (24 bytes: ip4+mask4+gw4+dns4+mac6+link1+pad1)
 pub fn sys_net_config(cmd: u32, buf_ptr: u32) -> u32 {
-    if buf_ptr == 0 { return u32::MAX; }
-
     match cmd {
         0 => {
+            if buf_ptr == 0 { return u32::MAX; }
             let cfg = crate::net::config();
             let link_up = crate::drivers::network::e1000::is_link_up();
             unsafe {
@@ -657,6 +656,7 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u32) -> u32 {
             0
         }
         1 => {
+            if buf_ptr == 0 { return u32::MAX; }
             unsafe {
                 let buf = buf_ptr as *const u8;
                 let mut ip = [0u8; 4]; let mut mask = [0u8; 4];
@@ -685,6 +685,10 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u32) -> u32 {
         4 => {
             // Query enabled state
             if crate::drivers::network::e1000::is_enabled() { 1 } else { 0 }
+        }
+        5 => {
+            // Query hardware availability
+            if crate::drivers::network::e1000::is_available() { 1 } else { 0 }
         }
         _ => u32::MAX,
     }
@@ -1836,6 +1840,16 @@ pub fn sys_set_priority(tid: u32, priority: u32) -> u32 {
         return u32::MAX;
     }
     crate::task::scheduler::set_thread_priority(target_tid, priority as u8);
+    0
+}
+
+/// SYS_SET_CRITICAL: Mark the calling thread as critical (won't be killed by RSP recovery).
+pub fn sys_set_critical() -> u32 {
+    let tid = crate::task::scheduler::current_tid();
+    if tid == 0 {
+        return u32::MAX;
+    }
+    crate::task::scheduler::set_thread_critical(tid);
     0
 }
 

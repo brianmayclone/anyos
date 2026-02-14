@@ -793,7 +793,9 @@ fn schedule_inner(from_timer: bool) {
                 let next_rsp = sched.threads[next_idx].context.rsp;
                 let next_rip = sched.threads[next_idx].context.rip;
 
-                let rsp_valid = next_rsp >= kstack_bottom && next_rsp <= kstack_top;
+                // Validate kstack_top is in kernel higher-half
+                let kstack_valid = kstack_top >= 0xFFFF_FFFF_8000_0000;
+                let rsp_valid = kstack_valid && next_rsp >= kstack_bottom && next_rsp <= kstack_top;
                 let rip_valid = next_rip >= 0xFFFF_FFFF_8010_0000
                              && next_rip < 0xFFFF_FFFF_C000_0000;
 
@@ -1392,10 +1394,19 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
     {
         if let Some(mut guard) = SCHEDULER.try_lock() {
             if let Some(ref mut sched) = *guard {
-                // Kill the current thread
+                // Handle the current thread
                 if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
                     if let Some(idx) = sched.find_idx(current_tid) {
-                        if !sched.threads[idx].is_idle {
+                        if sched.threads[idx].critical {
+                            // Critical thread — do NOT kill. Clear current_tid so
+                            // scheduler re-picks it next tick with repaired RSP0.
+                            crate::serial_println!(
+                                "  CRITICAL thread '{}' (TID={}) spared — RSP will be repaired",
+                                sched.threads[idx].name_str(), current_tid,
+                            );
+                            sched.threads[idx].state = ThreadState::Ready;
+                            sched.per_cpu[cpu_id].ready_queue.push(current_tid);
+                        } else if !sched.threads[idx].is_idle {
                             sched.threads[idx].state = ThreadState::Terminated;
                             sched.threads[idx].exit_code = Some(139); // SIGSEGV
                             sched.threads[idx].terminated_at_tick =
@@ -1757,6 +1768,16 @@ pub fn current_thread_stdin_pipe() -> u32 {
         }
     }
     0
+}
+
+/// Mark a thread as critical (will not be killed by RSP recovery).
+pub fn set_thread_critical(tid: u32) {
+    let mut guard = SCHEDULER.lock();
+    let sched = guard.as_mut().expect("Scheduler not initialized");
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        thread.critical = true;
+        crate::serial_println!("  Thread '{}' (TID={}) marked as critical", thread.name_str(), tid);
+    }
 }
 
 // =============================================================================

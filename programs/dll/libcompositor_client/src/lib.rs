@@ -227,6 +227,109 @@ pub fn screen_size() -> (u32, u32) {
     (w, h)
 }
 
+// ── Tray Client ─────────────────────────────────────────────────────────────
+
+/// Compositor client for tray-icon apps (windowless event delivery).
+///
+/// Unlike `CompositorClient`, `TrayClient` does not require a window for
+/// event delivery.  `poll_event()` returns ALL events unfiltered — the app
+/// routes by `event_type` and `window_id`.
+pub struct TrayClient {
+    pub channel_id: u32,
+    sub_id: u32,
+}
+
+impl TrayClient {
+    /// Connect to the compositor.
+    pub fn init() -> Option<Self> {
+        let mut sub_id: u32 = 0;
+        let channel_id = (raw::exports().init)(&mut sub_id);
+        if channel_id == 0 {
+            return None;
+        }
+        Some(TrayClient { channel_id, sub_id })
+    }
+
+    /// Register or update a 16x16 ARGB tray icon (upsert).
+    pub fn set_icon(&self, icon_id: u32, pixels: &[u32; 256]) {
+        (raw::exports().add_status_icon)(self.channel_id, icon_id, pixels.as_ptr());
+    }
+
+    /// Remove a tray icon.
+    pub fn remove_icon(&self, icon_id: u32) {
+        (raw::exports().remove_status_icon)(self.channel_id, icon_id);
+    }
+
+    /// Poll for the next event (unfiltered — tray clicks, window events, broadcasts).
+    pub fn poll_event(&self) -> Option<Event> {
+        let mut buf = [0u32; 5];
+        let ok = (raw::exports().tray_poll_event)(
+            self.channel_id,
+            self.sub_id,
+            &mut buf,
+        );
+        if ok != 0 {
+            Some(Event {
+                event_type: buf[0],
+                window_id: buf[1],
+                arg1: buf[2],
+                arg2: buf[3],
+                arg3: buf[4],
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Create a window (for popups, settings panels, etc.).
+    pub fn create_window(&self, width: u32, height: u32, flags: u32) -> Option<WindowHandle> {
+        let mut shm_id: u32 = 0;
+        let mut surface: *mut u32 = core::ptr::null_mut();
+        let id = (raw::exports().create_window)(
+            self.channel_id,
+            self.sub_id,
+            width,
+            height,
+            flags,
+            &mut shm_id,
+            &mut surface,
+        );
+        if id == 0 || surface.is_null() {
+            return None;
+        }
+        Some(WindowHandle {
+            id,
+            shm_id,
+            surface_ptr: surface,
+            width,
+            height,
+        })
+    }
+
+    /// Destroy a window.
+    pub fn destroy_window(&self, handle: &WindowHandle) {
+        (raw::exports().destroy_window)(self.channel_id, handle.id, handle.shm_id);
+    }
+
+    /// Signal the compositor that window content has been updated.
+    pub fn present(&self, handle: &WindowHandle) {
+        (raw::exports().present)(self.channel_id, handle.id, handle.shm_id);
+    }
+
+    /// Move a window to a new position.
+    pub fn move_window(&self, handle: &WindowHandle, x: i32, y: i32) {
+        (raw::exports().move_window)(self.channel_id, handle.id, x, y);
+    }
+
+    /// Get screen dimensions.
+    pub fn screen_size(&self) -> (u32, u32) {
+        let mut w: u32 = 0;
+        let mut h: u32 = 0;
+        (raw::exports().screen_size)(&mut w, &mut h);
+        (w, h)
+    }
+}
+
 // ── Menu Bar Builder ────────────────────────────────────────────────────────
 
 const MENU_MAGIC: u32 = 0x4D454E55; // 'MENU'

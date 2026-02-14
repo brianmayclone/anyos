@@ -475,6 +475,11 @@ pub fn is_enabled() -> bool {
     }
 }
 
+/// Check if E1000 hardware was detected and initialized.
+pub fn is_available() -> bool {
+    E1000_STATE.lock().is_some()
+}
+
 /// Check if the E1000 is initialized and link is up.
 pub fn is_link_up() -> bool {
     let state = E1000_STATE.lock();

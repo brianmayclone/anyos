@@ -165,6 +165,7 @@ pub const SYS_CAPTURE_SCREEN: u32 = 161;
 // Threading
 pub const SYS_THREAD_CREATE: u32 = 170;
 pub const SYS_SET_PRIORITY: u32 = 171;
+pub const SYS_SET_CRITICAL: u32 = 172;
 
 // Pipe listing
 pub const SYS_PIPE_LIST: u32 = 180;
@@ -371,6 +372,7 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         // Threading
         SYS_THREAD_CREATE => handlers::sys_thread_create(arg1, arg2, arg3, arg4, arg5),
         SYS_SET_PRIORITY => handlers::sys_set_priority(arg1, arg2),
+        SYS_SET_CRITICAL => handlers::sys_set_critical(),
 
         // Pipe listing
         SYS_PIPE_LIST => handlers::sys_pipe_list(arg1, arg2),

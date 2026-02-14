@@ -47,6 +47,7 @@ echo "  User programs..."
 for dir in "${BUILD_DIR}/programs"/*/; do
     [ -d "$dir" ] && rm -rf "${dir}x86_64-anyos-user" 2>/dev/null
     [ -d "$dir" ] && rm -rf "${dir}debug" 2>/dev/null
+    [ -d "$dir" ] && rm -rf "${dir}release" 2>/dev/null
 done
 
 # System programs (in build/programs/compositor/ etc.)
@@ -54,10 +55,12 @@ echo "  System programs..."
 for dir in "${BUILD_DIR}/programs"/*/; do
     [ -d "$dir" ] && rm -rf "${dir}x86_64-anyos-user" 2>/dev/null
     [ -d "$dir" ] && rm -rf "${dir}debug" 2>/dev/null
+    [ -d "$dir" ] && rm -rf "${dir}release" 2>/dev/null
     # Nested dirs (e.g. programs/compositor/dock/)
     for subdir in "${dir}"*/; do
         [ -d "$subdir" ] && rm -rf "${subdir}x86_64-anyos-user" 2>/dev/null
         [ -d "$subdir" ] && rm -rf "${subdir}debug" 2>/dev/null
+        [ -d "$subdir" ] && rm -rf "${subdir}release" 2>/dev/null
     done
 done
 

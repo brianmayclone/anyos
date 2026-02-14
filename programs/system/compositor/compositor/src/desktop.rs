@@ -528,6 +528,8 @@ pub struct Desktop {
     app_subs: Vec<(u32, u32)>,
     /// Deferred wallpaper reload after resolution change
     wallpaper_pending: bool,
+    /// Tray icon events for windowless apps (pushed directly as IPC events)
+    tray_ipc_events: Vec<(Option<u32>, [u32; 5])>,
 }
 
 impl Desktop {
@@ -572,6 +574,7 @@ impl Desktop {
             has_gpu_accel: anyos_std::ui::window::gpu_has_accel(),
             app_subs: Vec::with_capacity(16),
             wallpaper_pending: false,
+            tray_ipc_events: Vec::new(),
         }
     }
 
@@ -1752,15 +1755,25 @@ impl Desktop {
     }
 
     fn push_status_icon_event(&mut self, owner_tid: u32, icon_id: u32) {
-        // Push event to the first window owned by this TID
+        // Try to push event to the first window owned by this TID
         for win in &mut self.windows {
             if win.owner_tid == owner_tid {
                 if win.events.len() < 256 {
                     win.events
                         .push_back([EVENT_STATUS_ICON_CLICK, icon_id, 0, 0, 0]);
                 }
-                break;
+                return;
             }
+        }
+        // No window found — push directly to tray event buffer (windowless app)
+        let target_sub = self.app_subs.iter()
+            .find(|(t, _)| *t == owner_tid)
+            .map(|(_, s)| *s);
+        if self.tray_ipc_events.len() < 256 {
+            self.tray_ipc_events.push((
+                target_sub,
+                [proto::EVT_STATUS_ICON_CLICK, 0, icon_id, 0, 0],
+            ));
         }
     }
 
@@ -2303,6 +2316,8 @@ impl Desktop {
                 out.push((target_sub, [ipc_type, win.id, evt[1], evt[2], evt[3]]));
             }
         }
+        // Drain tray events for windowless apps (already IPC-formatted)
+        out.extend(self.tray_ipc_events.drain(..));
         out
     }
 

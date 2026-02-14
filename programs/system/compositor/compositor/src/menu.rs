@@ -715,15 +715,16 @@ impl MenuBar {
         if pixel_data.len() < 256 {
             return false;
         }
-        if self.status_icons.len() >= 8 {
-            return false;
-        }
-        // No duplicates
-        if self
+        // Upsert: if icon already exists, update its pixels in-place
+        if let Some(existing) = self
             .status_icons
-            .iter()
-            .any(|i| i.owner_tid == owner_tid && i.icon_id == icon_id)
+            .iter_mut()
+            .find(|i| i.owner_tid == owner_tid && i.icon_id == icon_id)
         {
+            existing.pixels.copy_from_slice(&pixel_data[..256]);
+            return true;
+        }
+        if self.status_icons.len() >= 8 {
             return false;
         }
 

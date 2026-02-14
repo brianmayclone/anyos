@@ -2,8 +2,7 @@
 //!
 //! Supports boot protocol keyboards and mice. When a HID device is detected
 //! during USB enumeration, the driver sets it to boot protocol mode and
-//! performs a single GET_REPORT to read the initial state. For ongoing input,
-//! the driver sets up a polling mechanism.
+//! registers it for periodic GET_REPORT polling.
 //!
 //! Boot protocol keyboard report: 8 bytes [modifier, reserved, key1..key6]
 //! Boot protocol mouse report: 3-4 bytes [buttons, dx, dy, (dz)]
@@ -11,10 +10,26 @@
 //! Events are injected into the existing PS/2 input pipeline so the compositor
 //! receives them through the same SYS_INPUT_POLL path.
 
-use super::{UsbDevice, UsbInterface};
+use super::{ControllerType, SetupPacket, UsbDevice, UsbInterface, UsbSpeed};
+use crate::sync::spinlock::Spinlock;
+use alloc::vec::Vec;
+
+// ── HID Device Registry ─────────────────────────
+
+struct HidDevice {
+    address: u8,
+    controller: ControllerType,
+    speed: UsbSpeed,
+    max_packet: u16,
+    protocol: u8,       // 1=keyboard, 2=mouse
+    interface_num: u8,
+    prev_keys: [u8; 6], // keyboard only — tracks which keys were pressed last poll
+}
+
+static HID_DEVICES: Spinlock<Vec<HidDevice>> = Spinlock::new(Vec::new());
 
 /// Called when a HID interface is detected during USB enumeration.
-/// Logs the device type and sets up initial polling.
+/// Sets boot protocol mode and registers the device for polling.
 pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     let device_type = match iface.protocol {
         1 => "Keyboard",
@@ -48,13 +63,87 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         crate::serial_println!("  USB HID: no interrupt IN endpoint found");
     }
 
-    // Boot protocol devices (subclass 1) can be used without parsing HID report descriptors.
-    // For now, log discovery. Full interrupt polling requires periodic schedule support.
-    if iface.subclass == 1 {
-        match iface.protocol {
-            1 => crate::serial_println!("  USB HID: boot keyboard ready (boot protocol)"),
-            2 => crate::serial_println!("  USB HID: boot mouse ready (boot protocol)"),
-            _ => {}
+    // Only handle boot protocol devices (subclass 1)
+    if iface.subclass != 1 {
+        crate::serial_println!("  USB HID: skipping non-boot device");
+        return;
+    }
+
+    // Send SET_PROTOCOL(0 = boot protocol)
+    let set_protocol = SetupPacket {
+        bm_request_type: 0x21, // Host-to-device, Class, Interface
+        b_request: 0x0B,       // SET_PROTOCOL
+        w_value: 0,            // 0 = Boot Protocol
+        w_index: iface.number as u16,
+        w_length: 0,
+    };
+
+    match super::hid_control_transfer(
+        dev.address, dev.controller, dev.speed, dev.max_packet_size,
+        &set_protocol, false, 0,
+    ) {
+        Ok(_) => crate::serial_println!("  USB HID: SET_PROTOCOL(boot) OK for addr={}", dev.address),
+        Err(e) => {
+            crate::serial_println!("  USB HID: SET_PROTOCOL failed: {} — continuing anyway", e);
+            // Some devices work in boot protocol by default, so don't bail
+        }
+    }
+
+    // Register for polling
+    let hid_dev = HidDevice {
+        address: dev.address,
+        controller: dev.controller,
+        speed: dev.speed,
+        max_packet: dev.max_packet_size,
+        protocol: iface.protocol,
+        interface_num: iface.number,
+        prev_keys: [0u8; 6],
+    };
+
+    HID_DEVICES.lock().push(hid_dev);
+    crate::serial_println!(
+        "  USB HID: registered {} (addr={}) for polling",
+        device_type, dev.address,
+    );
+}
+
+/// Poll all registered HID devices via GET_REPORT control transfer.
+/// Called from the USB poll thread at ~10ms intervals.
+pub fn poll_all() {
+    let mut devs = HID_DEVICES.lock();
+    for dev in devs.iter_mut() {
+        let report_len: u16 = if dev.protocol == 1 { 8 } else { 4 };
+
+        let get_report = SetupPacket {
+            bm_request_type: 0xA1, // Device-to-host, Class, Interface
+            b_request: 0x01,       // GET_REPORT
+            w_value: 0x0100,       // Report type = Input (1), Report ID = 0
+            w_index: dev.interface_num as u16,
+            w_length: report_len,
+        };
+
+        match super::hid_control_transfer(
+            dev.address, dev.controller, dev.speed, dev.max_packet,
+            &get_report, true, report_len,
+        ) {
+            Ok(data) => {
+                if data.len() >= 3 {
+                    match dev.protocol {
+                        1 if data.len() >= 8 => {
+                            let mut report = [0u8; 8];
+                            report.copy_from_slice(&data[..8]);
+                            parse_keyboard_report(&report, &mut dev.prev_keys);
+                        }
+                        2 => {
+                            parse_mouse_report(&data, data.len());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Err(_) => {
+                // Device may have been unplugged — silently skip
+            }
         }
     }
 }
@@ -62,26 +151,29 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
 // ── Boot Protocol Report Parsing ───────────────
 
 /// HID modifier key bits (byte 0 of boot keyboard report).
-#[allow(dead_code)]
 const MOD_LEFT_CTRL: u8 = 1 << 0;
-#[allow(dead_code)]
 const MOD_LEFT_SHIFT: u8 = 1 << 1;
-#[allow(dead_code)]
 const MOD_LEFT_ALT: u8 = 1 << 2;
 #[allow(dead_code)]
 const MOD_LEFT_GUI: u8 = 1 << 3;
-#[allow(dead_code)]
 const MOD_RIGHT_CTRL: u8 = 1 << 4;
-#[allow(dead_code)]
 const MOD_RIGHT_SHIFT: u8 = 1 << 5;
-#[allow(dead_code)]
 const MOD_RIGHT_ALT: u8 = 1 << 6;
 #[allow(dead_code)]
 const MOD_RIGHT_GUI: u8 = 1 << 7;
 
+/// Modifier bit → PS/2 scancode mapping (make code; release = | 0x80).
+const MOD_SCANCODES: [(u8, u8); 6] = [
+    (MOD_LEFT_CTRL,   0x1D),
+    (MOD_LEFT_SHIFT,  0x2A),
+    (MOD_LEFT_ALT,    0x38),
+    (MOD_RIGHT_CTRL,  0x1D), // simplified — PS/2 right ctrl is E0 1D
+    (MOD_RIGHT_SHIFT, 0x36),
+    (MOD_RIGHT_ALT,   0x38), // simplified — PS/2 right alt is E0 38
+];
+
 /// Convert a USB HID usage code (from boot keyboard report) to a PS/2 scancode.
 /// Returns None for unmapped keys.
-#[allow(dead_code)]
 fn hid_usage_to_scancode(usage: u8) -> Option<u8> {
     // USB HID Usage Table → PS/2 Scancode Set 1
     match usage {
@@ -163,13 +255,31 @@ fn hid_usage_to_scancode(usage: u8) -> Option<u8> {
     }
 }
 
+/// Track previous modifier state for press/release detection.
+static PREV_MODIFIERS: Spinlock<u8> = Spinlock::new(0);
+
 /// Parse a boot keyboard report (8 bytes) and inject key events into the
 /// PS/2 keyboard pipeline. `prev_keys` tracks previously pressed keys to
 /// detect press/release transitions.
-#[allow(dead_code)]
-pub fn parse_keyboard_report(report: &[u8; 8], prev_keys: &mut [u8; 6]) {
-    let _modifiers = report[0];
+fn parse_keyboard_report(report: &[u8; 8], prev_keys: &mut [u8; 6]) {
+    let modifiers = report[0];
     let keys = &report[2..8];
+
+    // Handle modifier key changes
+    let mut prev_mods = PREV_MODIFIERS.lock();
+    let changed_mods = modifiers ^ *prev_mods;
+    for &(bit, scancode) in &MOD_SCANCODES {
+        if changed_mods & bit != 0 {
+            if modifiers & bit != 0 {
+                // Modifier pressed
+                crate::drivers::input::keyboard::handle_scancode(scancode);
+            } else {
+                // Modifier released
+                crate::drivers::input::keyboard::handle_scancode(scancode | 0x80);
+            }
+        }
+    }
+    *prev_mods = modifiers;
 
     // Detect released keys (in prev but not in current)
     for &prev in prev_keys.iter() {
@@ -190,16 +300,12 @@ pub fn parse_keyboard_report(report: &[u8; 8], prev_keys: &mut [u8; 6]) {
         }
     }
 
-    // Handle modifier changes by injecting corresponding scancodes
-    // (Handled implicitly by the keyboard driver's modifier tracking)
-
     prev_keys.copy_from_slice(keys);
 }
 
 /// Parse a boot mouse report (3-4 bytes) and inject movement/button events
 /// into the PS/2 mouse pipeline.
-#[allow(dead_code)]
-pub fn parse_mouse_report(report: &[u8], len: usize) {
+fn parse_mouse_report(report: &[u8], len: usize) {
     if len < 3 {
         return;
     }
@@ -207,7 +313,11 @@ pub fn parse_mouse_report(report: &[u8], len: usize) {
     let buttons = report[0];
     let dx = report[1] as i8;
     let dy = report[2] as i8;
-    let _dz = if len >= 4 { report[3] as i8 } else { 0i8 };
+
+    // Skip empty reports (no movement, no button changes)
+    if dx == 0 && dy == 0 && buttons == 0 {
+        return;
+    }
 
     // Reconstruct PS/2 mouse byte 0: buttons + sign bits + overflow
     let mut byte0: u8 = 0x08; // bit 3 always set in PS/2

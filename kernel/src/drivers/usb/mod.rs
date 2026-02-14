@@ -125,6 +125,23 @@ pub fn poll_all_controllers() {
     ehci::poll_ports();
 }
 
+/// Perform a control transfer to a USB device (for HID GET_REPORT / SET_PROTOCOL).
+/// Dispatches to the correct controller driver based on `controller` type.
+pub fn hid_control_transfer(
+    addr: u8,
+    controller: ControllerType,
+    speed: UsbSpeed,
+    max_packet: u16,
+    setup: &SetupPacket,
+    data_in: bool,
+    data_len: u16,
+) -> Result<Vec<u8>, &'static str> {
+    match controller {
+        ControllerType::Uhci => uhci::hid_control_transfer(addr, setup, data_in, data_len),
+        ControllerType::Ehci => ehci::hid_control_transfer(addr, speed, max_packet, setup, data_in, data_len),
+    }
+}
+
 fn class_name(class: u8) -> &'static str {
     match class {
         0x00 => "Composite",

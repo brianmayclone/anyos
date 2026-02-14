@@ -46,6 +46,12 @@ pub fn capture_screen(buf: &mut [u32], info: &mut [u32; 2]) -> bool {
     ret == 0
 }
 
+/// Mark the calling thread as critical (won't be killed by kernel RSP recovery).
+/// Only system services (compositor) should use this.
+pub fn set_critical() {
+    syscall0(SYS_SET_CRITICAL);
+}
+
 /// List devices. Each 64-byte entry:
 ///   [0..32]  path (null-terminated)
 ///   [32..56] driver name (null-terminated)
