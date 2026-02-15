@@ -96,6 +96,14 @@ static PER_CPU_HAS_THREAD: [AtomicBool; MAX_CPUS] = {
     [INIT; MAX_CPUS]
 };
 
+/// Per-CPU thread name cache for lock-free crash diagnostics.
+/// Updated in schedule_inner alongside PER_CPU_CURRENT_TID. Read by
+/// `debug_current_thread_name()` without locks — safe during panic/RSOD
+/// even when the SCHEDULER lock is held (avoids the cpu=N owner=N deadlock).
+/// Written via `write_volatile` under the scheduler lock, read via
+/// `read_volatile` from the same CPU in a panic context.
+static mut PER_CPU_THREAD_NAME: [[u8; 32]; MAX_CPUS] = [[0u8; 32]; MAX_CPUS];
+
 /// Per-CPU kernel stack bounds for real-time overflow detection.
 /// Updated in schedule_inner when switching threads. Read by the timer ISR
 /// (lock-free) to detect stack overflow BEFORE it corrupts adjacent memory.
@@ -107,6 +115,25 @@ static PER_CPU_STACK_TOP: [AtomicU64; MAX_CPUS] = {
     const INIT: AtomicU64 = AtomicU64::new(0);
     [INIT; MAX_CPUS]
 };
+
+/// Update the per-CPU thread name cache (for lock-free crash diagnostics).
+/// Called from schedule_inner and other paths that update PER_CPU_CURRENT_TID.
+#[inline]
+fn update_per_cpu_name(cpu_id: usize, name: &[u8; 32]) {
+    unsafe {
+        let dst = core::ptr::addr_of_mut!(PER_CPU_THREAD_NAME[cpu_id]);
+        core::ptr::write_volatile(dst, *name);
+    }
+}
+
+/// Clear the per-CPU thread name cache (thread exiting / no thread).
+#[inline]
+fn clear_per_cpu_name(cpu_id: usize) {
+    unsafe {
+        let dst = core::ptr::addr_of_mut!(PER_CPU_THREAD_NAME[cpu_id]);
+        core::ptr::write_volatile(dst, [0u8; 32]);
+    }
+}
 
 /// Per-CPU scheduling state: current thread (TID) and local ready queue (TIDs).
 struct PerCpuState {
@@ -818,6 +845,7 @@ fn schedule_inner(from_timer: bool) {
                             sched.threads[pi].context.save_complete = 1;
                             PER_CPU_CURRENT_TID[cpu_id].store(pt, Ordering::Relaxed);
                             PER_CPU_IS_USER[cpu_id].store(sched.threads[pi].is_user, Ordering::Relaxed);
+                            update_per_cpu_name(cpu_id, &sched.threads[pi].name);
                         }
                     }
                     None
@@ -829,6 +857,7 @@ fn schedule_inner(from_timer: bool) {
                     PER_CPU_HAS_THREAD[cpu_id].store(true, Ordering::Relaxed);
                     PER_CPU_CURRENT_TID[cpu_id].store(next_tid, Ordering::Relaxed);
                     PER_CPU_IS_USER[cpu_id].store(sched.threads[next_idx].is_user, Ordering::Relaxed);
+                    update_per_cpu_name(cpu_id, &sched.threads[next_idx].name);
 
                     // Update this CPU's TSS RSP0 and SYSCALL per-CPU kernel RSP
                     crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, kstack_top);
@@ -919,6 +948,7 @@ fn schedule_inner(from_timer: bool) {
                         PER_CPU_HAS_THREAD[cpu_id].store(true, Ordering::Relaxed);
                         PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
                         PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
+                        update_per_cpu_name(cpu_id, &sched.threads[idle_i].name);
                         let idle_kstack_top = sched.threads[idle_i].kernel_stack_top();
                         crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
                         crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, idle_kstack_top);
@@ -944,6 +974,7 @@ fn schedule_inner(from_timer: bool) {
                     PER_CPU_HAS_THREAD[cpu_id].store(true, Ordering::Relaxed);
                     PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
                     PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
+                    update_per_cpu_name(cpu_id, &sched.threads[idle_i].name);
                     // CRITICAL: Set TSS.RSP0 to idle thread's stack — without this,
                     // TSS.RSP0 points to the reaped thread's freed stack.
                     let idle_kstack_top = sched.threads[idle_i].kernel_stack_top();
@@ -1007,6 +1038,9 @@ fn schedule_inner(from_timer: bool) {
                         }
                         if let Some(pt) = prev_tid {
                             PER_CPU_CURRENT_TID[cpu_id].store(pt, Ordering::Relaxed);
+                            if let Some(pi) = sched.find_idx(pt) {
+                                update_per_cpu_name(cpu_id, &sched.threads[pi].name);
+                            }
                         }
                     }
                 }
@@ -1018,6 +1052,37 @@ fn schedule_inner(from_timer: bool) {
         unsafe {
             core::arch::asm!("fxsave [{}]", in(reg) old_fpu, options(nostack, preserves_flags));
             core::arch::asm!("fxrstor [{}]", in(reg) new_fpu, options(nostack, preserves_flags));
+        }
+        // Final RIP/RSP validation AFTER fxsave (which writes 512 bytes and
+        // could corrupt new_ctx if old_fpu pointed to the wrong location).
+        let final_rip = unsafe { (*new_ctx).rip };
+        let final_rsp = unsafe { (*new_ctx).rsp };
+        if final_rip != new_rip || final_rsp != new_rsp {
+            crate::serial_println!(
+                "BUG: context corrupted AFTER fxsave! RIP {:#018x}->{:#018x} RSP {:#018x}->{:#018x} CPU{}",
+                new_rip, final_rip, new_rsp, final_rsp, cpu_id,
+            );
+            unsafe { (*old_ctx).save_complete = 1; }
+            {
+                if let Some(mut guard) = SCHEDULER.try_lock() {
+                    if let Some(sched) = guard.as_mut() {
+                        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
+                            if let Some(idx) = sched.find_idx(tid) {
+                                sched.threads[idx].state = ThreadState::Terminated;
+                                sched.threads[idx].terminated_at_tick =
+                                    Some(crate::arch::x86::pit::get_ticks());
+                            }
+                        }
+                        sched.per_cpu[cpu_id].current_tid = prev_tid;
+                        if prev_kstack_top >= 0xFFFF_FFFF_8000_0000 {
+                            crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, prev_kstack_top);
+                            crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, prev_kstack_top);
+                        }
+                    }
+                }
+            }
+            unsafe { core::arch::asm!("sti"); }
+            return;
         }
         unsafe { crate::task::context::context_switch(old_ctx, new_ctx); }
     }
@@ -1083,6 +1148,19 @@ pub fn debug_current_tid() -> u32 {
 pub fn debug_is_current_user() -> bool {
     let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
     PER_CPU_IS_USER[cpu_id].load(Ordering::Relaxed)
+}
+
+/// Lock-free read of the thread name cached for the current CPU.
+/// Safe during panic/RSOD — never acquires the SCHEDULER lock.
+pub fn debug_current_thread_name() -> [u8; 32] {
+    let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
+    if cpu_id >= MAX_CPUS {
+        return [0u8; 32];
+    }
+    unsafe {
+        let src = core::ptr::addr_of!(PER_CPU_THREAD_NAME[cpu_id]);
+        core::ptr::read_volatile(src)
+    }
 }
 
 /// Lock-free check: does this CPU have an active thread running?
@@ -1360,6 +1438,11 @@ pub fn try_exit_current(code: u32) -> bool {
     loop { unsafe { core::arch::asm!("hlt"); } }
 }
 
+/// Saved by interrupts.asm before the recovery SWAPGS overwrites RSP.
+/// Contains the corrupt RSP value at the time `test rsp, rsp; jns .bad_rsp` fired.
+#[no_mangle]
+pub static mut BAD_RSP_SAVED: u64 = 0;
+
 /// Recovery function called from interrupts.asm when an ISR/IRQ fires with a
 /// corrupt RSP (TSS.RSP0 was bad on Ring 3→0 transition). By the time we get
 /// here, the ASM stub has already switched RSP to the per-CPU kernel_rsp via
@@ -1374,9 +1457,23 @@ pub fn try_exit_current(code: u32) -> bool {
 #[no_mangle]
 pub extern "C" fn bad_rsp_recovery() -> ! {
     let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
+    let tss_rsp0 = crate::arch::x86::tss::get_kernel_stack_for_cpu(cpu_id);
+    let percpu_krsp = crate::arch::x86::syscall_msr::get_kernel_rsp(cpu_id);
+    let tid = PER_CPU_CURRENT_TID[cpu_id].load(core::sync::atomic::Ordering::Relaxed);
+    let stack_bottom = PER_CPU_STACK_BOTTOM[cpu_id].load(core::sync::atomic::Ordering::Relaxed);
+    let stack_top = PER_CPU_STACK_TOP[cpu_id].load(core::sync::atomic::Ordering::Relaxed);
     crate::serial_println!(
         "!RSP RECOVERY on CPU {} — killing current thread, entering idle",
         cpu_id
+    );
+    let bad_rsp = unsafe { BAD_RSP_SAVED };
+    crate::serial_println!(
+        "  DIAG: bad_rsp={:#018x} TSS.RSP0={:#018x} PERCPU.krsp={:#018x}",
+        bad_rsp, tss_rsp0, percpu_krsp,
+    );
+    crate::serial_println!(
+        "  DIAG: TID={} stack=[{:#018x}..{:#018x}]",
+        tid, stack_bottom, stack_top,
     );
 
     // Send EOI to LAPIC unconditionally — we may have entered from an IRQ,
@@ -1453,6 +1550,7 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
     PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
     PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
     PER_CPU_CURRENT_TID[cpu_id].store(0, Ordering::Relaxed);
+    clear_per_cpu_name(cpu_id);
 
     // Switch to kernel CR3 so we're not running on a user page directory
     // that might get destroyed.
@@ -1481,6 +1579,118 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
     } else {
         // Last resort: couldn't determine idle stack. Stay on current stack
         // and hope scheduler fixes it on next tick.
+        unsafe { core::arch::asm!("sti"); }
+        loop {
+            unsafe { core::arch::asm!("hlt"); }
+        }
+    }
+}
+
+/// Fallback recovery for try_kill_faulting_thread when try_exit_current fails.
+/// Similar to bad_rsp_recovery: kills the thread, repairs per-CPU state, and
+/// enters the idle loop WITHOUT calling schedule()/context_switch. This avoids
+/// the deadlock that occurs when schedule_inner's try_lock loop spins forever.
+///
+/// Called from idt.rs when the 1000-iteration retry limit of try_exit_current
+/// is exhausted (scheduler lock permanently contended by another CPU).
+pub fn fault_kill_and_idle(signal: u32) -> ! {
+    let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
+    let tid = PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Relaxed);
+
+    crate::serial_println!(
+        "  FALLBACK: manual kill TID={} signal={} on CPU {} — entering idle",
+        tid, signal, cpu_id,
+    );
+
+    // Force-unlock scheduler if this CPU still holds it (e.g., fault inside
+    // a syscall that held the lock, and the initial force_unlock didn't work
+    // because the fault path re-acquired it).
+    let cpu = cpu_id as u32;
+    if is_scheduler_locked_by_cpu(cpu) {
+        unsafe { force_unlock_scheduler(); }
+    }
+
+    let mut idle_stack_top: u64 = 0;
+
+    // Try to acquire the lock for proper cleanup
+    {
+        if let Some(mut guard) = SCHEDULER.try_lock() {
+            if let Some(ref mut sched) = *guard {
+                // Mark thread as terminated
+                if let Some(idx) = sched.find_idx(tid) {
+                    sched.threads[idx].state = ThreadState::Terminated;
+                    sched.threads[idx].exit_code = Some(signal);
+                    sched.threads[idx].terminated_at_tick =
+                        Some(crate::arch::x86::pit::get_ticks());
+                    // Wake any waiter (e.g., parent doing waitpid)
+                    if let Some(waiter_tid) = sched.threads[idx].waiting_tid {
+                        sched.wake_thread_inner(waiter_tid);
+                    }
+                }
+
+                // Clear current thread for this CPU
+                sched.per_cpu[cpu_id].current_tid = None;
+
+                // Get idle thread's stack for TSS.RSP0 repair
+                let idle_tid = sched.idle_tid[cpu_id];
+                if let Some(idx) = sched.find_idx(idle_tid) {
+                    let kstack_top = sched.threads[idx].kernel_stack_top();
+                    crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, kstack_top);
+                    crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, kstack_top);
+                    idle_stack_top = kstack_top;
+                    PER_CPU_STACK_BOTTOM[cpu_id].store(
+                        sched.threads[idx].kernel_stack_bottom(), Ordering::Relaxed,
+                    );
+                    PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
+                }
+            }
+        } else {
+            crate::serial_println!("  WARNING: scheduler locked by other CPU, deferring cleanup");
+            // Can't get lock — use per-CPU atomics for minimal TSS.RSP0 repair
+            let stack_top = PER_CPU_STACK_TOP[cpu_id].load(Ordering::Relaxed);
+            if stack_top >= 0xFFFF_FFFF_8000_0000 {
+                crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, stack_top);
+                crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, stack_top);
+                idle_stack_top = stack_top;
+            }
+        }
+    }
+
+    // Update lock-free per-CPU state
+    PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
+    PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
+    PER_CPU_CURRENT_TID[cpu_id].store(0, Ordering::Relaxed);
+    clear_per_cpu_name(cpu_id);
+
+    // Emit process exit event (for compositor to clean up windows).
+    // Done outside the lock to avoid holding it during event dispatch.
+    if tid != 0 {
+        crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
+            crate::ipc::event_bus::EVT_PROCESS_EXITED, tid, signal, 0, 0,
+        ));
+    }
+
+    // Switch to kernel CR3
+    unsafe {
+        let kcr3 = crate::memory::virtual_mem::kernel_cr3();
+        core::arch::asm!("mov cr3, {}", in(reg) kcr3, options(nostack));
+    }
+
+    // Enter idle loop on idle thread's stack
+    crate::serial_println!("  CPU {} entering idle loop (fault recovery)", cpu_id);
+    if idle_stack_top >= 0xFFFF_FFFF_8000_0000 {
+        unsafe {
+            core::arch::asm!(
+                "mov rsp, {0}",
+                "sti",
+                "2: hlt",
+                "jmp 2b",
+                in(reg) idle_stack_top,
+                options(noreturn)
+            );
+        }
+    } else {
+        // Last resort: stay on current stack
         unsafe { core::arch::asm!("sti"); }
         loop {
             unsafe { core::arch::asm!("hlt"); }
@@ -1815,6 +2025,8 @@ pub struct ThreadInfo {
     pub io_read_bytes: u64,
     /// Cumulative bytes written to disk files.
     pub io_write_bytes: u64,
+    /// Number of user-space pages mapped for this process.
+    pub user_pages: u32,
 }
 
 /// List all live threads (for `ps` command).
@@ -1835,11 +2047,12 @@ pub fn list_threads() -> Vec<ThreadInfo> {
         cpu_ticks: u32,
         io_read_bytes: u64,
         io_write_bytes: u64,
+        user_pages: u32,
         name: [u8; 32],
         name_len: u8,
     }
     let mut buf = [const {
-        ThreadSnap { tid: 0, priority: 0, state: 0, arch_mode: 0, cpu_ticks: 0, io_read_bytes: 0, io_write_bytes: 0, name: [0; 32], name_len: 0 }
+        ThreadSnap { tid: 0, priority: 0, state: 0, arch_mode: 0, cpu_ticks: 0, io_read_bytes: 0, io_write_bytes: 0, user_pages: 0, name: [0; 32], name_len: 0 }
     }; MAX_SNAP];
     let mut count = 0;
 
@@ -1872,6 +2085,7 @@ pub fn list_threads() -> Vec<ThreadInfo> {
                     cpu_ticks: thread.cpu_ticks,
                     io_read_bytes: thread.io_read_bytes,
                     io_write_bytes: thread.io_write_bytes,
+                    user_pages: thread.user_pages,
                     name: name_buf,
                     name_len: len as u8,
                 };
@@ -1901,6 +2115,7 @@ pub fn list_threads() -> Vec<ThreadInfo> {
             arch_mode: snap.arch_mode,
             io_read_bytes: snap.io_read_bytes,
             io_write_bytes: snap.io_write_bytes,
+            user_pages: snap.user_pages,
         });
     }
     result
@@ -1947,6 +2162,45 @@ pub fn record_io_write(bytes: u64) {
     }
 }
 
+/// Adjust the user_pages counter for a specific thread by TID.
+/// Used by the loader when mapping code/data/stack pages into a new process.
+pub fn adjust_thread_user_pages(tid: u32, delta: i32) {
+    let guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(t) = sched.threads.iter().find(|t| t.tid == tid) {
+            let t = &**t as *const Thread as *mut Thread;
+            unsafe {
+                if delta >= 0 {
+                    (*t).user_pages = (*t).user_pages.saturating_add(delta as u32);
+                } else {
+                    (*t).user_pages = (*t).user_pages.saturating_sub((-delta) as u32);
+                }
+            }
+        }
+    }
+}
+
+/// Adjust the user_pages counter for the current thread on this CPU.
+/// Used by sbrk (heap growth) and shared memory mapping.
+pub fn adjust_current_user_pages(delta: i32) {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
+            if let Some(t) = sched.threads.iter().find(|t| t.tid == tid) {
+                let t = &**t as *const Thread as *mut Thread;
+                unsafe {
+                    if delta >= 0 {
+                        (*t).user_pages = (*t).user_pages.saturating_add(delta as u32);
+                    } else {
+                        (*t).user_pages = (*t).user_pages.saturating_sub((-delta) as u32);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Force-release the scheduler lock held by a faulting thread.
 ///
 /// Called from the ISR fault handler when a user thread faults while this CPU
@@ -1979,6 +2233,7 @@ pub fn run() -> ! {
                 PER_CPU_HAS_THREAD[0].store(true, Ordering::Relaxed);
                 PER_CPU_STACK_BOTTOM[0].store(kstack_bottom, Ordering::Relaxed);
                 PER_CPU_STACK_TOP[0].store(kstack_top, Ordering::Relaxed);
+                update_per_cpu_name(0, &sched.threads[idx].name);
             }
         }
     }
@@ -2008,6 +2263,7 @@ pub fn register_ap_idle(cpu_id: usize) {
             PER_CPU_HAS_THREAD[cpu_id].store(true, Ordering::Relaxed);
             PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
             PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
+            update_per_cpu_name(cpu_id, &sched.threads[idx].name);
         }
     }
     crate::serial_println!("  SMP: CPU{} idle thread registered", cpu_id);

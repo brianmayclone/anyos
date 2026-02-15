@@ -30,15 +30,16 @@ const COL_TID: i32 = 10;
 const COL_NAME: i32 = 60;
 const COL_NAME_TEXT: i32 = COL_NAME + ICON_SIZE as i32 + 4;
 const COL_STATE: i32 = 210;
-const COL_ARCH: i32 = 300;
-const COL_CPU: i32 = 360;
-const COL_PRIO: i32 = 430;
+const COL_ARCH: i32 = 290;
+const COL_CPU: i32 = 345;
+const COL_MEM: i32 = 400;
+const COL_PRIO: i32 = 470;
 
 // Selected row highlight color
 const SEL_BG: u32 = 0xFF0A4A8A;
 const MAX_CPUS: usize = 16;
 const MAX_TASKS: usize = 64;
-const THREAD_ENTRY_SIZE: usize = 52;
+const THREAD_ENTRY_SIZE: usize = 56;
 
 // ─── Data Structures ─────────────────────────────────────────────────────────
 
@@ -49,6 +50,7 @@ struct TaskEntry {
     state: u8,
     priority: u8,
     arch: u8,       // 0=x86_64, 1=x86
+    user_pages: u32, // number of user-space pages (× 4 = KiB)
     cpu_pct_x10: u32, // CPU% × 10 (e.g. 125 = 12.5%)
     io_read_bytes: u64,
     io_write_bytes: u64,
@@ -228,14 +230,15 @@ fn fetch_tasks(buf: &mut [u8; THREAD_ENTRY_SIZE * 64], prev: &mut PrevTicks, tot
         let mut name = [0u8; 24];
         name.copy_from_slice(&buf[off + 8..off + 32]);
         let name_len = name.iter().position(|&b| b == 0).unwrap_or(24);
-        let cpu_ticks = u32::from_le_bytes([buf[off + 32], buf[off + 33], buf[off + 34], buf[off + 35]]);
+        let user_pages = u32::from_le_bytes([buf[off + 32], buf[off + 33], buf[off + 34], buf[off + 35]]);
+        let cpu_ticks = u32::from_le_bytes([buf[off + 36], buf[off + 37], buf[off + 38], buf[off + 39]]);
         let io_read_bytes = u64::from_le_bytes([
-            buf[off + 36], buf[off + 37], buf[off + 38], buf[off + 39],
             buf[off + 40], buf[off + 41], buf[off + 42], buf[off + 43],
+            buf[off + 44], buf[off + 45], buf[off + 46], buf[off + 47],
         ]);
         let io_write_bytes = u64::from_le_bytes([
-            buf[off + 44], buf[off + 45], buf[off + 46], buf[off + 47],
             buf[off + 48], buf[off + 49], buf[off + 50], buf[off + 51],
+            buf[off + 52], buf[off + 53], buf[off + 54], buf[off + 55],
         ]);
 
         // Find previous ticks for this TID
@@ -252,7 +255,7 @@ fn fetch_tasks(buf: &mut [u8; THREAD_ENTRY_SIZE * 64], prev: &mut PrevTicks, tot
             0
         };
 
-        result.push(TaskEntry { tid, name, name_len, state, priority: prio, arch, cpu_pct_x10, io_read_bytes, io_write_bytes });
+        result.push(TaskEntry { tid, name, name_len, state, priority: prio, arch, user_pages, cpu_pct_x10, io_read_bytes, io_write_bytes });
     }
 
     // Save current snapshot for next delta
@@ -262,7 +265,7 @@ fn fetch_tasks(buf: &mut [u8; THREAD_ENTRY_SIZE * 64], prev: &mut PrevTicks, tot
         let off = i * THREAD_ENTRY_SIZE;
         if off + THREAD_ENTRY_SIZE > buf.len() { break; }
         let tid = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
-        let cpu_ticks = u32::from_le_bytes([buf[off + 32], buf[off + 33], buf[off + 34], buf[off + 35]]);
+        let cpu_ticks = u32::from_le_bytes([buf[off + 36], buf[off + 37], buf[off + 38], buf[off + 39]]);
         prev.entries[prev.count] = (tid, cpu_ticks);
         prev.count += 1;
     }
@@ -415,6 +418,7 @@ fn render(
         label(win_id, COL_STATE, y + 3, "State", colors::TEXT(), FontSize::Small, TextAlign::Left);
         label(win_id, COL_ARCH, y + 3, "Arch", colors::TEXT(), FontSize::Small, TextAlign::Left);
         label(win_id, COL_CPU, y + 3, "CPU", colors::TEXT(), FontSize::Small, TextAlign::Left);
+        label(win_id, COL_MEM, y + 3, "Memory", colors::TEXT(), FontSize::Small, TextAlign::Left);
         label(win_id, COL_PRIO, y + 3, "Priority", colors::TEXT(), FontSize::Small, TextAlign::Left);
         y += ROW_H;
 
@@ -464,6 +468,10 @@ fn render(
                 "0.0%"
             };
             label(win_id, COL_CPU, y + 3, cpu_str, colors::TEXT_SECONDARY(), FontSize::Small, TextAlign::Left);
+
+            let mut membuf = [0u8; 16];
+            let mem_str = fmt_mem_pages(&mut membuf, task.user_pages);
+            label(win_id, COL_MEM, y + 3, mem_str, colors::TEXT_SECONDARY(), FontSize::Small, TextAlign::Left);
 
             let mut pbuf = [0u8; 12];
             label(win_id, COL_PRIO, y + 3, fmt_u32(&mut pbuf, task.priority as u32), colors::TEXT_SECONDARY(), FontSize::Small, TextAlign::Left);
@@ -953,6 +961,24 @@ fn fmt_overall_cpu<'a>(buf: &'a mut [u8; 24], pct: u32, ncpu: u32) -> &'a str {
     unsafe { core::str::from_utf8_unchecked(&buf[..p]) }
 }
 
+fn fmt_mem_pages<'a>(buf: &'a mut [u8; 16], pages: u32) -> &'a str {
+    let kib = pages * 4;
+    let mut t = [0u8; 12];
+    let mut p = 0;
+    if kib >= 1024 {
+        let mib = kib / 1024;
+        let frac = (kib % 1024) * 10 / 1024;
+        let s = fmt_u32(&mut t, mib); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
+        buf[p] = b'.'; p += 1;
+        buf[p] = b'0' + frac as u8; p += 1;
+        buf[p] = b'M'; p += 1;
+    } else {
+        let s = fmt_u32(&mut t, kib); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
+        buf[p] = b'K'; p += 1;
+    }
+    unsafe { core::str::from_utf8_unchecked(&buf[..p]) }
+}
+
 fn fmt_process_cpu<'a>(buf: &'a mut [u8; 32], count: usize, cpu_pct: u32) -> &'a str {
     let mut t = [0u8; 12];
     let mut p = 0;
@@ -969,7 +995,7 @@ fn fmt_process_cpu<'a>(buf: &'a mut [u8; 32], count: usize, cpu_pct: u32) -> &'a
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
-    let win_id = window::create("Activity Monitor", 100, 60, 540, 420);
+    let win_id = window::create("Activity Monitor", 100, 60, 580, 420);
     if win_id == u32::MAX {
         return;
     }
@@ -986,7 +1012,7 @@ fn main() {
     window::set_menu(win_id, data);
     window::disable_menu_item(win_id, 10);
 
-    let (mut win_w, mut win_h) = window::get_size(win_id).unwrap_or((540, 420));
+    let (mut win_w, mut win_h) = window::get_size(win_id).unwrap_or((580, 420));
     let kill_btn = UiToolbarButton::new(PAD, STATS_H + 4, 100, 24);
 
     let mut thread_buf = [0u8; THREAD_ENTRY_SIZE * 64];

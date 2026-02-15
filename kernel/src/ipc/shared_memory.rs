@@ -36,6 +36,11 @@ pub struct SharedRegion {
     pub owner_tid: u32,
     /// Active per-process mappings.
     mappings: Vec<ShmMapping>,
+    /// True until the first mapping zeros the frames (prevents info leaks).
+    /// Zeroing is deferred to `map_into_current()` because `create()` runs in
+    /// user CR3 context where physical frames above 64 MiB are not accessible
+    /// via identity mapping.
+    needs_zeroing: bool,
 }
 
 static SHARED_REGIONS: Spinlock<Vec<SharedRegion>> = Spinlock::new(Vec::new());
@@ -52,14 +57,7 @@ pub fn create(size: usize, owner_tid: u32) -> Option<u32> {
     let mut frames = Vec::new();
     for _ in 0..pages {
         match physical::alloc_frame() {
-            Some(frame) => {
-                // Zero the frame via identity mapping to prevent information leaks
-                // and avoid garbage pixels in new window surfaces.
-                unsafe {
-                    core::ptr::write_bytes(frame.as_u64() as *mut u8, 0, FRAME_SIZE);
-                }
-                frames.push(frame);
-            }
+            Some(frame) => frames.push(frame),
             None => {
                 for f in &frames {
                     physical::free_frame(*f);
@@ -82,6 +80,7 @@ pub fn create(size: usize, owner_tid: u32) -> Option<u32> {
         size: pages * FRAME_SIZE,
         owner_tid,
         mappings: Vec::new(),
+        needs_zeroing: true,
     };
 
     SHARED_REGIONS.lock().push(region);
@@ -117,6 +116,23 @@ pub fn map_into_current(region_id: u32) -> u64 {
         let frame = regions[idx].physical_frames[i];
         let va = VirtAddr::new(vaddr + (i * FRAME_SIZE) as u64);
         virtual_mem::map_page(va, frame, 0x07); // Present + Writable + User
+    }
+
+    // Zero frames on first mapping to prevent information leaks.
+    // Done here (not in create()) because create() runs in user CR3 context
+    // where physical frames above 64 MiB are not identity-mapped.
+    // The virtual address is guaranteed accessible since we just mapped it.
+    if regions[idx].needs_zeroing {
+        for i in 0..pages {
+            unsafe {
+                core::ptr::write_bytes(
+                    (vaddr + (i * FRAME_SIZE) as u64) as *mut u8,
+                    0,
+                    FRAME_SIZE,
+                );
+            }
+        }
+        regions[idx].needs_zeroing = false;
     }
 
     regions[idx].mappings.push(ShmMapping { tid, vaddr });

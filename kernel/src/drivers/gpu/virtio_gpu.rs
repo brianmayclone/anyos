@@ -9,6 +9,7 @@
 
 use super::GpuDriver;
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use crate::drivers::pci::PciDevice;
 use crate::drivers::virtio::{self, VirtioDevice, VIRTIO_F_VERSION_1};
 use crate::drivers::virtio::virtqueue::VirtQueue;
@@ -232,6 +233,9 @@ pub struct VirtioGpu {
     // Pre-allocated DMA buffers for commands/responses (identity-mapped phys)
     cmd_buf: u64,   // 1 page (4096 bytes) for command payloads
     resp_buf: u64,  // 1 page (4096 bytes) for response payloads
+
+    // Supported display modes (native first, then filtered COMMON_MODES)
+    supported: Vec<(u32, u32)>,
 }
 
 // VirtioGpu is accessed under the GPU Spinlock
@@ -655,6 +659,10 @@ impl GpuDriver for VirtioGpu {
         (self.width, self.height, self.pitch, self.fb_phys as u32)
     }
 
+    fn supported_modes(&self) -> &[(u32, u32)] {
+        &self.supported
+    }
+
     fn has_accel(&self) -> bool {
         true // Software fill/copy directly on guest RAM framebuffer
     }
@@ -942,15 +950,25 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         cursor_hot_y: 0,
         cmd_buf,
         resp_buf,
+        supported: Vec::new(),
     };
 
-    // 9. Use boot VBE resolution (matches Bochs VGA / SVGA behavior).
-    // GET_DISPLAY_INFO returns the host's preferred resolution which may exceed
-    // the kernel heap's initial 16 MiB mapping.
+    // 9. Query native display resolution and build supported modes list.
+    let native = gpu.cmd_get_display_info().unwrap_or((1024, 768));
+    crate::serial_println!("  VirtIO GPU: native display {}x{}", native.0, native.1);
+
+    // Build supported modes: start with COMMON_MODES, add native if not already present
+    let mut modes: Vec<(u32, u32)> = super::COMMON_MODES.to_vec();
+    if !modes.contains(&native) && native.0 > 0 && native.1 > 0 {
+        modes.insert(0, native);
+    }
+    gpu.supported = modes;
+
+    // Use boot VBE resolution (matches Bochs VGA / SVGA behavior).
     let (width, height) = if let Some(fb) = crate::drivers::framebuffer::info() {
         (fb.width, fb.height)
     } else {
-        gpu.cmd_get_display_info().unwrap_or((1024, 768))
+        native
     };
 
     // 10-13. Set up display pipeline

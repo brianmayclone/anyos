@@ -592,7 +592,7 @@ add_custom_command(
 # ============================================================
 # DOOM (doomgeneric, cross-compiled C program)
 # ============================================================
-set(DOOM_DIR "${CMAKE_SOURCE_DIR}/programs/doom")
+set(DOOM_DIR "${CMAKE_SOURCE_DIR}/third_party/doom")
 set(DOOM_ELF "${DOOM_DIR}/doom.elf")
 
 add_custom_command(
@@ -614,6 +614,56 @@ add_custom_command(
   COMMENT "Installing DOOM + WAD to sysroot"
 )
 
+# Quake (WinQuake software renderer, cross-compiled C program)
+# ============================================================
+set(QUAKE_DIR "${CMAKE_SOURCE_DIR}/third_party/quake")
+set(QUAKE_ELF "${QUAKE_DIR}/quake.elf")
+
+add_custom_command(
+  OUTPUT ${QUAKE_ELF}
+  COMMAND make -C ${QUAKE_DIR} clean
+  COMMAND make -C ${QUAKE_DIR} LIBC_DIR=${LIBC_DIR}
+  DEPENDS ${LIBC_A} ${LIBC_CRT0}
+  COMMENT "Building Quake for anyOS"
+)
+
+set(QUAKE_PAK "${CMAKE_SOURCE_DIR}/tools/sysroot/apps/quake/id1/pak0.pak")
+set(QUAKE_CFG "${CMAKE_SOURCE_DIR}/tools/sysroot/apps/quake/id1/config.cfg")
+
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/apps/quake/quake ${SYSROOT_DIR}/apps/quake/id1/pak0.pak
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/apps/quake/id1
+  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE_ELF} ${SYSROOT_DIR}/apps/quake/quake
+  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE_PAK} ${SYSROOT_DIR}/apps/quake/id1/pak0.pak
+  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE_CFG} ${SYSROOT_DIR}/apps/quake/id1/config.cfg
+  DEPENDS ${QUAKE_ELF} ${QUAKE_PAK} ${QUAKE_CFG}
+  COMMENT "Installing Quake + PAK to sysroot"
+)
+
+# Quake 2 (id Software GPL, cross-compiled C program with ref_soft)
+# ============================================================
+set(QUAKE2_DIR "${CMAKE_SOURCE_DIR}/third_party/quake2")
+set(QUAKE2_ELF "${QUAKE2_DIR}/quake2.elf")
+
+add_custom_command(
+  OUTPUT ${QUAKE2_ELF}
+  COMMAND make -C ${QUAKE2_DIR} -f Makefile.anyos clean
+  COMMAND make -C ${QUAKE2_DIR} -f Makefile.anyos LIBC_DIR=${LIBC_DIR}
+  DEPENDS ${LIBC_A} ${LIBC_CRT0}
+  COMMENT "Building Quake 2 for anyOS"
+)
+
+set(QUAKE2_PAK "${CMAKE_SOURCE_DIR}/tools/sysroot/apps/quake2/baseq2/pak0.pak")
+
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/apps/quake2/quake2 ${SYSROOT_DIR}/apps/quake2/baseq2/pak0.pak
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/apps/quake2/baseq2
+  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE2_ELF} ${SYSROOT_DIR}/apps/quake2/quake2
+  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE2_PAK} ${SYSROOT_DIR}/apps/quake2/baseq2/pak0.pak
+  DEPENDS ${QUAKE2_ELF} ${QUAKE2_PAK}
+  COMMENT "Installing Quake 2 + PAK to sysroot"
+)
+
 add_custom_target(programs DEPENDS
   ${RUST_USER_BINS}
   ${SYSTEM_BINS}
@@ -625,6 +675,8 @@ add_custom_target(programs DEPENDS
   ${SYSROOT_DIR}/bin/cc
   ${SYSROOT_DIR}/lib/tcc/include/.stamp
   ${SYSROOT_DIR}/apps/doom/doom
+  ${SYSROOT_DIR}/apps/quake/quake
+  ${SYSROOT_DIR}/apps/quake2/quake2
 )
 
 # ============================================================
@@ -637,7 +689,7 @@ add_custom_command(
     --stage2 ${CMAKE_BINARY_DIR}/stage2.bin
     --kernel ${KERNEL_ELF}
     --output ${DISK_IMAGE}
-    --image-size 64
+    --image-size 128
     --sysroot ${SYSROOT_DIR}
     --fs-start 8192
   DEPENDS
@@ -654,7 +706,9 @@ add_custom_command(
     ${SYSROOT_DIR}/bin/cc
     ${SYSROOT_DIR}/lib/tcc/include/.stamp
     ${SYSROOT_DIR}/apps/doom/doom
-  COMMENT "Creating bootable disk image (64 MiB, FAT16 filesystem)"
+    ${SYSROOT_DIR}/apps/quake/quake
+    ${SYSROOT_DIR}/apps/quake2/quake2
+  COMMENT "Creating bootable disk image (128 MiB, FAT16 filesystem)"
 )
 
 # ============================================================

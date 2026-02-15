@@ -102,6 +102,9 @@ pub struct Thread {
     pub io_read_bytes: u64,
     /// Cumulative bytes written to disk files (fd >= 3).
     pub io_write_bytes: u64,
+    /// Number of user-space pages mapped for this process (heap, stack, code).
+    /// Excludes identity-mapped kernel pages and shared DLL pages.
+    pub user_pages: u32,
 }
 
 /// Size of each thread's kernel-mode stack.
@@ -179,6 +182,7 @@ impl Thread {
             critical: false,
             io_read_bytes: 0,
             io_write_bytes: 0,
+            user_pages: 0,
         }
     }
 

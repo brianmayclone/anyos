@@ -16,6 +16,10 @@ extern isr_handler
 extern irq_handler
 extern bad_rsp_recovery
 
+; Global variable to save the corrupt RSP for diagnostics.
+; Defined in Rust (scheduler.rs) as #[no_mangle] pub static.
+extern BAD_RSP_SAVED
+
 ; =============================================================================
 ; ISR stubs - CPU Exceptions (INT 0-31)
 ; =============================================================================
@@ -196,6 +200,8 @@ isr_common_stub:
     out dx, al
     ; --- RECOVERY: switch to valid kernel stack and call Rust handler ---
     ; This fires on Ring 3→0 transition with corrupt TSS.RSP0.
+    ; Save the corrupt RSP for diagnostics before overwriting it.
+    mov [rel BAD_RSP_SAVED], rsp
     ; At this point: KERNEL_GS_BASE = PERCPU (not swapped yet).
     ; SWAPGS gives us access to PERCPU.kernel_rsp at [gs:0].
     swapgs
@@ -288,6 +294,7 @@ irq_common_stub:
     mov al, 10
     out dx, al
     ; --- RECOVERY: same as ISR bad_rsp above ---
+    mov [rel BAD_RSP_SAVED], rsp
     swapgs
     mov rsp, [gs:0]             ; RSP = per-CPU kernel_rsp
     swapgs

@@ -12,6 +12,36 @@ use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use crate::sync::spinlock::Spinlock;
 
+/// Validate a `&dyn GpuDriver` trait object's vtable pointer.
+/// Returns false if data or vtable pointer is outside kernel higher-half,
+/// indicating heap corruption of the `Box<dyn GpuDriver>`.
+#[inline]
+fn validate_gpu_vtable(driver: &dyn GpuDriver) -> bool {
+    let fat: [usize; 2] = unsafe { core::mem::transmute_copy(&(driver as *const dyn GpuDriver)) };
+    let data = fat[0] as u64;
+    let vtable = fat[1] as u64;
+    const KERNEL_HIGHER_HALF: u64 = 0xFFFF_FFFF_8000_0000;
+    if data < KERNEL_HIGHER_HALF || vtable < KERNEL_HIGHER_HALF {
+        unsafe {
+            use crate::arch::x86::port::{inb, outb};
+            let msg = b"\r\n!!! GPU VTABLE CORRUPT vtable=";
+            for &c in msg { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            let mut v = vtable;
+            let mut buf = [0u8; 16];
+            for i in (0..16).rev() {
+                let d = (v & 0xF) as u8;
+                buf[i] = if d < 10 { b'0' + d } else { b'a' + d - 10 };
+                v >>= 4;
+            }
+            for &c in &buf { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            let msg2 = b" -- GPU call SKIPPED\r\n";
+            for &c in msg2 { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+        }
+        return false;
+    }
+    true
+}
+
 /// Common display resolutions supported by QEMU VGA devices
 pub static COMMON_MODES: &[(u32, u32)] = &[
     (640, 480),
@@ -101,13 +131,19 @@ pub fn register(driver: Box<dyn GpuDriver>) {
 }
 
 /// Access the registered GPU driver within a closure.
-/// Returns None if no GPU driver is registered.
+/// Returns None if no GPU driver is registered or if the trait object
+/// vtable appears corrupted (prevents RIP=0x3 crash from heap corruption).
 pub fn with_gpu<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut dyn GpuDriver) -> R,
 {
     let mut gpu = GPU.lock();
-    gpu.as_mut().map(|g| f(g.as_mut()))
+    let boxed = gpu.as_mut()?;
+    let driver: &mut dyn GpuDriver = boxed.as_mut();
+    if !validate_gpu_vtable(driver) {
+        return None;
+    }
+    Some(f(driver))
 }
 
 /// Check if a GPU driver is registered.
@@ -189,7 +225,10 @@ pub fn splash_cursor_move(dx: i32, dy: i32) -> bool {
     // Update HW cursor via GPU (try_lock to avoid deadlock from IRQ context)
     if let Some(mut gpu) = GPU.try_lock() {
         if let Some(g) = gpu.as_mut() {
-            g.move_cursor(new_x as u32, new_y as u32);
+            let driver: &mut dyn GpuDriver = g.as_mut();
+            if validate_gpu_vtable(driver) {
+                driver.move_cursor(new_x as u32, new_y as u32);
+            }
         }
     }
     true

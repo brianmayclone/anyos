@@ -8,9 +8,14 @@ use crate::memory::physical;
 use crate::memory::virtual_mem;
 use crate::sync::spinlock::Spinlock;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 const PAGE_SIZE: u64 = 4096;
 const PAGE_USER: u64 = 0x04;
+
+/// Next available virtual address for dynamically loaded DLLs.
+/// Starts after the last boot-time DLL (0x0440_0000), incremented per load.
+static NEXT_DYNAMIC_BASE: AtomicU64 = AtomicU64::new(0x0440_0000);
 
 /// DLL virtual address range: 0x04000000 - 0x07FFFFFF.
 /// In x86-64 4-level paging, these are PML4[0], PDPT[0], PD[32..63].
@@ -163,6 +168,99 @@ pub fn handle_dll_demand_page(vaddr: u64) -> bool {
         }
     }
     false
+}
+
+/// Load a DLL dynamically at runtime from the filesystem.
+/// Allocates a virtual address from the DLL region, loads data, registers it.
+/// Returns the base virtual address on success, or None.
+pub fn load_dll_dynamic(path: &str) -> Option<u64> {
+    // Check if already loaded (by filename)
+    if let Some(base) = get_dll_base(path) {
+        return Some(base);
+    }
+
+    // Read file from VFS
+    let data = match crate::fs::vfs::read_file_to_vec(path) {
+        Ok(d) => d,
+        Err(_) => {
+            crate::serial_println!("  dload: failed to read '{}'", path);
+            return None;
+        }
+    };
+
+    if data.len() < 32 {
+        crate::serial_println!("  dload: file too small: '{}'", path);
+        return None;
+    }
+
+    // Validate DLIB magic
+    if &data[0..4] != b"DLIB" {
+        crate::serial_println!("  dload: invalid magic in '{}'", path);
+        return None;
+    }
+
+    let num_pages = (data.len() as u64 + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    // Allocate base address (atomic bump allocator, page-aligned)
+    let aligned_size = num_pages * PAGE_SIZE;
+    let base = NEXT_DYNAMIC_BASE.fetch_add(aligned_size, Ordering::SeqCst);
+
+    // Sanity check: stay within DLL range (0x04000000 - 0x07FFFFFF)
+    if base + aligned_size > 0x0800_0000 {
+        crate::serial_println!("  dload: DLL address space exhausted at {:#x}", base);
+        return None;
+    }
+
+    // Allocate physical frames and copy data
+    let temp_virt = VirtAddr::new(0xFFFF_FFFF_81F1_0000);
+    let mut pages = Vec::with_capacity(num_pages as usize);
+
+    for i in 0..num_pages {
+        let frame = match physical::alloc_frame() {
+            Some(f) => f,
+            None => {
+                crate::serial_println!("  dload: OOM allocating frame for '{}'", path);
+                return None;
+            }
+        };
+
+        virtual_mem::map_page(temp_virt, frame, 0x02);
+
+        let offset = (i * PAGE_SIZE) as usize;
+        let remaining = data.len() - offset;
+        let copy_len = remaining.min(PAGE_SIZE as usize);
+
+        unsafe {
+            let dest = temp_virt.as_u64() as *mut u8;
+            core::ptr::copy_nonoverlapping(data.as_ptr().add(offset), dest, copy_len);
+            if copy_len < PAGE_SIZE as usize {
+                core::ptr::write_bytes(dest.add(copy_len), 0, PAGE_SIZE as usize - copy_len);
+            }
+        }
+
+        virtual_mem::unmap_page(temp_virt);
+        pages.push(frame);
+    }
+
+    // Register in loaded DLLs
+    let mut name_buf = [0u8; 32];
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let len = name.len().min(31);
+    name_buf[..len].copy_from_slice(&name.as_bytes()[..len]);
+
+    let mut dlls = LOADED_DLLS.lock();
+    dlls.push(LoadedDll {
+        name: name_buf,
+        base_vaddr: base,
+        pages,
+    });
+
+    crate::serial_println!(
+        "[OK] dload: '{}' at {:#010x} ({} pages, {} bytes)",
+        name, base, num_pages, data.len()
+    );
+
+    Some(base)
 }
 
 /// Get the base address of a loaded DLL by path name.

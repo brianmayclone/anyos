@@ -53,23 +53,21 @@ double ceil(double x) {
 }
 
 double sqrt(double x) {
-    if (x < 0.0) return NAN;
-    if (x == 0.0) return 0.0;
-    double guess = x / 2.0;
-    for (int i = 0; i < 50; i++) {
-        guess = (guess + x / guess) / 2.0;
-    }
-    return guess;
+    double result;
+    __asm__ __volatile__("fsqrt" : "=t"(result) : "0"(x));
+    return result;
 }
 
-double pow(double base, double exp) {
-    if (exp == 0.0) return 1.0;
+double pow(double base, double exponent) {
+    if (exponent == 0.0) return 1.0;
     if (base == 0.0) return 0.0;
+    if (base == 1.0) return 1.0;
     /* Integer exponent fast path */
     int neg = 0;
-    if (exp < 0.0) { neg = 1; exp = -exp; }
-    long iexp = (long)exp;
-    if ((double)iexp == exp) {
+    double e = exponent;
+    if (e < 0.0) { neg = 1; e = -e; }
+    long iexp = (long)e;
+    if ((double)iexp == e) {
         double result = 1.0;
         double b = base;
         while (iexp > 0) {
@@ -79,8 +77,31 @@ double pow(double base, double exp) {
         }
         return neg ? 1.0 / result : result;
     }
-    /* Fallback: exp(exp * log(base)) — basic implementation */
-    return 0.0; /* non-integer exponents not fully supported */
+    /* General case: 2^(exponent * log2(base)) via x87 */
+    /* fyl2x computes y * log2(x) */
+    double t;
+    __asm__ __volatile__(
+        "fyl2x"
+        : "=t"(t)
+        : "0"(base), "u"(exponent)
+        : "st(1)"
+    );
+    /* Now compute 2^t: split into integer + fraction, use f2xm1 */
+    double result;
+    __asm__ __volatile__(
+        "fld %%st(0)\n\t"   /* duplicate t */
+        "frndint\n\t"       /* int(t) */
+        "fxch %%st(1)\n\t"
+        "fsub %%st(1), %%st(0)\n\t" /* frac = t - int(t) */
+        "f2xm1\n\t"         /* 2^frac - 1 */
+        "fld1\n\t"
+        "faddp\n\t"          /* 2^frac */
+        "fscale\n\t"         /* 2^frac * 2^int = 2^t */
+        "fstp %%st(1)\n\t"   /* pop the integer part */
+        : "=t"(result)
+        : "0"(t)
+    );
+    return result;
 }
 
 double log(double x) {
@@ -115,6 +136,100 @@ double exp(double x) {
     }
     return sum;
 }
+
+double log10(double x) {
+    return log(x) / 2.302585092994045684;
+}
+
+/* ── Trigonometric functions via x87 FPU ── */
+
+double sin(double x) {
+    double result;
+    __asm__ __volatile__("fsin" : "=t"(result) : "0"(x));
+    return result;
+}
+
+double cos(double x) {
+    double result;
+    __asm__ __volatile__("fcos" : "=t"(result) : "0"(x));
+    return result;
+}
+
+double tan(double x) {
+    double result;
+    /* fptan pushes 1.0 then tan(x); pop the 1.0 */
+    __asm__ __volatile__(
+        "fptan\n\t"
+        "fstp %%st(0)"
+        : "=t"(result)
+        : "0"(x)
+    );
+    return result;
+}
+
+double atan(double x) {
+    double result;
+    /* fpatan computes atan(st1/st0); load 1.0 to get atan(x/1) = atan(x) */
+    __asm__ __volatile__(
+        "fld1\n\t"
+        "fpatan"
+        : "=t"(result)
+        : "0"(x)
+    );
+    return result;
+}
+
+double atan2(double y, double x) {
+    double result;
+    /* fpatan computes atan(st1/st0) = atan(y/x) */
+    __asm__ __volatile__(
+        "fpatan"
+        : "=t"(result)
+        : "0"(x), "u"(y)
+        : "st(1)"
+    );
+    return result;
+}
+
+double asin(double x) {
+    /* asin(x) = atan2(x, sqrt(1 - x*x)) */
+    return atan2(x, sqrt(1.0 - x * x));
+}
+
+double acos(double x) {
+    /* acos(x) = atan2(sqrt(1 - x*x), x) */
+    return atan2(sqrt(1.0 - x * x), x);
+}
+
+double fmod(double x, double y) {
+    if (y == 0.0) return NAN;
+    double result;
+    __asm__ __volatile__(
+        "1:\n\t"
+        "fprem\n\t"
+        "fnstsw %%ax\n\t"
+        "testw $0x400, %%ax\n\t"
+        "jnz 1b"
+        : "=t"(result)
+        : "0"(x), "u"(y)
+        : "ax", "st(1)"
+    );
+    return result;
+}
+
+/* ── float variants ── */
+
+float fabsf(float x) { return x < 0.0f ? -x : x; }
+float sqrtf(float x) { return (float)sqrt((double)x); }
+float sinf(float x) { return (float)sin((double)x); }
+float cosf(float x) { return (float)cos((double)x); }
+float atan2f(float y, float x) { return (float)atan2((double)y, (double)x); }
+float fmodf(float x, float y) { return (float)fmod((double)x, (double)y); }
+float floorf(float x) { return (float)floor((double)x); }
+float ceilf(float x) { return (float)ceil((double)x); }
+float powf(float x, float y) { return (float)pow((double)x, (double)y); }
+float logf(float x) { return (float)log((double)x); }
+float expf(float x) { return (float)exp((double)x); }
 
 /* Parse a floating-point number string */
 static double _parse_double(const char *nptr, char **endptr) {

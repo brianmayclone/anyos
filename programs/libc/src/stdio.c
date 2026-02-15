@@ -16,9 +16,9 @@
 #include <errno.h>
 
 /* Static FILE objects for stdin/stdout/stderr */
-static FILE _stdin  = { .fd = 0, .flags = 0, .eof = 0, .error = 0 };
-static FILE _stdout = { .fd = 1, .flags = 1, .eof = 0, .error = 0 };
-static FILE _stderr = { .fd = 2, .flags = 1, .eof = 0, .error = 0 };
+static FILE _stdin  = { .fd = 0, .flags = 0, .eof = 0, .error = 0, .ungot = -1 };
+static FILE _stdout = { .fd = 1, .flags = 1, .eof = 0, .error = 0, .ungot = -1 };
+static FILE _stderr = { .fd = 2, .flags = 1, .eof = 0, .error = 0, .ungot = -1 };
 
 FILE *stdin  = &_stdin;
 FILE *stdout = &_stdout;
@@ -44,6 +44,7 @@ FILE *fopen(const char *path, const char *mode) {
     if (!f) { close(fd); return NULL; }
     f->fd = fd;
     f->flags = (flags & O_WRONLY) || (flags & O_RDWR) ? 1 : 0;
+    f->ungot = -1;
     return f;
 }
 
@@ -106,9 +107,21 @@ int fflush(FILE *stream) {
 }
 
 int fgetc(FILE *stream) {
+    if (stream->ungot >= 0) {
+        int c = stream->ungot;
+        stream->ungot = -1;
+        return c;
+    }
     unsigned char c;
     if (fread(&c, 1, 1, stream) == 1) return c;
     return EOF;
+}
+
+int ungetc(int c, FILE *stream) {
+    if (c == EOF || !stream) return EOF;
+    stream->ungot = (unsigned char)c;
+    stream->eof = 0;
+    return c;
 }
 
 int fputc(int c, FILE *stream) {
@@ -399,6 +412,89 @@ int sscanf(const char *str, const char *format, ...) {
     return count;
 }
 
+int fscanf(FILE *stream, const char *format, ...) {
+    va_list ap;
+    va_start(ap, format);
+    int count = 0;
+
+    while (*format) {
+        if (*format == '%') {
+            format++;
+            if (*format == 'i' || *format == 'd') {
+                int *val = va_arg(ap, int *);
+                int c, neg = 0, n = 0, has = 0;
+                /* skip whitespace */
+                while ((c = fgetc(stream)) != EOF && (c == ' ' || c == '\t' || c == '\n' || c == '\r'));
+                if (c == EOF) break;
+                if (c == '-') { neg = 1; }
+                else if (c == '+') { /* skip */ }
+                else if (c >= '0' && c <= '9') { n = c - '0'; has = 1; }
+                else { ungetc(c, stream); break; }
+                while ((c = fgetc(stream)) != EOF && c >= '0' && c <= '9') {
+                    n = n * 10 + (c - '0'); has = 1;
+                }
+                if (c != EOF) ungetc(c, stream);
+                if (has) { *val = neg ? -n : n; count++; }
+                else break;
+            } else if (*format == 'f') {
+                float *val = va_arg(ap, float *);
+                int c, neg = 0, has = 0;
+                double result = 0.0;
+                /* skip whitespace */
+                while ((c = fgetc(stream)) != EOF && (c == ' ' || c == '\t' || c == '\n' || c == '\r'));
+                if (c == EOF) break;
+                if (c == '-') { neg = 1; }
+                else if (c == '+') { /* skip */ }
+                else if ((c >= '0' && c <= '9') || c == '.') { ungetc(c, stream); }
+                else { ungetc(c, stream); break; }
+                /* integer part */
+                while ((c = fgetc(stream)) != EOF && c >= '0' && c <= '9') {
+                    result = result * 10.0 + (c - '0'); has = 1;
+                }
+                /* fractional part */
+                if (c == '.') {
+                    double frac = 0.1;
+                    while ((c = fgetc(stream)) != EOF && c >= '0' && c <= '9') {
+                        result += (c - '0') * frac; frac *= 0.1; has = 1;
+                    }
+                }
+                if (c != EOF) ungetc(c, stream);
+                if (has) { *val = (float)(neg ? -result : result); count++; }
+                else break;
+            } else if (*format == 's') {
+                char *s = va_arg(ap, char *);
+                int c;
+                /* skip whitespace */
+                while ((c = fgetc(stream)) != EOF && (c == ' ' || c == '\t' || c == '\n' || c == '\r'));
+                if (c == EOF) break;
+                *s++ = c;
+                while ((c = fgetc(stream)) != EOF && c != ' ' && c != '\t' && c != '\n' && c != '\r')
+                    *s++ = c;
+                *s = '\0';
+                if (c != EOF) ungetc(c, stream);
+                count++;
+            } else {
+                break;
+            }
+            format++;
+        } else if (*format == ' ' || *format == '\t' || *format == '\n' || *format == '\r') {
+            /* whitespace in format: skip whitespace in input */
+            int c;
+            while ((c = fgetc(stream)) != EOF && (c == ' ' || c == '\t' || c == '\n' || c == '\r'));
+            if (c != EOF) ungetc(c, stream);
+            format++;
+        } else {
+            /* literal match */
+            int c = fgetc(stream);
+            if (c != *format) { if (c != EOF) ungetc(c, stream); break; }
+            format++;
+        }
+    }
+
+    va_end(ap);
+    return count;
+}
+
 int remove(const char *pathname) {
     return unlink(pathname);
 }
@@ -419,6 +515,7 @@ FILE *fdopen(int fd, const char *mode) {
     if (!f) return NULL;
     f->fd = fd;
     f->flags = (mode[0] == 'w' || mode[0] == 'a' || (mode[0] == 'r' && mode[1] == '+')) ? 1 : 0;
+    f->ungot = -1;
     return f;
 }
 

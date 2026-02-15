@@ -15,8 +15,9 @@ const PROGRAM_LOAD_ADDR: u64 = 0x0800_0000;
 /// Stack grows downward.
 const USER_STACK_TOP: u64 = 0x0C00_0000;
 
-/// Number of pages for the user stack (64 KiB = 16 pages).
-const USER_STACK_PAGES: u64 = 16;
+/// Number of pages for the user stack (8 MiB = 2048 pages).
+/// Matches the Linux default of 8 MiB.
+const USER_STACK_PAGES: u64 = 2048;
 
 const PAGE_SIZE: u64 = 4096;
 const PAGE_WRITABLE: u64 = 0x02;
@@ -130,6 +131,8 @@ struct Elf32Phdr {
 struct ElfLoadResult {
     entry: u64,
     brk: u64,
+    /// Total user pages mapped (code + data + BSS segments).
+    pages_mapped: u32,
 }
 
 /// Load an ELF64 binary into a user PML4.
@@ -149,6 +152,7 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
     crate::serial_println!("  ELF64: entry={:#018x}, {} program headers", entry, ph_num);
 
     let mut max_vaddr_end: u64 = 0;
+    let mut total_pages: u32 = 0;
 
     // Iterate program headers and load PT_LOAD segments
     for i in 0..ph_num {
@@ -191,6 +195,7 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
                 let phys = physical::alloc_frame()
                     .ok_or("Failed to allocate frame for ELF64 segment")?;
                 virtual_mem::map_page_in_pd(pd_phys, page_virt, phys, PAGE_WRITABLE | PAGE_USER);
+                total_pages += 1;
             }
         }
 
@@ -244,7 +249,7 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
     }
 
     let brk = (max_vaddr_end + PAGE_SIZE - 1) & !0xFFF;
-    Ok(ElfLoadResult { entry, brk })
+    Ok(ElfLoadResult { entry, brk, pages_mapped: total_pages })
 }
 
 /// Load an ELF32 binary into a user PML4 (for 32-bit compatibility mode).
@@ -263,6 +268,7 @@ fn load_elf32(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
     crate::serial_println!("  ELF32: entry={:#010x}, {} program headers", entry, ph_num);
 
     let mut max_vaddr_end: u64 = 0;
+    let mut total_pages: u32 = 0;
 
     for i in 0..ph_num {
         let ph_offset = ph_off + i * ph_size;
@@ -302,6 +308,7 @@ fn load_elf32(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
                 let phys = physical::alloc_frame()
                     .ok_or("Failed to allocate frame for ELF32 segment")?;
                 virtual_mem::map_page_in_pd(pd_phys, page_virt, phys, PAGE_WRITABLE | PAGE_USER);
+                total_pages += 1;
             }
         }
 
@@ -349,7 +356,7 @@ fn load_elf32(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
     }
 
     let brk = (max_vaddr_end + PAGE_SIZE - 1) & !0xFFF;
-    Ok(ElfLoadResult { entry, brk })
+    Ok(ElfLoadResult { entry, brk, pages_mapped: total_pages })
 }
 
 /// Check if data starts with ELF magic bytes.
@@ -391,20 +398,22 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
 
     let (entry_point, brk);
     let mut is_compat32 = false;
+    let mut total_user_pages: u32 = 0;
 
     let class = elf_class(&data);
     if class == ELFCLASS64 {
         // ---- ELF64 binary path ----
         crate::serial_println!("  Detected ELF64 binary");
 
-        // Allocate and map stack pages
+        // Allocate, map, and zero stack pages (single CR3 switch)
         let stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
-        for i in 0..USER_STACK_PAGES {
-            let virt = VirtAddr::new(stack_bottom + i * PAGE_SIZE);
-            let phys = physical::alloc_frame()
-                .ok_or("Failed to allocate frame for user stack")?;
-            virtual_mem::map_page_in_pd(pd_phys, virt, phys, PAGE_WRITABLE | PAGE_USER);
-        }
+        let stack_mapped = virtual_mem::map_pages_range_in_pd(
+            pd_phys,
+            VirtAddr::new(stack_bottom),
+            USER_STACK_PAGES,
+            PAGE_WRITABLE | PAGE_USER,
+            true,
+        )?;
 
         // DLLs are mapped on-demand via page fault handler (handle_dll_demand_page)
 
@@ -412,18 +421,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         let elf_result = load_elf64(&data, pd_phys)?;
         entry_point = elf_result.entry;
         brk = elf_result.brk;
-
-        // Zero user stack
-        unsafe {
-            let rflags: u64;
-            core::arch::asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
-            core::arch::asm!("cli", options(nomem, nostack));
-            let old_cr3 = virtual_mem::current_cr3();
-            core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
-            core::ptr::write_bytes(stack_bottom as *mut u8, 0, (USER_STACK_PAGES * PAGE_SIZE) as usize);
-            core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
-            core::arch::asm!("push {}; popfq", in(reg) rflags, options(nomem));
-        }
+        total_user_pages += elf_result.pages_mapped + stack_mapped;
 
         crate::serial_println!(
             "  ELF64: PD={:#018x}, entry={:#018x}, brk={:#018x}, stack={:#010x}-{:#010x}",
@@ -435,12 +433,13 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         crate::serial_println!("  Detected ELF32 binary");
 
         let stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
-        for i in 0..USER_STACK_PAGES {
-            let virt = VirtAddr::new(stack_bottom + i * PAGE_SIZE);
-            let phys = physical::alloc_frame()
-                .ok_or("Failed to allocate frame for user stack")?;
-            virtual_mem::map_page_in_pd(pd_phys, virt, phys, PAGE_WRITABLE | PAGE_USER);
-        }
+        let stack_mapped = virtual_mem::map_pages_range_in_pd(
+            pd_phys,
+            VirtAddr::new(stack_bottom),
+            USER_STACK_PAGES,
+            PAGE_WRITABLE | PAGE_USER,
+            true,
+        )?;
 
         // DLLs are mapped on-demand via page fault handler (handle_dll_demand_page)
 
@@ -448,17 +447,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         entry_point = elf_result.entry;
         brk = elf_result.brk;
         is_compat32 = true;
-
-        unsafe {
-            let rflags: u64;
-            core::arch::asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
-            core::arch::asm!("cli", options(nomem, nostack));
-            let old_cr3 = virtual_mem::current_cr3();
-            core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
-            core::ptr::write_bytes(stack_bottom as *mut u8, 0, (USER_STACK_PAGES * PAGE_SIZE) as usize);
-            core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
-            core::arch::asm!("push {}; popfq", in(reg) rflags, options(nomem));
-        }
+        total_user_pages += elf_result.pages_mapped + stack_mapped;
 
         crate::serial_println!(
             "  ELF32 (compat): PD={:#018x}, entry={:#010x}, brk={:#010x}, stack={:#010x}-{:#010x}",
@@ -470,23 +459,26 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     } else {
         // ---- Flat binary path ----
         let code_pages = (data.len() as u64 + PAGE_SIZE - 1) / PAGE_SIZE;
-        for i in 0..code_pages {
-            let virt = VirtAddr::new(PROGRAM_LOAD_ADDR + i * PAGE_SIZE);
-            let phys = physical::alloc_frame()
-                .ok_or("Failed to allocate frame for program code")?;
-            virtual_mem::map_page_in_pd(pd_phys, virt, phys, PAGE_WRITABLE | PAGE_USER);
-        }
+        let code_mapped = virtual_mem::map_pages_range_in_pd(
+            pd_phys,
+            VirtAddr::new(PROGRAM_LOAD_ADDR),
+            code_pages,
+            PAGE_WRITABLE | PAGE_USER,
+            true,
+        )?;
 
         let stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
-        for i in 0..USER_STACK_PAGES {
-            let virt = VirtAddr::new(stack_bottom + i * PAGE_SIZE);
-            let phys = physical::alloc_frame()
-                .ok_or("Failed to allocate frame for user stack")?;
-            virtual_mem::map_page_in_pd(pd_phys, virt, phys, PAGE_WRITABLE | PAGE_USER);
-        }
+        let stack_mapped = virtual_mem::map_pages_range_in_pd(
+            pd_phys,
+            VirtAddr::new(stack_bottom),
+            USER_STACK_PAGES,
+            PAGE_WRITABLE | PAGE_USER,
+            true,
+        )?;
 
         // DLLs are mapped on-demand via page fault handler (handle_dll_demand_page)
 
+        // Copy binary data (pages already zeroed by map_pages_range_in_pd)
         unsafe {
             let rflags: u64;
             core::arch::asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
@@ -495,9 +487,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
 
             let dest = PROGRAM_LOAD_ADDR as *mut u8;
-            core::ptr::write_bytes(dest, 0, (code_pages * PAGE_SIZE) as usize);
             core::ptr::copy_nonoverlapping(data.as_ptr(), dest, data.len());
-            core::ptr::write_bytes(stack_bottom as *mut u8, 0, (USER_STACK_PAGES * PAGE_SIZE) as usize);
 
             core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
             core::arch::asm!("push {}; popfq", in(reg) rflags, options(nomem));
@@ -505,6 +495,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
 
         entry_point = PROGRAM_LOAD_ADDR;
         brk = PROGRAM_LOAD_ADDR + code_pages * PAGE_SIZE;
+        total_user_pages += code_mapped + stack_mapped;
 
         crate::serial_println!(
             "  PD={:#018x}, {} code pages at {:#010x}, brk={:#010x}",
@@ -517,6 +508,9 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     // where an AP runs the trampoline before we store pending-program data.
     let tid = crate::task::scheduler::spawn_blocked(user_thread_trampoline, 100, name);
     crate::task::scheduler::set_thread_user_info(tid, pd_phys, brk as u32);
+    if total_user_pages > 0 {
+        crate::task::scheduler::adjust_thread_user_pages(tid, total_user_pages as i32);
+    }
 
     // Set architecture mode for compat32 threads
     if is_compat32 {

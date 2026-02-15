@@ -7,6 +7,7 @@
 
 use super::GpuDriver;
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use crate::drivers::pci::PciDevice;
 use crate::memory::address::VirtAddr;
 
@@ -78,6 +79,7 @@ pub struct VmwareSvgaGpu {
     width: u32,
     height: u32,
     pitch: u32,
+    supported: Vec<(u32, u32)>,
 }
 
 impl VmwareSvgaGpu {
@@ -187,6 +189,10 @@ impl GpuDriver for VmwareSvgaGpu {
 
     fn get_mode(&self) -> (u32, u32, u32, u32) {
         (self.width, self.height, self.pitch, self.fb_phys)
+    }
+
+    fn supported_modes(&self) -> &[(u32, u32)] {
+        &self.supported
     }
 
     fn has_accel(&self) -> bool {
@@ -353,6 +359,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         width: 0,
         height: 0,
         pitch: 0,
+        supported: Vec::new(),
     };
 
     // 1. Version negotiation
@@ -393,7 +400,16 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     gpu.pitch = gpu.reg_read(SVGA_REG_BYTES_PER_LINE);
     gpu.fb_phys = gpu.reg_read(SVGA_REG_FB_START);
 
-    // 6. Read FIFO info and map FIFO memory
+    // 6. Query hardware max resolution and build supported mode list
+    let max_w = gpu.reg_read(SVGA_REG_MAX_WIDTH);
+    let max_h = gpu.reg_read(SVGA_REG_MAX_HEIGHT);
+    crate::serial_println!("  SVGA II: max resolution {}x{}", max_w, max_h);
+    gpu.supported = super::COMMON_MODES.iter()
+        .copied()
+        .filter(|&(w, h)| w <= max_w && h <= max_h)
+        .collect();
+
+    // 7. Read FIFO info and map FIFO memory
     gpu.fifo_size = gpu.reg_read(SVGA_REG_FIFO_SIZE);
     crate::serial_println!(
         "  SVGA II: IO={:#x} FB={:#x} FIFO={:#x} (size={}K)",

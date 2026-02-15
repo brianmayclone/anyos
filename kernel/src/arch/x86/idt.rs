@@ -361,21 +361,21 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
             unsafe { crate::task::scheduler::force_unlock_scheduler(); }
         }
 
-        // Spin-retry: the scheduler lock may be held briefly by another CPU.
-        // We MUST NOT return false here — doing so would either:
-        //   (a) iretq back to the faulting instruction → infinite fault loop, or
-        //   (b) fall through to panic code that dereferences the (possibly corrupt)
-        //       interrupt frame → secondary GPF with RSP=garbage → kernel corruption.
-        for _ in 0..100_000 {
+        // Try the clean path: try_exit_current acquires the lock, marks the
+        // thread terminated, and calls schedule() → context_switch to next thread.
+        // Limited retries: if the lock is permanently contended, fall back to
+        // manual recovery instead of spinning forever (which caused deadlocks).
+        for _ in 0..1_000 {
             if crate::task::scheduler::try_exit_current(signal) {
                 unreachable!(); // try_exit_current calls schedule() and never returns
             }
             core::hint::spin_loop();
         }
-        // Still can't get the lock after 100K attempts — halt this CPU.
-        crate::serial_println!("  CRITICAL: scheduler lock deadlocked — halting CPU");
-        crate::drivers::serial::enter_panic_mode();
-        loop { unsafe { core::arch::asm!("cli; hlt"); } }
+        // Clean path failed — use manual fallback: kill thread, repair state,
+        // enter idle loop. Does NOT call schedule()/context_switch, avoiding
+        // the deadlock where schedule_inner's try_lock loop spins forever.
+        crate::serial_println!("  try_exit_current failed 1000x — falling back to manual recovery");
+        crate::task::scheduler::fault_kill_and_idle(signal);
     }
     false
 }
@@ -835,6 +835,8 @@ pub extern "C" fn irq_handler(frame: &InterruptFrame) {
 
     // LAPIC timer (IRQ 16): per-tick safety checks + debug tick-rate output.
     if irq == 16 {
+        // Raw lapic_id() is O(1) single MMIO read — fast for 1000Hz timer ISR.
+        // On QEMU, LAPIC IDs are contiguous 0..N matching logical per-CPU indices.
         let cpu_id = crate::arch::x86::apic::lapic_id() as usize;
 
         // === DEBUG: Show TSC-based uptime every ~5s (LAPIC timer fires at 1000Hz) ===

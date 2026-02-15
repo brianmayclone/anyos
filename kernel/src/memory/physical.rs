@@ -41,6 +41,7 @@ extern "C" {
 struct FrameAllocator {
     total_frames: usize,
     free_frames: usize,
+    next_search: usize,
     bitmap: [u8; BITMAP_SIZE],
 }
 
@@ -62,6 +63,7 @@ static ALLOCATOR: Spinlock<FrameAllocator> = Spinlock::new(FrameAllocator {
     bitmap: [0; BITMAP_SIZE], // Zero-init → lives in BSS (no binary bloat for 2 MiB)
     total_frames: 0,
     free_frames: 0,
+    next_search: 0,
 });
 
 /// Initialize the physical frame allocator from the E820 memory map.
@@ -172,14 +174,30 @@ pub fn init(boot_info: &BootInfo) {
 
 /// Allocate a single 4 KiB physical frame, returning its physical address.
 ///
-/// Uses a linear scan of the bitmap (first-fit). Returns `None` if no frames are available.
+/// Uses next-fit: resumes scanning from where the last allocation left off.
+/// This makes sequential allocations O(1) amortized instead of O(n).
 pub fn alloc_frame() -> Option<PhysAddr> {
     let mut alloc = ALLOCATOR.lock();
     let total = alloc.total_frames;
-    for i in 0..total {
+    if alloc.free_frames == 0 {
+        return None;
+    }
+    let start = alloc.next_search;
+    // Search from next_search to end
+    for i in start..total {
         if !alloc.is_used(i) {
             alloc.set_used(i);
             alloc.free_frames -= 1;
+            alloc.next_search = i + 1;
+            return Some(PhysAddr::new((i * FRAME_SIZE) as u64));
+        }
+    }
+    // Wrap around: search from 0 to start
+    for i in 0..start {
+        if !alloc.is_used(i) {
+            alloc.set_used(i);
+            alloc.free_frames -= 1;
+            alloc.next_search = i + 1;
             return Some(PhysAddr::new((i * FRAME_SIZE) as u64));
         }
     }
@@ -193,6 +211,10 @@ pub fn free_frame(addr: PhysAddr) {
     if alloc.is_used(frame) {
         alloc.set_free(frame);
         alloc.free_frames += 1;
+        // Hint allocator to reuse freed region sooner
+        if frame < alloc.next_search {
+            alloc.next_search = frame;
+        }
     }
 }
 

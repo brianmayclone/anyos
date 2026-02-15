@@ -532,6 +532,70 @@ pub fn map_page_in_pd(pd_phys: PhysAddr, virt: VirtAddr, phys: PhysAddr, flags: 
     }
 }
 
+/// Map `count` consecutive 4K pages starting at `start_virt` in the target PD.
+/// Allocates physical frames internally. Uses chunked CR3 switches (64 pages
+/// per chunk) to avoid long interrupt-disabled windows while still being much
+/// faster than per-page CR3 switches.
+/// Optionally zeroes each page after mapping.
+///
+/// Returns the number of pages mapped on success.
+pub fn map_pages_range_in_pd(
+    pd_phys: PhysAddr,
+    start_virt: VirtAddr,
+    count: u64,
+    flags: u64,
+    zero: bool,
+) -> Result<u32, &'static str> {
+    // Process in chunks of 64 pages (~256 KiB). Each chunk holds interrupts
+    // disabled for ~1-2ms. Between chunks, interrupts are re-enabled briefly
+    // so IRQs, IPC, and timer ticks can fire on this CPU.
+    const CHUNK_SIZE: u64 = 64;
+
+    let mut mapped = 0u32;
+    let mut i = 0u64;
+
+    while i < count {
+        let chunk_end = core::cmp::min(i + CHUNK_SIZE, count);
+
+        unsafe {
+            let rflags: u64;
+            asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
+            asm!("cli", options(nomem, nostack));
+            let old_cr3 = current_cr3();
+            asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
+
+            let mut err = false;
+            for j in i..chunk_end {
+                let virt = VirtAddr::new(start_virt.as_u64() + j * FRAME_SIZE as u64);
+                match physical::alloc_frame() {
+                    Some(phys) => {
+                        map_page(virt, phys, flags);
+                        if zero {
+                            core::ptr::write_bytes(virt.as_u64() as *mut u8, 0, FRAME_SIZE);
+                        }
+                        mapped += 1;
+                    }
+                    None => {
+                        err = true;
+                        break;
+                    }
+                }
+            }
+
+            asm!("mov cr3, {}", in(reg) old_cr3);
+            asm!("push {}; popfq", in(reg) rflags, options(nomem));
+
+            if err {
+                return Err("Failed to allocate frame for page range");
+            }
+        }
+
+        i = chunk_end;
+    }
+
+    Ok(mapped)
+}
+
 /// Check if a virtual address is mapped in a specific page directory.
 /// Temporarily switches CR3 to the target PML4.
 ///

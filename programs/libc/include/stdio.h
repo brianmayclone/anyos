@@ -30,6 +30,7 @@ typedef struct _FILE {
     unsigned char buf[BUFSIZ];
     int buf_pos;
     int buf_len;
+    int ungot;  /* ungetc character, -1 if none */
 } FILE;
 
 extern FILE *stdin;
@@ -64,7 +65,9 @@ int vprintf(const char *format, va_list ap);
 int vfprintf(FILE *stream, const char *format, va_list ap);
 int vsprintf(char *str, const char *format, va_list ap);
 int vsnprintf(char *str, size_t size, const char *format, va_list ap);
+int ungetc(int c, FILE *stream);
 int sscanf(const char *str, const char *format, ...);
+int fscanf(FILE *stream, const char *format, ...);
 int remove(const char *pathname);
 int rename(const char *oldpath, const char *newpath);
 FILE *tmpfile(void);

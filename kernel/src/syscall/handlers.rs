@@ -261,17 +261,23 @@ pub fn sys_sbrk(increment: i32) -> u32 {
         let new_page_end = (new_brk + page_size - 1) & !(page_size - 1);
 
         let mut addr = old_page_end;
+        let mut pages_mapped = 0u32;
         while addr < new_page_end {
             // Skip pages already mapped (another thread sharing this PD may have mapped them)
             if !virtual_mem::is_page_mapped(VirtAddr::new(addr as u64)) {
                 if let Some(phys) = physical::alloc_frame() {
                     virtual_mem::map_page(VirtAddr::new(addr as u64), phys, 0x02 | 0x04);
                     unsafe { core::ptr::write_bytes(addr as *mut u8, 0, page_size as usize); }
+                    pages_mapped += 1;
                 } else {
                     return u32::MAX;
                 }
             }
             addr += page_size;
+        }
+
+        if pages_mapped > 0 {
+            crate::task::scheduler::adjust_current_user_pages(pages_mapped as i32);
         }
 
         // set_current_thread_brk also syncs brk across all sibling threads
@@ -576,12 +582,12 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
             0
         }
         1 => {
-            // Thread list: 52 bytes each
+            // Thread list: 56 bytes each
             // [tid:u32, prio:u8, state:u8, arch:u8, pad:u8, name:24bytes,
-            //  cpu_ticks:u32, io_read_bytes:u64, io_write_bytes:u64]
+            //  user_pages:u32, cpu_ticks:u32, io_read_bytes:u64, io_write_bytes:u64]
             let threads = crate::task::scheduler::list_threads();
             if buf_ptr != 0 && buf_size > 0 {
-                let entry_size = 52usize;
+                let entry_size = 56usize;
                 let max = (buf_size as usize) / entry_size;
                 let buf = unsafe {
                     core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize)
@@ -599,11 +605,13 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
                     let n = name_bytes.len().min(23);
                     buf[off + 8..off + 8 + n].copy_from_slice(&name_bytes[..n]);
                     buf[off + 8 + n] = 0;
-                    // cpu_ticks at offset 32
-                    buf[off + 32..off + 36].copy_from_slice(&t.cpu_ticks.to_le_bytes());
-                    // io_read_bytes at offset 36, io_write_bytes at offset 44
-                    buf[off + 36..off + 44].copy_from_slice(&t.io_read_bytes.to_le_bytes());
-                    buf[off + 44..off + 52].copy_from_slice(&t.io_write_bytes.to_le_bytes());
+                    // user_pages at offset 32
+                    buf[off + 32..off + 36].copy_from_slice(&t.user_pages.to_le_bytes());
+                    // cpu_ticks at offset 36
+                    buf[off + 36..off + 40].copy_from_slice(&t.cpu_ticks.to_le_bytes());
+                    // io_read_bytes at offset 40, io_write_bytes at offset 48
+                    buf[off + 40..off + 48].copy_from_slice(&t.io_read_bytes.to_le_bytes());
+                    buf[off + 48..off + 56].copy_from_slice(&t.io_write_bytes.to_le_bytes());
                 }
             }
             threads.len() as u32
@@ -1396,7 +1404,12 @@ pub fn sys_pipe_list(buf_ptr: u32, buf_size: u32) -> u32 {
 pub fn sys_dll_load(path_ptr: u32, _path_len: u32) -> u32 {
     if path_ptr == 0 { return 0; }
     let path = unsafe { read_user_str(path_ptr) };
-    match crate::task::dll::get_dll_base(path) {
+    // Try existing loaded DLLs first
+    if let Some(base) = crate::task::dll::get_dll_base(path) {
+        return base as u32;
+    }
+    // Try loading from filesystem (dload)
+    match crate::task::dll::load_dll_dynamic(path) {
         Some(base) => base as u32,
         None => 0,
     }

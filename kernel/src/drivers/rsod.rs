@@ -390,13 +390,19 @@ fn write_system_info(w: &mut RsodWriter) {
     let _ = write!(w, "Memory: {} MiB free / {} MiB total\n", free_mb, total_mb);
 }
 
-/// Write current thread info
+/// Write current thread info.
+///
+/// Uses ONLY lock-free accessors (`debug_*` variants) to avoid deadlock.
+/// The SCHEDULER lock may already be held when RSOD fires (panic/exception
+/// inside schedule_inner, OOM under lock, etc.). Calling the normal
+/// `current_thread_name()` / `is_current_thread_user()` would re-acquire
+/// the lock on the same CPU → cpu=N owner=N self-deadlock.
 fn write_thread_info(w: &mut RsodWriter) {
     let tid = crate::task::scheduler::debug_current_tid();
-    let name_buf = crate::task::scheduler::current_thread_name();
+    let name_buf = crate::task::scheduler::debug_current_thread_name();
     let name_len = name_buf.iter().position(|&b| b == 0).unwrap_or(32);
     let name = core::str::from_utf8(&name_buf[..name_len]).unwrap_or("???");
-    let is_user = crate::task::scheduler::is_current_thread_user();
+    let is_user = crate::task::scheduler::debug_is_current_user();
     let mode = if is_user { "user" } else { "kernel" };
 
     let _ = write!(w, "Thread: TID={} name=\"{}\" mode={}\n", tid, name, mode);
