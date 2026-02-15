@@ -25,7 +25,7 @@
 
 [BITS 64]
 
-extern syscall_dispatch
+extern syscall_dispatch_64
 extern LAPIC_TO_PERCPU
 
 ; LAPIC virtual address: LAPIC_VIRT_BASE(0xFFFFFFFFD0100000) + LAPIC_ID(0x20)
@@ -87,16 +87,16 @@ syscall_fast_entry:
     mov ds, ax
     mov es, ax
 
-    ; === Phase 4: Call Rust syscall dispatcher ===
+    ; === Phase 4: Call Rust syscall dispatcher (64-bit path) ===
     ; Re-enable interrupts — SFMASK cleared IF on SYSCALL entry, but syscall
     ; handlers need interrupts for AHCI completion, timer preemption, etc.
     ; (INT 0x80 uses a trap gate that keeps IF=1, so this is consistent.)
     sti
 
     mov rdi, rsp                    ; arg0 = &SyscallRegs
-    call syscall_dispatch
+    call syscall_dispatch_64
 
-    ; Store return value in saved RAX position (offset 14*8 = 112)
+    ; Store return value (full 64-bit RAX) in saved RAX position (offset 14*8 = 112)
     mov [rsp + 112], rax
 
     ; === Phase 5: Restore registers ===

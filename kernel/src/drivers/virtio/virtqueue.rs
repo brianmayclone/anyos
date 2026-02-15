@@ -106,6 +106,16 @@ impl VirtQueue {
             }
         }
 
+        // Suppress device-to-driver notifications (interrupts).
+        // We use polled I/O (execute_sync busy-waits on used ring), so interrupts
+        // are unnecessary. Without this, every completed command asserts the PCI
+        // INTx line. Since no ISR handler deasserts it, level-triggered delivery
+        // causes an interrupt storm that starves the main thread.
+        // VIRTQ_AVAIL_F_NO_INTERRUPT = 1
+        unsafe {
+            core::ptr::write_volatile(avail, 1u16);
+        }
+
         Some(VirtQueue {
             queue_size,
             desc_phys,

@@ -1,19 +1,20 @@
 ; =============================================================================
 ; syscall_entry.asm - System call entry point (int 0x80) for x86-64
 ; =============================================================================
-; INT 0x80 convention (used by both 64-bit and 32-bit compat processes):
-;   RAX = syscall number
-;   RBX = arg1, RCX = arg2, RDX = arg3, RSI = arg4, RDI = arg5
-;   Return value in RAX
+; INT 0x80 convention — used by 32-bit compatibility mode processes
+; (libc, TCC, Doom, etc.):
+;   EAX = syscall number
+;   EBX = arg1, ECX = arg2, EDX = arg3, ESI = arg4, EDI = arg5
+;   Return value in EAX
 ;
-; The dispatcher checks CS to determine if caller is 32-bit compat (CS=0x1B)
-; or 64-bit native (CS=0x2B) and adjusts argument extraction accordingly.
+; CPU zero-extends 32-bit registers to 64-bit on ring transition.
+; The dispatcher (syscall_dispatch_32) explicitly truncates args to u32.
 ;
 ; CPU pushes on INT: SS, RSP, RFLAGS, CS, RIP (always in 64-bit mode)
 
 [BITS 64]
 
-extern syscall_dispatch
+extern syscall_dispatch_32
 
 global syscall_entry
 syscall_entry:
@@ -41,7 +42,7 @@ syscall_entry:
 
     ; Pass pointer to SyscallRegs as first arg (System V ABI: RDI)
     mov rdi, rsp
-    call syscall_dispatch
+    call syscall_dispatch_32
 
     ; Store return value (RAX) back into the saved RAX on stack.
     ; Stack layout from RSP:

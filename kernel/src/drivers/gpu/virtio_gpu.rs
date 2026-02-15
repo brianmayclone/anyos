@@ -288,6 +288,9 @@ impl VirtioGpu {
             return 0;
         }
 
+        // Read ISR status to deassert any pending level-triggered PCI interrupt
+        let _ = virtio::mmio_read8(self.device.isr_addr);
+
         // Read response type
         let resp_type = unsafe { core::ptr::read_volatile(self.resp_buf as *const u32) };
         resp_type
@@ -323,6 +326,9 @@ impl VirtioGpu {
             &[(cursor_resp, 24)],
             || { virtio::mmio_write16(notify_virt, 1); },
         );
+
+        // Read ISR status to deassert any pending level-triggered PCI interrupt
+        let _ = virtio::mmio_read8(self.device.isr_addr);
     }
 
     // ── GPU operations ──
@@ -434,6 +440,7 @@ impl VirtioGpu {
                 || { virtio::mmio_write16(notify_virt, 0); },
             );
 
+            let _ = virtio::mmio_read8(self.device.isr_addr);
             if result.is_none() { return false; }
             let resp = unsafe { core::ptr::read_volatile(self.resp_buf as *const u32) };
             return resp == VIRTIO_GPU_RESP_OK_NODATA;
@@ -476,6 +483,7 @@ impl VirtioGpu {
             || { virtio::mmio_write16(notify_virt, 0); },
         );
 
+        let _ = virtio::mmio_read8(self.device.isr_addr);
         if result.is_none() { return false; }
         let resp = unsafe { core::ptr::read_volatile(self.resp_buf as *const u32) };
         resp == VIRTIO_GPU_RESP_OK_NODATA
@@ -932,6 +940,10 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
 
     // 8. Set DRIVER_OK
     device.set_driver_ok();
+
+    // Clear any pending interrupt from device initialization
+    let _ = virtio::mmio_read8(device.isr_addr);
+
     crate::serial_println!("  VirtIO GPU: device ready (DRIVER_OK)");
 
     let mut gpu = VirtioGpu {

@@ -974,25 +974,6 @@ pub fn sys_net_arp(buf_ptr: u32, buf_size: u32) -> u32 {
     entries.len() as u32
 }
 
-// =========================================================================
-// Window Manager (SYS_WIN_*) — STUBS
-// Kernel compositor removed; apps should use libcompositor + userspace compositor.
-// These stubs return u32::MAX (error) for all window operations.
-// =========================================================================
-
-pub fn sys_win_create(_: u32, _: u32, _: u32, _: u32, _: u32) -> u32 { u32::MAX }
-pub fn sys_win_destroy(_: u32) -> u32 { u32::MAX }
-pub fn sys_win_set_title(_: u32, _: u32, _: u32) -> u32 { u32::MAX }
-pub fn sys_win_get_event(_: u32, _: u32) -> u32 { 0 }
-pub fn sys_win_fill_rect(_: u32, _: u32) -> u32 { u32::MAX }
-pub fn sys_win_draw_text(_: u32, _: u32) -> u32 { u32::MAX }
-pub fn sys_win_draw_text_mono(_: u32, _: u32) -> u32 { u32::MAX }
-pub fn sys_win_present(_: u32) -> u32 { 0 }
-pub fn sys_win_get_size(_: u32, _: u32) -> u32 { u32::MAX }
-pub fn sys_win_blit(_: u32, _: u32) -> u32 { u32::MAX }
-pub fn sys_win_list(_: u32, _: u32) -> u32 { 0 }
-pub fn sys_win_focus(_: u32) -> u32 { u32::MAX }
-
 /// sys_screen_size - Get screen dimensions from GPU driver.
 pub fn sys_screen_size(buf_ptr: u32) -> u32 {
     if buf_ptr == 0 { return u32::MAX; }
@@ -1202,22 +1183,12 @@ pub fn sys_font_measure(params_ptr: u32) -> u32 {
     0
 }
 
-/// SYS_WIN_DRAW_TEXT_EX — stub (kernel compositor removed).
-pub fn sys_win_draw_text_ex(_: u32, _: u32) -> u32 { u32::MAX }
-
-/// SYS_WIN_FILL_ROUNDED_RECT — stub (kernel compositor removed).
-pub fn sys_win_fill_rounded_rect(_: u32, _: u32) -> u32 { u32::MAX }
 
 /// SYS_GPU_HAS_ACCEL: Query if GPU acceleration is available.
 pub fn sys_gpu_has_accel() -> u32 {
     if crate::graphics::font_manager::gpu_accel_enabled() { 1 } else { 0 }
 }
 
-/// SYS_SET_WALLPAPER — stub (userspace compositor manages wallpaper).
-pub fn sys_set_wallpaper(_: u32) -> u32 { 0 }
-
-/// SYS_BOOT_READY — no-op (userspace compositor manages its own boot sequence).
-pub fn sys_boot_ready() -> u32 { 0 }
 
 /// SYS_FONT_RENDER_BUF: Render TTF text to a user-provided ARGB pixel buffer.
 /// params_ptr: [buf_ptr:u32, buf_w:u32, buf_h:u32, x:i32, y:i32, color:u32,

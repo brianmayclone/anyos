@@ -1,11 +1,16 @@
-//! System call interface (`int 0x80`) -- dispatch, number definitions, and register layout.
+//! System call interface — dual-path dispatch for 32-bit and 64-bit user processes.
 //!
-//! User programs invoke syscalls via `int 0x80` with the syscall number in RAX and up to
-//! five arguments in RBX, RCX, RDX, RSI, RDI. The assembly stub (`syscall_entry.asm`) saves
-//! registers and calls [`syscall_dispatch`], which routes to the appropriate handler.
+//! **INT 0x80 path** (`syscall_dispatch_32`):
+//!   Used by 32-bit compatibility mode processes (libc, TCC, Doom, etc.).
+//!   Convention: EAX=num, EBX=arg1, ECX=arg2, EDX=arg3, ESI=arg4, EDI=arg5.
+//!   CPU zero-extends 32-bit registers to 64-bit on ring transition.
+//!   All arguments are explicitly treated as u32.
 //!
-//! For 32-bit compat processes the convention is the same (EAX, EBX, ECX, EDX, ESI, EDI)
-//! with registers zero-extended to 64-bit by the CPU on transition to long mode.
+//! **SYSCALL path** (`syscall_dispatch_64`):
+//!   Used by native 64-bit Rust processes (compositor, terminal, etc.).
+//!   Convention: RAX=num, RBX=arg1, R10=arg2 (RCX clobbered), RDX=arg3, RSI=arg4, RDI=arg5.
+//!   Arguments are full 64-bit values (currently truncated to u32 for handler compatibility,
+//!   but the separation allows future widening without touching the 32-bit path).
 
 pub mod handlers;
 pub mod table;
@@ -104,37 +109,21 @@ pub const SYS_EVT_CHAN_UNSUBSCRIBE: u32 = 67;
 pub const SYS_EVT_CHAN_DESTROY: u32 = 68;
 pub const SYS_EVT_CHAN_EMIT_TO: u32 = 69;
 
-// Window manager / GUI
-pub const SYS_WIN_CREATE: u32 = 50;
-pub const SYS_WIN_DESTROY: u32 = 51;
-pub const SYS_WIN_SET_TITLE: u32 = 52;
-pub const SYS_WIN_GET_EVENT: u32 = 53;
-pub const SYS_WIN_FILL_RECT: u32 = 54;
-pub const SYS_WIN_DRAW_TEXT: u32 = 55;
-pub const SYS_WIN_PRESENT: u32 = 56;
-pub const SYS_WIN_GET_SIZE: u32 = 57;
-pub const SYS_WIN_DRAW_TEXT_MONO: u32 = 58;
-pub const SYS_WIN_BLIT: u32 = 59;
-pub const SYS_WIN_LIST: u32 = 70;
-pub const SYS_WIN_FOCUS: u32 = 71;
+// Display / GPU
 pub const SYS_SCREEN_SIZE: u32 = 72;
 pub const SYS_SET_RESOLUTION: u32 = 110;
 pub const SYS_LIST_RESOLUTIONS: u32 = 111;
 pub const SYS_GPU_INFO: u32 = 112;
+pub const SYS_GPU_HAS_ACCEL: u32 = 135;
 
 // Audio syscalls
 pub const SYS_AUDIO_WRITE: u32 = 120;
 pub const SYS_AUDIO_CTL: u32 = 121;
 
-// Font / AA drawing / wallpaper
+// Font rendering (kernel-side TTF rasterizer)
 pub const SYS_FONT_LOAD: u32 = 130;
 pub const SYS_FONT_UNLOAD: u32 = 131;
 pub const SYS_FONT_MEASURE: u32 = 132;
-pub const SYS_WIN_DRAW_TEXT_EX: u32 = 133;
-pub const SYS_WIN_FILL_ROUNDED_RECT: u32 = 134;
-pub const SYS_GPU_HAS_ACCEL: u32 = 135;
-pub const SYS_SET_WALLPAPER: u32 = 136;
-pub const SYS_BOOT_READY: u32 = 137;
 
 // Shared memory
 pub const SYS_SHM_CREATE: u32 = 140;
@@ -175,12 +164,7 @@ pub const SYS_SETENV: u32 = 182;
 pub const SYS_GETENV: u32 = 183;
 pub const SYS_LISTENV: u32 = 184;
 
-// Window creation flags (must match compositor/src/desktop.rs)
-pub const WIN_FLAG_BORDERLESS: u32 = 0x01;
-pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x02;
-pub const WIN_FLAG_ALWAYS_ON_TOP: u32 = 0x04;
-
-/// Register frame pushed by `syscall_entry.asm` before calling [`syscall_dispatch`].
+/// Register frame pushed by `syscall_entry.asm` / `syscall_fast.asm`.
 ///
 /// The layout matches the individual GPR pushes (no pushad in 64-bit mode) plus the
 /// CPU-pushed interrupt frame (RIP, CS, RFLAGS, RSP, SS — always pushed in long mode).
@@ -212,23 +196,16 @@ pub struct SyscallRegs {
 
 /// Register the `int 0x80` syscall trap gate and log readiness.
 pub fn init() {
-    crate::serial_println!("[OK] Syscall interface initialized (int 0x80)");
+    crate::serial_println!("[OK] Syscall interface initialized (int 0x80 + SYSCALL)");
 }
 
-/// Called from syscall_entry.asm.
-///
-/// INT 0x80 convention: RAX=num, RBX=arg1, RCX=arg2, RDX=arg3, RSI=arg4, RDI=arg5.
-/// For 32-bit compat processes the same registers are used (zero-extended by CPU).
-/// All handler args remain u32 for now; they will be widened to u64 in Phase 6.
-#[no_mangle]
-pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
-    let syscall_num = regs.rax as u32;
-    let arg1 = regs.rbx as u32;
-    let arg2 = regs.rcx as u32;
-    let arg3 = regs.rdx as u32;
-    let arg4 = regs.rsi as u32;
-    let arg5 = regs.rdi as u32;
+// =========================================================================
+// Shared dispatch logic — routes syscall number to handler.
+// Both 32-bit and 64-bit entry points extract args into u32 and call this.
+// =========================================================================
 
+#[inline(always)]
+fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, arg5: u32) -> u32 {
     let result = match syscall_num {
         // Process management
         SYS_EXIT => handlers::sys_exit(arg1),
@@ -294,9 +271,6 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         SYS_UDP_RECVFROM => handlers::sys_udp_recvfrom(arg1, arg2, arg3),
         SYS_UDP_SET_OPT => handlers::sys_udp_set_opt(arg1, arg2, arg3),
 
-        // Font buffer rendering
-        SYS_FONT_RENDER_BUF => handlers::sys_font_render_buf(arg1),
-
         // Pipes
         SYS_PIPE_CREATE => handlers::sys_pipe_create(arg1),
         SYS_PIPE_READ => handlers::sys_pipe_read(arg1, arg2, arg3),
@@ -319,39 +293,22 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
         SYS_EVT_CHAN_DESTROY => handlers::sys_evt_chan_destroy(arg1),
         SYS_EVT_CHAN_EMIT_TO => handlers::sys_evt_chan_emit_to(arg1, arg2, arg3),
 
-        // Window manager
-        SYS_WIN_CREATE => handlers::sys_win_create(arg1, arg2, arg3, arg4, arg5),
-        SYS_WIN_DESTROY => handlers::sys_win_destroy(arg1),
-        SYS_WIN_SET_TITLE => handlers::sys_win_set_title(arg1, arg2, arg3),
-        SYS_WIN_GET_EVENT => handlers::sys_win_get_event(arg1, arg2),
-        SYS_WIN_FILL_RECT => handlers::sys_win_fill_rect(arg1, arg2),
-        SYS_WIN_DRAW_TEXT => handlers::sys_win_draw_text(arg1, arg2),
-        SYS_WIN_DRAW_TEXT_MONO => handlers::sys_win_draw_text_mono(arg1, arg2),
-        SYS_WIN_PRESENT => handlers::sys_win_present(arg1),
-        SYS_WIN_GET_SIZE => handlers::sys_win_get_size(arg1, arg2),
-        SYS_WIN_BLIT => handlers::sys_win_blit(arg1, arg2),
-        SYS_WIN_LIST => handlers::sys_win_list(arg1, arg2),
-        SYS_WIN_FOCUS => handlers::sys_win_focus(arg1),
-        SYS_SCREEN_SIZE => handlers::sys_screen_size(arg1),
-
         // Display / GPU
+        SYS_SCREEN_SIZE => handlers::sys_screen_size(arg1),
         SYS_SET_RESOLUTION => handlers::sys_set_resolution(arg1, arg2),
         SYS_LIST_RESOLUTIONS => handlers::sys_list_resolutions(arg1, arg2),
         SYS_GPU_INFO => handlers::sys_gpu_info(arg1, arg2),
+        SYS_GPU_HAS_ACCEL => handlers::sys_gpu_has_accel(),
 
         // Audio
         SYS_AUDIO_WRITE => handlers::sys_audio_write(arg1, arg2),
         SYS_AUDIO_CTL => handlers::sys_audio_ctl(arg1, arg2),
 
-        // Font / AA drawing / wallpaper
+        // Font rendering (kernel-side TTF rasterizer)
         SYS_FONT_LOAD => handlers::sys_font_load(arg1, arg2),
         SYS_FONT_UNLOAD => handlers::sys_font_unload(arg1),
         SYS_FONT_MEASURE => handlers::sys_font_measure(arg1),
-        SYS_WIN_DRAW_TEXT_EX => handlers::sys_win_draw_text_ex(arg1, arg2),
-        SYS_WIN_FILL_ROUNDED_RECT => handlers::sys_win_fill_rounded_rect(arg1, arg2),
-        SYS_GPU_HAS_ACCEL => handlers::sys_gpu_has_accel(),
-        SYS_SET_WALLPAPER => handlers::sys_set_wallpaper(arg1),
-        SYS_BOOT_READY => handlers::sys_boot_ready(),
+        SYS_FONT_RENDER_BUF => handlers::sys_font_render_buf(arg1),
 
         // Shared memory
         SYS_SHM_CREATE => handlers::sys_shm_create(arg1),
@@ -392,4 +349,60 @@ pub extern "C" fn syscall_dispatch(regs: &mut SyscallRegs) -> u32 {
     crate::task::scheduler::check_current_stack_canary(syscall_num);
 
     result
+}
+
+// =========================================================================
+// 32-bit dispatch — called from syscall_entry.asm (INT 0x80)
+// =========================================================================
+
+/// Called from `syscall_entry.asm` for 32-bit compatibility mode processes.
+///
+/// INT 0x80 convention: EAX=num, EBX=arg1, ECX=arg2, EDX=arg3, ESI=arg4, EDI=arg5.
+/// The CPU zero-extends 32-bit registers to 64-bit on the ring transition.
+/// We explicitly mask to u32 to guarantee clean 32-bit values regardless of
+/// any garbage the caller may have left in the upper 32 bits.
+#[no_mangle]
+pub extern "C" fn syscall_dispatch_32(regs: &mut SyscallRegs) -> u32 {
+    let syscall_num = regs.rax as u32;
+    let arg1 = regs.rbx as u32;
+    let arg2 = regs.rcx as u32;
+    let arg3 = regs.rdx as u32;
+    let arg4 = regs.rsi as u32;
+    let arg5 = regs.rdi as u32;
+
+    dispatch_inner(syscall_num, arg1, arg2, arg3, arg4, arg5)
+}
+
+// =========================================================================
+// 64-bit dispatch — called from syscall_fast.asm (SYSCALL instruction)
+// =========================================================================
+
+/// Called from `syscall_fast.asm` for native 64-bit processes.
+///
+/// SYSCALL convention: RAX=num, RBX=arg1, R10=arg2, RDX=arg3, RSI=arg4, RDI=arg5.
+/// The assembly stub pushes R10 into the RCX slot of `SyscallRegs`, so `regs.rcx`
+/// contains the caller's R10 value (arg2).
+///
+/// Arguments are extracted as full u64 values. Currently truncated to u32 for
+/// handler compatibility (all user addresses are below 4 GiB), but this entry
+/// point is the place to widen handlers to u64 in the future.
+#[no_mangle]
+pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
+    let syscall_num = regs.rax as u32;
+    // Full 64-bit argument extraction (R10 is in the RCX slot per syscall_fast.asm)
+    let _arg1_64: u64 = regs.rbx;
+    let _arg2_64: u64 = regs.rcx; // actually R10
+    let _arg3_64: u64 = regs.rdx;
+    let _arg4_64: u64 = regs.rsi;
+    let _arg5_64: u64 = regs.rdi;
+
+    // Truncate to u32 for existing handler signatures.
+    // When handlers are widened to u64, use the _argN_64 values directly.
+    let arg1 = _arg1_64 as u32;
+    let arg2 = _arg2_64 as u32;
+    let arg3 = _arg3_64 as u32;
+    let arg4 = _arg4_64 as u32;
+    let arg5 = _arg5_64 as u32;
+
+    dispatch_inner(syscall_num, arg1, arg2, arg3, arg4, arg5) as u64
 }
