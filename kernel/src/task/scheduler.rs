@@ -116,6 +116,23 @@ static PER_CPU_STACK_TOP: [AtomicU64; MAX_CPUS] = {
     [INIT; MAX_CPUS]
 };
 
+/// Per-CPU idle thread stack top (set once during init, never changes).
+/// Used by bad_rsp_recovery and fault_kill_and_idle as a SAFE fallback stack
+/// when the scheduler lock is unavailable. Unlike PER_CPU_STACK_TOP (which
+/// tracks the CURRENT thread's stack and changes on every context switch),
+/// this always points to the idle thread's stack — never shared with any
+/// running user/kernel thread.
+static PER_CPU_IDLE_STACK_TOP: [AtomicU64; MAX_CPUS] = {
+    const INIT: AtomicU64 = AtomicU64::new(0);
+    [INIT; MAX_CPUS]
+};
+
+/// Per-CPU flag: has this CPU installed the DR1 watchpoint yet?
+static PER_CPU_DR1_INSTALLED: [AtomicBool; MAX_CPUS] = {
+    const INIT: AtomicBool = AtomicBool::new(false);
+    [INIT; MAX_CPUS]
+};
+
 /// Update the per-CPU thread name cache (for lock-free crash diagnostics).
 /// Called from schedule_inner and other paths that update PER_CPU_CURRENT_TID.
 #[inline]
@@ -259,6 +276,13 @@ impl Scheduler {
     /// Add a thread to the scheduler and enqueue it on the least-loaded CPU.
     fn add_thread(&mut self, mut thread: Thread) -> u32 {
         let tid = thread.tid;
+        // Duplicate TID check — if NEXT_TID race produced a duplicate, detect it now
+        if self.find_idx(tid).is_some() {
+            crate::serial_println!(
+                "BUG: duplicate TID {}! Thread '{}' conflicts with existing thread",
+                tid, thread.name_str(),
+            );
+        }
         let cpu = self.least_loaded_cpu();
         thread.last_cpu = cpu;
         self.threads.push(Box::new(thread));
@@ -270,6 +294,13 @@ impl Scheduler {
     /// Used by `spawn_blocked()` to prevent SMP races.
     fn add_thread_blocked(&mut self, mut thread: Thread) -> u32 {
         let tid = thread.tid;
+        // Duplicate TID check
+        if self.find_idx(tid).is_some() {
+            crate::serial_println!(
+                "BUG: duplicate TID {}! Thread '{}' conflicts with existing thread",
+                tid, thread.name_str(),
+            );
+        }
         thread.state = ThreadState::Blocked;
         self.threads.push(Box::new(thread));
         tid
@@ -596,6 +627,17 @@ fn schedule_inner(from_timer: bool) {
     // but we only use it for the early-return counter path (which is from_timer only).
     let cpu_id_early = get_cpu_id();
 
+    // Lazy DR1 propagation: if a DR1 watchpoint address has been set (by
+    // set_thread_critical on CPU 0) but this CPU hasn't installed it yet,
+    // install it now. This ensures all CPUs watch the compositor's CpuContext.rip.
+    if !PER_CPU_DR1_INSTALLED[cpu_id_early].load(Ordering::Relaxed) {
+        let addr = DR1_WATCH_ADDR.load(Ordering::Relaxed);
+        if addr != 0 {
+            install_dr1_watchpoint(addr);
+            PER_CPU_DR1_INSTALLED[cpu_id_early].store(true, Ordering::Relaxed);
+        }
+    }
+
     // CPU 0 processes deferred PD destruction from remote kill_thread() calls.
     // Done BEFORE acquiring the scheduler lock — destroy_user_page_directory
     // may temporarily switch CR3 and must not be called under the scheduler lock.
@@ -686,6 +728,46 @@ fn schedule_inner(from_timer: bool) {
                             sched.threads[i].wake_at_tick = None;
                             sched.enqueue_on_cpu(tid, target_cpu);
                         }
+                    }
+                }
+            }
+        }
+
+        // Per-tick integrity scan: check critical threads for CpuContext corruption.
+        // Only runs on timer ticks (not voluntary schedule), only scans threads that
+        // are NOT currently running on any CPU (save_complete == 1 means their context
+        // is fully saved and should contain valid values).
+        if from_timer && cpu_id == 0 {
+            for i in 0..sched.threads.len() {
+                if sched.threads[i].critical
+                    && sched.threads[i].context.save_complete == 1
+                    && sched.threads[i].state != ThreadState::Terminated
+                {
+                    let rip = sched.threads[i].context.rip;
+                    let rsp = sched.threads[i].context.rsp;
+                    let rbp = sched.threads[i].context.rbp;
+                    // Kernel RIP must be in [0xFFFFFFFF80100000, 0xFFFFFFFFC0000000)
+                    let rip_bad = rip < 0xFFFF_FFFF_8010_0000 || rip >= 0xFFFF_FFFF_C000_0000;
+                    // Kernel RSP must be in higher-half
+                    let rsp_bad = rsp < 0xFFFF_FFFF_8000_0000;
+                    if rip_bad || rsp_bad {
+                        let ctx_addr = &sched.threads[i].context as *const CpuContext as u64;
+                        crate::serial_println!(
+                            "!!! CORRUPT CRITICAL '{}' TID={} RIP={:#018x} RSP={:#018x} RBP={:#018x} ctx@{:#x} state={:?}",
+                            sched.threads[i].name_str(), sched.threads[i].tid,
+                            rip, rsp, rbp, ctx_addr, sched.threads[i].state,
+                        );
+                        // Print surrounding context fields for forensics
+                        crate::serial_println!(
+                            "    RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
+                            sched.threads[i].context.rax, sched.threads[i].context.rbx,
+                            sched.threads[i].context.rcx, sched.threads[i].context.rdx,
+                        );
+                        crate::serial_println!(
+                            "    RSI={:#018x} RDI={:#018x} CR3={:#018x} RFLAGS={:#018x}",
+                            sched.threads[i].context.rsi, sched.threads[i].context.rdi,
+                            sched.threads[i].context.cr3, sched.threads[i].context.rflags,
+                        );
                     }
                 }
             }
@@ -1476,6 +1558,46 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
         tid, stack_bottom, stack_top,
     );
 
+    // Read the interrupt frame from identity-mapped memory at bad_rsp.
+    // In x86-64, the CPU always pushes SS:RSP even for same-privilege
+    // interrupts, so the full frame is at bad_rsp. Since identity mapping
+    // covers the first 128 MiB, any bad_rsp < 0x0800_0000 is readable.
+    if bad_rsp > 0 && bad_rsp < 0x0800_0000 && bad_rsp + 176 < 0x0800_0000 {
+        unsafe {
+            let p = bad_rsp as *const u64;
+            let frame_rip   = core::ptr::read_volatile(p.add(17)); // +136
+            let frame_cs    = core::ptr::read_volatile(p.add(18)); // +144
+            let frame_rfl   = core::ptr::read_volatile(p.add(19)); // +152
+            let frame_rsp   = core::ptr::read_volatile(p.add(20)); // +160
+            let frame_ss    = core::ptr::read_volatile(p.add(21)); // +168
+            let frame_int   = core::ptr::read_volatile(p.add(15)); // +120
+            let frame_err   = core::ptr::read_volatile(p.add(16)); // +128
+            let frame_rbp   = core::ptr::read_volatile(p.add(8));  // +64
+            let frame_rax   = core::ptr::read_volatile(p.add(14)); // +112
+            let frame_rdi   = core::ptr::read_volatile(p.add(9));  // +72
+            let frame_rsi   = core::ptr::read_volatile(p.add(10)); // +80
+            crate::serial_println!(
+                "  FRAME at {:#x}: RIP={:#018x} CS={:#06x} SS={:#06x} INT={}",
+                bad_rsp, frame_rip, frame_cs, frame_ss, frame_int,
+            );
+            crate::serial_println!(
+                "  FRAME: RSP_orig={:#018x} RFLAGS={:#018x} ERR={:#x}",
+                frame_rsp, frame_rfl, frame_err,
+            );
+            crate::serial_println!(
+                "  FRAME: RBP={:#018x} RAX={:#018x} RDI={:#018x} RSI={:#018x}",
+                frame_rbp, frame_rax, frame_rdi, frame_rsi,
+            );
+            // If RIP is in kernel text, show its offset from kernel base
+            if frame_rip >= 0xFFFF_FFFF_8010_0000 && frame_rip < 0xFFFF_FFFF_8100_0000 {
+                crate::serial_println!(
+                    "  FRAME: kernel offset = {:#x} (add to nm/objdump output)",
+                    frame_rip - 0xFFFF_FFFF_8010_0000,
+                );
+            }
+        }
+    }
+
     // Send EOI to LAPIC unconditionally — we may have entered from an IRQ,
     // and without EOI the LAPIC won't deliver further interrupts to this CPU.
     crate::arch::x86::apic::eoi();
@@ -1502,6 +1624,7 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
                                 sched.threads[idx].name_str(), current_tid,
                             );
                             sched.threads[idx].state = ThreadState::Ready;
+                            sched.threads[idx].context.save_complete = 1;
                             sched.per_cpu[cpu_id].ready_queue.push(current_tid);
                         } else if !sched.threads[idx].is_idle {
                             sched.threads[idx].state = ThreadState::Terminated;
@@ -1536,12 +1659,16 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
             }
         } else {
             crate::serial_println!("  WARNING: scheduler locked, deferring cleanup");
-            // Fall back to per-CPU atomic stack top (lock-free)
-            let stack_top = PER_CPU_STACK_TOP[cpu_id].load(Ordering::Relaxed);
-            if stack_top >= 0xFFFF_FFFF_8000_0000 {
-                crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, stack_top);
-                crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, stack_top);
-                idle_stack_top = stack_top;
+            // CRITICAL: Use PER_CPU_IDLE_STACK_TOP (set once at init, never changes)
+            // instead of PER_CPU_STACK_TOP (current thread's stack, may be shared).
+            // Using PER_CPU_STACK_TOP caused double faults: this CPU would idle on
+            // a thread's stack while that thread got rescheduled on another CPU,
+            // both CPUs sharing one stack → mutual corruption.
+            let idle_st = PER_CPU_IDLE_STACK_TOP[cpu_id].load(Ordering::Relaxed);
+            if idle_st >= 0xFFFF_FFFF_8000_0000 {
+                crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, idle_st);
+                crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, idle_st);
+                idle_stack_top = idle_st;
             }
         }
     }
@@ -1646,12 +1773,14 @@ pub fn fault_kill_and_idle(signal: u32) -> ! {
             }
         } else {
             crate::serial_println!("  WARNING: scheduler locked by other CPU, deferring cleanup");
-            // Can't get lock — use per-CPU atomics for minimal TSS.RSP0 repair
-            let stack_top = PER_CPU_STACK_TOP[cpu_id].load(Ordering::Relaxed);
-            if stack_top >= 0xFFFF_FFFF_8000_0000 {
-                crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, stack_top);
-                crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, stack_top);
-                idle_stack_top = stack_top;
+            // CRITICAL: Use PER_CPU_IDLE_STACK_TOP (set once at init) for safe fallback.
+            // PER_CPU_STACK_TOP is the CURRENT thread's stack — using it here would
+            // cause double faults when the thread is rescheduled on another CPU.
+            let idle_st = PER_CPU_IDLE_STACK_TOP[cpu_id].load(Ordering::Relaxed);
+            if idle_st >= 0xFFFF_FFFF_8000_0000 {
+                crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, idle_st);
+                crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, idle_st);
+                idle_stack_top = idle_st;
             }
         }
     }
@@ -1981,13 +2110,59 @@ pub fn current_thread_stdin_pipe() -> u32 {
 }
 
 /// Mark a thread as critical (will not be killed by RSP recovery).
+/// Also installs a DR1 hardware write-watchpoint on the thread's CpuContext.rip
+/// field to catch the exact instruction that corrupts it.
 pub fn set_thread_critical(tid: u32) {
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("Scheduler not initialized");
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.critical = true;
+        // Get the address of this thread's CpuContext.rip field for DR1 watchpoint
+        let rip_addr = &thread.context.rip as *const u64 as u64;
         crate::serial_println!("  Thread '{}' (TID={}) marked as critical", thread.name_str(), tid);
+        crate::serial_println!("  Installing DR1 watchpoint on CpuContext.rip at {:#018x}", rip_addr);
+        // Install DR1 watchpoint on this CPU (BSP). Other CPUs will lazily
+        // install it on their next schedule_inner() call.
+        install_dr1_watchpoint(rip_addr);
+        let cpu_id = get_cpu_id();
+        PER_CPU_DR1_INSTALLED[cpu_id].store(true, Ordering::Relaxed);
     }
+}
+
+/// Address being watched by DR1 (compositor's CpuContext.rip).
+/// Read by #DB handler to report which field was hit.
+static DR1_WATCH_ADDR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Install a DR1 hardware write-watchpoint on the given address (8-byte write).
+/// DR7 is extended to enable DR1 alongside existing DR0 (TSS.RSP0 watchpoint).
+fn install_dr1_watchpoint(addr: u64) {
+    DR1_WATCH_ADDR.store(addr, Ordering::Relaxed);
+    unsafe {
+        // DR1 = address to watch
+        core::arch::asm!("mov dr1, {}", in(reg) addr, options(nostack, preserves_flags));
+
+        // Read current DR7 (preserves DR0 settings)
+        let dr7: u64;
+        core::arch::asm!("mov {}, dr7", out(reg) dr7, options(nostack, nomem, preserves_flags));
+
+        // Add DR1 settings:
+        //   bit 2 = local enable DR1
+        //   bits 21:20 = condition for DR1 (01 = write-only)
+        //   bits 23:22 = length for DR1 (11 = 8 bytes / qword)
+        //   bit 9 = LE (local exact, legacy)
+        // DR1 bits = (01 << 20) | (11 << 22) | (1 << 9) | (1 << 2)
+        //          = 0x0010_0000 | 0x00C0_0000 | 0x0000_0200 | 0x0000_0004
+        //          = 0x00D0_0204
+        let dr1_bits: u64 = 0x00D0_0204;
+        let dr1_mask: u64 = !(0x00F0_0204); // clear DR1-related bits before OR
+        let new_dr7 = (dr7 & dr1_mask) | dr1_bits;
+        core::arch::asm!("mov dr7, {}", in(reg) new_dr7, options(nostack, preserves_flags));
+    }
+}
+
+/// Get the DR1 watch address (for #DB handler to identify the watchpoint).
+pub fn get_dr1_watch_addr() -> u64 {
+    DR1_WATCH_ADDR.load(Ordering::Relaxed)
 }
 
 // =============================================================================
@@ -2233,10 +2408,21 @@ pub fn run() -> ! {
                 PER_CPU_HAS_THREAD[0].store(true, Ordering::Relaxed);
                 PER_CPU_STACK_BOTTOM[0].store(kstack_bottom, Ordering::Relaxed);
                 PER_CPU_STACK_TOP[0].store(kstack_top, Ordering::Relaxed);
+                PER_CPU_IDLE_STACK_TOP[0].store(kstack_top, Ordering::Relaxed);
                 update_per_cpu_name(0, &sched.threads[idx].name);
             }
         }
     }
+    // Print Thread struct layout for verifying fxsave/CpuContext separation
+    {
+        let guard = SCHEDULER.lock();
+        if let Some(sched) = guard.as_ref() {
+            if let Some(t) = sched.threads.first() {
+                t.print_layout_diagnostics();
+            }
+        }
+    }
+
     // Enable hardware watchpoint on TSS.RSP0 for CPU 0 — catches any write
     // (including wild pointers) that corrupts RSP0. #DB handler logs the
     // faulting RIP when the new value is bad.
@@ -2263,6 +2449,7 @@ pub fn register_ap_idle(cpu_id: usize) {
             PER_CPU_HAS_THREAD[cpu_id].store(true, Ordering::Relaxed);
             PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
             PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
+            PER_CPU_IDLE_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
             update_per_cpu_name(cpu_id, &sched.threads[idx].name);
         }
     }

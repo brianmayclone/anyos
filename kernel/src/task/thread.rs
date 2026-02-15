@@ -7,8 +7,9 @@ use crate::memory::address::PhysAddr;
 use crate::task::context::CpuContext;
 use alloc::boxed::Box;
 use alloc::vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 
-static mut NEXT_TID: u32 = 1;
+static NEXT_TID: AtomicU32 = AtomicU32::new(1);
 
 /// Architecture mode for user-space threads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,11 +121,7 @@ impl Thread {
     /// The thread is initialized in the `Ready` state with its own kernel stack
     /// and a CPU context pointing to the entry function.
     pub fn new(entry: extern "C" fn(), priority: u8, name: &str) -> Self {
-        let tid = unsafe {
-            let t = NEXT_TID;
-            NEXT_TID += 1;
-            t
-        };
+        let tid = NEXT_TID.fetch_add(1, Ordering::Relaxed);
 
         // Allocate kernel stack on the heap directly (NOT via Box::new which
         // would create a 16 KiB temporary on the current stack — fatal when
@@ -205,5 +202,32 @@ impl Thread {
     pub fn name_str(&self) -> &str {
         let len = self.name.iter().position(|&b| b == 0).unwrap_or(32);
         core::str::from_utf8(&self.name[..len]).unwrap_or("???")
+    }
+
+    /// Print the memory layout of Thread fields (offsets of context and fpu_state).
+    /// Called once at boot to verify FXSAVE can't corrupt CpuContext.
+    pub fn print_layout_diagnostics(&self) {
+        let base = self as *const Self as usize;
+        let ctx_off = &self.context as *const CpuContext as usize - base;
+        let fpu_off = self.fpu_state.data.as_ptr() as usize - base;
+        let name_off = self.name.as_ptr() as usize - base;
+        let size = core::mem::size_of::<Self>();
+        crate::serial_println!(
+            "  Thread layout: size={}, context@+{:#x}({}B), fpu@+{:#x}(512B), name@+{:#x}(32B)",
+            size, ctx_off, core::mem::size_of::<CpuContext>(), fpu_off, name_off,
+        );
+        // Check if fxsave (512 bytes at fpu_off) could overwrite context
+        let fpu_end = fpu_off + 512;
+        if (fpu_off < ctx_off + core::mem::size_of::<CpuContext>()) && (fpu_end > ctx_off) {
+            crate::serial_println!("  WARNING: fpu_state and context OVERLAP in Thread layout!");
+        }
+        let gap = if fpu_off > ctx_off + core::mem::size_of::<CpuContext>() {
+            fpu_off - (ctx_off + core::mem::size_of::<CpuContext>())
+        } else if ctx_off > fpu_end {
+            ctx_off - fpu_end
+        } else {
+            0
+        };
+        crate::serial_println!("  Gap between fpu_state and context: {} bytes", gap);
     }
 }

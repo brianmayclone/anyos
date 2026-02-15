@@ -524,6 +524,45 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 return;
             }
 
+            if dr6 & 2 != 0 {
+                // DR1 watchpoint hit — something wrote to compositor's CpuContext.rip.
+                // This fires on EVERY write (including legitimate context_switch saves).
+                // We only log when the written value looks corrupt.
+                let watch_addr = crate::task::scheduler::get_dr1_watch_addr();
+                if watch_addr != 0 {
+                    let written_val = unsafe { core::ptr::read_volatile(watch_addr as *const u64) };
+                    let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
+                    let tid = crate::task::scheduler::debug_current_tid();
+
+                    // Check if the new RIP value is corrupt (not in kernel text range)
+                    let is_bad = written_val < 0xFFFF_FFFF_8010_0000
+                              || written_val >= 0xFFFF_FFFF_C000_0000;
+
+                    if is_bad {
+                        crate::serial_println!(
+                            "!!! DR1 WATCHPOINT: BAD write to CpuContext.rip! writer_RIP={:#018x} written_val={:#018x} CPU{} TID={}",
+                            frame.rip, written_val, cpu_id, tid
+                        );
+                        crate::serial_println!(
+                            "    RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
+                            frame.rax, frame.rbx, frame.rcx, frame.rdx
+                        );
+                        crate::serial_println!(
+                            "    RSI={:#018x} RDI={:#018x} RBP={:#018x} RSP={:#018x}",
+                            frame.rsi, frame.rdi, frame.rbp, frame.rsp
+                        );
+                        crate::serial_println!(
+                            "    R8={:#018x} R9={:#018x} R10={:#018x} R11={:#018x}",
+                            frame.r8, frame.r9, frame.r10, frame.r11
+                        );
+                    }
+                }
+
+                // Clear DR6 to acknowledge
+                unsafe { core::arch::asm!("xor {tmp}, {tmp}; mov dr6, {tmp}", tmp = out(reg) _, options(nostack)); }
+                return;
+            }
+
             // Not a watchpoint — handle as normal debug exception
             if is_user_mode {
                 crate::task::scheduler::exit_current(129);
