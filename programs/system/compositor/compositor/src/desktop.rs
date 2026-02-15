@@ -546,7 +546,7 @@ impl Desktop {
         let mut arrow_pixels = vec![0u32; (HW_ARROW_W * HW_ARROW_H) as usize];
         bitmap_to_argb(&CURSOR_BITMAP, &mut arrow_pixels);
 
-        Desktop {
+        let mut desktop = Desktop {
             compositor,
             bg_layer_id: bg_id,
             menubar_layer_id: mb_id,
@@ -575,7 +575,14 @@ impl Desktop {
             app_subs: Vec::with_capacity(16),
             wallpaper_pending: false,
             tray_ipc_events: Vec::new(),
+        };
+
+        // Enable GPU 2D acceleration for the compositor (RECT_COPY, RECT_FILL)
+        if desktop.has_gpu_accel {
+            desktop.compositor.enable_gpu_accel();
         }
+
+        desktop
     }
 
     // ── Initialization ──────────────────────────────────────────────────
@@ -1540,6 +1547,25 @@ impl Desktop {
                                 offset_x: mx - self.windows[idx].x,
                                 offset_y: my - self.windows[idx].y,
                             });
+                            // Disable shadow during drag — shadow pixels are
+                            // position-dependent and break GPU RECT_COPY.
+                            let layer_id = self.windows[idx].layer_id;
+                            let old_shadow = {
+                                if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
+                                    if layer.has_shadow {
+                                        let sb = layer.shadow_bounds();
+                                        layer.has_shadow = false;
+                                        Some(sb)
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            };
+                            if let Some(sb) = old_shadow {
+                                self.compositor.add_damage(sb);
+                            }
                         }
                     }
                     HitTest::MinButton => {
@@ -1607,8 +1633,25 @@ impl Desktop {
                 }
             }
 
-            // End drag
-            if self.dragging.is_some() {
+            // End drag — re-enable shadow
+            if let Some(ref drag) = self.dragging {
+                let win_id = drag.window_id;
+                if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
+                    if !self.windows[idx].is_borderless() {
+                        let layer_id = self.windows[idx].layer_id;
+                        let new_shadow = {
+                            if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
+                                layer.has_shadow = true;
+                                Some(layer.shadow_bounds())
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some(sb) = new_shadow {
+                            self.compositor.add_damage(sb);
+                        }
+                    }
+                }
                 self.set_cursor_shape(CursorShape::Arrow);
             }
             self.dragging = None;

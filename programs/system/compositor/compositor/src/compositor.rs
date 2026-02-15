@@ -187,6 +187,60 @@ const SHADOW_ALPHA_FOCUSED: u32 = 50;
 /// Shadow alpha for unfocused windows (innermost ring).
 const SHADOW_ALPHA_UNFOCUSED: u32 = 25;
 
+// ── AccelMoveHint ────────────────────────────────────────────────────────────
+
+/// Tracks a pending GPU-accelerated layer move for RECT_COPY optimization.
+/// Multiple move_layer() calls within the same frame are coalesced: keeps the
+/// first old_bounds and updates new_bounds on each subsequent call.
+struct AccelMoveHint {
+    layer_id: u32,
+    old_bounds: Rect,
+    new_bounds: Rect,
+}
+
+/// Compute up to 4 non-overlapping rects covering `a` minus `b`.
+/// Returns [top_strip, bottom_strip, left_strip, right_strip] (some may be empty).
+fn subtract_rects(a: &Rect, b: &Rect) -> [Rect; 4] {
+    let mut result = [Rect::new(0, 0, 0, 0); 4];
+    if let Some(overlap) = a.intersect(b) {
+        // Top strip (full width of a)
+        if overlap.y > a.y {
+            result[0] = Rect::new(a.x, a.y, a.width, (overlap.y - a.y) as u32);
+        }
+        // Bottom strip (full width of a)
+        if overlap.bottom() < a.bottom() {
+            result[1] = Rect::new(
+                a.x,
+                overlap.bottom(),
+                a.width,
+                (a.bottom() - overlap.bottom()) as u32,
+            );
+        }
+        // Left strip (between top and bottom strips)
+        if overlap.x > a.x {
+            result[2] = Rect::new(
+                a.x,
+                overlap.y,
+                (overlap.x - a.x) as u32,
+                overlap.height,
+            );
+        }
+        // Right strip (between top and bottom strips)
+        if overlap.right() < a.right() {
+            result[3] = Rect::new(
+                overlap.right(),
+                overlap.y,
+                (a.right() - overlap.right()) as u32,
+                overlap.height,
+            );
+        }
+    } else {
+        // No overlap — entire a is exposed
+        result[0] = *a;
+    }
+    result
+}
+
 // ── Compositor ──────────────────────────────────────────────────────────────
 
 pub struct Compositor {
@@ -226,6 +280,9 @@ pub struct Compositor {
 
     /// The currently focused layer (gets stronger shadow)
     pub focused_layer_id: Option<u32>,
+
+    /// Pending GPU-accelerated move hint for RECT_COPY optimization
+    accel_move_hint: Option<AccelMoveHint>,
 }
 
 impl Compositor {
@@ -249,6 +306,7 @@ impl Compositor {
             hw_cursor: false,
             resize_outline: None,
             focused_layer_id: None,
+            accel_move_hint: None,
         }
     }
 
@@ -382,6 +440,23 @@ impl Compositor {
             self.layers[idx].x = new_x;
             self.layers[idx].y = new_y;
             let new_bounds = self.layers[idx].damage_bounds();
+
+            if self.gpu_accel {
+                // Coalesce: keep first old_bounds, update last new_bounds
+                match &mut self.accel_move_hint {
+                    Some(hint) if hint.layer_id == id => {
+                        hint.new_bounds = new_bounds;
+                    }
+                    _ => {
+                        self.accel_move_hint = Some(AccelMoveHint {
+                            layer_id: id,
+                            old_bounds,
+                            new_bounds,
+                        });
+                    }
+                }
+            }
+            // Always add damage (fallback path + merge logic)
             self.damage.push(old_bounds);
             self.damage.push(new_bounds);
         }
@@ -484,7 +559,7 @@ impl Compositor {
 
     /// Merge damage rects if there are too many (prevents performance explosion).
     fn merge_damage_if_needed(&mut self) {
-        if self.damage.len() > 16 {
+        if self.damage.len() > 64 {
             let merged = self.damage.iter().copied().reduce(|a, b| a.union(&b));
             self.damage.clear();
             if let Some(r) = merged {
@@ -501,6 +576,9 @@ impl Compositor {
     /// Main compositing function. Composites all dirty regions.
     pub fn compose(&mut self) {
         self.collect_dirty_damage();
+
+        // Take the accel hint for this frame (if any)
+        let accel_hint = self.accel_move_hint.take();
 
         if self.damage.is_empty() {
             return;
@@ -520,48 +598,148 @@ impl Compositor {
             return;
         }
 
-        // Phase 1: Composite layers into back buffer
-        for rect in &damage {
-            self.composite_rect(rect);
+        // Check if we can use the GPU RECT_COPY fast path
+        let use_rect_copy = if let Some(ref hint) = accel_hint {
+            self.gpu_accel
+                && !self.hw_double_buffer
+                && hint.old_bounds.width == hint.new_bounds.width
+                && hint.old_bounds.height == hint.new_bounds.height
+                && self.layer_index(hint.layer_id).map_or(false, |idx| self.layers[idx].visible)
+        } else {
+            false
+        };
+
+        if use_rect_copy {
+            self.compose_with_rect_copy(&damage, accel_hint.as_ref().unwrap());
+        } else {
+            // Standard SW compositing path
+            for rect in &damage {
+                self.composite_rect(rect);
+            }
+
+            if let Some(outline) = self.resize_outline {
+                self.draw_outline_to_bb(&outline);
+            }
+
+            if self.hw_double_buffer {
+                let back_offset = if self.current_page == 0 {
+                    self.fb_height
+                } else {
+                    0
+                };
+                for rect in &self.prev_damage {
+                    self.flush_region(rect, back_offset);
+                }
+                for rect in &damage {
+                    self.flush_region(rect, back_offset);
+                }
+                self.gpu_cmds.push([GPU_FLIP, 0, 0, 0, 0, 0, 0, 0, 0]);
+                self.current_page = 1 - self.current_page;
+                self.prev_damage = damage;
+            } else {
+                for rect in &damage {
+                    self.flush_region(rect, 0);
+                    self.gpu_cmds
+                        .push([GPU_UPDATE, rect.x as u32, rect.y as u32, rect.width, rect.height, 0, 0, 0, 0]);
+                }
+            }
+
+            self.flush_gpu();
+        }
+    }
+
+    /// GPU-accelerated compositing for window drag (RECT_COPY fast path).
+    ///
+    /// Instead of recompositing the entire old+new damage area, uses GPU RECT_COPY
+    /// to move the already-composited window pixels within VRAM, and only
+    /// SW-composites the exposed strip (the area uncovered by the move).
+    fn compose_with_rect_copy(&mut self, _damage: &[Rect], hint: &AccelMoveHint) {
+        let old_b = hint.old_bounds.clip_to_screen(self.fb_width, self.fb_height);
+        let new_b = hint.new_bounds.clip_to_screen(self.fb_width, self.fb_height);
+
+        if old_b.is_empty() || new_b.is_empty() {
+            return;
         }
 
-        // Draw resize outline on back buffer (if active)
+        // Step 1: Compute exposed strips (old position minus new position overlap)
+        let exposed = subtract_rects(&old_b, &new_b);
+
+        // Step 2: SW-composite the exposed strips into back buffer
+        for rect in &exposed {
+            if !rect.is_empty() {
+                self.composite_rect(rect);
+            }
+        }
+
+        // Step 3: SW-composite new position into back buffer (keep in sync for future frames)
+        self.composite_rect(&new_b);
+
+        // Step 4: Draw resize outline if active
         if let Some(outline) = self.resize_outline {
             self.draw_outline_to_bb(&outline);
         }
 
-        // Phase 2: Flush to framebuffer
-        if self.hw_double_buffer {
-            // Double-buffered: flush prev_damage to new back page first,
-            // then flush current damage, then flip.
-            let back_offset = if self.current_page == 0 {
-                self.fb_height
-            } else {
-                0
-            };
-
-            // Flush previous damage to the new back page
-            for rect in &self.prev_damage {
-                self.flush_region(rect, back_offset);
-            }
-            // Flush current damage
-            for rect in &damage {
-                self.flush_region(rect, back_offset);
-            }
-            // Page flip
-            self.gpu_cmds.push([GPU_FLIP, 0, 0, 0, 0, 0, 0, 0, 0]);
-            self.current_page = 1 - self.current_page;
-            self.prev_damage = damage;
-        } else {
-            // Single-buffered: copy back buffer to visible FB
-            for rect in &damage {
+        // Step 5: Flush exposed strips from back buffer → VRAM
+        for rect in &exposed {
+            if !rect.is_empty() {
                 self.flush_region(rect, 0);
-                self.gpu_cmds
-                    .push([GPU_UPDATE, rect.x as u32, rect.y as u32, rect.width, rect.height, 0, 0, 0, 0]);
+                self.gpu_cmds.push([
+                    GPU_UPDATE,
+                    rect.x as u32,
+                    rect.y as u32,
+                    rect.width,
+                    rect.height,
+                    0, 0, 0, 0,
+                ]);
             }
         }
 
-        // Submit GPU commands
+        // Step 6: GPU RECT_COPY — move window pixels within VRAM (hardware accelerated)
+        self.gpu_cmds.push([
+            GPU_RECT_COPY,
+            old_b.x as u32,
+            old_b.y as u32,
+            new_b.x as u32,
+            new_b.y as u32,
+            new_b.width,
+            new_b.height,
+            0, 0,
+        ]);
+
+        // Step 7: Above-layer fixup — any layer ABOVE the moved layer that overlaps
+        // the destination had its pixels overwritten by RECT_COPY (stale dock/menubar
+        // pixels carried from the old position). Flush those intersections from the
+        // back buffer which has the correct composited result.
+        if let Some(moved_idx) = self.layer_index(hint.layer_id) {
+            for li in (moved_idx + 1)..self.layers.len() {
+                if !self.layers[li].visible {
+                    continue;
+                }
+                let above_bounds = self.layers[li].damage_bounds();
+                if let Some(intersection) = new_b.intersect(&above_bounds) {
+                    self.flush_region(&intersection, 0);
+                    self.gpu_cmds.push([
+                        GPU_UPDATE,
+                        intersection.x as u32,
+                        intersection.y as u32,
+                        intersection.width,
+                        intersection.height,
+                        0, 0, 0, 0,
+                    ]);
+                }
+            }
+        }
+
+        // Step 8: Also UPDATE the new position so GPU displays the RECT_COPY result
+        self.gpu_cmds.push([
+            GPU_UPDATE,
+            new_b.x as u32,
+            new_b.y as u32,
+            new_b.width,
+            new_b.height,
+            0, 0, 0, 0,
+        ]);
+
         self.flush_gpu();
     }
 
@@ -626,23 +804,59 @@ impl Compositor {
                             .copy_from_slice(&layer_pixels[src_off..src_off + copy_w]);
                     }
                 } else {
-                    // Alpha-blend path
+                    // Alpha-blend path with opaque-run optimization.
+                    // Windows with rounded corners have opaque=false, but 95%+ of
+                    // pixels are a=255. Detect contiguous opaque runs per row and
+                    // bulk-copy them via copy_from_slice (memcpy) instead of
+                    // per-pixel branching.
                     for row in 0..overlap.height as usize {
                         let src_off = (sy + row) * lw + sx;
                         let dst_off =
                             (overlap.y as usize + row) * bb_stride + overlap.x as usize;
-                        for col in 0..overlap.width as usize {
+                        let row_width = overlap.width as usize;
+                        let mut col = 0usize;
+                        while col < row_width {
                             let si = src_off + col;
-                            let di = dst_off + col;
-                            if si >= lp_len || di >= self.back_buffer.len() {
+                            if si >= lp_len {
                                 break;
                             }
-                            let src = layer_pixels[si];
-                            let a = (src >> 24) & 0xFF;
+                            let src_px = layer_pixels[si];
+                            let a = src_px >> 24;
                             if a >= 255 {
-                                self.back_buffer[di] = src;
+                                // Scan ahead for contiguous opaque run
+                                let run_start = col;
+                                col += 1;
+                                while col < row_width {
+                                    let si2 = src_off + col;
+                                    if si2 >= lp_len {
+                                        break;
+                                    }
+                                    if layer_pixels[si2] >> 24 < 255 {
+                                        break;
+                                    }
+                                    col += 1;
+                                }
+                                // Bulk copy the opaque run
+                                let run_len = col - run_start;
+                                let ss = src_off + run_start;
+                                let ds = dst_off + run_start;
+                                let safe = run_len
+                                    .min(lp_len.saturating_sub(ss))
+                                    .min(self.back_buffer.len().saturating_sub(ds));
+                                if safe > 0 {
+                                    self.back_buffer[ds..ds + safe]
+                                        .copy_from_slice(&layer_pixels[ss..ss + safe]);
+                                }
                             } else if a > 0 {
-                                self.back_buffer[di] = alpha_blend(src, self.back_buffer[di]);
+                                let di = dst_off + col;
+                                if di < self.back_buffer.len() {
+                                    self.back_buffer[di] =
+                                        alpha_blend(src_px, self.back_buffer[di]);
+                                }
+                                col += 1;
+                            } else {
+                                // Fully transparent — skip
+                                col += 1;
                             }
                         }
                     }
