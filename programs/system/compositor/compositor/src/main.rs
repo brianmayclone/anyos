@@ -226,19 +226,19 @@ fn main() {
     // The allocator may return 8-byte or 16-byte aligned addresses, so we
     // must explicitly align: round down to 16, then subtract 8.
     let render_stack_top = ((render_stack_base + render_stack_size) & !0xF) - 8;
-    // Render thread gets high priority (250) for smooth 60 Hz compositing.
-    // Management thread gets lower priority (150) — IPC/window ops can tolerate latency.
+    // Render thread gets highest priority (127) for smooth 60 Hz compositing.
+    // Management thread gets lower priority (120) — IPC/window ops can tolerate latency.
     let render_tid = process::thread_create_with_priority(
-        render_thread_entry, render_stack_top, "compositor/gpu", 250,
+        render_thread_entry, render_stack_top, "compositor/gpu", 127,
     );
     println!(
-        "compositor: render thread spawned (TID={}, stack=0x{:X}, priority=250)",
+        "compositor: render thread spawned (TID={}, stack=0x{:X}, priority=127)",
         render_tid, render_stack_base
     );
 
     // Lower management thread priority so render thread gets preferential scheduling
-    process::set_priority(0, 150);
-    println!("compositor: management thread priority set to 150");
+    process::set_priority(0, 120);
+    println!("compositor: management thread priority set to 120");
 
     // Step 7: Spawn the dock now that everything is ready (event channel,
     // render thread, management loop about to start).

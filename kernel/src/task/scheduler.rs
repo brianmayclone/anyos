@@ -1,18 +1,42 @@
-//! Preemptive round-robin scheduler with per-CPU ready queues.
+//! Mach-style preemptive scheduler with per-CPU multi-level priority queues.
 //!
-//! Each CPU has its own ready queue (TID-based) and tracks its current thread by TID.
-//! This eliminates cross-CPU index manipulation — the root cause of thread identity
-//! corruption in the previous shared-queue design. Work stealing ensures idle CPUs
-//! pick up threads from overloaded ones.
+//! 128 priority levels (0–127, higher = more important) with O(1) bitmap-indexed
+//! thread selection. Each CPU maintains its own set of priority queues. Idle CPUs
+//! steal work from the busiest CPU. Lazy FPU/SSE switching via CR0.TS avoids
+//! saving/restoring 512 bytes of FXSAVE state on every context switch — only
+//! threads that actually use FPU/SSE pay the cost.
 
 use crate::memory::address::PhysAddr;
 use crate::sync::spinlock::Spinlock;
 use crate::task::context::CpuContext;
-use crate::task::thread::{FxState, Thread, ThreadState};
+use crate::task::thread::{Thread, ThreadState};
 use crate::arch::x86::smp::MAX_CPUS;
 use alloc::boxed::Box;
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+
+/// Number of discrete priority levels (Mach-style, like macOS).
+const NUM_PRIORITIES: usize = 128;
+const MAX_PRIORITY: u8 = (NUM_PRIORITIES - 1) as u8; // 127
+
+/// Clamp priority to valid range [0, 127]. Prints a debug warning if clamped.
+#[inline]
+fn clamp_priority(priority: u8, context: &str) -> u8 {
+    if priority > MAX_PRIORITY {
+        crate::serial_println!(
+            "  WARN: priority {} > {} clamped to {} ({})",
+            priority, MAX_PRIORITY, MAX_PRIORITY, context
+        );
+        MAX_PRIORITY
+    } else {
+        priority
+    }
+}
+
+// =============================================================================
+// Global state
+// =============================================================================
 
 static SCHEDULER: Spinlock<Option<Scheduler>> = Spinlock::new(None);
 
@@ -20,22 +44,16 @@ static SCHEDULER: Spinlock<Option<Scheduler>> = Spinlock::new(None);
 /// When kill_thread() kills a thread running on another CPU, the PD can't be
 /// destroyed immediately (the other CPU might still be mid-syscall accessing
 /// user pages). Instead, the PD is queued here and destroyed on CPU 0's next
-/// timer tick — by which time the killed thread has been descheduled.
+/// timer tick.
 struct DeferredPdQueue {
     entries: [Option<PhysAddr>; 16],
 }
 impl DeferredPdQueue {
-    const fn new() -> Self {
-        Self { entries: [None; 16] }
-    }
+    const fn new() -> Self { Self { entries: [None; 16] } }
     fn push(&mut self, pd: PhysAddr) {
         for slot in self.entries.iter_mut() {
-            if slot.is_none() {
-                *slot = Some(pd);
-                return;
-            }
+            if slot.is_none() { *slot = Some(pd); return; }
         }
-        // Queue full — destroy synchronously (last resort, risky)
         crate::serial_println!("WARNING: deferred PD queue full, destroying synchronously");
         crate::memory::virtual_mem::destroy_user_page_directory(pd);
     }
@@ -47,66 +65,32 @@ impl DeferredPdQueue {
 }
 static DEFERRED_PD_DESTROY: Spinlock<DeferredPdQueue> = Spinlock::new(DeferredPdQueue::new());
 
-/// Per-CPU lock-free TID: tracks the currently running thread TID on each CPU.
-/// Updated by schedule() before context switch. Read by exception handlers
-/// without acquiring any locks (safe for use in fault handlers).
+// =============================================================================
+// Per-CPU atomics (lock-free, read by ISR/panic handlers)
+// =============================================================================
+
+/// TID of the thread currently running on each CPU.
 static PER_CPU_CURRENT_TID: [AtomicU32; MAX_CPUS] = {
     const INIT: AtomicU32 = AtomicU32::new(0);
     [INIT; MAX_CPUS]
 };
 
-/// Per-CPU lock-free flag: true when the currently running thread is a user process.
-/// Updated in schedule_inner. Read by exception handlers (try_kill_faulting_thread)
-/// without locks, preventing deadlock if a fault fires while the scheduler lock is held.
+/// True when the current thread on this CPU is a user process.
 static PER_CPU_IS_USER: [AtomicBool; MAX_CPUS] = {
     const INIT: AtomicBool = AtomicBool::new(false);
     [INIT; MAX_CPUS]
 };
 
-/// Round-robin counter for tie-breaking in least_loaded_cpu().
-static ROUND_ROBIN_COUNTER: AtomicU32 = AtomicU32::new(0);
-
-/// Total scheduler ticks (incremented every schedule() call).
-static TOTAL_SCHED_TICKS: AtomicU32 = AtomicU32::new(0);
-/// Idle scheduler ticks (incremented when no thread is running).
-static IDLE_SCHED_TICKS: AtomicU32 = AtomicU32::new(0);
-
-/// Per-CPU total ticks (incremented on each timer tick, per CPU).
-static PER_CPU_TOTAL: [AtomicU32; MAX_CPUS] = {
-    const INIT: AtomicU32 = AtomicU32::new(0);
-    [INIT; MAX_CPUS]
-};
-/// Per-CPU idle ticks (incremented when that CPU has no thread to run).
-static PER_CPU_IDLE: [AtomicU32; MAX_CPUS] = {
-    const INIT: AtomicU32 = AtomicU32::new(0);
-    [INIT; MAX_CPUS]
-};
-
-/// Per-CPU busy ticks not yet attributed to a thread (due to lock contention).
-/// Drained and added to the running thread's cpu_ticks when the lock is next acquired.
-static PER_CPU_CONTENDED_BUSY: [AtomicU32; MAX_CPUS] = {
-    const INIT: AtomicU32 = AtomicU32::new(0);
-    [INIT; MAX_CPUS]
-};
-
-/// Per-CPU flag: true when a thread is actively running on this CPU.
-/// Used to correctly count idle ticks even when the scheduler lock is contended.
+/// True when a non-idle thread is running on this CPU.
 static PER_CPU_HAS_THREAD: [AtomicBool; MAX_CPUS] = {
     const INIT: AtomicBool = AtomicBool::new(false);
     [INIT; MAX_CPUS]
 };
 
 /// Per-CPU thread name cache for lock-free crash diagnostics.
-/// Updated in schedule_inner alongside PER_CPU_CURRENT_TID. Read by
-/// `debug_current_thread_name()` without locks — safe during panic/RSOD
-/// even when the SCHEDULER lock is held (avoids the cpu=N owner=N deadlock).
-/// Written via `write_volatile` under the scheduler lock, read via
-/// `read_volatile` from the same CPU in a panic context.
 static mut PER_CPU_THREAD_NAME: [[u8; 32]; MAX_CPUS] = [[0u8; 32]; MAX_CPUS];
 
 /// Per-CPU kernel stack bounds for real-time overflow detection.
-/// Updated in schedule_inner when switching threads. Read by the timer ISR
-/// (lock-free) to detect stack overflow BEFORE it corrupts adjacent memory.
 static PER_CPU_STACK_BOTTOM: [AtomicU64; MAX_CPUS] = {
     const INIT: AtomicU64 = AtomicU64::new(0);
     [INIT; MAX_CPUS]
@@ -117,24 +101,52 @@ static PER_CPU_STACK_TOP: [AtomicU64; MAX_CPUS] = {
 };
 
 /// Per-CPU idle thread stack top (set once during init, never changes).
-/// Used by bad_rsp_recovery and fault_kill_and_idle as a SAFE fallback stack
-/// when the scheduler lock is unavailable. Unlike PER_CPU_STACK_TOP (which
-/// tracks the CURRENT thread's stack and changes on every context switch),
-/// this always points to the idle thread's stack — never shared with any
-/// running user/kernel thread.
+/// Used by recovery paths as a safe fallback stack.
 static PER_CPU_IDLE_STACK_TOP: [AtomicU64; MAX_CPUS] = {
     const INIT: AtomicU64 = AtomicU64::new(0);
     [INIT; MAX_CPUS]
 };
 
-/// Per-CPU flag: has this CPU installed the DR1 watchpoint yet?
-static PER_CPU_DR1_INSTALLED: [AtomicBool; MAX_CPUS] = {
-    const INIT: AtomicBool = AtomicBool::new(false);
+// --- Lazy FPU per-CPU state ---
+
+/// TID whose FPU/SSE state is currently loaded in this CPU's XMM registers.
+/// 0 = no owner (default state after boot or after fxsave).
+static PER_CPU_FPU_OWNER: [AtomicU32; MAX_CPUS] = {
+    const INIT: AtomicU32 = AtomicU32::new(0);
     [INIT; MAX_CPUS]
 };
 
-/// Update the per-CPU thread name cache (for lock-free crash diagnostics).
-/// Called from schedule_inner and other paths that update PER_CPU_CURRENT_TID.
+/// Raw pointer to the current thread's FxState data buffer.
+/// Set by schedule_inner, read by the #NM handler (lock-free).
+static PER_CPU_FPU_PTR: [AtomicU64; MAX_CPUS] = {
+    const INIT: AtomicU64 = AtomicU64::new(0);
+    [INIT; MAX_CPUS]
+};
+
+// --- Tick counters ---
+
+static TOTAL_SCHED_TICKS: AtomicU32 = AtomicU32::new(0);
+static IDLE_SCHED_TICKS: AtomicU32 = AtomicU32::new(0);
+static ROUND_ROBIN_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+static PER_CPU_TOTAL: [AtomicU32; MAX_CPUS] = {
+    const INIT: AtomicU32 = AtomicU32::new(0);
+    [INIT; MAX_CPUS]
+};
+static PER_CPU_IDLE: [AtomicU32; MAX_CPUS] = {
+    const INIT: AtomicU32 = AtomicU32::new(0);
+    [INIT; MAX_CPUS]
+};
+/// Busy ticks accumulated while the scheduler lock was contended.
+static PER_CPU_CONTENDED_BUSY: [AtomicU32; MAX_CPUS] = {
+    const INIT: AtomicU32 = AtomicU32::new(0);
+    [INIT; MAX_CPUS]
+};
+
+// =============================================================================
+// Per-CPU name cache helpers
+// =============================================================================
+
 #[inline]
 fn update_per_cpu_name(cpu_id: usize, name: &[u8; 32]) {
     unsafe {
@@ -143,7 +155,6 @@ fn update_per_cpu_name(cpu_id: usize, name: &[u8; 32]) {
     }
 }
 
-/// Clear the per-CPU thread name cache (thread exiting / no thread).
 #[inline]
 fn clear_per_cpu_name(cpu_id: usize) {
     unsafe {
@@ -152,33 +163,137 @@ fn clear_per_cpu_name(cpu_id: usize) {
     }
 }
 
-/// Per-CPU scheduling state: current thread (TID) and local ready queue (TIDs).
+/// Read CPU ID from the LAPIC (always accurate, even after migration).
+fn get_cpu_id() -> usize {
+    let c = crate::arch::x86::smp::current_cpu_id() as usize;
+    if c < MAX_CPUS { c } else { 0 }
+}
+
+// =============================================================================
+// RunQueue — bitmap-indexed multi-level FIFO priority queue
+// =============================================================================
+
+/// Per-CPU multi-level priority queue with O(1) highest-priority lookup.
+///
+/// 128 priority levels (0 = lowest / idle, 127 = highest / real-time).
+/// A 2×u64 bitmap tracks which levels have queued threads. Finding the
+/// highest non-empty level is a single `leading_zeros` operation.
+struct RunQueue {
+    /// One FIFO queue per priority level.
+    levels: Vec<VecDeque<u32>>,
+    /// Bitmap: bit `p` set ⟺ `levels[p]` is non-empty.
+    /// `bits[0]` covers priorities 0–63, `bits[1]` covers 64–127.
+    bits: [u64; 2],
+}
+
+impl RunQueue {
+    fn new() -> Self {
+        let mut levels = Vec::with_capacity(NUM_PRIORITIES);
+        for _ in 0..NUM_PRIORITIES {
+            levels.push(VecDeque::new());
+        }
+        RunQueue { levels, bits: [0; 2] }
+    }
+
+    /// Enqueue a TID at the given priority level (back of FIFO).
+    fn enqueue(&mut self, tid: u32, priority: u8) {
+        let p = (priority as usize).min(NUM_PRIORITIES - 1);
+        // Prevent duplicates (safety net — should not happen in normal operation)
+        if !self.levels[p].contains(&tid) {
+            self.levels[p].push_back(tid);
+            self.bits[p / 64] |= 1u64 << (p % 64);
+        }
+    }
+
+    /// Dequeue the highest-priority thread (front of its FIFO). O(1) via bitmap.
+    fn dequeue_highest(&mut self) -> Option<u32> {
+        let p = self.highest_priority()?;
+        let tid = self.levels[p].pop_front()?;
+        if self.levels[p].is_empty() {
+            self.bits[p / 64] &= !(1u64 << (p % 64));
+        }
+        Some(tid)
+    }
+
+    /// Dequeue the lowest-priority thread (used for work stealing).
+    fn dequeue_lowest(&mut self) -> Option<u32> {
+        let p = self.lowest_priority()?;
+        let tid = self.levels[p].pop_front()?;
+        if self.levels[p].is_empty() {
+            self.bits[p / 64] &= !(1u64 << (p % 64));
+        }
+        Some(tid)
+    }
+
+    /// Remove a specific TID from all priority levels.
+    fn remove(&mut self, tid: u32) {
+        for p in 0..NUM_PRIORITIES {
+            if let Some(pos) = self.levels[p].iter().position(|&t| t == tid) {
+                self.levels[p].remove(pos);
+                if self.levels[p].is_empty() {
+                    self.bits[p / 64] &= !(1u64 << (p % 64));
+                }
+                return;
+            }
+        }
+    }
+
+    /// Total number of queued threads across all priority levels.
+    fn total_count(&self) -> usize {
+        self.levels.iter().map(|q| q.len()).sum()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.bits[0] == 0 && self.bits[1] == 0
+    }
+
+    /// Highest priority level that has queued threads.
+    fn highest_priority(&self) -> Option<usize> {
+        if self.bits[1] != 0 {
+            Some(127 - self.bits[1].leading_zeros() as usize)
+        } else if self.bits[0] != 0 {
+            Some(63 - self.bits[0].leading_zeros() as usize)
+        } else {
+            None
+        }
+    }
+
+    /// Lowest priority level that has queued threads.
+    fn lowest_priority(&self) -> Option<usize> {
+        if self.bits[0] != 0 {
+            Some(self.bits[0].trailing_zeros() as usize)
+        } else if self.bits[1] != 0 {
+            Some(64 + self.bits[1].trailing_zeros() as usize)
+        } else {
+            None
+        }
+    }
+}
+
+// =============================================================================
+// Scheduler core
+// =============================================================================
+
+/// Per-CPU scheduling state.
 struct PerCpuState {
     /// TID of the thread currently executing on this CPU, or None if idle.
     current_tid: Option<u32>,
-    /// TIDs of threads ready to run on this CPU.
-    ready_queue: Vec<u32>,
+    /// Multi-level priority queue of ready threads assigned to this CPU.
+    run_queue: RunQueue,
 }
 
-/// Core scheduler state with per-CPU ready queues and TID-based tracking.
-///
-/// All thread references in queues and current-thread tracking use TIDs (stable,
-/// never change) instead of Vec indices (shift on remove). This eliminates the
-/// entire class of cross-CPU index corruption bugs.
+/// Mach-style scheduler with per-CPU multi-level priority queues.
 pub struct Scheduler {
-    /// All threads known to the scheduler (running, ready, blocked, terminated).
-    /// Each thread is heap-allocated in a `Box` for pointer stability — schedule_inner
-    /// extracts raw pointers to CpuContext/FxState under the lock and uses them
-    /// after releasing it (for context_switch).
+    /// All threads known to the scheduler (any state).
+    /// Heap-allocated via Box for pointer stability across Vec resizes.
     threads: Vec<Box<Thread>>,
-    /// Per-CPU state: current thread TID + local ready queue.
+    /// Per-CPU state: current thread + priority queue.
     per_cpu: Vec<PerCpuState>,
-    /// Per-CPU idle thread TIDs. Each CPU always has an idle thread as fallback
-    /// so that current_tid is never None and TSS.RSP0 always points to a valid stack.
+    /// Per-CPU idle thread TIDs. Always valid — never reaped.
     idle_tid: [u32; MAX_CPUS],
 }
 
-/// Idle thread entry point (per-CPU). Just halts until the next interrupt.
+/// Idle thread entry point. Halts until the next interrupt.
 extern "C" fn idle_thread_entry() {
     loop {
         unsafe { core::arch::asm!("sti; hlt"); }
@@ -191,23 +306,23 @@ impl Scheduler {
         for _ in 0..MAX_CPUS {
             per_cpu.push(PerCpuState {
                 current_tid: None,
-                ready_queue: Vec::new(),
+                run_queue: RunQueue::new(),
             });
         }
+
         let mut sched = Scheduler {
             threads: Vec::with_capacity(128),
             per_cpu,
             idle_tid: [0; MAX_CPUS],
         };
 
-        // Create per-CPU idle threads. These are real threads with their own
-        // kernel stacks, ensuring TSS.RSP0 always points to valid memory.
-        // All MAX_CPUS slots are pre-created so schedule_inner() can always
-        // find idle_tid[cpu]. Non-online idle threads are filtered in list_threads().
+        // Create per-CPU idle threads (priority 0 = lowest).
         for cpu in 0..MAX_CPUS {
             let name: &str = match cpu {
-                0 => "idle/0", 1 => "idle/1", 2 => "idle/2", 3 => "idle/3",
-                4 => "idle/4", 5 => "idle/5", 6 => "idle/6", 7 => "idle/7",
+                0 => "idle/0",   1 => "idle/1",   2 => "idle/2",   3 => "idle/3",
+                4 => "idle/4",   5 => "idle/5",   6 => "idle/6",   7 => "idle/7",
+                8 => "idle/8",   9 => "idle/9",  10 => "idle/10", 11 => "idle/11",
+               12 => "idle/12", 13 => "idle/13", 14 => "idle/14", 15 => "idle/15",
                 _ => "idle/?",
             };
             let mut thread = Thread::new(idle_thread_entry, 0, name);
@@ -226,7 +341,7 @@ impl Scheduler {
         self.threads.iter().position(|t| t.tid == tid)
     }
 
-    /// Get the number of active CPUs (at least 1).
+    /// Number of online CPUs (at least 1).
     #[inline]
     fn num_cpus(&self) -> usize {
         let n = crate::arch::x86::smp::cpu_count() as usize;
@@ -234,7 +349,6 @@ impl Scheduler {
     }
 
     /// Pick the CPU with the shortest ready queue for load balancing.
-    /// On ties, round-robin using a monotonic counter to avoid always picking CPU 0.
     fn least_loaded_cpu(&self) -> usize {
         let n = self.num_cpus();
         let mut best_cpu = 0;
@@ -242,92 +356,61 @@ impl Scheduler {
         let mut tie_count = 0u32;
         let rr = ROUND_ROBIN_COUNTER.fetch_add(1, Ordering::Relaxed);
         for cpu in 0..n {
-            let len = self.per_cpu[cpu].ready_queue.len();
+            let len = self.per_cpu[cpu].run_queue.total_count();
             if len < best_len {
                 best_len = len;
                 best_cpu = cpu;
                 tie_count = 1;
             } else if len == best_len {
                 tie_count += 1;
-                // Deterministic round-robin among tied CPUs
-                if rr % tie_count == 0 {
-                    best_cpu = cpu;
-                }
+                if rr % tie_count == 0 { best_cpu = cpu; }
             }
         }
         best_cpu
     }
 
-    /// Enqueue a TID on a specific CPU's ready queue (if not already present).
-    fn enqueue_on_cpu(&mut self, tid: u32, cpu_id: usize) {
-        let queue = &mut self.per_cpu[cpu_id].ready_queue;
-        if !queue.contains(&tid) {
-            queue.push(tid);
-        }
-    }
-
-    /// Remove a TID from ALL per-CPU ready queues (defensive cleanup).
-    fn remove_from_all_queues(&mut self, tid: u32) {
-        for cpu in 0..MAX_CPUS {
-            self.per_cpu[cpu].ready_queue.retain(|&t| t != tid);
-        }
-    }
-
-    /// Add a thread to the scheduler and enqueue it on the least-loaded CPU.
+    /// Add a thread to the scheduler and enqueue on the least-loaded CPU.
     fn add_thread(&mut self, mut thread: Thread) -> u32 {
         let tid = thread.tid;
-        // Duplicate TID check — if NEXT_TID race produced a duplicate, detect it now
-        if self.find_idx(tid).is_some() {
-            crate::serial_println!(
-                "BUG: duplicate TID {}! Thread '{}' conflicts with existing thread",
-                tid, thread.name_str(),
-            );
-        }
         let cpu = self.least_loaded_cpu();
+        let pri = thread.priority;
         thread.last_cpu = cpu;
         self.threads.push(Box::new(thread));
-        self.per_cpu[cpu].ready_queue.push(tid);
+        self.per_cpu[cpu].run_queue.enqueue(tid, pri);
         tid
     }
 
     /// Add a thread in Blocked state without putting it in any ready queue.
-    /// Used by `spawn_blocked()` to prevent SMP races.
     fn add_thread_blocked(&mut self, mut thread: Thread) -> u32 {
         let tid = thread.tid;
-        // Duplicate TID check
-        if self.find_idx(tid).is_some() {
-            crate::serial_println!(
-                "BUG: duplicate TID {}! Thread '{}' conflicts with existing thread",
-                tid, thread.name_str(),
-            );
-        }
         thread.state = ThreadState::Blocked;
         self.threads.push(Box::new(thread));
         tid
     }
 
-    /// Remove terminated threads whose exit code has been consumed or auto-reaped.
-    /// With TID-based queues, no index adjustment is needed — just remove TIDs.
+    /// Remove a TID from ALL per-CPU ready queues.
+    fn remove_from_all_queues(&mut self, tid: u32) {
+        for cpu in 0..MAX_CPUS {
+            self.per_cpu[cpu].run_queue.remove(tid);
+        }
+    }
+
+    /// Reap terminated threads whose exit code has been consumed or auto-reaped.
     fn reap_terminated(&mut self) {
         let current_tick = crate::arch::x86::pit::get_ticks();
         let mut i = 0;
         while i < self.threads.len() {
-            // Never reap idle threads
             if self.threads[i].is_idle {
                 i += 1;
                 continue;
             }
             if self.threads[i].state == ThreadState::Terminated {
-                // Safety: don't reap if context_switch.asm is still saving to
-                // this thread's CpuContext (save_complete == 0 means ASM hasn't
-                // finished writing all registers yet).
+                // Don't reap while context_switch.asm is still saving registers
                 if self.threads[i].context.save_complete == 0 {
                     i += 1;
                     continue;
                 }
-                // Grace period: another CPU may still hold raw pointers to this
-                // thread's CpuContext/FxState from a context_switch in progress.
-                // 50 ticks (50ms) gives ample time for any in-flight context_switch.
+                // Grace period: 50ms for any in-flight context_switch
                 let min_elapsed = self.threads[i].terminated_at_tick
                     .map(|t| current_tick.wrapping_sub(t) > 50)
                     .unwrap_or(false);
@@ -335,26 +418,21 @@ impl Scheduler {
                     i += 1;
                     continue;
                 }
-
                 let consumed = self.threads[i].exit_code.is_none();
                 let auto_reap = self.threads[i].waiting_tid.is_none()
                     && self.threads[i].terminated_at_tick
                         .map(|t| current_tick.wrapping_sub(t) > 200)
                         .unwrap_or(false);
-
                 if consumed || auto_reap {
                     let tid = self.threads[i].tid;
-                    // Remove TID from all per-CPU ready queues (defensive)
                     self.remove_from_all_queues(tid);
-                    // Clear per-CPU current_tid if it points to this thread (defensive)
                     for cpu in 0..MAX_CPUS {
                         if self.per_cpu[cpu].current_tid == Some(tid) {
                             self.per_cpu[cpu].current_tid = Some(self.idle_tid[cpu]);
                         }
                     }
-                    // swap_remove is O(1) — safe because all refs are TID-based
                     self.threads.swap_remove(i);
-                    // Don't increment i — check the swapped-in element
+                    // Don't increment — check swapped-in element
                 } else {
                     i += 1;
                 }
@@ -364,80 +442,79 @@ impl Scheduler {
         }
     }
 
-    /// Pick the highest-priority ready thread from this CPU's queue.
-    /// If the local queue is empty, steal from the busiest CPU (work stealing).
+    /// Pick the next thread for this CPU: local queue first, then work stealing.
+    /// Returns None if no eligible thread is available.
     fn pick_next(&mut self, cpu_id: usize) -> Option<u32> {
-        // Try local queue first
-        if let Some(tid) = self.pick_from_queue(cpu_id) {
+        // 1. Try local queue
+        if let Some(tid) = self.pick_eligible(cpu_id) {
             return Some(tid);
         }
-        // Work stealing: find the CPU with the longest ready queue
+        // 2. Work stealing: find the busiest CPU and steal from it
         let n = self.num_cpus();
-        let mut max_len = 0;
-        let mut max_cpu = cpu_id;
+        let mut max_count = 0;
+        let mut victim = cpu_id;
         for c in 0..n {
             if c != cpu_id {
-                let len = self.per_cpu[c].ready_queue.len();
-                if len > max_len {
-                    max_len = len;
-                    max_cpu = c;
+                let count = self.per_cpu[c].run_queue.total_count();
+                if count > max_count {
+                    max_count = count;
+                    victim = c;
                 }
             }
         }
-        if max_len > 0 {
-            self.pick_from_queue(max_cpu)
+        if max_count > 0 {
+            self.pick_eligible(victim)
         } else {
             None
         }
     }
 
-    /// Pick the highest-priority ready thread from a specific CPU's queue.
-    fn pick_from_queue(&mut self, cpu_id: usize) -> Option<u32> {
-        let mut best_tid: Option<u32> = None;
-        let mut best_pri: u8 = 0;
-        let mut best_pos: usize = 0;
-
-        for (pos, &tid) in self.per_cpu[cpu_id].ready_queue.iter().enumerate() {
+    /// Dequeue the highest-priority eligible thread from a CPU's queue.
+    /// Skips threads with save_complete==0 (context still being saved by ASM).
+    fn pick_eligible(&mut self, queue_cpu: usize) -> Option<u32> {
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            if attempts > 8 { return None; }
+            let tid = match self.per_cpu[queue_cpu].run_queue.dequeue_highest() {
+                Some(t) => t,
+                None => return None,
+            };
             if let Some(idx) = self.find_idx(tid) {
-                let thread = &self.threads[idx];
-                // Skip threads whose context is still being saved (save_complete == 0)
-                if thread.state == ThreadState::Ready && thread.context.save_complete != 0 {
-                    if best_tid.is_none() || thread.priority > best_pri {
-                        best_tid = Some(tid);
-                        best_pri = thread.priority;
-                        best_pos = pos;
-                    }
+                if self.threads[idx].state == ThreadState::Ready
+                    && self.threads[idx].context.save_complete != 0
+                {
+                    return Some(tid);
                 }
+                // Not eligible yet — re-enqueue and give up for this tick
+                let pri = self.threads[idx].priority;
+                self.per_cpu[queue_cpu].run_queue.enqueue(tid, pri);
+                return None;
             }
+            // Thread reaped — discard stale TID and try next
         }
-
-        if best_tid.is_some() {
-            self.per_cpu[cpu_id].ready_queue.swap_remove(best_pos);
-        }
-        best_tid
     }
 
-    /// Internal: wake a blocked thread, enqueuing on the least-loaded CPU.
+    /// Wake a blocked thread, enqueuing on the least-loaded CPU.
     fn wake_thread_inner(&mut self, tid: u32) {
         if let Some(idx) = self.find_idx(tid) {
             if self.threads[idx].state == ThreadState::Blocked {
                 self.threads[idx].state = ThreadState::Ready;
                 let target_cpu = self.least_loaded_cpu();
-                self.enqueue_on_cpu(tid, target_cpu);
+                self.per_cpu[target_cpu].run_queue.enqueue(tid, self.threads[idx].priority);
             }
         }
     }
 }
 
 // =============================================================================
-// Public API
+// Public API — Init
 // =============================================================================
 
 /// Initialize the global scheduler.
 pub fn init() {
     let mut sched = SCHEDULER.lock();
     *sched = Some(Scheduler::new());
-    // Set BSP's current thread to its idle thread — ensures current_tid is never None
     if let Some(s) = sched.as_mut() {
         let idle_tid = s.idle_tid[0];
         s.per_cpu[0].current_tid = Some(idle_tid);
@@ -445,40 +522,34 @@ pub fn init() {
             s.threads[idx].state = ThreadState::Running;
         }
     }
-    crate::serial_println!("[OK] Scheduler initialized (per-CPU queues, {} CPUs max)", MAX_CPUS);
+    crate::serial_println!(
+        "[OK] Mach scheduler initialized ({} priority levels, {} CPUs max, lazy FPU)",
+        NUM_PRIORITIES, MAX_CPUS,
+    );
 }
 
-/// Get total scheduler ticks (for CPU load calculation).
-pub fn total_sched_ticks() -> u32 {
-    TOTAL_SCHED_TICKS.load(Ordering::Relaxed)
-}
+// =============================================================================
+// Public API — Tick counters
+// =============================================================================
 
-/// Get idle scheduler ticks (for CPU load calculation).
-pub fn idle_sched_ticks() -> u32 {
-    IDLE_SCHED_TICKS.load(Ordering::Relaxed)
-}
+pub fn total_sched_ticks() -> u32 { TOTAL_SCHED_TICKS.load(Ordering::Relaxed) }
+pub fn idle_sched_ticks() -> u32 { IDLE_SCHED_TICKS.load(Ordering::Relaxed) }
 
-/// Get per-CPU total ticks.
 pub fn per_cpu_total_ticks(cpu: usize) -> u32 {
-    if cpu < MAX_CPUS {
-        PER_CPU_TOTAL[cpu].load(Ordering::Relaxed)
-    } else {
-        0
-    }
+    if cpu < MAX_CPUS { PER_CPU_TOTAL[cpu].load(Ordering::Relaxed) } else { 0 }
 }
 
-/// Get per-CPU idle ticks.
 pub fn per_cpu_idle_ticks(cpu: usize) -> u32 {
-    if cpu < MAX_CPUS {
-        PER_CPU_IDLE[cpu].load(Ordering::Relaxed)
-    } else {
-        0
-    }
+    if cpu < MAX_CPUS { PER_CPU_IDLE[cpu].load(Ordering::Relaxed) } else { 0 }
 }
+
+// =============================================================================
+// Public API — Spawn
+// =============================================================================
 
 /// Create a new kernel thread and add it to the ready queue.
-/// Returns the assigned TID. Emits an `EVT_PROCESS_SPAWNED` event.
 pub fn spawn(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
+    let priority = clamp_priority(priority, name);
     let tid = {
         let thread = Thread::new(entry, priority, name);
         let mut sched = SCHEDULER.lock();
@@ -487,33 +558,14 @@ pub fn spawn(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
         crate::serial_println!("  Spawned thread '{}' (TID={})", name, tid);
         tid
     };
-
-    // Pack the first 12 chars of the thread name into 3 u32 words (little-endian)
-    let name_bytes = name.as_bytes();
-    let mut p2: u32 = 0;
-    let mut p3: u32 = 0;
-    let mut p4: u32 = 0;
-    for i in 0..name_bytes.len().min(12) {
-        let word = match i / 4 {
-            0 => &mut p2,
-            1 => &mut p3,
-            _ => &mut p4,
-        };
-        *word |= (name_bytes[i] as u32) << ((i % 4) * 8);
-    }
-    crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
-        crate::ipc::event_bus::EVT_PROCESS_SPAWNED, tid, p2, p3, p4,
-    ));
-
+    emit_spawn_event(tid, name);
     tid
 }
 
 /// Spawn a kernel thread in Blocked state (not added to any ready queue).
-///
-/// The thread will NOT run on any CPU until [`wake_thread`] is called with the
-/// returned TID. This prevents SMP races where an AP picks up the thread before
-/// the caller has finished setting up user info, pending program data, and args.
+/// The thread will NOT run until [`wake_thread`] is called.
 pub fn spawn_blocked(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
+    let priority = clamp_priority(priority, name);
     let tid = {
         let thread = Thread::new(entry, priority, name);
         let mut sched = SCHEDULER.lock();
@@ -522,66 +574,42 @@ pub fn spawn_blocked(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
         crate::serial_println!("  Spawned thread '{}' (TID={}, blocked)", name, tid);
         tid
     };
+    emit_spawn_event(tid, name);
+    tid
+}
 
-    // Emit process-spawned event (same as spawn)
+/// Helper: emit EVT_PROCESS_SPAWNED with the thread name packed into u32 words.
+fn emit_spawn_event(tid: u32, name: &str) {
     let name_bytes = name.as_bytes();
     let mut p2: u32 = 0;
     let mut p3: u32 = 0;
     let mut p4: u32 = 0;
     for i in 0..name_bytes.len().min(12) {
-        let word = match i / 4 {
-            0 => &mut p2,
-            1 => &mut p3,
-            _ => &mut p4,
-        };
+        let word = match i / 4 { 0 => &mut p2, 1 => &mut p3, _ => &mut p4 };
         *word |= (name_bytes[i] as u32) << ((i % 4) * 8);
     }
     crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
         crate::ipc::event_bus::EVT_PROCESS_SPAWNED, tid, p2, p3, p4,
     ));
-
-    tid
 }
 
 /// Create a new thread within the same address space as the currently running thread.
-///
-/// The new thread shares the caller's page directory (same CR3) and starts executing
-/// at `entry_rip` with its stack at `user_rsp`. Returns the TID of the new thread,
-/// or 0 on error.
-///
-/// `priority`: 0 = inherit from parent, 1-255 = explicit priority.
 pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &str, priority: u8) -> u32 {
-    // Read caller's state under the lock
     let (pd, arch_mode, brk, parent_pri) = {
         let guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
-        let sched = match guard.as_ref() {
-            Some(s) => s,
-            None => return 0,
-        };
-        let current_tid = match sched.per_cpu[cpu_id].current_tid {
-            Some(t) => t,
-            None => return 0,
-        };
-        let idx = match sched.find_idx(current_tid) {
-            Some(i) => i,
-            None => return 0,
-        };
+        let sched = match guard.as_ref() { Some(s) => s, None => return 0 };
+        let current_tid = match sched.per_cpu[cpu_id].current_tid { Some(t) => t, None => return 0 };
+        let idx = match sched.find_idx(current_tid) { Some(i) => i, None => return 0 };
         let thread = &sched.threads[idx];
-        let pd = match thread.page_directory {
-            Some(pd) => pd,
-            None => return 0, // Must be a user process
-        };
+        let pd = match thread.page_directory { Some(pd) => pd, None => return 0 };
         (pd, thread.arch_mode, thread.brk, thread.priority)
     };
 
-    // Priority: 0 = inherit from parent, otherwise use explicit value
     let effective_pri = if priority == 0 { parent_pri } else { priority };
-
-    // Spawn a new kernel thread in Blocked state (uses the loader's trampoline).
+    let effective_pri = clamp_priority(effective_pri, name);
     let tid = spawn_blocked(crate::task::loader::thread_create_trampoline, effective_pri, name);
 
-    // Configure the new thread: share the page directory, mark as user, set pd_shared.
     {
         let mut guard = SCHEDULER.lock();
         let sched = guard.as_mut().expect("Scheduler not initialized");
@@ -595,52 +623,25 @@ pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &st
         }
     }
 
-    // Store entry point and user stack in the pending programs table.
     crate::task::loader::store_pending_thread(tid, entry_rip, user_rsp);
-
-    // All setup complete — make the thread schedulable.
     wake_thread(tid);
-
     tid
 }
 
-/// Called from the timer interrupt (PIT or LAPIC) to perform preemptive scheduling.
-pub fn schedule_tick() {
-    schedule_inner(true);
-}
+// =============================================================================
+// Scheduling
+// =============================================================================
+
+/// Called from the timer interrupt for preemptive scheduling.
+pub fn schedule_tick() { schedule_inner(true); }
 
 /// Voluntary yield: reschedule without incrementing CPU accounting counters.
-pub fn schedule() {
-    schedule_inner(false);
-}
-
-/// Get the current CPU index, always reading from the LAPIC.
-fn get_cpu_id() -> usize {
-    let c = crate::arch::x86::smp::current_cpu_id() as usize;
-    if c < MAX_CPUS { c } else { 0 }
-}
+pub fn schedule() { schedule_inner(false); }
 
 fn schedule_inner(from_timer: bool) {
-    // Read cpu_id early for pre-lock counters. For the timer path (from_timer=true),
-    // interrupts are already disabled (IRQ handler), so this is always correct.
-    // For the voluntary path (from_timer=false), this might be stale if preempted,
-    // but we only use it for the early-return counter path (which is from_timer only).
     let cpu_id_early = get_cpu_id();
 
-    // Lazy DR1 propagation: if a DR1 watchpoint address has been set (by
-    // set_thread_critical on CPU 0) but this CPU hasn't installed it yet,
-    // install it now. This ensures all CPUs watch the compositor's CpuContext.rip.
-    if !PER_CPU_DR1_INSTALLED[cpu_id_early].load(Ordering::Relaxed) {
-        let addr = DR1_WATCH_ADDR.load(Ordering::Relaxed);
-        if addr != 0 {
-            install_dr1_watchpoint(addr);
-            PER_CPU_DR1_INSTALLED[cpu_id_early].store(true, Ordering::Relaxed);
-        }
-    }
-
-    // CPU 0 processes deferred PD destruction from remote kill_thread() calls.
-    // Done BEFORE acquiring the scheduler lock — destroy_user_page_directory
-    // may temporarily switch CR3 and must not be called under the scheduler lock.
+    // CPU 0 processes deferred PD destruction (before acquiring scheduler lock)
     if from_timer && cpu_id_early == 0 {
         let pds = DEFERRED_PD_DESTROY.lock().drain();
         for pd in pds.iter().flatten() {
@@ -648,45 +649,27 @@ fn schedule_inner(from_timer: bool) {
         }
     }
 
-    // Extract context switch parameters under the lock, then release before switching
-    let switch_info: Option<(*mut CpuContext, *const CpuContext, *mut u8, *const u8)>;
-    // Saved for TSS.RSP0 recovery in post-lock error paths
-    let mut prev_tid: Option<u32> = None;
-    let mut prev_kstack_top: u64 = 0;
-
-    // Only increment counters on timer-driven scheduling
+    // Tick counters (timer path only)
     if from_timer {
         TOTAL_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
         PER_CPU_TOTAL[cpu_id_early].fetch_add(1, Ordering::Relaxed);
     }
 
-    // For timer-driven scheduling (from_timer=true), use try_lock to avoid
-    // blocking the IRQ handler — if the lock is contended, skip this tick.
-    // For voluntary scheduling (from_timer=false, e.g. sleep_until), the
-    // current thread is already marked Blocked and MUST be descheduled.
-    // We spin on try_lock() instead of using lock(): try_lock restores IF
-    // on failure, so LAPIC timer interrupts can still fire between attempts.
-    // Using lock() would keep IF=0 during the entire spin, causing timekeeping
-    // drift (~30% tick loss) since LAPIC timer ticks are missed on this CPU.
+    // Lock acquisition: try_lock for timer (non-blocking), spin for voluntary
     let mut guard = if from_timer {
         match SCHEDULER.try_lock() {
             Some(s) => s,
             None => {
-                // Lock contended — attribute tick to idle or running thread
                 if !PER_CPU_HAS_THREAD[cpu_id_early].load(Ordering::Relaxed) {
                     IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
                     PER_CPU_IDLE[cpu_id_early].fetch_add(1, Ordering::Relaxed);
                 } else {
-                    // Thread is running but we can't access its cpu_ticks without the lock.
-                    // Accumulate here; drained when lock is next acquired.
                     PER_CPU_CONTENDED_BUSY[cpu_id_early].fetch_add(1, Ordering::Relaxed);
                 }
                 return;
             }
         }
     } else {
-        // Spin with try_lock: each failed attempt restores IF (allowing
-        // timer IRQs to fire on this CPU), then retries with IF=0.
         loop {
             match SCHEDULER.try_lock() {
                 Some(s) => break s,
@@ -695,18 +678,16 @@ fn schedule_inner(from_timer: bool) {
         }
     };
 
-    // CRITICAL: Re-read CPU ID now that interrupts are disabled (lock acquired).
-    // For voluntary schedule() calls via INT 0x80 (IF=1), a timer IRQ could have
-    // preempted us between get_cpu_id() above and try_lock(), migrating this thread
-    // to a different CPU. Using the stale cpu_id would corrupt another CPU's
-    // per-CPU state (current_tid, ready_queue, TSS.RSP0) — causing the exact
-    // "SCHED FIX" TID/RSP mismatch symptoms.
+    // Re-read CPU ID under lock (interrupts disabled — can't migrate)
     let cpu_id = get_cpu_id();
+
+    // Extract context switch parameters under the lock
+    let switch_info: Option<(*mut CpuContext, *const CpuContext, *mut u8, *const u8, u32, u32)>;
 
     {
         let sched = match guard.as_mut() {
             Some(s) => s,
-            None => return, // guard drops normally (restores IF)
+            None => return,
         };
 
         // CPU 0 reaps terminated threads
@@ -714,8 +695,7 @@ fn schedule_inner(from_timer: bool) {
             sched.reap_terminated();
         }
 
-        // All CPUs wake sleepers whose timer has expired, distributing to least-loaded CPU.
-        // Previously only CPU 0 did this, which funneled all woken threads back to CPU 0.
+        // Wake expired sleepers
         if from_timer {
             let current_tick = crate::arch::x86::pit::get_ticks();
             for i in 0..sched.threads.len() {
@@ -723,59 +703,18 @@ fn schedule_inner(from_timer: bool) {
                     if let Some(wake_tick) = sched.threads[i].wake_at_tick {
                         if current_tick.wrapping_sub(wake_tick) < 0x8000_0000 {
                             let tid = sched.threads[i].tid;
+                            let pri = sched.threads[i].priority;
                             let target_cpu = sched.least_loaded_cpu();
                             sched.threads[i].state = ThreadState::Ready;
                             sched.threads[i].wake_at_tick = None;
-                            sched.enqueue_on_cpu(tid, target_cpu);
+                            sched.per_cpu[target_cpu].run_queue.enqueue(tid, pri);
                         }
                     }
                 }
             }
         }
 
-        // Per-tick integrity scan: check critical threads for CpuContext corruption.
-        // Only runs on timer ticks (not voluntary schedule), only scans threads that
-        // are NOT currently running on any CPU (save_complete == 1 means their context
-        // is fully saved and should contain valid values).
-        if from_timer && cpu_id == 0 {
-            for i in 0..sched.threads.len() {
-                if sched.threads[i].critical
-                    && sched.threads[i].context.save_complete == 1
-                    && sched.threads[i].state != ThreadState::Terminated
-                {
-                    let rip = sched.threads[i].context.rip;
-                    let rsp = sched.threads[i].context.rsp;
-                    let rbp = sched.threads[i].context.rbp;
-                    // Kernel RIP must be in [0xFFFFFFFF80100000, 0xFFFFFFFFC0000000)
-                    let rip_bad = rip < 0xFFFF_FFFF_8010_0000 || rip >= 0xFFFF_FFFF_C000_0000;
-                    // Kernel RSP must be in higher-half
-                    let rsp_bad = rsp < 0xFFFF_FFFF_8000_0000;
-                    if rip_bad || rsp_bad {
-                        let ctx_addr = &sched.threads[i].context as *const CpuContext as u64;
-                        crate::serial_println!(
-                            "!!! CORRUPT CRITICAL '{}' TID={} RIP={:#018x} RSP={:#018x} RBP={:#018x} ctx@{:#x} state={:?}",
-                            sched.threads[i].name_str(), sched.threads[i].tid,
-                            rip, rsp, rbp, ctx_addr, sched.threads[i].state,
-                        );
-                        // Print surrounding context fields for forensics
-                        crate::serial_println!(
-                            "    RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
-                            sched.threads[i].context.rax, sched.threads[i].context.rbx,
-                            sched.threads[i].context.rcx, sched.threads[i].context.rdx,
-                        );
-                        crate::serial_println!(
-                            "    RSI={:#018x} RDI={:#018x} CR3={:#018x} RFLAGS={:#018x}",
-                            sched.threads[i].context.rsi, sched.threads[i].context.rdi,
-                            sched.threads[i].context.cr3, sched.threads[i].context.rflags,
-                        );
-                    }
-                }
-            }
-        }
-
-        // Drain contended-busy ticks accumulated while lock was held by another CPU.
-        // These ticks were counted in PER_CPU_TOTAL but couldn't be attributed to
-        // the running thread without the lock. Attribute them now.
+        // Drain contended-busy ticks
         let missed = PER_CPU_CONTENDED_BUSY[cpu_id].swap(0, Ordering::Relaxed);
         if missed > 0 {
             if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
@@ -787,11 +726,10 @@ fn schedule_inner(from_timer: bool) {
             }
         }
 
-        // Track CPU ticks for the currently running thread on THIS CPU
+        // CPU tick accounting
         if from_timer {
             if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
                 if current_tid == sched.idle_tid[cpu_id] {
-                    // Idle thread running = CPU is idle
                     IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
                     PER_CPU_IDLE[cpu_id].fetch_add(1, Ordering::Relaxed);
                 } else if let Some(idx) = sched.find_idx(current_tid) {
@@ -802,211 +740,108 @@ fn schedule_inner(from_timer: bool) {
             }
         }
 
-        // RSP validation: verify our actual RSP matches the expected thread.
-        // With per-CPU TID-based queues this should never fire, but serves as
-        // a safety net against context corruption.
-        let current_rsp: u64;
-        unsafe { core::arch::asm!("mov {}, rsp", out(reg) current_rsp); }
-
-        if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(current_tid) {
-                let bottom = sched.threads[idx].kernel_stack_bottom();
-                let top = sched.threads[idx].kernel_stack_top();
-                if current_rsp < bottom || current_rsp > top {
-                    // Mismatch! Find the actual thread by RSP scan.
-                    let mut actual_tid = None;
-                    for t in sched.threads.iter() {
-                        let b = t.kernel_stack_bottom();
-                        let tt = t.kernel_stack_top();
-                        if current_rsp >= b && current_rsp <= tt {
-                            actual_tid = Some(t.tid);
-                            break;
-                        }
-                    }
-                    if let Some(at) = actual_tid {
-                        crate::serial_println!(
-                            "SCHED FIX: CPU{} current_tid={} but RSP {:#x} in TID={} — correcting",
-                            cpu_id, current_tid, current_rsp, at,
-                        );
-                        if let Some(ai) = sched.find_idx(at) {
-                            if sched.threads[ai].state == ThreadState::Terminated {
-                                // Don't resurrect a dead thread — this happens when
-                                // bad_rsp_recovery() killed a thread but RSP is still
-                                // on its stack (before the RSP switch to idle stack).
-                                // Fall back to idle instead.
-                                crate::serial_println!(
-                                    "SCHED FIX: TID={} is Terminated — using idle instead",
-                                    at,
-                                );
-                                sched.per_cpu[cpu_id].current_tid = Some(sched.idle_tid[cpu_id]);
-                            } else {
-                                sched.per_cpu[cpu_id].current_tid = Some(at);
-                                if sched.threads[ai].state != ThreadState::Running {
-                                    sched.threads[ai].state = ThreadState::Running;
-                                }
-                                sched.threads[ai].last_cpu = cpu_id;
-                            }
-                        } else {
-                            // Thread was reaped — RSP is on freed memory, use idle
-                            sched.per_cpu[cpu_id].current_tid = Some(sched.idle_tid[cpu_id]);
-                        }
-                    } else {
-                        // RSP not in any thread — we're on idle/boot stack
-                        sched.per_cpu[cpu_id].current_tid = Some(sched.idle_tid[cpu_id]);
-                    }
-                }
-            } else {
-                // current_tid not found (thread was reaped?) — fall back to idle
-                sched.per_cpu[cpu_id].current_tid = Some(sched.idle_tid[cpu_id]);
-            }
-        }
-
-        // Put current thread back to Ready on THIS CPU's queue.
-        // Mark save_complete = 0 so other CPUs won't pick it until
-        // context_switch.asm finishes saving its registers.
-        if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
-            // Idle threads are never enqueued in ready queues
+        // --- Put current thread back into its priority queue ---
+        let outgoing_tid = sched.per_cpu[cpu_id].current_tid;
+        if let Some(current_tid) = outgoing_tid {
             if current_tid != sched.idle_tid[cpu_id] {
                 if let Some(idx) = sched.find_idx(current_tid) {
                     if sched.threads[idx].state == ThreadState::Running {
                         sched.threads[idx].context.save_complete = 0;
                         sched.threads[idx].state = ThreadState::Ready;
                         sched.threads[idx].last_cpu = cpu_id;
-                        sched.enqueue_on_cpu(current_tid, cpu_id);
+                        let pri = sched.threads[idx].priority;
+                        sched.per_cpu[cpu_id].run_queue.enqueue(current_tid, pri);
                     }
                 }
             }
         }
 
-        prev_tid = sched.per_cpu[cpu_id].current_tid;
-
-        // Save previous thread's kernel stack top for TSS.RSP0 recovery.
-        // If anything goes wrong during scheduling, we can restore TSS.RSP0
-        // to this value to prevent cascading corruption.
-        prev_kstack_top = if let Some(pt) = prev_tid {
-            if let Some(pi) = sched.find_idx(pt) {
-                sched.threads[pi].kernel_stack_top()
-            } else { 0 }
-        } else { 0 };
-
-        // Pick next thread for THIS CPU (local queue first, then work stealing)
+        // --- Pick next thread (O(1) via bitmap) ---
         switch_info = if let Some(next_tid) = sched.pick_next(cpu_id) {
             if let Some(next_idx) = sched.find_idx(next_tid) {
-                // === VALIDATE candidate BEFORE committing per-CPU state ===
-                // This prevents TSS.RSP0 corruption: if we set TSS.RSP0 to
-                // the next thread's stack and then discover its context is
-                // corrupt, the previous thread would be left with wrong
-                // TSS.RSP0 → cascading corruption on next Ring 3→0 transition.
                 let kstack_top = sched.threads[next_idx].kernel_stack_top();
                 let kstack_bottom = sched.threads[next_idx].kernel_stack_bottom();
-                let next_rsp = sched.threads[next_idx].context.rsp;
-                let next_rip = sched.threads[next_idx].context.rip;
 
-                // Validate kstack_top is in kernel higher-half
+                // Validate candidate before committing
                 let kstack_valid = kstack_top >= 0xFFFF_FFFF_8000_0000;
-                let rsp_valid = kstack_valid && next_rsp >= kstack_bottom && next_rsp <= kstack_top;
-                let rip_valid = next_rip >= 0xFFFF_FFFF_8010_0000
-                             && next_rip < 0xFFFF_FFFF_C000_0000;
-
-                if !rsp_valid || !rip_valid {
-                    // Kill the corrupt thread WITHOUT modifying TSS.RSP0
+                if !kstack_valid {
                     crate::serial_println!(
-                        "BUG: thread '{}' (TID={}) corrupt context RSP={:#018x} RIP={:#018x} (stack=[{:#018x}..{:#018x}]) — killing (CPU{})",
-                        sched.threads[next_idx].name_str(), next_tid,
-                        next_rsp, next_rip, kstack_bottom, kstack_top, cpu_id,
+                        "BUG: thread '{}' (TID={}) invalid kstack_top={:#x} — killing",
+                        sched.threads[next_idx].name_str(), next_tid, kstack_top,
                     );
                     sched.threads[next_idx].state = ThreadState::Terminated;
                     sched.threads[next_idx].exit_code = Some(139);
                     sched.threads[next_idx].terminated_at_tick =
                         Some(crate::arch::x86::pit::get_ticks());
-                    // Restore prev thread — TSS.RSP0 was NOT changed
-                    sched.per_cpu[cpu_id].current_tid = prev_tid;
-                    PER_CPU_HAS_THREAD[cpu_id].store(prev_tid.is_some(), Ordering::Relaxed);
-                    if let Some(pt) = prev_tid {
-                        if let Some(pi) = sched.find_idx(pt) {
-                            sched.threads[pi].context.save_complete = 1;
-                            PER_CPU_CURRENT_TID[cpu_id].store(pt, Ordering::Relaxed);
-                            PER_CPU_IS_USER[cpu_id].store(sched.threads[pi].is_user, Ordering::Relaxed);
-                            update_per_cpu_name(cpu_id, &sched.threads[pi].name);
+                    // Restore outgoing as current
+                    sched.per_cpu[cpu_id].current_tid = outgoing_tid;
+                    if let Some(ot) = outgoing_tid {
+                        if let Some(oi) = sched.find_idx(ot) {
+                            sched.threads[oi].context.save_complete = 1;
                         }
                     }
                     None
                 } else {
-                    // === Candidate validated — now commit per-CPU state ===
+                    // Commit: update per-CPU state
                     sched.per_cpu[cpu_id].current_tid = Some(next_tid);
                     sched.threads[next_idx].state = ThreadState::Running;
                     sched.threads[next_idx].last_cpu = cpu_id;
+
                     PER_CPU_HAS_THREAD[cpu_id].store(true, Ordering::Relaxed);
                     PER_CPU_CURRENT_TID[cpu_id].store(next_tid, Ordering::Relaxed);
                     PER_CPU_IS_USER[cpu_id].store(sched.threads[next_idx].is_user, Ordering::Relaxed);
                     update_per_cpu_name(cpu_id, &sched.threads[next_idx].name);
 
-                    // Update this CPU's TSS RSP0 and SYSCALL per-CPU kernel RSP
+                    // Update TSS.RSP0 and SYSCALL kernel RSP
                     crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, kstack_top);
                     crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, kstack_top);
                     PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
                     PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
 
-                    // Check stack canary for the outgoing thread
-                    if let Some(pt) = prev_tid {
-                        if let Some(pi) = sched.find_idx(pt) {
-                            if !sched.threads[pi].check_stack_canary() {
-                                crate::serial_println!(
-                                    "STACK OVERFLOW: thread '{}' (TID={}) canary destroyed! CPU{} — killing",
-                                    sched.threads[pi].name_str(), pt, cpu_id,
-                                );
-                                sched.threads[pi].state = ThreadState::Terminated;
-                                sched.threads[pi].exit_code = Some(139);
-                                sched.threads[pi].terminated_at_tick =
-                                    Some(crate::arch::x86::pit::get_ticks());
-                                // Remove from queue (we just enqueued it)
-                                sched.per_cpu[cpu_id].ready_queue.retain(|&t| t != pt);
-                            }
-                        }
-                    }
+                    // Store FPU pointer for lazy #NM handler
+                    PER_CPU_FPU_PTR[cpu_id].store(
+                        sched.threads[next_idx].fpu_state.data.as_ptr() as u64,
+                        Ordering::Relaxed,
+                    );
 
-                    if let Some(pt) = prev_tid {
-                        if pt != next_tid {
-                            // Different thread — context switch from prev to next
-                            if let Some(prev_idx) = sched.find_idx(pt) {
-                                let old_ctx = &mut sched.threads[prev_idx].context as *mut CpuContext;
-                                let new_ctx = &sched.threads[next_idx].context as *const CpuContext;
-                                let old_fpu = sched.threads[prev_idx].fpu_state.data.as_mut_ptr();
-                                let new_fpu = sched.threads[next_idx].fpu_state.data.as_ptr();
-                                Some((old_ctx, new_ctx, old_fpu, new_fpu))
-                            } else {
-                                // prev thread gone (reaped) — switch from idle thread
-                                let idle_i = sched.find_idx(sched.idle_tid[cpu_id]).unwrap();
-                                let idle_ctx = &mut sched.threads[idle_i].context as *mut CpuContext;
-                                let new_ctx = &sched.threads[next_idx].context as *const CpuContext;
-                                let old_fpu = sched.threads[idle_i].fpu_state.data.as_mut_ptr();
-                                let new_fpu = sched.threads[next_idx].fpu_state.data.as_ptr();
-                                Some((idle_ctx, new_ctx, old_fpu, new_fpu))
-                            }
+                    if outgoing_tid == Some(next_tid) {
+                        // Same thread — no switch needed
+                        sched.threads[next_idx].context.save_complete = 1;
+                        None
+                    } else if let Some(prev_tid) = outgoing_tid {
+                        if let Some(prev_idx) = sched.find_idx(prev_tid) {
+                            let old_ctx = &mut sched.threads[prev_idx].context as *mut CpuContext;
+                            let new_ctx = &sched.threads[next_idx].context as *const CpuContext;
+                            let old_fpu = sched.threads[prev_idx].fpu_state.data.as_mut_ptr();
+                            let new_fpu = sched.threads[next_idx].fpu_state.data.as_ptr();
+                            Some((old_ctx, new_ctx, old_fpu, new_fpu, prev_tid, next_tid))
                         } else {
-                            // Same thread — no switch needed, restore save_complete
-                            sched.threads[next_idx].context.save_complete = 1;
-                            None
+                            // Previous thread reaped — switch from idle
+                            let idle_i = sched.find_idx(sched.idle_tid[cpu_id]).unwrap();
+                            let old_ctx = &mut sched.threads[idle_i].context as *mut CpuContext;
+                            let new_ctx = &sched.threads[next_idx].context as *const CpuContext;
+                            let old_fpu = sched.threads[idle_i].fpu_state.data.as_mut_ptr();
+                            let new_fpu = sched.threads[next_idx].fpu_state.data.as_ptr();
+                            Some((old_ctx, new_ctx, old_fpu, new_fpu, sched.idle_tid[cpu_id], next_tid))
                         }
                     } else {
-                        // No previous thread — switch from idle thread
+                        // No previous thread — switch from idle
                         let idle_i = sched.find_idx(sched.idle_tid[cpu_id]).unwrap();
-                        let idle_ctx = &mut sched.threads[idle_i].context as *mut CpuContext;
+                        let old_ctx = &mut sched.threads[idle_i].context as *mut CpuContext;
                         let new_ctx = &sched.threads[next_idx].context as *const CpuContext;
                         let old_fpu = sched.threads[idle_i].fpu_state.data.as_mut_ptr();
                         let new_fpu = sched.threads[next_idx].fpu_state.data.as_ptr();
-                        Some((idle_ctx, new_ctx, old_fpu, new_fpu))
+                        Some((old_ctx, new_ctx, old_fpu, new_fpu, sched.idle_tid[cpu_id], next_tid))
                     }
                 }
             } else {
-                // find_idx returned None — TID was reaped between pick_next and here.
-                // TSS.RSP0 was NOT modified, so no corruption risk.
-                if let Some(pt) = prev_tid {
-                    if let Some(pi) = sched.find_idx(pt) {
-                        sched.threads[pi].context.save_complete = 1;
+                // TID reaped between pick_next and here
+                sched.per_cpu[cpu_id].current_tid = outgoing_tid;
+                if let Some(ot) = outgoing_tid {
+                    if let Some(oi) = sched.find_idx(ot) {
+                        sched.threads[oi].context.save_complete = 1;
                     }
                 }
-                sched.per_cpu[cpu_id].current_tid = prev_tid;
                 None
             }
         } else {
@@ -1016,13 +851,11 @@ fn schedule_inner(from_timer: bool) {
                 PER_CPU_IDLE[cpu_id].fetch_add(1, Ordering::Relaxed);
             }
 
-            // If the current thread is no longer runnable, switch to idle thread
+            // If current thread is no longer runnable, switch to idle
             if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
                 if let Some(idx) = sched.find_idx(current_tid) {
                     if sched.threads[idx].state != ThreadState::Running {
-                        // Mark save pending — thread could be woken while being saved
                         sched.threads[idx].context.save_complete = 0;
-                        // Switch to this CPU's idle thread
                         let idle_tid = sched.idle_tid[cpu_id];
                         let idle_i = sched.find_idx(idle_tid).unwrap();
                         sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
@@ -1036,20 +869,23 @@ fn schedule_inner(from_timer: bool) {
                         crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, idle_kstack_top);
                         PER_CPU_STACK_BOTTOM[cpu_id].store(sched.threads[idle_i].kernel_stack_bottom(), Ordering::Relaxed);
                         PER_CPU_STACK_TOP[cpu_id].store(idle_kstack_top, Ordering::Relaxed);
+                        PER_CPU_FPU_PTR[cpu_id].store(
+                            sched.threads[idle_i].fpu_state.data.as_ptr() as u64,
+                            Ordering::Relaxed,
+                        );
                         let old_ctx = &mut sched.threads[idx].context as *mut CpuContext;
                         let idle_ctx = &sched.threads[idle_i].context as *const CpuContext;
                         let old_fpu = sched.threads[idx].fpu_state.data.as_mut_ptr();
                         let new_fpu = sched.threads[idle_i].fpu_state.data.as_ptr();
-                        Some((old_ctx, idle_ctx, old_fpu, new_fpu))
+                        Some((old_ctx, idle_ctx, old_fpu, new_fpu, current_tid, idle_tid))
                     } else {
-                        // Current thread still Running (idle or real), no switch needed
                         if !sched.threads[idx].is_idle {
                             sched.threads[idx].context.save_complete = 1;
                         }
                         None
                     }
                 } else {
-                    // Thread not found — fall back to idle thread
+                    // Current thread reaped — set to idle
                     let idle_tid = sched.idle_tid[cpu_id];
                     let idle_i = sched.find_idx(idle_tid).unwrap();
                     sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
@@ -1057,8 +893,6 @@ fn schedule_inner(from_timer: bool) {
                     PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
                     PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
                     update_per_cpu_name(cpu_id, &sched.threads[idle_i].name);
-                    // CRITICAL: Set TSS.RSP0 to idle thread's stack — without this,
-                    // TSS.RSP0 points to the reaped thread's freed stack.
                     let idle_kstack_top = sched.threads[idle_i].kernel_stack_top();
                     crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
                     crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, idle_kstack_top);
@@ -1067,121 +901,84 @@ fn schedule_inner(from_timer: bool) {
                     None
                 }
             } else {
-                // No current thread — set to idle (shouldn't happen)
                 let idle_tid = sched.idle_tid[cpu_id];
                 let idle_i = sched.find_idx(idle_tid).unwrap();
                 sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
-                // Set TSS.RSP0 to idle thread's stack
                 let idle_kstack_top = sched.threads[idle_i].kernel_stack_top();
                 crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
                 crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, idle_kstack_top);
                 None
             }
         };
-        // sched borrow ends here
-    }
+    } // sched borrow ends here
 
-    // CRITICAL: Release the lock WITHOUT restoring IF. This keeps interrupts
-    // disabled from lock acquisition all the way through context_switch.
+    // Release lock WITHOUT restoring IF — keeps interrupts disabled through context_switch
     guard.release_no_irq_restore();
 
-    // Context switch with the lock released AND interrupts still disabled.
-    if let Some((old_ctx, new_ctx, old_fpu, new_fpu)) = switch_info {
-        // Post-lock safety check: validate RIP hasn't been corrupted since
-        // the in-lock check (e.g., by heap corruption or wild pointer).
-        let new_rip = unsafe { (*new_ctx).rip };
-        let new_rsp = unsafe { (*new_ctx).rsp };
-        let new_cr3 = unsafe { (*new_ctx).cr3 };
-        if new_rip < 0xFFFF_FFFF_8010_0000 || new_rip >= 0xFFFF_FFFF_C000_0000 {
-            crate::serial_println!(
-                "BUG: context_switch to bad RIP={:#018x} RSP={:#018x} CR3={:#018x} CPU{}",
-                new_rip, new_rsp, new_cr3, cpu_id,
-            );
-            unsafe { (*old_ctx).save_complete = 1; }
-            // Recover: kill the bad thread AND restore TSS.RSP0
-            {
-                if let Some(mut guard) = SCHEDULER.try_lock() {
-                    if let Some(sched) = guard.as_mut() {
-                        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-                            if let Some(idx) = sched.find_idx(tid) {
-                                sched.threads[idx].state = ThreadState::Terminated;
-                                sched.threads[idx].terminated_at_tick =
-                                    Some(crate::arch::x86::pit::get_ticks());
-                            }
-                        }
-                        // CRITICAL: Restore TSS.RSP0 to prev thread's stack.
-                        // Without this, the prev thread runs with TSS.RSP0
-                        // pointing to the killed thread's stack — cascading
-                        // corruption on next Ring 3→0 transition.
-                        sched.per_cpu[cpu_id].current_tid = prev_tid;
-                        if prev_kstack_top >= 0xFFFF_FFFF_8000_0000 {
-                            crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, prev_kstack_top);
-                            crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, prev_kstack_top);
-                        }
-                        if let Some(pt) = prev_tid {
-                            PER_CPU_CURRENT_TID[cpu_id].store(pt, Ordering::Relaxed);
-                            if let Some(pi) = sched.find_idx(pt) {
-                                update_per_cpu_name(cpu_id, &sched.threads[pi].name);
-                            }
-                        }
-                    }
-                }
+    // Context switch with lock released, interrupts still disabled
+    if let Some((old_ctx, new_ctx, old_fpu, _new_fpu, outgoing_tid, _next_tid)) = switch_info {
+        // --- Lazy FPU: save outgoing thread's state if this CPU owns it ---
+        let fpu_owner = PER_CPU_FPU_OWNER[cpu_id].load(Ordering::Relaxed);
+        if fpu_owner != 0 && fpu_owner == outgoing_tid {
+            unsafe {
+                core::arch::asm!("fxsave [{}]", in(reg) old_fpu, options(nostack, preserves_flags));
             }
-            unsafe { core::arch::asm!("sti"); }
-            return;
+            PER_CPU_FPU_OWNER[cpu_id].store(0, Ordering::Relaxed);
         }
-        // Save current FPU/SSE state, load new thread's FPU/SSE state
+
+        // Set CR0.TS — next FPU/SSE instruction triggers #NM for lazy restore
         unsafe {
-            core::arch::asm!("fxsave [{}]", in(reg) old_fpu, options(nostack, preserves_flags));
-            core::arch::asm!("fxrstor [{}]", in(reg) new_fpu, options(nostack, preserves_flags));
+            let cr0: u64;
+            core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nostack, nomem, preserves_flags));
+            core::arch::asm!("mov cr0, {}", in(reg) cr0 | 8, options(nostack, nomem, preserves_flags));
         }
-        // Final RIP/RSP validation AFTER fxsave (which writes 512 bytes and
-        // could corrupt new_ctx if old_fpu pointed to the wrong location).
-        let final_rip = unsafe { (*new_ctx).rip };
-        let final_rsp = unsafe { (*new_ctx).rsp };
-        if final_rip != new_rip || final_rsp != new_rsp {
-            crate::serial_println!(
-                "BUG: context corrupted AFTER fxsave! RIP {:#018x}->{:#018x} RSP {:#018x}->{:#018x} CPU{}",
-                new_rip, final_rip, new_rsp, final_rsp, cpu_id,
-            );
-            unsafe { (*old_ctx).save_complete = 1; }
-            {
-                if let Some(mut guard) = SCHEDULER.try_lock() {
-                    if let Some(sched) = guard.as_mut() {
-                        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-                            if let Some(idx) = sched.find_idx(tid) {
-                                sched.threads[idx].state = ThreadState::Terminated;
-                                sched.threads[idx].terminated_at_tick =
-                                    Some(crate::arch::x86::pit::get_ticks());
-                            }
-                        }
-                        sched.per_cpu[cpu_id].current_tid = prev_tid;
-                        if prev_kstack_top >= 0xFFFF_FFFF_8000_0000 {
-                            crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, prev_kstack_top);
-                            crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, prev_kstack_top);
-                        }
-                    }
-                }
-            }
-            unsafe { core::arch::asm!("sti"); }
-            return;
-        }
+
         unsafe { crate::task::context::context_switch(old_ctx, new_ctx); }
     }
 
-    // Re-enable interrupts. For voluntary schedule() calls this is CRITICAL —
-    // without it, IF stays 0 permanently and sleep() loops forever.
+    // Re-enable interrupts (CRITICAL for voluntary schedule — without this, IF stays 0)
     unsafe { core::arch::asm!("sti"); }
 }
 
 // =============================================================================
-// Current thread accessors (TID-based lookup)
+// Lazy FPU — #NM handler
+// =============================================================================
+
+/// Handle Device Not Available exception (#NM, ISR 7).
+/// Called when a thread executes an FPU/SSE instruction with CR0.TS set.
+/// Loads the thread's FPU state and clears TS so the instruction can retry.
+pub fn handle_device_not_available() {
+    let cpu_id = get_cpu_id();
+    let current_tid = PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Relaxed);
+    let fpu_owner = PER_CPU_FPU_OWNER[cpu_id].load(Ordering::Relaxed);
+
+    // If this thread's state is already loaded, just clear TS
+    if fpu_owner == current_tid && current_tid != 0 {
+        unsafe { core::arch::asm!("clts", options(nostack, preserves_flags)); }
+        return;
+    }
+
+    // Clear TS first — FXRSTOR also traps on CR0.TS=1
+    unsafe { core::arch::asm!("clts", options(nostack, preserves_flags)); }
+
+    // Load this thread's FPU/SSE state
+    let fpu_ptr = PER_CPU_FPU_PTR[cpu_id].load(Ordering::Relaxed);
+    if fpu_ptr != 0 {
+        unsafe {
+            core::arch::asm!("fxrstor [{}]", in(reg) fpu_ptr, options(nostack, preserves_flags));
+        }
+        PER_CPU_FPU_OWNER[cpu_id].store(current_tid, Ordering::Relaxed);
+    }
+}
+
+// =============================================================================
+// Current thread accessors
 // =============================================================================
 
 /// Get the current thread's TID (on the calling CPU).
 pub fn current_tid() -> u32 {
     let guard = SCHEDULER.lock();
-    let cpu_id = get_cpu_id(); // after lock — interrupts disabled, can't migrate
+    let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
         return sched.per_cpu[cpu_id].current_tid.unwrap_or(0);
     }
@@ -1202,7 +999,7 @@ pub fn is_current_thread_user() -> bool {
     false
 }
 
-/// Get the current thread's name (for diagnostic messages).
+/// Get the current thread's name.
 pub fn current_thread_name() -> [u8; 32] {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
@@ -1216,29 +1013,22 @@ pub fn current_thread_name() -> [u8; 32] {
     [0u8; 32]
 }
 
-/// Lock-free read of the last-scheduled thread TID on this CPU.
+/// Lock-free read of the current TID on this CPU.
 pub fn debug_current_tid() -> u32 {
     let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
-    if cpu_id < MAX_CPUS {
-        PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Relaxed)
-    } else {
-        0
-    }
+    if cpu_id < MAX_CPUS { PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Relaxed) } else { 0 }
 }
 
-/// Lock-free check: is the current thread on this CPU a user process?
+/// Lock-free check: is the current thread a user process?
 pub fn debug_is_current_user() -> bool {
     let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
     PER_CPU_IS_USER[cpu_id].load(Ordering::Relaxed)
 }
 
-/// Lock-free read of the thread name cached for the current CPU.
-/// Safe during panic/RSOD — never acquires the SCHEDULER lock.
+/// Lock-free read of the cached thread name for the current CPU.
 pub fn debug_current_thread_name() -> [u8; 32] {
     let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
-    if cpu_id >= MAX_CPUS {
-        return [0u8; 32];
-    }
+    if cpu_id >= MAX_CPUS { return [0u8; 32]; }
     unsafe {
         let src = core::ptr::addr_of!(PER_CPU_THREAD_NAME[cpu_id]);
         core::ptr::read_volatile(src)
@@ -1247,34 +1037,20 @@ pub fn debug_current_thread_name() -> [u8; 32] {
 
 /// Lock-free check: does this CPU have an active thread running?
 pub fn cpu_has_active_thread(cpu_id: usize) -> bool {
-    if cpu_id < MAX_CPUS {
-        PER_CPU_HAS_THREAD[cpu_id].load(Ordering::Relaxed)
-    } else {
-        false
-    }
+    if cpu_id < MAX_CPUS { PER_CPU_HAS_THREAD[cpu_id].load(Ordering::Relaxed) } else { false }
 }
 
-/// Check the current thread's stack canary after a syscall completes.
+/// Check the current thread's stack canary after a syscall.
 pub fn check_current_stack_canary(syscall_num: u32) {
     let mut guard = SCHEDULER.lock();
-    let sched = match guard.as_mut() {
-        Some(s) => s,
-        None => return,
-    };
+    let sched = match guard.as_mut() { Some(s) => s, None => return };
     let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
-    let tid = match sched.per_cpu[cpu_id].current_tid {
-        Some(t) => t,
-        None => return,
-    };
-    let idx = match sched.find_idx(tid) {
-        Some(i) => i,
-        None => return,
-    };
+    let tid = match sched.per_cpu[cpu_id].current_tid { Some(t) => t, None => return };
+    let idx = match sched.find_idx(tid) { Some(i) => i, None => return };
     if !sched.threads[idx].check_stack_canary() {
-        let name = sched.threads[idx].name_str();
         crate::serial_println!(
-            "STACK OVERFLOW detected after syscall {} in thread '{}' (TID={}) — killing",
-            syscall_num, name, tid,
+            "STACK OVERFLOW after syscall {} in '{}' (TID={}) — killing",
+            syscall_num, sched.threads[idx].name_str(), tid,
         );
         sched.threads[idx].state = ThreadState::Terminated;
         sched.threads[idx].exit_code = Some(139);
@@ -1282,28 +1058,25 @@ pub fn check_current_stack_canary(syscall_num: u32) {
     }
 }
 
-/// Lock-free check: is the given RSP within this CPU's current thread's kernel stack?
+/// Lock-free check: is RSP within this CPU's current thread's kernel stack?
 pub fn check_rsp_in_bounds(cpu_id: usize, rsp: u64) -> bool {
     let bottom = PER_CPU_STACK_BOTTOM[cpu_id].load(Ordering::Relaxed);
     let top = PER_CPU_STACK_TOP[cpu_id].load(Ordering::Relaxed);
-    if bottom == 0 || top == 0 {
-        return true; // Not initialized yet
-    }
+    if bottom == 0 || top == 0 { return true; }
     rsp >= bottom && rsp <= top
 }
 
-/// Get the per-CPU stack bounds (lock-free, for diagnostics).
+/// Get per-CPU stack bounds (lock-free).
 pub fn get_stack_bounds(cpu_id: usize) -> (u64, u64) {
-    let bottom = PER_CPU_STACK_BOTTOM[cpu_id].load(Ordering::Relaxed);
-    let top = PER_CPU_STACK_TOP[cpu_id].load(Ordering::Relaxed);
-    (bottom, top)
+    (PER_CPU_STACK_BOTTOM[cpu_id].load(Ordering::Relaxed),
+     PER_CPU_STACK_TOP[cpu_id].load(Ordering::Relaxed))
 }
 
 // =============================================================================
 // Thread configuration
 // =============================================================================
 
-/// Configure a thread as a user process (set page directory, CR3, brk, is_user).
+/// Configure a thread as a user process.
 pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u32) {
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("Scheduler not initialized");
@@ -1315,7 +1088,7 @@ pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u32) {
     }
 }
 
-/// Set the architecture mode (Native64/Compat32) for a thread.
+/// Set the architecture mode for a thread.
 pub fn set_thread_arch_mode(tid: u32, mode: crate::task::thread::ArchMode) {
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("Scheduler not initialized");
@@ -1324,7 +1097,7 @@ pub fn set_thread_arch_mode(tid: u32, mode: crate::task::thread::ArchMode) {
     }
 }
 
-/// Get the current thread's page directory (if it's a user process).
+/// Get the current thread's page directory.
 pub fn current_thread_page_directory() -> Option<PhysAddr> {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
@@ -1338,7 +1111,7 @@ pub fn current_thread_page_directory() -> Option<PhysAddr> {
     None
 }
 
-/// Check if the current thread has a shared page directory (intra-process child).
+/// Check if the current thread has a shared page directory.
 pub fn current_thread_pd_shared() -> bool {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
@@ -1352,8 +1125,7 @@ pub fn current_thread_pd_shared() -> bool {
     false
 }
 
-/// Check if any OTHER live thread shares the same page directory as the current thread.
-/// Used by sys_exit to decide whether it's safe to destroy the PD.
+/// Check if any OTHER live thread shares the same page directory.
 pub fn has_live_pd_siblings() -> bool {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
@@ -1373,10 +1145,7 @@ pub fn has_live_pd_siblings() -> bool {
     false
 }
 
-/// Atomically get all info needed for sys_exit in a single lock acquisition.
-/// Returns (tid, pd, can_destroy_pd) — eliminates TOCTOU races from
-/// calling current_tid / current_thread_page_directory / pd_shared / has_live_pd_siblings
-/// as separate locked operations with timer-preemptible gaps.
+/// Atomically get all info needed for sys_exit.
 pub fn current_exit_info() -> (u32, Option<PhysAddr>, bool) {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
@@ -1391,9 +1160,7 @@ pub fn current_exit_info() -> (u32, Option<PhysAddr>, bool) {
                             && t.page_directory == Some(pd_addr)
                             && t.state != ThreadState::Terminated
                     })
-                } else {
-                    false
-                };
+                } else { false };
                 let can_destroy = pd.is_some() && !pd_shared && !has_siblings;
                 return (tid, pd, can_destroy);
             }
@@ -1402,7 +1169,7 @@ pub fn current_exit_info() -> (u32, Option<PhysAddr>, bool) {
     (0, None, false)
 }
 
-/// Get the current thread's program break address.
+/// Get the current thread's program break.
 pub fn current_thread_brk() -> u32 {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
@@ -1416,7 +1183,7 @@ pub fn current_thread_brk() -> u32 {
     0
 }
 
-/// Set the current thread's program break address, and sync across sibling threads.
+/// Set the current thread's program break, syncing across sibling threads.
 pub fn set_current_thread_brk(brk: u32) {
     let mut guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
@@ -1424,7 +1191,6 @@ pub fn set_current_thread_brk(brk: u32) {
         if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
             if let Some(idx) = sched.find_idx(tid) {
                 sched.threads[idx].brk = brk;
-                // Sync brk across all sibling threads sharing the same PD
                 if let Some(pd) = sched.threads[idx].page_directory {
                     let current_tid = sched.threads[idx].tid;
                     for thread in sched.threads.iter_mut() {
@@ -1449,35 +1215,27 @@ pub fn exit_current(code: u32) {
         let mut guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
         let sched = guard.as_mut().expect("Scheduler not initialized");
-
         tid = sched.per_cpu[cpu_id].current_tid.unwrap_or(0);
-
         if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
             if let Some(idx) = sched.find_idx(current_tid) {
                 sched.threads[idx].state = ThreadState::Terminated;
                 sched.threads[idx].exit_code = Some(code);
-                sched.threads[idx].terminated_at_tick =
-                    Some(crate::arch::x86::pit::get_ticks());
+                sched.threads[idx].terminated_at_tick = Some(crate::arch::x86::pit::get_ticks());
                 sched.threads[idx].page_directory = None;
-
-                // Wake any thread waiting on us
                 if let Some(waiter_tid) = sched.threads[idx].waiting_tid {
                     sched.wake_thread_inner(waiter_tid);
                 }
             }
         }
     }
-
     crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
         crate::ipc::event_bus::EVT_PROCESS_EXITED, tid, code, 0, 0,
     ));
-
     schedule();
     loop { unsafe { core::arch::asm!("hlt"); } }
 }
 
-/// Try to terminate the current thread using `try_lock` (non-blocking).
-/// Returns `false` if the scheduler lock could not be acquired.
+/// Try to terminate the current thread (non-blocking lock acquisition).
 pub fn try_exit_current(code: u32) -> bool {
     let tid;
     {
@@ -1485,185 +1243,84 @@ pub fn try_exit_current(code: u32) -> bool {
             Some(g) => g,
             None => return false,
         };
-        let cpu_id = get_cpu_id(); // after lock — interrupts disabled
-        let sched = match guard.as_mut() {
-            Some(s) => s,
-            None => return false,
-        };
-
+        let cpu_id = get_cpu_id();
+        let sched = match guard.as_mut() { Some(s) => s, None => return false };
         if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
             tid = current_tid;
             if let Some(idx) = sched.find_idx(current_tid) {
                 sched.threads[idx].state = ThreadState::Terminated;
                 sched.threads[idx].exit_code = Some(code);
-                sched.threads[idx].terminated_at_tick =
-                    Some(crate::arch::x86::pit::get_ticks());
+                sched.threads[idx].terminated_at_tick = Some(crate::arch::x86::pit::get_ticks());
                 sched.threads[idx].page_directory = None;
-
                 if let Some(waiter_tid) = sched.threads[idx].waiting_tid {
                     sched.wake_thread_inner(waiter_tid);
                 }
-            } else {
-                return false;
-            }
-        } else {
-            return false;
-        }
+            } else { return false; }
+        } else { return false; }
     }
-
-    // Notify compositor (and other listeners) so windows get cleaned up
     crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
         crate::ipc::event_bus::EVT_PROCESS_EXITED, tid, code, 0, 0,
     ));
-
     schedule();
     loop { unsafe { core::arch::asm!("hlt"); } }
 }
 
 /// Saved by interrupts.asm before the recovery SWAPGS overwrites RSP.
-/// Contains the corrupt RSP value at the time `test rsp, rsp; jns .bad_rsp` fired.
 #[no_mangle]
 pub static mut BAD_RSP_SAVED: u64 = 0;
 
-/// Recovery function called from interrupts.asm when an ISR/IRQ fires with a
-/// corrupt RSP (TSS.RSP0 was bad on Ring 3→0 transition). By the time we get
-/// here, the ASM stub has already switched RSP to the per-CPU kernel_rsp via
-/// SWAPGS. We kill the faulting thread, repair TSS.RSP0, send LAPIC EOI, and
-/// enter the idle loop. This function never returns.
-///
-/// IMPORTANT: We must NOT call schedule() or try_exit_current() here because
-/// those call context_switch, and our stack frame is the PERCPU kernel_rsp
-/// (not a normal call chain). Instead, we mark the thread as Terminated,
-/// repair per-CPU state, and enter the idle loop. The next timer tick will
-/// call schedule() normally.
+/// Recovery function called from interrupts.asm when an ISR fires with corrupt RSP.
+/// Kills the faulting thread, repairs TSS.RSP0, and enters the idle loop.
+/// This function never returns.
 #[no_mangle]
 pub extern "C" fn bad_rsp_recovery() -> ! {
     let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
-    let tss_rsp0 = crate::arch::x86::tss::get_kernel_stack_for_cpu(cpu_id);
-    let percpu_krsp = crate::arch::x86::syscall_msr::get_kernel_rsp(cpu_id);
-    let tid = PER_CPU_CURRENT_TID[cpu_id].load(core::sync::atomic::Ordering::Relaxed);
-    let stack_bottom = PER_CPU_STACK_BOTTOM[cpu_id].load(core::sync::atomic::Ordering::Relaxed);
-    let stack_top = PER_CPU_STACK_TOP[cpu_id].load(core::sync::atomic::Ordering::Relaxed);
-    crate::serial_println!(
-        "!RSP RECOVERY on CPU {} — killing current thread, entering idle",
-        cpu_id
-    );
+    let tid = PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Relaxed);
+    crate::serial_println!("!RSP RECOVERY on CPU {} — killing TID={}, entering idle", cpu_id, tid);
+
     let bad_rsp = unsafe { BAD_RSP_SAVED };
+    let tss_rsp0 = crate::arch::x86::tss::get_kernel_stack_for_cpu(cpu_id);
     crate::serial_println!(
-        "  DIAG: bad_rsp={:#018x} TSS.RSP0={:#018x} PERCPU.krsp={:#018x}",
-        bad_rsp, tss_rsp0, percpu_krsp,
-    );
-    crate::serial_println!(
-        "  DIAG: TID={} stack=[{:#018x}..{:#018x}]",
-        tid, stack_bottom, stack_top,
+        "  bad_rsp={:#018x} TSS.RSP0={:#018x}", bad_rsp, tss_rsp0,
     );
 
-    // Read the interrupt frame from identity-mapped memory at bad_rsp.
-    // In x86-64, the CPU always pushes SS:RSP even for same-privilege
-    // interrupts, so the full frame is at bad_rsp. Since identity mapping
-    // covers the first 128 MiB, any bad_rsp < 0x0800_0000 is readable.
-    if bad_rsp > 0 && bad_rsp < 0x0800_0000 && bad_rsp + 176 < 0x0800_0000 {
-        unsafe {
-            let p = bad_rsp as *const u64;
-            let frame_rip   = core::ptr::read_volatile(p.add(17)); // +136
-            let frame_cs    = core::ptr::read_volatile(p.add(18)); // +144
-            let frame_rfl   = core::ptr::read_volatile(p.add(19)); // +152
-            let frame_rsp   = core::ptr::read_volatile(p.add(20)); // +160
-            let frame_ss    = core::ptr::read_volatile(p.add(21)); // +168
-            let frame_int   = core::ptr::read_volatile(p.add(15)); // +120
-            let frame_err   = core::ptr::read_volatile(p.add(16)); // +128
-            let frame_rbp   = core::ptr::read_volatile(p.add(8));  // +64
-            let frame_rax   = core::ptr::read_volatile(p.add(14)); // +112
-            let frame_rdi   = core::ptr::read_volatile(p.add(9));  // +72
-            let frame_rsi   = core::ptr::read_volatile(p.add(10)); // +80
-            crate::serial_println!(
-                "  FRAME at {:#x}: RIP={:#018x} CS={:#06x} SS={:#06x} INT={}",
-                bad_rsp, frame_rip, frame_cs, frame_ss, frame_int,
-            );
-            crate::serial_println!(
-                "  FRAME: RSP_orig={:#018x} RFLAGS={:#018x} ERR={:#x}",
-                frame_rsp, frame_rfl, frame_err,
-            );
-            crate::serial_println!(
-                "  FRAME: RBP={:#018x} RAX={:#018x} RDI={:#018x} RSI={:#018x}",
-                frame_rbp, frame_rax, frame_rdi, frame_rsi,
-            );
-            // If RIP is in kernel text, show its offset from kernel base
-            if frame_rip >= 0xFFFF_FFFF_8010_0000 && frame_rip < 0xFFFF_FFFF_8100_0000 {
-                crate::serial_println!(
-                    "  FRAME: kernel offset = {:#x} (add to nm/objdump output)",
-                    frame_rip - 0xFFFF_FFFF_8010_0000,
-                );
-            }
-        }
-    }
-
-    // Send EOI to LAPIC unconditionally — we may have entered from an IRQ,
-    // and without EOI the LAPIC won't deliver further interrupts to this CPU.
     crate::arch::x86::apic::eoi();
 
-    // Capture the idle thread's kernel stack top so we can switch RSP to it
-    // after releasing the lock. Without this, the idle loop runs on the dead
-    // thread's stack — causing SCHED FIX to resurrect the terminated thread.
     let mut idle_stack_top: u64 = 0;
-
-    // Try to mark the current thread as terminated and repair TSS.RSP0
-    // in a single lock acquisition. If the lock is contended, we still
-    // enter idle (the scheduler will clean up on the next tick).
     {
         if let Some(mut guard) = SCHEDULER.try_lock() {
             if let Some(ref mut sched) = *guard {
-                // Handle the current thread
                 if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
                     if let Some(idx) = sched.find_idx(current_tid) {
                         if sched.threads[idx].critical {
-                            // Critical thread — do NOT kill. Clear current_tid so
-                            // scheduler re-picks it next tick with repaired RSP0.
                             crate::serial_println!(
-                                "  CRITICAL thread '{}' (TID={}) spared — RSP will be repaired",
+                                "  CRITICAL thread '{}' (TID={}) spared",
                                 sched.threads[idx].name_str(), current_tid,
                             );
                             sched.threads[idx].state = ThreadState::Ready;
                             sched.threads[idx].context.save_complete = 1;
-                            sched.per_cpu[cpu_id].ready_queue.push(current_tid);
+                            let pri = sched.threads[idx].priority;
+                            sched.per_cpu[cpu_id].run_queue.enqueue(current_tid, pri);
                         } else if !sched.threads[idx].is_idle {
                             sched.threads[idx].state = ThreadState::Terminated;
-                            sched.threads[idx].exit_code = Some(139); // SIGSEGV
-                            sched.threads[idx].terminated_at_tick =
-                                Some(crate::arch::x86::pit::get_ticks());
-                            // Wake any waiter
+                            sched.threads[idx].exit_code = Some(139);
+                            sched.threads[idx].terminated_at_tick = Some(crate::arch::x86::pit::get_ticks());
                             if let Some(waiter_tid) = sched.threads[idx].waiting_tid {
                                 sched.wake_thread_inner(waiter_tid);
                             }
-                            crate::serial_println!(
-                                "  Killed tid={} (corrupt RSP)", current_tid
-                            );
                         }
                     }
-                    // Clear current so scheduler picks fresh next tick
                     sched.per_cpu[cpu_id].current_tid = None;
                 }
-
-                // Repair TSS.RSP0 to idle thread's kernel stack
                 let idle_tid = sched.idle_tid[cpu_id];
                 if let Some(idx) = sched.find_idx(idle_tid) {
                     let kstack_top = sched.threads[idx].kernel_stack_top();
                     crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, kstack_top);
                     crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, kstack_top);
                     idle_stack_top = kstack_top;
-                    crate::serial_println!(
-                        "  RSP0 repaired to idle stack 0x{:x} for CPU {}",
-                        kstack_top, cpu_id
-                    );
                 }
             }
         } else {
-            crate::serial_println!("  WARNING: scheduler locked, deferring cleanup");
-            // CRITICAL: Use PER_CPU_IDLE_STACK_TOP (set once at init, never changes)
-            // instead of PER_CPU_STACK_TOP (current thread's stack, may be shared).
-            // Using PER_CPU_STACK_TOP caused double faults: this CPU would idle on
-            // a thread's stack while that thread got rescheduled on another CPU,
-            // both CPUs sharing one stack → mutual corruption.
             let idle_st = PER_CPU_IDLE_STACK_TOP[cpu_id].load(Ordering::Relaxed);
             if idle_st >= 0xFFFF_FFFF_8000_0000 {
                 crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, idle_st);
@@ -1673,109 +1330,64 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
         }
     }
 
-    // Update lock-free per-CPU state
     PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
     PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
     PER_CPU_CURRENT_TID[cpu_id].store(0, Ordering::Relaxed);
     clear_per_cpu_name(cpu_id);
 
-    // Switch to kernel CR3 so we're not running on a user page directory
-    // that might get destroyed.
     unsafe {
         let kcr3 = crate::memory::virtual_mem::kernel_cr3();
         core::arch::asm!("mov cr3, {}", in(reg) kcr3, options(nostack));
     }
 
-    // CRITICAL: Switch RSP to the idle thread's stack before entering the
-    // idle loop. Without this, the loop runs on the killed thread's stack.
-    // When reap_terminated() frees that stack, we'd be executing on freed
-    // memory. Worse, SCHED FIX detects RSP in the dead thread's range and
-    // resurrects it — causing RIP=garbage crashes.
-    crate::serial_println!("  CPU {} entering idle loop", cpu_id);
     if idle_stack_top >= 0xFFFF_FFFF_8000_0000 {
         unsafe {
             core::arch::asm!(
-                "mov rsp, {0}",
-                "sti",
-                "2: hlt",
-                "jmp 2b",
-                in(reg) idle_stack_top,
-                options(noreturn)
+                "mov rsp, {0}", "sti", "2: hlt", "jmp 2b",
+                in(reg) idle_stack_top, options(noreturn)
             );
         }
     } else {
-        // Last resort: couldn't determine idle stack. Stay on current stack
-        // and hope scheduler fixes it on next tick.
         unsafe { core::arch::asm!("sti"); }
-        loop {
-            unsafe { core::arch::asm!("hlt"); }
-        }
+        loop { unsafe { core::arch::asm!("hlt"); } }
     }
 }
 
-/// Fallback recovery for try_kill_faulting_thread when try_exit_current fails.
-/// Similar to bad_rsp_recovery: kills the thread, repairs per-CPU state, and
-/// enters the idle loop WITHOUT calling schedule()/context_switch. This avoids
-/// the deadlock that occurs when schedule_inner's try_lock loop spins forever.
-///
-/// Called from idt.rs when the 1000-iteration retry limit of try_exit_current
-/// is exhausted (scheduler lock permanently contended by another CPU).
+/// Fallback recovery when try_exit_current fails. Kills thread and enters idle.
 pub fn fault_kill_and_idle(signal: u32) -> ! {
     let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
     let tid = PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Relaxed);
+    crate::serial_println!("  FALLBACK: manual kill TID={} signal={} on CPU {}", tid, signal, cpu_id);
 
-    crate::serial_println!(
-        "  FALLBACK: manual kill TID={} signal={} on CPU {} — entering idle",
-        tid, signal, cpu_id,
-    );
-
-    // Force-unlock scheduler if this CPU still holds it (e.g., fault inside
-    // a syscall that held the lock, and the initial force_unlock didn't work
-    // because the fault path re-acquired it).
     let cpu = cpu_id as u32;
     if is_scheduler_locked_by_cpu(cpu) {
         unsafe { force_unlock_scheduler(); }
     }
 
     let mut idle_stack_top: u64 = 0;
-
-    // Try to acquire the lock for proper cleanup
     {
         if let Some(mut guard) = SCHEDULER.try_lock() {
             if let Some(ref mut sched) = *guard {
-                // Mark thread as terminated
                 if let Some(idx) = sched.find_idx(tid) {
                     sched.threads[idx].state = ThreadState::Terminated;
                     sched.threads[idx].exit_code = Some(signal);
-                    sched.threads[idx].terminated_at_tick =
-                        Some(crate::arch::x86::pit::get_ticks());
-                    // Wake any waiter (e.g., parent doing waitpid)
+                    sched.threads[idx].terminated_at_tick = Some(crate::arch::x86::pit::get_ticks());
                     if let Some(waiter_tid) = sched.threads[idx].waiting_tid {
                         sched.wake_thread_inner(waiter_tid);
                     }
                 }
-
-                // Clear current thread for this CPU
                 sched.per_cpu[cpu_id].current_tid = None;
-
-                // Get idle thread's stack for TSS.RSP0 repair
                 let idle_tid = sched.idle_tid[cpu_id];
                 if let Some(idx) = sched.find_idx(idle_tid) {
                     let kstack_top = sched.threads[idx].kernel_stack_top();
                     crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, kstack_top);
                     crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, kstack_top);
                     idle_stack_top = kstack_top;
-                    PER_CPU_STACK_BOTTOM[cpu_id].store(
-                        sched.threads[idx].kernel_stack_bottom(), Ordering::Relaxed,
-                    );
+                    PER_CPU_STACK_BOTTOM[cpu_id].store(sched.threads[idx].kernel_stack_bottom(), Ordering::Relaxed);
                     PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
                 }
             }
         } else {
-            crate::serial_println!("  WARNING: scheduler locked by other CPU, deferring cleanup");
-            // CRITICAL: Use PER_CPU_IDLE_STACK_TOP (set once at init) for safe fallback.
-            // PER_CPU_STACK_TOP is the CURRENT thread's stack — using it here would
-            // cause double faults when the thread is rescheduled on another CPU.
             let idle_st = PER_CPU_IDLE_STACK_TOP[cpu_id].load(Ordering::Relaxed);
             if idle_st >= 0xFFFF_FFFF_8000_0000 {
                 crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, idle_st);
@@ -1785,104 +1397,69 @@ pub fn fault_kill_and_idle(signal: u32) -> ! {
         }
     }
 
-    // Update lock-free per-CPU state
     PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
     PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
     PER_CPU_CURRENT_TID[cpu_id].store(0, Ordering::Relaxed);
     clear_per_cpu_name(cpu_id);
 
-    // Emit process exit event (for compositor to clean up windows).
-    // Done outside the lock to avoid holding it during event dispatch.
     if tid != 0 {
         crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
             crate::ipc::event_bus::EVT_PROCESS_EXITED, tid, signal, 0, 0,
         ));
     }
 
-    // Switch to kernel CR3
     unsafe {
         let kcr3 = crate::memory::virtual_mem::kernel_cr3();
         core::arch::asm!("mov cr3, {}", in(reg) kcr3, options(nostack));
     }
 
-    // Enter idle loop on idle thread's stack
-    crate::serial_println!("  CPU {} entering idle loop (fault recovery)", cpu_id);
     if idle_stack_top >= 0xFFFF_FFFF_8000_0000 {
         unsafe {
             core::arch::asm!(
-                "mov rsp, {0}",
-                "sti",
-                "2: hlt",
-                "jmp 2b",
-                in(reg) idle_stack_top,
-                options(noreturn)
+                "mov rsp, {0}", "sti", "2: hlt", "jmp 2b",
+                in(reg) idle_stack_top, options(noreturn)
             );
         }
     } else {
-        // Last resort: stay on current stack
         unsafe { core::arch::asm!("sti"); }
-        loop {
-            unsafe { core::arch::asm!("hlt"); }
-        }
+        loop { unsafe { core::arch::asm!("hlt"); } }
     }
 }
 
 /// Kill a thread by TID. Returns 0 on success, u32::MAX on error.
 pub fn kill_thread(tid: u32) -> u32 {
-    if tid == 0 {
-        return u32::MAX;
-    }
+    if tid == 0 { return u32::MAX; }
 
     let mut pd_to_destroy: Option<PhysAddr> = None;
-    let mut is_current = false;
-    let mut running_on_other_cpu = false;
+    let is_current;
+    let running_on_other_cpu;
 
     {
         let mut guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
         let sched = guard.as_mut().expect("Scheduler not initialized");
 
-        let target_idx = match sched.find_idx(tid) {
-            Some(idx) => idx,
-            None => return u32::MAX,
-        };
-
-        // Protect idle threads (never kill them)
-        if sched.threads[target_idx].is_idle {
-            return u32::MAX;
-        }
+        let target_idx = match sched.find_idx(tid) { Some(idx) => idx, None => return u32::MAX };
+        if sched.threads[target_idx].is_idle { return u32::MAX; }
 
         is_current = sched.per_cpu[cpu_id].current_tid == Some(tid);
-
-        // Check if the thread is currently executing on another CPU
         running_on_other_cpu = !is_current && sched.per_cpu.iter().enumerate().any(|(i, cpu)| {
             i != cpu_id && cpu.current_tid == Some(tid)
         });
 
         sched.threads[target_idx].state = ThreadState::Terminated;
         sched.threads[target_idx].exit_code = Some(u32::MAX - 1);
-        sched.threads[target_idx].terminated_at_tick =
-            Some(crate::arch::x86::pit::get_ticks());
-
-        // Remove from all ready queues
+        sched.threads[target_idx].terminated_at_tick = Some(crate::arch::x86::pit::get_ticks());
         sched.remove_from_all_queues(tid);
 
-        // Only destroy PD if this thread owns it (not shared with siblings).
-        // Shared PD threads (pd_shared=true) must NOT destroy the PD — siblings
-        // are still using it. Also check that no OTHER thread shares this PD.
         if let Some(pd) = sched.threads[target_idx].page_directory {
             if sched.threads[target_idx].pd_shared {
-                // Child thread: don't destroy the shared PD
                 sched.threads[target_idx].page_directory = None;
             } else {
-                // Owner thread: only destroy if no siblings are still alive
                 let has_live_siblings = sched.threads.iter().any(|t| {
-                    t.tid != tid
-                        && t.page_directory == Some(pd)
-                        && t.state != ThreadState::Terminated
+                    t.tid != tid && t.page_directory == Some(pd) && t.state != ThreadState::Terminated
                 });
                 if has_live_siblings {
-                    // Siblings still running — don't destroy PD yet
                     sched.threads[target_idx].page_directory = None;
                 } else {
                     pd_to_destroy = Some(pd);
@@ -1891,11 +1468,9 @@ pub fn kill_thread(tid: u32) -> u32 {
             }
         }
 
-        // Wake any thread waiting on us
         if let Some(waiter_tid) = sched.threads[target_idx].waiting_tid {
             sched.wake_thread_inner(waiter_tid);
         }
-
         if is_current {
             sched.per_cpu[cpu_id].current_tid = Some(sched.idle_tid[cpu_id]);
         }
@@ -1903,11 +1478,6 @@ pub fn kill_thread(tid: u32) -> u32 {
 
     if let Some(pd) = pd_to_destroy {
         if running_on_other_cpu {
-            // CRITICAL: Thread is still executing on another CPU — the other CPU
-            // might be mid-syscall reading/writing user pages. Destroying the PD
-            // now would corrupt the other CPU's page table walks.
-            // Defer destruction to CPU 0's next timer tick (by which time the
-            // killed thread will have been descheduled).
             DEFERRED_PD_DESTROY.lock().push(pd);
         } else {
             if is_current {
@@ -1926,7 +1496,6 @@ pub fn kill_thread(tid: u32) -> u32 {
         schedule();
         loop { unsafe { core::arch::asm!("hlt"); } }
     }
-
     0
 }
 
@@ -1940,19 +1509,13 @@ pub fn waitpid(tid: u32) -> u32 {
         let mut guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
         let sched = guard.as_mut().expect("Scheduler not initialized");
-
-        // Check if already terminated
         if let Some(target) = sched.threads.iter_mut().find(|t| t.tid == tid) {
             if target.state == ThreadState::Terminated {
                 let code = target.exit_code.unwrap_or(0);
                 target.exit_code = None;
                 return code;
             }
-        } else {
-            return u32::MAX;
-        }
-
-        // Block the current thread and register as waiter
+        } else { return u32::MAX; }
         if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
             if let Some(target) = sched.threads.iter_mut().find(|t| t.tid == tid) {
                 target.waiting_tid = Some(current_tid);
@@ -1962,10 +1525,8 @@ pub fn waitpid(tid: u32) -> u32 {
             }
         }
     }
-
     loop {
         unsafe { core::arch::asm!("sti; hlt"); }
-
         {
             let mut guard = SCHEDULER.lock();
             if let Some(sched) = guard.as_mut() {
@@ -1975,9 +1536,7 @@ pub fn waitpid(tid: u32) -> u32 {
                         target.exit_code = None;
                         return code;
                     }
-                } else {
-                    return u32::MAX;
-                }
+                } else { return u32::MAX; }
             }
         }
     }
@@ -1998,7 +1557,7 @@ pub fn try_waitpid(tid: u32) -> u32 {
     u32::MAX // Not found
 }
 
-/// Block the current thread until the given PIT tick count is reached.
+/// Block the current thread until the given PIT tick is reached.
 pub fn sleep_until(wake_at: u32) {
     {
         let mut guard = SCHEDULER.lock();
@@ -2030,10 +1589,9 @@ pub fn block_current_thread() {
 }
 
 // =============================================================================
-// Thread args / stdout pipe
+// Thread args / stdout / stdin
 // =============================================================================
 
-/// Set command-line arguments for a thread.
 pub fn set_thread_args(tid: u32, args: &str) {
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("Scheduler not initialized");
@@ -2045,7 +1603,6 @@ pub fn set_thread_args(tid: u32, args: &str) {
     }
 }
 
-/// Get the current thread's command-line arguments.
 pub fn current_thread_args(buf: &mut [u8]) -> usize {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
@@ -2063,7 +1620,6 @@ pub fn current_thread_args(buf: &mut [u8]) -> usize {
     0
 }
 
-/// Set a thread's stdout pipe ID.
 pub fn set_thread_stdout_pipe(tid: u32, pipe_id: u32) {
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("Scheduler not initialized");
@@ -2072,7 +1628,6 @@ pub fn set_thread_stdout_pipe(tid: u32, pipe_id: u32) {
     }
 }
 
-/// Get the current thread's stdout pipe ID.
 pub fn current_thread_stdout_pipe() -> u32 {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
@@ -2086,7 +1641,6 @@ pub fn current_thread_stdout_pipe() -> u32 {
     0
 }
 
-/// Set a thread's stdin pipe ID.
 pub fn set_thread_stdin_pipe(tid: u32, pipe_id: u32) {
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("Scheduler not initialized");
@@ -2095,7 +1649,6 @@ pub fn set_thread_stdin_pipe(tid: u32, pipe_id: u32) {
     }
 }
 
-/// Get the current thread's stdin pipe ID.
 pub fn current_thread_stdin_pipe() -> u32 {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
@@ -2109,68 +1662,13 @@ pub fn current_thread_stdin_pipe() -> u32 {
     0
 }
 
-/// Mark a thread as critical (will not be killed by RSP recovery).
-/// Also installs a DR1 hardware write-watchpoint on the thread's CpuContext.rip
-/// field to catch the exact instruction that corrupts it.
-pub fn set_thread_critical(tid: u32) {
-    let mut guard = SCHEDULER.lock();
-    let sched = guard.as_mut().expect("Scheduler not initialized");
-    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
-        thread.critical = true;
-        // Get the address of this thread's CpuContext.rip field for DR1 watchpoint
-        let rip_addr = &thread.context.rip as *const u64 as u64;
-        crate::serial_println!("  Thread '{}' (TID={}) marked as critical", thread.name_str(), tid);
-        crate::serial_println!("  Installing DR1 watchpoint on CpuContext.rip at {:#018x}", rip_addr);
-        // Install DR1 watchpoint on this CPU (BSP). Other CPUs will lazily
-        // install it on their next schedule_inner() call.
-        install_dr1_watchpoint(rip_addr);
-        let cpu_id = get_cpu_id();
-        PER_CPU_DR1_INSTALLED[cpu_id].store(true, Ordering::Relaxed);
-    }
-}
-
-/// Address being watched by DR1 (compositor's CpuContext.rip).
-/// Read by #DB handler to report which field was hit.
-static DR1_WATCH_ADDR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
-/// Install a DR1 hardware write-watchpoint on the given address (8-byte write).
-/// DR7 is extended to enable DR1 alongside existing DR0 (TSS.RSP0 watchpoint).
-fn install_dr1_watchpoint(addr: u64) {
-    DR1_WATCH_ADDR.store(addr, Ordering::Relaxed);
-    unsafe {
-        // DR1 = address to watch
-        core::arch::asm!("mov dr1, {}", in(reg) addr, options(nostack, preserves_flags));
-
-        // Read current DR7 (preserves DR0 settings)
-        let dr7: u64;
-        core::arch::asm!("mov {}, dr7", out(reg) dr7, options(nostack, nomem, preserves_flags));
-
-        // Add DR1 settings:
-        //   bit 2 = local enable DR1
-        //   bits 21:20 = condition for DR1 (01 = write-only)
-        //   bits 23:22 = length for DR1 (11 = 8 bytes / qword)
-        //   bit 9 = LE (local exact, legacy)
-        // DR1 bits = (01 << 20) | (11 << 22) | (1 << 9) | (1 << 2)
-        //          = 0x0010_0000 | 0x00C0_0000 | 0x0000_0200 | 0x0000_0004
-        //          = 0x00D0_0204
-        let dr1_bits: u64 = 0x00D0_0204;
-        let dr1_mask: u64 = !(0x00F0_0204); // clear DR1-related bits before OR
-        let new_dr7 = (dr7 & dr1_mask) | dr1_bits;
-        core::arch::asm!("mov dr7, {}", in(reg) new_dr7, options(nostack, preserves_flags));
-    }
-}
-
-/// Get the DR1 watch address (for #DB handler to identify the watchpoint).
-pub fn get_dr1_watch_addr() -> u64 {
-    DR1_WATCH_ADDR.load(Ordering::Relaxed)
-}
-
 // =============================================================================
-// Priority / wake / thread info
+// Priority / wake / critical
 // =============================================================================
 
-/// Set the priority of a thread by TID.
+/// Set the priority of a thread by TID (clamped to 0–127).
 pub fn set_thread_priority(tid: u32, priority: u8) {
+    let priority = clamp_priority(priority, "set_thread_priority");
     let mut guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_mut() {
         if let Some(idx) = sched.find_idx(tid) {
@@ -2179,7 +1677,7 @@ pub fn set_thread_priority(tid: u32, priority: u8) {
     }
 }
 
-/// Wake a blocked thread by TID, moving it to its last CPU's ready queue.
+/// Wake a blocked thread by TID.
 pub fn wake_thread(tid: u32) {
     let mut guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_mut() {
@@ -2187,47 +1685,47 @@ pub fn wake_thread(tid: u32) {
     }
 }
 
-/// Snapshot of a thread's state, used by the `ps` / sysinfo syscall.
+/// Mark a thread as critical (will not be killed by RSP recovery).
+pub fn set_thread_critical(tid: u32) {
+    let mut guard = SCHEDULER.lock();
+    let sched = guard.as_mut().expect("Scheduler not initialized");
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        thread.critical = true;
+        crate::serial_println!("  Thread '{}' (TID={}) marked as critical", thread.name_str(), tid);
+    }
+}
+
+/// Get the DR1 watch address (kept for compat — returns 0, no watchpoint in Mach scheduler).
+pub fn get_dr1_watch_addr() -> u64 { 0 }
+
+// =============================================================================
+// Thread info / diagnostics
+// =============================================================================
+
+/// Snapshot of a thread's state for the `ps` / sysinfo syscall.
 pub struct ThreadInfo {
     pub tid: u32,
     pub priority: u8,
     pub state: &'static str,
     pub name: alloc::string::String,
     pub cpu_ticks: u32,
-    /// Architecture mode: 0 = Native64, 1 = Compat32.
     pub arch_mode: u8,
-    /// Cumulative bytes read from disk files.
     pub io_read_bytes: u64,
-    /// Cumulative bytes written to disk files.
     pub io_write_bytes: u64,
-    /// Number of user-space pages mapped for this process.
     pub user_pages: u32,
 }
 
-/// List all live threads (for `ps` command).
-///
-/// Collects lightweight data under the scheduler lock (no heap allocation),
-/// then builds the Vec outside the lock. This prevents holding the scheduler
-/// lock while the heap allocator's lock is acquired — eliminating a lock chain
-/// (SCHEDULER → HEAP) that can cause all-CPU deadlock if the heap is contended
-/// or its free list is corrupted.
+/// List all live threads (lock-free heap allocation pattern).
 pub fn list_threads() -> Vec<ThreadInfo> {
-    // Phase 1: collect raw data under the lock — stack-only, no heap allocs.
     const MAX_SNAP: usize = 64;
     struct ThreadSnap {
-        tid: u32,
-        priority: u8,
-        state: u8,       // 0=ready, 1=running, 2=blocked
-        arch_mode: u8,
-        cpu_ticks: u32,
-        io_read_bytes: u64,
-        io_write_bytes: u64,
-        user_pages: u32,
-        name: [u8; 32],
-        name_len: u8,
+        tid: u32, priority: u8, state: u8, arch_mode: u8,
+        cpu_ticks: u32, io_read_bytes: u64, io_write_bytes: u64,
+        user_pages: u32, name: [u8; 32], name_len: u8,
     }
     let mut buf = [const {
-        ThreadSnap { tid: 0, priority: 0, state: 0, arch_mode: 0, cpu_ticks: 0, io_read_bytes: 0, io_write_bytes: 0, user_pages: 0, name: [0; 32], name_len: 0 }
+        ThreadSnap { tid: 0, priority: 0, state: 0, arch_mode: 0, cpu_ticks: 0,
+            io_read_bytes: 0, io_write_bytes: 0, user_pages: 0, name: [0; 32], name_len: 0 }
     }; MAX_SNAP];
     let mut count = 0;
 
@@ -2237,10 +1735,7 @@ pub fn list_threads() -> Vec<ThreadInfo> {
             let online_cpus = crate::arch::x86::smp::cpu_count() as usize;
             for thread in &sched.threads {
                 if thread.state == ThreadState::Terminated { continue; }
-                // Skip idle threads for CPUs that aren't online
-                if thread.is_idle && !sched.idle_tid[..online_cpus].contains(&thread.tid) {
-                    continue;
-                }
+                if thread.is_idle && !sched.idle_tid[..online_cpus].contains(&thread.tid) { continue; }
                 if count >= MAX_SNAP { break; }
                 let state_num = match thread.state {
                     ThreadState::Ready => 0u8,
@@ -2253,39 +1748,26 @@ pub fn list_threads() -> Vec<ThreadInfo> {
                 let mut name_buf = [0u8; 32];
                 name_buf[..len].copy_from_slice(&name_str.as_bytes()[..len]);
                 buf[count] = ThreadSnap {
-                    tid: thread.tid,
-                    priority: thread.priority,
-                    state: state_num,
-                    arch_mode: thread.arch_mode as u8,
-                    cpu_ticks: thread.cpu_ticks,
-                    io_read_bytes: thread.io_read_bytes,
-                    io_write_bytes: thread.io_write_bytes,
-                    user_pages: thread.user_pages,
-                    name: name_buf,
-                    name_len: len as u8,
+                    tid: thread.tid, priority: thread.priority, state: state_num,
+                    arch_mode: thread.arch_mode as u8, cpu_ticks: thread.cpu_ticks,
+                    io_read_bytes: thread.io_read_bytes, io_write_bytes: thread.io_write_bytes,
+                    user_pages: thread.user_pages, name: name_buf, name_len: len as u8,
                 };
                 count += 1;
             }
         }
-    } // SCHEDULER lock released here — before any heap allocation
+    }
 
-    // Phase 2: build Vec from stack buffer (heap allocations happen here, lock-free).
     let mut result = Vec::with_capacity(count);
     for i in 0..count {
         let snap = &buf[i];
-        let state_str = match snap.state {
-            0 => "ready",
-            1 => "running",
-            _ => "blocked",
-        };
-        let name = alloc::string::String::from(
-            core::str::from_utf8(&snap.name[..snap.name_len as usize]).unwrap_or("?")
-        );
         result.push(ThreadInfo {
             tid: snap.tid,
             priority: snap.priority,
-            state: state_str,
-            name,
+            state: match snap.state { 0 => "ready", 1 => "running", _ => "blocked" },
+            name: alloc::string::String::from(
+                core::str::from_utf8(&snap.name[..snap.name_len as usize]).unwrap_or("?")
+            ),
             cpu_ticks: snap.cpu_ticks,
             arch_mode: snap.arch_mode,
             io_read_bytes: snap.io_read_bytes,
@@ -2296,95 +1778,13 @@ pub fn list_threads() -> Vec<ThreadInfo> {
     result
 }
 
-/// Check if the scheduler lock is held by the given CPU.
-/// Used by the fault handler to detect deadlock before force-recovery.
-pub fn is_scheduler_locked_by_cpu(cpu: u32) -> bool {
-    SCHEDULER.is_held_by_cpu(cpu)
-}
+// =============================================================================
+// Lock management
+// =============================================================================
 
-/// Check if the scheduler lock is currently held (by any CPU).
-/// Lock-free diagnostic — safe to call from IRQ context.
-pub fn is_scheduler_locked() -> bool {
-    SCHEDULER.is_locked()
-}
+pub fn is_scheduler_locked_by_cpu(cpu: u32) -> bool { SCHEDULER.is_held_by_cpu(cpu) }
+pub fn is_scheduler_locked() -> bool { SCHEDULER.is_locked() }
 
-/// Record disk-file read bytes for the current thread.
-pub fn record_io_read(bytes: u64) {
-    let guard = SCHEDULER.lock();
-    let cpu_id = get_cpu_id();
-    if let Some(sched) = guard.as_ref() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(t) = sched.threads.iter().find(|t| t.tid == tid) {
-                // Safety: we hold the scheduler lock, only one CPU touches this thread.
-                let t = &**t as *const Thread as *mut Thread;
-                unsafe { (*t).io_read_bytes += bytes; }
-            }
-        }
-    }
-}
-
-/// Record disk-file write bytes for the current thread.
-pub fn record_io_write(bytes: u64) {
-    let guard = SCHEDULER.lock();
-    let cpu_id = get_cpu_id();
-    if let Some(sched) = guard.as_ref() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(t) = sched.threads.iter().find(|t| t.tid == tid) {
-                let t = &**t as *const Thread as *mut Thread;
-                unsafe { (*t).io_write_bytes += bytes; }
-            }
-        }
-    }
-}
-
-/// Adjust the user_pages counter for a specific thread by TID.
-/// Used by the loader when mapping code/data/stack pages into a new process.
-pub fn adjust_thread_user_pages(tid: u32, delta: i32) {
-    let guard = SCHEDULER.lock();
-    if let Some(sched) = guard.as_ref() {
-        if let Some(t) = sched.threads.iter().find(|t| t.tid == tid) {
-            let t = &**t as *const Thread as *mut Thread;
-            unsafe {
-                if delta >= 0 {
-                    (*t).user_pages = (*t).user_pages.saturating_add(delta as u32);
-                } else {
-                    (*t).user_pages = (*t).user_pages.saturating_sub((-delta) as u32);
-                }
-            }
-        }
-    }
-}
-
-/// Adjust the user_pages counter for the current thread on this CPU.
-/// Used by sbrk (heap growth) and shared memory mapping.
-pub fn adjust_current_user_pages(delta: i32) {
-    let guard = SCHEDULER.lock();
-    let cpu_id = get_cpu_id();
-    if let Some(sched) = guard.as_ref() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(t) = sched.threads.iter().find(|t| t.tid == tid) {
-                let t = &**t as *const Thread as *mut Thread;
-                unsafe {
-                    if delta >= 0 {
-                        (*t).user_pages = (*t).user_pages.saturating_add(delta as u32);
-                    } else {
-                        (*t).user_pages = (*t).user_pages.saturating_sub((-delta) as u32);
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Force-release the scheduler lock held by a faulting thread.
-///
-/// Called from the ISR fault handler when a user thread faults while this CPU
-/// holds the scheduler lock. Without this, the lock remains permanently held
-/// and ALL CPUs deadlock on the next schedule() call.
-///
-/// After force-releasing, the caller should proceed to kill the faulting thread
-/// via `try_exit_current()`, which will re-acquire the lock cleanly.
-///
 /// # Safety
 /// Must only be called when `is_scheduler_locked_by_cpu(cpu)` returns true.
 pub unsafe fn force_unlock_scheduler() {
@@ -2392,9 +1792,69 @@ pub unsafe fn force_unlock_scheduler() {
     crate::serial_println!("  RECOVERED: force-released scheduler lock");
 }
 
+// =============================================================================
+// I/O accounting
+// =============================================================================
+
+pub fn record_io_read(bytes: u64) {
+    let mut guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
+            if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+                thread.io_read_bytes += bytes;
+            }
+        }
+    }
+}
+
+pub fn record_io_write(bytes: u64) {
+    let mut guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
+            if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+                thread.io_write_bytes += bytes;
+            }
+        }
+    }
+}
+
+pub fn adjust_thread_user_pages(tid: u32, delta: i32) {
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+            if delta >= 0 {
+                thread.user_pages = thread.user_pages.saturating_add(delta as u32);
+            } else {
+                thread.user_pages = thread.user_pages.saturating_sub((-delta) as u32);
+            }
+        }
+    }
+}
+
+pub fn adjust_current_user_pages(delta: i32) {
+    let mut guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
+            if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+                if delta >= 0 {
+                    thread.user_pages = thread.user_pages.saturating_add(delta as u32);
+                } else {
+                    thread.user_pages = thread.user_pages.saturating_sub((-delta) as u32);
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Entry points
+// =============================================================================
+
 /// Enter the scheduler loop (called from kernel_main, becomes BSP idle thread).
 pub fn run() -> ! {
-    // Set TSS.RSP0 and PERCPU to idle thread's kernel stack
     {
         let guard = SCHEDULER.lock();
         if let Some(sched) = guard.as_ref() {
@@ -2413,7 +1873,6 @@ pub fn run() -> ! {
             }
         }
     }
-    // Print Thread struct layout for verifying fxsave/CpuContext separation
     {
         let guard = SCHEDULER.lock();
         if let Some(sched) = guard.as_ref() {
@@ -2422,18 +1881,12 @@ pub fn run() -> ! {
             }
         }
     }
-
-    // Enable hardware watchpoint on TSS.RSP0 for CPU 0 — catches any write
-    // (including wild pointers) that corrupts RSP0. #DB handler logs the
-    // faulting RIP when the new value is bad.
     crate::arch::x86::tss::enable_rsp0_watchpoint(0);
     unsafe { core::arch::asm!("sti"); }
-    loop {
-        unsafe { core::arch::asm!("hlt"); }
-    }
+    loop { unsafe { core::arch::asm!("hlt"); } }
 }
 
-/// Register the idle thread for an AP. Called from ap_entry() before enabling interrupts.
+/// Register the idle thread for an AP.
 pub fn register_ap_idle(cpu_id: usize) {
     let mut guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_mut() {
@@ -2454,6 +1907,5 @@ pub fn register_ap_idle(cpu_id: usize) {
         }
     }
     crate::serial_println!("  SMP: CPU{} idle thread registered", cpu_id);
-    // Enable hardware watchpoint on TSS.RSP0 for this AP
     crate::arch::x86::tss::enable_rsp0_watchpoint(cpu_id);
 }

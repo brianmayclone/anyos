@@ -5,7 +5,7 @@
 
 use core::arch::asm;
 use core::mem::size_of;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Total IDT entries (covers the full x86 interrupt vector range).
 const IDT_ENTRIES: usize = 256;
@@ -636,13 +636,13 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             loop { unsafe { core::arch::asm!("cli; hlt"); } }
         }
         7 => {
-            // #NM — Device Not Available (CR0.TS set or no FPU)
+            // #NM — Device Not Available (CR0.TS set)
+            // Lazy FPU switching: user thread touched FPU/SSE, restore its state
             if is_user_mode {
-                crate::serial_println!("EXCEPTION: #NM Device Not Available at RIP={:#018x} CS={:#x}", frame.rip, frame.cs);
-                crate::serial_println!("  User process fault — terminating thread");
-                crate::task::scheduler::exit_current(135);
+                crate::task::scheduler::handle_device_not_available();
+                return; // Retry the faulting FPU/SSE instruction
             }
-            if try_kill_faulting_thread(135, frame) { return; }
+            // Kernel never uses FPU (soft-float) — #NM in kernel is a bug
             crate::drivers::serial::enter_panic_mode();
             crate::serial_println!("EXCEPTION: #NM Device Not Available at RIP={:#018x} CS={:#x}", frame.rip, frame.cs);
             crate::serial_println!("  FATAL: unexpected #NM in kernel — halting");

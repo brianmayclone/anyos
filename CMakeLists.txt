@@ -95,6 +95,12 @@ if(ANYOS_DEBUG_VERBOSE)
   set(CARGO_FEATURES_ARG "--features;debug_verbose")
 endif()
 
+# Collect all kernel .rs source files so CMake re-invokes Cargo when any change.
+# CONFIGURE_DEPENDS makes CMake re-glob at build time if files are added/removed.
+file(GLOB_RECURSE KERNEL_RS_SOURCES CONFIGURE_DEPENDS
+  "${CMAKE_SOURCE_DIR}/kernel/src/*.rs"
+)
+
 add_custom_command(
   OUTPUT ${KERNEL_ELF}
   COMMAND ${CMAKE_COMMAND} -E env
@@ -112,6 +118,7 @@ add_custom_command(
     ${CMAKE_SOURCE_DIR}/kernel/build.rs
     ${CMAKE_SOURCE_DIR}/kernel/link.ld
     ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
+    ${KERNEL_RS_SOURCES}
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   COMMENT "Building kernel with Cargo"
 )
@@ -151,6 +158,7 @@ set(STDLIB_DEPS
 
 function(add_rust_user_program NAME SRC_DIR)
   set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos-user/release/${NAME}.elf")
+  file(GLOB_RECURSE _PROG_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
   add_custom_command(
     OUTPUT ${ELF}
     COMMAND ${CARGO_EXECUTABLE} build --release
@@ -160,7 +168,7 @@ function(add_rust_user_program NAME SRC_DIR)
     DEPENDS
       ${SRC_DIR}/Cargo.toml
       ${SRC_DIR}/build.rs
-      ${SRC_DIR}/src/main.rs
+      ${_PROG_RS}
       ${STDLIB_DEPS}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Building Rust user program: ${NAME}"
@@ -179,6 +187,7 @@ endfunction()
 # Variant for system programs (placed in /system/ instead of /bin/)
 function(add_rust_system_program NAME SRC_DIR)
   set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos-user/release/${NAME}.elf")
+  file(GLOB_RECURSE _PROG_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
   add_custom_command(
     OUTPUT ${ELF}
     COMMAND ${CARGO_EXECUTABLE} build --release
@@ -188,7 +197,7 @@ function(add_rust_system_program NAME SRC_DIR)
     DEPENDS
       ${SRC_DIR}/Cargo.toml
       ${SRC_DIR}/build.rs
-      ${SRC_DIR}/src/main.rs
+      ${_PROG_RS}
       ${STDLIB_DEPS}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Building system program: ${NAME}"
@@ -207,6 +216,7 @@ endfunction()
 # Variant for DLLs (placed in /system/lib/)
 function(add_dll NAME SRC_DIR)
   set(DLL_ELF "${CMAKE_BINARY_DIR}/dll/${NAME}/x86_64-anyos-user/release/${NAME}.elf")
+  file(GLOB_RECURSE _DLL_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
   add_custom_command(
     OUTPUT ${DLL_ELF}
     COMMAND ${CARGO_EXECUTABLE} build --release
@@ -216,7 +226,7 @@ function(add_dll NAME SRC_DIR)
     DEPENDS
       ${SRC_DIR}/Cargo.toml
       ${SRC_DIR}/build.rs
-      ${SRC_DIR}/src/main.rs
+      ${_DLL_RS}
       ${SRC_DIR}/link.ld
       ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}

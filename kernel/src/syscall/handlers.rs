@@ -1612,8 +1612,8 @@ pub fn sys_register_compositor() -> u32 {
         }
 
         // Boost compositor to realtime priority so UI never stutters
-        crate::task::scheduler::set_thread_priority(tid, 250);
-        crate::serial_println!("[OK] Compositor registered (TID={}, priority=250)", tid);
+        crate::task::scheduler::set_thread_priority(tid, 127);
+        crate::serial_println!("[OK] Compositor registered (TID={}, priority=127)", tid);
         0
     } else {
         u32::MAX // Already registered
