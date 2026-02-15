@@ -1,0 +1,16 @@
+[package]
+name = "audiomon"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyos_std = { path = "../../libs/stdlib" }
+libcompositor_client = { path = "../../libs/libcompositor_client" }
+uisys_client = { path = "../../libs/uisys_client" }
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
+
+[profile.release]
+panic = "abort"

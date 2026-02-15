@@ -8,7 +8,6 @@
 
 extern crate alloc;
 
-mod apps;
 mod arch;
 mod boot_info;
 mod drivers;
@@ -291,10 +290,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         task::scheduler::run();
     }
 
-    // Fallback: text mode shell
-    serial_println!("No framebuffer available, starting text terminal.");
-    let mut text_terminal = apps::text_terminal::TextTerminal::new();
-    text_terminal.run();
+    // No framebuffer — cannot start compositor, halt.
+    serial_println!("FATAL: No framebuffer available, cannot start compositor.");
+    loop { unsafe { core::arch::asm!("hlt"); } }
 }
 
 // IRQ handler functions for dynamic IRQ dispatch

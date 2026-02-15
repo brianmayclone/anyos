@@ -147,22 +147,22 @@ file(MAKE_DIRECTORY "${SYSROOT_DIR}/src")
 
 # --- Helper: build a Rust user program ---
 set(STDLIB_DEPS
-  ${CMAKE_SOURCE_DIR}/stdlib/Cargo.toml
-  ${CMAKE_SOURCE_DIR}/stdlib/src/lib.rs
-  ${CMAKE_SOURCE_DIR}/stdlib/src/raw.rs
-  ${CMAKE_SOURCE_DIR}/stdlib/src/dll.rs
-  ${CMAKE_SOURCE_DIR}/stdlib/src/process.rs
-  ${CMAKE_SOURCE_DIR}/stdlib/src/fs.rs
-  ${CMAKE_SOURCE_DIR}/stdlib/src/sys.rs
-  ${CMAKE_SOURCE_DIR}/stdlib/src/net.rs
-  ${CMAKE_SOURCE_DIR}/stdlib/src/ipc.rs
-  ${CMAKE_SOURCE_DIR}/stdlib/src/io.rs
-  ${CMAKE_SOURCE_DIR}/stdlib/src/heap.rs
-  ${CMAKE_SOURCE_DIR}/stdlib/src/anim.rs
-  ${CMAKE_SOURCE_DIR}/stdlib/src/icons.rs
-  ${CMAKE_SOURCE_DIR}/stdlib/src/ui/mod.rs
-  ${CMAKE_SOURCE_DIR}/stdlib/src/ui/window.rs
-  ${CMAKE_SOURCE_DIR}/stdlib/link.ld
+  ${CMAKE_SOURCE_DIR}/libs/stdlib/Cargo.toml
+  ${CMAKE_SOURCE_DIR}/libs/stdlib/src/lib.rs
+  ${CMAKE_SOURCE_DIR}/libs/stdlib/src/raw.rs
+  ${CMAKE_SOURCE_DIR}/libs/stdlib/src/dll.rs
+  ${CMAKE_SOURCE_DIR}/libs/stdlib/src/process.rs
+  ${CMAKE_SOURCE_DIR}/libs/stdlib/src/fs.rs
+  ${CMAKE_SOURCE_DIR}/libs/stdlib/src/sys.rs
+  ${CMAKE_SOURCE_DIR}/libs/stdlib/src/net.rs
+  ${CMAKE_SOURCE_DIR}/libs/stdlib/src/ipc.rs
+  ${CMAKE_SOURCE_DIR}/libs/stdlib/src/io.rs
+  ${CMAKE_SOURCE_DIR}/libs/stdlib/src/heap.rs
+  ${CMAKE_SOURCE_DIR}/libs/stdlib/src/anim.rs
+  ${CMAKE_SOURCE_DIR}/libs/stdlib/src/icons.rs
+  ${CMAKE_SOURCE_DIR}/libs/stdlib/src/ui/mod.rs
+  ${CMAKE_SOURCE_DIR}/libs/stdlib/src/ui/window.rs
+  ${CMAKE_SOURCE_DIR}/libs/stdlib/link.ld
   ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
 )
 
@@ -254,78 +254,78 @@ function(add_dll NAME SRC_DIR)
 endfunction()
 
 set(DLL_BINS "")
-add_dll(uisys ${CMAKE_SOURCE_DIR}/programs/dll/uisys)
-add_dll(libimage ${CMAKE_SOURCE_DIR}/programs/dll/libimage)
-add_dll(libfont ${CMAKE_SOURCE_DIR}/programs/dll/libfont)
-add_dll(librender ${CMAKE_SOURCE_DIR}/programs/dll/librender)
-add_dll(libcompositor ${CMAKE_SOURCE_DIR}/programs/dll/libcompositor)
+add_dll(uisys ${CMAKE_SOURCE_DIR}/libs/uisys)
+add_dll(libimage ${CMAKE_SOURCE_DIR}/libs/libimage)
+add_dll(libfont ${CMAKE_SOURCE_DIR}/libs/libfont)
+add_dll(librender ${CMAKE_SOURCE_DIR}/libs/librender)
+add_dll(libcompositor ${CMAKE_SOURCE_DIR}/libs/libcompositor)
 
 set(RUST_USER_BINS "")
-add_rust_user_program(ping       ${CMAKE_SOURCE_DIR}/programs/ping)
-add_rust_user_program(dhcp       ${CMAKE_SOURCE_DIR}/programs/dhcp)
-add_rust_user_program(dns        ${CMAKE_SOURCE_DIR}/programs/dns)
-add_rust_user_program(ls         ${CMAKE_SOURCE_DIR}/programs/ls)
-add_rust_user_program(cat        ${CMAKE_SOURCE_DIR}/programs/cat)
-add_rust_user_program(ifconfig   ${CMAKE_SOURCE_DIR}/programs/ifconfig)
-add_rust_user_program(arp        ${CMAKE_SOURCE_DIR}/programs/arp)
-add_rust_user_program(sysinfo    ${CMAKE_SOURCE_DIR}/programs/sysinfo)
-add_rust_user_program(dmesg      ${CMAKE_SOURCE_DIR}/programs/dmesg)
-add_rust_user_program(mkdir      ${CMAKE_SOURCE_DIR}/programs/mkdir)
-add_rust_user_program(rm         ${CMAKE_SOURCE_DIR}/programs/rm)
-add_rust_user_program(touch      ${CMAKE_SOURCE_DIR}/programs/touch)
-add_rust_user_program(cp         ${CMAKE_SOURCE_DIR}/programs/cp)
-add_rust_user_program(mv         ${CMAKE_SOURCE_DIR}/programs/mv)
-add_rust_user_program(date       ${CMAKE_SOURCE_DIR}/programs/date)
-add_rust_user_program(sleep      ${CMAKE_SOURCE_DIR}/programs/sleep)
-add_rust_user_program(hostname   ${CMAKE_SOURCE_DIR}/programs/hostname)
-add_rust_user_program(ftp        ${CMAKE_SOURCE_DIR}/programs/ftp)
-add_rust_user_program(wget       ${CMAKE_SOURCE_DIR}/programs/wget)
-add_rust_user_program(play       ${CMAKE_SOURCE_DIR}/programs/play)
-add_rust_user_program(pipes      ${CMAKE_SOURCE_DIR}/programs/pipes)
-add_rust_user_program(devlist    ${CMAKE_SOURCE_DIR}/programs/devlist)
-add_rust_user_program(echo       ${CMAKE_SOURCE_DIR}/programs/echo)
-add_rust_user_program(ps         ${CMAKE_SOURCE_DIR}/programs/ps)
-add_rust_user_program(kill       ${CMAKE_SOURCE_DIR}/programs/kill)
-add_rust_user_program(free       ${CMAKE_SOURCE_DIR}/programs/free)
-add_rust_user_program(uptime     ${CMAKE_SOURCE_DIR}/programs/uptime)
-add_rust_user_program(uname      ${CMAKE_SOURCE_DIR}/programs/uname)
-add_rust_user_program(pwd        ${CMAKE_SOURCE_DIR}/programs/pwd)
-add_rust_user_program(wc         ${CMAKE_SOURCE_DIR}/programs/wc)
-add_rust_user_program(hexdump    ${CMAKE_SOURCE_DIR}/programs/hexdump)
-add_rust_user_program(head       ${CMAKE_SOURCE_DIR}/programs/head)
-add_rust_user_program(tail       ${CMAKE_SOURCE_DIR}/programs/tail)
-add_rust_user_program(clear      ${CMAKE_SOURCE_DIR}/programs/clear)
-add_rust_user_program(env        ${CMAKE_SOURCE_DIR}/programs/env)
-add_rust_user_program(grep       ${CMAKE_SOURCE_DIR}/programs/grep)
-add_rust_user_program(find       ${CMAKE_SOURCE_DIR}/programs/find)
-add_rust_user_program(sort       ${CMAKE_SOURCE_DIR}/programs/sort)
-add_rust_user_program(uniq       ${CMAKE_SOURCE_DIR}/programs/uniq)
-add_rust_user_program(rev        ${CMAKE_SOURCE_DIR}/programs/rev)
-add_rust_user_program(stat       ${CMAKE_SOURCE_DIR}/programs/stat)
-add_rust_user_program(df         ${CMAKE_SOURCE_DIR}/programs/df)
-add_rust_user_program(cal        ${CMAKE_SOURCE_DIR}/programs/cal)
-add_rust_user_program(seq        ${CMAKE_SOURCE_DIR}/programs/seq)
-add_rust_user_program(yes        ${CMAKE_SOURCE_DIR}/programs/yes)
-add_rust_user_program(whoami     ${CMAKE_SOURCE_DIR}/programs/whoami)
-add_rust_user_program(which      ${CMAKE_SOURCE_DIR}/programs/which)
-add_rust_user_program(strings    ${CMAKE_SOURCE_DIR}/programs/strings)
-add_rust_user_program(base64     ${CMAKE_SOURCE_DIR}/programs/base64)
-add_rust_user_program(xxd        ${CMAKE_SOURCE_DIR}/programs/xxd)
-add_rust_user_program(set        ${CMAKE_SOURCE_DIR}/programs/set)
-add_rust_user_program(export     ${CMAKE_SOURCE_DIR}/programs/export)
+add_rust_user_program(ping       ${CMAKE_SOURCE_DIR}/bin/ping)
+add_rust_user_program(dhcp       ${CMAKE_SOURCE_DIR}/bin/dhcp)
+add_rust_user_program(dns        ${CMAKE_SOURCE_DIR}/bin/dns)
+add_rust_user_program(ls         ${CMAKE_SOURCE_DIR}/bin/ls)
+add_rust_user_program(cat        ${CMAKE_SOURCE_DIR}/bin/cat)
+add_rust_user_program(ifconfig   ${CMAKE_SOURCE_DIR}/bin/ifconfig)
+add_rust_user_program(arp        ${CMAKE_SOURCE_DIR}/bin/arp)
+add_rust_user_program(sysinfo    ${CMAKE_SOURCE_DIR}/bin/sysinfo)
+add_rust_user_program(dmesg      ${CMAKE_SOURCE_DIR}/bin/dmesg)
+add_rust_user_program(mkdir      ${CMAKE_SOURCE_DIR}/bin/mkdir)
+add_rust_user_program(rm         ${CMAKE_SOURCE_DIR}/bin/rm)
+add_rust_user_program(touch      ${CMAKE_SOURCE_DIR}/bin/touch)
+add_rust_user_program(cp         ${CMAKE_SOURCE_DIR}/bin/cp)
+add_rust_user_program(mv         ${CMAKE_SOURCE_DIR}/bin/mv)
+add_rust_user_program(date       ${CMAKE_SOURCE_DIR}/bin/date)
+add_rust_user_program(sleep      ${CMAKE_SOURCE_DIR}/bin/sleep)
+add_rust_user_program(hostname   ${CMAKE_SOURCE_DIR}/bin/hostname)
+add_rust_user_program(ftp        ${CMAKE_SOURCE_DIR}/bin/ftp)
+add_rust_user_program(wget       ${CMAKE_SOURCE_DIR}/bin/wget)
+add_rust_user_program(play       ${CMAKE_SOURCE_DIR}/bin/play)
+add_rust_user_program(pipes      ${CMAKE_SOURCE_DIR}/bin/pipes)
+add_rust_user_program(devlist    ${CMAKE_SOURCE_DIR}/bin/devlist)
+add_rust_user_program(echo       ${CMAKE_SOURCE_DIR}/bin/echo)
+add_rust_user_program(ps         ${CMAKE_SOURCE_DIR}/bin/ps)
+add_rust_user_program(kill       ${CMAKE_SOURCE_DIR}/bin/kill)
+add_rust_user_program(free       ${CMAKE_SOURCE_DIR}/bin/free)
+add_rust_user_program(uptime     ${CMAKE_SOURCE_DIR}/bin/uptime)
+add_rust_user_program(uname      ${CMAKE_SOURCE_DIR}/bin/uname)
+add_rust_user_program(pwd        ${CMAKE_SOURCE_DIR}/bin/pwd)
+add_rust_user_program(wc         ${CMAKE_SOURCE_DIR}/bin/wc)
+add_rust_user_program(hexdump    ${CMAKE_SOURCE_DIR}/bin/hexdump)
+add_rust_user_program(head       ${CMAKE_SOURCE_DIR}/bin/head)
+add_rust_user_program(tail       ${CMAKE_SOURCE_DIR}/bin/tail)
+add_rust_user_program(clear      ${CMAKE_SOURCE_DIR}/bin/clear)
+add_rust_user_program(env        ${CMAKE_SOURCE_DIR}/bin/env)
+add_rust_user_program(grep       ${CMAKE_SOURCE_DIR}/bin/grep)
+add_rust_user_program(find       ${CMAKE_SOURCE_DIR}/bin/find)
+add_rust_user_program(sort       ${CMAKE_SOURCE_DIR}/bin/sort)
+add_rust_user_program(uniq       ${CMAKE_SOURCE_DIR}/bin/uniq)
+add_rust_user_program(rev        ${CMAKE_SOURCE_DIR}/bin/rev)
+add_rust_user_program(stat       ${CMAKE_SOURCE_DIR}/bin/stat)
+add_rust_user_program(df         ${CMAKE_SOURCE_DIR}/bin/df)
+add_rust_user_program(cal        ${CMAKE_SOURCE_DIR}/bin/cal)
+add_rust_user_program(seq        ${CMAKE_SOURCE_DIR}/bin/seq)
+add_rust_user_program(yes        ${CMAKE_SOURCE_DIR}/bin/yes)
+add_rust_user_program(whoami     ${CMAKE_SOURCE_DIR}/bin/whoami)
+add_rust_user_program(which      ${CMAKE_SOURCE_DIR}/bin/which)
+add_rust_user_program(strings    ${CMAKE_SOURCE_DIR}/bin/strings)
+add_rust_user_program(base64     ${CMAKE_SOURCE_DIR}/bin/base64)
+add_rust_user_program(xxd        ${CMAKE_SOURCE_DIR}/bin/xxd)
+add_rust_user_program(set        ${CMAKE_SOURCE_DIR}/bin/set)
+add_rust_user_program(export     ${CMAKE_SOURCE_DIR}/bin/export)
 
 # true/false: package names are true_cmd/false_cmd (Rust keywords) but binaries named true/false
 set(TRUE_ELF "${CMAKE_BINARY_DIR}/programs/true_cmd/x86_64-anyos-user/release/true_cmd.elf")
 add_custom_command(
   OUTPUT ${TRUE_ELF}
   COMMAND ${CARGO_EXECUTABLE} build --release
-    --manifest-path ${CMAKE_SOURCE_DIR}/programs/true/Cargo.toml
+    --manifest-path ${CMAKE_SOURCE_DIR}/bin/true/Cargo.toml
     --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
     --target-dir ${CMAKE_BINARY_DIR}/programs/true_cmd
   DEPENDS
-    ${CMAKE_SOURCE_DIR}/programs/true/Cargo.toml
-    ${CMAKE_SOURCE_DIR}/programs/true/build.rs
-    ${CMAKE_SOURCE_DIR}/programs/true/src/main.rs
+    ${CMAKE_SOURCE_DIR}/bin/true/Cargo.toml
+    ${CMAKE_SOURCE_DIR}/bin/true/build.rs
+    ${CMAKE_SOURCE_DIR}/bin/true/src/main.rs
     ${STDLIB_DEPS}
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   COMMENT "Building Rust user program: true"
@@ -344,13 +344,13 @@ set(FALSE_ELF "${CMAKE_BINARY_DIR}/programs/false_cmd/x86_64-anyos-user/release/
 add_custom_command(
   OUTPUT ${FALSE_ELF}
   COMMAND ${CARGO_EXECUTABLE} build --release
-    --manifest-path ${CMAKE_SOURCE_DIR}/programs/false/Cargo.toml
+    --manifest-path ${CMAKE_SOURCE_DIR}/bin/false/Cargo.toml
     --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
     --target-dir ${CMAKE_BINARY_DIR}/programs/false_cmd
   DEPENDS
-    ${CMAKE_SOURCE_DIR}/programs/false/Cargo.toml
-    ${CMAKE_SOURCE_DIR}/programs/false/build.rs
-    ${CMAKE_SOURCE_DIR}/programs/false/src/main.rs
+    ${CMAKE_SOURCE_DIR}/bin/false/Cargo.toml
+    ${CMAKE_SOURCE_DIR}/bin/false/build.rs
+    ${CMAKE_SOURCE_DIR}/bin/false/src/main.rs
     ${STDLIB_DEPS}
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   COMMENT "Building Rust user program: false"
@@ -366,24 +366,26 @@ add_custom_command(
 list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/bin/false)
 
 set(SYSTEM_BINS "")
-add_rust_system_program(init        ${CMAKE_SOURCE_DIR}/programs/system/init)
-add_rust_system_program(terminal    ${CMAKE_SOURCE_DIR}/programs/system/terminal)
-add_rust_system_program(taskmanager ${CMAKE_SOURCE_DIR}/programs/system/taskmanager)
-add_rust_system_program(settings    ${CMAKE_SOURCE_DIR}/programs/system/settings)
-add_rust_system_program(finder      ${CMAKE_SOURCE_DIR}/programs/system/finder)
-add_rust_system_program(notepad     ${CMAKE_SOURCE_DIR}/programs/system/notepad)
-add_rust_system_program(imgview     ${CMAKE_SOURCE_DIR}/programs/system/imgview)
-add_rust_system_program(videoplayer ${CMAKE_SOURCE_DIR}/programs/system/videoplayer)
-add_rust_system_program(diagnostics ${CMAKE_SOURCE_DIR}/programs/system/diagnostics)
-add_rust_system_program(calc        ${CMAKE_SOURCE_DIR}/programs/system/calc)
-add_rust_system_program(fontviewer  ${CMAKE_SOURCE_DIR}/programs/system/fontviewer)
-add_rust_system_program(clock       ${CMAKE_SOURCE_DIR}/programs/system/clock)
-add_rust_system_program(screenshot  ${CMAKE_SOURCE_DIR}/programs/system/screenshot)
-add_rust_system_program(netmon      ${CMAKE_SOURCE_DIR}/programs/system/netmon)
-add_rust_system_program(audiomon    ${CMAKE_SOURCE_DIR}/programs/system/audiomon)
+add_rust_system_program(init        ${CMAKE_SOURCE_DIR}/system/init)
+add_rust_system_program(terminal    ${CMAKE_SOURCE_DIR}/system/terminal)
+add_rust_system_program(taskmanager ${CMAKE_SOURCE_DIR}/system/taskmanager)
+add_rust_system_program(settings    ${CMAKE_SOURCE_DIR}/system/settings)
+add_rust_system_program(finder      ${CMAKE_SOURCE_DIR}/system/finder)
+add_rust_system_program(audiomon    ${CMAKE_SOURCE_DIR}/system/audiomon)
+add_rust_system_program(netmon      ${CMAKE_SOURCE_DIR}/system/netmon)
+
+# Apps (GUI applications, also installed to /system/)
+add_rust_system_program(notepad     ${CMAKE_SOURCE_DIR}/apps/notepad)
+add_rust_system_program(imgview     ${CMAKE_SOURCE_DIR}/apps/imgview)
+add_rust_system_program(videoplayer ${CMAKE_SOURCE_DIR}/apps/videoplayer)
+add_rust_system_program(diagnostics ${CMAKE_SOURCE_DIR}/apps/diagnostics)
+add_rust_system_program(calc        ${CMAKE_SOURCE_DIR}/apps/calc)
+add_rust_system_program(fontviewer  ${CMAKE_SOURCE_DIR}/apps/fontviewer)
+add_rust_system_program(clock       ${CMAKE_SOURCE_DIR}/apps/clock)
+add_rust_system_program(screenshot  ${CMAKE_SOURCE_DIR}/apps/screenshot)
 
 # Build compositor binary (nested path: /system/compositor/compositor)
-set(COMPOSITOR_SRC_DIR ${CMAKE_SOURCE_DIR}/programs/system/compositor/compositor)
+set(COMPOSITOR_SRC_DIR ${CMAKE_SOURCE_DIR}/system/compositor/compositor)
 set(COMPOSITOR_ELF "${CMAKE_BINARY_DIR}/programs/compositor/x86_64-anyos-user/release/compositor.elf")
 add_custom_command(
   OUTPUT ${COMPOSITOR_ELF}
@@ -411,7 +413,7 @@ add_custom_command(
 list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/system/compositor/compositor)
 
 # Build dock program (nested path: /system/compositor/dock)
-set(DOCK_SRC_DIR ${CMAKE_SOURCE_DIR}/programs/system/compositor/dock)
+set(DOCK_SRC_DIR ${CMAKE_SOURCE_DIR}/system/compositor/dock)
 set(DOCK_ELF "${CMAKE_BINARY_DIR}/programs/dock/x86_64-anyos/release/dock.elf")
 add_custom_command(
   OUTPUT ${DOCK_ELF}
@@ -463,17 +465,17 @@ list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/bin/finder)
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/.stamp
   COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/tools/sysroot
+    ${CMAKE_SOURCE_DIR}/sysroot
     ${SYSROOT_DIR}
   COMMAND ${CMAKE_COMMAND} -E touch ${SYSROOT_DIR}/.stamp
-  DEPENDS ${CMAKE_SOURCE_DIR}/tools/sysroot
-          ${CMAKE_SOURCE_DIR}/tools/sysroot/src/hello.c
-          ${CMAKE_SOURCE_DIR}/tools/sysroot/system/fonts/sfpro.ttf
-          ${CMAKE_SOURCE_DIR}/tools/sysroot/system/fonts/sfpro-bold.ttf
-          ${CMAKE_SOURCE_DIR}/tools/sysroot/system/fonts/sfpro-thin.ttf
-          ${CMAKE_SOURCE_DIR}/tools/sysroot/system/fonts/sfpro-italic.ttf
-          ${CMAKE_SOURCE_DIR}/tools/sysroot/media/wallpapers/default.png
-          ${CMAKE_SOURCE_DIR}/tools/sysroot/system/media/icons
+  DEPENDS ${CMAKE_SOURCE_DIR}/sysroot
+          ${CMAKE_SOURCE_DIR}/sysroot/src/hello.c
+          ${CMAKE_SOURCE_DIR}/sysroot/system/fonts/sfpro.ttf
+          ${CMAKE_SOURCE_DIR}/sysroot/system/fonts/sfpro-bold.ttf
+          ${CMAKE_SOURCE_DIR}/sysroot/system/fonts/sfpro-thin.ttf
+          ${CMAKE_SOURCE_DIR}/sysroot/system/fonts/sfpro-italic.ttf
+          ${CMAKE_SOURCE_DIR}/sysroot/media/wallpapers/default.png
+          ${CMAKE_SOURCE_DIR}/sysroot/system/media/icons
   COMMENT "Populating sysroot from tools/sysroot"
 )
 
@@ -482,7 +484,7 @@ add_custom_command(
 # ============================================================
 if(HAS_CROSS_COMPILER)
 # ── C Library (libc.a + crt0.o for C programs) ──
-set(LIBC_DIR "${CMAKE_SOURCE_DIR}/programs/libc")
+set(LIBC_DIR "${CMAKE_SOURCE_DIR}/libs/libc")
 set(LIBC_A "${LIBC_DIR}/libc.a")
 set(LIBC_CRT0 "${LIBC_DIR}/obj/crt0.o")
 
@@ -624,7 +626,7 @@ add_custom_command(
   COMMENT "Building DOOM for anyOS"
 )
 
-set(DOOM_WAD "${CMAKE_SOURCE_DIR}/tools/sysroot/apps/doom/doom.wad")
+set(DOOM_WAD "${CMAKE_SOURCE_DIR}/sysroot/apps/doom/doom.wad")
 
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/apps/doom/doom ${SYSROOT_DIR}/apps/doom/doom.wad
@@ -648,8 +650,8 @@ add_custom_command(
   COMMENT "Building Quake for anyOS"
 )
 
-set(QUAKE_PAK "${CMAKE_SOURCE_DIR}/tools/sysroot/apps/quake/id1/pak0.pak")
-set(QUAKE_CFG "${CMAKE_SOURCE_DIR}/tools/sysroot/apps/quake/id1/config.cfg")
+set(QUAKE_PAK "${CMAKE_SOURCE_DIR}/sysroot/apps/quake/id1/pak0.pak")
+set(QUAKE_CFG "${CMAKE_SOURCE_DIR}/sysroot/apps/quake/id1/config.cfg")
 
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/apps/quake/quake ${SYSROOT_DIR}/apps/quake/id1/pak0.pak
@@ -674,7 +676,7 @@ add_custom_command(
   COMMENT "Building Quake 2 for anyOS"
 )
 
-set(QUAKE2_PAK "${CMAKE_SOURCE_DIR}/tools/sysroot/apps/quake2/baseq2/pak0.pak")
+set(QUAKE2_PAK "${CMAKE_SOURCE_DIR}/sysroot/apps/quake2/baseq2/pak0.pak")
 
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/apps/quake2/quake2 ${SYSROOT_DIR}/apps/quake2/baseq2/pak0.pak

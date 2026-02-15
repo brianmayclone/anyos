@@ -1,0 +1,13 @@
+[package]
+name = "dock"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyos_std = { path = "../../../libs/stdlib" }
+libcompositor_client = { path = "../../../libs/libcompositor_client" }
+libimage_client = { path = "../../../libs/libimage_client" }
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
