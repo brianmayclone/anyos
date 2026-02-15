@@ -2,6 +2,9 @@ target/
 build/
 *.img
 *.bin
+!kernel/src/graphics/boot_logo.bin
+!kernel/src/graphics/font_8x16.bin
+!stdlib/src/ui/font_8x16.bin
 *.o
 *.elf
 /kernel/target/

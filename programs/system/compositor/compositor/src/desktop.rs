@@ -849,8 +849,9 @@ impl Desktop {
         let opaque = borderless; // Decorated windows have transparent rounded corners
         let layer_id = self.compositor.add_layer(x, y, content_w, full_h, opaque);
 
-        // Enable shadow for decorated (non-borderless) windows
-        if !borderless {
+        // Enable shadow for decorated windows and always-on-top borderless (dock)
+        let wants_shadow = !borderless || (flags & WIN_FLAG_ALWAYS_ON_TOP != 0);
+        if wants_shadow {
             if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
                 layer.has_shadow = true;
             }
@@ -2202,7 +2203,8 @@ impl Desktop {
             pre_pixels,
         );
 
-        if !borderless {
+        let wants_shadow = !borderless || (flags & WIN_FLAG_ALWAYS_ON_TOP != 0);
+        if wants_shadow {
             if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
                 layer.has_shadow = true;
             }
