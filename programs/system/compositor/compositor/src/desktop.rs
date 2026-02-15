@@ -539,8 +539,11 @@ impl Desktop {
         // Background layer (bottom)
         let bg_id = compositor.add_layer(0, 0, width, height, true);
 
-        // Menubar layer (top of desktop, below windows)
+        // Menubar layer (always on top, above all windows)
         let mb_id = compositor.add_layer(0, 0, width, MENUBAR_HEIGHT + 1, false);
+        if let Some(layer) = compositor.get_layer_mut(mb_id) {
+            layer.has_shadow = true;
+        }
 
         // Convert arrow cursor bitmap to ARGB
         let mut arrow_pixels = vec![0u32; (HW_ARROW_W * HW_ARROW_H) as usize];
@@ -969,6 +972,9 @@ impl Desktop {
             let win = self.windows.remove(idx);
             self.windows.push(win);
 
+            // Ensure always-on-top layers (dock, menubar) stay above
+            self.ensure_top_layers();
+
             self.render_window(id);
 
             // Update menu bar for the newly focused window
@@ -979,6 +985,19 @@ impl Desktop {
                 ));
             }
         }
+    }
+
+    /// Re-raise always-on-top windows and the menubar so they stay above
+    /// normal windows after any z-order change.
+    fn ensure_top_layers(&mut self) {
+        // Raise always-on-top windows (e.g. dock)
+        for win in &self.windows {
+            if win.is_always_on_top() {
+                self.compositor.raise_layer(win.layer_id);
+            }
+        }
+        // Menubar is always the topmost layer
+        self.compositor.raise_layer(self.menubar_layer_id);
     }
 
     /// Get a window's event queue.
@@ -2116,8 +2135,9 @@ impl Desktop {
             false,
         );
 
-        // Enable shadow for decorated (non-borderless) IPC windows
-        if !borderless {
+        // Enable shadow for decorated windows and always-on-top borderless (dock)
+        let wants_shadow = !borderless || (flags & WIN_FLAG_ALWAYS_ON_TOP != 0);
+        if wants_shadow {
             if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
                 layer.has_shadow = true;
             }
@@ -2237,6 +2257,9 @@ impl Desktop {
 
             let win = self.windows.remove(idx);
             self.windows.push(win);
+
+            // Ensure always-on-top layers (dock, menubar) stay above
+            self.ensure_top_layers();
 
             // Mark dirty so it gets composited — but DON'T call render_window()
             self.compositor.mark_layer_dirty(layer_id);

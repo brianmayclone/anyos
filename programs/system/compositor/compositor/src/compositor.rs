@@ -192,6 +192,7 @@ const SHADOW_ALPHA_UNFOCUSED: u32 = 25;
 /// Tracks a pending GPU-accelerated layer move for RECT_COPY optimization.
 /// Multiple move_layer() calls within the same frame are coalesced: keeps the
 /// first old_bounds and updates new_bounds on each subsequent call.
+#[allow(dead_code)]
 struct AccelMoveHint {
     layer_id: u32,
     old_bounds: Rect,
@@ -200,6 +201,7 @@ struct AccelMoveHint {
 
 /// Compute up to 4 non-overlapping rects covering `a` minus `b`.
 /// Returns [top_strip, bottom_strip, left_strip, right_strip] (some may be empty).
+#[allow(dead_code)]
 fn subtract_rects(a: &Rect, b: &Rect) -> [Rect; 4] {
     let mut result = [Rect::new(0, 0, 0, 0); 4];
     if let Some(overlap) = a.intersect(b) {
@@ -577,8 +579,8 @@ impl Compositor {
     pub fn compose(&mut self) {
         self.collect_dirty_damage();
 
-        // Take the accel hint for this frame (if any)
-        let accel_hint = self.accel_move_hint.take();
+        // Discard accel hint — RECT_COPY disabled (see compose_with_rect_copy)
+        self.accel_move_hint = None;
 
         if self.damage.is_empty() {
             return;
@@ -598,20 +600,11 @@ impl Compositor {
             return;
         }
 
-        // Check if we can use the GPU RECT_COPY fast path
-        let use_rect_copy = if let Some(ref hint) = accel_hint {
-            self.gpu_accel
-                && !self.hw_double_buffer
-                && hint.old_bounds.width == hint.new_bounds.width
-                && hint.old_bounds.height == hint.new_bounds.height
-                && self.layer_index(hint.layer_id).map_or(false, |idx| self.layers[idx].visible)
-        } else {
-            false
-        };
-
-        if use_rect_copy {
-            self.compose_with_rect_copy(&damage, accel_hint.as_ref().unwrap());
-        } else {
+        // GPU RECT_COPY disabled: CPU flush_region and GPU FIFO commands lack
+        // synchronization — RECT_COPY reads VRAM after CPU already overwrote
+        // exposed strips, producing artifacts. The opaque-run optimization in
+        // composite_rect() provides the main performance win instead.
+        {
             // Standard SW compositing path
             for rect in &damage {
                 self.composite_rect(rect);
@@ -650,9 +643,10 @@ impl Compositor {
 
     /// GPU-accelerated compositing for window drag (RECT_COPY fast path).
     ///
-    /// Instead of recompositing the entire old+new damage area, uses GPU RECT_COPY
-    /// to move the already-composited window pixels within VRAM, and only
-    /// SW-composites the exposed strip (the area uncovered by the move).
+    /// Currently disabled: CPU flush_region writes to VRAM before GPU processes
+    /// the RECT_COPY command, causing the copy to read partially-overwritten data.
+    /// Needs proper SVGA FIFO sync (SYNC register + BUSY poll) to work correctly.
+    #[allow(dead_code)]
     fn compose_with_rect_copy(&mut self, _damage: &[Rect], hint: &AccelMoveHint) {
         let old_b = hint.old_bounds.clip_to_screen(self.fb_width, self.fb_height);
         let new_b = hint.new_bounds.clip_to_screen(self.fb_width, self.fb_height);
