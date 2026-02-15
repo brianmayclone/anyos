@@ -46,7 +46,11 @@ for arg in "$@"; do
             IDE_MODE=true
             ;;
         --audio)
-            AUDIO_FLAGS="-device AC97,audiodev=audio0 -audiodev coreaudio,id=audio0"
+            if [ "$(uname -s)" = "Darwin" ]; then
+                AUDIO_FLAGS="-device AC97,audiodev=audio0 -audiodev coreaudio,id=audio0"
+            else
+                AUDIO_FLAGS="-device AC97,audiodev=audio0 -audiodev pa,id=audio0"
+            fi
             AUDIO_LABEL=", audio: AC'97"
             ;;
         --usb)
@@ -65,14 +69,34 @@ done
 
 if [ "$UEFI_MODE" = true ]; then
     IMAGE="${SCRIPT_DIR}/../build/anyos-uefi.img"
-    OVMF_FW="/opt/homebrew/share/qemu/edk2-x86_64-code.fd"
+
+    # Find OVMF firmware (platform-dependent paths)
+    if [ "$(uname -s)" = "Darwin" ]; then
+        OVMF_FW="/opt/homebrew/share/qemu/edk2-x86_64-code.fd"
+        OVMF_HINT="Install with: brew install qemu"
+    else
+        # Common Linux locations
+        for path in \
+            /usr/share/OVMF/OVMF_CODE.fd \
+            /usr/share/edk2/x64/OVMF_CODE.fd \
+            /usr/share/qemu/OVMF.fd \
+            /usr/share/edk2-ovmf/OVMF_CODE.fd; do
+            if [ -f "$path" ]; then
+                OVMF_FW="$path"
+                break
+            fi
+        done
+        OVMF_FW="${OVMF_FW:-/usr/share/OVMF/OVMF_CODE.fd}"
+        OVMF_HINT="Install with: sudo apt-get install ovmf"
+    fi
+
     BIOS_FLAGS="-drive if=pflash,format=raw,readonly=on,file=$OVMF_FW"
     DRIVE_FLAGS="-drive format=raw,file=\"$IMAGE\""
     DRIVE_LABEL="UEFI (GPT)"
 
     if [ ! -f "$OVMF_FW" ]; then
         echo "Error: OVMF firmware not found at $OVMF_FW"
-        echo "Install with: brew install qemu"
+        echo "$OVMF_HINT"
         exit 1
     fi
 else
