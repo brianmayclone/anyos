@@ -590,6 +590,11 @@ impl Desktop {
 
     // ── Initialization ──────────────────────────────────────────────────
 
+    /// Whether GPU 2D acceleration is available.
+    pub fn has_gpu_accel(&self) -> bool {
+        self.has_gpu_accel
+    }
+
     /// Set the initial cursor position (used during compositor startup to sync
     /// with the kernel's splash cursor position).
     pub fn set_cursor_pos(&mut self, x: i32, y: i32) {

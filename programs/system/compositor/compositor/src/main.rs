@@ -187,7 +187,7 @@ fn main() {
     // 3. Drain stale mouse events (already applied by splash handler)
     let (splash_x, splash_y) = ipc::cursor_takeover();
     desktop.set_cursor_pos(splash_x, splash_y);
-    if desktop.has_gpu_accel {
+    if desktop.has_gpu_accel() {
         desktop.init_hw_cursor();
         println!("compositor: HW cursor enabled (pos={},{})", splash_x, splash_y);
     } else {
