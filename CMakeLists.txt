@@ -10,6 +10,16 @@ set(CARGO_EXECUTABLE "$ENV{HOME}/.cargo/bin/cargo")
 
 option(ANYOS_DEBUG_VERBOSE "Enable verbose debug output" OFF)
 
+# Auto-detect i686-elf cross-compiler (needed for libc, TCC, Doom, Quake)
+find_program(I686_ELF_GCC NAMES i686-elf-gcc i386-elf-gcc)
+if(I686_ELF_GCC)
+  set(HAS_CROSS_COMPILER TRUE)
+  message(STATUS "Found cross-compiler: ${I686_ELF_GCC}")
+else()
+  set(HAS_CROSS_COMPILER FALSE)
+  message(STATUS "i686-elf-gcc not found — skipping C library, TCC, and games (Rust-only build)")
+endif()
+
 set(DISK_IMAGE "${CMAKE_BINARY_DIR}/anyos.img")
 set(KERNEL_ELF "${CMAKE_BINARY_DIR}/kernel/x86_64-anyos/release/anyos_kernel.elf")
 
@@ -468,8 +478,10 @@ add_custom_command(
 )
 
 # ============================================================
-# C Library (libc.a + crt0.o for C programs)
+# C Library, TCC, and Games (require i686-elf cross-compiler)
 # ============================================================
+if(HAS_CROSS_COMPILER)
+# ── C Library (libc.a + crt0.o for C programs) ──
 set(LIBC_DIR "${CMAKE_SOURCE_DIR}/programs/libc")
 set(LIBC_A "${LIBC_DIR}/libc.a")
 set(LIBC_CRT0 "${LIBC_DIR}/obj/crt0.o")
@@ -673,11 +685,7 @@ add_custom_command(
   COMMENT "Installing Quake 2 + PAK to sysroot"
 )
 
-add_custom_target(programs DEPENDS
-  ${RUST_USER_BINS}
-  ${SYSTEM_BINS}
-  ${DLL_BINS}
-  ${SYSROOT_DIR}/.stamp
+set(C_TOOLCHAIN_DEPS
   ${SYSROOT_DIR}/lib/libc.a
   ${SYSROOT_DIR}/lib/crt0.o
   ${SYSROOT_DIR}/include/.stamp
@@ -686,6 +694,16 @@ add_custom_target(programs DEPENDS
   ${SYSROOT_DIR}/apps/doom/doom
   ${SYSROOT_DIR}/apps/quake/quake
   ${SYSROOT_DIR}/apps/quake2/quake2
+)
+
+endif() # HAS_CROSS_COMPILER
+
+add_custom_target(programs DEPENDS
+  ${RUST_USER_BINS}
+  ${SYSTEM_BINS}
+  ${DLL_BINS}
+  ${SYSROOT_DIR}/.stamp
+  ${C_TOOLCHAIN_DEPS}
 )
 
 # ============================================================
@@ -709,14 +727,7 @@ add_custom_command(
     ${SYSTEM_BINS}
     ${DLL_BINS}
     ${SYSROOT_DIR}/.stamp
-    ${SYSROOT_DIR}/lib/libc.a
-    ${SYSROOT_DIR}/lib/crt0.o
-    ${SYSROOT_DIR}/include/.stamp
-    ${SYSROOT_DIR}/bin/cc
-    ${SYSROOT_DIR}/lib/tcc/include/.stamp
-    ${SYSROOT_DIR}/apps/doom/doom
-    ${SYSROOT_DIR}/apps/quake/quake
-    ${SYSROOT_DIR}/apps/quake2/quake2
+    ${C_TOOLCHAIN_DEPS}
   COMMENT "Creating bootable disk image (128 MiB, FAT16 filesystem)"
 )
 
@@ -909,12 +920,7 @@ add_custom_command(
     ${SYSTEM_BINS}
     ${DLL_BINS}
     ${SYSROOT_DIR}/.stamp
-    ${SYSROOT_DIR}/lib/libc.a
-    ${SYSROOT_DIR}/lib/crt0.o
-    ${SYSROOT_DIR}/include/.stamp
-    ${SYSROOT_DIR}/bin/cc
-    ${SYSROOT_DIR}/lib/tcc/include/.stamp
-    ${SYSROOT_DIR}/apps/doom/doom
+    ${C_TOOLCHAIN_DEPS}
   COMMENT "Creating UEFI bootable disk image (GPT + ESP + FAT16)"
 )
 
