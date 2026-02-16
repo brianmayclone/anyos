@@ -1,9 +1,9 @@
 // Copyright (c) 2024-2026 Christian Moeller
 // SPDX-License-Identifier: MIT
 
-//! Raw FFI bindings to libimage.dll export table.
+//! Raw FFI bindings to libimage.dlib export table.
 
-/// Base virtual address where libimage.dll is loaded.
+/// Base virtual address where libimage.dlib is loaded.
 const LIBIMAGE_BASE: usize = 0x0410_0000;
 
 /// Image metadata returned by `image_probe`.

@@ -1,7 +1,7 @@
 // Copyright (c) 2024-2026 Christian Moeller
 // SPDX-License-Identifier: MIT
 
-//! Export table for libimage.dll.
+//! Export table for libimage.dlib.
 
 use crate::types::{ImageInfo, VideoInfo};
 

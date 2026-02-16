@@ -27,7 +27,7 @@ const DOCK_BORDER_RADIUS: i32 = 16;
 const DOCK_H_PADDING: u32 = 12;
 
 // Colors (ARGB u32)
-/// Read theme from uisys.dll shared page (DLL base + 12).
+/// Read theme from uisys.dlib shared page (DLIB base + 12).
 const THEME_ADDR: *const u32 = 0x0400_000C as *const u32;
 #[inline(always)]
 fn is_light() -> bool { unsafe { core::ptr::read_volatile(THEME_ADDR) != 0 } }
@@ -46,7 +46,7 @@ const TOOLTIP_PAD: u32 = 8; // horizontal padding inside tooltip pill
 const FONT_ID: u16 = 0;
 const FONT_SIZE: u16 = 12;
 
-const CONFIG_PATH: &str = "/system/dock/programs.conf";
+const CONFIG_PATH: &str = "/System/dock/programs.conf";
 
 // ── Icon data ──
 struct Icon {
@@ -304,7 +304,7 @@ fn load_ico_icon(path: &str) -> Option<Icon> {
 
 // ── Config file parsing ──
 
-/// Load dock items from /system/dock/programs.conf
+/// Load dock items from /System/dock/programs.conf
 /// Format: one item per line: name|path
 /// Lines starting with '#' are comments, empty lines are skipped.
 fn load_dock_config() -> Vec<DockItem> {
@@ -680,7 +680,16 @@ fn main() {
                         .unwrap_or_else(|| alloc::format!("app-{}", app_tid));
                     // Skip system names
                     if !SYSTEM_NAMES.iter().any(|&s| s == name.as_str()) {
-                        let bin_path = alloc::format!("/bin/{}", name);
+                        // Try /Applications/{Name}.app first, then /bin/{name}
+                        let bin_path = {
+                            let app_path = alloc::format!("/Applications/{}.app", name);
+                            let mut stat_buf = [0u32; 2];
+                            if anyos_std::fs::stat(&app_path, &mut stat_buf) == 0 && stat_buf[0] == 1 {
+                                app_path
+                            } else {
+                                alloc::format!("/bin/{}", name)
+                            }
+                        };
                         let icon_path = icons::app_icon_path(&bin_path);
                         let icon = load_ico_icon(&icon_path);
                         items.push(DockItem {
@@ -772,7 +781,8 @@ fn main() {
                 // Match pinned items by binary basename (show running dot immediately)
                 for item in &mut items {
                     if item.pinned && item.tid == 0 {
-                        let basename = item.bin_path.rsplit('/').next().unwrap_or("");
+                        let raw_basename = item.bin_path.rsplit('/').next().unwrap_or("");
+                        let basename = raw_basename.strip_suffix(".app").unwrap_or(raw_basename);
                         if basename == name.as_str() {
                             item.tid = spawned_tid;
                             item.running = true;

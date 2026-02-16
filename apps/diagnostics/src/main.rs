@@ -137,7 +137,7 @@ fn bench_file_stat(state: &mut BenchState, hz: u32) {
     let mut stat_buf = [0u32; 2];
     let t0 = ticks_now();
     for _ in 0..iters {
-        let _ = fs::stat("/system/diagnostics", &mut stat_buf);
+        let _ = fs::stat("/Applications/Diagnostics.app", &mut stat_buf);
     }
     let t1 = ticks_now();
     let us = ticks_to_us(t1.wrapping_sub(t0), hz);
@@ -151,7 +151,7 @@ fn bench_file_open_close(state: &mut BenchState, hz: u32) {
     let iters = 100u32;
     let t0 = ticks_now();
     for _ in 0..iters {
-        let fd = fs::open("/system/fonts/sfpro.ttf", 0);
+        let fd = fs::open("/System/fonts/sfpro.ttf", 0);
         if fd != u32::MAX {
             fs::close(fd);
         }
@@ -169,7 +169,7 @@ fn bench_file_read_small(state: &mut BenchState, hz: u32) {
     let mut buf = [0u8; 4096];
     let t0 = ticks_now();
     for _ in 0..iters {
-        let fd = fs::open("/system/fonts/sfpro.ttf", 0);
+        let fd = fs::open("/System/fonts/sfpro.ttf", 0);
         if fd != u32::MAX {
             fs::read(fd, &mut buf);
             fs::close(fd);
@@ -189,7 +189,7 @@ fn bench_file_read_large(state: &mut BenchState, hz: u32) {
     let mut total_bytes = 0u64;
     let t0 = ticks_now();
     for _ in 0..iters {
-        let fd = fs::open("/system/fonts/sfpro.ttf", 0);
+        let fd = fs::open("/System/fonts/sfpro.ttf", 0);
         if fd != u32::MAX {
             loop {
                 let n = fs::read(fd, &mut buf);
@@ -214,7 +214,7 @@ fn bench_file_read_testdata(state: &mut BenchState, hz: u32) {
     let mut total_bytes = 0u64;
     let t0 = ticks_now();
     for _ in 0..iters {
-        let fd = fs::open("/system/testdata.bin", 0);
+        let fd = fs::open("/System/testdata.bin", 0);
         if fd != u32::MAX {
             loop {
                 let n = fs::read(fd, &mut buf);
@@ -223,7 +223,7 @@ fn bench_file_read_testdata(state: &mut BenchState, hz: u32) {
             }
             fs::close(fd);
         } else {
-            log!("  WARN: /system/testdata.bin not found, skipping");
+            log!("  WARN: /System/testdata.bin not found, skipping");
             state.add("Read 64K testdata", 0, 0);
             return;
         }
@@ -359,7 +359,7 @@ fn stress_iteration(hz: u32, win_id: u32) -> (u32, u32) {
 
     // 2. File operations: open + read + close (exercises VFS + storage syscalls)
     for _ in 0..10 {
-        let fd = fs::open("/system/fonts/sfpro.ttf", 0);
+        let fd = fs::open("/System/fonts/sfpro.ttf", 0);
         calls += 1;
         if fd != u32::MAX {
             let mut buf = [0u8; 512];
@@ -376,7 +376,7 @@ fn stress_iteration(hz: u32, win_id: u32) -> (u32, u32) {
     // 3. File stat (exercises directory traversal)
     for _ in 0..20 {
         let mut stat_buf = [0u32; 2];
-        let r = fs::stat("/system/diagnostics", &mut stat_buf);
+        let r = fs::stat("/Applications/Diagnostics.app", &mut stat_buf);
         calls += 1;
         if r == u32::MAX { errors += 1; }
     }

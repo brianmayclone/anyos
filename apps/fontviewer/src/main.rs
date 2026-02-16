@@ -225,7 +225,7 @@ fn main() {
                         }
                         200 => {
                             // Open font file
-                            if let filedialog::FileDialogResult::Selected(path) = filedialog::open_file("/system/fonts") {
+                            if let filedialog::FileDialogResult::Selected(path) = filedialog::open_file("/System/fonts") {
                                 if let Some(fid) = window::font_load(&path) {
                                     st.font_id = fid as u16;
                                     st.font_name = String::from(basename(&path));

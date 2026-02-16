@@ -148,7 +148,16 @@ struct IconEntry {
 }
 
 fn load_app_icon(name: &str) -> Vec<u32> {
-    let bin_path = alloc::format!("/bin/{}", name);
+    // Check /Applications/{Name}.app first, then fall back to /bin/{name}
+    let bin_path = {
+        let app_path = alloc::format!("/Applications/{}.app", name);
+        let mut stat_buf = [0u32; 2];
+        if fs::stat(&app_path, &mut stat_buf) == 0 && stat_buf[0] == 1 {
+            app_path
+        } else {
+            alloc::format!("/bin/{}", name)
+        }
+    };
     let icon_path = icons::app_icon_path(&bin_path);
 
     let fd = fs::open(&icon_path, 0);

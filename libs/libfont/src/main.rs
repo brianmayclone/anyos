@@ -1,12 +1,12 @@
 // Copyright (c) 2024-2026 Christian Moeller
 // SPDX-License-Identifier: MIT
 
-//! libfont.dll — Userspace TTF font engine.
+//! libfont.dlib — Userspace TTF font engine.
 //!
 //! Provides font loading, glyph rasterization (greyscale + subpixel LCD),
 //! text measurement, and rendering into ARGB pixel buffers.
 //!
-//! State is stored per-process via the DLL state page at 0x0BFE_0000.
+//! State is stored per-process via .bss statics (DLIB v3 per-process sections).
 //! Heap memory is obtained via SYS_SBRK (bump allocator in heap.rs).
 //!
 //! Subpixel rendering is auto-detected on init by querying SYS_GPU_HAS_ACCEL.

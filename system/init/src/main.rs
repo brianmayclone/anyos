@@ -58,13 +58,13 @@ fn benchmark_memory(duration_ticks: u32) -> u32 {
 
 // ─── Init Config Parser ─────────────────────────────────────────────────────
 
-/// Read /system/init.conf and spawn each program listed (one path per line).
+/// Read /System/init.conf and spawn each program listed (one path per line).
 /// Lines starting with '#' are comments. Empty lines are skipped.
 fn run_init_conf() {
     // Read config file
-    let fd = fs::open("/system/init.conf", 0); // read-only
+    let fd = fs::open("/System/init.conf", 0); // read-only
     if fd == u32::MAX {
-        println!("init: /system/init.conf not found, skipping");
+        println!("init: /System/init.conf not found, skipping");
         return;
     }
 
@@ -73,7 +73,7 @@ fn run_init_conf() {
     fs::close(fd);
 
     if n == 0 {
-        println!("init: /system/init.conf is empty");
+        println!("init: /System/init.conf is empty");
         return;
     }
 

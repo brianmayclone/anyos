@@ -1,4 +1,4 @@
-//! Safe Rust client API for the userspace compositor (via libcompositor.dll).
+//! Safe Rust client API for the userspace compositor (via libcompositor.dlib).
 //!
 //! # Usage
 //! ```rust,ignore

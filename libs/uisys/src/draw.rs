@@ -1,7 +1,7 @@
 //! Drawing helper functions for direct pixel-buffer rendering.
 //!
 //! All drawing operates on a `WinSurface` (pointer to an ARGB pixel buffer).
-//! Shape rendering uses librender.dll, text rendering uses libfont.dll.
+//! Shape rendering uses librender.dlib, text rendering uses libfont.dlib.
 //! No kernel syscalls are needed for any drawing operations.
 
 use crate::font_bitmap;
@@ -98,7 +98,7 @@ fn syscall0(num: u32) -> u32 {
 const DEFAULT_FONT_ID: u16 = 0;
 const DEFAULT_FONT_SIZE: u16 = 13;
 
-/// Render TTF text onto a WinSurface via libfont.dll.
+/// Render TTF text onto a WinSurface via libfont.dlib.
 #[inline(always)]
 fn render_ttf_surface(s: &WinSurface, x: i32, y: i32, color: u32, text: &[u8], font_id: u16, size: u16) {
     if text.is_empty() { return; }
@@ -212,7 +212,7 @@ pub fn draw_text_ex(win: u32, x: i32, y: i32, color: u32, font_id: u16, size: u1
     render_ttf_surface(s, x, y, color, text_slice, font_id, size);
 }
 
-/// Measure text extent with a specific font via libfont.dll.
+/// Measure text extent with a specific font via libfont.dlib.
 pub fn measure_text(font_id: u16, size: u16, text: *const u8, text_len: u32, out_w: *mut u32, out_h: *mut u32) -> u32 {
     (libfont().measure_string)(font_id as u32, size, text, text_len, out_w, out_h);
     0

@@ -1,5 +1,5 @@
 //! Bitmap font (8x16 fixed-width) for boot console and kernel-internal use.
-//! TTF rendering has been moved to userspace libfont.dll.
+//! TTF rendering has been moved to userspace libfont.dlib.
 
 use crate::graphics::color::Color;
 use crate::graphics::surface::Surface;

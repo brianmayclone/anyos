@@ -14,17 +14,19 @@ use crate::menu::{MenuBar, MenuBarDef, MenuBarHit};
 
 const COLOR_DESKTOP_BG: u32 = 0xFF1E1E1E; // wallpaper covers this anyway
 
-/// Address of the `theme` field in the uisys.dll export struct.
-/// DLL pages are shared physical frames — compositor writes, all apps read.
-const UISYS_THEME_ADDR: *mut u32 = 0x0400_000C as *mut u32;
+/// Address of the `theme` field in the uisys.dlib export struct.
+/// RO pages are shared across all processes — reads via volatile, writes via syscall.
+const UISYS_BASE: u64 = 0x0400_0000;
+const UISYS_THEME_OFFSET: u32 = 0x0C; // offset of `theme` field in export struct
+const UISYS_THEME_ADDR: *const u32 = (UISYS_BASE as usize + UISYS_THEME_OFFSET as usize) as *const u32;
 
-/// Read the current theme (0 = dark, 1 = light) from the shared DLL page.
+/// Read the current theme (0 = dark, 1 = light) from the shared DLIB page.
 #[inline(always)]
 fn is_light() -> bool { unsafe { core::ptr::read_volatile(UISYS_THEME_ADDR) != 0 } }
 
-/// Set the theme by writing to the shared DLL page (visible to all processes).
+/// Set the theme via kernel-mediated write to the shared RO DLIB page.
 pub fn set_theme(value: u32) {
-    unsafe { core::ptr::write_volatile(UISYS_THEME_ADDR, value) };
+    anyos_std::dll::set_dll_u32(UISYS_BASE, UISYS_THEME_OFFSET, value);
 }
 
 #[inline(always)]

@@ -1,6 +1,6 @@
-//! Raw FFI bindings to librender.dll export table.
+//! Raw FFI bindings to librender.dlib export table.
 
-/// Base virtual address where librender.dll is loaded.
+/// Base virtual address where librender.dlib is loaded.
 const LIBRENDER_BASE: usize = 0x0430_0000;
 
 /// Export function table — must match the DLL's `LibrenderExports` layout exactly.

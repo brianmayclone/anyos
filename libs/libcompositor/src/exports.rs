@@ -1,4 +1,4 @@
-//! Export table for libcompositor.dll.
+//! Export table for libcompositor.dlib.
 //!
 //! Provides IPC-based window management via the compositor event channel.
 //! Apps create windows backed by shared memory, draw directly to the surface,

@@ -1,7 +1,7 @@
-//! Raw FFI bindings to libcompositor.dll export table.
+//! Raw FFI bindings to libcompositor.dlib export table.
 //!
-//! libcompositor.dll is loaded at virtual address 0x0438_0000.
-//! The export struct starts at byte 0 of the DLL image.
+//! libcompositor.dlib is loaded at virtual address 0x0438_0000.
+//! The export struct starts at byte 0 of the DLIB image.
 
 const LIBCOMPOSITOR_BASE: usize = 0x0438_0000;
 

@@ -1,6 +1,6 @@
 //! Window manager — create, draw, events, present.
 //!
-//! Uses the userspace compositor via libcompositor.dll (at 0x0438_0000).
+//! Uses the userspace compositor via libcompositor.dlib (at 0x0438_0000).
 //! Drawing functions operate directly on shared-memory pixel buffers.
 //!
 //! The external "window ID" returned by `create()` is actually a pointer to a
@@ -36,7 +36,7 @@ pub const FONT_THIN: u16 = 2;
 /// System font — italic.
 pub const FONT_ITALIC: u16 = 3;
 
-// ── Compositor DLL bindings (libcompositor.dll at 0x0438_0000) ──────────────
+// ── Compositor DLIB bindings (libcompositor.dlib at 0x0438_0000) ─────────────
 
 const LIBCOMPOSITOR_BASE: usize = 0x0438_0000;
 
@@ -520,7 +520,7 @@ pub fn list_resolutions() -> alloc::vec::Vec<(u32, u32)> {
 }
 
 /// Get current theme. Returns 0 (dark) or 1 (light).
-/// Reads from the shared uisys.dll page (zero syscalls).
+/// Reads from the shared uisys.dlib page (zero syscalls).
 pub fn get_theme() -> u32 {
     unsafe { core::ptr::read_volatile(0x0400_000C as *const u32) }
 }
@@ -560,7 +560,7 @@ pub fn font_measure(font_id: u16, size: u16, text: &str) -> (u32, u32) {
     (out_w, out_h)
 }
 
-/// Draw text with explicit font_id and size (TTF rendering via libfont.dll).
+/// Draw text with explicit font_id and size (TTF rendering via libfont.dlib).
 pub fn draw_text_ex(
     window_id: u32,
     x: i16,
@@ -589,7 +589,7 @@ pub fn draw_text_ex(
     )
 }
 
-/// Render TTF text directly into a raw ARGB pixel buffer via libfont.dll.
+/// Render TTF text directly into a raw ARGB pixel buffer via libfont.dlib.
 pub fn font_render_buf(
     font_id: u16,
     size: u16,

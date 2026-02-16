@@ -27,8 +27,8 @@ fn main() {
         return;
     }
 
-    // Check /system/<cmd>
-    let prefix2 = b"/system/";
+    // Check /System/<cmd>
+    let prefix2 = b"/System/";
     let mut path2 = [0u8; 128];
     path2[..prefix2.len()].copy_from_slice(prefix2);
     let clen2 = cmd.len().min(128 - prefix2.len());

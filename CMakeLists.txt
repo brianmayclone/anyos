@@ -138,8 +138,9 @@ add_custom_command(
 # ============================================================
 set(SYSROOT_DIR "${CMAKE_BINARY_DIR}/sysroot")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/bin")
-file(MAKE_DIRECTORY "${SYSROOT_DIR}/system")
-file(MAKE_DIRECTORY "${SYSROOT_DIR}/system/lib")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/System")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/Applications")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/include")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/include/sys")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/lib")
@@ -194,7 +195,7 @@ function(add_rust_user_program NAME SRC_DIR)
   set(RUST_USER_BINS ${RUST_USER_BINS} ${SYSROOT_DIR}/bin/${NAME} PARENT_SCOPE)
 endfunction()
 
-# Variant for system programs (placed in /system/ instead of /bin/)
+# Variant for system programs (placed in /System/ instead of /bin/)
 function(add_rust_system_program NAME SRC_DIR)
   set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos-user/release/${NAME}.elf")
   file(GLOB_RECURSE _PROG_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
@@ -213,17 +214,59 @@ function(add_rust_system_program NAME SRC_DIR)
     COMMENT "Building system program: ${NAME}"
   )
   add_custom_command(
-    OUTPUT ${SYSROOT_DIR}/system/${NAME}
+    OUTPUT ${SYSROOT_DIR}/System/${NAME}
     COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
       ${ELF}
-      ${SYSROOT_DIR}/system/${NAME}
+      ${SYSROOT_DIR}/System/${NAME}
     DEPENDS ${ELF}
     COMMENT "Converting ${NAME} ELF to flat binary"
   )
-  set(SYSTEM_BINS ${SYSTEM_BINS} ${SYSROOT_DIR}/system/${NAME} PARENT_SCOPE)
+  set(SYSTEM_BINS ${SYSTEM_BINS} ${SYSROOT_DIR}/System/${NAME} PARENT_SCOPE)
 endfunction()
 
-# Variant for DLLs (placed in /system/lib/)
+# Variant for .app bundles (placed in /Applications/{DISPLAY_NAME}.app/)
+function(add_app NAME SRC_DIR DISPLAY_NAME)
+  set(APP_DIR "${SYSROOT_DIR}/Applications/${DISPLAY_NAME}.app")
+  set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos-user/release/${NAME}.elf")
+  file(GLOB_RECURSE _PROG_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
+  add_custom_command(
+    OUTPUT ${ELF}
+    COMMAND ${CARGO_EXECUTABLE} build --release
+      --manifest-path ${SRC_DIR}/Cargo.toml
+      --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
+      --target-dir ${CMAKE_BINARY_DIR}/programs/${NAME}
+    DEPENDS
+      ${SRC_DIR}/Cargo.toml
+      ${SRC_DIR}/build.rs
+      ${_PROG_RS}
+      ${STDLIB_DEPS}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Building app: ${DISPLAY_NAME}"
+  )
+  add_custom_command(
+    OUTPUT "${APP_DIR}/${DISPLAY_NAME}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${APP_DIR}"
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+      ${ELF}
+      "${APP_DIR}/${DISPLAY_NAME}"
+    COMMAND ${CMAKE_COMMAND} -E copy "${SRC_DIR}/Info.conf" "${APP_DIR}/Info.conf"
+    DEPENDS ${ELF} "${SRC_DIR}/Info.conf"
+    COMMENT "Packaging ${DISPLAY_NAME}.app"
+  )
+  set(_LOCAL_BINS "${APP_DIR}/${DISPLAY_NAME}")
+  if(EXISTS "${SRC_DIR}/Icon.ico")
+    add_custom_command(
+      OUTPUT "${APP_DIR}/Icon.ico"
+      COMMAND ${CMAKE_COMMAND} -E copy "${SRC_DIR}/Icon.ico" "${APP_DIR}/Icon.ico"
+      DEPENDS "${SRC_DIR}/Icon.ico" "${APP_DIR}/${DISPLAY_NAME}"
+      COMMENT "Copying icon for ${DISPLAY_NAME}.app"
+    )
+    list(APPEND _LOCAL_BINS "${APP_DIR}/Icon.ico")
+  endif()
+  set(APP_BINS ${APP_BINS} ${_LOCAL_BINS} PARENT_SCOPE)
+endfunction()
+
+# Variant for DLLs (placed in /Libraries/)
 function(add_dll NAME SRC_DIR)
   set(DLL_ELF "${CMAKE_BINARY_DIR}/dll/${NAME}/x86_64-anyos-user/release/${NAME}.elf")
   file(GLOB_RECURSE _DLL_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
@@ -243,14 +286,14 @@ function(add_dll NAME SRC_DIR)
     COMMENT "Building DLL: ${NAME}"
   )
   add_custom_command(
-    OUTPUT ${SYSROOT_DIR}/system/lib/${NAME}.dll
-    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+    OUTPUT ${SYSROOT_DIR}/Libraries/${NAME}.dlib
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py --dlib
       ${DLL_ELF}
-      ${SYSROOT_DIR}/system/lib/${NAME}.dll
+      ${SYSROOT_DIR}/Libraries/${NAME}.dlib
     DEPENDS ${DLL_ELF}
-    COMMENT "Converting ${NAME} ELF to DLL flat binary"
+    COMMENT "Converting ${NAME} ELF to DLIB v3"
   )
-  set(DLL_BINS ${DLL_BINS} ${SYSROOT_DIR}/system/lib/${NAME}.dll PARENT_SCOPE)
+  set(DLL_BINS ${DLL_BINS} ${SYSROOT_DIR}/Libraries/${NAME}.dlib PARENT_SCOPE)
 endfunction()
 
 set(DLL_BINS "")
@@ -369,24 +412,25 @@ list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/bin/false)
 
 set(SYSTEM_BINS "")
 add_rust_system_program(init        ${CMAKE_SOURCE_DIR}/system/init)
-add_rust_system_program(terminal    ${CMAKE_SOURCE_DIR}/system/terminal)
-add_rust_system_program(taskmanager ${CMAKE_SOURCE_DIR}/system/taskmanager)
-add_rust_system_program(settings    ${CMAKE_SOURCE_DIR}/system/settings)
-add_rust_system_program(finder      ${CMAKE_SOURCE_DIR}/system/finder)
 add_rust_system_program(audiomon    ${CMAKE_SOURCE_DIR}/system/audiomon)
 add_rust_system_program(netmon      ${CMAKE_SOURCE_DIR}/system/netmon)
 
-# Apps (GUI applications, also installed to /system/)
-add_rust_system_program(notepad     ${CMAKE_SOURCE_DIR}/apps/notepad)
-add_rust_system_program(imgview     ${CMAKE_SOURCE_DIR}/apps/imgview)
-add_rust_system_program(videoplayer ${CMAKE_SOURCE_DIR}/apps/videoplayer)
-add_rust_system_program(diagnostics ${CMAKE_SOURCE_DIR}/apps/diagnostics)
-add_rust_system_program(calc        ${CMAKE_SOURCE_DIR}/apps/calc)
-add_rust_system_program(fontviewer  ${CMAKE_SOURCE_DIR}/apps/fontviewer)
-add_rust_system_program(clock       ${CMAKE_SOURCE_DIR}/apps/clock)
-add_rust_system_program(screenshot  ${CMAKE_SOURCE_DIR}/apps/screenshot)
+# Desktop GUI applications → .app bundles in /Applications/
+set(APP_BINS "")
+add_app(terminal    ${CMAKE_SOURCE_DIR}/system/terminal     "Terminal")
+add_app(taskmanager ${CMAKE_SOURCE_DIR}/system/taskmanager  "Activity Monitor")
+add_app(settings    ${CMAKE_SOURCE_DIR}/system/settings     "Settings")
+add_app(finder      ${CMAKE_SOURCE_DIR}/system/finder       "Finder")
+add_app(notepad     ${CMAKE_SOURCE_DIR}/apps/notepad        "Notepad")
+add_app(imgview     ${CMAKE_SOURCE_DIR}/apps/imgview        "Image Viewer")
+add_app(videoplayer ${CMAKE_SOURCE_DIR}/apps/videoplayer    "Video Player")
+add_app(diagnostics ${CMAKE_SOURCE_DIR}/apps/diagnostics    "Diagnostics")
+add_app(calc        ${CMAKE_SOURCE_DIR}/apps/calc           "Calculator")
+add_app(fontviewer  ${CMAKE_SOURCE_DIR}/apps/fontviewer     "Font Viewer")
+add_app(clock       ${CMAKE_SOURCE_DIR}/apps/clock          "Clock")
+add_app(screenshot  ${CMAKE_SOURCE_DIR}/apps/screenshot     "Screenshot")
 
-# Build compositor binary (nested path: /system/compositor/compositor)
+# Build compositor binary (nested path: /System/compositor/compositor)
 set(COMPOSITOR_SRC_DIR ${CMAKE_SOURCE_DIR}/system/compositor/compositor)
 set(COMPOSITOR_ELF "${CMAKE_BINARY_DIR}/programs/compositor/x86_64-anyos-user/release/compositor.elf")
 add_custom_command(
@@ -404,17 +448,17 @@ add_custom_command(
   COMMENT "Building system program: compositor"
 )
 add_custom_command(
-  OUTPUT ${SYSROOT_DIR}/system/compositor/compositor
-  COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/system/compositor
+  OUTPUT ${SYSROOT_DIR}/System/compositor/compositor
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/System/compositor
   COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
     ${COMPOSITOR_ELF}
-    ${SYSROOT_DIR}/system/compositor/compositor
+    ${SYSROOT_DIR}/System/compositor/compositor
   DEPENDS ${COMPOSITOR_ELF}
   COMMENT "Converting compositor ELF to flat binary"
 )
-list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/system/compositor/compositor)
+list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/System/compositor/compositor)
 
-# Build dock program (nested path: /system/compositor/dock)
+# Build dock program (nested path: /System/compositor/dock)
 set(DOCK_SRC_DIR ${CMAKE_SOURCE_DIR}/system/compositor/dock)
 set(DOCK_ELF "${CMAKE_BINARY_DIR}/programs/dock/x86_64-anyos/release/dock.elf")
 add_custom_command(
@@ -432,36 +476,16 @@ add_custom_command(
   COMMENT "Building system program: dock"
 )
 add_custom_command(
-  OUTPUT ${SYSROOT_DIR}/system/compositor/dock
-  COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/system/compositor
+  OUTPUT ${SYSROOT_DIR}/System/compositor/dock
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/System/compositor
   COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
     ${DOCK_ELF}
-    ${SYSROOT_DIR}/system/compositor/dock
+    ${SYSROOT_DIR}/System/compositor/dock
   DEPENDS ${DOCK_ELF}
   COMMENT "Converting dock ELF to flat binary"
 )
-list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/system/compositor/dock)
+list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/System/compositor/dock)
 
-# Also place taskmanager and finder in /bin/ so the terminal shell can launch them
-add_custom_command(
-  OUTPUT ${SYSROOT_DIR}/bin/taskmanager
-  COMMAND ${CMAKE_COMMAND} -E copy
-    ${SYSROOT_DIR}/system/taskmanager
-    ${SYSROOT_DIR}/bin/taskmanager
-  DEPENDS ${SYSROOT_DIR}/system/taskmanager
-  COMMENT "Copying taskmanager to /bin/"
-)
-list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/bin/taskmanager)
-
-add_custom_command(
-  OUTPUT ${SYSROOT_DIR}/bin/finder
-  COMMAND ${CMAKE_COMMAND} -E copy
-    ${SYSROOT_DIR}/system/finder
-    ${SYSROOT_DIR}/bin/finder
-  DEPENDS ${SYSROOT_DIR}/system/finder
-  COMMENT "Copying finder to /bin/"
-)
-list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/bin/finder)
 
 # Copy any extra sysroot files from tools/sysroot
 add_custom_command(
@@ -472,12 +496,12 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E touch ${SYSROOT_DIR}/.stamp
   DEPENDS ${CMAKE_SOURCE_DIR}/sysroot
           ${CMAKE_SOURCE_DIR}/sysroot/src/hello.c
-          ${CMAKE_SOURCE_DIR}/sysroot/system/fonts/sfpro.ttf
-          ${CMAKE_SOURCE_DIR}/sysroot/system/fonts/sfpro-bold.ttf
-          ${CMAKE_SOURCE_DIR}/sysroot/system/fonts/sfpro-thin.ttf
-          ${CMAKE_SOURCE_DIR}/sysroot/system/fonts/sfpro-italic.ttf
+          ${CMAKE_SOURCE_DIR}/sysroot/System/fonts/sfpro.ttf
+          ${CMAKE_SOURCE_DIR}/sysroot/System/fonts/sfpro-bold.ttf
+          ${CMAKE_SOURCE_DIR}/sysroot/System/fonts/sfpro-thin.ttf
+          ${CMAKE_SOURCE_DIR}/sysroot/System/fonts/sfpro-italic.ttf
           ${CMAKE_SOURCE_DIR}/sysroot/media/wallpapers/default.png
-          ${CMAKE_SOURCE_DIR}/sysroot/system/media/icons
+          ${CMAKE_SOURCE_DIR}/sysroot/System/media/icons
   COMMENT "Populating sysroot from tools/sysroot"
 )
 
@@ -615,10 +639,11 @@ add_custom_command(
 )
 
 # ============================================================
-# DOOM (doomgeneric, cross-compiled C program)
+# DOOM (doomgeneric, cross-compiled C program) → DOOM.app
 # ============================================================
 set(DOOM_DIR "${CMAKE_SOURCE_DIR}/third_party/doom")
 set(DOOM_ELF "${DOOM_DIR}/doom.elf")
+set(DOOM_APP "${SYSROOT_DIR}/Applications/DOOM.app")
 
 add_custom_command(
   OUTPUT ${DOOM_ELF}
@@ -631,18 +656,21 @@ add_custom_command(
 set(DOOM_WAD "${CMAKE_SOURCE_DIR}/sysroot/apps/doom/doom.wad")
 
 add_custom_command(
-  OUTPUT ${SYSROOT_DIR}/apps/doom/doom ${SYSROOT_DIR}/apps/doom/doom.wad
-  COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/apps/doom
-  COMMAND ${CMAKE_COMMAND} -E copy ${DOOM_ELF} ${SYSROOT_DIR}/apps/doom/doom
-  COMMAND ${CMAKE_COMMAND} -E copy ${DOOM_WAD} ${SYSROOT_DIR}/apps/doom/doom.wad
-  DEPENDS ${DOOM_ELF} ${DOOM_WAD}
-  COMMENT "Installing DOOM + WAD to sysroot"
+  OUTPUT ${DOOM_APP}/DOOM
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${DOOM_APP}"
+  COMMAND ${CMAKE_COMMAND} -E copy ${DOOM_ELF} "${DOOM_APP}/DOOM"
+  COMMAND ${CMAKE_COMMAND} -E copy ${DOOM_WAD} "${DOOM_APP}/doom.wad"
+  COMMAND ${CMAKE_COMMAND} -E copy "${DOOM_DIR}/Info.conf" "${DOOM_APP}/Info.conf"
+  COMMAND ${CMAKE_COMMAND} -E copy "${DOOM_DIR}/Icon.ico" "${DOOM_APP}/Icon.ico"
+  DEPENDS ${DOOM_ELF} ${DOOM_WAD} "${DOOM_DIR}/Info.conf" "${DOOM_DIR}/Icon.ico"
+  COMMENT "Packaging DOOM.app"
 )
 
-# Quake (WinQuake software renderer, cross-compiled C program)
+# Quake (WinQuake software renderer, cross-compiled C program) → Quake.app
 # ============================================================
 set(QUAKE_DIR "${CMAKE_SOURCE_DIR}/third_party/quake")
 set(QUAKE_ELF "${QUAKE_DIR}/quake.elf")
+set(QUAKE_APP "${SYSROOT_DIR}/Applications/Quake.app")
 
 add_custom_command(
   OUTPUT ${QUAKE_ELF}
@@ -656,19 +684,21 @@ set(QUAKE_PAK "${CMAKE_SOURCE_DIR}/sysroot/apps/quake/id1/pak0.pak")
 set(QUAKE_CFG "${CMAKE_SOURCE_DIR}/sysroot/apps/quake/id1/config.cfg")
 
 add_custom_command(
-  OUTPUT ${SYSROOT_DIR}/apps/quake/quake ${SYSROOT_DIR}/apps/quake/id1/pak0.pak
-  COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/apps/quake/id1
-  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE_ELF} ${SYSROOT_DIR}/apps/quake/quake
-  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE_PAK} ${SYSROOT_DIR}/apps/quake/id1/pak0.pak
-  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE_CFG} ${SYSROOT_DIR}/apps/quake/id1/config.cfg
-  DEPENDS ${QUAKE_ELF} ${QUAKE_PAK} ${QUAKE_CFG}
-  COMMENT "Installing Quake + PAK to sysroot"
+  OUTPUT ${QUAKE_APP}/Quake
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${QUAKE_APP}/id1"
+  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE_ELF} "${QUAKE_APP}/Quake"
+  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE_PAK} "${QUAKE_APP}/id1/pak0.pak"
+  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE_CFG} "${QUAKE_APP}/id1/config.cfg"
+  COMMAND ${CMAKE_COMMAND} -E copy "${QUAKE_DIR}/Info.conf" "${QUAKE_APP}/Info.conf"
+  DEPENDS ${QUAKE_ELF} ${QUAKE_PAK} ${QUAKE_CFG} "${QUAKE_DIR}/Info.conf"
+  COMMENT "Packaging Quake.app"
 )
 
-# Quake 2 (id Software GPL, cross-compiled C program with ref_soft)
+# Quake 2 (id Software GPL, cross-compiled C program with ref_soft) → Quake II.app
 # ============================================================
 set(QUAKE2_DIR "${CMAKE_SOURCE_DIR}/third_party/quake2")
 set(QUAKE2_ELF "${QUAKE2_DIR}/quake2.elf")
+set(QUAKE2_APP "${SYSROOT_DIR}/Applications/Quake II.app")
 
 add_custom_command(
   OUTPUT ${QUAKE2_ELF}
@@ -679,14 +709,17 @@ add_custom_command(
 )
 
 set(QUAKE2_PAK "${CMAKE_SOURCE_DIR}/sysroot/apps/quake2/baseq2/pak0.pak")
+set(QUAKE2_CFG "${CMAKE_SOURCE_DIR}/sysroot/apps/quake2/baseq2/config.cfg")
 
 add_custom_command(
-  OUTPUT ${SYSROOT_DIR}/apps/quake2/quake2 ${SYSROOT_DIR}/apps/quake2/baseq2/pak0.pak
-  COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/apps/quake2/baseq2
-  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE2_ELF} ${SYSROOT_DIR}/apps/quake2/quake2
-  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE2_PAK} ${SYSROOT_DIR}/apps/quake2/baseq2/pak0.pak
-  DEPENDS ${QUAKE2_ELF} ${QUAKE2_PAK}
-  COMMENT "Installing Quake 2 + PAK to sysroot"
+  OUTPUT "${QUAKE2_APP}/Quake II"
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${QUAKE2_APP}/baseq2"
+  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE2_ELF} "${QUAKE2_APP}/Quake II"
+  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE2_PAK} "${QUAKE2_APP}/baseq2/pak0.pak"
+  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE2_CFG} "${QUAKE2_APP}/baseq2/config.cfg"
+  COMMAND ${CMAKE_COMMAND} -E copy "${QUAKE2_DIR}/Info.conf" "${QUAKE2_APP}/Info.conf"
+  DEPENDS ${QUAKE2_ELF} ${QUAKE2_PAK} ${QUAKE2_CFG} "${QUAKE2_DIR}/Info.conf"
+  COMMENT "Packaging Quake II.app"
 )
 
 set(C_TOOLCHAIN_DEPS
@@ -695,9 +728,9 @@ set(C_TOOLCHAIN_DEPS
   ${SYSROOT_DIR}/include/.stamp
   ${SYSROOT_DIR}/bin/cc
   ${SYSROOT_DIR}/lib/tcc/include/.stamp
-  ${SYSROOT_DIR}/apps/doom/doom
-  ${SYSROOT_DIR}/apps/quake/quake
-  ${SYSROOT_DIR}/apps/quake2/quake2
+  ${DOOM_APP}/DOOM
+  ${QUAKE_APP}/Quake
+  "${QUAKE2_APP}/Quake II"
 )
 
 endif() # HAS_CROSS_COMPILER
@@ -705,6 +738,7 @@ endif() # HAS_CROSS_COMPILER
 add_custom_target(programs DEPENDS
   ${RUST_USER_BINS}
   ${SYSTEM_BINS}
+  ${APP_BINS}
   ${DLL_BINS}
   ${SYSROOT_DIR}/.stamp
   ${C_TOOLCHAIN_DEPS}
@@ -720,7 +754,7 @@ add_custom_command(
     --stage2 ${CMAKE_BINARY_DIR}/stage2.bin
     --kernel ${KERNEL_ELF}
     --output ${DISK_IMAGE}
-    --image-size 128
+    --image-size 256
     --sysroot ${SYSROOT_DIR}
     --fs-start 8192
   DEPENDS
@@ -732,7 +766,7 @@ add_custom_command(
     ${DLL_BINS}
     ${SYSROOT_DIR}/.stamp
     ${C_TOOLCHAIN_DEPS}
-  COMMENT "Creating bootable disk image (128 MiB, FAT16 filesystem)"
+  COMMENT "Creating bootable disk image (256 MiB, exFAT filesystem)"
 )
 
 # ============================================================
@@ -908,7 +942,7 @@ add_custom_command(
   COMMENT "Building UEFI bootloader"
 )
 
-# Create UEFI disk image (GPT + ESP + FAT16 data partition)
+# Create UEFI disk image (GPT + ESP + exFAT data partition)
 add_custom_command(
   OUTPUT ${UEFI_DISK_IMAGE}
   COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/mkimage.py --uefi
@@ -925,7 +959,7 @@ add_custom_command(
     ${DLL_BINS}
     ${SYSROOT_DIR}/.stamp
     ${C_TOOLCHAIN_DEPS}
-  COMMENT "Creating UEFI bootable disk image (GPT + ESP + FAT16)"
+  COMMENT "Creating UEFI bootable disk image (GPT + ESP + exFAT)"
 )
 
 add_custom_target(uefi-bootloader DEPENDS ${UEFI_BOOTLOADER_EFI})

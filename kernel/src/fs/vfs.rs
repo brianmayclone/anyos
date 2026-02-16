@@ -1,7 +1,8 @@
 //! Virtual File System (VFS) -- unified interface for file descriptors, open/read/write/close.
-//! Delegates to the mounted FAT16 filesystem and manages the global open file table.
+//! Delegates to the mounted filesystem (exFAT or FAT16) and manages the global open file table.
 
 use crate::fs::devfs::DevFs;
+use crate::fs::exfat::ExFatFs;
 use crate::fs::fat::FatFs;
 use crate::fs::iso9660::Iso9660Fs;
 use crate::fs::file::{DirEntry, FileDescriptor, FileFlags, FileType, OpenFile, SeekFrom};
@@ -13,8 +14,8 @@ use alloc::vec::Vec;
 /// Maximum number of simultaneously open file descriptors.
 const MAX_OPEN_FILES: usize = 256;
 
-/// FAT16 partition start sector (must match mkimage.py --fs-start)
-const FAT16_PARTITION_LBA: u32 = 8192;
+/// Partition start sector (must match mkimage.py --fs-start).
+const PARTITION_LBA: u32 = 8192;
 
 static VFS: Mutex<Option<VfsState>> = Mutex::new(None);
 
@@ -22,6 +23,7 @@ struct VfsState {
     open_files: Vec<Option<OpenFile>>,
     next_fd: FileDescriptor,
     mount_points: Vec<MountPoint>,
+    exfat_fs: Option<ExFatFs>,
     fat_fs: Option<FatFs>,
     iso9660_fs: Option<Iso9660Fs>,
     devfs: Option<DevFs>,
@@ -36,7 +38,9 @@ struct MountPoint {
 /// Supported filesystem types for mount points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FsType {
-    /// FAT12/16/32 filesystem on disk.
+    /// exFAT filesystem on disk (default for OS image).
+    ExFat,
+    /// FAT12/16/32 filesystem on disk (secondary mounts).
     Fat,
     /// ISO 9660 filesystem (CD-ROM/DVD-ROM, read-only).
     Iso9660,
@@ -86,7 +90,7 @@ pub enum FsError {
 }
 
 /// Split a path into (parent_dir, filename).
-/// "/system/hello.txt" → ("/system", "hello.txt")
+/// "/System/hello.txt" → ("/System", "hello.txt")
 /// "/hello.txt" → ("/", "hello.txt")
 fn split_parent_name(path: &str) -> Result<(&str, &str), FsError> {
     let path = path.trim_end_matches('/');
@@ -157,6 +161,7 @@ pub fn init() {
         open_files: Vec::new(),
         next_fd: 3, // 0=stdin, 1=stdout, 2=stderr
         mount_points: Vec::new(),
+        exfat_fs: None,
         fat_fs: None,
         iso9660_fs: None,
         devfs: None,
@@ -171,30 +176,54 @@ pub fn init() {
     crate::serial_println!("[OK] VFS initialized");
 }
 
-/// Check if the root FAT16 filesystem is mounted.
-pub fn has_root_fat() -> bool {
+/// Check if a root disk filesystem (exFAT or FAT16) is mounted.
+pub fn has_root_fs() -> bool {
     let vfs = VFS.lock();
     if let Some(ref state) = *vfs {
-        state.fat_fs.is_some()
+        state.exfat_fs.is_some() || state.fat_fs.is_some()
     } else {
         false
     }
 }
 
-/// Mount a filesystem at the given path. For FAT, reads the BPB from disk.
+/// Mount a filesystem at the given path.
+/// For disk partitions, auto-detects exFAT vs FAT16 by reading the OEM name.
 pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().expect("VFS not initialized");
 
-    if fs_type == FsType::Fat {
-        match FatFs::new(device_id, FAT16_PARTITION_LBA) {
-            Ok(fat) => {
-                state.fat_fs = Some(fat);
-                crate::serial_println!("  Mounted FAT16 at '{}'", path);
+    let actual_type = if fs_type == FsType::Fat || fs_type == FsType::ExFat {
+        // Auto-detect: read first sector to check OEM name
+        let mut buf = [0u8; 512];
+        if crate::drivers::storage::read_sectors(PARTITION_LBA, 1, &mut buf) {
+            crate::serial_println!("  VFS auto-detect: OEM bytes = {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9], buf[10]);
+            if &buf[3..11] == b"EXFAT   " {
+                match ExFatFs::new(device_id, PARTITION_LBA) {
+                    Ok(exfat) => {
+                        state.exfat_fs = Some(exfat);
+                        crate::serial_println!("  Mounted exFAT at '{}'", path);
+                    }
+                    Err(_) => {
+                        crate::serial_println!("  Failed to mount exFAT at '{}'", path);
+                    }
+                }
+                FsType::ExFat
+            } else {
+                match FatFs::new(device_id, PARTITION_LBA) {
+                    Ok(fat) => {
+                        state.fat_fs = Some(fat);
+                        crate::serial_println!("  Mounted FAT16 at '{}'", path);
+                    }
+                    Err(_) => {
+                        crate::serial_println!("  Failed to mount FAT16 at '{}'", path);
+                    }
+                }
+                FsType::Fat
             }
-            Err(_) => {
-                crate::serial_println!("  Failed to mount FAT16 at '{}'", path);
-            }
+        } else {
+            crate::serial_println!("  Failed to read partition at LBA {}", PARTITION_LBA);
+            FsType::Fat
         }
     } else if fs_type == FsType::Iso9660 {
         match Iso9660Fs::new() {
@@ -206,11 +235,14 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
                 crate::serial_println!("  Failed to mount ISO 9660 at '{}'", path);
             }
         }
-    }
+        FsType::Iso9660
+    } else {
+        fs_type
+    };
 
     state.mount_points.push(MountPoint {
         path: String::from(path),
-        fs_type,
+        fs_type: actual_type,
         device_id,
     });
 }
@@ -301,7 +333,62 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
         return Err(FsError::NotFound);
     }
 
-    // --- FAT path ---
+    // --- exFAT path (primary OS filesystem) ---
+    if let Some(ref mut exfat) = state.exfat_fs {
+        let lookup_result = exfat.lookup(path);
+
+        let (inode, file_type, size, parent_cluster) = match lookup_result {
+            Ok((inode, file_type, size)) => {
+                if flags.truncate && flags.write {
+                    let (parent_path, filename) = split_parent_name(path)?;
+                    let (pc, _, _) = exfat.lookup(parent_path)?;
+                    exfat.truncate_file(pc, filename)?;
+                    (0u32, file_type, 0u32, pc)
+                } else {
+                    let parent_cluster = if flags.write {
+                        let (parent_path, _) = split_parent_name(path)?;
+                        exfat.lookup(parent_path).map(|(c, _, _)| c).unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    (inode, file_type, size, parent_cluster)
+                }
+            }
+            Err(FsError::NotFound) if flags.create => {
+                let (parent_path, filename) = split_parent_name(path)?;
+                let (pc, pt, _) = exfat.lookup(parent_path)?;
+                if pt != FileType::Directory {
+                    return Err(FsError::NotADirectory);
+                }
+                exfat.create_file(pc, filename)?;
+                (0u32, FileType::Regular, 0u32, pc)
+            }
+            Err(e) => return Err(e),
+        };
+
+        let fd = state.next_fd;
+        state.next_fd += 1;
+        let position = if flags.append { size } else { 0 };
+        let file = OpenFile {
+            fd,
+            path: String::from(path),
+            file_type,
+            flags,
+            position,
+            size,
+            fs_id: 3, // exFAT
+            inode,
+            parent_cluster,
+        };
+        if let Some(slot) = state.open_files.iter_mut().find(|e| e.is_none()) {
+            *slot = Some(file);
+        } else {
+            state.open_files.push(Some(file));
+        }
+        return Ok(fd);
+    }
+
+    // --- FAT16 path (fallback / secondary mounts) ---
     if let Some(ref mut fat) = state.fat_fs {
         let lookup_result = fat.lookup(path);
 
@@ -436,7 +523,7 @@ pub fn read(fd: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
         return Ok(bytes_read);
     }
 
-    // --- FAT file ---
+    // --- exFAT / FAT file ---
     if file.position >= file.size {
         return Ok(0); // EOF
     }
@@ -444,7 +531,10 @@ pub fn read(fd: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
     let remaining = (file.size - file.position) as usize;
     let to_read = buf.len().min(remaining);
 
-    let bytes_read = if let Some(ref fat) = state.fat_fs {
+    let bytes_read = if file.fs_id == 3 {
+        let exfat = state.exfat_fs.as_ref().ok_or(FsError::IoError)?;
+        exfat.read_file(file.inode, file.position, &mut buf[..to_read])?
+    } else if let Some(ref fat) = state.fat_fs {
         fat.read_file(file.inode, file.position, &mut buf[..to_read])?
     } else {
         return Err(FsError::IoError);
@@ -476,32 +566,44 @@ pub fn write(fd: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
         return devfs.write(name, buf).ok_or(FsError::IoError);
     }
 
-    // --- FAT file ---
+    // --- exFAT / FAT file ---
     let old_inode = file.inode;
     let old_size = file.size;
     let position = file.position;
     let parent_cluster = file.parent_cluster;
+    let fs_id = file.fs_id;
 
     // Extract filename from path for directory entry update
     let path_clone = file.path.clone();
     let filename = path_clone.rsplit('/').next().unwrap_or("");
 
-    let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
-    let (new_cluster, new_size) = fat.write_file(old_inode, position, buf, old_size)?;
-
-    // Update directory entry if cluster or size changed
-    if new_cluster != old_inode || new_size != old_size {
-        fat.update_entry(parent_cluster, filename, new_size, new_cluster)?;
+    if fs_id == 3 {
+        let exfat = state.exfat_fs.as_mut().ok_or(FsError::IoError)?;
+        let (new_cluster, new_size) = exfat.write_file(old_inode, position, buf, old_size)?;
+        if new_cluster != old_inode || new_size != old_size {
+            exfat.update_entry(parent_cluster, filename, new_size, new_cluster)?;
+        }
+        let file = state.open_files.iter_mut()
+            .flatten()
+            .find(|f| f.fd == fd)
+            .ok_or(FsError::BadFd)?;
+        file.inode = new_cluster;
+        file.size = new_size;
+        file.position = position + buf.len() as u32;
+    } else {
+        let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
+        let (new_cluster, new_size) = fat.write_file(old_inode, position, buf, old_size)?;
+        if new_cluster != old_inode || new_size != old_size {
+            fat.update_entry(parent_cluster, filename, new_size, new_cluster)?;
+        }
+        let file = state.open_files.iter_mut()
+            .flatten()
+            .find(|f| f.fd == fd)
+            .ok_or(FsError::BadFd)?;
+        file.inode = new_cluster;
+        file.size = new_size;
+        file.position = position + buf.len() as u32;
     }
-
-    // Update open file metadata
-    let file = state.open_files.iter_mut()
-        .flatten()
-        .find(|f| f.fd == fd)
-        .ok_or(FsError::BadFd)?;
-    file.inode = new_cluster;
-    file.size = new_size;
-    file.position = position + buf.len() as u32;
 
     Ok(buf.len())
 }
@@ -547,7 +649,21 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
         return Err(FsError::NotFound);
     }
 
-    // --- FAT path ---
+    // --- exFAT path (primary) ---
+    if let Some(ref exfat) = state.exfat_fs {
+        let (inode, file_type, _size) = exfat.lookup(path)?;
+        if file_type != FileType::Directory {
+            return Err(FsError::NotADirectory);
+        }
+        let (cluster, _) = crate::fs::exfat::decode_inode(inode);
+        let mut entries = exfat.read_dir(cluster)?;
+        if path == "/" {
+            add_virtual_root_entries(state, &mut entries);
+        }
+        return Ok(entries);
+    }
+
+    // --- FAT16 path (fallback) ---
     if let Some(ref fat) = state.fat_fs {
         let (cluster, file_type, _size) = fat.lookup(path)?;
         if file_type != FileType::Directory {
@@ -603,6 +719,14 @@ fn add_virtual_root_entries(state: &VfsState, entries: &mut Vec<DirEntry>) {
 /// Because the VFS uses a scheduler-integrated [`Mutex`] (not a spinlock),
 /// interrupts remain enabled even during Phase 1 disk I/O.
 pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
+    use crate::fs::exfat::ExFatReadPlan;
+    use crate::fs::fat::FileReadPlan;
+
+    enum ReadPlan {
+        Fat(FileReadPlan),
+        ExFat(ExFatReadPlan),
+    }
+
     // Device files are streaming — can't read to vec
     if is_dev_path(path) {
         return Err(FsError::PermissionDenied);
@@ -624,14 +748,19 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
     let plan = {
         let vfs = VFS.lock();
         let state = vfs.as_ref().ok_or(FsError::IoError)?;
-        if let Some(ref fat) = state.fat_fs {
+        if let Some(ref exfat) = state.exfat_fs {
+            let (inode, file_type, size) = exfat.lookup(path)?;
+            if file_type == FileType::Directory {
+                return Err(FsError::IsADirectory);
+            }
+            ReadPlan::ExFat(exfat.get_file_read_plan(inode, size))
+        } else if let Some(ref fat) = state.fat_fs {
             let (cluster, file_type, size) = fat.lookup(path)?;
             if file_type == FileType::Directory {
                 return Err(FsError::IsADirectory);
             }
-            fat.get_file_read_plan(cluster, size)
+            ReadPlan::Fat(fat.get_file_read_plan(cluster, size))
         } else if let Some(ref iso) = state.iso9660_fs {
-            // ISO 9660 root fallback (CD-ROM boot, no FAT16 disk)
             return iso.read_file_to_vec(path);
         } else {
             return Err(FsError::NotFound);
@@ -639,7 +768,10 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
     }; // VFS lock dropped — interrupts re-enabled
 
     // Phase 2: Without lock — perform disk I/O with interrupts enabled
-    plan.execute()
+    match plan {
+        ReadPlan::Fat(p) => p.execute(),
+        ReadPlan::ExFat(p) => p.execute(),
+    }
 }
 
 /// Delete a file or empty directory at the given path.
@@ -647,9 +779,14 @@ pub fn delete(path: &str) -> Result<(), FsError> {
     if is_dev_path(path) { return Err(FsError::PermissionDenied); }
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
-    let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
 
     let (parent_path, filename) = split_parent_name(path)?;
+    if let Some(ref mut exfat) = state.exfat_fs {
+        let (inode, _, _) = exfat.lookup(parent_path)?;
+        let (pc, _) = crate::fs::exfat::decode_inode(inode);
+        return exfat.delete_file(pc, filename);
+    }
+    let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
     let (parent_cluster, _, _) = fat.lookup(parent_path)?;
     fat.delete_file(parent_cluster, filename)
 }
@@ -659,9 +796,18 @@ pub fn mkdir(path: &str) -> Result<(), FsError> {
     if is_dev_path(path) { return Err(FsError::PermissionDenied); }
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
-    let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
 
     let (parent_path, dirname) = split_parent_name(path)?;
+    if let Some(ref mut exfat) = state.exfat_fs {
+        let (inode, pt, _) = exfat.lookup(parent_path)?;
+        if pt != FileType::Directory {
+            return Err(FsError::NotADirectory);
+        }
+        let (pc, _) = crate::fs::exfat::decode_inode(inode);
+        exfat.create_dir(pc, dirname)?;
+        return Ok(());
+    }
+    let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
     let (parent_cluster, parent_type, _) = fat.lookup(parent_path)?;
     if parent_type != FileType::Directory {
         return Err(FsError::NotADirectory);
@@ -732,9 +878,14 @@ pub fn truncate(path: &str) -> Result<(), FsError> {
     if is_dev_path(path) { return Err(FsError::PermissionDenied); }
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
-    let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
 
     let (parent_path, filename) = split_parent_name(path)?;
+    if let Some(ref mut exfat) = state.exfat_fs {
+        let (inode, _, _) = exfat.lookup(parent_path)?;
+        let (pc, _) = crate::fs::exfat::decode_inode(inode);
+        return exfat.truncate_file(pc, filename);
+    }
+    let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
     let (parent_cluster, _, _) = fat.lookup(parent_path)?;
     fat.truncate_file(parent_cluster, filename)
 }
@@ -822,6 +973,7 @@ pub fn list_mounts() -> Vec<(String, &'static str, u32)> {
     if let Some(ref state) = *vfs {
         state.mount_points.iter().map(|mp| {
             let fs_name = match mp.fs_type {
+                FsType::ExFat => "exfat",
                 FsType::Fat => "fat16",
                 FsType::Iso9660 => "iso9660",
                 FsType::DevFs => "devfs",

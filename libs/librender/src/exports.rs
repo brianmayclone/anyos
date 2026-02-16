@@ -1,4 +1,4 @@
-//! Export table for librender.dll.
+//! Export table for librender.dlib.
 
 use crate::color::Color;
 use crate::rect::Rect;

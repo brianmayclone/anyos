@@ -8,26 +8,90 @@ use alloc::vec::Vec;
 use crate::fs;
 
 /// Base directory for app icons (.ico files).
-pub const APP_ICONS_DIR: &str = "/system/media/icons/apps";
+pub const APP_ICONS_DIR: &str = "/System/media/icons/apps";
 
 /// Default app icon (fallback when no app-specific icon exists).
-pub const DEFAULT_APP_ICON: &str = "/system/media/icons/apps/default.ico";
+pub const DEFAULT_APP_ICON: &str = "/System/media/icons/apps/default.ico";
 
 /// Default file icon (fallback when no mimetype-specific icon exists).
-pub const DEFAULT_FILE_ICON: &str = "/system/media/icons/default.ico";
+pub const DEFAULT_FILE_ICON: &str = "/System/media/icons/default.ico";
 
 /// Folder icon path.
-pub const FOLDER_ICON: &str = "/system/media/icons/folder.ico";
+pub const FOLDER_ICON: &str = "/System/media/icons/folder.ico";
 
 /// Mimetype configuration file path.
-const MIMETYPES_CONF: &str = "/system/mimetypes.conf";
+const MIMETYPES_CONF: &str = "/System/mimetypes.conf";
 
-/// Derive the app icon path for a binary.
+/// Check if a path refers to a .app bundle (directory ending in `.app`).
+pub fn is_app_bundle(path: &str) -> bool {
+    path.ends_with(".app")
+}
+
+/// Read the display name from a .app bundle's Info.conf.
+/// Falls back to the folder name minus ".app" if Info.conf is missing or has no `name=` key.
+pub fn app_bundle_name(bundle_path: &str) -> String {
+    // Try reading Info.conf
+    let mut conf_path = String::from(bundle_path);
+    conf_path.push_str("/Info.conf");
+
+    let fd = fs::open(&conf_path, 0);
+    if fd != u32::MAX {
+        let mut buf = [0u8; 512];
+        let n = fs::read(fd, &mut buf);
+        fs::close(fd);
+        if n > 0 && n != u32::MAX {
+            if let Ok(text) = core::str::from_utf8(&buf[..n as usize]) {
+                for line in text.split('\n') {
+                    let line = line.trim();
+                    if let Some(rest) = line.strip_prefix("name=") {
+                        if !rest.is_empty() {
+                            return String::from(rest);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: derive from folder name
+    let folder = bundle_path.rsplit('/').next().unwrap_or(bundle_path);
+    if let Some(name) = folder.strip_suffix(".app") {
+        String::from(name)
+    } else {
+        String::from(folder)
+    }
+}
+
+/// Derive the app icon path for a binary or .app bundle path.
 ///
-/// Given a binary path like `/system/finder`, extracts the basename
-/// and returns `/system/media/icons/apps/finder.ico`.
-/// Falls back to `DEFAULT_APP_ICON` if the specific icon file does not exist.
+/// For .app bundles: checks for `Icon.ico` inside the bundle directory.
+/// For regular binaries: returns `/System/media/icons/apps/{basename}.ico`.
+/// Falls back to `DEFAULT_APP_ICON` if no icon file exists.
 pub fn app_icon_path(bin_path: &str) -> String {
+    // .app bundle: look for Icon.ico inside the bundle
+    if bin_path.ends_with(".app") {
+        let mut path = String::from(bin_path);
+        path.push_str("/Icon.ico");
+        let mut stat_buf = [0u32; 2];
+        if fs::stat(&path, &mut stat_buf) == 0 {
+            return path;
+        }
+        return String::from(DEFAULT_APP_ICON);
+    }
+
+    // Path inside a .app bundle (e.g. "/Applications/Calc.app/Calc")
+    if let Some(pos) = bin_path.find(".app/") {
+        let bundle_dir = &bin_path[..pos + 4];
+        let mut path = String::from(bundle_dir);
+        path.push_str("/Icon.ico");
+        let mut stat_buf = [0u32; 2];
+        if fs::stat(&path, &mut stat_buf) == 0 {
+            return path;
+        }
+        return String::from(DEFAULT_APP_ICON);
+    }
+
+    // Regular binary: /System/media/icons/apps/{basename}.ico
     let basename = match bin_path.rfind('/') {
         Some(pos) if pos + 1 < bin_path.len() => &bin_path[pos + 1..],
         _ => bin_path,
@@ -64,7 +128,7 @@ pub struct MimeDb {
 }
 
 impl MimeDb {
-    /// Load the mimetype database from /system/mimetypes.conf.
+    /// Load the mimetype database from /System/mimetypes.conf.
     pub fn load() -> Self {
         Self { entries: load_mimetypes_inner() }
     }

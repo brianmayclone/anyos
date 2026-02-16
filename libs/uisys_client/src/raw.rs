@@ -1,6 +1,6 @@
 //! Raw export struct definition — must exactly match the DLL's UisysExports layout.
 
-/// Base virtual address where uisys.dll is mapped.
+/// Base virtual address where uisys.dlib is mapped.
 pub const UISYS_BASE: usize = 0x0400_0000;
 
 #[repr(C)]

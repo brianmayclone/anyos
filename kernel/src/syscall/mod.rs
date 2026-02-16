@@ -161,6 +161,9 @@ pub const SYS_SETENV: u32 = 182;
 pub const SYS_GETENV: u32 = 183;
 pub const SYS_LISTENV: u32 = 184;
 
+// DLIB shared page write
+pub const SYS_SET_DLL_U32: u32 = 190;
+
 /// Register frame pushed by `syscall_entry.asm` / `syscall_fast.asm`.
 ///
 /// The layout matches the individual GPR pushes (no pushad in 64-bit mode) plus the
@@ -332,6 +335,9 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_SETENV => handlers::sys_setenv(arg1, arg2),
         SYS_GETENV => handlers::sys_getenv(arg1, arg2, arg3),
         SYS_LISTENV => handlers::sys_listenv(arg1, arg2),
+
+        // DLIB shared page write
+        SYS_SET_DLL_U32 => handlers::sys_set_dll_u32(arg1, arg2, arg3),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

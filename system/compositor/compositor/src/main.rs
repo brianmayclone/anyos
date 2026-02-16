@@ -104,11 +104,11 @@ fn render_thread_entry() {
 
 // ── Compositor Config File ──────────────────────────────────────────────────
 
-/// Read /system/compositor/compositor.conf and spawn each listed program.
+/// Read /System/compositor/compositor.conf and spawn each listed program.
 fn launch_compositor_conf() {
     use anyos_std::fs;
 
-    let conf_path = "/system/compositor/compositor.conf";
+    let conf_path = "/System/compositor/compositor.conf";
     let fd = fs::open(conf_path, 0);
     if fd == u32::MAX {
         println!("compositor: no compositor.conf found");
@@ -249,7 +249,7 @@ fn main() {
 
     // Step 7: Spawn the dock now that everything is ready (event channel,
     // render thread, management loop about to start).
-    let _dock_tid = process::spawn("/system/compositor/dock", "");
+    let _dock_tid = process::spawn("/System/compositor/dock", "");
     println!("compositor: dock spawned");
 
     // Step 7b: Launch programs from compositor.conf (after dock)

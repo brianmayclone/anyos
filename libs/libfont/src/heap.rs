@@ -1,8 +1,8 @@
-//! DLL bump allocator using the per-process DLL state page.
+//! DLL bump allocator using per-process `.bss` statics.
 //!
-//! The kernel maps a zeroed physical frame at `DLL_STATE_PAGE` (0x0BFE_0000)
-//! for each user process. This allocator stores its heap_pos and heap_end
-//! at fixed offsets in that page, avoiding the need for `.data`/`.bss` sections.
+//! With DLIB v3, each process gets its own `.bss` section (zeroed on demand
+//! by the kernel). The heap position and end pointers live here as normal
+//! statics — no DLL state page needed.
 //!
 //! Memory is obtained from the process heap via `SYS_SBRK`. This coexists
 //! with stdlib's allocator — when sbrk returns non-contiguous memory (because
@@ -13,28 +13,19 @@ use core::alloc::{GlobalAlloc, Layout};
 
 use crate::syscall;
 
-/// Per-process DLL state page virtual address (must match kernel constant).
-const DLL_STATE_PAGE: usize = 0x0BFE_0000;
-
-// Layout within the state page (libfont uses bytes 0-23):
-//   [0x00] u64: FontManager pointer (0 = not initialized)
-//   [0x08] u64: heap_pos (next allocation address)
-//   [0x10] u64: heap_end (current mapped heap boundary)
-const HEAP_POS_OFFSET: usize = 0x08;
-const HEAP_END_OFFSET: usize = 0x10;
+/// Heap state — lives in per-process .bss (zero-initialized per process).
+static mut HEAP_POS: u64 = 0;
+static mut HEAP_END: u64 = 0;
 
 #[global_allocator]
 static ALLOCATOR: DllBumpAlloc = DllBumpAlloc;
 
-/// Zero-sized bump allocator — all state lives in the DLL state page.
+/// Zero-sized bump allocator — state lives in per-process .bss statics.
 struct DllBumpAlloc;
 
 unsafe impl GlobalAlloc for DllBumpAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let pos_ptr = (DLL_STATE_PAGE + HEAP_POS_OFFSET) as *mut u64;
-        let end_ptr = (DLL_STATE_PAGE + HEAP_END_OFFSET) as *mut u64;
-
-        let mut pos = *pos_ptr;
+        let mut pos = HEAP_POS;
 
         // First allocation: initialize from current sbrk position
         if pos == 0 {
@@ -42,8 +33,8 @@ unsafe impl GlobalAlloc for DllBumpAlloc {
             if brk == u64::MAX {
                 return core::ptr::null_mut();
             }
-            *pos_ptr = brk;
-            *end_ptr = brk;
+            HEAP_POS = brk;
+            HEAP_END = brk;
             pos = brk;
         }
 
@@ -55,7 +46,7 @@ unsafe impl GlobalAlloc for DllBumpAlloc {
         let new_pos = aligned + size;
 
         // Grow the heap via sbrk if needed
-        let end = *end_ptr;
+        let end = HEAP_END;
         if new_pos > end {
             // Request enough for a full allocation in case sbrk returns
             // non-contiguous memory (another allocator moved the break)
@@ -69,19 +60,19 @@ unsafe impl GlobalAlloc for DllBumpAlloc {
 
             if result == end {
                 // Contiguous extension — original aligned/new_pos are valid
-                *end_ptr = end + grow;
+                HEAP_END = end + grow;
             } else {
                 // Non-contiguous: another allocator owns [end, result)
                 // Start fresh from the sbrk return value
-                *end_ptr = result + grow;
+                HEAP_END = result + grow;
                 let aligned = (result + align - 1) & !(align - 1);
                 let new_pos = aligned + size;
-                *pos_ptr = new_pos;
+                HEAP_POS = new_pos;
                 return aligned as *mut u8;
             }
         }
 
-        *pos_ptr = new_pos;
+        HEAP_POS = new_pos;
         aligned as *mut u8
     }
 

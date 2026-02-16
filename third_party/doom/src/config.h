@@ -20,4 +20,4 @@
 #define VERSION 0.1
 
 /* Game files are located on the anyOS filesystem */
-#define FILES_DIR "/apps/doom"
+#define FILES_DIR "/Applications/DOOM.app"

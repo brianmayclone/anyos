@@ -1,4 +1,4 @@
-//! uisys client — type-safe Rust wrappers for the uisys.dll shared library.
+//! uisys client — type-safe Rust wrappers for the uisys.dlib shared library.
 //!
 //! Programs depend on this crate to call DLL functions through the export table
 //! at the fixed virtual address 0x04000000.

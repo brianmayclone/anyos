@@ -1,6 +1,6 @@
 //! anyOS UEFI Bootloader
 //!
-//! Loads `/system/kernel.bin` from the FAT data partition, sets up page tables,
+//! Loads `/System/kernel.bin` from the exFAT data partition, sets up page tables,
 //! fills the BootInfo struct (identical to the BIOS Stage 2 format), and jumps
 //! to the kernel entry point.
 //!
@@ -65,9 +65,9 @@ const PT_PAGE_FLAGS: u64 = PT_PRESENT | PT_RW | PT_PS;
 const PREFERRED_WIDTH: usize = 1024;
 const PREFERRED_HEIGHT: usize = 768;
 
-/// Kernel file paths on data partition.
-const KERNEL_PATH: &str = "\\system\\kernel.bin";
-const KERNEL_FALLBACK: &str = "\\system\\kernel.bak";
+/// Kernel file paths (looked up on all volumes — ESP and data partition).
+const KERNEL_PATH: &str = "\\System\\kernel.bin";
+const KERNEL_FALLBACK: &str = "\\System\\kernel.bak";
 
 /// Maximum kernel size: 8 MiB.
 const MAX_KERNEL_SIZE: usize = 8 * 1024 * 1024;

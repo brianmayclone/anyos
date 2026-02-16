@@ -196,12 +196,12 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
 
     // Auto-detect CD-ROM with ISO 9660 filesystem
     if drivers::storage::atapi::is_present() && drivers::storage::atapi::capacity_lba() > 0 {
-        if fs::vfs::has_root_fat() {
+        if fs::vfs::has_root_fs() {
             // Hard disk + CD-ROM: mount CD at /mnt/cdrom0
             fs::vfs::mount("/mnt/cdrom0", fs::vfs::FsType::Iso9660, 0);
         } else {
             // CD-ROM only (Live CD boot): mount ISO 9660 as root filesystem
-            serial_println!("  No FAT16 disk detected, using ISO 9660 as root filesystem");
+            serial_println!("  No disk filesystem detected, using ISO 9660 as root filesystem");
             fs::vfs::mount("/", fs::vfs::FsType::Iso9660, 0);
         }
     }
@@ -221,26 +221,26 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         }
     }
 
-    // Phase 8c: Load shared DLLs from filesystem
-    match task::dll::load_dll("/system/lib/uisys.dll", 0x0400_0000) {
-        Ok(pages) => serial_println!("[OK] uisys.dll: {} pages", pages),
-        Err(e) => serial_println!("[WARN] uisys.dll not loaded: {}", e),
+    // Phase 8c: Load shared DLIBs from filesystem
+    match task::dll::load_dll("/Libraries/uisys.dlib", 0x0400_0000) {
+        Ok(pages) => serial_println!("[OK] uisys.dlib: {} pages", pages),
+        Err(e) => serial_println!("[WARN] uisys.dlib not loaded: {}", e),
     }
-    match task::dll::load_dll("/system/lib/libimage.dll", 0x0410_0000) {
-        Ok(pages) => serial_println!("[OK] libimage.dll: {} pages", pages),
-        Err(e) => serial_println!("[WARN] libimage.dll not loaded: {}", e),
+    match task::dll::load_dll("/Libraries/libimage.dlib", 0x0410_0000) {
+        Ok(pages) => serial_println!("[OK] libimage.dlib: {} pages", pages),
+        Err(e) => serial_println!("[WARN] libimage.dlib not loaded: {}", e),
     }
-    match task::dll::load_dll("/system/lib/libfont.dll", 0x0420_0000) {
-        Ok(pages) => serial_println!("[OK] libfont.dll: {} pages", pages),
-        Err(e) => serial_println!("[WARN] libfont.dll not loaded: {}", e),
+    match task::dll::load_dll("/Libraries/libfont.dlib", 0x0420_0000) {
+        Ok(pages) => serial_println!("[OK] libfont.dlib: {} pages", pages),
+        Err(e) => serial_println!("[WARN] libfont.dlib not loaded: {}", e),
     }
-    match task::dll::load_dll("/system/lib/librender.dll", 0x0430_0000) {
-        Ok(pages) => serial_println!("[OK] librender.dll: {} pages", pages),
-        Err(e) => serial_println!("[WARN] librender.dll not loaded: {}", e),
+    match task::dll::load_dll("/Libraries/librender.dlib", 0x0430_0000) {
+        Ok(pages) => serial_println!("[OK] librender.dlib: {} pages", pages),
+        Err(e) => serial_println!("[WARN] librender.dlib not loaded: {}", e),
     }
-    match task::dll::load_dll("/system/lib/libcompositor.dll", 0x0438_0000) {
-        Ok(pages) => serial_println!("[OK] libcompositor.dll: {} pages", pages),
-        Err(e) => serial_println!("[WARN] libcompositor.dll not loaded: {}", e),
+    match task::dll::load_dll("/Libraries/libcompositor.dlib", 0x0438_0000) {
+        Ok(pages) => serial_println!("[OK] libcompositor.dlib: {} pages", pages),
+        Err(e) => serial_println!("[WARN] libcompositor.dlib not loaded: {}", e),
     }
 
     // Phase 9: Start userspace compositor + init process
@@ -286,16 +286,16 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         task::scheduler::spawn(usb_poll_thread, 50, "usb_poll");
 
         // Launch userspace compositor (highest user priority)
-        match task::loader::load_and_run("/system/compositor/compositor", "compositor") {
+        match task::loader::load_and_run("/System/compositor/compositor", "compositor") {
             Ok(tid) => serial_println!("[OK] Userspace compositor spawned (TID={})", tid),
             Err(e) => serial_println!("  WARN: Failed to load compositor: {}", e),
         }
 
         // Launch init process (runs benchmarks, loads wallpaper, starts programs)
-        match task::loader::load_and_run("/system/init", "init") {
+        match task::loader::load_and_run("/System/init", "init") {
             Ok(tid) => serial_println!("[OK] Init spawned (TID={})", tid),
             Err(e) => {
-                serial_println!("  WARN: Failed to load /system/init: {}", e);
+                serial_println!("  WARN: Failed to load /System/init: {}", e);
             }
         }
 

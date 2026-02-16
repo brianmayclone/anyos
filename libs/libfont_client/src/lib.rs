@@ -1,7 +1,7 @@
 // Copyright (c) 2024-2026 Christian Moeller
 // SPDX-License-Identifier: MIT
 
-//! Client library for libfont.dll — TTF font engine.
+//! Client library for libfont.dlib — TTF font engine.
 //!
 //! Provides safe Rust wrappers around the raw DLL export functions.
 //! User programs depend on this crate to load TrueType fonts, measure text,

@@ -741,8 +741,8 @@ fn main() {
     anyos_std::env::set("PWD", "/");
     anyos_std::env::set("HOME", "/");
     anyos_std::env::set("USER", "root");
-    anyos_std::env::set("SHELL", "/system/terminal");
-    anyos_std::env::set("PATH", "/bin:/system");
+    anyos_std::env::set("SHELL", "/System/terminal");
+    anyos_std::env::set("PATH", "/bin:/System");
 
     // Welcome message
     buf.current_color = COLOR_TITLE;

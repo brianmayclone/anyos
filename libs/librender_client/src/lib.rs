@@ -1,4 +1,4 @@
-//! Client library for librender.dll — 2D rendering primitives.
+//! Client library for librender.dlib — 2D rendering primitives.
 //!
 //! Provides safe Rust wrappers around the raw DLL export functions.
 //! All operations work on caller-provided ARGB8888 pixel buffers.

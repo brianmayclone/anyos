@@ -98,7 +98,7 @@ impl UiEvent {
 
 /// Theme color functions matching the DLL's built-in palette.
 /// Colors are dynamic — they change based on the system theme (dark/light).
-/// Theme value is read from uisys.dll shared page (zero syscalls).
+/// Theme value is read from uisys.dlib shared page (zero syscalls).
 pub mod colors {
     /// Address of the `theme` field in UisysExports (DLL base 0x04000000 + 12).
     const THEME_ADDR: *const u32 = 0x0400_000C as *const u32;

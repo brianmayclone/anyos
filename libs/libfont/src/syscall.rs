@@ -1,4 +1,4 @@
-//! Raw syscall wrappers for libfont.dll.
+//! Raw syscall wrappers for libfont.dlib.
 //!
 //! Uses the SYSCALL instruction directly (x86-64 fast path).
 //! Convention: RAX=num, RBX=arg1, R10=arg2, RDX=arg3. Return in RAX.

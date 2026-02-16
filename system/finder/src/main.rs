@@ -27,12 +27,13 @@ const ICON_SIZE: u32 = 16;
 const EVENT_MOUSE_SCROLL: u32 = 7;
 
 // Sidebar locations
-const LOCATIONS: [(&str, &str); 5] = [
+const LOCATIONS: [(&str, &str); 6] = [
     ("Root", "/"),
+    ("Applications", "/Applications"),
     ("Programs", "/bin"),
-    ("System", "/system"),
-    ("Libraries", "/system/lib"),
-    ("Icons", "/system/icons"),
+    ("System", "/System"),
+    ("Libraries", "/Libraries"),
+    ("Icons", "/System/icons"),
 ];
 
 // File entry type constants (from readdir)
@@ -326,6 +327,12 @@ fn open_entry(state: &mut AppState, idx: usize) {
     let name = entry.name_str();
 
     if entry.entry_type == TYPE_DIR {
+        // .app bundles: launch as an application, not navigate into
+        if name.ends_with(".app") {
+            let full_path = build_full_path(&state.cwd, name);
+            process::spawn(&full_path, "");
+            return;
+        }
         let new_path = build_full_path(&state.cwd, name);
         navigate(state, &new_path);
     } else {
@@ -569,12 +576,19 @@ fn render_file_list(win: u32, state: &mut AppState, win_w: u32, win_h: u32) {
         let icon_y = ry + (ROW_H - ICON_SIZE as i32) / 2;
 
         // Determine icon path for this entry.
-        // App icons (from /system/media/icons/apps/) take priority over mimetype icons.
+        // App icons (from /System/media/icons/apps/) take priority over mimetype icons.
         let name = entry.name_str();
         let entry_type = entry.entry_type;
         let app_icon_buf: alloc::string::String;
         let icon_path: &str = if entry_type == TYPE_DIR {
-            icons::FOLDER_ICON
+            // .app bundles get their Icon.ico, regular dirs get folder icon
+            if name.ends_with(".app") {
+                let full = build_full_path(&state.cwd, name);
+                app_icon_buf = icons::app_icon_path(&full);
+                app_icon_buf.as_str()
+            } else {
+                icons::FOLDER_ICON
+            }
         } else {
             app_icon_buf = icons::app_icon_path(&build_full_path(&state.cwd, name));
             if app_icon_buf.as_str() != icons::DEFAULT_APP_ICON {
@@ -613,9 +627,15 @@ fn render_file_list(win: u32, state: &mut AppState, win_w: u32, win_h: u32) {
             window::fill_rect(win, icon_x as i16, icon_y as i16, ICON_SIZE as u16, ICON_SIZE as u16, icon_color);
         }
 
-        // Name
+        // Name — strip ".app" suffix for bundles
         let name_x = icon_x + ICON_SIZE as i32 + 8;
-        label_ellipsis(win, name_x, ry + 6, entry.name_str(), text_color, FontSize::Normal,
+        let display_name = entry.name_str();
+        let display_name = if entry_type == TYPE_DIR {
+            display_name.strip_suffix(".app").unwrap_or(display_name)
+        } else {
+            display_name
+        };
+        label_ellipsis(win, name_x, ry + 6, display_name, text_color, FontSize::Normal,
             (size_col_x - name_x - 8) as u32);
 
         // Size (only for files)
@@ -861,9 +881,9 @@ fn main() {
                         2 => { window::destroy(win); return; } // Close
                         10 => { navigate(&mut state, "/"); needs_redraw = true; }
                         11 => { navigate(&mut state, "/bin"); needs_redraw = true; }
-                        12 => { navigate(&mut state, "/system"); needs_redraw = true; }
-                        13 => { navigate(&mut state, "/system/lib"); needs_redraw = true; }
-                        14 => { navigate(&mut state, "/system/icons"); needs_redraw = true; }
+                        12 => { navigate(&mut state, "/System"); needs_redraw = true; }
+                        13 => { navigate(&mut state, "/Libraries"); needs_redraw = true; }
+                        14 => { navigate(&mut state, "/System/icons"); needs_redraw = true; }
                         20 => { navigate_back(&mut state); needs_redraw = true; }
                         21 => { navigate_forward(&mut state); needs_redraw = true; }
                         _ => {}

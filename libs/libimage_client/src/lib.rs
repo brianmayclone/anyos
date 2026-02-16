@@ -1,7 +1,7 @@
 // Copyright (c) 2024-2026 Christian Moeller
 // SPDX-License-Identifier: MIT
 
-//! Client library for libimage.dll — image and video decoding shared library.
+//! Client library for libimage.dlib — image and video decoding shared library.
 //!
 //! Provides safe Rust wrappers around the raw DLL export functions.
 //! User programs depend on this crate to decode BMP, PNG, JPEG, GIF images

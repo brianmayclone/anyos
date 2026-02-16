@@ -314,7 +314,13 @@ pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32
         ""
     };
     crate::serial_println!("sys_spawn: path='{}' pipe={} args_ptr={:#x} stdin_pipe={}", path, stdout_pipe, args_ptr, stdin_pipe);
-    let name = path.rsplit('/').next().unwrap_or(path);
+    let raw_name = path.rsplit('/').next().unwrap_or(path);
+    // Strip ".app" suffix so process name is clean (e.g. "Calculator" not "Calculator.app")
+    let name = if raw_name.ends_with(".app") {
+        &raw_name[..raw_name.len() - 4]
+    } else {
+        raw_name
+    };
     match crate::task::loader::load_and_run_with_args(path, name, args) {
         Ok(tid) => {
             if stdout_pipe != 0 {
@@ -1334,6 +1340,18 @@ pub fn sys_dll_load(path_ptr: u32, _path_len: u32) -> u32 {
     match crate::task::dll::load_dll_dynamic(path) {
         Some(base) => base as u32,
         None => 0,
+    }
+}
+
+/// Write a u32 value to a shared DLIB page.
+/// arg1 = dll_base_vaddr (lower 32 bits), arg2 = offset, arg3 = value.
+/// Used by compositor to write theme field to uisys shared RO pages.
+pub fn sys_set_dll_u32(dll_base_lo: u32, offset: u32, value: u32) -> u32 {
+    let dll_base = dll_base_lo as u64;
+    if crate::task::dll::set_dll_u32(dll_base, offset as u64, value) {
+        0
+    } else {
+        u32::MAX
     }
 }
 

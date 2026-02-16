@@ -15,12 +15,12 @@ Supports two modes:
     Sector 0:       Stage 1 (MBR, 512 bytes)
     Sectors 1-63:   Stage 2 (padded to 63 * 512 bytes)
     Sectors 64+:    Kernel flat binary (extracted from ELF PT_LOAD segments)
-    Sector fs_start+: FAT16 filesystem (optional, if --sysroot is given)
+    Sector fs_start+: exFAT filesystem (optional, if --sysroot is given)
 
   UEFI mode (--uefi):
     GPT partition table with:
       Partition 1: EFI System Partition (FAT16, 3 MiB) containing BOOTX64.EFI
-      Partition 2: anyOS Data (FAT16) containing sysroot + /system/kernel.bin
+      Partition 2: anyOS Data (exFAT) containing sysroot + /System/kernel.bin
 """
 
 import argparse
@@ -623,6 +623,573 @@ class Fat16Formatter:
 
 
 # =====================================================================
+# exFAT formatter
+# =====================================================================
+
+class ExFatFormatter:
+    """Creates an exFAT filesystem in the disk image."""
+
+    # Directory entry types
+    ENTRY_BITMAP  = 0x81
+    ENTRY_UPCASE  = 0x82
+    ENTRY_LABEL   = 0x83
+    ENTRY_FILE    = 0x85
+    ENTRY_STREAM  = 0xC0
+    ENTRY_FILENAME = 0xC1
+
+    ATTR_DIRECTORY = 0x0010
+    ATTR_ARCHIVE   = 0x0020
+
+    FLAG_CONTIGUOUS = 0x02
+
+    EXFAT_EOC  = 0xFFFFFFFF
+    EXFAT_FREE = 0x00000000
+
+    def __init__(self, image, fs_start_sector, fs_sector_count, sectors_per_cluster=8):
+        self.image = image
+        self.fs_start = fs_start_sector
+        self.fs_sectors = fs_sector_count
+        self.bps_shift = 9   # 2^9 = 512
+        self.spc_shift = 3   # 2^3 = 8 sectors per cluster
+        self.spc = sectors_per_cluster
+        self.cluster_size = self.spc * SECTOR_SIZE  # 4096
+        self.num_fats = 1
+
+        # Layout: Main Boot Region (12) + Backup (12) + alignment = FAT at sector 32
+        self.fat_offset = 32  # sectors from fs_start to FAT
+
+        # Iterative: compute cluster_count and fat_length
+        # cluster_count = (fs_sectors - cluster_heap_offset) / spc
+        # cluster_heap_offset = fat_offset + fat_length
+        # fat_length = ceil((cluster_count + 2) * 4 / 512)
+        # Start with estimate
+        est_clusters = (fs_sector_count - self.fat_offset) // self.spc
+        fat_bytes = (est_clusters + 2) * 4
+        self.fat_length = (fat_bytes + SECTOR_SIZE - 1) // SECTOR_SIZE
+        self.cluster_heap_offset = self.fat_offset + self.fat_length
+        self.cluster_count = (fs_sector_count - self.cluster_heap_offset) // self.spc
+
+        # Recompute fat_length with final cluster_count
+        fat_bytes = (self.cluster_count + 2) * 4
+        self.fat_length = (fat_bytes + SECTOR_SIZE - 1) // SECTOR_SIZE
+        self.cluster_heap_offset = self.fat_offset + self.fat_length
+
+        # Next free cluster (starts at 2)
+        self.next_cluster = 2
+
+        # Root directory at cluster 4 (bitmap=2, upcase=3, root=4)
+        # We'll allocate them in order
+        self.bitmap_cluster = None
+        self.root_cluster = None
+
+        # In-memory FAT cache
+        self.fat_cache = bytearray((self.cluster_count + 2) * 4)
+        # Entry 0: media type, Entry 1: end marker
+        struct.pack_into('<I', self.fat_cache, 0, 0xFFFFFFF8)
+        struct.pack_into('<I', self.fat_cache, 4, 0xFFFFFFFF)
+
+        # In-memory allocation bitmap
+        bitmap_bytes = (self.cluster_count + 7) // 8
+        self.bitmap = bytearray(bitmap_bytes)
+
+        print(f"  exFAT: {self.cluster_count} clusters, {self.cluster_size} bytes/cluster")
+        print(f"  exFAT: FAT at sector +{self.fat_offset} ({self.fat_length} sectors), "
+              f"data at sector +{self.cluster_heap_offset}")
+
+    def _abs_offset(self, relative_sector):
+        """Byte offset in image for a filesystem-relative sector."""
+        return (self.fs_start + relative_sector) * SECTOR_SIZE
+
+    def _write_sector(self, relative_sector, data):
+        offset = self._abs_offset(relative_sector)
+        self.image[offset:offset + len(data)] = data
+
+    def _read_sector(self, relative_sector):
+        offset = self._abs_offset(relative_sector)
+        return bytes(self.image[offset:offset + SECTOR_SIZE])
+
+    def _cluster_to_sector(self, cluster):
+        """Convert cluster number (>=2) to filesystem-relative sector."""
+        return self.cluster_heap_offset + (cluster - 2) * self.spc
+
+    def _write_cluster(self, cluster, data):
+        sector = self._cluster_to_sector(cluster)
+        for s in range(self.spc):
+            s_offset = s * SECTOR_SIZE
+            if s_offset >= len(data):
+                self._write_sector(sector + s, b'\x00' * SECTOR_SIZE)
+            else:
+                chunk = data[s_offset:s_offset + SECTOR_SIZE]
+                if len(chunk) < SECTOR_SIZE:
+                    chunk = chunk + b'\x00' * (SECTOR_SIZE - len(chunk))
+                self._write_sector(sector + s, chunk)
+
+    def _alloc_cluster(self):
+        """Allocate a single cluster, mark bitmap + write EOC to FAT."""
+        c = self.next_cluster
+        if c - 2 >= self.cluster_count:
+            raise RuntimeError("exFAT: out of clusters")
+        self.next_cluster += 1
+        # Mark bitmap
+        idx = c - 2
+        self.bitmap[idx // 8] |= 1 << (idx % 8)
+        # Write FAT EOC
+        struct.pack_into('<I', self.fat_cache, c * 4, self.EXFAT_EOC)
+        return c
+
+    def _alloc_clusters_contiguous(self, count):
+        """Allocate `count` contiguous clusters. Returns first cluster.
+        Does NOT write FAT chain (for NoFatChain files)."""
+        if count == 0:
+            return 0
+        first = self.next_cluster
+        for i in range(count):
+            c = self.next_cluster
+            if c - 2 >= self.cluster_count:
+                raise RuntimeError("exFAT: out of clusters")
+            self.next_cluster += 1
+            idx = c - 2
+            self.bitmap[idx // 8] |= 1 << (idx % 8)
+            # No FAT chain for contiguous files — leave FAT entries as 0
+        return first
+
+    def _alloc_clusters_chained(self, count):
+        """Allocate `count` clusters with FAT chain. Returns first cluster."""
+        if count == 0:
+            return 0
+        first = self._alloc_cluster()
+        prev = first
+        for i in range(1, count):
+            c = self._alloc_cluster()
+            struct.pack_into('<I', self.fat_cache, prev * 4, c)
+            prev = c
+        return first
+
+    def _write_to_clusters_contiguous(self, first_cluster, data):
+        """Write data to contiguous clusters."""
+        offset = 0
+        cluster = first_cluster
+        while offset < len(data):
+            chunk = data[offset:offset + self.cluster_size]
+            self._write_cluster(cluster, chunk)
+            offset += self.cluster_size
+            cluster += 1
+
+    def _write_to_clusters_chained(self, first_cluster, data):
+        """Write data to FAT-chained clusters."""
+        cluster = first_cluster
+        offset = 0
+        while offset < len(data):
+            chunk = data[offset:offset + self.cluster_size]
+            self._write_cluster(cluster, chunk)
+            offset += self.cluster_size
+            if offset < len(data):
+                next_val = struct.unpack_from('<I', self.fat_cache, cluster * 4)[0]
+                if next_val >= 0xFFFFFFF8 or next_val == 0:
+                    break
+                cluster = next_val
+
+    # =====================================================================
+    # Boot sector
+    # =====================================================================
+
+    @staticmethod
+    def _boot_checksum(data):
+        """Compute exFAT boot region checksum over sectors 0-10."""
+        checksum = 0
+        for i, byte in enumerate(data):
+            # Skip VolumeFlags (106-107) and PercentInUse (112)
+            if i == 106 or i == 107 or i == 112:
+                continue
+            checksum = (((checksum & 1) << 31) | (checksum >> 1)) + byte
+            checksum &= 0xFFFFFFFF
+        return checksum
+
+    def write_boot_sector(self):
+        """Write the exFAT VBR and backup boot region."""
+        vbr = bytearray(SECTOR_SIZE)
+
+        # JumpBoot
+        vbr[0:3] = b'\xEB\x76\x90'
+        # FileSystemName
+        vbr[3:11] = b'EXFAT   '
+        # MustBeZero (bytes 11-63)
+        # Already zero
+
+        # PartitionOffset (not needed for our use, set to fs_start)
+        struct.pack_into('<Q', vbr, 64, self.fs_start)
+        # VolumeLength
+        struct.pack_into('<Q', vbr, 72, self.fs_sectors)
+        # FatOffset
+        struct.pack_into('<I', vbr, 80, self.fat_offset)
+        # FatLength
+        struct.pack_into('<I', vbr, 84, self.fat_length)
+        # ClusterHeapOffset
+        struct.pack_into('<I', vbr, 88, self.cluster_heap_offset)
+        # ClusterCount
+        struct.pack_into('<I', vbr, 92, self.cluster_count)
+        # FirstClusterOfRootDirectory (will be set after allocation)
+        # Placeholder — filled in by init_fs()
+        struct.pack_into('<I', vbr, 96, 4)  # root at cluster 4
+        # VolumeSerialNumber
+        struct.pack_into('<I', vbr, 100, 0x414E594F)  # "ANYO"
+        # FileSystemRevision (1.00)
+        struct.pack_into('<H', vbr, 104, 0x0100)
+        # VolumeFlags
+        struct.pack_into('<H', vbr, 106, 0)
+        # BytesPerSectorShift
+        vbr[108] = self.bps_shift
+        # SectorsPerClusterShift
+        vbr[109] = self.spc_shift
+        # NumberOfFats
+        vbr[110] = self.num_fats
+        # DriveSelect
+        vbr[111] = 0x80
+        # PercentInUse
+        vbr[112] = 0xFF  # Unknown
+
+        # BootSignature
+        vbr[510] = 0x55
+        vbr[511] = 0xAA
+
+        # Extended Boot Sectors (sectors 1-8): zeros with 0x55AA signature
+        ext_sectors = []
+        for _ in range(8):
+            ext = bytearray(SECTOR_SIZE)
+            ext[510] = 0x55
+            ext[511] = 0xAA
+            ext_sectors.append(ext)
+
+        # OEM Parameters (sector 9): zeros
+        oem = bytearray(SECTOR_SIZE)
+        # Reserved (sector 10): zeros
+        reserved = bytearray(SECTOR_SIZE)
+
+        # Assemble sectors 0-10 for checksum
+        boot_region = bytearray(vbr)
+        for ext in ext_sectors:
+            boot_region += ext
+        boot_region += oem
+        boot_region += reserved
+
+        # Compute checksum
+        checksum = self._boot_checksum(boot_region)
+
+        # Checksum sector (sector 11): repeated u32
+        cs_sector = bytearray(SECTOR_SIZE)
+        for i in range(0, SECTOR_SIZE, 4):
+            struct.pack_into('<I', cs_sector, i, checksum)
+
+        # Write Main Boot Region (sectors 0-11)
+        self._write_sector(0, vbr)
+        for i, ext in enumerate(ext_sectors):
+            self._write_sector(1 + i, ext)
+        self._write_sector(9, oem)
+        self._write_sector(10, reserved)
+        self._write_sector(11, cs_sector)
+
+        # Write Backup Boot Region (sectors 12-23)
+        self._write_sector(12, vbr)
+        for i, ext in enumerate(ext_sectors):
+            self._write_sector(13 + i, ext)
+        self._write_sector(21, oem)
+        self._write_sector(22, reserved)
+        self._write_sector(23, cs_sector)
+
+        print(f"  exFAT: VBR written at sector {self.fs_start}")
+
+    # =====================================================================
+    # Filesystem initialization
+    # =====================================================================
+
+    def init_fs(self):
+        """Initialize the exFAT filesystem: FAT, bitmap, root directory."""
+        # Allocate cluster 2 for allocation bitmap
+        self.bitmap_cluster = self._alloc_cluster()  # = 2
+        # Allocate cluster 3 for a minimal upcase table
+        upcase_cluster = self._alloc_cluster()  # = 3
+        # Allocate cluster 4 for root directory
+        self.root_cluster = self._alloc_cluster()  # = 4
+
+        # Write minimal upcase table (identity mapping for ASCII 0-127)
+        upcase_data = bytearray(128 * 2)  # 128 UTF-16LE entries
+        for i in range(128):
+            ch = i
+            if 0x61 <= ch <= 0x7A:  # a-z → A-Z
+                ch -= 0x20
+            struct.pack_into('<H', upcase_data, i * 2, ch)
+        # Pad to cluster size
+        upcase_padded = upcase_data + b'\x00' * (self.cluster_size - len(upcase_data))
+        self._write_cluster(upcase_cluster, upcase_padded)
+
+        # Write root directory with bitmap, upcase, and volume label entries
+        root_data = bytearray(self.cluster_size)
+        pos = 0
+
+        # Allocation Bitmap entry (0x81)
+        root_data[pos] = self.ENTRY_BITMAP
+        root_data[pos + 1] = 0  # BitmapFlags (first bitmap)
+        bitmap_size = (self.cluster_count + 7) // 8
+        struct.pack_into('<I', root_data, pos + 20, self.bitmap_cluster)
+        struct.pack_into('<Q', root_data, pos + 24, bitmap_size)
+        pos += 32
+
+        # Upcase Table entry (0x82)
+        root_data[pos] = self.ENTRY_UPCASE
+        upcase_checksum = 0
+        for b in upcase_data:
+            upcase_checksum = (((upcase_checksum & 1) << 31) | (upcase_checksum >> 1)) + b
+            upcase_checksum &= 0xFFFFFFFF
+        struct.pack_into('<I', root_data, pos + 4, upcase_checksum)
+        struct.pack_into('<I', root_data, pos + 20, upcase_cluster)
+        struct.pack_into('<Q', root_data, pos + 24, len(upcase_data))
+        pos += 32
+
+        # Volume Label entry (0x83)
+        label = "anyOS"
+        root_data[pos] = self.ENTRY_LABEL
+        root_data[pos + 1] = len(label)  # CharacterCount
+        for i, ch in enumerate(label):
+            struct.pack_into('<H', root_data, pos + 2 + i * 2, ord(ch))
+        pos += 32
+
+        self._write_cluster(self.root_cluster, root_data)
+
+        # Update VBR with correct root cluster
+        vbr_offset = self._abs_offset(0)
+        struct.pack_into('<I', self.image, vbr_offset + 96, self.root_cluster)
+        # Also update backup
+        backup_offset = self._abs_offset(12)
+        struct.pack_into('<I', self.image, backup_offset + 96, self.root_cluster)
+
+        print(f"  exFAT: bitmap=cluster {self.bitmap_cluster}, "
+              f"upcase=cluster {upcase_cluster}, root=cluster {self.root_cluster}")
+
+    # =====================================================================
+    # Directory entry helpers
+    # =====================================================================
+
+    @staticmethod
+    def _entry_set_checksum(data):
+        """Compute exFAT entry set checksum."""
+        checksum = 0
+        for i, byte in enumerate(data):
+            if i == 2 or i == 3:  # skip SetChecksum field
+                continue
+            checksum = ((checksum << 15) | (checksum >> 1)) + byte
+            checksum &= 0xFFFF
+        return checksum
+
+    @staticmethod
+    def _name_hash(utf16_chars):
+        """Compute exFAT name hash over UTF-16 characters (upper-cased)."""
+        h = 0
+        for ch in utf16_chars:
+            uc = ch
+            if 0x61 <= uc <= 0x7A:
+                uc -= 0x20
+            h = ((h << 15) | (h >> 1)) + (uc & 0xFF)
+            h &= 0xFFFF
+            h = ((h << 15) | (h >> 1)) + (uc >> 8)
+            h &= 0xFFFF
+        return h
+
+    def _build_entry_set(self, name, attributes, first_cluster, data_length, contiguous=False):
+        """Build a complete exFAT directory entry set."""
+        utf16 = [ord(c) for c in name]
+        name_len = len(utf16)
+        fn_entries = (name_len + 14) // 15
+        secondary = 1 + fn_entries  # Stream + FileName(s)
+        total = 1 + secondary
+        entry_set = bytearray(total * 32)
+
+        # File Directory Entry (0x85)
+        entry_set[0] = self.ENTRY_FILE
+        entry_set[1] = secondary
+        # [2..3] = SetChecksum (filled last)
+        struct.pack_into('<H', entry_set, 4, attributes)
+
+        # Stream Extension (0xC0)
+        s = 32
+        entry_set[s] = self.ENTRY_STREAM
+        flags = 0x01  # AllocationPossible
+        if contiguous:
+            flags |= self.FLAG_CONTIGUOUS
+        entry_set[s + 1] = flags
+        entry_set[s + 3] = name_len
+        nh = self._name_hash(utf16)
+        struct.pack_into('<H', entry_set, s + 4, nh)
+        struct.pack_into('<Q', entry_set, s + 8, data_length)   # ValidDataLength
+        struct.pack_into('<I', entry_set, s + 20, first_cluster)
+        struct.pack_into('<Q', entry_set, s + 24, data_length)  # DataLength
+
+        # FileName entries (0xC1)
+        for fi in range(fn_entries):
+            f = (2 + fi) * 32
+            entry_set[f] = self.ENTRY_FILENAME
+            for j in range(15):
+                ci = fi * 15 + j
+                ch = utf16[ci] if ci < len(utf16) else 0x0000
+                struct.pack_into('<H', entry_set, f + 2 + j * 2, ch)
+
+        # Checksum
+        checksum = self._entry_set_checksum(entry_set)
+        struct.pack_into('<H', entry_set, 2, checksum)
+
+        return bytes(entry_set)
+
+    def _add_entry_to_dir(self, dir_cluster, entry_set):
+        """Add an entry set to a directory cluster. Extends directory if needed."""
+        entry_count = len(entry_set) // 32
+
+        # Read current directory data
+        cluster = dir_cluster
+        while True:
+            sector = self._cluster_to_sector(cluster)
+            dir_data = bytearray()
+            for s in range(self.spc):
+                dir_data += bytearray(self._read_sector(sector + s))
+
+            # Find free space
+            run_start = -1
+            run_len = 0
+            for idx in range(len(dir_data) // 32):
+                off = idx * 32
+                etype = dir_data[off]
+                if etype == 0x00 or (etype & 0x80 == 0 and etype != 0):
+                    if run_len == 0:
+                        run_start = idx
+                    run_len += 1
+                    if run_len >= entry_count:
+                        # Found space
+                        write_off = run_start * 32
+                        dir_data[write_off:write_off + len(entry_set)] = entry_set
+                        for s in range(self.spc):
+                            self._write_sector(sector + s,
+                                dir_data[s * SECTOR_SIZE:(s + 1) * SECTOR_SIZE])
+                        return
+                    if etype == 0x00:
+                        # End of dir — check remaining space
+                        remaining = len(dir_data) // 32 - run_start
+                        if remaining >= entry_count:
+                            write_off = run_start * 32
+                            dir_data[write_off:write_off + len(entry_set)] = entry_set
+                            for s in range(self.spc):
+                                self._write_sector(sector + s,
+                                    dir_data[s * SECTOR_SIZE:(s + 1) * SECTOR_SIZE])
+                            return
+                        break  # Need new cluster
+                else:
+                    run_len = 0
+                    run_start = -1
+
+            # Check FAT for next cluster
+            fat_val = struct.unpack_from('<I', self.fat_cache, cluster * 4)[0]
+            if fat_val >= 0xFFFFFFF8 or fat_val == 0:
+                # Extend directory with new cluster
+                new_cluster = self._alloc_cluster()
+                struct.pack_into('<I', self.fat_cache, cluster * 4, new_cluster)
+                new_data = bytearray(self.cluster_size)
+                new_data[0:len(entry_set)] = entry_set
+                self._write_cluster(new_cluster, new_data)
+                return
+            cluster = fat_val
+
+    # =====================================================================
+    # Public API
+    # =====================================================================
+
+    def create_directory(self, parent_cluster, dirname):
+        """Create a subdirectory. Returns the new directory's cluster."""
+        dir_cluster = self._alloc_cluster()
+        # Initialize empty directory
+        self._write_cluster(dir_cluster, bytearray(self.cluster_size))
+
+        entry_set = self._build_entry_set(
+            dirname, self.ATTR_DIRECTORY, dir_cluster, 0, contiguous=False)
+
+        if parent_cluster is None:
+            parent_cluster = self.root_cluster
+        self._add_entry_to_dir(parent_cluster, entry_set)
+        return dir_cluster
+
+    def add_file(self, parent_cluster, filename, data):
+        """Add a file to a directory."""
+        if parent_cluster is None:
+            parent_cluster = self.root_cluster
+
+        if len(data) == 0:
+            entry_set = self._build_entry_set(
+                filename, self.ATTR_ARCHIVE, 0, 0, contiguous=True)
+            self._add_entry_to_dir(parent_cluster, entry_set)
+            return
+
+        num_clusters = (len(data) + self.cluster_size - 1) // self.cluster_size
+        first_cluster = self._alloc_clusters_contiguous(num_clusters)
+        self._write_to_clusters_contiguous(first_cluster, data)
+
+        entry_set = self._build_entry_set(
+            filename, self.ATTR_ARCHIVE, first_cluster, len(data), contiguous=True)
+        self._add_entry_to_dir(parent_cluster, entry_set)
+
+        print(f"    File: {filename} ({len(data)} bytes, {num_clusters} cluster(s), "
+              f"start={first_cluster}, contiguous)")
+
+    def populate_from_sysroot(self, sysroot_path):
+        """Recursively copy files from sysroot directory to the filesystem."""
+        if not os.path.isdir(sysroot_path):
+            print(f"  Warning: sysroot path '{sysroot_path}' does not exist, skipping")
+            return
+        self._populate_dir(sysroot_path, self.root_cluster)
+
+    def _populate_dir(self, host_path, parent_cluster):
+        """Recursively populate a directory."""
+        entries = sorted(os.listdir(host_path))
+
+        for entry_name in entries:
+            full_path = os.path.join(host_path, entry_name)
+
+            if entry_name.startswith('.'):
+                continue
+
+            if os.path.isdir(full_path):
+                dir_cluster = self.create_directory(parent_cluster, entry_name)
+                print(f"    Dir:  {entry_name}/ (cluster={dir_cluster})")
+                self._populate_dir(full_path, dir_cluster)
+
+            elif os.path.isfile(full_path):
+                with open(full_path, 'rb') as f:
+                    data = f.read()
+                self.add_file(parent_cluster, entry_name, data)
+
+    def flush_fat_and_bitmap(self):
+        """Write the in-memory FAT cache and allocation bitmap to disk."""
+        # Write FAT
+        for s in range(self.fat_length):
+            offset = s * SECTOR_SIZE
+            chunk = self.fat_cache[offset:offset + SECTOR_SIZE]
+            if len(chunk) < SECTOR_SIZE:
+                chunk = chunk + b'\x00' * (SECTOR_SIZE - len(chunk))
+            self._write_sector(self.fat_offset + s, chunk)
+
+        # Write allocation bitmap to its cluster(s)
+        bitmap_size = len(self.bitmap)
+        num_clusters = (bitmap_size + self.cluster_size - 1) // self.cluster_size
+        offset = 0
+        cluster = self.bitmap_cluster
+        for _ in range(num_clusters):
+            chunk = self.bitmap[offset:offset + self.cluster_size]
+            if len(chunk) < self.cluster_size:
+                chunk = chunk + b'\x00' * (self.cluster_size - len(chunk))
+            self._write_cluster(cluster, chunk)
+            offset += self.cluster_size
+            cluster += 1
+
+        print(f"  exFAT: FAT and bitmap flushed ({self.next_cluster - 2} clusters used "
+              f"of {self.cluster_count})")
+
+
+# =====================================================================
 # GPT (GUID Partition Table) helpers
 # =====================================================================
 
@@ -787,17 +1354,19 @@ def create_bios_image(args):
     image[kernel_offset:kernel_offset + len(kernel)] = kernel
 
     fs_sector_count = (image_size // SECTOR_SIZE) - args.fs_start
-    print(f"\nFAT16 filesystem:")
+    print(f"\nexFAT filesystem:")
     print(f"  Start sector: {args.fs_start} (offset 0x{args.fs_start * SECTOR_SIZE:X})")
     print(f"  Size: {fs_sector_count} sectors ({fs_sector_count * SECTOR_SIZE // (1024 * 1024)} MiB)")
 
-    fat = Fat16Formatter(image, args.fs_start, fs_sector_count)
-    fat.write_boot_sector()
-    fat.init_fat()
+    exfat = ExFatFormatter(image, args.fs_start, fs_sector_count)
+    exfat.write_boot_sector()
+    exfat.init_fs()
 
     if args.sysroot:
         print(f"  Populating from sysroot: {args.sysroot}")
-        fat.populate_from_sysroot(args.sysroot)
+        exfat.populate_from_sysroot(args.sysroot)
+
+    exfat.flush_fat_and_bitmap()
 
     with open(args.output, "wb") as f:
         f.write(image)
@@ -810,7 +1379,7 @@ def create_bios_image(args):
 # =====================================================================
 
 def create_uefi_image(args):
-    """Create a UEFI-bootable disk image (GPT + ESP + FAT16 data partition)."""
+    """Create a UEFI-bootable disk image (GPT + ESP + exFAT data partition)."""
     if not args.bootloader:
         print("ERROR: --bootloader required for UEFI mode", file=sys.stderr)
         sys.exit(1)
@@ -838,10 +1407,10 @@ def create_uefi_image(args):
 
     # Partition layout
     esp_start = 2048
-    esp_sectors = 6144  # 3 MiB (data partition must start at LBA 8192 to match kernel FAT16_PARTITION_LBA)
+    esp_sectors = 6144  # 3 MiB (data partition must start at LBA 8192 to match kernel PARTITION_LBA)
     esp_end = esp_start + esp_sectors - 1
 
-    data_start = esp_start + esp_sectors  # 8192 — matches kernel's FAT16_PARTITION_LBA
+    data_start = esp_start + esp_sectors  # 8192 — matches kernel's PARTITION_LBA
     entry_sectors = (GPT_ENTRY_COUNT * GPT_ENTRY_SIZE + 511) // 512
     data_end = total_sectors - 1 - entry_sectors - 1  # before backup GPT
     data_sectors = data_end - data_start + 1
@@ -874,30 +1443,25 @@ def create_uefi_image(args):
     boot_dir = esp_fat.create_directory(efi_dir, "BOOT", is_root_parent=False)
     esp_fat.add_file(boot_dir, "BOOTX64.EFI", efi_data, is_root_parent=False)
 
-    # Format data partition as FAT16
-    print(f"\nData filesystem:")
-    data_fat = Fat16Formatter(image, data_start, data_sectors)
-    data_fat.write_boot_sector()
-    data_fat.init_fat()
+    # Place kernel on ESP (FAT16) so UEFI firmware can always read it
+    # (exFAT data partition may not be readable by all UEFI implementations)
+    if kernel_flat:
+        sys_dir = esp_fat.create_directory(None, "System", is_root_parent=True)
+        esp_fat.add_file(sys_dir, "kernel.bin", kernel_flat, is_root_parent=False)
+        print(f"  Wrote kernel.bin to ESP ({len(kernel_flat)} bytes)")
 
-    # If kernel flat binary available, write it to sysroot temporarily
-    kernel_tmp_path = None
-    if kernel_flat and args.sysroot:
-        system_dir = os.path.join(args.sysroot, "system")
-        os.makedirs(system_dir, exist_ok=True)
-        kernel_tmp_path = os.path.join(system_dir, "kernel.bin")
-        with open(kernel_tmp_path, 'wb') as f:
-            f.write(kernel_flat)
-        print(f"  Wrote kernel.bin to sysroot ({len(kernel_flat)} bytes)")
+    # Format data partition as exFAT
+    print(f"\nData filesystem (exFAT):")
+    data_exfat = ExFatFormatter(image, data_start, data_sectors)
+    data_exfat.write_boot_sector()
+    data_exfat.init_fs()
 
     # Populate data partition from sysroot
     if args.sysroot:
         print(f"  Populating from sysroot: {args.sysroot}")
-        data_fat.populate_from_sysroot(args.sysroot)
+        data_exfat.populate_from_sysroot(args.sysroot)
 
-    # Clean up temporary kernel.bin from sysroot
-    if kernel_tmp_path and os.path.exists(kernel_tmp_path):
-        os.remove(kernel_tmp_path)
+    data_exfat.flush_fat_and_bitmap()
 
     # Write image
     with open(args.output, "wb") as f:
@@ -1389,8 +1953,8 @@ def main():
     parser.add_argument("--image-size", type=int, default=64, help="Image size in MiB")
     parser.add_argument("--sysroot", default=None,
                         help="Path to sysroot directory to populate filesystem")
-    parser.add_argument("--fs-start", type=int, default=2048,
-                        help="Start sector for FAT16 filesystem (BIOS mode only)")
+    parser.add_argument("--fs-start", type=int, default=8192,
+                        help="Start sector for exFAT filesystem (BIOS mode only)")
     args = parser.parse_args()
 
     if args.iso:

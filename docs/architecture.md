@@ -144,7 +144,7 @@ The kernel initializes subsystems in 10 phases:
 7. **Interrupts** -- PIC/APIC setup, keyboard, mouse, timer (100 Hz PIT)
 8. **Scheduler** -- Thread system, idle task
 9. **Graphics** -- Compositor, desktop environment, GPU acceleration
-10. **Userspace** -- Load `/system/init` as first Ring 3 process
+10. **Userspace** -- Load `/System/init` as first Ring 3 process
 
 ---
 
@@ -223,7 +223,7 @@ GPU auto-detection happens during PCI enumeration. The compositor uses whichever
 ### Virtual File System (VFS)
 
 - **File descriptors**: Global FD table, per-process open files
-- **Paths**: `/bin/`, `/system/`, `/include/`, `/lib/`
+- **Paths**: `/bin/`, `/System/`, `/Libraries/`, `/include/`, `/lib/`
 - **Device files**: `/dev/serial`, `/dev/null`, `/dev/random`
 - **Standard FDs**: 0=stdin, 1=stdout (serial), 2=stderr (serial)
 

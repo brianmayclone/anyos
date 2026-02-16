@@ -381,9 +381,26 @@ pub fn load_and_run(path: &str, name: &str) -> Result<u32, &'static str> {
 }
 
 /// Load a flat binary or ELF and run it with command-line arguments.
+/// If `path` ends with `.app`, it is treated as a bundle directory:
+/// the binary is loaded from `{path}/{FolderName}` (folder name minus ".app").
 pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32, &'static str> {
+    // .app bundle resolution: derive binary path from folder name
+    let resolved_path: alloc::string::String;
+    let actual_path = if path.ends_with(".app") {
+        let folder_name = path.rsplit('/').next().unwrap_or(path);
+        let binary_name = &folder_name[..folder_name.len() - 4];
+        if binary_name.is_empty() {
+            return Err("Invalid .app bundle path");
+        }
+        resolved_path = alloc::format!("{}/{}", path, binary_name);
+        crate::serial_println!("  .app bundle: {} -> {}", path, resolved_path);
+        resolved_path.as_str()
+    } else {
+        path
+    };
+
     // Read the binary from the filesystem
-    let data = crate::fs::vfs::read_file_to_vec(path)
+    let data = crate::fs::vfs::read_file_to_vec(actual_path)
         .map_err(|_| "Failed to read program file")?;
 
     if data.is_empty() {

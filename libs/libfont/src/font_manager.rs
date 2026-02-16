@@ -1,7 +1,7 @@
 //! Font manager — loads TTF fonts from disk, caches rasterized glyphs,
 //! and provides text rendering into user-provided ARGB pixel buffers.
 //!
-//! State is stored on the process heap; the pointer lives in the DLL state page.
+//! State is stored on the process heap; the pointer lives in per-process .bss.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -10,10 +10,9 @@ use crate::ttf::TtfFont;
 use crate::ttf_rasterizer;
 use crate::syscall;
 
-/// Per-process DLL state page virtual address.
-const DLL_STATE_PAGE: usize = 0x0BFE_0000;
-/// Offset of FontManager pointer in state page.
-const FONT_MGR_PTR_OFFSET: usize = 0x00;
+/// FontManager pointer — lives in per-process .bss (zero-initialized per process).
+/// Each process gets its own copy via DLIB v3 per-process .bss support.
+static mut FONT_MGR_PTR: *mut FontManager = core::ptr::null_mut();
 
 /// Maximum number of cached glyphs before LRU eviction.
 const MAX_CACHE_SIZE: usize = 512;
@@ -166,20 +165,21 @@ fn line_height_internal(ttf: &TtfFont, size: u16) -> u32 {
 
 // ─── State access ────────────────────────────────────────────────────────
 
-/// Get the FontManager pointer from the DLL state page, or None if not initialized.
+/// Get the FontManager pointer from per-process .bss, or None if not initialized.
 fn get_mgr() -> Option<&'static mut FontManager> {
-    let ptr = unsafe { *((DLL_STATE_PAGE + FONT_MGR_PTR_OFFSET) as *const u64) };
-    if ptr == 0 {
-        None
-    } else {
-        Some(unsafe { &mut *(ptr as *mut FontManager) })
+    unsafe {
+        if FONT_MGR_PTR.is_null() {
+            None
+        } else {
+            Some(&mut *FONT_MGR_PTR)
+        }
     }
 }
 
-/// Store the FontManager pointer in the DLL state page.
+/// Store the FontManager pointer in per-process .bss.
 fn set_mgr_ptr(mgr: *mut FontManager) {
     unsafe {
-        *((DLL_STATE_PAGE + FONT_MGR_PTR_OFFSET) as *mut u64) = mgr as u64;
+        FONT_MGR_PTR = mgr;
     }
 }
 
@@ -200,10 +200,10 @@ pub fn init() {
 
     // Load system font variants
     let font_paths: [&[u8]; 4] = [
-        b"/system/fonts/sfpro.ttf",
-        b"/system/fonts/sfpro-bold.ttf",
-        b"/system/fonts/sfpro-thin.ttf",
-        b"/system/fonts/sfpro-italic.ttf",
+        b"/System/fonts/sfpro.ttf",
+        b"/System/fonts/sfpro-bold.ttf",
+        b"/System/fonts/sfpro-thin.ttf",
+        b"/System/fonts/sfpro-italic.ttf",
     ];
 
     for path in &font_paths {

@@ -1,9 +1,9 @@
 // Copyright (c) 2024-2026 Christian Moeller
 // SPDX-License-Identifier: MIT
 
-//! Raw FFI bindings to libfont.dll export table.
+//! Raw FFI bindings to libfont.dlib export table.
 
-/// Base virtual address where libfont.dll is loaded.
+/// Base virtual address where libfont.dlib is loaded.
 const LIBFONT_BASE: usize = 0x0420_0000;
 
 /// Export function table — must match the DLL's `LibfontExports` layout exactly.
