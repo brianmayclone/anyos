@@ -103,16 +103,10 @@ pub(crate) const SYS_TCP_RECV: u32 = 102;
 pub(crate) const SYS_TCP_CLOSE: u32 = 103;
 pub(crate) const SYS_TCP_STATUS: u32 = 104;
 
-// Font / AA drawing / wallpaper
-pub(crate) const SYS_FONT_LOAD: u32 = 130;
-pub(crate) const SYS_FONT_UNLOAD: u32 = 131;
-pub(crate) const SYS_FONT_MEASURE: u32 = 132;
-pub(crate) const SYS_WIN_DRAW_TEXT_EX: u32 = 133;
-pub(crate) const SYS_WIN_FILL_ROUNDED_RECT: u32 = 134;
+// Display / GPU / wallpaper
 pub(crate) const SYS_GPU_HAS_ACCEL: u32 = 135;
 pub(crate) const SYS_SET_WALLPAPER: u32 = 136;
 pub(crate) const SYS_BOOT_READY: u32 = 137;
-pub(crate) const SYS_FONT_RENDER_BUF: u32 = 160;
 
 // Shared memory
 pub(crate) const SYS_SHM_CREATE: u32 = 140;

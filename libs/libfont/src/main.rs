@@ -1,67 +1,30 @@
 // Copyright (c) 2024-2026 Christian Moeller
 // SPDX-License-Identifier: MIT
 
-//! libfont.dll — Font and extended drawing syscall wrappers.
+//! libfont.dll — Userspace TTF font engine.
 //!
-//! Provides font loading/unloading, text measurement, extended text drawing,
-//! rounded rectangle fills, and GPU acceleration queries via kernel syscalls.
+//! Provides font loading, glyph rasterization (greyscale + subpixel LCD),
+//! text measurement, and rendering into ARGB pixel buffers.
+//!
+//! State is stored per-process via the DLL state page at 0x0BFE_0000.
+//! Heap memory is obtained via SYS_SBRK (bump allocator in heap.rs).
+//!
+//! Subpixel rendering is auto-detected on init by querying SYS_GPU_HAS_ACCEL.
 
 #![no_std]
 #![no_main]
 
-use core::arch::asm;
+extern crate alloc;
 
-// ── Syscall numbers ──────────────────────────────────────
-
-const SYS_FONT_LOAD: u32 = 130;
-const SYS_FONT_UNLOAD: u32 = 131;
-const SYS_FONT_MEASURE: u32 = 132;
-const SYS_WIN_DRAW_TEXT_EX: u32 = 133;
-const SYS_WIN_FILL_ROUNDED_RECT: u32 = 134;
-const SYS_GPU_HAS_ACCEL: u32 = 135;
-
-// ── Syscall helpers (SYSCALL instruction, x86-64) ────────
-//
-// Convention (matches kernel syscall_fast_entry):
-//   RAX = syscall number, RBX = arg1, R10 = arg2
-//   Return in RAX.  Clobbers: RCX (← user RIP), R11 (← user RFLAGS).
-
-#[inline(always)]
-fn syscall0(num: u32) -> u32 {
-    let ret: u64;
-    unsafe {
-        asm!(
-            "syscall",
-            inlateout("rax") num as u64 => ret,
-            out("rcx") _,
-            out("r11") _,
-        );
-    }
-    ret as u32
-}
-
-#[inline(always)]
-fn syscall2(num: u32, a1: u64, a2: u64) -> u32 {
-    let ret: u64;
-    unsafe {
-        asm!(
-            "push rbx",
-            "mov rbx, {a1}",
-            "syscall",
-            "pop rbx",
-            a1 = in(reg) a1,
-            inlateout("rax") num as u64 => ret,
-            in("r10") a2,
-            out("rcx") _,
-            out("r11") _,
-        );
-    }
-    ret as u32
-}
+mod heap;
+mod syscall;
+mod ttf;
+mod ttf_rasterizer;
+mod font_manager;
 
 // ── Export struct ─────────────────────────────────────────
 
-const NUM_EXPORTS: u32 = 6;
+const NUM_EXPORTS: u32 = 7;
 
 /// Export function table — must be `#[repr(C)]` and placed in `.exports` section.
 ///
@@ -70,24 +33,26 @@ const NUM_EXPORTS: u32 = 6;
 ///   offset  4: version u32
 ///   offset  8: num_exports u32
 ///   offset 12: _pad u32
-///   offset 16: font_load fn ptr (8 bytes)
-///   offset 24: font_unload fn ptr (8 bytes)
-///   offset 32: font_measure fn ptr (8 bytes)
-///   offset 40: win_draw_text_ex fn ptr (8 bytes)
-///   offset 48: win_fill_rounded_rect fn ptr (8 bytes)
-///   offset 56: gpu_has_accel fn ptr (8 bytes)
+///   offset 16: init fn ptr (8 bytes)
+///   offset 24: load_font fn ptr (8 bytes)
+///   offset 32: unload_font fn ptr (8 bytes)
+///   offset 40: measure_string fn ptr (8 bytes)
+///   offset 48: draw_string_buf fn ptr (8 bytes)
+///   offset 56: line_height fn ptr (8 bytes)
+///   offset 64: set_subpixel fn ptr (8 bytes)
 #[repr(C)]
 pub struct LibfontExports {
     pub magic: [u8; 4],
     pub version: u32,
     pub num_exports: u32,
     pub _pad: u32,
-    pub font_load: extern "C" fn(*const u8, u32) -> u32,
-    pub font_unload: extern "C" fn(u32) -> u32,
-    pub font_measure: extern "C" fn(u32, u16, *const u8, u32, *mut u32, *mut u32) -> u32,
-    pub win_draw_text_ex: extern "C" fn(u32, i32, i32, u32, u32, u16, *const u8, u32) -> u32,
-    pub win_fill_rounded_rect: extern "C" fn(u32, i32, i32, u32, u32, u32, u32) -> u32,
-    pub gpu_has_accel: extern "C" fn() -> u32,
+    pub init: extern "C" fn(),
+    pub load_font: extern "C" fn(*const u8, u32) -> u32,
+    pub unload_font: extern "C" fn(u32),
+    pub measure_string: extern "C" fn(u32, u16, *const u8, u32, *mut u32, *mut u32),
+    pub draw_string_buf: extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, u16, *const u8, u32),
+    pub line_height: extern "C" fn(u32, u16) -> u32,
+    pub set_subpixel: extern "C" fn(u32),
 }
 
 #[link_section = ".exports"]
@@ -95,125 +60,86 @@ pub struct LibfontExports {
 #[no_mangle]
 pub static LIBFONT_EXPORTS: LibfontExports = LibfontExports {
     magic: *b"DLIB",
-    version: 1,
+    version: 2,
     num_exports: NUM_EXPORTS,
     _pad: 0,
-    font_load: font_load_export,
-    font_unload: font_unload_export,
-    font_measure: font_measure_export,
-    win_draw_text_ex: win_draw_text_ex_export,
-    win_fill_rounded_rect: win_fill_rounded_rect_export,
-    gpu_has_accel: gpu_has_accel_export,
+    init: init_export,
+    load_font: load_font_export,
+    unload_font: unload_font_export,
+    measure_string: measure_string_export,
+    draw_string_buf: draw_string_buf_export,
+    line_height: line_height_export,
+    set_subpixel: set_subpixel_export,
 };
 
 // ── Export implementations ───────────────────────────────
 
-/// Load a font file and return a font_id, or 0 on failure.
-/// Syscall: SYS_FONT_LOAD(path_ptr, path_len) -> font_id
-extern "C" fn font_load_export(path_ptr: *const u8, path_len: u32) -> u32 {
-    syscall2(SYS_FONT_LOAD, path_ptr as u64, path_len as u64)
+/// Initialize the font manager, load system fonts, auto-detect subpixel.
+extern "C" fn init_export() {
+    font_manager::init();
 }
 
-/// Unload a previously loaded font.
-/// Syscall: SYS_FONT_UNLOAD(font_id) -> 0
-extern "C" fn font_unload_export(font_id: u32) -> u32 {
-    syscall2(SYS_FONT_UNLOAD, font_id as u64, 0)
+/// Load a custom TTF font from a file path. Returns font_id, or u32::MAX on failure.
+extern "C" fn load_font_export(path_ptr: *const u8, path_len: u32) -> u32 {
+    let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
+    font_manager::load_font(path)
+}
+
+/// Unload a previously loaded font by ID.
+extern "C" fn unload_font_export(font_id: u32) {
+    font_manager::unload_font(font_id as u16);
 }
 
 /// Measure text dimensions for a given font and size.
-/// Syscall: SYS_FONT_MEASURE(params_ptr) -> 0
-/// params: [font_id:u16, size:u16, text_ptr:u32, text_len:u32, out_w:u32, out_h:u32]
-extern "C" fn font_measure_export(
+/// Writes pixel width/height into out_w/out_h.
+extern "C" fn measure_string_export(
     font_id: u32,
     size: u16,
     text_ptr: *const u8,
     text_len: u32,
     out_w: *mut u32,
     out_h: *mut u32,
-) -> u32 {
-    let params: [u8; 20] = unsafe {
-        let mut p = [0u8; 20];
-        let fid = font_id as u16;
-        core::ptr::copy_nonoverlapping(fid.to_le_bytes().as_ptr(), p.as_mut_ptr(), 2);
-        core::ptr::copy_nonoverlapping(size.to_le_bytes().as_ptr(), p.as_mut_ptr().add(2), 2);
-        let tp = text_ptr as u32;
-        core::ptr::copy_nonoverlapping(tp.to_le_bytes().as_ptr(), p.as_mut_ptr().add(4), 4);
-        core::ptr::copy_nonoverlapping(text_len.to_le_bytes().as_ptr(), p.as_mut_ptr().add(8), 4);
-        let ow = out_w as u32;
-        core::ptr::copy_nonoverlapping(ow.to_le_bytes().as_ptr(), p.as_mut_ptr().add(12), 4);
-        let oh = out_h as u32;
-        core::ptr::copy_nonoverlapping(oh.to_le_bytes().as_ptr(), p.as_mut_ptr().add(16), 4);
-        p
+) {
+    let text = unsafe {
+        let bytes = core::slice::from_raw_parts(text_ptr, text_len as usize);
+        core::str::from_utf8_unchecked(bytes)
     };
-    syscall2(SYS_FONT_MEASURE, params.as_ptr() as u64, 0)
+    let (w, h) = font_manager::measure_string(text, font_id as u16, size);
+    unsafe {
+        *out_w = w;
+        *out_h = h;
+    }
 }
 
-/// Draw text with a loaded font at a given size and color.
-/// Syscall: SYS_WIN_DRAW_TEXT_EX(win_id, params_ptr) -> 0
-/// params: [x:i16, y:i16, color:u32, font_id:u16, size:u16, text_ptr:u32]
-extern "C" fn win_draw_text_ex_export(
-    win_id: u32,
+/// Render text into a caller-provided ARGB pixel buffer.
+extern "C" fn draw_string_buf_export(
+    buf: *mut u32,
+    buf_w: u32,
+    buf_h: u32,
     x: i32,
     y: i32,
     color: u32,
     font_id: u32,
     size: u16,
     text_ptr: *const u8,
-    _text_len: u32,
-) -> u32 {
-    let params: [u8; 16] = unsafe {
-        let mut p = [0u8; 16];
-        let px = x as i16;
-        let py = y as i16;
-        let fid = font_id as u16;
-        core::ptr::copy_nonoverlapping(px.to_le_bytes().as_ptr(), p.as_mut_ptr(), 2);
-        core::ptr::copy_nonoverlapping(py.to_le_bytes().as_ptr(), p.as_mut_ptr().add(2), 2);
-        core::ptr::copy_nonoverlapping(color.to_le_bytes().as_ptr(), p.as_mut_ptr().add(4), 4);
-        core::ptr::copy_nonoverlapping(fid.to_le_bytes().as_ptr(), p.as_mut_ptr().add(8), 2);
-        core::ptr::copy_nonoverlapping(size.to_le_bytes().as_ptr(), p.as_mut_ptr().add(10), 2);
-        let tp = text_ptr as u32;
-        core::ptr::copy_nonoverlapping(tp.to_le_bytes().as_ptr(), p.as_mut_ptr().add(12), 4);
-        p
+    text_len: u32,
+) {
+    let text = unsafe {
+        let bytes = core::slice::from_raw_parts(text_ptr, text_len as usize);
+        core::str::from_utf8_unchecked(bytes)
     };
-    syscall2(SYS_WIN_DRAW_TEXT_EX, win_id as u64, params.as_ptr() as u64)
+    font_manager::draw_string_buf(buf, buf_w, buf_h, x, y, color, font_id as u16, size, text);
 }
 
-/// Fill a rounded rectangle in a window.
-/// Syscall: SYS_WIN_FILL_ROUNDED_RECT(win_id, params_ptr) -> 0
-/// params: [x:i16, y:i16, w:u16, h:u16, radius:u16, pad:u16, color:u32]
-extern "C" fn win_fill_rounded_rect_export(
-    win_id: u32,
-    x: i32,
-    y: i32,
-    w: u32,
-    h: u32,
-    radius: u32,
-    color: u32,
-) -> u32 {
-    let params: [u8; 16] = unsafe {
-        let mut p = [0u8; 16];
-        let px = x as i16;
-        let py = y as i16;
-        let pw = w as u16;
-        let ph = h as u16;
-        let pr = radius as u16;
-        let pad: u16 = 0;
-        core::ptr::copy_nonoverlapping(px.to_le_bytes().as_ptr(), p.as_mut_ptr(), 2);
-        core::ptr::copy_nonoverlapping(py.to_le_bytes().as_ptr(), p.as_mut_ptr().add(2), 2);
-        core::ptr::copy_nonoverlapping(pw.to_le_bytes().as_ptr(), p.as_mut_ptr().add(4), 2);
-        core::ptr::copy_nonoverlapping(ph.to_le_bytes().as_ptr(), p.as_mut_ptr().add(6), 2);
-        core::ptr::copy_nonoverlapping(pr.to_le_bytes().as_ptr(), p.as_mut_ptr().add(8), 2);
-        core::ptr::copy_nonoverlapping(pad.to_le_bytes().as_ptr(), p.as_mut_ptr().add(10), 2);
-        core::ptr::copy_nonoverlapping(color.to_le_bytes().as_ptr(), p.as_mut_ptr().add(12), 4);
-        p
-    };
-    syscall2(SYS_WIN_FILL_ROUNDED_RECT, win_id as u64, params.as_ptr() as u64)
+/// Get line height for a font at a given size.
+extern "C" fn line_height_export(font_id: u32, size: u16) -> u32 {
+    font_manager::line_height(font_id as u16, size)
 }
 
-/// Query whether GPU acceleration is available.
-/// Syscall: SYS_GPU_HAS_ACCEL() -> 0/1
-extern "C" fn gpu_has_accel_export() -> u32 {
-    syscall0(SYS_GPU_HAS_ACCEL)
+/// Override subpixel rendering: 1 = enable, 0 = disable.
+/// Normally auto-detected on init, but apps can override if needed.
+extern "C" fn set_subpixel_export(enabled: u32) {
+    font_manager::set_subpixel(enabled != 0);
 }
 
 // ── Entry / panic ────────────────────────────────────────

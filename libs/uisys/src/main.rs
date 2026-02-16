@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 
-mod syscall;
 mod theme;
 mod draw;
 mod font_bitmap;

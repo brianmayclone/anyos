@@ -42,15 +42,30 @@ unsafe impl GlobalAlloc for BumpAlloc {
 
         // Grow the heap via sbrk if needed
         if new_pos > HEAP_END {
-            let needed = new_pos - HEAP_END;
-            // Round up to page size (4 KiB) for efficiency
-            let grow = (needed + 4095) & !4095;
+            // Request enough for a full allocation in case sbrk returns
+            // non-contiguous memory (another allocator moved the break)
+            let grow = ((size + align + 4095) & !4095) as usize;
             let result = crate::process::sbrk(grow as i32);
             if result == u32::MAX as usize {
                 HEAP_LOCK.store(false, Ordering::Release);
                 return core::ptr::null_mut();
             }
-            HEAP_END += grow;
+            let result = result as u64;
+            let grow = grow as u64;
+
+            if result == HEAP_END {
+                // Contiguous extension — original aligned/new_pos are valid
+                HEAP_END += grow;
+            } else {
+                // Non-contiguous: another allocator (e.g. DLL) owns [HEAP_END, result)
+                // Start fresh from the sbrk return value
+                HEAP_END = result + grow;
+                let aligned = (result + align - 1) & !(align - 1);
+                let new_pos = aligned + size;
+                HEAP_POS = new_pos;
+                HEAP_LOCK.store(false, Ordering::Release);
+                return aligned as *mut u8;
+            }
         }
 
         HEAP_POS = new_pos;

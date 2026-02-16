@@ -22,10 +22,13 @@ mod syscall;
 mod task;
 
 use boot_info::BootInfo;
-use core::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering as AtomicOrdering};
 
 /// Boot mode: 0 = Legacy BIOS, 1 = UEFI.
 static BOOT_MODE: AtomicU8 = AtomicU8::new(0);
+
+/// GPU 2D acceleration available (queried by SYS_GPU_HAS_ACCEL).
+pub static GPU_ACCEL: AtomicBool = AtomicBool::new(false);
 
 /// Get the boot mode (0 = BIOS, 1 = UEFI).
 pub fn boot_mode() -> u8 {
@@ -205,10 +208,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         }
     }
 
-    // Phase 8c: Load TTF fonts from disk (after scheduler + VFS + interrupts)
-    graphics::font_manager::init();
-
-    // Phase 8d: Load shared DLLs from filesystem
+    // Phase 8c: Load shared DLLs from filesystem
     match task::dll::load_dll("/system/lib/uisys.dll", 0x0400_0000) {
         Ok(pages) => serial_println!("[OK] uisys.dll: {} pages", pages),
         Err(e) => serial_println!("[WARN] uisys.dll not loaded: {}", e),
@@ -250,7 +250,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
 
         let has_accel = drivers::gpu::with_gpu(|g| g.has_accel()).unwrap_or(false);
         if has_accel {
-            graphics::font_manager::set_gpu_accel(true);
+            GPU_ACCEL.store(true, AtomicOrdering::Relaxed);
             serial_println!("[OK] GPU 2D acceleration enabled");
         }
 

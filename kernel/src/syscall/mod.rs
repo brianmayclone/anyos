@@ -120,19 +120,11 @@ pub const SYS_GPU_HAS_ACCEL: u32 = 135;
 pub const SYS_AUDIO_WRITE: u32 = 120;
 pub const SYS_AUDIO_CTL: u32 = 121;
 
-// Font rendering (kernel-side TTF rasterizer)
-pub const SYS_FONT_LOAD: u32 = 130;
-pub const SYS_FONT_UNLOAD: u32 = 131;
-pub const SYS_FONT_MEASURE: u32 = 132;
-
 // Shared memory
 pub const SYS_SHM_CREATE: u32 = 140;
 pub const SYS_SHM_MAP: u32 = 141;
 pub const SYS_SHM_UNMAP: u32 = 142;
 pub const SYS_SHM_DESTROY: u32 = 143;
-
-// Font buffer rendering
-pub const SYS_FONT_RENDER_BUF: u32 = 160;
 
 // UDP networking
 pub const SYS_UDP_BIND: u32 = 150;
@@ -303,12 +295,6 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         // Audio
         SYS_AUDIO_WRITE => handlers::sys_audio_write(arg1, arg2),
         SYS_AUDIO_CTL => handlers::sys_audio_ctl(arg1, arg2),
-
-        // Font rendering (kernel-side TTF rasterizer)
-        SYS_FONT_LOAD => handlers::sys_font_load(arg1, arg2),
-        SYS_FONT_UNLOAD => handlers::sys_font_unload(arg1),
-        SYS_FONT_MEASURE => handlers::sys_font_measure(arg1),
-        SYS_FONT_RENDER_BUF => handlers::sys_font_render_buf(arg1),
 
         // Shared memory
         SYS_SHM_CREATE => handlers::sys_shm_create(arg1),

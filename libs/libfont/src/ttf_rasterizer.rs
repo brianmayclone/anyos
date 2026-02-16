@@ -46,9 +46,6 @@ pub fn rasterize_subpixel(outline: &GlyphOutline, size_px: u32, units_per_em: u1
 fn rasterize_impl(outline: &GlyphOutline, size_px: u32, units_per_em: u16, h_scale: u32) -> Option<GlyphBitmap> {
     if outline.points.is_empty() || outline.contour_ends.is_empty() { return None; }
     if units_per_em == 0 || size_px == 0 { return None; }
-    // Scale factor maps font units to 24.8 fixed-point pixel coordinates.
-    // Use 64-bit intermediate to avoid truncation for small size/upm ratios
-    // (e.g. size=13, upm=2048: 13*256/2048=1 is wrong; 13*65536/2048=416 is correct).
     let scale_fp = ((size_px as i64 * FP_ONE as i64 * FP_ONE as i64) / units_per_em as i64) as i32;
     if scale_fp == 0 { return None; }
     let scale_x_fp = scale_fp * h_scale as i32;
@@ -75,7 +72,6 @@ fn rasterize_impl(outline: &GlyphOutline, size_px: u32, units_per_em: u16, h_sca
         contour_start = end + 1;
     }
     if edges.is_empty() { return None; }
-    // Flip Y: TrueType Y-up -> bitmap Y-down
     let y_flip = px_y_max << FP_SHIFT;
     for edge in &mut edges {
         edge.y0 = y_flip - edge.y0;

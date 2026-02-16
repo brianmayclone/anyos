@@ -32,6 +32,11 @@ const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 /// Kernel higher-half virtual base (must match link.ld).
 const KERNEL_VIRT_BASE: u64 = 0xFFFF_FFFF_8000_0000;
 
+/// Per-process DLL state page virtual address.
+/// Allocated as a fresh zeroed physical frame for each user process.
+/// DLLs store per-process mutable state pointers and allocator metadata here.
+pub const DLL_STATE_PAGE_VADDR: u64 = 0x0BFE_0000;
+
 /// Recursive mapping index in PML4 (entry 510).
 /// PML4[510] points to the PML4 itself, providing access to all page tables.
 const RECURSIVE_INDEX: usize = 510;
@@ -509,6 +514,24 @@ pub fn create_user_page_directory() -> Option<PhysAddr> {
     unmap_page(temp_pml4);
     unmap_page(temp_pdpt);
     unmap_page(temp_pd);
+
+    // Allocate and map the per-process DLL state page (zeroed).
+    // DLLs use this to store per-process mutable state (allocator metadata, etc.).
+    let dll_state_frame = physical::alloc_frame()?;
+    {
+        let temp_state = VirtAddr::new(0xFFFF_FFFF_BFF0_3000);
+        map_page(temp_state, dll_state_frame, PAGE_WRITABLE);
+        unsafe {
+            core::ptr::write_bytes(temp_state.as_u64() as *mut u8, 0, FRAME_SIZE);
+        }
+        unmap_page(temp_state);
+    }
+    map_page_in_pd(
+        new_pml4_phys,
+        VirtAddr::new(DLL_STATE_PAGE_VADDR),
+        dll_state_frame,
+        PAGE_USER | PAGE_WRITABLE,
+    );
 
     Some(new_pml4_phys)
 }

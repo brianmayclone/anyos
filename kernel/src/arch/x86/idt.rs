@@ -672,6 +672,22 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                     "EXCEPTION: General Protection Fault err={:#x} RIP={:#018x} CS={:#x}",
                     frame.err_code, frame.rip, frame.cs
                 );
+                crate::serial_println!(
+                    "  RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
+                    frame.rax, frame.rbx, frame.rcx, frame.rdx
+                );
+                crate::serial_println!(
+                    "  RSI={:#018x} RDI={:#018x} RBP={:#018x} RSP={:#018x}",
+                    frame.rsi, frame.rdi, frame.rbp, frame.rsp
+                );
+                crate::serial_println!(
+                    "  R8={:#018x} R9={:#018x} R10={:#018x} R11={:#018x}",
+                    frame.r8, frame.r9, frame.r10, frame.r11
+                );
+                crate::serial_println!(
+                    "  R12={:#018x} R13={:#018x} R14={:#018x} R15={:#018x}",
+                    frame.r12, frame.r13, frame.r14, frame.r15
+                );
                 crate::serial_println!("  User process fault — terminating thread");
                 crate::task::scheduler::exit_current(139);
             }

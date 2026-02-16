@@ -7,6 +7,7 @@ edition = "2021"
 anyos_std = { path = "../../../libs/stdlib" }
 librender_client = { path = "../../../libs/librender_client" }
 libimage_client = { path = "../../../libs/libimage_client" }
+libfont_client = { path = "../../../libs/libfont_client" }
 
 [profile.dev]
 panic = "abort"

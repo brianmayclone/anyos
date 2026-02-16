@@ -155,6 +155,37 @@ fn find_win_mut(ext_id: u32) -> Option<&'static mut WinInfo> {
         .map(|b| &mut **b)
 }
 
+// ── libfont DLL access (at fixed address 0x04200000) ────────────────────────
+
+const LIBFONT_BASE: usize = 0x0420_0000;
+
+#[repr(C)]
+struct LibfontExportsPartial {
+    _magic: [u8; 4],
+    _version: u32,
+    _num_exports: u32,
+    _pad: u32,
+    // offset 16
+    _init: usize,
+    // offset 24
+    load_font: extern "C" fn(*const u8, u32) -> u32,
+    // offset 32
+    unload_font: extern "C" fn(u32),
+    // offset 40
+    measure_string: extern "C" fn(u32, u16, *const u8, u32, *mut u32, *mut u32),
+    // offset 48
+    draw_string_buf: extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, u16, *const u8, u32),
+    // offset 56
+    _line_height: usize,
+    // offset 64
+    _set_subpixel: usize,
+}
+
+#[inline(always)]
+fn libfont() -> &'static LibfontExportsPartial {
+    unsafe { &*(LIBFONT_BASE as *const LibfontExportsPartial) }
+}
+
 // ── 8x16 bitmap font for draw_text / draw_text_mono ────────────────────────
 
 const FONT_W: u32 = 8;
@@ -339,15 +370,12 @@ pub fn draw_text(window_id: u32, x: i16, y: i16, color: u32, text: &str) -> u32 
         Some(w) => w,
         None => return u32::MAX,
     };
+    let pixel_count = (win.surface.width as usize) * (win.surface.height as usize);
+    let buf = unsafe { core::slice::from_raw_parts_mut(win.surface.pixels, pixel_count) };
     font_render_buf(
         0, // system font
         13, // default size
-        unsafe {
-            core::slice::from_raw_parts_mut(
-                win.surface.pixels,
-                (win.surface.width * win.surface.height) as usize,
-            )
-        },
+        buf,
         win.surface.width,
         win.surface.height,
         x as i32,
@@ -507,39 +535,32 @@ pub fn set_theme(theme: u32) {
 
 /// Load a TTF font from a file path. Returns font_id or None.
 pub fn font_load(path: &str) -> Option<u32> {
-    let result = syscall2(SYS_FONT_LOAD, path.as_ptr() as u64, path.len() as u64);
-    if result == u32::MAX {
+    let id = (libfont().load_font)(path.as_ptr(), path.len() as u32);
+    if id == u32::MAX {
         None
     } else {
-        Some(result)
+        Some(id)
     }
 }
 
 /// Unload a previously loaded font.
 pub fn font_unload(font_id: u32) {
-    syscall1(SYS_FONT_UNLOAD, font_id as u64);
+    (libfont().unload_font)(font_id);
 }
 
 /// Measure text dimensions with a specific font and size.
 pub fn font_measure(font_id: u16, size: u16, text: &str) -> (u32, u32) {
     let mut out_w: u32 = 0;
     let mut out_h: u32 = 0;
-    let mut params = [0u8; 20];
-    params[0..2].copy_from_slice(&font_id.to_le_bytes());
-    params[2..4].copy_from_slice(&size.to_le_bytes());
-    let text_ptr = text.as_ptr() as u32;
-    let text_len = text.len() as u32;
-    params[4..8].copy_from_slice(&text_ptr.to_le_bytes());
-    params[8..12].copy_from_slice(&text_len.to_le_bytes());
-    let w_ptr = &mut out_w as *mut u32 as u32;
-    let h_ptr = &mut out_h as *mut u32 as u32;
-    params[12..16].copy_from_slice(&w_ptr.to_le_bytes());
-    params[16..20].copy_from_slice(&h_ptr.to_le_bytes());
-    syscall1(SYS_FONT_MEASURE, params.as_ptr() as u64);
+    (libfont().measure_string)(
+        font_id as u32, size,
+        text.as_ptr(), text.len() as u32,
+        &mut out_w, &mut out_h,
+    );
     (out_w, out_h)
 }
 
-/// Draw text with explicit font_id and size (TTF rendering via kernel).
+/// Draw text with explicit font_id and size (TTF rendering via libfont.dll).
 pub fn draw_text_ex(
     window_id: u32,
     x: i16,
@@ -553,15 +574,12 @@ pub fn draw_text_ex(
         Some(w) => w,
         None => return u32::MAX,
     };
+    let pixel_count = (win.surface.width as usize) * (win.surface.height as usize);
+    let buf = unsafe { core::slice::from_raw_parts_mut(win.surface.pixels, pixel_count) };
     font_render_buf(
         font_id,
         size,
-        unsafe {
-            core::slice::from_raw_parts_mut(
-                win.surface.pixels,
-                (win.surface.width * win.surface.height) as usize,
-            )
-        },
+        buf,
         win.surface.width,
         win.surface.height,
         x as i32,
@@ -571,7 +589,7 @@ pub fn draw_text_ex(
     )
 }
 
-/// Render TTF text directly into a raw ARGB pixel buffer.
+/// Render TTF text directly into a raw ARGB pixel buffer via libfont.dll.
 pub fn font_render_buf(
     font_id: u16,
     size: u16,
@@ -583,21 +601,13 @@ pub fn font_render_buf(
     color: u32,
     text: &str,
 ) -> u32 {
-    let mut params = [0u8; 36];
-    let buf_ptr = buf.as_mut_ptr() as u32;
-    params[0..4].copy_from_slice(&buf_ptr.to_le_bytes());
-    params[4..8].copy_from_slice(&buf_w.to_le_bytes());
-    params[8..12].copy_from_slice(&buf_h.to_le_bytes());
-    params[12..16].copy_from_slice(&x.to_le_bytes());
-    params[16..20].copy_from_slice(&y.to_le_bytes());
-    params[20..24].copy_from_slice(&color.to_le_bytes());
-    params[24..26].copy_from_slice(&font_id.to_le_bytes());
-    params[26..28].copy_from_slice(&size.to_le_bytes());
-    let text_ptr = text.as_ptr() as u32;
-    let text_len = text.len() as u32;
-    params[28..32].copy_from_slice(&text_ptr.to_le_bytes());
-    params[32..36].copy_from_slice(&text_len.to_le_bytes());
-    syscall1(SYS_FONT_RENDER_BUF, params.as_ptr() as u64)
+    (libfont().draw_string_buf)(
+        buf.as_mut_ptr(), buf_w, buf_h,
+        x, y, color,
+        font_id as u32, size,
+        text.as_ptr(), text.len() as u32,
+    );
+    0
 }
 
 /// Fill a rounded rectangle.

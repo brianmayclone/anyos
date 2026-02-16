@@ -174,7 +174,10 @@ fn main() {
     let height = fb_info.height;
     let fb_ptr = fb_info.fb_addr as *mut u32;
 
-    // Step 3: Initialize desktop (single-threaded, no lock needed yet)
+    // Step 3: Initialize fonts (must happen before any text rendering)
+    libfont_client::init();
+
+    // Step 4: Initialize desktop (single-threaded, no lock needed yet)
     let mut desktop = alloc::boxed::Box::new(desktop::Desktop::new(
         fb_ptr, width, height, fb_info.pitch,
     ));
