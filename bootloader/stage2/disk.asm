@@ -1,9 +1,13 @@
 ; =============================================================================
 ; disk.asm - Load kernel from disk using unreal mode
 ; =============================================================================
-; Supports two paths:
-;   1. INT 13h AH=42h (HDD/AHCI) — standard BIOS disk read
-;   2. ATAPI PACKET commands (CD-ROM) — direct PIO if INT 13h fails
+; Supports three paths (tried in order):
+;   1. INT 13h AH=48h detects sector size → AH=42h with correct LBAs
+;      - HDD/AHCI: 512-byte sectors, reads 64 sectors at a time (32 KiB)
+;      - CD-ROM:   2048-byte sectors, reads 16 CD sectors at a time (32 KiB)
+;   2. INT 13h AH=42h test read (if AH=48h unavailable) → HDD path
+;   3. ATAPI PACKET commands — direct PIO for legacy IDE CD-ROM drives
+;      (last resort, only if BIOS doesn't support INT 13h for CD-ROM)
 ; =============================================================================
 
 ; Enter unreal mode: load a 32-bit GDT, enter/exit protected mode
@@ -57,88 +61,153 @@ unreal_gdt_desc:
 ; =============================================================================
 ; load_kernel - Load kernel sectors from disk to KERNEL_LOAD_PHYS (0x100000)
 ; =============================================================================
+; kernel_start_lba and kernel_sectors are in 512-byte sector units (patched by
+; mkimage.py). This routine detects the actual drive sector size and adjusts
+; LBAs accordingly, so it works on both HDD (512-byte) and CD-ROM (2048-byte).
+; =============================================================================
 load_kernel:
     pusha
 
-    movzx ecx, word [kernel_sectors]    ; Total 512-byte sectors to read
-    mov eax, [kernel_start_lba]         ; Starting LBA (512-byte sectors)
-    mov edi, KERNEL_LOAD_PHYS           ; Destination in high memory
+    ; =====================================================================
+    ; Step 1: Detect sector size via INT 13h AH=48h (EDD Get Drive Params)
+    ; This is the universal way to distinguish HDD vs CD-ROM on any BIOS.
+    ; Works on real hardware (AMI, Award, Phoenix, Insyde, etc.) and QEMU.
+    ; =====================================================================
+    mov word [drive_params_buf], 0x1E   ; Minimum buffer size (30 bytes)
+    mov ah, 0x48
+    mov dl, [boot_drive]
+    mov si, drive_params_buf
+    int 0x13
+    jc .no_edd                          ; AH=48h not supported → try test read
 
-    ; First try INT 13h AH=42h (works for HDD/AHCI)
-    ; Test with a single-sector read to check if INT 13h works on this drive
+    ; Check bytes_per_sector at offset 0x18
+    mov ax, [drive_params_buf + 0x18]
+    cmp ax, 1024
+    ja .cd_int13_path                   ; > 1024 → CD-ROM (2048-byte sectors)
+    test ax, ax
+    jz .no_edd                          ; 0 = field not filled → try test read
+    jmp .hdd_int13_path                 ; ≤ 1024 → HDD (512-byte sectors)
+
+.no_edd:
+    ; AH=48h not supported (very old BIOS) — try INT 13h AH=42h test read
+    ; If this succeeds, assume HDD. If it fails, fall back to ATAPI PIO.
+    mov eax, [kernel_start_lba]
     mov word  [kernel_load_dap + 2], 1  ; Read 1 sector
-    mov dword [kernel_load_dap + 8], eax ; LBA
+    mov dword [kernel_load_dap + 8], eax
     push eax
-    push ecx
     mov si, kernel_load_dap
     mov dl, [boot_drive]
     mov ah, 0x42
     int 0x13
-    pop ecx
     pop eax
-    jc .try_atapi                       ; INT 13h failed → CD-ROM path
+    jc .try_atapi                       ; INT 13h unavailable → ATAPI PIO
+    ; Fall through to HDD path
 
     ; =====================================================================
-    ; INT 13h path (HDD/AHCI) — read in 64-sector chunks
+    ; HDD/AHCI INT 13h path — 512-byte sectors, 64 at a time (32 KiB)
     ; =====================================================================
-    mov ebx, 64                         ; Read 64 sectors at a time (32 KiB)
+.hdd_int13_path:
+    movzx ecx, word [kernel_sectors]    ; Total 512-byte sectors
+    mov eax, [kernel_start_lba]         ; Starting LBA (512-byte)
+    mov edi, KERNEL_LOAD_PHYS           ; Destination in high memory
+    mov ebx, 64                         ; 64 × 512 = 32 KiB per chunk
 
-.int13_read_loop:
+.hdd_read_loop:
     test ecx, ecx
     jz .done
 
-    ; Determine how many sectors to read this iteration
     cmp ecx, ebx
-    jae .int13_full_chunk
-    mov ebx, ecx           ; Last partial chunk
+    jae .hdd_full_chunk
+    mov ebx, ecx                        ; Last partial chunk
 
-.int13_full_chunk:
-    ; Set up DAP for this chunk
+.hdd_full_chunk:
     mov word  [kernel_load_dap + 2], bx ; Sector count
     mov dword [kernel_load_dap + 8], eax ; LBA
 
-    ; Read sectors to temp buffer
     push eax
     push ecx
-
     mov si, kernel_load_dap
     mov dl, [boot_drive]
     mov ah, 0x42
     int 0x13
     jc .disk_error
-
     pop ecx
     pop eax
 
-    ; Copy from temp buffer (0x10000) to high memory (EDI) using 32-bit addressing
+    ; Copy from TEMP_BUFFER to high memory via unreal mode 32-bit addressing
     push ecx
     push eax
-
-    ; Calculate byte count
     movzx ecx, bx
-    shl ecx, 9             ; * 512 = bytes
-
-    mov esi, TEMP_BUFFER    ; Source
-    ; EDI is already set as destination
-
-    ; Use 32-bit copy in unreal mode
-    a32 rep movsb
-
+    shl ecx, 9                          ; × 512 = byte count
+    mov esi, TEMP_BUFFER
+    a32 rep movsb                        ; EDI advances automatically
     pop eax
     pop ecx
 
-    ; Advance: LBA += sectors read, remaining -= sectors read
     add eax, ebx
     sub ecx, ebx
-    ; EDI already advanced by movsb
-
-    mov ebx, 64            ; Reset chunk size
-    jmp .int13_read_loop
+    mov ebx, 64                          ; Reset chunk size
+    jmp .hdd_read_loop
 
     ; =====================================================================
-    ; ATAPI path (CD-ROM) — use PACKET commands with READ(10)
-    ; Detection: try each IDE position by reading CD sector 16 (PVD)
-    ; and verifying the "CD001" ISO 9660 signature.
+    ; CD-ROM INT 13h path — 2048-byte sectors, 16 at a time (32 KiB)
+    ; Uses BIOS INT 13h which abstracts the hardware (IDE/AHCI/USB/etc.)
+    ; so this works on ANY x86 PC, not just legacy IDE controllers.
+    ; =====================================================================
+.cd_int13_path:
+    movzx ecx, word [kernel_sectors]    ; Total 512-byte sectors
+    mov eax, [kernel_start_lba]         ; Starting LBA (512-byte)
+    mov edi, KERNEL_LOAD_PHYS
+
+    ; Convert 512-byte LBA → CD sector LBA
+    shr eax, 2                           ; LBA ÷ 4
+    ; Convert 512-byte count → CD sector count (round up)
+    add ecx, 3
+    shr ecx, 2                           ; (count + 3) ÷ 4
+
+    mov ebx, 16                          ; 16 × 2048 = 32 KiB per chunk
+
+.cd_read_loop:
+    test ecx, ecx
+    jz .done
+
+    cmp ecx, ebx
+    jae .cd_full_chunk
+    mov ebx, ecx                         ; Last partial chunk
+
+.cd_full_chunk:
+    mov word  [kernel_load_dap + 2], bx  ; CD sector count
+    mov dword [kernel_load_dap + 8], eax ; CD sector LBA
+
+    push eax
+    push ecx
+    mov si, kernel_load_dap
+    mov dl, [boot_drive]
+    mov ah, 0x42
+    int 0x13
+    jc .disk_error
+    pop ecx
+    pop eax
+
+    ; Copy (chunk × 2048) bytes from TEMP_BUFFER to high memory
+    push ecx
+    push eax
+    movzx ecx, bx
+    shl ecx, 11                          ; × 2048 = byte count
+    mov esi, TEMP_BUFFER
+    a32 rep movsb
+    pop eax
+    pop ecx
+
+    add eax, ebx
+    sub ecx, ebx
+    mov ebx, 16                           ; Reset chunk size
+    jmp .cd_read_loop
+
+    ; =====================================================================
+    ; ATAPI PIO path — direct PACKET commands (legacy IDE CD-ROM fallback)
+    ; Only reached if BIOS has no EDD support AND no INT 13h for CD-ROM.
+    ; This covers very old BIOSes with legacy IDE controllers.
     ; =====================================================================
 .try_atapi:
     ; Try secondary master (most common for QEMU -cdrom)
@@ -169,7 +238,7 @@ load_kernel:
     test al, al
     jnz .atapi_found
 
-    jmp .disk_error         ; No ATAPI device found
+    jmp .disk_error                      ; No readable drive found
 
 .atapi_found:
     ; Reload kernel parameters (may have been clobbered by probing)
@@ -177,14 +246,10 @@ load_kernel:
     mov eax, [kernel_start_lba]
     mov edi, KERNEL_LOAD_PHYS
 
-    ; Convert 512-byte LBA to 2048-byte CD sectors
-    ; kernel_start_lba is in 512-byte sectors (e.g. 188)
-    ; CD sector = LBA / 4
-    shr eax, 2              ; EAX = CD sector LBA
-
-    ; Convert 512-byte sector count to CD sector count (round up)
+    ; Convert 512-byte LBA → CD sector LBA
+    shr eax, 2
     add ecx, 3
-    shr ecx, 2              ; ECX = CD sectors to read
+    shr ecx, 2
 
 .atapi_read_loop:
     test ecx, ecx
@@ -193,21 +258,21 @@ load_kernel:
     ; Read one CD sector (2048 bytes) to temp buffer
     push eax
     push ecx
-    call atapi_read_sector  ; EAX = CD LBA, reads 2048 bytes to TEMP_BUFFER
+    call atapi_read_sector               ; EAX = CD LBA → TEMP_BUFFER
     pop ecx
     pop eax
-    jc .disk_error          ; Read failed
+    jc .disk_error
 
     ; Copy 2048 bytes from temp buffer to high memory via unreal mode
     push ecx
     push eax
     mov ecx, 2048
     mov esi, TEMP_BUFFER
-    a32 rep movsb           ; Copy to EDI (high memory), advances EDI
+    a32 rep movsb
     pop eax
     pop ecx
 
-    inc eax                 ; Next CD sector
+    inc eax
     dec ecx
     jmp .atapi_read_loop
 
@@ -466,6 +531,13 @@ kernel_load_dap:
     dw TEMP_BUFFER_SEG      ; Buffer segment (0x1000 -> physical 0x10000)
     dd 0                    ; LBA low (patched per chunk)
     dd 0                    ; LBA high
+
+; INT 13h AH=48h result buffer (EDD Get Drive Parameters)
+; Minimum 30 bytes (0x1E). Bytes_per_sector at offset 0x18.
+ALIGN 4
+drive_params_buf:
+    dw 0x1E                 ; Buffer size (input)
+    times 28 db 0           ; Result filled by BIOS (30 bytes total)
 
 ; ATAPI state
 atapi_base:  dw 0x170      ; I/O base port for ATAPI channel
