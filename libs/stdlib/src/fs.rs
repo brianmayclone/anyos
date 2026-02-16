@@ -99,3 +99,39 @@ pub fn getcwd(buf: &mut [u8]) -> u32 {
 pub fn isatty(fd: u32) -> u32 {
     syscall1(SYS_ISATTY, fd as u64)
 }
+
+/// Mount a filesystem.
+/// `mount_path`: where to mount (e.g. "/mnt/cdrom0")
+/// `device`: device path (e.g. "/dev/cdrom0")
+/// `fs_type`: filesystem type (0=fat, 1=iso9660)
+/// Returns 0 on success, u32::MAX on error.
+pub fn mount(mount_path: &str, device: &str, fs_type: u32) -> u32 {
+    let mut mp_buf = [0u8; 257];
+    let mp_len = mount_path.len().min(256);
+    mp_buf[..mp_len].copy_from_slice(&mount_path.as_bytes()[..mp_len]);
+    mp_buf[mp_len] = 0;
+
+    let mut dev_buf = [0u8; 257];
+    let dev_len = device.len().min(256);
+    dev_buf[..dev_len].copy_from_slice(&device.as_bytes()[..dev_len]);
+    dev_buf[dev_len] = 0;
+
+    syscall3(SYS_MOUNT, mp_buf.as_ptr() as u64, dev_buf.as_ptr() as u64, fs_type as u64)
+}
+
+/// Unmount a filesystem.
+/// `mount_path`: the mount point to unmount (e.g. "/mnt/cdrom0")
+/// Returns 0 on success, u32::MAX on error.
+pub fn umount(mount_path: &str) -> u32 {
+    let mut buf = [0u8; 257];
+    let len = mount_path.len().min(256);
+    buf[..len].copy_from_slice(&mount_path.as_bytes()[..len]);
+    buf[len] = 0;
+    syscall1(SYS_UMOUNT, buf.as_ptr() as u64)
+}
+
+/// List all mount points. Writes tab-separated "path\tfstype\n" entries to buf.
+/// Returns bytes written, or u32::MAX on error.
+pub fn list_mounts(buf: &mut [u8]) -> u32 {
+    syscall2(SYS_LIST_MOUNTS, buf.as_mut_ptr() as u64, buf.len() as u64)
+}

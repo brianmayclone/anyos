@@ -1,6 +1,10 @@
 ; =============================================================================
 ; disk.asm - Load kernel from disk using unreal mode
 ; =============================================================================
+; Supports two paths:
+;   1. INT 13h AH=42h (HDD/AHCI) — standard BIOS disk read
+;   2. ATAPI PACKET commands (CD-ROM) — direct PIO if INT 13h fails
+; =============================================================================
 
 ; Enter unreal mode: load a 32-bit GDT, enter/exit protected mode
 ; to load 32-bit segment limits, then return to real mode with big segments
@@ -56,23 +60,39 @@ unreal_gdt_desc:
 load_kernel:
     pusha
 
-    movzx ecx, word [kernel_sectors]    ; Total sectors to read
-    mov eax, [kernel_start_lba]         ; Starting LBA
+    movzx ecx, word [kernel_sectors]    ; Total 512-byte sectors to read
+    mov eax, [kernel_start_lba]         ; Starting LBA (512-byte sectors)
     mov edi, KERNEL_LOAD_PHYS           ; Destination in high memory
 
-    ; Sectors per chunk
+    ; First try INT 13h AH=42h (works for HDD/AHCI)
+    ; Test with a single-sector read to check if INT 13h works on this drive
+    mov word  [kernel_load_dap + 2], 1  ; Read 1 sector
+    mov dword [kernel_load_dap + 8], eax ; LBA
+    push eax
+    push ecx
+    mov si, kernel_load_dap
+    mov dl, [boot_drive]
+    mov ah, 0x42
+    int 0x13
+    pop ecx
+    pop eax
+    jc .try_atapi                       ; INT 13h failed → CD-ROM path
+
+    ; =====================================================================
+    ; INT 13h path (HDD/AHCI) — read in 64-sector chunks
+    ; =====================================================================
     mov ebx, 64                         ; Read 64 sectors at a time (32 KiB)
 
-.read_loop:
+.int13_read_loop:
     test ecx, ecx
     jz .done
 
     ; Determine how many sectors to read this iteration
     cmp ecx, ebx
-    jae .full_chunk
+    jae .int13_full_chunk
     mov ebx, ecx           ; Last partial chunk
 
-.full_chunk:
+.int13_full_chunk:
     ; Set up DAP for this chunk
     mov word  [kernel_load_dap + 2], bx ; Sector count
     mov dword [kernel_load_dap + 8], eax ; LBA
@@ -113,7 +133,83 @@ load_kernel:
     ; EDI already advanced by movsb
 
     mov ebx, 64            ; Reset chunk size
-    jmp .read_loop
+    jmp .int13_read_loop
+
+    ; =====================================================================
+    ; ATAPI path (CD-ROM) — use PACKET commands with READ(10)
+    ; Detection: try each IDE position by reading CD sector 16 (PVD)
+    ; and verifying the "CD001" ISO 9660 signature.
+    ; =====================================================================
+.try_atapi:
+    ; Try secondary master (most common for QEMU -cdrom)
+    mov word [atapi_base], 0x170
+    mov byte [atapi_slave], 0
+    call atapi_probe
+    test al, al
+    jnz .atapi_found
+
+    ; Try secondary slave
+    mov word [atapi_base], 0x170
+    mov byte [atapi_slave], 1
+    call atapi_probe
+    test al, al
+    jnz .atapi_found
+
+    ; Try primary slave
+    mov word [atapi_base], 0x1F0
+    mov byte [atapi_slave], 1
+    call atapi_probe
+    test al, al
+    jnz .atapi_found
+
+    ; Try primary master
+    mov word [atapi_base], 0x1F0
+    mov byte [atapi_slave], 0
+    call atapi_probe
+    test al, al
+    jnz .atapi_found
+
+    jmp .disk_error         ; No ATAPI device found
+
+.atapi_found:
+    ; Reload kernel parameters (may have been clobbered by probing)
+    movzx ecx, word [kernel_sectors]
+    mov eax, [kernel_start_lba]
+    mov edi, KERNEL_LOAD_PHYS
+
+    ; Convert 512-byte LBA to 2048-byte CD sectors
+    ; kernel_start_lba is in 512-byte sectors (e.g. 188)
+    ; CD sector = LBA / 4
+    shr eax, 2              ; EAX = CD sector LBA
+
+    ; Convert 512-byte sector count to CD sector count (round up)
+    add ecx, 3
+    shr ecx, 2              ; ECX = CD sectors to read
+
+.atapi_read_loop:
+    test ecx, ecx
+    jz .done
+
+    ; Read one CD sector (2048 bytes) to temp buffer
+    push eax
+    push ecx
+    call atapi_read_sector  ; EAX = CD LBA, reads 2048 bytes to TEMP_BUFFER
+    pop ecx
+    pop eax
+    jc .disk_error          ; Read failed
+
+    ; Copy 2048 bytes from temp buffer to high memory via unreal mode
+    push ecx
+    push eax
+    mov ecx, 2048
+    mov esi, TEMP_BUFFER
+    a32 rep movsb           ; Copy to EDI (high memory), advances EDI
+    pop eax
+    pop ecx
+
+    inc eax                 ; Next CD sector
+    dec ecx
+    jmp .atapi_read_loop
 
 .disk_error:
     mov si, msg_disk_err
@@ -125,7 +221,242 @@ load_kernel:
     popa
     ret
 
-; DAP for kernel loading (non-local label since it's data)
+; =============================================================================
+; atapi_probe - Try to read CD sector 16 (PVD) and verify "CD001" signature
+; Input:  [atapi_base] = I/O base port, [atapi_slave] = 0 master, 1 slave
+; Output: AL = 1 if ISO 9660 CD-ROM found, 0 if not
+; =============================================================================
+atapi_probe:
+    push ebx
+    push edi
+
+    ; Try reading PVD (CD sector 16)
+    mov eax, 16
+    call atapi_read_sector
+    jc .probe_fail
+
+    ; Verify ISO 9660 magic "CD001" at offset 1 of the PVD
+    ; PVD: byte 0 = type (1), bytes 1-5 = "CD001"
+    ; Must use 32-bit register for TEMP_BUFFER (0x10000 > 16-bit range)
+    mov edi, TEMP_BUFFER
+    cmp byte [edi + 1], 'C'
+    jne .probe_fail
+    cmp byte [edi + 2], 'D'
+    jne .probe_fail
+    cmp byte [edi + 3], '0'
+    jne .probe_fail
+    cmp byte [edi + 4], '0'
+    jne .probe_fail
+    cmp byte [edi + 5], '1'
+    jne .probe_fail
+
+    mov al, 1              ; Found ISO 9660 CD-ROM
+    pop edi
+    pop ebx
+    ret
+
+.probe_fail:
+    xor al, al             ; Not found
+    pop edi
+    pop ebx
+    ret
+
+; =============================================================================
+; atapi_read_sector - Read one 2048-byte CD sector using ATAPI PACKET command
+; Input:  EAX = CD sector LBA
+;         [atapi_base] = I/O base, [atapi_slave] = drive select
+; Output: 2048 bytes at TEMP_BUFFER (physical 0x10000)
+;         CF clear on success, CF set on error
+; =============================================================================
+atapi_read_sector:
+    push eax
+    push ebx
+    push ecx
+    push edx
+    push edi
+
+    mov ebx, eax           ; Save LBA in EBX
+
+    ; Select device
+    mov dx, [atapi_base]
+    add dx, 6              ; Device/Head register
+    mov al, [atapi_slave]
+    test al, al
+    jz .sel_master
+    mov al, 0xB0           ; Slave (bit 4 = 1)
+    jmp .sel_done
+.sel_master:
+    mov al, 0xA0           ; Master (bit 4 = 0)
+.sel_done:
+    out dx, al
+
+    ; 400ns delay (read status 4 times)
+    mov dx, [atapi_base]
+    add dx, 7              ; Status register
+    in al, dx
+    in al, dx
+    in al, dx
+    in al, dx
+
+    ; Quick check: floating bus (0xFF) = no device present
+    in al, dx
+    cmp al, 0xFF
+    je .atapi_err
+
+    ; Wait for device ready (BSY=0) with timeout
+    mov ecx, 200000
+.wait_ready:
+    in al, dx
+    test al, 0x80          ; BSY bit
+    jz .ready
+    dec ecx
+    jnz .wait_ready
+    jmp .atapi_err          ; Timeout → no ATAPI device
+.ready:
+
+    ; Set features = 0 (PIO mode)
+    mov dx, [atapi_base]
+    inc dx                 ; Features register (base + 1)
+    xor al, al
+    out dx, al
+
+    ; Set byte count = 2048 (max transfer per DRQ)
+    mov dx, [atapi_base]
+    add dx, 4              ; Byte Count Low (base + 4)
+    mov al, 0x00           ; 2048 & 0xFF = 0
+    out dx, al
+    inc dx                 ; Byte Count High (base + 5)
+    mov al, 0x08           ; 2048 >> 8 = 8
+    out dx, al
+
+    ; Send PACKET command
+    mov dx, [atapi_base]
+    add dx, 7              ; Command register
+    mov al, 0xA0           ; PACKET command
+    out dx, al
+
+    ; Wait for DRQ (device ready to receive CDB)
+    ; Status register = base + 7
+    mov ecx, 200000
+.wait_drq_cdb:
+    in al, dx
+    test al, 0x80          ; BSY — keep spinning while BSY=1
+    jnz .wait_drq_cdb_next
+    test al, 0x01          ; ERR
+    jnz .atapi_err
+    test al, 0x08          ; DRQ
+    jnz .send_cdb
+.wait_drq_cdb_next:
+    dec ecx
+    jnz .wait_drq_cdb
+    jmp .atapi_err          ; Timeout
+
+.send_cdb:
+    ; Build READ(10) CDB (12 bytes, sent as 6 × 16-bit words)
+    ;
+    ;   Byte 0: 0x28 (READ(10) opcode)
+    ;   Byte 1: 0x00
+    ;   Bytes 2-5: LBA (big-endian u32)
+    ;   Byte 6: 0x00
+    ;   Bytes 7-8: Transfer length = 1 sector (big-endian u16)
+    ;   Bytes 9-11: 0x00
+    ;
+    ; x86 "out dx, ax" sends AL first, AH second (little-endian wire order).
+    ; So for each word: AL = even CDB byte, AH = odd CDB byte.
+
+    mov dx, [atapi_base]   ; Data port (base + 0)
+
+    ; Word 0: CDB[0]=0x28, CDB[1]=0x00
+    mov ax, 0x0028
+    out dx, ax
+
+    ; Word 1: CDB[2]=LBA[31:24], CDB[3]=LBA[23:16]
+    mov eax, ebx           ; EAX = LBA (little-endian)
+    bswap eax              ; EAX = LBA (big-endian byte order)
+    push eax
+    out dx, ax             ; AL=LBA[31:24], AH=LBA[23:16]
+
+    ; Word 2: CDB[4]=LBA[15:8], CDB[5]=LBA[7:0]
+    pop eax
+    shr eax, 16
+    out dx, ax             ; AL=LBA[15:8], AH=LBA[7:0]
+
+    ; Word 3: CDB[6]=0x00, CDB[7]=0x00 (transfer length high)
+    xor ax, ax
+    out dx, ax
+
+    ; Word 4: CDB[8]=0x01 (transfer length low), CDB[9]=0x00
+    mov ax, 0x0001
+    out dx, ax
+
+    ; Word 5: CDB[10]=0x00, CDB[11]=0x00
+    xor ax, ax
+    out dx, ax
+
+    ; Wait for data DRQ
+    mov dx, [atapi_base]
+    add dx, 7              ; Status register
+    mov ecx, 1000000       ; Generous timeout for CD seek + read
+.wait_drq_data:
+    in al, dx
+    test al, 0x80          ; BSY — keep spinning
+    jnz .wait_drq_data_next
+    test al, 0x01          ; ERR
+    jnz .atapi_err
+    test al, 0x08          ; DRQ
+    jnz .read_data
+.wait_drq_data_next:
+    dec ecx
+    jnz .wait_drq_data
+    jmp .atapi_err          ; Timeout
+
+.read_data:
+    ; Read 2048 bytes (1024 words) from data port to TEMP_BUFFER
+    mov dx, [atapi_base]   ; Data port
+    mov edi, TEMP_BUFFER   ; Destination (32-bit address, unreal mode)
+    mov ecx, 1024          ; Word count
+.read_word:
+    in ax, dx
+    mov [edi], ax
+    add edi, 2
+    dec ecx
+    jnz .read_word
+
+    ; Wait for BSY to clear (command complete)
+    mov dx, [atapi_base]
+    add dx, 7
+    mov ecx, 200000
+.wait_complete:
+    in al, dx
+    test al, 0x80          ; BSY
+    jz .check_err
+    dec ecx
+    jnz .wait_complete
+    jmp .atapi_err
+
+.check_err:
+    test al, 0x01          ; ERR bit
+    jnz .atapi_err
+
+    clc                     ; Success
+    jmp .atapi_ret
+
+.atapi_err:
+    stc                     ; Error
+
+.atapi_ret:
+    pop edi
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+    ret
+
+; =============================================================================
+; Data
+; =============================================================================
+
+; DAP for kernel loading (INT 13h path)
 ALIGN 4
 kernel_load_dap:
     db 0x10                 ; DAP size
@@ -135,5 +466,9 @@ kernel_load_dap:
     dw TEMP_BUFFER_SEG      ; Buffer segment (0x1000 -> physical 0x10000)
     dd 0                    ; LBA low (patched per chunk)
     dd 0                    ; LBA high
+
+; ATAPI state
+atapi_base:  dw 0x170      ; I/O base port for ATAPI channel
+atapi_slave: db 0           ; 0 = master, 1 = slave
 
 msg_disk_err: db "FATAL: Kernel disk read failed!", 13, 10, 0

@@ -8,7 +8,7 @@
 # SPDX-License-Identifier: MIT
 
 # Build anyOS
-# Usage: ./build.sh [--clean] [--uefi] [--all]
+# Usage: ./build.sh [--clean] [--uefi] [--iso] [--all]
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="${SCRIPT_DIR}/.."
@@ -16,6 +16,7 @@ BUILD_DIR="${PROJECT_DIR}/build"
 
 CLEAN=0
 BUILD_UEFI=0
+BUILD_ISO=0
 BUILD_ALL=0
 
 for arg in "$@"; do
@@ -26,15 +27,19 @@ for arg in "$@"; do
         --uefi)
             BUILD_UEFI=1
             ;;
+        --iso)
+            BUILD_ISO=1
+            ;;
         --all)
             BUILD_ALL=1
             ;;
         *)
-            echo "Usage: $0 [--clean] [--uefi] [--all]"
+            echo "Usage: $0 [--clean] [--uefi] [--iso] [--all]"
             echo ""
             echo "  --clean    Force full rebuild of all components"
             echo "  --uefi     Build UEFI disk image (in addition to BIOS)"
-            echo "  --all      Build both BIOS and UEFI disk images"
+            echo "  --iso      Build bootable ISO 9660 image (El Torito, CD-ROM)"
+            echo "  --all      Build BIOS, UEFI, and ISO images"
             exit 1
             ;;
     esac
@@ -82,6 +87,20 @@ if [ "$BUILD_UEFI" -eq 1 ] || [ "$BUILD_ALL" -eq 1 ]; then
     fi
 
     echo "UEFI build successful."
+fi
+
+# Build ISO image if requested
+if [ "$BUILD_ISO" -eq 1 ] || [ "$BUILD_ALL" -eq 1 ]; then
+    echo "Building anyOS (ISO 9660, El Torito)..."
+    ninja -C "$BUILD_DIR" iso
+    ISO_RC=$?
+
+    if [ $ISO_RC -ne 0 ]; then
+        echo "ISO build failed!"
+        exit $ISO_RC
+    fi
+
+    echo "ISO build successful: ${BUILD_DIR}/anyos.iso"
 fi
 
 echo "Build complete."

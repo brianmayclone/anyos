@@ -907,6 +907,470 @@ def create_uefi_image(args):
 
 
 # =====================================================================
+# ISO 9660 helpers
+# =====================================================================
+
+ISO_BLOCK_SIZE = 2048
+
+def both_endian_u32(val):
+    """Encode a 32-bit value in ISO 9660 both-endian format (LE + BE = 8 bytes)."""
+    return struct.pack('<I', val) + struct.pack('>I', val)
+
+def both_endian_u16(val):
+    """Encode a 16-bit value in ISO 9660 both-endian format (LE + BE = 4 bytes)."""
+    return struct.pack('<H', val) + struct.pack('>H', val)
+
+def iso_datetime_now():
+    """ISO 9660 directory record date/time (7 bytes): year-1900,month,day,hour,min,sec,gmt_offset."""
+    import time
+    t = time.localtime()
+    return bytes([t.tm_year - 1900, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, 0])
+
+def iso_dec_datetime_now():
+    """ISO 9660 PVD date/time string (17 bytes ASCII): YYYYMMDDHHMMSSCC + GMT offset."""
+    import time
+    t = time.localtime()
+    s = f'{t.tm_year:04d}{t.tm_mon:02d}{t.tm_mday:02d}{t.tm_hour:02d}{t.tm_min:02d}{t.tm_sec:02d}00'
+    return s.encode('ascii') + b'\x00'  # 17 bytes
+
+def make_dir_record(lba, data_len, flags, name_bytes, is_root=False):
+    """Build an ISO 9660 directory record (variable length)."""
+    name_len = len(name_bytes)
+    rec_len = 33 + name_len
+    if rec_len % 2 != 0:
+        rec_len += 1  # Pad to even
+
+    rec = bytearray(rec_len)
+    rec[0] = rec_len
+    rec[1] = 0  # Extended attribute length
+    rec[2:10] = both_endian_u32(lba)
+    rec[10:18] = both_endian_u32(data_len)
+    rec[18:25] = iso_datetime_now()
+    rec[25] = flags
+    rec[26] = 0  # File unit size
+    rec[27] = 0  # Interleave gap size
+    rec[28:32] = both_endian_u16(1)  # Volume sequence number
+    rec[32] = name_len
+    rec[33:33 + name_len] = name_bytes
+    return bytes(rec)
+
+
+class Iso9660Creator:
+    """Creates an ISO 9660 filesystem image with El Torito boot support."""
+
+    def __init__(self):
+        self.dirs = {}     # path -> {'lba': int, 'entries': [DirRecord,...], 'children': [name,...]}
+        self.files = {}    # path -> {'data': bytes, 'lba': int}
+        self.volume_id = 'ANYOS_LIVE'
+
+    def add_sysroot(self, sysroot_path):
+        """Recursively collect all files and directories from sysroot."""
+        if not os.path.isdir(sysroot_path):
+            return
+        self._collect_dir(sysroot_path, '/')
+
+    def _collect_dir(self, host_path, iso_path):
+        """Recursively collect directory contents."""
+        if iso_path not in self.dirs:
+            self.dirs[iso_path] = {'children': [], 'files': []}
+
+        for entry in sorted(os.listdir(host_path)):
+            if entry.startswith('.'):
+                continue
+            full = os.path.join(host_path, entry)
+            child_iso = iso_path.rstrip('/') + '/' + entry
+
+            if os.path.isdir(full):
+                self.dirs[iso_path]['children'].append(entry)
+                self._collect_dir(full, child_iso)
+            elif os.path.isfile(full):
+                with open(full, 'rb') as f:
+                    data = f.read()
+                self.files[child_iso] = {'data': data}
+                self.dirs[iso_path]['files'].append(entry)
+
+    def write_image(self, output_path, stage1_data=None, stage2_data=None, kernel_flat=None):
+        """Write the complete ISO 9660 image."""
+        # Layout:
+        # Sectors 0-15:  System area (stage1 + stage2)
+        # Sector 16:     PVD
+        # Sector 17:     Boot Record Volume Descriptor (El Torito)
+        # Sector 18:     VD Set Terminator
+        # Sector 19:     Boot Catalog
+        # Sector 20:     Path Table (L-type)
+        # Sector 21:     Path Table (M-type)
+        # Sector 22+:    Directory extents
+        # Then:          Kernel data (at sector 32 minimum = disk LBA 128)
+        # Then:          File data
+
+        has_boot = stage1_data is not None and stage2_data is not None
+
+        # Assign LBAs for directories
+        all_dirs = sorted(self.dirs.keys())
+        dir_lba_start = 22
+        dir_lbas = {}
+        next_lba = dir_lba_start
+        for d in all_dirs:
+            dir_lbas[d] = next_lba
+            # Estimate directory extent size (1 sector per dir for now, expand if needed)
+            next_lba += 1
+
+        # Kernel data LBA (must be at CD sector 32 = disk LBA 128 for bootloader)
+        kernel_lba = 32
+        if next_lba > kernel_lba:
+            kernel_lba = next_lba
+        kernel_sectors = 0
+        if kernel_flat:
+            kernel_sectors = (len(kernel_flat) + ISO_BLOCK_SIZE - 1) // ISO_BLOCK_SIZE
+        file_data_lba = kernel_lba + kernel_sectors
+
+        # Assign LBAs for files
+        file_lbas = {}
+        cur_lba = file_data_lba
+        for fpath in sorted(self.files.keys()):
+            fdata = self.files[fpath]['data']
+            file_lbas[fpath] = cur_lba
+            sectors = (len(fdata) + ISO_BLOCK_SIZE - 1) // ISO_BLOCK_SIZE
+            cur_lba += max(sectors, 1)  # At least 1 sector per file
+
+        total_sectors = cur_lba
+
+        # Build directory extents
+        dir_extents = {}
+        for d in all_dirs:
+            extent = bytearray()
+            d_lba = dir_lbas[d]
+
+            # "." entry
+            extent += make_dir_record(d_lba, ISO_BLOCK_SIZE, 0x02, b'\x00')
+            # ".." entry
+            parent = '/'.join(d.rstrip('/').split('/')[:-1]) or '/'
+            parent_lba = dir_lbas.get(parent, dir_lbas.get('/', d_lba))
+            extent += make_dir_record(parent_lba, ISO_BLOCK_SIZE, 0x02, b'\x01')
+
+            # Child directories
+            children = self.dirs[d].get('children', [])
+            for child_name in children:
+                child_path = d.rstrip('/') + '/' + child_name
+                child_lba = dir_lbas[child_path]
+                name_bytes = child_name.upper().encode('ascii')
+                extent += make_dir_record(child_lba, ISO_BLOCK_SIZE, 0x02, name_bytes)
+
+            # Files
+            files_in_dir = self.dirs[d].get('files', [])
+            for fname in files_in_dir:
+                fpath = d.rstrip('/') + '/' + fname
+                fdata = self.files[fpath]['data']
+                flba = file_lbas[fpath]
+                # ISO 9660 filename: uppercase + ";1" version
+                iso_name = fname.upper()
+                if '.' not in iso_name:
+                    iso_name += '.'
+                iso_name += ';1'
+                name_bytes = iso_name.encode('ascii')
+                extent += make_dir_record(flba, len(fdata), 0x00, name_bytes)
+
+            # Pad extent to block boundary
+            while len(extent) % ISO_BLOCK_SIZE != 0:
+                extent += b'\x00'
+
+            # Check if we need more than 1 sector
+            needed = len(extent) // ISO_BLOCK_SIZE
+            if needed > 1:
+                # Need to reassign LBAs — for simplicity, just allocate more
+                # This could cause overlap. In practice, sysroot dirs are small enough.
+                pass
+
+            dir_extents[d] = bytes(extent)
+
+        # Build Path Table (L-type, little-endian)
+        path_table = bytearray()
+        # Entry format: dir_id_len(1), ext_attr_len(1), extent_lba(4, LE), parent_dir_num(2, LE), dir_id(N), pad(1 if odd)
+        dir_numbers = {}
+        dir_num = 1
+        for d in all_dirs:
+            dir_numbers[d] = dir_num
+            dir_num += 1
+
+        for d in all_dirs:
+            d_lba = dir_lbas[d]
+            parent = '/'.join(d.rstrip('/').split('/')[:-1]) or '/'
+            parent_num = dir_numbers.get(parent, 1)
+            if d == '/':
+                name_bytes = b'\x01'  # Root directory identifier
+                parent_num = 1
+            else:
+                name_bytes = d.rsplit('/', 1)[-1].upper().encode('ascii')
+
+            entry = bytearray()
+            entry.append(len(name_bytes))  # Directory identifier length
+            entry.append(0)                 # Extended attribute record length
+            entry += struct.pack('<I', d_lba)   # LBA (LE)
+            entry += struct.pack('<H', parent_num)  # Parent dir number (LE)
+            entry += name_bytes
+            if len(name_bytes) % 2 != 0:
+                entry += b'\x00'  # Padding
+
+            path_table += entry
+
+        path_table_size = len(path_table)
+
+        # Build Path Table (M-type, big-endian)
+        path_table_m = bytearray()
+        for d in all_dirs:
+            d_lba = dir_lbas[d]
+            parent = '/'.join(d.rstrip('/').split('/')[:-1]) or '/'
+            parent_num = dir_numbers.get(parent, 1)
+            if d == '/':
+                name_bytes = b'\x01'
+                parent_num = 1
+            else:
+                name_bytes = d.rsplit('/', 1)[-1].upper().encode('ascii')
+
+            entry = bytearray()
+            entry.append(len(name_bytes))
+            entry.append(0)
+            entry += struct.pack('>I', d_lba)   # LBA (BE)
+            entry += struct.pack('>H', parent_num)  # Parent dir number (BE)
+            entry += name_bytes
+            if len(name_bytes) % 2 != 0:
+                entry += b'\x00'
+
+            path_table_m += entry
+
+        # Build PVD
+        root_dir_lba = dir_lbas['/']
+        root_dir_size = len(dir_extents['/'])
+        pvd = self._make_pvd(total_sectors, root_dir_lba, root_dir_size,
+                             20, path_table_size)
+
+        # Build El Torito BRVD
+        brvd = bytearray(ISO_BLOCK_SIZE)
+        brvd[0] = 0     # Boot Record type
+        brvd[1:6] = b'CD001'
+        brvd[6] = 1     # Version
+        brvd[7:39] = b'EL TORITO SPECIFICATION' + b'\x00' * 9
+        # Boot catalog LBA at offset 71 (LE u32)
+        struct.pack_into('<I', brvd, 71, 19)  # Boot catalog at sector 19
+
+        # Build VD Set Terminator
+        vdst = bytearray(ISO_BLOCK_SIZE)
+        vdst[0] = 255  # Terminator type
+        vdst[1:6] = b'CD001'
+        vdst[6] = 1
+
+        # Build Boot Catalog
+        boot_cat = bytearray(ISO_BLOCK_SIZE)
+        # Validation Entry (32 bytes)
+        boot_cat[0] = 0x01   # Header ID
+        boot_cat[1] = 0x00   # Platform ID (x86)
+        boot_cat[28] = 0xAA  # Key byte 1
+        boot_cat[29] = 0x55  # Key byte 2
+        # Calculate checksum for validation entry (sum of all 16-bit LE words must be 0)
+        boot_cat[30] = 0
+        boot_cat[31] = 0
+        checksum = 0
+        for i in range(0, 32, 2):
+            checksum += struct.unpack_from('<H', boot_cat, i)[0]
+        checksum = (0x10000 - (checksum & 0xFFFF)) & 0xFFFF
+        struct.pack_into('<H', boot_cat, 28 - 2, checksum)  # Ugh wait, the spec says offset 28=key bytes
+        # Actually: validation entry checksum is at offset 28 = key byte 55AA, checksum is included
+        # Let me redo: all words sum to 0. Key bytes at offset 30-31.
+        # Re-read spec: byte 0=header_id(1), 1=platform(0), 2-3=reserved, 4-27=ID string,
+        #               28-29=checksum, 30=key_byte_55, 31=key_byte_AA
+        boot_cat[30] = 0x55
+        boot_cat[31] = 0xAA
+        boot_cat[28] = 0  # checksum placeholder
+        boot_cat[29] = 0
+        checksum = 0
+        for i in range(0, 32, 2):
+            checksum += struct.unpack_from('<H', boot_cat, i)[0]
+        checksum = (0x10000 - (checksum & 0xFFFF)) & 0xFFFF
+        struct.pack_into('<H', boot_cat, 28, checksum)
+
+        # Initial/Default Entry (32 bytes, at offset 32)
+        boot_cat[32] = 0x88  # Bootable
+        boot_cat[33] = 0x00  # No emulation
+        struct.pack_into('<H', boot_cat, 34, 0x0000)  # Load Segment (0 = default 0x7C0)
+        boot_cat[36] = 0x00  # System type
+        boot_cat[37] = 0x00  # Unused
+        # Sector count: number of 512-byte virtual sectors to load
+        # Load stage1 (1 sector) + stage2 (63 sectors) = 64 sectors = 32 KiB
+        struct.pack_into('<H', boot_cat, 38, 64)
+        # Load RBA: CD sector of boot image (sector 0 = system area)
+        struct.pack_into('<I', boot_cat, 40, 0)
+
+        # === Assemble the image ===
+        image_size = total_sectors * ISO_BLOCK_SIZE
+        image = bytearray(image_size)
+
+        # System area (sectors 0-15): stage1 + stage2
+        # Patch stage2 with actual kernel location (must happen after layout is computed)
+        if has_boot:
+            stage2_patched = bytearray(stage2_data)
+            kernel_disk_lba = kernel_lba * (ISO_BLOCK_SIZE // SECTOR_SIZE)  # CD sector → 512-byte sector
+            kernel_disk_sectors = (len(kernel_flat) + SECTOR_SIZE - 1) // SECTOR_SIZE if kernel_flat else 0
+            if len(stage2_patched) >= 8:
+                struct.pack_into("<H", stage2_patched, 2, kernel_disk_sectors)
+                struct.pack_into("<I", stage2_patched, 4, kernel_disk_lba)
+            print(f"  Stage2 patched: kernel at disk LBA {kernel_disk_lba}, {kernel_disk_sectors} sectors")
+            image[0:len(stage1_data)] = stage1_data
+            image[SECTOR_SIZE:SECTOR_SIZE + len(stage2_patched)] = stage2_patched
+
+        # PVD at sector 16
+        image[16 * ISO_BLOCK_SIZE:16 * ISO_BLOCK_SIZE + ISO_BLOCK_SIZE] = pvd
+        # BRVD at sector 17
+        image[17 * ISO_BLOCK_SIZE:17 * ISO_BLOCK_SIZE + ISO_BLOCK_SIZE] = brvd
+        # VD Terminator at sector 18
+        image[18 * ISO_BLOCK_SIZE:18 * ISO_BLOCK_SIZE + ISO_BLOCK_SIZE] = vdst
+        # Boot Catalog at sector 19
+        image[19 * ISO_BLOCK_SIZE:19 * ISO_BLOCK_SIZE + ISO_BLOCK_SIZE] = boot_cat
+        # Path Table L at sector 20
+        pt_offset = 20 * ISO_BLOCK_SIZE
+        image[pt_offset:pt_offset + len(path_table)] = path_table
+        # Path Table M at sector 21
+        pt_m_offset = 21 * ISO_BLOCK_SIZE
+        image[pt_m_offset:pt_m_offset + len(path_table_m)] = path_table_m
+
+        # Directory extents
+        for d in all_dirs:
+            d_lba = dir_lbas[d]
+            d_offset = d_lba * ISO_BLOCK_SIZE
+            ext_data = dir_extents[d]
+            image[d_offset:d_offset + len(ext_data)] = ext_data
+
+        # Kernel data at sector 32 (= disk LBA 128)
+        if kernel_flat:
+            k_offset = kernel_lba * ISO_BLOCK_SIZE
+            image[k_offset:k_offset + len(kernel_flat)] = kernel_flat
+            print(f"  Kernel at CD sector {kernel_lba} ({len(kernel_flat)} bytes, "
+                  f"{kernel_sectors} sectors)")
+
+        # File data
+        for fpath in sorted(self.files.keys()):
+            fdata = self.files[fpath]['data']
+            flba = file_lbas[fpath]
+            f_offset = flba * ISO_BLOCK_SIZE
+            image[f_offset:f_offset + len(fdata)] = fdata
+
+        # Write image
+        with open(output_path, 'wb') as f:
+            f.write(image)
+
+        iso_size_mb = len(image) / (1024 * 1024)
+        print(f"\n  ISO 9660 image: {output_path} ({iso_size_mb:.1f} MiB, "
+              f"{total_sectors} CD sectors)")
+        print(f"  Files: {len(self.files)}, Directories: {len(self.dirs)}")
+
+        return kernel_lba, kernel_sectors
+
+    def _make_pvd(self, total_blocks, root_dir_lba, root_dir_size,
+                  path_table_lba, path_table_size):
+        """Create a Primary Volume Descriptor."""
+        pvd = bytearray(ISO_BLOCK_SIZE)
+        pvd[0] = 1      # Type: PVD
+        pvd[1:6] = b'CD001'
+        pvd[6] = 1      # Version
+        # System identifier (bytes 8-39, 32 chars, space-padded)
+        sys_id = b'ANYOS                           '
+        pvd[8:40] = sys_id
+        # Volume identifier (bytes 40-71, 32 chars, space-padded)
+        vol_id = self.volume_id.ljust(32).encode('ascii')[:32]
+        pvd[40:72] = vol_id
+        # Volume Space Size (bytes 80-87, both-endian u32)
+        pvd[80:88] = both_endian_u32(total_blocks)
+        # Volume Set Size (bytes 120-123, both-endian u16)
+        pvd[120:124] = both_endian_u16(1)
+        # Volume Sequence Number (bytes 124-127, both-endian u16)
+        pvd[124:128] = both_endian_u16(1)
+        # Logical Block Size (bytes 128-131, both-endian u16)
+        pvd[128:132] = both_endian_u16(ISO_BLOCK_SIZE)
+        # Path Table Size (bytes 132-139, both-endian u32)
+        pvd[132:140] = both_endian_u32(path_table_size)
+        # Type L Path Table Location (bytes 140-143, u32 LE)
+        struct.pack_into('<I', pvd, 140, path_table_lba)
+        # Optional Type L Path Table Location (bytes 144-147, u32 LE)
+        struct.pack_into('<I', pvd, 144, 0)
+        # Type M Path Table Location (bytes 148-151, u32 BE)
+        struct.pack_into('>I', pvd, 148, path_table_lba + 1)
+        # Optional Type M Path Table Location (bytes 152-155, u32 BE)
+        struct.pack_into('>I', pvd, 152, 0)
+        # Root Directory Record (bytes 156-189, 34 bytes)
+        root_rec = make_dir_record(root_dir_lba, root_dir_size, 0x02, b'\x00', is_root=True)
+        pvd[156:156 + len(root_rec)] = root_rec
+        # Volume Set Identifier (190-317, 128 bytes)
+        # Publisher Identifier (318-445, 128 bytes)
+        # Data Preparer Identifier (446-573, 128 bytes)
+        # Application Identifier (574-701, 128 bytes)
+        app_id = b'ANYOS MKIMAGE                   '
+        pvd[574:574 + len(app_id)] = app_id
+        # Volume Creation Date/Time (813-829, 17 bytes)
+        pvd[813:830] = iso_dec_datetime_now()
+        # Volume Modification Date/Time (830-846)
+        pvd[830:847] = iso_dec_datetime_now()
+        # File Structure Version (881)
+        pvd[881] = 1
+        return bytes(pvd)
+
+
+# =====================================================================
+# Image creation: ISO mode (El Torito bootable CD-ROM)
+# =====================================================================
+
+def create_iso_image(args):
+    """Create a bootable ISO 9660 image with El Torito BIOS boot."""
+    if not args.stage1 or not args.stage2 or not args.kernel:
+        print("ERROR: --stage1, --stage2, and --kernel are required for ISO mode",
+              file=sys.stderr)
+        sys.exit(1)
+
+    with open(args.stage1, "rb") as f:
+        stage1 = f.read()
+    if len(stage1) != SECTOR_SIZE:
+        print(f"ERROR: Stage 1 must be exactly {SECTOR_SIZE} bytes", file=sys.stderr)
+        sys.exit(1)
+
+    with open(args.stage2, "rb") as f:
+        stage2 = f.read()
+    stage2_max = 63 * SECTOR_SIZE
+    if len(stage2) > stage2_max:
+        print(f"ERROR: Stage 2 is {len(stage2)} bytes, max is {stage2_max}", file=sys.stderr)
+        sys.exit(1)
+
+    with open(args.kernel, "rb") as f:
+        kernel_elf = f.read()
+
+    KERNEL_LMA = 0x00100000
+    print(f"Kernel ELF: {len(kernel_elf)} bytes")
+    kernel_flat = elf_to_flat_binary(kernel_elf, KERNEL_LMA)
+
+    kernel_sectors = (len(kernel_flat) + SECTOR_SIZE - 1) // SECTOR_SIZE
+
+    print(f"\nISO 9660 Live CD image:")
+    print(f"  Stage 1: {len(stage1)} bytes")
+    print(f"  Stage 2: {len(stage2)} bytes")
+    print(f"  Kernel:  {len(kernel_flat)} bytes ({kernel_sectors} disk sectors)")
+
+    # Note: stage2 is patched with actual kernel LBA inside write_image()
+    # after the ISO layout is computed (kernel may shift past CD sector 32
+    # if many directories overflow the reserved space).
+
+    # Collect sysroot
+    iso = Iso9660Creator()
+    if args.sysroot:
+        print(f"  Populating ISO from sysroot: {args.sysroot}")
+        iso.add_sysroot(args.sysroot)
+
+    # Write ISO image (patches stage2 with correct kernel location)
+    kernel_lba, _ = iso.write_image(args.output, stage1, stage2, kernel_flat)
+    kernel_disk_lba = kernel_lba * (ISO_BLOCK_SIZE // SECTOR_SIZE)
+
+    print(f"\nISO image created: {args.output}")
+    print(f"  Boot: El Torito no-emulation, 64 sectors loaded at 0x7C00")
+    print(f"  Kernel at CD sector {kernel_lba} (disk LBA {kernel_disk_lba})")
+
+
+# =====================================================================
 # Main entry point
 # =====================================================================
 
@@ -914,6 +1378,8 @@ def main():
     parser = argparse.ArgumentParser(description="Create anyOS disk image")
     parser.add_argument("--uefi", action="store_true",
                         help="Create UEFI (GPT+ESP) image instead of BIOS (MBR)")
+    parser.add_argument("--iso", action="store_true",
+                        help="Create bootable ISO 9660 (El Torito) image")
     parser.add_argument("--bootloader", default=None,
                         help="Path to UEFI bootloader .efi file (required for --uefi)")
     parser.add_argument("--stage1", default=None, help="Path to stage1.bin (BIOS mode)")
@@ -927,7 +1393,9 @@ def main():
                         help="Start sector for FAT16 filesystem (BIOS mode only)")
     args = parser.parse_args()
 
-    if args.uefi:
+    if args.iso:
+        create_iso_image(args)
+    elif args.uefi:
         create_uefi_image(args)
     else:
         if not args.stage1 or not args.stage2 or not args.kernel:

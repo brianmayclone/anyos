@@ -125,6 +125,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     // Phase 5: Drivers
     drivers::rtc::init();
     drivers::storage::ata::init();
+    drivers::storage::atapi::init();
     drivers::framebuffer::init(boot_info);
     drivers::boot_console::init(); // Show boot splash (color logo)
 
@@ -192,6 +193,18 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     fs::vfs::init();
     fs::vfs::mount("/", fs::vfs::FsType::Fat, 0);
     fs::vfs::mount_devfs();
+
+    // Auto-detect CD-ROM with ISO 9660 filesystem
+    if drivers::storage::atapi::is_present() && drivers::storage::atapi::capacity_lba() > 0 {
+        if fs::vfs::has_root_fat() {
+            // Hard disk + CD-ROM: mount CD at /mnt/cdrom0
+            fs::vfs::mount("/mnt/cdrom0", fs::vfs::FsType::Iso9660, 0);
+        } else {
+            // CD-ROM only (Live CD boot): mount ISO 9660 as root filesystem
+            serial_println!("  No FAT16 disk detected, using ISO 9660 as root filesystem");
+            fs::vfs::mount("/", fs::vfs::FsType::Iso9660, 0);
+        }
+    }
 
     // Phase 8: Initialize mouse
     drivers::input::mouse::init();

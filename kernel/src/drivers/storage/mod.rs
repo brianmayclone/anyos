@@ -8,6 +8,7 @@
 
 pub mod ata;
 pub mod ahci;
+pub mod atapi;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 

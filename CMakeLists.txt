@@ -313,6 +313,8 @@ add_rust_user_program(base64     ${CMAKE_SOURCE_DIR}/bin/base64)
 add_rust_user_program(xxd        ${CMAKE_SOURCE_DIR}/bin/xxd)
 add_rust_user_program(set        ${CMAKE_SOURCE_DIR}/bin/set)
 add_rust_user_program(export     ${CMAKE_SOURCE_DIR}/bin/export)
+add_rust_user_program(mount      ${CMAKE_SOURCE_DIR}/bin/mount)
+add_rust_user_program(umount     ${CMAKE_SOURCE_DIR}/bin/umount)
 
 # true/false: package names are true_cmd/false_cmd (Rust keywords) but binaries named true/false
 set(TRUE_ELF "${CMAKE_BINARY_DIR}/programs/true_cmd/x86_64-anyos-user/release/true_cmd.elf")
@@ -957,4 +959,76 @@ add_custom_target(run-uefi-std
   DEPENDS ${UEFI_DISK_IMAGE}
   USES_TERMINAL
   COMMENT "Launching anyOS in QEMU with UEFI (OVMF + Bochs VGA)"
+)
+
+# ============================================================
+# ISO 9660 Live CD Support (El Torito BIOS boot)
+# ============================================================
+set(ISO_IMAGE "${CMAKE_BINARY_DIR}/anyos.iso")
+
+add_custom_command(
+  OUTPUT ${ISO_IMAGE}
+  COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/mkimage.py --iso
+    --stage1 ${CMAKE_BINARY_DIR}/stage1.bin
+    --stage2 ${CMAKE_BINARY_DIR}/stage2.bin
+    --kernel ${KERNEL_ELF}
+    --output ${ISO_IMAGE}
+    --sysroot ${SYSROOT_DIR}
+  DEPENDS
+    ${CMAKE_BINARY_DIR}/stage1.bin
+    ${CMAKE_BINARY_DIR}/stage2.bin
+    ${KERNEL_ELF}
+    ${RUST_USER_BINS}
+    ${SYSTEM_BINS}
+    ${DLL_BINS}
+    ${SYSROOT_DIR}/.stamp
+    ${C_TOOLCHAIN_DEPS}
+  COMMENT "Creating bootable ISO 9660 image (El Torito, BIOS boot)"
+)
+
+add_custom_target(iso DEPENDS ${ISO_IMAGE} programs)
+
+add_custom_target(run-cdrom
+  COMMAND ${QEMU_EXECUTABLE}
+    -cdrom ${ISO_IMAGE}
+    -boot d
+    -m 1024M
+    -smp cpus=4
+    -serial stdio
+    -vga vmware
+    -netdev user,id=net0 -device e1000,netdev=net0
+    -no-reboot -no-shutdown
+  DEPENDS ${ISO_IMAGE}
+  USES_TERMINAL
+  COMMENT "Launching anyOS from ISO (CD-ROM boot with VMware SVGA)"
+)
+
+add_custom_target(run-cdrom-std
+  COMMAND ${QEMU_EXECUTABLE}
+    -cdrom ${ISO_IMAGE}
+    -boot d
+    -m 1024M
+    -smp cpus=4
+    -serial stdio
+    -vga std
+    -netdev user,id=net0 -device e1000,netdev=net0
+    -no-reboot -no-shutdown
+  DEPENDS ${ISO_IMAGE}
+  USES_TERMINAL
+  COMMENT "Launching anyOS from ISO (CD-ROM boot with Bochs VGA)"
+)
+
+add_custom_target(run-cdrom-with-disk
+  COMMAND ${QEMU_EXECUTABLE}
+    -drive format=raw,file=${DISK_IMAGE}
+    -cdrom ${ISO_IMAGE}
+    -m 1024M
+    -smp cpus=4
+    -serial stdio
+    -vga vmware
+    -netdev user,id=net0 -device e1000,netdev=net0
+    -no-reboot -no-shutdown
+  DEPENDS ${DISK_IMAGE} ${ISO_IMAGE}
+  USES_TERMINAL
+  COMMENT "Launching anyOS with HDD + CD-ROM (VMware SVGA)"
 )

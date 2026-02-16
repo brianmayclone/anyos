@@ -41,6 +41,9 @@ pub(crate) const SYS_STAT: u32 = 24;
 pub(crate) const SYS_MKDIR: u32 = 90;
 pub(crate) const SYS_UNLINK: u32 = 91;
 pub(crate) const SYS_TRUNCATE: u32 = 92;
+pub(crate) const SYS_MOUNT: u32 = 93;
+pub(crate) const SYS_UMOUNT: u32 = 94;
+pub(crate) const SYS_LIST_MOUNTS: u32 = 95;
 
 // System information
 pub(crate) const SYS_TIME: u32 = 30;

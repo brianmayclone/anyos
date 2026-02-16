@@ -8,11 +8,12 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU
-# Usage: ./run.sh [--vmware | --std | --virtio] [--ide] [--audio] [--usb] [--uefi]
+# Usage: ./run.sh [--vmware | --std | --virtio] [--ide] [--cdrom] [--audio] [--usb] [--uefi]
 #   --vmware   VMware SVGA II (2D acceleration, HW cursor)
 #   --std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
 #   --virtio   VirtIO GPU (modern transport, ARGB cursor)
 #   --ide      Use legacy IDE (PIO) instead of AHCI (DMA) for disk I/O
+#   --cdrom    Boot from ISO image (CD-ROM) instead of hard drive
 #   --audio    Enable AC'97 audio device
 #   --usb      Enable USB controller with keyboard + mouse devices
 #   --uefi     Boot via UEFI (OVMF) instead of BIOS
@@ -20,6 +21,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 UEFI_MODE=false
+CDROM_MODE=false
 VGA="std"
 VGA_LABEL="Bochs VGA (standard)"
 IDE_MODE=false
@@ -45,6 +47,9 @@ for arg in "$@"; do
         --ide)
             IDE_MODE=true
             ;;
+        --cdrom)
+            CDROM_MODE=true
+            ;;
         --audio)
             if [ "$(uname -s)" = "Darwin" ]; then
                 AUDIO_FLAGS="-device AC97,audiodev=audio0 -audiodev coreaudio,id=audio0"
@@ -61,13 +66,18 @@ for arg in "$@"; do
             UEFI_MODE=true
             ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio] [--ide] [--audio] [--usb] [--uefi]"
+            echo "Usage: $0 [--vmware | --std | --virtio] [--ide] [--cdrom] [--audio] [--usb] [--uefi]"
             exit 1
             ;;
     esac
 done
 
-if [ "$UEFI_MODE" = true ]; then
+if [ "$CDROM_MODE" = true ]; then
+    IMAGE="${SCRIPT_DIR}/../build/anyos.iso"
+    BIOS_FLAGS=""
+    DRIVE_FLAGS="-cdrom \"$IMAGE\" -boot d"
+    DRIVE_LABEL="CD-ROM (ISO 9660)"
+elif [ "$UEFI_MODE" = true ]; then
     IMAGE="${SCRIPT_DIR}/../build/anyos-uefi.img"
 
     # Find OVMF firmware (platform-dependent paths)
@@ -112,8 +122,12 @@ else
 fi
 
 if [ ! -f "$IMAGE" ]; then
-    echo "Error: Disk image not found at $IMAGE"
-    echo "Run: ./scripts/build.sh first"
+    echo "Error: Image not found at $IMAGE"
+    if [ "$CDROM_MODE" = true ]; then
+        echo "Run: cd build && ninja iso"
+    else
+        echo "Run: ./scripts/build.sh first"
+    fi
     exit 1
 fi
 

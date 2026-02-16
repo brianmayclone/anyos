@@ -733,9 +733,39 @@ pub fn probe_and_bind_all() {
     crate::serial_println!("  HAL: Bound {} PCI driver(s)", bound);
 }
 
+/// ATAPI CD-ROM/DVD-ROM driver wrapper
+struct AtapiDriver;
+
+impl Driver for AtapiDriver {
+    fn name(&self) -> &str { "ATAPI CD/DVD-ROM" }
+    fn driver_type(&self) -> DriverType { DriverType::Block }
+    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize, DriverError> {
+        // offset is in bytes, convert to 2048-byte CD blocks
+        let lba = offset / 2048;
+        let blocks = (buf.len() + 2047) / 2048;
+        if crate::drivers::storage::atapi::read_sectors(lba as u32, blocks as u32, buf) {
+            Ok(blocks * 2048)
+        } else {
+            Err(DriverError::IoError)
+        }
+    }
+    fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize, DriverError> {
+        Err(DriverError::NotSupported) // Read-only
+    }
+    fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
+        Err(DriverError::NotSupported)
+    }
+}
+
 /// Register legacy (non-PCI) devices that are always present on x86
 pub fn register_legacy_devices() {
     register_device("/dev/kbd", Box::new(Ps2KeyboardDriver), None);
     register_device("/dev/mouse", Box::new(Ps2MouseDriver), None);
     register_device("/dev/ttyS0", Box::new(SerialDriver), None);
+
+    // Register ATAPI CD/DVD-ROM if detected
+    if crate::drivers::storage::atapi::is_present() {
+        register_device("/dev/cdrom0", Box::new(AtapiDriver), None);
+    }
 }

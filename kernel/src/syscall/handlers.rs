@@ -516,6 +516,68 @@ pub fn sys_truncate(path_ptr: u32) -> u32 {
 }
 
 // =========================================================================
+// Mount/Unmount (SYS_MOUNT, SYS_UMOUNT, SYS_LIST_MOUNTS)
+// =========================================================================
+
+/// sys_mount - Mount a filesystem.
+/// arg1=mount_path_ptr, arg2=device_path_ptr, arg3=fs_type (0=fat, 1=iso9660)
+/// Returns 0 on success, u32::MAX on failure.
+pub fn sys_mount(mount_path_ptr: u32, device_path_ptr: u32, fs_type: u32) -> u32 {
+    if mount_path_ptr == 0 { return u32::MAX; }
+    let mount_path = resolve_path(unsafe { read_user_str(mount_path_ptr) });
+    let device_path = if device_path_ptr != 0 {
+        String::from(unsafe { read_user_str(device_path_ptr) })
+    } else {
+        String::new()
+    };
+    match crate::fs::vfs::mount_fs(&mount_path, &device_path, fs_type) {
+        Ok(()) => 0,
+        Err(_) => u32::MAX,
+    }
+}
+
+/// sys_umount - Unmount a filesystem.
+/// arg1=mount_path_ptr
+/// Returns 0 on success, u32::MAX on failure.
+pub fn sys_umount(mount_path_ptr: u32) -> u32 {
+    if mount_path_ptr == 0 { return u32::MAX; }
+    let mount_path = resolve_path(unsafe { read_user_str(mount_path_ptr) });
+    match crate::fs::vfs::umount_fs(&mount_path) {
+        Ok(()) => 0,
+        Err(_) => u32::MAX,
+    }
+}
+
+/// sys_list_mounts - List all mount points.
+/// arg1=buf_ptr: output buffer
+/// arg2=buf_len: buffer capacity
+/// Returns number of bytes written, or u32::MAX on error.
+///
+/// Output format: "mount_path\tfs_type\n" for each mount, null-terminated.
+pub fn sys_list_mounts(buf_ptr: u32, buf_len: u32) -> u32 {
+    if buf_ptr == 0 || buf_len == 0 { return u32::MAX; }
+    if !is_valid_user_ptr(buf_ptr as u64, buf_len as u64) { return u32::MAX; }
+
+    let mounts = crate::fs::vfs::list_mounts();
+    let mut output = String::new();
+    for (path, fs_type, _dev_id) in &mounts {
+        output.push_str(path);
+        output.push('\t');
+        output.push_str(fs_type);
+        output.push('\n');
+    }
+
+    let bytes = output.as_bytes();
+    let to_copy = bytes.len().min(buf_len as usize - 1);
+    unsafe {
+        let dst = buf_ptr as *mut u8;
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, to_copy);
+        *dst.add(to_copy) = 0; // null-terminate
+    }
+    to_copy as u32
+}
+
+// =========================================================================
 // System Information (SYS_TIME, SYS_UPTIME, SYS_SYSINFO)
 // =========================================================================
 

@@ -3,6 +3,7 @@
 
 use crate::fs::devfs::DevFs;
 use crate::fs::fat::FatFs;
+use crate::fs::iso9660::Iso9660Fs;
 use crate::fs::file::{DirEntry, FileDescriptor, FileFlags, FileType, OpenFile, SeekFrom};
 use crate::sync::mutex::Mutex;
 use alloc::string::String;
@@ -22,6 +23,7 @@ struct VfsState {
     next_fd: FileDescriptor,
     mount_points: Vec<MountPoint>,
     fat_fs: Option<FatFs>,
+    iso9660_fs: Option<Iso9660Fs>,
     devfs: Option<DevFs>,
 }
 
@@ -36,6 +38,8 @@ struct MountPoint {
 pub enum FsType {
     /// FAT12/16/32 filesystem on disk.
     Fat,
+    /// ISO 9660 filesystem (CD-ROM/DVD-ROM, read-only).
+    Iso9660,
     /// In-memory device filesystem (/dev).
     DevFs,
 }
@@ -106,6 +110,46 @@ fn dev_name(path: &str) -> &str {
     if path.len() > 5 { &path[5..] } else { "" }
 }
 
+/// Check if a path targets a /mnt/ mount point.
+/// Returns (mount_path, relative_path) if matched.
+/// The relative_path always starts with "/" (e.g. "/" for the mount root, "/file.txt" for a file).
+fn find_mnt_mount<'a>(path: &'a str, mount_points: &[MountPoint]) -> Option<(&'a str, &'a str)> {
+    // Find longest matching mount point under /mnt/
+    let mut best_len: usize = 0;
+    let mut found = false;
+    for mp in mount_points {
+        if !mp.path.starts_with("/mnt/") {
+            continue;
+        }
+        let mp_path = mp.path.as_str();
+        // Match exact path or path with trailing /
+        if path == mp_path {
+            if mp_path.len() > best_len {
+                best_len = mp_path.len();
+                found = true;
+            }
+        } else if path.len() > mp_path.len()
+            && path.as_bytes()[mp_path.len()] == b'/'
+            && path.starts_with(mp_path)
+        {
+            if mp_path.len() > best_len {
+                best_len = mp_path.len();
+                found = true;
+            }
+        }
+    }
+    if found {
+        let relative = if path.len() > best_len {
+            &path[best_len..]  // starts with "/"
+        } else {
+            "/"
+        };
+        Some((&path[..best_len], relative))
+    } else {
+        None
+    }
+}
+
 /// Initialize the VFS, reserving file descriptors 0-2 for stdin/stdout/stderr.
 pub fn init() {
     let mut vfs = VFS.lock();
@@ -114,6 +158,7 @@ pub fn init() {
         next_fd: 3, // 0=stdin, 1=stdout, 2=stderr
         mount_points: Vec::new(),
         fat_fs: None,
+        iso9660_fs: None,
         devfs: None,
     });
 
@@ -124,6 +169,16 @@ pub fn init() {
     }
 
     crate::serial_println!("[OK] VFS initialized");
+}
+
+/// Check if the root FAT16 filesystem is mounted.
+pub fn has_root_fat() -> bool {
+    let vfs = VFS.lock();
+    if let Some(ref state) = *vfs {
+        state.fat_fs.is_some()
+    } else {
+        false
+    }
 }
 
 /// Mount a filesystem at the given path. For FAT, reads the BPB from disk.
@@ -139,6 +194,16 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
             }
             Err(_) => {
                 crate::serial_println!("  Failed to mount FAT16 at '{}'", path);
+            }
+        }
+    } else if fs_type == FsType::Iso9660 {
+        match Iso9660Fs::new() {
+            Ok(iso) => {
+                state.iso9660_fs = Some(iso);
+                crate::serial_println!("  Mounted ISO 9660 at '{}'", path);
+            }
+            Err(_) => {
+                crate::serial_println!("  Failed to mount ISO 9660 at '{}'", path);
             }
         }
     }
@@ -209,69 +274,120 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
         return Ok(fd);
     }
 
-    // --- FAT path ---
-    let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
-
-    // Try to look up the file
-    let lookup_result = fat.lookup(path);
-
-    let (inode, file_type, size, parent_cluster) = match lookup_result {
-        Ok((inode, file_type, size)) => {
-            // File exists
-            if flags.truncate && flags.write {
-                // Truncate: need parent info
-                let (parent_path, filename) = split_parent_name(path)?;
-                let (parent_cluster, _, _) = fat.lookup(parent_path)?;
-                fat.truncate_file(parent_cluster, filename)?;
-                (0u32, file_type, 0u32, parent_cluster)
+    // --- Mount point path (e.g. /mnt/cdrom0/...) ---
+    if let Some((_mount_path, relative_path)) = find_mnt_mount(path, &state.mount_points) {
+        if let Some(ref iso) = state.iso9660_fs {
+            let (inode, file_type, size) = iso.lookup(relative_path)?;
+            let fd = state.next_fd;
+            state.next_fd += 1;
+            let file = OpenFile {
+                fd,
+                path: String::from(path),
+                file_type,
+                flags,
+                position: 0,
+                size,
+                fs_id: 2, // ISO 9660
+                inode,
+                parent_cluster: 0,
+            };
+            if let Some(slot) = state.open_files.iter_mut().find(|e| e.is_none()) {
+                *slot = Some(file);
             } else {
-                // Get parent cluster for potential writes
-                let parent_cluster = if flags.write {
-                    let (parent_path, _) = split_parent_name(path)?;
-                    fat.lookup(parent_path).map(|(c, _, _)| c).unwrap_or(0)
-                } else {
-                    0
-                };
-                (inode, file_type, size, parent_cluster)
+                state.open_files.push(Some(file));
             }
+            return Ok(fd);
         }
-        Err(FsError::NotFound) if flags.create => {
-            // File doesn't exist but create flag is set
-            let (parent_path, filename) = split_parent_name(path)?;
-            let (parent_cluster, parent_type, _) = fat.lookup(parent_path)?;
-            if parent_type != FileType::Directory {
-                return Err(FsError::NotADirectory);
-            }
-            fat.create_file(parent_cluster, filename)?;
-            (0u32, FileType::Regular, 0u32, parent_cluster)
-        }
-        Err(e) => return Err(e),
-    };
-
-    let fd = state.next_fd;
-    state.next_fd += 1;
-
-    let position = if flags.append { size } else { 0 };
-
-    let file = OpenFile {
-        fd,
-        path: String::from(path),
-        file_type,
-        flags,
-        position,
-        size,
-        fs_id: 0,
-        inode,
-        parent_cluster,
-    };
-
-    // Reuse a None slot left by close(), or append if none available
-    if let Some(slot) = state.open_files.iter_mut().find(|e| e.is_none()) {
-        *slot = Some(file);
-    } else {
-        state.open_files.push(Some(file));
+        return Err(FsError::NotFound);
     }
-    Ok(fd)
+
+    // --- FAT path ---
+    if let Some(ref mut fat) = state.fat_fs {
+        let lookup_result = fat.lookup(path);
+
+        let (inode, file_type, size, parent_cluster) = match lookup_result {
+            Ok((inode, file_type, size)) => {
+                // File exists
+                if flags.truncate && flags.write {
+                    let (parent_path, filename) = split_parent_name(path)?;
+                    let (parent_cluster, _, _) = fat.lookup(parent_path)?;
+                    fat.truncate_file(parent_cluster, filename)?;
+                    (0u32, file_type, 0u32, parent_cluster)
+                } else {
+                    let parent_cluster = if flags.write {
+                        let (parent_path, _) = split_parent_name(path)?;
+                        fat.lookup(parent_path).map(|(c, _, _)| c).unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    (inode, file_type, size, parent_cluster)
+                }
+            }
+            Err(FsError::NotFound) if flags.create => {
+                let (parent_path, filename) = split_parent_name(path)?;
+                let (parent_cluster, parent_type, _) = fat.lookup(parent_path)?;
+                if parent_type != FileType::Directory {
+                    return Err(FsError::NotADirectory);
+                }
+                fat.create_file(parent_cluster, filename)?;
+                (0u32, FileType::Regular, 0u32, parent_cluster)
+            }
+            Err(e) => return Err(e),
+        };
+
+        let fd = state.next_fd;
+        state.next_fd += 1;
+
+        let position = if flags.append { size } else { 0 };
+
+        let file = OpenFile {
+            fd,
+            path: String::from(path),
+            file_type,
+            flags,
+            position,
+            size,
+            fs_id: 0,
+            inode,
+            parent_cluster,
+        };
+
+        if let Some(slot) = state.open_files.iter_mut().find(|e| e.is_none()) {
+            *slot = Some(file);
+        } else {
+            state.open_files.push(Some(file));
+        }
+        return Ok(fd);
+    }
+
+    // --- ISO 9660 root fallback (CD-ROM boot, no FAT16 disk) ---
+    if let Some(ref iso) = state.iso9660_fs {
+        if flags.write || flags.create || flags.truncate || flags.append {
+            return Err(FsError::PermissionDenied);
+        }
+        let (inode, file_type, size) = iso.lookup(path)?;
+        let fd = state.next_fd;
+        state.next_fd += 1;
+        let file = OpenFile {
+            fd,
+            path: String::from(path),
+            file_type,
+            flags,
+            position: 0,
+            size,
+            fs_id: 2, // ISO 9660
+            inode,
+            parent_cluster: 0,
+        };
+        if let Some(slot) = state.open_files.iter_mut().find(|e| e.is_none()) {
+            *slot = Some(file);
+        } else {
+            state.open_files.push(Some(file));
+        }
+        return Ok(fd);
+    }
+
+    Err(FsError::IoError)
 }
 
 /// Close an open file descriptor, releasing its slot in the open file table.
@@ -307,6 +423,17 @@ pub fn read(fd: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
         let name = dev_name(&file.path);
         let devfs = state.devfs.as_ref().ok_or(FsError::IoError)?;
         return devfs.read(name, buf).ok_or(FsError::IoError);
+    }
+
+    // --- ISO 9660 file ---
+    if file.fs_id == 2 {
+        if file.position >= file.size {
+            return Ok(0);
+        }
+        let iso = state.iso9660_fs.as_ref().ok_or(FsError::IoError)?;
+        let bytes_read = iso.read_file(file.inode, file.position, buf, file.size)?;
+        file.position += bytes_read as u32;
+        return Ok(bytes_read);
     }
 
     // --- FAT file ---
@@ -390,6 +517,36 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
         return Ok(devfs.list());
     }
 
+    // --- /mnt listing ---
+    if path == "/mnt" || path == "/mnt/" {
+        let mut entries = Vec::new();
+        for mp in &state.mount_points {
+            if mp.path.starts_with("/mnt/") {
+                let name = &mp.path[5..]; // strip "/mnt/"
+                if !name.contains('/') && !name.is_empty() {
+                    entries.push(DirEntry {
+                        name: String::from(name),
+                        file_type: FileType::Directory,
+                        size: 0,
+                    });
+                }
+            }
+        }
+        return Ok(entries);
+    }
+
+    // --- Mount point path (e.g. /mnt/cdrom0/...) ---
+    if let Some((_mount_path, relative_path)) = find_mnt_mount(path, &state.mount_points) {
+        if let Some(ref iso) = state.iso9660_fs {
+            let (lba, file_type, size) = iso.lookup(relative_path)?;
+            if file_type != FileType::Directory {
+                return Err(FsError::NotADirectory);
+            }
+            return iso.read_dir(lba, size);
+        }
+        return Err(FsError::NotFound);
+    }
+
     // --- FAT path ---
     if let Some(ref fat) = state.fat_fs {
         let (cluster, file_type, _size) = fat.lookup(path)?;
@@ -397,19 +554,43 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
             return Err(FsError::NotADirectory);
         }
         let mut entries = fat.read_dir(cluster)?;
-        // If listing root, add "dev" as a virtual directory entry
         if path == "/" {
-            if state.devfs.is_some() {
-                entries.push(DirEntry {
-                    name: String::from("dev"),
-                    file_type: FileType::Directory,
-                    size: 0,
-                });
-            }
+            add_virtual_root_entries(state, &mut entries);
         }
-        Ok(entries)
-    } else {
-        Err(FsError::NotFound)
+        return Ok(entries);
+    }
+
+    // --- ISO 9660 root fallback (CD-ROM boot, no FAT16 disk) ---
+    if let Some(ref iso) = state.iso9660_fs {
+        let (lba, file_type, size) = iso.lookup(path)?;
+        if file_type != FileType::Directory {
+            return Err(FsError::NotADirectory);
+        }
+        let mut entries = iso.read_dir(lba, size)?;
+        if path == "/" {
+            add_virtual_root_entries(state, &mut entries);
+        }
+        return Ok(entries);
+    }
+
+    Err(FsError::NotFound)
+}
+
+/// Add virtual directory entries (dev, mnt) to root directory listing.
+fn add_virtual_root_entries(state: &VfsState, entries: &mut Vec<DirEntry>) {
+    if state.devfs.is_some() {
+        entries.push(DirEntry {
+            name: String::from("dev"),
+            file_type: FileType::Directory,
+            size: 0,
+        });
+    }
+    if state.mount_points.iter().any(|mp| mp.path.starts_with("/mnt/")) {
+        entries.push(DirEntry {
+            name: String::from("mnt"),
+            file_type: FileType::Directory,
+            size: 0,
+        });
     }
 }
 
@@ -427,6 +608,18 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
         return Err(FsError::PermissionDenied);
     }
 
+    // Try mount point path (e.g. /mnt/cdrom0/...)
+    {
+        let vfs = VFS.lock();
+        let state = vfs.as_ref().ok_or(FsError::IoError)?;
+        if let Some((_mount_path, relative_path)) = find_mnt_mount(path, &state.mount_points) {
+            if let Some(ref iso) = state.iso9660_fs {
+                return iso.read_file_to_vec(relative_path);
+            }
+            return Err(FsError::NotFound);
+        }
+    }
+
     // Phase 1: Under VFS lock — lookup + build read plan (no disk I/O)
     let plan = {
         let vfs = VFS.lock();
@@ -437,6 +630,9 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
                 return Err(FsError::IsADirectory);
             }
             fat.get_file_read_plan(cluster, size)
+        } else if let Some(ref iso) = state.iso9660_fs {
+            // ISO 9660 root fallback (CD-ROM boot, no FAT16 disk)
+            return iso.read_file_to_vec(path);
         } else {
             return Err(FsError::NotFound);
         }
@@ -541,4 +737,98 @@ pub fn truncate(path: &str) -> Result<(), FsError> {
     let (parent_path, filename) = split_parent_name(path)?;
     let (parent_cluster, _, _) = fat.lookup(parent_path)?;
     fat.truncate_file(parent_cluster, filename)
+}
+
+/// Mount a filesystem at the given path from userspace (syscall handler).
+///
+/// `mount_path`: where to mount (e.g. "/mnt/cdrom0")
+/// `device`: device path (e.g. "/dev/cdrom0") — currently only used for identification
+/// `fs_type_id`: 0=FAT, 1=ISO9660
+///
+/// Returns Ok(()) on success.
+pub fn mount_fs(mount_path: &str, _device: &str, fs_type_id: u32) -> Result<(), FsError> {
+    let mut vfs = VFS.lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
+
+    // Check for duplicate mount point
+    for mp in &state.mount_points {
+        if mp.path == mount_path {
+            return Err(FsError::AlreadyExists);
+        }
+    }
+
+    match fs_type_id {
+        0 => {
+            // FAT mount — not supported as additional mount yet
+            return Err(FsError::PermissionDenied);
+        }
+        1 => {
+            // ISO 9660 (CD-ROM)
+            if state.iso9660_fs.is_some() {
+                // Already have an ISO fs instance — just add mount point
+            } else {
+                match Iso9660Fs::new() {
+                    Ok(iso) => {
+                        state.iso9660_fs = Some(iso);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            state.mount_points.push(MountPoint {
+                path: String::from(mount_path),
+                fs_type: FsType::Iso9660,
+                device_id: 0,
+            });
+            crate::serial_println!("  Mounted ISO 9660 at '{}'", mount_path);
+            Ok(())
+        }
+        _ => Err(FsError::InvalidPath),
+    }
+}
+
+/// Unmount a filesystem at the given path.
+pub fn umount_fs(mount_path: &str) -> Result<(), FsError> {
+    let mut vfs = VFS.lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
+
+    // Don't allow unmounting root or /dev
+    if mount_path == "/" || mount_path == "/dev" {
+        return Err(FsError::PermissionDenied);
+    }
+
+    // Find and remove the mount point
+    let pos = state.mount_points.iter().position(|mp| mp.path == mount_path);
+    if let Some(idx) = pos {
+        let mp = state.mount_points.remove(idx);
+
+        // If it was ISO 9660 and no other ISO mounts remain, drop the fs instance
+        if mp.fs_type == FsType::Iso9660 {
+            let has_other_iso = state.mount_points.iter().any(|m| m.fs_type == FsType::Iso9660);
+            if !has_other_iso {
+                state.iso9660_fs = None;
+            }
+        }
+
+        crate::serial_println!("  Unmounted '{}'", mount_path);
+        Ok(())
+    } else {
+        Err(FsError::NotFound)
+    }
+}
+
+/// List all current mount points. Returns Vec of (mount_path, fs_type_name, device_id).
+pub fn list_mounts() -> Vec<(String, &'static str, u32)> {
+    let vfs = VFS.lock();
+    if let Some(ref state) = *vfs {
+        state.mount_points.iter().map(|mp| {
+            let fs_name = match mp.fs_type {
+                FsType::Fat => "fat16",
+                FsType::Iso9660 => "iso9660",
+                FsType::DevFs => "devfs",
+            };
+            (mp.path.clone(), fs_name, mp.device_id)
+        }).collect()
+    } else {
+        Vec::new()
+    }
 }

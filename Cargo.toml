@@ -87,6 +87,8 @@ exclude = [
   "bin/xxd",
   "bin/set",
   "bin/export",
+  "bin/mount",
+  "bin/umount",
   # Bootloader
   "bootloader/uefi",
 ]
