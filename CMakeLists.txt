@@ -145,6 +145,14 @@ file(MAKE_DIRECTORY "${SYSROOT_DIR}/include")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/include/sys")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/lib")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/src")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers/gpu")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers/storage")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers/network")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers/input")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers/audio")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers/bus")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers/system")
 
 # --- Helper: build a Rust user program ---
 set(STDLIB_DEPS
@@ -295,6 +303,41 @@ function(add_dll NAME SRC_DIR)
   )
   set(DLL_BINS ${DLL_BINS} ${SYSROOT_DIR}/Libraries/${NAME}.dlib PARENT_SCOPE)
 endfunction()
+
+# Variant for loadable kernel drivers (.ddv bundles in /System/Drivers/{CATEGORY}/)
+# Builds with kernel target (Ring 0), converts to KDRV format via elf2kdrv.py
+function(add_driver NAME SRC_DIR DISPLAY_NAME CATEGORY)
+  set(DDV_DIR "${SYSROOT_DIR}/System/Drivers/${CATEGORY}/${DISPLAY_NAME}.ddv")
+  set(DRV_ELF "${CMAKE_BINARY_DIR}/drivers/${NAME}/x86_64-anyos/release/${NAME}.elf")
+  file(GLOB_RECURSE _DRV_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
+  add_custom_command(
+    OUTPUT ${DRV_ELF}
+    COMMAND ${CARGO_EXECUTABLE} build --release
+      --manifest-path ${SRC_DIR}/Cargo.toml
+      --target ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
+      --target-dir ${CMAKE_BINARY_DIR}/drivers/${NAME}
+    DEPENDS
+      ${SRC_DIR}/Cargo.toml
+      ${_DRV_RS}
+      ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Building driver: ${DISPLAY_NAME}"
+  )
+  add_custom_command(
+    OUTPUT "${DDV_DIR}/${DISPLAY_NAME}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${DDV_DIR}"
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2kdrv.py
+      ${DRV_ELF}
+      "${DDV_DIR}/${DISPLAY_NAME}"
+    COMMAND ${CMAKE_COMMAND} -E copy "${SRC_DIR}/Info.conf" "${DDV_DIR}/Info.conf"
+    DEPENDS ${DRV_ELF} "${SRC_DIR}/Info.conf"
+    COMMENT "Packaging ${DISPLAY_NAME}.ddv"
+  )
+  set(DRIVER_BINS ${DRIVER_BINS} "${DDV_DIR}/${DISPLAY_NAME}" PARENT_SCOPE)
+endfunction()
+
+set(DRIVER_BINS "")
+# add_driver(example_drv ${CMAKE_SOURCE_DIR}/drivers/example "Example Driver" "network")
 
 set(DLL_BINS "")
 add_dll(uisys ${CMAKE_SOURCE_DIR}/libs/uisys)
@@ -740,6 +783,7 @@ add_custom_target(programs DEPENDS
   ${SYSTEM_BINS}
   ${APP_BINS}
   ${DLL_BINS}
+  ${DRIVER_BINS}
   ${SYSROOT_DIR}/.stamp
   ${C_TOOLCHAIN_DEPS}
 )
@@ -764,6 +808,7 @@ add_custom_command(
     ${RUST_USER_BINS}
     ${SYSTEM_BINS}
     ${DLL_BINS}
+    ${DRIVER_BINS}
     ${SYSROOT_DIR}/.stamp
     ${C_TOOLCHAIN_DEPS}
   COMMENT "Creating bootable disk image (256 MiB, exFAT filesystem)"

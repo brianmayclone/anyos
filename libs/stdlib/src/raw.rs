@@ -96,6 +96,7 @@ pub(crate) const SYS_GPU_INFO: u32 = 112;
 
 // Filesystem (POSIX-like)
 pub(crate) const SYS_GETCWD: u32 = 25;
+pub(crate) const SYS_CHDIR: u32 = 26;
 pub(crate) const SYS_LSEEK: u32 = 105;
 pub(crate) const SYS_FSTAT: u32 = 106;
 pub(crate) const SYS_ISATTY: u32 = 108;

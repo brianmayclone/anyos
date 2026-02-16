@@ -95,6 +95,15 @@ pub fn getcwd(buf: &mut [u8]) -> u32 {
     syscall2(SYS_GETCWD, buf.as_mut_ptr() as u64, buf.len() as u64)
 }
 
+/// Change current working directory. Returns 0 on success, u32::MAX on error.
+pub fn chdir(path: &str) -> u32 {
+    let mut buf = [0u8; 257];
+    let len = path.len().min(256);
+    buf[..len].copy_from_slice(&path.as_bytes()[..len]);
+    buf[len] = 0;
+    syscall1(SYS_CHDIR, buf.as_ptr() as u64)
+}
+
 /// Check if fd refers to a terminal. Returns 1 for tty, 0 otherwise.
 pub fn isatty(fd: u32) -> u32 {
     syscall1(SYS_ISATTY, fd as u64)

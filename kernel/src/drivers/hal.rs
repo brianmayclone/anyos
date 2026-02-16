@@ -207,6 +207,20 @@ pub fn count_by_type(dtype: DriverType) -> usize {
     }
 }
 
+/// Return all PCI devices that already have bound drivers.
+pub fn bound_pci_devices() -> Vec<PciDevice> {
+    let hal = HAL.lock();
+    let mut result = Vec::new();
+    if let Some(registry) = hal.as_ref() {
+        for dev in &registry.devices {
+            if let Some(ref pci) = dev.pci {
+                result.push(pci.clone());
+            }
+        }
+    }
+    result
+}
+
 /// Print all registered devices to serial
 pub fn print_devices() {
     let devices = list_devices();
@@ -232,8 +246,8 @@ struct PciDriverEntry {
     specificity: u8,
 }
 
-/// Auto-generate a device path from driver type and index
-fn make_device_path(dtype: DriverType, index: usize) -> String {
+/// Auto-generate a device path from driver type and index.
+pub fn make_device_path(dtype: DriverType, index: usize) -> String {
     let prefix = match dtype {
         DriverType::Block => "/dev/blk",
         DriverType::Network => "/dev/net",

@@ -106,6 +106,10 @@ pub struct Thread {
     /// Number of user-space pages mapped for this process (heap, stack, code).
     /// Excludes identity-mapped kernel pages and shared DLL pages.
     pub user_pages: u32,
+    /// Current working directory (null-terminated, max 255 chars).
+    /// Defaults to "/" for kernel threads and non-bundle processes.
+    /// For .app bundles, set to the bundle directory (or per Info.conf working_dir).
+    pub cwd: [u8; 256],
 }
 
 /// Size of each thread's kernel-mode stack.
@@ -180,6 +184,11 @@ impl Thread {
             io_read_bytes: 0,
             io_write_bytes: 0,
             user_pages: 0,
+            cwd: {
+                let mut c = [0u8; 256];
+                c[0] = b'/';
+                c
+            },
         }
     }
 

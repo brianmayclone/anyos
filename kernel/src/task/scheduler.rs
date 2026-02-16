@@ -595,7 +595,7 @@ fn emit_spawn_event(tid: u32, name: &str) {
 
 /// Create a new thread within the same address space as the currently running thread.
 pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &str, priority: u8) -> u32 {
-    let (pd, arch_mode, brk, parent_pri) = {
+    let (pd, arch_mode, brk, parent_pri, parent_cwd) = {
         let guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
         let sched = match guard.as_ref() { Some(s) => s, None => return 0 };
@@ -603,7 +603,7 @@ pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &st
         let idx = match sched.find_idx(current_tid) { Some(i) => i, None => return 0 };
         let thread = &sched.threads[idx];
         let pd = match thread.page_directory { Some(pd) => pd, None => return 0 };
-        (pd, thread.arch_mode, thread.brk, thread.priority)
+        (pd, thread.arch_mode, thread.brk, thread.priority, thread.cwd)
     };
 
     let effective_pri = if priority == 0 { parent_pri } else { priority };
@@ -620,6 +620,7 @@ pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &st
             thread.brk = brk;
             thread.arch_mode = arch_mode;
             thread.pd_shared = true;
+            thread.cwd = parent_cwd;
         }
     }
 
@@ -1613,6 +1614,36 @@ pub fn current_thread_args(buf: &mut [u8]) -> usize {
                 let len = args.iter().position(|&b| b == 0).unwrap_or(256);
                 let copy_len = len.min(buf.len());
                 buf[..copy_len].copy_from_slice(&args[..copy_len]);
+                return copy_len;
+            }
+        }
+    }
+    0
+}
+
+/// Set the current working directory for a thread.
+pub fn set_thread_cwd(tid: u32, cwd: &str) {
+    let mut guard = SCHEDULER.lock();
+    let sched = guard.as_mut().expect("Scheduler not initialized");
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        let bytes = cwd.as_bytes();
+        let len = bytes.len().min(255);
+        thread.cwd[..len].copy_from_slice(&bytes[..len]);
+        thread.cwd[len] = 0;
+    }
+}
+
+/// Get the current working directory for the running thread.
+pub fn current_thread_cwd(buf: &mut [u8]) -> usize {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
+            if let Some(idx) = sched.find_idx(tid) {
+                let cwd = &sched.threads[idx].cwd;
+                let len = cwd.iter().position(|&b| b == 0).unwrap_or(256);
+                let copy_len = len.min(buf.len());
+                buf[..copy_len].copy_from_slice(&cwd[..copy_len]);
                 return copy_len;
             }
         }

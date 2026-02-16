@@ -9,6 +9,7 @@ pub mod framebuffer;
 pub mod gpu;
 pub mod hal;
 pub mod input;
+pub mod kdrv;
 pub mod network;
 pub mod pci;
 pub mod rsod;

@@ -3,6 +3,7 @@
 //! Provides a preemptive round-robin scheduler with priority support, ELF/flat binary
 //! loading into isolated per-process address spaces, DLL mapping, and CPU utilization monitoring.
 
+pub mod app_config;
 pub mod context;
 pub mod cpu_monitor;
 pub mod dll;

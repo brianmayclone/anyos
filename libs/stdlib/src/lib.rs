@@ -7,6 +7,7 @@ mod raw;
 
 pub mod anim;
 pub mod audio;
+pub mod bundle;
 pub mod dll;
 pub mod env;
 pub mod fs;

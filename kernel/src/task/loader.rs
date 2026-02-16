@@ -382,20 +382,56 @@ pub fn load_and_run(path: &str, name: &str) -> Result<u32, &'static str> {
 
 /// Load a flat binary or ELF and run it with command-line arguments.
 /// If `path` ends with `.app`, it is treated as a bundle directory:
-/// the binary is loaded from `{path}/{FolderName}` (folder name minus ".app").
+/// the binary is resolved from Info.conf `exec=` field, or derived from the folder name.
+/// The exec binary MUST reside directly inside the .app directory (no subdirectories).
 pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32, &'static str> {
-    // .app bundle resolution: derive binary path from folder name
+    // .app bundle resolution
     let resolved_path: alloc::string::String;
+    let bundle_cwd: Option<alloc::string::String>;
     let actual_path = if path.ends_with(".app") {
-        let folder_name = path.rsplit('/').next().unwrap_or(path);
-        let binary_name = &folder_name[..folder_name.len() - 4];
+        // Parse Info.conf for exec field and working_dir
+        let config = crate::task::app_config::parse_info_conf(path);
+
+        // Determine binary name: prefer Info.conf exec=, fallback to folder name
+        let binary_name: alloc::string::String = if let Some(ref cfg) = config {
+            if let Some(ref exec) = cfg.exec {
+                // SECURITY: exec must be a plain filename — no '/' or '..' allowed.
+                // The binary MUST reside directly inside the .app directory.
+                if exec.contains('/') || exec.contains("..") {
+                    return Err(".app exec must be a plain filename (no path separators)");
+                }
+                alloc::string::String::from(exec.as_str())
+            } else {
+                // Fallback: derive from folder name minus ".app"
+                let folder_name = path.rsplit('/').next().unwrap_or(path);
+                alloc::string::String::from(&folder_name[..folder_name.len() - 4])
+            }
+        } else {
+            let folder_name = path.rsplit('/').next().unwrap_or(path);
+            alloc::string::String::from(&folder_name[..folder_name.len() - 4])
+        };
+
         if binary_name.is_empty() {
-            return Err("Invalid .app bundle path");
+            return Err("Invalid .app bundle: empty exec name");
         }
+
         resolved_path = alloc::format!("{}/{}", path, binary_name);
+
+        // Determine CWD from working_dir field (default: bundle directory)
+        bundle_cwd = if let Some(ref cfg) = config {
+            match cfg.working_dir.as_deref() {
+                Some("home") => Some(alloc::string::String::from("/")),
+                Some(explicit) if explicit != "bundle" => Some(alloc::string::String::from(explicit)),
+                _ => Some(alloc::string::String::from(path)), // "bundle" or unset
+            }
+        } else {
+            Some(alloc::string::String::from(path))
+        };
+
         crate::serial_println!("  .app bundle: {} -> {}", path, resolved_path);
         resolved_path.as_str()
     } else {
+        bundle_cwd = None;
         path
     };
 
@@ -554,9 +590,14 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         crate::task::scheduler::set_thread_args(tid, args);
     }
 
+    // Set CWD for .app bundle processes
+    if let Some(ref cwd) = bundle_cwd {
+        crate::task::scheduler::set_thread_cwd(tid, cwd);
+    }
+
     crate::serial_println!("  Spawn complete: TID={}, all setup done — waking thread", tid);
 
-    // All setup complete (CR3, pending data, args). Now make the thread runnable.
+    // All setup complete (CR3, pending data, args, CWD). Now make the thread runnable.
     crate::task::scheduler::wake_thread(tid);
 
     Ok(tid)

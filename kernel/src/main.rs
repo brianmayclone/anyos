@@ -206,6 +206,10 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         }
     }
 
+    // Phase 7f: External driver loading (requires VFS — scans /System/Drivers/)
+    // Only loads drivers whose match rules correspond to unbound PCI devices.
+    drivers::kdrv::probe_external_drivers();
+
     // Phase 8: Initialize mouse
     drivers::input::mouse::init();
 

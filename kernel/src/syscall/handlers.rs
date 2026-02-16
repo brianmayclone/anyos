@@ -10,13 +10,20 @@ use alloc::string::String;
 // Helpers
 // =========================================================================
 
-/// Make a relative path absolute by prepending "/" (cwd is always "/").
+/// Make a relative path absolute using the current thread's working directory.
 /// Returns the input unchanged if already absolute.
 fn resolve_path(path: &str) -> String {
     if path.starts_with('/') {
         String::from(path)
     } else {
-        alloc::format!("/{}", path)
+        let mut cwd_buf = [0u8; 256];
+        let cwd_len = crate::task::scheduler::current_thread_cwd(&mut cwd_buf);
+        let cwd = core::str::from_utf8(&cwd_buf[..cwd_len]).unwrap_or("/");
+        if cwd == "/" || cwd.is_empty() {
+            alloc::format!("/{}", path)
+        } else {
+            alloc::format!("{}/{}", cwd, path)
+        }
     }
 }
 
@@ -475,14 +482,37 @@ pub fn sys_fstat(fd: u32, buf_ptr: u32) -> u32 {
 /// sys_getcwd - Get current working directory.
 /// arg1=buf_ptr, arg2=buf_size. Returns length written.
 pub fn sys_getcwd(buf_ptr: u32, buf_size: u32) -> u32 {
-    if buf_ptr == 0 || buf_size == 0 { return u32::MAX; }
-    // For now, CWD is always "/"
-    let cwd = b"/\0";
-    let copy_len = cwd.len().min(buf_size as usize);
-    unsafe {
-        core::ptr::copy_nonoverlapping(cwd.as_ptr(), buf_ptr as *mut u8, copy_len);
+    if buf_ptr == 0 || buf_size == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
+        return u32::MAX;
     }
-    1 // length of "/"
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
+    let len = crate::task::scheduler::current_thread_cwd(buf);
+    if len == 0 {
+        // Fallback
+        if buf_size >= 2 {
+            buf[0] = b'/';
+            buf[1] = 0;
+        }
+        return 1;
+    }
+    len as u32
+}
+
+/// sys_chdir - Change current working directory.
+/// arg1=path_ptr (null-terminated). Returns 0 on success, u32::MAX on error.
+pub fn sys_chdir(path_ptr: u32) -> u32 {
+    if path_ptr == 0 { return u32::MAX; }
+    let raw_path = unsafe { read_user_str(path_ptr) };
+    let path = resolve_path(raw_path);
+    // Verify the directory exists
+    match crate::fs::vfs::read_dir(&path) {
+        Ok(_) => {
+            let tid = crate::task::scheduler::current_tid();
+            crate::task::scheduler::set_thread_cwd(tid, &path);
+            0
+        }
+        Err(_) => u32::MAX,
+    }
 }
 
 /// sys_isatty - Check if a file descriptor refers to a terminal.
