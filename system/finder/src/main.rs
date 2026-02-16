@@ -30,7 +30,7 @@ const EVENT_MOUSE_SCROLL: u32 = 7;
 const LOCATIONS: [(&str, &str); 6] = [
     ("Root", "/"),
     ("Applications", "/Applications"),
-    ("Programs", "/bin"),
+    ("Programs", "/System/bin"),
     ("System", "/System"),
     ("Libraries", "/Libraries"),
     ("Icons", "/System/icons"),
@@ -880,7 +880,7 @@ fn main() {
                         }
                         2 => { window::destroy(win); return; } // Close
                         10 => { navigate(&mut state, "/"); needs_redraw = true; }
-                        11 => { navigate(&mut state, "/bin"); needs_redraw = true; }
+                        11 => { navigate(&mut state, "/System/bin"); needs_redraw = true; }
                         12 => { navigate(&mut state, "/System"); needs_redraw = true; }
                         13 => { navigate(&mut state, "/Libraries"); needs_redraw = true; }
                         14 => { navigate(&mut state, "/System/icons"); needs_redraw = true; }

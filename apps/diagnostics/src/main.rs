@@ -327,7 +327,7 @@ fn bench_process_spawn(state: &mut BenchState, hz: u32) {
     let mut total = 0u32;
     for i in 0..iters {
         let t0 = ticks_now();
-        let tid = process::spawn("/bin/ls", "/");
+        let tid = process::spawn("/System/bin/ls", "/");
         let t1 = ticks_now();
         let us = ticks_to_us(t1.wrapping_sub(t0), hz);
         total += us;

@@ -137,13 +137,13 @@ add_custom_command(
 # 5. User Programs (flat binaries)
 # ============================================================
 set(SYSROOT_DIR "${CMAKE_BINARY_DIR}/sysroot")
-file(MAKE_DIRECTORY "${SYSROOT_DIR}/bin")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/bin")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/include")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/include/sys")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/lib")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Applications")
-file(MAKE_DIRECTORY "${SYSROOT_DIR}/include")
-file(MAKE_DIRECTORY "${SYSROOT_DIR}/include/sys")
-file(MAKE_DIRECTORY "${SYSROOT_DIR}/lib")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/src")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers/gpu")
@@ -193,14 +193,14 @@ function(add_rust_user_program NAME SRC_DIR)
     COMMENT "Building Rust user program: ${NAME}"
   )
   add_custom_command(
-    OUTPUT ${SYSROOT_DIR}/bin/${NAME}
+    OUTPUT ${SYSROOT_DIR}/System/bin/${NAME}
     COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
       ${ELF}
-      ${SYSROOT_DIR}/bin/${NAME}
+      ${SYSROOT_DIR}/System/bin/${NAME}
     DEPENDS ${ELF}
     COMMENT "Converting ${NAME} ELF to flat binary"
   )
-  set(RUST_USER_BINS ${RUST_USER_BINS} ${SYSROOT_DIR}/bin/${NAME} PARENT_SCOPE)
+  set(RUST_USER_BINS ${RUST_USER_BINS} ${SYSROOT_DIR}/System/bin/${NAME} PARENT_SCOPE)
 endfunction()
 
 # Variant for system programs (placed in /System/ instead of /bin/)
@@ -401,6 +401,7 @@ add_rust_user_program(set        ${CMAKE_SOURCE_DIR}/bin/set)
 add_rust_user_program(export     ${CMAKE_SOURCE_DIR}/bin/export)
 add_rust_user_program(mount      ${CMAKE_SOURCE_DIR}/bin/mount)
 add_rust_user_program(umount     ${CMAKE_SOURCE_DIR}/bin/umount)
+add_rust_user_program(open       ${CMAKE_SOURCE_DIR}/bin/open)
 
 # true/false: package names are true_cmd/false_cmd (Rust keywords) but binaries named true/false
 set(TRUE_ELF "${CMAKE_BINARY_DIR}/programs/true_cmd/x86_64-anyos-user/release/true_cmd.elf")
@@ -419,14 +420,14 @@ add_custom_command(
   COMMENT "Building Rust user program: true"
 )
 add_custom_command(
-  OUTPUT ${SYSROOT_DIR}/bin/true
+  OUTPUT ${SYSROOT_DIR}/System/bin/true
   COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
     ${TRUE_ELF}
-    ${SYSROOT_DIR}/bin/true
+    ${SYSROOT_DIR}/System/bin/true
   DEPENDS ${TRUE_ELF}
   COMMENT "Converting true ELF to flat binary"
 )
-list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/bin/true)
+list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/bin/true)
 
 set(FALSE_ELF "${CMAKE_BINARY_DIR}/programs/false_cmd/x86_64-anyos-user/release/false_cmd.elf")
 add_custom_command(
@@ -444,14 +445,14 @@ add_custom_command(
   COMMENT "Building Rust user program: false"
 )
 add_custom_command(
-  OUTPUT ${SYSROOT_DIR}/bin/false
+  OUTPUT ${SYSROOT_DIR}/System/bin/false
   COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
     ${FALSE_ELF}
-    ${SYSROOT_DIR}/bin/false
+    ${SYSROOT_DIR}/System/bin/false
   DEPENDS ${FALSE_ELF}
   COMMENT "Converting false ELF to flat binary"
 )
-list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/bin/false)
+list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/bin/false)
 
 set(SYSTEM_BINS "")
 add_rust_system_program(init        ${CMAKE_SOURCE_DIR}/system/init)
@@ -595,21 +596,21 @@ add_custom_command(
 
 # Copy libc artifacts to sysroot
 add_custom_command(
-  OUTPUT ${SYSROOT_DIR}/lib/libc.a ${SYSROOT_DIR}/lib/crt0.o
-  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_A} ${SYSROOT_DIR}/lib/libc.a
-  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_CRT0} ${SYSROOT_DIR}/lib/crt0.o
-  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_CRT0} ${SYSROOT_DIR}/lib/crt1.o
-  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_CRTI} ${SYSROOT_DIR}/lib/crti.o
-  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_CRTN} ${SYSROOT_DIR}/lib/crtn.o
+  OUTPUT ${SYSROOT_DIR}/Libraries/libc/lib/libc.a ${SYSROOT_DIR}/Libraries/libc/lib/crt0.o
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_A} ${SYSROOT_DIR}/Libraries/libc/lib/libc.a
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_CRT0} ${SYSROOT_DIR}/Libraries/libc/lib/crt0.o
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_CRT0} ${SYSROOT_DIR}/Libraries/libc/lib/crt1.o
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_CRTI} ${SYSROOT_DIR}/Libraries/libc/lib/crti.o
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_CRTN} ${SYSROOT_DIR}/Libraries/libc/lib/crtn.o
   DEPENDS ${LIBC_A} ${LIBC_CRT0} ${LIBC_CRTI} ${LIBC_CRTN}
   COMMENT "Installing libc.a and crt0.o to sysroot"
 )
 
 # Copy libc headers to sysroot
 add_custom_command(
-  OUTPUT ${SYSROOT_DIR}/include/.stamp
-  COMMAND ${CMAKE_COMMAND} -E copy_directory ${LIBC_DIR}/include ${SYSROOT_DIR}/include
-  COMMAND ${CMAKE_COMMAND} -E touch ${SYSROOT_DIR}/include/.stamp
+  OUTPUT ${SYSROOT_DIR}/Libraries/libc/include/.stamp
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${LIBC_DIR}/include ${SYSROOT_DIR}/Libraries/libc/include
+  COMMAND ${CMAKE_COMMAND} -E touch ${SYSROOT_DIR}/Libraries/libc/include/.stamp
   DEPENDS ${LIBC_A}
   COMMENT "Installing C headers to sysroot"
 )
@@ -626,10 +627,10 @@ set(TCC_CFLAGS
   -DTCC_TARGET_I386
   -DCONFIG_TCC_STATIC
   -DCONFIG_TCCBOOT
-  "-DCONFIG_TCCDIR=\"/lib/tcc\""
-  "-DCONFIG_TCC_SYSINCLUDEPATHS=\"/include\""
-  "-DCONFIG_TCC_LIBPATHS=\"/lib\""
-  "-DCONFIG_TCC_CRTPREFIX=\"/lib\""
+  "-DCONFIG_TCCDIR=\"/Libraries/libc/lib/tcc\""
+  "-DCONFIG_TCC_SYSINCLUDEPATHS=\"/Libraries/libc/include\""
+  "-DCONFIG_TCC_LIBPATHS=\"/Libraries/libc/lib\""
+  "-DCONFIG_TCC_CRTPREFIX=\"/Libraries/libc/lib\""
   "-DCONFIG_TCC_ELFINTERP=\"\""
   "-DTCC_VERSION=\"0.9.27\""
 )
@@ -663,20 +664,20 @@ add_custom_command(
 
 # Copy TCC to sysroot
 add_custom_command(
-  OUTPUT ${SYSROOT_DIR}/bin/cc
-  COMMAND ${CMAKE_COMMAND} -E copy ${TCC_ELF} ${SYSROOT_DIR}/bin/cc
+  OUTPUT ${SYSROOT_DIR}/System/bin/cc
+  COMMAND ${CMAKE_COMMAND} -E copy ${TCC_ELF} ${SYSROOT_DIR}/System/bin/cc
   DEPENDS ${TCC_ELF}
-  COMMENT "Installing TCC as /bin/cc"
+  COMMENT "Installing TCC as /System/bin/cc"
 )
 
 # Copy TCC internal headers
-file(MAKE_DIRECTORY "${SYSROOT_DIR}/lib/tcc/include")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/lib/tcc/include")
 add_custom_command(
-  OUTPUT ${SYSROOT_DIR}/lib/tcc/include/.stamp
-  COMMAND ${CMAKE_COMMAND} -E copy_directory ${TCC_DIR}/include ${SYSROOT_DIR}/lib/tcc/include
-  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_DIR}/link.ld ${SYSROOT_DIR}/lib/tcc/link.ld
-  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_LIBTCC1} ${SYSROOT_DIR}/lib/tcc/libtcc1.a
-  COMMAND ${CMAKE_COMMAND} -E touch ${SYSROOT_DIR}/lib/tcc/include/.stamp
+  OUTPUT ${SYSROOT_DIR}/Libraries/libc/lib/tcc/include/.stamp
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${TCC_DIR}/include ${SYSROOT_DIR}/Libraries/libc/lib/tcc/include
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_DIR}/link.ld ${SYSROOT_DIR}/Libraries/libc/lib/tcc/link.ld
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_LIBTCC1} ${SYSROOT_DIR}/Libraries/libc/lib/tcc/libtcc1.a
+  COMMAND ${CMAKE_COMMAND} -E touch ${SYSROOT_DIR}/Libraries/libc/lib/tcc/include/.stamp
   DEPENDS ${TCC_ELF} ${LIBC_LIBTCC1}
   COMMENT "Installing TCC headers to sysroot"
 )
@@ -766,11 +767,11 @@ add_custom_command(
 )
 
 set(C_TOOLCHAIN_DEPS
-  ${SYSROOT_DIR}/lib/libc.a
-  ${SYSROOT_DIR}/lib/crt0.o
-  ${SYSROOT_DIR}/include/.stamp
-  ${SYSROOT_DIR}/bin/cc
-  ${SYSROOT_DIR}/lib/tcc/include/.stamp
+  ${SYSROOT_DIR}/Libraries/libc/lib/libc.a
+  ${SYSROOT_DIR}/Libraries/libc/lib/crt0.o
+  ${SYSROOT_DIR}/Libraries/libc/include/.stamp
+  ${SYSROOT_DIR}/System/bin/cc
+  ${SYSROOT_DIR}/Libraries/libc/lib/tcc/include/.stamp
   ${DOOM_APP}/DOOM
   ${QUAKE_APP}/Quake
   "${QUAKE2_APP}/Quake II"

@@ -5,6 +5,17 @@ anyos_std::entry!(main);
 
 const B64_CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
+fn b64_val(c: u8) -> u8 {
+    match c {
+        b'A'..=b'Z' => c - b'A',
+        b'a'..=b'z' => c - b'a' + 26,
+        b'0'..=b'9' => c - b'0' + 52,
+        b'+' => 62,
+        b'/' => 63,
+        _ => 0xFF, // invalid
+    }
+}
+
 fn base64_encode(input: &[u8]) {
     let mut i = 0;
     let mut col = 0;
@@ -56,22 +67,41 @@ fn base64_encode(input: &[u8]) {
     }
 }
 
-fn main() {
-    let mut args_buf = [0u8; 256];
-    let args = anyos_std::process::args(&mut args_buf);
-    let path = args.trim();
+fn base64_decode(input: &[u8]) {
+    let mut out = anyos_std::Vec::new();
+    let mut buf = [0u8; 4];
+    let mut buf_len = 0;
 
-    if path.is_empty() {
-        anyos_std::println!("Usage: base64 FILE");
-        return;
+    for &c in input {
+        if c == b'\n' || c == b'\r' || c == b' ' { continue; }
+        if c == b'=' { break; }
+        let v = b64_val(c);
+        if v == 0xFF { continue; }
+        buf[buf_len] = v;
+        buf_len += 1;
+        if buf_len == 4 {
+            out.push((buf[0] << 2) | (buf[1] >> 4));
+            out.push((buf[1] << 4) | (buf[2] >> 2));
+            out.push((buf[2] << 6) | buf[3]);
+            buf_len = 0;
+        }
     }
 
-    let fd = anyos_std::fs::open(path, 0);
-    if fd == u32::MAX {
-        anyos_std::println!("base64: cannot open '{}'", path);
-        return;
+    // Handle remaining
+    if buf_len == 2 {
+        out.push((buf[0] << 2) | (buf[1] >> 4));
+    } else if buf_len == 3 {
+        out.push((buf[0] << 2) | (buf[1] >> 4));
+        out.push((buf[1] << 4) | (buf[2] >> 2));
     }
 
+    // Write as raw bytes
+    for &b in &out {
+        anyos_std::print!("{}", b as char);
+    }
+}
+
+fn read_all(fd: u32) -> (anyos_std::Vec<u8>, usize) {
     let mut file_buf = anyos_std::vec![0u8; 64 * 1024];
     let mut total: usize = 0;
     let mut read_buf = [0u8; 512];
@@ -83,7 +113,34 @@ fn main() {
         file_buf[total..total + n].copy_from_slice(&read_buf[..n]);
         total += n;
     }
-    anyos_std::fs::close(fd);
+    (file_buf, total)
+}
 
-    base64_encode(&file_buf[..total]);
+fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    let args = anyos_std::args::parse(raw, b"");
+
+    let decode = args.has(b'd');
+
+    let fd = if args.pos_count > 0 {
+        let path = args.positional[0];
+        let f = anyos_std::fs::open(path, 0);
+        if f == u32::MAX {
+            anyos_std::println!("base64: cannot open '{}'", path);
+            return;
+        }
+        f
+    } else {
+        0 // stdin
+    };
+
+    let (file_buf, total) = read_all(fd);
+    if fd != 0 { anyos_std::fs::close(fd); }
+
+    if decode {
+        base64_decode(&file_buf[..total]);
+    } else {
+        base64_encode(&file_buf[..total]);
+    }
 }

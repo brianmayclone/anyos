@@ -3,53 +3,9 @@
 
 anyos_std::entry!(main);
 
-fn parse_u32(s: &str) -> Option<u32> {
-    let mut n: u32 = 0;
-    for &b in s.as_bytes() {
-        if b < b'0' || b > b'9' { return None; }
-        n = n.checked_mul(10)?.checked_add((b - b'0') as u32)?;
-    }
-    Some(n)
-}
-
-fn main() {
-    let mut args_buf = [0u8; 256];
-    let args = anyos_std::process::args(&mut args_buf);
-
-    let mut max_lines: u32 = 10;
-    let mut path = "";
-
-    // Parse: head [-n N] <file>
-    let parts: [&str; 4] = {
-        let mut p = [""; 4];
-        let mut idx = 0;
-        for word in args.split_ascii_whitespace() {
-            if idx < 4 { p[idx] = word; idx += 1; }
-        }
-        p
-    };
-
-    if parts[0] == "-n" && !parts[1].is_empty() {
-        if let Some(n) = parse_u32(parts[1]) { max_lines = n; }
-        path = parts[2];
-    } else {
-        path = parts[0];
-    }
-
-    if path.is_empty() {
-        anyos_std::println!("Usage: head [-n N] <file>");
-        return;
-    }
-
-    let fd = anyos_std::fs::open(path, 0);
-    if fd == u32::MAX {
-        anyos_std::println!("head: cannot open '{}'", path);
-        return;
-    }
-
+fn head_lines(fd: u32, max_lines: u32) {
     let mut lines_printed: u32 = 0;
     let mut read_buf = [0u8; 512];
-
     'outer: loop {
         let n = anyos_std::fs::read(fd, &mut read_buf);
         if n == 0 || n == u32::MAX { break; }
@@ -61,6 +17,50 @@ fn main() {
             }
         }
     }
+}
 
-    anyos_std::fs::close(fd);
+fn head_bytes(fd: u32, max_bytes: u32) {
+    let mut printed: u32 = 0;
+    let mut read_buf = [0u8; 512];
+    loop {
+        let n = anyos_std::fs::read(fd, &mut read_buf);
+        if n == 0 || n == u32::MAX { break; }
+        for &b in &read_buf[..n as usize] {
+            anyos_std::print!("{}", b as char);
+            printed += 1;
+            if printed >= max_bytes { return; }
+        }
+    }
+}
+
+fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    let args = anyos_std::args::parse(raw, b"nc");
+
+    let max_lines = args.opt_u32(b'n', 10);
+    let byte_mode = args.opt(b'c');
+
+    let fd = if args.pos_count > 0 {
+        let path = args.positional[0];
+        let f = anyos_std::fs::open(path, 0);
+        if f == u32::MAX {
+            anyos_std::println!("head: cannot open '{}'", path);
+            return;
+        }
+        f
+    } else {
+        0 // stdin
+    };
+
+    if let Some(c_val) = byte_mode {
+        let max_bytes = args.opt_u32(b'c', 512);
+        head_bytes(fd, max_bytes);
+    } else {
+        head_lines(fd, max_lines);
+    }
+
+    if fd != 0 {
+        anyos_std::fs::close(fd);
+    }
 }

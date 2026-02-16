@@ -155,7 +155,7 @@ fn load_app_icon(name: &str) -> Vec<u32> {
         if fs::stat(&app_path, &mut stat_buf) == 0 && stat_buf[0] == 1 {
             app_path
         } else {
-            alloc::format!("/bin/{}", name)
+            alloc::format!("/System/bin/{}", name)
         }
     };
     let icon_path = icons::app_icon_path(&bin_path);

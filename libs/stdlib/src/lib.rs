@@ -5,6 +5,7 @@ extern crate alloc;
 
 mod raw;
 
+pub mod args;
 pub mod anim;
 pub mod audio;
 pub mod bundle;

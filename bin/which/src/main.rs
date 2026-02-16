@@ -13,31 +13,37 @@ fn main() {
         return;
     }
 
-    // Check /bin/<cmd>
-    let mut path = [0u8; 128];
-    let prefix = b"/bin/";
-    path[..prefix.len()].copy_from_slice(prefix);
-    let clen = cmd.len().min(128 - prefix.len());
-    path[prefix.len()..prefix.len() + clen].copy_from_slice(&cmd.as_bytes()[..clen]);
-    let full = core::str::from_utf8(&path[..prefix.len() + clen]).unwrap_or("");
+    // Read PATH from environment (fallback to defaults)
+    let mut path_buf = [0u8; 256];
+    let len = anyos_std::env::get("PATH", &mut path_buf);
+    let path_str = if len != u32::MAX {
+        core::str::from_utf8(&path_buf[..len as usize]).unwrap_or("/System/bin:/System")
+    } else {
+        "/System/bin:/System"
+    };
 
     let mut stat_buf = [0u32; 2];
-    if anyos_std::fs::stat(full, &mut stat_buf) == 0 && stat_buf[0] == 0 {
-        anyos_std::println!("{}", full);
-        return;
-    }
 
-    // Check /System/<cmd>
-    let prefix2 = b"/System/";
-    let mut path2 = [0u8; 128];
-    path2[..prefix2.len()].copy_from_slice(prefix2);
-    let clen2 = cmd.len().min(128 - prefix2.len());
-    path2[prefix2.len()..prefix2.len() + clen2].copy_from_slice(&cmd.as_bytes()[..clen2]);
-    let full2 = core::str::from_utf8(&path2[..prefix2.len() + clen2]).unwrap_or("");
+    for dir in path_str.split(':') {
+        let dir = dir.trim();
+        if dir.is_empty() {
+            continue;
+        }
+        // Build candidate path
+        let mut buf = [0u8; 256];
+        let dlen = dir.len();
+        if dlen + 1 + cmd.len() > buf.len() {
+            continue;
+        }
+        buf[..dlen].copy_from_slice(dir.as_bytes());
+        buf[dlen] = b'/';
+        buf[dlen + 1..dlen + 1 + cmd.len()].copy_from_slice(cmd.as_bytes());
+        let full = core::str::from_utf8(&buf[..dlen + 1 + cmd.len()]).unwrap_or("");
 
-    if anyos_std::fs::stat(full2, &mut stat_buf) == 0 && stat_buf[0] == 0 {
-        anyos_std::println!("{}", full2);
-        return;
+        if anyos_std::fs::stat(full, &mut stat_buf) == 0 && stat_buf[0] == 0 {
+            anyos_std::println!("{}", full);
+            return;
+        }
     }
 
     anyos_std::println!("{}: not found", cmd);

@@ -687,7 +687,7 @@ fn main() {
                             if anyos_std::fs::stat(&app_path, &mut stat_buf) == 0 && stat_buf[0] == 1 {
                                 app_path
                             } else {
-                                alloc::format!("/bin/{}", name)
+                                alloc::format!("/System/bin/{}", name)
                             }
                         };
                         let icon_path = icons::app_icon_path(&bin_path);

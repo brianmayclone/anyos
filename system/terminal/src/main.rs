@@ -164,6 +164,73 @@ struct ForegroundProcess {
     extra_pipes: Vec<u32>,
 }
 
+// ─── Environment / PATH helpers ──────────────────────────────────────────────
+
+/// Load /System/.env — sets KEY=VALUE pairs as environment variables.
+fn load_dotenv() {
+    let fd = fs::open("/System/.env", 0);
+    if fd == u32::MAX {
+        return;
+    }
+    let mut data = [0u8; 1024];
+    let mut total = 0usize;
+    loop {
+        let n = fs::read(fd, &mut data[total..]);
+        if n == 0 || n == u32::MAX {
+            break;
+        }
+        total += n as usize;
+        if total >= data.len() {
+            break;
+        }
+    }
+    fs::close(fd);
+
+    let text = match core::str::from_utf8(&data[..total]) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    for line in text.split('\n') {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(eq) = line.find('=') {
+            let key = &line[..eq];
+            let val = &line[eq + 1..];
+            if !key.is_empty() {
+                anyos_std::env::set(key, val);
+            }
+        }
+    }
+}
+
+/// Resolve a bare command name via PATH env var.
+/// Returns the full path if found, None otherwise.
+fn resolve_from_path(cmd: &str) -> Option<String> {
+    let mut path_buf = [0u8; 256];
+    let len = anyos_std::env::get("PATH", &mut path_buf);
+    if len == u32::MAX {
+        return None;
+    }
+    let path_str = match core::str::from_utf8(&path_buf[..len as usize]) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+    let mut stat_buf = [0u32; 2];
+    for dir in path_str.split(':') {
+        let dir = dir.trim();
+        if dir.is_empty() {
+            continue;
+        }
+        let candidate = format!("{}/{}", dir, cmd);
+        if fs::stat(&candidate, &mut stat_buf) == 0 && stat_buf[0] == 0 {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 // ─── Shell ───────────────────────────────────────────────────────────────────
 
 struct Shell {
@@ -329,7 +396,7 @@ impl Shell {
                 // Resolve command path:
                 // - Absolute paths (/foo/bar) used as-is
                 // - Relative paths (./foo, ../foo) resolved against cwd
-                // - Bare names looked up in /bin/
+                // - Bare names resolved via PATH
                 let path = if bg_cmd.starts_with('/') {
                     String::from(bg_cmd)
                 } else if bg_cmd.starts_with("./") || bg_cmd.starts_with("../") {
@@ -339,7 +406,10 @@ impl Shell {
                         format!("{}/{}", self.cwd, bg_cmd)
                     }
                 } else {
-                    format!("/bin/{}", bg_cmd)
+                    match resolve_from_path(bg_cmd) {
+                        Some(p) => p,
+                        None => format!("/System/bin/{}", bg_cmd),
+                    }
                 };
 
                 // Build full args string with program name as argv[0]
@@ -436,7 +506,10 @@ impl Shell {
                     format!("{}/{}", self.cwd, cmd)
                 }
             } else {
-                format!("/bin/{}", cmd)
+                match resolve_from_path(cmd) {
+                    Some(p) => p,
+                    None => format!("/System/bin/{}", cmd),
+                }
             };
 
             // Build full args with program name as argv[0]
@@ -491,7 +564,7 @@ impl Shell {
         buf.write_str("    uname    System identification\n");
         buf.write_str("    exit     Exit terminal\n");
         buf.write_str("\n");
-        buf.write_str("  Programs (in /bin):\n");
+        buf.write_str("  Programs (in /System/bin):\n");
         buf.write_str("    ls       List directory contents\n");
         buf.write_str("    cat      Show file contents\n");
         buf.write_str("    ping     Ping an IP address\n");
@@ -737,12 +810,9 @@ fn main() {
     let mut buf = TerminalBuffer::new(cols, rows);
     let mut shell = Shell::new();
 
-    // Set initial environment variables
-    anyos_std::env::set("PWD", "/");
-    anyos_std::env::set("HOME", "/");
-    anyos_std::env::set("USER", "root");
-    anyos_std::env::set("SHELL", "/System/terminal");
-    anyos_std::env::set("PATH", "/bin:/System");
+    // Load environment from /System/.env
+    load_dotenv();
+    anyos_std::env::set("PWD", "/"); // PWD is dynamic, always set
 
     // Welcome message
     buf.current_color = COLOR_TITLE;
