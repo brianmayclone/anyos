@@ -94,6 +94,8 @@ impl UiEvent {
     pub fn mouse_pos(&self) -> (i32, i32) { (self.p1 as i32, self.p2 as i32) }
     pub fn key_code(&self) -> u32 { self.p1 }
     pub fn char_val(&self) -> u32 { self.p2 }
+    /// Modifier bits: 0=shift, 1=ctrl, 2=alt, 3=caps_lock, 4=altgr
+    pub fn modifiers(&self) -> u32 { self.p3 }
 }
 
 /// Theme color functions matching the DLL's built-in palette.

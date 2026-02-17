@@ -81,48 +81,145 @@ pub fn scale_image(
         return 0;
     }
 
-    // Fixed-point step: how far to advance in *crop* space per dest pixel.
-    let step_x = fp_div(crop_w << FP_SHIFT, vp_w << FP_SHIFT);
-    let step_y = fp_div(crop_h << FP_SHIFT, vp_h << FP_SHIFT);
-
-    // Clamp limits in source coordinates.
-    let max_sx = ((src_w - 1) as u32) << FP_SHIFT;
-    let max_sy = ((src_h - 1) as u32) << FP_SHIFT;
-
-    // Starting position in source space (crop origin + half-step for pixel
-    // centre sampling).
-    let origin_x = (crop_x << FP_SHIFT) + (step_x >> 1);
-    let origin_y = (crop_y << FP_SHIFT) + (step_y >> 1);
-
     let src_stride = src_w as usize;
     let dst_stride = dst_w as usize;
 
-    let mut sy_fp = origin_y;
-    for dy in 0..vp_h {
-        let csy = clamp(sy_fp, max_sy);
-        let sy0 = (csy >> FP_SHIFT) as usize;
-        let sy1 = if sy0 + 1 < src_h as usize { sy0 + 1 } else { sy0 };
-        let fy = csy & (FP_ONE - 1);
+    // Choose algorithm: area averaging for downscaling, bilinear for upscaling.
+    let downscaling = crop_w > vp_w || crop_h > vp_h;
 
-        let dst_row = ((vp_y + dy) as usize) * dst_stride + (vp_x as usize);
+    if downscaling {
+        // Area averaging (box filter): for each destination pixel, average ALL
+        // source pixels that map into its area. This prevents detail loss and
+        // aliasing that bilinear causes when shrinking.
+        //
+        // We use 8.24 fixed-point for sub-pixel source coordinate mapping.
+        const AA_SHIFT: u64 = 24;
+        const AA_ONE: u64 = 1 << AA_SHIFT;
 
-        let mut sx_fp = origin_x;
-        for dx in 0..vp_w {
-            let csx = clamp(sx_fp, max_sx);
-            let sx0 = (csx >> FP_SHIFT) as usize;
-            let sx1 = if sx0 + 1 < src_w as usize { sx0 + 1 } else { sx0 };
-            let fx = csx & (FP_ONE - 1);
+        let step_x_aa = ((crop_w as u64) << AA_SHIFT) / (vp_w as u64);
+        let step_y_aa = ((crop_h as u64) << AA_SHIFT) / (vp_h as u64);
 
-            let c00 = src_slice[sy0 * src_stride + sx0];
-            let c10 = src_slice[sy0 * src_stride + sx1];
-            let c01 = src_slice[sy1 * src_stride + sx0];
-            let c11 = src_slice[sy1 * src_stride + sx1];
+        for dy in 0..vp_h {
+            let dst_row = ((vp_y + dy) as usize) * dst_stride + (vp_x as usize);
 
-            dst_slice[dst_row + dx as usize] = bilinear(c00, c10, c01, c11, fx, fy);
+            // Source Y range for this destination row
+            let sy_start = (dy as u64) * step_y_aa + ((crop_y as u64) << AA_SHIFT);
+            let sy_end = sy_start + step_y_aa;
 
-            sx_fp = sx_fp.wrapping_add(step_x);
+            let sy0 = (sy_start >> AA_SHIFT) as usize;
+            let sy1_raw = ((sy_end + AA_ONE - 1) >> AA_SHIFT) as usize;
+            let sy1 = if sy1_raw > src_h as usize { src_h as usize } else { sy1_raw };
+
+            for dx in 0..vp_w {
+                // Source X range for this destination column
+                let sx_start = (dx as u64) * step_x_aa + ((crop_x as u64) << AA_SHIFT);
+                let sx_end = sx_start + step_x_aa;
+
+                let sx0 = (sx_start >> AA_SHIFT) as usize;
+                let sx1_raw = ((sx_end + AA_ONE - 1) >> AA_SHIFT) as usize;
+                let sx1 = if sx1_raw > src_w as usize { src_w as usize } else { sx1_raw };
+
+                // Accumulate weighted sum of all source pixels in the box.
+                // Weights account for partial pixel coverage at edges.
+                let mut sum_a: u64 = 0;
+                let mut sum_r: u64 = 0;
+                let mut sum_g: u64 = 0;
+                let mut sum_b: u64 = 0;
+                let mut weight_total: u64 = 0;
+
+                for sy in sy0..sy1 {
+                    // Vertical weight: how much of this source row is covered
+                    let wy = if sy1 - sy0 == 1 {
+                        AA_ONE
+                    } else if sy == sy0 {
+                        let frac = sy_start & (AA_ONE - 1);
+                        AA_ONE - frac
+                    } else if sy == sy1 - 1 {
+                        let frac = sy_end & (AA_ONE - 1);
+                        if frac == 0 { AA_ONE } else { frac }
+                    } else {
+                        AA_ONE
+                    };
+
+                    let row_off = sy * src_stride;
+
+                    for sx in sx0..sx1 {
+                        // Horizontal weight
+                        let wx = if sx1 - sx0 == 1 {
+                            AA_ONE
+                        } else if sx == sx0 {
+                            let frac = sx_start & (AA_ONE - 1);
+                            AA_ONE - frac
+                        } else if sx == sx1 - 1 {
+                            let frac = sx_end & (AA_ONE - 1);
+                            if frac == 0 { AA_ONE } else { frac }
+                        } else {
+                            AA_ONE
+                        };
+
+                        // Combined weight (reduce to 16-bit range to avoid overflow)
+                        let w = (wy >> 12) * (wx >> 12);
+                        let px = src_slice[row_off + sx];
+                        sum_a += ((px >> 24) & 0xFF) as u64 * w;
+                        sum_r += ((px >> 16) & 0xFF) as u64 * w;
+                        sum_g += ((px >> 8) & 0xFF) as u64 * w;
+                        sum_b += (px & 0xFF) as u64 * w;
+                        weight_total += w;
+                    }
+                }
+
+                let pixel = if weight_total == 0 {
+                    0
+                } else {
+                    let half = weight_total >> 1;
+                    let a = ((sum_a + half) / weight_total).min(255) as u32;
+                    let r = ((sum_r + half) / weight_total).min(255) as u32;
+                    let g = ((sum_g + half) / weight_total).min(255) as u32;
+                    let b = ((sum_b + half) / weight_total).min(255) as u32;
+                    (a << 24) | (r << 16) | (g << 8) | b
+                };
+
+                dst_slice[dst_row + dx as usize] = pixel;
+            }
         }
-        sy_fp = sy_fp.wrapping_add(step_y);
+    } else {
+        // Bilinear interpolation: good for upscaling
+        let step_x = fp_div(crop_w << FP_SHIFT, vp_w << FP_SHIFT);
+        let step_y = fp_div(crop_h << FP_SHIFT, vp_h << FP_SHIFT);
+
+        let max_sx = ((src_w - 1) as u32) << FP_SHIFT;
+        let max_sy = ((src_h - 1) as u32) << FP_SHIFT;
+
+        let origin_x = (crop_x << FP_SHIFT) + (step_x >> 1);
+        let origin_y = (crop_y << FP_SHIFT) + (step_y >> 1);
+
+        let mut sy_fp = origin_y;
+        for dy in 0..vp_h {
+            let csy = clamp(sy_fp, max_sy);
+            let sy0 = (csy >> FP_SHIFT) as usize;
+            let sy1 = if sy0 + 1 < src_h as usize { sy0 + 1 } else { sy0 };
+            let fy = csy & (FP_ONE - 1);
+
+            let dst_row = ((vp_y + dy) as usize) * dst_stride + (vp_x as usize);
+
+            let mut sx_fp = origin_x;
+            for dx in 0..vp_w {
+                let csx = clamp(sx_fp, max_sx);
+                let sx0 = (csx >> FP_SHIFT) as usize;
+                let sx1 = if sx0 + 1 < src_w as usize { sx0 + 1 } else { sx0 };
+                let fx = csx & (FP_ONE - 1);
+
+                let c00 = src_slice[sy0 * src_stride + sx0];
+                let c10 = src_slice[sy0 * src_stride + sx1];
+                let c01 = src_slice[sy1 * src_stride + sx0];
+                let c11 = src_slice[sy1 * src_stride + sx1];
+
+                dst_slice[dst_row + dx as usize] = bilinear(c00, c10, c01, c11, fx, fy);
+
+                sx_fp = sx_fp.wrapping_add(step_x);
+            }
+            sy_fp = sy_fp.wrapping_add(step_y);
+        }
     }
 
     0

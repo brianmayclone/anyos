@@ -6,6 +6,7 @@
 //! Copied from libimage's deflate.rs with an added `decompress_gzip()` entry
 //! point that strips the gzip framing before calling the raw DEFLATE decoder.
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 const WINDOW_SIZE: usize = 32768;

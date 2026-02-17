@@ -154,10 +154,14 @@ pub struct UisysExports {
     pub fill_rounded_rect_aa: extern "C" fn(u32, i32, i32, u32, u32, u32, u32),
     pub draw_text_with_font: extern "C" fn(u32, i32, i32, u32, u32, u16, *const u8, u32),
     pub font_measure: extern "C" fn(u32, u16, *const u8, u32, *mut u32, *mut u32) -> u32,
+
+    // --- TextField v2 (2) ---
+    pub textfield_render_ex: extern "C" fn(u32, i32, i32, u32, u32, *const u8, u32, *const u8, u32, u32, u32, u32, u32),
+    pub textfield_cursor_from_click_ex: extern "C" fn(i32, *const u8, u32, i32, i32) -> u32,
 }
 
 // Total export function count
-const NUM_EXPORTS: u32 = 77;
+const NUM_EXPORTS: u32 = 79;
 
 /// The global export instance, placed at the very start of the binary.
 #[link_section = ".exports"]
@@ -306,4 +310,8 @@ pub static UISYS_EXPORTS: UisysExports = UisysExports {
     fill_rounded_rect_aa: draw::fill_rounded_rect_aa,
     draw_text_with_font: draw::draw_text_with_font,
     font_measure: draw::font_measure_export,
+
+    // TextField v2
+    textfield_render_ex: textfield::textfield_render_ex,
+    textfield_cursor_from_click_ex: textfield::textfield_cursor_from_click_ex,
 };

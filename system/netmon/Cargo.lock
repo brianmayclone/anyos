@@ -11,6 +11,10 @@ name = "libcompositor_client"
 version = "0.1.0"
 
 [[package]]
+name = "libimage_client"
+version = "0.1.0"
+
+[[package]]
 name = "netmon"
 version = "0.1.0"
 dependencies = [
@@ -22,3 +26,7 @@ dependencies = [
 [[package]]
 name = "uisys_client"
 version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libimage_client",
+]

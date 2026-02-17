@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyos_std = { path = "../stdlib" }
+libimage_client = { path = "../libimage_client" }
 
 [profile.dev]
 opt-level = 2

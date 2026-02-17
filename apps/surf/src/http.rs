@@ -323,28 +323,44 @@ pub fn resolve_url(base: &Url, relative: &str) -> Url {
 pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError> {
     let mut current = clone_url(url);
 
-    for _ in 0..MAX_REDIRECTS {
+    for redirect_n in 0..MAX_REDIRECTS {
         // Reject HTTPS for now (no TLS support)
         if current.scheme == "https" {
+            anyos_std::println!("[http] HTTPS not supported: {}", current.host);
             return Err(FetchError::HttpsNotSupported);
         }
 
+        anyos_std::println!("[http] GET {}:{}{}", current.host, current.port, current.path);
+
         // 1. DNS resolve
-        let ip = resolve_host(&current.host).ok_or(FetchError::DnsFailure)?;
+        let ip = match resolve_host(&current.host) {
+            Some(ip) => {
+                anyos_std::println!("[http] DNS: {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
+                ip
+            }
+            None => {
+                anyos_std::println!("[http] DNS failed for {}", current.host);
+                return Err(FetchError::DnsFailure);
+            }
+        };
 
         // 2. TCP connect
         let sock = net::tcp_connect(&ip, current.port, CONNECT_TIMEOUT_MS);
         if sock == u32::MAX {
+            anyos_std::println!("[http] TCP connect failed");
             return Err(FetchError::ConnectFailure);
         }
+        anyos_std::println!("[http] TCP connected (sock={})", sock);
 
         // 3. Build and send GET request
         let request = build_request(&current, cookies);
         let sent = net::tcp_send(sock, request.as_bytes());
         if sent == u32::MAX {
+            anyos_std::println!("[http] send failed");
             net::tcp_close(sock);
             return Err(FetchError::SendFailure);
         }
+        anyos_std::println!("[http] sent {} bytes", sent);
 
         // 4. Receive headers
         let mut response_buf: Vec<u8> = Vec::new();
@@ -354,6 +370,7 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
         loop {
             let n = net::tcp_recv(sock, &mut recv_buf);
             if n == 0 || n == u32::MAX {
+                anyos_std::println!("[http] recv failed (n={}, buf={}B)", n, response_buf.len());
                 net::tcp_close(sock);
                 return Err(FetchError::NoResponse);
             }
@@ -364,6 +381,7 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
                 break;
             }
             if response_buf.len() > MAX_HEADER_SIZE {
+                anyos_std::println!("[http] headers too large ({}B)", response_buf.len());
                 net::tcp_close(sock);
                 return Err(FetchError::NoResponse);
             }
@@ -373,6 +391,7 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
         let header_str = core::str::from_utf8(&response_buf[..header_end]).unwrap_or("");
         let (status, _reason) = parse_status_line(header_str);
         let headers = String::from(header_str);
+        anyos_std::println!("[http] HTTP {} {}", status, _reason);
 
         // Store cookies
         cookies.store_from_headers(header_str, &current.host, &current.path);
@@ -381,6 +400,7 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
         if is_redirect(status) {
             net::tcp_close(sock);
             if let Some(location) = find_header_value(header_str, "location") {
+                anyos_std::println!("[http] redirect #{} -> {}", redirect_n + 1, location);
                 current = resolve_url(&current, location);
                 continue;
             }
@@ -395,6 +415,17 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
         let content_encoding = find_header_value(header_str, "content-encoding")
             .map(|v| String::from(v));
 
+        if is_chunked {
+            anyos_std::println!("[http] body: chunked transfer-encoding");
+        } else if let Some(cl) = content_length {
+            anyos_std::println!("[http] body: content-length={}", cl);
+        } else {
+            anyos_std::println!("[http] body: read until close");
+        }
+        if let Some(ref enc) = content_encoding {
+            anyos_std::println!("[http] content-encoding: {}", enc);
+        }
+
         // Remaining data already read past the header
         let mut trailing = Vec::new();
         if header_end < response_buf.len() {
@@ -408,17 +439,35 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
         };
 
         net::tcp_close(sock);
+        anyos_std::println!("[http] raw body: {} bytes", raw_body.len());
 
         // 8. Decompress if content-encoded
         let body = if let Some(ref enc) = content_encoding {
             let enc_lower = enc.to_ascii_lowercase();
             if enc_lower.contains("gzip") {
-                deflate::decompress_gzip(&raw_body).unwrap_or(raw_body)
+                match deflate::decompress_gzip(&raw_body) {
+                    Some(decoded) => {
+                        anyos_std::println!("[http] gzip decompressed: {} -> {} bytes", raw_body.len(), decoded.len());
+                        decoded
+                    }
+                    None => {
+                        anyos_std::println!("[http] gzip decompression FAILED, using raw");
+                        raw_body
+                    }
+                }
             } else if enc_lower.contains("deflate") {
-                // Could be raw DEFLATE or zlib-wrapped
-                deflate::decompress_zlib(&raw_body)
+                match deflate::decompress_zlib(&raw_body)
                     .or_else(|| deflate::decompress_deflate(&raw_body))
-                    .unwrap_or(raw_body)
+                {
+                    Some(decoded) => {
+                        anyos_std::println!("[http] deflate decompressed: {} -> {} bytes", raw_body.len(), decoded.len());
+                        decoded
+                    }
+                    None => {
+                        anyos_std::println!("[http] deflate decompression FAILED, using raw");
+                        raw_body
+                    }
+                }
             } else {
                 raw_body
             }
@@ -426,9 +475,11 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
             raw_body
         };
 
+        anyos_std::println!("[http] final body: {} bytes", body.len());
         return Ok(Response { status, headers, body });
     }
 
+    anyos_std::println!("[http] too many redirects");
     Err(FetchError::TooManyRedirects)
 }
 

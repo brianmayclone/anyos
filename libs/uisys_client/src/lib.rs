@@ -43,6 +43,7 @@ pub mod colorwell;
 pub mod progress;
 pub mod imageview;
 pub mod iconbutton;
+pub mod controls;
 
 // Re-export everything so `use uisys_client::*` works
 pub use types::*;
@@ -76,6 +77,7 @@ pub use colorwell::*;
 pub use progress::*;
 pub use imageview::*;
 pub use iconbutton::*;
+pub use controls::*;
 
 /// Copy a &str into a NUL-terminated buffer. Returns the string length (excl. NUL).
 pub(crate) fn nul_copy(s: &str, buf: &mut [u8]) -> u32 {

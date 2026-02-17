@@ -480,6 +480,46 @@ pub fn blit(window_id: u32, x: i16, y: i16, w: u16, h: u16, data: &[u32]) -> u32
     0
 }
 
+/// Alpha-blend ARGB pixel data onto window content surface.
+/// Unlike `blit`, this properly handles transparent and semi-transparent pixels.
+pub fn blit_alpha(window_id: u32, x: i16, y: i16, w: u16, h: u16, data: &[u32]) -> u32 {
+    let win = match find_win(window_id) {
+        Some(w) => w,
+        None => return u32::MAX,
+    };
+    let sw = win.surface.width as i32;
+    let sh = win.surface.height as i32;
+    let stride = win.surface.width;
+    for row in 0..h as i32 {
+        let py = y as i32 + row;
+        if py < 0 || py >= sh { continue; }
+        let x0 = (x as i32).max(0);
+        let x1 = (x as i32 + w as i32).min(sw);
+        if x0 >= x1 { continue; }
+        for col in x0..x1 {
+            let src_idx = (row * w as i32 + (col - x as i32)) as usize;
+            if src_idx >= data.len() { break; }
+            let src = data[src_idx];
+            let a = (src >> 24) & 0xFF;
+            if a == 0 { continue; }
+            let dst_idx = (py as u32 * stride + col as u32) as usize;
+            unsafe {
+                if a >= 255 {
+                    *win.surface.pixels.add(dst_idx) = src;
+                } else {
+                    let dst = *win.surface.pixels.add(dst_idx);
+                    let inv = 255 - a;
+                    let r = (((src >> 16) & 0xFF) * a + ((dst >> 16) & 0xFF) * inv) / 255;
+                    let g = (((src >> 8) & 0xFF) * a + ((dst >> 8) & 0xFF) * inv) / 255;
+                    let b = ((src & 0xFF) * a + (dst & 0xFF) * inv) / 255;
+                    *win.surface.pixels.add(dst_idx) = 0xFF000000 | (r << 16) | (g << 8) | b;
+                }
+            }
+        }
+    }
+    0
+}
+
 /// List open windows. Returns number of windows.
 pub fn list_windows(_buf: &mut [u8]) -> u32 {
     // TODO: implement via compositor IPC

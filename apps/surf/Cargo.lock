@@ -27,3 +27,7 @@ dependencies = [
 [[package]]
 name = "uisys_client"
 version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libimage_client",
+]

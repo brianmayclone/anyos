@@ -550,6 +550,7 @@ add_custom_command(
           ${CMAKE_SOURCE_DIR}/sysroot/System/fonts/sfpro-italic.ttf
           ${CMAKE_SOURCE_DIR}/sysroot/media/wallpapers/default.png
           ${CMAKE_SOURCE_DIR}/sysroot/System/media/icons
+          ${CMAKE_SOURCE_DIR}/sysroot/System/media/icons/controls
   COMMENT "Populating sysroot from tools/sysroot"
 )
 

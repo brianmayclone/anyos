@@ -165,6 +165,23 @@ impl IconCache {
     }
 }
 
+struct NavIcons {
+    back: Option<ControlIcon>,
+    forward: Option<ControlIcon>,
+    refresh: Option<ControlIcon>,
+}
+
+impl NavIcons {
+    fn load() -> Self {
+        let sz = 16;
+        NavIcons {
+            back: load_control_icon("left", sz),
+            forward: load_control_icon("right", sz),
+            refresh: load_control_icon("refresh", sz),
+        }
+    }
+}
+
 struct AppState {
     cwd: String,
     entries: Vec<FileEntry>,
@@ -181,6 +198,10 @@ struct AppState {
     mimetypes: icons::MimeDb,
     // Icon cache
     icon_cache: IconCache,
+    // Toolbar icons
+    nav_icons: NavIcons,
+    // Path textfield
+    path_field: UiTextField,
 }
 
 // ============================================================================
@@ -231,6 +252,10 @@ fn navigate(state: &mut AppState, path: &str) {
     state.history.push(state.cwd.clone());
     state.history_pos = state.history.len() - 1;
 
+    // Sync path textfield
+    state.path_field.set_text(path);
+    state.path_field.focused = false;
+
     // Update sidebar selection if path matches a location
     state.sidebar_sel = LOCATIONS.len(); // none
     for (i, &(_, loc_path)) in LOCATIONS.iter().enumerate() {
@@ -252,6 +277,8 @@ fn navigate_back(state: &mut AppState) {
     state.selected = None;
     state.scroll_offset = 0;
     state.last_click_idx = None;
+    state.path_field.set_text(&path);
+    state.path_field.focused = false;
 
     state.sidebar_sel = LOCATIONS.len();
     for (i, &(_, loc_path)) in LOCATIONS.iter().enumerate() {
@@ -273,6 +300,8 @@ fn navigate_forward(state: &mut AppState) {
     state.selected = None;
     state.scroll_offset = 0;
     state.last_click_idx = None;
+    state.path_field.set_text(&path);
+    state.path_field.focused = false;
 
     state.sidebar_sel = LOCATIONS.len();
     for (i, &(_, loc_path)) in LOCATIONS.iter().enumerate() {
@@ -422,14 +451,22 @@ fn handle_click(state: &mut AppState, mx: i32, my: i32, win_w: u32, win_h: u32) 
 }
 
 fn handle_toolbar_click(state: &mut AppState, mx: i32, _my: i32) -> bool {
-    // Back button: x=8, w=60
-    if mx >= 8 && mx < 68 {
+    // Back button: x=8, w=32
+    if mx >= 8 && mx < 8 + NAV_BTN_W {
         navigate_back(state);
         return true;
     }
-    // Forward button: x=72, w=60
-    if mx >= 72 && mx < 132 {
+    // Forward button: x=42, w=32
+    if mx >= 42 && mx < 42 + NAV_BTN_W {
         navigate_forward(state);
+        return true;
+    }
+    // Refresh button: x=76, w=32
+    if mx >= 76 && mx < 76 + NAV_BTN_W {
+        // Re-read current directory
+        state.entries = read_directory(&state.cwd);
+        state.selected = None;
+        state.scroll_offset = 0;
         return true;
     }
     false
@@ -482,19 +519,59 @@ fn render(win: u32, state: &mut AppState, win_w: u32, win_h: u32) {
     render_file_list(win, state, win_w, win_h);
 }
 
+const NAV_BTN_W: i32 = 32;
+const NAV_BTN_H: i32 = 28;
+const NAV_BTN_Y: i32 = 4;
+const PATH_X: i32 = 112;
+const PATH_H: u32 = 26;
+const PATH_Y: i32 = 5;
+
+/// Tint icon pixels: replace RGB with tint color, preserve alpha. If `dimmed`, reduce alpha.
+fn tint_icon(pixels: &[u32], count: usize, tint: u32, dimmed: bool) -> [u32; 256] {
+    let tr = (tint >> 16) & 0xFF;
+    let tg = (tint >> 8) & 0xFF;
+    let tb = tint & 0xFF;
+    let mut out = [0u32; 256];
+    for i in 0..count.min(256) {
+        let a = (pixels[i] >> 24) & 0xFF;
+        if a == 0 { continue; }
+        let a = if dimmed { a / 3 } else { a };
+        out[i] = (a << 24) | (tr << 16) | (tg << 8) | tb;
+    }
+    out
+}
+
+fn render_nav_icon(win: u32, bx: i32, by: i32, bw: i32, bh: i32, icon: &Option<ControlIcon>, disabled: bool) {
+    if let Some(ref ic) = icon {
+        let ix = bx + (bw - ic.width as i32) / 2;
+        let iy = by + (bh - ic.height as i32) / 2;
+        let count = (ic.width * ic.height) as usize;
+        let tinted = tint_icon(&ic.pixels, count, 0xFFFFFFFF, disabled); // white tint
+        window::blit_alpha(win, ix as i16, iy as i16, ic.width as u16, ic.height as u16, &tinted[..count]);
+    }
+}
+
 fn render_toolbar(win: u32, state: &AppState, win_w: u32) {
     toolbar(win, 0, 0, win_w, TOOLBAR_H);
 
     // Back button
-    let back_state = if state.history_pos > 0 { ButtonState::Normal } else { ButtonState::Disabled };
-    toolbar_button(win, 8, 2, 60, TOOLBAR_H - 4, "<", back_state);
+    let back_disabled = state.history_pos == 0;
+    let back_state = if !back_disabled { ButtonState::Normal } else { ButtonState::Disabled };
+    toolbar_button(win, 8, NAV_BTN_Y, NAV_BTN_W as u32, NAV_BTN_H as u32, "", back_state);
+    render_nav_icon(win, 8, NAV_BTN_Y, NAV_BTN_W, NAV_BTN_H, &state.nav_icons.back, back_disabled);
 
     // Forward button
-    let fwd_state = if state.history_pos + 1 < state.history.len() { ButtonState::Normal } else { ButtonState::Disabled };
-    toolbar_button(win, 72, 2, 60, TOOLBAR_H - 4, ">", fwd_state);
+    let fwd_disabled = state.history_pos + 1 >= state.history.len();
+    let fwd_state = if !fwd_disabled { ButtonState::Normal } else { ButtonState::Disabled };
+    toolbar_button(win, 42, NAV_BTN_Y, NAV_BTN_W as u32, NAV_BTN_H as u32, "", fwd_state);
+    render_nav_icon(win, 42, NAV_BTN_Y, NAV_BTN_W, NAV_BTN_H, &state.nav_icons.forward, fwd_disabled);
 
-    // Path display
-    label(win, 140, 10, &state.cwd, colors::TEXT(), FontSize::Normal, TextAlign::Left);
+    // Refresh button
+    toolbar_button(win, 76, NAV_BTN_Y, NAV_BTN_W as u32, NAV_BTN_H as u32, "", ButtonState::Normal);
+    render_nav_icon(win, 76, NAV_BTN_Y, NAV_BTN_W, NAV_BTN_H, &state.nav_icons.refresh, false);
+
+    // Path textfield
+    state.path_field.render(win, "Enter path...");
 
     // Item count on right
     let mut buf = [0u8; 16];
@@ -753,6 +830,12 @@ fn main() {
 
     let mimetypes = icons::MimeDb::load();
 
+    let nav_icons = NavIcons::load();
+
+    let path_w = (win_w as i32 - PATH_X - 80).max(80) as u32;
+    let mut path_field = UiTextField::new(PATH_X, PATH_Y, path_w, PATH_H);
+    path_field.set_text("/");
+
     let mut state = AppState {
         cwd: String::from("/"),
         entries: Vec::new(),
@@ -765,6 +848,8 @@ fn main() {
         history_pos: 0,
         mimetypes,
         icon_cache: IconCache::new(),
+        nav_icons,
+        path_field,
     };
 
     // Initial directory load
@@ -782,70 +867,96 @@ fn main() {
             match event[0] {
                 window::EVENT_KEY_DOWN => {
                     let key = event[1];
-                    match key {
-                        0x103 => { // ESC
+
+                    if key == 0x103 { // ESC
+                        if state.path_field.focused {
+                            // Cancel editing, revert to cwd
+                            state.path_field.set_text(&state.cwd.clone());
+                            state.path_field.focused = false;
+                            needs_redraw = true;
+                        } else {
                             window::destroy(win);
                             return;
                         }
-                        0x101 => { // Backspace - go up
-                            if state.cwd != "/" {
-                                let trimmed = state.cwd.trim_end_matches('/');
-                                let parent = match trimmed.rfind('/') {
-                                    Some(0) => "/",
-                                    Some(pos) => &state.cwd[..pos],
-                                    None => "/",
-                                };
-                                let parent_str = String::from(parent);
-                                navigate(&mut state, &parent_str);
-                                needs_redraw = true;
+                    } else if state.path_field.focused {
+                        // Route keys to path textfield
+                        if key == 0x100 { // Enter — navigate to typed path
+                            let typed = String::from(state.path_field.text());
+                            if !typed.is_empty() {
+                                navigate(&mut state, &typed);
                             }
+                            state.path_field.focused = false;
+                            needs_redraw = true;
+                        } else {
+                            let ui_evt = UiEvent::from_raw(&event);
+                            state.path_field.handle_event(&ui_evt);
+                            needs_redraw = true;
                         }
-                        0x100 => { // Enter - open selected
-                            if let Some(idx) = state.selected {
-                                if idx < state.entries.len() {
-                                    open_entry(&mut state, idx);
+                    } else {
+                        match key {
+                            0x101 => { // Backspace - go up
+                                if state.cwd != "/" {
+                                    let trimmed = state.cwd.trim_end_matches('/');
+                                    let parent = match trimmed.rfind('/') {
+                                        Some(0) => "/",
+                                        Some(pos) => &state.cwd[..pos],
+                                        None => "/",
+                                    };
+                                    let parent_str = String::from(parent);
+                                    navigate(&mut state, &parent_str);
                                     needs_redraw = true;
                                 }
                             }
-                        }
-                        0x105 => { // Up arrow
-                            match state.selected {
-                                Some(0) | None => state.selected = Some(0),
-                                Some(i) => state.selected = Some(i - 1),
-                            }
-                            // Scroll to keep selection visible
-                            if let Some(sel) = state.selected {
-                                if (sel as u32) < state.scroll_offset {
-                                    state.scroll_offset = sel as u32;
+                            0x100 => { // Enter - open selected
+                                if let Some(idx) = state.selected {
+                                    if idx < state.entries.len() {
+                                        open_entry(&mut state, idx);
+                                        needs_redraw = true;
+                                    }
                                 }
                             }
-                            needs_redraw = true;
-                        }
-                        0x106 => { // Down arrow
-                            let max = state.entries.len().saturating_sub(1);
-                            match state.selected {
-                                None => state.selected = Some(0),
-                                Some(i) if i < max => state.selected = Some(i + 1),
-                                _ => {}
-                            }
-                            // Scroll to keep selection visible
-                            if let Some(sel) = state.selected {
-                                let file_area_h = win_h as i32 - TOOLBAR_H as i32 - ROW_H;
-                                let max_visible = (file_area_h / ROW_H) as usize;
-                                if sel >= state.scroll_offset as usize + max_visible {
-                                    state.scroll_offset = (sel - max_visible + 1) as u32;
+                            0x105 => { // Up arrow
+                                match state.selected {
+                                    Some(0) | None => state.selected = Some(0),
+                                    Some(i) => state.selected = Some(i - 1),
                                 }
+                                if let Some(sel) = state.selected {
+                                    if (sel as u32) < state.scroll_offset {
+                                        state.scroll_offset = sel as u32;
+                                    }
+                                }
+                                needs_redraw = true;
                             }
-                            needs_redraw = true;
+                            0x106 => { // Down arrow
+                                let max = state.entries.len().saturating_sub(1);
+                                match state.selected {
+                                    None => state.selected = Some(0),
+                                    Some(i) if i < max => state.selected = Some(i + 1),
+                                    _ => {}
+                                }
+                                if let Some(sel) = state.selected {
+                                    let file_area_h = win_h as i32 - TOOLBAR_H as i32 - ROW_H;
+                                    let max_visible = (file_area_h / ROW_H) as usize;
+                                    if sel >= state.scroll_offset as usize + max_visible {
+                                        state.scroll_offset = (sel - max_visible + 1) as u32;
+                                    }
+                                }
+                                needs_redraw = true;
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
                 window::EVENT_MOUSE_DOWN => {
                     let mx = event[1] as i32;
                     let my = event[2] as i32;
+                    // Route clicks to path textfield for focus
+                    let ui_evt = UiEvent::from_raw(&event);
+                    state.path_field.handle_event(&ui_evt);
                     if handle_click(&mut state, mx, my, win_w, win_h) {
                         needs_redraw = true;
+                    } else {
+                        needs_redraw = true; // textfield focus may have changed
                     }
                 }
                 EVENT_MOUSE_SCROLL => {
@@ -865,6 +976,7 @@ fn main() {
                 window::EVENT_RESIZE => {
                     win_w = event[1];
                     win_h = event[2];
+                    state.path_field.w = (win_w as i32 - PATH_X - 80).max(80) as u32;
                     needs_redraw = true;
                 }
                 window::EVENT_MENU_ITEM => {

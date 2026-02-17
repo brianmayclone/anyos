@@ -7,6 +7,10 @@ name = "anyos_std"
 version = "0.1.0"
 
 [[package]]
+name = "libimage_client"
+version = "0.1.0"
+
+[[package]]
 name = "settings"
 version = "0.1.0"
 dependencies = [
@@ -17,3 +21,7 @@ dependencies = [
 [[package]]
 name = "uisys_client"
 version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libimage_client",
+]
