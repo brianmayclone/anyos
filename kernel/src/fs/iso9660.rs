@@ -264,6 +264,7 @@ impl Iso9660Fs {
                     FileType::Regular
                 },
                 size: r.data_length,
+                is_symlink: false,
             })
             .collect())
     }

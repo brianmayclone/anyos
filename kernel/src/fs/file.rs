@@ -69,4 +69,6 @@ pub struct DirEntry {
     pub name: String,
     pub file_type: FileType,
     pub size: u32,
+    /// True if this entry is a symbolic link.
+    pub is_symlink: bool,
 }

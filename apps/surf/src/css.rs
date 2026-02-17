@@ -81,6 +81,44 @@ pub enum Property {
     ListStyleType,
     WhiteSpace,
     Overflow,
+    OverflowX,
+    OverflowY,
+    // Positioning
+    Position,
+    Top,
+    Right,
+    Bottom,
+    Left,
+    ZIndex,
+    // Flexbox
+    FlexDirection,
+    FlexWrap,
+    JustifyContent,
+    AlignItems,
+    AlignSelf,
+    AlignContent,
+    FlexGrow,
+    FlexShrink,
+    FlexBasis,
+    Flex,
+    Gap,
+    RowGap,
+    ColumnGap,
+    Order,
+    // Box model
+    BoxSizing,
+    // Float
+    Float,
+    Clear,
+    // Visual
+    Opacity,
+    Visibility,
+    TextTransform,
+    Cursor,
+    // Table
+    BorderCollapse,
+    BorderSpacing,
+    TableLayout,
 }
 
 #[derive(Clone)]
@@ -457,8 +495,17 @@ fn parse_declarations(p: &mut Parser) -> Vec<Declaration> {
         }
 
         if let Some(property) = parse_property(&prop_name) {
-            let value = parse_value(property, value_str.trim());
-            decls.push(Declaration { property, value });
+            let trimmed = value_str.trim();
+            // Expand shorthand properties into individual declarations.
+            if is_expandable_shorthand(property) {
+                let expanded = expand_shorthand(property, trimmed);
+                for d in expanded {
+                    decls.push(d);
+                }
+            } else {
+                let value = parse_value(property, trimmed);
+                decls.push(Declaration { property, value });
+            }
         }
     }
 
@@ -503,8 +550,8 @@ pub fn parse_inline_style(style: &str) -> Vec<Declaration> {
 
 pub fn parse_property(name: &str) -> Option<Property> {
     // Convert to lowercase for comparison
-    let mut buf = [0u8; 32];
-    let len = name.len().min(32);
+    let mut buf = [0u8; 40];
+    let len = name.len().min(40);
     for (i, &b) in name.as_bytes()[..len].iter().enumerate() {
         buf[i] = if b >= b'A' && b <= b'Z' { b + 32 } else { b };
     }
@@ -548,9 +595,47 @@ pub fn parse_property(name: &str) -> Option<Property> {
         "border-width" => Some(Property::BorderWidth),
         "border-style" => Some(Property::BorderStyle),
         "border-radius" => Some(Property::BorderRadius),
+        "border-collapse" => Some(Property::BorderCollapse),
+        "border-spacing" => Some(Property::BorderSpacing),
         "list-style-type" => Some(Property::ListStyleType),
+        "list-style" => Some(Property::ListStyleType),
         "white-space" => Some(Property::WhiteSpace),
         "overflow" => Some(Property::Overflow),
+        "overflow-x" => Some(Property::OverflowX),
+        "overflow-y" => Some(Property::OverflowY),
+        // Positioning
+        "position" => Some(Property::Position),
+        "top" => Some(Property::Top),
+        "right" => Some(Property::Right),
+        "bottom" => Some(Property::Bottom),
+        "left" => Some(Property::Left),
+        "z-index" => Some(Property::ZIndex),
+        // Flexbox
+        "flex-direction" => Some(Property::FlexDirection),
+        "flex-wrap" => Some(Property::FlexWrap),
+        "justify-content" => Some(Property::JustifyContent),
+        "align-items" => Some(Property::AlignItems),
+        "align-self" => Some(Property::AlignSelf),
+        "align-content" => Some(Property::AlignContent),
+        "flex-grow" => Some(Property::FlexGrow),
+        "flex-shrink" => Some(Property::FlexShrink),
+        "flex-basis" => Some(Property::FlexBasis),
+        "flex" => Some(Property::Flex),
+        "gap" => Some(Property::Gap),
+        "row-gap" => Some(Property::RowGap),
+        "column-gap" => Some(Property::ColumnGap),
+        "order" => Some(Property::Order),
+        // Box model
+        "box-sizing" => Some(Property::BoxSizing),
+        // Float
+        "float" => Some(Property::Float),
+        "clear" => Some(Property::Clear),
+        // Visual
+        "opacity" => Some(Property::Opacity),
+        "visibility" => Some(Property::Visibility),
+        "text-transform" => Some(Property::TextTransform),
+        "cursor" => Some(Property::Cursor),
+        "table-layout" => Some(Property::TableLayout),
         _ => Option::None,
     }
 }
@@ -601,14 +686,6 @@ pub fn parse_value(property: Property, value_str: &str) -> CssValue {
         return v;
     }
 
-    // Shorthand: for margin/padding take the first value
-    if is_shorthand_box(property) {
-        let first = s.split(|c: char| c == ' ' || c == '\t').next().unwrap_or(s);
-        if first != s {
-            return parse_value(property, first);
-        }
-    }
-
     // Fall back to keyword
     CssValue::Keyword(lower)
 }
@@ -623,8 +700,196 @@ fn is_color_property(p: Property) -> bool {
     )
 }
 
-fn is_shorthand_box(p: Property) -> bool {
-    matches!(p, Property::Margin | Property::Padding)
+/// Check if a property is a shorthand that should be expanded in the parser.
+fn is_expandable_shorthand(p: Property) -> bool {
+    matches!(
+        p,
+        Property::Margin | Property::Padding | Property::Border
+        | Property::Flex | Property::Gap | Property::Overflow
+    )
+}
+
+/// Expand a shorthand property into individual declarations.
+fn expand_shorthand(property: Property, value_str: &str) -> Vec<Declaration> {
+    match property {
+        Property::Margin => expand_box_shorthand(
+            value_str,
+            Property::MarginTop, Property::MarginRight,
+            Property::MarginBottom, Property::MarginLeft,
+        ),
+        Property::Padding => expand_box_shorthand(
+            value_str,
+            Property::PaddingTop, Property::PaddingRight,
+            Property::PaddingBottom, Property::PaddingLeft,
+        ),
+        Property::Border => expand_border_shorthand(value_str),
+        Property::Flex => expand_flex_shorthand(value_str),
+        Property::Gap => expand_gap_shorthand(value_str),
+        Property::Overflow => expand_overflow_shorthand(value_str),
+        _ => {
+            let value = parse_value(property, value_str);
+            let mut v = Vec::new();
+            v.push(Declaration { property, value });
+            v
+        }
+    }
+}
+
+/// Expand margin/padding shorthand: 1 value → all, 2 → TB/LR, 3 → T/LR/B, 4 → T/R/B/L.
+fn expand_box_shorthand(
+    value_str: &str,
+    top: Property, right: Property, bottom: Property, left: Property,
+) -> Vec<Declaration> {
+    let parts: Vec<&str> = value_str.split_whitespace().collect();
+    if parts.is_empty() {
+        return Vec::new();
+    }
+    let (t, r, b, l) = match parts.len() {
+        1 => (parts[0], parts[0], parts[0], parts[0]),
+        2 => (parts[0], parts[1], parts[0], parts[1]),
+        3 => (parts[0], parts[1], parts[2], parts[1]),
+        _ => (parts[0], parts[1], parts[2], parts[3]),
+    };
+    let mut v = Vec::with_capacity(4);
+    v.push(Declaration { property: top, value: parse_value(top, t) });
+    v.push(Declaration { property: right, value: parse_value(right, r) });
+    v.push(Declaration { property: bottom, value: parse_value(bottom, b) });
+    v.push(Declaration { property: left, value: parse_value(left, l) });
+    v
+}
+
+/// Expand `border: <width> <style> <color>` shorthand.
+fn expand_border_shorthand(value_str: &str) -> Vec<Declaration> {
+    let mut decls = Vec::new();
+    let parts: Vec<&str> = value_str.split_whitespace().collect();
+    for part in &parts {
+        let lower = to_ascii_lower(part);
+        // Check if it's a border style keyword.
+        if matches!(lower.as_str(), "solid" | "dashed" | "dotted" | "double"
+            | "groove" | "ridge" | "inset" | "outset" | "hidden") {
+            decls.push(Declaration {
+                property: Property::BorderStyle,
+                value: CssValue::Keyword(lower),
+            });
+        } else if let Some(c) = try_parse_color(part) {
+            decls.push(Declaration {
+                property: Property::BorderColor,
+                value: CssValue::Color(c),
+            });
+        } else if let Some(c) = named_color(&lower) {
+            decls.push(Declaration {
+                property: Property::BorderColor,
+                value: CssValue::Color(c),
+            });
+        } else if let Some(dim) = try_parse_dimension(part) {
+            decls.push(Declaration {
+                property: Property::BorderWidth,
+                value: dim,
+            });
+        } else if matches!(lower.as_str(), "thin" | "medium" | "thick") {
+            decls.push(Declaration {
+                property: Property::BorderWidth,
+                value: CssValue::Keyword(lower),
+            });
+        } else if lower == "none" {
+            decls.push(Declaration {
+                property: Property::BorderStyle,
+                value: CssValue::None,
+            });
+            decls.push(Declaration {
+                property: Property::BorderWidth,
+                value: CssValue::Length(0, Unit::Px),
+            });
+        }
+    }
+    decls
+}
+
+/// Expand `flex: <grow> [<shrink>] [<basis>]` shorthand.
+fn expand_flex_shorthand(value_str: &str) -> Vec<Declaration> {
+    let lower = to_ascii_lower(value_str);
+    let mut decls = Vec::new();
+
+    // Handle keyword values.
+    match lower.as_str() {
+        "none" => {
+            decls.push(Declaration { property: Property::FlexGrow, value: CssValue::Number(0) });
+            decls.push(Declaration { property: Property::FlexShrink, value: CssValue::Number(0) });
+            decls.push(Declaration { property: Property::FlexBasis, value: CssValue::Auto });
+            return decls;
+        }
+        "auto" => {
+            decls.push(Declaration { property: Property::FlexGrow, value: CssValue::Number(100) });
+            decls.push(Declaration { property: Property::FlexShrink, value: CssValue::Number(100) });
+            decls.push(Declaration { property: Property::FlexBasis, value: CssValue::Auto });
+            return decls;
+        }
+        _ => {}
+    }
+
+    let parts: Vec<&str> = value_str.split_whitespace().collect();
+    if parts.is_empty() {
+        return decls;
+    }
+
+    // First value: flex-grow (number).
+    decls.push(Declaration {
+        property: Property::FlexGrow,
+        value: parse_value(Property::FlexGrow, parts[0]),
+    });
+
+    if parts.len() >= 2 {
+        // Could be shrink or basis.
+        if let Some(dim) = try_parse_dimension(parts[1]) {
+            // If it has a unit, it's flex-basis.
+            if matches!(dim, CssValue::Length(_, _) | CssValue::Percentage(_)) {
+                decls.push(Declaration { property: Property::FlexShrink, value: CssValue::Number(100) });
+                decls.push(Declaration { property: Property::FlexBasis, value: dim });
+            } else {
+                decls.push(Declaration { property: Property::FlexShrink, value: dim });
+            }
+        } else {
+            decls.push(Declaration {
+                property: Property::FlexShrink,
+                value: parse_value(Property::FlexShrink, parts[1]),
+            });
+        }
+    }
+
+    if parts.len() >= 3 {
+        decls.push(Declaration {
+            property: Property::FlexBasis,
+            value: parse_value(Property::FlexBasis, parts[2]),
+        });
+    }
+
+    decls
+}
+
+/// Expand `gap: <row> [<column>]` shorthand.
+fn expand_gap_shorthand(value_str: &str) -> Vec<Declaration> {
+    let parts: Vec<&str> = value_str.split_whitespace().collect();
+    let mut decls = Vec::new();
+    if parts.is_empty() {
+        return decls;
+    }
+    decls.push(Declaration { property: Property::RowGap, value: parse_value(Property::RowGap, parts[0]) });
+    let col = if parts.len() >= 2 { parts[1] } else { parts[0] };
+    decls.push(Declaration { property: Property::ColumnGap, value: parse_value(Property::ColumnGap, col) });
+    decls
+}
+
+/// Expand `overflow: <x> [<y>]` shorthand.
+fn expand_overflow_shorthand(value_str: &str) -> Vec<Declaration> {
+    let parts: Vec<&str> = value_str.split_whitespace().collect();
+    let mut decls = Vec::new();
+    if parts.is_empty() {
+        return decls;
+    }
+    decls.push(Declaration { property: Property::OverflowX, value: parse_value(Property::OverflowX, parts[0]) });
+    let y = if parts.len() >= 2 { parts[1] } else { parts[0] };
+    decls.push(Declaration { property: Property::OverflowY, value: parse_value(Property::OverflowY, y) });
+    decls
 }
 
 // ---------------------------------------------------------------------------

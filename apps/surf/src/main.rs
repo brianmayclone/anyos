@@ -27,6 +27,7 @@ use alloc::vec::Vec;
 use alloc::vec;
 use libcompositor_client::*;
 use uisys_client::*;
+use layout::FormFieldKind;
 
 // ---------------------------------------------------------------------------
 // Layout constants
@@ -85,6 +86,24 @@ fn surface_id(ws: &WinSurface) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
+// Form field state
+// ---------------------------------------------------------------------------
+
+struct FormFieldState {
+    node_id: dom::NodeId,
+    kind: FormFieldKind,
+    name: String,
+    value: String,
+    cursor: usize,
+    checked: bool,
+    /// Layout position in document coordinates.
+    doc_x: i32,
+    doc_y: i32,
+    width: i32,
+    height: i32,
+}
+
+// ---------------------------------------------------------------------------
 // Per-tab state
 // ---------------------------------------------------------------------------
 
@@ -108,6 +127,9 @@ struct TabState {
     page_pixels: Vec<u32>,
     page_pixels_w: u32,
     page_pixels_h: u32,
+    // Form state
+    form_fields: Vec<FormFieldState>,
+    focused_field: Option<usize>,
 }
 
 impl TabState {
@@ -131,6 +153,8 @@ impl TabState {
             page_pixels: Vec::new(),
             page_pixels_w: 0,
             page_pixels_h: 0,
+            form_fields: Vec::new(),
+            focused_field: None,
         }
     }
 
@@ -338,6 +362,47 @@ fn navigate(browser: &mut Browser, url_str: &str, win_w: u32) {
     paint::paint(&layout_root, &mut page_pixels, page_buf_w, page_buf_h, 0, &images);
     anyos_std::println!("[surf] page rendered to off-screen buffer");
 
+    // Collect form field positions from layout tree
+    let form_positions = layout::collect_form_positions(&layout_root);
+    let mut form_fields: Vec<FormFieldState> = Vec::new();
+    for fp in &form_positions {
+        if fp.kind == FormFieldKind::Hidden { continue; }
+        let name = dom.attr(fp.node_id, "name").unwrap_or("");
+        let value = match fp.kind {
+            FormFieldKind::Textarea => {
+                let tc = dom.text_content(fp.node_id);
+                let t = tc.trim();
+                String::from(t)
+            }
+            FormFieldKind::Submit | FormFieldKind::ButtonEl => {
+                let v = dom.attr(fp.node_id, "value").unwrap_or("");
+                if v.is_empty() {
+                    // For <button>, use text content
+                    let tc = dom.text_content(fp.node_id);
+                    let t = tc.trim();
+                    if t.is_empty() { String::from("Submit") } else { String::from(t) }
+                } else {
+                    String::from(v)
+                }
+            }
+            _ => String::from(dom.attr(fp.node_id, "value").unwrap_or("")),
+        };
+        let checked = dom.attr(fp.node_id, "checked").is_some();
+        form_fields.push(FormFieldState {
+            node_id: fp.node_id,
+            kind: fp.kind,
+            name: String::from(name),
+            value: value.clone(),
+            cursor: value.len(),
+            checked,
+            doc_x: fp.doc_x,
+            doc_y: fp.doc_y,
+            width: fp.width,
+            height: fp.height,
+        });
+    }
+    anyos_std::println!("[surf] form fields: {} found", form_fields.len());
+
     let url_string = format_url(&url);
     let tab = browser.tab_mut();
 
@@ -363,6 +428,8 @@ fn navigate(browser: &mut Browser, url_str: &str, win_w: u32) {
     tab.page_pixels_h = page_buf_h;
     tab.scroll_y = 0;
     tab.hover_link = None;
+    tab.form_fields = form_fields;
+    tab.focused_field = None;
     tab.url_text = url_string;
     tab.url_cursor = tab.url_text.len();
     tab.status_text = String::from("Done");
@@ -557,6 +624,49 @@ fn render(client: &CompositorClient, win: &WindowHandle, browser: &Browser, icon
             }
         }
 
+        // -- Form field overlays (rendered on top of page content) --
+        let status_y_limit = (h as i32 - STATUS_H);
+        for (fi, field) in tab.form_fields.iter().enumerate() {
+            let screen_x = field.doc_x;
+            let screen_y = field.doc_y - tab.scroll_y + CHROME_H;
+            // Skip if not visible
+            if screen_y + field.height < CHROME_H || screen_y >= status_y_limit {
+                continue;
+            }
+            let focused = tab.focused_field == Some(fi);
+            match field.kind {
+                FormFieldKind::TextInput => {
+                    textfield(wid, screen_x, screen_y,
+                        field.width as u32, field.height as u32,
+                        &field.value, "", field.cursor as u32, focused);
+                }
+                FormFieldKind::Password => {
+                    textfield_password(wid, screen_x, screen_y,
+                        field.width as u32, field.height as u32,
+                        &field.value, "", field.cursor as u32, focused);
+                }
+                FormFieldKind::Submit | FormFieldKind::ButtonEl => {
+                    let lbl = if field.value.is_empty() { "Submit" } else { &field.value };
+                    button(wid, screen_x, screen_y,
+                        field.width as u32, field.height as u32,
+                        lbl, ButtonStyle::Default, ButtonState::Normal);
+                }
+                FormFieldKind::Checkbox => {
+                    let state = if field.checked { CheckboxState::Checked } else { CheckboxState::Unchecked };
+                    checkbox(wid, screen_x, screen_y, state, "");
+                }
+                FormFieldKind::Radio => {
+                    radio(wid, screen_x, screen_y, field.checked, "");
+                }
+                FormFieldKind::Textarea => {
+                    textfield(wid, screen_x, screen_y,
+                        field.width as u32, field.height as u32,
+                        &field.value, "", field.cursor as u32, focused);
+                }
+                FormFieldKind::Hidden => {}
+            }
+        }
+
         // -- Scrollbar --
         if tab.total_height > viewport_h {
             let sb_x = w as i32 - SCROLLBAR_W as i32;
@@ -660,6 +770,388 @@ fn handle_url_key(tab: &mut TabState, key: u32, ch: u32) -> bool {
         }
     }
     false
+}
+
+// ---------------------------------------------------------------------------
+// Form field interaction
+// ---------------------------------------------------------------------------
+
+fn handle_form_field_click(browser: &mut Browser, fi: usize, win_w: u32, client: &CompositorClient, win: &WindowHandle) {
+    let tab = browser.tab_mut();
+    let kind = tab.form_fields[fi].kind;
+
+    match kind {
+        FormFieldKind::Checkbox => {
+            tab.form_fields[fi].checked = !tab.form_fields[fi].checked;
+            tab.focused_field = Some(fi);
+        }
+        FormFieldKind::Radio => {
+            let name = tab.form_fields[fi].name.clone();
+            // Uncheck all radios with same name
+            for f in &mut tab.form_fields {
+                if f.kind == FormFieldKind::Radio && f.name == name {
+                    f.checked = false;
+                }
+            }
+            tab.form_fields[fi].checked = true;
+            tab.focused_field = Some(fi);
+        }
+        FormFieldKind::Submit | FormFieldKind::ButtonEl => {
+            tab.focused_field = None;
+            submit_form(browser, fi, win_w, client, win);
+            return;
+        }
+        FormFieldKind::TextInput | FormFieldKind::Password | FormFieldKind::Textarea => {
+            tab.focused_field = Some(fi);
+        }
+        _ => {}
+    }
+    browser.needs_redraw = true;
+}
+
+/// Handle a keyboard event for the currently focused form field.
+/// Returns true if a form was submitted (navigate happened).
+fn handle_form_field_key(browser: &mut Browser, key: u32, ch: u32, win_w: u32, client: &CompositorClient, win: &WindowHandle) -> bool {
+    let fi = match browser.tab().focused_field {
+        Some(fi) => fi,
+        None => return false,
+    };
+
+    let kind = browser.tab().form_fields[fi].kind;
+
+    match kind {
+        FormFieldKind::TextInput | FormFieldKind::Password | FormFieldKind::Textarea => {
+            match key {
+                KEY_BACKSPACE => {
+                    let field = &mut browser.tab_mut().form_fields[fi];
+                    if field.cursor > 0 {
+                        field.value.remove(field.cursor - 1);
+                        field.cursor -= 1;
+                    }
+                }
+                KEY_DELETE => {
+                    let field = &mut browser.tab_mut().form_fields[fi];
+                    if field.cursor < field.value.len() {
+                        field.value.remove(field.cursor);
+                    }
+                }
+                KEY_LEFT => {
+                    let field = &mut browser.tab_mut().form_fields[fi];
+                    if field.cursor > 0 { field.cursor -= 1; }
+                }
+                KEY_RIGHT => {
+                    let field = &mut browser.tab_mut().form_fields[fi];
+                    if field.cursor < field.value.len() { field.cursor += 1; }
+                }
+                KEY_HOME => {
+                    browser.tab_mut().form_fields[fi].cursor = 0;
+                }
+                KEY_END => {
+                    let len = browser.tab().form_fields[fi].value.len();
+                    browser.tab_mut().form_fields[fi].cursor = len;
+                }
+                KEY_ENTER => {
+                    if kind != FormFieldKind::Textarea {
+                        // Submit the form containing this field
+                        submit_form(browser, fi, win_w, client, win);
+                        return true;
+                    }
+                }
+                KEY_ESCAPE => {
+                    browser.tab_mut().focused_field = None;
+                }
+                KEY_TAB => {
+                    // Move to next text field
+                    let tab = browser.tab_mut();
+                    let count = tab.form_fields.len();
+                    let mut next = fi + 1;
+                    while next < count {
+                        let k = tab.form_fields[next].kind;
+                        if k == FormFieldKind::TextInput || k == FormFieldKind::Password || k == FormFieldKind::Textarea {
+                            tab.focused_field = Some(next);
+                            break;
+                        }
+                        next += 1;
+                    }
+                    if next >= count {
+                        tab.focused_field = None;
+                    }
+                }
+                _ => {
+                    if ch >= 0x20 && ch <= 0x7E {
+                        let field = &mut browser.tab_mut().form_fields[fi];
+                        if field.value.len() < 255 {
+                            field.value.insert(field.cursor, ch as u8 as char);
+                            field.cursor += 1;
+                        }
+                    }
+                }
+            }
+        }
+        _ => {
+            if key == KEY_ESCAPE {
+                browser.tab_mut().focused_field = None;
+            }
+        }
+    }
+    false
+}
+
+// ---------------------------------------------------------------------------
+// Form submission
+// ---------------------------------------------------------------------------
+
+fn submit_form(browser: &mut Browser, trigger_fi: usize, win_w: u32, client: &CompositorClient, win: &WindowHandle) {
+    let tab = browser.tab_mut();
+    let trigger_node = tab.form_fields[trigger_fi].node_id;
+
+    let dom = match &tab.page_dom {
+        Some(d) => d,
+        None => return,
+    };
+
+    // Find the <form> ancestor of the trigger field
+    let form_node = find_form_ancestor(dom, trigger_node);
+    let (method, action) = if let Some(fid) = form_node {
+        let m = dom.attr(fid, "method").unwrap_or("get");
+        let a = dom.attr(fid, "action").unwrap_or("");
+        (ascii_lower_method(m), String::from(a))
+    } else {
+        (String::from("get"), String::new())
+    };
+
+    // Collect name=value pairs from form fields that belong to this form
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for field in &tab.form_fields {
+        if field.name.is_empty() { continue; }
+
+        // Check if this field is a descendant of the same form
+        if let Some(fid) = form_node {
+            if !is_descendant(dom, field.node_id, fid) { continue; }
+        }
+
+        match field.kind {
+            FormFieldKind::TextInput | FormFieldKind::Password | FormFieldKind::Textarea | FormFieldKind::Hidden => {
+                pairs.push((field.name.clone(), field.value.clone()));
+            }
+            FormFieldKind::Checkbox | FormFieldKind::Radio => {
+                if field.checked {
+                    let val = if field.value.is_empty() { String::from("on") } else { field.value.clone() };
+                    pairs.push((field.name.clone(), val));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Build form data string
+    let encoded = url_encode_pairs(&pairs);
+    anyos_std::println!("[surf] form submit: method={}, action={}, data={}", method, action, encoded);
+
+    // Resolve action URL
+    let base = match &tab.current_url {
+        Some(u) => http::clone_url(u),
+        None => return,
+    };
+
+    let action_url = if action.is_empty() {
+        base
+    } else {
+        http::resolve_url(&base, &action)
+    };
+
+    if method == "post" {
+        let url_str = format_url(&action_url);
+        navigate_post(browser, &url_str, &encoded, win_w);
+    } else {
+        let mut url_str = format_url(&action_url);
+        // Strip any existing query string
+        if let Some(qpos) = url_str.find('?') {
+            url_str.truncate(qpos);
+        }
+        if !encoded.is_empty() {
+            url_str.push('?');
+            url_str.push_str(&encoded);
+        }
+        navigate(browser, &url_str, win_w);
+    }
+    update_title(client, win, browser);
+}
+
+/// Navigate to a URL using POST with form-urlencoded body.
+fn navigate_post(browser: &mut Browser, url_str: &str, body: &str, win_w: u32) {
+    anyos_std::println!("[surf] navigate_post: {}", url_str);
+
+    let tab = browser.tab_mut();
+    tab.status_text = String::from("Submitting...");
+    browser.needs_redraw = true;
+
+    let url = match http::parse_url(url_str) {
+        Ok(u) => u,
+        Err(_) => {
+            browser.tab_mut().status_text = String::from("Invalid URL");
+            return;
+        }
+    };
+
+    let response = match http::fetch_post(&url, body, &mut browser.cookies) {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = match e {
+                http::FetchError::InvalidUrl => "Invalid URL",
+                http::FetchError::DnsFailure => "DNS lookup failed",
+                http::FetchError::ConnectFailure => "Connection failed",
+                http::FetchError::SendFailure => "Send failed",
+                http::FetchError::NoResponse => "No response",
+                http::FetchError::TooManyRedirects => "Too many redirects",
+                http::FetchError::TlsHandshakeFailed => "TLS handshake failed",
+            };
+            browser.tab_mut().status_text = String::from(msg);
+            return;
+        }
+    };
+
+    if response.status < 200 || response.status >= 400 {
+        browser.tab_mut().status_text = String::from("HTTP error");
+        return;
+    }
+
+    // Same page processing as navigate()
+    let body_text = String::from_utf8_lossy(&response.body).into_owned();
+    let dom = html::parse(&body_text);
+    let title = dom.find_title().unwrap_or_else(|| String::from("Untitled"));
+    let mut stylesheets = Vec::new();
+    for (i, node) in dom.nodes.iter().enumerate() {
+        if let dom::NodeType::Element { tag: dom::Tag::Style, .. } = &node.node_type {
+            let css_text = dom.text_content(i);
+            stylesheets.push(css::parse_stylesheet(&css_text));
+        }
+    }
+    let styles = style::resolve_styles(&dom, &stylesheets);
+    let viewport_w = (win_w as i32 - SCROLLBAR_W as i32).max(100);
+    let layout_root = layout::layout(&dom, &styles, viewport_w);
+    let total_h = paint::total_height(&layout_root);
+    let mut images = paint::ImageCache { entries: Vec::new() };
+    collect_and_fetch_images(&dom, &url, &mut images, &mut browser.cookies);
+
+    let page_buf_w = win_w;
+    let page_buf_h = (total_h as u32).max(1);
+    let mut page_pixels = vec![0u32; (page_buf_w as usize) * (page_buf_h as usize)];
+    paint::paint(&layout_root, &mut page_pixels, page_buf_w, page_buf_h, 0, &images);
+
+    let form_positions = layout::collect_form_positions(&layout_root);
+    let mut form_fields: Vec<FormFieldState> = Vec::new();
+    for fp in &form_positions {
+        if fp.kind == FormFieldKind::Hidden { continue; }
+        let name = dom.attr(fp.node_id, "name").unwrap_or("");
+        let value = match fp.kind {
+            FormFieldKind::Textarea => {
+                let tc = dom.text_content(fp.node_id);
+                String::from(tc.trim())
+            }
+            FormFieldKind::Submit | FormFieldKind::ButtonEl => {
+                let v = dom.attr(fp.node_id, "value").unwrap_or("");
+                if v.is_empty() {
+                    let tc = dom.text_content(fp.node_id);
+                    let t = tc.trim();
+                    if t.is_empty() { String::from("Submit") } else { String::from(t) }
+                } else { String::from(v) }
+            }
+            _ => String::from(dom.attr(fp.node_id, "value").unwrap_or("")),
+        };
+        let checked = dom.attr(fp.node_id, "checked").is_some();
+        form_fields.push(FormFieldState {
+            node_id: fp.node_id, kind: fp.kind,
+            name: String::from(name), value: value.clone(),
+            cursor: value.len(), checked,
+            doc_x: fp.doc_x, doc_y: fp.doc_y,
+            width: fp.width, height: fp.height,
+        });
+    }
+
+    let url_string = format_url(&url);
+    let tab = browser.tab_mut();
+    tab.current_url = Some(url);
+    tab.page_title = title;
+    tab.page_dom = Some(dom);
+    tab.page_styles = styles;
+    tab.page_layout = Some(layout_root);
+    tab.total_height = total_h;
+    tab.images = images;
+    tab.page_pixels = page_pixels;
+    tab.page_pixels_w = page_buf_w;
+    tab.page_pixels_h = page_buf_h;
+    tab.scroll_y = 0;
+    tab.hover_link = None;
+    tab.form_fields = form_fields;
+    tab.focused_field = None;
+    tab.url_text = url_string;
+    tab.url_cursor = tab.url_text.len();
+    tab.status_text = String::from("Done");
+    browser.needs_redraw = true;
+}
+
+/// Find the closest <form> ancestor of a node.
+fn find_form_ancestor(dom: &dom::Dom, node_id: dom::NodeId) -> Option<dom::NodeId> {
+    let mut cur = Some(node_id);
+    while let Some(id) = cur {
+        if dom.tag(id) == Some(dom::Tag::Form) {
+            return Some(id);
+        }
+        cur = dom.get(id).parent;
+    }
+    None
+}
+
+/// Check if `child` is a descendant of `ancestor` in the DOM.
+fn is_descendant(dom: &dom::Dom, child: dom::NodeId, ancestor: dom::NodeId) -> bool {
+    let mut cur = dom.get(child).parent;
+    while let Some(id) = cur {
+        if id == ancestor { return true; }
+        cur = dom.get(id).parent;
+    }
+    false
+}
+
+/// URL-encode a list of name=value pairs into a query string.
+fn url_encode_pairs(pairs: &[(String, String)]) -> String {
+    let mut s = String::new();
+    for (i, (name, value)) in pairs.iter().enumerate() {
+        if i > 0 { s.push('&'); }
+        url_encode_into(&mut s, name);
+        s.push('=');
+        url_encode_into(&mut s, value);
+    }
+    s
+}
+
+fn url_encode_into(out: &mut String, s: &str) {
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            b' ' => out.push('+'),
+            _ => {
+                out.push('%');
+                out.push(hex_digit(b >> 4));
+                out.push(hex_digit(b & 0xF));
+            }
+        }
+    }
+}
+
+fn hex_digit(n: u8) -> char {
+    if n < 10 { (b'0' + n) as char } else { (b'A' + n - 10) as char }
+}
+
+fn ascii_lower_method(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b >= b'A' && b <= b'Z' { out.push((b + 32) as char); }
+        else { out.push(b as char); }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -795,6 +1287,12 @@ fn main() {
                             browser.tab_mut().url_focused = false;
                             update_title(&client, &win, &browser);
                         }
+                    } else if browser.tab().focused_field.is_some() {
+                        let did_submit = handle_form_field_key(&mut browser, key, ch, win.width, &client, &win);
+                        browser.needs_redraw = true;
+                        if did_submit {
+                            update_title(&client, &win, &browser);
+                        }
                     } else {
                         match key {
                             KEY_ESCAPE => {
@@ -823,16 +1321,34 @@ fn main() {
                     } else {
                         // Content area click
                         browser.tab_mut().url_focused = false;
+                        let content_x = mx;
                         let content_y = my - CHROME_H + browser.tab().scroll_y;
-                        if let Some(ref root) = browser.tab().page_layout {
-                            if let Some(link) = paint::hit_test(root, mx, content_y, 0) {
-                                let resolved = if let Some(ref base) = browser.tab().current_url {
-                                    format_url(&http::resolve_url(base, &link))
-                                } else {
-                                    link
-                                };
-                                navigate(&mut browser, &resolved, win.width);
-                                update_title(&client, &win, &browser);
+
+                        // Check form fields first
+                        let mut clicked_field = None;
+                        for (fi, field) in browser.tab().form_fields.iter().enumerate() {
+                            if content_x >= field.doc_x && content_x < field.doc_x + field.width
+                                && content_y >= field.doc_y && content_y < field.doc_y + field.height
+                            {
+                                clicked_field = Some(fi);
+                                break;
+                            }
+                        }
+
+                        if let Some(fi) = clicked_field {
+                            handle_form_field_click(&mut browser, fi, win.width, &client, &win);
+                        } else {
+                            browser.tab_mut().focused_field = None;
+                            if let Some(ref root) = browser.tab().page_layout {
+                                if let Some(link) = paint::hit_test(root, mx, content_y, 0) {
+                                    let resolved = if let Some(ref base) = browser.tab().current_url {
+                                        format_url(&http::resolve_url(base, &link))
+                                    } else {
+                                        link
+                                    };
+                                    navigate(&mut browser, &resolved, win.width);
+                                    update_title(&client, &win, &browser);
+                                }
                             }
                         }
                         browser.needs_redraw = true;
@@ -1029,6 +1545,21 @@ fn relayout(browser: &mut Browser, win_w: u32) {
         paint::paint(&root, &mut tab.page_pixels, page_buf_w, page_buf_h, 0, &tab.images);
         tab.page_pixels_w = page_buf_w;
         tab.page_pixels_h = page_buf_h;
+
+        // Update form field positions
+        let positions = layout::collect_form_positions(&root);
+        for fp in &positions {
+            // Find matching form field state by node_id and update position
+            for field in &mut tab.form_fields {
+                if field.node_id == fp.node_id {
+                    field.doc_x = fp.doc_x;
+                    field.doc_y = fp.doc_y;
+                    field.width = fp.width;
+                    field.height = fp.height;
+                    break;
+                }
+            }
+        }
 
         tab.page_layout = Some(root);
     }

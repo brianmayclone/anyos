@@ -56,6 +56,10 @@ pub struct UiTextField {
     pub sel_anchor: u32,
     pub focused: bool,
     pub password: bool,
+    /// True while the mouse button is held down (for drag selection).
+    mouse_pressed: bool,
+    /// Uptime tick of the last mouse-down (for double-click detection).
+    last_click_tick: u32,
 }
 
 impl UiTextField {
@@ -65,6 +69,8 @@ impl UiTextField {
             buf: [0; 256], len: 0,
             cursor: 0, sel_anchor: 0,
             focused: false, password: false,
+            mouse_pressed: false,
+            last_click_tick: 0,
         }
     }
 
@@ -122,6 +128,46 @@ impl UiTextField {
         );
     }
 
+    /// Returns true if `c` is a word delimiter for double-click selection.
+    fn is_word_delimiter(c: u8) -> bool {
+        matches!(c,
+            b' ' | b'\t' | b'\n' | b'\r'
+            | b'.' | b',' | b'/' | b';' | b':' | b'!' | b'?'
+            | b'@' | b'#' | b'$' | b'%' | b'^' | b'&' | b'*'
+            | b'(' | b')' | b'-' | b'=' | b'+' | b'[' | b']'
+            | b'{' | b'}' | b'|' | b'\\' | b'<' | b'>' | b'"'
+            | b'\'' | b'~' | b'`'
+        )
+    }
+
+    /// Select the word at `pos`, expanding outward to word delimiters.
+    fn select_word_at(&mut self, pos: usize) {
+        if self.len == 0 { return; }
+        let pos = pos.min(self.len.saturating_sub(1));
+
+        // If on a delimiter, select just that character
+        if Self::is_word_delimiter(self.buf[pos]) {
+            self.sel_anchor = pos as u32;
+            self.cursor = (pos + 1).min(self.len) as u32;
+            return;
+        }
+
+        // Find word start: scan left until delimiter or start of text
+        let mut start = pos;
+        while start > 0 && !Self::is_word_delimiter(self.buf[start - 1]) {
+            start -= 1;
+        }
+
+        // Find word end: scan right until delimiter or end of text
+        let mut end = pos;
+        while end < self.len && !Self::is_word_delimiter(self.buf[end]) {
+            end += 1;
+        }
+
+        self.sel_anchor = start as u32;
+        self.cursor = end as u32;
+    }
+
     /// Delete the currently selected text. Returns true if something was deleted.
     fn delete_selection(&mut self) -> bool {
         if !self.has_selection() { return false; }
@@ -147,15 +193,49 @@ impl UiTextField {
     /// Returns `true` if text content changed.
     /// Focus changes are reflected in `self.focused` but don't return true.
     pub fn handle_event(&mut self, event: &UiEvent) -> bool {
+        // ── Mouse down: position cursor, detect double-click ──
         if event.is_mouse_down() {
             let (mx, my) = event.mouse_pos();
             self.focused = textfield_hit_test(self.x, self.y, self.w, self.h, mx, my);
             if self.focused {
-                // Position cursor at click point
                 let pos = (exports().textfield_cursor_from_click)(self.x, self.len as u32, mx);
-                self.cursor = pos.min(self.len as u32);
-                self.sel_anchor = self.cursor; // clear selection on click
+                let pos = pos.min(self.len as u32);
+
+                // Double-click detection (~400ms threshold at 100 Hz PIT)
+                let now = anyos_std::sys::uptime();
+                let is_double = now.wrapping_sub(self.last_click_tick) < 40;
+                self.last_click_tick = now;
+
+                if is_double {
+                    // Select word at cursor position
+                    self.select_word_at(pos as usize);
+                } else {
+                    // Single click — position cursor, optionally extend selection
+                    let shift = (event.modifiers() & 1) != 0;
+                    self.cursor = pos;
+                    if !shift {
+                        self.sel_anchor = self.cursor;
+                    }
+                }
+                self.mouse_pressed = true;
+            } else {
+                self.mouse_pressed = false;
             }
+            return false;
+        }
+
+        // ── Mouse move: drag selection ──
+        if event.event_type == EVENT_MOUSE_MOVE && self.mouse_pressed && self.focused {
+            let (mx, _my) = event.mouse_pos();
+            let pos = (exports().textfield_cursor_from_click)(self.x, self.len as u32, mx);
+            self.cursor = pos.min(self.len as u32);
+            // sel_anchor stays at drag origin → selection grows/shrinks
+            return false;
+        }
+
+        // ── Mouse up: end drag ──
+        if event.is_mouse_up() {
+            self.mouse_pressed = false;
             return false;
         }
 

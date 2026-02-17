@@ -645,6 +645,7 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
                         name: String::from(name),
                         file_type: FileType::Directory,
                         size: 0,
+                        is_symlink: false,
                     });
                 }
             }
@@ -714,6 +715,7 @@ fn add_virtual_root_entries(state: &VfsState, entries: &mut Vec<DirEntry>) {
             name: String::from("dev"),
             file_type: FileType::Directory,
             size: 0,
+            is_symlink: false,
         });
     }
     if state.mount_points.iter().any(|mp| mp.path.starts_with("/mnt/")) {
@@ -721,6 +723,7 @@ fn add_virtual_root_entries(state: &VfsState, entries: &mut Vec<DirEntry>) {
             name: String::from("mnt"),
             file_type: FileType::Directory,
             size: 0,
+            is_symlink: false,
         });
     }
 }

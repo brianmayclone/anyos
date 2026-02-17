@@ -512,6 +512,135 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
     Err(FetchError::TooManyRedirects)
 }
 
+/// Fetch a URL using POST with a form-urlencoded body.
+pub fn fetch_post(url: &Url, body: &str, cookies: &mut CookieJar) -> Result<Response, FetchError> {
+    let mut current = clone_url(url);
+
+    for redirect_n in 0..MAX_REDIRECTS {
+        let is_https = current.scheme == "https";
+        anyos_std::println!("[http] {} POST {}:{}{}", if is_https { "HTTPS" } else { "HTTP" },
+            current.host, current.port, current.path);
+
+        let ip = match resolve_host(&current.host) {
+            Some(ip) => ip,
+            None => return Err(FetchError::DnsFailure),
+        };
+
+        let sock = net::tcp_connect(&ip, current.port, CONNECT_TIMEOUT_MS);
+        if sock == u32::MAX { return Err(FetchError::ConnectFailure); }
+
+        if is_https {
+            let ret = crate::tls::connect(sock, &current.host);
+            if ret != 0 {
+                net::tcp_close(sock);
+                return Err(FetchError::TlsHandshakeFailed);
+            }
+        }
+
+        // Use POST on first request, but follow redirects as GET
+        let request = if redirect_n == 0 {
+            build_post_request(&current, body, cookies)
+        } else {
+            build_request(&current, cookies)
+        };
+
+        let send_ok = if is_https {
+            crate::tls::send(request.as_bytes()) >= 0
+        } else {
+            net::tcp_send(sock, request.as_bytes()) != u32::MAX
+        };
+        if !send_ok {
+            if is_https { crate::tls::close(); }
+            net::tcp_close(sock);
+            return Err(FetchError::SendFailure);
+        }
+
+        let mut response_buf: Vec<u8> = Vec::new();
+        let mut recv_buf = [0u8; RECV_BUF_SIZE];
+        let header_end;
+
+        loop {
+            let n = if is_https {
+                let ret = crate::tls::recv(&mut recv_buf);
+                if ret <= 0 { 0u32 } else { ret as u32 }
+            } else {
+                let r = net::tcp_recv(sock, &mut recv_buf);
+                if r == u32::MAX { 0 } else { r }
+            };
+            if n == 0 {
+                if is_https { crate::tls::close(); }
+                net::tcp_close(sock);
+                return Err(FetchError::NoResponse);
+            }
+            response_buf.extend_from_slice(&recv_buf[..n as usize]);
+            if let Some(end) = find_header_end(&response_buf) {
+                header_end = end;
+                break;
+            }
+            if response_buf.len() > MAX_HEADER_SIZE {
+                if is_https { crate::tls::close(); }
+                net::tcp_close(sock);
+                return Err(FetchError::NoResponse);
+            }
+        }
+
+        let header_str = core::str::from_utf8(&response_buf[..header_end]).unwrap_or("");
+        let (status, _reason) = parse_status_line(header_str);
+        let headers = String::from(header_str);
+        anyos_std::println!("[http] POST response: HTTP {} {}", status, _reason);
+
+        cookies.store_from_headers(header_str, &current.host, &current.path);
+
+        if is_redirect(status) {
+            if is_https { crate::tls::close(); }
+            net::tcp_close(sock);
+            if let Some(location) = find_header_value(header_str, "location") {
+                current = resolve_url(&current, location);
+                continue;
+            }
+            return Ok(Response { status, headers, body: Vec::new() });
+        }
+
+        let is_chunked = find_header_value(header_str, "transfer-encoding")
+            .map(|v| v.contains("chunked"))
+            .unwrap_or(false);
+        let content_length = parse_content_length(header_str);
+        let content_encoding = find_header_value(header_str, "content-encoding")
+            .map(|v| String::from(v));
+
+        let mut trailing = Vec::new();
+        if header_end < response_buf.len() {
+            trailing.extend_from_slice(&response_buf[header_end..]);
+        }
+
+        let raw_body = if is_chunked {
+            if is_https { read_chunked_body_tls(&trailing) } else { read_chunked_body(sock, &trailing) }
+        } else if is_https {
+            read_body_tls(&trailing, content_length)
+        } else {
+            read_body(sock, &trailing, content_length)
+        };
+
+        if is_https { crate::tls::close(); }
+        net::tcp_close(sock);
+
+        let resp_body = if let Some(ref enc) = content_encoding {
+            let enc_lower = enc.to_ascii_lowercase();
+            if enc_lower.contains("gzip") {
+                crate::deflate::decompress_gzip(&raw_body).unwrap_or(raw_body)
+            } else if enc_lower.contains("deflate") {
+                crate::deflate::decompress_zlib(&raw_body)
+                    .or_else(|| crate::deflate::decompress_deflate(&raw_body))
+                    .unwrap_or(raw_body)
+            } else { raw_body }
+        } else { raw_body };
+
+        return Ok(Response { status, headers, body: resp_body });
+    }
+
+    Err(FetchError::TooManyRedirects)
+}
+
 // ---------------------------------------------------------------------------
 // Body reading
 // ---------------------------------------------------------------------------
@@ -771,8 +900,17 @@ fn parse_content_length(headers: &str) -> Option<u32> {
 }
 
 fn build_request(url: &Url, cookies: &CookieJar) -> String {
+    build_request_with_method(url, "GET", None, cookies)
+}
+
+fn build_post_request(url: &Url, body: &str, cookies: &CookieJar) -> String {
+    build_request_with_method(url, "POST", Some(body), cookies)
+}
+
+fn build_request_with_method(url: &Url, method: &str, body: Option<&str>, cookies: &CookieJar) -> String {
     let mut req = String::new();
-    req.push_str("GET ");
+    req.push_str(method);
+    req.push(' ');
     req.push_str(&url.path);
     req.push_str(" HTTP/1.1\r\nHost: ");
     req.push_str(&url.host);
@@ -785,6 +923,12 @@ fn build_request(url: &Url, cookies: &CookieJar) -> String {
     req.push_str("\r\nAccept-Encoding: gzip, deflate");
     req.push_str("\r\nConnection: close");
 
+    if let Some(body) = body {
+        req.push_str("\r\nContent-Type: application/x-www-form-urlencoded");
+        req.push_str("\r\nContent-Length: ");
+        push_u32(&mut req, body.len() as u32);
+    }
+
     // Append cookies
     let is_secure = url.scheme == "https";
     if let Some(cookie_val) = cookies.cookie_header(&url.host, &url.path, is_secure) {
@@ -793,6 +937,11 @@ fn build_request(url: &Url, cookies: &CookieJar) -> String {
     }
 
     req.push_str("\r\n\r\n");
+
+    if let Some(body) = body {
+        req.push_str(body);
+    }
+
     req
 }
 

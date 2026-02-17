@@ -22,7 +22,96 @@ pub enum Display {
     ListItem,
     TableRow,
     TableCell,
+    Flex,
+    InlineFlex,
     None,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Position {
+    Static,
+    Relative,
+    Absolute,
+    Fixed,
+    Sticky,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BoxSizing {
+    ContentBox,
+    BorderBox,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Visibility {
+    Visible,
+    Hidden,
+    Collapse,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FloatVal {
+    None,
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ClearVal {
+    None,
+    Left,
+    Right,
+    Both,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FlexDirection {
+    Row,
+    RowReverse,
+    Column,
+    ColumnReverse,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FlexWrap {
+    Nowrap,
+    Wrap,
+    WrapReverse,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum JustifyContent {
+    FlexStart,
+    FlexEnd,
+    Center,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AlignItems {
+    FlexStart,
+    FlexEnd,
+    Center,
+    Stretch,
+    Baseline,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum OverflowVal {
+    Visible,
+    Hidden,
+    Scroll,
+    Auto,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TextTransform {
+    None,
+    Uppercase,
+    Lowercase,
+    Capitalize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -62,6 +151,10 @@ pub struct ComputedStyle {
     pub margin_right: i32,
     pub margin_bottom: i32,
     pub margin_left: i32,
+    /// true if margin-left was explicitly `auto`
+    pub margin_left_auto: bool,
+    /// true if margin-right was explicitly `auto`
+    pub margin_right_auto: bool,
     pub padding_top: i32,
     pub padding_right: i32,
     pub padding_bottom: i32,
@@ -72,8 +165,45 @@ pub struct ComputedStyle {
     pub width: Option<i32>,      // None = auto
     pub height: Option<i32>,     // None = auto
     pub max_width: Option<i32>,
+    pub min_width: i32,
+    pub max_height: Option<i32>,
+    pub min_height: i32,
     pub list_style: ListStyle,
     pub white_space: WhiteSpace,
+    // Positioning
+    pub position: Position,
+    pub top: Option<i32>,
+    pub right_offset: Option<i32>,
+    pub bottom_offset: Option<i32>,
+    pub left_offset: Option<i32>,
+    pub z_index: i32,
+    // Flexbox
+    pub flex_direction: FlexDirection,
+    pub flex_wrap: FlexWrap,
+    pub justify_content: JustifyContent,
+    pub align_items: AlignItems,
+    pub align_self: Option<AlignItems>,
+    pub flex_grow: i32,          // fixed-point * 100
+    pub flex_shrink: i32,        // fixed-point * 100
+    pub flex_basis: Option<i32>, // None = auto, Some(px)
+    pub row_gap: i32,
+    pub column_gap: i32,
+    pub order: i32,
+    // Box model
+    pub box_sizing: BoxSizing,
+    // Float
+    pub float: FloatVal,
+    pub clear: ClearVal,
+    // Visual
+    pub opacity: i32,            // 0..255 (255 = fully opaque)
+    pub visibility: Visibility,
+    pub text_transform: TextTransform,
+    // Overflow
+    pub overflow_x: OverflowVal,
+    pub overflow_y: OverflowVal,
+    // Width/height percentages (stored as fixed-point * 100, None if not percentage)
+    pub width_pct: Option<i32>,
+    pub height_pct: Option<i32>,
 }
 
 // Bitflags for tracking which inheritable properties were explicitly set.
@@ -86,6 +216,8 @@ const SET_LINE_HEIGHT: u16 = 1 << 5;
 const SET_WHITE_SPACE: u16 = 1 << 6;
 const SET_LIST_STYLE: u16 = 1 << 7;
 const SET_TEXT_DECO: u16  = 1 << 8;
+const SET_VISIBILITY: u16 = 1 << 9;
+const SET_TEXT_TRANSFORM: u16 = 1 << 10;
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -103,7 +235,8 @@ pub fn default_style() -> ComputedStyle {
         text_align: TextAlignVal::Left,
         text_decoration: TextDeco::None,
         line_height: 0,
-        margin_top: 0,  margin_right: 0,  margin_bottom: 0,  margin_left: 0,
+        margin_top: 0, margin_right: 0, margin_bottom: 0, margin_left: 0,
+        margin_left_auto: false, margin_right_auto: false,
         padding_top: 0, padding_right: 0, padding_bottom: 0, padding_left: 0,
         border_width: 0,
         border_color: 0xFF808080,
@@ -111,8 +244,45 @@ pub fn default_style() -> ComputedStyle {
         width: Option::None,
         height: Option::None,
         max_width: Option::None,
+        min_width: 0,
+        max_height: Option::None,
+        min_height: 0,
         list_style: ListStyle::None,
         white_space: WhiteSpace::Normal,
+        // Positioning
+        position: Position::Static,
+        top: Option::None,
+        right_offset: Option::None,
+        bottom_offset: Option::None,
+        left_offset: Option::None,
+        z_index: 0,
+        // Flexbox
+        flex_direction: FlexDirection::Row,
+        flex_wrap: FlexWrap::Nowrap,
+        justify_content: JustifyContent::FlexStart,
+        align_items: AlignItems::Stretch,
+        align_self: Option::None,
+        flex_grow: 0,
+        flex_shrink: 100, // default 1.0 = 100 in fixed-point
+        flex_basis: Option::None, // auto
+        row_gap: 0,
+        column_gap: 0,
+        order: 0,
+        // Box model
+        box_sizing: BoxSizing::ContentBox,
+        // Float
+        float: FloatVal::None,
+        clear: ClearVal::None,
+        // Visual
+        opacity: 255,
+        visibility: Visibility::Visible,
+        text_transform: TextTransform::None,
+        // Overflow
+        overflow_x: OverflowVal::Visible,
+        overflow_y: OverflowVal::Visible,
+        // Percentages
+        width_pct: Option::None,
+        height_pct: Option::None,
     }
 }
 
@@ -461,6 +631,8 @@ fn inherit_unset(child: &mut ComputedStyle, parent: &ComputedStyle, set: u16) {
     if set & SET_WHITE_SPACE == 0 { child.white_space = parent.white_space; }
     if set & SET_LIST_STYLE == 0 { child.list_style = parent.list_style; }
     if set & SET_TEXT_DECO == 0  { child.text_decoration = parent.text_decoration; }
+    if set & SET_VISIBILITY == 0 { child.visibility = parent.visibility; }
+    if set & SET_TEXT_TRANSFORM == 0 { child.text_transform = parent.text_transform; }
 }
 
 /// Map a CSS property to the inheritable-set bitflag (0 if not inheritable).
@@ -475,6 +647,8 @@ fn decl_set_flag(prop: Property) -> u16 {
         Property::WhiteSpace => SET_WHITE_SPACE,
         Property::ListStyleType => SET_LIST_STYLE,
         Property::TextDecoration => SET_TEXT_DECO,
+        Property::Visibility => SET_VISIBILITY,
+        Property::TextTransform => SET_TEXT_TRANSFORM,
         _ => 0,
     }
 }
@@ -523,6 +697,8 @@ pub fn apply_declaration(
                     "list-item" => Display::ListItem,
                     "table-row" => Display::TableRow,
                     "table-cell" => Display::TableCell,
+                    "flex" => Display::Flex,
+                    "inline-flex" => Display::InlineFlex,
                     "none" => Display::None,
                     _ => style.display,
                 };
@@ -614,20 +790,24 @@ pub fn apply_declaration(
         }
         Property::Width => {
             match decl.value {
-                CssValue::Auto => style.width = Option::None,
+                CssValue::Auto => { style.width = Option::None; style.width_pct = Option::None; }
+                CssValue::Percentage(v) => { style.width_pct = Some(v); style.width = Option::None; }
                 _ => {
                     if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                         style.width = Some(px);
+                        style.width_pct = Option::None;
                     }
                 }
             }
         }
         Property::Height => {
             match decl.value {
-                CssValue::Auto => style.height = Option::None,
+                CssValue::Auto => { style.height = Option::None; style.height_pct = Option::None; }
+                CssValue::Percentage(v) => { style.height_pct = Some(v); style.height = Option::None; }
                 _ => {
                     if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                         style.height = Some(px);
+                        style.height_pct = Option::None;
                     }
                 }
             }
@@ -635,6 +815,10 @@ pub fn apply_declaration(
         Property::MaxWidth => {
             match decl.value {
                 CssValue::None => style.max_width = Option::None,
+                CssValue::Percentage(v) => {
+                    // Store percentage as negative marker; layout resolves against container.
+                    style.max_width = Some(-(v.max(1)));
+                }
                 _ => {
                     if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                         style.max_width = Some(px);
@@ -642,11 +826,37 @@ pub fn apply_declaration(
                 }
             }
         }
-        // Shorthand margin: apply a single value to all four sides.
-        Property::Margin => {
+        Property::MinWidth => {
+            if let CssValue::Percentage(v) = decl.value {
+                style.min_width = -(v.max(1));
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.min_width = px;
+            }
+        }
+        Property::MaxHeight => {
+            match decl.value {
+                CssValue::None => style.max_height = Option::None,
+                _ => {
+                    if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                        style.max_height = Some(px);
+                    }
+                }
+            }
+        }
+        Property::MinHeight => {
             if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.min_height = px;
+            }
+        }
+        // Margin properties — track `auto` for centering.
+        Property::Margin => {
+            if matches!(decl.value, CssValue::Auto) {
+                style.margin_left_auto = true;
+                style.margin_right_auto = true;
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.margin_top = px; style.margin_right = px;
                 style.margin_bottom = px; style.margin_left = px;
+                style.margin_left_auto = false; style.margin_right_auto = false;
             }
         }
         Property::MarginTop => {
@@ -655,8 +865,11 @@ pub fn apply_declaration(
             }
         }
         Property::MarginRight => {
-            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+            if matches!(decl.value, CssValue::Auto) {
+                style.margin_right_auto = true;
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.margin_right = px;
+                style.margin_right_auto = false;
             }
         }
         Property::MarginBottom => {
@@ -665,8 +878,11 @@ pub fn apply_declaration(
             }
         }
         Property::MarginLeft => {
-            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+            if matches!(decl.value, CssValue::Auto) {
+                style.margin_left_auto = true;
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.margin_left = px;
+                style.margin_left_auto = false;
             }
         }
         // Shorthand padding.
@@ -748,10 +964,236 @@ pub fn apply_declaration(
                 };
             }
         }
-        // Properties we parse but do not use in ComputedStyle yet.
-        Property::TextIndent | Property::VerticalAlign | Property::MinWidth
-        | Property::MinHeight | Property::MaxHeight | Property::BorderStyle
-        | Property::Overflow => {}
+        Property::Position => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.position = match kw.as_str() {
+                    "static" => Position::Static,
+                    "relative" => Position::Relative,
+                    "absolute" => Position::Absolute,
+                    "fixed" => Position::Fixed,
+                    "sticky" => Position::Sticky,
+                    _ => style.position,
+                };
+            }
+        }
+        Property::Top => {
+            if matches!(decl.value, CssValue::Auto) {
+                style.top = Option::None;
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.top = Some(px);
+            }
+        }
+        Property::Right => {
+            if matches!(decl.value, CssValue::Auto) {
+                style.right_offset = Option::None;
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.right_offset = Some(px);
+            }
+        }
+        Property::Bottom => {
+            if matches!(decl.value, CssValue::Auto) {
+                style.bottom_offset = Option::None;
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.bottom_offset = Some(px);
+            }
+        }
+        Property::Left => {
+            if matches!(decl.value, CssValue::Auto) {
+                style.left_offset = Option::None;
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.left_offset = Some(px);
+            }
+        }
+        Property::ZIndex => {
+            if let CssValue::Number(v) = decl.value {
+                style.z_index = v / 100;
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.z_index = px;
+            }
+        }
+        Property::FlexDirection => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.flex_direction = match kw.as_str() {
+                    "row" => FlexDirection::Row,
+                    "row-reverse" => FlexDirection::RowReverse,
+                    "column" => FlexDirection::Column,
+                    "column-reverse" => FlexDirection::ColumnReverse,
+                    _ => style.flex_direction,
+                };
+            }
+        }
+        Property::FlexWrap => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.flex_wrap = match kw.as_str() {
+                    "nowrap" => FlexWrap::Nowrap,
+                    "wrap" => FlexWrap::Wrap,
+                    "wrap-reverse" => FlexWrap::WrapReverse,
+                    _ => style.flex_wrap,
+                };
+            }
+        }
+        Property::JustifyContent => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.justify_content = match kw.as_str() {
+                    "flex-start" | "start" => JustifyContent::FlexStart,
+                    "flex-end" | "end" => JustifyContent::FlexEnd,
+                    "center" => JustifyContent::Center,
+                    "space-between" => JustifyContent::SpaceBetween,
+                    "space-around" => JustifyContent::SpaceAround,
+                    "space-evenly" => JustifyContent::SpaceEvenly,
+                    _ => style.justify_content,
+                };
+            }
+        }
+        Property::AlignItems => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.align_items = match kw.as_str() {
+                    "flex-start" | "start" => AlignItems::FlexStart,
+                    "flex-end" | "end" => AlignItems::FlexEnd,
+                    "center" => AlignItems::Center,
+                    "stretch" => AlignItems::Stretch,
+                    "baseline" => AlignItems::Baseline,
+                    _ => style.align_items,
+                };
+            }
+        }
+        Property::AlignSelf => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.align_self = match kw.as_str() {
+                    "auto" => Option::None,
+                    "flex-start" | "start" => Some(AlignItems::FlexStart),
+                    "flex-end" | "end" => Some(AlignItems::FlexEnd),
+                    "center" => Some(AlignItems::Center),
+                    "stretch" => Some(AlignItems::Stretch),
+                    "baseline" => Some(AlignItems::Baseline),
+                    _ => style.align_self,
+                };
+            }
+        }
+        Property::FlexGrow => {
+            if let CssValue::Number(v) = decl.value {
+                style.flex_grow = v;
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.flex_grow = px * 100;
+            }
+        }
+        Property::FlexShrink => {
+            if let CssValue::Number(v) = decl.value {
+                style.flex_shrink = v;
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.flex_shrink = px * 100;
+            }
+        }
+        Property::FlexBasis => {
+            if matches!(decl.value, CssValue::Auto) {
+                style.flex_basis = Option::None;
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.flex_basis = Some(px);
+            }
+        }
+        Property::RowGap => {
+            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.row_gap = px;
+            }
+        }
+        Property::ColumnGap => {
+            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.column_gap = px;
+            }
+        }
+        Property::Order => {
+            if let CssValue::Number(v) = decl.value {
+                style.order = v / 100;
+            }
+        }
+        Property::BoxSizing => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.box_sizing = match kw.as_str() {
+                    "border-box" => BoxSizing::BorderBox,
+                    "content-box" => BoxSizing::ContentBox,
+                    _ => style.box_sizing,
+                };
+            }
+        }
+        Property::Float => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.float = match kw.as_str() {
+                    "left" => FloatVal::Left,
+                    "right" => FloatVal::Right,
+                    "none" => FloatVal::None,
+                    _ => style.float,
+                };
+            }
+            if matches!(decl.value, CssValue::None) { style.float = FloatVal::None; }
+        }
+        Property::Clear => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.clear = match kw.as_str() {
+                    "left" => ClearVal::Left,
+                    "right" => ClearVal::Right,
+                    "both" => ClearVal::Both,
+                    "none" => ClearVal::None,
+                    _ => style.clear,
+                };
+            }
+            if matches!(decl.value, CssValue::None) { style.clear = ClearVal::None; }
+        }
+        Property::Opacity => {
+            if let CssValue::Number(v) = decl.value {
+                // v is fixed-point * 100: "0.5" → 50, "1" → 100
+                style.opacity = ((v * 255) / 100).max(0).min(255);
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.opacity = (px * 255).max(0).min(255);
+            }
+        }
+        Property::Visibility => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.visibility = match kw.as_str() {
+                    "visible" => Visibility::Visible,
+                    "hidden" => Visibility::Hidden,
+                    "collapse" => Visibility::Collapse,
+                    _ => style.visibility,
+                };
+            }
+        }
+        Property::TextTransform => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.text_transform = match kw.as_str() {
+                    "uppercase" => TextTransform::Uppercase,
+                    "lowercase" => TextTransform::Lowercase,
+                    "capitalize" => TextTransform::Capitalize,
+                    "none" => TextTransform::None,
+                    _ => style.text_transform,
+                };
+            }
+            if matches!(decl.value, CssValue::None) { style.text_transform = TextTransform::None; }
+        }
+        Property::OverflowX => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.overflow_x = parse_overflow_keyword(kw);
+            }
+        }
+        Property::OverflowY => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.overflow_y = parse_overflow_keyword(kw);
+            }
+        }
+        // Properties we parse but do not yet resolve:
+        Property::TextIndent | Property::VerticalAlign
+        | Property::BorderStyle | Property::Overflow
+        | Property::AlignContent | Property::Flex
+        | Property::Gap | Property::Cursor
+        | Property::BorderCollapse | Property::BorderSpacing | Property::TableLayout => {}
+    }
+}
+
+fn parse_overflow_keyword(kw: &str) -> OverflowVal {
+    match kw {
+        "visible" => OverflowVal::Visible,
+        "hidden" => OverflowVal::Hidden,
+        "scroll" => OverflowVal::Scroll,
+        "auto" => OverflowVal::Auto,
+        _ => OverflowVal::Visible,
     }
 }
 

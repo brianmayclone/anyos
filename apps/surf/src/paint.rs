@@ -7,8 +7,8 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::layout::{BoxType, Edges, LayoutBox};
-use crate::style::{TextAlignVal, TextDeco};
+use crate::layout::{FormFieldKind, LayoutBox};
+use crate::style::TextDeco;
 
 // ---------------------------------------------------------------------------
 // Image cache
@@ -85,6 +85,17 @@ fn paint_box(
     parent_y: i32,
     images: &ImageCache,
 ) {
+    // Skip invisible boxes (visibility:hidden still takes up space but doesn't paint).
+    if bx.visibility_hidden {
+        // Still need to paint children — visibility can be re-set on them.
+        let abs_x = parent_x + bx.x;
+        let abs_y = parent_y + bx.y - scroll_y;
+        for child in &bx.children {
+            paint_box(child, pixels, buf_w, buf_h, scroll_y, abs_x, abs_y + scroll_y, images);
+        }
+        return;
+    }
+
     let abs_x = parent_x + bx.x;
     let abs_y = parent_y + bx.y - scroll_y;
 
@@ -93,32 +104,46 @@ fn paint_box(
         return;
     }
 
+    // Apply opacity by modifying colors for this box. For simplicity, we
+    // apply opacity at draw time by premultiplying the alpha channel. A full
+    // implementation would composite to an offscreen buffer, but that's too
+    // expensive for our embedded browser.
+    let opacity = bx.opacity;
+    let apply_alpha = |color: u32| -> u32 {
+        if opacity >= 255 { return color; }
+        let a = (color >> 24) & 0xFF;
+        let new_a = (a * opacity as u32) / 255;
+        (new_a << 24) | (color & 0x00FFFFFF)
+    };
+
     // 1. Background.
     if bx.bg_color != 0 {
+        let bg = apply_alpha(bx.bg_color);
         if bx.border_radius > 0 {
             fill_rounded_rect(
                 pixels, buf_w, buf_h,
                 abs_x, abs_y, bx.width, bx.height,
-                bx.border_radius, bx.bg_color,
+                bx.border_radius, bg,
             );
         } else {
-            fill_rect(pixels, buf_w, buf_h, abs_x, abs_y, bx.width, bx.height, bx.bg_color);
+            fill_rect(pixels, buf_w, buf_h, abs_x, abs_y, bx.width, bx.height, bg);
         }
     }
 
     // 2. Border.
     if bx.border_width > 0 && bx.border_color != 0 {
+        let bc = apply_alpha(bx.border_color);
         draw_border(
             pixels, buf_w, buf_h,
             abs_x, abs_y, bx.width, bx.height,
-            bx.border_width, bx.border_color,
+            bx.border_width, bc,
         );
     }
 
     // 3. Horizontal rule.
     if bx.is_hr {
         let hr_y = abs_y + bx.padding.top;
-        draw_line_h(pixels, buf_w, buf_h, abs_x + 4, hr_y, bx.width - 8, 0xFFCCCCCC);
+        draw_line_h(pixels, buf_w, buf_h, abs_x + 4, hr_y, bx.width - 8, apply_alpha(0xFFCCCCCC));
     }
 
     // 4. List marker.
@@ -128,7 +153,7 @@ fn paint_box(
         let my = abs_y + bx.padding.top;
         draw_text_to_buffer(
             pixels, buf_w, buf_h, mx, my,
-            marker, bx.font_size, bx.bold, bx.color,
+            marker, bx.font_size, bx.bold, apply_alpha(bx.color),
         );
     }
 
@@ -137,18 +162,19 @@ fn paint_box(
         if !text.is_empty() {
             let tx = abs_x;
             let ty = abs_y;
-            draw_text_to_buffer(pixels, buf_w, buf_h, tx, ty, text, bx.font_size, bx.bold, bx.color);
+            let tc = apply_alpha(bx.color);
+            draw_text_to_buffer(pixels, buf_w, buf_h, tx, ty, text, bx.font_size, bx.bold, tc);
 
             // Text decorations.
             let (tw, th) = measure_text_dims(text, bx.font_size, bx.bold);
             match bx.text_decoration {
                 TextDeco::Underline => {
                     let uy = ty + th + 1;
-                    draw_line_h(pixels, buf_w, buf_h, tx, uy, tw, bx.color);
+                    draw_line_h(pixels, buf_w, buf_h, tx, uy, tw, tc);
                 }
                 TextDeco::LineThrough => {
                     let sy = ty + th / 2;
-                    draw_line_h(pixels, buf_w, buf_h, tx, sy, tw, bx.color);
+                    draw_line_h(pixels, buf_w, buf_h, tx, sy, tw, tc);
                 }
                 TextDeco::None => {}
             }
@@ -189,10 +215,73 @@ fn paint_box(
         }
     }
 
-    // 7. Children.
-    for child in &bx.children {
-        paint_box(child, pixels, buf_w, buf_h, scroll_y, abs_x, abs_y + scroll_y, images);
+    // 7. Form field placeholders (interactive overlays drawn later by main.rs).
+    if let Some(kind) = bx.form_field {
+        match kind {
+            FormFieldKind::TextInput | FormFieldKind::Password | FormFieldKind::Textarea => {
+                // Light gray background with border
+                fill_rect(pixels, buf_w, buf_h, abs_x, abs_y, bx.width, bx.height, 0xFFF0F0F0);
+                draw_border(pixels, buf_w, buf_h, abs_x, abs_y, bx.width, bx.height, 1, 0xFFCCCCCC);
+            }
+            FormFieldKind::Submit | FormFieldKind::ButtonEl => {
+                fill_rect(pixels, buf_w, buf_h, abs_x, abs_y, bx.width, bx.height, 0xFFE0E0E0);
+                draw_border(pixels, buf_w, buf_h, abs_x, abs_y, bx.width, bx.height, 1, 0xFFAAAAAA);
+            }
+            FormFieldKind::Checkbox | FormFieldKind::Radio => {
+                fill_rect(pixels, buf_w, buf_h, abs_x, abs_y, bx.width, bx.height, 0xFFF8F8F8);
+            }
+            FormFieldKind::Hidden => {}
+        }
     }
+
+    // 8. Children — with optional overflow:hidden clipping.
+    if bx.overflow_hidden {
+        // Paint children, but clip to this box's bounds.
+        for child in &bx.children {
+            paint_box_clipped(
+                child, pixels, buf_w, buf_h, scroll_y,
+                abs_x, abs_y + scroll_y, images,
+                abs_x, abs_y, bx.width, bx.height,
+            );
+        }
+    } else {
+        for child in &bx.children {
+            paint_box(child, pixels, buf_w, buf_h, scroll_y, abs_x, abs_y + scroll_y, images);
+        }
+    }
+}
+
+/// Paint a box with clipping to a parent's overflow:hidden rect.
+/// This is a simplified clipping approach: we skip any box whose bounds
+/// are entirely outside the clip rect.
+fn paint_box_clipped(
+    bx: &LayoutBox,
+    pixels: &mut [u32],
+    buf_w: u32,
+    buf_h: u32,
+    scroll_y: i32,
+    parent_x: i32,
+    parent_y: i32,
+    images: &ImageCache,
+    clip_x: i32,
+    clip_y: i32,
+    clip_w: i32,
+    clip_h: i32,
+) {
+    let abs_x = parent_x + bx.x;
+    let abs_y = parent_y + bx.y - scroll_y;
+
+    // Cull boxes entirely outside the clip rect.
+    if abs_x + bx.width < clip_x || abs_x > clip_x + clip_w {
+        return;
+    }
+    if abs_y + bx.height < clip_y || abs_y > clip_y + clip_h {
+        return;
+    }
+
+    // Delegate to normal paint — overflow:hidden clipping is approximate
+    // (we cull fully-outside boxes but don't pixel-clip partially visible ones).
+    paint_box(bx, pixels, buf_w, buf_h, scroll_y, parent_x, parent_y, images);
 }
 
 // ---------------------------------------------------------------------------
