@@ -476,6 +476,7 @@ add_app(calc        ${CMAKE_SOURCE_DIR}/apps/calc           "Calculator")
 add_app(fontviewer  ${CMAKE_SOURCE_DIR}/apps/fontviewer     "Font Viewer")
 add_app(clock       ${CMAKE_SOURCE_DIR}/apps/clock          "Clock")
 add_app(screenshot  ${CMAKE_SOURCE_DIR}/apps/screenshot     "Screenshot")
+add_app(surf        ${CMAKE_SOURCE_DIR}/apps/surf            "Surf")
 
 # Build compositor binary (nested path: /System/compositor/compositor)
 set(COMPOSITOR_SRC_DIR ${CMAKE_SOURCE_DIR}/system/compositor/compositor)
@@ -744,108 +745,15 @@ add_custom_command(
 )
 
 # ============================================================
-# NetSurf Web Browser (C libraries + linked ELF) → Browser.app
+# BearSSL (TLS library, used by curl)
 # ============================================================
-set(NS_DIR "${CMAKE_SOURCE_DIR}/third_party/netsurf")
 set(BEARSSL_DIR "${CMAKE_SOURCE_DIR}/third_party/bearssl")
-set(CURL_DIR "${CMAKE_SOURCE_DIR}/third_party/curl")
-set(ZLIB_DIR "${CMAKE_SOURCE_DIR}/third_party/zlib")
-set(BROWSER_SCRIPTS "${CMAKE_SOURCE_DIR}/scripts/browser")
-
-# Detect the NetSurf buildsystem build-ID suffix
-execute_process(
-  COMMAND bash -c "ls -d '${NS_DIR}/libwapcaplet/build-'*'-release-lib-static' 2>/dev/null | head -1 | xargs basename 2>/dev/null || echo build-release-lib-static"
-  OUTPUT_VARIABLE NS_BUILD_SUFFIX
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-
-# --- zlib ---
-set(ZLIB_A "${ZLIB_DIR}/libz.a")
-add_custom_command(
-  OUTPUT ${ZLIB_A}
-  COMMAND bash ${BROWSER_SCRIPTS}/build_zlib.sh
-  DEPENDS ${LIBC_A}
-  COMMENT "Building zlib for anyOS"
-)
-
-# --- BearSSL ---
 set(BEARSSL_A "${BEARSSL_DIR}/build/libbearssl.a")
 add_custom_command(
   OUTPUT ${BEARSSL_A}
-  COMMAND bash ${BROWSER_SCRIPTS}/build_bearssl.sh
+  COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/build_bearssl.sh
   DEPENDS ${LIBC_A}
   COMMENT "Building BearSSL for anyOS"
-)
-
-# --- libcurl ---
-set(CURL_A "${CURL_DIR}/lib/libcurl.a")
-add_custom_command(
-  OUTPUT ${CURL_A}
-  COMMAND bash ${BROWSER_SCRIPTS}/build_curl.sh
-  DEPENDS ${LIBC_A} ${BEARSSL_A}
-  COMMENT "Building libcurl for anyOS"
-)
-
-# --- NetSurf component libraries ---
-set(NS_COMPONENT_LIBS
-  "${NS_DIR}/libparserutils/${NS_BUILD_SUFFIX}/libparserutils.a"
-  "${NS_DIR}/libwapcaplet/${NS_BUILD_SUFFIX}/libwapcaplet.a"
-  "${NS_DIR}/libhubbub/${NS_BUILD_SUFFIX}/libhubbub.a"
-  "${NS_DIR}/libdom/${NS_BUILD_SUFFIX}/libdom.a"
-  "${NS_DIR}/libcss/${NS_BUILD_SUFFIX}/libcss.a"
-  "${NS_DIR}/libnsutils/${NS_BUILD_SUFFIX}/libnsutils.a"
-  "${NS_DIR}/libnslog/libnslog.a"
-  "${NS_DIR}/libnspsl/${NS_BUILD_SUFFIX}/libnspsl.a"
-  "${NS_DIR}/libnsgif/${NS_BUILD_SUFFIX}/libnsgif.a"
-  "${NS_DIR}/libnsbmp/${NS_BUILD_SUFFIX}/libnsbmp.a"
-  "${NS_DIR}/libnsfb/${NS_BUILD_SUFFIX}/libnsfb.a"
-)
-# Build all component libraries (script skips already-built ones)
-add_custom_command(
-  OUTPUT ${NS_COMPONENT_LIBS}
-  COMMAND bash ${BROWSER_SCRIPTS}/build_nslibs.sh
-  DEPENDS ${LIBC_A}
-  COMMENT "Building NetSurf component libraries"
-)
-
-# --- NetSurf core (framebuffer frontend) ---
-set(NETSURF_A "${NS_DIR}/netsurf/libnetsurf.a")
-add_custom_command(
-  OUTPUT ${NETSURF_A}
-  COMMAND bash ${BROWSER_SCRIPTS}/build_netsurf.sh
-  DEPENDS ${LIBC_A} ${NS_COMPONENT_LIBS} ${CURL_A}
-  COMMENT "Building NetSurf browser core"
-)
-
-# --- Link browser ELF ---
-set(BROWSER_ELF "${NS_DIR}/netsurf/browser.elf")
-add_custom_command(
-  OUTPUT ${BROWSER_ELF}
-  COMMAND bash ${BROWSER_SCRIPTS}/link_browser.sh
-  DEPENDS
-    ${NETSURF_A}
-    ${NS_COMPONENT_LIBS}
-    ${CURL_A}
-    ${BEARSSL_A}
-    ${ZLIB_A}
-    ${LIBC_A}
-    ${LIBC_CRT0}
-    ${LIBC_DIR}/link.ld
-  COMMENT "Linking NetSurf browser"
-)
-
-# --- Package Browser.app ---
-set(BROWSER_APP "${SYSROOT_DIR}/Applications/Browser.app")
-set(BROWSER_RES "${CMAKE_SOURCE_DIR}/third_party/netsurf/netsurf/frontends/framebuffer/res")
-add_custom_command(
-  OUTPUT "${BROWSER_APP}/Browser"
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${BROWSER_APP}/res"
-  COMMAND ${CMAKE_COMMAND} -E copy ${BROWSER_ELF} "${BROWSER_APP}/Browser"
-  COMMAND ${CMAKE_COMMAND} -E copy
-    "${CMAKE_SOURCE_DIR}/apps/browser/Info.conf" "${BROWSER_APP}/Info.conf"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory "${BROWSER_RES}" "${BROWSER_APP}/res"
-  DEPENDS ${BROWSER_ELF} "${CMAKE_SOURCE_DIR}/apps/browser/Info.conf"
-  COMMENT "Packaging Browser.app"
 )
 
 # ============================================================
@@ -897,7 +805,6 @@ set(C_TOOLCHAIN_DEPS
   ${SYSROOT_DIR}/Libraries/libc/lib/tcc/include/.stamp
   ${DOOM_APP}/DOOM
   ${QUAKE_APP}/Quake
-  "${BROWSER_APP}/Browser"
   ${SYSROOT_DIR}/System/bin/curl
 )
 
@@ -932,6 +839,7 @@ add_custom_command(
     ${KERNEL_ELF}
     ${RUST_USER_BINS}
     ${SYSTEM_BINS}
+    ${APP_BINS}
     ${DLL_BINS}
     ${DRIVER_BINS}
     ${SYSROOT_DIR}/.stamp

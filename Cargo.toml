@@ -33,6 +33,7 @@ exclude = [
   "apps/fontviewer",
   "apps/clock",
   "apps/screenshot",
+  "apps/surf",
   # CLI utilities
   "bin/ping",
   "bin/dhcp",
