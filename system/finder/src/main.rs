@@ -554,20 +554,22 @@ fn render_nav_icon(win: u32, bx: i32, by: i32, bw: i32, bh: i32, icon: &Option<C
 fn render_toolbar(win: u32, state: &AppState, win_w: u32) {
     toolbar(win, 0, 0, win_w, TOOLBAR_H);
 
-    // Back button
+    // Back button (rounded, like Surf)
     let back_disabled = state.history_pos == 0;
+    let back_style = if !back_disabled { ButtonStyle::Plain } else { ButtonStyle::Default };
     let back_state = if !back_disabled { ButtonState::Normal } else { ButtonState::Disabled };
-    toolbar_button(win, 8, NAV_BTN_Y, NAV_BTN_W as u32, NAV_BTN_H as u32, "", back_state);
+    button(win, 8, NAV_BTN_Y, NAV_BTN_W as u32, NAV_BTN_H as u32, "", back_style, back_state);
     render_nav_icon(win, 8, NAV_BTN_Y, NAV_BTN_W, NAV_BTN_H, &state.nav_icons.back, back_disabled);
 
-    // Forward button
+    // Forward button (rounded, like Surf)
     let fwd_disabled = state.history_pos + 1 >= state.history.len();
+    let fwd_style = if !fwd_disabled { ButtonStyle::Plain } else { ButtonStyle::Default };
     let fwd_state = if !fwd_disabled { ButtonState::Normal } else { ButtonState::Disabled };
-    toolbar_button(win, 42, NAV_BTN_Y, NAV_BTN_W as u32, NAV_BTN_H as u32, "", fwd_state);
+    button(win, 42, NAV_BTN_Y, NAV_BTN_W as u32, NAV_BTN_H as u32, "", fwd_style, fwd_state);
     render_nav_icon(win, 42, NAV_BTN_Y, NAV_BTN_W, NAV_BTN_H, &state.nav_icons.forward, fwd_disabled);
 
-    // Refresh button
-    toolbar_button(win, 76, NAV_BTN_Y, NAV_BTN_W as u32, NAV_BTN_H as u32, "", ButtonState::Normal);
+    // Refresh button (rounded, like Surf)
+    button(win, 76, NAV_BTN_Y, NAV_BTN_W as u32, NAV_BTN_H as u32, "", ButtonStyle::Plain, ButtonState::Normal);
     render_nav_icon(win, 76, NAV_BTN_Y, NAV_BTN_W, NAV_BTN_H, &state.nav_icons.refresh, false);
 
     // Path textfield

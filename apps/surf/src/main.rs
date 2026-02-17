@@ -103,6 +103,10 @@ struct TabState {
     page_layout: Option<layout::LayoutBox>,
     images: paint::ImageCache,
     hover_link: Option<String>,
+    // Full-page off-screen pixel buffer (rendered once, blitted on scroll)
+    page_pixels: Vec<u32>,
+    page_pixels_w: u32,
+    page_pixels_h: u32,
 }
 
 impl TabState {
@@ -123,6 +127,9 @@ impl TabState {
             page_layout: None,
             images: paint::ImageCache { entries: Vec::new() },
             hover_link: None,
+            page_pixels: Vec::new(),
+            page_pixels_w: 0,
+            page_pixels_h: 0,
         }
     }
 
@@ -320,6 +327,16 @@ fn navigate(browser: &mut Browser, url_str: &str, win_w: u32) {
     collect_and_fetch_images(&dom, &url, &mut images, &mut browser.cookies);
     anyos_std::println!("[surf] images: {} loaded", images.entries.len());
 
+    // Pre-render full page into off-screen buffer
+    let page_buf_w = win_w;
+    let page_buf_h = (total_h as u32).max(1);
+    anyos_std::println!("[surf] allocating page buffer: {}x{} ({} KB)",
+        page_buf_w, page_buf_h,
+        (page_buf_w as usize * page_buf_h as usize * 4) / 1024);
+    let mut page_pixels = vec![0u32; (page_buf_w as usize) * (page_buf_h as usize)];
+    paint::paint(&layout_root, &mut page_pixels, page_buf_w, page_buf_h, 0, &images);
+    anyos_std::println!("[surf] page rendered to off-screen buffer");
+
     let url_string = format_url(&url);
     let tab = browser.tab_mut();
 
@@ -340,6 +357,9 @@ fn navigate(browser: &mut Browser, url_str: &str, win_w: u32) {
     tab.page_layout = Some(layout_root);
     tab.total_height = total_h;
     tab.images = images;
+    tab.page_pixels = page_pixels;
+    tab.page_pixels_w = page_buf_w;
+    tab.page_pixels_h = page_buf_h;
     tab.scroll_y = 0;
     tab.hover_link = None;
     tab.url_text = url_string;
@@ -515,18 +535,25 @@ fn render(client: &CompositorClient, win: &WindowHandle, browser: &Browser, icon
     render_tab_bar(surface, wid, w, browser);
     fill_rect_raw(surface, w, 0, CHROME_H - 1, w as i32, 1, SEPARATOR);
 
-    // -- Content area: paint HTML --
+    // -- Content area: blit from pre-rendered full-page buffer --
     let viewport_h = tab.viewport_height(h);
-    if let Some(ref root) = tab.page_layout {
-        let content_w = (w as i32 - SCROLLBAR_W as i32).max(0) as u32;
+    if tab.page_pixels_w > 0 && tab.page_pixels_h > 0 && viewport_h > 0 {
+        let offset = (CHROME_H as u32 * w) as usize;
+        let src_y = tab.scroll_y.max(0) as u32;
+        let blit_w = tab.page_pixels_w.min(w) as usize;
 
-        if content_w > 0 && viewport_h > 0 {
-            let offset = (CHROME_H as u32 * w) as usize;
-            let len = (viewport_h as u32 * w) as usize;
-            let content_pixels = unsafe {
-                core::slice::from_raw_parts_mut(surface.add(offset), len)
-            };
-            paint::paint(root, content_pixels, w, viewport_h as u32, tab.scroll_y, &tab.images);
+        for dy in 0..viewport_h as u32 {
+            let src_row = src_y + dy;
+            if src_row >= tab.page_pixels_h { break; }
+            let src_off = (src_row as usize) * (tab.page_pixels_w as usize);
+            let dst_off = offset + (dy as usize) * (w as usize);
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    tab.page_pixels.as_ptr().add(src_off),
+                    surface.add(dst_off),
+                    blit_w,
+                );
+            }
         }
 
         // -- Scrollbar --
@@ -985,6 +1012,15 @@ fn relayout(browser: &mut Browser, win_w: u32) {
         let viewport_w = (win_w as i32 - SCROLLBAR_W as i32).max(100);
         let root = layout::layout(dom, &tab.page_styles, viewport_w);
         tab.total_height = paint::total_height(&root);
+
+        // Re-render full page into off-screen buffer
+        let page_buf_w = win_w;
+        let page_buf_h = (tab.total_height as u32).max(1);
+        tab.page_pixels = vec![0u32; (page_buf_w as usize) * (page_buf_h as usize)];
+        paint::paint(&root, &mut tab.page_pixels, page_buf_w, page_buf_h, 0, &tab.images);
+        tab.page_pixels_w = page_buf_w;
+        tab.page_pixels_h = page_buf_h;
+
         tab.page_layout = Some(root);
     }
 }
