@@ -449,6 +449,7 @@ add_rust_sbin_program(adduser    ${CMAKE_SOURCE_DIR}/bin/adduser)
 add_rust_sbin_program(deluser    ${CMAKE_SOURCE_DIR}/bin/deluser)
 add_rust_sbin_program(addgroup   ${CMAKE_SOURCE_DIR}/bin/addgroup)
 add_rust_sbin_program(delgroup   ${CMAKE_SOURCE_DIR}/bin/delgroup)
+add_rust_sbin_program(passwd     ${CMAKE_SOURCE_DIR}/bin/passwd)
 
 # true/false: package names are true_cmd/false_cmd (Rust keywords) but binaries named true/false
 set(TRUE_ELF "${CMAKE_BINARY_DIR}/programs/true_cmd/x86_64-anyos-user/release/true_cmd.elf")
@@ -776,6 +777,8 @@ add_custom_command(
   OUTPUT ${GIT_ELF}
   COMMAND ${CMAKE_SOURCE_DIR}/scripts/build_git.sh
   DEPENDS ${LG2_A} ${BEARSSL_A} ${LIBC_A} ${LIBC_CRT0}
+    ${GIT_DIR}/src/main.c
+    ${GIT_DIR}/src/bearssl_stream.c
   COMMENT "Building mini git CLI for anyOS"
 )
 

@@ -202,6 +202,7 @@ pub const SYS_DELGROUP: u32 = 230;
 pub const SYS_LISTGROUPS: u32 = 231;
 pub const SYS_GETUSERNAME: u32 = 232;
 pub const SYS_SET_IDENTITY: u32 = 233;
+pub const SYS_CHPASSWD: u32 = 234;
 
 /// Register frame pushed by `syscall_entry.asm` / `syscall_fast.asm`.
 ///
@@ -446,6 +447,7 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_LISTGROUPS => handlers::sys_listgroups(arg1, arg2),
         SYS_GETUSERNAME => handlers::sys_getusername(arg1, arg2, arg3),
         SYS_SET_IDENTITY => handlers::sys_set_identity(arg1),
+        SYS_CHPASSWD => handlers::sys_chpasswd(arg1),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

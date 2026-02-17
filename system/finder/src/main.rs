@@ -209,7 +209,7 @@ struct AppState {
 // ============================================================================
 
 fn read_directory(path: &str) -> Vec<FileEntry> {
-    let mut buf = [0u8; 64 * 64]; // max 64 entries
+    let mut buf = [0u8; 256 * 64]; // max 256 entries
     let count = fs::readdir(path, &mut buf);
     if count == u32::MAX {
         return Vec::new();

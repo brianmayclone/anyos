@@ -1103,28 +1103,30 @@ class ExFatFormatter:
     # Public API
     # =====================================================================
 
-    def create_directory(self, parent_cluster, dirname):
+    def create_directory(self, parent_cluster, dirname, uid=0, gid=0, mode=0xFFF):
         """Create a subdirectory. Returns the new directory's cluster."""
         dir_cluster = self._alloc_cluster()
         # Initialize empty directory
         self._write_cluster(dir_cluster, bytearray(self.cluster_size))
 
         entry_set = self._build_entry_set(
-            dirname, self.ATTR_DIRECTORY, dir_cluster, 0, contiguous=False)
+            dirname, self.ATTR_DIRECTORY, dir_cluster, 0, contiguous=False,
+            uid=uid, gid=gid, mode=mode)
 
         if parent_cluster is None:
             parent_cluster = self.root_cluster
         self._add_entry_to_dir(parent_cluster, entry_set)
         return dir_cluster
 
-    def add_file(self, parent_cluster, filename, data):
+    def add_file(self, parent_cluster, filename, data, uid=0, gid=0, mode=0xFFF):
         """Add a file to a directory."""
         if parent_cluster is None:
             parent_cluster = self.root_cluster
 
         if len(data) == 0:
             entry_set = self._build_entry_set(
-                filename, self.ATTR_ARCHIVE, 0, 0, contiguous=True)
+                filename, self.ATTR_ARCHIVE, 0, 0, contiguous=True,
+                uid=uid, gid=gid, mode=mode)
             self._add_entry_to_dir(parent_cluster, entry_set)
             return
 
@@ -1133,38 +1135,56 @@ class ExFatFormatter:
         self._write_to_clusters_contiguous(first_cluster, data)
 
         entry_set = self._build_entry_set(
-            filename, self.ATTR_ARCHIVE, first_cluster, len(data), contiguous=True)
+            filename, self.ATTR_ARCHIVE, first_cluster, len(data), contiguous=True,
+            uid=uid, gid=gid, mode=mode)
         self._add_entry_to_dir(parent_cluster, entry_set)
 
         print(f"    File: {filename} ({len(data)} bytes, {num_clusters} cluster(s), "
               f"start={first_cluster}, contiguous)")
+
+    # Directories whose contents are restricted to root (uid=0, mode=0xF00).
+    # Paths are relative to sysroot, using forward slashes.
+    ROOT_ONLY_DIRS = {"System/sbin"}
 
     def populate_from_sysroot(self, sysroot_path):
         """Recursively copy files from sysroot directory to the filesystem."""
         if not os.path.isdir(sysroot_path):
             print(f"  Warning: sysroot path '{sysroot_path}' does not exist, skipping")
             return
-        self._populate_dir(sysroot_path, self.root_cluster)
+        self._populate_dir(sysroot_path, self.root_cluster, "")
 
-    def _populate_dir(self, host_path, parent_cluster):
+    def _populate_dir(self, host_path, parent_cluster, virt_path):
         """Recursively populate a directory."""
         entries = sorted(os.listdir(host_path))
 
         for entry_name in entries:
             full_path = os.path.join(host_path, entry_name)
+            child_virt = f"{virt_path}/{entry_name}" if virt_path else entry_name
 
             if entry_name.startswith('.'):
                 continue
 
+            # Check if this path (or any ancestor) is root-only
+            is_restricted = any(
+                child_virt == d or child_virt.startswith(d + "/")
+                for d in self.ROOT_ONLY_DIRS
+            )
+            uid = 0
+            gid = 0
+            mode = 0xF00 if is_restricted else 0xFFF
+
             if os.path.isdir(full_path):
-                dir_cluster = self.create_directory(parent_cluster, entry_name)
-                print(f"    Dir:  {entry_name}/ (cluster={dir_cluster})")
-                self._populate_dir(full_path, dir_cluster)
+                dir_cluster = self.create_directory(
+                    parent_cluster, entry_name, uid=uid, gid=gid, mode=mode)
+                suffix = " [root-only]" if is_restricted else ""
+                print(f"    Dir:  {entry_name}/ (cluster={dir_cluster}){suffix}")
+                self._populate_dir(full_path, dir_cluster, child_virt)
 
             elif os.path.isfile(full_path):
                 with open(full_path, 'rb') as f:
                     data = f.read()
-                self.add_file(parent_cluster, entry_name, data)
+                self.add_file(parent_cluster, entry_name, data,
+                              uid=uid, gid=gid, mode=mode)
 
     def flush_fat_and_bitmap(self):
         """Write the in-memory FAT cache and allocation bitmap to disk."""

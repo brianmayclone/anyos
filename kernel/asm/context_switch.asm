@@ -29,6 +29,18 @@
 [BITS 64]
 global context_switch
 
+; Polled serial output: write immediate byte to COM1 (clobbers AL, DX)
+%macro SERIAL_PUTC_POLL 1
+    mov dx, 0x3FD
+%%wait:
+    in al, dx
+    test al, 0x20
+    jz %%wait
+    mov dx, 0x3F8
+    mov al, %1
+    out dx, al
+%endmacro
+
 context_switch:
     ; --- Save current context to [RDI] ---
 
@@ -73,6 +85,19 @@ context_switch:
     ; partially-saved CpuContext. x86 TSO guarantees all prior stores
     ; (register saves above) are visible before this store.
     mov qword [rdi + 152], 1
+
+    ; --- Validate new context before loading ---
+    ; Detect heap-corrupted CpuContext: RSP and RIP must be in kernel
+    ; higher-half (bit 63 set). Without this, loading corrupt RSP causes
+    ; an unrecoverable Double Fault (RSP=0x2 pattern), and corrupt RIP
+    ; causes execution at wild addresses (RIP=0x1 pattern).
+    ; At this point we have NOT modified RSP or loaded any new state.
+    mov rax, [rsi + 120]        ; proposed RSP
+    bt rax, 63                  ; must be >= 0x8000000000000000
+    jnc .bad_ctx
+    mov rax, [rsi + 128]        ; proposed RIP
+    bt rax, 63
+    jnc .bad_ctx
 
     ; --- Load new context from [RSI] ---
 
@@ -122,3 +147,107 @@ context_switch:
 
     ; Jump to new RIP
     ret
+
+; =========================================================================
+; .bad_ctx: Corrupt CpuContext detected — diagnostic halt
+; =========================================================================
+; Reached when [rsi+120] (RSP) or [rsi+128] (RIP) fails kernel-half check.
+; We have NOT loaded any new CR3/RSP/RIP — still on old thread's stack/CR3.
+; However, the old context has save_complete=1, so another CPU could pick it
+; up and start using the same stack. Use register-only I/O (no push/pop).
+;
+; Prints: "\r\n!CTX rsp=<hex16> rip=<hex16> ctx=<hex16>\r\n"
+; Then halts this CPU. Other CPUs continue running normally.
+; =========================================================================
+.bad_ctx:
+    cli
+    ; Save diagnostic values in callee-saved regs
+    mov r12, [rsi + 120]       ; corrupt RSP value
+    mov r13, [rsi + 128]       ; corrupt RIP value
+    mov r14, rsi               ; CpuContext pointer address
+
+    ; Print "\r\n!CTX rsp="
+    SERIAL_PUTC_POLL 0x0D
+    SERIAL_PUTC_POLL 0x0A
+    SERIAL_PUTC_POLL '!'
+    SERIAL_PUTC_POLL 'C'
+    SERIAL_PUTC_POLL 'T'
+    SERIAL_PUTC_POLL 'X'
+    SERIAL_PUTC_POLL ' '
+    SERIAL_PUTC_POLL 'r'
+    SERIAL_PUTC_POLL 's'
+    SERIAL_PUTC_POLL 'p'
+    SERIAL_PUTC_POLL '='
+
+    ; Print R12 (corrupt RSP) as 16-nibble hex
+    mov r8, r12
+    lea r15, [rel .after_rsp_hex]
+    jmp .print_hex_r8
+.after_rsp_hex:
+
+    ; Print " rip="
+    SERIAL_PUTC_POLL ' '
+    SERIAL_PUTC_POLL 'r'
+    SERIAL_PUTC_POLL 'i'
+    SERIAL_PUTC_POLL 'p'
+    SERIAL_PUTC_POLL '='
+
+    ; Print R13 (corrupt RIP) as 16-nibble hex
+    mov r8, r13
+    lea r15, [rel .after_rip_hex]
+    jmp .print_hex_r8
+.after_rip_hex:
+
+    ; Print " ctx="
+    SERIAL_PUTC_POLL ' '
+    SERIAL_PUTC_POLL 'c'
+    SERIAL_PUTC_POLL 't'
+    SERIAL_PUTC_POLL 'x'
+    SERIAL_PUTC_POLL '='
+
+    ; Print R14 (CpuContext address) as 16-nibble hex
+    mov r8, r14
+    lea r15, [rel .after_ctx_hex]
+    jmp .print_hex_r8
+.after_ctx_hex:
+
+    ; Print "\r\n"
+    SERIAL_PUTC_POLL 0x0D
+    SERIAL_PUTC_POLL 0x0A
+
+    ; Halt this CPU forever. Other CPUs continue via their own scheduler.
+.ctx_halt:
+    hlt
+    jmp .ctx_halt
+
+; =========================================================================
+; .print_hex_r8: Print R8 as 16-nibble hex via polled COM1
+; =========================================================================
+; Clobbers: RAX, RBX, RCX, RDX.  Returns via JMP R15 (link register).
+; No stack usage — safe even when stack may be raced by another CPU.
+; =========================================================================
+.print_hex_r8:
+    mov rcx, 60                ; bit shift (MSB first)
+.ph_loop:
+    mov rax, r8
+    shr rax, cl
+    and al, 0x0F
+    cmp al, 10
+    jb .ph_digit
+    add al, 'a' - 10
+    jmp .ph_emit
+.ph_digit:
+    add al, '0'
+.ph_emit:
+    mov bl, al                 ; save hex char
+    mov dx, 0x3FD
+.ph_wait:
+    in al, dx
+    test al, 0x20
+    jz .ph_wait
+    mov dx, 0x3F8
+    mov al, bl
+    out dx, al
+    sub rcx, 4
+    jge .ph_loop
+    jmp r15

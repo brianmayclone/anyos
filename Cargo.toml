@@ -100,6 +100,7 @@ exclude = [
   "bin/listgroups",
   "bin/addgroup",
   "bin/delgroup",
+  "bin/passwd",
   "bin/chmod",
   "bin/chown",
   "bin/su",

@@ -448,6 +448,13 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         path
     };
 
+    // Permission check: caller must have read permission on the binary
+    if let Ok((uid, gid, mode)) = crate::fs::vfs::get_permissions(actual_path) {
+        if !crate::fs::permissions::check_permission(uid, gid, mode, crate::fs::permissions::PERM_READ) {
+            return Err("Permission denied");
+        }
+    }
+
     // Read the binary from the filesystem
     let data = crate::fs::vfs::read_file_to_vec(actual_path)
         .map_err(|_| "Failed to read program file")?;

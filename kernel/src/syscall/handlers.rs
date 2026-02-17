@@ -2600,25 +2600,26 @@ pub fn sys_adduser(data_ptr: u32) -> u32 {
     if crate::task::scheduler::current_thread_uid() != 0 {
         return u32::MAX;
     }
-    if !is_valid_user_ptr(data_ptr as u64, 16) {
+    if !is_valid_user_ptr(data_ptr as u64, 32) {
         return u32::MAX;
     }
 
-    let ptrs = unsafe { core::slice::from_raw_parts(data_ptr as *const u32, 4) };
-    let username = match read_user_str_safe(ptrs[0]) {
+    // Stdlib packs 4 pointers as [u64; 4] (x86_64 pointer size)
+    let ptrs = unsafe { core::slice::from_raw_parts(data_ptr as *const u64, 4) };
+    let username = match read_user_str_safe(ptrs[0] as u32) {
         Some(s) => s,
         None => return u32::MAX,
     };
-    let password = match read_user_str_safe(ptrs[1]) {
+    let password = match read_user_str_safe(ptrs[1] as u32) {
         Some(s) => s,
         None => return u32::MAX,
     };
-    let fullname = match read_user_str_safe(ptrs[2]) {
+    let fullname = match read_user_str_safe(ptrs[2] as u32) {
         Some(s) if !s.is_empty() => s,
         _ => username,
     };
     let homedir_default = alloc::format!("/Users/{}", username);
-    let homedir = match read_user_str_safe(ptrs[3]) {
+    let homedir = match read_user_str_safe(ptrs[3] as u32) {
         Some(s) if !s.is_empty() => s,
         _ => &homedir_default,
     };
@@ -2659,6 +2660,64 @@ pub fn sys_deluser(uid: u32) -> u32 {
     if crate::task::users::remove_user(uid as u16) { 0 } else { u32::MAX }
 }
 
+/// SYS_CHPASSWD: Change a user's password.
+/// data_ptr → [username_ptr: u64, old_password_ptr: u64, new_password_ptr: u64]
+/// Root can change any password (old_password ignored).
+/// Non-root must provide correct old_password and can only change own password.
+/// Returns 0 on success, u32::MAX on failure.
+pub fn sys_chpasswd(data_ptr: u32) -> u32 {
+    if !is_valid_user_ptr(data_ptr as u64, 24) {
+        return u32::MAX;
+    }
+
+    let ptrs = unsafe { core::slice::from_raw_parts(data_ptr as *const u64, 3) };
+    let username = match read_user_str_safe(ptrs[0] as u32) {
+        Some(s) => s,
+        None => return u32::MAX,
+    };
+    let old_password = match read_user_str_safe(ptrs[1] as u32) {
+        Some(s) => s,
+        None => return u32::MAX,
+    };
+    let new_password = match read_user_str_safe(ptrs[2] as u32) {
+        Some(s) => s,
+        None => return u32::MAX,
+    };
+
+    let caller_uid = crate::task::scheduler::current_thread_uid();
+    let is_root = caller_uid == 0;
+
+    if !is_root {
+        // Non-root: verify the target is the caller's own account
+        let target = match crate::task::users::lookup_username(username) {
+            Some(u) => u,
+            None => return u32::MAX,
+        };
+        if target.uid != caller_uid {
+            return u32::MAX; // can only change own password
+        }
+        // Verify old password
+        if crate::task::users::authenticate(username, old_password).is_none() {
+            return u32::MAX;
+        }
+    }
+
+    // Hash new password
+    let hash = if new_password.is_empty() {
+        [0u8; 32]
+    } else {
+        crate::crypto::md5::md5_hex(new_password.as_bytes())
+    };
+    let hash_str = core::str::from_utf8(&hash).unwrap_or("");
+
+    if crate::task::users::change_password(username, hash_str) {
+        crate::serial_println!("  CHPASSWD: Password changed for '{}'", username);
+        0
+    } else {
+        u32::MAX
+    }
+}
+
 /// SYS_LISTUSERS: List all users into a buffer.
 /// arg1 = buf_ptr, arg2 = buf_len. Returns bytes written.
 pub fn sys_listusers(buf_ptr: u32, buf_len: u32) -> u32 {
@@ -2675,11 +2734,12 @@ pub fn sys_addgroup(data_ptr: u32) -> u32 {
     if crate::task::scheduler::current_thread_uid() != 0 {
         return u32::MAX;
     }
-    if !is_valid_user_ptr(data_ptr as u64, 8) {
+    if !is_valid_user_ptr(data_ptr as u64, 16) {
         return u32::MAX;
     }
-    let ptrs = unsafe { core::slice::from_raw_parts(data_ptr as *const u32, 2) };
-    let name = match read_user_str_safe(ptrs[0]) {
+    // Stdlib packs [name_ptr: u64, gid: u64]
+    let ptrs = unsafe { core::slice::from_raw_parts(data_ptr as *const u64, 2) };
+    let name = match read_user_str_safe(ptrs[0] as u32) {
         Some(s) => s,
         None => return u32::MAX,
     };

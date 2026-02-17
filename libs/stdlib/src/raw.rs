@@ -180,6 +180,7 @@ pub(crate) const SYS_DELGROUP: u32 = 230;
 pub(crate) const SYS_LISTGROUPS: u32 = 231;
 pub(crate) const SYS_GETUSERNAME: u32 = 232;
 pub(crate) const SYS_SET_IDENTITY: u32 = 233;
+pub(crate) const SYS_CHPASSWD: u32 = 234;
 
 // Event bus
 pub(crate) const SYS_EVT_SYS_SUBSCRIBE: u32 = 60;

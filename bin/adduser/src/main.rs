@@ -36,9 +36,15 @@ fn main() {
     };
 
     let ret = anyos_std::users::adduser(username, password, fullname, homedir);
-    if ret == 0 {
-        anyos_std::println!("User '{}' created.", username);
+    if ret != u32::MAX {
+        anyos_std::println!("User '{}' created (uid={}).", username, ret);
     } else {
-        anyos_std::println!("adduser: failed to create user '{}'", username);
+        // Check possible failure reasons
+        let caps = anyos_std::process::get_capabilities();
+        if caps & 1 == 0 {
+            anyos_std::println!("adduser: permission denied (root required)");
+        } else {
+            anyos_std::println!("adduser: failed to create user '{}' (user may already exist)", username);
+        }
     }
 }

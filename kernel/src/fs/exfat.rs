@@ -486,7 +486,9 @@ impl ExFatFs {
             self.read_cluster(cur, &mut cbuf)?;
             result.extend_from_slice(&cbuf);
             match self.next_cluster(cur) {
-                Some(next) => cur = next,
+                Some(next) => {
+                    cur = next;
+                }
                 None => break,
             }
         }
@@ -536,7 +538,9 @@ impl ExFatFs {
         while i + 32 <= buf.len() {
             let etype = buf[i];
             if etype == 0x00 {
-                break;
+                // Skip empty slots — directory may span multiple clusters
+                i += 32;
+                continue;
             }
             if etype != ENTRY_FILE {
                 i += 32;
@@ -595,7 +599,9 @@ impl ExFatFs {
         while i + 32 <= buf.len() {
             let etype = buf[i];
             if etype == 0x00 {
-                break;
+                // Skip empty slots — directory may span multiple clusters
+                i += 32;
+                continue;
             }
             if etype != ENTRY_FILE {
                 i += 32;

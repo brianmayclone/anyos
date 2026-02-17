@@ -331,6 +331,21 @@ pub fn remove_user(uid: u16) -> bool {
     false
 }
 
+/// Change a user's password. Returns true on success.
+/// `new_hash` should be the MD5 hex string of the new password (or empty for no password).
+pub fn change_password(username: &str, new_hash: &str) -> bool {
+    let mut users = USERS.lock();
+    for user in users.iter_mut() {
+        if user.used && user.username_str() == username {
+            copy_str_to_buf(new_hash, &mut user.password_hash);
+            drop(users);
+            persist_passwd();
+            return true;
+        }
+    }
+    false
+}
+
 /// Add a new group. Returns true on success.
 pub fn add_group(name: &str, gid: u16) -> bool {
     let mut groups = GROUPS.lock();

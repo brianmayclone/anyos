@@ -159,6 +159,9 @@ impl TerminalBuffer {
 struct ForegroundProcess {
     tid: u32,
     pipe_id: u32,
+    /// Stdin pipe for forwarding keyboard input to the child process.
+    /// 0 means no stdin pipe.
+    stdin_pipe: u32,
     /// Intermediate pipe IDs from a pipeline (cmd1 | cmd2 | cmd3).
     /// Closed when the pipeline exits.
     extra_pipes: Vec<u32>,
@@ -523,16 +526,19 @@ impl Shell {
                     // Foreground: capture output via pipe, poll in main loop
                     let pipe_name = format!("term:stdout:{}", bg_cmd);
                     let pipe_id = ipc::pipe_create(&pipe_name);
+                    let stdin_name = format!("term:stdin:{}", bg_cmd);
+                    let stdin_pipe = ipc::pipe_create(&stdin_name);
 
-                    let tid = process::spawn_piped(&path, full_args, pipe_id);
+                    let tid = process::spawn_piped_full(&path, full_args, pipe_id, stdin_pipe);
                     if tid == u32::MAX {
                         ipc::pipe_close(pipe_id);
+                        ipc::pipe_close(stdin_pipe);
                         buf.current_color = COLOR_FG;
                         buf.write_str("Unknown command: ");
                         buf.write_str(bg_cmd);
                         buf.write_str("\nType 'help' for available commands.\n");
                     } else {
-                        return (true, Some(ForegroundProcess { tid, pipe_id, extra_pipes: Vec::new() }));
+                        return (true, Some(ForegroundProcess { tid, pipe_id, stdin_pipe, extra_pipes: Vec::new() }));
                     }
                 }
             }
@@ -628,6 +634,7 @@ impl Shell {
         Some(ForegroundProcess {
             tid: last_tid,
             pipe_id: display_pipe,
+            stdin_pipe: 0, // pipelines don't get stdin forwarding
             extra_pipes,
         })
     }
@@ -1253,10 +1260,14 @@ fn main() {
                 }
                 // Copy out pipe IDs before dropping fg_proc
                 let pipe_id = fp.pipe_id;
+                let stdin_pipe_id = fp.stdin_pipe;
                 let extra_pipes: Vec<u32> = fp.extra_pipes.clone();
                 let exit_code = status;
                 fg_proc = None;
                 ipc::pipe_close(pipe_id);
+                if stdin_pipe_id != 0 {
+                    ipc::pipe_close(stdin_pipe_id);
+                }
                 // Close intermediate pipes from pipeline
                 for &p in &extra_pipes {
                     ipc::pipe_close(p);
@@ -1339,6 +1350,9 @@ fn main() {
                             if n == 0 || n == u32::MAX { break; }
                         }
                         ipc::pipe_close(fp.pipe_id);
+                        if fp.stdin_pipe != 0 {
+                            ipc::pipe_close(fp.stdin_pipe);
+                        }
                         for &p in &fp.extra_pipes {
                             ipc::pipe_close(p);
                         }
@@ -1445,6 +1459,23 @@ fn main() {
                                         buf.cursor_col += 1;
                                     }
                                     dirty = true;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Foreground process running — forward keyboard input to its stdin pipe.
+                    // Do NOT echo here; the child program controls echoing via stdout pipe.
+                    if let Some(ref fp) = fg_proc {
+                        if fp.stdin_pipe != 0 {
+                            if key_code == KEY_ENTER {
+                                ipc::pipe_write(fp.stdin_pipe, b"\n");
+                            } else if key_code == KEY_BACKSPACE {
+                                ipc::pipe_write(fp.stdin_pipe, &[8]); // BS
+                            } else if char_val > 0 && char_val < 128 && (mods & MOD_CTRL) == 0 {
+                                let c = char_val as u8;
+                                if c >= b' ' {
+                                    ipc::pipe_write(fp.stdin_pipe, &[c]);
                                 }
                             }
                         }

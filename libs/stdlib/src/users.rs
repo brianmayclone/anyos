@@ -35,6 +35,34 @@ pub fn adduser(username: &str, password: &str, fullname: &str, homedir: &str) ->
     syscall1(SYS_ADDUSER, ptrs.as_ptr() as u64)
 }
 
+/// Change a user's password.
+/// Root can change any user's password (old_password ignored).
+/// Non-root must provide correct old_password and can only change own password.
+/// Returns 0 on success, u32::MAX on error.
+pub fn chpasswd(username: &str, old_password: &str, new_password: &str) -> u32 {
+    let mut ubuf = [0u8; 33];
+    let ulen = username.len().min(32);
+    ubuf[..ulen].copy_from_slice(&username.as_bytes()[..ulen]);
+    ubuf[ulen] = 0;
+
+    let mut obuf = [0u8; 65];
+    let olen = old_password.len().min(64);
+    obuf[..olen].copy_from_slice(&old_password.as_bytes()[..olen]);
+    obuf[olen] = 0;
+
+    let mut nbuf = [0u8; 65];
+    let nlen = new_password.len().min(64);
+    nbuf[..nlen].copy_from_slice(&new_password.as_bytes()[..nlen]);
+    nbuf[nlen] = 0;
+
+    let ptrs: [u64; 3] = [
+        ubuf.as_ptr() as u64,
+        obuf.as_ptr() as u64,
+        nbuf.as_ptr() as u64,
+    ];
+    syscall1(SYS_CHPASSWD, ptrs.as_ptr() as u64)
+}
+
 /// Delete a user by UID. Root only.
 pub fn deluser(uid: u16) -> u32 {
     syscall1(SYS_DELUSER, uid as u64)
