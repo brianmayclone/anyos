@@ -589,7 +589,6 @@ add_custom_command(
     ${SYSROOT_DIR}
   COMMAND ${CMAKE_COMMAND} -E touch ${SYSROOT_DIR}/.stamp
   DEPENDS ${CMAKE_SOURCE_DIR}/sysroot
-          ${CMAKE_SOURCE_DIR}/sysroot/src/hello.c
           ${CMAKE_SOURCE_DIR}/sysroot/System/fonts/sfpro.ttf
           ${CMAKE_SOURCE_DIR}/sysroot/System/fonts/sfpro-bold.ttf
           ${CMAKE_SOURCE_DIR}/sysroot/System/fonts/sfpro-thin.ttf
