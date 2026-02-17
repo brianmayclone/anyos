@@ -12,23 +12,169 @@
 #include <stddef.h>
 #include <errno.h>
 #include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
 
-/* ── getopt ── */
+/* ── getopt (full GNU-compatible implementation) ── */
 #include <getopt.h>
+#include <stdio.h>
 
 char *optarg = NULL;
 int optind = 1, opterr = 1, optopt = '?';
+static int _optpos = 0; /* position within clustered short options */
 
 int getopt(int argc, char * const argv[], const char *optstring) {
-    (void)argc; (void)argv; (void)optstring;
-    return -1;
+    if (optind >= argc || !argv[optind]) return -1;
+
+    const char *arg = argv[optind];
+
+    /* Reset position if we've moved to a new argument */
+    if (_optpos == 0) {
+        if (arg[0] != '-' || arg[1] == '\0') return -1; /* not an option */
+        if (arg[1] == '-' && arg[2] == '\0') { optind++; return -1; } /* "--" */
+    }
+
+    /* Current option character */
+    int pos = _optpos ? _optpos : 1;
+    int c = arg[pos];
+    if (c == '\0') { /* end of this arg, advance */
+        optind++;
+        _optpos = 0;
+        return getopt(argc, argv, optstring);
+    }
+
+    /* Leading ':' suppresses error messages */
+    int quiet = (optstring[0] == ':');
+    const char *os = optstring;
+    if (*os == ':' || *os == '+' || *os == '-') os++;
+
+    /* Find in optstring */
+    const char *match = NULL;
+    for (const char *p = os; *p; p++) {
+        if (*p == c) { match = p; break; }
+    }
+
+    if (!match) {
+        optopt = c;
+        if (opterr && !quiet) fprintf(stderr, "%s: invalid option -- '%c'\n", argv[0], c);
+        if (arg[pos + 1]) _optpos = pos + 1; else { optind++; _optpos = 0; }
+        return '?';
+    }
+
+    if (match[1] == ':') {
+        /* Option requires argument */
+        if (arg[pos + 1]) {
+            /* Argument is rest of this argv entry */
+            optarg = (char *)&arg[pos + 1];
+            optind++;
+            _optpos = 0;
+        } else if (match[2] == ':') {
+            /* Optional argument (::) — no arg if not adjacent */
+            optarg = NULL;
+            optind++;
+            _optpos = 0;
+        } else if (optind + 1 < argc) {
+            /* Argument is next argv entry */
+            optarg = argv[optind + 1];
+            optind += 2;
+            _optpos = 0;
+        } else {
+            optopt = c;
+            optind++;
+            _optpos = 0;
+            if (opterr && !quiet)
+                fprintf(stderr, "%s: option requires an argument -- '%c'\n", argv[0], c);
+            return quiet ? ':' : '?';
+        }
+    } else {
+        /* No argument */
+        optarg = NULL;
+        if (arg[pos + 1]) _optpos = pos + 1;
+        else { optind++; _optpos = 0; }
+    }
+
+    return c;
 }
 
 int getopt_long(int argc, char * const argv[], const char *optstring,
                 const struct option *longopts, int *longindex) {
-    (void)argc; (void)argv; (void)optstring;
-    (void)longopts; (void)longindex;
-    return -1;
+    if (optind >= argc || !argv[optind]) return -1;
+
+    const char *arg = argv[optind];
+
+    /* Check for long option (--foo) */
+    if (arg[0] == '-' && arg[1] == '-' && arg[2] != '\0' && _optpos == 0) {
+        const char *name = arg + 2;
+        /* Find '=' separator */
+        const char *eq = NULL;
+        int namelen = 0;
+        for (const char *p = name; *p; p++) {
+            if (*p == '=') { eq = p; break; }
+            namelen++;
+        }
+        if (!eq) namelen = (int)strlen(name);
+
+        /* Search longopts */
+        int match_idx = -1;
+        int match_count = 0;
+        for (int i = 0; longopts && longopts[i].name; i++) {
+            if (strncmp(longopts[i].name, name, namelen) == 0) {
+                if ((int)strlen(longopts[i].name) == namelen) {
+                    /* Exact match */
+                    match_idx = i;
+                    match_count = 1;
+                    break;
+                }
+                match_idx = i;
+                match_count++;
+            }
+        }
+
+        if (match_count == 0) {
+            if (opterr) fprintf(stderr, "%s: unrecognized option '--%.*s'\n", argv[0], namelen, name);
+            optind++;
+            return '?';
+        }
+        if (match_count > 1) {
+            if (opterr) fprintf(stderr, "%s: option '--%.*s' is ambiguous\n", argv[0], namelen, name);
+            optind++;
+            return '?';
+        }
+
+        if (longindex) *longindex = match_idx;
+        const struct option *o = &longopts[match_idx];
+
+        if (o->has_arg == no_argument) {
+            if (eq) {
+                if (opterr)
+                    fprintf(stderr, "%s: option '--%s' doesn't allow an argument\n", argv[0], o->name);
+                optind++;
+                return '?';
+            }
+            optarg = NULL;
+        } else if (o->has_arg == required_argument) {
+            if (eq) {
+                optarg = (char *)(eq + 1);
+            } else if (optind + 1 < argc) {
+                optarg = argv[optind + 1];
+                optind++;
+            } else {
+                if (opterr)
+                    fprintf(stderr, "%s: option '--%s' requires an argument\n", argv[0], o->name);
+                optind++;
+                return (optstring[0] == ':') ? ':' : '?';
+            }
+        } else { /* optional_argument */
+            optarg = eq ? (char *)(eq + 1) : NULL;
+        }
+
+        optind++;
+        if (o->flag) { *o->flag = o->val; return 0; }
+        return o->val;
+    }
+
+    /* Fall back to short option parsing */
+    return getopt(argc, argv, optstring);
 }
 
 /* ── dirent — real implementations using SYS_READDIR ── */
@@ -63,7 +209,7 @@ DIR *opendir(const char *name) {
     memcpy(d->path, name, len + 1);
     /* Fetch all entries from kernel */
     int n = _syscall(SYS_READDIR, (int)d->path, (int)d->buf, KDIR_BUF_SIZE, 0);
-    if (n == -1 || n == (int)0xFFFFFFFF) { free(d); errno = ENOENT; return NULL; }
+    if (n < 0) { free(d); errno = -n; return NULL; }
     d->count = n;
     d->pos = 0;
     return (DIR *)d;
@@ -243,19 +389,62 @@ int atexit(void (*function)(void)) {
     return 0;
 }
 
+#define SYS_SETENV 182
+
 int setenv(const char *name, const char *value, int overwrite) {
-    (void)name; (void)value; (void)overwrite;
+    if (!name || !*name || strchr(name, '=')) { errno = EINVAL; return -1; }
+    if (!overwrite) {
+        /* Check if already set — SYS_GETENV returns u32::MAX if not found */
+        char tmp[4];
+        int r = _syscall(183, (int)name, (int)tmp, sizeof(tmp), 0);
+        if (r != -1 && r != (int)0xFFFFFFFF) return 0; /* already set, don't overwrite */
+    }
+    /* Build "NAME=VALUE" string for SYS_SETENV */
+    size_t nlen = strlen(name);
+    size_t vlen = value ? strlen(value) : 0;
+    char buf[512];
+    if (nlen + 1 + vlen >= sizeof(buf)) { errno = ENOMEM; return -1; }
+    memcpy(buf, name, nlen);
+    buf[nlen] = '=';
+    if (value) memcpy(buf + nlen + 1, value, vlen);
+    buf[nlen + 1 + vlen] = '\0';
+    _syscall(SYS_SETENV, (int)buf, 0, 0, 0);
     return 0;
 }
 
 int unsetenv(const char *name) {
-    (void)name;
+    if (!name || !*name || strchr(name, '=')) { errno = EINVAL; return -1; }
+    /* SYS_SETENV with empty value effectively clears it */
+    char buf[256];
+    size_t nlen = strlen(name);
+    if (nlen + 2 >= sizeof(buf)) return -1;
+    memcpy(buf, name, nlen);
+    buf[nlen] = '=';
+    buf[nlen + 1] = '\0';
+    _syscall(SYS_SETENV, (int)buf, 0, 0, 0);
     return 0;
 }
 
 int mkstemp(char *tmpl) {
-    (void)tmpl;
-    errno = ENOSYS;
+    if (!tmpl) { errno = EINVAL; return -1; }
+    size_t len = strlen(tmpl);
+    if (len < 6) { errno = EINVAL; return -1; }
+    char *suffix = tmpl + len - 6;
+    /* Verify template ends with XXXXXX */
+    for (int i = 0; i < 6; i++) {
+        if (suffix[i] != 'X') { errno = EINVAL; return -1; }
+    }
+    static unsigned int _mkstemp_counter = 0;
+    for (int tries = 0; tries < 100; tries++) {
+        unsigned int v = (unsigned int)rand() ^ (++_mkstemp_counter * 7919);
+        for (int i = 0; i < 6; i++) {
+            int r = (v >> (i * 5)) % 36;
+            suffix[i] = (char)(r < 10 ? '0' + r : 'a' + r - 10);
+        }
+        int fd = open(tmpl, 0x201 /* O_CREAT | O_RDWR */, 0);
+        if (fd >= 0) return fd;
+    }
+    errno = EEXIST;
     return -1;
 }
 
@@ -338,3 +527,162 @@ int rmdir(const char *pathname) {
 }
 
 /* mkdir lives in stat.c with real SYS_MKDIR implementation */
+
+/* ── posix_spawn ── */
+#include <spawn.h>
+
+#define SYS_SPAWN_STUBS 27
+
+int posix_spawn(pid_t *pid, const char *path,
+    const posix_spawn_file_actions_t *file_actions,
+    const posix_spawnattr_t *attrp,
+    char *const argv[], char *const envp[]) {
+    (void)file_actions; (void)attrp; (void)envp;
+    if (!path) { errno = EINVAL; return EINVAL; }
+    /* Build space-separated args string from argv[] */
+    char args[1024];
+    int pos = 0;
+    if (argv) {
+        for (int i = 0; argv[i]; i++) {
+            if (i > 0 && pos < 1022) args[pos++] = ' ';
+            for (const char *s = argv[i]; *s && pos < 1022; s++)
+                args[pos++] = *s;
+        }
+    }
+    args[pos] = '\0';
+    int tid = _syscall(SYS_SPAWN_STUBS, (int)path, 0, (int)args, 0);
+    if (tid < 0) { errno = ENOENT; return ENOENT; }
+    if (pid) *pid = (pid_t)tid;
+    return 0;
+}
+
+int posix_spawnp(pid_t *pid, const char *file,
+    const posix_spawn_file_actions_t *file_actions,
+    const posix_spawnattr_t *attrp,
+    char *const argv[], char *const envp[]) {
+    /* Try /bin/<file> if not an absolute path */
+    if (file && file[0] != '/') {
+        char path[256];
+        int len = 0;
+        const char *prefix = "/bin/";
+        for (const char *p = prefix; *p; p++) path[len++] = *p;
+        for (const char *p = file; *p && len < 254; p++) path[len++] = *p;
+        path[len] = '\0';
+        return posix_spawn(pid, path, file_actions, attrp, argv, envp);
+    }
+    return posix_spawn(pid, file, file_actions, attrp, argv, envp);
+}
+
+int posix_spawn_file_actions_init(posix_spawn_file_actions_t *fa) { if (fa) *fa = 0; return 0; }
+int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t *fa) { (void)fa; return 0; }
+int posix_spawnattr_init(posix_spawnattr_t *attr) { if (attr) *attr = 0; return 0; }
+int posix_spawnattr_destroy(posix_spawnattr_t *attr) { (void)attr; return 0; }
+
+/* ── POSIX stubs for libgit2 and other ports ── */
+
+int fsync(int fd) { (void)fd; return 0; }
+int fdatasync(int fd) { (void)fd; return 0; }
+int chmod(const char *path, unsigned int mode) { (void)path; (void)mode; return 0; }
+int fchmod(int fd, unsigned int mode) { (void)fd; (void)mode; return 0; }
+
+extern int _syscall(int num, int a1, int a2, int a3, int a4);
+
+int lstat(const char *path, struct stat *buf) {
+    /* anyOS has no symlinks, lstat == stat */
+    return stat(path, buf);
+}
+
+unsigned int getuid(void) { return 0; }
+unsigned int getgid(void) { return 0; }
+unsigned int umask(unsigned int mask) { (void)mask; return 022; }
+
+int link(const char *oldpath, const char *newpath) {
+    (void)oldpath; (void)newpath;
+    errno = ENOSYS;
+    return -1;
+}
+
+int symlink(const char *target, const char *linkpath) {
+    (void)target; (void)linkpath;
+    errno = ENOSYS;
+    return -1;
+}
+
+int readlink(const char *path, char *buf, size_t bufsiz) {
+    (void)path; (void)buf; (void)bufsiz;
+    errno = EINVAL;
+    return -1;
+}
+
+int chown(const char *path, unsigned int owner, unsigned int group) {
+    (void)path; (void)owner; (void)group;
+    return 0;
+}
+
+long sysconf(int name) {
+    if (name == 30) return 4096; /* _SC_PAGESIZE */
+    return -1;
+}
+
+int getpid(void) { return 1; }
+int getppid(void) { return 0; }
+int getpgid(int pid) { (void)pid; return 0; }
+unsigned int geteuid(void) { return 0; }
+unsigned int getegid(void) { return 0; }
+int getsid(int pid) { (void)pid; return 0; }
+
+/* utimes stub */
+#include <sys/time.h>
+int utimes(const char *filename, const struct timeval times[2]) {
+    (void)filename; (void)times;
+    return 0; /* no-op */
+}
+
+/* strnlen */
+size_t strnlen(const char *s, size_t maxlen) {
+    size_t len = 0;
+    while (len < maxlen && s[len]) len++;
+    return len;
+}
+
+/* pwd.h stubs */
+#include <pwd.h>
+
+struct passwd *getpwuid(uid_t uid) {
+    static struct passwd pw = { "user", "/home/user", "/bin/sh", 0, 0 };
+    (void)uid;
+    return &pw;
+}
+
+struct passwd *getpwnam(const char *name) {
+    (void)name;
+    static struct passwd pw = { "user", "/home/user", "/bin/sh", 0, 0 };
+    return &pw;
+}
+
+int getpwuid_r(uid_t uid, struct passwd *pwd, char *buf, size_t buflen, struct passwd **result) {
+    (void)uid; (void)buf; (void)buflen;
+    if (pwd) {
+        pwd->pw_name = "user";
+        pwd->pw_dir = "/home/user";
+        pwd->pw_shell = "/bin/sh";
+        pwd->pw_uid = 0;
+        pwd->pw_gid = 0;
+    }
+    if (result) *result = pwd;
+    return 0;
+}
+
+/* gmtime_r / localtime_r */
+#include <sys/time.h>
+struct tm *gmtime_r(const time_t *timer, struct tm *result) {
+    struct tm *t = gmtime(timer);
+    if (t && result) *result = *t;
+    return result;
+}
+
+struct tm *localtime_r(const time_t *timer, struct tm *result) {
+    struct tm *t = localtime(timer);
+    if (t && result) *result = *t;
+    return result;
+}

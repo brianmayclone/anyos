@@ -13,7 +13,10 @@
 
 #include <stddef.h>
 
+#ifndef _TIME_T_DEFINED
+#define _TIME_T_DEFINED
 typedef unsigned int time_t;
+#endif
 typedef unsigned int clock_t;
 
 #define CLOCKS_PER_SEC 100
@@ -43,5 +46,7 @@ struct tm *localtime(const time_t *timer);
 struct tm *gmtime(const time_t *timer);
 size_t strftime(char *s, size_t max, const char *format, const struct tm *tm);
 int nanosleep(const struct timespec *req, struct timespec *rem);
+struct tm *gmtime_r(const time_t *timer, struct tm *result);
+struct tm *localtime_r(const time_t *timer, struct tm *result);
 
 #endif

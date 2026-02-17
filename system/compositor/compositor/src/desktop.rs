@@ -675,10 +675,13 @@ impl Desktop {
 
         // Try user's preferred wallpaper
         if path_found {
-            let path = core::str::from_utf8(&self.wallpaper_path[..self.wallpaper_path_len])
-                .unwrap_or("");
-            if self.load_wallpaper(path) {
-                return;
+            let mut tmp = [0u8; 128];
+            let len = self.wallpaper_path_len;
+            tmp[..len].copy_from_slice(&self.wallpaper_path[..len]);
+            if let Ok(path) = core::str::from_utf8(&tmp[..len]) {
+                if self.load_wallpaper(path) {
+                    return;
+                }
             }
         }
 
@@ -725,12 +728,11 @@ impl Desktop {
             return false;
         }
         let file_size = stat_buf[1] as usize;
-        if file_size == 0 || file_size > 2 * 1024 * 1024 {
+        if file_size == 0 || file_size > 8 * 1024 * 1024 {
             fs::close(fd);
             return false;
         }
 
-        // Read file
         let mut data = vec![0u8; file_size];
         let bytes_read = fs::read(fd, &mut data) as usize;
         fs::close(fd);
@@ -751,18 +753,21 @@ impl Desktop {
         if libimage_client::decode(&data[..bytes_read], &mut pixels, &mut scratch).is_err() {
             return false;
         }
-        // Free file data and scratch early
-        drop(data);
         drop(scratch);
+        drop(data);
 
         let sw = self.screen_width;
         let sh = self.screen_height;
 
-        // Scale to screen if needed
-        let final_pixels = if info.width == sw && info.height == sh {
-            pixels
+        // Scale to screen if needed, then copy to background layer
+        if info.width == sw && info.height == sh {
+            if let Some(bg_pixels) = self.compositor.layer_pixels(self.bg_layer_id) {
+                let copy_len = bg_pixels.len().min(pixel_count);
+                bg_pixels[..copy_len].copy_from_slice(&pixels[..copy_len]);
+            }
         } else {
-            let mut dst = vec![0u32; (sw * sh) as usize];
+            let dst_count = (sw * sh) as usize;
+            let mut dst = vec![0u32; dst_count];
             if !libimage_client::scale_image(
                 &pixels, info.width, info.height,
                 &mut dst, sw, sh,
@@ -771,13 +776,11 @@ impl Desktop {
                 return false;
             }
             drop(pixels);
-            dst
-        };
 
-        // Copy to background layer
-        if let Some(bg_pixels) = self.compositor.layer_pixels(self.bg_layer_id) {
-            let copy_len = bg_pixels.len().min(final_pixels.len());
-            bg_pixels[..copy_len].copy_from_slice(&final_pixels[..copy_len]);
+            if let Some(bg_pixels) = self.compositor.layer_pixels(self.bg_layer_id) {
+                let copy_len = bg_pixels.len().min(dst_count);
+                bg_pixels[..copy_len].copy_from_slice(&dst[..copy_len]);
+            }
         }
 
         anyos_std::println!("compositor: wallpaper loaded ({}x{} {})",

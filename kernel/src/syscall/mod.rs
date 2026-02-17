@@ -93,8 +93,10 @@ pub const SYS_READLINK: u32 = 97;
 pub const SYS_LSTAT: u32 = 98;
 
 // Filesystem (POSIX-like)
+pub const SYS_RENAME: u32 = 99;
 pub const SYS_LSEEK: u32 = 105;
 pub const SYS_FSTAT: u32 = 106;
+pub const SYS_FTRUNCATE: u32 = 107;
 pub const SYS_ISATTY: u32 = 108;
 
 // TCP networking
@@ -283,6 +285,8 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_YIELD => handlers::sys_yield(),
         SYS_SLEEP => handlers::sys_sleep(arg1),
         SYS_SBRK => handlers::sys_sbrk(arg1 as i32),
+        SYS_MMAP => handlers::sys_mmap(arg1),
+        SYS_MUNMAP => handlers::sys_munmap(arg1, arg2),
         SYS_WAITPID => handlers::sys_waitpid(arg1),
         SYS_KILL => handlers::sys_kill(arg1),
         SYS_SPAWN => handlers::sys_spawn(arg1, arg2, arg3, arg4),
@@ -312,8 +316,10 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_MOUNT => handlers::sys_mount(arg1, arg2, arg3),
         SYS_UMOUNT => handlers::sys_umount(arg1),
         SYS_LIST_MOUNTS => handlers::sys_list_mounts(arg1, arg2),
+        SYS_RENAME => handlers::sys_rename(arg1, arg2),
         SYS_LSEEK => handlers::sys_lseek(arg1, arg2, arg3),
         SYS_FSTAT => handlers::sys_fstat(arg1, arg2),
+        SYS_FTRUNCATE => handlers::sys_ftruncate(arg1, arg2),
         SYS_ISATTY => handlers::sys_isatty(arg1),
 
         // System info

@@ -984,6 +984,30 @@ pub fn delete(path: &str) -> Result<(), FsError> {
     fat.delete_file(parent_cluster, filename)
 }
 
+/// Rename (move) a file or directory from old_path to new_path.
+pub fn rename(old_path: &str, new_path: &str) -> Result<(), FsError> {
+    if is_dev_path(old_path) || is_dev_path(new_path) {
+        return Err(FsError::PermissionDenied);
+    }
+    let mut vfs = VFS.lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
+
+    let (old_parent, old_name) = split_parent_name(old_path)?;
+    let (new_parent, new_name) = split_parent_name(new_path)?;
+
+    if let Some(ref mut exfat) = state.exfat_fs {
+        let old_pr = resolve_exfat_path(exfat, old_parent, true)?;
+        let (old_pc, _) = crate::fs::exfat::decode_inode(old_pr.inode);
+        let new_pr = resolve_exfat_path(exfat, new_parent, true)?;
+        let (new_pc, _) = crate::fs::exfat::decode_inode(new_pr.inode);
+        return exfat.rename_entry(old_pc, old_name, new_pc, new_name);
+    }
+    let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
+    let (old_pc, _, _) = fat.lookup(old_parent)?;
+    let (new_pc, _, _) = fat.lookup(new_parent)?;
+    fat.rename_entry(old_pc, old_name, new_pc, new_name)
+}
+
 /// Create a directory at the given path.
 pub fn mkdir(path: &str) -> Result<(), FsError> {
     if is_dev_path(path) { return Err(FsError::PermissionDenied); }
@@ -1140,6 +1164,17 @@ pub fn fstat(fd: FileDescriptor) -> Result<(FileType, u32, u32), FsError> {
         .ok_or(FsError::BadFd)?;
 
     Ok((file.file_type, file.size, file.position))
+}
+
+/// Get the path associated with an open file descriptor.
+pub fn get_fd_path(fd: FileDescriptor) -> Result<alloc::string::String, FsError> {
+    let vfs = VFS.lock();
+    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+    let file = state.open_files.iter()
+        .flatten()
+        .find(|f| f.fd == fd)
+        .ok_or(FsError::BadFd)?;
+    Ok(file.path.clone())
 }
 
 /// Truncate a file to zero length.

@@ -36,6 +36,7 @@ size_t strcspn(const char *s, const char *reject);
 char *strtok(char *str, const char *delim);
 char *strpbrk(const char *s, const char *accept);
 void *memrchr(const void *s, int c, size_t n);
+size_t strnlen(const char *s, size_t maxlen);
 
 /* BSD extensions (also in <strings.h>) */
 #include <strings.h>

@@ -1295,6 +1295,43 @@ impl ExFatFs {
         Ok(cluster)
     }
 
+    /// Rename (move) a file: remove old entry (keeping clusters), create new entry.
+    pub fn rename_entry(&mut self, old_parent: u32, old_name: &str, new_parent: u32, new_name: &str) -> Result<(), FsError> {
+        // Find old entry to get metadata
+        let raw = self.read_dir_raw(old_parent)?;
+        let found = self.find_entry_in_buf(&raw, old_name)
+            .ok_or(FsError::NotFound)?;
+        let cluster = found.first_cluster;
+        let size = found.data_length;
+        let is_dir = (found.attributes & 0x10) != 0;
+        // Delete old directory entries WITHOUT freeing cluster chain
+        let cs = self.cluster_size() as usize;
+        let mut cur = old_parent;
+        loop {
+            let mut cbuf = vec![0u8; cs];
+            self.read_cluster(cur, &mut cbuf)?;
+            if let Some(f) = self.find_entry_in_buf(&cbuf, old_name) {
+                let total = 1 + f.secondary_count as usize;
+                let off = f.file_entry_offset;
+                for e in 0..total {
+                    let eoff = off + e * 32;
+                    if eoff < cbuf.len() {
+                        cbuf[eoff] &= 0x7F; // clear InUse bit
+                    }
+                }
+                self.write_cluster(cur, &cbuf)?;
+                break;
+            }
+            match self.next_cluster(cur) {
+                Some(next) => cur = next,
+                None => return Err(FsError::NotFound),
+            }
+        }
+        // Create new entry pointing to the same cluster chain
+        self.create_entry(new_parent, new_name, is_dir, cluster, size)?;
+        Ok(())
+    }
+
     /// Delete a file or directory and free its cluster chain.
     pub fn delete_file(&mut self, parent_cluster: u32, name: &str) -> Result<(), FsError> {
         let cs = self.cluster_size() as usize;

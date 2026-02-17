@@ -177,9 +177,17 @@ unsigned long strtoul(const char *nptr, char **endptr, int base) {
 int abs(int j) { return j < 0 ? -j : j; }
 long labs(long j) { return j < 0 ? -j : j; }
 
+extern int _syscall(int num, int a1, int a2, int a3, int a4);
+#define SYS_GETENV 183
+
 char *getenv(const char *name) {
-    (void)name;
-    return NULL; /* no environment */
+    if (!name || !*name) return NULL;
+    static char _env_buf[1024];
+    int r = _syscall(SYS_GETENV, (int)name, (int)_env_buf, sizeof(_env_buf) - 1, 0);
+    if (r < 0) return NULL;
+    if (r < (int)sizeof(_env_buf)) _env_buf[r] = '\0';
+    else _env_buf[sizeof(_env_buf) - 1] = '\0';
+    return _env_buf;
 }
 
 static unsigned int _rand_seed = 1;
@@ -235,7 +243,34 @@ double atof(const char *nptr) {
     return strtod(nptr, NULL);
 }
 
+#define SYS_SPAWN_STDLIB   27
+#define SYS_WAITPID_STDLIB 12
+
 int system(const char *command) {
-    (void)command;
-    return -1; /* not supported */
+    if (!command) return 1; /* POSIX: non-zero means shell available */
+    /* Find the executable — first word of command */
+    char path[256];
+    const char *p = command;
+    while (*p == ' ') p++;
+    int i = 0;
+    while (*p && *p != ' ' && i < 254) path[i++] = *p++;
+    path[i] = '\0';
+    /* Skip spaces to find args */
+    while (*p == ' ') p++;
+    /* Build full args: "progname args..." */
+    char args[512];
+    int alen = 0;
+    /* Copy program basename as argv[0] */
+    const char *base = path;
+    for (const char *s = path; *s; s++) if (*s == '/') base = s + 1;
+    for (const char *s = base; *s && alen < 510; s++) args[alen++] = *s;
+    if (*p) {
+        args[alen++] = ' ';
+        while (*p && alen < 510) args[alen++] = *p++;
+    }
+    args[alen] = '\0';
+    int tid = _syscall(SYS_SPAWN_STDLIB, (int)path, 0, (int)args, 0);
+    if (tid < 0) return -1;
+    int status = _syscall(SYS_WAITPID_STDLIB, tid, 0, 0, 0);
+    return status;
 }

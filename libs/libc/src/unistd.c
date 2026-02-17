@@ -1,10 +1,5 @@
 /*
  * Copyright (c) 2024-2026 Christian Moeller
- * Email: c.moeller.ffo@gmail.com, brianmayclone@googlemail.com
- *
- * This project is open source and community-driven.
- * Contributions are welcome! See README.md for details.
- *
  * SPDX-License-Identifier: MIT
  */
 
@@ -38,7 +33,7 @@ ssize_t read(int fd, void *buf, size_t count) {
         return recv(fd, buf, count, 0);
     }
     int ret = _syscall(SYS_READ, fd, (int)buf, (int)count, 0);
-    if (ret == -1) { errno = EIO; return -1; }
+    if (ret < 0) { errno = -ret; return -1; }
     return ret;
 }
 
@@ -47,7 +42,7 @@ ssize_t write(int fd, const void *buf, size_t count) {
         return send(fd, buf, count, 0);
     }
     int ret = _syscall(SYS_WRITE, fd, (int)buf, (int)count, 0);
-    if (ret == -1) { errno = EIO; return -1; }
+    if (ret < 0) { errno = -ret; return -1; }
     return ret;
 }
 
@@ -61,7 +56,7 @@ int open(const char *path, int flags, ...) {
     if (flags & O_TRUNC)  anyos_flags |= 8;  /* O_TRUNC */
 
     int ret = _syscall(SYS_OPEN, (int)path, anyos_flags, 0, 0);
-    if (ret == -1) { errno = ENOENT; return -1; }
+    if (ret < 0) { errno = -ret; return -1; }
     return ret;
 }
 
@@ -74,13 +69,13 @@ int close(int fd) {
         return __socket_close(fd);
     }
     int ret = _syscall(SYS_CLOSE, fd, 0, 0, 0);
-    if (ret == -1) { errno = EBADF; return -1; }
+    if (ret < 0) { errno = -ret; return -1; }
     return ret;
 }
 
 int lseek(int fd, int offset, int whence) {
     int ret = _syscall(SYS_LSEEK, fd, offset, whence, 0);
-    if (ret == -1) { errno = EINVAL; return -1; }
+    if (ret < 0) { errno = -ret; return -1; }
     return ret;
 }
 
@@ -90,7 +85,7 @@ int isatty(int fd) {
 
 char *getcwd(char *buf, size_t size) {
     int ret = _syscall(SYS_GETCWD, (int)buf, (int)size, 0, 0);
-    if (ret == -1) { errno = ERANGE; return NULL; }
+    if (ret < 0) { errno = -ret; return NULL; }
     return buf;
 }
 
@@ -107,7 +102,7 @@ void *sbrk(int increment) {
 
 int unlink(const char *path) {
     int ret = _syscall(SYS_UNLINK, (int)path, 0, 0, 0);
-    if (ret == -1) { errno = ENOENT; return -1; }
+    if (ret < 0) { errno = -ret; return -1; }
     return 0;
 }
 
@@ -115,7 +110,7 @@ int access(const char *path, int mode) {
     (void)mode;
     /* Check if file exists by trying to open it */
     int fd = open(path, O_RDONLY);
-    if (fd < 0) { errno = ENOENT; return -1; }
+    if (fd < 0) return -1; /* errno already set by open() */
     close(fd);
     return 0;
 }
@@ -126,10 +121,12 @@ int execvp(const char *file, char *const argv[]) {
     return -1;
 }
 
+#define SYS_FTRUNCATE_UNISTD 107
+
 int ftruncate(int fd, unsigned int length) {
-    (void)fd; (void)length;
-    errno = ENOSYS;
-    return -1;
+    int r = _syscall(SYS_FTRUNCATE_UNISTD, fd, (int)length, 0, 0);
+    if (r < 0) { errno = -r; return -1; }
+    return 0;
 }
 
 ssize_t pread(int fd, void *buf, size_t count, long offset) {

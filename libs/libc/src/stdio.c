@@ -499,10 +499,14 @@ int remove(const char *pathname) {
     return unlink(pathname);
 }
 
+extern int _syscall(int num, int a1, int a2, int a3, int a4);
+#define SYS_RENAME_STDIO 99
+
 int rename(const char *oldpath, const char *newpath) {
-    (void)oldpath; (void)newpath;
-    errno = ENOSYS;
-    return -1;
+    if (!oldpath || !newpath) { errno = EINVAL; return -1; }
+    int r = _syscall(SYS_RENAME_STDIO, (int)oldpath, (int)newpath, 0, 0);
+    if (r < 0) { errno = -r; return -1; }
+    return 0;
 }
 
 FILE *tmpfile(void) {
@@ -538,4 +542,13 @@ FILE *freopen(const char *path, const char *mode, FILE *stream) {
 void __assert_fail(const char *expr, const char *file, int line) {
     fprintf(stderr, "Assertion failed: %s at %s:%d\n", expr, file, line);
     abort();
+}
+
+void perror(const char *s) {
+    if (s && *s) {
+        fputs(s, stderr);
+        fputs(": ", stderr);
+    }
+    fputs(strerror(errno), stderr);
+    fputc('\n', stderr);
 }

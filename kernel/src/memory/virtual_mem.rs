@@ -327,6 +327,9 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) {
             // Flush TLB for the recursive address so we can access the new table
             asm!("invlpg [{}]", in(reg) pdpt_base, options(nostack, preserves_flags));
             core::ptr::write_bytes(pdpt_base, 0, FRAME_SIZE);
+        } else if flags & PAGE_USER != 0 && pml4e & PAGE_USER == 0 {
+            // Promote existing entry to user-accessible
+            pml4_ptr.add(pml4i).write_volatile(pml4e | PAGE_USER);
         }
 
         // Ensure PD exists
@@ -338,6 +341,9 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) {
             let pd_base = recursive_pd_base(virt) as *mut u8;
             asm!("invlpg [{}]", in(reg) pd_base, options(nostack, preserves_flags));
             core::ptr::write_bytes(pd_base, 0, FRAME_SIZE);
+        } else if flags & PAGE_USER != 0 && pdpte & PAGE_USER == 0 {
+            // Promote existing entry to user-accessible
+            pdpt_ptr.add(pdpti).write_volatile(pdpte | PAGE_USER);
         }
 
         // Ensure PT exists
@@ -349,6 +355,9 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) {
             let pt_base = recursive_pt_base(virt) as *mut u8;
             asm!("invlpg [{}]", in(reg) pt_base, options(nostack, preserves_flags));
             core::ptr::write_bytes(pt_base, 0, FRAME_SIZE);
+        } else if flags & PAGE_USER != 0 && pde & PAGE_USER == 0 {
+            // Promote existing entry to user-accessible
+            pd_ptr.add(pdi).write_volatile(pde | PAGE_USER);
         }
 
         // Set the PTE
@@ -427,6 +436,32 @@ pub fn is_page_mapped(virt: VirtAddr) -> bool {
         let pt_ptr = recursive_pt_base(virt) as *const u64;
         let pte = pt_ptr.add(pti).read_volatile();
         pte & PAGE_PRESENT != 0
+    }
+}
+
+/// Read the raw PTE value for a virtual address.
+/// Returns 0 if any level of the page table hierarchy is not present.
+pub fn read_pte(virt: VirtAddr) -> u64 {
+    let pml4i = virt.pml4_index();
+    let pdpti = virt.pdpt_index();
+    let pdi = virt.pd_index();
+    let pti = virt.pt_index();
+
+    unsafe {
+        let pml4_ptr = RECURSIVE_PML4_BASE as *const u64;
+        if pml4_ptr.add(pml4i).read_volatile() & PAGE_PRESENT == 0 {
+            return 0;
+        }
+        let pdpt_ptr = recursive_pdpt_base(virt) as *const u64;
+        if pdpt_ptr.add(pdpti).read_volatile() & PAGE_PRESENT == 0 {
+            return 0;
+        }
+        let pd_ptr = recursive_pd_base(virt) as *const u64;
+        if pd_ptr.add(pdi).read_volatile() & PAGE_PRESENT == 0 {
+            return 0;
+        }
+        let pt_ptr = recursive_pt_base(virt) as *const u64;
+        pt_ptr.add(pti).read_volatile()
     }
 }
 

@@ -28,8 +28,17 @@ const PAGE_NAMES: [&str; 5] = ["General", "Display", "Wallpaper", "Network", "Ab
 const THUMB_W: u32 = 120;
 const THUMB_H: u32 = 80;
 const THUMB_PAD: i32 = 12;
-const THUMB_COLS: usize = 3;
 const MAX_WALLPAPERS: usize = 16;
+
+/// Compute how many thumbnail columns fit in the content area.
+fn thumb_cols(win_w: u32) -> usize {
+    let cw = win_w.saturating_sub(SIDEBAR_W + 40);
+    let inner = cw.saturating_sub(PAD as u32 * 2);
+    let col_w = THUMB_W + THUMB_PAD as u32;
+    // (inner + THUMB_PAD) / col_w — the extra THUMB_PAD accounts for no trailing pad
+    let cols = (inner + THUMB_PAD as u32) / col_w;
+    (cols as usize).max(1)
+}
 
 struct WallpaperEntry {
     name: [u8; 56],
@@ -164,7 +173,7 @@ fn main() {
                     }
 
                     if sidebar.selected == PAGE_WALLPAPER {
-                        if let Some(idx) = hit_test_wallpaper(&wallpapers, &ui_event, SIDEBAR_W as i32 + 20, scroll_y) {
+                        if let Some(idx) = hit_test_wallpaper(&wallpapers, &ui_event, SIDEBAR_W as i32 + 20, scroll_y, win_w) {
                             if idx != wallpaper_selected {
                                 wallpaper_selected = idx;
                                 let wp = &wallpapers[idx];
@@ -178,7 +187,7 @@ fn main() {
                 }
                 7 => { // EVENT_MOUSE_SCROLL
                     let dz = event[1] as i32;
-                    let content_h = page_content_height(sidebar.selected, resolutions.len(), wallpapers.len());
+                    let content_h = page_content_height(sidebar.selected, resolutions.len(), wallpapers.len(), win_w);
                     let max_scroll = content_h.saturating_sub(win_h);
                     if dz < 0 {
                         scroll_y = scroll_y.saturating_sub((-dz) as u32 * 30);
@@ -246,7 +255,7 @@ fn scan_wallpapers(wallpapers: &mut alloc::vec::Vec<WallpaperEntry>, selected: &
         let raw_entry = &dir_buf[i * 64..(i + 1) * 64];
         let entry_type = raw_entry[0];
         let name_len = raw_entry[1] as usize;
-        if entry_type != 1 || name_len == 0 { continue; }
+        if entry_type != 0 || name_len == 0 { continue; }
 
         let nlen = name_len.min(56);
         let name_bytes = &raw_entry[8..8 + nlen];
@@ -288,9 +297,31 @@ fn scan_wallpapers(wallpapers: &mut alloc::vec::Vec<WallpaperEntry>, selected: &
         }
     }
 
-    for wp in wallpapers.iter_mut() {
-        load_thumbnail(wp);
+    // Use mmap for large temporary buffers — munmap actually frees the memory,
+    // unlike the bump allocator (sbrk) where dealloc is a no-op.
+    const MAX_PIX: usize = 1920 * 1200;
+    const FILE_BUF_SIZE: usize = 4 * 1024 * 1024;
+    const SCRATCH_SIZE: usize = 32768 + (1920 * 4 + 1) * 1200 + FILE_BUF_SIZE;
+    const PIXEL_BUF_SIZE: usize = MAX_PIX * 4; // u32 pixels
+
+    let file_ptr = process::mmap(FILE_BUF_SIZE);
+    let pixel_ptr = process::mmap(PIXEL_BUF_SIZE);
+    let scratch_ptr = process::mmap(SCRATCH_SIZE);
+
+    if !file_ptr.is_null() && !pixel_ptr.is_null() && !scratch_ptr.is_null() {
+        let file_buf = unsafe { core::slice::from_raw_parts_mut(file_ptr, FILE_BUF_SIZE) };
+        let pixel_buf = unsafe { core::slice::from_raw_parts_mut(pixel_ptr as *mut u32, MAX_PIX) };
+        let scratch_buf = unsafe { core::slice::from_raw_parts_mut(scratch_ptr, SCRATCH_SIZE) };
+
+        for wp in wallpapers.iter_mut() {
+            load_thumbnail_mmap(wp, file_buf, pixel_buf, scratch_buf);
+        }
     }
+
+    // Free all temporary buffers — physical memory is reclaimed
+    if !scratch_ptr.is_null() { process::munmap(scratch_ptr, SCRATCH_SIZE); }
+    if !pixel_ptr.is_null() { process::munmap(pixel_ptr, PIXEL_BUF_SIZE); }
+    if !file_ptr.is_null() { process::munmap(file_ptr, FILE_BUF_SIZE); }
 }
 
 fn is_image_file(name: &[u8], len: usize) -> bool {
@@ -309,7 +340,13 @@ fn is_image_file(name: &[u8], len: usize) -> bool {
     false
 }
 
-fn load_thumbnail(wp: &mut WallpaperEntry) {
+
+fn load_thumbnail_mmap(
+    wp: &mut WallpaperEntry,
+    file_buf: &mut [u8],
+    pixel_buf: &mut [u32],
+    scratch_buf: &mut [u8],
+) {
     let path = match core::str::from_utf8(&wp.path[..wp.path_len]) {
         Ok(s) => s,
         Err(_) => return,
@@ -324,35 +361,41 @@ fn load_thumbnail(wp: &mut WallpaperEntry) {
         return;
     }
     let file_size = stat_buf[1] as usize;
-    if file_size == 0 || file_size > 2 * 1024 * 1024 {
+    if file_size == 0 || file_size > file_buf.len() {
         fs::close(fd);
         return;
     }
 
-    let mut data = alloc::vec![0u8; file_size];
-    let bytes_read = fs::read(fd, &mut data) as usize;
+    let bytes_read = fs::read(fd, &mut file_buf[..file_size]) as usize;
     fs::close(fd);
     if bytes_read == 0 { return; }
 
-    let info = match libimage_client::probe(&data[..bytes_read]) {
+    let info = match libimage_client::probe(&file_buf[..bytes_read]) {
         Some(i) => i,
         None => return,
     };
 
     let pixel_count = (info.width * info.height) as usize;
-    if pixel_count > 4 * 1024 * 1024 { return; }
+    if pixel_count > pixel_buf.len() { return; }
 
-    let mut pixels = alloc::vec![0u32; pixel_count];
-    let mut scratch = alloc::vec![0u8; info.scratch_needed as usize];
-    if libimage_client::decode(&data[..bytes_read], &mut pixels, &mut scratch).is_err() {
+    let scratch_needed = info.scratch_needed as usize;
+    if scratch_needed > scratch_buf.len() { return; }
+
+    let mut j = 0;
+    while j < pixel_count { pixel_buf[j] = 0; j += 1; }
+
+    if libimage_client::decode(
+        &file_buf[..bytes_read],
+        &mut pixel_buf[..pixel_count],
+        &mut scratch_buf[..scratch_needed],
+    ).is_err() {
         return;
     }
-    drop(data);
-    drop(scratch);
 
-    let mut thumb = alloc::vec![0u32; (THUMB_W * THUMB_H) as usize];
+    let thumb_size = (THUMB_W * THUMB_H) as usize;
+    let mut thumb = alloc::vec![0u32; thumb_size];
     if libimage_client::scale_image(
-        &pixels, info.width, info.height,
+        &pixel_buf[..pixel_count], info.width, info.height,
         &mut thumb, THUMB_W, THUMB_H,
         libimage_client::MODE_COVER,
     ) {
@@ -505,19 +548,20 @@ fn hit_test_wallpaper(
     event: &UiEvent,
     cx: i32,
     scroll_y: u32,
+    win_w: u32,
 ) -> Option<usize> {
     if event.event_type != window::EVENT_MOUSE_DOWN { return None; }
-    let mx = event.x as i32;
-    let my = event.y as i32;
+    let (mx, my) = event.mouse_pos();
 
+    let cols = thumb_cols(win_w);
     let sy = scroll_y as i32;
     let card_y = 54 - sy;
     let grid_y = card_y + PAD + 36;
     let grid_x = cx + PAD;
 
     for (i, _wp) in wallpapers.iter().enumerate() {
-        let col = i % THUMB_COLS;
-        let row = i / THUMB_COLS;
+        let col = i % cols;
+        let row = i / cols;
         let tx = grid_x + col as i32 * (THUMB_W as i32 + THUMB_PAD);
         let ty = grid_y + row as i32 * (THUMB_H as i32 + THUMB_PAD + 16);
 
@@ -577,7 +621,7 @@ fn update_positions(
     res_radio.spacing = 24;
 }
 
-fn page_content_height(page: usize, num_resolutions: usize, num_wallpapers: usize) -> u32 {
+fn page_content_height(page: usize, num_resolutions: usize, num_wallpapers: usize, win_w: u32) -> u32 {
     match page {
         PAGE_GENERAL => (54 + PAD * 2 + ROW_H * 4 + 20) as u32,
         PAGE_DISPLAY => {
@@ -586,7 +630,8 @@ fn page_content_height(page: usize, num_resolutions: usize, num_wallpapers: usiz
             (54 + card1_h + 32 + card2_h + 20) as u32
         }
         PAGE_WALLPAPER => {
-            let rows = (num_wallpapers.max(1) + THUMB_COLS - 1) / THUMB_COLS;
+            let cols = thumb_cols(win_w);
+            let rows = (num_wallpapers.max(1) + cols - 1) / cols;
             let grid_h = rows as i32 * (THUMB_H as i32 + THUMB_PAD + 16);
             (54 + PAD * 2 + 36 + grid_h + 20) as u32
         }
@@ -625,13 +670,13 @@ fn render(
     match sidebar_c.selected {
         PAGE_GENERAL => render_general(win, dark, sound, notif, cx, cw, sy),
         PAGE_DISPLAY => render_display(win, brightness, res_radio, resolutions, cx, cw, sy),
-        PAGE_WALLPAPER => render_wallpaper(win, wallpapers, wallpaper_selected, cx, cw, sy),
+        PAGE_WALLPAPER => render_wallpaper(win, wallpapers, wallpaper_selected, cx, cw, sy, win_w),
         PAGE_NETWORK => render_network(win, cx, cw, sy),
         PAGE_ABOUT => render_about(win, cx, cw, sy),
         _ => {}
     }
 
-    let content_h = page_content_height(sidebar_c.selected, resolutions.len(), wallpapers.len());
+    let content_h = page_content_height(sidebar_c.selected, resolutions.len(), wallpapers.len(), win_w);
     let sb_x = SIDEBAR_W as i32;
     let sb_w = win_w - SIDEBAR_W;
     scrollbar(win, sb_x, 0, sb_w, win_h, content_h, scroll_y);
@@ -717,11 +762,13 @@ fn render_wallpaper(
     cx: i32,
     cw: u32,
     sy: i32,
+    win_w: u32,
 ) {
     label(win, cx, 20 - sy, "Wallpaper", colors::TEXT(), FontSize::Title, TextAlign::Left);
 
+    let cols = thumb_cols(win_w);
     let card_y = 54 - sy;
-    let rows = (wallpapers.len().max(1) + THUMB_COLS - 1) / THUMB_COLS;
+    let rows = (wallpapers.len().max(1) + cols - 1) / cols;
     let grid_h = rows as i32 * (THUMB_H as i32 + THUMB_PAD + 16);
     let card_h = (PAD * 2 + 36 + grid_h) as u32;
     card(win, cx, card_y, cw, card_h);
@@ -731,11 +778,11 @@ fn render_wallpaper(
     let grid_y = card_y + PAD + 36;
     let grid_x = cx + PAD;
     let accent = colors::ACCENT();
-    let border_color = colors::CARD_BORDER();
+    let border_color = colors::SEPARATOR();
 
     for (i, wp) in wallpapers.iter().enumerate() {
-        let col = i % THUMB_COLS;
-        let row = i / THUMB_COLS;
+        let col = i % cols;
+        let row = i / cols;
         let tx = grid_x + col as i32 * (THUMB_W as i32 + THUMB_PAD);
         let ty = grid_y + row as i32 * (THUMB_H as i32 + THUMB_PAD + 16);
 

@@ -594,6 +594,8 @@ add_custom_command(
           ${CMAKE_SOURCE_DIR}/sysroot/System/fonts/sfpro-thin.ttf
           ${CMAKE_SOURCE_DIR}/sysroot/System/fonts/sfpro-italic.ttf
           ${CMAKE_SOURCE_DIR}/sysroot/media/wallpapers/default.png
+          ${CMAKE_SOURCE_DIR}/sysroot/media/wallpapers
+          ${CMAKE_SOURCE_DIR}/sysroot/System/users/wallpapers
           ${CMAKE_SOURCE_DIR}/sysroot/System/media/icons
           ${CMAKE_SOURCE_DIR}/sysroot/System/media/icons/controls
   COMMENT "Populating sysroot from tools/sysroot"
@@ -735,6 +737,57 @@ add_custom_command(
 )
 
 # ============================================================
+# NASM (Netwide Assembler for anyOS)
+# ============================================================
+set(NASM_DIR "${CMAKE_SOURCE_DIR}/third_party/nasm")
+set(NASM_ELF "${NASM_DIR}/nasm.elf")
+
+add_custom_command(
+  OUTPUT ${NASM_ELF}
+  COMMAND ${CMAKE_SOURCE_DIR}/scripts/build_nasm.sh
+  DEPENDS ${LIBC_A} ${LIBC_CRT0}
+  COMMENT "Building NASM assembler for anyOS"
+)
+
+# Copy NASM to sysroot
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/bin/nasm
+  COMMAND ${CMAKE_COMMAND} -E copy ${NASM_ELF} ${SYSROOT_DIR}/System/bin/nasm
+  DEPENDS ${NASM_ELF}
+  COMMENT "Installing NASM as /System/bin/nasm"
+)
+
+# ============================================================
+# libgit2 + mini git CLI
+# ============================================================
+set(LG2_DIR "${CMAKE_SOURCE_DIR}/third_party/libgit2")
+set(LG2_A "${LG2_DIR}/libgit2.a")
+set(GIT_DIR "${CMAKE_SOURCE_DIR}/bin/git")
+set(GIT_ELF "${GIT_DIR}/git.elf")
+
+add_custom_command(
+  OUTPUT ${LG2_A}
+  COMMAND ${CMAKE_SOURCE_DIR}/scripts/build_libgit2.sh
+  DEPENDS ${LIBC_A} ${LIBC_CRT0}
+  COMMENT "Building libgit2 for anyOS"
+)
+
+add_custom_command(
+  OUTPUT ${GIT_ELF}
+  COMMAND ${CMAKE_SOURCE_DIR}/scripts/build_git.sh
+  DEPENDS ${LG2_A} ${BEARSSL_A} ${LIBC_A} ${LIBC_CRT0}
+  COMMENT "Building mini git CLI for anyOS"
+)
+
+# Copy git to sysroot
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/bin/git
+  COMMAND ${CMAKE_COMMAND} -E copy ${GIT_ELF} ${SYSROOT_DIR}/System/bin/git
+  DEPENDS ${GIT_ELF}
+  COMMENT "Installing git as /System/bin/git"
+)
+
+# ============================================================
 # DOOM (doomgeneric, cross-compiled C program) → DOOM.app
 # ============================================================
 set(DOOM_DIR "${CMAKE_SOURCE_DIR}/third_party/doom")
@@ -848,10 +901,12 @@ set(C_TOOLCHAIN_DEPS
   ${SYSROOT_DIR}/Libraries/libc/lib/crt0.o
   ${SYSROOT_DIR}/Libraries/libc/include/.stamp
   ${SYSROOT_DIR}/System/bin/cc
+  ${SYSROOT_DIR}/System/bin/nasm
   ${SYSROOT_DIR}/Libraries/libc/lib/tcc/include/.stamp
   ${DOOM_APP}/DOOM
   ${QUAKE_APP}/Quake
   ${SYSROOT_DIR}/System/bin/curl
+  ${SYSROOT_DIR}/System/bin/git
 )
 
 endif() # HAS_CROSS_COMPILER

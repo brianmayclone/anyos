@@ -154,6 +154,31 @@ pub fn set_kernel_rsp(cpu_id: usize, rsp: u64) {
     if !INITIALIZED.load(Ordering::Acquire) || cpu_id >= MAX_CPUS {
         return;
     }
+    // Guard: kernel RSP must be in higher-half (same check as TSS.RSP0).
+    // Without this, a corrupt kernel_stack_top() would be stored here while
+    // set_kernel_stack_for_cpu() rejects it — leaving PERCPU.kernel_rsp corrupt
+    // but TSS.RSP0 valid. The SYSCALL path loads RSP from [gs:0] (PERCPU),
+    // so corrupt PERCPU.kernel_rsp → RSP=garbage → Double Fault.
+    if rsp == 0 || rsp < 0xFFFF_FFFF_8000_0000 {
+        unsafe {
+            use crate::arch::x86::port::{inb, outb};
+            let msg = b"\r\n!!! BUG: set_kernel_rsp bad rsp cpu=";
+            for &c in msg { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            outb(0x3F8, b'0' + cpu_id as u8);
+            let msg2 = b" rsp=";
+            for &c in msg2 { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            // Print hex value of rsp
+            let hex = b"0123456789abcdef";
+            for i in (0..16).rev() {
+                let nibble = ((rsp >> (i * 4)) & 0xF) as usize;
+                while inb(0x3FD) & 0x20 == 0 {}
+                outb(0x3F8, hex[nibble]);
+            }
+            let msg3 = b"\r\n";
+            for &c in msg3 { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+        }
+        return; // Keep previous valid kernel_rsp
+    }
     unsafe {
         PERCPU[cpu_id].kernel_rsp = rsp;
     }

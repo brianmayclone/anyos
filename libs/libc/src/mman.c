@@ -1,31 +1,43 @@
 /*
  * Copyright (c) 2024-2026 Christian Moeller
- * Email: c.moeller.ffo@gmail.com, brianmayclone@googlemail.com
- *
- * This project is open source and community-driven.
- * Contributions are welcome! See README.md for details.
- *
  * SPDX-License-Identifier: MIT
  */
 
 #include <sys/mman.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 #include <errno.h>
 
-/* Stub implementations — anyOS doesn't support mmap yet */
+/* mmap shim: MAP_ANONYMOUS → calloc, file mapping → malloc+read */
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, long offset) {
-    (void)addr; (void)length; (void)prot; (void)flags; (void)fd; (void)offset;
-    errno = ENOSYS;
-    return MAP_FAILED;
+    (void)addr; (void)prot;
+    if (length == 0) return MAP_FAILED;
+    void *buf = malloc(length);
+    if (!buf) return MAP_FAILED;
+    if (flags & MAP_ANONYMOUS) {
+        memset(buf, 0, length);
+    } else if (fd >= 0) {
+        lseek(fd, (int)offset, 0 /* SEEK_SET */);
+        size_t total = 0;
+        while (total < length) {
+            int chunk = (length - total > 32768) ? 32768 : (int)(length - total);
+            int n = read(fd, (char *)buf + total, chunk);
+            if (n <= 0) break;
+            total += n;
+        }
+        if (total < length) memset((char *)buf + total, 0, length - total);
+    }
+    return buf;
 }
 
 int munmap(void *addr, size_t length) {
-    (void)addr; (void)length;
-    errno = ENOSYS;
-    return -1;
+    (void)length;
+    if (addr && addr != MAP_FAILED) free(addr);
+    return 0;
 }
 
 int mprotect(void *addr, size_t length, int prot) {
     (void)addr; (void)length; (void)prot;
-    errno = ENOSYS;
-    return -1;
+    return 0;
 }

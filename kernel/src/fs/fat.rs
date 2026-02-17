@@ -1389,6 +1389,23 @@ impl FatFs {
         Ok(())
     }
 
+    /// Rename (move) a file: remove old dir entry (keeping clusters), create new entry.
+    pub fn rename_entry(&mut self, old_parent: u32, old_name: &str, new_parent: u32, new_name: &str) -> Result<(), FsError> {
+        // Look up old entry to get cluster and size
+        let dir_data = self.read_dir_raw(old_parent)?;
+        let found = self.find_entry_in_buf(&dir_data, old_name)
+            .ok_or(FsError::NotFound)?;
+        let cluster = found.cluster;
+        let size = found.size;
+        let is_dir = found.is_dir;
+        // Delete old directory entry (does NOT free cluster chain)
+        self.delete_entry(old_parent, old_name)?;
+        // Create new entry pointing to the same cluster chain
+        let attr: u8 = if is_dir { 0x10 } else { 0x20 };
+        self.create_entry(new_parent, new_name, attr, cluster, size)?;
+        Ok(())
+    }
+
     /// Truncate a file to zero length: free its cluster chain and update the directory entry.
     pub fn truncate_file(&mut self, parent_cluster: u32, name: &str) -> Result<(), FsError> {
         let dir_data = self.read_dir_raw(parent_cluster)?;

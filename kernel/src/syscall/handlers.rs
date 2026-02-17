@@ -12,9 +12,9 @@ use crate::fs::permissions::{check_permission, PERM_CREATE};
 // =========================================================================
 
 /// Make a relative path absolute using the current thread's working directory.
-/// Returns the input unchanged if already absolute.
+/// Normalizes `.` and `..` components so e.g. `"."` resolves to the CWD itself.
 fn resolve_path(path: &str) -> String {
-    if path.starts_with('/') {
+    let abs = if path.starts_with('/') {
         String::from(path)
     } else {
         let mut cwd_buf = [0u8; 256];
@@ -25,7 +25,28 @@ fn resolve_path(path: &str) -> String {
         } else {
             alloc::format!("{}/{}", cwd, path)
         }
-    }
+    };
+    crate::fs::path::normalize(&abs)
+}
+
+/// Convert an FsError into a negated-errno return value.
+/// Convention: success = 0, error = (-errno) as u32.
+/// The libc side checks `(int)ret < 0` and does `errno = -(int)ret`.
+fn fs_err(e: crate::fs::vfs::FsError) -> u32 {
+    use crate::fs::vfs::FsError;
+    let errno: i32 = match e {
+        FsError::NotFound => 2,        // ENOENT
+        FsError::PermissionDenied => 13, // EACCES
+        FsError::AlreadyExists => 17,   // EEXIST
+        FsError::NotADirectory => 20,   // ENOTDIR
+        FsError::IsADirectory => 21,    // EISDIR
+        FsError::NoSpace => 28,         // ENOSPC
+        FsError::IoError => 5,          // EIO
+        FsError::InvalidPath => 22,     // EINVAL
+        FsError::TooManyOpenFiles => 24, // EMFILE
+        FsError::BadFd => 9,            // EBADF
+    };
+    (-errno) as u32
 }
 
 /// Validate that a user pointer is in user address space (below kernel half).
@@ -146,7 +167,7 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
                 crate::task::scheduler::record_io_write(n as u64);
                 n as u32
             }
-            Err(_) => u32::MAX,
+            Err(e) => fs_err(e),
         }
     } else {
         u32::MAX
@@ -182,7 +203,7 @@ pub fn sys_read(fd: u32, buf_ptr: u32, len: u32) -> u32 {
                 crate::task::scheduler::record_io_read(n as u64);
                 n as u32
             }
-            Err(_) => u32::MAX,
+            Err(e) => fs_err(e),
         }
     } else {
         u32::MAX
@@ -226,9 +247,9 @@ pub fn sys_open(path_ptr: u32, flags: u32, _arg3: u32) -> u32 {
 
     let result = match crate::fs::vfs::open(&resolved, file_flags) {
         Ok(fd) => fd,
-        Err(_) => u32::MAX,
+        Err(e) => fs_err(e),
     };
-    crate::debug_println!("  open({:?}) -> fd={}", resolved, if result == u32::MAX { -1i32 } else { result as i32 });
+    crate::debug_println!("  open({:?}) -> fd={}", resolved, result as i32);
     result
 }
 
@@ -239,7 +260,7 @@ pub fn sys_close(fd: u32) -> u32 {
     }
     match crate::fs::vfs::close(fd) {
         Ok(()) => 0,
-        Err(_) => u32::MAX,
+        Err(e) => fs_err(e),
     }
 }
 
@@ -320,6 +341,116 @@ pub fn sys_sbrk(increment: i32) -> u32 {
         crate::task::scheduler::set_current_thread_brk(new_brk);
         old_brk
     }
+}
+
+/// sys_mmap - Map anonymous pages into user address space.
+/// arg1=size (bytes, rounded up to page boundary). Returns virtual address or u32::MAX on error.
+///
+/// Allocates physical frames, maps them with PAGE_USER|PAGE_WRITABLE, zeroes them.
+/// Virtual addresses are assigned from a per-process bump pointer starting at 0x20000000.
+pub fn sys_mmap(size: u32) -> u32 {
+    use crate::memory::address::VirtAddr;
+    use crate::memory::physical;
+    use crate::memory::virtual_mem;
+
+    if size == 0 {
+        return u32::MAX;
+    }
+
+    const MMAP_BASE: u32 = 0x2000_0000;
+    const MMAP_LIMIT: u32 = 0x4000_0000; // 512 MiB mmap region
+    const PAGE_SIZE: u32 = 4096;
+
+    let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    let num_pages = aligned_size / PAGE_SIZE;
+
+    let mmap_next = crate::task::scheduler::current_thread_mmap_next();
+    let base = if mmap_next < MMAP_BASE { MMAP_BASE } else { mmap_next };
+
+    if base.checked_add(aligned_size).map_or(true, |end| end > MMAP_LIMIT) {
+        crate::serial_println!("sys_mmap: out of mmap virtual address space");
+        return u32::MAX;
+    }
+
+    // Allocate and map pages
+    let mut addr = base;
+    for _ in 0..num_pages {
+        if let Some(phys) = physical::alloc_frame() {
+            virtual_mem::map_page(
+                VirtAddr::new(addr as u64),
+                phys,
+                0x02 | 0x04, // PAGE_WRITABLE | PAGE_USER
+            );
+            unsafe { core::ptr::write_bytes(addr as *mut u8, 0, PAGE_SIZE as usize); }
+        } else {
+            // Out of physical memory — unmap what we already mapped
+            let mut cleanup = base;
+            while cleanup < addr {
+                let pte = virtual_mem::read_pte(VirtAddr::new(cleanup as u64));
+                if pte & 1 != 0 {
+                    let phys_addr = crate::memory::address::PhysAddr::new(pte & 0x000F_FFFF_FFFF_F000);
+                    virtual_mem::unmap_page(VirtAddr::new(cleanup as u64));
+                    physical::free_frame(phys_addr);
+                }
+                cleanup += PAGE_SIZE;
+            }
+            crate::serial_println!("sys_mmap: out of physical memory");
+            return u32::MAX;
+        }
+        addr += PAGE_SIZE;
+    }
+
+    crate::task::scheduler::adjust_current_user_pages(num_pages as i32);
+    crate::task::scheduler::set_current_thread_mmap_next(base + aligned_size);
+
+    base
+}
+
+/// sys_munmap - Unmap pages from user address space, freeing physical frames.
+/// arg1=addr (must be page-aligned), arg2=size (bytes, rounded up to pages).
+/// Returns 0 on success, u32::MAX on error.
+pub fn sys_munmap(addr: u32, size: u32) -> u32 {
+    use crate::memory::address::VirtAddr;
+    use crate::memory::physical;
+    use crate::memory::virtual_mem;
+
+    const MMAP_BASE: u32 = 0x2000_0000;
+    const MMAP_LIMIT: u32 = 0x4000_0000;
+    const PAGE_SIZE: u32 = 4096;
+
+    if size == 0 || addr & (PAGE_SIZE - 1) != 0 {
+        return u32::MAX;
+    }
+
+    // Validate the range is within the mmap region
+    if addr < MMAP_BASE || addr >= MMAP_LIMIT {
+        return u32::MAX;
+    }
+    let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    if addr.checked_add(aligned_size).map_or(true, |end| end > MMAP_LIMIT) {
+        return u32::MAX;
+    }
+
+    let num_pages = aligned_size / PAGE_SIZE;
+    let mut freed = 0u32;
+    let mut page_addr = addr;
+
+    for _ in 0..num_pages {
+        let pte = virtual_mem::read_pte(VirtAddr::new(page_addr as u64));
+        if pte & 1 != 0 {
+            let phys_addr = crate::memory::address::PhysAddr::new(pte & 0x000F_FFFF_FFFF_F000);
+            virtual_mem::unmap_page(VirtAddr::new(page_addr as u64));
+            physical::free_frame(phys_addr);
+            freed += 1;
+        }
+        page_addr += PAGE_SIZE;
+    }
+
+    if freed > 0 {
+        crate::task::scheduler::adjust_current_user_pages(-(freed as i32));
+    }
+
+    0
 }
 
 /// sys_waitpid - Wait for a process to exit. Returns exit code.
@@ -436,7 +567,7 @@ pub fn sys_readdir(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
             }
             entries.len() as u32
         }
-        Err(_) => u32::MAX,
+        Err(e) => fs_err(e),
     }
 }
 
@@ -470,7 +601,7 @@ pub fn sys_stat(path_ptr: u32, buf_ptr: u32) -> u32 {
             }
             0
         }
-        Err(_) => u32::MAX,
+        Err(e) => fs_err(e),
     }
 }
 
@@ -502,7 +633,7 @@ pub fn sys_lstat(path_ptr: u32, buf_ptr: u32) -> u32 {
             }
             0
         }
-        Err(_) => u32::MAX,
+        Err(e) => fs_err(e),
     }
 }
 
@@ -516,7 +647,7 @@ pub fn sys_symlink(target_ptr: u32, link_path_ptr: u32) -> u32 {
 
     match crate::fs::vfs::create_symlink(&link_path, target) {
         Ok(()) => 0,
-        Err(_) => u32::MAX,
+        Err(e) => fs_err(e),
     }
 }
 
@@ -545,7 +676,7 @@ pub fn sys_readlink(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
             }
             to_copy as u32
         }
-        Err(_) => u32::MAX,
+        Err(e) => fs_err(e),
     }
 }
 
@@ -556,7 +687,7 @@ pub fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
     if fd < 3 { return 0; }
     match crate::fs::vfs::lseek(fd, offset as i32, whence) {
         Ok(pos) => pos,
-        Err(_) => u32::MAX,
+        Err(e) => fs_err(e),
     }
 }
 
@@ -589,7 +720,7 @@ pub fn sys_fstat(fd: u32, buf_ptr: u32) -> u32 {
             }
             0
         }
-        Err(_) => u32::MAX,
+        Err(e) => fs_err(e),
     }
 }
 
@@ -625,7 +756,7 @@ pub fn sys_chdir(path_ptr: u32) -> u32 {
             crate::task::scheduler::set_thread_cwd(tid, &path);
             0
         }
-        Err(_) => u32::MAX,
+        Err(e) => fs_err(e),
     }
 }
 
@@ -652,7 +783,7 @@ pub fn sys_mkdir(path_ptr: u32) -> u32 {
 
     match crate::fs::vfs::mkdir(&path) {
         Ok(()) => 0,
-        Err(_) => u32::MAX,
+        Err(e) => fs_err(e),
     }
 }
 
@@ -673,7 +804,7 @@ pub fn sys_unlink(path_ptr: u32) -> u32 {
 
     match crate::fs::vfs::delete(&path) {
         Ok(()) => 0,
-        Err(_) => u32::MAX,
+        Err(e) => fs_err(e),
     }
 }
 
@@ -691,7 +822,35 @@ pub fn sys_truncate(path_ptr: u32) -> u32 {
 
     match crate::fs::vfs::truncate(&path) {
         Ok(()) => 0,
-        Err(_) => u32::MAX,
+        Err(e) => fs_err(e),
+    }
+}
+
+/// sys_rename - Rename (move) a file or directory.
+/// arg1 = old_path_ptr, arg2 = new_path_ptr.
+/// Returns 0 on success, u32::MAX on error.
+pub fn sys_rename(old_ptr: u32, new_ptr: u32) -> u32 {
+    if old_ptr == 0 || new_ptr == 0 { return u32::MAX; }
+    let old_path = resolve_path(unsafe { read_user_str(old_ptr) });
+    let new_path = resolve_path(unsafe { read_user_str(new_ptr) });
+    match crate::fs::vfs::rename(&old_path, &new_path) {
+        Ok(()) => 0,
+        Err(e) => fs_err(e),
+    }
+}
+
+/// sys_ftruncate - Truncate a file by fd to zero length.
+/// arg1 = fd, arg2 = length (currently ignored, always truncates to 0).
+/// Returns 0 on success, u32::MAX on error.
+pub fn sys_ftruncate(fd: u32, _length: u32) -> u32 {
+    if fd < 3 { return u32::MAX; }
+    let path = match crate::fs::vfs::get_fd_path(fd) {
+        Ok(p) => p,
+        Err(e) => return fs_err(e),
+    };
+    match crate::fs::vfs::truncate(&path) {
+        Ok(()) => 0,
+        Err(e) => fs_err(e),
     }
 }
 
@@ -712,7 +871,7 @@ pub fn sys_mount(mount_path_ptr: u32, device_path_ptr: u32, fs_type: u32) -> u32
     };
     match crate::fs::vfs::mount_fs(&mount_path, &device_path, fs_type) {
         Ok(()) => 0,
-        Err(_) => u32::MAX,
+        Err(e) => fs_err(e),
     }
 }
 
@@ -724,7 +883,7 @@ pub fn sys_umount(mount_path_ptr: u32) -> u32 {
     let mount_path = resolve_path(unsafe { read_user_str(mount_path_ptr) });
     match crate::fs::vfs::umount_fs(&mount_path) {
         Ok(()) => 0,
-        Err(_) => u32::MAX,
+        Err(e) => fs_err(e),
     }
 }
 
@@ -2411,7 +2570,7 @@ pub fn sys_chmod(path_ptr: u32, mode: u32) -> u32 {
 
     match crate::fs::vfs::set_mode(&resolved, mode) {
         Ok(()) => 0,
-        Err(_) => u32::MAX,
+        Err(e) => fs_err(e),
     }
 }
 
@@ -2430,7 +2589,7 @@ pub fn sys_chown(path_ptr: u32, uid: u32, gid: u32) -> u32 {
 
     match crate::fs::vfs::set_owner(&resolved, uid as u16, gid as u16) {
         Ok(()) => 0,
-        Err(_) => u32::MAX,
+        Err(e) => fs_err(e),
     }
 }
 

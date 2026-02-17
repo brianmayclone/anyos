@@ -54,6 +54,13 @@ syscall_fast_entry:
     ; === Phase 1c: Switch to kernel stack (PERCPU ownership verified) ===
     mov rsp, [gs:0]                 ; RSP = per_cpu.kernel_rsp
 
+    ; Validate kernel RSP: must be in kernel higher-half (bit 63 set).
+    ; If PERCPU.kernel_rsp was corrupted (e.g., by wild write or stale value),
+    ; using it would cause #PF → #DF (unrecoverable). Detect now and fall back
+    ; to the PERCPU repair path which can recover onto the user stack.
+    test rsp, rsp
+    jns .bad_kernel_rsp             ; RSP is positive (not in higher-half) — corrupt!
+
     ; === Phase 2: Build SyscallRegs frame (matching INT 0x80 layout) ===
     ; CPU-pushed interrupt frame (emulated for SYSCALL)
     push 0x23                       ; SS  (user data selector, RPL=3)
@@ -194,3 +201,51 @@ syscall_fast_entry:
 .repair_halt:
     hlt
     jmp .repair_halt
+
+; =============================================================================
+; Bad kernel RSP recovery — PERCPU.kernel_rsp was corrupt (not in higher-half)
+; =============================================================================
+; At entry:
+;   RSP = corrupt value loaded from [gs:0] (NOT in higher-half)
+;   GS.base = this CPU's PERCPU (already verified by LAPIC check)
+;   RAX = syscall number (restored from PERCPU scratch)
+;   RCX = user RIP, R11 = user RFLAGS
+;   User RSP saved in [gs:8]
+;
+; Strategy: log the corruption via serial, switch back to user stack,
+; undo SWAPGS, and return to user space with RAX = -EAGAIN (-11).
+; The user program sees SYSCALL fail and can retry. This is better than
+; a Double Fault which kills the entire system.
+
+.bad_kernel_rsp:
+    ; Write diagnostic to serial (0x3F8) — lock-free, no stack needed
+    mov dx, 0x3F8
+    mov al, '!'
+    out dx, al
+    mov al, 'S'
+    out dx, al
+    mov al, 'Y'
+    out dx, al
+    mov al, 'S'
+    out dx, al
+    mov al, ' '
+    out dx, al
+    mov al, 'R'
+    out dx, al
+    mov al, 'S'
+    out dx, al
+    mov al, 'P'
+    out dx, al
+    mov al, 10
+    out dx, al
+
+    ; Restore user RSP from PERCPU (saved earlier at [gs:8])
+    mov rsp, [gs:8]
+
+    ; Undo SWAPGS (restore user GS)
+    swapgs
+
+    ; Return -EAGAIN (errno 11) to user space so the syscall can be retried.
+    ; SYSRET: RIP ← RCX, RFLAGS ← R11 (both still hold user values).
+    mov rax, -11                    ; -EAGAIN
+    o64 sysret

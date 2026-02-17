@@ -57,6 +57,8 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_SYMLINK, "symlink"),
     (SYS_READLINK, "readlink"),
     (SYS_LSTAT, "lstat"),
+    (SYS_RENAME, "rename"),
+    (SYS_FTRUNCATE, "ftruncate"),
     (SYS_GET_CAPABILITIES, "get_capabilities"),
     (SYS_BOOT_READY, "boot_ready"),
     (SYS_GETUID, "getuid"),

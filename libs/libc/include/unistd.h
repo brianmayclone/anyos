@@ -42,6 +42,31 @@ int gethostname(char *name, size_t len);
 char *realpath(const char *path, char *resolved_path);
 int rmdir(const char *pathname);
 int unlinkat(int dirfd, const char *pathname, int flags);
+int fsync(int fd);
+int fdatasync(int fd);
+int chmod(const char *path, unsigned int mode);
+int fchmod(int fd, unsigned int mode);
+struct stat;
+int lstat(const char *path, struct stat *buf);
+unsigned int getuid(void);
+unsigned int getgid(void);
+unsigned int umask(unsigned int mask);
+int link(const char *oldpath, const char *newpath);
+int symlink(const char *target, const char *linkpath);
+int readlink(const char *path, char *buf, size_t bufsiz);
+int chown(const char *path, unsigned int owner, unsigned int group);
+unsigned int sleep(unsigned int seconds);
+long sysconf(int name);
+int getpid(void);
+int getppid(void);
+int getpgid(int pid);
+unsigned int geteuid(void);
+unsigned int getegid(void);
+int getsid(int pid);
+
+#define _SC_PAGESIZE 30
+#define _SC_PAGE_SIZE _SC_PAGESIZE
+#define _SC_GETPW_R_SIZE_MAX 70
 
 #define F_OK 0
 #define R_OK 4

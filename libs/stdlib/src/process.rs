@@ -31,6 +31,27 @@ pub fn sbrk(increment: i32) -> usize {
     syscall1(SYS_SBRK, increment as i64 as u64) as usize
 }
 
+/// Map anonymous pages into the process address space.
+/// Returns a pointer to the mapped region, or null on failure.
+/// The memory is zeroed and page-aligned.
+/// Use `munmap` to free it when no longer needed.
+pub fn mmap(size: usize) -> *mut u8 {
+    let result = syscall1(SYS_MMAP, size as u64);
+    if result == u32::MAX {
+        core::ptr::null_mut()
+    } else {
+        result as *mut u8
+    }
+}
+
+/// Unmap pages previously mapped with `mmap`, freeing the physical memory.
+/// `addr` must be the value returned by `mmap` (page-aligned).
+/// `size` is the original size passed to `mmap`.
+/// Returns true on success.
+pub fn munmap(addr: *mut u8, size: usize) -> bool {
+    syscall2(SYS_MUNMAP, addr as u64, size as u64) == 0
+}
+
 pub fn waitpid(tid: u32) -> u32 {
     syscall1(SYS_WAITPID, tid as u64)
 }

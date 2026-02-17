@@ -1,0 +1,30 @@
+/* config.h for anyOS bare-metal build */
+
+#define HAVE_STDINT_H 1
+#define HAVE_INTTYPES_H 1
+#define HAVE_SYS_STAT_H 1
+#define HAVE_SYS_TYPES_H 1
+#define HAVE_UNISTD_H 1
+#define HAVE_DIRENT_H 1
+#define HAVE_MEMMOVE 1
+#define HAVE_STRERROR 1
+#define HAVE_STRTOLL 1
+#define HAVE_LONG_LONG 1
+#define HAVE_UNSIGNED_LONG_LONG 1
+
+#define PCRE_STATIC 1
+#define SUPPORT_PCRE8 1
+#define SUPPORT_UTF 1
+#define SUPPORT_UCP 1
+#define NO_RECURSE 1
+
+#define NEWLINE 10
+#define POSIX_MALLOC_THRESHOLD 10
+#define LINK_SIZE 2
+#define PARENS_NEST_LIMIT 250
+#define MATCH_LIMIT 10000000
+#define MATCH_LIMIT_RECURSION 10000000
+#define PCREGREP_BUFSIZE 20480
+
+#define MAX_NAME_SIZE 32
+#define MAX_NAME_COUNT 10000

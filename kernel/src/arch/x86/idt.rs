@@ -935,6 +935,32 @@ pub extern "C" fn irq_handler(frame: &InterruptFrame) {
                     }
                 }
             }
+
+            // PERCPU.kernel_rsp corruption check (SYSCALL path uses this, NOT TSS.RSP0).
+            // The SYSCALL fast entry loads RSP from [gs:0] = PERCPU.kernel_rsp.
+            // If this is corrupt but TSS.RSP0 is fine, INT 0x80 works but SYSCALL crashes.
+            // This closes the blind spot where set_kernel_rsp had no validation.
+            if crate::task::scheduler::cpu_has_active_thread(cpu_id) {
+                let percpu_rsp = crate::arch::x86::syscall_msr::get_kernel_rsp(cpu_id);
+                if percpu_rsp != 0 && percpu_rsp < 0xFFFF_FFFF_8000_0000 {
+                    let tid = crate::task::scheduler::debug_current_tid();
+                    uart_puts(b"\n!!!PERCPU.kernel_rsp CORRUPT cpu=");
+                    uart_put_dec(cpu_id as u32);
+                    uart_puts(b" rsp=");
+                    uart_put_hex(percpu_rsp);
+                    uart_puts(b" tid=");
+                    uart_put_dec(tid);
+                    uart_putc(b'\n');
+                    // Repair from per-CPU stack bounds
+                    let (_, stack_top) = crate::task::scheduler::get_stack_bounds(cpu_id);
+                    if stack_top >= 0xFFFF_FFFF_8000_0000 {
+                        crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, stack_top);
+                        uart_puts(b"  REPAIRED PERCPU.kernel_rsp=");
+                        uart_put_hex(stack_top);
+                        uart_putc(b'\n');
+                    }
+                }
+            }
         }
     }
 

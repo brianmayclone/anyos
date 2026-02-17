@@ -78,6 +78,8 @@ int setvbuf(FILE *stream, char *buf, int mode, size_t size);
 void setbuf(FILE *stream, char *buf);
 void setlinebuf(FILE *stream);
 
+void perror(const char *s);
+
 #define _IOFBF 0
 #define _IOLBF 1
 #define _IONBF 2

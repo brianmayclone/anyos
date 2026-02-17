@@ -1208,6 +1208,41 @@ pub fn set_current_thread_brk(brk: u32) {
     }
 }
 
+/// Return the current thread's mmap bump pointer.
+pub fn current_thread_mmap_next() -> u32 {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
+            if let Some(idx) = sched.find_idx(tid) {
+                return sched.threads[idx].mmap_next;
+            }
+        }
+    }
+    0
+}
+
+/// Set the current thread's mmap bump pointer, syncing across sibling threads.
+pub fn set_current_thread_mmap_next(val: u32) {
+    let mut guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
+            if let Some(idx) = sched.find_idx(tid) {
+                sched.threads[idx].mmap_next = val;
+                if let Some(pd) = sched.threads[idx].page_directory {
+                    let current_tid = sched.threads[idx].tid;
+                    for thread in sched.threads.iter_mut() {
+                        if thread.tid != current_tid && thread.page_directory == Some(pd) {
+                            thread.mmap_next = val;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // =============================================================================
 // Thread lifecycle
 // =============================================================================

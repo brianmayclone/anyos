@@ -11,6 +11,14 @@ pub const O_APPEND: u32 = 2;
 pub const O_CREATE: u32 = 4;
 pub const O_TRUNC: u32 = 8;
 
+/// Translate kernel error codes to u32::MAX for backward compatibility.
+/// Kernel returns (-errno) as u32 on error (top bit set). Convert to u32::MAX
+/// so all existing Rust callers (`== u32::MAX`) keep working.
+#[inline]
+fn sys_err(v: u32) -> u32 {
+    if (v as i32) < 0 { u32::MAX } else { v }
+}
+
 /// Resolve a path into a null-terminated absolute path in `buf`.
 /// Handles ".", "./relative", and bare relative paths by prepending CWD.
 /// Returns the length of the resolved path (not including the null terminator).
@@ -25,7 +33,7 @@ pub fn prepare_path(path: &str, buf: &mut [u8; 257]) -> usize {
     // Relative path — get CWD
     let mut cwd = [0u8; 256];
     let cwd_len = syscall2(SYS_GETCWD, cwd.as_mut_ptr() as u64, 256);
-    let cwd_len = if cwd_len != u32::MAX { cwd_len as usize } else { 0 };
+    let cwd_len = if (cwd_len as i32) >= 0 { cwd_len as usize } else { 0 };
     if cwd_len == 0 {
         cwd[0] = b'/';
     }
@@ -66,21 +74,21 @@ pub fn prepare_path(path: &str, buf: &mut [u8; 257]) -> usize {
 }
 
 pub fn write(fd: u32, buf: &[u8]) -> u32 {
-    syscall3(SYS_WRITE, fd as u64, buf.as_ptr() as u64, buf.len() as u64)
+    sys_err(syscall3(SYS_WRITE, fd as u64, buf.as_ptr() as u64, buf.len() as u64))
 }
 
 pub fn read(fd: u32, buf: &mut [u8]) -> u32 {
-    syscall3(SYS_READ, fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
+    sys_err(syscall3(SYS_READ, fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64))
 }
 
 pub fn open(path: &str, flags: u32) -> u32 {
     let mut buf = [0u8; 257];
     prepare_path(path, &mut buf);
-    syscall3(SYS_OPEN, buf.as_ptr() as u64, flags as u64, 0)
+    sys_err(syscall3(SYS_OPEN, buf.as_ptr() as u64, flags as u64, 0))
 }
 
 pub fn close(fd: u32) -> u32 {
-    syscall1(SYS_CLOSE, fd as u64)
+    sys_err(syscall1(SYS_CLOSE, fd as u64))
 }
 
 /// Read directory entries. Returns number of entries (or u32::MAX on error).
@@ -88,7 +96,7 @@ pub fn close(fd: u32) -> u32 {
 pub fn readdir(path: &str, buf: &mut [u8]) -> u32 {
     let mut path_buf = [0u8; 257];
     prepare_path(path, &mut path_buf);
-    syscall3(SYS_READDIR, path_buf.as_ptr() as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
+    sys_err(syscall3(SYS_READDIR, path_buf.as_ptr() as u64, buf.as_mut_ptr() as u64, buf.len() as u64))
 }
 
 /// Get file status (follows symlinks). Returns 0 on success.
@@ -97,7 +105,7 @@ pub fn readdir(path: &str, buf: &mut [u8]) -> u32 {
 pub fn stat(path: &str, stat_buf: &mut [u32; 6]) -> u32 {
     let mut path_buf = [0u8; 257];
     prepare_path(path, &mut path_buf);
-    syscall2(SYS_STAT, path_buf.as_ptr() as u64, stat_buf.as_mut_ptr() as u64)
+    sys_err(syscall2(SYS_STAT, path_buf.as_ptr() as u64, stat_buf.as_mut_ptr() as u64))
 }
 
 /// Get file status WITHOUT following final symlink. Returns 0 on success.
@@ -106,7 +114,7 @@ pub fn stat(path: &str, stat_buf: &mut [u32; 6]) -> u32 {
 pub fn lstat(path: &str, stat_buf: &mut [u32; 6]) -> u32 {
     let mut path_buf = [0u8; 257];
     prepare_path(path, &mut path_buf);
-    syscall2(SYS_LSTAT, path_buf.as_ptr() as u64, stat_buf.as_mut_ptr() as u64)
+    sys_err(syscall2(SYS_LSTAT, path_buf.as_ptr() as u64, stat_buf.as_mut_ptr() as u64))
 }
 
 /// Create a symbolic link. Returns 0 on success, u32::MAX on error.
@@ -121,35 +129,35 @@ pub fn symlink(target: &str, link_path: &str) -> u32 {
     let mut link_buf = [0u8; 257];
     prepare_path(link_path, &mut link_buf);
 
-    syscall2(SYS_SYMLINK, target_buf.as_ptr() as u64, link_buf.as_ptr() as u64)
+    sys_err(syscall2(SYS_SYMLINK, target_buf.as_ptr() as u64, link_buf.as_ptr() as u64))
 }
 
 /// Read the target of a symbolic link. Returns bytes written, or u32::MAX on error.
 pub fn readlink(path: &str, buf: &mut [u8]) -> u32 {
     let mut path_buf = [0u8; 257];
     prepare_path(path, &mut path_buf);
-    syscall3(SYS_READLINK, path_buf.as_ptr() as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
+    sys_err(syscall3(SYS_READLINK, path_buf.as_ptr() as u64, buf.as_mut_ptr() as u64, buf.len() as u64))
 }
 
 /// Create a directory. Returns 0 on success, u32::MAX on error.
 pub fn mkdir(path: &str) -> u32 {
     let mut buf = [0u8; 257];
     prepare_path(path, &mut buf);
-    syscall1(SYS_MKDIR, buf.as_ptr() as u64)
+    sys_err(syscall1(SYS_MKDIR, buf.as_ptr() as u64))
 }
 
 /// Delete a file. Returns 0 on success, u32::MAX on error.
 pub fn unlink(path: &str) -> u32 {
     let mut buf = [0u8; 257];
     prepare_path(path, &mut buf);
-    syscall1(SYS_UNLINK, buf.as_ptr() as u64)
+    sys_err(syscall1(SYS_UNLINK, buf.as_ptr() as u64))
 }
 
 /// Truncate a file to zero length. Returns 0 on success, u32::MAX on error.
 pub fn truncate(path: &str) -> u32 {
     let mut buf = [0u8; 257];
     prepare_path(path, &mut buf);
-    syscall1(SYS_TRUNCATE, buf.as_ptr() as u64)
+    sys_err(syscall1(SYS_TRUNCATE, buf.as_ptr() as u64))
 }
 
 // Seek whence constants
@@ -159,25 +167,25 @@ pub const SEEK_END: u32 = 2;
 
 /// Seek within an open file. Returns new position or u32::MAX on error.
 pub fn lseek(fd: u32, offset: i32, whence: u32) -> u32 {
-    syscall3(SYS_LSEEK, fd as u64, offset as i64 as u64, whence as u64)
+    sys_err(syscall3(SYS_LSEEK, fd as u64, offset as i64 as u64, whence as u64))
 }
 
 /// Get file information by fd. Returns 0 on success.
 /// Writes [type:u32, size:u32, position:u32] to stat_buf.
 pub fn fstat(fd: u32, stat_buf: &mut [u32; 3]) -> u32 {
-    syscall2(SYS_FSTAT, fd as u64, stat_buf.as_mut_ptr() as u64)
+    sys_err(syscall2(SYS_FSTAT, fd as u64, stat_buf.as_mut_ptr() as u64))
 }
 
 /// Get current working directory. Returns length or u32::MAX on error.
 pub fn getcwd(buf: &mut [u8]) -> u32 {
-    syscall2(SYS_GETCWD, buf.as_mut_ptr() as u64, buf.len() as u64)
+    sys_err(syscall2(SYS_GETCWD, buf.as_mut_ptr() as u64, buf.len() as u64))
 }
 
 /// Change current working directory. Returns 0 on success, u32::MAX on error.
 pub fn chdir(path: &str) -> u32 {
     let mut buf = [0u8; 257];
     prepare_path(path, &mut buf);
-    syscall1(SYS_CHDIR, buf.as_ptr() as u64)
+    sys_err(syscall1(SYS_CHDIR, buf.as_ptr() as u64))
 }
 
 /// Check if fd refers to a terminal. Returns 1 for tty, 0 otherwise.
@@ -197,7 +205,7 @@ pub fn mount(mount_path: &str, device: &str, fs_type: u32) -> u32 {
     let mut dev_buf = [0u8; 257];
     prepare_path(device, &mut dev_buf);
 
-    syscall3(SYS_MOUNT, mp_buf.as_ptr() as u64, dev_buf.as_ptr() as u64, fs_type as u64)
+    sys_err(syscall3(SYS_MOUNT, mp_buf.as_ptr() as u64, dev_buf.as_ptr() as u64, fs_type as u64))
 }
 
 /// Unmount a filesystem.
@@ -206,25 +214,25 @@ pub fn mount(mount_path: &str, device: &str, fs_type: u32) -> u32 {
 pub fn umount(mount_path: &str) -> u32 {
     let mut buf = [0u8; 257];
     prepare_path(mount_path, &mut buf);
-    syscall1(SYS_UMOUNT, buf.as_ptr() as u64)
+    sys_err(syscall1(SYS_UMOUNT, buf.as_ptr() as u64))
 }
 
 /// List all mount points. Writes tab-separated "path\tfstype\n" entries to buf.
 /// Returns bytes written, or u32::MAX on error.
 pub fn list_mounts(buf: &mut [u8]) -> u32 {
-    syscall2(SYS_LIST_MOUNTS, buf.as_mut_ptr() as u64, buf.len() as u64)
+    sys_err(syscall2(SYS_LIST_MOUNTS, buf.as_mut_ptr() as u64, buf.len() as u64))
 }
 
 /// Change file permissions. Returns 0 on success.
 pub fn chmod(path: &str, mode: u16) -> u32 {
     let mut path_buf = [0u8; 257];
     prepare_path(path, &mut path_buf);
-    syscall2(SYS_CHMOD, path_buf.as_ptr() as u64, mode as u64)
+    sys_err(syscall2(SYS_CHMOD, path_buf.as_ptr() as u64, mode as u64))
 }
 
 /// Change file owner (root only). Returns 0 on success.
 pub fn chown(path: &str, uid: u16, gid: u16) -> u32 {
     let mut path_buf = [0u8; 257];
     prepare_path(path, &mut path_buf);
-    syscall3(SYS_CHOWN, path_buf.as_ptr() as u64, uid as u64, gid as u64)
+    sys_err(syscall3(SYS_CHOWN, path_buf.as_ptr() as u64, uid as u64, gid as u64))
 }

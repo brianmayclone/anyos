@@ -142,7 +142,7 @@ fn load_config() {
     let mut buf = [0u8; 16];
     let n = anyos_std::fs::read(fd, &mut buf) as usize;
     anyos_std::fs::close(fd);
-    if n == 0 { return; }
+    if n == 0 || n > buf.len() { return; }
     // Parse ASCII decimal layout ID
     let s = match core::str::from_utf8(&buf[..n]) {
         Ok(s) => s.trim(),
