@@ -114,6 +114,10 @@ pub struct Thread {
     /// Capability bitmask — gates which syscalls this thread may invoke.
     /// Set from Info.conf for .app bundles, inherited (capped) for CLI programs.
     pub capabilities: CapSet,
+    /// User ID — 0 = root, >=1000 for regular users.
+    pub uid: u16,
+    /// Group ID — 0 = root/wheel, >=1000 for regular groups.
+    pub gid: u16,
 }
 
 /// Size of each thread's kernel-mode stack.
@@ -194,6 +198,8 @@ impl Thread {
                 c
             },
             capabilities: 0,
+            uid: 0,
+            gid: 0,
         }
     }
 

@@ -51,6 +51,10 @@ struct FoundEntry {
     /// Byte offset of the File entry (0x85) within the cluster buffer
     file_entry_offset: usize,
     secondary_count: u8,
+    /// File owner/group/permissions from reserved bytes 6-11
+    uid: u16,
+    gid: u16,
+    mode: u16,
 }
 
 /// In-memory representation of a mounted exFAT filesystem.
@@ -559,6 +563,12 @@ impl ExFatFs {
             let first_cluster = u32::from_le_bytes(buf[s + 20..s + 24].try_into().unwrap());
             let data_length = u64::from_le_bytes(buf[s + 24..s + 32].try_into().unwrap());
 
+            // Read uid/gid/mode from File Directory Entry reserved bytes 6-11
+            let entry_uid = u16::from_le_bytes([buf[i + 6], buf[i + 7]]);
+            let entry_gid = u16::from_le_bytes([buf[i + 8], buf[i + 9]]);
+            let entry_mode = u16::from_le_bytes([buf[i + 10], buf[i + 11]]);
+            let entry_mode = if entry_mode == 0 { 0xFFF } else { entry_mode };
+
             let collected = Self::collect_name(buf, i, secondary_count, name_length);
             if Self::names_equal(&collected, name) {
                 return Some(FoundEntry {
@@ -568,6 +578,9 @@ impl ExFatFs {
                     contiguous,
                     file_entry_offset: i,
                     secondary_count,
+                    uid: entry_uid,
+                    gid: entry_gid,
+                    mode: entry_mode,
                 });
             }
 
@@ -615,11 +628,22 @@ impl ExFatFs {
             };
 
             let is_symlink = attributes & ATTR_SYMLINK != 0;
+
+            // Read uid/gid/mode from File Directory Entry reserved bytes 6-11
+            let uid = u16::from_le_bytes([buf[i + 6], buf[i + 7]]);
+            let gid = u16::from_le_bytes([buf[i + 8], buf[i + 9]]);
+            let mode = u16::from_le_bytes([buf[i + 10], buf[i + 11]]);
+            // Default mode 0xFFF if unset (all zeros on disk means legacy/unset)
+            let mode = if mode == 0 { 0xFFF } else { mode };
+
             entries.push(DirEntry {
                 name: name_str,
                 file_type,
                 size: data_length as u32,
                 is_symlink,
+                uid,
+                gid,
+                mode,
             });
 
             i += total * 32;
@@ -684,11 +708,13 @@ impl ExFatFs {
 
     /// Look up a single name in a directory.
     /// Returns `(encoded_inode, file_type, size, is_symlink)`.
+    /// Lookup a name in a directory.
+    /// Returns (inode, file_type, size, is_symlink, uid, gid, mode).
     pub fn lookup_in_dir(
         &self,
         dir_cluster: u32,
         name: &str,
-    ) -> Result<(u32, FileType, u32, bool), FsError> {
+    ) -> Result<(u32, FileType, u32, bool, u16, u16, u16), FsError> {
         let raw = self.read_dir_raw(dir_cluster)?;
         match self.find_entry_in_buf(&raw, name) {
             Some(found) => {
@@ -696,9 +722,116 @@ impl ExFatFs {
                 let is_dir = found.attributes & ATTR_DIRECTORY != 0;
                 let ft = if is_dir { FileType::Directory } else { FileType::Regular };
                 let inode = encode_inode(found.first_cluster, found.contiguous);
-                Ok((inode, ft, found.data_length as u32, is_symlink))
+                Ok((inode, ft, found.data_length as u32, is_symlink, found.uid, found.gid, found.mode))
             }
             None => Err(FsError::NotFound),
+        }
+    }
+
+    /// Get the (uid, gid, mode) for a path.
+    pub fn get_permissions(&self, path: &str) -> Result<(u16, u16, u16), FsError> {
+        let path = path.trim_start_matches('/');
+        if path.is_empty() {
+            // Root directory: uid=0, gid=0, full access
+            return Ok((0, 0, 0xFFF));
+        }
+
+        let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let mut current_cluster = self.root_cluster;
+
+        for (idx, component) in components.iter().enumerate() {
+            let is_last = idx == components.len() - 1;
+            let dir_data = self.read_dir_raw(current_cluster)?;
+
+            match self.find_entry_in_buf(&dir_data, component) {
+                Some(found) => {
+                    if is_last {
+                        return Ok((found.uid, found.gid, found.mode));
+                    }
+                    if found.attributes & ATTR_DIRECTORY != 0 {
+                        current_cluster = found.first_cluster;
+                    } else {
+                        return Err(FsError::NotADirectory);
+                    }
+                }
+                None => return Err(FsError::NotFound),
+            }
+        }
+
+        Err(FsError::NotFound)
+    }
+
+    /// Set the mode bits for a path (update bytes 10-11 of the File Directory Entry).
+    pub fn set_mode(&mut self, path: &str, mode: u16) -> Result<(), FsError> {
+        self.update_entry_perms(path, None, None, Some(mode))
+    }
+
+    /// Set the owner (uid, gid) for a path.
+    pub fn set_owner(&mut self, path: &str, uid: u16, gid: u16) -> Result<(), FsError> {
+        self.update_entry_perms(path, Some(uid), Some(gid), None)
+    }
+
+    /// Update uid/gid/mode in the on-disk File Directory Entry.
+    fn update_entry_perms(
+        &mut self,
+        path: &str,
+        new_uid: Option<u16>,
+        new_gid: Option<u16>,
+        new_mode: Option<u16>,
+    ) -> Result<(), FsError> {
+        let path = path.trim_start_matches('/');
+        if path.is_empty() {
+            return Err(FsError::InvalidPath); // Can't change root
+        }
+
+        // Split into parent dir + filename
+        let (parent_path, filename) = match path.rfind('/') {
+            Some(pos) => (&path[..pos], &path[pos + 1..]),
+            None => ("", path),
+        };
+
+        // Resolve parent cluster
+        let parent_cluster = if parent_path.is_empty() {
+            self.root_cluster
+        } else {
+            match self.lookup(parent_path)? {
+                (cluster, FileType::Directory, _) => cluster,
+                _ => return Err(FsError::NotADirectory),
+            }
+        };
+
+        // Walk clusters to find the entry and modify it in-place
+        let cs = self.cluster_size() as usize;
+        let mut cur = parent_cluster;
+        loop {
+            let mut cbuf = vec![0u8; cs];
+            self.read_cluster(cur, &mut cbuf)?;
+
+            if let Some(found) = self.find_entry_in_buf(&cbuf, filename) {
+                let i = found.file_entry_offset;
+                // Update uid/gid/mode in-place
+                if let Some(uid) = new_uid {
+                    cbuf[i + 6..i + 8].copy_from_slice(&uid.to_le_bytes());
+                }
+                if let Some(gid) = new_gid {
+                    cbuf[i + 8..i + 10].copy_from_slice(&gid.to_le_bytes());
+                }
+                if let Some(mode) = new_mode {
+                    cbuf[i + 10..i + 12].copy_from_slice(&mode.to_le_bytes());
+                }
+                // Recompute checksum
+                let total = 1 + found.secondary_count as usize;
+                let checksum = Self::entry_set_checksum(&cbuf[i..i + total * 32], total);
+                cbuf[i + 2..i + 4].copy_from_slice(&checksum.to_le_bytes());
+                // Write back
+                self.write_cluster(cur, &cbuf)?;
+                return Ok(());
+            }
+
+            match self.next_cluster(cur) {
+                Some(next) => cur = next,
+                None => return Err(FsError::NotFound),
+            }
         }
     }
 
@@ -1008,6 +1141,9 @@ impl ExFatFs {
         first_cluster: u32,
         data_length: u64,
         contiguous: bool,
+        uid: u16,
+        gid: u16,
+        mode: u16,
     ) -> Vec<u8> {
         let utf16: Vec<u16> = name.bytes().map(|b| b as u16).collect();
         let name_len = utf16.len();
@@ -1021,6 +1157,10 @@ impl ExFatFs {
         set[1] = secondary as u8;
         // [2..3] = SetChecksum (filled last)
         set[4..6].copy_from_slice(&attributes.to_le_bytes());
+        // [6..11] = uid/gid/mode in reserved bytes
+        set[6..8].copy_from_slice(&uid.to_le_bytes());
+        set[8..10].copy_from_slice(&gid.to_le_bytes());
+        set[10..12].copy_from_slice(&mode.to_le_bytes());
 
         // -- Stream Extension (0xC0) --
         let s = 32;
@@ -1100,7 +1240,10 @@ impl ExFatFs {
         data_length: u64,
     ) -> Result<(), FsError> {
         let attr = if is_dir { ATTR_DIRECTORY } else { ATTR_ARCHIVE };
-        let entry_set = Self::build_entry_set(name, attr, first_cluster, data_length, false);
+        // New entries inherit current thread's uid/gid with full-access mode
+        let uid = crate::task::scheduler::current_thread_uid();
+        let gid = crate::task::scheduler::current_thread_gid();
+        let entry_set = Self::build_entry_set(name, attr, first_cluster, data_length, false, uid, gid, 0xFFF);
         let num = entry_set.len() / 32;
         let cs = self.cluster_size() as usize;
         let mut cur = parent_cluster;
@@ -1303,7 +1446,9 @@ impl ExFatFs {
         first_cluster: u32,
         data_length: u64,
     ) -> Result<(), FsError> {
-        let entry_set = Self::build_entry_set(name, attr, first_cluster, data_length, false);
+        let uid = crate::task::scheduler::current_thread_uid();
+        let gid = crate::task::scheduler::current_thread_gid();
+        let entry_set = Self::build_entry_set(name, attr, first_cluster, data_length, false, uid, gid, 0xFFF);
         let num = entry_set.len() / 32;
         let cs = self.cluster_size() as usize;
         let mut cur = parent_cluster;

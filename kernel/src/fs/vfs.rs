@@ -206,6 +206,9 @@ struct ResolvedEntry {
     file_type: FileType,
     size: u32,
     is_symlink: bool,
+    uid: u16,
+    gid: u16,
+    mode: u16,
 }
 
 /// Resolve a path on exFAT, following symlinks at intermediate components.
@@ -235,6 +238,9 @@ fn resolve_exfat_inner(
             file_type: FileType::Directory,
             size: 0,
             is_symlink: false,
+            uid: 0,
+            gid: 0,
+            mode: 0xFFF,
         });
     }
 
@@ -243,7 +249,7 @@ fn resolve_exfat_inner(
 
     for (idx, component) in components.iter().enumerate() {
         let is_last = idx == components.len() - 1;
-        let (inode, file_type, size, is_symlink) =
+        let (inode, file_type, size, is_symlink, entry_uid, entry_gid, entry_mode) =
             exfat.lookup_in_dir(current_cluster, component)?;
 
         if is_symlink && (!is_last || follow_last) {
@@ -295,6 +301,9 @@ fn resolve_exfat_inner(
                 file_type,
                 size,
                 is_symlink,
+                uid: entry_uid,
+                gid: entry_gid,
+                mode: entry_mode,
             });
         }
 
@@ -785,6 +794,7 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
                         file_type: FileType::Directory,
                         size: 0,
                         is_symlink: false,
+                        uid: 0, gid: 0, mode: 0xFFF,
                     });
                 }
             }
@@ -877,6 +887,7 @@ fn add_virtual_root_entries(state: &VfsState, entries: &mut Vec<DirEntry>) {
             file_type: FileType::Directory,
             size: 0,
             is_symlink: false,
+            uid: 0, gid: 0, mode: 0xFFF,
         });
     }
     if state.mount_points.iter().any(|mp| mp.path.starts_with("/mnt/")) {
@@ -885,6 +896,7 @@ fn add_virtual_root_entries(state: &VfsState, entries: &mut Vec<DirEntry>) {
             file_type: FileType::Directory,
             size: 0,
             is_symlink: false,
+            uid: 0, gid: 0, mode: 0xFFF,
         });
     }
 }
@@ -1041,45 +1053,58 @@ pub fn lseek(fd: FileDescriptor, offset: i32, whence: u32) -> Result<u32, FsErro
     Ok(new_pos)
 }
 
+/// Stat result with permission info.
+pub struct StatResult {
+    pub file_type: FileType,
+    pub size: u32,
+    pub is_symlink: bool,
+    pub uid: u16,
+    pub gid: u16,
+    pub mode: u16,
+}
+
 /// Get file type and size by path, following symlinks.
-/// Returns (file_type, size, is_symlink).
-pub fn stat(path: &str) -> Result<(FileType, u32, bool), FsError> {
+pub fn stat(path: &str) -> Result<StatResult, FsError> {
     stat_inner(path, true)
 }
 
 /// Get file type and size by path WITHOUT following the final symlink.
-/// Returns (file_type, size, is_symlink).
-pub fn lstat(path: &str) -> Result<(FileType, u32, bool), FsError> {
+pub fn lstat(path: &str) -> Result<StatResult, FsError> {
     stat_inner(path, false)
 }
 
-fn stat_inner(path: &str, follow_last: bool) -> Result<(FileType, u32, bool), FsError> {
+fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
     let vfs = VFS.lock();
     let state = vfs.as_ref().ok_or(FsError::IoError)?;
+
+    let default_stat = |ft, sz, sym| StatResult {
+        file_type: ft, size: sz, is_symlink: sym,
+        uid: 0, gid: 0, mode: 0xFFF,
+    };
 
     // --- DevFs path ---
     if is_dev_path(path) {
         let name = dev_name(path);
         if name.is_empty() {
-            return Ok((FileType::Directory, 0, false));
+            return Ok(default_stat(FileType::Directory, 0, false));
         }
         let devfs = state.devfs.as_ref().ok_or(FsError::NotFound)?;
         if devfs.lookup(name).is_some() {
-            return Ok((FileType::Device, 0, false));
+            return Ok(default_stat(FileType::Device, 0, false));
         }
         return Err(FsError::NotFound);
     }
 
     // Virtual directory paths
-    if path == "/" { return Ok((FileType::Directory, 0, false)); }
-    if path == "/mnt" || path == "/mnt/" { return Ok((FileType::Directory, 0, false)); }
-    if path == "/dev" || path == "/dev/" { return Ok((FileType::Directory, 0, false)); }
+    if path == "/" { return Ok(default_stat(FileType::Directory, 0, false)); }
+    if path == "/mnt" || path == "/mnt/" { return Ok(default_stat(FileType::Directory, 0, false)); }
+    if path == "/dev" || path == "/dev/" { return Ok(default_stat(FileType::Directory, 0, false)); }
 
     // --- Mount point path ---
     if let Some((_mount_path, relative_path)) = find_mnt_mount(path, &state.mount_points) {
         if let Some(ref iso) = state.iso9660_fs {
             let (_inode, file_type, size) = iso.lookup(relative_path)?;
-            return Ok((file_type, size, false));
+            return Ok(default_stat(file_type, size, false));
         }
         return Err(FsError::NotFound);
     }
@@ -1087,11 +1112,18 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<(FileType, u32, bool), Fs
     // --- exFAT path (with symlink resolution) ---
     if let Some(ref exfat) = state.exfat_fs {
         let r = resolve_exfat_path(exfat, path, follow_last)?;
-        return Ok((r.file_type, r.size, r.is_symlink));
+        return Ok(StatResult {
+            file_type: r.file_type,
+            size: r.size,
+            is_symlink: r.is_symlink,
+            uid: r.uid,
+            gid: r.gid,
+            mode: r.mode,
+        });
     }
     if let Some(ref fat) = state.fat_fs {
         let (_inode, file_type, size) = fat.lookup(path)?;
-        return Ok((file_type, size, false));
+        return Ok(default_stat(file_type, size, false));
     }
 
     Err(FsError::NotFound)
@@ -1238,6 +1270,46 @@ pub fn readlink(path: &str) -> Result<String, FsError> {
             return Err(FsError::InvalidPath); // Not a symlink
         }
         return exfat.readlink(r.inode, r.size);
+    }
+    Err(FsError::PermissionDenied)
+}
+
+/// Get (uid, gid, mode) for a path. Returns defaults for non-exFAT filesystems.
+pub fn get_permissions(path: &str) -> Result<(u16, u16, u16), FsError> {
+    let vfs = VFS.lock();
+    let state = vfs.as_ref().ok_or(FsError::NotFound)?;
+
+    // Virtual paths always have root/full-access
+    if path == "/dev" || path.starts_with("/dev/") || path == "/mnt" || path.starts_with("/mnt/") {
+        return Ok((0, 0, 0xFFF));
+    }
+
+    if let Some(ref exfat) = state.exfat_fs {
+        return exfat.get_permissions(path);
+    }
+
+    // FAT16 / other: no permission support
+    Ok((0, 0, 0xFFF))
+}
+
+/// Set the mode bits for a path.
+pub fn set_mode(path: &str, mode: u16) -> Result<(), FsError> {
+    let mut vfs = VFS.lock();
+    let state = vfs.as_mut().ok_or(FsError::NotFound)?;
+
+    if let Some(ref mut exfat) = state.exfat_fs {
+        return exfat.set_mode(path, mode);
+    }
+    Err(FsError::PermissionDenied)
+}
+
+/// Set the owner (uid, gid) for a path.
+pub fn set_owner(path: &str, uid: u16, gid: u16) -> Result<(), FsError> {
+    let mut vfs = VFS.lock();
+    let state = vfs.as_mut().ok_or(FsError::NotFound)?;
+
+    if let Some(ref mut exfat) = state.exfat_fs {
+        return exfat.set_owner(path, uid, gid);
     }
     Err(FsError::PermissionDenied)
 }

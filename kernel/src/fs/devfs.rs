@@ -92,6 +92,7 @@ impl DevFs {
                 file_type: FileType::Device,
                 size: 0,
                 is_symlink: false,
+                uid: 0, gid: 0, mode: 0xFFF,
             })
             .collect()
     }

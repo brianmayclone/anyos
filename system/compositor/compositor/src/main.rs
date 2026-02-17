@@ -247,13 +247,26 @@ fn main() {
     process::set_priority(0, 120);
     println!("compositor: management thread priority set to 120");
 
-    // Step 7: Spawn the dock now that everything is ready (event channel,
-    // render thread, management loop about to start).
-    let _dock_tid = process::spawn("/System/compositor/dock", "");
-    println!("compositor: dock spawned");
+    // Step 7: Spawn login window — authentication happens in main loop
+    // IMPORTANT: Cannot use blocking waitpid() here because the login window
+    // needs the compositor's IPC event loop running to create its window and
+    // receive input events. Using try_waitpid() in the main loop instead.
+    let login_tid = process::spawn("/System/login", "");
+    let mut login_pending = login_tid != u32::MAX;
+    let mut dock_spawned = false;
+    if login_pending {
+        println!("compositor: login window spawned, waiting for authentication...");
+    } else {
+        println!("compositor: login not found, continuing as root");
+    }
 
-    // Step 7b: Launch programs from compositor.conf (after dock)
-    launch_compositor_conf();
+    // Step 7b: If no login needed, spawn dock + conf immediately
+    if !login_pending {
+        let _dock_tid = process::spawn("/System/compositor/dock", "");
+        println!("compositor: dock spawned");
+        launch_compositor_conf();
+        dock_spawned = true;
+    }
 
     println!("compositor: entering main loop (multi-threaded)");
 
@@ -262,6 +275,44 @@ fn main() {
     let mut events_buf = [[0u32; 5]; 256];
     let mut ipc_buf = [0u32; 5];
     loop {
+        // ── Check if login window has exited ──
+        if login_pending {
+            let status = process::try_waitpid(login_tid);
+            if status != process::STILL_RUNNING {
+                login_pending = false;
+                let exit_uid = status;
+                println!("compositor: authentication complete, uid={}", exit_uid);
+
+                // Switch compositor process identity to the authenticated user
+                if exit_uid != u32::MAX && exit_uid != 0 {
+                    process::set_identity(exit_uid as u16);
+                    println!("compositor: identity switched to uid={}", exit_uid);
+                }
+
+                // Update environment for the user session
+                let uid = process::getuid();
+                let mut name_buf = [0u8; 32];
+                let nlen = process::getusername(uid, &mut name_buf);
+                if nlen != u32::MAX && nlen > 0 {
+                    if let Ok(username) = core::str::from_utf8(&name_buf[..nlen as usize]) {
+                        anyos_std::env::set("USER", username);
+                        if uid != 0 {
+                            let home = alloc::format!("/Users/{}", username);
+                            anyos_std::env::set("HOME", &home);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Spawn dock + conf programs once login is done
+        if !login_pending && !dock_spawned {
+            let _dock_tid = process::spawn("/System/compositor/dock", "");
+            println!("compositor: dock spawned");
+            launch_compositor_conf();
+            dock_spawned = true;
+        }
+
         // Poll raw input events (no lock needed — just reading from kernel)
         let event_count = ipc::input_poll(&mut events_buf) as usize;
 

@@ -186,6 +186,21 @@ pub const SYS_RANDOM: u32 = 210;
 // Capabilities query
 pub const SYS_GET_CAPABILITIES: u32 = 220;
 
+// User identity & management
+pub const SYS_GETUID: u32 = 221;
+pub const SYS_GETGID: u32 = 222;
+pub const SYS_AUTHENTICATE: u32 = 223;
+pub const SYS_CHMOD: u32 = 224;
+pub const SYS_CHOWN: u32 = 225;
+pub const SYS_ADDUSER: u32 = 226;
+pub const SYS_DELUSER: u32 = 227;
+pub const SYS_LISTUSERS: u32 = 228;
+pub const SYS_ADDGROUP: u32 = 229;
+pub const SYS_DELGROUP: u32 = 230;
+pub const SYS_LISTGROUPS: u32 = 231;
+pub const SYS_GETUSERNAME: u32 = 232;
+pub const SYS_SET_IDENTITY: u32 = 233;
+
 /// Register frame pushed by `syscall_entry.asm` / `syscall_fast.asm`.
 ///
 /// The layout matches the individual GPR pushes (no pushad in 64-bit mode) plus the
@@ -410,6 +425,21 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
 
         // Capabilities query
         SYS_GET_CAPABILITIES => handlers::sys_get_capabilities(),
+
+        // User identity & management
+        SYS_GETUID => handlers::sys_getuid(),
+        SYS_GETGID => handlers::sys_getgid(),
+        SYS_AUTHENTICATE => handlers::sys_authenticate(arg1, arg2),
+        SYS_CHMOD => handlers::sys_chmod(arg1, arg2),
+        SYS_CHOWN => handlers::sys_chown(arg1, arg2, arg3),
+        SYS_ADDUSER => handlers::sys_adduser(arg1),
+        SYS_DELUSER => handlers::sys_deluser(arg1),
+        SYS_LISTUSERS => handlers::sys_listusers(arg1, arg2),
+        SYS_ADDGROUP => handlers::sys_addgroup(arg1),
+        SYS_DELGROUP => handlers::sys_delgroup(arg1),
+        SYS_LISTGROUPS => handlers::sys_listgroups(arg1, arg2),
+        SYS_GETUSERNAME => handlers::sys_getusername(arg1, arg2, arg3),
+        SYS_SET_IDENTITY => handlers::sys_set_identity(arg1),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

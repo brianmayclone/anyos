@@ -994,7 +994,7 @@ class ExFatFormatter:
             h &= 0xFFFF
         return h
 
-    def _build_entry_set(self, name, attributes, first_cluster, data_length, contiguous=False):
+    def _build_entry_set(self, name, attributes, first_cluster, data_length, contiguous=False, uid=0, gid=0, mode=0xFFF):
         """Build a complete exFAT directory entry set."""
         utf16 = [ord(c) for c in name]
         name_len = len(utf16)
@@ -1008,6 +1008,10 @@ class ExFatFormatter:
         entry_set[1] = secondary
         # [2..3] = SetChecksum (filled last)
         struct.pack_into('<H', entry_set, 4, attributes)
+        # [6..11] = uid, gid, mode (VFS permissions)
+        struct.pack_into('<H', entry_set, 6, uid)
+        struct.pack_into('<H', entry_set, 8, gid)
+        struct.pack_into('<H', entry_set, 10, mode)
 
         # Stream Extension (0xC0)
         s = 32

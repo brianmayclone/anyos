@@ -71,4 +71,10 @@ pub struct DirEntry {
     pub size: u32,
     /// True if this entry is a symbolic link.
     pub is_symlink: bool,
+    /// Owner user ID.
+    pub uid: u16,
+    /// Owner group ID.
+    pub gid: u16,
+    /// Permission mode (12-bit: owner[8-11] | group[4-7] | others[0-3]).
+    pub mode: u16,
 }

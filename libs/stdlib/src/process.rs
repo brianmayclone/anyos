@@ -126,6 +126,44 @@ pub fn get_capabilities() -> u32 {
     syscall0(SYS_GET_CAPABILITIES)
 }
 
+/// Return the calling thread's user ID.
+pub fn getuid() -> u16 {
+    syscall0(SYS_GETUID) as u16
+}
+
+/// Return the calling thread's group ID.
+pub fn getgid() -> u16 {
+    syscall0(SYS_GETGID) as u16
+}
+
+/// Authenticate with username and password. On success, sets the process
+/// identity (uid/gid) and returns true. On failure returns false.
+pub fn authenticate(username: &str, password: &str) -> bool {
+    let mut ubuf = [0u8; 33];
+    let ulen = username.len().min(32);
+    ubuf[..ulen].copy_from_slice(&username.as_bytes()[..ulen]);
+    ubuf[ulen] = 0;
+
+    let mut pbuf = [0u8; 65];
+    let plen = password.len().min(64);
+    pbuf[..plen].copy_from_slice(&password.as_bytes()[..plen]);
+    pbuf[plen] = 0;
+
+    syscall2(SYS_AUTHENTICATE, ubuf.as_ptr() as u64, pbuf.as_ptr() as u64) == 0
+}
+
+/// Get username for a given uid. Returns the number of bytes written, or u32::MAX.
+pub fn getusername(uid: u16, buf: &mut [u8]) -> u32 {
+    syscall3(SYS_GETUSERNAME, uid as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
+}
+
+/// Root-only: Set the calling process's identity to the given uid.
+/// The kernel looks up the gid from the user database.
+/// Returns 0 on success, u32::MAX on failure.
+pub fn set_identity(uid: u16) -> u32 {
+    syscall1(SYS_SET_IDENTITY, uid as u64)
+}
+
 /// Get command-line arguments (raw). Returns the args length.
 /// The raw args string includes argv[0] (the program name).
 pub fn getargs(buf: &mut [u8]) -> usize {

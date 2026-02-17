@@ -13,7 +13,7 @@ fn main() {
         return;
     }
 
-    let mut stat_buf = [0u32; 3];
+    let mut stat_buf = [0u32; 6];
     if anyos_std::fs::stat(path, &mut stat_buf) != 0 {
         anyos_std::println!("stat: cannot stat '{}'", path);
         return;
@@ -27,7 +27,7 @@ fn main() {
     anyos_std::println!("  File: {}", path);
 
     // Check if it's a symlink via lstat
-    let mut lstat_buf = [0u32; 3];
+    let mut lstat_buf = [0u32; 6];
     let is_link = if anyos_std::fs::lstat(path, &mut lstat_buf) == 0 {
         lstat_buf[2] & 1 != 0
     } else {
@@ -43,6 +43,10 @@ fn main() {
         }
     }
 
+    let uid = stat_buf[3];
+    let gid = stat_buf[4];
+    let mode = stat_buf[5];
+
     if file_type == 1 {
         anyos_std::println!("  Type: directory{}", if is_symlink { " (symlink)" } else { "" });
         anyos_std::println!("  Entries: {}", size);
@@ -53,4 +57,21 @@ fn main() {
             anyos_std::println!("        ({} KiB)", size / 1024);
         }
     }
+
+    // Format mode as owner/group/others permission string
+    let owner = (mode >> 8) & 0xF;
+    let group = (mode >> 4) & 0xF;
+    let others = mode & 0xF;
+    let perm_str = |p: u32| -> &str {
+        match p {
+            0xF => "rmdc",
+            0x7 => "rmd-",
+            0x3 => "rm--",
+            0x1 => "r---",
+            0x0 => "----",
+            _ => "????"
+        }
+    };
+    anyos_std::println!("  Mode: 0x{:03X} ({}|{}|{})", mode, perm_str(owner), perm_str(group), perm_str(others));
+    anyos_std::println!("   Uid: {}    Gid: {}", uid, gid);
 }

@@ -595,7 +595,7 @@ fn emit_spawn_event(tid: u32, name: &str) {
 
 /// Create a new thread within the same address space as the currently running thread.
 pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &str, priority: u8) -> u32 {
-    let (pd, arch_mode, brk, parent_pri, parent_cwd, parent_caps) = {
+    let (pd, arch_mode, brk, parent_pri, parent_cwd, parent_caps, parent_uid, parent_gid) = {
         let guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
         let sched = match guard.as_ref() { Some(s) => s, None => return 0 };
@@ -603,7 +603,7 @@ pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &st
         let idx = match sched.find_idx(current_tid) { Some(i) => i, None => return 0 };
         let thread = &sched.threads[idx];
         let pd = match thread.page_directory { Some(pd) => pd, None => return 0 };
-        (pd, thread.arch_mode, thread.brk, thread.priority, thread.cwd, thread.capabilities)
+        (pd, thread.arch_mode, thread.brk, thread.priority, thread.cwd, thread.capabilities, thread.uid, thread.gid)
     };
 
     let effective_pri = if priority == 0 { parent_pri } else { priority };
@@ -622,6 +622,8 @@ pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &st
             thread.pd_shared = true;
             thread.cwd = parent_cwd;
             thread.capabilities = parent_caps;
+            thread.uid = parent_uid;
+            thread.gid = parent_gid;
         }
     }
 
@@ -1746,6 +1748,64 @@ pub fn set_thread_capabilities(tid: u32, caps: crate::task::capabilities::CapSet
     let sched = guard.as_mut().expect("Scheduler not initialized");
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.capabilities = caps;
+    }
+}
+
+/// Get the user ID of the currently running thread.
+pub fn current_thread_uid() -> u16 {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    let sched = guard.as_ref().expect("Scheduler not initialized");
+    if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
+        if let Some(thread) = sched.threads.iter().find(|t| t.tid == tid) {
+            return thread.uid;
+        }
+    }
+    0
+}
+
+/// Get the group ID of the currently running thread.
+pub fn current_thread_gid() -> u16 {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    let sched = guard.as_ref().expect("Scheduler not initialized");
+    if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
+        if let Some(thread) = sched.threads.iter().find(|t| t.tid == tid) {
+            return thread.gid;
+        }
+    }
+    0
+}
+
+/// Set the user and group IDs for a specific thread.
+pub fn set_thread_identity(tid: u32, uid: u16, gid: u16) {
+    let mut guard = SCHEDULER.lock();
+    let sched = guard.as_mut().expect("Scheduler not initialized");
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        thread.uid = uid;
+        thread.gid = gid;
+    }
+}
+
+/// Set uid/gid on ALL threads that share the same page_directory as the given thread.
+/// Used by SYS_AUTHENTICATE to propagate identity to all threads in a process.
+pub fn set_process_identity(tid: u32, uid: u16, gid: u16) {
+    let mut guard = SCHEDULER.lock();
+    let sched = guard.as_mut().expect("Scheduler not initialized");
+    // Find the page directory of the target thread
+    let pd = {
+        let thread = match sched.threads.iter().find(|t| t.tid == tid) {
+            Some(t) => t,
+            None => return,
+        };
+        thread.page_directory
+    };
+    // Update all threads sharing the same PD (same process)
+    for thread in sched.threads.iter_mut() {
+        if thread.page_directory == pd {
+            thread.uid = uid;
+            thread.gid = gid;
+        }
     }
 }
 

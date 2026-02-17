@@ -22,7 +22,7 @@ fn main() {
         "/System/bin:/System"
     };
 
-    let mut stat_buf = [0u32; 3];
+    let mut stat_buf = [0u32; 6];
 
     for dir in path_str.split(':') {
         let dir = dir.trim();

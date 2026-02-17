@@ -28,7 +28,7 @@ fn main() {
 
     // If force flag, remove existing file
     if force {
-        let mut stat_buf = [0u32; 3];
+        let mut stat_buf = [0u32; 6];
         if anyos_std::fs::lstat(link_name, &mut stat_buf) == 0 {
             if anyos_std::fs::unlink(link_name) != 0 {
                 anyos_std::println!("ln: cannot remove '{}': Permission denied", link_name);

@@ -624,7 +624,16 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         }
     };
     crate::task::scheduler::set_thread_capabilities(tid, caps);
-    crate::serial_println!("  Spawn complete: TID={}, caps={:#x}, all setup done — waking thread", tid, caps);
+
+    // Inherit uid/gid from parent thread (processes start with same identity)
+    let (parent_uid, parent_gid) = {
+        let uid = crate::task::scheduler::current_thread_uid();
+        let gid = crate::task::scheduler::current_thread_gid();
+        (uid, gid)
+    };
+    crate::task::scheduler::set_thread_identity(tid, parent_uid, parent_gid);
+
+    crate::serial_println!("  Spawn complete: TID={}, caps={:#x}, uid={}, gid={}, all setup done — waking thread", tid, caps, parent_uid, parent_gid);
 
     // All setup complete (CR3, pending data, args, CWD, caps). Now make the thread runnable.
     crate::task::scheduler::wake_thread(tid);

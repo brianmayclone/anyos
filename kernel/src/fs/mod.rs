@@ -6,4 +6,5 @@ pub mod fat;
 pub mod file;
 pub mod iso9660;
 pub mod path;
+pub mod permissions;
 pub mod vfs;

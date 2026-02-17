@@ -9,6 +9,7 @@ pub mod args;
 pub mod anim;
 pub mod audio;
 pub mod bundle;
+pub mod crypto;
 pub mod dll;
 pub mod env;
 pub mod fs;
@@ -21,6 +22,7 @@ pub mod net;
 pub mod process;
 pub mod sys;
 pub mod ui;
+pub mod users;
 
 // Re-export alloc types for user convenience
 pub use alloc::boxed::Box;

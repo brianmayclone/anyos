@@ -139,6 +139,9 @@ add_custom_command(
 set(SYSROOT_DIR "${CMAKE_BINARY_DIR}/sysroot")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/bin")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/sbin")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/users")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/Users")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/include")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/include/sys")
@@ -232,6 +235,35 @@ function(add_rust_system_program NAME SRC_DIR)
     COMMENT "Converting ${NAME} ELF to flat binary"
   )
   set(SYSTEM_BINS ${SYSTEM_BINS} ${SYSROOT_DIR}/System/${NAME} PARENT_SCOPE)
+endfunction()
+
+# Variant for privileged sbin programs (placed in /System/sbin/)
+function(add_rust_sbin_program NAME SRC_DIR)
+  set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos-user/release/${NAME}.elf")
+  file(GLOB_RECURSE _PROG_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
+  add_custom_command(
+    OUTPUT ${ELF}
+    COMMAND ${CARGO_EXECUTABLE} build --release
+      --manifest-path ${SRC_DIR}/Cargo.toml
+      --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
+      --target-dir ${CMAKE_BINARY_DIR}/programs/${NAME}
+    DEPENDS
+      ${SRC_DIR}/Cargo.toml
+      ${SRC_DIR}/build.rs
+      ${_PROG_RS}
+      ${STDLIB_DEPS}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Building sbin program: ${NAME}"
+  )
+  add_custom_command(
+    OUTPUT ${SYSROOT_DIR}/System/sbin/${NAME}
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+      ${ELF}
+      ${SYSROOT_DIR}/System/sbin/${NAME}
+    DEPENDS ${ELF}
+    COMMENT "Converting ${NAME} ELF to flat binary (sbin)"
+  )
+  set(RUST_USER_BINS ${RUST_USER_BINS} ${SYSROOT_DIR}/System/sbin/${NAME} PARENT_SCOPE)
 endfunction()
 
 # Variant for .app bundles (placed in /Applications/{DISPLAY_NAME}.app/)
@@ -406,6 +438,17 @@ add_rust_user_program(export     ${CMAKE_SOURCE_DIR}/bin/export)
 add_rust_user_program(mount      ${CMAKE_SOURCE_DIR}/bin/mount)
 add_rust_user_program(umount     ${CMAKE_SOURCE_DIR}/bin/umount)
 add_rust_user_program(open       ${CMAKE_SOURCE_DIR}/bin/open)
+add_rust_user_program(listuser   ${CMAKE_SOURCE_DIR}/bin/listuser)
+add_rust_user_program(listgroups ${CMAKE_SOURCE_DIR}/bin/listgroups)
+add_rust_user_program(chmod      ${CMAKE_SOURCE_DIR}/bin/chmod)
+add_rust_user_program(chown      ${CMAKE_SOURCE_DIR}/bin/chown)
+add_rust_user_program(su         ${CMAKE_SOURCE_DIR}/bin/su)
+
+# Privileged sbin programs
+add_rust_sbin_program(adduser    ${CMAKE_SOURCE_DIR}/bin/adduser)
+add_rust_sbin_program(deluser    ${CMAKE_SOURCE_DIR}/bin/deluser)
+add_rust_sbin_program(addgroup   ${CMAKE_SOURCE_DIR}/bin/addgroup)
+add_rust_sbin_program(delgroup   ${CMAKE_SOURCE_DIR}/bin/delgroup)
 
 # true/false: package names are true_cmd/false_cmd (Rust keywords) but binaries named true/false
 set(TRUE_ELF "${CMAKE_BINARY_DIR}/programs/true_cmd/x86_64-anyos-user/release/true_cmd.elf")
@@ -463,6 +506,7 @@ add_rust_system_program(init        ${CMAKE_SOURCE_DIR}/system/init)
 add_rust_system_program(audiomon    ${CMAKE_SOURCE_DIR}/system/audiomon)
 add_rust_system_program(netmon      ${CMAKE_SOURCE_DIR}/system/netmon)
 add_rust_system_program(inputmon    ${CMAKE_SOURCE_DIR}/system/inputmon)
+add_rust_system_program(login       ${CMAKE_SOURCE_DIR}/system/login)
 
 # Desktop GUI applications → .app bundles in /Applications/
 set(APP_BINS "")

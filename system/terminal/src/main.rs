@@ -166,25 +166,42 @@ struct ForegroundProcess {
 
 // ─── Environment / PATH helpers ──────────────────────────────────────────────
 
-/// Load /System/.env — sets KEY=VALUE pairs as environment variables.
-fn load_dotenv() {
-    let fd = fs::open("/System/.env", 0);
+/// Read a file into a buffer. Returns the number of bytes read.
+fn read_file_to_buf(path: &str, buf: &mut [u8]) -> usize {
+    let fd = fs::open(path, 0);
     if fd == u32::MAX {
-        return;
+        return 0;
     }
-    let mut data = [0u8; 1024];
     let mut total = 0usize;
     loop {
-        let n = fs::read(fd, &mut data[total..]);
+        let n = fs::read(fd, &mut buf[total..]);
         if n == 0 || n == u32::MAX {
             break;
         }
         total += n as usize;
-        if total >= data.len() {
+        if total >= buf.len() {
             break;
         }
     }
     fs::close(fd);
+    total
+}
+
+/// Source an .env file — supports:
+///   KEY=VALUE
+///   export KEY=VALUE
+///   source /path/to/file
+///   # comments
+/// `depth` prevents infinite recursion.
+fn source_env_file(path: &str, depth: u32) {
+    if depth > 4 {
+        return; // prevent infinite source loops
+    }
+    let mut data = [0u8; 2048];
+    let total = read_file_to_buf(path, &mut data);
+    if total == 0 {
+        return;
+    }
 
     let text = match core::str::from_utf8(&data[..total]) {
         Ok(s) => s,
@@ -195,11 +212,51 @@ fn load_dotenv() {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if let Some(eq) = line.find('=') {
-            let key = &line[..eq];
-            let val = &line[eq + 1..];
+
+        // Handle 'source /path/to/file'
+        if line.starts_with("source ") {
+            let target = line[7..].trim();
+            if !target.is_empty() {
+                source_env_file(target, depth + 1);
+            }
+            continue;
+        }
+
+        // Strip optional 'export ' prefix
+        let assignment = if line.starts_with("export ") {
+            line[7..].trim()
+        } else {
+            line
+        };
+
+        if let Some(eq) = assignment.find('=') {
+            let key = assignment[..eq].trim();
+            let val = assignment[eq + 1..].trim();
             if !key.is_empty() {
                 anyos_std::env::set(key, val);
+            }
+        }
+    }
+}
+
+/// Load system and user .env files.
+fn load_dotenv() {
+    // 1. System environment
+    source_env_file("/System/.env", 0);
+
+    // 2. User environment — determine username from uid
+    let uid = anyos_std::process::getuid();
+    let mut name_buf = [0u8; 32];
+    let nlen = anyos_std::process::getusername(uid, &mut name_buf);
+    if nlen != u32::MAX && nlen > 0 {
+        if let Ok(username) = core::str::from_utf8(&name_buf[..nlen as usize]) {
+            if username != "root" {
+                let user_env = format!("/Users/{}/.env", username);
+                source_env_file(&user_env, 0);
+                // Update HOME and USER based on actual identity
+                let home = format!("/Users/{}", username);
+                anyos_std::env::set("HOME", &home);
+                anyos_std::env::set("USER", username);
             }
         }
     }
@@ -217,7 +274,7 @@ fn resolve_from_path(cmd: &str) -> Option<String> {
         Ok(s) => s,
         Err(_) => return None,
     };
-    let mut stat_buf = [0u32; 3];
+    let mut stat_buf = [0u32; 6];
     for dir in path_str.split(':') {
         let dir = dir.trim();
         if dir.is_empty() {
@@ -377,6 +434,7 @@ impl Shell {
             "set" => self.cmd_set(args, buf),
             "export" => self.cmd_export(args, buf),
             "unset" => self.cmd_unset(args, buf),
+            "su" => self.cmd_su(args, buf),
             "exit" => return (false, None),
             "reboot" => {
                 buf.current_color = COLOR_FG;
@@ -590,7 +648,7 @@ impl Shell {
         buf.write_str("    uname    System identification\n");
         buf.write_str("    exit     Exit terminal\n");
         buf.write_str("\n");
-        buf.write_str("  Programs (in /System/bin):\n");
+        buf.write_str("  Programs (in PATH):\n");
         buf.write_str("    ls       List directory contents\n");
         buf.write_str("    cat      Show file contents\n");
         buf.write_str("    ping     Ping an IP address\n");
@@ -731,7 +789,7 @@ impl Shell {
         };
 
         // Verify directory exists via stat
-        let mut stat_buf = [0u32; 3];
+        let mut stat_buf = [0u32; 6];
         let ret = fs::stat(&new_path, &mut stat_buf);
         if ret != 0 {
             buf.current_color = COLOR_FG;
@@ -753,13 +811,39 @@ impl Shell {
         anyos_std::env::set("PWD", &self.cwd);
         fs::chdir(&self.cwd);
     }
+
+    fn cmd_su(&self, args: &str, buf: &mut TerminalBuffer) {
+        let parts: Vec<&str> = args.split_whitespace().collect();
+        let username = if parts.is_empty() { "root" } else { parts[0] };
+        let password = if parts.len() > 1 { parts[1] } else { "" };
+
+        buf.current_color = COLOR_FG;
+        if process::authenticate(username, password) {
+            // Update environment to reflect new identity
+            anyos_std::env::set("USER", username);
+            let uid = process::getuid();
+            if uid == 0 {
+                anyos_std::env::set("HOME", "/");
+            } else {
+                let home = format!("/Users/{}", username);
+                anyos_std::env::set("HOME", &home);
+            }
+            buf.write_str("Switched to user '");
+            buf.write_str(username);
+            buf.write_str("'.\n");
+        } else {
+            buf.write_str("su: authentication failed for '");
+            buf.write_str(username);
+            buf.write_str("'\n");
+        }
+    }
 }
 
 // ─── Builtins & Completion ───────────────────────────────────────────────────
 
 const BUILTINS: &[&str] = &[
     "help", "echo", "clear", "uname", "cd", "pwd",
-    "set", "export", "unset", "exit", "reboot",
+    "set", "export", "unset", "su", "exit", "reboot",
 ];
 
 /// Erase the input portion of the current display line and rewrite it.

@@ -59,6 +59,19 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_LSTAT, "lstat"),
     (SYS_GET_CAPABILITIES, "get_capabilities"),
     (SYS_BOOT_READY, "boot_ready"),
+    (SYS_GETUID, "getuid"),
+    (SYS_GETGID, "getgid"),
+    (SYS_AUTHENTICATE, "authenticate"),
+    (SYS_CHMOD, "chmod"),
+    (SYS_CHOWN, "chown"),
+    (SYS_ADDUSER, "adduser"),
+    (SYS_DELUSER, "deluser"),
+    (SYS_LISTUSERS, "listusers"),
+    (SYS_ADDGROUP, "addgroup"),
+    (SYS_DELGROUP, "delgroup"),
+    (SYS_LISTGROUPS, "listgroups"),
+    (SYS_GETUSERNAME, "getusername"),
+    (SYS_SET_IDENTITY, "set_identity"),
 ];
 
 /// Look up the human-readable name for a syscall number.

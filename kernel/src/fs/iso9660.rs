@@ -265,6 +265,7 @@ impl Iso9660Fs {
                 },
                 size: r.data_length,
                 is_symlink: false,
+                uid: 0, gid: 0, mode: 0xFFF,
             })
             .collect())
     }

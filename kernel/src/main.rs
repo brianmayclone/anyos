@@ -10,6 +10,7 @@ extern crate alloc;
 
 mod arch;
 mod boot_info;
+mod crypto;
 mod drivers;
 mod fs;
 mod graphics;
@@ -209,6 +210,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     // Phase 7f: External driver loading (requires VFS — scans /System/Drivers/)
     // Only loads drivers whose match rules correspond to unbound PCI devices.
     drivers::kdrv::probe_external_drivers();
+
+    // Phase 7g: User database (requires VFS)
+    task::users::init();
 
     // Phase 8: Initialize mouse
     drivers::input::mouse::init();

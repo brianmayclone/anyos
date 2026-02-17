@@ -164,6 +164,21 @@ pub(crate) const SYS_RANDOM: u32 = 210;
 // Capabilities query
 pub(crate) const SYS_GET_CAPABILITIES: u32 = 220;
 
+// User/group management
+pub(crate) const SYS_GETUID: u32 = 221;
+pub(crate) const SYS_GETGID: u32 = 222;
+pub(crate) const SYS_AUTHENTICATE: u32 = 223;
+pub(crate) const SYS_CHMOD: u32 = 224;
+pub(crate) const SYS_CHOWN: u32 = 225;
+pub(crate) const SYS_ADDUSER: u32 = 226;
+pub(crate) const SYS_DELUSER: u32 = 227;
+pub(crate) const SYS_LISTUSERS: u32 = 228;
+pub(crate) const SYS_ADDGROUP: u32 = 229;
+pub(crate) const SYS_DELGROUP: u32 = 230;
+pub(crate) const SYS_LISTGROUPS: u32 = 231;
+pub(crate) const SYS_GETUSERNAME: u32 = 232;
+pub(crate) const SYS_SET_IDENTITY: u32 = 233;
+
 // Event bus
 pub(crate) const SYS_EVT_SYS_SUBSCRIBE: u32 = 60;
 pub(crate) const SYS_EVT_SYS_POLL: u32 = 61;

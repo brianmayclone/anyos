@@ -87,7 +87,15 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_RANDOM
         | syscall::SYS_ISATTY
         | syscall::SYS_MMAP
-        | syscall::SYS_MUNMAP => 0,
+        | syscall::SYS_MUNMAP
+        | syscall::SYS_GETUID
+        | syscall::SYS_GETGID
+        | syscall::SYS_AUTHENTICATE
+        | syscall::SYS_LISTUSERS
+        | syscall::SYS_LISTGROUPS
+        | syscall::SYS_GETUSERNAME
+        | syscall::SYS_SET_IDENTITY
+        | syscall::SYS_GET_CAPABILITIES => 0,
 
         // Filesystem
         syscall::SYS_OPEN
@@ -108,7 +116,9 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_LSEEK
         | syscall::SYS_FSTAT
         | syscall::SYS_CHDIR
-        | syscall::SYS_GETCWD => CAP_FILESYSTEM,
+        | syscall::SYS_GETCWD
+        | syscall::SYS_CHMOD
+        | syscall::SYS_CHOWN => CAP_FILESYSTEM,
 
         // Networking
         syscall::SYS_NET_CONFIG
@@ -203,7 +213,11 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_LISTENV
         | syscall::SYS_KBD_SET_LAYOUT
         | syscall::SYS_SET_CRITICAL
-        | syscall::SYS_SET_DLL_U32 => CAP_SYSTEM,
+        | syscall::SYS_SET_DLL_U32
+        | syscall::SYS_ADDUSER
+        | syscall::SYS_DELUSER
+        | syscall::SYS_ADDGROUP
+        | syscall::SYS_DELGROUP => CAP_SYSTEM,
 
         // DLL loading
         syscall::SYS_DLL_LOAD => CAP_DLL,

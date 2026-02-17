@@ -94,6 +94,16 @@ exclude = [
   "bin/mount",
   "bin/umount",
   "bin/open",
+  "bin/adduser",
+  "bin/deluser",
+  "bin/listuser",
+  "bin/listgroups",
+  "bin/addgroup",
+  "bin/delgroup",
+  "bin/chmod",
+  "bin/chown",
+  "bin/su",
+  "system/login",
   # Bootloader
   "bootloader/uefi",
 ]

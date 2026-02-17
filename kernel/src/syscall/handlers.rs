@@ -5,6 +5,7 @@
 //! requested kernel operation, and return a result code in EAX.
 
 use alloc::string::String;
+use crate::fs::permissions::{check_permission, PERM_CREATE};
 
 // =========================================================================
 // Helpers
@@ -203,6 +204,26 @@ pub fn sys_open(path_ptr: u32, flags: u32, _arg3: u32) -> u32 {
         truncate: (flags & 8) != 0,
     };
     let resolved = resolve_path(path);
+
+    // VFS permission check
+    if let Ok((uid, gid, mode)) = crate::fs::vfs::get_permissions(&resolved) {
+        use crate::fs::permissions::*;
+        let needed = if file_flags.write { PERM_READ | PERM_MODIFY } else { PERM_READ };
+        if !check_permission(uid, gid, mode, needed) {
+            return u32::MAX;
+        }
+    } else if file_flags.create {
+        // File doesn't exist, check create permission on parent
+        if let Some(parent) = resolved.rfind('/') {
+            let parent_path = if parent == 0 { "/" } else { &resolved[..parent] };
+            if let Ok((uid, gid, mode)) = crate::fs::vfs::get_permissions(parent_path) {
+                if !check_permission(uid, gid, mode, PERM_CREATE) {
+                    return u32::MAX;
+                }
+            }
+        }
+    }
+
     let result = match crate::fs::vfs::open(&resolved, file_flags) {
         Ok(fd) => fd,
         Err(_) => u32::MAX,
@@ -378,6 +399,13 @@ pub fn sys_getargs(buf_ptr: u32, buf_size: u32) -> u32 {
 pub fn sys_readdir(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
     let path = resolve_path(unsafe { read_user_str(path_ptr) });
 
+    // Permission check: need PERM_READ on directory
+    if let Ok((uid, gid, mode)) = crate::fs::vfs::get_permissions(&path) {
+        if !crate::fs::permissions::check_permission(uid, gid, mode, crate::fs::permissions::PERM_READ) {
+            return 0;
+        }
+    }
+
     match crate::fs::vfs::read_dir(&path) {
         Ok(entries) => {
             let entry_size = 64u32;
@@ -413,7 +441,8 @@ pub fn sys_readdir(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
 }
 
 /// sys_stat - Get file information (follows symlinks).
-/// arg1=path_ptr (null-terminated), arg2=stat_buf_ptr: output [type:u32, size:u32, flags:u32] = 12 bytes
+/// arg1=path_ptr (null-terminated), arg2=stat_buf_ptr:
+/// output [type:u32, size:u32, flags:u32, uid:u32, gid:u32, mode:u32] = 24 bytes
 /// flags: bit 0 = is_symlink
 /// Returns 0 on success, u32::MAX on error.
 pub fn sys_stat(path_ptr: u32, buf_ptr: u32) -> u32 {
@@ -421,19 +450,22 @@ pub fn sys_stat(path_ptr: u32, buf_ptr: u32) -> u32 {
     let path = resolve_path(raw_path);
 
     match crate::fs::vfs::stat(&path) {
-        Ok((file_type, size, is_symlink)) => {
+        Ok(st) => {
             if buf_ptr != 0 {
-                let type_val: u32 = match file_type {
+                let type_val: u32 = match st.file_type {
                     crate::fs::file::FileType::Directory => 1,
                     crate::fs::file::FileType::Device => 2,
                     _ => 0, // Regular
                 };
-                let flags: u32 = if is_symlink { 1 } else { 0 };
+                let flags: u32 = if st.is_symlink { 1 } else { 0 };
                 unsafe {
                     let buf = buf_ptr as *mut u32;
                     *buf = type_val;
-                    *buf.add(1) = size;
+                    *buf.add(1) = st.size;
                     *buf.add(2) = flags;
+                    *buf.add(3) = st.uid as u32;
+                    *buf.add(4) = st.gid as u32;
+                    *buf.add(5) = st.mode as u32;
                 }
             }
             0
@@ -443,26 +475,29 @@ pub fn sys_stat(path_ptr: u32, buf_ptr: u32) -> u32 {
 }
 
 /// sys_lstat - Get file information WITHOUT following final symlink.
-/// Same format as sys_stat: [type:u32, size:u32, flags:u32] = 12 bytes
+/// Same format as sys_stat: [type:u32, size:u32, flags:u32, uid:u32, gid:u32, mode:u32] = 24 bytes
 /// Returns 0 on success, u32::MAX on error.
 pub fn sys_lstat(path_ptr: u32, buf_ptr: u32) -> u32 {
     let raw_path = unsafe { read_user_str(path_ptr) };
     let path = resolve_path(raw_path);
 
     match crate::fs::vfs::lstat(&path) {
-        Ok((file_type, size, is_symlink)) => {
+        Ok(st) => {
             if buf_ptr != 0 {
-                let type_val: u32 = match file_type {
+                let type_val: u32 = match st.file_type {
                     crate::fs::file::FileType::Directory => 1,
                     crate::fs::file::FileType::Device => 2,
                     _ => 0, // Regular
                 };
-                let flags: u32 = if is_symlink { 1 } else { 0 };
+                let flags: u32 = if st.is_symlink { 1 } else { 0 };
                 unsafe {
                     let buf = buf_ptr as *mut u32;
                     *buf = type_val;
-                    *buf.add(1) = size;
+                    *buf.add(1) = st.size;
                     *buf.add(2) = flags;
+                    *buf.add(3) = st.uid as u32;
+                    *buf.add(4) = st.gid as u32;
+                    *buf.add(5) = st.mode as u32;
                 }
             }
             0
@@ -604,6 +639,17 @@ pub fn sys_isatty(fd: u32) -> u32 {
 pub fn sys_mkdir(path_ptr: u32) -> u32 {
     if path_ptr == 0 { return u32::MAX; }
     let path = resolve_path(unsafe { read_user_str(path_ptr) });
+
+    // Permission check: need PERM_CREATE on parent directory
+    if let Some(parent_end) = path.rfind('/') {
+        let parent = if parent_end == 0 { "/" } else { &path[..parent_end] };
+        if let Ok((uid, gid, mode)) = crate::fs::vfs::get_permissions(parent) {
+            if !crate::fs::permissions::check_permission(uid, gid, mode, crate::fs::permissions::PERM_CREATE) {
+                return u32::MAX;
+            }
+        }
+    }
+
     match crate::fs::vfs::mkdir(&path) {
         Ok(()) => 0,
         Err(_) => u32::MAX,
@@ -614,6 +660,17 @@ pub fn sys_mkdir(path_ptr: u32) -> u32 {
 pub fn sys_unlink(path_ptr: u32) -> u32 {
     if path_ptr == 0 { return u32::MAX; }
     let path = resolve_path(unsafe { read_user_str(path_ptr) });
+
+    // Permission check: need PERM_DELETE on parent directory
+    if let Some(parent_end) = path.rfind('/') {
+        let parent = if parent_end == 0 { "/" } else { &path[..parent_end] };
+        if let Ok((uid, gid, mode)) = crate::fs::vfs::get_permissions(parent) {
+            if !crate::fs::permissions::check_permission(uid, gid, mode, crate::fs::permissions::PERM_DELETE) {
+                return u32::MAX;
+            }
+        }
+    }
+
     match crate::fs::vfs::delete(&path) {
         Ok(()) => 0,
         Err(_) => u32::MAX,
@@ -624,6 +681,14 @@ pub fn sys_unlink(path_ptr: u32) -> u32 {
 pub fn sys_truncate(path_ptr: u32) -> u32 {
     if path_ptr == 0 { return u32::MAX; }
     let path = resolve_path(unsafe { read_user_str(path_ptr) });
+
+    // Permission check: need PERM_MODIFY on the file
+    if let Ok((uid, gid, mode)) = crate::fs::vfs::get_permissions(&path) {
+        if !crate::fs::permissions::check_permission(uid, gid, mode, crate::fs::permissions::PERM_MODIFY) {
+            return u32::MAX;
+        }
+    }
+
     match crate::fs::vfs::truncate(&path) {
         Ok(()) => 0,
         Err(_) => u32::MAX,
@@ -2275,4 +2340,233 @@ pub fn sys_kbd_list_layouts(buf_ptr: u32, max_entries: u32) -> u32 {
         dst[i] = LAYOUT_INFOS[i];
     }
     count as u32
+}
+
+// =========================================================================
+// User identity & management
+// =========================================================================
+
+/// SYS_GETUID: Return the calling thread's user ID.
+pub fn sys_getuid() -> u32 {
+    crate::task::scheduler::current_thread_uid() as u32
+}
+
+/// SYS_GETGID: Return the calling thread's group ID.
+pub fn sys_getgid() -> u32 {
+    crate::task::scheduler::current_thread_gid() as u32
+}
+
+/// SYS_AUTHENTICATE: Verify credentials and set uid/gid on the calling process.
+/// arg1 = username_ptr (null-terminated), arg2 = password_ptr (null-terminated).
+/// Returns 0 on success, u32::MAX on failure.
+pub fn sys_authenticate(username_ptr: u32, password_ptr: u32) -> u32 {
+    let username = match read_user_str_safe(username_ptr) {
+        Some(s) => s,
+        None => return u32::MAX,
+    };
+    let password = match read_user_str_safe(password_ptr) {
+        Some(s) => s,
+        None => return u32::MAX,
+    };
+
+    match crate::task::users::authenticate(username, password) {
+        Some((uid, gid)) => {
+            let tid = crate::task::scheduler::current_tid();
+            crate::task::scheduler::set_process_identity(tid, uid, gid);
+            crate::serial_println!("  AUTH: T{} authenticated as {}(uid={}, gid={})", tid, username, uid, gid);
+            0
+        }
+        None => {
+            crate::serial_println!("  AUTH: Failed authentication for '{}'", username);
+            u32::MAX
+        }
+    }
+}
+
+/// SYS_CHMOD: Change file permission mode.
+/// arg1 = path_ptr, arg2 = new_mode (u16).
+/// Only owner or root can change permissions.
+pub fn sys_chmod(path_ptr: u32, mode: u32) -> u32 {
+    let path = match read_user_str_safe(path_ptr) {
+        Some(s) => s,
+        None => return u32::MAX,
+    };
+    let resolved = resolve_path(path);
+    let mode = mode as u16;
+
+    // Check ownership: must be owner or root
+    let thread_uid = crate::task::scheduler::current_thread_uid();
+    if thread_uid != 0 {
+        if let Ok(perms) = crate::fs::vfs::get_permissions(&resolved) {
+            if perms.0 != thread_uid {
+                return u32::MAX; // Not owner and not root
+            }
+        }
+    }
+
+    match crate::fs::vfs::set_mode(&resolved, mode) {
+        Ok(()) => 0,
+        Err(_) => u32::MAX,
+    }
+}
+
+/// SYS_CHOWN: Change file owner/group. Root only.
+/// arg1 = path_ptr, arg2 = new_uid (u16), arg3 = new_gid (u16).
+pub fn sys_chown(path_ptr: u32, uid: u32, gid: u32) -> u32 {
+    // Root-only check
+    if crate::task::scheduler::current_thread_uid() != 0 {
+        return u32::MAX;
+    }
+    let path = match read_user_str_safe(path_ptr) {
+        Some(s) => s,
+        None => return u32::MAX,
+    };
+    let resolved = resolve_path(path);
+
+    match crate::fs::vfs::set_owner(&resolved, uid as u16, gid as u16) {
+        Ok(()) => 0,
+        Err(_) => u32::MAX,
+    }
+}
+
+/// SYS_ADDUSER: Add a user. Root only.
+/// arg1 = ptr to packed struct: [username_ptr: u32, password_ptr: u32, fullname_ptr: u32, homedir_ptr: u32]
+pub fn sys_adduser(data_ptr: u32) -> u32 {
+    // Root-only check
+    if crate::task::scheduler::current_thread_uid() != 0 {
+        return u32::MAX;
+    }
+    if !is_valid_user_ptr(data_ptr as u64, 16) {
+        return u32::MAX;
+    }
+
+    let ptrs = unsafe { core::slice::from_raw_parts(data_ptr as *const u32, 4) };
+    let username = match read_user_str_safe(ptrs[0]) {
+        Some(s) => s,
+        None => return u32::MAX,
+    };
+    let password = match read_user_str_safe(ptrs[1]) {
+        Some(s) => s,
+        None => return u32::MAX,
+    };
+    let fullname = match read_user_str_safe(ptrs[2]) {
+        Some(s) if !s.is_empty() => s,
+        _ => username,
+    };
+    let homedir_default = alloc::format!("/Users/{}", username);
+    let homedir = match read_user_str_safe(ptrs[3]) {
+        Some(s) if !s.is_empty() => s,
+        _ => &homedir_default,
+    };
+
+    // Hash password
+    let hash = if password.is_empty() {
+        [0u8; 32] // empty hash = no password
+    } else {
+        crate::crypto::md5::md5_hex(password.as_bytes())
+    };
+    let hash_str = core::str::from_utf8(&hash).unwrap_or("");
+
+    let uid = crate::task::users::next_uid();
+    let gid = uid; // Default: same as uid
+
+    if crate::task::users::add_user(username, hash_str, uid, gid, fullname, homedir) {
+        // Create home directory
+        let _ = crate::fs::vfs::mkdir(homedir);
+        let docs = alloc::format!("{}/Documents", homedir);
+        let _ = crate::fs::vfs::mkdir(&docs);
+
+        // Set ownership on home directory
+        let _ = crate::fs::vfs::set_owner(homedir, uid, gid);
+        let _ = crate::fs::vfs::set_mode(homedir, 0xFF0); // owner+group full, others none
+
+        crate::serial_println!("  ADDUSER: Created user '{}' uid={} gid={} home={}", username, uid, gid, homedir);
+        uid as u32
+    } else {
+        u32::MAX
+    }
+}
+
+/// SYS_DELUSER: Remove a user by UID. Root only.
+pub fn sys_deluser(uid: u32) -> u32 {
+    if crate::task::scheduler::current_thread_uid() != 0 {
+        return u32::MAX;
+    }
+    if crate::task::users::remove_user(uid as u16) { 0 } else { u32::MAX }
+}
+
+/// SYS_LISTUSERS: List all users into a buffer.
+/// arg1 = buf_ptr, arg2 = buf_len. Returns bytes written.
+pub fn sys_listusers(buf_ptr: u32, buf_len: u32) -> u32 {
+    if buf_ptr == 0 || buf_len == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_len as u64) {
+        return 0;
+    }
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize) };
+    crate::task::users::list_users(buf) as u32
+}
+
+/// SYS_ADDGROUP: Add a group. Root only.
+/// arg1 = ptr to packed struct: [name_ptr: u32, gid: u32]
+pub fn sys_addgroup(data_ptr: u32) -> u32 {
+    if crate::task::scheduler::current_thread_uid() != 0 {
+        return u32::MAX;
+    }
+    if !is_valid_user_ptr(data_ptr as u64, 8) {
+        return u32::MAX;
+    }
+    let ptrs = unsafe { core::slice::from_raw_parts(data_ptr as *const u32, 2) };
+    let name = match read_user_str_safe(ptrs[0]) {
+        Some(s) => s,
+        None => return u32::MAX,
+    };
+    let gid = ptrs[1] as u16;
+    if crate::task::users::add_group(name, gid) { 0 } else { u32::MAX }
+}
+
+/// SYS_DELGROUP: Remove a group by GID. Root only.
+pub fn sys_delgroup(gid: u32) -> u32 {
+    if crate::task::scheduler::current_thread_uid() != 0 {
+        return u32::MAX;
+    }
+    if crate::task::users::remove_group(gid as u16) { 0 } else { u32::MAX }
+}
+
+/// SYS_LISTGROUPS: List all groups into a buffer.
+pub fn sys_listgroups(buf_ptr: u32, buf_len: u32) -> u32 {
+    if buf_ptr == 0 || buf_len == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_len as u64) {
+        return 0;
+    }
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize) };
+    crate::task::users::list_groups(buf) as u32
+}
+
+/// SYS_GETUSERNAME: Get username for a UID.
+/// arg1 = uid, arg2 = buf_ptr, arg3 = buf_len. Returns bytes written.
+pub fn sys_getusername(uid: u32, buf_ptr: u32, buf_len: u32) -> u32 {
+    if buf_ptr == 0 || buf_len == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_len as u64) {
+        return 0;
+    }
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize) };
+    crate::task::users::get_username(uid as u16, buf) as u32
+}
+
+/// SYS_SET_IDENTITY: Root-only. Set uid/gid on calling process.
+/// arg1 = uid. The kernel looks up the user's gid from the user database.
+/// Sets uid/gid on ALL threads sharing the caller's page_directory.
+/// Returns 0 on success, u32::MAX on failure.
+pub fn sys_set_identity(uid: u32) -> u32 {
+    // Only root can call this
+    if crate::task::scheduler::current_thread_uid() != 0 {
+        return u32::MAX;
+    }
+
+    let uid16 = uid as u16;
+
+    // Look up gid from user database
+    let gid = crate::task::users::lookup_gid_for_uid(uid16);
+
+    // Get current thread's TID to find all threads in this process
+    let tid = crate::task::scheduler::current_tid();
+    crate::task::scheduler::set_process_identity(tid, uid16, gid);
+    0
 }
