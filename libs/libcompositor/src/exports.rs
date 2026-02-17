@@ -19,6 +19,7 @@ const CMD_UPDATE_MENU_ITEM: u32 = 0x1009;
 const CMD_RESIZE_SHM: u32 = 0x100B;
 const CMD_REGISTER_SUB: u32 = 0x100C;
 const CMD_SET_BLUR_BEHIND: u32 = 0x100E;
+const CMD_SET_WALLPAPER: u32 = 0x100F;
 const RESP_WINDOW_CREATED: u32 = 0x2001;
 
 const NUM_EXPORTS: u32 = 16;
@@ -67,8 +68,8 @@ pub struct LibcompositorExports {
     /// Get screen dimensions.
     pub screen_size: extern "C" fn(out_w: *mut u32, out_h: *mut u32),
 
-    /// Set desktop wallpaper.
-    pub set_wallpaper: extern "C" fn(pixels: *const u32, width: u32, height: u32),
+    /// Set desktop wallpaper by file path (via compositor IPC).
+    pub set_wallpaper: extern "C" fn(channel_id: u32, path_ptr: *const u8, path_len: u32),
 
     /// Move a window to a new position.
     pub move_window: extern "C" fn(channel_id: u32, window_id: u32, x: i32, y: i32),
@@ -287,9 +288,38 @@ extern "C" fn export_screen_size(out_w: *mut u32, out_h: *mut u32) {
     syscall::screen_size(out_w, out_h);
 }
 
-extern "C" fn export_set_wallpaper(_pixels: *const u32, _width: u32, _height: u32) {
-    // TODO: Implement wallpaper setting via compositor IPC
-    // For now, this is a no-op. Wallpaper is loaded by the compositor itself.
+extern "C" fn export_set_wallpaper(channel_id: u32, path_ptr: *const u8, path_len: u32) {
+    if path_ptr.is_null() || path_len == 0 || path_len > 255 {
+        return;
+    }
+
+    // Create temp SHM and copy path as null-terminated string
+    let shm_size = path_len + 1; // +1 for null terminator
+    let shm_id = syscall::shm_create(shm_size);
+    if shm_id == 0 {
+        return;
+    }
+    let shm_addr = syscall::shm_map(shm_id);
+    if shm_addr == 0 {
+        syscall::shm_destroy(shm_id);
+        return;
+    }
+
+    // Copy path into SHM with null terminator
+    let dst = shm_addr as *mut u8;
+    unsafe {
+        core::ptr::copy_nonoverlapping(path_ptr, dst, path_len as usize);
+        *dst.add(path_len as usize) = 0; // null terminator
+    }
+
+    // Send CMD_SET_WALLPAPER: [CMD, shm_id, 0, 0, 0]
+    let cmd: [u32; 5] = [CMD_SET_WALLPAPER, shm_id, 0, 0, 0];
+    syscall::evt_chan_emit(channel_id, &cmd);
+
+    // Wait for compositor to read the SHM, then free it
+    syscall::sleep(32);
+    syscall::shm_unmap(shm_id);
+    syscall::shm_destroy(shm_id);
 }
 
 extern "C" fn export_move_window(channel_id: u32, window_id: u32, x: i32, y: i32) {

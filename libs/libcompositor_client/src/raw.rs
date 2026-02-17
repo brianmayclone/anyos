@@ -40,7 +40,7 @@ pub struct LibcompositorExports {
 
     pub screen_size: extern "C" fn(out_w: *mut u32, out_h: *mut u32),
 
-    pub set_wallpaper: extern "C" fn(pixels: *const u32, width: u32, height: u32),
+    pub set_wallpaper: extern "C" fn(channel_id: u32, path_ptr: *const u8, path_len: u32),
 
     pub move_window: extern "C" fn(channel_id: u32, window_id: u32, x: i32, y: i32),
 

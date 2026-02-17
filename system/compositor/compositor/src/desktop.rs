@@ -535,6 +535,9 @@ pub struct Desktop {
     wallpaper_pending: bool,
     /// Tray icon events for windowless apps (pushed directly as IPC events)
     tray_ipc_events: Vec<(Option<u32>, [u32; 5])>,
+    /// Current wallpaper path (for reload on resolution change)
+    wallpaper_path: [u8; 128],
+    wallpaper_path_len: usize,
 }
 
 impl Desktop {
@@ -583,6 +586,8 @@ impl Desktop {
             app_subs: Vec::with_capacity(16),
             wallpaper_pending: false,
             tray_ipc_events: Vec::new(),
+            wallpaper_path: [0u8; 128],
+            wallpaper_path_len: 0,
         };
 
         // Enable GPU 2D acceleration for the compositor (RECT_COPY, RECT_FILL)
@@ -611,12 +616,79 @@ impl Desktop {
 
     /// Draw the initial desktop (background + menubar).
     pub fn init(&mut self) {
-        // Load wallpaper (falls back to gradient)
+        // Load user's preferred wallpaper (falls back to default, then gradient)
+        self.load_user_wallpaper();
+        self.draw_menubar();
+        self.compositor.damage_all();
+    }
+
+    /// Load wallpaper from per-user preferences file.
+    /// Format: `<uid>:<path>\n` per line in `/System/users/wallpapers`.
+    fn load_user_wallpaper(&mut self) {
+        use anyos_std::fs;
+        use anyos_std::process;
+
+        let uid = process::getuid() as u32;
+        let mut path_found = false;
+
+        let fd = fs::open("/System/users/wallpapers", 0);
+        if fd != u32::MAX {
+            let mut buf = [0u8; 512];
+            let n = fs::read(fd, &mut buf) as usize;
+            fs::close(fd);
+
+            // Parse lines: "<uid>:<path>\n"
+            let data = &buf[..n];
+            let mut pos = 0;
+            while pos < data.len() {
+                // Find end of line
+                let line_end = data[pos..].iter().position(|&b| b == b'\n')
+                    .map(|p| pos + p).unwrap_or(data.len());
+                let line = &data[pos..line_end];
+                pos = line_end + 1;
+
+                // Find colon separator
+                if let Some(colon) = line.iter().position(|&b| b == b':') {
+                    // Parse uid
+                    let uid_str = &line[..colon];
+                    let mut parsed_uid: u32 = 0;
+                    let mut valid = uid_str.len() > 0;
+                    for &b in uid_str {
+                        if b >= b'0' && b <= b'9' {
+                            parsed_uid = parsed_uid * 10 + (b - b'0') as u32;
+                        } else {
+                            valid = false;
+                            break;
+                        }
+                    }
+                    if valid && parsed_uid == uid {
+                        let path_bytes = &line[colon + 1..];
+                        let len = path_bytes.len().min(127);
+                        self.wallpaper_path[..len].copy_from_slice(&path_bytes[..len]);
+                        self.wallpaper_path_len = len;
+                        path_found = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Try user's preferred wallpaper
+        if path_found {
+            let path = core::str::from_utf8(&self.wallpaper_path[..self.wallpaper_path_len])
+                .unwrap_or("");
+            if self.load_wallpaper(path) {
+                return;
+            }
+        }
+
+        // Fall back to default
+        let default_path = b"/media/wallpapers/default.png";
+        self.wallpaper_path[..default_path.len()].copy_from_slice(default_path);
+        self.wallpaper_path_len = default_path.len();
         if !self.load_wallpaper("/media/wallpapers/default.png") {
             self.draw_gradient_background();
         }
-        self.draw_menubar();
-        self.compositor.damage_all();
     }
 
     /// Process deferred wallpaper reload (after resolution change).
@@ -627,7 +699,14 @@ impl Desktop {
             return;
         }
         self.wallpaper_pending = false;
-        if self.load_wallpaper("/media/wallpapers/default.png") {
+        let path = core::str::from_utf8(&self.wallpaper_path[..self.wallpaper_path_len])
+            .unwrap_or("/media/wallpapers/default.png");
+        // Need a stack copy since load_wallpaper borrows &mut self
+        let mut path_buf = [0u8; 128];
+        let len = path.len().min(127);
+        path_buf[..len].copy_from_slice(&path.as_bytes()[..len]);
+        let path_str = core::str::from_utf8(&path_buf[..len]).unwrap_or("");
+        if self.load_wallpaper(path_str) {
             self.compositor.damage_all();
         }
     }
@@ -2685,6 +2764,37 @@ impl Desktop {
                         layer.blur_radius = radius;
                     }
                 }
+                None
+            }
+            proto::CMD_SET_WALLPAPER => {
+                let shm_id = cmd[1];
+                if shm_id == 0 {
+                    return None;
+                }
+                let shm_addr = anyos_std::ipc::shm_map(shm_id);
+                if shm_addr == 0 {
+                    return None;
+                }
+                // Read null-terminated path from SHM (max 256 bytes)
+                let data = unsafe {
+                    core::slice::from_raw_parts(shm_addr as *const u8, 256)
+                };
+                let path_len = data.iter().position(|&b| b == 0).unwrap_or(256);
+                let path_len = path_len.min(127);
+                if path_len > 0 {
+                    self.wallpaper_path[..path_len].copy_from_slice(&data[..path_len]);
+                    self.wallpaper_path_len = path_len;
+                    if let Ok(path) = core::str::from_utf8(&self.wallpaper_path[..path_len]) {
+                        // Need a stack copy since load_wallpaper borrows &mut self
+                        let mut path_buf = [0u8; 128];
+                        path_buf[..path_len].copy_from_slice(&data[..path_len]);
+                        let path_str = core::str::from_utf8(&path_buf[..path_len]).unwrap_or("");
+                        if self.load_wallpaper(path_str) {
+                            self.compositor.damage_all();
+                        }
+                    }
+                }
+                anyos_std::ipc::shm_unmap(shm_id);
                 None
             }
             _ => None,

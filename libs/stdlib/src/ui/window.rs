@@ -70,7 +70,7 @@ struct DllExports {
     set_title:
         extern "C" fn(channel_id: u32, window_id: u32, title_ptr: *const u8, title_len: u32),
     screen_size: extern "C" fn(out_w: *mut u32, out_h: *mut u32),
-    set_wallpaper: extern "C" fn(pixels: *const u32, width: u32, height: u32),
+    set_wallpaper: extern "C" fn(channel_id: u32, path_ptr: *const u8, path_len: u32),
     move_window: extern "C" fn(channel_id: u32, window_id: u32, x: i32, y: i32),
     set_menu:
         extern "C" fn(channel_id: u32, window_id: u32, menu_data: *const u8, menu_len: u32),
@@ -721,9 +721,13 @@ pub fn gpu_has_accel() -> bool {
     syscall0(SYS_GPU_HAS_ACCEL) != 0
 }
 
-/// Set the desktop wallpaper from decoded ARGB pixel data.
-pub fn set_wallpaper(w: u32, h: u32, pixels: &[u32], _mode: u32) -> u32 {
-    (dll().set_wallpaper)(pixels.as_ptr(), w, h);
+/// Set the desktop wallpaper by file path.
+/// The compositor loads and scales the image to fit the screen.
+pub fn set_wallpaper(path: &str) -> u32 {
+    if !ensure_init() { return u32::MAX; }
+    let st = state();
+    let bytes = path.as_bytes();
+    (dll().set_wallpaper)(st.channel_id, bytes.as_ptr(), bytes.len() as u32);
     0
 }
 

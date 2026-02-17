@@ -109,6 +109,12 @@ pub const CMD_SET_THEME: u32 = 0x100D;
 /// before alpha-blending the window on top (frosted glass effect).
 pub const CMD_SET_BLUR_BEHIND: u32 = 0x100E;
 
+/// Set desktop wallpaper by file path.
+/// [CMD, shm_id, 0, 0, 0]
+/// SHM contains a null-terminated UTF-8 path string (e.g. "/media/wallpapers/mountains.jpg").
+/// Compositor maps SHM, reads path, loads wallpaper, unmaps SHM, damages all.
+pub const CMD_SET_WALLPAPER: u32 = 0x100F;
+
 /// Theme changed notification (compositor → apps via channel).
 /// [EVT, new_theme, old_theme, 0, 0]
 pub const EVT_THEME_CHANGED: u32 = 0x0050;

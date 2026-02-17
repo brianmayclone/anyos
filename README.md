@@ -1,4 +1,5 @@
-# anyOS
+![OS-Image](assets/images/boot2.png)
+
 
 A 64-bit x86_64 operating system built from scratch in **Rust** and **NASM assembly**, featuring a macOS-inspired dark GUI with a window compositor, network stack, and on-disk C compiler.
 
@@ -7,6 +8,13 @@ This is a **learning project** created purely for fun and education. It demonstr
 **Contributions are welcome!** Whether you want to fix bugs, add features, improve documentation, or just explore the code -- feel free to get involved.
 
 ## Screenshots
+
+<img src="assets/screenshots/shot1.png" alt="drawing" width="200"/>
+<img src="assets/screenshots/shot2.png" alt="drawing" width="200"/>
+<img src="assets/screenshots/shot3.png" alt="drawing" width="200"/>
+<img src="assets/screenshots/shot4.png" alt="drawing" width="200"/>
+<img src="assets/screenshots/shot5.png" alt="drawing" width="200"/>
+<img src="assets/screenshots/shot7.png" alt="drawing" width="200"/>
 
 The OS boots into a graphical desktop environment with:
 - Window compositor with shadows, rounded corners, and transparency

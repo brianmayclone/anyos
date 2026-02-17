@@ -204,6 +204,13 @@ impl CompositorClient {
         (raw::exports().set_blur_behind)(self.channel_id, handle.id, radius);
     }
 
+    /// Set the desktop wallpaper by file path.
+    /// The compositor loads the image, scales it to the screen, and recomposes.
+    pub fn set_wallpaper(&self, path: &str) {
+        let bytes = path.as_bytes();
+        (raw::exports().set_wallpaper)(self.channel_id, bytes.as_ptr(), bytes.len() as u32);
+    }
+
     /// Resize a window's shared memory surface to new dimensions.
     /// Updates the WindowHandle in-place with the new SHM id, surface pointer,
     /// and dimensions. Returns true on success.
