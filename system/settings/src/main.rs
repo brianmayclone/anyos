@@ -4,6 +4,7 @@
 use anyos_std::sys;
 use anyos_std::net;
 use anyos_std::process;
+use anyos_std::fs;
 use anyos_std::ui::window;
 
 anyos_std::entry!(main);
@@ -18,9 +19,26 @@ const ROW_H: i32 = 40;
 // Pages
 const PAGE_GENERAL: usize = 0;
 const PAGE_DISPLAY: usize = 1;
-const PAGE_NETWORK: usize = 2;
-const PAGE_ABOUT: usize = 3;
-const PAGE_NAMES: [&str; 4] = ["General", "Display", "Network", "About"];
+const PAGE_WALLPAPER: usize = 2;
+const PAGE_NETWORK: usize = 3;
+const PAGE_ABOUT: usize = 4;
+const PAGE_NAMES: [&str; 5] = ["General", "Display", "Wallpaper", "Network", "About"];
+
+// Wallpaper thumbnail dimensions
+const THUMB_W: u32 = 120;
+const THUMB_H: u32 = 80;
+const THUMB_PAD: i32 = 12;
+const THUMB_COLS: usize = 3;
+const MAX_WALLPAPERS: usize = 16;
+
+struct WallpaperEntry {
+    name: [u8; 56],
+    name_len: usize,
+    path: [u8; 128],
+    path_len: usize,
+    thumbnail: alloc::vec::Vec<u32>,
+    loaded: bool,
+}
 
 fn main() {
     let win = window::create("Settings", 180, 100, 560, 400);
@@ -34,8 +52,9 @@ fn main() {
         .menu("View")
             .item(10, "General", 0)
             .item(11, "Display", 0)
-            .item(12, "Network", 0)
-            .item(13, "About", 0)
+            .item(12, "Wallpaper", 0)
+            .item(13, "Network", 0)
+            .item(14, "About", 0)
         .end_menu();
     let data = mb.build();
     window::set_menu(win, data);
@@ -66,12 +85,27 @@ fn main() {
         }
     }
 
+    // Wallpaper state
+    let mut wallpapers: alloc::vec::Vec<WallpaperEntry> = alloc::vec::Vec::new();
+    let mut wallpaper_selected: usize = 0;
+    let mut wallpapers_scanned = false;
+
     let mut event = [0u32; 5];
     let mut needs_redraw = true;
     let mut scroll_y: u32 = 0;
     let mut prev_page = sidebar.selected;
 
+    // Suppress unused variable warning
+    let _ = content_x;
+
     loop {
+        // Lazy-load wallpaper thumbnails when page is first shown
+        if sidebar.selected == PAGE_WALLPAPER && !wallpapers_scanned {
+            scan_wallpapers(&mut wallpapers, &mut wallpaper_selected);
+            wallpapers_scanned = true;
+            needs_redraw = true;
+        }
+
         while window::get_event(win, &mut event) == 1 {
             let ui_event = UiEvent::from_raw(&event);
 
@@ -118,7 +152,6 @@ fn main() {
                             if idx < resolutions.len() {
                                 let (rw, rh) = resolutions[idx];
                                 if window::set_resolution(rw, rh) {
-                                    // Resolution changed — update window size tracking
                                     if let Some((nw, nh)) = window::get_size(win) {
                                         win_w = nw;
                                         win_h = nh;
@@ -129,10 +162,23 @@ fn main() {
                             }
                         }
                     }
+
+                    if sidebar.selected == PAGE_WALLPAPER {
+                        if let Some(idx) = hit_test_wallpaper(&wallpapers, &ui_event, SIDEBAR_W as i32 + 20, scroll_y) {
+                            if idx != wallpaper_selected {
+                                wallpaper_selected = idx;
+                                let wp = &wallpapers[idx];
+                                let path = core::str::from_utf8(&wp.path[..wp.path_len]).unwrap_or("");
+                                window::set_wallpaper(path);
+                                save_wallpaper_preference(path);
+                                needs_redraw = true;
+                            }
+                        }
+                    }
                 }
                 7 => { // EVENT_MOUSE_SCROLL
                     let dz = event[1] as i32;
-                    let content_h = page_content_height(sidebar.selected, resolutions.len());
+                    let content_h = page_content_height(sidebar.selected, resolutions.len(), wallpapers.len());
                     let max_scroll = content_h.saturating_sub(win_h);
                     if dz < 0 {
                         scroll_y = scroll_y.saturating_sub((-dz) as u32 * 30);
@@ -144,11 +190,12 @@ fn main() {
                 window::EVENT_MENU_ITEM => {
                     let item_id = event[2];
                     match item_id {
-                        1 => { window::destroy(win); return; } // Close
+                        1 => { window::destroy(win); return; }
                         10 => { sidebar.selected = PAGE_GENERAL; needs_redraw = true; }
                         11 => { sidebar.selected = PAGE_DISPLAY; needs_redraw = true; }
-                        12 => { sidebar.selected = PAGE_NETWORK; needs_redraw = true; }
-                        13 => { sidebar.selected = PAGE_ABOUT; needs_redraw = true; }
+                        12 => { sidebar.selected = PAGE_WALLPAPER; needs_redraw = true; }
+                        13 => { sidebar.selected = PAGE_NETWORK; needs_redraw = true; }
+                        14 => { sidebar.selected = PAGE_ABOUT; needs_redraw = true; }
                         _ => {}
                     }
                 }
@@ -157,7 +204,6 @@ fn main() {
                     return;
                 }
                 0x0050 => {
-                    // EVT_THEME_CHANGED — update toggle state and redraw
                     dark_toggle.on = window::get_theme() == 0;
                     needs_redraw = true;
                 }
@@ -165,25 +211,335 @@ fn main() {
             }
         }
 
-        // Reset scroll when switching pages
         if sidebar.selected != prev_page {
             scroll_y = 0;
             prev_page = sidebar.selected;
         }
 
         if needs_redraw {
-            // Update positions for rendering
             update_positions(&sidebar, &mut dark_toggle, &mut sound_toggle, &mut notif_toggle, &mut brightness, &mut res_radio, resolutions.len(), win_w, scroll_y);
-            render(win, &sidebar, &dark_toggle, &sound_toggle, &notif_toggle, &brightness, &res_radio, &resolutions, win_w, win_h, scroll_y);
+            render(win, &sidebar, &dark_toggle, &sound_toggle, &notif_toggle, &brightness, &res_radio, &resolutions, &wallpapers, wallpaper_selected, win_w, win_h, scroll_y);
             window::present(win);
             needs_redraw = false;
         }
 
-        process::sleep(16); // ~60 Hz poll rate, not busy-wait
+        process::sleep(16);
     }
 }
 
-/// Compute component positions based on current window size and scroll offset.
+// ============================================================================
+// Wallpaper scanning & thumbnail generation
+// ============================================================================
+
+fn scan_wallpapers(wallpapers: &mut alloc::vec::Vec<WallpaperEntry>, selected: &mut usize) {
+    let mut dir_buf = [0u8; 64 * 32];
+    let count = fs::readdir("/media/wallpapers", &mut dir_buf);
+    if count == u32::MAX || count == 0 { return; }
+
+    let mut current_path = [0u8; 128];
+    let mut current_path_len = 0usize;
+    read_current_wallpaper_pref(&mut current_path, &mut current_path_len);
+
+    for i in 0..count as usize {
+        if wallpapers.len() >= MAX_WALLPAPERS { break; }
+
+        let raw_entry = &dir_buf[i * 64..(i + 1) * 64];
+        let entry_type = raw_entry[0];
+        let name_len = raw_entry[1] as usize;
+        if entry_type != 1 || name_len == 0 { continue; }
+
+        let nlen = name_len.min(56);
+        let name_bytes = &raw_entry[8..8 + nlen];
+
+        if !is_image_file(name_bytes, nlen) { continue; }
+
+        let prefix = b"/media/wallpapers/";
+        let path_len = prefix.len() + nlen;
+        if path_len > 127 { continue; }
+
+        let mut path = [0u8; 128];
+        path[..prefix.len()].copy_from_slice(prefix);
+        path[prefix.len()..prefix.len() + nlen].copy_from_slice(&name_bytes[..nlen]);
+
+        let mut entry = WallpaperEntry {
+            name: [0u8; 56],
+            name_len: nlen,
+            path,
+            path_len,
+            thumbnail: alloc::vec::Vec::new(),
+            loaded: false,
+        };
+        entry.name[..nlen].copy_from_slice(&name_bytes[..nlen]);
+        wallpapers.push(entry);
+    }
+
+    wallpapers.sort_unstable_by(|a, b| {
+        cmp_name_ci(&a.name[..a.name_len], &b.name[..b.name_len])
+    });
+
+    // Find selected index after sort
+    if current_path_len > 0 {
+        for (i, wp) in wallpapers.iter().enumerate() {
+            if wp.path_len == current_path_len &&
+               wp.path[..wp.path_len] == current_path[..current_path_len] {
+                *selected = i;
+                break;
+            }
+        }
+    }
+
+    for wp in wallpapers.iter_mut() {
+        load_thumbnail(wp);
+    }
+}
+
+fn is_image_file(name: &[u8], len: usize) -> bool {
+    if len < 4 { return false; }
+    let lower = |b: u8| -> u8 { if b >= b'A' && b <= b'Z' { b + 32 } else { b } };
+    if len >= 4 && lower(name[len-4]) == b'.' && lower(name[len-3]) == b'p' &&
+       lower(name[len-2]) == b'n' && lower(name[len-1]) == b'g' { return true; }
+    if len >= 4 && lower(name[len-4]) == b'.' && lower(name[len-3]) == b'j' &&
+       lower(name[len-2]) == b'p' && lower(name[len-1]) == b'g' { return true; }
+    if len >= 5 && lower(name[len-5]) == b'.' && lower(name[len-4]) == b'j' &&
+       lower(name[len-3]) == b'p' && lower(name[len-2]) == b'e' && lower(name[len-1]) == b'g' { return true; }
+    if len >= 4 && lower(name[len-4]) == b'.' && lower(name[len-3]) == b'b' &&
+       lower(name[len-2]) == b'm' && lower(name[len-1]) == b'p' { return true; }
+    if len >= 4 && lower(name[len-4]) == b'.' && lower(name[len-3]) == b'g' &&
+       lower(name[len-2]) == b'i' && lower(name[len-1]) == b'f' { return true; }
+    false
+}
+
+fn load_thumbnail(wp: &mut WallpaperEntry) {
+    let path = match core::str::from_utf8(&wp.path[..wp.path_len]) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let fd = fs::open(path, 0);
+    if fd == u32::MAX { return; }
+
+    let mut stat_buf = [0u32; 3];
+    if fs::fstat(fd, &mut stat_buf) == u32::MAX {
+        fs::close(fd);
+        return;
+    }
+    let file_size = stat_buf[1] as usize;
+    if file_size == 0 || file_size > 2 * 1024 * 1024 {
+        fs::close(fd);
+        return;
+    }
+
+    let mut data = alloc::vec![0u8; file_size];
+    let bytes_read = fs::read(fd, &mut data) as usize;
+    fs::close(fd);
+    if bytes_read == 0 { return; }
+
+    let info = match libimage_client::probe(&data[..bytes_read]) {
+        Some(i) => i,
+        None => return,
+    };
+
+    let pixel_count = (info.width * info.height) as usize;
+    if pixel_count > 4 * 1024 * 1024 { return; }
+
+    let mut pixels = alloc::vec![0u32; pixel_count];
+    let mut scratch = alloc::vec![0u8; info.scratch_needed as usize];
+    if libimage_client::decode(&data[..bytes_read], &mut pixels, &mut scratch).is_err() {
+        return;
+    }
+    drop(data);
+    drop(scratch);
+
+    let mut thumb = alloc::vec![0u32; (THUMB_W * THUMB_H) as usize];
+    if libimage_client::scale_image(
+        &pixels, info.width, info.height,
+        &mut thumb, THUMB_W, THUMB_H,
+        libimage_client::MODE_COVER,
+    ) {
+        wp.thumbnail = thumb;
+        wp.loaded = true;
+    }
+}
+
+fn read_current_wallpaper_pref(path: &mut [u8; 128], path_len: &mut usize) {
+    let uid = process::getuid() as u32;
+    let fd = fs::open("/System/users/wallpapers", 0);
+    if fd == u32::MAX { return; }
+
+    let mut buf = [0u8; 512];
+    let n = fs::read(fd, &mut buf) as usize;
+    fs::close(fd);
+
+    let data = &buf[..n];
+    let mut pos = 0;
+    while pos < data.len() {
+        let line_end = data[pos..].iter().position(|&b| b == b'\n')
+            .map(|p| pos + p).unwrap_or(data.len());
+        let line = &data[pos..line_end];
+        pos = line_end + 1;
+
+        if let Some(colon) = line.iter().position(|&b| b == b':') {
+            let uid_str = &line[..colon];
+            let mut parsed_uid: u32 = 0;
+            let mut valid = !uid_str.is_empty();
+            for &b in uid_str {
+                if b >= b'0' && b <= b'9' {
+                    parsed_uid = parsed_uid * 10 + (b - b'0') as u32;
+                } else { valid = false; break; }
+            }
+            if valid && parsed_uid == uid {
+                let p = &line[colon + 1..];
+                let len = p.len().min(127);
+                path[..len].copy_from_slice(&p[..len]);
+                *path_len = len;
+                return;
+            }
+        }
+    }
+}
+
+fn save_wallpaper_preference(wallpaper_path: &str) {
+    let uid = process::getuid() as u32;
+
+    let mut existing = [0u8; 512];
+    let mut existing_len = 0usize;
+    let fd = fs::open("/System/users/wallpapers", 0);
+    if fd != u32::MAX {
+        existing_len = fs::read(fd, &mut existing) as usize;
+        fs::close(fd);
+    }
+
+    let mut out = [0u8; 512];
+    let mut op = 0usize;
+    let mut found = false;
+
+    let data = &existing[..existing_len];
+    let mut pos = 0;
+    while pos < data.len() {
+        let line_end = data[pos..].iter().position(|&b| b == b'\n')
+            .map(|p| pos + p).unwrap_or(data.len());
+        let line = &data[pos..line_end];
+        pos = line_end + 1;
+
+        if line.is_empty() { continue; }
+
+        let is_our_uid = if let Some(colon) = line.iter().position(|&b| b == b':') {
+            let uid_str = &line[..colon];
+            let mut parsed_uid: u32 = 0;
+            let mut valid = !uid_str.is_empty();
+            for &b in uid_str {
+                if b >= b'0' && b <= b'9' {
+                    parsed_uid = parsed_uid * 10 + (b - b'0') as u32;
+                } else { valid = false; break; }
+            }
+            valid && parsed_uid == uid
+        } else {
+            false
+        };
+
+        if is_our_uid {
+            let uid_bytes = fmt_uid_buf(uid);
+            if op + uid_bytes.len() + 1 + wallpaper_path.len() + 1 < out.len() {
+                out[op..op + uid_bytes.len()].copy_from_slice(uid_bytes);
+                op += uid_bytes.len();
+                out[op] = b':';
+                op += 1;
+                out[op..op + wallpaper_path.len()].copy_from_slice(wallpaper_path.as_bytes());
+                op += wallpaper_path.len();
+                out[op] = b'\n';
+                op += 1;
+            }
+            found = true;
+        } else {
+            if op + line.len() + 1 < out.len() {
+                out[op..op + line.len()].copy_from_slice(line);
+                op += line.len();
+                out[op] = b'\n';
+                op += 1;
+            }
+        }
+    }
+
+    if !found {
+        let uid_bytes = fmt_uid_buf(uid);
+        if op + uid_bytes.len() + 1 + wallpaper_path.len() + 1 < out.len() {
+            out[op..op + uid_bytes.len()].copy_from_slice(uid_bytes);
+            op += uid_bytes.len();
+            out[op] = b':';
+            op += 1;
+            out[op..op + wallpaper_path.len()].copy_from_slice(wallpaper_path.as_bytes());
+            op += wallpaper_path.len();
+            out[op] = b'\n';
+            op += 1;
+        }
+    }
+
+    let fd = fs::open("/System/users/wallpapers", fs::O_CREATE | fs::O_TRUNC);
+    if fd != u32::MAX {
+        fs::write(fd, &out[..op]);
+        fs::close(fd);
+    }
+}
+
+fn fmt_uid_buf(uid: u32) -> &'static [u8] {
+    static mut BUF: [u8; 8] = [0u8; 8];
+    static mut LEN: usize = 0;
+    unsafe {
+        if uid == 0 {
+            BUF[0] = b'0';
+            LEN = 1;
+        } else {
+            let mut v = uid;
+            let mut tmp = [0u8; 8];
+            let mut n = 0;
+            while v > 0 { tmp[n] = b'0' + (v % 10) as u8; v /= 10; n += 1; }
+            for i in 0..n { BUF[i] = tmp[n - 1 - i]; }
+            LEN = n;
+        }
+        &BUF[..LEN]
+    }
+}
+
+fn hit_test_wallpaper(
+    wallpapers: &[WallpaperEntry],
+    event: &UiEvent,
+    cx: i32,
+    scroll_y: u32,
+) -> Option<usize> {
+    if event.event_type != window::EVENT_MOUSE_DOWN { return None; }
+    let mx = event.x as i32;
+    let my = event.y as i32;
+
+    let sy = scroll_y as i32;
+    let card_y = 54 - sy;
+    let grid_y = card_y + PAD + 36;
+    let grid_x = cx + PAD;
+
+    for (i, _wp) in wallpapers.iter().enumerate() {
+        let col = i % THUMB_COLS;
+        let row = i / THUMB_COLS;
+        let tx = grid_x + col as i32 * (THUMB_W as i32 + THUMB_PAD);
+        let ty = grid_y + row as i32 * (THUMB_H as i32 + THUMB_PAD + 16);
+
+        if mx >= tx && mx < tx + THUMB_W as i32 &&
+           my >= ty && my < ty + THUMB_H as i32 {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn cmp_name_ci(a: &[u8], b: &[u8]) -> core::cmp::Ordering {
+    let lower = |c: u8| -> u8 { if c >= b'A' && c <= b'Z' { c + 32 } else { c } };
+    let len = a.len().min(b.len());
+    for i in 0..len {
+        let la = lower(a[i]);
+        let lb = lower(b[i]);
+        if la != lb { return la.cmp(&lb); }
+    }
+    a.len().cmp(&b.len())
+}
+
 fn update_positions(
     sidebar: &UiSidebar,
     dark: &mut UiToggle,
@@ -201,39 +557,38 @@ fn update_positions(
     let card_y = 54 - sy;
     let toggle_x = cx + cw - PAD - 36;
 
-    // Dark Mode toggle (General page, row 1)
     dark.x = toggle_x;
     dark.y = card_y + PAD + ROW_H + 10;
 
-    // Sound toggle (General page, row 2)
     sound.x = toggle_x;
     sound.y = card_y + PAD + ROW_H * 2 + 10;
 
-    // Notifications toggle (General page, row 3)
     notif.x = toggle_x;
     notif.y = card_y + PAD + ROW_H * 3 + 10;
 
-    // Brightness slider (Display page)
     let brightness_row_y = card_y + PAD + ROW_H * 2;
     brightness.x = cx + PAD + 100;
     brightness.y = brightness_row_y + 6;
     brightness.w = (cw - PAD * 2 - 100) as u32;
 
-    // Resolution radio group (Display page, inside second card)
     let res_card_y = card_y + PAD * 2 + ROW_H * 3 + 16;
     res_radio.x = cx + PAD;
     res_radio.y = res_card_y + PAD + ROW_H + 4;
     res_radio.spacing = 24;
 }
 
-/// Content height for each page (for scrollbar calculation).
-fn page_content_height(page: usize, num_resolutions: usize) -> u32 {
+fn page_content_height(page: usize, num_resolutions: usize, num_wallpapers: usize) -> u32 {
     match page {
         PAGE_GENERAL => (54 + PAD * 2 + ROW_H * 4 + 20) as u32,
         PAGE_DISPLAY => {
             let card1_h = PAD * 2 + ROW_H * 3;
             let card2_h = PAD * 2 + ROW_H + num_resolutions as i32 * 24;
             (54 + card1_h + 32 + card2_h + 20) as u32
+        }
+        PAGE_WALLPAPER => {
+            let rows = (num_wallpapers.max(1) + THUMB_COLS - 1) / THUMB_COLS;
+            let grid_h = rows as i32 * (THUMB_H as i32 + THUMB_PAD + 16);
+            (54 + PAD * 2 + 36 + grid_h + 20) as u32
         }
         PAGE_NETWORK => (54 + PAD * 2 + ROW_H * 6 + 20) as u32,
         PAGE_ABOUT => (54 + PAD * 2 + ROW_H * 5 + 20) as u32,
@@ -254,15 +609,15 @@ fn render(
     brightness: &UiSlider,
     res_radio: &UiRadioGroup,
     resolutions: &[(u32, u32)],
+    wallpapers: &[WallpaperEntry],
+    wallpaper_selected: usize,
     win_w: u32, win_h: u32,
     scroll_y: u32,
 ) {
     window::fill_rect(win, 0, 0, win_w as u16, win_h as u16, colors::WINDOW_BG());
 
-    // Sidebar with built-in rendering
     sidebar_c.render(win, "SETTINGS", &PAGE_NAMES);
 
-    // Content
     let cx = SIDEBAR_W as i32 + 20;
     let cw = (win_w - SIDEBAR_W - 40) as u32;
     let sy = scroll_y as i32;
@@ -270,13 +625,13 @@ fn render(
     match sidebar_c.selected {
         PAGE_GENERAL => render_general(win, dark, sound, notif, cx, cw, sy),
         PAGE_DISPLAY => render_display(win, brightness, res_radio, resolutions, cx, cw, sy),
+        PAGE_WALLPAPER => render_wallpaper(win, wallpapers, wallpaper_selected, cx, cw, sy),
         PAGE_NETWORK => render_network(win, cx, cw, sy),
         PAGE_ABOUT => render_about(win, cx, cw, sy),
         _ => {}
     }
 
-    // Scrollbar
-    let content_h = page_content_height(sidebar_c.selected, resolutions.len());
+    let content_h = page_content_height(sidebar_c.selected, resolutions.len(), wallpapers.len());
     let sb_x = SIDEBAR_W as i32;
     let sb_w = win_w - SIDEBAR_W;
     scrollbar(win, sb_x, 0, sb_w, win_h, content_h, scroll_y);
@@ -288,24 +643,20 @@ fn render_general(win: u32, dark: &UiToggle, sound: &UiToggle, notif: &UiToggle,
     let card_y = 54 - sy;
     card(win, cx, card_y, cw, (PAD * 2 + ROW_H * 4) as u32);
 
-    // Row 0: Device Name
     let ry = card_y + PAD;
     label(win, cx + PAD, ry + 12, "Device Name", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     label(win, cx + PAD + 140, ry + 12, "anyOS Computer", colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 
-    // Row 1: Dark Mode
     let ry = ry + ROW_H;
     divider_h(win, cx + PAD, ry, cw - PAD as u32 * 2);
     label(win, cx + PAD, ry + 12, "Dark Mode", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     dark.render(win);
 
-    // Row 2: Sound
     let ry = ry + ROW_H;
     divider_h(win, cx + PAD, ry, cw - PAD as u32 * 2);
     label(win, cx + PAD, ry + 12, "Sound", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     sound.render(win);
 
-    // Row 3: Notifications
     let ry = ry + ROW_H;
     divider_h(win, cx + PAD, ry, cw - PAD as u32 * 2);
     label(win, cx + PAD, ry + 12, "Notifications", colors::TEXT(), FontSize::Normal, TextAlign::Left);
@@ -315,17 +666,14 @@ fn render_general(win: u32, dark: &UiToggle, sound: &UiToggle, notif: &UiToggle,
 fn render_display(win: u32, brightness: &UiSlider, res_radio: &UiRadioGroup, resolutions: &[(u32, u32)], cx: i32, cw: u32, sy: i32) {
     label(win, cx, 20 - sy, "Display", colors::TEXT(), FontSize::Title, TextAlign::Left);
 
-    // Card 1: GPU & Brightness info
     let card_y = 54 - sy;
     card(win, cx, card_y, cw, (PAD * 2 + ROW_H * 3) as u32);
 
-    // Row 0: GPU Driver
     let ry = card_y + PAD;
     label(win, cx + PAD, ry + 12, "GPU Driver", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     let gpu_name = window::gpu_name();
     label(win, cx + PAD + 120, ry + 12, &gpu_name, colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 
-    // Row 1: Current Resolution
     let ry = ry + ROW_H;
     divider_h(win, cx + PAD, ry, cw - PAD as u32 * 2);
     label(win, cx + PAD, ry + 12, "Resolution", colors::TEXT(), FontSize::Normal, TextAlign::Left);
@@ -334,13 +682,11 @@ fn render_display(win: u32, brightness: &UiSlider, res_radio: &UiRadioGroup, res
     let res = fmt_resolution(&mut buf, sw, sh);
     label(win, cx + PAD + 120, ry + 12, res, colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 
-    // Row 2: Brightness
     let ry = ry + ROW_H;
     divider_h(win, cx + PAD, ry, cw - PAD as u32 * 2);
     label(win, cx + PAD, ry + 12, "Brightness", colors::TEXT(), FontSize::Normal, TextAlign::Left);
     brightness.render(win);
 
-    // Card 2: Resolution picker
     let res_card_y = card_y + PAD * 2 + ROW_H * 3 + 16;
     let num_res = resolutions.len();
     let res_card_h = (PAD * 2 + ROW_H + num_res as i32 * 24) as u32;
@@ -349,7 +695,6 @@ fn render_display(win: u32, brightness: &UiSlider, res_radio: &UiRadioGroup, res
     let ry = res_card_y + PAD;
     label(win, cx + PAD, ry + 4, "Change Resolution", colors::TEXT(), FontSize::Normal, TextAlign::Left);
 
-    // Build resolution label strings for the radio group
     let mut label_bufs: [[u8; 32]; 16] = [[0u8; 32]; 16];
     let mut label_lens: [usize; 16] = [0; 16];
     let count = num_res.min(16);
@@ -363,6 +708,63 @@ fn render_display(win: u32, brightness: &UiSlider, res_radio: &UiRadioGroup, res
         labels[i] = unsafe { core::str::from_utf8_unchecked(&label_bufs[i][..label_lens[i]]) };
     }
     res_radio.render(win, &labels[..count]);
+}
+
+fn render_wallpaper(
+    win: u32,
+    wallpapers: &[WallpaperEntry],
+    selected: usize,
+    cx: i32,
+    cw: u32,
+    sy: i32,
+) {
+    label(win, cx, 20 - sy, "Wallpaper", colors::TEXT(), FontSize::Title, TextAlign::Left);
+
+    let card_y = 54 - sy;
+    let rows = (wallpapers.len().max(1) + THUMB_COLS - 1) / THUMB_COLS;
+    let grid_h = rows as i32 * (THUMB_H as i32 + THUMB_PAD + 16);
+    let card_h = (PAD * 2 + 36 + grid_h) as u32;
+    card(win, cx, card_y, cw, card_h);
+
+    label(win, cx + PAD, card_y + PAD + 4, "Choose a wallpaper", colors::TEXT(), FontSize::Normal, TextAlign::Left);
+
+    let grid_y = card_y + PAD + 36;
+    let grid_x = cx + PAD;
+    let accent = colors::ACCENT();
+    let border_color = colors::CARD_BORDER();
+
+    for (i, wp) in wallpapers.iter().enumerate() {
+        let col = i % THUMB_COLS;
+        let row = i / THUMB_COLS;
+        let tx = grid_x + col as i32 * (THUMB_W as i32 + THUMB_PAD);
+        let ty = grid_y + row as i32 * (THUMB_H as i32 + THUMB_PAD + 16);
+
+        let is_selected = i == selected;
+
+        if is_selected {
+            window::fill_rect(win, (tx - 3) as i16, (ty - 3) as i16,
+                (THUMB_W + 6) as u16, (THUMB_H + 6) as u16, accent);
+        } else {
+            window::fill_rect(win, (tx - 1) as i16, (ty - 1) as i16,
+                (THUMB_W + 2) as u16, (THUMB_H + 2) as u16, border_color);
+        }
+
+        if wp.loaded && wp.thumbnail.len() == (THUMB_W * THUMB_H) as usize {
+            window::blit(win, tx as i16, ty as i16, THUMB_W as u16, THUMB_H as u16, &wp.thumbnail);
+        } else {
+            window::fill_rect(win, tx as i16, ty as i16, THUMB_W as u16, THUMB_H as u16, 0xFF3A3A3E);
+        }
+
+        let name = display_name(&wp.name, wp.name_len);
+        label(win, tx, ty + THUMB_H as i32 + 4, name,
+            if is_selected { accent } else { colors::TEXT_SECONDARY() },
+            FontSize::Small, TextAlign::Left);
+    }
+}
+
+fn display_name<'a>(name: &'a [u8], len: usize) -> &'a str {
+    let end = name[..len].iter().rposition(|&b| b == b'.').unwrap_or(len);
+    core::str::from_utf8(&name[..end]).unwrap_or("?")
 }
 
 fn render_network(win: u32, cx: i32, cw: u32, sy: i32) {

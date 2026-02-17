@@ -1,4 +1,4 @@
-![OS-Image](assets/images/boot2.png)
+![OS-Image](assets/images/logo_bw.png)
 
 
 A 64-bit x86_64 operating system built from scratch in **Rust** and **NASM assembly**, featuring a macOS-inspired dark GUI with a window compositor, network stack, and on-disk C compiler.
