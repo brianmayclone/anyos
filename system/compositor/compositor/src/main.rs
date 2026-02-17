@@ -256,6 +256,11 @@ fn main() {
     let mut dock_spawned = false;
     if login_pending {
         println!("compositor: login window spawned, waiting for authentication...");
+        // Hide menubar during login screen
+        acquire_lock();
+        let desktop = unsafe { desktop_ref() };
+        desktop.set_menubar_visible(false);
+        release_lock();
     } else {
         println!("compositor: login not found, continuing as root");
     }
@@ -307,6 +312,12 @@ fn main() {
 
         // Spawn dock + conf programs once login is done
         if !login_pending && !dock_spawned {
+            // Show menubar now that login is complete
+            acquire_lock();
+            let desktop = unsafe { desktop_ref() };
+            desktop.set_menubar_visible(true);
+            release_lock();
+
             let _dock_tid = process::spawn("/System/compositor/dock", "");
             println!("compositor: dock spawned");
             launch_compositor_conf();
@@ -365,8 +376,8 @@ fn main() {
 
                                 // Pre-render window chrome (title bar, buttons, body)
                                 if !borderless {
-                                    desktop::pre_render_chrome(
-                                        &mut pre_pixels, width, full_h, "Window", true,
+                                    desktop::pre_render_chrome_ex(
+                                        &mut pre_pixels, width, full_h, "Window", true, flags,
                                     );
                                     // Copy initial SHM content into content area
                                     desktop::copy_shm_to_pixels(

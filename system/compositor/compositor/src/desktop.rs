@@ -77,6 +77,9 @@ const TITLE_BTN_SPACING: u32 = 20;
 pub const WIN_FLAG_BORDERLESS: u32 = 0x01;
 pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x02;
 pub const WIN_FLAG_ALWAYS_ON_TOP: u32 = 0x04;
+pub const WIN_FLAG_NO_CLOSE: u32 = 0x08;
+pub const WIN_FLAG_NO_MINIMIZE: u32 = 0x10;
+pub const WIN_FLAG_NO_MAXIMIZE: u32 = 0x20;
 
 // ── Event Types ─────────────────────────────────────────────────────────────
 
@@ -757,6 +760,11 @@ impl Desktop {
         self.compositor.mark_layer_dirty(self.menubar_layer_id);
     }
 
+    /// Show or hide the menubar layer.
+    pub fn set_menubar_visible(&mut self, visible: bool) {
+        self.compositor.set_layer_visible(self.menubar_layer_id, visible);
+    }
+
     /// Handle a resolution change event. Resizes all desktop layers and redraws.
     pub fn handle_resolution_change(&mut self, new_w: u32, new_h: u32) {
         if new_w == self.screen_width && new_h == self.screen_height {
@@ -1093,12 +1101,19 @@ impl Desktop {
 
                 // Traffic light buttons — with animated hover/press colour blend
                 let now = anyos_std::sys::uptime();
+                let win_flags = self.windows[win_idx].flags;
+                let btn_hidden = [
+                    win_flags & WIN_FLAG_NO_CLOSE != 0,
+                    win_flags & WIN_FLAG_NO_MINIMIZE != 0,
+                    win_flags & WIN_FLAG_NO_MAXIMIZE != 0,
+                ];
                 let base_colors: [u32; 3] = if focused {
                     [COLOR_CLOSE_BTN, COLOR_MIN_BTN, COLOR_MAX_BTN]
                 } else {
                     [color_btn_unfocused(), color_btn_unfocused(), color_btn_unfocused()]
                 };
                 for (i, &base) in base_colors.iter().enumerate() {
+                    if btn_hidden[i] { continue; }
                     let aid = button_anim_id(window_id, i as u8);
                     let color = if let Some(t) = self.btn_anims.value(aid, now) {
                         let target = if self.btn_pressed == Some((window_id, i as u8)) {
@@ -1557,14 +1572,19 @@ impl Desktop {
 
                 match hit_test {
                     HitTest::CloseButton => {
-                        // Animate press colour
-                        if self.has_gpu_accel {
-                            self.btn_pressed = Some((win_id, 0));
-                            let aid = button_anim_id(win_id, 0);
-                            self.btn_anims.start(aid, 0, 1000, 100, anyos_std::anim::Easing::EaseOut);
-                            self.render_window(win_id);
+                        // Check if close is allowed
+                        let no_close = self.windows.iter().find(|w| w.id == win_id)
+                            .map(|w| w.flags & WIN_FLAG_NO_CLOSE != 0).unwrap_or(false);
+                        if !no_close {
+                            // Animate press colour
+                            if self.has_gpu_accel {
+                                self.btn_pressed = Some((win_id, 0));
+                                let aid = button_anim_id(win_id, 0);
+                                self.btn_anims.start(aid, 0, 1000, 100, anyos_std::anim::Easing::EaseOut);
+                                self.render_window(win_id);
+                            }
+                            self.push_event(win_id, [EVENT_WINDOW_CLOSE, 0, 0, 0, 0]);
                         }
-                        self.push_event(win_id, [EVENT_WINDOW_CLOSE, 0, 0, 0, 0]);
                     }
                     HitTest::TitleBar => {
                         // Start drag
@@ -1596,22 +1616,30 @@ impl Desktop {
                         }
                     }
                     HitTest::MinButton => {
-                        if self.has_gpu_accel {
-                            self.btn_pressed = Some((win_id, 1));
-                            let aid = button_anim_id(win_id, 1);
-                            self.btn_anims.start(aid, 0, 1000, 100, anyos_std::anim::Easing::EaseOut);
-                            self.render_window(win_id);
+                        let no_min = self.windows.iter().find(|w| w.id == win_id)
+                            .map(|w| w.flags & WIN_FLAG_NO_MINIMIZE != 0).unwrap_or(false);
+                        if !no_min {
+                            if self.has_gpu_accel {
+                                self.btn_pressed = Some((win_id, 1));
+                                let aid = button_anim_id(win_id, 1);
+                                self.btn_anims.start(aid, 0, 1000, 100, anyos_std::anim::Easing::EaseOut);
+                                self.render_window(win_id);
+                            }
+                            // Minimize handling is elsewhere
                         }
-                        // Minimize handling is elsewhere
                     }
                     HitTest::MaxButton => {
-                        if self.has_gpu_accel {
-                            self.btn_pressed = Some((win_id, 2));
-                            let aid = button_anim_id(win_id, 2);
-                            self.btn_anims.start(aid, 0, 1000, 100, anyos_std::anim::Easing::EaseOut);
-                            self.render_window(win_id);
+                        let no_max = self.windows.iter().find(|w| w.id == win_id)
+                            .map(|w| w.flags & WIN_FLAG_NO_MAXIMIZE != 0).unwrap_or(false);
+                        if !no_max {
+                            if self.has_gpu_accel {
+                                self.btn_pressed = Some((win_id, 2));
+                                let aid = button_anim_id(win_id, 2);
+                                self.btn_anims.start(aid, 0, 1000, 100, anyos_std::anim::Easing::EaseOut);
+                                self.render_window(win_id);
+                            }
+                            self.toggle_maximize(win_id);
                         }
-                        self.toggle_maximize(win_id);
                     }
                     HitTest::Content => {
                         // Forward to window (local coordinates)
@@ -2787,6 +2815,18 @@ pub fn pre_render_chrome(
     title: &str,
     focused: bool,
 ) {
+    pre_render_chrome_ex(pixels, stride, full_h, title, focused, 0);
+}
+
+/// Pre-render window chrome with flags (hides disabled buttons).
+pub fn pre_render_chrome_ex(
+    pixels: &mut [u32],
+    stride: u32,
+    full_h: u32,
+    title: &str,
+    focused: bool,
+    flags: u32,
+) {
     // Clear to transparent (for rounded corners)
     for p in pixels.iter_mut() {
         *p = 0x00000000;
@@ -2816,12 +2856,18 @@ pub fn pre_render_chrome(
     }
 
     // Traffic light buttons (no hover/press animations for a brand-new window)
+    let btn_hidden = [
+        flags & WIN_FLAG_NO_CLOSE != 0,
+        flags & WIN_FLAG_NO_MINIMIZE != 0,
+        flags & WIN_FLAG_NO_MAXIMIZE != 0,
+    ];
     let base_colors: [u32; 3] = if focused {
         [COLOR_CLOSE_BTN, COLOR_MIN_BTN, COLOR_MAX_BTN]
     } else {
         [color_btn_unfocused(), color_btn_unfocused(), color_btn_unfocused()]
     };
     for (i, &color) in base_colors.iter().enumerate() {
+        if btn_hidden[i] { continue; }
         let cx = 8 + i as i32 * TITLE_BTN_SPACING as i32 + TITLE_BTN_SIZE as i32 / 2;
         let cy = TITLE_BTN_Y as i32 + TITLE_BTN_SIZE as i32 / 2;
         fill_circle(pixels, stride, full_h, cx, cy, (TITLE_BTN_SIZE / 2) as i32, color);

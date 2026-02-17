@@ -600,8 +600,8 @@ class Fat16Formatter:
         for entry_name in entries:
             full_path = os.path.join(host_path, entry_name)
 
-            if entry_name.startswith('.'):
-                continue  # Skip hidden files
+            if entry_name in ('.DS_Store', '.git', '.gitignore', '.gitkeep'):
+                continue  # Skip OS/VCS metadata files
 
             if os.path.isdir(full_path):
                 # Create subdirectory

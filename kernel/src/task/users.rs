@@ -236,8 +236,11 @@ pub fn authenticate(username: &str, password: &str) -> Option<(u16, u16)> {
         // Check password
         let stored_hash = user.hash_str();
         if stored_hash.is_empty() {
-            // Empty hash = no password required
-            return Some((user.uid, user.gid));
+            // Empty hash = no password set — only accept empty password
+            if password.is_empty() {
+                return Some((user.uid, user.gid));
+            }
+            return None;
         }
         // Compute MD5 of the provided password
         let computed = crate::crypto::md5::md5_hex(password.as_bytes());

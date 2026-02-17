@@ -1827,6 +1827,7 @@ pub struct ThreadInfo {
     pub io_read_bytes: u64,
     pub io_write_bytes: u64,
     pub user_pages: u32,
+    pub uid: u16,
 }
 
 /// List all live threads (lock-free heap allocation pattern).
@@ -1835,11 +1836,11 @@ pub fn list_threads() -> Vec<ThreadInfo> {
     struct ThreadSnap {
         tid: u32, priority: u8, state: u8, arch_mode: u8,
         cpu_ticks: u32, io_read_bytes: u64, io_write_bytes: u64,
-        user_pages: u32, name: [u8; 32], name_len: u8,
+        user_pages: u32, name: [u8; 32], name_len: u8, uid: u16,
     }
     let mut buf = [const {
         ThreadSnap { tid: 0, priority: 0, state: 0, arch_mode: 0, cpu_ticks: 0,
-            io_read_bytes: 0, io_write_bytes: 0, user_pages: 0, name: [0; 32], name_len: 0 }
+            io_read_bytes: 0, io_write_bytes: 0, user_pages: 0, name: [0; 32], name_len: 0, uid: 0 }
     }; MAX_SNAP];
     let mut count = 0;
 
@@ -1866,6 +1867,7 @@ pub fn list_threads() -> Vec<ThreadInfo> {
                     arch_mode: thread.arch_mode as u8, cpu_ticks: thread.cpu_ticks,
                     io_read_bytes: thread.io_read_bytes, io_write_bytes: thread.io_write_bytes,
                     user_pages: thread.user_pages, name: name_buf, name_len: len as u8,
+                    uid: thread.uid,
                 };
                 count += 1;
             }
@@ -1887,6 +1889,7 @@ pub fn list_threads() -> Vec<ThreadInfo> {
             io_read_bytes: snap.io_read_bytes,
             io_write_bytes: snap.io_write_bytes,
             user_pages: snap.user_pages,
+            uid: snap.uid,
         });
     }
     result

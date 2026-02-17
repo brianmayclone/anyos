@@ -21,7 +21,11 @@ fn main() -> u32 {
     let wx = ((sw as i32 - DIALOG_W as i32) / 2).max(0);
     let wy = ((sh as i32 - DIALOG_H as i32) / 2).max(0);
 
-    let win_id = window::create("Login", wx as u16, wy as u16, DIALOG_W as u16, DIALOG_H as u16);
+    let flags = window::WIN_FLAG_NOT_RESIZABLE
+        | window::WIN_FLAG_NO_CLOSE
+        | window::WIN_FLAG_NO_MINIMIZE
+        | window::WIN_FLAG_NO_MAXIMIZE;
+    let win_id = window::create_ex("Login", wx as u16, wy as u16, DIALOG_W as u16, DIALOG_H as u16, flags);
     if win_id == u32::MAX {
         return 0; // Fallback: continue as root
     }

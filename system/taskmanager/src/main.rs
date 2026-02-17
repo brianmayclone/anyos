@@ -27,19 +27,20 @@ const ICON_SIZE: u32 = 16;
 
 // Column X positions (icon at COL_NAME, text at COL_NAME_TEXT)
 const COL_TID: i32 = 10;
-const COL_NAME: i32 = 60;
+const COL_NAME: i32 = 50;
 const COL_NAME_TEXT: i32 = COL_NAME + ICON_SIZE as i32 + 4;
-const COL_STATE: i32 = 210;
-const COL_ARCH: i32 = 290;
-const COL_CPU: i32 = 345;
-const COL_MEM: i32 = 400;
-const COL_PRIO: i32 = 470;
+const COL_USER: i32 = 185;
+const COL_STATE: i32 = 250;
+const COL_ARCH: i32 = 330;
+const COL_CPU: i32 = 385;
+const COL_MEM: i32 = 440;
+const COL_PRIO: i32 = 510;
 
 // Selected row highlight color
 const SEL_BG: u32 = 0xFF0A4A8A;
 const MAX_CPUS: usize = 16;
 const MAX_TASKS: usize = 64;
-const THREAD_ENTRY_SIZE: usize = 56;
+const THREAD_ENTRY_SIZE: usize = 60;
 
 // ─── Data Structures ─────────────────────────────────────────────────────────
 
@@ -50,6 +51,7 @@ struct TaskEntry {
     state: u8,
     priority: u8,
     arch: u8,       // 0=x86_64, 1=x86
+    uid: u16,       // user ID
     user_pages: u32, // number of user-space pages (× 4 = KiB)
     cpu_pct_x10: u32, // CPU% × 10 (e.g. 125 = 12.5%)
     io_read_bytes: u64,
@@ -264,7 +266,9 @@ fn fetch_tasks(buf: &mut [u8; THREAD_ENTRY_SIZE * 64], prev: &mut PrevTicks, tot
             0
         };
 
-        result.push(TaskEntry { tid, name, name_len, state, priority: prio, arch, user_pages, cpu_pct_x10, io_read_bytes, io_write_bytes });
+        let uid = u16::from_le_bytes([buf[off + 56], buf[off + 57]]);
+
+        result.push(TaskEntry { tid, name, name_len, state, priority: prio, arch, uid, user_pages, cpu_pct_x10, io_read_bytes, io_write_bytes });
     }
 
     // Save current snapshot for next delta
@@ -424,6 +428,7 @@ fn render(
         window::fill_rect(win_id, 0, y as i16, win_w as u16, ROW_H as u16, 0xFF4A4A4A);
         label(win_id, COL_TID, y + 3, "TID", colors::TEXT(), FontSize::Small, TextAlign::Left);
         label(win_id, COL_NAME_TEXT, y + 3, "Process", colors::TEXT(), FontSize::Small, TextAlign::Left);
+        label(win_id, COL_USER, y + 3, "User", colors::TEXT(), FontSize::Small, TextAlign::Left);
         label(win_id, COL_STATE, y + 3, "State", colors::TEXT(), FontSize::Small, TextAlign::Left);
         label(win_id, COL_ARCH, y + 3, "Arch", colors::TEXT(), FontSize::Small, TextAlign::Left);
         label(win_id, COL_CPU, y + 3, "CPU", colors::TEXT(), FontSize::Small, TextAlign::Left);
@@ -462,6 +467,18 @@ fn render(
                     window::blit(win_id, COL_NAME as i16, icon_y as i16, ICON_SIZE as u16, ICON_SIZE as u16, pixels);
                 }
                 label(win_id, COL_NAME_TEXT, y + 3, name, text_color, FontSize::Small, TextAlign::Left);
+            }
+
+            // User column
+            {
+                let mut ubuf = [0u8; 16];
+                let nlen = anyos_std::process::getusername(task.uid, &mut ubuf);
+                let uname = if nlen != u32::MAX && nlen > 0 {
+                    core::str::from_utf8(&ubuf[..nlen as usize]).unwrap_or("?")
+                } else {
+                    "?"
+                };
+                label(win_id, COL_USER, y + 3, uname, colors::TEXT_SECONDARY(), FontSize::Small, TextAlign::Left);
             }
 
             status_indicator_sized(win_id, COL_STATE, y + 3, state_kind, state_text, FontSize::Small);

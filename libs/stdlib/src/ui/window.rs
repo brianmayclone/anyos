@@ -26,6 +26,9 @@ pub const EVENT_MENU_ITEM: u32 = 9;
 pub const WIN_FLAG_BORDERLESS: u32 = 0x01;
 pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x02;
 pub const WIN_FLAG_ALWAYS_ON_TOP: u32 = 0x04;
+pub const WIN_FLAG_NO_CLOSE: u32 = 0x08;
+pub const WIN_FLAG_NO_MINIMIZE: u32 = 0x10;
+pub const WIN_FLAG_NO_MAXIMIZE: u32 = 0x20;
 
 /// System font — regular weight (SF Pro).
 pub const FONT_REGULAR: u16 = 0;
