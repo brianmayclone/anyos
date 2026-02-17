@@ -87,24 +87,23 @@ context_switch:
     mov qword [rdi + 152], 1
 
     ; --- Validate new context before loading ---
-    ; Tighter range validation for heap-corrupted CpuContext.
-    ; RSP must be in heap range (>= HEAP_START = 0xFFFFFFFF82000000)
-    ;   because all kernel stacks are heap-allocated.
-    ; RIP must be in kernel code range (>= KERNEL_VMA = 0xFFFFFFFF80100000
-    ;   AND < HEAP_START) because context_switch RIP is always a kernel
-    ;   text address (return address from schedule_inner or thread entry).
+    ; Range validation for heap-corrupted CpuContext.
+    ; RSP must be >= KERNEL_VMA (0xFFFFFFFF80100000) — covers both:
+    ;   - boot/idle stacks in BSS area (0xFFFFFFFF803xxxxx)
+    ;   - heap-allocated thread stacks (0xFFFFFFFF82xxxxxx+)
+    ; RIP must be in kernel code range (>= KERNEL_VMA AND < HEAP_START)
+    ;   because context_switch RIP is always a kernel text address.
     ; At this point we have NOT modified RSP or loaded any new state.
 
-    ; Check RSP >= 0xFFFFFFFF82000000 (kernel heap)
+    ; Check RSP >= 0xFFFFFFFF80100000 (kernel virtual base)
     mov rax, [rsi + 120]
-    mov rcx, 0xFFFFFFFF82000000
+    mov rcx, 0xFFFFFFFF80100000
     cmp rax, rcx
-    jb .bad_ctx                 ; RSP below heap = corrupt
+    jb .bad_ctx                 ; RSP below kernel = corrupt
 
     ; Check RIP >= 0xFFFFFFFF80100000 (kernel text)
     mov rax, [rsi + 128]
-    mov rcx, 0xFFFFFFFF80100000
-    cmp rax, rcx
+    cmp rax, rcx                ; RCX still = 0xFFFFFFFF80100000
     jb .bad_ctx                 ; RIP below kernel text = corrupt
 
     ; Check RIP < 0xFFFFFFFF82000000 (must not be in heap/stack area)

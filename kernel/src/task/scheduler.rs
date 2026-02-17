@@ -926,13 +926,15 @@ fn schedule_inner(from_timer: bool) {
         // Must be done while lock is released but pointers are still valid
         // (Box<Thread> provides stable heap addresses; no reap can happen in
         // the few microseconds between lock release and context_switch).
-        const KERNEL_TEXT_START: u64 = 0xFFFF_FFFF_8010_0000;
+        const KERNEL_VMA: u64 = 0xFFFF_FFFF_8010_0000;
         const HEAP_START: u64 = 0xFFFF_FFFF_8200_0000;
         let (new_rsp, new_rip, new_rbp, new_cr3) = unsafe {
             ((*new_ctx).rsp, (*new_ctx).rip, (*new_ctx).rbp, (*new_ctx).cr3)
         };
-        let rip_ok = new_rip >= KERNEL_TEXT_START && new_rip < HEAP_START;
-        let rsp_ok = new_rsp >= HEAP_START;
+        let rip_ok = new_rip >= KERNEL_VMA && new_rip < HEAP_START;
+        // RSP can be in BSS area (boot/idle stacks at 0xFFFFFFFF803xxxxx)
+        // or in the heap (thread stacks at 0xFFFFFFFF82xxxxxx+).
+        let rsp_ok = new_rsp >= KERNEL_VMA;
         if !rip_ok || !rsp_ok {
             crate::serial_println!(
                 "!CTX CORRUPT: TID={} rip={:#018x} rsp={:#018x} rbp={:#018x} cr3={:#018x} ctx={:#x}",
