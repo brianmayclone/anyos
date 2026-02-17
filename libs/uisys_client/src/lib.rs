@@ -116,3 +116,73 @@ pub fn font_measure(font_id: u16, size: u16, text: &str) -> (u32, u32) {
     (raw::exports().font_measure)(font_id as u32, size, bytes.as_ptr(), bytes.len() as u32, &mut w, &mut h);
     (w, h)
 }
+
+// --- Shadow API ---
+
+/// Surface descriptor for raw pixel buffer shadow drawing.
+/// Must match the layout expected by uisys DLL (pointer, width, height).
+#[repr(C)]
+pub struct ShadowSurface {
+    pub pixels: *mut u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Draw a soft shadow for a rectangle onto a raw pixel buffer.
+pub fn draw_shadow_rect_buf(
+    pixels: &mut [u32], fb_w: u32, fb_h: u32,
+    x: i32, y: i32, w: u32, h: u32,
+    offset_x: i32, offset_y: i32, spread: i32, alpha: u32,
+) {
+    let mut surface = ShadowSurface { pixels: pixels.as_mut_ptr(), width: fb_w, height: fb_h };
+    let win = &mut surface as *mut ShadowSurface as u32;
+    (raw::exports().draw_shadow_rect)(win, x, y, w, h, offset_x, offset_y, spread, alpha);
+}
+
+/// Draw a soft shadow for a rounded rectangle onto a raw pixel buffer.
+pub fn draw_shadow_rounded_rect_buf(
+    pixels: &mut [u32], fb_w: u32, fb_h: u32,
+    x: i32, y: i32, w: u32, h: u32, r: i32,
+    offset_x: i32, offset_y: i32, spread: i32, alpha: u32,
+) {
+    let mut surface = ShadowSurface { pixels: pixels.as_mut_ptr(), width: fb_w, height: fb_h };
+    let win = &mut surface as *mut ShadowSurface as u32;
+    (raw::exports().draw_shadow_rounded_rect)(win, x, y, w, h, r, offset_x, offset_y, spread, alpha);
+}
+
+/// Draw a soft shadow for an oval/ellipse onto a raw pixel buffer.
+pub fn draw_shadow_oval_buf(
+    pixels: &mut [u32], fb_w: u32, fb_h: u32,
+    cx: i32, cy: i32, rx: i32, ry: i32,
+    offset_x: i32, offset_y: i32, spread: i32, alpha: u32,
+) {
+    let mut surface = ShadowSurface { pixels: pixels.as_mut_ptr(), width: fb_w, height: fb_h };
+    let win = &mut surface as *mut ShadowSurface as u32;
+    (raw::exports().draw_shadow_oval)(win, cx, cy, rx, ry, offset_x, offset_y, spread, alpha);
+}
+
+// --- Blur API ---
+
+/// Apply a box blur to a rectangular region of a raw pixel buffer.
+/// `radius` = blur kernel half-size. `passes` = number of blur iterations (3 ≈ Gaussian).
+pub fn blur_rect_buf(
+    pixels: &mut [u32], fb_w: u32, fb_h: u32,
+    x: i32, y: i32, w: u32, h: u32,
+    radius: u32, passes: u32,
+) {
+    let mut surface = ShadowSurface { pixels: pixels.as_mut_ptr(), width: fb_w, height: fb_h };
+    let win = &mut surface as *mut ShadowSurface as u32;
+    (raw::exports().blur_rect)(win, x, y, w, h, radius, passes);
+}
+
+/// Apply a box blur to a rounded-rect region of a raw pixel buffer.
+/// Pixels outside the rounded rect are not modified.
+pub fn blur_rounded_rect_buf(
+    pixels: &mut [u32], fb_w: u32, fb_h: u32,
+    x: i32, y: i32, w: u32, h: u32, r: i32,
+    radius: u32, passes: u32,
+) {
+    let mut surface = ShadowSurface { pixels: pixels.as_mut_ptr(), width: fb_w, height: fb_h };
+    let win = &mut surface as *mut ShadowSurface as u32;
+    (raw::exports().blur_rounded_rect)(win, x, y, w, h, r, radius, passes);
+}

@@ -30,7 +30,7 @@ pub fn set_theme(value: u32) {
 }
 
 #[inline(always)]
-fn color_menubar_bg() -> u32     { if is_light() { 0xE6F6F6F6 } else { 0xE6303035 } }
+fn color_menubar_bg() -> u32     { if is_light() { 0xB3F0F0F5 } else { 0xB3303035 } }
 #[inline(always)]
 fn color_menubar_border() -> u32 { if is_light() { 0xFFD1D1D6 } else { 0xFF404045 } }
 #[inline(always)]
@@ -864,9 +864,8 @@ impl Desktop {
         let opaque = borderless; // Decorated windows have transparent rounded corners
         let layer_id = self.compositor.add_layer(x, y, content_w, full_h, opaque);
 
-        // Enable shadow for decorated windows and always-on-top borderless (dock)
-        let wants_shadow = !borderless || (flags & WIN_FLAG_ALWAYS_ON_TOP != 0);
-        if wants_shadow {
+        // Enable shadow for decorated windows only (borderless windows like dock draw their own)
+        if !borderless {
             if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
                 layer.has_shadow = true;
             }
@@ -2171,9 +2170,8 @@ impl Desktop {
             false,
         );
 
-        // Enable shadow for decorated windows and always-on-top borderless (dock)
-        let wants_shadow = !borderless || (flags & WIN_FLAG_ALWAYS_ON_TOP != 0);
-        if wants_shadow {
+        // Enable shadow for decorated windows only (borderless windows like dock draw their own)
+        if !borderless {
             if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
                 layer.has_shadow = true;
             }
@@ -2238,8 +2236,8 @@ impl Desktop {
             pre_pixels,
         );
 
-        let wants_shadow = !borderless || (flags & WIN_FLAG_ALWAYS_ON_TOP != 0);
-        if wants_shadow {
+        // Enable shadow for decorated windows only
+        if !borderless {
             if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
                 layer.has_shadow = true;
             }
@@ -2674,6 +2672,18 @@ impl Desktop {
                         }
                     }
                     self.focus_window(win_id);
+                }
+                None
+            }
+            proto::CMD_SET_BLUR_BEHIND => {
+                let window_id = cmd[1];
+                let radius = cmd[2];
+                if let Some(idx) = self.windows.iter().position(|w| w.id == window_id) {
+                    let layer_id = self.windows[idx].layer_id;
+                    if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
+                        layer.blur_behind = radius > 0;
+                        layer.blur_radius = radius;
+                    }
                 }
                 None
             }

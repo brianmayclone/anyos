@@ -32,7 +32,7 @@ const THEME_ADDR: *const u32 = 0x0400_000C as *const u32;
 #[inline(always)]
 fn is_light() -> bool { unsafe { core::ptr::read_volatile(THEME_ADDR) != 0 } }
 #[inline(always)]
-fn dock_bg() -> u32 { if is_light() { 0xC0F0F0F5 } else { 0xC0303035 } }
+fn dock_bg() -> u32 { if is_light() { 0xB3F0F0F5 } else { 0xB3303035 } }
 const COLOR_WHITE: u32 = 0xFFFFFFFF;
 const COLOR_TRANSPARENT: u32 = 0x00000000;
 const COLOR_HIGHLIGHT: u32 = 0x19FFFFFF; // 10% white
@@ -448,7 +448,14 @@ fn render_dock(fb: &mut Framebuffer, items: &[DockItem], screen_width: u32, rs: 
     let dock_x = (screen_width as i32 - total_width as i32) / 2;
     let dock_y = DOCK_MARGIN as i32;
 
-    // Glass pill background
+    // Soft shadow around the pill
+    uisys_client::draw_shadow_rounded_rect_buf(
+        &mut fb.pixels, fb.width, fb.height,
+        dock_x, dock_y, total_width, DOCK_HEIGHT, DOCK_BORDER_RADIUS,
+        0, 4, 12, 40,
+    );
+
+    // Glass pill background (semi-transparent for blur-behind to show through)
     fb.fill_rounded_rect(dock_x, dock_y, total_width, DOCK_HEIGHT, DOCK_BORDER_RADIUS, dock_bg());
 
     // Top highlight line for depth

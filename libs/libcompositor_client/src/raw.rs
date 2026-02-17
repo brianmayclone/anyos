@@ -68,6 +68,8 @@ pub struct LibcompositorExports {
         sub_id: u32,
         buf: *mut [u32; 5],
     ) -> u32,
+
+    pub set_blur_behind: extern "C" fn(channel_id: u32, window_id: u32, radius: u32),
 }
 
 /// Get a reference to the libcompositor export table.

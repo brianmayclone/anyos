@@ -151,6 +151,15 @@ pub struct UisysExports {
     // TextField v2 (2)
     pub textfield_render_ex: extern "C" fn(u32, i32, i32, u32, u32, *const u8, u32, *const u8, u32, u32, u32, u32, u32),
     pub textfield_cursor_from_click_ex: extern "C" fn(i32, *const u8, u32, i32, i32) -> u32,
+
+    // Shadow (3)
+    pub draw_shadow_rect: extern "C" fn(u32, i32, i32, u32, u32, i32, i32, i32, u32),
+    pub draw_shadow_rounded_rect: extern "C" fn(u32, i32, i32, u32, u32, i32, i32, i32, i32, u32),
+    pub draw_shadow_oval: extern "C" fn(u32, i32, i32, i32, i32, i32, i32, i32, u32),
+
+    // Blur (2)
+    pub blur_rect: extern "C" fn(u32, i32, i32, u32, u32, u32, u32),
+    pub blur_rounded_rect: extern "C" fn(u32, i32, i32, u32, u32, i32, u32, u32),
 }
 
 /// Get a reference to the export table at the fixed DLL base address.

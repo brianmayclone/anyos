@@ -18,9 +18,10 @@ const CMD_REMOVE_STATUS_ICON: u32 = 0x1008;
 const CMD_UPDATE_MENU_ITEM: u32 = 0x1009;
 const CMD_RESIZE_SHM: u32 = 0x100B;
 const CMD_REGISTER_SUB: u32 = 0x100C;
+const CMD_SET_BLUR_BEHIND: u32 = 0x100E;
 const RESP_WINDOW_CREATED: u32 = 0x2001;
 
-const NUM_EXPORTS: u32 = 15;
+const NUM_EXPORTS: u32 = 16;
 
 #[repr(C)]
 pub struct LibcompositorExports {
@@ -105,6 +106,10 @@ pub struct LibcompositorExports {
         sub_id: u32,
         buf: *mut [u32; 5],
     ) -> u32,
+
+    /// Enable/disable blur-behind on a window.
+    /// radius=0 disables, radius>0 enables with given blur radius.
+    pub set_blur_behind: extern "C" fn(channel_id: u32, window_id: u32, radius: u32),
 }
 
 #[link_section = ".exports"]
@@ -130,6 +135,7 @@ pub static LIBCOMPOSITOR_EXPORTS: LibcompositorExports = LibcompositorExports {
     update_menu_item: export_update_menu_item,
     resize_shm: export_resize_shm,
     tray_poll_event: export_tray_poll_event,
+    set_blur_behind: export_set_blur_behind,
 };
 
 // ── Export Implementations ───────────────────────────────────────────────────
@@ -428,4 +434,9 @@ extern "C" fn export_tray_poll_event(
     } else {
         0
     }
+}
+
+extern "C" fn export_set_blur_behind(channel_id: u32, window_id: u32, radius: u32) {
+    let cmd: [u32; 5] = [CMD_SET_BLUR_BEHIND, window_id, radius, 0, 0];
+    syscall::evt_chan_emit(channel_id, &cmd);
 }

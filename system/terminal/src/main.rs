@@ -187,7 +187,7 @@ fn read_file_to_buf(path: &str, buf: &mut [u8]) -> usize {
     total
 }
 
-/// Source an .env file — supports:
+/// Source an env file — supports:
 ///   KEY=VALUE
 ///   export KEY=VALUE
 ///   source /path/to/file
@@ -239,10 +239,10 @@ fn source_env_file(path: &str, depth: u32) {
     }
 }
 
-/// Load system and user .env files.
+/// Load system and user env files.
 fn load_dotenv() {
     // 1. System environment
-    source_env_file("/System/.env", 0);
+    source_env_file("/System/env", 0);
 
     // 2. User environment — determine username from uid
     let uid = anyos_std::process::getuid();
@@ -251,7 +251,7 @@ fn load_dotenv() {
     if nlen != u32::MAX && nlen > 0 {
         if let Ok(username) = core::str::from_utf8(&name_buf[..nlen as usize]) {
             if username != "root" {
-                let user_env = format!("/Users/{}/.env", username);
+                let user_env = format!("/Users/{}/env", username);
                 source_env_file(&user_env, 0);
                 // Update HOME and USER based on actual identity
                 let home = format!("/Users/{}", username);
@@ -434,6 +434,7 @@ impl Shell {
             "set" => self.cmd_set(args, buf),
             "export" => self.cmd_export(args, buf),
             "unset" => self.cmd_unset(args, buf),
+            "source" | "." => self.cmd_source(args, buf),
             "su" => self.cmd_su(args, buf),
             "exit" => return (false, None),
             "reboot" => {
@@ -812,6 +813,99 @@ impl Shell {
         fs::chdir(&self.cwd);
     }
 
+    fn cmd_source(&mut self, args: &str, buf: &mut TerminalBuffer) {
+        let path = args.trim();
+        if path.is_empty() {
+            buf.current_color = COLOR_FG;
+            buf.write_str("usage: source <file>\n");
+            return;
+        }
+
+        let mut data = [0u8; 4096];
+        let total = read_file_to_buf(path, &mut data);
+        if total == 0 {
+            buf.current_color = COLOR_FG;
+            buf.write_str("source: cannot read '");
+            buf.write_str(path);
+            buf.write_str("'\n");
+            return;
+        }
+
+        let text = match core::str::from_utf8(&data[..total]) {
+            Ok(s) => s,
+            Err(_) => {
+                buf.current_color = COLOR_FG;
+                buf.write_str("source: invalid UTF-8\n");
+                return;
+            }
+        };
+
+        for line in text.split('\n') {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            // Parse command and args
+            let mut parts = line.splitn(2, ' ');
+            let cmd = parts.next().unwrap_or("");
+            let cmd_args = parts.next().unwrap_or("");
+
+            match cmd {
+                "export" => self.cmd_export(cmd_args, buf),
+                "set" => self.cmd_set(cmd_args, buf),
+                "unset" => self.cmd_unset(cmd_args, buf),
+                "cd" => self.cmd_cd(cmd_args, buf),
+                "echo" => {
+                    buf.current_color = COLOR_FG;
+                    buf.write_str(cmd_args);
+                    buf.write_char('\n');
+                }
+                "source" | "." => self.cmd_source(cmd_args, buf),
+                _ => {
+                    // Handle KEY=VALUE assignment (no command prefix)
+                    if let Some(eq) = line.find('=') {
+                        if !line[..eq].contains(' ') {
+                            let key = line[..eq].trim();
+                            let val = line[eq + 1..].trim();
+                            if !key.is_empty() {
+                                anyos_std::env::set(key, val);
+                            }
+                            continue;
+                        }
+                    }
+
+                    // External command — resolve path, spawn, and wait
+                    let resolved = if cmd.starts_with('/') {
+                        String::from(cmd)
+                    } else if cmd.starts_with("./") || cmd.starts_with("../") {
+                        if self.cwd == "/" {
+                            format!("/{}", cmd.trim_start_matches("./"))
+                        } else {
+                            format!("{}/{}", self.cwd, cmd)
+                        }
+                    } else {
+                        match resolve_from_path(cmd) {
+                            Some(p) => p,
+                            None => format!("/System/bin/{}", cmd),
+                        }
+                    };
+
+                    let full_args = if cmd_args.is_empty() {
+                        String::from(cmd)
+                    } else {
+                        format!("{} {}", cmd, cmd_args)
+                    };
+
+                    let tid = process::spawn(&resolved, &full_args);
+                    if tid != u32::MAX {
+                        process::waitpid(tid);
+                    }
+                }
+            }
+        }
+    }
+
     fn cmd_su(&self, args: &str, buf: &mut TerminalBuffer) {
         let parts: Vec<&str> = args.split_whitespace().collect();
         let username = if parts.is_empty() { "root" } else { parts[0] };
@@ -843,7 +937,7 @@ impl Shell {
 
 const BUILTINS: &[&str] = &[
     "help", "echo", "clear", "uname", "cd", "pwd",
-    "set", "export", "unset", "su", "exit", "reboot",
+    "set", "export", "unset", "source", "su", "exit", "reboot",
 ];
 
 /// Erase the input portion of the current display line and rewrite it.
@@ -1104,7 +1198,7 @@ fn main() {
     let mut buf = TerminalBuffer::new(cols, rows);
     let mut shell = Shell::new();
 
-    // Load environment from /System/.env
+    // Load environment from /System/env
     load_dotenv();
     anyos_std::env::set("PWD", "/"); // PWD is dynamic, always set
 

@@ -13,6 +13,7 @@ dependencies = [
  "anyos_std",
  "libcompositor_client",
  "libimage_client",
+ "uisys_client",
 ]
 
 [[package]]
@@ -22,3 +23,11 @@ version = "0.1.0"
 [[package]]
 name = "libimage_client"
 version = "0.1.0"
+
+[[package]]
+name = "uisys_client"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libimage_client",
+]

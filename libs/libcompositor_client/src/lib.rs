@@ -195,6 +195,15 @@ impl CompositorClient {
         (raw::exports().update_menu_item)(self.channel_id, handle.id, item_id, new_flags);
     }
 
+    /// Enable blur-behind on a window (frosted glass effect).
+    /// The compositor blurs the composited background behind the window layer
+    /// before alpha-blending the window on top. The window must have semi-transparent
+    /// pixels for the blur to be visible.
+    /// `radius` controls blur strength (0 = disable, typically 4-12).
+    pub fn set_blur_behind(&self, handle: &WindowHandle, radius: u32) {
+        (raw::exports().set_blur_behind)(self.channel_id, handle.id, radius);
+    }
+
     /// Resize a window's shared memory surface to new dimensions.
     /// Updates the WindowHandle in-place with the new SHM id, surface pointer,
     /// and dimensions. Returns true on success.

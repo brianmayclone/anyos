@@ -132,6 +132,9 @@ pub struct Layer {
     pub visible: bool,
     pub has_shadow: bool,
     pub dirty: bool,
+    /// Blur the back buffer behind this layer before compositing.
+    pub blur_behind: bool,
+    pub blur_radius: u32,
     /// Cached shadow alpha bitmap (computed lazily, invalidated on resize).
     shadow_cache: Option<ShadowCache>,
 }
@@ -339,6 +342,8 @@ impl Compositor {
             visible: true,
             has_shadow: false,
             dirty: true,
+            blur_behind: false,
+            blur_radius: 0,
             shadow_cache: None,
         });
         id
@@ -369,6 +374,8 @@ impl Compositor {
             visible: true,
             has_shadow: false,
             dirty: true,
+            blur_behind: false,
+            blur_radius: 0,
             shadow_cache: None,
         });
         id
@@ -401,6 +408,8 @@ impl Compositor {
             visible: true,
             has_shadow: false,
             dirty: true,
+            blur_behind: false,
+            blur_radius: 0,
             shadow_cache: None,
         });
         id
@@ -768,6 +777,20 @@ impl Compositor {
             let has_shadow = self.layers[li].has_shadow;
             if has_shadow {
                 self.draw_shadow_to_bb(rect, li);
+            }
+
+            // Blur the back buffer behind this layer (frosted glass effect)
+            let blur_behind = self.layers[li].blur_behind;
+            let blur_radius = self.layers[li].blur_radius;
+            if blur_behind && blur_radius > 0 {
+                let lb = self.layers[li].bounds();
+                if let Some(blur_area) = rect.intersect(&lb) {
+                    blur_back_buffer_region(
+                        &mut self.back_buffer, self.fb_width, self.fb_height,
+                        blur_area.x, blur_area.y, blur_area.width, blur_area.height,
+                        blur_radius, 2, // 2 passes ≈ triangle blur (fast + decent quality)
+                    );
+                }
             }
 
             let layer_rect = self.layers[li].bounds();
@@ -1142,16 +1165,22 @@ fn compute_shadow_cache(layer_w: u32, layer_h: u32) -> ShadowCache {
 
             let dist = rounded_rect_sdf(px, py, lx, ly, lw, lh, corner_r);
 
-            // Only outside the rect (dist > 0) and within spread
-            if dist <= 0 || dist >= spread {
+            if dist >= spread {
                 continue;
             }
 
-            let t = dist as u32;
-            let inv = s - t;
-            // Normalized alpha: quadratic falloff scaled to 0-255
-            let a = (255 * inv * inv) / (s * s);
-            alphas[(row * cache_w + col) as usize] = a.min(255) as u8;
+            if dist <= 0 {
+                // Inside the shadow shape: full alpha.
+                // The window layer drawn on top will cover the interior;
+                // this ensures no gap when the shadow is offset.
+                alphas[(row * cache_w + col) as usize] = 255;
+            } else {
+                let t = dist as u32;
+                let inv = s - t;
+                // Normalized alpha: quadratic falloff scaled to 0-255
+                let a = (255 * inv * inv) / (s * s);
+                alphas[(row * cache_w + col) as usize] = a.min(255) as u8;
+            }
         }
     }
 
@@ -1225,6 +1254,83 @@ fn isqrt_u32(n: u32) -> u32 {
         y = (x + n / x) / 2;
     }
     x
+}
+
+/// Fast two-pass (H+V) box blur on a rectangular region of a pixel buffer.
+/// `passes` iterations: 1=box, 2=triangle, 3≈gaussian.
+fn blur_back_buffer_region(
+    bb: &mut [u32], fb_w: u32, fb_h: u32,
+    rx: i32, ry: i32, rw: u32, rh: u32,
+    radius: u32, passes: u32,
+) {
+    if rw == 0 || rh == 0 || radius == 0 || passes == 0 { return; }
+    let x0 = rx.max(0) as usize;
+    let y0 = ry.max(0) as usize;
+    let x1 = ((rx + rw as i32) as usize).min(fb_w as usize);
+    let y1 = ((ry + rh as i32) as usize).min(fb_h as usize);
+    if x0 >= x1 || y0 >= y1 { return; }
+    let w = x1 - x0;
+    let h = y1 - y0;
+    let stride = fb_w as usize;
+    let r = radius as usize;
+    let kernel = (2 * r + 1) as u32;
+
+    let max_dim = w.max(h);
+    let mut temp = vec![0u32; max_dim];
+
+    for _ in 0..passes {
+        // Horizontal pass
+        for row in y0..y1 {
+            let row_off = row * stride;
+            let (mut sr, mut sg, mut sb) = (0u32, 0u32, 0u32);
+            for i in 0..=(2 * r) {
+                let sx = (x0 as i32 + i as i32 - r as i32).max(0).min(fb_w as i32 - 1) as usize;
+                let px = bb[row_off + sx];
+                sr += (px >> 16) & 0xFF;
+                sg += (px >> 8) & 0xFF;
+                sb += px & 0xFF;
+            }
+            for col in 0..w {
+                let cx = x0 + col;
+                temp[col] = 0xFF000000 | ((sr / kernel) << 16) | ((sg / kernel) << 8) | (sb / kernel);
+                let add_x = (cx as i32 + r as i32 + 1).min(fb_w as i32 - 1).max(0) as usize;
+                let rem_x = (cx as i32 - r as i32).max(0).min(fb_w as i32 - 1) as usize;
+                let add_px = bb[row_off + add_x];
+                let rem_px = bb[row_off + rem_x];
+                sr += ((add_px >> 16) & 0xFF) - ((rem_px >> 16) & 0xFF);
+                sg += ((add_px >> 8) & 0xFF) - ((rem_px >> 8) & 0xFF);
+                sb += (add_px & 0xFF) - (rem_px & 0xFF);
+            }
+            for col in 0..w {
+                bb[row_off + x0 + col] = temp[col];
+            }
+        }
+        // Vertical pass
+        for col in x0..x1 {
+            let (mut sr, mut sg, mut sb) = (0u32, 0u32, 0u32);
+            for i in 0..=(2 * r) {
+                let sy = (y0 as i32 + i as i32 - r as i32).max(0).min(fb_h as i32 - 1) as usize;
+                let px = bb[sy * stride + col];
+                sr += (px >> 16) & 0xFF;
+                sg += (px >> 8) & 0xFF;
+                sb += px & 0xFF;
+            }
+            for row in 0..h {
+                let cy = y0 + row;
+                temp[row] = 0xFF000000 | ((sr / kernel) << 16) | ((sg / kernel) << 8) | (sb / kernel);
+                let add_y = (cy as i32 + r as i32 + 1).min(fb_h as i32 - 1).max(0) as usize;
+                let rem_y = (cy as i32 - r as i32).max(0).min(fb_h as i32 - 1) as usize;
+                let add_px = bb[add_y * stride + col];
+                let rem_px = bb[rem_y * stride + col];
+                sr += ((add_px >> 16) & 0xFF) - ((rem_px >> 16) & 0xFF);
+                sg += ((add_px >> 8) & 0xFF) - ((rem_px >> 8) & 0xFF);
+                sb += (add_px & 0xFF) - (rem_px & 0xFF);
+            }
+            for row in 0..h {
+                bb[(y0 + row) * stride + col] = temp[row];
+            }
+        }
+    }
 }
 
 /// Alpha-blend src over dst (both ARGB8888).
