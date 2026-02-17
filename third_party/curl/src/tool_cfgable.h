@@ -26,6 +26,7 @@
 #include "tool_setup.h"
 #include "tool_sdecls.h"
 #include "tool_urlglob.h"
+#include "dynbuf.h"
 #include "var.h"
 
 /* the type we use for storing a single boolean bit */

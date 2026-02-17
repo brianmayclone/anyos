@@ -847,6 +847,46 @@ add_custom_command(
   COMMENT "Packaging Browser.app"
 )
 
+# ============================================================
+# curl (HTTP/FTP client, cross-compiled C program)
+# ============================================================
+set(CURL_DIR "${CMAKE_SOURCE_DIR}/third_party/curl")
+set(CURL_LIB "${CURL_DIR}/libcurl.a")
+set(CURL_ELF "${CURL_DIR}/curl.elf")
+
+add_custom_command(
+  OUTPUT ${CURL_LIB}
+  COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/build_curl.sh
+  DEPENDS
+    ${LIBC_A}
+    ${CMAKE_SOURCE_DIR}/scripts/build_curl.sh
+    ${CURL_DIR}/lib/config-anyos.h
+  COMMENT "Building libcurl for anyOS"
+)
+
+add_custom_command(
+  OUTPUT ${CURL_ELF}
+  COMMAND i686-elf-gcc
+    -nostdlib -static -m32
+    -T ${LIBC_DIR}/link.ld
+    -o ${CURL_ELF}
+    ${LIBC_CRT0}
+    -Wl,--start-group
+    ${CURL_LIB}
+    ${LIBC_A}
+    -lgcc
+    -Wl,--end-group
+  DEPENDS ${CURL_LIB} ${LIBC_A} ${LIBC_CRT0} ${LIBC_DIR}/link.ld
+  COMMENT "Linking curl for anyOS"
+)
+
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/bin/curl
+  COMMAND ${CMAKE_COMMAND} -E copy ${CURL_ELF} ${SYSROOT_DIR}/bin/curl
+  DEPENDS ${CURL_ELF}
+  COMMENT "Installing curl to /bin/curl"
+)
+
 set(C_TOOLCHAIN_DEPS
   ${SYSROOT_DIR}/Libraries/libc/lib/libc.a
   ${SYSROOT_DIR}/Libraries/libc/lib/crt0.o
@@ -856,6 +896,7 @@ set(C_TOOLCHAIN_DEPS
   ${DOOM_APP}/DOOM
   ${QUAKE_APP}/Quake
   "${BROWSER_APP}/Browser"
+  ${SYSROOT_DIR}/bin/curl
 )
 
 endif() # HAS_CROSS_COMPILER

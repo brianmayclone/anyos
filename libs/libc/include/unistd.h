@@ -37,6 +37,7 @@ ssize_t pread(int fd, void *buf, size_t count, long offset);
 ssize_t pwrite(int fd, const void *buf, size_t count, long offset);
 int dup(int oldfd);
 int dup2(int oldfd, int newfd);
+int pipe(int pipefd[2]);
 int gethostname(char *name, size_t len);
 char *realpath(const char *path, char *resolved_path);
 int rmdir(const char *pathname);

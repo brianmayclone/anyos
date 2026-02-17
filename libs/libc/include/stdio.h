@@ -72,6 +72,7 @@ int remove(const char *pathname);
 int rename(const char *oldpath, const char *newpath);
 FILE *tmpfile(void);
 FILE *fdopen(int fd, const char *mode);
+FILE *freopen(const char *path, const char *mode, FILE *stream);
 int fileno(FILE *stream);
 int setvbuf(FILE *stream, char *buf, int mode, size_t size);
 void setbuf(FILE *stream, char *buf);

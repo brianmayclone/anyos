@@ -175,3 +175,19 @@ int ioctl(int fd, unsigned long request, ...) {
     errno = ENOSYS;
     return -1;
 }
+
+int fcntl(int fd, int cmd, ...) {
+    (void)fd;
+    if (cmd == 3 /* F_GETFL */) return 0; /* return current flags = 0 */
+    if (cmd == 4 /* F_SETFL */) return 0; /* pretend success */
+    errno = ENOSYS;
+    return -1;
+}
+
+int pipe(int pipefd[2]) {
+    /* anyOS has named pipes, not POSIX anonymous pipes.
+       Stub: curl uses this only for stderr redirect. */
+    (void)pipefd;
+    errno = ENOSYS;
+    return -1;
+}

@@ -529,6 +529,12 @@ int setvbuf(FILE *stream, char *buf, int mode, size_t size) {
     return 0; /* unbuffered */
 }
 
+FILE *freopen(const char *path, const char *mode, FILE *stream) {
+    (void)path; (void)mode; (void)stream;
+    /* stub — curl uses this for stderr redirect */
+    return stream;
+}
+
 void __assert_fail(const char *expr, const char *file, int line) {
     fprintf(stderr, "Assertion failed: %s at %s:%d\n", expr, file, line);
     abort();
