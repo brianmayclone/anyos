@@ -57,6 +57,8 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_SYMLINK, "symlink"),
     (SYS_READLINK, "readlink"),
     (SYS_LSTAT, "lstat"),
+    (SYS_GET_CAPABILITIES, "get_capabilities"),
+    (SYS_BOOT_READY, "boot_ready"),
 ];
 
 /// Look up the human-readable name for a syscall number.

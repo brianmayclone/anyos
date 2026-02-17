@@ -595,7 +595,7 @@ fn emit_spawn_event(tid: u32, name: &str) {
 
 /// Create a new thread within the same address space as the currently running thread.
 pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &str, priority: u8) -> u32 {
-    let (pd, arch_mode, brk, parent_pri, parent_cwd) = {
+    let (pd, arch_mode, brk, parent_pri, parent_cwd, parent_caps) = {
         let guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
         let sched = match guard.as_ref() { Some(s) => s, None => return 0 };
@@ -603,7 +603,7 @@ pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &st
         let idx = match sched.find_idx(current_tid) { Some(i) => i, None => return 0 };
         let thread = &sched.threads[idx];
         let pd = match thread.page_directory { Some(pd) => pd, None => return 0 };
-        (pd, thread.arch_mode, thread.brk, thread.priority, thread.cwd)
+        (pd, thread.arch_mode, thread.brk, thread.priority, thread.cwd, thread.capabilities)
     };
 
     let effective_pri = if priority == 0 { parent_pri } else { priority };
@@ -621,6 +621,7 @@ pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &st
             thread.arch_mode = arch_mode;
             thread.pd_shared = true;
             thread.cwd = parent_cwd;
+            thread.capabilities = parent_caps;
         }
     }
 
@@ -1723,6 +1724,28 @@ pub fn set_thread_critical(tid: u32) {
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.critical = true;
         crate::serial_println!("  Thread '{}' (TID={}) marked as critical", thread.name_str(), tid);
+    }
+}
+
+/// Get the capability bitmask for the currently running thread.
+pub fn current_thread_capabilities() -> crate::task::capabilities::CapSet {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    let sched = guard.as_ref().expect("Scheduler not initialized");
+    if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
+        if let Some(thread) = sched.threads.iter().find(|t| t.tid == tid) {
+            return thread.capabilities;
+        }
+    }
+    0
+}
+
+/// Set the capability bitmask for a thread (called by loader after spawn).
+pub fn set_thread_capabilities(tid: u32, caps: crate::task::capabilities::CapSet) {
+    let mut guard = SCHEDULER.lock();
+    let sched = guard.as_mut().expect("Scheduler not initialized");
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        thread.capabilities = caps;
     }
 }
 

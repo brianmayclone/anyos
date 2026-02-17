@@ -4,6 +4,7 @@
 //! and optional per-process state (page directory, heap break, arguments).
 
 use crate::memory::address::PhysAddr;
+use crate::task::capabilities::CapSet;
 use crate::task::context::CpuContext;
 use alloc::boxed::Box;
 use alloc::vec;
@@ -110,6 +111,9 @@ pub struct Thread {
     /// Defaults to "/" for kernel threads and non-bundle processes.
     /// For .app bundles, set to the bundle directory (or per Info.conf working_dir).
     pub cwd: [u8; 256],
+    /// Capability bitmask — gates which syscalls this thread may invoke.
+    /// Set from Info.conf for .app bundles, inherited (capped) for CLI programs.
+    pub capabilities: CapSet,
 }
 
 /// Size of each thread's kernel-mode stack.
@@ -189,6 +193,7 @@ impl Thread {
                 c[0] = b'/';
                 c
             },
+            capabilities: 0,
         }
     }
 

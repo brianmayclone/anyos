@@ -161,6 +161,9 @@ pub(crate) const SYS_KBD_LIST_LAYOUTS: u32 = 202;
 // Random number generation
 pub(crate) const SYS_RANDOM: u32 = 210;
 
+// Capabilities query
+pub(crate) const SYS_GET_CAPABILITIES: u32 = 220;
+
 // Event bus
 pub(crate) const SYS_EVT_SYS_SUBSCRIBE: u32 = 60;
 pub(crate) const SYS_EVT_SYS_POLL: u32 = 61;

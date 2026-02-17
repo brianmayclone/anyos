@@ -121,6 +121,11 @@ pub fn set_priority(tid: u32, priority: u8) -> u32 {
     syscall2(SYS_SET_PRIORITY, tid as u64, priority as u64)
 }
 
+/// Return the calling thread's capability bitmask.
+pub fn get_capabilities() -> u32 {
+    syscall0(SYS_GET_CAPABILITIES)
+}
+
 /// Get command-line arguments (raw). Returns the args length.
 /// The raw args string includes argv[0] (the program name).
 pub fn getargs(buf: &mut [u8]) -> usize {

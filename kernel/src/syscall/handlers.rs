@@ -1995,6 +1995,19 @@ pub fn sys_set_critical() -> u32 {
     0
 }
 
+/// SYS_GET_CAPABILITIES: Return the calling thread's capability bitmask.
+/// Always allowed (no capability required).
+pub fn sys_get_capabilities() -> u32 {
+    crate::task::scheduler::current_thread_capabilities()
+}
+
+/// SYS_BOOT_READY: Signal from the compositor that the desktop is fully up.
+/// Currently a no-op signal (kernel logs it); may be used for boot timing.
+pub fn sys_boot_ready() -> u32 {
+    crate::serial_println!("[OK] Boot ready signal received from compositor");
+    0
+}
+
 /// SYS_CAPTURE_SCREEN: Capture the current framebuffer contents to a user buffer.
 /// arg1 = buf_ptr (pointer to u32 ARGB pixels)
 /// arg2 = buf_size (buffer size in bytes)

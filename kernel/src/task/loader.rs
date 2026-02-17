@@ -388,6 +388,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     // .app bundle resolution
     let resolved_path: alloc::string::String;
     let bundle_cwd: Option<alloc::string::String>;
+    let bundle_caps: Option<crate::task::capabilities::CapSet>;
     let actual_path = if path.ends_with(".app") {
         // Parse Info.conf for exec field and working_dir
         let config = crate::task::app_config::parse_info_conf(path);
@@ -428,10 +429,22 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             Some(alloc::string::String::from(path))
         };
 
+        // Extract capabilities from Info.conf
+        bundle_caps = if let Some(ref cfg) = config {
+            if let Some(ref cap_str) = cfg.capabilities {
+                Some(crate::task::capabilities::parse_capabilities(cap_str))
+            } else {
+                Some(crate::task::capabilities::CAP_DEFAULT)
+            }
+        } else {
+            Some(crate::task::capabilities::CAP_DEFAULT)
+        };
+
         crate::serial_println!("  .app bundle: {} -> {}", path, resolved_path);
         resolved_path.as_str()
     } else {
         bundle_cwd = None;
+        bundle_caps = None;
         path
     };
 
@@ -595,9 +608,25 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         crate::task::scheduler::set_thread_cwd(tid, cwd);
     }
 
-    crate::serial_println!("  Spawn complete: TID={}, all setup done — waking thread", tid);
+    // Set capabilities: .app bundles use Info.conf, non-.app binaries inherit parent's caps.
+    // The permission boundary is at the .app bundle level — CLI tools and system services
+    // inherit whatever their parent has (compositor children get CAP_ALL, etc.).
+    let caps = if let Some(c) = bundle_caps {
+        c
+    } else {
+        let parent_caps = crate::task::scheduler::current_thread_capabilities();
+        if parent_caps == 0 {
+            // Kernel thread spawning user process (e.g. compositor at boot) — full access
+            crate::task::capabilities::CAP_ALL
+        } else {
+            // Non-.app binary: inherit parent's full capabilities
+            parent_caps
+        }
+    };
+    crate::task::scheduler::set_thread_capabilities(tid, caps);
+    crate::serial_println!("  Spawn complete: TID={}, caps={:#x}, all setup done — waking thread", tid, caps);
 
-    // All setup complete (CR3, pending data, args, CWD). Now make the thread runnable.
+    // All setup complete (CR3, pending data, args, CWD, caps). Now make the thread runnable.
     crate::task::scheduler::wake_thread(tid);
 
     Ok(tid)

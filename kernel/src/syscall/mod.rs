@@ -130,6 +130,7 @@ pub const SYS_SET_RESOLUTION: u32 = 110;
 pub const SYS_LIST_RESOLUTIONS: u32 = 111;
 pub const SYS_GPU_INFO: u32 = 112;
 pub const SYS_GPU_HAS_ACCEL: u32 = 135;
+pub const SYS_BOOT_READY: u32 = 137;
 
 // Audio syscalls
 pub const SYS_AUDIO_WRITE: u32 = 120;
@@ -181,6 +182,9 @@ pub const SYS_KBD_LIST_LAYOUTS: u32 = 202;
 
 // Random number generation
 pub const SYS_RANDOM: u32 = 210;
+
+// Capabilities query
+pub const SYS_GET_CAPABILITIES: u32 = 220;
 
 /// Register frame pushed by `syscall_entry.asm` / `syscall_fast.asm`.
 ///
@@ -236,6 +240,20 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
                 crate::debug_println!("syscall [T{}] {}({}) args=({:#x},{:#x},{:#x},{:#x})",
                     tid, name, syscall_num, arg1, arg2, arg3, arg4);
             }
+        }
+    }
+
+    // Capability permission check — deny syscalls the thread lacks permission for.
+    let required = crate::task::capabilities::required_cap(syscall_num);
+    if required != 0 {
+        let caps = crate::task::scheduler::current_thread_capabilities();
+        if caps & required != required {
+            crate::serial_println!(
+                "DENIED: T{} syscall {}({}) requires cap {:#x}, has {:#x}",
+                crate::task::scheduler::current_tid(),
+                table::syscall_name(syscall_num), syscall_num, required, caps
+            );
+            return u32::MAX;
         }
     }
 
@@ -344,6 +362,7 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_LIST_RESOLUTIONS => handlers::sys_list_resolutions(arg1, arg2),
         SYS_GPU_INFO => handlers::sys_gpu_info(arg1, arg2),
         SYS_GPU_HAS_ACCEL => handlers::sys_gpu_has_accel(),
+        SYS_BOOT_READY => handlers::sys_boot_ready(),
 
         // Audio
         SYS_AUDIO_WRITE => handlers::sys_audio_write(arg1, arg2),
@@ -388,6 +407,9 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
 
         // Random number generation
         SYS_RANDOM => handlers::sys_random(arg1, arg2),
+
+        // Capabilities query
+        SYS_GET_CAPABILITIES => handlers::sys_get_capabilities(),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);
