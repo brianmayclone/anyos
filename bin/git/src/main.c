@@ -540,6 +540,105 @@ static int cmd_push(int argc, char **argv) {
     return 0;
 }
 
+/* ---- git config ---- */
+static int cmd_config(int argc, char **argv) {
+    int global = 0;
+    int list = 0;
+    int unset = 0;
+    int argi = 0;
+
+    /* Parse flags */
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "--global") == 0)
+            global = 1;
+        else if (strcmp(argv[i], "--local") == 0)
+            global = 0;
+        else if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--list") == 0)
+            list = 1;
+        else if (strcmp(argv[i], "--unset") == 0)
+            unset = 1;
+        else
+            break;
+        argi = i + 1;
+    }
+
+    git_config *cfg = NULL;
+    int err;
+
+    if (global) {
+        /* Open/create global config (~/.gitconfig) */
+        char path[256];
+        snprintf(path, sizeof(path), "/Users/.gitconfig");
+        err = git_config_open_ondisk(&cfg, path);
+        if (err < 0) die("Cannot open global config", err);
+    } else {
+        /* Open repo-level config */
+        git_repository *repo = NULL;
+        err = git_repository_open(&repo, ".");
+        if (err < 0) die("Cannot open repository", err);
+        err = git_repository_config(&cfg, repo);
+        if (err < 0) die("Cannot open config", err);
+        git_repository_free(repo);
+    }
+
+    if (list) {
+        /* git config --list */
+        git_config_iterator *iter = NULL;
+        err = git_config_iterator_new(&iter, cfg);
+        if (err < 0) die("Cannot iterate config", err);
+
+        git_config_entry *entry = NULL;
+        while (git_config_next(&entry, iter) == 0) {
+            printf("%s=%s\n", entry->name, entry->value);
+        }
+        git_config_iterator_free(iter);
+        git_config_free(cfg);
+        return 0;
+    }
+
+    if (unset) {
+        /* git config --unset <key> */
+        if (argi >= argc) {
+            fprintf(stderr, "usage: git config --unset <key>\n");
+            git_config_free(cfg);
+            return 1;
+        }
+        err = git_config_delete_entry(cfg, argv[argi]);
+        if (err < 0) die("Cannot unset config", err);
+        git_config_free(cfg);
+        return 0;
+    }
+
+    if (argi >= argc) {
+        fprintf(stderr, "usage: git config [--global] <key> [<value>]\n");
+        fprintf(stderr, "       git config [--global] --list\n");
+        fprintf(stderr, "       git config [--global] --unset <key>\n");
+        git_config_free(cfg);
+        return 1;
+    }
+
+    const char *key = argv[argi];
+
+    if (argi + 1 < argc) {
+        /* Set value: git config <key> <value> */
+        err = git_config_set_string(cfg, key, argv[argi + 1]);
+        if (err < 0) die("Cannot set config", err);
+    } else {
+        /* Get value: git config <key> */
+        git_config_entry *entry = NULL;
+        err = git_config_get_entry(&entry, cfg, key);
+        if (err < 0) {
+            git_config_free(cfg);
+            return 1;
+        }
+        printf("%s\n", entry->value);
+        git_config_entry_free(entry);
+    }
+
+    git_config_free(cfg);
+    return 0;
+}
+
 /* ---- main ---- */
 static void usage(void) {
     fprintf(stderr, "usage: git <command> [<args>]\n\n");
@@ -555,6 +654,7 @@ static void usage(void) {
     fprintf(stderr, "  fetch      Download objects from a remote\n");
     fprintf(stderr, "  pull       Fetch and merge from a remote\n");
     fprintf(stderr, "  push       Update remote refs\n");
+    fprintf(stderr, "  config     Get and set repository or global options\n");
 }
 
 int main(int argc, char **argv) {
@@ -591,6 +691,8 @@ int main(int argc, char **argv) {
         ret = cmd_pull(argc - 2, argv + 2);
     else if (strcmp(cmd, "push") == 0)
         ret = cmd_push(argc - 2, argv + 2);
+    else if (strcmp(cmd, "config") == 0)
+        ret = cmd_config(argc - 2, argv + 2);
     else {
         fprintf(stderr, "git: '%s' is not a git command\n", cmd);
         usage();

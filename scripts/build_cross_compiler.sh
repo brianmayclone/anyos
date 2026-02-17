@@ -1,114 +1,133 @@
 #!/bin/bash
 # Copyright (c) 2024-2026 Christian Moeller
-# Email: c.moeller.ffo@gmail.com, brianmayclone@googlemail.com
-#
-# This project is open source and community-driven.
-# Contributions are welcome! See README.md for details.
-#
 # SPDX-License-Identifier: MIT
 #
 # Build i686-elf cross-compiler (binutils + GCC) from source.
-# Installs to $HOME/opt/cross/ by default.
+# Tested on Ubuntu 24.04 LTS.
 #
-# Prerequisites (Ubuntu/Debian):
-#   sudo apt-get install -y build-essential bison flex libgmp-dev \
-#       libmpc-dev libmpfr-dev texinfo
+# Installs to $HOME/opt/cross/ by default.
+# After install, add to PATH:
+#   export PATH="$HOME/opt/cross/bin:$PATH"
 
-set -e
+set -euo pipefail
 
 TARGET="i686-elf"
 PREFIX="${CROSS_PREFIX:-$HOME/opt/cross}"
-BINUTILS_VERSION="2.42"
-GCC_VERSION="13.2.0"
-JOBS="$(nproc 2>/dev/null || echo 4)"
+BINUTILS_VERSION="2.44"
+GCC_VERSION="14.2.0"
+JOBS="$(nproc)"
 
-BINUTILS_URL="https://ftp.gnu.org/gnu/binutils/binutils-${BINUTILS_VERSION}.tar.xz"
-GCC_URL="https://ftp.gnu.org/gnu/gcc/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.xz"
+SRC_DIR="$HOME/src/cross-compiler"
+BUILD_DIR="$HOME/build/cross-compiler"
 
-BUILD_DIR="/tmp/cross-build-$$"
-
-echo "Building $TARGET cross-compiler"
+echo "========================================="
+echo " anyOS cross-compiler setup"
+echo "========================================="
+echo "  Target:   $TARGET"
 echo "  Prefix:   $PREFIX"
 echo "  Binutils: $BINUTILS_VERSION"
 echo "  GCC:      $GCC_VERSION"
 echo "  Jobs:     $JOBS"
 echo ""
 
-# Check prerequisites
-for cmd in make gcc g++ bison flex makeinfo; do
-    if ! command -v "$cmd" &> /dev/null; then
-        echo "Error: '$cmd' not found. Install build prerequisites:"
-        echo "  sudo apt-get install -y build-essential bison flex libgmp-dev libmpc-dev libmpfr-dev texinfo"
-        exit 1
-    fi
-done
+# ── Prerequisites ────────────────────────────────────────────────────────────
 
-mkdir -p "$PREFIX"
-mkdir -p "$BUILD_DIR"
-cd "$BUILD_DIR"
+echo "--- Installing build dependencies ---"
+sudo apt-get update -qq
+sudo apt-get install -y \
+    build-essential \
+    bison \
+    flex \
+    libgmp-dev \
+    libmpc-dev \
+    libmpfr-dev \
+    texinfo \
+    wget \
+    xz-utils
 
+# ── Directories ──────────────────────────────────────────────────────────────
+
+mkdir -p "$PREFIX" "$SRC_DIR" "$BUILD_DIR"
 export PATH="$PREFIX/bin:$PATH"
 
-# ── Binutils ──────────────────────────────────────────────────────────────────
+# ── Download ─────────────────────────────────────────────────────────────────
 
-echo "--- Downloading binutils-${BINUTILS_VERSION} ---"
+cd "$SRC_DIR"
+
 if [ ! -f "binutils-${BINUTILS_VERSION}.tar.xz" ]; then
-    curl -LO "$BINUTILS_URL"
+    echo "--- Downloading binutils-${BINUTILS_VERSION} ---"
+    wget -q --show-progress "https://ftp.gnu.org/gnu/binutils/binutils-${BINUTILS_VERSION}.tar.xz"
 fi
-echo "--- Extracting ---"
-tar xf "binutils-${BINUTILS_VERSION}.tar.xz"
 
-echo "--- Building binutils ---"
-mkdir -p build-binutils && cd build-binutils
-"../binutils-${BINUTILS_VERSION}/configure" \
+if [ ! -f "gcc-${GCC_VERSION}.tar.xz" ]; then
+    echo "--- Downloading gcc-${GCC_VERSION} ---"
+    wget -q --show-progress "https://ftp.gnu.org/gnu/gcc/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.xz"
+fi
+
+# ── Extract ──────────────────────────────────────────────────────────────────
+
+echo "--- Extracting sources ---"
+[ ! -d "binutils-${BINUTILS_VERSION}" ] && tar xf "binutils-${BINUTILS_VERSION}.tar.xz"
+[ ! -d "gcc-${GCC_VERSION}" ]           && tar xf "gcc-${GCC_VERSION}.tar.xz"
+
+# ── Build binutils ───────────────────────────────────────────────────────────
+
+echo ""
+echo "--- Building binutils (${TARGET}) ---"
+rm -rf "$BUILD_DIR/binutils"
+mkdir -p "$BUILD_DIR/binutils" && cd "$BUILD_DIR/binutils"
+
+"$SRC_DIR/binutils-${BINUTILS_VERSION}/configure" \
     --target="$TARGET" \
     --prefix="$PREFIX" \
     --with-sysroot \
     --disable-nls \
     --disable-werror
+
 make -j"$JOBS"
 make install
-cd ..
-
 echo "--- binutils installed ---"
+
+# ── Build GCC ────────────────────────────────────────────────────────────────
+
 echo ""
+echo "--- Building GCC (${TARGET}) ---"
+rm -rf "$BUILD_DIR/gcc"
+mkdir -p "$BUILD_DIR/gcc" && cd "$BUILD_DIR/gcc"
 
-# ── GCC ───────────────────────────────────────────────────────────────────────
-
-echo "--- Downloading gcc-${GCC_VERSION} ---"
-if [ ! -f "gcc-${GCC_VERSION}.tar.xz" ]; then
-    curl -LO "$GCC_URL"
-fi
-echo "--- Extracting ---"
-tar xf "gcc-${GCC_VERSION}.tar.xz"
-
-echo "--- Building GCC ---"
-mkdir -p build-gcc && cd build-gcc
-"../gcc-${GCC_VERSION}/configure" \
+"$SRC_DIR/gcc-${GCC_VERSION}/configure" \
     --target="$TARGET" \
     --prefix="$PREFIX" \
     --disable-nls \
     --enable-languages=c \
     --without-headers
+
 make -j"$JOBS" all-gcc all-target-libgcc
 make install-gcc install-target-libgcc
-cd ..
-
 echo "--- GCC installed ---"
+
+# ── Verify ───────────────────────────────────────────────────────────────────
+
+echo ""
+echo "========================================="
+echo " Installation complete!"
+echo "========================================="
 echo ""
 
-# ── Cleanup ───────────────────────────────────────────────────────────────────
+"$PREFIX/bin/${TARGET}-gcc" --version | head -1
+"$PREFIX/bin/${TARGET}-ld"  --version | head -1
+"$PREFIX/bin/${TARGET}-ar"  --version | head -1
 
-rm -rf "$BUILD_DIR"
-
-echo "========================================"
-echo "Cross-compiler installed to: $PREFIX"
 echo ""
-echo "Add to your PATH:"
+echo "Add to your shell profile (~/.bashrc):"
+echo ""
 echo "  export PATH=\"$PREFIX/bin:\$PATH\""
 echo ""
-echo "Add this line to ~/.bashrc or ~/.profile to make it permanent."
-echo ""
-echo "Verify:"
-echo "  $TARGET-gcc --version"
-echo "========================================"
+
+if ! grep -q "$PREFIX/bin" ~/.bashrc 2>/dev/null; then
+    read -p "Add to ~/.bashrc now? [y/N] " answer
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+        echo "export PATH=\"$PREFIX/bin:\$PATH\"" >> ~/.bashrc
+        echo "Added. Run 'source ~/.bashrc' or open a new terminal."
+    fi
+fi
