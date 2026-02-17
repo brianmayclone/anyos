@@ -52,6 +52,14 @@ pub fn set_critical() {
     syscall0(SYS_SET_CRITICAL);
 }
 
+/// Fill a buffer with random bytes from the kernel RNG.
+/// Returns number of bytes written.
+pub fn random(buf: &mut [u8]) -> u32 {
+    if buf.is_empty() { return 0; }
+    let len = buf.len().min(256);
+    syscall2(SYS_RANDOM, buf.as_mut_ptr() as u64, len as u64)
+}
+
 /// List devices. Each 64-byte entry:
 ///   [0..32]  path (null-terminated)
 ///   [32..56] driver name (null-terminated)

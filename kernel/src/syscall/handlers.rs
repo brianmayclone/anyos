@@ -2077,6 +2077,96 @@ pub fn sys_kbd_set_layout(layout_id: u32) -> u32 {
     }
 }
 
+/// SYS_RANDOM (210): Fill a user buffer with random bytes.
+/// arg1 = buf_ptr, arg2 = len (max 256 bytes per call).
+/// Uses RDRAND if available, falls back to TSC-based PRNG.
+/// Returns number of bytes written.
+pub fn sys_random(buf_ptr: u32, len: u32) -> u32 {
+    let len = (len as usize).min(256);
+    if len == 0 || !is_valid_user_ptr(buf_ptr as u64, len as u64) {
+        return 0;
+    }
+
+    let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
+    let has_rdrand = crate::arch::x86::cpuid::features().rdrand;
+
+    let mut filled = 0usize;
+    if has_rdrand {
+        // Use RDRAND: generates 64 bits of hardware random per call
+        while filled + 8 <= len {
+            if let Some(val) = rdrand64() {
+                dst[filled..filled + 8].copy_from_slice(&val.to_ne_bytes());
+                filled += 8;
+            } else {
+                break; // RDRAND failed, fall through to TSC
+            }
+        }
+        // Handle remaining bytes
+        if filled < len {
+            if let Some(val) = rdrand64() {
+                let bytes = val.to_ne_bytes();
+                let remaining = len - filled;
+                dst[filled..filled + remaining].copy_from_slice(&bytes[..remaining]);
+                filled = len;
+            }
+        }
+    }
+
+    // Fallback: TSC-based xorshift64 for any unfilled bytes
+    if filled < len {
+        let mut state = rdtsc();
+        // Mix in some additional entropy
+        state ^= buf_ptr as u64;
+        state ^= len as u64;
+        while filled < len {
+            state = xorshift64(state);
+            let bytes = state.to_ne_bytes();
+            let chunk = (len - filled).min(8);
+            dst[filled..filled + chunk].copy_from_slice(&bytes[..chunk]);
+            filled += chunk;
+        }
+    }
+
+    filled as u32
+}
+
+/// Try to read 64 bits from RDRAND. Returns None if the instruction fails.
+#[inline]
+fn rdrand64() -> Option<u64> {
+    let val: u64;
+    let ok: u8;
+    unsafe {
+        core::arch::asm!(
+            "rdrand {val}",
+            "setc {ok}",
+            val = out(reg) val,
+            ok = out(reg_byte) ok,
+        );
+    }
+    if ok != 0 { Some(val) } else { None }
+}
+
+/// Read the Time Stamp Counter.
+#[inline]
+fn rdtsc() -> u64 {
+    let lo: u32;
+    let hi: u32;
+    unsafe {
+        core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi);
+    }
+    ((hi as u64) << 32) | lo as u64
+}
+
+/// xorshift64 PRNG step.
+#[inline]
+fn xorshift64(mut x: u64) -> u64 {
+    if x == 0 { x = 0x123456789ABCDEF0; }
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    x
+}
+
 /// SYS_KBD_LIST_LAYOUTS (202): Write layout info entries to a user buffer.
 /// arg1 = buf_ptr (array of LayoutInfo), arg2 = max_entries.
 /// Returns number of entries written.

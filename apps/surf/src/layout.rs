@@ -659,8 +659,25 @@ fn emit_word_fragments(
     // Trailing space.
     let has_trailing_space = len > 1 && is_ascii_ws(bytes[len - 1]);
 
+    // If the entire text is whitespace (e.g. space between two tags), emit one space.
+    if words.is_empty() {
+        if has_leading_space {
+            let (sw, sh) = measure_text(" ", font_size, bold);
+            let mut space_box = LayoutBox::new_text(String::from(" "), font_size, bold, italic, color);
+            space_box.link_url = link.clone();
+            space_box.text_decoration = deco;
+            out.push(InlineFragment {
+                width: sw,
+                height: sh,
+                layout_box: space_box,
+                breaks_after: false,
+            });
+        }
+        return;
+    }
+
     // Emit space fragment before first word if there was leading whitespace.
-    if has_leading_space && !words.is_empty() {
+    if has_leading_space {
         let (sw, sh) = measure_text(" ", font_size, bold);
         let mut space_box = LayoutBox::new_text(String::from(" "), font_size, bold, italic, color);
         space_box.link_url = link.clone();

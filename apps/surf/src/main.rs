@@ -18,6 +18,7 @@ mod layout;
 mod paint;
 mod http;
 mod deflate;
+mod tls;
 
 anyos_std::entry!(main);
 
@@ -278,7 +279,7 @@ fn navigate(browser: &mut Browser, url_str: &str, win_w: u32) {
                 http::FetchError::SendFailure => "Send failed",
                 http::FetchError::NoResponse => "No response",
                 http::FetchError::TooManyRedirects => "Too many redirects",
-                http::FetchError::HttpsNotSupported => "HTTPS not supported",
+                http::FetchError::TlsHandshakeFailed => "TLS handshake failed",
             };
             anyos_std::println!("[surf] ERROR: fetch failed: {}", msg);
             browser.tab_mut().status_text = String::from(msg);
@@ -589,14 +590,10 @@ fn render_tab_bar(surface: *mut u32, wid: u32, win_w: u32, browser: &Browser) {
         // Tab background
         fill_rect_raw(surface, win_w, tx, ty + 2, tab_w - 1, TAB_BAR_H - 3, bg);
 
-        // Tab label (truncated)
+        // Tab label (truncated to fit tab width)
         let label_text = tab.tab_label();
         let max_chars = ((tab_w - 24) / 7).max(1) as usize; // ~7px per char
-        let display = if label_text.len() > max_chars {
-            &label_text[..max_chars]
-        } else {
-            label_text
-        };
+        let display = truncate_str(label_text, max_chars);
         label(wid, tx + 8, ty + 8, display, text_color, FontSize::Small, TextAlign::Left);
 
         // Close button "x" on each tab (except if only 1 tab)
@@ -1004,6 +1001,18 @@ fn update_title(client: &CompositorClient, win: &WindowHandle, browser: &Browser
         title.push_str(" - Surf");
         client.set_title(win, &title);
     }
+}
+
+/// Truncate a string to at most `max_bytes` bytes on a valid UTF-8 char boundary.
+fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 fn relayout(browser: &mut Browser, win_w: u32) {

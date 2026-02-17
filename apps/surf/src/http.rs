@@ -35,7 +35,7 @@ pub enum FetchError {
     SendFailure,
     NoResponse,
     TooManyRedirects,
-    HttpsNotSupported,
+    TlsHandshakeFailed,
 }
 
 // ---------------------------------------------------------------------------
@@ -324,13 +324,9 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
     let mut current = clone_url(url);
 
     for redirect_n in 0..MAX_REDIRECTS {
-        // Reject HTTPS for now (no TLS support)
-        if current.scheme == "https" {
-            anyos_std::println!("[http] HTTPS not supported: {}", current.host);
-            return Err(FetchError::HttpsNotSupported);
-        }
-
-        anyos_std::println!("[http] GET {}:{}{}", current.host, current.port, current.path);
+        let is_https = current.scheme == "https";
+        anyos_std::println!("[http] {} GET {}:{}{}", if is_https { "HTTPS" } else { "HTTP" },
+            current.host, current.port, current.path);
 
         // 1. DNS resolve
         let ip = match resolve_host(&current.host) {
@@ -352,25 +348,49 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
         }
         anyos_std::println!("[http] TCP connected (sock={})", sock);
 
-        // 3. Build and send GET request
+        // 3. TLS handshake for HTTPS
+        if is_https {
+            anyos_std::println!("[http] TLS handshake with {}...", current.host);
+            let ret = crate::tls::connect(sock, &current.host);
+            if ret != 0 {
+                anyos_std::println!("[http] TLS handshake FAILED (err={})", ret);
+                net::tcp_close(sock);
+                return Err(FetchError::TlsHandshakeFailed);
+            }
+            anyos_std::println!("[http] TLS handshake OK");
+        }
+
+        // 4. Build and send GET request
         let request = build_request(&current, cookies);
-        let sent = net::tcp_send(sock, request.as_bytes());
-        if sent == u32::MAX {
+        let send_ok = if is_https {
+            crate::tls::send(request.as_bytes()) >= 0
+        } else {
+            net::tcp_send(sock, request.as_bytes()) != u32::MAX
+        };
+        if !send_ok {
             anyos_std::println!("[http] send failed");
+            if is_https { crate::tls::close(); }
             net::tcp_close(sock);
             return Err(FetchError::SendFailure);
         }
-        anyos_std::println!("[http] sent {} bytes", sent);
+        anyos_std::println!("[http] sent {} bytes", request.len());
 
-        // 4. Receive headers
+        // 5. Receive headers
         let mut response_buf: Vec<u8> = Vec::new();
         let mut recv_buf = [0u8; RECV_BUF_SIZE];
         let header_end;
 
         loop {
-            let n = net::tcp_recv(sock, &mut recv_buf);
-            if n == 0 || n == u32::MAX {
-                anyos_std::println!("[http] recv failed (n={}, buf={}B)", n, response_buf.len());
+            let n = if is_https {
+                let ret = crate::tls::recv(&mut recv_buf);
+                if ret <= 0 { 0u32 } else { ret as u32 }
+            } else {
+                let r = net::tcp_recv(sock, &mut recv_buf);
+                if r == u32::MAX { 0 } else { r }
+            };
+            if n == 0 {
+                anyos_std::println!("[http] recv failed (buf={}B)", response_buf.len());
+                if is_https { crate::tls::close(); }
                 net::tcp_close(sock);
                 return Err(FetchError::NoResponse);
             }
@@ -382,12 +402,13 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
             }
             if response_buf.len() > MAX_HEADER_SIZE {
                 anyos_std::println!("[http] headers too large ({}B)", response_buf.len());
+                if is_https { crate::tls::close(); }
                 net::tcp_close(sock);
                 return Err(FetchError::NoResponse);
             }
         }
 
-        // 5. Parse status + headers
+        // 6. Parse status + headers
         let header_str = core::str::from_utf8(&response_buf[..header_end]).unwrap_or("");
         let (status, _reason) = parse_status_line(header_str);
         let headers = String::from(header_str);
@@ -396,8 +417,9 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
         // Store cookies
         cookies.store_from_headers(header_str, &current.host, &current.path);
 
-        // 6. Handle redirects
+        // 7. Handle redirects
         if is_redirect(status) {
+            if is_https { crate::tls::close(); }
             net::tcp_close(sock);
             if let Some(location) = find_header_value(header_str, "location") {
                 anyos_std::println!("[http] redirect #{} -> {}", redirect_n + 1, location);
@@ -407,7 +429,7 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
             return Ok(Response { status, headers, body: Vec::new() });
         }
 
-        // 7. Read body (chunked or content-length or until close)
+        // 8. Read body (chunked or content-length or until close)
         let is_chunked = find_header_value(header_str, "transfer-encoding")
             .map(|v| v.contains("chunked"))
             .unwrap_or(false);
@@ -433,15 +455,22 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
         }
 
         let raw_body = if is_chunked {
-            read_chunked_body(sock, &trailing)
+            if is_https {
+                read_chunked_body_tls(&trailing)
+            } else {
+                read_chunked_body(sock, &trailing)
+            }
+        } else if is_https {
+            read_body_tls(&trailing, content_length)
         } else {
             read_body(sock, &trailing, content_length)
         };
 
+        if is_https { crate::tls::close(); }
         net::tcp_close(sock);
         anyos_std::println!("[http] raw body: {} bytes", raw_body.len());
 
-        // 8. Decompress if content-encoded
+        // 9. Decompress if content-encoded
         let body = if let Some(ref enc) = content_encoding {
             let enc_lower = enc.to_ascii_lowercase();
             if enc_lower.contains("gzip") {
@@ -565,6 +594,88 @@ fn read_chunked_body(sock: u32, initial: &[u8]) -> Vec<u8> {
             }
             let n = net::tcp_recv(sock, &mut recv_buf);
             if n == 0 || n == u32::MAX { break; }
+            buf.extend_from_slice(&recv_buf[..n as usize]);
+        }
+    }
+
+    body
+}
+
+// ---------------------------------------------------------------------------
+// TLS body reading (uses crate::tls::recv instead of tcp_recv)
+// ---------------------------------------------------------------------------
+
+fn read_body_tls(initial: &[u8], content_length: Option<u32>) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::new();
+    body.extend_from_slice(initial);
+
+    if let Some(cl) = content_length {
+        let cl = cl as usize;
+        if cl > body.len() && cl < 32 * 1024 * 1024 {
+            body.reserve(cl - body.len());
+        }
+    }
+
+    let mut recv_buf = [0u8; RECV_BUF_SIZE];
+    loop {
+        if let Some(cl) = content_length {
+            if body.len() >= cl as usize { break; }
+        }
+        let n = crate::tls::recv(&mut recv_buf);
+        if n <= 0 { break; }
+        body.extend_from_slice(&recv_buf[..n as usize]);
+    }
+    body
+}
+
+fn read_chunked_body_tls(initial: &[u8]) -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::new();
+    buf.extend_from_slice(initial);
+    let mut body: Vec<u8> = Vec::new();
+    let mut recv_buf = [0u8; RECV_BUF_SIZE];
+
+    loop {
+        let chunk_size;
+        loop {
+            if let Some(crlf) = find_crlf(&buf) {
+                let size_str = core::str::from_utf8(&buf[..crlf]).unwrap_or("0");
+                let hex_str = match size_str.find(';') {
+                    Some(i) => &size_str[..i],
+                    None => size_str,
+                };
+                chunk_size = parse_hex(hex_str.trim());
+                let new_buf = buf[crlf + 2..].to_vec();
+                buf = new_buf;
+                break;
+            }
+            let n = crate::tls::recv(&mut recv_buf);
+            if n <= 0 { return body; }
+            buf.extend_from_slice(&recv_buf[..n as usize]);
+        }
+
+        if chunk_size == 0 { break; }
+
+        while buf.len() < chunk_size {
+            let n = crate::tls::recv(&mut recv_buf);
+            if n <= 0 { break; }
+            buf.extend_from_slice(&recv_buf[..n as usize]);
+        }
+
+        let take = chunk_size.min(buf.len());
+        body.extend_from_slice(&buf[..take]);
+        let new_buf = buf[take..].to_vec();
+        buf = new_buf;
+
+        loop {
+            if buf.len() >= 2 {
+                if buf[0] == b'\r' && buf[1] == b'\n' {
+                    let new_buf = buf[2..].to_vec();
+                    buf = new_buf;
+                }
+                break;
+            }
+            let n = crate::tls::recv(&mut recv_buf);
+            if n <= 0 { break; }
             buf.extend_from_slice(&recv_buf[..n as usize]);
         }
     }
