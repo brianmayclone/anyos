@@ -669,13 +669,19 @@ static CURLcode bearssl_connect_step1(struct Curl_cfilter *cf,
 
   /* On bare-metal OS without /dev/urandom or RDRAND, BearSSL's engine PRNG
      won't be seeded by br_prng_seeder_system(). Inject entropy manually so
-     br_ssl_engine_init_rand() finds rng_init_done == 2. */
+     br_ssl_engine_init_rand() finds rng_init_done == 2.
+     Use TSC + monotonic counter to ensure unique seeds per connection. */
   {
+    static unsigned int conn_counter = 0;
     struct curltime now = Curl_now();
     unsigned char seed[32];
     unsigned int i;
+    unsigned int tsc_lo, tsc_hi;
+    __asm__ __volatile__("rdtsc" : "=a"(tsc_lo), "=d"(tsc_hi));
     unsigned int val = (unsigned int)now.tv_usec ^ (unsigned int)now.tv_sec
-                       ^ (unsigned int)(size_t)&backend;
+                       ^ (unsigned int)(size_t)&backend
+                       ^ tsc_lo ^ tsc_hi
+                       ^ (++conn_counter * 2654435761u);
     for(i = 0; i < sizeof(seed); i++) {
       val = val * 1103515245 + 12345;
       seed[i] = (unsigned char)(val >> 16);
@@ -1057,13 +1063,14 @@ static CURLcode bearssl_random(struct Curl_easy *data UNUSED_PARAM,
     }
     else {
       /* No system seeder available (bare-metal OS without /dev/urandom
-         or RDRAND) — fall back to time-based seed. Not cryptographically
-         strong, but sufficient for basic TLS operation. */
+         or RDRAND) — fall back to TSC + time-based seed. */
       struct curltime now = Curl_now();
       unsigned char seed[32];
       unsigned int i;
+      unsigned int tsc_lo, tsc_hi;
+      __asm__ __volatile__("rdtsc" : "=a"(tsc_lo), "=d"(tsc_hi));
       unsigned int val = (unsigned int)now.tv_usec ^ (unsigned int)now.tv_sec
-                         ^ (unsigned int)(size_t)&ctx;
+                         ^ (unsigned int)(size_t)&ctx ^ tsc_lo ^ tsc_hi;
       for(i = 0; i < sizeof(seed); i++) {
         val = val * 1103515245 + 12345;
         seed[i] = (unsigned char)(val >> 16);

@@ -625,6 +625,78 @@ pub fn status(socket_id: u32) -> u32 {
     }
 }
 
+/// Check bytes available to read on a TCP connection.
+/// Returns: >0 = bytes in recv_buf, 0 = no data yet, u32::MAX-1 = EOF/FIN, u32::MAX = error.
+pub fn recv_available(socket_id: u32) -> u32 {
+    let id = socket_id as usize;
+    if id >= MAX_CONNECTIONS {
+        return u32::MAX;
+    }
+    let conns = TCP_CONNECTIONS.lock();
+    let table = match conns.as_ref() {
+        Some(t) => t,
+        None => return u32::MAX,
+    };
+    match &table[id] {
+        Some(tcb) => {
+            if tcb.reset_received {
+                return u32::MAX;
+            }
+            if !tcb.recv_buf.is_empty() {
+                return tcb.recv_buf.len() as u32;
+            }
+            if tcb.fin_received {
+                return u32::MAX - 1;
+            }
+            match tcb.state {
+                TcpState::CloseWait | TcpState::Closed => u32::MAX - 1,
+                _ => 0,
+            }
+        }
+        None => u32::MAX,
+    }
+}
+
+/// Half-close (SHUT_WR): send FIN but don't block. Connection can still receive.
+pub fn shutdown_write(socket_id: u32) -> u32 {
+    let id = socket_id as usize;
+    if id >= MAX_CONNECTIONS {
+        return u32::MAX;
+    }
+
+    let send_info = {
+        let mut conns = TCP_CONNECTIONS.lock();
+        let table = match conns.as_mut() {
+            Some(t) => t,
+            None => return u32::MAX,
+        };
+        let tcb = match table[id].as_mut() {
+            Some(t) => t,
+            None => return u32::MAX,
+        };
+
+        match tcb.state {
+            TcpState::Established => {
+                tcb.state = TcpState::FinWait1;
+                let info = (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
+                           tcb.snd_nxt, tcb.rcv_nxt);
+                tcb.last_sent_flags = FIN | ACK;
+                tcb.last_send_tick = crate::arch::x86::pit::get_ticks();
+                tcb.retransmit_count = 0;
+                tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
+                Some(info)
+            }
+            _ => None,
+        }
+    };
+
+    if let Some((local_ip, local_port, remote_ip, remote_port, seq, ack_num)) = send_info {
+        send_segment(local_ip, local_port, remote_ip, remote_port, seq, ack_num, FIN | ACK, &[]);
+    }
+
+    0
+}
+
 /// Deferred send info — collected while holding the lock, sent after dropping it.
 struct DeferredSend {
     local_ip: Ipv4Addr,

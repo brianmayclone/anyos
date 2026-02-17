@@ -959,6 +959,25 @@ pub fn sys_tcp_status(socket_id: u32) -> u32 {
     crate::net::tcp::status(socket_id)
 }
 
+/// sys_tcp_recv_available - Check bytes available to read.
+/// Returns: >0 = bytes available, 0 = no data, u32::MAX-1 = EOF, u32::MAX = error.
+pub fn sys_tcp_recv_available(socket_id: u32) -> u32 {
+    crate::net::tcp::recv_available(socket_id)
+}
+
+/// sys_tcp_shutdown_wr - Half-close (send FIN, don't block).
+/// arg1=socket_id. Returns 0 on success.
+pub fn sys_tcp_shutdown_wr(socket_id: u32) -> u32 {
+    crate::net::tcp::shutdown_write(socket_id)
+}
+
+/// sys_net_poll - Process pending network packets.
+/// Triggers E1000 RX ring processing and TCP packet dispatch.
+pub fn sys_net_poll() -> u32 {
+    crate::net::poll();
+    0
+}
+
 // =========================================================================
 // UDP Networking (SYS_UDP_*)
 // =========================================================================

@@ -35,11 +35,14 @@ extern int _syscall(int num, int a1, int a2, int a3, int a4);
 /* Syscall numbers */
 #define SYS_SLEEP           8
 #define SYS_NET_DNS         43
+#define SYS_NET_POLL        50
 #define SYS_TCP_CONNECT     100
 #define SYS_TCP_SEND        101
 #define SYS_TCP_RECV        102
 #define SYS_TCP_CLOSE       103
 #define SYS_TCP_STATUS      104
+#define SYS_TCP_RECV_AVAILABLE 130
+#define SYS_TCP_SHUTDOWN_WR 131
 #define SYS_UDP_BIND        150
 #define SYS_UDP_UNBIND      151
 #define SYS_UDP_SENDTO      152
@@ -463,11 +466,16 @@ int shutdown(int sockfd, int how)
     socket_entry_t *s = get_socket(sockfd);
     if (!s) { errno = EBADF; return -1; }
 
-    if (s->type == SOCK_STREAM && s->tcp_sock_id >= 0 &&
-        (how == SHUT_WR || how == SHUT_RDWR)) {
-        _syscall(SYS_TCP_CLOSE, s->tcp_sock_id, 0, 0, 0);
-        s->tcp_sock_id = -1;
-        s->connected = 0;
+    if (s->type == SOCK_STREAM && s->tcp_sock_id >= 0) {
+        if (how == SHUT_RDWR) {
+            /* Full close */
+            _syscall(SYS_TCP_CLOSE, s->tcp_sock_id, 0, 0, 0);
+            s->tcp_sock_id = -1;
+            s->connected = 0;
+        } else if (how == SHUT_WR) {
+            /* Half-close: send FIN but keep socket open for reading */
+            _syscall(SYS_TCP_SHUTDOWN_WR, s->tcp_sock_id, 0, 0, 0);
+        }
     }
     return 0;
 }
@@ -504,17 +512,15 @@ int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
  * select() / poll()
  * ========================================================================= */
 
-int select(int nfds, fd_set *readfds, fd_set *writefds,
-           fd_set *exceptfds, struct timeval *timeout)
+static int __select_check(int nfds, fd_set *readfds, fd_set *writefds,
+                          fd_set *exceptfds,
+                          fd_set *rd_result, fd_set *wr_result, fd_set *ex_result)
 {
     int ready = 0;
-    fd_set rd_result, wr_result, ex_result;
 
-    FD_ZERO(&rd_result);
-    FD_ZERO(&wr_result);
-    FD_ZERO(&ex_result);
+    /* Flush pending network packets into TCP recv buffers */
+    _syscall(SYS_NET_POLL, 0, 0, 0, 0);
 
-    /* Check each fd in the sets */
     for (int fd = 0; fd < nfds && fd < FD_SETSIZE; fd++) {
         socket_entry_t *s = get_socket(fd);
         if (!s) continue;
@@ -522,13 +528,12 @@ int select(int nfds, fd_set *readfds, fd_set *writefds,
         if (s->type == SOCK_STREAM && s->tcp_sock_id >= 0) {
             int st = _syscall(SYS_TCP_STATUS, s->tcp_sock_id, 0, 0, 0);
 
-            /* Readable: established or connection closed (EOF) */
+            /* Readable: check if actual data is available in recv_buf */
             if (readfds && FD_ISSET(fd, readfds)) {
-                if (st == TCP_STATE_ESTABLISHED ||
-                    st == TCP_STATE_CLOSE_WAIT ||
-                    st == TCP_STATE_CLOSED ||
-                    st == (int)0xFFFFFFFFu) {
-                    FD_SET(fd, &rd_result);
+                int avail = _syscall(SYS_TCP_RECV_AVAILABLE, s->tcp_sock_id, 0, 0, 0);
+                /* avail > 0: data ready, avail == 0xFFFFFFFE: EOF, avail == 0xFFFFFFFF: error */
+                if (avail > 0 || avail == (int)0xFFFFFFFEu || avail == (int)0xFFFFFFFFu) {
+                    FD_SET(fd, rd_result);
                     ready++;
                 }
             }
@@ -536,7 +541,7 @@ int select(int nfds, fd_set *readfds, fd_set *writefds,
             /* Writable: established */
             if (writefds && FD_ISSET(fd, writefds)) {
                 if (st == TCP_STATE_ESTABLISHED) {
-                    FD_SET(fd, &wr_result);
+                    FD_SET(fd, wr_result);
                     ready++;
                 }
             }
@@ -544,63 +549,70 @@ int select(int nfds, fd_set *readfds, fd_set *writefds,
             /* Exceptional: error states */
             if (exceptfds && FD_ISSET(fd, exceptfds)) {
                 if (st == (int)0xFFFFFFFFu) {
-                    FD_SET(fd, &ex_result);
+                    FD_SET(fd, ex_result);
                     ready++;
                 }
             }
         }
         else if (s->type == SOCK_DGRAM) {
-            /* UDP sockets: always writable, readable check via peek */
             if (readfds && FD_ISSET(fd, readfds)) {
-                /* For now, report UDP sockets as always readable */
-                FD_SET(fd, &rd_result);
+                FD_SET(fd, rd_result);
                 ready++;
             }
             if (writefds && FD_ISSET(fd, writefds)) {
-                FD_SET(fd, &wr_result);
+                FD_SET(fd, wr_result);
                 ready++;
             }
         }
     }
 
-    /* If nothing ready and timeout > 0, sleep briefly and retry once */
-    if (ready == 0 && timeout) {
-        long ms = timeout->tv_sec * 1000 + timeout->tv_usec / 1000;
-        if (ms > 0) {
-            if (ms > 100) ms = 100;  /* Cap at 100ms per iteration */
-            _syscall(SYS_SLEEP, (int)ms, 0, 0, 0);
+    return ready;
+}
 
-            /* Retry check */
-            for (int fd = 0; fd < nfds && fd < FD_SETSIZE; fd++) {
-                socket_entry_t *s = get_socket(fd);
-                if (!s) continue;
+int select(int nfds, fd_set *readfds, fd_set *writefds,
+           fd_set *exceptfds, struct timeval *timeout)
+{
+    fd_set rd_result, wr_result, ex_result;
+    long timeout_ms = -1; /* infinite */
 
-                if (s->type == SOCK_STREAM && s->tcp_sock_id >= 0) {
-                    int st = _syscall(SYS_TCP_STATUS, s->tcp_sock_id, 0, 0, 0);
-                    if (readfds && FD_ISSET(fd, readfds)) {
-                        if (st == TCP_STATE_ESTABLISHED || st == TCP_STATE_CLOSE_WAIT ||
-                            st == TCP_STATE_CLOSED || st == (int)0xFFFFFFFFu) {
-                            FD_SET(fd, &rd_result);
-                            ready++;
-                        }
-                    }
-                    if (writefds && FD_ISSET(fd, writefds)) {
-                        if (st == TCP_STATE_ESTABLISHED) {
-                            FD_SET(fd, &wr_result);
-                            ready++;
-                        }
-                    }
-                }
-            }
-        }
+    if (timeout) {
+        timeout_ms = timeout->tv_sec * 1000 + timeout->tv_usec / 1000;
     }
 
-    /* Copy results back */
-    if (readfds)   memcpy(readfds, &rd_result, sizeof(fd_set));
-    if (writefds)  memcpy(writefds, &wr_result, sizeof(fd_set));
-    if (exceptfds) memcpy(exceptfds, &ex_result, sizeof(fd_set));
+    /* Loop until ready or timeout */
+    long elapsed = 0;
+    while (1) {
+        FD_ZERO(&rd_result);
+        FD_ZERO(&wr_result);
+        FD_ZERO(&ex_result);
 
-    return ready;
+        int ready = __select_check(nfds, readfds, writefds, exceptfds,
+                                   &rd_result, &wr_result, &ex_result);
+
+        if (ready > 0 || timeout_ms == 0) {
+            if (readfds)   memcpy(readfds, &rd_result, sizeof(fd_set));
+            if (writefds)  memcpy(writefds, &wr_result, sizeof(fd_set));
+            if (exceptfds) memcpy(exceptfds, &ex_result, sizeof(fd_set));
+            return ready;
+        }
+
+        /* Check if we've exceeded the timeout */
+        if (timeout_ms > 0 && elapsed >= timeout_ms) {
+            if (readfds)   memcpy(readfds, &rd_result, sizeof(fd_set));
+            if (writefds)  memcpy(writefds, &wr_result, sizeof(fd_set));
+            if (exceptfds) memcpy(exceptfds, &ex_result, sizeof(fd_set));
+            return 0;
+        }
+
+        /* Sleep a short interval and retry */
+        int sleep_ms = 10;
+        if (timeout_ms > 0) {
+            long remaining = timeout_ms - elapsed;
+            if (remaining < sleep_ms) sleep_ms = (int)remaining;
+        }
+        _syscall(SYS_SLEEP, sleep_ms, 0, 0, 0);
+        elapsed += sleep_ms;
+    }
 }
 
 int pselect(int nfds, fd_set *readfds, fd_set *writefds,
@@ -620,44 +632,55 @@ int pselect(int nfds, fd_set *readfds, fd_set *writefds,
 
 int poll(struct pollfd *fds, nfds_t nfds, int timeout)
 {
-    int ready = 0;
+    long elapsed = 0;
 
-    for (nfds_t i = 0; i < nfds; i++) {
-        fds[i].revents = 0;
-        socket_entry_t *s = get_socket(fds[i].fd);
-        if (!s) {
-            fds[i].revents = POLLNVAL;
-            continue;
-        }
+    while (1) {
+        int ready = 0;
 
-        if (s->type == SOCK_STREAM && s->tcp_sock_id >= 0) {
-            int st = _syscall(SYS_TCP_STATUS, s->tcp_sock_id, 0, 0, 0);
-            if (fds[i].events & POLLIN) {
-                if (st == TCP_STATE_ESTABLISHED || st == TCP_STATE_CLOSE_WAIT ||
-                    st == TCP_STATE_CLOSED)
-                    fds[i].revents |= POLLIN;
+        /* Flush pending network packets */
+        _syscall(SYS_NET_POLL, 0, 0, 0, 0);
+
+        for (nfds_t i = 0; i < nfds; i++) {
+            fds[i].revents = 0;
+            socket_entry_t *s = get_socket(fds[i].fd);
+            if (!s) {
+                fds[i].revents = POLLNVAL;
+                continue;
             }
-            if (fds[i].events & POLLOUT) {
-                if (st == TCP_STATE_ESTABLISHED)
-                    fds[i].revents |= POLLOUT;
+
+            if (s->type == SOCK_STREAM && s->tcp_sock_id >= 0) {
+                int st = _syscall(SYS_TCP_STATUS, s->tcp_sock_id, 0, 0, 0);
+                if (fds[i].events & POLLIN) {
+                    int avail = _syscall(SYS_TCP_RECV_AVAILABLE, s->tcp_sock_id, 0, 0, 0);
+                    if (avail > 0 || avail == (int)0xFFFFFFFEu || avail == (int)0xFFFFFFFFu)
+                        fds[i].revents |= POLLIN;
+                }
+                if (fds[i].events & POLLOUT) {
+                    if (st == TCP_STATE_ESTABLISHED)
+                        fds[i].revents |= POLLOUT;
+                }
+                if (st == (int)0xFFFFFFFFu)
+                    fds[i].revents |= POLLERR;
             }
-            if (st == (int)0xFFFFFFFFu)
-                fds[i].revents |= POLLERR;
-        }
-        else if (s->type == SOCK_DGRAM) {
-            if (fds[i].events & POLLIN) fds[i].revents |= POLLIN;
-            if (fds[i].events & POLLOUT) fds[i].revents |= POLLOUT;
+            else if (s->type == SOCK_DGRAM) {
+                if (fds[i].events & POLLIN) fds[i].revents |= POLLIN;
+                if (fds[i].events & POLLOUT) fds[i].revents |= POLLOUT;
+            }
+
+            if (fds[i].revents) ready++;
         }
 
-        if (fds[i].revents) ready++;
-    }
+        if (ready > 0 || timeout == 0) return ready;
+        if (timeout > 0 && elapsed >= timeout) return 0;
 
-    if (ready == 0 && timeout > 0) {
-        int sleep_ms = timeout < 100 ? timeout : 100;
+        int sleep_ms = 10;
+        if (timeout > 0) {
+            long remaining = timeout - elapsed;
+            if (remaining < sleep_ms) sleep_ms = (int)remaining;
+        }
         _syscall(SYS_SLEEP, sleep_ms, 0, 0, 0);
+        elapsed += sleep_ms;
     }
-
-    return ready;
 }
 
 /* =========================================================================

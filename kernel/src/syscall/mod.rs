@@ -98,6 +98,11 @@ pub const SYS_TCP_SEND: u32 = 101;
 pub const SYS_TCP_RECV: u32 = 102;
 pub const SYS_TCP_CLOSE: u32 = 103;
 pub const SYS_TCP_STATUS: u32 = 104;
+pub const SYS_TCP_RECV_AVAILABLE: u32 = 130;
+pub const SYS_TCP_SHUTDOWN_WR: u32 = 131;
+
+// Network polling
+pub const SYS_NET_POLL: u32 = 50;
 
 // DLL
 pub const SYS_DLL_LOAD: u32 = 80;
@@ -282,6 +287,11 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_TCP_RECV => handlers::sys_tcp_recv(arg1, arg2, arg3),
         SYS_TCP_CLOSE => handlers::sys_tcp_close(arg1),
         SYS_TCP_STATUS => handlers::sys_tcp_status(arg1),
+        SYS_TCP_RECV_AVAILABLE => handlers::sys_tcp_recv_available(arg1),
+        SYS_TCP_SHUTDOWN_WR => handlers::sys_tcp_shutdown_wr(arg1),
+
+        // Network polling
+        SYS_NET_POLL => handlers::sys_net_poll(),
 
         // UDP
         SYS_UDP_BIND => handlers::sys_udp_bind(arg1),
