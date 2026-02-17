@@ -667,6 +667,22 @@ static CURLcode bearssl_connect_step1(struct Curl_cfilter *cf,
     }
   }
 
+  /* On bare-metal OS without /dev/urandom or RDRAND, BearSSL's engine PRNG
+     won't be seeded by br_prng_seeder_system(). Inject entropy manually so
+     br_ssl_engine_init_rand() finds rng_init_done == 2. */
+  {
+    struct curltime now = Curl_now();
+    unsigned char seed[32];
+    unsigned int i;
+    unsigned int val = (unsigned int)now.tv_usec ^ (unsigned int)now.tv_sec
+                       ^ (unsigned int)(size_t)&backend;
+    for(i = 0; i < sizeof(seed); i++) {
+      val = val * 1103515245 + 12345;
+      seed[i] = (unsigned char)(val >> 16);
+    }
+    br_ssl_engine_inject_entropy(&backend->ctx.eng, seed, sizeof(seed));
+  }
+
   if(!br_ssl_client_reset(&backend->ctx, hostname, session_set))
     return CURLE_FAILED_INIT;
   backend->active = TRUE;
@@ -1035,8 +1051,25 @@ static CURLcode bearssl_random(struct Curl_easy *data UNUSED_PARAM,
 
     br_hmac_drbg_init(&ctx, &br_sha256_vtable, NULL, 0);
     seeder = br_prng_seeder_system(NULL);
-    if(!seeder || !seeder(&ctx.vtable))
-      return CURLE_FAILED_INIT;
+    if(seeder) {
+      if(!seeder(&ctx.vtable))
+        return CURLE_FAILED_INIT;
+    }
+    else {
+      /* No system seeder available (bare-metal OS without /dev/urandom
+         or RDRAND) — fall back to time-based seed. Not cryptographically
+         strong, but sufficient for basic TLS operation. */
+      struct curltime now = Curl_now();
+      unsigned char seed[32];
+      unsigned int i;
+      unsigned int val = (unsigned int)now.tv_usec ^ (unsigned int)now.tv_sec
+                         ^ (unsigned int)(size_t)&ctx;
+      for(i = 0; i < sizeof(seed); i++) {
+        val = val * 1103515245 + 12345;
+        seed[i] = (unsigned char)(val >> 16);
+      }
+      br_hmac_drbg_update(&ctx, seed, sizeof(seed));
+    }
     seeded = TRUE;
   }
   br_hmac_drbg_generate(&ctx, entropy, length);

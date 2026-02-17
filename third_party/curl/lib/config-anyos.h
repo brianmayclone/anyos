@@ -116,14 +116,14 @@
 #define CURL_DISABLE_FORM_API 1
 #define CURL_DISABLE_MIME 1
 /* BINDLOCAL needed for FTP PORT (Curl_if2ip) */
-#define CURL_DISABLE_VERBOSE_STRINGS 1
+/* CURL_DISABLE_VERBOSE_STRINGS removed — keep error messages for debugging */
 #define CURL_DISABLE_HEADERS_API 1
 #define CURL_DISABLE_SHUFFLE_DNS 1
 #define CURL_DISABLE_SOCKETPAIR 1
 #define CURL_DISABLE_THREADED_RESOLVER 1
 
-/* No SSL/TLS */
-/* (no USE_OPENSSL, USE_BEARSSL, etc.) */
+/* SSL/TLS via BearSSL */
+#define USE_BEARSSL 1
 
 /* No compression */
 /* (no HAVE_LIBZ, etc.) */

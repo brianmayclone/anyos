@@ -332,6 +332,14 @@ pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32
     };
     match crate::task::loader::load_and_run_with_args(path, name, args) {
         Ok(tid) => {
+            // Inherit parent's cwd
+            let mut cwd_buf = [0u8; 256];
+            let cwd_len = crate::task::scheduler::current_thread_cwd(&mut cwd_buf);
+            if cwd_len > 0 {
+                if let Ok(cwd) = core::str::from_utf8(&cwd_buf[..cwd_len]) {
+                    crate::task::scheduler::set_thread_cwd(tid, cwd);
+                }
+            }
             if stdout_pipe != 0 {
                 crate::task::scheduler::set_thread_stdout_pipe(tid, stdout_pipe);
             }

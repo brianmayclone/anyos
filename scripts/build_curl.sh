@@ -42,6 +42,7 @@ CFLAGS_ARRAY=(
     "-I$CURL/include"
     "-I$CURL/lib"
     "-I$CURL/src"
+    "-I$ROOT/third_party/bearssl/inc"
 )
 
 # ---------------------------------------------------------------------------
@@ -183,12 +184,14 @@ LIB_VAUTH_FILES=(
     vauth/vauth.c
 )
 
-# vtls (stubs — no TLS backend)
+# vtls (BearSSL TLS backend)
 LIB_VTLS_FILES=(
+    vtls/bearssl.c
     vtls/cipher_suite.c
     vtls/hostcheck.c
     vtls/keylog.c
     vtls/vtls.c
+    vtls/vtls_scache.c
 )
 
 echo "  [lib core]"

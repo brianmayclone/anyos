@@ -873,18 +873,19 @@ add_custom_command(
     ${LIBC_CRT0}
     -Wl,--start-group
     ${CURL_LIB}
+    ${BEARSSL_A}
     ${LIBC_A}
     -lgcc
     -Wl,--end-group
-  DEPENDS ${CURL_LIB} ${LIBC_A} ${LIBC_CRT0} ${LIBC_DIR}/link.ld
+  DEPENDS ${CURL_LIB} ${BEARSSL_A} ${LIBC_A} ${LIBC_CRT0} ${LIBC_DIR}/link.ld
   COMMENT "Linking curl for anyOS"
 )
 
 add_custom_command(
-  OUTPUT ${SYSROOT_DIR}/bin/curl
-  COMMAND ${CMAKE_COMMAND} -E copy ${CURL_ELF} ${SYSROOT_DIR}/bin/curl
+  OUTPUT ${SYSROOT_DIR}/System/bin/curl
+  COMMAND ${CMAKE_COMMAND} -E copy ${CURL_ELF} ${SYSROOT_DIR}/System/bin/curl
   DEPENDS ${CURL_ELF}
-  COMMENT "Installing curl to /bin/curl"
+  COMMENT "Installing curl to /System/bin/curl"
 )
 
 set(C_TOOLCHAIN_DEPS
@@ -896,7 +897,7 @@ set(C_TOOLCHAIN_DEPS
   ${DOOM_APP}/DOOM
   ${QUAKE_APP}/Quake
   "${BROWSER_APP}/Browser"
-  ${SYSROOT_DIR}/bin/curl
+  ${SYSROOT_DIR}/System/bin/curl
 )
 
 endif() # HAS_CROSS_COMPILER

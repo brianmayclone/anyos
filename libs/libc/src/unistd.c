@@ -178,6 +178,8 @@ int ioctl(int fd, unsigned long request, ...) {
 
 int fcntl(int fd, int cmd, ...) {
     (void)fd;
+    if (cmd == 1 /* F_GETFD */) return 0; /* fd exists */
+    if (cmd == 2 /* F_SETFD */) return 0; /* pretend success */
     if (cmd == 3 /* F_GETFL */) return 0; /* return current flags = 0 */
     if (cmd == 4 /* F_SETFL */) return 0; /* pretend success */
     errno = ENOSYS;
