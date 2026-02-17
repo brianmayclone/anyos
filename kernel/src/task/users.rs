@@ -17,7 +17,7 @@ const MAX_GROUP_MEMBERS: usize = 8;
 #[derive(Clone)]
 pub struct UserEntry {
     pub username: [u8; 32],
-    pub password_hash: [u8; 32], // MD5 hex string (32 ASCII chars), or all zeros for no password
+    pub password_hash: [u8; 33], // MD5 hex string (32 ASCII chars) + null terminator
     pub uid: u16,
     pub gid: u16,
     pub fullname: [u8; 64],
@@ -29,7 +29,7 @@ impl UserEntry {
     const fn empty() -> Self {
         UserEntry {
             username: [0u8; 32],
-            password_hash: [0u8; 32],
+            password_hash: [0u8; 33],
             uid: 0,
             gid: 0,
             fullname: [0u8; 64],
@@ -54,7 +54,7 @@ impl UserEntry {
     }
 
     fn hash_str(&self) -> &str {
-        let len = self.password_hash.iter().position(|&b| b == 0).unwrap_or(32);
+        let len = self.password_hash.iter().position(|&b| b == 0).unwrap_or(33);
         core::str::from_utf8(&self.password_hash[..len]).unwrap_or("")
     }
 }
@@ -245,6 +245,7 @@ pub fn authenticate(username: &str, password: &str) -> Option<(u16, u16)> {
         // Compute MD5 of the provided password
         let computed = crate::crypto::md5::md5_hex(password.as_bytes());
         let computed_str = core::str::from_utf8(&computed).unwrap_or("");
+        crate::serial_println!("  AUTH: user='{}' pass='{}' computed='{}' stored='{}'", username, password, computed_str, stored_hash);
         if stored_hash == computed_str {
             return Some((user.uid, user.gid));
         }

@@ -5,6 +5,7 @@ build/
 !kernel/src/graphics/boot_logo.bin
 !kernel/src/graphics/font_8x16.bin
 !stdlib/src/ui/font_8x16.bin
+!config.h
 *.o
 *.elf
 /kernel/target/

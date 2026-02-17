@@ -2710,6 +2710,8 @@ pub fn sys_chpasswd(data_ptr: u32) -> u32 {
     };
     let hash_str = core::str::from_utf8(&hash).unwrap_or("");
 
+    crate::serial_println!("  CHPASSWD: user='{}' new_pass='{}' hash='{}'", username, new_password, hash_str);
+
     if crate::task::users::change_password(username, hash_str) {
         crate::serial_println!("  CHPASSWD: Password changed for '{}'", username);
         0

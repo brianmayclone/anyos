@@ -111,7 +111,7 @@ fn main() {
     let old_pw_len;
     if !is_root {
         anyos_std::print!("Current password: ");
-        old_pw_len = read_line(&mut old_pw_buf, false);
+        old_pw_len = read_line(&mut old_pw_buf, true);
         if old_pw_len == 0 {
             anyos_std::println!("passwd: aborted");
             return;
@@ -123,7 +123,7 @@ fn main() {
     // Read new password
     anyos_std::print!("New password: ");
     let mut new_pw_buf = [0u8; 64];
-    let new_pw_len = read_line(&mut new_pw_buf, false);
+    let new_pw_len = read_line(&mut new_pw_buf, true);
     if new_pw_len == 0 {
         anyos_std::println!("passwd: password cannot be empty");
         return;
@@ -132,7 +132,7 @@ fn main() {
     // Confirm new password
     anyos_std::print!("Confirm new password: ");
     let mut confirm_buf = [0u8; 64];
-    let confirm_len = read_line(&mut confirm_buf, false);
+    let confirm_len = read_line(&mut confirm_buf, true);
 
     if new_pw_len != confirm_len || new_pw_buf[..new_pw_len] != confirm_buf[..confirm_len] {
         anyos_std::println!("passwd: passwords do not match");

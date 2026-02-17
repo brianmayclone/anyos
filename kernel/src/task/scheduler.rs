@@ -920,24 +920,94 @@ fn schedule_inner(from_timer: bool) {
     guard.release_no_irq_restore();
 
     // Context switch with lock released, interrupts still disabled
-    if let Some((old_ctx, new_ctx, old_fpu, _new_fpu, outgoing_tid, _next_tid)) = switch_info {
-        // --- Lazy FPU: save outgoing thread's state if this CPU owns it ---
-        let fpu_owner = PER_CPU_FPU_OWNER[cpu_id].load(Ordering::Relaxed);
-        if fpu_owner != 0 && fpu_owner == outgoing_tid {
+    if let Some((old_ctx, new_ctx, old_fpu, _new_fpu, outgoing_tid, next_tid)) = switch_info {
+        // --- Validate new CpuContext integrity ---
+        // Catches heap corruption before context_switch loads corrupt RSP/RIP.
+        // Must be done while lock is released but pointers are still valid
+        // (Box<Thread> provides stable heap addresses; no reap can happen in
+        // the few microseconds between lock release and context_switch).
+        const KERNEL_TEXT_START: u64 = 0xFFFF_FFFF_8010_0000;
+        const HEAP_START: u64 = 0xFFFF_FFFF_8200_0000;
+        let (new_rsp, new_rip, new_rbp, new_cr3) = unsafe {
+            ((*new_ctx).rsp, (*new_ctx).rip, (*new_ctx).rbp, (*new_ctx).cr3)
+        };
+        let rip_ok = new_rip >= KERNEL_TEXT_START && new_rip < HEAP_START;
+        let rsp_ok = new_rsp >= HEAP_START;
+        if !rip_ok || !rsp_ok {
+            crate::serial_println!(
+                "!CTX CORRUPT: TID={} rip={:#018x} rsp={:#018x} rbp={:#018x} cr3={:#018x} ctx={:#x}",
+                next_tid, new_rip, new_rsp, new_rbp, new_cr3, new_ctx as u64,
+            );
+            // Dump all 20 CpuContext fields for pattern analysis
             unsafe {
-                core::arch::asm!("fxsave [{}]", in(reg) old_fpu, options(nostack, preserves_flags));
+                let p = new_ctx as *const u64;
+                let names = [
+                    "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp",
+                    "r8 ", "r9 ", "r10", "r11", "r12", "r13", "r14", "r15",
+                    "rsp", "rip", "rfl", "cr3", "sav",
+                ];
+                for i in 0..20 {
+                    crate::serial_println!("  [{}] {} = {:#018x}", i * 8, names[i], *p.add(i));
+                }
+
+                // Memory dump: 64 bytes BEFORE and 64 bytes AFTER CpuContext
+                // Shows Thread struct fields adjacent to context — helps identify
+                // if adjacent fields are also corrupt (buffer overflow pattern).
+                let ctx_addr = new_ctx as usize;
+                let base = ctx_addr.saturating_sub(64);
+                let end = ctx_addr + 160 + 64; // CpuContext is 160 bytes
+                crate::serial_println!("  Memory around CpuContext ({:#x}):", ctx_addr);
+                let mut addr = base;
+                while addr < end && addr >= 0xFFFF_FFFF_8000_0000 {
+                    let val = (addr as *const u64).read_unaligned();
+                    let marker = if addr == ctx_addr { " <-- ctx start" }
+                        else if addr == ctx_addr + 120 { " <-- rsp" }
+                        else if addr == ctx_addr + 128 { " <-- rip" }
+                        else if addr == ctx_addr + 160 { " <-- ctx end" }
+                        else { "" };
+                    crate::serial_println!("    {:#018x}: {:#018x}{}", addr, val, marker);
+                    addr += 8;
+                }
+
+                // Kernel-mode stack trace of current CPU (what led to schedule_inner)
+                crate::serial_println!("  Caller stack trace:");
+                let mut bp: u64;
+                core::arch::asm!("mov {}, rbp", out(reg) bp, options(nomem, nostack, preserves_flags));
+                for depth in 0..16 {
+                    if bp < 0xFFFF_FFFF_8200_0000 || bp & 7 != 0 { break; }
+                    let ret_addr = *((bp + 8) as *const u64);
+                    let prev_bp = *(bp as *const u64);
+                    if ret_addr < 0xFFFF_FFFF_8010_0000 || ret_addr >= 0xFFFF_FFFF_8200_0000 {
+                        break;
+                    }
+                    crate::serial_println!("    #{}: {:#018x}", depth, ret_addr);
+                    bp = prev_bp;
+                }
             }
-            PER_CPU_FPU_OWNER[cpu_id].store(0, Ordering::Relaxed);
-        }
+            // Recovery: don't switch. Set old thread's save_complete=1 so it
+            // can be rescheduled. The corrupt thread stays "Running" on this CPU
+            // but will be reassigned on the next timer tick.
+            unsafe { (*old_ctx).save_complete = 1; }
+            // Fall through to sti — continue as current thread
+        } else {
+            // --- Lazy FPU: save outgoing thread's state if this CPU owns it ---
+            let fpu_owner = PER_CPU_FPU_OWNER[cpu_id].load(Ordering::Relaxed);
+            if fpu_owner != 0 && fpu_owner == outgoing_tid {
+                unsafe {
+                    core::arch::asm!("fxsave [{}]", in(reg) old_fpu, options(nostack, preserves_flags));
+                }
+                PER_CPU_FPU_OWNER[cpu_id].store(0, Ordering::Relaxed);
+            }
 
-        // Set CR0.TS — next FPU/SSE instruction triggers #NM for lazy restore
-        unsafe {
-            let cr0: u64;
-            core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nostack, nomem, preserves_flags));
-            core::arch::asm!("mov cr0, {}", in(reg) cr0 | 8, options(nostack, nomem, preserves_flags));
-        }
+            // Set CR0.TS — next FPU/SSE instruction triggers #NM for lazy restore
+            unsafe {
+                let cr0: u64;
+                core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nostack, nomem, preserves_flags));
+                core::arch::asm!("mov cr0, {}", in(reg) cr0 | 8, options(nostack, nomem, preserves_flags));
+            }
 
-        unsafe { crate::task::context::context_switch(old_ctx, new_ctx); }
+            unsafe { crate::task::context::context_switch(old_ctx, new_ctx); }
+        }
     }
 
     // Re-enable interrupts (CRITICAL for voluntary schedule — without this, IF stays 0)

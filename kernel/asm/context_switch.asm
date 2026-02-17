@@ -87,17 +87,30 @@ context_switch:
     mov qword [rdi + 152], 1
 
     ; --- Validate new context before loading ---
-    ; Detect heap-corrupted CpuContext: RSP and RIP must be in kernel
-    ; higher-half (bit 63 set). Without this, loading corrupt RSP causes
-    ; an unrecoverable Double Fault (RSP=0x2 pattern), and corrupt RIP
-    ; causes execution at wild addresses (RIP=0x1 pattern).
+    ; Tighter range validation for heap-corrupted CpuContext.
+    ; RSP must be in heap range (>= HEAP_START = 0xFFFFFFFF82000000)
+    ;   because all kernel stacks are heap-allocated.
+    ; RIP must be in kernel code range (>= KERNEL_VMA = 0xFFFFFFFF80100000
+    ;   AND < HEAP_START) because context_switch RIP is always a kernel
+    ;   text address (return address from schedule_inner or thread entry).
     ; At this point we have NOT modified RSP or loaded any new state.
-    mov rax, [rsi + 120]        ; proposed RSP
-    bt rax, 63                  ; must be >= 0x8000000000000000
-    jnc .bad_ctx
-    mov rax, [rsi + 128]        ; proposed RIP
-    bt rax, 63
-    jnc .bad_ctx
+
+    ; Check RSP >= 0xFFFFFFFF82000000 (kernel heap)
+    mov rax, [rsi + 120]
+    mov rcx, 0xFFFFFFFF82000000
+    cmp rax, rcx
+    jb .bad_ctx                 ; RSP below heap = corrupt
+
+    ; Check RIP >= 0xFFFFFFFF80100000 (kernel text)
+    mov rax, [rsi + 128]
+    mov rcx, 0xFFFFFFFF80100000
+    cmp rax, rcx
+    jb .bad_ctx                 ; RIP below kernel text = corrupt
+
+    ; Check RIP < 0xFFFFFFFF82000000 (must not be in heap/stack area)
+    mov rcx, 0xFFFFFFFF82000000
+    cmp rax, rcx
+    jae .bad_ctx                ; RIP in heap = executing data as code
 
     ; --- Load new context from [RSI] ---
 
@@ -149,24 +162,21 @@ context_switch:
     ret
 
 ; =========================================================================
-; .bad_ctx: Corrupt CpuContext detected — diagnostic halt
+; .bad_ctx: Corrupt CpuContext detected — full dump + halt
 ; =========================================================================
-; Reached when [rsi+120] (RSP) or [rsi+128] (RIP) fails kernel-half check.
+; Reached when RSP/RIP fails range validation.
 ; We have NOT loaded any new CR3/RSP/RIP — still on old thread's stack/CR3.
 ; However, the old context has save_complete=1, so another CPU could pick it
 ; up and start using the same stack. Use register-only I/O (no push/pop).
 ;
-; Prints: "\r\n!CTX rsp=<hex16> rip=<hex16> ctx=<hex16>\r\n"
+; Prints ALL 20 CpuContext fields to help identify the corruption pattern.
 ; Then halts this CPU. Other CPUs continue running normally.
 ; =========================================================================
 .bad_ctx:
     cli
-    ; Save diagnostic values in callee-saved regs
-    mov r12, [rsi + 120]       ; corrupt RSP value
-    mov r13, [rsi + 128]       ; corrupt RIP value
-    mov r14, rsi               ; CpuContext pointer address
+    mov r14, rsi               ; save CpuContext pointer in R14
 
-    ; Print "\r\n!CTX rsp="
+    ; Print "\r\n!CTX CORRUPT ctx="
     SERIAL_PUTC_POLL 0x0D
     SERIAL_PUTC_POLL 0x0A
     SERIAL_PUTC_POLL '!'
@@ -174,46 +184,90 @@ context_switch:
     SERIAL_PUTC_POLL 'T'
     SERIAL_PUTC_POLL 'X'
     SERIAL_PUTC_POLL ' '
-    SERIAL_PUTC_POLL 'r'
-    SERIAL_PUTC_POLL 's'
-    SERIAL_PUTC_POLL 'p'
-    SERIAL_PUTC_POLL '='
-
-    ; Print R12 (corrupt RSP) as 16-nibble hex
-    mov r8, r12
-    lea r15, [rel .after_rsp_hex]
-    jmp .print_hex_r8
-.after_rsp_hex:
-
-    ; Print " rip="
-    SERIAL_PUTC_POLL ' '
-    SERIAL_PUTC_POLL 'r'
-    SERIAL_PUTC_POLL 'i'
-    SERIAL_PUTC_POLL 'p'
-    SERIAL_PUTC_POLL '='
-
-    ; Print R13 (corrupt RIP) as 16-nibble hex
-    mov r8, r13
-    lea r15, [rel .after_rip_hex]
-    jmp .print_hex_r8
-.after_rip_hex:
-
-    ; Print " ctx="
+    SERIAL_PUTC_POLL 'C'
+    SERIAL_PUTC_POLL 'O'
+    SERIAL_PUTC_POLL 'R'
+    SERIAL_PUTC_POLL 'R'
+    SERIAL_PUTC_POLL 'U'
+    SERIAL_PUTC_POLL 'P'
+    SERIAL_PUTC_POLL 'T'
     SERIAL_PUTC_POLL ' '
     SERIAL_PUTC_POLL 'c'
     SERIAL_PUTC_POLL 't'
     SERIAL_PUTC_POLL 'x'
     SERIAL_PUTC_POLL '='
-
-    ; Print R14 (CpuContext address) as 16-nibble hex
     mov r8, r14
-    lea r15, [rel .after_ctx_hex]
+    lea r15, [rel .dump_ctx_addr_done]
     jmp .print_hex_r8
-.after_ctx_hex:
-
-    ; Print "\r\n"
+.dump_ctx_addr_done:
     SERIAL_PUTC_POLL 0x0D
     SERIAL_PUTC_POLL 0x0A
+
+    ; Dump all 20 fields: offset 0 (rax) through offset 152 (save_complete)
+    ; Use R12 as field index (0..19), R14 = CpuContext base (preserved)
+    xor r12d, r12d             ; R12 = 0 (first field index)
+.dump_field:
+    ; Print "  [" offset "] = " value "\r\n"
+    SERIAL_PUTC_POLL ' '
+    SERIAL_PUTC_POLL ' '
+    SERIAL_PUTC_POLL '['
+
+    ; Print offset as 3-digit decimal (max 152)
+    mov rax, r12
+    shl rax, 3                 ; offset = index * 8
+    mov r9, rax                ; save offset in R9 for field read
+    ; hundreds
+    xor rdx, rdx
+    mov rcx, 100
+    div rcx                    ; RAX = hundreds, RDX = remainder
+    add al, '0'
+    mov bl, al
+    mov dx, 0x3FD
+.dw0:  in al, dx
+    test al, 0x20
+    jz .dw0
+    mov dx, 0x3F8
+    mov al, bl
+    out dx, al
+    ; tens
+    mov rax, rdx               ; remainder
+    xor rdx, rdx
+    mov rcx, 10
+    div rcx
+    add al, '0'
+    mov bl, al
+    mov dx, 0x3FD
+.dw1:  in al, dx
+    test al, 0x20
+    jz .dw1
+    mov dx, 0x3F8
+    mov al, bl
+    out dx, al
+    ; ones
+    add dl, '0'
+    mov bl, dl
+    mov dx, 0x3FD
+.dw2:  in al, dx
+    test al, 0x20
+    jz .dw2
+    mov dx, 0x3F8
+    mov al, bl
+    out dx, al
+
+    SERIAL_PUTC_POLL ']'
+    SERIAL_PUTC_POLL '='
+
+    ; Print field value as 16-nibble hex
+    mov r8, [r14 + r9]        ; read CpuContext field at offset R9
+    lea r15, [rel .dump_field_done]
+    jmp .print_hex_r8
+.dump_field_done:
+    SERIAL_PUTC_POLL 0x0D
+    SERIAL_PUTC_POLL 0x0A
+
+    inc r12
+    cmp r12, 20                ; 20 fields (0..19, offsets 0..152)
+    jb .dump_field
 
     ; Halt this CPU forever. Other CPUs continue via their own scheduler.
 .ctx_halt:
