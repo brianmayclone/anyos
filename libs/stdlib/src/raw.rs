@@ -150,6 +150,11 @@ pub(crate) const SYS_UDP_SENDTO: u32 = 152;
 pub(crate) const SYS_UDP_RECVFROM: u32 = 153;
 pub(crate) const SYS_UDP_SET_OPT: u32 = 154;
 
+// Keyboard layout
+pub(crate) const SYS_KBD_GET_LAYOUT: u32 = 200;
+pub(crate) const SYS_KBD_SET_LAYOUT: u32 = 201;
+pub(crate) const SYS_KBD_LIST_LAYOUTS: u32 = 202;
+
 // Event bus
 pub(crate) const SYS_EVT_SYS_SUBSCRIBE: u32 = 60;
 pub(crate) const SYS_EVT_SYS_POLL: u32 = 61;

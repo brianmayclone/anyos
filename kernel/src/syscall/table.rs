@@ -51,6 +51,9 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_PIPE_WRITE, "pipe_write"),
     (SYS_PIPE_OPEN, "pipe_open"),
     (SYS_PIPE_LIST, "pipe_list"),
+    (SYS_KBD_GET_LAYOUT, "kbd_get_layout"),
+    (SYS_KBD_SET_LAYOUT, "kbd_set_layout"),
+    (SYS_KBD_LIST_LAYOUTS, "kbd_list_layouts"),
 ];
 
 /// Look up the human-readable name for a syscall number.

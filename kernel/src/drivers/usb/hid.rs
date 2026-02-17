@@ -163,13 +163,15 @@ const MOD_RIGHT_ALT: u8 = 1 << 6;
 const MOD_RIGHT_GUI: u8 = 1 << 7;
 
 /// Modifier bit → PS/2 scancode mapping (make code; release = | 0x80).
-const MOD_SCANCODES: [(u8, u8); 6] = [
-    (MOD_LEFT_CTRL,   0x1D),
-    (MOD_LEFT_SHIFT,  0x2A),
-    (MOD_LEFT_ALT,    0x38),
-    (MOD_RIGHT_CTRL,  0x1D), // simplified — PS/2 right ctrl is E0 1D
-    (MOD_RIGHT_SHIFT, 0x36),
-    (MOD_RIGHT_ALT,   0x38), // simplified — PS/2 right alt is E0 38
+/// Third element: if true, send 0xE0 prefix before the scancode so the keyboard
+/// driver distinguishes Right Alt (AltGr) / Right Ctrl from their left counterparts.
+const MOD_SCANCODES: [(u8, u8, bool); 6] = [
+    (MOD_LEFT_CTRL,   0x1D, false),
+    (MOD_LEFT_SHIFT,  0x2A, false),
+    (MOD_LEFT_ALT,    0x38, false),
+    (MOD_RIGHT_CTRL,  0x1D, true),   // E0 prefix — Right Ctrl
+    (MOD_RIGHT_SHIFT, 0x36, false),
+    (MOD_RIGHT_ALT,   0x38, true),   // E0 prefix — Right Alt (AltGr)
 ];
 
 /// Convert a USB HID usage code (from boot keyboard report) to a PS/2 scancode.
@@ -251,6 +253,7 @@ fn hid_usage_to_scancode(usage: u8) -> Option<u8> {
         0x53 => Some(0x45),  // Num Lock
         0x62 => Some(0x52),  // Keypad 0
         0x63 => Some(0x53),  // Keypad .
+        0x64 => Some(0x56),  // Non-US \ and | (ISO key, between LShift and Z)
         _ => None,
     }
 }
@@ -268,13 +271,14 @@ fn parse_keyboard_report(report: &[u8; 8], prev_keys: &mut [u8; 6]) {
     // Handle modifier key changes
     let mut prev_mods = PREV_MODIFIERS.lock();
     let changed_mods = modifiers ^ *prev_mods;
-    for &(bit, scancode) in &MOD_SCANCODES {
+    for &(bit, scancode, needs_e0) in &MOD_SCANCODES {
         if changed_mods & bit != 0 {
+            if needs_e0 {
+                crate::drivers::input::keyboard::handle_scancode(0xE0);
+            }
             if modifiers & bit != 0 {
-                // Modifier pressed
                 crate::drivers::input::keyboard::handle_scancode(scancode);
             } else {
-                // Modifier released
                 crate::drivers::input::keyboard::handle_scancode(scancode | 0x80);
             }
         }

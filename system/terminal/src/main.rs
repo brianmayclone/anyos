@@ -304,6 +304,32 @@ impl Shell {
         }
     }
 
+    fn cursor_left(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+        }
+    }
+
+    fn cursor_right(&mut self) {
+        if self.cursor < self.input.len() {
+            self.cursor += 1;
+        }
+    }
+
+    fn cursor_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn cursor_end(&mut self) {
+        self.cursor = self.input.len();
+    }
+
+    fn delete_at_cursor(&mut self) {
+        if self.cursor < self.input.len() {
+            self.input.remove(self.cursor);
+        }
+    }
+
     /// Execute command. Returns (should_continue, optional foreground process).
     fn submit(&mut self, buf: &mut TerminalBuffer) -> (bool, Option<ForegroundProcess>) {
         let line = self.input.trim_matches(|c: char| c == ' ').to_string();
@@ -725,6 +751,190 @@ impl Shell {
 
         self.cwd = new_path;
         anyos_std::env::set("PWD", &self.cwd);
+        fs::chdir(&self.cwd);
+    }
+}
+
+// ─── Builtins & Completion ───────────────────────────────────────────────────
+
+const BUILTINS: &[&str] = &[
+    "help", "echo", "clear", "uname", "cd", "pwd",
+    "set", "export", "unset", "exit", "reboot",
+];
+
+/// Erase the input portion of the current display line and rewrite it.
+fn redraw_input_line(buf: &mut TerminalBuffer, shell: &Shell) {
+    let prompt_len = shell.prompt().len();
+    if buf.cursor_row < buf.lines.len() {
+        buf.lines[buf.cursor_row].truncate(prompt_len);
+    }
+    buf.cursor_col = prompt_len;
+    buf.current_color = COLOR_FG;
+    buf.write_str(&shell.input);
+    buf.cursor_col = prompt_len + shell.cursor;
+}
+
+/// List directory entries as (name, is_directory) pairs.
+fn list_dir_entries(path: &str) -> Vec<(String, bool)> {
+    let mut entries = Vec::new();
+    let mut dir_buf = [0u8; 64 * 64];
+    let count = fs::readdir(path, &mut dir_buf);
+    if count == u32::MAX {
+        return entries;
+    }
+    for i in 0..count as usize {
+        let off = i * 64;
+        if off + 64 > dir_buf.len() {
+            break;
+        }
+        let entry_type = dir_buf[off];
+        let name_len = dir_buf[off + 1] as usize;
+        let name_bytes = &dir_buf[off + 8..off + 8 + name_len.min(56)];
+        if let Ok(name) = core::str::from_utf8(name_bytes) {
+            entries.push((String::from(name), entry_type == 1));
+        }
+    }
+    entries
+}
+
+/// Find the longest common prefix among a set of strings.
+fn common_prefix(items: &[String]) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+    let first = &items[0];
+    let mut len = first.len();
+    for item in &items[1..] {
+        len = len.min(item.len());
+        for (i, (a, b)) in first.bytes().zip(item.bytes()).enumerate() {
+            if i >= len { break; }
+            if a != b {
+                len = i;
+                break;
+            }
+        }
+    }
+    String::from(&first[..len])
+}
+
+/// Complete a command name (first word on the line).
+fn complete_command(prefix: &str) -> Vec<String> {
+    let mut matches = Vec::new();
+    for &b in BUILTINS {
+        if b.starts_with(prefix) {
+            matches.push(String::from(b));
+        }
+    }
+    let mut path_buf = [0u8; 256];
+    let plen = anyos_std::env::get("PATH", &mut path_buf);
+    if plen != u32::MAX {
+        if let Ok(path_str) = core::str::from_utf8(&path_buf[..plen as usize]) {
+            for dir in path_str.split(':') {
+                let dir = dir.trim();
+                if dir.is_empty() { continue; }
+                for (name, _) in list_dir_entries(dir) {
+                    if name.starts_with(prefix) && !matches.iter().any(|m| *m == name) {
+                        matches.push(name);
+                    }
+                }
+            }
+        }
+    }
+    for (name, _) in list_dir_entries("/System/bin") {
+        if name.starts_with(prefix) && !matches.iter().any(|m| *m == name) {
+            matches.push(name);
+        }
+    }
+    matches.sort();
+    matches
+}
+
+/// Complete a file or directory path (argument position).
+fn complete_path(word: &str, cwd: &str) -> Vec<String> {
+    let (dir_prefix, file_prefix) = if let Some(slash_pos) = word.rfind('/') {
+        (&word[..slash_pos + 1], &word[slash_pos + 1..])
+    } else {
+        ("", word)
+    };
+    let search_dir = if dir_prefix.is_empty() {
+        String::from(cwd)
+    } else if dir_prefix.starts_with('/') {
+        let p = dir_prefix.trim_end_matches('/');
+        if p.is_empty() { String::from("/") } else { String::from(p) }
+    } else {
+        if cwd == "/" {
+            format!("/{}", dir_prefix.trim_end_matches('/'))
+        } else {
+            format!("{}/{}", cwd, dir_prefix.trim_end_matches('/'))
+        }
+    };
+    let entries = list_dir_entries(&search_dir);
+    let mut matches = Vec::new();
+    for (name, is_dir) in entries {
+        if name.starts_with(file_prefix) {
+            let completion = if is_dir {
+                format!("{}{}/", dir_prefix, name)
+            } else {
+                format!("{}{}", dir_prefix, name)
+            };
+            matches.push(completion);
+        }
+    }
+    matches.sort();
+    matches
+}
+
+/// Handle Tab key for autocompletion.
+fn handle_tab(shell: &mut Shell, buf: &mut TerminalBuffer) {
+    let before_cursor = &shell.input[..shell.cursor];
+    let word_start = before_cursor.rfind(' ').map(|i| i + 1).unwrap_or(0);
+    let word = String::from(&before_cursor[word_start..]);
+    let is_command = !before_cursor[..word_start].contains(|c: char| c != ' ');
+    let completions = if is_command {
+        complete_command(&word)
+    } else {
+        complete_path(&word, &shell.cwd)
+    };
+
+    if completions.is_empty() {
+        return;
+    }
+
+    if completions.len() == 1 {
+        let completion = &completions[0];
+        if completion.len() > word.len() {
+            let remaining = String::from(&completion[word.len()..]);
+            for ch in remaining.chars() {
+                shell.insert_char(ch);
+            }
+        }
+        if !completion.ends_with('/') {
+            shell.insert_char(' ');
+        }
+        redraw_input_line(buf, shell);
+    } else {
+        let common = common_prefix(&completions);
+        if common.len() > word.len() {
+            let remaining = String::from(&common[word.len()..]);
+            for ch in remaining.chars() {
+                shell.insert_char(ch);
+            }
+        }
+        buf.write_char('\n');
+        buf.current_color = COLOR_FG;
+        for c in &completions {
+            let display = c.rsplit('/').next().unwrap_or(c);
+            buf.write_str(display);
+            buf.write_str("  ");
+        }
+        buf.write_char('\n');
+        buf.current_color = COLOR_PROMPT;
+        let prompt = shell.prompt();
+        buf.write_str(&prompt);
+        buf.current_color = COLOR_FG;
+        buf.write_str(&shell.input);
+        let prompt_len = prompt.len();
+        buf.cursor_col = prompt_len + shell.cursor;
     }
 }
 
@@ -936,71 +1146,128 @@ fn main() {
                     buf.scroll_down(3);
                 }
                 dirty = true;
-            } else if event[0] == EVENT_KEY_DOWN && fg_proc.is_none() {
+            } else if event[0] == EVENT_KEY_DOWN {
                 let key_code = event[1];
                 let char_val = event[2];
                 let mods = event[3];
 
-                match key_code {
-                    KEY_ENTER => {
-                        let (should_continue, new_fg) = shell.submit(&mut buf);
-                        if !should_continue {
-                            break;
+                // Ctrl+C: cancel foreground process or clear input
+                if (mods & MOD_CTRL) != 0 && char_val == 'c' as u32 {
+                    if let Some(fp) = fg_proc.take() {
+                        process::kill(fp.tid);
+                        let mut drain_buf = [0u8; 512];
+                        loop {
+                            let n = ipc::pipe_read(fp.pipe_id, &mut drain_buf);
+                            if n == 0 || n == u32::MAX { break; }
                         }
-                        if let Some(fp) = new_fg {
-                            fg_proc = Some(fp);
-                        } else {
-                            buf.current_color = COLOR_PROMPT;
-                            let prompt = shell.prompt();
-                            buf.write_str(&prompt);
-                            buf.current_color = COLOR_FG;
+                        ipc::pipe_close(fp.pipe_id);
+                        for &p in &fp.extra_pipes {
+                            ipc::pipe_close(p);
                         }
-                        dirty = true;
                     }
-                    KEY_BACKSPACE => {
-                        if shell.cursor > 0 {
-                            shell.backspace();
-                            buf.backspace();
+                    buf.write_str("^C\n");
+                    shell.input.clear();
+                    shell.cursor = 0;
+                    buf.current_color = COLOR_PROMPT;
+                    let prompt = shell.prompt();
+                    buf.write_str(&prompt);
+                    buf.current_color = COLOR_FG;
+                    dirty = true;
+                } else if fg_proc.is_none() {
+                    match key_code {
+                        KEY_ENTER => {
+                            let (should_continue, new_fg) = shell.submit(&mut buf);
+                            if !should_continue {
+                                break;
+                            }
+                            if let Some(fp) = new_fg {
+                                fg_proc = Some(fp);
+                            } else {
+                                buf.current_color = COLOR_PROMPT;
+                                let prompt = shell.prompt();
+                                buf.write_str(&prompt);
+                                buf.current_color = COLOR_FG;
+                            }
                             dirty = true;
                         }
-                    }
-                    KEY_UP => {
-                        let old_len = shell.input.len();
-                        shell.history_up();
-                        // Erase old input from display
-                        for _ in 0..old_len {
-                            buf.backspace();
-                        }
-                        buf.write_str(&shell.input);
-                        dirty = true;
-                    }
-                    KEY_DOWN => {
-                        let old_len = shell.input.len();
-                        shell.history_down();
-                        for _ in 0..old_len {
-                            buf.backspace();
-                        }
-                        buf.write_str(&shell.input);
-                        dirty = true;
-                    }
-                    _ => {
-                        // Check for Ctrl+C
-                        if (mods & MOD_CTRL) != 0 && char_val == 'c' as u32 {
-                            buf.write_str("^C\n");
-                            shell.input.clear();
-                            shell.cursor = 0;
-                            buf.current_color = COLOR_PROMPT;
-                            let prompt = shell.prompt();
-                            buf.write_str(&prompt);
-                            buf.current_color = COLOR_FG;
-                            dirty = true;
-                        } else if char_val > 0 && char_val < 128 && (mods & MOD_CTRL) == 0 {
-                            // Printable character
-                            let c = char_val as u8 as char;
-                            if c >= ' ' {
-                                shell.insert_char(c);
-                                buf.write_char(c);
+                        KEY_BACKSPACE => {
+                            if shell.cursor > 0 {
+                                shell.backspace();
+                                buf.backspace();
                                 dirty = true;
+                            }
+                        }
+                        KEY_UP => {
+                            shell.history_up();
+                            redraw_input_line(&mut buf, &shell);
+                            dirty = true;
+                        }
+                        KEY_DOWN => {
+                            shell.history_down();
+                            redraw_input_line(&mut buf, &shell);
+                            dirty = true;
+                        }
+                        KEY_LEFT => {
+                            if shell.cursor > 0 {
+                                shell.cursor_left();
+                                buf.cursor_col -= 1;
+                                dirty = true;
+                            }
+                        }
+                        KEY_RIGHT => {
+                            if shell.cursor < shell.input.len() {
+                                shell.cursor_right();
+                                buf.cursor_col += 1;
+                                dirty = true;
+                            }
+                        }
+                        KEY_HOME => {
+                            if shell.cursor > 0 {
+                                buf.cursor_col -= shell.cursor;
+                                shell.cursor_home();
+                                dirty = true;
+                            }
+                        }
+                        KEY_END => {
+                            if shell.cursor < shell.input.len() {
+                                buf.cursor_col += shell.input.len() - shell.cursor;
+                                shell.cursor_end();
+                                dirty = true;
+                            }
+                        }
+                        KEY_DELETE => {
+                            if shell.cursor < shell.input.len() {
+                                shell.delete_at_cursor();
+                                let row = buf.cursor_row;
+                                let col = buf.cursor_col;
+                                if row < buf.lines.len() && col < buf.lines[row].len() {
+                                    buf.lines[row].remove(col);
+                                }
+                                dirty = true;
+                            }
+                        }
+                        KEY_TAB => {
+                            handle_tab(&mut shell, &mut buf);
+                            dirty = true;
+                        }
+                        _ => {
+                            if char_val > 0 && char_val < 128 && (mods & MOD_CTRL) == 0 {
+                                let c = char_val as u8 as char;
+                                if c >= ' ' {
+                                    let at_end = shell.cursor >= shell.input.len();
+                                    shell.insert_char(c);
+                                    if at_end {
+                                        buf.write_char(c);
+                                    } else {
+                                        buf.ensure_line(buf.cursor_row);
+                                        let row = buf.cursor_row;
+                                        let col = buf.cursor_col;
+                                        let color = buf.current_color;
+                                        buf.lines[row].insert(col, (c, color));
+                                        buf.cursor_col += 1;
+                                    }
+                                    dirty = true;
+                                }
                             }
                         }
                     }

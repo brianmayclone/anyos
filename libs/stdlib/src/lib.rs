@@ -16,6 +16,7 @@ pub mod heap;
 pub mod icons;
 pub mod io;
 pub mod ipc;
+pub mod kbd;
 pub mod net;
 pub mod process;
 pub mod sys;

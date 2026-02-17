@@ -460,6 +460,7 @@ set(SYSTEM_BINS "")
 add_rust_system_program(init        ${CMAKE_SOURCE_DIR}/system/init)
 add_rust_system_program(audiomon    ${CMAKE_SOURCE_DIR}/system/audiomon)
 add_rust_system_program(netmon      ${CMAKE_SOURCE_DIR}/system/netmon)
+add_rust_system_program(inputmon    ${CMAKE_SOURCE_DIR}/system/inputmon)
 
 # Desktop GUI applications → .app bundles in /Applications/
 set(APP_BINS "")

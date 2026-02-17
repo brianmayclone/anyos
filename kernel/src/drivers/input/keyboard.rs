@@ -1,9 +1,12 @@
-//! PS/2 keyboard driver with scancode set 1 to keycode translation.
+//! Keyboard driver with scancode set 1 to keycode translation.
 //!
-//! Processes IRQ1 scancodes into [`KeyEvent`]s with modifier tracking (Shift,
-//! Ctrl, Alt, CapsLock) and buffers up to 64 events for consumption by the compositor.
+//! Processes raw scancodes (from PS/2 IRQ1 or USB-HID) into [`KeyEvent`]s with
+//! modifier tracking (Shift, Ctrl, Alt, AltGr, CapsLock) and buffers up to 256
+//! events for consumption by the compositor.
+//!
+//! Character translation is delegated to the [`super::layout`] module, making
+//! this driver device-agnostic — both PS/2 and USB-HID feed scancodes here.
 
-use crate::arch::x86::port::inb;
 use alloc::collections::VecDeque;
 use crate::sync::spinlock::Spinlock;
 
@@ -16,7 +19,7 @@ pub struct KeyEvent {
     pub modifiers: Modifiers,
 }
 
-/// Logical key identifiers translated from PS/2 scancodes.
+/// Logical key identifiers translated from scancodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     Char(char),
@@ -45,63 +48,51 @@ pub enum Key {
     Unknown,
 }
 
-/// State of keyboard modifier keys (Shift, Ctrl, Alt, CapsLock).
+/// State of keyboard modifier keys.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Modifiers {
     pub shift: bool,
     pub ctrl: bool,
     pub alt: bool,
+    pub altgr: bool,
     pub caps_lock: bool,
 }
 
-/// Ring buffer of pending keyboard events, capacity 64.
+/// Ring buffer of pending keyboard events.
 static KEY_BUFFER: Spinlock<VecDeque<KeyEvent>> = Spinlock::new(VecDeque::new());
 static MODIFIERS: Spinlock<Modifiers> = Spinlock::new(Modifiers {
     shift: false,
     ctrl: false,
     alt: false,
+    altgr: false,
     caps_lock: false,
 });
 
-/// US QWERTY scancode set 1 to ASCII (unshifted)
-static SCANCODE_MAP: [char; 128] = {
-    let mut map = ['\0'; 128];
-    map[0x02] = '1'; map[0x03] = '2'; map[0x04] = '3'; map[0x05] = '4';
-    map[0x06] = '5'; map[0x07] = '6'; map[0x08] = '7'; map[0x09] = '8';
-    map[0x0A] = '9'; map[0x0B] = '0'; map[0x0C] = '-'; map[0x0D] = '=';
-    map[0x10] = 'q'; map[0x11] = 'w'; map[0x12] = 'e'; map[0x13] = 'r';
-    map[0x14] = 't'; map[0x15] = 'y'; map[0x16] = 'u'; map[0x17] = 'i';
-    map[0x18] = 'o'; map[0x19] = 'p'; map[0x1A] = '['; map[0x1B] = ']';
-    map[0x1E] = 'a'; map[0x1F] = 's'; map[0x20] = 'd'; map[0x21] = 'f';
-    map[0x22] = 'g'; map[0x23] = 'h'; map[0x24] = 'j'; map[0x25] = 'k';
-    map[0x26] = 'l'; map[0x27] = ';'; map[0x28] = '\'';
-    map[0x29] = '`'; map[0x2B] = '\\';
-    map[0x2C] = 'z'; map[0x2D] = 'x'; map[0x2E] = 'c'; map[0x2F] = 'v';
-    map[0x30] = 'b'; map[0x31] = 'n'; map[0x32] = 'm'; map[0x33] = ',';
-    map[0x34] = '.'; map[0x35] = '/';
-    map
-};
+/// E0 prefix state — persists across IRQ calls.
+/// PS/2 sends 0xE0 as a separate byte on one IRQ, then the actual scancode next.
+static E0_PENDING: Spinlock<bool> = Spinlock::new(false);
 
-/// Shifted version of the scancode map
-static SCANCODE_MAP_SHIFT: [char; 128] = {
-    let mut map = ['\0'; 128];
-    map[0x02] = '!'; map[0x03] = '@'; map[0x04] = '#'; map[0x05] = '$';
-    map[0x06] = '%'; map[0x07] = '^'; map[0x08] = '&'; map[0x09] = '*';
-    map[0x0A] = '('; map[0x0B] = ')'; map[0x0C] = '_'; map[0x0D] = '+';
-    map[0x10] = 'Q'; map[0x11] = 'W'; map[0x12] = 'E'; map[0x13] = 'R';
-    map[0x14] = 'T'; map[0x15] = 'Y'; map[0x16] = 'U'; map[0x17] = 'I';
-    map[0x18] = 'O'; map[0x19] = 'P'; map[0x1A] = '{'; map[0x1B] = '}';
-    map[0x1E] = 'A'; map[0x1F] = 'S'; map[0x20] = 'D'; map[0x21] = 'F';
-    map[0x22] = 'G'; map[0x23] = 'H'; map[0x24] = 'J'; map[0x25] = 'K';
-    map[0x26] = 'L'; map[0x27] = ':'; map[0x28] = '"';
-    map[0x29] = '~'; map[0x2B] = '|';
-    map[0x2C] = 'Z'; map[0x2D] = 'X'; map[0x2E] = 'C'; map[0x2F] = 'V';
-    map[0x30] = 'B'; map[0x31] = 'N'; map[0x32] = 'M'; map[0x33] = '<';
-    map[0x34] = '>'; map[0x35] = '?';
-    map
-};
+/// Translate a scancode to a Key, considering E0 prefix and modifiers.
+fn scancode_to_key(scancode: u8, is_e0: bool, mods: &Modifiers) -> Key {
+    // E0-prefixed keys: navigation cluster, right modifiers
+    if is_e0 {
+        return match scancode {
+            0x48 => Key::Up,
+            0x50 => Key::Down,
+            0x4B => Key::Left,
+            0x4D => Key::Right,
+            0x47 => Key::Home,
+            0x4F => Key::End,
+            0x49 => Key::PageUp,
+            0x51 => Key::PageDown,
+            0x53 => Key::Delete,
+            0x1D => Key::RightCtrl,
+            0x38 => Key::RightAlt,
+            _ => Key::Unknown,
+        };
+    }
 
-fn scancode_to_key(scancode: u8, mods: &Modifiers) -> Key {
+    // Non-E0: special keys first
     match scancode {
         0x01 => Key::Escape,
         0x0E => Key::Backspace,
@@ -125,6 +116,7 @@ fn scancode_to_key(scancode: u8, mods: &Modifiers) -> Key {
         0x44 => Key::F10,
         0x57 => Key::F11,
         0x58 => Key::F12,
+        // Non-E0 nav keys (numpad when NumLock is off)
         0x47 => Key::Home,
         0x48 => Key::Up,
         0x49 => Key::PageUp,
@@ -134,13 +126,9 @@ fn scancode_to_key(scancode: u8, mods: &Modifiers) -> Key {
         0x50 => Key::Down,
         0x51 => Key::PageDown,
         0x53 => Key::Delete,
+        // Character keys: delegate to layout module
         code if code < 128 => {
-            let use_shift = mods.shift ^ mods.caps_lock;
-            let ch = if use_shift {
-                SCANCODE_MAP_SHIFT[code as usize]
-            } else {
-                SCANCODE_MAP[code as usize]
-            };
+            let ch = super::layout::translate(code, mods.shift, mods.altgr, mods.caps_lock);
             if ch != '\0' {
                 Key::Char(ch)
             } else {
@@ -151,23 +139,44 @@ fn scancode_to_key(scancode: u8, mods: &Modifiers) -> Key {
     }
 }
 
-/// Called from IRQ1 handler to process a keyboard scancode
+/// Called from IRQ1 handler (or USB-HID driver) to process a keyboard scancode.
+///
+/// For extended keys, the PS/2 controller sends 0xE0 first (on a separate IRQ),
+/// then the actual scancode. USB-HID also sends 0xE0 for Right Alt / Right Ctrl.
 pub fn handle_scancode(scancode: u8) {
+    // Check and consume E0 prefix
+    let mut e0_lock = E0_PENDING.lock();
+    if scancode == 0xE0 {
+        *e0_lock = true;
+        return;
+    }
+    let is_e0 = *e0_lock;
+    *e0_lock = false;
+    drop(e0_lock);
+
     let pressed = scancode & 0x80 == 0;
     let code = scancode & 0x7F;
 
     // Update modifier state
     let mut mods = MODIFIERS.lock();
-    match code {
-        0x2A => mods.shift = pressed,         // Left shift
-        0x36 => mods.shift = pressed,         // Right shift
-        0x1D => mods.ctrl = pressed,          // Left ctrl
-        0x38 => mods.alt = pressed,           // Left alt
-        0x3A if pressed => mods.caps_lock = !mods.caps_lock, // Caps lock toggle
-        _ => {}
+    if is_e0 {
+        match code {
+            0x38 => mods.altgr = pressed,  // E0 0x38 = Right Alt = AltGr
+            0x1D => mods.ctrl = pressed,   // E0 0x1D = Right Ctrl
+            _ => {}
+        }
+    } else {
+        match code {
+            0x2A => mods.shift = pressed,  // Left Shift
+            0x36 => mods.shift = pressed,  // Right Shift
+            0x1D => mods.ctrl = pressed,   // Left Ctrl
+            0x38 => mods.alt = pressed,    // Left Alt (not AltGr)
+            0x3A if pressed => mods.caps_lock = !mods.caps_lock,
+            _ => {}
+        }
     }
 
-    let key = scancode_to_key(code, &mods);
+    let key = scancode_to_key(code, is_e0, &mods);
     let modifiers = *mods;
     drop(mods);
 

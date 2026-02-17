@@ -1809,7 +1809,8 @@ pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
                 let mods = (key_evt.modifiers.shift as u32)
                     | ((key_evt.modifiers.ctrl as u32) << 1)
                     | ((key_evt.modifiers.alt as u32) << 2)
-                    | ((key_evt.modifiers.caps_lock as u32) << 3);
+                    | ((key_evt.modifiers.caps_lock as u32) << 3)
+                    | ((key_evt.modifiers.altgr as u32) << 4);
 
                 events[count] = [event_type, key_evt.scancode as u32, char_val, mods, 0];
                 count += 1;
@@ -2052,4 +2053,48 @@ pub fn sys_listenv(buf_ptr: u32, buf_size: u32) -> u32 {
 
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
     crate::task::env::list(pd, buf) as u32
+}
+
+// =========================================================================
+// Keyboard layout syscalls
+// =========================================================================
+
+/// SYS_KBD_GET_LAYOUT (200): Returns the currently active keyboard layout ID.
+pub fn sys_kbd_get_layout() -> u32 {
+    crate::drivers::input::layout::get_layout() as u32
+}
+
+/// SYS_KBD_SET_LAYOUT (201): Set the active keyboard layout by ID.
+/// Returns 0 on success, u32::MAX if the layout ID is invalid.
+pub fn sys_kbd_set_layout(layout_id: u32) -> u32 {
+    match crate::drivers::input::layout::layout_id_from_u32(layout_id) {
+        Some(id) => {
+            crate::drivers::input::layout::set_layout(id);
+            crate::serial_println!("Keyboard layout changed to {:?}", id);
+            0
+        }
+        None => u32::MAX,
+    }
+}
+
+/// SYS_KBD_LIST_LAYOUTS (202): Write layout info entries to a user buffer.
+/// arg1 = buf_ptr (array of LayoutInfo), arg2 = max_entries.
+/// Returns number of entries written.
+pub fn sys_kbd_list_layouts(buf_ptr: u32, max_entries: u32) -> u32 {
+    use crate::drivers::input::layout::{LAYOUT_INFOS, LAYOUT_COUNT, LayoutInfo};
+
+    let count = (max_entries as usize).min(LAYOUT_COUNT);
+    let byte_size = count * core::mem::size_of::<LayoutInfo>();
+
+    if buf_ptr == 0 || byte_size == 0 || !is_valid_user_ptr(buf_ptr as u64, byte_size as u64) {
+        return 0;
+    }
+
+    let dst = unsafe {
+        core::slice::from_raw_parts_mut(buf_ptr as *mut LayoutInfo, count)
+    };
+    for i in 0..count {
+        dst[i] = LAYOUT_INFOS[i];
+    }
+    count as u32
 }

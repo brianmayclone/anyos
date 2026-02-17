@@ -761,7 +761,7 @@ impl MenuBar {
     fn recompute_status_positions(&mut self, screen_width: u32) {
         self.status_icon_x.clear();
         let clock_region = 60i32;
-        let icon_spacing = 4i32;
+        let icon_spacing = 8i32;
         let icon_size = 16i32;
         let mut x = screen_width as i32 - clock_region - icon_spacing;
 

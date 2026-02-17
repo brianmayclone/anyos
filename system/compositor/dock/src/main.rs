@@ -374,7 +374,7 @@ fn load_dock_config() -> Vec<DockItem> {
 // ── System event name unpacking ──
 
 /// System thread names that should NOT appear in the dock.
-const SYSTEM_NAMES: &[&str] = &["compositor", "dock", "cpu_monitor", "init", "netmon", "audiomon", "compositor/gpu"];
+const SYSTEM_NAMES: &[&str] = &["compositor", "dock", "cpu_monitor", "init", "netmon", "audiomon", "inputmon", "compositor/gpu"];
 
 /// Unpack a process name from EVT_PROCESS_SPAWNED words[2..5] (3 u32 LE packed).
 fn unpack_event_name(w2: u32, w3: u32, w4: u32) -> String {

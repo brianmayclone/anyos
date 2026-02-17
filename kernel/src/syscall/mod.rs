@@ -169,6 +169,11 @@ pub const SYS_LISTENV: u32 = 184;
 // DLIB shared page write
 pub const SYS_SET_DLL_U32: u32 = 190;
 
+// Keyboard layout
+pub const SYS_KBD_GET_LAYOUT: u32 = 200;
+pub const SYS_KBD_SET_LAYOUT: u32 = 201;
+pub const SYS_KBD_LIST_LAYOUTS: u32 = 202;
+
 /// Register frame pushed by `syscall_entry.asm` / `syscall_fast.asm`.
 ///
 /// The layout matches the individual GPR pushes (no pushad in 64-bit mode) plus the
@@ -364,6 +369,11 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
 
         // DLIB shared page write
         SYS_SET_DLL_U32 => handlers::sys_set_dll_u32(arg1, arg2, arg3),
+
+        // Keyboard layout
+        SYS_KBD_GET_LAYOUT => handlers::sys_kbd_get_layout(),
+        SYS_KBD_SET_LAYOUT => handlers::sys_kbd_set_layout(arg1),
+        SYS_KBD_LIST_LAYOUTS => handlers::sys_kbd_list_layouts(arg1, arg2),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

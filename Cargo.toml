@@ -21,6 +21,7 @@ exclude = [
   "system/finder",
   "system/audiomon",
   "system/netmon",
+  "system/inputmon",
   "system/compositor/dock",
   "system/compositor/compositor",
   # Apps
