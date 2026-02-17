@@ -9,7 +9,9 @@
  */
 
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
+#include <ctype.h>
 
 void *memcpy(void *dest, const void *src, size_t n) {
     unsigned char *d = dest;
@@ -135,6 +137,14 @@ char *strdup(const char *s) {
     return d;
 }
 
+char *strndup(const char *s, size_t n) {
+    size_t len = strlen(s);
+    if (len > n) len = n;
+    char *d = malloc(len + 1);
+    if (d) { memcpy(d, s, len); d[len] = '\0'; }
+    return d;
+}
+
 static const char *_strerror_msgs[] = {
     "Success", "Operation not permitted", "No such file or directory",
     "No such process", "Interrupted", "I/O error"
@@ -155,6 +165,59 @@ size_t strcspn(const char *s, const char *reject) {
     size_t count = 0;
     while (*s && !strchr(reject, *s)) { s++; count++; }
     return count;
+}
+
+int strcasecmp(const char *s1, const char *s2) {
+    while (*s1 && *s2) {
+        int c1 = tolower((unsigned char)*s1);
+        int c2 = tolower((unsigned char)*s2);
+        if (c1 != c2) return c1 - c2;
+        s1++; s2++;
+    }
+    return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
+}
+
+int strncasecmp(const char *s1, const char *s2, size_t n) {
+    while (n && *s1 && *s2) {
+        int c1 = tolower((unsigned char)*s1);
+        int c2 = tolower((unsigned char)*s2);
+        if (c1 != c2) return c1 - c2;
+        s1++; s2++; n--;
+    }
+    if (n == 0) return 0;
+    return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
+}
+
+char *strcasestr(const char *haystack, const char *needle) {
+    size_t nlen = strlen(needle);
+    if (nlen == 0) return (char *)haystack;
+    while (*haystack) {
+        if (strncasecmp(haystack, needle, nlen) == 0) return (char *)haystack;
+        haystack++;
+    }
+    return NULL;
+}
+
+char *strchrnul(const char *s, int c) {
+    while (*s && *s != (char)c) s++;
+    return (char *)s;
+}
+
+char *strpbrk(const char *s, const char *accept) {
+    while (*s) {
+        if (strchr(accept, *s)) return (char *)s;
+        s++;
+    }
+    return NULL;
+}
+
+void *memrchr(const void *s, int c, size_t n) {
+    const unsigned char *p = (const unsigned char *)s + n;
+    while (n--) {
+        --p;
+        if (*p == (unsigned char)c) return (void *)p;
+    }
+    return NULL;
 }
 
 static char *_strtok_last = NULL;

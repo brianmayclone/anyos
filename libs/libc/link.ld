@@ -13,6 +13,12 @@ SECTIONS {
         *(.rodata .rodata.*)
     }
 
+    .init_array : {
+        __init_array_start = .;
+        KEEP(*(.init_array .init_array.* .ctors))
+        __init_array_end = .;
+    }
+
     .data : {
         *(.data .data.*)
     }

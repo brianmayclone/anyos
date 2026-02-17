@@ -33,5 +33,32 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_DEVWRITE, "devwrite"),
     (SYS_DEVIOCTL, "devioctl"),
     (SYS_IRQWAIT, "irqwait"),
+    (SYS_READDIR, "readdir"),
+    (SYS_STAT, "stat"),
+    (SYS_GETCWD, "getcwd"),
+    (SYS_CHDIR, "chdir"),
+    (SYS_SPAWN, "spawn"),
+    (SYS_GETARGS, "getargs"),
+    (SYS_TRY_WAITPID, "try_waitpid"),
+    (SYS_TIME, "time"),
+    (SYS_UPTIME, "uptime"),
+    (SYS_SYSINFO, "sysinfo"),
+    (SYS_DMESG, "dmesg"),
+    (SYS_TICK_HZ, "tick_hz"),
+    (SYS_PIPE_CREATE, "pipe_create"),
+    (SYS_PIPE_READ, "pipe_read"),
+    (SYS_PIPE_CLOSE, "pipe_close"),
+    (SYS_PIPE_WRITE, "pipe_write"),
+    (SYS_PIPE_OPEN, "pipe_open"),
     (SYS_PIPE_LIST, "pipe_list"),
 ];
+
+/// Look up the human-readable name for a syscall number.
+pub fn syscall_name(num: u32) -> &'static str {
+    for &(n, name) in SYSCALL_TABLE {
+        if n == num {
+            return name;
+        }
+    }
+    "unknown"
+}

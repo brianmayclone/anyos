@@ -142,6 +142,8 @@ file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/bin")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/include")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/include/sys")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/include/netinet")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/include/arpa")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/lib")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Applications")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/src")
@@ -578,6 +580,8 @@ add_custom_command(
     ${LIBC_DIR}/src/math.c
     ${LIBC_DIR}/src/mman.c
     ${LIBC_DIR}/src/start.c
+    ${LIBC_DIR}/src/socket.c
+    ${LIBC_DIR}/src/stubs.c
   COMMENT "Building C library (libc.a + crt0.o)"
 )
 
@@ -738,32 +742,109 @@ add_custom_command(
   COMMENT "Packaging Quake.app"
 )
 
-# Quake 2 (id Software GPL, cross-compiled C program with ref_soft) → Quake II.app
 # ============================================================
-set(QUAKE2_DIR "${CMAKE_SOURCE_DIR}/third_party/quake2")
-set(QUAKE2_ELF "${QUAKE2_DIR}/quake2.elf")
-set(QUAKE2_APP "${SYSROOT_DIR}/Applications/Quake II.app")
+# NetSurf Web Browser (C libraries + linked ELF) → Browser.app
+# ============================================================
+set(NS_DIR "${CMAKE_SOURCE_DIR}/third_party/netsurf")
+set(BEARSSL_DIR "${CMAKE_SOURCE_DIR}/third_party/bearssl")
+set(CURL_DIR "${CMAKE_SOURCE_DIR}/third_party/curl")
+set(ZLIB_DIR "${CMAKE_SOURCE_DIR}/third_party/zlib")
+set(BROWSER_SCRIPTS "${CMAKE_SOURCE_DIR}/scripts/browser")
 
-add_custom_command(
-  OUTPUT ${QUAKE2_ELF}
-  COMMAND make -C ${QUAKE2_DIR} -f Makefile.anyos clean
-  COMMAND make -C ${QUAKE2_DIR} -f Makefile.anyos LIBC_DIR=${LIBC_DIR}
-  DEPENDS ${LIBC_A} ${LIBC_CRT0}
-  COMMENT "Building Quake 2 for anyOS"
+# Detect the NetSurf buildsystem build-ID suffix
+execute_process(
+  COMMAND bash -c "ls -d '${NS_DIR}/libwapcaplet/build-'*'-release-lib-static' 2>/dev/null | head -1 | xargs basename 2>/dev/null || echo build-release-lib-static"
+  OUTPUT_VARIABLE NS_BUILD_SUFFIX
+  OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
-set(QUAKE2_PAK "${CMAKE_SOURCE_DIR}/sysroot/apps/quake2/baseq2/pak0.pak")
-set(QUAKE2_CFG "${CMAKE_SOURCE_DIR}/sysroot/apps/quake2/baseq2/config.cfg")
-
+# --- zlib ---
+set(ZLIB_A "${ZLIB_DIR}/libz.a")
 add_custom_command(
-  OUTPUT "${QUAKE2_APP}/Quake II"
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${QUAKE2_APP}/baseq2"
-  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE2_ELF} "${QUAKE2_APP}/Quake II"
-  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE2_PAK} "${QUAKE2_APP}/baseq2/pak0.pak"
-  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE2_CFG} "${QUAKE2_APP}/baseq2/config.cfg"
-  COMMAND ${CMAKE_COMMAND} -E copy "${QUAKE2_DIR}/Info.conf" "${QUAKE2_APP}/Info.conf"
-  DEPENDS ${QUAKE2_ELF} ${QUAKE2_PAK} ${QUAKE2_CFG} "${QUAKE2_DIR}/Info.conf"
-  COMMENT "Packaging Quake II.app"
+  OUTPUT ${ZLIB_A}
+  COMMAND bash ${BROWSER_SCRIPTS}/build_zlib.sh
+  DEPENDS ${LIBC_A}
+  COMMENT "Building zlib for anyOS"
+)
+
+# --- BearSSL ---
+set(BEARSSL_A "${BEARSSL_DIR}/build/libbearssl.a")
+add_custom_command(
+  OUTPUT ${BEARSSL_A}
+  COMMAND bash ${BROWSER_SCRIPTS}/build_bearssl.sh
+  DEPENDS ${LIBC_A}
+  COMMENT "Building BearSSL for anyOS"
+)
+
+# --- libcurl ---
+set(CURL_A "${CURL_DIR}/lib/libcurl.a")
+add_custom_command(
+  OUTPUT ${CURL_A}
+  COMMAND bash ${BROWSER_SCRIPTS}/build_curl.sh
+  DEPENDS ${LIBC_A} ${BEARSSL_A}
+  COMMENT "Building libcurl for anyOS"
+)
+
+# --- NetSurf component libraries ---
+set(NS_COMPONENT_LIBS
+  "${NS_DIR}/libparserutils/${NS_BUILD_SUFFIX}/libparserutils.a"
+  "${NS_DIR}/libwapcaplet/${NS_BUILD_SUFFIX}/libwapcaplet.a"
+  "${NS_DIR}/libhubbub/${NS_BUILD_SUFFIX}/libhubbub.a"
+  "${NS_DIR}/libdom/${NS_BUILD_SUFFIX}/libdom.a"
+  "${NS_DIR}/libcss/${NS_BUILD_SUFFIX}/libcss.a"
+  "${NS_DIR}/libnsutils/${NS_BUILD_SUFFIX}/libnsutils.a"
+  "${NS_DIR}/libnslog/libnslog.a"
+  "${NS_DIR}/libnspsl/${NS_BUILD_SUFFIX}/libnspsl.a"
+  "${NS_DIR}/libnsgif/${NS_BUILD_SUFFIX}/libnsgif.a"
+  "${NS_DIR}/libnsbmp/${NS_BUILD_SUFFIX}/libnsbmp.a"
+  "${NS_DIR}/libnsfb/${NS_BUILD_SUFFIX}/libnsfb.a"
+)
+# Build all component libraries (script skips already-built ones)
+add_custom_command(
+  OUTPUT ${NS_COMPONENT_LIBS}
+  COMMAND bash ${BROWSER_SCRIPTS}/build_nslibs.sh
+  DEPENDS ${LIBC_A}
+  COMMENT "Building NetSurf component libraries"
+)
+
+# --- NetSurf core (framebuffer frontend) ---
+set(NETSURF_A "${NS_DIR}/netsurf/libnetsurf.a")
+add_custom_command(
+  OUTPUT ${NETSURF_A}
+  COMMAND bash ${BROWSER_SCRIPTS}/build_netsurf.sh
+  DEPENDS ${LIBC_A} ${NS_COMPONENT_LIBS} ${CURL_A}
+  COMMENT "Building NetSurf browser core"
+)
+
+# --- Link browser ELF ---
+set(BROWSER_ELF "${NS_DIR}/netsurf/browser.elf")
+add_custom_command(
+  OUTPUT ${BROWSER_ELF}
+  COMMAND bash ${BROWSER_SCRIPTS}/link_browser.sh
+  DEPENDS
+    ${NETSURF_A}
+    ${NS_COMPONENT_LIBS}
+    ${CURL_A}
+    ${BEARSSL_A}
+    ${ZLIB_A}
+    ${LIBC_A}
+    ${LIBC_CRT0}
+    ${LIBC_DIR}/link.ld
+  COMMENT "Linking NetSurf browser"
+)
+
+# --- Package Browser.app ---
+set(BROWSER_APP "${SYSROOT_DIR}/Applications/Browser.app")
+set(BROWSER_RES "${CMAKE_SOURCE_DIR}/third_party/netsurf/netsurf/frontends/framebuffer/res")
+add_custom_command(
+  OUTPUT "${BROWSER_APP}/Browser"
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${BROWSER_APP}/res"
+  COMMAND ${CMAKE_COMMAND} -E copy ${BROWSER_ELF} "${BROWSER_APP}/Browser"
+  COMMAND ${CMAKE_COMMAND} -E copy
+    "${CMAKE_SOURCE_DIR}/apps/browser/Info.conf" "${BROWSER_APP}/Info.conf"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory "${BROWSER_RES}" "${BROWSER_APP}/res"
+  DEPENDS ${BROWSER_ELF} "${CMAKE_SOURCE_DIR}/apps/browser/Info.conf"
+  COMMENT "Packaging Browser.app"
 )
 
 set(C_TOOLCHAIN_DEPS
@@ -774,7 +855,7 @@ set(C_TOOLCHAIN_DEPS
   ${SYSROOT_DIR}/Libraries/libc/lib/tcc/include/.stamp
   ${DOOM_APP}/DOOM
   ${QUAKE_APP}/Quake
-  "${QUAKE2_APP}/Quake II"
+  "${BROWSER_APP}/Browser"
 )
 
 endif() # HAS_CROSS_COMPILER

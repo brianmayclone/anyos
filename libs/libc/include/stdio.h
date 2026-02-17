@@ -74,6 +74,8 @@ FILE *tmpfile(void);
 FILE *fdopen(int fd, const char *mode);
 int fileno(FILE *stream);
 int setvbuf(FILE *stream, char *buf, int mode, size_t size);
+void setbuf(FILE *stream, char *buf);
+void setlinebuf(FILE *stream);
 
 #define _IOFBF 0
 #define _IOLBF 1

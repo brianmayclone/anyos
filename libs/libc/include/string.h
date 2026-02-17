@@ -29,9 +29,15 @@ char *strchr(const char *s, int c);
 char *strrchr(const char *s, int c);
 char *strstr(const char *haystack, const char *needle);
 char *strdup(const char *s);
+char *strndup(const char *s, size_t n);
 char *strerror(int errnum);
 size_t strspn(const char *s, const char *accept);
 size_t strcspn(const char *s, const char *reject);
 char *strtok(char *str, const char *delim);
+char *strpbrk(const char *s, const char *accept);
+void *memrchr(const void *s, int c, size_t n);
+
+/* BSD extensions (also in <strings.h>) */
+#include <strings.h>
 
 #endif

@@ -235,8 +235,8 @@ int vsnprintf(char *str, size_t size, const char *format, va_list ap) {
         }
 
         /* Length modifier */
-        int is_long = 0;
-        if (*format == 'l') { is_long = 1; format++; if (*format == 'l') format++; }
+        int is_long = 0, is_longlong = 0;
+        if (*format == 'l') { is_long = 1; format++; if (*format == 'l') { is_longlong = 1; format++; } }
         else if (*format == 'h') { format++; if (*format == 'h') format++; }
         else if (*format == 'z') { format++; }
 
@@ -245,7 +245,7 @@ int vsnprintf(char *str, size_t size, const char *format, va_list ap) {
         /* For integer types, precision means minimum digits (zero-padded) */
         switch (*format) {
             case 'd': case 'i': {
-                long val = is_long ? va_arg(ap, long) : va_arg(ap, int);
+                long long val = is_longlong ? va_arg(ap, long long) : is_long ? va_arg(ap, long) : va_arg(ap, int);
                 if (val < 0) {
                     pos += _put_char(str, pos, max, '-');
                     val = -val;
@@ -257,31 +257,31 @@ int vsnprintf(char *str, size_t size, const char *format, va_list ap) {
                 break;
             }
             case 'u': {
-                unsigned long val = is_long ? va_arg(ap, unsigned long) : va_arg(ap, unsigned int);
+                unsigned long long val = is_longlong ? va_arg(ap, unsigned long long) : is_long ? va_arg(ap, unsigned long) : va_arg(ap, unsigned int);
                 int iw = width, izp = zero_pad;
                 if (precision >= 0) { iw = precision; izp = 1; }
-                pos += _put_uint(str, pos, max, val, 10, 0, iw, izp);
+                pos += _put_uint(str, pos, max, (unsigned long)val, 10, 0, iw, izp);
                 break;
             }
             case 'x': {
-                unsigned long val = is_long ? va_arg(ap, unsigned long) : va_arg(ap, unsigned int);
+                unsigned long long val = is_longlong ? va_arg(ap, unsigned long long) : is_long ? va_arg(ap, unsigned long) : va_arg(ap, unsigned int);
                 int iw = width, izp = zero_pad;
                 if (precision >= 0) { iw = precision; izp = 1; }
-                pos += _put_uint(str, pos, max, val, 16, 0, iw, izp);
+                pos += _put_uint(str, pos, max, (unsigned long)val, 16, 0, iw, izp);
                 break;
             }
             case 'X': {
-                unsigned long val = is_long ? va_arg(ap, unsigned long) : va_arg(ap, unsigned int);
+                unsigned long long val = is_longlong ? va_arg(ap, unsigned long long) : is_long ? va_arg(ap, unsigned long) : va_arg(ap, unsigned int);
                 int iw = width, izp = zero_pad;
                 if (precision >= 0) { iw = precision; izp = 1; }
-                pos += _put_uint(str, pos, max, val, 16, 1, iw, izp);
+                pos += _put_uint(str, pos, max, (unsigned long)val, 16, 1, iw, izp);
                 break;
             }
             case 'o': {
-                unsigned long val = is_long ? va_arg(ap, unsigned long) : va_arg(ap, unsigned int);
+                unsigned long long val = is_longlong ? va_arg(ap, unsigned long long) : is_long ? va_arg(ap, unsigned long) : va_arg(ap, unsigned int);
                 int iw = width, izp = zero_pad;
                 if (precision >= 0) { iw = precision; izp = 1; }
-                pos += _put_uint(str, pos, max, val, 8, 0, iw, izp);
+                pos += _put_uint(str, pos, max, (unsigned long)val, 8, 0, iw, izp);
                 break;
             }
             case 'p': {

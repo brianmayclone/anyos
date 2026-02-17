@@ -80,7 +80,7 @@ unsafe fn read_user_str(ptr: u32) -> &'static str {
 pub fn sys_exit(status: u32) -> u32 {
     // Single atomic lock acquisition — no TOCTOU gaps between reads
     let (tid, pd, can_destroy) = crate::task::scheduler::current_exit_info();
-    crate::serial_println!("sys_exit({}) TID={}", status, tid);
+    crate::debug_println!("sys_exit({}) TID={}", status, tid);
 
     // Clean up shared memory mappings while still in user PD context.
     // Must happen BEFORE switching CR3, so unmap_page operates on the
@@ -111,7 +111,7 @@ pub fn sys_exit(status: u32) -> u32 {
 /// sys_kill - Kill a thread by TID
 pub fn sys_kill(tid: u32) -> u32 {
     if tid == 0 { return u32::MAX; }
-    crate::serial_println!("sys_kill({})", tid);
+    crate::debug_println!("sys_kill({})", tid);
     crate::task::scheduler::kill_thread(tid)
 }
 
@@ -203,10 +203,12 @@ pub fn sys_open(path_ptr: u32, flags: u32, _arg3: u32) -> u32 {
         truncate: (flags & 8) != 0,
     };
     let resolved = resolve_path(path);
-    match crate::fs::vfs::open(&resolved, file_flags) {
+    let result = match crate::fs::vfs::open(&resolved, file_flags) {
         Ok(fd) => fd,
         Err(_) => u32::MAX,
-    }
+    };
+    crate::debug_println!("  open({:?}) -> fd={}", resolved, if result == u32::MAX { -1i32 } else { result as i32 });
+    result
 }
 
 /// sys_close - Close a file descriptor
@@ -320,7 +322,7 @@ pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32
     } else {
         ""
     };
-    crate::serial_println!("sys_spawn: path='{}' pipe={} args_ptr={:#x} stdin_pipe={}", path, stdout_pipe, args_ptr, stdin_pipe);
+    crate::debug_println!("sys_spawn: path='{}' pipe={} args_ptr={:#x} stdin_pipe={}", path, stdout_pipe, args_ptr, stdin_pipe);
     let raw_name = path.rsplit('/').next().unwrap_or(path);
     // Strip ".app" suffix so process name is clean (e.g. "Calculator" not "Calculator.app")
     let name = if raw_name.ends_with(".app") {
@@ -336,7 +338,7 @@ pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32
             if stdin_pipe != 0 {
                 crate::task::scheduler::set_thread_stdin_pipe(tid, stdin_pipe);
             }
-            crate::serial_println!("sys_spawn: returning TID={}", tid);
+            crate::debug_println!("sys_spawn: returning TID={}", tid);
             tid
         }
         Err(e) => {
@@ -408,31 +410,25 @@ pub fn sys_stat(path_ptr: u32, buf_ptr: u32) -> u32 {
     let raw_path = unsafe { read_user_str(path_ptr) };
     let path = resolve_path(raw_path);
 
-    // Check directory first
-    if let Ok(entries) = crate::fs::vfs::read_dir(&path) {
-        if buf_ptr != 0 {
-            unsafe {
-                let buf = buf_ptr as *mut u32;
-                *buf = 1; // directory
-                *buf.add(1) = entries.len() as u32;
+    // Use vfs::stat() which does a directory-entry lookup (no file I/O)
+    match crate::fs::vfs::stat(&path) {
+        Ok((file_type, size)) => {
+            if buf_ptr != 0 {
+                let type_val: u32 = match file_type {
+                    crate::fs::file::FileType::Directory => 1,
+                    crate::fs::file::FileType::Device => 2,
+                    _ => 0, // Regular
+                };
+                unsafe {
+                    let buf = buf_ptr as *mut u32;
+                    *buf = type_val;
+                    *buf.add(1) = size;
+                }
             }
+            0
         }
-        return 0;
+        Err(_) => u32::MAX,
     }
-
-    // Try as a file
-    if let Ok(data) = crate::fs::vfs::read_file_to_vec(&path) {
-        if buf_ptr != 0 {
-            unsafe {
-                let buf = buf_ptr as *mut u32;
-                *buf = 0; // regular file
-                *buf.add(1) = data.len() as u32;
-            }
-        }
-        return 0;
-    }
-
-    u32::MAX
 }
 
 /// sys_lseek - Seek within an open file.
@@ -1863,7 +1859,7 @@ pub fn sys_thread_create(entry_rip: u32, user_rsp: u32, name_ptr: u32, name_len:
     let pri = if priority > 0 && priority <= 255 { priority as u8 } else { 0 };
 
     let tid = crate::task::scheduler::create_thread_in_current_process(entry, rsp, name, pri);
-    crate::serial_println!("sys_thread_create: entry={:#x} rsp={:#x} name={} pri={} -> TID={}", entry, rsp, name, pri, tid);
+    crate::debug_println!("sys_thread_create: entry={:#x} rsp={:#x} name={} pri={} -> TID={}", entry, rsp, name, pri, tid);
     tid
 }
 

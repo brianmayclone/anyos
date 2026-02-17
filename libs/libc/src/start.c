@@ -14,6 +14,11 @@ extern int _syscall(int num, int a1, int a2, int a3, int a4);
 extern int main(int argc, char **argv);
 extern void exit(int status);
 
+/* .init_array constructors — linker script provides these symbols */
+typedef void (*init_func)(void);
+extern init_func __init_array_start[];
+extern init_func __init_array_end[];
+
 #define SYS_GETARGS 28
 #define MAX_ARGS    64
 #define ARG_BUF_SIZE 1024
@@ -49,6 +54,11 @@ void __libc_start_main(void) {
     }
 
     argv[argc] = (char *)0;  /* NULL-terminate argv */
+
+    /* Run .init_array constructors (e.g. __attribute__((constructor))) */
+    for (init_func *fn = __init_array_start; fn < __init_array_end; fn++) {
+        if (*fn) (*fn)();
+    }
 
     int ret = main(argc, argv);
     exit(ret);

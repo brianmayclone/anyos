@@ -12,7 +12,10 @@
 #include <string.h>
 #include <unistd.h>
 
-/* Simple malloc: sbrk-based with free-list */
+/* Arena-based malloc: requests memory from sbrk in large chunks, suballocates
+ * locally. This avoids a syscall for every malloc — critical for complex C
+ * programs like NetSurf that do tens of thousands of small allocations. */
+
 typedef struct block_header {
     size_t size;        /* payload size (not including header) */
     int free;
@@ -21,18 +24,49 @@ typedef struct block_header {
 
 #define HEADER_SIZE (sizeof(block_header_t))
 #define ALIGN(x) (((x) + 7) & ~7)
+#define ARENA_CHUNK 65536  /* request 64 KiB from sbrk at a time */
 
 static block_header_t *free_list = NULL;
+
+/* Arena: current position and remaining bytes in the current sbrk chunk */
+static char *arena_ptr = NULL;
+static size_t arena_remaining = 0;
+
+/* Allocate raw memory from the arena, calling sbrk only when needed */
+static void *arena_alloc(size_t total) {
+    if (total > arena_remaining) {
+        /* Request a new chunk from sbrk — at least ARENA_CHUNK or the
+         * requested size, whichever is larger */
+        size_t chunk = total > ARENA_CHUNK ? total : ARENA_CHUNK;
+        void *p = sbrk(chunk);
+        if (p == (void *)-1) return NULL;
+        arena_ptr = (char *)p;
+        arena_remaining = chunk;
+    }
+    void *result = arena_ptr;
+    arena_ptr += total;
+    arena_remaining -= total;
+    return result;
+}
 
 void *malloc(size_t size) {
     if (size == 0) return NULL;
     size = ALIGN(size);
 
-    /* Search free list */
+    /* Search free list for a reusable block */
     block_header_t *prev = NULL;
     block_header_t *curr = free_list;
     while (curr) {
         if (curr->free && curr->size >= size) {
+            /* Split if the block is significantly larger */
+            if (curr->size >= size + HEADER_SIZE + 16) {
+                block_header_t *split = (block_header_t *)((char *)curr + HEADER_SIZE + size);
+                split->size = curr->size - size - HEADER_SIZE;
+                split->free = 1;
+                split->next = curr->next;
+                curr->size = size;
+                curr->next = split;
+            }
             curr->free = 0;
             return (void *)((char *)curr + HEADER_SIZE);
         }
@@ -40,10 +74,10 @@ void *malloc(size_t size) {
         curr = curr->next;
     }
 
-    /* Allocate from sbrk */
+    /* Allocate from arena (batched sbrk) */
     size_t total = HEADER_SIZE + size;
-    void *p = sbrk(total);
-    if (p == (void *)-1) return NULL;
+    void *p = arena_alloc(total);
+    if (!p) return NULL;
 
     block_header_t *blk = (block_header_t *)p;
     blk->size = size;
@@ -68,6 +102,7 @@ void *realloc(void *ptr, size_t size) {
     if (size == 0) { free(ptr); return NULL; }
 
     block_header_t *blk = (block_header_t *)((char *)ptr - HEADER_SIZE);
+    size = ALIGN(size);
     if (blk->size >= size) return ptr;
 
     void *new_ptr = malloc(size);
@@ -180,6 +215,20 @@ void qsort(void *base, size_t nmemb, size_t size, int (*compar)(const void *, co
         }
         memcpy(b + j * size, tmp, size);
     }
+}
+
+void *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
+              int (*compar)(const void *, const void *)) {
+    const char *b = base;
+    size_t lo = 0, hi = nmemb;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        int cmp = compar(key, b + mid * size);
+        if (cmp < 0) hi = mid;
+        else if (cmp > 0) lo = mid + 1;
+        else return (void *)(b + mid * size);
+    }
+    return NULL;
 }
 
 double atof(const char *nptr) {

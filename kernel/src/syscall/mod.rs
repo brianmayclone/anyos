@@ -206,6 +206,21 @@ pub fn init() {
 
 #[inline(always)]
 fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, arg5: u32) -> u32 {
+    // Log interesting syscalls (skip high-frequency ones: UPTIME, TICK_HZ, YIELD, EVT_CHAN_POLL, SLEEP)
+    #[cfg(feature = "debug_verbose")]
+    {
+        let tid = crate::task::scheduler::current_tid();
+        match syscall_num {
+            SYS_UPTIME | SYS_TICK_HZ | SYS_YIELD | SYS_EVT_CHAN_POLL | SYS_SLEEP
+            | SYS_EVT_SYS_POLL | SYS_INPUT_POLL | SYS_WRITE | SYS_TIME | SYS_SBRK => {},
+            _ => {
+                let name = table::syscall_name(syscall_num);
+                crate::debug_println!("syscall [T{}] {}({}) args=({:#x},{:#x},{:#x},{:#x})",
+                    tid, name, syscall_num, arg1, arg2, arg3, arg4);
+            }
+        }
+    }
+
     let result = match syscall_num {
         // Process management
         SYS_EXIT => handlers::sys_exit(arg1),
@@ -345,6 +360,19 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
             u32::MAX
         }
     };
+
+    // Log results for interesting syscalls
+    #[cfg(feature = "debug_verbose")]
+    {
+        match syscall_num {
+            SYS_UPTIME | SYS_TICK_HZ | SYS_YIELD | SYS_EVT_CHAN_POLL | SYS_SLEEP
+            | SYS_EVT_SYS_POLL | SYS_INPUT_POLL | SYS_WRITE | SYS_TIME | SYS_SBRK => {},
+            _ => {
+                let tid = crate::task::scheduler::current_tid();
+                crate::debug_println!("  -> [T{}] result={:#x}", tid, result);
+            }
+        }
+    }
 
     // Post-syscall stack canary check: catch overflows before returning to user
     crate::task::scheduler::check_current_stack_canary(syscall_num);

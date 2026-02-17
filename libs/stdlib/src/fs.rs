@@ -13,12 +13,13 @@ pub const O_TRUNC: u32 = 8;
 
 /// Resolve a path into a null-terminated absolute path in `buf`.
 /// Handles ".", "./relative", and bare relative paths by prepending CWD.
-fn prepare_path(path: &str, buf: &mut [u8; 257]) {
+/// Returns the length of the resolved path (not including the null terminator).
+pub fn prepare_path(path: &str, buf: &mut [u8; 257]) -> usize {
     if path.is_empty() || path.starts_with('/') {
         let len = path.len().min(256);
         buf[..len].copy_from_slice(&path.as_bytes()[..len]);
         buf[len] = 0;
-        return;
+        return len;
     }
 
     // Relative path — get CWD
@@ -26,7 +27,6 @@ fn prepare_path(path: &str, buf: &mut [u8; 257]) {
     let cwd_len = syscall2(SYS_GETCWD, cwd.as_mut_ptr() as u64, 256);
     let cwd_len = if cwd_len != u32::MAX { cwd_len as usize } else { 0 };
     if cwd_len == 0 {
-        // Fallback: "/"
         cwd[0] = b'/';
     }
     let cwd_len = if cwd_len == 0 { 1 } else { cwd_len };
@@ -36,7 +36,7 @@ fn prepare_path(path: &str, buf: &mut [u8; 257]) {
         let len = cwd_len.min(256);
         buf[..len].copy_from_slice(&cwd[..len]);
         buf[len] = 0;
-        return;
+        return len;
     }
 
     // Build: cwd + "/" + relative_part
@@ -45,12 +45,10 @@ fn prepare_path(path: &str, buf: &mut [u8; 257]) {
         buf[pos] = cwd[i];
         pos += 1;
     }
-    // Add separator if CWD doesn't end with /
     if pos > 0 && buf[pos - 1] != b'/' {
         buf[pos] = b'/';
         pos += 1;
     }
-    // Strip "./" prefix from the relative part
     let rel = if path.starts_with("./") {
         &path.as_bytes()[2..]
     } else {
@@ -64,6 +62,7 @@ fn prepare_path(path: &str, buf: &mut [u8; 257]) {
         pos += 1;
     }
     buf[pos] = 0;
+    pos
 }
 
 pub fn write(fd: u32, buf: &[u8]) -> u32 {
@@ -144,9 +143,7 @@ pub fn getcwd(buf: &mut [u8]) -> u32 {
 /// Change current working directory. Returns 0 on success, u32::MAX on error.
 pub fn chdir(path: &str) -> u32 {
     let mut buf = [0u8; 257];
-    let len = path.len().min(256);
-    buf[..len].copy_from_slice(&path.as_bytes()[..len]);
-    buf[len] = 0;
+    prepare_path(path, &mut buf);
     syscall1(SYS_CHDIR, buf.as_ptr() as u64)
 }
 
@@ -162,14 +159,10 @@ pub fn isatty(fd: u32) -> u32 {
 /// Returns 0 on success, u32::MAX on error.
 pub fn mount(mount_path: &str, device: &str, fs_type: u32) -> u32 {
     let mut mp_buf = [0u8; 257];
-    let mp_len = mount_path.len().min(256);
-    mp_buf[..mp_len].copy_from_slice(&mount_path.as_bytes()[..mp_len]);
-    mp_buf[mp_len] = 0;
+    prepare_path(mount_path, &mut mp_buf);
 
     let mut dev_buf = [0u8; 257];
-    let dev_len = device.len().min(256);
-    dev_buf[..dev_len].copy_from_slice(&device.as_bytes()[..dev_len]);
-    dev_buf[dev_len] = 0;
+    prepare_path(device, &mut dev_buf);
 
     syscall3(SYS_MOUNT, mp_buf.as_ptr() as u64, dev_buf.as_ptr() as u64, fs_type as u64)
 }
@@ -179,9 +172,7 @@ pub fn mount(mount_path: &str, device: &str, fs_type: u32) -> u32 {
 /// Returns 0 on success, u32::MAX on error.
 pub fn umount(mount_path: &str) -> u32 {
     let mut buf = [0u8; 257];
-    let len = mount_path.len().min(256);
-    buf[..len].copy_from_slice(&mount_path.as_bytes()[..len]);
-    buf[len] = 0;
+    prepare_path(mount_path, &mut buf);
     syscall1(SYS_UMOUNT, buf.as_ptr() as u64)
 }
 

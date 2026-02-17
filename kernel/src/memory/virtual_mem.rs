@@ -12,6 +12,13 @@ use crate::memory::address::{PhysAddr, VirtAddr};
 use crate::memory::physical;
 use crate::memory::FRAME_SIZE;
 use core::arch::asm;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+/// Spinlock for serializing demand page faults across CPUs.
+/// Prevents TOCTOU race where two CPUs fault on the same unmapped page simultaneously,
+/// both allocate frames, and the second overwrites the first's PTE (leaking the frame
+/// and zeroing data the first CPU already wrote).
+static DEMAND_PAGE_LOCK: AtomicBool = AtomicBool::new(false);
 
 /// Page table entry flag: page is present in physical memory.
 const PAGE_PRESENT: u64 = 1 << 0;
@@ -762,14 +769,39 @@ pub fn handle_heap_demand_page(vaddr: u64) -> bool {
         return false;
     }
 
+    let page_addr = VirtAddr::new(vaddr & !0xFFF);
+
+    // Serialize demand page faults across CPUs. This prevents the TOCTOU race
+    // where two CPUs fault on the same unmapped page simultaneously — without
+    // the lock, both would allocate frames and the second map_page overwrites
+    // the first's PTE, leaking a frame and zeroing live data.
+    // ISR 14 runs with IF=0, so this spin won't be interrupted.
+    while DEMAND_PAGE_LOCK.compare_exchange_weak(
+        false, true, Ordering::Acquire, Ordering::Relaxed
+    ).is_err() {
+        core::hint::spin_loop();
+    }
+
+    // Check if already mapped (another CPU may have just mapped it while we waited,
+    // or our TLB had a stale not-present entry).
+    if is_page_mapped(page_addr) {
+        DEMAND_PAGE_LOCK.store(false, Ordering::Release);
+        unsafe {
+            asm!("invlpg [{}]", in(reg) page_addr.as_u64(), options(nostack, preserves_flags));
+        }
+        return true;
+    }
+
     // Allocate a physical frame
     let phys = match physical::alloc_frame() {
         Some(p) => p,
-        None => return false,
+        None => {
+            DEMAND_PAGE_LOCK.store(false, Ordering::Release);
+            return false;
+        }
     };
 
     // Map the page (Present + Writable, kernel-only)
-    let page_addr = VirtAddr::new(vaddr & !0xFFF);
     map_page(page_addr, phys, 0x03);
 
     // Zero the page (demand-paged pages must be zeroed for security/correctness)
@@ -777,5 +809,6 @@ pub fn handle_heap_demand_page(vaddr: u64) -> bool {
         core::ptr::write_bytes(page_addr.as_u64() as *mut u8, 0, FRAME_SIZE);
     }
 
+    DEMAND_PAGE_LOCK.store(false, Ordering::Release);
     true
 }

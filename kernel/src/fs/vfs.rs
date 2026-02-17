@@ -21,12 +21,33 @@ static VFS: Mutex<Option<VfsState>> = Mutex::new(None);
 
 struct VfsState {
     open_files: Vec<Option<OpenFile>>,
-    next_fd: FileDescriptor,
     mount_points: Vec<MountPoint>,
     exfat_fs: Option<ExFatFs>,
     fat_fs: Option<FatFs>,
     iso9660_fs: Option<Iso9660Fs>,
     devfs: Option<DevFs>,
+}
+
+impl VfsState {
+    /// Find the lowest available FD number (>= 3, avoiding stdin/stdout/stderr).
+    /// Scans open_files for gaps; if none found, returns max_fd + 1.
+    fn next_available_fd(&self) -> FileDescriptor {
+        // Collect all currently used FDs
+        let mut used: alloc::vec::Vec<u32> = self.open_files.iter()
+            .filter_map(|e| e.as_ref().map(|f| f.fd))
+            .collect();
+        used.sort_unstable();
+        // Find lowest unused FD starting from 3
+        let mut candidate: u32 = 3;
+        for &fd in &used {
+            if fd == candidate {
+                candidate += 1;
+            } else if fd > candidate {
+                break;
+            }
+        }
+        candidate
+    }
 }
 
 struct MountPoint {
@@ -159,7 +180,6 @@ pub fn init() {
     let mut vfs = VFS.lock();
     *vfs = Some(VfsState {
         open_files: Vec::new(),
-        next_fd: 3, // 0=stdin, 1=stdout, 2=stderr
         mount_points: Vec::new(),
         exfat_fs: None,
         fat_fs: None,
@@ -283,8 +303,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
         let devfs = state.devfs.as_ref().ok_or(FsError::NotFound)?;
         let idx = devfs.lookup(name).ok_or(FsError::NotFound)?;
 
-        let fd = state.next_fd;
-        state.next_fd += 1;
+        let fd = state.next_available_fd();
 
         let file = OpenFile {
             fd,
@@ -310,8 +329,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
     if let Some((_mount_path, relative_path)) = find_mnt_mount(path, &state.mount_points) {
         if let Some(ref iso) = state.iso9660_fs {
             let (inode, file_type, size) = iso.lookup(relative_path)?;
-            let fd = state.next_fd;
-            state.next_fd += 1;
+            let fd = state.next_available_fd();
             let file = OpenFile {
                 fd,
                 path: String::from(path),
@@ -366,8 +384,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             Err(e) => return Err(e),
         };
 
-        let fd = state.next_fd;
-        state.next_fd += 1;
+        let fd = state.next_available_fd();
         let position = if flags.append { size } else { 0 };
         let file = OpenFile {
             fd,
@@ -422,8 +439,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             Err(e) => return Err(e),
         };
 
-        let fd = state.next_fd;
-        state.next_fd += 1;
+        let fd = state.next_available_fd();
 
         let position = if flags.append { size } else { 0 };
 
@@ -453,8 +469,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             return Err(FsError::PermissionDenied);
         }
         let (inode, file_type, size) = iso.lookup(path)?;
-        let fd = state.next_fd;
-        state.next_fd += 1;
+        let fd = state.next_available_fd();
         let file = OpenFile {
             fd,
             path: String::from(path),
@@ -858,6 +873,47 @@ pub fn lseek(fd: FileDescriptor, offset: i32, whence: u32) -> Result<u32, FsErro
 
     file.position = new_pos;
     Ok(new_pos)
+}
+
+/// Get file type and size by path, without reading the file content.
+/// Returns (file_type, size).
+pub fn stat(path: &str) -> Result<(FileType, u32), FsError> {
+    let vfs = VFS.lock();
+    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+
+    // --- DevFs path ---
+    if is_dev_path(path) {
+        let name = dev_name(path);
+        if name.is_empty() {
+            return Ok((FileType::Directory, 0));
+        }
+        let devfs = state.devfs.as_ref().ok_or(FsError::NotFound)?;
+        if devfs.lookup(name).is_some() {
+            return Ok((FileType::Device, 0));
+        }
+        return Err(FsError::NotFound);
+    }
+
+    // --- Mount point path ---
+    if let Some((_mount_path, relative_path)) = find_mnt_mount(path, &state.mount_points) {
+        if let Some(ref iso) = state.iso9660_fs {
+            let (_inode, file_type, size) = iso.lookup(relative_path)?;
+            return Ok((file_type, size));
+        }
+        return Err(FsError::NotFound);
+    }
+
+    // --- exFAT / FAT path ---
+    if let Some(ref exfat) = state.exfat_fs {
+        let (_inode, file_type, size) = exfat.lookup(path)?;
+        return Ok((file_type, size));
+    }
+    if let Some(ref fat) = state.fat_fs {
+        let (_inode, file_type, size) = fat.lookup(path)?;
+        return Ok((file_type, size));
+    }
+
+    Err(FsError::NotFound)
 }
 
 /// Get file info by fd. Returns (file_type, size, position).

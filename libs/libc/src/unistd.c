@@ -26,13 +26,26 @@ extern int _syscall(int num, int a1, int a2, int a3, int a4);
 #define SYS_FSTAT   106
 #define SYS_ISATTY  108
 
+/* Socket fd base — socket fds start at 128 */
+#define SOCKET_FD_BASE 128
+
+/* Defined in socket.c — handles socket fd I/O */
+extern ssize_t recv(int sockfd, void *buf, size_t len, int flags);
+extern ssize_t send(int sockfd, const void *buf, size_t len, int flags);
+
 ssize_t read(int fd, void *buf, size_t count) {
+    if (fd >= SOCKET_FD_BASE) {
+        return recv(fd, buf, count, 0);
+    }
     int ret = _syscall(SYS_READ, fd, (int)buf, (int)count, 0);
     if (ret == -1) { errno = EIO; return -1; }
     return ret;
 }
 
 ssize_t write(int fd, const void *buf, size_t count) {
+    if (fd >= SOCKET_FD_BASE) {
+        return send(fd, buf, count, 0);
+    }
     int ret = _syscall(SYS_WRITE, fd, (int)buf, (int)count, 0);
     if (ret == -1) { errno = EIO; return -1; }
     return ret;
@@ -52,7 +65,14 @@ int open(const char *path, int flags, ...) {
     return ret;
 }
 
+/* Defined in socket.c — handles socket fd cleanup */
+extern int __socket_close(int sockfd);
+
 int close(int fd) {
+    /* Route socket fds to socket layer */
+    if (fd >= SOCKET_FD_BASE) {
+        return __socket_close(fd);
+    }
     int ret = _syscall(SYS_CLOSE, fd, 0, 0, 0);
     if (ret == -1) { errno = EBADF; return -1; }
     return ret;
@@ -108,6 +128,50 @@ int execvp(const char *file, char *const argv[]) {
 
 int ftruncate(int fd, unsigned int length) {
     (void)fd; (void)length;
+    errno = ENOSYS;
+    return -1;
+}
+
+ssize_t pread(int fd, void *buf, size_t count, long offset) {
+    int saved = lseek(fd, 0, SEEK_CUR);
+    if (saved < 0) return -1;
+    if (lseek(fd, offset, SEEK_SET) < 0) return -1;
+    ssize_t n = read(fd, buf, count);
+    lseek(fd, saved, SEEK_SET);
+    return n;
+}
+
+ssize_t pwrite(int fd, const void *buf, size_t count, long offset) {
+    int saved = lseek(fd, 0, SEEK_CUR);
+    if (saved < 0) return -1;
+    if (lseek(fd, offset, SEEK_SET) < 0) return -1;
+    ssize_t n = write(fd, buf, count);
+    lseek(fd, saved, SEEK_SET);
+    return n;
+}
+
+int dup(int oldfd) {
+    (void)oldfd;
+    errno = ENOSYS;
+    return -1;
+}
+
+int dup2(int oldfd, int newfd) {
+    (void)oldfd; (void)newfd;
+    errno = ENOSYS;
+    return -1;
+}
+
+int gethostname(char *name, size_t len) {
+    const char *hostname = "anyos";
+    size_t hlen = 5;
+    if (len < hlen + 1) { errno = ENAMETOOLONG; return -1; }
+    for (size_t i = 0; i <= hlen; i++) name[i] = hostname[i];
+    return 0;
+}
+
+int ioctl(int fd, unsigned long request, ...) {
+    (void)fd; (void)request;
     errno = ENOSYS;
     return -1;
 }

@@ -30,6 +30,8 @@ int abs(int j);
 long labs(long j);
 char *getenv(const char *name);
 void qsort(void *base, size_t nmemb, size_t size, int (*compar)(const void *, const void *));
+void *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
+              int (*compar)(const void *, const void *));
 int rand(void);
 void srand(unsigned int seed);
 long long strtoll(const char *nptr, char **endptr, int base);
@@ -39,6 +41,11 @@ float strtof(const char *nptr, char **endptr);
 double atof(const char *nptr);
 
 int system(const char *command);
+int atexit(void (*function)(void));
+int setenv(const char *name, const char *value, int overwrite);
+int unsetenv(const char *name);
+int mkstemp(char *template);
+char *mktemp(char *template);
 
 #define RAND_MAX 0x7FFFFFFF
 

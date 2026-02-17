@@ -33,6 +33,14 @@ int unlink(const char *path);
 int access(const char *path, int mode);
 int execvp(const char *file, char *const argv[]);
 int ftruncate(int fd, unsigned int length);
+ssize_t pread(int fd, void *buf, size_t count, long offset);
+ssize_t pwrite(int fd, const void *buf, size_t count, long offset);
+int dup(int oldfd);
+int dup2(int oldfd, int newfd);
+int gethostname(char *name, size_t len);
+char *realpath(const char *path, char *resolved_path);
+int rmdir(const char *pathname);
+int unlinkat(int dirfd, const char *pathname, int flags);
 
 #define F_OK 0
 #define R_OK 4

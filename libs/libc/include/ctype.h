@@ -24,5 +24,6 @@ int iscntrl(int c);
 int isgraph(int c);
 int toupper(int c);
 int tolower(int c);
+int isascii(int c);
 
 #endif

@@ -8,7 +8,7 @@
 # SPDX-License-Identifier: MIT
 
 # Build anyOS
-# Usage: ./build.sh [--clean] [--uefi] [--iso] [--all]
+# Usage: ./build.sh [--clean] [--uefi] [--iso] [--all] [--debug]
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="${SCRIPT_DIR}/.."
@@ -18,6 +18,7 @@ CLEAN=0
 BUILD_UEFI=0
 BUILD_ISO=0
 BUILD_ALL=0
+DEBUG_VERBOSE=0
 
 for arg in "$@"; do
     case "$arg" in
@@ -33,22 +34,29 @@ for arg in "$@"; do
         --all)
             BUILD_ALL=1
             ;;
+        --debug)
+            DEBUG_VERBOSE=1
+            ;;
         *)
-            echo "Usage: $0 [--clean] [--uefi] [--iso] [--all]"
+            echo "Usage: $0 [--clean] [--uefi] [--iso] [--all] [--debug]"
             echo ""
             echo "  --clean    Force full rebuild of all components"
             echo "  --uefi     Build UEFI disk image (in addition to BIOS)"
             echo "  --iso      Build bootable ISO 9660 image (El Torito, CD-ROM)"
             echo "  --all      Build BIOS, UEFI, and ISO images"
+            echo "  --debug    Enable verbose kernel debug prints"
             exit 1
             ;;
     esac
 done
 
+# CMake flags
+CMAKE_EXTRA_FLAGS="-DANYOS_DEBUG_VERBOSE=$([ "$DEBUG_VERBOSE" -eq 1 ] && echo ON || echo OFF)"
+
 # Ensure build directory exists
 if [ ! -f "${BUILD_DIR}/build.ninja" ]; then
     echo "Configuring build..."
-    cmake -B "$BUILD_DIR" -G Ninja "$PROJECT_DIR"
+    cmake -B "$BUILD_DIR" -G Ninja $CMAKE_EXTRA_FLAGS "$PROJECT_DIR"
 fi
 
 # Force full rebuild if --clean
@@ -57,8 +65,11 @@ if [ "$CLEAN" -eq 1 ]; then
     "${SCRIPT_DIR}/clean.sh"
     # Re-configure CMake after clean (build.ninja was deleted)
     echo "Configuring build..."
-    cmake -B "$BUILD_DIR" -G Ninja "$PROJECT_DIR"
+    cmake -B "$BUILD_DIR" -G Ninja $CMAKE_EXTRA_FLAGS "$PROJECT_DIR"
 fi
+
+# Always re-run cmake to pick up flag changes (fast if nothing changed)
+cmake -B "$BUILD_DIR" -G Ninja $CMAKE_EXTRA_FLAGS "$PROJECT_DIR" > /dev/null 2>&1
 
 # Suppress Rust warnings and notes — only show errors
 export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Awarnings"
