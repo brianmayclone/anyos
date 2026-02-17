@@ -91,11 +91,44 @@ pub fn readdir(path: &str, buf: &mut [u8]) -> u32 {
     syscall3(SYS_READDIR, path_buf.as_ptr() as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
 }
 
-/// Get file status. Returns 0 on success. Writes [type:u32, size:u32] to buf.
-pub fn stat(path: &str, stat_buf: &mut [u32; 2]) -> u32 {
+/// Get file status (follows symlinks). Returns 0 on success.
+/// Writes [type:u32, size:u32, flags:u32] to buf.
+/// flags: bit 0 = is_symlink
+pub fn stat(path: &str, stat_buf: &mut [u32; 3]) -> u32 {
     let mut path_buf = [0u8; 257];
     prepare_path(path, &mut path_buf);
     syscall2(SYS_STAT, path_buf.as_ptr() as u64, stat_buf.as_mut_ptr() as u64)
+}
+
+/// Get file status WITHOUT following final symlink. Returns 0 on success.
+/// Writes [type:u32, size:u32, flags:u32] to buf.
+/// flags: bit 0 = is_symlink
+pub fn lstat(path: &str, stat_buf: &mut [u32; 3]) -> u32 {
+    let mut path_buf = [0u8; 257];
+    prepare_path(path, &mut path_buf);
+    syscall2(SYS_LSTAT, path_buf.as_ptr() as u64, stat_buf.as_mut_ptr() as u64)
+}
+
+/// Create a symbolic link. Returns 0 on success, u32::MAX on error.
+/// `target` is the path the symlink points to.
+/// `link_path` is where the symlink will be created.
+pub fn symlink(target: &str, link_path: &str) -> u32 {
+    let mut target_buf = [0u8; 257];
+    let tlen = target.len().min(256);
+    target_buf[..tlen].copy_from_slice(&target.as_bytes()[..tlen]);
+    target_buf[tlen] = 0;
+
+    let mut link_buf = [0u8; 257];
+    prepare_path(link_path, &mut link_buf);
+
+    syscall2(SYS_SYMLINK, target_buf.as_ptr() as u64, link_buf.as_ptr() as u64)
+}
+
+/// Read the target of a symbolic link. Returns bytes written, or u32::MAX on error.
+pub fn readlink(path: &str, buf: &mut [u8]) -> u32 {
+    let mut path_buf = [0u8; 257];
+    prepare_path(path, &mut path_buf);
+    syscall3(SYS_READLINK, path_buf.as_ptr() as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
 }
 
 /// Create a directory. Returns 0 on success, u32::MAX on error.

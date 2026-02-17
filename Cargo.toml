@@ -76,6 +76,8 @@ exclude = [
   "bin/uniq",
   "bin/rev",
   "bin/stat",
+  "bin/ln",
+  "bin/readlink",
   "bin/df",
   "bin/cal",
   "bin/seq",

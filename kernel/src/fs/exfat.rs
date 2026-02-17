@@ -24,6 +24,8 @@ const FLAG_CONTIGUOUS: u8 = 0x02;
 // File attributes
 const ATTR_DIRECTORY: u16 = 0x0010;
 const ATTR_ARCHIVE: u16 = 0x0020;
+/// Custom symlink attribute (bit 10, unused by exFAT spec).
+const ATTR_SYMLINK: u16 = 0x0400;
 
 /// Bit flag stored in the VFS `inode` field to indicate a contiguous file.
 /// Since exFAT volumes realistically have far fewer than 2^31 clusters,
@@ -199,6 +201,12 @@ impl ExFatFs {
     #[inline]
     fn sectors_per_cluster(&self) -> u32 {
         1u32 << self.sectors_per_cluster_shift
+    }
+
+    /// Get the root directory cluster.
+    #[inline]
+    pub fn root_cluster(&self) -> u32 {
+        self.root_cluster
     }
 
     #[inline]
@@ -606,10 +614,12 @@ impl ExFatFs {
                 FileType::Regular
             };
 
+            let is_symlink = attributes & ATTR_SYMLINK != 0;
             entries.push(DirEntry {
                 name: name_str,
                 file_type,
                 size: data_length as u32,
+                is_symlink,
             });
 
             i += total * 32;
@@ -670,6 +680,26 @@ impl ExFatFs {
         }
 
         Err(FsError::NotFound)
+    }
+
+    /// Look up a single name in a directory.
+    /// Returns `(encoded_inode, file_type, size, is_symlink)`.
+    pub fn lookup_in_dir(
+        &self,
+        dir_cluster: u32,
+        name: &str,
+    ) -> Result<(u32, FileType, u32, bool), FsError> {
+        let raw = self.read_dir_raw(dir_cluster)?;
+        match self.find_entry_in_buf(&raw, name) {
+            Some(found) => {
+                let is_symlink = found.attributes & ATTR_SYMLINK != 0;
+                let is_dir = found.attributes & ATTR_DIRECTORY != 0;
+                let ft = if is_dir { FileType::Directory } else { FileType::Regular };
+                let inode = encode_inode(found.first_cluster, found.contiguous);
+                Ok((inode, ft, found.data_length as u32, is_symlink))
+            }
+            None => Err(FsError::NotFound),
+        }
     }
 
     // =================================================================
@@ -1206,5 +1236,99 @@ impl ExFatFs {
             self.free_chain(found.first_cluster, found.contiguous, found.data_length)?;
         }
         self.update_entry(parent_cluster, name, 0, 0)
+    }
+
+    // =================================================================
+    // Public API — symlinks
+    // =================================================================
+
+    /// Create a symbolic link. The link's content is the target path stored as file data.
+    pub fn create_symlink(
+        &mut self,
+        parent_cluster: u32,
+        name: &str,
+        target: &str,
+    ) -> Result<(), FsError> {
+        let raw = self.read_dir_raw(parent_cluster)?;
+        if self.find_entry_in_buf(&raw, name).is_some() {
+            return Err(FsError::AlreadyExists);
+        }
+
+        // Allocate a cluster and write the target path into it.
+        let cluster = self.alloc_cluster()?;
+        let cs = self.cluster_size() as usize;
+        let target_bytes = target.as_bytes();
+        if target_bytes.len() > cs {
+            self.free_chain(cluster, true, 0)?;
+            return Err(FsError::IoError);
+        }
+        let mut cbuf = vec![0u8; cs];
+        cbuf[..target_bytes.len()].copy_from_slice(target_bytes);
+        self.write_cluster(cluster, &cbuf)?;
+
+        // Create a directory entry with ATTR_SYMLINK set.
+        self.create_entry_with_attr(
+            parent_cluster,
+            name,
+            ATTR_SYMLINK | ATTR_ARCHIVE,
+            cluster,
+            target_bytes.len() as u64,
+        )
+    }
+
+    /// Read the target of a symbolic link. `inode` is the encoded inode of the link.
+    pub fn readlink(&self, inode: u32, size: u32) -> Result<String, FsError> {
+        let mut buf = vec![0u8; size as usize];
+        let n = self.read_file(inode, 0, &mut buf)?;
+        let s = core::str::from_utf8(&buf[..n]).map_err(|_| FsError::IoError)?;
+        Ok(String::from(s))
+    }
+
+    /// Check if a given entry is a symlink by looking up its attributes.
+    pub fn is_symlink(&self, parent_cluster: u32, name: &str) -> bool {
+        if let Ok(raw) = self.read_dir_raw(parent_cluster) {
+            if let Some(found) = self.find_entry_in_buf(&raw, name) {
+                return found.attributes & ATTR_SYMLINK != 0;
+            }
+        }
+        false
+    }
+
+    /// Create a directory entry with explicit attributes.
+    fn create_entry_with_attr(
+        &mut self,
+        parent_cluster: u32,
+        name: &str,
+        attr: u16,
+        first_cluster: u32,
+        data_length: u64,
+    ) -> Result<(), FsError> {
+        let entry_set = Self::build_entry_set(name, attr, first_cluster, data_length, false);
+        let num = entry_set.len() / 32;
+        let cs = self.cluster_size() as usize;
+        let mut cur = parent_cluster;
+
+        loop {
+            let mut cbuf = vec![0u8; cs];
+            self.read_cluster(cur, &mut cbuf)?;
+
+            if let Some(off) = Self::find_free_entries(&cbuf, num) {
+                cbuf[off..off + entry_set.len()].copy_from_slice(&entry_set);
+                self.write_cluster(cur, &cbuf)?;
+                return Ok(());
+            }
+
+            match self.next_cluster(cur) {
+                Some(next) => cur = next,
+                None => {
+                    let new = self.alloc_cluster()?;
+                    self.write_fat_entry(cur, new)?;
+                    let mut new_buf = vec![0u8; cs];
+                    new_buf[..entry_set.len()].copy_from_slice(&entry_set);
+                    self.write_cluster(new, &new_buf)?;
+                    return Ok(());
+                }
+            }
+        }
     }
 }

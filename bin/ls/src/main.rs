@@ -8,6 +8,7 @@ struct Entry {
     name_len: usize,
     size: u32,
     entry_type: u8,
+    is_symlink: bool,
 }
 
 fn format_size_human(buf: &mut [u8], size: u32) -> usize {
@@ -111,6 +112,8 @@ fn main() {
         let raw_entry = &buf[i * 64..(i + 1) * 64];
         let entry_type = raw_entry[0];
         let name_len = raw_entry[1] as usize;
+        let flags = raw_entry[2];
+        let is_symlink = flags & 1 != 0;
         let size = u32::from_le_bytes([raw_entry[4], raw_entry[5], raw_entry[6], raw_entry[7]]);
         let mut name = [0u8; 56];
         let nlen = name_len.min(56);
@@ -120,7 +123,7 @@ fn main() {
             continue;
         }
 
-        entries.push(Entry { name, name_len: nlen, size, entry_type });
+        entries.push(Entry { name, name_len: nlen, size, entry_type, is_symlink });
     }
 
     // Sort
@@ -138,15 +141,49 @@ fn main() {
     // Print
     if long {
         for e in &entries {
-            let type_char = match e.entry_type { 1 => 'd', 2 => 'c', _ => '-' };
+            let type_char = if e.is_symlink { 'l' } else { match e.entry_type { 1 => 'd', 2 => 'c', _ => '-' } };
             let name_str = core::str::from_utf8(&e.name[..e.name_len]).unwrap_or("???");
+
+            // For symlinks, try to read target
+            let mut link_target = [0u8; 256];
+            let mut link_len = 0usize;
+            if e.is_symlink {
+                // Build full path for readlink
+                let mut full = [0u8; 512];
+                let mut full_len = 0usize;
+                let path_bytes = path.as_bytes();
+                for &b in path_bytes {
+                    if full_len < 511 { full[full_len] = b; full_len += 1; }
+                }
+                if full_len > 0 && full[full_len - 1] != b'/' {
+                    if full_len < 511 { full[full_len] = b'/'; full_len += 1; }
+                }
+                for j in 0..e.name_len {
+                    if full_len < 511 { full[full_len] = e.name[j]; full_len += 1; }
+                }
+                full[full_len] = 0;
+                let full_str = core::str::from_utf8(&full[..full_len]).unwrap_or("");
+                let n = anyos_std::fs::readlink(full_str, &mut link_target);
+                if n != u32::MAX { link_len = n as usize; }
+            }
+
             if human {
                 let mut sbuf = [0u8; 16];
                 let slen = format_size_human(&mut sbuf, e.size);
                 let size_str = core::str::from_utf8(&sbuf[..slen]).unwrap_or("?");
-                anyos_std::println!("{}  {:>6}  {}", type_char, size_str, name_str);
+                if link_len > 0 {
+                    let tgt = core::str::from_utf8(&link_target[..link_len]).unwrap_or("?");
+                    anyos_std::println!("{}  {:>6}  {} -> {}", type_char, size_str, name_str, tgt);
+                } else {
+                    anyos_std::println!("{}  {:>6}  {}", type_char, size_str, name_str);
+                }
             } else {
-                anyos_std::println!("{}  {:>8}  {}", type_char, e.size, name_str);
+                if link_len > 0 {
+                    let tgt = core::str::from_utf8(&link_target[..link_len]).unwrap_or("?");
+                    anyos_std::println!("{}  {:>8}  {} -> {}", type_char, e.size, name_str, tgt);
+                } else {
+                    anyos_std::println!("{}  {:>8}  {}", type_char, e.size, name_str);
+                }
             }
         }
     } else if one_per_line {

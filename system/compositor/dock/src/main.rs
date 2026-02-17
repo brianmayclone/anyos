@@ -310,7 +310,7 @@ fn load_ico_icon(path: &str) -> Option<Icon> {
 fn load_dock_config() -> Vec<DockItem> {
     let mut items = Vec::new();
 
-    let mut stat_buf = [0u32; 2];
+    let mut stat_buf = [0u32; 3];
     if fs::stat(CONFIG_PATH, &mut stat_buf) != 0 {
         return items;
     }
@@ -683,7 +683,7 @@ fn main() {
                         // Try /Applications/{Name}.app first, then /bin/{name}
                         let bin_path = {
                             let app_path = alloc::format!("/Applications/{}.app", name);
-                            let mut stat_buf = [0u32; 2];
+                            let mut stat_buf = [0u32; 3];
                             if anyos_std::fs::stat(&app_path, &mut stat_buf) == 0 && stat_buf[0] == 1 {
                                 app_path
                             } else {

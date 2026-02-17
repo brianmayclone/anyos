@@ -26,7 +26,7 @@ fn main() {
     }
 
     // Stat the target to see what it is
-    let mut stat_buf = [0u32; 2];
+    let mut stat_buf = [0u32; 3];
     let ret = fs::stat(path, &mut stat_buf);
     if ret != 0 {
         // Maybe it's a bare app name? Try /Applications/<name>.app

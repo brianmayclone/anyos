@@ -17,6 +17,9 @@ const MAX_OPEN_FILES: usize = 256;
 /// Partition start sector (must match mkimage.py --fs-start).
 const PARTITION_LBA: u32 = 8192;
 
+/// Maximum depth for symlink resolution (prevents infinite loops).
+const MAX_SYMLINK_DEPTH: u32 = 20;
+
 static VFS: Mutex<Option<VfsState>> = Mutex::new(None);
 
 struct VfsState {
@@ -173,6 +176,137 @@ fn find_mnt_mount<'a>(path: &'a str, mount_points: &[MountPoint]) -> Option<(&'a
     } else {
         None
     }
+}
+
+/// Normalize a path by resolving `.` and `..` components.
+fn normalize_path(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => { parts.pop(); }
+            _ => parts.push(part),
+        }
+    }
+    if parts.is_empty() {
+        String::from("/")
+    } else {
+        let mut result = String::new();
+        for p in &parts {
+            result.push('/');
+            result.push_str(p);
+        }
+        result
+    }
+}
+
+/// Result of resolving an exFAT path with symlink handling.
+struct ResolvedEntry {
+    inode: u32,
+    file_type: FileType,
+    size: u32,
+    is_symlink: bool,
+}
+
+/// Resolve a path on exFAT, following symlinks at intermediate components.
+/// If `follow_last` is true, also follow a symlink at the final component.
+fn resolve_exfat_path(
+    exfat: &ExFatFs,
+    path: &str,
+    follow_last: bool,
+) -> Result<ResolvedEntry, FsError> {
+    resolve_exfat_inner(exfat, path, follow_last, 0)
+}
+
+fn resolve_exfat_inner(
+    exfat: &ExFatFs,
+    path: &str,
+    follow_last: bool,
+    depth: u32,
+) -> Result<ResolvedEntry, FsError> {
+    if depth > MAX_SYMLINK_DEPTH {
+        return Err(FsError::IoError); // symlink loop
+    }
+
+    let path = path.trim_start_matches('/');
+    if path.is_empty() {
+        return Ok(ResolvedEntry {
+            inode: exfat.root_cluster(),
+            file_type: FileType::Directory,
+            size: 0,
+            is_symlink: false,
+        });
+    }
+
+    let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let mut current_cluster = exfat.root_cluster();
+
+    for (idx, component) in components.iter().enumerate() {
+        let is_last = idx == components.len() - 1;
+        let (inode, file_type, size, is_symlink) =
+            exfat.lookup_in_dir(current_cluster, component)?;
+
+        if is_symlink && (!is_last || follow_last) {
+            // Read symlink target path
+            let target = exfat.readlink(inode, size)?;
+
+            // Build remaining path after this component
+            let remaining: String = if is_last {
+                String::new()
+            } else {
+                let rest: Vec<&str> = components[idx + 1..].iter().copied().collect();
+                rest.join("/")
+            };
+
+            let resolved = if target.starts_with('/') {
+                // Absolute symlink target
+                if remaining.is_empty() {
+                    target
+                } else {
+                    let mut s = String::from(target.trim_end_matches('/'));
+                    s.push('/');
+                    s.push_str(&remaining);
+                    s
+                }
+            } else {
+                // Relative symlink target — relative to parent of the symlink
+                let mut parent = String::from("/");
+                for &p in &components[..idx] {
+                    parent.push_str(p);
+                    parent.push('/');
+                }
+                let mut base = String::from(parent.trim_end_matches('/'));
+                base.push('/');
+                base.push_str(&target);
+                if !remaining.is_empty() {
+                    base.push('/');
+                    base.push_str(&remaining);
+                }
+                base
+            };
+
+            let normalized = normalize_path(&resolved);
+            return resolve_exfat_inner(exfat, &normalized, follow_last, depth + 1);
+        }
+
+        if is_last {
+            return Ok(ResolvedEntry {
+                inode,
+                file_type,
+                size,
+                is_symlink,
+            });
+        }
+
+        if file_type != FileType::Directory {
+            return Err(FsError::NotADirectory);
+        }
+
+        let (cluster, _) = crate::fs::exfat::decode_inode(inode);
+        current_cluster = cluster;
+    }
+
+    Err(FsError::NotFound)
 }
 
 /// Initialize the VFS, reserving file descriptors 0-2 for stdin/stdout/stderr.
@@ -351,33 +485,38 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
         return Err(FsError::NotFound);
     }
 
-    // --- exFAT path (primary OS filesystem) ---
+    // --- exFAT path (primary OS filesystem, with symlink resolution) ---
     if let Some(ref mut exfat) = state.exfat_fs {
-        let lookup_result = exfat.lookup(path);
+        // Resolve symlinks in the path before opening
+        let lookup_result = resolve_exfat_path(exfat, path, true);
 
         let (inode, file_type, size, parent_cluster) = match lookup_result {
-            Ok((inode, file_type, size)) => {
+            Ok(r) => {
                 if flags.truncate && flags.write {
                     let (parent_path, filename) = split_parent_name(path)?;
-                    let (pc, _, _) = exfat.lookup(parent_path)?;
+                    let pr = resolve_exfat_path(exfat, parent_path, true)?;
+                    let (pc, _) = crate::fs::exfat::decode_inode(pr.inode);
                     exfat.truncate_file(pc, filename)?;
-                    (0u32, file_type, 0u32, pc)
+                    (0u32, r.file_type, 0u32, pc)
                 } else {
                     let parent_cluster = if flags.write {
                         let (parent_path, _) = split_parent_name(path)?;
-                        exfat.lookup(parent_path).map(|(c, _, _)| c).unwrap_or(0)
+                        resolve_exfat_path(exfat, parent_path, true)
+                            .map(|pr| crate::fs::exfat::decode_inode(pr.inode).0)
+                            .unwrap_or(0)
                     } else {
                         0
                     };
-                    (inode, file_type, size, parent_cluster)
+                    (r.inode, r.file_type, r.size, parent_cluster)
                 }
             }
             Err(FsError::NotFound) if flags.create => {
                 let (parent_path, filename) = split_parent_name(path)?;
-                let (pc, pt, _) = exfat.lookup(parent_path)?;
-                if pt != FileType::Directory {
+                let pr = resolve_exfat_path(exfat, parent_path, true)?;
+                if pr.file_type != FileType::Directory {
                     return Err(FsError::NotADirectory);
                 }
+                let pc = crate::fs::exfat::decode_inode(pr.inode).0;
                 exfat.create_file(pc, filename)?;
                 (0u32, FileType::Regular, 0u32, pc)
             }
@@ -665,14 +804,36 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
         return Err(FsError::NotFound);
     }
 
-    // --- exFAT path (primary) ---
+    // --- exFAT path (primary, with symlink resolution) ---
     if let Some(ref exfat) = state.exfat_fs {
-        let (inode, file_type, _size) = exfat.lookup(path)?;
-        if file_type != FileType::Directory {
+        let r = resolve_exfat_path(exfat, path, true)?;
+        if r.file_type != FileType::Directory {
             return Err(FsError::NotADirectory);
         }
-        let (cluster, _) = crate::fs::exfat::decode_inode(inode);
+        let (cluster, _) = crate::fs::exfat::decode_inode(r.inode);
         let mut entries = exfat.read_dir(cluster)?;
+
+        // Resolve symlink target types so file_type is transparent
+        let dir_path = if path.ends_with('/') || path == "/" {
+            String::from(path)
+        } else {
+            let mut s = String::from(path);
+            s.push('/');
+            s
+        };
+        for entry in entries.iter_mut() {
+            if entry.is_symlink {
+                // Try to resolve target to get the real file type
+                let mut entry_path = dir_path.clone();
+                entry_path.push_str(&entry.name);
+                if let Ok(resolved) = resolve_exfat_path(exfat, &entry_path, true) {
+                    entry.file_type = resolved.file_type;
+                    entry.size = resolved.size;
+                }
+                // If resolution fails (broken symlink), keep original type
+            }
+        }
+
         if path == "/" {
             add_virtual_root_entries(state, &mut entries);
         }
@@ -767,11 +928,11 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
         let vfs = VFS.lock();
         let state = vfs.as_ref().ok_or(FsError::IoError)?;
         if let Some(ref exfat) = state.exfat_fs {
-            let (inode, file_type, size) = exfat.lookup(path)?;
-            if file_type == FileType::Directory {
+            let r = resolve_exfat_path(exfat, path, true)?;
+            if r.file_type == FileType::Directory {
                 return Err(FsError::IsADirectory);
             }
-            ReadPlan::ExFat(exfat.get_file_read_plan(inode, size))
+            ReadPlan::ExFat(exfat.get_file_read_plan(r.inode, r.size))
         } else if let Some(ref fat) = state.fat_fs {
             let (cluster, file_type, size) = fat.lookup(path)?;
             if file_type == FileType::Directory {
@@ -792,7 +953,8 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
     }
 }
 
-/// Delete a file or empty directory at the given path.
+/// Delete a file, directory, or symlink at the given path.
+/// Symlinks are deleted without following (only the link is removed).
 pub fn delete(path: &str) -> Result<(), FsError> {
     if is_dev_path(path) { return Err(FsError::PermissionDenied); }
     let mut vfs = VFS.lock();
@@ -800,8 +962,9 @@ pub fn delete(path: &str) -> Result<(), FsError> {
 
     let (parent_path, filename) = split_parent_name(path)?;
     if let Some(ref mut exfat) = state.exfat_fs {
-        let (inode, _, _) = exfat.lookup(parent_path)?;
-        let (pc, _) = crate::fs::exfat::decode_inode(inode);
+        // Resolve parent with symlink following, but the filename itself is not followed
+        let pr = resolve_exfat_path(exfat, parent_path, true)?;
+        let (pc, _) = crate::fs::exfat::decode_inode(pr.inode);
         return exfat.delete_file(pc, filename);
     }
     let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
@@ -817,11 +980,11 @@ pub fn mkdir(path: &str) -> Result<(), FsError> {
 
     let (parent_path, dirname) = split_parent_name(path)?;
     if let Some(ref mut exfat) = state.exfat_fs {
-        let (inode, pt, _) = exfat.lookup(parent_path)?;
-        if pt != FileType::Directory {
+        let pr = resolve_exfat_path(exfat, parent_path, true)?;
+        if pr.file_type != FileType::Directory {
             return Err(FsError::NotADirectory);
         }
-        let (pc, _) = crate::fs::exfat::decode_inode(inode);
+        let (pc, _) = crate::fs::exfat::decode_inode(pr.inode);
         exfat.create_dir(pc, dirname)?;
         return Ok(());
     }
@@ -878,9 +1041,19 @@ pub fn lseek(fd: FileDescriptor, offset: i32, whence: u32) -> Result<u32, FsErro
     Ok(new_pos)
 }
 
-/// Get file type and size by path, without reading the file content.
-/// Returns (file_type, size).
-pub fn stat(path: &str) -> Result<(FileType, u32), FsError> {
+/// Get file type and size by path, following symlinks.
+/// Returns (file_type, size, is_symlink).
+pub fn stat(path: &str) -> Result<(FileType, u32, bool), FsError> {
+    stat_inner(path, true)
+}
+
+/// Get file type and size by path WITHOUT following the final symlink.
+/// Returns (file_type, size, is_symlink).
+pub fn lstat(path: &str) -> Result<(FileType, u32, bool), FsError> {
+    stat_inner(path, false)
+}
+
+fn stat_inner(path: &str, follow_last: bool) -> Result<(FileType, u32, bool), FsError> {
     let vfs = VFS.lock();
     let state = vfs.as_ref().ok_or(FsError::IoError)?;
 
@@ -888,32 +1061,37 @@ pub fn stat(path: &str) -> Result<(FileType, u32), FsError> {
     if is_dev_path(path) {
         let name = dev_name(path);
         if name.is_empty() {
-            return Ok((FileType::Directory, 0));
+            return Ok((FileType::Directory, 0, false));
         }
         let devfs = state.devfs.as_ref().ok_or(FsError::NotFound)?;
         if devfs.lookup(name).is_some() {
-            return Ok((FileType::Device, 0));
+            return Ok((FileType::Device, 0, false));
         }
         return Err(FsError::NotFound);
     }
+
+    // Virtual directory paths
+    if path == "/" { return Ok((FileType::Directory, 0, false)); }
+    if path == "/mnt" || path == "/mnt/" { return Ok((FileType::Directory, 0, false)); }
+    if path == "/dev" || path == "/dev/" { return Ok((FileType::Directory, 0, false)); }
 
     // --- Mount point path ---
     if let Some((_mount_path, relative_path)) = find_mnt_mount(path, &state.mount_points) {
         if let Some(ref iso) = state.iso9660_fs {
             let (_inode, file_type, size) = iso.lookup(relative_path)?;
-            return Ok((file_type, size));
+            return Ok((file_type, size, false));
         }
         return Err(FsError::NotFound);
     }
 
-    // --- exFAT / FAT path ---
+    // --- exFAT path (with symlink resolution) ---
     if let Some(ref exfat) = state.exfat_fs {
-        let (_inode, file_type, size) = exfat.lookup(path)?;
-        return Ok((file_type, size));
+        let r = resolve_exfat_path(exfat, path, follow_last)?;
+        return Ok((r.file_type, r.size, r.is_symlink));
     }
     if let Some(ref fat) = state.fat_fs {
         let (_inode, file_type, size) = fat.lookup(path)?;
-        return Ok((file_type, size));
+        return Ok((file_type, size, false));
     }
 
     Err(FsError::NotFound)
@@ -940,8 +1118,8 @@ pub fn truncate(path: &str) -> Result<(), FsError> {
 
     let (parent_path, filename) = split_parent_name(path)?;
     if let Some(ref mut exfat) = state.exfat_fs {
-        let (inode, _, _) = exfat.lookup(parent_path)?;
-        let (pc, _) = crate::fs::exfat::decode_inode(inode);
+        let pr = resolve_exfat_path(exfat, parent_path, true)?;
+        let (pc, _) = crate::fs::exfat::decode_inode(pr.inode);
         return exfat.truncate_file(pc, filename);
     }
     let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
@@ -1024,6 +1202,44 @@ pub fn umount_fs(mount_path: &str) -> Result<(), FsError> {
     } else {
         Err(FsError::NotFound)
     }
+}
+
+/// Create a symbolic link at `link_path` pointing to `target`.
+/// Only supported on exFAT filesystems.
+pub fn create_symlink(link_path: &str, target: &str) -> Result<(), FsError> {
+    if is_dev_path(link_path) { return Err(FsError::PermissionDenied); }
+    let mut vfs = VFS.lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
+
+    let (parent_path, link_name) = split_parent_name(link_path)?;
+    if let Some(ref mut exfat) = state.exfat_fs {
+        let pr = resolve_exfat_path(exfat, parent_path, true)?;
+        if pr.file_type != FileType::Directory {
+            return Err(FsError::NotADirectory);
+        }
+        let (pc, _) = crate::fs::exfat::decode_inode(pr.inode);
+        return exfat.create_symlink(pc, link_name, target);
+    }
+    // FAT16 does not support symlinks
+    Err(FsError::PermissionDenied)
+}
+
+/// Read the target of a symbolic link WITHOUT following it.
+/// Returns the target path string.
+pub fn readlink(path: &str) -> Result<String, FsError> {
+    if is_dev_path(path) { return Err(FsError::InvalidPath); }
+    let vfs = VFS.lock();
+    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+
+    if let Some(ref exfat) = state.exfat_fs {
+        // Resolve all path components EXCEPT the final one
+        let r = resolve_exfat_path(exfat, path, false)?;
+        if !r.is_symlink {
+            return Err(FsError::InvalidPath); // Not a symlink
+        }
+        return exfat.readlink(r.inode, r.size);
+    }
+    Err(FsError::PermissionDenied)
 }
 
 /// List all current mount points. Returns Vec of (mount_path, fs_type_name, device_id).

@@ -87,6 +87,11 @@ pub const SYS_MOUNT: u32 = 93;
 pub const SYS_UMOUNT: u32 = 94;
 pub const SYS_LIST_MOUNTS: u32 = 95;
 
+// Symlinks
+pub const SYS_SYMLINK: u32 = 96;
+pub const SYS_READLINK: u32 = 97;
+pub const SYS_LSTAT: u32 = 98;
+
 // Filesystem (POSIX-like)
 pub const SYS_LSEEK: u32 = 105;
 pub const SYS_FSTAT: u32 = 106;
@@ -268,6 +273,9 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_MKDIR => handlers::sys_mkdir(arg1),
         SYS_UNLINK => handlers::sys_unlink(arg1),
         SYS_TRUNCATE => handlers::sys_truncate(arg1),
+        SYS_SYMLINK => handlers::sys_symlink(arg1, arg2),
+        SYS_READLINK => handlers::sys_readlink(arg1, arg2, arg3),
+        SYS_LSTAT => handlers::sys_lstat(arg1, arg2),
         SYS_MOUNT => handlers::sys_mount(arg1, arg2, arg3),
         SYS_UMOUNT => handlers::sys_umount(arg1),
         SYS_LIST_MOUNTS => handlers::sys_list_mounts(arg1, arg2),

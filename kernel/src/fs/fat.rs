@@ -959,6 +959,7 @@ impl FatFs {
                 name,
                 file_type,
                 size: file_size,
+                is_symlink: false,
             });
 
             i += 32;

@@ -54,6 +54,9 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_KBD_GET_LAYOUT, "kbd_get_layout"),
     (SYS_KBD_SET_LAYOUT, "kbd_set_layout"),
     (SYS_KBD_LIST_LAYOUTS, "kbd_list_layouts"),
+    (SYS_SYMLINK, "symlink"),
+    (SYS_READLINK, "readlink"),
+    (SYS_LSTAT, "lstat"),
 ];
 
 /// Look up the human-readable name for a syscall number.

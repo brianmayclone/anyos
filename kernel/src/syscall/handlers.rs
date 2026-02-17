@@ -372,7 +372,8 @@ pub fn sys_getargs(buf_ptr: u32, buf_size: u32) -> u32 {
 
 /// sys_readdir - Read directory entries.
 /// arg1=path_ptr (null-terminated), arg2=buf_ptr, arg3=buf_size
-/// Each entry: [type:u8, name_len:u8, pad:u16, size:u32, name:56bytes] = 64 bytes
+/// Each entry: [type:u8, name_len:u8, flags:u8, pad:u8, size:u32, name:56bytes] = 64 bytes
+/// flags: bit 0 = is_symlink
 /// Returns number of entries, or u32::MAX on error.
 pub fn sys_readdir(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
     let path = resolve_path(unsafe { read_user_str(path_ptr) });
@@ -397,7 +398,7 @@ pub fn sys_readdir(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
                     let name_bytes = entry.name.as_bytes();
                     let name_len = name_bytes.len().min(55);
                     buf[off + 1] = name_len as u8;
-                    buf[off + 2] = 0;
+                    buf[off + 2] = if entry.is_symlink { 1 } else { 0 }; // flags: bit 0 = symlink
                     buf[off + 3] = 0;
                     let size = entry.size as u32;
                     buf[off + 4..off + 8].copy_from_slice(&size.to_le_bytes());
@@ -411,29 +412,103 @@ pub fn sys_readdir(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
     }
 }
 
-/// sys_stat - Get file information.
-/// arg1=path_ptr (null-terminated), arg2=stat_buf_ptr: output [type:u32, size:u32] = 8 bytes
+/// sys_stat - Get file information (follows symlinks).
+/// arg1=path_ptr (null-terminated), arg2=stat_buf_ptr: output [type:u32, size:u32, flags:u32] = 12 bytes
+/// flags: bit 0 = is_symlink
 /// Returns 0 on success, u32::MAX on error.
 pub fn sys_stat(path_ptr: u32, buf_ptr: u32) -> u32 {
     let raw_path = unsafe { read_user_str(path_ptr) };
     let path = resolve_path(raw_path);
 
-    // Use vfs::stat() which does a directory-entry lookup (no file I/O)
     match crate::fs::vfs::stat(&path) {
-        Ok((file_type, size)) => {
+        Ok((file_type, size, is_symlink)) => {
             if buf_ptr != 0 {
                 let type_val: u32 = match file_type {
                     crate::fs::file::FileType::Directory => 1,
                     crate::fs::file::FileType::Device => 2,
                     _ => 0, // Regular
                 };
+                let flags: u32 = if is_symlink { 1 } else { 0 };
                 unsafe {
                     let buf = buf_ptr as *mut u32;
                     *buf = type_val;
                     *buf.add(1) = size;
+                    *buf.add(2) = flags;
                 }
             }
             0
+        }
+        Err(_) => u32::MAX,
+    }
+}
+
+/// sys_lstat - Get file information WITHOUT following final symlink.
+/// Same format as sys_stat: [type:u32, size:u32, flags:u32] = 12 bytes
+/// Returns 0 on success, u32::MAX on error.
+pub fn sys_lstat(path_ptr: u32, buf_ptr: u32) -> u32 {
+    let raw_path = unsafe { read_user_str(path_ptr) };
+    let path = resolve_path(raw_path);
+
+    match crate::fs::vfs::lstat(&path) {
+        Ok((file_type, size, is_symlink)) => {
+            if buf_ptr != 0 {
+                let type_val: u32 = match file_type {
+                    crate::fs::file::FileType::Directory => 1,
+                    crate::fs::file::FileType::Device => 2,
+                    _ => 0, // Regular
+                };
+                let flags: u32 = if is_symlink { 1 } else { 0 };
+                unsafe {
+                    let buf = buf_ptr as *mut u32;
+                    *buf = type_val;
+                    *buf.add(1) = size;
+                    *buf.add(2) = flags;
+                }
+            }
+            0
+        }
+        Err(_) => u32::MAX,
+    }
+}
+
+/// sys_symlink - Create a symbolic link.
+/// arg1=target_ptr (null-terminated), arg2=link_path_ptr (null-terminated)
+/// Returns 0 on success, u32::MAX on error.
+pub fn sys_symlink(target_ptr: u32, link_path_ptr: u32) -> u32 {
+    let target = unsafe { read_user_str(target_ptr) };
+    let raw_link = unsafe { read_user_str(link_path_ptr) };
+    let link_path = resolve_path(raw_link);
+
+    match crate::fs::vfs::create_symlink(&link_path, target) {
+        Ok(()) => 0,
+        Err(_) => u32::MAX,
+    }
+}
+
+/// sys_readlink - Read the target of a symbolic link.
+/// arg1=path_ptr (null-terminated), arg2=buf_ptr, arg3=buf_size
+/// Returns number of bytes written, or u32::MAX on error.
+pub fn sys_readlink(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
+    let raw_path = unsafe { read_user_str(path_ptr) };
+    let path = resolve_path(raw_path);
+
+    match crate::fs::vfs::readlink(&path) {
+        Ok(target) => {
+            let target_bytes = target.as_bytes();
+            let to_copy = target_bytes.len().min(buf_size as usize);
+            if buf_ptr != 0 && to_copy > 0
+                && is_valid_user_ptr(buf_ptr as u64, buf_size as u64)
+            {
+                let buf = unsafe {
+                    core::slice::from_raw_parts_mut(buf_ptr as *mut u8, to_copy)
+                };
+                buf[..to_copy].copy_from_slice(&target_bytes[..to_copy]);
+                // Null-terminate if space
+                if to_copy < buf_size as usize {
+                    unsafe { *((buf_ptr as *mut u8).add(to_copy)) = 0; }
+                }
+            }
+            to_copy as u32
         }
         Err(_) => u32::MAX,
     }

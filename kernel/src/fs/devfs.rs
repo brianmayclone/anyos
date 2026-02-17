@@ -91,6 +91,7 @@ impl DevFs {
                 name: d.name.clone(),
                 file_type: FileType::Device,
                 size: 0,
+                is_symlink: false,
             })
             .collect()
     }
