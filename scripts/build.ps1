@@ -1,0 +1,102 @@
+# Copyright (c) 2024-2026 Christian Moeller
+# Email: c.moeller.ffo@gmail.com, brianmayclone@googlemail.com
+#
+# This project is open source and community-driven.
+# Contributions are welcome! See README.md for details.
+#
+# SPDX-License-Identifier: MIT
+
+# Build anyOS on Windows
+# Usage: .\scripts\build.ps1 [-Clean] [-Uefi] [-Iso] [-All] [-Debug]
+
+param(
+    [switch]$Clean,
+    [switch]$Uefi,
+    [switch]$Iso,
+    [switch]$All,
+    [switch]$Debug
+)
+
+$ErrorActionPreference = "Stop"
+
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ProjectDir = Split-Path -Parent $ScriptDir
+$BuildDir = Join-Path $ProjectDir "build"
+
+# Ensure cargo is in PATH
+$cargoDir = Join-Path $env:USERPROFILE ".cargo\bin"
+if (Test-Path $cargoDir) {
+    if ($env:Path -notlike "*$cargoDir*") {
+        $env:Path = "$cargoDir;$env:Path"
+    }
+}
+
+# CMake flags
+$debugFlag = if ($Debug) { "ON" } else { "OFF" }
+$cmakeExtra = "-DANYOS_DEBUG_VERBOSE=$debugFlag"
+
+# Ensure build directory exists and is configured
+if (-not (Test-Path (Join-Path $BuildDir "build.ninja"))) {
+    Write-Host "Configuring build..."
+    & cmake -B $BuildDir -G Ninja $cmakeExtra $ProjectDir
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "CMake configuration failed!" -ForegroundColor Red
+        exit $LASTEXITCODE
+    }
+}
+
+# Force full rebuild if -Clean
+if ($Clean) {
+    Write-Host "Cleaning build..."
+    & (Join-Path $ScriptDir "clean.ps1")
+    # Re-configure CMake after clean
+    Write-Host "Configuring build..."
+    & cmake -B $BuildDir -G Ninja $cmakeExtra $ProjectDir
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "CMake configuration failed!" -ForegroundColor Red
+        exit $LASTEXITCODE
+    }
+}
+
+# Always re-run cmake to pick up flag changes (fast if nothing changed)
+& cmake -B $BuildDir -G Ninja $cmakeExtra $ProjectDir 2>$null | Out-Null
+
+# Suppress Rust warnings — only show errors
+if ($env:RUSTFLAGS) {
+    $env:RUSTFLAGS = "$($env:RUSTFLAGS) -Awarnings"
+} else {
+    $env:RUSTFLAGS = "-Awarnings"
+}
+
+# Build BIOS image (default target)
+Write-Host "Building anyOS (BIOS)..." -ForegroundColor Cyan
+& ninja -C $BuildDir
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "BIOS build failed!" -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+Write-Host "BIOS build successful." -ForegroundColor Green
+
+# Build UEFI image if requested
+if ($Uefi -or $All) {
+    Write-Host "Building anyOS (UEFI)..." -ForegroundColor Cyan
+    & ninja -C $BuildDir uefi-image
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "UEFI build failed!" -ForegroundColor Red
+        exit $LASTEXITCODE
+    }
+    Write-Host "UEFI build successful." -ForegroundColor Green
+}
+
+# Build ISO image if requested
+if ($Iso -or $All) {
+    Write-Host "Building anyOS (ISO 9660, El Torito)..." -ForegroundColor Cyan
+    & ninja -C $BuildDir iso
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ISO build failed!" -ForegroundColor Red
+        exit $LASTEXITCODE
+    }
+    Write-Host "ISO build successful: $BuildDir\anyos.iso" -ForegroundColor Green
+}
+
+Write-Host "Build complete." -ForegroundColor Green
