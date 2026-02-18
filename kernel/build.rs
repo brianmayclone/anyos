@@ -1,7 +1,7 @@
 fn main() {
     println!("cargo:rerun-if-env-changed=ANYOS_ASM_OBJECTS");
     if let Ok(objects) = std::env::var("ANYOS_ASM_OBJECTS") {
-        for obj in objects.split(';') {
+        for obj in objects.split(',') {
             let obj = obj.trim();
             if !obj.is_empty() {
                 println!("cargo:rustc-link-arg={}", obj);

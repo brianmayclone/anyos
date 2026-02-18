@@ -7,14 +7,15 @@
 # SPDX-License-Identifier: MIT
 
 # Build anyOS on Windows
-# Usage: .\scripts\build.ps1 [-Clean] [-Uefi] [-Iso] [-All] [-Debug]
+# Usage: .\scripts\build.ps1 [-Clean] [-Uefi] [-Iso] [-All] [-Debug] [-NoCross]
 
 param(
     [switch]$Clean,
     [switch]$Uefi,
     [switch]$Iso,
     [switch]$All,
-    [switch]$Debug
+    [switch]$Debug,
+    [switch]$NoCross
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,8 +34,9 @@ if (Test-Path $cargoDir) {
 }
 
 # CMake flags
-$debugFlag = if ($Debug) { "ON" } else { "OFF" }
-$cmakeExtra = "-DANYOS_DEBUG_VERBOSE=$debugFlag"
+$debugFlag   = if ($Debug)   { "ON" } else { "OFF" }
+$noCrossFlag = if ($NoCross) { "ON" } else { "OFF" }
+$cmakeExtra  = "-DANYOS_DEBUG_VERBOSE=$debugFlag", "-DANYOS_NO_CROSS=$noCrossFlag"
 
 # Ensure build directory exists and is configured
 if (-not (Test-Path (Join-Path $BuildDir "build.ninja"))) {

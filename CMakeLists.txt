@@ -27,15 +27,21 @@ if(NOT PYTHON_EXECUTABLE)
 endif()
 
 option(ANYOS_DEBUG_VERBOSE "Enable verbose debug output" OFF)
+option(ANYOS_NO_CROSS "Disable cross-compilation (skip libc, TCC, games, curl)" OFF)
 
 # Auto-detect i686-elf cross-compiler (needed for libc, TCC, Doom, Quake)
-find_program(I686_ELF_GCC NAMES i686-elf-gcc i386-elf-gcc)
-if(I686_ELF_GCC)
-  set(HAS_CROSS_COMPILER TRUE)
-  message(STATUS "Found cross-compiler: ${I686_ELF_GCC}")
-else()
+if(ANYOS_NO_CROSS)
   set(HAS_CROSS_COMPILER FALSE)
-  message(STATUS "i686-elf-gcc not found — skipping C library, TCC, and games (Rust-only build)")
+  message(STATUS "Cross-compilation disabled (ANYOS_NO_CROSS=ON) — skipping C library, TCC, and games")
+else()
+  find_program(I686_ELF_GCC NAMES i686-elf-gcc i386-elf-gcc)
+  if(I686_ELF_GCC)
+    set(HAS_CROSS_COMPILER TRUE)
+    message(STATUS "Found cross-compiler: ${I686_ELF_GCC}")
+  else()
+    set(HAS_CROSS_COMPILER FALSE)
+    message(STATUS "i686-elf-gcc not found — skipping C library, TCC, and games (Rust-only build)")
+  endif()
 endif()
 
 set(DISK_IMAGE "${CMAKE_BINARY_DIR}/anyos.img")
@@ -101,8 +107,8 @@ foreach(ASM_SRC ${KERNEL_ASM_SOURCES})
   list(APPEND KERNEL_ASM_OBJECTS ${ASM_OBJ})
 endforeach()
 
-# Build semicolon-separated list for passing to Cargo
-string(REPLACE ";" "\\;" KERNEL_ASM_OBJECTS_STR "${KERNEL_ASM_OBJECTS}")
+# Build comma-separated list for passing to Cargo (avoid CMake ';' and CMD '|' pipe)
+string(REPLACE ";" "," KERNEL_ASM_OBJECTS_STR "${KERNEL_ASM_OBJECTS}")
 
 # AP trampoline — assembled as flat binary (not ELF), included via include_bytes!
 set(AP_TRAMPOLINE_BIN ${CMAKE_BINARY_DIR}/ap_trampoline.bin)
@@ -630,10 +636,13 @@ set(LIBC_DIR "${CMAKE_SOURCE_DIR}/libs/libc")
 set(LIBC_A "${LIBC_DIR}/libc.a")
 set(LIBC_CRT0 "${LIBC_DIR}/obj/crt0.o")
 
+get_filename_component(CROSS_BIN_DIR "${I686_ELF_GCC}" DIRECTORY)
+set(I686_ELF_AR  "${CROSS_BIN_DIR}/i686-elf-ar${CMAKE_EXECUTABLE_SUFFIX}")
+
 add_custom_command(
   OUTPUT ${LIBC_A} ${LIBC_CRT0}
-  COMMAND ${MAKE_EXECUTABLE} -C ${LIBC_DIR} clean
-  COMMAND ${MAKE_EXECUTABLE} -C ${LIBC_DIR}
+  COMMAND ${MAKE_EXECUTABLE} -C ${LIBC_DIR} clean CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC}
+  COMMAND ${MAKE_EXECUTABLE} -C ${LIBC_DIR} CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC}
   DEPENDS
     ${LIBC_DIR}/Makefile
     ${LIBC_DIR}/src/crt0.S
@@ -661,9 +670,9 @@ set(LIBC_CRTN "${LIBC_DIR}/obj/crtn.o")
 set(LIBC_LIBTCC1 "${LIBC_DIR}/libtcc1.a")
 add_custom_command(
   OUTPUT ${LIBC_CRTI} ${LIBC_CRTN} ${LIBC_LIBTCC1}
-  COMMAND i686-elf-gcc -m32 -c ${LIBC_DIR}/src/crti.S -o ${LIBC_CRTI}
-  COMMAND i686-elf-gcc -m32 -c ${LIBC_DIR}/src/crtn.S -o ${LIBC_CRTN}
-  COMMAND i686-elf-ar rcs ${LIBC_LIBTCC1}
+  COMMAND ${I686_ELF_GCC} -m32 -c ${LIBC_DIR}/src/crti.S -o ${LIBC_CRTI}
+  COMMAND ${I686_ELF_GCC} -m32 -c ${LIBC_DIR}/src/crtn.S -o ${LIBC_CRTN}
+  COMMAND ${I686_ELF_AR} rcs ${LIBC_LIBTCC1}
   DEPENDS ${LIBC_A} ${LIBC_DIR}/src/crti.S ${LIBC_DIR}/src/crtn.S
   COMMENT "Creating CRT stubs and libtcc1.a for TCC"
 )
@@ -711,7 +720,7 @@ set(TCC_CFLAGS
 
 add_custom_command(
   OUTPUT ${TCC_OBJ}
-  COMMAND i686-elf-gcc
+  COMMAND ${I686_ELF_GCC}
     ${TCC_CFLAGS}
     -I${TCC_DIR}
     -I${LIBC_DIR}/include
@@ -724,7 +733,7 @@ add_custom_command(
 
 add_custom_command(
   OUTPUT ${TCC_ELF}
-  COMMAND i686-elf-gcc
+  COMMAND ${I686_ELF_GCC}
     -nostdlib -static -m32
     -T ${LIBC_DIR}/link.ld
     -o ${TCC_ELF}
@@ -818,8 +827,8 @@ set(DOOM_APP "${SYSROOT_DIR}/Applications/DOOM.app")
 
 add_custom_command(
   OUTPUT ${DOOM_ELF}
-  COMMAND ${MAKE_EXECUTABLE} -C ${DOOM_DIR} clean
-  COMMAND ${MAKE_EXECUTABLE} -C ${DOOM_DIR} LIBC_DIR=${LIBC_DIR}
+  COMMAND ${MAKE_EXECUTABLE} -C ${DOOM_DIR} clean CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC}
+  COMMAND ${MAKE_EXECUTABLE} -C ${DOOM_DIR} CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC} LIBC_DIR=${LIBC_DIR}
   DEPENDS ${LIBC_A} ${LIBC_CRT0}
   COMMENT "Building DOOM for anyOS"
 )
@@ -845,8 +854,8 @@ set(QUAKE_APP "${SYSROOT_DIR}/Applications/Quake.app")
 
 add_custom_command(
   OUTPUT ${QUAKE_ELF}
-  COMMAND ${MAKE_EXECUTABLE} -C ${QUAKE_DIR} clean
-  COMMAND ${MAKE_EXECUTABLE} -C ${QUAKE_DIR} LIBC_DIR=${LIBC_DIR}
+  COMMAND ${MAKE_EXECUTABLE} -C ${QUAKE_DIR} clean CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC}
+  COMMAND ${MAKE_EXECUTABLE} -C ${QUAKE_DIR} CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC} LIBC_DIR=${LIBC_DIR}
   DEPENDS ${LIBC_A} ${LIBC_CRT0}
   COMMENT "Building Quake for anyOS"
 )
@@ -896,7 +905,7 @@ add_custom_command(
 
 add_custom_command(
   OUTPUT ${CURL_ELF}
-  COMMAND i686-elf-gcc
+  COMMAND ${I686_ELF_GCC}
     -nostdlib -static -m32
     -T ${LIBC_DIR}/link.ld
     -o ${CURL_ELF}

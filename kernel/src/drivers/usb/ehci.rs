@@ -18,6 +18,9 @@ use super::*;
 const EHCI_MMIO_BASE: u64 = 0xFFFF_FFFF_D008_0000;
 const EHCI_MMIO_PAGES: usize = 16; // 64 KiB
 
+/// EHCI spec: N_PORTS is a 4-bit field → hardware maximum is 15 ports per controller.
+const EHCI_MAX_PORTS: usize = 15;
+
 // ── Capability Register Offsets ────────────────
 
 const CAP_CAPLENGTH: u32 = 0x00;  // 8-bit
@@ -109,7 +112,7 @@ struct EhciController {
     async_qh_phys: u64,  // async schedule head QH (physical)
     td_pool_phys: u64,    // qTD pool (physical)
     data_buf_phys: u64,   // data buffer (physical)
-    port_connected: [bool; 8], // per-port connection state (max 8 ports)
+    port_connected: [bool; EHCI_MAX_PORTS], // per-port connection state
 }
 
 static EHCI_CTRL: crate::sync::spinlock::Spinlock<Option<EhciController>> =
@@ -594,7 +597,7 @@ pub fn init_controller(pci: &PciDevice) {
 
     // Read structural parameters
     let hcsparams = mmio_read32(mmio_base, CAP_HCSPARAMS);
-    let n_ports = (hcsparams & 0x0F) as u8;
+    let n_ports = ((hcsparams & 0x0F) as u8).min(EHCI_MAX_PORTS as u8);
 
     crate::serial_println!(
         "  EHCI: CAPLENGTH={}, {} port(s)",
@@ -745,7 +748,7 @@ pub fn init_controller(pci: &PciDevice) {
         async_qh_phys,
         td_pool_phys,
         data_buf_phys,
-        port_connected: [false; 8],
+        port_connected: [false; EHCI_MAX_PORTS],
     };
 
     scan_ports(&ctrl);

@@ -7,8 +7,9 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU on Windows
-# Usage: .\scripts\run.ps1 [-Vmware] [-Std] [-Virtio] [-Ide] [-Cdrom] [-Audio] [-Usb] [-Uefi]
+# Usage: .\scripts\run.ps1 [-Vmware] [-Std] [-Virtio] [-Ide] [-Cdrom] [-Audio] [-Usb] [-Uefi] [-VBox]
 #
+#   -VBox     Start VirtualBox VM named 'anyos' and stream its COM1 serial output here
 #   -Vmware   VMware SVGA II (2D acceleration, HW cursor)
 #   -Std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
 #   -Virtio   VirtIO GPU (modern transport, ARGB cursor)
@@ -19,6 +20,7 @@
 #   -Uefi     Boot via UEFI (OVMF) instead of BIOS
 
 param(
+    [switch]$VBox,
     [switch]$Vmware,
     [switch]$Std,
     [switch]$Virtio,
@@ -34,6 +36,188 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectDir = Split-Path -Parent $ScriptDir
 $BuildDir = Join-Path $ProjectDir "build"
+
+# ── VirtualBox mode ───────────────────────────────────────────────────────────
+
+if ($VBox) {
+    # Find VBoxManage
+    $vbm = Get-Command "VBoxManage" -ErrorAction SilentlyContinue
+    if (-not $vbm) {
+        $vbmDefault = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
+        if (Test-Path $vbmDefault) {
+            $vbm = $vbmDefault
+        } else {
+            Write-Host "Error: VBoxManage not found in PATH or '$vbmDefault'" -ForegroundColor Red
+            Write-Host "Install VirtualBox from https://www.virtualbox.org/"
+            exit 1
+        }
+    } else {
+        $vbm = $vbm.Source
+    }
+
+    $vmName   = "anyos"
+    $pipeName = "anyos-serial"
+    $pipePath = "\\.\pipe\$pipeName"
+
+    # Query current VM state (machinereadable output: VMState="running")
+    $vmInfo  = & $vbm showvminfo $vmName --machinereadable 2>&1
+    $stMatch = ($vmInfo | Select-String '^VMState="(\w+)"')
+    $vmState = if ($stMatch) { $stMatch.Matches.Groups[1].Value } else { "unknown" }
+
+    if ($vmState -eq "running" -or $vmState -eq "starting") {
+        Write-Host "VM '$vmName' is already $vmState - skipping configuration." -ForegroundColor Yellow
+    } else {
+        # ── Refresh disk: detach old medium, reconvert, re-attach ────────────
+        $imgPath  = Join-Path $BuildDir "anyos.img"
+        $vmdkPath = Join-Path $BuildDir "anyos.vmdk"
+
+        if (-not (Test-Path $imgPath)) {
+            Write-Host "Error: $imgPath not found. Run .\scripts\build.ps1 first." -ForegroundColor Red
+            exit 1
+        }
+
+        Write-Host "Refreshing disk image ..." -ForegroundColor Cyan
+
+        # Collect all storage controller names from VM info
+        $ctrlNames = @()
+        foreach ($line in $vmInfo) {
+            if ($line -match '^storagecontrollername\d+="(.+)"$') { $ctrlNames += $Matches[1] }
+        }
+
+        # Find which controller / port / device currently holds a HDD medium
+        $diskCtrl = $null; $diskPort = 0; $diskDevice = 0; $diskMedium = $null
+        foreach ($cn in $ctrlNames) {
+            $pat = '^"' + [Regex]::Escape($cn) + '-(\d+)-(\d+)"="(.+\.(vmdk|vdi|vhd|img))"$'
+            foreach ($line in $vmInfo) {
+                if ($line -match $pat) {
+                    $diskCtrl   = $cn
+                    $diskPort   = [int]$Matches[1]
+                    $diskDevice = [int]$Matches[2]
+                    $diskMedium = $Matches[3]
+                    break
+                }
+            }
+            if ($diskCtrl) { break }
+        }
+
+        # Detach old medium and unregister it (frees the UUID).
+        # Wrapped in try/catch because VBoxManage writes progress to stderr and
+        # $ErrorActionPreference = "Stop" would treat that as a fatal error.
+        if ($diskCtrl -and $diskMedium) {
+            Write-Host "  Detaching: $diskMedium" -ForegroundColor DarkGray
+            try { & $vbm storageattach $vmName --storagectl $diskCtrl --port $diskPort --device $diskDevice --medium none 2>&1 | Out-Null } catch {}
+            try { & $vbm closemedium disk $diskMedium --delete 2>&1 | Out-Null } catch {}
+        }
+
+        # Remove stale VMDK file (closemedium --delete may already have done it)
+        try { if (Test-Path $vmdkPath) { Remove-Item $vmdkPath -Force } } catch {}
+
+        # Convert raw disk image to VMDK (VirtualBox assigns a fresh UUID)
+        Write-Host "  Converting anyos.img -> anyos.vmdk ..." -ForegroundColor DarkGray
+        & $vbm convertfromraw $imgPath $vmdkPath --format VMDK
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Error: VBoxManage convertfromraw failed." -ForegroundColor Red
+            exit 1
+        }
+
+        # Determine controller / port to use for the new medium
+        if (-not $diskCtrl) {
+            $diskCtrl   = if ($ctrlNames.Count -gt 0) { $ctrlNames[0] } else { "SATA Controller" }
+            $diskPort   = 0
+            $diskDevice = 0
+            if ($ctrlNames.Count -eq 0) {
+                Write-Host "  Adding storage controller '$diskCtrl' ..." -ForegroundColor DarkGray
+                & $vbm storagectl $vmName --name $diskCtrl --add sata --controller IntelAhci
+            }
+        }
+
+        # Attach the freshly created VMDK
+        Write-Host "  Attaching anyos.vmdk -> '$diskCtrl' port=$diskPort device=$diskDevice" -ForegroundColor DarkGray
+        & $vbm storageattach $vmName --storagectl $diskCtrl --port $diskPort --device $diskDevice --type hdd --medium $vmdkPath
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Error: Could not attach VMDK to VM '$vmName'." -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "[OK] Disk refreshed." -ForegroundColor Green
+
+        # ── Configure COM1 as named pipe (VirtualBox = server, we = client) ──
+        Write-Host "Configuring VM '$vmName'  COM1 -> named pipe $pipePath" -ForegroundColor Cyan
+        & $vbm modifyvm $vmName --uart1 0x3f8 4
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Error: Could not configure UART (VM locked or name wrong?)." -ForegroundColor Red
+            exit 1
+        }
+        & $vbm modifyvm $vmName --uartmode1 server $pipePath
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Error: Could not set UART mode to named-pipe server." -ForegroundColor Red
+            exit 1
+        }
+
+        # Start the VM with GUI so the user can also see the display
+        Write-Host "Starting VirtualBox VM '$vmName'..." -ForegroundColor Cyan
+        & $vbm startvm $vmName --type gui
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Error: Failed to start VM '$vmName'." -ForegroundColor Red
+            exit 1
+        }
+    }
+
+    # Wait for VirtualBox to create the named pipe (up to 20 s)
+    Write-Host "Waiting for serial pipe $pipePath ..." -ForegroundColor Cyan
+    $pipe    = $null
+    $deadline = (Get-Date).AddSeconds(20)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(
+                ".", $pipeName,
+                [System.IO.Pipes.PipeDirection]::In,
+                [System.IO.Pipes.PipeOptions]::None
+            )
+            $pipe.Connect(500)   # 0.5 s per attempt
+            break
+        } catch {
+            if ($null -ne $pipe) { $pipe.Dispose(); $pipe = $null }
+            Start-Sleep -Milliseconds 300
+        }
+    }
+
+    if ($null -eq $pipe -or -not $pipe.IsConnected) {
+        Write-Host "Error: Could not connect to $pipePath after 20 s." -ForegroundColor Red
+        Write-Host "Make sure the VM is running and COM1 is enabled in VirtualBox settings."
+        exit 1
+    }
+
+    Write-Host ""
+    Write-Host ("=" * 60) -ForegroundColor Magenta
+    Write-Host "  anyOS Serial Output  (Ctrl+C to disconnect)" -ForegroundColor Magenta
+    Write-Host ("=" * 60) -ForegroundColor Magenta
+    Write-Host ""
+
+    try {
+        $buf = New-Object byte[] 512
+        while ($true) {
+            $read = $pipe.Read($buf, 0, $buf.Length)
+            if ($read -le 0) { break }
+            # Decode ASCII; strip bare CR so lines render correctly in PowerShell
+            $text = [System.Text.Encoding]::ASCII.GetString($buf, 0, $read)
+            $text = $text -replace "`r`n", "`n" -replace "`r", ""
+            Write-Host -NoNewline $text
+        }
+    } catch {
+        # IOException = VM shut down (normal); anything else print message
+        if ($_.Exception -isnot [System.IO.IOException]) {
+            Write-Host "`nPipe error: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    } finally {
+        if ($null -ne $pipe) { $pipe.Dispose() }
+    }
+
+    Write-Host ""
+    Write-Host ("=" * 60) -ForegroundColor Magenta
+    Write-Host "  Serial session ended." -ForegroundColor Magenta
+    Write-Host ("=" * 60) -ForegroundColor Magenta
+    exit 0
+}
 
 # ── Find QEMU ────────────────────────────────────────────────────────────────
 

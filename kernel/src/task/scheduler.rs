@@ -2314,7 +2314,6 @@ pub fn run() -> ! {
             }
         }
     }
-    crate::arch::x86::tss::enable_rsp0_watchpoint(0);
     unsafe { core::arch::asm!("sti"); }
     loop { unsafe { core::arch::asm!("hlt"); } }
 }
@@ -2340,5 +2339,4 @@ pub fn register_ap_idle(cpu_id: usize) {
         }
     }
     crate::serial_println!("  SMP: CPU{} idle thread registered", cpu_id);
-    crate::arch::x86::tss::enable_rsp0_watchpoint(cpu_id);
 }
