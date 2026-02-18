@@ -12,5 +12,7 @@ pub mod env;
 pub mod loader;
 pub mod process;
 pub mod scheduler;
+#[cfg(feature = "debug_verbose")]
+pub mod stress_test;
 pub mod thread;
 pub mod users;

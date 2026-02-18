@@ -149,6 +149,13 @@ impl Thread {
             *(stack.as_ptr() as *mut u64) = STACK_CANARY;
         }
 
+        // Write exit trampoline address at stack_top - 8 so that when the
+        // entry function does `ret`, it returns into kernel_thread_exit()
+        // instead of jumping to address 0 (which would cause a double fault).
+        unsafe {
+            *((stack_top - 8) as *mut u64) = kernel_thread_exit as *const () as u64;
+        }
+
         // Set up initial context so that when we "switch" to this thread,
         // it starts executing at `entry`.
         // RSP is set to stack_top - 8 for proper 16-byte ABI alignment:
@@ -161,6 +168,8 @@ impl Thread {
         context.rflags = 0x202; // IF (interrupts enabled) + reserved bit 1
         // Use the current page directory (all kernel threads share same address space)
         unsafe { core::arch::asm!("mov {}, cr3", out(reg) context.cr3); }
+        // Recompute checksum after modifying fields above
+        context.checksum = context.compute_checksum();
 
         // Copy name
         let mut name_buf = [0u8; 32];
@@ -254,4 +263,12 @@ impl Thread {
         };
         crate::serial_println!("  Gap between fpu_state and context: {} bytes", gap);
     }
+}
+
+/// Trampoline for kernel threads: called when a kernel thread's entry function
+/// returns via `ret`. Without this, the thread would jump to address 0.
+/// This address is placed at stack_top - 8 during Thread::new() so it acts
+/// as the return address for the entry function.
+extern "C" fn kernel_thread_exit() {
+    crate::task::scheduler::exit_current(0);
 }

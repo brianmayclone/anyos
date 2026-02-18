@@ -143,6 +143,16 @@ static PER_CPU_CONTENDED_BUSY: [AtomicU32; MAX_CPUS] = {
     [INIT; MAX_CPUS]
 };
 
+/// True when this CPU is inside schedule_inner (either timer or voluntary path).
+/// Checked by the timer handler to prevent re-entrant schedule_tick() calls.
+/// Without this, a timer firing during the voluntary schedule's try_lock loop
+/// nests schedule_inner → context_switch, which can corrupt saved contexts
+/// and cause deadlocks when the restored thread re-enters the try_lock loop.
+static PER_CPU_IN_SCHEDULER: [AtomicBool; MAX_CPUS] = {
+    const INIT: AtomicBool = AtomicBool::new(false);
+    [INIT; MAX_CPUS]
+};
+
 // =============================================================================
 // Per-CPU name cache helpers
 // =============================================================================
@@ -554,10 +564,12 @@ pub fn spawn(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
         let thread = Thread::new(entry, priority, name);
         let mut sched = SCHEDULER.lock();
         let sched = sched.as_mut().expect("Scheduler not initialized");
-        let tid = sched.add_thread(thread);
-        crate::serial_println!("  Spawned thread '{}' (TID={})", name, tid);
-        tid
+        sched.add_thread(thread)
     };
+    // Debug output OUTSIDE the lock — serial I/O takes ~3ms at 115200 baud
+    // and holding the lock that long starves CPU 0's reap_terminated.
+    #[cfg(feature = "debug_verbose")]
+    crate::serial_println!("  Spawned thread '{}' (TID={})", name, tid);
     emit_spawn_event(tid, name);
     tid
 }
@@ -570,10 +582,11 @@ pub fn spawn_blocked(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
         let thread = Thread::new(entry, priority, name);
         let mut sched = SCHEDULER.lock();
         let sched = sched.as_mut().expect("Scheduler not initialized");
-        let tid = sched.add_thread_blocked(thread);
-        crate::serial_println!("  Spawned thread '{}' (TID={}, blocked)", name, tid);
-        tid
+        sched.add_thread_blocked(thread)
     };
+    // Debug output OUTSIDE the lock (serial I/O is slow).
+    #[cfg(feature = "debug_verbose")]
+    crate::serial_println!("  Spawned thread '{}' (TID={}, blocked)", name, tid);
     emit_spawn_event(tid, name);
     tid
 }
@@ -616,6 +629,7 @@ pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &st
         if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
             thread.page_directory = Some(pd);
             thread.context.cr3 = pd.as_u64();
+            thread.context.checksum = thread.context.compute_checksum();
             thread.is_user = true;
             thread.brk = brk;
             thread.arch_mode = arch_mode;
@@ -637,13 +651,55 @@ pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &st
 // =============================================================================
 
 /// Called from the timer interrupt for preemptive scheduling.
-pub fn schedule_tick() { schedule_inner(true); }
+/// Returns false (and does nothing) if this CPU is already inside schedule_inner,
+/// preventing re-entrant scheduling that causes context corruption and deadlocks.
+pub fn schedule_tick() -> bool {
+    let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
+    if cpu_id < MAX_CPUS && PER_CPU_IN_SCHEDULER[cpu_id].load(Ordering::Relaxed) {
+        // Already in scheduler — just count the tick for timekeeping accuracy
+        TOTAL_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+        PER_CPU_TOTAL[cpu_id].fetch_add(1, Ordering::Relaxed);
+        if !PER_CPU_HAS_THREAD[cpu_id].load(Ordering::Relaxed) {
+            IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+            PER_CPU_IDLE[cpu_id].fetch_add(1, Ordering::Relaxed);
+        } else {
+            PER_CPU_CONTENDED_BUSY[cpu_id].fetch_add(1, Ordering::Relaxed);
+        }
+        return false;
+    }
+    schedule_inner(true);
+    true
+}
 
 /// Voluntary yield: reschedule without incrementing CPU accounting counters.
 pub fn schedule() { schedule_inner(false); }
 
 fn schedule_inner(from_timer: bool) {
+    // Read CPU ID and set in-scheduler flag atomically w.r.t. timer interrupts.
+    // For from_timer=true, IF is already 0 (inside IRQ handler) — no race.
+    // For from_timer=false (voluntary), we MUST briefly disable interrupts to
+    // prevent a timer from firing between get_cpu_id() and the flag store.
+    // Without this, the timer can preempt, migrate the thread to CPU B, and
+    // the thread resumes setting PER_CPU_IN_SCHEDULER[A] (stale) — permanently
+    // blocking scheduling on CPU A.
+    let saved_flags: u64;
+    if !from_timer {
+        unsafe { core::arch::asm!("pushfq; pop {0}; cli", out(reg) saved_flags, options(nomem, nostack)); }
+    } else {
+        saved_flags = 0; // unused — IF already 0 in timer path
+    }
+
     let cpu_id_early = get_cpu_id();
+
+    // Mark this CPU as inside the scheduler to prevent timer nesting.
+    if cpu_id_early < MAX_CPUS {
+        PER_CPU_IN_SCHEDULER[cpu_id_early].store(true, Ordering::Relaxed);
+    }
+
+    // Restore interrupts for voluntary path (needed for spin loop below)
+    if !from_timer {
+        unsafe { core::arch::asm!("push {0}; popfq", in(reg) saved_flags, options(nomem, nostack)); }
+    }
 
     // CPU 0 processes deferred PD destruction (before acquiring scheduler lock)
     if from_timer && cpu_id_early == 0 {
@@ -670,6 +726,7 @@ fn schedule_inner(from_timer: bool) {
                 } else {
                     PER_CPU_CONTENDED_BUSY[cpu_id_early].fetch_add(1, Ordering::Relaxed);
                 }
+                PER_CPU_IN_SCHEDULER[cpu_id_early].store(false, Ordering::Relaxed);
                 return;
             }
         }
@@ -691,12 +748,53 @@ fn schedule_inner(from_timer: bool) {
     {
         let sched = match guard.as_mut() {
             Some(s) => s,
-            None => return,
+            None => {
+                PER_CPU_IN_SCHEDULER[cpu_id as usize].store(false, Ordering::Relaxed);
+                return;
+            }
         };
 
-        // CPU 0 reaps terminated threads
-        if cpu_id == 0 {
+        // Reap terminated threads (any CPU can do this, not just CPU 0).
+        // Previously restricted to CPU 0, but under high lock contention
+        // (e.g., stress test with serial debug output) CPU 0 may not get
+        // the lock often enough, causing terminated threads to accumulate.
+        if from_timer {
             sched.reap_terminated();
+        }
+
+        // CPU 0: periodic canary check on all non-Running threads.
+        // Rate-limited to every 100 ticks (~100ms) to avoid holding the lock
+        // too long with serial output. Only reports first corrupt thread found
+        // to keep the critical section short.
+        if from_timer && cpu_id == 0 {
+            static CANARY_CHECK_CTR: AtomicU32 = AtomicU32::new(0);
+            let ctr = CANARY_CHECK_CTR.fetch_add(1, Ordering::Relaxed);
+            if ctr % 100 == 0 {
+                use crate::task::context::CANARY_MAGIC;
+                for i in 0..sched.threads.len() {
+                    let t = &sched.threads[i];
+                    if t.context.save_complete == 1
+                        && t.state != ThreadState::Running
+                        && !t.is_idle
+                    {
+                        if t.context.canary != CANARY_MAGIC {
+                            crate::serial_println!(
+                                "!CANARY DEAD: TID={} '{}' canary={:#018x} ctx={:#x}",
+                                t.tid, t.name_str(),
+                                t.context.canary, &t.context as *const _ as u64,
+                            );
+                            break; // Only report first — keep critical section short
+                        } else if t.context.checksum != t.context.compute_checksum() {
+                            crate::serial_println!(
+                                "!CHECKSUM FAIL: TID={} '{}' chk={:#018x} expect={:#018x}",
+                                t.tid, t.name_str(),
+                                t.context.checksum, t.context.compute_checksum(),
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         // Wake expired sleepers
@@ -749,8 +847,11 @@ fn schedule_inner(from_timer: bool) {
         if let Some(current_tid) = outgoing_tid {
             if current_tid != sched.idle_tid[cpu_id] {
                 if let Some(idx) = sched.find_idx(current_tid) {
+                    // ALWAYS mark context as unsaved for non-idle outgoing threads.
+                    // Defense-in-depth: even if waitpid/sleep_until already set this
+                    // to 0, this catches any path that missed it.
+                    sched.threads[idx].context.save_complete = 0;
                     if sched.threads[idx].state == ThreadState::Running {
-                        sched.threads[idx].context.save_complete = 0;
                         sched.threads[idx].state = ThreadState::Ready;
                         sched.threads[idx].last_cpu = cpu_id;
                         let pri = sched.threads[idx].priority;
@@ -849,11 +950,12 @@ fn schedule_inner(from_timer: bool) {
                 None
             }
         } else {
-            // No ready threads — this CPU is idle
-            if from_timer {
-                IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
-                PER_CPU_IDLE[cpu_id].fetch_add(1, Ordering::Relaxed);
-            }
+            // No ready threads — this CPU is idle.
+            // NOTE: Do NOT increment IDLE_SCHED_TICKS here — the per-tick
+            // accounting at lines 812-824 above already counted this tick
+            // as idle (if current==idle) or busy (if current was Running).
+            // Double-counting idle ticks causes idle > total, making the
+            // Activity Monitor show 0% CPU load permanently.
 
             // If current thread is no longer runnable, switch to idle
             if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
@@ -864,7 +966,7 @@ fn schedule_inner(from_timer: bool) {
                         let idle_i = sched.find_idx(idle_tid).unwrap();
                         sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
                         sched.threads[idle_i].state = ThreadState::Running;
-                        PER_CPU_HAS_THREAD[cpu_id].store(true, Ordering::Relaxed);
+                        PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
                         PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
                         PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
                         update_per_cpu_name(cpu_id, &sched.threads[idle_i].name);
@@ -893,7 +995,7 @@ fn schedule_inner(from_timer: bool) {
                     let idle_tid = sched.idle_tid[cpu_id];
                     let idle_i = sched.find_idx(idle_tid).unwrap();
                     sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
-                    PER_CPU_HAS_THREAD[cpu_id].store(true, Ordering::Relaxed);
+                    PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
                     PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
                     PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
                     update_per_cpu_name(cpu_id, &sched.threads[idle_i].name);
@@ -908,6 +1010,7 @@ fn schedule_inner(from_timer: bool) {
                 let idle_tid = sched.idle_tid[cpu_id];
                 let idle_i = sched.find_idx(idle_tid).unwrap();
                 sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
+                PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
                 let idle_kstack_top = sched.threads[idle_i].kernel_stack_top();
                 crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
                 crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, idle_kstack_top);
@@ -921,43 +1024,48 @@ fn schedule_inner(from_timer: bool) {
 
     // Context switch with lock released, interrupts still disabled
     if let Some((old_ctx, new_ctx, old_fpu, _new_fpu, outgoing_tid, next_tid)) = switch_info {
-        // --- Validate new CpuContext integrity ---
-        // Catches heap corruption before context_switch loads corrupt RSP/RIP.
-        // Must be done while lock is released but pointers are still valid
-        // (Box<Thread> provides stable heap addresses; no reap can happen in
-        // the few microseconds between lock release and context_switch).
-        const KERNEL_VMA: u64 = 0xFFFF_FFFF_8010_0000;
-        const HEAP_START: u64 = 0xFFFF_FFFF_8200_0000;
-        let (new_rsp, new_rip, new_rbp, new_cr3) = unsafe {
-            ((*new_ctx).rsp, (*new_ctx).rip, (*new_ctx).rbp, (*new_ctx).cr3)
+        // --- Validate new CpuContext integrity (canary + checksum + range) ---
+        // The ASM-side also checks, but Rust can print richer diagnostics.
+        let corrupt = unsafe {
+            use crate::task::context::CANARY_MAGIC;
+            let ctx = &*new_ctx;
+            let canary_ok = ctx.canary == CANARY_MAGIC;
+            let checksum_ok = ctx.checksum == ctx.compute_checksum();
+            let rip_ok = ctx.rip >= 0xFFFF_FFFF_8010_0000 && ctx.rip < 0xFFFF_FFFF_8200_0000;
+            let rsp_ok = ctx.rsp >= 0xFFFF_FFFF_8010_0000;
+            if !canary_ok || !checksum_ok || !rip_ok || !rsp_ok {
+                let reason = if !canary_ok { "CANARY_DEAD" }
+                    else if !checksum_ok { "CHECKSUM_FAIL" }
+                    else { "RANGE_BAD" };
+                Some(reason)
+            } else {
+                None
+            }
         };
-        let rip_ok = new_rip >= KERNEL_VMA && new_rip < HEAP_START;
-        // RSP can be in BSS area (boot/idle stacks at 0xFFFFFFFF803xxxxx)
-        // or in the heap (thread stacks at 0xFFFFFFFF82xxxxxx+).
-        let rsp_ok = new_rsp >= KERNEL_VMA;
-        if !rip_ok || !rsp_ok {
-            crate::serial_println!(
-                "!CTX CORRUPT: TID={} rip={:#018x} rsp={:#018x} rbp={:#018x} cr3={:#018x} ctx={:#x}",
-                next_tid, new_rip, new_rsp, new_rbp, new_cr3, new_ctx as u64,
-            );
-            // Dump all 20 CpuContext fields for pattern analysis
+
+        if let Some(reason) = corrupt {
             unsafe {
+                let ctx = &*new_ctx;
+                crate::serial_println!(
+                    "!{}: TID={} ctx={:#x} canary={:#018x} chk={:#018x} expect={:#018x}",
+                    reason, next_tid, new_ctx as u64,
+                    ctx.canary, ctx.checksum, ctx.compute_checksum(),
+                );
+                // Dump all 22 CpuContext fields
                 let p = new_ctx as *const u64;
                 let names = [
                     "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp",
                     "r8 ", "r9 ", "r10", "r11", "r12", "r13", "r14", "r15",
-                    "rsp", "rip", "rfl", "cr3", "sav",
+                    "rsp", "rip", "rfl", "cr3", "sav", "can", "chk",
                 ];
-                for i in 0..20 {
+                for i in 0..22 {
                     crate::serial_println!("  [{}] {} = {:#018x}", i * 8, names[i], *p.add(i));
                 }
 
-                // Memory dump: 64 bytes BEFORE and 64 bytes AFTER CpuContext
-                // Shows Thread struct fields adjacent to context — helps identify
-                // if adjacent fields are also corrupt (buffer overflow pattern).
+                // Memory dump: 64 bytes BEFORE and AFTER CpuContext (176 bytes)
                 let ctx_addr = new_ctx as usize;
                 let base = ctx_addr.saturating_sub(64);
-                let end = ctx_addr + 160 + 64; // CpuContext is 160 bytes
+                let end = ctx_addr + 176 + 64;
                 crate::serial_println!("  Memory around CpuContext ({:#x}):", ctx_addr);
                 let mut addr = base;
                 while addr < end && addr >= 0xFFFF_FFFF_8000_0000 {
@@ -965,18 +1073,19 @@ fn schedule_inner(from_timer: bool) {
                     let marker = if addr == ctx_addr { " <-- ctx start" }
                         else if addr == ctx_addr + 120 { " <-- rsp" }
                         else if addr == ctx_addr + 128 { " <-- rip" }
-                        else if addr == ctx_addr + 160 { " <-- ctx end" }
+                        else if addr == ctx_addr + 160 { " <-- canary" }
+                        else if addr == ctx_addr + 176 { " <-- ctx end" }
                         else { "" };
                     crate::serial_println!("    {:#018x}: {:#018x}{}", addr, val, marker);
                     addr += 8;
                 }
 
-                // Kernel-mode stack trace of current CPU (what led to schedule_inner)
+                // Stack trace
                 crate::serial_println!("  Caller stack trace:");
                 let mut bp: u64;
                 core::arch::asm!("mov {}, rbp", out(reg) bp, options(nomem, nostack, preserves_flags));
                 for depth in 0..16 {
-                    if bp < 0xFFFF_FFFF_8200_0000 || bp & 7 != 0 { break; }
+                    if bp < 0xFFFF_FFFF_8010_0000 || bp & 7 != 0 { break; }
                     let ret_addr = *((bp + 8) as *const u64);
                     let prev_bp = *(bp as *const u64);
                     if ret_addr < 0xFFFF_FFFF_8010_0000 || ret_addr >= 0xFFFF_FFFF_8200_0000 {
@@ -986,11 +1095,8 @@ fn schedule_inner(from_timer: bool) {
                     bp = prev_bp;
                 }
             }
-            // Recovery: don't switch. Set old thread's save_complete=1 so it
-            // can be rescheduled. The corrupt thread stays "Running" on this CPU
-            // but will be reassigned on the next timer tick.
+            // Recovery: don't switch
             unsafe { (*old_ctx).save_complete = 1; }
-            // Fall through to sti — continue as current thread
         } else {
             // --- Lazy FPU: save outgoing thread's state if this CPU owns it ---
             let fpu_owner = PER_CPU_FPU_OWNER[cpu_id].load(Ordering::Relaxed);
@@ -1008,8 +1114,22 @@ fn schedule_inner(from_timer: bool) {
                 core::arch::asm!("mov cr0, {}", in(reg) cr0 | 8, options(nostack, nomem, preserves_flags));
             }
 
+            // Clear in-scheduler flag BEFORE context_switch. Interrupts are disabled
+            // (release_no_irq_restore kept IF=0), so no timer can fire between the
+            // clear and the switch. This is CRITICAL because if the new thread is
+            // starting for the first time (RIP = entry point, not inside schedule_inner),
+            // it will never reach the post-switch cleanup code below.
+            PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Relaxed);
+
             unsafe { crate::task::context::context_switch(old_ctx, new_ctx); }
         }
+    }
+
+    // Also clear after context_switch for the no-switch path (switch_info was None).
+    // After context_switch we may be on a different CPU, so re-read cpu_id.
+    let cpu_id_exit = get_cpu_id();
+    if cpu_id_exit < MAX_CPUS {
+        PER_CPU_IN_SCHEDULER[cpu_id_exit].store(false, Ordering::Relaxed);
     }
 
     // Re-enable interrupts (CRITICAL for voluntary schedule — without this, IF stays 0)
@@ -1116,6 +1236,21 @@ pub fn cpu_has_active_thread(cpu_id: usize) -> bool {
     if cpu_id < MAX_CPUS { PER_CPU_HAS_THREAD[cpu_id].load(Ordering::Relaxed) } else { false }
 }
 
+/// Lock-free check: is this CPU currently inside schedule_inner?
+pub fn per_cpu_in_scheduler(cpu: usize) -> bool {
+    if cpu < MAX_CPUS { PER_CPU_IN_SCHEDULER[cpu].load(Ordering::Relaxed) } else { false }
+}
+
+/// Lock-free read: current thread TID on this CPU (0 if none).
+pub fn per_cpu_current_tid(cpu: usize) -> u32 {
+    if cpu < MAX_CPUS { PER_CPU_CURRENT_TID[cpu].load(Ordering::Relaxed) } else { 0 }
+}
+
+/// Lock-free check: does this CPU have a non-idle thread?
+pub fn per_cpu_has_thread(cpu: usize) -> bool {
+    if cpu < MAX_CPUS { PER_CPU_HAS_THREAD[cpu].load(Ordering::Relaxed) } else { false }
+}
+
 /// Check the current thread's stack canary after a syscall.
 pub fn check_current_stack_canary(syscall_num: u32) {
     let mut guard = SCHEDULER.lock();
@@ -1159,6 +1294,7 @@ pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u32) {
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.page_directory = Some(pd);
         thread.context.cr3 = pd.as_u64();
+        thread.context.checksum = thread.context.compute_checksum();
         thread.is_user = true;
         thread.brk = brk;
     }
@@ -1322,8 +1458,9 @@ pub fn set_current_thread_mmap_next(val: u32) {
 /// Terminate the current thread with an exit code. Wakes any waitpid waiter.
 pub fn exit_current(code: u32) {
     let tid;
+    let mut pd_to_destroy: Option<PhysAddr> = None;
+    let mut guard = SCHEDULER.lock();
     {
-        let mut guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
         let sched = guard.as_mut().expect("Scheduler not initialized");
         tid = sched.per_cpu[cpu_id].current_tid.unwrap_or(0);
@@ -1332,6 +1469,18 @@ pub fn exit_current(code: u32) {
                 sched.threads[idx].state = ThreadState::Terminated;
                 sched.threads[idx].exit_code = Some(code);
                 sched.threads[idx].terminated_at_tick = Some(crate::arch::x86::pit::get_ticks());
+                // Save PD for destruction AFTER lock release (not just None — that leaks frames)
+                if let Some(pd) = sched.threads[idx].page_directory {
+                    if !sched.threads[idx].pd_shared {
+                        let has_live_siblings = sched.threads.iter().any(|t| {
+                            t.tid != current_tid && t.page_directory == Some(pd)
+                                && t.state != ThreadState::Terminated
+                        });
+                        if !has_live_siblings {
+                            pd_to_destroy = Some(pd);
+                        }
+                    }
+                }
                 sched.threads[idx].page_directory = None;
                 if let Some(waiter_tid) = sched.threads[idx].waiting_tid {
                     sched.wake_thread_inner(waiter_tid);
@@ -1339,9 +1488,20 @@ pub fn exit_current(code: u32) {
             }
         }
     }
+    // Release lock but keep IF=0 — no timer can fire between here and schedule().
+    // This closes the race where a timer could context-switch away a Terminated
+    // thread before PD destruction and system_emit run.
+    guard.release_no_irq_restore();
+    // Destroy page directory (switch to kernel CR3 first)
+    if let Some(pd) = pd_to_destroy {
+        let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
+        unsafe { core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3); }
+        crate::memory::virtual_mem::destroy_user_page_directory(pd);
+    }
     crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
         crate::ipc::event_bus::EVT_PROCESS_EXITED, tid, code, 0, 0,
     ));
+    // schedule_inner will sti after context_switch
     schedule();
     loop { unsafe { core::arch::asm!("hlt"); } }
 }
@@ -1349,11 +1509,12 @@ pub fn exit_current(code: u32) {
 /// Try to terminate the current thread (non-blocking lock acquisition).
 pub fn try_exit_current(code: u32) -> bool {
     let tid;
+    let mut pd_to_destroy: Option<PhysAddr> = None;
+    let mut guard = match SCHEDULER.try_lock() {
+        Some(g) => g,
+        None => return false,
+    };
     {
-        let mut guard = match SCHEDULER.try_lock() {
-            Some(g) => g,
-            None => return false,
-        };
         let cpu_id = get_cpu_id();
         let sched = match guard.as_mut() { Some(s) => s, None => return false };
         if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
@@ -1362,12 +1523,31 @@ pub fn try_exit_current(code: u32) -> bool {
                 sched.threads[idx].state = ThreadState::Terminated;
                 sched.threads[idx].exit_code = Some(code);
                 sched.threads[idx].terminated_at_tick = Some(crate::arch::x86::pit::get_ticks());
+                // Save PD for destruction (same as exit_current)
+                if let Some(pd) = sched.threads[idx].page_directory {
+                    if !sched.threads[idx].pd_shared {
+                        let has_live_siblings = sched.threads.iter().any(|t| {
+                            t.tid != current_tid && t.page_directory == Some(pd)
+                                && t.state != ThreadState::Terminated
+                        });
+                        if !has_live_siblings {
+                            pd_to_destroy = Some(pd);
+                        }
+                    }
+                }
                 sched.threads[idx].page_directory = None;
                 if let Some(waiter_tid) = sched.threads[idx].waiting_tid {
                     sched.wake_thread_inner(waiter_tid);
                 }
             } else { return false; }
         } else { return false; }
+    }
+    // Release lock but keep IF=0 (same pattern as exit_current)
+    guard.release_no_irq_restore();
+    if let Some(pd) = pd_to_destroy {
+        let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
+        unsafe { core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3); }
+        crate::memory::virtual_mem::destroy_user_page_directory(pd);
     }
     crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
         crate::ipc::event_bus::EVT_PROCESS_EXITED, tid, code, 0, 0,
@@ -1545,12 +1725,15 @@ pub fn kill_thread(tid: u32) -> u32 {
     let is_current;
     let running_on_other_cpu;
 
+    let mut guard = SCHEDULER.lock();
     {
-        let mut guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
         let sched = guard.as_mut().expect("Scheduler not initialized");
 
-        let target_idx = match sched.find_idx(tid) { Some(idx) => idx, None => return u32::MAX };
+        let target_idx = match sched.find_idx(tid) {
+            Some(idx) => idx,
+            None => return u32::MAX, // guard drops normally (restores IF)
+        };
         if sched.threads[target_idx].is_idle { return u32::MAX; }
 
         is_current = sched.per_cpu[cpu_id].current_tid == Some(tid);
@@ -1582,9 +1765,17 @@ pub fn kill_thread(tid: u32) -> u32 {
         if let Some(waiter_tid) = sched.threads[target_idx].waiting_tid {
             sched.wake_thread_inner(waiter_tid);
         }
-        if is_current {
-            sched.per_cpu[cpu_id].current_tid = Some(sched.idle_tid[cpu_id]);
-        }
+        // NOTE: Do NOT set current_tid = idle_tid here! We're still on the
+        // killed thread's kernel stack. schedule_inner will handle the
+        // Terminated→idle transition properly.
+    }
+
+    // For is_current: release lock but keep IF=0 to prevent timer from
+    // context-switching before schedule(). For !is_current: normal drop.
+    if is_current {
+        guard.release_no_irq_restore();
+    } else {
+        drop(guard);
     }
 
     if let Some(pd) = pd_to_destroy {
@@ -1604,6 +1795,7 @@ pub fn kill_thread(tid: u32) -> u32 {
     ));
 
     if is_current {
+        // IF still 0 — schedule_inner will sti after context_switch.
         schedule();
         loop { unsafe { core::arch::asm!("hlt"); } }
     }
@@ -1632,6 +1824,11 @@ pub fn waitpid(tid: u32) -> u32 {
                 target.waiting_tid = Some(current_tid);
             }
             if let Some(idx) = sched.find_idx(current_tid) {
+                // CRITICAL: Mark context as unsaved BEFORE setting Blocked.
+                // Without this, another CPU can wake this thread (→ Ready)
+                // and load its stale saved context while we're still
+                // physically executing on its stack → two CPUs on same stack → crash.
+                sched.threads[idx].context.save_complete = 0;
                 sched.threads[idx].state = ThreadState::Blocked;
             }
         }
@@ -1654,14 +1851,22 @@ pub fn waitpid(tid: u32) -> u32 {
 }
 
 /// Non-blocking check if a thread has terminated.
+/// Also marks the target with `waiting_tid` so the auto-reaper won't
+/// discard the exit code before the caller can retrieve it.
 pub fn try_waitpid(tid: u32) -> u32 {
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("Scheduler not initialized");
+    let caller_tid = sched.per_cpu[get_cpu_id()].current_tid.unwrap_or(0);
     if let Some(target) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         if target.state == ThreadState::Terminated {
             let code = target.exit_code.unwrap_or(0);
             target.exit_code = None;
             return code;
+        }
+        // Mark that someone is polling for this thread's exit —
+        // prevents auto-reap from discarding the exit code.
+        if target.waiting_tid.is_none() {
+            target.waiting_tid = Some(caller_tid);
         }
         return u32::MAX - 1; // Still running
     }
@@ -1676,6 +1881,8 @@ pub fn sleep_until(wake_at: u32) {
         let sched = guard.as_mut().expect("Scheduler not initialized");
         if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
             if let Some(idx) = sched.find_idx(current_tid) {
+                // CRITICAL: Mark context as unsaved before Blocked (same race as waitpid).
+                sched.threads[idx].context.save_complete = 0;
                 sched.threads[idx].wake_at_tick = Some(wake_at);
                 sched.threads[idx].state = ThreadState::Blocked;
             }
@@ -1692,6 +1899,8 @@ pub fn block_current_thread() {
         let sched = guard.as_mut().expect("Scheduler not initialized");
         if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
             if let Some(idx) = sched.find_idx(current_tid) {
+                // CRITICAL: Mark context as unsaved before Blocked (same race as waitpid).
+                sched.threads[idx].context.save_complete = 0;
                 sched.threads[idx].state = ThreadState::Blocked;
             }
         }
@@ -2089,7 +2298,7 @@ pub fn run() -> ! {
                 crate::arch::x86::tss::set_kernel_stack_for_cpu(0, kstack_top);
                 crate::arch::x86::syscall_msr::set_kernel_rsp(0, kstack_top);
                 PER_CPU_CURRENT_TID[0].store(idle_tid, Ordering::Relaxed);
-                PER_CPU_HAS_THREAD[0].store(true, Ordering::Relaxed);
+                PER_CPU_HAS_THREAD[0].store(false, Ordering::Relaxed);
                 PER_CPU_STACK_BOTTOM[0].store(kstack_bottom, Ordering::Relaxed);
                 PER_CPU_STACK_TOP[0].store(kstack_top, Ordering::Relaxed);
                 PER_CPU_IDLE_STACK_TOP[0].store(kstack_top, Ordering::Relaxed);
@@ -2123,7 +2332,7 @@ pub fn register_ap_idle(cpu_id: usize) {
             crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, kstack_top);
             crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, kstack_top);
             PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
-            PER_CPU_HAS_THREAD[cpu_id].store(true, Ordering::Relaxed);
+            PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
             PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
             PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
             PER_CPU_IDLE_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);

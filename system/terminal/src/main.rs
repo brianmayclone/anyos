@@ -390,8 +390,8 @@ impl Shell {
         }
     }
 
-    /// Execute command. Returns (should_continue, optional foreground process).
-    fn submit(&mut self, buf: &mut TerminalBuffer) -> (bool, Option<ForegroundProcess>) {
+    /// Execute command. Returns (should_continue, optional foreground process, optional pending su username).
+    fn submit(&mut self, buf: &mut TerminalBuffer) -> (bool, Option<ForegroundProcess>, Option<String>) {
         let line = self.input.trim_matches(|c: char| c == ' ').to_string();
         buf.write_char('\n');
 
@@ -409,7 +409,7 @@ impl Shell {
         self.history_index = None;
 
         if line.is_empty() {
-            return (true, None);
+            return (true, None, None);
         }
 
         let mut parts = line.splitn(2, ' ');
@@ -438,8 +438,13 @@ impl Shell {
             "export" => self.cmd_export(args, buf),
             "unset" => self.cmd_unset(args, buf),
             "source" | "." => self.cmd_source(args, buf),
-            "su" => self.cmd_su(args, buf),
-            "exit" => return (false, None),
+            "su" => {
+                let pending = self.cmd_su(args, buf);
+                if pending.is_some() {
+                    return (true, None, pending);
+                }
+            }
+            "exit" => return (false, None, None),
             "reboot" => {
                 buf.current_color = COLOR_FG;
                 buf.write_str("Rebooting...\n");
@@ -451,9 +456,9 @@ impl Shell {
                 // Check for pipeline: "cmd1 | cmd2 | cmd3"
                 if line.contains('|') {
                     if let Some(fp) = self.execute_pipeline(&line, buf) {
-                        return (true, Some(fp));
+                        return (true, Some(fp), None);
                     }
-                    return (true, None);
+                    return (true, None, None);
                 }
 
                 // Check for background suffix: "cmd &"
@@ -538,13 +543,13 @@ impl Shell {
                         buf.write_str(bg_cmd);
                         buf.write_str("\nType 'help' for available commands.\n");
                     } else {
-                        return (true, Some(ForegroundProcess { tid, pipe_id, stdin_pipe, extra_pipes: Vec::new() }));
+                        return (true, Some(ForegroundProcess { tid, pipe_id, stdin_pipe, extra_pipes: Vec::new() }), None);
                     }
                 }
             }
         }
 
-        (true, None)
+        (true, None, None)
     }
 
     /// Execute a pipeline (cmd1 | cmd2 | cmd3).
@@ -913,14 +918,28 @@ impl Shell {
         }
     }
 
-    fn cmd_su(&self, args: &str, buf: &mut TerminalBuffer) {
+    /// Execute `su`. If password is given as argument, authenticate immediately.
+    /// Otherwise, return the target username so the caller can prompt for a password.
+    fn cmd_su(&self, args: &str, buf: &mut TerminalBuffer) -> Option<String> {
         let parts: Vec<&str> = args.split_whitespace().collect();
         let username = if parts.is_empty() { "root" } else { parts[0] };
-        let password = if parts.len() > 1 { parts[1] } else { "" };
 
+        if parts.len() > 1 {
+            // Password given as argument — authenticate immediately
+            let password = parts[1];
+            Self::do_su(username, password, buf);
+            None
+        } else {
+            // Need to prompt for password interactively
+            buf.current_color = COLOR_FG;
+            buf.write_str("Password: ");
+            Some(String::from(username))
+        }
+    }
+
+    fn do_su(username: &str, password: &str, buf: &mut TerminalBuffer) {
         buf.current_color = COLOR_FG;
         if process::authenticate(username, password) {
-            // Update environment to reflect new identity
             anyos_std::env::set("USER", username);
             let uid = process::getuid();
             if uid == 0 {
@@ -1228,6 +1247,10 @@ fn main() {
     let mut event = [0u32; 5];
     let mut fg_proc: Option<ForegroundProcess> = None;
 
+    // Password prompt state for built-in `su` command
+    let mut su_pending_user: Option<String> = None;
+    let mut su_password = String::new();
+
     loop {
         // Poll foreground process pipe for real-time output
         if let Some(ref fp) = fg_proc {
@@ -1340,7 +1363,7 @@ fn main() {
                 let char_val = event[2];
                 let mods = event[3];
 
-                // Ctrl+C: cancel foreground process or clear input
+                // Ctrl+C: cancel foreground process, password prompt, or clear input
                 if (mods & MOD_CTRL) != 0 && char_val == 'c' as u32 {
                     if let Some(fp) = fg_proc.take() {
                         process::kill(fp.tid);
@@ -1357,6 +1380,10 @@ fn main() {
                             ipc::pipe_close(p);
                         }
                     }
+                    // Cancel any pending su password prompt
+                    su_pending_user = None;
+                    su_password.clear();
+
                     buf.write_str("^C\n");
                     shell.input.clear();
                     shell.cursor = 0;
@@ -1365,15 +1392,50 @@ fn main() {
                     buf.write_str(&prompt);
                     buf.current_color = COLOR_FG;
                     dirty = true;
+                } else if su_pending_user.is_some() {
+                    // Password prompt mode for `su`
+                    match key_code {
+                        KEY_ENTER => {
+                            buf.write_char('\n');
+                            let username = su_pending_user.take().unwrap();
+                            Shell::do_su(&username, &su_password, &mut buf);
+                            su_password.clear();
+                            buf.current_color = COLOR_PROMPT;
+                            let prompt = shell.prompt();
+                            buf.write_str(&prompt);
+                            buf.current_color = COLOR_FG;
+                            dirty = true;
+                        }
+                        KEY_BACKSPACE => {
+                            if !su_password.is_empty() {
+                                su_password.pop();
+                                buf.backspace();
+                                dirty = true;
+                            }
+                        }
+                        _ => {
+                            if char_val > 0 && char_val < 128 && (mods & MOD_CTRL) == 0 {
+                                let c = char_val as u8 as char;
+                                if c >= ' ' {
+                                    su_password.push(c);
+                                    buf.write_char('*');
+                                    dirty = true;
+                                }
+                            }
+                        }
+                    }
                 } else if fg_proc.is_none() {
                     match key_code {
                         KEY_ENTER => {
-                            let (should_continue, new_fg) = shell.submit(&mut buf);
+                            let (should_continue, new_fg, pending_su) = shell.submit(&mut buf);
                             if !should_continue {
                                 break;
                             }
                             if let Some(fp) = new_fg {
                                 fg_proc = Some(fp);
+                            } else if let Some(user) = pending_su {
+                                su_pending_user = Some(user);
+                                su_password.clear();
                             } else {
                                 buf.current_color = COLOR_PROMPT;
                                 let prompt = shell.prompt();

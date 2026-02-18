@@ -902,7 +902,23 @@ pub extern "C" fn irq_handler(frame: &InterruptFrame) {
                 let uptime_ms = crate::arch::x86::pit::get_ticks();
                 uart_puts(b"[TICK] uptime=");
                 uart_put_dec((uptime_ms / 1000) as u32);
-                uart_puts(b"s\n");
+                uart_puts(b"s");
+                // Compact scheduler diagnostic (lock-free atomics only)
+                let ncpu = crate::arch::x86::smp::cpu_count() as usize;
+                for c in 0..ncpu.min(4) {
+                    if c == 0 { uart_puts(b" ["); } else { uart_puts(b" "); }
+                    uart_puts(b"C");
+                    uart_put_dec(c as u32);
+                    uart_puts(b":");
+                    uart_put_dec(crate::task::scheduler::per_cpu_current_tid(c));
+                    if crate::task::scheduler::per_cpu_in_scheduler(c) {
+                        uart_puts(b"/S");
+                    }
+                    if !crate::task::scheduler::per_cpu_has_thread(c) {
+                        uart_puts(b"/I");
+                    }
+                }
+                uart_puts(b"]\n");
             }
         }
         // === END DEBUG ===

@@ -1580,22 +1580,28 @@ class Iso9660Creator:
     def write_image(self, output_path, stage1_data=None, stage2_data=None, kernel_flat=None):
         """Write the complete ISO 9660 image."""
         # Layout:
-        # Sectors 0-15:  System area (stage1 + stage2)
+        # Sectors 0-15:  System area (stage1 + stage2 for HDD boot)
         # Sector 16:     PVD
         # Sector 17:     Boot Record Volume Descriptor (El Torito)
         # Sector 18:     VD Set Terminator
         # Sector 19:     Boot Catalog
         # Sector 20:     Path Table (L-type)
         # Sector 21:     Path Table (M-type)
-        # Sector 22+:    Directory extents
-        # Then:          Kernel data (at sector 32 minimum = disk LBA 128)
+        # Sectors 22-37: El Torito boot image (stage1+stage2, 16 CD sectors)
+        # Sector 38+:    Directory extents
+        # Then:          Kernel data
         # Then:          File data
 
         has_boot = stage1_data is not None and stage2_data is not None
 
+        # El Torito boot image at sector 22 (16 CD sectors = 32 KiB)
+        # VirtualBox requires Load RBA != 0 to recognize the CD as bootable
+        boot_image_lba = 22
+        boot_image_sectors = 16  # 32 KiB = stage1 (512) + stage2 (31744)
+
         # Assign LBAs for directories
         all_dirs = sorted(self.dirs.keys())
-        dir_lba_start = 22
+        dir_lba_start = boot_image_lba + boot_image_sectors  # 38
         dir_lbas = {}
         next_lba = dir_lba_start
         for d in all_dirs:
@@ -1603,10 +1609,8 @@ class Iso9660Creator:
             # Estimate directory extent size (1 sector per dir for now, expand if needed)
             next_lba += 1
 
-        # Kernel data LBA (must be at CD sector 32 = disk LBA 128 for bootloader)
-        kernel_lba = 32
-        if next_lba > kernel_lba:
-            kernel_lba = next_lba
+        # Kernel data LBA (after directories)
+        kernel_lba = next_lba
         kernel_sectors = 0
         if kernel_flat:
             kernel_sectors = (len(kernel_flat) + ISO_BLOCK_SIZE - 1) // ISO_BLOCK_SIZE
@@ -1785,14 +1789,13 @@ class Iso9660Creator:
         # Sector count: number of 512-byte virtual sectors to load
         # Load stage1 (1 sector) + stage2 (63 sectors) = 64 sectors = 32 KiB
         struct.pack_into('<H', boot_cat, 38, 64)
-        # Load RBA: CD sector of boot image (sector 0 = system area)
-        struct.pack_into('<I', boot_cat, 40, 0)
+        # Load RBA: CD sector of boot image (non-zero for VirtualBox compatibility)
+        struct.pack_into('<I', boot_cat, 40, boot_image_lba)
 
         # === Assemble the image ===
         image_size = total_sectors * ISO_BLOCK_SIZE
         image = bytearray(image_size)
 
-        # System area (sectors 0-15): stage1 + stage2
         # Patch stage2 with actual kernel location (must happen after layout is computed)
         if has_boot:
             stage2_patched = bytearray(stage2_data)
@@ -1802,8 +1805,13 @@ class Iso9660Creator:
                 struct.pack_into("<H", stage2_patched, 2, kernel_disk_sectors)
                 struct.pack_into("<I", stage2_patched, 4, kernel_disk_lba)
             print(f"  Stage2 patched: kernel at disk LBA {kernel_disk_lba}, {kernel_disk_sectors} sectors")
+            # System area (sectors 0-15): stage1 + stage2 for HDD boot path
             image[0:len(stage1_data)] = stage1_data
             image[SECTOR_SIZE:SECTOR_SIZE + len(stage2_patched)] = stage2_patched
+            # El Torito boot image (sector 22+): same data for CD-ROM boot path
+            bi_off = boot_image_lba * ISO_BLOCK_SIZE
+            image[bi_off:bi_off + len(stage1_data)] = stage1_data
+            image[bi_off + SECTOR_SIZE:bi_off + SECTOR_SIZE + len(stage2_patched)] = stage2_patched
 
         # PVD at sector 16
         image[16 * ISO_BLOCK_SIZE:16 * ISO_BLOCK_SIZE + ISO_BLOCK_SIZE] = pvd

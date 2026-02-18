@@ -4,7 +4,7 @@
 ; void context_switch(CpuContext* old, CpuContext* new)
 ; System V ABI: old in RDI, new in RSI
 ;
-; CpuContext layout (each field u64, total 152 bytes):
+; CpuContext layout (each field u64, total 176 bytes):
 ;   offset 0:   rax
 ;   offset 8:   rbx
 ;   offset 16:  rcx
@@ -24,7 +24,12 @@
 ;   offset 128: rip
 ;   offset 136: rflags
 ;   offset 144: cr3
+;   offset 152: save_complete
+;   offset 160: canary   (CANARY_MAGIC = 0xCAFEBABEDEADBEEF)
+;   offset 168: checksum (XOR of offsets 0..152)
 ; =============================================================================
+
+%define CANARY_MAGIC 0xCAFEBABEDEADBEEF
 
 [BITS 64]
 global context_switch
@@ -86,8 +91,64 @@ context_switch:
     ; (register saves above) are visible before this store.
     mov qword [rdi + 152], 1
 
+    ; Write canary magic value (corruption detection)
+    mov rax, CANARY_MAGIC
+    mov [rdi + 160], rax
+
+    ; Compute XOR checksum of register fields (offsets 0..144, 19 fields).
+    ; Excludes save_complete (offset 152) which is modified by Rust scheduler.
+    mov rax, [rdi + 0]
+    xor rax, [rdi + 8]
+    xor rax, [rdi + 16]
+    xor rax, [rdi + 24]
+    xor rax, [rdi + 32]
+    xor rax, [rdi + 40]
+    xor rax, [rdi + 48]
+    xor rax, [rdi + 56]
+    xor rax, [rdi + 64]
+    xor rax, [rdi + 72]
+    xor rax, [rdi + 80]
+    xor rax, [rdi + 88]
+    xor rax, [rdi + 96]
+    xor rax, [rdi + 104]
+    xor rax, [rdi + 112]
+    xor rax, [rdi + 120]
+    xor rax, [rdi + 128]
+    xor rax, [rdi + 136]
+    xor rax, [rdi + 144]
+    mov [rdi + 168], rax
+
     ; --- Validate new context before loading ---
-    ; Range validation for heap-corrupted CpuContext.
+
+    ; 1. Verify canary (detects external memory overwrites)
+    mov rax, CANARY_MAGIC
+    cmp [rsi + 160], rax
+    jne .bad_canary              ; canary destroyed = memory corruption
+
+    ; 2. Verify XOR checksum of register fields (offsets 0..144, 19 fields)
+    mov rax, [rsi + 0]
+    xor rax, [rsi + 8]
+    xor rax, [rsi + 16]
+    xor rax, [rsi + 24]
+    xor rax, [rsi + 32]
+    xor rax, [rsi + 40]
+    xor rax, [rsi + 48]
+    xor rax, [rsi + 56]
+    xor rax, [rsi + 64]
+    xor rax, [rsi + 72]
+    xor rax, [rsi + 80]
+    xor rax, [rsi + 88]
+    xor rax, [rsi + 96]
+    xor rax, [rsi + 104]
+    xor rax, [rsi + 112]
+    xor rax, [rsi + 120]
+    xor rax, [rsi + 128]
+    xor rax, [rsi + 136]
+    xor rax, [rsi + 144]
+    cmp rax, [rsi + 168]
+    jne .bad_checksum            ; fields modified since save = corruption
+
+    ; 3. Range validation for heap-corrupted CpuContext.
     ; RSP must be >= KERNEL_VMA (0xFFFFFFFF80100000) — covers both:
     ;   - boot/idle stacks in BSS area (0xFFFFFFFF803xxxxx)
     ;   - heap-allocated thread stacks (0xFFFFFFFF82xxxxxx+)
@@ -161,35 +222,75 @@ context_switch:
     ret
 
 ; =========================================================================
-; .bad_ctx: Corrupt CpuContext detected — full dump + halt
+; Corruption handlers — canary, checksum, and range check failures
 ; =========================================================================
-; Reached when RSP/RIP fails range validation.
-; We have NOT loaded any new CR3/RSP/RIP — still on old thread's stack/CR3.
-; However, the old context has save_complete=1, so another CPU could pick it
-; up and start using the same stack. Use register-only I/O (no push/pop).
-;
-; Prints ALL 20 CpuContext fields to help identify the corruption pattern.
-; Then halts this CPU. Other CPUs continue running normally.
+; Each prints a distinguishing label then falls through to the dump.
+; At entry RSI = new CpuContext pointer, we're still on old thread's stack.
+; Uses register-only I/O (no push/pop) since stack may be raced.
 ; =========================================================================
-.bad_ctx:
-    cli
-    mov r14, rsi               ; save CpuContext pointer in R14
 
-    ; Print "\r\n!CTX CORRUPT ctx="
+.bad_canary:
+    cli
+    mov r14, rsi
+    ; Print "\r\n!CANARY DEAD ctx="
     SERIAL_PUTC_POLL 0x0D
     SERIAL_PUTC_POLL 0x0A
     SERIAL_PUTC_POLL '!'
     SERIAL_PUTC_POLL 'C'
-    SERIAL_PUTC_POLL 'T'
-    SERIAL_PUTC_POLL 'X'
+    SERIAL_PUTC_POLL 'A'
+    SERIAL_PUTC_POLL 'N'
+    SERIAL_PUTC_POLL 'A'
+    SERIAL_PUTC_POLL 'R'
+    SERIAL_PUTC_POLL 'Y'
     SERIAL_PUTC_POLL ' '
+    SERIAL_PUTC_POLL 'D'
+    SERIAL_PUTC_POLL 'E'
+    SERIAL_PUTC_POLL 'A'
+    SERIAL_PUTC_POLL 'D'
+    jmp .dump_header_ctx
+
+.bad_checksum:
+    cli
+    mov r14, rsi
+    ; Print "\r\n!CHECKSUM FAIL ctx="
+    SERIAL_PUTC_POLL 0x0D
+    SERIAL_PUTC_POLL 0x0A
+    SERIAL_PUTC_POLL '!'
     SERIAL_PUTC_POLL 'C'
-    SERIAL_PUTC_POLL 'O'
-    SERIAL_PUTC_POLL 'R'
-    SERIAL_PUTC_POLL 'R'
+    SERIAL_PUTC_POLL 'H'
+    SERIAL_PUTC_POLL 'K'
+    SERIAL_PUTC_POLL 'S'
     SERIAL_PUTC_POLL 'U'
+    SERIAL_PUTC_POLL 'M'
+    SERIAL_PUTC_POLL ' '
+    SERIAL_PUTC_POLL 'F'
+    SERIAL_PUTC_POLL 'A'
+    SERIAL_PUTC_POLL 'I'
+    SERIAL_PUTC_POLL 'L'
+    jmp .dump_header_ctx
+
+.bad_ctx:
+    cli
+    mov r14, rsi
+    ; Print "\r\n!RSP/RIP BAD  ctx="
+    SERIAL_PUTC_POLL 0x0D
+    SERIAL_PUTC_POLL 0x0A
+    SERIAL_PUTC_POLL '!'
+    SERIAL_PUTC_POLL 'R'
+    SERIAL_PUTC_POLL 'S'
     SERIAL_PUTC_POLL 'P'
-    SERIAL_PUTC_POLL 'T'
+    SERIAL_PUTC_POLL '/'
+    SERIAL_PUTC_POLL 'R'
+    SERIAL_PUTC_POLL 'I'
+    SERIAL_PUTC_POLL 'P'
+    SERIAL_PUTC_POLL ' '
+    SERIAL_PUTC_POLL 'B'
+    SERIAL_PUTC_POLL 'A'
+    SERIAL_PUTC_POLL 'D'
+    SERIAL_PUTC_POLL ' '
+
+.dump_header_ctx:
+    ; Print " ctx="
     SERIAL_PUTC_POLL ' '
     SERIAL_PUTC_POLL 'c'
     SERIAL_PUTC_POLL 't'
@@ -202,8 +303,8 @@ context_switch:
     SERIAL_PUTC_POLL 0x0D
     SERIAL_PUTC_POLL 0x0A
 
-    ; Dump all 20 fields: offset 0 (rax) through offset 152 (save_complete)
-    ; Use R12 as field index (0..19), R14 = CpuContext base (preserved)
+    ; Dump all 22 fields: offset 0 (rax) through offset 168 (checksum)
+    ; Use R12 as field index (0..21), R14 = CpuContext base (preserved)
     xor r12d, r12d             ; R12 = 0 (first field index)
 .dump_field:
     ; Print "  [" offset "] = " value "\r\n"
@@ -265,7 +366,7 @@ context_switch:
     SERIAL_PUTC_POLL 0x0A
 
     inc r12
-    cmp r12, 20                ; 20 fields (0..19, offsets 0..152)
+    cmp r12, 22                ; 22 fields (0..21, offsets 0..168)
     jb .dump_field
 
     ; Halt this CPU forever. Other CPUs continue via their own scheduler.

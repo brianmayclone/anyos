@@ -293,6 +293,10 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         // Spawn USB hot-plug poll thread (low priority)
         task::scheduler::spawn(usb_poll_thread, 50, "usb_poll");
 
+        // Spawn kernel thread stress test when debug_verbose is enabled
+        #[cfg(feature = "debug_verbose")]
+        task::scheduler::spawn(task::stress_test::stress_master, 30, "stress");
+
         // Launch userspace compositor (highest user priority)
         match task::loader::load_and_run("/System/compositor/compositor", "compositor") {
             Ok(tid) => serial_println!("[OK] Userspace compositor spawned (TID={})", tid),
@@ -362,6 +366,11 @@ extern "C" fn usb_poll_thread() {
             crate::drivers::usb::poll_all_controllers();
         }
 
-        crate::arch::x86::pit::delay_ms(10);
+        // Blocking sleep — yields the CPU instead of busy-spinning.
+        let pit_hz = crate::arch::x86::pit::TICK_HZ;
+        let ticks = (10u64 * pit_hz as u64 / 1000) as u32;
+        let ticks = if ticks == 0 { 1 } else { ticks };
+        let now = crate::arch::x86::pit::get_ticks();
+        crate::task::scheduler::sleep_until(now.wrapping_add(ticks));
     }
 }
