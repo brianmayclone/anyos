@@ -6,7 +6,19 @@ project(anyOS NONE)
 # ============================================================
 set(NASM_EXECUTABLE "nasm")
 set(QEMU_EXECUTABLE "qemu-system-x86_64")
-set(CARGO_EXECUTABLE "$ENV{HOME}/.cargo/bin/cargo")
+find_program(CARGO_EXECUTABLE cargo
+    HINTS "$ENV{USERPROFILE}/.cargo/bin" "$ENV{HOME}/.cargo/bin")
+if(NOT CARGO_EXECUTABLE)
+    message(FATAL_ERROR "cargo not found in PATH. Install Rust from https://rustup.rs/")
+endif()
+
+# find make without putting MSYS2/usr/bin in the Windows PATH
+# (that directory contains a GNU coreutils link.exe that conflicts with MSVC link.exe)
+find_program(MAKE_EXECUTABLE NAMES make
+    HINTS "C:/msys64/usr/bin" "/usr/bin" "/usr/local/bin")
+if(NOT MAKE_EXECUTABLE)
+    message(STATUS "make not found — C library and game builds will be skipped")
+endif()
 
 option(ANYOS_DEBUG_VERBOSE "Enable verbose debug output" OFF)
 
@@ -614,8 +626,8 @@ set(LIBC_CRT0 "${LIBC_DIR}/obj/crt0.o")
 
 add_custom_command(
   OUTPUT ${LIBC_A} ${LIBC_CRT0}
-  COMMAND make -C ${LIBC_DIR} clean
-  COMMAND make -C ${LIBC_DIR}
+  COMMAND ${MAKE_EXECUTABLE} -C ${LIBC_DIR} clean
+  COMMAND ${MAKE_EXECUTABLE} -C ${LIBC_DIR}
   DEPENDS
     ${LIBC_DIR}/Makefile
     ${LIBC_DIR}/src/crt0.S
@@ -800,8 +812,8 @@ set(DOOM_APP "${SYSROOT_DIR}/Applications/DOOM.app")
 
 add_custom_command(
   OUTPUT ${DOOM_ELF}
-  COMMAND make -C ${DOOM_DIR} clean
-  COMMAND make -C ${DOOM_DIR} LIBC_DIR=${LIBC_DIR}
+  COMMAND ${MAKE_EXECUTABLE} -C ${DOOM_DIR} clean
+  COMMAND ${MAKE_EXECUTABLE} -C ${DOOM_DIR} LIBC_DIR=${LIBC_DIR}
   DEPENDS ${LIBC_A} ${LIBC_CRT0}
   COMMENT "Building DOOM for anyOS"
 )
@@ -827,8 +839,8 @@ set(QUAKE_APP "${SYSROOT_DIR}/Applications/Quake.app")
 
 add_custom_command(
   OUTPUT ${QUAKE_ELF}
-  COMMAND make -C ${QUAKE_DIR} clean
-  COMMAND make -C ${QUAKE_DIR} LIBC_DIR=${LIBC_DIR}
+  COMMAND ${MAKE_EXECUTABLE} -C ${QUAKE_DIR} clean
+  COMMAND ${MAKE_EXECUTABLE} -C ${QUAKE_DIR} LIBC_DIR=${LIBC_DIR}
   DEPENDS ${LIBC_A} ${LIBC_CRT0}
   COMMENT "Building Quake for anyOS"
 )

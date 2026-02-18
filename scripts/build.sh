@@ -10,6 +10,7 @@
 # Build anyOS
 # Usage: ./build.sh [--clean] [--uefi] [--iso] [--all] [--debug]
 
+BUILD_START=$(date +%s)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="${SCRIPT_DIR}/.."
 BUILD_DIR="${PROJECT_DIR}/build"
@@ -114,4 +115,5 @@ if [ "$BUILD_ISO" -eq 1 ] || [ "$BUILD_ALL" -eq 1 ]; then
     echo "ISO build successful: ${BUILD_DIR}/anyos.iso"
 fi
 
-echo "Build complete."
+ELAPSED=$(( $(date +%s) - BUILD_START ))
+printf "Build complete in %02d:%02d\n" $((ELAPSED / 60)) $((ELAPSED % 60))

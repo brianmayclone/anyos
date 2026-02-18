@@ -19,6 +19,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+$BuildStart = Get-Date
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectDir = Split-Path -Parent $ScriptDir
 $BuildDir = Join-Path $ProjectDir "build"
@@ -99,4 +100,5 @@ if ($Iso -or $All) {
     Write-Host "ISO build successful: $BuildDir\anyos.iso" -ForegroundColor Green
 }
 
-Write-Host "Build complete." -ForegroundColor Green
+$elapsed = (Get-Date) - $BuildStart
+Write-Host ("Build complete in {0:mm\:ss}" -f $elapsed) -ForegroundColor Green

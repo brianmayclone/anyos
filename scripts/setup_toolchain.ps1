@@ -22,6 +22,17 @@ function Test-CommandExists {
     $null -ne (Get-Command $Command -ErrorAction SilentlyContinue)
 }
 
+# ── Helper: check if python is real (not a Windows Store App Execution Alias) ─
+
+function Test-PythonReal {
+    try {
+        $ver = & python --version 2>&1
+        return ($LASTEXITCODE -eq 0 -and "$ver" -match "Python \d")
+    } catch {
+        return $false
+    }
+}
+
 # ── Helper: install via winget ───────────────────────────────────────────────
 
 function Install-ViaWinget {
@@ -30,18 +41,20 @@ function Install-ViaWinget {
         [string]$WingetId,
         [string]$FallbackUrl
     )
-    Write-Host "Installing $Name..."
-    if (Test-CommandExists "winget") {
-        winget install --accept-source-agreements --accept-package-agreements -e --id $WingetId
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "  winget install failed. Download manually from: $FallbackUrl" -ForegroundColor Yellow
-            return $false
-        }
-        return $true
-    } else {
+    if (-not (Test-CommandExists "winget")) {
         Write-Host "  winget not found. Download manually from: $FallbackUrl" -ForegroundColor Yellow
         return $false
     }
+    Write-Host "Installing $Name via winget..."
+    winget install --accept-source-agreements --accept-package-agreements -e --id $WingetId
+    $ec = $LASTEXITCODE
+    # 0                = success
+    # 0x8A15002B (-1978335189) = already installed (treat as success)
+    if ($ec -eq 0 -or $ec -eq -1978335189) {
+        return $true
+    }
+    Write-Host "  winget exited with code $ec. Download manually from: $FallbackUrl" -ForegroundColor Yellow
+    return $false
 }
 
 # ── Helper: refresh PATH within this session ─────────────────────────────────
@@ -50,6 +63,21 @@ function Update-SessionPath {
     $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $env:Path = "$machinePath;$userPath"
+}
+
+# ── Helper: add a dir to current + user PATH if not already present ───────────
+
+function Add-ToPathIfNeeded {
+    param([string]$Dir)
+    if (-not (Test-Path $Dir)) { return }
+    if ($env:Path -notlike "*$Dir*") {
+        $env:Path = "$Dir;$env:Path"
+    }
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($userPath -notlike "*$Dir*") {
+        [Environment]::SetEnvironmentVariable("Path", "$userPath;$Dir", "User")
+        Write-Host "  Added $Dir to user PATH" -ForegroundColor DarkGray
+    }
 }
 
 # ── Rust nightly ─────────────────────────────────────────────────────────────
@@ -78,35 +106,30 @@ Write-Host ""
 # ── NASM ─────────────────────────────────────────────────────────────────────
 
 Write-Host "--- NASM ---" -ForegroundColor Green
+# Fix PATH first in case NASM is installed but wasn't added to PATH
+Add-ToPathIfNeeded "C:\Program Files\NASM"
 if (-not (Test-CommandExists "nasm")) {
     Install-ViaWinget "NASM" "NASM.NASM" "https://www.nasm.us/pub/nasm/releasebuilds/"
     Update-SessionPath
-    # NASM installs to C:\Program Files\NASM but may not add to PATH
-    $nasmDir = "C:\Program Files\NASM"
-    if ((Test-Path $nasmDir) -and ($env:Path -notlike "*$nasmDir*")) {
-        $env:Path = "$nasmDir;$env:Path"
-        # Persist to user PATH
-        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-        if ($userPath -notlike "*$nasmDir*") {
-            [Environment]::SetEnvironmentVariable("Path", "$userPath;$nasmDir", "User")
-            Write-Host "  Added $nasmDir to user PATH" -ForegroundColor DarkGray
-        }
-    }
+    Add-ToPathIfNeeded "C:\Program Files\NASM"
 }
 Write-Host ""
 
 # ── CMake ────────────────────────────────────────────────────────────────────
 
 Write-Host "--- CMake ---" -ForegroundColor Green
+Add-ToPathIfNeeded "C:\Program Files\CMake\bin"
 if (-not (Test-CommandExists "cmake")) {
     Install-ViaWinget "CMake" "Kitware.CMake" "https://cmake.org/download/"
     Update-SessionPath
+    Add-ToPathIfNeeded "C:\Program Files\CMake\bin"
 }
 Write-Host ""
 
 # ── Ninja ────────────────────────────────────────────────────────────────────
 
 Write-Host "--- Ninja ---" -ForegroundColor Green
+# Ninja is typically added to PATH by winget; no fixed install dir to probe
 if (-not (Test-CommandExists "ninja")) {
     Install-ViaWinget "Ninja" "Ninja-build.Ninja" "https://github.com/ninja-build/ninja/releases"
     Update-SessionPath
@@ -116,39 +139,38 @@ Write-Host ""
 # ── QEMU ─────────────────────────────────────────────────────────────────────
 
 Write-Host "--- QEMU ---" -ForegroundColor Green
-$qemuExe = Get-Command "qemu-system-x86_64" -ErrorAction SilentlyContinue
-if (-not $qemuExe) {
-    # Check default install location
-    $qemuDefaultDir = "C:\Program Files\qemu"
-    if (Test-Path (Join-Path $qemuDefaultDir "qemu-system-x86_64.exe")) {
-        $env:Path = "$qemuDefaultDir;$env:Path"
-        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-        if ($userPath -notlike "*$qemuDefaultDir*") {
-            [Environment]::SetEnvironmentVariable("Path", "$userPath;$qemuDefaultDir", "User")
-            Write-Host "  Added $qemuDefaultDir to user PATH" -ForegroundColor DarkGray
-        }
-    } else {
-        Install-ViaWinget "QEMU" "SoftwareFreedomConservancy.QEMU" "https://www.qemu.org/download/#windows"
-        Update-SessionPath
-    }
+Add-ToPathIfNeeded "C:\Program Files\qemu"
+if (-not (Test-CommandExists "qemu-system-x86_64")) {
+    Install-ViaWinget "QEMU" "SoftwareFreedomConservancy.QEMU" "https://www.qemu.org/download/#windows"
+    Update-SessionPath
+    Add-ToPathIfNeeded "C:\Program Files\qemu"
 }
 Write-Host ""
 
 # ── Python 3 + pip packages ─────────────────────────────────────────────────
 
 Write-Host "--- Python 3 ---" -ForegroundColor Green
-if (-not (Test-CommandExists "python")) {
+if (-not (Test-PythonReal)) {
     Install-ViaWinget "Python 3" "Python.Python.3.12" "https://www.python.org/downloads/"
     Update-SessionPath
 }
 
-# Install pip packages for build scripts
-$missingPkg = $false
-try { & python -c "import PIL" 2>$null; if ($LASTEXITCODE -ne 0) { $missingPkg = $true } } catch { $missingPkg = $true }
-try { & python -c "import fontTools" 2>$null; if ($LASTEXITCODE -ne 0) { $missingPkg = $true } } catch { $missingPkg = $true }
-if ($missingPkg) {
-    Write-Host "Installing Python packages (Pillow, fonttools)..."
-    & python -m pip install --user Pillow fonttools 2>$null
+# Install pip packages for build scripts (only if python is now available)
+if (Test-PythonReal) {
+    $missingPkg = $false
+    try { & python -c "import PIL" 2>$null; if ($LASTEXITCODE -ne 0) { $missingPkg = $true } } catch { $missingPkg = $true }
+    try { & python -c "import fontTools" 2>$null; if ($LASTEXITCODE -ne 0) { $missingPkg = $true } } catch { $missingPkg = $true }
+    if ($missingPkg) {
+        Write-Host "Installing Python packages (Pillow, fonttools)..."
+        try {
+            & python -m pip install --user Pillow fonttools 2>$null
+        } catch {
+            Write-Host "  pip install failed. Run manually: python -m pip install --user Pillow fonttools" -ForegroundColor Yellow
+        }
+    }
+} else {
+    Write-Host "  Python not found after install attempt. Install manually from https://www.python.org/downloads/" -ForegroundColor Yellow
+    Write-Host "  Then run: python -m pip install --user Pillow fonttools" -ForegroundColor Yellow
 }
 Write-Host ""
 
@@ -165,31 +187,64 @@ if (-not (Test-Path $msys2Bash)) {
 }
 
 if (Test-Path $msys2Bash) {
-    # Update MSYS2 package database and install cross-compiler
-    Write-Host "Installing i686-elf cross-compiler via MSYS2 pacman..."
-    & $msys2Bash --login -c "pacman -Syu --noconfirm" 2>$null
-    & $msys2Bash --login -c "pacman -S --needed --noconfirm mingw-w64-x86_64-i686-elf-gcc mingw-w64-x86_64-i686-elf-binutils make" 2>$null
+    # MSYS2 has no pre-built i686-elf-gcc package.
+    # The cross-compiler installs to ~/opt/cross/bin inside MSYS2,
+    # which maps to %USERPROFILE%\opt\cross\bin on Windows.
+    $crossBin = Join-Path $env:USERPROFILE "opt\cross\bin"
+    Add-ToPathIfNeeded $crossBin
+    # NOTE: do NOT add C:\msys64\usr\bin to the Windows PATH —
+    # it contains a GNU coreutils link.exe that shadows MSVC link.exe
+    # and breaks Rust/MSVC builds. make is found via CMake's find_program.
 
-    # Add MSYS2 MinGW64 bin to PATH (where i686-elf-gcc lives)
-    $mingw64Bin = Join-Path $msys2Root "mingw64\bin"
-    if ((Test-Path $mingw64Bin) -and ($env:Path -notlike "*$mingw64Bin*")) {
-        $env:Path = "$mingw64Bin;$env:Path"
-        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-        if ($userPath -notlike "*$mingw64Bin*") {
-            [Environment]::SetEnvironmentVariable("Path", "$userPath;$mingw64Bin", "User")
-            Write-Host "  Added $mingw64Bin to user PATH" -ForegroundColor DarkGray
+    $crossGcc = Join-Path $crossBin "i686-elf-gcc.exe"
+    if (Test-Path $crossGcc) {
+        Write-Host "  i686-elf-gcc already built at $crossBin" -ForegroundColor DarkGray
+    } else {
+        Write-Host "  i686-elf-gcc not found. Building from source via MSYS2..."
+        Write-Host "  This downloads binutils + GCC and compiles them -- expect 20-30 min."
+
+        # Update package database and install build deps (pacman replaces apt-get here)
+        & $msys2Bash --login -c "pacman -Syu --noconfirm"
+        & $msys2Bash --login -c "pacman -S --needed --noconfirm base-devel gcc wget gmp-devel mpc-devel mpfr-devel"
+
+        # Inline build matching build_cross_compiler.sh but for MSYS2
+        $buildCmd = @'
+set -euo pipefail
+TARGET="i686-elf"
+PREFIX="$HOME/opt/cross"
+BINUTILS_VERSION="2.44"
+GCC_VERSION="14.2.0"
+JOBS="$(nproc)"
+SRC_DIR="$HOME/src/cross-compiler"
+BUILD_DIR="$HOME/build/cross-compiler"
+mkdir -p "$PREFIX" "$SRC_DIR" "$BUILD_DIR"
+export PATH="$PREFIX/bin:$PATH"
+cd "$SRC_DIR"
+[ ! -f "binutils-${BINUTILS_VERSION}.tar.xz" ] && wget -q --show-progress "https://ftp.gnu.org/gnu/binutils/binutils-${BINUTILS_VERSION}.tar.xz"
+[ ! -f "gcc-${GCC_VERSION}.tar.xz" ]           && wget -q --show-progress "https://ftp.gnu.org/gnu/gcc/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.xz"
+[ ! -d "binutils-${BINUTILS_VERSION}" ] && tar xf "binutils-${BINUTILS_VERSION}.tar.xz"
+[ ! -d "gcc-${GCC_VERSION}" ]           && tar xf "gcc-${GCC_VERSION}.tar.xz"
+rm -rf "$BUILD_DIR/binutils" && mkdir -p "$BUILD_DIR/binutils" && cd "$BUILD_DIR/binutils"
+"$SRC_DIR/binutils-${BINUTILS_VERSION}/configure" --target="$TARGET" --prefix="$PREFIX" --with-sysroot --disable-nls --disable-werror
+make -j"$JOBS" && make install
+rm -rf "$BUILD_DIR/gcc" && mkdir -p "$BUILD_DIR/gcc" && cd "$BUILD_DIR/gcc"
+"$SRC_DIR/gcc-${GCC_VERSION}/configure" --target="$TARGET" --prefix="$PREFIX" --disable-nls --enable-languages=c --without-headers
+make -j"$JOBS" all-gcc all-target-libgcc && make install-gcc install-target-libgcc
+echo "Done: $("$PREFIX/bin/${TARGET}-gcc" --version | head -1)"
+'@
+        & $msys2Bash --login -c $buildCmd
+        if ($LASTEXITCODE -eq 0) {
+            Add-ToPathIfNeeded $crossBin
+            Write-Host "  i686-elf-gcc built successfully." -ForegroundColor Green
+        } else {
+            Write-Host "  Build failed. C libraries and games will be skipped by CMake." -ForegroundColor Yellow
+            Write-Host "  To retry manually: run scripts\build_cross_compiler.sh inside MSYS2."
         }
-    }
-
-    # Also add MSYS2 usr/bin for make
-    $msys2Bin = Join-Path $msys2Root "usr\bin"
-    if ((Test-Path $msys2Bin) -and ($env:Path -notlike "*$msys2Bin*")) {
-        $env:Path = "$msys2Bin;$env:Path"
     }
 } else {
     Write-Host "  MSYS2 not found at $msys2Root." -ForegroundColor Yellow
     Write-Host "  Install manually from https://www.msys2.org/ then re-run this script."
-    Write-Host "  The cross-compiler is needed for libc/TCC. Rust-only builds work without it."
+    Write-Host "  Without it, C libraries/TCC/games are skipped. Rust kernel builds fine."
 }
 Write-Host ""
 
