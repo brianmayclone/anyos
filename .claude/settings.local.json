@@ -5,7 +5,9 @@
       "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Development\\\\anyos\\\\scripts\\\\_fix_path.ps1\")",
       "Bash(powershell.exe -Command \"rustup toolchain list; Get-ChildItem \\(Join-Path $env:USERPROFILE ''.rustup/toolchains''\\) -ErrorAction SilentlyContinue | Select-Object Name\")",
       "Bash(powershell.exe -Command \"Get-ChildItem ''C:\\\\Users\\\\cmoel\\\\.rustup\\\\toolchains\\\\nightly-x86_64-pc-windows-msvc\\\\lib\\\\rustlib\\\\x86_64-pc-windows-msvc\\\\bin'' -Filter ''lld*'' -ErrorAction SilentlyContinue | Select-Object Name\")",
-      "Bash(powershell.exe -Command \"Get-ChildItem ''C:\\\\Users\\\\cmoel\\\\.rustup\\\\toolchains\\\\nightly-x86_64-pc-windows-msvc\\\\bin'' -Filter ''*.exe'' | Select-Object Name\")"
+      "Bash(powershell.exe -Command \"Get-ChildItem ''C:\\\\Users\\\\cmoel\\\\.rustup\\\\toolchains\\\\nightly-x86_64-pc-windows-msvc\\\\bin'' -Filter ''*.exe'' | Select-Object Name\")",
+      "Bash(powershell.exe -Command:*)",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Development\\\\anyos\\\\scripts\\\\_add_cross_path.ps1\")"
     ]
   }
 }

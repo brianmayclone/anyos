@@ -20,6 +20,12 @@ if(NOT MAKE_EXECUTABLE)
     message(STATUS "make not found — C library and game builds will be skipped")
 endif()
 
+# find Python — on Windows the executable is "python", on Unix "python3"
+find_program(PYTHON_EXECUTABLE NAMES python3 python)
+if(NOT PYTHON_EXECUTABLE)
+    message(FATAL_ERROR "Python not found. Install from https://www.python.org/downloads/")
+endif()
+
 option(ANYOS_DEBUG_VERBOSE "Enable verbose debug output" OFF)
 
 # Auto-detect i686-elf cross-compiler (needed for libc, TCC, Doom, Quake)
@@ -212,7 +218,7 @@ function(add_rust_user_program NAME SRC_DIR)
   )
   add_custom_command(
     OUTPUT ${SYSROOT_DIR}/System/bin/${NAME}
-    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+    COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
       ${ELF}
       ${SYSROOT_DIR}/System/bin/${NAME}
     DEPENDS ${ELF}
@@ -241,7 +247,7 @@ function(add_rust_system_program NAME SRC_DIR)
   )
   add_custom_command(
     OUTPUT ${SYSROOT_DIR}/System/${NAME}
-    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+    COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
       ${ELF}
       ${SYSROOT_DIR}/System/${NAME}
     DEPENDS ${ELF}
@@ -270,7 +276,7 @@ function(add_rust_sbin_program NAME SRC_DIR)
   )
   add_custom_command(
     OUTPUT ${SYSROOT_DIR}/System/sbin/${NAME}
-    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+    COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
       ${ELF}
       ${SYSROOT_DIR}/System/sbin/${NAME}
     DEPENDS ${ELF}
@@ -301,7 +307,7 @@ function(add_app NAME SRC_DIR DISPLAY_NAME)
   add_custom_command(
     OUTPUT "${APP_DIR}/${DISPLAY_NAME}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${APP_DIR}"
-    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+    COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
       ${ELF}
       "${APP_DIR}/${DISPLAY_NAME}"
     COMMAND ${CMAKE_COMMAND} -E copy "${SRC_DIR}/Info.conf" "${APP_DIR}/Info.conf"
@@ -342,7 +348,7 @@ function(add_dll NAME SRC_DIR)
   )
   add_custom_command(
     OUTPUT ${SYSROOT_DIR}/Libraries/${NAME}.dlib
-    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py --dlib
+    COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2bin.py --dlib
       ${DLL_ELF}
       ${SYSROOT_DIR}/Libraries/${NAME}.dlib
     DEPENDS ${DLL_ELF}
@@ -373,7 +379,7 @@ function(add_driver NAME SRC_DIR DISPLAY_NAME CATEGORY)
   add_custom_command(
     OUTPUT "${DDV_DIR}/${DISPLAY_NAME}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${DDV_DIR}"
-    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2kdrv.py
+    COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2kdrv.py
       ${DRV_ELF}
       "${DDV_DIR}/${DISPLAY_NAME}"
     COMMAND ${CMAKE_COMMAND} -E copy "${SRC_DIR}/Info.conf" "${DDV_DIR}/Info.conf"
@@ -482,7 +488,7 @@ add_custom_command(
 )
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/bin/true
-  COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
     ${TRUE_ELF}
     ${SYSROOT_DIR}/System/bin/true
   DEPENDS ${TRUE_ELF}
@@ -507,7 +513,7 @@ add_custom_command(
 )
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/bin/false
-  COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
     ${FALSE_ELF}
     ${SYSROOT_DIR}/System/bin/false
   DEPENDS ${FALSE_ELF}
@@ -558,7 +564,7 @@ add_custom_command(
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/compositor/compositor
   COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/System/compositor
-  COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
     ${COMPOSITOR_ELF}
     ${SYSROOT_DIR}/System/compositor/compositor
   DEPENDS ${COMPOSITOR_ELF}
@@ -586,7 +592,7 @@ add_custom_command(
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/compositor/dock
   COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/System/compositor
-  COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
     ${DOCK_ELF}
     ${SYSROOT_DIR}/System/compositor/dock
   DEPENDS ${DOCK_ELF}
@@ -942,7 +948,7 @@ add_custom_target(programs DEPENDS
 # ============================================================
 add_custom_command(
   OUTPUT ${DISK_IMAGE}
-  COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/mkimage.py
+  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/mkimage.py
     --stage1 ${CMAKE_BINARY_DIR}/stage1.bin
     --stage2 ${CMAKE_BINARY_DIR}/stage2.bin
     --kernel ${KERNEL_ELF}
@@ -1140,7 +1146,7 @@ add_custom_command(
 # Create UEFI disk image (GPT + ESP + exFAT data partition)
 add_custom_command(
   OUTPUT ${UEFI_DISK_IMAGE}
-  COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/mkimage.py --uefi
+  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/mkimage.py --uefi
     --bootloader ${UEFI_BOOTLOADER_EFI}
     --kernel ${KERNEL_ELF}
     --output ${UEFI_DISK_IMAGE}
@@ -1197,7 +1203,7 @@ set(ISO_IMAGE "${CMAKE_BINARY_DIR}/anyos.iso")
 
 add_custom_command(
   OUTPUT ${ISO_IMAGE}
-  COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/mkimage.py --iso
+  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/mkimage.py --iso
     --stage1 ${CMAKE_BINARY_DIR}/stage1.bin
     --stage2 ${CMAKE_BINARY_DIR}/stage2.bin
     --kernel ${KERNEL_ELF}

@@ -188,9 +188,10 @@ if (-not (Test-Path $msys2Bash)) {
 
 if (Test-Path $msys2Bash) {
     # MSYS2 has no pre-built i686-elf-gcc package.
-    # The cross-compiler installs to ~/opt/cross/bin inside MSYS2,
-    # which maps to %USERPROFILE%\opt\cross\bin on Windows.
-    $crossBin = Join-Path $env:USERPROFILE "opt\cross\bin"
+    # The cross-compiler installs to ~/opt/cross/bin inside MSYS2.
+    # MSYS2 $HOME = /home/<user> which maps to C:\msys64\home\<user> on Windows,
+    # NOT to %USERPROFILE% (C:\Users\<user>).
+    $crossBin = Join-Path $msys2Root "home\$env:USERNAME\opt\cross\bin"
     Add-ToPathIfNeeded $crossBin
     # NOTE: do NOT add C:\msys64\usr\bin to the Windows PATH —
     # it contains a GNU coreutils link.exe that shadows MSVC link.exe
