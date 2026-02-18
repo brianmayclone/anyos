@@ -71,8 +71,8 @@ if (-not (Test-CommandExists "rustup")) {
         $env:Path = "$cargoPath;$env:Path"
     }
 }
-& rustup install nightly 2>$null
-& rustup component add rust-src llvm-tools-preview --toolchain nightly
+rustup install nightly
+rustup component add rust-src llvm-tools-preview --toolchain nightly
 Write-Host ""
 
 # ── NASM ─────────────────────────────────────────────────────────────────────
