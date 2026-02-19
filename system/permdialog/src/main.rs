@@ -74,6 +74,8 @@ const BTN_PAD: i32 = 12;
 const LOCK_PIPE: &str = "_permdialog_lock";
 
 fn main() {
+    anyos_std::println!("[permdialog] start");
+
     // ── Singleton check: only one PermissionDialog at a time ────────────
     let existing = ipc::pipe_open(LOCK_PIPE);
     if existing != 0 {
@@ -97,7 +99,10 @@ fn main() {
         ""
     };
 
+    anyos_std::println!("[permdialog] args_len={}, args='{}'", args_len, args_str);
+
     if args_str.is_empty() {
+        anyos_std::println!("[permdialog] empty args, exiting");
         cleanup(lock_pipe, u32::MAX, u32::MAX, 1);
     }
 
@@ -137,12 +142,15 @@ fn main() {
         }
     }
 
+    anyos_std::println!("[permdialog] app_id='{}' app_name='{}' caps=0x{} num_active={}", app_id, app_name, caps_hex, num_active);
+
     if num_active == 0 {
         permissions::perm_store(app_id, 0, 0);
         cleanup(lock_pipe, u32::MAX, u32::MAX, 0);
     }
 
     // ── Create fullscreen dim overlay ───────────────────────────────────
+    anyos_std::println!("[permdialog] creating windows");
     let (sw, sh) = window::screen_size();
 
     // Borderless + SHADOW makes the layer non-opaque → alpha blending works
@@ -187,6 +195,8 @@ fn main() {
         cleanup(lock_pipe, dim_win, u32::MAX, 1);
     }
 
+    anyos_std::println!("[permdialog] dim_win={} dialog_win={}", dim_win, win);
+
     // ── Build UI elements ───────────────────────────────────────────────
     let cb_x = PAD;
     let mut checkboxes: [UiCheckbox; 6] = [
@@ -209,6 +219,8 @@ fn main() {
     let mut deny_btn = UiButton::new(btn_base_x, btn_y, BTN_W, BTN_H, ButtonStyle::Default);
     let mut allow_btn = UiButton::new(btn_base_x + BTN_W as i32 + BTN_PAD, btn_y,
         BTN_W, BTN_H, ButtonStyle::Primary);
+
+    anyos_std::println!("[permdialog] entering event loop");
 
     // ── Event loop ──────────────────────────────────────────────────────
     let mut dirty = true;
@@ -238,10 +250,9 @@ fn main() {
                 }
             }
 
-            // Deny All — store granted=0 so the app runs without sensitive caps
+            // Don't Allow — no file stored, app won't start, dialog appears again next time
             if deny_btn.handle_event(&ev) {
-                permissions::perm_store(app_id, 0, 0);
-                cleanup(lock_pipe, dim_win, win, 0);
+                cleanup(lock_pipe, dim_win, win, 1);
             }
 
             // Allow Selected
@@ -290,11 +301,13 @@ fn render(
     deny_btn: &UiButton,
     allow_btn: &UiButton,
 ) {
+    anyos_std::println!("[permdialog] render: getting colors");
     let bg = colors::WINDOW_BG();
     let text_color = colors::TEXT();
     let secondary = colors::TEXT_SECONDARY();
 
     // Background
+    anyos_std::println!("[permdialog] render: fill_rect bg");
     window::fill_rect(win, 0, 0, w as u16, h as u16, bg);
 
     // Title: "AppName" wants access to:
@@ -302,6 +315,7 @@ fn render(
     let title_len = format_title(app_name, &mut title_buf);
     let title = core::str::from_utf8(&title_buf[..title_len]).unwrap_or("App wants access to:");
 
+    anyos_std::println!("[permdialog] render: calling label()");
     label(win, PAD, 20, title, text_color, FontSize::Normal, TextAlign::Left);
     label(win, PAD, 46, "This app requests the following permissions:",
         secondary, FontSize::Small, TextAlign::Left);
@@ -329,8 +343,8 @@ fn render(
     divider_h(win, PAD, btn_div_y, w - PAD as u32 * 2);
 
     // Buttons
-    deny_btn.render(win, "Deny All");
-    allow_btn.render(win, "Allow Selected");
+    deny_btn.render(win, "Don't Allow");
+    allow_btn.render(win, "Allow");
 
     window::present(win);
 }
