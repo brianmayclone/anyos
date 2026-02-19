@@ -1,34 +1,87 @@
-![OS-Image](assets/images/logo_bw.png)
+<div align="center">
 
+<img src="assets/images/logo_bw.png" alt="anyOS" width="280">
 
-A 64-bit x86_64 operating system built from scratch in **Rust** and **NASM assembly**, featuring a macOS-inspired dark GUI with a window compositor, network stack, USB support, audio playback, and an on-disk C compiler and assembler.
+<br><br>
 
-This is a **learning project** created purely for fun and education. It demonstrates how operating systems work under the hood -- from bootloader to desktop environment -- all without relying on any existing OS or standard library.
+**A 64-bit operating system built from scratch in Rust and Assembly**
 
-**Contributions are welcome!** Whether you want to fix bugs, add features, improve documentation, or just explore the code -- feel free to get involved.
+macOS-inspired desktop with window compositor, network stack, USB support,<br>
+audio playback, TrueType fonts, and an on-disk C compiler — all running bare-metal on x86_64.
+
+<br>
+
+![Rust](https://img.shields.io/badge/Rust-000000?style=flat-square&logo=rust&logoColor=white)
+![NASM](https://img.shields.io/badge/NASM-Assembly-0066B8?style=flat-square)
+![x86_64](https://img.shields.io/badge/Arch-x86__64-4B7BEC?style=flat-square)
+![License: MIT](https://img.shields.io/badge/License-MIT-2ecc71?style=flat-square)
+![Programs](https://img.shields.io/badge/Programs-70+-e67e22?style=flat-square)
+![Syscalls](https://img.shields.io/badge/Syscalls-113-9b59b6?style=flat-square)
+
+<br>
+
+<img src="assets/screenshots/shot3.png" alt="anyOS Desktop — Terminal and Activity Monitor" width="760">
+
+<sub>Terminal and Activity Monitor running side by side on the anyOS desktop</sub>
+
+<br><br>
+
+[Features](#features) · [Screenshots](#screenshots) · [Quick Start](#quick-start) · [Documentation](#documentation) · [Contributing](#contributing)
+
+</div>
+
+<br>
+
+> **A learning project** created purely for fun and curiosity. It demonstrates how operating systems work under the hood — from bootloader to desktop environment — all without relying on any existing OS or standard library. **Contributions are welcome!**
+
+---
 
 ## Screenshots
 
-<img src="assets/screenshots/shot1.png" alt="drawing" width="200"/>
-<img src="assets/screenshots/shot2.png" alt="drawing" width="200"/>
-<img src="assets/screenshots/shot3.png" alt="drawing" width="200"/>
-<img src="assets/screenshots/shot4.png" alt="drawing" width="200"/>
-<img src="assets/screenshots/shot5.png" alt="drawing" width="200"/>
-<img src="assets/screenshots/shot6.png" alt="drawing" width="200"/>
-<img src="assets/screenshots/shot7.png" alt="drawing" width="200"/>
+<div align="center">
+<table>
+<tr>
+<td align="center" width="50%">
+<img src="assets/screenshots/shot1.png" width="100%"><br>
+<sub><b>Login Screen</b> — User authentication with wave wallpaper</sub>
+</td>
+<td align="center" width="50%">
+<img src="assets/screenshots/shot2.png" width="100%"><br>
+<sub><b>Desktop</b> — Menu bar, dock, and dynamic wallpaper</sub>
+</td>
+</tr>
+<tr>
+<td align="center">
+<img src="assets/screenshots/shot4.png" width="100%"><br>
+<sub><b>CPU Monitoring</b> — Real-time per-core graphs across 4 SMP cores</sub>
+</td>
+<td align="center">
+<img src="assets/screenshots/shot5.png" width="100%"><br>
+<sub><b>Finder</b> — File browser with sidebar and icon view</sub>
+</td>
+</tr>
+<tr>
+<td align="center">
+<img src="assets/screenshots/shot6.png" width="100%"><br>
+<sub><b>DOOM</b> — Running natively in a window</sub>
+</td>
+<td align="center">
+<img src="assets/screenshots/shot7.png" width="100%"><br>
+<sub><b>Quake & DOOM</b> — Classic games running side by side</sub>
+</td>
+</tr>
+</table>
+</div>
 
-The OS boots into a graphical desktop environment with:
-- Window compositor with shadows, blur effects, rounded corners, and transparency
-- macOS-style menu bar and dock
-- Resizable, draggable windows with traffic light buttons
-- Hardware-accelerated cursor (VMware SVGA II) or software cursor (Bochs VGA)
+---
 
 ## Features
 
 ### Kernel
+
 - **64-bit x86_64** long mode with 4-level paging (4 KiB pages)
 - **Preemptive multitasking** with priority-based round-robin scheduler (1 ms time slices)
-- **SMP support** -- multi-core via LAPIC/IOAPIC with per-CPU idle threads
+- **SMP support** — multi-core via LAPIC/IOAPIC with per-CPU idle threads
 - **Per-process address spaces** with isolated PML4 page directories
 - **Ring 3 user mode** with dual syscall interface: `SYSCALL/SYSRET` (64-bit) and `INT 0x80` (32-bit compat)
 - **113 system calls** across 21 categories (process, file I/O, networking, IPC, display, audio, USB, ...)
@@ -38,68 +91,106 @@ The OS boots into a graphical desktop environment with:
 - **ELF loader** for user programs (ELF64 native + ELF32 compat)
 - **FPU/SSE support** with eager save/restore (FXSAVE/FXRSTOR) per context switch
 - **TSC-calibrated timekeeping** via PIT channel 2 polled (no IRQ dependency)
-- **User identity system** -- UID/GID, user accounts, groups, authentication
+- **User identity system** — UID/GID, user accounts, groups, authentication
 
 ### Graphics & UI
+
 - **VESA VBE** framebuffer (1024x768x32, runtime resolution switching)
 - **Double-buffered compositor** with damage-based partial updates and blur effects
 - **GPU drivers**: Bochs VGA (page flipping) and VMware SVGA II (2D acceleration, hardware cursor)
 - **macOS-inspired dark theme** with rounded windows, shadows, and alpha blending
 - **31 UI components** via the uisys shared library (buttons, text fields, sliders, tables, alerts, etc.)
-- **5 shared libraries (DLLs)** -- uisys, libimage, libfont, librender, libcompositor
+- **5 shared libraries (DLLs)** — uisys, libimage, libfont, librender, libcompositor
 - **TrueType font rendering** with subpixel LCD anti-aliasing (SF Pro family)
 
 ### Networking
+
 - **Intel E1000** NIC driver (MMIO, DMA)
 - **Protocol stack**: Ethernet, ARP, IPv4, ICMP, UDP, TCP, DHCP, DNS
 - **TLS support** via BearSSL
 - Userspace utilities: `ping`, `ifconfig`, `arp`, `dhcp`, `dns`, `wget`, `ftp`, `curl`
 
 ### USB
+
 - **UHCI** (USB 1.1) and **EHCI** (USB 2.0) host controller drivers
 - HID keyboard and mouse support
 - Mass storage (bulk-only transport)
 
 ### Audio
+
 - **AC'97** audio codec driver
 - WAV/PCM playback via `play` command
 
 ### C Toolchain
+
 - **TCC** (Tiny C Compiler) 0.9.27 running natively on the OS
 - **NASM** 2.15+ assembler running natively
 - **Minimal POSIX libc** (35 headers, stdio, stdlib, string, math, socket, etc.)
 - Write, compile, and run C programs directly on anyOS: `cc hello.c -o hello && hello`
 
 ### Boot Methods
-- **BIOS/MBR** -- traditional PC boot (256 MiB disk, exFAT)
-- **UEFI** -- modern firmware boot (64 MiB GPT disk, exFAT, Rust UEFI bootloader)
-- **ISO 9660** -- CD-ROM/USB boot (El Torito, Rock Ridge extensions)
+
+- **BIOS/MBR** — traditional PC boot (256 MiB disk, exFAT)
+- **UEFI** — modern firmware boot (64 MiB GPT disk, exFAT, Rust UEFI bootloader)
+- **ISO 9660** — CD-ROM/USB boot (El Torito, Rock Ridge extensions)
 
 ### User Programs
 
 70+ command-line and GUI applications:
 
-**GUI Applications (13):**
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**GUI Applications (13)**
+
 Terminal, Finder, Settings, Activity Monitor, Notepad, Image Viewer, Video Player, Calculator, Clock, Screenshot, Diagnostics, Font Viewer, Surf (web browser prototype)
 
-**Games (2):**
+**Games (2)**
+
 DOOM (doomgeneric port), Quake (WinQuake software renderer port)
 
-**CLI Utilities (69):**
+</td>
+<td width="50%" valign="top">
+
+**CLI Utilities (69)**
 
 | Category | Programs |
 |----------|----------|
-| File Management | `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `touch`, `ln`, `readlink`, `find`, `stat`, `df`, `mount`, `umount` |
-| Text Processing | `echo`, `grep`, `wc`, `head`, `tail`, `sort`, `uniq`, `rev`, `strings`, `base64` |
-| System Info | `sysinfo`, `dmesg`, `devlist`, `ps`, `free`, `uptime`, `uname`, `hostname`, `whoami`, `which`, `date`, `cal` |
-| Networking | `ping`, `dhcp`, `dns`, `ifconfig`, `arp`, `wget`, `ftp`, `curl` |
-| User Management | `chmod`, `chown`, `su`, `listuser`, `listgroups`, `adduser`, `deluser`, `addgroup`, `delgroup`, `passwd` |
-| Shell | `env`, `set`, `export`, `pwd`, `clear`, `sleep`, `seq`, `yes`, `true`, `false` |
-| Binary/Hex | `hexdump`, `xxd` |
-| Multimedia | `play`, `pipes` |
-| Dev Tools | `cc` (TCC), `nasm`, `git`, `open` |
+| File Management | `ls` `cat` `cp` `mv` `rm` `mkdir` `touch` `ln` `readlink` `find` `stat` `df` `mount` `umount` |
+| Text Processing | `echo` `grep` `wc` `head` `tail` `sort` `uniq` `rev` `strings` `base64` |
+| System Info | `sysinfo` `dmesg` `devlist` `ps` `free` `uptime` `uname` `hostname` `whoami` `which` `date` `cal` |
+| Networking | `ping` `dhcp` `dns` `ifconfig` `arp` `wget` `ftp` `curl` |
+| User Mgmt | `chmod` `chown` `su` `listuser` `listgroups` `adduser` `deluser` `addgroup` `delgroup` `passwd` |
+| Shell | `env` `set` `export` `pwd` `clear` `sleep` `seq` `yes` `true` `false` |
+| Binary/Hex | `hexdump` `xxd` |
+| Multimedia | `play` `pipes` |
+| Dev Tools | `cc` (TCC) `nasm` `git` `open` |
 
-## Getting Started
+</td>
+</tr>
+</table>
+
+---
+
+## Quick Start
+
+```bash
+# Clone the repository
+git clone https://github.com/nicosommelier/anyos.git
+cd anyos
+
+# Set up the toolchain (installs cross-compiler)
+./scripts/setup_toolchain.sh
+
+# Build everything
+mkdir -p build && cd build
+cmake .. -G Ninja
+ninja
+
+# Run in QEMU
+ninja run
+```
 
 ### Prerequisites
 
@@ -163,26 +254,10 @@ pip install Pillow fonttools
 
 </details>
 
-### Quick Start
-
-```bash
-# 1. Clone the repository
-git clone https://github.com/nicosommelier/anyos.git
-cd anyos
-
-# 2. Set up the toolchain (installs cross-compiler)
-./scripts/setup_toolchain.sh
-
-# 3. Build everything
-mkdir -p build && cd build
-cmake .. -G Ninja
-ninja
-
-# 4. Run in QEMU
-ninja run
-```
-
 ### Build Targets
+
+<details>
+<summary><b>All build and run targets</b></summary>
 
 #### Disk Images
 
@@ -221,7 +296,10 @@ ninja run
 | `ninja run-cdrom-std` | Boot from ISO with Bochs VGA |
 | `ninja run-cdrom-with-disk` | Boot from ISO with HDD attached |
 
-### QEMU Configuration
+</details>
+
+<details>
+<summary><b>QEMU configuration</b></summary>
 
 The default `run` target uses:
 ```
@@ -231,11 +309,11 @@ qemu-system-x86_64 -drive format=raw,file=anyos.img -m 1024M -smp cpus=4 \
 ```
 
 Key flags:
-- `-vga std` -- Bochs VGA (VESA + page flipping)
-- `-vga vmware` -- VMware SVGA II (2D acceleration + hardware cursor)
-- `-serial stdio` -- Kernel serial output to terminal
-- `-m 1024M` -- 1 GiB RAM
-- `-smp cpus=4` -- 4 CPU cores
+- `-vga std` — Bochs VGA (VESA + page flipping)
+- `-vga vmware` — VMware SVGA II (2D acceleration + hardware cursor)
+- `-serial stdio` — Kernel serial output to terminal
+- `-m 1024M` — 1 GiB RAM
+- `-smp cpus=4` — 4 CPU cores
 
 For AHCI (SATA DMA) disk I/O instead of legacy ATA PIO:
 ```
@@ -245,7 +323,14 @@ For AHCI (SATA DMA) disk I/O instead of legacy ATA PIO:
 
 Or use `./scripts/run.sh --ahci [--vmware | --std]` for quick testing.
 
+</details>
+
+---
+
 ## Project Structure
+
+<details>
+<summary><b>Full directory tree</b></summary>
 
 ```
 anyos/
@@ -269,17 +354,17 @@ anyos/
       task/                Scheduler, context switch, ELF loader, DLL loader
       crypto/              MD5 hash
   libs/                  Libraries
-    stdlib/                anyos_std -- Rust standard library for user programs
+    stdlib/                anyos_std — Rust standard library for user programs
     libc/                  POSIX C library (35 headers, i686-elf-gcc)
-    uisys/                 uisys.dlib -- UI component DLL (31 components, 84 exports)
+    uisys/                 uisys.dlib — UI component DLL (31 components, 84 exports)
     uisys_client/          Client stub crate for uisys
-    libimage/              libimage.dlib -- Image decoding DLL (PNG, BMP, JPEG, ICO, MJV)
+    libimage/              libimage.dlib — Image decoding DLL (PNG, BMP, JPEG, ICO, MJV)
     libimage_client/       Client stub crate for libimage
-    libfont/               libfont.dlib -- TrueType font rendering DLL
+    libfont/               libfont.dlib — TrueType font rendering DLL
     libfont_client/        Client stub crate for libfont
-    librender/             librender.dlib -- 2D graphics primitives DLL
+    librender/             librender.dlib — 2D graphics primitives DLL
     librender_client/      Client stub crate for librender
-    libcompositor/         libcompositor.dlib -- Compositor client API DLL
+    libcompositor/         libcompositor.dlib — Compositor client API DLL
     libcompositor_client/  Client stub crate for libcompositor
   bin/                   CLI program sources (69 Rust programs)
   apps/                  GUI application sources (13 .app bundles)
@@ -313,6 +398,8 @@ anyos/
   docs/                  API documentation
 ```
 
+</details>
+
 ### DLL Architecture
 
 anyOS uses a custom **DLIB** (Dynamic Library) format for shared libraries. Each DLL is loaded at a fixed virtual address and exports a `#[repr(C)]` function pointer table prefixed with a `DLIB` magic header.
@@ -327,17 +414,21 @@ anyOS uses a custom **DLIB** (Dynamic Library) format for shared libraries. Each
 
 Programs link against lightweight client stub crates (e.g. `uisys_client`, `libfont_client`) that read the export table from the DLL's fixed address at runtime.
 
+---
+
 ## Documentation
 
-- **[Architecture Overview](docs/architecture.md)** -- Boot process, memory layout, scheduling, IPC, USB, user identity
-- **[Syscall Reference](docs/syscalls.md)** -- Complete reference for all 113 system calls
-- **[Standard Library API](docs/stdlib-api.md)** -- `anyos_std` crate reference for Rust user programs
-- **[UI System API](docs/uisys-api.md)** -- `uisys` DLL component reference (31 components, 84 exports)
-- **[C Library API](docs/libc-api.md)** -- POSIX libc reference (35 headers) for C programs
-- **[libimage API](docs/libimage-api.md)** -- Image decoding, scaling, ICO, and video (MJV)
-- **[libfont API](docs/libfont-api.md)** -- TrueType font rendering with subpixel LCD anti-aliasing
-- **[librender API](docs/librender-api.md)** -- 2D graphics primitives (fill, stroke, gradient, AA)
-- **[libcompositor API](docs/libcompositor-api.md)** -- Window management and compositor IPC
+- **[Architecture Overview](docs/architecture.md)** — Boot process, memory layout, scheduling, IPC, USB, user identity
+- **[Syscall Reference](docs/syscalls.md)** — Complete reference for all 113 system calls
+- **[Standard Library API](docs/stdlib-api.md)** — `anyos_std` crate reference for Rust user programs
+- **[UI System API](docs/uisys-api.md)** — `uisys` DLL component reference (31 components, 84 exports)
+- **[C Library API](docs/libc-api.md)** — POSIX libc reference (35 headers) for C programs
+- **[libimage API](docs/libimage-api.md)** — Image decoding, scaling, ICO, and video (MJV)
+- **[libfont API](docs/libfont-api.md)** — TrueType font rendering with subpixel LCD anti-aliasing
+- **[librender API](docs/librender-api.md)** — 2D graphics primitives (fill, stroke, gradient, AA)
+- **[libcompositor API](docs/libcompositor-api.md)** — Window management and compositor IPC
+
+---
 
 ## Developing User Programs
 
@@ -412,6 +503,8 @@ hello
 
 The on-disk TCC compiler supports standard C with the bundled libc. See [libc API docs](docs/libc-api.md) for the full header reference.
 
+---
+
 ## Contributing
 
 This is a community project and contributions are welcome! Here's how to get started:
@@ -436,15 +529,18 @@ Areas where help is appreciated:
 - Assembly: NASM syntax with clear comments
 - All source files include a copyright header (run `scripts/add_copyright.sh` to add)
 
+---
+
 ## License
 
-This project is licensed under the MIT License -- see [LICENSE](LICENSE) for details.
+This project is licensed under the MIT License — see [LICENSE](LICENSE) for details.
 
 ## Contact
 
-- **Christian Moeller**
-- Email: c.moeller.ffo@gmail.com / brianmayclone@googlemail.com
+**Christian Moeller** — [c.moeller.ffo@gmail.com](mailto:c.moeller.ffo@gmail.com) · [brianmayclone@googlemail.com](mailto:brianmayclone@googlemail.com)
 
 ---
 
-*Built with curiosity and a lot of coffee. If you're learning OS development, I hope this codebase helps you on your journey!*
+<div align="center">
+<sub>Built with curiosity and a lot of coffee. If you're learning OS development, I hope this codebase helps you on your journey.</sub>
+</div>

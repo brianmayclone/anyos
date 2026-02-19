@@ -4,6 +4,7 @@
 //! and optional per-process state (page directory, heap break, arguments).
 
 use crate::fs::fd_table::FdTable;
+use crate::ipc::signal::SignalState;
 use crate::memory::address::PhysAddr;
 use crate::task::capabilities::CapSet;
 use crate::task::context::CpuContext;
@@ -124,6 +125,10 @@ pub struct Thread {
     pub gid: u16,
     /// Per-process file descriptor table (maps local FDs to global VFS slots / pipes).
     pub fd_table: FdTable,
+    /// POSIX signal state: pending/blocked bitmasks and handler table.
+    pub signals: SignalState,
+    /// TID of the parent process (set by fork/spawn, 0 for init/kernel threads).
+    pub parent_tid: u32,
 }
 
 /// Size of each thread's kernel-mode stack.
@@ -219,6 +224,8 @@ impl Thread {
             uid: 0,
             gid: 0,
             fd_table: FdTable::new(),
+            signals: SignalState::new(),
+            parent_tid: 0,
         }
     }
 
