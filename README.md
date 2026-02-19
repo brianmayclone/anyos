@@ -490,6 +490,39 @@ The on-disk TCC compiler supports standard C with the bundled libc. See [libc AP
 
 ---
 
+## On-Device Test Suite
+
+anyOS ships with a built-in test suite at `/Library/system/tests/` that verifies core OS functionality **directly on the running system**. The tests are plain C programs compiled on-device using the bundled TCC compiler — no cross-compilation or external tooling needed.
+
+```bash
+# In the anyOS terminal:
+cd /Library/system/tests
+make            # compile all tests
+./testsuite     # run the full suite
+```
+
+The test runner (`testsuite`) forks and executes each test as a child process, checks its exit code, and prints a summary:
+
+```
+=== Running test 1/5: fork_test ===
+...
+=== Results: 5/5 passed, 0 FAILED ===
+```
+
+### Test Coverage
+
+| Test | What it verifies | Key syscalls |
+|------|-----------------|--------------|
+| **fork_test** | Process creation, parent-child relationships, exit code propagation | `fork` `waitpid` `getpid` `_exit` |
+| **pipe_test** | Anonymous pipe IPC, data integrity across processes | `pipe` `fork` `read` `write` `close` |
+| **dup_test** | File descriptor duplication, stdout redirection via `dup2` | `dup` `dup2` `pipe` `read` `write` |
+| **pipe_chain** | Shell-style pipeline simulation (`echo` | `cat`), stdin redirection | `pipe` `fork` `dup2` `read` `write` |
+| **signal_test** | Signal handlers (`SIGUSR1`, `SIGCHLD`), `SIG_IGN` | `signal` `kill` `fork` `waitpid` |
+
+Each test is self-contained, exits with code 0 on success, and can also be run individually (e.g. `./fork_test`).
+
+---
+
 ## Contributing
 
 This is a community project and contributions are welcome! Here's how to get started:

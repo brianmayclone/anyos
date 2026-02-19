@@ -8,6 +8,7 @@ static const char *tests[] = {
     "pipe_test",
     "dup_test",
     "pipe_chain",
+    "signal_test",
     NULL
 };
 

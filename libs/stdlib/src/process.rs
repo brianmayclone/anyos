@@ -63,9 +63,9 @@ pub fn try_waitpid(tid: u32) -> u32 {
     syscall1(SYS_TRY_WAITPID, tid as u64)
 }
 
-/// Kill a thread by TID. Returns 0 on success, u32::MAX on failure.
+/// Kill a thread by TID (sends SIGKILL). Returns 0 on success, u32::MAX on failure.
 pub fn kill(tid: u32) -> u32 {
-    syscall1(SYS_KILL, tid as u64)
+    syscall2(SYS_KILL, tid as u64, 9) // 9 = SIGKILL
 }
 
 /// Fork the current process. Returns:

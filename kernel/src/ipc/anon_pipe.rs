@@ -233,7 +233,9 @@ pub fn write(pipe_id: u32, data: &[u8]) -> u32 {
             };
 
             if pipe.read_refs == 0 {
-                // No readers — EPIPE
+                // No readers — send SIGPIPE to current thread, return EPIPE
+                let tid = crate::task::scheduler::current_tid();
+                crate::task::scheduler::send_signal_to_thread(tid, crate::ipc::signal::SIGPIPE);
                 return u32::MAX;
             }
 

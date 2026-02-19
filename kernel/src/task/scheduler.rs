@@ -1495,6 +1495,7 @@ pub fn set_current_thread_mmap_next(val: u32) {
 pub fn exit_current(code: u32) {
     let tid;
     let mut pd_to_destroy: Option<PhysAddr> = None;
+    let mut parent_tid_for_sigchld: u32 = 0;
     let mut guard = SCHEDULER.lock();
     {
         let cpu_id = get_cpu_id();
@@ -1502,6 +1503,9 @@ pub fn exit_current(code: u32) {
         tid = sched.per_cpu[cpu_id].current_tid.unwrap_or(0);
         if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
             if let Some(idx) = sched.find_idx(current_tid) {
+                // Capture parent_tid for SIGCHLD before marking terminated
+                parent_tid_for_sigchld = sched.threads[idx].parent_tid;
+
                 sched.threads[idx].state = ThreadState::Terminated;
                 sched.threads[idx].exit_code = Some(code);
                 sched.threads[idx].terminated_at_tick = Some(crate::arch::x86::pit::get_ticks());
@@ -1520,6 +1524,13 @@ pub fn exit_current(code: u32) {
                 sched.threads[idx].page_directory = None;
                 if let Some(waiter_tid) = sched.threads[idx].waiting_tid {
                     sched.wake_thread_inner(waiter_tid);
+                }
+
+                // Send SIGCHLD to parent (while still under the lock)
+                if parent_tid_for_sigchld != 0 {
+                    if let Some(parent_idx) = sched.find_idx(parent_tid_for_sigchld) {
+                        sched.threads[parent_idx].signals.send(crate::ipc::signal::SIGCHLD);
+                    }
                 }
             }
         }
@@ -1556,6 +1567,14 @@ pub fn try_exit_current(code: u32) -> bool {
         if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
             tid = current_tid;
             if let Some(idx) = sched.find_idx(current_tid) {
+                // Send SIGCHLD to parent
+                let parent_tid = sched.threads[idx].parent_tid;
+                if parent_tid != 0 {
+                    if let Some(parent_idx) = sched.find_idx(parent_tid) {
+                        sched.threads[parent_idx].signals.send(crate::ipc::signal::SIGCHLD);
+                    }
+                }
+
                 sched.threads[idx].state = ThreadState::Terminated;
                 sched.threads[idx].exit_code = Some(code);
                 sched.threads[idx].terminated_at_tick = Some(crate::arch::x86::pit::get_ticks());

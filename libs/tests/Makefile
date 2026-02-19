@@ -1,7 +1,7 @@
 CC = cc
 CFLAGS = -o
 
-TESTS = fork_test pipe_test dup_test pipe_chain testsuite
+TESTS = fork_test pipe_test dup_test pipe_chain signal_test testsuite
 
 all: $(TESTS)
 	@echo "All tests built."
@@ -17,6 +17,9 @@ dup_test: dup_test.c
 
 pipe_chain: pipe_chain.c
 	$(CC) $(CFLAGS) pipe_chain pipe_chain.c
+
+signal_test: signal_test.c
+	$(CC) $(CFLAGS) signal_test signal_test.c
 
 testsuite: testsuite.c
 	$(CC) $(CFLAGS) testsuite testsuite.c
