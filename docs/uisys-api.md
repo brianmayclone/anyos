@@ -1,7 +1,10 @@
 # anyOS UI System (uisys) API Reference
 
-The **uisys** DLL is a shared library providing 30 macOS-inspired dark-themed UI components for anyOS GUI applications. It exports 73 functions via a C ABI function pointer table at virtual address `0x04000000`.
+The **uisys** DLL is a shared library providing 31 macOS-inspired dark-themed UI components for anyOS GUI applications. It exports 84 functions via a C ABI function pointer table at virtual address `0x04000000`.
 
+**DLL Address:** `0x04000000`
+**Version:** 1
+**Exports:** 84
 **Client crate:** `uisys_client`
 
 ---
@@ -41,6 +44,14 @@ The **uisys** DLL is a shared library providing 30 macOS-inspired dark-themed UI
   - [ImageView](#28-imageview)
   - [IconButton](#29-iconbutton)
   - [Divider](#30-divider)
+  - [Alert](#31-alert)
+- [v2 API Extensions](#v2-api-extensions)
+  - [GPU Acceleration](#gpu-acceleration)
+  - [Anti-Aliased Drawing](#anti-aliased-drawing)
+  - [Font Rendering](#font-rendering)
+  - [Shadow Effects](#shadow-effects)
+  - [Blur Effects](#blur-effects)
+- [Controls Module](#controls-module)
 - [Design Patterns](#design-patterns)
 
 ---
@@ -160,9 +171,9 @@ All colors are 32-bit ARGB (`0xAARRGGBB`).
 
 | Variant | Value (pixels) |
 |---------|----------------|
-| `Small` | 13 |
-| `Normal` | 16 |
-| `Large` | 20 |
+| `Small` | 11 |
+| `Normal` | 13 |
+| `Large` | 17 |
 | `Title` | 24 |
 
 #### StatusKind
@@ -195,6 +206,7 @@ pub struct UiEvent {
 - `mouse_pos() -> (i32, i32)`
 - `key_code() -> u32`
 - `char_val() -> u32`
+- `modifiers() -> u32`
 
 ### Key Codes
 
@@ -204,13 +216,16 @@ pub struct UiEvent {
 | `KEY_BACKSPACE` | `0x101` |
 | `KEY_TAB` | `0x102` |
 | `KEY_ESCAPE` | `0x103` |
-| `KEY_DELETE` | `0x104` |
+| `KEY_SPACE` | `0x104` |
 | `KEY_UP` | `0x105` |
 | `KEY_DOWN` | `0x106` |
 | `KEY_LEFT` | `0x107` |
 | `KEY_RIGHT` | `0x108` |
-| `KEY_HOME` | `0x109` |
-| `KEY_END` | `0x10A` |
+| `KEY_DELETE` | `0x120` |
+| `KEY_HOME` | `0x121` |
+| `KEY_END` | `0x122` |
+| `KEY_PAGE_UP` | `0x123` |
+| `KEY_PAGE_DOWN` | `0x124` |
 
 ---
 
@@ -435,7 +450,15 @@ pub struct UiTextField {
 | `render(&self, win, placeholder)` | -- | Draw with placeholder |
 | `handle_event(&mut self, event) -> bool` | `true` if text changed | Handles typing, backspace, arrows, home/end |
 
+**Additional methods:**
+- `has_selection() -> bool` -- Check if text is selected
+- `selection_range() -> (usize, usize)` -- Get selection start/end
+- `select_all(&mut self)` -- Select all text
+- `selected_text(&self) -> &str` -- Get selected text
+
 **Supported keys:** Printable ASCII (0x20-0x7E), BACKSPACE, DELETE, LEFT, RIGHT, HOME, END
+
+**v2 Features:** The `textfield_ex` raw function supports password mode (dots instead of text) and text selection highlighting (sel_start, sel_end). The `UiTextField` struct has a `password: bool` field. Double-click selects all text.
 
 #### Example
 
@@ -905,6 +928,115 @@ divider::divider_h(win, x, y, width);
 // Vertical line
 divider::divider_v(win, x, y, height);
 ```
+
+---
+
+### 31. Alert
+
+Modal alert dialog panel with title, message, and action buttons.
+
+#### Raw Functions
+
+```rust
+// Draw alert panel background with title and message
+alert::alert(win, x, y, w, h, "Title", "Message text here");
+
+// Draw alert button (same style as regular buttons)
+alert::alert_button(win, x, y, w, h, "OK", ButtonStyle::Primary, ButtonState::Normal);
+```
+
+The alert component draws a centered panel with title in bold, message text below, and buttons at the bottom. Use in combination with a semi-transparent overlay for modal behavior.
+
+---
+
+## v2 API Extensions
+
+These functions were added in the v2 export table update (exports 70-84).
+
+### GPU Acceleration
+
+```rust
+// Check if GPU acceleration (VMware SVGA II) is available
+let accel = uisys_client::gpu_has_accel();
+```
+
+### Anti-Aliased Drawing
+
+```rust
+// Fill a rounded rectangle with anti-aliased edges
+uisys_client::fill_rounded_rect_aa(win, x, y, w, h, radius, color);
+```
+
+Produces smoother corners than the standard `fill_rounded_rect` by using sub-pixel alpha blending at edges.
+
+### Font Rendering
+
+```rust
+// Draw text with a specific loaded font and size
+uisys_client::draw_text_with_font(win, x, y, color, size, font_id, "Hello");
+
+// Measure text dimensions with a specific font
+let (w, h) = uisys_client::font_measure(font_id, size, "Hello");
+```
+
+These functions use the libfont DLL for TrueType rendering instead of the built-in bitmap font.
+
+### Shadow Effects
+
+Draw drop shadows behind UI elements. These operate on raw pixel buffers (for compositor use).
+
+```rust
+use uisys_client::*;
+
+// Rectangle shadow
+draw_shadow_rect_buf(&mut pixels, fb_w, fb_h, x, y, w, h, offset_x, offset_y, spread, alpha);
+
+// Rounded rectangle shadow
+draw_shadow_rounded_rect_buf(&mut pixels, fb_w, fb_h, x, y, w, h, radius, offset_x, offset_y, spread, alpha);
+
+// Oval/ellipse shadow
+draw_shadow_oval_buf(&mut pixels, fb_w, fb_h, cx, cy, rx, ry, offset_x, offset_y, spread, alpha);
+```
+
+**Parameters:**
+- `offset_x`, `offset_y` -- Shadow offset from the element
+- `spread` -- Shadow blur spread radius
+- `alpha` -- Shadow opacity (0-255)
+
+### Blur Effects
+
+Apply box blur to regions of a pixel buffer (for frosted glass, background blur).
+
+```rust
+use uisys_client::*;
+
+// Blur a rectangular region
+blur_rect_buf(&mut pixels, fb_w, fb_h, x, y, w, h, radius, passes);
+
+// Blur a rounded rectangle region
+blur_rounded_rect_buf(&mut pixels, fb_w, fb_h, x, y, w, h, corner_radius, blur_radius, passes);
+```
+
+**Parameters:**
+- `radius` -- Blur kernel radius (larger = more blurry)
+- `passes` -- Number of blur iterations (2-3 recommended for quality)
+
+---
+
+## Controls Module
+
+Load system control icons from the icon set.
+
+```rust
+use uisys_client::controls;
+
+if let Some(icon) = controls::load_control_icon("close", 16) {
+    // icon.pixels: Vec<u32> (ARGB8888)
+    // icon.width, icon.height: u32
+}
+```
+
+The `ControlIcon` struct contains decoded ARGB pixel data ready for blitting.
 
 ---
 

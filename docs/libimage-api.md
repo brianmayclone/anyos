@@ -1,7 +1,10 @@
 # anyOS Image Library (libimage) API Reference
 
-The **libimage** DLL is a shared library for decoding image files into ARGB8888 pixel buffers. It supports BMP, PNG, JPEG, and GIF formats. The DLL is loaded at virtual address `0x04100000` and exports 2 functions via a C ABI function pointer table.
+The **libimage** DLL is a shared library for decoding images and video frames into ARGB8888 pixel buffers. It supports BMP, PNG, JPEG, GIF, and ICO image formats plus MJV video, and includes a scaling API.
 
+**DLL Address:** `0x04100000`
+**Version:** 1
+**Exports:** 7
 **Client crate:** `libimage_client`
 
 ---
@@ -10,14 +13,25 @@ The **libimage** DLL is a shared library for decoding image files into ARGB8888 
 
 - [Getting Started](#getting-started)
 - [Types](#types)
-- [Functions](#functions)
+- [Image Functions](#image-functions)
   - [probe](#probe)
   - [decode](#decode)
+  - [format_name](#format_name)
+- [ICO Functions](#ico-functions)
+  - [probe_ico_size](#probe_ico_size)
+  - [decode_ico_size](#decode_ico_size)
+- [Video Functions](#video-functions)
+  - [video_probe](#video_probe)
+  - [video_decode_frame](#video_decode_frame)
+- [Scale Functions](#scale-functions)
+  - [scale_image](#scale_image)
 - [Format Support](#format-support)
   - [BMP](#bmp)
   - [PNG](#png)
   - [JPEG](#jpeg)
   - [GIF](#gif)
+  - [ICO](#ico)
+  - [MJV (Video)](#mjv-video)
 - [Error Handling](#error-handling)
 - [Examples](#examples)
 
@@ -31,8 +45,8 @@ Add to your program's `Cargo.toml`:
 
 ```toml
 [dependencies]
-anyos_std = { path = "../../stdlib" }
-libimage_client = { path = "../../programs/dll/libimage_client" }
+anyos_std = { path = "../../libs/stdlib" }
+libimage_client = { path = "../../libs/libimage_client" }
 ```
 
 ### Minimal Decode Example
@@ -102,7 +116,7 @@ This design avoids heap allocation inside the DLL, making it safe for use across
 
 ### ImageInfo
 
-Returned by `probe()` with image metadata.
+Returned by `probe()` and `probe_ico_size()` with image metadata.
 
 ```rust
 #[repr(C)]
@@ -111,6 +125,21 @@ pub struct ImageInfo {
     pub height: u32,         // Image height in pixels
     pub format: u32,         // Format identifier (see constants below)
     pub scratch_needed: u32, // Bytes of scratch buffer needed for decode()
+}
+```
+
+### VideoInfo
+
+Returned by `video_probe()` with video metadata.
+
+```rust
+#[repr(C)]
+pub struct VideoInfo {
+    pub width: u32,          // Frame width in pixels
+    pub height: u32,         // Frame height in pixels
+    pub fps: u32,            // Frames per second
+    pub num_frames: u32,     // Total number of frames
+    pub scratch_needed: u32, // Bytes of scratch buffer needed for video_decode_frame()
 }
 ```
 
@@ -123,10 +152,20 @@ pub struct ImageInfo {
 | `FMT_PNG` | 2 | `\x89PNG\r\n\x1a\n` |
 | `FMT_JPEG` | 3 | `\xFF\xD8` |
 | `FMT_GIF` | 4 | `GIF87a` or `GIF89a` |
+| `FMT_ICO` | 5 | `\x00\x00\x01\x00` (reserved=0, type=1) |
+| `FMT_MJV` | 10 | `MJV1` |
+
+### Scale Mode Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `MODE_SCALE` | 0 | Stretch to fill, ignoring aspect ratio |
+| `MODE_CONTAIN` | 1 | Fit within destination, maintaining aspect ratio (letterboxed with transparent black) |
+| `MODE_COVER` | 2 | Fill destination, maintaining aspect ratio (excess cropped) |
 
 ### ImageError
 
-Error type returned by `decode()`.
+Error type returned by decode functions.
 
 | Variant | Raw Code | Description |
 |---------|----------|-------------|
@@ -138,7 +177,7 @@ Error type returned by `decode()`.
 
 ---
 
-## Functions
+## Image Functions
 
 ### probe
 
@@ -146,7 +185,7 @@ Error type returned by `decode()`.
 pub fn probe(data: &[u8]) -> Option<ImageInfo>
 ```
 
-Detect the image format from magic bytes and parse the header for dimensions.
+Detect the image format from magic bytes and parse the header for dimensions. Supports BMP, PNG, JPEG, GIF, and ICO formats.
 
 **Parameters:**
 - `data` -- Raw image file bytes (at least 8 bytes required)
@@ -159,6 +198,7 @@ Detect the image format from magic bytes and parse the header for dimensions.
 - Only reads the file header, does not decode pixel data
 - The `scratch_needed` field tells you how large a scratch buffer to allocate for `decode()`
 - BMP images need no scratch buffer (`scratch_needed = 0`)
+- For ICO files, selects the best entry closest to 16x16 (default behavior)
 
 ### decode
 
@@ -166,7 +206,7 @@ Detect the image format from magic bytes and parse the header for dimensions.
 pub fn decode(data: &[u8], pixels: &mut [u32], scratch: &mut [u8]) -> Result<(), ImageError>
 ```
 
-Decode an image into ARGB8888 pixels.
+Decode an image into ARGB8888 pixels. The format is auto-detected from magic bytes.
 
 **Parameters:**
 - `data` -- Raw image file bytes
@@ -193,7 +233,143 @@ Convert a format constant to a human-readable string.
 | `FMT_PNG` | `"PNG"` |
 | `FMT_JPEG` | `"JPEG"` |
 | `FMT_GIF` | `"GIF"` |
+| `FMT_MJV` | `"MJV"` |
 | other | `"Unknown"` |
+
+---
+
+## ICO Functions
+
+ICO files contain multiple image entries at different sizes. These functions let you select the best entry for a specific display size.
+
+### probe_ico_size
+
+```rust
+pub fn probe_ico_size(data: &[u8], preferred_size: u32) -> Option<ImageInfo>
+```
+
+Probe an ICO file, selecting the best entry for a preferred display size.
+
+**Parameters:**
+- `data` -- Raw ICO file bytes
+- `preferred_size` -- Desired icon dimension (e.g. 16, 32, 48, 64, 128, 256)
+
+**Returns:**
+- `Some(ImageInfo)` with the selected entry's dimensions and scratch buffer size
+- `None` if the file is not a valid ICO
+
+**Selection logic:** Prefers exact size match, then next-larger entry (downscaling is preferred over upscaling), then closest available.
+
+### decode_ico_size
+
+```rust
+pub fn decode_ico_size(
+    data: &[u8],
+    preferred_size: u32,
+    pixels: &mut [u32],
+    scratch: &mut [u8],
+) -> Result<(), ImageError>
+```
+
+Decode an ICO file, selecting the best entry for a preferred display size.
+
+**Parameters:**
+- `data` -- Raw ICO file bytes
+- `preferred_size` -- Desired icon dimension
+- `pixels` -- Output buffer, must have at least `width * height` elements (from `probe_ico_size()`)
+- `scratch` -- Working memory, must have at least `scratch_needed` bytes (from `probe_ico_size()`)
+
+**Returns:**
+- `Ok(())` on success
+- `Err(ImageError)` on failure
+
+---
+
+## Video Functions
+
+### video_probe
+
+```rust
+pub fn video_probe(data: &[u8]) -> Option<VideoInfo>
+```
+
+Probe a video file to determine format, dimensions, frame rate, and frame count.
+
+**Parameters:**
+- `data` -- Raw video file bytes (at least 32 bytes required)
+
+**Returns:**
+- `Some(VideoInfo)` with width, height, fps, num_frames, and scratch_needed
+- `None` if the format is not recognized
+
+**Notes:**
+- Currently only supports the MJV (Motion JPEG Video) format
+- Probes the first JPEG frame internally to determine `scratch_needed`
+
+### video_decode_frame
+
+```rust
+pub fn video_decode_frame(
+    data: &[u8],
+    num_frames: u32,
+    frame_idx: u32,
+    pixels: &mut [u32],
+    scratch: &mut [u8],
+) -> Result<(), ImageError>
+```
+
+Decode a single video frame into ARGB8888 pixels.
+
+**Parameters:**
+- `data` -- Raw video file bytes (entire .mjv file)
+- `num_frames` -- Total frame count (from `video_probe()`)
+- `frame_idx` -- Zero-based frame index to decode
+- `pixels` -- Output buffer, must have at least `width * height` elements
+- `scratch` -- Working memory, must have at least `scratch_needed` bytes (from `video_probe()`)
+
+**Returns:**
+- `Ok(())` on success
+- `Err(ImageError)` on failure
+
+**Notes:**
+- Each frame is an independent JPEG, so frames can be decoded in any order
+- The scratch buffer is reused across frame decodes (no need to reallocate)
+
+---
+
+## Scale Functions
+
+### scale_image
+
+```rust
+pub fn scale_image(
+    src: &[u32], src_w: u32, src_h: u32,
+    dst: &mut [u32], dst_w: u32, dst_h: u32,
+    mode: u32,
+) -> bool
+```
+
+Scale an ARGB8888 image to a new size.
+
+**Parameters:**
+- `src` -- Source pixel buffer (`src_w * src_h` elements)
+- `src_w`, `src_h` -- Source dimensions
+- `dst` -- Destination pixel buffer (`dst_w * dst_h` elements)
+- `dst_w`, `dst_h` -- Destination dimensions
+- `mode` -- Scale mode: `MODE_SCALE` (0), `MODE_CONTAIN` (1), or `MODE_COVER` (2)
+
+**Returns:**
+- `true` on success
+- `false` on error (null pointer, zero dimension, or invalid mode)
+
+**Algorithm:**
+- **Downscaling**: Area averaging (box filter) -- averages all source pixels that map to each destination pixel, preventing aliasing and detail loss
+- **Upscaling**: Bilinear interpolation -- blends four neighboring source pixels using 16.16 fixed-point arithmetic (no floating point)
+
+**Scale modes:**
+- `MODE_SCALE` (0): Stretches source to fill destination exactly. Aspect ratio is not preserved.
+- `MODE_CONTAIN` (1): Fits source within destination while preserving aspect ratio. Unused areas are filled with transparent black (`0x00000000`). The scaled image is centered in the destination.
+- `MODE_COVER` (2): Fills destination while preserving aspect ratio. Excess source area is cropped (centered). No transparent pixels are produced.
 
 ---
 
@@ -269,6 +445,50 @@ Graphics Interchange Format.
 
 **Scratch needed:** `4096 * 4 + width * height` bytes (LZW string table + index buffer)
 
+### ICO
+
+Windows Icon format.
+
+| Feature | Supported |
+|---------|-----------|
+| ICO (type 1) | Yes |
+| CUR (type 2, cursor) | Yes |
+| BMP-in-ICO: 32-bit BGRA | Yes |
+| BMP-in-ICO: 24-bit BGR | Yes |
+| BMP-in-ICO: 8-bit palette | Yes |
+| BMP-in-ICO: 4-bit palette | Yes |
+| BMP-in-ICO: 1-bit monochrome | Yes |
+| PNG-in-ICO | Yes (delegates to PNG decoder) |
+| AND mask transparency | Yes |
+| Multi-size selection | Yes (probe_ico_size / decode_ico_size) |
+| 256x256 entries (width byte = 0) | Yes |
+
+**Scratch needed:** 0 bytes for BMP-in-ICO, PNG scratch for PNG-in-ICO entries
+
+**Size selection:** `probe()` / `decode()` default to preferring a 16x16 entry. Use `probe_ico_size()` / `decode_ico_size()` to select by a preferred size.
+
+### MJV (Video)
+
+Motion JPEG Video -- a simple container for a sequence of JPEG frames.
+
+**File format:**
+
+| Offset | Size | Field |
+|--------|------|-------|
+| 0 | 4 | Magic: `MJV1` |
+| 4 | 4 | Reserved |
+| 8 | 4 | Width (pixels) |
+| 12 | 4 | Height (pixels) |
+| 16 | 4 | FPS (frames per second) |
+| 20 | 4 | Number of frames |
+| 24 | 8 | Reserved |
+| 32 | 8 * N | Frame table: N entries of (offset: u32, size: u32) |
+| variable | variable | Concatenated JPEG frame data |
+
+Each frame is an independent baseline JPEG that can be decoded in any order.
+
+**Scratch needed:** Same as JPEG: `width * height * 3 + 4096` bytes
+
 ---
 
 ## Error Handling
@@ -277,7 +497,8 @@ Graphics Interchange Format.
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| `probe()` returns `None` | File is not BMP/PNG/JPEG/GIF or too short | Check file format, ensure >= 8 bytes |
+| `probe()` returns `None` | File is not BMP/PNG/JPEG/GIF/ICO or too short | Check file format, ensure >= 8 bytes |
+| `video_probe()` returns `None` | File is not MJV or too short | Check file format, ensure >= 32 bytes |
 | `InvalidData` | Corrupt header, truncated file | Verify file integrity |
 | `Unsupported` | Progressive JPEG, palette PNG, RLE BMP | Convert to supported format |
 | `BufferTooSmall` | `pixels.len() < width * height` | Allocate `width * height` u32s |
@@ -317,6 +538,64 @@ fn show_image(win: u32, data: &[u8]) {
         }
         ui::window::present(win);
     }
+}
+```
+
+### Load a Specific Icon Size
+
+```rust
+use libimage_client;
+
+fn load_icon_48(data: &[u8]) -> Option<Vec<u32>> {
+    let info = libimage_client::probe_ico_size(data, 48)?;
+    let count = (info.width * info.height) as usize;
+    let mut pixels = vec![0u32; count];
+    let mut scratch = vec![0u8; info.scratch_needed as usize];
+
+    libimage_client::decode_ico_size(data, 48, &mut pixels, &mut scratch).ok()?;
+    Some(pixels)
+}
+```
+
+### Play Video Frames
+
+```rust
+use anyos_std::*;
+use libimage_client;
+
+fn play_video(win: u32, data: &[u8]) {
+    let info = match libimage_client::video_probe(data) {
+        Some(i) => i,
+        None => return,
+    };
+
+    let count = (info.width * info.height) as usize;
+    let mut pixels = vec![0u32; count];
+    let mut scratch = vec![0u8; info.scratch_needed as usize];
+    let frame_ms = 1000 / info.fps;
+
+    for frame in 0..info.num_frames {
+        if libimage_client::video_decode_frame(
+            data, info.num_frames, frame, &mut pixels, &mut scratch
+        ).is_ok() {
+            // Blit frame to window
+            ui::window::blit(win, 0, 0, info.width as u16, info.height as u16, &pixels);
+            ui::window::present(win);
+        }
+        process::sleep(frame_ms);
+    }
+}
+```
+
+### Scale Image to Fit Window
+
+```rust
+use libimage_client::{self, MODE_CONTAIN};
+
+fn scale_to_window(src: &[u32], src_w: u32, src_h: u32, win_w: u32, win_h: u32) -> Vec<u32> {
+    let mut dst = vec![0u32; (win_w * win_h) as usize];
+    libimage_client::scale_image(src, src_w, src_h, &mut dst, win_w, win_h, MODE_CONTAIN);
+    dst
 }
 ```
 

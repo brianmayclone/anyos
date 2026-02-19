@@ -1,6 +1,6 @@
 # anyOS Standard Library API Reference
 
-The **anyos_std** crate is the standard library for user-space Rust programs on anyOS. It provides syscall wrappers, formatted I/O, memory allocation, and an entry point macro -- everything needed to build `#![no_std]` applications.
+The **anyos_std** crate is the standard library for user-space Rust programs on anyOS. It provides syscall wrappers, formatted I/O, memory allocation, an entry point macro, networking, IPC, audio, window management, and more -- everything needed to build `#![no_std]` applications.
 
 **Crate:** `anyos_std` (version 0.1.0, edition 2021)
 
@@ -18,10 +18,19 @@ The **anyos_std** crate is the standard library for user-space Rust programs on 
 - [fs -- Filesystem Operations](#fs----filesystem-operations)
 - [net -- Networking](#net----networking)
 - [ipc -- Inter-Process Communication](#ipc----inter-process-communication)
-- [ui::window -- Window Management](#uiwindow----window-management)
+- [env -- Environment Variables](#env----environment-variables)
+- [users -- User & Group Management](#users----user--group-management)
+- [kbd -- Keyboard Layouts](#kbd----keyboard-layouts)
+- [crypto -- Cryptography](#crypto----cryptography)
 - [audio -- Audio Playback](#audio----audio-playback)
 - [dll -- Dynamic Library Loading](#dll----dynamic-library-loading)
-- [Syscall Numbers](#syscall-numbers)
+- [args -- Argument Parser](#args----argument-parser)
+- [anim -- Animation Engine](#anim----animation-engine)
+- [bundle -- App Bundle Discovery](#bundle----app-bundle-discovery)
+- [icons -- Icon & MIME Type Lookup](#icons----icon--mime-type-lookup)
+- [ui::window -- Window Management](#uiwindow----window-management)
+- [ui::dialog -- Modal Dialogs](#uidialog----modal-dialogs)
+- [ui::filedialog -- File & Folder Dialogs](#uifiledialog----file--folder-dialogs)
 
 ---
 
@@ -73,6 +82,8 @@ Generates the `_start` entry point for your program. It:
 3. Calls your `main()` function
 4. Calls `process::exit(0)` on return
 
+The `main` function can return `()` or `u32` (exit code) via the `MainReturn` trait.
+
 The stdlib also provides:
 - **Panic handler**: Prints panic message to stdout, then calls `process::exit(1)`
 - **Alloc error handler**: Prints "ALLOC ERROR: out of memory", then calls `process::exit(2)`
@@ -102,15 +113,6 @@ pub use alloc::{format, vec};
 | `println!()` | Print a newline |
 | `println!($($arg:tt)*)` | Print formatted text with trailing newline |
 
-**Example:**
-```rust
-use anyos_std::*;
-
-println!("The answer is {}", 42);
-print!("No newline here");
-println!();
-```
-
 Output goes to file descriptor 1 (stdout) via the `fs::write()` syscall.
 
 ---
@@ -125,60 +127,32 @@ Output goes to file descriptor 1 (stdout) via the `fs::write()` syscall.
 | `getpid` | `fn getpid() -> u32` | Get current thread ID. |
 | `yield_cpu` | `fn yield_cpu()` | Voluntary context switch to scheduler. |
 | `sleep` | `fn sleep(ms: u32)` | Sleep for `ms` milliseconds. |
-| `sbrk` | `fn sbrk(increment: i32) -> u32` | Grow/shrink heap. Returns new program break address. |
-| `spawn` | `fn spawn(path: &str, args: &str) -> u32` | Spawn new process from filesystem path. Returns TID or `u32::MAX` on error. |
-| `spawn_piped` | `fn spawn_piped(path: &str, args: &str, pipe_id: u32) -> u32` | Spawn process with stdout redirected to a pipe. `pipe_id=0` means no pipe. |
+| `sbrk` | `fn sbrk(increment: i32) -> usize` | Grow/shrink heap. Returns new program break address. |
+| `mmap` | `fn mmap(size: usize) -> *mut u8` | Map anonymous pages. Returns pointer or null. |
+| `munmap` | `fn munmap(addr: *mut u8, size: usize) -> bool` | Unmap pages. Returns true on success. |
+| `spawn` | `fn spawn(path: &str, args: &str) -> u32` | Spawn new process. Returns TID or `u32::MAX` on error. |
+| `spawn_piped` | `fn spawn_piped(path: &str, args: &str, pipe_id: u32) -> u32` | Spawn with stdout redirected to a pipe. |
+| `spawn_piped_full` | `fn spawn_piped_full(path: &str, args: &str, stdout_pipe: u32, stdin_pipe: u32) -> u32` | Spawn with both stdin and stdout pipes. |
 | `waitpid` | `fn waitpid(tid: u32) -> u32` | Block until thread terminates. Returns exit code. |
-| `try_waitpid` | `fn try_waitpid(tid: u32) -> u32` | Non-blocking wait. Returns exit code, `STILL_RUNNING`, or `u32::MAX` (not found). |
-| `kill` | `fn kill(tid: u32) -> u32` | Kill a thread. Returns 0 on success, `u32::MAX` on failure. |
+| `try_waitpid` | `fn try_waitpid(tid: u32) -> u32` | Non-blocking wait. Returns exit code, `STILL_RUNNING`, or `u32::MAX`. |
+| `kill` | `fn kill(tid: u32) -> u32` | Kill a thread. Returns 0 on success. |
 | `getargs` | `fn getargs(buf: &mut [u8]) -> usize` | Get raw command-line arguments (includes argv[0]). |
 | `args` | `fn args(buf: &mut [u8; 256]) -> &str` | Get arguments, skipping program name. |
+| `thread_create` | `fn thread_create(entry: fn(), stack_top: usize, name: &str) -> u32` | Create a new thread. Returns TID. |
+| `thread_create_with_priority` | `fn thread_create_with_priority(entry: fn(), stack_top: usize, name: &str, priority: u8) -> u32` | Create thread with priority. |
+| `set_priority` | `fn set_priority(tid: u32, priority: u8) -> u32` | Set thread priority (0=highest, 255=lowest). |
+| `get_capabilities` | `fn get_capabilities() -> u32` | Get capability flags for current process. |
+| `getuid` | `fn getuid() -> u16` | Get current user ID. |
+| `getgid` | `fn getgid() -> u16` | Get current group ID. |
+| `authenticate` | `fn authenticate(username: &str, password: &str) -> bool` | Authenticate credentials. |
+| `getusername` | `fn getusername(uid: u16, buf: &mut [u8]) -> u32` | Resolve UID to username. |
+| `set_identity` | `fn set_identity(uid: u16) -> u32` | Switch to a different user identity. |
 
 ### Constants
 
 | Constant | Value | Description |
 |----------|-------|-------------|
 | `STILL_RUNNING` | `u32::MAX - 1` | Return from `try_waitpid()` when thread is still alive |
-
-### Example: Spawning a Child Process
-
-```rust
-use anyos_std::*;
-
-fn main() {
-    let tid = process::spawn("/bin/ls", "ls /bin");
-    if tid != u32::MAX {
-        let exit_code = process::waitpid(tid);
-        println!("Child exited with code {}", exit_code);
-    }
-}
-```
-
-### Example: Non-blocking Wait with Pipe
-
-```rust
-use anyos_std::*;
-
-fn main() {
-    let pipe = ipc::pipe_create("output");
-    let tid = process::spawn_piped("/bin/ls", "ls /bin", pipe);
-
-    let mut buf = [0u8; 1024];
-    loop {
-        let n = ipc::pipe_read(pipe, &mut buf);
-        if n > 0 {
-            let s = core::str::from_utf8(&buf[..n as usize]).unwrap_or("");
-            print!("{}", s);
-        }
-        let status = process::try_waitpid(tid);
-        if status != process::STILL_RUNNING {
-            break;
-        }
-        process::yield_cpu();
-    }
-    ipc::pipe_close(pipe);
-}
-```
 
 ---
 
@@ -189,23 +163,16 @@ fn main() {
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `time` | `fn time(buf: &mut [u8; 8]) -> u32` | Get current time. Writes `[year_lo, year_hi, month, day, hour, min, sec, 0]`. |
-| `uptime` | `fn uptime() -> u32` | System uptime in PIT ticks (100 Hz). Divide by 100 for seconds. |
+| `uptime` | `fn uptime() -> u32` | System uptime in ticks. Divide by `tick_hz()` for seconds. |
+| `tick_hz` | `fn tick_hz() -> u32` | Timer tick frequency (typically 1000 Hz). |
 | `sysinfo` | `fn sysinfo(cmd: u32, buf: &mut [u8]) -> u32` | Query system info. cmd: 0=memory, 1=threads, 2=cpus. |
 | `dmesg` | `fn dmesg(buf: &mut [u8]) -> u32` | Read kernel log buffer. Returns bytes written. |
-
-### Example: Reading Current Time
-
-```rust
-use anyos_std::*;
-
-fn main() {
-    let mut buf = [0u8; 8];
-    sys::time(&mut buf);
-    let year = buf[0] as u16 | ((buf[1] as u16) << 8);
-    println!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        year, buf[2], buf[3], buf[4], buf[5], buf[6]);
-}
-```
+| `boot_ready` | `fn boot_ready()` | Signal that boot is complete (compositor startup). |
+| `capture_screen` | `fn capture_screen(buf: &mut [u32], info: &mut [u32; 2]) -> bool` | Capture framebuffer. info = [width, height]. |
+| `set_critical` | `fn set_critical()` | Mark current thread as critical (won't be killed by OOM). |
+| `random` | `fn random(buf: &mut [u8]) -> u32` | Fill buffer with random bytes. Returns bytes written. |
+| `devlist` | `fn devlist(buf: &mut [u8]) -> u32` | List detected devices. Returns bytes written. |
+| `pipe_list` | `fn pipe_list(buf: &mut [u8]) -> u32` | List active pipes. Returns bytes written. |
 
 ---
 
@@ -253,19 +220,28 @@ Combine with `|`: `fs::open("file.txt", fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `open` | `fn open(path: &str, flags: u32) -> u32` | Open file. Returns FD or error. |
+| `open` | `fn open(path: &str, flags: u32) -> u32` | Open file. Returns FD or `u32::MAX`. |
 | `close` | `fn close(fd: u32) -> u32` | Close file descriptor. |
 | `read` | `fn read(fd: u32, buf: &mut [u8]) -> u32` | Read from FD. Returns bytes read. |
 | `write` | `fn write(fd: u32, buf: &[u8]) -> u32` | Write to FD. Returns bytes written. |
 | `lseek` | `fn lseek(fd: u32, offset: i32, whence: u32) -> u32` | Seek within file. Returns new position. |
 | `readdir` | `fn readdir(path: &str, buf: &mut [u8]) -> u32` | List directory. Returns entry count or `u32::MAX`. |
-| `stat` | `fn stat(path: &str, buf: &mut [u32; 2]) -> u32` | File status. Writes `[type, size]`. |
+| `stat` | `fn stat(path: &str, buf: &mut [u32; 6]) -> u32` | File status. Returns 0 on success. |
+| `lstat` | `fn lstat(path: &str, buf: &mut [u32; 6]) -> u32` | File status (no symlink follow). |
 | `fstat` | `fn fstat(fd: u32, buf: &mut [u32; 3]) -> u32` | FD status. Writes `[type, size, position]`. |
 | `mkdir` | `fn mkdir(path: &str) -> u32` | Create directory. 0 on success. |
 | `unlink` | `fn unlink(path: &str) -> u32` | Delete file. 0 on success. |
 | `truncate` | `fn truncate(path: &str) -> u32` | Truncate file to zero. 0 on success. |
 | `getcwd` | `fn getcwd(buf: &mut [u8]) -> u32` | Get current working directory. |
+| `chdir` | `fn chdir(path: &str) -> u32` | Change working directory. 0 on success. |
 | `isatty` | `fn isatty(fd: u32) -> u32` | Check if FD is a terminal. 1=yes, 0=no. |
+| `symlink` | `fn symlink(target: &str, link_path: &str) -> u32` | Create symbolic link. 0 on success. |
+| `readlink` | `fn readlink(path: &str, buf: &mut [u8]) -> u32` | Read symlink target. Returns bytes written. |
+| `mount` | `fn mount(mount_path: &str, device: &str, fs_type: u32) -> u32` | Mount filesystem. 0 on success. |
+| `umount` | `fn umount(mount_path: &str) -> u32` | Unmount filesystem. 0 on success. |
+| `list_mounts` | `fn list_mounts(buf: &mut [u8]) -> u32` | List mounted filesystems. |
+| `chmod` | `fn chmod(path: &str, mode: u16) -> u32` | Change file permissions. 0 on success. |
+| `chown` | `fn chown(path: &str, uid: u16, gid: u16) -> u32` | Change file owner/group. 0 on success. |
 
 ### Directory Entry Format
 
@@ -287,39 +263,6 @@ Combine with `|`: `fs::open("file.txt", fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC
 | 1 | stdout | Serial output |
 | 2 | stderr | Serial output |
 
-### Example: Reading a File
-
-```rust
-use anyos_std::*;
-
-fn main() {
-    let fd = fs::open("/bin/hello", 0); // 0 = read-only
-    if fd == u32::MAX {
-        println!("Failed to open file");
-        return;
-    }
-
-    let mut buf = [0u8; 256];
-    let n = fs::read(fd, &mut buf);
-    println!("Read {} bytes", n);
-    fs::close(fd);
-}
-```
-
-### Example: Writing a File
-
-```rust
-use anyos_std::*;
-
-fn main() {
-    let fd = fs::open("/tmp/test.txt", fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
-    if fd != u32::MAX {
-        fs::write(fd, b"Hello, world!\n");
-        fs::close(fd);
-    }
-}
-```
-
 ---
 
 ## `net` -- Networking
@@ -331,6 +274,15 @@ fn main() {
 | `get_config` | `fn get_config(buf: &mut [u8; 24]) -> u32` | Get network config: `[ip:4, mask:4, gw:4, dns:4, mac:6, link:1, pad:1]` |
 | `set_config` | `fn set_config(buf: &[u8; 16]) -> u32` | Set network config: `[ip:4, mask:4, gw:4, dns:4]` |
 | `dhcp` | `fn dhcp(buf: &mut [u8; 16]) -> u32` | Auto-configure via DHCP. 0 on success. |
+
+### NIC Control
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `disable_nic` | `fn disable_nic() -> u32` | Disable the network interface. |
+| `enable_nic` | `fn enable_nic() -> u32` | Enable the network interface. |
+| `is_nic_enabled` | `fn is_nic_enabled() -> bool` | Check if NIC is enabled. |
+| `is_nic_available` | `fn is_nic_available() -> bool` | Check if NIC hardware is present. |
 
 ### ICMP, DNS, ARP
 
@@ -350,46 +302,15 @@ fn main() {
 | `tcp_close` | `fn tcp_close(socket_id: u32) -> u32` | Close connection. |
 | `tcp_status` | `fn tcp_status(socket_id: u32) -> u32` | Connection state: 0=Closed, 2=Established, etc. |
 
-### Example: DNS Lookup and Ping
+### UDP
 
-```rust
-use anyos_std::*;
-
-fn main() {
-    let mut ip = [0u8; 4];
-    if net::dns("example.com", &mut ip) == 0 {
-        println!("Resolved to {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
-        let rtt = net::ping(&ip, 1, 500);
-        if rtt != u32::MAX {
-            println!("Ping: {} ms", rtt * 10);
-        }
-    }
-}
-```
-
-### Example: HTTP GET via TCP
-
-```rust
-use anyos_std::*;
-
-fn main() {
-    let ip = [93, 184, 216, 34]; // example.com
-    let sock = net::tcp_connect(&ip, 80, 5000);
-    if sock == u32::MAX { return; }
-
-    let request = b"GET / HTTP/1.0\r\nHost: example.com\r\n\r\n";
-    net::tcp_send(sock, request);
-
-    let mut buf = [0u8; 4096];
-    loop {
-        let n = net::tcp_recv(sock, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
-        let s = core::str::from_utf8(&buf[..n as usize]).unwrap_or("");
-        print!("{}", s);
-    }
-    net::tcp_close(sock);
-}
-```
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `udp_bind` | `fn udp_bind(port: u16) -> u32` | Bind to a UDP port. Returns 0 on success. |
+| `udp_unbind` | `fn udp_unbind(port: u16) -> u32` | Release a UDP port. |
+| `udp_sendto` | `fn udp_sendto(dst_ip: &[u8; 4], dst_port: u16, src_port: u16, data: &[u8], flags: u32) -> u32` | Send UDP datagram. |
+| `udp_recvfrom` | `fn udp_recvfrom(port: u16, buf: &mut [u8]) -> u32` | Receive UDP datagram. Returns bytes read. |
+| `udp_set_opt` | `fn udp_set_opt(port: u16, opt: u32, val: u32) -> u32` | Set UDP socket option. |
 
 ---
 
@@ -419,107 +340,159 @@ fn main() {
 |----------|-----------|-------------|
 | `evt_chan_create` | `fn evt_chan_create(name: &str) -> u32` | Create named channel. Returns channel_id. |
 | `evt_chan_subscribe` | `fn evt_chan_subscribe(channel_id: u32, filter: u32) -> u32` | Subscribe. Returns sub_id. |
-| `evt_chan_emit` | `fn evt_chan_emit(channel_id: u32, event: &[u32; 5])` | Emit event to channel. |
+| `evt_chan_emit` | `fn evt_chan_emit(channel_id: u32, event: &[u32; 5])` | Emit event to all subscribers. |
+| `evt_chan_emit_to` | `fn evt_chan_emit_to(channel_id: u32, sub_id: u32, event: &[u32; 5])` | Emit event to a specific subscriber. |
 | `evt_chan_poll` | `fn evt_chan_poll(channel_id: u32, sub_id: u32, buf: &mut [u32; 5]) -> bool` | Poll next event. |
 | `evt_chan_unsubscribe` | `fn evt_chan_unsubscribe(channel_id: u32, sub_id: u32)` | Unsubscribe. |
 | `evt_chan_destroy` | `fn evt_chan_destroy(channel_id: u32)` | Destroy channel. |
 
+### Shared Memory (SHM)
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `shm_create` | `fn shm_create(size: u32) -> u32` | Create shared memory region. Returns shm_id. |
+| `shm_map` | `fn shm_map(shm_id: u32) -> u32` | Map SHM into process address space. Returns virtual address. |
+| `shm_unmap` | `fn shm_unmap(shm_id: u32) -> u32` | Unmap SHM from process. |
+| `shm_destroy` | `fn shm_destroy(shm_id: u32) -> u32` | Destroy SHM region. |
+
+### Compositor-Privileged API
+
+These functions are only available to the compositor process (registered via `register_compositor()`).
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `register_compositor` | `fn register_compositor() -> u32` | Register as the system compositor. |
+| `map_framebuffer` | `fn map_framebuffer() -> Option<FbMapInfo>` | Map the physical framebuffer. |
+| `gpu_command` | `fn gpu_command(cmds: &[[u32; 9]]) -> u32` | Submit GPU commands (VMware SVGA II). |
+| `input_poll` | `fn input_poll(buf: &mut [[u32; 5]]) -> u32` | Poll raw keyboard/mouse input. |
+| `cursor_takeover` | `fn cursor_takeover() -> (i32, i32)` | Take control of cursor, returns position. |
+
+### FbMapInfo
+
+```rust
+pub struct FbMapInfo {
+    pub fb_addr: u32,   // Virtual address of framebuffer
+    pub width: u32,     // Screen width in pixels
+    pub height: u32,    // Screen height in pixels
+    pub pitch: u32,     // Bytes per row
+}
+```
+
 ---
 
-## `ui::window` -- Window Management
+## `env` -- Environment Variables
 
-### Window Event Types
-
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `EVENT_KEY_DOWN` | `1` | Key pressed. `p2` = key code. |
-| `EVENT_KEY_UP` | `2` | Key released. |
-| `EVENT_RESIZE` | `3` | Window resized. `p1` = new width, `p2` = new height. |
-| `EVENT_MOUSE_DOWN` | `4` | Mouse button pressed. `p1` = x, `p2` = y. |
-| `EVENT_MOUSE_UP` | `5` | Mouse button released. |
-| `EVENT_MOUSE_MOVE` | `6` | Mouse moved. `p1` = x, `p2` = y. |
-| `EVENT_MOUSE_SCROLL` | `7` | Mouse scroll. `p1` = dz (signed). |
-
-### Window Creation Flags
-
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `WIN_FLAG_NOT_RESIZABLE` | `0x01` | Disallow window resizing |
-| `WIN_FLAG_BORDERLESS` | `0x02` | No title bar or border |
-| `WIN_FLAG_ALWAYS_ON_TOP` | `0x04` | Stay above all other windows |
+Per-process key-value environment variable storage.
 
 ### Functions
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `create` | `fn create(title: &str, x: u16, y: u16, w: u16, h: u16) -> u32` | Create window. Returns window_id or `u32::MAX`. |
-| `create_ex` | `fn create_ex(title: &str, x: u16, y: u16, w: u16, h: u16, flags: u32) -> u32` | Create window with flags. |
-| `destroy` | `fn destroy(window_id: u32) -> u32` | Destroy window. |
-| `set_title` | `fn set_title(window_id: u32, title: &str) -> u32` | Update title bar text. |
-| `get_event` | `fn get_event(window_id: u32, event: &mut [u32; 5]) -> u32` | Poll event. 1=received, 0=none. |
-| `get_size` | `fn get_size(window_id: u32) -> Option<(u32, u32)>` | Get content area size. |
-| `fill_rect` | `fn fill_rect(window_id: u32, x: i16, y: i16, w: u16, h: u16, color: u32) -> u32` | Fill rectangle with ARGB color. |
-| `draw_text` | `fn draw_text(window_id: u32, x: i16, y: i16, color: u32, text: &str) -> u32` | Draw proportional text. |
-| `draw_text_mono` | `fn draw_text_mono(window_id: u32, x: i16, y: i16, color: u32, text: &str) -> u32` | Draw monospace text (8x16). |
-| `blit` | `fn blit(window_id: u32, x: i16, y: i16, w: u16, h: u16, data: &[u32]) -> u32` | Blit ARGB pixel array. |
-| `present` | `fn present(window_id: u32) -> u32` | Flush to compositor. **Required after drawing.** |
-| `list_windows` | `fn list_windows(buf: &mut [u8]) -> u32` | List open windows. |
-| `focus` | `fn focus(window_id: u32) -> u32` | Focus/raise window. |
-| `screen_size` | `fn screen_size() -> (u32, u32)` | Get screen dimensions. |
-| `set_resolution` | `fn set_resolution(width: u32, height: u32) -> bool` | Change display resolution. |
-| `list_resolutions` | `fn list_resolutions() -> Vec<(u32, u32)>` | List supported resolutions. |
-| `gpu_name` | `fn gpu_name() -> String` | Get GPU driver name. |
+| `set` | `fn set(key: &str, value: &str) -> u32` | Set variable. 0 on success. |
+| `unset` | `fn unset(key: &str) -> u32` | Remove variable. Pass empty value to `set`. |
+| `get` | `fn get(key: &str, buf: &mut [u8]) -> u32` | Get variable value. Returns length or 0 if not found. |
+| `list` | `fn list(buf: &mut [u8]) -> u32` | List all variables. Returns bytes written. |
 
-### Color Format
-
-Colors are 32-bit ARGB: `0xAARRGGBB`
-
-| Example | Value |
-|---------|-------|
-| Opaque black | `0xFF000000` |
-| Opaque white | `0xFFFFFFFF` |
-| Opaque red | `0xFFFF0000` |
-| 50% transparent blue | `0x800000FF` |
-
-### Example: Simple Window
+### Example
 
 ```rust
-#![no_std]
-#![no_main]
-
 use anyos_std::*;
 
-anyos_std::entry!(main);
-
 fn main() {
-    let win = ui::window::create("My App", 100, 100, 400, 300);
-    if win == u32::MAX { return; }
-
-    let mut event = [0u32; 5];
-    loop {
-        // Process events
-        while ui::window::get_event(win, &mut event) == 1 {
-            if event[0] == 0 { // Window closed
-                ui::window::destroy(win);
-                return;
-            }
-        }
-
-        // Draw
-        ui::window::fill_rect(win, 0, 0, 400, 300, 0xFF1E1E1E);
-        ui::window::draw_text(win, 20, 20, 0xFFE6E6E6, "Hello, World!");
-        ui::window::present(win);
-
-        process::yield_cpu();
+    env::set("HOME", "/home/user");
+    let mut buf = [0u8; 256];
+    let len = env::get("HOME", &mut buf);
+    if len > 0 {
+        let val = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
+        println!("HOME={}", val);
     }
 }
 ```
 
 ---
 
+## `users` -- User & Group Management
+
+### Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `adduser` | `fn adduser(username: &str, password: &str, fullname: &str, homedir: &str) -> u32` | Create user account. Returns UID or `u32::MAX`. |
+| `chpasswd` | `fn chpasswd(username: &str, old_password: &str, new_password: &str) -> u32` | Change password. 0 on success. |
+| `deluser` | `fn deluser(uid: u16) -> u32` | Delete user account. |
+| `listusers` | `fn listusers(buf: &mut [u8]) -> u32` | List all users. Returns bytes written. |
+| `addgroup` | `fn addgroup(name: &str, gid: u16) -> u32` | Create a group. |
+| `delgroup` | `fn delgroup(gid: u16) -> u32` | Delete a group. |
+| `listgroups` | `fn listgroups(buf: &mut [u8]) -> u32` | List all groups. Returns bytes written. |
+
+User identity functions (`getuid`, `getgid`, `authenticate`, `getusername`, `set_identity`) are in the `process` module.
+
+---
+
+## `kbd` -- Keyboard Layouts
+
+### Types
+
+```rust
+pub struct LayoutInfo {
+    pub id: u32,         // Layout ID
+    pub code: [u8; 8],   // Layout code (e.g. "en-us\0\0\0")
+    pub label: [u8; 4],  // Short label (e.g. "US\0\0")
+}
+```
+
+### Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `get_layout` | `fn get_layout() -> u32` | Get active keyboard layout ID. |
+| `set_layout` | `fn set_layout(id: u32) -> u32` | Switch keyboard layout. |
+| `list_layouts` | `fn list_layouts(buf: &mut [LayoutInfo]) -> u32` | List available layouts. Returns count. |
+| `label_str` | `fn label_str(label: &[u8; 4]) -> &str` | Convert label bytes to string (trims nulls). |
+| `code_str` | `fn code_str(code: &[u8; 8]) -> &str` | Convert code bytes to string (trims nulls). |
+
+### Example
+
+```rust
+use anyos_std::kbd;
+
+fn main() {
+    let mut layouts = [kbd::LayoutInfo { id: 0, code: [0; 8], label: [0; 4] }; 16];
+    let count = kbd::list_layouts(&mut layouts);
+    for i in 0..count as usize {
+        println!("{}: {} ({})", layouts[i].id,
+            kbd::code_str(&layouts[i].code),
+            kbd::label_str(&layouts[i].label));
+    }
+}
+```
+
+---
+
+## `crypto` -- Cryptography
+
+### Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `md5` | `fn md5(input: &[u8]) -> [u8; 16]` | Compute MD5 hash (16 raw bytes). |
+| `md5_hex` | `fn md5_hex(input: &[u8]) -> [u8; 32]` | Compute MD5 hash as hex string bytes. |
+
+### Example
+
+```rust
+use anyos_std::crypto;
+
+let hash = crypto::md5_hex(b"hello");
+let hex_str = core::str::from_utf8(&hash).unwrap_or("");
+println!("MD5: {}", hex_str);
+```
+
+---
+
 ## `audio` -- Audio Playback
 
-Provides functions to write PCM audio data, control volume, and play WAV files. Audio output is 48 kHz, 16-bit signed stereo (native AC'97 format).
+Audio output is 48 kHz, 16-bit signed stereo (native AC'97 format).
 
 ### Functions
 
@@ -549,53 +522,6 @@ Raw PCM data passed to `audio_write()` must be:
 - **Channels:** Mono (duplicated to stereo) or stereo
 - **Sample rate:** Any (resampled to 48 kHz via nearest-neighbor)
 
-### Example: Playing a WAV File
-
-```rust
-use anyos_std::*;
-
-fn main() {
-    if !audio::audio_is_available() {
-        println!("No audio device");
-        return;
-    }
-
-    let fd = fs::open("/sounds/alert.wav", 0);
-    if fd == u32::MAX { return; }
-
-    let mut data = Vec::new();
-    let mut buf = [0u8; 4096];
-    loop {
-        let n = fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
-        data.extend_from_slice(&buf[..n as usize]);
-    }
-    fs::close(fd);
-
-    match audio::play_wav(&data) {
-        Ok(()) => {
-            while audio::audio_is_playing() {
-                process::yield_cpu();
-            }
-            println!("Done.");
-        }
-        Err(e) => println!("Error: {}", e),
-    }
-}
-```
-
-### Example: Volume Control
-
-```rust
-use anyos_std::audio;
-
-// Set volume to 50%
-audio::audio_set_volume(50);
-
-// Read current volume
-let vol = audio::audio_get_volume();
-```
-
 ---
 
 ## `dll` -- Dynamic Library Loading
@@ -604,127 +530,400 @@ let vol = audio::audio_get_volume();
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `dll_load` | `fn dll_load(path: &str) -> u32` | Load DLL by path. Returns base virtual address or 0 on failure. |
+| `dll_load` | `fn dll_load(path: &str) -> u32` | Load DLL by path. Returns base virtual address or 0. |
+| `set_dll_u32` | `fn set_dll_u32(dll_base: u64, offset: u32, value: u32) -> u32` | Write a u32 into DLL data section. |
 
-DLLs are loaded at fixed virtual addresses (starting at `0x04000000`). The main DLL is `uisys.dll`, which provides UI components. See the [uisys API reference](uisys-api.md) for details.
+DLLs are loaded at fixed virtual addresses (starting at `0x04000000`). See the dedicated DLL API docs for each library.
 
 ---
 
-## Syscall Numbers
+## `args` -- Argument Parser
 
-All syscalls use `int 0x80` with EAX = syscall number and EBX-EDI for arguments.
+A zero-allocation command-line argument parser.
 
-### Process (1-13, 27-29)
+### Types
 
-| Number | Name | Description |
-|--------|------|-------------|
-| 1 | SYS_EXIT | Terminate process |
-| 6 | SYS_GETPID | Get thread ID |
-| 7 | SYS_YIELD | Yield CPU |
-| 8 | SYS_SLEEP | Sleep (ms) |
-| 9 | SYS_SBRK | Grow heap |
-| 12 | SYS_WAITPID | Wait for thread |
-| 13 | SYS_KILL | Kill thread |
-| 27 | SYS_SPAWN | Spawn process |
-| 28 | SYS_GETARGS | Get arguments |
-| 29 | SYS_TRY_WAITPID | Non-blocking wait |
+```rust
+pub struct ParsedArgs<'a> {
+    pub positional: [&'a str; 8],  // Positional arguments
+    pub pos_count: usize,          // Number of positional args
+    // ... internal flag/option storage
+}
+```
 
-### Filesystem (2-5, 23-25, 90-92, 105-108)
+### ParsedArgs Methods
 
-| Number | Name | Description |
-|--------|------|-------------|
-| 2 | SYS_WRITE | Write to FD |
-| 3 | SYS_READ | Read from FD |
-| 4 | SYS_OPEN | Open file |
-| 5 | SYS_CLOSE | Close FD |
-| 23 | SYS_READDIR | List directory |
-| 24 | SYS_STAT | File status |
-| 25 | SYS_GETCWD | Get working directory |
-| 90 | SYS_MKDIR | Create directory |
-| 91 | SYS_UNLINK | Delete file |
-| 92 | SYS_TRUNCATE | Truncate file |
-| 105 | SYS_LSEEK | Seek in file |
-| 106 | SYS_FSTAT | FD status |
-| 108 | SYS_ISATTY | Check terminal |
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `has` | `fn has(&self, flag: u8) -> bool` | Check if a boolean flag is set (e.g. `b'v'` for `-v`). |
+| `opt` | `fn opt(&self, flag: u8) -> Option<&str>` | Get value of an option flag (e.g. `-o value`). |
+| `opt_u32` | `fn opt_u32(&self, flag: u8, default: u32) -> u32` | Get option value as u32 with default. |
+| `first_or` | `fn first_or(&self, default: &str) -> &str` | First positional arg or default. |
+| `pos` | `fn pos(&self, idx: usize) -> Option<&str>` | Get positional argument by index. |
 
-### Time / System (30-33)
+### Function
 
-| Number | Name | Description |
-|--------|------|-------------|
-| 30 | SYS_TIME | Get time |
-| 31 | SYS_UPTIME | Get uptime |
-| 32 | SYS_SYSINFO | System info |
-| 33 | SYS_DMESG | Kernel log |
+```rust
+pub fn parse<'a>(raw: &'a str, opts_with_values: &[u8]) -> ParsedArgs<'a>
+```
 
-### Networking (40-44, 100-104)
+Parse a raw argument string. `opts_with_values` lists flags that expect a value.
 
-| Number | Name | Description |
-|--------|------|-------------|
-| 40 | SYS_NET_CONFIG | Network config |
-| 41 | SYS_NET_PING | ICMP ping |
-| 42 | SYS_NET_DHCP | DHCP config |
-| 43 | SYS_NET_DNS | DNS resolve |
-| 44 | SYS_NET_ARP | ARP table |
-| 100 | SYS_TCP_CONNECT | TCP connect |
-| 101 | SYS_TCP_SEND | TCP send |
-| 102 | SYS_TCP_RECV | TCP receive |
-| 103 | SYS_TCP_CLOSE | TCP close |
-| 104 | SYS_TCP_STATUS | TCP status |
+### Example
 
-### IPC (45-49, 60-68)
+```rust
+use anyos_std::args;
 
-| Number | Name | Description |
-|--------|------|-------------|
-| 45 | SYS_PIPE_CREATE | Create pipe |
-| 46 | SYS_PIPE_READ | Read pipe |
-| 47 | SYS_PIPE_CLOSE | Close pipe |
-| 48 | SYS_PIPE_WRITE | Write pipe |
-| 49 | SYS_PIPE_OPEN | Open pipe |
-| 60 | SYS_EVT_SYS_SUBSCRIBE | Subscribe system events |
-| 61 | SYS_EVT_SYS_POLL | Poll system events |
-| 62 | SYS_EVT_SYS_UNSUBSCRIBE | Unsubscribe |
-| 63 | SYS_EVT_CHAN_CREATE | Create channel |
-| 64 | SYS_EVT_CHAN_SUBSCRIBE | Subscribe channel |
-| 65 | SYS_EVT_CHAN_EMIT | Emit event |
-| 66 | SYS_EVT_CHAN_POLL | Poll channel |
-| 67 | SYS_EVT_CHAN_UNSUBSCRIBE | Unsubscribe channel |
-| 68 | SYS_EVT_CHAN_DESTROY | Destroy channel |
+fn main() {
+    let mut buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut buf);
+    let parsed = args::parse(raw, b"o"); // -o takes a value
 
-### Window Manager (50-59, 70-72)
+    if parsed.has(b'v') {
+        println!("Verbose mode");
+    }
+    if let Some(output) = parsed.opt(b'o') {
+        println!("Output: {}", output);
+    }
+    let file = parsed.first_or("default.txt");
+    println!("File: {}", file);
+}
+```
 
-| Number | Name | Description |
-|--------|------|-------------|
-| 50 | SYS_WIN_CREATE | Create window |
-| 51 | SYS_WIN_DESTROY | Destroy window |
-| 52 | SYS_WIN_SET_TITLE | Set title |
-| 53 | SYS_WIN_GET_EVENT | Poll event |
-| 54 | SYS_WIN_FILL_RECT | Fill rectangle |
-| 55 | SYS_WIN_DRAW_TEXT | Draw text |
-| 56 | SYS_WIN_PRESENT | Flush to screen |
-| 57 | SYS_WIN_GET_SIZE | Get size |
-| 58 | SYS_WIN_DRAW_TEXT_MONO | Draw mono text |
-| 59 | SYS_WIN_BLIT | Blit pixels |
-| 70 | SYS_WIN_LIST | List windows |
-| 71 | SYS_WIN_FOCUS | Focus window |
-| 72 | SYS_SCREEN_SIZE | Screen dimensions |
+---
 
-### DLL (80)
+## `anim` -- Animation Engine
 
-| Number | Name | Description |
-|--------|------|-------------|
-| 80 | SYS_DLL_LOAD | Load DLL |
+Tick-based animation system with easing functions.
 
-### Audio (120-121)
+### Easing
 
-| Number | Name | Args | Description |
-|--------|------|------|-------------|
-| 120 | SYS_AUDIO_WRITE | buf_ptr, buf_len | Write PCM data (16-bit LE stereo 48 kHz). Returns bytes accepted. |
-| 121 | SYS_AUDIO_CTL | cmd, arg | Audio control: 0=stop, 1=set_volume(arg), 2=get_volume, 3=is_playing, 4=is_available |
+```rust
+pub enum Easing {
+    Linear,
+    EaseIn,
+    EaseOut,
+}
+```
 
-### Display (110-112)
+### Anim
 
-| Number | Name | Description |
-|--------|------|-------------|
-| 110 | SYS_SET_RESOLUTION | Change resolution |
-| 111 | SYS_LIST_RESOLUTIONS | List modes |
-| 112 | SYS_GPU_INFO | GPU info |
+A single animation interpolating between two values.
+
+```rust
+pub struct Anim {
+    pub from: i32,
+    pub to: i32,
+    pub easing: Easing,
+    // ... internal timing fields
+}
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `fn new(from: i32, to: i32, duration_ms: u32, easing: Easing) -> Self` | Create animation starting now. |
+| `new_at` | `fn new_at(from: i32, to: i32, duration_ms: u32, easing: Easing, start: u32) -> Self` | Create animation at specific tick. |
+| `progress` | `fn progress(&self, now_tick: u32) -> u32` | Get progress 0..65536 (16.16 fixed-point). |
+| `value` | `fn value(&self, now_tick: u32) -> i32` | Get interpolated value at tick. |
+| `done` | `fn done(&self, now_tick: u32) -> bool` | Check if animation is complete. |
+
+### AnimSet
+
+Manages multiple named animations.
+
+```rust
+pub struct AnimSet { /* ... */ }
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `fn new() -> Self` | Create empty animation set. |
+| `start` | `fn start(&mut self, id: u32, from: i32, to: i32, duration_ms: u32, easing: Easing)` | Start animation with ID. |
+| `start_at` | `fn start_at(&mut self, id: u32, from: i32, to: i32, duration_ms: u32, easing: Easing, start: u32)` | Start at specific tick. |
+| `value` | `fn value(&self, id: u32, now: u32) -> Option<i32>` | Get current value by ID. |
+| `value_or` | `fn value_or(&self, id: u32, now: u32, default: i32) -> i32` | Get value or default. |
+| `is_active` | `fn is_active(&self, id: u32, now: u32) -> bool` | Check if animation is running. |
+| `has_active` | `fn has_active(&self, now: u32) -> bool` | Check if any animation is running. |
+| `remove_done` | `fn remove_done(&mut self, now: u32)` | Remove completed animations. |
+| `remove` | `fn remove(&mut self, id: u32)` | Remove animation by ID. |
+| `len` | `fn len(&self) -> usize` | Number of active animations. |
+
+### Utility
+
+```rust
+pub fn color_blend(c1: u32, c2: u32, t: u32) -> u32
+```
+
+Blend two ARGB colors. `t` is 0..65536 (0 = c1, 65536 = c2).
+
+---
+
+## `bundle` -- App Bundle Discovery
+
+Discover app bundle paths and metadata for `.app` directories.
+
+### Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `bundle_path` | `fn bundle_path() -> Option<&'static str>` | Get the current app's bundle directory. |
+| `resource_path` | `fn resource_path(name: &str) -> Option<String>` | Resolve a resource file path within the bundle. |
+| `bundle_name` | `fn bundle_name() -> Option<String>` | Get the bundle display name. |
+| `bundle_info` | `fn bundle_info(key: &str) -> Option<String>` | Read a key from the bundle's info file. |
+
+---
+
+## `icons` -- Icon & MIME Type Lookup
+
+### Constants
+
+| Constant | Value |
+|----------|-------|
+| `APP_ICONS_DIR` | `"/System/media/icons/apps"` |
+| `DEFAULT_APP_ICON` | `"/System/media/icons/apps/default.ico"` |
+| `DEFAULT_FILE_ICON` | `"/System/media/icons/default.ico"` |
+| `FOLDER_ICON` | `"/System/media/icons/folder.ico"` |
+
+### MimeDb
+
+Database of file extension to application and icon mappings.
+
+```rust
+pub struct MimeDb { /* ... */ }
+pub struct MimeEntry {
+    pub ext: String,
+    pub app: String,
+    pub icon_path: String,
+}
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `load` | `fn load() -> Self` | Load MIME database from disk. |
+| `lookup` | `fn lookup(&self, ext: &str) -> Option<&MimeEntry>` | Lookup by file extension. |
+| `icon_for_ext` | `fn icon_for_ext(&self, ext: &str) -> &str` | Get icon path for extension. |
+| `app_for_ext` | `fn app_for_ext(&self, ext: &str) -> Option<&str>` | Get default app for extension. |
+
+### Utility Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `is_app_bundle` | `fn is_app_bundle(path: &str) -> bool` | Check if path is a `.app` bundle. |
+| `app_bundle_name` | `fn app_bundle_name(bundle_path: &str) -> String` | Extract display name from bundle path. |
+| `app_icon_path` | `fn app_icon_path(bin_path: &str) -> String` | Find icon for an application binary. |
+
+---
+
+## `ui::window` -- Window Management
+
+### Event Types
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `EVENT_KEY_DOWN` | `1` | Key pressed. `p2` = key code. |
+| `EVENT_KEY_UP` | `2` | Key released. |
+| `EVENT_RESIZE` | `3` | Window resized. `p1` = width, `p2` = height. |
+| `EVENT_MOUSE_DOWN` | `4` | Mouse button pressed. `p1` = x, `p2` = y. |
+| `EVENT_MOUSE_UP` | `5` | Mouse button released. |
+| `EVENT_MOUSE_MOVE` | `6` | Mouse moved. `p1` = x, `p2` = y. |
+| `EVENT_MOUSE_SCROLL` | `7` | Mouse scroll. `p1` = dz (signed). |
+| `EVENT_WINDOW_CLOSE` | `8` | Window close requested. |
+| `EVENT_MENU_ITEM` | `9` | Menu item selected. `p1` = item_id. |
+
+### Window Creation Flags
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `WIN_FLAG_BORDERLESS` | `0x01` | No title bar or border |
+| `WIN_FLAG_NOT_RESIZABLE` | `0x02` | Disallow window resizing |
+| `WIN_FLAG_ALWAYS_ON_TOP` | `0x04` | Stay above other windows |
+| `WIN_FLAG_NO_CLOSE` | `0x08` | Hide close button |
+| `WIN_FLAG_NO_MINIMIZE` | `0x10` | Hide minimize button |
+| `WIN_FLAG_NO_MAXIMIZE` | `0x20` | Hide maximize button |
+
+### Font Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `FONT_REGULAR` | `0` | Regular weight |
+| `FONT_BOLD` | `1` | Bold weight |
+| `FONT_THIN` | `2` | Thin weight |
+| `FONT_ITALIC` | `3` | Italic style |
+
+### Menu Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `MENU_FLAG_DISABLED` | `0x01` | Greyed out, not clickable |
+| `MENU_FLAG_SEPARATOR` | `0x02` | Separator line |
+| `MENU_FLAG_CHECKED` | `0x04` | Checkmark visible |
+| `APP_MENU_ABOUT` | `0xFFFE` | Standard "About" item ID |
+| `APP_MENU_HIDE` | `0xFFFD` | Standard "Hide" item ID |
+| `APP_MENU_QUIT` | `0xFFFF` | Standard "Quit" item ID |
+
+### Window Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `create` | `fn create(title: &str, x: u16, y: u16, w: u16, h: u16) -> u32` | Create window. Returns window_id or `u32::MAX`. |
+| `create_ex` | `fn create_ex(title: &str, x: u16, y: u16, w: u16, h: u16, flags: u32) -> u32` | Create window with flags. |
+| `destroy` | `fn destroy(window_id: u32) -> u32` | Destroy window. |
+| `set_title` | `fn set_title(window_id: u32, title: &str) -> u32` | Update title bar text. |
+| `get_event` | `fn get_event(window_id: u32, event: &mut [u32; 5]) -> u32` | Poll event. 1=received, 0=none. |
+| `get_size` | `fn get_size(window_id: u32) -> Option<(u32, u32)>` | Get content area size. |
+
+### Drawing Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `fill_rect` | `fn fill_rect(win: u32, x: i16, y: i16, w: u16, h: u16, color: u32) -> u32` | Fill rectangle with ARGB color. |
+| `fill_rounded_rect` | `fn fill_rounded_rect(win: u32, x: i16, y: i16, w: u16, h: u16, radius: u16, color: u32) -> u32` | Fill rounded rectangle. |
+| `draw_text` | `fn draw_text(win: u32, x: i16, y: i16, color: u32, text: &str) -> u32` | Draw proportional text. |
+| `draw_text_mono` | `fn draw_text_mono(win: u32, x: i16, y: i16, color: u32, text: &str) -> u32` | Draw monospace text (8x16). |
+| `draw_text_ex` | `fn draw_text_ex(win: u32, x: i16, y: i16, color: u32, font_id: u16, size: u16, text: &str) -> u32` | Draw text with custom font and size. |
+| `blit` | `fn blit(win: u32, x: i16, y: i16, w: u16, h: u16, data: &[u32]) -> u32` | Blit ARGB pixel array (opaque). |
+| `blit_alpha` | `fn blit_alpha(win: u32, x: i16, y: i16, w: u16, h: u16, data: &[u32]) -> u32` | Blit ARGB pixel array (alpha blended). |
+| `present` | `fn present(win: u32) -> u32` | Flush to compositor. **Required after drawing.** |
+
+### Surface Access
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `surface_ptr` | `fn surface_ptr(win: u32) -> *mut u32` | Get raw pixel buffer pointer. |
+| `surface_info` | `fn surface_info(win: u32) -> Option<(*mut u32, u32, u32)>` | Get (pointer, width, height). |
+
+### Display Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `screen_size` | `fn screen_size() -> (u32, u32)` | Get screen dimensions. |
+| `set_resolution` | `fn set_resolution(w: u32, h: u32) -> bool` | Change display resolution. |
+| `list_resolutions` | `fn list_resolutions() -> Vec<(u32, u32)>` | List supported resolutions. |
+| `gpu_name` | `fn gpu_name() -> String` | Get GPU driver name. |
+| `gpu_has_accel` | `fn gpu_has_accel() -> bool` | Check if GPU acceleration is available. |
+| `set_wallpaper` | `fn set_wallpaper(path: &str) -> u32` | Set desktop wallpaper image. |
+| `get_theme` | `fn get_theme() -> u32` | Get current UI theme ID. |
+| `set_theme` | `fn set_theme(theme: u32)` | Set UI theme. |
+
+### Window Management
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `list_windows` | `fn list_windows(buf: &mut [u8]) -> u32` | List open windows. |
+| `focus` | `fn focus(win: u32) -> u32` | Focus/raise window. |
+
+### Font Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `font_load` | `fn font_load(path: &str) -> Option<u32>` | Load a font file. Returns font_id. |
+| `font_unload` | `fn font_unload(font_id: u32)` | Unload a font. |
+| `font_measure` | `fn font_measure(font_id: u16, size: u16, text: &str) -> (u32, u32)` | Measure text (width, height). |
+| `font_render_buf` | `fn font_render_buf(font_id: u16, size: u16, buf: &mut [u32], buf_w: u32, buf_h: u32, x: i32, y: i32, color: u32, text: &str) -> u32` | Render text into pixel buffer. |
+
+### Menu Bar
+
+```rust
+pub struct MenuBarBuilder { /* ... */ }
+pub struct MenuBuilder { /* ... */ }
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `MenuBarBuilder::new` | `fn new() -> Self` | Create builder. |
+| `MenuBarBuilder::menu` | `fn menu(self, title: &str) -> MenuBuilder` | Start a menu. |
+| `MenuBarBuilder::build` | `fn build(&mut self) -> &[u8]` | Finalize and get binary data. |
+| `MenuBuilder::item` | `fn item(self, id: u32, label: &str, flags: u32) -> Self` | Add menu item. |
+| `MenuBuilder::separator` | `fn separator(self) -> Self` | Add separator. |
+| `MenuBuilder::end_menu` | `fn end_menu(self) -> MenuBarBuilder` | End current menu. |
+
+**Menu Functions:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `set_menu` | `fn set_menu(win: u32, data: &[u8])` | Set window's menu bar. |
+| `update_menu_item` | `fn update_menu_item(win: u32, item_id: u32, new_flags: u32)` | Update menu item flags. |
+| `enable_menu_item` | `fn enable_menu_item(win: u32, item_id: u32)` | Enable a menu item. |
+| `disable_menu_item` | `fn disable_menu_item(win: u32, item_id: u32)` | Disable a menu item. |
+
+### Color Format
+
+Colors are 32-bit ARGB: `0xAARRGGBB`
+
+| Example | Value |
+|---------|-------|
+| Opaque black | `0xFF000000` |
+| Opaque white | `0xFFFFFFFF` |
+| Opaque red | `0xFFFF0000` |
+| 50% transparent blue | `0x800000FF` |
+
+---
+
+## `ui::dialog` -- Modal Dialogs
+
+### DialogType
+
+```rust
+pub enum DialogType {
+    Info,
+    Warning,
+    Error,
+    Success,
+    Question,
+}
+```
+
+### Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `show` | `fn show(parent: u32, dtype: DialogType, title: &str, message: &str, buttons: &[&str]) -> u32` | Show dialog with custom buttons. Returns button index. |
+| `show_error` | `fn show_error(parent: u32, title: &str, msg: &str) -> u32` | Error dialog with OK button. |
+| `show_warning` | `fn show_warning(parent: u32, title: &str, msg: &str) -> u32` | Warning dialog with OK button. |
+| `show_info` | `fn show_info(parent: u32, title: &str, msg: &str) -> u32` | Info dialog with OK button. |
+| `show_confirm` | `fn show_confirm(parent: u32, title: &str, msg: &str) -> u32` | Confirm dialog with OK/Cancel. |
+| `show_success` | `fn show_success(parent: u32, title: &str, msg: &str) -> u32` | Success dialog with OK button. |
+
+### Example
+
+```rust
+use anyos_std::ui::dialog;
+
+let result = dialog::show_confirm(win, "Confirm", "Save changes?");
+if result == 0 {
+    // User clicked OK
+}
+```
+
+---
+
+## `ui::filedialog` -- File & Folder Dialogs
+
+### FileDialogResult
+
+```rust
+pub enum FileDialogResult {
+    Selected(String),
+    Cancelled,
+}
+```
+
+### Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `open_file` | `fn open_file(starting_path: &str) -> FileDialogResult` | Show file open dialog. |
+| `open_folder` | `fn open_folder(starting_path: &str) -> FileDialogResult` | Show folder selection dialog. |
+| `save_file` | `fn save_file(starting_path: &str, default_name: &str) -> FileDialogResult` | Show file save dialog. |
+| `create_folder` | `fn create_folder(parent_path: &str) -> FileDialogResult` | Show create folder dialog. |
+
+### Example
+
+```rust
+use anyos_std::ui::filedialog::{self, FileDialogResult};
+
+match filedialog::open_file("/") {
+    FileDialogResult::Selected(path) => println!("Selected: {}", path),
+    FileDialogResult::Cancelled => println!("Cancelled"),
+}
+```

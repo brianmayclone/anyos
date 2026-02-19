@@ -8,6 +8,7 @@
       "Bash(powershell.exe -Command \"Get-ChildItem ''C:\\\\Users\\\\cmoel\\\\.rustup\\\\toolchains\\\\nightly-x86_64-pc-windows-msvc\\\\bin'' -Filter ''*.exe'' | Select-Object Name\")",
       "Bash(powershell.exe -Command:*)",
       "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Development\\\\anyos\\\\scripts\\\\_add_cross_path.ps1\")",
+      "Bash(ls:*)",
       "Bash(powershell -Command \"& { VBoxManage list vms }\")",
       "Bash(powershell -Command \"& { & ''C:\\\\Program Files\\\\Oracle\\\\VirtualBox\\\\VBoxManage.exe'' list vms }\")",
       "Bash(powershell -Command \"& { & ''C:\\\\Program Files\\\\Oracle\\\\VirtualBox\\\\VBoxManage.exe'' showvminfo anyos | Select-String ''Log'' }\")",
