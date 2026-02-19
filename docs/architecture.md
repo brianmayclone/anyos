@@ -434,6 +434,24 @@ anyOS supports multi-user identity with per-process UID/GID.
 - **File ownership**: `chmod` and `chown` syscalls for permission management
 - User database stored in `/System/users/`
 
+### App Permissions
+
+anyOS enforces a runtime permission system similar to macOS/Android for `.app` bundles:
+
+- **Capability bitmask**: 14 capability bits enforced at syscall dispatch
+- **Sensitive capabilities** (require user consent): Filesystem, Network, Audio, Display, Device, Process, System, Compositor
+- **Auto-granted capabilities** (infrastructure, no prompt): DLL, Thread, SHM, Event, Pipe
+- **Permission storage**: `/System/users/perm/{uid}/{app_id}` files containing `granted=0x{hex}`
+
+**First-launch flow:**
+
+1. `SYS_SPAWN` detects `.app` bundle with sensitive capabilities and no stored permission → returns `PERM_NEEDED`
+2. Stdlib `spawn()` launches `/System/permdialog` (a modal dialog with dimmed background)
+3. User selects which permissions to grant via checkboxes → stored via `SYS_PERM_STORE`
+4. Stdlib retries spawn — kernel intersects declared capabilities with user-granted capabilities
+
+**Settings app** provides an "Apps" page where users can review and toggle per-app permissions or reset them entirely (triggers re-prompt on next launch).
+
 ---
 
 ## Syscall Interface
@@ -467,7 +485,7 @@ anyOS supports two syscall paths:
 
 ### Syscall Categories
 
-There are 113 syscalls organized by category:
+There are 118 syscalls organized by category:
 
 | Category | Syscall Numbers | Count | Examples |
 |----------|----------------|-------|----------|
@@ -488,6 +506,7 @@ There are 113 syscalls organized by category:
 | Environment | 170-172 | 3 | setenv, getenv, listenv |
 | Keyboard | 180-182 | 3 | kbd_get_layout, kbd_set_layout, kbd_list_layouts |
 | User/Identity | 190-201 | 14 | getuid, authenticate, adduser, chpasswd |
+| App Permissions | 250-254 | 5 | perm_check, perm_store, perm_list, perm_delete, perm_pending_info |
 | Filesystem ext | 97-99 | 3 | chmod, chown, chdir |
 
 See [syscalls reference](syscalls.md) for the complete list with all arguments and return values.

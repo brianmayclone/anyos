@@ -26,6 +26,7 @@ The **anyos_std** crate is the standard library for user-space Rust programs on 
 - [dll -- Dynamic Library Loading](#dll----dynamic-library-loading)
 - [args -- Argument Parser](#args----argument-parser)
 - [anim -- Animation Engine](#anim----animation-engine)
+- [permissions -- App Permissions](#permissions----app-permissions)
 - [bundle -- App Bundle Discovery](#bundle----app-bundle-discovery)
 - [icons -- Icon & MIME Type Lookup](#icons----icon--mime-type-lookup)
 - [ui::window -- Window Management](#uiwindow----window-management)
@@ -130,7 +131,7 @@ Output goes to file descriptor 1 (stdout) via the `fs::write()` syscall.
 | `sbrk` | `fn sbrk(increment: i32) -> usize` | Grow/shrink heap. Returns new program break address. |
 | `mmap` | `fn mmap(size: usize) -> *mut u8` | Map anonymous pages. Returns pointer or null. |
 | `munmap` | `fn munmap(addr: *mut u8, size: usize) -> bool` | Unmap pages. Returns true on success. |
-| `spawn` | `fn spawn(path: &str, args: &str) -> u32` | Spawn new process. Returns TID or `u32::MAX` on error. |
+| `spawn` | `fn spawn(path: &str, args: &str) -> u32` | Spawn new process. Automatically shows permission dialog for `.app` bundles on first launch. Returns TID or `u32::MAX` on error. |
 | `spawn_piped` | `fn spawn_piped(path: &str, args: &str, pipe_id: u32) -> u32` | Spawn with stdout redirected to a pipe. |
 | `spawn_piped_full` | `fn spawn_piped_full(path: &str, args: &str, stdout_pipe: u32, stdin_pipe: u32) -> u32` | Spawn with both stdin and stdout pipes. |
 | `waitpid` | `fn waitpid(tid: u32) -> u32` | Block until thread terminates. Returns exit code. |
@@ -658,6 +659,39 @@ Blend two ARGB colors. `t` is 0..65536 (0 = c1, 65536 = c2).
 
 ---
 
+## `permissions` -- App Permissions
+
+Runtime per-user, per-app permission management. Used by the PermissionDialog and Settings app.
+
+### Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `PERM_NEEDED` | `u32::MAX - 2` | Sentinel returned by `spawn()` when the app needs permission approval |
+
+### Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `perm_check` | `fn perm_check(app_id: &str, uid: u16) -> u32` | Check stored permissions. Returns granted bitmask or `u32::MAX` if not found. `uid=0` uses caller's uid. |
+| `perm_store` | `fn perm_store(app_id: &str, granted: u32, uid: u16) -> bool` | Store granted permissions. Returns true on success. `uid=0` uses caller's uid. |
+| `perm_list` | `fn perm_list(buf: &mut [u8]) -> u32` | List all apps with stored permissions. Writes `"app_id\x1Fgranted_hex\n"` entries. Returns entry count. |
+| `perm_delete` | `fn perm_delete(app_id: &str) -> bool` | Delete stored permissions for an app. Returns true on success. |
+| `perm_pending_info` | `fn perm_pending_info(buf: &mut [u8]) -> u32` | Read pending permission info from current thread. Returns bytes written (0 if none). |
+
+### Permission Flow
+
+The `spawn()` function in the `process` module automatically handles the permission flow:
+
+1. If `spawn()` returns `PERM_NEEDED`, it reads pending info via `perm_pending_info()`
+2. Launches `/System/permdialog` with the app's permission requirements
+3. Waits for the dialog to complete (exit code 0 = user approved)
+4. Retries the spawn — the kernel now finds the stored permission file
+
+This is transparent to callers of `spawn()` — they simply see either a valid TID or an error.
+
+---
+
 ## `bundle` -- App Bundle Discovery
 
 Discover app bundle paths and metadata for `.app` directories.
@@ -740,6 +774,8 @@ pub struct MimeEntry {
 | `WIN_FLAG_NO_CLOSE` | `0x08` | Hide close button |
 | `WIN_FLAG_NO_MINIMIZE` | `0x10` | Hide minimize button |
 | `WIN_FLAG_NO_MAXIMIZE` | `0x20` | Hide maximize button |
+| `WIN_FLAG_SHADOW` | `0x40` | Enable window shadow |
+| `WIN_FLAG_NO_MOVE` | `0x100` | Prevent window dragging |
 
 ### Font Constants
 
