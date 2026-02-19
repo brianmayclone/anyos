@@ -2184,6 +2184,8 @@ pub struct ForkSnapshot {
     pub priority: u8,
     pub name: [u8; 32],
     pub fd_table: crate::fs::fd_table::FdTable,
+    pub signals: crate::ipc::signal::SignalState,
+    pub parent_tid: u32,
 }
 
 /// Capture all fork-relevant fields from the current thread in a single lock.
@@ -2211,6 +2213,8 @@ pub fn current_thread_fork_snapshot() -> Option<ForkSnapshot> {
         priority: thread.priority,
         name: thread.name,
         fd_table: thread.fd_table.clone(),
+        signals: thread.signals.clone(),
+        parent_tid: thread.tid,
     })
 }
 
@@ -2620,4 +2624,163 @@ pub fn close_all_fds_for_thread(tid: u32) -> [FdKind; MAX_FDS] {
         }
     }
     out
+}
+
+// =========================================================================
+// Signal helpers
+// =========================================================================
+
+/// Send a signal to a thread by TID. Returns true if the thread exists.
+pub fn send_signal_to_thread(tid: u32, sig: u32) -> bool {
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+            thread.signals.send(sig);
+            return true;
+        }
+    }
+    false
+}
+
+/// Dequeue the lowest-numbered pending, unblocked signal for the current thread.
+pub fn current_signal_dequeue() -> Option<u32> {
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        let cpu = get_cpu_id();
+        if let Some(tid) = sched.per_cpu[cpu].current_tid {
+            if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+                return thread.signals.dequeue();
+            }
+        }
+    }
+    None
+}
+
+/// Get the handler address for a signal on the current thread.
+pub fn current_signal_handler(sig: u32) -> u64 {
+    let guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_ref() {
+        let cpu = get_cpu_id();
+        if let Some(tid) = sched.per_cpu[cpu].current_tid {
+            if let Some(thread) = sched.threads.iter().find(|t| t.tid == tid) {
+                return thread.signals.get_handler(sig);
+            }
+        }
+    }
+    crate::ipc::signal::SIG_DFL
+}
+
+/// Set a signal handler on the current thread. Returns the old handler.
+pub fn current_signal_set_handler(sig: u32, handler: u64) -> u64 {
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        let cpu = get_cpu_id();
+        if let Some(tid) = sched.per_cpu[cpu].current_tid {
+            if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+                return thread.signals.set_handler(sig, handler);
+            }
+        }
+    }
+    crate::ipc::signal::SIG_DFL
+}
+
+/// Get the current thread's blocked signal mask.
+pub fn current_signal_get_blocked() -> u32 {
+    let guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_ref() {
+        let cpu = get_cpu_id();
+        if let Some(tid) = sched.per_cpu[cpu].current_tid {
+            if let Some(thread) = sched.threads.iter().find(|t| t.tid == tid) {
+                return thread.signals.blocked;
+            }
+        }
+    }
+    0
+}
+
+/// Set the current thread's blocked signal mask. Returns the old mask.
+pub fn current_signal_set_blocked(new_mask: u32) -> u32 {
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        let cpu = get_cpu_id();
+        if let Some(tid) = sched.per_cpu[cpu].current_tid {
+            if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+                let old = thread.signals.blocked;
+                thread.signals.blocked = new_mask;
+                return old;
+            }
+        }
+    }
+    0
+}
+
+/// Check if the current thread has any pending, unblocked signals.
+pub fn current_has_pending_signal() -> bool {
+    let guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_ref() {
+        let cpu = get_cpu_id();
+        if let Some(tid) = sched.per_cpu[cpu].current_tid {
+            if let Some(thread) = sched.threads.iter().find(|t| t.tid == tid) {
+                return thread.signals.has_pending();
+            }
+        }
+    }
+    false
+}
+
+/// Set parent_tid on a thread (for fork/spawn child).
+pub fn set_thread_parent_tid(tid: u32, parent: u32) {
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+            thread.parent_tid = parent;
+        }
+    }
+}
+
+/// Get the current thread's parent TID.
+pub fn current_parent_tid() -> u32 {
+    let guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_ref() {
+        let cpu = get_cpu_id();
+        if let Some(tid) = sched.per_cpu[cpu].current_tid {
+            if let Some(thread) = sched.threads.iter().find(|t| t.tid == tid) {
+                return thread.parent_tid;
+            }
+        }
+    }
+    0
+}
+
+/// Set signal state on a thread (for fork child — inherits handler table, clears pending).
+pub fn set_thread_signals(tid: u32, signals: crate::ipc::signal::SignalState) {
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+            // Fork child inherits handler table and blocked mask, but pending signals are cleared
+            thread.signals.handlers = signals.handlers;
+            thread.signals.blocked = signals.blocked;
+            thread.signals.pending = 0;
+        }
+    }
+}
+
+/// Check if a thread exists (for kill(pid, 0) semantics).
+pub fn thread_exists(tid: u32) -> bool {
+    let guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_ref() {
+        return sched.threads.iter().any(|t| t.tid == tid && t.state != ThreadState::Terminated);
+    }
+    false
+}
+
+/// Get the parent_tid for a specific thread (for SIGCHLD delivery on exit).
+pub fn get_thread_parent_tid(tid: u32) -> u32 {
+    let guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(thread) = sched.threads.iter().find(|t| t.tid == tid) {
+            return thread.parent_tid;
+        }
+    }
+    0
 }

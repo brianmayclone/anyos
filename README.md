@@ -138,22 +138,11 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 
 70+ command-line and GUI applications:
 
-<table>
-<tr>
-<td width="50%" valign="top">
+**GUI Applications (13):** Terminal, Finder, Settings, Activity Monitor, Notepad, Image Viewer, Video Player, Calculator, Clock, Screenshot, Diagnostics, Font Viewer, Surf (web browser prototype)
 
-**GUI Applications (13)**
+**Games (2):** DOOM (doomgeneric port), Quake (WinQuake software renderer port)
 
-Terminal, Finder, Settings, Activity Monitor, Notepad, Image Viewer, Video Player, Calculator, Clock, Screenshot, Diagnostics, Font Viewer, Surf (web browser prototype)
-
-**Games (2)**
-
-DOOM (doomgeneric port), Quake (WinQuake software renderer port)
-
-</td>
-<td width="50%" valign="top">
-
-**CLI Utilities (69)**
+**CLI Utilities (69):**
 
 | Category | Programs |
 |----------|----------|
@@ -166,10 +155,6 @@ DOOM (doomgeneric port), Quake (WinQuake software renderer port)
 | Binary/Hex | `hexdump` `xxd` |
 | Multimedia | `play` `pipes` |
 | Dev Tools | `cc` (TCC) `nasm` `git` `open` |
-
-</td>
-</tr>
-</table>
 
 ---
 

@@ -210,6 +210,11 @@ pub const SYS_DUP: u32 = 241;
 pub const SYS_DUP2: u32 = 242;
 pub const SYS_FCNTL: u32 = 243;
 
+// POSIX signals
+pub const SYS_SIGACTION: u32 = 244;
+pub const SYS_SIGPROCMASK: u32 = 245;
+pub const SYS_SIGRETURN: u32 = 246;
+
 /// Register frame pushed by `syscall_entry.asm` / `syscall_fast.asm`.
 ///
 /// The layout matches the individual GPR pushes (no pushad in 64-bit mode) plus the
@@ -283,7 +288,7 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_MMAP => handlers::sys_mmap(arg1),
         SYS_MUNMAP => handlers::sys_munmap(arg1, arg2),
         SYS_WAITPID => handlers::sys_waitpid(arg1),
-        SYS_KILL => handlers::sys_kill(arg1),
+        SYS_KILL => handlers::sys_kill(arg1, arg2),
         SYS_SPAWN => handlers::sys_spawn(arg1, arg2, arg3, arg4),
         SYS_EXEC => handlers::sys_exec(arg1, arg2),
         SYS_GETARGS => handlers::sys_getargs(arg1, arg2),
@@ -450,6 +455,10 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_DUP2 => handlers::sys_dup2(arg1, arg2),
         SYS_FCNTL => handlers::sys_fcntl(arg1, arg2, arg3),
 
+        // POSIX signals (SYS_SIGRETURN intercepted at dispatch level, not here)
+        SYS_SIGACTION => handlers::sys_sigaction(arg1, arg2),
+        SYS_SIGPROCMASK => handlers::sys_sigprocmask(arg1, arg2),
+
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);
             u32::MAX
@@ -489,7 +498,14 @@ pub extern "C" fn syscall_dispatch_32(regs: &mut SyscallRegs) -> u32 {
 
     // fork() needs the full register frame — intercept before dispatch_inner
     if syscall_num == SYS_FORK {
-        return handlers::sys_fork(regs);
+        let result = handlers::sys_fork(regs);
+        handlers::deliver_pending_signal_32(regs, result);
+        return result;
+    }
+
+    // sigreturn restores saved context — needs full register frame
+    if syscall_num == SYS_SIGRETURN {
+        return handlers::sys_sigreturn_32(regs);
     }
 
     let arg1 = regs.rbx as u32;
@@ -498,7 +514,9 @@ pub extern "C" fn syscall_dispatch_32(regs: &mut SyscallRegs) -> u32 {
     let arg4 = regs.rsi as u32;
     let arg5 = regs.rdi as u32;
 
-    dispatch_inner(syscall_num, arg1, arg2, arg3, arg4, arg5)
+    let result = dispatch_inner(syscall_num, arg1, arg2, arg3, arg4, arg5);
+    handlers::deliver_pending_signal_32(regs, result);
+    result
 }
 
 // =========================================================================
@@ -520,7 +538,9 @@ pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
 
     // fork() needs the full register frame — intercept before dispatch_inner
     if syscall_num == SYS_FORK {
-        return handlers::sys_fork(regs) as u64;
+        let result = handlers::sys_fork(regs);
+        handlers::deliver_pending_signal_default();
+        return result as u64;
     }
 
     // Full 64-bit argument extraction (R10 is in the RCX slot per syscall_fast.asm)
@@ -538,5 +558,7 @@ pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
     let arg4 = _arg4_64 as u32;
     let arg5 = _arg5_64 as u32;
 
-    dispatch_inner(syscall_num, arg1, arg2, arg3, arg4, arg5) as u64
+    let result = dispatch_inner(syscall_num, arg1, arg2, arg3, arg4, arg5);
+    handlers::deliver_pending_signal_default();
+    result as u64
 }
