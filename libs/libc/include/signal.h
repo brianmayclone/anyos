@@ -34,6 +34,11 @@
 #define SIGTTIN   21
 #define SIGTTOU   22
 
+#define NSIG      32  /* Total number of signals (0..31) */
+
+/* Atomic type for signal handlers */
+typedef volatile int sig_atomic_t;
+
 /* Signal handler type */
 typedef void (*sighandler_t)(int);
 #define SIG_DFL ((sighandler_t)0)

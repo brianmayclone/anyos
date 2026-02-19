@@ -20,6 +20,22 @@
 #define PAGE_SIZE 4096
 #endif
 
+#ifndef HZ
+#define HZ 100
+#endif
+
+#ifndef NOFILE
+#define NOFILE 64
+#endif
+
+#ifndef NBBY
+#define NBBY 8
+#endif
+
+#ifndef howmany
+#define howmany(x, y) (((x) + ((y) - 1)) / (y))
+#endif
+
 #ifndef MIN
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #endif

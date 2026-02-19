@@ -16,6 +16,7 @@ exclude = [
   # System daemons
   "system/init",
   "system/terminal",
+  "system/shell",
   "system/taskmanager",
   "system/settings",
   "system/finder",

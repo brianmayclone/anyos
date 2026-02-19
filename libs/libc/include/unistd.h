@@ -75,7 +75,10 @@ int getsid(int pid);
 pid_t setsid(void);
 int execve(const char *path, char *const argv[], char *const envp[]);
 unsigned int alarm(unsigned int seconds);
+pid_t vfork(void);
+int faccessat(int dirfd, const char *pathname, int mode, int flags);
 
+#define _SC_CLK_TCK 2
 #define _SC_PAGESIZE 30
 #define _SC_PAGE_SIZE _SC_PAGESIZE
 #define _SC_GETPW_R_SIZE_MAX 70

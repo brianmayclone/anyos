@@ -54,9 +54,13 @@
 #define HAVE_DECL_FILENO 1
 #define HAVE_FTRUNCATE 1
 
+/* Functions we DO have in libc */
+#define HAVE_MEMPCPY 1
+#define HAVE_STPCPY 1
+
 /* Functions we DON'T have - let NASM use its own stdlib/ versions */
 /* #undef HAVE_STRLCPY */
-/* #undef HAVE_STRNLEN */
+#define HAVE_STRNLEN 1
 /* #undef HAVE_STRCHRNUL - we have it but NASM has its own strrchrnul */
 #define HAVE_DECL_STRLCPY 0
 #define HAVE_DECL_STRCHRNUL 0

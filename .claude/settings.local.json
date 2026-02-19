@@ -46,7 +46,9 @@
       "Bash(fi)",
       "Bash(done)",
       "Bash(__NEW_LINE_85f5d27fc71e32d7__ if [ -f \"/Users/cmoeller/Development/github/anyos/libs/libc/include/sys/cygwin.h\" ])",
-      "Bash(__NEW_LINE_85f5d27fc71e32d7__ if [ -f \"/Users/cmoeller/Development/github/anyos/libs/libc/include/sys/times.h\" ])"
+      "Bash(__NEW_LINE_85f5d27fc71e32d7__ if [ -f \"/Users/cmoeller/Development/github/anyos/libs/libc/include/sys/times.h\" ])",
+      "Bash(chmod:*)",
+      "Bash(cmake:*)"
     ]
   }
 }

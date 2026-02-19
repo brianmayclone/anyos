@@ -538,6 +538,7 @@ add_rust_system_program(login       ${CMAKE_SOURCE_DIR}/system/login)
 # Desktop GUI applications → .app bundles in /Applications/
 set(APP_BINS "")
 add_app(terminal    ${CMAKE_SOURCE_DIR}/system/terminal     "Terminal")
+add_app(shell       ${CMAKE_SOURCE_DIR}/system/shell        "Shell")
 add_app(taskmanager ${CMAKE_SOURCE_DIR}/system/taskmanager  "Activity Monitor")
 add_app(settings    ${CMAKE_SOURCE_DIR}/system/settings     "Settings")
 add_app(finder      ${CMAKE_SOURCE_DIR}/system/finder       "Finder")
@@ -620,6 +621,7 @@ add_custom_command(
           ${CMAKE_SOURCE_DIR}/sysroot/System/fonts/sfpro-bold.ttf
           ${CMAKE_SOURCE_DIR}/sysroot/System/fonts/sfpro-thin.ttf
           ${CMAKE_SOURCE_DIR}/sysroot/System/fonts/sfpro-italic.ttf
+          ${CMAKE_SOURCE_DIR}/sysroot/System/fonts/andale-mono.ttf
           ${CMAKE_SOURCE_DIR}/sysroot/media/wallpapers/default.png
           ${CMAKE_SOURCE_DIR}/sysroot/media/wallpapers
           ${CMAKE_SOURCE_DIR}/sysroot/System/users/wallpapers
@@ -966,6 +968,46 @@ add_custom_command(
   COMMENT "Installing curl to /System/bin/curl"
 )
 
+# ============================================================
+# dash (Debian Almquist Shell for anyOS)
+# ============================================================
+set(DASH_DIR "${CMAKE_SOURCE_DIR}/third_party/dash-0.5.12")
+set(DASH_LIB "${DASH_DIR}/dash.a")
+set(DASH_ELF "${DASH_DIR}/dash.elf")
+
+add_custom_command(
+  OUTPUT ${DASH_LIB}
+  COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/build_dash.sh
+  DEPENDS
+    ${LIBC_A}
+    ${CMAKE_SOURCE_DIR}/scripts/build_dash.sh
+    ${DASH_DIR}/config.h
+  COMMENT "Building dash for anyOS"
+)
+
+add_custom_command(
+  OUTPUT ${DASH_ELF}
+  COMMAND ${I686_ELF_GCC}
+    -nostdlib -static -m32
+    -T ${LIBC_DIR}/link.ld
+    -o ${DASH_ELF}
+    ${LIBC_CRT0}
+    -Wl,--start-group
+    ${DASH_LIB}
+    ${LIBC_A}
+    -lgcc
+    -Wl,--end-group
+  DEPENDS ${DASH_LIB} ${LIBC_A} ${LIBC_CRT0} ${LIBC_DIR}/link.ld
+  COMMENT "Linking dash for anyOS"
+)
+
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/bin/sh
+  COMMAND ${CMAKE_COMMAND} -E copy ${DASH_ELF} ${SYSROOT_DIR}/System/bin/sh
+  DEPENDS ${DASH_ELF}
+  COMMENT "Installing dash as /System/bin/sh"
+)
+
 # Copy test source files to /Libraries/system/tests/ on disk
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/Libraries/system/tests/.stamp
@@ -997,6 +1039,7 @@ set(C_TOOLCHAIN_DEPS
   ${QUAKE_APP}/Quake
   ${SYSROOT_DIR}/System/bin/curl
   ${SYSROOT_DIR}/System/bin/git
+  ${SYSROOT_DIR}/System/bin/sh
 )
 
 endif() # HAS_CROSS_COMPILER

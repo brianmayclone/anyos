@@ -14,6 +14,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <signal.h>
 
 /* ── getopt (full GNU-compatible implementation) ── */
 #include <getopt.h>
@@ -721,3 +722,90 @@ struct tm *localtime_r(const time_t *timer, struct tm *result) {
     if (t && result) *result = *t;
     return result;
 }
+
+/* wait3 — wrapper around waitpid (ignores rusage) */
+int wait3(int *status, int options, void *rusage) {
+    (void)rusage;
+    return waitpid(-1, status, options);
+}
+
+/* times — stub (no process accounting) */
+long times(void *buf) {
+    if (buf) memset(buf, 0, 16); /* sizeof(struct tms) = 4 * sizeof(clock_t) */
+    return 0;
+}
+
+/* ioctl is in unistd.c */
+
+/* mempcpy — like memcpy but returns dest + n */
+void *mempcpy(void *dest, const void *src, size_t n) {
+    memcpy(dest, src, n);
+    return (char *)dest + n;
+}
+
+/* stpcpy — like strcpy but returns pointer to '\0' */
+char *stpcpy(char *dest, const char *src) {
+    while ((*dest = *src)) { dest++; src++; }
+    return dest;
+}
+
+/* strchrnul is in string.c */
+
+/* strsignal — return signal name string */
+static char _signame_buf[16];
+char *strsignal(int sig) {
+    if (sig >= 0 && sig < 32) {
+        /* Simple numeric representation */
+        char *p = _signame_buf;
+        *p++ = 'S'; *p++ = 'i'; *p++ = 'g'; *p++ = ' ';
+        if (sig >= 10) *p++ = '0' + sig / 10;
+        *p++ = '0' + sig % 10;
+        *p = '\0';
+        return _signame_buf;
+    }
+    return "Unknown signal";
+}
+
+/* isblank */
+int isblank(int c) {
+    return c == ' ' || c == '\t';
+}
+
+/* killpg — send signal to process group */
+int killpg(int pgrp, int sig) {
+    return kill(-pgrp, sig);
+}
+
+/* faccessat — stub, falls back to access() */
+int faccessat(int dirfd, const char *pathname, int mode, int flags) {
+    (void)dirfd; (void)flags;
+    return access(pathname, mode);
+}
+
+/* vfork — anyOS has no vfork, just use fork */
+int vfork(void) {
+    return fork();
+}
+
+/* stpncpy — like strncpy but returns pointer to end */
+char *stpncpy(char *dest, const char *src, size_t n) {
+    size_t i;
+    for (i = 0; i < n && src[i]; i++)
+        dest[i] = src[i];
+    char *ret = dest + i;
+    for (; i < n; i++)
+        dest[i] = '\0';
+    return ret;
+}
+
+/* strtoimax / strtoumax — needed by dash printf/arith */
+long strtoimax(const char *nptr, char **endptr, int base) {
+    return strtol(nptr, endptr, base);
+}
+
+unsigned long strtoumax(const char *nptr, char **endptr, int base) {
+    return strtoul(nptr, endptr, base);
+}
+
+/* environ — global environment pointer (set by _start or exec) */
+char **environ = (char **)0;
