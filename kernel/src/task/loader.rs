@@ -1069,6 +1069,9 @@ pub extern "C" fn thread_create_trampoline() {
 /// User code segment 64-bit = 0x2B (GDT entry 5 | RPL=3)
 /// User data segment = 0x23 (GDT entry 4 | RPL=3)
 unsafe fn jump_to_user_mode(entry: u64, user_stack: u64) -> ! {
+    // Use explicit R14/R15 to avoid `mov ax, 0x23` clobbering an in(reg) operand
+    // (MEMORY.md: hardcoded AX in asm! corrupts any in(reg) that the compiler
+    //  allocates to RAX — and `pop rax` would clobber it too)
     core::arch::asm!(
         // Set data segment registers to user data segment
         "mov ax, 0x23",
@@ -1079,16 +1082,33 @@ unsafe fn jump_to_user_mode(entry: u64, user_stack: u64) -> ! {
         // Build iretq frame on the kernel stack:
         //   SS, RSP, RFLAGS, CS, RIP
         "push 0x23",       // SS = user data segment
-        "push {user_rsp}", // RSP = user stack pointer
+        "push r14",        // RSP = user stack pointer
         "pushfq",          // RFLAGS
         "pop rax",
         "or rax, 0x200",   // Set IF (interrupts enabled)
         "push rax",
         "push 0x2B",       // CS = user code 64-bit segment
-        "push {entry}",    // RIP = program entry point
+        "push r15",        // RIP = program entry point
+        // Clear all GPRs to prevent kernel address leaks to user mode
+        // (critical for exec: INT 0x80 frame leaves kernel values in regs)
+        "xor eax, eax",
+        "xor ebx, ebx",
+        "xor ecx, ecx",
+        "xor edx, edx",
+        "xor esi, esi",
+        "xor edi, edi",
+        "xor ebp, ebp",
+        "xor r8d, r8d",
+        "xor r9d, r9d",
+        "xor r10d, r10d",
+        "xor r11d, r11d",
+        "xor r12d, r12d",
+        "xor r13d, r13d",
+        "xor r14d, r14d",
+        "xor r15d, r15d",
         "iretq",           // Enter Ring 3!
-        user_rsp = in(reg) user_stack,
-        entry = in(reg) entry,
+        in("r14") user_stack,
+        in("r15") entry,
         options(noreturn)
     );
 }
@@ -1109,16 +1129,32 @@ unsafe fn jump_to_user_mode_compat32(entry: u64, user_stack: u64) -> ! {
         // Build iretq frame on the kernel stack:
         //   SS, RSP, RFLAGS, CS, RIP
         "push 0x23",       // SS = user data segment
-        "push {user_rsp}", // RSP = user stack pointer (truncated to 32-bit by compat mode)
+        "push r14",        // RSP = user stack pointer (truncated to 32-bit by compat mode)
         "pushfq",          // RFLAGS
         "pop rax",
         "or rax, 0x200",   // Set IF (interrupts enabled)
         "push rax",
         "push 0x1B",       // CS = user code 32-bit compat segment
-        "push {entry}",    // EIP = program entry point (32-bit)
+        "push r15",        // EIP = program entry point (32-bit)
+        // Clear all GPRs to prevent kernel address leaks to user mode
+        "xor eax, eax",
+        "xor ebx, ebx",
+        "xor ecx, ecx",
+        "xor edx, edx",
+        "xor esi, esi",
+        "xor edi, edi",
+        "xor ebp, ebp",
+        "xor r8d, r8d",
+        "xor r9d, r9d",
+        "xor r10d, r10d",
+        "xor r11d, r11d",
+        "xor r12d, r12d",
+        "xor r13d, r13d",
+        "xor r14d, r14d",
+        "xor r15d, r15d",
         "iretq",           // Enter Ring 3 in compatibility mode!
-        user_rsp = in(reg) user_stack,
-        entry = in(reg) entry,
+        in("r14") user_stack,
+        in("r15") entry,
         options(noreturn)
     );
 }

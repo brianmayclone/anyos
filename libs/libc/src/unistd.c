@@ -152,13 +152,16 @@ pid_t fork(void) {
 }
 
 pid_t waitpid(pid_t pid, int *status, int options) {
-    (void)options;
-    int r = _syscall(SYS_WAITPID, pid, 0, 0, 0);
+    unsigned int child_tid = 0;
+    int r = _syscall(SYS_WAITPID, pid, (int)&child_tid, options, 0);
     if (r == (int)0xFFFFFFFF) {
         errno = ECHILD;
         return -1;
     }
     if (status) *status = r;
+    /* For pid==-1 (any child), kernel writes actual child TID to child_tid */
+    if (pid == -1 && child_tid != 0)
+        return (pid_t)child_tid;
     return pid;
 }
 

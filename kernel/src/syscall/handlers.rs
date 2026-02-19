@@ -599,8 +599,30 @@ pub fn sys_munmap(addr: u32, size: u32) -> u32 {
 }
 
 /// sys_waitpid - Wait for a process to exit. Returns exit code.
-pub fn sys_waitpid(tid: u32) -> u32 {
-    crate::task::scheduler::waitpid(tid)
+/// arg1 = tid (u32::MAX = -1 = wait for any child)
+/// arg2 = child_tid_ptr (optional: if non-zero and tid==-1, write actual child TID here)
+/// arg3 = options (bit 0 = WNOHANG)
+pub fn sys_waitpid(tid: u32, child_tid_ptr: u32, options: u32) -> u32 {
+    let wnohang = (options & 1) != 0;
+    if tid == u32::MAX {
+        // waitpid(-1): wait for any child
+        let (child_tid, code) = if wnohang {
+            crate::task::scheduler::try_waitpid_any()
+        } else {
+            crate::task::scheduler::waitpid_any()
+        };
+        // Write actual child TID to user pointer (if provided)
+        if child_tid_ptr != 0 && child_tid != u32::MAX && child_tid != u32::MAX - 1 {
+            if is_valid_user_ptr(child_tid_ptr as u64, 4) {
+                unsafe { *(child_tid_ptr as *mut u32) = child_tid; }
+            }
+        }
+        code
+    } else if wnohang {
+        crate::task::scheduler::try_waitpid(tid)
+    } else {
+        crate::task::scheduler::waitpid(tid)
+    }
 }
 
 /// sys_try_waitpid - Non-blocking check if process exited.

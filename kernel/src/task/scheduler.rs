@@ -1916,6 +1916,101 @@ pub fn waitpid(tid: u32) -> u32 {
     }
 }
 
+/// Wait for ANY child of the current thread to terminate.
+/// Returns (child_tid, exit_code), or (u32::MAX, u32::MAX) if no children.
+pub fn waitpid_any() -> (u32, u32) {
+    let current_tid;
+    {
+        let mut guard = SCHEDULER.lock();
+        let cpu_id = get_cpu_id();
+        let sched = guard.as_mut().expect("Scheduler not initialized");
+        current_tid = match sched.per_cpu[cpu_id].current_tid {
+            Some(t) => t,
+            None => return (u32::MAX, u32::MAX),
+        };
+
+        // Check for already-terminated children
+        if let Some(child_idx) = sched.threads.iter().position(|t|
+            t.parent_tid == current_tid && t.state == ThreadState::Terminated
+                && t.exit_code.is_some()
+        ) {
+            let child_tid = sched.threads[child_idx].tid;
+            let code = sched.threads[child_idx].exit_code.unwrap_or(0);
+            sched.threads[child_idx].exit_code = None;
+            return (child_tid, code);
+        }
+
+        // Check if any children exist at all
+        let has_children = sched.threads.iter().any(|t| t.parent_tid == current_tid);
+        if !has_children {
+            return (u32::MAX, u32::MAX);
+        }
+
+        // Set waiting_tid on all non-terminated children so exit_current wakes us
+        for t in sched.threads.iter_mut() {
+            if t.parent_tid == current_tid && t.state != ThreadState::Terminated {
+                t.waiting_tid = Some(current_tid);
+            }
+        }
+
+        // Block current thread
+        if let Some(idx) = sched.find_idx(current_tid) {
+            sched.threads[idx].context.save_complete = 0;
+            sched.threads[idx].state = ThreadState::Blocked;
+        }
+    }
+    loop {
+        unsafe { core::arch::asm!("sti; hlt"); }
+        {
+            let mut guard = SCHEDULER.lock();
+            if let Some(sched) = guard.as_mut() {
+                if let Some(child_idx) = sched.threads.iter().position(|t|
+                    t.parent_tid == current_tid && t.state == ThreadState::Terminated
+                        && t.exit_code.is_some()
+                ) {
+                    let child_tid = sched.threads[child_idx].tid;
+                    let code = sched.threads[child_idx].exit_code.unwrap_or(0);
+                    sched.threads[child_idx].exit_code = None;
+                    return (child_tid, code);
+                }
+                // No children at all → ECHILD
+                let has_children = sched.threads.iter().any(|t| t.parent_tid == current_tid);
+                if !has_children {
+                    return (u32::MAX, u32::MAX);
+                }
+            }
+        }
+    }
+}
+
+/// Non-blocking wait for any child (used by WNOHANG).
+/// Returns (child_tid, exit_code), or (u32::MAX-1, u32::MAX-1) if children exist but none terminated.
+pub fn try_waitpid_any() -> (u32, u32) {
+    let mut guard = SCHEDULER.lock();
+    let sched = guard.as_mut().expect("Scheduler not initialized");
+    let current_tid = match sched.per_cpu[get_cpu_id()].current_tid {
+        Some(t) => t,
+        None => return (u32::MAX, u32::MAX),
+    };
+    if let Some(child_idx) = sched.threads.iter().position(|t|
+        t.parent_tid == current_tid && t.state == ThreadState::Terminated
+            && t.exit_code.is_some()
+    ) {
+        let child_tid = sched.threads[child_idx].tid;
+        let code = sched.threads[child_idx].exit_code.unwrap_or(0);
+        sched.threads[child_idx].exit_code = None;
+        // Mark waiting so reaper doesn't reclaim before caller checks
+        sched.threads[child_idx].waiting_tid = Some(current_tid);
+        return (child_tid, code);
+    }
+    let has_children = sched.threads.iter().any(|t| t.parent_tid == current_tid);
+    if !has_children {
+        (u32::MAX, u32::MAX)
+    } else {
+        (u32::MAX - 1, u32::MAX - 1) // STILL_RUNNING equivalent
+    }
+}
+
 /// Non-blocking check if a thread has terminated.
 /// Also marks the target with `waiting_tid` so the auto-reaper won't
 /// discard the exit code before the caller can retrieve it.
