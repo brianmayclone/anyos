@@ -122,16 +122,14 @@ fn sti() {
     }
 }
 
-/// Read the LAPIC ID directly via MMIO (lock-free, no function calls, no loops).
-/// Returns bits [31:24] of the LAPIC ID register as a unique per-CPU value.
-/// Before LAPIC is initialized (early boot), returns 0 (BSP only).
+/// Get the logical CPU index for spinlock ownership tracking.
+/// Uses `current_cpu_id()` which maps the hardware LAPIC ID to a logical
+/// index (0..N). This must match the representation used by callers of
+/// `is_held_by_cpu()` (e.g., `fault_kill_and_idle`, `try_kill_faulting_thread`).
+/// Before LAPIC/SMP is initialized (early boot), returns 0 (BSP only).
 #[inline(always)]
 fn cpu_id() -> u32 {
-    if !crate::arch::x86::apic::is_initialized() {
-        return 0;
-    }
-    const LAPIC_ID_ADDR: *const u32 = 0xFFFF_FFFF_D010_0020 as *const u32;
-    unsafe { LAPIC_ID_ADDR.read_volatile() >> 24 }
+    crate::arch::x86::smp::current_cpu_id() as u32
 }
 
 impl<T> Spinlock<T> {

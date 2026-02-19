@@ -356,7 +356,7 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         // If THIS CPU holds the scheduler lock (fault occurred inside a syscall
         // that was holding the lock), force-release it first. Without this, the
         // lock remains permanently held and ALL CPUs deadlock.
-        let cpu = crate::arch::x86::apic::lapic_id() as u32;
+        let cpu = crate::arch::x86::smp::current_cpu_id() as u32;
         if crate::task::scheduler::is_scheduler_locked_by_cpu(cpu) {
             unsafe { crate::task::scheduler::force_unlock_scheduler(); }
         }
