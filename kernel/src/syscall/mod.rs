@@ -218,6 +218,13 @@ pub const SYS_SIGRETURN: u32 = 246;
 // Process identity (extended)
 pub const SYS_GETPPID: u32 = 247;
 
+// App permissions
+pub const SYS_PERM_CHECK: u32 = 250;
+pub const SYS_PERM_STORE: u32 = 251;
+pub const SYS_PERM_LIST: u32 = 252;
+pub const SYS_PERM_DELETE: u32 = 253;
+pub const SYS_PERM_PENDING_INFO: u32 = 254;
+
 /// Register frame pushed by `syscall_entry.asm` / `syscall_fast.asm`.
 ///
 /// The layout matches the individual GPR pushes (no pushad in 64-bit mode) plus the
@@ -464,6 +471,13 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
 
         // Process identity (extended)
         SYS_GETPPID => handlers::sys_getppid(),
+
+        // App permissions
+        SYS_PERM_CHECK => handlers::sys_perm_check(arg1, arg2),
+        SYS_PERM_STORE => handlers::sys_perm_store(arg1, arg2, arg3),
+        SYS_PERM_LIST => handlers::sys_perm_list(arg1, arg2),
+        SYS_PERM_DELETE => handlers::sys_perm_delete(arg1),
+        SYS_PERM_PENDING_INFO => handlers::sys_perm_pending_info(arg1, arg2),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

@@ -30,6 +30,8 @@ pub const WIN_FLAG_NO_CLOSE: u32 = 0x08;
 pub const WIN_FLAG_NO_MINIMIZE: u32 = 0x10;
 pub const WIN_FLAG_NO_MAXIMIZE: u32 = 0x20;
 pub const WIN_FLAG_SHADOW: u32 = 0x40;
+pub const WIN_FLAG_SCALE_CONTENT: u32 = 0x80;
+pub const WIN_FLAG_NO_MOVE: u32 = 0x100;
 
 /// System font — regular weight (SF Pro).
 pub const FONT_REGULAR: u16 = 0;
@@ -111,6 +113,7 @@ struct WinInfo {
     shm_id: u32,
     surface: WinSurface,
     ext_id: u32, // = &self.surface as u32 — external "window ID"
+    flags: u32,
 }
 
 struct CompState {
@@ -241,6 +244,7 @@ pub fn create_ex(title: &str, x: u16, y: u16, w: u16, h: u16, flags: u32) -> u32
             height: h as u32,
         },
         ext_id: 0,
+        flags,
     });
     let ext_id = &info.surface as *const WinSurface as u32;
     info.ext_id = ext_id;
@@ -311,28 +315,34 @@ pub fn get_event(window_id: u32, event: &mut [u32; 5]) -> u32 {
         event[4] = 0;
 
         // Update stored dimensions on resize — must reallocate SHM
+        // (unless SCALE_CONTENT is set, in which case the SHM stays fixed
+        // and the compositor scales the content to the new window size)
         if buf[0] == 0x3006 {
             let new_w = buf[2];
             let new_h = buf[3];
             if let Some(win) = find_win_mut(window_id) {
-                // Only reallocate if dimensions actually changed
-                if new_w != win.surface.width || new_h != win.surface.height {
-                    let mut new_shm_id: u32 = 0;
-                    let new_ptr = (dll().resize_shm)(
-                        st.channel_id,
-                        win.comp_id,
-                        win.shm_id,
-                        new_w,
-                        new_h,
-                        &mut new_shm_id,
-                    );
-                    if !new_ptr.is_null() && new_shm_id != 0 {
-                        win.shm_id = new_shm_id;
-                        win.surface.pixels = new_ptr;
+                if win.flags & WIN_FLAG_SCALE_CONTENT != 0 {
+                    // Scaled mode: don't reallocate SHM — compositor scales for us
+                } else {
+                    // Normal mode: reallocate SHM to match new size
+                    if new_w != win.surface.width || new_h != win.surface.height {
+                        let mut new_shm_id: u32 = 0;
+                        let new_ptr = (dll().resize_shm)(
+                            st.channel_id,
+                            win.comp_id,
+                            win.shm_id,
+                            new_w,
+                            new_h,
+                            &mut new_shm_id,
+                        );
+                        if !new_ptr.is_null() && new_shm_id != 0 {
+                            win.shm_id = new_shm_id;
+                            win.surface.pixels = new_ptr;
+                        }
                     }
+                    win.surface.width = new_w;
+                    win.surface.height = new_h;
                 }
-                win.surface.width = new_w;
-                win.surface.height = new_h;
             }
         }
         1

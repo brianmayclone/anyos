@@ -82,6 +82,11 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_SIGPROCMASK, "sigprocmask"),
     (SYS_SIGRETURN, "sigreturn"),
     (SYS_GETPPID, "getppid"),
+    (SYS_PERM_CHECK, "perm_check"),
+    (SYS_PERM_STORE, "perm_store"),
+    (SYS_PERM_LIST, "perm_list"),
+    (SYS_PERM_DELETE, "perm_delete"),
+    (SYS_PERM_PENDING_INFO, "perm_pending_info"),
 ];
 
 /// Look up the human-readable name for a syscall number.

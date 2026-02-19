@@ -236,14 +236,15 @@ void VID_Init(unsigned char *palette)
     uint32_t shm_addr = _syscall(SYS_SHM_MAP, g_shm_id, 0, 0, 0);
     g_surface = (uint32_t *)shm_addr;
 
-    /* Create window */
+    /* Create window (with scale-on-resize for pixel-art upscaling) */
+    #define WIN_FLAG_SCALE_CONTENT 0x80
     uint32_t tid = _syscall(SYS_GETPID, 0, 0, 0, 0);
     uint32_t cmd[5];
     cmd[0] = CMD_CREATE_WINDOW;
     cmd[1] = tid;
     cmd[2] = BASEWIDTH;
     cmd[3] = BASEHEIGHT;
-    cmd[4] = (g_shm_id << 16);
+    cmd[4] = (g_shm_id << 16) | WIN_FLAG_SCALE_CONTENT;
     _syscall(SYS_EVT_CHAN_EMIT, g_channel_id, (int)cmd, 0, 0);
 
     /* Wait for RESP_WINDOW_CREATED */

@@ -184,6 +184,13 @@ pub(crate) const SYS_GETUSERNAME: u32 = 232;
 pub(crate) const SYS_SET_IDENTITY: u32 = 233;
 pub(crate) const SYS_CHPASSWD: u32 = 234;
 
+// App permissions
+pub(crate) const SYS_PERM_CHECK: u32 = 250;
+pub(crate) const SYS_PERM_STORE: u32 = 251;
+pub(crate) const SYS_PERM_LIST: u32 = 252;
+pub(crate) const SYS_PERM_DELETE: u32 = 253;
+pub(crate) const SYS_PERM_PENDING_INFO: u32 = 254;
+
 // Event bus
 pub(crate) const SYS_EVT_SYS_SUBSCRIBE: u32 = 60;
 pub(crate) const SYS_EVT_SYS_POLL: u32 = 61;

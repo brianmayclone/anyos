@@ -129,6 +129,11 @@ pub struct Thread {
     pub signals: SignalState,
     /// TID of the parent process (set by fork/spawn, 0 for init/kernel threads).
     pub parent_tid: u32,
+    /// Pending permission info: set when SYS_SPAWN returns PERM_NEEDED.
+    /// Format: "app_id\x1Fapp_name\x1Fcaps_hex\x1Fbundle_path\0"
+    pub perm_pending: [u8; 512],
+    /// Length of valid data in perm_pending (0 = none).
+    pub perm_pending_len: u16,
 }
 
 /// Size of each thread's kernel-mode stack.
@@ -226,6 +231,8 @@ impl Thread {
             fd_table: FdTable::new(),
             signals: SignalState::new(),
             parent_tid: 0,
+            perm_pending: [0u8; 512],
+            perm_pending_len: 0,
         }
     }
 

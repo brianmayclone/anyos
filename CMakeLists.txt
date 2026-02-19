@@ -534,6 +534,7 @@ add_rust_system_program(audiomon    ${CMAKE_SOURCE_DIR}/system/audiomon)
 add_rust_system_program(netmon      ${CMAKE_SOURCE_DIR}/system/netmon)
 add_rust_system_program(inputmon    ${CMAKE_SOURCE_DIR}/system/inputmon)
 add_rust_system_program(login       ${CMAKE_SOURCE_DIR}/system/login)
+add_rust_system_program(permdialog  ${CMAKE_SOURCE_DIR}/system/permdialog)
 
 # Desktop GUI applications → .app bundles in /Applications/
 set(APP_BINS "")

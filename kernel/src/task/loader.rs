@@ -728,6 +728,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     let resolved_path: alloc::string::String;
     let bundle_cwd: Option<alloc::string::String>;
     let bundle_caps: Option<crate::task::capabilities::CapSet>;
+    let bundle_app_id: Option<alloc::string::String>;
     let actual_path = if path.ends_with(".app") {
         // Parse Info.conf for exec field and working_dir
         let config = crate::task::app_config::parse_info_conf(path);
@@ -779,11 +780,23 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             Some(crate::task::capabilities::CAP_DEFAULT)
         };
 
+        // Extract app_id for permission lookup (id field from Info.conf, or folder name)
+        bundle_app_id = if let Some(ref cfg) = config {
+            if let Some(ref id) = cfg.id {
+                Some(id.clone())
+            } else {
+                Some(alloc::string::String::from(name))
+            }
+        } else {
+            Some(alloc::string::String::from(name))
+        };
+
         crate::serial_println!("  .app bundle: {} -> {}", path, resolved_path);
         resolved_path.as_str()
     } else {
         bundle_cwd = None;
         bundle_caps = None;
+        bundle_app_id = None;
         path
     };
 
@@ -959,16 +972,36 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         crate::task::scheduler::set_thread_cwd(tid, cwd);
     }
 
-    // Set capabilities: .app bundles use Info.conf, non-.app binaries inherit parent's caps.
+    // Set capabilities: .app bundles use Info.conf intersected with stored permissions,
+    // non-.app binaries inherit parent's caps.
     // The permission boundary is at the .app bundle level — CLI tools and system services
     // inherit whatever their parent has (compositor children get CAP_ALL, etc.).
-    let caps = if let Some(c) = bundle_caps {
-        c
+    let caps = if let Some(declared) = bundle_caps {
+        use crate::task::capabilities::*;
+        if declared == CAP_ALL {
+            // System app (capabilities=all) — full access, no permission restriction
+            CAP_ALL
+        } else {
+            // Intersect declared caps with stored user permissions:
+            // - auto-granted caps (DLL, THREAD, SHM, EVENT, PIPE) always apply
+            // - sensitive caps only if the user granted them
+            let auto = declared & CAP_AUTO_GRANTED;
+            let uid = crate::task::scheduler::current_thread_uid();
+            let app_id = bundle_app_id.as_deref().unwrap_or(name);
+            let granted_sensitive = crate::task::permissions::read_stored_perms(uid, app_id)
+                .unwrap_or(0);
+            auto | (declared & granted_sensitive)
+        }
     } else {
         let parent_caps = crate::task::scheduler::current_thread_capabilities();
         if parent_caps == 0 {
             // Kernel thread spawning user process (e.g. compositor at boot) — full access
             crate::task::capabilities::CAP_ALL
+        } else if actual_path == "/System/permdialog" {
+            // Kernel allowlist: PermissionDialog needs MANAGE_PERMS + FILESYSTEM
+            // regardless of parent's caps, so it can write permission files.
+            parent_caps | crate::task::capabilities::CAP_MANAGE_PERMS
+                        | crate::task::capabilities::CAP_FILESYSTEM
         } else {
             // Non-.app binary: inherit parent's full capabilities
             parent_caps
