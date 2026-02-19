@@ -6,6 +6,7 @@ use anyos_std::Vec;
 use anyos_std::format;
 use anyos_std::process;
 use anyos_std::ipc;
+use anyos_std::fs;
 use anyos_std::ui::window;
 use alloc::string::ToString;
 
@@ -611,9 +612,92 @@ fn render(win_id: u32, buf: &TerminalBuffer, font: &FontMetrics, win_w: u32, win
     window::present(win_id);
 }
 
+// ─── Environment Setup ───────────────────────────────────────────────────────
+
+fn read_file_to_buf(path: &str, buf: &mut [u8]) -> usize {
+    let fd = fs::open(path, 0);
+    if fd == u32::MAX {
+        return 0;
+    }
+    let mut total = 0usize;
+    loop {
+        let n = fs::read(fd, &mut buf[total..]);
+        if n == 0 || n == u32::MAX {
+            break;
+        }
+        total += n as usize;
+        if total >= buf.len() {
+            break;
+        }
+    }
+    fs::close(fd);
+    total
+}
+
+fn source_env_file(path: &str, depth: u32) {
+    if depth > 4 {
+        return;
+    }
+    let mut data = [0u8; 2048];
+    let total = read_file_to_buf(path, &mut data);
+    if total == 0 {
+        return;
+    }
+    let text = match core::str::from_utf8(&data[..total]) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    for line in text.split('\n') {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with("source ") {
+            let target = line[7..].trim();
+            if !target.is_empty() {
+                source_env_file(target, depth + 1);
+            }
+            continue;
+        }
+        let assignment = if line.starts_with("export ") {
+            line[7..].trim()
+        } else {
+            line
+        };
+        if let Some(eq) = assignment.find('=') {
+            let key = assignment[..eq].trim();
+            let val = assignment[eq + 1..].trim();
+            if !key.is_empty() {
+                anyos_std::env::set(key, val);
+            }
+        }
+    }
+}
+
+fn load_dotenv() {
+    source_env_file("/System/env", 0);
+    let uid = process::getuid();
+    let mut name_buf = [0u8; 32];
+    let nlen = process::getusername(uid, &mut name_buf);
+    if nlen != u32::MAX && nlen > 0 {
+        if let Ok(username) = core::str::from_utf8(&name_buf[..nlen as usize]) {
+            if username != "root" {
+                let user_env = format!("/Users/{}/env", username);
+                source_env_file(&user_env, 0);
+                let home = format!("/Users/{}", username);
+                anyos_std::env::set("HOME", &home);
+                anyos_std::env::set("USER", username);
+            }
+        }
+    }
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
+    // Load environment from /System/env (same as Terminal)
+    load_dotenv();
+
     // Create window
     let win_id = window::create("Shell", 80, 80, 720, 450);
     if win_id == u32::MAX {
@@ -822,10 +906,23 @@ fn main() {
                             dirty = true;
                         }
                     } else if !shell_exited {
-                        // Forward keystrokes to shell
+                        // Forward keystrokes to shell + local echo
                         match key_code {
-                            KEY_ENTER => shell_proc.write(b"\n"),
-                            KEY_BACKSPACE => shell_proc.write(&[0x7f]),
+                            KEY_ENTER => {
+                                shell_proc.write(b"\n");
+                                buf.feed(b"\n");
+                            }
+                            KEY_BACKSPACE => {
+                                shell_proc.write(&[0x7f]);
+                                // Erase last character on screen
+                                if buf.cursor_col > 0 {
+                                    buf.cursor_col -= 1;
+                                    buf.ensure_line(buf.cursor_row);
+                                    if buf.cursor_col < buf.lines[buf.cursor_row].len() {
+                                        buf.lines[buf.cursor_row].truncate(buf.cursor_col);
+                                    }
+                                }
+                            }
                             KEY_TAB => shell_proc.write(b"\t"),
                             KEY_UP => shell_proc.write(b"\x1b[A"),
                             KEY_DOWN => shell_proc.write(b"\x1b[B"),
@@ -839,12 +936,15 @@ fn main() {
                                     let c = char_val as u8;
                                     if c >= b' ' {
                                         shell_proc.write(&[c]);
+                                        // Local echo
+                                        buf.feed(&[c]);
                                     }
                                 }
                             }
                         }
                         // Scroll to bottom on any key input
                         buf.scroll_to_bottom();
+                        dirty = true;
                     }
                 }
                 _ => {}

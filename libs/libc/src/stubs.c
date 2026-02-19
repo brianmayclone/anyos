@@ -799,14 +799,40 @@ char *stpncpy(char *dest, const char *src, size_t n) {
 }
 
 /* strtoimax / strtoumax — needed by dash printf/arith */
-long strtoimax(const char *nptr, char **endptr, int base) {
-    return strtol(nptr, endptr, base);
+/* intmax_t is long long (64-bit) on i686 — must return 64-bit value */
+long long strtoimax(const char *nptr, char **endptr, int base) {
+    return (long long)strtol(nptr, endptr, base);
 }
 
-unsigned long strtoumax(const char *nptr, char **endptr, int base) {
-    return strtoul(nptr, endptr, base);
+unsigned long long strtoumax(const char *nptr, char **endptr, int base) {
+    return (unsigned long long)strtoul(nptr, endptr, base);
 }
 
-/* environ — global environment pointer (set by _start or exec) */
-static char *empty_environ[] = { (char *)0 };
-char **environ = empty_environ;
+/* environ — populated from kernel env store at startup */
+#define SYS_LISTENV 184
+#define MAX_ENV_ENTRIES 64
+#define ENV_BUF_SIZE   4096
+
+static char  _env_buf[ENV_BUF_SIZE];
+static char *_env_ptrs[MAX_ENV_ENTRIES + 1]; /* +1 for NULL terminator */
+char **environ = _env_ptrs; /* initially empty (all-zero → first entry is NULL) */
+
+/* Called from crt0 before main() to populate environ from kernel store.
+ * Format of SYS_LISTENV: "KEY=VALUE\0KEY2=VALUE2\0..." */
+void __init_environ(void) {
+    int total = _syscall(SYS_LISTENV, (int)_env_buf, ENV_BUF_SIZE - 1, 0, 0);
+    if (total <= 0) return;
+    if (total >= ENV_BUF_SIZE) total = ENV_BUF_SIZE - 1;
+    _env_buf[total] = '\0';
+
+    int idx = 0;
+    int i = 0;
+    while (i < total && idx < MAX_ENV_ENTRIES) {
+        if (_env_buf[i] == '\0') { i++; continue; }
+        _env_ptrs[idx++] = &_env_buf[i];
+        /* Advance past this entry */
+        while (i < total && _env_buf[i] != '\0') i++;
+        i++; /* skip the null terminator */
+    }
+    _env_ptrs[idx] = (char *)0;
+}

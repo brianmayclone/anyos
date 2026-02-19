@@ -13,6 +13,7 @@
 extern int _syscall(int num, int a1, int a2, int a3, int a4);
 extern int main(int argc, char **argv);
 extern void exit(int status);
+extern void __init_environ(void);
 
 /* .init_array constructors — linker script provides these symbols */
 typedef void (*init_func)(void);
@@ -54,6 +55,9 @@ void __libc_start_main(void) {
     }
 
     argv[argc] = (char *)0;  /* NULL-terminate argv */
+
+    /* Populate environ from kernel env store (SYS_LISTENV) */
+    __init_environ();
 
     /* Run .init_array constructors (e.g. __attribute__((constructor))) */
     for (init_func *fn = __init_array_start; fn < __init_array_end; fn++) {

@@ -39,8 +39,8 @@
 #define PRIo32 "o"
 #define PRIo64 "llo"
 
-#define PRIdMAX "ld"
-#define PRIuMAX "lu"
+#define PRIdMAX "lld"
+#define PRIuMAX "llu"
 
 /* scanf format macros */
 #define SCNd8  "hhd"

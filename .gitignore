@@ -7,6 +7,7 @@ build/
 !stdlib/src/ui/font_8x16.bin
 !config.h
 *.o
+*.a
 *.elf
 /kernel/target/
 .DS_Store

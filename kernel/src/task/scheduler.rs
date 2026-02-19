@@ -1359,6 +1359,17 @@ pub fn current_thread_page_directory() -> Option<PhysAddr> {
     None
 }
 
+/// Get the page directory for a thread by TID.
+pub fn thread_page_directory(tid: u32) -> Option<PhysAddr> {
+    let guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(idx) = sched.find_idx(tid) {
+            return sched.threads[idx].page_directory;
+        }
+    }
+    None
+}
+
 /// Check if the current thread has a shared page directory.
 pub fn current_thread_pd_shared() -> bool {
     let guard = SCHEDULER.lock();

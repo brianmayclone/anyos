@@ -643,6 +643,12 @@ pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32
             if stdin_pipe != 0 {
                 crate::task::scheduler::set_thread_stdin_pipe(tid, stdin_pipe);
             }
+            // Inherit parent's environment variables
+            if let Some(parent_pd) = crate::task::scheduler::current_thread_page_directory() {
+                if let Some(child_pd) = crate::task::scheduler::thread_page_directory(tid) {
+                    crate::task::env::clone_env(parent_pd.0, child_pd.0);
+                }
+            }
             crate::debug_println!("sys_spawn: returning TID={}", tid);
             tid
         }

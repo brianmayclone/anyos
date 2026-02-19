@@ -37,12 +37,24 @@ extern int _syscall(int num, int a1, int a2, int a3, int a4);
 extern ssize_t recv(int sockfd, void *buf, size_t len, int flags);
 extern ssize_t send(int sockfd, const void *buf, size_t len, int flags);
 
+#define SYS_SLEEP   8
+
 ssize_t read(int fd, void *buf, size_t count) {
     if (fd >= SOCKET_FD_BASE) {
         return recv(fd, buf, count, 0);
     }
     int ret = _syscall(SYS_READ, fd, (int)buf, (int)count, 0);
     if (ret < 0) { errno = -ret; return -1; }
+    /* For stdin (fd 0): pipe returns 0 when empty (non-blocking).
+     * Block by polling with sleep until data arrives. */
+    if (fd == 0 && ret == 0 && count > 0) {
+        for (;;) {
+            _syscall(SYS_SLEEP, 10, 0, 0, 0); /* 10ms */
+            ret = _syscall(SYS_READ, 0, (int)buf, (int)count, 0);
+            if (ret < 0) { errno = -ret; return -1; }
+            if (ret > 0) return ret;
+        }
+    }
     return ret;
 }
 

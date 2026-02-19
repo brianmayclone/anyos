@@ -8,12 +8,12 @@
 #define _PATH_DEVNULL "/dev/null"
 #define _PATH_TTY "/dev/tty"
 
-/* Size checks */
-#define SIZEOF_INTMAX_T 4
+/* Size checks — intmax_t is long long (8 bytes) on i686-elf-gcc */
+#define SIZEOF_INTMAX_T 8
 #define SIZEOF_LONG_LONG_INT 8
 
-/* printf format for intmax_t */
-#define PRIdMAX "ld"
+/* printf format for intmax_t (long long) */
+#define PRIdMAX "lld"
 
 /* Functions available in anyOS libc */
 #define HAVE_BSEARCH 1
