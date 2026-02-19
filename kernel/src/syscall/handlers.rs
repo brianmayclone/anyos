@@ -101,7 +101,7 @@ unsafe fn read_user_str(ptr: u32) -> &'static str {
 /// sys_exit - Terminate the current process
 pub fn sys_exit(status: u32) -> u32 {
     // Single atomic lock acquisition — no TOCTOU gaps between reads
-    let (tid, pd, can_destroy) = crate::task::scheduler::current_exit_info();
+    let (tid, pd, _) = crate::task::scheduler::current_exit_info();
     crate::debug_println!("sys_exit({}) TID={}", status, tid);
 
     // Clean up shared memory mappings while still in user PD context.
@@ -116,13 +116,16 @@ pub fn sys_exit(status: u32) -> u32 {
         crate::task::env::cleanup(pd_phys.as_u64());
     }
 
-    if let Some(pd_phys) = pd {
+    // Switch to kernel CR3 before exit_current — the scheduler will destroy
+    // the user page directory exclusively (in exit_current) after marking the
+    // thread Terminated and setting page_directory = None.  Destroying here
+    // would double-free the PML4 frame: exit_current still sees Some(pd) and
+    // calls destroy_user_page_directory again, by which time the frame may
+    // have been reallocated to a new process.
+    if pd.is_some() {
         unsafe {
             let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
             core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3);
-        }
-        if can_destroy {
-            crate::memory::virtual_mem::destroy_user_page_directory(pd_phys);
         }
     }
 

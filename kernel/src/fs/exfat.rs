@@ -8,6 +8,90 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+// =============================================================================
+// Cluster read cache
+// =============================================================================
+
+/// Number of cluster slots in the LRU cache.
+/// 16 slots × cluster_size (typically 4 KiB) = 64 KiB of cached directory data.
+const CLUSTER_CACHE_SLOTS: usize = 16;
+
+struct CacheEntry {
+    /// Cluster number (0 = empty; valid exFAT clusters start at 2).
+    cluster: u32,
+    /// LRU tick — higher means more recently used.
+    tick: u32,
+    /// Cluster data.
+    data: Vec<u8>,
+}
+
+/// Simple LRU cluster cache.
+///
+/// Stored inside `ExFatFs` via `UnsafeCell` so that `read_cluster` can update
+/// it while keeping a `&self` receiver (all callers already hold the VFS mutex
+/// which guarantees single-threaded access, so there is no aliasing hazard).
+struct ClusterCache {
+    slots: Vec<CacheEntry>,
+    tick: u32,
+}
+
+impl ClusterCache {
+    fn new() -> Self {
+        ClusterCache { slots: Vec::new(), tick: 0 }
+    }
+
+    /// Copy cached data into `buf`. Returns `true` on hit.
+    fn lookup(&mut self, cluster: u32, buf: &mut [u8]) -> bool {
+        for slot in &mut self.slots {
+            if slot.cluster == cluster {
+                let n = buf.len().min(slot.data.len());
+                buf[..n].copy_from_slice(&slot.data[..n]);
+                self.tick = self.tick.wrapping_add(1);
+                slot.tick = self.tick;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Store `data` for `cluster`, evicting the LRU slot if the cache is full.
+    fn insert(&mut self, cluster: u32, data: &[u8]) {
+        self.tick = self.tick.wrapping_add(1);
+        // Update in-place if already present.
+        for slot in &mut self.slots {
+            if slot.cluster == cluster {
+                slot.data.clear();
+                slot.data.extend_from_slice(data);
+                slot.tick = self.tick;
+                return;
+            }
+        }
+        if self.slots.len() < CLUSTER_CACHE_SLOTS {
+            self.slots.push(CacheEntry { cluster, tick: self.tick, data: data.to_vec() });
+        } else {
+            // Evict the slot with the smallest (oldest) tick.
+            let lru = self.slots.iter().enumerate()
+                .min_by_key(|(_, s)| s.tick)
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            self.slots[lru].cluster = cluster;
+            self.slots[lru].tick = self.tick;
+            self.slots[lru].data.clear();
+            self.slots[lru].data.extend_from_slice(data);
+        }
+    }
+
+    /// Mark a cluster's slot as empty so the next read goes to disk.
+    fn invalidate(&mut self, cluster: u32) {
+        for slot in &mut self.slots {
+            if slot.cluster == cluster {
+                slot.cluster = 0; // 0 is never a valid exFAT cluster
+                return;
+            }
+        }
+    }
+}
+
 // exFAT FAT entry constants
 const EXFAT_EOC: u32 = 0xFFFFFFFF;
 const EXFAT_BAD: u32 = 0xFFFFFFF7;
@@ -76,6 +160,12 @@ pub struct ExFatFs {
     bitmap_cluster: u32,
     /// Whether bitmap is stored contiguously.
     bitmap_contiguous: bool,
+    /// LRU cluster data cache.
+    ///
+    /// `UnsafeCell` allows `read_cluster(&self, …)` to update the cache without
+    /// requiring `&mut self`.  Safe because `ExFatFs` is always accessed while
+    /// the VFS `Mutex` is held — at most one CPU touches this at a time.
+    cluster_cache: core::cell::UnsafeCell<ClusterCache>,
 }
 
 /// Pre-computed read plan for exFAT files (matches FAT16 FileReadPlan pattern).
@@ -171,11 +261,14 @@ impl ExFatFs {
         let fat_cache_bytes = (fat_length as usize) * 512;
         let mut fat_cache = vec![0u8; fat_cache_bytes];
         let abs_fat_lba = partition_start_lba + fat_offset;
+        crate::debug_println!("  [exFAT] new: caching FAT table abs_lba={} sectors={} ({} KB)",
+            abs_fat_lba, fat_length, fat_cache_bytes / 1024);
         if !crate::drivers::storage::read_sectors(abs_fat_lba, fat_length, &mut fat_cache) {
             crate::serial_println!("  exFAT: Failed to cache FAT table");
             return Err(FsError::IoError);
         }
         crate::serial_println!("  exFAT: cached {} KB FAT table", fat_cache_bytes / 1024);
+        crate::debug_println!("  [exFAT] new: FAT cache complete, calling load_bitmap()");
 
         let mut fs = ExFatFs {
             device_id,
@@ -191,6 +284,7 @@ impl ExFatFs {
             bitmap: Vec::new(),
             bitmap_cluster: 0,
             bitmap_contiguous: true,
+            cluster_cache: core::cell::UnsafeCell::new(ClusterCache::new()),
         };
 
         // Scan root directory for the allocation bitmap entry
@@ -231,9 +325,12 @@ impl ExFatFs {
     // =================================================================
 
     fn read_sectors(&self, abs_lba: u32, count: u32, buf: &mut [u8]) -> Result<(), FsError> {
+        crate::debug_println!("  [exFAT] read_sectors: lba={} count={} buf_len={}", abs_lba, count, buf.len());
         if !crate::drivers::storage::read_sectors(abs_lba, count, buf) {
+            crate::debug_println!("  [exFAT] read_sectors: FAILED lba={} count={}", abs_lba, count);
             Err(FsError::IoError)
         } else {
+            crate::debug_println!("  [exFAT] read_sectors: OK lba={} count={}", abs_lba, count);
             Ok(())
         }
     }
@@ -247,11 +344,26 @@ impl ExFatFs {
     }
 
     fn read_cluster(&self, cluster: u32, buf: &mut [u8]) -> Result<(), FsError> {
+        // SAFETY: ExFatFs is always accessed while the VFS Mutex is held,
+        // guaranteeing single-threaded access to the cache.
+        let cache = unsafe { &mut *self.cluster_cache.get() };
+        if cache.lookup(cluster, buf) {
+            crate::debug_println!("  [exFAT] read_cluster: CACHE HIT cluster={}", cluster);
+            return Ok(());
+        }
         let lba = self.cluster_to_lba(cluster);
-        self.read_sectors(lba, self.sectors_per_cluster(), buf)
+        crate::debug_println!("  [exFAT] read_cluster: cluster={} -> lba={} (disk read)", cluster, lba);
+        self.read_sectors(lba, self.sectors_per_cluster(), buf)?;
+        cache.insert(cluster, buf);
+        Ok(())
     }
 
     fn write_cluster(&self, cluster: u32, buf: &[u8]) -> Result<(), FsError> {
+        // Invalidate cached copy so next read reflects the new on-disk content.
+        // SAFETY: same as read_cluster — VFS mutex ensures single-threaded access.
+        let cache = unsafe { &mut *self.cluster_cache.get() };
+        cache.invalidate(cluster);
+
         let lba = self.cluster_to_lba(cluster);
         let cs = self.cluster_size() as usize;
         if buf.len() >= cs {
@@ -312,17 +424,24 @@ impl ExFatFs {
     fn load_bitmap(&mut self) -> Result<(), FsError> {
         let cs = self.cluster_size() as usize;
         let mut cluster = self.root_cluster;
+        crate::debug_println!("  [exFAT] load_bitmap: start root_cluster={} cluster_size={}", cluster, cs);
 
+        let mut iter = 0u32;
         loop {
+            crate::debug_println!("  [exFAT] load_bitmap: reading cluster={} (iteration={})", cluster, iter);
+            iter += 1;
             let mut cbuf = vec![0u8; cs];
             self.read_cluster(cluster, &mut cbuf)?;
+            crate::debug_println!("  [exFAT] load_bitmap: cluster={} read OK, scanning {} entries", cluster, cs / 32);
 
             let mut i = 0;
             while i + 32 <= cs {
                 let etype = cbuf[i];
                 if etype == 0x00 {
+                    crate::debug_println!("  [exFAT] load_bitmap: end-of-directory at offset={}", i);
                     break;
                 }
+                crate::debug_println!("  [exFAT] load_bitmap: entry type={:#04x} at offset={}", etype, i);
                 // Allocation Bitmap (in-use = 0x81)
                 if etype == 0x81 {
                     let bm_cluster = u32::from_le_bytes(
@@ -331,6 +450,7 @@ impl ExFatFs {
                     let bm_size = u64::from_le_bytes(
                         cbuf[i + 24..i + 32].try_into().unwrap(),
                     );
+                    crate::debug_println!("  [exFAT] load_bitmap: FOUND bitmap cluster={} size={}", bm_cluster, bm_size);
                     self.bitmap_cluster = bm_cluster;
                     self.bitmap_contiguous = true;
 
@@ -339,8 +459,11 @@ impl ExFatFs {
                         ((bm_size as u32 + self.cluster_size() - 1) / self.cluster_size()).max(1);
                     let total_sectors = num_clusters * self.sectors_per_cluster();
                     let total_bytes = total_sectors as usize * 512;
+                    crate::debug_println!("  [exFAT] load_bitmap: reading bitmap: {} clusters, {} sectors, {} bytes",
+                        num_clusters, total_sectors, total_bytes);
                     let mut raw = vec![0u8; total_bytes];
                     let lba = self.cluster_to_lba(bm_cluster);
+                    crate::debug_println!("  [exFAT] load_bitmap: bitmap lba={}", lba);
                     self.read_sectors(lba, total_sectors, &mut raw)?;
                     raw.truncate(bm_size as usize);
                     self.bitmap = raw;
@@ -349,14 +472,21 @@ impl ExFatFs {
                         "  exFAT: allocation bitmap at cluster {}, {} bytes",
                         bm_cluster, bm_size
                     );
+                    crate::debug_println!("  [exFAT] load_bitmap: done OK");
                     return Ok(());
                 }
                 i += 32;
             }
 
             match self.next_cluster(cluster) {
-                Some(next) => cluster = next,
-                None => break,
+                Some(next) => {
+                    crate::debug_println!("  [exFAT] load_bitmap: following FAT chain cluster={} -> {}", cluster, next);
+                    cluster = next;
+                }
+                None => {
+                    crate::debug_println!("  [exFAT] load_bitmap: end of cluster chain at cluster={}", cluster);
+                    break;
+                }
             }
         }
 

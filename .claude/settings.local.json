@@ -7,7 +7,24 @@
       "Bash(powershell.exe -Command \"Get-ChildItem ''C:\\\\Users\\\\cmoel\\\\.rustup\\\\toolchains\\\\nightly-x86_64-pc-windows-msvc\\\\lib\\\\rustlib\\\\x86_64-pc-windows-msvc\\\\bin'' -Filter ''lld*'' -ErrorAction SilentlyContinue | Select-Object Name\")",
       "Bash(powershell.exe -Command \"Get-ChildItem ''C:\\\\Users\\\\cmoel\\\\.rustup\\\\toolchains\\\\nightly-x86_64-pc-windows-msvc\\\\bin'' -Filter ''*.exe'' | Select-Object Name\")",
       "Bash(powershell.exe -Command:*)",
-      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Development\\\\anyos\\\\scripts\\\\_add_cross_path.ps1\")"
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Development\\\\anyos\\\\scripts\\\\_add_cross_path.ps1\")",
+      "Bash(powershell -Command \"& { VBoxManage list vms }\")",
+      "Bash(powershell -Command \"& { & ''C:\\\\Program Files\\\\Oracle\\\\VirtualBox\\\\VBoxManage.exe'' list vms }\")",
+      "Bash(powershell -Command \"& { & ''C:\\\\Program Files\\\\Oracle\\\\VirtualBox\\\\VBoxManage.exe'' showvminfo anyos | Select-String ''Log'' }\")",
+      "Bash(powershell -Command \"Get-ChildItem ''C:\\\\Users\\\\cmoel\\\\VirtualBox VMs\\\\anyos\\\\Logs\\\\''\")",
+      "Bash(powershell -Command:*)",
+      "Bash(bash -c:*)",
+      "Bash(nm -n:*)",
+      "Bash(objdump:*)",
+      "Bash(nm:*)",
+      "Bash(/c/msys64/home/cmoel/opt/cross/bin/i686-elf-nm.exe:*)",
+      "Bash(LLVM_BIN=\"C:/Users/cmoel/.rustup/toolchains/nightly-x86_64-pc-windows-msvc/lib/rustlib/x86_64-pc-windows-msvc/bin\":*)",
+      "Bash(\"$LLVM_BIN/llvm-nm.exe\" -n c:/Development/anyos/build/kernel/x86_64-anyos/release/anyos_kernel.elf)",
+      "Bash(\"C:\\\\Users\\\\cmoel\\\\.rustup\\\\toolchains\\\\nightly-x86_64-pc-windows-msvc\\\\lib\\\\rustlib\\\\x86_64-pc-windows-msvc\\\\bin\\\\llvm-nm.exe\" -n \"c:\\\\Development\\\\anyos\\\\build\\\\kernel\\\\x86_64-anyos\\\\release\\\\anyos_kernel.elf\")",
+      "Bash(\"C:\\\\Users\\\\cmoel\\\\.rustup\\\\toolchains\\\\nightly-x86_64-pc-windows-msvc\\\\lib\\\\rustlib\\\\x86_64-pc-windows-msvc\\\\bin\\\\llvm-objdump.exe\" -d --start-address=0xffffffff8018ea08 --stop-address=0xffffffff8018eab0 \"c:\\\\Development\\\\anyos\\\\build\\\\kernel\\\\x86_64-anyos\\\\release\\\\anyos_kernel.elf\")",
+      "Bash(C:/Users/cmoel/.rustup/toolchains/nightly-x86_64-pc-windows-msvc/lib/rustlib/x86_64-pc-windows-msvc/bin/llvm-objdump.exe:*)",
+      "Bash(C:/Users/cmoel/.rustup/toolchains/nightly-x86_64-pc-windows-msvc/lib/rustlib/x86_64-pc-windows-msvc/bin/llvm-nm.exe:*)",
+      "Read(//c/Development/anyos/**)"
     ]
   }
 }

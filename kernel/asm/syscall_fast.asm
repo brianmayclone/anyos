@@ -123,24 +123,21 @@ syscall_fast_entry:
     pop rbx
     pop rax
 
-    ; === Phase 6: Return to user space via SYSRET ===
+    ; === Phase 6: Return to user space via IRETQ ===
     ; Stack now has: RIP(0), CS(8), RFLAGS(16), RSP(24), SS(32)
-    mov rcx, [rsp]                  ; RCX = user RIP (for SYSRETQ)
-    mov r11, [rsp + 16]             ; R11 = user RFLAGS (for SYSRETQ)
-
-    ; Validate return RIP: SYSRETQ to non-canonical address causes GPF in ring 0
-    bt rcx, 47
-    jc .fallback_iretq
-
-    ; Disable interrupts for the critical RSP→SYSRET window: after loading
-    ; user RSP we are still in Ring 0, so an interrupt would push its frame
-    ; onto the user stack. SYSRET atomically restores RFLAGS (IF=1 from R11).
-    cli
-    mov rsp, [rsp + 24]
-    o64 sysret
-
-.fallback_iretq:
-    ; Non-canonical RIP — use IRETQ (safe for any address)
+    ;
+    ; We use IRETQ unconditionally instead of SYSRETQ because:
+    ;   1. SYSRETQ has the infamous non-canonical-RIP vulnerability (CVE-2012-0217)
+    ;      where a GPF fires in ring 0 on AMD (and certain hypervisor emulations).
+    ;   2. Some hypervisors (VirtualBox in NEM/Hyper-V mode) do not set SS.RPL=3
+    ;      on SYSRETQ, leaving SS=0x20 instead of 0x23.  User code runs fine
+    ;      (64-bit mode ignores SS), but the NEXT interrupt/exception pushes
+    ;      SS=0x20 onto the kernel stack, and IRETQ back to ring 3 then faults
+    ;      with #GP(0x20) because SS.RPL(0) != target CPL(3).
+    ;   3. IRETQ uses our hardcoded frame (SS=0x23, CS=0x2B from Phase 2),
+    ;      guaranteeing correct segment selectors on every hypervisor.
+    ;   4. The performance difference (SYSRET vs IRETQ) is negligible — a few
+    ;      nanoseconds per syscall, irrelevant for a desktop/hobby OS.
     iretq
 
 ; =============================================================================
@@ -246,6 +243,15 @@ syscall_fast_entry:
     swapgs
 
     ; Return -EAGAIN (errno 11) to user space so the syscall can be retried.
-    ; SYSRET: RIP ← RCX, RFLAGS ← R11 (both still hold user values).
-    mov rax, -11                    ; -EAGAIN
-    o64 sysret
+    ; Build a minimal IRETQ frame on the user stack (avoids SYSRET SS.RPL bug).
+    ; RCX = user RIP, R11 = user RFLAGS (both still hold SYSCALL-saved values).
+    ; RSP = user RSP (loaded from PERCPU before SWAPGS above).
+    mov rax, rsp                    ; save original user RSP (before pushes)
+    sub rsp, 40                     ; reserve 5 qwords for IRETQ frame
+    mov qword [rsp + 32], 0x23     ; SS  (user data, RPL=3)
+    mov [rsp + 24], rax             ; RSP (original user RSP)
+    mov [rsp + 16], r11             ; RFLAGS
+    mov qword [rsp + 8], 0x2B      ; CS  (user code64, RPL=3)
+    mov [rsp], rcx                  ; RIP
+    mov rax, -11                    ; return -EAGAIN
+    iretq

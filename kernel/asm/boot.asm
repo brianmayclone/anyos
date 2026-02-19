@@ -13,9 +13,10 @@
 
 [BITS 64]
 
-; Kernel stack: placed ABOVE BSS to avoid overlap as the kernel grows.
-; Must match KERNEL_STACK_SIZE in kernel/src/memory/physical.rs.
-KERNEL_STACK_SIZE equ 0x10000  ; 64 KiB
+; Kernel boot stack: the linker script reserves a dedicated 512 KiB region
+; (.boot_stack) above BSS.  _boot_stack_top is the initial RSP; the stack
+; grows downward toward _boot_stack_bottom.  Keeping the stack in its own
+; section prevents overflow from silently corrupting BSS statics (GDT, IDT…).
 
 ; Serial port for debug output
 COM1            equ 0x3F8
@@ -24,6 +25,7 @@ COM1            equ 0x3F8
 extern kernel_main
 extern _bss_start
 extern _bss_end
+extern _boot_stack_top
 
 section .text.boot
 global _boot_start
@@ -84,10 +86,9 @@ higher_half_entry:
     xor rax, rax
     rep stosb
 
-    ; Set up kernel stack ABOVE BSS so they never overlap.
-    ; Stack grows down from (_bss_end + KERNEL_STACK_SIZE).
-    mov rsp, _bss_end
-    add rsp, KERNEL_STACK_SIZE
+    ; Set up kernel stack using the dedicated .boot_stack section from link.ld.
+    ; _boot_stack_top is the top of the 512 KiB region; stack grows downward.
+    mov rsp, _boot_stack_top
 
     ; Ensure 16-byte stack alignment (required by System V AMD64 ABI)
     and rsp, -16

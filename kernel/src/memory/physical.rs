@@ -23,8 +23,8 @@ const BITMAP_SIZE: usize = MAX_FRAMES / 8;
 // Kernel virtual base (must match link.ld and boot.asm)
 const KERNEL_VIRT_BASE: u64 = 0xFFFF_FFFF_8000_0000;
 
-// Kernel stack placed above BSS (must match KERNEL_STACK_SIZE in boot.asm)
-const KERNEL_STACK_SIZE: u64 = 0x10000; // 64 KiB
+// _kernel_end from link.ld already includes the dedicated .boot_stack section,
+// so no separate KERNEL_STACK_SIZE constant is needed here.
 
 extern "C" {
     static _kernel_end: u8;
@@ -33,10 +33,10 @@ extern "C" {
 /// Physical frame allocator state.
 ///
 /// Field order matters: `total_frames`/`free_frames` are placed BEFORE the
-/// 2 MiB bitmap so they sit at the start of BSS, far from the kernel stack
-/// (which starts at `_bss_end` and grows downward). Without this ordering,
-/// the bitmap pushes these fields to the end of BSS where stack overflow
-/// during init can silently corrupt them.
+/// 2 MiB bitmap so they sit at the start of BSS.  The boot stack now lives in
+/// a dedicated .boot_stack linker section above BSS, so stack overflow cannot
+/// silently corrupt BSS statics.  The field ordering remains as an extra
+/// safety margin in case of unexpected memory pressure.
 #[repr(C)]
 struct FrameAllocator {
     total_frames: usize,
@@ -151,8 +151,8 @@ pub fn init(boot_info: &BootInfo) {
     } else {
         boot_info.kernel_phys_end as u64
     };
-    // Reserve BSS + kernel stack area (stack is placed above BSS in boot.asm)
-    let kernel_end = PhysAddr::new(kernel_end_phys + KERNEL_STACK_SIZE).frame_align_up();
+    // _kernel_end already covers BSS + the 512 KiB .boot_stack section.
+    let kernel_end = PhysAddr::new(kernel_end_phys).frame_align_up();
     crate::serial_println!(
         "Reserving kernel region: {:#010x} - {:#010x} (includes BSS + stack)",
         kernel_start.as_u64(), kernel_end.as_u64()

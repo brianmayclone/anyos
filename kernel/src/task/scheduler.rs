@@ -2320,14 +2320,19 @@ pub fn run() -> ! {
 
 /// Register the idle thread for an AP.
 pub fn register_ap_idle(cpu_id: usize) {
+    crate::debug_println!("  [Sched] register_ap_idle: cpu={} acquiring scheduler lock", cpu_id);
     let mut guard = SCHEDULER.lock();
+    crate::debug_println!("  [Sched] register_ap_idle: cpu={} lock acquired", cpu_id);
     if let Some(sched) = guard.as_mut() {
         let idle_tid = sched.idle_tid[cpu_id];
+        crate::debug_println!("  [Sched] register_ap_idle: cpu={} idle_tid={}", cpu_id, idle_tid);
         sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
         if let Some(idx) = sched.find_idx(idle_tid) {
             sched.threads[idx].state = ThreadState::Running;
             let kstack_top = sched.threads[idx].kernel_stack_top();
             let kstack_bottom = sched.threads[idx].kernel_stack_bottom();
+            crate::debug_println!("  [Sched] register_ap_idle: cpu={} kstack=[{:#x}..{:#x}]",
+                cpu_id, kstack_bottom, kstack_top);
             crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, kstack_top);
             crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, kstack_top);
             PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
@@ -2336,7 +2341,12 @@ pub fn register_ap_idle(cpu_id: usize) {
             PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
             PER_CPU_IDLE_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
             update_per_cpu_name(cpu_id, &sched.threads[idx].name);
+        } else {
+            crate::debug_println!("  [Sched] register_ap_idle: cpu={} ERROR: idle_tid={} not found!", cpu_id, idle_tid);
         }
+    } else {
+        crate::debug_println!("  [Sched] register_ap_idle: cpu={} ERROR: scheduler not initialized!", cpu_id);
     }
     crate::serial_println!("  SMP: CPU{} idle thread registered", cpu_id);
+    crate::debug_println!("  [Sched] register_ap_idle: cpu={} done, releasing lock", cpu_id);
 }

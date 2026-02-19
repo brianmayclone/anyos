@@ -456,8 +456,13 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     }
 
     // Read the binary from the filesystem
-    let data = crate::fs::vfs::read_file_to_vec(actual_path)
-        .map_err(|_| "Failed to read program file")?;
+    let data = match crate::fs::vfs::read_file_to_vec(actual_path) {
+        Ok(d) => d,
+        Err(e) => {
+            crate::serial_println!("  load_and_run: read_file_to_vec('{}') failed: {:?}", actual_path, e);
+            return Err("Failed to read program file");
+        }
+    };
 
     if data.is_empty() {
         return Err("Program file is empty");

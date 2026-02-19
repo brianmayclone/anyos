@@ -33,6 +33,19 @@ SECTIONS
         _bss_end = .;
     }
 
+    /* Boot stack: 512 KiB dedicated region placed above BSS.
+     * Separating the stack from BSS ensures a stack overflow cannot silently
+     * corrupt static data (GDT, IDT, IST stacks, etc.).
+     * _boot_stack_top is the initial RSP; the stack grows downward from there.
+     * _boot_stack_bottom serves as a sentinel: if RSP ever drops below it,
+     * the stack has overflowed into BSS. */
+    .boot_stack (NOLOAD) : AT(ADDR(.boot_stack) - KERNEL_VMA + KERNEL_LMA)
+    {
+        _boot_stack_bottom = .;
+        . += 0x80000;    /* 512 KiB */
+        _boot_stack_top = .;
+    }
+
     _kernel_end = .;
 
     /DISCARD/ :

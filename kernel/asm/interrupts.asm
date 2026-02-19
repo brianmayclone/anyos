@@ -173,7 +173,15 @@ isr_common_stub:
     ; Remove interrupt number and error code from stack
     add rsp, 16
 
-    ; Return from interrupt (64-bit IRET)
+    ; Sanitise SS before IRETQ when returning to ring 3.
+    ; Some hypervisors (VirtualBox NEM/Hyper-V) leave SS.RPL=0 after SYSRETQ,
+    ; so the CPU pushes SS=0x20 (User Data, RPL=0) on the next interrupt.
+    ; IRETQ to ring 3 requires SS.RPL == target CPL (3), otherwise #GP(0x20).
+    ; Fix: OR the RPL bits into SS on the stack when CS indicates ring 3.
+    test qword [rsp + 8], 3        ; check CS.RPL (bits 0-1)
+    jz .isr_iret_done              ; kernel return (RPL=0) — no fix needed
+    or qword [rsp + 32], 3         ; force SS.RPL = 3 for user-mode return
+.isr_iret_done:
     iretq
 
 .bad_rsp:
@@ -269,6 +277,12 @@ irq_common_stub:
     pop rax
 
     add rsp, 16
+
+    ; Sanitise SS before IRETQ (same fix as isr_common_stub — see comment there).
+    test qword [rsp + 8], 3        ; check CS.RPL
+    jz .irq_iret_done
+    or qword [rsp + 32], 3         ; force SS.RPL = 3
+.irq_iret_done:
     iretq
 
 .bad_rsp:

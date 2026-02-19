@@ -352,22 +352,27 @@ pub fn has_root_fs() -> bool {
 /// Mount a filesystem at the given path.
 /// For disk partitions, auto-detects exFAT vs FAT16 by reading the OEM name.
 pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
+    crate::debug_println!("  [VFS] mount: path='{}' fs_type={:?} device_id={}", path, fs_type, device_id);
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().expect("VFS not initialized");
 
     let actual_type = if fs_type == FsType::Fat || fs_type == FsType::ExFat {
         // Auto-detect: read first sector to check OEM name
+        crate::debug_println!("  [VFS] mount: reading VBR at LBA={}", PARTITION_LBA);
         let mut buf = [0u8; 512];
         if crate::drivers::storage::read_sectors(PARTITION_LBA, 1, &mut buf) {
             crate::serial_println!("  VFS auto-detect: OEM bytes = {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
                 buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9], buf[10]);
             if &buf[3..11] == b"EXFAT   " {
+                crate::debug_println!("  [VFS] mount: detected exFAT, calling ExFatFs::new()");
                 match ExFatFs::new(device_id, PARTITION_LBA) {
                     Ok(exfat) => {
+                        crate::debug_println!("  [VFS] mount: ExFatFs::new() succeeded");
                         state.exfat_fs = Some(exfat);
                         crate::serial_println!("  Mounted exFAT at '{}'", path);
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        crate::debug_println!("  [VFS] mount: ExFatFs::new() FAILED: {:?}", e);
                         crate::serial_println!("  Failed to mount exFAT at '{}'", path);
                     }
                 }
@@ -428,6 +433,7 @@ pub fn mount_devfs() {
 
 /// Open a file by path with the given flags. Returns a file descriptor on success.
 pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
+    crate::debug_println!("  [VFS] open: path='{}' create={} write={} read={}", path, flags.create, flags.write, flags.read);
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
@@ -773,6 +779,7 @@ pub fn write(fd: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
 
 /// Read directory entries at a given path.
 pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
+    crate::debug_println!("  [VFS] read_dir: path='{}'", path);
     let vfs = VFS.lock();
     let state = vfs.as_ref().ok_or(FsError::IoError)?;
 
@@ -912,6 +919,7 @@ fn add_virtual_root_entries(state: &VfsState, entries: &mut Vec<DirEntry>) {
 pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
     use crate::fs::exfat::ExFatReadPlan;
     use crate::fs::fat::FileReadPlan;
+    crate::debug_println!("  [VFS] read_file_to_vec: path='{}'", path);
 
     enum ReadPlan {
         Fat(FileReadPlan),
@@ -936,6 +944,7 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
     }
 
     // Phase 1: Under VFS lock — lookup + build read plan (no disk I/O)
+    crate::debug_println!("  [VFS] read_file_to_vec: phase1 lookup '{}'", path);
     let plan = {
         let vfs = VFS.lock();
         let state = vfs.as_ref().ok_or(FsError::IoError)?;
@@ -944,6 +953,7 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
             if r.file_type == FileType::Directory {
                 return Err(FsError::IsADirectory);
             }
+            crate::debug_println!("  [VFS] read_file_to_vec: inode={:#x} size={} building read plan", r.inode, r.size);
             ReadPlan::ExFat(exfat.get_file_read_plan(r.inode, r.size))
         } else if let Some(ref fat) = state.fat_fs {
             let (cluster, file_type, size) = fat.lookup(path)?;
@@ -959,10 +969,13 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
     }; // VFS lock dropped — interrupts re-enabled
 
     // Phase 2: Without lock — perform disk I/O with interrupts enabled
-    match plan {
+    crate::debug_println!("  [VFS] read_file_to_vec: phase2 disk I/O '{}'", path);
+    let result = match plan {
         ReadPlan::Fat(p) => p.execute(),
         ReadPlan::ExFat(p) => p.execute(),
-    }
+    };
+    crate::debug_println!("  [VFS] read_file_to_vec: done '{}' ok={}", path, result.is_ok());
+    result
 }
 
 /// Delete a file, directory, or symlink at the given path.

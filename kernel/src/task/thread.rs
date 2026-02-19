@@ -124,7 +124,9 @@ pub struct Thread {
 }
 
 /// Size of each thread's kernel-mode stack.
-const KERNEL_STACK_SIZE: usize = 128 * 1024; // 128 KiB per thread
+/// 512 KiB gives comfortable headroom for deep VFS/exFAT call chains plus
+/// IRQ frames landing on top of in-progress syscall stacks.
+const KERNEL_STACK_SIZE: usize = 512 * 1024; // 512 KiB per thread
 
 /// Magic canary value placed at the bottom of each kernel stack.
 /// If this gets overwritten, the stack has overflowed.

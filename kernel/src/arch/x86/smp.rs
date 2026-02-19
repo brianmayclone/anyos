@@ -157,52 +157,66 @@ pub fn start_aps(processors: &[ProcessorInfo]) {
 /// AP entry point — called by trampoline after switching to long mode.
 /// Runs on the AP's own stack. Must never return.
 extern "C" fn ap_entry() -> ! {
+    // Read CPU ID first (trampoline wrote it before jumping here)
+    let cpu_id = unsafe { core::ptr::read_volatile(AP_COMM_CPUID as *const u32) } as usize;
+    crate::debug_println!("  [SMP] AP#{}: ap_entry start", cpu_id);
+
     // Load the kernel's GDT (replace trampoline's minimal GDT)
     crate::arch::x86::gdt::reload();
+    crate::debug_println!("  [SMP] AP#{}: GDT reloaded", cpu_id);
 
     // Load the kernel's IDT (AP starts with no valid IDT)
     crate::arch::x86::idt::reload();
+    crate::debug_println!("  [SMP] AP#{}: IDT reloaded", cpu_id);
 
     // Program PAT MSR (must match BSP — all CPUs need identical PAT config)
     crate::arch::x86::pat::init();
-
-    // Read CPU ID before any LAPIC init (trampoline wrote it)
-    let cpu_id = unsafe { core::ptr::read_volatile(AP_COMM_CPUID as *const u32) } as usize;
+    crate::debug_println!("  [SMP] AP#{}: PAT initialized", cpu_id);
 
     // Initialize per-CPU TSS (each AP gets its own TSS for correct RSP0)
     crate::arch::x86::tss::init_for_cpu(cpu_id);
+    crate::debug_println!("  [SMP] AP#{}: TSS initialized", cpu_id);
 
     // Initialize this AP's LAPIC (starts periodic timer for scheduling)
     crate::arch::x86::apic::init_ap();
+    crate::debug_println!("  [SMP] AP#{}: LAPIC initialized", cpu_id);
 
     crate::serial_println!("  SMP: AP#{} entry point reached, LAPIC+TSS initialized", cpu_id);
 
     // Configure SYSCALL/SYSRET MSRs for this AP
     crate::arch::x86::syscall_msr::init_ap(cpu_id);
+    crate::debug_println!("  [SMP] AP#{}: SYSCALL MSRs configured", cpu_id);
 
     // Register ourselves in CPU_DATA BEFORE signaling ready and enabling
     // interrupts.  This prevents a race where the LAPIC timer fires and
     // schedule_inner → current_cpu_id() can't find our LAPIC ID in
     // CPU_DATA (BSP hasn't written it yet), causing the fallback to
     // return 0 and making us act as CPU 0 (wrong per-CPU data, TSS, etc.).
+    let lapic_id = crate::arch::x86::apic::lapic_id();
+    crate::debug_println!("  [SMP] AP#{}: registering in CPU_DATA (lapic_id={})", cpu_id, lapic_id);
     unsafe {
         CPU_DATA[cpu_id] = PerCpu {
             cpu_id: cpu_id as u8,
-            lapic_id: crate::arch::x86::apic::lapic_id(),
+            lapic_id,
             is_bsp: false,
             initialized: true,
         };
     }
+    crate::debug_println!("  [SMP] AP#{}: CPU_DATA set", cpu_id);
 
     // Register this CPU's idle thread in the scheduler
+    crate::debug_println!("  [SMP] AP#{}: calling register_ap_idle", cpu_id);
     crate::task::scheduler::register_ap_idle(cpu_id);
+    crate::debug_println!("  [SMP] AP#{}: register_ap_idle done", cpu_id);
 
     // Signal BSP that we're ready
+    crate::debug_println!("  [SMP] AP#{}: signaling BSP ready", cpu_id);
     unsafe {
         core::ptr::write_volatile(AP_COMM_READY as *mut u8, 1);
     }
 
     // Enter idle loop — the LAPIC timer will trigger scheduling
+    crate::debug_println!("  [SMP] AP#{}: entering idle loop (sti + hlt)", cpu_id);
     unsafe { core::arch::asm!("sti"); }
     loop {
         unsafe { core::arch::asm!("hlt"); }

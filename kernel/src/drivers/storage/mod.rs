@@ -49,7 +49,9 @@ pub fn set_backend_ahci() {
 /// Dispatches to the active backend. For ATA, automatically batches into
 /// 255-sector chunks. For AHCI, uses DMA with a bounce buffer.
 pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
+    crate::debug_println!("  [storage] read_sectors: lba={} count={} (acquiring io_lock)", lba, count);
     io_lock_acquire();
+    crate::debug_println!("  [storage] read_sectors: io_lock acquired, dispatching");
     let result = match unsafe { BACKEND } {
         StorageBackend::Ata => {
             let mut offset = 0usize;
@@ -58,10 +60,13 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
             let mut ok = true;
             while remaining > 0 {
                 let batch = remaining.min(255) as u8;
+                crate::debug_println!("  [storage] ATA batch: lba={} count={} remaining={}", cur_lba, batch, remaining);
                 if !ata::read_sectors(cur_lba, batch, &mut buf[offset..]) {
+                    crate::debug_println!("  [storage] ATA batch FAILED: lba={} count={}", cur_lba, batch);
                     ok = false;
                     break;
                 }
+                crate::debug_println!("  [storage] ATA batch OK: lba={} count={}", cur_lba, batch);
                 offset += batch as usize * 512;
                 cur_lba += batch as u32;
                 remaining -= batch as u32;
@@ -70,6 +75,7 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
         }
         StorageBackend::Ahci => ahci::read_sectors(lba, count, buf),
     };
+    crate::debug_println!("  [storage] read_sectors: done result={} releasing io_lock", result);
     io_lock_release();
     result
 }

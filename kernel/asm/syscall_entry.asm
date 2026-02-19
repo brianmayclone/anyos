@@ -67,4 +67,10 @@ syscall_entry:
     pop rbx
     pop rax
 
+    ; Sanitise SS before IRETQ (same VirtualBox NEM fix as interrupts.asm).
+    ; INT 0x80 always returns to ring 3, but check CS.RPL for safety.
+    test qword [rsp + 8], 3
+    jz .int80_iret_done
+    or qword [rsp + 32], 3
+.int80_iret_done:
     iretq
