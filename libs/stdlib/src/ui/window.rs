@@ -29,6 +29,7 @@ pub const WIN_FLAG_ALWAYS_ON_TOP: u32 = 0x04;
 pub const WIN_FLAG_NO_CLOSE: u32 = 0x08;
 pub const WIN_FLAG_NO_MINIMIZE: u32 = 0x10;
 pub const WIN_FLAG_NO_MAXIMIZE: u32 = 0x20;
+pub const WIN_FLAG_SHADOW: u32 = 0x40;
 
 /// System font — regular weight (SF Pro).
 pub const FONT_REGULAR: u16 = 0;

@@ -80,6 +80,7 @@ pub const WIN_FLAG_ALWAYS_ON_TOP: u32 = 0x04;
 pub const WIN_FLAG_NO_CLOSE: u32 = 0x08;
 pub const WIN_FLAG_NO_MINIMIZE: u32 = 0x10;
 pub const WIN_FLAG_NO_MAXIMIZE: u32 = 0x20;
+pub const WIN_FLAG_SHADOW: u32 = 0x40;
 
 // ── Event Types ─────────────────────────────────────────────────────────────
 
@@ -943,11 +944,12 @@ impl Desktop {
         };
 
         // Create compositor layer for this window
-        let opaque = borderless; // Decorated windows have transparent rounded corners
+        let force_shadow = flags & WIN_FLAG_SHADOW != 0;
+        let opaque = borderless && !force_shadow; // Shadows need alpha blending
         let layer_id = self.compositor.add_layer(x, y, content_w, full_h, opaque);
 
-        // Enable shadow for decorated windows only (borderless windows like dock draw their own)
-        if !borderless {
+        // Enable shadow for decorated windows, or borderless windows with WIN_FLAG_SHADOW
+        if !borderless || force_shadow {
             if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
                 layer.has_shadow = true;
             }
@@ -2252,8 +2254,9 @@ impl Desktop {
             false,
         );
 
-        // Enable shadow for decorated windows only (borderless windows like dock draw their own)
-        if !borderless {
+        // Enable shadow for decorated windows, or borderless windows with WIN_FLAG_SHADOW
+        let force_shadow = flags & WIN_FLAG_SHADOW != 0;
+        if !borderless || force_shadow {
             if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
                 layer.has_shadow = true;
             }
@@ -2318,8 +2321,9 @@ impl Desktop {
             pre_pixels,
         );
 
-        // Enable shadow for decorated windows only
-        if !borderless {
+        // Enable shadow for decorated windows, or borderless windows with WIN_FLAG_SHADOW
+        let force_shadow = flags & WIN_FLAG_SHADOW != 0;
+        if !borderless || force_shadow {
             if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
                 layer.has_shadow = true;
             }

@@ -923,7 +923,7 @@ fn main() {
                                     }
                                 }
                             }
-                            KEY_TAB => shell_proc.write(b"\t"),
+                            KEY_TAB => {}, // dash has no tab completion; ignore
                             KEY_UP => shell_proc.write(b"\x1b[A"),
                             KEY_DOWN => shell_proc.write(b"\x1b[B"),
                             KEY_RIGHT => shell_proc.write(b"\x1b[C"),
