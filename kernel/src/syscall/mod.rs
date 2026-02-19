@@ -215,6 +215,9 @@ pub const SYS_SIGACTION: u32 = 244;
 pub const SYS_SIGPROCMASK: u32 = 245;
 pub const SYS_SIGRETURN: u32 = 246;
 
+// Process identity (extended)
+pub const SYS_GETPPID: u32 = 247;
+
 /// Register frame pushed by `syscall_entry.asm` / `syscall_fast.asm`.
 ///
 /// The layout matches the individual GPR pushes (no pushad in 64-bit mode) plus the
@@ -458,6 +461,9 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         // POSIX signals (SYS_SIGRETURN intercepted at dispatch level, not here)
         SYS_SIGACTION => handlers::sys_sigaction(arg1, arg2),
         SYS_SIGPROCMASK => handlers::sys_sigprocmask(arg1, arg2),
+
+        // Process identity (extended)
+        SYS_GETPPID => handlers::sys_getppid(),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

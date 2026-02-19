@@ -81,6 +81,7 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_SIGACTION, "sigaction"),
     (SYS_SIGPROCMASK, "sigprocmask"),
     (SYS_SIGRETURN, "sigreturn"),
+    (SYS_GETPPID, "getppid"),
 ];
 
 /// Look up the human-readable name for a syscall number.

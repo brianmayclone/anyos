@@ -625,11 +625,46 @@ long sysconf(int name) {
 }
 
 int getpid(void) { return _syscall(6, 0, 0, 0, 0); }   /* SYS_GETPID = 6 */
-int getppid(void) { return 0; }
-int getpgid(int pid) { (void)pid; return 0; }
+int getppid(void) { return _syscall(247, 0, 0, 0, 0); } /* SYS_GETPPID = 247 */
+int getpgid(int pid) { (void)pid; return getpid(); }
+int setpgid(int pid, int pgid) { (void)pid; (void)pgid; return 0; }
+int setpgrp(void) { return 0; }
+int getpgrp(void) { return getpid(); }
 unsigned int geteuid(void) { return 0; }
 unsigned int getegid(void) { return 0; }
-int getsid(int pid) { (void)pid; return 0; }
+int getsid(int pid) { (void)pid; return getpid(); }
+int setsid(void) { return getpid(); }
+unsigned int alarm(unsigned int seconds) { (void)seconds; return 0; }
+
+int execve(const char *path, char *const argv[], char *const envp[]) {
+    (void)envp; /* anyOS exec ignores envp for now */
+    return execv(path, argv);
+}
+
+/* Resource limits — stubs */
+struct rlimit { unsigned long rlim_cur; unsigned long rlim_max; };
+int getrlimit(int resource, struct rlimit *rlim) {
+    (void)resource;
+    if (rlim) { rlim->rlim_cur = ~0UL; rlim->rlim_max = ~0UL; }
+    return 0;
+}
+int setrlimit(int resource, const struct rlimit *rlim) {
+    (void)resource; (void)rlim;
+    return 0;
+}
+
+/* Terminal control — stubs (no job control) */
+int tcgetpgrp(int fd) { (void)fd; return getpid(); }
+int tcsetpgrp(int fd, int pgrp) { (void)fd; (void)pgrp; return 0; }
+
+struct termios;
+int tcgetattr(int fd, struct termios *t) { (void)fd; (void)t; return -1; }
+int tcsetattr(int fd, int act, const struct termios *t) { (void)fd; (void)act; (void)t; return -1; }
+unsigned int cfgetispeed(const struct termios *t) { (void)t; return 0; }
+unsigned int cfgetospeed(const struct termios *t) { (void)t; return 0; }
+
+/* wait() — calls waitpid(-1, status, 0) */
+int wait(int *status) { return waitpid(-1, status, 0); }
 
 /* utimes stub */
 #include <sys/time.h>

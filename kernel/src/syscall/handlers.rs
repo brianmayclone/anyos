@@ -409,6 +409,11 @@ pub fn sys_getpid() -> u32 {
     crate::task::scheduler::current_tid()
 }
 
+/// sys_getppid - Get parent process ID
+pub fn sys_getppid() -> u32 {
+    crate::task::scheduler::current_parent_tid()
+}
+
 /// sys_yield - Yield the CPU to another thread
 pub fn sys_yield() -> u32 {
     crate::task::scheduler::schedule();

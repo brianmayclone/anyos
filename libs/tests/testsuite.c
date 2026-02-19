@@ -9,6 +9,7 @@ static const char *tests[] = {
     "dup_test",
     "pipe_chain",
     "signal_test",
+    "setjmp_test",
     NULL
 };
 

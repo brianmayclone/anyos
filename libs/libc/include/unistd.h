@@ -66,9 +66,15 @@ long sysconf(int name);
 int getpid(void);
 int getppid(void);
 int getpgid(int pid);
+int setpgid(pid_t pid, pid_t pgid);
+pid_t setpgrp(void);
+pid_t getpgrp(void);
 unsigned int geteuid(void);
 unsigned int getegid(void);
 int getsid(int pid);
+pid_t setsid(void);
+int execve(const char *path, char *const argv[], char *const envp[]);
+unsigned int alarm(unsigned int seconds);
 
 #define _SC_PAGESIZE 30
 #define _SC_PAGE_SIZE _SC_PAGESIZE

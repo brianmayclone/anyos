@@ -48,11 +48,29 @@ typedef void (*sighandler_t)(int);
 /* Signal set type (bitmask) */
 typedef unsigned int sigset_t;
 
+/* sigaction structure */
+struct sigaction {
+    union {
+        sighandler_t sa_handler;
+        void (*sa_sigaction)(int, void *, void *);
+    };
+    sigset_t sa_mask;
+    int      sa_flags;
+};
+
+#define SA_RESTART  0x10000000
+#define SA_NODEFER  0x40000000
+#define SA_RESETHAND 0x80000000
+
 /* Signal functions */
 sighandler_t signal(int signum, sighandler_t handler);
 int raise(int sig);
 int kill(int pid, int sig);
 int sigprocmask(int how, const sigset_t *set, sigset_t *oldset);
+int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact);
+int sigsuspend(const sigset_t *mask);
+int sigpending(sigset_t *set);
+int siginterrupt(int sig, int flag);
 
 /* Signal set manipulation macros */
 #define sigemptyset(s)    (*(s) = 0, 0)

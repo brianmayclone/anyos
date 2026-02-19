@@ -979,6 +979,7 @@ add_custom_command(
           ${CMAKE_SOURCE_DIR}/libs/tests/dup_test.c
           ${CMAKE_SOURCE_DIR}/libs/tests/pipe_chain.c
           ${CMAKE_SOURCE_DIR}/libs/tests/signal_test.c
+          ${CMAKE_SOURCE_DIR}/libs/tests/setjmp_test.c
           ${CMAKE_SOURCE_DIR}/libs/tests/testsuite.c
   COMMENT "Installing test sources to /Libraries/system/tests/"
 )
