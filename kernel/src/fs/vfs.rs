@@ -32,24 +32,20 @@ struct VfsState {
 }
 
 impl VfsState {
-    /// Find the lowest available FD number (>= 3, avoiding stdin/stdout/stderr).
-    /// Scans open_files for gaps; if none found, returns max_fd + 1.
-    fn next_available_fd(&self) -> FileDescriptor {
-        // Collect all currently used FDs
-        let mut used: alloc::vec::Vec<u32> = self.open_files.iter()
-            .filter_map(|e| e.as_ref().map(|f| f.fd))
-            .collect();
-        used.sort_unstable();
-        // Find lowest unused FD starting from 3
-        let mut candidate: u32 = 3;
-        for &fd in &used {
-            if fd == candidate {
-                candidate += 1;
-            } else if fd > candidate {
-                break;
+    /// Allocate a free slot in the global open_files table.
+    /// Returns the slot index (global_id), or None if the table is full.
+    fn alloc_slot(&mut self) -> Option<u32> {
+        for (i, entry) in self.open_files.iter().enumerate() {
+            if entry.is_none() {
+                return Some(i as u32);
             }
         }
-        candidate
+        if self.open_files.len() < MAX_OPEN_FILES {
+            let idx = self.open_files.len() as u32;
+            self.open_files.push(None);
+            return Some(idx);
+        }
+        None
     }
 }
 
@@ -455,10 +451,10 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
         let devfs = state.devfs.as_ref().ok_or(FsError::NotFound)?;
         let idx = devfs.lookup(name).ok_or(FsError::NotFound)?;
 
-        let fd = state.next_available_fd();
+        let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
 
         let file = OpenFile {
-            fd,
+            fd: slot_id,
             path: String::from(path),
             file_type: FileType::Device,
             flags,
@@ -467,23 +463,20 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             fs_id: 1, // DevFs
             inode: idx as u32,
             parent_cluster: 0,
+            refcount: 1,
         };
 
-        if let Some(slot) = state.open_files.iter_mut().find(|e| e.is_none()) {
-            *slot = Some(file);
-        } else {
-            state.open_files.push(Some(file));
-        }
-        return Ok(fd);
+        state.open_files[slot_id as usize] = Some(file);
+        return Ok(slot_id);
     }
 
     // --- Mount point path (e.g. /mnt/cdrom0/...) ---
     if let Some((_mount_path, relative_path)) = find_mnt_mount(path, &state.mount_points) {
         if let Some(ref iso) = state.iso9660_fs {
             let (inode, file_type, size) = iso.lookup(relative_path)?;
-            let fd = state.next_available_fd();
+            let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
             let file = OpenFile {
-                fd,
+                fd: slot_id,
                 path: String::from(path),
                 file_type,
                 flags,
@@ -492,13 +485,10 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                 fs_id: 2, // ISO 9660
                 inode,
                 parent_cluster: 0,
+                refcount: 1,
             };
-            if let Some(slot) = state.open_files.iter_mut().find(|e| e.is_none()) {
-                *slot = Some(file);
-            } else {
-                state.open_files.push(Some(file));
-            }
-            return Ok(fd);
+            state.open_files[slot_id as usize] = Some(file);
+            return Ok(slot_id);
         }
         return Err(FsError::NotFound);
     }
@@ -541,10 +531,10 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             Err(e) => return Err(e),
         };
 
-        let fd = state.next_available_fd();
+        let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
         let position = if flags.append { size } else { 0 };
         let file = OpenFile {
-            fd,
+            fd: slot_id,
             path: String::from(path),
             file_type,
             flags,
@@ -553,13 +543,10 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             fs_id: 3, // exFAT
             inode,
             parent_cluster,
+            refcount: 1,
         };
-        if let Some(slot) = state.open_files.iter_mut().find(|e| e.is_none()) {
-            *slot = Some(file);
-        } else {
-            state.open_files.push(Some(file));
-        }
-        return Ok(fd);
+        state.open_files[slot_id as usize] = Some(file);
+        return Ok(slot_id);
     }
 
     // --- FAT16 path (fallback / secondary mounts) ---
@@ -596,12 +583,12 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             Err(e) => return Err(e),
         };
 
-        let fd = state.next_available_fd();
+        let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
 
         let position = if flags.append { size } else { 0 };
 
         let file = OpenFile {
-            fd,
+            fd: slot_id,
             path: String::from(path),
             file_type,
             flags,
@@ -610,14 +597,11 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             fs_id: 0,
             inode,
             parent_cluster,
+            refcount: 1,
         };
 
-        if let Some(slot) = state.open_files.iter_mut().find(|e| e.is_none()) {
-            *slot = Some(file);
-        } else {
-            state.open_files.push(Some(file));
-        }
-        return Ok(fd);
+        state.open_files[slot_id as usize] = Some(file);
+        return Ok(slot_id);
     }
 
     // --- ISO 9660 root fallback (CD-ROM boot, no FAT16 disk) ---
@@ -626,9 +610,9 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             return Err(FsError::PermissionDenied);
         }
         let (inode, file_type, size) = iso.lookup(path)?;
-        let fd = state.next_available_fd();
+        let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
         let file = OpenFile {
-            fd,
+            fd: slot_id,
             path: String::from(path),
             file_type,
             flags,
@@ -637,44 +621,69 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             fs_id: 2, // ISO 9660
             inode,
             parent_cluster: 0,
+            refcount: 1,
         };
-        if let Some(slot) = state.open_files.iter_mut().find(|e| e.is_none()) {
-            *slot = Some(file);
-        } else {
-            state.open_files.push(Some(file));
-        }
-        return Ok(fd);
+        state.open_files[slot_id as usize] = Some(file);
+        return Ok(slot_id);
     }
 
     Err(FsError::IoError)
 }
 
-/// Close an open file descriptor, releasing its slot in the open file table.
-pub fn close(fd: FileDescriptor) -> Result<(), FsError> {
+/// Close a global open file slot (by slot_id). Decrements refcount, frees if 0.
+pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
-    for entry in state.open_files.iter_mut() {
-        if let Some(file) = entry {
-            if file.fd == fd {
-                *entry = None;
-                return Ok(());
+    let entry = state.open_files.get_mut(slot_id as usize).ok_or(FsError::BadFd)?;
+    if let Some(file) = entry {
+        if file.refcount > 1 {
+            file.refcount -= 1;
+        } else {
+            *entry = None;
+        }
+        Ok(())
+    } else {
+        Err(FsError::BadFd)
+    }
+}
+
+/// Increment the reference count on a global open file slot (for fork/dup).
+pub fn incref(slot_id: u32) {
+    let mut vfs = VFS.lock();
+    if let Some(state) = vfs.as_mut() {
+        if let Some(Some(file)) = state.open_files.get_mut(slot_id as usize) {
+            file.refcount += 1;
+        }
+    }
+}
+
+/// Decrement the reference count on a global open file slot (for close/exit).
+/// Frees the slot if refcount drops to 0.
+pub fn decref(slot_id: u32) {
+    let mut vfs = VFS.lock();
+    if let Some(state) = vfs.as_mut() {
+        if let Some(entry) = state.open_files.get_mut(slot_id as usize) {
+            if let Some(file) = entry {
+                if file.refcount > 1 {
+                    file.refcount -= 1;
+                } else {
+                    *entry = None;
+                }
             }
         }
     }
-
-    Err(FsError::BadFd)
 }
 
-/// Read bytes from an open file into `buf`. Returns the number of bytes read (0 at EOF).
-pub fn read(fd: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
+/// Read bytes from an open file into `buf`. `slot_id` is the global open_files index.
+/// Returns the number of bytes read (0 at EOF).
+pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
-    // Find open file
-    let file = state.open_files.iter_mut()
-        .flatten()
-        .find(|f| f.fd == fd)
+    // Direct index lookup
+    let file = state.open_files.get_mut(slot_id as usize)
+        .and_then(|e| e.as_mut())
         .ok_or(FsError::BadFd)?;
 
     // --- DevFs file ---
@@ -716,15 +725,15 @@ pub fn read(fd: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
     Ok(bytes_read)
 }
 
-/// Write bytes from `buf` to an open file. Returns the number of bytes written.
-pub fn write(fd: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
+/// Write bytes from `buf` to an open file. `slot_id` is the global open_files index.
+/// Returns the number of bytes written.
+pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
-    // Find open file
-    let file = state.open_files.iter_mut()
-        .flatten()
-        .find(|f| f.fd == fd)
+    // Direct index lookup
+    let file = state.open_files.get_mut(slot_id as usize)
+        .and_then(|e| e.as_mut())
         .ok_or(FsError::BadFd)?;
 
     if !file.flags.write {
@@ -755,9 +764,8 @@ pub fn write(fd: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
         if new_cluster != old_inode || new_size != old_size {
             exfat.update_entry(parent_cluster, filename, new_size, new_cluster)?;
         }
-        let file = state.open_files.iter_mut()
-            .flatten()
-            .find(|f| f.fd == fd)
+        let file = state.open_files.get_mut(slot_id as usize)
+            .and_then(|e| e.as_mut())
             .ok_or(FsError::BadFd)?;
         file.inode = new_cluster;
         file.size = new_size;
@@ -768,9 +776,8 @@ pub fn write(fd: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
         if new_cluster != old_inode || new_size != old_size {
             fat.update_entry(parent_cluster, filename, new_size, new_cluster)?;
         }
-        let file = state.open_files.iter_mut()
-            .flatten()
-            .find(|f| f.fd == fd)
+        let file = state.open_files.get_mut(slot_id as usize)
+            .and_then(|e| e.as_mut())
             .ok_or(FsError::BadFd)?;
         file.inode = new_cluster;
         file.size = new_size;
@@ -1049,14 +1056,14 @@ pub fn mkdir(path: &str) -> Result<(), FsError> {
     Ok(())
 }
 
-/// Seek within an open file. Returns new position.
-pub fn lseek(fd: FileDescriptor, offset: i32, whence: u32) -> Result<u32, FsError> {
+/// Seek within an open file. `slot_id` is the global open_files index.
+/// Returns new position.
+pub fn lseek(slot_id: FileDescriptor, offset: i32, whence: u32) -> Result<u32, FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
-    let file = state.open_files.iter_mut()
-        .flatten()
-        .find(|f| f.fd == fd)
+    let file = state.open_files.get_mut(slot_id as usize)
+        .and_then(|e| e.as_mut())
         .ok_or(FsError::BadFd)?;
 
     // Device files don't support seeking
@@ -1175,14 +1182,14 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
     Err(FsError::NotFound)
 }
 
-/// Get file info by fd. Returns (file_type, size, position, mtime).
-pub fn fstat(fd: FileDescriptor) -> Result<(FileType, u32, u32, u32), FsError> {
+/// Get file info by slot_id (global open_files index).
+/// Returns (file_type, size, position, mtime).
+pub fn fstat(slot_id: FileDescriptor) -> Result<(FileType, u32, u32, u32), FsError> {
     let vfs = VFS.lock();
     let state = vfs.as_ref().ok_or(FsError::IoError)?;
 
-    let file = state.open_files.iter()
-        .flatten()
-        .find(|f| f.fd == fd)
+    let file = state.open_files.get(slot_id as usize)
+        .and_then(|e| e.as_ref())
         .ok_or(FsError::BadFd)?;
 
     let path = file.path.clone();
@@ -1203,12 +1210,11 @@ pub fn fstat(fd: FileDescriptor) -> Result<(FileType, u32, u32, u32), FsError> {
 }
 
 /// Get the path associated with an open file descriptor.
-pub fn get_fd_path(fd: FileDescriptor) -> Result<alloc::string::String, FsError> {
+pub fn get_fd_path(slot_id: FileDescriptor) -> Result<alloc::string::String, FsError> {
     let vfs = VFS.lock();
     let state = vfs.as_ref().ok_or(FsError::IoError)?;
-    let file = state.open_files.iter()
-        .flatten()
-        .find(|f| f.fd == fd)
+    let file = state.open_files.get(slot_id as usize)
+        .and_then(|e| e.as_ref())
         .ok_or(FsError::BadFd)?;
     Ok(file.path.clone())
 }

@@ -32,7 +32,9 @@
       "Bash(ninja:*)",
       "Bash(python3:*)",
       "WebFetch(domain:linuxhandbook.com)",
-      "WebFetch(domain:www.linuxfromscratch.org)"
+      "WebFetch(domain:www.linuxfromscratch.org)",
+      "Bash(timeout 30 qemu-system-x86_64:*)",
+      "Bash(gtimeout 30 qemu-system-x86_64:*)"
     ]
   }
 }

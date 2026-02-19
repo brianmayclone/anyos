@@ -104,6 +104,24 @@ pub fn sys_exit(status: u32) -> u32 {
     let (tid, pd, _) = crate::task::scheduler::current_exit_info();
     crate::debug_println!("sys_exit({}) TID={}", status, tid);
 
+    // Close all open file descriptors and decref global resources.
+    // Must happen before destroying the page directory.
+    {
+        use crate::fs::fd_table::FdKind;
+        let closed = crate::task::scheduler::close_all_fds_for_thread(tid);
+        for kind in closed.iter() {
+            match kind {
+                FdKind::File { global_id } => {
+                    crate::fs::vfs::decref(*global_id);
+                }
+                FdKind::PipeRead { pipe_id: _ } | FdKind::PipeWrite { pipe_id: _ } => {
+                    // TODO: decref anonymous pipe endpoints (Phase 2)
+                }
+                FdKind::None => {}
+            }
+        }
+    }
+
     // Clean up shared memory mappings while still in user PD context.
     // Must happen BEFORE switching CR3, so unmap_page operates on the
     // correct page tables via recursive mapping.
@@ -149,77 +167,110 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
     if len > 0x1000_0000 || !is_valid_user_ptr(buf_ptr as u64, len as u64) {
         return u32::MAX;
     }
-    if fd == 1 || fd == 2 {
-        let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
-        let pipe_id = crate::task::scheduler::current_thread_stdout_pipe();
-        if pipe_id != 0 {
-            crate::ipc::pipe::write(pipe_id, buf);
-        }
-        // Acquire the serial output lock so entire messages are atomic —
-        // without this, user-space println! bytes interleave with kernel serial_println!
-        let lock_state = crate::drivers::serial::output_lock_acquire();
-        for &byte in buf {
-            crate::drivers::serial::write_byte(byte);
-        }
-        crate::drivers::serial::output_lock_release(lock_state);
-        len
-    } else if fd >= 3 {
-        let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
-        match crate::fs::vfs::write(fd, buf) {
-            Ok(n) => {
-                crate::task::scheduler::record_io_write(n as u64);
-                n as u32
+
+    use crate::fs::fd_table::FdKind;
+
+    // Look up the FD in the per-process table
+    match crate::task::scheduler::current_fd_get(fd) {
+        Some(entry) => {
+            let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
+            match entry.kind {
+                FdKind::File { global_id } => {
+                    match crate::fs::vfs::write(global_id, buf) {
+                        Ok(n) => {
+                            crate::task::scheduler::record_io_write(n as u64);
+                            n as u32
+                        }
+                        Err(e) => fs_err(e),
+                    }
+                }
+                FdKind::PipeWrite { pipe_id: _ } => {
+                    // TODO: anonymous pipe write (Phase 2)
+                    0
+                }
+                FdKind::PipeRead { .. } | FdKind::None => u32::MAX,
             }
-            Err(e) => fs_err(e),
         }
-    } else {
-        u32::MAX
+        None => {
+            // Backward compat: fd=1,2 fall back to legacy stdout_pipe + serial
+            if fd == 1 || fd == 2 {
+                let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
+                let pipe_id = crate::task::scheduler::current_thread_stdout_pipe();
+                if pipe_id != 0 {
+                    crate::ipc::pipe::write(pipe_id, buf);
+                }
+                // Acquire the serial output lock so entire messages are atomic
+                let lock_state = crate::drivers::serial::output_lock_acquire();
+                for &byte in buf {
+                    crate::drivers::serial::write_byte(byte);
+                }
+                crate::drivers::serial::output_lock_release(lock_state);
+                len
+            } else {
+                u32::MAX
+            }
+        }
     }
 }
 
-/// sys_read - Read from a file descriptor
-/// fd=0 -> stdin (reads from stdin_pipe if set), fd>=3 -> VFS file
+/// sys_read - Read from a file descriptor (local FD from per-process table).
+/// Dispatches to VFS file read or pipe read based on FdKind.
+/// Falls back to legacy stdin_pipe for fd=0 if not in FD table.
 pub fn sys_read(fd: u32, buf_ptr: u32, len: u32) -> u32 {
-    if fd == 0 {
-        let pipe = crate::task::scheduler::current_thread_stdin_pipe();
-        if pipe != 0 {
-            if buf_ptr == 0 || len == 0 {
-                return 0;
-            }
-            if len > 0x1000_0000 || !is_valid_user_ptr(buf_ptr as u64, len as u64) {
-                return u32::MAX;
-            }
+    if buf_ptr == 0 || len == 0 {
+        return 0;
+    }
+    if len > 0x1000_0000 || !is_valid_user_ptr(buf_ptr as u64, len as u64) {
+        return u32::MAX;
+    }
+
+    use crate::fs::fd_table::FdKind;
+
+    // Look up the FD in the per-process table
+    match crate::task::scheduler::current_fd_get(fd) {
+        Some(entry) => {
             let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
-            return crate::ipc::pipe::read(pipe, buf) as u32;
-        }
-        0 // no stdin pipe
-    } else if fd >= 3 {
-        if buf_ptr == 0 || len == 0 {
-            return 0;
-        }
-        if len > 0x1000_0000 || !is_valid_user_ptr(buf_ptr as u64, len as u64) {
-            return u32::MAX;
-        }
-        let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
-        match crate::fs::vfs::read(fd, buf) {
-            Ok(n) => {
-                crate::task::scheduler::record_io_read(n as u64);
-                n as u32
+            match entry.kind {
+                FdKind::File { global_id } => {
+                    match crate::fs::vfs::read(global_id, buf) {
+                        Ok(n) => {
+                            crate::task::scheduler::record_io_read(n as u64);
+                            n as u32
+                        }
+                        Err(e) => fs_err(e),
+                    }
+                }
+                FdKind::PipeRead { pipe_id: _ } => {
+                    // TODO: anonymous pipe read (Phase 2)
+                    0
+                }
+                FdKind::PipeWrite { .. } | FdKind::None => u32::MAX,
             }
-            Err(e) => fs_err(e),
         }
-    } else {
-        u32::MAX
+        None => {
+            // Backward compat: fd=0 falls back to legacy stdin_pipe
+            if fd == 0 {
+                let pipe = crate::task::scheduler::current_thread_stdin_pipe();
+                if pipe != 0 {
+                    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
+                    return crate::ipc::pipe::read(pipe, buf) as u32;
+                }
+                0 // no stdin pipe
+            } else {
+                u32::MAX
+            }
+        }
     }
 }
 
 /// sys_open - Open a file. arg1=path_ptr (null-terminated), arg2=flags, arg3=unused
-/// Returns file descriptor or u32::MAX on error.
+/// Returns local file descriptor or u32::MAX on error.
 pub fn sys_open(path_ptr: u32, flags: u32, _arg3: u32) -> u32 {
     let path = match read_user_str_safe(path_ptr) {
         Some(s) => s,
         None => return u32::MAX,
     };
+    let cloexec = (flags & 0x10) != 0; // O_CLOEXEC
     let file_flags = crate::fs::file::FileFlags {
         read: true,
         write: (flags & 1) != 0,
@@ -248,22 +299,56 @@ pub fn sys_open(path_ptr: u32, flags: u32, _arg3: u32) -> u32 {
         }
     }
 
-    let result = match crate::fs::vfs::open(&resolved, file_flags) {
-        Ok(fd) => fd,
-        Err(e) => fs_err(e),
+    // VFS open returns a global slot_id
+    let global_id = match crate::fs::vfs::open(&resolved, file_flags) {
+        Ok(id) => id,
+        Err(e) => return fs_err(e),
     };
-    crate::debug_println!("  open({:?}) -> fd={}", resolved, result as i32);
-    result
+
+    // Allocate a local FD in the current thread's FD table
+    use crate::fs::fd_table::FdKind;
+    let local_fd = match crate::task::scheduler::current_fd_alloc(FdKind::File { global_id }) {
+        Some(fd) => fd,
+        None => {
+            // No local FD available — close the global slot
+            crate::fs::vfs::decref(global_id);
+            return u32::MAX;
+        }
+    };
+
+    if cloexec {
+        crate::task::scheduler::current_fd_set_cloexec(local_fd, true);
+    }
+
+    crate::debug_println!("  open({:?}) -> local_fd={} global_id={}", resolved, local_fd, global_id);
+    local_fd
 }
 
-/// sys_close - Close a file descriptor
+/// sys_close - Close a file descriptor (local FD from per-process table).
 pub fn sys_close(fd: u32) -> u32 {
-    if fd < 3 {
-        return 0;
-    }
-    match crate::fs::vfs::close(fd) {
-        Ok(()) => 0,
-        Err(e) => fs_err(e),
+    use crate::fs::fd_table::FdKind;
+    // Close the local FD entry — returns the old FdKind for resource cleanup
+    match crate::task::scheduler::current_fd_close(fd) {
+        Some(FdKind::File { global_id }) => {
+            crate::fs::vfs::decref(global_id);
+            0
+        }
+        Some(FdKind::PipeRead { pipe_id: _ } | FdKind::PipeWrite { pipe_id: _ }) => {
+            // TODO: anonymous pipe decref (Phase 2)
+            0
+        }
+        Some(FdKind::None) | None => {
+            // FD was not open — for backward compat, still try VFS close
+            // (kernel-internal callers like users.rs use global slot IDs directly)
+            if fd >= 3 {
+                match crate::fs::vfs::close(fd) {
+                    Ok(()) => 0,
+                    Err(_) => u32::MAX,
+                }
+            } else {
+                0
+            }
+        }
     }
 }
 
@@ -689,10 +774,28 @@ pub fn sys_readlink(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
 /// arg1=fd, arg2=offset (signed i32), arg3=whence (0=SET, 1=CUR, 2=END)
 /// Returns new position, or u32::MAX on error.
 pub fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
-    if fd < 3 { return 0; }
-    match crate::fs::vfs::lseek(fd, offset as i32, whence) {
-        Ok(pos) => pos,
-        Err(e) => fs_err(e),
+    use crate::fs::fd_table::FdKind;
+    match crate::task::scheduler::current_fd_get(fd) {
+        Some(entry) => match entry.kind {
+            FdKind::File { global_id } => {
+                match crate::fs::vfs::lseek(global_id, offset as i32, whence) {
+                    Ok(pos) => pos,
+                    Err(e) => fs_err(e),
+                }
+            }
+            _ => 0,
+        },
+        None => {
+            // Backward compat for kernel callers using global slot IDs
+            if fd >= 3 {
+                match crate::fs::vfs::lseek(fd, offset as i32, whence) {
+                    Ok(pos) => pos,
+                    Err(e) => fs_err(e),
+                }
+            } else {
+                0
+            }
+        }
     }
 }
 
@@ -701,18 +804,49 @@ pub fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
 /// Returns 0 on success, u32::MAX on error.
 pub fn sys_fstat(fd: u32, buf_ptr: u32) -> u32 {
     if buf_ptr == 0 { return u32::MAX; }
-    if fd < 3 {
-        // stdin/stdout/stderr: character device, size 0
-        unsafe {
-            let buf = buf_ptr as *mut u32;
-            *buf = 2; // device
-            *buf.add(1) = 0;
-            *buf.add(2) = 0;
-            *buf.add(3) = 0;
+
+    use crate::fs::fd_table::FdKind;
+
+    // Check per-process FD table first
+    let global_id = match crate::task::scheduler::current_fd_get(fd) {
+        Some(entry) => match entry.kind {
+            FdKind::File { global_id } => Some(global_id),
+            FdKind::PipeRead { .. } | FdKind::PipeWrite { .. } => {
+                // Pipe FDs: report as character device, size 0
+                unsafe {
+                    let buf = buf_ptr as *mut u32;
+                    *buf = 2; // device
+                    *buf.add(1) = 0;
+                    *buf.add(2) = 0;
+                    *buf.add(3) = 0;
+                }
+                return 0;
+            }
+            FdKind::None => None,
+        },
+        None => None,
+    };
+
+    let slot = match global_id {
+        Some(id) => id,
+        None => {
+            // Backward compat: fd 0-2 are stdin/stdout/stderr
+            if fd < 3 {
+                unsafe {
+                    let buf = buf_ptr as *mut u32;
+                    *buf = 2; // device
+                    *buf.add(1) = 0;
+                    *buf.add(2) = 0;
+                    *buf.add(3) = 0;
+                }
+                return 0;
+            }
+            // Try global slot ID directly (kernel callers)
+            fd
         }
-        return 0;
-    }
-    match crate::fs::vfs::fstat(fd) {
+    };
+
+    match crate::fs::vfs::fstat(slot) {
         Ok((file_type, size, position, mtime)) => {
             unsafe {
                 let buf = buf_ptr as *mut u32;
@@ -768,9 +902,19 @@ pub fn sys_chdir(path_ptr: u32) -> u32 {
 }
 
 /// sys_isatty - Check if a file descriptor refers to a terminal.
-/// Returns 1 for stdin/stdout/stderr, 0 otherwise.
+/// Returns 1 for stdin/stdout/stderr (when not redirected to a file/pipe), 0 otherwise.
 pub fn sys_isatty(fd: u32) -> u32 {
-    if fd <= 2 { 1 } else { 0 }
+    use crate::fs::fd_table::FdKind;
+    match crate::task::scheduler::current_fd_get(fd) {
+        Some(entry) => match entry.kind {
+            FdKind::File { .. } | FdKind::PipeRead { .. } | FdKind::PipeWrite { .. } => 0,
+            FdKind::None => 0,
+        },
+        None => {
+            // fd not in FD table: 0-2 are terminals (via legacy stdout/stdin pipe)
+            if fd <= 2 { 1 } else { 0 }
+        }
+    }
 }
 
 /// sys_mkdir - Create a directory. arg1=path_ptr (null-terminated).
@@ -850,8 +994,19 @@ pub fn sys_rename(old_ptr: u32, new_ptr: u32) -> u32 {
 /// arg1 = fd, arg2 = length (currently ignored, always truncates to 0).
 /// Returns 0 on success, u32::MAX on error.
 pub fn sys_ftruncate(fd: u32, _length: u32) -> u32 {
-    if fd < 3 { return u32::MAX; }
-    let path = match crate::fs::vfs::get_fd_path(fd) {
+    use crate::fs::fd_table::FdKind;
+    let global_id = match crate::task::scheduler::current_fd_get(fd) {
+        Some(entry) => match entry.kind {
+            FdKind::File { global_id } => global_id,
+            _ => return u32::MAX,
+        },
+        None => {
+            // Backward compat: try fd as global slot
+            if fd < 3 { return u32::MAX; }
+            fd
+        }
+    };
+    let path = match crate::fs::vfs::get_fd_path(global_id) {
         Ok(p) => p,
         Err(e) => return fs_err(e),
     };
@@ -2892,6 +3047,24 @@ pub fn sys_fork(regs: &super::SyscallRegs) -> u32 {
     scheduler::set_thread_mmap_next(child_tid, snap.mmap_next);
     scheduler::set_thread_user_pages(child_tid, snap.user_pages);
     scheduler::set_thread_arch_mode(child_tid, snap.arch_mode);
+
+    // FD table: clone parent's table and incref all global resources
+    {
+        use crate::fs::fd_table::FdKind;
+        let fd_table = snap.fd_table.clone();
+        for entry in fd_table.iter_open() {
+            match entry.kind {
+                FdKind::File { global_id } => {
+                    crate::fs::vfs::incref(global_id);
+                }
+                FdKind::PipeRead { pipe_id: _ } | FdKind::PipeWrite { pipe_id: _ } => {
+                    // TODO: incref anonymous pipe endpoints (Phase 2)
+                }
+                FdKind::None => {}
+            }
+        }
+        scheduler::set_thread_fd_table(child_tid, fd_table);
+    }
 
     // 6. Clone environment
     env::clone_env(snap.pd.0, child_pd.0);

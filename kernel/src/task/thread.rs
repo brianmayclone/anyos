@@ -3,6 +3,7 @@
 //! Each thread has a unique TID, a kernel stack, a saved CPU context for context switching,
 //! and optional per-process state (page directory, heap break, arguments).
 
+use crate::fs::fd_table::FdTable;
 use crate::memory::address::PhysAddr;
 use crate::task::capabilities::CapSet;
 use crate::task::context::CpuContext;
@@ -121,6 +122,8 @@ pub struct Thread {
     pub uid: u16,
     /// Group ID — 0 = root/wheel, >=1000 for regular groups.
     pub gid: u16,
+    /// Per-process file descriptor table (maps local FDs to global VFS slots / pipes).
+    pub fd_table: FdTable,
 }
 
 /// Size of each thread's kernel-mode stack.
@@ -215,6 +218,7 @@ impl Thread {
             capabilities: 0,
             uid: 0,
             gid: 0,
+            fd_table: FdTable::new(),
         }
     }
 

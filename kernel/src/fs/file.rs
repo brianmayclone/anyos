@@ -51,7 +51,8 @@ impl FileFlags {
     };
 }
 
-/// An open file descriptor entry
+/// An open file description (global, shared via refcount across fork/dup).
+/// The `fd` field is the global slot index in the VFS open_files table.
 pub struct OpenFile {
     pub fd: FileDescriptor,
     pub path: String,
@@ -62,6 +63,9 @@ pub struct OpenFile {
     pub fs_id: u32,        // Which filesystem this belongs to
     pub inode: u32,        // Filesystem-specific identifier (start cluster for FAT)
     pub parent_cluster: u32, // Parent directory cluster (0 = root)
+    /// Reference count: how many per-process FD table entries point to this slot.
+    /// Slot is freed when refcount drops to 0.
+    pub refcount: u32,
 }
 
 #[derive(Debug, Clone)]

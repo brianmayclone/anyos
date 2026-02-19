@@ -2179,6 +2179,7 @@ pub struct ForkSnapshot {
     pub user_pages: u32,
     pub priority: u8,
     pub name: [u8; 32],
+    pub fd_table: crate::fs::fd_table::FdTable,
 }
 
 /// Capture all fork-relevant fields from the current thread in a single lock.
@@ -2205,6 +2206,7 @@ pub fn current_thread_fork_snapshot() -> Option<ForkSnapshot> {
         user_pages: thread.user_pages,
         priority: thread.priority,
         name: thread.name,
+        fd_table: thread.fd_table.clone(),
     })
 }
 
@@ -2481,4 +2483,127 @@ pub fn register_ap_idle(cpu_id: usize) {
     }
     crate::serial_println!("  SMP: CPU{} idle thread registered", cpu_id);
     crate::debug_println!("  [Sched] register_ap_idle: cpu={} done, releasing lock", cpu_id);
+}
+
+// =============================================================================
+// Per-process FD table helpers
+// =============================================================================
+
+use crate::fs::fd_table::{FdEntry, FdKind, FdTable, MAX_FDS};
+
+/// Allocate an FD in the current thread's FD table.
+pub fn current_fd_alloc(kind: FdKind) -> Option<u32> {
+    let mut guard = SCHEDULER.lock();
+    let sched = guard.as_mut()?;
+    let cpu = get_cpu_id();
+    let tid = sched.per_cpu[cpu].current_tid?;
+    let thread = sched.threads.iter_mut().find(|t| t.tid == tid)?;
+    thread.fd_table.alloc(kind)
+}
+
+/// Close an FD in the current thread's FD table.
+/// Returns the old FdKind for cleanup (decref, etc.), or None if invalid.
+pub fn current_fd_close(fd: u32) -> Option<FdKind> {
+    let mut guard = SCHEDULER.lock();
+    let sched = guard.as_mut()?;
+    let cpu = get_cpu_id();
+    let tid = sched.per_cpu[cpu].current_tid?;
+    let thread = sched.threads.iter_mut().find(|t| t.tid == tid)?;
+    thread.fd_table.close(fd)
+}
+
+/// Look up an FD in the current thread's FD table.
+pub fn current_fd_get(fd: u32) -> Option<FdEntry> {
+    let guard = SCHEDULER.lock();
+    let sched = guard.as_ref()?;
+    let cpu = get_cpu_id();
+    let tid = sched.per_cpu[cpu].current_tid?;
+    let thread = sched.threads.iter().find(|t| t.tid == tid)?;
+    thread.fd_table.get(fd).copied()
+}
+
+/// Duplicate old_fd to new_fd in the current thread's FD table.
+/// Caller must handle closing new_fd first and incrementing refcounts.
+pub fn current_fd_dup2(old_fd: u32, new_fd: u32) -> bool {
+    let mut guard = SCHEDULER.lock();
+    let sched = match guard.as_mut() { Some(s) => s, None => return false };
+    let cpu = get_cpu_id();
+    let tid = match sched.per_cpu[cpu].current_tid { Some(t) => t, None => return false };
+    let thread = match sched.threads.iter_mut().find(|t| t.tid == tid) { Some(t) => t, None => return false };
+    thread.fd_table.dup2(old_fd, new_fd)
+}
+
+/// Allocate an FD at a specific slot in the current thread's FD table.
+pub fn current_fd_alloc_at(fd: u32, kind: FdKind) -> bool {
+    let mut guard = SCHEDULER.lock();
+    let sched = match guard.as_mut() { Some(s) => s, None => return false };
+    let cpu = get_cpu_id();
+    let tid = match sched.per_cpu[cpu].current_tid { Some(t) => t, None => return false };
+    let thread = match sched.threads.iter_mut().find(|t| t.tid == tid) { Some(t) => t, None => return false };
+    thread.fd_table.alloc_at(fd, kind)
+}
+
+/// Set or clear the CLOEXEC flag on an FD in the current thread's FD table.
+pub fn current_fd_set_cloexec(fd: u32, cloexec: bool) {
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        let cpu = get_cpu_id();
+        if let Some(tid) = sched.per_cpu[cpu].current_tid {
+            if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+                thread.fd_table.set_cloexec(fd, cloexec);
+            }
+        }
+    }
+}
+
+/// Set the FD table on a thread (for fork child setup).
+pub fn set_thread_fd_table(tid: u32, table: FdTable) {
+    let mut guard = SCHEDULER.lock();
+    let sched = guard.as_mut().expect("Scheduler not initialized");
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        thread.fd_table = table;
+    }
+}
+
+/// Close all FDs in the current thread's FD table. Returns old FdKinds for cleanup.
+pub fn current_fd_close_all() -> [FdKind; MAX_FDS] {
+    let mut out = [FdKind::None; MAX_FDS];
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        let cpu = get_cpu_id();
+        if let Some(tid) = sched.per_cpu[cpu].current_tid {
+            if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+                thread.fd_table.close_all(&mut out);
+            }
+        }
+    }
+    out
+}
+
+/// Close all CLOEXEC FDs in the current thread's FD table. Returns old FdKinds.
+pub fn current_fd_close_cloexec() -> [FdKind; MAX_FDS] {
+    let mut out = [FdKind::None; MAX_FDS];
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        let cpu = get_cpu_id();
+        if let Some(tid) = sched.per_cpu[cpu].current_tid {
+            if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+                thread.fd_table.close_cloexec(&mut out);
+            }
+        }
+    }
+    out
+}
+
+/// Close all FDs for a specific thread (by TID). Returns old FdKinds for cleanup.
+/// Used during sys_exit before destroying the page directory.
+pub fn close_all_fds_for_thread(tid: u32) -> [FdKind; MAX_FDS] {
+    let mut out = [FdKind::None; MAX_FDS];
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+            thread.fd_table.close_all(&mut out);
+        }
+    }
+    out
 }
