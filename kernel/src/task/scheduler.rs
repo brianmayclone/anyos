@@ -1727,6 +1727,14 @@ pub fn fault_kill_and_idle(signal: u32) -> ! {
     if is_scheduler_locked_by_cpu(cpu) {
         unsafe { force_unlock_scheduler(); }
     }
+    if crate::memory::physical::is_allocator_locked_by_cpu(cpu) {
+        unsafe { crate::memory::physical::force_unlock_allocator(); }
+        crate::serial_println!("  RECOVERED: force-released physical allocator lock");
+    }
+    if crate::task::dll::is_dll_locked_by_cpu(cpu) {
+        unsafe { crate::task::dll::force_unlock_dlls(); }
+        crate::serial_println!("  RECOVERED: force-released LOADED_DLLS lock");
+    }
 
     let mut idle_stack_top: u64 = 0;
     {

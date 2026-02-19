@@ -845,7 +845,12 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             true,
         )?;
 
-        // DLLs are mapped on-demand via page fault handler (handle_dll_demand_page)
+        // Pre-map DLIB shared RO pages into the new address space.
+        // Without this, every first DLIB access triggers a page fault inside
+        // the kernel's demand-page handler (which holds LOADED_DLLS + ALLOCATOR
+        // locks). Pre-mapping avoids that fragile nested-lock path for RO code.
+        // Per-process .data/.bss pages are still demand-paged on first access.
+        crate::task::dll::map_all_dlls_into(pd_phys);
 
         // Load ELF64 segments
         let elf_result = load_elf64(&data, pd_phys)?;
@@ -871,7 +876,8 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             true,
         )?;
 
-        // DLLs are mapped on-demand via page fault handler (handle_dll_demand_page)
+        // Pre-map DLIB shared RO pages (same as ELF64 path above)
+        crate::task::dll::map_all_dlls_into(pd_phys);
 
         let elf_result = load_elf32(&data, pd_phys)?;
         entry_point = elf_result.entry;
@@ -906,7 +912,8 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             true,
         )?;
 
-        // DLLs are mapped on-demand via page fault handler (handle_dll_demand_page)
+        // Pre-map DLIB shared RO pages (same as ELF64/ELF32 paths above)
+        crate::task::dll::map_all_dlls_into(pd_phys);
 
         // Copy binary data (pages already zeroed by map_pages_range_in_pd)
         unsafe {

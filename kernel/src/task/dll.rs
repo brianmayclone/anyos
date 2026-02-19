@@ -55,6 +55,20 @@ pub struct LoadedDll {
 
 static LOADED_DLLS: Spinlock<Vec<LoadedDll>> = Spinlock::new(Vec::new());
 
+/// Check if this CPU holds the LOADED_DLLS lock.
+pub fn is_dll_locked_by_cpu(cpu: u32) -> bool {
+    LOADED_DLLS.is_held_by_cpu(cpu)
+}
+
+/// Force-release the LOADED_DLLS lock unconditionally.
+///
+/// # Safety
+/// Must only be called when `is_dll_locked_by_cpu(cpu)` returns true
+/// for the current CPU. The DLL registry may be in an inconsistent state.
+pub unsafe fn force_unlock_dlls() {
+    LOADED_DLLS.force_unlock();
+}
+
 // ── Header parsing helpers ─────────────────────────────────
 
 fn read_u32_le(data: &[u8], offset: usize) -> u32 {

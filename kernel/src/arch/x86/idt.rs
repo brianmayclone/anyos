@@ -353,12 +353,20 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         }
         crate::serial_println!("--- End Crash Report ---");
 
-        // If THIS CPU holds the scheduler lock (fault occurred inside a syscall
-        // that was holding the lock), force-release it first. Without this, the
-        // lock remains permanently held and ALL CPUs deadlock.
+        // Force-release any kernel locks held by THIS CPU. A fault during a
+        // syscall or demand-page handler can leave locks permanently held,
+        // deadlocking the entire system. Check all critical locks:
         let cpu = crate::arch::x86::smp::current_cpu_id() as u32;
         if crate::task::scheduler::is_scheduler_locked_by_cpu(cpu) {
             unsafe { crate::task::scheduler::force_unlock_scheduler(); }
+        }
+        if crate::memory::physical::is_allocator_locked_by_cpu(cpu) {
+            unsafe { crate::memory::physical::force_unlock_allocator(); }
+            crate::serial_println!("  RECOVERED: force-released physical allocator lock");
+        }
+        if crate::task::dll::is_dll_locked_by_cpu(cpu) {
+            unsafe { crate::task::dll::force_unlock_dlls(); }
+            crate::serial_println!("  RECOVERED: force-released LOADED_DLLS lock");
         }
 
         // Try the clean path: try_exit_current acquires the lock, marks the
@@ -443,6 +451,56 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             // Halt this CPU cleanly — let other CPUs continue
             loop { core::arch::asm!("cli; hlt"); }
         }
+    }
+
+    // Garbled frame detection: CS must be a valid segment selector.
+    // If CS contains a kernel heap address instead of 0x08/0x1B/0x2B, the
+    // exception frame was pushed to wrong memory (stale TSS.RSP0 pointing
+    // to freed/reused stack) or adjacent heap was corrupted by stack overflow.
+    let cs_valid = matches!(frame.cs, 0x08 | 0x1B | 0x2B);
+    if !cs_valid {
+        let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
+        let tss_rsp0 = crate::arch::x86::tss::get_kernel_stack_for_cpu(cpu_id);
+        let percpu_krsp = crate::arch::x86::syscall_msr::get_kernel_rsp(cpu_id);
+        let (stack_bottom, stack_top) = crate::task::scheduler::get_stack_bounds(cpu_id);
+        let tid = crate::task::scheduler::debug_current_tid();
+        uart_puts(b"\n!!! GARBLED InterruptFrame detected!\n");
+        uart_puts(b"  CS="); uart_put_hex(frame.cs);
+        uart_puts(b" SS="); uart_put_hex(frame.ss);
+        uart_puts(b" RIP="); uart_put_hex(frame.rip);
+        uart_puts(b" int="); uart_put_dec(frame.int_no as u32);
+        uart_putc(b'\n');
+        uart_puts(b"  frame_addr="); uart_put_hex(frame as *const InterruptFrame as u64);
+        uart_puts(b" TSS.RSP0="); uart_put_hex(tss_rsp0);
+        uart_puts(b" PERCPU.krsp="); uart_put_hex(percpu_krsp);
+        uart_putc(b'\n');
+        uart_puts(b"  stack=["); uart_put_hex(stack_bottom);
+        uart_puts(b".."); uart_put_hex(stack_top);
+        uart_puts(b"] cpu="); uart_put_dec(cpu_id as u32);
+        uart_puts(b" tid="); uart_put_dec(tid);
+        uart_putc(b'\n');
+        // Check if frame is inside or outside expected stack bounds
+        let frame_u64 = frame as *const InterruptFrame as u64;
+        if stack_bottom != 0 && (frame_u64 < stack_bottom || frame_u64 > stack_top) {
+            uart_puts(b"  >>> Frame is OUTSIDE kernel stack bounds!\n");
+        }
+        // Check if TSS.RSP0 is inside expected stack bounds
+        if stack_bottom != 0 && (tss_rsp0 < stack_bottom || tss_rsp0 > stack_top) {
+            uart_puts(b"  >>> TSS.RSP0 is OUTSIDE kernel stack bounds!\n");
+        }
+        // Check stack canary for current thread
+        if stack_bottom != 0 && stack_bottom >= 0xFFFF_FFFF_8000_0000 {
+            let canary = unsafe { *(stack_bottom as *const u64) };
+            if canary != crate::task::thread::STACK_CANARY {
+                uart_puts(b"  >>> STACK CANARY DEAD! canary=");
+                uart_put_hex(canary);
+                uart_puts(b" expected=");
+                uart_put_hex(crate::task::thread::STACK_CANARY);
+                uart_putc(b'\n');
+            }
+        }
+        // Try to kill the faulting thread via the existing recovery path
+        // (uses debug_is_current_user which doesn't depend on frame.cs)
     }
 
     let is_user_mode = frame.cs & 3 != 0;
@@ -932,17 +990,32 @@ pub extern "C" fn irq_handler(frame: &InterruptFrame) {
             // Checking here catches corruption BEFORE the next user-mode interrupt.
             if crate::task::scheduler::cpu_has_active_thread(cpu_id) {
                 let tss_rsp0 = crate::arch::x86::tss::get_kernel_stack_for_cpu(cpu_id);
-                if tss_rsp0 == 0 || tss_rsp0 < 0xFFFF_FFFF_8000_0000 {
+                let (stack_bottom, stack_top) = crate::task::scheduler::get_stack_bounds(cpu_id);
+                // Check 1: RSP0 must be in kernel higher-half
+                let rsp0_range_bad = tss_rsp0 == 0 || tss_rsp0 < 0xFFFF_FFFF_8000_0000;
+                // Check 2: RSP0 must be within the current thread's stack bounds.
+                // If RSP0 points to a different thread's freed stack, the next
+                // ring 3→0 transition pushes the frame to wrong memory → garbled.
+                let rsp0_bounds_bad = stack_bottom != 0 && stack_top != 0
+                    && (tss_rsp0 < stack_bottom || tss_rsp0 > stack_top);
+                if rsp0_range_bad || rsp0_bounds_bad {
                     let tid = crate::task::scheduler::debug_current_tid();
-                    uart_puts(b"\n!!!TSS.RSP0 CORRUPT cpu=");
+                    if rsp0_range_bad {
+                        uart_puts(b"\n!!!TSS.RSP0 CORRUPT cpu=");
+                    } else {
+                        uart_puts(b"\n!!!TSS.RSP0 OUT-OF-BOUNDS cpu=");
+                    }
                     uart_put_dec(cpu_id as u32);
                     uart_puts(b" rsp0=");
                     uart_put_hex(tss_rsp0);
                     uart_puts(b" tid=");
                     uart_put_dec(tid);
-                    uart_putc(b'\n');
+                    uart_puts(b" stack=[");
+                    uart_put_hex(stack_bottom);
+                    uart_puts(b"..");
+                    uart_put_hex(stack_top);
+                    uart_puts(b"]\n");
                     // Attempt repair: use the per-CPU stack bounds (set by scheduler)
-                    let (_, stack_top) = crate::task::scheduler::get_stack_bounds(cpu_id);
                     if stack_top >= 0xFFFF_FFFF_8000_0000 {
                         crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, stack_top);
                         crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, stack_top);
@@ -978,6 +1051,34 @@ pub extern "C" fn irq_handler(frame: &InterruptFrame) {
                     }
                 }
             }
+
+            // Stack canary check: detect kernel stack overflow on every timer tick.
+            // The canary at the bottom of the current thread's stack is the earliest
+            // indicator of overflow — fires before the overflow corrupts adjacent
+            // heap memory (which causes the garbled InterruptFrame crashes).
+            if crate::task::scheduler::cpu_has_active_thread(cpu_id) {
+                let (stack_bottom, _) = crate::task::scheduler::get_stack_bounds(cpu_id);
+                if stack_bottom >= 0xFFFF_FFFF_8000_0000 {
+                    let canary = unsafe { *(stack_bottom as *const u64) };
+                    if canary != crate::task::thread::STACK_CANARY {
+                        let tid = crate::task::scheduler::debug_current_tid();
+                        uart_puts(b"\n!!!STACK CANARY DEAD cpu=");
+                        uart_put_dec(cpu_id as u32);
+                        uart_puts(b" tid=");
+                        uart_put_dec(tid);
+                        uart_puts(b" canary=");
+                        uart_put_hex(canary);
+                        uart_putc(b'\n');
+                        // Kill the thread to prevent further corruption
+                        crate::task::scheduler::try_exit_current(139);
+                    }
+                }
+            }
+
+            // Refresh KERNEL_GS_BASE MSR to ensure SYSCALL always loads the
+            // correct per-CPU data. Without this, a corrupted MSR could cause
+            // SYSCALL to load the wrong kernel RSP → crash.
+            crate::arch::x86::syscall_msr::refresh_kernel_gs_base();
         }
     }
 

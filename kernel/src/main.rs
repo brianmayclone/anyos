@@ -276,9 +276,6 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             serial_println!("[OK] Hardware cursor enabled (splash mode)");
         }
 
-        // Stop boot spinner — compositor will take over the framebuffer
-        drivers::boot_console::stop_spinner();
-
         // Disable interrupts while spawning threads
         unsafe { core::arch::asm!("cli"); }
 
@@ -291,6 +288,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         // Spawn kernel thread stress test when debug_verbose is enabled
         #[cfg(feature = "debug_verbose")]
         task::scheduler::spawn(task::stress_test::stress_master, 30, "stress");
+
+        // Stop boot spinner — compositor will take over the framebuffer
+        drivers::boot_console::stop_spinner();
 
         // Launch userspace compositor (highest user priority)
         match task::loader::load_and_run("/System/compositor/compositor", "compositor") {

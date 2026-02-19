@@ -228,6 +228,20 @@ pub fn is_allocator_locked() -> bool {
     ALLOCATOR.is_locked()
 }
 
+/// Check if this CPU holds the allocator lock.
+pub fn is_allocator_locked_by_cpu(cpu: u32) -> bool {
+    ALLOCATOR.is_held_by_cpu(cpu)
+}
+
+/// Force-release the allocator lock unconditionally.
+///
+/// # Safety
+/// Must only be called when `is_allocator_locked_by_cpu(cpu)` returns true
+/// for the current CPU. The allocator's internal state may be inconsistent.
+pub unsafe fn force_unlock_allocator() {
+    ALLOCATOR.force_unlock();
+}
+
 /// Returns the number of free physical frames (alias for [`free_frame_count`]).
 pub fn free_frames() -> usize {
     ALLOCATOR.lock().free_frames
