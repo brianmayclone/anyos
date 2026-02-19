@@ -516,7 +516,7 @@ impl ShellProcess {
         let stdout_pipe = ipc::pipe_create(&stdout_name);
         let stdin_pipe = ipc::pipe_create(&stdin_name);
 
-        let tid = process::spawn_piped_full("/System/bin/sh", "sh", stdout_pipe, stdin_pipe);
+        let tid = process::spawn_piped_full("/System/bin/sh", "sh -i", stdout_pipe, stdin_pipe);
         if tid == u32::MAX {
             ipc::pipe_close(stdout_pipe);
             ipc::pipe_close(stdin_pipe);

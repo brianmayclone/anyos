@@ -28,8 +28,8 @@
 #define HAVE_STRCHRNUL 1
 #define HAVE_STRSIGNAL 1
 #define HAVE_STRTOD 1
-#define HAVE_STRTOIMAX 0
-#define HAVE_STRTOUMAX 0
+#define HAVE_STRTOIMAX 1
+#define HAVE_STRTOUMAX 1
 #define HAVE_SYSCONF 1
 
 /* isblank() available in anyOS libc */
