@@ -120,7 +120,7 @@ pub fn sys_exit(status: u32) -> u32 {
                 FdKind::PipeWrite { pipe_id } => {
                     crate::ipc::anon_pipe::decref_write(*pipe_id);
                 }
-                FdKind::None => {}
+                FdKind::Tty | FdKind::None => {}
             }
         }
     }
@@ -190,18 +190,30 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
                 FdKind::PipeWrite { pipe_id } => {
                     crate::ipc::anon_pipe::write(pipe_id, buf)
                 }
+                FdKind::Tty => {
+                    // Terminal I/O: write to named stdout pipe + serial
+                    let pipe_id = crate::task::scheduler::current_thread_stdout_pipe();
+                    if pipe_id != 0 {
+                        crate::ipc::pipe::write(pipe_id, buf);
+                    }
+                    let lock_state = crate::drivers::serial::output_lock_acquire();
+                    for &byte in buf {
+                        crate::drivers::serial::write_byte(byte);
+                    }
+                    crate::drivers::serial::output_lock_release(lock_state);
+                    len
+                }
                 FdKind::PipeRead { .. } | FdKind::None => u32::MAX,
             }
         }
         None => {
-            // Backward compat: fd=1,2 fall back to legacy stdout_pipe + serial
+            // Backward compat for kernel threads (no FdTable setup)
             if fd == 1 || fd == 2 {
                 let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
                 let pipe_id = crate::task::scheduler::current_thread_stdout_pipe();
                 if pipe_id != 0 {
                     crate::ipc::pipe::write(pipe_id, buf);
                 }
-                // Acquire the serial output lock so entire messages are atomic
                 let lock_state = crate::drivers::serial::output_lock_acquire();
                 for &byte in buf {
                     crate::drivers::serial::write_byte(byte);
@@ -245,11 +257,20 @@ pub fn sys_read(fd: u32, buf_ptr: u32, len: u32) -> u32 {
                 FdKind::PipeRead { pipe_id } => {
                     crate::ipc::anon_pipe::read(pipe_id, buf)
                 }
+                FdKind::Tty => {
+                    // Terminal I/O: read from named stdin pipe
+                    let pipe = crate::task::scheduler::current_thread_stdin_pipe();
+                    if pipe != 0 {
+                        crate::ipc::pipe::read(pipe, buf) as u32
+                    } else {
+                        0 // no stdin
+                    }
+                }
                 FdKind::PipeWrite { .. } | FdKind::None => u32::MAX,
             }
         }
         None => {
-            // Backward compat: fd=0 falls back to legacy stdin_pipe
+            // Backward compat for kernel threads (no FdTable setup)
             if fd == 0 {
                 let pipe = crate::task::scheduler::current_thread_stdin_pipe();
                 if pipe != 0 {
@@ -341,6 +362,9 @@ pub fn sys_close(fd: u32) -> u32 {
         Some(FdKind::PipeWrite { pipe_id }) => {
             crate::ipc::anon_pipe::decref_write(pipe_id);
             0
+        }
+        Some(FdKind::Tty) => {
+            0 // Tty slot cleared, no resource to decref
         }
         Some(FdKind::None) | None => {
             // FD was not open — for backward compat, still try VFS close
@@ -816,8 +840,8 @@ pub fn sys_fstat(fd: u32, buf_ptr: u32) -> u32 {
     let global_id = match crate::task::scheduler::current_fd_get(fd) {
         Some(entry) => match entry.kind {
             FdKind::File { global_id } => Some(global_id),
-            FdKind::PipeRead { .. } | FdKind::PipeWrite { .. } => {
-                // Pipe FDs: report as character device, size 0
+            FdKind::PipeRead { .. } | FdKind::PipeWrite { .. } | FdKind::Tty => {
+                // Pipe/Tty FDs: report as character device, size 0
                 unsafe {
                     let buf = buf_ptr as *mut u32;
                     *buf = 2; // device
@@ -912,6 +936,7 @@ pub fn sys_isatty(fd: u32) -> u32 {
     use crate::fs::fd_table::FdKind;
     match crate::task::scheduler::current_fd_get(fd) {
         Some(entry) => match entry.kind {
+            FdKind::Tty => 1,
             FdKind::File { .. } | FdKind::PipeRead { .. } | FdKind::PipeWrite { .. } => 0,
             FdKind::None => 0,
         },
@@ -3068,7 +3093,7 @@ pub fn sys_fork(regs: &super::SyscallRegs) -> u32 {
                 FdKind::PipeWrite { pipe_id } => {
                     crate::ipc::anon_pipe::incref_write(pipe_id);
                 }
-                FdKind::None => {}
+                FdKind::Tty | FdKind::None => {}
             }
         }
         scheduler::set_thread_fd_table(child_tid, fd_table);
@@ -3331,7 +3356,7 @@ fn incref_fd_kind(kind: crate::fs::fd_table::FdKind) {
         FdKind::File { global_id } => crate::fs::vfs::incref(global_id),
         FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::incref_read(pipe_id),
         FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::incref_write(pipe_id),
-        FdKind::None => {}
+        FdKind::Tty | FdKind::None => {}
     }
 }
 
@@ -3342,6 +3367,6 @@ fn decref_fd_kind(kind: crate::fs::fd_table::FdKind) {
         FdKind::File { global_id } => crate::fs::vfs::decref(global_id),
         FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::decref_read(pipe_id),
         FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::decref_write(pipe_id),
-        FdKind::None => {}
+        FdKind::Tty | FdKind::None => {}
     }
 }

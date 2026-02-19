@@ -18,6 +18,9 @@ pub enum FdKind {
     PipeRead { pipe_id: u32 },
     /// Write end of an anonymous pipe.
     PipeWrite { pipe_id: u32 },
+    /// Terminal I/O — uses legacy stdout_pipe / stdin_pipe on the Thread.
+    /// Reserves fd 0/1/2 so pipe()/open() start at fd 3.
+    Tty,
 }
 
 /// Per-FD flags (POSIX).

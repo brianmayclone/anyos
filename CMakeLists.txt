@@ -973,7 +973,12 @@ add_custom_command(
     ${CMAKE_SOURCE_DIR}/libs/tests
     ${SYSROOT_DIR}/Libraries/system/tests
   COMMAND ${CMAKE_COMMAND} -E touch ${SYSROOT_DIR}/Libraries/system/tests/.stamp
-  DEPENDS ${CMAKE_SOURCE_DIR}/libs/tests/fork_test.c ${CMAKE_SOURCE_DIR}/libs/tests/Makefile
+  DEPENDS ${CMAKE_SOURCE_DIR}/libs/tests/Makefile
+          ${CMAKE_SOURCE_DIR}/libs/tests/fork_test.c
+          ${CMAKE_SOURCE_DIR}/libs/tests/pipe_test.c
+          ${CMAKE_SOURCE_DIR}/libs/tests/dup_test.c
+          ${CMAKE_SOURCE_DIR}/libs/tests/pipe_chain.c
+          ${CMAKE_SOURCE_DIR}/libs/tests/testsuite.c
   COMMENT "Installing test sources to /Libraries/system/tests/"
 )
 

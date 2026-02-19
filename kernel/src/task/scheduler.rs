@@ -1329,6 +1329,10 @@ pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u32) {
         thread.context.checksum = thread.context.compute_checksum();
         thread.is_user = true;
         thread.brk = brk;
+        // Reserve fd 0/1/2 as Tty so pipe()/open() start at fd 3
+        thread.fd_table.alloc_at(0, FdKind::Tty);
+        thread.fd_table.alloc_at(1, FdKind::Tty);
+        thread.fd_table.alloc_at(2, FdKind::Tty);
     }
 }
 
