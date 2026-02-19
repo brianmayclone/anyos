@@ -30,7 +30,9 @@
       "Bash(xargs:*)",
       "Bash(wc:*)",
       "Bash(ninja:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "WebFetch(domain:linuxhandbook.com)",
+      "WebFetch(domain:www.linuxfromscratch.org)"
     ]
   }
 }

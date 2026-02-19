@@ -159,26 +159,29 @@ pub extern "C" fn fork_child_trampoline() {
 
 /// Restore all user-mode registers from a ForkChildRegs struct and IRETQ.
 /// Sets RAX=0 (fork child return value). Never returns.
+///
+/// CRITICAL: Never hardcode register names (ax, rax, etc.) in asm! blocks when
+/// `in(reg)` operands exist — LLVM may allocate the same register, causing
+/// silent corruption of the pointer operand.
 unsafe fn fork_return_to_user(regs: *const ForkChildRegs) -> ! {
     core::arch::asm!(
-        // Set data segments for user mode
-        "mov ax, 0x23",
-        "mov ds, ax",
-        "mov es, ax",
-        "mov fs, ax",
-        "mov gs, ax",
+        "cli",
+        // Set data segments for user mode — use {seg} operand, NEVER hardcode ax
+        "mov ds, {seg:x}",
+        "mov es, {seg:x}",
+        "mov fs, {seg:x}",
+        "mov gs, {seg:x}",
         // Build IRETQ frame from struct (field offsets in ForkChildRegs):
         // rbx=0, rcx=8, rdx=16, rsi=24, rdi=32, rbp=40,
         // r8=48, r9=56, r10=64, r11=72, r12=80, r13=88, r14=96, r15=104,
         // rip=112, cs=120, rflags=128, rsp=136, ss=144
         "push qword ptr [{p} + 144]",   // SS
         "push qword ptr [{p} + 136]",   // RSP
-        "mov rax, [{p} + 128]",         // RFLAGS
-        "or rax, 0x200",                // Ensure IF set
-        "push rax",
+        "push qword ptr [{p} + 128]",   // RFLAGS
+        "or qword ptr [rsp], 0x200",    // Ensure IF set (no hardcoded reg)
         "push qword ptr [{p} + 120]",   // CS
         "push qword ptr [{p} + 112]",   // RIP
-        // Restore GPRs
+        // Restore GPRs — {p} is still live, no hardcoded reg writes allowed
         "mov r15, [{p} + 104]",
         "mov r14, [{p} + 96]",
         "mov r13, [{p} + 88]",
@@ -193,9 +196,11 @@ unsafe fn fork_return_to_user(regs: *const ForkChildRegs) -> ! {
         "mov rdx, [{p} + 16]",
         "mov rcx, [{p} + 8]",
         "mov rbx, [{p}]",
+        // {p} is now dead — safe to clobber any register
         "xor eax, eax",             // RAX = 0 (fork child return value)
         "iretq",
         p = in(reg) regs,
+        seg = in(reg) 0x23u64,
         options(noreturn)
     );
 }
