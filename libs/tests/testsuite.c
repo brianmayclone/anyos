@@ -40,7 +40,8 @@ int main(void) {
             if (path[strlen(path) - 1] != '/')
                 strcat(path, "/");
             strcat(path, tests[i]);
-            execl(path, tests[i], NULL);
+            char *argv[] = { (char *)tests[i], NULL };
+            execv(path, argv);
             printf("  ERROR: exec('%s') failed\n", path);
             _exit(127);
         }
