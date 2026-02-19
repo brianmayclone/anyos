@@ -204,6 +204,12 @@ pub const SYS_GETUSERNAME: u32 = 232;
 pub const SYS_SET_IDENTITY: u32 = 233;
 pub const SYS_CHPASSWD: u32 = 234;
 
+// POSIX anonymous pipe / FD duplication
+pub const SYS_PIPE2: u32 = 240;
+pub const SYS_DUP: u32 = 241;
+pub const SYS_DUP2: u32 = 242;
+pub const SYS_FCNTL: u32 = 243;
+
 /// Register frame pushed by `syscall_entry.asm` / `syscall_fast.asm`.
 ///
 /// The layout matches the individual GPR pushes (no pushad in 64-bit mode) plus the
@@ -437,6 +443,12 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_GETUSERNAME => handlers::sys_getusername(arg1, arg2, arg3),
         SYS_SET_IDENTITY => handlers::sys_set_identity(arg1),
         SYS_CHPASSWD => handlers::sys_chpasswd(arg1),
+
+        // POSIX anonymous pipes / FD duplication
+        SYS_PIPE2 => handlers::sys_pipe2(arg1, arg2),
+        SYS_DUP => handlers::sys_dup(arg1),
+        SYS_DUP2 => handlers::sys_dup2(arg1, arg2),
+        SYS_FCNTL => handlers::sys_fcntl(arg1, arg2, arg3),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

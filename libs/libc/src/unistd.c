@@ -25,6 +25,10 @@ extern int _syscall(int num, int a1, int a2, int a3, int a4);
 #define SYS_LSEEK   105
 #define SYS_FSTAT   106
 #define SYS_ISATTY  108
+#define SYS_PIPE2   240
+#define SYS_DUP_SC  241
+#define SYS_DUP2_SC 242
+#define SYS_FCNTL_SC 243
 
 /* Socket fd base — socket fds start at 128 */
 #define SOCKET_FD_BASE 128
@@ -216,15 +220,15 @@ ssize_t pwrite(int fd, const void *buf, size_t count, long offset) {
 }
 
 int dup(int oldfd) {
-    (void)oldfd;
-    errno = ENOSYS;
-    return -1;
+    int r = _syscall(SYS_DUP_SC, oldfd, 0, 0, 0);
+    if (r == (int)0xFFFFFFFF) { errno = EBADF; return -1; }
+    return r;
 }
 
 int dup2(int oldfd, int newfd) {
-    (void)oldfd; (void)newfd;
-    errno = ENOSYS;
-    return -1;
+    int r = _syscall(SYS_DUP2_SC, oldfd, newfd, 0, 0);
+    if (r == (int)0xFFFFFFFF) { errno = EBADF; return -1; }
+    return r;
 }
 
 int gethostname(char *name, size_t len) {
@@ -242,19 +246,21 @@ int ioctl(int fd, unsigned long request, ...) {
 }
 
 int fcntl(int fd, int cmd, ...) {
-    (void)fd;
-    if (cmd == 1 /* F_GETFD */) return 0; /* fd exists */
-    if (cmd == 2 /* F_SETFD */) return 0; /* pretend success */
-    if (cmd == 3 /* F_GETFL */) return 0; /* return current flags = 0 */
-    if (cmd == 4 /* F_SETFL */) return 0; /* pretend success */
-    errno = ENOSYS;
-    return -1;
+    int arg = 0;
+    if (cmd == 0 || cmd == 1030 || cmd == 2 || cmd == 4) {
+        /* F_DUPFD, F_DUPFD_CLOEXEC, F_SETFD, F_SETFL take an int arg */
+        __builtin_va_list ap;
+        __builtin_va_start(ap, cmd);
+        arg = __builtin_va_arg(ap, int);
+        __builtin_va_end(ap);
+    }
+    int r = _syscall(SYS_FCNTL_SC, fd, cmd, arg, 0);
+    if (r == (int)0xFFFFFFFF) { errno = EBADF; return -1; }
+    return r;
 }
 
 int pipe(int pipefd[2]) {
-    /* anyOS has named pipes, not POSIX anonymous pipes.
-       Stub: curl uses this only for stderr redirect. */
-    (void)pipefd;
-    errno = ENOSYS;
-    return -1;
+    int r = _syscall(SYS_PIPE2, (int)pipefd, 0, 0, 0);
+    if (r == (int)0xFFFFFFFF) { errno = EMFILE; return -1; }
+    return 0;
 }

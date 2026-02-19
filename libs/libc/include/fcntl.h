@@ -27,6 +27,9 @@
 #define F_SETFD 2
 #define F_GETFL 3
 #define F_SETFL 4
+#define F_DUPFD_CLOEXEC 1030
+
+#define FD_CLOEXEC 1
 
 #define AT_FDCWD (-100)
 #define AT_SYMLINK_NOFOLLOW 0x100

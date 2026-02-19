@@ -74,6 +74,10 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_LISTGROUPS, "listgroups"),
     (SYS_GETUSERNAME, "getusername"),
     (SYS_SET_IDENTITY, "set_identity"),
+    (SYS_PIPE2, "pipe2"),
+    (SYS_DUP, "dup"),
+    (SYS_DUP2, "dup2"),
+    (SYS_FCNTL, "fcntl"),
 ];
 
 /// Look up the human-readable name for a syscall number.

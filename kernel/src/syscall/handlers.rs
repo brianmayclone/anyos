@@ -114,8 +114,11 @@ pub fn sys_exit(status: u32) -> u32 {
                 FdKind::File { global_id } => {
                     crate::fs::vfs::decref(*global_id);
                 }
-                FdKind::PipeRead { pipe_id: _ } | FdKind::PipeWrite { pipe_id: _ } => {
-                    // TODO: decref anonymous pipe endpoints (Phase 2)
+                FdKind::PipeRead { pipe_id } => {
+                    crate::ipc::anon_pipe::decref_read(*pipe_id);
+                }
+                FdKind::PipeWrite { pipe_id } => {
+                    crate::ipc::anon_pipe::decref_write(*pipe_id);
                 }
                 FdKind::None => {}
             }
@@ -184,9 +187,8 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
                         Err(e) => fs_err(e),
                     }
                 }
-                FdKind::PipeWrite { pipe_id: _ } => {
-                    // TODO: anonymous pipe write (Phase 2)
-                    0
+                FdKind::PipeWrite { pipe_id } => {
+                    crate::ipc::anon_pipe::write(pipe_id, buf)
                 }
                 FdKind::PipeRead { .. } | FdKind::None => u32::MAX,
             }
@@ -240,9 +242,8 @@ pub fn sys_read(fd: u32, buf_ptr: u32, len: u32) -> u32 {
                         Err(e) => fs_err(e),
                     }
                 }
-                FdKind::PipeRead { pipe_id: _ } => {
-                    // TODO: anonymous pipe read (Phase 2)
-                    0
+                FdKind::PipeRead { pipe_id } => {
+                    crate::ipc::anon_pipe::read(pipe_id, buf)
                 }
                 FdKind::PipeWrite { .. } | FdKind::None => u32::MAX,
             }
@@ -333,8 +334,12 @@ pub fn sys_close(fd: u32) -> u32 {
             crate::fs::vfs::decref(global_id);
             0
         }
-        Some(FdKind::PipeRead { pipe_id: _ } | FdKind::PipeWrite { pipe_id: _ }) => {
-            // TODO: anonymous pipe decref (Phase 2)
+        Some(FdKind::PipeRead { pipe_id }) => {
+            crate::ipc::anon_pipe::decref_read(pipe_id);
+            0
+        }
+        Some(FdKind::PipeWrite { pipe_id }) => {
+            crate::ipc::anon_pipe::decref_write(pipe_id);
             0
         }
         Some(FdKind::None) | None => {
@@ -3057,8 +3062,11 @@ pub fn sys_fork(regs: &super::SyscallRegs) -> u32 {
                 FdKind::File { global_id } => {
                     crate::fs::vfs::incref(global_id);
                 }
-                FdKind::PipeRead { pipe_id: _ } | FdKind::PipeWrite { pipe_id: _ } => {
-                    // TODO: incref anonymous pipe endpoints (Phase 2)
+                FdKind::PipeRead { pipe_id } => {
+                    crate::ipc::anon_pipe::incref_read(pipe_id);
+                }
+                FdKind::PipeWrite { pipe_id } => {
+                    crate::ipc::anon_pipe::incref_write(pipe_id);
                 }
                 FdKind::None => {}
             }
@@ -3138,4 +3146,202 @@ pub fn sys_exec(path_ptr: u32, args_ptr: u32) -> u32 {
     let err = crate::task::loader::exec_current_process(&data, args);
     crate::serial_println!("sys_exec: FAILED: {}", err);
     u32::MAX
+}
+
+// =============================================================================
+// POSIX anonymous pipes + FD duplication
+// =============================================================================
+
+/// sys_pipe2 - Create an anonymous pipe.
+/// arg1 = user pointer to int[2] (receives [read_fd, write_fd]).
+/// arg2 = flags (O_CLOEXEC = 0x10).
+/// Returns 0 on success, u32::MAX on failure.
+pub fn sys_pipe2(pipefd_ptr: u32, flags: u32) -> u32 {
+    if pipefd_ptr == 0 || !is_valid_user_ptr(pipefd_ptr as u64, 8) {
+        return u32::MAX;
+    }
+
+    let cloexec = (flags & 0x10) != 0;
+
+    // Create the kernel pipe
+    let pipe_id = crate::ipc::anon_pipe::create();
+    if pipe_id == 0 {
+        return u32::MAX; // table full
+    }
+
+    use crate::fs::fd_table::FdKind;
+
+    // Allocate read-end FD
+    let read_fd = match crate::task::scheduler::current_fd_alloc(FdKind::PipeRead { pipe_id }) {
+        Some(fd) => fd,
+        None => {
+            // Clean up: decref both sides
+            crate::ipc::anon_pipe::decref_read(pipe_id);
+            crate::ipc::anon_pipe::decref_write(pipe_id);
+            return u32::MAX;
+        }
+    };
+
+    // Allocate write-end FD
+    let write_fd = match crate::task::scheduler::current_fd_alloc(FdKind::PipeWrite { pipe_id }) {
+        Some(fd) => fd,
+        None => {
+            // Clean up: close read-end, decref write
+            crate::task::scheduler::current_fd_close(read_fd);
+            crate::ipc::anon_pipe::decref_read(pipe_id);
+            crate::ipc::anon_pipe::decref_write(pipe_id);
+            return u32::MAX;
+        }
+    };
+
+    if cloexec {
+        crate::task::scheduler::current_fd_set_cloexec(read_fd, true);
+        crate::task::scheduler::current_fd_set_cloexec(write_fd, true);
+    }
+
+    // Write [read_fd, write_fd] to user memory as two u32 values
+    unsafe {
+        let ptr = pipefd_ptr as *mut u32;
+        *ptr = read_fd;
+        *ptr.add(1) = write_fd;
+    }
+
+    crate::debug_println!("sys_pipe2: pipe_id={}, read_fd={}, write_fd={}", pipe_id, read_fd, write_fd);
+    0
+}
+
+/// sys_dup - Duplicate a file descriptor, returning the lowest available FD.
+/// Returns the new FD, or u32::MAX on error.
+pub fn sys_dup(old_fd: u32) -> u32 {
+    use crate::fs::fd_table::FdKind;
+
+    let entry = match crate::task::scheduler::current_fd_get(old_fd) {
+        Some(e) => e,
+        None => return u32::MAX,
+    };
+
+    let kind = entry.kind;
+
+    // Allocate new FD with same kind
+    let new_fd = match crate::task::scheduler::current_fd_alloc(kind) {
+        Some(fd) => fd,
+        None => return u32::MAX,
+    };
+
+    // Incref the underlying resource
+    incref_fd_kind(kind);
+
+    new_fd
+}
+
+/// sys_dup2 - Duplicate old_fd to new_fd. If new_fd is open, close it first.
+/// Returns new_fd on success, u32::MAX on error.
+pub fn sys_dup2(old_fd: u32, new_fd: u32) -> u32 {
+    use crate::fs::fd_table::FdKind;
+
+    if old_fd == new_fd {
+        // POSIX: if old_fd == new_fd and old_fd is valid, return new_fd
+        return match crate::task::scheduler::current_fd_get(old_fd) {
+            Some(_) => new_fd,
+            None => u32::MAX,
+        };
+    }
+
+    let entry = match crate::task::scheduler::current_fd_get(old_fd) {
+        Some(e) => e,
+        None => return u32::MAX,
+    };
+
+    let kind = entry.kind;
+
+    // Close new_fd if it's currently open
+    if let Some(old_kind) = crate::task::scheduler::current_fd_close(new_fd) {
+        decref_fd_kind(old_kind);
+    }
+
+    // Place old_fd's resource at new_fd
+    if !crate::task::scheduler::current_fd_alloc_at(new_fd, kind) {
+        return u32::MAX;
+    }
+
+    // Incref the underlying resource
+    incref_fd_kind(kind);
+
+    new_fd
+}
+
+/// sys_fcntl - File control operations.
+/// cmd: F_DUPFD=0, F_GETFD=1, F_SETFD=2, F_GETFL=3, F_SETFL=4, F_DUPFD_CLOEXEC=1030.
+/// Returns result or u32::MAX on error.
+pub fn sys_fcntl(fd: u32, cmd: u32, arg: u32) -> u32 {
+    use crate::fs::fd_table::FdKind;
+
+    const F_DUPFD: u32 = 0;
+    const F_GETFD: u32 = 1;
+    const F_SETFD: u32 = 2;
+    const F_GETFL: u32 = 3;
+    const F_SETFL: u32 = 4;
+    const F_DUPFD_CLOEXEC: u32 = 1030;
+    const FD_CLOEXEC: u32 = 1;
+
+    match cmd {
+        F_DUPFD | F_DUPFD_CLOEXEC => {
+            let entry = match crate::task::scheduler::current_fd_get(fd) {
+                Some(e) => e,
+                None => return u32::MAX,
+            };
+            let kind = entry.kind;
+
+            // Allocate lowest FD >= arg
+            let new_fd = match crate::task::scheduler::current_fd_alloc_above(arg, kind) {
+                Some(fd) => fd,
+                None => return u32::MAX,
+            };
+
+            incref_fd_kind(kind);
+
+            if cmd == F_DUPFD_CLOEXEC {
+                crate::task::scheduler::current_fd_set_cloexec(new_fd, true);
+            }
+
+            new_fd
+        }
+        F_GETFD => {
+            match crate::task::scheduler::current_fd_get(fd) {
+                Some(e) => if e.flags.cloexec { FD_CLOEXEC } else { 0 },
+                None => u32::MAX,
+            }
+        }
+        F_SETFD => {
+            crate::task::scheduler::current_fd_set_cloexec(fd, (arg & FD_CLOEXEC) != 0);
+            0
+        }
+        F_GETFL | F_SETFL => {
+            // Minimal: return 0 for get, succeed for set
+            0
+        }
+        _ => u32::MAX,
+    }
+}
+
+/// Increment the reference count for an FdKind resource.
+fn incref_fd_kind(kind: crate::fs::fd_table::FdKind) {
+    use crate::fs::fd_table::FdKind;
+    match kind {
+        FdKind::File { global_id } => crate::fs::vfs::incref(global_id),
+        FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::incref_read(pipe_id),
+        FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::incref_write(pipe_id),
+        FdKind::None => {}
+    }
+}
+
+/// Decrement the reference count for an FdKind resource.
+fn decref_fd_kind(kind: crate::fs::fd_table::FdKind) {
+    use crate::fs::fd_table::FdKind;
+    match kind {
+        FdKind::File { global_id } => crate::fs::vfs::decref(global_id),
+        FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::decref_read(pipe_id),
+        FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::decref_write(pipe_id),
+        FdKind::None => {}
+    }
 }

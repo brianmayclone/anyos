@@ -2533,6 +2533,16 @@ pub fn current_fd_dup2(old_fd: u32, new_fd: u32) -> bool {
     thread.fd_table.dup2(old_fd, new_fd)
 }
 
+/// Allocate the lowest FD >= min_fd in the current thread's FD table.
+pub fn current_fd_alloc_above(min_fd: u32, kind: FdKind) -> Option<u32> {
+    let mut guard = SCHEDULER.lock();
+    let sched = match guard.as_mut() { Some(s) => s, None => return None };
+    let cpu = get_cpu_id();
+    let tid = match sched.per_cpu[cpu].current_tid { Some(t) => t, None => return None };
+    let thread = match sched.threads.iter_mut().find(|t| t.tid == tid) { Some(t) => t, None => return None };
+    thread.fd_table.alloc_above(min_fd, kind)
+}
+
 /// Allocate an FD at a specific slot in the current thread's FD table.
 pub fn current_fd_alloc_at(fd: u32, kind: FdKind) -> bool {
     let mut guard = SCHEDULER.lock();

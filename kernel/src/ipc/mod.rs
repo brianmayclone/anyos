@@ -3,6 +3,7 @@
 //! Provides named pipes, a system/module event bus, POSIX-style signals,
 //! shared memory regions, and message queues for kernel and user-space IPC.
 
+pub mod anon_pipe;
 pub mod event_bus;
 pub mod message_queue;
 pub mod pipe;
