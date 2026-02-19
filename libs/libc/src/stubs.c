@@ -624,7 +624,7 @@ long sysconf(int name) {
     return -1;
 }
 
-int getpid(void) { return 1; }
+int getpid(void) { return _syscall(6, 0, 0, 0, 0); }   /* SYS_GETPID = 6 */
 int getppid(void) { return 0; }
 int getpgid(int pid) { (void)pid; return 0; }
 unsigned int geteuid(void) { return 0; }
