@@ -1,0 +1,35 @@
+# GDB init for anyOS VirtualBox debugging
+set architecture i386:x86-64
+set pagination off
+set confirm off
+
+# Connect to VirtualBox GDB stub
+target remote localhost:1234
+
+# Breakpoints on key crash points
+# Uncomment as needed:
+
+# Break on destroy_user_page_directory
+# b destroy_user_page_directory
+
+# Break on General Protection Fault handler
+# b general_protection_fault_handler
+
+# Break on Page Fault handler
+# b page_fault_handler
+
+# Break on AP entry
+# b ap_entry
+
+# Useful commands:
+# info threads          — show all CPUs
+# thread N              — switch to CPU N
+# info registers        — show registers for current CPU
+# x/16gx $rsp           — show stack contents
+# bt                    — backtrace
+# c                     — continue execution
+# interrupt             — pause VM (Ctrl+C also works)
+
+echo \n=== anyOS VirtualBox Debug Session ===\n
+echo Commands: c (continue), Ctrl+C (pause), info threads (CPUs)\n
+echo bt (backtrace), info registers, thread N (switch CPU)\n\n

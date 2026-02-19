@@ -1273,6 +1273,13 @@ pub fn per_cpu_in_scheduler(cpu: usize) -> bool {
     if cpu < MAX_CPUS { PER_CPU_IN_SCHEDULER[cpu].load(Ordering::Relaxed) } else { false }
 }
 
+/// Get the idle thread's kernel stack top for a given CPU.
+/// Used by AP init to switch from the small 16 KiB boot stack to the
+/// idle thread's 512 KiB kernel stack for more headroom.
+pub fn idle_stack_top(cpu_id: usize) -> u64 {
+    if cpu_id < MAX_CPUS { PER_CPU_IDLE_STACK_TOP[cpu_id].load(Ordering::Relaxed) } else { 0 }
+}
+
 /// Lock-free read: current thread TID on this CPU (0 if none).
 pub fn per_cpu_current_tid(cpu: usize) -> u32 {
     if cpu < MAX_CPUS { PER_CPU_CURRENT_TID[cpu].load(Ordering::Relaxed) } else { 0 }

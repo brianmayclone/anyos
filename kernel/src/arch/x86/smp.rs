@@ -215,6 +215,17 @@ extern "C" fn ap_entry() -> ! {
         core::ptr::write_volatile(AP_COMM_READY as *mut u8, 1);
     }
 
+    // Switch from the small 16 KiB AP boot stack to the idle thread's
+    // 512 KiB kernel stack. All interrupt handling (scheduler, serial output,
+    // panic handler) runs on this stack, so it needs adequate headroom.
+    // The 16 KiB boot stack is sufficient for init but marginal for nested
+    // interrupt + scheduler + serial formatting under load.
+    let idle_kstack = crate::task::scheduler::idle_stack_top(cpu_id);
+    if idle_kstack >= 0xFFFF_FFFF_8000_0000 {
+        crate::debug_println!("  [SMP] AP#{}: switching to idle kstack {:#018x}", cpu_id, idle_kstack);
+        unsafe { core::arch::asm!("mov rsp, {}", in(reg) idle_kstack); }
+    }
+
     // Enter idle loop — the LAPIC timer will trigger scheduling
     crate::debug_println!("  [SMP] AP#{}: entering idle loop (sti + hlt)", cpu_id);
     unsafe { core::arch::asm!("sti"); }

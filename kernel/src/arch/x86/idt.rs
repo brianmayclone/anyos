@@ -890,9 +890,10 @@ pub extern "C" fn irq_handler(frame: &InterruptFrame) {
 
     // LAPIC timer (IRQ 16): per-tick safety checks + debug tick-rate output.
     if irq == 16 {
-        // Raw lapic_id() is O(1) single MMIO read — fast for 1000Hz timer ISR.
-        // On QEMU, LAPIC IDs are contiguous 0..N matching logical per-CPU indices.
-        let cpu_id = crate::arch::x86::apic::lapic_id() as usize;
+        // Use current_cpu_id() for correctness — it maps the hardware LAPIC ID
+        // to the logical CPU index via CPU_DATA lookup. LAPIC IDs may not be
+        // contiguous on all hypervisors (e.g., VirtualBox can assign 0,2,4,6).
+        let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
 
         // === DEBUG: Show TSC-based uptime every ~5s (LAPIC timer fires at 1000Hz) ===
         if cpu_id == 0 {
