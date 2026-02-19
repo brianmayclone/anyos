@@ -16,6 +16,7 @@ extern int _syscall(int num, int a1, int a2, int a3, int a4);
 #define SYS_CLOSE   5
 #define SYS_SBRK    9
 #define SYS_GETCWD  25
+#define SYS_CHDIR   26
 #define SYS_UNLINK  91
 #define SYS_LSEEK   105
 #define SYS_FSTAT   106
@@ -87,6 +88,12 @@ char *getcwd(char *buf, size_t size) {
     int ret = _syscall(SYS_GETCWD, (int)buf, (int)size, 0, 0);
     if (ret < 0) { errno = -ret; return NULL; }
     return buf;
+}
+
+int chdir(const char *path) {
+    int ret = _syscall(SYS_CHDIR, (int)path, 0, 0, 0);
+    if (ret < 0) { errno = -ret; return -1; }
+    return 0;
 }
 
 void _exit(int status) {

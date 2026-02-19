@@ -7,6 +7,92 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+// =====================================================================
+// DOS datetime ↔ Unix timestamp conversion
+// =====================================================================
+
+fn is_leap_year(y: u32) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+/// Days from 1970-01-01 to (year, month 1-12, day 1-31).
+fn days_from_civil(year: u32, month: u32, day: u32) -> u32 {
+    const CUMUL: [u32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let mut days = 0u32;
+    for y in 1970..year {
+        days += if is_leap_year(y) { 366 } else { 365 };
+    }
+    if month >= 1 && month <= 12 {
+        days += CUMUL[(month - 1) as usize];
+    }
+    if month > 2 && is_leap_year(year) {
+        days += 1;
+    }
+    days + day - 1
+}
+
+/// Convert (days since epoch) → (year, month 1-12, day 1-31).
+fn civil_from_days(total_days: u32) -> (u32, u32, u32) {
+    let mut remaining = total_days;
+    let mut year = 1970u32;
+    loop {
+        let dy = if is_leap_year(year) { 366 } else { 365 };
+        if remaining < dy { break; }
+        remaining -= dy;
+        year += 1;
+    }
+    let leap = is_leap_year(year);
+    const DAYS: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 1u32;
+    for m in 0..12u32 {
+        let dim = if m == 1 && leap { 29 } else { DAYS[m as usize] };
+        if remaining < dim {
+            month = m + 1;
+            break;
+        }
+        remaining -= dim;
+        if m == 11 { month = 12; }
+    }
+    (year, month, remaining + 1)
+}
+
+/// Convert DOS date+time (FAT format) to Unix timestamp.
+pub fn dos_datetime_to_unix(date: u16, time: u16) -> u32 {
+    if date == 0 && time == 0 { return 0; }
+    let year  = 1980 + ((date >> 9) & 0x7F) as u32;
+    let month = ((date >> 5) & 0x0F) as u32;
+    let day   = (date & 0x1F) as u32;
+    let hours = ((time >> 11) & 0x1F) as u32;
+    let mins  = ((time >> 5) & 0x3F) as u32;
+    let secs  = ((time & 0x1F) * 2) as u32;
+    if month < 1 || month > 12 || day < 1 || day > 31 { return 0; }
+    days_from_civil(year, month, day) * 86400 + hours * 3600 + mins * 60 + secs
+}
+
+/// Convert Unix timestamp to DOS (date, time) pair.
+pub fn unix_to_dos_datetime(ts: u32) -> (u16, u16) {
+    if ts == 0 { return (0, 0); }
+    let secs_of_day = ts % 86400;
+    let total_days = ts / 86400;
+    let hours = secs_of_day / 3600;
+    let mins = (secs_of_day % 3600) / 60;
+    let secs = secs_of_day % 60;
+    let (year, month, day) = civil_from_days(total_days);
+    let dos_year = if year >= 1980 { year - 1980 } else { 0 };
+    let date = ((dos_year as u16) << 9) | ((month as u16) << 5) | (day as u16);
+    let time = ((hours as u16) << 11) | ((mins as u16) << 5) | ((secs / 2) as u16);
+    (date, time)
+}
+
+/// Get current RTC time as DOS (date, time) pair.
+fn current_dos_datetime() -> (u16, u16) {
+    let rtc = crate::drivers::rtc::read_time();
+    let year = if rtc.year >= 1980 { rtc.year as u32 - 1980 } else { 0 };
+    let date = ((year as u16) << 9) | ((rtc.month as u16) << 5) | (rtc.day as u16);
+    let time = ((rtc.hours as u16) << 11) | ((rtc.minutes as u16) << 5) | ((rtc.seconds as u16 / 2));
+    (date, time)
+}
+
 /// FAT16 BIOS Parameter Block (BPB) layout at the start of the partition.
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
@@ -198,6 +284,10 @@ struct FoundEntry {
     size: u32,
     /// Is a directory
     is_dir: bool,
+    /// DOS write time (FAT timestamp)
+    write_time: u16,
+    /// DOS write date (FAT timestamp)
+    write_date: u16,
 }
 
 /// In-memory representation of a mounted FAT filesystem with cached BPB parameters.
@@ -864,12 +954,16 @@ impl FatFs {
                 let cluster_hi = u16::from_le_bytes([buf[i + 20], buf[i + 21]]) as u32;
                 let cluster = (cluster_hi << 16) | cluster_lo;
                 let size = u32::from_le_bytes([buf[i + 28], buf[i + 29], buf[i + 30], buf[i + 31]]);
+                let write_time = u16::from_le_bytes([buf[i + 22], buf[i + 23]]);
+                let write_date = u16::from_le_bytes([buf[i + 24], buf[i + 25]]);
                 return Some(FoundEntry {
                     offset: i,
                     lfn_start: current_lfn_start,
                     cluster,
                     size,
                     is_dir: attr & ATTR_DIRECTORY != 0,
+                    write_time,
+                    write_date,
                 });
             }
 
@@ -1011,6 +1105,35 @@ impl FatFs {
         Err(FsError::NotFound)
     }
 
+    /// Look up a file/directory and return (start_cluster, file_type, file_size, mtime_unix).
+    pub fn stat_path(&self, path: &str) -> Result<(u32, FileType, u32, u32), FsError> {
+        let path = path.trim_start_matches('/');
+        if path.is_empty() {
+            return Ok((0, FileType::Directory, 0, 0));
+        }
+        let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let mut current_cluster: u32 = 0;
+        for (idx, component) in components.iter().enumerate() {
+            let is_last = idx == components.len() - 1;
+            let dir_data = self.read_dir_raw(current_cluster)?;
+            match self.find_entry_in_buf(&dir_data, component) {
+                Some(found) => {
+                    if is_last {
+                        let ft = if found.is_dir { FileType::Directory } else { FileType::Regular };
+                        let mtime = dos_datetime_to_unix(found.write_date, found.write_time);
+                        return Ok((found.cluster, ft, found.size, mtime));
+                    } else if !found.is_dir {
+                        return Err(FsError::NotADirectory);
+                    } else {
+                        current_cluster = found.cluster;
+                    }
+                }
+                None => return Err(FsError::NotFound),
+            }
+        }
+        Err(FsError::NotFound)
+    }
+
     // =====================================================================
     // LFN entry generation (for create)
     // =====================================================================
@@ -1133,16 +1256,17 @@ impl FatFs {
     // =====================================================================
 
     fn fill_dir_entry(&self, entry: &mut [u8], name83: &[u8; 11], attr: u8, first_cluster: u32, size: u32) {
+        let (date, time) = current_dos_datetime();
         entry[0..11].copy_from_slice(name83);
         entry[11] = attr;
-        entry[12] = 0;
-        entry[13] = 0;
-        entry[14..16].copy_from_slice(&0u16.to_le_bytes());
-        entry[16..18].copy_from_slice(&0u16.to_le_bytes());
-        entry[18..20].copy_from_slice(&0u16.to_le_bytes());
+        entry[12] = 0;                   // reserved
+        entry[13] = 0;                   // create_time_tenth
+        entry[14..16].copy_from_slice(&time.to_le_bytes()); // create_time
+        entry[16..18].copy_from_slice(&date.to_le_bytes()); // create_date
+        entry[18..20].copy_from_slice(&date.to_le_bytes()); // last_access_date
         entry[20..22].copy_from_slice(&((first_cluster >> 16) as u16).to_le_bytes());
-        entry[22..24].copy_from_slice(&0u16.to_le_bytes());
-        entry[24..26].copy_from_slice(&0u16.to_le_bytes());
+        entry[22..24].copy_from_slice(&time.to_le_bytes()); // write_time
+        entry[24..26].copy_from_slice(&date.to_le_bytes()); // write_date
         entry[26..28].copy_from_slice(&(first_cluster as u16).to_le_bytes());
         entry[28..32].copy_from_slice(&size.to_le_bytes());
     }
@@ -1300,8 +1424,9 @@ impl FatFs {
     // Directory entry update (LFN-aware lookup)
     // =====================================================================
 
-    /// Update the size and starting cluster of an existing directory entry.
+    /// Update the size, starting cluster, and modification time of an existing directory entry.
     pub fn update_entry(&self, parent_cluster: u32, name: &str, new_size: u32, new_cluster: u32) -> Result<(), FsError> {
+        let (date, time) = current_dos_datetime();
         if parent_cluster == 0 {
             let root_size = (self.root_dir_sectors * 512) as usize;
             let mut buf = vec![0u8; root_size];
@@ -1309,6 +1434,8 @@ impl FatFs {
 
             if let Some(found) = self.find_entry_in_buf(&buf, name) {
                 let i = found.offset;
+                buf[i + 22..i + 24].copy_from_slice(&time.to_le_bytes()); // write_time
+                buf[i + 24..i + 26].copy_from_slice(&date.to_le_bytes()); // write_date
                 buf[i + 26..i + 28].copy_from_slice(&(new_cluster as u16).to_le_bytes());
                 buf[i + 20..i + 22].copy_from_slice(&((new_cluster >> 16) as u16).to_le_bytes());
                 buf[i + 28..i + 32].copy_from_slice(&new_size.to_le_bytes());
@@ -1331,6 +1458,8 @@ impl FatFs {
 
                 if let Some(found) = self.find_entry_in_buf(&cbuf, name) {
                     let i = found.offset;
+                    cbuf[i + 22..i + 24].copy_from_slice(&time.to_le_bytes()); // write_time
+                    cbuf[i + 24..i + 26].copy_from_slice(&date.to_le_bytes()); // write_date
                     cbuf[i + 26..i + 28].copy_from_slice(&(new_cluster as u16).to_le_bytes());
                     cbuf[i + 20..i + 22].copy_from_slice(&((new_cluster >> 16) as u16).to_le_bytes());
                     cbuf[i + 28..i + 32].copy_from_slice(&new_size.to_le_bytes());

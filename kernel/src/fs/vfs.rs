@@ -209,6 +209,7 @@ struct ResolvedEntry {
     uid: u16,
     gid: u16,
     mode: u16,
+    mtime: u32,
 }
 
 /// Resolve a path on exFAT, following symlinks at intermediate components.
@@ -241,6 +242,7 @@ fn resolve_exfat_inner(
             uid: 0,
             gid: 0,
             mode: 0xFFF,
+            mtime: 0,
         });
     }
 
@@ -249,7 +251,7 @@ fn resolve_exfat_inner(
 
     for (idx, component) in components.iter().enumerate() {
         let is_last = idx == components.len() - 1;
-        let (inode, file_type, size, is_symlink, entry_uid, entry_gid, entry_mode) =
+        let (inode, file_type, size, is_symlink, entry_uid, entry_gid, entry_mode, entry_mtime) =
             exfat.lookup_in_dir(current_cluster, component)?;
 
         if is_symlink && (!is_last || follow_last) {
@@ -304,6 +306,7 @@ fn resolve_exfat_inner(
                 uid: entry_uid,
                 gid: entry_gid,
                 mode: entry_mode,
+                mtime: entry_mtime,
             });
         }
 
@@ -1098,6 +1101,8 @@ pub struct StatResult {
     pub uid: u16,
     pub gid: u16,
     pub mode: u16,
+    /// Modification time as Unix timestamp (seconds since 1970-01-01).
+    pub mtime: u32,
 }
 
 /// Get file type and size by path, following symlinks.
@@ -1116,7 +1121,7 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
 
     let default_stat = |ft, sz, sym| StatResult {
         file_type: ft, size: sz, is_symlink: sym,
-        uid: 0, gid: 0, mode: 0xFFF,
+        uid: 0, gid: 0, mode: 0xFFF, mtime: 0,
     };
 
     // --- DevFs path ---
@@ -1156,18 +1161,22 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
             uid: r.uid,
             gid: r.gid,
             mode: r.mode,
+            mtime: r.mtime,
         });
     }
     if let Some(ref fat) = state.fat_fs {
-        let (_inode, file_type, size) = fat.lookup(path)?;
-        return Ok(default_stat(file_type, size, false));
+        let (_inode, file_type, size, mtime) = fat.stat_path(path)?;
+        return Ok(StatResult {
+            file_type, size, is_symlink: false,
+            uid: 0, gid: 0, mode: 0xFFF, mtime,
+        });
     }
 
     Err(FsError::NotFound)
 }
 
-/// Get file info by fd. Returns (file_type, size, position).
-pub fn fstat(fd: FileDescriptor) -> Result<(FileType, u32, u32), FsError> {
+/// Get file info by fd. Returns (file_type, size, position, mtime).
+pub fn fstat(fd: FileDescriptor) -> Result<(FileType, u32, u32, u32), FsError> {
     let vfs = VFS.lock();
     let state = vfs.as_ref().ok_or(FsError::IoError)?;
 
@@ -1176,7 +1185,21 @@ pub fn fstat(fd: FileDescriptor) -> Result<(FileType, u32, u32), FsError> {
         .find(|f| f.fd == fd)
         .ok_or(FsError::BadFd)?;
 
-    Ok((file.file_type, file.size, file.position))
+    let path = file.path.clone();
+    let ft = file.file_type;
+    let sz = file.size;
+    let pos = file.position;
+
+    // Look up mtime from the filesystem
+    let mtime = if let Some(ref exfat) = state.exfat_fs {
+        resolve_exfat_path(exfat, &path, true).map(|r| r.mtime).unwrap_or(0)
+    } else if let Some(ref fat) = state.fat_fs {
+        fat.stat_path(&path).map(|(_, _, _, m)| m).unwrap_or(0)
+    } else {
+        0
+    };
+
+    Ok((ft, sz, pos, mtime))
 }
 
 /// Get the path associated with an open file descriptor.

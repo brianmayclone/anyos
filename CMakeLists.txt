@@ -819,6 +819,44 @@ add_custom_command(
 )
 
 # ============================================================
+# make (minimal POSIX make utility, cross-compiled C)
+# ============================================================
+set(MAKE_SRC "${CMAKE_SOURCE_DIR}/bin/make/src/make.c")
+set(MAKE_OBJ "${CMAKE_SOURCE_DIR}/bin/make/make.o")
+set(MAKE_ELF "${CMAKE_SOURCE_DIR}/bin/make/make.elf")
+
+add_custom_command(
+  OUTPUT ${MAKE_OBJ}
+  COMMAND ${I686_ELF_GCC}
+    -ffreestanding -nostdlib -nostdinc -fno-builtin -fno-stack-protector
+    -I${LIBC_DIR}/include -O2 -m32 -w
+    -c ${MAKE_SRC} -o ${MAKE_OBJ}
+  DEPENDS ${MAKE_SRC} ${LIBC_A}
+  COMMENT "Compiling make for anyOS"
+)
+
+add_custom_command(
+  OUTPUT ${MAKE_ELF}
+  COMMAND ${I686_ELF_GCC}
+    -nostdlib -static -m32
+    -T ${LIBC_DIR}/link.ld
+    -o ${MAKE_ELF}
+    ${LIBC_CRT0}
+    ${MAKE_OBJ}
+    ${LIBC_A}
+    -lgcc
+  DEPENDS ${MAKE_OBJ} ${LIBC_A} ${LIBC_CRT0} ${LIBC_DIR}/link.ld
+  COMMENT "Linking make for anyOS"
+)
+
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/bin/make
+  COMMAND ${CMAKE_COMMAND} -E copy ${MAKE_ELF} ${SYSROOT_DIR}/System/bin/make
+  DEPENDS ${MAKE_ELF}
+  COMMENT "Installing make as /System/bin/make"
+)
+
+# ============================================================
 # DOOM (doomgeneric, cross-compiled C program) → DOOM.app
 # ============================================================
 set(DOOM_DIR "${CMAKE_SOURCE_DIR}/third_party/doom")
@@ -933,6 +971,7 @@ set(C_TOOLCHAIN_DEPS
   ${SYSROOT_DIR}/Libraries/libc/include/.stamp
   ${SYSROOT_DIR}/System/bin/cc
   ${SYSROOT_DIR}/System/bin/nasm
+  ${SYSROOT_DIR}/System/bin/make
   ${SYSROOT_DIR}/Libraries/libc/lib/tcc/include/.stamp
   ${DOOM_APP}/DOOM
   ${QUAKE_APP}/Quake

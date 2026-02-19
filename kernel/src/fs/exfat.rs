@@ -111,6 +111,48 @@ const ATTR_ARCHIVE: u16 = 0x0020;
 /// Custom symlink attribute (bit 10, unused by exFAT spec).
 const ATTR_SYMLINK: u16 = 0x0400;
 
+// =====================================================================
+// exFAT timestamp conversion
+// =====================================================================
+
+/// Convert exFAT 32-bit timestamp to Unix timestamp.
+/// Format: [31:25]=year-1980, [24:21]=month, [20:16]=day, [15:11]=hour, [10:5]=minute, [4:0]=2-seconds
+fn exfat_timestamp_to_unix(ts: u32) -> u32 {
+    if ts == 0 { return 0; }
+    let year = 1980 + ((ts >> 25) & 0x7F) as u32;
+    let month = ((ts >> 21) & 0xF) as u32;
+    let day = ((ts >> 16) & 0x1F) as u32;
+    let hour = ((ts >> 11) & 0x1F) as u32;
+    let minute = ((ts >> 5) & 0x3F) as u32;
+    let second = ((ts & 0x1F) * 2) as u32;
+    if month < 1 || month > 12 || day < 1 || day > 31 { return 0; }
+    // Reuse FAT module's helper
+    crate::fs::fat::dos_datetime_to_unix(
+        ((year - 1980) as u16) << 9 | (month as u16) << 5 | day as u16,
+        (hour as u16) << 11 | (minute as u16) << 5 | (second / 2) as u16,
+    )
+}
+
+/// Convert Unix timestamp to exFAT 32-bit timestamp.
+fn unix_to_exfat_timestamp(unix: u32) -> u32 {
+    let (date, time) = crate::fs::fat::unix_to_dos_datetime(unix);
+    let year = ((date >> 9) & 0x7F) as u32;
+    let month = ((date >> 5) & 0xF) as u32;
+    let day = (date & 0x1F) as u32;
+    let hour = ((time >> 11) & 0x1F) as u32;
+    let minute = ((time >> 5) & 0x3F) as u32;
+    let second = (time & 0x1F) as u32;
+    (year << 25) | (month << 21) | (day << 16) | (hour << 11) | (minute << 5) | second
+}
+
+/// Get current RTC time as exFAT 32-bit timestamp.
+fn current_exfat_timestamp() -> u32 {
+    let rtc = crate::drivers::rtc::read_time();
+    let year = if rtc.year >= 1980 { rtc.year as u32 - 1980 } else { 0 };
+    (year << 25) | ((rtc.month as u32) << 21) | ((rtc.day as u32) << 16)
+        | ((rtc.hours as u32) << 11) | ((rtc.minutes as u32) << 5) | ((rtc.seconds as u32 / 2))
+}
+
 /// Bit flag stored in the VFS `inode` field to indicate a contiguous file.
 /// Since exFAT volumes realistically have far fewer than 2^31 clusters,
 /// we use bit 31 to encode the NoFatChain flag alongside the first cluster.
@@ -139,6 +181,8 @@ struct FoundEntry {
     uid: u16,
     gid: u16,
     mode: u16,
+    /// Modification time as Unix timestamp
+    mtime: u32,
 }
 
 /// In-memory representation of a mounted exFAT filesystem.
@@ -703,6 +747,10 @@ impl ExFatFs {
             let entry_mode = u16::from_le_bytes([buf[i + 10], buf[i + 11]]);
             let entry_mode = if entry_mode == 0 { 0xFFF } else { entry_mode };
 
+            // Read LastModifiedTimestamp (bytes 12-15 of 0x85 entry) and convert to Unix
+            let exfat_mtime = u32::from_le_bytes(buf[i + 12..i + 16].try_into().unwrap());
+            let mtime_unix = exfat_timestamp_to_unix(exfat_mtime);
+
             let collected = Self::collect_name(buf, i, secondary_count, name_length);
             if Self::names_equal(&collected, name) {
                 return Some(FoundEntry {
@@ -715,6 +763,7 @@ impl ExFatFs {
                     uid: entry_uid,
                     gid: entry_gid,
                     mode: entry_mode,
+                    mtime: mtime_unix,
                 });
             }
 
@@ -845,12 +894,12 @@ impl ExFatFs {
     /// Look up a single name in a directory.
     /// Returns `(encoded_inode, file_type, size, is_symlink)`.
     /// Lookup a name in a directory.
-    /// Returns (inode, file_type, size, is_symlink, uid, gid, mode).
+    /// Returns (inode, file_type, size, is_symlink, uid, gid, mode, mtime_unix).
     pub fn lookup_in_dir(
         &self,
         dir_cluster: u32,
         name: &str,
-    ) -> Result<(u32, FileType, u32, bool, u16, u16, u16), FsError> {
+    ) -> Result<(u32, FileType, u32, bool, u16, u16, u16, u32), FsError> {
         let raw = self.read_dir_raw(dir_cluster)?;
         match self.find_entry_in_buf(&raw, name) {
             Some(found) => {
@@ -858,7 +907,7 @@ impl ExFatFs {
                 let is_dir = found.attributes & ATTR_DIRECTORY != 0;
                 let ft = if is_dir { FileType::Directory } else { FileType::Regular };
                 let inode = encode_inode(found.first_cluster, found.contiguous);
-                Ok((inode, ft, found.data_length as u32, is_symlink, found.uid, found.gid, found.mode))
+                Ok((inode, ft, found.data_length as u32, is_symlink, found.uid, found.gid, found.mode, found.mtime))
             }
             None => Err(FsError::NotFound),
         }
@@ -1297,6 +1346,9 @@ impl ExFatFs {
         set[6..8].copy_from_slice(&uid.to_le_bytes());
         set[8..10].copy_from_slice(&gid.to_le_bytes());
         set[10..12].copy_from_slice(&mode.to_le_bytes());
+        // [12..15] = LastModifiedTimestamp (exFAT format)
+        let now = current_exfat_timestamp();
+        set[12..16].copy_from_slice(&now.to_le_bytes());
 
         // -- Stream Extension (0xC0) --
         let s = 32;
@@ -1520,6 +1572,10 @@ impl ExFatFs {
                 let off = found.file_entry_offset;
                 let s = off + 32; // Stream Extension offset
                 let sz = new_size as u64;
+
+                // Update LastModifiedTimestamp in File Directory Entry
+                let now = current_exfat_timestamp();
+                cbuf[off + 12..off + 16].copy_from_slice(&now.to_le_bytes());
 
                 cbuf[s + 8..s + 16].copy_from_slice(&sz.to_le_bytes()); // ValidDataLength
                 cbuf[s + 20..s + 24].copy_from_slice(&new_cluster.to_le_bytes());

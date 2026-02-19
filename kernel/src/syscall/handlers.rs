@@ -576,7 +576,7 @@ pub fn sys_readdir(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
 
 /// sys_stat - Get file information (follows symlinks).
 /// arg1=path_ptr (null-terminated), arg2=stat_buf_ptr:
-/// output [type:u32, size:u32, flags:u32, uid:u32, gid:u32, mode:u32] = 24 bytes
+/// output [type:u32, size:u32, flags:u32, uid:u32, gid:u32, mode:u32, mtime:u32] = 28 bytes
 /// flags: bit 0 = is_symlink
 /// Returns 0 on success, u32::MAX on error.
 pub fn sys_stat(path_ptr: u32, buf_ptr: u32) -> u32 {
@@ -600,6 +600,7 @@ pub fn sys_stat(path_ptr: u32, buf_ptr: u32) -> u32 {
                     *buf.add(3) = st.uid as u32;
                     *buf.add(4) = st.gid as u32;
                     *buf.add(5) = st.mode as u32;
+                    *buf.add(6) = st.mtime;
                 }
             }
             0
@@ -609,7 +610,7 @@ pub fn sys_stat(path_ptr: u32, buf_ptr: u32) -> u32 {
 }
 
 /// sys_lstat - Get file information WITHOUT following final symlink.
-/// Same format as sys_stat: [type:u32, size:u32, flags:u32, uid:u32, gid:u32, mode:u32] = 24 bytes
+/// Same format as sys_stat: [type:u32, size:u32, flags:u32, uid:u32, gid:u32, mode:u32, mtime:u32] = 28 bytes
 /// Returns 0 on success, u32::MAX on error.
 pub fn sys_lstat(path_ptr: u32, buf_ptr: u32) -> u32 {
     let raw_path = unsafe { read_user_str(path_ptr) };
@@ -632,6 +633,7 @@ pub fn sys_lstat(path_ptr: u32, buf_ptr: u32) -> u32 {
                     *buf.add(3) = st.uid as u32;
                     *buf.add(4) = st.gid as u32;
                     *buf.add(5) = st.mode as u32;
+                    *buf.add(6) = st.mtime;
                 }
             }
             0
@@ -695,7 +697,7 @@ pub fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
 }
 
 /// sys_fstat - Get file information by fd.
-/// arg1=fd, arg2=stat_buf_ptr: output [type:u32, size:u32, position:u32] = 12 bytes
+/// arg1=fd, arg2=stat_buf_ptr: output [type:u32, size:u32, position:u32, mtime:u32] = 16 bytes
 /// Returns 0 on success, u32::MAX on error.
 pub fn sys_fstat(fd: u32, buf_ptr: u32) -> u32 {
     if buf_ptr == 0 { return u32::MAX; }
@@ -706,11 +708,12 @@ pub fn sys_fstat(fd: u32, buf_ptr: u32) -> u32 {
             *buf = 2; // device
             *buf.add(1) = 0;
             *buf.add(2) = 0;
+            *buf.add(3) = 0;
         }
         return 0;
     }
     match crate::fs::vfs::fstat(fd) {
-        Ok((file_type, size, position)) => {
+        Ok((file_type, size, position, mtime)) => {
             unsafe {
                 let buf = buf_ptr as *mut u32;
                 *buf = match file_type {
@@ -720,6 +723,7 @@ pub fn sys_fstat(fd: u32, buf_ptr: u32) -> u32 {
                 };
                 *buf.add(1) = size;
                 *buf.add(2) = position;
+                *buf.add(3) = mtime;
             }
             0
         }

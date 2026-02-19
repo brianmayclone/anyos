@@ -28,7 +28,8 @@
       "Read(//c/Development/anyos/**)",
       "Bash(grep:*)",
       "Bash(xargs:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(ninja:*)"
     ]
   }
 }

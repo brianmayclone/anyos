@@ -27,6 +27,7 @@ int close(int fd);
 int lseek(int fd, int offset, int whence);
 int isatty(int fd);
 char *getcwd(char *buf, size_t size);
+int chdir(const char *path);
 void _exit(int status);
 void *sbrk(int increment);
 int unlink(const char *path);

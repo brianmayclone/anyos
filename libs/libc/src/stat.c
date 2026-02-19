@@ -14,7 +14,7 @@ extern int _syscall(int num, int a1, int a2, int a3, int a4);
 #define SYS_MKDIR  90
 
 int stat(const char *path, struct stat *buf) {
-    unsigned int info[6]; /* type, size, flags, uid, gid, mode */
+    unsigned int info[7]; /* type, size, flags, uid, gid, mode, mtime */
     int ret = _syscall(SYS_STAT, (int)path, (int)info, 0, 0);
     if (ret < 0) { errno = -ret; return -1; }
     if (buf) {
@@ -30,12 +30,15 @@ int stat(const char *path, struct stat *buf) {
         buf->st_nlink = 1;
         buf->st_uid = info[3];
         buf->st_gid = info[4];
+        buf->st_mtime = info[6];
+        buf->st_atime = info[6];
+        buf->st_ctime = info[6];
     }
     return 0;
 }
 
 int fstat(int fd, struct stat *buf) {
-    unsigned int info[3]; /* type, size, position */
+    unsigned int info[4]; /* type, size, position, mtime */
     int ret = _syscall(SYS_FSTAT, fd, (int)info, 0, 0);
     if (ret < 0) { errno = -ret; return -1; }
     if (buf) {
@@ -45,6 +48,9 @@ int fstat(int fd, struct stat *buf) {
         else buf->st_mode = S_IFCHR | 0666;
         buf->st_size = info[1];
         buf->st_nlink = 1;
+        buf->st_mtime = info[3];
+        buf->st_atime = info[3];
+        buf->st_ctime = info[3];
     }
     return 0;
 }
