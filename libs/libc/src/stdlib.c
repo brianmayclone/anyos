@@ -246,6 +246,36 @@ double atof(const char *nptr) {
 #define SYS_SPAWN_STDLIB   27
 #define SYS_WAITPID_STDLIB 12
 
+/* Try to spawn `path`; if it's a bare name (no '/'), search PATH env. */
+static int _resolve_and_spawn(const char *path, const char *args) {
+    /* If path contains '/', try it directly */
+    for (const char *s = path; *s; s++) {
+        if (*s == '/') {
+            return _syscall(SYS_SPAWN_STDLIB, (int)path, 0, (int)args, 0);
+        }
+    }
+    /* Bare name — search PATH environment variable */
+    char *path_env = getenv("PATH");
+    if (!path_env || !*path_env) path_env = "/System/bin";
+    const char *p = path_env;
+    while (*p) {
+        char full[256];
+        int pos = 0;
+        /* Copy next PATH component (until ':' or end) */
+        while (*p && *p != ':' && pos < 240) full[pos++] = *p++;
+        if (*p == ':') p++;
+        if (pos == 0) continue;
+        /* Append '/' + command name */
+        if (full[pos - 1] != '/') full[pos++] = '/';
+        const char *n = path;
+        while (*n && pos < 255) full[pos++] = *n++;
+        full[pos] = '\0';
+        int tid = _syscall(SYS_SPAWN_STDLIB, (int)full, 0, (int)args, 0);
+        if (tid > 0) return tid;
+    }
+    return -1;
+}
+
 int system(const char *command) {
     if (!command) return 1; /* POSIX: non-zero means shell available */
     /* Find the executable — first word of command */
@@ -269,7 +299,7 @@ int system(const char *command) {
         while (*p && alen < 510) args[alen++] = *p++;
     }
     args[alen] = '\0';
-    int tid = _syscall(SYS_SPAWN_STDLIB, (int)path, 0, (int)args, 0);
+    int tid = _resolve_and_spawn(path, args);
     if (tid < 0) return -1;
     int status = _syscall(SYS_WAITPID_STDLIB, tid, 0, 0, 0);
     return status;

@@ -13,6 +13,8 @@
 
 #include <stddef.h>
 
+typedef int pid_t;
+
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
@@ -32,6 +34,9 @@ void _exit(int status);
 void *sbrk(int increment);
 int unlink(const char *path);
 int access(const char *path, int mode);
+pid_t fork(void);
+pid_t waitpid(pid_t pid, int *status, int options);
+int execv(const char *path, char *const argv[]);
 int execvp(const char *file, char *const argv[]);
 int ftruncate(int fd, unsigned int length);
 ssize_t pread(int fd, void *buf, size_t count, long offset);
@@ -73,7 +78,5 @@ int getsid(int pid);
 #define R_OK 4
 #define W_OK 2
 #define X_OK 1
-
-typedef int pid_t;
 
 #endif

@@ -68,6 +68,32 @@ pub fn kill(tid: u32) -> u32 {
     syscall1(SYS_KILL, tid as u64)
 }
 
+/// Fork the current process. Returns:
+/// - In the parent: the child's TID (> 0)
+/// - In the child: 0
+/// - On error: u32::MAX
+pub fn fork() -> u32 {
+    syscall0(SYS_FORK)
+}
+
+/// Replace the current process with a new program.
+/// `path` — filesystem path to the binary.
+/// `args` — command-line arguments string (space-separated).
+/// On success, never returns. On failure, returns u32::MAX.
+pub fn exec(path: &str, args: &str) -> u32 {
+    let mut path_buf = [0u8; 257];
+    let plen = path.len().min(256);
+    path_buf[..plen].copy_from_slice(&path.as_bytes()[..plen]);
+    path_buf[plen] = 0;
+
+    let mut args_buf = [0u8; 257];
+    let alen = args.len().min(256);
+    args_buf[..alen].copy_from_slice(&args.as_bytes()[..alen]);
+    args_buf[alen] = 0;
+
+    syscall2(SYS_EXEC, path_buf.as_ptr() as u64, args_buf.as_ptr() as u64)
+}
+
 /// Spawn a new process. Returns TID or u32::MAX on error.
 pub fn spawn(path: &str, args: &str) -> u32 {
     spawn_piped(path, args, 0)

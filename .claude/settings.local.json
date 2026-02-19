@@ -29,7 +29,8 @@
       "Bash(grep:*)",
       "Bash(xargs:*)",
       "Bash(wc:*)",
-      "Bash(ninja:*)"
+      "Bash(ninja:*)",
+      "Bash(python3:*)"
     ]
   }
 }

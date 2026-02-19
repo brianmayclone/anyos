@@ -53,6 +53,154 @@ static PENDING_PROGRAMS: Spinlock<[PendingSlot; MAX_PENDING]> =
     ]);
 
 // =========================================================================
+// fork() child state — saved parent registers for child to resume from
+// =========================================================================
+
+/// User-mode register state saved by fork() for the child process.
+/// The child's trampoline restores these via IRETQ, with RAX=0.
+#[repr(C)]
+pub struct ForkChildRegs {
+    pub rbx: u64,
+    pub rcx: u64,
+    pub rdx: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub rbp: u64,
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+    pub r11: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+    // IRETQ frame
+    pub rip: u64,
+    pub cs: u64,
+    pub rflags: u64,
+    pub rsp: u64,
+    pub ss: u64,
+}
+
+struct ForkPendingSlot {
+    tid: u32,
+    used: bool,
+    regs: ForkChildRegs,
+}
+
+impl ForkPendingSlot {
+    const fn empty() -> Self {
+        ForkPendingSlot {
+            tid: 0,
+            used: false,
+            regs: ForkChildRegs {
+                rbx: 0, rcx: 0, rdx: 0, rsi: 0, rdi: 0, rbp: 0,
+                r8: 0, r9: 0, r10: 0, r11: 0, r12: 0, r13: 0, r14: 0, r15: 0,
+                rip: 0, cs: 0, rflags: 0, rsp: 0, ss: 0,
+            },
+        }
+    }
+}
+
+static PENDING_FORKS: Spinlock<[ForkPendingSlot; MAX_PENDING]> =
+    Spinlock::new([
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+    ]);
+
+/// Store the parent's register state for a fork() child to pick up.
+pub fn store_pending_fork(tid: u32, regs: ForkChildRegs) {
+    let mut slots = PENDING_FORKS.lock();
+    let slot = slots.iter_mut().find(|s| !s.used)
+        .expect("Too many pending forks");
+    slot.tid = tid;
+    slot.regs = regs;
+    slot.used = true;
+}
+
+/// Trampoline for fork() child threads.
+/// Wakes up in kernel mode, retrieves saved parent registers, then IRETQ to user
+/// mode with RAX=0 (fork child return value).
+pub extern "C" fn fork_child_trampoline() {
+    let tid = crate::task::scheduler::current_tid();
+
+    // Retrieve saved register state
+    let regs = {
+        let mut slots = PENDING_FORKS.lock();
+        let slot = slots.iter_mut().find(|s| s.used && s.tid == tid)
+            .expect("No pending fork state for child trampoline");
+        // Copy regs out and free slot
+        let r = ForkChildRegs {
+            rbx: slot.regs.rbx, rcx: slot.regs.rcx, rdx: slot.regs.rdx,
+            rsi: slot.regs.rsi, rdi: slot.regs.rdi, rbp: slot.regs.rbp,
+            r8: slot.regs.r8, r9: slot.regs.r9, r10: slot.regs.r10,
+            r11: slot.regs.r11, r12: slot.regs.r12, r13: slot.regs.r13,
+            r14: slot.regs.r14, r15: slot.regs.r15,
+            rip: slot.regs.rip, cs: slot.regs.cs,
+            rflags: slot.regs.rflags, rsp: slot.regs.rsp, ss: slot.regs.ss,
+        };
+        slot.used = false;
+        r
+    };
+
+    crate::serial_println!(
+        "  fork child T{}: returning to user at {:#018x}, stack={:#018x}, cs={:#x}",
+        tid, regs.rip, regs.rsp, regs.cs
+    );
+
+    unsafe { fork_return_to_user(&regs); }
+}
+
+/// Restore all user-mode registers from a ForkChildRegs struct and IRETQ.
+/// Sets RAX=0 (fork child return value). Never returns.
+unsafe fn fork_return_to_user(regs: *const ForkChildRegs) -> ! {
+    core::arch::asm!(
+        // Set data segments for user mode
+        "mov ax, 0x23",
+        "mov ds, ax",
+        "mov es, ax",
+        "mov fs, ax",
+        "mov gs, ax",
+        // Build IRETQ frame from struct (field offsets in ForkChildRegs):
+        // rbx=0, rcx=8, rdx=16, rsi=24, rdi=32, rbp=40,
+        // r8=48, r9=56, r10=64, r11=72, r12=80, r13=88, r14=96, r15=104,
+        // rip=112, cs=120, rflags=128, rsp=136, ss=144
+        "push qword ptr [{p} + 144]",   // SS
+        "push qword ptr [{p} + 136]",   // RSP
+        "mov rax, [{p} + 128]",         // RFLAGS
+        "or rax, 0x200",                // Ensure IF set
+        "push rax",
+        "push qword ptr [{p} + 120]",   // CS
+        "push qword ptr [{p} + 112]",   // RIP
+        // Restore GPRs
+        "mov r15, [{p} + 104]",
+        "mov r14, [{p} + 96]",
+        "mov r13, [{p} + 88]",
+        "mov r12, [{p} + 80]",
+        "mov r11, [{p} + 72]",
+        "mov r10, [{p} + 64]",
+        "mov r9,  [{p} + 56]",
+        "mov r8,  [{p} + 48]",
+        "mov rbp, [{p} + 40]",
+        "mov rdi, [{p} + 32]",
+        "mov rsi, [{p} + 24]",
+        "mov rdx, [{p} + 16]",
+        "mov rcx, [{p} + 8]",
+        "mov rbx, [{p}]",
+        "xor eax, eax",             // RAX = 0 (fork child return value)
+        "iretq",
+        p = in(reg) regs,
+        options(noreturn)
+    );
+}
+
+// =========================================================================
 // ELF structures
 // =========================================================================
 
@@ -370,6 +518,192 @@ fn elf_class(data: &[u8]) -> u8 {
         data[4]
     } else {
         0
+    }
+}
+
+// =========================================================================
+// Shared binary loading (used by both spawn and exec)
+// =========================================================================
+
+/// Result of loading a binary into a page directory.
+pub struct LoadResult {
+    pub entry: u64,
+    pub brk: u64,
+    pub is_compat32: bool,
+    pub user_pages: u32,
+}
+
+/// Load a binary (ELF64/ELF32/flat) into an already-created page directory.
+/// Maps code segments + user stack. Returns entry point, brk, arch mode, page count.
+pub fn load_binary_into_pd(
+    data: &[u8],
+    pd_phys: crate::memory::address::PhysAddr,
+) -> Result<LoadResult, &'static str> {
+    if data.is_empty() {
+        return Err("Program data is empty");
+    }
+
+    let mut total_user_pages: u32 = 0;
+    let stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
+
+    let class = elf_class(data);
+    if class == ELFCLASS64 {
+        let stack_mapped = virtual_mem::map_pages_range_in_pd(
+            pd_phys,
+            VirtAddr::new(stack_bottom),
+            USER_STACK_PAGES,
+            PAGE_WRITABLE | PAGE_USER,
+            true,
+        )?;
+        let elf_result = load_elf64(data, pd_phys)?;
+        total_user_pages += elf_result.pages_mapped + stack_mapped;
+        Ok(LoadResult {
+            entry: elf_result.entry,
+            brk: elf_result.brk,
+            is_compat32: false,
+            user_pages: total_user_pages,
+        })
+    } else if class == ELFCLASS32 {
+        let stack_mapped = virtual_mem::map_pages_range_in_pd(
+            pd_phys,
+            VirtAddr::new(stack_bottom),
+            USER_STACK_PAGES,
+            PAGE_WRITABLE | PAGE_USER,
+            true,
+        )?;
+        let elf_result = load_elf32(data, pd_phys)?;
+        total_user_pages += elf_result.pages_mapped + stack_mapped;
+        Ok(LoadResult {
+            entry: elf_result.entry,
+            brk: elf_result.brk,
+            is_compat32: true,
+            user_pages: total_user_pages,
+        })
+    } else if is_elf(data) {
+        Err("Unknown ELF class (not ELF32 or ELF64)")
+    } else {
+        // Flat binary
+        let code_pages = (data.len() as u64 + PAGE_SIZE - 1) / PAGE_SIZE;
+        let code_mapped = virtual_mem::map_pages_range_in_pd(
+            pd_phys,
+            VirtAddr::new(PROGRAM_LOAD_ADDR),
+            code_pages,
+            PAGE_WRITABLE | PAGE_USER,
+            true,
+        )?;
+        let stack_mapped = virtual_mem::map_pages_range_in_pd(
+            pd_phys,
+            VirtAddr::new(stack_bottom),
+            USER_STACK_PAGES,
+            PAGE_WRITABLE | PAGE_USER,
+            true,
+        )?;
+
+        // Copy binary data into the new address space
+        unsafe {
+            let rflags: u64;
+            core::arch::asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
+            core::arch::asm!("cli", options(nomem, nostack));
+            let old_cr3 = virtual_mem::current_cr3();
+            core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
+
+            let dest = PROGRAM_LOAD_ADDR as *mut u8;
+            core::ptr::copy_nonoverlapping(data.as_ptr(), dest, data.len());
+
+            core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
+            core::arch::asm!("push {}; popfq", in(reg) rflags, options(nomem));
+        }
+
+        total_user_pages += code_mapped + stack_mapped;
+        Ok(LoadResult {
+            entry: PROGRAM_LOAD_ADDR,
+            brk: PROGRAM_LOAD_ADDR + code_pages * PAGE_SIZE,
+            is_compat32: false,
+            user_pages: total_user_pages,
+        })
+    }
+}
+
+// =========================================================================
+// exec() — replace current process image
+// =========================================================================
+
+/// Replace the current process with a new binary loaded from `data`.
+/// On success, never returns (jumps to user mode in new address space).
+/// On failure, returns an error string and the old process continues.
+pub fn exec_current_process(data: &[u8], args: &str) -> &'static str {
+    use crate::memory::address::PhysAddr;
+
+    let tid = crate::task::scheduler::current_tid();
+
+    // Get old PD before we replace it
+    let old_pd = match crate::task::scheduler::current_thread_page_directory() {
+        Some(pd) => pd,
+        None => return "exec: no page directory on current thread",
+    };
+
+    // Create fresh page directory
+    let new_pd = match virtual_mem::create_user_page_directory() {
+        Some(pd) => pd,
+        None => return "exec: failed to create page directory (OOM)",
+    };
+
+    // Load binary into new PD
+    let result = match load_binary_into_pd(data, new_pd) {
+        Ok(r) => r,
+        Err(e) => {
+            virtual_mem::destroy_user_page_directory(new_pd);
+            return e;
+        }
+    };
+
+    crate::serial_println!(
+        "exec T{}: entry={:#018x}, brk={:#x}, compat32={}, pages={}",
+        tid, result.entry, result.brk, result.is_compat32, result.user_pages
+    );
+
+    // Map DLLs into new address space
+    crate::task::dll::map_all_dlls_into(new_pd);
+
+    // Determine architecture mode
+    let arch_mode = if result.is_compat32 {
+        crate::task::thread::ArchMode::Compat32
+    } else {
+        crate::task::thread::ArchMode::Native64
+    };
+
+    // Update thread metadata (PD, brk, arch_mode, FPU reset, mmap reset)
+    crate::task::scheduler::exec_update_thread(
+        tid, new_pd, result.brk as u32, arch_mode, result.user_pages,
+    );
+
+    // Set new args (clear old args first)
+    crate::task::scheduler::set_thread_args(tid, args);
+
+    // Rekey environment from old PD to new PD (move entries in-place)
+    crate::task::env::rekey_env(old_pd.0, new_pd.0);
+
+    // Switch CR3 to new address space and destroy old one
+    unsafe {
+        core::arch::asm!("cli", options(nomem, nostack));
+        core::arch::asm!("mov cr3, {}", in(reg) new_pd.as_u64());
+    }
+
+    // Destroy old PD (safe: we're now running on new PD, kernel pages are shared)
+    virtual_mem::destroy_user_page_directory(old_pd);
+
+    // Re-enable interrupts and jump to user mode (never returns)
+    let user_stack = USER_STACK_TOP - 8;
+
+    crate::serial_println!(
+        "exec T{}: jumping to user mode at {:#018x}, stack={:#018x}",
+        tid, result.entry, user_stack
+    );
+
+    if result.is_compat32 {
+        unsafe { jump_to_user_mode_compat32(result.entry, user_stack); }
+    } else {
+        unsafe { jump_to_user_mode(result.entry, user_stack); }
     }
 }
 

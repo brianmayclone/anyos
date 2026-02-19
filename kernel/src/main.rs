@@ -230,25 +230,20 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     }
 
     // Phase 8c: Load shared DLIBs from filesystem
-    match task::dll::load_dll("/Libraries/uisys.dlib", 0x0400_0000) {
-        Ok(pages) => serial_println!("[OK] uisys.dlib: {} pages", pages),
-        Err(e) => serial_println!("[WARN] uisys.dlib not loaded: {}", e),
-    }
-    match task::dll::load_dll("/Libraries/libimage.dlib", 0x0410_0000) {
-        Ok(pages) => serial_println!("[OK] libimage.dlib: {} pages", pages),
-        Err(e) => serial_println!("[WARN] libimage.dlib not loaded: {}", e),
-    }
-    match task::dll::load_dll("/Libraries/libfont.dlib", 0x0420_0000) {
-        Ok(pages) => serial_println!("[OK] libfont.dlib: {} pages", pages),
-        Err(e) => serial_println!("[WARN] libfont.dlib not loaded: {}", e),
-    }
-    match task::dll::load_dll("/Libraries/librender.dlib", 0x0430_0000) {
-        Ok(pages) => serial_println!("[OK] librender.dlib: {} pages", pages),
-        Err(e) => serial_println!("[WARN] librender.dlib not loaded: {}", e),
-    }
-    match task::dll::load_dll("/Libraries/libcompositor.dlib", 0x0438_0000) {
-        Ok(pages) => serial_println!("[OK] libcompositor.dlib: {} pages", pages),
-        Err(e) => serial_println!("[WARN] libcompositor.dlib not loaded: {}", e),
+    const DLLS: [(&str, u64); 5] = [
+        ("/Libraries/uisys.dlib", 0x0400_0000u64),
+        ("/Libraries/libimage.dlib", 0x0410_0000u64),
+        ("/Libraries/libfont.dlib", 0x0420_0000u64),
+        ("/Libraries/librender.dlib", 0x0430_0000u64),
+        ("/Libraries/libcompositor.dlib", 0x0438_0000u64),
+    ];
+
+    for (path, base) in DLLS {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        match task::dll::load_dll(path, base) {
+            Ok(pages) => serial_println!("[OK] {}: {} pages", name, pages),
+            Err(e) => serial_println!("[WARN] {} not loaded: {}", name, e),
+        }
     }
 
     // Phase 9: Start userspace compositor + init process

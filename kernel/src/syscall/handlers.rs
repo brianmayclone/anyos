@@ -2803,3 +2803,166 @@ pub fn sys_set_identity(uid: u32) -> u32 {
     crate::task::scheduler::set_process_identity(tid, uid16, gid);
     0
 }
+
+// =========================================================================
+// Fork / Exec (SYS_FORK, SYS_EXEC)
+// =========================================================================
+
+/// sys_fork - Create a child process that is a copy of the parent.
+/// Called with the full SyscallRegs frame so we can save/restore all user
+/// registers in the child. The child returns 0, the parent returns child TID.
+///
+/// `regs` is the register frame pushed by the INT 0x80 or SYSCALL stub.
+pub fn sys_fork(regs: &super::SyscallRegs) -> u32 {
+    use crate::task::scheduler;
+    use crate::task::loader::{ForkChildRegs, store_pending_fork, fork_child_trampoline};
+    use crate::task::env;
+    use crate::task::dll;
+    use crate::memory::virtual_mem;
+
+    // 1. Capture parent state in a single lock
+    let snap = match scheduler::current_thread_fork_snapshot() {
+        Some(s) => s,
+        None => {
+            crate::serial_println!("sys_fork: failed to snapshot current thread");
+            return u32::MAX;
+        }
+    };
+
+    crate::serial_println!(
+        "sys_fork: parent T{} pd={:#x} brk={:#x}",
+        scheduler::current_tid(), snap.pd.0, snap.brk
+    );
+
+    // 2. Clone user address space
+    let child_pd = match virtual_mem::clone_user_page_directory(snap.pd) {
+        Some(pd) => pd,
+        None => {
+            crate::serial_println!("sys_fork: clone_user_page_directory failed (OOM)");
+            return u32::MAX;
+        }
+    };
+
+    // 3. Build child name: "parent_name(fork)"
+    let name_len = snap.name.iter().position(|&b| b == 0).unwrap_or(snap.name.len());
+    let parent_name = core::str::from_utf8(&snap.name[..name_len]).unwrap_or("?");
+
+    // 4. Spawn child thread in Blocked state (prevents SMP race)
+    let child_tid = scheduler::spawn_blocked(
+        fork_child_trampoline,
+        snap.priority,
+        parent_name,
+    );
+
+    crate::serial_println!("sys_fork: child T{} created, pd={:#x}", child_tid, child_pd.0);
+
+    // 5. Copy thread metadata to child
+    scheduler::set_thread_user_info(child_tid, child_pd, snap.brk);
+
+    // CWD
+    let cwd_len = snap.cwd.iter().position(|&b| b == 0).unwrap_or(0);
+    if cwd_len > 0 {
+        if let Ok(cwd) = core::str::from_utf8(&snap.cwd[..cwd_len]) {
+            scheduler::set_thread_cwd(child_tid, cwd);
+        }
+    }
+
+    // Args
+    let args_len = snap.args.iter().position(|&b| b == 0).unwrap_or(0);
+    if args_len > 0 {
+        if let Ok(args) = core::str::from_utf8(&snap.args[..args_len]) {
+            scheduler::set_thread_args(child_tid, args);
+        }
+    }
+
+    // Capabilities, identity
+    scheduler::set_thread_capabilities(child_tid, snap.capabilities);
+    scheduler::set_thread_identity(child_tid, snap.uid, snap.gid);
+
+    // Pipes
+    if snap.stdout_pipe != 0 {
+        scheduler::set_thread_stdout_pipe(child_tid, snap.stdout_pipe);
+    }
+    if snap.stdin_pipe != 0 {
+        scheduler::set_thread_stdin_pipe(child_tid, snap.stdin_pipe);
+    }
+
+    // FPU state, mmap_next, user_pages, arch_mode
+    scheduler::set_thread_fpu_state(child_tid, &snap.fpu_data);
+    scheduler::set_thread_mmap_next(child_tid, snap.mmap_next);
+    scheduler::set_thread_user_pages(child_tid, snap.user_pages);
+    scheduler::set_thread_arch_mode(child_tid, snap.arch_mode);
+
+    // 6. Clone environment
+    env::clone_env(snap.pd.0, child_pd.0);
+
+    // 7. Map DLLs into child address space (RO pages shared)
+    dll::map_all_dlls_into(child_pd);
+
+    // 8. Build ForkChildRegs from parent's register frame
+    let child_regs = ForkChildRegs {
+        rbx: regs.rbx,
+        rcx: regs.rcx,
+        rdx: regs.rdx,
+        rsi: regs.rsi,
+        rdi: regs.rdi,
+        rbp: regs.rbp,
+        r8: regs.r8,
+        r9: regs.r9,
+        r10: regs.r10,
+        r11: regs.r11,
+        r12: regs.r12,
+        r13: regs.r13,
+        r14: regs.r14,
+        r15: regs.r15,
+        // IRETQ frame from parent's interrupt/SYSCALL frame
+        rip: regs.rip,
+        cs: regs.cs,
+        rflags: regs.rflags,
+        rsp: regs.rsp,
+        ss: regs.ss,
+    };
+    store_pending_fork(child_tid, child_regs);
+
+    // 9. Wake child — it will run fork_child_trampoline and IRETQ with RAX=0
+    scheduler::wake_thread(child_tid);
+
+    crate::serial_println!("sys_fork: parent returning child_tid={}", child_tid);
+
+    // Parent returns child TID
+    child_tid
+}
+
+/// sys_exec - Replace the current process with a new program.
+/// arg1 = path_ptr (null-terminated), arg2 = args_ptr (null-terminated, 0=none).
+/// On success, never returns (process is replaced).
+/// On failure, returns u32::MAX.
+pub fn sys_exec(path_ptr: u32, args_ptr: u32) -> u32 {
+    let path = resolve_path(unsafe { read_user_str(path_ptr) });
+    let args_str;
+    let args = if args_ptr != 0 {
+        args_str = unsafe { read_user_str(args_ptr) };
+        args_str
+    } else {
+        ""
+    };
+
+    crate::serial_println!(
+        "sys_exec: T{} path='{}' args='{}'",
+        crate::task::scheduler::current_tid(), path, args
+    );
+
+    // Read the binary from the filesystem
+    let data = match crate::fs::vfs::read_file_to_vec(&path) {
+        Ok(d) => d,
+        Err(e) => {
+            crate::serial_println!("sys_exec: read_file_to_vec('{}') failed: {:?}", path, e);
+            return u32::MAX;
+        }
+    };
+
+    // exec_current_process only returns on error (on success it jumps to user mode)
+    let err = crate::task::loader::exec_current_process(&data, args);
+    crate::serial_println!("sys_exec: FAILED: {}", err);
+    u32::MAX
+}

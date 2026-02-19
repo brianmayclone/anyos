@@ -2157,6 +2157,106 @@ pub fn set_process_identity(tid: u32, uid: u16, gid: u16) {
     }
 }
 
+// =========================================================================
+// fork() helpers — snapshot parent state, copy fields to child
+// =========================================================================
+
+/// Snapshot of a thread's state needed for fork().
+/// All fields captured under a single scheduler lock to prevent TOCTOU.
+pub struct ForkSnapshot {
+    pub pd: PhysAddr,
+    pub brk: u32,
+    pub arch_mode: crate::task::thread::ArchMode,
+    pub args: [u8; 256],
+    pub cwd: [u8; 256],
+    pub capabilities: crate::task::capabilities::CapSet,
+    pub uid: u16,
+    pub gid: u16,
+    pub stdout_pipe: u32,
+    pub stdin_pipe: u32,
+    pub fpu_data: [u8; 512],
+    pub mmap_next: u32,
+    pub user_pages: u32,
+    pub priority: u8,
+    pub name: [u8; 32],
+}
+
+/// Capture all fork-relevant fields from the current thread in a single lock.
+pub fn current_thread_fork_snapshot() -> Option<ForkSnapshot> {
+    let guard = SCHEDULER.lock();
+    let sched = guard.as_ref()?;
+    let cpu = get_cpu_id();
+    let tid = sched.per_cpu[cpu].current_tid?;
+    let thread = sched.threads.iter().find(|t| t.tid == tid)?;
+    let pd = thread.page_directory?;
+    Some(ForkSnapshot {
+        pd,
+        brk: thread.brk,
+        arch_mode: thread.arch_mode,
+        args: thread.args,
+        cwd: thread.cwd,
+        capabilities: thread.capabilities,
+        uid: thread.uid,
+        gid: thread.gid,
+        stdout_pipe: thread.stdout_pipe,
+        stdin_pipe: thread.stdin_pipe,
+        fpu_data: thread.fpu_state.data,
+        mmap_next: thread.mmap_next,
+        user_pages: thread.user_pages,
+        priority: thread.priority,
+        name: thread.name,
+    })
+}
+
+/// Set the FPU state on a thread (for fork child).
+pub fn set_thread_fpu_state(tid: u32, data: &[u8; 512]) {
+    let mut guard = SCHEDULER.lock();
+    let sched = guard.as_mut().expect("Scheduler not initialized");
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        thread.fpu_state.data = *data;
+    }
+}
+
+/// Set mmap_next on a thread (for fork child).
+pub fn set_thread_mmap_next(tid: u32, val: u32) {
+    let mut guard = SCHEDULER.lock();
+    let sched = guard.as_mut().expect("Scheduler not initialized");
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        thread.mmap_next = val;
+    }
+}
+
+/// Set user_pages count on a thread (for fork child).
+pub fn set_thread_user_pages(tid: u32, val: u32) {
+    let mut guard = SCHEDULER.lock();
+    let sched = guard.as_mut().expect("Scheduler not initialized");
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        thread.user_pages = val;
+    }
+}
+
+/// Update thread state for exec(): new PD, reset brk/mmap/fpu, change arch mode.
+pub fn exec_update_thread(
+    tid: u32,
+    new_pd: PhysAddr,
+    brk: u32,
+    arch_mode: crate::task::thread::ArchMode,
+    user_pages: u32,
+) {
+    let mut guard = SCHEDULER.lock();
+    let sched = guard.as_mut().expect("Scheduler not initialized");
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        thread.page_directory = Some(new_pd);
+        thread.context.cr3 = new_pd.as_u64();
+        thread.brk = brk;
+        thread.mmap_next = 0x2000_0000;
+        thread.fpu_state = crate::task::thread::FxState::new_default();
+        thread.user_pages = user_pages;
+        thread.arch_mode = arch_mode;
+        thread.context.checksum = thread.context.compute_checksum();
+    }
+}
+
 /// Get the DR1 watch address (kept for compat — returns 0, no watchpoint in Mach scheduler).
 pub fn get_dr1_watch_addr() -> u64 { 0 }
 

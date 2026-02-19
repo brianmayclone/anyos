@@ -17,10 +17,10 @@
 /* #undef HAVE_SELINUX */
 
 /* Default paths for anyOS */
-#define CONFIG_TCCDIR "/lib/tcc"
-#define CONFIG_TCC_SYSINCLUDEPATHS "/include"
-#define CONFIG_TCC_LIBPATHS "/lib"
-#define CONFIG_TCC_CRTPREFIX "/lib"
+#define CONFIG_TCCDIR "/Libraries/libc/lib/tcc"
+#define CONFIG_TCC_SYSINCLUDEPATHS "/Libraries/libc/include"
+#define CONFIG_TCC_LIBPATHS "/Libraries/libc/lib"
+#define CONFIG_TCC_CRTPREFIX "/Libraries/libc/lib"
 #define CONFIG_TCC_ELFINTERP ""
 
 /* Use ONE_SOURCE build */

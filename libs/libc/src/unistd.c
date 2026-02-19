@@ -15,6 +15,10 @@ extern int _syscall(int num, int a1, int a2, int a3, int a4);
 #define SYS_OPEN    4
 #define SYS_CLOSE   5
 #define SYS_SBRK    9
+#define SYS_FORK    10
+#define SYS_EXEC    11
+#define SYS_WAITPID 12
+#define SYS_KILL    13
 #define SYS_GETCWD  25
 #define SYS_CHDIR   26
 #define SYS_UNLINK  91
@@ -122,9 +126,66 @@ int access(const char *path, int mode) {
     return 0;
 }
 
+pid_t fork(void) {
+    int r = _syscall(SYS_FORK, 0, 0, 0, 0);
+    if (r == (int)0xFFFFFFFF) {
+        errno = EAGAIN;
+        return -1;
+    }
+    return (pid_t)r;
+}
+
+pid_t waitpid(pid_t pid, int *status, int options) {
+    (void)options;
+    int r = _syscall(SYS_WAITPID, pid, 0, 0, 0);
+    if (r == (int)0xFFFFFFFF) {
+        errno = ECHILD;
+        return -1;
+    }
+    if (status) *status = r;
+    return pid;
+}
+
+/* Build a single space-separated args string from argv[] for SYS_EXEC. */
+static int _build_args(char *const argv[], char *buf, int bufsize) {
+    int pos = 0;
+    for (int i = 0; argv[i] != (void*)0; i++) {
+        int len = 0;
+        while (argv[i][len]) len++;
+        if (pos + len + 1 >= bufsize) break;
+        if (pos > 0) buf[pos++] = ' ';
+        for (int j = 0; j < len; j++) buf[pos++] = argv[i][j];
+    }
+    buf[pos] = '\0';
+    return pos;
+}
+
+int execv(const char *path, char *const argv[]) {
+    char args[512];
+    _build_args(argv, args, sizeof(args));
+    int r = _syscall(SYS_EXEC, (int)path, (int)args, 0, 0);
+    /* exec only returns on error */
+    (void)r;
+    errno = ENOENT;
+    return -1;
+}
+
 int execvp(const char *file, char *const argv[]) {
-    (void)file; (void)argv;
-    errno = ENOSYS;
+    /* Try exact path first */
+    if (execv(file, argv) == 0) return 0;  /* never reached on success */
+
+    /* If not absolute, try /bin/<file> */
+    if (file[0] != '/') {
+        char path[256];
+        int pos = 0;
+        const char *prefix = "/bin/";
+        while (*prefix) path[pos++] = *prefix++;
+        int i = 0;
+        while (file[i] && pos < 255) path[pos++] = file[i++];
+        path[pos] = '\0';
+        return execv(path, argv);
+    }
+    errno = ENOENT;
     return -1;
 }
 

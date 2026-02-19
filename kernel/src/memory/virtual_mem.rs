@@ -555,6 +555,178 @@ pub fn create_user_page_directory() -> Option<PhysAddr> {
     Some(new_pml4_phys)
 }
 
+/// Lock protecting the temp page addresses (0xBFF03000/0xBFF04000) used by
+/// clone_user_page_directory for page-content copying. Prevents SMP races
+/// when two CPUs fork concurrently.
+static CLONE_TEMP_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Clone a user process's entire address space for fork().
+///
+/// Creates a new PML4 with copied kernel mappings (like create_user_page_directory),
+/// then walks the parent's user-space page tables and copies all user pages:
+/// - Identity-map entries (PD[0..31]): skipped (shared with kernel)
+/// - DLL RO pages (PD[32..63], no PAGE_WRITABLE): shared (same physical frame)
+/// - DLL writable pages (.data/.bss): copied (new frame)
+/// - All other user pages: copied (new frame)
+///
+/// Returns the physical address of the child's new PML4, or None on OOM.
+pub fn clone_user_page_directory(parent_pd: PhysAddr) -> Option<PhysAddr> {
+    // Step 1: Create a fresh PML4 with kernel mappings + identity-map
+    let child_pd = create_user_page_directory()?;
+
+    // Temp addresses for page content copy (in kernel space, safe from any CR3)
+    let temp_src = VirtAddr::new(0xFFFF_FFFF_BFF0_3000);
+    let temp_dst = VirtAddr::new(0xFFFF_FFFF_BFF0_4000);
+
+    // Acquire clone temp lock (spin, interrupts may be enabled here)
+    while CLONE_TEMP_LOCK.compare_exchange_weak(
+        false, true, Ordering::Acquire, Ordering::Relaxed
+    ).is_err() {
+        core::hint::spin_loop();
+    }
+
+    // Collect pages to copy/share: (vaddr, parent_phys, flags, is_shared)
+    // We do this in two phases:
+    //   Phase A: Walk parent tables under cli (CR3 switched), collect page info
+    //   Phase B: Copy page contents with kernel CR3 (temp mappings)
+    // This minimizes the time spent with interrupts disabled.
+
+    // Use a Vec on the heap to avoid stack overflow (could be thousands of pages)
+    let mut pages_to_copy: alloc::vec::Vec<(u64, u64, u64, bool)> = alloc::vec::Vec::new();
+
+    unsafe {
+        // Phase A: Walk parent's page tables
+        let old_cr3 = current_cr3();
+        let rflags: u64;
+        asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
+        asm!("cli", options(nomem, nostack));
+        asm!("mov cr3, {}", in(reg) parent_pd.as_u64());
+
+        let pml4_ptr = RECURSIVE_PML4_BASE as *const u64;
+
+        for pml4i in 0..256usize {
+            let pml4e = pml4_ptr.add(pml4i).read_volatile();
+            if pml4e & PAGE_PRESENT == 0 {
+                continue;
+            }
+
+            let pdpt_base = sign_extend(
+                (RECURSIVE_INDEX as u64) << 39
+                    | (RECURSIVE_INDEX as u64) << 30
+                    | (RECURSIVE_INDEX as u64) << 21
+                    | (pml4i as u64) << 12,
+            );
+            let pdpt_ptr = pdpt_base as *const u64;
+
+            for pdpti in 0..ENTRIES_PER_TABLE {
+                let pdpte = pdpt_ptr.add(pdpti).read_volatile();
+                if pdpte & PAGE_PRESENT == 0 {
+                    continue;
+                }
+
+                let pd_base = sign_extend(
+                    (RECURSIVE_INDEX as u64) << 39
+                        | (RECURSIVE_INDEX as u64) << 30
+                        | (pml4i as u64) << 21
+                        | (pdpti as u64) << 12,
+                );
+                let pd_ptr = pd_base as *const u64;
+
+                for pdi in 0..ENTRIES_PER_TABLE {
+                    let pde = pd_ptr.add(pdi).read_volatile();
+                    if pde & PAGE_PRESENT == 0 {
+                        continue;
+                    }
+
+                    // Skip identity-map entries (kernel-owned)
+                    let is_identity_map = pml4i == 0 && pdpti == 0 && pdi < 32;
+                    if is_identity_map {
+                        continue;
+                    }
+
+                    let is_dll = pml4i == 0 && pdpti == 0 && pdi >= 32 && pdi <= 63;
+
+                    let pt_base = sign_extend(
+                        (RECURSIVE_INDEX as u64) << 39
+                            | (pml4i as u64) << 30
+                            | (pdpti as u64) << 21
+                            | (pdi as u64) << 12,
+                    );
+                    let pt_ptr = pt_base as *const u64;
+
+                    for pti in 0..ENTRIES_PER_TABLE {
+                        let pte = pt_ptr.add(pti).read_volatile();
+                        if pte & PAGE_PRESENT == 0 {
+                            continue;
+                        }
+
+                        let parent_phys = pte & ADDR_MASK;
+                        let pte_flags = pte & 0xFFF; // lower 12 bits = flags
+
+                        // Compute virtual address
+                        let vaddr = (pml4i as u64) << 39
+                            | (pdpti as u64) << 30
+                            | (pdi as u64) << 21
+                            | (pti as u64) << 12;
+
+                        // DLL RO pages: share same physical frame
+                        let shared = is_dll && (pte & PAGE_WRITABLE == 0);
+
+                        pages_to_copy.push((vaddr, parent_phys, pte_flags, shared));
+                    }
+                }
+            }
+        }
+
+        // Restore CR3 and interrupts
+        asm!("mov cr3, {}", in(reg) old_cr3);
+        asm!("push {}; popfq", in(reg) rflags, options(nomem));
+    }
+
+    // Phase B: Copy page contents and map in child PD
+    for &(vaddr, parent_phys, pte_flags, shared) in pages_to_copy.iter() {
+        if shared {
+            // DLL RO page — share same frame in child
+            map_page_in_pd(
+                child_pd,
+                VirtAddr::new(vaddr),
+                PhysAddr::new(parent_phys),
+                pte_flags,
+            );
+        } else {
+            // Allocate new frame for child
+            let child_phys = match physical::alloc_frame() {
+                Some(f) => f,
+                None => {
+                    // OOM — clean up child PD and release lock
+                    CLONE_TEMP_LOCK.store(false, Ordering::Release);
+                    destroy_user_page_directory(child_pd);
+                    return None;
+                }
+            };
+
+            // Copy page contents via temp mappings (kernel CR3 is fine)
+            unsafe {
+                map_page(temp_src, PhysAddr::new(parent_phys), PAGE_WRITABLE);
+                map_page(temp_dst, child_phys, PAGE_WRITABLE);
+                core::ptr::copy_nonoverlapping(
+                    temp_src.as_u64() as *const u8,
+                    temp_dst.as_u64() as *mut u8,
+                    FRAME_SIZE,
+                );
+                unmap_page(temp_src);
+                unmap_page(temp_dst);
+            }
+
+            // Map new frame in child's PD
+            map_page_in_pd(child_pd, VirtAddr::new(vaddr), child_phys, pte_flags);
+        }
+    }
+
+    CLONE_TEMP_LOCK.store(false, Ordering::Release);
+    Some(child_pd)
+}
+
 /// Map a page in a specific page directory (not necessarily the current one).
 /// Temporarily switches CR3 to the target PML4.
 ///

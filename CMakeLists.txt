@@ -168,6 +168,7 @@ file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/sbin")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/users")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Users")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/system/tests")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/include")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/include/sys")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/include/netinet")
@@ -965,7 +966,19 @@ add_custom_command(
   COMMENT "Installing curl to /System/bin/curl"
 )
 
+# Copy test source files to /Libraries/system/tests/ on disk
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/Libraries/system/tests/.stamp
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/libs/tests
+    ${SYSROOT_DIR}/Libraries/system/tests
+  COMMAND ${CMAKE_COMMAND} -E touch ${SYSROOT_DIR}/Libraries/system/tests/.stamp
+  DEPENDS ${CMAKE_SOURCE_DIR}/libs/tests/fork_test.c ${CMAKE_SOURCE_DIR}/libs/tests/Makefile
+  COMMENT "Installing test sources to /Libraries/system/tests/"
+)
+
 set(C_TOOLCHAIN_DEPS
+  ${SYSROOT_DIR}/Libraries/system/tests/.stamp
   ${SYSROOT_DIR}/Libraries/libc/lib/libc.a
   ${SYSROOT_DIR}/Libraries/libc/lib/crt0.o
   ${SYSROOT_DIR}/Libraries/libc/include/.stamp

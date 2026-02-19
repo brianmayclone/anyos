@@ -85,6 +85,31 @@ pub fn list(pd: u64, buf: &mut [u8]) -> usize {
     offset
 }
 
+/// Clone all environment variables from one process to another (for fork).
+pub fn clone_env(src_pd: u64, dst_pd: u64) {
+    // Collect entries under lock, then set them outside the lock
+    let entries: Vec<(String, String)> = {
+        let table = ENV_TABLE.lock();
+        if let Some(pe) = table.iter().find(|pe| pe.pd == src_pd) {
+            pe.entries.iter().map(|e| (e.key.clone(), e.value.clone())).collect()
+        } else {
+            Vec::new()
+        }
+    };
+    for (key, value) in entries {
+        set(dst_pd, &key, &value);
+    }
+}
+
+/// Rekey environment variables from old PD to new PD (for exec).
+/// Moves all entries in-place without cloning.
+pub fn rekey_env(old_pd: u64, new_pd: u64) {
+    let mut table = ENV_TABLE.lock();
+    if let Some(pe) = table.iter_mut().find(|pe| pe.pd == old_pd) {
+        pe.pd = new_pd;
+    }
+}
+
 /// Clean up all environment variables for a process (on process exit).
 pub fn cleanup(pd: u64) {
     let mut table = ENV_TABLE.lock();

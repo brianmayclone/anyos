@@ -279,6 +279,7 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_WAITPID => handlers::sys_waitpid(arg1),
         SYS_KILL => handlers::sys_kill(arg1),
         SYS_SPAWN => handlers::sys_spawn(arg1, arg2, arg3, arg4),
+        SYS_EXEC => handlers::sys_exec(arg1, arg2),
         SYS_GETARGS => handlers::sys_getargs(arg1, arg2),
         SYS_TRY_WAITPID => handlers::sys_try_waitpid(arg1),
 
@@ -473,6 +474,12 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
 #[no_mangle]
 pub extern "C" fn syscall_dispatch_32(regs: &mut SyscallRegs) -> u32 {
     let syscall_num = regs.rax as u32;
+
+    // fork() needs the full register frame — intercept before dispatch_inner
+    if syscall_num == SYS_FORK {
+        return handlers::sys_fork(regs);
+    }
+
     let arg1 = regs.rbx as u32;
     let arg2 = regs.rcx as u32;
     let arg3 = regs.rdx as u32;
@@ -498,6 +505,12 @@ pub extern "C" fn syscall_dispatch_32(regs: &mut SyscallRegs) -> u32 {
 #[no_mangle]
 pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
     let syscall_num = regs.rax as u32;
+
+    // fork() needs the full register frame — intercept before dispatch_inner
+    if syscall_num == SYS_FORK {
+        return handlers::sys_fork(regs) as u64;
+    }
+
     // Full 64-bit argument extraction (R10 is in the RCX slot per syscall_fast.asm)
     let _arg1_64: u64 = regs.rbx;
     let _arg2_64: u64 = regs.rcx; // actually R10

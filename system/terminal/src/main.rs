@@ -493,10 +493,11 @@ impl Shell {
                 let path = if bg_cmd.starts_with('/') {
                     String::from(bg_cmd)
                 } else if bg_cmd.starts_with("./") || bg_cmd.starts_with("../") {
+                    let rel = bg_cmd.strip_prefix("./").unwrap_or(bg_cmd);
                     if self.cwd == "/" {
-                        format!("/{}", bg_cmd.trim_start_matches("./"))
+                        format!("/{}", rel)
                     } else {
-                        format!("{}/{}", self.cwd, bg_cmd)
+                        format!("{}/{}", self.cwd, rel)
                     }
                 } else {
                     match resolve_from_path(bg_cmd) {
@@ -596,10 +597,11 @@ impl Shell {
             let path = if cmd.starts_with('/') {
                 String::from(cmd)
             } else if cmd.starts_with("./") || cmd.starts_with("../") {
+                let rel = cmd.strip_prefix("./").unwrap_or(cmd);
                 if self.cwd == "/" {
-                    format!("/{}", cmd.trim_start_matches("./"))
+                    format!("/{}", rel)
                 } else {
-                    format!("{}/{}", self.cwd, cmd)
+                    format!("{}/{}", self.cwd, rel)
                 }
             } else {
                 match resolve_from_path(cmd) {
