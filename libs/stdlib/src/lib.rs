@@ -19,6 +19,7 @@ pub mod io;
 pub mod ipc;
 pub mod kbd;
 pub mod net;
+pub mod permissions;
 pub mod process;
 pub mod sys;
 pub mod ui;

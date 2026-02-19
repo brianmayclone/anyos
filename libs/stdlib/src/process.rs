@@ -95,8 +95,33 @@ pub fn exec(path: &str, args: &str) -> u32 {
 }
 
 /// Spawn a new process. Returns TID or u32::MAX on error.
+///
+/// For `.app` bundles that require sensitive permissions and have not been
+/// approved by the user yet, this automatically launches the PermissionDialog,
+/// waits for the user's decision, and retries the spawn.
 pub fn spawn(path: &str, args: &str) -> u32 {
-    spawn_piped(path, args, 0)
+    let tid = spawn_piped(path, args, 0);
+    if tid == crate::permissions::PERM_NEEDED {
+        // Read pending info stored by the kernel
+        let mut buf = [0u8; 512];
+        let len = crate::permissions::perm_pending_info(&mut buf);
+        if len == 0 {
+            return u32::MAX;
+        }
+        // Build dialog args: pass the raw pending info as the argument
+        let info = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
+        let dialog_tid = spawn_piped("/System/permdialog", info, 0);
+        if dialog_tid == u32::MAX || dialog_tid == crate::permissions::PERM_NEEDED {
+            return u32::MAX;
+        }
+        let exit_code = waitpid(dialog_tid);
+        if exit_code != 0 {
+            return u32::MAX; // User cancelled or dialog error
+        }
+        // Retry the original spawn — permissions should now be stored
+        return spawn_piped(path, args, 0);
+    }
+    tid
 }
 
 /// Spawn a new process with stdout redirected to a pipe.

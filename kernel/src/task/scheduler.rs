@@ -2261,6 +2261,42 @@ pub fn current_thread_gid() -> u16 {
     0
 }
 
+/// Store pending permission info on the current thread.
+/// Data is a UTF-8 byte slice: "app_id\x1Fapp_name\x1Fcaps_hex\x1Fbundle_path".
+pub fn set_current_perm_pending(data: &[u8]) {
+    let mut guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
+            if let Some(idx) = sched.find_idx(tid) {
+                let len = data.len().min(512);
+                sched.threads[idx].perm_pending[..len].copy_from_slice(&data[..len]);
+                sched.threads[idx].perm_pending_len = len as u16;
+            }
+        }
+    }
+}
+
+/// Read pending permission info from the current thread into `buf`.
+/// Returns the number of bytes copied (0 if none).
+pub fn current_perm_pending(buf: &mut [u8]) -> usize {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
+            if let Some(idx) = sched.find_idx(tid) {
+                let len = sched.threads[idx].perm_pending_len as usize;
+                if len > 0 {
+                    let copy = len.min(buf.len());
+                    buf[..copy].copy_from_slice(&sched.threads[idx].perm_pending[..copy]);
+                    return copy;
+                }
+            }
+        }
+    }
+    0
+}
+
 /// Set the user and group IDs for a specific thread.
 pub fn set_thread_identity(tid: u32, uid: u16, gid: u16) {
     let mut guard = SCHEDULER.lock();

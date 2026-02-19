@@ -25,15 +25,23 @@ pub const CAP_COMPOSITOR: CapSet = 1 << 9;
 pub const CAP_SYSTEM: CapSet     = 1 << 10;
 pub const CAP_DLL: CapSet        = 1 << 11;
 pub const CAP_THREAD: CapSet     = 1 << 12;
+pub const CAP_MANAGE_PERMS: CapSet = 1 << 13;
 
 // ---- Predefined sets ----
 
 /// All capabilities — for system apps (compositor, terminal, finder).
-pub const CAP_ALL: CapSet = (1 << 13) - 1; // bits 0..12
+pub const CAP_ALL: CapSet = (1 << 14) - 1; // bits 0..13
 
 /// Default for CLI programs spawned from terminal.
 pub const CAP_DEFAULT: CapSet = CAP_FILESYSTEM | CAP_PROCESS | CAP_PIPE
                               | CAP_EVENT | CAP_DLL | CAP_THREAD;
+
+/// Infrastructure capabilities every GUI app needs — granted without user consent.
+pub const CAP_AUTO_GRANTED: CapSet = CAP_DLL | CAP_THREAD | CAP_SHM | CAP_EVENT | CAP_PIPE;
+
+/// Capabilities that require explicit user consent on first launch.
+pub const CAP_SENSITIVE: CapSet = CAP_FILESYSTEM | CAP_NETWORK | CAP_AUDIO | CAP_DISPLAY
+                                | CAP_DEVICE | CAP_PROCESS | CAP_SYSTEM | CAP_COMPOSITOR;
 
 /// Parse a comma-separated capability string into a bitmask.
 ///
@@ -59,6 +67,7 @@ pub fn parse_capabilities(s: &str) -> CapSet {
             "system" => CAP_SYSTEM,
             "dll" => CAP_DLL,
             "thread" => CAP_THREAD,
+            "manage_perms" => CAP_MANAGE_PERMS,
             _ => 0,
         };
     }
@@ -224,6 +233,15 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
 
         // Thread creation
         syscall::SYS_THREAD_CREATE => CAP_THREAD,
+
+        // App permissions — check and pending info are always allowed;
+        // store, list, and delete require CAP_MANAGE_PERMS.
+        syscall::SYS_PERM_CHECK
+        | syscall::SYS_PERM_PENDING_INFO => 0,
+
+        syscall::SYS_PERM_STORE
+        | syscall::SYS_PERM_LIST
+        | syscall::SYS_PERM_DELETE => CAP_MANAGE_PERMS,
 
         // Unknown syscalls — let the dispatch handle it (returns u32::MAX)
         _ => 0,

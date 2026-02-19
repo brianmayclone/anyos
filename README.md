@@ -16,7 +16,7 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 ![x86_64](https://img.shields.io/badge/Arch-x86__64-4B7BEC?style=flat-square)
 ![License: MIT](https://img.shields.io/badge/License-MIT-2ecc71?style=flat-square)
 ![Programs](https://img.shields.io/badge/Programs-70+-e67e22?style=flat-square)
-![Syscalls](https://img.shields.io/badge/Syscalls-113-9b59b6?style=flat-square)
+![Syscalls](https://img.shields.io/badge/Syscalls-118-9b59b6?style=flat-square)
 
 <br>
 
@@ -84,7 +84,7 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 - **SMP support** — multi-core via LAPIC/IOAPIC with per-CPU idle threads
 - **Per-process address spaces** with isolated PML4 page directories
 - **Ring 3 user mode** with dual syscall interface: `SYSCALL/SYSRET` (64-bit) and `INT 0x80` (32-bit compat)
-- **113 system calls** across 21 categories (process, file I/O, networking, IPC, display, audio, USB, ...)
+- **118 system calls** across 22 categories (process, file I/O, networking, IPC, display, audio, USB, permissions, ...)
 - **Physical + virtual memory manager** with kernel heap allocator
 - **exFAT filesystem** with VFAT long filename support, symlinks, mount points, chmod/chown
 - **Storage dispatch**: ATA PIO (legacy IDE) and **AHCI** (SATA DMA) backends
@@ -92,6 +92,7 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 - **FPU/SSE support** with eager save/restore (FXSAVE/FXRSTOR) per context switch
 - **TSC-calibrated timekeeping** via PIT channel 2 polled (no IRQ dependency)
 - **User identity system** — UID/GID, user accounts, groups, authentication
+- **Runtime app permissions** — per-user capability grants with consent dialog on first launch, reviewable in Settings
 
 ### Graphics & UI
 
@@ -335,7 +336,7 @@ anyos/
       memory/              Physical allocator, virtual memory, heap
       net/                 Ethernet, ARP, IPv4, ICMP, UDP, TCP, DHCP, DNS
       sync/                Spinlock, mutex
-      syscall/             113 syscall handlers
+      syscall/             118 syscall handlers
       task/                Scheduler, context switch, ELF loader, DLL loader
       crypto/              MD5 hash
   libs/                  Libraries
@@ -363,6 +364,7 @@ anyos/
     terminal/              Terminal emulator
     finder/                File browser
     settings/              System preferences
+    permdialog/            Permission consent dialog
     taskmanager/           Activity Monitor
   third_party/           External dependencies
     tcc-0.9.27/            Tiny C Compiler
@@ -404,7 +406,7 @@ Programs link against lightweight client stub crates (e.g. `uisys_client`, `libf
 ## Documentation
 
 - **[Architecture Overview](docs/architecture.md)** — Boot process, memory layout, scheduling, IPC, USB, user identity
-- **[Syscall Reference](docs/syscalls.md)** — Complete reference for all 113 system calls
+- **[Syscall Reference](docs/syscalls.md)** — Complete reference for all 118 system calls
 - **[Standard Library API](docs/stdlib-api.md)** — `anyos_std` crate reference for Rust user programs
 - **[UI System API](docs/uisys-api.md)** — `uisys` DLL component reference (31 components, 84 exports)
 - **[C Library API](docs/libc-api.md)** — POSIX libc reference (35 headers) for C programs

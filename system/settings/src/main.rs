@@ -5,6 +5,7 @@ use anyos_std::sys;
 use anyos_std::net;
 use anyos_std::process;
 use anyos_std::fs;
+use anyos_std::permissions;
 use anyos_std::ui::window;
 
 anyos_std::entry!(main);
@@ -21,14 +22,47 @@ const PAGE_GENERAL: usize = 0;
 const PAGE_DISPLAY: usize = 1;
 const PAGE_WALLPAPER: usize = 2;
 const PAGE_NETWORK: usize = 3;
-const PAGE_ABOUT: usize = 4;
-const PAGE_NAMES: [&str; 5] = ["General", "Display", "Wallpaper", "Network", "About"];
+const PAGE_APPS: usize = 4;
+const PAGE_ABOUT: usize = 5;
+const PAGE_NAMES: [&str; 6] = ["General", "Display", "Wallpaper", "Network", "Apps", "About"];
 
 // Wallpaper thumbnail dimensions
 const THUMB_W: u32 = 120;
 const THUMB_H: u32 = 80;
 const THUMB_PAD: i32 = 12;
 const MAX_WALLPAPERS: usize = 16;
+
+// ── Capability bit definitions (must match kernel) ──────────────────────────
+const CAP_FILESYSTEM: u32  = 1 << 0;
+const CAP_NETWORK: u32     = 1 << 1;
+const CAP_AUDIO: u32       = 1 << 2;
+const CAP_DISPLAY: u32     = 1 << 3;
+const CAP_DEVICE: u32      = 1 << 4;
+const CAP_PROCESS: u32     = 1 << 5;
+const CAP_SYSTEM: u32      = 1 << 6;
+const CAP_COMPOSITOR: u32  = 1 << 12;
+
+struct PermGroup {
+    mask: u32,
+    name: &'static str,
+}
+
+const PERM_GROUPS: &[PermGroup] = &[
+    PermGroup { mask: CAP_FILESYSTEM, name: "Files & Storage" },
+    PermGroup { mask: CAP_NETWORK, name: "Internet & Network" },
+    PermGroup { mask: CAP_AUDIO, name: "Audio" },
+    PermGroup { mask: CAP_DISPLAY | CAP_COMPOSITOR, name: "Display" },
+    PermGroup { mask: CAP_DEVICE, name: "Devices" },
+    PermGroup { mask: CAP_PROCESS | CAP_SYSTEM, name: "System" },
+];
+
+const MAX_APPS: usize = 32;
+
+struct AppEntry {
+    app_id: [u8; 64],
+    app_id_len: usize,
+    granted: u32,
+}
 
 /// Compute how many thumbnail columns fit in the content area.
 fn thumb_cols(win_w: u32) -> usize {
@@ -63,7 +97,8 @@ fn main() {
             .item(11, "Display", 0)
             .item(12, "Wallpaper", 0)
             .item(13, "Network", 0)
-            .item(14, "About", 0)
+            .item(14, "Apps", 0)
+            .item(15, "About", 0)
         .end_menu();
     let data = mb.build();
     window::set_menu(win, data);
@@ -99,6 +134,18 @@ fn main() {
     let mut wallpaper_selected: usize = 0;
     let mut wallpapers_scanned = false;
 
+    // Apps page state
+    let mut apps: alloc::vec::Vec<AppEntry> = alloc::vec::Vec::new();
+    let mut apps_scanned = false;
+    let mut apps_detail: Option<usize> = None;
+    let mut perm_toggles: [UiToggle; 6] = [
+        UiToggle::new(0, 0, false), UiToggle::new(0, 0, false),
+        UiToggle::new(0, 0, false), UiToggle::new(0, 0, false),
+        UiToggle::new(0, 0, false), UiToggle::new(0, 0, false),
+    ];
+    let mut reset_btn = UiButton::new(0, 0, 160, 34, ButtonStyle::Destructive);
+    let mut back_btn = UiButton::new(0, 0, 60, 28, ButtonStyle::Plain);
+
     let mut event = [0u32; 5];
     let mut needs_redraw = true;
     let mut scroll_y: u32 = 0;
@@ -112,6 +159,13 @@ fn main() {
         if sidebar.selected == PAGE_WALLPAPER && !wallpapers_scanned {
             scan_wallpapers(&mut wallpapers, &mut wallpaper_selected);
             wallpapers_scanned = true;
+            needs_redraw = true;
+        }
+
+        // Lazy-load app permissions when page is first shown
+        if sidebar.selected == PAGE_APPS && !apps_scanned {
+            scan_apps(&mut apps);
+            apps_scanned = true;
             needs_redraw = true;
         }
 
@@ -184,10 +238,72 @@ fn main() {
                             }
                         }
                     }
+
+                    if sidebar.selected == PAGE_APPS {
+                        let cx = SIDEBAR_W as i32 + 20;
+                        let cw = win_w as i32 - SIDEBAR_W as i32 - 40;
+                        let sy = scroll_y as i32;
+                        if let Some(detail_idx) = apps_detail {
+                            // Detail view: position components then handle events
+                            let toggle_x = cx + cw - PAD - 36;
+                            let card_y = 86 - sy;
+                            for i in 0..6 {
+                                perm_toggles[i].x = toggle_x;
+                                perm_toggles[i].y = card_y + PAD + (i as i32 * ROW_H) + 8;
+                            }
+                            let num_rows = 6i32;
+                            reset_btn.x = cx;
+                            reset_btn.y = card_y + PAD * 2 + num_rows * ROW_H + 16;
+                            back_btn.x = cx;
+                            back_btn.y = 20 - sy;
+
+                            if back_btn.handle_event(&ui_event) {
+                                apps_detail = None;
+                                scroll_y = 0;
+                                needs_redraw = true;
+                            }
+                            for i in 0..6 {
+                                if let Some(new_state) = perm_toggles[i].handle_event(&ui_event) {
+                                    if detail_idx < apps.len() {
+                                        if new_state {
+                                            apps[detail_idx].granted |= PERM_GROUPS[i].mask;
+                                        } else {
+                                            apps[detail_idx].granted &= !PERM_GROUPS[i].mask;
+                                        }
+                                        let a = &apps[detail_idx];
+                                        let id = core::str::from_utf8(&a.app_id[..a.app_id_len]).unwrap_or("");
+                                        permissions::perm_store(id, a.granted, 0);
+                                        needs_redraw = true;
+                                    }
+                                }
+                            }
+                            if reset_btn.handle_event(&ui_event) {
+                                if detail_idx < apps.len() {
+                                    let a = &apps[detail_idx];
+                                    let id = core::str::from_utf8(&a.app_id[..a.app_id_len]).unwrap_or("");
+                                    permissions::perm_delete(id);
+                                    apps.remove(detail_idx);
+                                    apps_detail = None;
+                                    scroll_y = 0;
+                                    needs_redraw = true;
+                                }
+                            }
+                        } else {
+                            // List view: hit test app rows
+                            if let Some(idx) = hit_test_app_row(&apps, &ui_event, cx, scroll_y) {
+                                apps_detail = Some(idx);
+                                for i in 0..6 {
+                                    perm_toggles[i].on = apps[idx].granted & PERM_GROUPS[i].mask != 0;
+                                }
+                                scroll_y = 0;
+                                needs_redraw = true;
+                            }
+                        }
+                    }
                 }
                 7 => { // EVENT_MOUSE_SCROLL
                     let dz = event[1] as i32;
-                    let content_h = page_content_height(sidebar.selected, resolutions.len(), wallpapers.len(), win_w);
+                    let content_h = page_content_height(sidebar.selected, resolutions.len(), wallpapers.len(), win_w, apps.len(), apps_detail.is_some());
                     let max_scroll = content_h.saturating_sub(win_h);
                     if dz < 0 {
                         scroll_y = scroll_y.saturating_sub((-dz) as u32 * 30);
@@ -204,7 +320,8 @@ fn main() {
                         11 => { sidebar.selected = PAGE_DISPLAY; needs_redraw = true; }
                         12 => { sidebar.selected = PAGE_WALLPAPER; needs_redraw = true; }
                         13 => { sidebar.selected = PAGE_NETWORK; needs_redraw = true; }
-                        14 => { sidebar.selected = PAGE_ABOUT; needs_redraw = true; }
+                        14 => { sidebar.selected = PAGE_APPS; needs_redraw = true; }
+                        15 => { sidebar.selected = PAGE_ABOUT; needs_redraw = true; }
                         _ => {}
                     }
                 }
@@ -222,12 +339,15 @@ fn main() {
 
         if sidebar.selected != prev_page {
             scroll_y = 0;
+            if prev_page == PAGE_APPS {
+                apps_detail = None;
+            }
             prev_page = sidebar.selected;
         }
 
         if needs_redraw {
             update_positions(&sidebar, &mut dark_toggle, &mut sound_toggle, &mut notif_toggle, &mut brightness, &mut res_radio, resolutions.len(), win_w, scroll_y);
-            render(win, &sidebar, &dark_toggle, &sound_toggle, &notif_toggle, &brightness, &res_radio, &resolutions, &wallpapers, wallpaper_selected, win_w, win_h, scroll_y);
+            render(win, &sidebar, &dark_toggle, &sound_toggle, &notif_toggle, &brightness, &res_radio, &resolutions, &wallpapers, wallpaper_selected, &apps, apps_detail, &perm_toggles, &reset_btn, &back_btn, win_w, win_h, scroll_y);
             window::present(win);
             needs_redraw = false;
         }
@@ -621,7 +741,7 @@ fn update_positions(
     res_radio.spacing = 24;
 }
 
-fn page_content_height(page: usize, num_resolutions: usize, num_wallpapers: usize, win_w: u32) -> u32 {
+fn page_content_height(page: usize, num_resolutions: usize, num_wallpapers: usize, win_w: u32, num_apps: usize, apps_detail: bool) -> u32 {
     match page {
         PAGE_GENERAL => (54 + PAD * 2 + ROW_H * 4 + 20) as u32,
         PAGE_DISPLAY => {
@@ -636,6 +756,15 @@ fn page_content_height(page: usize, num_resolutions: usize, num_wallpapers: usiz
             (54 + PAD * 2 + 36 + grid_h + 20) as u32
         }
         PAGE_NETWORK => (54 + PAD * 2 + ROW_H * 6 + 20) as u32,
+        PAGE_APPS => {
+            if apps_detail {
+                // Back label + app name + card with 6 rows + reset button
+                (86 + PAD * 2 + ROW_H * 6 + 60) as u32
+            } else {
+                let rows = num_apps.max(1) as i32;
+                (54 + PAD * 2 + rows * ROW_H + 20) as u32
+            }
+        }
         PAGE_ABOUT => (54 + PAD * 2 + ROW_H * 5 + 20) as u32,
         _ => 400,
     }
@@ -656,6 +785,11 @@ fn render(
     resolutions: &[(u32, u32)],
     wallpapers: &[WallpaperEntry],
     wallpaper_selected: usize,
+    apps: &[AppEntry],
+    apps_detail: Option<usize>,
+    perm_toggles: &[UiToggle; 6],
+    reset_btn: &UiButton,
+    back_btn: &UiButton,
     win_w: u32, win_h: u32,
     scroll_y: u32,
 ) {
@@ -672,11 +806,12 @@ fn render(
         PAGE_DISPLAY => render_display(win, brightness, res_radio, resolutions, cx, cw, sy),
         PAGE_WALLPAPER => render_wallpaper(win, wallpapers, wallpaper_selected, cx, cw, sy, win_w),
         PAGE_NETWORK => render_network(win, cx, cw, sy),
+        PAGE_APPS => render_apps(win, apps, apps_detail, perm_toggles, reset_btn, back_btn, cx, cw, sy),
         PAGE_ABOUT => render_about(win, cx, cw, sy),
         _ => {}
     }
 
-    let content_h = page_content_height(sidebar_c.selected, resolutions.len(), wallpapers.len(), win_w);
+    let content_h = page_content_height(sidebar_c.selected, resolutions.len(), wallpapers.len(), win_w, apps.len(), apps_detail.is_some());
     let sb_x = SIDEBAR_W as i32;
     let sb_w = win_w - SIDEBAR_W;
     scrollbar(win, sb_x, 0, sb_w, win_h, content_h, scroll_y);
@@ -906,6 +1041,219 @@ fn render_about(win: u32, cx: i32, cw: u32, sy: i32) {
     let mut b = [0u8; 32];
     let hz = sys::tick_hz().max(1);
     label(win, vx, ry + 12, fmt_uptime(&mut b, sys::uptime() / hz), colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
+}
+
+fn render_apps(
+    win: u32,
+    apps: &[AppEntry],
+    detail: Option<usize>,
+    perm_toggles: &[UiToggle; 6],
+    reset_btn: &UiButton,
+    back_btn: &UiButton,
+    cx: i32,
+    cw: u32,
+    sy: i32,
+) {
+    if let Some(idx) = detail {
+        render_apps_detail(win, apps, idx, perm_toggles, reset_btn, back_btn, cx, cw, sy);
+    } else {
+        render_apps_list(win, apps, cx, cw, sy);
+    }
+}
+
+fn render_apps_list(win: u32, apps: &[AppEntry], cx: i32, cw: u32, sy: i32) {
+    label(win, cx, 20 - sy, "Apps", colors::TEXT(), FontSize::Title, TextAlign::Left);
+
+    if apps.is_empty() {
+        label(win, cx + PAD, 70 - sy, "No apps with stored permissions.",
+            colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
+        return;
+    }
+
+    let num_rows = apps.len() as i32;
+    let card_y = 54 - sy;
+    let card_h = (PAD * 2 + num_rows * ROW_H) as u32;
+    card(win, cx, card_y, cw, card_h);
+
+    let lx = cx + PAD;
+
+    for (i, app) in apps.iter().enumerate() {
+        let ry = card_y + PAD + i as i32 * ROW_H;
+
+        if i > 0 {
+            divider_h(win, lx, ry, cw - PAD as u32 * 2);
+        }
+
+        let app_id = core::str::from_utf8(&app.app_id[..app.app_id_len]).unwrap_or("?");
+        label(win, lx, ry + 12, app_id, colors::TEXT(), FontSize::Normal, TextAlign::Left);
+
+        // Show permission count as secondary text
+        let count = count_granted_groups(app.granted);
+        let mut b = [0u8; 32];
+        let desc = fmt_perm_count(&mut b, count);
+        label(win, cx + cw as i32 - PAD - 140, ry + 12, desc, colors::TEXT_SECONDARY(), FontSize::Small, TextAlign::Right);
+
+        // Arrow indicator
+        label(win, cx + cw as i32 - PAD - 8, ry + 12, ">", colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
+    }
+}
+
+fn render_apps_detail(
+    win: u32,
+    apps: &[AppEntry],
+    idx: usize,
+    perm_toggles: &[UiToggle; 6],
+    reset_btn: &UiButton,
+    back_btn: &UiButton,
+    cx: i32,
+    cw: u32,
+    sy: i32,
+) {
+    if idx >= apps.len() { return; }
+
+    // Back button
+    back_btn.render(win, "\u{2190} Back");
+
+    // App name title
+    let app_id = core::str::from_utf8(&apps[idx].app_id[..apps[idx].app_id_len]).unwrap_or("?");
+    let mut title_buf = [0u8; 80];
+    let title_len = fmt_app_title(app_id, &mut title_buf);
+    let title = core::str::from_utf8(&title_buf[..title_len]).unwrap_or(app_id);
+    label(win, cx, 54 - sy, title, colors::TEXT(), FontSize::Title, TextAlign::Left);
+
+    // Permission toggles card
+    let card_y = 86 - sy;
+    let card_h = (PAD * 2 + 6 * ROW_H) as u32;
+    card(win, cx, card_y, cw, card_h);
+
+    let lx = cx + PAD;
+
+    for i in 0..6 {
+        let ry = card_y + PAD + i as i32 * ROW_H;
+
+        if i > 0 {
+            divider_h(win, lx, ry, cw - PAD as u32 * 2);
+        }
+
+        label(win, lx, ry + 12, PERM_GROUPS[i].name, colors::TEXT(), FontSize::Normal, TextAlign::Left);
+        perm_toggles[i].render(win);
+    }
+
+    // Reset button
+    reset_btn.render(win, "Reset Permissions");
+}
+
+fn count_granted_groups(granted: u32) -> u32 {
+    let mut count = 0u32;
+    for g in PERM_GROUPS.iter() {
+        if granted & g.mask != 0 { count += 1; }
+    }
+    count
+}
+
+fn fmt_perm_count<'a>(buf: &'a mut [u8; 32], count: u32) -> &'a str {
+    let mut p = 0usize;
+    let mut t = [0u8; 8];
+    let s = fmt_u32(&mut t, count);
+    buf[p..p + s.len()].copy_from_slice(s.as_bytes());
+    p += s.len();
+    if count == 1 {
+        buf[p..p + 11].copy_from_slice(b" permission");
+        p += 11;
+    } else {
+        buf[p..p + 12].copy_from_slice(b" permissions");
+        p += 12;
+    }
+    unsafe { core::str::from_utf8_unchecked(&buf[..p]) }
+}
+
+fn fmt_app_title<'a>(app_id: &str, buf: &'a mut [u8; 80]) -> usize {
+    let mut p = 0usize;
+    let max = buf.len() - 1;
+    for &b in app_id.as_bytes() {
+        if p >= max { break; }
+        buf[p] = b;
+        p += 1;
+    }
+    p
+}
+
+fn hit_test_app_row(apps: &[AppEntry], event: &UiEvent, cx: i32, scroll_y: u32) -> Option<usize> {
+    if event.event_type != window::EVENT_MOUSE_DOWN { return None; }
+    let (mx, my) = event.mouse_pos();
+
+    let sy = scroll_y as i32;
+    let card_y = 54 - sy;
+
+    for i in 0..apps.len() {
+        let ry = card_y + PAD + i as i32 * ROW_H;
+        if mx >= cx && my >= ry && my < ry + ROW_H {
+            return Some(i);
+        }
+    }
+    None
+}
+
+// ============================================================================
+// Apps permission scanning
+// ============================================================================
+
+fn scan_apps(apps: &mut alloc::vec::Vec<AppEntry>) {
+    apps.clear();
+    let mut buf = [0u8; 4096];
+    let count = permissions::perm_list(&mut buf);
+    if count == 0 || count == u32::MAX { return; }
+
+    // Parse "app_id\x1Fgranted_hex\n" entries
+    let mut pos = 0usize;
+    let data = &buf[..];
+    let mut entries = 0u32;
+
+    while pos < data.len() && entries < count && apps.len() < MAX_APPS {
+        // Find end of line
+        let line_end = data[pos..].iter().position(|&b| b == b'\n')
+            .map(|p| pos + p).unwrap_or(data.len());
+        let line = &data[pos..line_end];
+        pos = line_end + 1;
+
+        if line.is_empty() { continue; }
+
+        // Split by \x1F
+        if let Some(sep) = line.iter().position(|&b| b == 0x1F) {
+            let id_bytes = &line[..sep];
+            let hex_bytes = &line[sep + 1..];
+
+            if !id_bytes.is_empty() && id_bytes.len() <= 64 {
+                let mut entry = AppEntry {
+                    app_id: [0u8; 64],
+                    app_id_len: id_bytes.len(),
+                    granted: parse_hex(hex_bytes),
+                };
+                entry.app_id[..id_bytes.len()].copy_from_slice(id_bytes);
+                apps.push(entry);
+                entries += 1;
+            }
+        }
+    }
+
+    // Sort by app_id
+    apps.sort_unstable_by(|a, b| {
+        cmp_name_ci(&a.app_id[..a.app_id_len], &b.app_id[..b.app_id_len])
+    });
+}
+
+fn parse_hex(s: &[u8]) -> u32 {
+    let mut val: u32 = 0;
+    for &b in s {
+        let digit = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => continue,
+        };
+        val = val.wrapping_shl(4) | digit as u32;
+    }
+    val
 }
 
 // ============================================================================

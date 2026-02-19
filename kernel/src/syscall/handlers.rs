@@ -631,9 +631,12 @@ pub fn sys_try_waitpid(tid: u32) -> u32 {
     crate::task::scheduler::try_waitpid(tid)
 }
 
+/// Sentinel return value from sys_spawn: the .app needs a permission dialog first.
+const PERM_NEEDED: u32 = u32::MAX - 2;
+
 /// sys_spawn - Spawn a new process from a filesystem path.
 /// arg1=path_ptr, arg2=stdout_pipe_id (0=none), arg3=args_ptr (0=none), arg4=stdin_pipe_id (0=none)
-/// Returns TID or u32::MAX on error.
+/// Returns TID, u32::MAX on error, or PERM_NEEDED if a permission dialog is required.
 pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32) -> u32 {
     let path = unsafe { read_user_str(path_ptr) };
     let args = if args_ptr != 0 {
@@ -649,6 +652,49 @@ pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32
     } else {
         raw_name
     };
+
+    // ── Runtime permission check for .app bundles ──
+    if path.ends_with(".app") {
+        if let Some(config) = crate::task::app_config::parse_info_conf(path) {
+            let declared = if let Some(ref cap_str) = config.capabilities {
+                crate::task::capabilities::parse_capabilities(cap_str)
+            } else {
+                crate::task::capabilities::CAP_DEFAULT
+            };
+            let sensitive_requested = declared & crate::task::capabilities::CAP_SENSITIVE;
+
+            // System apps (capabilities=all) bypass the dialog entirely
+            if declared != crate::task::capabilities::CAP_ALL && sensitive_requested != 0 {
+                let uid = crate::task::scheduler::current_thread_uid();
+                let app_id = config.id.as_deref().unwrap_or(name);
+
+                if crate::task::permissions::read_stored_perms(uid, app_id).is_none() {
+                    // No permission file — store pending info and return PERM_NEEDED
+                    let app_name = config.name.as_deref().unwrap_or(name);
+                    let caps_hex = alloc::format!("{:x}", declared);
+                    // Format: "app_id\x1Fapp_name\x1Fcaps_hex\x1Fbundle_path"
+                    let pending = alloc::format!(
+                        "{}\x1F{}\x1F{}\x1F{}",
+                        app_id, app_name, caps_hex, path
+                    );
+                    crate::task::scheduler::set_current_perm_pending(pending.as_bytes());
+                    crate::serial_println!(
+                        "sys_spawn: PERM_NEEDED for '{}' (app_id={}, caps={:#x})",
+                        path, app_id, declared
+                    );
+                    return PERM_NEEDED;
+                }
+            } else if declared != crate::task::capabilities::CAP_ALL && sensitive_requested == 0 {
+                // Only auto-granted caps — auto-create empty permission file
+                let uid = crate::task::scheduler::current_thread_uid();
+                let app_id = config.id.as_deref().unwrap_or(name);
+                if crate::task::permissions::read_stored_perms(uid, app_id).is_none() {
+                    crate::task::permissions::write_stored_perms(uid, app_id, 0);
+                }
+            }
+        }
+    }
+
     match crate::task::loader::load_and_run_with_args(path, name, args) {
         Ok(tid) => {
             // Inherit parent's cwd
@@ -3650,4 +3696,121 @@ pub fn deliver_pending_signal_default() {
             sig, crate::task::scheduler::current_tid());
         sys_exit(128 + sig);
     }
+}
+
+// =========================================================================
+// App permission syscalls
+// =========================================================================
+
+/// SYS_PERM_CHECK (250): Check stored permissions for an app.
+/// arg1 = app_id_ptr (null-terminated string), arg2 = uid (0 = use caller's uid).
+/// Returns the granted capability bitmask, or u32::MAX if no permission file exists.
+pub fn sys_perm_check(app_id_ptr: u32, uid_arg: u32) -> u32 {
+    let app_id = match read_user_str_safe(app_id_ptr) {
+        Some(s) => s,
+        None => return u32::MAX,
+    };
+    let uid = if uid_arg == 0 {
+        crate::task::scheduler::current_thread_uid()
+    } else {
+        uid_arg as u16
+    };
+
+    match crate::task::permissions::read_stored_perms(uid, app_id) {
+        Some(granted) => granted,
+        None => u32::MAX,
+    }
+}
+
+/// SYS_PERM_STORE (251): Store granted permissions for an app.
+/// arg1 = app_id_ptr, arg2 = granted bitmask, arg3 = uid (0 = caller's uid).
+/// Returns 0 on success, u32::MAX on failure.
+pub fn sys_perm_store(app_id_ptr: u32, granted: u32, uid_arg: u32) -> u32 {
+    let app_id = match read_user_str_safe(app_id_ptr) {
+        Some(s) => s,
+        None => return u32::MAX,
+    };
+    let uid = if uid_arg == 0 {
+        crate::task::scheduler::current_thread_uid()
+    } else {
+        uid_arg as u16
+    };
+
+    if crate::task::permissions::write_stored_perms(uid, app_id, granted) {
+        crate::serial_println!("PERM_STORE: uid={} app='{}' granted={:#x}", uid, app_id, granted);
+        0
+    } else {
+        u32::MAX
+    }
+}
+
+/// SYS_PERM_LIST (252): List all apps with stored permissions for the caller's uid.
+/// arg1 = buf_ptr, arg2 = buf_size.
+/// Writes entries as "app_id\x1Fgranted_hex\n" packed into the buffer.
+/// Returns number of entries written.
+pub fn sys_perm_list(buf_ptr: u32, buf_size: u32) -> u32 {
+    let uid = crate::task::scheduler::current_thread_uid();
+    let apps = crate::task::permissions::list_apps_with_perms(uid);
+
+    if buf_ptr == 0 || buf_size == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
+        return apps.len() as u32;
+    }
+
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
+    let mut offset = 0usize;
+    let mut count = 0u32;
+
+    for (app_id, granted) in &apps {
+        // Format: "app_id\x1Fgranted_hex\n"
+        let entry = alloc::format!("{}\x1F{:x}\n", app_id, granted);
+        let bytes = entry.as_bytes();
+        if offset + bytes.len() > buf.len() {
+            break;
+        }
+        buf[offset..offset + bytes.len()].copy_from_slice(bytes);
+        offset += bytes.len();
+        count += 1;
+    }
+
+    count
+}
+
+/// SYS_PERM_DELETE (253): Delete stored permissions for an app.
+/// arg1 = app_id_ptr. Uses caller's uid.
+/// Returns 0 on success, u32::MAX on failure.
+pub fn sys_perm_delete(app_id_ptr: u32) -> u32 {
+    let app_id = match read_user_str_safe(app_id_ptr) {
+        Some(s) => s,
+        None => return u32::MAX,
+    };
+    let uid = crate::task::scheduler::current_thread_uid();
+
+    if crate::task::permissions::delete_stored_perms(uid, app_id) {
+        crate::serial_println!("PERM_DELETE: uid={} app='{}'", uid, app_id);
+        0
+    } else {
+        u32::MAX
+    }
+}
+
+/// SYS_PERM_PENDING_INFO (254): Read pending permission info from the calling thread.
+/// arg1 = buf_ptr, arg2 = buf_size.
+/// The pending info was stored by sys_spawn when it returned PERM_NEEDED.
+/// Format: "app_id\x1Fapp_name\x1Fcaps_hex\x1Fbundle_path".
+/// Returns bytes written (0 if no pending info).
+pub fn sys_perm_pending_info(buf_ptr: u32, buf_size: u32) -> u32 {
+    if buf_ptr == 0 || buf_size == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
+        return 0;
+    }
+
+    let mut kernel_buf = [0u8; 512];
+    let len = crate::task::scheduler::current_perm_pending(&mut kernel_buf);
+    if len == 0 {
+        return 0;
+    }
+
+    let copy = len.min(buf_size as usize);
+    let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, copy) };
+    dst.copy_from_slice(&kernel_buf[..copy]);
+    copy as u32
 }

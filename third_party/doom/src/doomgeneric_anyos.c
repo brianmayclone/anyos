@@ -191,16 +191,17 @@ void DG_Init(void)
     printf("DG_Init: shm_addr=0x%x\n", (unsigned)shm_addr);
     g_surface = (uint32_t *)shm_addr;
 
-    /* Send CMD_CREATE_WINDOW (with window chrome, no borderless) */
+    /* Send CMD_CREATE_WINDOW (with window chrome + scale-on-resize) */
     uint32_t tid = _syscall(SYS_GETPID, 0, 0, 0, 0);
     printf("DG_Init: tid=%u\n", (unsigned)tid);
 
+    #define WIN_FLAG_SCALE_CONTENT 0x80
     uint32_t cmd[5];
     cmd[0] = CMD_CREATE_WINDOW;
     cmd[1] = tid;
     cmd[2] = DOOM_W;
     cmd[3] = DOOM_H;
-    cmd[4] = (g_shm_id << 16);  /* flags: 0 = normal window with chrome */
+    cmd[4] = (g_shm_id << 16) | WIN_FLAG_SCALE_CONTENT;
     printf("DG_Init: sending CMD_CREATE_WINDOW [%x %u %u %u %x]\n",
            cmd[0], cmd[1], cmd[2], cmd[3], cmd[4]);
 

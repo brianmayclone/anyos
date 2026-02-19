@@ -81,6 +81,8 @@ pub const WIN_FLAG_NO_CLOSE: u32 = 0x08;
 pub const WIN_FLAG_NO_MINIMIZE: u32 = 0x10;
 pub const WIN_FLAG_NO_MAXIMIZE: u32 = 0x20;
 pub const WIN_FLAG_SHADOW: u32 = 0x40;
+pub const WIN_FLAG_SCALE_CONTENT: u32 = 0x80;
+pub const WIN_FLAG_NO_MOVE: u32 = 0x100;
 
 // ── Event Types ─────────────────────────────────────────────────────────────
 
@@ -1670,31 +1672,35 @@ impl Desktop {
                         }
                     }
                     HitTest::TitleBar => {
-                        // Start drag
+                        // Start drag (blocked by NO_MOVE flag)
                         if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
-                            self.dragging = Some(DragState {
-                                window_id: win_id,
-                                offset_x: mx - self.windows[idx].x,
-                                offset_y: my - self.windows[idx].y,
-                            });
-                            // Disable shadow during drag — shadow pixels are
-                            // position-dependent and break GPU RECT_COPY.
-                            let layer_id = self.windows[idx].layer_id;
-                            let old_shadow = {
-                                if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
-                                    if layer.has_shadow {
-                                        let sb = layer.shadow_bounds();
-                                        layer.has_shadow = false;
-                                        Some(sb)
+                            if self.windows[idx].flags & WIN_FLAG_NO_MOVE != 0 {
+                                // Window is not movable — ignore drag
+                            } else {
+                                self.dragging = Some(DragState {
+                                    window_id: win_id,
+                                    offset_x: mx - self.windows[idx].x,
+                                    offset_y: my - self.windows[idx].y,
+                                });
+                                // Disable shadow during drag — shadow pixels are
+                                // position-dependent and break GPU RECT_COPY.
+                                let layer_id = self.windows[idx].layer_id;
+                                let old_shadow = {
+                                    if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
+                                        if layer.has_shadow {
+                                            let sb = layer.shadow_bounds();
+                                            layer.has_shadow = false;
+                                            Some(sb)
+                                        } else {
+                                            None
+                                        }
                                     } else {
                                         None
                                     }
-                                } else {
-                                    None
+                                };
+                                if let Some(sb) = old_shadow {
+                                    self.compositor.add_damage(sb);
                                 }
-                            };
-                            if let Some(sb) = old_shadow {
-                                self.compositor.add_damage(sb);
                             }
                         }
                     }
@@ -1832,7 +1838,8 @@ impl Desktop {
                     let layer_id = self.windows[idx].layer_id;
                     self.compositor.move_layer(layer_id, nx, ny);
 
-                    if is_ipc {
+                    let scale_content = self.windows[idx].flags & WIN_FLAG_SCALE_CONTENT != 0;
+                    if is_ipc && !scale_content {
                         // IPC window: send resize event but defer layer/content
                         // resize until the app sends CMD_RESIZE_SHM with the
                         // new SHM buffer. This prevents reading beyond the old SHM.
@@ -1841,7 +1848,10 @@ impl Desktop {
                             [EVENT_RESIZE, nw, content_h, 0, 0],
                         );
                     } else {
-                        // Local window: resize immediately
+                        // Local window or IPC with SCALE_CONTENT: resize layer
+                        // immediately. For SCALE_CONTENT, the SHM stays at its
+                        // original size and present_ipc_window() scales via
+                        // nearest-neighbor.
                         self.windows[idx].content_width = nw;
                         self.windows[idx].content_height = content_h;
                         let full_h = self.windows[idx].full_height();
@@ -2396,6 +2406,8 @@ impl Desktop {
 
     /// Handle a "present" command for an IPC window.
     /// Copies the app's SHM content into the window layer's content area.
+    /// When WIN_FLAG_SCALE_CONTENT is set and SHM differs from content size,
+    /// nearest-neighbor scaling is used to fill the content area.
     pub fn present_ipc_window(&mut self, window_id: u32) {
         let win_idx = match self.windows.iter().position(|w| w.id == window_id) {
             Some(i) => i,
@@ -2409,8 +2421,10 @@ impl Desktop {
 
         let layer_id = self.windows[win_idx].layer_id;
         let cw = self.windows[win_idx].content_width;
+        let ch = self.windows[win_idx].content_height;
         let borderless = self.windows[win_idx].is_borderless();
         let content_y = if borderless { 0 } else { TITLE_BAR_HEIGHT };
+        let scale_content = self.windows[win_idx].flags & WIN_FLAG_SCALE_CONTENT != 0;
 
         // Use SHM dimensions (not content dims) to avoid reading beyond the SHM buffer
         let shm_w = self.windows[win_idx].shm_width;
@@ -2419,37 +2433,57 @@ impl Desktop {
             return; // SHM not yet allocated
         }
 
-        // Copy the overlapping region (min of SHM dims and content dims)
-        let copy_w = shm_w.min(cw);
-        let copy_h = shm_h.min(self.windows[win_idx].content_height);
+        // Check if scaling is needed
+        let needs_scale = scale_content && (shm_w != cw || shm_h != ch);
 
         if let Some(pixels) = self.compositor.layer_pixels(layer_id) {
             let stride = cw;
             let src_count = (shm_w * shm_h) as usize;
             let src_slice = unsafe { core::slice::from_raw_parts(shm_ptr, src_count) };
 
-            // Copy SHM content into the layer at content_y offset.
-            // For decorated windows: skip fully transparent (alpha=0) pixels
-            // so the window body/border drawn by render_window() is preserved.
-            // Borderless windows (dock, etc.) use fast memcpy to support transparency.
-            for row in 0..copy_h {
-                let src_off = (row * shm_w) as usize;
-                let dst_off = ((content_y + row) * stride) as usize;
-                let w = copy_w as usize;
-                let src_end = (src_off + w).min(src_slice.len());
-                let dst_end = (dst_off + w).min(pixels.len());
-                let safe_w = (src_end - src_off).min(dst_end - dst_off);
-                if safe_w > 0 {
-                    if borderless {
-                        // Borderless: fast memcpy (dock needs alpha transparency)
-                        pixels[dst_off..dst_off + safe_w]
-                            .copy_from_slice(&src_slice[src_off..src_off + safe_w]);
-                    } else {
-                        // Decorated: skip alpha=0 to preserve window chrome
-                        for col in 0..safe_w {
-                            let src_px = src_slice[src_off + col];
-                            if (src_px >> 24) > 0 {
-                                pixels[dst_off + col] = src_px;
+            if needs_scale {
+                // Nearest-neighbor scaling: SHM (shm_w x shm_h) → content area (cw x ch)
+                for dst_row in 0..ch {
+                    let src_y = (dst_row as u64 * shm_h as u64 / ch as u64) as u32;
+                    let src_y = src_y.min(shm_h - 1);
+                    let src_row_off = (src_y * shm_w) as usize;
+                    let dst_off = ((content_y + dst_row) * stride) as usize;
+
+                    for dst_col in 0..cw {
+                        let src_x = (dst_col as u64 * shm_w as u64 / cw as u64) as u32;
+                        let src_x = src_x.min(shm_w - 1);
+                        let si = src_row_off + src_x as usize;
+                        let di = dst_off + dst_col as usize;
+                        if si < src_slice.len() && di < pixels.len() {
+                            let src_px = src_slice[si];
+                            if borderless || (src_px >> 24) > 0 {
+                                pixels[di] = src_px;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Direct copy (original path): copy the overlapping region
+                let copy_w = shm_w.min(cw);
+                let copy_h = shm_h.min(ch);
+
+                for row in 0..copy_h {
+                    let src_off = (row * shm_w) as usize;
+                    let dst_off = ((content_y + row) * stride) as usize;
+                    let w = copy_w as usize;
+                    let src_end = (src_off + w).min(src_slice.len());
+                    let dst_end = (dst_off + w).min(pixels.len());
+                    let safe_w = (src_end - src_off).min(dst_end - dst_off);
+                    if safe_w > 0 {
+                        if borderless {
+                            pixels[dst_off..dst_off + safe_w]
+                                .copy_from_slice(&src_slice[src_off..src_off + safe_w]);
+                        } else {
+                            for col in 0..safe_w {
+                                let src_px = src_slice[src_off + col];
+                                if (src_px >> 24) > 0 {
+                                    pixels[dst_off + col] = src_px;
+                                }
                             }
                         }
                     }

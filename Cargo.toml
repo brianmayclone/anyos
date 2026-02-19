@@ -106,6 +106,7 @@ exclude = [
   "bin/chown",
   "bin/su",
   "system/login",
+  "system/permdialog",
   # Bootloader
   "bootloader/uefi",
 ]

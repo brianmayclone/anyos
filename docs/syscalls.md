@@ -1,6 +1,6 @@
 # anyOS Syscall Reference
 
-Complete reference for all 113 system calls in anyOS. Syscalls are the interface between user-space programs and the kernel.
+Complete reference for all 118 system calls in anyOS. Syscalls are the interface between user-space programs and the kernel.
 
 ## Calling Conventions
 
@@ -38,6 +38,7 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 - **Positive value**: Success with data (fd, tid, byte count, etc.)
 - **0xFFFFFFFF** (`u32::MAX`): Error / not found
 - **0xFFFFFFFE** (`u32::MAX - 1`): Special (e.g. `STILL_RUNNING` for `try_waitpid`)
+- **0xFFFFFFFD** (`u32::MAX - 2`): `PERM_NEEDED` — app requires user permission approval before spawning
 
 ---
 
@@ -294,3 +295,42 @@ These syscalls require prior `register_compositor()` call (first caller wins).
 | 232 | `getusername` | uid, buf_ptr, buf_len | bytes_written | Get username for UID |
 | 233 | `set_identity` | uid | 0 or error | Set uid/gid on calling process. Root only |
 | 234 | `chpasswd` | data_ptr | 0 or error | Change password. data_ptr: 3 u64 pointers [username, old_pass, new_pass] |
+
+## App Permissions
+
+Runtime per-user, per-app permission management. Apps declare capabilities in their `Info.conf`; sensitive capabilities require user consent via a permission dialog on first launch. Permissions are stored in `/System/users/perm/{uid}/{app_id}`.
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 250 | `perm_check` | app_id_ptr, uid (0=caller) | granted_bitmask or 0xFFFFFFFF | Check stored permissions for an app. Returns granted capability bitmask, or `u32::MAX` if no permission file exists |
+| 251 | `perm_store` | app_id_ptr, granted, uid (0=caller) | 0 or error | Store granted permissions for an app. Requires `CAP_MANAGE_PERMS` |
+| 252 | `perm_list` | buf_ptr, buf_size | entry_count | List all apps with stored permissions for caller's uid. Format: `"app_id\x1Fgranted_hex\n"` per entry. Requires `CAP_MANAGE_PERMS` |
+| 253 | `perm_delete` | app_id_ptr | 0 or error | Delete stored permissions for an app. Requires `CAP_MANAGE_PERMS` |
+| 254 | `perm_pending_info` | buf_ptr, buf_size | bytes_written | Read pending permission info from current thread. Format: `"app_id\x1Fapp_name\x1Fcaps_hex\x1Fbundle_path"`. Set by kernel when `spawn()` returns `PERM_NEEDED` |
+
+### Capability Bits
+
+| Bit | Name | Sensitive | Description |
+|-----|------|-----------|-------------|
+| 0 | `FILESYSTEM` | Yes | Read and write files |
+| 1 | `NETWORK` | Yes | Send and receive network data |
+| 2 | `AUDIO` | Yes | Play sounds and music |
+| 3 | `DISPLAY` | Yes | Control display settings |
+| 4 | `DEVICE` | Yes | Access hardware devices |
+| 5 | `PROCESS` | Yes | Start and stop processes |
+| 6 | `SYSTEM` | Yes | Manage system settings |
+| 7 | `DLL` | No | Load shared libraries (auto-granted) |
+| 8 | `THREAD` | No | Create threads (auto-granted) |
+| 9 | `SHM` | No | Shared memory (auto-granted) |
+| 10 | `EVENT` | No | Event bus (auto-granted) |
+| 11 | `PIPE` | No | Named pipes (auto-granted) |
+| 12 | `COMPOSITOR` | Yes | Direct compositor access |
+| 13 | `MANAGE_PERMS` | — | Manage permission files (kernel allowlist only) |
+
+### Permission Flow
+
+1. `SYS_SPAWN` for a `.app` bundle → kernel reads `Info.conf` → checks `/System/users/perm/{uid}/{app_id}`
+2. If no permission file exists and app requests sensitive capabilities → returns `PERM_NEEDED` (`0xFFFFFFFD`)
+3. Stdlib `spawn()` detects `PERM_NEEDED`, reads pending info via `perm_pending_info`, launches `/System/permdialog`
+4. PermissionDialog shows user-friendly consent dialog → user grants/denies → calls `perm_store`
+5. Stdlib retries `spawn()` — kernel finds permission file, intersects declared caps with granted caps
