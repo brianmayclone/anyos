@@ -17,8 +17,8 @@ const CAP_AUDIO: u32       = 1 << 2;
 const CAP_DISPLAY: u32     = 1 << 3;
 const CAP_DEVICE: u32      = 1 << 4;
 const CAP_PROCESS: u32     = 1 << 5;
-const CAP_SYSTEM: u32      = 1 << 6;
-const CAP_COMPOSITOR: u32  = 1 << 12;
+const CAP_COMPOSITOR: u32  = 1 << 9;
+const CAP_SYSTEM: u32      = 1 << 10;
 
 // ── Permission groups (user-friendly, grouped) ─────────────────────────────
 
