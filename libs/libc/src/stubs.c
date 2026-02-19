@@ -808,4 +808,5 @@ unsigned long strtoumax(const char *nptr, char **endptr, int base) {
 }
 
 /* environ — global environment pointer (set by _start or exec) */
-char **environ = (char **)0;
+static char *empty_environ[] = { (char *)0 };
+char **environ = empty_environ;
