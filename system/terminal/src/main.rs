@@ -277,7 +277,7 @@ fn resolve_from_path(cmd: &str) -> Option<String> {
         Ok(s) => s,
         Err(_) => return None,
     };
-    let mut stat_buf = [0u32; 6];
+    let mut stat_buf = [0u32; 7];
     for dir in path_str.split(':') {
         let dir = dir.trim();
         if dir.is_empty() {
@@ -802,7 +802,7 @@ impl Shell {
         };
 
         // Verify directory exists via stat
-        let mut stat_buf = [0u32; 6];
+        let mut stat_buf = [0u32; 7];
         let ret = fs::stat(&new_path, &mut stat_buf);
         if ret != 0 {
             buf.current_color = COLOR_FG;

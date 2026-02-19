@@ -64,7 +64,7 @@ fn load_icon_file(path: &str) -> Option<ControlIcon> {
     if fd == u32::MAX { return None; }
 
     // Get file size
-    let mut stat = [0u32; 3];
+    let mut stat = [0u32; 4];
     if anyos_std::fs::fstat(fd, &mut stat) != 0 {
         anyos_std::fs::close(fd);
         return None;

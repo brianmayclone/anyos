@@ -13,7 +13,7 @@ fn main() {
         return;
     }
 
-    let mut stat_buf = [0u32; 6];
+    let mut stat_buf = [0u32; 7];
     if anyos_std::fs::stat(path, &mut stat_buf) != 0 {
         anyos_std::println!("stat: cannot stat '{}'", path);
         return;
@@ -27,7 +27,7 @@ fn main() {
     anyos_std::println!("  File: {}", path);
 
     // Check if it's a symlink via lstat
-    let mut lstat_buf = [0u32; 6];
+    let mut lstat_buf = [0u32; 7];
     let is_link = if anyos_std::fs::lstat(path, &mut lstat_buf) == 0 {
         lstat_buf[2] & 1 != 0
     } else {

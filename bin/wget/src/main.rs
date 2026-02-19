@@ -545,7 +545,7 @@ fn main() {
     // Check existing file size for resume
     let mut existing_size: u32 = 0;
     if resume && !to_stdout {
-        let mut stat_buf = [0u32; 6];
+        let mut stat_buf = [0u32; 7];
         if fs::stat(&out_filename, &mut stat_buf) == 0 {
             existing_size = stat_buf[1];
         }

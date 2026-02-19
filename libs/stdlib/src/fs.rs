@@ -100,18 +100,18 @@ pub fn readdir(path: &str, buf: &mut [u8]) -> u32 {
 }
 
 /// Get file status (follows symlinks). Returns 0 on success.
-/// Writes [type:u32, size:u32, flags:u32, uid:u32, gid:u32, mode:u32] to buf.
+/// Writes [type:u32, size:u32, flags:u32, uid:u32, gid:u32, mode:u32, mtime:u32] to buf.
 /// flags: bit 0 = is_symlink
-pub fn stat(path: &str, stat_buf: &mut [u32; 6]) -> u32 {
+pub fn stat(path: &str, stat_buf: &mut [u32; 7]) -> u32 {
     let mut path_buf = [0u8; 257];
     prepare_path(path, &mut path_buf);
     sys_err(syscall2(SYS_STAT, path_buf.as_ptr() as u64, stat_buf.as_mut_ptr() as u64))
 }
 
 /// Get file status WITHOUT following final symlink. Returns 0 on success.
-/// Writes [type:u32, size:u32, flags:u32, uid:u32, gid:u32, mode:u32] to buf.
+/// Writes [type:u32, size:u32, flags:u32, uid:u32, gid:u32, mode:u32, mtime:u32] to buf.
 /// flags: bit 0 = is_symlink
-pub fn lstat(path: &str, stat_buf: &mut [u32; 6]) -> u32 {
+pub fn lstat(path: &str, stat_buf: &mut [u32; 7]) -> u32 {
     let mut path_buf = [0u8; 257];
     prepare_path(path, &mut path_buf);
     sys_err(syscall2(SYS_LSTAT, path_buf.as_ptr() as u64, stat_buf.as_mut_ptr() as u64))
@@ -171,8 +171,8 @@ pub fn lseek(fd: u32, offset: i32, whence: u32) -> u32 {
 }
 
 /// Get file information by fd. Returns 0 on success.
-/// Writes [type:u32, size:u32, position:u32] to stat_buf.
-pub fn fstat(fd: u32, stat_buf: &mut [u32; 3]) -> u32 {
+/// Writes [type:u32, size:u32, position:u32, mtime:u32] to stat_buf.
+pub fn fstat(fd: u32, stat_buf: &mut [u32; 4]) -> u32 {
     sys_err(syscall2(SYS_FSTAT, fd as u64, stat_buf.as_mut_ptr() as u64))
 }
 

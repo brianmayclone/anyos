@@ -355,7 +355,7 @@ fn load_thumbnail_mmap(
     let fd = fs::open(path, 0);
     if fd == u32::MAX { return; }
 
-    let mut stat_buf = [0u32; 3];
+    let mut stat_buf = [0u32; 4];
     if fs::fstat(fd, &mut stat_buf) == u32::MAX {
         fs::close(fd);
         return;

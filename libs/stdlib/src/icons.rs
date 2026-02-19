@@ -72,7 +72,7 @@ pub fn app_icon_path(bin_path: &str) -> String {
     if bin_path.ends_with(".app") {
         let mut path = String::from(bin_path);
         path.push_str("/Icon.ico");
-        let mut stat_buf = [0u32; 6];
+        let mut stat_buf = [0u32; 7];
         if fs::stat(&path, &mut stat_buf) == 0 {
             return path;
         }
@@ -84,7 +84,7 @@ pub fn app_icon_path(bin_path: &str) -> String {
         let bundle_dir = &bin_path[..pos + 4];
         let mut path = String::from(bundle_dir);
         path.push_str("/Icon.ico");
-        let mut stat_buf = [0u32; 6];
+        let mut stat_buf = [0u32; 7];
         if fs::stat(&path, &mut stat_buf) == 0 {
             return path;
         }
@@ -107,7 +107,7 @@ pub fn app_icon_path(bin_path: &str) -> String {
     path.push_str(".ico");
 
     // Check if the file exists
-    let mut stat_buf = [0u32; 6];
+    let mut stat_buf = [0u32; 7];
     if fs::stat(&path, &mut stat_buf) == 0 {
         path
     } else {

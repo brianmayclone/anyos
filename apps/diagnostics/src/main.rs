@@ -134,7 +134,7 @@ fn bench_syscall_overhead(state: &mut BenchState, hz: u32) {
 fn bench_file_stat(state: &mut BenchState, hz: u32) {
     log!("=== Test: File stat() ===");
     let iters = 100u32;
-    let mut stat_buf = [0u32; 6];
+    let mut stat_buf = [0u32; 7];
     let t0 = ticks_now();
     for _ in 0..iters {
         let _ = fs::stat("/Applications/Diagnostics.app", &mut stat_buf);
@@ -375,7 +375,7 @@ fn stress_iteration(hz: u32, win_id: u32) -> (u32, u32) {
 
     // 3. File stat (exercises directory traversal)
     for _ in 0..20 {
-        let mut stat_buf = [0u32; 6];
+        let mut stat_buf = [0u32; 7];
         let r = fs::stat("/Applications/Diagnostics.app", &mut stat_buf);
         calls += 1;
         if r == u32::MAX { errors += 1; }
