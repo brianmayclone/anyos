@@ -25,7 +25,10 @@
       "Bash(\"C:\\\\Users\\\\cmoel\\\\.rustup\\\\toolchains\\\\nightly-x86_64-pc-windows-msvc\\\\lib\\\\rustlib\\\\x86_64-pc-windows-msvc\\\\bin\\\\llvm-objdump.exe\" -d --start-address=0xffffffff8018ea08 --stop-address=0xffffffff8018eab0 \"c:\\\\Development\\\\anyos\\\\build\\\\kernel\\\\x86_64-anyos\\\\release\\\\anyos_kernel.elf\")",
       "Bash(C:/Users/cmoel/.rustup/toolchains/nightly-x86_64-pc-windows-msvc/lib/rustlib/x86_64-pc-windows-msvc/bin/llvm-objdump.exe:*)",
       "Bash(C:/Users/cmoel/.rustup/toolchains/nightly-x86_64-pc-windows-msvc/lib/rustlib/x86_64-pc-windows-msvc/bin/llvm-nm.exe:*)",
-      "Read(//c/Development/anyos/**)"
+      "Read(//c/Development/anyos/**)",
+      "Bash(grep:*)",
+      "Bash(xargs:*)",
+      "Bash(wc:*)"
     ]
   }
 }

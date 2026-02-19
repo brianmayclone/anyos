@@ -85,12 +85,6 @@ context_switch:
     mov rax, cr3
     mov [rdi + 144], rax
 
-    ; Mark old context as fully saved. Other CPUs check this flag in
-    ; pick_next() before restoring a thread — prevents racing on a
-    ; partially-saved CpuContext. x86 TSO guarantees all prior stores
-    ; (register saves above) are visible before this store.
-    mov qword [rdi + 152], 1
-
     ; Write canary magic value (corruption detection)
     mov rax, CANARY_MAGIC
     mov [rdi + 160], rax
@@ -117,6 +111,13 @@ context_switch:
     xor rax, [rdi + 136]
     xor rax, [rdi + 144]
     mov [rdi + 168], rax
+
+    ; Mark old context as fully saved — MUST be the LAST store.
+    ; Other CPUs check this flag in pick_eligible() before restoring a
+    ; thread. All prior stores (registers, canary, checksum) are visible
+    ; before this store thanks to x86 TSO (total store order). This
+    ; prevents another CPU from loading a context with a stale checksum.
+    mov qword [rdi + 152], 1
 
     ; --- Validate new context before loading ---
 

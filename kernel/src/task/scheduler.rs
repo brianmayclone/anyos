@@ -743,7 +743,8 @@ fn schedule_inner(from_timer: bool) {
     let cpu_id = get_cpu_id();
 
     // Extract context switch parameters under the lock
-    let switch_info: Option<(*mut CpuContext, *const CpuContext, *mut u8, *const u8, u32, u32)>;
+    let mut switch_info: Option<(*mut CpuContext, *const CpuContext, *mut u8, *const u8, u32, u32)>;
+    let mut corrupt_diag: Option<(&'static str, u32, *const CpuContext)> = None;
 
     {
         let sched = match guard.as_mut() {
@@ -1017,112 +1018,143 @@ fn schedule_inner(from_timer: bool) {
                 None
             }
         };
+
+        // ---------------------------------------------------------------
+        // Validate incoming context WHILE STILL HOLDING THE LOCK.
+        // If corrupt, undo all scheduling state changes and kill the
+        // corrupt thread. This prevents the broken recovery scenario where
+        // the outgoing thread ends up in the run queue with save_complete=1
+        // but its context was never re-saved — leading to two CPUs on the
+        // same stack.
+        // ---------------------------------------------------------------
+        if let Some((_, new_ctx, _, _, out_tid, next_tid)) = switch_info {
+            use crate::task::context::CANARY_MAGIC;
+            let is_corrupt = unsafe {
+                let ctx = &*new_ctx;
+                ctx.canary != CANARY_MAGIC
+                    || ctx.checksum != ctx.compute_checksum()
+                    || ctx.rip < 0xFFFF_FFFF_8010_0000
+                    || ctx.rip >= 0xFFFF_FFFF_8200_0000
+                    || ctx.rsp < 0xFFFF_FFFF_8010_0000
+            };
+            if is_corrupt {
+                let reason = unsafe {
+                    let ctx = &*new_ctx;
+                    if ctx.canary != CANARY_MAGIC { "CANARY_DEAD" }
+                    else if ctx.checksum != ctx.compute_checksum() { "CHECKSUM_FAIL" }
+                    else { "RANGE_BAD" }
+                };
+                corrupt_diag = Some((reason, next_tid, new_ctx));
+
+                // Kill the corrupt incoming thread
+                if let Some(next_idx) = sched.find_idx(next_tid) {
+                    sched.threads[next_idx].state = ThreadState::Terminated;
+                    sched.threads[next_idx].exit_code = Some(139);
+                    sched.threads[next_idx].terminated_at_tick =
+                        Some(crate::arch::x86::pit::get_ticks());
+                }
+
+                // Determine which thread to restore as current on this CPU.
+                // The outgoing thread's state depends on how it became outgoing:
+                //   - Was Running → set to Ready + enqueued + save_complete=0
+                //   - Was Blocked → save_complete=0, NOT enqueued
+                //   - Was idle → nothing was changed
+                let restore_tid = if let Some(out_idx) = sched.find_idx(out_tid) {
+                    if sched.threads[out_idx].state == ThreadState::Ready {
+                        // Was Running, promoted to Ready for enqueue — restore to Running.
+                        // It's still in the run queue, but safe: pick_eligible checks
+                        // state==Ready, so it will be dequeued and re-enqueued without
+                        // being selected.
+                        sched.threads[out_idx].state = ThreadState::Running;
+                    }
+                    sched.threads[out_idx].context.save_complete = 1;
+                    if sched.threads[out_idx].state == ThreadState::Running {
+                        out_tid
+                    } else {
+                        // Blocked or other non-running state — go to idle
+                        sched.idle_tid[cpu_id]
+                    }
+                } else {
+                    // Outgoing was reaped — go to idle
+                    sched.idle_tid[cpu_id]
+                };
+
+                // Restore per-CPU state for the chosen thread
+                sched.per_cpu[cpu_id].current_tid = Some(restore_tid);
+                if let Some(ri) = sched.find_idx(restore_tid) {
+                    if restore_tid != out_tid {
+                        sched.threads[ri].state = ThreadState::Running;
+                    }
+                    PER_CPU_HAS_THREAD[cpu_id].store(
+                        !sched.threads[ri].is_idle, Ordering::Relaxed);
+                    PER_CPU_CURRENT_TID[cpu_id].store(restore_tid, Ordering::Relaxed);
+                    PER_CPU_IS_USER[cpu_id].store(
+                        sched.threads[ri].is_user, Ordering::Relaxed);
+                    update_per_cpu_name(cpu_id, &sched.threads[ri].name);
+                    let kstack_top = sched.threads[ri].kernel_stack_top();
+                    crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, kstack_top);
+                    crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, kstack_top);
+                    PER_CPU_STACK_BOTTOM[cpu_id].store(
+                        sched.threads[ri].kernel_stack_bottom(), Ordering::Relaxed);
+                    PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
+                }
+
+                switch_info = None;
+            }
+        }
+
     } // sched borrow ends here
 
     // Release lock WITHOUT restoring IF — keeps interrupts disabled through context_switch
     guard.release_no_irq_restore();
 
-    // Context switch with lock released, interrupts still disabled
-    if let Some((old_ctx, new_ctx, old_fpu, _new_fpu, outgoing_tid, next_tid)) = switch_info {
-        // --- Validate new CpuContext integrity (canary + checksum + range) ---
-        // The ASM-side also checks, but Rust can print richer diagnostics.
-        let corrupt = unsafe {
-            use crate::task::context::CANARY_MAGIC;
-            let ctx = &*new_ctx;
-            let canary_ok = ctx.canary == CANARY_MAGIC;
-            let checksum_ok = ctx.checksum == ctx.compute_checksum();
-            let rip_ok = ctx.rip >= 0xFFFF_FFFF_8010_0000 && ctx.rip < 0xFFFF_FFFF_8200_0000;
-            let rsp_ok = ctx.rsp >= 0xFFFF_FFFF_8010_0000;
-            if !canary_ok || !checksum_ok || !rip_ok || !rsp_ok {
-                let reason = if !canary_ok { "CANARY_DEAD" }
-                    else if !checksum_ok { "CHECKSUM_FAIL" }
-                    else { "RANGE_BAD" };
-                Some(reason)
-            } else {
-                None
+    // Verbose diagnostics AFTER lock released (serial I/O is slow, ~3ms/char at 115200)
+    if let Some((reason, next_tid, ctx_ptr)) = corrupt_diag {
+        unsafe {
+            let ctx = &*ctx_ptr;
+            crate::serial_println!(
+                "!{}: TID={} ctx={:#x} canary={:#018x} chk={:#018x} expect={:#018x}",
+                reason, next_tid, ctx_ptr as u64,
+                ctx.canary, ctx.checksum, ctx.compute_checksum(),
+            );
+            let p = ctx_ptr as *const u64;
+            let names = [
+                "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp",
+                "r8 ", "r9 ", "r10", "r11", "r12", "r13", "r14", "r15",
+                "rsp", "rip", "rfl", "cr3", "sav", "can", "chk",
+            ];
+            for i in 0..22 {
+                crate::serial_println!("  [{}] {} = {:#018x}", i * 8, names[i], *p.add(i));
             }
-        };
-
-        if let Some(reason) = corrupt {
-            unsafe {
-                let ctx = &*new_ctx;
-                crate::serial_println!(
-                    "!{}: TID={} ctx={:#x} canary={:#018x} chk={:#018x} expect={:#018x}",
-                    reason, next_tid, new_ctx as u64,
-                    ctx.canary, ctx.checksum, ctx.compute_checksum(),
-                );
-                // Dump all 22 CpuContext fields
-                let p = new_ctx as *const u64;
-                let names = [
-                    "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp",
-                    "r8 ", "r9 ", "r10", "r11", "r12", "r13", "r14", "r15",
-                    "rsp", "rip", "rfl", "cr3", "sav", "can", "chk",
-                ];
-                for i in 0..22 {
-                    crate::serial_println!("  [{}] {} = {:#018x}", i * 8, names[i], *p.add(i));
-                }
-
-                // Memory dump: 64 bytes BEFORE and AFTER CpuContext (176 bytes)
-                let ctx_addr = new_ctx as usize;
-                let base = ctx_addr.saturating_sub(64);
-                let end = ctx_addr + 176 + 64;
-                crate::serial_println!("  Memory around CpuContext ({:#x}):", ctx_addr);
-                let mut addr = base;
-                while addr < end && addr >= 0xFFFF_FFFF_8000_0000 {
-                    let val = (addr as *const u64).read_unaligned();
-                    let marker = if addr == ctx_addr { " <-- ctx start" }
-                        else if addr == ctx_addr + 120 { " <-- rsp" }
-                        else if addr == ctx_addr + 128 { " <-- rip" }
-                        else if addr == ctx_addr + 160 { " <-- canary" }
-                        else if addr == ctx_addr + 176 { " <-- ctx end" }
-                        else { "" };
-                    crate::serial_println!("    {:#018x}: {:#018x}{}", addr, val, marker);
-                    addr += 8;
-                }
-
-                // Stack trace
-                crate::serial_println!("  Caller stack trace:");
-                let mut bp: u64;
-                core::arch::asm!("mov {}, rbp", out(reg) bp, options(nomem, nostack, preserves_flags));
-                for depth in 0..16 {
-                    if bp < 0xFFFF_FFFF_8010_0000 || bp & 7 != 0 { break; }
-                    let ret_addr = *((bp + 8) as *const u64);
-                    let prev_bp = *(bp as *const u64);
-                    if ret_addr < 0xFFFF_FFFF_8010_0000 || ret_addr >= 0xFFFF_FFFF_8200_0000 {
-                        break;
-                    }
-                    crate::serial_println!("    #{}: {:#018x}", depth, ret_addr);
-                    bp = prev_bp;
-                }
-            }
-            // Recovery: don't switch
-            unsafe { (*old_ctx).save_complete = 1; }
-        } else {
-            // --- Lazy FPU: save outgoing thread's state if this CPU owns it ---
-            let fpu_owner = PER_CPU_FPU_OWNER[cpu_id].load(Ordering::Relaxed);
-            if fpu_owner != 0 && fpu_owner == outgoing_tid {
-                unsafe {
-                    core::arch::asm!("fxsave [{}]", in(reg) old_fpu, options(nostack, preserves_flags));
-                }
-                PER_CPU_FPU_OWNER[cpu_id].store(0, Ordering::Relaxed);
-            }
-
-            // Set CR0.TS — next FPU/SSE instruction triggers #NM for lazy restore
-            unsafe {
-                let cr0: u64;
-                core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nostack, nomem, preserves_flags));
-                core::arch::asm!("mov cr0, {}", in(reg) cr0 | 8, options(nostack, nomem, preserves_flags));
-            }
-
-            // Clear in-scheduler flag BEFORE context_switch. Interrupts are disabled
-            // (release_no_irq_restore kept IF=0), so no timer can fire between the
-            // clear and the switch. This is CRITICAL because if the new thread is
-            // starting for the first time (RIP = entry point, not inside schedule_inner),
-            // it will never reach the post-switch cleanup code below.
-            PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Relaxed);
-
-            unsafe { crate::task::context::context_switch(old_ctx, new_ctx); }
         }
+    }
+
+    // Context switch with lock released, interrupts still disabled
+    if let Some((old_ctx, new_ctx, old_fpu, _new_fpu, outgoing_tid, _next_tid)) = switch_info {
+        // --- Lazy FPU: save outgoing thread's state if this CPU owns it ---
+        let fpu_owner = PER_CPU_FPU_OWNER[cpu_id].load(Ordering::Relaxed);
+        if fpu_owner != 0 && fpu_owner == outgoing_tid {
+            unsafe {
+                core::arch::asm!("fxsave [{}]", in(reg) old_fpu, options(nostack, preserves_flags));
+            }
+            PER_CPU_FPU_OWNER[cpu_id].store(0, Ordering::Relaxed);
+        }
+
+        // Set CR0.TS — next FPU/SSE instruction triggers #NM for lazy restore
+        unsafe {
+            let cr0: u64;
+            core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nostack, nomem, preserves_flags));
+            core::arch::asm!("mov cr0, {}", in(reg) cr0 | 8, options(nostack, nomem, preserves_flags));
+        }
+
+        // Clear in-scheduler flag BEFORE context_switch. Interrupts are disabled
+        // (release_no_irq_restore kept IF=0), so no timer can fire between the
+        // clear and the switch. This is CRITICAL because if the new thread is
+        // starting for the first time (RIP = entry point, not inside schedule_inner),
+        // it will never reach the post-switch cleanup code below.
+        PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Relaxed);
+
+        unsafe { crate::task::context::context_switch(old_ctx, new_ctx); }
     }
 
     // Also clear after context_switch for the no-switch path (switch_info was None).
