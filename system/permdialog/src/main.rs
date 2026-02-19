@@ -86,8 +86,16 @@ fn main() {
     }
 
     // ── Parse args: "app_id\x1Fapp_name\x1Fcaps_hex\x1Fbundle_path" ────
+    // Use getargs() directly — the args are structured data with \x1F separators,
+    // NOT traditional "program_name arg1 arg2" format, so args() would fail to
+    // find a space and return "".
     let mut args_buf = [0u8; 256];
-    let args_str = process::args(&mut args_buf);
+    let args_len = process::getargs(&mut args_buf);
+    let args_str = if args_len > 0 {
+        core::str::from_utf8(&args_buf[..args_len]).unwrap_or("")
+    } else {
+        ""
+    };
 
     if args_str.is_empty() {
         cleanup(lock_pipe, u32::MAX, u32::MAX, 1);
@@ -144,7 +152,8 @@ fn main() {
         | window::WIN_FLAG_NOT_RESIZABLE
         | window::WIN_FLAG_NO_CLOSE
         | window::WIN_FLAG_NO_MINIMIZE
-        | window::WIN_FLAG_NO_MAXIMIZE;
+        | window::WIN_FLAG_NO_MAXIMIZE
+        | window::WIN_FLAG_NO_MOVE;
 
     let dim_win = window::create_ex("", 0, 0, sw as u16, sh as u16, dim_flags);
     if dim_win == u32::MAX {
@@ -169,7 +178,8 @@ fn main() {
         | window::WIN_FLAG_ALWAYS_ON_TOP
         | window::WIN_FLAG_NO_CLOSE
         | window::WIN_FLAG_NO_MINIMIZE
-        | window::WIN_FLAG_NO_MAXIMIZE;
+        | window::WIN_FLAG_NO_MAXIMIZE
+        | window::WIN_FLAG_NO_MOVE;
 
     let win = window::create_ex("", dx as u16, dy as u16,
         DIALOG_W as u16, dialog_h as u16, dialog_flags);
