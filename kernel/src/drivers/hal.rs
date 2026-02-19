@@ -604,6 +604,27 @@ static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
         specificity: 2,
     },
     PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x80EE, device: 0xBEEF },
+        factory: |pci| {
+            // VirtualBox GPU: auto-detect VBoxSVGA vs VBoxVGA.
+            // VBoxSVGA (default for modern guests) has BAR0 as I/O port and uses
+            // VMware SVGA II protocol internally — gives FIFO-based 2D acceleration.
+            // VBoxVGA (legacy) has BAR0 as MMIO framebuffer and uses HGSMI protocol.
+            if pci.bars[0] & 1 != 0 {
+                // BAR0 is I/O → VBoxSVGA (VMware SVGA II internals)
+                crate::serial_println!("  HAL: VBoxSVGA detected (SVGA II mode)");
+                crate::drivers::gpu::vmware_svga::init_and_register(pci);
+                Some(Box::new(GpuDisplayDriver { _pci: pci.clone(), driver_name: "VBoxSVGA" }))
+            } else {
+                // BAR0 is MMIO → VBoxVGA (legacy, HGSMI)
+                crate::serial_println!("  HAL: VBoxVGA detected (HGSMI mode)");
+                crate::drivers::gpu::vbox_vga::init_and_register(pci);
+                Some(Box::new(GpuDisplayDriver { _pci: pci.clone(), driver_name: "VBoxVGA (HGSMI)" }))
+            }
+        },
+        specificity: 2,
+    },
+    PciDriverEntry {
         match_rule: PciMatch::VendorDevice { vendor: 0x15AD, device: 0x0405 },
         factory: |pci| {
             // Initialize VMware SVGA II GPU driver

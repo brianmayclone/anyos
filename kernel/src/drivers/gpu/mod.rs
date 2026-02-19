@@ -5,6 +5,7 @@
 //! resolution changes. Drivers are registered dynamically via PCI detection in the HAL.
 
 pub mod bochs_vga;
+pub mod vbox_vga;
 pub mod virtio_gpu;
 pub mod vmware_svga;
 

@@ -76,7 +76,15 @@
       "Bash(ELF=\"/c/Development/anyos/build/kernel/x86_64-anyos/release/anyos_kernel.elf\")",
       "Bash(\"$OBJDUMP\" -d --no-show-raw-insn --start-address=0xffffffff801103c0 --stop-address=0xffffffff80110540 \"$ELF\")",
       "Bash(\"$OBJDUMP\" -d --no-show-raw-insn --start-address=0xffffffff8013bd80 --stop-address=0xffffffff8013be10 \"$ELF\")",
-      "Bash(# The -s option dumps the whole section. Let me use a different approach - # search the saved output for the data at the target address grep \"\"ffffffff801a428\"\" /c/Users/cmoel/.claude/projects/c--Development-anyos/d8deb278-2d14-41c0-8a76-68d39a59a905/tool-results/bf38a63.txt)"
+      "Bash(# The -s option dumps the whole section. Let me use a different approach - # search the saved output for the data at the target address grep \"\"ffffffff801a428\"\" /c/Users/cmoel/.claude/projects/c--Development-anyos/d8deb278-2d14-41c0-8a76-68d39a59a905/tool-results/bf38a63.txt)",
+      "WebFetch(domain:wiki.osdev.org)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:fossies.org)",
+      "WebFetch(domain:codebrowser.dev)",
+      "WebFetch(domain:cregit.linuxsources.org)",
+      "WebFetch(domain:ssd-disclosure.com)",
+      "WebFetch(domain:www.exploit-db.com)",
+      "WebFetch(domain:cm-gitlab.stanford.edu)"
     ]
   }
 }
