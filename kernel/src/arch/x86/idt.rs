@@ -802,16 +802,17 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
 
             // User-mode page fault: print diagnostics and kill the thread
             if is_user_mode {
+                let tid = crate::task::scheduler::current_thread_id();
                 crate::serial_println!(
-                    "EXCEPTION: Page Fault addr={:#018x} RIP={:#018x} err={:#x}",
-                    cr2, frame.rip, frame.err_code
+                    "EXCEPTION: Page Fault addr={:#018x} RIP={:#018x} err={:#x} TID={}",
+                    cr2, frame.rip, frame.err_code, tid
                 );
                 crate::serial_println!(
                     "  CS={:#x} RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
                     frame.cs, frame.rax, frame.rbx, frame.rcx, frame.rdx
                 );
                 crate::serial_println!("  User RSP={:#018x} SS={:#x}", frame.rsp, frame.ss);
-                crate::serial_println!("  User process fault — terminating thread");
+                crate::serial_println!("  User process fault — terminating thread (TID={})", tid);
                 crate::task::scheduler::exit_current(139);
             }
             if try_kill_faulting_thread(139, frame) { return; }
