@@ -2417,6 +2417,25 @@ pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
         }
     }
 
+    // Poll VMMDev for absolute mouse position (VirtualBox mouse integration).
+    // Do this before draining PS/2 events so absolute position is always fresh.
+    if crate::drivers::vmmdev::is_available() {
+        match crate::drivers::vmmdev::poll_mouse() {
+            Some((x, y, _btns)) => {
+                crate::serial_println!("[cursor] kernel: VMMDev abs ({}, {})", x, y);
+                crate::drivers::input::mouse::inject_absolute(
+                    x, y,
+                    crate::drivers::input::mouse::MouseButtons { left: false, right: false, middle: false },
+                );
+            }
+            None => {
+                crate::serial_println!("[cursor] kernel: VMMDev poll_mouse returned None");
+            }
+        }
+    } else {
+        crate::serial_println!("[cursor] kernel: VMMDev not available");
+    }
+
     // Drain mouse events
     while count < max {
         match crate::drivers::input::mouse::read_event() {
@@ -2425,6 +2444,10 @@ pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
                 let (event_type, arg0, arg1, arg2, arg3) = match mouse_evt.event_type {
                     MouseEventType::Move => {
                         (3u32, mouse_evt.dx as u32, mouse_evt.dy as u32, 0, 0)
+                    }
+                    MouseEventType::MoveAbsolute => {
+                        // event_type 6 = absolute position (pixel coords)
+                        (6u32, mouse_evt.dx as u32, mouse_evt.dy as u32, 0, 0)
                     }
                     MouseEventType::ButtonDown => {
                         let btns = (mouse_evt.buttons.left as u32)

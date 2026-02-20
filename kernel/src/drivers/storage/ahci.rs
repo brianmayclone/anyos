@@ -3,6 +3,7 @@
 //! Supports AHCI 1.0+ host controllers (PCI class 01:06, prog IF 01).
 //! Uses DMA transfers via MMIO, replacing legacy ATA PIO when available.
 
+use alloc::boxed::Box;
 use crate::drivers::pci::{PciDevice, pci_config_read32, pci_config_write32};
 use crate::memory::address::{PhysAddr, VirtAddr};
 use crate::memory::{virtual_mem, physical};
@@ -708,4 +709,10 @@ pub fn init_and_register(pci: &PciDevice) {
 
         crate::serial_println!("[OK] AHCI initialized (port {}, DMA mode)", active_port);
     }
+}
+
+/// Probe: initialize AHCI and return a HAL driver.
+pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
+    init_and_register(pci);
+    super::create_hal_driver("AHCI SATA Controller")
 }

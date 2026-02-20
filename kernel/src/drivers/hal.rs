@@ -2,6 +2,8 @@
 //!
 //! Provides a unified [`Driver`] trait and a central device registry. Includes automatic
 //! PCI-to-driver matching for device detection at boot, plus legacy device registration.
+//!
+//! PCI device-to-driver mappings are in [`super::pci_drivers`].
 
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -231,20 +233,8 @@ pub fn print_devices() {
 }
 
 // ──────────────────────────────────────────────
-// PCI-to-Driver Matching
+// Device path generation
 // ──────────────────────────────────────────────
-
-enum PciMatch {
-    Class { class: u8, subclass: u8 },
-    VendorDevice { vendor: u16, device: u16 },
-}
-
-struct PciDriverEntry {
-    match_rule: PciMatch,
-    factory: fn(&PciDevice) -> Option<Box<dyn Driver>>,
-    /// Higher = more specific match (vendor/device beats class)
-    specificity: u8,
-}
 
 /// Auto-generate a device path from driver type and index.
 pub fn make_device_path(dtype: DriverType, index: usize) -> String {
@@ -261,7 +251,6 @@ pub fn make_device_path(dtype: DriverType, index: usize) -> String {
         DriverType::Unknown => "/dev/misc",
     };
     let mut path = String::from(prefix);
-    // Simple number-to-string without format! to avoid pulling in too much
     if index < 10 {
         path.push((b'0' + index as u8) as char);
     } else {
@@ -272,447 +261,14 @@ pub fn make_device_path(dtype: DriverType, index: usize) -> String {
 }
 
 // ──────────────────────────────────────────────
-// Stub Drivers
+// PCI probe (delegates to pci_drivers table)
 // ──────────────────────────────────────────────
-
-/// GPU display driver (wraps gpu::GpuDriver trait)
-/// Used for both Bochs VGA and VMware SVGA II — routes ioctls through gpu::with_gpu()
-struct GpuDisplayDriver {
-    _pci: PciDevice,
-    driver_name: &'static str,
-}
-
-impl Driver for GpuDisplayDriver {
-    fn name(&self) -> &str { self.driver_name }
-    fn driver_type(&self) -> DriverType { DriverType::Display }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
-    fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-    fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-    fn ioctl(&mut self, cmd: u32, arg: u32) -> Result<u32, DriverError> {
-        match cmd {
-            IOCTL_DISPLAY_GET_MODE => {
-                crate::drivers::gpu::with_gpu(|g| {
-                    let (w, h, _, _) = g.get_mode();
-                    Ok(w | (h << 16))
-                }).unwrap_or(Err(DriverError::NotInitialized))
-            }
-            IOCTL_DISPLAY_FLIP => {
-                crate::drivers::gpu::with_gpu(|g| g.flip());
-                Ok(0)
-            }
-            IOCTL_DISPLAY_IS_DBLBUF => {
-                Ok(crate::drivers::gpu::with_gpu(|g| g.has_double_buffer() as u32).unwrap_or(0))
-            }
-            IOCTL_DISPLAY_GET_PITCH => {
-                crate::drivers::gpu::with_gpu(|g| {
-                    let (_, _, pitch, _) = g.get_mode();
-                    Ok(pitch)
-                }).unwrap_or(Err(DriverError::NotInitialized))
-            }
-            IOCTL_DISPLAY_SET_MODE => {
-                let w = arg & 0xFFFF;
-                let h = (arg >> 16) & 0xFFFF;
-                crate::drivers::gpu::with_gpu(|g| {
-                    match g.set_mode(w, h, 32) {
-                        Some(_) => Ok(0u32),
-                        None => Err(DriverError::NotSupported),
-                    }
-                }).unwrap_or(Err(DriverError::NotInitialized))
-            }
-            IOCTL_DISPLAY_LIST_MODES => {
-                Ok(crate::drivers::gpu::with_gpu(|g| g.supported_modes().len() as u32).unwrap_or(0))
-            }
-            IOCTL_DISPLAY_HAS_ACCEL => {
-                Ok(crate::drivers::gpu::with_gpu(|g| g.has_accel() as u32).unwrap_or(0))
-            }
-            IOCTL_DISPLAY_HAS_HW_CURSOR => {
-                Ok(crate::drivers::gpu::with_gpu(|g| g.has_hw_cursor() as u32).unwrap_or(0))
-            }
-            _ => Err(DriverError::NotSupported),
-        }
-    }
-}
-
-/// Generic VGA controller stub
-struct GenericVgaDriver {
-    pci: PciDevice,
-}
-
-impl Driver for GenericVgaDriver {
-    fn name(&self) -> &str { "Generic VGA" }
-    fn driver_type(&self) -> DriverType { DriverType::Display }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
-    fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-    fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-    fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-}
-
-/// IDE controller driver (wraps existing ata.rs)
-struct IdeDriver {
-    pci: PciDevice,
-}
-
-impl Driver for IdeDriver {
-    fn name(&self) -> &str { "IDE Controller" }
-    fn driver_type(&self) -> DriverType { DriverType::Block }
-    fn init(&mut self) -> Result<(), DriverError> {
-        // Already initialized via ata::init() at boot
-        Ok(())
-    }
-    fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize, DriverError> {
-        let lba = offset / 512;
-        let sectors = (buf.len() + 511) / 512;
-        if sectors > 255 { return Err(DriverError::InvalidArgument); }
-        if crate::drivers::storage::ata::read_sectors(lba as u32, sectors as u8, buf) {
-            Ok(sectors * 512)
-        } else {
-            Err(DriverError::IoError)
-        }
-    }
-    fn write(&self, offset: usize, buf: &[u8]) -> Result<usize, DriverError> {
-        let lba = offset / 512;
-        let sectors = (buf.len() + 511) / 512;
-        if sectors > 255 { return Err(DriverError::InvalidArgument); }
-        if crate::drivers::storage::ata::write_sectors(lba as u32, sectors as u8, buf) {
-            Ok(sectors * 512)
-        } else {
-            Err(DriverError::IoError)
-        }
-    }
-    fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-}
-
-/// AHCI/SATA controller driver (wraps ahci.rs DMA backend)
-struct SataDriver {
-    _pci: PciDevice,
-}
-
-impl Driver for SataDriver {
-    fn name(&self) -> &str { "AHCI SATA Controller" }
-    fn driver_type(&self) -> DriverType { DriverType::Block }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
-    fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize, DriverError> {
-        let lba = offset / 512;
-        let sectors = (buf.len() + 511) / 512;
-        if crate::drivers::storage::read_sectors(lba as u32, sectors as u32, buf) {
-            Ok(sectors * 512)
-        } else {
-            Err(DriverError::IoError)
-        }
-    }
-    fn write(&self, offset: usize, buf: &[u8]) -> Result<usize, DriverError> {
-        let lba = offset / 512;
-        let sectors = (buf.len() + 511) / 512;
-        if crate::drivers::storage::write_sectors(lba as u32, sectors as u32, buf) {
-            Ok(sectors * 512)
-        } else {
-            Err(DriverError::IoError)
-        }
-    }
-    fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-}
-
-/// Ethernet controller driver (wraps e1000.rs)
-struct EthernetDriver {
-    _pci: PciDevice,
-}
-
-impl Driver for EthernetDriver {
-    fn name(&self) -> &str { "Intel E1000 Ethernet" }
-    fn driver_type(&self) -> DriverType { DriverType::Network }
-    fn init(&mut self) -> Result<(), DriverError> {
-        // Actual init is done via e1000::init() in main.rs
-        Ok(())
-    }
-    fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-    fn write(&self, _offset: usize, buf: &[u8]) -> Result<usize, DriverError> {
-        if crate::drivers::network::e1000::transmit(buf) {
-            Ok(buf.len())
-        } else {
-            Err(DriverError::IoError)
-        }
-    }
-    fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-}
-
-/// Audio controller stub
-struct AudioDriver {
-    pci: PciDevice,
-    initialized: bool,
-}
-
-impl Driver for AudioDriver {
-    fn name(&self) -> &str {
-        if self.initialized { "Intel AC'97 Audio" } else { "Audio Controller (no device)" }
-    }
-    fn driver_type(&self) -> DriverType { DriverType::Audio }
-    fn init(&mut self) -> Result<(), DriverError> {
-        crate::drivers::audio::ac97::init_from_pci(&self.pci);
-        self.initialized = crate::drivers::audio::ac97::is_available();
-        Ok(())
-    }
-    fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-    fn write(&self, _offset: usize, buf: &[u8]) -> Result<usize, DriverError> {
-        if !self.initialized { return Err(DriverError::NotSupported); }
-        Ok(crate::drivers::audio::write_pcm(buf))
-    }
-    fn ioctl(&mut self, cmd: u32, arg: u32) -> Result<u32, DriverError> {
-        if !self.initialized { return Err(DriverError::NotSupported); }
-        match cmd {
-            IOCTL_AUDIO_GET_SAMPLE_RATE => Ok(48000),
-            IOCTL_AUDIO_SET_VOLUME => {
-                crate::drivers::audio::set_volume(arg as u8);
-                Ok(0)
-            }
-            IOCTL_AUDIO_GET_VOLUME => Ok(crate::drivers::audio::get_volume() as u32),
-            _ => Err(DriverError::NotSupported),
-        }
-    }
-}
-
-/// USB host controller driver — dispatches to UHCI/EHCI based on prog_if.
-struct UsbControllerDriver {
-    _pci: PciDevice,
-    controller_name: &'static str,
-}
-
-impl Driver for UsbControllerDriver {
-    fn name(&self) -> &str { self.controller_name }
-    fn driver_type(&self) -> DriverType { DriverType::Bus }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
-    fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-    fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-    fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-}
-
-/// SMBus controller stub
-struct SmbusDriver {
-    _pci: PciDevice,
-}
-
-impl Driver for SmbusDriver {
-    fn name(&self) -> &str { "SMBus Controller (stub)" }
-    fn driver_type(&self) -> DriverType { DriverType::Bus }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
-    fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-    fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-    fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-}
-
-// ──────────────────────────────────────────────
-// Legacy (non-PCI) device drivers
-// ──────────────────────────────────────────────
-
-/// PS/2 Keyboard driver wrapper
-struct Ps2KeyboardDriver;
-
-impl Driver for Ps2KeyboardDriver {
-    fn name(&self) -> &str { "PS/2 Keyboard" }
-    fn driver_type(&self) -> DriverType { DriverType::Input }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
-    fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-    fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-    fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-}
-
-/// PS/2 Mouse driver wrapper
-struct Ps2MouseDriver;
-
-impl Driver for Ps2MouseDriver {
-    fn name(&self) -> &str { "PS/2 Mouse" }
-    fn driver_type(&self) -> DriverType { DriverType::Input }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
-    fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-    fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-    fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-}
-
-/// Serial port driver wrapper
-struct SerialDriver;
-
-impl Driver for SerialDriver {
-    fn name(&self) -> &str { "Serial Port (COM1)" }
-    fn driver_type(&self) -> DriverType { DriverType::Char }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
-    fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-    fn write(&self, _offset: usize, buf: &[u8]) -> Result<usize, DriverError> {
-        for &b in buf {
-            crate::drivers::serial::write_byte(b);
-        }
-        Ok(buf.len())
-    }
-    fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
-        Err(DriverError::NotSupported)
-    }
-}
-
-// ──────────────────────────────────────────────
-// PCI driver table + probe
-// ──────────────────────────────────────────────
-
-static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
-    // Most specific: vendor/device match
-    PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x1234, device: 0x1111 },
-        factory: |pci| Some(Box::new(GpuDisplayDriver { _pci: pci.clone(), driver_name: "Bochs/QEMU VGA" })),
-        specificity: 2,
-    },
-    PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x80EE, device: 0xBEEF },
-        factory: |pci| {
-            // VirtualBox GPU: auto-detect VBoxSVGA vs VBoxVGA.
-            // VBoxSVGA (default for modern guests) has BAR0 as I/O port and uses
-            // VMware SVGA II protocol internally — gives FIFO-based 2D acceleration.
-            // VBoxVGA (legacy) has BAR0 as MMIO framebuffer and uses HGSMI protocol.
-            if pci.bars[0] & 1 != 0 {
-                // BAR0 is I/O → VBoxSVGA (VMware SVGA II internals)
-                crate::serial_println!("  HAL: VBoxSVGA detected (SVGA II mode)");
-                crate::drivers::gpu::vmware_svga::init_and_register(pci);
-                Some(Box::new(GpuDisplayDriver { _pci: pci.clone(), driver_name: "VBoxSVGA" }))
-            } else {
-                // BAR0 is MMIO → VBoxVGA (legacy, HGSMI)
-                crate::serial_println!("  HAL: VBoxVGA detected (HGSMI mode)");
-                crate::drivers::gpu::vbox_vga::init_and_register(pci);
-                Some(Box::new(GpuDisplayDriver { _pci: pci.clone(), driver_name: "VBoxVGA (HGSMI)" }))
-            }
-        },
-        specificity: 2,
-    },
-    PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x15AD, device: 0x0405 },
-        factory: |pci| {
-            // Initialize VMware SVGA II GPU driver
-            crate::drivers::gpu::vmware_svga::init_and_register(pci);
-            Some(Box::new(GpuDisplayDriver { _pci: pci.clone(), driver_name: "VMware SVGA II" }))
-        },
-        specificity: 2,
-    },
-    PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1050 },
-        factory: |pci| {
-            // Initialize VirtIO GPU driver
-            crate::drivers::gpu::virtio_gpu::init_and_register(pci);
-            Some(Box::new(GpuDisplayDriver { _pci: pci.clone(), driver_name: "VirtIO GPU" }))
-        },
-        specificity: 2,
-    },
-    // Class-based matches
-    PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x01, subclass: 0x01 },
-        factory: |pci| Some(Box::new(IdeDriver { pci: pci.clone() })),
-        specificity: 1,
-    },
-    PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x01, subclass: 0x06 },
-        factory: |pci| {
-            // Initialize AHCI SATA controller
-            crate::drivers::storage::ahci::init_and_register(pci);
-            Some(Box::new(SataDriver { _pci: pci.clone() }))
-        },
-        specificity: 1,
-    },
-    PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x02, subclass: 0x00 },
-        factory: |pci| Some(Box::new(EthernetDriver { _pci: pci.clone() })),
-        specificity: 1,
-    },
-    PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x03, subclass: 0x00 },
-        factory: |pci| Some(Box::new(GenericVgaDriver { pci: pci.clone() })),
-        specificity: 1,
-    },
-    PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x04, subclass: 0x01 },
-        factory: |pci| Some(Box::new(AudioDriver { pci: pci.clone(), initialized: false })),
-        specificity: 1,
-    },
-    PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x04, subclass: 0x03 },
-        factory: |pci| Some(Box::new(AudioDriver { pci: pci.clone(), initialized: false })),
-        specificity: 1,
-    },
-    PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x0C, subclass: 0x03 },
-        factory: |pci| {
-            crate::drivers::usb::init(pci);
-            let name = match pci.prog_if {
-                0x00 => "UHCI USB 1.1",
-                0x20 => "EHCI USB 2.0",
-                0x10 => "OHCI USB 1.1",
-                0x30 => "xHCI USB 3.0",
-                _ => "USB Controller",
-            };
-            Some(Box::new(UsbControllerDriver { _pci: pci.clone(), controller_name: name }))
-        },
-        specificity: 1,
-    },
-    PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x0C, subclass: 0x05 },
-        factory: |pci| Some(Box::new(SmbusDriver { _pci: pci.clone() })),
-        specificity: 1,
-    },
-];
-
-fn matches_pci(rule: &PciMatch, dev: &PciDevice) -> bool {
-    match rule {
-        PciMatch::Class { class, subclass } => {
-            dev.class_code == *class && dev.subclass == *subclass
-        }
-        PciMatch::VendorDevice { vendor, device } => {
-            dev.vendor_id == *vendor && dev.device_id == *device
-        }
-    }
-}
 
 /// Probe all PCI devices and bind matching drivers.
 /// Skips bridges (class 0x06) since they don't need a user-facing driver.
 pub fn probe_and_bind_all() {
+    use crate::drivers::pci_drivers::{PCI_DRIVER_TABLE, matches_pci};
+
     let pci_devices = crate::drivers::pci::devices();
     let mut bound = 0u32;
     let mut type_counters = [0usize; 10]; // indexed by DriverType discriminant (10 variants)
@@ -726,7 +282,7 @@ pub fn probe_and_bind_all() {
         }
 
         // Find best matching driver entry (highest specificity wins)
-        let mut best: Option<&PciDriverEntry> = None;
+        let mut best: Option<&crate::drivers::pci_drivers::PciDriverEntry> = None;
         for entry in PCI_DRIVER_TABLE {
             if matches_pci(&entry.match_rule, pci_dev) {
                 if best.is_none() || entry.specificity > best.unwrap().specificity {
@@ -768,6 +324,64 @@ pub fn probe_and_bind_all() {
     crate::serial_println!("  HAL: Bound {} PCI driver(s)", bound);
 }
 
+// ──────────────────────────────────────────────
+// Legacy (non-PCI) device drivers
+// ──────────────────────────────────────────────
+
+struct Ps2KeyboardDriver;
+
+impl Driver for Ps2KeyboardDriver {
+    fn name(&self) -> &str { "PS/2 Keyboard" }
+    fn driver_type(&self) -> DriverType { DriverType::Input }
+    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
+        Err(DriverError::NotSupported)
+    }
+    fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize, DriverError> {
+        Err(DriverError::NotSupported)
+    }
+    fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
+        Err(DriverError::NotSupported)
+    }
+}
+
+struct Ps2MouseDriver;
+
+impl Driver for Ps2MouseDriver {
+    fn name(&self) -> &str { "PS/2 Mouse" }
+    fn driver_type(&self) -> DriverType { DriverType::Input }
+    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
+        Err(DriverError::NotSupported)
+    }
+    fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize, DriverError> {
+        Err(DriverError::NotSupported)
+    }
+    fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
+        Err(DriverError::NotSupported)
+    }
+}
+
+struct SerialDriver;
+
+impl Driver for SerialDriver {
+    fn name(&self) -> &str { "Serial Port (COM1)" }
+    fn driver_type(&self) -> DriverType { DriverType::Char }
+    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
+        Err(DriverError::NotSupported)
+    }
+    fn write(&self, _offset: usize, buf: &[u8]) -> Result<usize, DriverError> {
+        for &b in buf {
+            crate::drivers::serial::write_byte(b);
+        }
+        Ok(buf.len())
+    }
+    fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
+        Err(DriverError::NotSupported)
+    }
+}
+
 /// ATAPI CD-ROM/DVD-ROM driver wrapper
 struct AtapiDriver;
 
@@ -776,7 +390,6 @@ impl Driver for AtapiDriver {
     fn driver_type(&self) -> DriverType { DriverType::Block }
     fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
     fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize, DriverError> {
-        // offset is in bytes, convert to 2048-byte CD blocks
         let lba = offset / 2048;
         let blocks = (buf.len() + 2047) / 2048;
         if crate::drivers::storage::atapi::read_sectors(lba as u32, blocks as u32, buf) {

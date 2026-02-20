@@ -104,6 +104,7 @@ const INPUT_KEY_UP: u32 = 2;
 const INPUT_MOUSE_MOVE: u32 = 3;
 const INPUT_MOUSE_BUTTON: u32 = 4;
 const INPUT_MOUSE_SCROLL: u32 = 5;
+const INPUT_MOUSE_MOVE_ABSOLUTE: u32 = 6;
 
 // ── SW Cursor ───────────────────────────────────────────────────────────────
 
@@ -1321,6 +1322,9 @@ impl Desktop {
         let mut cursor_moved = false;
         let mut last_dx: i32 = 0;
         let mut last_dy: i32 = 0;
+        let mut absolute_move = false; // true if last move was absolute
+        let mut abs_x: i32 = 0;
+        let mut abs_y: i32 = 0;
 
         // Batch mouse moves — only process the final position
         for i in 0..count {
@@ -1329,14 +1333,36 @@ impl Desktop {
                 INPUT_MOUSE_MOVE => {
                     let dx = evt[1] as i32;
                     let dy = evt[2] as i32;
+                    if absolute_move {
+                        // Switch from absolute to relative: flush absolute first
+                        absolute_move = false;
+                        last_dx = 0;
+                        last_dy = 0;
+                    }
                     last_dx += dx;
                     last_dy += dy;
                     cursor_moved = true;
                 }
+                INPUT_MOUSE_MOVE_ABSOLUTE => {
+                    // Absolute coordinates from VMMDev — take last position
+                    abs_x = evt[1] as i32;
+                    abs_y = evt[2] as i32;
+                    anyos_std::println!("[cursor] compositor: abs event ({}, {})", abs_x, abs_y);
+                    absolute_move = true;
+                    cursor_moved = true;
+                    // Discard any pending relative deltas
+                    last_dx = 0;
+                    last_dy = 0;
+                }
                 INPUT_MOUSE_BUTTON => {
                     // Apply any pending move first
                     if cursor_moved {
-                        self.apply_mouse_move(last_dx, last_dy);
+                        if absolute_move {
+                            self.apply_mouse_move_absolute(abs_x, abs_y);
+                            absolute_move = false;
+                        } else {
+                            self.apply_mouse_move(last_dx, last_dy);
+                        }
                         last_dx = 0;
                         last_dy = 0;
                         cursor_moved = false;
@@ -1368,7 +1394,11 @@ impl Desktop {
 
         // Apply any remaining batched mouse move
         if cursor_moved {
-            self.apply_mouse_move(last_dx, last_dy);
+            if absolute_move {
+                self.apply_mouse_move_absolute(abs_x, abs_y);
+            } else {
+                self.apply_mouse_move(last_dx, last_dy);
+            }
             needs_compose = true;
         }
 
@@ -1511,6 +1541,20 @@ impl Desktop {
                 }
             }
         }
+    }
+
+    /// Apply an absolute mouse position (from VMMDev). Converts to delta and
+    /// delegates to `apply_mouse_move` so all drag/resize/cursor logic is reused.
+    fn apply_mouse_move_absolute(&mut self, x: i32, y: i32) {
+        let target_x = x.clamp(0, self.screen_width as i32 - 1);
+        let target_y = y.clamp(0, self.screen_height as i32 - 1);
+        let dx = target_x - self.mouse_x;
+        let dy = target_y - self.mouse_y;
+        anyos_std::println!(
+            "[cursor] compositor: abs_move target=({},{}) cur=({},{}) delta=({},{})",
+            target_x, target_y, self.mouse_x, self.mouse_y, dx, dy
+        );
+        self.apply_mouse_move(dx, dy);
     }
 
     /// Returns (window_id, btn_index) of the button under the cursor, if any.

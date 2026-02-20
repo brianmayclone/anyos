@@ -4,8 +4,10 @@
 //! Supports IRQ-driven and polled packet reception, transmit via descriptor rings,
 //! and MAC address reading from EEPROM/RAL registers. Used with QEMU `-device e1000`.
 
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
+use crate::drivers::pci::PciDevice;
 use crate::sync::spinlock::Spinlock;
 use crate::memory::address::{PhysAddr, VirtAddr};
 use crate::memory::{physical, virtual_mem, FRAME_SIZE};
@@ -379,6 +381,9 @@ pub fn init() -> bool {
     crate::serial_println!("[OK] E1000 NIC initialized ({} RX + {} TX descriptors)",
         NUM_RX_DESC, NUM_TX_DESC);
 
+    // Register with the generic network subsystem
+    super::register(Box::new(E1000NetworkDriver));
+
     true
 }
 
@@ -569,4 +574,21 @@ fn e1000_irq_handler(_irq: u8) {
             }
         }
     }
+}
+
+// ── NetworkDriver trait implementation ──────────────────────────────────────
+
+/// Thin wrapper that delegates to the E1000 static state.
+pub struct E1000NetworkDriver;
+
+impl super::NetworkDriver for E1000NetworkDriver {
+    fn name(&self) -> &str { "Intel E1000" }
+    fn transmit(&mut self, data: &[u8]) -> bool { transmit(data) }
+    fn get_mac(&self) -> [u8; 6] { get_mac().unwrap_or([0; 6]) }
+    fn link_up(&self) -> bool { is_link_up() }
+}
+
+/// Probe: return a HAL driver wrapper for the E1000 Ethernet controller.
+pub fn probe(_pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
+    super::create_hal_driver("Intel E1000 Ethernet")
 }

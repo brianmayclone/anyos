@@ -440,3 +440,9 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     super::register(Box::new(gpu));
     true
 }
+
+/// Probe: initialize VMware SVGA II and return a HAL driver.
+pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
+    init_and_register(pci);
+    super::create_hal_driver("VMware SVGA II")
+}

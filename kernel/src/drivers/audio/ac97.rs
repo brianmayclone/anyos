@@ -9,6 +9,7 @@
 //!
 //! QEMU: `-device AC97 -audiodev coreaudio,id=audio0`
 
+use alloc::boxed::Box;
 use crate::arch::x86::port;
 use crate::memory::physical;
 use crate::sync::spinlock::Spinlock;
@@ -247,6 +248,9 @@ pub fn init_from_pci(pci: &PciDevice) {
     }
 
     serial_println!("[OK] AC'97 initialized (48 kHz, 16-bit stereo, IRQ {})", irq);
+
+    // Register with the generic audio subsystem
+    super::register(Box::new(Ac97Driver));
 }
 
 /// Write PCM data to the next available DMA buffer.
@@ -368,6 +372,22 @@ pub fn is_playing() -> bool {
     }
 }
 
+// ── AudioDriver trait implementation ─────────────
+
+/// Thin wrapper that delegates to the AC97 static state.
+/// The actual state lives in the `AC97` Spinlock above (needed by IRQ handler).
+pub struct Ac97Driver;
+
+impl super::AudioDriver for Ac97Driver {
+    fn name(&self) -> &str { "Intel AC'97" }
+    fn write_pcm(&mut self, data: &[u8]) -> usize { write_pcm(data) }
+    fn stop(&mut self) { stop(); }
+    fn set_volume(&mut self, vol: u8) { set_volume(vol); }
+    fn get_volume(&self) -> u8 { get_volume() }
+    fn is_playing(&self) -> bool { is_playing() }
+    fn sample_rate(&self) -> u32 { 48000 }
+}
+
 /// AC'97 IRQ handler — acknowledges buffer completion interrupts.
 fn ac97_irq_handler(_irq: u8) {
     if let Some(mut guard) = AC97.try_lock() {
@@ -397,4 +417,10 @@ fn ac97_irq_handler(_irq: u8) {
             }
         }
     }
+}
+
+/// Probe: initialize AC'97 and return a HAL driver.
+pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
+    init_from_pci(pci);
+    super::create_hal_driver("Intel AC'97 Audio")
 }

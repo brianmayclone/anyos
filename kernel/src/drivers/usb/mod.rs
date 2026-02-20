@@ -328,6 +328,48 @@ pub fn parse_config(data: &[u8]) -> Vec<UsbInterface> {
     interfaces
 }
 
+// ── HAL integration ─────────────────────────────────────────────────────────
+
+use alloc::boxed::Box;
+use crate::drivers::hal::{Driver, DriverType, DriverError};
+
+struct UsbHalDriver {
+    name: &'static str,
+}
+
+impl Driver for UsbHalDriver {
+    fn name(&self) -> &str { self.name }
+    fn driver_type(&self) -> DriverType { DriverType::Bus }
+    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
+        Err(DriverError::NotSupported)
+    }
+    fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize, DriverError> {
+        Err(DriverError::NotSupported)
+    }
+    fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
+        Err(DriverError::NotSupported)
+    }
+}
+
+/// Probe: initialize USB controller and return a HAL driver.
+pub fn probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
+    let name = match pci.prog_if {
+        0x00 => "UHCI USB Controller",
+        0x10 => "OHCI USB Controller",
+        0x20 => "EHCI USB Controller",
+        0x30 => "xHCI USB Controller",
+        _    => "USB Controller",
+    };
+    init(pci);
+    Some(Box::new(UsbHalDriver { name }))
+}
+
+/// Create a HAL driver for SMBus controller.
+pub fn smbus_probe(_pci: &PciDevice) -> Option<Box<dyn Driver>> {
+    Some(Box::new(UsbHalDriver { name: "SMBus Controller" }))
+}
+
 // ── Init entry point ─────────────────────────────
 
 /// Initialize USB for a PCI USB controller, dispatching by prog_if.

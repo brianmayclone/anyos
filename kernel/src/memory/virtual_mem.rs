@@ -1019,3 +1019,41 @@ pub fn handle_heap_demand_page(vaddr: u64) -> bool {
     DEMAND_PAGE_LOCK.store(false, Ordering::Release);
     true
 }
+
+// ── Dynamic MMIO Allocator ──────────────────────────────────────────────────
+
+use crate::sync::spinlock::Spinlock;
+
+/// Next available virtual address in the kernel MMIO region.
+/// Range: 0xFFFF_FFFF_D016_0000 .. 0xFFFF_FFFF_D100_0000 (~240 MiB)
+/// Addresses below 0xD016_0000 are reserved for existing hardcoded driver mappings.
+static MMIO_NEXT: Spinlock<u64> = Spinlock::new(0xFFFF_FFFF_D016_0000);
+
+/// Allocate a contiguous virtual address range and map physical MMIO pages into it.
+///
+/// `phys_base` is the physical BAR address, `pages` is the number of 4 KiB pages to map.
+/// Returns the virtual base address, or `None` if the MMIO space is exhausted.
+///
+/// Pages are mapped as Present + Writable + PCD (Page Cache Disable) for MMIO.
+pub fn map_mmio(phys_base: PhysAddr, pages: usize) -> Option<VirtAddr> {
+    let size = pages as u64 * FRAME_SIZE as u64;
+    let mut next = MMIO_NEXT.lock();
+    let base = *next;
+
+    // Check we haven't exhausted the MMIO VA region
+    if base + size > 0xFFFF_FFFF_D100_0000 {
+        return None;
+    }
+    *next = base + size;
+    drop(next);
+
+    // Map each page: Present(0) + Writable(1) + PCD(4) for uncacheable MMIO
+    const MMIO_FLAGS: u64 = 0x03 | (1 << 4); // Present | Writable | PCD
+    for i in 0..pages {
+        let virt = VirtAddr::new(base + i as u64 * FRAME_SIZE as u64);
+        let phys = PhysAddr::new(phys_base.as_u64() + i as u64 * FRAME_SIZE as u64);
+        map_page(virt, phys, MMIO_FLAGS);
+    }
+
+    Some(VirtAddr::new(base))
+}

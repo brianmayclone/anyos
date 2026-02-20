@@ -9,6 +9,8 @@
 pub mod ata;
 pub mod ahci;
 pub mod atapi;
+pub mod nvme;
+pub mod lsi_scsi;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -16,6 +18,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 enum StorageBackend {
     Ata,
     Ahci,
+    Nvme,
+    LsiScsi,
 }
 
 static mut BACKEND: StorageBackend = StorageBackend::Ata;
@@ -42,6 +46,16 @@ fn io_lock_release() {
 /// Switch the active storage backend to AHCI (called after AHCI init succeeds).
 pub fn set_backend_ahci() {
     unsafe { BACKEND = StorageBackend::Ahci; }
+}
+
+/// Switch the active storage backend to NVMe (called after NVMe init succeeds).
+pub fn set_backend_nvme() {
+    unsafe { BACKEND = StorageBackend::Nvme; }
+}
+
+/// Switch the active storage backend to LSI Logic SCSI.
+pub fn set_backend_lsi() {
+    unsafe { BACKEND = StorageBackend::LsiScsi; }
 }
 
 /// Read `count` sectors starting at `lba` into `buf`.
@@ -74,6 +88,9 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
             ok
         }
         StorageBackend::Ahci => ahci::read_sectors(lba, count, buf),
+        StorageBackend::Nvme => nvme::read_sectors(lba, count, buf),
+        StorageBackend::LsiScsi => lsi_scsi::read_sectors(lba, count, buf),
+
     };
     crate::debug_println!("  [storage] read_sectors: done result={} releasing io_lock", result);
     io_lock_release();
@@ -105,7 +122,48 @@ pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
             ok
         }
         StorageBackend::Ahci => ahci::write_sectors(lba, count, buf),
+        StorageBackend::Nvme => nvme::write_sectors(lba, count, buf),
+        StorageBackend::LsiScsi => lsi_scsi::write_sectors(lba, count, buf),
+
     };
     io_lock_release();
     result
+}
+
+// ── HAL integration ─────────────────────────────────────────────────────────
+
+use alloc::boxed::Box;
+use crate::drivers::hal::{Driver, DriverType, DriverError};
+
+struct StorageHalDriver {
+    name: &'static str,
+}
+
+impl Driver for StorageHalDriver {
+    fn name(&self) -> &str { self.name }
+    fn driver_type(&self) -> DriverType { DriverType::Block }
+    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize, DriverError> {
+        let lba = (offset / 512) as u32;
+        let count = ((buf.len() + 511) / 512) as u32;
+        if read_sectors(lba, count, buf) { Ok(count as usize * 512) } else { Err(DriverError::IoError) }
+    }
+    fn write(&self, offset: usize, buf: &[u8]) -> Result<usize, DriverError> {
+        let lba = (offset / 512) as u32;
+        let count = ((buf.len() + 511) / 512) as u32;
+        if write_sectors(lba, count, buf) { Ok(count as usize * 512) } else { Err(DriverError::IoError) }
+    }
+    fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
+        Err(DriverError::NotSupported)
+    }
+}
+
+/// Create a HAL Driver wrapper for the storage subsystem (called from driver probe).
+pub(crate) fn create_hal_driver(name: &'static str) -> Option<Box<dyn Driver>> {
+    Some(Box::new(StorageHalDriver { name }))
+}
+
+/// Probe for IDE controller (uses default ATA PIO backend).
+pub fn ide_probe(_pci: &crate::drivers::pci::PciDevice) -> Option<Box<dyn Driver>> {
+    create_hal_driver("IDE Controller")
 }

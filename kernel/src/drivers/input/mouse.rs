@@ -24,6 +24,7 @@ pub enum MouseEventType {
     ButtonDown,
     ButtonUp,
     Scroll,
+    MoveAbsolute, // x/y are screen pixel coordinates (VMMDev absolute mouse)
 }
 
 /// State of the three mouse buttons.
@@ -247,6 +248,21 @@ pub fn has_event() -> bool {
 /// Drain all pending mouse events (used during splash→compositor transition).
 pub fn clear_buffer() {
     MOUSE_BUFFER.lock().clear();
+}
+
+/// Inject an absolute mouse position event (from VMMDev or USB tablet).
+pub fn inject_absolute(x: i32, y: i32, buttons: MouseButtons) {
+    let event = MouseEvent {
+        dx: x,
+        dy: y,
+        dz: 0,
+        buttons,
+        event_type: MouseEventType::MoveAbsolute,
+    };
+    let mut buf = MOUSE_BUFFER.lock();
+    if buf.len() < 256 {
+        buf.push_back(event);
+    }
 }
 
 /// PS/2 mouse IRQ handler (IRQ 12). Reads byte from port 0x60.

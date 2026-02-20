@@ -242,3 +242,96 @@ pub fn splash_cursor_position() -> (i32, i32) {
         SPLASH_CURSOR_Y.load(Ordering::Relaxed),
     )
 }
+
+// ── HAL integration ─────────────────────────────────────────────────────────
+
+use crate::drivers::pci::PciDevice;
+use crate::drivers::hal::{Driver, DriverType, DriverError,
+    IOCTL_DISPLAY_GET_MODE, IOCTL_DISPLAY_FLIP, IOCTL_DISPLAY_IS_DBLBUF,
+    IOCTL_DISPLAY_GET_PITCH, IOCTL_DISPLAY_SET_MODE, IOCTL_DISPLAY_LIST_MODES,
+    IOCTL_DISPLAY_HAS_ACCEL, IOCTL_DISPLAY_HAS_HW_CURSOR};
+
+struct GpuHalDriver {
+    name: &'static str,
+}
+
+impl Driver for GpuHalDriver {
+    fn name(&self) -> &str { self.name }
+    fn driver_type(&self) -> DriverType { DriverType::Display }
+    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
+        Err(DriverError::NotSupported)
+    }
+    fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize, DriverError> {
+        Err(DriverError::NotSupported)
+    }
+    fn ioctl(&mut self, cmd: u32, arg: u32) -> Result<u32, DriverError> {
+        if !is_available() { return Err(DriverError::NotSupported); }
+        match cmd {
+            IOCTL_DISPLAY_GET_MODE => {
+                with_gpu(|g| {
+                    let (w, h, _, _) = g.get_mode();
+                    w | (h << 16)
+                }).ok_or(DriverError::IoError)
+            }
+            IOCTL_DISPLAY_FLIP => {
+                with_gpu(|g| g.flip());
+                Ok(0)
+            }
+            IOCTL_DISPLAY_IS_DBLBUF => {
+                Ok(with_gpu(|g| g.has_double_buffer() as u32).unwrap_or(0))
+            }
+            IOCTL_DISPLAY_GET_PITCH => {
+                with_gpu(|g| {
+                    let (_, _, pitch, _) = g.get_mode();
+                    pitch
+                }).ok_or(DriverError::IoError)
+            }
+            IOCTL_DISPLAY_SET_MODE => {
+                let w = arg & 0xFFFF;
+                let h = (arg >> 16) & 0xFFFF;
+                with_gpu(|g| {
+                    g.set_mode(w, h, 32).map(|(w, h, _, _)| w | (h << 16))
+                }).flatten().ok_or(DriverError::IoError)
+            }
+            IOCTL_DISPLAY_LIST_MODES => {
+                Ok(with_gpu(|g| g.supported_modes().len() as u32).unwrap_or(0))
+            }
+            IOCTL_DISPLAY_HAS_ACCEL => {
+                Ok(with_gpu(|g| g.has_accel() as u32).unwrap_or(0))
+            }
+            IOCTL_DISPLAY_HAS_HW_CURSOR => {
+                Ok(with_gpu(|g| g.has_hw_cursor() as u32).unwrap_or(0))
+            }
+            _ => Err(DriverError::NotSupported),
+        }
+    }
+}
+
+/// Create a HAL Driver wrapper for the GPU subsystem (called from driver probe).
+pub(crate) fn create_hal_driver(name: &'static str) -> Option<Box<dyn Driver>> {
+    Some(Box::new(GpuHalDriver { name }))
+}
+
+/// Auto-detect and initialize VirtualBox GPU (VBoxSVGA vs VBoxVGA based on BAR0).
+pub fn vbox_probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
+    if pci.bars[0] & 1 != 0 {
+        crate::serial_println!("  GPU: VBoxSVGA detected (SVGA II mode)");
+        vmware_svga::init_and_register(pci);
+        create_hal_driver("VBoxSVGA")
+    } else {
+        crate::serial_println!("  GPU: VBoxVGA detected (HGSMI mode)");
+        vbox_vga::init_and_register(pci);
+        create_hal_driver("VBoxVGA (HGSMI)")
+    }
+}
+
+/// Probe for Bochs/QEMU VGA (already initialized via VBE during boot).
+pub fn bochs_probe(_pci: &PciDevice) -> Option<Box<dyn Driver>> {
+    create_hal_driver("Bochs/QEMU VGA")
+}
+
+/// Fallback probe for generic VGA-compatible controller.
+pub fn generic_vga_probe(_pci: &PciDevice) -> Option<Box<dyn Driver>> {
+    create_hal_driver("Generic VGA")
+}
