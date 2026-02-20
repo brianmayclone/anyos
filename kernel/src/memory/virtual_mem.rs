@@ -30,6 +30,10 @@ const PAGE_USER: u64 = 1 << 2;
 /// With PAT1 reprogrammed to WC, PWT=1 selects Write-Combining.
 const PAGE_PWT: u64 = 1 << 3;
 
+/// OS-available PTE bit 9: VRAM page — do NOT free_frame on process exit.
+/// Used for pages mapped from the GPU's framebuffer into user processes.
+pub const PTE_VRAM: u64 = 1 << 9;
+
 /// Number of entries in a page table (512 for x86-64).
 const ENTRIES_PER_TABLE: usize = 512;
 
@@ -927,6 +931,10 @@ pub fn destroy_user_page_directory(pml4_phys: PhysAddr) {
                     for pti in 0..ENTRIES_PER_TABLE {
                         let pte = pt_ptr.add(pti).read_volatile();
                         if pte & PAGE_PRESENT != 0 {
+                            // VRAM pages: physical frames belong to GPU, not our allocator.
+                            if pte & PTE_VRAM != 0 {
+                                continue;
+                            }
                             // In DLL range: free ONLY per-process writable pages (.data/.bss).
                             // Shared RO pages (no PAGE_WRITABLE) are owned by the global
                             // LOADED_DLLS registry and must NOT be freed.

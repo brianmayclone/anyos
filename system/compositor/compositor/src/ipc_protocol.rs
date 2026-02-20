@@ -36,6 +36,16 @@ pub const RESP_WINDOW_DESTROYED: u32 = 0x2002;
 /// Sent after the compositor has parsed the menu SHM, so the app can free it.
 pub const RESP_MENU_SET: u32 = 0x2003;
 
+/// VRAM window created: [RESP, window_id, stride_pixels, app_tid, vram_offset]
+/// stride_pixels = fb_pitch/4 (the row stride for the VRAM surface).
+/// vram_offset = byte offset from VRAM base to the surface start.
+/// App maps VRAM via SYS_VRAM_MAP and writes to (mapped_base + vram_offset).
+pub const RESP_VRAM_WINDOW_CREATED: u32 = 0x2004;
+
+/// VRAM window creation failed: [RESP, 0, 0, app_tid, 0]
+/// Not enough off-screen VRAM or GPU not available. App should fall back to SHM.
+pub const RESP_VRAM_WINDOW_FAILED: u32 = 0x2005;
+
 // ── Compositor → App Input Events ────────────────────────────────────────────
 
 /// Key down: [EVT, window_id, scancode, char_code, modifiers]
@@ -108,6 +118,13 @@ pub const CMD_SET_THEME: u32 = 0x100D;
 /// The compositor blurs the composited background behind the window layer
 /// before alpha-blending the window on top (frosted glass effect).
 pub const CMD_SET_BLUR_BEHIND: u32 = 0x100E;
+
+/// Create a VRAM-direct window (app renders directly to off-screen VRAM).
+/// [CMD, app_tid, width, height, flags]
+/// Compositor allocates off-screen VRAM, maps it into the app's address space,
+/// and responds with RESP_VRAM_WINDOW_CREATED containing the VRAM surface info.
+/// On failure, responds with RESP_VRAM_WINDOW_FAILED (app should fall back to SHM).
+pub const CMD_CREATE_VRAM_WINDOW: u32 = 0x1010;
 
 /// Set desktop wallpaper by file path.
 /// [CMD, shm_id, 0, 0, 0]

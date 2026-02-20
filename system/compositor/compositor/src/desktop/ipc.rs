@@ -296,6 +296,26 @@ impl Desktop {
                 }
                 None
             }
+            proto::CMD_CREATE_VRAM_WINDOW => {
+                let app_tid = cmd[1];
+                let width = cmd[2];
+                let height = cmd[3];
+                let flags = cmd[4];
+
+                if width == 0 || height == 0 {
+                    return None;
+                }
+
+                // Try to allocate VRAM and create the window
+                if let Some(result) = self.create_vram_window(app_tid, width, height, flags) {
+                    let target = self.get_sub_id_for_tid(app_tid);
+                    Some((target, result))
+                } else {
+                    // VRAM allocation failed — tell app to fall back to SHM
+                    let target = self.get_sub_id_for_tid(app_tid);
+                    Some((target, [proto::RESP_VRAM_WINDOW_FAILED, 0, 0, app_tid, 0]))
+                }
+            }
             proto::CMD_SET_WALLPAPER => {
                 let shm_id = cmd[1];
                 if shm_id == 0 {

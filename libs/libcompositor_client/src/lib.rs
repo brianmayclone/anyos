@@ -59,6 +59,39 @@ impl WindowHandle {
     }
 }
 
+/// A handle to a VRAM-direct window (app renders directly to GPU VRAM).
+/// The surface pointer points to mapped VRAM memory. The row stride is
+/// `stride` pixels (not `width`), because VRAM rows are pitch-aligned.
+pub struct VramWindowHandle {
+    pub id: u32,
+    surface_ptr: *mut u32,
+    pub width: u32,
+    pub height: u32,
+    /// Row stride in pixels (fb_pitch / 4). Use this instead of `width` for row offsets.
+    pub stride: u32,
+}
+
+impl VramWindowHandle {
+    /// Get a raw pointer to the VRAM surface.
+    /// Pixels are ARGB8888. Row stride is `self.stride` pixels (NOT `self.width`).
+    pub fn surface(&self) -> *mut u32 {
+        self.surface_ptr
+    }
+
+    /// Get a mutable slice of the VRAM surface.
+    /// Note: length = stride * height (covers gaps between rows).
+    pub unsafe fn surface_slice(&self) -> &mut [u32] {
+        let count = (self.stride * self.height) as usize;
+        core::slice::from_raw_parts_mut(self.surface_ptr, count)
+    }
+
+    /// Write a pixel at (x, y) using the correct stride.
+    pub unsafe fn put_pixel(&self, x: u32, y: u32, color: u32) {
+        let off = y * self.stride + x;
+        *self.surface_ptr.add(off as usize) = color;
+    }
+}
+
 /// An event received from the compositor.
 #[derive(Clone, Copy, Debug)]
 pub struct Event {
@@ -113,9 +146,44 @@ impl CompositorClient {
         })
     }
 
+    /// Create a VRAM-direct window (app renders directly to GPU VRAM).
+    /// Returns a VramWindowHandle on success, None if GPU not available or VRAM exhausted.
+    /// The app should fall back to `create_window()` (SHM path) on failure.
+    ///
+    /// IMPORTANT: The surface stride is `handle.stride` pixels (not `width`).
+    /// Use `y * stride + x` to address pixels, not `y * width + x`.
+    pub fn create_vram_window(&self, width: u32, height: u32, flags: u32) -> Option<VramWindowHandle> {
+        let mut stride: u32 = 0;
+        let mut surface: *mut u32 = core::ptr::null_mut();
+        let id = (raw::exports().create_vram_window)(
+            self.channel_id,
+            self.sub_id,
+            width,
+            height,
+            flags,
+            &mut stride,
+            &mut surface,
+        );
+        if id == 0 || surface.is_null() {
+            return None;
+        }
+        Some(VramWindowHandle {
+            id,
+            surface_ptr: surface,
+            width,
+            height,
+            stride,
+        })
+    }
+
     /// Destroy a window.
     pub fn destroy_window(&self, handle: &WindowHandle) {
         (raw::exports().destroy_window)(self.channel_id, handle.id, handle.shm_id);
+    }
+
+    /// Destroy a VRAM-direct window.
+    pub fn destroy_vram_window(&self, handle: &VramWindowHandle) {
+        (raw::exports().destroy_window)(self.channel_id, handle.id, 0);
     }
 
     /// Signal the compositor that window content has been updated.
@@ -123,8 +191,35 @@ impl CompositorClient {
         (raw::exports().present)(self.channel_id, handle.id, handle.shm_id);
     }
 
+    /// Signal the compositor that VRAM window content has been updated.
+    pub fn present_vram(&self, handle: &VramWindowHandle) {
+        (raw::exports().present)(self.channel_id, handle.id, 0);
+    }
+
     /// Poll for the next event for a specific window.
     pub fn poll_event(&self, handle: &WindowHandle) -> Option<Event> {
+        let mut buf = [0u32; 5];
+        let ok = (raw::exports().poll_event)(
+            self.channel_id,
+            self.sub_id,
+            handle.id,
+            &mut buf,
+        );
+        if ok != 0 {
+            Some(Event {
+                event_type: buf[0],
+                window_id: buf[1],
+                arg1: buf[2],
+                arg2: buf[3],
+                arg3: buf[4],
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Poll for the next event for a VRAM window.
+    pub fn poll_event_vram(&self, handle: &VramWindowHandle) -> Option<Event> {
         let mut buf = [0u32; 5];
         let ok = (raw::exports().poll_event)(
             self.channel_id,

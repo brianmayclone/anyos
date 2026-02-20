@@ -101,6 +101,7 @@ pub struct VmwareSvgaGpu {
     width: u32,
     height: u32,
     pitch: u32,
+    vram_size_bytes: u32,
     supported: Vec<(u32, u32)>,
 }
 
@@ -156,7 +157,7 @@ impl VmwareSvgaGpu {
 
             // If FIFO is full, sync and retry
             if next_next == stop {
-                self.sync();
+                self.sync_fifo();
             }
 
             unsafe {
@@ -171,7 +172,7 @@ impl VmwareSvgaGpu {
     }
 
     /// Synchronize: wait for GPU to process all FIFO commands
-    fn sync(&self) {
+    fn sync_fifo(&self) {
         self.reg_write(SVGA_REG_SYNC, 1);
         // Busy-wait for GPU to finish
         while self.reg_read(SVGA_REG_BUSY) != 0 {
@@ -261,7 +262,7 @@ impl GpuDriver for VmwareSvgaGpu {
             let mut cmd = alloc::vec![SVGA_CMD_DEFINE_ALPHA_CURSOR, 0, hotx, hoty, w, h];
             cmd.extend_from_slice(pixels);
             self.fifo_write_cmd(&cmd);
-            self.sync();
+            self.sync_fifo();
             return;
         }
 
@@ -318,7 +319,7 @@ impl GpuDriver for VmwareSvgaGpu {
         }
 
         self.fifo_write_cmd(&cmd);
-        self.sync();
+        self.sync_fifo();
     }
 
     fn move_cursor(&mut self, x: u32, y: u32) {
@@ -334,6 +335,14 @@ impl GpuDriver for VmwareSvgaGpu {
 
     // VMware SVGA II does NOT use double-buffering — it uses FIFO + UPDATE
     fn has_double_buffer(&self) -> bool { false }
+
+    fn sync(&mut self) {
+        self.sync_fifo();
+    }
+
+    fn vram_size(&self) -> u32 {
+        self.vram_size_bytes
+    }
 }
 
 // ──────────────────────────────────────────────
@@ -382,6 +391,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         width: 0,
         height: 0,
         pitch: 0,
+        vram_size_bytes: 0,
         supported: Vec::new(),
     };
 
@@ -420,11 +430,13 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     gpu.reg_write(SVGA_REG_HEIGHT, 768);
     gpu.reg_write(SVGA_REG_BPP, 32);
 
-    // 5. Read back actual mode (device may adjust)
+    // 5. Read back actual mode and VRAM info
     gpu.width = gpu.reg_read(SVGA_REG_WIDTH);
     gpu.height = gpu.reg_read(SVGA_REG_HEIGHT);
     gpu.pitch = gpu.reg_read(SVGA_REG_BYTES_PER_LINE);
     gpu.fb_phys = gpu.reg_read(SVGA_REG_FB_START);
+    gpu.vram_size_bytes = gpu.reg_read(SVGA_REG_VRAM_SIZE);
+    crate::serial_println!("  SVGA II: VRAM size = {} KiB ({} MiB)", gpu.vram_size_bytes / 1024, gpu.vram_size_bytes / (1024 * 1024));
 
     // 6. Query hardware max resolution and build supported mode list
     let max_w = gpu.reg_read(SVGA_REG_MAX_WIDTH);

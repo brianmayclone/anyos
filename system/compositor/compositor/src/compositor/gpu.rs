@@ -14,6 +14,7 @@ pub(crate) const GPU_CURSOR_MOVE: u32 = 4;
 pub(crate) const GPU_CURSOR_SHOW: u32 = 5;
 pub(crate) const GPU_DEFINE_CURSOR: u32 = 6;
 pub(crate) const GPU_FLIP: u32 = 7;
+pub(crate) const GPU_SYNC: u32 = 8;
 
 impl Compositor {
     pub fn enable_double_buffer(&mut self) {

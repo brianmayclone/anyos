@@ -20,9 +20,12 @@ const CMD_RESIZE_SHM: u32 = 0x100B;
 const CMD_REGISTER_SUB: u32 = 0x100C;
 const CMD_SET_BLUR_BEHIND: u32 = 0x100E;
 const CMD_SET_WALLPAPER: u32 = 0x100F;
+const CMD_CREATE_VRAM_WINDOW: u32 = 0x1010;
 const RESP_WINDOW_CREATED: u32 = 0x2001;
+const RESP_VRAM_WINDOW_CREATED: u32 = 0x2004;
+const RESP_VRAM_WINDOW_FAILED: u32 = 0x2005;
 
-const NUM_EXPORTS: u32 = 16;
+const NUM_EXPORTS: u32 = 17;
 
 #[repr(C)]
 pub struct LibcompositorExports {
@@ -111,6 +114,21 @@ pub struct LibcompositorExports {
     /// Enable/disable blur-behind on a window.
     /// radius=0 disables, radius>0 enables with given blur radius.
     pub set_blur_behind: extern "C" fn(channel_id: u32, window_id: u32, radius: u32),
+
+    /// Create a VRAM-direct window (app renders directly to GPU VRAM).
+    /// Returns window_id (0 on failure). Fills out_stride, out_surface, out_vram_offset.
+    /// stride = pitch in pixels (not bytes) — use this as row stride.
+    /// surface = pointer to mapped VRAM region (app writes pixels here).
+    /// If GPU not available or VRAM exhausted, returns 0 (app should fall back to SHM).
+    pub create_vram_window: extern "C" fn(
+        channel_id: u32,
+        sub_id: u32,
+        width: u32,
+        height: u32,
+        flags: u32,
+        out_stride: *mut u32,
+        out_surface: *mut *mut u32,
+    ) -> u32,
 }
 
 #[link_section = ".exports"]
@@ -137,6 +155,7 @@ pub static LIBCOMPOSITOR_EXPORTS: LibcompositorExports = LibcompositorExports {
     resize_shm: export_resize_shm,
     tray_poll_event: export_tray_poll_event,
     set_blur_behind: export_set_blur_behind,
+    create_vram_window: export_create_vram_window,
 };
 
 // ── Export Implementations ───────────────────────────────────────────────────
@@ -469,4 +488,53 @@ extern "C" fn export_tray_poll_event(
 extern "C" fn export_set_blur_behind(channel_id: u32, window_id: u32, radius: u32) {
     let cmd: [u32; 5] = [CMD_SET_BLUR_BEHIND, window_id, radius, 0, 0];
     syscall::evt_chan_emit(channel_id, &cmd);
+}
+
+/// VRAM base address where the kernel maps VRAM into user space (must match kernel).
+const VRAM_USER_BASE: usize = 0x18000000;
+
+extern "C" fn export_create_vram_window(
+    channel_id: u32,
+    sub_id: u32,
+    width: u32,
+    height: u32,
+    flags: u32,
+    out_stride: *mut u32,
+    out_surface: *mut *mut u32,
+) -> u32 {
+    let tid = syscall::get_tid();
+
+    // Send CMD_CREATE_VRAM_WINDOW to compositor
+    let cmd: [u32; 5] = [CMD_CREATE_VRAM_WINDOW, tid, width, height, flags];
+    syscall::evt_chan_emit(channel_id, &cmd);
+
+    // Poll for response
+    let mut response = [0u32; 5];
+    for _ in 0..100 {
+        while syscall::evt_chan_poll(channel_id, sub_id, &mut response) {
+            if response[3] == tid {
+                if response[0] == RESP_VRAM_WINDOW_CREATED {
+                    let window_id = response[1];
+                    let stride_pixels = response[2];
+                    let vram_offset = response[4];
+
+                    // The kernel mapped VRAM at VRAM_USER_BASE.
+                    // Our surface starts at VRAM_USER_BASE + vram_offset.
+                    let surface_ptr = (VRAM_USER_BASE + vram_offset as usize) as *mut u32;
+
+                    unsafe {
+                        *out_stride = stride_pixels;
+                        *out_surface = surface_ptr;
+                    }
+                    return window_id;
+                } else if response[0] == RESP_VRAM_WINDOW_FAILED {
+                    return 0; // VRAM allocation failed
+                }
+            }
+            // Not our response — discard
+        }
+        syscall::sleep(5);
+    }
+
+    0 // Timeout
 }

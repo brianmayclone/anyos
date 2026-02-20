@@ -2359,6 +2359,14 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
                     g.flip();
                     true
                 }
+                8 => { // SYNC — wait for all prior FIFO commands to complete
+                    g.sync();
+                    true
+                }
+                9 => { // VRAM_INFO — returns (vram_size, fb_size) in args[0..1]
+                    // No-op here; handled below outside with_gpu
+                    true
+                }
                 _ => false,
             }
         });
@@ -3717,6 +3725,76 @@ pub fn deliver_pending_signal_default() {
             sig, crate::task::scheduler::current_tid());
         sys_exit(128 + sig);
     }
+}
+
+// =========================================================================
+// VRAM direct surface syscalls
+// =========================================================================
+
+/// SYS_GPU_VRAM_SIZE (256): Return total GPU VRAM size in bytes.
+/// Compositor-only. Returns 0 if no GPU driver.
+pub fn sys_gpu_vram_size() -> u32 {
+    if !is_compositor() {
+        return 0;
+    }
+    crate::drivers::gpu::with_gpu(|g| g.vram_size()).unwrap_or(0)
+}
+
+/// SYS_VRAM_MAP (257): Map VRAM pages into a target app's address space.
+/// Compositor-only. Used for VRAM-direct surfaces (zero-copy GPU rendering).
+///
+/// arg1 = target_tid
+/// arg2 = vram_byte_offset (must be page-aligned)
+/// arg3 = num_bytes (rounded up to pages)
+///
+/// Maps VRAM at user VA 0x18000000 in the target process with Write-Through + PTE_VRAM.
+/// Returns 0x18000000 on success, 0 on failure.
+pub fn sys_vram_map(target_tid: u32, vram_offset: u32, num_bytes: u32) -> u32 {
+    if !is_compositor() {
+        return 0;
+    }
+    if num_bytes == 0 || (vram_offset & 0xFFF) != 0 {
+        return 0;
+    }
+
+    // Get framebuffer physical base from GPU
+    let fb_phys = match crate::drivers::gpu::with_gpu(|g| g.get_mode()) {
+        Some((_, _, _, phys)) => phys as u64,
+        None => return 0,
+    };
+
+    // Get target thread's page directory
+    let pd_phys = match crate::task::scheduler::thread_page_directory(target_tid) {
+        Some(pd) => pd,
+        None => {
+            crate::serial_println!("VRAM_MAP: thread {} has no page directory", target_tid);
+            return 0;
+        }
+    };
+
+    let user_va_base: u64 = 0x1800_0000;
+    let pages = ((num_bytes as usize + 4095) / 4096) as usize;
+
+    // Map VRAM pages into the target's address space
+    // Flags: Present + Writable + User + Write-Through + PTE_VRAM
+    let flags: u64 = 0x0F | crate::memory::virtual_mem::PTE_VRAM; // 0x20F
+
+    for i in 0..pages {
+        let phys = crate::memory::address::PhysAddr::new(
+            fb_phys + vram_offset as u64 + (i * 4096) as u64,
+        );
+        let virt = crate::memory::address::VirtAddr::new(
+            user_va_base + (i * 4096) as u64,
+        );
+        crate::memory::virtual_mem::map_page_in_pd(pd_phys, virt, phys, flags);
+    }
+
+    crate::serial_println!(
+        "VRAM_MAP: mapped {} pages at VA {:#x} for T{} (fb_phys={:#x}, offset={:#x})",
+        pages, user_va_base, target_tid, fb_phys, vram_offset
+    );
+
+    user_va_base as u32
 }
 
 // =========================================================================

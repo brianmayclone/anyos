@@ -788,6 +788,83 @@ impl Desktop {
         id
     }
 
+    /// Create a VRAM-direct window (app renders directly to off-screen VRAM).
+    /// Returns `Some([RESP_VRAM_WINDOW_CREATED, win_id, stride_pixels, tid, vram_offset])`
+    /// on success, or `None` if VRAM allocation fails.
+    pub fn create_vram_window(
+        &mut self,
+        app_tid: u32,
+        content_w: u32,
+        content_h: u32,
+        flags: u32,
+    ) -> Option<[u32; 5]> {
+        // VRAM windows are always borderless + opaque (no title bar chrome)
+        let layer_id = self.compositor.add_vram_layer(
+            100,
+            MENUBAR_HEIGHT as i32 + 40,
+            content_w,
+            content_h,
+        )?;
+
+        // Get the VRAM allocation info for the response
+        let vram_y = self.compositor.vram_layer_y(layer_id)?;
+        let stride_pixels = self.compositor.fb_pitch / 4;
+        let vram_offset = vram_y * self.compositor.fb_pitch;
+
+        // Map VRAM into the app's address space via kernel syscall
+        let alloc_info = self.compositor.vram_allocator.as_ref()?.get(layer_id)?;
+        let map_offset = alloc_info.offset;
+        let map_size = alloc_info.size;
+
+        let map_result = anyos_std::ipc::vram_map(app_tid, map_offset, map_size);
+        if map_result == 0 || map_result == u32::MAX {
+            // VRAM mapping failed — remove the layer and free allocation
+            self.compositor.remove_layer(layer_id);
+            return None;
+        }
+
+        let force_shadow = flags & WIN_FLAG_SHADOW != 0;
+        if force_shadow {
+            if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
+                layer.has_shadow = true;
+            }
+        }
+
+        let id = self.next_window_id;
+        self.next_window_id += 1;
+
+        let win = WindowInfo {
+            id,
+            layer_id,
+            title: String::from("Window"),
+            x: 100,
+            y: MENUBAR_HEIGHT as i32 + 40,
+            content_width: content_w,
+            content_height: content_h,
+            flags: flags | WIN_FLAG_BORDERLESS, // VRAM windows are always borderless
+            owner_tid: app_tid,
+            events: VecDeque::with_capacity(32),
+            focused: false,
+            saved_bounds: None,
+            maximized: false,
+            shm_id: 0,
+            shm_ptr: core::ptr::null_mut(),
+            shm_width: content_w,
+            shm_height: content_h,
+        };
+
+        self.windows.push(win);
+        self.focus_window(id);
+
+        Some([
+            crate::ipc_protocol::RESP_VRAM_WINDOW_CREATED,
+            id,
+            stride_pixels,
+            app_tid,
+            vram_offset,
+        ])
+    }
+
     /// Create an IPC window using pre-rendered pixels (fast path).
     pub fn create_ipc_window_fast(
         &mut self,
@@ -852,18 +929,30 @@ impl Desktop {
     }
 
     /// Copy SHM content into the window layer's content area.
+    /// For VRAM-direct windows (shm_ptr is null), just marks the layer dirty.
     pub fn present_ipc_window(&mut self, window_id: u32) {
         let win_idx = match self.windows.iter().position(|w| w.id == window_id) {
             Some(i) => i,
             None => return,
         };
 
+        let layer_id = self.windows[win_idx].layer_id;
+
+        // VRAM-direct windows: no pixel copy needed, just mark dirty + damage
+        if let Some(layer) = self.compositor.get_layer(layer_id) {
+            if layer.is_vram {
+                let bounds = layer.damage_bounds();
+                self.compositor.mark_layer_dirty(layer_id);
+                self.compositor.add_damage(bounds);
+                return;
+            }
+        }
+
         let shm_ptr = self.windows[win_idx].shm_ptr;
         if shm_ptr.is_null() {
             return;
         }
 
-        let layer_id = self.windows[win_idx].layer_id;
         let cw = self.windows[win_idx].content_width;
         let ch = self.windows[win_idx].content_height;
         let borderless = self.windows[win_idx].is_borderless();

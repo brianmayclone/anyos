@@ -8,6 +8,7 @@ mod compositing;
 mod gpu;
 mod layer;
 mod rect;
+pub mod vram_alloc;
 
 pub use blend::alpha_blend;
 pub use layer::Layer;
@@ -16,6 +17,7 @@ pub use rect::Rect;
 use alloc::vec;
 use alloc::vec::Vec;
 use layer::AccelMoveHint;
+use vram_alloc::VramAllocator;
 
 // ── Compositor ──────────────────────────────────────────────────────────────
 
@@ -59,6 +61,10 @@ pub struct Compositor {
 
     /// Pending GPU-accelerated move hint for RECT_COPY optimization
     pub(crate) accel_move_hint: Option<AccelMoveHint>,
+
+    /// Off-screen VRAM allocator for VRAM-direct surfaces.
+    /// None if GPU accel not available or VRAM too small.
+    pub(crate) vram_allocator: Option<VramAllocator>,
 }
 
 impl Compositor {
@@ -83,6 +89,7 @@ impl Compositor {
             resize_outline: None,
             focused_layer_id: None,
             accel_move_hint: None,
+            vram_allocator: None,
         }
     }
 
@@ -116,6 +123,8 @@ impl Compositor {
             blur_behind: false,
             blur_radius: 0,
             shadow_cache: None,
+            is_vram: false,
+            vram_y: 0,
         });
         id
     }
@@ -148,6 +157,8 @@ impl Compositor {
             blur_behind: false,
             blur_radius: 0,
             shadow_cache: None,
+            is_vram: false,
+            vram_y: 0,
         });
         id
     }
@@ -182,6 +193,8 @@ impl Compositor {
             blur_behind: false,
             blur_radius: 0,
             shadow_cache: None,
+            is_vram: false,
+            vram_y: 0,
         });
         id
     }
@@ -191,8 +204,71 @@ impl Compositor {
         if let Some(idx) = self.layer_index(id) {
             let layer = &self.layers[idx];
             self.damage.push(layer.damage_bounds());
+            // Free off-screen VRAM allocation if this was a VRAM-direct layer
+            if layer.is_vram {
+                if let Some(ref mut alloc) = self.vram_allocator {
+                    alloc.free(id);
+                }
+            }
             self.layers.remove(idx);
         }
+    }
+
+    /// Add a new layer backed by VRAM-direct surface.
+    /// The app writes directly to off-screen VRAM; compositor uses GPU RECT_COPY
+    /// to blit to the visible framebuffer (zero CPU pixel copies for opaque windows).
+    /// Returns `Some(layer_id)` on success, `None` if VRAM allocation fails.
+    pub fn add_vram_layer(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+    ) -> Option<u32> {
+        let alloc = self.vram_allocator.as_mut()?.alloc(w, h, self.next_layer_id)?;
+        let id = self.next_layer_id;
+        self.next_layer_id += 1;
+        self.layers.push(Layer {
+            id,
+            x,
+            y,
+            width: w,
+            height: h,
+            pixels: Vec::new(), // not used — app writes to VRAM directly
+            shm_ptr: core::ptr::null_mut(),
+            shm_id: 0,
+            opaque: true, // VRAM surfaces are always opaque (GPU RECT_COPY)
+            visible: true,
+            has_shadow: false,
+            dirty: true,
+            blur_behind: false,
+            blur_radius: 0,
+            shadow_cache: None,
+            is_vram: true,
+            vram_y: alloc.vram_y,
+        });
+        Some(id)
+    }
+
+    /// Initialize the off-screen VRAM allocator (called after GPU accel is enabled).
+    pub fn init_vram_allocator(&mut self, vram_total: u32) {
+        if vram_total > self.fb_pitch * self.fb_height {
+            self.vram_allocator = Some(VramAllocator::new(
+                self.fb_pitch,
+                self.fb_height,
+                vram_total,
+            ));
+        }
+    }
+
+    /// Whether VRAM-direct surfaces are available.
+    pub fn has_vram_surfaces(&self) -> bool {
+        self.vram_allocator.is_some()
+    }
+
+    /// Get the VRAM Y-offset for a layer (for RECT_COPY source).
+    pub fn vram_layer_y(&self, layer_id: u32) -> Option<u32> {
+        self.layers.iter().find(|l| l.id == layer_id && l.is_vram).map(|l| l.vram_y)
     }
 
     /// Get layer index by ID.
@@ -361,5 +437,17 @@ impl Compositor {
         self.current_page = 0;
         self.prev_damage.clear();
         self.damage.clear();
+        // Invalidate VRAM allocations — resolution changed so off-screen layout is invalid.
+        // Mark all VRAM layers as non-VRAM (they'll fall back to SHM compositing).
+        for layer in &mut self.layers {
+            if layer.is_vram {
+                layer.is_vram = false;
+                layer.vram_y = 0;
+            }
+        }
+        if let Some(ref mut alloc) = self.vram_allocator {
+            let vram_total = alloc.off_screen_bytes() + new_pitch * new_height;
+            alloc.update_fb(new_pitch, new_height, vram_total);
+        }
     }
 }

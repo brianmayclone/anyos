@@ -6,7 +6,7 @@ use super::Compositor;
 use super::rect::Rect;
 use super::layer::{AccelMoveHint, SHADOW_OFFSET_X, SHADOW_OFFSET_Y, SHADOW_SPREAD, SHADOW_ALPHA_FOCUSED, SHADOW_ALPHA_UNFOCUSED};
 use super::blend::{alpha_blend, compute_shadow_cache, blur_back_buffer_region};
-use super::gpu::{GPU_UPDATE, GPU_FLIP, GPU_RECT_COPY};
+use super::gpu::{GPU_UPDATE, GPU_FLIP, GPU_RECT_COPY, GPU_SYNC};
 
 impl Compositor {
     /// Collect damage from all dirty layers.
@@ -49,8 +49,8 @@ impl Compositor {
     pub fn compose(&mut self) {
         self.collect_dirty_damage();
 
-        // Discard accel hint — RECT_COPY disabled (see compose_with_rect_copy)
-        self.accel_move_hint = None;
+        // Check for GPU-accelerated RECT_COPY path (window drag optimization)
+        let hint = self.accel_move_hint.take();
 
         if self.damage.is_empty() {
             return;
@@ -70,53 +70,71 @@ impl Compositor {
             return;
         }
 
-        // GPU RECT_COPY disabled: CPU flush_region and GPU FIFO commands lack
-        // synchronization — RECT_COPY reads VRAM after CPU already overwrote
-        // exposed strips, producing artifacts. The opaque-run optimization in
-        // composite_rect() provides the main performance win instead.
-        {
-            // Standard SW compositing path
-            for rect in &damage {
-                self.composite_rect(rect);
-            }
-
-            if let Some(outline) = self.resize_outline {
-                self.draw_outline_to_bb(&outline);
-            }
-
-            if self.hw_double_buffer {
-                let back_offset = if self.current_page == 0 {
-                    self.fb_height
-                } else {
-                    0
-                };
-                for rect in &self.prev_damage {
-                    self.flush_region(rect, back_offset);
-                }
-                for rect in &damage {
-                    self.flush_region(rect, back_offset);
-                }
-                self.gpu_cmds.push([GPU_FLIP, 0, 0, 0, 0, 0, 0, 0, 0]);
-                self.current_page = 1 - self.current_page;
-                self.prev_damage = damage;
-            } else {
-                for rect in &damage {
-                    self.flush_region(rect, 0);
-                    self.gpu_cmds
-                        .push([GPU_UPDATE, rect.x as u32, rect.y as u32, rect.width, rect.height, 0, 0, 0, 0]);
+        // Try GPU RECT_COPY fast path for window drags (requires gpu_accel + valid hint)
+        if self.gpu_accel && !self.hw_double_buffer {
+            if let Some(ref h) = hint {
+                if let Some(moved_idx) = self.layer_index(h.layer_id) {
+                    if self.layers[moved_idx].opaque {
+                        self.compose_with_rect_copy(&damage, h);
+                        return;
+                    }
                 }
             }
-
-            self.flush_gpu();
         }
+
+        // Standard SW compositing path (skips VRAM-direct layers)
+        for rect in &damage {
+            self.composite_rect(rect);
+        }
+
+        if let Some(outline) = self.resize_outline {
+            self.draw_outline_to_bb(&outline);
+        }
+
+        if self.hw_double_buffer {
+            let back_offset = if self.current_page == 0 {
+                self.fb_height
+            } else {
+                0
+            };
+            for rect in &self.prev_damage {
+                self.flush_region(rect, back_offset);
+            }
+            for rect in &damage {
+                self.flush_region(rect, back_offset);
+            }
+            self.gpu_cmds.push([GPU_FLIP, 0, 0, 0, 0, 0, 0, 0, 0]);
+            self.current_page = 1 - self.current_page;
+            self.prev_damage = damage;
+        } else {
+            for rect in &damage {
+                self.flush_region(rect, 0);
+                self.gpu_cmds
+                    .push([GPU_UPDATE, rect.x as u32, rect.y as u32, rect.width, rect.height, 0, 0, 0, 0]);
+            }
+
+            // VRAM-direct layer overlay: after CPU flush, GPU RECT_COPY from off-screen VRAM.
+            // This must happen AFTER flush_region so the background is in place,
+            // and BEFORE flush_gpu so RECT_COPY + UPDATE are batched together.
+            if self.gpu_accel {
+                self.overlay_vram_layers(&damage);
+            }
+        }
+
+        self.flush_gpu();
     }
 
     /// GPU-accelerated compositing for window drag (RECT_COPY fast path).
     ///
-    /// Currently disabled: CPU flush_region writes to VRAM before GPU processes
-    /// the RECT_COPY command, causing the copy to read partially-overwritten data.
-    /// Needs proper SVGA FIFO sync (SYNC register + BUSY poll) to work correctly.
-    #[allow(dead_code)]
+    /// Key insight: RECT_COPY must execute BEFORE any CPU flush_region writes,
+    /// because RECT_COPY reads from the old window position in VRAM. If we
+    /// flush_region first, the exposed strips overwrite parts of the source.
+    ///
+    /// Sequence:
+    ///   1. SW composite into back buffer (for future frames)
+    ///   2. GPU RECT_COPY old→new position + SYNC (GPU reads pristine VRAM)
+    ///   3. CPU flush exposed strips + above-layer fixup to VRAM
+    ///   4. GPU UPDATE for all affected regions
     fn compose_with_rect_copy(&mut self, _damage: &[Rect], hint: &AccelMoveHint) {
         let old_b = hint.old_bounds.clip_to_screen(self.fb_width, self.fb_height);
         let new_b = hint.new_bounds.clip_to_screen(self.fb_width, self.fb_height);
@@ -128,22 +146,34 @@ impl Compositor {
         // Step 1: Compute exposed strips (old position minus new position overlap)
         let exposed = super::layer::subtract_rects(&old_b, &new_b);
 
-        // Step 2: SW-composite the exposed strips into back buffer
+        // Step 2: SW-composite into back buffer (keeps it in sync for future frames)
         for rect in &exposed {
             if !rect.is_empty() {
                 self.composite_rect(rect);
             }
         }
-
-        // Step 3: SW-composite new position into back buffer (keep in sync for future frames)
         self.composite_rect(&new_b);
 
-        // Step 4: Draw resize outline if active
         if let Some(outline) = self.resize_outline {
             self.draw_outline_to_bb(&outline);
         }
 
-        // Step 5: Flush exposed strips from back buffer -> VRAM
+        // Step 3: GPU RECT_COPY + SYNC — move window in VRAM BEFORE any CPU writes.
+        // RECT_COPY reads from old window position which is still intact in VRAM.
+        self.gpu_cmds.push([
+            GPU_RECT_COPY,
+            old_b.x as u32,
+            old_b.y as u32,
+            new_b.x as u32,
+            new_b.y as u32,
+            new_b.width,
+            new_b.height,
+            0, 0,
+        ]);
+        self.gpu_cmds.push([GPU_SYNC, 0, 0, 0, 0, 0, 0, 0, 0]);
+        self.flush_gpu(); // GPU executes RECT_COPY, blocks on SYNC until done
+
+        // Step 4: Now safe to CPU-flush exposed strips from back buffer to VRAM
         for rect in &exposed {
             if !rect.is_empty() {
                 self.flush_region(rect, 0);
@@ -158,22 +188,9 @@ impl Compositor {
             }
         }
 
-        // Step 6: GPU RECT_COPY — move window pixels within VRAM (hardware accelerated)
-        self.gpu_cmds.push([
-            GPU_RECT_COPY,
-            old_b.x as u32,
-            old_b.y as u32,
-            new_b.x as u32,
-            new_b.y as u32,
-            new_b.width,
-            new_b.height,
-            0, 0,
-        ]);
-
-        // Step 7: Above-layer fixup — any layer ABOVE the moved layer that overlaps
-        // the destination had its pixels overwritten by RECT_COPY (stale dock/menubar
-        // pixels carried from the old position). Flush those intersections from the
-        // back buffer which has the correct composited result.
+        // Step 5: Above-layer fixup — flush intersections of above-layers with the
+        // destination from the back buffer (RECT_COPY may have overwritten them with
+        // stale dock/menubar pixels from the old position).
         if let Some(moved_idx) = self.layer_index(hint.layer_id) {
             for li in (moved_idx + 1)..self.layers.len() {
                 if !self.layers[li].visible {
@@ -194,7 +211,7 @@ impl Compositor {
             }
         }
 
-        // Step 8: Also UPDATE the new position so GPU displays the RECT_COPY result
+        // Step 6: UPDATE the destination region
         self.gpu_cmds.push([
             GPU_UPDATE,
             new_b.x as u32,
@@ -205,6 +222,59 @@ impl Compositor {
         ]);
 
         self.flush_gpu();
+    }
+
+    /// Overlay VRAM-direct layers onto the visible framebuffer using GPU RECT_COPY.
+    /// Called after the CPU back buffer has been flushed to VRAM.
+    /// For each visible VRAM layer that intersects a damage rect, issues a RECT_COPY
+    /// from off-screen VRAM (where the app rendered) to the visible region.
+    fn overlay_vram_layers(&mut self, damage: &[Rect]) {
+        let screen = Rect::new(0, 0, self.fb_width, self.fb_height);
+
+        for li in 0..self.layers.len() {
+            if !self.layers[li].visible || !self.layers[li].is_vram {
+                continue;
+            }
+            let layer_rect = self.layers[li].bounds();
+            let vram_y = self.layers[li].vram_y;
+            let lx = self.layers[li].x;
+            let ly = self.layers[li].y;
+
+            for dmg in damage {
+                if let Some(overlap) = dmg.intersect(&layer_rect) {
+                    let overlap = match overlap.intersect(&screen) {
+                        Some(o) => o,
+                        None => continue,
+                    };
+                    // Source coordinates in off-screen VRAM surface:
+                    // The surface is at vram_y rows, with stride = pitch_pixels.
+                    // Source pixel at (sx, sy) relative to layer origin.
+                    let sx = (overlap.x - lx) as u32;
+                    let sy = (overlap.y - ly) as u32;
+                    let src_x = sx;
+                    let src_y = vram_y + sy;
+
+                    self.gpu_cmds.push([
+                        GPU_RECT_COPY,
+                        src_x,          // source X (within pitch-aligned row)
+                        src_y,          // source Y (off-screen VRAM row)
+                        overlap.x as u32, // dest X (screen)
+                        overlap.y as u32, // dest Y (screen)
+                        overlap.width,
+                        overlap.height,
+                        0, 0,
+                    ]);
+                    self.gpu_cmds.push([
+                        GPU_UPDATE,
+                        overlap.x as u32,
+                        overlap.y as u32,
+                        overlap.width,
+                        overlap.height,
+                        0, 0, 0, 0,
+                    ]);
+                }
+            }
+        }
     }
 
     /// Composite all layers within a damage rect into the back buffer.
@@ -231,6 +301,12 @@ impl Compositor {
         // Composite each visible layer (bottom to top)
         for li in 0..self.layers.len() {
             if !self.layers[li].visible {
+                continue;
+            }
+
+            // Skip VRAM-direct layers — their pixels are in off-screen VRAM,
+            // not accessible from CPU. They're overlaid via GPU RECT_COPY later.
+            if self.layers[li].is_vram {
                 continue;
             }
 

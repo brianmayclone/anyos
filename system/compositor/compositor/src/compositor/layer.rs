@@ -51,6 +51,11 @@ pub struct Layer {
     pub blur_radius: u32,
     /// Cached shadow alpha bitmap (computed lazily, invalidated on resize).
     pub(crate) shadow_cache: Option<ShadowCache>,
+    /// VRAM-direct surface: app writes directly to off-screen VRAM, compositor
+    /// uses GPU RECT_COPY instead of CPU pixel copy during compositing.
+    pub is_vram: bool,
+    /// Y-coordinate of this layer's surface in off-screen VRAM (for RECT_COPY source).
+    pub vram_y: u32,
 }
 
 impl Layer {

@@ -141,6 +141,11 @@ impl Desktop {
 
         if desktop.has_gpu_accel {
             desktop.compositor.enable_gpu_accel();
+            // Initialize VRAM allocator if enough off-screen VRAM is available
+            let vram_total = anyos_std::ipc::gpu_vram_size();
+            if vram_total > 0 {
+                desktop.compositor.init_vram_allocator(vram_total);
+            }
         }
 
         desktop

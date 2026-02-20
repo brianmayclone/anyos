@@ -91,6 +91,12 @@ pub trait GpuDriver: Send {
     /// Notify the GPU that a screen region has been updated (for SVGA FIFO).
     fn update_rect(&mut self, _x: u32, _y: u32, _w: u32, _h: u32) {}
 
+    /// Synchronize: wait for GPU to process all pending FIFO commands.
+    fn sync(&mut self) {}
+
+    /// Total VRAM size in bytes (0 if unknown).
+    fn vram_size(&self) -> u32 { 0 }
+
     // ── Hardware Cursor ──────────────────────────────────
 
     /// Returns true if hardware cursor is supported.

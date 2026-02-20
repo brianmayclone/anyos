@@ -185,6 +185,10 @@ pub(crate) const SYS_GETUSERNAME: u32 = 232;
 pub(crate) const SYS_SET_IDENTITY: u32 = 233;
 pub(crate) const SYS_CHPASSWD: u32 = 234;
 
+// VRAM direct surface
+pub(crate) const SYS_GPU_VRAM_SIZE: u32 = 256;
+pub(crate) const SYS_VRAM_MAP: u32 = 257;
+
 // App permissions
 pub(crate) const SYS_PERM_CHECK: u32 = 250;
 pub(crate) const SYS_PERM_STORE: u32 = 251;

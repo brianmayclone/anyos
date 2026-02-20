@@ -145,6 +145,18 @@ pub fn gpu_command(cmds: &[[u32; 9]]) -> u32 {
     syscall2(SYS_GPU_COMMAND, cmds.as_ptr() as u64, cmds.len() as u64)
 }
 
+/// Query total GPU VRAM size in bytes. Compositor-only.
+/// Returns 0 if no GPU driver or caller is not compositor.
+pub fn gpu_vram_size() -> u32 {
+    syscall0(SYS_GPU_VRAM_SIZE)
+}
+
+/// Map VRAM pages into a target app's address space. Compositor-only.
+/// Returns the user VA (0x18000000) on success, 0 on failure.
+pub fn vram_map(target_tid: u32, vram_byte_offset: u32, num_bytes: u32) -> u32 {
+    syscall3(SYS_VRAM_MAP, target_tid as u64, vram_byte_offset as u64, num_bytes as u64)
+}
+
 /// Poll raw input events. Returns number of events written to buf.
 /// Each event is [u32; 5]: { event_type, arg0, arg1, arg2, arg3 }.
 pub fn input_poll(buf: &mut [[u32; 5]]) -> u32 {
