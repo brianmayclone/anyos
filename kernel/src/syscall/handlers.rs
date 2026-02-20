@@ -1735,6 +1735,10 @@ pub fn sys_set_resolution(width: u32, height: u32) -> u32 {
         Some(Some(_)) => {
             // Update kernel-side cursor bounds for the new resolution
             crate::drivers::gpu::update_cursor_bounds(width, height);
+            // Update VMMDev screen size for absolute mouse coordinate scaling
+            crate::drivers::vmmdev::set_screen_size(width as u16, height as u16);
+            // Update vmmouse screen size for backdoor coordinate scaling
+            crate::drivers::input::vmmouse::update_screen_size(width, height);
             // Notify all subscribers about the resolution change
             crate::ipc::event_bus::system_emit(
                 crate::ipc::event_bus::EventData::new(
@@ -1848,6 +1852,12 @@ pub fn sys_audio_ctl(cmd: u32, arg: u32) -> u32 {
 pub fn sys_gpu_has_accel() -> u32 {
     use core::sync::atomic::Ordering;
     if crate::GPU_ACCEL.load(Ordering::Relaxed) { 1 } else { 0 }
+}
+
+/// SYS_GPU_HAS_HW_CURSOR: Query if GPU hardware cursor is available.
+pub fn sys_gpu_has_hw_cursor() -> u32 {
+    use core::sync::atomic::Ordering;
+    if crate::GPU_HW_CURSOR.load(Ordering::Relaxed) { 1 } else { 0 }
 }
 
 // =========================================================================
@@ -2417,23 +2427,22 @@ pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
         }
     }
 
-    // Poll VMMDev for absolute mouse position (VirtualBox mouse integration).
+    // Poll absolute mouse position from hypervisor (VMMDev or SVGA cursor bypass).
     // Do this before draining PS/2 events so absolute position is always fresh.
     if crate::drivers::vmmdev::is_available() {
-        match crate::drivers::vmmdev::poll_mouse() {
-            Some((x, y, _btns)) => {
-                crate::serial_println!("[cursor] kernel: VMMDev abs ({}, {})", x, y);
-                crate::drivers::input::mouse::inject_absolute(
-                    x, y,
-                    crate::drivers::input::mouse::MouseButtons { left: false, right: false, middle: false },
-                );
-            }
-            None => {
-                crate::serial_println!("[cursor] kernel: VMMDev poll_mouse returned None");
-            }
+        if let Some((x, y, _btns)) = crate::drivers::vmmdev::poll_mouse() {
+            crate::drivers::input::mouse::inject_absolute(
+                x, y,
+                crate::drivers::input::mouse::MouseButtons { left: false, right: false, middle: false },
+            );
         }
-    } else {
-        crate::serial_println!("[cursor] kernel: VMMDev not available");
+    }
+    // VMware SVGA FIFO cursor bypass: host writes cursor pos to FIFO memory
+    if let Some((x, y)) = crate::drivers::gpu::vmware_svga::poll_cursor() {
+        crate::drivers::input::mouse::inject_absolute(
+            x, y,
+            crate::drivers::input::mouse::MouseButtons { left: false, right: false, middle: false },
+        );
     }
 
     // Drain mouse events

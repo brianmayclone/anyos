@@ -77,6 +77,7 @@ fn libfont() -> &'static LibfontExportsPartial {
 // ── Direct kernel syscall for GPU accel query ───────────────────────
 
 const SYS_GPU_HAS_ACCEL: u32 = 135;
+const SYS_GPU_HAS_HW_CURSOR: u32 = 138;
 
 #[inline(always)]
 fn syscall0(num: u32) -> u32 {
@@ -257,6 +258,11 @@ pub fn text_width_n(text: &[u8], n: usize) -> u32 {
 /// Query whether GPU acceleration is available (direct kernel syscall).
 pub fn gpu_has_accel() -> u32 {
     syscall0(SYS_GPU_HAS_ACCEL)
+}
+
+/// Query whether GPU hardware cursor is available (direct kernel syscall).
+pub fn gpu_has_hw_cursor() -> u32 {
+    syscall0(SYS_GPU_HAS_HW_CURSOR)
 }
 
 // --- v2 extern "C" exports ---

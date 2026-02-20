@@ -119,6 +119,7 @@ pub(crate) const SYS_TCP_STATUS: u32 = 104;
 pub(crate) const SYS_GPU_HAS_ACCEL: u32 = 135;
 pub(crate) const SYS_SET_WALLPAPER: u32 = 136;
 pub(crate) const SYS_BOOT_READY: u32 = 137;
+pub(crate) const SYS_GPU_HAS_HW_CURSOR: u32 = 138;
 
 // Shared memory
 pub(crate) const SYS_SHM_CREATE: u32 = 140;

@@ -3,3 +3,4 @@
 pub mod keyboard;
 pub mod layout;
 pub mod mouse;
+pub mod vmmouse;

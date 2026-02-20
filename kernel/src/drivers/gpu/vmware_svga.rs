@@ -10,6 +10,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use crate::drivers::pci::PciDevice;
 use crate::memory::address::VirtAddr;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 // ──────────────────────────────────────────────
 // SVGA Register indices (I/O indexed access)
@@ -42,14 +43,26 @@ const SVGA_CAP_RECT_COPY: u32 = 1 << 1;
 const SVGA_CAP_CURSOR: u32 = 1 << 5;
 const SVGA_CAP_CURSOR_BYPASS: u32 = 1 << 6;
 const SVGA_CAP_CURSOR_BYPASS_2: u32 = 1 << 7;
+const SVGA_CAP_ALPHA_CURSOR: u32 = 1 << 23;
 
 // FIFO register offsets (in u32 units)
 const SVGA_FIFO_MIN: usize = 0;
 const SVGA_FIFO_MAX: usize = 1;
 const SVGA_FIFO_NEXT_CMD: usize = 2;
 const SVGA_FIFO_STOP: usize = 3;
+const SVGA_FIFO_CAPABILITIES: usize = 4;
+const SVGA_FIFO_FLAGS: usize = 5;
 
-// Cursor I/O registers (QEMU uses I/O ports, not FIFO memory, for cursor bypass)
+// FIFO cursor bypass registers (host writes cursor position here)
+const SVGA_FIFO_CURSOR_ON: usize = 6;
+const SVGA_FIFO_CURSOR_X: usize = 7;
+const SVGA_FIFO_CURSOR_Y: usize = 8;
+const SVGA_FIFO_CURSOR_COUNT: usize = 9;
+
+// FIFO capability flags
+const SVGA_FIFO_CAP_CURSOR_BYPASS_3: u32 = 1 << 4;
+
+// Cursor I/O registers (guest writes cursor position here for cursor bypass 1/2)
 const SVGA_REG_CURSOR_ID: u32 = 24;
 const SVGA_REG_CURSOR_X: u32 = 25;
 const SVGA_REG_CURSOR_Y: u32 = 26;
@@ -58,11 +71,20 @@ const SVGA_REG_CURSOR_ON: u32 = 27;
 // FIFO reserved registers
 const SVGA_FIFO_NUM_REGS: usize = 293;
 
+// ── Cursor bypass global state ──────────────────────
+/// FIFO virtual address for direct cursor register access (bypasses GPU trait)
+static SVGA_FIFO_VIRT: AtomicU64 = AtomicU64::new(0);
+/// Whether FIFO cursor bypass 3 is available (host writes cursor pos to FIFO)
+static CURSOR_BYPASS_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Last seen CURSOR_COUNT value (to detect position changes)
+static LAST_CURSOR_COUNT: AtomicU32 = AtomicU32::new(0);
+
 // FIFO command opcodes
 const SVGA_CMD_UPDATE: u32 = 1;
 const SVGA_CMD_RECT_FILL: u32 = 2;
 const SVGA_CMD_RECT_COPY: u32 = 3;
 const SVGA_CMD_DEFINE_CURSOR: u32 = 19;
+const SVGA_CMD_DEFINE_ALPHA_CURSOR: u32 = 22;
 
 // Virtual address for FIFO mapping (kernel higher-half MMIO region)
 const FIFO_VIRT_BASE: u64 = 0xFFFF_FFFF_D002_0000;
@@ -225,31 +247,36 @@ impl GpuDriver for VmwareSvgaGpu {
     }
 
     fn has_hw_cursor(&self) -> bool {
-        (self.capabilities & SVGA_CAP_CURSOR) != 0
+        (self.capabilities & (SVGA_CAP_CURSOR | SVGA_CAP_ALPHA_CURSOR)) != 0
     }
 
     fn define_cursor(&mut self, w: u32, h: u32, hotx: u32, hoty: u32, pixels: &[u32]) {
+        if w == 0 || h == 0 || pixels.len() != (w * h) as usize {
+            return;
+        }
+
+        // Prefer ALPHA_CURSOR (ARGB, full color + transparency) over monochrome.
+        if self.capabilities & SVGA_CAP_ALPHA_CURSOR != 0 {
+            // SVGA_CMD_DEFINE_ALPHA_CURSOR: [cmd, id, hotx, hoty, w, h, pixels...]
+            let mut cmd = alloc::vec![SVGA_CMD_DEFINE_ALPHA_CURSOR, 0, hotx, hoty, w, h];
+            cmd.extend_from_slice(pixels);
+            self.fifo_write_cmd(&cmd);
+            self.sync();
+            return;
+        }
+
         if self.capabilities & SVGA_CAP_CURSOR == 0 {
             return;
         }
 
-        // Use monochrome cursor (bpp=1) — both AND and XOR masks are 1-bit bitmaps.
-        // QEMU skips field 6 (andMaskDepth) and uses field 7 as cursor.bpp.
-        // For bpp=1: cursor_set_mono(foreground=0xFFFFFF, background=0x000000, image=XOR, mask=AND)
-        // Windows/SVGA convention:
-        //   AND=0 + XOR=1 → opaque foreground (white)
-        //   AND=0 + XOR=0 → opaque background (black)
-        //   AND=1 + XOR=0 → transparent
-        let bitmap_u32s = ((w + 31) / 32 * h) as usize; // SVGA_BITMAP_SIZE
-        let bpl = ((w + 7) / 8) as usize; // bytes per line in cursor_set_mono
+        // Fallback: monochrome cursor (bpp=1) — AND + XOR masks.
+        let bitmap_u32s = ((w + 31) / 32 * h) as usize;
+        let bpl = ((w + 7) / 8) as usize;
 
         let mut cmd = alloc::vec![SVGA_CMD_DEFINE_CURSOR, 0, hotx, hoty, w, h, 1, 1];
 
-        // Build AND mask (transparency) and XOR mask (color) as tightly-packed bytes.
-        // cursor_set_mono reads bytes with stride bpl = ceil(w/8).
-        // Windows/SVGA cursor convention: AND=1 → transparent, AND=0 → opaque.
         let total_bytes = bitmap_u32s * 4;
-        let mut and_bytes = alloc::vec![0xFFu8; total_bytes]; // all transparent by default
+        let mut and_bytes = alloc::vec![0xFFu8; total_bytes];
         let mut xor_bytes = alloc::vec![0u8; total_bytes];
 
         for row in 0..h as usize {
@@ -261,9 +288,7 @@ impl GpuDriver for VmwareSvgaGpu {
                 if alpha >= 128 {
                     let byte_idx = row * bpl + col / 8;
                     let bit = 0x80u8 >> (col % 8);
-                    // AND mask: CLEAR bit for opaque pixels (AND=0 → opaque)
                     and_bytes[byte_idx] &= !bit;
-                    // XOR mask: bit=1 means foreground (white), bit=0 means background (black)
                     let r = (pixel >> 16) & 0xFF;
                     let g = (pixel >> 8) & 0xFF;
                     let b = pixel & 0xFF;
@@ -274,7 +299,6 @@ impl GpuDriver for VmwareSvgaGpu {
             }
         }
 
-        // Pack AND mask bytes into u32 words (little-endian) for FIFO
         for i in 0..bitmap_u32s {
             let off = i * 4;
             let word = and_bytes[off] as u32
@@ -284,7 +308,6 @@ impl GpuDriver for VmwareSvgaGpu {
             cmd.push(word);
         }
 
-        // Pack XOR mask bytes into u32 words (little-endian) for FIFO
         for i in 0..bitmap_u32s {
             let off = i * 4;
             let word = xor_bytes[off] as u32
@@ -385,6 +408,9 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     if gpu.capabilities & SVGA_CAP_CURSOR_BYPASS != 0 {
         crate::serial_println!("    - CURSOR_BYPASS");
     }
+    if gpu.capabilities & SVGA_CAP_ALPHA_CURSOR != 0 {
+        crate::serial_println!("    - ALPHA_CURSOR");
+    }
 
     // 3. Enable SVGA FIRST — must be enabled before setting mode or reading FB info
     gpu.reg_write(SVGA_REG_ENABLE, 1);
@@ -428,7 +454,17 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     // 7. Initialize FIFO and signal CONFIG_DONE
     gpu.init_fifo();
 
-    // 8. Send initial full-screen UPDATE + SYNC so QEMU displays the framebuffer
+    // 8. Check for FIFO cursor bypass 3 (host writes cursor pos to FIFO memory)
+    SVGA_FIFO_VIRT.store(gpu.fifo_virt, Ordering::Relaxed);
+    let fifo_caps = gpu.fifo_read(SVGA_FIFO_CAPABILITIES);
+    if fifo_caps & SVGA_FIFO_CAP_CURSOR_BYPASS_3 != 0 {
+        CURSOR_BYPASS_ACTIVE.store(true, Ordering::Relaxed);
+        crate::serial_println!("  SVGA II: FIFO cursor bypass 3 active (absolute mouse from host)");
+    } else {
+        crate::serial_println!("  SVGA II: FIFO caps={:#x} (no cursor bypass 3)", fifo_caps);
+    }
+
+    // 9. Send initial full-screen UPDATE + SYNC so QEMU displays the framebuffer
     gpu.fifo_write_cmd(&[SVGA_CMD_UPDATE, 0, 0, gpu.width, gpu.height]);
     gpu.sync();
 
@@ -445,4 +481,40 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
 pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
     init_and_register(pci);
     super::create_hal_driver("VMware SVGA II")
+}
+
+// ── FIFO Cursor Bypass (absolute mouse from host) ────────────
+
+/// Poll the VMware SVGA FIFO for absolute cursor position.
+/// Returns `Some((x, y))` if cursor position changed since last poll.
+/// The host (QEMU/VBox) writes cursor position to FIFO memory when
+/// cursor bypass 3 is active. This replaces PS/2 for mouse input.
+pub fn poll_cursor() -> Option<(i32, i32)> {
+    if !CURSOR_BYPASS_ACTIVE.load(Ordering::Relaxed) {
+        return None;
+    }
+    let fifo_virt = SVGA_FIFO_VIRT.load(Ordering::Relaxed);
+    if fifo_virt == 0 {
+        return None;
+    }
+
+    let fifo = fifo_virt as *const u32;
+
+    // Read CURSOR_COUNT — host increments this on each position update
+    let count = unsafe { core::ptr::read_volatile(fifo.add(SVGA_FIFO_CURSOR_COUNT)) };
+    let last = LAST_CURSOR_COUNT.load(Ordering::Relaxed);
+    if count == last {
+        return None;
+    }
+    LAST_CURSOR_COUNT.store(count, Ordering::Relaxed);
+
+    let x = unsafe { core::ptr::read_volatile(fifo.add(SVGA_FIFO_CURSOR_X)) } as i32;
+    let y = unsafe { core::ptr::read_volatile(fifo.add(SVGA_FIFO_CURSOR_Y)) } as i32;
+
+    Some((x, y))
+}
+
+/// Check if SVGA cursor bypass is available.
+pub fn has_cursor_bypass() -> bool {
+    CURSOR_BYPASS_ACTIVE.load(Ordering::Relaxed)
 }

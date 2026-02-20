@@ -768,6 +768,11 @@ pub fn gpu_has_accel() -> bool {
     syscall0(SYS_GPU_HAS_ACCEL) != 0
 }
 
+/// Query if GPU hardware cursor is available.
+pub fn gpu_has_hw_cursor() -> bool {
+    syscall0(SYS_GPU_HAS_HW_CURSOR) != 0
+}
+
 /// Set the desktop wallpaper by file path.
 /// The compositor loads and scales the image to fit the screen.
 pub fn set_wallpaper(path: &str) -> u32 {

@@ -533,6 +533,8 @@ pub struct Desktop {
     btn_anims: anyos_std::anim::AnimSet,
     /// Whether GPU acceleration is available (cached at init)
     has_gpu_accel: bool,
+    /// Whether GPU hardware cursor is available (cached at init)
+    has_hw_cursor: bool,
     /// Per-app subscription IDs for targeted event delivery: (tid, sub_id)
     app_subs: Vec<(u32, u32)>,
     /// Deferred wallpaper reload after resolution change
@@ -587,6 +589,7 @@ impl Desktop {
             btn_pressed: None,
             btn_anims: anyos_std::anim::AnimSet::new(),
             has_gpu_accel: anyos_std::ui::window::gpu_has_accel(),
+            has_hw_cursor: anyos_std::ui::window::gpu_has_hw_cursor(),
             app_subs: Vec::with_capacity(16),
             wallpaper_pending: false,
             tray_ipc_events: Vec::new(),
@@ -607,6 +610,11 @@ impl Desktop {
     /// Whether GPU 2D acceleration is available.
     pub fn has_gpu_accel(&self) -> bool {
         self.has_gpu_accel
+    }
+
+    /// Whether GPU hardware cursor is available.
+    pub fn has_hw_cursor(&self) -> bool {
+        self.has_hw_cursor
     }
 
     /// Set the initial cursor position (used during compositor startup to sync
@@ -1347,7 +1355,6 @@ impl Desktop {
                     // Absolute coordinates from VMMDev — take last position
                     abs_x = evt[1] as i32;
                     abs_y = evt[2] as i32;
-                    anyos_std::println!("[cursor] compositor: abs event ({}, {})", abs_x, abs_y);
                     absolute_move = true;
                     cursor_moved = true;
                     // Discard any pending relative deltas
@@ -2245,8 +2252,9 @@ impl Desktop {
             // that Compositor::compose() may have skipped due to empty damage.
             self.compositor.flush_gpu();
         } else {
+            // SW cursor: draw cursor on top of composited frame, then copy
+            // the cursor region to the VISIBLE framebuffer page.
             self.draw_sw_cursor();
-            // Flush cursor region to FB
             let rect = Rect::new(
                 self.mouse_x,
                 self.mouse_y,
@@ -2255,14 +2263,7 @@ impl Desktop {
             )
             .clip_to_screen(self.screen_width, self.screen_height);
             if !rect.is_empty() {
-                self.compositor.flush_region_pub(&rect);
-                self.compositor.queue_gpu_update(
-                    rect.x as u32,
-                    rect.y as u32,
-                    rect.width,
-                    rect.height,
-                );
-                self.compositor.flush_gpu();
+                self.compositor.flush_cursor_region(&rect);
             }
         }
     }

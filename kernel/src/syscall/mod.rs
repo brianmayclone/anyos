@@ -132,6 +132,7 @@ pub const SYS_SET_RESOLUTION: u32 = 110;
 pub const SYS_LIST_RESOLUTIONS: u32 = 111;
 pub const SYS_GPU_INFO: u32 = 112;
 pub const SYS_GPU_HAS_ACCEL: u32 = 135;
+pub const SYS_GPU_HAS_HW_CURSOR: u32 = 138;
 pub const SYS_BOOT_READY: u32 = 137;
 
 // Audio syscalls
@@ -394,6 +395,7 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_LIST_RESOLUTIONS => handlers::sys_list_resolutions(arg1, arg2),
         SYS_GPU_INFO => handlers::sys_gpu_info(arg1, arg2),
         SYS_GPU_HAS_ACCEL => handlers::sys_gpu_has_accel(),
+        SYS_GPU_HAS_HW_CURSOR => handlers::sys_gpu_has_hw_cursor(),
         SYS_BOOT_READY => handlers::sys_boot_ready(),
 
         // Audio

@@ -1116,6 +1116,23 @@ impl Compositor {
         self.flush_region(rect, 0);
     }
 
+    /// Flush a region to the currently VISIBLE framebuffer page.
+    /// Used for SW cursor: after compose()'s FLIP, the visible page depends on current_page.
+    /// For non-double-buffer mode, also sends GPU_UPDATE.
+    pub fn flush_cursor_region(&mut self, rect: &Rect) {
+        if self.hw_double_buffer {
+            // After compose()'s FLIP, current_page was swapped.
+            // The page we just wrote to (now visible) is:
+            //   current_page==1 → visible at fb_height, current_page==0 → visible at 0
+            let front_offset = if self.current_page == 1 { self.fb_height } else { 0 };
+            self.flush_region(rect, front_offset);
+        } else {
+            self.flush_region(rect, 0);
+            self.gpu_cmds.push([GPU_UPDATE, rect.x as u32, rect.y as u32, rect.width, rect.height, 0, 0, 0, 0]);
+            self.flush_gpu();
+        }
+    }
+
     /// Full-screen damage (force recomposition of everything).
     pub fn damage_all(&mut self) {
         self.damage

@@ -36,7 +36,7 @@ pub struct MouseButtons {
 }
 
 /// Ring buffer of pending mouse events, capacity 64.
-static MOUSE_BUFFER: Spinlock<VecDeque<MouseEvent>> = Spinlock::new(VecDeque::new());
+pub(crate) static MOUSE_BUFFER: Spinlock<VecDeque<MouseEvent>> = Spinlock::new(VecDeque::new());
 static MOUSE_STATE: Spinlock<MouseState> = Spinlock::new(MouseState {
     cycle: 0,
     bytes: [0; 4],
@@ -85,15 +85,13 @@ pub fn init() {
     mouse_wait_input();
     unsafe { outb(0x64, 0xA8); }
 
-    // Enable interrupts
+    // Read controller config — but do NOT enable IRQ12 yet.
+    // IRQ12 must stay disabled during init so ACK bytes from mouse commands
+    // don't leak into the IRQ handler's packet state machine.
     mouse_wait_input();
     unsafe { outb(0x64, 0x20); }
     mouse_wait_output();
-    let status = unsafe { inb(0x60) } | 0x02; // Enable IRQ12
-    mouse_wait_input();
-    unsafe { outb(0x64, 0x60); }
-    mouse_wait_input();
-    unsafe { outb(0x60, status); }
+    let status = unsafe { inb(0x60) };
 
     // Set defaults
     mouse_write(0xF6);
@@ -120,6 +118,22 @@ pub fn init() {
     // Enable data reporting
     mouse_write(0xF4);
     mouse_read(); // ACK
+
+    // Flush any stale bytes from the controller buffer
+    for _ in 0..16 {
+        if unsafe { inb(0x64) } & 0x01 != 0 {
+            unsafe { inb(0x60); } // discard
+        } else {
+            break;
+        }
+    }
+
+    // NOW enable IRQ12 in the controller config — all init commands are done,
+    // no more ACK bytes can leak into the IRQ handler.
+    mouse_wait_input();
+    unsafe { outb(0x64, 0x60); }
+    mouse_wait_input();
+    unsafe { outb(0x60, status | 0x02); } // Enable IRQ12
 
     if has_scroll {
         crate::serial_println!("[OK] PS/2 mouse initialized (IntelliMouse, scroll wheel)");
@@ -184,6 +198,11 @@ fn process_packet(state: &mut MouseState, dz: i32) {
     }
     // PS/2 mouse Y is inverted
     dy = -dy;
+
+    // Debug: log mouse packet values (raw bytes + decoded dx/dy)
+    if dx != 0 || dy != 0 {
+        crate::serial_println!("[mouse] raw=[{:#04x},{:#04x},{:#04x},{:#04x}] dx={} dy={} scroll={}", b[0], b[1], b[2], b[3], dx, dy, dz);
+    }
 
     // Boot splash: update HW cursor directly from IRQ (lag-free)
     crate::drivers::gpu::splash_cursor_move(dx, dy);
@@ -252,6 +271,10 @@ pub fn clear_buffer() {
 
 /// Inject an absolute mouse position event (from VMMDev or USB tablet).
 pub fn inject_absolute(x: i32, y: i32, buttons: MouseButtons) {
+    static LOGGED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    if !LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
+        crate::serial_println!("[mouse] inject_absolute first event: x={} y={}", x, y);
+    }
     let event = MouseEvent {
         dx: x,
         dy: y,
@@ -266,7 +289,23 @@ pub fn inject_absolute(x: i32, y: i32, buttons: MouseButtons) {
 }
 
 /// PS/2 mouse IRQ handler (IRQ 12). Reads byte from port 0x60.
+/// When the VMware backdoor (vmmouse) is active, delegates to vmmouse instead.
 pub fn irq_handler(_irq: u8) {
+    // If vmmouse is active, the backdoor intercepts PS/2 data — read from backdoor instead
+    if super::vmmouse::is_active() {
+        super::vmmouse::handle_irq();
+        return;
+    }
+
+    let status = unsafe { crate::arch::x86::port::inb(0x64) };
+    // Bit 0: Output Buffer Full — data is available
+    // Bit 5: AUX data — byte is from mouse, not keyboard
+    if status & 0x01 == 0 {
+        return; // no data available (spurious IRQ)
+    }
     let byte = unsafe { crate::arch::x86::port::inb(0x60) };
+    if status & 0x20 == 0 {
+        return; // not from auxiliary device (keyboard data, ignore)
+    }
     handle_byte(byte);
 }

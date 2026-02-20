@@ -31,6 +31,9 @@ static BOOT_MODE: AtomicU8 = AtomicU8::new(0);
 /// GPU 2D acceleration available (queried by SYS_GPU_HAS_ACCEL).
 pub static GPU_ACCEL: AtomicBool = AtomicBool::new(false);
 
+/// GPU hardware cursor available (queried by SYS_GPU_HAS_HW_CURSOR).
+pub static GPU_HW_CURSOR: AtomicBool = AtomicBool::new(false);
+
 /// Get the boot mode (0 = BIOS, 1 = UEFI).
 pub fn boot_mode() -> u8 {
     BOOT_MODE.load(AtomicOrdering::Relaxed)
@@ -217,6 +220,10 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     // Phase 8: Initialize mouse
     drivers::input::mouse::init();
 
+    // Phase 8a: Try VMware backdoor (vmmouse) for absolute mouse in VMs
+    // Must be after PS/2 init — if backdoor is present, IRQ12 will use it instead of PS/2.
+    drivers::input::vmmouse::init();
+
     // Emit boot complete event
     ipc::event_bus::system_emit(ipc::event_bus::EventData::new(
         ipc::event_bus::EVT_BOOT_COMPLETE, 0, 0, 0, 0,
@@ -272,6 +279,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
 
         let has_hw_cursor = drivers::gpu::with_gpu(|g| g.has_hw_cursor()).unwrap_or(false);
         if has_hw_cursor {
+            GPU_HW_CURSOR.store(true, AtomicOrdering::Relaxed);
             drivers::gpu::enable_splash_cursor(fb.width, fb.height);
             serial_println!("[OK] Hardware cursor enabled (splash mode)");
         }

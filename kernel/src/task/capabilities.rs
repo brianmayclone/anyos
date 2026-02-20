@@ -163,6 +163,7 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_LIST_RESOLUTIONS
         | syscall::SYS_GPU_INFO
         | syscall::SYS_GPU_HAS_ACCEL
+        | syscall::SYS_GPU_HAS_HW_CURSOR
         | syscall::SYS_CAPTURE_SCREEN => CAP_DISPLAY,
 
         // Raw devices

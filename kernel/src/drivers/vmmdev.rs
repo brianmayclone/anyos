@@ -127,8 +127,16 @@ struct VMMDevReqGuestInfo {
 // ── Global state ────────────────────────────────────
 
 static AVAILABLE: AtomicBool = AtomicBool::new(false);
-static SCREEN_WIDTH: AtomicU16 = AtomicU16::new(1920);
-static SCREEN_HEIGHT: AtomicU16 = AtomicU16::new(1080);
+/// Whether host supports absolute mouse (HOST_WANTS_ABSOLUTE was set).
+/// If false, poll_mouse() returns None immediately and PS/2 relative is used.
+static ABSOLUTE_AVAILABLE: AtomicBool = AtomicBool::new(false);
+static SCREEN_WIDTH: AtomicU16 = AtomicU16::new(0);
+static SCREEN_HEIGHT: AtomicU16 = AtomicU16::new(0);
+/// Debug: log first poll_mouse result once
+static MOUSE_POLL_LOGGED: AtomicBool = AtomicBool::new(false);
+/// Last polled raw coordinates (to detect changes, avoid duplicate events)
+static LAST_RAW_X: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(-1);
+static LAST_RAW_Y: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(-1);
 
 /// I/O port base (BAR0) for request submission.
 static mut IO_PORT: u16 = 0;
@@ -155,10 +163,14 @@ pub fn set_screen_size(width: u16, height: u16) {
 }
 
 /// Poll VMMDev for current absolute mouse position.
-/// Returns `Some((pixel_x, pixel_y, buttons))` if new position available,
-/// `None` if VMMDev not available or no change.
+/// Returns `Some((pixel_x, pixel_y, buttons))` if position changed since last poll,
+/// `None` if VMMDev not available or position unchanged.
+///
+/// NOTE: Does NOT check HOST_WANTS_ABSOLUTE. VirtualBox provides absolute
+/// coordinates via GetMouseStatus regardless of that flag when Mouse Integration
+/// is active. We detect valid data by checking for position changes.
 pub fn poll_mouse() -> Option<(i32, i32, u32)> {
-    if !is_available() {
+    if !is_available() || !ABSOLUTE_AVAILABLE.load(Ordering::Relaxed) {
         return None;
     }
 
@@ -178,20 +190,35 @@ pub fn poll_mouse() -> Option<(i32, i32, u32)> {
         return None;
     }
 
-    // Host doesn't want absolute? No position data.
-    if resp.mouse_features & VMMDEV_MOUSE_HOST_WANTS_ABSOLUTE == 0 {
+    // One-shot debug: log the first GetMouseStatus response
+    if !MOUSE_POLL_LOGGED.swap(true, Ordering::Relaxed) {
+        crate::serial_println!(
+            "[vmmdev] GetMouseStatus: features={:#06x} pos=({},{}) screen={}x{}",
+            resp.mouse_features, resp.pointer_x, resp.pointer_y,
+            SCREEN_WIDTH.load(Ordering::Relaxed), SCREEN_HEIGHT.load(Ordering::Relaxed),
+        );
+    }
+
+    // Only return if position actually changed (avoids flooding with duplicates)
+    let raw_x = resp.pointer_x;
+    let raw_y = resp.pointer_y;
+    let last_x = LAST_RAW_X.load(Ordering::Relaxed);
+    let last_y = LAST_RAW_Y.load(Ordering::Relaxed);
+    if raw_x == last_x && raw_y == last_y {
         return None;
     }
+    LAST_RAW_X.store(raw_x, Ordering::Relaxed);
+    LAST_RAW_Y.store(raw_y, Ordering::Relaxed);
 
     // Scale from 0..0xFFFF to screen pixels
     let sw = SCREEN_WIDTH.load(Ordering::Relaxed) as i32;
     let sh = SCREEN_HEIGHT.load(Ordering::Relaxed) as i32;
-    let px = (resp.pointer_x as i64 * sw as i64 / 0xFFFF) as i32;
-    let py = (resp.pointer_y as i64 * sh as i64 / 0xFFFF) as i32;
+    if sw == 0 || sh == 0 {
+        return None;
+    }
+    let px = (raw_x as i64 * sw as i64 / 0xFFFF) as i32;
+    let py = (raw_y as i64 * sh as i64 / 0xFFFF) as i32;
 
-    // Extract button state from mouse_features (bits 8-10 in some VBox versions)
-    // VMMDev doesn't provide buttons in GetMouseStatus — buttons come via PS/2.
-    // Return 0 for buttons; the PS/2 button state is tracked separately.
     Some((px, py, 0))
 }
 
@@ -294,21 +321,50 @@ pub fn init_and_register(pci: &PciDevice) {
         );
     }
 
-    // Step 3: Enable absolute mouse
-    let mouse_req = VMMDevReqMouseStatus {
+    // Step 3: Check if host supports absolute mouse BEFORE enabling it.
+    // CRITICAL: We must NEVER set GUEST_CAN_ABSOLUTE if the host doesn't support
+    // absolute mouse. Even briefly setting and then clearing it corrupts VirtualBox's
+    // PS/2 mouse emulation permanently for the session (no Y data, only positive X).
+    let check_req = VMMDevReqMouseStatus {
         header: VMMDevRequestHeader::new(
-            VMMDEVREQ_SET_MOUSE_STATUS,
+            VMMDEVREQ_GET_MOUSE_STATUS,
             core::mem::size_of::<VMMDevReqMouseStatus>() as u32,
         ),
-        mouse_features: VMMDEV_MOUSE_GUEST_CAN_ABSOLUTE | VMMDEV_MOUSE_NEW_PROTOCOL,
+        mouse_features: 0,
         pointer_x: 0,
         pointer_y: 0,
     };
-    let mouse_resp: VMMDevReqMouseStatus = unsafe { submit_request(&mouse_req) };
-    if mouse_resp.header.rc < 0 {
-        crate::serial_println!("  VMMDev: SetMouseStatus failed (rc={})", mouse_resp.header.rc);
-    } else {
-        crate::serial_println!("  VMMDev: Absolute mouse enabled");
+    let check_resp: VMMDevReqMouseStatus = unsafe { submit_request(&check_req) };
+    if check_resp.header.rc >= 0 {
+        crate::serial_println!(
+            "  VMMDev: GetMouseStatus features={:#06x} pos=({},{})",
+            check_resp.mouse_features, check_resp.pointer_x, check_resp.pointer_y,
+        );
+
+        if check_resp.mouse_features & VMMDEV_MOUSE_HOST_WANTS_ABSOLUTE != 0 {
+            // Host supports absolute mouse — now safe to set GUEST_CAN_ABSOLUTE
+            let mouse_req = VMMDevReqMouseStatus {
+                header: VMMDevRequestHeader::new(
+                    VMMDEVREQ_SET_MOUSE_STATUS,
+                    core::mem::size_of::<VMMDevReqMouseStatus>() as u32,
+                ),
+                mouse_features: VMMDEV_MOUSE_GUEST_CAN_ABSOLUTE | VMMDEV_MOUSE_NEW_PROTOCOL,
+                pointer_x: 0,
+                pointer_y: 0,
+            };
+            let mouse_resp: VMMDevReqMouseStatus = unsafe { submit_request(&mouse_req) };
+            if mouse_resp.header.rc < 0 {
+                crate::serial_println!("  VMMDev: SetMouseStatus failed (rc={})", mouse_resp.header.rc);
+            } else {
+                ABSOLUTE_AVAILABLE.store(true, Ordering::Relaxed);
+                crate::serial_println!("  VMMDev: Absolute mouse enabled (HOST_WANTS_ABSOLUTE + GUEST_CAN_ABSOLUTE)");
+            }
+        } else {
+            // Host does NOT support absolute mouse (e.g. VBoxVGA).
+            // Do NOT touch mouse status — leave PS/2 relative mode intact.
+            ABSOLUTE_AVAILABLE.store(false, Ordering::Relaxed);
+            crate::serial_println!("  VMMDev: No absolute mouse support (features={:#06x}), using PS/2 relative", check_resp.mouse_features);
+        }
     }
 
     // Step 4: Set event filter (enable mouse capability change events)
@@ -321,6 +377,13 @@ pub fn init_and_register(pci: &PciDevice) {
         not_mask: 0,
     };
     let _: VMMDevReqGuestFilterMask = unsafe { submit_request(&filter) };
+
+    // Step 5: Set screen size from boot framebuffer for absolute mouse scaling
+    if let Some(fb) = crate::drivers::framebuffer::info() {
+        SCREEN_WIDTH.store(fb.width as u16, Ordering::Relaxed);
+        SCREEN_HEIGHT.store(fb.height as u16, Ordering::Relaxed);
+        crate::serial_println!("  VMMDev: Screen size = {}x{}", fb.width, fb.height);
+    }
 
     AVAILABLE.store(true, Ordering::Release);
     crate::serial_println!("[OK] VMMDev initialized (abs mouse, event filter)");
