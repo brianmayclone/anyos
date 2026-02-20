@@ -155,8 +155,8 @@ pub fn read(pipe_id: u32, buf: &mut [u8]) -> u32 {
     }
 
     loop {
-        let mut readers_to_wake: [u32; MAX_BLOCKED] = [0; MAX_BLOCKED];
-        let mut r_wake = 0;
+        let readers_to_wake: [u32; MAX_BLOCKED] = [0; MAX_BLOCKED];
+        let r_wake = 0;
         let mut writers_to_wake: [u32; MAX_BLOCKED] = [0; MAX_BLOCKED];
         let mut w_wake = 0;
 

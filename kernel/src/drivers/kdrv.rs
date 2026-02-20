@@ -405,7 +405,7 @@ fn load_kdrv(bundle_path: &str, exec_name: &str) -> Option<&'static DriverExport
     drop(next_va);
 
     use crate::memory::virtual_mem::map_page;
-    use crate::memory::address::{VirtAddr, PhysAddr};
+    use crate::memory::address::VirtAddr;
     use crate::memory::physical;
     const PG_PRESENT: u64 = 1;
     const PG_WRITABLE: u64 = 1 << 1;

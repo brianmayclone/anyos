@@ -637,8 +637,6 @@ pub fn load_binary_into_pd(
 /// On success, never returns (jumps to user mode in new address space).
 /// On failure, returns an error string and the old process continues.
 pub fn exec_current_process(data: &[u8], args: &str) -> &'static str {
-    use crate::memory::address::PhysAddr;
-
     let tid = crate::task::scheduler::current_tid();
 
     // Get old PD before we replace it

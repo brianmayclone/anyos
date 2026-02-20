@@ -156,7 +156,7 @@ fn make_qh_caps(speed: UsbSpeed) -> u32 {
     // For full/low-speed through transaction translator, set hub/port
     match speed {
         UsbSpeed::High => 1 << 30,  // mult=1
-        _ => (1 << 30),             // mult=1 (simplified — no TT support yet)
+        _ => 1 << 30,               // mult=1 (simplified — no TT support yet)
     }
 }
 
@@ -260,7 +260,7 @@ fn control_transfer(
         (*qtd).buffer[3] = 0;
         (*qtd).buffer[4] = 0;
     }
-    td_idx += 1;
+    let _ = td_idx;
 
     // Set up async QH to point to the first qTD
     let mps = if max_packet == 0 { 8 } else { max_packet };

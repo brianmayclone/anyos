@@ -91,9 +91,24 @@ struct DllExports {
     ) -> *mut u32,
 }
 
-#[inline(always)]
 fn dll() -> &'static DllExports {
-    unsafe { &*(LIBCOMPOSITOR_BASE as *const DllExports) }
+    static mut VALIDATED: bool = false;
+    let exports = unsafe { &*(LIBCOMPOSITOR_BASE as *const DllExports) };
+    unsafe {
+        if !VALIDATED {
+            let magic = &exports.magic;
+            if magic != b"DLIB" {
+                crate::println!(
+                    "[FATAL] libcompositor DLL at {:#x}: bad magic {:02x}{:02x}{:02x}{:02x} (init={:#x})",
+                    LIBCOMPOSITOR_BASE,
+                    magic[0], magic[1], magic[2], magic[3],
+                    exports.init as usize,
+                );
+            }
+            VALIDATED = true;
+        }
+    }
+    exports
 }
 
 // ── Internal state ──────────────────────────────────────────────────────────
@@ -188,9 +203,30 @@ struct LibfontExportsPartial {
     _set_subpixel: usize,
 }
 
-#[inline(always)]
 fn libfont() -> &'static LibfontExportsPartial {
-    unsafe { &*(LIBFONT_BASE as *const LibfontExportsPartial) }
+    static mut VALIDATED: bool = false;
+    let exports = unsafe { &*(LIBFONT_BASE as *const LibfontExportsPartial) };
+    unsafe {
+        if !VALIDATED {
+            let magic = &exports._magic;
+            if magic != b"DLIB" {
+                crate::println!(
+                    "[FATAL] libfont DLL at {:#x}: bad magic {:02x}{:02x}{:02x}{:02x} (draw_string_buf={:#x})",
+                    LIBFONT_BASE,
+                    magic[0], magic[1], magic[2], magic[3],
+                    exports.draw_string_buf as usize,
+                );
+            } else {
+                crate::println!(
+                    "[libfont] DLL OK at {:#x}, draw_string_buf={:#x}",
+                    LIBFONT_BASE,
+                    exports.draw_string_buf as usize,
+                );
+            }
+            VALIDATED = true;
+        }
+    }
+    exports
 }
 
 // ── 8x16 bitmap font for draw_text / draw_text_mono ────────────────────────
