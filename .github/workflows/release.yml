@@ -1,0 +1,79 @@
+# Copyright (c) 2024-2026 Christian Moeller
+# SPDX-License-Identifier: MIT
+#
+# Release pipeline: triggered when a version tag (v*) is pushed.
+# Builds the complete OS and publishes a GitHub Release containing:
+#   anyos.img   — raw BIOS/MBR disk image
+#   anyos.iso   — bootable ISO 9660 (El Torito, CD-ROM)
+#   anyos.vmdk  — VMDK disk image (VirtualBox / VMware)
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and release anyOS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y nasm cmake ninja-build python3 python3-pip qemu-utils
+
+      - name: Install Python packages
+        run: pip3 install Pillow fonttools
+
+      - name: Set up Rust nightly
+        # rust-toolchain.toml pins the nightly channel; this installs it.
+        run: rustup show
+
+      - name: Cache cross-compiler
+        id: cache-cross
+        uses: actions/cache@v4
+        with:
+          path: ~/opt/cross
+          key: cross-i686-elf-gcc14.2.0-binutils2.44-${{ runner.os }}
+
+      - name: Build cross-compiler
+        if: steps.cache-cross.outputs.cache-hit != 'true'
+        run: ./scripts/build_cross_compiler.sh
+
+      - name: Add cross-compiler to PATH
+        run: echo "$HOME/opt/cross/bin" >> "$GITHUB_PATH"
+
+      - name: Configure
+        run: cmake -B build -G Ninja
+
+      - name: Build BIOS disk image
+        env:
+          RUSTFLAGS: -Awarnings
+        run: ninja -C build
+
+      - name: Build ISO image
+        env:
+          RUSTFLAGS: -Awarnings
+        run: ninja -C build iso
+
+      - name: Convert disk image to VMDK
+        run: qemu-img convert -f raw -O vmdk build/anyos.img build/anyos.vmdk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/anyos.img
+            build/anyos.iso
+            build/anyos.vmdk
+          generate_release_notes: true
+          fail_on_unmatched_files: true

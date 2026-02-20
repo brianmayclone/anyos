@@ -124,7 +124,7 @@ echo ""
 echo "  export PATH=\"$PREFIX/bin:\$PATH\""
 echo ""
 
-if ! grep -q "$PREFIX/bin" ~/.bashrc 2>/dev/null; then
+if [ -t 0 ] && ! grep -q "$PREFIX/bin" ~/.bashrc 2>/dev/null; then
     read -p "Add to ~/.bashrc now? [y/N] " answer
     if [[ "$answer" =~ ^[Yy]$ ]]; then
         echo "export PATH=\"$PREFIX/bin:\$PATH\"" >> ~/.bashrc
