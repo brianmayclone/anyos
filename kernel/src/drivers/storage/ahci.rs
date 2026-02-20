@@ -307,8 +307,12 @@ unsafe fn issue_command(
     // Issue command (slot 0)
     port_write(ahci.mmio_base, ahci.active_port, PORT_CI, 1);
 
-    // Fast path: brief spin — QEMU DMA completes in microseconds
-    for _ in 0..50_000 {
+    // Fast path: brief spin — QEMU DMA completes in microseconds.
+    // Keep iteration count low: each MMIO read is a VM exit on VirtualBox
+    // NEM/Hyper-V (~1-50μs each). 50k iterations wasted seconds; 1k is
+    // enough to catch QEMU's near-instant DMA while falling through
+    // quickly to the IRQ-driven slow path on real hardware and VBox.
+    for _ in 0..1_000 {
         let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
         if ci & 1 == 0 {
             let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);

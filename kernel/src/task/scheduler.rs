@@ -123,6 +123,26 @@ static PER_CPU_FPU_PTR: [AtomicU64; MAX_CPUS] = {
     [INIT; MAX_CPUS]
 };
 
+/// Per-CPU scratch CpuContext used when the outgoing thread has been reaped
+/// and we need to context_switch to idle but have no valid old_ctx to save into.
+/// The saved state is discarded — we just need a writable CpuContext address.
+static mut SCRATCH_CTX: [CpuContext; MAX_CPUS] = {
+    const INIT: CpuContext = CpuContext {
+        rax: 0, rbx: 0, rcx: 0, rdx: 0,
+        rsi: 0, rdi: 0, rbp: 0,
+        r8: 0, r9: 0, r10: 0, r11: 0,
+        r12: 0, r13: 0, r14: 0, r15: 0,
+        rsp: 0, rip: 0, rflags: 0, cr3: 0,
+        save_complete: 1,
+        canary: 0,
+        checksum: 0,
+    };
+    [INIT; MAX_CPUS]
+};
+
+/// Per-CPU scratch FPU buffer for the same reaped-outgoing-thread case.
+static mut SCRATCH_FPU: [[u8; 512]; MAX_CPUS] = [[0u8; 512]; MAX_CPUS];
+
 // --- Tick counters ---
 
 static TOTAL_SCHED_TICKS: AtomicU32 = AtomicU32::new(0);
@@ -435,12 +455,25 @@ impl Scheduler {
                         .unwrap_or(false);
                 if consumed || auto_reap {
                     let tid = self.threads[i].tid;
-                    self.remove_from_all_queues(tid);
-                    for cpu in 0..MAX_CPUS {
-                        if self.per_cpu[cpu].current_tid == Some(tid) {
-                            self.per_cpu[cpu].current_tid = Some(self.idle_tid[cpu]);
-                        }
+
+                    // SAFETY: Do NOT reap if any CPU still has this thread as
+                    // current_tid.  The timer path uses try_lock — if a vCPU was
+                    // paused by the hypervisor (VirtualBox NEM, Hyper-V) it may
+                    // not have entered schedule_inner yet.  Its interrupt handler
+                    // stack frames are still on this thread's kernel stack.
+                    // Freeing the stack now would cause IRETQ to load garbage
+                    // (RIP/RSP from zeroed or reused heap memory → #UD / #DF).
+                    // Skip now; the CPU will switch away on its next tick, then
+                    // the NEXT reap pass will find no CPU referencing this TID.
+                    let still_current_on_cpu = (0..MAX_CPUS).any(|cpu| {
+                        self.per_cpu[cpu].current_tid == Some(tid)
+                    });
+                    if still_current_on_cpu {
+                        i += 1;
+                        continue;
                     }
+
+                    self.remove_from_all_queues(tid);
                     self.threads.swap_remove(i);
                     // Don't increment — check swapped-in element
                 } else {
@@ -992,7 +1025,14 @@ fn schedule_inner(from_timer: bool) {
                         None
                     }
                 } else {
-                    // Current thread reaped — set to idle
+                    // Current thread reaped — MUST context_switch to idle.
+                    // We're running on the reaped thread's (freed) stack!
+                    // Using a per-CPU scratch CpuContext as old_ctx since the
+                    // reaped thread's CpuContext no longer exists.
+                    crate::serial_println!(
+                        "!REAPED-CURRENT: CPU{} tid={} → idle, switching via scratch ctx",
+                        cpu_id, current_tid,
+                    );
                     let idle_tid = sched.idle_tid[cpu_id];
                     let idle_i = sched.find_idx(idle_tid).unwrap();
                     sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
@@ -1005,7 +1045,15 @@ fn schedule_inner(from_timer: bool) {
                     crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, idle_kstack_top);
                     PER_CPU_STACK_BOTTOM[cpu_id].store(sched.threads[idle_i].kernel_stack_bottom(), Ordering::Relaxed);
                     PER_CPU_STACK_TOP[cpu_id].store(idle_kstack_top, Ordering::Relaxed);
-                    None
+                    PER_CPU_FPU_PTR[cpu_id].store(
+                        sched.threads[idle_i].fpu_state.data.as_ptr() as u64,
+                        Ordering::Relaxed,
+                    );
+                    let scratch_ctx = unsafe { &mut SCRATCH_CTX[cpu_id] as *mut CpuContext };
+                    let idle_ctx = &sched.threads[idle_i].context as *const CpuContext;
+                    let scratch_fpu = unsafe { SCRATCH_FPU[cpu_id].as_mut_ptr() };
+                    let new_fpu = sched.threads[idle_i].fpu_state.data.as_ptr();
+                    Some((scratch_ctx, idle_ctx, scratch_fpu, new_fpu, idle_tid, idle_tid))
                 }
             } else {
                 let idle_tid = sched.idle_tid[cpu_id];

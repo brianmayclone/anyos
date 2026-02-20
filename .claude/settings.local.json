@@ -86,7 +86,8 @@
       "WebFetch(domain:www.exploit-db.com)",
       "WebFetch(domain:cm-gitlab.stanford.edu)",
       "Bash(find:*)",
-      "Bash(xxd:*)"
+      "Bash(xxd:*)",
+      "Bash(make:*)"
     ]
   }
 }

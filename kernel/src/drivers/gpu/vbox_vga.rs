@@ -498,7 +498,9 @@ impl GpuDriver for VBoxVgaGpu {
 
         // Send cursor position via HGSMI
         let pos = VbvaCursorPosition {
-            report: 1, // report = set position
+            report: 0, // report=0: update cursor image position only (no host sync)
+                       // report=1 would activate mouse integration, conflicting
+                       // with PS/2 relative input and causing host cursor jumps
             x,
             y,
         };
