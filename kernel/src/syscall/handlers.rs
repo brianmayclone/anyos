@@ -2525,7 +2525,6 @@ pub fn sys_get_capabilities() -> u32 {
 }
 
 /// SYS_BOOT_READY: Signal from the compositor that the desktop is fully up.
-/// Currently a no-op signal (kernel logs it); may be used for boot timing.
 pub fn sys_boot_ready() -> u32 {
     crate::serial_println!("[OK] Boot ready signal received from compositor");
     0

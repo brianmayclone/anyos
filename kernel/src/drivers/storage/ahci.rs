@@ -307,12 +307,8 @@ unsafe fn issue_command(
     // Issue command (slot 0)
     port_write(ahci.mmio_base, ahci.active_port, PORT_CI, 1);
 
-    // Fast path: brief spin — QEMU DMA completes in microseconds.
-    // Keep iteration count low: each MMIO read is a VM exit on VirtualBox
-    // NEM/Hyper-V (~1-50μs each). 50k iterations wasted seconds; 1k is
-    // enough to catch QEMU's near-instant DMA while falling through
-    // quickly to the IRQ-driven slow path on real hardware and VBox.
-    for _ in 0..1_000 {
+    // Fast path: spin-wait for command completion.
+    for _ in 0..50_000 {
         let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
         if ci & 1 == 0 {
             let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
@@ -325,43 +321,26 @@ unsafe fn issue_command(
         core::hint::spin_loop();
     }
 
-    // Slow path: yield-and-poll with IRQ assist.
-    // Uses sleep_until(tick+1) which auto-wakes on the next PIT tick (~1ms)
-    // even if the AHCI IRQ never fires (e.g., IOAPIC routing mismatch in
-    // VirtualBox). The IRQ handler can still wake us sooner via wake_thread.
-    // Also checks CI directly — no sole reliance on AHCI_IRQ_FIRED.
+    // Slow path: block on IRQ, with timeout fallback.
     let tid = crate::task::scheduler::current_tid();
     if tid > 0 {
         if ahci.irq > 0 {
             AHCI_WAITER.store(tid, core::sync::atomic::Ordering::Release);
         }
 
-        let start = crate::arch::x86::pit::get_ticks();
-        loop {
-            // Check command completion directly (no dependency on IRQ)
-            let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
-            if ci & 1 == 0 {
-                break;
-            }
-            if crate::arch::x86::pit::get_ticks().wrapping_sub(start) > 2000 {
-                AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
-                crate::serial_println!("AHCI: command timeout");
-                return false;
-            }
-            // Sleep for 1 PIT tick (~1ms). PIT tick handler auto-wakes us.
-            // AHCI IRQ handler can also wake us sooner via wake_thread.
-            let now = crate::arch::x86::pit::get_ticks();
-            crate::task::scheduler::sleep_until(now.wrapping_add(1));
-        }
+        crate::task::scheduler::block_current_thread();
 
         AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
 
-        let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
-        if tfd & 0x01 != 0 {
-            crate::serial_println!("AHCI: command error, TFD={:#x}", tfd);
-            return false;
+        let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
+        if ci & 1 == 0 {
+            let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
+            if tfd & 0x01 != 0 {
+                crate::serial_println!("AHCI: command error, TFD={:#x}", tfd);
+                return false;
+            }
+            return true;
         }
-        return true;
     }
 
     // Fallback: extended poll (boot thread or no IRQ)

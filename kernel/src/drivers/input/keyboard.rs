@@ -207,3 +207,9 @@ pub fn has_event() -> bool {
 pub fn modifiers() -> Modifiers {
     *MODIFIERS.lock()
 }
+
+/// PS/2 keyboard IRQ handler (IRQ 1). Reads scancode from port 0x60.
+pub fn irq_handler(_irq: u8) {
+    let scancode = unsafe { crate::arch::x86::port::inb(0x60) };
+    handle_scancode(scancode);
+}

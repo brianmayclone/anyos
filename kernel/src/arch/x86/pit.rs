@@ -161,6 +161,21 @@ pub fn delay_ms(ms: u32) {
     }
 }
 
+/// PIT IRQ 0 handler (APIC mode): timekeeping + boot spinner animation.
+/// Does NOT call the scheduler — LAPIC timer handles scheduling separately.
+pub fn irq_handler(_irq: u8) {
+    tick();
+    crate::drivers::boot_console::tick_spinner();
+}
+
+/// PIT IRQ 0 handler (legacy PIC mode): timekeeping, spinner, AND scheduling.
+/// In legacy PIC mode, the PIT is the only periodic interrupt source.
+pub fn irq_handler_with_schedule(_irq: u8) {
+    tick();
+    crate::drivers::boot_console::tick_spinner();
+    crate::task::scheduler::schedule_tick();
+}
+
 /// Return real elapsed milliseconds since boot, computed from TSC.
 /// Independent calculation from `get_ticks()` — useful for cross-checking.
 #[inline]

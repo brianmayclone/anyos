@@ -262,3 +262,8 @@ unsafe fn write(reg: u32, value: u32) {
 pub fn is_initialized() -> bool {
     LAPIC_INITIALIZED.load(Ordering::Relaxed)
 }
+
+/// LAPIC timer IRQ handler (IRQ 16): scheduling only (no tick counting).
+pub fn timer_irq_handler(_irq: u8) {
+    crate::task::scheduler::schedule_tick();
+}

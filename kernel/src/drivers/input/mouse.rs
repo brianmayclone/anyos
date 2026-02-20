@@ -248,3 +248,9 @@ pub fn has_event() -> bool {
 pub fn clear_buffer() {
     MOUSE_BUFFER.lock().clear();
 }
+
+/// PS/2 mouse IRQ handler (IRQ 12). Reads byte from port 0x60.
+pub fn irq_handler(_irq: u8) {
+    let byte = unsafe { crate::arch::x86::port::inb(0x60) };
+    handle_byte(byte);
+}

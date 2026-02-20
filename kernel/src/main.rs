@@ -150,22 +150,22 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     drivers::boot_console::tick_spinner();
 
     // Phase 7: Register IRQ handlers and enable interrupts
-    arch::x86::irq::register_irq(1, irq_keyboard);
-    arch::x86::irq::register_irq(12, irq_mouse);
+    arch::x86::irq::register_irq(1, drivers::input::keyboard::irq_handler);
+    arch::x86::irq::register_irq(12, drivers::input::mouse::irq_handler);
 
     if acpi_info.is_some() {
         // APIC mode:
         // PIT IRQ 0 → timekeeping only (needed for calibration + uptime)
         // LAPIC timer IRQ 16 → scheduling only
         // Separating them prevents double-counting ticks.
-        arch::x86::irq::register_irq(0, irq_pit_tick);
-        arch::x86::irq::register_irq(16, irq_lapic_timer);
+        arch::x86::irq::register_irq(0, arch::x86::pit::irq_handler);
+        arch::x86::irq::register_irq(16, arch::x86::apic::timer_irq_handler);
         arch::x86::ioapic::unmask_irq(0);  // PIT (for timekeeping + calibration)
         arch::x86::ioapic::unmask_irq(1);  // Keyboard
         arch::x86::ioapic::unmask_irq(12); // Mouse
     } else {
         // Legacy PIC mode: PIT IRQ 0 does both timekeeping AND scheduling
-        arch::x86::irq::register_irq(0, irq_pit_tick_and_schedule);
+        arch::x86::irq::register_irq(0, arch::x86::pit::irq_handler_with_schedule);
         arch::x86::pic::unmask(0);  // Timer (IRQ0)
         arch::x86::pic::unmask(1);  // Keyboard (IRQ1)
         arch::x86::pic::unmask(12); // Mouse (IRQ12)
@@ -283,7 +283,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         task::scheduler::spawn(task::cpu_monitor::start, 10, "cpu_monitor");
 
         // Spawn USB hot-plug poll thread (low priority)
-        task::scheduler::spawn(usb_poll_thread, 50, "usb_poll");
+        task::scheduler::spawn(drivers::usb::poll_thread, 50, "usb_poll");
 
         // Spawn kernel thread stress test when debug_verbose is enabled
         #[cfg(feature = "debug_verbose")]
@@ -315,57 +315,3 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     loop { unsafe { core::arch::asm!("hlt"); } }
 }
 
-// IRQ handler functions for dynamic IRQ dispatch
-
-/// PIT IRQ 0 (APIC mode): timekeeping + boot spinner animation.
-fn irq_pit_tick(_irq: u8) {
-    crate::arch::x86::pit::tick();
-    crate::drivers::boot_console::tick_spinner();
-}
-
-/// PIT IRQ 0 (legacy PIC mode): timekeeping, spinner, AND scheduling.
-fn irq_pit_tick_and_schedule(_irq: u8) {
-    crate::arch::x86::pit::tick();
-    crate::drivers::boot_console::tick_spinner();
-    crate::task::scheduler::schedule_tick();
-}
-
-/// LAPIC timer IRQ 16: scheduling only (no tick counting).
-fn irq_lapic_timer(_irq: u8) {
-    crate::task::scheduler::schedule_tick();
-}
-
-/// Keyboard IRQ handler: reads scancode from PS/2 port 0x60.
-fn irq_keyboard(_irq: u8) {
-    let scancode = unsafe { crate::arch::x86::port::inb(0x60) };
-    crate::drivers::input::keyboard::handle_scancode(scancode);
-}
-
-/// Mouse IRQ handler: reads byte from PS/2 port 0x60.
-fn irq_mouse(_irq: u8) {
-    let byte = unsafe { crate::arch::x86::port::inb(0x60) };
-    crate::drivers::input::mouse::handle_byte(byte);
-}
-
-/// USB polling thread: HID input every 10ms, port hot-plug every 500ms.
-extern "C" fn usb_poll_thread() {
-    let mut port_counter: u32 = 0;
-    loop {
-        // Poll HID devices (keyboard/mouse reports)
-        crate::drivers::usb::hid::poll_all();
-
-        // Poll USB ports for hot-plug every 500ms (every 50 iterations of 10ms)
-        port_counter += 1;
-        if port_counter >= 50 {
-            port_counter = 0;
-            crate::drivers::usb::poll_all_controllers();
-        }
-
-        // Blocking sleep — yields the CPU instead of busy-spinning.
-        let pit_hz = crate::arch::x86::pit::TICK_HZ;
-        let ticks = (10u64 * pit_hz as u64 / 1000) as u32;
-        let ticks = if ticks == 0 { 1 } else { ticks };
-        let now = crate::arch::x86::pit::get_ticks();
-        crate::task::scheduler::sleep_until(now.wrapping_add(ticks));
-    }
-}

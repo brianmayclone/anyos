@@ -125,6 +125,29 @@ pub fn poll_all_controllers() {
     ehci::poll_ports();
 }
 
+/// USB polling kernel thread: HID input every 10ms, port hot-plug every 500ms.
+pub extern "C" fn poll_thread() {
+    let mut port_counter: u32 = 0;
+    loop {
+        // Poll HID devices (keyboard/mouse reports)
+        hid::poll_all();
+
+        // Poll USB ports for hot-plug every 500ms (every 50 iterations of 10ms)
+        port_counter += 1;
+        if port_counter >= 50 {
+            port_counter = 0;
+            poll_all_controllers();
+        }
+
+        // Blocking sleep — yields the CPU instead of busy-spinning.
+        let pit_hz = crate::arch::x86::pit::TICK_HZ;
+        let ticks = (10u64 * pit_hz as u64 / 1000) as u32;
+        let ticks = if ticks == 0 { 1 } else { ticks };
+        let now = crate::arch::x86::pit::get_ticks();
+        crate::task::scheduler::sleep_until(now.wrapping_add(ticks));
+    }
+}
+
 /// Perform a control transfer to a USB device (for HID GET_REPORT / SET_PROTOCOL).
 /// Dispatches to the correct controller driver based on `controller` type.
 pub fn hid_control_transfer(
