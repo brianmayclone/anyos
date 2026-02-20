@@ -129,6 +129,18 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 - **Minimal POSIX libc** (35 headers, stdio, stdlib, string, math, socket, etc.)
 - Write, compile, and run C programs directly on anyOS: `cc hello.c -o hello && hello`
 
+### Build System Tools
+
+Three native C99 tools replace all Python build scripts. They compile at the start of each build and are also available as source on the disk for self-hosting:
+
+| Tool | Purpose | Modes |
+|------|---------|-------|
+| **anyelf** | ELF conversion | `bin` (flat binary), `dlib` (DLIB v3 shared library), `kdrv` (kernel driver) |
+| **mkimage** | Disk image creation | BIOS (MBR + exFAT), UEFI (GPT + ESP + exFAT), ISO (El Torito + ISO 9660) |
+| **anyld** | ELF64 linker | Links `.o` + `.a` into shared objects (ET_DYN with .dynsym/.hash/.dynamic) |
+
+All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, enabling self-hosted builds directly on anyOS.
+
 ### Boot Methods
 
 - **BIOS/MBR** — traditional PC boot (256 MiB disk, exFAT)
@@ -155,7 +167,7 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 | Shell | `env` `set` `export` `pwd` `clear` `sleep` `seq` `yes` `true` `false` |
 | Binary/Hex | `hexdump` `xxd` |
 | Multimedia | `play` `pipes` |
-| Dev Tools | `cc` (TCC) `nasm` `git` `open` |
+| Dev Tools | `cc` (TCC) `nasm` `make` `git` `open` |
 
 ---
 
@@ -185,13 +197,10 @@ ninja run
 
 ```bash
 # Homebrew packages
-brew install nasm qemu cmake ninja python3
+brew install nasm qemu cmake ninja
 
 # Rust nightly toolchain
 rustup install nightly
-
-# Python dependencies
-pip install Pillow fonttools
 
 # Cross-compiler for libc (run once)
 ./scripts/setup_toolchain.sh
@@ -204,13 +213,10 @@ pip install Pillow fonttools
 
 ```bash
 # Ubuntu/Debian
-sudo apt install nasm qemu-system-x86 cmake ninja-build python3 python3-pip
+sudo apt install nasm qemu-system-x86 cmake ninja-build
 
 # Rust nightly toolchain
 rustup install nightly
-
-# Python dependencies
-pip install Pillow fonttools
 
 # Cross-compiler for libc (run once)
 ./scripts/setup_toolchain.sh
@@ -229,10 +235,7 @@ Requires MSYS2 or WSL for the cross-compiler. PowerShell build scripts are provi
 # - NASM: https://www.nasm.us
 # - QEMU: https://www.qemu.org
 # - CMake + Ninja: https://cmake.org
-# - Python 3: https://python.org
 # - i686-elf-gcc: run scripts/build_cross_compiler.ps1
-
-pip install Pillow fonttools
 
 # Set up toolchain
 .\scripts\setup_toolchain.ps1
@@ -375,9 +378,11 @@ anyos/
     bearssl/               BearSSL TLS library
     libgit2/               Git library
     minigit/               Mini git CLI
-  tools/                 Build utilities (Python)
-    mkimage.py             Disk image builder (MBR/UEFI/ISO)
-    elf2bin.py             ELF to flat binary converter
+  buildsystem/           Native C build tools (compiled at build start)
+    anyelf/                ELF conversion tool (bin, dlib, kdrv modes)
+    mkimage/               Disk image builder (BIOS/UEFI/ISO, exFAT/FAT16/GPT)
+    anyld/                 ELF64 shared object linker (.so generation)
+  tools/                 Legacy build utilities (Python, kept as reference)
     gen_font.py            Bitmap font generator
     encode_mjv.py          MJV video encoder
   scripts/               Build, run, debug scripts (.sh + .ps1)

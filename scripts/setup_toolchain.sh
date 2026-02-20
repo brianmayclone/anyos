@@ -96,26 +96,6 @@ if ! command -v qemu-system-x86_64 &> /dev/null; then
 fi
 echo ""
 
-# ── Python 3 + pip packages ──────────────────────────────────────────────────
-
-echo "--- Python 3 ---"
-if ! command -v python3 &> /dev/null; then
-    install_pkg "Python 3" "python3" "python3"
-fi
-
-# pip packages for build scripts (mkimage.py, font rendering)
-if ! python3 -c "import PIL" &> /dev/null || ! python3 -c "import fontTools" &> /dev/null; then
-    echo "Installing Python packages (Pillow, fonttools)..."
-    if [ "$PLATFORM" = "linux" ]; then
-        # Ensure pip is available on Ubuntu
-        if ! command -v pip3 &> /dev/null; then
-            sudo apt-get install -y python3-pip
-        fi
-    fi
-    pip3 install --user Pillow fonttools 2>/dev/null || python3 -m pip install --user Pillow fonttools
-fi
-echo ""
-
 # ── i686-elf cross-compiler (for libc + TCC) ─────────────────────────────────
 
 echo "--- i686-elf-gcc cross-compiler ---"

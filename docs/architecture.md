@@ -17,6 +17,7 @@ This document describes the internal architecture of anyOS, from boot to desktop
 - [Syscall Interface](#syscall-interface)
 - [Audio](#audio)
 - [DLL System](#dll-system)
+- [Build System Tools](#build-system-tools)
 
 ---
 
@@ -578,3 +579,95 @@ See [librender API](librender-api.md) for the complete reference.
 IPC-based window management for GUI applications. Uses shared memory (SHM) pixel buffers and event channels to communicate with the compositor process. Provides window lifecycle, menu bars, status icons, and blur-behind effects.
 
 See [libcompositor API](libcompositor-api.md) for the complete reference.
+
+---
+
+## Build System Tools
+
+anyOS uses three native C99 tools for the build pipeline. They are compiled at the start of each build (before any programs) and replace all Python build scripts. Each tool supports `ONE_SOURCE` single-file compilation for TCC, making them available for self-hosted builds directly on anyOS.
+
+### anyelf — ELF Conversion Tool
+
+Converts ELF binaries into the formats used by the kernel and loader.
+
+| Mode | Input | Output | Description |
+|------|-------|--------|-------------|
+| `bin` | ELF64/ELF32 | flat binary | Loads PT_LOAD segments by vaddr, outputs contiguous bytes. Used for user programs. |
+| `dlib` | ELF64 | DLIB v3 | anyOS shared library format: 4096-byte header + read-only pages + `.data` template. |
+| `kdrv` | ELF64 | KDRV | Kernel driver format: 4096-byte header + code pages + data pages + exports offset. |
+
+**Usage:** `anyelf <mode> <input.elf> <output> [options]`
+
+**DLIB v3 format:**
+
+```
+Offset  Size  Content
+0x000   4     Magic "DLIB"
+0x004   4     Version (3)
+0x008   8     RO size (bytes)
+0x010   8     Data template size (bytes)
+0x018   8     BSS size (bytes, zero-filled at load)
+0x020   8     Entry point offset (into RO region)
+0x1000  ...   RO pages (code + rodata)
+...     ...   Data template pages (.data initial values)
+```
+
+### mkimage — Disk Image Builder
+
+Creates bootable disk images from bootloader, kernel ELF, and sysroot directory tree.
+
+| Mode | Flag | Layout | Filesystem |
+|------|------|--------|------------|
+| BIOS | *(default)* | MBR + kernel sectors + filesystem partition | exFAT |
+| UEFI | `--uefi` | GPT + EFI System Partition (FAT16) + data partition | exFAT |
+| ISO | `--iso` | ISO 9660 + El Torito boot catalog | ISO 9660 |
+
+**Usage:**
+```
+mkimage --stage1 s1.bin --stage2 s2.bin --kernel kernel.elf \
+        --output disk.img --image-size 256 --sysroot sysroot/ --fs-start 8192
+```
+
+**BIOS image layout:**
+
+```
+Sector 0        MBR (stage1, 512 bytes)
+Sectors 1-7     Stage 2 bootloader
+Sector 8+       Kernel flat binary (converted from ELF by paddr)
+Sector fs-start exFAT filesystem with sysroot contents
+```
+
+**exFAT features:**
+- Boot sector + backup, allocation bitmap, upcase table
+- 4 KiB clusters, contiguous allocation preferred
+- VFAT-style long filenames (File + Stream + FileName entry sets)
+- `ROOT_ONLY_DIRS` support (`/System/sbin/`, `/System/users/perm/`) for permission enforcement
+
+### anyld — ELF64 Shared Object Linker
+
+Links ELF64 relocatable objects (`.o`) and AR archives (`.a`) into a shared object (`ET_DYN`).
+
+**Usage:** `anyld -o output.so input1.o input2.o libfoo.a`
+
+**Features:**
+- Reads ELF64 relocatable objects and GNU AR archives
+- Merges `.text`, `.rodata`, `.data`, `.bss` sections with alignment
+- Resolves symbols with standard precedence (strong > weak > undefined)
+- Applies x86_64 relocations: `R_X86_64_64`, `R_X86_64_PC32`, `R_X86_64_32`, `R_X86_64_32S`, `R_X86_64_PLT32`
+- Generates ELF64 ET_DYN output with `.dynsym`, `.dynstr`, `.hash`, `.dynamic` sections
+- Global symbols exported in `.dynsym` for runtime linking
+
+### Self-Hosting
+
+Build tool sources are installed to `/Libraries/system/buildsystem/` on the disk image. On anyOS, they can be compiled with TCC:
+
+```bash
+cd /Libraries/system/buildsystem/anyelf
+make CC=cc one    # builds anyelf with TCC in ONE_SOURCE mode
+
+cd /Libraries/system/buildsystem/mkimage
+make CC=cc one    # builds mkimage with TCC
+
+cd /Libraries/system/buildsystem/anyld
+make CC=cc one    # builds anyld with TCC
+```
