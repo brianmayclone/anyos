@@ -5,10 +5,9 @@ use crate::fs::devfs::DevFs;
 use crate::fs::exfat::ExFatFs;
 use crate::fs::fat::FatFs;
 use crate::fs::iso9660::Iso9660Fs;
-use crate::fs::file::{DirEntry, FileDescriptor, FileFlags, FileType, OpenFile, SeekFrom};
+use crate::fs::file::{DirEntry, FileDescriptor, FileFlags, FileType, OpenFile};
 use crate::sync::mutex::Mutex;
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
 
 /// Maximum number of simultaneously open file descriptors.
@@ -370,8 +369,8 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
                         state.exfat_fs = Some(exfat);
                         crate::serial_println!("  Mounted exFAT at '{}'", path);
                     }
-                    Err(e) => {
-                        crate::debug_println!("  [VFS] mount: ExFatFs::new() FAILED: {:?}", e);
+                    Err(_e) => {
+                        crate::debug_println!("  [VFS] mount: ExFatFs::new() FAILED: {:?}", _e);
                         crate::serial_println!("  Failed to mount exFAT at '{}'", path);
                     }
                 }

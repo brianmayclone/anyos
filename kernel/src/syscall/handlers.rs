@@ -3345,8 +3345,6 @@ pub fn sys_pipe2(pipefd_ptr: u32, flags: u32) -> u32 {
 /// sys_dup - Duplicate a file descriptor, returning the lowest available FD.
 /// Returns the new FD, or u32::MAX on error.
 pub fn sys_dup(old_fd: u32) -> u32 {
-    use crate::fs::fd_table::FdKind;
-
     let entry = match crate::task::scheduler::current_fd_get(old_fd) {
         Some(e) => e,
         None => return u32::MAX,
@@ -3369,8 +3367,6 @@ pub fn sys_dup(old_fd: u32) -> u32 {
 /// sys_dup2 - Duplicate old_fd to new_fd. If new_fd is open, close it first.
 /// Returns new_fd on success, u32::MAX on error.
 pub fn sys_dup2(old_fd: u32, new_fd: u32) -> u32 {
-    use crate::fs::fd_table::FdKind;
-
     if old_fd == new_fd {
         // POSIX: if old_fd == new_fd and old_fd is valid, return new_fd
         return match crate::task::scheduler::current_fd_get(old_fd) {
@@ -3406,8 +3402,6 @@ pub fn sys_dup2(old_fd: u32, new_fd: u32) -> u32 {
 /// cmd: F_DUPFD=0, F_GETFD=1, F_SETFD=2, F_GETFL=3, F_SETFL=4, F_DUPFD_CLOEXEC=1030.
 /// Returns result or u32::MAX on error.
 pub fn sys_fcntl(fd: u32, cmd: u32, arg: u32) -> u32 {
-    use crate::fs::fd_table::FdKind;
-
     const F_DUPFD: u32 = 0;
     const F_GETFD: u32 = 1;
     const F_SETFD: u32 = 2;

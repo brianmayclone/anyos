@@ -470,10 +470,10 @@ impl ExFatFs {
         let mut cluster = self.root_cluster;
         crate::debug_println!("  [exFAT] load_bitmap: start root_cluster={} cluster_size={}", cluster, cs);
 
-        let mut iter = 0u32;
+        let mut _iter = 0u32;
         loop {
-            crate::debug_println!("  [exFAT] load_bitmap: reading cluster={} (iteration={})", cluster, iter);
-            iter += 1;
+            crate::debug_println!("  [exFAT] load_bitmap: reading cluster={} (iteration={})", cluster, _iter);
+            _iter += 1;
             let mut cbuf = vec![0u8; cs];
             self.read_cluster(cluster, &mut cbuf)?;
             crate::debug_println!("  [exFAT] load_bitmap: cluster={} read OK, scanning {} entries", cluster, cs / 32);

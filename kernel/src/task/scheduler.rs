@@ -1561,7 +1561,7 @@ pub fn set_current_thread_mmap_next(val: u32) {
 pub fn exit_current(code: u32) {
     let tid;
     let mut pd_to_destroy: Option<PhysAddr> = None;
-    let mut parent_tid_for_sigchld: u32 = 0;
+    let mut parent_tid_for_sigchld: u32;
     let mut guard = SCHEDULER.lock();
     {
         let cpu_id = get_cpu_id();

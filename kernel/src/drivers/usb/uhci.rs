@@ -7,7 +7,6 @@
 use crate::arch::x86::pit::delay_ms;
 use crate::arch::x86::port::{inw, outw, inl, outl};
 use crate::drivers::pci::{PciDevice, pci_config_read32, pci_config_write32};
-use crate::memory::address::PhysAddr;
 use crate::memory::physical;
 use super::*;
 

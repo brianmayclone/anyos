@@ -3,9 +3,8 @@
 /// Starts Application Processors (APs) using the INIT-SIPI-SIPI sequence.
 /// Each AP gets its own stack, GDT, TSS, and enters the scheduler loop.
 
-use core::sync::atomic::{AtomicU8, AtomicU32, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use crate::arch::x86::acpi::ProcessorInfo;
-use alloc::vec::Vec;
 
 /// Maximum number of CPUs supported
 pub const MAX_CPUS: usize = 16;

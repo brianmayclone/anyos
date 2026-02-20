@@ -4,7 +4,6 @@
 /// It has a redirection table with one entry per interrupt input pin,
 /// mapping each to a destination LAPIC and vector.
 
-use alloc::vec::Vec;
 use crate::arch::x86::acpi::{IoApicInfo, IsoInfo};
 
 /// Virtual address where I/O APIC MMIO is mapped

@@ -802,7 +802,7 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
 
             // User-mode page fault: print diagnostics and kill the thread
             if is_user_mode {
-                let tid = crate::task::scheduler::current_thread_id();
+                let tid = crate::task::scheduler::current_tid();
                 crate::serial_println!(
                     "EXCEPTION: Page Fault addr={:#018x} RIP={:#018x} err={:#x} TID={}",
                     cr2, frame.rip, frame.err_code, tid
