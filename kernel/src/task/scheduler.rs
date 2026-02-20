@@ -214,6 +214,8 @@ struct RunQueue {
     /// Bitmap: bit `p` set ⟺ `levels[p]` is non-empty.
     /// `bits[0]` covers priorities 0–63, `bits[1]` covers 64–127.
     bits: [u64; 2],
+    /// Cached total count — avoids O(128) sum on every `total_count()` call.
+    count: usize,
 }
 
 impl RunQueue {
@@ -222,17 +224,18 @@ impl RunQueue {
         for _ in 0..NUM_PRIORITIES {
             levels.push(VecDeque::new());
         }
-        RunQueue { levels, bits: [0; 2] }
+        RunQueue { levels, bits: [0; 2], count: 0 }
     }
 
     /// Enqueue a TID at the given priority level (back of FIFO).
+    /// Caller must ensure no duplicates (the scheduler guarantees this via
+    /// state transitions: only Ready threads are enqueued, and they transition
+    /// to Running immediately on pick).
     fn enqueue(&mut self, tid: u32, priority: u8) {
         let p = (priority as usize).min(NUM_PRIORITIES - 1);
-        // Prevent duplicates (safety net — should not happen in normal operation)
-        if !self.levels[p].contains(&tid) {
-            self.levels[p].push_back(tid);
-            self.bits[p / 64] |= 1u64 << (p % 64);
-        }
+        self.levels[p].push_back(tid);
+        self.bits[p / 64] |= 1u64 << (p % 64);
+        self.count += 1;
     }
 
     /// Dequeue the highest-priority thread (front of its FIFO). O(1) via bitmap.
@@ -242,6 +245,7 @@ impl RunQueue {
         if self.levels[p].is_empty() {
             self.bits[p / 64] &= !(1u64 << (p % 64));
         }
+        self.count -= 1;
         Some(tid)
     }
 
@@ -252,6 +256,7 @@ impl RunQueue {
         if self.levels[p].is_empty() {
             self.bits[p / 64] &= !(1u64 << (p % 64));
         }
+        self.count -= 1;
         Some(tid)
     }
 
@@ -263,14 +268,16 @@ impl RunQueue {
                 if self.levels[p].is_empty() {
                     self.bits[p / 64] &= !(1u64 << (p % 64));
                 }
+                self.count -= 1;
                 return;
             }
         }
     }
 
-    /// Total number of queued threads across all priority levels.
+    /// Total number of queued threads across all priority levels. O(1).
+    #[inline]
     fn total_count(&self) -> usize {
-        self.levels.iter().map(|q| q.len()).sum()
+        self.count
     }
 
     fn is_empty(&self) -> bool {
@@ -308,6 +315,9 @@ impl RunQueue {
 struct PerCpuState {
     /// TID of the thread currently executing on this CPU, or None if idle.
     current_tid: Option<u32>,
+    /// Cached index into `threads` Vec for the current thread. O(1) lookup
+    /// instead of O(n) find_idx on every accessor call. Validated by TID match.
+    current_idx: Option<usize>,
     /// Multi-level priority queue of ready threads assigned to this CPU.
     run_queue: RunQueue,
 }
@@ -336,6 +346,7 @@ impl Scheduler {
         for _ in 0..MAX_CPUS {
             per_cpu.push(PerCpuState {
                 current_tid: None,
+                current_idx: None,
                 run_queue: RunQueue::new(),
             });
         }
@@ -365,10 +376,25 @@ impl Scheduler {
         sched
     }
 
-    /// Find a thread's index in the threads Vec by TID.
+    /// Find a thread's index in the threads Vec by TID. O(n) linear scan.
     #[inline]
     fn find_idx(&self, tid: u32) -> Option<usize> {
         self.threads.iter().position(|t| t.tid == tid)
+    }
+
+    /// Get index of the current thread on the given CPU.
+    /// O(1) via cached index (validated by TID match), O(n) fallback.
+    /// Eliminates redundant find_idx calls in the 38+ accessor functions.
+    #[inline]
+    fn current_idx(&self, cpu_id: usize) -> Option<usize> {
+        let tid = self.per_cpu[cpu_id].current_tid?;
+        if let Some(cached) = self.per_cpu[cpu_id].current_idx {
+            if cached < self.threads.len() && self.threads[cached].tid == tid {
+                return Some(cached);
+            }
+        }
+        // Cache miss — fall back to linear scan
+        self.find_idx(tid)
     }
 
     /// Number of online CPUs (at least 1).
@@ -475,6 +501,16 @@ impl Scheduler {
 
                     self.remove_from_all_queues(tid);
                     self.threads.swap_remove(i);
+                    // Maintain current_idx caches: swap_remove moved the
+                    // last element into position i.
+                    let moved_from = self.threads.len();
+                    if i < self.threads.len() {
+                        for cpu in 0..MAX_CPUS {
+                            if self.per_cpu[cpu].current_idx == Some(moved_from) {
+                                self.per_cpu[cpu].current_idx = Some(i);
+                            }
+                        }
+                    }
                     // Don't increment — check swapped-in element
                 } else {
                     i += 1;
@@ -850,47 +886,48 @@ fn schedule_inner(from_timer: bool) {
             }
         }
 
+        // --- Cache commonly-used indices (eliminates 10+ redundant find_idx calls) ---
+        let idle_tid = sched.idle_tid[cpu_id];
+        let idle_idx = sched.find_idx(idle_tid).expect("idle thread missing");
+        let outgoing_tid = sched.per_cpu[cpu_id].current_tid;
+        let outgoing_is_idle = outgoing_tid == Some(idle_tid);
+        let outgoing_idx = if outgoing_is_idle {
+            Some(idle_idx)
+        } else {
+            outgoing_tid.and_then(|t| sched.find_idx(t))
+        };
+
         // Drain contended-busy ticks
         let missed = PER_CPU_CONTENDED_BUSY[cpu_id].swap(0, Ordering::Relaxed);
-        if missed > 0 {
-            if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
-                if current_tid != sched.idle_tid[cpu_id] {
-                    if let Some(idx) = sched.find_idx(current_tid) {
-                        sched.threads[idx].cpu_ticks += missed;
-                    }
-                }
+        if missed > 0 && !outgoing_is_idle {
+            if let Some(idx) = outgoing_idx {
+                sched.threads[idx].cpu_ticks += missed;
             }
         }
 
         // CPU tick accounting
         if from_timer {
-            if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
-                if current_tid == sched.idle_tid[cpu_id] {
-                    IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
-                    PER_CPU_IDLE[cpu_id].fetch_add(1, Ordering::Relaxed);
-                } else if let Some(idx) = sched.find_idx(current_tid) {
-                    if sched.threads[idx].state == ThreadState::Running {
-                        sched.threads[idx].cpu_ticks += 1;
-                    }
+            if outgoing_is_idle {
+                IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+                PER_CPU_IDLE[cpu_id].fetch_add(1, Ordering::Relaxed);
+            } else if let Some(idx) = outgoing_idx {
+                if sched.threads[idx].state == ThreadState::Running {
+                    sched.threads[idx].cpu_ticks += 1;
                 }
             }
         }
 
         // --- Put current thread back into its priority queue ---
-        let outgoing_tid = sched.per_cpu[cpu_id].current_tid;
-        if let Some(current_tid) = outgoing_tid {
-            if current_tid != sched.idle_tid[cpu_id] {
-                if let Some(idx) = sched.find_idx(current_tid) {
-                    // ALWAYS mark context as unsaved for non-idle outgoing threads.
-                    // Defense-in-depth: even if waitpid/sleep_until already set this
-                    // to 0, this catches any path that missed it.
-                    sched.threads[idx].context.save_complete = 0;
-                    if sched.threads[idx].state == ThreadState::Running {
-                        sched.threads[idx].state = ThreadState::Ready;
-                        sched.threads[idx].last_cpu = cpu_id;
-                        let pri = sched.threads[idx].priority;
-                        sched.per_cpu[cpu_id].run_queue.enqueue(current_tid, pri);
-                    }
+        if !outgoing_is_idle {
+            if let Some(idx) = outgoing_idx {
+                // ALWAYS mark context as unsaved for non-idle outgoing threads.
+                sched.threads[idx].context.save_complete = 0;
+                if sched.threads[idx].state == ThreadState::Running {
+                    sched.threads[idx].state = ThreadState::Ready;
+                    sched.threads[idx].last_cpu = cpu_id;
+                    let pri = sched.threads[idx].priority;
+                    sched.per_cpu[cpu_id].run_queue.enqueue(
+                        outgoing_tid.unwrap(), pri);
                 }
             }
         }
@@ -914,15 +951,15 @@ fn schedule_inner(from_timer: bool) {
                         Some(crate::arch::x86::pit::get_ticks());
                     // Restore outgoing as current
                     sched.per_cpu[cpu_id].current_tid = outgoing_tid;
-                    if let Some(ot) = outgoing_tid {
-                        if let Some(oi) = sched.find_idx(ot) {
-                            sched.threads[oi].context.save_complete = 1;
-                        }
+                    sched.per_cpu[cpu_id].current_idx = outgoing_idx;
+                    if let Some(oi) = outgoing_idx {
+                        sched.threads[oi].context.save_complete = 1;
                     }
                     None
                 } else {
                     // Commit: update per-CPU state
                     sched.per_cpu[cpu_id].current_tid = Some(next_tid);
+                    sched.per_cpu[cpu_id].current_idx = Some(next_idx);
                     sched.threads[next_idx].state = ThreadState::Running;
                     sched.threads[next_idx].last_cpu = cpu_id;
 
@@ -947,39 +984,29 @@ fn schedule_inner(from_timer: bool) {
                         // Same thread — no switch needed
                         sched.threads[next_idx].context.save_complete = 1;
                         None
-                    } else if let Some(prev_tid) = outgoing_tid {
-                        if let Some(prev_idx) = sched.find_idx(prev_tid) {
-                            let old_ctx = &mut sched.threads[prev_idx].context as *mut CpuContext;
-                            let new_ctx = &sched.threads[next_idx].context as *const CpuContext;
-                            let old_fpu = sched.threads[prev_idx].fpu_state.data.as_mut_ptr();
-                            let new_fpu = sched.threads[next_idx].fpu_state.data.as_ptr();
-                            Some((old_ctx, new_ctx, old_fpu, new_fpu, prev_tid, next_tid))
-                        } else {
-                            // Previous thread reaped — switch from idle
-                            let idle_i = sched.find_idx(sched.idle_tid[cpu_id]).unwrap();
-                            let old_ctx = &mut sched.threads[idle_i].context as *mut CpuContext;
-                            let new_ctx = &sched.threads[next_idx].context as *const CpuContext;
-                            let old_fpu = sched.threads[idle_i].fpu_state.data.as_mut_ptr();
-                            let new_fpu = sched.threads[next_idx].fpu_state.data.as_ptr();
-                            Some((old_ctx, new_ctx, old_fpu, new_fpu, sched.idle_tid[cpu_id], next_tid))
-                        }
-                    } else {
-                        // No previous thread — switch from idle
-                        let idle_i = sched.find_idx(sched.idle_tid[cpu_id]).unwrap();
-                        let old_ctx = &mut sched.threads[idle_i].context as *mut CpuContext;
+                    } else if let Some(prev_idx) = outgoing_idx {
+                        // Use cached outgoing_idx (same thread, avoids redundant find_idx)
+                        let prev_tid = outgoing_tid.unwrap();
+                        let old_ctx = &mut sched.threads[prev_idx].context as *mut CpuContext;
                         let new_ctx = &sched.threads[next_idx].context as *const CpuContext;
-                        let old_fpu = sched.threads[idle_i].fpu_state.data.as_mut_ptr();
+                        let old_fpu = sched.threads[prev_idx].fpu_state.data.as_mut_ptr();
                         let new_fpu = sched.threads[next_idx].fpu_state.data.as_ptr();
-                        Some((old_ctx, new_ctx, old_fpu, new_fpu, sched.idle_tid[cpu_id], next_tid))
+                        Some((old_ctx, new_ctx, old_fpu, new_fpu, prev_tid, next_tid))
+                    } else {
+                        // Previous thread reaped or no previous — switch from idle
+                        let old_ctx = &mut sched.threads[idle_idx].context as *mut CpuContext;
+                        let new_ctx = &sched.threads[next_idx].context as *const CpuContext;
+                        let old_fpu = sched.threads[idle_idx].fpu_state.data.as_mut_ptr();
+                        let new_fpu = sched.threads[next_idx].fpu_state.data.as_ptr();
+                        Some((old_ctx, new_ctx, old_fpu, new_fpu, idle_tid, next_tid))
                     }
                 }
             } else {
                 // TID reaped between pick_next and here
                 sched.per_cpu[cpu_id].current_tid = outgoing_tid;
-                if let Some(ot) = outgoing_tid {
-                    if let Some(oi) = sched.find_idx(ot) {
-                        sched.threads[oi].context.save_complete = 1;
-                    }
+                sched.per_cpu[cpu_id].current_idx = outgoing_idx;
+                if let Some(oi) = outgoing_idx {
+                    sched.threads[oi].context.save_complete = 1;
                 }
                 None
             }
@@ -992,31 +1019,30 @@ fn schedule_inner(from_timer: bool) {
             // Activity Monitor show 0% CPU load permanently.
 
             // If current thread is no longer runnable, switch to idle
-            if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
-                if let Some(idx) = sched.find_idx(current_tid) {
+            if let Some(current_tid) = outgoing_tid {
+                if let Some(idx) = outgoing_idx {
                     if sched.threads[idx].state != ThreadState::Running {
                         sched.threads[idx].context.save_complete = 0;
-                        let idle_tid = sched.idle_tid[cpu_id];
-                        let idle_i = sched.find_idx(idle_tid).unwrap();
                         sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
-                        sched.threads[idle_i].state = ThreadState::Running;
+                        sched.per_cpu[cpu_id].current_idx = Some(idle_idx);
+                        sched.threads[idle_idx].state = ThreadState::Running;
                         PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
                         PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
                         PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
-                        update_per_cpu_name(cpu_id, &sched.threads[idle_i].name);
-                        let idle_kstack_top = sched.threads[idle_i].kernel_stack_top();
+                        update_per_cpu_name(cpu_id, &sched.threads[idle_idx].name);
+                        let idle_kstack_top = sched.threads[idle_idx].kernel_stack_top();
                         crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
                         crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, idle_kstack_top);
-                        PER_CPU_STACK_BOTTOM[cpu_id].store(sched.threads[idle_i].kernel_stack_bottom(), Ordering::Relaxed);
+                        PER_CPU_STACK_BOTTOM[cpu_id].store(sched.threads[idle_idx].kernel_stack_bottom(), Ordering::Relaxed);
                         PER_CPU_STACK_TOP[cpu_id].store(idle_kstack_top, Ordering::Relaxed);
                         PER_CPU_FPU_PTR[cpu_id].store(
-                            sched.threads[idle_i].fpu_state.data.as_ptr() as u64,
+                            sched.threads[idle_idx].fpu_state.data.as_ptr() as u64,
                             Ordering::Relaxed,
                         );
                         let old_ctx = &mut sched.threads[idx].context as *mut CpuContext;
-                        let idle_ctx = &sched.threads[idle_i].context as *const CpuContext;
+                        let idle_ctx = &sched.threads[idle_idx].context as *const CpuContext;
                         let old_fpu = sched.threads[idx].fpu_state.data.as_mut_ptr();
-                        let new_fpu = sched.threads[idle_i].fpu_state.data.as_ptr();
+                        let new_fpu = sched.threads[idle_idx].fpu_state.data.as_ptr();
                         Some((old_ctx, idle_ctx, old_fpu, new_fpu, current_tid, idle_tid))
                     } else {
                         if !sched.threads[idx].is_idle {
@@ -1026,41 +1052,36 @@ fn schedule_inner(from_timer: bool) {
                     }
                 } else {
                     // Current thread reaped — MUST context_switch to idle.
-                    // We're running on the reaped thread's (freed) stack!
-                    // Using a per-CPU scratch CpuContext as old_ctx since the
-                    // reaped thread's CpuContext no longer exists.
                     crate::serial_println!(
                         "!REAPED-CURRENT: CPU{} tid={} → idle, switching via scratch ctx",
                         cpu_id, current_tid,
                     );
-                    let idle_tid = sched.idle_tid[cpu_id];
-                    let idle_i = sched.find_idx(idle_tid).unwrap();
                     sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
+                    sched.per_cpu[cpu_id].current_idx = Some(idle_idx);
                     PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
                     PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
                     PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
-                    update_per_cpu_name(cpu_id, &sched.threads[idle_i].name);
-                    let idle_kstack_top = sched.threads[idle_i].kernel_stack_top();
+                    update_per_cpu_name(cpu_id, &sched.threads[idle_idx].name);
+                    let idle_kstack_top = sched.threads[idle_idx].kernel_stack_top();
                     crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
                     crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, idle_kstack_top);
-                    PER_CPU_STACK_BOTTOM[cpu_id].store(sched.threads[idle_i].kernel_stack_bottom(), Ordering::Relaxed);
+                    PER_CPU_STACK_BOTTOM[cpu_id].store(sched.threads[idle_idx].kernel_stack_bottom(), Ordering::Relaxed);
                     PER_CPU_STACK_TOP[cpu_id].store(idle_kstack_top, Ordering::Relaxed);
                     PER_CPU_FPU_PTR[cpu_id].store(
-                        sched.threads[idle_i].fpu_state.data.as_ptr() as u64,
+                        sched.threads[idle_idx].fpu_state.data.as_ptr() as u64,
                         Ordering::Relaxed,
                     );
                     let scratch_ctx = unsafe { &mut SCRATCH_CTX[cpu_id] as *mut CpuContext };
-                    let idle_ctx = &sched.threads[idle_i].context as *const CpuContext;
+                    let idle_ctx = &sched.threads[idle_idx].context as *const CpuContext;
                     let scratch_fpu = unsafe { SCRATCH_FPU[cpu_id].as_mut_ptr() };
-                    let new_fpu = sched.threads[idle_i].fpu_state.data.as_ptr();
+                    let new_fpu = sched.threads[idle_idx].fpu_state.data.as_ptr();
                     Some((scratch_ctx, idle_ctx, scratch_fpu, new_fpu, idle_tid, idle_tid))
                 }
             } else {
-                let idle_tid = sched.idle_tid[cpu_id];
-                let idle_i = sched.find_idx(idle_tid).unwrap();
                 sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
+                sched.per_cpu[cpu_id].current_idx = Some(idle_idx);
                 PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
-                let idle_kstack_top = sched.threads[idle_i].kernel_stack_top();
+                let idle_kstack_top = sched.threads[idle_idx].kernel_stack_top();
                 crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
                 crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, idle_kstack_top);
                 None
@@ -1266,10 +1287,8 @@ pub fn is_current_thread_user() -> bool {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(tid) {
-                return sched.threads[idx].is_user;
-            }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            return sched.threads[idx].is_user;
         }
     }
     false
@@ -1280,10 +1299,8 @@ pub fn current_thread_name() -> [u8; 32] {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(tid) {
-                return sched.threads[idx].name;
-            }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            return sched.threads[idx].name;
         }
     }
     [0u8; 32]
@@ -1344,7 +1361,7 @@ pub fn check_current_stack_canary(syscall_num: u32) {
     let sched = match guard.as_mut() { Some(s) => s, None => return };
     let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
     let tid = match sched.per_cpu[cpu_id].current_tid { Some(t) => t, None => return };
-    let idx = match sched.find_idx(tid) { Some(i) => i, None => return };
+    let idx = match sched.current_idx(cpu_id) { Some(i) => i, None => return };
     if !sched.threads[idx].check_stack_canary() {
         crate::serial_println!(
             "STACK OVERFLOW after syscall {} in '{}' (TID={}) — killing",
@@ -1405,10 +1422,8 @@ pub fn current_thread_page_directory() -> Option<PhysAddr> {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(tid) {
-                return sched.threads[idx].page_directory;
-            }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            return sched.threads[idx].page_directory;
         }
     }
     None
@@ -1430,10 +1445,8 @@ pub fn current_thread_pd_shared() -> bool {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(tid) {
-                return sched.threads[idx].pd_shared;
-            }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            return sched.threads[idx].pd_shared;
         }
     }
     false
@@ -1444,15 +1457,14 @@ pub fn has_live_pd_siblings() -> bool {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(tid) {
-                if let Some(pd) = sched.threads[idx].page_directory {
-                    return sched.threads.iter().any(|t| {
-                        t.tid != tid
-                            && t.page_directory == Some(pd)
-                            && t.state != ThreadState::Terminated
-                    });
-                }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            let tid = sched.threads[idx].tid;
+            if let Some(pd) = sched.threads[idx].page_directory {
+                return sched.threads.iter().any(|t| {
+                    t.tid != tid
+                        && t.page_directory == Some(pd)
+                        && t.state != ThreadState::Terminated
+                });
             }
         }
     }
@@ -1464,20 +1476,19 @@ pub fn current_exit_info() -> (u32, Option<PhysAddr>, bool) {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(tid) {
-                let pd = sched.threads[idx].page_directory;
-                let pd_shared = sched.threads[idx].pd_shared;
-                let has_siblings = if let Some(pd_addr) = pd {
-                    pd_shared || sched.threads.iter().any(|t| {
-                        t.tid != tid
-                            && t.page_directory == Some(pd_addr)
-                            && t.state != ThreadState::Terminated
-                    })
-                } else { false };
-                let can_destroy = pd.is_some() && !pd_shared && !has_siblings;
-                return (tid, pd, can_destroy);
-            }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            let tid = sched.threads[idx].tid;
+            let pd = sched.threads[idx].page_directory;
+            let pd_shared = sched.threads[idx].pd_shared;
+            let has_siblings = if let Some(pd_addr) = pd {
+                pd_shared || sched.threads.iter().any(|t| {
+                    t.tid != tid
+                        && t.page_directory == Some(pd_addr)
+                        && t.state != ThreadState::Terminated
+                })
+            } else { false };
+            let can_destroy = pd.is_some() && !pd_shared && !has_siblings;
+            return (tid, pd, can_destroy);
         }
     }
     (0, None, false)
@@ -1488,10 +1499,8 @@ pub fn current_thread_brk() -> u32 {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(tid) {
-                return sched.threads[idx].brk;
-            }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            return sched.threads[idx].brk;
         }
     }
     0
@@ -1502,15 +1511,13 @@ pub fn set_current_thread_brk(brk: u32) {
     let mut guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_mut() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(tid) {
-                sched.threads[idx].brk = brk;
-                if let Some(pd) = sched.threads[idx].page_directory {
-                    let current_tid = sched.threads[idx].tid;
-                    for thread in sched.threads.iter_mut() {
-                        if thread.tid != current_tid && thread.page_directory == Some(pd) {
-                            thread.brk = brk;
-                        }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            sched.threads[idx].brk = brk;
+            if let Some(pd) = sched.threads[idx].page_directory {
+                let current_tid = sched.threads[idx].tid;
+                for thread in sched.threads.iter_mut() {
+                    if thread.tid != current_tid && thread.page_directory == Some(pd) {
+                        thread.brk = brk;
                     }
                 }
             }
@@ -1523,10 +1530,8 @@ pub fn current_thread_mmap_next() -> u32 {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(tid) {
-                return sched.threads[idx].mmap_next;
-            }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            return sched.threads[idx].mmap_next;
         }
     }
     0
@@ -1537,15 +1542,13 @@ pub fn set_current_thread_mmap_next(val: u32) {
     let mut guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_mut() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(tid) {
-                sched.threads[idx].mmap_next = val;
-                if let Some(pd) = sched.threads[idx].page_directory {
-                    let current_tid = sched.threads[idx].tid;
-                    for thread in sched.threads.iter_mut() {
-                        if thread.tid != current_tid && thread.page_directory == Some(pd) {
-                            thread.mmap_next = val;
-                        }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            sched.threads[idx].mmap_next = val;
+            if let Some(pd) = sched.threads[idx].page_directory {
+                let current_tid = sched.threads[idx].tid;
+                for thread in sched.threads.iter_mut() {
+                    if thread.tid != current_tid && thread.page_directory == Some(pd) {
+                        thread.mmap_next = val;
                     }
                 }
             }
@@ -1561,14 +1564,14 @@ pub fn set_current_thread_mmap_next(val: u32) {
 pub fn exit_current(code: u32) {
     let tid;
     let mut pd_to_destroy: Option<PhysAddr> = None;
-    let mut parent_tid_for_sigchld: u32;
+    let parent_tid_for_sigchld: u32;
     let mut guard = SCHEDULER.lock();
     {
         let cpu_id = get_cpu_id();
         let sched = guard.as_mut().expect("Scheduler not initialized");
         tid = sched.per_cpu[cpu_id].current_tid.unwrap_or(0);
         if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(current_tid) {
+            if let Some(idx) = sched.current_idx(cpu_id) {
                 // Capture parent_tid for SIGCHLD before marking terminated
                 parent_tid_for_sigchld = sched.threads[idx].parent_tid;
 
@@ -1632,7 +1635,7 @@ pub fn try_exit_current(code: u32) -> bool {
         let sched = match guard.as_mut() { Some(s) => s, None => return false };
         if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
             tid = current_tid;
-            if let Some(idx) = sched.find_idx(current_tid) {
+            if let Some(idx) = sched.current_idx(cpu_id) {
                 // Send SIGCHLD to parent
                 let parent_tid = sched.threads[idx].parent_tid;
                 if parent_tid != 0 {
@@ -1723,6 +1726,7 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
                         }
                     }
                     sched.per_cpu[cpu_id].current_tid = None;
+                    sched.per_cpu[cpu_id].current_idx = None;
                 }
                 let idle_tid = sched.idle_tid[cpu_id];
                 if let Some(idx) = sched.find_idx(idle_tid) {
@@ -1797,6 +1801,7 @@ pub fn fault_kill_and_idle(signal: u32) -> ! {
                     }
                 }
                 sched.per_cpu[cpu_id].current_tid = None;
+                sched.per_cpu[cpu_id].current_idx = None;
                 let idle_tid = sched.idle_tid[cpu_id];
                 if let Some(idx) = sched.find_idx(idle_tid) {
                     let kstack_top = sched.threads[idx].kernel_stack_top();
@@ -1952,7 +1957,7 @@ pub fn waitpid(tid: u32) -> u32 {
             if let Some(target) = sched.threads.iter_mut().find(|t| t.tid == tid) {
                 target.waiting_tid = Some(current_tid);
             }
-            if let Some(idx) = sched.find_idx(current_tid) {
+            if let Some(idx) = sched.current_idx(cpu_id) {
                 // CRITICAL: Mark context as unsaved BEFORE setting Blocked.
                 // Without this, another CPU can wake this thread (→ Ready)
                 // and load its stale saved context while we're still
@@ -1962,6 +1967,8 @@ pub fn waitpid(tid: u32) -> u32 {
             }
         }
     }
+    // Yield immediately instead of waiting up to 1ms for timer preemption.
+    schedule();
     loop {
         unsafe { core::arch::asm!("sti; hlt"); }
         {
@@ -2017,11 +2024,13 @@ pub fn waitpid_any() -> (u32, u32) {
         }
 
         // Block current thread
-        if let Some(idx) = sched.find_idx(current_tid) {
+        if let Some(idx) = sched.current_idx(get_cpu_id()) {
             sched.threads[idx].context.save_complete = 0;
             sched.threads[idx].state = ThreadState::Blocked;
         }
     }
+    // Yield immediately instead of waiting up to 1ms for timer preemption.
+    schedule();
     loop {
         unsafe { core::arch::asm!("sti; hlt"); }
         {
@@ -2103,13 +2112,11 @@ pub fn sleep_until(wake_at: u32) {
         let mut guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
         let sched = guard.as_mut().expect("Scheduler not initialized");
-        if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(current_tid) {
-                // CRITICAL: Mark context as unsaved before Blocked (same race as waitpid).
-                sched.threads[idx].context.save_complete = 0;
-                sched.threads[idx].wake_at_tick = Some(wake_at);
-                sched.threads[idx].state = ThreadState::Blocked;
-            }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            // CRITICAL: Mark context as unsaved before Blocked (same race as waitpid).
+            sched.threads[idx].context.save_complete = 0;
+            sched.threads[idx].wake_at_tick = Some(wake_at);
+            sched.threads[idx].state = ThreadState::Blocked;
         }
     }
     schedule();
@@ -2121,12 +2128,10 @@ pub fn block_current_thread() {
         let mut guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
         let sched = guard.as_mut().expect("Scheduler not initialized");
-        if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(current_tid) {
-                // CRITICAL: Mark context as unsaved before Blocked (same race as waitpid).
-                sched.threads[idx].context.save_complete = 0;
-                sched.threads[idx].state = ThreadState::Blocked;
-            }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            // CRITICAL: Mark context as unsaved before Blocked (same race as waitpid).
+            sched.threads[idx].context.save_complete = 0;
+            sched.threads[idx].state = ThreadState::Blocked;
         }
     }
     schedule();
@@ -2151,14 +2156,12 @@ pub fn current_thread_args(buf: &mut [u8]) -> usize {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(tid) {
-                let args = &sched.threads[idx].args;
-                let len = args.iter().position(|&b| b == 0).unwrap_or(256);
-                let copy_len = len.min(buf.len());
-                buf[..copy_len].copy_from_slice(&args[..copy_len]);
-                return copy_len;
-            }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            let args = &sched.threads[idx].args;
+            let len = args.iter().position(|&b| b == 0).unwrap_or(256);
+            let copy_len = len.min(buf.len());
+            buf[..copy_len].copy_from_slice(&args[..copy_len]);
+            return copy_len;
         }
     }
     0
@@ -2181,14 +2184,12 @@ pub fn current_thread_cwd(buf: &mut [u8]) -> usize {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(tid) {
-                let cwd = &sched.threads[idx].cwd;
-                let len = cwd.iter().position(|&b| b == 0).unwrap_or(256);
-                let copy_len = len.min(buf.len());
-                buf[..copy_len].copy_from_slice(&cwd[..copy_len]);
-                return copy_len;
-            }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            let cwd = &sched.threads[idx].cwd;
+            let len = cwd.iter().position(|&b| b == 0).unwrap_or(256);
+            let copy_len = len.min(buf.len());
+            buf[..copy_len].copy_from_slice(&cwd[..copy_len]);
+            return copy_len;
         }
     }
     0
@@ -2206,10 +2207,8 @@ pub fn current_thread_stdout_pipe() -> u32 {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(tid) {
-                return sched.threads[idx].stdout_pipe;
-            }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            return sched.threads[idx].stdout_pipe;
         }
     }
     0
@@ -2227,10 +2226,8 @@ pub fn current_thread_stdin_pipe() -> u32 {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(tid) {
-                return sched.threads[idx].stdin_pipe;
-            }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            return sched.threads[idx].stdin_pipe;
         }
     }
     0
@@ -2274,10 +2271,8 @@ pub fn current_thread_capabilities() -> crate::task::capabilities::CapSet {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     let sched = guard.as_ref().expect("Scheduler not initialized");
-    if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-        if let Some(thread) = sched.threads.iter().find(|t| t.tid == tid) {
-            return thread.capabilities;
-        }
+    if let Some(idx) = sched.current_idx(cpu_id) {
+        return sched.threads[idx].capabilities;
     }
     0
 }
@@ -2296,10 +2291,8 @@ pub fn current_thread_uid() -> u16 {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     let sched = guard.as_ref().expect("Scheduler not initialized");
-    if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-        if let Some(thread) = sched.threads.iter().find(|t| t.tid == tid) {
-            return thread.uid;
-        }
+    if let Some(idx) = sched.current_idx(cpu_id) {
+        return sched.threads[idx].uid;
     }
     0
 }
@@ -2309,45 +2302,77 @@ pub fn current_thread_gid() -> u16 {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     let sched = guard.as_ref().expect("Scheduler not initialized");
-    if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-        if let Some(thread) = sched.threads.iter().find(|t| t.tid == tid) {
-            return thread.gid;
-        }
+    if let Some(idx) = sched.current_idx(cpu_id) {
+        return sched.threads[idx].gid;
     }
     0
 }
 
-/// Store pending permission info on the current thread.
-/// Data is a UTF-8 byte slice: "app_id\x1Fapp_name\x1Fcaps_hex\x1Fbundle_path".
-pub fn set_current_perm_pending(data: &[u8]) {
-    let mut guard = SCHEDULER.lock();
-    let cpu_id = get_cpu_id();
-    if let Some(sched) = guard.as_mut() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(tid) {
-                let len = data.len().min(512);
-                sched.threads[idx].perm_pending[..len].copy_from_slice(&data[..len]);
-                sched.threads[idx].perm_pending_len = len as u16;
-            }
-        }
+// =============================================================================
+// Pending permission info — static array (NOT in Thread struct).
+// =============================================================================
+// Follows the same pattern as PENDING_PROGRAMS in loader.rs to avoid enlarging
+// the Thread struct (which changes heap layout and can trigger latent bugs).
+
+const MAX_PENDING_PERM: usize = 16;
+
+struct PendingPermSlot {
+    tid: u32,
+    data: [u8; 512],
+    len: u16,
+    used: bool,
+}
+
+impl PendingPermSlot {
+    const fn empty() -> Self {
+        PendingPermSlot { tid: 0, data: [0u8; 512], len: 0, used: false }
     }
 }
 
-/// Read pending permission info from the current thread into `buf`.
+static PENDING_PERM_INFO: Spinlock<[PendingPermSlot; MAX_PENDING_PERM]> = Spinlock::new([
+    PendingPermSlot::empty(), PendingPermSlot::empty(),
+    PendingPermSlot::empty(), PendingPermSlot::empty(),
+    PendingPermSlot::empty(), PendingPermSlot::empty(),
+    PendingPermSlot::empty(), PendingPermSlot::empty(),
+    PendingPermSlot::empty(), PendingPermSlot::empty(),
+    PendingPermSlot::empty(), PendingPermSlot::empty(),
+    PendingPermSlot::empty(), PendingPermSlot::empty(),
+    PendingPermSlot::empty(), PendingPermSlot::empty(),
+]);
+
+/// Store pending permission info for the current thread.
+/// Data is a UTF-8 byte slice: "app_id\x1Fapp_name\x1Fcaps_hex\x1Fbundle_path".
+pub fn set_current_perm_pending(data: &[u8]) {
+    let tid = current_tid();
+    if tid == 0 { return; }
+    let mut slots = PENDING_PERM_INFO.lock();
+    // Overwrite existing slot for this TID, or allocate a new one
+    let idx = slots.iter().position(|s| s.used && s.tid == tid)
+        .or_else(|| slots.iter().position(|s| !s.used));
+    if let Some(i) = idx {
+        let len = data.len().min(512);
+        slots[i].data[..len].copy_from_slice(&data[..len]);
+        slots[i].len = len as u16;
+        slots[i].tid = tid;
+        slots[i].used = true;
+    }
+}
+
+/// Read pending permission info for the current thread into `buf`.
+/// Consumes (clears) the slot after reading.
 /// Returns the number of bytes copied (0 if none).
 pub fn current_perm_pending(buf: &mut [u8]) -> usize {
-    let guard = SCHEDULER.lock();
-    let cpu_id = get_cpu_id();
-    if let Some(sched) = guard.as_ref() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(idx) = sched.find_idx(tid) {
-                let len = sched.threads[idx].perm_pending_len as usize;
-                if len > 0 {
-                    let copy = len.min(buf.len());
-                    buf[..copy].copy_from_slice(&sched.threads[idx].perm_pending[..copy]);
-                    return copy;
-                }
-            }
+    let tid = current_tid();
+    if tid == 0 { return 0; }
+    let mut slots = PENDING_PERM_INFO.lock();
+    if let Some(slot) = slots.iter_mut().find(|s| s.used && s.tid == tid) {
+        let len = slot.len as usize;
+        if len > 0 {
+            let copy = len.min(buf.len());
+            buf[..copy].copy_from_slice(&slot.data[..copy]);
+            // Consume the slot so it can be reused
+            slot.used = false;
+            return copy;
         }
     }
     0
@@ -2417,8 +2442,8 @@ pub fn current_thread_fork_snapshot() -> Option<ForkSnapshot> {
     let guard = SCHEDULER.lock();
     let sched = guard.as_ref()?;
     let cpu = get_cpu_id();
-    let tid = sched.per_cpu[cpu].current_tid?;
-    let thread = sched.threads.iter().find(|t| t.tid == tid)?;
+    let idx = sched.current_idx(cpu)?;
+    let thread = &sched.threads[idx];
     let pd = thread.page_directory?;
     Some(ForkSnapshot {
         pd,
@@ -2599,10 +2624,8 @@ pub fn record_io_read(bytes: u64) {
     let mut guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_mut() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
-                thread.io_read_bytes += bytes;
-            }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            sched.threads[idx].io_read_bytes += bytes;
         }
     }
 }
@@ -2611,10 +2634,8 @@ pub fn record_io_write(bytes: u64) {
     let mut guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_mut() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
-                thread.io_write_bytes += bytes;
-            }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            sched.threads[idx].io_write_bytes += bytes;
         }
     }
 }
@@ -2636,13 +2657,11 @@ pub fn adjust_current_user_pages(delta: i32) {
     let mut guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_mut() {
-        if let Some(tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
-                if delta >= 0 {
-                    thread.user_pages = thread.user_pages.saturating_add(delta as u32);
-                } else {
-                    thread.user_pages = thread.user_pages.saturating_sub((-delta) as u32);
-                }
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            if delta >= 0 {
+                sched.threads[idx].user_pages = sched.threads[idx].user_pages.saturating_add(delta as u32);
+            } else {
+                sched.threads[idx].user_pages = sched.threads[idx].user_pages.saturating_sub((-delta) as u32);
             }
         }
     }
@@ -2694,6 +2713,7 @@ pub fn register_ap_idle(cpu_id: usize) {
         crate::debug_println!("  [Sched] register_ap_idle: cpu={} idle_tid={}", cpu_id, idle_tid);
         sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
         if let Some(idx) = sched.find_idx(idle_tid) {
+            sched.per_cpu[cpu_id].current_idx = Some(idx);
             sched.threads[idx].state = ThreadState::Running;
             let kstack_top = sched.threads[idx].kernel_stack_top();
             let kstack_bottom = sched.threads[idx].kernel_stack_bottom();
@@ -2728,9 +2748,8 @@ pub fn current_fd_alloc(kind: FdKind) -> Option<u32> {
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut()?;
     let cpu = get_cpu_id();
-    let tid = sched.per_cpu[cpu].current_tid?;
-    let thread = sched.threads.iter_mut().find(|t| t.tid == tid)?;
-    thread.fd_table.alloc(kind)
+    let idx = sched.current_idx(cpu)?;
+    sched.threads[idx].fd_table.alloc(kind)
 }
 
 /// Close an FD in the current thread's FD table.
@@ -2739,9 +2758,8 @@ pub fn current_fd_close(fd: u32) -> Option<FdKind> {
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut()?;
     let cpu = get_cpu_id();
-    let tid = sched.per_cpu[cpu].current_tid?;
-    let thread = sched.threads.iter_mut().find(|t| t.tid == tid)?;
-    thread.fd_table.close(fd)
+    let idx = sched.current_idx(cpu)?;
+    sched.threads[idx].fd_table.close(fd)
 }
 
 /// Look up an FD in the current thread's FD table.
@@ -2749,9 +2767,8 @@ pub fn current_fd_get(fd: u32) -> Option<FdEntry> {
     let guard = SCHEDULER.lock();
     let sched = guard.as_ref()?;
     let cpu = get_cpu_id();
-    let tid = sched.per_cpu[cpu].current_tid?;
-    let thread = sched.threads.iter().find(|t| t.tid == tid)?;
-    thread.fd_table.get(fd).copied()
+    let idx = sched.current_idx(cpu)?;
+    sched.threads[idx].fd_table.get(fd).copied()
 }
 
 /// Duplicate old_fd to new_fd in the current thread's FD table.
@@ -2760,9 +2777,8 @@ pub fn current_fd_dup2(old_fd: u32, new_fd: u32) -> bool {
     let mut guard = SCHEDULER.lock();
     let sched = match guard.as_mut() { Some(s) => s, None => return false };
     let cpu = get_cpu_id();
-    let tid = match sched.per_cpu[cpu].current_tid { Some(t) => t, None => return false };
-    let thread = match sched.threads.iter_mut().find(|t| t.tid == tid) { Some(t) => t, None => return false };
-    thread.fd_table.dup2(old_fd, new_fd)
+    let idx = match sched.current_idx(cpu) { Some(i) => i, None => return false };
+    sched.threads[idx].fd_table.dup2(old_fd, new_fd)
 }
 
 /// Allocate the lowest FD >= min_fd in the current thread's FD table.
@@ -2770,9 +2786,8 @@ pub fn current_fd_alloc_above(min_fd: u32, kind: FdKind) -> Option<u32> {
     let mut guard = SCHEDULER.lock();
     let sched = match guard.as_mut() { Some(s) => s, None => return None };
     let cpu = get_cpu_id();
-    let tid = match sched.per_cpu[cpu].current_tid { Some(t) => t, None => return None };
-    let thread = match sched.threads.iter_mut().find(|t| t.tid == tid) { Some(t) => t, None => return None };
-    thread.fd_table.alloc_above(min_fd, kind)
+    let idx = match sched.current_idx(cpu) { Some(i) => i, None => return None };
+    sched.threads[idx].fd_table.alloc_above(min_fd, kind)
 }
 
 /// Allocate an FD at a specific slot in the current thread's FD table.
@@ -2780,9 +2795,8 @@ pub fn current_fd_alloc_at(fd: u32, kind: FdKind) -> bool {
     let mut guard = SCHEDULER.lock();
     let sched = match guard.as_mut() { Some(s) => s, None => return false };
     let cpu = get_cpu_id();
-    let tid = match sched.per_cpu[cpu].current_tid { Some(t) => t, None => return false };
-    let thread = match sched.threads.iter_mut().find(|t| t.tid == tid) { Some(t) => t, None => return false };
-    thread.fd_table.alloc_at(fd, kind)
+    let idx = match sched.current_idx(cpu) { Some(i) => i, None => return false };
+    sched.threads[idx].fd_table.alloc_at(fd, kind)
 }
 
 /// Set or clear the CLOEXEC flag on an FD in the current thread's FD table.
@@ -2790,10 +2804,8 @@ pub fn current_fd_set_cloexec(fd: u32, cloexec: bool) {
     let mut guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_mut() {
         let cpu = get_cpu_id();
-        if let Some(tid) = sched.per_cpu[cpu].current_tid {
-            if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
-                thread.fd_table.set_cloexec(fd, cloexec);
-            }
+        if let Some(idx) = sched.current_idx(cpu) {
+            sched.threads[idx].fd_table.set_cloexec(fd, cloexec);
         }
     }
 }
@@ -2813,10 +2825,8 @@ pub fn current_fd_close_all() -> [FdKind; MAX_FDS] {
     let mut guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_mut() {
         let cpu = get_cpu_id();
-        if let Some(tid) = sched.per_cpu[cpu].current_tid {
-            if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
-                thread.fd_table.close_all(&mut out);
-            }
+        if let Some(idx) = sched.current_idx(cpu) {
+            sched.threads[idx].fd_table.close_all(&mut out);
         }
     }
     out
@@ -2828,10 +2838,8 @@ pub fn current_fd_close_cloexec() -> [FdKind; MAX_FDS] {
     let mut guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_mut() {
         let cpu = get_cpu_id();
-        if let Some(tid) = sched.per_cpu[cpu].current_tid {
-            if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
-                thread.fd_table.close_cloexec(&mut out);
-            }
+        if let Some(idx) = sched.current_idx(cpu) {
+            sched.threads[idx].fd_table.close_cloexec(&mut out);
         }
     }
     out
@@ -2871,10 +2879,8 @@ pub fn current_signal_dequeue() -> Option<u32> {
     let mut guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_mut() {
         let cpu = get_cpu_id();
-        if let Some(tid) = sched.per_cpu[cpu].current_tid {
-            if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
-                return thread.signals.dequeue();
-            }
+        if let Some(idx) = sched.current_idx(cpu) {
+            return sched.threads[idx].signals.dequeue();
         }
     }
     None
@@ -2885,10 +2891,8 @@ pub fn current_signal_handler(sig: u32) -> u64 {
     let guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_ref() {
         let cpu = get_cpu_id();
-        if let Some(tid) = sched.per_cpu[cpu].current_tid {
-            if let Some(thread) = sched.threads.iter().find(|t| t.tid == tid) {
-                return thread.signals.get_handler(sig);
-            }
+        if let Some(idx) = sched.current_idx(cpu) {
+            return sched.threads[idx].signals.get_handler(sig);
         }
     }
     crate::ipc::signal::SIG_DFL
@@ -2899,10 +2903,8 @@ pub fn current_signal_set_handler(sig: u32, handler: u64) -> u64 {
     let mut guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_mut() {
         let cpu = get_cpu_id();
-        if let Some(tid) = sched.per_cpu[cpu].current_tid {
-            if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
-                return thread.signals.set_handler(sig, handler);
-            }
+        if let Some(idx) = sched.current_idx(cpu) {
+            return sched.threads[idx].signals.set_handler(sig, handler);
         }
     }
     crate::ipc::signal::SIG_DFL
@@ -2913,10 +2915,8 @@ pub fn current_signal_get_blocked() -> u32 {
     let guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_ref() {
         let cpu = get_cpu_id();
-        if let Some(tid) = sched.per_cpu[cpu].current_tid {
-            if let Some(thread) = sched.threads.iter().find(|t| t.tid == tid) {
-                return thread.signals.blocked;
-            }
+        if let Some(idx) = sched.current_idx(cpu) {
+            return sched.threads[idx].signals.blocked;
         }
     }
     0
@@ -2927,12 +2927,10 @@ pub fn current_signal_set_blocked(new_mask: u32) -> u32 {
     let mut guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_mut() {
         let cpu = get_cpu_id();
-        if let Some(tid) = sched.per_cpu[cpu].current_tid {
-            if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
-                let old = thread.signals.blocked;
-                thread.signals.blocked = new_mask;
-                return old;
-            }
+        if let Some(idx) = sched.current_idx(cpu) {
+            let old = sched.threads[idx].signals.blocked;
+            sched.threads[idx].signals.blocked = new_mask;
+            return old;
         }
     }
     0
@@ -2943,10 +2941,8 @@ pub fn current_has_pending_signal() -> bool {
     let guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_ref() {
         let cpu = get_cpu_id();
-        if let Some(tid) = sched.per_cpu[cpu].current_tid {
-            if let Some(thread) = sched.threads.iter().find(|t| t.tid == tid) {
-                return thread.signals.has_pending();
-            }
+        if let Some(idx) = sched.current_idx(cpu) {
+            return sched.threads[idx].signals.has_pending();
         }
     }
     false
@@ -2967,10 +2963,8 @@ pub fn current_parent_tid() -> u32 {
     let guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_ref() {
         let cpu = get_cpu_id();
-        if let Some(tid) = sched.per_cpu[cpu].current_tid {
-            if let Some(thread) = sched.threads.iter().find(|t| t.tid == tid) {
-                return thread.parent_tid;
-            }
+        if let Some(idx) = sched.current_idx(cpu) {
+            return sched.threads[idx].parent_tid;
         }
     }
     0

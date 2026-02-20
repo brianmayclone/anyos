@@ -199,11 +199,6 @@ fn process_packet(state: &mut MouseState, dz: i32) {
     // PS/2 mouse Y is inverted
     dy = -dy;
 
-    // Debug: log mouse packet values (raw bytes + decoded dx/dy)
-    if dx != 0 || dy != 0 {
-        crate::serial_println!("[mouse] raw=[{:#04x},{:#04x},{:#04x},{:#04x}] dx={} dy={} scroll={}", b[0], b[1], b[2], b[3], dx, dy, dz);
-    }
-
     // Boot splash: update HW cursor directly from IRQ (lag-free)
     crate::drivers::gpu::splash_cursor_move(dx, dy);
 
@@ -324,6 +319,26 @@ pub fn inject_absolute(x: i32, y: i32, buttons: MouseButtons) {
             dz: 0,
             buttons,
             event_type: btn_event_type,
+        });
+    }
+}
+
+/// Inject an absolute position-only event (no button state change).
+///
+/// Used by polling paths (VMMDev, SVGA cursor bypass) in sys_input_poll
+/// where reading `get_current_buttons()` would race with IRQ-driven
+/// `inject_absolute()` calls, causing spurious ButtonDown/ButtonUp events.
+pub fn inject_position(x: i32, y: i32) {
+    let mut buf = MOUSE_BUFFER.lock();
+    if buf.len() < 256 {
+        // Read current buttons for the event struct but do NOT compare/change them
+        let buttons = MOUSE_STATE.lock().buttons;
+        buf.push_back(MouseEvent {
+            dx: x,
+            dy: y,
+            dz: 0,
+            buttons,
+            event_type: MouseEventType::MoveAbsolute,
         });
     }
 }

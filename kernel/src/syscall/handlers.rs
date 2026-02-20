@@ -2431,20 +2431,14 @@ pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
     // Do this before draining PS/2 events so absolute position is always fresh.
     if crate::drivers::vmmdev::is_available() {
         if let Some((x, y, _btns)) = crate::drivers::vmmdev::poll_mouse() {
-            let current_buttons = crate::drivers::input::mouse::get_current_buttons();
-            crate::drivers::input::mouse::inject_absolute(
-                x, y,
-                current_buttons,
-            );
+            // Position-only: button state comes from IRQ-driven inject_absolute
+            crate::drivers::input::mouse::inject_position(x, y);
         }
     }
     // VMware SVGA FIFO cursor bypass: host writes cursor pos to FIFO memory
     if let Some((x, y)) = crate::drivers::gpu::vmware_svga::poll_cursor() {
-        let current_buttons = crate::drivers::input::mouse::get_current_buttons();
-        crate::drivers::input::mouse::inject_absolute(
-            x, y,
-            current_buttons,
-        );
+        // Position-only: button state comes from IRQ-driven inject_absolute
+        crate::drivers::input::mouse::inject_position(x, y);
     }
 
     // Drain mouse events

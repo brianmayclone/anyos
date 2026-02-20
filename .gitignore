@@ -12,3 +12,4 @@ build/
 /kernel/target/
 .DS_Store
 .claude/
+CLAUDE.md
