@@ -490,9 +490,6 @@ extern "C" fn export_set_blur_behind(channel_id: u32, window_id: u32, radius: u3
     syscall::evt_chan_emit(channel_id, &cmd);
 }
 
-/// VRAM base address where the kernel maps VRAM into user space (must match kernel).
-const VRAM_USER_BASE: usize = 0x18000000;
-
 extern "C" fn export_create_vram_window(
     channel_id: u32,
     sub_id: u32,
@@ -516,11 +513,11 @@ extern "C" fn export_create_vram_window(
                 if response[0] == RESP_VRAM_WINDOW_CREATED {
                     let window_id = response[1];
                     let stride_pixels = response[2];
-                    let vram_offset = response[4];
+                    let surface_va = response[4];
 
-                    // The kernel mapped VRAM at VRAM_USER_BASE.
-                    // Our surface starts at VRAM_USER_BASE + vram_offset.
-                    let surface_ptr = (VRAM_USER_BASE + vram_offset as usize) as *mut u32;
+                    // The compositor already mapped VRAM into our address space.
+                    // surface_va is the ready-to-use virtual address.
+                    let surface_ptr = surface_va as *mut u32;
 
                     unsafe {
                         *out_stride = stride_pixels;

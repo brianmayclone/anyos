@@ -113,12 +113,8 @@ impl Compositor {
                     .push([GPU_UPDATE, rect.x as u32, rect.y as u32, rect.width, rect.height, 0, 0, 0, 0]);
             }
 
-            // VRAM-direct layer overlay: after CPU flush, GPU RECT_COPY from off-screen VRAM.
-            // This must happen AFTER flush_region so the background is in place,
-            // and BEFORE flush_gpu so RECT_COPY + UPDATE are batched together.
-            if self.gpu_accel {
-                self.overlay_vram_layers(&damage);
-            }
+            // VRAM layers are now composited directly in composite_rect() by reading
+            // from fb_ptr (the entire VRAM is mapped). No GPU RECT_COPY needed.
         }
 
         self.flush_gpu();
@@ -224,59 +220,6 @@ impl Compositor {
         self.flush_gpu();
     }
 
-    /// Overlay VRAM-direct layers onto the visible framebuffer using GPU RECT_COPY.
-    /// Called after the CPU back buffer has been flushed to VRAM.
-    /// For each visible VRAM layer that intersects a damage rect, issues a RECT_COPY
-    /// from off-screen VRAM (where the app rendered) to the visible region.
-    fn overlay_vram_layers(&mut self, damage: &[Rect]) {
-        let screen = Rect::new(0, 0, self.fb_width, self.fb_height);
-
-        for li in 0..self.layers.len() {
-            if !self.layers[li].visible || !self.layers[li].is_vram {
-                continue;
-            }
-            let layer_rect = self.layers[li].bounds();
-            let vram_y = self.layers[li].vram_y;
-            let lx = self.layers[li].x;
-            let ly = self.layers[li].y;
-
-            for dmg in damage {
-                if let Some(overlap) = dmg.intersect(&layer_rect) {
-                    let overlap = match overlap.intersect(&screen) {
-                        Some(o) => o,
-                        None => continue,
-                    };
-                    // Source coordinates in off-screen VRAM surface:
-                    // The surface is at vram_y rows, with stride = pitch_pixels.
-                    // Source pixel at (sx, sy) relative to layer origin.
-                    let sx = (overlap.x - lx) as u32;
-                    let sy = (overlap.y - ly) as u32;
-                    let src_x = sx;
-                    let src_y = vram_y + sy;
-
-                    self.gpu_cmds.push([
-                        GPU_RECT_COPY,
-                        src_x,          // source X (within pitch-aligned row)
-                        src_y,          // source Y (off-screen VRAM row)
-                        overlap.x as u32, // dest X (screen)
-                        overlap.y as u32, // dest Y (screen)
-                        overlap.width,
-                        overlap.height,
-                        0, 0,
-                    ]);
-                    self.gpu_cmds.push([
-                        GPU_UPDATE,
-                        overlap.x as u32,
-                        overlap.y as u32,
-                        overlap.width,
-                        overlap.height,
-                        0, 0, 0, 0,
-                    ]);
-                }
-            }
-        }
-    }
-
     /// Composite all layers within a damage rect into the back buffer.
     fn composite_rect(&mut self, rect: &Rect) {
         let bb_stride = self.fb_width as usize;
@@ -299,14 +242,10 @@ impl Compositor {
         }
 
         // Composite each visible layer (bottom to top)
+        let pitch_stride = (self.fb_pitch / 4) as usize;
+
         for li in 0..self.layers.len() {
             if !self.layers[li].visible {
-                continue;
-            }
-
-            // Skip VRAM-direct layers — their pixels are in off-screen VRAM,
-            // not accessible from CPU. They're overlaid via GPU RECT_COPY later.
-            if self.layers[li].is_vram {
                 continue;
             }
 
@@ -333,16 +272,29 @@ impl Compositor {
             let layer_rect = self.layers[li].bounds();
             let layer_x = self.layers[li].x;
             let layer_y = self.layers[li].y;
-            let lw = self.layers[li].width as usize;
             let layer_opaque = self.layers[li].opaque;
+            let is_vram = self.layers[li].is_vram;
+
+            // For VRAM layers: read pixels directly from fb_ptr (off-screen VRAM).
+            // The compositor has the entire VRAM mapped, so off-screen regions are
+            // accessible at fb_ptr + vram_y * pitch_stride.
+            // Row stride = pitch_stride (not layer width).
+            let (pixels_ptr, lp_len, lw): (*const u32, usize, usize) = if is_vram {
+                let vram_y = self.layers[li].vram_y as usize;
+                let ptr = unsafe { self.fb_ptr.add(vram_y * pitch_stride) as *const u32 };
+                let len = self.layers[li].height as usize * pitch_stride;
+                (ptr, len, pitch_stride)
+            } else {
+                let ps = self.layers[li].pixel_slice();
+                (ps.as_ptr(), ps.len(), self.layers[li].width as usize)
+            };
 
             if let Some(overlap) = rect.intersect(&layer_rect) {
                 // Source coords in layer
                 let sx = (overlap.x - layer_x) as usize;
                 let sy = (overlap.y - layer_y) as usize;
 
-                let layer_pixels = self.layers[li].pixel_slice();
-                let lp_len = layer_pixels.len();
+                let layer_pixels = unsafe { core::slice::from_raw_parts(pixels_ptr, lp_len) };
 
                 if layer_opaque {
                     // Fast path: opaque copy
@@ -359,10 +311,6 @@ impl Compositor {
                     }
                 } else {
                     // Alpha-blend path with opaque-run optimization.
-                    // Windows with rounded corners have opaque=false, but 95%+ of
-                    // pixels are a=255. Detect contiguous opaque runs per row and
-                    // bulk-copy them via copy_from_slice (memcpy) instead of
-                    // per-pixel branching.
                     for row in 0..overlap.height as usize {
                         let src_off = (sy + row) * lw + sx;
                         let dst_off =

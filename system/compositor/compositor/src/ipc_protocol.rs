@@ -36,10 +36,10 @@ pub const RESP_WINDOW_DESTROYED: u32 = 0x2002;
 /// Sent after the compositor has parsed the menu SHM, so the app can free it.
 pub const RESP_MENU_SET: u32 = 0x2003;
 
-/// VRAM window created: [RESP, window_id, stride_pixels, app_tid, vram_offset]
+/// VRAM window created: [RESP, window_id, stride_pixels, app_tid, surface_va]
 /// stride_pixels = fb_pitch/4 (the row stride for the VRAM surface).
-/// vram_offset = byte offset from VRAM base to the surface start.
-/// App maps VRAM via SYS_VRAM_MAP and writes to (mapped_base + vram_offset).
+/// surface_va = user virtual address of the VRAM surface (ready to write pixels).
+/// App writes ARGB pixels to surface_va using stride_pixels as row stride.
 pub const RESP_VRAM_WINDOW_CREATED: u32 = 0x2004;
 
 /// VRAM window creation failed: [RESP, 0, 0, app_tid, 0]

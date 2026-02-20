@@ -789,7 +789,7 @@ impl Desktop {
     }
 
     /// Create a VRAM-direct window (app renders directly to off-screen VRAM).
-    /// Returns `Some([RESP_VRAM_WINDOW_CREATED, win_id, stride_pixels, tid, vram_offset])`
+    /// Returns `Some([RESP_VRAM_WINDOW_CREATED, win_id, stride_pixels, tid, surface_va])`
     /// on success, or `None` if VRAM allocation fails.
     pub fn create_vram_window(
         &mut self,
@@ -806,18 +806,16 @@ impl Desktop {
             content_h,
         )?;
 
-        // Get the VRAM allocation info for the response
-        let vram_y = self.compositor.vram_layer_y(layer_id)?;
+        // Get the VRAM allocation info for mapping
         let stride_pixels = self.compositor.fb_pitch / 4;
-        let vram_offset = vram_y * self.compositor.fb_pitch;
-
-        // Map VRAM into the app's address space via kernel syscall
         let alloc_info = self.compositor.vram_allocator.as_ref()?.get(layer_id)?;
         let map_offset = alloc_info.offset;
         let map_size = alloc_info.size;
 
-        let map_result = anyos_std::ipc::vram_map(app_tid, map_offset, map_size);
-        if map_result == 0 || map_result == u32::MAX {
+        // Map VRAM into the app's address space via kernel syscall.
+        // Returns the user VA where the surface is mapped (e.g. 0x18000000).
+        let surface_va = anyos_std::ipc::vram_map(app_tid, map_offset, map_size);
+        if surface_va == 0 || surface_va == u32::MAX {
             // VRAM mapping failed — remove the layer and free allocation
             self.compositor.remove_layer(layer_id);
             return None;
@@ -861,7 +859,7 @@ impl Desktop {
             id,
             stride_pixels,
             app_tid,
-            vram_offset,
+            surface_va,
         ])
     }
 
