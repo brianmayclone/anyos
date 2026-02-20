@@ -325,26 +325,33 @@ unsafe fn issue_command(
         core::hint::spin_loop();
     }
 
-    // Slow path: block and wait for IRQ (real hardware with actual latency)
+    // Slow path: yield-and-poll with IRQ assist.
+    // Uses sleep_until(tick+1) which auto-wakes on the next PIT tick (~1ms)
+    // even if the AHCI IRQ never fires (e.g., IOAPIC routing mismatch in
+    // VirtualBox). The IRQ handler can still wake us sooner via wake_thread.
+    // Also checks CI directly — no sole reliance on AHCI_IRQ_FIRED.
     let tid = crate::task::scheduler::current_tid();
-    if tid > 0 && ahci.irq > 0 {
-        AHCI_WAITER.store(tid, core::sync::atomic::Ordering::Release);
+    if tid > 0 {
+        if ahci.irq > 0 {
+            AHCI_WAITER.store(tid, core::sync::atomic::Ordering::Release);
+        }
 
         let start = crate::arch::x86::pit::get_ticks();
         loop {
-            if AHCI_IRQ_FIRED.load(core::sync::atomic::Ordering::Acquire) {
-                let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
-                if ci & 1 == 0 {
-                    break;
-                }
-                AHCI_IRQ_FIRED.store(false, core::sync::atomic::Ordering::Release);
+            // Check command completion directly (no dependency on IRQ)
+            let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
+            if ci & 1 == 0 {
+                break;
             }
             if crate::arch::x86::pit::get_ticks().wrapping_sub(start) > 2000 {
                 AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
-                crate::serial_println!("AHCI: IRQ timeout, falling back to poll");
-                return poll_completion(ahci);
+                crate::serial_println!("AHCI: command timeout");
+                return false;
             }
-            crate::task::scheduler::block_current_thread();
+            // Sleep for 1 PIT tick (~1ms). PIT tick handler auto-wakes us.
+            // AHCI IRQ handler can also wake us sooner via wake_thread.
+            let now = crate::arch::x86::pit::get_ticks();
+            crate::task::scheduler::sleep_until(now.wrapping_add(1));
         }
 
         AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);

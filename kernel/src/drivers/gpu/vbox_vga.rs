@@ -442,7 +442,12 @@ impl GpuDriver for VBoxVgaGpu {
     // ── Hardware Cursor ──────────────────────────────────
 
     fn has_hw_cursor(&self) -> bool {
-        self.hgsmi_supported
+        // Disabled: HGSMI cursor commands (VBVA_MOUSE_POINTER_SHAPE,
+        // VBVA_CURSOR_POSITION) cause VirtualBox to activate mouse
+        // integration mode. Without VMMDev/VBoxGuest, this conflicts
+        // with PS/2 relative input, pushing the host cursor to (0,0).
+        // The compositor falls back to software cursor instead.
+        false
     }
 
     fn define_cursor(&mut self, w: u32, h: u32, hotx: u32, hoty: u32, pixels: &[u32]) {
