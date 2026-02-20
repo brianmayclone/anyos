@@ -18,6 +18,8 @@ fn perm_path(uid: u16, app_id: &str) -> String {
 /// Ensure the directory `/System/users/perm/{uid}/` exists, creating
 /// intermediate directories as needed.
 fn ensure_perm_dir(uid: u16) {
+    // Create each level; errors are OK (AlreadyExists is expected).
+    let _ = vfs::mkdir("/System/users");
     let _ = vfs::mkdir("/System/users/perm");
     let dir = format!("/System/users/perm/{}", uid);
     let _ = vfs::mkdir(&dir);
@@ -61,7 +63,10 @@ pub fn write_stored_perms(uid: u16, app_id: &str, granted: CapSet) -> bool {
             let _ = vfs::close(fd);
             true
         }
-        Err(_) => false,
+        Err(e) => {
+            crate::serial_println!("PERM: write_stored_perms failed: path='{}' err={:?}", path, e);
+            false
+        }
     }
 }
 

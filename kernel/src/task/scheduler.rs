@@ -426,20 +426,26 @@ impl Scheduler {
     }
 
     /// Add a thread to the scheduler and enqueue on the least-loaded CPU.
+    /// Sets both `last_cpu` and `affinity_cpu` to the selected CPU.
     fn add_thread(&mut self, mut thread: Thread) -> u32 {
         let tid = thread.tid;
         let cpu = self.least_loaded_cpu();
         let pri = thread.priority;
         thread.last_cpu = cpu;
+        thread.affinity_cpu = cpu;
         self.threads.push(Box::new(thread));
         self.per_cpu[cpu].run_queue.enqueue(tid, pri);
         tid
     }
 
     /// Add a thread in Blocked state without putting it in any ready queue.
+    /// Sets `affinity_cpu` to the least-loaded CPU so the first wake goes there.
     fn add_thread_blocked(&mut self, mut thread: Thread) -> u32 {
         let tid = thread.tid;
         thread.state = ThreadState::Blocked;
+        let cpu = self.least_loaded_cpu();
+        thread.last_cpu = cpu;
+        thread.affinity_cpu = cpu;
         self.threads.push(Box::new(thread));
         tid
     }
@@ -528,7 +534,10 @@ impl Scheduler {
         if let Some(tid) = self.pick_eligible(cpu_id) {
             return Some(tid);
         }
-        // 2. Work stealing: find the busiest CPU and steal from it
+        // 2. Work stealing: find the busiest CPU and steal only when the
+        //    imbalance is large enough to justify cache-line invalidation.
+        //    With few threads and many CPUs, overeager stealing causes
+        //    constant migration of heavy threads (DOOM, compositor).
         let n = self.num_cpus();
         let mut max_count = 0;
         let mut victim = cpu_id;
@@ -541,7 +550,10 @@ impl Scheduler {
                 }
             }
         }
-        if max_count > 0 {
+        // Only steal when the victim has 3+ queued threads — this keeps 2 for
+        // the victim (1 running + 1 queued) before we take one.  Prevents
+        // thrashing when 2 threads share a CPU via affinity.
+        if max_count >= 3 {
             self.pick_eligible(victim)
         } else {
             None
@@ -574,13 +586,15 @@ impl Scheduler {
         }
     }
 
-    /// Wake a blocked thread, enqueuing on the least-loaded CPU.
+    /// Wake a blocked thread, enqueuing on its stable `affinity_cpu`.
     fn wake_thread_inner(&mut self, tid: u32) {
         if let Some(idx) = self.find_idx(tid) {
             if self.threads[idx].state == ThreadState::Blocked {
                 self.threads[idx].state = ThreadState::Ready;
-                let target_cpu = self.least_loaded_cpu();
-                self.per_cpu[target_cpu].run_queue.enqueue(tid, self.threads[idx].priority);
+                let cpu = self.threads[idx].affinity_cpu;
+                let n = self.num_cpus();
+                let target = if cpu < n { cpu } else { 0 };
+                self.per_cpu[target].run_queue.enqueue(tid, self.threads[idx].priority);
             }
         }
     }
@@ -868,6 +882,7 @@ fn schedule_inner(from_timer: bool) {
         }
 
         // Wake expired sleepers
+        let n_cpus = sched.num_cpus();
         if from_timer {
             let current_tick = crate::arch::x86::pit::get_ticks();
             for i in 0..sched.threads.len() {
@@ -876,11 +891,73 @@ fn schedule_inner(from_timer: bool) {
                         if current_tick.wrapping_sub(wake_tick) < 0x8000_0000 {
                             let tid = sched.threads[i].tid;
                             let pri = sched.threads[i].priority;
-                            let target_cpu = sched.least_loaded_cpu();
+                            let aff = sched.threads[i].affinity_cpu;
+                            let target_cpu = if aff < n_cpus { aff } else { 0 };
                             sched.threads[i].state = ThreadState::Ready;
                             sched.threads[i].wake_at_tick = None;
                             sched.per_cpu[target_cpu].run_queue.enqueue(tid, pri);
                         }
+                    }
+                }
+            }
+        }
+
+        // --- Periodic affinity rebalancing (CPU 0 only, every ~1 second) ---
+        // Counts how many Ready/Running threads have affinity to each CPU.
+        // If any CPU is overloaded (3+ more than the lightest), migrate one
+        // thread's affinity to the lightest CPU.  This is the ONLY place
+        // where affinity_cpu changes after spawn.
+        if from_timer && cpu_id == 0 {
+            static REBALANCE_CTR: AtomicU32 = AtomicU32::new(0);
+            let ctr = REBALANCE_CTR.fetch_add(1, Ordering::Relaxed);
+            if ctr % 1000 == 0 {
+                let mut aff_count = [0u32; MAX_CPUS];
+                for t in sched.threads.iter() {
+                    if t.is_idle { continue; }
+                    match t.state {
+                        ThreadState::Ready | ThreadState::Running => {
+                            let c = t.affinity_cpu;
+                            if c < n_cpus { aff_count[c] += 1; }
+                        }
+                        _ => {}
+                    }
+                }
+                // Find busiest and lightest
+                let mut busiest_cpu = 0usize;
+                let mut busiest_val = 0u32;
+                let mut lightest_cpu = 0usize;
+                let mut lightest_val = u32::MAX;
+                for c in 0..n_cpus {
+                    if aff_count[c] > busiest_val {
+                        busiest_val = aff_count[c];
+                        busiest_cpu = c;
+                    }
+                    if aff_count[c] < lightest_val {
+                        lightest_val = aff_count[c];
+                        lightest_cpu = c;
+                    }
+                }
+                // Only rebalance if imbalance >= 3 threads
+                if busiest_val >= lightest_val + 3 && busiest_cpu != lightest_cpu {
+                    // Migrate the lowest-priority non-idle thread from busiest
+                    let mut victim_idx: Option<usize> = None;
+                    let mut victim_pri = 0u8;
+                    for (i, t) in sched.threads.iter().enumerate() {
+                        if t.is_idle || t.critical { continue; }
+                        if t.affinity_cpu == busiest_cpu {
+                            match t.state {
+                                ThreadState::Ready | ThreadState::Running => {
+                                    if victim_idx.is_none() || t.priority >= victim_pri {
+                                        victim_idx = Some(i);
+                                        victim_pri = t.priority;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    if let Some(vi) = victim_idx {
+                        sched.threads[vi].affinity_cpu = lightest_cpu;
                     }
                 }
             }

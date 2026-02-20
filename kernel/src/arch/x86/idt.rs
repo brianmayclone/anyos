@@ -811,6 +811,10 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                     "  CS={:#x} RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
                     frame.cs, frame.rax, frame.rbx, frame.rcx, frame.rdx
                 );
+                crate::serial_println!(
+                    "  RSI={:#018x} RDI={:#018x} RBP={:#018x} R8={:#018x}",
+                    frame.rsi, frame.rdi, frame.rbp, frame.r8
+                );
                 crate::serial_println!("  User RSP={:#018x} SS={:#x}", frame.rsp, frame.ss);
                 crate::serial_println!("  User process fault — terminating thread (TID={})", tid);
                 crate::task::scheduler::exit_current(139);

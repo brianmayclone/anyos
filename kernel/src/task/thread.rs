@@ -96,8 +96,12 @@ pub struct Thread {
     /// True if this thread shares its page directory with another thread (intra-process child).
     /// When true, sys_exit must NOT destroy the page directory.
     pub pd_shared: bool,
-    /// Last CPU this thread ran on (for affinity when re-queuing after wake/unblock).
+    /// Last CPU this thread ran on (updated every context switch).
     pub last_cpu: usize,
+    /// Stable CPU affinity — set at spawn to `least_loaded_cpu()`.
+    /// Wake-ups always target this CPU.  Only changed by the periodic
+    /// load rebalancer when this CPU is genuinely overloaded.
+    pub affinity_cpu: usize,
     /// True for per-CPU idle threads (never reaped, never killed, never enqueued).
     pub is_idle: bool,
     /// True for critical system threads (compositor) that must not be killed by RSP recovery.
@@ -213,6 +217,7 @@ impl Thread {
             terminated_at_tick: None,
             pd_shared: false,
             last_cpu: 0,
+            affinity_cpu: 0,
             is_idle: false,
             critical: false,
             io_read_bytes: 0,

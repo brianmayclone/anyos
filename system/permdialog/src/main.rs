@@ -185,8 +185,12 @@ fn main() {
                         granted |= PERM_GROUPS[active_groups[i].0].mask;
                     }
                 }
-                permissions::perm_store(app_id, granted, 0);
-                cleanup(lock_pipe, dim_win, win, 0);
+                if permissions::perm_store(app_id, granted, 0) {
+                    cleanup(lock_pipe, dim_win, win, 0);
+                } else {
+                    // Store failed — exit with error so spawn() doesn't retry blindly
+                    cleanup(lock_pipe, dim_win, win, 2);
+                }
             }
         }
 

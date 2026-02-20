@@ -21,10 +21,68 @@ if(NOT MAKE_EXECUTABLE)
 endif()
 
 # find Python — on Windows the executable is "python", on Unix "python3"
+# (kept as fallback; native C tools are preferred)
 find_program(PYTHON_EXECUTABLE NAMES python3 python)
-if(NOT PYTHON_EXECUTABLE)
-    message(FATAL_ERROR "Python not found. Install from https://www.python.org/downloads/")
-endif()
+
+# ============================================================
+# Build System Tools (anyelf, mkimage — built first, used later)
+# ============================================================
+# These are native C tools that replace the Python scripts.
+# They are compiled at configure/build time for the host, and also
+# copied to the sysroot for self-hosting on anyOS.
+
+set(BUILDSYSTEM_DIR "${CMAKE_SOURCE_DIR}/buildsystem")
+
+# anyelf — ELF conversion tool (replaces elf2bin.py, elf2kdrv.py)
+set(ANYELF_EXECUTABLE "${CMAKE_BINARY_DIR}/buildsystem/anyelf")
+file(GLOB ANYELF_SRCS "${BUILDSYSTEM_DIR}/anyelf/src/*.c" "${BUILDSYSTEM_DIR}/anyelf/src/*.h")
+add_custom_command(
+  OUTPUT ${ANYELF_EXECUTABLE}
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/buildsystem"
+  COMMAND cc -Wall -O2 -std=c99 -o ${ANYELF_EXECUTABLE}
+    ${BUILDSYSTEM_DIR}/anyelf/src/anyelf.c
+    ${BUILDSYSTEM_DIR}/anyelf/src/convert.c
+  DEPENDS ${ANYELF_SRCS}
+  COMMENT "Building buildsystem tool: anyelf"
+)
+
+# mkimage — disk image builder (replaces mkimage.py)
+set(MKIMAGE_EXECUTABLE "${CMAKE_BINARY_DIR}/buildsystem/mkimage")
+file(GLOB MKIMAGE_SRCS "${BUILDSYSTEM_DIR}/mkimage/src/*.c" "${BUILDSYSTEM_DIR}/mkimage/src/*.h")
+add_custom_command(
+  OUTPUT ${MKIMAGE_EXECUTABLE}
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/buildsystem"
+  COMMAND cc -Wall -O2 -std=c99 -o ${MKIMAGE_EXECUTABLE}
+    ${BUILDSYSTEM_DIR}/mkimage/src/mkimage.c
+    ${BUILDSYSTEM_DIR}/mkimage/src/elf.c
+    ${BUILDSYSTEM_DIR}/mkimage/src/fat16.c
+    ${BUILDSYSTEM_DIR}/mkimage/src/exfat.c
+    ${BUILDSYSTEM_DIR}/mkimage/src/gpt.c
+    ${BUILDSYSTEM_DIR}/mkimage/src/iso9660.c
+  DEPENDS ${MKIMAGE_SRCS}
+  COMMENT "Building buildsystem tool: mkimage"
+)
+
+# anyld — ELF64 shared object linker (for future .so builds)
+set(ANYLD_EXECUTABLE "${CMAKE_BINARY_DIR}/buildsystem/anyld")
+file(GLOB ANYLD_SRCS "${BUILDSYSTEM_DIR}/anyld/src/*.c" "${BUILDSYSTEM_DIR}/anyld/src/*.h")
+add_custom_command(
+  OUTPUT ${ANYLD_EXECUTABLE}
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/buildsystem"
+  COMMAND cc -Wall -O2 -std=c99 -o ${ANYLD_EXECUTABLE}
+    ${BUILDSYSTEM_DIR}/anyld/src/anyld.c
+    ${BUILDSYSTEM_DIR}/anyld/src/input.c
+    ${BUILDSYSTEM_DIR}/anyld/src/link.c
+    ${BUILDSYSTEM_DIR}/anyld/src/output.c
+    ${BUILDSYSTEM_DIR}/anyld/src/defs.c
+  DEPENDS ${ANYLD_SRCS}
+  COMMENT "Building buildsystem tool: anyld"
+)
+
+# Target to build all buildsystem tools
+add_custom_target(buildsystem-tools
+  DEPENDS ${ANYELF_EXECUTABLE} ${MKIMAGE_EXECUTABLE} ${ANYLD_EXECUTABLE}
+)
 
 option(ANYOS_DEBUG_VERBOSE "Enable verbose debug output" OFF)
 option(ANYOS_NO_CROSS "Disable cross-compilation (skip libc, TCC, games, curl)" OFF)
@@ -185,6 +243,21 @@ file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers/audio")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers/bus")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers/system")
 
+# Copy buildsystem tool sources to sysroot for self-hosting on anyOS
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/Libraries/system/buildsystem/.stamp
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/Libraries/system/buildsystem
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${BUILDSYSTEM_DIR}/anyelf ${SYSROOT_DIR}/Libraries/system/buildsystem/anyelf
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${BUILDSYSTEM_DIR}/mkimage ${SYSROOT_DIR}/Libraries/system/buildsystem/mkimage
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${BUILDSYSTEM_DIR}/anyld ${SYSROOT_DIR}/Libraries/system/buildsystem/anyld
+  COMMAND ${CMAKE_COMMAND} -E touch ${SYSROOT_DIR}/Libraries/system/buildsystem/.stamp
+  DEPENDS ${ANYELF_SRCS} ${MKIMAGE_SRCS} ${ANYLD_SRCS}
+  COMMENT "Installing buildsystem tool sources to sysroot"
+)
+
 # --- Helper: build a Rust user program ---
 set(STDLIB_DEPS
   ${CMAKE_SOURCE_DIR}/libs/stdlib/Cargo.toml
@@ -225,10 +298,10 @@ function(add_rust_user_program NAME SRC_DIR)
   )
   add_custom_command(
     OUTPUT ${SYSROOT_DIR}/System/bin/${NAME}
-    COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+    COMMAND ${ANYELF_EXECUTABLE} bin
       ${ELF}
       ${SYSROOT_DIR}/System/bin/${NAME}
-    DEPENDS ${ELF}
+    DEPENDS ${ELF} ${ANYELF_EXECUTABLE}
     COMMENT "Converting ${NAME} ELF to flat binary"
   )
   set(RUST_USER_BINS ${RUST_USER_BINS} ${SYSROOT_DIR}/System/bin/${NAME} PARENT_SCOPE)
@@ -254,10 +327,10 @@ function(add_rust_system_program NAME SRC_DIR)
   )
   add_custom_command(
     OUTPUT ${SYSROOT_DIR}/System/${NAME}
-    COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+    COMMAND ${ANYELF_EXECUTABLE} bin
       ${ELF}
       ${SYSROOT_DIR}/System/${NAME}
-    DEPENDS ${ELF}
+    DEPENDS ${ELF} ${ANYELF_EXECUTABLE}
     COMMENT "Converting ${NAME} ELF to flat binary"
   )
   set(SYSTEM_BINS ${SYSTEM_BINS} ${SYSROOT_DIR}/System/${NAME} PARENT_SCOPE)
@@ -283,10 +356,10 @@ function(add_rust_sbin_program NAME SRC_DIR)
   )
   add_custom_command(
     OUTPUT ${SYSROOT_DIR}/System/sbin/${NAME}
-    COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+    COMMAND ${ANYELF_EXECUTABLE} bin
       ${ELF}
       ${SYSROOT_DIR}/System/sbin/${NAME}
-    DEPENDS ${ELF}
+    DEPENDS ${ELF} ${ANYELF_EXECUTABLE}
     COMMENT "Converting ${NAME} ELF to flat binary (sbin)"
   )
   set(RUST_USER_BINS ${RUST_USER_BINS} ${SYSROOT_DIR}/System/sbin/${NAME} PARENT_SCOPE)
@@ -314,11 +387,11 @@ function(add_app NAME SRC_DIR DISPLAY_NAME)
   add_custom_command(
     OUTPUT "${APP_DIR}/${DISPLAY_NAME}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${APP_DIR}"
-    COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+    COMMAND ${ANYELF_EXECUTABLE} bin
       ${ELF}
       "${APP_DIR}/${DISPLAY_NAME}"
     COMMAND ${CMAKE_COMMAND} -E copy "${SRC_DIR}/Info.conf" "${APP_DIR}/Info.conf"
-    DEPENDS ${ELF} "${SRC_DIR}/Info.conf"
+    DEPENDS ${ELF} "${SRC_DIR}/Info.conf" ${ANYELF_EXECUTABLE}
     COMMENT "Packaging ${DISPLAY_NAME}.app"
   )
   set(_LOCAL_BINS "${APP_DIR}/${DISPLAY_NAME}")
@@ -355,17 +428,17 @@ function(add_dll NAME SRC_DIR)
   )
   add_custom_command(
     OUTPUT ${SYSROOT_DIR}/Libraries/${NAME}.dlib
-    COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2bin.py --dlib
+    COMMAND ${ANYELF_EXECUTABLE} dlib
       ${DLL_ELF}
       ${SYSROOT_DIR}/Libraries/${NAME}.dlib
-    DEPENDS ${DLL_ELF}
+    DEPENDS ${DLL_ELF} ${ANYELF_EXECUTABLE}
     COMMENT "Converting ${NAME} ELF to DLIB v3"
   )
   set(DLL_BINS ${DLL_BINS} ${SYSROOT_DIR}/Libraries/${NAME}.dlib PARENT_SCOPE)
 endfunction()
 
 # Variant for loadable kernel drivers (.ddv bundles in /System/Drivers/{CATEGORY}/)
-# Builds with kernel target (Ring 0), converts to KDRV format via elf2kdrv.py
+# Builds with kernel target (Ring 0), converts to KDRV format via anyelf
 function(add_driver NAME SRC_DIR DISPLAY_NAME CATEGORY)
   set(DDV_DIR "${SYSROOT_DIR}/System/Drivers/${CATEGORY}/${DISPLAY_NAME}.ddv")
   set(DRV_ELF "${CMAKE_BINARY_DIR}/drivers/${NAME}/x86_64-anyos/release/${NAME}.elf")
@@ -386,11 +459,11 @@ function(add_driver NAME SRC_DIR DISPLAY_NAME CATEGORY)
   add_custom_command(
     OUTPUT "${DDV_DIR}/${DISPLAY_NAME}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${DDV_DIR}"
-    COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2kdrv.py
+    COMMAND ${ANYELF_EXECUTABLE} kdrv
       ${DRV_ELF}
       "${DDV_DIR}/${DISPLAY_NAME}"
     COMMAND ${CMAKE_COMMAND} -E copy "${SRC_DIR}/Info.conf" "${DDV_DIR}/Info.conf"
-    DEPENDS ${DRV_ELF} "${SRC_DIR}/Info.conf"
+    DEPENDS ${DRV_ELF} "${SRC_DIR}/Info.conf" ${ANYELF_EXECUTABLE}
     COMMENT "Packaging ${DISPLAY_NAME}.ddv"
   )
   set(DRIVER_BINS ${DRIVER_BINS} "${DDV_DIR}/${DISPLAY_NAME}" PARENT_SCOPE)
@@ -495,10 +568,10 @@ add_custom_command(
 )
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/bin/true
-  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+  COMMAND ${ANYELF_EXECUTABLE} bin
     ${TRUE_ELF}
     ${SYSROOT_DIR}/System/bin/true
-  DEPENDS ${TRUE_ELF}
+  DEPENDS ${TRUE_ELF} ${ANYELF_EXECUTABLE}
   COMMENT "Converting true ELF to flat binary"
 )
 list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/bin/true)
@@ -520,10 +593,10 @@ add_custom_command(
 )
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/bin/false
-  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+  COMMAND ${ANYELF_EXECUTABLE} bin
     ${FALSE_ELF}
     ${SYSROOT_DIR}/System/bin/false
-  DEPENDS ${FALSE_ELF}
+  DEPENDS ${FALSE_ELF} ${ANYELF_EXECUTABLE}
   COMMENT "Converting false ELF to flat binary"
 )
 list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/bin/false)
@@ -573,10 +646,10 @@ add_custom_command(
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/compositor/compositor
   COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/System/compositor
-  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+  COMMAND ${ANYELF_EXECUTABLE} bin
     ${COMPOSITOR_ELF}
     ${SYSROOT_DIR}/System/compositor/compositor
-  DEPENDS ${COMPOSITOR_ELF}
+  DEPENDS ${COMPOSITOR_ELF} ${ANYELF_EXECUTABLE}
   COMMENT "Converting compositor ELF to flat binary"
 )
 list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/System/compositor/compositor)
@@ -601,10 +674,10 @@ add_custom_command(
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/compositor/dock
   COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/System/compositor
-  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/elf2bin.py
+  COMMAND ${ANYELF_EXECUTABLE} bin
     ${DOCK_ELF}
     ${SYSROOT_DIR}/System/compositor/dock
-  DEPENDS ${DOCK_ELF}
+  DEPENDS ${DOCK_ELF} ${ANYELF_EXECUTABLE}
   COMMENT "Converting dock ELF to flat binary"
 )
 list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/System/compositor/dock)
@@ -1052,6 +1125,7 @@ add_custom_target(programs DEPENDS
   ${DLL_BINS}
   ${DRIVER_BINS}
   ${SYSROOT_DIR}/.stamp
+  ${SYSROOT_DIR}/Libraries/system/buildsystem/.stamp
   ${C_TOOLCHAIN_DEPS}
 )
 
@@ -1060,7 +1134,7 @@ add_custom_target(programs DEPENDS
 # ============================================================
 add_custom_command(
   OUTPUT ${DISK_IMAGE}
-  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/mkimage.py
+  COMMAND ${MKIMAGE_EXECUTABLE}
     --stage1 ${CMAKE_BINARY_DIR}/stage1.bin
     --stage2 ${CMAKE_BINARY_DIR}/stage2.bin
     --kernel ${KERNEL_ELF}
@@ -1079,6 +1153,7 @@ add_custom_command(
     ${DRIVER_BINS}
     ${SYSROOT_DIR}/.stamp
     ${C_TOOLCHAIN_DEPS}
+    ${MKIMAGE_EXECUTABLE}
   COMMENT "Creating bootable disk image (256 MiB, exFAT filesystem)"
 )
 
@@ -1258,7 +1333,7 @@ add_custom_command(
 # Create UEFI disk image (GPT + ESP + exFAT data partition)
 add_custom_command(
   OUTPUT ${UEFI_DISK_IMAGE}
-  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/mkimage.py --uefi
+  COMMAND ${MKIMAGE_EXECUTABLE} --uefi
     --bootloader ${UEFI_BOOTLOADER_EFI}
     --kernel ${KERNEL_ELF}
     --output ${UEFI_DISK_IMAGE}
@@ -1272,6 +1347,7 @@ add_custom_command(
     ${DLL_BINS}
     ${SYSROOT_DIR}/.stamp
     ${C_TOOLCHAIN_DEPS}
+    ${MKIMAGE_EXECUTABLE}
   COMMENT "Creating UEFI bootable disk image (GPT + ESP + exFAT)"
 )
 
@@ -1315,7 +1391,7 @@ set(ISO_IMAGE "${CMAKE_BINARY_DIR}/anyos.iso")
 
 add_custom_command(
   OUTPUT ${ISO_IMAGE}
-  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/mkimage.py --iso
+  COMMAND ${MKIMAGE_EXECUTABLE} --iso
     --stage1 ${CMAKE_BINARY_DIR}/stage1.bin
     --stage2 ${CMAKE_BINARY_DIR}/stage2.bin
     --kernel ${KERNEL_ELF}
@@ -1330,6 +1406,7 @@ add_custom_command(
     ${DLL_BINS}
     ${SYSROOT_DIR}/.stamp
     ${C_TOOLCHAIN_DEPS}
+    ${MKIMAGE_EXECUTABLE}
   COMMENT "Creating bootable ISO 9660 image (El Torito, BIOS boot)"
 )
 

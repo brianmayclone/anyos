@@ -1144,7 +1144,7 @@ class ExFatFormatter:
 
     # Directories whose contents are restricted to root (uid=0, mode=0xF00).
     # Paths are relative to sysroot, using forward slashes.
-    ROOT_ONLY_DIRS = {"System/sbin"}
+    ROOT_ONLY_DIRS = {"System/sbin", "System/users/perm"}
 
     def populate_from_sysroot(self, sysroot_path):
         """Recursively copy files from sysroot directory to the filesystem."""
