@@ -23,7 +23,7 @@ const CMD_ABSPOINTER_STATUS: u32 = 40;
 const CMD_ABSPOINTER_COMMAND: u32 = 41;
 
 // ABSPOINTER sub-commands (passed as arg to CMD_ABSPOINTER_COMMAND)
-const ABSPOINTER_ENABLE: u32 = 0x4545_4152; // "EARE" — enable vmmouse
+const ABSPOINTER_ENABLE: u32 = 0x4541_4552; // "EAER" — enable vmmouse
 const ABSPOINTER_RELATIVE: u32 = 0xF5;       // disable / back to relative PS/2
 const ABSPOINTER_ABSOLUTE: u32 = 0x5342_4152; // "SBAR" — switch to absolute mode
 
@@ -88,16 +88,23 @@ fn enable() -> bool {
 
     // Step 2: Check status — should return version info, not error
     let status = backdoor(CMD_ABSPOINTER_STATUS, 0);
-    if status.eax == 0xFFFF_0000 {
-        // Error — vmmouse not available
+    if (status.eax & 0xFFFF) == 0 || status.eax == 0xFFFF_0000 {
+        // Error — vmmouse not available or queue empty
         return false;
     }
 
     // Step 3: Read any pending initial data (1 word)
-    backdoor(CMD_ABSPOINTER_DATA, 1);
+    let version = backdoor(CMD_ABSPOINTER_DATA, 1);
+    if version.eax != 0x3442554A { // VMMOUSE_VERSION_ID
+        return false;
+    }
 
     // Step 4: Switch to absolute mode
     backdoor(CMD_ABSPOINTER_COMMAND, ABSPOINTER_ABSOLUTE);
+
+    // Step 5: Restrict ioport access, if possible.
+    // VMMOUSE_RESTRICT_CPL0 = 0x01
+    backdoor(86, 0x01); // VMWARE_CMD_ABSPOINTER_RESTRICT
 
     true
 }
@@ -152,59 +159,88 @@ pub fn handle_irq() {
     // Read and discard PS/2 byte to clear the IRQ (port 0x60 has garbage when vmmouse active)
     unsafe { crate::arch::x86::port::inb(0x60); }
 
-    // Check how many 4-byte packets are pending
-    let status = backdoor(CMD_ABSPOINTER_STATUS, 0);
-    let words_available = status.eax & 0xFFFF;
+    loop {
+        // Check how many 4-byte packets are pending
+        let status = backdoor(CMD_ABSPOINTER_STATUS, 0);
+        let words_available = status.eax & 0xFFFF;
 
-    if words_available < 4 {
-        return; // No complete packet
-    }
+        if words_available < 4 {
+            break; // No complete packet
+        }
 
-    // Read the mouse data packet (4 words)
-    let data = backdoor(CMD_ABSPOINTER_DATA, 4);
+        // Read the mouse data packet (4 words)
+        let data = backdoor(CMD_ABSPOINTER_DATA, 4);
 
-    // data.eax bits [15:0] = button flags:
-    //   bit 5 (0x20) = left button
-    //   bit 4 (0x10) = right button
-    //   bit 3 (0x08) = middle button
-    let btn_flags = data.eax & 0xFFFF;
-    let buttons = super::mouse::MouseButtons {
-        left: btn_flags & 0x20 != 0,
-        right: btn_flags & 0x10 != 0,
-        middle: btn_flags & 0x08 != 0,
-    };
-
-    // data.ebx = X coordinate (0..0xFFFF), data.ecx = Y coordinate (0..0xFFFF)
-    let raw_x = data.ebx;
-    let raw_y = data.ecx;
-
-    // data.edx = scroll wheel delta (signed byte in low bits)
-    let dz = data.edx as i8 as i32;
-
-    // Scale from 0..0xFFFF to screen pixel coordinates
-    let (screen_w, screen_h) = get_screen_size();
-
-    let x = ((raw_x as u64 * screen_w as u64) / 0xFFFF) as i32;
-    let y = ((raw_y as u64 * screen_h as u64) / 0xFFFF) as i32;
-
-    // Inject as absolute event into the mouse buffer
-    if dz != 0 {
-        // Scroll event — inject with current position
-        let scroll_event = super::mouse::MouseEvent {
-            dx: x,
-            dy: y,
-            dz,
-            buttons,
-            event_type: super::mouse::MouseEventType::Scroll,
+        // data.eax bits [15:0] = button flags:
+        //   bit 5 (0x20) = left button
+        //   bit 4 (0x10) = right button
+        //   bit 3 (0x08) = middle button
+        let btn_flags = data.eax & 0xFFFF;
+        let buttons = super::mouse::MouseButtons {
+            left: btn_flags & 0x20 != 0,
+            right: btn_flags & 0x10 != 0,
+            middle: btn_flags & 0x08 != 0,
         };
-        let mut buf = super::mouse::MOUSE_BUFFER.lock();
-        if buf.len() < 256 {
-            buf.push_back(scroll_event);
+
+        let is_relative = (data.eax & 0x0001_0000) != 0;
+
+        // data.ebx = X coordinate (0..0xFFFF), data.ecx = Y coordinate (0..0xFFFF)
+        let raw_x = data.ebx;
+        let raw_y = data.ecx;
+
+        // data.edx = scroll wheel delta (signed byte in low bits)
+        let dz = -(data.edx as i8 as i32); // Invert scroll wheel
+
+        if is_relative {
+            let dx = raw_x as i32;
+            let dy = -(raw_y as i32); // PS/2 Y is inverted
+
+            let event = super::mouse::MouseEvent {
+                dx,
+                dy,
+                dz,
+                buttons,
+                event_type: if dz != 0 {
+                    super::mouse::MouseEventType::Scroll
+                } else {
+                    super::mouse::MouseEventType::Move
+                },
+            };
+            
+            // Boot splash: update HW cursor directly from IRQ (lag-free)
+            crate::drivers::gpu::splash_cursor_move(dx, dy);
+
+            let mut buf = super::mouse::MOUSE_BUFFER.lock();
+            if buf.len() < 256 {
+                buf.push_back(event);
+            }
+        } else {
+            // Scale from 0..0xFFFF to screen pixel coordinates
+            let (screen_w, screen_h) = get_screen_size();
+
+            let x = ((raw_x as u64 * screen_w as u64) / 0xFFFF) as i32;
+            let y = ((raw_y as u64 * screen_h as u64) / 0xFFFF) as i32;
+
+            // Inject as absolute event into the mouse buffer
+            if dz != 0 {
+                // Scroll event — inject with current position
+                let scroll_event = super::mouse::MouseEvent {
+                    dx: x,
+                    dy: y,
+                    dz,
+                    buttons,
+                    event_type: super::mouse::MouseEventType::Scroll,
+                };
+                let mut buf = super::mouse::MOUSE_BUFFER.lock();
+                if buf.len() < 256 {
+                    buf.push_back(scroll_event);
+                }
+            }
+
+            // Always inject position/button event
+            super::mouse::inject_absolute(x, y, buttons);
         }
     }
-
-    // Always inject position/button event
-    super::mouse::inject_absolute(x, y, buttons);
 }
 
 /// Get cached screen dimensions for coordinate scaling.

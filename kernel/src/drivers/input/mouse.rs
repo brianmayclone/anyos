@@ -269,22 +269,62 @@ pub fn clear_buffer() {
     MOUSE_BUFFER.lock().clear();
 }
 
+/// Get the current state of the mouse buttons.
+pub fn get_current_buttons() -> MouseButtons {
+    MOUSE_STATE.lock().buttons
+}
+
 /// Inject an absolute mouse position event (from VMMDev or USB tablet).
+///
+/// When buttons change, emits a MoveAbsolute event FIRST (for the position),
+/// then the ButtonDown/ButtonUp event with dx=0,dy=0. This is necessary because
+/// the compositor treats dx/dy in button events as relative deltas — absolute
+/// pixel coordinates would send the cursor flying off-screen.
 pub fn inject_absolute(x: i32, y: i32, buttons: MouseButtons) {
     static LOGGED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
     if !LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
         crate::serial_println!("[mouse] inject_absolute first event: x={} y={}", x, y);
     }
-    let event = MouseEvent {
-        dx: x,
-        dy: y,
-        dz: 0,
-        buttons,
-        event_type: MouseEventType::MoveAbsolute,
-    };
+
+    let mut state = MOUSE_STATE.lock();
+    let old_buttons = state.buttons;
+
+    let buttons_changed = buttons.left != old_buttons.left
+        || buttons.right != old_buttons.right
+        || buttons.middle != old_buttons.middle;
+
+    state.buttons = buttons;
+
     let mut buf = MOUSE_BUFFER.lock();
+
+    // Always emit the position update as MoveAbsolute
     if buf.len() < 256 {
-        buf.push_back(event);
+        buf.push_back(MouseEvent {
+            dx: x,
+            dy: y,
+            dz: 0,
+            buttons,
+            event_type: MouseEventType::MoveAbsolute,
+        });
+    }
+
+    // If buttons changed, emit a separate ButtonDown/ButtonUp event (no position)
+    if buttons_changed && buf.len() < 256 {
+        let btn_event_type = if (buttons.left && !old_buttons.left)
+            || (buttons.right && !old_buttons.right)
+            || (buttons.middle && !old_buttons.middle)
+        {
+            MouseEventType::ButtonDown
+        } else {
+            MouseEventType::ButtonUp
+        };
+        buf.push_back(MouseEvent {
+            dx: 0,
+            dy: 0,
+            dz: 0,
+            buttons,
+            event_type: btn_event_type,
+        });
     }
 }
 
