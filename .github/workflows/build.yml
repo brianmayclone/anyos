@@ -1,0 +1,77 @@
+# Copyright (c) 2024-2026 Christian Moeller
+# SPDX-License-Identifier: MIT
+#
+# CI build pipeline: validates every push and pull request.
+# Builds the BIOS disk image (.img), ISO image (.iso), and VMDK (.vmdk),
+# then uploads them as workflow artifacts.
+
+name: Build
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+
+jobs:
+  build:
+    name: Build anyOS
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y nasm cmake ninja-build python3 python3-pip qemu-utils
+
+      - name: Install Python packages
+        run: pip3 install Pillow fonttools
+
+      - name: Set up Rust nightly
+        # rust-toolchain.toml pins the nightly channel; this installs it.
+        run: rustup show
+
+      - name: Cache cross-compiler
+        id: cache-cross
+        uses: actions/cache@v4
+        with:
+          path: ~/opt/cross
+          key: cross-i686-elf-gcc14.2.0-binutils2.44-${{ runner.os }}
+
+      - name: Build cross-compiler
+        if: steps.cache-cross.outputs.cache-hit != 'true'
+        run: ./scripts/build_cross_compiler.sh
+
+      - name: Add cross-compiler to PATH
+        run: echo "$HOME/opt/cross/bin" >> "$GITHUB_PATH"
+
+      - name: Configure
+        run: cmake -B build -G Ninja
+
+      - name: Build BIOS disk image
+        env:
+          RUSTFLAGS: -Awarnings
+        run: ninja -C build
+
+      - name: Build ISO image
+        env:
+          RUSTFLAGS: -Awarnings
+        run: ninja -C build iso
+
+      - name: Convert disk image to VMDK
+        run: qemu-img convert -f raw -O vmdk build/anyos.img build/anyos.vmdk
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: anyos-images
+          path: |
+            build/anyos.img
+            build/anyos.iso
+            build/anyos.vmdk
+          if-no-files-found: error
