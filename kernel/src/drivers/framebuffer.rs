@@ -2,6 +2,9 @@
 //!
 //! Captures framebuffer address, dimensions, pitch, and bit depth from the
 //! boot info structure. Used by the compositor and GPU drivers for display setup.
+//!
+//! GPU drivers that change the active framebuffer (e.g. VirtIO GPU switching to
+//! guest RAM) call [`update()`] — registered hooks are notified automatically.
 
 use crate::boot_info::BootInfo;
 
@@ -15,6 +18,10 @@ pub struct FramebufferInfo {
 }
 
 static mut FB_INFO: Option<FramebufferInfo> = None;
+
+/// Change hook: called synchronously when [`update()`] stores new FB parameters.
+/// Signature: `fn(addr, pitch, width, height)`.
+static mut ON_CHANGE: Option<fn(u32, u32, u32, u32)> = None;
 
 /// Initialize framebuffer from boot info
 pub fn init(boot_info: &BootInfo) {
@@ -43,6 +50,31 @@ pub fn init(boot_info: &BootInfo) {
         "[OK] Framebuffer: {}x{}x{} at {:#010x}, pitch={}",
         width, height, bpp, addr, pitch
     );
+}
+
+/// Update framebuffer parameters at runtime (e.g. GPU driver changed resolution
+/// or switched to a different backing buffer). Notifies registered hooks.
+pub fn update(addr: u32, pitch: u32, width: u32, height: u32, bpp: u8) {
+    unsafe {
+        FB_INFO = Some(FramebufferInfo {
+            addr,
+            pitch,
+            width,
+            height,
+            bpp,
+        });
+
+        if let Some(hook) = ON_CHANGE {
+            hook(addr, pitch, width, height);
+        }
+    }
+}
+
+/// Register a hook that is called when framebuffer parameters change.
+/// Only one hook is supported (boot_console). Called during early boot,
+/// before interrupts — no synchronization needed.
+pub fn register_change_hook(hook: fn(u32, u32, u32, u32)) {
+    unsafe { ON_CHANGE = Some(hook); }
 }
 
 /// Get framebuffer info (returns None if not initialized or no VESA mode)

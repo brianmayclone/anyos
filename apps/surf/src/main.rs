@@ -1223,6 +1223,7 @@ fn main() {
 
     // Main event loop
     loop {
+        let t0 = anyos_std::sys::uptime_ms();
         while let Some(evt) = client.poll_event(&win) {
             match evt.event_type {
                 EVT_WINDOW_CLOSE => {
@@ -1432,7 +1433,8 @@ fn main() {
             browser.needs_redraw = false;
         }
 
-        anyos_std::process::sleep(16);
+        let elapsed = anyos_std::sys::uptime_ms().wrapping_sub(t0);
+        if elapsed < 16 { anyos_std::process::sleep(16 - elapsed); }
     }
 }
 

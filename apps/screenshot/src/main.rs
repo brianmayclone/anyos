@@ -340,6 +340,7 @@ fn main() {
     let mut dirty = true;
 
     loop {
+        let t0 = sys::uptime_ms();
         while window::get_event(win, &mut event) == 1 {
             match event[0] {
                 window::EVENT_MOUSE_DOWN => {
@@ -422,6 +423,7 @@ fn main() {
             window::present(win);
             dirty = false;
         }
-        process::sleep(16);
+        let elapsed = sys::uptime_ms().wrapping_sub(t0);
+        if elapsed < 16 { process::sleep(16 - elapsed); }
     }
 }

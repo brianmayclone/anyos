@@ -155,6 +155,7 @@ fn main() {
     let _ = content_x;
 
     loop {
+        let t0 = sys::uptime_ms();
         // Lazy-load wallpaper thumbnails when page is first shown
         if sidebar.selected == PAGE_WALLPAPER && !wallpapers_scanned {
             scan_wallpapers(&mut wallpapers, &mut wallpaper_selected);
@@ -352,7 +353,8 @@ fn main() {
             needs_redraw = false;
         }
 
-        process::sleep(16);
+        let elapsed = sys::uptime_ms().wrapping_sub(t0);
+        if elapsed < 16 { process::sleep(16 - elapsed); }
     }
 }
 

@@ -1245,6 +1245,11 @@ pub fn sys_tick_hz() -> u32 {
     crate::arch::x86::pit::TICK_HZ
 }
 
+/// sys_uptime_ms - Get uptime in milliseconds (TSC-based, sub-ms precision).
+pub fn sys_uptime_ms() -> u32 {
+    crate::arch::x86::pit::real_ms_since_boot() as u32
+}
+
 /// sys_dmesg - Read kernel log ring buffer.
 /// arg1=buf_ptr, arg2=buf_size. Returns bytes written.
 pub fn sys_dmesg(buf_ptr: u32, buf_size: u32) -> u32 {
@@ -2309,13 +2314,30 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
         core::slice::from_raw_parts(cmd_buf_ptr as *const [u32; 9], count)
     };
 
-    let mut executed = 0u32;
-    for cmd in cmds {
-        let cmd_type = cmd[0];
-        let ok = crate::drivers::gpu::with_gpu(|g| {
-            match cmd_type {
-                1 => { // UPDATE(x, y, w, h)
-                    g.update_rect(cmd[1], cmd[2], cmd[3], cmd[4]);
+    // Process all commands in a single GPU lock acquisition.
+    // UPDATE commands use transfer_rect (no flush) and accumulate a
+    // bounding box; a single flush_display at the end covers them all.
+    let result = crate::drivers::gpu::with_gpu(|g| {
+        let mut executed = 0u32;
+        // Bounding box for batched UPDATE transfers
+        let mut flush_x0 = u32::MAX;
+        let mut flush_y0 = u32::MAX;
+        let mut flush_x1 = 0u32;
+        let mut flush_y1 = 0u32;
+
+        for cmd in cmds {
+            let cmd_type = cmd[0];
+            let ok = match cmd_type {
+                1 => { // UPDATE(x, y, w, h) — transfer only, defer flush
+                    let (x, y, w, h) = (cmd[1], cmd[2], cmd[3], cmd[4]);
+                    g.transfer_rect(x, y, w, h);
+                    // Expand bounding box
+                    if w > 0 && h > 0 {
+                        flush_x0 = flush_x0.min(x);
+                        flush_y0 = flush_y0.min(y);
+                        flush_x1 = flush_x1.max(x + w);
+                        flush_y1 = flush_y1.max(y + h);
+                    }
                     true
                 }
                 2 => { // FILL_RECT(x, y, w, h, color)
@@ -2325,8 +2347,6 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
                     g.accel_copy_rect(cmd[1], cmd[2], cmd[3], cmd[4], cmd[5], cmd[6])
                 }
                 4 => { // CURSOR_MOVE(x, y)
-                    // When kernel-side cursor tracking is active (IRQ-driven),
-                    // skip compositor CURSOR_MOVE to avoid dual-tracking jitter.
                     if !crate::drivers::gpu::is_splash_cursor_active() {
                         g.move_cursor(cmd[1], cmd[2]);
                     }
@@ -2359,23 +2379,29 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
                     g.flip();
                     true
                 }
-                8 => { // SYNC — wait for all prior FIFO commands to complete
+                8 => { // SYNC
                     g.sync();
                     true
                 }
-                9 => { // VRAM_INFO — returns (vram_size, fb_size) in args[0..1]
-                    // No-op here; handled below outside with_gpu
+                9 => { // VRAM_INFO
                     true
                 }
                 _ => false,
+            };
+            if ok {
+                executed += 1;
             }
-        });
-        if ok == Some(true) {
-            executed += 1;
         }
-    }
 
-    executed
+        // Single flush for all batched UPDATE transfers
+        if flush_x0 < flush_x1 && flush_y0 < flush_y1 {
+            g.flush_display(flush_x0, flush_y0, flush_x1 - flush_x0, flush_y1 - flush_y0);
+        }
+
+        executed
+    });
+
+    result.unwrap_or(0)
 }
 
 /// Poll raw input events for the compositor.

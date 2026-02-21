@@ -20,7 +20,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use crate::compositor;
-use crate::control::{self, ControlId, Control, Callback};
+use crate::control::{self, ControlId, ControlKind, Control, Callback};
 
 /// Double-click threshold in frames (~400ms at 30fps).
 const DOUBLE_CLICK_FRAMES: u64 = 12;
@@ -34,12 +34,19 @@ struct PendingCallback {
 }
 
 /// Run the event loop. Blocks until all windows are closed or quit is requested.
+/// Uses dynamic frame pacing: measures frame time and sleeps only the remainder
+/// to hit ~60fps. If a frame takes longer than 16ms, no sleep occurs.
 pub fn run() {
     loop {
+        let t0 = crate::syscall::uptime_ms();
         if run_once() == 0 {
             break;
         }
-        crate::syscall::yield_cpu();
+        let elapsed = crate::syscall::uptime_ms().wrapping_sub(t0);
+        let target = 16; // ~60fps
+        if elapsed < target {
+            crate::syscall::sleep(target - elapsed);
+        }
     }
 }
 
@@ -159,6 +166,7 @@ pub fn run_once() -> u32 {
                     }
 
                     st.pressed = hit_id;
+                    st.pressed_button = button;
 
                     if let Some(target_id) = hit_id {
                         if let Some(idx) = control::find_idx(&st.controls, target_id) {
@@ -206,32 +214,49 @@ pub fn run_once() -> u32 {
                             let still_over = is_point_in_control(&st.controls, target_id, mx, my);
 
                             if still_over {
-                                if let Some(idx2) = control::find_idx(&st.controls, target_id) {
-                                    let click_resp = st.controls[idx2].handle_click(local_x, local_y, button);
+                                if st.pressed_button & 0x02 != 0 {
+                                    // Right-click → fire EVENT_CONTEXT_MENU
+                                    fire_event_callback(&st.controls, target_id, control::EVENT_CONTEXT_MENU, &mut pending_cbs);
 
-                                    fire_event_callback(&st.controls, target_id, control::EVENT_CLICK, &mut pending_cbs);
-
-                                    if click_resp.fire_change {
-                                        fire_event_callback(&st.controls, target_id, control::EVENT_CHANGE, &mut pending_cbs);
-                                    }
-
-                                    // Double-click detection
-                                    let tick = frame_tick();
-                                    if st.last_click_id == Some(target_id)
-                                        && tick.wrapping_sub(st.last_click_tick) <= DOUBLE_CLICK_FRAMES
-                                    {
-                                        if let Some(idx3) = control::find_idx(&st.controls, target_id) {
-                                            let dc_resp = st.controls[idx3].handle_double_click(local_x, local_y, button);
-                                            fire_event_callback(&st.controls, target_id, control::EVENT_DOUBLE_CLICK, &mut pending_cbs);
-                                            if dc_resp.fire_change {
-                                                fire_event_callback(&st.controls, target_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                    // If control has a context menu, show it at cursor position
+                                    if let Some(idx2) = control::find_idx(&st.controls, target_id) {
+                                        if let Some(menu_id) = st.controls[idx2].base().context_menu {
+                                            if let Some(mi) = control::find_idx(&st.controls, menu_id) {
+                                                st.controls[mi].set_position(mx, my);
+                                                st.controls[mi].base_mut().visible = true;
+                                                st.controls[mi].base_mut().dirty = true;
                                             }
                                         }
-                                        st.last_click_id = None;
-                                        st.last_click_tick = 0;
-                                    } else {
-                                        st.last_click_id = Some(target_id);
-                                        st.last_click_tick = tick;
+                                    }
+                                } else {
+                                    // Left-click → normal click + double-click handling
+                                    if let Some(idx2) = control::find_idx(&st.controls, target_id) {
+                                        let click_resp = st.controls[idx2].handle_click(local_x, local_y, button);
+
+                                        fire_event_callback(&st.controls, target_id, control::EVENT_CLICK, &mut pending_cbs);
+
+                                        if click_resp.fire_change {
+                                            fire_event_callback(&st.controls, target_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                        }
+
+                                        // Double-click detection
+                                        let tick = frame_tick();
+                                        if st.last_click_id == Some(target_id)
+                                            && tick.wrapping_sub(st.last_click_tick) <= DOUBLE_CLICK_FRAMES
+                                        {
+                                            if let Some(idx3) = control::find_idx(&st.controls, target_id) {
+                                                let dc_resp = st.controls[idx3].handle_double_click(local_x, local_y, button);
+                                                fire_event_callback(&st.controls, target_id, control::EVENT_DOUBLE_CLICK, &mut pending_cbs);
+                                                if dc_resp.fire_change {
+                                                    fire_event_callback(&st.controls, target_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                                }
+                                            }
+                                            st.last_click_id = None;
+                                            st.last_click_tick = 0;
+                                        } else {
+                                            st.last_click_id = Some(target_id);
+                                            st.last_click_tick = tick;
+                                        }
                                     }
                                 }
                             }
@@ -266,16 +291,26 @@ pub fn run_once() -> u32 {
                     // arg1=dz (signed), arg2=0, arg3=0
                     let dz = ev[2] as i32;
 
-                    // Dispatch to hovered control
+                    // Dispatch to hovered control, bubbling up to ScrollView if needed
                     if let Some(target_id) = st.hovered {
-                        if let Some(idx) = control::find_idx(&st.controls, target_id) {
-                            let resp = st.controls[idx].handle_scroll(dz);
-                            st.controls[idx].base_mut().dirty = true;
-                            if resp.consumed {
-                                fire_event_callback(&st.controls, target_id, control::EVENT_SCROLL, &mut pending_cbs);
-                            }
-                            if resp.fire_change {
-                                fire_event_callback(&st.controls, target_id, control::EVENT_CHANGE, &mut pending_cbs);
+                        let mut cur = target_id;
+                        loop {
+                            if let Some(idx) = control::find_idx(&st.controls, cur) {
+                                let resp = st.controls[idx].handle_scroll(dz);
+                                if resp.consumed {
+                                    st.controls[idx].base_mut().dirty = true;
+                                    fire_event_callback(&st.controls, cur, control::EVENT_SCROLL, &mut pending_cbs);
+                                    if resp.fire_change {
+                                        fire_event_callback(&st.controls, cur, control::EVENT_CHANGE, &mut pending_cbs);
+                                    }
+                                    break;
+                                }
+                                // Bubble up to parent
+                                let parent = st.controls[idx].parent_id();
+                                if parent == 0 || parent == cur { break; }
+                                cur = parent;
+                            } else {
+                                break;
                             }
                         }
                     }
@@ -342,6 +377,9 @@ pub fn run_once() -> u32 {
         let win_id = st.windows[wi];
         crate::layout::perform_layout(&mut st.controls, win_id);
     }
+
+    // ── Phase 3.6: Update scroll bounds ─────────────────────────────
+    crate::controls::scroll_view::update_scroll_bounds(&mut st.controls);
 
     // ── Phase 4: Render dirty windows ──────────────────────────────
     let channel_id = st.channel_id;
@@ -494,6 +532,17 @@ fn render_tree(
     let child_abs_y = parent_abs_y + cy;
 
     let children: Vec<ControlId> = controls[idx].children().to_vec();
+    // Skip children if this is a collapsed Expander
+    if controls[idx].kind() == ControlKind::Expander && controls[idx].base().state == 0 {
+        return;
+    }
+    // ScrollView: offset children by -scroll_y
+    // Expander: offset children by +HEADER_HEIGHT (below header)
+    let child_abs_y = match controls[idx].kind() {
+        ControlKind::ScrollView => child_abs_y - controls[idx].base().state as i32,
+        ControlKind::Expander => child_abs_y + crate::controls::expander::HEADER_HEIGHT as i32,
+        _ => child_abs_y,
+    };
     for &child_id in &children {
         render_tree(controls, child_id, surface, child_abs_x, child_abs_y);
     }

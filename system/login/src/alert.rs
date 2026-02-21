@@ -1,6 +1,7 @@
 //! Modal error alert dialog.
 
 use anyos_std::process;
+use anyos_std::sys;
 use anyos_std::ui::window;
 use uisys_client::*;
 
@@ -36,6 +37,7 @@ pub fn show_error_alert(_parent_win: u32) {
     let mut dirty = true;
     let mut event = [0u32; 5];
     loop {
+        let t0 = sys::uptime_ms();
         if dirty {
             let bg = colors::WINDOW_BG();
             window::fill_rect(alert_id, 0, 0, ALERT_W as u16, ALERT_H as u16, bg);
@@ -65,6 +67,7 @@ pub fn show_error_alert(_parent_win: u32) {
             }
         }
 
-        process::sleep(16);
+        let elapsed = sys::uptime_ms().wrapping_sub(t0);
+        if elapsed < 16 { process::sleep(16 - elapsed); }
     }
 }

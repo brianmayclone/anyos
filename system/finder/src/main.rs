@@ -7,6 +7,7 @@ use anyos_std::Vec;
 use anyos_std::fs;
 use anyos_std::icons;
 use anyos_std::process;
+use anyos_std::sys;
 use anyos_std::ui::window;
 
 anyos_std::entry!(main);
@@ -865,6 +866,7 @@ fn main() {
     let mut needs_redraw = true;
 
     loop {
+        let t0 = sys::uptime_ms();
         while window::get_event(win, &mut event) == 1 {
             match event[0] {
                 window::EVENT_KEY_DOWN => {
@@ -1019,6 +1021,7 @@ fn main() {
             needs_redraw = false;
         }
 
-        process::sleep(16); // ~60 Hz poll rate, not busy-wait
+        let elapsed = sys::uptime_ms().wrapping_sub(t0);
+        if elapsed < 16 { process::sleep(16 - elapsed); }
     }
 }

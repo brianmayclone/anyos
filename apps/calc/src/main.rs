@@ -451,6 +451,7 @@ fn main() {
     window::present(win);
 
     loop {
+        let t0 = anyos_std::sys::uptime_ms();
         let mut dirty = false;
         while window::get_event(win, &mut event) == 1 {
             match event[0] {
@@ -487,6 +488,7 @@ fn main() {
             render(win, &calc, pressed);
             window::present(win);
         }
-        anyos_std::process::sleep(16);
+        let elapsed = anyos_std::sys::uptime_ms().wrapping_sub(t0);
+        if elapsed < 16 { anyos_std::process::sleep(16 - elapsed); }
     }
 }

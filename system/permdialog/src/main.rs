@@ -6,6 +6,7 @@ anyos_std::entry!(main);
 use anyos_std::ipc;
 use anyos_std::permissions;
 use anyos_std::process;
+use anyos_std::sys;
 use anyos_std::ui::window;
 use uisys_client::*;
 
@@ -151,6 +152,7 @@ fn main() {
     let mut event = [0u32; 5];
 
     loop {
+        let t0 = sys::uptime_ms();
         if dirty {
             render(
                 win, DIALOG_W, dialog_h, app_name,
@@ -198,7 +200,8 @@ fn main() {
         let mut dim_ev = [0u32; 5];
         while window::get_event(dim_win, &mut dim_ev) == 1 {}
 
-        process::sleep(16);
+        let elapsed = sys::uptime_ms().wrapping_sub(t0);
+        if elapsed < 16 { process::sleep(16 - elapsed); }
     }
 }
 

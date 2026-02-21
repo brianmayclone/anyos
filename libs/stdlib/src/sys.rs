@@ -17,6 +17,12 @@ pub fn tick_hz() -> u32 {
     syscall0(SYS_TICK_HZ)
 }
 
+/// Get uptime in milliseconds (TSC-based, sub-ms precision).
+/// Wraps at ~49 days — use wrapping_sub for deltas.
+pub fn uptime_ms() -> u32 {
+    syscall0(SYS_UPTIME_MS)
+}
+
 /// Get system info. cmd: 0=memory, 1=threads, 2=cpus.
 pub fn sysinfo(cmd: u32, buf: &mut [u8]) -> u32 {
     syscall3(SYS_SYSINFO, cmd as u64, buf.as_mut_ptr() as u64, buf.len() as u64)

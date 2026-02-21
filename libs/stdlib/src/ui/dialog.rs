@@ -129,7 +129,7 @@ pub fn show(
                 _ => {}
             }
         }
-        process::yield_cpu();
+        process::sleep(16);
     }
 
     window::destroy(win);

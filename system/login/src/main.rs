@@ -4,6 +4,7 @@
 anyos_std::entry!(main);
 
 use anyos_std::process;
+use anyos_std::sys;
 use anyos_std::ui::window;
 use uisys_client::*;
 
@@ -82,6 +83,7 @@ fn main() -> u32 {
     let mut event = [0u32; 5];
 
     loop {
+        let t0 = sys::uptime_ms();
         if dirty {
             render_login(
                 win_id, &logo, logo_y,
@@ -162,7 +164,8 @@ fn main() -> u32 {
             }
         }
 
-        process::sleep(16);
+        let elapsed = sys::uptime_ms().wrapping_sub(t0);
+        if elapsed < 16 { process::sleep(16 - elapsed); }
     }
 }
 

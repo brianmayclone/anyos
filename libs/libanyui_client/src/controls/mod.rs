@@ -23,6 +23,7 @@ mod tag;
 mod canvas;
 
 // ── Container controls (can have children) ──
+mod expander;
 mod tooltip;
 mod window;
 mod view;
@@ -40,6 +41,9 @@ mod tableview;
 mod stackpanel;
 mod flowpanel;
 mod tablelayout;
+
+// ── Static dialogs ──
+mod messagebox;
 
 // ── Re-exports ──
 pub use label::Label;
@@ -64,6 +68,7 @@ pub use badge::Badge;
 pub use tag::Tag;
 pub use canvas::Canvas;
 
+pub use expander::Expander;
 pub use window::Window;
 pub use view::View;
 pub use card::Card;
@@ -80,3 +85,5 @@ pub use tableview::TableView;
 pub use stackpanel::StackPanel;
 pub use flowpanel::FlowPanel;
 pub use tablelayout::TableLayout;
+
+pub use messagebox::{MessageBox, MessageBoxType};

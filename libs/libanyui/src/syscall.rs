@@ -15,6 +15,7 @@ const SYS_EXIT: u64 = 1;
 const SYS_YIELD: u64 = 7;
 const SYS_SLEEP: u64 = 8;
 const SYS_SBRK: u64 = 9;
+const SYS_UPTIME_MS: u64 = 35;
 
 #[inline(always)]
 fn syscall0(num: u64) -> u64 {
@@ -64,4 +65,8 @@ pub fn sleep(ms: u32) {
 
 pub fn sbrk(increment: u32) -> u64 {
     syscall1(SYS_SBRK, increment as u64)
+}
+
+pub fn uptime_ms() -> u32 {
+    syscall0(SYS_UPTIME_MS) as u32
 }

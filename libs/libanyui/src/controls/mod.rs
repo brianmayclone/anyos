@@ -43,6 +43,7 @@ pub mod stack_panel;
 pub mod flow_panel;
 pub mod table_layout;
 pub mod canvas;
+pub mod expander;
 
 /// Factory: create a concrete control based on `kind`.
 ///
@@ -76,7 +77,7 @@ pub fn create_control(
         ControlKind::Card => Box::new(card::Card::new(base)),
         ControlKind::SplitView => Box::new(split_view::SplitView::new(base)),
         ControlKind::Divider => Box::new(divider::Divider::new(base)),
-        ControlKind::ContextMenu => Box::new(context_menu::ContextMenu::new(base)),
+        ControlKind::ContextMenu => Box::new(context_menu::ContextMenu::new(TextControlBase::new(base).with_text(text))),
         ControlKind::ImageView => Box::new(image_view::ImageView::new(base)),
         ControlKind::ColorWell => Box::new(colorwell::ColorWell::new(base)),
         ControlKind::StackPanel => Box::new(stack_panel::StackPanel::new(base)),
@@ -100,6 +101,7 @@ pub fn create_control(
         ControlKind::Tooltip => Box::new(tooltip::Tooltip::new(TextControlBase::new(base).with_text(text))),
         ControlKind::SearchField => Box::new(searchfield::SearchField::new(TextControlBase::new(base).with_text(text))),
         ControlKind::TextArea => Box::new(textarea::TextArea::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::Expander => Box::new(expander::Expander::new(TextControlBase::new(base).with_text(text))),
         ControlKind::IconButton => Box::new(icon_button::IconButton::new(TextControlBase::new(base).with_text(text))),
         ControlKind::Badge => Box::new(badge::Badge::new(TextControlBase::new(base).with_text(text))),
         ControlKind::Tag => Box::new(tag::Tag::new(TextControlBase::new(base).with_text(text))),

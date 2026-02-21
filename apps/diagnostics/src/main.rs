@@ -802,6 +802,7 @@ fn main() {
     render_main(win_id, mode, &bench, &stress, hz, &btn_start, &btn_stress);
 
     loop {
+        let t0 = sys::uptime_ms();
         if mode == Mode::Stress {
             // In stress mode: run one iteration, then check for stop events
             let (calls, errs) = stress_iteration(hz, win_id);
@@ -899,7 +900,8 @@ fn main() {
             }
         }
 
-        process::sleep(16);
+        let elapsed = sys::uptime_ms().wrapping_sub(t0);
+        if elapsed < 16 { process::sleep(16 - elapsed); }
     }
 
     window::destroy(win_id);

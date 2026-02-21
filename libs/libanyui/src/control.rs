@@ -183,6 +183,7 @@ pub enum ControlKind {
     FlowPanel = 34,
     TableLayout = 35,
     Canvas = 36,
+    Expander = 37,
 }
 
 impl ControlKind {
@@ -225,6 +226,7 @@ impl ControlKind {
             34 => Self::FlowPanel,
             35 => Self::TableLayout,
             36 => Self::Canvas,
+            37 => Self::Expander,
             _ => Self::View,
         }
     }
@@ -248,6 +250,7 @@ impl ControlKind {
             Self::IconButton | Self::ColorWell => (32, 32),
             Self::Tooltip => (150, 24),
             Self::Canvas => (200, 200),
+            Self::Expander => (200, 32),
             _ => (0, 0),
         }
     }
@@ -302,6 +305,9 @@ pub struct ControlBase {
     pub max_w: u32,
     pub max_h: u32,
 
+    /// Optional ContextMenu control ID to show on right-click.
+    pub context_menu: Option<ControlId>,
+
     /// Callback table indexed by event type (EVENT_CLICK=1 .. EVENT_MOUSE_MOVE=16).
     /// Index 0 is unused. Each slot has its own userdata.
     callbacks: [Option<CallbackSlot>; NUM_CALLBACK_SLOTS],
@@ -329,6 +335,7 @@ impl ControlBase {
             min_h: 0,
             max_w: 0,
             max_h: 0,
+            context_menu: None,
             callbacks: [None; NUM_CALLBACK_SLOTS],
         }
     }
@@ -664,11 +671,23 @@ pub fn hit_test(
         return None;
     }
 
-    // Check children in reverse order (topmost first)
-    let children: Vec<ControlId> = b.children.to_vec();
-    for &child_id in children.iter().rev() {
-        if let Some(hit) = hit_test(controls, child_id, px, py, abs_x, abs_y) {
-            return Some(hit);
+    // ScrollView/Expander: offset children's Y for hit-testing
+    let child_abs_y = match controls[idx].kind() {
+        ControlKind::ScrollView => abs_y - b.state as i32,
+        ControlKind::Expander if b.state != 0 => abs_y + crate::controls::expander::HEADER_HEIGHT as i32,
+        _ => abs_y,
+    };
+
+    // Skip children if collapsed Expander
+    if controls[idx].kind() == ControlKind::Expander && b.state == 0 {
+        // Collapsed — no children are clickable
+    } else {
+        // Check children in reverse order (topmost first)
+        let children: Vec<ControlId> = b.children.to_vec();
+        for &child_id in children.iter().rev() {
+            if let Some(hit) = hit_test(controls, child_id, px, py, abs_x, child_abs_y) {
+                return Some(hit);
+            }
         }
     }
 
@@ -707,11 +726,21 @@ pub fn hit_test_any(
         return None;
     }
 
-    // Check children in reverse order (topmost first)
-    let children: Vec<ControlId> = b.children.to_vec();
-    for &child_id in children.iter().rev() {
-        if let Some(hit) = hit_test_any(controls, child_id, px, py, abs_x, abs_y) {
-            return Some(hit);
+    // ScrollView/Expander: offset children's Y
+    let child_abs_y = match controls[idx].kind() {
+        ControlKind::ScrollView => abs_y - b.state as i32,
+        ControlKind::Expander if b.state != 0 => abs_y + crate::controls::expander::HEADER_HEIGHT as i32,
+        _ => abs_y,
+    };
+
+    if controls[idx].kind() == ControlKind::Expander && b.state == 0 {
+        // Collapsed — skip children
+    } else {
+        let children: Vec<ControlId> = b.children.to_vec();
+        for &child_id in children.iter().rev() {
+            if let Some(hit) = hit_test_any(controls, child_id, px, py, abs_x, child_abs_y) {
+                return Some(hit);
+            }
         }
     }
 
@@ -719,6 +748,7 @@ pub fn hit_test_any(
 }
 
 /// Calculate the absolute position of a control by walking up the parent chain.
+/// Accounts for ScrollView scroll offsets and Expander header offsets.
 pub fn abs_position(controls: &[Box<dyn Control>], id: ControlId) -> (i32, i32) {
     let mut ax = 0i32;
     let mut ay = 0i32;
@@ -731,6 +761,18 @@ pub fn abs_position(controls: &[Box<dyn Control>], id: ControlId) -> (i32, i32) 
             let parent = controls[idx].parent_id();
             if parent == 0 || parent == cur {
                 break;
+            }
+            // Apply parent container offsets
+            if let Some(pidx) = find_idx(controls, parent) {
+                match controls[pidx].kind() {
+                    ControlKind::ScrollView => {
+                        ay -= controls[pidx].base().state as i32;
+                    }
+                    ControlKind::Expander if controls[pidx].base().state != 0 => {
+                        ay += crate::controls::expander::HEADER_HEIGHT as i32;
+                    }
+                    _ => {}
+                }
             }
             cur = parent;
         } else {

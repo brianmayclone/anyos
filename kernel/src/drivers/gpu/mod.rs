@@ -91,6 +91,18 @@ pub trait GpuDriver: Send {
     /// Notify the GPU that a screen region has been updated (for SVGA FIFO).
     fn update_rect(&mut self, _x: u32, _y: u32, _w: u32, _h: u32) {}
 
+    /// Transfer a dirty region to the GPU without flushing to display.
+    /// Default: falls back to update_rect (transfer+flush combined).
+    /// VirtIO GPU overrides this to only TRANSFER_TO_HOST_2D.
+    fn transfer_rect(&mut self, x: u32, y: u32, w: u32, h: u32) {
+        self.update_rect(x, y, w, h);
+    }
+
+    /// Flush accumulated transfers to the display as a single
+    /// bounding-box region. Default: no-op (drivers that don't
+    /// separate transfer/flush already did everything in transfer_rect).
+    fn flush_display(&mut self, _x: u32, _y: u32, _w: u32, _h: u32) {}
+
     /// Synchronize: wait for GPU to process all pending FIFO commands.
     fn sync(&mut self) {}
 

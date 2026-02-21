@@ -84,6 +84,8 @@ pub(crate) struct AnyuiState {
     pub last_click_id: Option<ControlId>,
     /// Tick count of the last click (for double-click detection).
     pub last_click_tick: u64,
+    /// Which mouse button was pressed (for right-click detection).
+    pub pressed_button: u32,
 }
 
 static mut STATE: Option<AnyuiState> = None;
@@ -159,6 +161,7 @@ pub extern "C" fn anyui_init() -> u32 {
             hovered: None,
             last_click_id: None,
             last_click_tick: 0,
+            pressed_button: 0,
         });
     }
     1
@@ -757,6 +760,144 @@ pub extern "C" fn anyui_on_click(id: ControlId, cb: Callback, userdata: u64) {
 #[no_mangle]
 pub extern "C" fn anyui_on_change(id: ControlId, cb: Callback, userdata: u64) {
     anyui_on_event(id, control::EVENT_CHANGE, cb, userdata);
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_set_context_menu(id: ControlId, menu_id: ControlId) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        ctrl.base_mut().context_menu = Some(menu_id);
+    }
+}
+
+// ── MessageBox ───────────────────────────────────────────────────────
+
+static mut MSGBOX_DISMISSED: bool = false;
+
+extern "C" fn msgbox_ok_clicked(_id: u32, _event_type: u32, _userdata: u64) {
+    unsafe { MSGBOX_DISMISSED = true; }
+}
+
+/// Show a modal message box. Blocks until the user dismisses it.
+///
+/// `msg_type`: 0 = alert (red), 1 = info (blue), 2 = warning (yellow).
+/// `text/text_len`: the message string.
+/// `btn_text/btn_text_len`: button label (e.g. "OK").
+#[no_mangle]
+pub extern "C" fn anyui_message_box(
+    msg_type: u32,
+    text: *const u8,
+    text_len: u32,
+    btn_text: *const u8,
+    btn_text_len: u32,
+) {
+    let st = state();
+    if st.windows.is_empty() { return; }
+
+    let win_id = st.windows[0];
+    let (win_w, win_h) = {
+        let ctrl = st.controls.iter().find(|c| c.id() == win_id);
+        match ctrl {
+            Some(c) => (c.base().w, c.base().h),
+            None => return,
+        }
+    };
+
+    let text_slice = if !text.is_null() && text_len > 0 {
+        unsafe { core::slice::from_raw_parts(text, text_len as usize) }
+    } else {
+        b"Message"
+    };
+    let btn_slice = if !btn_text.is_null() && btn_text_len > 0 {
+        unsafe { core::slice::from_raw_parts(btn_text, btn_text_len as usize) }
+    } else {
+        b"OK"
+    };
+
+    // Icon and accent color based on type
+    let (icon_char, icon_color) = match msg_type {
+        0 => (b"!" as &[u8], 0xFFFF3B30u32),  // alert — red
+        1 => (b"i" as &[u8], 0xFF007AFFu32),   // info — blue
+        _ => (b"!" as &[u8], 0xFFFFD60Au32),   // warning — yellow
+    };
+
+    let card_w = 320u32;
+    let card_h = 160u32;
+    let card_x = ((win_w as i32) - (card_w as i32)) / 2;
+    let card_y = ((win_h as i32) - (card_h as i32)) / 2;
+
+    // Allocate IDs
+    let overlay_id = st.next_id; st.next_id += 1;
+    let card_id = st.next_id; st.next_id += 1;
+    let icon_id = st.next_id; st.next_id += 1;
+    let msg_id = st.next_id; st.next_id += 1;
+    let btn_id = st.next_id; st.next_id += 1;
+
+    // Create overlay (full-window view, dark background)
+    let mut overlay = controls::create_control(
+        ControlKind::View, overlay_id, win_id, 0, 0, win_w, win_h, &[],
+    );
+    overlay.set_color(0xAA000000);
+    st.controls.push(overlay);
+    if let Some(w) = st.controls.iter_mut().find(|c| c.id() == win_id) {
+        w.add_child(overlay_id);
+    }
+
+    // Create card
+    let card = controls::create_control(
+        ControlKind::Card, card_id, overlay_id, card_x, card_y, card_w, card_h, &[],
+    );
+    st.controls.push(card);
+    if let Some(o) = st.controls.iter_mut().find(|c| c.id() == overlay_id) {
+        o.add_child(card_id);
+    }
+
+    // Icon label
+    let mut icon = controls::create_control(
+        ControlKind::Label, icon_id, card_id, 20, 16, 24, 24, icon_char,
+    );
+    icon.set_color(icon_color);
+    st.controls.push(icon);
+    if let Some(c) = st.controls.iter_mut().find(|c| c.id() == card_id) {
+        c.add_child(icon_id);
+    }
+
+    // Message label
+    let msg = controls::create_control(
+        ControlKind::Label, msg_id, card_id, 52, 16, card_w - 72, 80, text_slice,
+    );
+    st.controls.push(msg);
+    if let Some(c) = st.controls.iter_mut().find(|c| c.id() == card_id) {
+        c.add_child(msg_id);
+    }
+
+    // OK button
+    let btn = controls::create_control(
+        ControlKind::Button, btn_id, card_id,
+        ((card_w as i32) - 80) / 2, (card_h as i32) - 48, 80, 32,
+        btn_slice,
+    );
+    st.controls.push(btn);
+    if let Some(c) = st.controls.iter_mut().find(|c| c.id() == card_id) {
+        c.add_child(btn_id);
+    }
+
+    // Register click handler on the button
+    if let Some(b) = st.controls.iter_mut().find(|c| c.id() == btn_id) {
+        b.set_event_callback(control::EVENT_CLICK, msgbox_ok_clicked, 0);
+    }
+
+    // Mini event loop — block until dismissed
+    unsafe { MSGBOX_DISMISSED = false; }
+    while !unsafe { MSGBOX_DISMISSED } {
+        let t0 = syscall::uptime_ms();
+        if event_loop::run_once() == 0 { break; }
+        let elapsed = syscall::uptime_ms().wrapping_sub(t0);
+        if elapsed < 16 { syscall::sleep(16 - elapsed); }
+    }
+
+    // Clean up — remove overlay and all descendants
+    anyui_remove(overlay_id);
 }
 
 // ── Event loop ───────────────────────────────────────────────────────

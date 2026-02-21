@@ -318,6 +318,7 @@ fn main() {
     let mut last_sec = u32::MAX;
 
     loop {
+        let t0 = anyos_std::sys::uptime_ms();
         while window::get_event(win, &mut event) == 1 {
             match event[0] {
                 window::EVENT_WINDOW_CLOSE => { window::destroy(win); return; }
@@ -338,6 +339,7 @@ fn main() {
             window::present(win);
         }
 
-        anyos_std::process::sleep(16);
+        let elapsed = anyos_std::sys::uptime_ms().wrapping_sub(t0);
+        if elapsed < 16 { anyos_std::process::sleep(16 - elapsed); }
     }
 }

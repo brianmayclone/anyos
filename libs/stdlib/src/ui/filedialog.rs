@@ -358,7 +358,7 @@ fn run_dialog(mode: Mode, starting_path: &str, default_name: &str) -> FileDialog
                 _ => {}
             }
         } else {
-            process::yield_cpu();
+            process::sleep(16);
         }
     }
 
@@ -472,7 +472,7 @@ fn run_create_folder_dialog(parent_path: &str) -> FileDialogResult {
                 _ => {}
             }
         } else {
-            process::yield_cpu();
+            process::sleep(16);
         }
     }
 

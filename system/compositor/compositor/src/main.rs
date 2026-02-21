@@ -15,6 +15,7 @@
 
 use anyos_std::ipc;
 use anyos_std::process;
+use anyos_std::sys;
 use anyos_std::println;
 
 mod compositor;
@@ -175,6 +176,8 @@ fn management_loop(
     let mut events_buf = [[0u32; 5]; 256];
     let mut ipc_buf = [0u32; 5];
     loop {
+        let t0 = sys::uptime_ms();
+
         // ── Check if login window has exited ──
         if *login_pending {
             let status = process::try_waitpid(login_tid);
@@ -255,7 +258,12 @@ fn management_loop(
         // NOTE: tick_animations(), update_clock(), and compose() are all handled
         // by the render thread — not called here.
 
-        process::sleep(16);
+        // Dynamic frame pacing: sleep only the remainder to hit ~60fps
+        let elapsed = sys::uptime_ms().wrapping_sub(t0);
+        let target = 16u32;
+        if elapsed < target {
+            process::sleep(target - elapsed);
+        }
     }
 }
 

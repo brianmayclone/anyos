@@ -117,6 +117,7 @@ fn main() {
     let mut needs_redraw = true;
 
     loop {
+        let t0 = anyos_std::sys::uptime_ms();
         let mut event_raw = [0u32; 5];
         while window::get_event(win, &mut event_raw) != 0 {
             let ev = UiEvent::from_raw(&event_raw);
@@ -210,7 +211,8 @@ fn main() {
             needs_redraw = false;
         }
 
-        anyos_std::process::sleep(16); // ~60 Hz poll rate, not busy-wait
+        let elapsed = anyos_std::sys::uptime_ms().wrapping_sub(t0);
+        if elapsed < 16 { anyos_std::process::sleep(16 - elapsed); }
     }
 }
 

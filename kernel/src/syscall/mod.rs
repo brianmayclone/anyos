@@ -62,6 +62,7 @@ pub const SYS_UPTIME: u32 = 31;
 pub const SYS_SYSINFO: u32 = 32;
 pub const SYS_DMESG: u32 = 33;
 pub const SYS_TICK_HZ: u32 = 34;
+pub const SYS_UPTIME_MS: u32 = 35;
 
 // Networking
 pub const SYS_NET_CONFIG: u32 = 40;
@@ -347,6 +348,7 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_SYSINFO => handlers::sys_sysinfo(arg1, arg2, arg3),
         SYS_DMESG => handlers::sys_dmesg(arg1, arg2),
         SYS_TICK_HZ => handlers::sys_tick_hz(),
+        SYS_UPTIME_MS => handlers::sys_uptime_ms(),
 
         // Networking
         SYS_NET_CONFIG => handlers::sys_net_config(arg1, arg2),

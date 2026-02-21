@@ -5,6 +5,7 @@
 //! share access through acquire_lock/release_lock.
 
 use anyos_std::process;
+use anyos_std::sys;
 use anyos_std::println;
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -64,6 +65,8 @@ pub fn render_thread_entry() {
     println!("compositor: render thread running");
     let mut frame: u32 = 0;
     loop {
+        let t0 = sys::uptime_ms();
+
         if try_lock() {
             let desktop = unsafe { desktop_ref() };
             // Tick animations + clock before compositing so updated state is
@@ -81,12 +84,17 @@ pub fn render_thread_entry() {
             if frame % 120 == 0 {
                 println!("compositor: render frame {}", frame);
             }
-
-            process::sleep(16);
         } else {
             // Lock contended — management thread is doing work (e.g. window creation).
             // Don't block: sleep briefly and retry. Previous frame stays on screen.
             process::yield_cpu();
+        }
+
+        // Dynamic frame pacing: sleep only the remainder to hit ~60fps
+        let elapsed = sys::uptime_ms().wrapping_sub(t0);
+        let target = 16u32;
+        if elapsed < target {
+            process::sleep(target - elapsed);
         }
     }
 }

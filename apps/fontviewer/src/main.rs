@@ -196,6 +196,7 @@ fn main() {
     let mut dirty = true;
 
     loop {
+        let t0 = anyos_std::sys::uptime_ms();
         while window::get_event(win, &mut event) == 1 {
             match event[0] {
                 window::EVENT_RESIZE => { dirty = true; }
@@ -252,6 +253,7 @@ fn main() {
             window::present(win);
             dirty = false;
         }
-        anyos_std::process::sleep(16);
+        let elapsed = anyos_std::sys::uptime_ms().wrapping_sub(t0);
+        if elapsed < 16 { anyos_std::process::sleep(16 - elapsed); }
     }
 }

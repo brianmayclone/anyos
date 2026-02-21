@@ -755,6 +755,36 @@ impl GpuDriver for VirtioGpu {
         self.cmd_resource_flush(self.scanout_resource_id, x, y, w, h);
     }
 
+    fn transfer_rect(&mut self, x: u32, y: u32, w: u32, h: u32) {
+        if self.scanout_resource_id == 0 || w == 0 || h == 0 {
+            return;
+        }
+        let x = x.min(self.width);
+        let y = y.min(self.height);
+        let w = w.min(self.width - x);
+        let h = h.min(self.height - y);
+        if w == 0 || h == 0 {
+            return;
+        }
+        // Only transfer — no flush
+        self.cmd_transfer_to_host_2d(self.scanout_resource_id, x, y, w, h);
+    }
+
+    fn flush_display(&mut self, x: u32, y: u32, w: u32, h: u32) {
+        if self.scanout_resource_id == 0 || w == 0 || h == 0 {
+            return;
+        }
+        let x = x.min(self.width);
+        let y = y.min(self.height);
+        let w = w.min(self.width - x);
+        let h = h.min(self.height - y);
+        if w == 0 || h == 0 {
+            return;
+        }
+        // Only flush — all transfers already done
+        self.cmd_resource_flush(self.scanout_resource_id, x, y, w, h);
+    }
+
     fn has_hw_cursor(&self) -> bool {
         true
     }
@@ -1003,27 +1033,16 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         return false;
     }
 
-    // Copy boot logo from VBE framebuffer to guest RAM buffer so it persists
-    // on screen until the compositor renders its first frame.
-    // Handle resolution mismatch: VBE may be 1024x768, VirtIO native may be larger.
-    if let Some(fb) = crate::drivers::framebuffer::info() {
-        let src = fb.addr as *const u8;
-        let dst = gpu.fb_phys as *mut u8;
-        let src_pitch = fb.pitch as usize;
-        let dst_pitch = gpu.pitch as usize;
-        let copy_w = (width as usize).min(fb.width as usize);
-        let copy_h = (height as usize).min(fb.height as usize);
-        let row_bytes = copy_w * 4;
-        for row in 0..copy_h {
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    src.add(row * src_pitch),
-                    dst.add(row * dst_pitch),
-                    row_bytes,
-                );
-            }
-        }
-    }
+    // Update canonical framebuffer info to point at VirtIO's guest RAM buffer.
+    // This triggers the boot_console change hook which re-renders the splash
+    // logo centered for the new resolution — no manual copy needed.
+    crate::drivers::framebuffer::update(
+        gpu.fb_phys as u32,
+        gpu.pitch,
+        width,
+        height,
+        32,
+    );
 
     // Initial transfer + flush
     gpu.cmd_transfer_to_host_2d(gpu.scanout_resource_id, 0, 0, width, height);

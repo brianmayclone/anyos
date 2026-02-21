@@ -58,3 +58,5 @@ EXPORTS
     anyui_marshal_set_position
     anyui_marshal_set_size
     anyui_marshal_dispatch
+    anyui_set_context_menu
+    anyui_message_box

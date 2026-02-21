@@ -74,6 +74,7 @@ pub const KIND_STACK_PANEL: u32 = 33;
 pub const KIND_FLOW_PANEL: u32 = 34;
 pub const KIND_TABLE_LAYOUT: u32 = 35;
 pub const KIND_CANVAS: u32 = 36;
+pub const KIND_EXPANDER: u32 = 37;
 
 // ── DockStyle constants ─────────────────────────────────────────────
 
@@ -183,6 +184,10 @@ struct AnyuiLib {
     marshal_set_position: extern "C" fn(u32, i32, i32),
     marshal_set_size: extern "C" fn(u32, u32, u32),
     marshal_dispatch: extern "C" fn(extern "C" fn(u64), u64),
+    // Context menu
+    set_context_menu: extern "C" fn(u32, u32),
+    // MessageBox
+    message_box: extern "C" fn(u32, *const u8, u32, *const u8, u32),
 }
 
 static mut LIB: Option<AnyuiLib> = None;
@@ -277,6 +282,10 @@ pub fn init() -> bool {
             marshal_set_position: resolve(&handle, "anyui_marshal_set_position"),
             marshal_set_size: resolve(&handle, "anyui_marshal_set_size"),
             marshal_dispatch: resolve(&handle, "anyui_marshal_dispatch"),
+            // Context menu
+            set_context_menu: resolve(&handle, "anyui_set_context_menu"),
+            // MessageBox
+            message_box: resolve(&handle, "anyui_message_box"),
             _handle: handle,
         };
         (lib.init)();
@@ -470,6 +479,13 @@ impl Control {
 
     pub fn on_mouse_up_raw(&self, cb: Callback, userdata: u64) {
         self.on_event_raw(EVENT_MOUSE_UP, cb, userdata);
+    }
+
+    // ── Context menu ──
+
+    /// Attach a context menu to this control. Shown on right-click.
+    pub fn set_context_menu(&self, menu: &impl Widget) {
+        (lib().set_context_menu)(self.id, menu.id());
     }
 
     // ── Removal ──

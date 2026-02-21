@@ -31,12 +31,31 @@ static BOOT_LOGO: &[u8] = include_bytes!("../graphics/boot_logo.bin");
 static FONT_DATA: &[u8] = include_bytes!("../graphics/font_8x16.bin");
 
 /// Initialize the boot splash screen from the framebuffer and display the logo.
+/// Registers a framebuffer change hook so the splash is automatically redrawn
+/// when a GPU driver changes resolution or switches backing buffers.
 pub fn init() {
+    // Register for framebuffer change notifications — any GPU driver that calls
+    // framebuffer::update() will trigger on_fb_changed() automatically.
+    crate::drivers::framebuffer::register_change_hook(on_fb_changed);
+
     if let Some(fb) = crate::drivers::framebuffer::info() {
         FB_ADDR.store(fb.addr, Ordering::Relaxed);
         FB_PITCH.store(fb.pitch, Ordering::Relaxed);
         FB_WIDTH.store(fb.width, Ordering::Relaxed);
         FB_HEIGHT.store(fb.height, Ordering::Relaxed);
+        show_splash();
+    }
+}
+
+/// Framebuffer change hook — called by framebuffer::update() when a GPU driver
+/// changes the active display. Re-renders the splash centered for the new resolution.
+fn on_fb_changed(addr: u32, pitch: u32, width: u32, height: u32) {
+    FB_ADDR.store(addr, Ordering::Relaxed);
+    FB_PITCH.store(pitch, Ordering::Relaxed);
+    FB_WIDTH.store(width, Ordering::Relaxed);
+    FB_HEIGHT.store(height, Ordering::Relaxed);
+
+    if SPINNER_ACTIVE.load(Ordering::Relaxed) && !ERROR_MODE.load(Ordering::Relaxed) {
         show_splash();
     }
 }

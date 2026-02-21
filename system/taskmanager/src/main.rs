@@ -1067,6 +1067,7 @@ fn main() {
     render(win_id, active_tab, &tasks, &mem, &cpu_state, &cpu_history, selected, &kill_btn, &icon_cache, scroll_offset, &hw_info, win_w, win_h);
 
     loop {
+        let t0 = sys::uptime_ms();
         if window::get_event(win_id, &mut event) == 1 {
             let ev = UiEvent::from_raw(&event);
 
@@ -1200,7 +1201,8 @@ fn main() {
             last_update = now;
         }
 
-        process::sleep(16);
+        let elapsed = sys::uptime_ms().wrapping_sub(t0);
+        if elapsed < 16 { process::sleep(16 - elapsed); }
     }
 
     window::destroy(win_id);
