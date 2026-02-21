@@ -39,6 +39,49 @@ struct LibcompositorExports {
 
     set_title:
         extern "C" fn(channel_id: u32, window_id: u32, title_ptr: *const u8, title_len: u32),
+
+    screen_size: extern "C" fn(out_w: *mut u32, out_h: *mut u32),
+
+    set_wallpaper: extern "C" fn(channel_id: u32, path_ptr: *const u8, path_len: u32),
+
+    move_window: extern "C" fn(channel_id: u32, window_id: u32, x: i32, y: i32),
+
+    set_menu:
+        extern "C" fn(channel_id: u32, window_id: u32, menu_data: *const u8, menu_len: u32),
+
+    add_status_icon: extern "C" fn(channel_id: u32, icon_id: u32, pixels: *const u32),
+
+    remove_status_icon: extern "C" fn(channel_id: u32, icon_id: u32),
+
+    update_menu_item:
+        extern "C" fn(channel_id: u32, window_id: u32, item_id: u32, new_flags: u32),
+
+    resize_shm: extern "C" fn(
+        channel_id: u32,
+        window_id: u32,
+        old_shm_id: u32,
+        new_width: u32,
+        new_height: u32,
+        out_new_shm_id: *mut u32,
+    ) -> *mut u32,
+
+    tray_poll_event: extern "C" fn(
+        channel_id: u32,
+        sub_id: u32,
+        buf: *mut [u32; 5],
+    ) -> u32,
+
+    set_blur_behind: extern "C" fn(channel_id: u32, window_id: u32, radius: u32),
+
+    create_vram_window: extern "C" fn(
+        channel_id: u32,
+        sub_id: u32,
+        width: u32,
+        height: u32,
+        flags: u32,
+        out_stride: *mut u32,
+        out_surface: *mut *mut u32,
+    ) -> u32,
 }
 
 fn exports() -> &'static LibcompositorExports {
@@ -113,6 +156,30 @@ pub fn poll_event(
 /// Set window title.
 pub fn set_title(channel_id: u32, window_id: u32, title: &[u8]) {
     (exports().set_title)(channel_id, window_id, title.as_ptr(), title.len() as u32);
+}
+
+/// Resize a window's SHM buffer. Returns new (shm_id, surface_ptr) or None.
+pub fn resize_shm(
+    channel_id: u32,
+    window_id: u32,
+    old_shm_id: u32,
+    new_width: u32,
+    new_height: u32,
+) -> Option<(u32, *mut u32)> {
+    let mut new_shm_id: u32 = 0;
+    let surface = (exports().resize_shm)(
+        channel_id,
+        window_id,
+        old_shm_id,
+        new_width,
+        new_height,
+        &mut new_shm_id,
+    );
+    if surface.is_null() {
+        None
+    } else {
+        Some((new_shm_id, surface))
+    }
 }
 
 // ── Surface helpers ──────────────────────────────────────────────────

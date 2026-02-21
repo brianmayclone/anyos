@@ -285,14 +285,25 @@ pub fn run_once() -> u32 {
                     // arg1=new_w, arg2=new_h
                     let new_w = ev[2];
                     let new_h = ev[3];
+                    // Resize the SHM buffer to fit the new dimensions
+                    if wi < st.comp_windows.len() {
+                        let cw = &mut st.comp_windows[wi];
+                        if let Some((new_shm_id, new_surface)) = compositor::resize_shm(
+                            st.channel_id,
+                            cw.window_id,
+                            cw.shm_id,
+                            new_w,
+                            new_h,
+                        ) {
+                            cw.shm_id = new_shm_id;
+                            cw.surface = new_surface;
+                        }
+                        cw.width = new_w;
+                        cw.height = new_h;
+                    }
                     if let Some(idx) = control::find_idx(&st.controls, win_id) {
                         st.controls[idx].set_size(new_w, new_h);
                         fire_event_callback(&st.controls, win_id, control::EVENT_RESIZE, &mut pending_cbs);
-                    }
-                    // Update CompWindow dimensions
-                    if wi < st.comp_windows.len() {
-                        st.comp_windows[wi].width = new_w;
-                        st.comp_windows[wi].height = new_h;
                     }
                 }
 

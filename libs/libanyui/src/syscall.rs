@@ -14,7 +14,7 @@ use core::arch::asm;
 const SYS_EXIT: u64 = 1;
 const SYS_YIELD: u64 = 7;
 const SYS_SLEEP: u64 = 8;
-const SYS_SBRK: u64 = 10;
+const SYS_SBRK: u64 = 9;
 
 #[inline(always)]
 fn syscall0(num: u64) -> u64 {

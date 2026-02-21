@@ -234,6 +234,13 @@ pub struct VirtioGpu {
     cmd_buf: u64,   // 1 page (4096 bytes) for command payloads
     resp_buf: u64,  // 1 page (4096 bytes) for response payloads
 
+    // Pre-allocated cursor backing store (64x64x4 = 16 KiB = 4 pages).
+    // Allocated during init (under kernel CR3 with full identity mapping).
+    // CRITICAL: user CR3 only identity-maps 64 MiB (PD[0..31]).
+    // Runtime alloc_contiguous() may return frames above 64 MiB → page fault
+    // when the kernel writes to them during a syscall under user CR3.
+    cursor_buf_phys: u64,
+
     // Supported display modes (native first, then filtered COMMON_MODES)
     supported: Vec<(u32, u32)>,
 }
@@ -756,28 +763,29 @@ impl GpuDriver for VirtioGpu {
         // VirtIO GPU cursor must be 64x64 — pad smaller cursors
         let cursor_w: u32 = 64;
         let cursor_h: u32 = 64;
+        let cursor_pages: usize = 4; // 64*64*4 = 16384 bytes = 4 pages
 
-        // Create a cursor resource
+        let cursor_phys = self.cursor_buf_phys;
+        if cursor_phys == 0 {
+            return;
+        }
+
+        // Detach + unref old cursor resource FIRST (before reusing backing buffer)
+        if self.cursor_resource_id != 0 {
+            self.cmd_detach_backing(self.cursor_resource_id);
+            self.cmd_resource_unref(self.cursor_resource_id);
+            self.cursor_resource_id = 0;
+        }
+
+        // Create a new cursor resource
         let cursor_res = self.next_resource_id;
         self.next_resource_id += 1;
 
-        // Create 2D resource for cursor (BGRA for alpha support)
         if !self.cmd_resource_create_2d(cursor_res, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, cursor_w, cursor_h) {
             return;
         }
 
-        // Allocate backing for cursor pixels (always 64x64x4 = 16384 bytes = 4 pages)
-        let cursor_size = (cursor_w as usize) * (cursor_h as usize) * 4;
-        let cursor_pages = (cursor_size + 4095) / 4096;
-        let cursor_phys = match physical::alloc_contiguous(cursor_pages) {
-            Some(p) => p.as_u64(),
-            None => {
-                self.cmd_resource_unref(cursor_res);
-                return;
-            }
-        };
-
-        // Zero the entire buffer (transparent)
+        // Zero the pre-allocated cursor buffer (transparent)
         unsafe {
             core::ptr::write_bytes(cursor_phys as *mut u8, 0, cursor_pages * 4096);
         }
@@ -795,11 +803,8 @@ impl GpuDriver for VirtioGpu {
             }
         }
 
-        // Attach backing
+        // Attach pre-allocated backing
         if !self.cmd_attach_backing(cursor_res, cursor_phys, cursor_pages) {
-            for i in 0..cursor_pages {
-                physical::free_frame(crate::memory::address::PhysAddr::new(cursor_phys + (i as u64) * 4096));
-            }
             self.cmd_resource_unref(cursor_res);
             return;
         }
@@ -807,11 +812,6 @@ impl GpuDriver for VirtioGpu {
         // Transfer cursor pixels to host
         self.cmd_transfer_to_host_2d(cursor_res, 0, 0, cursor_w, cursor_h);
 
-        // Unref old cursor if exists
-        if self.cursor_resource_id != 0 {
-            self.cmd_detach_backing(self.cursor_resource_id);
-            self.cmd_resource_unref(self.cursor_resource_id);
-        }
         self.cursor_resource_id = cursor_res;
         self.cursor_hot_x = hotx;
         self.cursor_hot_y = hoty;
@@ -946,6 +946,21 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
 
     crate::serial_println!("  VirtIO GPU: device ready (DRIVER_OK)");
 
+    // Pre-allocate cursor backing store (64x64x4 = 16 KiB = 4 pages).
+    // MUST be allocated here during boot (kernel CR3 active, full 128 MiB identity map).
+    // Runtime allocation during syscalls may land above 64 MiB — user CR3 only
+    // identity-maps PD[0..31] (64 MiB), so writing to higher frames page-faults.
+    let cursor_buf_phys = match physical::alloc_contiguous(4) {
+        Some(p) => {
+            unsafe { core::ptr::write_bytes(p.as_u64() as *mut u8, 0, 4 * 4096); }
+            p.as_u64()
+        }
+        None => {
+            crate::serial_println!("  VirtIO GPU: failed to allocate cursor buffer");
+            0
+        }
+    };
+
     let mut gpu = VirtioGpu {
         device,
         controlq,
@@ -962,6 +977,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         cursor_hot_y: 0,
         cmd_buf,
         resp_buf,
+        cursor_buf_phys,
         supported: Vec::new(),
     };
 
@@ -976,12 +992,10 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     }
     gpu.supported = modes;
 
-    // Use boot VBE resolution (matches Bochs VGA / SVGA behavior).
-    let (width, height) = if let Some(fb) = crate::drivers::framebuffer::info() {
-        (fb.width, fb.height)
-    } else {
-        native
-    };
+    // Use VirtIO GPU's native display resolution (reported by host).
+    // Unlike Bochs VGA / SVGA which inherit VBE boot resolution, VirtIO GPU
+    // manages its own display pipeline and should use the native size.
+    let (width, height) = native;
 
     // 10-13. Set up display pipeline
     if !gpu.setup_display(width, height) {
@@ -991,13 +1005,16 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
 
     // Copy boot logo from VBE framebuffer to guest RAM buffer so it persists
     // on screen until the compositor renders its first frame.
+    // Handle resolution mismatch: VBE may be 1024x768, VirtIO native may be larger.
     if let Some(fb) = crate::drivers::framebuffer::info() {
         let src = fb.addr as *const u8;
         let dst = gpu.fb_phys as *mut u8;
         let src_pitch = fb.pitch as usize;
         let dst_pitch = gpu.pitch as usize;
-        let row_bytes = (width as usize) * 4;
-        for row in 0..(height as usize) {
+        let copy_w = (width as usize).min(fb.width as usize);
+        let copy_h = (height as usize).min(fb.height as usize);
+        let row_bytes = copy_w * 4;
+        for row in 0..copy_h {
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     src.add(row * src_pitch),
