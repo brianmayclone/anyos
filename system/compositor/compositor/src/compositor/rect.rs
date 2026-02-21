@@ -30,6 +30,15 @@ impl Rect {
         px >= self.x && px < self.right() && py >= self.y && py < self.bottom()
     }
 
+    /// Returns true if this rect fully contains `other`.
+    pub fn fully_contains(&self, other: &Rect) -> bool {
+        !self.is_empty() && !other.is_empty()
+            && self.x <= other.x
+            && self.y <= other.y
+            && self.right() >= other.right()
+            && self.bottom() >= other.bottom()
+    }
+
     /// Compute intersection of two rectangles. Returns None if no overlap.
     pub fn intersect(&self, other: &Rect) -> Option<Rect> {
         let x = self.x.max(other.x);
@@ -66,6 +75,13 @@ impl Rect {
             (self.width as i32 + n * 2).max(0) as u32,
             (self.height as i32 + n * 2).max(0) as u32,
         )
+    }
+
+    /// Shrink rect by `n` pixels on all sides. Returns empty if too small.
+    pub fn shrink(&self, n: i32) -> Rect {
+        let w = (self.width as i32 - n * 2).max(0) as u32;
+        let h = (self.height as i32 - n * 2).max(0) as u32;
+        Rect::new(self.x + n, self.y + n, w, h)
     }
 
     /// Clip rect to screen bounds.

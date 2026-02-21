@@ -26,5 +26,11 @@ dependencies = [
 name = "libanyui_client"
 version = "0.1.0"
 dependencies = [
+ "anyos_std",
  "dynlink",
+ "libimage_client",
 ]
+
+[[package]]
+name = "libimage_client"
+version = "0.1.0"

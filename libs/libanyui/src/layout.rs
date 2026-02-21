@@ -16,7 +16,7 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use crate::control::{Control, ControlId, DockStyle, find_idx};
+use crate::control::{Control, ControlId, ControlKind, DockStyle, find_idx};
 
 /// Perform layout for a control and all its descendants.
 pub fn perform_layout(controls: &mut Vec<Box<dyn Control>>, id: ControlId) {
@@ -134,5 +134,29 @@ pub fn perform_layout(controls: &mut Vec<Box<dyn Control>>, id: ControlId) {
     // Recurse into children
     for &child_id in &children {
         perform_layout(controls, child_id);
+    }
+
+    // Auto-size StackPanel height to fit content after children have been laid out.
+    // This ensures ScrollView's update_scroll_bounds sees the correct height
+    // when Expanders collapse or children change size.
+    let idx = match find_idx(controls, id) {
+        Some(i) => i,
+        None => return,
+    };
+    if controls[idx].kind() == ControlKind::StackPanel {
+        let pad = controls[idx].base().padding;
+        let mut max_bottom = 0i32;
+        for &child_id in &children {
+            if let Some(ci) = find_idx(controls, child_id) {
+                let b = controls[ci].base();
+                if b.visible {
+                    let bottom = b.y + b.h as i32 + b.margin.bottom;
+                    if bottom > max_bottom { max_bottom = bottom; }
+                }
+            }
+        }
+        let content_h = (max_bottom + pad.bottom).max(0) as u32;
+        let w = controls[idx].base().w;
+        controls[idx].set_size(w, content_h);
     }
 }

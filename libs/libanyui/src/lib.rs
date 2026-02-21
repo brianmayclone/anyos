@@ -734,6 +734,288 @@ pub extern "C" fn anyui_canvas_get_stride(id: ControlId) -> u32 {
     0
 }
 
+// ── ImageView ────────────────────────────────────────────────────────
+
+/// Set pixel data for an ImageView from a decoded ARGB buffer.
+#[no_mangle]
+pub extern "C" fn anyui_imageview_set_pixels(id: ControlId, data: *const u32, w: u32, h: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::ImageView {
+            let count = (w as usize) * (h as usize);
+            if !data.is_null() && count > 0 {
+                let slice = unsafe { core::slice::from_raw_parts(data, count) };
+                let raw: *mut dyn Control = &mut **ctrl;
+                let iv = unsafe { &mut *(raw as *mut controls::image_view::ImageView) };
+                iv.set_pixels(slice, w, h);
+            }
+        }
+    }
+}
+
+/// Set the scale mode for an ImageView: 0=None, 1=Fit, 2=Fill, 3=Stretch.
+#[no_mangle]
+pub extern "C" fn anyui_imageview_set_scale_mode(id: ControlId, mode: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::ImageView {
+            let raw: *mut dyn Control = &mut **ctrl;
+            let iv = unsafe { &mut *(raw as *mut controls::image_view::ImageView) };
+            iv.scale_mode = mode;
+            iv.base.dirty = true;
+        }
+    }
+}
+
+/// Get the original image dimensions. Returns via out pointers. Returns 1 on success.
+#[no_mangle]
+pub extern "C" fn anyui_imageview_get_image_size(id: ControlId, out_w: *mut u32, out_h: *mut u32) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::ImageView {
+            let raw: *const dyn Control = &**ctrl;
+            let iv = unsafe { &*(raw as *const controls::image_view::ImageView) };
+            if !out_w.is_null() { unsafe { *out_w = iv.img_w; } }
+            if !out_h.is_null() { unsafe { *out_h = iv.img_h; } }
+            return 1;
+        }
+    }
+    0
+}
+
+/// Clear pixel data from an ImageView.
+#[no_mangle]
+pub extern "C" fn anyui_imageview_clear(id: ControlId) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::ImageView {
+            let raw: *mut dyn Control = &mut **ctrl;
+            let iv = unsafe { &mut *(raw as *mut controls::image_view::ImageView) };
+            iv.clear();
+        }
+    }
+}
+
+// ── DataGrid ─────────────────────────────────────────────────────────
+
+fn as_data_grid(ctrl: &mut alloc::boxed::Box<dyn Control>) -> Option<&mut controls::data_grid::DataGrid> {
+    if ctrl.kind() == ControlKind::DataGrid {
+        let raw: *mut dyn Control = &mut **ctrl;
+        Some(unsafe { &mut *(raw as *mut controls::data_grid::DataGrid) })
+    } else {
+        None
+    }
+}
+
+fn as_data_grid_ref(ctrl: &alloc::boxed::Box<dyn Control>) -> Option<&controls::data_grid::DataGrid> {
+    if ctrl.kind() == ControlKind::DataGrid {
+        let raw: *const dyn Control = &**ctrl;
+        Some(unsafe { &*(raw as *const controls::data_grid::DataGrid) })
+    } else {
+        None
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_columns(id: ControlId, data: *const u8, len: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            if !data.is_null() && len > 0 {
+                let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
+                dg.set_columns_from_data(slice);
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_get_column_count(id: ControlId) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid_ref(ctrl) {
+            return dg.column_count() as u32;
+        }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_column_width(id: ControlId, col_index: u32, width: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            dg.set_column_width(col_index as usize, width);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_data(id: ControlId, data: *const u8, len: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            if !data.is_null() && len > 0 {
+                let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
+                dg.set_data_from_encoded(slice);
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_cell(id: ControlId, row: u32, col: u32, text: *const u8, text_len: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            if !text.is_null() && text_len > 0 {
+                let slice = unsafe { core::slice::from_raw_parts(text, text_len as usize) };
+                dg.set_cell(row as usize, col as usize, slice);
+            } else {
+                dg.set_cell(row as usize, col as usize, &[]);
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_get_cell(id: ControlId, row: u32, col: u32, buf: *mut u8, max_len: u32) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid_ref(ctrl) {
+            let text = dg.get_cell(row as usize, col as usize);
+            let copy_len = text.len().min(max_len as usize);
+            if !buf.is_null() && copy_len > 0 {
+                unsafe { core::ptr::copy_nonoverlapping(text.as_ptr(), buf, copy_len); }
+            }
+            return copy_len as u32;
+        }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_cell_colors(id: ControlId, colors: *const u32, count: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            if !colors.is_null() && count > 0 {
+                let slice = unsafe { core::slice::from_raw_parts(colors, count as usize) };
+                dg.set_cell_colors(slice);
+            } else {
+                dg.set_cell_colors(&[]);
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_row_count(id: ControlId, count: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            dg.set_row_count(count as usize);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_get_row_count(id: ControlId) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid_ref(ctrl) {
+            return dg.row_count as u32;
+        }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_selection_mode(id: ControlId, mode: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            dg.set_selection_mode(if mode == 1 {
+                controls::data_grid::SelectionMode::Multi
+            } else {
+                controls::data_grid::SelectionMode::Single
+            });
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_get_selected_row(id: ControlId) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::DataGrid {
+            return ctrl.base().state;
+        }
+    }
+    u32::MAX
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_selected_row(id: ControlId, row: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            dg.clear_selection();
+            dg.set_row_selected(row as usize, true);
+            dg.base.state = row;
+            dg.base.dirty = true;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_is_row_selected(id: ControlId, row: u32) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid_ref(ctrl) {
+            return dg.is_row_selected(row as usize) as u32;
+        }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_sort(id: ControlId, column: u32, direction: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            let dir = match direction {
+                1 => controls::data_grid::SortDirection::Ascending,
+                2 => controls::data_grid::SortDirection::Descending,
+                _ => controls::data_grid::SortDirection::None,
+            };
+            dg.sort_by(column as usize, dir);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_row_height(id: ControlId, height: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            dg.row_height = height.max(16);
+            dg.base.dirty = true;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_header_height(id: ControlId, height: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            dg.header_height = height.max(16);
+            dg.base.dirty = true;
+        }
+    }
+}
+
 // ── Callbacks ────────────────────────────────────────────────────────
 
 /// Register a callback for a specific event type on a control.

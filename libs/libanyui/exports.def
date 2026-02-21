@@ -60,3 +60,23 @@ EXPORTS
     anyui_marshal_dispatch
     anyui_set_context_menu
     anyui_message_box
+    anyui_imageview_set_pixels
+    anyui_imageview_set_scale_mode
+    anyui_imageview_get_image_size
+    anyui_imageview_clear
+    anyui_datagrid_set_columns
+    anyui_datagrid_get_column_count
+    anyui_datagrid_set_column_width
+    anyui_datagrid_set_data
+    anyui_datagrid_set_cell
+    anyui_datagrid_get_cell
+    anyui_datagrid_set_cell_colors
+    anyui_datagrid_set_row_count
+    anyui_datagrid_get_row_count
+    anyui_datagrid_set_selection_mode
+    anyui_datagrid_get_selected_row
+    anyui_datagrid_set_selected_row
+    anyui_datagrid_is_row_selected
+    anyui_datagrid_sort
+    anyui_datagrid_set_row_height
+    anyui_datagrid_set_header_height

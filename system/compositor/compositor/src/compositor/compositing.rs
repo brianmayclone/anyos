@@ -10,25 +10,20 @@ use super::gpu::{GPU_UPDATE, GPU_FLIP, GPU_RECT_COPY, GPU_SYNC};
 
 impl Compositor {
     /// Collect damage from all dirty layers.
+    /// Single pass: visible dirty layers already had damage added by the caller
+    /// (present, move, resize). Invisible dirty layers get their bounds added
+    /// to ensure correct repainting when they become visible.
     fn collect_dirty_damage(&mut self) {
-        for layer in &mut self.layers {
-            if layer.dirty && layer.visible {
-                // NOTE: can't push to self.damage while iterating self.layers
-                // so we just set dirty=false; damage was already added by the caller
-                layer.dirty = false;
+        // Index-based loop: allows pushing to self.damage while reading self.layers
+        // (different struct fields — no borrow conflict).
+        for i in 0..self.layers.len() {
+            if self.layers[i].dirty {
+                if !self.layers[i].visible {
+                    self.damage.push(self.layers[i].damage_bounds());
+                }
+                self.layers[i].dirty = false;
             }
         }
-        // Also collect dirty layers' bounds
-        let mut new_damage = Vec::new();
-        for layer in &self.layers {
-            if layer.dirty {
-                new_damage.push(layer.damage_bounds());
-            }
-        }
-        for layer in &mut self.layers {
-            layer.dirty = false;
-        }
-        self.damage.extend(new_damage);
     }
 
     /// Merge damage rects if there are too many (prevents performance explosion).
@@ -58,17 +53,20 @@ impl Compositor {
 
         self.merge_damage_if_needed();
 
-        // Clip all damage to screen bounds
-        let screen = Rect::new(0, 0, self.fb_width, self.fb_height);
-        let damage: Vec<Rect> = self
-            .damage
-            .drain(..)
-            .filter_map(|r| r.intersect(&screen))
-            .collect();
+        // Clip all damage to screen bounds in-place, remove empty rects
+        let fb_w = self.fb_width;
+        let fb_h = self.fb_height;
+        for r in &mut self.damage {
+            *r = r.clip_to_screen(fb_w, fb_h);
+        }
+        self.damage.retain(|r| !r.is_empty());
 
-        if damage.is_empty() {
+        if self.damage.is_empty() {
             return;
         }
+
+        // Drain into local Vec for compositing (self.damage keeps its capacity for next frame)
+        let damage: Vec<Rect> = self.damage.drain(..).collect();
 
         // Try GPU RECT_COPY fast path for window drags (requires gpu_accel + valid hint)
         if self.gpu_accel && !self.hw_double_buffer {
@@ -228,24 +226,63 @@ impl Compositor {
         let rw = rect.width as usize;
         let rh = rect.height as usize;
 
-        // Fill with transparent black (background will be drawn by bottom layer)
-        for row in 0..rh {
-            let y = ry + row;
-            if y >= self.fb_height as usize {
-                break;
-            }
-            let off = y * bb_stride + rx;
-            let end = (off + rw).min(self.back_buffer.len());
-            for p in &mut self.back_buffer[off..end] {
-                *p = 0xFF1E1E1E; // Desktop background color as fallback
+        // ── Occlusion culling ──
+        // Find topmost layer that fully covers this damage rect with opaque pixels.
+        // All layers below are invisible in this rect — skip them entirely.
+        //
+        // For non-opaque layers (windows with rounded corners): the inner rect
+        // shrunk by the corner radius (8px) is fully opaque. If that inner rect
+        // still covers the damage rect, we can skip everything below.
+        let mut base_layer_idx = 0usize;
+        let mut skip_bg_clear = false;
+        const CORNER_RADIUS: i32 = 8;
+
+        for li in (0..self.layers.len()).rev() {
+            if !self.layers[li].visible { continue; }
+            let bounds = self.layers[li].bounds();
+            if self.layers[li].opaque {
+                if bounds.fully_contains(rect) {
+                    base_layer_idx = li;
+                    skip_bg_clear = true;
+                    break;
+                }
+            } else {
+                // Non-opaque layer: check inner opaque rect (bounds minus corner radius)
+                let inner = bounds.shrink(CORNER_RADIUS);
+                if !inner.is_empty() && inner.fully_contains(rect) {
+                    base_layer_idx = li;
+                    skip_bg_clear = true;
+                    break;
+                }
             }
         }
 
-        // Composite each visible layer (bottom to top)
+        // Background fill only if no opaque layer covers this rect
+        if !skip_bg_clear {
+            for row in 0..rh {
+                let y = ry + row;
+                if y >= self.fb_height as usize {
+                    break;
+                }
+                let off = y * bb_stride + rx;
+                let end = (off + rw).min(self.back_buffer.len());
+                for p in &mut self.back_buffer[off..end] {
+                    *p = 0xFF1E1E1E; // Desktop background color as fallback
+                }
+            }
+        }
+
+        // Composite layers from base upward (skip everything below)
         let pitch_stride = (self.fb_pitch / 4) as usize;
 
-        for li in 0..self.layers.len() {
+        for li in base_layer_idx..self.layers.len() {
             if !self.layers[li].visible {
+                continue;
+            }
+
+            // Early intersection test: skip layers that don't overlap this damage rect
+            let layer_damage = self.layers[li].damage_bounds();
+            if rect.intersect(&layer_damage).is_none() {
                 continue;
             }
 

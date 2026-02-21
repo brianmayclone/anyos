@@ -33,6 +33,9 @@ extern crate alloc;
 mod events;
 pub use events::*;
 
+pub mod icon;
+pub use icon::Icon;
+
 use dynlink::{DlHandle, dl_open, dl_sym};
 
 // ── Control kind constants (match libanyui's ControlKind enum) ───────
@@ -75,6 +78,7 @@ pub const KIND_FLOW_PANEL: u32 = 34;
 pub const KIND_TABLE_LAYOUT: u32 = 35;
 pub const KIND_CANVAS: u32 = 36;
 pub const KIND_EXPANDER: u32 = 37;
+pub const KIND_DATA_GRID: u32 = 38;
 
 // ── DockStyle constants ─────────────────────────────────────────────
 
@@ -188,6 +192,28 @@ struct AnyuiLib {
     set_context_menu: extern "C" fn(u32, u32),
     // MessageBox
     message_box: extern "C" fn(u32, *const u8, u32, *const u8, u32),
+    // ImageView
+    imageview_set_pixels: extern "C" fn(u32, *const u32, u32, u32),
+    imageview_set_scale_mode: extern "C" fn(u32, u32),
+    imageview_get_image_size: extern "C" fn(u32, *mut u32, *mut u32) -> u32,
+    imageview_clear: extern "C" fn(u32),
+    // DataGrid
+    datagrid_set_columns: extern "C" fn(u32, *const u8, u32),
+    datagrid_get_column_count: extern "C" fn(u32) -> u32,
+    datagrid_set_column_width: extern "C" fn(u32, u32, u32),
+    datagrid_set_data: extern "C" fn(u32, *const u8, u32),
+    datagrid_set_cell: extern "C" fn(u32, u32, u32, *const u8, u32),
+    datagrid_get_cell: extern "C" fn(u32, u32, u32, *mut u8, u32) -> u32,
+    datagrid_set_cell_colors: extern "C" fn(u32, *const u32, u32),
+    datagrid_set_row_count: extern "C" fn(u32, u32),
+    datagrid_get_row_count: extern "C" fn(u32) -> u32,
+    datagrid_set_selection_mode: extern "C" fn(u32, u32),
+    datagrid_get_selected_row: extern "C" fn(u32) -> u32,
+    datagrid_set_selected_row: extern "C" fn(u32, u32),
+    datagrid_is_row_selected: extern "C" fn(u32, u32) -> u32,
+    datagrid_sort: extern "C" fn(u32, u32, u32),
+    datagrid_set_row_height: extern "C" fn(u32, u32),
+    datagrid_set_header_height: extern "C" fn(u32, u32),
 }
 
 static mut LIB: Option<AnyuiLib> = None;
@@ -286,6 +312,28 @@ pub fn init() -> bool {
             set_context_menu: resolve(&handle, "anyui_set_context_menu"),
             // MessageBox
             message_box: resolve(&handle, "anyui_message_box"),
+            // ImageView
+            imageview_set_pixels: resolve(&handle, "anyui_imageview_set_pixels"),
+            imageview_set_scale_mode: resolve(&handle, "anyui_imageview_set_scale_mode"),
+            imageview_get_image_size: resolve(&handle, "anyui_imageview_get_image_size"),
+            imageview_clear: resolve(&handle, "anyui_imageview_clear"),
+            // DataGrid
+            datagrid_set_columns: resolve(&handle, "anyui_datagrid_set_columns"),
+            datagrid_get_column_count: resolve(&handle, "anyui_datagrid_get_column_count"),
+            datagrid_set_column_width: resolve(&handle, "anyui_datagrid_set_column_width"),
+            datagrid_set_data: resolve(&handle, "anyui_datagrid_set_data"),
+            datagrid_set_cell: resolve(&handle, "anyui_datagrid_set_cell"),
+            datagrid_get_cell: resolve(&handle, "anyui_datagrid_get_cell"),
+            datagrid_set_cell_colors: resolve(&handle, "anyui_datagrid_set_cell_colors"),
+            datagrid_set_row_count: resolve(&handle, "anyui_datagrid_set_row_count"),
+            datagrid_get_row_count: resolve(&handle, "anyui_datagrid_get_row_count"),
+            datagrid_set_selection_mode: resolve(&handle, "anyui_datagrid_set_selection_mode"),
+            datagrid_get_selected_row: resolve(&handle, "anyui_datagrid_get_selected_row"),
+            datagrid_set_selected_row: resolve(&handle, "anyui_datagrid_set_selected_row"),
+            datagrid_is_row_selected: resolve(&handle, "anyui_datagrid_is_row_selected"),
+            datagrid_sort: resolve(&handle, "anyui_datagrid_sort"),
+            datagrid_set_row_height: resolve(&handle, "anyui_datagrid_set_row_height"),
+            datagrid_set_header_height: resolve(&handle, "anyui_datagrid_set_header_height"),
             _handle: handle,
         };
         (lib.init)();

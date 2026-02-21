@@ -21,6 +21,7 @@ mod iconbutton;
 mod badge;
 mod tag;
 mod canvas;
+mod datagrid;
 
 // ── Container controls (can have children) ──
 mod expander;
@@ -67,6 +68,7 @@ pub use iconbutton::IconButton;
 pub use badge::Badge;
 pub use tag::Tag;
 pub use canvas::Canvas;
+pub use datagrid::{DataGrid, ColumnDef};
 
 pub use expander::Expander;
 pub use window::Window;

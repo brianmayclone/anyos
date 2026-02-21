@@ -44,6 +44,7 @@ pub mod flow_panel;
 pub mod table_layout;
 pub mod canvas;
 pub mod expander;
+pub mod data_grid;
 
 /// Factory: create a concrete control based on `kind`.
 ///
@@ -84,6 +85,7 @@ pub fn create_control(
         ControlKind::FlowPanel => Box::new(flow_panel::FlowPanel::new(base)),
         ControlKind::TableLayout => Box::new(table_layout::TableLayout::new(base)),
         ControlKind::Canvas => Box::new(canvas::Canvas::new(base)),
+        ControlKind::DataGrid => Box::new(data_grid::DataGrid::new(base)),
 
         // Text controls — wrap ControlBase in TextControlBase with text
         ControlKind::Label => Box::new(label::Label::new(TextControlBase::new(base).with_text(text))),

@@ -226,7 +226,6 @@ fn management_loop(
         if event_count > 0 {
             acquire_lock();
             let desktop = unsafe { desktop_ref() };
-            desktop.damage_cursor();
             desktop.process_input(&events_buf, event_count);
             desktop.damage_cursor();
             desktop.compositor.flush_gpu();

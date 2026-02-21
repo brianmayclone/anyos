@@ -9,7 +9,20 @@ impl ContextMenu {
         let mut cm = Self { text_base };
         // Start hidden
         cm.text_base.base.visible = false;
+        cm.recompute_size();
         cm
+    }
+
+    /// Recompute w/h from pipe-separated item text.
+    fn recompute_size(&mut self) {
+        let items: alloc::vec::Vec<&[u8]> = self.text_base.text.split(|&b| b == b'|').collect();
+        let mut max_w = 0u32;
+        for item in &items {
+            let (tw, _) = crate::draw::text_size(item);
+            if tw > max_w { max_w = tw; }
+        }
+        self.text_base.base.w = (max_w + 24).max(120); // 12px padding each side, min 120px
+        self.text_base.base.h = (items.len().max(1) as u32) * 28 + 8;
     }
 }
 
@@ -20,16 +33,30 @@ impl Control for ContextMenu {
     fn text_base_mut(&mut self) -> Option<&mut TextControlBase> { Some(&mut self.text_base) }
     fn kind(&self) -> ControlKind { ControlKind::ContextMenu }
 
+    fn set_text(&mut self, t: &[u8]) {
+        if let Some(tb) = self.text_base_mut() {
+            tb.set_text(t);
+        }
+        self.recompute_size();
+    }
+
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let x = ax + self.text_base.base.x;
         let y = ay + self.text_base.base.y;
-        let w = self.text_base.base.w;
         let tc = crate::theme::colors();
 
         // Count items from pipe-separated text
         let items: alloc::vec::Vec<&[u8]> = self.text_base.text.split(|&b| b == b'|').collect();
         let item_count = items.len().max(1);
-        let h = (item_count as u32) * 28 + 8; // 28px per item + 8px padding
+
+        // Compute width from longest item (matches recompute_size)
+        let mut max_w = 0u32;
+        for item in &items {
+            let (tw, _) = crate::draw::text_size(item);
+            if tw > max_w { max_w = tw; }
+        }
+        let w = (max_w + 24).max(120);
+        let h = (item_count as u32) * 28 + 8;
 
         // Shadow for popup depth
         crate::draw::draw_shadow_rounded_rect(surface, x, y, w, h, 6, 0, 3, 12, 80);

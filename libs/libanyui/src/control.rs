@@ -184,6 +184,7 @@ pub enum ControlKind {
     TableLayout = 35,
     Canvas = 36,
     Expander = 37,
+    DataGrid = 38,
 }
 
 impl ControlKind {
@@ -227,6 +228,7 @@ impl ControlKind {
             35 => Self::TableLayout,
             36 => Self::Canvas,
             37 => Self::Expander,
+            38 => Self::DataGrid,
             _ => Self::View,
         }
     }
