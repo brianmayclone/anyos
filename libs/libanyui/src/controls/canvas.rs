@@ -2,7 +2,7 @@
 //!
 //! The Canvas owns an ARGB pixel buffer. Clients draw into it using
 //! functions like `clear`, `fill_rect`, `draw_line`, `draw_circle`, etc.
-//! The buffer is blitted to the window surface during rendering via SYS_WIN_BLIT.
+//! The buffer is blitted to the window's SHM surface during rendering.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -162,11 +162,12 @@ impl Control for Canvas {
     fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
     fn kind(&self) -> ControlKind { ControlKind::Canvas }
 
-    fn render(&self, win: u32, ax: i32, ay: i32) {
+    fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         if self.pixels.is_empty() { return; }
         let x = ax + self.base.x;
         let y = ay + self.base.y;
-        crate::syscall::win_blit(win, x, y, self.base.w, self.base.h, &self.pixels);
+        // Blit our pixel buffer directly to the surface
+        crate::draw::blit_buffer(surface, x, y, self.base.w, self.base.h, &self.pixels);
     }
 
     fn is_interactive(&self) -> bool { true }

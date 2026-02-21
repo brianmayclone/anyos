@@ -21,10 +21,20 @@ impl Control for Slider {
     fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
     fn kind(&self) -> ControlKind { ControlKind::Slider }
 
-    fn render(&self, win: u32, ax: i32, ay: i32) {
+    fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let x = ax + self.base.x;
         let y = ay + self.base.y;
-        crate::uisys::render_slider(win, x, y, self.base.w, self.base.h, 0, 100, self.base.state);
+        let tc = crate::theme::colors();
+        let track_y = y + (self.base.h as i32 - 4) / 2;
+        crate::draw::fill_rounded_rect(surface, x, track_y, self.base.w, 4, 2, tc.control_bg);
+        let val = self.base.state.min(100);
+        let fill_w = (self.base.w as u64 * val as u64 / 100) as u32;
+        if fill_w > 0 {
+            crate::draw::fill_rounded_rect(surface, x, track_y, fill_w, 4, 2, tc.accent);
+        }
+        let thumb_x = x + fill_w as i32 - 9;
+        let thumb_y = y + (self.base.h as i32 - 18) / 2;
+        crate::draw::fill_rounded_rect(surface, thumb_x, thumb_y, 18, 18, 9, tc.toggle_thumb);
     }
 
     fn is_interactive(&self) -> bool { true }

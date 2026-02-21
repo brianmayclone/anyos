@@ -4,7 +4,7 @@
 //! based on the `ControlKind` discriminator.
 
 use alloc::boxed::Box;
-use crate::control::{Control, ControlBase, ControlKind, ControlId};
+use crate::control::{Control, ControlBase, TextControlBase, ControlKind, ControlId};
 
 pub mod window;
 pub mod view;
@@ -61,41 +61,48 @@ pub fn create_control(
     let w = if w == 0 && dw > 0 { dw } else { w };
     let h = if h == 0 && dh > 0 { dh } else { h };
 
-    let base = ControlBase::new(id, parent, x, y, w, h).with_text(text);
+    let base = ControlBase::new(id, parent, x, y, w, h);
 
     match kind {
+        // Non-text controls — take ControlBase directly (text param ignored)
         ControlKind::Window => Box::new(window::Window::new(base)),
         ControlKind::View => Box::new(view::View::new(base)),
-        ControlKind::Label => Box::new(label::Label::new(base)),
-        ControlKind::Button => Box::new(button::Button::new(base)),
-        ControlKind::TextField => Box::new(textfield::TextField::new(base)),
-        ControlKind::Toggle => Box::new(toggle::Toggle::new(base)),
-        ControlKind::Checkbox => Box::new(checkbox::Checkbox::new(base)),
         ControlKind::Slider => Box::new(slider::Slider::new(base)),
-        ControlKind::RadioButton => Box::new(radio_button::RadioButton::new(base)),
         ControlKind::ProgressBar => Box::new(progress_bar::ProgressBar::new(base)),
-        ControlKind::Stepper => Box::new(stepper::Stepper::new(base)),
-        ControlKind::SegmentedControl => Box::new(segmented::SegmentedControl::new(base)),
         ControlKind::TableView => Box::new(table_view::TableView::new(base)),
         ControlKind::ScrollView => Box::new(scroll_view::ScrollView::new(base)),
         ControlKind::Sidebar => Box::new(sidebar::Sidebar::new(base)),
-        ControlKind::NavigationBar => Box::new(navbar::NavigationBar::new(base)),
-        ControlKind::TabBar => Box::new(tabbar::TabBar::new(base)),
         ControlKind::Toolbar => Box::new(toolbar::Toolbar::new(base)),
         ControlKind::Card => Box::new(card::Card::new(base)),
-        ControlKind::GroupBox => Box::new(groupbox::GroupBox::new(base)),
         ControlKind::SplitView => Box::new(split_view::SplitView::new(base)),
         ControlKind::Divider => Box::new(divider::Divider::new(base)),
-        ControlKind::Alert => Box::new(alert::Alert::new(base)),
         ControlKind::ContextMenu => Box::new(context_menu::ContextMenu::new(base)),
-        ControlKind::Tooltip => Box::new(tooltip::Tooltip::new(base)),
         ControlKind::ImageView => Box::new(image_view::ImageView::new(base)),
-        ControlKind::StatusIndicator => Box::new(status_indicator::StatusIndicator::new(base)),
         ControlKind::ColorWell => Box::new(colorwell::ColorWell::new(base)),
-        ControlKind::SearchField => Box::new(searchfield::SearchField::new(base)),
-        ControlKind::TextArea => Box::new(textarea::TextArea::new(base)),
-        ControlKind::IconButton => Box::new(icon_button::IconButton::new(base)),
-        ControlKind::Badge => Box::new(badge::Badge::new(base)),
-        ControlKind::Tag => Box::new(tag::Tag::new(base)),
+        ControlKind::StackPanel => Box::new(stack_panel::StackPanel::new(base)),
+        ControlKind::FlowPanel => Box::new(flow_panel::FlowPanel::new(base)),
+        ControlKind::TableLayout => Box::new(table_layout::TableLayout::new(base)),
+        ControlKind::Canvas => Box::new(canvas::Canvas::new(base)),
+
+        // Text controls — wrap ControlBase in TextControlBase with text
+        ControlKind::Label => Box::new(label::Label::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::Button => Box::new(button::Button::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::TextField => Box::new(textfield::TextField::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::Toggle => Box::new(toggle::Toggle::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::Checkbox => Box::new(checkbox::Checkbox::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::RadioButton => Box::new(radio_button::RadioButton::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::Stepper => Box::new(stepper::Stepper::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::SegmentedControl => Box::new(segmented::SegmentedControl::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::NavigationBar => Box::new(navbar::NavigationBar::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::TabBar => Box::new(tabbar::TabBar::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::GroupBox => Box::new(groupbox::GroupBox::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::Alert => Box::new(alert::Alert::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::Tooltip => Box::new(tooltip::Tooltip::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::SearchField => Box::new(searchfield::SearchField::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::TextArea => Box::new(textarea::TextArea::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::IconButton => Box::new(icon_button::IconButton::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::Badge => Box::new(badge::Badge::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::Tag => Box::new(tag::Tag::new(TextControlBase::new(base).with_text(text))),
+        ControlKind::StatusIndicator => Box::new(status_indicator::StatusIndicator::new(TextControlBase::new(base).with_text(text))),
     }
 }

@@ -14,7 +14,7 @@ impl Control for ScrollView {
     fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
     fn kind(&self) -> ControlKind { ControlKind::ScrollView }
 
-    fn render(&self, _win: u32, _ax: i32, _ay: i32) {
+    fn render(&self, _surface: &crate::draw::Surface, _ax: i32, _ay: i32) {
         // Transparent container — children rendered by tree walker.
     }
 

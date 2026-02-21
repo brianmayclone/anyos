@@ -14,15 +14,15 @@ use alloc::vec::Vec;
 /// Unique identifier for a control in the widget tree.
 pub type ControlId = u32;
 
-/// Compositor event types (from window event buffer).
-pub const COMP_EVENT_MOUSE_DOWN: u32 = 1;
-pub const COMP_EVENT_MOUSE_UP: u32 = 2;
-pub const COMP_EVENT_MOUSE_MOVE: u32 = 3;
-pub const COMP_EVENT_KEY_DOWN: u32 = 4;
-pub const COMP_EVENT_KEY_UP: u32 = 5;
-pub const COMP_EVENT_WINDOW_CLOSE: u32 = 6;
-pub const COMP_EVENT_MOUSE_SCROLL: u32 = 7;
-pub const COMP_EVENT_WINDOW_RESIZE: u32 = 8;
+/// Compositor IPC event types (from libcompositor.dlib poll_event).
+pub const COMP_EVENT_KEY_DOWN: u32 = 0x3001;
+pub const COMP_EVENT_KEY_UP: u32 = 0x3002;
+pub const COMP_EVENT_MOUSE_DOWN: u32 = 0x3003;
+pub const COMP_EVENT_MOUSE_UP: u32 = 0x3004;
+pub const COMP_EVENT_MOUSE_SCROLL: u32 = 0x3005;
+pub const COMP_EVENT_WINDOW_RESIZE: u32 = 0x3006;
+pub const COMP_EVENT_WINDOW_CLOSE: u32 = 0x3007;
+pub const COMP_EVENT_MOUSE_MOVE: u32 = 0x300A;
 
 /// Callback event types (passed to user callbacks).
 pub const EVENT_CLICK: u32 = 1;
@@ -253,6 +253,20 @@ impl ControlKind {
     }
 }
 
+// ── ChildLayout — returned by layout_children for deferred application ──
+
+/// Describes the desired position and size of a child control after layout.
+/// Returned by `layout_children()` to avoid borrow conflicts.
+pub struct ChildLayout {
+    pub id: ControlId,
+    pub x: i32,
+    pub y: i32,
+    /// If Some, the child's width is changed. If None, width is left as-is.
+    pub w: Option<u32>,
+    /// If Some, the child's height is changed. If None, height is left as-is.
+    pub h: Option<u32>,
+}
+
 // ── ControlBase — shared state embedded in every concrete control ────
 
 /// A single callback slot: function pointer + per-slot userdata.
@@ -272,9 +286,11 @@ pub struct ControlBase {
     pub w: u32,
     pub h: u32,
     pub visible: bool,
-    pub text: Vec<u8>,
     pub color: u32,
     pub state: u32,
+
+    /// Whether this control needs to be redrawn.
+    pub dirty: bool,
 
     // ── Layout properties (Windows Forms-style) ──
     pub padding: Padding,
@@ -285,9 +301,6 @@ pub struct ControlBase {
     pub min_h: u32,
     pub max_w: u32,
     pub max_h: u32,
-
-    // ── Text styling ──
-    pub text_style: TextStyle,
 
     /// Callback table indexed by event type (EVENT_CLICK=1 .. EVENT_MOUSE_MOVE=16).
     /// Index 0 is unused. Each slot has its own userdata.
@@ -305,9 +318,9 @@ impl ControlBase {
             w,
             h,
             visible: true,
-            text: Vec::new(),
             color: 0,
             state: 0,
+            dirty: true,
             padding: Padding::default(),
             margin: Margin::default(),
             dock: DockStyle::None,
@@ -316,14 +329,8 @@ impl ControlBase {
             min_h: 0,
             max_w: 0,
             max_h: 0,
-            text_style: TextStyle::default(),
             callbacks: [None; NUM_CALLBACK_SLOTS],
         }
-    }
-
-    pub fn with_text(mut self, text: &[u8]) -> Self {
-        self.text.extend_from_slice(text);
-        self
     }
 
     pub fn with_color(mut self, color: u32) -> Self {
@@ -353,6 +360,46 @@ impl ControlBase {
             None
         }
     }
+}
+
+// ── TextControlBase — ControlBase + font properties for text controls ──
+
+/// Extended base for controls that display text (Label, Button, TextField, etc.).
+/// Wraps `ControlBase` and adds `TextStyle` (font_size, font_id, text_color).
+pub struct TextControlBase {
+    pub base: ControlBase,
+    pub text: Vec<u8>,
+    pub text_style: TextStyle,
+}
+
+impl TextControlBase {
+    pub fn new(base: ControlBase) -> Self {
+        Self { base, text: Vec::new(), text_style: TextStyle::default() }
+    }
+
+    pub fn with_text(mut self, text: &[u8]) -> Self {
+        self.text.extend_from_slice(text);
+        self
+    }
+
+    /// Set the text content.
+    pub fn set_text(&mut self, t: &[u8]) {
+        self.text.clear();
+        self.text.extend_from_slice(t);
+        self.base.dirty = true;
+    }
+
+    /// Effective text color: uses text_style override or theme default.
+    pub fn effective_text_color(&self) -> u32 {
+        if self.text_style.text_color != 0 {
+            self.text_style.text_color
+        } else {
+            crate::theme::colors().text
+        }
+    }
+
+    pub fn font_size(&self) -> u16 { self.text_style.font_size }
+    pub fn font_id(&self) -> u16 { self.text_style.font_id }
 }
 
 // ── EventResponse — return value from virtual event handlers ────────
@@ -410,7 +457,7 @@ pub trait Control {
     /// the control adds its own (x, y) offset.
     ///
     /// **Override this in each concrete control type.**
-    fn render(&self, win: u32, parent_abs_x: i32, parent_abs_y: i32);
+    fn render(&self, surface: &crate::draw::Surface, parent_abs_x: i32, parent_abs_y: i32);
 
     /// Whether this control accepts mouse/keyboard input.
     fn is_interactive(&self) -> bool {
@@ -424,15 +471,21 @@ pub trait Control {
 
     /// Whether this control displays text (and supports TextStyle properties).
     fn is_text_control(&self) -> bool {
-        false
+        self.text_base().is_some()
     }
+
+    /// Access the TextControlBase (only for text controls).
+    fn text_base(&self) -> Option<&TextControlBase> { None }
+    /// Mutable access to the TextControlBase.
+    fn text_base_mut(&mut self) -> Option<&mut TextControlBase> { None }
 
     /// Override for layout containers (StackPanel, FlowPanel, TableLayout).
     /// Called by the layout engine to position children according to the
     /// container's specific layout algorithm.
-    /// Returns true if this control handled its children's layout.
-    fn layout_children(&self, _controls: &mut [Box<dyn Control>]) -> bool {
-        false
+    /// Returns Some(vec) with layout changes if this control handles layout,
+    /// or None to use the default Dock layout.
+    fn layout_children(&self, _controls: &[Box<dyn Control>]) -> Option<Vec<ChildLayout>> {
+        None
     }
 
     // ── Virtual event handlers (override in subclasses) ──────────────
@@ -514,6 +567,7 @@ pub trait Control {
         let b = self.base_mut();
         b.x = x;
         b.y = y;
+        b.dirty = true;
     }
     fn size(&self) -> (u32, u32) {
         (self.base().w, self.base().h)
@@ -522,32 +576,42 @@ pub trait Control {
         let b = self.base_mut();
         b.w = w;
         b.h = h;
+        b.dirty = true;
     }
     fn visible(&self) -> bool {
         self.base().visible
     }
     fn set_visible(&mut self, v: bool) {
-        self.base_mut().visible = v;
+        let b = self.base_mut();
+        b.visible = v;
+        b.dirty = true;
     }
     fn text(&self) -> &[u8] {
-        &self.base().text
+        match self.text_base() {
+            Some(tb) => &tb.text,
+            None => &[],
+        }
     }
     fn set_text(&mut self, t: &[u8]) {
-        let b = self.base_mut();
-        b.text.clear();
-        b.text.extend_from_slice(t);
+        if let Some(tb) = self.text_base_mut() {
+            tb.set_text(t);
+        }
     }
     fn color(&self) -> u32 {
         self.base().color
     }
     fn set_color(&mut self, c: u32) {
-        self.base_mut().color = c;
+        let b = self.base_mut();
+        b.color = c;
+        b.dirty = true;
     }
     fn state_val(&self) -> u32 {
         self.base().state
     }
     fn set_state(&mut self, s: u32) {
-        self.base_mut().state = s;
+        let b = self.base_mut();
+        b.state = s;
+        b.dirty = true;
     }
 
     // ── Callback accessors (generic, indexed by event type) ─────────

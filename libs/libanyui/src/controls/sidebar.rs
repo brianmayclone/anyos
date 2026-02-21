@@ -13,10 +13,10 @@ impl Control for Sidebar {
     fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
     fn kind(&self) -> ControlKind { ControlKind::Sidebar }
 
-    fn render(&self, win: u32, ax: i32, ay: i32) {
+    fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let x = ax + self.base.x;
         let y = ay + self.base.y;
-        crate::syscall::win_fill_rect(win, x, y, self.base.w, self.base.h, 0xFF2C2C2E);
+        crate::draw::fill_rect(surface, x, y, self.base.w, self.base.h, crate::theme::colors().sidebar_bg);
     }
 
     fn is_interactive(&self) -> bool { true }

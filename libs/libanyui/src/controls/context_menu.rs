@@ -13,10 +13,12 @@ impl Control for ContextMenu {
     fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
     fn kind(&self) -> ControlKind { ControlKind::ContextMenu }
 
-    fn render(&self, win: u32, ax: i32, ay: i32) {
+    fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let x = ax + self.base.x;
         let y = ay + self.base.y;
-        crate::syscall::win_fill_rect(win, x, y, self.base.w, self.base.h, 0xFF3A3A3C);
+        let tc = crate::theme::colors();
+        crate::draw::fill_rounded_rect(surface, x, y, self.base.w, self.base.h, 6, tc.control_bg);
+        crate::draw::draw_rounded_border(surface, x, y, self.base.w, self.base.h, 6, tc.card_border);
     }
 
     fn is_interactive(&self) -> bool { true }

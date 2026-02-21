@@ -20,3 +20,36 @@ EXPORTS
     anyui_quit
     anyui_remove
     anyui_destroy_window
+    anyui_set_padding
+    anyui_set_margin
+    anyui_set_dock
+    anyui_set_auto_size
+    anyui_set_min_size
+    anyui_set_max_size
+    anyui_set_font_size
+    anyui_get_font_size
+    anyui_set_font
+    anyui_set_text_color
+    anyui_set_orientation
+    anyui_set_columns
+    anyui_set_row_height
+    anyui_canvas_set_pixel
+    anyui_canvas_clear
+    anyui_canvas_fill_rect
+    anyui_canvas_draw_line
+    anyui_canvas_draw_rect
+    anyui_canvas_draw_circle
+    anyui_canvas_fill_circle
+    anyui_canvas_get_buffer
+    anyui_canvas_get_stride
+    anyui_textfield_set_prefix
+    anyui_textfield_set_postfix
+    anyui_textfield_set_password
+    anyui_textfield_set_placeholder
+    anyui_marshal_set_text
+    anyui_marshal_set_color
+    anyui_marshal_set_state
+    anyui_marshal_set_visible
+    anyui_marshal_set_position
+    anyui_marshal_set_size
+    anyui_marshal_dispatch

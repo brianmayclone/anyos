@@ -1,4 +1,8 @@
-//! Event loop — polls compositor events, dispatches via virtual methods, renders.
+//! Event loop — polls compositor events via DLL, dispatches via virtual methods, renders.
+//!
+//! Window management uses libcompositor.dlib (user-space compositor), NOT kernel syscalls.
+//! Events are received via the compositor's IPC protocol (EVT_* = 0x3001-0x300A).
+//! Rendering writes directly to the window's SHM surface, then calls present().
 //!
 //! # Event dispatch flow:
 //!
@@ -15,6 +19,7 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use crate::compositor;
 use crate::control::{self, ControlId, Control, Callback};
 
 /// Double-click threshold in frames (~400ms at 30fps).
@@ -48,45 +53,47 @@ pub fn run_once() -> u32 {
         return 0;
     }
 
-    // Increment frame counter for double-click detection
-    st.last_click_tick = st.last_click_tick.wrapping_add(0); // frame count updated per-click
+    // ── Phase 0: Drain marshal queue (cross-thread commands) ───────
+    crate::marshal::drain(st);
 
     // ── Phase 1: Poll events from all windows ──────────────────────
     let win_count = st.windows.len();
     for wi in 0..win_count {
         if wi >= st.windows.len() { break; }
         let win_id = st.windows[wi];
-        let comp_win = st.comp_wins[wi];
+        let comp_window_id = st.comp_windows[wi].window_id;
 
         let mut ev = [0u32; 5];
-        while crate::syscall::win_get_event(comp_win, &mut ev) != 0 {
+        // Poll events via compositor DLL
+        // Buffer layout: [event_type, window_id, arg1, arg2, arg3]
+        while compositor::poll_event(st.channel_id, st.sub_id, comp_window_id, &mut ev) {
             match ev[0] {
-                control::COMP_EVENT_WINDOW_CLOSE => {
-                    // Fire EVENT_CLOSE callback on the window control
+                compositor::EVT_WINDOW_CLOSE => {
                     fire_event_callback(&st.controls, win_id, control::EVENT_CLOSE, &mut pending_cbs);
                     windows_to_close.push(win_id);
                 }
 
-                control::COMP_EVENT_MOUSE_MOVE => {
-                    let mx = ev[1] as i32;
-                    let my = ev[2] as i32;
+                compositor::EVT_MOUSE_MOVE => {
+                    // arg1=local_x, arg2=local_y
+                    let mx = ev[2] as i32;
+                    let my = ev[3] as i32;
 
                     // Update hover tracking (MouseEnter / MouseLeave)
                     let new_hover = control::hit_test_any(&st.controls, win_id, mx, my, 0, 0);
                     let old_hover = st.hovered;
 
                     if new_hover != old_hover {
-                        // MouseLeave on old control
                         if let Some(old_id) = old_hover {
                             if let Some(idx) = control::find_idx(&st.controls, old_id) {
                                 st.controls[idx].handle_mouse_leave();
+                                st.controls[idx].base_mut().dirty = true;
                                 fire_event_callback(&st.controls, old_id, control::EVENT_MOUSE_LEAVE, &mut pending_cbs);
                             }
                         }
-                        // MouseEnter on new control
                         if let Some(new_id) = new_hover {
                             if let Some(idx) = control::find_idx(&st.controls, new_id) {
                                 st.controls[idx].handle_mouse_enter();
+                                st.controls[idx].base_mut().dirty = true;
                                 fire_event_callback(&st.controls, new_id, control::EVENT_MOUSE_ENTER, &mut pending_cbs);
                             }
                         }
@@ -113,10 +120,11 @@ pub fn run_once() -> u32 {
                     }
                 }
 
-                control::COMP_EVENT_MOUSE_DOWN => {
-                    let mx = ev[1] as i32;
-                    let my = ev[2] as i32;
-                    let button = ev[3];
+                compositor::EVT_MOUSE_DOWN => {
+                    // arg1=local_x, arg2=local_y, arg3=buttons
+                    let mx = ev[2] as i32;
+                    let my = ev[3] as i32;
+                    let button = ev[4];
 
                     let hit_id = control::hit_test(&st.controls, win_id, mx, my, 0, 0);
 
@@ -124,14 +132,12 @@ pub fn run_once() -> u32 {
                     if let Some(new_focus) = hit_id {
                         let old_focus = st.focused;
                         if old_focus != Some(new_focus) {
-                            // Blur old focused control
                             if let Some(old_id) = old_focus {
                                 if let Some(idx) = control::find_idx(&st.controls, old_id) {
                                     st.controls[idx].handle_blur();
                                     fire_event_callback(&st.controls, old_id, control::EVENT_BLUR, &mut pending_cbs);
                                 }
                             }
-                            // Focus new control (only if it accepts focus)
                             if let Some(idx) = control::find_idx(&st.controls, new_focus) {
                                 if st.controls[idx].accepts_focus() {
                                     st.controls[idx].handle_focus();
@@ -143,7 +149,6 @@ pub fn run_once() -> u32 {
                             }
                         }
                     } else {
-                        // Clicked on empty space - blur current focus
                         if let Some(old_id) = st.focused {
                             if let Some(idx) = control::find_idx(&st.controls, old_id) {
                                 st.controls[idx].handle_blur();
@@ -153,18 +158,16 @@ pub fn run_once() -> u32 {
                         st.focused = None;
                     }
 
-                    // Set pressed control
                     st.pressed = hit_id;
 
-                    // Dispatch handle_mouse_down
                     if let Some(target_id) = hit_id {
                         if let Some(idx) = control::find_idx(&st.controls, target_id) {
                             let (ax, ay) = control::abs_position(&st.controls, target_id);
                             let local_x = mx - ax;
                             let local_y = my - ay;
                             let resp = st.controls[idx].handle_mouse_down(local_x, local_y, button);
+                            st.controls[idx].base_mut().dirty = true;
 
-                            // Always fire EVENT_MOUSE_DOWN callback
                             fire_event_callback(&st.controls, target_id, control::EVENT_MOUSE_DOWN, &mut pending_cbs);
 
                             if resp.fire_change {
@@ -177,10 +180,11 @@ pub fn run_once() -> u32 {
                     }
                 }
 
-                control::COMP_EVENT_MOUSE_UP => {
-                    let mx = ev[1] as i32;
-                    let my = ev[2] as i32;
-                    let button = ev[3];
+                compositor::EVT_MOUSE_UP => {
+                    // arg1=local_x, arg2=local_y
+                    let mx = ev[2] as i32;
+                    let my = ev[3] as i32;
+                    let button = ev[4];
 
                     let pressed_id = st.pressed.take();
 
@@ -190,8 +194,8 @@ pub fn run_once() -> u32 {
                             let local_x = mx - ax;
                             let local_y = my - ay;
 
-                            // Dispatch handle_mouse_up
                             let resp = st.controls[idx].handle_mouse_up(local_x, local_y, button);
+                            st.controls[idx].base_mut().dirty = true;
                             fire_event_callback(&st.controls, target_id, control::EVENT_MOUSE_UP, &mut pending_cbs);
 
                             if resp.fire_change {
@@ -199,17 +203,12 @@ pub fn run_once() -> u32 {
                             }
 
                             // Check if mouse is still over the pressed control → Click
-                            let hit_now = control::hit_test(&st.controls, target_id,
-                                mx - ax + local_x, my - ay + local_y, 0, 0);
-                            let still_over = hit_now == Some(target_id)
-                                || is_point_in_control(&st.controls, target_id, mx, my);
+                            let still_over = is_point_in_control(&st.controls, target_id, mx, my);
 
                             if still_over {
-                                // Dispatch handle_click (virtual method)
                                 if let Some(idx2) = control::find_idx(&st.controls, target_id) {
                                     let click_resp = st.controls[idx2].handle_click(local_x, local_y, button);
 
-                                    // Fire EVENT_CLICK callback
                                     fire_event_callback(&st.controls, target_id, control::EVENT_CLICK, &mut pending_cbs);
 
                                     if click_resp.fire_change {
@@ -221,7 +220,6 @@ pub fn run_once() -> u32 {
                                     if st.last_click_id == Some(target_id)
                                         && tick.wrapping_sub(st.last_click_tick) <= DOUBLE_CLICK_FRAMES
                                     {
-                                        // Double-click!
                                         if let Some(idx3) = control::find_idx(&st.controls, target_id) {
                                             let dc_resp = st.controls[idx3].handle_double_click(local_x, local_y, button);
                                             fire_event_callback(&st.controls, target_id, control::EVENT_DOUBLE_CLICK, &mut pending_cbs);
@@ -241,14 +239,15 @@ pub fn run_once() -> u32 {
                     }
                 }
 
-                control::COMP_EVENT_KEY_DOWN => {
-                    let keycode = ev[1];
-                    let char_code = ev[2];
+                compositor::EVT_KEY_DOWN => {
+                    // arg1=scancode, arg2=char_code, arg3=modifiers
+                    let keycode = ev[2];
+                    let char_code = ev[3];
 
-                    // Dispatch to focused control
                     if let Some(focus_id) = st.focused {
                         if let Some(idx) = control::find_idx(&st.controls, focus_id) {
                             let resp = st.controls[idx].handle_key_down(keycode, char_code);
+                            st.controls[idx].base_mut().dirty = true;
 
                             if resp.consumed {
                                 fire_event_callback(&st.controls, focus_id, control::EVENT_KEY, &mut pending_cbs);
@@ -263,21 +262,15 @@ pub fn run_once() -> u32 {
                     }
                 }
 
-                control::COMP_EVENT_MOUSE_SCROLL => {
-                    let dz = ev[1] as i32;
-                    let mx = ev[2] as i32;
-                    let my = ev[3] as i32;
+                compositor::EVT_MOUSE_SCROLL => {
+                    // arg1=dz (signed), arg2=0, arg3=0
+                    let dz = ev[2] as i32;
 
-                    // Dispatch to control under cursor, or hovered control
-                    let target = if mx != 0 || my != 0 {
-                        control::hit_test(&st.controls, win_id, mx, my, 0, 0)
-                    } else {
-                        st.hovered
-                    };
-
-                    if let Some(target_id) = target {
+                    // Dispatch to hovered control
+                    if let Some(target_id) = st.hovered {
                         if let Some(idx) = control::find_idx(&st.controls, target_id) {
                             let resp = st.controls[idx].handle_scroll(dz);
+                            st.controls[idx].base_mut().dirty = true;
                             if resp.consumed {
                                 fire_event_callback(&st.controls, target_id, control::EVENT_SCROLL, &mut pending_cbs);
                             }
@@ -288,12 +281,18 @@ pub fn run_once() -> u32 {
                     }
                 }
 
-                control::COMP_EVENT_WINDOW_RESIZE => {
-                    let new_w = ev[1];
-                    let new_h = ev[2];
+                compositor::EVT_RESIZE => {
+                    // arg1=new_w, arg2=new_h
+                    let new_w = ev[2];
+                    let new_h = ev[3];
                     if let Some(idx) = control::find_idx(&st.controls, win_id) {
                         st.controls[idx].set_size(new_w, new_h);
                         fire_event_callback(&st.controls, win_id, control::EVENT_RESIZE, &mut pending_cbs);
+                    }
+                    // Update CompWindow dimensions
+                    if wi < st.comp_windows.len() {
+                        st.comp_windows[wi].width = new_w;
+                        st.comp_windows[wi].height = new_h;
                     }
                 }
 
@@ -304,14 +303,14 @@ pub fn run_once() -> u32 {
     }
 
     // ── Phase 2: Close windows ──────────────────────────────────────
+    let channel_id = st.channel_id;
     for win_id in &windows_to_close {
         if let Some(wi) = st.windows.iter().position(|&w| w == *win_id) {
-            let comp_win = st.comp_wins[wi];
-            crate::syscall::win_destroy(comp_win);
+            let cw = &st.comp_windows[wi];
+            compositor::destroy_window(channel_id, cw.window_id, cw.shm_id);
+            st.comp_windows.remove(wi);
             st.windows.remove(wi);
-            st.comp_wins.remove(wi);
         }
-        // Clear tracking for controls being removed
         clear_tracking_for(st, *win_id);
         remove_subtree(&mut st.controls, *win_id);
     }
@@ -327,22 +326,44 @@ pub fn run_once() -> u32 {
         return 0;
     }
 
-    // ── Phase 4: Render all windows ────────────────────────────────
+    // ── Phase 3.5: Layout ───────────────────────────────────────────
     for wi in 0..st.windows.len() {
         let win_id = st.windows[wi];
-        let comp_win = st.comp_wins[wi];
+        crate::layout::perform_layout(&mut st.controls, win_id);
+    }
+
+    // ── Phase 4: Render dirty windows ──────────────────────────────
+    let channel_id = st.channel_id;
+    for wi in 0..st.windows.len() {
+        let win_id = st.windows[wi];
+
+        // Skip rendering if no control in this window tree is dirty
+        if !any_dirty(&st.controls, win_id) {
+            continue;
+        }
+
+        let surface_ptr = st.comp_windows[wi].surface;
+        let sw = st.comp_windows[wi].width;
+        let sh = st.comp_windows[wi].height;
+        let comp_window_id = st.comp_windows[wi].window_id;
+        let shm_id = st.comp_windows[wi].shm_id;
+
+        let surf = crate::draw::Surface { pixels: surface_ptr, width: sw, height: sh };
 
         // Clear window background
         if let Some(idx) = control::find_idx(&st.controls, win_id) {
             let (w, h) = st.controls[idx].size();
-            crate::syscall::win_fill_rect(comp_win, 0, 0, w, h, crate::uisys::color_window_bg());
+            crate::draw::fill_rect(&surf, 0, 0, w, h, crate::theme::colors().window_bg);
         }
 
         // Render control tree (depth-first, parent before children)
-        render_tree(&st.controls, win_id, comp_win, 0, 0);
+        render_tree(&st.controls, win_id, &surf, 0, 0);
 
-        // Present
-        crate::syscall::win_present(comp_win);
+        // Clear dirty flags after rendering
+        clear_dirty(&mut st.controls, win_id);
+
+        // Present via compositor DLL
+        compositor::present(channel_id, comp_window_id, shm_id);
     }
 
     1
@@ -350,7 +371,6 @@ pub fn run_once() -> u32 {
 
 // ── Helper functions ────────────────────────────────────────────────
 
-/// Fire a user callback if registered for the given event type.
 fn fire_event_callback(
     controls: &[Box<dyn Control>],
     id: ControlId,
@@ -369,7 +389,6 @@ fn fire_event_callback(
     }
 }
 
-/// Check if a point (in window coords) is within a control's bounds.
 fn is_point_in_control(
     controls: &[Box<dyn Control>],
     id: ControlId,
@@ -385,8 +404,6 @@ fn is_point_in_control(
     }
 }
 
-/// Simple frame counter for double-click detection.
-/// Incremented globally each time run_once() processes a MOUSE_UP with click.
 static mut FRAME_COUNTER: u64 = 0;
 
 fn frame_tick() -> u64 {
@@ -396,13 +413,11 @@ fn frame_tick() -> u64 {
     }
 }
 
-/// Clear event tracking state for a control and its descendants.
 fn clear_tracking_for(st: &mut crate::AnyuiState, id: ControlId) {
     if st.focused == Some(id) { st.focused = None; }
     if st.pressed == Some(id) { st.pressed = None; }
     if st.hovered == Some(id) { st.hovered = None; }
 
-    // Also clear for descendants
     if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
         let children: Vec<ControlId> = ctrl.children().to_vec();
         for &child in &children {
@@ -411,12 +426,44 @@ fn clear_tracking_for(st: &mut crate::AnyuiState, id: ControlId) {
     }
 }
 
+// ── Dirty tracking ─────────────────────────────────────────────────
+
+/// Check if any control in the subtree rooted at `id` is dirty.
+fn any_dirty(controls: &[Box<dyn Control>], id: ControlId) -> bool {
+    let idx = match control::find_idx(controls, id) {
+        Some(i) => i,
+        None => return false,
+    };
+    if controls[idx].base().dirty {
+        return true;
+    }
+    for &child_id in controls[idx].children() {
+        if any_dirty(controls, child_id) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Clear dirty flags for all controls in the subtree rooted at `id`.
+fn clear_dirty(controls: &mut [Box<dyn Control>], id: ControlId) {
+    let idx = match control::find_idx(controls, id) {
+        Some(i) => i,
+        None => return,
+    };
+    controls[idx].base_mut().dirty = false;
+    let children: Vec<ControlId> = controls[idx].children().to_vec();
+    for &child_id in &children {
+        clear_dirty(controls, child_id);
+    }
+}
+
 // ── Tree rendering ──────────────────────────────────────────────────
 
 fn render_tree(
     controls: &[Box<dyn Control>],
     id: ControlId,
-    win: u32,
+    surface: &crate::draw::Surface,
     parent_abs_x: i32,
     parent_abs_y: i32,
 ) {
@@ -429,18 +476,15 @@ fn render_tree(
         return;
     }
 
-    // Render this control
-    controls[idx].render(win, parent_abs_x, parent_abs_y);
+    controls[idx].render(surface, parent_abs_x, parent_abs_y);
 
-    // Calculate absolute position for children
     let (cx, cy) = controls[idx].position();
     let child_abs_x = parent_abs_x + cx;
     let child_abs_y = parent_abs_y + cy;
 
-    // Render children
     let children: Vec<ControlId> = controls[idx].children().to_vec();
     for &child_id in &children {
-        render_tree(controls, child_id, win, child_abs_x, child_abs_y);
+        render_tree(controls, child_id, surface, child_abs_x, child_abs_y);
     }
 }
 
@@ -451,7 +495,6 @@ fn remove_subtree(controls: &mut Vec<Box<dyn Control>>, id: ControlId) {
     collect_descendants(controls, id, &mut to_remove);
     to_remove.push(id);
 
-    // Remove from parent's children
     if let Some(idx) = control::find_idx(controls, id) {
         let parent = controls[idx].parent_id();
         if let Some(pi) = control::find_idx(controls, parent) {

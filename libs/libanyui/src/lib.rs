@@ -7,8 +7,12 @@
 //! # Architecture
 //! - Global `AnyuiState` owns all controls as `Vec<Box<dyn Control>>`.
 //! - Each control has an ID (`ControlId`), parent, children, and a `ControlKind`.
+//! - Window management goes through libcompositor.dlib (user-space compositor),
+//!   NOT kernel syscalls. Windows have shared memory (SHM) pixel surfaces.
 //! - The event loop polls compositor events, dispatches via hit-testing and
 //!   virtual method calls, and invokes registered callbacks.
+//! - Rendering uses draw.rs (Surface-based) with librender/libfont DLLs
+//!   for themed control drawing and direct SHM surface writes.
 //!
 //! # Event Model
 //! Base events are fired for ALL controls automatically:
@@ -27,15 +31,31 @@
 
 extern crate alloc;
 
+mod compositor;
 mod control;
 mod controls;
+pub mod draw;
 mod event_loop;
+pub mod font_bitmap;
+mod layout;
+mod marshal;
 mod syscall;
-pub mod uisys;
+pub mod theme;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use control::{Control, ControlId, ControlKind, Callback};
+use control::{Control, ControlId, ControlKind, Callback, DockStyle, Orientation};
+
+// ── Compositor window handle ─────────────────────────────────────────
+
+/// Per-window compositor state (SHM surface + IDs).
+pub(crate) struct CompWindow {
+    pub window_id: u32,
+    pub shm_id: u32,
+    pub surface: *mut u32,
+    pub width: u32,
+    pub height: u32,
+}
 
 // ── Global state (per-process, lives in .data/.bss of the .so) ───────
 
@@ -45,9 +65,13 @@ pub(crate) struct AnyuiState {
     /// Top-level window ControlIds.
     pub windows: Vec<ControlId>,
     /// Compositor window handles, parallel to `windows`.
-    pub comp_wins: Vec<u32>,
+    pub comp_windows: Vec<CompWindow>,
     /// Set to true when anyui_quit() is called.
     pub quit_requested: bool,
+
+    // ── Compositor connection ────────────────────────────────────────
+    pub channel_id: u32,
+    pub sub_id: u32,
 
     // ── Event tracking ──────────────────────────────────────────────
     /// Currently focused control (receives keyboard events).
@@ -112,16 +136,24 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 // ══════════════════════════════════════════════════════════════════════
 
 /// Initialize the anyui framework. Must be called before any other function.
-/// Returns 1 on success.
+/// Connects to the compositor via libcompositor.dlib. Returns 1 on success.
 #[no_mangle]
 pub extern "C" fn anyui_init() -> u32 {
+    let mut sub_id: u32 = 0;
+    let channel_id = compositor::init(&mut sub_id);
+    if channel_id == 0 {
+        return 0;
+    }
+
     unsafe {
         STATE = Some(AnyuiState {
             controls: Vec::new(),
             next_id: 1,
             windows: Vec::new(),
-            comp_wins: Vec::new(),
+            comp_windows: Vec::new(),
             quit_requested: false,
+            channel_id,
+            sub_id,
             focused: None,
             pressed: None,
             hovered: None,
@@ -136,15 +168,16 @@ pub extern "C" fn anyui_init() -> u32 {
 #[no_mangle]
 pub extern "C" fn anyui_shutdown() {
     let st = state();
-    for &win in &st.comp_wins {
-        syscall::win_destroy(win);
+    let channel_id = st.channel_id;
+    for cw in &st.comp_windows {
+        compositor::destroy_window(channel_id, cw.window_id, cw.shm_id);
     }
     unsafe { STATE = None; }
 }
 
 // ── Control creation ─────────────────────────────────────────────────
 
-/// Create a top-level window. Returns a ControlId.
+/// Create a top-level window. Returns a ControlId (0 on failure).
 #[no_mangle]
 pub extern "C" fn anyui_create_window(
     title: *const u8,
@@ -165,19 +198,32 @@ pub extern "C" fn anyui_create_window(
         }
     }
 
-    // Create compositor window
-    let comp_win = syscall::win_create(&title_buf[..len], 100, 100, w, h);
+    // Create compositor window via DLL
+    let (window_id, shm_id, surface) =
+        match compositor::create_window(st.channel_id, st.sub_id, w, h, 0) {
+            Some(result) => result,
+            None => return 0,
+        };
+
+    // Set title
+    compositor::set_title(st.channel_id, window_id, &title_buf[..len]);
 
     let ctrl = controls::create_control(ControlKind::Window, id, 0, 0, 0, w, h, &title_buf[..len]);
     st.controls.push(ctrl);
     st.windows.push(id);
-    st.comp_wins.push(comp_win);
+    st.comp_windows.push(CompWindow {
+        window_id,
+        shm_id,
+        surface,
+        width: w,
+        height: h,
+    });
     id
 }
 
 /// Add a control as a child of `parent`. Returns the new ControlId.
 ///
-/// `kind` selects the control type (see `ControlKind` values 0-32).
+/// `kind` selects the control type (see `ControlKind` values 0-36).
 /// `text` + `text_len` provide initial text content.
 #[no_mangle]
 pub extern "C" fn anyui_add_control(
@@ -290,6 +336,310 @@ pub extern "C" fn anyui_get_state(id: ControlId) -> u32 {
     st.controls.iter().find(|c| c.id() == id).map_or(0, |c| c.state_val())
 }
 
+// ── Layout properties ────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn anyui_set_padding(id: ControlId, left: i32, top: i32, right: i32, bottom: i32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        ctrl.base_mut().padding = control::Padding { left, top, right, bottom };
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_set_margin(id: ControlId, left: i32, top: i32, right: i32, bottom: i32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        ctrl.base_mut().margin = control::Margin { left, top, right, bottom };
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_set_dock(id: ControlId, dock_style: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        ctrl.base_mut().dock = DockStyle::from_u32(dock_style);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_set_auto_size(id: ControlId, enabled: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        ctrl.base_mut().auto_size = enabled != 0;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_set_min_size(id: ControlId, min_w: u32, min_h: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        let b = ctrl.base_mut();
+        b.min_w = min_w;
+        b.min_h = min_h;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_set_max_size(id: ControlId, max_w: u32, max_h: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        let b = ctrl.base_mut();
+        b.max_w = max_w;
+        b.max_h = max_h;
+    }
+}
+
+// ── Text styling ─────────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn anyui_set_font_size(id: ControlId, size: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tb) = ctrl.text_base_mut() {
+            tb.text_style.font_size = size as u16;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_get_font_size(id: ControlId) -> u32 {
+    let st = state();
+    st.controls.iter().find(|c| c.id() == id)
+        .and_then(|c| c.text_base())
+        .map_or(14, |tb| tb.text_style.font_size as u32)
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_set_font(id: ControlId, font_id: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tb) = ctrl.text_base_mut() {
+            tb.text_style.font_id = font_id as u16;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_set_text_color(id: ControlId, color: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tb) = ctrl.text_base_mut() {
+            tb.text_style.text_color = color;
+        }
+    }
+}
+
+// ── StackPanel orientation ───────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn anyui_set_orientation(id: ControlId, orientation: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::StackPanel {
+            let raw: *mut dyn Control = &mut **ctrl;
+            let sp = unsafe { &mut *(raw as *mut controls::stack_panel::StackPanel) };
+            sp.orientation = Orientation::from_u32(orientation);
+        }
+    }
+}
+
+// ── TableLayout properties ───────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn anyui_set_columns(id: ControlId, columns: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::TableLayout {
+            let raw: *mut dyn Control = &mut **ctrl;
+            let tl = unsafe { &mut *(raw as *mut controls::table_layout::TableLayout) };
+            tl.columns = columns;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_set_row_height(id: ControlId, row_height: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::TableLayout {
+            let raw: *mut dyn Control = &mut **ctrl;
+            let tl = unsafe { &mut *(raw as *mut controls::table_layout::TableLayout) };
+            tl.row_height = row_height;
+        }
+    }
+}
+
+// ── TextField properties ─────────────────────────────────────────────
+
+/// Helper to downcast a control to TextField.
+fn as_textfield(ctrl: &mut Box<dyn Control>) -> Option<&mut controls::textfield::TextField> {
+    if ctrl.kind() == ControlKind::TextField {
+        let raw: *mut dyn Control = &mut **ctrl;
+        Some(unsafe { &mut *(raw as *mut controls::textfield::TextField) })
+    } else {
+        None
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_textfield_set_prefix(id: ControlId, icon_code: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tf) = as_textfield(ctrl) {
+            tf.prefix_icon = if icon_code == 0 { None } else { Some(icon_code) };
+            tf.text_base.base.dirty = true;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_textfield_set_postfix(id: ControlId, icon_code: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tf) = as_textfield(ctrl) {
+            tf.postfix_icon = if icon_code == 0 { None } else { Some(icon_code) };
+            tf.text_base.base.dirty = true;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_textfield_set_password(id: ControlId, enabled: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tf) = as_textfield(ctrl) {
+            tf.password_mode = enabled != 0;
+            tf.text_base.base.dirty = true;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_textfield_set_placeholder(id: ControlId, text: *const u8, len: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tf) = as_textfield(ctrl) {
+            tf.placeholder.clear();
+            if !text.is_null() && len > 0 {
+                let slice = unsafe { core::slice::from_raw_parts(text, len as usize) };
+                tf.placeholder.extend_from_slice(slice);
+            }
+            tf.text_base.base.dirty = true;
+        }
+    }
+}
+
+// ── Canvas operations ────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn anyui_canvas_set_pixel(id: ControlId, x: i32, y: i32, color: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::Canvas {
+            let raw: *mut dyn Control = &mut **ctrl;
+            let canvas = unsafe { &mut *(raw as *mut controls::canvas::Canvas) };
+            canvas.set_pixel(x, y, color);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_canvas_clear(id: ControlId, color: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::Canvas {
+            let raw: *mut dyn Control = &mut **ctrl;
+            let canvas = unsafe { &mut *(raw as *mut controls::canvas::Canvas) };
+            canvas.clear(color);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_canvas_fill_rect(id: ControlId, x: i32, y: i32, w: u32, h: u32, color: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::Canvas {
+            let raw: *mut dyn Control = &mut **ctrl;
+            let canvas = unsafe { &mut *(raw as *mut controls::canvas::Canvas) };
+            canvas.fill_rect(x, y, w, h, color);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_canvas_draw_line(id: ControlId, x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::Canvas {
+            let raw: *mut dyn Control = &mut **ctrl;
+            let canvas = unsafe { &mut *(raw as *mut controls::canvas::Canvas) };
+            canvas.draw_line(x0, y0, x1, y1, color);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_canvas_draw_rect(id: ControlId, x: i32, y: i32, w: u32, h: u32, color: u32, thickness: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::Canvas {
+            let raw: *mut dyn Control = &mut **ctrl;
+            let canvas = unsafe { &mut *(raw as *mut controls::canvas::Canvas) };
+            canvas.draw_rect(x, y, w, h, color, thickness);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_canvas_draw_circle(id: ControlId, cx: i32, cy: i32, radius: i32, color: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::Canvas {
+            let raw: *mut dyn Control = &mut **ctrl;
+            let canvas = unsafe { &mut *(raw as *mut controls::canvas::Canvas) };
+            canvas.draw_circle(cx, cy, radius, color);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_canvas_fill_circle(id: ControlId, cx: i32, cy: i32, radius: i32, color: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::Canvas {
+            let raw: *mut dyn Control = &mut **ctrl;
+            let canvas = unsafe { &mut *(raw as *mut controls::canvas::Canvas) };
+            canvas.fill_circle(cx, cy, radius, color);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_canvas_get_buffer(id: ControlId) -> *mut u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::Canvas {
+            let raw: *mut dyn Control = &mut **ctrl;
+            let canvas = unsafe { &mut *(raw as *mut controls::canvas::Canvas) };
+            return canvas.pixels.as_mut_ptr();
+        }
+    }
+    core::ptr::null_mut()
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_canvas_get_stride(id: ControlId) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::Canvas {
+            return ctrl.base().w;
+        }
+    }
+    0
+}
+
 // ── Callbacks ────────────────────────────────────────────────────────
 
 /// Register a callback for a specific event type on a control.
@@ -369,10 +719,10 @@ pub extern "C" fn anyui_destroy_window(win_id: ControlId) {
     let st = state();
 
     if let Some(idx) = st.windows.iter().position(|&w| w == win_id) {
-        let comp_win = st.comp_wins[idx];
-        syscall::win_destroy(comp_win);
+        let cw = &st.comp_windows[idx];
+        compositor::destroy_window(st.channel_id, cw.window_id, cw.shm_id);
+        st.comp_windows.remove(idx);
         st.windows.remove(idx);
-        st.comp_wins.remove(idx);
     }
 
     anyui_remove(win_id);

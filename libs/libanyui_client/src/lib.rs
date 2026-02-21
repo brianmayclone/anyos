@@ -54,6 +54,24 @@ pub const KIND_TEXT_AREA: u32 = 29;
 pub const KIND_ICON_BUTTON: u32 = 30;
 pub const KIND_BADGE: u32 = 31;
 pub const KIND_TAG: u32 = 32;
+pub const KIND_STACK_PANEL: u32 = 33;
+pub const KIND_FLOW_PANEL: u32 = 34;
+pub const KIND_TABLE_LAYOUT: u32 = 35;
+pub const KIND_CANVAS: u32 = 36;
+
+// ── DockStyle constants ─────────────────────────────────────────────
+
+pub const DOCK_NONE: u32 = 0;
+pub const DOCK_TOP: u32 = 1;
+pub const DOCK_BOTTOM: u32 = 2;
+pub const DOCK_LEFT: u32 = 3;
+pub const DOCK_RIGHT: u32 = 4;
+pub const DOCK_FILL: u32 = 5;
+
+// ── Orientation constants ───────────────────────────────────────────
+
+pub const ORIENTATION_VERTICAL: u32 = 0;
+pub const ORIENTATION_HORIZONTAL: u32 = 1;
 
 // ── Event type constants ────────────────────────────────────────────
 
@@ -81,6 +99,7 @@ pub type Callback = extern "C" fn(u32, u32, u64);
 
 struct AnyuiLib {
     _handle: DlHandle,
+    // Core
     init: extern "C" fn() -> u32,
     shutdown: extern "C" fn(),
     create_window: extern "C" fn(*const u8, u32, u32, u32) -> u32,
@@ -101,6 +120,45 @@ struct AnyuiLib {
     quit_fn: extern "C" fn(),
     remove_fn: extern "C" fn(u32),
     destroy_window: extern "C" fn(u32),
+    // Layout
+    set_padding: extern "C" fn(u32, i32, i32, i32, i32),
+    set_margin: extern "C" fn(u32, i32, i32, i32, i32),
+    set_dock: extern "C" fn(u32, u32),
+    set_auto_size: extern "C" fn(u32, u32),
+    set_min_size: extern "C" fn(u32, u32, u32),
+    set_max_size: extern "C" fn(u32, u32, u32),
+    // Text styling
+    set_font_size: extern "C" fn(u32, u32),
+    get_font_size: extern "C" fn(u32) -> u32,
+    set_font: extern "C" fn(u32, u32),
+    set_text_color: extern "C" fn(u32, u32),
+    // Container properties
+    set_orientation: extern "C" fn(u32, u32),
+    set_columns: extern "C" fn(u32, u32),
+    set_row_height: extern "C" fn(u32, u32),
+    // Canvas
+    canvas_set_pixel: extern "C" fn(u32, i32, i32, u32),
+    canvas_clear: extern "C" fn(u32, u32),
+    canvas_fill_rect: extern "C" fn(u32, i32, i32, u32, u32, u32),
+    canvas_draw_line: extern "C" fn(u32, i32, i32, i32, i32, u32),
+    canvas_draw_rect: extern "C" fn(u32, i32, i32, u32, u32, u32, u32),
+    canvas_draw_circle: extern "C" fn(u32, i32, i32, i32, u32),
+    canvas_fill_circle: extern "C" fn(u32, i32, i32, i32, u32),
+    canvas_get_buffer: extern "C" fn(u32) -> *mut u32,
+    canvas_get_stride: extern "C" fn(u32) -> u32,
+    // TextField-specific
+    textfield_set_prefix: extern "C" fn(u32, u32),
+    textfield_set_postfix: extern "C" fn(u32, u32),
+    textfield_set_password: extern "C" fn(u32, u32),
+    textfield_set_placeholder: extern "C" fn(u32, *const u8, u32),
+    // Marshal (cross-thread)
+    marshal_set_text: extern "C" fn(u32, *const u8, u32),
+    marshal_set_color: extern "C" fn(u32, u32),
+    marshal_set_state: extern "C" fn(u32, u32),
+    marshal_set_visible: extern "C" fn(u32, u32),
+    marshal_set_position: extern "C" fn(u32, i32, i32),
+    marshal_set_size: extern "C" fn(u32, u32, u32),
+    marshal_dispatch: extern "C" fn(extern "C" fn(u64), u64),
 }
 
 static mut LIB: Option<AnyuiLib> = None;
@@ -127,6 +185,7 @@ pub fn init() -> bool {
 
     unsafe {
         let lib = AnyuiLib {
+            // Core
             init: resolve(&handle, "anyui_init"),
             shutdown: resolve(&handle, "anyui_shutdown"),
             create_window: resolve(&handle, "anyui_create_window"),
@@ -147,6 +206,45 @@ pub fn init() -> bool {
             quit_fn: resolve(&handle, "anyui_quit"),
             remove_fn: resolve(&handle, "anyui_remove"),
             destroy_window: resolve(&handle, "anyui_destroy_window"),
+            // Layout
+            set_padding: resolve(&handle, "anyui_set_padding"),
+            set_margin: resolve(&handle, "anyui_set_margin"),
+            set_dock: resolve(&handle, "anyui_set_dock"),
+            set_auto_size: resolve(&handle, "anyui_set_auto_size"),
+            set_min_size: resolve(&handle, "anyui_set_min_size"),
+            set_max_size: resolve(&handle, "anyui_set_max_size"),
+            // Text styling
+            set_font_size: resolve(&handle, "anyui_set_font_size"),
+            get_font_size: resolve(&handle, "anyui_get_font_size"),
+            set_font: resolve(&handle, "anyui_set_font"),
+            set_text_color: resolve(&handle, "anyui_set_text_color"),
+            // Container properties
+            set_orientation: resolve(&handle, "anyui_set_orientation"),
+            set_columns: resolve(&handle, "anyui_set_columns"),
+            set_row_height: resolve(&handle, "anyui_set_row_height"),
+            // Canvas
+            canvas_set_pixel: resolve(&handle, "anyui_canvas_set_pixel"),
+            canvas_clear: resolve(&handle, "anyui_canvas_clear"),
+            canvas_fill_rect: resolve(&handle, "anyui_canvas_fill_rect"),
+            canvas_draw_line: resolve(&handle, "anyui_canvas_draw_line"),
+            canvas_draw_rect: resolve(&handle, "anyui_canvas_draw_rect"),
+            canvas_draw_circle: resolve(&handle, "anyui_canvas_draw_circle"),
+            canvas_fill_circle: resolve(&handle, "anyui_canvas_fill_circle"),
+            canvas_get_buffer: resolve(&handle, "anyui_canvas_get_buffer"),
+            canvas_get_stride: resolve(&handle, "anyui_canvas_get_stride"),
+            // TextField-specific
+            textfield_set_prefix: resolve(&handle, "anyui_textfield_set_prefix"),
+            textfield_set_postfix: resolve(&handle, "anyui_textfield_set_postfix"),
+            textfield_set_password: resolve(&handle, "anyui_textfield_set_password"),
+            textfield_set_placeholder: resolve(&handle, "anyui_textfield_set_placeholder"),
+            // Marshal (cross-thread)
+            marshal_set_text: resolve(&handle, "anyui_marshal_set_text"),
+            marshal_set_color: resolve(&handle, "anyui_marshal_set_color"),
+            marshal_set_state: resolve(&handle, "anyui_marshal_set_state"),
+            marshal_set_visible: resolve(&handle, "anyui_marshal_set_visible"),
+            marshal_set_position: resolve(&handle, "anyui_marshal_set_position"),
+            marshal_set_size: resolve(&handle, "anyui_marshal_set_size"),
+            marshal_dispatch: resolve(&handle, "anyui_marshal_dispatch"),
             _handle: handle,
         };
         (lib.init)();
@@ -256,6 +354,22 @@ impl Window {
     pub fn add_divider(&self, x: i32, y: i32, w: u32) -> Control {
         self.add_control(KIND_DIVIDER, x, y, w, 1, "")
     }
+
+    pub fn add_stack_panel(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
+        self.add_control(KIND_STACK_PANEL, x, y, w, h, "")
+    }
+
+    pub fn add_flow_panel(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
+        self.add_control(KIND_FLOW_PANEL, x, y, w, h, "")
+    }
+
+    pub fn add_table_layout(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
+        self.add_control(KIND_TABLE_LAYOUT, x, y, w, h, "")
+    }
+
+    pub fn add_canvas(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
+        self.add_control(KIND_CANVAS, x, y, w, h, "")
+    }
 }
 
 // ── Generic Control handle ───────────────────────────────────────────
@@ -278,6 +392,38 @@ impl Control {
         let l = lib();
         Control((l.add_control)(self.0, kind, x, y, w, h, text.as_ptr(), text.len() as u32))
     }
+
+    // ── Convenience methods for adding children ──
+
+    pub fn add_label(&self, text: &str, x: i32, y: i32) -> Control {
+        self.add_control(KIND_LABEL, x, y, 0, 0, text)
+    }
+
+    pub fn add_button(&self, text: &str, x: i32, y: i32, w: u32, h: u32) -> Control {
+        self.add_control(KIND_BUTTON, x, y, w, h, text)
+    }
+
+    pub fn add_textfield(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
+        self.add_control(KIND_TEXTFIELD, x, y, w, h, "")
+    }
+
+    pub fn add_stack_panel(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
+        self.add_control(KIND_STACK_PANEL, x, y, w, h, "")
+    }
+
+    pub fn add_flow_panel(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
+        self.add_control(KIND_FLOW_PANEL, x, y, w, h, "")
+    }
+
+    pub fn add_table_layout(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
+        self.add_control(KIND_TABLE_LAYOUT, x, y, w, h, "")
+    }
+
+    pub fn add_canvas(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
+        self.add_control(KIND_CANVAS, x, y, w, h, "")
+    }
+
+    // ── Core properties ──
 
     pub fn set_text(&self, text: &str) {
         (lib().set_text)(self.0, text.as_ptr(), text.len() as u32);
@@ -311,67 +457,209 @@ impl Control {
         (lib().get_state)(self.0)
     }
 
-    /// Register a callback for a specific event type.
+    // ── Layout properties ──
+
+    pub fn set_padding(&self, left: i32, top: i32, right: i32, bottom: i32) {
+        (lib().set_padding)(self.0, left, top, right, bottom);
+    }
+
+    pub fn set_margin(&self, left: i32, top: i32, right: i32, bottom: i32) {
+        (lib().set_margin)(self.0, left, top, right, bottom);
+    }
+
+    pub fn set_dock(&self, dock_style: u32) {
+        (lib().set_dock)(self.0, dock_style);
+    }
+
+    pub fn set_auto_size(&self, enabled: bool) {
+        (lib().set_auto_size)(self.0, enabled as u32);
+    }
+
+    pub fn set_min_size(&self, min_w: u32, min_h: u32) {
+        (lib().set_min_size)(self.0, min_w, min_h);
+    }
+
+    pub fn set_max_size(&self, max_w: u32, max_h: u32) {
+        (lib().set_max_size)(self.0, max_w, max_h);
+    }
+
+    // ── Text styling ──
+
+    pub fn set_font_size(&self, size: u32) {
+        (lib().set_font_size)(self.0, size);
+    }
+
+    pub fn get_font_size(&self) -> u32 {
+        (lib().get_font_size)(self.0)
+    }
+
+    pub fn set_font(&self, font_id: u32) {
+        (lib().set_font)(self.0, font_id);
+    }
+
+    pub fn set_text_color(&self, color: u32) {
+        (lib().set_text_color)(self.0, color);
+    }
+
+    // ── Container properties (StackPanel / TableLayout) ──
+
+    pub fn set_orientation(&self, orientation: u32) {
+        (lib().set_orientation)(self.0, orientation);
+    }
+
+    pub fn set_columns(&self, columns: u32) {
+        (lib().set_columns)(self.0, columns);
+    }
+
+    pub fn set_row_height(&self, row_height: u32) {
+        (lib().set_row_height)(self.0, row_height);
+    }
+
+    // ── Canvas operations ──
+
+    pub fn canvas_set_pixel(&self, x: i32, y: i32, color: u32) {
+        (lib().canvas_set_pixel)(self.0, x, y, color);
+    }
+
+    pub fn canvas_clear(&self, color: u32) {
+        (lib().canvas_clear)(self.0, color);
+    }
+
+    pub fn canvas_fill_rect(&self, x: i32, y: i32, w: u32, h: u32, color: u32) {
+        (lib().canvas_fill_rect)(self.0, x, y, w, h, color);
+    }
+
+    pub fn canvas_draw_line(&self, x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
+        (lib().canvas_draw_line)(self.0, x0, y0, x1, y1, color);
+    }
+
+    pub fn canvas_draw_rect(&self, x: i32, y: i32, w: u32, h: u32, color: u32, thickness: u32) {
+        (lib().canvas_draw_rect)(self.0, x, y, w, h, color, thickness);
+    }
+
+    pub fn canvas_draw_circle(&self, cx: i32, cy: i32, radius: i32, color: u32) {
+        (lib().canvas_draw_circle)(self.0, cx, cy, radius, color);
+    }
+
+    pub fn canvas_fill_circle(&self, cx: i32, cy: i32, radius: i32, color: u32) {
+        (lib().canvas_fill_circle)(self.0, cx, cy, radius, color);
+    }
+
+    pub fn canvas_get_buffer(&self) -> *mut u32 {
+        (lib().canvas_get_buffer)(self.0)
+    }
+
+    pub fn canvas_get_stride(&self) -> u32 {
+        (lib().canvas_get_stride)(self.0)
+    }
+
+    // ── Callbacks ──
+
+    /// Register a callback for a specific event type on a control.
     pub fn on_event(&self, event_type: u32, cb: Callback, userdata: u64) {
         (lib().on_event_fn)(self.0, event_type, cb, userdata);
     }
 
-    /// Register a click callback (convenience).
     pub fn on_click(&self, cb: Callback, userdata: u64) {
         (lib().on_click_fn)(self.0, cb, userdata);
     }
 
-    /// Register a change callback (convenience).
     pub fn on_change(&self, cb: Callback, userdata: u64) {
         (lib().on_change_fn)(self.0, cb, userdata);
     }
 
-    /// Register a mouse enter callback.
     pub fn on_mouse_enter(&self, cb: Callback, userdata: u64) {
         self.on_event(EVENT_MOUSE_ENTER, cb, userdata);
     }
 
-    /// Register a mouse leave callback.
     pub fn on_mouse_leave(&self, cb: Callback, userdata: u64) {
         self.on_event(EVENT_MOUSE_LEAVE, cb, userdata);
     }
 
-    /// Register a double-click callback.
     pub fn on_double_click(&self, cb: Callback, userdata: u64) {
         self.on_event(EVENT_DOUBLE_CLICK, cb, userdata);
     }
 
-    /// Register a focus callback.
     pub fn on_focus(&self, cb: Callback, userdata: u64) {
         self.on_event(EVENT_FOCUS, cb, userdata);
     }
 
-    /// Register a blur callback.
     pub fn on_blur(&self, cb: Callback, userdata: u64) {
         self.on_event(EVENT_BLUR, cb, userdata);
     }
 
-    /// Register a scroll callback.
     pub fn on_scroll(&self, cb: Callback, userdata: u64) {
         self.on_event(EVENT_SCROLL, cb, userdata);
     }
 
-    /// Register a key down callback.
     pub fn on_key_down(&self, cb: Callback, userdata: u64) {
         self.on_event(EVENT_KEY, cb, userdata);
     }
 
-    /// Register a mouse down callback.
     pub fn on_mouse_down(&self, cb: Callback, userdata: u64) {
         self.on_event(EVENT_MOUSE_DOWN, cb, userdata);
     }
 
-    /// Register a mouse up callback.
     pub fn on_mouse_up(&self, cb: Callback, userdata: u64) {
         self.on_event(EVENT_MOUSE_UP, cb, userdata);
+    }
+
+    // ── TextField-specific ──
+
+    pub fn textfield_set_prefix(&self, icon_code: u32) {
+        (lib().textfield_set_prefix)(self.0, icon_code);
+    }
+
+    pub fn textfield_set_postfix(&self, icon_code: u32) {
+        (lib().textfield_set_postfix)(self.0, icon_code);
+    }
+
+    pub fn textfield_set_password(&self, enabled: bool) {
+        (lib().textfield_set_password)(self.0, enabled as u32);
+    }
+
+    pub fn textfield_set_placeholder(&self, text: &str) {
+        (lib().textfield_set_placeholder)(self.0, text.as_ptr(), text.len() as u32);
     }
 
     pub fn remove(&self) {
         (lib().remove_fn)(self.0);
     }
+}
+
+// ── Marshal (cross-thread UI access) ─────────────────────────────────
+
+/// Set a control's text from a worker thread (deferred to UI thread).
+pub fn marshal_set_text(id: u32, text: &str) {
+    (lib().marshal_set_text)(id, text.as_ptr(), text.len() as u32);
+}
+
+/// Set a control's color from a worker thread.
+pub fn marshal_set_color(id: u32, color: u32) {
+    (lib().marshal_set_color)(id, color);
+}
+
+/// Set a control's state from a worker thread.
+pub fn marshal_set_state(id: u32, value: u32) {
+    (lib().marshal_set_state)(id, value);
+}
+
+/// Set a control's visibility from a worker thread.
+pub fn marshal_set_visible(id: u32, visible: bool) {
+    (lib().marshal_set_visible)(id, visible as u32);
+}
+
+/// Set a control's position from a worker thread.
+pub fn marshal_set_position(id: u32, x: i32, y: i32) {
+    (lib().marshal_set_position)(id, x, y);
+}
+
+/// Set a control's size from a worker thread.
+pub fn marshal_set_size(id: u32, w: u32, h: u32) {
+    (lib().marshal_set_size)(id, w, h);
+}
+
+/// Dispatch a callback to be executed on the UI thread.
+pub fn marshal_dispatch(cb: extern "C" fn(u64), userdata: u64) {
+    (lib().marshal_dispatch)(cb, userdata);
 }

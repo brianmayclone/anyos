@@ -1,7 +1,8 @@
 //! FlowPanel — layout container that arranges children horizontally with line wrapping.
 
 use alloc::boxed::Box;
-use crate::control::{Control, ControlBase, ControlKind, EventResponse, find_idx};
+use alloc::vec::Vec;
+use crate::control::{Control, ControlBase, ControlKind, ChildLayout, find_idx};
 
 pub struct FlowPanel {
     pub(crate) base: ControlBase,
@@ -18,23 +19,24 @@ impl Control for FlowPanel {
     fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
     fn kind(&self) -> ControlKind { ControlKind::FlowPanel }
 
-    fn render(&self, win: u32, ax: i32, ay: i32) {
+    fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let x = ax + self.base.x;
         let y = ay + self.base.y;
         if self.base.color != 0 {
-            crate::syscall::win_fill_rect(win, x, y, self.base.w, self.base.h, self.base.color);
+            crate::draw::fill_rect(surface, x, y, self.base.w, self.base.h, self.base.color);
         }
     }
 
-    fn layout_children(&self, controls: &mut [Box<dyn Control>]) -> bool {
+    fn layout_children(&self, controls: &[Box<dyn Control>]) -> Option<Vec<ChildLayout>> {
         let pad = &self.base.padding;
         let max_x = self.base.w as i32 - pad.right;
         let mut cursor_x = pad.left;
         let mut cursor_y = pad.top;
         let mut row_height: i32 = 0;
+        let mut result = Vec::new();
 
-        let children = self.base.children.clone();
-        for &child_id in &children {
+        let children = &self.base.children;
+        for &child_id in children {
             let ci = match find_idx(controls, child_id) {
                 Some(i) => i,
                 None => continue,
@@ -54,12 +56,12 @@ impl Control for FlowPanel {
                 row_height = 0;
             }
 
-            controls[ci].set_position(cursor_x + m.left, cursor_y + m.top);
+            result.push(ChildLayout { id: child_id, x: cursor_x + m.left, y: cursor_y + m.top, w: None, h: None });
             cursor_x += cw;
             if ch > row_height {
                 row_height = ch;
             }
         }
-        true
+        Some(result)
     }
 }

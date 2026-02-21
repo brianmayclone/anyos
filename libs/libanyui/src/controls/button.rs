@@ -1,24 +1,32 @@
-use crate::control::{Control, ControlBase, ControlKind, EventResponse};
+use crate::control::{Control, ControlBase, TextControlBase, ControlKind, EventResponse};
 
 pub struct Button {
-    pub(crate) base: ControlBase,
+    pub(crate) text_base: TextControlBase,
     pressed: bool,
 }
 
 impl Button {
-    pub fn new(base: ControlBase) -> Self { Self { base, pressed: false } }
+    pub fn new(text_base: TextControlBase) -> Self { Self { text_base, pressed: false } }
 }
 
 impl Control for Button {
-    fn base(&self) -> &ControlBase { &self.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
+    fn base(&self) -> &ControlBase { &self.text_base.base }
+    fn base_mut(&mut self) -> &mut ControlBase { &mut self.text_base.base }
+    fn text_base(&self) -> Option<&crate::control::TextControlBase> { Some(&self.text_base) }
+    fn text_base_mut(&mut self) -> Option<&mut crate::control::TextControlBase> { Some(&mut self.text_base) }
     fn kind(&self) -> ControlKind { ControlKind::Button }
 
-    fn render(&self, win: u32, ax: i32, ay: i32) {
-        let x = ax + self.base.x;
-        let y = ay + self.base.y;
-        let pressed_flag: u8 = if self.pressed { 1 } else { 0 };
-        crate::uisys::render_button(win, x, y, self.base.w, self.base.h, &self.base.text, pressed_flag, 0);
+    fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
+        let x = ax + self.text_base.base.x;
+        let y = ay + self.text_base.base.y;
+        let tc = crate::theme::colors();
+        let bg = if self.pressed { tc.control_pressed } else { tc.control_bg };
+        crate::draw::fill_rounded_rect(surface, x, y, self.text_base.base.w, self.text_base.base.h, crate::theme::BUTTON_CORNER, bg);
+        let text_color = if self.text_base.text_style.text_color != 0 { self.text_base.text_style.text_color } else { tc.text };
+        let (tw, _th) = crate::draw::text_size_at(&self.text_base.text, self.text_base.text_style.font_size);
+        let tx = x + (self.text_base.base.w as i32 - tw as i32) / 2;
+        let ty = y + 4;
+        crate::draw::draw_text_sized(surface, tx, ty, text_color, &self.text_base.text, self.text_base.text_style.font_size);
     }
 
     fn is_interactive(&self) -> bool { true }

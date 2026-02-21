@@ -13,13 +13,14 @@ impl Control for Divider {
     fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
     fn kind(&self) -> ControlKind { ControlKind::Divider }
 
-    fn render(&self, win: u32, ax: i32, ay: i32) {
+    fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let x = ax + self.base.x;
         let y = ay + self.base.y;
-        if self.base.w > self.base.h {
-            crate::uisys::render_divider_h(win, x, y, self.base.w);
+        let tc = crate::theme::colors();
+        if self.base.h <= 1 {
+            crate::draw::fill_rect(surface, x, y, self.base.w, 1, tc.separator);
         } else {
-            crate::uisys::render_divider_v(win, x, y, self.base.h);
+            crate::draw::fill_rect(surface, x, y, 1, self.base.h, tc.separator);
         }
     }
 }

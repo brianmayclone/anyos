@@ -32,20 +32,32 @@ pub fn perform_layout(controls: &mut Vec<Box<dyn Control>>, id: ControlId) {
     }
 
     // Check if this control has a custom layout (StackPanel, FlowPanel, etc.)
-    // We need to call layout_children on the control, but we can't borrow
-    // controls mutably twice. So we check the flag, collect the needed data,
-    // then apply the layout.
-    let has_custom_layout = controls[idx].layout_children(controls);
+    // layout_children takes &[Box<dyn Control>] (immutable) — no borrow conflict.
+    let custom_layouts = controls[idx].layout_children(controls);
 
-    if !has_custom_layout {
+    if let Some(layouts) = custom_layouts {
+        // Apply custom layout changes
+        for cl in layouts {
+            if let Some(ci) = find_idx(controls, cl.id) {
+                controls[ci].set_position(cl.x, cl.y);
+                if let Some(w) = cl.w {
+                    if let Some(h) = cl.h {
+                        controls[ci].set_size(w, h);
+                    } else {
+                        let old_h = controls[ci].base().h;
+                        controls[ci].set_size(w, old_h);
+                    }
+                } else if let Some(h) = cl.h {
+                    let old_w = controls[ci].base().w;
+                    controls[ci].set_size(old_w, h);
+                }
+            }
+        }
+    } else {
         // Standard Dock layout
         let pad = controls[idx].base().padding;
-        let (_, _, pw, ph) = (
-            controls[idx].base().x,
-            controls[idx].base().y,
-            controls[idx].base().w,
-            controls[idx].base().h,
-        );
+        let pw = controls[idx].base().w;
+        let ph = controls[idx].base().h;
 
         // Client area (inside padding)
         let mut area_left = pad.left;
