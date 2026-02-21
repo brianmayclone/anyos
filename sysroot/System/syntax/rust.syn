@@ -1,0 +1,15 @@
+keywords=as,async,await,break,const,continue,crate,dyn,else,enum,extern,false,fn,for,if,impl,in,let,loop,match,mod,move,mut,pub,ref,return,self,Self,static,struct,super,trait,true,type,unsafe,use,where,while,yield,macro_rules
+types=u8,u16,u32,u64,u128,i8,i16,i32,i64,i128,f32,f64,bool,char,str,usize,isize,String,Vec,Option,Result,Box,Rc,Arc,Cell,RefCell,HashMap,HashSet,BTreeMap,BTreeSet,VecDeque,LinkedList,Cow,Pin,PhantomData,ManuallyDrop,MaybeUninit
+builtins=println,print,eprintln,eprint,format,panic,assert,assert_eq,assert_ne,debug_assert,todo,unimplemented,unreachable,dbg,include,include_str,include_bytes,cfg,env,concat,stringify,file,line,column,module_path,vec,write,writeln,Some,None,Ok,Err
+line_comment=//
+block_comment_start=/*
+block_comment_end=*/
+string_delimiters="
+char_delimiter='
+keyword_color=0xFFC586C0
+type_color=0xFF4EC9B0
+builtin_color=0xFFDCDCAA
+string_color=0xFFCE9178
+comment_color=0xFF6A9955
+number_color=0xFFB5CEA8
+operator_color=0xFFD4D4D4

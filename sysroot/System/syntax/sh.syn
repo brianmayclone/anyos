@@ -1,0 +1,15 @@
+keywords=if,then,else,elif,fi,for,while,do,done,case,esac,in,function,return,local,export,source,alias,unalias,set,unset,shift,break,continue,exit,trap,eval,exec,readonly
+types=PATH,HOME,USER,SHELL,PWD,OLDPWD,IFS,PS1,PS2,TERM,LANG,LC_ALL
+builtins=echo,cd,pwd,ls,cat,cp,mv,rm,mkdir,rmdir,touch,chmod,chown,grep,sed,awk,find,sort,uniq,wc,head,tail,cut,tr,test,read,printf,true,false
+line_comment=#
+block_comment_start=
+block_comment_end=
+string_delimiters="
+char_delimiter='
+keyword_color=0xFFC586C0
+type_color=0xFF9CDCFE
+builtin_color=0xFFDCDCAA
+string_color=0xFFCE9178
+comment_color=0xFF6A9955
+number_color=0xFFB5CEA8
+operator_color=0xFFD4D4D4

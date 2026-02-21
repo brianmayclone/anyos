@@ -1,0 +1,15 @@
+keywords=true,false,null
+types=
+builtins=
+line_comment=
+block_comment_start=
+block_comment_end=
+string_delimiters="
+char_delimiter=
+keyword_color=0xFF569CD6
+type_color=0xFF4EC9B0
+builtin_color=0xFFDCDCAA
+string_color=0xFFCE9178
+comment_color=0xFF6A9955
+number_color=0xFFB5CEA8
+operator_color=0xFFD4D4D4

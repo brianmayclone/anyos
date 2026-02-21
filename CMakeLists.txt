@@ -668,6 +668,7 @@ add_app(clock       ${CMAKE_SOURCE_DIR}/apps/clock          "Clock")
 add_app(screenshot  ${CMAKE_SOURCE_DIR}/apps/screenshot     "Screenshot")
 add_app(surf        ${CMAKE_SOURCE_DIR}/apps/surf            "Surf")
 add_app(demo_anyui  ${CMAKE_SOURCE_DIR}/apps/demo_anyui     "anyUI Demo")
+add_app(anycode     ${CMAKE_SOURCE_DIR}/apps/anycode        "anyOS Code")
 
 # Build compositor binary (nested path: /System/compositor/compositor)
 set(COMPOSITOR_SRC_DIR ${CMAKE_SOURCE_DIR}/system/compositor/compositor)

@@ -1,0 +1,15 @@
+keywords=auto,break,case,char,const,continue,default,do,double,else,enum,extern,float,for,goto,if,int,long,register,return,short,signed,sizeof,static,struct,switch,typedef,union,unsigned,void,volatile,while,inline,restrict,_Bool,_Complex,_Imaginary,_Alignas,_Alignof,_Atomic,_Generic,_Noreturn,_Static_assert,_Thread_local
+types=char,int,float,double,void,long,short,unsigned,signed,size_t,ssize_t,uint8_t,uint16_t,uint32_t,uint64_t,int8_t,int16_t,int32_t,int64_t,bool,FILE,DIR,pid_t,off_t,ptrdiff_t
+builtins=printf,fprintf,sprintf,snprintf,scanf,sscanf,malloc,calloc,realloc,free,memcpy,memset,memmove,memcmp,strlen,strcpy,strncpy,strcmp,strncmp,strcat,strncat,strstr,strchr,strrchr,fopen,fclose,fread,fwrite,fgets,fputs,fseek,ftell,rewind,feof,ferror,exit,abort,atexit,system,getenv,atoi,atol,atof,strtol,strtoul,strtod,qsort,bsearch,abs,labs,rand,srand,time,clock,NULL,EOF,stdin,stdout,stderr,errno,SEEK_SET,SEEK_CUR,SEEK_END,true,false
+line_comment=//
+block_comment_start=/*
+block_comment_end=*/
+string_delimiters="
+char_delimiter='
+keyword_color=0xFFC586C0
+type_color=0xFF4EC9B0
+builtin_color=0xFFDCDCAA
+string_color=0xFFCE9178
+comment_color=0xFF6A9955
+number_color=0xFFB5CEA8
+operator_color=0xFFD4D4D4

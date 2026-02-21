@@ -9,6 +9,10 @@ impl SplitView {
         Self { container: Container { ctrl: Control { id } } }
     }
 
+    pub fn set_orientation(&self, orientation: u32) {
+        (lib().set_orientation)(self.container.ctrl.id, orientation);
+    }
+
     pub fn set_split_ratio(&self, ratio: u32) {
         (lib().set_split_ratio)(self.container.ctrl.id, ratio);
     }

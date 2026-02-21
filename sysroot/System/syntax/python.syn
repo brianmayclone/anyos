@@ -1,0 +1,15 @@
+keywords=and,as,assert,async,await,break,class,continue,def,del,elif,else,except,finally,for,from,global,if,import,in,is,lambda,nonlocal,not,or,pass,raise,return,try,while,with,yield,True,False,None
+types=int,float,str,bool,list,dict,tuple,set,frozenset,bytes,bytearray,complex,range,type,object,Exception,ValueError,TypeError,KeyError,IndexError,AttributeError,IOError,OSError,RuntimeError,StopIteration
+builtins=print,len,range,input,open,int,str,float,list,dict,tuple,set,type,isinstance,issubclass,hasattr,getattr,setattr,delattr,dir,vars,globals,locals,id,hash,repr,format,abs,round,min,max,sum,sorted,reversed,enumerate,zip,map,filter,any,all,iter,next,super,property,staticmethod,classmethod
+line_comment=#
+block_comment_start=
+block_comment_end=
+string_delimiters="
+char_delimiter='
+keyword_color=0xFFC586C0
+type_color=0xFF4EC9B0
+builtin_color=0xFFDCDCAA
+string_color=0xFFCE9178
+comment_color=0xFF6A9955
+number_color=0xFFB5CEA8
+operator_color=0xFFD4D4D4
