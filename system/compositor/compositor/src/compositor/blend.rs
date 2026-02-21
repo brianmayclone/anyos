@@ -1,10 +1,22 @@
 //! Color blending, blur, and shadow cache computation.
+//!
+//! Performance-critical: all hot-path divisions replaced with `div255()`
+//! bit trick (exact for 0..=65025, which covers all 255*255 products).
 
 use alloc::vec;
+use alloc::vec::Vec;
 
 use super::layer::{ShadowCache, SHADOW_SPREAD};
 
-/// Alpha-blend src over dst (both ARGB8888).
+/// Fast exact division by 255 using bit manipulation.
+/// Exact for all x in 0..=65025 (255*255), which covers every possible
+/// product in alpha blending (channel * alpha where both are 0-255).
+#[inline(always)]
+pub(crate) fn div255(x: u32) -> u32 {
+    (x + 1 + (x >> 8)) >> 8
+}
+
+/// Alpha-blend src over dst (both ARGB8888). Division-free.
 #[inline]
 pub fn alpha_blend(src: u32, dst: u32) -> u32 {
     let sa = (src >> 24) & 0xFF;
@@ -15,10 +27,23 @@ pub fn alpha_blend(src: u32, dst: u32) -> u32 {
         return src;
     }
     let inv = 255 - sa;
-    let r = (((src >> 16) & 0xFF) * sa + ((dst >> 16) & 0xFF) * inv) / 255;
-    let g = (((src >> 8) & 0xFF) * sa + ((dst >> 8) & 0xFF) * inv) / 255;
-    let b = ((src & 0xFF) * sa + (dst & 0xFF) * inv) / 255;
-    let a = sa + ((dst >> 24) & 0xFF) * inv / 255;
+    let r = div255(((src >> 16) & 0xFF) * sa + ((dst >> 16) & 0xFF) * inv);
+    let g = div255(((src >> 8) & 0xFF) * sa + ((dst >> 8) & 0xFF) * inv);
+    let b = div255((src & 0xFF) * sa + (dst & 0xFF) * inv);
+    let a = sa + div255(((dst >> 24) & 0xFF) * inv);
+    (a << 24) | (r << 16) | (g << 8) | b
+}
+
+/// Blend a pure-black shadow (R=G=B=0) with alpha onto dst. Division-free.
+/// Specialized fast path: skips source RGB extraction (always 0).
+#[inline(always)]
+pub(crate) fn shadow_blend(alpha: u32, dst: u32) -> u32 {
+    if alpha == 0 { return dst; }
+    let inv = 255 - alpha;
+    let r = div255(((dst >> 16) & 0xFF) * inv);
+    let g = div255(((dst >> 8) & 0xFF) * inv);
+    let b = div255((dst & 0xFF) * inv);
+    let a = alpha + div255(((dst >> 24) & 0xFF) * inv);
     (a << 24) | (r << 16) | (g << 8) | b
 }
 
@@ -140,10 +165,12 @@ pub(crate) fn compute_shadow_cache(layer_w: u32, layer_h: u32) -> ShadowCache {
 
 /// Fast two-pass (H+V) box blur on a rectangular region of a pixel buffer.
 /// `passes` iterations: 1=box, 2=triangle, 3~=gaussian.
+/// `temp` is a reusable scratch buffer (avoids per-call heap allocation).
 pub(crate) fn blur_back_buffer_region(
     bb: &mut [u32], fb_w: u32, fb_h: u32,
     rx: i32, ry: i32, rw: u32, rh: u32,
     radius: u32, passes: u32,
+    temp: &mut Vec<u32>,
 ) {
     if rw == 0 || rh == 0 || radius == 0 || passes == 0 { return; }
     let x0 = rx.max(0) as usize;
@@ -157,8 +184,14 @@ pub(crate) fn blur_back_buffer_region(
     let r = radius as usize;
     let kernel = (2 * r + 1) as u32;
 
+    // Fixed-point reciprocal: replaces `/ kernel` with `* recip >> 16`.
+    // Max input: 255 * kernel. For kernel=17: 255*17=4335, 4335*recip=16,711,425 < u32::MAX.
+    let recip = ((1u32 << 16) + kernel - 1) / kernel;
+
     let max_dim = w.max(h);
-    let mut temp = vec![0u32; max_dim];
+    if temp.len() < max_dim {
+        temp.resize(max_dim, 0);
+    }
 
     for _ in 0..passes {
         // Horizontal pass
@@ -174,7 +207,10 @@ pub(crate) fn blur_back_buffer_region(
             }
             for col in 0..w {
                 let cx = x0 + col;
-                temp[col] = 0xFF000000 | ((sr / kernel) << 16) | ((sg / kernel) << 8) | (sb / kernel);
+                temp[col] = 0xFF000000
+                    | (((sr * recip) >> 16) << 16)
+                    | (((sg * recip) >> 16) << 8)
+                    | ((sb * recip) >> 16);
                 let add_x = (cx as i32 + r as i32 + 1).min(fb_w as i32 - 1).max(0) as usize;
                 let rem_x = (cx as i32 - r as i32).max(0).min(fb_w as i32 - 1) as usize;
                 let add_px = bb[row_off + add_x];
@@ -199,7 +235,10 @@ pub(crate) fn blur_back_buffer_region(
             }
             for row in 0..h {
                 let cy = y0 + row;
-                temp[row] = 0xFF000000 | ((sr / kernel) << 16) | ((sg / kernel) << 8) | (sb / kernel);
+                temp[row] = 0xFF000000
+                    | (((sr * recip) >> 16) << 16)
+                    | (((sg * recip) >> 16) << 8)
+                    | ((sb * recip) >> 16);
                 let add_y = (cy as i32 + r as i32 + 1).min(fb_h as i32 - 1).max(0) as usize;
                 let rem_y = (cy as i32 - r as i32).max(0).min(fb_h as i32 - 1) as usize;
                 let add_px = bb[add_y * stride + col];

@@ -65,6 +65,12 @@ pub struct Compositor {
     /// Off-screen VRAM allocator for VRAM-direct surfaces.
     /// None if GPU accel not available or VRAM too small.
     pub(crate) vram_allocator: Option<VramAllocator>,
+
+    /// Reusable scratch buffer for blur operations (avoids per-frame heap allocation).
+    pub(crate) blur_temp: Vec<u32>,
+
+    /// Reusable Vec for compositing loop (swap with self.damage to avoid drain+collect alloc).
+    pub(crate) compositing_damage: Vec<Rect>,
 }
 
 impl Compositor {
@@ -90,6 +96,8 @@ impl Compositor {
             focused_layer_id: None,
             accel_move_hint: None,
             vram_allocator: None,
+            blur_temp: Vec::with_capacity(width.max(height) as usize),
+            compositing_damage: Vec::with_capacity(32),
         }
     }
 
