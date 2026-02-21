@@ -1016,6 +1016,347 @@ pub extern "C" fn anyui_datagrid_set_header_height(id: ControlId, height: u32) {
     }
 }
 
+// ── TextEditor ────────────────────────────────────────────────────────
+
+fn as_text_editor(ctrl: &mut alloc::boxed::Box<dyn Control>) -> Option<&mut controls::text_editor::TextEditor> {
+    if ctrl.kind() == ControlKind::TextEditor {
+        let raw: *mut dyn Control = &mut **ctrl;
+        Some(unsafe { &mut *(raw as *mut controls::text_editor::TextEditor) })
+    } else {
+        None
+    }
+}
+
+fn as_text_editor_ref(ctrl: &alloc::boxed::Box<dyn Control>) -> Option<&controls::text_editor::TextEditor> {
+    if ctrl.kind() == ControlKind::TextEditor {
+        let raw: *const dyn Control = &**ctrl;
+        Some(unsafe { &*(raw as *const controls::text_editor::TextEditor) })
+    } else {
+        None
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_set_text(id: ControlId, data: *const u8, len: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor(ctrl) {
+            if !data.is_null() && len > 0 {
+                let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
+                te.set_text(slice);
+            } else {
+                te.set_text(&[]);
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_get_text(id: ControlId, buf: *mut u8, max_len: u32) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor_ref(ctrl) {
+            let text = te.get_text();
+            let copy_len = text.len().min(max_len as usize);
+            if !buf.is_null() && copy_len > 0 {
+                unsafe { core::ptr::copy_nonoverlapping(text.as_ptr(), buf, copy_len); }
+            }
+            return copy_len as u32;
+        }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_set_syntax(id: ControlId, data: *const u8, len: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor(ctrl) {
+            if !data.is_null() && len > 0 {
+                let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
+                te.set_syntax(slice);
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_set_cursor(id: ControlId, row: u32, col: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor(ctrl) {
+            te.set_cursor(row as usize, col as usize);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_get_cursor(id: ControlId, out_row: *mut u32, out_col: *mut u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor_ref(ctrl) {
+            let (r, c) = te.cursor();
+            if !out_row.is_null() { unsafe { *out_row = r as u32; } }
+            if !out_col.is_null() { unsafe { *out_col = c as u32; } }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_set_line_height(id: ControlId, height: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor(ctrl) {
+            te.line_height = height.max(12);
+            te.base.dirty = true;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_set_tab_width(id: ControlId, width: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor(ctrl) {
+            te.tab_width = width.max(1);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_set_show_line_numbers(id: ControlId, show: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor(ctrl) {
+            te.show_line_numbers = show != 0;
+            te.base.dirty = true;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_set_font(id: ControlId, font_id: u32, font_size: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor(ctrl) {
+            te.font_id = font_id as u16;
+            te.font_size = font_size as u16;
+            let (cw, _) = crate::draw::measure_text_ex(b"M", te.font_id, te.font_size);
+            te.char_width = if cw > 0 { cw } else { 8 };
+            te.base.dirty = true;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_insert_text(id: ControlId, data: *const u8, len: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor(ctrl) {
+            if !data.is_null() && len > 0 {
+                let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
+                te.insert_text_at_cursor(slice);
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_get_line_count(id: ControlId) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor_ref(ctrl) {
+            return te.line_count() as u32;
+        }
+    }
+    0
+}
+
+// ── TreeView ──────────────────────────────────────────────────────────
+
+fn as_tree_view(ctrl: &mut alloc::boxed::Box<dyn Control>) -> Option<&mut controls::tree_view::TreeView> {
+    if ctrl.kind() == ControlKind::TreeView {
+        let raw: *mut dyn Control = &mut **ctrl;
+        Some(unsafe { &mut *(raw as *mut controls::tree_view::TreeView) })
+    } else {
+        None
+    }
+}
+
+fn as_tree_view_ref(ctrl: &alloc::boxed::Box<dyn Control>) -> Option<&controls::tree_view::TreeView> {
+    if ctrl.kind() == ControlKind::TreeView {
+        let raw: *const dyn Control = &**ctrl;
+        Some(unsafe { &*(raw as *const controls::tree_view::TreeView) })
+    } else {
+        None
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_treeview_add_node(id: ControlId, parent_index: u32, text: *const u8, text_len: u32) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tv) = as_tree_view(ctrl) {
+            let parent = if parent_index == u32::MAX { None } else { Some(parent_index as usize) };
+            let slice = if !text.is_null() && text_len > 0 {
+                unsafe { core::slice::from_raw_parts(text, text_len as usize) }
+            } else {
+                &[]
+            };
+            return tv.add_node(parent, slice) as u32;
+        }
+    }
+    u32::MAX
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_treeview_remove_node(id: ControlId, index: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tv) = as_tree_view(ctrl) {
+            tv.remove_node(index as usize);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_treeview_set_node_text(id: ControlId, index: u32, text: *const u8, text_len: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tv) = as_tree_view(ctrl) {
+            let slice = if !text.is_null() && text_len > 0 {
+                unsafe { core::slice::from_raw_parts(text, text_len as usize) }
+            } else {
+                &[]
+            };
+            tv.set_node_text(index as usize, slice);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_treeview_set_node_icon(id: ControlId, index: u32, pixels: *const u32, w: u32, h: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tv) = as_tree_view(ctrl) {
+            if !pixels.is_null() && w > 0 && h > 0 {
+                let count = (w * h) as usize;
+                let slice = unsafe { core::slice::from_raw_parts(pixels, count) };
+                tv.set_node_icon(index as usize, slice, w as u16, h as u16);
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_treeview_set_node_style(id: ControlId, index: u32, style: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tv) = as_tree_view(ctrl) {
+            tv.set_node_style(index as usize, style);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_treeview_set_node_text_color(id: ControlId, index: u32, color: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tv) = as_tree_view(ctrl) {
+            tv.set_node_text_color(index as usize, color);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_treeview_set_expanded(id: ControlId, index: u32, expanded: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tv) = as_tree_view(ctrl) {
+            tv.set_expanded(index as usize, expanded != 0);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_treeview_get_expanded(id: ControlId, index: u32) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if let Some(tv) = as_tree_view_ref(ctrl) {
+            return tv.is_expanded(index as usize) as u32;
+        }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_treeview_get_selected(id: ControlId) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if let Some(tv) = as_tree_view_ref(ctrl) {
+            return tv.selected().map_or(u32::MAX, |s| s as u32);
+        }
+    }
+    u32::MAX
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_treeview_set_selected(id: ControlId, index: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tv) = as_tree_view(ctrl) {
+            if index == u32::MAX {
+                tv.set_selected(None);
+            } else {
+                tv.set_selected(Some(index as usize));
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_treeview_clear(id: ControlId) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tv) = as_tree_view(ctrl) {
+            tv.clear();
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_treeview_get_node_count(id: ControlId) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if let Some(tv) = as_tree_view_ref(ctrl) {
+            return tv.node_count() as u32;
+        }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_treeview_set_indent_width(id: ControlId, width: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tv) = as_tree_view(ctrl) {
+            tv.indent_width = width.max(8);
+            tv.base.dirty = true;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_treeview_set_row_height(id: ControlId, height: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tv) = as_tree_view(ctrl) {
+            tv.row_height = height.max(16);
+            tv.base.dirty = true;
+        }
+    }
+}
+
 // ── Callbacks ────────────────────────────────────────────────────────
 
 /// Register a callback for a specific event type on a control.

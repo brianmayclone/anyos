@@ -45,6 +45,8 @@ pub mod table_layout;
 pub mod canvas;
 pub mod expander;
 pub mod data_grid;
+pub mod text_editor;
+pub mod tree_view;
 
 /// Factory: create a concrete control based on `kind`.
 ///
@@ -86,6 +88,8 @@ pub fn create_control(
         ControlKind::TableLayout => Box::new(table_layout::TableLayout::new(base)),
         ControlKind::Canvas => Box::new(canvas::Canvas::new(base)),
         ControlKind::DataGrid => Box::new(data_grid::DataGrid::new(base)),
+        ControlKind::TextEditor => Box::new(text_editor::TextEditor::new(base)),
+        ControlKind::TreeView => Box::new(tree_view::TreeView::new(base)),
 
         // Text controls — wrap ControlBase in TextControlBase with text
         ControlKind::Label => Box::new(label::Label::new(TextControlBase::new(base).with_text(text))),

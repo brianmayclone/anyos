@@ -22,6 +22,8 @@ mod badge;
 mod tag;
 mod canvas;
 mod datagrid;
+mod texteditor;
+mod treeview;
 
 // ── Container controls (can have children) ──
 mod expander;
@@ -69,6 +71,8 @@ pub use badge::Badge;
 pub use tag::Tag;
 pub use canvas::Canvas;
 pub use datagrid::{DataGrid, ColumnDef};
+pub use texteditor::TextEditor;
+pub use treeview::TreeView;
 
 pub use expander::Expander;
 pub use window::Window;

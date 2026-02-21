@@ -80,3 +80,28 @@ EXPORTS
     anyui_datagrid_sort
     anyui_datagrid_set_row_height
     anyui_datagrid_set_header_height
+    anyui_texteditor_set_text
+    anyui_texteditor_get_text
+    anyui_texteditor_set_syntax
+    anyui_texteditor_set_cursor
+    anyui_texteditor_get_cursor
+    anyui_texteditor_set_line_height
+    anyui_texteditor_set_tab_width
+    anyui_texteditor_set_show_line_numbers
+    anyui_texteditor_set_font
+    anyui_texteditor_insert_text
+    anyui_texteditor_get_line_count
+    anyui_treeview_add_node
+    anyui_treeview_remove_node
+    anyui_treeview_set_node_text
+    anyui_treeview_set_node_icon
+    anyui_treeview_set_node_style
+    anyui_treeview_set_node_text_color
+    anyui_treeview_set_expanded
+    anyui_treeview_get_expanded
+    anyui_treeview_get_selected
+    anyui_treeview_set_selected
+    anyui_treeview_clear
+    anyui_treeview_get_node_count
+    anyui_treeview_set_indent_width
+    anyui_treeview_set_row_height

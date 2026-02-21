@@ -79,6 +79,8 @@ pub const KIND_TABLE_LAYOUT: u32 = 35;
 pub const KIND_CANVAS: u32 = 36;
 pub const KIND_EXPANDER: u32 = 37;
 pub const KIND_DATA_GRID: u32 = 38;
+pub const KIND_TEXT_EDITOR: u32 = 39;
+pub const KIND_TREE_VIEW: u32 = 40;
 
 // ── DockStyle constants ─────────────────────────────────────────────
 
@@ -214,6 +216,33 @@ struct AnyuiLib {
     datagrid_sort: extern "C" fn(u32, u32, u32),
     datagrid_set_row_height: extern "C" fn(u32, u32),
     datagrid_set_header_height: extern "C" fn(u32, u32),
+    // TextEditor
+    texteditor_set_text: extern "C" fn(u32, *const u8, u32),
+    texteditor_get_text: extern "C" fn(u32, *mut u8, u32) -> u32,
+    texteditor_set_syntax: extern "C" fn(u32, *const u8, u32),
+    texteditor_set_cursor: extern "C" fn(u32, u32, u32),
+    texteditor_get_cursor: extern "C" fn(u32, *mut u32, *mut u32),
+    texteditor_set_line_height: extern "C" fn(u32, u32),
+    texteditor_set_tab_width: extern "C" fn(u32, u32),
+    texteditor_set_show_line_numbers: extern "C" fn(u32, u32),
+    texteditor_set_font: extern "C" fn(u32, u32, u32),
+    texteditor_insert_text: extern "C" fn(u32, *const u8, u32),
+    texteditor_get_line_count: extern "C" fn(u32) -> u32,
+    // TreeView
+    treeview_add_node: extern "C" fn(u32, u32, *const u8, u32) -> u32,
+    treeview_remove_node: extern "C" fn(u32, u32),
+    treeview_set_node_text: extern "C" fn(u32, u32, *const u8, u32),
+    treeview_set_node_icon: extern "C" fn(u32, u32, *const u32, u32, u32),
+    treeview_set_node_style: extern "C" fn(u32, u32, u32),
+    treeview_set_node_text_color: extern "C" fn(u32, u32, u32),
+    treeview_set_expanded: extern "C" fn(u32, u32, u32),
+    treeview_get_expanded: extern "C" fn(u32, u32) -> u32,
+    treeview_get_selected: extern "C" fn(u32) -> u32,
+    treeview_set_selected: extern "C" fn(u32, u32),
+    treeview_clear: extern "C" fn(u32),
+    treeview_get_node_count: extern "C" fn(u32) -> u32,
+    treeview_set_indent_width: extern "C" fn(u32, u32),
+    treeview_set_row_height: extern "C" fn(u32, u32),
 }
 
 static mut LIB: Option<AnyuiLib> = None;
@@ -334,6 +363,33 @@ pub fn init() -> bool {
             datagrid_sort: resolve(&handle, "anyui_datagrid_sort"),
             datagrid_set_row_height: resolve(&handle, "anyui_datagrid_set_row_height"),
             datagrid_set_header_height: resolve(&handle, "anyui_datagrid_set_header_height"),
+            // TextEditor
+            texteditor_set_text: resolve(&handle, "anyui_texteditor_set_text"),
+            texteditor_get_text: resolve(&handle, "anyui_texteditor_get_text"),
+            texteditor_set_syntax: resolve(&handle, "anyui_texteditor_set_syntax"),
+            texteditor_set_cursor: resolve(&handle, "anyui_texteditor_set_cursor"),
+            texteditor_get_cursor: resolve(&handle, "anyui_texteditor_get_cursor"),
+            texteditor_set_line_height: resolve(&handle, "anyui_texteditor_set_line_height"),
+            texteditor_set_tab_width: resolve(&handle, "anyui_texteditor_set_tab_width"),
+            texteditor_set_show_line_numbers: resolve(&handle, "anyui_texteditor_set_show_line_numbers"),
+            texteditor_set_font: resolve(&handle, "anyui_texteditor_set_font"),
+            texteditor_insert_text: resolve(&handle, "anyui_texteditor_insert_text"),
+            texteditor_get_line_count: resolve(&handle, "anyui_texteditor_get_line_count"),
+            // TreeView
+            treeview_add_node: resolve(&handle, "anyui_treeview_add_node"),
+            treeview_remove_node: resolve(&handle, "anyui_treeview_remove_node"),
+            treeview_set_node_text: resolve(&handle, "anyui_treeview_set_node_text"),
+            treeview_set_node_icon: resolve(&handle, "anyui_treeview_set_node_icon"),
+            treeview_set_node_style: resolve(&handle, "anyui_treeview_set_node_style"),
+            treeview_set_node_text_color: resolve(&handle, "anyui_treeview_set_node_text_color"),
+            treeview_set_expanded: resolve(&handle, "anyui_treeview_set_expanded"),
+            treeview_get_expanded: resolve(&handle, "anyui_treeview_get_expanded"),
+            treeview_get_selected: resolve(&handle, "anyui_treeview_get_selected"),
+            treeview_set_selected: resolve(&handle, "anyui_treeview_set_selected"),
+            treeview_clear: resolve(&handle, "anyui_treeview_clear"),
+            treeview_get_node_count: resolve(&handle, "anyui_treeview_get_node_count"),
+            treeview_set_indent_width: resolve(&handle, "anyui_treeview_set_indent_width"),
+            treeview_set_row_height: resolve(&handle, "anyui_treeview_set_row_height"),
             _handle: handle,
         };
         (lib.init)();

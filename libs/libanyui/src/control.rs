@@ -185,6 +185,8 @@ pub enum ControlKind {
     Canvas = 36,
     Expander = 37,
     DataGrid = 38,
+    TextEditor = 39,
+    TreeView = 40,
 }
 
 impl ControlKind {
@@ -229,6 +231,8 @@ impl ControlKind {
             36 => Self::Canvas,
             37 => Self::Expander,
             38 => Self::DataGrid,
+            39 => Self::TextEditor,
+            40 => Self::TreeView,
             _ => Self::View,
         }
     }
