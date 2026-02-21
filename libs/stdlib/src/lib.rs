@@ -7,6 +7,7 @@ mod raw;
 
 pub mod args;
 pub mod anim;
+pub mod hashmap;
 pub mod audio;
 pub mod bundle;
 pub mod crypto;
@@ -32,6 +33,7 @@ pub use alloc::boxed::Box;
 pub use alloc::string::String;
 pub use alloc::vec::Vec;
 pub use alloc::{format, vec};
+pub use hashmap::HashMap;
 
 /// Trait for main function return types (() or u32 exit code).
 pub trait MainReturn {
