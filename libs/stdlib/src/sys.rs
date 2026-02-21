@@ -70,6 +70,13 @@ pub fn devlist(buf: &mut [u8]) -> u32 {
     syscall2(SYS_DEVLIST, buf.as_mut_ptr() as u64, buf.len() as u64)
 }
 
+/// Retrieve crash report for a terminated thread.
+/// Returns bytes written to buf, or 0 if no crash report exists for that TID.
+/// Buffer must be large enough for the kernel's CrashReport struct.
+pub fn get_crash_info(tid: u32, buf: &mut [u8]) -> u32 {
+    syscall3(SYS_GET_CRASH_INFO, tid as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
+}
+
 /// List all open pipes. Each 80-byte entry:
 ///   [0..4]   pipe_id (u32 LE)
 ///   [4..8]   buffered_bytes (u32 LE)

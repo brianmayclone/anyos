@@ -331,14 +331,18 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* ── Step 6: Apply relocations ──────────────────────────────────── */
+    /* ── Step 6: Compute section layout (VMAs) ──────────────────────── */
+    if (compute_layout(&ctx) != 0)
+        fatal("layout computation failed");
+
+    /* ── Step 7: Apply relocations ──────────────────────────────────── */
     if (apply_relocations(&ctx) != 0)
         fatal("relocation failed");
 
     if (verbose)
         printf("anyld: %d relocations applied\n", ctx.nrelocs);
 
-    /* ── Step 7: Write output ───────────────────────────────────────── */
+    /* ── Step 8: Write output ───────────────────────────────────────── */
     if (write_output(&ctx) != 0)
         fatal("output generation failed");
 

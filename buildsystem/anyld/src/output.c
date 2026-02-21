@@ -210,6 +210,64 @@ static void build_shstrtab(Buf *shstrtab, ShstrOffsets *off) {
     #undef ADD_NAME
 }
 
+/* ── Compute section virtual addresses (must be called before relocs) ── */
+
+int compute_layout(Ctx *ctx) {
+    uint64_t base = ctx->base_addr;
+
+    /*
+     * Metadata region: offset 0x0000 → just before .text
+     * [ELF header][PHDRs][.dynsym][.dynstr][.hash][pad to page]
+     *
+     * Build temporary dynsym/dynstr/hash just to determine sizes
+     * (symbol values don't matter — only entry count affects size).
+     */
+    uint64_t meta_off = sizeof(Elf64_Ehdr) + NUM_PHDRS * sizeof(Elf64_Phdr);
+
+    Buf tmp_dynsym, tmp_dynstr, tmp_hash;
+    int tmp_count;
+    build_dynsym(ctx, &tmp_dynsym, &tmp_dynstr, &tmp_count);
+    build_hash(&tmp_hash, &tmp_dynsym, &tmp_dynstr, tmp_count);
+
+    uint64_t dynsym_off = (meta_off + 7) & ~7ULL;
+    uint64_t dynstr_off = dynsym_off + tmp_dynsym.size;
+    uint64_t hash_off   = (dynstr_off + tmp_dynstr.size + 3) & ~3ULL;
+    uint64_t meta_end   = hash_off + tmp_hash.size;
+
+    buf_free(&tmp_dynsym);
+    buf_free(&tmp_dynstr);
+    buf_free(&tmp_hash);
+
+    /* .text starts at next page */
+    uint64_t text_off = PAGE_ALIGN(meta_end);
+    ctx->text_vaddr   = base + text_off;
+
+    /* .rodata follows .text, 16-byte aligned */
+    uint64_t rodata_off = text_off + ctx->text.size;
+    rodata_off = (rodata_off + 15) & ~15ULL;
+    ctx->rodata_vaddr = base + rodata_off;
+
+    /* .data starts at next page after .rodata */
+    uint64_t rx_end   = rodata_off + ctx->rodata.size;
+    uint64_t data_off = PAGE_ALIGN(rx_end);
+    ctx->data_vaddr   = base + data_off;
+
+    /* .dynamic follows .data, 8-byte aligned */
+    uint64_t dyn_off  = data_off + ctx->data.size;
+    dyn_off = (dyn_off + 7) & ~7ULL;
+    ctx->dynamic_vaddr = base + dyn_off;
+
+    /* Estimate .dynamic size (7 entries * 16 bytes = 112 max) */
+    uint64_t dyn_size_est = 7 * sizeof(Elf64_Dyn);
+    uint64_t rw_file_end  = dyn_off + dyn_size_est;
+
+    /* .bss follows at next page boundary */
+    uint64_t bss_off_virt = PAGE_ALIGN(rw_file_end);
+    ctx->bss_vaddr = base + bss_off_virt;
+
+    return 0;
+}
+
 /* ── Write the complete ELF64 output file ───────────────────────────── */
 
 int write_output(Ctx *ctx) {
@@ -227,9 +285,7 @@ int write_output(Ctx *ctx) {
     Buf dynsym_buf, dynstr_buf, hash_buf, dyn_buf, shstrtab_buf;
     int dynsym_count;
 
-    /* We need vaddrs for .dynamic entries, but don't know them yet.
-     * Build dynsym/dynstr/hash first (sizes don't depend on vaddrs),
-     * then compute layout, then rebuild .dynamic with correct vaddrs. */
+    /* Build dynsym/dynstr/hash with final symbol values */
     build_dynsym(ctx, &dynsym_buf, &dynstr_buf, &dynsym_count);
     build_hash(&hash_buf, &dynsym_buf, &dynstr_buf, dynsym_count);
 
@@ -242,7 +298,7 @@ int write_output(Ctx *ctx) {
     /* .text starts at next page */
     uint64_t text_off = PAGE_ALIGN(meta_end);
 
-    /* Virtual addresses for code */
+    /* Recompute layout (must match compute_layout) */
     ctx->text_vaddr   = base + text_off;
     uint64_t rodata_off = text_off + ctx->text.size;
     rodata_off = (rodata_off + 15) & ~15ULL;  /* 16-byte align */
@@ -270,51 +326,6 @@ int write_output(Ctx *ctx) {
     /* BSS follows .dynamic in virtual space */
     uint64_t bss_off_virt = PAGE_ALIGN(rw_file_end);
     ctx->bss_vaddr = base + bss_off_virt;
-
-    /* Finalize symbol values with the computed vaddrs */
-    /* (Already called by apply_relocations, but calling again
-     *  since we just set the vaddrs) */
-    for (int i = 0; i < ctx->nsyms; i++) {
-        Symbol *s = &ctx->syms[i];
-        if (!s->defined) { s->value = 0; continue; }
-        if (s->type == STT_SECTION) {
-            uint64_t sv = 0;
-            switch (s->out_sec) {
-                case SEC_TEXT:   sv = ctx->text_vaddr; break;
-                case SEC_RODATA: sv = ctx->rodata_vaddr; break;
-                case SEC_DATA:   sv = ctx->data_vaddr; break;
-                case SEC_BSS:    sv = ctx->bss_vaddr; break;
-            }
-            if (s->obj_idx >= 0 && s->obj_idx < ctx->nobjs) {
-                InputObj *obj = &ctx->objs[s->obj_idx];
-                if (s->sec_idx < obj->nshdr)
-                    sv += obj->sec_map[s->sec_idx].out_off;
-            }
-            s->value = sv;
-            continue;
-        }
-        uint64_t bv = 0;
-        switch (s->out_sec) {
-            case SEC_TEXT:   bv = ctx->text_vaddr; break;
-            case SEC_RODATA: bv = ctx->rodata_vaddr; break;
-            case SEC_DATA:   bv = ctx->data_vaddr; break;
-            case SEC_BSS:    bv = ctx->bss_vaddr; break;
-            default:         s->value = s->sec_off; continue;
-        }
-        uint64_t mo = 0;
-        if (s->obj_idx >= 0 && s->obj_idx < ctx->nobjs) {
-            InputObj *obj = &ctx->objs[s->obj_idx];
-            if (s->sec_idx < obj->nshdr)
-                mo = obj->sec_map[s->sec_idx].out_off;
-        }
-        s->value = bv + mo + s->sec_off;
-    }
-
-    /* Rebuild .dynsym with final symbol values */
-    buf_free(&dynsym_buf);
-    buf_free(&dynstr_buf);
-    buf_free(&hash_buf);
-    buf_free(&dyn_buf);
 
     build_dynsym(ctx, &dynsym_buf, &dynstr_buf, &dynsym_count);
     build_hash(&hash_buf, &dynsym_buf, &dynstr_buf, dynsym_count);

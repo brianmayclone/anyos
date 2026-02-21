@@ -196,6 +196,9 @@ pub(crate) const SYS_PERM_LIST: u32 = 252;
 pub(crate) const SYS_PERM_DELETE: u32 = 253;
 pub(crate) const SYS_PERM_PENDING_INFO: u32 = 254;
 
+// Crash info
+pub(crate) const SYS_GET_CRASH_INFO: u32 = 260;
+
 // Event bus
 pub(crate) const SYS_EVT_SYS_SUBSCRIBE: u32 = 60;
 pub(crate) const SYS_EVT_SYS_POLL: u32 = 61;

@@ -3913,3 +3913,40 @@ pub fn sys_perm_pending_info(buf_ptr: u32, buf_size: u32) -> u32 {
     dst.copy_from_slice(&kernel_buf[..copy]);
     copy as u32
 }
+
+// =========================================================================
+// Crash Info (SYS_GET_CRASH_INFO)
+// =========================================================================
+
+/// SYS_GET_CRASH_INFO (260): Retrieve crash report for a terminated thread.
+/// arg1 = tid, arg2 = buf_ptr, arg3 = buf_size.
+/// Copies the raw CrashReport struct into the user buffer.
+/// Returns bytes written, or 0 if no crash report exists for that TID.
+pub fn sys_get_crash_info(tid: u32, buf_ptr: u32, buf_size: u32) -> u32 {
+    use crate::task::crash_info;
+
+    if buf_ptr == 0 || buf_size == 0 {
+        return 0;
+    }
+
+    let needed = crash_info::CRASH_REPORT_SIZE;
+    if (buf_size as usize) < needed {
+        return 0;
+    }
+
+    if !is_valid_user_ptr(buf_ptr as u64, needed as u64) {
+        return 0;
+    }
+
+    match crash_info::take_crash(tid) {
+        Some(report) => {
+            let src = &report as *const crash_info::CrashReport as *const u8;
+            let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, needed) };
+            unsafe {
+                core::ptr::copy_nonoverlapping(src, dst.as_mut_ptr(), needed);
+            }
+            needed as u32
+        }
+        None => 0,
+    }
+}

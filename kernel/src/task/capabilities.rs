@@ -104,10 +104,9 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_LISTGROUPS
         | syscall::SYS_GETUSERNAME
         | syscall::SYS_SET_IDENTITY
-        | syscall::SYS_GET_CAPABILITIES => 0,
-
-        // Filesystem
-        syscall::SYS_OPEN
+        | syscall::SYS_GET_CAPABILITIES
+        // Filesystem — always allowed (every app needs file access)
+        | syscall::SYS_OPEN
         | syscall::SYS_READ
         | syscall::SYS_WRITE
         | syscall::SYS_CLOSE
@@ -127,7 +126,16 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_CHDIR
         | syscall::SYS_GETCWD
         | syscall::SYS_CHMOD
-        | syscall::SYS_CHOWN => CAP_FILESYSTEM,
+        | syscall::SYS_CHOWN
+        | syscall::SYS_RENAME
+        | syscall::SYS_FTRUNCATE
+        // Shared memory — always allowed (GUI apps need SHM for window surfaces)
+        | syscall::SYS_SHM_CREATE
+        | syscall::SYS_SHM_MAP
+        | syscall::SYS_SHM_UNMAP
+        | syscall::SYS_SHM_DESTROY
+        // Crash info — always allowed
+        | syscall::SYS_GET_CRASH_INFO => 0,
 
         // Networking
         syscall::SYS_NET_CONFIG
@@ -189,12 +197,6 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_PIPE_CLOSE
         | syscall::SYS_PIPE_OPEN
         | syscall::SYS_PIPE_LIST => CAP_PIPE,
-
-        // Shared memory
-        syscall::SYS_SHM_CREATE
-        | syscall::SYS_SHM_MAP
-        | syscall::SYS_SHM_UNMAP
-        | syscall::SYS_SHM_DESTROY => CAP_SHM,
 
         // Event bus
         syscall::SYS_EVT_SYS_SUBSCRIBE

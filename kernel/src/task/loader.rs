@@ -990,7 +990,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             // Intersect declared caps with stored user permissions:
             // - auto-granted caps (DLL, THREAD, SHM, EVENT, PIPE) always apply
             // - sensitive caps only if the user granted them
-            let auto = declared & CAP_AUTO_GRANTED;
+            let auto = CAP_AUTO_GRANTED;
             let uid = crate::task::scheduler::current_thread_uid();
             let app_id = bundle_app_id.as_deref().unwrap_or(name);
             let granted_sensitive = crate::task::permissions::read_stored_perms(uid, app_id)

@@ -380,6 +380,10 @@ impl Desktop {
 
                 match hit_test {
                     HitTest::CloseButton => {
+                        // Crash dialogs: close button dismisses the dialog directly
+                        if self.handle_crash_dialog_click(win_id, 0, 0) {
+                            return;
+                        }
                         let no_close = self.windows.iter().find(|w| w.id == win_id)
                             .map(|w| w.flags & WIN_FLAG_NO_CLOSE != 0).unwrap_or(false);
                         if !no_close {
@@ -450,13 +454,18 @@ impl Desktop {
                     HitTest::Content => {
                         if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
                             let lx = mx - self.windows[idx].x;
-                            let mut ly = my - self.windows[idx].y;
+                            let ly = my - self.windows[idx].y;
+                            // Check if this is a crash dialog click
+                            if self.handle_crash_dialog_click(win_id, lx, ly) {
+                                return;
+                            }
+                            let mut content_ly = ly;
                             if !self.windows[idx].is_borderless() {
-                                ly -= TITLE_BAR_HEIGHT as i32;
+                                content_ly -= TITLE_BAR_HEIGHT as i32;
                             }
                             self.push_event(
                                 win_id,
-                                [EVENT_MOUSE_DOWN, lx as u32, ly as u32, buttons, 0],
+                                [EVENT_MOUSE_DOWN, lx as u32, content_ly as u32, buttons, 0],
                             );
                         }
                     }

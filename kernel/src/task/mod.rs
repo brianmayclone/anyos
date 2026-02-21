@@ -6,6 +6,7 @@
 pub mod app_config;
 pub mod capabilities;
 pub mod context;
+pub mod crash_info;
 pub mod cpu_monitor;
 pub mod dll;
 pub mod env;

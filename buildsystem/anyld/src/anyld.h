@@ -151,6 +151,7 @@ int  apply_relocations(Ctx *ctx);
 
 /* ── output.c ───────────────────────────────────────────────────────── */
 
+int  compute_layout(Ctx *ctx);
 int  write_output(Ctx *ctx);
 
 /* ── defs.c ─────────────────────────────────────────────────────────── */

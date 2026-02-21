@@ -230,6 +230,9 @@ pub const SYS_PERM_LIST: u32 = 252;
 pub const SYS_PERM_DELETE: u32 = 253;
 pub const SYS_PERM_PENDING_INFO: u32 = 254;
 
+// Crash info
+pub const SYS_GET_CRASH_INFO: u32 = 260;
+
 /// Register frame pushed by `syscall_entry.asm` / `syscall_fast.asm`.
 ///
 /// The layout matches the individual GPR pushes (no pushad in 64-bit mode) plus the
@@ -488,6 +491,9 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_PERM_LIST => handlers::sys_perm_list(arg1, arg2),
         SYS_PERM_DELETE => handlers::sys_perm_delete(arg1),
         SYS_PERM_PENDING_INFO => handlers::sys_perm_pending_info(arg1, arg2),
+
+        // Crash info
+        SYS_GET_CRASH_INFO => handlers::sys_get_crash_info(arg1, arg2, arg3),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

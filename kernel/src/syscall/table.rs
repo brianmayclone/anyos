@@ -89,6 +89,7 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_PERM_PENDING_INFO, "perm_pending_info"),
     (SYS_GPU_VRAM_SIZE, "gpu_vram_size"),
     (SYS_VRAM_MAP, "vram_map"),
+    (SYS_GET_CRASH_INFO, "get_crash_info"),
 ];
 
 /// Look up the human-readable name for a syscall number.

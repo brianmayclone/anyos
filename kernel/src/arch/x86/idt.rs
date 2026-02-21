@@ -353,6 +353,9 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         }
         crate::serial_println!("--- End Crash Report ---");
 
+        // Store crash report for retrieval by compositor crash dialog
+        crate::task::crash_info::store_crash(tid, signal, frame);
+
         // Force-release any kernel locks held by THIS CPU. A fault during a
         // syscall or demand-page handler can leave locks permanently held,
         // deadlocking the entire system. Check all critical locks:

@@ -1,5 +1,6 @@
 //! Desktop manager — coordinates window management, menubar, wallpaper, cursor, and input.
 
+pub mod crash_dialog;
 pub mod cursors;
 pub mod drawing;
 pub mod input;
@@ -87,6 +88,8 @@ pub struct Desktop {
     /// Current wallpaper path (for reload on resolution change).
     pub(crate) wallpaper_path: [u8; 128],
     pub(crate) wallpaper_path_len: usize,
+    /// Active crash dialogs (internal windows showing crash info).
+    pub(crate) crash_dialogs: Vec<crash_dialog::CrashDialog>,
 }
 
 impl Desktop {
@@ -137,6 +140,7 @@ impl Desktop {
             tray_ipc_events: Vec::new(),
             wallpaper_path: [0u8; 128],
             wallpaper_path_len: 0,
+            crash_dialogs: Vec::new(),
         };
 
         if desktop.has_gpu_accel {
@@ -474,6 +478,77 @@ impl Desktop {
 
     pub fn focused_window_id(&self) -> Option<u32> {
         self.focused_window
+    }
+
+    // ── Crash Dialogs ──────────────────────────────────────────────────
+
+    /// Show a crash dialog for a terminated thread.
+    /// `report_buf` contains the raw CrashReport bytes from the kernel.
+    pub fn show_crash_dialog(&mut self, tid: u32, _exit_code: u32, report_buf: &[u8]) {
+        let report = unsafe {
+            &*(report_buf.as_ptr() as *const crash_dialog::CrashReport)
+        };
+
+        let content_h = crash_dialog::CrashDialog::from_report(0, report).content_height();
+        let flags = WIN_FLAG_NO_MINIMIZE | WIN_FLAG_NO_MAXIMIZE | WIN_FLAG_ALWAYS_ON_TOP;
+
+        // Center on screen
+        let x = (self.screen_width as i32 - 420) / 2;
+        let y = (self.screen_height as i32 - (content_h + TITLE_BAR_HEIGHT) as i32) / 2;
+
+        let win_id = self.create_window("Application Crashed", x, y, 420, content_h, flags, 0);
+
+        let dialog = crash_dialog::CrashDialog::from_report(win_id, report);
+
+        // Render the dialog content
+        let layer_id = self.windows.iter().find(|w| w.id == win_id).map(|w| w.layer_id).unwrap_or(0);
+        let full_h = content_h + TITLE_BAR_HEIGHT;
+        if let Some(pixels) = self.compositor.layer_pixels(layer_id) {
+            dialog.render(pixels, 420, full_h);
+        }
+        self.compositor.mark_layer_dirty(layer_id);
+
+        self.crash_dialogs.push(dialog);
+    }
+
+    /// Check if a window click is on a crash dialog and handle it.
+    /// Returns true if the click was consumed by a crash dialog.
+    pub fn handle_crash_dialog_click(&mut self, window_id: u32, wx: i32, wy: i32) -> bool {
+        let dialog_idx = match self.crash_dialogs.iter().position(|d| d.window_id == window_id) {
+            Some(i) => i,
+            None => return false,
+        };
+
+        let action = self.crash_dialogs[dialog_idx].handle_click(wx, wy);
+        match action {
+            crash_dialog::CrashDialogAction::Dismiss => {
+                self.crash_dialogs.remove(dialog_idx);
+                self.destroy_window(window_id);
+            }
+            crash_dialog::CrashDialogAction::ToggleDetails => {
+                let new_h = self.crash_dialogs[dialog_idx].content_height();
+                // Resize the window
+                if let Some(win) = self.windows.iter_mut().find(|w| w.id == window_id) {
+                    win.content_height = new_h;
+                    let full_h = new_h + TITLE_BAR_HEIGHT;
+                    let layer_id = win.layer_id;
+                    let cw = win.content_width;
+                    self.compositor.resize_layer(layer_id, cw, full_h);
+
+                    // Re-render chrome + dialog content
+                    if let Some(pixels) = self.compositor.layer_pixels(layer_id) {
+                        window::pre_render_chrome_ex(
+                            pixels, cw, full_h, "Application Crashed", true,
+                            WIN_FLAG_NO_MINIMIZE | WIN_FLAG_NO_MAXIMIZE,
+                        );
+                        self.crash_dialogs[dialog_idx].render(pixels, cw, full_h);
+                    }
+                    self.compositor.mark_layer_dirty(layer_id);
+                }
+            }
+            crash_dialog::CrashDialogAction::None => {}
+        }
+        true
     }
 }
 

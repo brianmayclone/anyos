@@ -416,7 +416,19 @@ fn handle_system_events(compositor_channel: u32, sys_sub: u32) {
         if sys_buf[0] == 0x0021 {
             // EVT_PROCESS_EXITED
             let exited_tid = sys_buf[1];
+            let exit_code = sys_buf[2];
             desktop.on_process_exit(exited_tid);
+
+            // Check if this was a crash (signal > 128 indicates a fatal signal)
+            if exit_code > 128 && exit_code < 256 {
+                // Query crash info from kernel
+                let mut crash_buf = [0u8; core::mem::size_of::<desktop::crash_dialog::CrashReport>()];
+                let bytes = anyos_std::sys::get_crash_info(exited_tid, &mut crash_buf);
+                if bytes > 0 {
+                    desktop.show_crash_dialog(exited_tid, exit_code, &crash_buf);
+                }
+            }
+
             release_lock();
             ipc::evt_chan_emit(compositor_channel, &[
                 ipc_protocol::EVT_WINDOW_CLOSED,
