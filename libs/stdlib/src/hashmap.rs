@@ -6,7 +6,6 @@
 //! Supports all standard operations: insert, get, get_mut, remove,
 //! contains_key, len, iter, iter_mut, keys, values, clear.
 
-use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::{Hash, Hasher};
 

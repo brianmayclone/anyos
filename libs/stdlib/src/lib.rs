@@ -28,6 +28,7 @@ pub mod process;
 pub mod sys;
 pub mod ui;
 pub mod users;
+pub mod xml;
 
 // Re-export alloc types for user convenience
 pub use alloc::boxed::Box;

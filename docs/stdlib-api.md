@@ -29,6 +29,9 @@ The **anyos_std** crate is the standard library for user-space Rust programs on 
 - [permissions -- App Permissions](#permissions----app-permissions)
 - [bundle -- App Bundle Discovery](#bundle----app-bundle-discovery)
 - [icons -- Icon & MIME Type Lookup](#icons----icon--mime-type-lookup)
+- [hashmap -- Hash Map](#hashmap----hash-map)
+- [json -- JSON Parser & Serializer](#json----json-parser--serializer)
+- [xml -- XML Parser & Serializer](#xml----xml-parser--serializer)
 - [ui::window -- Window Management](#uiwindow----window-management)
 - [ui::dialog -- Modal Dialogs](#uidialog----modal-dialogs)
 - [ui::filedialog -- File & Folder Dialogs](#uifiledialog----file--folder-dialogs)
@@ -100,6 +103,7 @@ pub use alloc::boxed::Box;
 pub use alloc::string::String;
 pub use alloc::vec::Vec;
 pub use alloc::{format, vec};
+pub use hashmap::HashMap;
 ```
 
 ---
@@ -745,6 +749,249 @@ pub struct MimeEntry {
 | `is_app_bundle` | `fn is_app_bundle(path: &str) -> bool` | Check if path is a `.app` bundle. |
 | `app_bundle_name` | `fn app_bundle_name(bundle_path: &str) -> String` | Extract display name from bundle path. |
 | `app_icon_path` | `fn app_icon_path(bin_path: &str) -> String` | Find icon for an application binary. |
+
+---
+
+## `hashmap` -- Hash Map
+
+A no_std hash map using FNV-1a hashing with open addressing (linear probing). Power-of-2 table size, resizes at 75% load factor. Re-exported as `anyos_std::HashMap`.
+
+### HashMap<K, V>
+
+```rust
+pub struct HashMap<K: Hash + Eq, V> { /* ... */ }
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `fn new() -> Self` | Create an empty HashMap. |
+| `with_capacity` | `fn with_capacity(cap: usize) -> Self` | Create with pre-allocated capacity. |
+| `insert` | `fn insert(&mut self, key: K, value: V) -> Option<V>` | Insert key-value pair. Returns previous value if key existed. |
+| `get` | `fn get(&self, key: &K) -> Option<&V>` | Get reference to value for key. |
+| `get_mut` | `fn get_mut(&mut self, key: &K) -> Option<&mut V>` | Get mutable reference to value. |
+| `remove` | `fn remove(&mut self, key: &K) -> Option<V>` | Remove key-value pair. Returns value if existed. |
+| `contains_key` | `fn contains_key(&self, key: &K) -> bool` | Check if key exists. |
+| `len` | `fn len(&self) -> usize` | Number of entries. |
+| `is_empty` | `fn is_empty(&self) -> bool` | Whether the map is empty. |
+| `capacity` | `fn capacity(&self) -> usize` | Number of allocated bucket slots. |
+| `clear` | `fn clear(&mut self)` | Remove all entries (keeps allocation). |
+| `iter` | `fn iter(&self) -> Iter<K, V>` | Iterate over `(&K, &V)` pairs. |
+| `iter_mut` | `fn iter_mut(&mut self) -> IterMut<K, V>` | Iterate over `(&K, &mut V)` pairs. |
+| `keys` | `fn keys(&self) -> Keys<K, V>` | Iterate over keys. |
+| `values` | `fn values(&self) -> Values<K, V>` | Iterate over values. |
+
+Implements: `Default`, `Debug`, `Clone`, `Index<&K>`, `FromIterator`, `IntoIterator`.
+
+### Example
+
+```rust
+use anyos_std::HashMap;
+
+let mut map = HashMap::new();
+map.insert("name", "anyOS");
+map.insert("version", "1.0");
+assert_eq!(map.get(&"name"), Some(&"anyOS"));
+assert_eq!(map["version"], "1.0");
+```
+
+---
+
+## `json` -- JSON Parser & Serializer
+
+Full RFC 8259 JSON parser and serializer with pretty-printing support.
+
+### Value
+
+```rust
+pub enum Value {
+    Null,
+    Bool(bool),
+    Number(Number),
+    String(String),
+    Array(Vec<Value>),
+    Object(Object),
+}
+
+pub enum Number {
+    Int(i64),
+    Float(f64),
+}
+```
+
+### Value Methods
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `parse` | `fn parse(input: &str) -> Result<Value, ParseError>` | Parse a JSON string. |
+| `new_object` | `fn new_object() -> Value` | Create empty object. |
+| `new_array` | `fn new_array() -> Value` | Create empty array. |
+| `to_json_string` | `fn to_json_string(&self) -> String` | Serialize to compact JSON. |
+| `to_json_string_pretty` | `fn to_json_string_pretty(&self) -> String` | Serialize with 2-space indent. |
+| `to_json_string_indent` | `fn to_json_string_indent(&self, indent: usize) -> String` | Serialize with custom indent. |
+| `is_null` | `fn is_null(&self) -> bool` | Type check. |
+| `is_bool` / `is_number` / `is_string` / `is_array` / `is_object` | | Type checks. |
+| `as_bool` | `fn as_bool(&self) -> Option<bool>` | Extract bool. |
+| `as_i64` | `fn as_i64(&self) -> Option<i64>` | Extract integer (converts float). |
+| `as_u64` | `fn as_u64(&self) -> Option<u64>` | Extract unsigned integer. |
+| `as_f64` | `fn as_f64(&self) -> Option<f64>` | Extract float (converts int). |
+| `as_str` | `fn as_str(&self) -> Option<&str>` | Extract string. |
+| `as_array` / `as_array_mut` | | Extract array reference. |
+| `as_object` / `as_object_mut` | | Extract object reference. |
+| `set` | `fn set(&mut self, key: &str, value: Value)` | Set key on object (no-op if not object). |
+| `push` | `fn push(&mut self, value: Value)` | Push to array (no-op if not array). |
+
+Index operators: `val["key"]` returns `Value::Null` for missing keys. `val[0]` for arrays.
+
+### Object
+
+Ordered key-value store (preserves insertion order) with O(1) HashMap-backed lookup.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `insert` | `fn insert(&mut self, key: String, value: Value) -> Option<Value>` | Insert or update. |
+| `get` | `fn get(&self, key: &str) -> Option<&Value>` | Lookup by key. |
+| `get_mut` | `fn get_mut(&mut self, key: &str) -> Option<&mut Value>` | Mutable lookup. |
+| `remove` | `fn remove(&mut self, key: &str) -> Option<Value>` | Remove by key. |
+| `contains_key` | `fn contains_key(&self, key: &str) -> bool` | Check if key exists. |
+| `len` / `is_empty` | | Entry count. |
+| `iter` | `fn iter(&self) -> impl Iterator<Item = (&str, &Value)>` | Iterate in insertion order. |
+| `keys` / `values` | | Key/value iterators. |
+
+### From Conversions
+
+`Value` implements `From<T>` for: `bool`, `i32`, `i64`, `u32`, `u64`, `f64`, `&str`, `String`, `Vec<T: Into<Value>>`.
+
+### Example
+
+```rust
+use anyos_std::json::{Value, Number};
+
+// Parse
+let val = Value::parse(r#"{"name": "anyOS", "version": 1}"#).unwrap();
+assert_eq!(val["name"].as_str(), Some("anyOS"));
+assert_eq!(val["version"].as_i64(), Some(1));
+
+// Build
+let mut obj = Value::new_object();
+obj.set("name", "anyOS".into());
+obj.set("version", Value::Number(Number::Int(1)));
+obj.set("features", vec!["multitasking", "networking"].into());
+
+println!("{}", obj.to_json_string_pretty());
+// {
+//   "name": "anyOS",
+//   "version": 1,
+//   "features": [
+//     "multitasking",
+//     "networking"
+//   ]
+// }
+```
+
+---
+
+## `xml` -- XML Parser & Serializer
+
+XML 1.0 parser and serializer supporting elements, attributes, text, CDATA, comments, processing instructions, and entity references.
+
+### Types
+
+```rust
+pub struct Document {
+    pub declaration: Option<Declaration>,
+    pub root: Element,
+}
+
+pub struct Declaration {
+    pub version: String,
+    pub encoding: Option<String>,
+    pub standalone: Option<bool>,
+}
+
+pub enum XmlNode {
+    Element(Element),
+    Text(String),
+    CData(String),
+    Comment(String),
+    PI(String, String),  // target, data
+}
+```
+
+### Document Methods
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `parse` | `fn parse(input: &str) -> Result<Document, XmlError>` | Parse XML string. |
+| `new` | `fn new(root: Element) -> Document` | Create document with root element. |
+| `with_declaration` | `fn with_declaration(root: Element, version: &str) -> Document` | Create with XML declaration. |
+| `to_xml_string` | `fn to_xml_string(&self) -> String` | Serialize to compact XML. |
+| `to_xml_string_pretty` | `fn to_xml_string_pretty(&self) -> String` | Serialize with 2-space indent. |
+| `to_xml_string_indent` | `fn to_xml_string_indent(&self, indent: usize) -> String` | Serialize with custom indent. |
+
+### Element Methods
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `fn new(name: &str) -> Element` | Create empty element. |
+| `name` | `fn name(&self) -> &str` | Tag name. |
+| `attr` | `fn attr(&self, name: &str) -> Option<&str>` | Get attribute value. |
+| `set_attr` | `fn set_attr(&mut self, name: &str, value: &str)` | Set attribute. |
+| `remove_attr` | `fn remove_attr(&mut self, name: &str) -> bool` | Remove attribute. |
+| `attributes` | `fn attributes(&self) -> &[(String, String)]` | All attributes. |
+| `children` | `fn children(&self) -> &[XmlNode]` | All child nodes. |
+| `child_elements` | `fn child_elements(&self) -> impl Iterator<Item = &Element>` | Child elements only. |
+| `child` | `fn child(&self, name: &str) -> Option<&Element>` | First child by name. |
+| `child_mut` | `fn child_mut(&mut self, name: &str) -> Option<&mut Element>` | Mutable child by name. |
+| `children_named` | `fn children_named(&self, name: &str) -> impl Iterator<Item = &Element>` | All children by name. |
+| `text` | `fn text(&self) -> Option<&str>` | First text/CDATA child. |
+| `text_content` | `fn text_content(&self) -> String` | Concatenated text of all text/CDATA children. |
+| `add_child_element` | `fn add_child_element(&mut self, element: Element)` | Add child element. |
+| `add_text` | `fn add_text(&mut self, text: &str)` | Add text node. |
+| `add_cdata` | `fn add_cdata(&mut self, data: &str)` | Add CDATA section. |
+| `add_comment` | `fn add_comment(&mut self, text: &str)` | Add comment. |
+| `element_count` | `fn element_count(&self) -> usize` | Number of child elements. |
+| `is_empty` | `fn is_empty(&self) -> bool` | Whether element has no children. |
+
+### Supported Features
+
+- XML declaration (`<?xml version="1.0" encoding="utf-8"?>`)
+- Attributes (single or double-quoted)
+- Self-closing elements (`<br/>`)
+- Entity references: `&amp;` `&lt;` `&gt;` `&quot;` `&apos;`
+- Numeric character references: `&#65;` `&#x41;`
+- CDATA sections (`<![CDATA[...]]>`)
+- Comments (`<!-- ... -->`)
+- Processing instructions (`<?target data?>`)
+- Pretty-printing with configurable indent
+
+### Example
+
+```rust
+use anyos_std::xml::{Document, Element};
+
+// Parse
+let doc = Document::parse(r#"<config version="1.0"><item key="name">anyOS</item></config>"#).unwrap();
+assert_eq!(doc.root.name(), "config");
+assert_eq!(doc.root.attr("version"), Some("1.0"));
+let item = doc.root.child("item").unwrap();
+assert_eq!(item.attr("key"), Some("name"));
+assert_eq!(item.text(), Some("anyOS"));
+
+// Build
+let mut root = Element::new("config");
+root.set_attr("version", "2.0");
+let mut item = Element::new("setting");
+item.set_attr("key", "theme");
+item.add_text("dark");
+root.add_child_element(item);
+
+let doc = Document::with_declaration(root, "1.0");
+println!("{}", doc.to_xml_string_pretty());
+// <?xml version="1.0"?>
+// <config version="2.0">
+//   <setting key="theme">dark</setting>
+// </config>
+```
 
 ---
 
