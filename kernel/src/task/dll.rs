@@ -302,7 +302,14 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
     };
 
     // Sanity: stay within DLIB range
-    let ro_page_count = ((ro_filesz + PAGE_SIZE - 1) / PAGE_SIZE) as u32;
+    // If there's an RW segment, extend the RO region to cover the gap between
+    // the end of file content and the start of the RW segment. This ensures
+    // the page fault handler maps data pages at the correct virtual address.
+    let ro_page_count = if has_rw && rw_vaddr > ro_vaddr {
+        ((rw_vaddr - ro_vaddr + PAGE_SIZE - 1) / PAGE_SIZE) as u32
+    } else {
+        ((ro_filesz + PAGE_SIZE - 1) / PAGE_SIZE) as u32
+    };
     let data_page_count = if has_rw {
         ((rw_filesz + PAGE_SIZE - 1) / PAGE_SIZE) as u32
     } else {
@@ -351,7 +358,12 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
         virtual_mem::map_page(temp_virt, frame, PAGE_WRITABLE);
 
         let file_off = ro_offset as usize + i * PAGE_SIZE as usize;
-        let copy_len = core::cmp::min(PAGE_SIZE as usize, ro_filesz as usize - i * PAGE_SIZE as usize);
+        let byte_offset = i * PAGE_SIZE as usize;
+        let copy_len = if byte_offset >= ro_filesz as usize {
+            0 // Gap page between RO file content and RW segment — stays zeroed
+        } else {
+            core::cmp::min(PAGE_SIZE as usize, ro_filesz as usize - byte_offset)
+        };
         unsafe {
             let dest = temp_virt.as_u64() as *mut u8;
             // Zero the page first (handles partial last page)

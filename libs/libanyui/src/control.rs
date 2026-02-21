@@ -45,6 +45,97 @@ pub const EVENT_MOUSE_MOVE: u32 = 16;
 /// Number of callback slots (EVENT_CLICK=1 .. EVENT_MOUSE_MOVE=16, index 0 unused).
 const NUM_CALLBACK_SLOTS: usize = 17;
 
+// ── Layout types (Windows Forms-inspired) ────────────────────────────
+
+/// Inner spacing (space reserved inside a control for its children).
+#[derive(Clone, Copy, Default)]
+pub struct Padding {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+impl Padding {
+    pub const fn all(v: i32) -> Self { Self { left: v, top: v, right: v, bottom: v } }
+}
+
+/// Outer spacing (space reserved around a control, between it and siblings/parent).
+#[derive(Clone, Copy, Default)]
+pub struct Margin {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+impl Margin {
+    pub const fn all(v: i32) -> Self { Self { left: v, top: v, right: v, bottom: v } }
+}
+
+/// Dock style — how a control docks within its parent's client area.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u32)]
+pub enum DockStyle {
+    /// Manual positioning (x, y are used as-is).
+    #[default]
+    None = 0,
+    /// Dock to parent's top edge, full width.
+    Top = 1,
+    /// Dock to parent's bottom edge, full width.
+    Bottom = 2,
+    /// Dock to parent's left edge, full height.
+    Left = 3,
+    /// Dock to parent's right edge, full height.
+    Right = 4,
+    /// Fill remaining space after other docked controls.
+    Fill = 5,
+}
+
+impl DockStyle {
+    pub fn from_u32(v: u32) -> Self {
+        match v {
+            1 => Self::Top,
+            2 => Self::Bottom,
+            3 => Self::Left,
+            4 => Self::Right,
+            5 => Self::Fill,
+            _ => Self::None,
+        }
+    }
+}
+
+/// Text styling properties shared by all text-displaying controls.
+#[derive(Clone, Copy)]
+pub struct TextStyle {
+    /// Font size in pixels. Default: 14.
+    pub font_size: u16,
+    /// Font ID (0 = system default).
+    pub font_id: u16,
+    /// Text color override (0 = use theme default).
+    pub text_color: u32,
+}
+
+impl Default for TextStyle {
+    fn default() -> Self {
+        Self { font_size: 14, font_id: 0, text_color: 0 }
+    }
+}
+
+/// Orientation for layout containers (StackPanel).
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum Orientation {
+    Vertical = 0,
+    Horizontal = 1,
+}
+
+impl Orientation {
+    pub fn from_u32(v: u32) -> Self {
+        if v == 1 { Self::Horizontal } else { Self::Vertical }
+    }
+}
+
 /// Callback function pointer type.
 /// Parameters: (control_id, event_type, userdata)
 pub type Callback = extern "C" fn(ControlId, u32, u64);
@@ -88,6 +179,10 @@ pub enum ControlKind {
     IconButton = 30,
     Badge = 31,
     Tag = 32,
+    StackPanel = 33,
+    FlowPanel = 34,
+    TableLayout = 35,
+    Canvas = 36,
 }
 
 impl ControlKind {
@@ -126,6 +221,10 @@ impl ControlKind {
             30 => Self::IconButton,
             31 => Self::Badge,
             32 => Self::Tag,
+            33 => Self::StackPanel,
+            34 => Self::FlowPanel,
+            35 => Self::TableLayout,
+            36 => Self::Canvas,
             _ => Self::View,
         }
     }
@@ -148,6 +247,7 @@ impl ControlKind {
             Self::TextArea => (300, 150),
             Self::IconButton | Self::ColorWell => (32, 32),
             Self::Tooltip => (150, 24),
+            Self::Canvas => (200, 200),
             _ => (0, 0),
         }
     }
@@ -176,6 +276,19 @@ pub struct ControlBase {
     pub color: u32,
     pub state: u32,
 
+    // ── Layout properties (Windows Forms-style) ──
+    pub padding: Padding,
+    pub margin: Margin,
+    pub dock: DockStyle,
+    pub auto_size: bool,
+    pub min_w: u32,
+    pub min_h: u32,
+    pub max_w: u32,
+    pub max_h: u32,
+
+    // ── Text styling ──
+    pub text_style: TextStyle,
+
     /// Callback table indexed by event type (EVENT_CLICK=1 .. EVENT_MOUSE_MOVE=16).
     /// Index 0 is unused. Each slot has its own userdata.
     callbacks: [Option<CallbackSlot>; NUM_CALLBACK_SLOTS],
@@ -195,6 +308,15 @@ impl ControlBase {
             text: Vec::new(),
             color: 0,
             state: 0,
+            padding: Padding::default(),
+            margin: Margin::default(),
+            dock: DockStyle::None,
+            auto_size: false,
+            min_w: 0,
+            min_h: 0,
+            max_w: 0,
+            max_h: 0,
+            text_style: TextStyle::default(),
             callbacks: [None; NUM_CALLBACK_SLOTS],
         }
     }
@@ -298,6 +420,19 @@ pub trait Control {
     /// Whether this control can receive keyboard focus.
     fn accepts_focus(&self) -> bool {
         self.is_interactive()
+    }
+
+    /// Whether this control displays text (and supports TextStyle properties).
+    fn is_text_control(&self) -> bool {
+        false
+    }
+
+    /// Override for layout containers (StackPanel, FlowPanel, TableLayout).
+    /// Called by the layout engine to position children according to the
+    /// container's specific layout algorithm.
+    /// Returns true if this control handled its children's layout.
+    fn layout_children(&self, _controls: &mut [Box<dyn Control>]) -> bool {
+        false
     }
 
     // ── Virtual event handlers (override in subclasses) ──────────────

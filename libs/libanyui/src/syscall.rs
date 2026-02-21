@@ -20,6 +20,7 @@ const SYS_WIN_DESTROY: u64 = 51;
 const SYS_WIN_GET_EVENT: u64 = 53;
 const SYS_WIN_FILL_RECT: u64 = 54;
 const SYS_WIN_PRESENT: u64 = 56;
+const SYS_WIN_BLIT: u64 = 59;
 
 #[inline(always)]
 fn syscall0(num: u64) -> u64 {
@@ -173,4 +174,19 @@ pub fn win_fill_rect(win: u32, x: i32, y: i32, w: u32, h: u32, color: u32) {
 /// Present (flip) the window to the screen.
 pub fn win_present(win: u32) {
     syscall1(SYS_WIN_PRESENT, win as u64);
+}
+
+/// Blit ARGB pixel data to window content surface.
+pub fn win_blit(win: u32, x: i32, y: i32, w: u32, h: u32, data: &[u32]) {
+    // SYS_WIN_BLIT: arg1=win, arg2=packed(x,y), arg3=packed(w,h), arg4=data_ptr, arg5=data_len
+    let packed_xy = ((x as u32 as u64) << 32) | (y as u32 as u64);
+    let packed_wh = ((w as u64) << 32) | (h as u64);
+    syscall5(
+        SYS_WIN_BLIT,
+        win as u64,
+        packed_xy,
+        packed_wh,
+        data.as_ptr() as u64,
+        data.len() as u64,
+    );
 }

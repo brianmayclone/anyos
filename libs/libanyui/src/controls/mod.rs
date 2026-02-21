@@ -39,6 +39,10 @@ pub mod textarea;
 pub mod icon_button;
 pub mod badge;
 pub mod tag;
+pub mod stack_panel;
+pub mod flow_panel;
+pub mod table_layout;
+pub mod canvas;
 
 /// Factory: create a concrete control based on `kind`.
 ///
