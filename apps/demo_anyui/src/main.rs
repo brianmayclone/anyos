@@ -1,23 +1,15 @@
 //! demo_anyui — Demo application using the libanyui OOP UI framework.
 //!
-//! Creates a window with various controls to demonstrate the library.
+//! Demonstrates the Windows Forms-style API: typed control structs,
+//! Container.add() for parenting, and property setters.
 
 #![no_std]
 #![no_main]
 
 use libanyui_client as ui;
+use ui::Widget;
 
 anyos_std::entry!(main);
-
-extern "C" fn on_button_click(_id: u32, _event: u32, _userdata: u64) {
-    // Button was clicked — update the label
-    // (In a real app, we'd store the label control ID and update it)
-}
-
-extern "C" fn on_toggle_change(id: u32, _event: u32, _userdata: u64) {
-    // Toggle state changed
-    let _state = ui::Control(id).get_state();
-}
 
 fn main() {
     if !ui::init() {
@@ -28,36 +20,83 @@ fn main() {
     let win = ui::Window::new("anyui Demo", 400, 350);
 
     // Title label
-    let title = win.add_label("anyui Demo", 20, 15);
+    let title = ui::Label::new("anyui Demo");
+    title.set_position(20, 15);
     title.set_color(0xFF007AFF); // accent blue
+    win.add(&title);
 
     // Divider
-    win.add_divider(20, 45, 360);
+    let div = ui::Divider::new();
+    div.set_position(20, 45);
+    div.set_size(360, 1);
+    win.add(&div);
 
     // Button
-    let btn = win.add_button("Click Me", 20, 60, 120, 32);
-    btn.on_click(on_button_click, 0);
+    let btn = ui::Button::new("Click Me");
+    btn.set_position(20, 60);
+    btn.set_size(120, 32);
+    btn.on_click(|_e| {
+        // Handle button click
+    });
+    win.add(&btn);
 
     // Toggle
-    win.add_label("Dark Mode", 20, 110);
-    let toggle = win.add_toggle(120, 108, true);
-    toggle.on_change(on_toggle_change, 0);
+    let toggle_label = ui::Label::new("Dark Mode");
+    toggle_label.set_position(20, 110);
+    win.add(&toggle_label);
+
+    let toggle = ui::Toggle::new(true);
+    toggle.set_position(120, 108);
+    toggle.on_checked_changed(|_e| {
+        // Handle toggle change
+    });
+    win.add(&toggle);
 
     // Checkbox
-    win.add_checkbox("Enable notifications", 20, 150);
+    let checkbox = ui::Checkbox::new("Enable notifications");
+    checkbox.set_position(20, 150);
+    checkbox.on_checked_changed(|_e| {
+        // Handle checkbox change
+    });
+    win.add(&checkbox);
 
-    // Slider
-    win.add_label("Volume", 20, 195);
-    win.add_slider(100, 195, 200, 75);
+    // Slider + Progress bar linked via typed event
+    let vol_label = ui::Label::new("Volume");
+    vol_label.set_position(20, 195);
+    win.add(&vol_label);
 
-    // Progress bar
-    win.add_label("Progress", 20, 235);
-    win.add_progress_bar(100, 238, 200, 65);
+    let slider = ui::Slider::new(75);
+    slider.set_position(100, 195);
+    slider.set_size(200, 20);
+    win.add(&slider);
+
+    let prog_label = ui::Label::new("Progress");
+    prog_label.set_position(20, 235);
+    win.add(&prog_label);
+
+    let progress = ui::ProgressBar::new(75);
+    progress.set_position(100, 238);
+    progress.set_size(200, 8);
+    win.add(&progress);
+
+    // Link slider to progress bar with typed event
+    slider.on_value_changed(move |e| {
+        progress.set_state(e.value);
+    });
 
     // Card with nested content
-    let card = win.add_card(20, 270, 360, 60);
-    card.add_control(ui::KIND_LABEL, 12, 8, 0, 0, "Card Title");
-    card.add_control(ui::KIND_LABEL, 12, 30, 0, 0, "Nested content inside a card.");
+    let card = ui::Card::new();
+    card.set_position(20, 270);
+    card.set_size(360, 60);
+    win.add(&card);
+
+    let card_title = ui::Label::new("Card Title");
+    card_title.set_position(12, 8);
+    card.add(&card_title);
+
+    let card_text = ui::Label::new("Nested content inside a card.");
+    card_text.set_position(12, 30);
+    card.add(&card_text);
 
     // Run the event loop
     ui::run();

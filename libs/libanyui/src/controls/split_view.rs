@@ -1,15 +1,39 @@
-use crate::control::{Control, ControlBase, ControlKind, EventResponse};
+use crate::control::{Control, ControlBase, ControlKind, EventResponse, ChildLayout};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 pub struct SplitView {
     pub(crate) base: ControlBase,
     pub(crate) divider_pos: i32,
+    /// Split ratio in percent (0-100). Default 30 (30% left, 70% right).
+    pub(crate) split_ratio: u32,
+    /// Minimum split ratio in percent. Default 10.
+    pub(crate) min_ratio: u32,
+    /// Maximum split ratio in percent. Default 90.
+    pub(crate) max_ratio: u32,
     dragging: bool,
 }
 
 impl SplitView {
     pub fn new(base: ControlBase) -> Self {
-        let default_pos = (base.w / 3) as i32;
-        Self { base, divider_pos: default_pos, dragging: false }
+        let default_ratio = 30u32;
+        let default_pos = (base.w * default_ratio / 100) as i32;
+        Self {
+            base,
+            divider_pos: default_pos,
+            split_ratio: default_ratio,
+            min_ratio: 10,
+            max_ratio: 90,
+            dragging: false,
+        }
+    }
+
+    fn min_pos(&self) -> i32 {
+        (self.base.w as u64 * self.min_ratio as u64 / 100) as i32
+    }
+
+    fn max_pos(&self) -> i32 {
+        (self.base.w as u64 * self.max_ratio as u64 / 100) as i32
     }
 }
 
@@ -22,10 +46,48 @@ impl Control for SplitView {
         let x = ax + self.base.x;
         let y = ay + self.base.y;
         let tc = crate::theme::colors();
+        // Draw 1px divider line
         crate::draw::fill_rect(surface, x + self.divider_pos, y, 1, self.base.h, tc.separator);
     }
 
     fn is_interactive(&self) -> bool { true }
+
+    fn layout_children(&self, controls: &[Box<dyn Control>]) -> Option<Vec<ChildLayout>> {
+        let children = &self.base.children;
+        if children.is_empty() {
+            return Some(Vec::new());
+        }
+
+        let mut layouts = Vec::new();
+        let div = self.divider_pos;
+        let w = self.base.w as i32;
+        let h = self.base.h;
+
+        // First child gets left pane
+        if children.len() >= 1 {
+            layouts.push(ChildLayout {
+                id: children[0],
+                x: 0,
+                y: 0,
+                w: Some(div.max(0) as u32),
+                h: Some(h),
+            });
+        }
+        // Second child gets right pane
+        if children.len() >= 2 {
+            let right_x = div + 1; // 1px divider
+            let right_w = (w - right_x).max(0) as u32;
+            layouts.push(ChildLayout {
+                id: children[1],
+                x: right_x,
+                y: 0,
+                w: Some(right_w),
+                h: Some(h),
+            });
+        }
+
+        Some(layouts)
+    }
 
     fn handle_mouse_down(&mut self, lx: i32, _ly: i32, _button: u32) -> EventResponse {
         // Check if click is near the divider (within 4px)
@@ -39,10 +101,14 @@ impl Control for SplitView {
 
     fn handle_mouse_move(&mut self, lx: i32, _ly: i32) -> EventResponse {
         if self.dragging {
-            let min = 50;
-            let max = (self.base.w as i32) - 50;
+            let min = self.min_pos();
+            let max = self.max_pos();
             self.divider_pos = lx.max(min).min(max);
-            self.base.state = self.divider_pos as u32;
+            if self.base.w > 0 {
+                self.split_ratio = (self.divider_pos as u32 * 100) / self.base.w;
+            }
+            self.base.state = self.split_ratio;
+            self.base.dirty = true;
             EventResponse::CHANGED
         } else {
             EventResponse::IGNORED

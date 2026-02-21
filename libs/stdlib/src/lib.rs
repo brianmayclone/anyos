@@ -12,6 +12,7 @@ pub mod bundle;
 pub mod crypto;
 pub mod dll;
 pub mod env;
+pub mod error;
 pub mod fs;
 pub mod heap;
 pub mod icons;
@@ -20,6 +21,7 @@ pub mod ipc;
 pub mod kbd;
 pub mod net;
 pub mod permissions;
+pub mod prelude;
 pub mod process;
 pub mod sys;
 pub mod ui;
@@ -44,6 +46,23 @@ impl MainReturn for u32 {
     fn to_exit_code(self) -> u32 { self }
 }
 
+impl MainReturn for error::Result<()> {
+    fn to_exit_code(self) -> u32 {
+        match self {
+            Ok(()) => 0,
+            Err(e) => {
+                io::_print_str("Error: ");
+                // Use Display impl via format_args
+                let _ = core::fmt::Write::write_fmt(
+                    &mut io::Stdout,
+                    format_args!("{}\n", e),
+                );
+                1
+            }
+        }
+    }
+}
+
 /// Entry point macro for .anyOS user programs.
 ///
 /// Generates `_start` entry point and `extern crate alloc`.
@@ -54,8 +73,9 @@ impl MainReturn for u32 {
 /// #![no_std]
 /// #![no_main]
 /// anyos_std::entry!(main);
-/// fn main() { ... }           // returns exit code 0
-/// fn main() -> u32 { 42 }    // returns exit code 42
+/// fn main() { ... }                              // returns exit code 0
+/// fn main() -> u32 { 42 }                       // returns exit code 42
+/// fn main() -> anyos_std::error::Result<()> { Ok(()) }  // Result support
 /// ```
 #[macro_export]
 macro_rules! entry {

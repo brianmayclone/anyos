@@ -38,6 +38,10 @@ impl Control for SearchField {
     }
 
     fn handle_key_down(&mut self, keycode: u32, char_code: u32) -> EventResponse {
+        // Enter key → fire click (used as "submit" by the client)
+        if char_code == 0x0A || char_code == 0x0D || keycode == 0x1C {
+            return EventResponse::CLICK;
+        }
         if char_code >= 0x20 && char_code < 0x7F {
             let ch = char_code as u8;
             if self.cursor_pos > self.text_base.text.len() {

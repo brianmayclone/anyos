@@ -252,3 +252,114 @@ pub fn args(buf: &mut [u8; 256]) -> &str {
         None => "",
     }
 }
+
+// =========================================================================
+// High-level types — Thread, Child
+// =========================================================================
+
+use crate::error;
+
+/// Default stack size for threads (64 KiB).
+const DEFAULT_STACK_SIZE: usize = 64 * 1024;
+
+/// A handle to a spawned thread. Provides RAII stack management.
+pub struct Thread {
+    tid: u32,
+    stack_ptr: *mut u8,
+    stack_size: usize,
+}
+
+impl Thread {
+    /// Spawn a new thread with the default stack size (64 KiB).
+    pub fn spawn(entry: fn(), name: &str) -> error::Result<Thread> {
+        Self::spawn_with_stack(entry, DEFAULT_STACK_SIZE, name)
+    }
+
+    /// Spawn a new thread with a custom stack size.
+    pub fn spawn_with_stack(entry: fn(), stack_size: usize, name: &str) -> error::Result<Thread> {
+        let stack_ptr = mmap(stack_size);
+        if stack_ptr.is_null() {
+            return Err(error::Error::OutOfMemory);
+        }
+        // x86_64 ABI: RSP must be STACK_TOP - 8 at function entry
+        let stack_top = (stack_ptr as usize) + stack_size - 8;
+        let tid = thread_create(entry, stack_top, name);
+        if tid == 0 {
+            munmap(stack_ptr, stack_size);
+            return Err(error::Error::Other(0));
+        }
+        Ok(Thread { tid, stack_ptr, stack_size })
+    }
+
+    /// Get the thread ID.
+    pub fn tid(&self) -> u32 {
+        self.tid
+    }
+
+    /// Wait for the thread to finish. Returns its exit code.
+    /// Consumes the handle and frees the thread's stack.
+    pub fn join(self) -> u32 {
+        let code = waitpid(self.tid);
+        munmap(self.stack_ptr, self.stack_size);
+        // Prevent Drop from freeing the stack again
+        core::mem::forget(self);
+        code
+    }
+}
+
+impl Drop for Thread {
+    fn drop(&mut self) {
+        // If the thread handle is dropped without join(), we still wait
+        // and free the stack to avoid leaking memory.
+        waitpid(self.tid);
+        munmap(self.stack_ptr, self.stack_size);
+    }
+}
+
+/// A handle to a spawned child process.
+pub struct Child {
+    tid: u32,
+}
+
+impl Child {
+    /// Spawn a new child process.
+    pub fn spawn(path: &str, args: &str) -> error::Result<Child> {
+        let tid = super::process::spawn(path, args);
+        if tid == u32::MAX {
+            return Err(error::Error::NotFound);
+        }
+        Ok(Child { tid })
+    }
+
+    /// Get the child's thread ID.
+    pub fn tid(&self) -> u32 {
+        self.tid
+    }
+
+    /// Wait for the child to exit. Returns its exit code.
+    /// Consumes the handle.
+    pub fn wait(self) -> u32 {
+        waitpid(self.tid)
+    }
+
+    /// Non-blocking check if the child has exited.
+    /// Returns `Some(exit_code)` if terminated, `None` if still running.
+    pub fn try_wait(&self) -> Option<u32> {
+        let ret = try_waitpid(self.tid);
+        if ret == STILL_RUNNING || ret == u32::MAX {
+            None
+        } else {
+            Some(ret)
+        }
+    }
+
+    /// Kill the child process.
+    pub fn kill(&self) -> error::Result<()> {
+        let ret = kill(self.tid);
+        if ret == u32::MAX {
+            Err(error::Error::NotFound)
+        } else {
+            Ok(())
+        }
+    }
+}

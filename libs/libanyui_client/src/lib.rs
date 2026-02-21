@@ -1,16 +1,28 @@
-//! libanyui_client — Ergonomic Rust wrapper for libanyui.so.
+//! libanyui_client — Windows Forms-style OO wrapper for libanyui.so.
 //!
-//! Loads libanyui.so via dynlink (dlopen/dlsym) and provides a safe Rust API.
-//! User programs depend on this crate, NOT on libanyui directly.
+//! Provides typed control structs with proper inheritance hierarchy:
+//!
+//! - `Control` — base type with common properties (position, size, color, events)
+//! - `Container` — extends Control, adds generic `add()` for child controls
+//! - Typed leaf controls (Label, Button, Slider, etc.) — Deref to Control
+//! - Typed container controls (View, Card, SplitView, etc.) — Deref to Container
 //!
 //! # Usage
 //! ```rust
 //! use libanyui_client as ui;
 //!
 //! ui::init();
-//! let win = ui::Window::new("Demo", 300, 200);
-//! let btn = win.add_button("Click Me", 20, 60, 120, 32);
-//! btn.on_click(my_callback, 0);
+//! let win = ui::Window::new("Demo", 400, 300);
+//! let label = ui::Label::new("Hello World");
+//! label.set_position(20, 20);
+//! win.add(&label);
+//! let slider = ui::Slider::new(50);
+//! let progress = ui::ProgressBar::new(50);
+//! slider.on_value_changed(|e| {
+//!     ui::Control::from_id(e.id).set_state(e.value);
+//! });
+//! win.add(&slider);
+//! win.add(&progress);
 //! ui::run();
 //! ```
 
@@ -18,10 +30,14 @@
 
 extern crate alloc;
 
+mod events;
+pub use events::*;
+
 use dynlink::{DlHandle, dl_open, dl_sym};
 
 // ── Control kind constants (match libanyui's ControlKind enum) ───────
 
+pub const KIND_WINDOW: u32 = 0;
 pub const KIND_VIEW: u32 = 1;
 pub const KIND_LABEL: u32 = 2;
 pub const KIND_BUTTON: u32 = 3;
@@ -95,7 +111,9 @@ pub const EVENT_MOUSE_MOVE: u32 = 16;
 /// Callback type: extern "C" fn(control_id: u32, event_type: u32, userdata: u64)
 pub type Callback = extern "C" fn(u32, u32, u64);
 
-// ── Internal: cached function pointers from libanyui.so ──────────────
+// ══════════════════════════════════════════════════════════════════════
+//  Internal: cached function pointers from libanyui.so
+// ══════════════════════════════════════════════════════════════════════
 
 struct AnyuiLib {
     _handle: DlHandle,
@@ -104,6 +122,8 @@ struct AnyuiLib {
     shutdown: extern "C" fn(),
     create_window: extern "C" fn(*const u8, u32, u32, u32) -> u32,
     add_control: extern "C" fn(u32, u32, i32, i32, u32, u32, *const u8, u32) -> u32,
+    create_control: extern "C" fn(u32, *const u8, u32) -> u32,
+    add_child: extern "C" fn(u32, u32),
     set_text: extern "C" fn(u32, *const u8, u32),
     get_text: extern "C" fn(u32, *mut u8, u32) -> u32,
     set_position: extern "C" fn(u32, i32, i32),
@@ -136,6 +156,10 @@ struct AnyuiLib {
     set_orientation: extern "C" fn(u32, u32),
     set_columns: extern "C" fn(u32, u32),
     set_row_height: extern "C" fn(u32, u32),
+    // SplitView properties
+    set_split_ratio: extern "C" fn(u32, u32),
+    set_min_split: extern "C" fn(u32, u32),
+    set_max_split: extern "C" fn(u32, u32),
     // Canvas
     canvas_set_pixel: extern "C" fn(u32, i32, i32, u32),
     canvas_clear: extern "C" fn(u32, u32),
@@ -173,7 +197,9 @@ unsafe fn resolve<T: Copy>(handle: &DlHandle, name: &str) -> T {
     core::mem::transmute_copy::<*const (), T>(&ptr)
 }
 
-// ── Public API ───────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+//  Public API — init / shutdown / run
+// ══════════════════════════════════════════════════════════════════════
 
 /// Load and initialize libanyui.so. Call once at program start.
 /// Returns true on success.
@@ -190,6 +216,8 @@ pub fn init() -> bool {
             shutdown: resolve(&handle, "anyui_shutdown"),
             create_window: resolve(&handle, "anyui_create_window"),
             add_control: resolve(&handle, "anyui_add_control"),
+            create_control: resolve(&handle, "anyui_create_control"),
+            add_child: resolve(&handle, "anyui_add_child"),
             set_text: resolve(&handle, "anyui_set_text"),
             get_text: resolve(&handle, "anyui_get_text"),
             set_position: resolve(&handle, "anyui_set_position"),
@@ -222,6 +250,10 @@ pub fn init() -> bool {
             set_orientation: resolve(&handle, "anyui_set_orientation"),
             set_columns: resolve(&handle, "anyui_set_columns"),
             set_row_height: resolve(&handle, "anyui_set_row_height"),
+            // SplitView properties
+            set_split_ratio: resolve(&handle, "anyui_set_split_ratio"),
+            set_min_split: resolve(&handle, "anyui_set_min_split"),
+            set_max_split: resolve(&handle, "anyui_set_max_split"),
             // Canvas
             canvas_set_pixel: resolve(&handle, "anyui_canvas_set_pixel"),
             canvas_clear: resolve(&handle, "anyui_canvas_clear"),
@@ -274,360 +306,255 @@ pub fn quit() {
     (lib().quit_fn)();
 }
 
-// ── Window ───────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+//  Widget trait — implemented by all control types
+// ══════════════════════════════════════════════════════════════════════
 
-/// A top-level window.
-pub struct Window(pub u32);
-
-impl Window {
-    /// Create a new window with the given title and size.
-    pub fn new(title: &str, w: u32, h: u32) -> Self {
-        let l = lib();
-        Window((l.create_window)(title.as_ptr(), title.len() as u32, w, h))
-    }
-
-    /// Destroy this window.
-    pub fn destroy(&self) {
-        (lib().destroy_window)(self.0);
-    }
-
-    /// Add a child control of any kind. Returns a generic `Control` handle.
-    pub fn add_control(
-        &self,
-        kind: u32,
-        x: i32,
-        y: i32,
-        w: u32,
-        h: u32,
-        text: &str,
-    ) -> Control {
-        let l = lib();
-        Control((l.add_control)(self.0, kind, x, y, w, h, text.as_ptr(), text.len() as u32))
-    }
-
-    // ── Convenience methods for common controls ──
-
-    pub fn add_label(&self, text: &str, x: i32, y: i32) -> Control {
-        self.add_control(KIND_LABEL, x, y, 0, 0, text)
-    }
-
-    pub fn add_button(&self, text: &str, x: i32, y: i32, w: u32, h: u32) -> Control {
-        self.add_control(KIND_BUTTON, x, y, w, h, text)
-    }
-
-    pub fn add_textfield(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
-        self.add_control(KIND_TEXTFIELD, x, y, w, h, "")
-    }
-
-    pub fn add_toggle(&self, x: i32, y: i32, on: bool) -> Control {
-        let ctrl = self.add_control(KIND_TOGGLE, x, y, 0, 0, "");
-        if on {
-            ctrl.set_state(1);
-        }
-        ctrl
-    }
-
-    pub fn add_checkbox(&self, label: &str, x: i32, y: i32) -> Control {
-        self.add_control(KIND_CHECKBOX, x, y, 0, 0, label)
-    }
-
-    pub fn add_slider(&self, x: i32, y: i32, w: u32, value: u32) -> Control {
-        let ctrl = self.add_control(KIND_SLIDER, x, y, w, 20, "");
-        ctrl.set_state(value);
-        ctrl
-    }
-
-    pub fn add_progress_bar(&self, x: i32, y: i32, w: u32, value: u32) -> Control {
-        let ctrl = self.add_control(KIND_PROGRESS_BAR, x, y, w, 8, "");
-        ctrl.set_state(value);
-        ctrl
-    }
-
-    pub fn add_view(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
-        self.add_control(KIND_VIEW, x, y, w, h, "")
-    }
-
-    pub fn add_card(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
-        self.add_control(KIND_CARD, x, y, w, h, "")
-    }
-
-    pub fn add_divider(&self, x: i32, y: i32, w: u32) -> Control {
-        self.add_control(KIND_DIVIDER, x, y, w, 1, "")
-    }
-
-    pub fn add_stack_panel(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
-        self.add_control(KIND_STACK_PANEL, x, y, w, h, "")
-    }
-
-    pub fn add_flow_panel(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
-        self.add_control(KIND_FLOW_PANEL, x, y, w, h, "")
-    }
-
-    pub fn add_table_layout(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
-        self.add_control(KIND_TABLE_LAYOUT, x, y, w, h, "")
-    }
-
-    pub fn add_canvas(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
-        self.add_control(KIND_CANVAS, x, y, w, h, "")
-    }
+/// Base trait for all UI controls. Provides the control's unique ID.
+pub trait Widget {
+    fn id(&self) -> u32;
 }
 
-// ── Generic Control handle ───────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+//  Control — base type with common properties
+// ══════════════════════════════════════════════════════════════════════
 
-/// A handle to any control in the tree.
+/// Base control handle. All typed controls Deref to this.
+///
+/// Provides common properties: position, size, visibility, color, state,
+/// layout (padding, margin, dock), text styling, and event callbacks.
 #[derive(Clone, Copy)]
-pub struct Control(pub u32);
+pub struct Control {
+    id: u32,
+}
+
+impl Widget for Control {
+    fn id(&self) -> u32 { self.id }
+}
 
 impl Control {
-    /// Add a child control of any kind.
-    pub fn add_control(
-        &self,
-        kind: u32,
-        x: i32,
-        y: i32,
-        w: u32,
-        h: u32,
-        text: &str,
-    ) -> Control {
-        let l = lib();
-        Control((l.add_control)(self.0, kind, x, y, w, h, text.as_ptr(), text.len() as u32))
-    }
+    /// Wrap a raw control ID.
+    pub fn from_id(id: u32) -> Self { Self { id } }
 
-    // ── Convenience methods for adding children ──
-
-    pub fn add_label(&self, text: &str, x: i32, y: i32) -> Control {
-        self.add_control(KIND_LABEL, x, y, 0, 0, text)
-    }
-
-    pub fn add_button(&self, text: &str, x: i32, y: i32, w: u32, h: u32) -> Control {
-        self.add_control(KIND_BUTTON, x, y, w, h, text)
-    }
-
-    pub fn add_textfield(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
-        self.add_control(KIND_TEXTFIELD, x, y, w, h, "")
-    }
-
-    pub fn add_stack_panel(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
-        self.add_control(KIND_STACK_PANEL, x, y, w, h, "")
-    }
-
-    pub fn add_flow_panel(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
-        self.add_control(KIND_FLOW_PANEL, x, y, w, h, "")
-    }
-
-    pub fn add_table_layout(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
-        self.add_control(KIND_TABLE_LAYOUT, x, y, w, h, "")
-    }
-
-    pub fn add_canvas(&self, x: i32, y: i32, w: u32, h: u32) -> Control {
-        self.add_control(KIND_CANVAS, x, y, w, h, "")
-    }
-
-    // ── Core properties ──
-
-    pub fn set_text(&self, text: &str) {
-        (lib().set_text)(self.0, text.as_ptr(), text.len() as u32);
-    }
-
-    pub fn get_text(&self, buf: &mut [u8]) -> u32 {
-        (lib().get_text)(self.0, buf.as_mut_ptr(), buf.len() as u32)
-    }
+    // ── Position / Size ──
 
     pub fn set_position(&self, x: i32, y: i32) {
-        (lib().set_position)(self.0, x, y);
+        (lib().set_position)(self.id, x, y);
     }
 
     pub fn set_size(&self, w: u32, h: u32) {
-        (lib().set_size)(self.0, w, h);
+        (lib().set_size)(self.id, w, h);
     }
+
+    // ── Visibility ──
 
     pub fn set_visible(&self, visible: bool) {
-        (lib().set_visible)(self.0, visible as u32);
+        (lib().set_visible)(self.id, visible as u32);
     }
+
+    // ── Color ──
 
     pub fn set_color(&self, color: u32) {
-        (lib().set_color)(self.0, color);
+        (lib().set_color)(self.id, color);
     }
 
+    // ── Text ──
+
+    pub fn set_text(&self, text: &str) {
+        (lib().set_text)(self.id, text.as_ptr(), text.len() as u32);
+    }
+
+    pub fn get_text(&self, buf: &mut [u8]) -> u32 {
+        (lib().get_text)(self.id, buf.as_mut_ptr(), buf.len() as u32)
+    }
+
+    // ── State (numeric value: slider position, toggle on/off, etc.) ──
+
     pub fn set_state(&self, value: u32) {
-        (lib().set_state)(self.0, value);
+        (lib().set_state)(self.id, value);
     }
 
     pub fn get_state(&self) -> u32 {
-        (lib().get_state)(self.0)
+        (lib().get_state)(self.id)
     }
 
     // ── Layout properties ──
 
     pub fn set_padding(&self, left: i32, top: i32, right: i32, bottom: i32) {
-        (lib().set_padding)(self.0, left, top, right, bottom);
+        (lib().set_padding)(self.id, left, top, right, bottom);
     }
 
     pub fn set_margin(&self, left: i32, top: i32, right: i32, bottom: i32) {
-        (lib().set_margin)(self.0, left, top, right, bottom);
+        (lib().set_margin)(self.id, left, top, right, bottom);
     }
 
     pub fn set_dock(&self, dock_style: u32) {
-        (lib().set_dock)(self.0, dock_style);
+        (lib().set_dock)(self.id, dock_style);
     }
 
     pub fn set_auto_size(&self, enabled: bool) {
-        (lib().set_auto_size)(self.0, enabled as u32);
+        (lib().set_auto_size)(self.id, enabled as u32);
     }
 
     pub fn set_min_size(&self, min_w: u32, min_h: u32) {
-        (lib().set_min_size)(self.0, min_w, min_h);
+        (lib().set_min_size)(self.id, min_w, min_h);
     }
 
     pub fn set_max_size(&self, max_w: u32, max_h: u32) {
-        (lib().set_max_size)(self.0, max_w, max_h);
+        (lib().set_max_size)(self.id, max_w, max_h);
     }
 
     // ── Text styling ──
 
     pub fn set_font_size(&self, size: u32) {
-        (lib().set_font_size)(self.0, size);
+        (lib().set_font_size)(self.id, size);
     }
 
     pub fn get_font_size(&self) -> u32 {
-        (lib().get_font_size)(self.0)
+        (lib().get_font_size)(self.id)
     }
 
     pub fn set_font(&self, font_id: u32) {
-        (lib().set_font)(self.0, font_id);
+        (lib().set_font)(self.id, font_id);
     }
 
     pub fn set_text_color(&self, color: u32) {
-        (lib().set_text_color)(self.0, color);
+        (lib().set_text_color)(self.id, color);
     }
 
-    // ── Container properties (StackPanel / TableLayout) ──
+    // ── Events / Callbacks (raw FFI) ──
 
-    pub fn set_orientation(&self, orientation: u32) {
-        (lib().set_orientation)(self.0, orientation);
+    pub fn on_event_raw(&self, event_type: u32, cb: Callback, userdata: u64) {
+        (lib().on_event_fn)(self.id, event_type, cb, userdata);
     }
 
-    pub fn set_columns(&self, columns: u32) {
-        (lib().set_columns)(self.0, columns);
+    pub fn on_click_raw(&self, cb: Callback, userdata: u64) {
+        (lib().on_click_fn)(self.id, cb, userdata);
     }
 
-    pub fn set_row_height(&self, row_height: u32) {
-        (lib().set_row_height)(self.0, row_height);
+    pub fn on_change_raw(&self, cb: Callback, userdata: u64) {
+        (lib().on_change_fn)(self.id, cb, userdata);
     }
 
-    // ── Canvas operations ──
-
-    pub fn canvas_set_pixel(&self, x: i32, y: i32, color: u32) {
-        (lib().canvas_set_pixel)(self.0, x, y, color);
+    pub fn on_mouse_enter_raw(&self, cb: Callback, userdata: u64) {
+        self.on_event_raw(EVENT_MOUSE_ENTER, cb, userdata);
     }
 
-    pub fn canvas_clear(&self, color: u32) {
-        (lib().canvas_clear)(self.0, color);
+    pub fn on_mouse_leave_raw(&self, cb: Callback, userdata: u64) {
+        self.on_event_raw(EVENT_MOUSE_LEAVE, cb, userdata);
     }
 
-    pub fn canvas_fill_rect(&self, x: i32, y: i32, w: u32, h: u32, color: u32) {
-        (lib().canvas_fill_rect)(self.0, x, y, w, h, color);
+    pub fn on_double_click_raw(&self, cb: Callback, userdata: u64) {
+        self.on_event_raw(EVENT_DOUBLE_CLICK, cb, userdata);
     }
 
-    pub fn canvas_draw_line(&self, x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
-        (lib().canvas_draw_line)(self.0, x0, y0, x1, y1, color);
+    pub fn on_focus_raw(&self, cb: Callback, userdata: u64) {
+        self.on_event_raw(EVENT_FOCUS, cb, userdata);
     }
 
-    pub fn canvas_draw_rect(&self, x: i32, y: i32, w: u32, h: u32, color: u32, thickness: u32) {
-        (lib().canvas_draw_rect)(self.0, x, y, w, h, color, thickness);
+    pub fn on_blur_raw(&self, cb: Callback, userdata: u64) {
+        self.on_event_raw(EVENT_BLUR, cb, userdata);
     }
 
-    pub fn canvas_draw_circle(&self, cx: i32, cy: i32, radius: i32, color: u32) {
-        (lib().canvas_draw_circle)(self.0, cx, cy, radius, color);
+    pub fn on_scroll_raw(&self, cb: Callback, userdata: u64) {
+        self.on_event_raw(EVENT_SCROLL, cb, userdata);
     }
 
-    pub fn canvas_fill_circle(&self, cx: i32, cy: i32, radius: i32, color: u32) {
-        (lib().canvas_fill_circle)(self.0, cx, cy, radius, color);
+    pub fn on_key_down_raw(&self, cb: Callback, userdata: u64) {
+        self.on_event_raw(EVENT_KEY, cb, userdata);
     }
 
-    pub fn canvas_get_buffer(&self) -> *mut u32 {
-        (lib().canvas_get_buffer)(self.0)
+    pub fn on_mouse_down_raw(&self, cb: Callback, userdata: u64) {
+        self.on_event_raw(EVENT_MOUSE_DOWN, cb, userdata);
     }
 
-    pub fn canvas_get_stride(&self) -> u32 {
-        (lib().canvas_get_stride)(self.0)
+    pub fn on_mouse_up_raw(&self, cb: Callback, userdata: u64) {
+        self.on_event_raw(EVENT_MOUSE_UP, cb, userdata);
     }
 
-    // ── Callbacks ──
-
-    /// Register a callback for a specific event type on a control.
-    pub fn on_event(&self, event_type: u32, cb: Callback, userdata: u64) {
-        (lib().on_event_fn)(self.0, event_type, cb, userdata);
-    }
-
-    pub fn on_click(&self, cb: Callback, userdata: u64) {
-        (lib().on_click_fn)(self.0, cb, userdata);
-    }
-
-    pub fn on_change(&self, cb: Callback, userdata: u64) {
-        (lib().on_change_fn)(self.0, cb, userdata);
-    }
-
-    pub fn on_mouse_enter(&self, cb: Callback, userdata: u64) {
-        self.on_event(EVENT_MOUSE_ENTER, cb, userdata);
-    }
-
-    pub fn on_mouse_leave(&self, cb: Callback, userdata: u64) {
-        self.on_event(EVENT_MOUSE_LEAVE, cb, userdata);
-    }
-
-    pub fn on_double_click(&self, cb: Callback, userdata: u64) {
-        self.on_event(EVENT_DOUBLE_CLICK, cb, userdata);
-    }
-
-    pub fn on_focus(&self, cb: Callback, userdata: u64) {
-        self.on_event(EVENT_FOCUS, cb, userdata);
-    }
-
-    pub fn on_blur(&self, cb: Callback, userdata: u64) {
-        self.on_event(EVENT_BLUR, cb, userdata);
-    }
-
-    pub fn on_scroll(&self, cb: Callback, userdata: u64) {
-        self.on_event(EVENT_SCROLL, cb, userdata);
-    }
-
-    pub fn on_key_down(&self, cb: Callback, userdata: u64) {
-        self.on_event(EVENT_KEY, cb, userdata);
-    }
-
-    pub fn on_mouse_down(&self, cb: Callback, userdata: u64) {
-        self.on_event(EVENT_MOUSE_DOWN, cb, userdata);
-    }
-
-    pub fn on_mouse_up(&self, cb: Callback, userdata: u64) {
-        self.on_event(EVENT_MOUSE_UP, cb, userdata);
-    }
-
-    // ── TextField-specific ──
-
-    pub fn textfield_set_prefix(&self, icon_code: u32) {
-        (lib().textfield_set_prefix)(self.0, icon_code);
-    }
-
-    pub fn textfield_set_postfix(&self, icon_code: u32) {
-        (lib().textfield_set_postfix)(self.0, icon_code);
-    }
-
-    pub fn textfield_set_password(&self, enabled: bool) {
-        (lib().textfield_set_password)(self.0, enabled as u32);
-    }
-
-    pub fn textfield_set_placeholder(&self, text: &str) {
-        (lib().textfield_set_placeholder)(self.0, text.as_ptr(), text.len() as u32);
-    }
+    // ── Removal ──
 
     pub fn remove(&self) {
-        (lib().remove_fn)(self.0);
+        (lib().remove_fn)(self.id);
     }
 }
 
-// ── Marshal (cross-thread UI access) ─────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+//  Container — extends Control, adds generic add()
+// ══════════════════════════════════════════════════════════════════════
+
+/// A control that can contain child controls.
+///
+/// Inherits all `Control` methods via Deref. Adds `add()` to attach children.
+#[derive(Clone, Copy)]
+pub struct Container {
+    ctrl: Control,
+}
+
+impl Widget for Container {
+    fn id(&self) -> u32 { self.ctrl.id }
+}
+
+impl core::ops::Deref for Container {
+    type Target = Control;
+    fn deref(&self) -> &Control { &self.ctrl }
+}
+
+impl Container {
+    /// Attach a child widget to this container.
+    pub fn add(&self, child: &impl Widget) {
+        (lib().add_child)(self.ctrl.id, child.id());
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  Macros for generating typed control structs
+// ══════════════════════════════════════════════════════════════════════
+
+/// Generate a leaf control (non-container). Derefs to Control.
+macro_rules! leaf_control {
+    ($name:ident, $kind:expr) => {
+        #[derive(Clone, Copy)]
+        pub struct $name { ctrl: Control }
+
+        impl Widget for $name {
+            fn id(&self) -> u32 { self.ctrl.id }
+        }
+
+        impl core::ops::Deref for $name {
+            type Target = Control;
+            fn deref(&self) -> &Control { &self.ctrl }
+        }
+    };
+}
+
+/// Generate a container control. Derefs to Container (which Derefs to Control).
+macro_rules! container_control {
+    ($name:ident, $kind:expr) => {
+        #[derive(Clone, Copy)]
+        pub struct $name { container: Container }
+
+        impl Widget for $name {
+            fn id(&self) -> u32 { self.container.ctrl.id }
+        }
+
+        impl core::ops::Deref for $name {
+            type Target = Container;
+            fn deref(&self) -> &Container { &self.container }
+        }
+    };
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  Controls — each control type lives in its own file under controls/
+// ══════════════════════════════════════════════════════════════════════
+
+mod controls;
+pub use controls::*;
+
+// ══════════════════════════════════════════════════════════════════════
+//  Marshal (cross-thread UI access)
+// ══════════════════════════════════════════════════════════════════════
 
 /// Set a control's text from a worker thread (deferred to UI thread).
 pub fn marshal_set_text(id: u32, text: &str) {

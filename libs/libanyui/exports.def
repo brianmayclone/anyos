@@ -4,6 +4,8 @@ EXPORTS
     anyui_shutdown
     anyui_create_window
     anyui_add_control
+    anyui_create_control
+    anyui_add_child
     anyui_set_text
     anyui_get_text
     anyui_set_position
@@ -33,6 +35,9 @@ EXPORTS
     anyui_set_orientation
     anyui_set_columns
     anyui_set_row_height
+    anyui_set_split_ratio
+    anyui_set_min_split
+    anyui_set_max_split
     anyui_canvas_set_pixel
     anyui_canvas_clear
     anyui_canvas_fill_rect

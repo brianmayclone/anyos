@@ -1,12 +1,25 @@
-use core::fmt::{self, Write};
+use core::fmt::{self, Write as FmtWrite};
 
-struct Stdout;
+/// Standard output handle.
+pub struct Stdout;
 
-impl Write for Stdout {
+impl FmtWrite for Stdout {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         crate::fs::write(1, s.as_bytes());
         Ok(())
     }
+}
+
+impl crate::fs::Write for Stdout {
+    fn write(&mut self, buf: &[u8]) -> crate::error::Result<usize> {
+        crate::fs::write(1, buf);
+        Ok(buf.len())
+    }
+}
+
+/// Get a handle to standard output.
+pub fn stdout() -> Stdout {
+    Stdout
 }
 
 /// Internal: print formatted arguments to stdout.

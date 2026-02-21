@@ -259,6 +259,51 @@ pub extern "C" fn anyui_add_control(
     id
 }
 
+/// Create a standalone control (not yet parented). Returns the new ControlId.
+///
+/// The control is created with position (0,0) and default size for its kind.
+/// Use `anyui_set_position()`, `anyui_set_size()` to configure, then
+/// `anyui_add_child()` to attach it to a parent container.
+#[no_mangle]
+pub extern "C" fn anyui_create_control(
+    kind: u32,
+    text: *const u8,
+    text_len: u32,
+) -> ControlId {
+    let st = state();
+    let id = st.next_id;
+    st.next_id += 1;
+
+    let ck = ControlKind::from_u32(kind);
+    let (dw, dh) = ck.default_size();
+
+    let text_slice = if !text.is_null() && text_len > 0 {
+        unsafe { core::slice::from_raw_parts(text, text_len as usize) }
+    } else {
+        &[]
+    };
+
+    let ctrl = controls::create_control(ck, id, 0, 0, 0, dw, dh, text_slice);
+    st.controls.push(ctrl);
+    id
+}
+
+/// Attach a child control to a parent container.
+///
+/// Sets the child's parent and adds it to the parent's children list.
+#[no_mangle]
+pub extern "C" fn anyui_add_child(parent: ControlId, child: ControlId) {
+    let st = state();
+    // Set parent on child
+    if let Some(c) = st.controls.iter_mut().find(|c| c.id() == child) {
+        c.set_parent(parent);
+    }
+    // Add to parent's children list
+    if let Some(p) = st.controls.iter_mut().find(|c| c.id() == parent) {
+        p.add_child(child);
+    }
+}
+
 // ── Properties ───────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -466,6 +511,52 @@ pub extern "C" fn anyui_set_row_height(id: ControlId, row_height: u32) {
             let raw: *mut dyn Control = &mut **ctrl;
             let tl = unsafe { &mut *(raw as *mut controls::table_layout::TableLayout) };
             tl.row_height = row_height;
+        }
+    }
+}
+
+// ── SplitView properties ─────────────────────────────────────────────
+
+/// Helper to downcast a control to SplitView.
+fn as_split_view(ctrl: &mut Box<dyn Control>) -> Option<&mut controls::split_view::SplitView> {
+    if ctrl.kind() == ControlKind::SplitView {
+        let raw: *mut dyn Control = &mut **ctrl;
+        Some(unsafe { &mut *(raw as *mut controls::split_view::SplitView) })
+    } else {
+        None
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_set_split_ratio(id: ControlId, ratio: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(sv) = as_split_view(ctrl) {
+            let r = ratio.min(100);
+            sv.split_ratio = r;
+            sv.divider_pos = (sv.base.w as u64 * r as u64 / 100) as i32;
+            sv.base.state = r;
+            sv.base.dirty = true;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_set_min_split(id: ControlId, min_ratio: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(sv) = as_split_view(ctrl) {
+            sv.min_ratio = min_ratio.min(100);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_set_max_split(id: ControlId, max_ratio: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(sv) = as_split_view(ctrl) {
+            sv.max_ratio = max_ratio.min(100);
         }
     }
 }
