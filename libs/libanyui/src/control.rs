@@ -572,26 +572,32 @@ pub trait Control {
     }
     fn set_position(&mut self, x: i32, y: i32) {
         let b = self.base_mut();
-        b.x = x;
-        b.y = y;
-        b.dirty = true;
+        if b.x != x || b.y != y {
+            b.x = x;
+            b.y = y;
+            b.dirty = true;
+        }
     }
     fn size(&self) -> (u32, u32) {
         (self.base().w, self.base().h)
     }
     fn set_size(&mut self, w: u32, h: u32) {
         let b = self.base_mut();
-        b.w = w;
-        b.h = h;
-        b.dirty = true;
+        if b.w != w || b.h != h {
+            b.w = w;
+            b.h = h;
+            b.dirty = true;
+        }
     }
     fn visible(&self) -> bool {
         self.base().visible
     }
     fn set_visible(&mut self, v: bool) {
         let b = self.base_mut();
-        b.visible = v;
-        b.dirty = true;
+        if b.visible != v {
+            b.visible = v;
+            b.dirty = true;
+        }
     }
     fn text(&self) -> &[u8] {
         match self.text_base() {
@@ -609,16 +615,20 @@ pub trait Control {
     }
     fn set_color(&mut self, c: u32) {
         let b = self.base_mut();
-        b.color = c;
-        b.dirty = true;
+        if b.color != c {
+            b.color = c;
+            b.dirty = true;
+        }
     }
     fn state_val(&self) -> u32 {
         self.base().state
     }
     fn set_state(&mut self, s: u32) {
         let b = self.base_mut();
-        b.state = s;
-        b.dirty = true;
+        if b.state != s {
+            b.state = s;
+            b.dirty = true;
+        }
     }
 
     // ── Callback accessors (generic, indexed by event type) ─────────

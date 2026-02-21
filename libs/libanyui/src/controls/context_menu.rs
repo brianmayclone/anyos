@@ -31,23 +31,25 @@ impl Control for ContextMenu {
         let item_count = items.len().max(1);
         let h = (item_count as u32) * 28 + 8; // 28px per item + 8px padding
 
-        // Background + border
-        crate::draw::fill_rounded_rect(surface, x, y, w, h, 6, tc.control_bg);
+        // Shadow for popup depth
+        crate::draw::draw_shadow_rounded_rect(surface, x, y, w, h, 6, 0, 3, 12, 80);
+
+        // Opaque background + border
+        crate::draw::fill_rounded_rect(surface, x, y, w, h, 6, tc.sidebar_bg);
         crate::draw::draw_rounded_border(surface, x, y, w, h, 6, tc.card_border);
 
         // Render each item
-        let selected = self.text_base.base.state;
         for (i, item_text) in items.iter().enumerate() {
             let iy = y + 4 + (i as i32) * 28;
 
-            // Highlight selected item
-            if i as u32 == selected {
-                crate::draw::fill_rect(surface, x + 4, iy, w - 8, 28, tc.accent);
+            // Highlight hovered item
+            if i as u32 == self.text_base.base.state {
+                crate::draw::fill_rounded_rect(surface, x + 4, iy, w - 8, 28, 4, tc.accent);
             }
 
             // Item text
             if !item_text.is_empty() {
-                let text_color = if i as u32 == selected { 0xFFFFFFFF } else { tc.text };
+                let text_color = if i as u32 == self.text_base.base.state { 0xFFFFFFFF } else { tc.text };
                 crate::draw::draw_text(surface, x + 12, iy + 6, text_color, item_text);
             }
         }

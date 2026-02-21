@@ -6,12 +6,41 @@
 
 use crate::font_bitmap;
 
-/// SHM window surface — pixel buffer + dimensions.
+/// SHM window surface — pixel buffer + dimensions + clip rect.
 #[derive(Clone, Copy)]
 pub struct Surface {
     pub pixels: *mut u32,
     pub width: u32,
     pub height: u32,
+    /// Clip rectangle — drawing outside this region is discarded.
+    pub clip_x: i32,
+    pub clip_y: i32,
+    pub clip_w: u32,
+    pub clip_h: u32,
+}
+
+impl Surface {
+    /// Create a surface with clip set to full bounds.
+    pub fn new(pixels: *mut u32, width: u32, height: u32) -> Self {
+        Self { pixels, width, height, clip_x: 0, clip_y: 0, clip_w: width, clip_h: height }
+    }
+
+    /// Return a copy with clip rect intersected with the given region.
+    pub fn with_clip(&self, x: i32, y: i32, w: u32, h: u32) -> Self {
+        let cx0 = self.clip_x.max(x);
+        let cy0 = self.clip_y.max(y);
+        let cx1 = (self.clip_x + self.clip_w as i32).min(x + w as i32);
+        let cy1 = (self.clip_y + self.clip_h as i32).min(y + h as i32);
+        Surface {
+            pixels: self.pixels,
+            width: self.width,
+            height: self.height,
+            clip_x: cx0,
+            clip_y: cy0,
+            clip_w: (cx1 - cx0).max(0) as u32,
+            clip_h: (cy1 - cy0).max(0) as u32,
+        }
+    }
 }
 
 // ── librender DLL access (at fixed address 0x04300000) ──────────────
@@ -76,14 +105,26 @@ const DEFAULT_FONT_SIZE: u16 = 13;
 
 // ── Drawing functions ───────────────────────────────────────────────
 
-/// Fill a rectangle on a surface via librender.
+/// Fill a rectangle on a surface via librender, clipped to the surface's clip rect.
 #[inline(always)]
 pub fn fill_rect(s: &Surface, x: i32, y: i32, w: u32, h: u32, color: u32) {
-    (librender().fill_rect)(s.pixels, s.width, s.height, x, y, w, h, color);
+    let x0 = x.max(s.clip_x);
+    let y0 = y.max(s.clip_y);
+    let x1 = (x + w as i32).min(s.clip_x + s.clip_w as i32);
+    let y1 = (y + h as i32).min(s.clip_y + s.clip_h as i32);
+    if x0 >= x1 || y0 >= y1 { return; }
+    (librender().fill_rect)(s.pixels, s.width, s.height, x0, y0, (x1 - x0) as u32, (y1 - y0) as u32, color);
 }
 
 /// Fill a rounded rectangle with antialiasing via librender.
+/// Skipped entirely if fully outside the clip rect.
 pub fn fill_rounded_rect(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, color: u32) {
+    // Skip if fully outside clip rect
+    if x + w as i32 <= s.clip_x || y + h as i32 <= s.clip_y
+        || x >= s.clip_x + s.clip_w as i32 || y >= s.clip_y + s.clip_h as i32
+    {
+        return;
+    }
     (librender().fill_rounded_rect_aa)(s.pixels, s.width, s.height, x, y, w, h, r as i32, color);
 }
 
@@ -137,9 +178,17 @@ pub fn draw_rounded_border(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, 
 // ── Text rendering ─────────────────────────────────────────────────
 
 /// Render TTF text onto a surface via libfont.dlib.
+/// Skipped if the text line is fully outside the clip rect.
 #[inline(always)]
 fn render_ttf(s: &Surface, x: i32, y: i32, color: u32, text: &[u8], font_id: u16, size: u16) {
     if text.is_empty() { return; }
+    let text_h = size as i32 + 4; // approximate line height
+    // Skip if fully outside clip rect
+    if y + text_h <= s.clip_y || y >= s.clip_y + s.clip_h as i32
+        || x >= s.clip_x + s.clip_w as i32
+    {
+        return;
+    }
     (libfont().draw_string_buf)(
         s.pixels, s.width, s.height,
         x, y, color,
@@ -167,12 +216,16 @@ pub fn draw_text_ex(s: &Surface, x: i32, y: i32, color: u32, text: &[u8], font_i
 /// Draw monospace text using the embedded bitmap font.
 #[inline(always)]
 pub fn draw_text_mono(s: &Surface, x: i32, y: i32, color: u32, text: &[u8]) {
+    if y + 16 <= s.clip_y || y >= s.clip_y + s.clip_h as i32
+        || x >= s.clip_x + s.clip_w as i32 { return; }
     font_bitmap::draw_text_mono(s.pixels, s.width, s.height, x, y, text, color);
 }
 
 /// Draw proportional text using the embedded bitmap font.
 #[inline(always)]
 pub fn draw_text_bitmap(s: &Surface, x: i32, y: i32, color: u32, text: &[u8]) {
+    if y + 16 <= s.clip_y || y >= s.clip_y + s.clip_h as i32
+        || x >= s.clip_x + s.clip_w as i32 { return; }
     font_bitmap::draw_text(s.pixels, s.width, s.height, x, y, text, color);
 }
 
@@ -364,9 +417,19 @@ pub fn draw_shadow_rect(s: &Surface, x: i32, y: i32, w: u32, h: u32,
     let sy = y + offset_y;
     let sw = w as i32;
     let sh = h as i32;
+    let bx = sx - spread;
+    let by = sy - spread;
+    let bw = sw + spread * 2;
+    let bh = sh + spread * 2;
+    // Skip if fully outside clip rect
+    if bx + bw <= s.clip_x || by + bh <= s.clip_y
+        || bx >= s.clip_x + s.clip_w as i32 || by >= s.clip_y + s.clip_h as i32
+    {
+        return;
+    }
     draw_shadow_core(
         s.pixels, s.width, s.height,
-        sx - spread, sy - spread, sw + spread * 2, sh + spread * 2,
+        bx, by, bw, bh,
         spread, alpha,
         |px, py| rect_sdf(px, py, sx, sy, sw, sh),
     );
@@ -419,17 +482,22 @@ pub fn blur_rounded_rect(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: i32, ra
     blur_region_rounded(s.pixels, s.width, s.height, x, y, w, h, r, radius, passes);
 }
 
-/// Blit a pixel buffer onto the surface at (x, y).
+/// Blit a pixel buffer onto the surface at (x, y), clipped to the surface's clip rect.
 pub fn blit_buffer(s: &Surface, x: i32, y: i32, w: u32, h: u32, src: &[u32]) {
     if w == 0 || h == 0 || src.is_empty() { return; }
     let sw = s.width as i32;
     let sh = s.height as i32;
+    // Compute effective clip bounds (intersection of surface bounds and clip rect)
+    let clip_x0 = s.clip_x.max(0);
+    let clip_y0 = s.clip_y.max(0);
+    let clip_x1 = (s.clip_x + s.clip_w as i32).min(sw);
+    let clip_y1 = (s.clip_y + s.clip_h as i32).min(sh);
     for row in 0..h as i32 {
         let dy = y + row;
-        if dy < 0 || dy >= sh { continue; }
+        if dy < clip_y0 || dy >= clip_y1 { continue; }
         let src_off = row as usize * w as usize;
-        let x0 = x.max(0);
-        let x1 = (x + w as i32).min(sw);
+        let x0 = x.max(clip_x0);
+        let x1 = (x + w as i32).min(clip_x1);
         if x0 >= x1 { continue; }
         let skip = (x0 - x) as usize;
         let count = (x1 - x0) as usize;

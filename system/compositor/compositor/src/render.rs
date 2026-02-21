@@ -86,8 +86,8 @@ pub fn render_thread_entry() {
             }
         } else {
             // Lock contended — management thread is doing work (e.g. window creation).
-            // Don't block: sleep briefly and retry. Previous frame stays on screen.
-            process::yield_cpu();
+            // Sleep 1ms and retry. Previous frame stays on screen.
+            process::sleep(1);
         }
 
         // Dynamic frame pacing: sleep only the remainder to hit ~60fps

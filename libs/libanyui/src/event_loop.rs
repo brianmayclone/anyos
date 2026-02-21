@@ -225,6 +225,13 @@ pub fn run_once() -> u32 {
                                                 st.controls[mi].set_position(mx, my);
                                                 st.controls[mi].base_mut().visible = true;
                                                 st.controls[mi].base_mut().dirty = true;
+                                                // Focus the menu so handle_blur hides it on outside click
+                                                if let Some(old_fid) = st.focused {
+                                                    if let Some(oi) = control::find_idx(&st.controls, old_fid) {
+                                                        st.controls[oi].handle_blur();
+                                                    }
+                                                }
+                                                st.focused = Some(menu_id);
                                             }
                                         }
                                     }
@@ -397,13 +404,11 @@ pub fn run_once() -> u32 {
         let comp_window_id = st.comp_windows[wi].window_id;
         let shm_id = st.comp_windows[wi].shm_id;
 
-        let surf = crate::draw::Surface { pixels: surface_ptr, width: sw, height: sh };
+        let surf = crate::draw::Surface::new(surface_ptr, sw, sh);
 
-        // Clear window background
-        if let Some(idx) = control::find_idx(&st.controls, win_id) {
-            let (w, h) = st.controls[idx].size();
-            crate::draw::fill_rect(&surf, 0, 0, w, h, crate::theme::colors().window_bg);
-        }
+        // No explicit background clear here — Window::render() paints its own
+        // background as the first step of render_tree. Avoiding a separate clear
+        // reduces the window where SHM contains a blank frame (present is async).
 
         // Render control tree (depth-first, parent before children)
         render_tree(&st.controls, win_id, &surf, 0, 0);
@@ -536,15 +541,27 @@ fn render_tree(
     if controls[idx].kind() == ControlKind::Expander && controls[idx].base().state == 0 {
         return;
     }
-    // ScrollView: offset children by -scroll_y
+    // ScrollView: offset children by -scroll_y and clip to viewport
     // Expander: offset children by +HEADER_HEIGHT (below header)
-    let child_abs_y = match controls[idx].kind() {
-        ControlKind::ScrollView => child_abs_y - controls[idx].base().state as i32,
-        ControlKind::Expander => child_abs_y + crate::controls::expander::HEADER_HEIGHT as i32,
-        _ => child_abs_y,
+    let (child_abs_y, child_surface) = match controls[idx].kind() {
+        ControlKind::ScrollView => {
+            let sv_x = parent_abs_x + controls[idx].base().x;
+            let sv_y = parent_abs_y + controls[idx].base().y;
+            let sv_w = controls[idx].base().w;
+            let sv_h = controls[idx].base().h;
+            (
+                child_abs_y - controls[idx].base().state as i32,
+                surface.with_clip(sv_x, sv_y, sv_w, sv_h),
+            )
+        }
+        ControlKind::Expander => (
+            child_abs_y + crate::controls::expander::HEADER_HEIGHT as i32,
+            *surface,
+        ),
+        _ => (child_abs_y, *surface),
     };
     for &child_id in &children {
-        render_tree(controls, child_id, surface, child_abs_x, child_abs_y);
+        render_tree(controls, child_id, &child_surface, child_abs_x, child_abs_y);
     }
 }
 

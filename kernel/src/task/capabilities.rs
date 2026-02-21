@@ -135,7 +135,14 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_SHM_UNMAP
         | syscall::SYS_SHM_DESTROY
         // Crash info — always allowed
-        | syscall::SYS_GET_CRASH_INFO => 0,
+        | syscall::SYS_GET_CRASH_INFO
+        // Uptime (TSC-based ms) — always allowed
+        | syscall::SYS_UPTIME_MS
+        // Display queries (read-only) — always allowed
+        | syscall::SYS_SCREEN_SIZE
+        | syscall::SYS_GPU_INFO
+        | syscall::SYS_GPU_HAS_ACCEL
+        | syscall::SYS_GPU_HAS_HW_CURSOR => 0,
 
         // Networking
         syscall::SYS_NET_CONFIG
@@ -165,13 +172,9 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         syscall::SYS_AUDIO_WRITE
         | syscall::SYS_AUDIO_CTL => CAP_AUDIO,
 
-        // Display / GPU (non-compositor)
-        syscall::SYS_SCREEN_SIZE
-        | syscall::SYS_SET_RESOLUTION
+        // Display / GPU (privileged — modify resolution, capture screen)
+        syscall::SYS_SET_RESOLUTION
         | syscall::SYS_LIST_RESOLUTIONS
-        | syscall::SYS_GPU_INFO
-        | syscall::SYS_GPU_HAS_ACCEL
-        | syscall::SYS_GPU_HAS_HW_CURSOR
         | syscall::SYS_CAPTURE_SCREEN => CAP_DISPLAY,
 
         // Raw devices
