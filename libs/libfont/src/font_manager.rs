@@ -1,7 +1,8 @@
 //! Font manager — loads TTF fonts from disk, caches rasterized glyphs,
 //! and provides text rendering into user-provided ARGB pixel buffers.
 //!
-//! State is stored on the process heap; the pointer lives in per-process .bss.
+//! Performance-critical: all `/ 255` replaced with `div255()` bit trick,
+//! glyph cache uses hash table for O(1) lookup, FIR filter uses fixed-point.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -17,6 +18,10 @@ static mut FONT_MGR_PTR: *mut FontManager = core::ptr::null_mut();
 /// Maximum number of cached glyphs before LRU eviction.
 const MAX_CACHE_SIZE: usize = 512;
 
+/// Hash table size for glyph cache lookup (must be power of 2).
+const GLYPH_HASH_SIZE: usize = 512;
+const GLYPH_HASH_EMPTY: u16 = 0xFFFF;
+
 /// System font IDs (must match kernel convention).
 pub const SYSTEM_FONT_ID: u16 = 0;
 pub const SYSTEM_FONT_BOLD: u16 = 1;
@@ -24,8 +29,41 @@ pub const SYSTEM_FONT_THIN: u16 = 2;
 pub const SYSTEM_FONT_ITALIC: u16 = 3;
 pub const SYSTEM_FONT_MONO: u16 = 4;
 
+/// Fast exact division by 255 (same as compositor's div255).
+#[inline(always)]
+fn div255(x: u32) -> u32 {
+    (x + 1 + (x >> 8)) >> 8
+}
+
 struct LoadedFont {
     ttf: TtfFont,
+    /// char→glyph cache for ASCII codepoints (avoids cmap4 binary search).
+    /// 0xFFFF = not cached yet.
+    ascii_glyph_cache: [u16; 128],
+}
+
+impl LoadedFont {
+    fn new(ttf: TtfFont) -> Self {
+        LoadedFont {
+            ttf,
+            ascii_glyph_cache: [0xFFFF; 128],
+        }
+    }
+
+    /// Get glyph ID for a codepoint, using ASCII cache for common characters.
+    fn char_to_glyph_cached(&mut self, codepoint: u32) -> u16 {
+        if codepoint < 128 {
+            let cached = self.ascii_glyph_cache[codepoint as usize];
+            if cached != 0xFFFF {
+                return cached;
+            }
+            let gid = self.ttf.char_to_glyph(codepoint);
+            self.ascii_glyph_cache[codepoint as usize] = gid;
+            gid
+        } else {
+            self.ttf.char_to_glyph(codepoint)
+        }
+    }
 }
 
 struct CachedGlyph {
@@ -45,8 +83,19 @@ struct CachedGlyph {
 pub struct FontManager {
     fonts: Vec<Option<LoadedFont>>,
     cache: Vec<CachedGlyph>,
+    /// Direct-mapped hash table for O(1) glyph cache lookup.
+    /// Value = index into `cache` Vec, GLYPH_HASH_EMPTY = empty slot.
+    glyph_hash: [u16; GLYPH_HASH_SIZE],
     access_counter: u32,
     subpixel_enabled: bool,
+}
+
+/// Compute hash table index from glyph cache key.
+#[inline]
+fn glyph_hash_index(font_id: u16, glyph_id: u16, size: u16, subpixel: bool) -> usize {
+    let k = (font_id as u32) << 16 | (glyph_id as u32);
+    let h = k.wrapping_mul(2654435761) ^ ((size as u32) << 1 | subpixel as u32);
+    (h as usize) & (GLYPH_HASH_SIZE - 1)
 }
 
 impl FontManager {
@@ -54,13 +103,14 @@ impl FontManager {
         FontManager {
             fonts: Vec::new(),
             cache: Vec::new(),
+            glyph_hash: [GLYPH_HASH_EMPTY; GLYPH_HASH_SIZE],
             access_counter: 0,
             subpixel_enabled: false,
         }
     }
 
     fn add_font(&mut self, ttf: TtfFont) -> u16 {
-        let font = LoadedFont { ttf };
+        let font = LoadedFont::new(ttf);
         for (i, slot) in self.fonts.iter_mut().enumerate() {
             if slot.is_none() {
                 *slot = Some(font);
@@ -79,6 +129,12 @@ impl FontManager {
             .map(|f| &f.ttf)
     }
 
+    fn get_font_mut(&mut self, font_id: u16) -> Option<&mut LoadedFont> {
+        self.fonts
+            .get_mut(font_id as usize)
+            .and_then(|slot| slot.as_mut())
+    }
+
     fn get_font_or_fallback(&self, font_id: u16) -> Option<&TtfFont> {
         self.get_font(font_id)
             .or_else(|| if font_id != SYSTEM_FONT_ID { self.get_font(SYSTEM_FONT_ID) } else { None })
@@ -88,18 +144,70 @@ impl FontManager {
         if let Some(slot) = self.fonts.get_mut(font_id as usize) {
             *slot = None;
         }
-        self.cache.retain(|g| g.font_id != font_id);
+        // Invalidate all hash entries for this font, then remove from cache
+        for i in (0..self.cache.len()).rev() {
+            if self.cache[i].font_id == font_id {
+                self.invalidate_hash_entry(i);
+                self.cache.swap_remove(i);
+                // Update hash entry for the element that was swapped in
+                if i < self.cache.len() {
+                    self.update_hash_entry(i);
+                }
+            }
+        }
     }
 
+    /// O(1) glyph cache lookup using hash table with linear-search fallback.
     fn find_cached(&mut self, font_id: u16, glyph_id: u16, size: u16, subpixel: bool) -> Option<usize> {
-        for (i, g) in self.cache.iter_mut().enumerate() {
+        let hash = glyph_hash_index(font_id, glyph_id, size, subpixel);
+        let slot = self.glyph_hash[hash];
+
+        // Fast path: direct hash hit
+        if slot != GLYPH_HASH_EMPTY {
+            let idx = slot as usize;
+            if idx < self.cache.len() {
+                let g = &self.cache[idx];
+                if g.font_id == font_id && g.glyph_id == glyph_id && g.size == size && g.subpixel == subpixel {
+                    self.access_counter += 1;
+                    self.cache[idx].use_count = self.access_counter;
+                    return Some(idx);
+                }
+            }
+        }
+
+        // Slow fallback: linear search (hash collision)
+        for i in 0..self.cache.len() {
+            let g = &self.cache[i];
             if g.font_id == font_id && g.glyph_id == glyph_id && g.size == size && g.subpixel == subpixel {
                 self.access_counter += 1;
-                g.use_count = self.access_counter;
+                self.cache[i].use_count = self.access_counter;
+                // Update hash table for next time
+                self.glyph_hash[hash] = i as u16;
                 return Some(i);
             }
         }
         None
+    }
+
+    /// Invalidate the hash entry pointing to cache index `idx`.
+    fn invalidate_hash_entry(&mut self, idx: usize) {
+        let g = &self.cache[idx];
+        let hash = glyph_hash_index(g.font_id, g.glyph_id, g.size, g.subpixel);
+        if self.glyph_hash[hash] == idx as u16 {
+            self.glyph_hash[hash] = GLYPH_HASH_EMPTY;
+        }
+    }
+
+    /// Update the hash entry for cache index `idx` (after swap_remove moved an element).
+    fn update_hash_entry(&mut self, idx: usize) {
+        let g = &self.cache[idx];
+        let hash = glyph_hash_index(g.font_id, g.glyph_id, g.size, g.subpixel);
+        // Only update if this slot was pointing to the old (now moved) index,
+        // or if it's empty (safe to claim).
+        let old_slot = self.glyph_hash[hash];
+        if old_slot == GLYPH_HASH_EMPTY || old_slot as usize >= self.cache.len() {
+            self.glyph_hash[hash] = idx as u16;
+        }
     }
 
     fn evict_if_needed(&mut self) {
@@ -114,7 +222,13 @@ impl FontManager {
                 min_idx = i;
             }
         }
+        // Invalidate hash entry for the evicted glyph
+        self.invalidate_hash_entry(min_idx);
         self.cache.swap_remove(min_idx);
+        // Update hash entry for the element that was swapped into min_idx
+        if min_idx < self.cache.len() {
+            self.update_hash_entry(min_idx);
+        }
     }
 
     fn cache_glyph(
@@ -132,6 +246,9 @@ impl FontManager {
             coverage: bitmap.coverage,
             use_count: self.access_counter,
         });
+        // Store in hash table
+        let hash = glyph_hash_index(font_id, glyph_id, size, subpixel);
+        self.glyph_hash[hash] = idx as u16;
         idx
     }
 
@@ -166,7 +283,6 @@ fn line_height_internal(ttf: &TtfFont, size: u16) -> u32 {
 
 // ─── State access ────────────────────────────────────────────────────────
 
-/// Get the FontManager pointer from per-process .bss, or None if not initialized.
 fn get_mgr() -> Option<&'static mut FontManager> {
     unsafe {
         if FONT_MGR_PTR.is_null() {
@@ -177,7 +293,6 @@ fn get_mgr() -> Option<&'static mut FontManager> {
     }
 }
 
-/// Store the FontManager pointer in per-process .bss.
 fn set_mgr_ptr(mgr: *mut FontManager) {
     unsafe {
         FONT_MGR_PTR = mgr;
@@ -188,7 +303,6 @@ fn set_mgr_ptr(mgr: *mut FontManager) {
 
 /// Initialize the font manager and load system fonts from disk.
 pub fn init() {
-    // Don't double-init
     if get_mgr().is_some() {
         return;
     }
@@ -199,7 +313,6 @@ pub fn init() {
 
     let mgr = unsafe { &mut *mgr_ptr };
 
-    // Load system font variants
     let font_paths: [&[u8]; 5] = [
         b"/System/fonts/sfpro.ttf",
         b"/System/fonts/sfpro-bold.ttf",
@@ -223,13 +336,11 @@ pub fn init() {
         }
     }
 
-    // Auto-detect GPU acceleration and enable subpixel rendering if available
     if syscall::gpu_has_accel() != 0 {
         mgr.subpixel_enabled = true;
     }
 }
 
-/// Ensure the font manager is initialized (auto-init on first call).
 fn ensure_init() -> Option<&'static mut FontManager> {
     if get_mgr().is_none() {
         init();
@@ -293,37 +404,52 @@ pub fn measure_string(text: &str, font_id: u16, size: u16) -> (u32, u32) {
         }
     };
 
-    if let Some(ttf) = mgr.get_font_or_fallback(font_id) {
-        let mut width = 0u32;
-        let mut max_width = 0u32;
-        let mut lines = 1u32;
-        let upm = ttf.units_per_em as u32;
+    let actual_font_id = if mgr.get_font(font_id).is_some() { font_id } else { SYSTEM_FONT_ID };
 
-        for ch in text.chars() {
-            if ch == '\n' {
-                max_width = max_width.max(width);
-                width = 0;
-                lines += 1;
-                continue;
-            }
-            if ch == '\t' {
-                let space_gid = ttf.char_to_glyph(b' ' as u32);
-                let space_adv = ttf.advance_width(space_gid) as u32;
+    // Get UPM from font (immutable borrow)
+    let upm = match mgr.get_font(actual_font_id) {
+        Some(ttf) => ttf.units_per_em as u32,
+        None => {
+            let char_w = (size as u32 * 6) / 10;
+            let w = text.chars().filter(|c| *c != '\n').count() as u32 * char_w;
+            return (w, size as u32);
+        }
+    };
+
+    let mut width = 0u32;
+    let mut max_width = 0u32;
+    let mut lines = 1u32;
+
+    for ch in text.chars() {
+        if ch == '\n' {
+            max_width = max_width.max(width);
+            width = 0;
+            lines += 1;
+            continue;
+        }
+        if ch == '\t' {
+            // Use ASCII cache for space glyph
+            if let Some(font) = mgr.get_font_mut(actual_font_id) {
+                let space_gid = font.char_to_glyph_cached(b' ' as u32);
+                let space_adv = font.ttf.advance_width(space_gid) as u32;
                 width += space_adv * 4 * size as u32 / upm;
-                continue;
             }
-            let gid = ttf.char_to_glyph(ch as u32);
-            let adv = ttf.advance_width(gid) as u32;
+            continue;
+        }
+        // Use ASCII cache for char→glyph lookup
+        if let Some(font) = mgr.get_font_mut(actual_font_id) {
+            let gid = font.char_to_glyph_cached(ch as u32);
+            let adv = font.ttf.advance_width(gid) as u32;
             width += (adv * size as u32 + upm / 2) / upm;
         }
-        max_width = max_width.max(width);
-        let lh = line_height_internal(ttf, size);
-        return (max_width, lines * lh);
     }
+    max_width = max_width.max(width);
 
-    let char_w = (size as u32 * 6) / 10;
-    let w = text.chars().filter(|c| *c != '\n').count() as u32 * char_w;
-    (w, size as u32)
+    let lh = match mgr.get_font(actual_font_id) {
+        Some(ttf) => line_height_internal(ttf, size),
+        None => size as u32,
+    };
+    (max_width, lines * lh)
 }
 
 /// Draw a string into an ARGB pixel buffer.
@@ -356,7 +482,6 @@ pub fn draw_string_buf(
     let mut cx = x;
     let mut cy = y;
 
-    // Extract color components
     let col_a = ((color >> 24) & 0xFF) as u32;
     let col_r = ((color >> 16) & 0xFF) as u8;
     let col_g = ((color >> 8) & 0xFF) as u8;
@@ -374,12 +499,12 @@ pub fn draw_string_buf(
         }
 
         let (gid, advance_px) = {
-            let ttf = match mgr.get_font(actual_font_id) {
-                Some(t) => t,
+            let font = match mgr.get_font_mut(actual_font_id) {
+                Some(f) => f,
                 None => continue,
             };
-            let gid = ttf.char_to_glyph(ch as u32);
-            let adv_fu = ttf.advance_width(gid);
+            let gid = font.char_to_glyph_cached(ch as u32);
+            let adv_fu = font.ttf.advance_width(gid);
             (gid, (adv_fu as u32 * size as u32 + upm / 2) / upm)
         };
 
@@ -432,7 +557,7 @@ fn draw_glyph_greyscale_buf(
             if px < 0 || px >= sw_i { continue; }
             let coverage = glyph.coverage[(row * bw + col) as usize];
             if coverage == 0 { continue; }
-            let alpha = (coverage as u32 * col_a) / 255;
+            let alpha = div255(coverage as u32 * col_a);
             if alpha == 0 { continue; }
 
             let idx = (py as u32 * sw + px as u32) as usize;
@@ -454,6 +579,9 @@ fn draw_glyph_subpixel_buf(
     let sw_i = sw as i32;
     let sh_i = sh as i32;
 
+    // Fixed-point reciprocal for / 10: (1 << 16) / 10 = 6553.6 → 6554
+    const RECIP10: u32 = 6554;
+
     for row in 0..bh {
         let py = y + row;
         if py < 0 || py >= sh_i { continue; }
@@ -470,7 +598,7 @@ fn draw_glyph_subpixel_buf(
             let b_raw = cov_row[ci + 2] as u32;
             if r_raw == 0 && g_raw == 0 && b_raw == 0 { continue; }
 
-            // 5-tap FIR filter for LCD color fringe reduction
+            // 5-tap FIR filter with fixed-point division (replaces / 10)
             let get = |i: usize| -> u32 {
                 if i < stride { cov_row[i] as u32 } else { 0 }
             };
@@ -478,31 +606,36 @@ fn draw_glyph_subpixel_buf(
             let getl = |i: isize| -> u32 {
                 if i >= 0 && (i as usize) < stride { cov_row[i as usize] as u32 } else { 0 }
             };
-            let r_filt = (getl(ci_i - 2) + getl(ci_i - 1) * 2 + r_raw * 4 + g_raw * 2 + b_raw + 5) / 10;
-            let g_filt = (getl(ci_i - 1) + r_raw * 2 + g_raw * 4 + b_raw * 2 + get(ci + 3) + 5) / 10;
-            let b_filt = (r_raw + g_raw * 2 + b_raw * 4 + get(ci + 3) * 2 + get(ci + 4) + 5) / 10;
+            let r_sum = getl(ci_i - 2) + getl(ci_i - 1) * 2 + r_raw * 4 + g_raw * 2 + b_raw + 5;
+            let g_sum = getl(ci_i - 1) + r_raw * 2 + g_raw * 4 + b_raw * 2 + get(ci + 3) + 5;
+            let b_sum = r_raw + g_raw * 2 + b_raw * 4 + get(ci + 3) * 2 + get(ci + 4) + 5;
+            let r_filt = ((r_sum * RECIP10) >> 16) as u8;
+            let g_filt = ((g_sum * RECIP10) >> 16) as u8;
+            let b_filt = ((b_sum * RECIP10) >> 16) as u8;
 
             let idx = (py as u32 * sw + px as u32) as usize;
             let dst = unsafe { *buf.add(idx) };
-            let blended = subpixel_blend(dst, r_filt as u8, g_filt as u8, b_filt as u8, col_r, col_g, col_b);
+            let blended = subpixel_blend(dst, r_filt, g_filt, b_filt, col_r, col_g, col_b);
             unsafe { *buf.add(idx) = blended; }
         }
     }
 }
 
-#[inline]
+/// Division-free alpha blend for font glyph pixel.
+#[inline(always)]
 fn alpha_blend_pixel(dst: u32, alpha: u32, r: u8, g: u8, b: u8) -> u32 {
     let inv = 255 - alpha;
     let dr = (dst >> 16) & 0xFF;
     let dg = (dst >> 8) & 0xFF;
     let db = dst & 0xFF;
-    let nr = (r as u32 * alpha + dr * inv) / 255;
-    let ng = (g as u32 * alpha + dg * inv) / 255;
-    let nb = (b as u32 * alpha + db * inv) / 255;
+    let nr = div255(r as u32 * alpha + dr * inv);
+    let ng = div255(g as u32 * alpha + dg * inv);
+    let nb = div255(b as u32 * alpha + db * inv);
     0xFF000000 | (nr << 16) | (ng << 8) | nb
 }
 
-#[inline]
+/// Division-free subpixel blend for LCD font rendering.
+#[inline(always)]
 fn subpixel_blend(dst: u32, r_cov: u8, g_cov: u8, b_cov: u8, col_r: u8, col_g: u8, col_b: u8) -> u32 {
     let dr = (dst >> 16) & 0xFF;
     let dg = (dst >> 8) & 0xFF;
@@ -510,8 +643,8 @@ fn subpixel_blend(dst: u32, r_cov: u8, g_cov: u8, b_cov: u8, col_r: u8, col_g: u
     let ra = r_cov as u32;
     let ga = g_cov as u32;
     let ba = b_cov as u32;
-    let nr = (col_r as u32 * ra + dr * (255 - ra)) / 255;
-    let ng = (col_g as u32 * ga + dg * (255 - ga)) / 255;
-    let nb = (col_b as u32 * ba + db * (255 - ba)) / 255;
+    let nr = div255(col_r as u32 * ra + dr * (255 - ra));
+    let ng = div255(col_g as u32 * ga + dg * (255 - ga));
+    let nb = div255(col_b as u32 * ba + db * (255 - ba));
     0xFF000000 | (nr << 16) | (ng << 8) | nb
 }
