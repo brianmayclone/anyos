@@ -13,6 +13,9 @@ exclude = [
   "libs/librender_client",
   "libs/libcompositor",
   "libs/libcompositor_client",
+  "libs/dynlink",
+  "libs/libanyui",
+  "libs/libanyui_client",
   # System daemons
   "system/init",
   "system/terminal",
@@ -105,6 +108,7 @@ exclude = [
   "bin/chmod",
   "bin/chown",
   "bin/su",
+  "apps/demo_anyui",
   "system/login",
   "system/permdialog",
   # Bootloader

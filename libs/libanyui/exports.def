@@ -1,0 +1,22 @@
+LIBRARY libanyui
+EXPORTS
+    anyui_init
+    anyui_shutdown
+    anyui_create_window
+    anyui_add_control
+    anyui_set_text
+    anyui_get_text
+    anyui_set_position
+    anyui_set_size
+    anyui_set_visible
+    anyui_set_color
+    anyui_set_state
+    anyui_get_state
+    anyui_on_event
+    anyui_on_click
+    anyui_on_change
+    anyui_run
+    anyui_run_once
+    anyui_quit
+    anyui_remove
+    anyui_destroy_window

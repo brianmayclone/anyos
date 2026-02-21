@@ -1,11 +1,14 @@
-//! DLIB v3 (Dynamic Library) loader and registry.
+//! Dynamic library loader and registry.
 //!
-//! DLIBs are shared code mapped into every user process at fixed virtual addresses.
+//! Supports two formats:
+//! - **DLIB v3**: Proprietary format (4096-byte header + flat pages). Used by boot-time DLLs.
+//! - **ELF64 ET_DYN**: Standard ELF shared objects linked by anyld. Used for new libraries.
+//!
+//! Both formats share the same runtime model:
 //! - `.rodata` + `.text` pages are shared read-only across all processes.
 //! - `.data` pages are per-process (copied from template on demand fault).
 //! - `.bss` pages are per-process (zeroed on demand fault).
 //!
-//! File format: 4096-byte header + RO content + .data template content.
 //! The PAGE_WRITABLE bit on PTEs distinguishes per-process (free on destroy)
 //! from shared (skip on destroy).
 
@@ -80,6 +83,10 @@ fn read_u32_le(data: &[u8], offset: usize) -> u32 {
     ])
 }
 
+fn read_u16_le(data: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes([data[offset], data[offset + 1]])
+}
+
 fn read_u64_le(data: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes([
         data[offset],
@@ -92,6 +99,32 @@ fn read_u64_le(data: &[u8], offset: usize) -> u64 {
         data[offset + 7],
     ])
 }
+
+// ── ELF64 constants ──────────────────────────────────────────
+
+const ELFCLASS64: u8 = 2;
+const ELFDATA2LSB: u8 = 1;
+const ET_DYN: u16 = 3;
+const EM_X86_64: u16 = 62;
+const PT_LOAD: u32 = 1;
+const PF_W: u32 = 2;
+
+// ELF64 header offsets
+const EI_CLASS: usize = 4;
+const EI_DATA: usize = 5;
+const E_TYPE: usize = 16;
+const E_MACHINE: usize = 18;
+const E_PHOFF: usize = 32;
+const E_PHENTSIZE: usize = 54;
+const E_PHNUM: usize = 56;
+
+// ELF64 Phdr offsets (each entry is 56 bytes)
+const PH_TYPE: usize = 0;
+const PH_FLAGS: usize = 4;
+const PH_OFFSET: usize = 8;
+const PH_VADDR: usize = 16;
+const PH_FILESZ: usize = 32;
+const PH_MEMSZ: usize = 40;
 
 /// Parse and validate a DLIB v3 header.
 /// Returns (base_vaddr, ro_pages, data_pages, bss_pages, total_pages).
@@ -149,6 +182,252 @@ fn alloc_and_copy_pages(
         pages.push(frame);
     }
     Ok(pages)
+}
+
+// ── ELF64 ET_DYN loader ──────────────────────────────────────
+
+/// Load an ELF64 ET_DYN shared object into physical memory.
+///
+/// Parses PT_LOAD segments from the ELF file:
+/// - RX segment (no PF_W) → shared read-only pages
+/// - RW segment (PF_W) → per-process .data template + .bss
+///
+/// All relocations are pre-applied by anyld, so no runtime relocation is needed.
+/// The virtual addresses in PT_LOAD headers are absolute — the kernel maps pages
+/// at those exact addresses.
+fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
+    // ── Validate ELF64 header ──
+    if data.len() < 64 {
+        crate::serial_println!("  dload: ELF too small");
+        return None;
+    }
+    if data[EI_CLASS] != ELFCLASS64 {
+        crate::serial_println!("  dload: not ELF64");
+        return None;
+    }
+    if data[EI_DATA] != ELFDATA2LSB {
+        crate::serial_println!("  dload: not little-endian");
+        return None;
+    }
+    if read_u16_le(data, E_TYPE) != ET_DYN {
+        crate::serial_println!("  dload: not ET_DYN");
+        return None;
+    }
+    if read_u16_le(data, E_MACHINE) != EM_X86_64 {
+        crate::serial_println!("  dload: not x86_64");
+        return None;
+    }
+
+    let phoff = read_u64_le(data, E_PHOFF) as usize;
+    let phentsize = read_u16_le(data, E_PHENTSIZE) as usize;
+    let phnum = read_u16_le(data, E_PHNUM) as usize;
+
+    if phentsize < 56 || phoff + phnum * phentsize > data.len() {
+        crate::serial_println!("  dload: invalid program headers");
+        return None;
+    }
+
+    // ── Collect PT_LOAD segments ──
+    // anyld produces exactly 2 PT_LOAD segments: RX (code+metadata) and RW (data+dynamic+bss)
+    let mut ro_vaddr: u64 = u64::MAX;
+    let mut ro_offset: u64 = 0;
+    let mut ro_filesz: u64 = 0;
+    let mut rw_vaddr: u64 = 0;
+    let mut rw_offset: u64 = 0;
+    let mut rw_filesz: u64 = 0;
+    let mut rw_memsz: u64 = 0;
+    let mut has_ro = false;
+    let mut has_rw = false;
+
+    for i in 0..phnum {
+        let ph = phoff + i * phentsize;
+        let p_type = read_u32_le(data, ph + PH_TYPE);
+        if p_type != PT_LOAD {
+            continue;
+        }
+
+        let p_flags = read_u32_le(data, ph + PH_FLAGS);
+        let p_offset = read_u64_le(data, ph + PH_OFFSET);
+        let p_vaddr = read_u64_le(data, ph + PH_VADDR);
+        let p_filesz = read_u64_le(data, ph + PH_FILESZ);
+        let p_memsz = read_u64_le(data, ph + PH_MEMSZ);
+
+        if (p_flags & PF_W) == 0 {
+            // RX segment (read-only, executable)
+            ro_vaddr = p_vaddr;
+            ro_offset = p_offset;
+            ro_filesz = p_filesz;
+            has_ro = true;
+        } else {
+            // RW segment (data + bss)
+            rw_vaddr = p_vaddr;
+            rw_offset = p_offset;
+            rw_filesz = p_filesz;
+            rw_memsz = p_memsz;
+            has_rw = true;
+        }
+    }
+
+    if !has_ro {
+        crate::serial_println!("  dload: no RX PT_LOAD segment");
+        return None;
+    }
+
+    // ── Determine base virtual address ──
+    let base = ro_vaddr; // Lowest PT_LOAD vaddr (anyld sets this to -b value)
+
+    // If base is 0, allocate dynamically
+    let base = if base == 0 {
+        // Calculate total virtual size
+        let total_vsize = if has_rw {
+            let rw_end = rw_vaddr + rw_memsz;
+            rw_end // vaddr is relative to 0 when base=0
+        } else {
+            let ro_end_page = (ro_filesz + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+            ro_end_page
+        };
+        let aligned_size = (total_vsize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        let b = NEXT_DYNAMIC_BASE.fetch_add(aligned_size, Ordering::SeqCst);
+        if b + aligned_size > 0x0800_0000 {
+            crate::serial_println!("  dload: address space exhausted");
+            return None;
+        }
+        // Cannot relocate — anyld already resolved all symbols at link time.
+        // Base=0 with anyld means all addresses are 0-based, which conflicts
+        // with user address space. For now, reject base=0 .so files.
+        crate::serial_println!("  dload: base=0 not supported for .so (anyld requires fixed base)");
+        return None;
+    } else {
+        base
+    };
+
+    // Sanity: stay within DLIB range
+    let ro_page_count = ((ro_filesz + PAGE_SIZE - 1) / PAGE_SIZE) as u32;
+    let data_page_count = if has_rw {
+        ((rw_filesz + PAGE_SIZE - 1) / PAGE_SIZE) as u32
+    } else {
+        0
+    };
+    let bss_size = if has_rw && rw_memsz > rw_filesz {
+        rw_memsz - rw_filesz
+    } else {
+        0
+    };
+    // BSS immediately follows the .data page(s) in virtual space.
+    // anyld may place .dynamic after .data within the same pages, so BSS starts
+    // after the RW file content (page-aligned).
+    let bss_page_count = ((bss_size + PAGE_SIZE - 1) / PAGE_SIZE) as u32;
+    let total_pages = ro_page_count + data_page_count + bss_page_count;
+
+    let end_vaddr = base + (total_pages as u64) * PAGE_SIZE;
+    if end_vaddr > 0x0800_0000 {
+        crate::serial_println!("  dload: .so at {:#x} exceeds DLIB range", base);
+        return None;
+    }
+
+    // ── Check for address conflict ──
+    {
+        let dlls = LOADED_DLLS.lock();
+        for dll in dlls.iter() {
+            let dll_end = dll.base_vaddr + (dll.total_pages as u64) * PAGE_SIZE;
+            if base < dll_end && end_vaddr > dll.base_vaddr {
+                crate::serial_println!(
+                    "  dload: address conflict: .so at {:#x} overlaps {} at {:#x}",
+                    base,
+                    core::str::from_utf8(&dll.name).unwrap_or("?"),
+                    dll.base_vaddr
+                );
+                return None;
+            }
+        }
+    }
+
+    // ── Allocate and copy RO pages ──
+    let temp_virt = VirtAddr::new(0xFFFF_FFFF_81F1_0000);
+    let mut ro_pages = Vec::with_capacity(ro_page_count as usize);
+
+    for i in 0..ro_page_count as usize {
+        let frame = physical::alloc_frame().expect("OOM in .so RO page");
+        virtual_mem::map_page(temp_virt, frame, PAGE_WRITABLE);
+
+        let file_off = ro_offset as usize + i * PAGE_SIZE as usize;
+        let copy_len = core::cmp::min(PAGE_SIZE as usize, ro_filesz as usize - i * PAGE_SIZE as usize);
+        unsafe {
+            let dest = temp_virt.as_u64() as *mut u8;
+            // Zero the page first (handles partial last page)
+            core::ptr::write_bytes(dest, 0, PAGE_SIZE as usize);
+            if copy_len > 0 && file_off + copy_len <= data.len() {
+                core::ptr::copy_nonoverlapping(data.as_ptr().add(file_off), dest, copy_len);
+            }
+        }
+
+        virtual_mem::unmap_page(temp_virt);
+        ro_pages.push(frame);
+    }
+
+    // ── Allocate and copy .data template pages ──
+    let mut data_template_pages = Vec::with_capacity(data_page_count as usize);
+
+    for i in 0..data_page_count as usize {
+        let frame = physical::alloc_frame().expect("OOM in .so data template page");
+        virtual_mem::map_page(temp_virt, frame, PAGE_WRITABLE);
+
+        let file_off = rw_offset as usize + i * PAGE_SIZE as usize;
+        let copy_len = core::cmp::min(PAGE_SIZE as usize, rw_filesz as usize - i * PAGE_SIZE as usize);
+        unsafe {
+            let dest = temp_virt.as_u64() as *mut u8;
+            // Zero the page first (handles .dynamic padding and partial pages)
+            core::ptr::write_bytes(dest, 0, PAGE_SIZE as usize);
+            if copy_len > 0 && file_off + copy_len <= data.len() {
+                core::ptr::copy_nonoverlapping(data.as_ptr().add(file_off), dest, copy_len);
+            }
+        }
+
+        virtual_mem::unmap_page(temp_virt);
+        data_template_pages.push(frame);
+    }
+
+    // ── Update NEXT_DYNAMIC_BASE if this fixed-base .so consumed the space ──
+    loop {
+        let current = NEXT_DYNAMIC_BASE.load(Ordering::SeqCst);
+        if end_vaddr <= current {
+            break; // Already past this .so
+        }
+        if NEXT_DYNAMIC_BASE
+            .compare_exchange(current, end_vaddr, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            break;
+        }
+    }
+
+    // ── Register in loaded DLLs ──
+    let mut name_buf = [0u8; 32];
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let len = name.len().min(31);
+    name_buf[..len].copy_from_slice(&name.as_bytes()[..len]);
+
+    let mut dlls = LOADED_DLLS.lock();
+    dlls.push(LoadedDll {
+        name: name_buf,
+        base_vaddr: base,
+        ro_pages,
+        data_template_pages,
+        data_page_count,
+        bss_page_count,
+        total_pages,
+    });
+
+    crate::serial_println!(
+        "[OK] dload ELF64 ET_DYN: '{}' at {:#010x} ({} RO + {} data + {} BSS pages)",
+        name,
+        base,
+        ro_page_count,
+        data_page_count,
+        bss_page_count
+    );
+
+    Some(base)
 }
 
 // ── Public API ─────────────────────────────────────────────
@@ -325,12 +604,13 @@ pub fn handle_dll_demand_page(vaddr: u64) -> bool {
     false
 }
 
-/// Load a DLIB dynamically at runtime from the filesystem.
-/// Reads base_vaddr from the DLIB v3 header. Returns the base on success.
+/// Load a shared library dynamically at runtime from the filesystem.
+/// Supports both DLIB v3 (.dlib) and ELF64 ET_DYN (.so) formats.
+/// Returns the base virtual address on success.
 pub fn load_dll_dynamic(path: &str) -> Option<u64> {
-    // Validate .dlib extension
-    if !path.ends_with(".dlib") {
-        crate::serial_println!("  dload: invalid extension: '{}'", path);
+    // Validate extension
+    if !path.ends_with(".dlib") && !path.ends_with(".so") {
+        crate::serial_println!("  dload: unsupported extension: '{}'", path);
         return None;
     }
 
@@ -348,7 +628,21 @@ pub fn load_dll_dynamic(path: &str) -> Option<u64> {
         }
     };
 
-    let (base_vaddr, ro_count, data_count, bss_count, total) = match parse_dlib_header(&data) {
+    // Dispatch based on file magic
+    if data.len() >= 4 && &data[0..4] == b"\x7fELF" {
+        return load_elf64_so(&data, path);
+    }
+    if data.len() >= 4 && &data[0..4] == b"DLIB" {
+        return load_dlib_v3_dynamic(&data, path);
+    }
+
+    crate::serial_println!("  dload: unrecognized file format in '{}'", path);
+    None
+}
+
+/// Load a DLIB v3 file dynamically. Called from load_dll_dynamic after magic check.
+fn load_dlib_v3_dynamic(data: &[u8], path: &str) -> Option<u64> {
+    let (base_vaddr, ro_count, data_count, bss_count, total) = match parse_dlib_header(data) {
         Ok(h) => h,
         Err(e) => {
             crate::serial_println!("  dload: header error in '{}': {}", path, e);
@@ -379,7 +673,7 @@ pub fn load_dll_dynamic(path: &str) -> Option<u64> {
     let temp_virt = VirtAddr::new(0xFFFF_FFFF_81F1_0000);
     let content_base = PAGE_SIZE as usize;
 
-    let ro_pages = match alloc_and_copy_pages(&data, content_base, ro_count as usize, temp_virt) {
+    let ro_pages = match alloc_and_copy_pages(data, content_base, ro_count as usize, temp_virt) {
         Ok(p) => p,
         Err(_) => {
             crate::serial_println!("  dload: OOM allocating RO pages for '{}'", path);
@@ -389,7 +683,7 @@ pub fn load_dll_dynamic(path: &str) -> Option<u64> {
 
     let data_offset = content_base + ro_count as usize * PAGE_SIZE as usize;
     let data_template_pages =
-        match alloc_and_copy_pages(&data, data_offset, data_count as usize, temp_virt) {
+        match alloc_and_copy_pages(data, data_offset, data_count as usize, temp_virt) {
             Ok(p) => p,
             Err(_) => {
                 crate::serial_println!("  dload: OOM allocating data template for '{}'", path);

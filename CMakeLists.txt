@@ -479,6 +479,49 @@ add_dll(libfont ${CMAKE_SOURCE_DIR}/libs/libfont)
 add_dll(librender ${CMAKE_SOURCE_DIR}/libs/librender)
 add_dll(libcompositor ${CMAKE_SOURCE_DIR}/libs/libcompositor)
 
+# Shared libraries (.so) — built via Cargo → .a → anyld → ET_DYN .so
+function(add_shared_lib NAME SRC_DIR BASE_ADDR)
+  set(LIB_A "${CMAKE_BINARY_DIR}/shlib/${NAME}/x86_64-anyos-user/release/lib${NAME}.a")
+  set(LIB_SO "${CMAKE_BINARY_DIR}/shlib/${NAME}.so")
+  file(GLOB_RECURSE _SL_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
+  # Step 1: Cargo → static archive (.a)
+  add_custom_command(
+    OUTPUT ${LIB_A}
+    COMMAND ${CARGO_EXECUTABLE} build --release
+      --manifest-path ${SRC_DIR}/Cargo.toml
+      --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
+      --target-dir ${CMAKE_BINARY_DIR}/shlib/${NAME}
+      -Z build-std=core,alloc
+    DEPENDS
+      ${SRC_DIR}/Cargo.toml
+      ${_SL_RS}
+      ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Building shared library: ${NAME} (Cargo)"
+  )
+  # Step 2: anyld → .so (ET_DYN shared object)
+  add_custom_command(
+    OUTPUT ${LIB_SO}
+    COMMAND ${ANYLD_EXECUTABLE}
+      -o ${LIB_SO}
+      -b ${BASE_ADDR}
+      -e ${SRC_DIR}/exports.def
+      ${LIB_A}
+    DEPENDS ${LIB_A} ${SRC_DIR}/exports.def ${ANYLD_EXECUTABLE}
+    COMMENT "Linking ${NAME}.so (anyld)"
+  )
+  # Step 3: Copy to sysroot
+  add_custom_command(
+    OUTPUT ${SYSROOT_DIR}/Libraries/${NAME}.so
+    COMMAND ${CMAKE_COMMAND} -E copy ${LIB_SO} ${SYSROOT_DIR}/Libraries/${NAME}.so
+    DEPENDS ${LIB_SO}
+    COMMENT "Installing ${NAME}.so to sysroot"
+  )
+  set(DLL_BINS ${DLL_BINS} ${SYSROOT_DIR}/Libraries/${NAME}.so PARENT_SCOPE)
+endfunction()
+
+add_shared_lib(libanyui ${CMAKE_SOURCE_DIR}/libs/libanyui "0x04400000")
+
 set(RUST_USER_BINS "")
 add_rust_user_program(ping       ${CMAKE_SOURCE_DIR}/bin/ping)
 add_rust_user_program(dhcp       ${CMAKE_SOURCE_DIR}/bin/dhcp)
@@ -542,7 +585,6 @@ add_rust_user_program(listgroups ${CMAKE_SOURCE_DIR}/bin/listgroups)
 add_rust_user_program(chmod      ${CMAKE_SOURCE_DIR}/bin/chmod)
 add_rust_user_program(chown      ${CMAKE_SOURCE_DIR}/bin/chown)
 add_rust_user_program(su         ${CMAKE_SOURCE_DIR}/bin/su)
-
 # Privileged sbin programs
 add_rust_sbin_program(adduser    ${CMAKE_SOURCE_DIR}/bin/adduser)
 add_rust_sbin_program(deluser    ${CMAKE_SOURCE_DIR}/bin/deluser)
@@ -625,6 +667,7 @@ add_app(fontviewer  ${CMAKE_SOURCE_DIR}/apps/fontviewer     "Font Viewer")
 add_app(clock       ${CMAKE_SOURCE_DIR}/apps/clock          "Clock")
 add_app(screenshot  ${CMAKE_SOURCE_DIR}/apps/screenshot     "Screenshot")
 add_app(surf        ${CMAKE_SOURCE_DIR}/apps/surf            "Surf")
+add_app(demo_anyui  ${CMAKE_SOURCE_DIR}/apps/demo_anyui     "anyUI Demo")
 
 # Build compositor binary (nested path: /System/compositor/compositor)
 set(COMPOSITOR_SRC_DIR ${CMAKE_SOURCE_DIR}/system/compositor/compositor)
