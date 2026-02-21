@@ -22,6 +22,7 @@ pub const SYSTEM_FONT_ID: u16 = 0;
 pub const SYSTEM_FONT_BOLD: u16 = 1;
 pub const SYSTEM_FONT_THIN: u16 = 2;
 pub const SYSTEM_FONT_ITALIC: u16 = 3;
+pub const SYSTEM_FONT_MONO: u16 = 4;
 
 struct LoadedFont {
     ttf: TtfFont,
@@ -199,11 +200,12 @@ pub fn init() {
     let mgr = unsafe { &mut *mgr_ptr };
 
     // Load system font variants
-    let font_paths: [&[u8]; 4] = [
+    let font_paths: [&[u8]; 5] = [
         b"/System/fonts/sfpro.ttf",
         b"/System/fonts/sfpro-bold.ttf",
         b"/System/fonts/sfpro-thin.ttf",
         b"/System/fonts/sfpro-italic.ttf",
+        b"/System/fonts/andale-mono.ttf",
     ];
 
     for path in &font_paths {
