@@ -54,6 +54,7 @@ const LOAD_FACTOR_NUM: usize = 3;
 const LOAD_FACTOR_DEN: usize = 4; // resize at 75% load
 
 /// A hash map using FNV-1a hashing with open addressing (linear probing).
+#[derive(Clone)]
 pub struct HashMap<K, V> {
     buckets: Vec<Option<(K, V)>>,
     len: usize,

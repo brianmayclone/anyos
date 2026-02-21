@@ -100,7 +100,7 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 - **Double-buffered compositor** with damage-based partial updates and blur effects
 - **GPU drivers**: Bochs VGA (page flipping) and VMware SVGA II (2D acceleration, hardware cursor)
 - **macOS-inspired dark theme** with rounded windows, shadows, and alpha blending
-- **31 UI components** via the uisys shared library (buttons, text fields, sliders, tables, alerts, etc.)
+- **41 UI controls** via the anyui framework + uisys shared library (buttons, text fields, code editor, tree view, data grid, toolbars, etc.)
 - **5 shared libraries (DLLs)** — uisys, libimage, libfont, librender, libcompositor
 - **TrueType font rendering** with subpixel LCD anti-aliasing (SF Pro family)
 
@@ -398,7 +398,7 @@ anyOS uses a custom **DLIB** (Dynamic Library) format for shared libraries. Each
 
 | DLL | Base Address | Exports | Purpose |
 |-----|-------------|---------|---------|
-| uisys | `0x04000000` | 84 | UI components (buttons, sliders, tables, text fields, ...) |
+| uisys | `0x04000000` | 108 | UI controls (buttons, text fields, code editor, tree view, data grid, toolbars, ...) |
 | libimage | `0x04100000` | 7 | Image decoding (PNG, BMP, JPEG, ICO) and scaling |
 | libfont | `0x04200000` | 7 | TrueType font rasterization with LCD subpixel rendering |
 | librender | `0x04300000` | 18 | 2D drawing primitives (lines, rects, circles, gradients) |
@@ -414,6 +414,7 @@ Programs link against lightweight client stub crates (e.g. `uisys_client`, `libf
 - **[Syscall Reference](docs/syscalls.md)** — Complete reference for all 118 system calls
 - **[Standard Library API](docs/stdlib-api.md)** — `anyos_std` crate reference for Rust user programs
 - **[UI System API](docs/uisys-api.md)** — `uisys` DLL component reference (31 components, 84 exports)
+- **[anyui Controls API](docs/anyui-api.md)** — anyui framework reference (41 controls, 108 exports)
 - **[C Library API](docs/libc-api.md)** — POSIX libc reference (35 headers) for C programs
 - **[libimage API](docs/libimage-api.md)** — Image decoding, scaling, ICO, and video (MJV)
 - **[libfont API](docs/libfont-api.md)** — TrueType font rendering with subpixel LCD anti-aliasing
