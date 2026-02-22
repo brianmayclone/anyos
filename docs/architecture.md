@@ -224,12 +224,14 @@ The kernel initializes subsystems in phases:
 
 ### GPU Drivers
 
-anyOS supports two GPU backends via the `GpuDriver` trait:
+anyOS supports four GPU backends via the `GpuDriver` trait:
 
 | Driver | PCI ID | Features |
 |--------|--------|----------|
 | **Bochs VGA** | 1234:1111 | VESA VBE, DISPI registers, page flipping (double buffer) |
 | **VMware SVGA II** | 15AD:0405 | FIFO command queue, 2D acceleration (rect fill/copy), hardware cursor |
+| **VirtualBox VGA** | 80EE:BEEF | VirtualBox guest display adapter |
+| **VirtIO GPU** | 1AF4:1050 | VirtIO graphics device |
 
 GPU auto-detection happens during PCI enumeration. The compositor uses whichever driver is available, falling back to software-only rendering if no known GPU is found.
 
@@ -256,21 +258,18 @@ GPU auto-detection happens during PCI enumeration. The compositor uses whichever
 
 ## Filesystem
 
-### FAT16 (BIOS Boot)
+### exFAT (Primary Filesystem)
 
-- **256 MiB disk image** with FAT16 filesystem
-- **8 sectors/cluster** (4 KiB clusters)
-- **VFAT long filenames**: LFN entries with UTF-16 to ASCII conversion
-- **Operations**: read, write, create, delete, mkdir, readdir, stat, seek, symlink, chmod, chown
+- **256 MiB disk image** with exFAT filesystem (both BIOS and UEFI modes)
+- **4 KiB clusters**, contiguous allocation preferred
+- **Long filenames**: File + Stream + FileName entry sets
+- **Operations**: read, write, create, delete, mkdir, readdir, stat, seek, symlink, chmod, chown, rename
 - **Storage dispatch**: Routes I/O to the active backend (auto-detected at boot)
   - **ATA PIO**: 28-bit LBA, sector read/write via I/O ports (legacy IDE, default)
-  - **AHCI DMA**: SATA DMA transfers via MMIO + bounce buffer (ICH9 AHCI, `--ahci` flag)
-
-### exFAT (UEFI Boot)
-
-- Used on the UEFI GPT disk image
-- Same VFS interface as FAT16 -- user programs see no difference
-- Supports large files and modern partition layouts
+  - **AHCI DMA**: SATA DMA transfers via MMIO + bounce buffer (ICH9 AHCI)
+  - **NVMe**: PCIe NVMe controller (submission/completion queue pairs)
+  - **ATAPI**: CD-ROM / ISO 9660 access
+  - **LSI SCSI**: LSI MegaRAID SCSI controller
 
 ### Virtual File System (VFS)
 
@@ -324,9 +323,11 @@ GPU auto-detection happens during PCI enumeration. The compositor uses whichever
 
 ## Audio
 
-### AC'97 Driver
+### Audio Drivers
 
-anyOS includes an Intel AC'97 audio codec driver for PCM playback.
+anyOS includes two audio codec drivers for PCM playback: **AC'97** (legacy) and **Intel HDA** (High Definition Audio).
+
+### AC'97 Driver
 
 | Property | Value |
 |----------|-------|
@@ -397,14 +398,28 @@ QEMU flags: `-device qemu-xhci` or `-device usb-ehci` with `-device usb-kbd`, `-
 
 ## IPC Architecture
 
-### Named Pipes
+### Pipes
 
 Kernel-managed byte streams for inter-process communication.
 
-- Named pipes identified by string names
-- Create/open/read/write/close semantics
+- **Named pipes**: Identified by string names, create/open/read/write/close semantics, ring buffer with 64 KiB default capacity
+- **Anonymous pipes**: POSIX-style `pipe()` syscall for parent-child IPC, used by shell for pipelines (`cmd1 | cmd2`)
 - Used by terminal for process output capture (`spawn_piped`)
-- Ring buffer with 64 KiB default capacity
+
+### Message Queues
+
+Bounded message queues for structured IPC between processes.
+
+- `Message` struct with sender PID, message type, and variable-length payload
+- Create/send/receive/destroy semantics
+
+### Signals
+
+POSIX-style signal delivery for process notification.
+
+- Signal handlers: `sigaction` for registering handlers, `kill` for sending signals
+- Supported signals: SIGUSR1, SIGCHLD, SIG_IGN, SIG_DFL
+- Used by test suite for verifying process lifecycle
 
 ### Event Bus
 
@@ -492,29 +507,32 @@ anyOS supports two syscall paths:
 
 ### Syscall Categories
 
-There are 118 syscalls organized by category:
+There are 140 syscalls organized by category:
 
-| Category | Syscall Numbers | Count | Examples |
-|----------|----------------|-------|----------|
-| Process Management | 1, 6-9, 12-13, 27-29 | 10 | exit, spawn, kill, sleep, sbrk, waitpid |
-| Threading | 130-132 | 3 | thread_create, set_priority, set_critical |
-| File I/O | 2-5, 23-25, 90-92, 105-108, 93 | 16 | read, write, open, close, readdir, stat, mkdir, symlink |
-| Mount | 94-96 | 3 | mount, umount, list_mounts |
-| Memory | 9, 133-134 | 3 | sbrk, mmap, munmap |
-| Networking | 40-44, 100-104, 140-144 | 15 | ping, dhcp, dns, tcp_*, udp_* |
-| Pipes/IPC | 45-49, 60-68 | 11 | pipe_create/read/write, evt_chan_*, evt_sys_* |
-| Shared Memory | 75-78 | 4 | shm_create, shm_map, shm_unmap, shm_destroy |
-| Window Manager | 50-59, 70-72 | 13 | win_create, draw_text, blit, present |
-| Display/GPU | 110-117 | 8 | set_resolution, set_wallpaper, capture_screen |
-| Compositor | 150-154 | 5 | map_framebuffer, gpu_command, input_poll |
-| Audio | 120-121 | 2 | audio_write, audio_ctl |
-| DLL | 80-81 | 2 | dll_load, set_dll_u32 |
-| Device/System | 30-33, 160-165 | 10 | time, uptime, sysinfo, devlist, random |
-| Environment | 170-172 | 3 | setenv, getenv, listenv |
-| Keyboard | 180-182 | 3 | kbd_get_layout, kbd_set_layout, kbd_list_layouts |
-| User/Identity | 190-201 | 14 | getuid, authenticate, adduser, chpasswd |
-| App Permissions | 250-254 | 5 | perm_check, perm_store, perm_list, perm_delete, perm_pending_info |
-| Filesystem ext | 97-99 | 3 | chmod, chown, chdir |
+| Category | Count | Examples |
+|----------|-------|----------|
+| Process Management | 14 | exit, spawn, fork, exec, kill, sleep, sbrk, waitpid, getppid |
+| Threading | 3 | thread_create, set_priority, set_critical |
+| File I/O | 16 | read, write, open, close, readdir, stat, mkdir, symlink, rename |
+| Mount | 3 | mount, umount, list_mounts |
+| Memory | 3 | sbrk, mmap, munmap |
+| Networking | 24 | ping, dhcp, dns, tcp_*, udp_*, net_poll |
+| Pipes/IPC | 11 | pipe_create/read/write, evt_chan_*, evt_sys_* |
+| POSIX Pipes/FD | 4 | pipe2, dup, dup2, fcntl |
+| Shared Memory | 4 | shm_create, shm_map, shm_unmap, shm_destroy |
+| Signals | 2 | sigaction, sigprocmask |
+| Window Manager | 13 | win_create, draw_text, blit, present |
+| Display/GPU | 8 | set_resolution, set_wallpaper, capture_screen, gpu_vram_size |
+| Compositor | 5 | map_framebuffer, gpu_command, input_poll |
+| Audio | 2 | audio_write, audio_ctl |
+| DLL | 2 | dll_load, set_dll_u32 |
+| Device/System | 10 | time, uptime, sysinfo, devlist, random |
+| Environment | 3 | setenv, getenv, listenv |
+| Keyboard | 3 | kbd_get_layout, kbd_set_layout, kbd_list_layouts |
+| User/Identity | 16 | getuid, authenticate, adduser, chpasswd, getppid |
+| App Permissions | 5 | perm_check, perm_store, perm_list, perm_delete, perm_pending_info |
+| Filesystem ext | 3 | chmod, chown, chdir |
+| Capabilities | 1 | get_capabilities |
 
 See [syscalls reference](syscalls.md) for the complete list with all arguments and return values.
 
