@@ -63,16 +63,25 @@ static void exfat_write_cluster(ExFat *fs, uint32_t cluster,
     }
 }
 
-/* Allocate a single cluster: mark bitmap + write EOC to FAT cache. */
+/* Allocate a single cluster: mark bitmap + write EOC to FAT cache.
+ * Scans bitmap for the next free cluster (required after incremental frees). */
 static uint32_t exfat_alloc_cluster(ExFat *fs)
 {
     uint32_t c   = fs->next_cluster;
     uint32_t idx;
 
+    /* Scan forward for a free cluster (bitmap bit = 0) */
+    while (c - 2 < fs->cluster_count) {
+        idx = c - 2;
+        if (!(fs->bitmap[idx / 8] & (1u << (idx % 8))))
+            break;
+        c++;
+    }
+
     if (c - 2 >= fs->cluster_count)
         fatal("exFAT: out of clusters");
 
-    fs->next_cluster++;
+    fs->next_cluster = c + 1;
 
     /* Mark bitmap */
     idx = c - 2;
@@ -85,29 +94,44 @@ static uint32_t exfat_alloc_cluster(ExFat *fs)
 }
 
 /* Allocate `count` contiguous clusters.  Does NOT write FAT chain
- * (for NoFatChain / contiguous files).  Returns first cluster. */
+ * (for NoFatChain / contiguous files).  Returns first cluster.
+ * Scans bitmap for a contiguous free run (required after incremental frees). */
 static uint32_t exfat_alloc_contiguous(ExFat *fs, uint32_t count)
 {
-    uint32_t first;
+    uint32_t start;
     uint32_t i;
 
     if (count == 0)
         return 0;
 
-    first = fs->next_cluster;
+    /* Find a contiguous run of `count` free clusters */
+    start = fs->next_cluster;
+    while (start - 2 + count <= fs->cluster_count) {
+        int all_free = 1;
+        for (i = 0; i < count; ++i) {
+            uint32_t idx = start - 2 + i;
+            if (fs->bitmap[idx / 8] & (1u << (idx % 8))) {
+                start = start + i + 1;  /* Skip past the used cluster */
+                all_free = 0;
+                break;
+            }
+        }
+        if (all_free)
+            break;
+    }
+
+    if (start - 2 + count > fs->cluster_count)
+        fatal("exFAT: out of clusters (contiguous, need %u)", count);
+
+    /* Mark bitmap for all clusters in the run */
     for (i = 0; i < count; ++i) {
-        uint32_t c   = fs->next_cluster;
-        uint32_t idx;
-
-        if (c - 2 >= fs->cluster_count)
-            fatal("exFAT: out of clusters (contiguous)");
-
-        fs->next_cluster++;
-        idx = c - 2;
+        uint32_t idx = start - 2 + i;
         fs->bitmap[idx / 8] |= (uint8_t)(1u << (idx % 8));
         /* No FAT chain — leave FAT entries as 0 */
     }
-    return first;
+
+    fs->next_cluster = start + count;
+    return start;
 }
 
 /* Allocate `count` clusters with a FAT chain.  Returns first cluster. */
@@ -914,8 +938,16 @@ void exfat_flush(ExFat *fs)
         cluster++;
     }
 
-    printf("  exFAT: FAT and bitmap flushed (%u clusters used of %u)\n",
-           fs->next_cluster - 2, fs->cluster_count);
+    /* Count actual used clusters from bitmap (accurate after incremental frees) */
+    {
+        uint32_t used = 0;
+        for (uint32_t ci = 0; ci < fs->cluster_count; ci++) {
+            if (fs->bitmap[ci / 8] & (1u << (ci % 8)))
+                used++;
+        }
+        printf("  exFAT: FAT and bitmap flushed (%u clusters used of %u)\n",
+               used, fs->cluster_count);
+    }
 }
 
 /*
@@ -927,4 +959,506 @@ void exfat_free(ExFat *fs)
     fs->fat_cache = NULL;
     free(fs->bitmap);
     fs->bitmap = NULL;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Incremental update support — exFAT reader + sync
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/*
+ * Open an existing exFAT filesystem by parsing its VBR.
+ * Loads FAT cache and allocation bitmap from the image data.
+ * After this call, the ExFat struct is ready for sync operations.
+ */
+void exfat_open_existing(ExFat *fs, uint8_t *image, uint32_t fs_start)
+{
+    uint8_t *vbr = image + (size_t)fs_start * SECTOR_SIZE;
+
+    /* Verify exFAT signature */
+    if (memcmp(vbr + 3, "EXFAT   ", 8) != 0)
+        fatal("exfat_open_existing: not an exFAT filesystem at sector %u", fs_start);
+
+    fs->image    = image;
+    fs->fs_start = fs_start;
+
+    /* Parse VBR fields */
+    fs->fs_sectors         = (uint32_t)read_le64(vbr + 72);
+    fs->fat_offset         = read_le32(vbr + 80);
+    fs->fat_length         = read_le32(vbr + 84);
+    fs->cluster_heap_offset = read_le32(vbr + 88);
+    fs->cluster_count      = read_le32(vbr + 92);
+    fs->root_cluster       = read_le32(vbr + 96);
+    fs->spc                = 1u << vbr[109];
+    fs->cluster_size       = fs->spc * SECTOR_SIZE;
+
+    /* Load FAT cache from image */
+    uint32_t fat_bytes = (fs->cluster_count + 2) * 4;
+    fs->fat_cache = (uint8_t *)malloc(fat_bytes);
+    if (!fs->fat_cache) fatal("exfat_open_existing: malloc fat_cache failed");
+    memcpy(fs->fat_cache,
+           image + (size_t)(fs_start + fs->fat_offset) * SECTOR_SIZE,
+           fat_bytes);
+
+    /* Load allocation bitmap from cluster 2 */
+    fs->bitmap_cluster = 2;
+    fs->bitmap_bytes   = (fs->cluster_count + 7) / 8;
+    fs->bitmap         = (uint8_t *)malloc(fs->bitmap_bytes);
+    if (!fs->bitmap) fatal("exfat_open_existing: malloc bitmap failed");
+
+    uint32_t bm_sector = exfat_cluster_to_sector(fs, 2);
+    uint32_t bm_clusters = (fs->bitmap_bytes + fs->cluster_size - 1) / fs->cluster_size;
+    uint32_t bm_offset = 0;
+    for (uint32_t i = 0; i < bm_clusters; i++) {
+        uint32_t chunk = fs->bitmap_bytes - bm_offset;
+        if (chunk > fs->cluster_size) chunk = fs->cluster_size;
+        memcpy(fs->bitmap + bm_offset,
+               image + (size_t)(fs_start + bm_sector + i * fs->spc) * SECTOR_SIZE,
+               chunk);
+        bm_offset += fs->cluster_size;
+    }
+
+    /* Find next_cluster: scan bitmap for first free cluster */
+    fs->next_cluster = fs->cluster_count + 2; /* default: full */
+    for (uint32_t c = 2; c < fs->cluster_count + 2; c++) {
+        uint32_t idx = c - 2;
+        if (!(fs->bitmap[idx / 8] & (1u << (idx % 8)))) {
+            fs->next_cluster = c;
+            break;
+        }
+    }
+
+    printf("  exFAT: opened existing filesystem (%u clusters, %u bytes/cluster)\n",
+           fs->cluster_count, fs->cluster_size);
+    printf("  exFAT: next free cluster: %u (%u used)\n",
+           fs->next_cluster, fs->next_cluster - 2);
+}
+
+/*
+ * Read data from a cluster chain (contiguous or FAT-chained).
+ * Returns malloc'd buffer of `length` bytes. Caller frees.
+ */
+static uint8_t *exfat_read_cluster_data(ExFat *fs, uint32_t first_cluster,
+                                         uint64_t length, int contiguous)
+{
+    uint8_t *data = (uint8_t *)malloc((size_t)length);
+    if (!data) fatal("exfat_read_cluster_data: malloc failed");
+
+    uint32_t cluster = first_cluster;
+    uint64_t offset = 0;
+
+    while (offset < length) {
+        uint32_t sector = exfat_cluster_to_sector(fs, cluster);
+        uint32_t abs_off = (fs->fs_start + sector) * SECTOR_SIZE;
+        uint64_t chunk = length - offset;
+        if (chunk > fs->cluster_size) chunk = fs->cluster_size;
+        memcpy(data + offset, fs->image + abs_off, (size_t)chunk);
+        offset += fs->cluster_size;
+
+        if (contiguous) {
+            cluster++;
+        } else {
+            uint32_t next = read_le32(fs->fat_cache + cluster * 4);
+            if (next >= 0xFFFFFFF8u) break;
+            cluster = next;
+        }
+    }
+    return data;
+}
+
+/*
+ * Parse directory entries from a directory cluster chain and build
+ * an ExFatNode tree. Returns a root node whose children are the entries.
+ */
+ExFatNode *exfat_read_dir_tree(ExFat *fs, uint32_t dir_cluster)
+{
+    ExFatNode *parent = (ExFatNode *)calloc(1, sizeof(ExFatNode));
+    if (!parent) fatal("exfat_read_dir_tree: calloc failed");
+    parent->attrs = EXFAT_ATTR_DIR;
+    parent->first_cluster = dir_cluster;
+
+    uint32_t cluster = dir_cluster;
+
+    while (1) {
+        uint32_t sector = exfat_cluster_to_sector(fs, cluster);
+        uint8_t *dir_data = (uint8_t *)malloc(fs->cluster_size);
+        if (!dir_data) fatal("exfat_read_dir_tree: malloc failed");
+
+        /* Read cluster */
+        for (uint32_t s = 0; s < fs->spc; s++)
+            exfat_read_sector(fs, sector + s, dir_data + s * SECTOR_SIZE);
+
+        /* Walk entries */
+        for (uint32_t idx = 0; idx < fs->cluster_size / 32; idx++) {
+            uint32_t off = idx * 32;
+            uint8_t etype = dir_data[off];
+
+            if (etype == 0x00) {
+                /* End of entries in this cluster.  Don't stop here —
+                 * a multi-cluster directory may have entries in subsequent
+                 * clusters (preceding cluster was full, remaining space was
+                 * zero-filled).  We follow the FAT chain after this loop. */
+                break;
+            }
+
+            if (etype == EXFAT_ENTRY_FILE) {
+                /* File directory entry — start of entry set */
+                uint8_t secondary_count = dir_data[off + 1];
+                uint32_t entry_set_len = (1 + secondary_count) * 32;
+
+                /* Ensure we have enough data in this cluster */
+                if (off + entry_set_len > fs->cluster_size) {
+                    /* Entry set spans cluster boundary — skip this entry,
+                     * continue to next cluster via FAT chain */
+                    break;
+                }
+
+                /* Parse attributes */
+                uint16_t attrs = read_le16(dir_data + off + 4);
+                uint16_t uid   = read_le16(dir_data + off + 6);
+                uint16_t gid   = read_le16(dir_data + off + 8);
+                uint16_t mode  = read_le16(dir_data + off + 10);
+
+                /* Parse stream extension (second entry) */
+                uint32_t stream_off = off + 32;
+                uint8_t flags       = dir_data[stream_off + 1];
+                uint8_t name_len    = dir_data[stream_off + 3];
+                uint32_t first_cl   = read_le32(dir_data + stream_off + 20);
+                uint64_t data_len   = read_le64(dir_data + stream_off + 24);
+
+                /* Parse filename entries */
+                char name[256];
+                uint32_t name_pos = 0;
+                for (uint8_t fi = 0; fi < secondary_count - 1 && fi < 17; fi++) {
+                    uint32_t fn_off = off + (2 + fi) * 32;
+                    if (dir_data[fn_off] != EXFAT_ENTRY_FILENAME) break;
+                    for (int j = 0; j < 15 && name_pos < name_len; j++) {
+                        uint16_t ch = read_le16(dir_data + fn_off + 2 + j * 2);
+                        if (ch == 0) break;
+                        name[name_pos++] = (char)(ch & 0xFF); /* ASCII only */
+                    }
+                }
+                name[name_pos] = '\0';
+
+                /* Create node */
+                ExFatNode *node = (ExFatNode *)calloc(1, sizeof(ExFatNode));
+                if (!node) fatal("exfat_read_dir_tree: calloc node failed");
+                strncpy(node->name, name, sizeof(node->name) - 1);
+                node->attrs         = attrs;
+                node->first_cluster = first_cl;
+                node->data_length   = data_len;
+                node->uid           = uid;
+                node->gid           = gid;
+                node->mode          = mode;
+                node->contiguous    = (flags & EXFAT_FLAG_CONTIGUOUS) ? 1 : 0;
+                node->dir_cluster   = cluster;  /* actual cluster containing this entry */
+                node->entry_offset  = off;
+                node->entry_set_len = entry_set_len;
+
+                /* Add to parent's children */
+                if (parent->child_count >= parent->child_cap) {
+                    int new_cap = (parent->child_cap == 0) ? 32 : parent->child_cap * 2;
+                    parent->children = (ExFatNode *)realloc(parent->children,
+                        (size_t)new_cap * sizeof(ExFatNode));
+                    if (!parent->children) fatal("realloc children failed");
+                    parent->child_cap = new_cap;
+                }
+                parent->children[parent->child_count++] = *node;
+                free(node);
+
+                /* If directory, recurse */
+                if (attrs & EXFAT_ATTR_DIR) {
+                    ExFatNode *child = &parent->children[parent->child_count - 1];
+                    if (first_cl >= 2 && first_cl < fs->cluster_count + 2) {
+                        ExFatNode *subtree = exfat_read_dir_tree(fs, first_cl);
+                        child->children    = subtree->children;
+                        child->child_count = subtree->child_count;
+                        child->child_cap   = subtree->child_cap;
+                        /* Free the wrapper node but NOT children */
+                        subtree->children = NULL;
+                        free(subtree);
+                    }
+                }
+
+                /* Skip past the secondary entries */
+                idx += secondary_count;
+            }
+            /* Skip bitmap (0x81), upcase (0x82), label (0x83), and deleted entries */
+        }
+
+        free(dir_data);
+
+        /* Follow FAT chain */
+        uint32_t next = read_le32(fs->fat_cache + cluster * 4);
+        if (next >= 0xFFFFFFF8u || next == 0) {
+            /* No more clusters — truly end of directory */
+            break;
+        }
+        cluster = next;
+        /* Continue to next cluster — a multi-cluster directory may have
+         * trailing zeros in one cluster and valid entries in the next */
+    }
+
+    return parent;
+}
+
+/*
+ * Find a child node by name in a directory node.
+ * Returns pointer into parent->children array, or NULL.
+ */
+ExFatNode *exfat_find_child(ExFatNode *parent, const char *name)
+{
+    if (!parent) return NULL;
+    for (int i = 0; i < parent->child_count; i++) {
+        if (strcmp(parent->children[i].name, name) == 0)
+            return &parent->children[i];
+    }
+    return NULL;
+}
+
+/*
+ * Compare file content in the existing image with new data.
+ * Returns 1 if content matches (no update needed), 0 otherwise.
+ */
+int exfat_file_matches(ExFat *fs, ExFatNode *node,
+                       const uint8_t *new_data, size_t new_size)
+{
+    if (node->data_length != (uint64_t)new_size)
+        return 0;
+    if (new_size == 0)
+        return 1;
+
+    uint32_t cluster = node->first_cluster;
+    size_t offset = 0;
+
+    while (offset < new_size) {
+        uint32_t sector = exfat_cluster_to_sector(fs, cluster);
+        uint32_t abs_off = (fs->fs_start + sector) * SECTOR_SIZE;
+        size_t chunk = new_size - offset;
+        if (chunk > fs->cluster_size) chunk = fs->cluster_size;
+
+        if (memcmp(fs->image + abs_off, new_data + offset, chunk) != 0)
+            return 0;
+
+        offset += fs->cluster_size;
+        if (node->contiguous) {
+            cluster++;
+        } else {
+            uint32_t next = read_le32(fs->fat_cache + cluster * 4);
+            if (next >= 0xFFFFFFF8u) break;
+            cluster = next;
+        }
+    }
+    return 1;
+}
+
+/*
+ * Free clusters used by a node. Clears bitmap bits and FAT entries.
+ */
+void exfat_free_clusters(ExFat *fs, ExFatNode *node)
+{
+    if (node->first_cluster < 2 || node->data_length == 0)
+        return;
+
+    uint32_t num_clusters = (uint32_t)((node->data_length + fs->cluster_size - 1)
+                                        / fs->cluster_size);
+    uint32_t cluster = node->first_cluster;
+
+    for (uint32_t i = 0; i < num_clusters; i++) {
+        uint32_t idx = cluster - 2;
+        if (idx < fs->cluster_count) {
+            /* Clear bitmap bit */
+            fs->bitmap[idx / 8] &= (uint8_t)~(1u << (idx % 8));
+        }
+
+        uint32_t next;
+        if (node->contiguous) {
+            next = cluster + 1;
+        } else {
+            next = read_le32(fs->fat_cache + cluster * 4);
+        }
+
+        /* Clear FAT entry */
+        write_le32(fs->fat_cache + cluster * 4, EXFAT_FREE);
+
+        if (!node->contiguous && next >= 0xFFFFFFF8u)
+            break;
+        cluster = next;
+    }
+
+    /* Update next_cluster if we freed earlier clusters */
+    if (node->first_cluster < fs->next_cluster)
+        fs->next_cluster = node->first_cluster;
+}
+
+/*
+ * Mark a directory entry set as deleted.
+ * Sets the type byte's bit 7 to 0 for each entry in the set.
+ */
+void exfat_delete_entry(ExFat *fs, ExFatNode *node)
+{
+    uint32_t cluster = node->dir_cluster;
+    uint32_t offset  = node->entry_offset;
+    uint32_t sector  = exfat_cluster_to_sector(fs, cluster);
+    uint32_t abs_off = (fs->fs_start + sector) * SECTOR_SIZE + offset;
+
+    /* Mark each entry in the set as deleted (clear bit 7 of type byte) */
+    uint32_t num_entries = node->entry_set_len / 32;
+    for (uint32_t i = 0; i < num_entries; i++) {
+        fs->image[abs_off + i * 32] &= 0x7F;
+    }
+}
+
+/*
+ * Internal: sync a single directory, comparing sysroot entries with
+ * existing filesystem entries.
+ */
+static void exfat_sync_dir(ExFat *fs, const char *host_path,
+                            uint32_t parent_cluster, ExFatNode *existing,
+                            const char *virt_path,
+                            int *n_unchanged, int *n_updated, int *n_added)
+{
+    DIR *d = opendir(host_path);
+    if (!d) {
+        fprintf(stderr, "  WARNING: Cannot open directory %s\n", host_path);
+        return;
+    }
+
+    /* Collect and sort names (same as exfat_populate_dir) */
+    char **names = NULL;
+    int name_count = 0, name_cap = 0;
+    struct dirent *ent;
+
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        if (name_count >= name_cap) {
+            int new_cap = (name_cap == 0) ? 64 : name_cap * 2;
+            names = (char **)realloc(names, (size_t)new_cap * sizeof(char *));
+            if (!names) fatal("exfat_sync_dir: realloc failed");
+            name_cap = new_cap;
+        }
+        names[name_count++] = strdup(ent->d_name);
+    }
+    closedir(d);
+
+    /* Sort ASCII */
+    for (int i = 0; i < name_count - 1; i++) {
+        for (int j = i + 1; j < name_count; j++) {
+            if (strcmp(names[i], names[j]) > 0) {
+                char *tmp = names[i]; names[i] = names[j]; names[j] = tmp;
+            }
+        }
+    }
+
+    for (int i = 0; i < name_count; i++) {
+        char full_path[4096], child_virt[4096];
+        snprintf(full_path, sizeof(full_path), "%s/%s", host_path, names[i]);
+
+        if (virt_path[0] == '\0')
+            snprintf(child_virt, sizeof(child_virt), "%s", names[i]);
+        else
+            snprintf(child_virt, sizeof(child_virt), "%s/%s", virt_path, names[i]);
+
+        struct stat st;
+        if (stat(full_path, &st) != 0) { free(names[i]); continue; }
+
+        uint16_t uid = 0, gid = 0;
+        uint16_t mode = is_root_only(child_virt) ? 0xF00 : 0xFFF;
+
+        ExFatNode *child = exfat_find_child(existing, names[i]);
+
+        if (S_ISDIR(st.st_mode)) {
+            if (child && (child->attrs & EXFAT_ATTR_DIR)) {
+                /* Directory exists — recurse */
+                exfat_sync_dir(fs, full_path, child->first_cluster, child,
+                               child_virt, n_unchanged, n_updated, n_added);
+            } else {
+                /* New directory */
+                uint32_t dir_cl = exfat_create_dir(fs, parent_cluster,
+                                                    names[i], uid, gid, mode);
+                printf("    Dir+: %s/ (cluster=%u)\n", names[i], dir_cl);
+                /* Populate new directory fully */
+                exfat_populate_dir(fs, full_path, dir_cl, child_virt);
+                (*n_added)++;
+            }
+        } else if (S_ISREG(st.st_mode)) {
+            size_t file_size;
+            uint8_t *file_data = read_file(full_path, &file_size);
+
+            if (child && !(child->attrs & EXFAT_ATTR_DIR)) {
+                /* File exists — check if content changed */
+                if (exfat_file_matches(fs, child, file_data, file_size)) {
+                    (*n_unchanged)++;
+                } else {
+                    /* Changed — delete old, add new */
+                    exfat_free_clusters(fs, child);
+                    exfat_delete_entry(fs, child);
+                    exfat_add_file(fs, parent_cluster, names[i],
+                                   file_data, file_size, uid, gid, mode);
+                    (*n_updated)++;
+                }
+            } else {
+                /* New file */
+                exfat_add_file(fs, parent_cluster, names[i],
+                               file_data, file_size, uid, gid, mode);
+                (*n_added)++;
+            }
+            free(file_data);
+        }
+        free(names[i]);
+    }
+    free(names);
+}
+
+/*
+ * Sync sysroot with existing exFAT filesystem.
+ * Only updates changed files, preserves non-sysroot data.
+ */
+void exfat_sync_sysroot(ExFat *fs, const char *sysroot_path)
+{
+    struct stat st;
+    if (stat(sysroot_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        printf("  Warning: sysroot path '%s' does not exist, skipping\n", sysroot_path);
+        return;
+    }
+
+    printf("  Incremental sync from: %s\n", sysroot_path);
+
+    /* Read existing directory tree */
+    ExFatNode *root = exfat_read_dir_tree(fs, fs->root_cluster);
+
+    int n_unchanged = 0, n_updated = 0, n_added = 0;
+
+    exfat_sync_dir(fs, sysroot_path, fs->root_cluster, root, "",
+                   &n_unchanged, &n_updated, &n_added);
+
+    printf("  exFAT sync: %d unchanged, %d updated, %d added\n",
+           n_unchanged, n_updated, n_added);
+
+    exfat_free_tree(root);
+}
+
+/*
+ * Recursively free children arrays of a node.
+ * Does NOT free the node itself (it is embedded in its parent's children array).
+ */
+static void exfat_free_children(ExFatNode *node)
+{
+    int i;
+    if (!node || !node->children) return;
+    for (i = 0; i < node->child_count; i++)
+        exfat_free_children(&node->children[i]);
+    free(node->children);
+    node->children = NULL;
+    node->child_count = 0;
+}
+
+/*
+ * Free an ExFatNode tree.  Only the root node was individually calloc'd;
+ * all other nodes live inside their parent's realloc'd children array.
+ */
+void exfat_free_tree(ExFatNode *node)
+{
+    if (!node) return;
+    exfat_free_children(node);
+    free(node);
 }

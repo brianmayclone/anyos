@@ -23,9 +23,9 @@ This document describes the internal architecture of anyOS, from boot to desktop
 
 ## Boot Process
 
-anyOS supports three boot methods: BIOS (MBR + FAT16), UEFI (GPT + exFAT), and ISO (El Torito).
+anyOS supports three boot methods: BIOS (MBR + exFAT), UEFI (GPT + exFAT), and ISO (El Torito).
 
-### BIOS Boot (MBR + FAT16)
+### BIOS Boot (MBR + exFAT)
 
 Custom two-stage bootloader written in NASM assembly.
 
@@ -93,6 +93,10 @@ The bootloader passes a `BootInfo` struct at a known address containing:
 0xFFFFFFFF_D0000000 - 0xFFFFFFFF_D001FFFF    E1000 MMIO (128 KiB)
 0xFFFFFFFF_D0020000 - 0xFFFFFFFF_D005FFFF    VMware SVGA FIFO (256 KiB)
 0xFFFFFFFF_D0060000 - 0xFFFFFFFF_D0067FFF    AHCI MMIO (32 KiB)
+0xFFFFFFFF_D00A0000+                         KDRV MMIO (loadable kernel drivers)
+0xFFFFFFFF_D0120000 - 0xFFFFFFFF_D012FFFF    VMMDev MMIO (VirtualBox guest integration)
+0xFFFFFFFF_D0140000 - 0xFFFFFFFF_D0143FFF    NVMe MMIO (16 KiB)
+0xFFFFFFFF_B0000000 - 0xFFFFFFFF_BFE00000    KDRV code/data (loadable kernel driver region)
 0xFD000000 - 0xFDFFFFFF                      Framebuffer (16 MiB, mapped via 4K pages)
 PML4[510] recursive self-mapping              Page table access
 ```
@@ -132,34 +136,31 @@ PML4[510] recursive self-mapping              Page table access
                  |  main.rs  |  Kernel entry, init sequence
                  +-----+-----+
                        |
-    +--------+---------+---------+--------+
-    |        |         |         |        |
-+---+---+ +--+--+ +---+---+ +---+--+ +---+---+
-|arch/  | |mem/ | |drivers/| |task/ | |syscall/|
-|x86    | |     | |        | |      | |        |
-+-------+ +-----+ +--------+ +------+ +--------+
-    |        |         |         |        |
-    |   +----+----+    |    +----+----+   |
-    |   |physical | +--+--+ |scheduler|   |
-    |   |virtual  | |GPU  | |loader   |   |
-    |   |heap     | |E1000| |thread   |   |
-    |   +---------+ |ATA  | |process  |   |
-    |               |AHCI | +---------+   |
-    |               |input|               |
-    +--+  +--+      +-----+              |
-    |GDT| |IDT|                           |
-    |TSS| |PIC|   +-------+  +-----+     |
-    |PIT| |APIC|  |  fs/  |  | net/|     |
-    +---+ +----+  | FAT16 |  | TCP |     |
+    +--------+---------+---------+--------+--------+
+    |        |         |         |        |        |
++---+---+ +--+--+ +---+---+ +---+--+ +---+---+ +--+--+
+|arch/  | |mem/ | |drivers/| |task/ | |syscall/| |ipc/ |
+|x86    | |     | |        | |      | |        | |     |
++-------+ +-----+ +--------+ +------+ +--------+ +-----+
+    |        |         |         |        |        |
+    |   +----+----+    |    +----+----+   |   +----+----+
+    |   |physical | +--+--+ |scheduler|   |   |msg queue|
+    |   |virtual  | |GPU  | |loader   |   |   |pipes    |
+    |   |heap     | |E1000| |thread   |   |   |signals  |
+    |   +---------+ |ATA  | |KDRV     |   |   |shm      |
+    |               |AHCI | +---------+   |   +---------+
+    |               |NVMe |               |
+    |               |USB  |               |
+    +--+  +--+      |HDA  |              |
+    |GDT| |IDT|     |input|              |
+    |TSS| |PIC|     +-----+              |
+    |PIT| |APIC|                          |
+    +---+ +----+  +-------+  +-----+     |
+                  |  fs/  |  | net/|     |
+                  | exFAT |  | TCP |     |
                   | VFS   |  | UDP |     |
                   +-------+  | DNS |     |
                              +-----+     |
-              +----------+               |
-              |graphics/ |  +-----+      |
-              |compositor|  | ui/ |      |
-              |surface   |  |desk |      |
-              |font      |  |dock |      |
-              +----------+  +-----+      |
 ```
 
 ### Init Sequence (main.rs)
@@ -173,12 +174,13 @@ The kernel initializes subsystems in phases:
 5. **PIT + TSC Calibration** -- PIT channel 2 polled calibration (no IRQ dependency)
 6. **Physical Memory** -- Frame allocator from E820/UEFI memory map
 7. **Virtual Memory** -- Page tables, kernel heap (linked-list allocator)
-8. **PCI + HAL** -- Bus enumeration, driver binding (GPU, NIC, ATA/AHCI, AC'97, USB)
+8. **PCI + HAL** -- Bus enumeration, driver binding (GPU, NIC, ATA/AHCI/NVMe, HDA, USB, VMMDev)
+9. **KDRV** -- Load kernel driver bundles (`.ddv`) from `/System/Drivers/`, match PCI devices
 9. **APIC** -- Local APIC + I/O APIC setup, LAPIC timer calibrated from TSC
-10. **SMP** -- AP (Application Processor) startup via INIT-SIPI-SIPI sequence
+10. **SMP** -- AP (Application Processor) startup via INIT-SIPI-SIPI sequence (up to 16 CPUs)
 11. **SYSCALL/SYSRET** -- MSR configuration (EFER.SCE, STAR, LSTAR, SFMASK)
-12. **Scheduler** -- Thread system, idle task per CPU, round-robin with priorities
-13. **Keyboard/Mouse** -- PS/2 driver with IntelliMouse scroll wheel
+12. **Scheduler** -- Mach-style multi-level priority queue (128 levels, per-CPU run queues, O(1) bitmap dispatch)
+13. **Keyboard/Mouse** -- PS/2 driver with IntelliMouse scroll wheel; VMware vmmouse / VMMDev absolute mouse
 14. **DLL Loading** -- Map boot-time DLIBs into kernel PD (uisys, libimage, librender, libcompositor); .so libraries (libanyui, libfont) loaded on demand via SYS_DLL_LOAD
 15. **Userspace** -- Load `/System/init` as first Ring 3 process, which starts the compositor
 
@@ -189,12 +191,15 @@ The kernel initializes subsystems in phases:
 ### Threads & Scheduling
 
 - Each "process" is one or more **kernel threads** sharing the same page directory
-- **SMP-aware round-robin** scheduler with 1ms time slices (LAPIC timer at 1000 Hz)
+- **Mach-style multi-level priority scheduler** with 128 priority levels (0-127, higher = more important)
+- **Bitmap-indexed O(1) dispatch**: 2x u64 bitmap for instant highest-priority thread selection
+- **Per-CPU run queues** with FIFO ordering within each priority level and inter-CPU work stealing
+- LAPIC timer at 1000 Hz (1 ms time slices) for preemption
 - Thread states: `Ready`, `Running`, `Sleeping`, `Blocked`, `Dead`
-- Thread priorities (0=highest, 255=lowest) affect scheduling order
-- Context switch saves/restores: RAX-RDI, R8-R15, RSP, RBP, RIP, RFLAGS, CR3, FPU state (FXSAVE/FXRSTOR)
-- Eager FPU switching: save/restore 512-byte `FxState` on every context switch
+- Context switch saves/restores: RAX-RDI, R8-R15, RSP, RBP, RIP, RFLAGS, CR3, FPU state
+- Lazy FPU switching via CR0.TS flag (only saves/restores 512-byte `FxState` when needed)
 - Per-CPU idle threads, one scheduler lock with `try_lock()` contention handling
+- POSIX process model: `fork`, `exec`, `waitpid`, `pipe`, `dup2`, `signals`
 
 ### Ring 3 User Mode
 

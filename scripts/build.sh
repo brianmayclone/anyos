@@ -8,7 +8,7 @@
 # SPDX-License-Identifier: MIT
 
 # Build anyOS
-# Usage: ./build.sh [--clean] [--uefi] [--iso] [--all] [--debug] [--no-cross]
+# Usage: ./build.sh [--clean] [--reset] [--uefi] [--iso] [--all] [--debug] [--no-cross]
 
 BUILD_START=$(date +%s)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -16,6 +16,7 @@ PROJECT_DIR="${SCRIPT_DIR}/.."
 BUILD_DIR="${PROJECT_DIR}/build"
 
 CLEAN=0
+RESET=0
 BUILD_UEFI=0
 BUILD_ISO=0
 BUILD_ALL=0
@@ -26,6 +27,9 @@ for arg in "$@"; do
     case "$arg" in
         --clean)
             CLEAN=1
+            ;;
+        --reset)
+            RESET=1
             ;;
         --uefi)
             BUILD_UEFI=1
@@ -43,9 +47,10 @@ for arg in "$@"; do
             NO_CROSS=1
             ;;
         *)
-            echo "Usage: $0 [--clean] [--uefi] [--iso] [--all] [--debug] [--no-cross]"
+            echo "Usage: $0 [--clean] [--reset] [--uefi] [--iso] [--all] [--debug] [--no-cross]"
             echo ""
             echo "  --clean     Force full rebuild of all components"
+            echo "  --reset     Force fresh disk image (destroy runtime data)"
             echo "  --uefi      Build UEFI disk image (in addition to BIOS)"
             echo "  --iso       Build bootable ISO 9660 image (El Torito, CD-ROM)"
             echo "  --all       Build BIOS, UEFI, and ISO images"
@@ -57,7 +62,7 @@ for arg in "$@"; do
 done
 
 # CMake flags
-CMAKE_EXTRA_FLAGS="-DANYOS_DEBUG_VERBOSE=$([ "$DEBUG_VERBOSE" -eq 1 ] && echo ON || echo OFF) -DANYOS_NO_CROSS=$([ "$NO_CROSS" -eq 1 ] && echo ON || echo OFF)"
+CMAKE_EXTRA_FLAGS="-DANYOS_DEBUG_VERBOSE=$([ "$DEBUG_VERBOSE" -eq 1 ] && echo ON || echo OFF) -DANYOS_NO_CROSS=$([ "$NO_CROSS" -eq 1 ] && echo ON || echo OFF) -DANYOS_RESET=$([ "$RESET" -eq 1 ] && echo ON || echo OFF)"
 
 # Ensure build directory exists
 if [ ! -f "${BUILD_DIR}/build.ninja" ]; then

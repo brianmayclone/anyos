@@ -101,6 +101,7 @@ typedef struct {
     const char *sysroot;
     int         image_size; /* MiB */
     int         fs_start;   /* sector */
+    int         reset;      /* 1 = force full rebuild, 0 = incremental if possible */
 } Args;
 
 /* ── FAT16 formatter state ────────────────────────────────────────────── */
@@ -160,6 +161,7 @@ void     write_be16(uint8_t *p, uint16_t v);
 void     write_be32(uint8_t *p, uint32_t v);
 uint16_t read_le16(const uint8_t *p);
 uint32_t read_le32(const uint8_t *p);
+uint64_t read_le64(const uint8_t *p);
 
 /* ── ELF functions (elf.c) ────────────────────────────────────────────── */
 
@@ -179,8 +181,27 @@ void     fat16_add_file(Fat16 *fs, uint32_t parent, const char *name,
                         int is_root_parent);
 void     fat16_populate_sysroot(Fat16 *fs, const char *sysroot_path);
 
+/* ── exFAT directory tree node (for incremental updates) ──────────────── */
+
+typedef struct ExFatNode {
+    char          name[256];       /* UTF-8 filename */
+    uint16_t      attrs;           /* EXFAT_ATTR_DIR or EXFAT_ATTR_ARCHIVE */
+    uint32_t      first_cluster;
+    uint64_t      data_length;
+    uint16_t      uid, gid, mode;  /* VFS permissions */
+    int           contiguous;      /* EXFAT_FLAG_CONTIGUOUS set */
+    uint32_t      dir_cluster;     /* cluster of parent dir containing this entry */
+    uint32_t      entry_offset;    /* byte offset of entry set in dir cluster chain */
+    uint32_t      entry_set_len;   /* total bytes of entry set (File+Stream+FileNames) */
+    /* Children (for directories) */
+    struct ExFatNode *children;
+    int           child_count;
+    int           child_cap;
+} ExFatNode;
+
 /* ── exFAT functions (exfat.c) ────────────────────────────────────────── */
 
+/* Format + populate (full rebuild) */
 void     exfat_init(ExFat *fs, uint8_t *image, uint32_t fs_start,
                     uint32_t fs_sectors, uint32_t spc);
 void     exfat_write_boot(ExFat *fs);
@@ -193,6 +214,17 @@ void     exfat_add_file(ExFat *fs, uint32_t parent, const char *name,
 void     exfat_populate_sysroot(ExFat *fs, const char *sysroot_path);
 void     exfat_flush(ExFat *fs);
 void     exfat_free(ExFat *fs);
+
+/* Incremental update */
+void       exfat_open_existing(ExFat *fs, uint8_t *image, uint32_t fs_start);
+ExFatNode *exfat_read_dir_tree(ExFat *fs, uint32_t dir_cluster);
+ExFatNode *exfat_find_child(ExFatNode *parent, const char *name);
+int        exfat_file_matches(ExFat *fs, ExFatNode *node,
+                              const uint8_t *new_data, size_t new_size);
+void       exfat_free_clusters(ExFat *fs, ExFatNode *node);
+void       exfat_delete_entry(ExFat *fs, ExFatNode *node);
+void       exfat_sync_sysroot(ExFat *fs, const char *sysroot_path);
+void       exfat_free_tree(ExFatNode *node);
 
 /* ── GPT functions (gpt.c) ────────────────────────────────────────────── */
 

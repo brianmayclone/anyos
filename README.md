@@ -15,8 +15,8 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 ![NASM](https://img.shields.io/badge/NASM-Assembly-0066B8?style=flat-square)
 ![x86_64](https://img.shields.io/badge/Arch-x86__64-4B7BEC?style=flat-square)
 ![License: MIT](https://img.shields.io/badge/License-MIT-2ecc71?style=flat-square)
-![Programs](https://img.shields.io/badge/Programs-70+-e67e22?style=flat-square)
-![Syscalls](https://img.shields.io/badge/Syscalls-118-9b59b6?style=flat-square)
+![Programs](https://img.shields.io/badge/Programs-95+-e67e22?style=flat-square)
+![Syscalls](https://img.shields.io/badge/Syscalls-140-9b59b6?style=flat-square)
 
 <br>
 
@@ -79,18 +79,21 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 
 ### Kernel
 
+- **Mach-style microkernel architecture** with message-based IPC
 - **64-bit x86_64** long mode with 4-level paging (4 KiB pages)
-- **Preemptive multitasking** with priority-based round-robin scheduler (1 ms time slices)
-- **SMP support** — multi-core via LAPIC/IOAPIC with per-CPU idle threads
+- **Preemptive multitasking** with Mach-style multi-level priority scheduler (128 levels, bitmap-indexed O(1) thread selection, per-CPU run queues)
+- **SMP support** — multi-core (up to 16 CPUs) via LAPIC/IOAPIC with per-CPU idle threads and work stealing
 - **Per-process address spaces** with isolated PML4 page directories
 - **Ring 3 user mode** with dual syscall interface: `SYSCALL/SYSRET` (64-bit) and `INT 0x80` (32-bit compat)
-- **118 system calls** across 22 categories (process, file I/O, networking, IPC, display, audio, USB, permissions, ...)
+- **140 system calls** across 22 categories (process, file I/O, networking, IPC, display, audio, USB, permissions, signals, ...)
 - **Physical + virtual memory manager** with kernel heap allocator
-- **exFAT filesystem** with VFAT long filename support, symlinks, mount points, chmod/chown
-- **Storage dispatch**: ATA PIO (legacy IDE) and **AHCI** (SATA DMA) backends
+- **exFAT filesystem** with long filename support, symlinks, mount points, chmod/chown
+- **Storage drivers**: ATA PIO, **AHCI** (SATA DMA), **NVMe** (PCIe), ATAPI (CD-ROM), LSI SCSI
 - **ELF loader** for user programs (ELF64 native + ELF32 compat)
-- **FPU/SSE support** with eager save/restore (FXSAVE/FXRSTOR) per context switch
+- **Loadable kernel drivers** (KDRV format) with PCI device matching and hot-loading from `.ddv` bundles
+- **FPU/SSE support** with lazy save/restore (CR0.TS flag) per context switch
 - **TSC-calibrated timekeeping** via PIT channel 2 polled (no IRQ dependency)
+- **POSIX compatibility**: `fork`, `exec`, `pipe`, `dup2`, `signals` (SIGUSR1, SIGCHLD, SIG_IGN)
 - **User identity system** — UID/GID, user accounts, groups, authentication
 - **Runtime app permissions** — per-user capability grants with consent dialog on first launch, reviewable in Settings
 
@@ -98,11 +101,11 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 
 - **VESA VBE** framebuffer (1024x768x32, runtime resolution switching)
 - **Double-buffered compositor** with damage-based partial updates and blur effects
-- **GPU drivers**: Bochs VGA (page flipping) and VMware SVGA II (2D acceleration, hardware cursor)
+- **GPU drivers**: Bochs VGA (page flipping), VMware SVGA II (2D acceleration, hardware cursor), VirtualBox VGA, VirtIO GPU
 - **macOS-inspired dark theme** with rounded windows, shadows, and alpha blending
-- **41 UI controls** via the anyui framework + uisys shared library (buttons, text fields, code editor, tree view, data grid, toolbars, etc.)
+- **42 UI controls** via the anyui framework + uisys shared library (buttons, text fields, code editor, tree view, data grid, toolbars, canvas, expander, flow/stack panels, etc.)
 - **6 shared libraries** — uisys, libimage, librender, libcompositor (DLIB format) + libanyui, libfont (.so format with ELF dynamic linking)
-- **TrueType font rendering** with subpixel LCD anti-aliasing (SF Pro family)
+- **TrueType font rendering** with gamma-corrected subpixel LCD anti-aliasing and size-adaptive smoothing (SF Pro family)
 
 ### Networking
 
@@ -119,25 +122,33 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 
 ### Audio
 
-- **AC'97** audio codec driver
+- **AC'97** codec driver and **Intel HDA** (High Definition Audio) driver
 - WAV/PCM playback via `play` command
 
-### C Toolchain
+### Hypervisor Integration
+
+- **VirtualBox**: VMMDev guest integration (absolute mouse, host events, capability negotiation)
+- **VMware**: vmmouse absolute mouse input, SVGA II 2D acceleration
+- **QEMU/KVM**: Bochs VGA, E1000, AC'97/HDA, AHCI, NVMe, VirtIO
+
+### C Toolchain & Shell
 
 - **TCC** (Tiny C Compiler) 0.9.27 running natively on the OS
 - **NASM** 2.15+ assembler running natively
+- **dash** (Debian Almquist Shell) — POSIX-compliant shell
 - **Minimal POSIX libc** (35 headers, stdio, stdlib, string, math, socket, etc.)
 - Write, compile, and run C programs directly on anyOS: `cc hello.c -o hello && hello`
 
 ### Build System Tools
 
-Three native C99 tools replace all Python build scripts. They compile at the start of each build and are also available as source on the disk for self-hosting:
+Four native C99 tools replace all Python build scripts. They compile at the start of each build and are also available as source on the disk for self-hosting:
 
-| Tool | Purpose | Modes |
-|------|---------|-------|
+| Tool | Purpose | Key Features |
+|------|---------|--------------|
 | **anyelf** | ELF conversion | `bin` (flat binary), `dlib` (DLIB v3 shared library), `kdrv` (kernel driver) |
-| **mkimage** | Disk image creation | BIOS (MBR + exFAT), UEFI (GPT + ESP + exFAT), ISO (El Torito + ISO 9660) |
+| **mkimage** | Disk image creation | BIOS (MBR + exFAT), UEFI (GPT + ESP + exFAT), ISO (El Torito + ISO 9660); **incremental updates** (use `--reset` for full rebuild) |
 | **anyld** | ELF64 linker | Links `.o` + `.a` into shared objects (ET_DYN with .dynsym/.hash/.dynamic) |
+| **mkappbundle** | App bundle creator | Validates Info.conf, capabilities, icon (ICO), executable; assembles `.app` directory structure |
 
 All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, enabling self-hosted builds directly on anyOS.
 
@@ -149,13 +160,15 @@ All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, en
 
 ### User Programs
 
-70+ command-line and GUI applications:
+95+ command-line and GUI applications:
 
-**GUI Applications (13):** Terminal, Finder, Settings, Activity Monitor, Notepad, Image Viewer, Video Player, Calculator, Clock, Screenshot, Diagnostics, Font Viewer, Surf (web browser prototype)
+**GUI Applications (11):** anyOS Code (IDE), Calculator, Clock, Diagnostics, Font Viewer, Image Viewer, Notepad, Screenshot, Surf (web browser prototype), Video Player, anyui Demo
+
+**System Applications (12):** Init, Login, Compositor, Terminal, Finder, Settings, Activity Monitor, Permission Dialog, Shell (dash), Audio Monitor, Network Monitor, Input Monitor
 
 **Games (2):** DOOM (doomgeneric port), Quake (WinQuake software renderer port)
 
-**CLI Utilities (69):**
+**CLI Utilities (72):**
 
 | Category | Programs |
 |----------|----------|
@@ -164,7 +177,7 @@ All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, en
 | System Info | `sysinfo` `dmesg` `devlist` `ps` `free` `uptime` `uname` `hostname` `whoami` `which` `date` `cal` |
 | Networking | `ping` `dhcp` `dns` `ifconfig` `arp` `wget` `ftp` `curl` |
 | User Mgmt | `chmod` `chown` `su` `listuser` `listgroups` `adduser` `deluser` `addgroup` `delgroup` `passwd` |
-| Shell | `env` `set` `export` `pwd` `clear` `sleep` `seq` `yes` `true` `false` |
+| Shell & Process | `env` `set` `export` `pwd` `clear` `sleep` `seq` `yes` `true` `false` `nice` `kill` |
 | Binary/Hex | `hexdump` `xxd` |
 | Multimedia | `play` `pipes` |
 | Dev Tools | `cc` (TCC) `nasm` `make` `git` `open` |
@@ -261,11 +274,11 @@ Requires MSYS2 or WSL for the cross-compiler. PowerShell build scripts are provi
 | Target | Description |
 |--------|-------------|
 | `ninja run` | Launch with Bochs VGA (software rendering) |
-| `ninja run-vmware` | Launch with VMware SVGA II (2D acceleration, hardware cursor) |
+| `ninja run-vmware` | Launch with VMware SVGA II (2D acceleration, hardware cursor, absolute mouse) |
 | `ninja run-ahci` | Launch with AHCI (SATA DMA) + Bochs VGA |
 | `ninja run-ahci-vmware` | Launch with AHCI + VMware SVGA II |
-| `ninja run-audio` | Launch with AC'97 audio device |
-| `ninja run-usb` | Launch with UHCI USB keyboard + mouse |
+| `ninja run-audio` | Launch with HDA audio device |
+| `ninja run-usb` | Launch with USB host controller + keyboard/mouse |
 | `ninja run-usb-ehci` | Launch with EHCI USB 2.0 keyboard + mouse |
 | `ninja debug` | Launch with GDB server on localhost:1234 |
 | `ninja run-vmware-debug` | VMware SVGA + GDB server |
@@ -331,25 +344,26 @@ anyos/
     asm/                   Context switch, ISR/IRQ stubs, syscall entry, SMP trampoline
     src/
       arch/x86/            GDT, IDT, APIC, PIT, TSC, paging, CPUID
-      drivers/             PCI, GPU (Bochs/VMware), keyboard, mouse, E1000, ATA, AHCI,
-                           serial, AC'97 audio, UHCI, EHCI
+      drivers/             PCI, GPU (Bochs/VMware/VBox/VirtIO), keyboard, mouse, vmmouse,
+                           E1000, ATA, AHCI, NVMe, ATAPI, LSI SCSI,
+                           serial, AC'97, HDA audio, UHCI, EHCI, VMMDev, VirtIO
       fs/                  VFS, exFAT, FAT16, devfs
       graphics/            Framebuffer management
-      ipc/                 Pipes, event bus, shared memory
+      ipc/                 Pipes, anonymous pipes, event bus, shared memory, message queues, signals
       memory/              Physical allocator, virtual memory, heap
       net/                 Ethernet, ARP, IPv4, ICMP, UDP, TCP, DHCP, DNS
       sync/                Spinlock, mutex
-      syscall/             118 syscall handlers
-      task/                Scheduler, context switch, ELF loader, DLL loader
+      syscall/             140 syscall handlers
+      task/                Mach-style scheduler, context switch, ELF loader, DLL loader, KDRV loader
       crypto/              MD5 hash
   libs/                  Libraries
     stdlib/                anyos_std — Rust standard library for user programs
     libc/                  POSIX C library (35 headers, i686-elf-gcc)
-    uisys/                 uisys.dlib — UI component DLL (31 components, 84 exports)
+    uisys/                 uisys.dlib — UI component DLL (31 components, 81 exports)
     uisys_client/          Client stub crate for uisys
     libimage/              libimage.dlib — Image decoding DLL (PNG, BMP, JPEG, ICO, MJV)
     libimage_client/       Client stub crate for libimage
-    libanyui/              libanyui.so — anyui UI framework (41 controls, 108 exports)
+    libanyui/              libanyui.so — anyui UI framework (42 controls, 111 exports)
     libanyui_client/       Client crate for libanyui (dynlink-based)
     libfont/               libfont.so — TrueType font rendering (embedded system fonts in .rodata)
     libfont_client/        Client crate for libfont (dynlink-based)
@@ -358,11 +372,12 @@ anyos/
     librender_client/      Client stub crate for librender
     libcompositor/         libcompositor.dlib — Compositor client API DLL
     libcompositor_client/  Client stub crate for libcompositor
-  bin/                   CLI program sources (69 Rust programs)
-  apps/                  GUI application sources (13 .app bundles)
-  system/                System programs
+  bin/                   CLI program sources (72 Rust programs)
+  apps/                  GUI application sources (11 .app bundles)
+  system/                System programs (12)
     init/                  Init system (PID 1)
     login/                 Login manager
+    shell/                 POSIX shell (dash)
     audiomon/              Audio monitor daemon
     netmon/                Network monitor daemon
     inputmon/              Input event monitor
@@ -375,6 +390,7 @@ anyos/
   third_party/           External dependencies
     tcc-0.9.27/            Tiny C Compiler
     nasm/                  NASM assembler
+    dash-0.5.12/           POSIX shell (Debian Almquist Shell)
     doom/                  doomgeneric port
     quake/                 WinQuake port
     curl/                  curl HTTP client
@@ -383,8 +399,9 @@ anyos/
     minigit/               Mini git CLI
   buildsystem/           Native C build tools (compiled at build start)
     anyelf/                ELF conversion tool (bin, dlib, kdrv modes)
-    mkimage/               Disk image builder (BIOS/UEFI/ISO, exFAT/FAT16/GPT)
+    mkimage/               Disk image builder (BIOS/UEFI/ISO, exFAT/FAT16/GPT, incremental updates)
     anyld/                 ELF64 shared object linker (.so generation)
+    mkappbundle/           App bundle creator (validates Info.conf, capabilities, icon, executable)
   tools/                 Legacy build utilities (Python, kept as reference)
     gen_font.py            Bitmap font generator
     encode_mjv.py          MJV video encoder
@@ -404,11 +421,11 @@ anyOS uses two shared library formats, both loaded at fixed virtual addresses:
 
 | Library | Format | Base Address | Exports | Purpose |
 |---------|--------|-------------|---------|---------|
-| uisys | DLIB | `0x04000000` | 108 | UI controls (buttons, text fields, code editor, tree view, data grid, toolbars, ...) |
+| uisys | DLIB | `0x04000000` | 81 | UI controls (buttons, text fields, scroll views, context menus, toolbars, ...) |
 | libimage | DLIB | `0x04100000` | 7 | Image decoding (PNG, BMP, JPEG, ICO) and scaling |
 | librender | DLIB | `0x04300000` | 18 | 2D drawing primitives (lines, rects, circles, gradients) |
 | libcompositor | DLIB | `0x04380000` | 16 | Window creation, event handling, IPC with compositor |
-| libanyui | .so | `0x04400000` | 108 | anyui UI framework (41 controls, Windows Forms-style) |
+| libanyui | .so | `0x04400000` | 111 | anyui UI framework (42 controls, Windows Forms-style) |
 | libfont | .so | `0x05000000` | 7 | TrueType font rendering with LCD subpixel AA (system fonts embedded in .rodata) |
 
 DLIB programs link against lightweight client stub crates (e.g. `uisys_client`) that read the export table at the known base address. `.so` programs use `dynlink` crate (`dl_open`/`dl_sym`) for ELF symbol resolution.
@@ -418,10 +435,10 @@ DLIB programs link against lightweight client stub crates (e.g. `uisys_client`) 
 ## Documentation
 
 - **[Architecture Overview](docs/architecture.md)** — Boot process, memory layout, scheduling, IPC, USB, user identity
-- **[Syscall Reference](docs/syscalls.md)** — Complete reference for all 118 system calls
+- **[Syscall Reference](docs/syscalls.md)** — Complete reference for all 140 system calls
 - **[Standard Library API](docs/stdlib-api.md)** — `anyos_std` crate reference for Rust user programs
-- **[UI System API](docs/uisys-api.md)** — `uisys` DLL component reference (31 components, 84 exports)
-- **[anyui Controls API](docs/anyui-api.md)** — anyui framework reference (41 controls, 108 exports)
+- **[UI System API](docs/uisys-api.md)** — `uisys` DLL component reference (31 components, 81 exports)
+- **[anyui Controls API](docs/anyui-api.md)** — anyui framework reference (42 controls, 111 exports)
 - **[C Library API](docs/libc-api.md)** — POSIX libc reference (35 headers) for C programs
 - **[libimage API](docs/libimage-api.md)** — Image decoding, scaling, ICO, and video (MJV)
 - **[libfont API](docs/libfont-api.md)** — TrueType font rendering with subpixel LCD anti-aliasing

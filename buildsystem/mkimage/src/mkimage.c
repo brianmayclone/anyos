@@ -136,6 +136,10 @@ uint32_t read_le32(const uint8_t *p) {
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+uint64_t read_le64(const uint8_t *p) {
+    return (uint64_t)read_le32(p) | ((uint64_t)read_le32(p + 4) << 32);
+}
+
 /* ── BIOS image creation ──────────────────────────────────────────────── */
 
 void create_bios_image(const Args *args) {
@@ -180,18 +184,45 @@ void create_bios_image(const Args *args) {
         write_le32(s2 + 4, kernel_start);
     }
 
-    /* Create image */
+    /* Create or load image */
     size_t image_size = (size_t)args->image_size * 1024 * 1024;
-    uint8_t *image = calloc(1, image_size);
-    if (!image) fatal("out of memory for image (%zu bytes)", image_size);
+    int incremental = 0;
+    uint8_t *image = NULL;
 
+    /* Check for incremental update: existing image of same size, not --reset */
+    if (!args->reset && args->sysroot) {
+        FILE *f = fopen(args->output, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long existing_size = ftell(f);
+            fclose(f);
+            if (existing_size > 0 && (size_t)existing_size == image_size) {
+                incremental = 1;
+            }
+        }
+    }
+
+    if (incremental) {
+        /* Load existing image for incremental update */
+        size_t dummy;
+        image = read_file(args->output, &dummy);
+        if (!image) fatal("cannot read existing image '%s'", args->output);
+        printf("\nIncremental update mode (use --reset for full rebuild)\n");
+    } else {
+        image = calloc(1, image_size);
+        if (!image) fatal("out of memory for image (%zu bytes)", image_size);
+        if (args->reset)
+            printf("\nFull rebuild (--reset)\n");
+    }
+
+    /* Always write boot sectors + kernel (even in incremental mode) */
     memcpy(image, s1, s1_size);
     memcpy(image + SECTOR_SIZE, s2, s2_size);
     memcpy(image + (size_t)kernel_start * SECTOR_SIZE, kernel, flat_size);
 
     free(s1); free(s2); free(kernel);
 
-    /* Create exFAT filesystem */
+    /* exFAT filesystem */
     uint32_t fs_sectors = (uint32_t)(image_size / SECTOR_SIZE) - (uint32_t)args->fs_start;
     printf("\nexFAT filesystem:\n");
     printf("  Start sector: %d (offset 0x%X)\n",
@@ -199,18 +230,30 @@ void create_bios_image(const Args *args) {
     printf("  Size: %u sectors (%u MiB)\n",
            fs_sectors, fs_sectors * SECTOR_SIZE / (1024 * 1024));
 
-    ExFat exfat;
-    exfat_init(&exfat, image, (uint32_t)args->fs_start, fs_sectors, 8);
-    exfat_write_boot(&exfat);
-    exfat_init_fs(&exfat);
+    if (incremental) {
+        /* Incremental: open existing FS, sync sysroot */
+        ExFat exfat;
+        exfat_open_existing(&exfat, image, (uint32_t)args->fs_start);
+        if (args->sysroot) {
+            exfat_sync_sysroot(&exfat, args->sysroot);
+        }
+        exfat_flush(&exfat);
+        exfat_free(&exfat);
+    } else {
+        /* Full rebuild: format + populate */
+        ExFat exfat;
+        exfat_init(&exfat, image, (uint32_t)args->fs_start, fs_sectors, 8);
+        exfat_write_boot(&exfat);
+        exfat_init_fs(&exfat);
 
-    if (args->sysroot) {
-        printf("  Populating from sysroot: %s\n", args->sysroot);
-        exfat_populate_sysroot(&exfat, args->sysroot);
+        if (args->sysroot) {
+            printf("  Populating from sysroot: %s\n", args->sysroot);
+            exfat_populate_sysroot(&exfat, args->sysroot);
+        }
+
+        exfat_flush(&exfat);
+        exfat_free(&exfat);
     }
-
-    exfat_flush(&exfat);
-    exfat_free(&exfat);
 
     /* Write image */
     FILE *fp = fopen(args->output, "wb");
@@ -219,7 +262,8 @@ void create_bios_image(const Args *args) {
     fclose(fp);
     free(image);
 
-    printf("\nDisk image created: %s (%d MiB)\n", args->output, args->image_size);
+    printf("\nDisk image %s: %s (%d MiB)\n",
+           incremental ? "updated" : "created", args->output, args->image_size);
 }
 
 /* ── UEFI image creation ──────────────────────────────────────────────── */
@@ -272,11 +316,36 @@ void create_uefi_image(const Args *args) {
            (unsigned long long)data_start, (unsigned long long)data_end,
            (unsigned long long)(data_sectors * 512 / (1024 * 1024)));
 
-    /* Create image */
-    uint8_t *image = calloc(1, image_size);
-    if (!image) fatal("out of memory for image (%zu bytes)", image_size);
+    /* Create or load image */
+    int incremental = 0;
+    uint8_t *image = NULL;
 
-    /* Protective MBR + GPT */
+    /* Check for incremental update */
+    if (!args->reset && args->sysroot) {
+        FILE *f = fopen(args->output, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long existing_size = ftell(f);
+            fclose(f);
+            if (existing_size > 0 && (size_t)existing_size == image_size) {
+                incremental = 1;
+            }
+        }
+    }
+
+    if (incremental) {
+        size_t dummy;
+        image = read_file(args->output, &dummy);
+        if (!image) fatal("cannot read existing image '%s'", args->output);
+        printf("\nIncremental update mode (use --reset for full rebuild)\n");
+    } else {
+        image = calloc(1, image_size);
+        if (!image) fatal("out of memory for image (%zu bytes)", image_size);
+        if (args->reset)
+            printf("\nFull rebuild (--reset)\n");
+    }
+
+    /* Always write GPT + ESP (boot sectors change with kernel updates) */
     write_protective_mbr(image, total_sectors);
 
     GptPartition parts[2];
@@ -294,7 +363,7 @@ void create_uefi_image(const Args *args) {
 
     create_gpt(image, total_sectors, parts, 2);
 
-    /* ESP as FAT16 */
+    /* ESP as FAT16 — always rebuild (small, contains bootloader + kernel) */
     printf("\nESP filesystem:\n");
     Fat16 esp_fat;
     fat16_init(&esp_fat, image, (uint32_t)esp_start, (uint32_t)esp_sectors, 1);
@@ -318,19 +387,32 @@ void create_uefi_image(const Args *args) {
 
     /* Data partition as exFAT */
     printf("\nData filesystem (exFAT):\n");
-    ExFat data_exfat;
-    exfat_init(&data_exfat, image, (uint32_t)data_start,
-               (uint32_t)data_sectors, 8);
-    exfat_write_boot(&data_exfat);
-    exfat_init_fs(&data_exfat);
 
-    if (args->sysroot) {
-        printf("  Populating from sysroot: %s\n", args->sysroot);
-        exfat_populate_sysroot(&data_exfat, args->sysroot);
+    if (incremental) {
+        /* Incremental: open existing FS, sync sysroot */
+        ExFat data_exfat;
+        exfat_open_existing(&data_exfat, image, (uint32_t)data_start);
+        if (args->sysroot) {
+            exfat_sync_sysroot(&data_exfat, args->sysroot);
+        }
+        exfat_flush(&data_exfat);
+        exfat_free(&data_exfat);
+    } else {
+        /* Full rebuild: format + populate */
+        ExFat data_exfat;
+        exfat_init(&data_exfat, image, (uint32_t)data_start,
+                   (uint32_t)data_sectors, 8);
+        exfat_write_boot(&data_exfat);
+        exfat_init_fs(&data_exfat);
+
+        if (args->sysroot) {
+            printf("  Populating from sysroot: %s\n", args->sysroot);
+            exfat_populate_sysroot(&data_exfat, args->sysroot);
+        }
+
+        exfat_flush(&data_exfat);
+        exfat_free(&data_exfat);
     }
-
-    exfat_flush(&data_exfat);
-    exfat_free(&data_exfat);
 
     if (kernel_flat) free(kernel_flat);
 
@@ -341,8 +423,8 @@ void create_uefi_image(const Args *args) {
     fclose(fp);
     free(image);
 
-    printf("\nUEFI disk image created: %s (%d MiB)\n",
-           args->output, args->image_size);
+    printf("\nUEFI disk image %s: %s (%d MiB)\n",
+           incremental ? "updated" : "created", args->output, args->image_size);
 }
 
 /* ── Usage ────────────────────────────────────────────────────────────── */
@@ -354,15 +436,18 @@ static void usage(void) {
         "BIOS mode (default):\n"
         "  mkimage --stage1 FILE --stage2 FILE --kernel FILE\n"
         "          --output FILE [--sysroot DIR] [--image-size N]\n"
-        "          [--fs-start SECTOR]\n"
+        "          [--fs-start SECTOR] [--reset]\n"
         "\n"
         "UEFI mode:\n"
         "  mkimage --uefi --bootloader FILE --kernel FILE\n"
-        "          --output FILE [--sysroot DIR] [--image-size N]\n"
+        "          --output FILE [--sysroot DIR] [--image-size N] [--reset]\n"
         "\n"
         "ISO mode:\n"
         "  mkimage --iso --stage1 FILE --stage2 FILE --kernel FILE\n"
         "          --output FILE [--sysroot DIR]\n"
+        "\n"
+        "Options:\n"
+        "  --reset   Force full image rebuild (default: incremental update)\n"
     );
     exit(1);
 }
@@ -396,6 +481,8 @@ static int parse_args(int argc, char **argv, Args *args) {
             args->image_size = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--fs-start") == 0 && i + 1 < argc) {
             args->fs_start = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--reset") == 0) {
+            args->reset = 1;
         } else if (strcmp(argv[i], "-h") == 0 ||
                    strcmp(argv[i], "--help") == 0) {
             usage();

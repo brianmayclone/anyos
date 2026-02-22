@@ -98,6 +98,7 @@ add_custom_target(buildsystem-tools
 
 option(ANYOS_DEBUG_VERBOSE "Enable verbose debug output" OFF)
 option(ANYOS_NO_CROSS "Disable cross-compilation (skip libc, TCC, games, curl)" OFF)
+option(ANYOS_RESET "Force fresh disk image rebuild (destroy runtime data)" OFF)
 
 # Auto-detect i686-elf cross-compiler (needed for libc, TCC, Doom, Quake)
 if(ANYOS_NO_CROSS)
@@ -1213,6 +1214,11 @@ add_custom_target(programs DEPENDS
 # ============================================================
 # 6. Disk Image
 # ============================================================
+set(MKIMAGE_RESET_FLAG "")
+if(ANYOS_RESET)
+  set(MKIMAGE_RESET_FLAG "--reset")
+endif()
+
 add_custom_command(
   OUTPUT ${DISK_IMAGE}
   COMMAND ${MKIMAGE_EXECUTABLE}
@@ -1223,6 +1229,7 @@ add_custom_command(
     --image-size 256
     --sysroot ${SYSROOT_DIR}
     --fs-start 8192
+    ${MKIMAGE_RESET_FLAG}
   DEPENDS
     ${CMAKE_BINARY_DIR}/stage1.bin
     ${CMAKE_BINARY_DIR}/stage2.bin
@@ -1420,6 +1427,7 @@ add_custom_command(
     --output ${UEFI_DISK_IMAGE}
     --image-size 64
     --sysroot ${SYSROOT_DIR}
+    ${MKIMAGE_RESET_FLAG}
   DEPENDS
     ${UEFI_BOOTLOADER_EFI}
     ${KERNEL_ELF}
