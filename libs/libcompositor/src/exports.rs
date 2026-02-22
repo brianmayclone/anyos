@@ -21,11 +21,14 @@ const CMD_REGISTER_SUB: u32 = 0x100C;
 const CMD_SET_BLUR_BEHIND: u32 = 0x100E;
 const CMD_SET_WALLPAPER: u32 = 0x100F;
 const CMD_CREATE_VRAM_WINDOW: u32 = 0x1010;
+const CMD_SET_CLIPBOARD: u32 = 0x1011;
+const CMD_GET_CLIPBOARD: u32 = 0x1012;
 const RESP_WINDOW_CREATED: u32 = 0x2001;
 const RESP_VRAM_WINDOW_CREATED: u32 = 0x2004;
 const RESP_VRAM_WINDOW_FAILED: u32 = 0x2005;
+const RESP_CLIPBOARD_DATA: u32 = 0x2010;
 
-const NUM_EXPORTS: u32 = 18;
+const NUM_EXPORTS: u32 = 20;
 
 #[repr(C)]
 pub struct LibcompositorExports {
@@ -139,6 +142,14 @@ pub struct LibcompositorExports {
     /// Signal that a rectangular region of window content has been updated.
     /// Only the dirty rect (x, y, w, h) is copied to the compositor layer.
     pub present_rect: extern "C" fn(channel_id: u32, window_id: u32, shm_id: u32, x: u32, y: u32, w: u32, h: u32),
+
+    /// Set clipboard contents. format: 0=text/plain, 1=text/uri-list.
+    pub set_clipboard: extern "C" fn(channel_id: u32, data_ptr: *const u8, data_len: u32, format: u32),
+
+    /// Get clipboard contents. Returns actual byte count (0 if empty).
+    /// Writes clipboard data into out_ptr (up to out_cap bytes).
+    /// out_format receives the clipboard format.
+    pub get_clipboard: extern "C" fn(channel_id: u32, sub_id: u32, out_ptr: *mut u8, out_cap: u32, out_format: *mut u32) -> u32,
 }
 
 #[link_section = ".exports"]
@@ -167,6 +178,8 @@ pub static LIBCOMPOSITOR_EXPORTS: LibcompositorExports = LibcompositorExports {
     set_blur_behind: export_set_blur_behind,
     create_vram_window: export_create_vram_window,
     present_rect: export_present_rect,
+    set_clipboard: export_set_clipboard,
+    get_clipboard: export_get_clipboard,
 };
 
 // ── Export Implementations ───────────────────────────────────────────────────
@@ -511,6 +524,95 @@ extern "C" fn export_tray_poll_event(
 extern "C" fn export_set_blur_behind(channel_id: u32, window_id: u32, radius: u32) {
     let cmd: [u32; 5] = [CMD_SET_BLUR_BEHIND, window_id, radius, 0, 0];
     syscall::evt_chan_emit(channel_id, &cmd);
+}
+
+extern "C" fn export_set_clipboard(channel_id: u32, data_ptr: *const u8, data_len: u32, format: u32) {
+    if data_ptr.is_null() || data_len == 0 || data_len > 65536 {
+        return;
+    }
+
+    let shm_id = syscall::shm_create(data_len);
+    if shm_id == 0 {
+        return;
+    }
+    let shm_addr = syscall::shm_map(shm_id);
+    if shm_addr == 0 {
+        syscall::shm_destroy(shm_id);
+        return;
+    }
+
+    let dst = shm_addr as *mut u8;
+    unsafe {
+        core::ptr::copy_nonoverlapping(data_ptr, dst, data_len as usize);
+    }
+
+    let cmd: [u32; 5] = [CMD_SET_CLIPBOARD, shm_id, data_len, format, 0];
+    syscall::evt_chan_emit(channel_id, &cmd);
+
+    syscall::sleep(32);
+    syscall::shm_unmap(shm_id);
+    syscall::shm_destroy(shm_id);
+}
+
+extern "C" fn export_get_clipboard(
+    channel_id: u32,
+    sub_id: u32,
+    out_ptr: *mut u8,
+    out_cap: u32,
+    out_format: *mut u32,
+) -> u32 {
+    if out_ptr.is_null() || out_cap == 0 {
+        return 0;
+    }
+
+    let shm_id = syscall::shm_create(out_cap);
+    if shm_id == 0 {
+        return 0;
+    }
+    let shm_addr = syscall::shm_map(shm_id);
+    if shm_addr == 0 {
+        syscall::shm_destroy(shm_id);
+        return 0;
+    }
+
+    let tid = syscall::get_tid();
+    let cmd: [u32; 5] = [CMD_GET_CLIPBOARD, shm_id, out_cap, tid, 0];
+    syscall::evt_chan_emit(channel_id, &cmd);
+
+    // Poll for RESP_CLIPBOARD_DATA
+    let mut response = [0u32; 5];
+    let mut result_len: u32 = 0;
+    for _ in 0..50 {
+        while syscall::evt_chan_poll(channel_id, sub_id, &mut response) {
+            if response[0] == RESP_CLIPBOARD_DATA && response[4] == tid {
+                result_len = response[2];
+                let format = response[3];
+                if !out_format.is_null() {
+                    unsafe { *out_format = format; }
+                }
+                // Copy data from SHM to output buffer
+                let copy_len = (result_len as usize).min(out_cap as usize);
+                if copy_len > 0 {
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            shm_addr as *const u8,
+                            out_ptr,
+                            copy_len,
+                        );
+                    }
+                }
+                syscall::shm_unmap(shm_id);
+                syscall::shm_destroy(shm_id);
+                return result_len;
+            }
+        }
+        syscall::sleep(5);
+    }
+
+    // Timeout
+    syscall::shm_unmap(shm_id);
+    syscall::shm_destroy(shm_id);
+    0
 }
 
 extern "C" fn export_create_vram_window(

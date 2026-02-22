@@ -342,6 +342,49 @@ impl Desktop {
                     Some((target, [proto::RESP_VRAM_WINDOW_FAILED, 0, 0, app_tid, 0]))
                 }
             }
+            proto::CMD_SET_CLIPBOARD => {
+                let shm_id = cmd[1];
+                let len = cmd[2] as usize;
+                let format = cmd[3];
+                if shm_id == 0 || len == 0 || len > 65536 {
+                    return None;
+                }
+                let shm_addr = anyos_std::ipc::shm_map(shm_id);
+                if shm_addr == 0 {
+                    return None;
+                }
+                let data = unsafe {
+                    core::slice::from_raw_parts(shm_addr as *const u8, len)
+                };
+                self.clipboard_data = data.to_vec();
+                self.clipboard_format = format;
+                anyos_std::ipc::shm_unmap(shm_id);
+                None
+            }
+            proto::CMD_GET_CLIPBOARD => {
+                let shm_id = cmd[1];
+                let capacity = cmd[2] as usize;
+                let requester_tid = cmd[3];
+                if shm_id == 0 || capacity == 0 {
+                    let target = self.get_sub_id_for_tid(requester_tid);
+                    return Some((target, [proto::RESP_CLIPBOARD_DATA, 0, 0, 0, requester_tid]));
+                }
+                let shm_addr = anyos_std::ipc::shm_map(shm_id);
+                if shm_addr == 0 {
+                    let target = self.get_sub_id_for_tid(requester_tid);
+                    return Some((target, [proto::RESP_CLIPBOARD_DATA, 0, 0, 0, requester_tid]));
+                }
+                let copy_len = self.clipboard_data.len().min(capacity);
+                if copy_len > 0 {
+                    let dst = unsafe {
+                        core::slice::from_raw_parts_mut(shm_addr as *mut u8, copy_len)
+                    };
+                    dst.copy_from_slice(&self.clipboard_data[..copy_len]);
+                }
+                anyos_std::ipc::shm_unmap(shm_id);
+                let target = self.get_sub_id_for_tid(requester_tid);
+                Some((target, [proto::RESP_CLIPBOARD_DATA, shm_id, copy_len as u32, self.clipboard_format, requester_tid]))
+            }
             proto::CMD_SET_WALLPAPER => {
                 let shm_id = cmd[1];
                 if shm_id == 0 {

@@ -91,6 +91,15 @@ struct DllExports {
         new_height: u32,
         out_new_shm_id: *mut u32,
     ) -> *mut u32,
+    // Fields 15-17 (tray_poll_event, set_blur_behind, create_vram_window, present_rect)
+    // are accessed by direct offset in libanyui — we skip them in this struct.
+    // Clipboard exports are at offsets 18 and 19:
+    _tray_poll_event: usize,
+    _set_blur_behind: usize,
+    _create_vram_window: usize,
+    _present_rect: usize,
+    set_clipboard: extern "C" fn(channel_id: u32, data_ptr: *const u8, data_len: u32, format: u32),
+    get_clipboard: extern "C" fn(channel_id: u32, sub_id: u32, out_ptr: *mut u8, out_cap: u32, out_format: *mut u32) -> u32,
 }
 
 fn dll() -> &'static DllExports {
@@ -841,6 +850,48 @@ pub fn set_wallpaper(path: &str) -> u32 {
     let bytes = path.as_bytes();
     (dll().set_wallpaper)(st.channel_id, bytes.as_ptr(), bytes.len() as u32);
     0
+}
+
+/// Clipboard format: plain text.
+pub const CLIPBOARD_TEXT: u32 = 0;
+/// Clipboard format: file URI list.
+pub const CLIPBOARD_URI_LIST: u32 = 1;
+
+/// Set clipboard contents (text).
+pub fn clipboard_set(text: &str) {
+    if !ensure_init() { return; }
+    let st = state();
+    let bytes = text.as_bytes();
+    (dll().set_clipboard)(st.channel_id, bytes.as_ptr(), bytes.len() as u32, CLIPBOARD_TEXT);
+}
+
+/// Set clipboard contents with explicit format.
+pub fn clipboard_set_with_format(data: &[u8], format: u32) {
+    if !ensure_init() { return; }
+    let st = state();
+    (dll().set_clipboard)(st.channel_id, data.as_ptr(), data.len() as u32, format);
+}
+
+/// Get clipboard contents as a String. Returns None if clipboard is empty.
+pub fn clipboard_get() -> Option<alloc::string::String> {
+    if !ensure_init() { return None; }
+    let st = state();
+    let mut buf = [0u8; 4096];
+    let mut format: u32 = 0;
+    let len = (dll().get_clipboard)(
+        st.channel_id,
+        st.sub_id,
+        buf.as_mut_ptr(),
+        buf.len() as u32,
+        &mut format,
+    );
+    if len == 0 {
+        return None;
+    }
+    let actual = (len as usize).min(buf.len());
+    core::str::from_utf8(&buf[..actual])
+        .ok()
+        .map(|s| alloc::string::String::from(s))
 }
 
 /// Get GPU driver name.

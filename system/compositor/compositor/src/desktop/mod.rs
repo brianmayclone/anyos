@@ -129,6 +129,10 @@ pub struct Desktop {
     /// Current wallpaper path (for reload on resolution change).
     pub(crate) wallpaper_path: [u8; 128],
     pub(crate) wallpaper_path_len: usize,
+    /// Clipboard contents (stored as raw bytes).
+    pub(crate) clipboard_data: Vec<u8>,
+    /// Clipboard format: 0 = text/plain, 1 = text/uri-list.
+    pub(crate) clipboard_format: u32,
     /// Active crash dialogs (internal windows showing crash info).
     pub(crate) crash_dialogs: Vec<crash_dialog::CrashDialog>,
     /// Cascading auto-placement state for new windows.
@@ -184,6 +188,8 @@ impl Desktop {
             tray_ipc_events: Vec::new(),
             wallpaper_path: [0u8; 128],
             wallpaper_path_len: 0,
+            clipboard_data: Vec::new(),
+            clipboard_format: 0,
             crash_dialogs: Vec::new(),
             cascade_x: 120,
             cascade_y: MENUBAR_HEIGHT as i32 + 50,

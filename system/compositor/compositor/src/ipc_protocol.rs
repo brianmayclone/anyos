@@ -52,6 +52,10 @@ pub const RESP_VRAM_WINDOW_CREATED: u32 = 0x2004;
 /// Not enough off-screen VRAM or GPU not available. App should fall back to SHM.
 pub const RESP_VRAM_WINDOW_FAILED: u32 = 0x2005;
 
+/// Clipboard data response: [RESP, shm_id, len, format, requester_tid]
+/// Sent in response to CMD_GET_CLIPBOARD. len=0 means clipboard is empty.
+pub const RESP_CLIPBOARD_DATA: u32 = 0x2010;
+
 // ── Compositor → App Input Events ────────────────────────────────────────────
 
 /// Key down: [EVT, window_id, scancode, char_code, modifiers]
@@ -137,6 +141,18 @@ pub const CMD_CREATE_VRAM_WINDOW: u32 = 0x1010;
 /// SHM contains a null-terminated UTF-8 path string (e.g. "/media/wallpapers/mountains.jpg").
 /// Compositor maps SHM, reads path, loads wallpaper, unmaps SHM, damages all.
 pub const CMD_SET_WALLPAPER: u32 = 0x100F;
+
+/// Set clipboard contents.
+/// [CMD, shm_id, len, format, 0]
+/// SHM contains raw clipboard data (text or binary). Compositor copies data internally.
+/// format: 0 = text/plain, 1 = text/uri-list
+pub const CMD_SET_CLIPBOARD: u32 = 0x1011;
+
+/// Get clipboard contents.
+/// [CMD, shm_id, capacity, 0, 0]
+/// App creates empty SHM with `capacity` bytes. Compositor writes clipboard data into it
+/// and responds with RESP_CLIPBOARD_DATA.
+pub const CMD_GET_CLIPBOARD: u32 = 0x1012;
 
 /// Theme changed notification (compositor → apps via channel).
 /// [EVT, new_theme, old_theme, 0, 0]
