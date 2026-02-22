@@ -2,7 +2,7 @@ fn main() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let project_root = std::path::PathBuf::from(&manifest_dir)
         .parent()
-        .unwrap() // apps/
+        .unwrap() // bin/
         .parent()
         .unwrap() // project root
         .to_path_buf();

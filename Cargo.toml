@@ -106,6 +106,7 @@ exclude = [
   "bin/addgroup",
   "bin/delgroup",
   "bin/passwd",
+  "bin/fdisk",
   "bin/chmod",
   "bin/chown",
   "bin/su",
@@ -115,7 +116,8 @@ exclude = [
   "bin/logd",
   "apps/demo_anyui",
   "apps/anycode",
-  "apps/eventviewer",
+  "system/eventviewer",
+  "system/diskutil",
   "system/login",
   "system/permdialog",
   # Bootloader

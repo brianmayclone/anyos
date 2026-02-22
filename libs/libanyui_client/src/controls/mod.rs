@@ -73,7 +73,8 @@ pub use iconbutton::{IconButton, ICON_NEW_FILE, ICON_FOLDER_OPEN, ICON_SAVE, ICO
 pub use badge::Badge;
 pub use tag::Tag;
 pub use canvas::Canvas;
-pub use datagrid::{DataGrid, ColumnDef};
+pub use datagrid::{DataGrid, ColumnDef, ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT,
+    SELECTION_SINGLE, SELECTION_MULTI, SORT_NONE, SORT_ASCENDING, SORT_DESCENDING};
 pub use texteditor::TextEditor;
 pub use treeview::TreeView;
 
