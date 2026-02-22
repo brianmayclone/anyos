@@ -112,8 +112,10 @@ exclude = [
   "bin/echoserver",
   "bin/netstat",
   "bin/svc",
+  "bin/logd",
   "apps/demo_anyui",
   "apps/anycode",
+  "apps/eventviewer",
   "system/login",
   "system/permdialog",
   # Bootloader

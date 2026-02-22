@@ -154,7 +154,7 @@ fn for_each_service(mut f: impl FnMut(&str)) {
         let off = i * 64;
         if off + 64 > buf.len() { break; }
         let entry_type = buf[off];
-        if entry_type != 1 { continue; } // 1 = file
+        if entry_type != 0 { continue; } // 0 = regular file
         let name_len = buf[off + 1] as usize;
         let name_start = off + 8;
         if name_len == 0 || name_start + name_len > buf.len() { continue; }

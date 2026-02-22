@@ -106,13 +106,22 @@ fn run_init_conf() {
 
             if let Ok(entry) = core::str::from_utf8(trimmed) {
                 // Suffix '&' means background (don't wait)
-                let (path, background) = if entry.ends_with('&') {
+                let (cmd, background) = if entry.ends_with('&') {
                     (entry[..entry.len() - 1].trim_end(), true)
                 } else {
                     (entry, false)
                 };
-                println!("init: spawning '{}'{}", path, if background { " [bg]" } else { "" });
-                let tid = process::spawn(path, "");
+                // Split command into path and arguments at first space
+                let (path, args) = match cmd.find(' ') {
+                    Some(idx) => (&cmd[..idx], cmd[idx + 1..].trim_start()),
+                    None => (cmd, ""),
+                };
+                if args.is_empty() {
+                    println!("init: spawning '{}'{}", path, if background { " [bg]" } else { "" });
+                } else {
+                    println!("init: spawning '{}' args='{}'{}", path, args, if background { " [bg]" } else { "" });
+                }
+                let tid = process::spawn(path, args);
                 if tid == u32::MAX {
                     println!("init: FAILED to spawn '{}'", path);
                 } else if !background {

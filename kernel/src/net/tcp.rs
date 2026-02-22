@@ -26,6 +26,18 @@ const RETRANSMIT_TICKS: u32 = 300; // 3 seconds at 100Hz
 const MAX_RETRANSMITS: u32 = 5;
 const TIME_WAIT_TICKS: u32 = 200; // 2 seconds at 100Hz
 const MAX_BACKLOG: usize = 16;    // max pending connections per listener
+const POLL_SLEEP_MS: u32 = 10;    // sleep interval between poll attempts
+
+/// Sleep the current thread briefly to avoid busy-waiting in poll loops.
+/// This blocks the thread via the scheduler so it consumes zero CPU.
+fn poll_sleep() {
+    let pit_hz = crate::arch::x86::pit::TICK_HZ;
+    let ticks = (POLL_SLEEP_MS as u64 * pit_hz as u64 / 1000) as u32;
+    let ticks = if ticks == 0 { 1 } else { ticks };
+    let now = crate::arch::x86::pit::get_ticks();
+    let wake_at = now.wrapping_add(ticks);
+    crate::task::scheduler::sleep_until(wake_at);
+}
 
 /// TCP connection state machine states per RFC 793.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -368,7 +380,7 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
             return u32::MAX;
         }
 
-        core::hint::spin_loop();
+        poll_sleep();
     }
 }
 
@@ -474,7 +486,7 @@ pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
             return (u32::MAX, Ipv4Addr([0; 4]), 0);
         }
 
-        core::hint::spin_loop();
+        poll_sleep();
     }
 }
 
@@ -590,7 +602,7 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
                 return if offset > 0 { offset as u32 } else { u32::MAX };
             }
 
-            core::hint::spin_loop();
+            poll_sleep();
         }
 
         offset = chunk_end;
@@ -656,7 +668,7 @@ pub fn recv(socket_id: u32, buf: &mut [u8], timeout_ticks: u32) -> u32 {
             return u32::MAX;
         }
 
-        core::hint::spin_loop();
+        poll_sleep();
     }
 }
 
@@ -780,7 +792,7 @@ pub fn close(socket_id: u32) -> u32 {
             return 0;
         }
 
-        core::hint::spin_loop();
+        poll_sleep();
     }
 }
 

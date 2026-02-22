@@ -19,6 +19,7 @@ pub mod heap;
 pub mod icons;
 pub mod io;
 pub mod ipc;
+pub mod log;
 pub mod json;
 pub mod kbd;
 pub mod net;

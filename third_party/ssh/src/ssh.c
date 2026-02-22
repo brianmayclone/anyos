@@ -45,6 +45,19 @@ static void dbg_int(const char *prefix, int val) {
     _syscall(SYS_WRITE, 1, (int)buf, pos, 0);
 }
 
+static void dbg_hex(const char *label, const uint8_t *data, int len) {
+    static const char hex[] = "0123456789abcdef";
+    char buf[256];
+    int pos = 0;
+    while (*label && pos < 40) buf[pos++] = *label++;
+    for (int i = 0; i < len && pos < 250; i++) {
+        buf[pos++] = hex[(data[i] >> 4) & 0x0F];
+        buf[pos++] = hex[data[i] & 0x0F];
+    }
+    buf[pos++] = '\n';
+    _syscall(SYS_WRITE, 1, (int)buf, pos, 0);
+}
+
 /* =========================================================================
  * Helpers
  * ========================================================================= */
@@ -992,35 +1005,49 @@ int ssh_server_kex(ssh_ctx_t *ctx,
     uint8_t len_buf[4];
 
     /* V_C */
+    dbg_int("H: V_C len=", (int)strlen(ctx->client_version));
+    dbg_hex("H: V_C=", (const uint8_t *)ctx->client_version, strlen(ctx->client_version) > 32 ? 32 : strlen(ctx->client_version));
     put_u32(len_buf, strlen(ctx->client_version));
     br_sha256_update(&sha, len_buf, 4);
     br_sha256_update(&sha, ctx->client_version, strlen(ctx->client_version));
     /* V_S */
+    dbg_int("H: V_S len=", (int)strlen(ctx->server_version));
+    dbg_hex("H: V_S=", (const uint8_t *)ctx->server_version, strlen(ctx->server_version) > 32 ? 32 : strlen(ctx->server_version));
     put_u32(len_buf, strlen(ctx->server_version));
     br_sha256_update(&sha, len_buf, 4);
     br_sha256_update(&sha, ctx->server_version, strlen(ctx->server_version));
     /* I_C */
+    dbg_int("H: I_C len=", (int)ctx->client_kexinit_len);
+    dbg_hex("H: I_C[0:16]=", ctx->client_kexinit, 16);
     put_u32(len_buf, ctx->client_kexinit_len);
     br_sha256_update(&sha, len_buf, 4);
     br_sha256_update(&sha, ctx->client_kexinit, ctx->client_kexinit_len);
     /* I_S */
+    dbg_int("H: I_S len=", (int)ctx->server_kexinit_len);
+    dbg_hex("H: I_S[0:16]=", ctx->server_kexinit, 16);
     put_u32(len_buf, ctx->server_kexinit_len);
     br_sha256_update(&sha, len_buf, 4);
     br_sha256_update(&sha, ctx->server_kexinit, ctx->server_kexinit_len);
     /* K_S (host key blob) */
+    dbg_int("H: K_S len=", (int)host_key_blob_len);
+    dbg_hex("H: K_S[0:16]=", host_key_blob, 16);
     put_u32(len_buf, host_key_blob_len);
     br_sha256_update(&sha, len_buf, 4);
     br_sha256_update(&sha, host_key_blob, host_key_blob_len);
     /* Q_C (client ephemeral) */
+    dbg_hex("H: Q_C=", client_pub_copy, 32);
     put_u32(len_buf, 32);
     br_sha256_update(&sha, len_buf, 4);
     br_sha256_update(&sha, client_pub_copy, 32);
     /* Q_S (server ephemeral) */
+    dbg_hex("H: Q_S=", my_pub, 32);
     put_u32(len_buf, 32);
     br_sha256_update(&sha, len_buf, 4);
     br_sha256_update(&sha, my_pub, 32);
     /* K (shared secret as mpint) */
+    dbg_hex("H: K=", shared_secret, 32);
     if (shared_secret[0] & 0x80) {
+        dbg_int("H: K mpint len=", 33);
         put_u32(len_buf, 33);
         br_sha256_update(&sha, len_buf, 4);
         uint8_t zero = 0;
@@ -1030,12 +1057,24 @@ int ssh_server_kex(ssh_ctx_t *ctx,
         int start = 0;
         while (start < 31 && shared_secret[start] == 0) start++;
         uint32_t ss_len2 = 32 - start;
-        put_u32(len_buf, ss_len2);
-        br_sha256_update(&sha, len_buf, 4);
-        br_sha256_update(&sha, shared_secret + start, ss_len2);
+        if ((shared_secret[start] & 0x80) != 0) {
+            /* Need 0x00 prefix for positive mpint */
+            dbg_int("H: K mpint len(+pad)=", (int)(ss_len2 + 1));
+            put_u32(len_buf, ss_len2 + 1);
+            br_sha256_update(&sha, len_buf, 4);
+            uint8_t zero = 0;
+            br_sha256_update(&sha, &zero, 1);
+            br_sha256_update(&sha, shared_secret + start, ss_len2);
+        } else {
+            dbg_int("H: K mpint len=", (int)ss_len2);
+            put_u32(len_buf, ss_len2);
+            br_sha256_update(&sha, len_buf, 4);
+            br_sha256_update(&sha, shared_secret + start, ss_len2);
+        }
     }
 
     br_sha256_out(&sha, ctx->kex_hash);
+    dbg_hex("H: hash=", ctx->kex_hash, 32);
 
     if (!ctx->session_id_set) {
         memcpy(ctx->session_id, ctx->kex_hash, 32);
@@ -1053,6 +1092,18 @@ int ssh_server_kex(ssh_ctx_t *ctx,
         ec_p256, &br_sha256_vtable, ctx->kex_hash, &sk, sig_asn1);
     dbg_int("sshd-kex: ECDSA sign len=", (int)sig_len);
     if (sig_len == 0) return SSH_ERR_KEX;
+    dbg_hex("sshd-kex: sig_asn1=", sig_asn1, sig_len > 32 ? 32 : sig_len);
+
+    /* Self-verify: confirm our signature is valid over our hash */
+    {
+        br_ec_public_key pk;
+        pk.curve = BR_EC_secp256r1;
+        pk.q = ecdsa_pub;
+        pk.qlen = 65;
+        uint32_t vfy = br_ecdsa_i31_vrfy_asn1(
+            ec_p256, ctx->kex_hash, 32, &pk, sig_asn1, sig_len);
+        dbg_int("sshd-kex: self-verify=", (int)vfy);
+    }
 
     /* Convert ASN.1 DER signature to SSH format: mpint(r) || mpint(s) per RFC 5656 */
     /* DER: 30 <len> 02 <r_len> <r_bytes> 02 <s_len> <s_bytes> */
