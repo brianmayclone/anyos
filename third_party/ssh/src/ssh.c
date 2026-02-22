@@ -141,6 +141,12 @@ static void hmac_sha256(const uint8_t *key, uint32_t key_len,
 }
 
 int ssh_send_packet(ssh_ctx_t *ctx, const uint8_t *payload, uint32_t len) {
+    /* Direction: client sends c2s, server sends s2c */
+    const uint8_t *skey = ctx->is_server ? ctx->key_s2c : ctx->key_c2s;
+    uint8_t       *siv  = ctx->is_server ? ctx->iv_s2c  : ctx->iv_c2s;
+    const uint8_t *smac = ctx->is_server ? ctx->mac_s2c : ctx->mac_c2s;
+    uint32_t      *sseq = ctx->is_server ? &ctx->seq_s2c : &ctx->seq_c2s;
+
     /* packet_length(4) + padding_length(1) + payload(len) + padding(pad) */
     /* Block size is 16 for AES-CTR, minimum padding is 4 */
     uint32_t block_size = ctx->encrypted ? 16 : 8;
@@ -161,29 +167,35 @@ int ssh_send_packet(ssh_ctx_t *ctx, const uint8_t *payload, uint32_t len) {
     if (ctx->encrypted) {
         /* MAC: HMAC-SHA256(mac_key, sequence_number(4) || unencrypted_packet) */
         uint8_t mac_input[4];
-        put_u32(mac_input, ctx->seq_c2s);
+        put_u32(mac_input, *sseq);
 
         br_hmac_key_context kc;
         br_hmac_context hc;
-        br_hmac_key_init(&kc, &br_sha256_vtable, ctx->mac_c2s, 32);
+        br_hmac_key_init(&kc, &br_sha256_vtable, smac, 32);
         br_hmac_init(&hc, &kc, 32);
         br_hmac_update(&hc, mac_input, 4);
         br_hmac_update(&hc, pkt, total);
         br_hmac_out(&hc, pkt + total);
 
         /* Encrypt (the entire packet including length) */
-        aes_ctr_crypt(ctx->key_c2s, ctx->iv_c2s, pkt, total);
+        aes_ctr_crypt(skey, siv, pkt, total);
 
         total += 32; /* MAC appended */
     }
 
-    ctx->seq_c2s++;
+    (*sseq)++;
     int rc = write_all(ctx->sock, pkt, total);
     free(pkt);
     return rc > 0 ? SSH_OK : SSH_ERR_IO;
 }
 
 int ssh_recv_packet(ssh_ctx_t *ctx) {
+    /* Direction: client receives s2c, server receives c2s */
+    const uint8_t *rkey = ctx->is_server ? ctx->key_c2s : ctx->key_s2c;
+    uint8_t       *riv  = ctx->is_server ? ctx->iv_c2s  : ctx->iv_s2c;
+    const uint8_t *rmac = ctx->is_server ? ctx->mac_c2s : ctx->mac_s2c;
+    uint32_t      *rseq = ctx->is_server ? &ctx->seq_c2s : &ctx->seq_s2c;
+
     uint8_t header[4];
     int rc;
 
@@ -194,9 +206,7 @@ int ssh_recv_packet(ssh_ctx_t *ctx) {
         if (rc < 0) return rc;
 
         /* Decrypt first block to get packet length */
-        uint8_t tmp_iv[16];
-        memcpy(tmp_iv, ctx->iv_s2c, 16);
-        aes_ctr_crypt(ctx->key_s2c, ctx->iv_s2c, first_block, 16);
+        aes_ctr_crypt(rkey, riv, first_block, 16);
 
         uint32_t packet_length = get_u32(first_block);
         if (packet_length > SSH_MAX_PACKET - 4) return SSH_ERR_PROTO;
@@ -211,7 +221,7 @@ int ssh_recv_packet(ssh_ctx_t *ctx) {
             rc = read_exact(ctx->sock, full_pkt + 16, remaining);
             if (rc < 0) { free(full_pkt); return rc; }
             /* Decrypt remaining */
-            aes_ctr_crypt(ctx->key_s2c, ctx->iv_s2c, full_pkt + 16, remaining);
+            aes_ctr_crypt(rkey, riv, full_pkt + 16, remaining);
         }
 
         /* Read MAC (32 bytes for HMAC-SHA256) */
@@ -221,11 +231,11 @@ int ssh_recv_packet(ssh_ctx_t *ctx) {
 
         /* Verify MAC */
         uint8_t seq_buf[4];
-        put_u32(seq_buf, ctx->seq_s2c);
+        put_u32(seq_buf, *rseq);
         uint8_t computed_mac[32];
         br_hmac_key_context kc;
         br_hmac_context hc;
-        br_hmac_key_init(&kc, &br_sha256_vtable, ctx->mac_s2c, 32);
+        br_hmac_key_init(&kc, &br_sha256_vtable, rmac, 32);
         br_hmac_init(&hc, &kc, 32);
         br_hmac_update(&hc, seq_buf, 4);
         br_hmac_update(&hc, full_pkt, packet_length + 4);
@@ -243,7 +253,7 @@ int ssh_recv_packet(ssh_ctx_t *ctx) {
         memcpy(ctx->rbuf, full_pkt + 5, payload_len);
         ctx->rbuf_len = payload_len;
         ctx->rbuf_pos = 0;
-        ctx->seq_s2c++;
+        (*rseq)++;
         int msg_type = ctx->rbuf[0];
         free(full_pkt);
         return msg_type;
@@ -269,7 +279,7 @@ int ssh_recv_packet(ssh_ctx_t *ctx) {
         memcpy(ctx->rbuf, body + 1, payload_len);
         ctx->rbuf_len = payload_len;
         ctx->rbuf_pos = 0;
-        ctx->seq_s2c++;
+        (*rseq)++;
         int msg_type = ctx->rbuf[0];
         free(body);
         return msg_type;
@@ -284,7 +294,11 @@ void ssh_init(ssh_ctx_t *ctx, int sock, int is_server) {
     memset(ctx, 0, sizeof(ssh_ctx_t));
     ctx->sock = sock;
     ctx->is_server = is_server;
-    strcpy(ctx->client_version, "SSH-2.0-anyOS_1.0");
+    if (is_server) {
+        strcpy(ctx->server_version, "SSH-2.0-anyOS_sshd_1.0");
+    } else {
+        strcpy(ctx->client_version, "SSH-2.0-anyOS_1.0");
+    }
     ctx->local_window = 0x200000; /* 2 MB */
     ctx->channel_id = 0;
 }
@@ -301,17 +315,21 @@ void ssh_free(ssh_ctx_t *ctx) {
  * ========================================================================= */
 
 int ssh_version_exchange(ssh_ctx_t *ctx) {
+    /* Our version is in server_version (server mode) or client_version (client) */
+    const char *our_ver = ctx->is_server ? ctx->server_version : ctx->client_version;
+    char *peer_ver = ctx->is_server ? ctx->client_version : ctx->server_version;
+
     /* Send our version string */
     char ver[128];
-    int vlen = strlen(ctx->client_version);
-    memcpy(ver, ctx->client_version, vlen);
+    int vlen = strlen(our_ver);
+    memcpy(ver, our_ver, vlen);
     ver[vlen] = '\r';
     ver[vlen + 1] = '\n';
 
     if (write_all(ctx->sock, (uint8_t *)ver, vlen + 2) < 0)
         return SSH_ERR_IO;
 
-    /* Read server version string */
+    /* Read peer version string */
     char line[256];
     int pos = 0;
     while (pos < 255) {
@@ -330,7 +348,8 @@ int ssh_version_exchange(ssh_ctx_t *ctx) {
     if (strncmp(line, "SSH-2.0-", 8) != 0 && strncmp(line, "SSH-1.99-", 9) != 0)
         return SSH_ERR_PROTO;
 
-    strncpy(ctx->server_version, line, sizeof(ctx->server_version) - 1);
+    strncpy(peer_ver, line, 63);
+    peer_ver[63] = '\0';
     return SSH_OK;
 }
 
@@ -340,7 +359,7 @@ int ssh_version_exchange(ssh_ctx_t *ctx) {
 
 /* Algorithm name lists for KEXINIT */
 static const char *kex_algos      = "curve25519-sha256,curve25519-sha256@libssh.org";
-static const char *host_key_algos = "ssh-ed25519,ssh-rsa,rsa-sha2-256,rsa-sha2-512";
+static const char *host_key_algos = "ecdsa-sha2-nistp256,ssh-ed25519,ssh-rsa,rsa-sha2-256,rsa-sha2-512";
 static const char *cipher_algos   = "aes128-ctr";
 static const char *mac_algos      = "hmac-sha2-256";
 static const char *comp_algos     = "none";
@@ -798,31 +817,395 @@ void ssh_disconnect(ssh_ctx_t *ctx, uint32_t reason, const char *desc) {
 }
 
 /* =========================================================================
- * Server-side API stubs (to be expanded for sshd)
+ * Server-side Key Exchange (curve25519-sha256 + ecdsa-sha2-nistp256 host key)
  * ========================================================================= */
+
+/* Server host key algorithm list (ecdsa-sha2-nistp256 only) */
+static const char *server_host_key_algos = "ecdsa-sha2-nistp256";
+
+/* Build an ecdsa-sha2-nistp256 host key blob from a P-256 public key.
+ * pub_point: 65 bytes (04 || x(32) || y(32))
+ * Returns blob length written to buf. */
+static uint32_t build_ecdsa_host_key_blob(uint8_t *buf, const uint8_t *pub_point) {
+    uint32_t off = 0;
+    put_cstring(buf, "ecdsa-sha2-nistp256", &off);
+    put_cstring(buf, "nistp256", &off);
+    put_string(buf, pub_point, 65, &off);
+    return off;
+}
+
+/* Build a server KEXINIT (uses server_host_key_algos) */
+static uint32_t build_server_kexinit(uint8_t *buf) {
+    uint32_t off = 0;
+    buf[off++] = SSH_MSG_KEXINIT;
+    ssh_random(buf + off, 16);
+    off += 16;
+
+    put_cstring(buf, kex_algos, &off);
+    put_cstring(buf, server_host_key_algos, &off);
+    put_cstring(buf, cipher_algos, &off);
+    put_cstring(buf, cipher_algos, &off);
+    put_cstring(buf, mac_algos, &off);
+    put_cstring(buf, mac_algos, &off);
+    put_cstring(buf, comp_algos, &off);
+    put_cstring(buf, comp_algos, &off);
+    put_cstring(buf, lang, &off);
+    put_cstring(buf, lang, &off);
+
+    buf[off++] = 0; /* first_kex_packet_follows = false */
+    put_u32(buf + off, 0); off += 4;
+    return off;
+}
 
 int ssh_server_kex(ssh_ctx_t *ctx,
                    const uint8_t *host_key_priv, uint32_t host_key_priv_len,
                    const uint8_t *host_key_pub, uint32_t host_key_pub_len) {
-    /* TODO: implement server-side KEX */
-    (void)ctx; (void)host_key_priv; (void)host_key_priv_len;
-    (void)host_key_pub; (void)host_key_pub_len;
-    return SSH_ERR_PROTO;
+    int rc;
+    (void)host_key_priv_len; (void)host_key_pub_len;
+
+    /* Generate ECDSA P-256 host key pair for signing */
+    uint8_t ecdsa_priv[32];
+    uint8_t ecdsa_pub[65]; /* 04 + x(32) + y(32) */
+    memcpy(ecdsa_priv, host_key_priv, 32);
+
+    /* Compute public key: ecdsa_pub = ecdsa_priv * G on P-256 */
+    const br_ec_impl *ec_p256 = br_ec_get_default();
+    size_t pub_len = ec_p256->mulgen(ecdsa_pub, ecdsa_priv, 32, BR_EC_secp256r1);
+    if (pub_len == 0) return SSH_ERR_KEX;
+
+    /* Build host key blob */
+    uint8_t host_key_blob[256];
+    uint32_t host_key_blob_len = build_ecdsa_host_key_blob(host_key_blob, ecdsa_pub);
+
+    /* 1. Receive client KEXINIT */
+    rc = ssh_recv_packet(ctx);
+    if (rc < 0) return rc;
+    if (rc != SSH_MSG_KEXINIT) return SSH_ERR_PROTO;
+
+    ctx->client_kexinit = (uint8_t *)malloc(ctx->rbuf_len);
+    if (!ctx->client_kexinit) return SSH_ERR_ALLOC;
+    memcpy(ctx->client_kexinit, ctx->rbuf, ctx->rbuf_len);
+    ctx->client_kexinit_len = ctx->rbuf_len;
+
+    /* 2. Send server KEXINIT */
+    uint8_t kexinit_buf[1024];
+    uint32_t kexinit_len = build_server_kexinit(kexinit_buf);
+
+    ctx->server_kexinit = (uint8_t *)malloc(kexinit_len);
+    if (!ctx->server_kexinit) return SSH_ERR_ALLOC;
+    memcpy(ctx->server_kexinit, kexinit_buf, kexinit_len);
+    ctx->server_kexinit_len = kexinit_len;
+
+    rc = ssh_send_packet(ctx, kexinit_buf, kexinit_len);
+    if (rc != SSH_OK) return rc;
+
+    /* 3. Receive ECDH_INIT (client ephemeral public key) */
+    rc = ssh_recv_packet(ctx);
+    if (rc < 0) return rc;
+    if (rc != SSH_MSG_KEX_ECDH_INIT) return SSH_ERR_PROTO;
+
+    uint32_t off = 1;
+    const uint8_t *client_pub;
+    uint32_t client_pub_len;
+    if (get_string(ctx->rbuf, ctx->rbuf_len, &off, &client_pub, &client_pub_len) < 0)
+        return SSH_ERR_PROTO;
+    if (client_pub_len != 32) return SSH_ERR_PROTO;
+
+    /* Save client pub for exchange hash */
+    uint8_t client_pub_copy[32];
+    memcpy(client_pub_copy, client_pub, 32);
+
+    /* 4. Generate server ephemeral X25519 key pair */
+    uint8_t my_priv[32], my_pub[32];
+    ssh_random(my_priv, 32);
+    my_priv[0] &= 248;
+    my_priv[31] &= 127;
+    my_priv[31] |= 64;
+
+    const br_ec_impl *ec = &br_ec_c25519_i31;
+    uint8_t gen[32];
+    memset(gen, 0, 32);
+    gen[0] = 9;
+    memcpy(my_pub, gen, 32);
+    uint32_t mul_ok = ec->mul(my_pub, 32, my_priv, 32, BR_EC_curve25519);
+    if (!mul_ok) return SSH_ERR_KEX;
+
+    /* 5. Compute shared secret K = my_priv * client_pub */
+    uint8_t shared_secret[32];
+    memcpy(shared_secret, client_pub_copy, 32);
+    mul_ok = ec->mul(shared_secret, 32, my_priv, 32, BR_EC_curve25519);
+    if (!mul_ok) return SSH_ERR_KEX;
+
+    /* 6. Compute exchange hash H = SHA256(V_C || V_S || I_C || I_S || K_S || Q_C || Q_S || K) */
+    br_sha256_context sha;
+    br_sha256_init(&sha);
+    uint8_t len_buf[4];
+
+    /* V_C */
+    put_u32(len_buf, strlen(ctx->client_version));
+    br_sha256_update(&sha, len_buf, 4);
+    br_sha256_update(&sha, ctx->client_version, strlen(ctx->client_version));
+    /* V_S */
+    put_u32(len_buf, strlen(ctx->server_version));
+    br_sha256_update(&sha, len_buf, 4);
+    br_sha256_update(&sha, ctx->server_version, strlen(ctx->server_version));
+    /* I_C */
+    put_u32(len_buf, ctx->client_kexinit_len);
+    br_sha256_update(&sha, len_buf, 4);
+    br_sha256_update(&sha, ctx->client_kexinit, ctx->client_kexinit_len);
+    /* I_S */
+    put_u32(len_buf, ctx->server_kexinit_len);
+    br_sha256_update(&sha, len_buf, 4);
+    br_sha256_update(&sha, ctx->server_kexinit, ctx->server_kexinit_len);
+    /* K_S (host key blob) */
+    put_u32(len_buf, host_key_blob_len);
+    br_sha256_update(&sha, len_buf, 4);
+    br_sha256_update(&sha, host_key_blob, host_key_blob_len);
+    /* Q_C (client ephemeral) */
+    put_u32(len_buf, 32);
+    br_sha256_update(&sha, len_buf, 4);
+    br_sha256_update(&sha, client_pub_copy, 32);
+    /* Q_S (server ephemeral) */
+    put_u32(len_buf, 32);
+    br_sha256_update(&sha, len_buf, 4);
+    br_sha256_update(&sha, my_pub, 32);
+    /* K (shared secret as mpint) */
+    if (shared_secret[0] & 0x80) {
+        put_u32(len_buf, 33);
+        br_sha256_update(&sha, len_buf, 4);
+        uint8_t zero = 0;
+        br_sha256_update(&sha, &zero, 1);
+        br_sha256_update(&sha, shared_secret, 32);
+    } else {
+        int start = 0;
+        while (start < 31 && shared_secret[start] == 0) start++;
+        uint32_t ss_len2 = 32 - start;
+        put_u32(len_buf, ss_len2);
+        br_sha256_update(&sha, len_buf, 4);
+        br_sha256_update(&sha, shared_secret + start, ss_len2);
+    }
+
+    br_sha256_out(&sha, ctx->kex_hash);
+
+    if (!ctx->session_id_set) {
+        memcpy(ctx->session_id, ctx->kex_hash, 32);
+        ctx->session_id_set = 1;
+    }
+
+    /* 7. Sign exchange hash with ECDSA-SHA256-P256 host key */
+    uint8_t sig_asn1[80]; /* ECDSA signature in ASN.1 DER, max ~72 bytes */
+    br_ec_private_key sk;
+    sk.curve = BR_EC_secp256r1;
+    sk.x = ecdsa_priv;
+    sk.xlen = 32;
+
+    size_t sig_len = br_ecdsa_i31_sign_asn1(
+        ec_p256, &br_sha256_vtable, ctx->kex_hash, &sk, sig_asn1);
+    if (sig_len == 0) return SSH_ERR_KEX;
+
+    /* Build signature blob: string("ecdsa-sha2-nistp256") + string(sig_asn1) */
+    uint8_t sig_blob[256];
+    uint32_t sig_off = 0;
+    put_cstring(sig_blob, "ecdsa-sha2-nistp256", &sig_off);
+    put_string(sig_blob, sig_asn1, sig_len, &sig_off);
+
+    /* 8. Send ECDH_REPLY: K_S + Q_S + signature */
+    uint32_t reply_len = 1 + (4 + host_key_blob_len) + (4 + 32) + (4 + sig_off);
+    uint8_t *reply = (uint8_t *)malloc(reply_len);
+    if (!reply) return SSH_ERR_ALLOC;
+
+    off = 0;
+    reply[off++] = SSH_MSG_KEX_ECDH_REPLY;
+    put_string(reply, host_key_blob, host_key_blob_len, &off);
+    put_string(reply, my_pub, 32, &off);
+    put_string(reply, sig_blob, sig_off, &off);
+
+    rc = ssh_send_packet(ctx, reply, off);
+    free(reply);
+    if (rc != SSH_OK) return rc;
+
+    /* 9. Send NEWKEYS */
+    uint8_t newkeys = SSH_MSG_NEWKEYS;
+    rc = ssh_send_packet(ctx, &newkeys, 1);
+    if (rc != SSH_OK) return rc;
+
+    /* 10. Receive NEWKEYS */
+    rc = ssh_recv_packet(ctx);
+    if (rc < 0) return rc;
+    if (rc != SSH_MSG_NEWKEYS) return SSH_ERR_PROTO;
+
+    /* 11. Derive encryption keys */
+    int ss_start = 0;
+    while (ss_start < 31 && shared_secret[ss_start] == 0) ss_start++;
+    uint32_t ss_len = 32 - ss_start;
+
+    derive_key(shared_secret + ss_start, ss_len, ctx->kex_hash, ctx->session_id,
+               'A', 16, ctx->iv_c2s);
+    derive_key(shared_secret + ss_start, ss_len, ctx->kex_hash, ctx->session_id,
+               'B', 16, ctx->iv_s2c);
+    derive_key(shared_secret + ss_start, ss_len, ctx->kex_hash, ctx->session_id,
+               'C', 16, ctx->key_c2s);
+    derive_key(shared_secret + ss_start, ss_len, ctx->kex_hash, ctx->session_id,
+               'D', 16, ctx->key_s2c);
+    derive_key(shared_secret + ss_start, ss_len, ctx->kex_hash, ctx->session_id,
+               'E', 32, ctx->mac_c2s);
+    derive_key(shared_secret + ss_start, ss_len, ctx->kex_hash, ctx->session_id,
+               'F', 32, ctx->mac_s2c);
+
+    ctx->encrypted = 1;
+    ctx->seq_c2s = 0;
+    ctx->seq_s2c = 0;
+
+    memset(my_priv, 0, 32);
+    memset(shared_secret, 0, 32);
+    memset(ecdsa_priv, 0, 32);
+
+    return SSH_OK;
 }
+
+/* =========================================================================
+ * Server-side Authentication (RFC 4252)
+ * ========================================================================= */
 
 int ssh_server_auth(ssh_ctx_t *ctx, char *user_buf, uint32_t user_buf_len,
                     char *pass_buf, uint32_t pass_buf_len) {
-    (void)ctx; (void)user_buf; (void)user_buf_len;
-    (void)pass_buf; (void)pass_buf_len;
-    return SSH_ERR_PROTO;
+    int rc;
+
+    /* Receive SERVICE_REQUEST for ssh-userauth */
+    rc = ssh_recv_packet(ctx);
+    if (rc < 0) return rc;
+    if (rc != SSH_MSG_SERVICE_REQUEST) return SSH_ERR_PROTO;
+
+    /* Send SERVICE_ACCEPT */
+    uint8_t accept[64];
+    uint32_t off = 0;
+    accept[off++] = SSH_MSG_SERVICE_ACCEPT;
+    put_cstring(accept, "ssh-userauth", &off);
+    rc = ssh_send_packet(ctx, accept, off);
+    if (rc != SSH_OK) return rc;
+
+    /* Receive USERAUTH_REQUEST */
+    rc = ssh_recv_packet(ctx);
+    if (rc < 0) return rc;
+    if (rc != SSH_MSG_USERAUTH_REQUEST) return SSH_ERR_PROTO;
+
+    /* Parse: username + service + method + ... */
+    off = 1; /* skip type byte */
+    const uint8_t *username;
+    uint32_t username_len;
+    if (get_string(ctx->rbuf, ctx->rbuf_len, &off, &username, &username_len) < 0)
+        return SSH_ERR_PROTO;
+
+    const uint8_t *service;
+    uint32_t service_len;
+    if (get_string(ctx->rbuf, ctx->rbuf_len, &off, &service, &service_len) < 0)
+        return SSH_ERR_PROTO;
+
+    const uint8_t *method;
+    uint32_t method_len;
+    if (get_string(ctx->rbuf, ctx->rbuf_len, &off, &method, &method_len) < 0)
+        return SSH_ERR_PROTO;
+
+    /* Only support "password" method */
+    if (method_len != 8 || memcmp(method, "password", 8) != 0)
+        return SSH_ERR_AUTH;
+
+    /* Skip the boolean (FALSE = not changing password) */
+    if (off >= ctx->rbuf_len) return SSH_ERR_PROTO;
+    off++; /* skip boolean */
+
+    const uint8_t *password;
+    uint32_t password_len;
+    if (get_string(ctx->rbuf, ctx->rbuf_len, &off, &password, &password_len) < 0)
+        return SSH_ERR_PROTO;
+
+    /* Copy to output buffers */
+    uint32_t ucopy = username_len < user_buf_len - 1 ? username_len : user_buf_len - 1;
+    memcpy(user_buf, username, ucopy);
+    user_buf[ucopy] = '\0';
+
+    uint32_t pcopy = password_len < pass_buf_len - 1 ? password_len : pass_buf_len - 1;
+    memcpy(pass_buf, password, pcopy);
+    pass_buf[pcopy] = '\0';
+
+    return SSH_OK;
 }
 
+/* =========================================================================
+ * Server-side Channel Management (RFC 4254)
+ * ========================================================================= */
+
 int ssh_server_accept_channel(ssh_ctx_t *ctx) {
-    (void)ctx;
-    return SSH_ERR_PROTO;
+    int rc = ssh_recv_packet(ctx);
+    if (rc < 0) return rc;
+    if (rc != SSH_MSG_CHANNEL_OPEN) return SSH_ERR_PROTO;
+
+    /* Parse channel open request */
+    uint32_t off = 1;
+    const uint8_t *chan_type;
+    uint32_t chan_type_len;
+    if (get_string(ctx->rbuf, ctx->rbuf_len, &off, &chan_type, &chan_type_len) < 0)
+        return SSH_ERR_PROTO;
+
+    uint32_t sender_channel = get_u32(ctx->rbuf + off); off += 4;
+    uint32_t initial_window = get_u32(ctx->rbuf + off); off += 4;
+    uint32_t max_packet = get_u32(ctx->rbuf + off); off += 4;
+
+    ctx->remote_channel = sender_channel;
+    ctx->remote_window = initial_window;
+    ctx->remote_max_packet = max_packet;
+
+    /* Send CHANNEL_OPEN_CONFIRMATION */
+    uint8_t buf[64];
+    off = 0;
+    buf[off++] = SSH_MSG_CHANNEL_OPEN_CONFIRMATION;
+    put_u32(buf + off, ctx->remote_channel); off += 4;  /* recipient channel */
+    put_u32(buf + off, ctx->channel_id); off += 4;      /* sender channel */
+    put_u32(buf + off, ctx->local_window); off += 4;    /* initial window */
+    put_u32(buf + off, SSH_MAX_PAYLOAD); off += 4;      /* max packet */
+
+    return ssh_send_packet(ctx, buf, off);
 }
 
 int ssh_server_accept_shell(ssh_ctx_t *ctx) {
-    (void)ctx;
+    /* Accept channel requests until we get "shell" or "exec" */
+    for (int attempts = 0; attempts < 5; attempts++) {
+        int rc = ssh_recv_packet(ctx);
+        if (rc < 0) return rc;
+
+        if (rc == SSH_MSG_CHANNEL_REQUEST) {
+            uint32_t off = 1;
+            /* skip recipient channel */ off += 4;
+
+            const uint8_t *req_type;
+            uint32_t req_type_len;
+            if (get_string(ctx->rbuf, ctx->rbuf_len, &off, &req_type, &req_type_len) < 0)
+                return SSH_ERR_PROTO;
+
+            uint8_t want_reply = 0;
+            if (off < ctx->rbuf_len) want_reply = ctx->rbuf[off++];
+
+            if (want_reply) {
+                /* Send CHANNEL_SUCCESS for any request */
+                uint8_t resp[8];
+                uint32_t roff = 0;
+                resp[roff++] = SSH_MSG_CHANNEL_SUCCESS;
+                put_u32(resp + roff, ctx->remote_channel); roff += 4;
+                ssh_send_packet(ctx, resp, roff);
+            }
+
+            /* Check if this is the shell/exec request */
+            if ((req_type_len == 5 && memcmp(req_type, "shell", 5) == 0) ||
+                (req_type_len == 4 && memcmp(req_type, "exec", 4) == 0)) {
+                return SSH_OK;
+            }
+            /* Otherwise loop (could be pty-req, env, etc.) */
+        } else if (rc == SSH_MSG_CHANNEL_WINDOW_ADJUST) {
+            uint32_t off = 1 + 4;
+            ctx->remote_window += get_u32(ctx->rbuf + off);
+        } else {
+            return SSH_ERR_PROTO;
+        }
+    }
     return SSH_ERR_PROTO;
 }
