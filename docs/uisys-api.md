@@ -1,10 +1,10 @@
 # anyOS UI System (uisys) API Reference
 
-The **uisys** DLL is a shared library providing 31 macOS-inspired dark-themed UI components for anyOS GUI applications. It exports 84 functions via a C ABI function pointer table at virtual address `0x04000000`.
+The **uisys** DLL is a shared library providing 31 macOS-inspired dark-themed UI components for anyOS GUI applications. It exports 80 functions via a C ABI function pointer table at virtual address `0x04000000`.
 
 **DLL Address:** `0x04000000`
 **Version:** 1
-**Exports:** 84
+**Exports:** 80
 **Client crate:** `uisys_client`
 
 ---

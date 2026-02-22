@@ -1,6 +1,6 @@
 # anyOS Font Library (libfont) API Reference
 
-The **libfont** shared library provides TrueType font loading and text rendering into pixel buffers. It supports greyscale and LCD subpixel anti-aliasing.
+The **libfont** shared library provides TrueType font loading and text rendering into pixel buffers. It supports greyscale and LCD subpixel anti-aliasing with **size-adaptive gamma correction** for optimal readability on dark backgrounds.
 
 **Format:** ELF64 shared object (.so), loaded on demand via `SYS_DLL_LOAD`
 **Load Address:** `0x05000000`

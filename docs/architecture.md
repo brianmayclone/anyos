@@ -176,13 +176,13 @@ The kernel initializes subsystems in phases:
 7. **Virtual Memory** -- Page tables, kernel heap (linked-list allocator)
 8. **PCI + HAL** -- Bus enumeration, driver binding (GPU, NIC, ATA/AHCI/NVMe, HDA, USB, VMMDev)
 9. **KDRV** -- Load kernel driver bundles (`.ddv`) from `/System/Drivers/`, match PCI devices
-9. **APIC** -- Local APIC + I/O APIC setup, LAPIC timer calibrated from TSC
-10. **SMP** -- AP (Application Processor) startup via INIT-SIPI-SIPI sequence (up to 16 CPUs)
-11. **SYSCALL/SYSRET** -- MSR configuration (EFER.SCE, STAR, LSTAR, SFMASK)
-12. **Scheduler** -- Mach-style multi-level priority queue (128 levels, per-CPU run queues, O(1) bitmap dispatch)
-13. **Keyboard/Mouse** -- PS/2 driver with IntelliMouse scroll wheel; VMware vmmouse / VMMDev absolute mouse
-14. **DLL Loading** -- Map boot-time DLIBs into kernel PD (uisys, libimage, librender, libcompositor); .so libraries (libanyui, libfont) loaded on demand via SYS_DLL_LOAD
-15. **Userspace** -- Load `/System/init` as first Ring 3 process, which starts the compositor
+10. **APIC** -- Local APIC + I/O APIC setup, LAPIC timer calibrated from TSC
+11. **SMP** -- AP (Application Processor) startup via INIT-SIPI-SIPI sequence (up to 16 CPUs)
+12. **SYSCALL/SYSRET** -- MSR configuration (EFER.SCE, STAR, LSTAR, SFMASK)
+13. **Scheduler** -- Mach-style multi-level priority queue (128 levels, per-CPU run queues, O(1) bitmap dispatch)
+14. **Keyboard/Mouse** -- PS/2 driver with IntelliMouse scroll wheel; VMware vmmouse / VMMDev absolute mouse
+15. **DLL Loading** -- Map boot-time DLIBs into kernel PD (uisys, libimage, librender, libcompositor); .so libraries (libanyui, libfont) loaded on demand via SYS_DLL_LOAD
+16. **Userspace** -- Load `/System/init` as first Ring 3 process, which starts the compositor
 
 ---
 
@@ -487,12 +487,11 @@ anyOS supports two syscall paths:
 | Register | Purpose |
 |----------|---------|
 | RAX | Syscall number (in) / return value (out) |
-| RDI | Argument 1 |
-| RSI | Argument 2 |
+| RBX | Argument 1 |
+| R10 | Argument 2 (not RCX -- SYSCALL clobbers it) |
 | RDX | Argument 3 |
-| R10 | Argument 4 (not RCX -- SYSCALL clobbers it) |
-| R8 | Argument 5 |
-| R9 | Argument 6 |
+| RSI | Argument 4 |
+| RDI | Argument 5 |
 
 **INT 0x80 (32-bit C/TCC programs, compatibility mode):
 

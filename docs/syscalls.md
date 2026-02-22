@@ -1,6 +1,6 @@
 # anyOS Syscall Reference
 
-Complete reference for all 118 system calls in anyOS. Syscalls are the interface between user-space programs and the kernel.
+Complete reference for all 140+ system calls in anyOS. Syscalls are the interface between user-space programs and the kernel.
 
 ## Calling Conventions
 
@@ -51,9 +51,12 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 | 7 | `yield` | — | 0 | Yield CPU time slice to scheduler |
 | 8 | `sleep` | ms | 0 | Sleep for N milliseconds (blocks thread) |
 | 9 | `sbrk` | increment (i32) | old_brk | Grow/shrink process heap; returns previous break address |
+| 10 | `fork` | — | child_tid (parent) / 0 (child) | Fork current process. Child gets copy of address space, returns 0. Parent returns child TID |
+| 11 | `exec` | path_ptr, args_ptr | never returns / 0xFFFFFFFF | Replace current process image with new program. On failure returns error |
 | 12 | `waitpid` | tid | exit_code | Block until process exits; returns its exit code |
 | 13 | `kill` | tid | 0 or error | Terminate thread by TID |
 | 29 | `try_waitpid` | tid | code, 0xFFFFFFFE, or 0xFFFFFFFF | Non-blocking: exit code if done, `STILL_RUNNING` if alive, `NOT_FOUND` if invalid |
+| 247 | `getppid` | — | parent_tid | Get parent process/thread ID |
 
 ## Process Spawning
 
@@ -67,7 +70,7 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 | # | Name | Args | Return | Description |
 |---|------|------|--------|-------------|
 | 170 | `thread_create` | entry_rip, user_rsp, name_ptr, name_len, priority | tid or 0 | Create new thread in current process address space |
-| 171 | `set_priority` | tid (0=self), priority (1–255) | 0 or error | Change thread scheduling priority |
+| 171 | `set_priority` | tid (0=self), priority (0–127) | 0 or error | Change thread scheduling priority (0=lowest/idle, 127=highest/real-time) |
 | 172 | `set_critical` | — | 0 | Mark thread as critical (won't be killed on process exit) |
 
 ## Memory Management
@@ -125,6 +128,7 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 | 42 | `net_dhcp` | buf_ptr | 0 or error | DHCP discovery and auto-configuration |
 | 43 | `net_dns` | hostname_ptr, result_ptr | 0 or error | DNS name resolution; writes 4-byte IPv4 address to result_ptr |
 | 44 | `net_arp` | buf_ptr, buf_size | entry_count | Get ARP table. Each entry: 12 bytes [ip:4, mac:6, pad:2] |
+| 50 | `net_poll` | — | 0 | Process pending network packets (triggers RX ring processing and TCP dispatch) |
 
 ## Networking — TCP
 
@@ -199,8 +203,8 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 | 111 | `list_resolutions` | buf_ptr, buf_len | mode_count | List supported modes. Each: 8 bytes [width:u32, height:u32] |
 | 112 | `gpu_info` | buf_ptr, buf_len | name_length | Get GPU driver name string |
 | 135 | `gpu_has_accel` | — | 1 or 0 | Query if GPU acceleration is available |
-| 136 | `set_wallpaper` | path_ptr, path_len | 0 or error | Set desktop wallpaper by file path |
 | 137 | `boot_ready` | — | 0 | Signal desktop is fully loaded (boot timing marker) |
+| 138 | `gpu_has_hw_cursor` | — | 1 or 0 | Query if GPU hardware cursor is available |
 | 161 | `capture_screen` | buf_ptr, buf_size, info_ptr | 0, 1 (no GPU), or 2 (too small) | Capture framebuffer to user buffer |
 
 ## Audio
@@ -219,6 +223,7 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 | 32 | `sysinfo` | cmd, buf_ptr, buf_size | varies | cmd: 0=memory, 1=threads, 2=cpus, 3=cpu_load, 4=hardware |
 | 33 | `dmesg` | buf_ptr, buf_size | bytes_written | Read kernel log ring buffer |
 | 34 | `tick_hz` | — | hz | Get PIT tick frequency in Hz |
+| 35 | `uptime_ms` | — | ms | System uptime in milliseconds (TSC-based, sub-ms precision) |
 
 ## Device Management
 
@@ -250,6 +255,8 @@ These syscalls require prior `register_compositor()` call (first caller wins).
 | 146 | `input_poll` | buf_ptr, max_events | event_count | Poll raw keyboard/mouse events. Each: 20 bytes [type, args[4]] |
 | 147 | `register_compositor` | — | 0 or error | Register as compositor (first caller wins, sets priority 127) |
 | 148 | `cursor_takeover` | — | (x<<16)\|(y&0xFFFF) | Take cursor control from boot splash; returns splash cursor position |
+| 256 | `gpu_vram_size` | — | bytes | Get total GPU VRAM size in bytes (compositor only) |
+| 257 | `vram_map` | target_tid, vram_offset, num_bytes | 0x18000000 or 0 | Map VRAM into target process at 0x18000000 with Write-Through caching (compositor only) |
 
 ## Environment Variables
 
@@ -334,3 +341,28 @@ Runtime per-user, per-app permission management. Apps declare capabilities in th
 3. Stdlib `spawn()` detects `PERM_NEEDED`, reads pending info via `perm_pending_info`, launches `/System/permdialog`
 4. PermissionDialog shows user-friendly consent dialog → user grants/denies → calls `perm_store`
 5. Stdlib retries `spawn()` — kernel finds permission file, intersects declared caps with granted caps
+
+---
+
+## POSIX File Descriptor Operations
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 240 | `pipe2` | pipefd_ptr (int[2]), flags | 0 or error | Create anonymous pipe. Writes [read_fd, write_fd] to pipefd_ptr. Flags: 0x10=O_CLOEXEC |
+| 241 | `dup` | old_fd | new_fd or error | Duplicate file descriptor, returns lowest available FD |
+| 242 | `dup2` | old_fd, new_fd | new_fd or error | Duplicate old_fd to new_fd; closes new_fd first if open |
+| 243 | `fcntl` | fd, cmd, arg | result or error | File control. cmd: 0=F_DUPFD, 1=F_GETFD, 2=F_SETFD, 3=F_GETFL, 4=F_SETFL, 1030=F_DUPFD_CLOEXEC |
+
+## POSIX Signals
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 244 | `sigaction` | sig, handler_addr | old_handler | Set or query signal handler. handler: 0=SIG_DFL, 1=SIG_IGN, or user function address. SIGKILL/SIGSTOP cannot be caught |
+| 245 | `sigprocmask` | how, set | old_mask | Modify signal mask. how: 0=SIG_BLOCK, 1=SIG_UNBLOCK, 2=SIG_SETMASK. SIGKILL/SIGSTOP cannot be blocked |
+| 246 | `sigreturn` | — | — | Return from signal handler (called by trampoline, not user code). Restores saved register context |
+
+## Crash Diagnostics
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 260 | `get_crash_info` | tid, buf_ptr, buf_size | bytes_written or 0 | Get crash report for a terminated thread. Copies raw CrashReport struct to user buffer |
