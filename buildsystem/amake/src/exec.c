@@ -129,22 +129,42 @@ static int try_run_builtin(const char *cmd, const char *amake_path,
     /* Handle env: transform to shell-native VAR=VAL cmd args... */
     if (strcmp(subcmd, "env") == 0) {
         /* Build rewritten command: VAR=VAL VAR2=VAL2 command args...
-         * Re-quote tokens that contain spaces or special chars. */
+         * For env var assignments (contain =), quote only the VALUE part:
+         *   VAR="val with spaces"  (NOT "VAR=val with spaces")
+         * For command/args, quote the whole token if it contains spaces. */
         size_t total = 0;
         int i;
         for (i = 3; i < argc; i++)
-            total += strlen(argv[i]) + 4; /* space + potential quotes */
+            total += strlen(argv[i]) + 4;
         char *rewritten = amake_malloc(total + 1);
         size_t pos = 0;
         for (i = 3; i < argc; i++) {
             if (i > 3) rewritten[pos++] = ' ';
-            int needs_quote = (strchr(argv[i], ' ') != NULL ||
-                              strchr(argv[i], '\t') != NULL);
-            if (needs_quote) rewritten[pos++] = '"';
-            size_t len = strlen(argv[i]);
-            memcpy(rewritten + pos, argv[i], len);
-            pos += len;
-            if (needs_quote) rewritten[pos++] = '"';
+            char *eq = strchr(argv[i], '=');
+            int has_space = (strchr(argv[i], ' ') != NULL ||
+                            strchr(argv[i], '\t') != NULL);
+            if (eq && has_space) {
+                /* VAR=VAL with spaces — quote only the value: VAR="VAL" */
+                size_t key_len = (size_t)(eq - argv[i]) + 1; /* includes '=' */
+                memcpy(rewritten + pos, argv[i], key_len);
+                pos += key_len;
+                rewritten[pos++] = '"';
+                size_t val_len = strlen(eq + 1);
+                memcpy(rewritten + pos, eq + 1, val_len);
+                pos += val_len;
+                rewritten[pos++] = '"';
+            } else if (has_space) {
+                /* Non-assignment with spaces — quote whole token */
+                rewritten[pos++] = '"';
+                size_t len = strlen(argv[i]);
+                memcpy(rewritten + pos, argv[i], len);
+                pos += len;
+                rewritten[pos++] = '"';
+            } else {
+                size_t len = strlen(argv[i]);
+                memcpy(rewritten + pos, argv[i], len);
+                pos += len;
+            }
         }
         rewritten[pos] = '\0';
         *out_rewritten = rewritten;

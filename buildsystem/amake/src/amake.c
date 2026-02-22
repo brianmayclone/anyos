@@ -316,6 +316,12 @@ static char *get_absolute_path(const char *path) {
     char resolved[PATH_MAX];
     if (realpath(path, resolved))
         return amake_strdup(resolved);
+    /* Path doesn't exist yet (e.g. after --clean) — construct from cwd */
+    if (path[0] == '/')
+        return amake_strdup(path);
+    char cwd[PATH_MAX];
+    if (getcwd(cwd, sizeof(cwd)))
+        return amake_path_join(cwd, path);
     return amake_strdup(path);
 }
 
