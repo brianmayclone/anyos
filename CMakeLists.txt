@@ -1373,6 +1373,8 @@ set(C_TOOLCHAIN_DEPS
   ${SYSROOT_DIR}/System/bin/curl
   ${SYSROOT_DIR}/System/bin/git
   ${SYSROOT_DIR}/System/bin/sh
+  ${SYSROOT_DIR}/bin/ssh
+  ${SYSROOT_DIR}/System/bin/sshd
 )
 
 if(HAS_CLASSICUBE)
