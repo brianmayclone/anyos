@@ -551,16 +551,16 @@ anyOS uses two shared library formats at fixed virtual addresses (0x04000000+):
 
 | Library | Format | Base Address | Exports | Description |
 |---------|--------|-------------|---------|-------------|
-| **uisys** | DLIB | `0x04000000` | 84 | macOS-style UI components (31 component types) |
+| **uisys** | DLIB | `0x04000000` | 81 | macOS-style UI components (31 component types) |
 | **libimage** | DLIB | `0x04100000` | 7 | Image/video decoding (BMP, PNG, JPEG, GIF, ICO, MJV) + scaling |
 | **librender** | DLIB | `0x04300000` | 18 | 2D rendering primitives (shapes, gradients, anti-aliasing) |
 | **libcompositor** | DLIB | `0x04380000` | 16 | Window management IPC (SHM surfaces, event channels) |
-| **libanyui** | .so | `0x04400000` | 108 | anyui UI framework (41 controls, Windows Forms-style) |
-| **libfont** | .so | `0x05000000` | 7 | TrueType font rendering (greyscale + LCD subpixel AA), system fonts embedded in .rodata |
+| **libanyui** | .so | `0x04400000` | 111 | anyui UI framework (42 controls, Windows Forms-style) |
+| **libfont** | .so | `0x05000000` | 7 | TrueType font rendering (gamma-corrected greyscale + LCD subpixel AA), system fonts embedded in .rodata |
 
 ### uisys.dlib
 
-The main UI system DLIB provides 84 exported functions implementing 31 UI components:
+The main UI system DLIB provides 81 exported functions implementing 31 UI components:
 - Inputs: Button, Toggle, Checkbox, Radio, Slider, Stepper, TextField, SearchField, TextArea
 - Layout: Sidebar, NavigationBar, Toolbar, TabBar, SegmentedControl, SplitView, ScrollView
 - Data: TableView, ContextMenu, Card, GroupBox, Badge, Tag, ProgressBar
@@ -610,7 +610,7 @@ See [libcompositor API](libcompositor-api.md) for the complete reference.
 
 ## Build System Tools
 
-anyOS uses three native C99 tools for the build pipeline. They are compiled at the start of each build (before any programs) and replace all Python build scripts. Each tool supports `ONE_SOURCE` single-file compilation for TCC, making them available for self-hosted builds directly on anyOS.
+anyOS uses four native C99 tools for the build pipeline. They are compiled at the start of each build (before any programs) and replace all Python build scripts. Each tool supports `ONE_SOURCE` single-file compilation for TCC, making them available for self-hosted builds directly on anyOS.
 
 ### anyelf — ELF Conversion Tool
 
@@ -640,7 +640,7 @@ Offset  Size  Content
 
 ### mkimage — Disk Image Builder
 
-Creates bootable disk images from bootloader, kernel ELF, and sysroot directory tree.
+Creates bootable disk images from bootloader, kernel ELF, and sysroot directory tree. Supports **incremental updates** — by default, only modified files are rewritten to the existing image. Use `--reset` to force a full rebuild.
 
 | Mode | Flag | Layout | Filesystem |
 |------|------|--------|------------|
@@ -683,6 +683,30 @@ Links ELF64 relocatable objects (`.o`) and AR archives (`.a`) into a shared obje
 - Generates ELF64 ET_DYN output with `.dynsym`, `.dynstr`, `.hash`, `.dynamic` sections
 - Global symbols exported in `.dynsym` for runtime linking
 
+### mkappbundle — Application Bundle Creator
+
+Validates and assembles `.app` bundle directories from metadata, executables, icons, and resources.
+
+**Usage:** `mkappbundle -i Info.conf -e <binary> [-c Icon.ico] [-r resource]... -o Output.app`
+
+**Features:**
+- Validates `Info.conf` metadata (required keys: id, name, exec, version, category)
+- Validates capability names and application categories
+- Auto-converts ELF binaries to flat binary via `anyelf` (or `--keep-elf` to skip)
+- Validates ICO icon format (Windows ICO header check)
+- Recursive resource directory copying (max 64 resources)
+- Cross-platform (Unix/Windows)
+
+**Info.conf format:**
+```ini
+id=com.anyos.appname        # Reverse-DNS identifier (required)
+name=App Name               # Display name (required)
+exec=AppName                # Executable filename in bundle (required)
+version=1.0                 # Version string (required)
+category=Utilities          # Category (required)
+capabilities=filesystem,dll # Comma-separated capability list
+```
+
 ### Self-Hosting
 
 Build tool sources are installed to `/Libraries/system/buildsystem/` on the disk image. On anyOS, they can be compiled with TCC:
@@ -696,4 +720,7 @@ make CC=cc one    # builds mkimage with TCC
 
 cd /Libraries/system/buildsystem/anyld
 make CC=cc one    # builds anyld with TCC
+
+cd /Libraries/system/buildsystem/mkappbundle
+make CC=cc one    # builds mkappbundle with TCC
 ```
