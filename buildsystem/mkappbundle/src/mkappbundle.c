@@ -19,10 +19,11 @@
  *   -o <path>    Output .app directory
  *
  * Optional:
- *   -c <path>    Icon file (must be valid ICO format)
- *   -r <path>    Resource file or directory (repeatable, max 64)
- *   -v           Verbose output
- *   --force      Skip validation warnings (errors still abort)
+ *   -c <path>           Icon file (must be valid ICO format)
+ *   -r <path>           Resource file or directory (repeatable, max 64)
+ *   --anyelf-path <p>   Path to anyelf for ELF auto-conversion
+ *   -v                  Verbose output
+ *   --force             Skip validation warnings (errors still abort)
  *
  * Examples:
  *   mkappbundle -i Info.conf -e Terminal -o Terminal.app
@@ -58,6 +59,7 @@
 
 static int g_warnings = 0;
 static int g_force    = 0;
+static int g_keep_elf = 0; /* allow ELF binaries as-is (no conversion) */
 static const char *g_anyelf_path = NULL; /* explicit path to anyelf, or NULL for PATH */
 
 static void fatal(const char *fmt, ...) {
@@ -220,7 +222,8 @@ static int is_valid_capability(const char *cap) {
 /* Known valid category names */
 static const char *VALID_CATEGORIES[] = {
     "System", "Utilities", "Games", "Development",
-    "Graphics", "Multimedia", "Network", "Other", NULL
+    "Graphics", "Multimedia", "Network", "Internet",
+    "Productivity", "Media", "Other", NULL
 };
 
 static int is_valid_category(const char *cat) {
@@ -414,6 +417,13 @@ static int validate_binary(const char *path, char *converted_path, int verbose) 
     }
 
     if (is_elf_file(path)) {
+        if (g_keep_elf) {
+            /* ELF allowed as-is (e.g. for C programs using kernel ELF loader) */
+            if (verbose)
+                printf("  Binary is ELF — keeping as-is (--keep-elf)\n");
+            return 0;
+        }
+
         /* Try auto-conversion with anyelf */
         snprintf(converted_path, MAX_PATH_LEN, "%s.flat.tmp", path);
 
@@ -428,7 +438,8 @@ static int validate_binary(const char *path, char *converted_path, int verbose) 
             "mkappbundle: error: binary '%s' is an ELF file\n"
             "  .app bundles require flat binaries. Convert with:\n"
             "    anyelf bin %s output.bin\n"
-            "  Or ensure 'anyelf' is in your PATH for auto-conversion.\n",
+            "  Or ensure 'anyelf' is in your PATH for auto-conversion.\n"
+            "  Use --keep-elf to bundle ELF binaries without conversion.\n",
             path, path);
         return -1;
     }
@@ -502,10 +513,12 @@ static void usage(void) {
         "  -o <path>    Output .app directory\n"
         "\n"
         "Optional:\n"
-        "  -c <path>    Icon file (validated as ICO format)\n"
-        "  -r <path>    Resource file or directory (repeatable, max %d)\n"
-        "  -v           Verbose output\n"
-        "  --force      Continue despite warnings\n"
+        "  -c <path>           Icon file (validated as ICO format)\n"
+        "  -r <path>           Resource file or directory (repeatable, max %d)\n"
+        "  --anyelf-path <p>   Path to anyelf binary (for ELF auto-conversion)\n"
+        "  --keep-elf          Bundle ELF binaries as-is (no conversion)\n"
+        "  -v                  Verbose output\n"
+        "  --force             Continue despite warnings\n"
         "\n"
         "Validation:\n"
         "  - Info.conf: required keys (id, name, exec, version, category)\n"
@@ -552,6 +565,10 @@ int main(int argc, char **argv) {
             verbose = 1;
         } else if (strcmp(argv[i], "--force") == 0) {
             g_force = 1;
+        } else if (strcmp(argv[i], "--keep-elf") == 0) {
+            g_keep_elf = 1;
+        } else if (strcmp(argv[i], "--anyelf-path") == 0 && i + 1 < argc) {
+            g_anyelf_path = argv[++i];
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             usage();
         } else {

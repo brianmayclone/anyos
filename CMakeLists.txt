@@ -378,6 +378,7 @@ function(add_rust_sbin_program NAME SRC_DIR)
 endfunction()
 
 # Variant for .app bundles (placed in /Applications/{DISPLAY_NAME}.app/)
+# Uses mkappbundle for validated bundling with ELF auto-conversion via anyelf.
 function(add_app NAME SRC_DIR DISPLAY_NAME)
   set(APP_DIR "${SYSROOT_DIR}/Applications/${DISPLAY_NAME}.app")
   set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos-user/release/${NAME}.elf")
@@ -396,44 +397,34 @@ function(add_app NAME SRC_DIR DISPLAY_NAME)
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Building app: ${DISPLAY_NAME}"
   )
-  add_custom_command(
-    OUTPUT "${APP_DIR}/${DISPLAY_NAME}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${APP_DIR}"
-    COMMAND ${ANYELF_EXECUTABLE} bin
-      ${ELF}
-      "${APP_DIR}/${DISPLAY_NAME}"
-    COMMAND ${CMAKE_COMMAND} -E copy "${SRC_DIR}/Info.conf" "${APP_DIR}/Info.conf"
-    DEPENDS ${ELF} "${SRC_DIR}/Info.conf" ${ANYELF_EXECUTABLE}
-    COMMENT "Packaging ${DISPLAY_NAME}.app"
+  # Collect mkappbundle arguments and dependencies
+  set(_BUNDLE_ARGS
+    -i "${SRC_DIR}/Info.conf"
+    -e ${ELF}
+    --anyelf-path ${ANYELF_EXECUTABLE}
+    -o "${APP_DIR}"
+    --force
   )
-  set(_LOCAL_BINS "${APP_DIR}/${DISPLAY_NAME}")
+  set(_BUNDLE_DEPS ${ELF} "${SRC_DIR}/Info.conf" ${ANYELF_EXECUTABLE} ${MKAPPBUNDLE_EXECUTABLE})
   if(EXISTS "${SRC_DIR}/Icon.ico")
-    add_custom_command(
-      OUTPUT "${APP_DIR}/Icon.ico"
-      COMMAND ${CMAKE_COMMAND} -E copy "${SRC_DIR}/Icon.ico" "${APP_DIR}/Icon.ico"
-      DEPENDS "${SRC_DIR}/Icon.ico" "${APP_DIR}/${DISPLAY_NAME}"
-      COMMENT "Copying icon for ${DISPLAY_NAME}.app"
-    )
-    list(APPEND _LOCAL_BINS "${APP_DIR}/Icon.ico")
+    list(APPEND _BUNDLE_ARGS -c "${SRC_DIR}/Icon.ico")
+    list(APPEND _BUNDLE_DEPS "${SRC_DIR}/Icon.ico")
   endif()
-  # Copy bundled resource directories (e.g. syntax/) into the .app
   foreach(_RESDIR syntax)
     if(IS_DIRECTORY "${SRC_DIR}/${_RESDIR}")
+      list(APPEND _BUNDLE_ARGS -r "${SRC_DIR}/${_RESDIR}")
       file(GLOB _RES_FILES "${SRC_DIR}/${_RESDIR}/*")
-      foreach(_RF ${_RES_FILES})
-        get_filename_component(_RF_NAME ${_RF} NAME)
-        add_custom_command(
-          OUTPUT "${APP_DIR}/${_RESDIR}/${_RF_NAME}"
-          COMMAND ${CMAKE_COMMAND} -E make_directory "${APP_DIR}/${_RESDIR}"
-          COMMAND ${CMAKE_COMMAND} -E copy "${_RF}" "${APP_DIR}/${_RESDIR}/${_RF_NAME}"
-          DEPENDS "${_RF}" "${APP_DIR}/${DISPLAY_NAME}"
-          COMMENT "Bundling ${_RESDIR}/${_RF_NAME} into ${DISPLAY_NAME}.app"
-        )
-        list(APPEND _LOCAL_BINS "${APP_DIR}/${_RESDIR}/${_RF_NAME}")
-      endforeach()
+      list(APPEND _BUNDLE_DEPS ${_RES_FILES})
     endif()
   endforeach()
-  set(APP_BINS ${APP_BINS} ${_LOCAL_BINS} PARENT_SCOPE)
+  add_custom_command(
+    OUTPUT "${APP_DIR}/${DISPLAY_NAME}"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${APP_DIR}"
+    COMMAND ${MKAPPBUNDLE_EXECUTABLE} ${_BUNDLE_ARGS}
+    DEPENDS ${_BUNDLE_DEPS}
+    COMMENT "Packaging ${DISPLAY_NAME}.app (mkappbundle)"
+  )
+  set(APP_BINS ${APP_BINS} "${APP_DIR}/${DISPLAY_NAME}" PARENT_SCOPE)
 endfunction()
 
 # Variant for DLLs (placed in /Libraries/)
@@ -1027,13 +1018,17 @@ set(DOOM_WAD "${CMAKE_SOURCE_DIR}/sysroot/apps/doom/doom.wad")
 
 add_custom_command(
   OUTPUT ${DOOM_APP}/DOOM
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${DOOM_APP}"
-  COMMAND ${CMAKE_COMMAND} -E copy ${DOOM_ELF} "${DOOM_APP}/DOOM"
-  COMMAND ${CMAKE_COMMAND} -E copy ${DOOM_WAD} "${DOOM_APP}/doom.wad"
-  COMMAND ${CMAKE_COMMAND} -E copy "${DOOM_DIR}/Info.conf" "${DOOM_APP}/Info.conf"
-  COMMAND ${CMAKE_COMMAND} -E copy "${DOOM_DIR}/Icon.ico" "${DOOM_APP}/Icon.ico"
-  DEPENDS ${DOOM_ELF} ${DOOM_WAD} "${DOOM_DIR}/Info.conf" "${DOOM_DIR}/Icon.ico"
-  COMMENT "Packaging DOOM.app"
+  COMMAND ${CMAKE_COMMAND} -E rm -rf "${DOOM_APP}"
+  COMMAND ${MKAPPBUNDLE_EXECUTABLE}
+    -i "${DOOM_DIR}/Info.conf"
+    -e ${DOOM_ELF}
+    -c "${DOOM_DIR}/Icon.ico"
+    -r ${DOOM_WAD}
+    --keep-elf
+    --force
+    -o "${DOOM_APP}"
+  DEPENDS ${DOOM_ELF} ${DOOM_WAD} "${DOOM_DIR}/Info.conf" "${DOOM_DIR}/Icon.ico" ${MKAPPBUNDLE_EXECUTABLE}
+  COMMENT "Packaging DOOM.app (mkappbundle)"
 )
 
 # Quake (WinQuake software renderer, cross-compiled C program) → Quake.app
@@ -1054,15 +1049,19 @@ add_custom_command(
 set(QUAKE_PAK "${CMAKE_SOURCE_DIR}/sysroot/apps/quake/id1/pak0.pak")
 set(QUAKE_CFG "${CMAKE_SOURCE_DIR}/sysroot/apps/quake/id1/config.cfg")
 
+set(QUAKE_ID1_DIR "${CMAKE_SOURCE_DIR}/sysroot/apps/quake/id1")
 add_custom_command(
   OUTPUT ${QUAKE_APP}/Quake
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${QUAKE_APP}/id1"
-  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE_ELF} "${QUAKE_APP}/Quake"
-  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE_PAK} "${QUAKE_APP}/id1/pak0.pak"
-  COMMAND ${CMAKE_COMMAND} -E copy ${QUAKE_CFG} "${QUAKE_APP}/id1/config.cfg"
-  COMMAND ${CMAKE_COMMAND} -E copy "${QUAKE_DIR}/Info.conf" "${QUAKE_APP}/Info.conf"
-  DEPENDS ${QUAKE_ELF} ${QUAKE_PAK} ${QUAKE_CFG} "${QUAKE_DIR}/Info.conf"
-  COMMENT "Packaging Quake.app"
+  COMMAND ${CMAKE_COMMAND} -E rm -rf "${QUAKE_APP}"
+  COMMAND ${MKAPPBUNDLE_EXECUTABLE}
+    -i "${QUAKE_DIR}/Info.conf"
+    -e ${QUAKE_ELF}
+    -r "${QUAKE_ID1_DIR}"
+    --keep-elf
+    --force
+    -o "${QUAKE_APP}"
+  DEPENDS ${QUAKE_ELF} ${QUAKE_PAK} ${QUAKE_CFG} "${QUAKE_DIR}/Info.conf" ${MKAPPBUNDLE_EXECUTABLE}
+  COMMENT "Packaging Quake.app (mkappbundle)"
 )
 
 # Clean targets for third-party builds (outside build dir)
