@@ -8,10 +8,9 @@ const STYLE_BOLD: u32 = 1;
 const DIR_COLOR: u32 = 0xFFCCCCCC;
 const FILE_COLOR: u32 = 0xFFBBBBBB;
 
-/// Sidebar panel with Explorer | Git tab switching.
+/// Sidebar panel with Explorer (tree view) — tab switching done via activity bar.
 pub struct Sidebar {
     pub panel: ui::View,
-    pub tab_control: ui::SegmentedControl,
     pub explorer_panel: ui::View,
     pub search: ui::SearchField,
     pub tree: ui::TreeView,
@@ -19,19 +18,13 @@ pub struct Sidebar {
 }
 
 impl Sidebar {
-    /// Create the sidebar panel with tab control, explorer, and placeholder for git.
+    /// Create the sidebar panel with explorer view.
     pub fn new() -> Self {
         let panel = ui::View::new();
+        panel.set_dock(ui::DOCK_FILL);
         panel.set_color(0xFF252526);
 
-        // Tab switcher at top
-        let tab_control = ui::SegmentedControl::new("Explorer|Git");
-        tab_control.set_dock(ui::DOCK_TOP);
-        tab_control.set_size(200, 26);
-        tab_control.set_margin(4, 4, 4, 2);
-        panel.add(&tab_control);
-
-        // Explorer panel (search + tree)
+        // Explorer panel (header + search + tree)
         let explorer_panel = ui::View::new();
         explorer_panel.set_dock(ui::DOCK_FILL);
         explorer_panel.set_color(0xFF252526);
@@ -42,7 +35,7 @@ impl Sidebar {
         header.set_size(200, 20);
         header.set_font_size(11);
         header.set_text_color(0xFF969696);
-        header.set_margin(8, 2, 0, 2);
+        header.set_margin(8, 4, 0, 2);
         explorer_panel.add(&header);
 
         let search = ui::SearchField::new();
@@ -60,7 +53,6 @@ impl Sidebar {
 
         Self {
             panel,
-            tab_control,
             explorer_panel,
             search,
             tree,

@@ -67,7 +67,8 @@ pub use statusindicator::StatusIndicator;
 pub use colorwell::ColorWell;
 pub use searchfield::SearchField;
 pub use textarea::TextArea;
-pub use iconbutton::IconButton;
+pub use iconbutton::{IconButton, ICON_NEW_FILE, ICON_FOLDER_OPEN, ICON_SAVE, ICON_SAVE_ALL,
+    ICON_BUILD, ICON_PLAY, ICON_STOP, ICON_SETTINGS, ICON_FILES, ICON_GIT_BRANCH, ICON_SEARCH};
 pub use badge::Badge;
 pub use tag::Tag;
 pub use canvas::Canvas;

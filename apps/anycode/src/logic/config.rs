@@ -153,8 +153,13 @@ fn bundle_path(relative: &str) -> String {
     }
 }
 
-/// Search for a binary by name using the PATH environment variable.
+/// Well-known system directories to search for binaries.
+const SYSTEM_DIRS: &[&str] = &["/bin", "/System/bin", "/usr/bin"];
+
+/// Search for a binary by name using the PATH environment variable
+/// and well-known system directories.
 fn find_in_path(name: &str) -> String {
+    // First: search PATH
     let mut path_buf = [0u8; 256];
     let len = anyos_std::env::get("PATH", &mut path_buf);
     if len != u32::MAX && (len as usize) < path_buf.len() {
@@ -169,6 +174,13 @@ fn find_in_path(name: &str) -> String {
                     return candidate;
                 }
             }
+        }
+    }
+    // Fallback: check well-known system directories
+    for dir in SYSTEM_DIRS {
+        let candidate = format!("{}/{}", dir, name);
+        if path::exists(&candidate) {
+            return candidate;
         }
     }
     String::new()

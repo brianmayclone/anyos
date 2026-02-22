@@ -29,6 +29,7 @@ pub struct GitPanel {
 impl GitPanel {
     pub fn new() -> Self {
         let panel = ui::View::new();
+        panel.set_dock(ui::DOCK_FILL);
         panel.set_color(0xFF252526);
 
         // Header

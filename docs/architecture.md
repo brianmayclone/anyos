@@ -100,12 +100,13 @@ PML4[510] recursive self-mapping              Page table access
 ### Virtual Memory (User Process)
 
 ```
-0x04000000 - 0x07FFFFFF    DLL mappings:
-                             0x04000000 = uisys.dll
-                             0x04100000 = libimage.dll
-                             0x04200000 = libfont.dll
-                             0x04300000 = librender.dll
-                             0x04380000 = libcompositor.dll
+0x04000000 - 0x07FFFFFF    DLL/shared library mappings:
+                             0x04000000 = uisys.dlib
+                             0x04100000 = libimage.dlib
+                             0x04300000 = librender.dlib
+                             0x04380000 = libcompositor.dlib
+                             0x04400000 = libanyui.so
+                             0x05000000 = libfont.so (~17 MiB, embedded fonts)
 0x08000000 - 0x080XXXXX    Program text + data + BSS
 0x080XXXXX - 0x0BFEFFFF    Heap (grows via sbrk)
 0x0BFF0000 - 0x0BFFFFFF    User stack (64 KiB, grows downward)
@@ -178,7 +179,7 @@ The kernel initializes subsystems in phases:
 11. **SYSCALL/SYSRET** -- MSR configuration (EFER.SCE, STAR, LSTAR, SFMASK)
 12. **Scheduler** -- Thread system, idle task per CPU, round-robin with priorities
 13. **Keyboard/Mouse** -- PS/2 driver with IntelliMouse scroll wheel
-14. **DLL Loading** -- Map all DLLs into kernel PD (uisys, libimage, libfont, librender, libcompositor)
+14. **DLL Loading** -- Map boot-time DLIBs into kernel PD (uisys, libimage, librender, libcompositor); .so libraries (libanyui, libfont) loaded on demand via SYS_DLL_LOAD
 15. **Userspace** -- Load `/System/init` as first Ring 3 process, which starts the compositor
 
 ---
@@ -518,25 +519,25 @@ See [syscalls reference](syscalls.md) for the complete list with all arguments a
 
 ### Design
 
-- DLLs are **stateless shared code** at fixed virtual addresses (0x04000000+)
-- Built as `bin` crates with custom linker scripts
-- Binary format: `DLIB` magic header + `#[repr(C)]` export function pointer table
-- Kernel loads DLL pages at boot, maps into every new process page directory
-- Client programs read function pointers from the export table at the known base address
+anyOS uses two shared library formats at fixed virtual addresses (0x04000000+):
 
-### DLL Overview
+- **DLIB (legacy)**: Built as `bin` crates with custom linker scripts. Binary format: `DLIB` magic header + `#[repr(C)]` export function pointer table. Kernel loads DLIB pages at boot, maps into every new process page directory. Client programs read function pointers from the export table at the known base address.
+- **.so (modern)**: Built as `staticlib` crates, linked by `anyld` into ELF64 ET_DYN shared objects with `.dynsym`/`.dynstr`/`.hash` sections. Loaded on demand via `SYS_DLL_LOAD` (syscall 80). Client programs resolve symbols at runtime using `dl_open`/`dl_sym` (ELF hash lookup).
 
-| DLL | Base Address | Exports | Description |
-|-----|-------------|---------|-------------|
-| **uisys.dll** | `0x04000000` | 84 | macOS-style UI components (31 component types) |
-| **libimage.dll** | `0x04100000` | 7 | Image/video decoding (BMP, PNG, JPEG, GIF, ICO, MJV) + scaling |
-| **libfont.dll** | `0x04200000` | 7 | TrueType font rendering (greyscale + LCD subpixel AA) |
-| **librender.dll** | `0x04300000` | 18 | 2D rendering primitives (shapes, gradients, anti-aliasing) |
-| **libcompositor.dll** | `0x04380000` | 16 | Window management IPC (SHM surfaces, event channels) |
+### Library Overview
 
-### uisys.dll
+| Library | Format | Base Address | Exports | Description |
+|---------|--------|-------------|---------|-------------|
+| **uisys** | DLIB | `0x04000000` | 84 | macOS-style UI components (31 component types) |
+| **libimage** | DLIB | `0x04100000` | 7 | Image/video decoding (BMP, PNG, JPEG, GIF, ICO, MJV) + scaling |
+| **librender** | DLIB | `0x04300000` | 18 | 2D rendering primitives (shapes, gradients, anti-aliasing) |
+| **libcompositor** | DLIB | `0x04380000` | 16 | Window management IPC (SHM surfaces, event channels) |
+| **libanyui** | .so | `0x04400000` | 108 | anyui UI framework (41 controls, Windows Forms-style) |
+| **libfont** | .so | `0x05000000` | 7 | TrueType font rendering (greyscale + LCD subpixel AA), system fonts embedded in .rodata |
 
-The main UI system DLL provides 84 exported functions implementing 31 UI components:
+### uisys.dlib
+
+The main UI system DLIB provides 84 exported functions implementing 31 UI components:
 - Inputs: Button, Toggle, Checkbox, Radio, Slider, Stepper, TextField, SearchField, TextArea
 - Layout: Sidebar, NavigationBar, Toolbar, TabBar, SegmentedControl, SplitView, ScrollView
 - Data: TableView, ContextMenu, Card, GroupBox, Badge, Tag, ProgressBar
@@ -545,7 +546,7 @@ The main UI system DLL provides 84 exported functions implementing 31 UI compone
 
 See [uisys API](uisys-api.md) for the complete component reference.
 
-### libimage.dll
+### libimage.dlib
 
 Image and video decoding library. Stateless, heap-free -- callers provide all memory.
 
@@ -562,19 +563,21 @@ Also provides bilinear image scaling (stretch/contain/cover modes).
 
 See [libimage API](libimage-api.md) for the complete reference.
 
-### libfont.dll
+### libfont.so
 
-TrueType font rendering with greyscale and LCD subpixel anti-aliasing. System fonts loaded from `/System/Fonts/`.
+TrueType font rendering with greyscale and LCD subpixel anti-aliasing. System fonts (SF Pro family + Andale Mono, ~17 MiB) are embedded in `.rodata` via `include_bytes!()`, so the font data is shared read-only across all processes — zero disk I/O at init, zero per-process memory duplication.
+
+Loaded on demand via `SYS_DLL_LOAD` when first needed. Custom fonts can still be loaded from disk via `font_load()`.
 
 See [libfont API](libfont-api.md) for the complete reference.
 
-### librender.dll
+### librender.dlib
 
 2D software rendering primitives: filled/outlined shapes (rect, rounded rect, circle, line), horizontal/vertical gradients, anti-aliased variants. Operates on caller-provided pixel buffers.
 
 See [librender API](librender-api.md) for the complete reference.
 
-### libcompositor.dll
+### libcompositor.dlib
 
 IPC-based window management for GUI applications. Uses shared memory (SHM) pixel buffers and event channels to communicate with the compositor process. Provides window lifecycle, menu bars, status icons, and blur-behind effects.
 

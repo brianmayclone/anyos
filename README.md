@@ -101,7 +101,7 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 - **GPU drivers**: Bochs VGA (page flipping) and VMware SVGA II (2D acceleration, hardware cursor)
 - **macOS-inspired dark theme** with rounded windows, shadows, and alpha blending
 - **41 UI controls** via the anyui framework + uisys shared library (buttons, text fields, code editor, tree view, data grid, toolbars, etc.)
-- **5 shared libraries (DLLs)** — uisys, libimage, libfont, librender, libcompositor
+- **6 shared libraries** — uisys, libimage, librender, libcompositor (DLIB format) + libanyui, libfont (.so format with ELF dynamic linking)
 - **TrueType font rendering** with subpixel LCD anti-aliasing (SF Pro family)
 
 ### Networking
@@ -349,8 +349,11 @@ anyos/
     uisys_client/          Client stub crate for uisys
     libimage/              libimage.dlib — Image decoding DLL (PNG, BMP, JPEG, ICO, MJV)
     libimage_client/       Client stub crate for libimage
-    libfont/               libfont.dlib — TrueType font rendering DLL
-    libfont_client/        Client stub crate for libfont
+    libanyui/              libanyui.so — anyui UI framework (41 controls, 108 exports)
+    libanyui_client/       Client crate for libanyui (dynlink-based)
+    libfont/               libfont.so — TrueType font rendering (embedded system fonts in .rodata)
+    libfont_client/        Client crate for libfont (dynlink-based)
+    dynlink/               Minimal user-space dynamic linker (dl_open/dl_sym for .so files)
     librender/             librender.dlib — 2D graphics primitives DLL
     librender_client/      Client stub crate for librender
     libcompositor/         libcompositor.dlib — Compositor client API DLL
@@ -392,19 +395,23 @@ anyos/
 
 </details>
 
-### DLL Architecture
+### Shared Library Architecture
 
-anyOS uses a custom **DLIB** (Dynamic Library) format for shared libraries. Each DLL is loaded at a fixed virtual address and exports a `#[repr(C)]` function pointer table prefixed with a `DLIB` magic header.
+anyOS uses two shared library formats, both loaded at fixed virtual addresses:
 
-| DLL | Base Address | Exports | Purpose |
-|-----|-------------|---------|---------|
-| uisys | `0x04000000` | 108 | UI controls (buttons, text fields, code editor, tree view, data grid, toolbars, ...) |
-| libimage | `0x04100000` | 7 | Image decoding (PNG, BMP, JPEG, ICO) and scaling |
-| libfont | `0x04200000` | 7 | TrueType font rasterization with LCD subpixel rendering |
-| librender | `0x04300000` | 18 | 2D drawing primitives (lines, rects, circles, gradients) |
-| libcompositor | `0x04380000` | 16 | Window creation, event handling, IPC with compositor |
+- **DLIB (legacy)**: Custom format with `DLIB` magic header + `#[repr(C)]` function pointer export table. Loaded by the kernel at boot into every process.
+- **.so (modern)**: ELF64 ET_DYN shared objects with `.dynsym`/`.hash` sections, linked by `anyld`. Loaded on demand via `SYS_DLL_LOAD`, symbols resolved via `dl_open`/`dl_sym`.
 
-Programs link against lightweight client stub crates (e.g. `uisys_client`, `libfont_client`) that read the export table from the DLL's fixed address at runtime.
+| Library | Format | Base Address | Exports | Purpose |
+|---------|--------|-------------|---------|---------|
+| uisys | DLIB | `0x04000000` | 108 | UI controls (buttons, text fields, code editor, tree view, data grid, toolbars, ...) |
+| libimage | DLIB | `0x04100000` | 7 | Image decoding (PNG, BMP, JPEG, ICO) and scaling |
+| librender | DLIB | `0x04300000` | 18 | 2D drawing primitives (lines, rects, circles, gradients) |
+| libcompositor | DLIB | `0x04380000` | 16 | Window creation, event handling, IPC with compositor |
+| libanyui | .so | `0x04400000` | 108 | anyui UI framework (41 controls, Windows Forms-style) |
+| libfont | .so | `0x05000000` | 7 | TrueType font rendering with LCD subpixel AA (system fonts embedded in .rodata) |
+
+DLIB programs link against lightweight client stub crates (e.g. `uisys_client`) that read the export table at the known base address. `.so` programs use `dynlink` crate (`dl_open`/`dl_sym`) for ELF symbol resolution.
 
 ---
 

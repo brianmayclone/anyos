@@ -42,6 +42,7 @@ mod marshal;
 mod syscall;
 mod timer;
 mod dialogs;
+pub mod icons;
 pub mod theme;
 
 use alloc::boxed::Box;

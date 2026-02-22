@@ -21,9 +21,10 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use libanyui_client as anyui;
+use anyui::Widget;
 
 use crate::logic::{build, config, file_manager, git, plugin, project};
-use crate::ui::{editor_view, git_panel, output_panel, sidebar, status_bar, toolbar};
+use crate::ui::{activity_bar, editor_view, git_panel, output_panel, sidebar, status_bar, toolbar};
 use crate::util::{path, syntax_map};
 
 // ════════════════════════════════════════════════════════════════
@@ -46,6 +47,9 @@ struct AppState {
     git_process: Option<git::GitProcess>,
     git_pending_op: Option<git::GitOp>,
     git_timer_id: u32,
+    // Activity bar panel IDs for view switching
+    explorer_panel_id: u32,
+    git_panel_id: u32,
 }
 
 static mut APP: Option<AppState> = None;
@@ -83,6 +87,10 @@ fn main() {
     status.panel.set_dock(anyui::DOCK_BOTTOM);
     win.add(&status.panel);
 
+    // ── Activity bar (DOCK_LEFT, narrow) ──
+    let activity_bar = activity_bar::ActivityBar::new();
+    win.add(&activity_bar.panel);
+
     // ── Main split: sidebar | editor area ──
     let main_split = anyui::SplitView::new();
     main_split.set_dock(anyui::DOCK_FILL);
@@ -91,15 +99,26 @@ fn main() {
     main_split.set_max_split(40);
     win.add(&main_split);
 
-    // ── Sidebar (left pane) ──
+    // ── Sidebar container (left pane — holds explorer + git panels) ──
+    let sidebar_container = anyui::View::new();
+    sidebar_container.set_color(0xFF252526);
+
+    // ── Sidebar (explorer view) ──
     let mut sidebar = sidebar::Sidebar::new();
+    sidebar_container.add(&sidebar.panel);
 
-    // ── Git panel (inside sidebar, connected to tab control) ──
+    // ── Git panel (inside sidebar container) ──
     let git_panel = git_panel::GitPanel::new();
-    sidebar.panel.add(&git_panel.panel);
-    sidebar.tab_control.connect_panels(&[&sidebar.explorer_panel, &git_panel.panel]);
+    sidebar_container.add(&git_panel.panel);
 
-    main_split.add(&sidebar.panel);
+    let explorer_panel_id = sidebar.panel.id();
+    let git_panel_id = git_panel.panel.id();
+
+    // Initially show explorer, hide git panel
+    sidebar.panel.set_visible(true);
+    git_panel.panel.set_visible(false);
+
+    main_split.add(&sidebar_container);
 
     // ── Editor area (right pane) — split vertically: editor | output ──
     let editor_split = anyui::SplitView::new();
@@ -150,6 +169,8 @@ fn main() {
             git_process: None,
             git_pending_op: None,
             git_timer_id: 0,
+            explorer_panel_id,
+            git_panel_id,
         });
     }
 
@@ -171,6 +192,21 @@ fn main() {
     // ════════════════════════════════════════════════════════════════
     //  Event wiring — all interactions via callbacks
     // ════════════════════════════════════════════════════════════════
+
+    // ── Activity bar: Files ──
+    activity_bar.btn_files.on_click(|_| {
+        switch_sidebar_view(0);
+    });
+
+    // ── Activity bar: Git ──
+    activity_bar.btn_git.on_click(|_| {
+        switch_sidebar_view(1);
+    });
+
+    // ── Activity bar: Search (future — for now just show explorer) ──
+    activity_bar.btn_search.on_click(|_| {
+        switch_sidebar_view(0);
+    });
 
     // ── Toolbar: New ──
     tb.btn_new.on_click(|_| {
@@ -394,6 +430,14 @@ fn main() {
 // ════════════════════════════════════════════════════════════════
 //  Helper functions
 // ════════════════════════════════════════════════════════════════
+
+/// Switch sidebar between Explorer (0) and Git (1).
+fn switch_sidebar_view(index: u32) {
+    let s = app();
+    let show_explorer = index == 0;
+    anyui::Control::from_id(s.explorer_panel_id).set_visible(show_explorer);
+    anyui::Control::from_id(s.git_panel_id).set_visible(!show_explorer);
+}
 
 fn open_file(file_path: &str) {
     let s = app();
