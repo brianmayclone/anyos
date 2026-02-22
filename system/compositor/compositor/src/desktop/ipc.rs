@@ -367,6 +367,8 @@ impl Desktop {
                             self.compositor.damage_all();
                         }
                     }
+                    // Persist the wallpaper preference to disk
+                    self.save_user_wallpaper();
                 }
                 anyos_std::ipc::shm_unmap(shm_id);
                 None

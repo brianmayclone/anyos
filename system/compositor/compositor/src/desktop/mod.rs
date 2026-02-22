@@ -27,6 +27,47 @@ use cursors::CURSOR_W;
 use theme::*;
 use window::*;
 
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Format a wallpaper preference entry: "UID:PATH\n"
+/// Returns (buffer, length).
+fn format_wallpaper_entry(uid: u32, path: &[u8]) -> ([u8; 160], usize) {
+    let mut buf = [0u8; 160];
+    let mut pos = 0;
+
+    // Write UID digits
+    if uid == 0 {
+        buf[pos] = b'0';
+        pos += 1;
+    } else {
+        let mut digits = [0u8; 10];
+        let mut d = 0;
+        let mut n = uid;
+        while n > 0 {
+            digits[d] = b'0' + (n % 10) as u8;
+            d += 1;
+            n /= 10;
+        }
+        while d > 0 {
+            d -= 1;
+            buf[pos] = digits[d];
+            pos += 1;
+        }
+    }
+
+    buf[pos] = b':';
+    pos += 1;
+
+    let plen = path.len().min(buf.len() - pos - 1);
+    buf[pos..pos + plen].copy_from_slice(&path[..plen]);
+    pos += plen;
+
+    buf[pos] = b'\n';
+    pos += 1;
+
+    (buf, pos)
+}
+
 // ── Desktop ────────────────────────────────────────────────────────────────
 
 pub struct Desktop {
@@ -251,6 +292,104 @@ impl Desktop {
         self.wallpaper_path_len = default_path.len();
         if !self.load_wallpaper("/media/wallpapers/default.png") {
             self.draw_gradient_background();
+        }
+    }
+
+    /// Save the current wallpaper path to the per-user preferences file.
+    fn save_user_wallpaper(&self) {
+        use anyos_std::fs;
+        use anyos_std::process;
+
+        if self.wallpaper_path_len == 0 {
+            return;
+        }
+
+        let uid = process::getuid() as u32;
+        let wp_path = &self.wallpaper_path[..self.wallpaper_path_len];
+
+        // Read existing file to preserve other users' entries
+        let mut existing = [0u8; 512];
+        let mut existing_len = 0usize;
+        let fd = fs::open("/System/users/wallpapers", 0);
+        if fd != u32::MAX {
+            let n = fs::read(fd, &mut existing);
+            if (n as i32) > 0 {
+                existing_len = n as usize;
+            }
+            fs::close(fd);
+        }
+
+        // Build new file content: keep lines for other UIDs, replace/add ours
+        let mut out = [0u8; 512];
+        let mut out_pos = 0usize;
+        let mut replaced = false;
+
+        if existing_len > 0 {
+            let data = &existing[..existing_len];
+            let mut pos = 0;
+            while pos < data.len() {
+                let line_end = data[pos..].iter().position(|&b| b == b'\n')
+                    .map(|p| pos + p).unwrap_or(data.len());
+                let line = &data[pos..line_end];
+                pos = line_end + 1;
+
+                if line.is_empty() {
+                    continue;
+                }
+
+                // Check if this line is for our UID
+                let is_our_uid = if let Some(colon) = line.iter().position(|&b| b == b':') {
+                    let uid_str = &line[..colon];
+                    let mut parsed_uid: u32 = 0;
+                    let mut valid = !uid_str.is_empty();
+                    for &b in uid_str {
+                        if b >= b'0' && b <= b'9' {
+                            parsed_uid = parsed_uid * 10 + (b - b'0') as u32;
+                        } else {
+                            valid = false;
+                            break;
+                        }
+                    }
+                    valid && parsed_uid == uid
+                } else {
+                    false
+                };
+
+                if is_our_uid {
+                    // Replace with our new entry
+                    let (entry, elen) = format_wallpaper_entry(uid, wp_path);
+                    let elen = elen.min(out.len() - out_pos);
+                    out[out_pos..out_pos + elen].copy_from_slice(&entry[..elen]);
+                    out_pos += elen;
+                    replaced = true;
+                } else {
+                    // Keep other user's line
+                    let llen = line.len().min(out.len() - out_pos - 1);
+                    out[out_pos..out_pos + llen].copy_from_slice(&line[..llen]);
+                    out_pos += llen;
+                    if out_pos < out.len() {
+                        out[out_pos] = b'\n';
+                        out_pos += 1;
+                    }
+                }
+            }
+        }
+
+        if !replaced {
+            let (entry, elen) = format_wallpaper_entry(uid, wp_path);
+            let elen = elen.min(out.len() - out_pos);
+            out[out_pos..out_pos + elen].copy_from_slice(&entry[..elen]);
+            out_pos += elen;
+        }
+
+        // Write back
+        let wfd = fs::open(
+            "/System/users/wallpapers",
+            fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC,
+        );
+        if wfd != u32::MAX {
+            fs::write(wfd, &out[..out_pos]);
+            fs::close(wfd);
         }
     }
 
