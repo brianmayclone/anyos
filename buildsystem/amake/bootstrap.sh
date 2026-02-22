@@ -6,7 +6,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC="${SCRIPT_DIR}/src"
-OUT="${SCRIPT_DIR}/../../build/buildsystem/amake"
+OUT="${SCRIPT_DIR}/../../buildsystem/build/amake"
 
 mkdir -p "$(dirname "$OUT")"
 

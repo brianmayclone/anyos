@@ -1,5 +1,6 @@
 target/
 build/
+buildsystem/build/
 *.img
 *.bin
 !kernel/src/graphics/boot_logo.bin
