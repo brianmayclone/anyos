@@ -18,6 +18,7 @@ pub const ICON_SETTINGS: u32 = 8;
 pub const ICON_FILES: u32 = 9;
 pub const ICON_GIT_BRANCH: u32 = 10;
 pub const ICON_SEARCH: u32 = 11;
+pub const ICON_REFRESH: u32 = 12;
 
 /// Draw a 16x16 icon at (x, y) with the given color.
 pub fn draw_icon(s: &Surface, x: i32, y: i32, icon_id: u32, color: u32) {
@@ -33,6 +34,7 @@ pub fn draw_icon(s: &Surface, x: i32, y: i32, icon_id: u32, color: u32) {
         ICON_FILES => draw_files(s, x, y, color),
         ICON_GIT_BRANCH => draw_git_branch(s, x, y, color),
         ICON_SEARCH => draw_search(s, x, y, color),
+        ICON_REFRESH => draw_refresh(s, x, y, color),
         _ => {}
     }
 }
@@ -228,6 +230,32 @@ fn draw_search(s: &Surface, x: i32, y: i32, c: u32) {
     fill_rect(s, x + 10, y + 9, 2, 1, c);
     fill_rect(s, x + 11, y + 10, 2, 1, c);
     fill_rect(s, x + 12, y + 11, 2, 2, c);
+}
+
+// ── Refresh (circular arrow) ───────────────────────────────────────
+
+fn draw_refresh(s: &Surface, x: i32, y: i32, c: u32) {
+    // Circular arc (open circle, gap at top-right for arrowhead)
+    // Top edge
+    fill_rect(s, x + 5, y + 1, 4, 2, c);
+    // Top-left corner
+    fill_rect(s, x + 3, y + 2, 2, 2, c);
+    // Left side
+    fill_rect(s, x + 2, y + 4, 2, 4, c);
+    // Bottom-left corner
+    fill_rect(s, x + 3, y + 8, 2, 2, c);
+    // Bottom edge
+    fill_rect(s, x + 5, y + 10, 4, 2, c);
+    // Bottom-right corner
+    fill_rect(s, x + 9, y + 8, 2, 2, c);
+    // Right side (partial — gap at top for arrow)
+    fill_rect(s, x + 10, y + 5, 2, 3, c);
+    // Arrowhead pointing right at top-right
+    fill_rect(s, x + 9, y + 1, 2, 1, c);
+    fill_rect(s, x + 10, y + 2, 2, 1, c);
+    fill_rect(s, x + 11, y + 3, 2, 1, c);
+    fill_rect(s, x + 10, y + 4, 2, 1, c);
+    fill_rect(s, x + 9, y + 5, 2, 1, c);
 }
 
 // ── Color helpers ───────────────────────────────────────────────────

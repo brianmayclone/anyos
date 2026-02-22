@@ -1081,7 +1081,26 @@ int ssh_server_kex(ssh_ctx_t *ctx,
         ctx->session_id_set = 1;
     }
 
-    /* 7. Sign exchange hash with ECDSA-SHA256-P256 host key */
+    /* 7. Sign exchange hash with ECDSA-SHA256-P256 host key.
+     *
+     * CRITICAL: ECDSA standard (RFC 5656, FIPS 186) requires hashing the
+     * message before signing. The exchange hash H is the "message" — the
+     * ECDSA algorithm itself applies SHA-256 to it.  BearSSL's sign function
+     * expects the ALREADY-HASHED digest, so we must compute SHA-256(H)
+     * ourselves before calling it.
+     *
+     * OpenSSH does the same: EVP_DigestSign(SHA256, H) internally computes
+     * SHA-256(H) then signs that.  Without this step our signature is over H
+     * directly, which OpenSSH rejects ("error in libcrypto"). */
+    uint8_t hash_for_sign[32];
+    {
+        br_sha256_context sha_s;
+        br_sha256_init(&sha_s);
+        br_sha256_update(&sha_s, ctx->kex_hash, 32);
+        br_sha256_out(&sha_s, hash_for_sign);
+    }
+    dbg_hex("sshd-kex: SHA256(H)=", hash_for_sign, 32);
+
     uint8_t sig_asn1[80]; /* ECDSA signature in ASN.1 DER, max ~72 bytes */
     br_ec_private_key sk;
     sk.curve = BR_EC_secp256r1;
@@ -1089,19 +1108,19 @@ int ssh_server_kex(ssh_ctx_t *ctx,
     sk.xlen = 32;
 
     size_t sig_len = br_ecdsa_i31_sign_asn1(
-        ec_p256, &br_sha256_vtable, ctx->kex_hash, &sk, sig_asn1);
+        ec_p256, &br_sha256_vtable, hash_for_sign, &sk, sig_asn1);
     dbg_int("sshd-kex: ECDSA sign len=", (int)sig_len);
     if (sig_len == 0) return SSH_ERR_KEX;
     dbg_hex("sshd-kex: sig_asn1=", sig_asn1, sig_len > 32 ? 32 : sig_len);
 
-    /* Self-verify: confirm our signature is valid over our hash */
+    /* Self-verify: confirm our signature is valid over SHA-256(H) */
     {
         br_ec_public_key pk;
         pk.curve = BR_EC_secp256r1;
         pk.q = ecdsa_pub;
         pk.qlen = 65;
         uint32_t vfy = br_ecdsa_i31_vrfy_asn1(
-            ec_p256, ctx->kex_hash, 32, &pk, sig_asn1, sig_len);
+            ec_p256, hash_for_sign, 32, &pk, sig_asn1, sig_len);
         dbg_int("sshd-kex: self-verify=", (int)vfy);
     }
 

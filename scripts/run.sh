@@ -43,6 +43,10 @@ for arg in "$@"; do
         --virtio)
             VGA="virtio"
             VGA_LABEL="Virtio GPU (paravirtualized)"
+            # VirtIO GPU has no VMware backdoor — add USB tablet for absolute mouse positioning
+            if [ -z "$USB_FLAGS" ]; then
+                USB_FLAGS="-usb -device usb-tablet"
+            fi
             ;;
         --ide)
             IDE_MODE=true

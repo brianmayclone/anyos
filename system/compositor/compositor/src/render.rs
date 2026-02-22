@@ -83,9 +83,6 @@ pub fn render_thread_entry() {
             release_lock();
 
             frame = frame.wrapping_add(1);
-            if frame % 120 == 0 {
-                println!("compositor: render frame {}", frame);
-            }
         } else {
             // Lock contended — management thread is doing work (e.g. window creation).
             // Sleep 1ms and retry. Previous frame stays on screen.

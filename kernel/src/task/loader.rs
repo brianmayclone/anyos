@@ -149,11 +149,6 @@ pub extern "C" fn fork_child_trampoline() {
         r
     };
 
-    crate::serial_println!(
-        "  fork child T{}: returning to user at {:#018x}, stack={:#018x}, cs={:#x}",
-        tid, regs.rip, regs.rsp, regs.cs
-    );
-
     unsafe { fork_return_to_user(&regs); }
 }
 
@@ -302,7 +297,7 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
     let ph_size = hdr.e_phentsize as usize;
     let ph_num = hdr.e_phnum as usize;
 
-    crate::serial_println!("  ELF64: entry={:#018x}, {} program headers", entry, ph_num);
+
 
     let mut max_vaddr_end: u64 = 0;
     let mut total_pages: u32 = 0;
@@ -326,11 +321,6 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
         if memsz == 0 {
             continue;
         }
-
-        crate::serial_println!(
-            "  ELF64 PT_LOAD: vaddr={:#018x} filesz={:#x} memsz={:#x}",
-            vaddr, filesz, memsz
-        );
 
         // Validate: vaddr must be in user space (lower canonical half)
         if vaddr >= 0x0000_8000_0000_0000 {
@@ -418,7 +408,7 @@ fn load_elf32(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
     let ph_size = hdr.e_phentsize as usize;
     let ph_num = hdr.e_phnum as usize;
 
-    crate::serial_println!("  ELF32: entry={:#010x}, {} program headers", entry, ph_num);
+
 
     let mut max_vaddr_end: u64 = 0;
     let mut total_pages: u32 = 0;
@@ -441,11 +431,6 @@ fn load_elf32(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
         if memsz == 0 {
             continue;
         }
-
-        crate::serial_println!(
-            "  ELF32 PT_LOAD: vaddr={:#010x} filesz={:#x} memsz={:#x}",
-            vaddr, filesz, memsz
-        );
 
         if vaddr >= 0xC000_0000 {
             return Err("ELF32 segment in kernel space");
@@ -660,11 +645,6 @@ pub fn exec_current_process(data: &[u8], args: &str) -> &'static str {
         }
     };
 
-    crate::serial_println!(
-        "exec T{}: entry={:#018x}, brk={:#x}, compat32={}, pages={}",
-        tid, result.entry, result.brk, result.is_compat32, result.user_pages
-    );
-
     // Map DLLs into new address space
     crate::task::dll::map_all_dlls_into(new_pd);
 
@@ -698,10 +678,9 @@ pub fn exec_current_process(data: &[u8], args: &str) -> &'static str {
     // Re-enable interrupts and jump to user mode (never returns)
     let user_stack = USER_STACK_TOP - 8;
 
-    crate::serial_println!(
-        "exec T{}: jumping to user mode at {:#018x}, stack={:#018x}",
-        tid, result.entry, user_stack
-    );
+    let fmt = if result.is_compat32 { "elf32" } else { "elf64" };
+    crate::serial_println!("exec: T{} -> ({}, {} pages, entry={:#x})",
+        tid, fmt, result.user_pages, result.entry);
 
     if result.is_compat32 {
         unsafe { jump_to_user_mode_compat32(result.entry, user_stack); }
@@ -789,7 +768,6 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             Some(alloc::string::String::from(name))
         };
 
-        crate::serial_println!("  .app bundle: {} -> {}", path, resolved_path);
         resolved_path.as_str()
     } else {
         bundle_cwd = None;
@@ -818,8 +796,6 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         return Err("Program file is empty");
     }
 
-    crate::serial_println!("  Loading program '{}' ({} bytes)", path, data.len());
-
     // Create per-process PML4 (clones kernel mappings, empty user space)
     let pd_phys = virtual_mem::create_user_page_directory()
         .ok_or("Failed to create user page directory")?;
@@ -831,7 +807,6 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     let class = elf_class(&data);
     if class == ELFCLASS64 {
         // ---- ELF64 binary path ----
-        crate::serial_println!("  Detected ELF64 binary");
 
         // Allocate, map, and zero stack pages (single CR3 switch)
         let stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
@@ -856,14 +831,8 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         brk = elf_result.brk;
         total_user_pages += elf_result.pages_mapped + stack_mapped;
 
-        crate::serial_println!(
-            "  ELF64: PD={:#018x}, entry={:#018x}, brk={:#018x}, stack={:#010x}-{:#010x}",
-            pd_phys.as_u64(), entry_point, brk,
-            stack_bottom, USER_STACK_TOP
-        );
     } else if class == ELFCLASS32 {
         // ---- ELF32 binary path (32-bit compatibility) ----
-        crate::serial_println!("  Detected ELF32 binary");
 
         let stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
         let stack_mapped = virtual_mem::map_pages_range_in_pd(
@@ -883,11 +852,6 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         is_compat32 = true;
         total_user_pages += elf_result.pages_mapped + stack_mapped;
 
-        crate::serial_println!(
-            "  ELF32 (compat): PD={:#018x}, entry={:#010x}, brk={:#010x}, stack={:#010x}-{:#010x}",
-            pd_phys.as_u64(), entry_point, brk,
-            stack_bottom, USER_STACK_TOP
-        );
     } else if is_elf(&data) {
         return Err("Unknown ELF class (not ELF32 or ELF64)");
     } else {
@@ -932,10 +896,6 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         brk = PROGRAM_LOAD_ADDR + code_pages * PAGE_SIZE;
         total_user_pages += code_mapped + stack_mapped;
 
-        crate::serial_println!(
-            "  PD={:#018x}, {} code pages at {:#010x}, brk={:#010x}",
-            pd_phys.as_u64(), code_pages, PROGRAM_LOAD_ADDR, brk
-        );
     }
 
     // Spawn in Blocked state — the thread cannot be picked up by any CPU
@@ -1022,7 +982,9 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     };
     crate::task::scheduler::set_thread_identity(tid, parent_uid, parent_gid);
 
-    crate::serial_println!("  Spawn complete: TID={}, caps={:#x}, uid={}, gid={}, all setup done — waking thread", tid, caps, parent_uid, parent_gid);
+    let fmt = if is_compat32 { "elf32" } else if is_elf(&data) { "elf64" } else { "flat" };
+    crate::serial_println!("spawn: '{}' -> T{} ({}, {} pages, entry={:#x})",
+        path, tid, fmt, total_user_pages, entry_point);
 
     // All setup complete (CR3, pending data, args, CWD, caps). Now make the thread runnable.
     crate::task::scheduler::wake_thread(tid);
@@ -1046,16 +1008,8 @@ extern "C" fn user_thread_trampoline() {
     };
 
     if compat32 {
-        crate::serial_println!(
-            "  User trampoline (compat32): entering Ring 3 at {:#010x}, stack={:#010x}",
-            entry, user_stack
-        );
         unsafe { jump_to_user_mode_compat32(entry, user_stack); }
     } else {
-        crate::serial_println!(
-            "  User trampoline: entering Ring 3 at {:#018x}, stack={:#018x}",
-            entry, user_stack
-        );
         unsafe { jump_to_user_mode(entry, user_stack); }
     }
 }
@@ -1089,16 +1043,8 @@ pub extern "C" fn thread_create_trampoline() {
     };
 
     if compat32 {
-        crate::serial_println!(
-            "  Thread trampoline (compat32): entering Ring 3 at {:#010x}, stack={:#010x}",
-            entry, user_stack
-        );
         unsafe { jump_to_user_mode_compat32(entry, user_stack); }
     } else {
-        crate::serial_println!(
-            "  Thread trampoline: entering Ring 3 at {:#018x}, stack={:#018x}",
-            entry, user_stack
-        );
         unsafe { jump_to_user_mode(entry, user_stack); }
     }
 }

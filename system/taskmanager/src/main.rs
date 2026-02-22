@@ -386,10 +386,12 @@ fn render(
     // Uptime
     let ticks = sys::uptime();
     let hz = sys::tick_hz();
-    let secs = if hz > 0 { ticks / hz } else { 0 };
-    let mins = secs / 60;
-    let mut ubuf = [0u8; 24];
-    let ustr = fmt_uptime(&mut ubuf, mins, secs % 60);
+    let total_secs = if hz > 0 { ticks / hz } else { 0 };
+    let hours = total_secs / 3600;
+    let mins = (total_secs % 3600) / 60;
+    let secs = total_secs % 60;
+    let mut ubuf = [0u8; 32];
+    let ustr = fmt_uptime(&mut ubuf, hours, mins, secs);
     label(win_id, win_w as i32 - (ustr.len() as i32 * 7) - PAD, 6, ustr, colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
 
     if active_tab == 0 {
@@ -847,10 +849,13 @@ fn fmt_pct<'a>(buf: &'a mut [u8; 12], pct_x10: u32) -> &'a str {
     unsafe { core::str::from_utf8_unchecked(&buf[..p]) }
 }
 
-fn fmt_uptime<'a>(buf: &'a mut [u8; 24], mins: u32, secs: u32) -> &'a str {
+fn fmt_uptime<'a>(buf: &'a mut [u8; 32], hours: u32, mins: u32, secs: u32) -> &'a str {
     let mut p = 0;
-    buf[p..p + 8].copy_from_slice(b"Uptime: "); p += 8;
     let mut t = [0u8; 12];
+    if hours > 0 {
+        let s = fmt_u32(&mut t, hours); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
+        buf[p..p + 2].copy_from_slice(b"h "); p += 2;
+    }
     let s = fmt_u32(&mut t, mins); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
     buf[p..p + 2].copy_from_slice(b"m "); p += 2;
     let s = fmt_u32(&mut t, secs); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();

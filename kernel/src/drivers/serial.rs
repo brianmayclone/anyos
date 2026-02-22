@@ -349,6 +349,28 @@ macro_rules! serial_print {
     }};
 }
 
+/// Helper for `serial_println!` — returns the current thread name as a printable wrapper.
+/// Lock-free, safe to call from interrupt handlers and early boot.
+pub fn caller_name() -> CallerName {
+    let raw = crate::task::scheduler::debug_current_thread_name();
+    CallerName(raw)
+}
+
+/// Wrapper for printing the caller thread name in `serial_println!`.
+pub struct CallerName([u8; 32]);
+
+impl fmt::Display for CallerName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let len = self.0.iter().position(|&b| b == 0).unwrap_or(32);
+        if len == 0 {
+            f.write_str("kernel")
+        } else {
+            let s = core::str::from_utf8(&self.0[..len]).unwrap_or("?");
+            f.write_str(s)
+        }
+    }
+}
+
 #[macro_export]
 macro_rules! serial_println {
     () => { $crate::serial_print!("\n") };

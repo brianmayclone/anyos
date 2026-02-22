@@ -67,14 +67,14 @@ fn app() -> &'static mut App {
 // ── Log file parsing ─────────────────────────────────────────────────────────
 
 /// Parse a single log line.
-/// Format: `[HH:MM:SS.mmm] LEVEL source: message`
+/// Format: `[YYYY-MM-DD HH:MM:SS] LEVEL source: message`
 fn parse_log_line(line: &str) -> Option<LogEntry> {
     let line = line.trim();
-    if line.len() < 16 || !line.starts_with('[') {
+    if line.len() < 22 || !line.starts_with('[') {
         return None;
     }
 
-    // Extract timestamp [HH:MM:SS.mmm]
+    // Extract timestamp [YYYY-MM-DD HH:MM:SS]
     let close = line.find(']')?;
     let timestamp = String::from(&line[..close + 1]);
 
@@ -287,14 +287,11 @@ fn main() {
     toolbar.set_padding(6, 4, 6, 4);
     win.add(&toolbar);
 
-    let btn_refresh = toolbar.add_button("Refresh");
-    btn_refresh.set_size(70, 28);
+    let btn_refresh = toolbar.add_icon_button("");
+    btn_refresh.set_icon(ui::ICON_REFRESH);
+    btn_refresh.set_size(32, 28);
 
     toolbar.add_separator();
-
-    let lbl_filter = toolbar.add_label("Level:");
-    lbl_filter.set_size(40, 28);
-    lbl_filter.set_text_color(0xFF969696);
 
     let seg_level = ui::SegmentedControl::new("All|Error|Warn|Info|Kern|Debug");
     seg_level.set_size(360, 28);
@@ -310,15 +307,15 @@ fn main() {
     // ── Status bar (bottom) ──
     let status_bar = ui::View::new();
     status_bar.set_dock(ui::DOCK_BOTTOM);
-    status_bar.set_size(WIN_W, 24);
+    status_bar.set_size(WIN_W, 28);
     status_bar.set_color(0xFF252526);
-    status_bar.set_padding(8, 3, 8, 3);
+    status_bar.set_padding(12, 6, 12, 6);
     win.add(&status_bar);
 
     let status_label = ui::Label::new("Loading...");
     status_label.set_text_color(0xFF969696);
     status_label.set_font_size(12);
-    status_label.set_size(400, 18);
+    status_label.set_size(500, 16);
     status_bar.add(&status_label);
 
     // ── Detail pane (above status bar) ──
@@ -359,10 +356,10 @@ fn main() {
     grid.set_font(4); // Monospace for log data
 
     let cols = alloc::vec![
-        ui::ColumnDef::new("Time").width(120),
+        ui::ColumnDef::new("Time").width(170),
         ui::ColumnDef::new("Level").width(60),
         ui::ColumnDef::new("Source").width(100),
-        ui::ColumnDef::new("Message").width(500),
+        ui::ColumnDef::new("Message").width(450),
     ];
     grid.set_columns(&cols);
     win.add(&grid);

@@ -81,31 +81,42 @@ fn parse_u32(s: &str, default: u32) -> u32 {
 
 // ─── Timestamp ──────────────────────────────────────────────────────────────
 
-/// Format uptime in ms as `[HH:MM:SS.mmm]`.
-fn format_timestamp(buf: &mut [u8; 16]) -> usize {
-    let ms = anyos_std::sys::uptime_ms();
-    let secs = ms / 1000;
-    let millis = ms % 1000;
-    let hours = secs / 3600;
-    let mins = (secs % 3600) / 60;
-    let s = secs % 60;
+/// Format real-time clock as `[YYYY-MM-DD HH:MM:SS]`.
+fn format_timestamp(buf: &mut [u8; 22]) -> usize {
+    let mut t = [0u8; 8];
+    anyos_std::sys::time(&mut t);
+    // t = [year_lo, year_hi, month, day, hour, min, sec, 0]
+    let year = t[0] as u32 | ((t[1] as u32) << 8);
 
     buf[0] = b'[';
-    buf[1] = b'0' + ((hours / 10) % 10) as u8;
-    buf[2] = b'0' + (hours % 10) as u8;
-    buf[3] = b':';
-    buf[4] = b'0' + ((mins / 10) % 10) as u8;
-    buf[5] = b'0' + (mins % 10) as u8;
-    buf[6] = b':';
-    buf[7] = b'0' + ((s / 10) % 10) as u8;
-    buf[8] = b'0' + (s % 10) as u8;
-    buf[9] = b'.';
-    buf[10] = b'0' + ((millis / 100) % 10) as u8;
-    buf[11] = b'0' + ((millis / 10) % 10) as u8;
-    buf[12] = b'0' + (millis % 10) as u8;
-    buf[13] = b']';
-    buf[14] = b' ';
-    15
+    // YYYY
+    buf[1] = b'0' + ((year / 1000) % 10) as u8;
+    buf[2] = b'0' + ((year / 100) % 10) as u8;
+    buf[3] = b'0' + ((year / 10) % 10) as u8;
+    buf[4] = b'0' + (year % 10) as u8;
+    buf[5] = b'-';
+    // MM
+    buf[6] = b'0' + (t[2] / 10);
+    buf[7] = b'0' + (t[2] % 10);
+    buf[8] = b'-';
+    // DD
+    buf[9] = b'0' + (t[3] / 10);
+    buf[10] = b'0' + (t[3] % 10);
+    buf[11] = b' ';
+    // HH
+    buf[12] = b'0' + (t[4] / 10);
+    buf[13] = b'0' + (t[4] % 10);
+    buf[14] = b':';
+    // MM
+    buf[15] = b'0' + (t[5] / 10);
+    buf[16] = b'0' + (t[5] % 10);
+    buf[17] = b':';
+    // SS
+    buf[18] = b'0' + (t[6] / 10);
+    buf[19] = b'0' + (t[6] % 10);
+    buf[20] = b']';
+    buf[21] = b' ';
+    22
 }
 
 // ─── Log Writer ─────────────────────────────────────────────────────────────
@@ -215,15 +226,17 @@ fn file_size(path: &str) -> u32 {
 // ─── Dmesg Tracker ──────────────────────────────────────────────────────────
 
 /// Tracks how much of the kernel dmesg buffer we've already consumed.
+/// Uses a 32 KiB buffer matching the kernel's LOG_BUF_SIZE to avoid truncation.
 struct DmesgTracker {
     last_offset: usize,
-    buf: [u8; 8192],
+    buf: Vec<u8>,
 }
 
 impl DmesgTracker {
     fn new() -> Self {
+        // Allocate buffer matching kernel ring buffer size (32 KiB)
+        let mut buf = alloc::vec![0u8; 32 * 1024];
         // Read current dmesg to establish baseline — don't re-log boot messages
-        let mut buf = [0u8; 8192];
         let n = anyos_std::sys::dmesg(&mut buf) as usize;
         DmesgTracker {
             last_offset: n,
@@ -256,7 +269,7 @@ impl DmesgTracker {
 /// Output format: `[HH:MM:SS.mmm] LEVEL source: message`
 fn format_app_message(raw: &[u8], out: &mut Vec<u8>) {
     // Add timestamp
-    let mut ts_buf = [0u8; 16];
+    let mut ts_buf = [0u8; 22];
     let ts_len = format_timestamp(&mut ts_buf);
     out.extend_from_slice(&ts_buf[..ts_len]);
 
@@ -303,7 +316,7 @@ fn format_app_message(raw: &[u8], out: &mut Vec<u8>) {
 
 /// Format a kernel log line with timestamp prefix.
 fn format_kernel_line(line: &[u8], out: &mut Vec<u8>) {
-    let mut ts_buf = [0u8; 16];
+    let mut ts_buf = [0u8; 22];
     let ts_len = format_timestamp(&mut ts_buf);
     out.extend_from_slice(&ts_buf[..ts_len]);
     out.extend_from_slice(b"KERN  ");
@@ -333,7 +346,7 @@ fn main() {
 
     // Write startup message
     let mut startup_line = Vec::new();
-    let mut ts_buf = [0u8; 16];
+    let mut ts_buf = [0u8; 22];
     let ts_len = format_timestamp(&mut ts_buf);
     startup_line.extend_from_slice(&ts_buf[..ts_len]);
     startup_line.extend_from_slice(b"INFO  logd: logging daemon started\n");

@@ -235,10 +235,10 @@ flush_interval=5000
 All log entries use a consistent format:
 
 ```
-[HH:MM:SS.mmm] LEVEL source: message
+[YYYY-MM-DD HH:MM:SS] LEVEL source: message
 ```
 
-**Timestamp:** Uptime-based `[HH:MM:SS.mmm]` (TSC milliseconds since boot).
+**Timestamp:** Real-time clock (RTC) via `sys::time()`. Persists across reboots.
 
 **Level field** (padded to 5 characters):
 
@@ -252,11 +252,11 @@ All log entries use a consistent format:
 
 **Examples:**
 ```
-[00:03:12.456] INFO  logd: logging daemon started
-[00:03:12.510] INFO  sshd: listening on port 22
-[00:03:15.023] KERN  E1000: link up 1000 Mbps
-[00:04:01.789] WARN  webapp: connection pool 80% full
-[00:04:02.001] ERROR webapp: database connection timeout
+[2026-02-22 20:03:12] INFO  logd: logging daemon started
+[2026-02-22 20:03:12] INFO  sshd: listening on port 22
+[2026-02-22 20:03:15] KERN  E1000: link up 1000 Mbps
+[2026-02-22 20:04:01] WARN  webapp: connection pool 80% full
+[2026-02-22 20:04:02] ERROR webapp: database connection timeout
 ```
 
 ### Log Rotation

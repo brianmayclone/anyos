@@ -13,6 +13,7 @@ pub const ICON_SETTINGS: u32 = 8;
 pub const ICON_FILES: u32 = 9;
 pub const ICON_GIT_BRANCH: u32 = 10;
 pub const ICON_SEARCH: u32 = 11;
+pub const ICON_REFRESH: u32 = 12;
 
 leaf_control!(IconButton, KIND_ICON_BUTTON);
 

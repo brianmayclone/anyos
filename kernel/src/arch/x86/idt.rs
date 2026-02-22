@@ -3,6 +3,7 @@
 //! Sets up 256 entries: CPU exceptions (ISR 0-31), hardware IRQs remapped
 //! to INT 32-55, and the `int 0x80` syscall trap gate (DPL 3).
 
+use crate::serial_println;
 use core::arch::asm;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -972,34 +973,18 @@ pub extern "C" fn irq_handler(frame: &InterruptFrame) {
         // contiguous on all hypervisors (e.g., VirtualBox can assign 0,2,4,6).
         let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
 
-        // === DEBUG: Show TSC-based uptime every ~5s (LAPIC timer fires at 1000Hz) ===
+        // Periodic uptime summary every 60s (CPU 0 only, LAPIC at 1000Hz)
         if cpu_id == 0 {
             static LAPIC_TICK_CTR: AtomicU32 = AtomicU32::new(0);
             let ctr = LAPIC_TICK_CTR.fetch_add(1, Ordering::Relaxed) + 1;
-            if ctr % 5000 == 0 {
+            if ctr % 60_000 == 0 {
                 let uptime_ms = crate::arch::x86::pit::get_ticks();
-                uart_puts(b"[TICK] uptime=");
-                uart_put_dec((uptime_ms / 1000) as u32);
-                uart_puts(b"s");
-                // Compact scheduler diagnostic (lock-free atomics only)
-                let ncpu = crate::arch::x86::smp::cpu_count() as usize;
-                for c in 0..ncpu.min(4) {
-                    if c == 0 { uart_puts(b" ["); } else { uart_puts(b" "); }
-                    uart_puts(b"C");
-                    uart_put_dec(c as u32);
-                    uart_puts(b":");
-                    uart_put_dec(crate::task::scheduler::per_cpu_current_tid(c));
-                    if crate::task::scheduler::per_cpu_in_scheduler(c) {
-                        uart_puts(b"/S");
-                    }
-                    if !crate::task::scheduler::per_cpu_has_thread(c) {
-                        uart_puts(b"/I");
-                    }
-                }
-                uart_puts(b"]\n");
+                let secs = uptime_ms / 1000;
+                let mins = secs / 60;
+                let hrs = mins / 60;
+                serial_println!("uptime: {}h {}m {}s", hrs, mins % 60, secs % 60);
             }
         }
-        // === END DEBUG ===
         if cpu_id < 8 {
             // TSS.RSP0 corruption check on EVERY timer tick.
             // When a user thread is running on this CPU, TSS.RSP0 must point to
