@@ -63,6 +63,22 @@ pub fn run_once() -> u32 {
     // ── Phase 0: Drain marshal queue (cross-thread commands) ───────
     crate::marshal::drain(st);
 
+    // ── Phase 0.5: Fire elapsed timers ──────────────────────────────
+    {
+        let now = crate::syscall::uptime_ms();
+        for slot in &mut st.timers.slots {
+            if now.wrapping_sub(slot.last_fired_ms) >= slot.interval_ms {
+                pending_cbs.push(PendingCallback {
+                    id: slot.id,
+                    event_type: 0,
+                    cb: slot.callback,
+                    userdata: slot.userdata,
+                });
+                slot.last_fired_ms = now;
+            }
+        }
+    }
+
     // ── Phase 1: Poll events from all windows ──────────────────────
     let win_count = st.windows.len();
     for wi in 0..win_count {

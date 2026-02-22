@@ -40,6 +40,7 @@ pub mod font_bitmap;
 mod layout;
 mod marshal;
 mod syscall;
+mod timer;
 pub mod theme;
 
 use alloc::boxed::Box;
@@ -86,6 +87,9 @@ pub(crate) struct AnyuiState {
     pub last_click_tick: u64,
     /// Which mouse button was pressed (for right-click detection).
     pub pressed_button: u32,
+
+    // ── Timers ───────────────────────────────────────────────────────
+    pub timers: timer::TimerState,
 }
 
 static mut STATE: Option<AnyuiState> = None;
@@ -162,6 +166,7 @@ pub extern "C" fn anyui_init() -> u32 {
             last_click_id: None,
             last_click_tick: 0,
             pressed_button: 0,
+            timers: timer::TimerState::new(),
         });
     }
     1
@@ -1538,6 +1543,26 @@ pub extern "C" fn anyui_run_once() -> u32 {
 #[no_mangle]
 pub extern "C" fn anyui_quit() {
     state().quit_requested = true;
+}
+
+// ── Timers ───────────────────────────────────────────────────────────
+
+/// Register a periodic timer. Returns a timer ID (>0).
+/// The callback fires on the UI thread during run_once(), at approximately
+/// the given interval. Receives (timer_id, 0, userdata).
+#[no_mangle]
+pub extern "C" fn anyui_set_timer(
+    interval_ms: u32,
+    cb: control::Callback,
+    userdata: u64,
+) -> u32 {
+    state().timers.set_timer(interval_ms, cb, userdata)
+}
+
+/// Remove a timer by ID. No-op if the timer ID is invalid.
+#[no_mangle]
+pub extern "C" fn anyui_kill_timer(timer_id: u32) {
+    state().timers.kill_timer(timer_id);
 }
 
 // ── Control removal ──────────────────────────────────────────────────

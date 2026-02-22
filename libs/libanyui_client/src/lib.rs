@@ -243,6 +243,9 @@ struct AnyuiLib {
     treeview_get_node_count: extern "C" fn(u32) -> u32,
     treeview_set_indent_width: extern "C" fn(u32, u32),
     treeview_set_row_height: extern "C" fn(u32, u32),
+    // Timer
+    set_timer_fn: extern "C" fn(u32, Callback, u64) -> u32,
+    kill_timer_fn: extern "C" fn(u32),
 }
 
 static mut LIB: Option<AnyuiLib> = None;
@@ -390,6 +393,9 @@ pub fn init() -> bool {
             treeview_get_node_count: resolve(&handle, "anyui_treeview_get_node_count"),
             treeview_set_indent_width: resolve(&handle, "anyui_treeview_set_indent_width"),
             treeview_set_row_height: resolve(&handle, "anyui_treeview_set_row_height"),
+            // Timer
+            set_timer_fn: resolve(&handle, "anyui_set_timer"),
+            kill_timer_fn: resolve(&handle, "anyui_kill_timer"),
             _handle: handle,
         };
         (lib.init)();
@@ -709,4 +715,20 @@ pub fn marshal_set_size(id: u32, w: u32, h: u32) {
 /// Dispatch a callback to be executed on the UI thread.
 pub fn marshal_dispatch(cb: extern "C" fn(u64), userdata: u64) {
     (lib().marshal_dispatch)(cb, userdata);
+}
+
+// ── Timer API ────────────────────────────────────────────────────────
+
+/// Register a periodic timer that fires a closure on the UI thread.
+/// Returns a timer ID that can be passed to `kill_timer()`.
+pub fn set_timer(interval_ms: u32, mut f: impl FnMut() + 'static) -> u32 {
+    let (thunk, ud) = events::register(move |_id, _event_type| {
+        f();
+    });
+    (lib().set_timer_fn)(interval_ms, thunk, ud)
+}
+
+/// Remove a previously registered timer. No-op if the ID is invalid.
+pub fn kill_timer(timer_id: u32) {
+    (lib().kill_timer_fn)(timer_id);
 }
