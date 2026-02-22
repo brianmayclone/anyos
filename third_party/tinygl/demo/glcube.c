@@ -16,6 +16,7 @@
 /* ── anyOS Syscall Numbers ─────────────────────────────────────────────── */
 
 #define SYS_EXIT            1
+#define SYS_YIELD           7
 #define SYS_SLEEP           8
 #define SYS_UPTIME          31
 #define SYS_TICK_HZ         34
@@ -62,6 +63,89 @@ static int g_running = 1;
 
 static ZBuffer *g_zb;
 static float g_angle = 0.0f;
+
+/* ── FPS Counter ──────────────────────────────────────────────────────── */
+
+static uint32_t g_tick_hz;
+static uint32_t g_last_time;
+static uint32_t g_frame_count;
+static uint32_t g_fps;
+
+/* 5x7 bitmap font for "0123456789FPS:. " */
+static const uint8_t font_5x7[][7] = {
+    /* '0' */ {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E},
+    /* '1' */ {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E},
+    /* '2' */ {0x0E,0x11,0x01,0x06,0x08,0x10,0x1F},
+    /* '3' */ {0x0E,0x11,0x01,0x06,0x01,0x11,0x0E},
+    /* '4' */ {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02},
+    /* '5' */ {0x1F,0x10,0x1E,0x01,0x01,0x11,0x0E},
+    /* '6' */ {0x06,0x08,0x10,0x1E,0x11,0x11,0x0E},
+    /* '7' */ {0x1F,0x01,0x02,0x04,0x08,0x08,0x08},
+    /* '8' */ {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E},
+    /* '9' */ {0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C},
+    /* 'F' */ {0x1F,0x10,0x10,0x1E,0x10,0x10,0x10},
+    /* 'P' */ {0x1E,0x11,0x11,0x1E,0x10,0x10,0x10},
+    /* 'S' */ {0x0E,0x11,0x10,0x0E,0x01,0x11,0x0E},
+    /* ':' */ {0x00,0x04,0x04,0x00,0x04,0x04,0x00},
+    /* ' ' */ {0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+};
+
+static int font_index(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c == 'F') return 10;
+    if (c == 'P') return 11;
+    if (c == 'S') return 12;
+    if (c == ':') return 13;
+    return 14; /* space */
+}
+
+static void draw_char(int x, int y, char c, uint32_t color)
+{
+    int idx = font_index(c);
+    int row, col;
+    for (row = 0; row < 7; row++) {
+        uint8_t bits = font_5x7[idx][row];
+        for (col = 0; col < 5; col++) {
+            if (bits & (0x10 >> col)) {
+                int px = x + col, py = y + row;
+                if (px >= 0 && px < WIN_W && py >= 0 && py < WIN_H)
+                    g_surface[py * WIN_W + px] = color;
+            }
+        }
+    }
+}
+
+static void draw_string(int x, int y, const char *s, uint32_t color)
+{
+    while (*s) {
+        draw_char(x, y, *s, color);
+        x += 6;
+        s++;
+    }
+}
+
+static void draw_fps_overlay(void)
+{
+    char buf[16];
+    int i = 0;
+    uint32_t f = g_fps;
+
+    buf[i++] = 'F';
+    buf[i++] = 'P';
+    buf[i++] = 'S';
+    buf[i++] = ':';
+    buf[i++] = ' ';
+
+    if (f >= 100) { buf[i++] = '0' + (f / 100) % 10; }
+    if (f >= 10)  { buf[i++] = '0' + (f / 10) % 10; }
+    buf[i++] = '0' + f % 10;
+    buf[i] = 0;
+
+    /* Draw with black outline for readability */
+    draw_string(9, 9, buf, 0xFF000000);
+    draw_string(8, 8, buf, 0xFF00FF00);
+}
 
 /* ── Compositor Setup (identical pattern to DOOM/Quake) ─────────────── */
 
@@ -145,6 +229,7 @@ static void present_frame(void)
 
 static void init_gl(void)
 {
+    /* Use TinyGL internal buffer — copy to SHM atomically after render */
     g_zb = ZB_open(WIN_W, WIN_H, ZB_MODE_RGBA, NULL);
     glInit(g_zb);
 
@@ -246,12 +331,14 @@ static void render_frame(void)
 
     glEnd();
 
-    /* Copy TinyGL framebuffer to SHM surface and set alpha to opaque */
-    ZB_copyFrameBuffer(g_zb, g_surface, WIN_W * 4);
+    /* Copy TinyGL internal buffer to SHM with alpha=0xFF in a single pass.
+     * This is atomic from the compositor's perspective — SHM always contains
+     * a complete frame, never a half-rendered one. */
     {
+        const uint32_t *src = (const uint32_t *)g_zb->pbuf;
         int i, n = WIN_W * WIN_H;
         for (i = 0; i < n; i++)
-            g_surface[i] |= 0xFF000000;
+            g_surface[i] = src[i] | 0xFF000000;
     }
 
     g_angle += 1.0f;
@@ -274,11 +361,29 @@ int main(int argc, char **argv)
     init_gl();
     printf("GLCube: OpenGL initialized, rendering...\n");
 
+    g_tick_hz = _syscall(SYS_TICK_HZ, 0, 0, 0, 0);
+    g_last_time = _syscall(SYS_UPTIME, 0, 0, 0, 0);
+    g_frame_count = 0;
+    g_fps = 0;
+
     while (g_running) {
-        render_frame();
-        present_frame();
+        render_frame();         /* renders into TinyGL internal buffer, copies to SHM */
+        draw_fps_overlay();     /* draws directly into SHM (already complete) */
+        present_frame();        /* tells compositor: SHM is ready */
+        _syscall(SYS_SLEEP, 8, 0, 0, 0); /* SHM stays valid while compositor reads it */
         poll_events();
-        _syscall(SYS_SLEEP, 16, 0, 0, 0); /* ~60 fps target */
+
+        g_frame_count++;
+        {
+            uint32_t now = _syscall(SYS_UPTIME, 0, 0, 0, 0);
+            uint32_t elapsed = now - g_last_time;
+            if (elapsed >= g_tick_hz) {
+                g_fps = (g_frame_count * g_tick_hz) / elapsed;
+                printf("GLCube: %u FPS\n", (unsigned)g_fps);
+                g_frame_count = 0;
+                g_last_time = now;
+            }
+        }
     }
 
     glClose();
