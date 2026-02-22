@@ -120,12 +120,13 @@ void lexer_tokenize(const char *src, size_t len, TokenList *out) {
             continue;
         }
 
-        /* Quoted string: "..." */
+        /* Quoted string: "..." — prefix with \x01 so expand_args preserves semicolons */
         if (*p == '"') {
             p++; /* skip opening quote */
             size_t cap = 256;
             char *buf = amake_malloc(cap);
             size_t blen = 0;
+            buf[blen++] = '\x01'; /* quoted marker */
             while (p < end && *p != '"') {
                 if (*p == '\\' && p + 1 < end) {
                     char esc = p[1];

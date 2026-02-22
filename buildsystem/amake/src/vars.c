@@ -167,26 +167,38 @@ void expand_args(AmakeCtx *ctx, char **args, int argc,
     int i;
 
     for (i = 0; i < argc; i++) {
-        char *expanded = expand_vars(ctx, args[i]);
+        /* Check if arg was quoted (lexer marks with \x01 prefix) */
+        int quoted = (args[i][0] == '\x01');
+        const char *raw = quoted ? args[i] + 1 : args[i];
+        char *expanded = expand_vars(ctx, raw);
 
-        /* Split on semicolons (CMake list separator) */
-        char *tok = expanded;
-        char *semi;
-        while ((semi = strchr(tok, ';')) != NULL) {
+        if (quoted) {
+            /* Quoted arg: preserve semicolons, no splitting */
             if (count + 1 >= cap) {
                 cap *= 2;
                 result = amake_realloc(result, sizeof(char *) * cap);
             }
-            result[count++] = amake_strndup(tok, (size_t)(semi - tok));
-            tok = semi + 1;
+            result[count++] = expanded; /* take ownership */
+        } else {
+            /* Unquoted arg: split on semicolons (CMake list separator) */
+            char *tok = expanded;
+            char *semi;
+            while ((semi = strchr(tok, ';')) != NULL) {
+                if (count + 1 >= cap) {
+                    cap *= 2;
+                    result = amake_realloc(result, sizeof(char *) * cap);
+                }
+                result[count++] = amake_strndup(tok, (size_t)(semi - tok));
+                tok = semi + 1;
+            }
+            /* Last segment (or only segment if no semicolons) */
+            if (count + 1 >= cap) {
+                cap *= 2;
+                result = amake_realloc(result, sizeof(char *) * cap);
+            }
+            result[count++] = amake_strdup(tok);
+            free(expanded);
         }
-        /* Last segment (or only segment if no semicolons) */
-        if (count + 1 >= cap) {
-            cap *= 2;
-            result = amake_realloc(result, sizeof(char *) * cap);
-        }
-        result[count++] = amake_strdup(tok);
-        free(expanded);
     }
 
     *out_args = result;
