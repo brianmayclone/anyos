@@ -1,3 +1,5 @@
+use alloc::string::String;
+use crate::logic::config::Config;
 use crate::logic::project::BuildType;
 
 /// A running build/run process with pipe output capture.
@@ -64,17 +66,17 @@ impl BuildProcess {
 }
 
 /// Get the build command for the detected build system.
-pub fn build_command(bt: BuildType) -> (&'static str, &'static str) {
+pub fn build_command(bt: BuildType, config: &Config) -> (String, String) {
     match bt {
-        BuildType::Make => ("/bin/make", ""),
-        BuildType::SingleFile => ("/bin/cc", "main.c -o main"),
+        BuildType::Make => (config.make_path.clone(), String::new()),
+        BuildType::SingleFile => (config.cc_path.clone(), String::from("main.c -o main")),
     }
 }
 
 /// Get the run command for the detected build system.
-pub fn run_command(bt: BuildType) -> (&'static str, &'static str) {
+pub fn run_command(bt: BuildType, config: &Config) -> (String, String) {
     match bt {
-        BuildType::Make => ("/bin/make", "run"),
-        BuildType::SingleFile => ("./main", ""),
+        BuildType::Make => (config.make_path.clone(), String::from("run")),
+        BuildType::SingleFile => (String::from("./main"), String::new()),
     }
 }

@@ -8,43 +8,60 @@ const STYLE_BOLD: u32 = 1;
 const DIR_COLOR: u32 = 0xFFCCCCCC;
 const FILE_COLOR: u32 = 0xFFBBBBBB;
 
-/// Sidebar panel containing the file explorer TreeView.
+/// Sidebar panel with Explorer | Git tab switching.
 pub struct Sidebar {
     pub panel: ui::View,
+    pub tab_control: ui::SegmentedControl,
+    pub explorer_panel: ui::View,
     pub search: ui::SearchField,
     pub tree: ui::TreeView,
     paths: Vec<String>,
 }
 
 impl Sidebar {
-    /// Create the sidebar panel with header, search, and tree view.
+    /// Create the sidebar panel with tab control, explorer, and placeholder for git.
     pub fn new() -> Self {
         let panel = ui::View::new();
         panel.set_color(0xFF252526);
+
+        // Tab switcher at top
+        let tab_control = ui::SegmentedControl::new("Explorer|Git");
+        tab_control.set_dock(ui::DOCK_TOP);
+        tab_control.set_size(200, 26);
+        tab_control.set_margin(4, 4, 4, 2);
+        panel.add(&tab_control);
+
+        // Explorer panel (search + tree)
+        let explorer_panel = ui::View::new();
+        explorer_panel.set_dock(ui::DOCK_FILL);
+        explorer_panel.set_color(0xFF252526);
+        panel.add(&explorer_panel);
 
         let header = ui::Label::new("EXPLORER");
         header.set_dock(ui::DOCK_TOP);
         header.set_size(200, 20);
         header.set_font_size(11);
         header.set_text_color(0xFF969696);
-        header.set_margin(8, 6, 0, 2);
-        panel.add(&header);
+        header.set_margin(8, 2, 0, 2);
+        explorer_panel.add(&header);
 
         let search = ui::SearchField::new();
         search.set_dock(ui::DOCK_TOP);
         search.set_size(200, 28);
         search.set_margin(4, 0, 4, 4);
         search.set_placeholder("Filter files...");
-        panel.add(&search);
+        explorer_panel.add(&search);
 
         let tree = ui::TreeView::new(200, 400);
         tree.set_dock(ui::DOCK_FILL);
         tree.set_indent_width(16);
         tree.set_row_height(22);
-        panel.add(&tree);
+        explorer_panel.add(&tree);
 
         Self {
             panel,
+            tab_control,
+            explorer_panel,
             search,
             tree,
             paths: Vec::new(),

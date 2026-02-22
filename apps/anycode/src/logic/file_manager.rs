@@ -42,9 +42,9 @@ impl FileManager {
     }
 
     /// Add a new untitled file. Returns the (index, path).
-    pub fn add_untitled(&mut self) -> (usize, String) {
+    pub fn add_untitled(&mut self, temp_dir: &str) -> (usize, String) {
         self.untitled_counter += 1;
-        let p = format!("/tmp/untitled-{}.txt", self.untitled_counter);
+        let p = format!("{}/untitled-{}.txt", temp_dir, self.untitled_counter);
         let idx = self.files.len();
         self.files.push(OpenFileData {
             path: p.clone(),

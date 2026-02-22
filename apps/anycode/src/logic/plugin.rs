@@ -14,13 +14,11 @@ pub struct Plugin {
     pub run_args: Option<String>,
 }
 
-const PLUGIN_DIR: &str = "/Libraries/anycode/plugins";
-
 /// Scan the plugin directory and load all plugins.
-pub fn load_plugins() -> Vec<Plugin> {
+pub fn load_plugins(plugin_dir: &str) -> Vec<Plugin> {
     let mut plugins = Vec::new();
 
-    let entries = match anyos_std::fs::read_dir(PLUGIN_DIR) {
+    let entries = match anyos_std::fs::read_dir(plugin_dir) {
         Ok(rd) => rd,
         Err(_) => return plugins,
     };
@@ -29,7 +27,7 @@ pub fn load_plugins() -> Vec<Plugin> {
         if !entry.is_dir() || entry.name == "." || entry.name == ".." {
             continue;
         }
-        if let Some(p) = load_single_plugin(&entry.name) {
+        if let Some(p) = load_single_plugin(plugin_dir, &entry.name) {
             plugins.push(p);
         }
     }
@@ -37,8 +35,8 @@ pub fn load_plugins() -> Vec<Plugin> {
     plugins
 }
 
-fn load_single_plugin(dir_name: &str) -> Option<Plugin> {
-    let plugin_dir = format!("{}/{}", PLUGIN_DIR, dir_name);
+fn load_single_plugin(base_dir: &str, dir_name: &str) -> Option<Plugin> {
+    let plugin_dir = format!("{}/{}", base_dir, dir_name);
     let json_path = format!("{}/plugin.json", plugin_dir);
 
     let data = anyos_std::fs::read_to_string(&json_path).ok()?;

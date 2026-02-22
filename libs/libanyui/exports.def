@@ -105,3 +105,5 @@ EXPORTS
     anyui_treeview_get_node_count
     anyui_treeview_set_indent_width
     anyui_treeview_set_row_height
+    anyui_set_timer
+    anyui_kill_timer

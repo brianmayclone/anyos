@@ -53,8 +53,8 @@ impl EditorView {
 
         // Load syntax highlighting
         let filename = path::basename(file_path);
-        if let Some(syn_path) = syntax_map::syntax_for_filename(filename) {
-            editor.load_syntax(syn_path);
+        if let Some(syn_path) = syntax_map::syntax_for_filename(&config.syntax_dir, filename) {
+            editor.load_syntax(&syn_path);
         }
 
         self.panel.add(&editor);
