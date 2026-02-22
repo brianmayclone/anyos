@@ -550,16 +550,16 @@ anyOS uses two shared library formats at fixed virtual addresses (0x04000000+):
 
 | Library | Format | Base Address | Exports | Description |
 |---------|--------|-------------|---------|-------------|
-| **uisys** | DLIB | `0x04000000` | 81 | macOS-style UI components (31 component types) |
+| **uisys** | DLIB | `0x04000000` | 80 | macOS-style UI components (31 component types) |
 | **libimage** | DLIB | `0x04100000` | 7 | Image/video decoding (BMP, PNG, JPEG, GIF, ICO, MJV) + scaling |
 | **librender** | DLIB | `0x04300000` | 18 | 2D rendering primitives (shapes, gradients, anti-aliasing) |
 | **libcompositor** | DLIB | `0x04380000` | 16 | Window management IPC (SHM surfaces, event channels) |
-| **libanyui** | .so | `0x04400000` | 111 | anyui UI framework (42 controls, Windows Forms-style) |
+| **libanyui** | .so | `0x04400000` | 112 | anyui UI framework (41 controls, Windows Forms-style) |
 | **libfont** | .so | `0x05000000` | 7 | TrueType font rendering (gamma-corrected greyscale + LCD subpixel AA), system fonts embedded in .rodata |
 
 ### uisys.dlib
 
-The main UI system DLIB provides 81 exported functions implementing 31 UI components:
+The main UI system DLIB provides 80 exported functions implementing 31 UI components:
 - Inputs: Button, Toggle, Checkbox, Radio, Slider, Stepper, TextField, SearchField, TextArea
 - Layout: Sidebar, NavigationBar, Toolbar, TabBar, SegmentedControl, SplitView, ScrollView
 - Data: TableView, ContextMenu, Card, GroupBox, Badge, Tag, ProgressBar

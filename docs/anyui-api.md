@@ -1,10 +1,11 @@
 # anyui Controls Framework API Reference
 
-The **anyui** framework is a Windows Forms-inspired UI toolkit providing 41 control types for anyOS GUI applications. It consists of a server-side library (**libanyui**) compiled into the compositor, and a client-side wrapper (**libanyui_client**) that user programs link against.
+The **anyui** framework is a Windows Forms-inspired UI toolkit providing 41 control types for anyOS GUI applications. It consists of a server-side library (**libanyui**, `.so` at `0x04400000`) compiled into the compositor, and a client-side wrapper (**libanyui_client**) that user programs link against.
 
 **Exports:** 112 (C ABI, `#[no_mangle]`)
 **Client crate:** `libanyui_client`
 **Controls:** 41 types (ControlKind 0–40)
+**Symbol resolution:** `dl_open`/`dl_sym` (ELF `.dynsym`/`.hash`)
 
 ---
 

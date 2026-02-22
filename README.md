@@ -359,11 +359,11 @@ anyos/
   libs/                  Libraries
     stdlib/                anyos_std — Rust standard library for user programs
     libc/                  POSIX C library (35 headers, i686-elf-gcc)
-    uisys/                 uisys.dlib — UI component DLL (31 components, 81 exports)
+    uisys/                 uisys.dlib — UI component DLL (31 components, 80 exports)
     uisys_client/          Client stub crate for uisys
     libimage/              libimage.dlib — Image decoding DLL (PNG, BMP, JPEG, ICO, MJV)
     libimage_client/       Client stub crate for libimage
-    libanyui/              libanyui.so — anyui UI framework (42 controls, 111 exports)
+    libanyui/              libanyui.so — anyui UI framework (41 controls, 112 exports)
     libanyui_client/       Client crate for libanyui (dynlink-based)
     libfont/               libfont.so — TrueType font rendering (embedded system fonts in .rodata)
     libfont_client/        Client crate for libfont (dynlink-based)
@@ -421,11 +421,11 @@ anyOS uses two shared library formats, both loaded at fixed virtual addresses:
 
 | Library | Format | Base Address | Exports | Purpose |
 |---------|--------|-------------|---------|---------|
-| uisys | DLIB | `0x04000000` | 81 | UI controls (buttons, text fields, scroll views, context menus, toolbars, ...) |
+| uisys | DLIB | `0x04000000` | 80 | UI controls (buttons, text fields, scroll views, context menus, toolbars, ...) |
 | libimage | DLIB | `0x04100000` | 7 | Image decoding (PNG, BMP, JPEG, ICO) and scaling |
 | librender | DLIB | `0x04300000` | 18 | 2D drawing primitives (lines, rects, circles, gradients) |
 | libcompositor | DLIB | `0x04380000` | 16 | Window creation, event handling, IPC with compositor |
-| libanyui | .so | `0x04400000` | 111 | anyui UI framework (42 controls, Windows Forms-style) |
+| libanyui | .so | `0x04400000` | 112 | anyui UI framework (41 controls, Windows Forms-style) |
 | libfont | .so | `0x05000000` | 7 | TrueType font rendering with LCD subpixel AA (system fonts embedded in .rodata) |
 
 DLIB programs link against lightweight client stub crates (e.g. `uisys_client`) that read the export table at the known base address. `.so` programs use `dynlink` crate (`dl_open`/`dl_sym`) for ELF symbol resolution.
@@ -437,8 +437,8 @@ DLIB programs link against lightweight client stub crates (e.g. `uisys_client`) 
 - **[Architecture Overview](docs/architecture.md)** — Boot process, memory layout, scheduling, IPC, USB, user identity
 - **[Syscall Reference](docs/syscalls.md)** — Complete reference for all 140 system calls
 - **[Standard Library API](docs/stdlib-api.md)** — `anyos_std` crate reference for Rust user programs
-- **[UI System API](docs/uisys-api.md)** — `uisys` DLL component reference (31 components, 81 exports)
-- **[anyui Controls API](docs/anyui-api.md)** — anyui framework reference (42 controls, 111 exports)
+- **[UI System API](docs/uisys-api.md)** — `uisys` DLL component reference (31 components, 80 exports)
+- **[anyui Controls API](docs/anyui-api.md)** — anyui framework reference (41 controls, 112 exports)
 - **[C Library API](docs/libc-api.md)** — POSIX libc reference (35 headers) for C programs
 - **[libimage API](docs/libimage-api.md)** — Image decoding, scaling, ICO, and video (MJV)
 - **[libfont API](docs/libfont-api.md)** — TrueType font rendering with subpixel LCD anti-aliasing
