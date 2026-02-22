@@ -147,8 +147,8 @@ fn main() {
     let args_str = anyos_std::process::args(&mut arg_buf);
     let parts: alloc::vec::Vec<&str> = args_str.split_whitespace().collect();
 
-    // parts[0] = "svc", parts[1] = command, parts[2] = service name, parts[3..] = extra args
-    if parts.len() < 3 {
+    // args() strips argv[0], so parts[0] = command, parts[1] = service name, parts[2..] = extra
+    if parts.len() < 2 {
         anyos_std::println!("Usage: svc <start|stop|status|restart> <service> [args...]");
         anyos_std::println!("");
         anyos_std::println!("Known services: sshd, echoserver");
@@ -162,13 +162,13 @@ fn main() {
         return;
     }
 
-    let cmd = parts[1];
-    let name = parts[2];
+    let cmd = parts[0];
+    let name = parts[1];
 
-    // Collect extra args (parts[3..])
-    let extra = if parts.len() > 3 {
+    // Collect extra args (parts[2..])
+    let extra = if parts.len() > 2 {
         let mut s = String::new();
-        for i in 3..parts.len() {
+        for i in 2..parts.len() {
             if !s.is_empty() { s.push(' '); }
             s.push_str(parts[i]);
         }

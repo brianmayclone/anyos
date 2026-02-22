@@ -22,6 +22,28 @@ extern int _syscall(int num, int a, int b, int c, int d);
 #define SYS_TCP_RECV_AVAILABLE 130
 #define SYS_RANDOM      210
 #define SYS_NET_POLL    50
+#define SYS_WRITE       2
+
+/* Simple debug output via serial (fd=1) */
+static void dbg(const char *msg) {
+    int len = 0;
+    while (msg[len]) len++;
+    _syscall(SYS_WRITE, 1, (int)msg, len, 0);
+}
+static void dbg_int(const char *prefix, int val) {
+    char buf[64];
+    int pos = 0;
+    while (*prefix && pos < 50) buf[pos++] = *prefix++;
+    /* Write decimal number */
+    if (val < 0) { buf[pos++] = '-'; val = -val; }
+    char tmp[12];
+    int tpos = 0;
+    if (val == 0) tmp[tpos++] = '0';
+    while (val > 0 && tpos < 11) { tmp[tpos++] = '0' + (val % 10); val /= 10; }
+    while (tpos > 0) buf[pos++] = tmp[--tpos];
+    buf[pos++] = '\n';
+    _syscall(SYS_WRITE, 1, (int)buf, pos, 0);
+}
 
 /* =========================================================================
  * Helpers
@@ -345,11 +367,14 @@ int ssh_version_exchange(ssh_ctx_t *ctx) {
         pos++;
     }
 
-    if (strncmp(line, "SSH-2.0-", 8) != 0 && strncmp(line, "SSH-1.99-", 9) != 0)
+    if (strncmp(line, "SSH-2.0-", 8) != 0 && strncmp(line, "SSH-1.99-", 9) != 0) {
+        dbg("ssh: bad version line\n");
         return SSH_ERR_PROTO;
+    }
 
     strncpy(peer_ver, line, 63);
     peer_ver[63] = '\0';
+    dbg("ssh: peer version: "); dbg(peer_ver); dbg("\n");
     return SSH_OK;
 }
 
@@ -620,8 +645,7 @@ int ssh_kex(ssh_ctx_t *ctx) {
                'F', 32, ctx->mac_s2c);  /* MAC key s2c */
 
     ctx->encrypted = 1;
-    ctx->seq_c2s = 0;
-    ctx->seq_s2c = 0;
+    /* RFC 4253 Section 6.4: sequence numbers must NEVER be reset, even after rekey */
 
     /* Clean up sensitive data */
     memset(my_priv, 0, 32);
@@ -878,7 +902,9 @@ int ssh_server_kex(ssh_ctx_t *ctx,
     uint32_t host_key_blob_len = build_ecdsa_host_key_blob(host_key_blob, ecdsa_pub);
 
     /* 1. Receive client KEXINIT */
+    dbg("sshd-kex: waiting for client KEXINIT...\n");
     rc = ssh_recv_packet(ctx);
+    dbg_int("sshd-kex: recv_packet returned ", rc);
     if (rc < 0) return rc;
     if (rc != SSH_MSG_KEXINIT) return SSH_ERR_PROTO;
 
@@ -886,10 +912,12 @@ int ssh_server_kex(ssh_ctx_t *ctx,
     if (!ctx->client_kexinit) return SSH_ERR_ALLOC;
     memcpy(ctx->client_kexinit, ctx->rbuf, ctx->rbuf_len);
     ctx->client_kexinit_len = ctx->rbuf_len;
+    dbg_int("sshd-kex: got client KEXINIT bytes=", ctx->client_kexinit_len);
 
     /* 2. Send server KEXINIT */
     uint8_t kexinit_buf[1024];
     uint32_t kexinit_len = build_server_kexinit(kexinit_buf);
+    dbg_int("sshd-kex: sending server KEXINIT bytes=", kexinit_len);
 
     ctx->server_kexinit = (uint8_t *)malloc(kexinit_len);
     if (!ctx->server_kexinit) return SSH_ERR_ALLOC;
@@ -897,10 +925,13 @@ int ssh_server_kex(ssh_ctx_t *ctx,
     ctx->server_kexinit_len = kexinit_len;
 
     rc = ssh_send_packet(ctx, kexinit_buf, kexinit_len);
+    dbg_int("sshd-kex: send_packet returned ", rc);
     if (rc != SSH_OK) return rc;
 
     /* 3. Receive ECDH_INIT (client ephemeral public key) */
+    dbg("sshd-kex: waiting for ECDH_INIT...\n");
     rc = ssh_recv_packet(ctx);
+    dbg_int("sshd-kex: ECDH recv returned ", rc);
     if (rc < 0) return rc;
     if (rc != SSH_MSG_KEX_ECDH_INIT) return SSH_ERR_PROTO;
 
@@ -1001,13 +1032,39 @@ int ssh_server_kex(ssh_ctx_t *ctx,
 
     size_t sig_len = br_ecdsa_i31_sign_asn1(
         ec_p256, &br_sha256_vtable, ctx->kex_hash, &sk, sig_asn1);
+    dbg_int("sshd-kex: ECDSA sign len=", (int)sig_len);
     if (sig_len == 0) return SSH_ERR_KEX;
 
-    /* Build signature blob: string("ecdsa-sha2-nistp256") + string(sig_asn1) */
+    /* Convert ASN.1 DER signature to SSH format: mpint(r) || mpint(s) per RFC 5656 */
+    /* DER: 30 <len> 02 <r_len> <r_bytes> 02 <s_len> <s_bytes> */
+    uint8_t sig_ssh[128];
+    uint32_t sig_ssh_len = 0;
+    {
+        const uint8_t *d = sig_asn1;
+        if (d[0] != 0x30) return SSH_ERR_KEX;
+        size_t dp = 2; /* skip SEQUENCE tag + length */
+        if (d[dp] != 0x02) return SSH_ERR_KEX;
+        dp++;
+        uint8_t r_len = d[dp++];
+        const uint8_t *r_data = &d[dp];
+        dp += r_len;
+        if (d[dp] != 0x02) return SSH_ERR_KEX;
+        dp++;
+        uint8_t s_len = d[dp++];
+        const uint8_t *s_data = &d[dp];
+
+        /* Write mpint(r) || mpint(s) */
+        put_u32(sig_ssh, r_len); sig_ssh_len = 4;
+        memcpy(sig_ssh + sig_ssh_len, r_data, r_len); sig_ssh_len += r_len;
+        put_u32(sig_ssh + sig_ssh_len, s_len); sig_ssh_len += 4;
+        memcpy(sig_ssh + sig_ssh_len, s_data, s_len); sig_ssh_len += s_len;
+    }
+
+    /* Build signature blob: string("ecdsa-sha2-nistp256") + string(mpint_r || mpint_s) */
     uint8_t sig_blob[256];
     uint32_t sig_off = 0;
     put_cstring(sig_blob, "ecdsa-sha2-nistp256", &sig_off);
-    put_string(sig_blob, sig_asn1, sig_len, &sig_off);
+    put_string(sig_blob, sig_ssh, sig_ssh_len, &sig_off);
 
     /* 8. Send ECDH_REPLY: K_S + Q_S + signature */
     uint32_t reply_len = 1 + (4 + host_key_blob_len) + (4 + 32) + (4 + sig_off);
@@ -1020,17 +1077,22 @@ int ssh_server_kex(ssh_ctx_t *ctx,
     put_string(reply, my_pub, 32, &off);
     put_string(reply, sig_blob, sig_off, &off);
 
+    dbg_int("sshd-kex: ECDH_REPLY payload size=", (int)off);
     rc = ssh_send_packet(ctx, reply, off);
     free(reply);
+    dbg_int("sshd-kex: ECDH_REPLY send rc=", rc);
     if (rc != SSH_OK) return rc;
 
     /* 9. Send NEWKEYS */
     uint8_t newkeys = SSH_MSG_NEWKEYS;
     rc = ssh_send_packet(ctx, &newkeys, 1);
+    dbg_int("sshd-kex: NEWKEYS send rc=", rc);
     if (rc != SSH_OK) return rc;
 
     /* 10. Receive NEWKEYS */
+    dbg("sshd-kex: waiting for client NEWKEYS...\n");
     rc = ssh_recv_packet(ctx);
+    dbg_int("sshd-kex: recv NEWKEYS rc=", rc);
     if (rc < 0) return rc;
     if (rc != SSH_MSG_NEWKEYS) return SSH_ERR_PROTO;
 
@@ -1053,8 +1115,8 @@ int ssh_server_kex(ssh_ctx_t *ctx,
                'F', 32, ctx->mac_s2c);
 
     ctx->encrypted = 1;
-    ctx->seq_c2s = 0;
-    ctx->seq_s2c = 0;
+    /* RFC 4253 Section 6.4: sequence numbers must NEVER be reset, even after rekey */
+    dbg("sshd-kex: KEX complete, encryption enabled\n");
 
     memset(my_priv, 0, 32);
     memset(shared_secret, 0, 32);
@@ -1084,51 +1146,63 @@ int ssh_server_auth(ssh_ctx_t *ctx, char *user_buf, uint32_t user_buf_len,
     rc = ssh_send_packet(ctx, accept, off);
     if (rc != SSH_OK) return rc;
 
-    /* Receive USERAUTH_REQUEST */
-    rc = ssh_recv_packet(ctx);
-    if (rc < 0) return rc;
-    if (rc != SSH_MSG_USERAUTH_REQUEST) return SSH_ERR_PROTO;
+    /* Receive USERAUTH_REQUEST(s) — OpenSSH sends "none" first, then "password" */
+    for (int auth_attempts = 0; auth_attempts < 5; auth_attempts++) {
+        rc = ssh_recv_packet(ctx);
+        if (rc < 0) return rc;
+        if (rc != SSH_MSG_USERAUTH_REQUEST) return SSH_ERR_PROTO;
 
-    /* Parse: username + service + method + ... */
-    off = 1; /* skip type byte */
-    const uint8_t *username;
-    uint32_t username_len;
-    if (get_string(ctx->rbuf, ctx->rbuf_len, &off, &username, &username_len) < 0)
-        return SSH_ERR_PROTO;
+        /* Parse: username + service + method + ... */
+        off = 1; /* skip type byte */
+        const uint8_t *username;
+        uint32_t username_len;
+        if (get_string(ctx->rbuf, ctx->rbuf_len, &off, &username, &username_len) < 0)
+            return SSH_ERR_PROTO;
 
-    const uint8_t *service;
-    uint32_t service_len;
-    if (get_string(ctx->rbuf, ctx->rbuf_len, &off, &service, &service_len) < 0)
-        return SSH_ERR_PROTO;
+        const uint8_t *service;
+        uint32_t service_len;
+        if (get_string(ctx->rbuf, ctx->rbuf_len, &off, &service, &service_len) < 0)
+            return SSH_ERR_PROTO;
 
-    const uint8_t *method;
-    uint32_t method_len;
-    if (get_string(ctx->rbuf, ctx->rbuf_len, &off, &method, &method_len) < 0)
-        return SSH_ERR_PROTO;
+        const uint8_t *method;
+        uint32_t method_len;
+        if (get_string(ctx->rbuf, ctx->rbuf_len, &off, &method, &method_len) < 0)
+            return SSH_ERR_PROTO;
 
-    /* Only support "password" method */
-    if (method_len != 8 || memcmp(method, "password", 8) != 0)
-        return SSH_ERR_AUTH;
+        /* If method is "password", extract credentials and return */
+        if (method_len == 8 && memcmp(method, "password", 8) == 0) {
+            /* Skip the boolean (FALSE = not changing password) */
+            if (off >= ctx->rbuf_len) return SSH_ERR_PROTO;
+            off++; /* skip boolean */
 
-    /* Skip the boolean (FALSE = not changing password) */
-    if (off >= ctx->rbuf_len) return SSH_ERR_PROTO;
-    off++; /* skip boolean */
+            const uint8_t *password;
+            uint32_t password_len;
+            if (get_string(ctx->rbuf, ctx->rbuf_len, &off, &password, &password_len) < 0)
+                return SSH_ERR_PROTO;
 
-    const uint8_t *password;
-    uint32_t password_len;
-    if (get_string(ctx->rbuf, ctx->rbuf_len, &off, &password, &password_len) < 0)
-        return SSH_ERR_PROTO;
+            /* Copy to output buffers */
+            uint32_t ucopy = username_len < user_buf_len - 1 ? username_len : user_buf_len - 1;
+            memcpy(user_buf, username, ucopy);
+            user_buf[ucopy] = '\0';
 
-    /* Copy to output buffers */
-    uint32_t ucopy = username_len < user_buf_len - 1 ? username_len : user_buf_len - 1;
-    memcpy(user_buf, username, ucopy);
-    user_buf[ucopy] = '\0';
+            uint32_t pcopy = password_len < pass_buf_len - 1 ? password_len : pass_buf_len - 1;
+            memcpy(pass_buf, password, pcopy);
+            pass_buf[pcopy] = '\0';
 
-    uint32_t pcopy = password_len < pass_buf_len - 1 ? password_len : pass_buf_len - 1;
-    memcpy(pass_buf, password, pcopy);
-    pass_buf[pcopy] = '\0';
+            return SSH_OK;
+        }
 
-    return SSH_OK;
+        /* For "none" or other methods, send USERAUTH_FAILURE with supported methods */
+        uint8_t fail[64];
+        uint32_t foff = 0;
+        fail[foff++] = SSH_MSG_USERAUTH_FAILURE;
+        put_cstring(fail, "password", &foff); /* name-list of methods that can continue */
+        fail[foff++] = 0; /* partial success = FALSE */
+        rc = ssh_send_packet(ctx, fail, foff);
+        if (rc != SSH_OK) return rc;
+    }
+
+    return SSH_ERR_AUTH;
 }
 
 /* =========================================================================

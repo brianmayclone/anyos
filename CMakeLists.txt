@@ -1305,11 +1305,11 @@ add_custom_command(
 )
 
 add_custom_command(
-  OUTPUT ${SYSROOT_DIR}/bin/ssh
-  COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/bin
-  COMMAND ${CMAKE_COMMAND} -E copy ${SSH_CLIENT_ELF} ${SYSROOT_DIR}/bin/ssh
+  OUTPUT ${SYSROOT_DIR}/System/bin/ssh
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/System/bin
+  COMMAND ${CMAKE_COMMAND} -E copy ${SSH_CLIENT_ELF} ${SYSROOT_DIR}/System/bin/ssh
   DEPENDS ${SSH_CLIENT_ELF}
-  COMMENT "Installing SSH client to /bin/ssh"
+  COMMENT "Installing SSH client to /System/bin/ssh"
 )
 
 # Build SSH server (sshd.elf)
@@ -1376,7 +1376,7 @@ set(C_TOOLCHAIN_DEPS
   ${SYSROOT_DIR}/System/bin/curl
   ${SYSROOT_DIR}/System/bin/git
   ${SYSROOT_DIR}/System/bin/sh
-  ${SYSROOT_DIR}/bin/ssh
+  ${SYSROOT_DIR}/System/bin/ssh
   ${SYSROOT_DIR}/System/bin/sshd
 )
 
