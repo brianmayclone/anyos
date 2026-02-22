@@ -43,9 +43,21 @@ font::draw_string_buf(&mut pixels, 200, 30, 0, 0, 0xFFFFFFFF, 0, 13, "Hello, Wor
 
 ### `init()`
 
-Initialize the font subsystem. Loads the `.so` via `dl_open("/Libraries/libfont.so")`, resolves all exported symbols, and calls `font_init()` which registers the embedded system fonts and auto-detects LCD subpixel rendering capability based on GPU driver (enabled for VMware SVGA II).
+Initialize the font subsystem. Loads the `.so` via `dl_open("/Libraries/libfont.so")`, resolves all exported symbols, and calls `font_init()` which registers the embedded system fonts, initializes the gamma correction LUTs, and auto-detects LCD subpixel rendering capability based on GPU driver (enabled for VMware SVGA II).
 
 Must be called once before any other font operations. Returns `true` on success.
+
+#### Gamma Correction
+
+During init, two 256-byte lookup tables are computed for size-adaptive gamma correction:
+
+| Font Size | LUT | Effect |
+|-----------|-----|--------|
+| ≤ 14 px | Strong (`GAMMA_LUT_S`) | ~50% coverage boost for thin strokes — small text is clearly visible on dark backgrounds |
+| 15–24 px | Moderate (`GAMMA_LUT_M`) | ~33% boost — balanced readability without over-thickening |
+| > 24 px | Identity (no LUT) | Large text has sufficient stroke width, no correction needed |
+
+The gamma curve blends linear and square-root components using integer math (no floating point). The 256-byte LUT lives permanently in L1 cache — zero measurable performance overhead (one byte lookup per coverage sample).
 
 ---
 
