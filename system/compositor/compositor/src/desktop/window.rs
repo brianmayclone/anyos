@@ -1051,25 +1051,36 @@ impl Desktop {
             let src_slice = unsafe { core::slice::from_raw_parts(shm_ptr, src_count) };
 
             if needs_scale && dirty_rect.is_none() {
-                // Scaled path — only used for full present (dirty rect + scale not supported)
+                // Scaled path using fixed-point stepping (no per-pixel division)
+                let x_step = ((shm_w as u32) << 16) / cw.max(1);
+                let y_step = ((shm_h as u32) << 16) / ch.max(1);
+                let mut src_y_fp: u32 = 0;
+
                 for dst_row in 0..ch {
-                    let src_y = (dst_row as u64 * shm_h as u64 / ch as u64) as u32;
-                    let src_y = src_y.min(shm_h - 1);
+                    let src_y = (src_y_fp >> 16).min(shm_h - 1);
                     let src_row_off = (src_y * shm_w) as usize;
                     let dst_off = ((content_y + dst_row) * stride) as usize;
+                    let mut src_x_fp: u32 = 0;
 
-                    for dst_col in 0..cw {
-                        let src_x = (dst_col as u64 * shm_w as u64 / cw as u64) as u32;
-                        let src_x = src_x.min(shm_w - 1);
-                        let si = src_row_off + src_x as usize;
-                        let di = dst_off + dst_col as usize;
-                        if si < src_slice.len() && di < pixels.len() {
-                            let src_px = src_slice[si];
-                            if borderless || (src_px >> 24) > 0 {
-                                pixels[di] = src_px;
+                    if borderless {
+                        for dst_col in 0..cw {
+                            let src_x = (src_x_fp >> 16).min(shm_w - 1) as usize;
+                            pixels[dst_off + dst_col as usize] =
+                                src_slice[src_row_off + src_x];
+                            src_x_fp += x_step;
+                        }
+                    } else {
+                        for dst_col in 0..cw {
+                            let src_x = (src_x_fp >> 16).min(shm_w - 1) as usize;
+                            let src_px = src_slice[src_row_off + src_x];
+                            if (src_px >> 24) > 0 {
+                                pixels[dst_off + dst_col as usize] = src_px;
                             }
+                            src_x_fp += x_step;
                         }
                     }
+
+                    src_y_fp += y_step;
                 }
             } else {
                 // Non-scaled path with dirty rect support

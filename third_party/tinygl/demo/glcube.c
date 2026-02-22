@@ -45,8 +45,8 @@ extern int _syscall(int num, int a1, int a2, int a3, int a4);
 
 /* ── Constants ─────────────────────────────────────────────────────────── */
 
-#define WIN_W  320
-#define WIN_H  240
+#define WIN_W  640
+#define WIN_H  480
 #define WIN_FLAG_SCALE_CONTENT 0x80
 #define CW_USEDEFAULT 0xFFFF
 
