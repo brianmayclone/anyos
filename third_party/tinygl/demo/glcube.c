@@ -246,8 +246,13 @@ static void render_frame(void)
 
     glEnd();
 
-    /* Copy TinyGL framebuffer to SHM surface */
+    /* Copy TinyGL framebuffer to SHM surface and set alpha to opaque */
     ZB_copyFrameBuffer(g_zb, g_surface, WIN_W * 4);
+    {
+        int i, n = WIN_W * WIN_H;
+        for (i = 0; i < n; i++)
+            g_surface[i] |= 0xFF000000;
+    }
 
     g_angle += 1.0f;
     if (g_angle >= 360.0f)

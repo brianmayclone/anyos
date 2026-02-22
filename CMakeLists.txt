@@ -1065,10 +1065,56 @@ add_custom_command(
   COMMENT "Packaging Quake.app (mkappbundle)"
 )
 
+# ============================================================
+# TinyGL Library (software OpenGL 1.x rasterizer)
+# ============================================================
+set(TINYGL_DIR "${CMAKE_SOURCE_DIR}/third_party/tinygl")
+set(TINYGL_A "${TINYGL_DIR}/libtinygl.a")
+
+file(GLOB TINYGL_SOURCES "${TINYGL_DIR}/src/*.c" "${TINYGL_DIR}/src/*.h" "${TINYGL_DIR}/Makefile")
+add_custom_command(
+  OUTPUT ${TINYGL_A}
+  COMMAND ${MAKE_EXECUTABLE} -C ${TINYGL_DIR} clean CC=${I686_ELF_GCC} AR=${I686_ELF_AR}
+  COMMAND ${MAKE_EXECUTABLE} -C ${TINYGL_DIR} CC=${I686_ELF_GCC} AR=${I686_ELF_AR} LIBC_DIR=${LIBC_DIR}
+  DEPENDS ${LIBC_A} ${TINYGL_SOURCES}
+  COMMENT "Building TinyGL library for anyOS"
+)
+
+# ============================================================
+# GLCube Demo (TinyGL spinning cube) → GLCube.app
+# ============================================================
+set(GLCUBE_DIR "${CMAKE_SOURCE_DIR}/third_party/tinygl/demo")
+set(GLCUBE_ELF "${GLCUBE_DIR}/glcube.elf")
+set(GLCUBE_APP "${SYSROOT_DIR}/Applications/GLCube.app")
+
+file(GLOB GLCUBE_SOURCES "${GLCUBE_DIR}/*.c" "${GLCUBE_DIR}/Makefile")
+add_custom_command(
+  OUTPUT ${GLCUBE_ELF}
+  COMMAND ${MAKE_EXECUTABLE} -C ${GLCUBE_DIR} clean CC=${I686_ELF_GCC}
+  COMMAND ${MAKE_EXECUTABLE} -C ${GLCUBE_DIR} CC=${I686_ELF_GCC} LIBC_DIR=${LIBC_DIR} TINYGL_DIR=${TINYGL_DIR}
+  DEPENDS ${LIBC_A} ${LIBC_CRT0} ${TINYGL_A} ${GLCUBE_SOURCES}
+  COMMENT "Building GLCube demo for anyOS"
+)
+
+add_custom_command(
+  OUTPUT ${GLCUBE_APP}/GLCube
+  COMMAND ${CMAKE_COMMAND} -E rm -rf "${GLCUBE_APP}"
+  COMMAND ${MKAPPBUNDLE_EXECUTABLE}
+    -i "${GLCUBE_DIR}/Info.conf"
+    -e ${GLCUBE_ELF}
+    --keep-elf
+    --force
+    -o "${GLCUBE_APP}"
+  DEPENDS ${GLCUBE_ELF} "${GLCUBE_DIR}/Info.conf" ${MKAPPBUNDLE_EXECUTABLE}
+  COMMENT "Packaging GLCube.app (mkappbundle)"
+)
+
 # Clean targets for third-party builds (outside build dir)
 set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES
   ${DOOM_ELF} "${DOOM_DIR}/obj"
   ${QUAKE_ELF} "${QUAKE_DIR}/obj"
+  ${TINYGL_A} "${TINYGL_DIR}/obj"
+  ${GLCUBE_ELF} "${GLCUBE_DIR}/obj"
 )
 
 # ============================================================
@@ -1193,6 +1239,7 @@ set(C_TOOLCHAIN_DEPS
   ${SYSROOT_DIR}/Libraries/libc/lib/tcc/include/.stamp
   ${DOOM_APP}/DOOM
   ${QUAKE_APP}/Quake
+  ${GLCUBE_APP}/GLCube
   ${SYSROOT_DIR}/System/bin/curl
   ${SYSROOT_DIR}/System/bin/git
   ${SYSROOT_DIR}/System/bin/sh

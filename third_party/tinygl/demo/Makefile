@@ -1,6 +1,6 @@
 # GLCube demo for anyOS — TinyGL spinning cube
 CC ?= i686-elf-gcc
-LD ?= i686-elf-gcc
+LD = $(CC)
 
 LIBC_DIR ?= ../../../libs/libc
 TINYGL_DIR ?= ..
