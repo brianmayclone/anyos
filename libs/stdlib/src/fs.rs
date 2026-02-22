@@ -153,6 +153,15 @@ pub fn unlink(path: &str) -> u32 {
     sys_err(syscall1(SYS_UNLINK, buf.as_ptr() as u64))
 }
 
+/// Rename (move) a file or directory. Returns 0 on success, u32::MAX on error.
+pub fn rename(old_path: &str, new_path: &str) -> u32 {
+    let mut old_buf = [0u8; 257];
+    let mut new_buf = [0u8; 257];
+    prepare_path(old_path, &mut old_buf);
+    prepare_path(new_path, &mut new_buf);
+    sys_err(syscall2(SYS_RENAME, old_buf.as_ptr() as u64, new_buf.as_ptr() as u64))
+}
+
 /// Truncate a file to zero length. Returns 0 on success, u32::MAX on error.
 pub fn truncate(path: &str) -> u32 {
     let mut buf = [0u8; 257];

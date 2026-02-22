@@ -109,6 +109,7 @@ exclude = [
   "bin/chmod",
   "bin/chown",
   "bin/su",
+  "bin/echoserver",
   "apps/demo_anyui",
   "apps/anycode",
   "system/login",

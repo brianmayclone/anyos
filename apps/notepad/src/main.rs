@@ -231,6 +231,11 @@ fn main() {
             .item(1, "Save", 0)
             .separator()
             .item(2, "Close", 0)
+        .end_menu()
+        .menu("Edit")
+            .item(10, "Copy Line", 0)
+            .item(11, "Cut Line", 0)
+            .item(12, "Paste", 0)
         .end_menu();
     let data = mb.build();
     window::set_menu(win, data);
@@ -332,10 +337,40 @@ fn main() {
                             return;
                         }
                         _ => {
-                            // Check for Ctrl+S (char 19 = 0x13)
-                            if ch == 0x13 {
+                            let mods = ev.modifiers();
+                            let ctrl = (mods & 2) != 0;
+
+                            if ctrl && ch == 's' as u32 {
+                                // Ctrl+S: save
                                 editor.save();
                                 needs_redraw = true;
+                            } else if ctrl && ch == 'c' as u32 {
+                                // Ctrl+C: copy current line
+                                let line = editor.lines[editor.cursor_line].clone();
+                                window::clipboard_set(&line);
+                            } else if ctrl && ch == 'x' as u32 {
+                                // Ctrl+X: cut current line
+                                let line = editor.lines[editor.cursor_line].clone();
+                                window::clipboard_set(&line);
+                                editor.lines[editor.cursor_line].clear();
+                                editor.cursor_col = 0;
+                                editor.modified = true;
+                                update_scrollbar(&mut sb, &editor);
+                                needs_redraw = true;
+                            } else if ctrl && ch == 'v' as u32 {
+                                // Ctrl+V: paste from clipboard
+                                if let Some(text) = window::clipboard_get() {
+                                    for c in text.chars() {
+                                        if c == '\n' {
+                                            editor.insert_newline();
+                                        } else if c >= ' ' && (c as u32) < 0x7F {
+                                            editor.insert_char(c as u8);
+                                        }
+                                    }
+                                    update_scrollbar(&mut sb, &editor);
+                                    ensure_cursor_visible(&mut sb, &editor, win_h);
+                                    needs_redraw = true;
+                                }
                             } else if key == KEY_PAGE_UP {
                                 // Page Up
                                 let page_lines = ((win_h as i32 - NAVBAR_H) / LINE_H).max(1) as usize;
@@ -387,6 +422,33 @@ fn main() {
                     match item_id {
                         1 => { editor.save(); needs_redraw = true; } // Save
                         2 => { window::destroy(win); return; }       // Close
+                        10 => { // Copy Line
+                            let line = editor.lines[editor.cursor_line].clone();
+                            window::clipboard_set(&line);
+                        }
+                        11 => { // Cut Line
+                            let line = editor.lines[editor.cursor_line].clone();
+                            window::clipboard_set(&line);
+                            editor.lines[editor.cursor_line].clear();
+                            editor.cursor_col = 0;
+                            editor.modified = true;
+                            update_scrollbar(&mut sb, &editor);
+                            needs_redraw = true;
+                        }
+                        12 => { // Paste
+                            if let Some(text) = window::clipboard_get() {
+                                for c in text.chars() {
+                                    if c == '\n' {
+                                        editor.insert_newline();
+                                    } else if c >= ' ' && (c as u32) < 0x7F {
+                                        editor.insert_char(c as u8);
+                                    }
+                                }
+                                update_scrollbar(&mut sb, &editor);
+                                ensure_cursor_visible(&mut sb, &editor, win_h);
+                                needs_redraw = true;
+                            }
+                        }
                         _ => {}
                     }
                 }

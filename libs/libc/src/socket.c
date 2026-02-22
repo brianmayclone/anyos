@@ -43,6 +43,8 @@ extern int _syscall(int num, int a1, int a2, int a3, int a4);
 #define SYS_TCP_STATUS      104
 #define SYS_TCP_RECV_AVAILABLE 130
 #define SYS_TCP_SHUTDOWN_WR 131
+#define SYS_TCP_LISTEN      132
+#define SYS_TCP_ACCEPT      133
 #define SYS_UDP_BIND        150
 #define SYS_UDP_UNBIND      151
 #define SYS_UDP_SENDTO      152
@@ -72,6 +74,8 @@ typedef struct {
     int      protocol;
     int      tcp_sock_id;   /* anyOS TCP socket ID (-1 if not connected) */
     uint16_t udp_port;      /* Bound UDP port (0 if not bound) */
+    uint16_t bind_port;     /* TCP bound port (for listen) */
+    int      listening;     /* 1 if socket is in listen state */
     /* Stored peer address (from connect) */
     struct sockaddr_in peer_addr;
     int      connected;
@@ -213,27 +217,97 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
         return 0;
     }
 
-    /* TCP bind not yet supported (no server sockets) */
+    if (s->type == SOCK_STREAM) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)addr;
+        uint16_t port = ntohs(sin->sin_port);
+        s->bind_port = port;
+        return 0;
+    }
+
     errno = EOPNOTSUPP;
     return -1;
 }
 
 /* =========================================================================
- * listen() / accept() - Not yet supported (server sockets)
+ * listen() / accept() - TCP server sockets
  * ========================================================================= */
 
 int listen(int sockfd, int backlog)
 {
-    (void)sockfd; (void)backlog;
-    errno = EOPNOTSUPP;
-    return -1;
+    socket_entry_t *s = get_socket(sockfd);
+    if (!s) { errno = EBADF; return -1; }
+    if (s->type != SOCK_STREAM) { errno = EOPNOTSUPP; return -1; }
+    if (s->bind_port == 0) { errno = EINVAL; return -1; }
+
+    int result = _syscall(SYS_TCP_LISTEN, (int)s->bind_port, backlog > 0 ? backlog : 5, 0, 0);
+    if (result == (int)0xFFFFFFFFu) {
+        errno = EADDRINUSE;
+        return -1;
+    }
+
+    s->tcp_sock_id = result;
+    s->listening = 1;
+    return 0;
 }
 
 int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
 {
-    (void)sockfd; (void)addr; (void)addrlen;
-    errno = EOPNOTSUPP;
-    return -1;
+    socket_entry_t *s = get_socket(sockfd);
+    if (!s) { errno = EBADF; return -1; }
+    if (!s->listening || s->tcp_sock_id < 0) { errno = EINVAL; return -1; }
+
+    /* result buffer: [socket_id:u32, ip:[u8;4], port:u16, pad:u16] */
+    uint8_t result_buf[12];
+    int rc = _syscall(SYS_TCP_ACCEPT, s->tcp_sock_id, (int)result_buf, 0, 0);
+    if (rc == (int)0xFFFFFFFFu) {
+        errno = EAGAIN;
+        return -1;
+    }
+
+    uint32_t new_sock_id = *(uint32_t *)&result_buf[0];
+    uint16_t remote_port = *(uint16_t *)&result_buf[8];
+
+    /* Find a free socket table entry for the new connection */
+    int new_fd = -1;
+    for (int i = 0; i < MAX_SOCKETS; i++) {
+        if (!socket_table[i].in_use) {
+            memset(&socket_table[i], 0, sizeof(socket_entry_t));
+            socket_table[i].in_use = 1;
+            socket_table[i].domain = AF_INET;
+            socket_table[i].type = SOCK_STREAM;
+            socket_table[i].tcp_sock_id = (int)new_sock_id;
+            socket_table[i].connected = 1;
+            socket_table[i].recv_timeout_ms = 30000;
+            socket_table[i].send_timeout_ms = 10000;
+            /* Store peer address */
+            socket_table[i].peer_addr.sin_family = AF_INET;
+            socket_table[i].peer_addr.sin_port = htons(remote_port);
+            memcpy(&socket_table[i].peer_addr.sin_addr.s_addr, &result_buf[4], 4);
+            new_fd = i + SOCKET_FD_BASE;
+            break;
+        }
+    }
+
+    if (new_fd < 0) {
+        /* No free socket slots — close the accepted connection */
+        _syscall(SYS_TCP_CLOSE, (int)new_sock_id, 0, 0, 0);
+        errno = EMFILE;
+        return -1;
+    }
+
+    /* Fill in addr if requested */
+    if (addr && addrlen) {
+        struct sockaddr_in sin;
+        sin.sin_family = AF_INET;
+        sin.sin_port = htons(remote_port);
+        memcpy(&sin.sin_addr.s_addr, &result_buf[4], 4);
+        socklen_t copylen = sizeof(sin);
+        if (*addrlen < copylen) copylen = *addrlen;
+        memcpy(addr, &sin, copylen);
+        *addrlen = sizeof(sin);
+    }
+
+    return new_fd;
 }
 
 /* =========================================================================

@@ -103,6 +103,26 @@ pub fn tcp_status(socket_id: u32) -> u32 {
     syscall1(SYS_TCP_STATUS, socket_id as u64)
 }
 
+/// Listen on a TCP port. Returns listener socket_id or u32::MAX.
+pub fn tcp_listen(port: u16, backlog: u16) -> u32 {
+    syscall2(SYS_TCP_LISTEN, port as u64, backlog as u64)
+}
+
+/// Accept a connection from a listening socket. Blocks until a connection
+/// arrives or timeout (30s). Returns (socket_id, remote_ip, remote_port)
+/// or (u32::MAX, [0;4], 0) on error/timeout.
+pub fn tcp_accept(listener_id: u32) -> (u32, [u8; 4], u16) {
+    let mut result = [0u8; 12];
+    let rc = syscall2(SYS_TCP_ACCEPT, listener_id as u64, result.as_mut_ptr() as u64);
+    if rc == u32::MAX {
+        return (u32::MAX, [0; 4], 0);
+    }
+    let sock_id = u32::from_le_bytes([result[0], result[1], result[2], result[3]]);
+    let ip = [result[4], result[5], result[6], result[7]];
+    let port = u16::from_le_bytes([result[8], result[9]]);
+    (sock_id, ip, port)
+}
+
 // =========================================================================
 // UDP
 // =========================================================================

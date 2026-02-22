@@ -1394,6 +1394,19 @@ fn main() {
                     buf.write_str(&prompt);
                     buf.current_color = COLOR_FG;
                     dirty = true;
+                } else if (mods & MOD_CTRL) != 0 && char_val == 'v' as u32 {
+                    // Ctrl+V: paste from clipboard into shell input
+                    if fg_proc.is_none() && su_pending_user.is_none() {
+                        if let Some(text) = window::clipboard_get() {
+                            for c in text.chars() {
+                                if c >= ' ' && (c as u32) < 128 {
+                                    shell.insert_char(c);
+                                }
+                            }
+                            redraw_input_line(&mut buf, &shell);
+                            dirty = true;
+                        }
+                    }
                 } else if su_pending_user.is_some() {
                     // Password prompt mode for `su`
                     match key_code {

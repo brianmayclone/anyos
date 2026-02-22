@@ -1574,6 +1574,36 @@ pub fn sys_tcp_shutdown_wr(socket_id: u32) -> u32 {
     crate::net::tcp::shutdown_write(socket_id)
 }
 
+/// sys_tcp_listen - Listen on a TCP port for incoming connections.
+/// arg1=port, arg2=backlog. Returns listener socket_id or u32::MAX on error.
+pub fn sys_tcp_listen(port: u32, backlog: u32) -> u32 {
+    if port == 0 || port > 65535 { return u32::MAX; }
+    crate::net::tcp::listen(port as u16, backlog.min(16) as u16)
+}
+
+/// sys_tcp_accept - Accept a connection from a listening socket.
+/// arg1=listener_id, arg2=result_ptr (12 bytes: [socket_id:u32, ip:[u8;4], port:u16, pad:u16])
+/// Returns 0 on success, u32::MAX on timeout/error.
+pub fn sys_tcp_accept(listener_id: u32, result_ptr: u32) -> u32 {
+    if result_ptr == 0 { return u32::MAX; }
+    let pit_hz = crate::arch::x86::pit::TICK_HZ;
+    let timeout_ticks = 30 * pit_hz; // 30 second timeout
+    let (sock_id, remote_ip, remote_port) = crate::net::tcp::accept(listener_id, timeout_ticks);
+    if sock_id == u32::MAX {
+        return u32::MAX;
+    }
+    // Write result to user buffer
+    let result = unsafe { core::slice::from_raw_parts_mut(result_ptr as *mut u8, 12) };
+    let sid_bytes = sock_id.to_le_bytes();
+    result[0..4].copy_from_slice(&sid_bytes);
+    result[4..8].copy_from_slice(remote_ip.as_bytes());
+    let port_bytes = remote_port.to_le_bytes();
+    result[8..10].copy_from_slice(&port_bytes);
+    result[10] = 0;
+    result[11] = 0;
+    0
+}
+
 /// sys_net_poll - Process pending network packets.
 /// Triggers E1000 RX ring processing and TCP packet dispatch.
 pub fn sys_net_poll() -> u32 {

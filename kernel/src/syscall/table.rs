@@ -91,6 +91,15 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_GPU_VRAM_SIZE, "gpu_vram_size"),
     (SYS_VRAM_MAP, "vram_map"),
     (SYS_GET_CRASH_INFO, "get_crash_info"),
+    (SYS_TCP_CONNECT, "tcp_connect"),
+    (SYS_TCP_SEND, "tcp_send"),
+    (SYS_TCP_RECV, "tcp_recv"),
+    (SYS_TCP_CLOSE, "tcp_close"),
+    (SYS_TCP_STATUS, "tcp_status"),
+    (SYS_TCP_RECV_AVAILABLE, "tcp_recv_available"),
+    (SYS_TCP_SHUTDOWN_WR, "tcp_shutdown_wr"),
+    (SYS_TCP_LISTEN, "tcp_listen"),
+    (SYS_TCP_ACCEPT, "tcp_accept"),
 ];
 
 /// Look up the human-readable name for a syscall number.

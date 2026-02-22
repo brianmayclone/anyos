@@ -51,6 +51,7 @@ pub(crate) const SYS_LIST_MOUNTS: u32 = 95;
 pub(crate) const SYS_SYMLINK: u32 = 96;
 pub(crate) const SYS_READLINK: u32 = 97;
 pub(crate) const SYS_LSTAT: u32 = 98;
+pub(crate) const SYS_RENAME: u32 = 99;
 
 // System information
 pub(crate) const SYS_TIME: u32 = 30;
@@ -115,6 +116,8 @@ pub(crate) const SYS_TCP_SEND: u32 = 101;
 pub(crate) const SYS_TCP_RECV: u32 = 102;
 pub(crate) const SYS_TCP_CLOSE: u32 = 103;
 pub(crate) const SYS_TCP_STATUS: u32 = 104;
+pub(crate) const SYS_TCP_LISTEN: u32 = 132;
+pub(crate) const SYS_TCP_ACCEPT: u32 = 133;
 
 // Display / GPU / wallpaper
 pub(crate) const SYS_GPU_HAS_ACCEL: u32 = 135;

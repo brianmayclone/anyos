@@ -607,6 +607,7 @@ add_rust_user_program(listgroups ${CMAKE_SOURCE_DIR}/bin/listgroups)
 add_rust_user_program(chmod      ${CMAKE_SOURCE_DIR}/bin/chmod)
 add_rust_user_program(chown      ${CMAKE_SOURCE_DIR}/bin/chown)
 add_rust_user_program(su         ${CMAKE_SOURCE_DIR}/bin/su)
+add_rust_user_program(echoserver ${CMAKE_SOURCE_DIR}/bin/echoserver)
 # Privileged sbin programs
 add_rust_sbin_program(adduser    ${CMAKE_SOURCE_DIR}/bin/adduser)
 add_rust_sbin_program(deluser    ${CMAKE_SOURCE_DIR}/bin/deluser)

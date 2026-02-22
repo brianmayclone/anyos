@@ -62,6 +62,22 @@ impl FileEntry {
 }
 
 // ============================================================================
+// Drag & Drop state
+// ============================================================================
+
+const DRAG_THRESHOLD: i32 = 5;
+
+struct DragState {
+    source_idx: usize,   // index in entries[]
+    start_x: i32,
+    start_y: i32,
+    current_x: i32,
+    current_y: i32,
+    active: bool,        // becomes true once distance > DRAG_THRESHOLD
+    drop_target: Option<usize>, // index of directory under cursor (or None)
+}
+
+// ============================================================================
 // Icon cache
 // ============================================================================
 
@@ -203,6 +219,8 @@ struct AppState {
     nav_icons: NavIcons,
     // Path textfield
     path_field: UiTextField,
+    // Drag & drop
+    drag: Option<DragState>,
 }
 
 // ============================================================================
@@ -451,6 +469,26 @@ fn handle_click(state: &mut AppState, mx: i32, my: i32, win_w: u32, win_h: u32) 
     }
 }
 
+/// Given a mouse position, return the file entry index in the file list area (or None).
+fn hit_test_file_list(state: &AppState, mx: i32, my: i32, win_h: u32) -> Option<usize> {
+    let content_y = TOOLBAR_H as i32;
+    let list_x = SIDEBAR_W as i32;
+    let header_h = ROW_H;
+    let file_area_y = content_y + header_h;
+
+    if mx < list_x || my < file_area_y {
+        return None;
+    }
+
+    let row_idx = ((my - file_area_y) as u32 + state.scroll_offset * ROW_H as u32) / ROW_H as u32;
+    let row = row_idx as usize;
+    if row < state.entries.len() {
+        Some(row)
+    } else {
+        None
+    }
+}
+
 fn handle_toolbar_click(state: &mut AppState, mx: i32, _my: i32) -> bool {
     // Back button: x=8, w=32
     if mx >= 8 && mx < 8 + NAV_BTN_W {
@@ -518,6 +556,20 @@ fn render(win: u32, state: &mut AppState, win_w: u32, win_h: u32) {
 
     // File list
     render_file_list(win, state, win_w, win_h);
+
+    // Drag overlay
+    if let Some(ref drag) = state.drag {
+        if drag.active && drag.source_idx < state.entries.len() {
+            // Draw semi-transparent label at cursor position
+            let name = state.entries[drag.source_idx].name_str();
+            let lx = drag.current_x + 12;
+            let ly = drag.current_y - 8;
+            // Background pill for the drag label
+            let text_w = (name.len() as u32 * 7 + 12).min(200);
+            window::fill_rect(win, lx as i16, ly as i16, text_w as u16, 20, 0xCC007AFF);
+            label(win, lx + 6, ly + 3, name, 0xFFFFFFFF, FontSize::Normal, TextAlign::Left);
+        }
+    }
 }
 
 const NAV_BTN_W: i32 = 32;
@@ -640,8 +692,18 @@ fn render_file_list(win: u32, state: &mut AppState, win_w: u32, win_h: u32) {
         let entry = &state.entries[entry_idx];
         let ry = file_area_y + i as i32 * ROW_H;
 
+        // Drop target highlight (during drag)
+        let is_drop_target = state.drag.as_ref()
+            .map(|d| d.active && d.drop_target == Some(entry_idx))
+            .unwrap_or(false);
+
         // Selection highlight
-        if state.selected == Some(entry_idx) {
+        if is_drop_target {
+            // Bright border highlight for drop target
+            window::fill_rect(win, list_x as i16, ry as i16, list_w as u16, ROW_H as u16, 0xFF1A5C9E);
+            window::fill_rect(win, list_x as i16, ry as i16, list_w as u16, 2, 0xFF007AFF);
+            window::fill_rect(win, list_x as i16, (ry + ROW_H - 2) as i16, list_w as u16, 2, 0xFF007AFF);
+        } else if state.selected == Some(entry_idx) {
             window::fill_rect(win, list_x as i16, ry as i16, list_w as u16, ROW_H as u16, colors::ACCENT());
         } else if i % 2 == 1 {
             // Alternating row background
@@ -682,7 +744,9 @@ fn render_file_list(win: u32, state: &mut AppState, win_w: u32, win_h: u32) {
         };
 
         // Row background color for alpha blending
-        let row_bg = if state.selected == Some(entry_idx) {
+        let row_bg = if is_drop_target {
+            0xFF1A5C9E
+        } else if state.selected == Some(entry_idx) {
             colors::ACCENT()
         } else if i % 2 == 1 {
             0xFF252525
@@ -853,6 +917,7 @@ fn main() {
         icon_cache: IconCache::new(),
         nav_icons,
         path_field,
+        drag: None,
     };
 
     // Initial directory load
@@ -873,7 +938,11 @@ fn main() {
                     let key = event[1];
 
                     if key == 0x103 { // ESC
-                        if state.path_field.focused {
+                        if state.drag.is_some() {
+                            // Cancel drag
+                            state.drag = None;
+                            needs_redraw = true;
+                        } else if state.path_field.focused {
                             // Cancel editing, revert to cwd
                             state.path_field.set_text(&state.cwd.clone());
                             state.path_field.focused = false;
@@ -897,6 +966,20 @@ fn main() {
                             needs_redraw = true;
                         }
                     } else {
+                        let char_val = event[2];
+                        let mods = event[3];
+
+                        // Ctrl+C: copy selected file's full path
+                        if (mods & 2) != 0 && char_val == 'c' as u32 {
+                            if let Some(idx) = state.selected {
+                                if idx < state.entries.len() {
+                                    let name = state.entries[idx].name_str();
+                                    let full_path = build_full_path(&state.cwd, name);
+                                    window::clipboard_set(&full_path);
+                                }
+                            }
+                        }
+
                         match key {
                             0x101 => { // Backspace - go up
                                 if state.cwd != "/" {
@@ -957,10 +1040,75 @@ fn main() {
                     // Route clicks to path textfield for focus
                     let ui_evt = UiEvent::from_raw(&event);
                     state.path_field.handle_event(&ui_evt);
+
+                    // Start potential drag if clicking on a file entry
+                    if let Some(row) = hit_test_file_list(&state, mx, my, win_h) {
+                        state.drag = Some(DragState {
+                            source_idx: row,
+                            start_x: mx,
+                            start_y: my,
+                            current_x: mx,
+                            current_y: my,
+                            active: false,
+                            drop_target: None,
+                        });
+                    } else {
+                        state.drag = None;
+                    }
+
                     if handle_click(&mut state, mx, my, win_w, win_h) {
                         needs_redraw = true;
                     } else {
                         needs_redraw = true; // textfield focus may have changed
+                    }
+                }
+                window::EVENT_MOUSE_MOVE => {
+                    let mx = event[1] as i32;
+                    let my = event[2] as i32;
+                    // Compute hit test before mutating drag (avoids borrow conflict)
+                    let hit = hit_test_file_list(&state, mx, my, win_h);
+                    // Check if hit target is a valid directory drop target
+                    let hit_is_dir = hit
+                        .filter(|&idx| idx < state.entries.len() && state.entries[idx].entry_type == TYPE_DIR);
+                    if let Some(ref mut drag) = state.drag {
+                        drag.current_x = mx;
+                        drag.current_y = my;
+                        if !drag.active {
+                            let dx = (mx - drag.start_x).abs();
+                            let dy = (my - drag.start_y).abs();
+                            if dx > DRAG_THRESHOLD || dy > DRAG_THRESHOLD {
+                                drag.active = true;
+                            }
+                        }
+                        if drag.active {
+                            let src = drag.source_idx;
+                            drag.drop_target = hit_is_dir.filter(|&idx| idx != src);
+                            needs_redraw = true;
+                        }
+                    }
+                }
+                window::EVENT_MOUSE_UP => {
+                    if let Some(drag) = state.drag.take() {
+                        if drag.active {
+                            // Execute the drop: move file into target directory
+                            if let Some(target_idx) = drag.drop_target {
+                                let src_name = state.entries[drag.source_idx].name_str();
+                                let dst_dir_name = state.entries[target_idx].name_str();
+                                let src_path = build_full_path(&state.cwd, src_name);
+                                let dst_dir = build_full_path(&state.cwd, dst_dir_name);
+                                let mut dst_path = dst_dir.clone();
+                                dst_path.push('/');
+                                dst_path.push_str(src_name);
+
+                                if fs::rename(&src_path, &dst_path) == 0 {
+                                    // Refresh the directory listing
+                                    state.entries = read_directory(&state.cwd);
+                                    state.selected = None;
+                                    state.scroll_offset = 0;
+                                }
+                            }
+                            needs_redraw = true;
+                        }
                     }
                 }
                 EVENT_MOUSE_SCROLL => {
