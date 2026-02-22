@@ -53,8 +53,13 @@ impl EditorView {
 
         // Load syntax highlighting
         let filename = path::basename(file_path);
+        anyos_std::println!("[SYNTAX] syntax_dir='{}', filename='{}'", config.syntax_dir, filename);
         if let Some(syn_path) = syntax_map::syntax_for_filename(&config.syntax_dir, filename) {
+            anyos_std::println!("[SYNTAX] loading syn file: '{}'", syn_path);
             editor.load_syntax(&syn_path);
+            anyos_std::println!("[SYNTAX] load_syntax() returned");
+        } else {
+            anyos_std::println!("[SYNTAX] no syntax mapping for '{}'", filename);
         }
 
         self.panel.add(&editor);

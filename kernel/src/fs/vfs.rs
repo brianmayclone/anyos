@@ -5,6 +5,7 @@ use crate::fs::devfs::DevFs;
 use crate::fs::exfat::ExFatFs;
 use crate::fs::fat::FatFs;
 use crate::fs::iso9660::Iso9660Fs;
+use crate::fs::ntfs::NtfsFs;
 use crate::fs::file::{DirEntry, FileDescriptor, FileFlags, FileType, OpenFile};
 use crate::sync::mutex::Mutex;
 use alloc::string::String;
@@ -43,6 +44,7 @@ struct VfsState {
     exfat_fs: Option<ExFatFs>,
     fat_fs: Option<FatFs>,
     iso9660_fs: Option<Iso9660Fs>,
+    ntfs_fs: Option<NtfsFs>,
     devfs: Option<DevFs>,
 }
 
@@ -79,6 +81,8 @@ pub enum FsType {
     Fat,
     /// ISO 9660 filesystem (CD-ROM/DVD-ROM, read-only).
     Iso9660,
+    /// NTFS filesystem (read-only).
+    Ntfs,
     /// In-memory device filesystem (/dev).
     DevFs,
 }
@@ -341,6 +345,7 @@ pub fn init() {
         exfat_fs: None,
         fat_fs: None,
         iso9660_fs: None,
+        ntfs_fs: None,
         devfs: None,
     });
 
@@ -353,11 +358,11 @@ pub fn init() {
     crate::serial_println!("[OK] VFS initialized");
 }
 
-/// Check if a root disk filesystem (exFAT or FAT16) is mounted.
+/// Check if a root disk filesystem is mounted.
 pub fn has_root_fs() -> bool {
     let vfs = VFS.lock();
     if let Some(ref state) = *vfs {
-        state.exfat_fs.is_some() || state.fat_fs.is_some()
+        state.exfat_fs.is_some() || state.fat_fs.is_some() || state.ntfs_fs.is_some()
     } else {
         false
     }
@@ -391,6 +396,18 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
                     }
                 }
                 FsType::ExFat
+            } else if &buf[3..11] == b"NTFS    " {
+                crate::debug_println!("  [VFS] mount: detected NTFS");
+                match NtfsFs::new(device_id, root_partition_lba()) {
+                    Ok(ntfs) => {
+                        state.ntfs_fs = Some(ntfs);
+                        crate::serial_println!("  Mounted NTFS (read-only) at '{}'", path);
+                    }
+                    Err(_e) => {
+                        crate::serial_println!("  Failed to mount NTFS at '{}'", path);
+                    }
+                }
+                FsType::Ntfs
             } else {
                 match FatFs::new(device_id, root_partition_lba()) {
                     Ok(fat) => {
@@ -624,6 +641,29 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
         return Ok(slot_id);
     }
 
+    // --- NTFS path (read-only) ---
+    if let Some(ref ntfs) = state.ntfs_fs {
+        if flags.write || flags.create || flags.truncate || flags.append {
+            return Err(FsError::PermissionDenied);
+        }
+        let (inode, file_type, size) = ntfs.lookup(path)?;
+        let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
+        let file = OpenFile {
+            fd: slot_id,
+            path: String::from(path),
+            file_type,
+            flags,
+            position: 0,
+            size,
+            fs_id: 4, // NTFS
+            inode,
+            parent_cluster: 0,
+            refcount: 1,
+        };
+        state.open_files[slot_id as usize] = Some(file);
+        return Ok(slot_id);
+    }
+
     // --- ISO 9660 root fallback (CD-ROM boot, no FAT16 disk) ---
     if let Some(ref iso) = state.iso9660_fs {
         if flags.write || flags.create || flags.truncate || flags.append {
@@ -724,6 +764,19 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
         return Ok(bytes_read);
     }
 
+    // --- NTFS file (read-only) ---
+    if file.fs_id == 4 {
+        if file.position >= file.size {
+            return Ok(0);
+        }
+        let remaining = (file.size - file.position) as usize;
+        let to_read = buf.len().min(remaining);
+        let ntfs = state.ntfs_fs.as_ref().ok_or(FsError::IoError)?;
+        let bytes_read = ntfs.read_file(file.inode, file.position, &mut buf[..to_read])?;
+        file.position += bytes_read as u32;
+        return Ok(bytes_read);
+    }
+
     // --- exFAT / FAT file ---
     if file.position >= file.size {
         return Ok(0); // EOF
@@ -765,6 +818,11 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
         let name = dev_name(&file.path);
         let devfs = state.devfs.as_ref().ok_or(FsError::IoError)?;
         return devfs.write(name, buf).ok_or(FsError::IoError);
+    }
+
+    // --- NTFS is read-only ---
+    if file.fs_id == 4 {
+        return Err(FsError::PermissionDenied);
     }
 
     // --- exFAT / FAT file ---
@@ -887,6 +945,19 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
         return Ok(entries);
     }
 
+    // --- NTFS path (read-only) ---
+    if let Some(ref ntfs) = state.ntfs_fs {
+        let (mft_rec, file_type, _size) = ntfs.lookup(path)?;
+        if file_type != FileType::Directory {
+            return Err(FsError::NotADirectory);
+        }
+        let mut entries = ntfs.read_dir(mft_rec as u64)?;
+        if path == "/" {
+            add_virtual_root_entries(state, &mut entries);
+        }
+        return Ok(entries);
+    }
+
     // --- FAT16 path (fallback) ---
     if let Some(ref fat) = state.fat_fs {
         let (cluster, file_type, _size) = fat.lookup(path)?;
@@ -949,11 +1020,13 @@ fn add_virtual_root_entries(state: &VfsState, entries: &mut Vec<DirEntry>) {
 pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
     use crate::fs::exfat::ExFatReadPlan;
     use crate::fs::fat::FileReadPlan;
+    use crate::fs::ntfs::NtfsReadPlan;
     crate::debug_println!("  [VFS] read_file_to_vec: path='{}'", path);
 
     enum ReadPlan {
         Fat(FileReadPlan),
         ExFat(ExFatReadPlan),
+        Ntfs(NtfsReadPlan),
     }
 
     // Device files are streaming — can't read to vec
@@ -985,6 +1058,12 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
             }
             crate::debug_println!("  [VFS] read_file_to_vec: inode={:#x} size={} building read plan", r.inode, r.size);
             ReadPlan::ExFat(exfat.get_file_read_plan(r.inode, r.size))
+        } else if let Some(ref ntfs) = state.ntfs_fs {
+            let (mft_rec, file_type, size) = ntfs.lookup(path)?;
+            if file_type == FileType::Directory {
+                return Err(FsError::IsADirectory);
+            }
+            ReadPlan::Ntfs(ntfs.get_file_read_plan(mft_rec, size))
         } else if let Some(ref fat) = state.fat_fs {
             let (cluster, file_type, size) = fat.lookup(path)?;
             if file_type == FileType::Directory {
@@ -1003,6 +1082,7 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
     let result = match plan {
         ReadPlan::Fat(p) => p.execute(),
         ReadPlan::ExFat(p) => p.execute(),
+        ReadPlan::Ntfs(p) => p.execute(),
     };
     crate::debug_println!("  [VFS] read_file_to_vec: done '{}' ok={}", path, result.is_ok());
     result
@@ -1191,6 +1271,13 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
             mtime: r.mtime,
         });
     }
+    if let Some(ref ntfs) = state.ntfs_fs {
+        let (file_type, size, _created, modified, _accessed) = ntfs.stat_path(path)?;
+        return Ok(StatResult {
+            file_type, size, is_symlink: false,
+            uid: 0, gid: 0, mode: 0o555, mtime: modified,
+        });
+    }
     if let Some(ref fat) = state.fat_fs {
         let (_inode, file_type, size, mtime) = fat.stat_path(path)?;
         return Ok(StatResult {
@@ -1220,6 +1307,8 @@ pub fn fstat(slot_id: FileDescriptor) -> Result<(FileType, u32, u32, u32), FsErr
     // Look up mtime from the filesystem
     let mtime = if let Some(ref exfat) = state.exfat_fs {
         resolve_exfat_path(exfat, &path, true).map(|r| r.mtime).unwrap_or(0)
+    } else if let Some(ref ntfs) = state.ntfs_fs {
+        ntfs.stat_path(&path).map(|(_, _, _, m, _)| m).unwrap_or(0)
     } else if let Some(ref fat) = state.fat_fs {
         fat.stat_path(&path).map(|(_, _, _, m)| m).unwrap_or(0)
     } else {
@@ -1260,7 +1349,7 @@ pub fn truncate(path: &str) -> Result<(), FsError> {
 ///
 /// `mount_path`: where to mount (e.g. "/mnt/cdrom0")
 /// `device`: device path (e.g. "/dev/cdrom0") — currently only used for identification
-/// `fs_type_id`: 0=FAT, 1=ISO9660
+/// `fs_type_id`: 0=FAT, 1=ISO9660, 4=NTFS
 ///
 /// Returns Ok(()) on success.
 pub fn mount_fs(mount_path: &str, _device: &str, fs_type_id: u32) -> Result<(), FsError> {
@@ -1297,6 +1386,26 @@ pub fn mount_fs(mount_path: &str, _device: &str, fs_type_id: u32) -> Result<(), 
                 device_id: 0,
             });
             crate::serial_println!("  Mounted ISO 9660 at '{}'", mount_path);
+            Ok(())
+        }
+        4 => {
+            // NTFS (read-only)
+            if state.ntfs_fs.is_some() {
+                // Already have an NTFS instance — just add mount point
+            } else {
+                match NtfsFs::new(0, root_partition_lba()) {
+                    Ok(ntfs) => {
+                        state.ntfs_fs = Some(ntfs);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            state.mount_points.push(MountPoint {
+                path: String::from(mount_path),
+                fs_type: FsType::Ntfs,
+                device_id: 0,
+            });
+            crate::serial_println!("  Mounted NTFS (read-only) at '{}'", mount_path);
             Ok(())
         }
         _ => Err(FsError::InvalidPath),
@@ -1420,6 +1529,7 @@ pub fn list_mounts() -> Vec<(String, &'static str, u32)> {
                 FsType::ExFat => "exfat",
                 FsType::Fat => "fat16",
                 FsType::Iso9660 => "iso9660",
+                FsType::Ntfs => "ntfs",
                 FsType::DevFs => "devfs",
             };
             (mp.path.clone(), fs_name, mp.device_id)

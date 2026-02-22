@@ -237,6 +237,15 @@ pub const SYS_PERM_PENDING_INFO: u32 = 254;
 // Crash info
 pub const SYS_GET_CRASH_INFO: u32 = 260;
 
+// Disk / partition management
+pub const SYS_DISK_LIST: u32 = 270;
+pub const SYS_DISK_PARTITIONS: u32 = 271;
+pub const SYS_DISK_READ: u32 = 272;
+pub const SYS_DISK_WRITE: u32 = 273;
+pub const SYS_PARTITION_CREATE: u32 = 274;
+pub const SYS_PARTITION_DELETE: u32 = 275;
+pub const SYS_PARTITION_RESCAN: u32 = 276;
+
 /// Register frame pushed by `syscall_entry.asm` / `syscall_fast.asm`.
 ///
 /// The layout matches the individual GPR pushes (no pushad in 64-bit mode) plus the
@@ -502,6 +511,15 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
 
         // Crash info
         SYS_GET_CRASH_INFO => handlers::sys_get_crash_info(arg1, arg2, arg3),
+
+        // Disk / partition management
+        SYS_DISK_LIST => handlers::sys_disk_list(arg1, arg2),
+        SYS_DISK_PARTITIONS => handlers::sys_disk_partitions(arg1, arg2, arg3),
+        SYS_DISK_READ => handlers::sys_disk_read(arg1, arg2, arg3, arg4, arg5),
+        SYS_DISK_WRITE => handlers::sys_disk_write(arg1, arg2, arg3, arg4, arg5),
+        SYS_PARTITION_CREATE => handlers::sys_partition_create(arg1, arg2, arg3),
+        SYS_PARTITION_DELETE => handlers::sys_partition_delete(arg1, arg2),
+        SYS_PARTITION_RESCAN => handlers::sys_partition_rescan(arg1),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

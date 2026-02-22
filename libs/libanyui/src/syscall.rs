@@ -87,6 +87,8 @@ fn syscall3(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     ret
 }
 
+const SYS_WRITE: u64 = 2;
+
 const SYS_DLL_LOAD: u64 = 80;
 const SYS_READDIR: u64 = 23;
 const SYS_GETCWD: u64 = 25;
@@ -139,4 +141,9 @@ pub fn getcwd(buf: &mut [u8]) -> u32 {
 /// Create a directory. `path` must be null-terminated. Returns 0 on success.
 pub fn mkdir(path: &[u8]) -> u32 {
     syscall1(SYS_MKDIR, path.as_ptr() as u64) as u32
+}
+
+/// Write bytes to a file descriptor. fd=1 for stdout (serial).
+pub fn write(fd: u32, buf: &[u8]) -> u32 {
+    syscall3(SYS_WRITE, fd as u64, buf.as_ptr() as u64, buf.len() as u64) as u32
 }

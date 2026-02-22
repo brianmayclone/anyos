@@ -204,6 +204,15 @@ pub(crate) const SYS_PERM_PENDING_INFO: u32 = 254;
 // Crash info
 pub(crate) const SYS_GET_CRASH_INFO: u32 = 260;
 
+// Disk / Partition management
+pub(crate) const SYS_DISK_LIST: u32 = 270;
+pub(crate) const SYS_DISK_PARTITIONS: u32 = 271;
+pub(crate) const SYS_DISK_READ: u32 = 272;
+pub(crate) const SYS_DISK_WRITE: u32 = 273;
+pub(crate) const SYS_PARTITION_CREATE: u32 = 274;
+pub(crate) const SYS_PARTITION_DELETE: u32 = 275;
+pub(crate) const SYS_PARTITION_RESCAN: u32 = 276;
+
 // Event bus
 pub(crate) const SYS_EVT_SYS_SUBSCRIBE: u32 = 60;
 pub(crate) const SYS_EVT_SYS_POLL: u32 = 61;

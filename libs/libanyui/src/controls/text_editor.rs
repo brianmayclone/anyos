@@ -197,7 +197,14 @@ impl TextEditor {
     }
 
     pub fn set_syntax(&mut self, data: &[u8]) {
+        crate::log!("[SYNTAX-SERVER] set_syntax called with {} bytes", data.len());
         self.syntax = SyntaxDef::parse(data);
+        if let Some(ref syn) = self.syntax {
+            crate::log!("[SYNTAX-SERVER] parsed OK: {} keywords, {} types, {} builtins",
+                syn.keywords.len(), syn.types.len(), syn.builtins.len());
+        } else {
+            crate::log!("[SYNTAX-SERVER] parse returned None");
+        }
         self.base.dirty = true;
     }
 

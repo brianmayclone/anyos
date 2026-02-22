@@ -31,6 +31,34 @@
 
 extern crate alloc;
 
+/// Debug logging macro — writes to serial via SYS_WRITE(fd=1).
+#[macro_export]
+macro_rules! log {
+    ($($arg:tt)*) => {{
+        use core::fmt::Write;
+        let mut buf = $crate::LogBuf([0u8; 256], 0);
+        let _ = core::write!(&mut buf, $($arg)*);
+        buf.0[buf.1.min(255)] = b'\n';
+        let len = (buf.1 + 1).min(256);
+        $crate::syscall::write(1, &buf.0[..len]);
+    }};
+}
+
+/// Small stack buffer for log formatting.
+pub struct LogBuf(pub [u8; 256], pub usize);
+
+impl core::fmt::Write for LogBuf {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for &b in s.as_bytes() {
+            if self.1 < 255 {
+                self.0[self.1] = b;
+                self.1 += 1;
+            }
+        }
+        Ok(())
+    }
+}
+
 mod compositor;
 mod control;
 mod controls;
@@ -39,7 +67,7 @@ mod event_loop;
 pub mod font_bitmap;
 mod layout;
 mod marshal;
-mod syscall;
+pub mod syscall;
 mod timer;
 mod dialogs;
 pub mod icons;

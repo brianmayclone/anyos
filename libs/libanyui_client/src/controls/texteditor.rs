@@ -37,8 +37,16 @@ impl TextEditor {
 
     /// Load syntax highlighting from a .syn file path.
     pub fn load_syntax(&self, path: &str) {
-        if let Ok(data) = anyos_std::fs::read_to_vec(path) {
-            self.load_syntax_from_bytes(&data);
+        anyos_std::println!("[SYNTAX-CLIENT] reading file: '{}'", path);
+        match anyos_std::fs::read_to_vec(path) {
+            Ok(data) => {
+                anyos_std::println!("[SYNTAX-CLIENT] read {} bytes from '{}'", data.len(), path);
+                self.load_syntax_from_bytes(&data);
+                anyos_std::println!("[SYNTAX-CLIENT] sent to server");
+            }
+            Err(_) => {
+                anyos_std::println!("[SYNTAX-CLIENT] FAILED to read file: '{}'", path);
+            }
         }
     }
 

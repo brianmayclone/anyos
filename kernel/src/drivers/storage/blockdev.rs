@@ -111,6 +111,16 @@ pub fn device_count() -> usize {
     DEVICES.lock().len()
 }
 
+/// Remove all partition devices for a given disk (keeps the whole-disk device).
+pub fn remove_partition_devices(disk_id: u8) {
+    let mut devs = DEVICES.lock();
+    devs.retain(|d| !(d.disk_id == disk_id && d.partition.is_some()));
+    // Re-assign IDs to match index
+    for (i, dev) in devs.iter_mut().enumerate() {
+        dev.id = i as u8;
+    }
+}
+
 /// Scan a disk for partitions and register each as a block device.
 ///
 /// Call this after registering the whole-disk device. Reads sector 0 of the
