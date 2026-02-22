@@ -184,6 +184,20 @@ The kernel initializes subsystems in phases:
 15. **DLL Loading** -- Map boot-time DLIBs into kernel PD (uisys, libimage, librender, libcompositor); .so libraries (libanyui, libfont) loaded on demand via SYS_DLL_LOAD
 16. **Userspace** -- Load `/System/init` as first Ring 3 process, which starts the compositor
 
+### Userspace Init Sequence
+
+After the kernel hands off to `/System/init`, the init program:
+
+1. Runs CPU and memory benchmarks, publishes results via `sys:startup_info` pipe
+2. Signals `boot_ready()` (compositor transitions from splash to desktop)
+3. Parses `/System/etc/init/init.conf` line by line:
+   - `/System/bin/dhcp` -- DHCP client (foreground, waits for completion)
+   - `/System/bin/svc start-all` -- Service manager starts all configured services
+
+The **service manager** (`svc start-all`) reads `/System/etc/svc/` for service configurations and starts each service (e.g., `logd`, `sshd`, `echoserver`) with dependency resolution.
+
+See [services.md](services.md) for the full service system documentation.
+
 ---
 
 ## Process Model

@@ -17,6 +17,7 @@ The **anyos_std** crate is the standard library for user-space Rust programs on 
 - [heap -- Memory Allocation](#heap----memory-allocation)
 - [fs -- Filesystem Operations](#fs----filesystem-operations)
 - [net -- Networking](#net----networking)
+- [log -- Structured Logging](#log----structured-logging)
 - [ipc -- Inter-Process Communication](#ipc----inter-process-communication)
 - [env -- Environment Variables](#env----environment-variables)
 - [users -- User & Group Management](#users----user--group-management)
@@ -316,6 +317,54 @@ Combine with `|`: `fs::open("file.txt", fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC
 | `udp_sendto` | `fn udp_sendto(dst_ip: &[u8; 4], dst_port: u16, src_port: u16, data: &[u8], flags: u32) -> u32` | Send UDP datagram. |
 | `udp_recvfrom` | `fn udp_recvfrom(port: u16, buf: &mut [u8]) -> u32` | Receive UDP datagram. Returns bytes read. |
 | `udp_set_opt` | `fn udp_set_opt(port: u16, opt: u32, val: u32) -> u32` | Set UDP socket option. |
+
+---
+
+## `log` -- Structured Logging
+
+Sends structured log messages to the central `logd` daemon via the `"log"` named pipe. The pipe is opened lazily on first use and cached for the process lifetime. If logd is not running, messages are silently dropped.
+
+See [services.md](services.md) for the full logging system documentation.
+
+### Macros
+
+| Macro | Level | Description |
+|-------|-------|-------------|
+| `log_info!(...)` | INFO | Informational message |
+| `log_warn!(...)` | WARN | Warning condition |
+| `log_error!(...)` | ERROR | Error condition |
+| `log_debug!(...)` | DEBUG | Debug/diagnostic output |
+
+All macros accept `format_args!()` syntax (zero heap allocation):
+
+```rust
+anyos_std::log_info!("server started on port {}", port);
+anyos_std::log_warn!("connection pool {}% full", usage);
+anyos_std::log_error!("failed to open {}: {}", path, err);
+anyos_std::log_debug!("packet: {} bytes, seq={}", len, seq);
+```
+
+### Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `log::log_msg` | `(level: &str, args: Arguments)` | Core logging function (used by macros) |
+| `log::reset` | `()` | Reset pipe cache (reconnect after logd restart) |
+
+### Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `LEVEL_INFO` | `"INFO"` | Informational level |
+| `LEVEL_WARN` | `"WARN"` | Warning level |
+| `LEVEL_ERROR` | `"ERROR"` | Error level |
+| `LEVEL_DEBUG` | `"DEBUG"` | Debug level |
+
+### Wire Protocol
+
+Messages are sent as: `LEVEL|source|message\n`
+
+The **source** is automatically derived from the program's argv[0] (filename after last `/`). Messages are built in a 512-byte stack buffer with no heap allocation.
 
 ---
 
