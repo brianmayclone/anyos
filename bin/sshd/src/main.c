@@ -301,7 +301,7 @@ static void handle_session(int sock, sshd_config_t *cfg)
             }
 
             if (n <= 0 && r <= 0) {
-                _syscall(SYS_YIELD, 0, 0, 0, 0);
+                _syscall(SYS_SLEEP, 10, 0, 0, 0); /* 10ms idle sleep */
             }
         }
 
@@ -357,7 +357,7 @@ int main(int argc, char **argv)
     while (1) {
         _syscall(SYS_NET_POLL, 0, 0, 0, 0);
 
-        /* Try to accept (blocking in kernel for up to 30s) */
+        /* Try to accept (non-blocking check) */
         unsigned char result[12]; /* socket_id(4) + ip(4) + port(2) + pad(2) */
         int rc = _syscall(SYS_TCP_ACCEPT, listener, (int)result, 0, 0);
 
@@ -373,8 +373,8 @@ int main(int argc, char **argv)
 
             handle_session(new_sock, &cfg);
         } else {
-            /* Timeout or error, just retry */
-            _syscall(SYS_SLEEP, 100, 0, 0, 0);
+            /* No pending connection — sleep 1 second before next poll */
+            _syscall(SYS_SLEEP, 1000, 0, 0, 0);
         }
     }
 

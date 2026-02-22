@@ -85,6 +85,15 @@ static int get_string(const uint8_t *buf, uint32_t buf_len, uint32_t *offset,
     return 0;
 }
 
+/* Reverse 32 bytes in-place (little-endian <-> big-endian) */
+static void reverse32(uint8_t *buf) {
+    for (int i = 0; i < 16; i++) {
+        uint8_t tmp = buf[i];
+        buf[i] = buf[31 - i];
+        buf[31 - i] = tmp;
+    }
+}
+
 /* Generate random bytes using kernel RDRAND */
 static void ssh_random(void *buf, size_t len) {
     _syscall(SYS_RANDOM, (int)buf, (int)len, 0, 0);
@@ -548,6 +557,10 @@ int ssh_kex(ssh_ctx_t *ctx) {
     mul_ok = ec->mul(shared_secret, 32, my_priv, 32, BR_EC_curve25519);
     if (!mul_ok) return SSH_ERR_KEX;
 
+    /* BearSSL returns X25519 result in little-endian (RFC 7748).
+     * SSH mpint encoding requires big-endian (RFC 8731). Reverse in-place. */
+    reverse32(shared_secret);
+
     /* 7. Compute exchange hash H = SHA256(V_C || V_S || I_C || I_S || K_S || Q_C || Q_S || K) */
     br_sha256_context sha;
     br_sha256_init(&sha);
@@ -966,6 +979,10 @@ int ssh_server_kex(ssh_ctx_t *ctx,
     memcpy(shared_secret, client_pub_copy, 32);
     mul_ok = ec->mul(shared_secret, 32, my_priv, 32, BR_EC_curve25519);
     if (!mul_ok) return SSH_ERR_KEX;
+
+    /* BearSSL returns X25519 result in little-endian (RFC 7748).
+     * SSH mpint encoding requires big-endian (RFC 8731). Reverse in-place. */
+    reverse32(shared_secret);
 
     /* 6. Compute exchange hash H = SHA256(V_C || V_S || I_C || I_S || K_S || Q_C || Q_S || K) */
     br_sha256_context sha;
