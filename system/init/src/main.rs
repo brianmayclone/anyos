@@ -111,17 +111,15 @@ fn run_init_conf() {
                 } else {
                     (entry, false)
                 };
-                // Split command into path and arguments at first space
-                let (path, args) = match cmd.find(' ') {
-                    Some(idx) => (&cmd[..idx], cmd[idx + 1..].trim_start()),
-                    None => (cmd, ""),
+                // Split path from arguments at first space
+                let path = match cmd.find(' ') {
+                    Some(idx) => &cmd[..idx],
+                    None => cmd,
                 };
-                if args.is_empty() {
-                    println!("init: spawning '{}'{}", path, if background { " [bg]" } else { "" });
-                } else {
-                    println!("init: spawning '{}' args='{}'{}", path, args, if background { " [bg]" } else { "" });
-                }
-                let tid = process::spawn(path, args);
+                // Pass the full command line as args (argv[0] = program name)
+                // process::args() strips argv[0] on the receiving side
+                println!("init: spawning '{}'{}", cmd, if background { " [bg]" } else { "" });
+                let tid = process::spawn(path, cmd);
                 if tid == u32::MAX {
                     println!("init: FAILED to spawn '{}'", path);
                 } else if !background {

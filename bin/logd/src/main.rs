@@ -159,8 +159,8 @@ impl LogWriter {
         }
 
         let log_path = format!("{}/system.log", self.log_dir);
-        // Append to log file (open with write+append+create flags)
-        let fd = anyos_std::fs::open(&log_path, 2 | 4); // append | create
+        // Append to log file (flags: 1=write, 2=append, 4=create)
+        let fd = anyos_std::fs::open(&log_path, 1 | 2 | 4); // write + append + create
         if fd != u32::MAX {
             anyos_std::fs::write(fd, &self.buffer);
             anyos_std::fs::close(fd);
