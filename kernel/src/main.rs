@@ -194,6 +194,42 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     drivers::hal::print_devices();
 
     // Phase 7e: Filesystem (after HAL probe — AHCI storage driver must be initialized first)
+
+    // Register the boot disk as a block device and scan for MBR/GPT partitions.
+    // If a partition table is found, derive the root filesystem LBA from it.
+    // Otherwise, fall back to the default hardcoded LBA 8192.
+    {
+        use drivers::storage::blockdev;
+        use fs::partition::PartitionType;
+
+        // Register whole boot disk (disk 0). Size 0 = unknown (whole disk).
+        blockdev::register_device(blockdev::BlockDevice {
+            id: 0,
+            disk_id: 0,
+            partition: None,
+            start_lba: 0,
+            size_sectors: 0, // whole disk, size unknown
+        });
+        blockdev::scan_and_register_partitions(0);
+
+        // Find the first data partition to use as root filesystem
+        let devices = blockdev::list_devices();
+        let mut found_root_lba = false;
+        for dev in &devices {
+            if dev.disk_id == 0 && dev.partition.is_some() {
+                // Use the first non-ESP partition as root
+                serial_println!("  Partition hd0p{}: start_lba={}", dev.partition.unwrap() + 1, dev.start_lba);
+                if !found_root_lba {
+                    fs::vfs::set_root_partition_lba(dev.start_lba as u32);
+                    found_root_lba = true;
+                }
+            }
+        }
+        if !found_root_lba {
+            serial_println!("  No partition table found, using default LBA 8192");
+        }
+    }
+
     fs::vfs::init();
     fs::vfs::mount("/", fs::vfs::FsType::Fat, 0);
     fs::vfs::mount_devfs();

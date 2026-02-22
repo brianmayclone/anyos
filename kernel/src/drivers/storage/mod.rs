@@ -9,6 +9,7 @@
 pub mod ata;
 pub mod ahci;
 pub mod atapi;
+pub mod blockdev;
 pub mod nvme;
 pub mod lsi_scsi;
 

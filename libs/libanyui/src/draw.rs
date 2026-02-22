@@ -75,9 +75,11 @@ fn librender() -> &'static LibrenderExportsPartial {
 
 type MeasureFn = extern "C" fn(u32, u16, *const u8, u32, *mut u32, *mut u32);
 type DrawFn = extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, u16, *const u8, u32);
+type DrawClipFn = extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, u16, *const u8, u32, i32, i32, i32, i32);
 
 static mut FONT_MEASURE: Option<MeasureFn> = None;
 static mut FONT_DRAW: Option<DrawFn> = None;
+static mut FONT_DRAW_CLIP: Option<DrawClipFn> = None;
 
 /// Ensure libfont.so is loaded and symbols are resolved.
 fn ensure_libfont() {
@@ -87,6 +89,7 @@ fn ensure_libfont() {
         if base == 0 { return; }
         FONT_MEASURE = resolve_sym(base, b"font_measure_string");
         FONT_DRAW = resolve_sym(base, b"font_draw_string_buf");
+        FONT_DRAW_CLIP = resolve_sym(base, b"font_draw_string_buf_clipped");
     }
 }
 
@@ -252,20 +255,29 @@ pub fn draw_rounded_border(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, 
 
 // ── Text rendering ─────────────────────────────────────────────────
 
-/// Render TTF text onto a surface via libfont.so.
+/// Render TTF text onto a surface via libfont.so, respecting the surface clip rect.
 /// Skipped if the text line is fully outside the clip rect.
 #[inline(always)]
 fn render_ttf(s: &Surface, x: i32, y: i32, color: u32, text: &[u8], font_id: u16, size: u16) {
     if text.is_empty() { return; }
     let text_h = size as i32 + 4; // approximate line height
+    let clip_r = s.clip_x + s.clip_w as i32;
+    let clip_b = s.clip_y + s.clip_h as i32;
     // Skip if fully outside clip rect
-    if y + text_h <= s.clip_y || y >= s.clip_y + s.clip_h as i32
-        || x >= s.clip_x + s.clip_w as i32
-    {
+    if y + text_h <= s.clip_y || y >= clip_b || x >= clip_r {
         return;
     }
     ensure_libfont();
-    if let Some(draw) = unsafe { FONT_DRAW } {
+    // Use clipped version if available (passes clip rect to glyph renderer)
+    if let Some(draw_clip) = unsafe { FONT_DRAW_CLIP } {
+        draw_clip(
+            s.pixels, s.width, s.height,
+            x, y, color,
+            font_id as u32, size,
+            text.as_ptr(), text.len() as u32,
+            s.clip_x, s.clip_y, clip_r, clip_b,
+        );
+    } else if let Some(draw) = unsafe { FONT_DRAW } {
         draw(
             s.pixels, s.width, s.height,
             x, y, color,

@@ -6,6 +6,7 @@ pub mod fat;
 pub mod fd_table;
 pub mod file;
 pub mod iso9660;
+pub mod partition;
 pub mod path;
 pub mod permissions;
 pub mod vfs;

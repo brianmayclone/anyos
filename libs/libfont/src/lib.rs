@@ -97,6 +97,32 @@ pub extern "C" fn font_draw_string_buf(
     font_manager::draw_string_buf(buf, buf_w, buf_h, x, y, color, font_id as u16, size, text);
 }
 
+/// Render text into a caller-provided ARGB pixel buffer with clip rect.
+#[no_mangle]
+pub extern "C" fn font_draw_string_buf_clipped(
+    buf: *mut u32,
+    buf_w: u32,
+    buf_h: u32,
+    x: i32,
+    y: i32,
+    color: u32,
+    font_id: u32,
+    size: u16,
+    text_ptr: *const u8,
+    text_len: u32,
+    clip_x: i32,
+    clip_y: i32,
+    clip_r: i32,
+    clip_b: i32,
+) {
+    let text = unsafe {
+        let bytes = core::slice::from_raw_parts(text_ptr, text_len as usize);
+        core::str::from_utf8_unchecked(bytes)
+    };
+    font_manager::draw_string_buf_clipped(buf, buf_w, buf_h, x, y, color, font_id as u16, size, text,
+        clip_x, clip_y, clip_r, clip_b);
+}
+
 /// Get line height for a font at a given size.
 #[no_mangle]
 pub extern "C" fn font_line_height(font_id: u32, size: u16) -> u32 {

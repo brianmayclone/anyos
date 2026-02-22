@@ -13,8 +13,24 @@ use alloc::vec::Vec;
 /// Maximum number of simultaneously open file descriptors.
 const MAX_OPEN_FILES: usize = 256;
 
-/// Partition start sector (must match mkimage.py --fs-start).
-const PARTITION_LBA: u32 = 8192;
+/// Default partition start sector (used when no MBR/GPT partition table is found).
+/// Must match mkimage.py --fs-start for backward compatibility.
+const DEFAULT_PARTITION_LBA: u32 = 8192;
+
+/// The actual partition LBA used for the root filesystem (set at boot from
+/// partition table or fallback to DEFAULT_PARTITION_LBA).
+static ROOT_PARTITION_LBA: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(8192);
+
+/// Set the root partition LBA (called from main.rs after partition scanning).
+pub fn set_root_partition_lba(lba: u32) {
+    ROOT_PARTITION_LBA.store(lba, core::sync::atomic::Ordering::Relaxed);
+    crate::serial_println!("[VFS] root partition LBA set to {}", lba);
+}
+
+/// Get the current root partition LBA.
+pub fn root_partition_lba() -> u32 {
+    ROOT_PARTITION_LBA.load(core::sync::atomic::Ordering::Relaxed)
+}
 
 /// Maximum depth for symlink resolution (prevents infinite loops).
 const MAX_SYMLINK_DEPTH: u32 = 20;
@@ -356,14 +372,14 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
 
     let actual_type = if fs_type == FsType::Fat || fs_type == FsType::ExFat {
         // Auto-detect: read first sector to check OEM name
-        crate::debug_println!("  [VFS] mount: reading VBR at LBA={}", PARTITION_LBA);
+        crate::debug_println!("  [VFS] mount: reading VBR at LBA={}", root_partition_lba());
         let mut buf = [0u8; 512];
-        if crate::drivers::storage::read_sectors(PARTITION_LBA, 1, &mut buf) {
+        if crate::drivers::storage::read_sectors(root_partition_lba(), 1, &mut buf) {
             crate::serial_println!("  VFS auto-detect: OEM bytes = {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
                 buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9], buf[10]);
             if &buf[3..11] == b"EXFAT   " {
                 crate::debug_println!("  [VFS] mount: detected exFAT, calling ExFatFs::new()");
-                match ExFatFs::new(device_id, PARTITION_LBA) {
+                match ExFatFs::new(device_id, root_partition_lba()) {
                     Ok(exfat) => {
                         crate::debug_println!("  [VFS] mount: ExFatFs::new() succeeded");
                         state.exfat_fs = Some(exfat);
@@ -376,7 +392,7 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
                 }
                 FsType::ExFat
             } else {
-                match FatFs::new(device_id, PARTITION_LBA) {
+                match FatFs::new(device_id, root_partition_lba()) {
                     Ok(fat) => {
                         state.fat_fs = Some(fat);
                         crate::serial_println!("  Mounted FAT16 at '{}'", path);
@@ -388,7 +404,7 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
                 FsType::Fat
             }
         } else {
-            crate::serial_println!("  Failed to read partition at LBA {}", PARTITION_LBA);
+            crate::serial_println!("  Failed to read partition at LBA {}", root_partition_lba());
             FsType::Fat
         }
     } else if fs_type == FsType::Iso9660 {

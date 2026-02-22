@@ -313,6 +313,7 @@ fn main() {
     win.add(&status_bar);
 
     let status_label = ui::Label::new("Loading...");
+    status_label.set_position(12, 6);
     status_label.set_text_color(0xFF969696);
     status_label.set_font_size(12);
     status_label.set_size(500, 16);
@@ -323,19 +324,19 @@ fn main() {
     detail_view.set_dock(ui::DOCK_BOTTOM);
     detail_view.set_size(WIN_W, DETAIL_H);
     detail_view.set_color(0xFF1E1E1E);
-    detail_view.set_padding(8, 6, 8, 6);
+    detail_view.set_padding(12, 8, 12, 8);
     win.add(&detail_view);
 
     let detail_title = ui::Label::new("Details");
-    detail_title.set_position(0, 0);
+    detail_title.set_position(12, 8);
     detail_title.set_size(100, 16);
     detail_title.set_text_color(0xFF969696);
     detail_title.set_font_size(11);
     detail_view.add(&detail_title);
 
     let detail_label = ui::Label::new("");
-    detail_label.set_position(0, 20);
-    detail_label.set_size(WIN_W - 16, DETAIL_H - 28);
+    detail_label.set_position(12, 30);
+    detail_label.set_size(WIN_W - 24, DETAIL_H - 40);
     detail_label.set_text_color(0xFFD0D0D0);
     detail_label.set_font_size(12);
     detail_label.set_font(4); // Monospace
@@ -348,7 +349,7 @@ fn main() {
     win.add(&sep);
 
     // ── DataGrid (fills remaining space) ──
-    let grid = ui::DataGrid::new(WIN_W, WIN_H - TOOLBAR_H - DETAIL_H - 24 - 1);
+    let grid = ui::DataGrid::new(WIN_W, WIN_H - TOOLBAR_H - DETAIL_H - 28 - 1);
     grid.set_dock(ui::DOCK_FILL);
     grid.set_row_height(20);
     grid.set_header_height(24);

@@ -504,10 +504,29 @@ pub fn draw_string_buf(
     x: i32, y: i32, color: u32,
     font_id: u16, size: u16, text: &str,
 ) {
+    draw_string_buf_clipped(buf, buf_w, buf_h, x, y, color, font_id, size, text,
+        0, 0, buf_w as i32, buf_h as i32);
+}
+
+/// Draw a string into an ARGB pixel buffer, clipped to a rectangle.
+/// Clip rect is (clip_x, clip_y, clip_r, clip_b) — left/top/right/bottom in pixels.
+pub fn draw_string_buf_clipped(
+    buf: *mut u32, buf_w: u32, buf_h: u32,
+    x: i32, y: i32, color: u32,
+    font_id: u16, size: u16, text: &str,
+    clip_x: i32, clip_y: i32, clip_r: i32, clip_b: i32,
+) {
     let mgr = match ensure_init() {
         Some(m) => m,
         None => return,
     };
+
+    // Clamp clip rect to buffer bounds
+    let clip_x = clip_x.max(0);
+    let clip_y = clip_y.max(0);
+    let clip_r = clip_r.min(buf_w as i32);
+    let clip_b = clip_b.min(buf_h as i32);
+    if clip_x >= clip_r || clip_y >= clip_b { return; }
 
     let subpixel = mgr.subpixel_enabled;
     let actual_font_id = if mgr.get_font(font_id).is_some() { font_id } else { SYSTEM_FONT_ID };
@@ -534,6 +553,9 @@ pub fn draw_string_buf(
     let col_b = (color & 0xFF) as u8;
 
     for ch in text.chars() {
+        // Early exit: cursor past right edge of clip rect
+        if cx >= clip_r { break; }
+
         if ch == '\n' {
             cx = x;
             cy += lh;
@@ -573,9 +595,11 @@ pub fn draw_string_buf(
             let gy = cy + ascent_px as i32 - glyph.y_offset;
 
             if subpixel && glyph.subpixel {
-                draw_glyph_subpixel_buf(buf, buf_w, buf_h, gx, gy, glyph, col_a, col_r, col_g, col_b);
+                draw_glyph_subpixel_buf(buf, buf_w, buf_h, gx, gy, glyph, col_a, col_r, col_g, col_b,
+                    clip_x, clip_y, clip_r, clip_b);
             } else {
-                draw_glyph_greyscale_buf(buf, buf_w, buf_h, gx, gy, glyph, col_a, col_r, col_g, col_b);
+                draw_glyph_greyscale_buf(buf, buf_w, buf_h, gx, gy, glyph, col_a, col_r, col_g, col_b,
+                    clip_x, clip_y, clip_r, clip_b);
             }
         }
 
@@ -586,22 +610,21 @@ pub fn draw_string_buf(
 // ─── Internal rendering ──────────────────────────────────────────────────
 
 fn draw_glyph_greyscale_buf(
-    buf: *mut u32, sw: u32, sh: u32,
+    buf: *mut u32, sw: u32, _sh: u32,
     x: i32, y: i32, glyph: &CachedGlyph,
     col_a: u32, col_r: u8, col_g: u8, col_b: u8,
+    clip_x: i32, clip_y: i32, clip_r: i32, clip_b: i32,
 ) {
     let bw = glyph.width as i32;
     let bh = glyph.height as i32;
-    let sw_i = sw as i32;
-    let sh_i = sh as i32;
     let lut = gamma_lut_for_size(glyph.size);
 
     for row in 0..bh {
         let py = y + row;
-        if py < 0 || py >= sh_i { continue; }
+        if py < clip_y || py >= clip_b { continue; }
         for col in 0..bw {
             let px = x + col;
-            if px < 0 || px >= sw_i { continue; }
+            if px < clip_x || px >= clip_r { continue; }
             let raw_cov = glyph.coverage[(row * bw + col) as usize];
             if raw_cov == 0 { continue; }
             let coverage = if let Some(tbl) = lut { tbl[raw_cov as usize] } else { raw_cov };
@@ -617,15 +640,14 @@ fn draw_glyph_greyscale_buf(
 }
 
 fn draw_glyph_subpixel_buf(
-    buf: *mut u32, sw: u32, sh: u32,
+    buf: *mut u32, sw: u32, _sh: u32,
     x: i32, y: i32, glyph: &CachedGlyph,
     _col_a: u32, col_r: u8, col_g: u8, col_b: u8,
+    clip_x: i32, clip_y: i32, clip_r: i32, clip_b: i32,
 ) {
     let pixel_w = (glyph.width / 3) as i32;
     let stride = glyph.width as usize;
     let bh = glyph.height as i32;
-    let sw_i = sw as i32;
-    let sh_i = sh as i32;
     let lut = gamma_lut_for_size(glyph.size);
 
     // Fixed-point reciprocal for / 10: (1 << 16) / 10 = 6553.6 → 6554
@@ -633,14 +655,14 @@ fn draw_glyph_subpixel_buf(
 
     for row in 0..bh {
         let py = y + row;
-        if py < 0 || py >= sh_i { continue; }
+        if py < clip_y || py >= clip_b { continue; }
         let row_start = row as usize * stride;
         if row_start + stride > glyph.coverage.len() { continue; }
         let cov_row = &glyph.coverage[row_start..row_start + stride];
 
         for col in 0..pixel_w {
             let px = x + col;
-            if px < 0 || px >= sw_i { continue; }
+            if px < clip_x || px >= clip_r { continue; }
             let ci = col as usize * 3;
             let r_raw = cov_row[ci] as u32;
             let g_raw = cov_row[ci + 1] as u32;

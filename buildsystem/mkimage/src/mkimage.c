@@ -220,6 +220,31 @@ void create_bios_image(const Args *args) {
     memcpy(image + SECTOR_SIZE, s2, s2_size);
     memcpy(image + (size_t)kernel_start * SECTOR_SIZE, kernel, flat_size);
 
+    /* Write MBR partition table (bytes 446-509 of sector 0).
+     * Stage 1 bootloader code occupies bytes 0-~106, so this is safe.
+     * Partition 1: the exFAT data partition at fs_start.
+     * The boot signature 0x55AA at bytes 510-511 is already part of Stage 1. */
+    {
+        uint32_t part_sectors = (uint32_t)(image_size / SECTOR_SIZE)
+                                - (uint32_t)args->fs_start;
+        uint8_t *entry = image + 446;
+        memset(entry, 0, 64);  /* zero all 4 partition entries */
+
+        /* Entry 1: data partition (exFAT) */
+        entry[0] = 0x80;      /* bootable / active */
+        /* CHS start: head=0, sector=2, cylinder=0 (placeholder for LBA) */
+        entry[1] = 0x00; entry[2] = 0x02; entry[3] = 0x00;
+        entry[4] = 0x07;      /* type 0x07 = NTFS/exFAT/HPFS */
+        /* CHS end: max for LBA mode */
+        entry[5] = 0xFE; entry[6] = 0xFF; entry[7] = 0xFF;
+        write_le32(entry + 8, (uint32_t)args->fs_start);
+        write_le32(entry + 12, part_sectors);
+
+        printf("\nMBR partition table:\n");
+        printf("  Partition 1: type=0x07 (exFAT) start=%d sectors=%u\n",
+               args->fs_start, part_sectors);
+    }
+
     free(s1); free(s2); free(kernel);
 
     /* exFAT filesystem */

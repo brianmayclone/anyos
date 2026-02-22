@@ -148,6 +148,8 @@ pub const ATTR_ARCHIVE: u8 = 0x20;
 pub const ATTR_LONG_NAME: u8 = 0x0F;
 
 const FAT16_EOC: u16 = 0xFFF8;
+const FAT32_EOC: u32 = 0x0FFFFFF8;
+const FAT32_MASK: u32 = 0x0FFFFFFF;
 
 // =====================================================================
 // VFAT Long Filename (LFN) helpers
@@ -302,9 +304,15 @@ pub struct FatFs {
     pub first_root_dir_sector: u32,
     pub total_clusters: u32,
     pub partition_start_lba: u32,
-    pub fat_size_16: u32,
+    /// FAT size in sectors (works for FAT12/16/32).
+    pub fat_size: u32,
     pub num_fats: u32,
+    /// FAT32: root directory start cluster (0 for FAT12/16).
+    pub root_cluster: u32,
+    /// FAT32: FSInfo sector number (0 for FAT12/16).
+    pub fsinfo_sector: u32,
     /// Cached FAT table — avoids per-cluster disk reads during file I/O.
+    /// For FAT12/16: entire FAT. For FAT32: entire FAT (up to ~4 MB).
     fat_cache: Vec<u8>,
 }
 
@@ -363,6 +371,7 @@ impl FileReadPlan {
 
 impl FatFs {
     /// Create a new FAT filesystem by reading the BPB from the ATA device.
+    /// Supports FAT12, FAT16, and FAT32 (including extended BPB fields).
     pub fn new(device_id: u32, partition_start_lba: u32) -> Result<Self, FsError> {
         let mut buf = [0u8; 512];
         if !crate::drivers::storage::read_sectors(partition_start_lba, 1, &mut buf) {
@@ -379,20 +388,24 @@ impl FatFs {
         let fat_size_16 = u16::from_le_bytes([buf[22], buf[23]]) as u32;
         let total_sectors_32 = u32::from_le_bytes([buf[32], buf[33], buf[34], buf[35]]);
 
+        // FAT32 extended BPB fields (only valid when fat_size_16 == 0)
+        let fat_size_32 = u32::from_le_bytes([buf[36], buf[37], buf[38], buf[39]]);
+        let fat_size = if fat_size_16 != 0 { fat_size_16 } else { fat_size_32 };
+
         let total_sectors = if total_sectors_16 != 0 { total_sectors_16 } else { total_sectors_32 };
 
         if bytes_per_sector != 512 {
             crate::serial_println!("  FAT: Unsupported sector size: {}", bytes_per_sector);
             return Err(FsError::IoError);
         }
-        if sectors_per_cluster == 0 || fat_size_16 == 0 {
-            crate::serial_println!("  FAT: Invalid BPB (spc={}, fat_size={})", sectors_per_cluster, fat_size_16);
+        if sectors_per_cluster == 0 || fat_size == 0 {
+            crate::serial_println!("  FAT: Invalid BPB (spc={}, fat_size={})", sectors_per_cluster, fat_size);
             return Err(FsError::IoError);
         }
 
         let root_dir_sectors = (root_entry_count * 32 + bytes_per_sector - 1) / bytes_per_sector;
         let first_fat_sector = reserved_sectors;
-        let first_root_dir_sector = reserved_sectors + num_fats * fat_size_16;
+        let first_root_dir_sector = reserved_sectors + num_fats * fat_size;
         let first_data_sector = first_root_dir_sector + root_dir_sectors;
         let data_sectors = total_sectors - first_data_sector;
         let total_clusters = data_sectors / sectors_per_cluster;
@@ -405,6 +418,18 @@ impl FatFs {
             FatType::Fat32
         };
 
+        // FAT32-specific fields
+        let root_cluster = if fat_type == FatType::Fat32 {
+            u32::from_le_bytes([buf[44], buf[45], buf[46], buf[47]])
+        } else {
+            0
+        };
+        let fsinfo_sector = if fat_type == FatType::Fat32 {
+            u16::from_le_bytes([buf[48], buf[49]]) as u32
+        } else {
+            0
+        };
+
         let oem = core::str::from_utf8(&buf[3..11]).unwrap_or("?");
 
         crate::serial_println!(
@@ -412,17 +437,27 @@ impl FatFs {
             match fat_type { FatType::Fat12 => "12", FatType::Fat16 => "16", FatType::Fat32 => "32" },
             total_clusters, sectors_per_cluster, oem.trim(),
         );
+        if fat_type == FatType::Fat32 {
+            crate::serial_println!(
+                "  FAT32: root_cluster={}, fsinfo_sector={}, fat_size={} sectors",
+                root_cluster, fsinfo_sector, fat_size,
+            );
+        }
         crate::serial_println!(
             "  FAT: first_fat={}, root_dir={}, data={}, total_sectors={}",
             first_fat_sector, first_root_dir_sector, first_data_sector, total_sectors
         );
 
         // Cache the entire FAT table in memory for fast cluster chain lookups.
-        // FAT16 on a 64 MB disk = ~128 sectors = 64 KB — trivially fits in RAM.
-        let fat_cache_size = (fat_size_16 * 512) as usize;
+        // FAT16: ~64 KB typical. FAT32: up to ~4 MB for a 4 GB disk (4KB clusters).
+        let fat_cache_size = (fat_size * 512) as usize;
+        if fat_cache_size > 8 * 1024 * 1024 {
+            crate::serial_println!("  FAT: FAT table too large to cache ({} KB)", fat_cache_size / 1024);
+            return Err(FsError::IoError);
+        }
         let mut fat_cache = vec![0u8; fat_cache_size];
         let abs_fat_lba = partition_start_lba + first_fat_sector;
-        if !crate::drivers::storage::read_sectors(abs_fat_lba, fat_size_16, &mut fat_cache) {
+        if !crate::drivers::storage::read_sectors(abs_fat_lba, fat_size, &mut fat_cache) {
             crate::serial_println!("  FAT: Failed to cache FAT table");
             return Err(FsError::IoError);
         }
@@ -439,8 +474,10 @@ impl FatFs {
             first_root_dir_sector,
             total_clusters,
             partition_start_lba,
-            fat_size_16,
+            fat_size,
             num_fats,
+            root_cluster,
+            fsinfo_sector,
             fat_cache,
         })
     }
@@ -470,18 +507,28 @@ impl FatFs {
     }
 
     fn next_cluster(&self, cluster: u32) -> Option<u32> {
-        let fat_offset = (cluster * 2) as usize;
-        if fat_offset + 1 >= self.fat_cache.len() {
-            return None;
+        match self.read_fat_entry(cluster) {
+            Ok(val) if val == 0 || self.is_eoc(val) => None,
+            Ok(val) => Some(val),
+            Err(_) => None,
         }
-        let value = u16::from_le_bytes([
-            self.fat_cache[fat_offset],
-            self.fat_cache[fat_offset + 1],
-        ]);
-        if value >= FAT16_EOC || value == 0 {
-            None
-        } else {
-            Some(value as u32)
+    }
+
+    /// Check if a FAT entry value indicates end-of-chain.
+    fn is_eoc(&self, value: u32) -> bool {
+        match self.fat_type {
+            FatType::Fat12 => value >= 0x0FF8,
+            FatType::Fat16 => value >= 0xFFF8,
+            FatType::Fat32 => value >= 0x0FFFFFF8,
+        }
+    }
+
+    /// Get the end-of-chain marker for the current FAT type.
+    fn eoc_mark(&self) -> u32 {
+        match self.fat_type {
+            FatType::Fat12 => 0x0FFF,
+            FatType::Fat16 => 0xFFFF,
+            FatType::Fat32 => 0x0FFFFFFF,
         }
     }
 
@@ -508,19 +555,47 @@ impl FatFs {
     // FAT table operations
     // =====================================================================
 
-    fn write_fat_entry(&mut self, cluster: u32, value: u16) -> Result<(), FsError> {
-        let fat_offset = (cluster * 2) as usize;
+    /// Write a FAT entry value for a cluster. Handles FAT16 (2 bytes) and FAT32 (4 bytes).
+    /// For FAT32, preserves the upper 4 bits of the existing entry.
+    fn write_fat_entry(&mut self, cluster: u32, value: u32) -> Result<(), FsError> {
+        let (fat_offset, entry_size) = match self.fat_type {
+            FatType::Fat12 => {
+                // FAT12 not writable for now
+                return Err(FsError::IoError);
+            }
+            FatType::Fat16 => ((cluster * 2) as usize, 2usize),
+            FatType::Fat32 => ((cluster * 4) as usize, 4usize),
+        };
+
+        if fat_offset + entry_size > self.fat_cache.len() {
+            return Err(FsError::IoError);
+        }
 
         // Update in-memory cache
-        if fat_offset + 1 < self.fat_cache.len() {
-            self.fat_cache[fat_offset] = value as u8;
-            self.fat_cache[fat_offset + 1] = (value >> 8) as u8;
+        match self.fat_type {
+            FatType::Fat16 => {
+                let v16 = value as u16;
+                self.fat_cache[fat_offset] = v16 as u8;
+                self.fat_cache[fat_offset + 1] = (v16 >> 8) as u8;
+            }
+            FatType::Fat32 => {
+                // Preserve upper 4 bits of existing entry
+                let old = u32::from_le_bytes([
+                    self.fat_cache[fat_offset],
+                    self.fat_cache[fat_offset + 1],
+                    self.fat_cache[fat_offset + 2],
+                    self.fat_cache[fat_offset + 3],
+                ]);
+                let new_val = (old & 0xF0000000) | (value & FAT32_MASK);
+                let bytes = new_val.to_le_bytes();
+                self.fat_cache[fat_offset..fat_offset + 4].copy_from_slice(&bytes);
+            }
+            _ => {}
         }
 
         // Write through to disk (both FAT copies)
         let fat_sector_rel = fat_offset as u32 / 512;
         let sector_start = (fat_sector_rel * 512) as usize;
-        // Use cached sector data directly — no need to re-read from disk
         let mut sector_buf = [0u8; 512];
         sector_buf.copy_from_slice(&self.fat_cache[sector_start..sector_start + 512]);
 
@@ -528,28 +603,59 @@ impl FatFs {
         self.write_sectors(fat1_sector, 1, &sector_buf)?;
 
         if self.num_fats > 1 {
-            let fat2_sector = self.first_fat_sector + self.fat_size_16 + fat_sector_rel;
+            let fat2_sector = self.first_fat_sector + self.fat_size + fat_sector_rel;
             self.write_sectors(fat2_sector, 1, &sector_buf)?;
         }
         Ok(())
     }
 
-    fn read_fat_entry(&self, cluster: u32) -> Result<u16, FsError> {
-        let fat_offset = (cluster * 2) as usize;
-        if fat_offset + 1 >= self.fat_cache.len() {
-            return Err(FsError::IoError);
+    /// Read a FAT entry for a cluster. Returns the entry value (masked for FAT32).
+    fn read_fat_entry(&self, cluster: u32) -> Result<u32, FsError> {
+        match self.fat_type {
+            FatType::Fat12 => {
+                // FAT12: 1.5 bytes per entry
+                let fat_offset = (cluster as usize * 3) / 2;
+                if fat_offset + 1 >= self.fat_cache.len() {
+                    return Err(FsError::IoError);
+                }
+                let raw = u16::from_le_bytes([
+                    self.fat_cache[fat_offset],
+                    self.fat_cache[fat_offset + 1],
+                ]);
+                let val = if cluster & 1 != 0 { raw >> 4 } else { raw & 0x0FFF };
+                Ok(val as u32)
+            }
+            FatType::Fat16 => {
+                let fat_offset = (cluster * 2) as usize;
+                if fat_offset + 1 >= self.fat_cache.len() {
+                    return Err(FsError::IoError);
+                }
+                Ok(u16::from_le_bytes([
+                    self.fat_cache[fat_offset],
+                    self.fat_cache[fat_offset + 1],
+                ]) as u32)
+            }
+            FatType::Fat32 => {
+                let fat_offset = (cluster * 4) as usize;
+                if fat_offset + 3 >= self.fat_cache.len() {
+                    return Err(FsError::IoError);
+                }
+                let raw = u32::from_le_bytes([
+                    self.fat_cache[fat_offset],
+                    self.fat_cache[fat_offset + 1],
+                    self.fat_cache[fat_offset + 2],
+                    self.fat_cache[fat_offset + 3],
+                ]);
+                Ok(raw & FAT32_MASK)
+            }
         }
-        Ok(u16::from_le_bytes([
-            self.fat_cache[fat_offset],
-            self.fat_cache[fat_offset + 1],
-        ]))
     }
 
     fn alloc_cluster(&mut self) -> Result<u32, FsError> {
         for cluster in 2..self.total_clusters + 2 {
             let entry = self.read_fat_entry(cluster)?;
-            if entry == 0x0000 {
-                self.write_fat_entry(cluster, 0xFFFF)?;
+            if entry == 0 {
+                self.write_fat_entry(cluster, self.eoc_mark())?;
                 return Ok(cluster);
             }
         }
@@ -564,11 +670,11 @@ impl FatFs {
         let mut cluster = start_cluster;
         loop {
             let next = self.read_fat_entry(cluster)?;
-            self.write_fat_entry(cluster, 0x0000)?;
-            if next >= FAT16_EOC || next == 0 {
+            self.write_fat_entry(cluster, 0)?;
+            if self.is_eoc(next) || next == 0 {
                 break;
             }
-            cluster = next as u32;
+            cluster = next;
         }
         Ok(())
     }
@@ -732,14 +838,14 @@ impl FatFs {
         while cluster_offset + cluster_size <= offset {
             cluster_offset += cluster_size;
             let next = self.read_fat_entry(cluster)?;
-            if next >= FAT16_EOC || next == 0 {
+            if self.is_eoc(next) || next == 0 {
                 let new = self.alloc_cluster()?;
-                self.write_fat_entry(cluster, new as u16)?;
+                self.write_fat_entry(cluster, new)?;
                 let zeros = vec![0u8; cluster_size as usize];
                 self.write_cluster(new, &zeros)?;
                 cluster = new;
             } else {
-                cluster = next as u32;
+                cluster = next;
             }
         }
 
@@ -764,14 +870,14 @@ impl FatFs {
                 break;
             }
             let next = self.read_fat_entry(cur_cluster)?;
-            if next >= FAT16_EOC || next == 0 {
+            if self.is_eoc(next) || next == 0 {
                 let new = self.alloc_cluster()?;
-                self.write_fat_entry(cur_cluster, new as u16)?;
+                self.write_fat_entry(cur_cluster, new)?;
                 let zeros = vec![0u8; cluster_size as usize];
                 self.write_cluster(new, &zeros)?;
                 cur_cluster = new;
             } else {
-                cur_cluster = next as u32;
+                cur_cluster = next;
             }
         }
         let new_size = (offset + data.len() as u32).max(old_size);
@@ -783,15 +889,18 @@ impl FatFs {
     // =====================================================================
 
     fn read_dir_raw(&self, cluster: u32) -> Result<Vec<u8>, FsError> {
-        if cluster == 0 {
+        if cluster == 0 && self.fat_type != FatType::Fat32 {
+            // FAT12/16: fixed root directory area
             let root_size = self.root_dir_sectors * 512;
             let mut buf = vec![0u8; root_size as usize];
             self.read_sectors(self.first_root_dir_sector, self.root_dir_sectors, &mut buf)?;
             Ok(buf)
         } else {
+            // Cluster chain (FAT32 root or any subdirectory)
+            let start = if cluster == 0 { self.root_cluster } else { cluster };
             let cluster_size = self.sectors_per_cluster * 512;
             let mut result = Vec::new();
-            let mut cur = cluster;
+            let mut cur = start;
             loop {
                 let mut cbuf = vec![0u8; cluster_size as usize];
                 self.read_cluster(cur, &mut cbuf)?;

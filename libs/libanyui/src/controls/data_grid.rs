@@ -366,7 +366,9 @@ impl Control for DataGrid {
                             }
                         };
                         let text_y = row_y + (self.row_height as i32 - 13) / 2;
-                        crate::draw::draw_text(&clipped, text_x, text_y, color, text);
+                        // Clip text to column bounds to prevent overflow into adjacent columns
+                        let cell_clip = clipped.with_clip(col_x, row_y, col.width, self.row_height);
+                        crate::draw::draw_text(&cell_clip, text_x, text_y, color, text);
                     }
 
                     col_x += col.width as i32;
@@ -385,9 +387,10 @@ impl Control for DataGrid {
             let logical_col = self.display_order[disp_col];
             let col = &self.columns[logical_col];
 
-            // Header text
+            // Header text (clipped to column bounds)
             let text_y = y + (self.header_height as i32 - 13) / 2;
-            crate::draw::draw_text(&clipped, col_x + 8, text_y, tc.text, &col.header);
+            let hdr_clip = clipped.with_clip(col_x, y, col.width, self.header_height);
+            crate::draw::draw_text(&hdr_clip, col_x + 8, text_y, tc.text, &col.header);
 
             // Sort indicator
             if self.sort_column == Some(disp_col) && self.sort_direction != SortDirection::None {
