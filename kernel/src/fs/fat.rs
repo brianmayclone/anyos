@@ -1,5 +1,5 @@
-//! FAT16 filesystem driver with VFAT long filename (LFN) support.
-//! Reads and writes files/directories on an ATA-backed FAT16 partition.
+//! FAT12/16/32 filesystem driver with VFAT long filename (LFN) support.
+//! Reads and writes files/directories on an ATA/AHCI-backed FAT partition.
 
 use crate::fs::file::{DirEntry, FileType};
 use crate::fs::vfs::FsError;
@@ -1469,7 +1469,8 @@ impl FatFs {
     /// Delete the 8.3 and any associated LFN entries for a file by name.
     /// Returns `(start_cluster, file_size)` of the deleted entry.
     pub fn delete_entry(&self, parent_cluster: u32, name: &str) -> Result<(u32, u32), FsError> {
-        if parent_cluster == 0 {
+        if parent_cluster == 0 && self.fat_type != FatType::Fat32 {
+            // FAT12/16: fixed root directory area
             let root_size = (self.root_dir_sectors * 512) as usize;
             let mut buf = vec![0u8; root_size];
             self.read_sectors(self.first_root_dir_sector, self.root_dir_sectors, &mut buf)?;
@@ -1501,8 +1502,10 @@ impl FatFs {
             }
             Err(FsError::NotFound)
         } else {
+            // Cluster chain (FAT32 root or any subdirectory)
+            let start = if parent_cluster == 0 { self.root_cluster } else { parent_cluster };
             let cluster_size = (self.sectors_per_cluster * 512) as usize;
-            let mut cur = parent_cluster;
+            let mut cur = start;
             loop {
                 let mut cbuf = vec![0u8; cluster_size];
                 self.read_cluster(cur, &mut cbuf)?;
@@ -1539,7 +1542,8 @@ impl FatFs {
     /// Update the size, starting cluster, and modification time of an existing directory entry.
     pub fn update_entry(&self, parent_cluster: u32, name: &str, new_size: u32, new_cluster: u32) -> Result<(), FsError> {
         let (date, time) = current_dos_datetime();
-        if parent_cluster == 0 {
+        if parent_cluster == 0 && self.fat_type != FatType::Fat32 {
+            // FAT12/16: fixed root directory area
             let root_size = (self.root_dir_sectors * 512) as usize;
             let mut buf = vec![0u8; root_size];
             self.read_sectors(self.first_root_dir_sector, self.root_dir_sectors, &mut buf)?;
@@ -1562,8 +1566,10 @@ impl FatFs {
             }
             Err(FsError::NotFound)
         } else {
+            // Cluster chain (FAT32 root or any subdirectory)
+            let start = if parent_cluster == 0 { self.root_cluster } else { parent_cluster };
             let cluster_size = (self.sectors_per_cluster * 512) as usize;
-            let mut cur = parent_cluster;
+            let mut cur = start;
             loop {
                 let mut cbuf = vec![0u8; cluster_size];
                 self.read_cluster(cur, &mut cbuf)?;

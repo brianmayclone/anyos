@@ -394,11 +394,16 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
             } else {
                 match FatFs::new(device_id, root_partition_lba()) {
                     Ok(fat) => {
+                        let type_name = match fat.fat_type {
+                            crate::fs::fat::FatType::Fat12 => "FAT12",
+                            crate::fs::fat::FatType::Fat16 => "FAT16",
+                            crate::fs::fat::FatType::Fat32 => "FAT32",
+                        };
+                        crate::serial_println!("  Mounted {} at '{}'", type_name, path);
                         state.fat_fs = Some(fat);
-                        crate::serial_println!("  Mounted FAT16 at '{}'", path);
                     }
                     Err(_) => {
-                        crate::serial_println!("  Failed to mount FAT16 at '{}'", path);
+                        crate::serial_println!("  Failed to mount FAT at '{}'", path);
                     }
                 }
                 FsType::Fat
