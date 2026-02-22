@@ -79,9 +79,21 @@ add_custom_command(
   COMMENT "Building buildsystem tool: anyld"
 )
 
+# mkappbundle — .app bundle creator (validates & assembles .app directories)
+set(MKAPPBUNDLE_EXECUTABLE "${CMAKE_BINARY_DIR}/buildsystem/mkappbundle")
+file(GLOB MKAPPBUNDLE_SRCS "${BUILDSYSTEM_DIR}/mkappbundle/src/*.c" "${BUILDSYSTEM_DIR}/mkappbundle/src/*.h")
+add_custom_command(
+  OUTPUT ${MKAPPBUNDLE_EXECUTABLE}
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/buildsystem"
+  COMMAND cc -Wall -O2 -std=c99 -o ${MKAPPBUNDLE_EXECUTABLE}
+    ${BUILDSYSTEM_DIR}/mkappbundle/src/mkappbundle.c
+  DEPENDS ${MKAPPBUNDLE_SRCS}
+  COMMENT "Building buildsystem tool: mkappbundle"
+)
+
 # Target to build all buildsystem tools
 add_custom_target(buildsystem-tools
-  DEPENDS ${ANYELF_EXECUTABLE} ${MKIMAGE_EXECUTABLE} ${ANYLD_EXECUTABLE}
+  DEPENDS ${ANYELF_EXECUTABLE} ${MKIMAGE_EXECUTABLE} ${ANYLD_EXECUTABLE} ${MKAPPBUNDLE_EXECUTABLE}
 )
 
 option(ANYOS_DEBUG_VERBOSE "Enable verbose debug output" OFF)
