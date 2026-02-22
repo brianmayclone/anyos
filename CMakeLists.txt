@@ -1109,13 +1109,57 @@ add_custom_command(
   COMMENT "Packaging GLCube.app (mkappbundle)"
 )
 
+# ============================================================
+# ClassiCube (Minecraft Classic, software renderer) → ClassiCube.app
+# (only built if third_party/classicube is present — not a git submodule)
+# ============================================================
+set(CLASSICUBE_DIR "${CMAKE_SOURCE_DIR}/third_party/classicube")
+if(EXISTS "${CLASSICUBE_DIR}/src/Core.h")
+  set(HAS_CLASSICUBE TRUE)
+  set(CLASSICUBE_ELF "${CLASSICUBE_DIR}/classicube.elf")
+  set(CLASSICUBE_APP "${SYSROOT_DIR}/Applications/ClassiCube.app")
+
+  file(GLOB CLASSICUBE_SOURCES
+    "${CLASSICUBE_DIR}/src/*.c"
+    "${CLASSICUBE_DIR}/src/*.h"
+    "${CLASSICUBE_DIR}/misc/anyos/Makefile"
+  )
+  add_custom_command(
+    OUTPUT ${CLASSICUBE_ELF}
+    COMMAND ${MAKE_EXECUTABLE} -C ${CLASSICUBE_DIR} -f misc/anyos/Makefile clean
+    COMMAND ${MAKE_EXECUTABLE} -C ${CLASSICUBE_DIR} -f misc/anyos/Makefile CC=${I686_ELF_GCC} LIBC_DIR=${LIBC_DIR}
+    DEPENDS ${LIBC_A} ${LIBC_CRT0} ${CLASSICUBE_SOURCES}
+    COMMENT "Building ClassiCube for anyOS"
+  )
+
+  add_custom_command(
+    OUTPUT ${CLASSICUBE_APP}/ClassiCube
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CLASSICUBE_APP}"
+    COMMAND ${MKAPPBUNDLE_EXECUTABLE}
+      -i "${CLASSICUBE_DIR}/Info.conf"
+      -e ${CLASSICUBE_ELF}
+      --keep-elf
+      --force
+      -o "${CLASSICUBE_APP}"
+    DEPENDS ${CLASSICUBE_ELF} "${CLASSICUBE_DIR}/Info.conf" ${MKAPPBUNDLE_EXECUTABLE}
+    COMMENT "Packaging ClassiCube.app (mkappbundle)"
+  )
+else()
+  set(HAS_CLASSICUBE FALSE)
+  message(STATUS "ClassiCube not found in third_party/classicube — skipping")
+endif()
+
 # Clean targets for third-party builds (outside build dir)
-set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES
+set(THIRD_PARTY_CLEAN_FILES
   ${DOOM_ELF} "${DOOM_DIR}/obj"
   ${QUAKE_ELF} "${QUAKE_DIR}/obj"
   ${TINYGL_A} "${TINYGL_DIR}/obj"
   ${GLCUBE_ELF} "${GLCUBE_DIR}/obj"
 )
+if(HAS_CLASSICUBE)
+  list(APPEND THIRD_PARTY_CLEAN_FILES ${CLASSICUBE_ELF} "${CLASSICUBE_DIR}/build/anyos")
+endif()
+set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES ${THIRD_PARTY_CLEAN_FILES})
 
 # ============================================================
 # BearSSL (TLS library, used by curl)
@@ -1244,6 +1288,10 @@ set(C_TOOLCHAIN_DEPS
   ${SYSROOT_DIR}/System/bin/git
   ${SYSROOT_DIR}/System/bin/sh
 )
+
+if(HAS_CLASSICUBE)
+  list(APPEND C_TOOLCHAIN_DEPS ${CLASSICUBE_APP}/ClassiCube)
+endif()
 
 endif() # HAS_CROSS_COMPILER
 
