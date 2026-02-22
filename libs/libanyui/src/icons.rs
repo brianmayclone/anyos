@@ -1,4 +1,4 @@
-//! Simple pixel-art icon rendering using fill_rect primitives.
+//! Pixel-art icon rendering using fill_rect primitives.
 //!
 //! Each icon is 16x16 and drawn at a given position and color.
 //! Icons are identified by ID constants.
@@ -37,158 +37,223 @@ pub fn draw_icon(s: &Surface, x: i32, y: i32, icon_id: u32, color: u32) {
     }
 }
 
-// New file: document with folded corner and "+"
+// ── New file: document with folded corner and "+" ───────────────────
+
 fn draw_new_file(s: &Surface, x: i32, y: i32, c: u32) {
-    // Document body
-    fill_rect(s, x + 2, y + 0, 9, 16, c);
-    // Fold corner cut (top-right)
-    fill_rect(s, x + 8, y + 0, 3, 4, 0x00000000); // transparent cut
-    // Fold triangle
-    fill_rect(s, x + 8, y + 3, 3, 1, c);
-    fill_rect(s, x + 10, y + 1, 1, 3, c);
-    // "+" sign in the middle
-    fill_rect(s, x + 5, y + 7, 5, 1, darken(c));
-    fill_rect(s, x + 7, y + 5, 1, 5, darken(c));
+    let d = dim(c);
+    // Document body — left portion
+    fill_rect(s, x + 3, y + 1, 7, 14, c);
+    // Right portion below fold
+    fill_rect(s, x + 10, y + 5, 3, 10, c);
+    // Fold triangle (stepped diagonal)
+    fill_rect(s, x + 10, y + 4, 3, 1, c);
+    fill_rect(s, x + 11, y + 3, 2, 1, c);
+    fill_rect(s, x + 12, y + 2, 1, 1, c);
+    // Fold face (darker)
+    fill_rect(s, x + 10, y + 1, 1, 3, d);
+    fill_rect(s, x + 11, y + 1, 1, 2, d);
+    fill_rect(s, x + 12, y + 1, 1, 1, d);
+    // "+" sign centered
+    fill_rect(s, x + 5, y + 8, 5, 1, d);
+    fill_rect(s, x + 7, y + 6, 1, 5, d);
 }
 
-// Folder open
+// ── Folder open ─────────────────────────────────────────────────────
+
 fn draw_folder_open(s: &Surface, x: i32, y: i32, c: u32) {
-    // Folder tab
-    fill_rect(s, x + 1, y + 2, 5, 2, c);
-    // Folder body
-    fill_rect(s, x + 1, y + 4, 13, 9, c);
-    // Folder front (open flap)
-    fill_rect(s, x + 0, y + 6, 14, 7, lighten(c));
-    // Inner dark area
-    fill_rect(s, x + 2, y + 7, 10, 4, darken(c));
+    // Tab on top-left
+    fill_rect(s, x + 1, y + 3, 5, 2, c);
+    // Back of folder
+    fill_rect(s, x + 1, y + 5, 13, 2, c);
+    // Open front flap (lighter, shifted left)
+    fill_rect(s, x + 0, y + 7, 13, 6, lighten(c));
+    // Inner shadow
+    fill_rect(s, x + 1, y + 8, 11, 4, dim(c));
 }
 
-// Save (floppy disk)
+// ── Save (floppy disk) ──────────────────────────────────────────────
+
 fn draw_save(s: &Surface, x: i32, y: i32, c: u32) {
     // Disk body
-    fill_rect(s, x + 1, y + 1, 14, 14, c);
-    // Label area (bottom center)
-    fill_rect(s, x + 3, y + 8, 10, 6, lighten(c));
-    // Metal slider (top)
-    fill_rect(s, x + 4, y + 1, 8, 5, darken(c));
+    fill_rect(s, x + 2, y + 1, 12, 14, c);
+    // Metal shutter (top, darker)
+    fill_rect(s, x + 4, y + 1, 7, 5, dim(c));
+    // Shutter slider hole
     fill_rect(s, x + 8, y + 2, 2, 3, c);
+    // Label area (bottom, lighter)
+    fill_rect(s, x + 4, y + 9, 8, 5, lighten(c));
+    // Label line
+    fill_rect(s, x + 5, y + 11, 6, 1, dim(c));
 }
 
-// Save all (two stacked floppy disks)
+// ── Save all (two stacked floppy disks) ─────────────────────────────
+
 fn draw_save_all(s: &Surface, x: i32, y: i32, c: u32) {
-    // Back disk (offset)
-    fill_rect(s, x + 3, y + 0, 12, 12, darken(c));
-    // Front disk
-    fill_rect(s, x + 1, y + 3, 12, 12, c);
-    // Label area
-    fill_rect(s, x + 3, y + 9, 8, 5, lighten(c));
-    // Metal slider
-    fill_rect(s, x + 4, y + 3, 6, 4, darken(c));
+    // Back disk shadow
+    fill_rect(s, x + 4, y + 0, 11, 12, dim(c));
+    // Front disk body
+    fill_rect(s, x + 1, y + 3, 11, 12, c);
+    // Metal shutter
+    fill_rect(s, x + 3, y + 3, 7, 4, dim(c));
+    // Slider hole
     fill_rect(s, x + 7, y + 4, 2, 2, c);
+    // Label area
+    fill_rect(s, x + 3, y + 10, 7, 4, lighten(c));
 }
 
-// Build (hammer/wrench)
+// ── Build (wrench) ──────────────────────────────────────────────────
+
 fn draw_build(s: &Surface, x: i32, y: i32, c: u32) {
-    // Wrench handle (diagonal, simplified as rectangles)
-    fill_rect(s, x + 2, y + 10, 6, 3, c);
-    fill_rect(s, x + 4, y + 8, 3, 2, c);
-    fill_rect(s, x + 6, y + 6, 3, 2, c);
-    fill_rect(s, x + 8, y + 4, 3, 2, c);
-    // Wrench head
-    fill_rect(s, x + 9, y + 1, 5, 5, c);
-    fill_rect(s, x + 11, y + 2, 1, 3, darken(c));
+    // Wrench head (top-right circle-ish)
+    fill_rect(s, x + 9, y + 1, 4, 1, c);
+    fill_rect(s, x + 8, y + 2, 6, 1, c);
+    fill_rect(s, x + 8, y + 3, 6, 1, c);
+    fill_rect(s, x + 9, y + 4, 4, 1, c);
+    // Jaw opening
+    fill_rect(s, x + 10, y + 2, 2, 2, dim(c));
+    // Handle (diagonal steps)
+    fill_rect(s, x + 8, y + 5, 3, 1, c);
+    fill_rect(s, x + 7, y + 6, 3, 1, c);
+    fill_rect(s, x + 6, y + 7, 3, 1, c);
+    fill_rect(s, x + 5, y + 8, 3, 1, c);
+    fill_rect(s, x + 4, y + 9, 3, 1, c);
+    fill_rect(s, x + 3, y + 10, 3, 1, c);
+    fill_rect(s, x + 2, y + 11, 3, 2, c);
+    // Handle end (wider)
+    fill_rect(s, x + 1, y + 13, 4, 1, c);
 }
 
-// Play triangle
+// ── Play triangle ───────────────────────────────────────────────────
+
 fn draw_play(s: &Surface, x: i32, y: i32, c: u32) {
-    // Play triangle approximated with rectangles
-    fill_rect(s, x + 4, y + 2, 2, 12, c);
-    fill_rect(s, x + 6, y + 3, 2, 10, c);
-    fill_rect(s, x + 8, y + 4, 2, 8, c);
-    fill_rect(s, x + 10, y + 5, 2, 6, c);
-    fill_rect(s, x + 12, y + 6, 1, 4, c);
+    // Smooth triangle pointing right
+    fill_rect(s, x + 4, y + 2, 1, 12, c);
+    fill_rect(s, x + 5, y + 3, 1, 10, c);
+    fill_rect(s, x + 6, y + 3, 1, 10, c);
+    fill_rect(s, x + 7, y + 4, 1, 8, c);
+    fill_rect(s, x + 8, y + 4, 1, 8, c);
+    fill_rect(s, x + 9, y + 5, 1, 6, c);
+    fill_rect(s, x + 10, y + 5, 1, 6, c);
+    fill_rect(s, x + 11, y + 6, 1, 4, c);
+    fill_rect(s, x + 12, y + 7, 1, 2, c);
 }
 
-// Stop square
+// ── Stop square ─────────────────────────────────────────────────────
+
 fn draw_stop(s: &Surface, x: i32, y: i32, c: u32) {
     fill_rect(s, x + 3, y + 3, 10, 10, c);
 }
 
-// Settings gear (simplified)
+// ── Settings gear ───────────────────────────────────────────────────
+
 fn draw_settings(s: &Surface, x: i32, y: i32, c: u32) {
-    // Center circle
+    // Center body
     fill_rect(s, x + 5, y + 5, 6, 6, c);
     // Center hole
-    fill_rect(s, x + 7, y + 7, 2, 2, darken(c));
-    // Gear teeth (cross pattern)
-    fill_rect(s, x + 6, y + 1, 4, 3, c); // top
-    fill_rect(s, x + 6, y + 12, 4, 3, c); // bottom
-    fill_rect(s, x + 1, y + 6, 3, 4, c); // left
-    fill_rect(s, x + 12, y + 6, 3, 4, c); // right
-    // Diagonal teeth
-    fill_rect(s, x + 2, y + 3, 3, 2, c);
-    fill_rect(s, x + 11, y + 3, 3, 2, c);
-    fill_rect(s, x + 2, y + 11, 3, 2, c);
-    fill_rect(s, x + 11, y + 11, 3, 2, c);
+    fill_rect(s, x + 7, y + 7, 2, 2, dim(c));
+    // Top tooth
+    fill_rect(s, x + 6, y + 1, 4, 3, c);
+    // Bottom tooth
+    fill_rect(s, x + 6, y + 12, 4, 3, c);
+    // Left tooth
+    fill_rect(s, x + 1, y + 6, 3, 4, c);
+    // Right tooth
+    fill_rect(s, x + 12, y + 6, 3, 4, c);
+    // Top-left diagonal tooth
+    fill_rect(s, x + 3, y + 3, 2, 2, c);
+    // Top-right diagonal tooth
+    fill_rect(s, x + 11, y + 3, 2, 2, c);
+    // Bottom-left diagonal tooth
+    fill_rect(s, x + 3, y + 11, 2, 2, c);
+    // Bottom-right diagonal tooth
+    fill_rect(s, x + 11, y + 11, 2, 2, c);
 }
 
-// Files (explorer icon - two documents)
+// ── Files (explorer icon) ───────────────────────────────────────────
+
 fn draw_files(s: &Surface, x: i32, y: i32, c: u32) {
-    // Back document
-    fill_rect(s, x + 4, y + 0, 9, 13, darken(c));
-    // Front document
-    fill_rect(s, x + 2, y + 3, 9, 13, c);
-    // Lines on front document
-    fill_rect(s, x + 4, y + 6, 5, 1, darken(c));
-    fill_rect(s, x + 4, y + 9, 5, 1, darken(c));
-    fill_rect(s, x + 4, y + 12, 3, 1, darken(c));
+    // Back document (darker, offset right+up)
+    fill_rect(s, x + 5, y + 0, 8, 12, dim(c));
+    // Front document (brighter, offset left+down)
+    fill_rect(s, x + 2, y + 3, 8, 12, c);
+    // Text lines on front document
+    fill_rect(s, x + 4, y + 6, 4, 1, dim(c));
+    fill_rect(s, x + 4, y + 9, 4, 1, dim(c));
+    fill_rect(s, x + 4, y + 12, 3, 1, dim(c));
 }
 
-// Git branch icon
+// ── Git branch icon ─────────────────────────────────────────────────
+
 fn draw_git_branch(s: &Surface, x: i32, y: i32, c: u32) {
-    // Vertical line (trunk)
-    fill_rect(s, x + 5, y + 2, 2, 12, c);
-    // Branch dot top-right
-    fill_rect(s, x + 10, y + 3, 3, 3, c);
-    // Branch line from dot to trunk
-    fill_rect(s, x + 7, y + 4, 3, 2, c);
-    // Trunk dot bottom
-    fill_rect(s, x + 4, y + 12, 4, 3, c);
-    // Trunk dot top
-    fill_rect(s, x + 4, y + 1, 4, 3, c);
+    // Main trunk (vertical line)
+    fill_rect(s, x + 5, y + 3, 2, 10, c);
+    // Top node (circle)
+    fill_rect(s, x + 4, y + 1, 4, 1, c);
+    fill_rect(s, x + 4, y + 2, 4, 2, c);
+    fill_rect(s, x + 4, y + 4, 4, 1, c);
+    // Bottom node (circle)
+    fill_rect(s, x + 4, y + 11, 4, 1, c);
+    fill_rect(s, x + 4, y + 12, 4, 2, c);
+    fill_rect(s, x + 4, y + 14, 4, 1, c);
+    // Branch node (right, circle)
+    fill_rect(s, x + 10, y + 3, 3, 1, c);
+    fill_rect(s, x + 10, y + 4, 3, 2, c);
+    fill_rect(s, x + 10, y + 6, 3, 1, c);
+    // Branch connector
+    fill_rect(s, x + 7, y + 5, 3, 2, c);
 }
 
-// Search (magnifying glass)
+// ── Search (magnifying glass) ───────────────────────────────────────
+
 fn draw_search(s: &Surface, x: i32, y: i32, c: u32) {
-    // Glass circle (as a square ring approximation)
-    fill_rect(s, x + 3, y + 1, 8, 2, c); // top
-    fill_rect(s, x + 3, y + 9, 8, 2, c); // bottom
-    fill_rect(s, x + 1, y + 3, 2, 6, c); // left
-    fill_rect(s, x + 11, y + 3, 2, 6, c); // right
-    fill_rect(s, x + 3, y + 3, 2, 2, c); // top-left corner
-    fill_rect(s, x + 9, y + 3, 2, 2, c); // top-right corner
-    fill_rect(s, x + 3, y + 7, 2, 2, c); // bottom-left corner
-    fill_rect(s, x + 9, y + 7, 2, 2, c); // bottom-right corner
-    // Handle
-    fill_rect(s, x + 11, y + 10, 2, 2, c);
+    // Circle top edge
+    fill_rect(s, x + 4, y + 1, 5, 1, c);
+    // Circle top-left / top-right corners
+    fill_rect(s, x + 3, y + 2, 1, 1, c);
+    fill_rect(s, x + 9, y + 2, 1, 1, c);
+    // Circle left / right sides
+    fill_rect(s, x + 2, y + 3, 1, 4, c);
+    fill_rect(s, x + 10, y + 3, 1, 4, c);
+    // Circle bottom-left / bottom-right corners
+    fill_rect(s, x + 3, y + 7, 1, 1, c);
+    fill_rect(s, x + 9, y + 7, 1, 1, c);
+    // Circle bottom edge
+    fill_rect(s, x + 4, y + 8, 5, 1, c);
+    // Glass interior fill (subtle)
+    fill_rect(s, x + 3, y + 3, 7, 4, alpha_blend(c, 40));
+    fill_rect(s, x + 4, y + 2, 5, 1, alpha_blend(c, 40));
+    fill_rect(s, x + 4, y + 7, 5, 1, alpha_blend(c, 40));
+    // Handle (diagonal)
+    fill_rect(s, x + 9, y + 8, 2, 1, c);
+    fill_rect(s, x + 10, y + 9, 2, 1, c);
+    fill_rect(s, x + 11, y + 10, 2, 1, c);
     fill_rect(s, x + 12, y + 11, 2, 2, c);
-    fill_rect(s, x + 13, y + 12, 2, 2, c);
 }
 
 // ── Color helpers ───────────────────────────────────────────────────
 
-fn darken(color: u32) -> u32 {
+/// Darken a color by reducing RGB by 50.
+fn dim(color: u32) -> u32 {
     let a = color & 0xFF000000;
-    let r = ((color >> 16) & 0xFF).saturating_sub(40);
-    let g = ((color >> 8) & 0xFF).saturating_sub(40);
-    let b = (color & 0xFF).saturating_sub(40);
+    let r = ((color >> 16) & 0xFF).saturating_sub(50);
+    let g = ((color >> 8) & 0xFF).saturating_sub(50);
+    let b = (color & 0xFF).saturating_sub(50);
     a | (r << 16) | (g << 8) | b
 }
 
+/// Lighten a color by adding 35 to each RGB channel.
 fn lighten(color: u32) -> u32 {
     let a = color & 0xFF000000;
-    let r = (((color >> 16) & 0xFF) + 30).min(255);
-    let g = (((color >> 8) & 0xFF) + 30).min(255);
-    let b = ((color & 0xFF) + 30).min(255);
+    let r = (((color >> 16) & 0xFF) + 35).min(255);
+    let g = (((color >> 8) & 0xFF) + 35).min(255);
+    let b = ((color & 0xFF) + 35).min(255);
     a | (r << 16) | (g << 8) | b
+}
+
+/// Create a semi-transparent version of a color for glass fill.
+fn alpha_blend(color: u32, alpha: u32) -> u32 {
+    let r = (color >> 16) & 0xFF;
+    let g = (color >> 8) & 0xFF;
+    let b = color & 0xFF;
+    (alpha << 24) | (r << 16) | (g << 8) | b
 }

@@ -187,11 +187,14 @@ pub extern "C" fn anyui_shutdown() {
 
 // ── Control creation ─────────────────────────────────────────────────
 
-/// Create a top-level window. Returns a ControlId (0 on failure).
+/// Create a top-level window at position (x, y). Returns a ControlId (0 on failure).
+/// x/y: pixel coordinates, or -1 for compositor auto-placement (CW_USEDEFAULT).
 #[no_mangle]
 pub extern "C" fn anyui_create_window(
     title: *const u8,
     title_len: u32,
+    x: i32,
+    y: i32,
     w: u32,
     h: u32,
 ) -> ControlId {
@@ -210,7 +213,7 @@ pub extern "C" fn anyui_create_window(
 
     // Create compositor window via DLL
     let (window_id, shm_id, surface) =
-        match compositor::create_window(st.channel_id, st.sub_id, w, h, 0) {
+        match compositor::create_window(st.channel_id, st.sub_id, x, y, w, h, 0) {
             Some(result) => result,
             None => return 0,
         };

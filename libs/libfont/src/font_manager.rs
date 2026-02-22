@@ -15,6 +15,15 @@ use crate::syscall;
 /// Each process gets its own copy via DLIB v3 per-process .bss support.
 static mut FONT_MGR_PTR: *mut FontManager = core::ptr::null_mut();
 
+/// Size-adaptive gamma correction LUTs for font coverage — make text appear
+/// thicker and more readable on dark backgrounds (like macOS/Windows).
+/// Three LUTs computed once during init():
+///  - GAMMA_LUT_S: strong boost for small text (≤14px)
+///  - GAMMA_LUT_M: moderate boost for medium text (15-24px)
+///  - >24px uses raw coverage (no LUT needed)
+static mut GAMMA_LUT_S: [u8; 256] = [0u8; 256];
+static mut GAMMA_LUT_M: [u8; 256] = [0u8; 256];
+
 /// Maximum number of cached glyphs before LRU eviction.
 const MAX_CACHE_SIZE: usize = 2048;
 
@@ -281,6 +290,47 @@ fn line_height_internal(ttf: &TtfFont, size: u16) -> u32 {
     (ascent + descent + line_gap) * size as u32 / ttf.units_per_em as u32
 }
 
+// ─── Gamma correction ────────────────────────────────────────────────────
+
+/// Integer square root via Newton's method (for gamma LUT computation).
+fn isqrt_u32(n: u32) -> u32 {
+    if n == 0 { return 0; }
+    let mut x = 1u32 << ((32 - n.leading_zeros() + 1) / 2);
+    loop {
+        let nx = (x + n / x) / 2;
+        if nx >= x { return x; }
+        x = nx;
+    }
+}
+
+/// Build size-adaptive gamma LUTs. Called once from init().
+///  - Strong (≤14px): (input + isqrt(input*255)) / 2 — ~50% boost on thin strokes
+///  - Moderate (15-24px): (2*input + isqrt(input*255)) / 3 — ~33% boost
+fn init_gamma_lut() {
+    unsafe {
+        GAMMA_LUT_S[0] = 0;
+        GAMMA_LUT_M[0] = 0;
+        for i in 1..256u32 {
+            let sq = isqrt_u32(i * 255);
+            GAMMA_LUT_S[i as usize] = ((i + sq + 1) / 2).min(255) as u8;
+            GAMMA_LUT_M[i as usize] = ((i * 2 + sq + 1) / 3).min(255) as u8;
+        }
+    }
+}
+
+/// Select the appropriate gamma LUT for a given glyph size.
+/// Returns a pointer to the 256-byte LUT, or None for large text (no correction).
+#[inline(always)]
+fn gamma_lut_for_size(size: u16) -> Option<&'static [u8; 256]> {
+    if size <= 14 {
+        Some(unsafe { &GAMMA_LUT_S })
+    } else if size <= 24 {
+        Some(unsafe { &GAMMA_LUT_M })
+    } else {
+        None
+    }
+}
+
 // ─── State access ────────────────────────────────────────────────────────
 
 fn get_mgr() -> Option<&'static mut FontManager> {
@@ -333,6 +383,8 @@ pub fn init() {
     if syscall::gpu_has_accel() != 0 {
         mgr.subpixel_enabled = true;
     }
+
+    init_gamma_lut();
 }
 
 fn ensure_init() -> Option<&'static mut FontManager> {
@@ -542,6 +594,7 @@ fn draw_glyph_greyscale_buf(
     let bh = glyph.height as i32;
     let sw_i = sw as i32;
     let sh_i = sh as i32;
+    let lut = gamma_lut_for_size(glyph.size);
 
     for row in 0..bh {
         let py = y + row;
@@ -549,8 +602,9 @@ fn draw_glyph_greyscale_buf(
         for col in 0..bw {
             let px = x + col;
             if px < 0 || px >= sw_i { continue; }
-            let coverage = glyph.coverage[(row * bw + col) as usize];
-            if coverage == 0 { continue; }
+            let raw_cov = glyph.coverage[(row * bw + col) as usize];
+            if raw_cov == 0 { continue; }
+            let coverage = if let Some(tbl) = lut { tbl[raw_cov as usize] } else { raw_cov };
             let alpha = div255(coverage as u32 * col_a);
             if alpha == 0 { continue; }
 
@@ -572,6 +626,7 @@ fn draw_glyph_subpixel_buf(
     let bh = glyph.height as i32;
     let sw_i = sw as i32;
     let sh_i = sh as i32;
+    let lut = gamma_lut_for_size(glyph.size);
 
     // Fixed-point reciprocal for / 10: (1 << 16) / 10 = 6553.6 → 6554
     const RECIP10: u32 = 6554;
@@ -603,9 +658,14 @@ fn draw_glyph_subpixel_buf(
             let r_sum = getl(ci_i - 2) + getl(ci_i - 1) * 2 + r_raw * 4 + g_raw * 2 + b_raw + 5;
             let g_sum = getl(ci_i - 1) + r_raw * 2 + g_raw * 4 + b_raw * 2 + get(ci + 3) + 5;
             let b_sum = r_raw + g_raw * 2 + b_raw * 4 + get(ci + 3) * 2 + get(ci + 4) + 5;
-            let r_filt = ((r_sum * RECIP10) >> 16) as u8;
-            let g_filt = ((g_sum * RECIP10) >> 16) as u8;
-            let b_filt = ((b_sum * RECIP10) >> 16) as u8;
+            let r_val = ((r_sum * RECIP10) >> 16).min(255) as u8;
+            let g_val = ((g_sum * RECIP10) >> 16).min(255) as u8;
+            let b_val = ((b_sum * RECIP10) >> 16).min(255) as u8;
+            let (r_filt, g_filt, b_filt) = if let Some(tbl) = lut {
+                (tbl[r_val as usize], tbl[g_val as usize], tbl[b_val as usize])
+            } else {
+                (r_val, g_val, b_val)
+            };
 
             let idx = (py as u32 * sw + px as u32) as usize;
             let dst = unsafe { *buf.add(idx) };

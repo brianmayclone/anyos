@@ -140,8 +140,9 @@ fn subdivide_bezier(
     let dx = p1x - mx;
     let dy = p1y - my;
     let dist_sq = dx as i64 * dx as i64 + dy as i64 * dy as i64;
-    let threshold = FP_HALF as i64 * FP_HALF as i64;
-    if dist_sq <= threshold || depth >= 6 {
+    let quarter = (FP_HALF / 2) as i64;
+    let threshold = quarter * quarter;
+    if dist_sq <= threshold || depth >= 8 {
         add_edge(edges, p0x, p0y, p2x, p2y);
         return;
     }

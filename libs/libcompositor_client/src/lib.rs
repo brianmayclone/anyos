@@ -3,7 +3,7 @@
 //! # Usage
 //! ```rust,ignore
 //! let mut client = libcompositor_client::CompositorClient::init().unwrap();
-//! let win = client.create_window(400, 300, 0).unwrap();
+//! let win = client.create_window(-1, -1, 400, 300, 0).unwrap();
 //!
 //! // Draw to the window surface (raw pixel buffer)
 //! let surface = win.surface();
@@ -120,14 +120,17 @@ impl CompositorClient {
         Some(CompositorClient { channel_id, sub_id })
     }
 
-    /// Create a new window with the given content dimensions.
+    /// Create a new window at position (x, y) with the given content dimensions.
+    /// x/y: pixel coordinates, or -1 for compositor auto-placement (CW_USEDEFAULT).
     /// Returns a WindowHandle on success, None on failure.
-    pub fn create_window(&self, width: u32, height: u32, flags: u32) -> Option<WindowHandle> {
+    pub fn create_window(&self, x: i32, y: i32, width: u32, height: u32, flags: u32) -> Option<WindowHandle> {
         let mut shm_id: u32 = 0;
         let mut surface: *mut u32 = core::ptr::null_mut();
         let id = (raw::exports().create_window)(
             self.channel_id,
             self.sub_id,
+            x,
+            y,
             width,
             height,
             flags,
@@ -152,12 +155,14 @@ impl CompositorClient {
     ///
     /// IMPORTANT: The surface stride is `handle.stride` pixels (not `width`).
     /// Use `y * stride + x` to address pixels, not `y * width + x`.
-    pub fn create_vram_window(&self, width: u32, height: u32, flags: u32) -> Option<VramWindowHandle> {
+    pub fn create_vram_window(&self, x: i32, y: i32, width: u32, height: u32, flags: u32) -> Option<VramWindowHandle> {
         let mut stride: u32 = 0;
         let mut surface: *mut u32 = core::ptr::null_mut();
         let id = (raw::exports().create_vram_window)(
             self.channel_id,
             self.sub_id,
+            x,
+            y,
             width,
             height,
             flags,
@@ -398,13 +403,16 @@ impl TrayClient {
         }
     }
 
-    /// Create a window (for popups, settings panels, etc.).
-    pub fn create_window(&self, width: u32, height: u32, flags: u32) -> Option<WindowHandle> {
+    /// Create a window at position (x, y) (for popups, settings panels, etc.).
+    /// x/y: pixel coordinates, or -1 for compositor auto-placement.
+    pub fn create_window(&self, x: i32, y: i32, width: u32, height: u32, flags: u32) -> Option<WindowHandle> {
         let mut shm_id: u32 = 0;
         let mut surface: *mut u32 = core::ptr::null_mut();
         let id = (raw::exports().create_window)(
             self.channel_id,
             self.sub_id,
+            x,
+            y,
             width,
             height,
             flags,

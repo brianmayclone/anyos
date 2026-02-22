@@ -281,8 +281,12 @@ fn handle_ipc_commands(
                 // CMD_CREATE_WINDOW: heavy work OUTSIDE lock, fast attach UNDER lock
                 ipc_protocol::CMD_CREATE_WINDOW => {
                     let app_tid = ipc_buf[1];
-                    let width = ipc_buf[2];
-                    let height = ipc_buf[3];
+                    let wh = ipc_buf[2];
+                    let width = wh >> 16;
+                    let height = wh & 0xFFFF;
+                    let xy = ipc_buf[3];
+                    let raw_x = (xy >> 16) as u16;
+                    let raw_y = (xy & 0xFFFF) as u16;
                     let shm_id_and_flags = ipc_buf[4];
                     let shm_id = shm_id_and_flags >> 16;
                     let flags = shm_id_and_flags & 0xFFFF;
@@ -325,6 +329,7 @@ fn handle_ipc_commands(
                             let win_id = desktop.create_ipc_window_fast(
                                 app_tid, width, height, flags,
                                 shm_id, shm_addr as *mut u32, pre_pixels,
+                                raw_x, raw_y,
                             );
                             let target = desktop.get_sub_id_for_tid(app_tid);
                             release_lock();

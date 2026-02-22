@@ -12,7 +12,7 @@
 //! use libanyui_client as ui;
 //!
 //! ui::init();
-//! let win = ui::Window::new("Demo", 400, 300);
+//! let win = ui::Window::new("Demo", -1, -1, 400, 300);
 //! let label = ui::Label::new("Hello World");
 //! label.set_position(20, 20);
 //! win.add(&label);
@@ -127,7 +127,7 @@ struct AnyuiLib {
     // Core
     init: extern "C" fn() -> u32,
     shutdown: extern "C" fn(),
-    create_window: extern "C" fn(*const u8, u32, u32, u32) -> u32,
+    create_window: extern "C" fn(*const u8, u32, i32, i32, u32, u32) -> u32,
     add_control: extern "C" fn(u32, u32, i32, i32, u32, u32, *const u8, u32) -> u32,
     create_control: extern "C" fn(u32, *const u8, u32) -> u32,
     add_child: extern "C" fn(u32, u32),

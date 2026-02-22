@@ -57,8 +57,12 @@ impl Desktop {
         match cmd[0] {
             proto::CMD_CREATE_WINDOW => {
                 let app_tid = cmd[1];
-                let width = cmd[2];
-                let height = cmd[3];
+                let wh = cmd[2];
+                let width = wh >> 16;
+                let height = wh & 0xFFFF;
+                let xy = cmd[3];
+                let raw_x = (xy >> 16) as u16;
+                let raw_y = (xy & 0xFFFF) as u16;
                 let shm_id_and_flags = cmd[4];
                 let shm_id = shm_id_and_flags >> 16;
                 let flags = shm_id_and_flags & 0xFFFF;
@@ -79,6 +83,8 @@ impl Desktop {
                     flags,
                     shm_id,
                     shm_addr as *mut u32,
+                    raw_x,
+                    raw_y,
                 );
 
                 let target = self.get_sub_id_for_tid(app_tid);
@@ -314,8 +320,12 @@ impl Desktop {
             }
             proto::CMD_CREATE_VRAM_WINDOW => {
                 let app_tid = cmd[1];
-                let width = cmd[2];
-                let height = cmd[3];
+                let wh = cmd[2];
+                let width = wh >> 16;
+                let height = wh & 0xFFFF;
+                let xy = cmd[3];
+                let raw_x = (xy >> 16) as u16;
+                let raw_y = (xy & 0xFFFF) as u16;
                 let flags = cmd[4];
 
                 if width == 0 || height == 0 {
@@ -323,7 +333,7 @@ impl Desktop {
                 }
 
                 // Try to allocate VRAM and create the window
-                if let Some(result) = self.create_vram_window(app_tid, width, height, flags) {
+                if let Some(result) = self.create_vram_window(app_tid, width, height, flags, raw_x, raw_y) {
                     let target = self.get_sub_id_for_tid(app_tid);
                     Some((target, result))
                 } else {
@@ -374,8 +384,12 @@ impl Desktop {
         shm_addr: usize,
     ) -> Option<(Option<u32>, [u32; 5])> {
         let app_tid = cmd[1];
-        let width = cmd[2];
-        let height = cmd[3];
+        let wh = cmd[2];
+        let width = wh >> 16;
+        let height = wh & 0xFFFF;
+        let xy = cmd[3];
+        let raw_x = (xy >> 16) as u16;
+        let raw_y = (xy & 0xFFFF) as u16;
         let shm_id_and_flags = cmd[4];
         let shm_id = shm_id_and_flags >> 16;
         let flags = shm_id_and_flags & 0xFFFF;
@@ -391,6 +405,8 @@ impl Desktop {
             flags,
             shm_id,
             shm_addr as *mut u32,
+            raw_x,
+            raw_y,
         );
 
         let target = self.get_sub_id_for_tid(app_tid);

@@ -238,12 +238,13 @@ void VID_Init(unsigned char *palette)
 
     /* Create window (with scale-on-resize for pixel-art upscaling) */
     #define WIN_FLAG_SCALE_CONTENT 0x80
+    #define CW_USEDEFAULT 0xFFFF
     uint32_t tid = _syscall(SYS_GETPID, 0, 0, 0, 0);
     uint32_t cmd[5];
     cmd[0] = CMD_CREATE_WINDOW;
     cmd[1] = tid;
-    cmd[2] = BASEWIDTH;
-    cmd[3] = BASEHEIGHT;
+    cmd[2] = (BASEWIDTH << 16) | (BASEHEIGHT & 0xFFFF);   /* packed w|h */
+    cmd[3] = (CW_USEDEFAULT << 16) | CW_USEDEFAULT;       /* auto-place */
     cmd[4] = (g_shm_id << 16) | WIN_FLAG_SCALE_CONTENT;
     _syscall(SYS_EVT_CHAN_EMIT, g_channel_id, (int)cmd, 0, 0);
 

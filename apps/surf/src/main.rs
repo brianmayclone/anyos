@@ -1169,7 +1169,10 @@ fn main() {
         }
     };
 
-    let mut win = match client.create_window(800, 600, 0) {
+    let (scr_w, scr_h) = client.screen_size();
+    let wx = (scr_w.saturating_sub(800)) / 2;
+    let wy = (scr_h.saturating_sub(600)) / 2;
+    let mut win = match client.create_window(wx as i32, wy as i32, 800, 600, 0) {
         Some(w) => w,
         None => {
             anyos_std::println!("surf: failed to create window");
@@ -1177,10 +1180,6 @@ fn main() {
         }
     };
 
-    let (scr_w, scr_h) = client.screen_size();
-    let wx = (scr_w.saturating_sub(800)) / 2;
-    let wy = (scr_h.saturating_sub(600)) / 2;
-    client.move_window(&win, wx as i32, wy as i32);
     client.set_title(&win, "Surf");
 
     let mut mb = MenuBarBuilder::new()

@@ -56,7 +56,8 @@ impl Config {
             sidebar_width: json_u32(&val, "sidebar_width", defaults.sidebar_width),
             output_height: json_u32(&val, "output_height", defaults.output_height),
             settings_path: json_str(&val, "settings_path", DEFAULT_SETTINGS_PATH),
-            syntax_dir: json_str(&val, "syntax_dir", &defaults.syntax_dir),
+            // Always derive syntax_dir from current bundle (path changes between installs)
+            syntax_dir: defaults.syntax_dir,
             plugin_dir: json_str(&val, "plugin_dir", &defaults.plugin_dir),
             temp_dir: json_str(&val, "temp_dir", &defaults.temp_dir),
             make_path: json_str(&val, "make_path", ""),
@@ -100,7 +101,7 @@ impl Config {
             font_id: FONT_MONO,
             tab_width: 4,
             show_line_numbers: true,
-            sidebar_width: 22,
+            sidebar_width: 28,
             output_height: 25,
             settings_path: String::from(DEFAULT_SETTINGS_PATH),
             syntax_dir,

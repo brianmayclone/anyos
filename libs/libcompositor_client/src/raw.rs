@@ -17,6 +17,8 @@ pub struct LibcompositorExports {
     pub create_window: extern "C" fn(
         channel_id: u32,
         sub_id: u32,
+        x: i32,
+        y: i32,
         width: u32,
         height: u32,
         flags: u32,
@@ -74,6 +76,8 @@ pub struct LibcompositorExports {
     pub create_vram_window: extern "C" fn(
         channel_id: u32,
         sub_id: u32,
+        x: i32,
+        y: i32,
         width: u32,
         height: u32,
         flags: u32,

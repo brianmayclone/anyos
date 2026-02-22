@@ -38,11 +38,14 @@ pub struct LibcompositorExports {
     /// Returns channel_id (0 on failure). Fills out_sub_id.
     pub init: extern "C" fn(out_sub_id: *mut u32) -> u32,
 
-    /// Create a window.
+    /// Create a window at position (x, y).
+    /// x/y: pixel coordinates, or -1 for compositor auto-placement (CW_USEDEFAULT).
     /// Returns window_id (0 on failure). Fills out_shm_id and out_surface.
     pub create_window: extern "C" fn(
         channel_id: u32,
         sub_id: u32,
+        x: i32,
+        y: i32,
         width: u32,
         height: u32,
         flags: u32,
@@ -115,14 +118,17 @@ pub struct LibcompositorExports {
     /// radius=0 disables, radius>0 enables with given blur radius.
     pub set_blur_behind: extern "C" fn(channel_id: u32, window_id: u32, radius: u32),
 
-    /// Create a VRAM-direct window (app renders directly to GPU VRAM).
-    /// Returns window_id (0 on failure). Fills out_stride, out_surface, out_vram_offset.
+    /// Create a VRAM-direct window at position (x, y).
+    /// x/y: pixel coordinates, or -1 for compositor auto-placement (CW_USEDEFAULT).
+    /// Returns window_id (0 on failure). Fills out_stride, out_surface.
     /// stride = pitch in pixels (not bytes) — use this as row stride.
     /// surface = pointer to mapped VRAM region (app writes pixels here).
     /// If GPU not available or VRAM exhausted, returns 0 (app should fall back to SHM).
     pub create_vram_window: extern "C" fn(
         channel_id: u32,
         sub_id: u32,
+        x: i32,
+        y: i32,
         width: u32,
         height: u32,
         flags: u32,
@@ -190,6 +196,8 @@ extern "C" fn export_init(out_sub_id: *mut u32) -> u32 {
 extern "C" fn export_create_window(
     channel_id: u32,
     sub_id: u32,
+    x: i32,
+    y: i32,
     width: u32,
     height: u32,
     flags: u32,
@@ -213,13 +221,17 @@ extern "C" fn export_create_window(
     // Get our TID for the create command
     let tid = syscall::get_tid();
 
+    // Pack position: -1 → CW_USEDEFAULT (0xFFFF), else clamp to u16
+    let x_u16: u16 = if x < 0 { 0xFFFF } else { (x as u32).min(0xFFFE) as u16 };
+    let y_u16: u16 = if y < 0 { 0xFFFF } else { (y as u32).min(0xFFFE) as u16 };
+
     // Send CREATE_WINDOW command to compositor
-    // [CMD, app_tid, width, height, (shm_id << 16) | flags]
+    // [CMD, app_tid, (width << 16) | height, (x << 16) | y, (shm_id << 16) | flags]
     let cmd: [u32; 5] = [
         CMD_CREATE_WINDOW,
         tid,
-        width,
-        height,
+        (width << 16) | (height & 0xFFFF),
+        ((x_u16 as u32) << 16) | (y_u16 as u32),
         (shm_id << 16) | (flags & 0xFFFF),
     ];
     syscall::evt_chan_emit(channel_id, &cmd);
@@ -504,6 +516,8 @@ extern "C" fn export_set_blur_behind(channel_id: u32, window_id: u32, radius: u3
 extern "C" fn export_create_vram_window(
     channel_id: u32,
     sub_id: u32,
+    x: i32,
+    y: i32,
     width: u32,
     height: u32,
     flags: u32,
@@ -512,8 +526,19 @@ extern "C" fn export_create_vram_window(
 ) -> u32 {
     let tid = syscall::get_tid();
 
+    // Pack position: -1 → CW_USEDEFAULT (0xFFFF), else clamp to u16
+    let x_u16: u16 = if x < 0 { 0xFFFF } else { (x as u32).min(0xFFFE) as u16 };
+    let y_u16: u16 = if y < 0 { 0xFFFF } else { (y as u32).min(0xFFFE) as u16 };
+
     // Send CMD_CREATE_VRAM_WINDOW to compositor
-    let cmd: [u32; 5] = [CMD_CREATE_VRAM_WINDOW, tid, width, height, flags];
+    // [CMD, app_tid, (width << 16) | height, (x << 16) | y, flags]
+    let cmd: [u32; 5] = [
+        CMD_CREATE_VRAM_WINDOW,
+        tid,
+        (width << 16) | (height & 0xFFFF),
+        ((x_u16 as u32) << 16) | (y_u16 as u32),
+        flags,
+    ];
     syscall::evt_chan_emit(channel_id, &cmd);
 
     // Poll for response

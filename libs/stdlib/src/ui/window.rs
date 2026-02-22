@@ -56,6 +56,8 @@ struct DllExports {
     create_window: extern "C" fn(
         channel_id: u32,
         sub_id: u32,
+        x: i32,
+        y: i32,
         width: u32,
         height: u32,
         flags: u32,
@@ -301,6 +303,8 @@ pub fn create_ex(title: &str, x: u16, y: u16, w: u16, h: u16, flags: u32) -> u32
     let comp_id = (dll().create_window)(
         st.channel_id,
         st.sub_id,
+        x as i32,
+        y as i32,
         w as u32,
         h as u32,
         flags,
@@ -314,9 +318,6 @@ pub fn create_ex(title: &str, x: u16, y: u16, w: u16, h: u16, flags: u32) -> u32
     // Set title
     let bytes = title.as_bytes();
     (dll().set_title)(st.channel_id, comp_id, bytes.as_ptr(), bytes.len() as u32);
-
-    // Move to requested position
-    (dll().move_window)(st.channel_id, comp_id, x as i32, y as i32);
 
     // Allocate stable WinInfo on heap (Box ensures address doesn't move)
     let mut info = Box::new(WinInfo {

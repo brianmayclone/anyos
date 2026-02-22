@@ -47,7 +47,7 @@ fn main() {
     let flags: u32 = 0x01 | 0x02 | 0x04;
 
     println!("dock: creating window ({}x{}, flags=0x{:x})", screen_width, DOCK_TOTAL_H, flags);
-    let mut win = match client.create_window(screen_width, DOCK_TOTAL_H, flags) {
+    let mut win = match client.create_window(0, (screen_height - DOCK_TOTAL_H) as i32, screen_width, DOCK_TOTAL_H, flags) {
         Some(w) => w,
         None => {
             println!("dock: FAILED to create window");
@@ -55,8 +55,6 @@ fn main() {
         }
     };
 
-    // Position at bottom of screen
-    client.move_window(&win, 0, (screen_height - DOCK_TOTAL_H) as i32);
     client.set_title(&win, "Dock");
 
     // Subscribe to system events (process spawn/exit notifications)

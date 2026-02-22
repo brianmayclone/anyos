@@ -343,15 +343,13 @@ fn open_popup(
 ) {
     let (sw, _sh) = client.screen_size();
     let h = popup_height(layout_count);
-    let win = match client.create_window(POPUP_W, h, BORDERLESS) {
+    // Position near top-right (below menubar)
+    let x = sw as i32 - POPUP_W as i32 - 8;
+    let y = 26;
+    let win = match client.create_window(x, y, POPUP_W, h, BORDERLESS) {
         Some(w) => w,
         None => return,
     };
-
-    // Position near top-right (near menubar)
-    let x = sw as i32 - POPUP_W as i32 - 8;
-    let y = 26; // below menubar
-    client.move_window(&win, x, y);
 
     draw_popup(&win, layouts, layout_count, current_id);
     client.present(&win);

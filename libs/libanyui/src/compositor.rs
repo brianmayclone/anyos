@@ -19,6 +19,8 @@ struct LibcompositorExports {
     create_window: extern "C" fn(
         channel_id: u32,
         sub_id: u32,
+        x: i32,
+        y: i32,
         width: u32,
         height: u32,
         flags: u32,
@@ -76,6 +78,8 @@ struct LibcompositorExports {
     create_vram_window: extern "C" fn(
         channel_id: u32,
         sub_id: u32,
+        x: i32,
+        y: i32,
         width: u32,
         height: u32,
         flags: u32,
@@ -106,10 +110,14 @@ pub fn init(out_sub_id: &mut u32) -> u32 {
     (exports().init)(out_sub_id)
 }
 
-/// Create a compositor window. Returns (window_id, shm_id, surface_ptr) or None.
+/// Create a compositor window at position (x, y).
+/// x/y: pixel coordinates, or -1 for compositor auto-placement (CW_USEDEFAULT).
+/// Returns (window_id, shm_id, surface_ptr) or None.
 pub fn create_window(
     channel_id: u32,
     sub_id: u32,
+    x: i32,
+    y: i32,
     width: u32,
     height: u32,
     flags: u32,
@@ -119,6 +127,8 @@ pub fn create_window(
     let window_id = (exports().create_window)(
         channel_id,
         sub_id,
+        x,
+        y,
         width,
         height,
         flags,

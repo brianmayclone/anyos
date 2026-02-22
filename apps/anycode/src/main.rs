@@ -47,7 +47,8 @@ struct AppState {
     git_process: Option<git::GitProcess>,
     git_pending_op: Option<git::GitOp>,
     git_timer_id: u32,
-    // Activity bar panel IDs for view switching
+    // Activity bar + panel IDs for view switching
+    activity_bar: activity_bar::ActivityBar,
     explorer_panel_id: u32,
     git_panel_id: u32,
 }
@@ -76,7 +77,7 @@ fn main() {
     let _plugins = plugin::load_plugins(&config.plugin_dir);
 
     // ── Create window ──
-    let win = anyui::Window::new("anyOS Code", 900, 650);
+    let win = anyui::Window::new("anyOS Code", -1, -1, 900, 650);
 
     // ── Toolbar (DOCK_TOP) ──
     let tb = toolbar::AppToolbar::new(&win);
@@ -169,6 +170,7 @@ fn main() {
             git_process: None,
             git_pending_op: None,
             git_timer_id: 0,
+            activity_bar,
             explorer_panel_id,
             git_panel_id,
         });
@@ -194,17 +196,17 @@ fn main() {
     // ════════════════════════════════════════════════════════════════
 
     // ── Activity bar: Files ──
-    activity_bar.btn_files.on_click(|_| {
+    app().activity_bar.btn_files.on_click(|_| {
         switch_sidebar_view(0);
     });
 
     // ── Activity bar: Git ──
-    activity_bar.btn_git.on_click(|_| {
+    app().activity_bar.btn_git.on_click(|_| {
         switch_sidebar_view(1);
     });
 
     // ── Activity bar: Search (future — for now just show explorer) ──
-    activity_bar.btn_search.on_click(|_| {
+    app().activity_bar.btn_search.on_click(|_| {
         switch_sidebar_view(0);
     });
 
@@ -437,6 +439,7 @@ fn switch_sidebar_view(index: u32) {
     let show_explorer = index == 0;
     anyui::Control::from_id(s.explorer_panel_id).set_visible(show_explorer);
     anyui::Control::from_id(s.git_panel_id).set_visible(!show_explorer);
+    s.activity_bar.set_active(index);
 }
 
 fn open_file(file_path: &str) {

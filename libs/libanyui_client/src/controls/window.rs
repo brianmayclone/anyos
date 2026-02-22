@@ -4,8 +4,10 @@ use crate::events::EventArgs;
 container_control!(Window, KIND_WINDOW);
 
 impl Window {
-    pub fn new(title: &str, w: u32, h: u32) -> Self {
-        let id = (lib().create_window)(title.as_ptr(), title.len() as u32, w, h);
+    /// Create a new window at position (x, y).
+    /// x/y: pixel coordinates, or -1 for compositor auto-placement (CW_USEDEFAULT).
+    pub fn new(title: &str, x: i32, y: i32, w: u32, h: u32) -> Self {
+        let id = (lib().create_window)(title.as_ptr(), title.len() as u32, x, y, w, h);
         Self { container: Container { ctrl: Control { id } } }
     }
 

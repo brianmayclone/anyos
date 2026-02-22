@@ -17,7 +17,7 @@ fn main() {
         return;
     }
 
-    let win = ui::Window::new("anyui Component Showcase", 460, 520);
+    let win = ui::Window::new("anyui Component Showcase", -1, -1, 460, 520);
 
     // ── ScrollView wraps all content ──
     let scroll = ui::ScrollView::new();

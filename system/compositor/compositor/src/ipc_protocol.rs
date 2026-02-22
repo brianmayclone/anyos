@@ -6,9 +6,15 @@
 
 // ── App → Compositor Commands ────────────────────────────────────────────────
 
-/// Create a window: [CMD, app_tid, width, height, (shm_id << 16) | flags]
+/// Create a window: [CMD, app_tid, (width << 16) | height, (x << 16) | y, (shm_id << 16) | flags]
+/// Width/height and x/y are packed as u16 pairs.
+/// x = 0xFFFF (CW_USEDEFAULT) → compositor auto-places via cascading algorithm.
+/// y = 0xFFFF (CW_USEDEFAULT) → compositor auto-places via cascading algorithm.
 /// Compositor responds with RESP_WINDOW_CREATED.
 pub const CMD_CREATE_WINDOW: u32 = 0x1001;
+
+/// Sentinel value for x/y: compositor decides the position (cascading auto-placement).
+pub const CW_USEDEFAULT: u16 = 0xFFFF;
 
 /// Destroy a window: [CMD, window_id, 0, 0, 0]
 pub const CMD_DESTROY_WINDOW: u32 = 0x1002;

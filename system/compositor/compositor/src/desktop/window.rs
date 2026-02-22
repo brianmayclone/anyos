@@ -727,7 +727,31 @@ impl Desktop {
 
     // ── IPC Window Operations ──────────────────────────────────────────
 
+    /// Compute the next auto-placement position (cascading).
+    fn next_auto_position(&mut self, win_w: u32, win_h: u32) -> (i32, i32) {
+        let x = self.cascade_x;
+        let y = self.cascade_y;
+
+        // Advance cascade for next window
+        self.cascade_x += 30;
+        self.cascade_y += 30;
+
+        // Wrap horizontally
+        if self.cascade_x + win_w as i32 > self.screen_width as i32 - 60 {
+            self.cascade_x = 120;
+            self.cascade_y += 30;
+        }
+        // Wrap vertically
+        if self.cascade_y + win_h as i32 > self.screen_height as i32 - 80 {
+            self.cascade_x = 120;
+            self.cascade_y = MENUBAR_HEIGHT as i32 + 50;
+        }
+
+        (x, y)
+    }
+
     /// Create a window backed by a shared memory region.
+    /// `raw_x` / `raw_y`: pixel coordinates, or `CW_USEDEFAULT` (0xFFFF) for auto-placement.
     pub fn create_ipc_window(
         &mut self,
         app_tid: u32,
@@ -736,6 +760,8 @@ impl Desktop {
         flags: u32,
         shm_id: u32,
         shm_ptr: *mut u32,
+        raw_x: u16,
+        raw_y: u16,
     ) -> u32 {
         let id = self.next_window_id;
         self.next_window_id += 1;
@@ -747,9 +773,18 @@ impl Desktop {
             content_h + TITLE_BAR_HEIGHT
         };
 
+        // Determine position: explicit or auto-placed
+        let (x, y) = if raw_x == crate::ipc_protocol::CW_USEDEFAULT
+            || raw_y == crate::ipc_protocol::CW_USEDEFAULT
+        {
+            self.next_auto_position(content_w, full_h)
+        } else {
+            (raw_x as i32, raw_y as i32)
+        };
+
         let layer_id = self.compositor.add_layer(
-            100,
-            MENUBAR_HEIGHT as i32 + 40,
+            x,
+            y,
             content_w,
             full_h,
             false,
@@ -766,8 +801,8 @@ impl Desktop {
             id,
             layer_id,
             title: String::from("Window"),
-            x: 100,
-            y: MENUBAR_HEIGHT as i32 + 40,
+            x,
+            y,
             content_width: content_w,
             content_height: content_h,
             flags,
@@ -797,11 +832,22 @@ impl Desktop {
         content_w: u32,
         content_h: u32,
         flags: u32,
+        raw_x: u16,
+        raw_y: u16,
     ) -> Option<[u32; 5]> {
+        // Determine position: explicit or auto-placed
+        let (x, y) = if raw_x == crate::ipc_protocol::CW_USEDEFAULT
+            || raw_y == crate::ipc_protocol::CW_USEDEFAULT
+        {
+            self.next_auto_position(content_w, content_h)
+        } else {
+            (raw_x as i32, raw_y as i32)
+        };
+
         // VRAM windows are always borderless + opaque (no title bar chrome)
         let layer_id = self.compositor.add_vram_layer(
-            100,
-            MENUBAR_HEIGHT as i32 + 40,
+            x,
+            y,
             content_w,
             content_h,
         )?;
@@ -835,8 +881,8 @@ impl Desktop {
             id,
             layer_id,
             title: String::from("Window"),
-            x: 100,
-            y: MENUBAR_HEIGHT as i32 + 40,
+            x,
+            y,
             content_width: content_w,
             content_height: content_h,
             flags: flags | WIN_FLAG_BORDERLESS, // VRAM windows are always borderless
@@ -873,6 +919,8 @@ impl Desktop {
         shm_id: u32,
         shm_ptr: *mut u32,
         pre_pixels: Vec<u32>,
+        raw_x: u16,
+        raw_y: u16,
     ) -> u32 {
         let id = self.next_window_id;
         self.next_window_id += 1;
@@ -884,9 +932,18 @@ impl Desktop {
             content_h + TITLE_BAR_HEIGHT
         };
 
+        // Determine position: explicit or auto-placed
+        let (x, y) = if raw_x == crate::ipc_protocol::CW_USEDEFAULT
+            || raw_y == crate::ipc_protocol::CW_USEDEFAULT
+        {
+            self.next_auto_position(content_w, full_h)
+        } else {
+            (raw_x as i32, raw_y as i32)
+        };
+
         let layer_id = self.compositor.add_layer_with_pixels(
-            100,
-            MENUBAR_HEIGHT as i32 + 40,
+            x,
+            y,
             content_w,
             full_h,
             false,
@@ -904,8 +961,8 @@ impl Desktop {
             id,
             layer_id,
             title: String::from("Window"),
-            x: 100,
-            y: MENUBAR_HEIGHT as i32 + 40,
+            x,
+            y,
             content_width: content_w,
             content_height: content_h,
             flags,

@@ -388,15 +388,13 @@ fn open_popup(
 ) {
     let (sw, _sh) = client.screen_size();
     let popup_h = if available { POPUP_H_NORMAL } else { POPUP_H_NO_DEVICE };
-    let win = match client.create_window(POPUP_W, popup_h, BORDERLESS) {
+    // Position near top-right (below menubar)
+    let x = sw as i32 - POPUP_W as i32 - 8;
+    let y = 26;
+    let win = match client.create_window(x, y, POPUP_W, popup_h, BORDERLESS) {
         Some(w) => w,
         None => return,
     };
-
-    // Position near top-right (near menubar)
-    let x = sw as i32 - POPUP_W as i32 - 8;
-    let y = 26; // below menubar
-    client.move_window(&win, x, y);
 
     let mut state = PopupState::new(volume, muted);
     draw_popup(&win, &mut state, available);

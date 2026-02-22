@@ -90,6 +90,9 @@ pub struct Desktop {
     pub(crate) wallpaper_path_len: usize,
     /// Active crash dialogs (internal windows showing crash info).
     pub(crate) crash_dialogs: Vec<crash_dialog::CrashDialog>,
+    /// Cascading auto-placement state for new windows.
+    pub(crate) cascade_x: i32,
+    pub(crate) cascade_y: i32,
 }
 
 impl Desktop {
@@ -141,6 +144,8 @@ impl Desktop {
             wallpaper_path: [0u8; 128],
             wallpaper_path_len: 0,
             crash_dialogs: Vec::new(),
+            cascade_x: 120,
+            cascade_y: MENUBAR_HEIGHT as i32 + 50,
         };
 
         if desktop.has_gpu_accel {
