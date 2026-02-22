@@ -144,16 +144,11 @@ fn find_thread_by_name(name: &str) -> u32 {
     0
 }
 
-/// List available services from the config directory.
-fn cmd_list() {
+/// Read all service names from the config directory.
+/// Calls `f` for each valid service name.
+fn for_each_service(mut f: impl FnMut(&str)) {
     let mut buf = [0u8; 8192];
     let count = anyos_std::fs::readdir(SVC_CONFIG_DIR, &mut buf);
-    if count == 0 {
-        anyos_std::println!("No services configured in {}", SVC_CONFIG_DIR);
-        return;
-    }
-    anyos_std::println!("{:<16} {:<8} {}", "SERVICE", "STATUS", "EXEC");
-    anyos_std::println!("{:<16} {:<8} {}", "-------", "------", "----");
     // readdir entries: 64 bytes each [type:u8, name_len:u8, flags:u8, pad:u8, size:u32, name:56]
     for i in 0..count as usize {
         let off = i * 64;
@@ -164,16 +159,56 @@ fn cmd_list() {
         let name_start = off + 8;
         if name_len == 0 || name_start + name_len > buf.len() { continue; }
         if let Ok(name) = core::str::from_utf8(&buf[name_start..name_start + name_len]) {
-            if name.starts_with('.') { continue; }
-            let tid = find_thread_by_name(name);
-            let status = if tid != 0 { "running" } else { "stopped" };
-            let exec_str = match read_config(name) {
-                Some(cfg) => cfg.exec,
-                None => String::from("(invalid config)"),
-            };
-            anyos_std::println!("{:<16} {:<8} {}", name, status, exec_str);
+            if !name.starts_with('.') {
+                f(name);
+            }
         }
     }
+}
+
+/// List available services from the config directory.
+fn cmd_list() {
+    let mut found = false;
+    anyos_std::println!("{:<16} {:<8} {}", "SERVICE", "STATUS", "EXEC");
+    anyos_std::println!("{:<16} {:<8} {}", "-------", "------", "----");
+    for_each_service(|name| {
+        found = true;
+        let tid = find_thread_by_name(name);
+        let status = if tid != 0 { "running" } else { "stopped" };
+        let exec_str = match read_config(name) {
+            Some(cfg) => cfg.exec,
+            None => String::from("(invalid config)"),
+        };
+        anyos_std::println!("{:<16} {:<8} {}", name, status, exec_str);
+    });
+    if !found {
+        anyos_std::println!("No services configured in {}", SVC_CONFIG_DIR);
+    }
+}
+
+/// Start all configured services that are not already running.
+fn cmd_start_all() {
+    let mut started = 0u32;
+    let mut already = 0u32;
+    // Collect names first to avoid borrowing issues with the readdir buffer
+    let mut names = alloc::vec::Vec::new();
+    for_each_service(|name| {
+        names.push(String::from(name));
+    });
+    for name in &names {
+        if find_thread_by_name(name) != 0 {
+            already += 1;
+            continue;
+        }
+        if !ensure_dependencies(name, 0) {
+            continue;
+        }
+        start_service(name, "");
+        if find_thread_by_name(name) != 0 {
+            started += 1;
+        }
+    }
+    anyos_std::println!("svc: {} started, {} already running", started, already);
 }
 
 fn cmd_start(name: &str, extra_args: &str) {
@@ -228,18 +263,18 @@ fn main() {
     let parts: alloc::vec::Vec<&str> = args_str.split_whitespace().collect();
 
     // args() strips argv[0], so parts[0] = command, parts[1] = service name, parts[2..] = extra
-    if parts.is_empty() || (parts.len() < 2 && parts[0] != "list") {
-        anyos_std::println!("Usage: svc <start|stop|status|restart|list> <service> [args...]");
+    if parts.is_empty() || (parts.len() < 2 && !matches!(parts[0], "list" | "start-all")) {
+        anyos_std::println!("Usage: svc <command> [service] [args...]");
+        anyos_std::println!("");
+        anyos_std::println!("Commands:");
+        anyos_std::println!("  start <service> [args]   Start a service");
+        anyos_std::println!("  stop <service>           Stop a running service");
+        anyos_std::println!("  status <service>         Check if a service is running");
+        anyos_std::println!("  restart <service> [args] Restart a service");
+        anyos_std::println!("  list                     List all configured services");
+        anyos_std::println!("  start-all                Start all configured services");
         anyos_std::println!("");
         anyos_std::println!("Services are configured in {}/", SVC_CONFIG_DIR);
-        anyos_std::println!("");
-        anyos_std::println!("Examples:");
-        anyos_std::println!("  svc list");
-        anyos_std::println!("  svc start sshd");
-        anyos_std::println!("  svc start sshd -p 2222");
-        anyos_std::println!("  svc stop sshd");
-        anyos_std::println!("  svc status sshd");
-        anyos_std::println!("  svc restart echoserver");
         return;
     }
 
@@ -247,6 +282,10 @@ fn main() {
 
     if cmd == "list" {
         cmd_list();
+        return;
+    }
+    if cmd == "start-all" {
+        cmd_start_all();
         return;
     }
 

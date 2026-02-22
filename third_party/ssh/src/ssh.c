@@ -557,9 +557,10 @@ int ssh_kex(ssh_ctx_t *ctx) {
     mul_ok = ec->mul(shared_secret, 32, my_priv, 32, BR_EC_curve25519);
     if (!mul_ok) return SSH_ERR_KEX;
 
-    /* BearSSL returns X25519 result in little-endian (RFC 7748).
-     * SSH mpint encoding requires big-endian (RFC 8731). Reverse in-place. */
-    reverse32(shared_secret);
+    /* Note: BearSSL returns X25519 result in little-endian (RFC 7748).
+     * OpenSSH feeds raw X25519 output directly to sshbuf_put_bignum2_bytes
+     * without reversing — treating LE bytes as BE. We must do the same
+     * for exchange hash compatibility. Do NOT reverse. */
 
     /* 7. Compute exchange hash H = SHA256(V_C || V_S || I_C || I_S || K_S || Q_C || Q_S || K) */
     br_sha256_context sha;
@@ -980,9 +981,10 @@ int ssh_server_kex(ssh_ctx_t *ctx,
     mul_ok = ec->mul(shared_secret, 32, my_priv, 32, BR_EC_curve25519);
     if (!mul_ok) return SSH_ERR_KEX;
 
-    /* BearSSL returns X25519 result in little-endian (RFC 7748).
-     * SSH mpint encoding requires big-endian (RFC 8731). Reverse in-place. */
-    reverse32(shared_secret);
+    /* Note: BearSSL returns X25519 result in little-endian (RFC 7748).
+     * OpenSSH feeds raw X25519 output directly to sshbuf_put_bignum2_bytes
+     * without reversing — treating LE bytes as BE. We must do the same
+     * for exchange hash compatibility. Do NOT reverse. */
 
     /* 6. Compute exchange hash H = SHA256(V_C || V_S || I_C || I_S || K_S || Q_C || Q_S || K) */
     br_sha256_context sha;
