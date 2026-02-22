@@ -2555,7 +2555,7 @@ pub fn sys_thread_create(entry_rip: u32, user_rsp: u32, name_ptr: u32, name_len:
 /// arg1 = tid (0 = self), arg2 = new priority (1-255)
 /// Returns 0 on success, u32::MAX on error.
 pub fn sys_set_priority(tid: u32, priority: u32) -> u32 {
-    if priority == 0 || priority > 255 {
+    if priority > 127 {
         return u32::MAX;
     }
     let target_tid = if tid == 0 {

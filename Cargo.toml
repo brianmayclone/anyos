@@ -64,6 +64,7 @@ exclude = [
   "bin/echo",
   "bin/ps",
   "bin/kill",
+  "bin/nice",
   "bin/free",
   "bin/uptime",
   "bin/uname",
