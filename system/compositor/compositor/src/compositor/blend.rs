@@ -6,7 +6,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use super::layer::{ShadowCache, SHADOW_SPREAD};
+use super::layer::{ShadowCache, SHADOW_SPREAD, SHADOW_ALPHA_FOCUSED, SHADOW_ALPHA_UNFOCUSED};
 
 /// Fast exact division by 255 using bit manipulation.
 /// Exact for all x in 0..=65025 (255*255), which covers every possible
@@ -111,8 +111,8 @@ pub(crate) fn rounded_rect_sdf(px: i32, py: i32, rx: i32, ry: i32, rw: i32, rh: 
 }
 
 /// Pre-compute shadow alpha values for a layer of given dimensions.
-/// The result is a bitmap of (layer_w + 2*spread) x (layer_h + 2*spread) alpha values
-/// representing the shadow intensity at each pixel, normalized to 0-255.
+/// Produces two pre-baked alpha arrays (focused + unfocused) so the per-pixel
+/// `div255(cache_a * base_alpha)` is eliminated at render time.
 pub(crate) fn compute_shadow_cache(layer_w: u32, layer_h: u32) -> ShadowCache {
     let spread = SHADOW_SPREAD;
     let lw = layer_w as i32;
@@ -122,11 +122,16 @@ pub(crate) fn compute_shadow_cache(layer_w: u32, layer_h: u32) -> ShadowCache {
 
     let cache_w = (lw + spread * 2) as u32;
     let cache_h = (lh + spread * 2) as u32;
-    let mut alphas = vec![0u8; (cache_w * cache_h) as usize];
+    let pixel_count = (cache_w * cache_h) as usize;
+    let mut focused_alphas = vec![0u8; pixel_count];
+    let mut unfocused_alphas = vec![0u8; pixel_count];
 
     // The virtual layer starts at (spread, spread) within the cache bitmap
     let lx = spread;
     let ly = spread;
+
+    let focus_base = SHADOW_ALPHA_FOCUSED;
+    let unfocus_base = SHADOW_ALPHA_UNFOCUSED;
 
     for row in 0..cache_h {
         let py = row as i32;
@@ -139,23 +144,25 @@ pub(crate) fn compute_shadow_cache(layer_w: u32, layer_h: u32) -> ShadowCache {
                 continue;
             }
 
-            if dist <= 0 {
-                // Inside the shadow shape: full alpha.
-                // The window layer drawn on top will cover the interior;
-                // this ensures no gap when the shadow is offset.
-                alphas[(row * cache_w + col) as usize] = 255;
+            let norm_a = if dist <= 0 {
+                255u32
             } else {
                 let t = dist as u32;
                 let inv = s - t;
-                // Normalized alpha: quadratic falloff scaled to 0-255
-                let a = (255 * inv * inv) / (s * s);
-                alphas[(row * cache_w + col) as usize] = a.min(255) as u8;
+                ((255 * inv * inv) / (s * s)).min(255)
+            };
+
+            if norm_a > 0 {
+                let idx = (row * cache_w + col) as usize;
+                focused_alphas[idx] = div255(norm_a * focus_base).min(255) as u8;
+                unfocused_alphas[idx] = div255(norm_a * unfocus_base).min(255) as u8;
             }
         }
     }
 
     ShadowCache {
-        alphas,
+        focused_alphas,
+        unfocused_alphas,
         cache_w,
         cache_h,
         layer_w,

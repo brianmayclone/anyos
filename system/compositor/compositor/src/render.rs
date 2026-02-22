@@ -68,6 +68,8 @@ pub fn render_thread_entry() {
         let t0 = sys::uptime_ms();
 
         if try_lock() {
+            // Refresh cached theme value ONCE per frame (avoids 28K+ volatile reads)
+            crate::desktop::theme::refresh_theme_cache();
             let desktop = unsafe { desktop_ref() };
             // Tick animations + clock before compositing so updated state is
             // reflected in the same frame — no extra lock round-trip needed.

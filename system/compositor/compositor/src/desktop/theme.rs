@@ -6,10 +6,19 @@ const UISYS_BASE: u64 = 0x0400_0000;
 const UISYS_THEME_OFFSET: u32 = 0x0C; // offset of `theme` field in export struct
 const UISYS_THEME_ADDR: *const u32 = (UISYS_BASE as usize + UISYS_THEME_OFFSET as usize) as *const u32;
 
-/// Read the current theme (0 = dark, 1 = light) from the shared DLIB page.
+/// Cached theme value — refreshed once per frame via `refresh_theme_cache()`.
+static mut CACHED_IS_LIGHT: bool = false;
+
+/// Refresh the cached theme value from the shared DLIB page.
+/// Called once per frame in the render loop — avoids 28K+ volatile reads per menubar render.
+pub(crate) fn refresh_theme_cache() {
+    unsafe { CACHED_IS_LIGHT = core::ptr::read_volatile(UISYS_THEME_ADDR) != 0; }
+}
+
+/// Read the cached theme (0 = dark, 1 = light).
 #[inline(always)]
 pub(crate) fn is_light() -> bool {
-    unsafe { core::ptr::read_volatile(UISYS_THEME_ADDR) != 0 }
+    unsafe { CACHED_IS_LIGHT }
 }
 
 /// Set the theme via kernel-mediated write to the shared RO DLIB page.

@@ -1,7 +1,5 @@
 //! Input handling — mouse, keyboard, scroll, drag, and resize interaction.
 
-use alloc::vec::Vec;
-
 use crate::compositor::Rect;
 use crate::keys::encode_scancode;
 use crate::menu::MenuBarHit;
@@ -273,23 +271,29 @@ impl Desktop {
         if !self.btn_anims.has_active(now) {
             return false;
         }
-        let mut wids = Vec::new();
+        let mut wids = [0u32; 16];
+        let mut wid_count = 0usize;
         for win in &self.windows {
             if win.focused {
                 let w = win.id;
                 for btn in 0u8..3 {
                     let aid = button_anim_id(w, btn);
-                    if self.btn_anims.is_active(aid, now) && !wids.contains(&w) {
-                        wids.push(w);
+                    if self.btn_anims.is_active(aid, now) {
+                        let already = wids[..wid_count].contains(&w);
+                        if !already && wid_count < 16 {
+                            wids[wid_count] = w;
+                            wid_count += 1;
+                        }
+                        break;
                     }
                 }
             }
         }
-        for wid in &wids {
-            self.render_window(*wid);
+        for i in 0..wid_count {
+            self.render_window(wids[i]);
         }
         self.btn_anims.remove_done(now);
-        !wids.is_empty()
+        wid_count > 0
     }
 
     pub(crate) fn handle_mouse_button(&mut self, buttons: u32, down: bool) {

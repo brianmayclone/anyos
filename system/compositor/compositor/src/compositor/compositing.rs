@@ -10,8 +10,8 @@
 
 use super::Compositor;
 use super::rect::Rect;
-use super::layer::{AccelMoveHint, SHADOW_OFFSET_X, SHADOW_OFFSET_Y, SHADOW_SPREAD, SHADOW_ALPHA_FOCUSED, SHADOW_ALPHA_UNFOCUSED};
-use super::blend::{alpha_blend, div255, shadow_blend, compute_shadow_cache, blur_back_buffer_region};
+use super::layer::{AccelMoveHint, SHADOW_OFFSET_X, SHADOW_OFFSET_Y, SHADOW_SPREAD};
+use super::blend::{alpha_blend, shadow_blend, compute_shadow_cache, blur_back_buffer_region};
 use super::gpu::{GPU_UPDATE, GPU_FLIP, GPU_RECT_COPY, GPU_SYNC};
 
 impl Compositor {
@@ -73,11 +73,14 @@ impl Compositor {
         // self.damage keeps its capacity for next frame's pushes.
         core::mem::swap(&mut self.damage, &mut self.compositing_damage);
 
-        // Try GPU RECT_COPY fast path for window drags (requires gpu_accel + valid hint)
+        // Try GPU RECT_COPY fast path for window drags (requires gpu_accel + valid hint).
+        // Works for both opaque and non-opaque layers (decorated windows with rounded corners).
+        // For non-opaque layers, corner strips are flushed from back buffer after RECT_COPY.
         if self.gpu_accel && !self.hw_double_buffer {
             if let Some(ref h) = hint {
                 if let Some(moved_idx) = self.layer_index(h.layer_id) {
-                    if self.layers[moved_idx].opaque {
+                    let layer = &self.layers[moved_idx];
+                    if layer.opaque || (layer.width > 16 && layer.height > 16) {
                         self.compose_with_rect_copy(h);
                         return;
                     }
@@ -196,6 +199,36 @@ impl Compositor {
                     ]);
                 }
             }
+        }
+
+        // For non-opaque layers (rounded corners), flush corner strips from the back buffer
+        // to correct alpha-blended corner pixels that RECT_COPY carried from the old position.
+        // The back buffer has the correct compositing result from composite_rect(&new_b) above.
+        let is_opaque = if let Some(moved_idx) = self.layer_index(hint.layer_id) {
+            self.layers[moved_idx].opaque
+        } else {
+            true
+        };
+
+        if !is_opaque {
+            const CORNER_R: u32 = 8; // must match window corner radius
+            // Top strip (covers TL + TR corners)
+            let top_strip = Rect::new(new_b.x, new_b.y, new_b.width, CORNER_R);
+            self.flush_region(&top_strip, 0);
+            self.gpu_cmds.push([GPU_UPDATE, top_strip.x as u32, top_strip.y as u32,
+                top_strip.width, top_strip.height, 0, 0, 0, 0]);
+            // Bottom strip (covers BL + BR corners)
+            let bot_strip = Rect::new(new_b.x, new_b.bottom() - CORNER_R as i32, new_b.width, CORNER_R);
+            self.flush_region(&bot_strip, 0);
+            self.gpu_cmds.push([GPU_UPDATE, bot_strip.x as u32, bot_strip.y as u32,
+                bot_strip.width, bot_strip.height, 0, 0, 0, 0]);
+        }
+
+        // If the window was partially off-screen, old_b and new_b have different
+        // dimensions (screen clipping). RECT_COPY reads stale pixels for the area
+        // that was never composited. Flush entire new_b from back buffer to fix.
+        if old_b.width != new_b.width || old_b.height != new_b.height {
+            self.flush_region(&new_b, 0);
         }
 
         self.gpu_cmds.push([
@@ -397,7 +430,7 @@ impl Compositor {
     }
 
     /// Draw a soft gradient shadow for a layer into the back buffer (within damage rect).
-    /// Uses shadow_blend() — specialized for pure-black shadows (no src RGB extraction).
+    /// Uses pre-baked alpha arrays (focused/unfocused) to skip per-pixel div255 multiply.
     fn draw_shadow_to_bb(&mut self, rect: &Rect, layer_idx: usize) {
         let layer_id = self.layers[layer_idx].id;
         let layer_w = self.layers[layer_idx].width;
@@ -416,12 +449,8 @@ impl Compositor {
             self.layers[layer_idx].shadow_cache = Some(cache);
         }
 
-        // Determine shadow intensity based on focus
-        let base_alpha = if self.focused_layer_id == Some(layer_id) {
-            SHADOW_ALPHA_FOCUSED
-        } else {
-            SHADOW_ALPHA_UNFOCUSED
-        };
+        // Pick focused or unfocused pre-baked alpha array
+        let is_focused = self.focused_layer_id == Some(layer_id);
 
         let shadow_rect = Rect::new(
             lx - spread,
@@ -435,12 +464,23 @@ impl Compositor {
             let shadow_ox = lx - spread;
             let shadow_oy = ly - spread;
 
-            // Split borrow: read cache from layers, write to back_buffer
+            // Split borrow: read all layer data first, then take mutable ref to back_buffer
             let cache = self.layers[layer_idx].shadow_cache.as_ref().unwrap();
             let cache_w = cache.cache_w as usize;
-            let cache_alphas = cache.alphas.as_ptr();
-            let cache_len = cache.alphas.len();
+            let alphas = if is_focused { &cache.focused_alphas } else { &cache.unfocused_alphas };
+            let cache_alphas = alphas.as_ptr();
+            let cache_len = alphas.len();
+
+            // Interior skip: use the ACTUAL window rect (not the shadow's offset position).
+            // With SHADOW_OFFSET_Y=6, using the shadow offset would incorrectly skip
+            // the 6px strip below the window where shadow should be visible.
+            let win_abs_x0 = self.layers[layer_idx].x;
+            let win_abs_x1 = self.layers[layer_idx].x + layer_w as i32;
+            let win_abs_y0 = self.layers[layer_idx].y;
+            let win_abs_y1 = self.layers[layer_idx].y + layer_h as i32;
+
             let bb = &mut self.back_buffer;
+            let bb_len = bb.len();
 
             for row in 0..overlap.height as usize {
                 let py = overlap.y + row as i32;
@@ -448,31 +488,54 @@ impl Compositor {
                 let cache_row_off = cy * cache_w;
                 let bb_row_off = py as usize * bb_stride;
 
-                for col in 0..overlap.width as usize {
-                    let px = overlap.x + col as i32;
-                    let cx = (px - shadow_ox) as usize;
+                let ol_x0 = overlap.x;
+                let ol_x1 = overlap.x + overlap.width as i32;
+                let in_window_y = py >= win_abs_y0 && py < win_abs_y1;
 
-                    let cache_idx = cache_row_off + cx;
-                    if cache_idx >= cache_len {
-                        break;
+                if in_window_y {
+                    let left_end = win_abs_x0.min(ol_x1);
+                    if ol_x0 < left_end {
+                        Self::shadow_span(
+                            bb, bb_len, bb_row_off,
+                            cache_alphas, cache_len, cache_row_off,
+                            shadow_ox, ol_x0, left_end,
+                        );
                     }
-                    let cache_a = unsafe { *cache_alphas.add(cache_idx) } as u32;
-                    if cache_a == 0 {
-                        continue;
+                    let right_start = win_abs_x1.max(ol_x0);
+                    if right_start < ol_x1 {
+                        Self::shadow_span(
+                            bb, bb_len, bb_row_off,
+                            cache_alphas, cache_len, cache_row_off,
+                            shadow_ox, right_start, ol_x1,
+                        );
                     }
-
-                    // Scale normalized alpha by base intensity (division-free)
-                    let a = div255(cache_a * base_alpha);
-                    if a == 0 {
-                        continue;
-                    }
-
-                    let di = bb_row_off + px as usize;
-                    if di < bb.len() {
-                        // shadow_blend: specialized for pure-black (R=G=B=0)
-                        bb[di] = shadow_blend(a, bb[di]);
-                    }
+                } else {
+                    Self::shadow_span(
+                        bb, bb_len, bb_row_off,
+                        cache_alphas, cache_len, cache_row_off,
+                        shadow_ox, ol_x0, ol_x1,
+                    );
                 }
+            }
+        }
+    }
+
+    /// Process a horizontal span of shadow pixels with pre-baked alpha (no per-pixel div255 multiply).
+    #[inline(always)]
+    fn shadow_span(
+        bb: &mut [u32], bb_len: usize, bb_row_off: usize,
+        cache_alphas: *const u8, cache_len: usize, cache_row_off: usize,
+        shadow_ox: i32, x_start: i32, x_end: i32,
+    ) {
+        for px in x_start..x_end {
+            let cx = (px - shadow_ox) as usize;
+            let cache_idx = cache_row_off + cx;
+            if cache_idx >= cache_len { break; }
+            let a = unsafe { *cache_alphas.add(cache_idx) } as u32;
+            if a == 0 { continue; }
+            let di = bb_row_off + px as usize;
+            if di < bb_len {
+                bb[di] = shadow_blend(a, bb[di]);
             }
         }
     }

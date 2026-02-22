@@ -1001,11 +1001,12 @@ set(DOOM_DIR "${CMAKE_SOURCE_DIR}/third_party/doom")
 set(DOOM_ELF "${DOOM_DIR}/doom.elf")
 set(DOOM_APP "${SYSROOT_DIR}/Applications/DOOM.app")
 
+file(GLOB DOOM_SOURCES "${DOOM_DIR}/src/*.c" "${DOOM_DIR}/src/*.h" "${DOOM_DIR}/Makefile")
 add_custom_command(
   OUTPUT ${DOOM_ELF}
   COMMAND ${MAKE_EXECUTABLE} -C ${DOOM_DIR} clean CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC}
   COMMAND ${MAKE_EXECUTABLE} -C ${DOOM_DIR} CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC} LIBC_DIR=${LIBC_DIR}
-  DEPENDS ${LIBC_A} ${LIBC_CRT0}
+  DEPENDS ${LIBC_A} ${LIBC_CRT0} ${DOOM_SOURCES}
   COMMENT "Building DOOM for anyOS"
 )
 
@@ -1028,11 +1029,12 @@ set(QUAKE_DIR "${CMAKE_SOURCE_DIR}/third_party/quake")
 set(QUAKE_ELF "${QUAKE_DIR}/quake.elf")
 set(QUAKE_APP "${SYSROOT_DIR}/Applications/Quake.app")
 
+file(GLOB QUAKE_SOURCES "${QUAKE_DIR}/WinQuake/*.c" "${QUAKE_DIR}/WinQuake/*.h" "${QUAKE_DIR}/Makefile")
 add_custom_command(
   OUTPUT ${QUAKE_ELF}
   COMMAND ${MAKE_EXECUTABLE} -C ${QUAKE_DIR} clean CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC}
   COMMAND ${MAKE_EXECUTABLE} -C ${QUAKE_DIR} CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC} LIBC_DIR=${LIBC_DIR}
-  DEPENDS ${LIBC_A} ${LIBC_CRT0}
+  DEPENDS ${LIBC_A} ${LIBC_CRT0} ${QUAKE_SOURCES}
   COMMENT "Building Quake for anyOS"
 )
 
@@ -1048,6 +1050,12 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E copy "${QUAKE_DIR}/Info.conf" "${QUAKE_APP}/Info.conf"
   DEPENDS ${QUAKE_ELF} ${QUAKE_PAK} ${QUAKE_CFG} "${QUAKE_DIR}/Info.conf"
   COMMENT "Packaging Quake.app"
+)
+
+# Clean targets for third-party builds (outside build dir)
+set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES
+  ${DOOM_ELF} "${DOOM_DIR}/obj"
+  ${QUAKE_ELF} "${QUAKE_DIR}/obj"
 )
 
 # ============================================================

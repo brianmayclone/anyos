@@ -3,6 +3,7 @@
 use crate::compositor::alpha_blend;
 
 /// Fill a solid or alpha-blended rectangle.
+/// Uses pre-clamped bounds and bulk slice::fill() for opaque fills.
 pub(crate) fn fill_rect(
     pixels: &mut [u32],
     stride: u32,
@@ -14,22 +15,30 @@ pub(crate) fn fill_rect(
     color: u32,
 ) {
     let a = (color >> 24) & 0xFF;
-    for row in 0..h as i32 {
-        let py = y + row;
-        if py < 0 || py >= buf_h as i32 {
-            continue;
-        }
-        for col in 0..w as i32 {
-            let px = x + col;
-            if px < 0 || px >= stride as i32 {
-                continue;
+    if a == 0 { return; }
+    // Pre-clamp bounds — eliminates per-pixel branch checks
+    let x0 = x.max(0) as u32;
+    let y0 = y.max(0) as u32;
+    let x1 = ((x + w as i32) as u32).min(stride);
+    let y1 = ((y + h as i32) as u32).min(buf_h);
+    if x0 >= x1 || y0 >= y1 { return; }
+    let cw = (x1 - x0) as usize;
+    let plen = pixels.len();
+    if a >= 255 {
+        // Opaque: LLVM vectorizes slice::fill to rep stosd / SSE stores
+        for row in y0..y1 {
+            let off = (row * stride + x0) as usize;
+            if off + cw <= plen {
+                pixels[off..off + cw].fill(color);
             }
-            let idx = (py as u32 * stride + px as u32) as usize;
-            if idx < pixels.len() {
-                if a >= 255 {
-                    pixels[idx] = color;
-                } else if a > 0 {
-                    pixels[idx] = alpha_blend(color, pixels[idx]);
+        }
+    } else {
+        for row in y0..y1 {
+            let off = (row * stride + x0) as usize;
+            for col in 0..cw {
+                let i = off + col;
+                if i < plen {
+                    pixels[i] = alpha_blend(color, pixels[i]);
                 }
             }
         }

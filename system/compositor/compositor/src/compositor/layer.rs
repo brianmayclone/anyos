@@ -17,11 +17,13 @@ pub(crate) const SHADOW_ALPHA_UNFOCUSED: u32 = 25;
 // ── Shadow Cache ────────────────────────────────────────────────────────────
 
 /// Pre-computed shadow alpha values for a given layer size.
-/// Avoids expensive per-pixel SDF + isqrt computation every frame.
+/// Stores two pre-baked alpha arrays (focused + unfocused) so the per-pixel
+/// `div255(cache_a * base_alpha)` is eliminated at render time.
 pub(crate) struct ShadowCache {
-    /// Alpha values (0-255 normalized) for each pixel in the shadow bitmap.
-    /// Layout: row-major, width = layer_w + 2*SHADOW_SPREAD.
-    pub(crate) alphas: Vec<u8>,
+    /// Pre-baked alpha values for focused shadow (base_alpha=50 already applied).
+    pub(crate) focused_alphas: Vec<u8>,
+    /// Pre-baked alpha values for unfocused shadow (base_alpha=25 already applied).
+    pub(crate) unfocused_alphas: Vec<u8>,
     pub(crate) cache_w: u32,
     pub(crate) cache_h: u32,
     /// Layer dimensions this was computed for (invalidated on resize).

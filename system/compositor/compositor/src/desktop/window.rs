@@ -516,8 +516,12 @@ impl Desktop {
         let _ch = self.windows[win_idx].content_height;
         let borderless = self.windows[win_idx].is_borderless();
         let focused = self.windows[win_idx].focused;
-        let title_clone = self.windows[win_idx].title.clone();
         let full_h = self.windows[win_idx].full_height();
+        // Stack-copy title to avoid heap allocation (title.clone())
+        let mut title_buf = [0u8; 128];
+        let title_len = self.windows[win_idx].title.len().min(128);
+        title_buf[..title_len].copy_from_slice(&self.windows[win_idx].title.as_bytes()[..title_len]);
+        let title_str = core::str::from_utf8(&title_buf[..title_len]).unwrap_or("");
 
         // Borderless IPC windows: no chrome — restore SHM content directly.
         if borderless && self.windows[win_idx].owner_tid != 0 {
@@ -593,12 +597,12 @@ impl Desktop {
                     fill_circle(pixels, stride, full_h, cx, cy, (TITLE_BTN_SIZE / 2) as i32, color);
                 }
 
-                let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, &title_clone);
+                let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, title_str);
                 let tx = (cw as i32 - tw as i32) / 2;
                 let ty = ((TITLE_BAR_HEIGHT as i32 - th as i32) / 2).max(0);
                 anyos_std::ui::window::font_render_buf(
                     FONT_ID, FONT_SIZE, pixels, stride, full_h, tx, ty,
-                    color_titlebar_text(), &title_clone,
+                    color_titlebar_text(), title_str,
                 );
             }
         }
@@ -620,8 +624,12 @@ impl Desktop {
         let layer_id = self.windows[win_idx].layer_id;
         let cw = self.windows[win_idx].content_width;
         let focused = self.windows[win_idx].focused;
-        let title_clone = self.windows[win_idx].title.clone();
         let full_h = self.windows[win_idx].full_height();
+        // Stack-copy title to avoid heap allocation (title.clone())
+        let mut title_buf = [0u8; 128];
+        let title_len = self.windows[win_idx].title.len().min(128);
+        title_buf[..title_len].copy_from_slice(&self.windows[win_idx].title.as_bytes()[..title_len]);
+        let title_str = core::str::from_utf8(&title_buf[..title_len]).unwrap_or("");
 
         if self.windows[win_idx].is_borderless() {
             return;
@@ -669,12 +677,12 @@ impl Desktop {
                 fill_circle(pixels, stride, full_h, cx, cy, (TITLE_BTN_SIZE / 2) as i32, color);
             }
 
-            let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, &title_clone);
+            let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, title_str);
             let tx = (cw as i32 - tw as i32) / 2;
             let ty = ((TITLE_BAR_HEIGHT as i32 - th as i32) / 2).max(0);
             anyos_std::ui::window::font_render_buf(
                 FONT_ID, FONT_SIZE, pixels, stride, full_h, tx, ty,
-                color_titlebar_text(), &title_clone,
+                color_titlebar_text(), title_str,
             );
         }
 
