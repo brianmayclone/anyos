@@ -1255,6 +1255,91 @@ add_custom_command(
   COMMENT "Installing dash as /System/bin/sh"
 )
 
+# ============================================================
+# SSH library + client + server
+# ============================================================
+set(SSH_DIR "${CMAKE_SOURCE_DIR}/third_party/ssh")
+set(SSH_LIB "${SSH_DIR}/build/libssh.a")
+set(SSH_CLIENT_DIR "${CMAKE_SOURCE_DIR}/bin/ssh")
+set(SSH_CLIENT_ELF "${SSH_CLIENT_DIR}/ssh.elf")
+set(SSHD_DIR "${CMAKE_SOURCE_DIR}/bin/sshd")
+set(SSHD_ELF "${SSHD_DIR}/sshd.elf")
+
+# Build libssh.a
+add_custom_command(
+  OUTPUT ${SSH_LIB}
+  COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/build_ssh.sh
+  DEPENDS
+    ${BEARSSL_A}
+    ${LIBC_A}
+    ${SSH_DIR}/src/ssh.c
+    ${SSH_DIR}/include/ssh.h
+    ${CMAKE_SOURCE_DIR}/scripts/build_ssh.sh
+  COMMENT "Building SSH library for anyOS"
+)
+
+# Build SSH client (ssh.elf)
+add_custom_command(
+  OUTPUT ${SSH_CLIENT_ELF}
+  COMMAND ${I686_ELF_GCC}
+    -m32 -O2 -ffreestanding -nostdlib -nostdinc -fno-builtin -fno-stack-protector -std=c99 -w
+    -I${SSH_DIR}/include -I${BEARSSL_DIR}/inc -I${LIBC_DIR}/include
+    -c ${SSH_CLIENT_DIR}/src/main.c -o ${SSH_CLIENT_DIR}/main.o
+  COMMAND ${I686_ELF_GCC}
+    -nostdlib -static -m32
+    -T ${LIBC_DIR}/link.ld
+    -o ${SSH_CLIENT_ELF}
+    ${LIBC_CRT0}
+    ${SSH_CLIENT_DIR}/main.o
+    -Wl,--start-group
+    ${SSH_LIB}
+    ${BEARSSL_A}
+    ${LIBC_A}
+    -lgcc
+    -Wl,--end-group
+  DEPENDS ${SSH_LIB} ${BEARSSL_A} ${LIBC_A} ${LIBC_CRT0} ${LIBC_DIR}/link.ld
+    ${SSH_CLIENT_DIR}/src/main.c
+  COMMENT "Building SSH client for anyOS"
+)
+
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/bin/ssh
+  COMMAND ${CMAKE_COMMAND} -E copy ${SSH_CLIENT_ELF} ${SYSROOT_DIR}/bin/ssh
+  DEPENDS ${SSH_CLIENT_ELF}
+  COMMENT "Installing SSH client to /bin/ssh"
+)
+
+# Build SSH server (sshd.elf)
+add_custom_command(
+  OUTPUT ${SSHD_ELF}
+  COMMAND ${I686_ELF_GCC}
+    -m32 -O2 -ffreestanding -nostdlib -nostdinc -fno-builtin -fno-stack-protector -std=c99 -w
+    -I${SSH_DIR}/include -I${BEARSSL_DIR}/inc -I${LIBC_DIR}/include
+    -c ${SSHD_DIR}/src/main.c -o ${SSHD_DIR}/main.o
+  COMMAND ${I686_ELF_GCC}
+    -nostdlib -static -m32
+    -T ${LIBC_DIR}/link.ld
+    -o ${SSHD_ELF}
+    ${LIBC_CRT0}
+    ${SSHD_DIR}/main.o
+    -Wl,--start-group
+    ${SSH_LIB}
+    ${BEARSSL_A}
+    ${LIBC_A}
+    -lgcc
+    -Wl,--end-group
+  DEPENDS ${SSH_LIB} ${BEARSSL_A} ${LIBC_A} ${LIBC_CRT0} ${LIBC_DIR}/link.ld
+    ${SSHD_DIR}/src/main.c
+  COMMENT "Building SSH server for anyOS"
+)
+
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/bin/sshd
+  COMMAND ${CMAKE_COMMAND} -E copy ${SSHD_ELF} ${SYSROOT_DIR}/System/bin/sshd
+  DEPENDS ${SSHD_ELF}
+  COMMENT "Installing SSH server to /System/bin/sshd"
+)
+
 # Copy test source files to /Libraries/system/tests/ on disk
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/Libraries/system/tests/.stamp
