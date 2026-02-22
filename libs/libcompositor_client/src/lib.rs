@@ -191,6 +191,12 @@ impl CompositorClient {
         (raw::exports().present)(self.channel_id, handle.id, handle.shm_id);
     }
 
+    /// Signal the compositor that a rectangular region of window content has been updated.
+    /// Only the dirty rect is copied to the compositor layer (much faster than full present).
+    pub fn present_rect(&self, handle: &WindowHandle, x: u32, y: u32, w: u32, h: u32) {
+        (raw::exports().present_rect)(self.channel_id, handle.id, handle.shm_id, x, y, w, h);
+    }
+
     /// Signal the compositor that VRAM window content has been updated.
     pub fn present_vram(&self, handle: &VramWindowHandle) {
         (raw::exports().present)(self.channel_id, handle.id, 0);
@@ -425,6 +431,11 @@ impl TrayClient {
     /// Signal the compositor that window content has been updated.
     pub fn present(&self, handle: &WindowHandle) {
         (raw::exports().present)(self.channel_id, handle.id, handle.shm_id);
+    }
+
+    /// Signal the compositor that a rectangular region of window content has been updated.
+    pub fn present_rect(&self, handle: &WindowHandle, x: u32, y: u32, w: u32, h: u32) {
+        (raw::exports().present_rect)(self.channel_id, handle.id, handle.shm_id, x, y, w, h);
     }
 
     /// Move a window to a new position.

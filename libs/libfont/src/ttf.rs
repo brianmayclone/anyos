@@ -8,6 +8,30 @@
 use alloc::vec::Vec;
 
 // ---------------------------------------------------------------------------
+// FontData — dual-mode storage (embedded static or heap-allocated)
+// ---------------------------------------------------------------------------
+
+/// Font data storage: either a static reference (embedded in .rodata, shared
+/// across processes) or an owned heap allocation (for user-loaded fonts).
+pub enum FontData {
+    /// Embedded system font — points into .rodata, zero-copy, shared pages.
+    Static(&'static [u8]),
+    /// Dynamically loaded font — owned heap allocation.
+    Owned(Vec<u8>),
+}
+
+impl core::ops::Deref for FontData {
+    type Target = [u8];
+    #[inline]
+    fn deref(&self) -> &[u8] {
+        match self {
+            FontData::Static(s) => s,
+            FontData::Owned(v) => v,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Big-endian reader helpers
 // ---------------------------------------------------------------------------
 
@@ -83,8 +107,8 @@ const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
 
 /// Parsed TrueType font.
 pub struct TtfFont {
-    /// Raw TTF file data.
-    pub data: Vec<u8>,
+    /// Raw TTF file data (static or heap-allocated).
+    pub data: FontData,
 
     /// Number of glyphs in the font (from `maxp`).
     pub num_glyphs: u16,
@@ -117,8 +141,17 @@ impl TtfFont {
     // Parsing
     // ------------------------------------------------------------------
 
-    /// Parse a TrueType font from raw file data.
+    /// Parse a TrueType font from heap-allocated file data (user-loaded fonts).
     pub fn parse(data: Vec<u8>) -> Option<Self> {
+        Self::parse_inner(FontData::Owned(data))
+    }
+
+    /// Parse a TrueType font from a static byte slice (embedded system fonts).
+    pub fn parse_static(data: &'static [u8]) -> Option<Self> {
+        Self::parse_inner(FontData::Static(data))
+    }
+
+    fn parse_inner(data: FontData) -> Option<Self> {
         if data.len() < 12 {
             return None;
         }

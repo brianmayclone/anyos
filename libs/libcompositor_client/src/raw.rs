@@ -80,6 +80,8 @@ pub struct LibcompositorExports {
         out_stride: *mut u32,
         out_surface: *mut *mut u32,
     ) -> u32,
+
+    pub present_rect: extern "C" fn(channel_id: u32, window_id: u32, shm_id: u32, x: u32, y: u32, w: u32, h: u32),
 }
 
 /// Get a reference to the libcompositor export table.

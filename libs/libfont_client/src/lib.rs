@@ -1,30 +1,69 @@
 // Copyright (c) 2024-2026 Christian Moeller
 // SPDX-License-Identifier: MIT
 
-//! Client library for libfont.dlib — TTF font engine.
+//! Client library for libfont.so — TTF font engine.
 //!
-//! Provides safe Rust wrappers around the raw DLL export functions.
-//! User programs depend on this crate to load TrueType fonts, measure text,
-//! and render text into pixel buffers. Font rendering runs entirely in
-//! userspace (no syscall overhead for text operations).
+//! Provides safe Rust wrappers around libfont's exported symbols,
+//! resolved at runtime via `dl_open` / `dl_sym` (ELF dynamic linking).
 
 #![no_std]
 
-pub mod raw;
+use dynlink::{DlHandle, dl_open, dl_sym};
 
-/// Initialize the font manager and load system fonts.
-///
-/// Called automatically on first use, but can be called explicitly
-/// for early initialization (e.g. compositor startup).
-pub fn init() {
-    (raw::exports().init)();
+struct FontLib {
+    _handle: DlHandle,
+    init_fn: extern "C" fn(),
+    load_fn: extern "C" fn(*const u8, u32) -> u32,
+    unload_fn: extern "C" fn(u32),
+    measure_fn: extern "C" fn(u32, u16, *const u8, u32, *mut u32, *mut u32),
+    draw_fn: extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, u16, *const u8, u32),
+    line_height_fn: extern "C" fn(u32, u16) -> u32,
+    set_subpixel_fn: extern "C" fn(u32),
+}
+
+static mut LIB: Option<FontLib> = None;
+
+fn lib() -> &'static FontLib {
+    unsafe { LIB.as_ref().expect("libfont not loaded") }
+}
+
+/// Resolve a function pointer from the loaded library, or panic.
+unsafe fn resolve<T: Copy>(handle: &DlHandle, name: &str) -> T {
+    let ptr = dl_sym(handle, name).expect("symbol not found in libfont.so");
+    core::mem::transmute_copy::<*const (), T>(&ptr)
+}
+
+/// Load and initialize libfont.so. Call once at program start.
+/// Returns true on success.
+pub fn init() -> bool {
+    let handle = match dl_open("/Libraries/libfont.so") {
+        Some(h) => h,
+        None => return false,
+    };
+
+    unsafe {
+        let lib = FontLib {
+            init_fn: resolve(&handle, "font_init"),
+            load_fn: resolve(&handle, "font_load"),
+            unload_fn: resolve(&handle, "font_unload"),
+            measure_fn: resolve(&handle, "font_measure_string"),
+            draw_fn: resolve(&handle, "font_draw_string_buf"),
+            line_height_fn: resolve(&handle, "font_line_height"),
+            set_subpixel_fn: resolve(&handle, "font_set_subpixel"),
+            _handle: handle,
+        };
+        (lib.init_fn)();
+        LIB = Some(lib);
+    }
+
+    true
 }
 
 /// Load a font from a file path.
 ///
 /// Returns `Some(font_id)` on success, or `None` if loading failed.
 pub fn load(path: &str) -> Option<u32> {
-    let id = (raw::exports().load_font)(path.as_ptr(), path.len() as u32);
+    let id = (lib().load_fn)(path.as_ptr(), path.len() as u32);
     if id != u32::MAX {
         Some(id)
     } else {
@@ -34,7 +73,7 @@ pub fn load(path: &str) -> Option<u32> {
 
 /// Unload a previously loaded font.
 pub fn unload(font_id: u32) {
-    (raw::exports().unload_font)(font_id);
+    (lib().unload_fn)(font_id);
 }
 
 /// Measure the pixel dimensions of text rendered with a given font and size.
@@ -43,7 +82,7 @@ pub fn unload(font_id: u32) {
 pub fn measure(font_id: u32, size: u16, text: &str) -> (u32, u32) {
     let mut w: u32 = 0;
     let mut h: u32 = 0;
-    (raw::exports().measure_string)(
+    (lib().measure_fn)(
         font_id,
         size,
         text.as_ptr(),
@@ -74,7 +113,7 @@ pub fn draw_string_buf(
     size: u16,
     text: &str,
 ) {
-    (raw::exports().draw_string_buf)(
+    (lib().draw_fn)(
         buf, buf_w, buf_h,
         x, y, color,
         font_id, size,
@@ -84,11 +123,11 @@ pub fn draw_string_buf(
 
 /// Get line height for a font at a given size.
 pub fn line_height(font_id: u32, size: u16) -> u32 {
-    (raw::exports().line_height)(font_id, size)
+    (lib().line_height_fn)(font_id, size)
 }
 
 /// Override subpixel rendering mode.
 /// Normally auto-detected on init via SYS_GPU_HAS_ACCEL.
 pub fn set_subpixel(enabled: bool) {
-    (raw::exports().set_subpixel)(if enabled { 1 } else { 0 });
+    (lib().set_subpixel_fn)(if enabled { 1 } else { 0 });
 }

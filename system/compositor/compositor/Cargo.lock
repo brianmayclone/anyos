@@ -17,8 +17,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dynlink"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
 name = "libfont_client"
 version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+]
 
 [[package]]
 name = "libimage_client"

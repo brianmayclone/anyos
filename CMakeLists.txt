@@ -404,6 +404,23 @@ function(add_app NAME SRC_DIR DISPLAY_NAME)
     )
     list(APPEND _LOCAL_BINS "${APP_DIR}/Icon.ico")
   endif()
+  # Copy bundled resource directories (e.g. syntax/) into the .app
+  foreach(_RESDIR syntax)
+    if(IS_DIRECTORY "${SRC_DIR}/${_RESDIR}")
+      file(GLOB _RES_FILES "${SRC_DIR}/${_RESDIR}/*")
+      foreach(_RF ${_RES_FILES})
+        get_filename_component(_RF_NAME ${_RF} NAME)
+        add_custom_command(
+          OUTPUT "${APP_DIR}/${_RESDIR}/${_RF_NAME}"
+          COMMAND ${CMAKE_COMMAND} -E make_directory "${APP_DIR}/${_RESDIR}"
+          COMMAND ${CMAKE_COMMAND} -E copy "${_RF}" "${APP_DIR}/${_RESDIR}/${_RF_NAME}"
+          DEPENDS "${_RF}" "${APP_DIR}/${DISPLAY_NAME}"
+          COMMENT "Bundling ${_RESDIR}/${_RF_NAME} into ${DISPLAY_NAME}.app"
+        )
+        list(APPEND _LOCAL_BINS "${APP_DIR}/${_RESDIR}/${_RF_NAME}")
+      endforeach()
+    endif()
+  endforeach()
   set(APP_BINS ${APP_BINS} ${_LOCAL_BINS} PARENT_SCOPE)
 endfunction()
 
@@ -475,7 +492,6 @@ set(DRIVER_BINS "")
 set(DLL_BINS "")
 add_dll(uisys ${CMAKE_SOURCE_DIR}/libs/uisys)
 add_dll(libimage ${CMAKE_SOURCE_DIR}/libs/libimage)
-add_dll(libfont ${CMAKE_SOURCE_DIR}/libs/libfont)
 add_dll(librender ${CMAKE_SOURCE_DIR}/libs/librender)
 add_dll(libcompositor ${CMAKE_SOURCE_DIR}/libs/libcompositor)
 
@@ -521,6 +537,7 @@ function(add_shared_lib NAME SRC_DIR BASE_ADDR)
 endfunction()
 
 add_shared_lib(libanyui ${CMAKE_SOURCE_DIR}/libs/libanyui "0x04400000")
+add_shared_lib(libfont ${CMAKE_SOURCE_DIR}/libs/libfont "0x05000000")
 
 set(RUST_USER_BINS "")
 add_rust_user_program(ping       ${CMAKE_SOURCE_DIR}/bin/ping)

@@ -7,6 +7,7 @@ pub struct StatusBar {
     file_label: ui::Label,
     cursor_label: ui::Label,
     language_label: ui::Label,
+    branch_label: ui::Label,
     encoding_label: ui::Label,
 }
 
@@ -35,8 +36,14 @@ impl StatusBar {
         lang_lbl.set_text_color(0xFFFFFFFF);
         panel.add(&lang_lbl);
 
+        let branch_lbl = ui::Label::new("");
+        branch_lbl.set_position(580, 3);
+        branch_lbl.set_font_size(11);
+        branch_lbl.set_text_color(0xFFFFFFFF);
+        panel.add(&branch_lbl);
+
         let enc_lbl = ui::Label::new("UTF-8");
-        enc_lbl.set_position(580, 3);
+        enc_lbl.set_position(720, 3);
         enc_lbl.set_font_size(11);
         enc_lbl.set_text_color(0xFFFFFFFF);
         panel.add(&enc_lbl);
@@ -46,6 +53,7 @@ impl StatusBar {
             file_label: file_lbl,
             cursor_label: cursor_lbl,
             language_label: lang_lbl,
+            branch_label: branch_lbl,
             encoding_label: enc_lbl,
         }
     }
@@ -64,5 +72,15 @@ impl StatusBar {
     /// Update language display.
     pub fn set_language(&self, lang: &str) {
         self.language_label.set_text(lang);
+    }
+
+    /// Update the git branch display.
+    pub fn set_branch(&self, branch: &str) {
+        if branch.is_empty() {
+            self.branch_label.set_text("");
+        } else {
+            let text = format!("$(git) {}", branch);
+            self.branch_label.set_text(&text);
+        }
     }
 }

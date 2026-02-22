@@ -32,7 +32,7 @@ impl Compositor {
 
     /// Merge damage rects if there are too many (prevents performance explosion).
     fn merge_damage_if_needed(&mut self) {
-        if self.damage.len() > 64 {
+        if self.damage.len() > 128 {
             let merged = self.damage.iter().copied().reduce(|a, b| a.union(&b));
             self.damage.clear();
             if let Some(r) = merged {

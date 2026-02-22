@@ -25,7 +25,7 @@ const RESP_WINDOW_CREATED: u32 = 0x2001;
 const RESP_VRAM_WINDOW_CREATED: u32 = 0x2004;
 const RESP_VRAM_WINDOW_FAILED: u32 = 0x2005;
 
-const NUM_EXPORTS: u32 = 17;
+const NUM_EXPORTS: u32 = 18;
 
 #[repr(C)]
 pub struct LibcompositorExports {
@@ -129,6 +129,10 @@ pub struct LibcompositorExports {
         out_stride: *mut u32,
         out_surface: *mut *mut u32,
     ) -> u32,
+
+    /// Signal that a rectangular region of window content has been updated.
+    /// Only the dirty rect (x, y, w, h) is copied to the compositor layer.
+    pub present_rect: extern "C" fn(channel_id: u32, window_id: u32, shm_id: u32, x: u32, y: u32, w: u32, h: u32),
 }
 
 #[link_section = ".exports"]
@@ -156,6 +160,7 @@ pub static LIBCOMPOSITOR_EXPORTS: LibcompositorExports = LibcompositorExports {
     tray_poll_event: export_tray_poll_event,
     set_blur_behind: export_set_blur_behind,
     create_vram_window: export_create_vram_window,
+    present_rect: export_present_rect,
 };
 
 // ── Export Implementations ───────────────────────────────────────────────────
@@ -257,6 +262,12 @@ extern "C" fn export_destroy_window(channel_id: u32, window_id: u32, shm_id: u32
 
 extern "C" fn export_present(channel_id: u32, window_id: u32, shm_id: u32) {
     let cmd: [u32; 5] = [CMD_PRESENT, window_id, shm_id, 0, 0];
+    syscall::evt_chan_emit(channel_id, &cmd);
+}
+
+extern "C" fn export_present_rect(channel_id: u32, window_id: u32, shm_id: u32, x: u32, y: u32, w: u32, h: u32) {
+    // Pack dirty rect: cmd[3] = (x << 16) | y, cmd[4] = (w << 16) | h
+    let cmd: [u32; 5] = [CMD_PRESENT, window_id, shm_id, (x << 16) | y, (w << 16) | h];
     syscall::evt_chan_emit(channel_id, &cmd);
 }
 

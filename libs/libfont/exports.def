@@ -1,0 +1,9 @@
+LIBRARY libfont
+EXPORTS
+    font_init
+    font_load
+    font_unload
+    font_measure_string
+    font_draw_string_buf
+    font_line_height
+    font_set_subpixel

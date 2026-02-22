@@ -522,7 +522,7 @@ impl Desktop {
         // Borderless IPC windows: no chrome — restore SHM content directly.
         if borderless && self.windows[win_idx].owner_tid != 0 {
             if !self.windows[win_idx].shm_ptr.is_null() {
-                self.present_ipc_window(window_id);
+                self.present_ipc_window(window_id, None);
             }
             return;
         }
@@ -606,7 +606,7 @@ impl Desktop {
         self.compositor.mark_layer_dirty(layer_id);
 
         if self.windows[win_idx].owner_tid != 0 && !self.windows[win_idx].shm_ptr.is_null() {
-            self.present_ipc_window(window_id);
+            self.present_ipc_window(window_id, None);
         }
     }
 
@@ -928,7 +928,8 @@ impl Desktop {
 
     /// Copy SHM content into the window layer's content area.
     /// For VRAM-direct windows (shm_ptr is null), just marks the layer dirty.
-    pub fn present_ipc_window(&mut self, window_id: u32) {
+    /// If `dirty_rect` is Some, only copies that region from SHM (partial present).
+    pub fn present_ipc_window(&mut self, window_id: u32, dirty_rect: Option<crate::compositor::Rect>) {
         let win_idx = match self.windows.iter().position(|w| w.id == window_id) {
             Some(i) => i,
             None => return,
@@ -965,12 +966,27 @@ impl Desktop {
 
         let needs_scale = scale_content && (shm_w != cw || shm_h != ch);
 
+        // Compute copy bounds — either the dirty rect or the full content area
+        let (copy_x, copy_y, copy_w, copy_h) = if let Some(ref dr) = dirty_rect {
+            let rx = (dr.x.max(0) as u32).min(shm_w);
+            let ry = (dr.y.max(0) as u32).min(shm_h);
+            let rw = dr.width.min(shm_w.saturating_sub(rx)).min(cw.saturating_sub(rx));
+            let rh = dr.height.min(shm_h.saturating_sub(ry)).min(ch.saturating_sub(ry));
+            if rw == 0 || rh == 0 {
+                return;
+            }
+            (rx, ry, rw, rh)
+        } else {
+            (0, 0, shm_w.min(cw), shm_h.min(ch))
+        };
+
         if let Some(pixels) = self.compositor.layer_pixels(layer_id) {
             let stride = cw;
             let src_count = (shm_w * shm_h) as usize;
             let src_slice = unsafe { core::slice::from_raw_parts(shm_ptr, src_count) };
 
-            if needs_scale {
+            if needs_scale && dirty_rect.is_none() {
+                // Scaled path — only used for full present (dirty rect + scale not supported)
                 for dst_row in 0..ch {
                     let src_y = (dst_row as u64 * shm_h as u64 / ch as u64) as u32;
                     let src_y = src_y.min(shm_h - 1);
@@ -991,12 +1007,10 @@ impl Desktop {
                     }
                 }
             } else {
-                let copy_w = shm_w.min(cw);
-                let copy_h = shm_h.min(ch);
-
+                // Non-scaled path with dirty rect support
                 for row in 0..copy_h {
-                    let src_off = (row * shm_w) as usize;
-                    let dst_off = ((content_y + row) * stride) as usize;
+                    let src_off = ((copy_y + row) * shm_w + copy_x) as usize;
+                    let dst_off = ((content_y + copy_y + row) * stride + copy_x) as usize;
                     let w = copy_w as usize;
                     let src_end = (src_off + w).min(src_slice.len());
                     let dst_end = (dst_off + w).min(pixels.len());
@@ -1020,7 +1034,20 @@ impl Desktop {
 
         self.compositor.mark_layer_dirty(layer_id);
 
-        if let Some(layer) = self.compositor.get_layer(layer_id) {
+        // Damage only the dirty region (offset by layer position + content_y)
+        if let Some(ref dr) = dirty_rect {
+            if let Some(layer) = self.compositor.get_layer(layer_id) {
+                let lx = layer.x;
+                let ly = layer.y;
+                let screen_rect = crate::compositor::Rect::new(
+                    lx + dr.x.max(0),
+                    ly + content_y as i32 + dr.y.max(0),
+                    dr.width,
+                    dr.height,
+                );
+                self.compositor.add_damage(screen_rect);
+            }
+        } else if let Some(layer) = self.compositor.get_layer(layer_id) {
             let bounds = layer.damage_bounds();
             self.compositor.add_damage(bounds);
         }

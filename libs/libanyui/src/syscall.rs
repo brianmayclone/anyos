@@ -48,6 +48,50 @@ fn syscall1(num: u64, a1: u64) -> u64 {
     ret
 }
 
+#[inline(always)]
+fn syscall2(num: u64, a1: u64, a2: u64) -> u64 {
+    let ret: u64;
+    unsafe {
+        asm!(
+            "push rbx",
+            "mov rbx, {a1}",
+            "syscall",
+            "pop rbx",
+            a1 = in(reg) a1,
+            inlateout("rax") num => ret,
+            in("r10") a2,
+            out("rcx") _,
+            out("r11") _,
+        );
+    }
+    ret
+}
+
+#[inline(always)]
+fn syscall3(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
+    let ret: u64;
+    unsafe {
+        asm!(
+            "push rbx",
+            "mov rbx, {a1}",
+            "syscall",
+            "pop rbx",
+            a1 = in(reg) a1,
+            inlateout("rax") num => ret,
+            in("r10") a2,
+            in("rdx") a3,
+            out("rcx") _,
+            out("r11") _,
+        );
+    }
+    ret
+}
+
+const SYS_DLL_LOAD: u64 = 80;
+const SYS_READDIR: u64 = 23;
+const SYS_GETCWD: u64 = 25;
+const SYS_MKDIR: u64 = 90;
+
 // ── High-level wrappers ──────────────────────────────────────────────
 
 pub fn exit(code: u32) -> ! {
@@ -69,4 +113,30 @@ pub fn sbrk(increment: u32) -> u64 {
 
 pub fn uptime_ms() -> u32 {
     syscall0(SYS_UPTIME_MS) as u32
+}
+
+/// Load/map a shared library by path. Returns the base virtual address, or 0 on failure.
+pub fn dll_load(path: &[u8]) -> u64 {
+    let mut buf = [0u8; 257];
+    let len = path.len().min(256);
+    buf[..len].copy_from_slice(&path[..len]);
+    buf[len] = 0;
+    syscall2(SYS_DLL_LOAD, buf.as_ptr() as u64, len as u64)
+}
+
+/// Read directory entries. `path` must be null-terminated.
+/// Each entry is 64 bytes: [type:u8, name_len:u8, pad:u16, size:u32, name:56bytes]
+/// Returns number of entries, or u32::MAX on error.
+pub fn readdir(path: &[u8], buf: &mut [u8]) -> u32 {
+    syscall3(SYS_READDIR, path.as_ptr() as u64, buf.as_mut_ptr() as u64, buf.len() as u64) as u32
+}
+
+/// Get current working directory. Returns length or u32::MAX on error.
+pub fn getcwd(buf: &mut [u8]) -> u32 {
+    syscall2(SYS_GETCWD, buf.as_mut_ptr() as u64, buf.len() as u64) as u32
+}
+
+/// Create a directory. `path` must be null-terminated. Returns 0 on success.
+pub fn mkdir(path: &[u8]) -> u32 {
+    syscall1(SYS_MKDIR, path.as_ptr() as u64) as u32
 }

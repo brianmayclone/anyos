@@ -47,6 +47,7 @@ mod tablelayout;
 
 // ── Static dialogs ──
 mod messagebox;
+mod filedialog;
 
 // ── Re-exports ──
 pub use label::Label;
@@ -93,3 +94,4 @@ pub use flowpanel::FlowPanel;
 pub use tablelayout::TableLayout;
 
 pub use messagebox::{MessageBox, MessageBoxType};
+pub use filedialog::FileDialog;

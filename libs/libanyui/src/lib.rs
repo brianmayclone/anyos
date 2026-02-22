@@ -41,6 +41,7 @@ mod layout;
 mod marshal;
 mod syscall;
 mod timer;
+mod dialogs;
 pub mod theme;
 
 use alloc::boxed::Box;
@@ -483,16 +484,26 @@ pub extern "C" fn anyui_set_text_color(id: ControlId, color: u32) {
     }
 }
 
-// ── StackPanel orientation ───────────────────────────────────────────
+// ── Layout orientation ───────────────────────────────────────────────
 
 #[no_mangle]
 pub extern "C" fn anyui_set_orientation(id: ControlId, orientation: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if ctrl.kind() == ControlKind::StackPanel {
-            let raw: *mut dyn Control = &mut **ctrl;
-            let sp = unsafe { &mut *(raw as *mut controls::stack_panel::StackPanel) };
-            sp.orientation = Orientation::from_u32(orientation);
+        match ctrl.kind() {
+            ControlKind::StackPanel => {
+                let raw: *mut dyn Control = &mut **ctrl;
+                let sp = unsafe { &mut *(raw as *mut controls::stack_panel::StackPanel) };
+                sp.orientation = Orientation::from_u32(orientation);
+            }
+            ControlKind::SplitView => {
+                let raw: *mut dyn Control = &mut **ctrl;
+                let sv = unsafe { &mut *(raw as *mut controls::split_view::SplitView) };
+                sv.orientation = Orientation::from_u32(orientation);
+                sv.sync_divider();
+                sv.base.dirty = true;
+            }
+            _ => {}
         }
     }
 }
@@ -542,7 +553,7 @@ pub extern "C" fn anyui_set_split_ratio(id: ControlId, ratio: u32) {
         if let Some(sv) = as_split_view(ctrl) {
             let r = ratio.min(100);
             sv.split_ratio = r;
-            sv.divider_pos = (sv.base.w as u64 * r as u64 / 100) as i32;
+            sv.sync_divider();
             sv.base.state = r;
             sv.base.dirty = true;
         }
@@ -1526,6 +1537,38 @@ pub extern "C" fn anyui_message_box(
 
     // Clean up — remove overlay and all descendants
     anyui_remove(overlay_id);
+}
+
+// ── File Dialogs ─────────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn anyui_open_folder(result_buf: *mut u8, buf_len: u32) -> u32 {
+    dialogs::open_folder(result_buf, buf_len)
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_open_file(result_buf: *mut u8, buf_len: u32) -> u32 {
+    dialogs::open_file(result_buf, buf_len)
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_save_file(
+    result_buf: *mut u8,
+    buf_len: u32,
+    default_name: *const u8,
+    name_len: u32,
+) -> u32 {
+    let name = if !default_name.is_null() && name_len > 0 {
+        unsafe { core::slice::from_raw_parts(default_name, name_len as usize) }
+    } else {
+        &[]
+    };
+    dialogs::save_file(result_buf, buf_len, name)
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_create_folder(result_buf: *mut u8, buf_len: u32) -> u32 {
+    dialogs::create_folder(result_buf, buf_len)
 }
 
 // ── Event loop ───────────────────────────────────────────────────────

@@ -16,10 +16,10 @@ use crate::syscall;
 static mut FONT_MGR_PTR: *mut FontManager = core::ptr::null_mut();
 
 /// Maximum number of cached glyphs before LRU eviction.
-const MAX_CACHE_SIZE: usize = 512;
+const MAX_CACHE_SIZE: usize = 2048;
 
 /// Hash table size for glyph cache lookup (must be power of 2).
-const GLYPH_HASH_SIZE: usize = 512;
+const GLYPH_HASH_SIZE: usize = 2048;
 const GLYPH_HASH_EMPTY: u16 = 0xFFFF;
 
 /// System font IDs (must match kernel convention).
@@ -301,7 +301,8 @@ fn set_mgr_ptr(mgr: *mut FontManager) {
 
 // ─── Public API (called from extern "C" exports) ────────────────────────
 
-/// Initialize the font manager and load system fonts from disk.
+/// Initialize the font manager and load system fonts from embedded .rodata.
+/// No disk I/O — fonts are compiled into the .so binary.
 pub fn init() {
     if get_mgr().is_some() {
         return;
@@ -313,26 +314,19 @@ pub fn init() {
 
     let mgr = unsafe { &mut *mgr_ptr };
 
-    let font_paths: [&[u8]; 5] = [
-        b"/System/fonts/sfpro.ttf",
-        b"/System/fonts/sfpro-bold.ttf",
-        b"/System/fonts/sfpro-thin.ttf",
-        b"/System/fonts/sfpro-italic.ttf",
-        b"/System/fonts/andale-mono.ttf",
+    let embedded: [&'static [u8]; 5] = [
+        crate::FONT_SFPRO,
+        crate::FONT_SFPRO_BOLD,
+        crate::FONT_SFPRO_THIN,
+        crate::FONT_SFPRO_ITALIC,
+        crate::FONT_ANDALE_MONO,
     ];
 
-    for path in &font_paths {
-        match syscall::read_file(path) {
-            Some(data) => {
-                if let Some(ttf) = TtfFont::parse(data) {
-                    mgr.add_font(ttf);
-                } else {
-                    mgr.fonts.push(None);
-                }
-            }
-            None => {
-                mgr.fonts.push(None);
-            }
+    for data in &embedded {
+        if let Some(ttf) = TtfFont::parse_static(data) {
+            mgr.add_font(ttf);
+        } else {
+            mgr.fonts.push(None);
         }
     }
 

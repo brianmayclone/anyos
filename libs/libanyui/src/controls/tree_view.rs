@@ -150,6 +150,15 @@ impl TreeView {
         self.base.dirty = true;
     }
 
+    /// Get node text.
+    pub fn node_text(&self, index: usize) -> &[u8] {
+        if index < self.nodes.len() {
+            &self.nodes[index].text
+        } else {
+            &[]
+        }
+    }
+
     /// Set node text.
     pub fn set_node_text(&mut self, index: usize, text: &[u8]) {
         if index < self.nodes.len() {

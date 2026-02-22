@@ -22,8 +22,8 @@ use alloc::string::String;
 use alloc::vec;
 use libanyui_client as anyui;
 
-use crate::logic::{build, config, file_manager, plugin, project};
-use crate::ui::{editor_view, output_panel, sidebar, status_bar, toolbar};
+use crate::logic::{build, config, file_manager, git, plugin, project};
+use crate::ui::{editor_view, git_panel, output_panel, sidebar, status_bar, toolbar};
 use crate::util::{path, syntax_map};
 
 // ════════════════════════════════════════════════════════════════
@@ -34,12 +34,18 @@ struct AppState {
     file_mgr: file_manager::FileManager,
     editor_view: editor_view::EditorView,
     sidebar: sidebar::Sidebar,
+    git_panel: git_panel::GitPanel,
     output: output_panel::OutputPanel,
     status: status_bar::StatusBar,
     config: config::Config,
     current_project: Option<project::Project>,
     build_process: Option<build::BuildProcess>,
     build_timer_id: u32,
+    // Git integration
+    git_state: git::GitState,
+    git_process: Option<git::GitProcess>,
+    git_pending_op: Option<git::GitOp>,
+    git_timer_id: u32,
 }
 
 static mut APP: Option<AppState> = None;
@@ -63,7 +69,7 @@ fn main() {
 
     // ── Load configuration and plugins ──
     let config = config::Config::load();
-    let _plugins = plugin::load_plugins();
+    let _plugins = plugin::load_plugins(&config.plugin_dir);
 
     // ── Create window ──
     let win = anyui::Window::new("anyOS Code", 900, 650);
@@ -87,6 +93,12 @@ fn main() {
 
     // ── Sidebar (left pane) ──
     let mut sidebar = sidebar::Sidebar::new();
+
+    // ── Git panel (inside sidebar, connected to tab control) ──
+    let git_panel = git_panel::GitPanel::new();
+    sidebar.panel.add(&git_panel.panel);
+    sidebar.tab_control.connect_panels(&[&sidebar.explorer_panel, &git_panel.panel]);
+
     main_split.add(&sidebar.panel);
 
     // ── Editor area (right pane) — split vertically: editor | output ──
@@ -115,19 +127,45 @@ fn main() {
         None
     };
 
+    // ── Git repo detection ──
+    let mut git_state = git::GitState::empty();
+    if let Some(ref proj) = current_project {
+        git_state.is_repo = git::is_git_repo(&proj.root);
+    }
+
     // ── Initialize global state ──
     unsafe {
         APP = Some(AppState {
             file_mgr: file_manager::FileManager::new(),
             editor_view,
             sidebar,
+            git_panel,
             output,
             status,
             config,
             current_project,
             build_process: None,
             build_timer_id: 0,
+            git_state,
+            git_process: None,
+            git_pending_op: None,
+            git_timer_id: 0,
         });
+    }
+
+    // ── Initial git panel state ──
+    {
+        let s = app();
+        if !s.config.has_git() {
+            s.git_panel.show_not_installed();
+        } else if !s.git_state.is_repo {
+            s.git_panel.show_no_repo();
+        } else {
+            // Start initial git refresh
+            trigger_git_refresh();
+            // Start periodic git timer (every 5 seconds)
+            s.git_timer_id = anyui::set_timer(5000, poll_git);
+        }
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -137,7 +175,7 @@ fn main() {
     // ── Toolbar: New ──
     tb.btn_new.on_click(|_| {
         let s = app();
-        let (_idx, ref p) = s.file_mgr.add_untitled();
+        let (_idx, ref p) = s.file_mgr.add_untitled(&s.config.temp_dir);
         s.editor_view.create_editor(p, None, &s.config);
         let count = s.file_mgr.count();
         s.editor_view.set_active(count - 1);
@@ -165,10 +203,11 @@ fn main() {
         let s = app();
         if let Some(ref proj) = s.current_project {
             s.output.clear();
-            s.output.append_line("$ make");
-            let (cmd, args) = build::build_command(proj.build_type);
+            let (cmd, args) = build::build_command(proj.build_type, &s.config);
+            let msg = format!("$ {}", path::basename(&cmd));
+            s.output.append_line(&msg);
             anyos_std::fs::chdir(&proj.root);
-            s.build_process = build::BuildProcess::spawn(cmd, args);
+            s.build_process = build::BuildProcess::spawn(&cmd, &args);
             if s.build_process.is_some() {
                 start_build_timer();
             }
@@ -180,10 +219,11 @@ fn main() {
         let s = app();
         if let Some(ref proj) = s.current_project {
             s.output.clear();
-            s.output.append_line("$ run");
-            let (cmd, args) = build::run_command(proj.build_type);
+            let (cmd, args) = build::run_command(proj.build_type, &s.config);
+            let msg = format!("$ {}", path::basename(&cmd));
+            s.output.append_line(&msg);
             anyos_std::fs::chdir(&proj.root);
-            s.build_process = build::BuildProcess::spawn(cmd, args);
+            s.build_process = build::BuildProcess::spawn(&cmd, &args);
             if s.build_process.is_some() {
                 start_build_timer();
             }
@@ -203,16 +243,24 @@ fn main() {
 
     // ── Toolbar: Open Folder ──
     tb.btn_open.on_click(|_| {
-        anyui::MessageBox::show(
-            anyui::MessageBoxType::Info,
-            "Open Folder: Enter path in terminal args",
-            None,
-        );
+        if let Some(folder) = anyui::FileDialog::open_folder() {
+            let s = app();
+            s.sidebar.populate(&folder);
+            s.current_project = Some(project::Project::open(&folder));
+            s.git_state.is_repo = git::is_git_repo(&folder);
+            if s.git_state.is_repo {
+                trigger_git_refresh();
+            }
+            s.status.set_branch("");
+            update_status();
+        }
     });
 
     // ── Toolbar: Settings ──
     tb.btn_settings.on_click(|_| {
-        open_file("/Users/settings/anycode.json");
+        let s = app();
+        let settings = s.config.settings_path.clone();
+        open_file(&settings);
         update_status();
     });
 
@@ -226,6 +274,93 @@ fn main() {
                 open_file(&owned);
                 update_status();
             }
+        }
+    });
+
+    // ── Git panel: tree selection opens file ──
+    app().git_panel.tree.on_selection_changed(|e| {
+        let s = app();
+        if let Some(rel_path) = s.git_panel.path_for_node(e.index) {
+            if let Some(ref proj) = s.current_project {
+                let full = path::join(&proj.root, rel_path);
+                open_file(&full);
+                update_status();
+            }
+        }
+    });
+
+    // ── Git panel: Refresh ──
+    app().git_panel.btn_refresh.on_click(|_| {
+        trigger_git_refresh();
+    });
+
+    // ── Git panel: Stage All ──
+    app().git_panel.btn_stage_all.on_click(|_| {
+        let s = app();
+        if s.git_process.is_some() {
+            return;
+        }
+        if let Some(ref proj) = s.current_project {
+            anyos_std::fs::chdir(&proj.root);
+            s.git_process = git::GitProcess::spawn(&s.config.git_path, "add -A");
+            s.git_pending_op = Some(git::GitOp::Add);
+        }
+    });
+
+    // ── Git panel: Commit ──
+    app().git_panel.btn_commit.on_click(|_| {
+        let s = app();
+        if s.git_process.is_some() {
+            return;
+        }
+        let mut msg_buf = [0u8; 512];
+        let len = s.git_panel.commit_field.get_text(&mut msg_buf);
+        if len == 0 {
+            return;
+        }
+        let msg = match core::str::from_utf8(&msg_buf[..len as usize]) {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        if msg.trim().is_empty() {
+            return;
+        }
+        if let Some(ref proj) = s.current_project {
+            let args = format!("commit -m \"{}\"", msg.trim());
+            anyos_std::fs::chdir(&proj.root);
+            s.git_process = git::GitProcess::spawn(&s.config.git_path, &args);
+            s.git_pending_op = Some(git::GitOp::Commit);
+            s.git_panel.commit_field.set_text("");
+        }
+    });
+
+    // ── Git panel: Push ──
+    app().git_panel.btn_push.on_click(|_| {
+        let s = app();
+        if s.git_process.is_some() {
+            return;
+        }
+        if let Some(ref proj) = s.current_project {
+            anyos_std::fs::chdir(&proj.root);
+            s.git_process = git::GitProcess::spawn(&s.config.git_path, "push");
+            s.git_pending_op = Some(git::GitOp::Push);
+            s.output.clear();
+            s.output.append_line("$ git push");
+        }
+    });
+
+    // ── Git panel: Pull ──
+    app().git_panel.btn_pull.on_click(|_| {
+        let s = app();
+        if s.git_process.is_some() {
+            return;
+        }
+        if let Some(ref proj) = s.current_project {
+            anyos_std::fs::chdir(&proj.root);
+            s.git_process = git::GitProcess::spawn(&s.config.git_path, "pull");
+            s.git_pending_op = Some(git::GitOp::Pull);
+            s.output.clear();
+            s.output.append_line("$ git pull");
         }
     });
 
@@ -311,6 +446,7 @@ fn update_status() {
         s.status.set_filename("No file open");
         s.status.set_language("Plain Text");
     }
+    s.status.set_branch(&s.git_state.branch);
 }
 
 // ── Build output timer ──────────────────────────────────────────
@@ -347,5 +483,72 @@ fn poll_build_output() {
         }
     } else {
         stop_build_timer();
+    }
+}
+
+// ── Git integration ─────────────────────────────────────────────
+
+/// Start a git status refresh (first queries branch, then status).
+fn trigger_git_refresh() {
+    let s = app();
+    if s.git_process.is_some() || !s.git_state.is_repo || !s.config.has_git() {
+        return;
+    }
+    if let Some(ref proj) = s.current_project {
+        anyos_std::fs::chdir(&proj.root);
+        s.git_process = git::GitProcess::spawn(&s.config.git_path, "branch --show-current");
+        s.git_pending_op = Some(git::GitOp::Branch);
+    }
+}
+
+/// Polled by the git timer — checks running git processes, handles results.
+fn poll_git() {
+    let s = app();
+
+    if let Some(ref mut proc) = s.git_process {
+        proc.poll();
+        if let Some(_exit_code) = proc.check_finished() {
+            let output = String::from(proc.output_str());
+            let op = s.git_pending_op.take().unwrap_or(git::GitOp::Status);
+
+            // Clear the finished process
+            s.git_process = None;
+
+            match op {
+                git::GitOp::Branch => {
+                    // Store branch name, then chain to status query
+                    s.git_state.branch = git::parse_branch(&output);
+                    s.status.set_branch(&s.git_state.branch);
+                    if let Some(ref proj) = s.current_project {
+                        anyos_std::fs::chdir(&proj.root);
+                        s.git_process = git::GitProcess::spawn(
+                            &s.config.git_path,
+                            "status --porcelain",
+                        );
+                        s.git_pending_op = Some(git::GitOp::Status);
+                    }
+                }
+                git::GitOp::Status => {
+                    // Parse and display changed files
+                    s.git_state.changed_files = git::parse_status_porcelain(&output);
+                    s.git_panel.update(&s.git_state);
+                }
+                git::GitOp::Add | git::GitOp::Commit => {
+                    // After add/commit, refresh status
+                    trigger_git_refresh();
+                }
+                git::GitOp::Push | git::GitOp::Pull => {
+                    // Show output in output panel, then refresh
+                    if !output.is_empty() {
+                        s.output.append(&output);
+                    }
+                    s.output.append_line("\n[Done]");
+                    trigger_git_refresh();
+                }
+            }
+        }
+    } else if s.git_state.is_repo && s.config.has_git() {
+        // No process running — trigger periodic refresh
+        trigger_git_refresh();
     }
 }

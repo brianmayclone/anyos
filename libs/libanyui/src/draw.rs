@@ -1,7 +1,7 @@
 //! Drawing functions for direct pixel-buffer rendering.
 //!
 //! All drawing operates on a `Surface` (pointer to an ARGB pixel buffer).
-//! Shape rendering delegates to librender.dlib, text rendering to libfont.dlib.
+//! Shape rendering delegates to librender.dlib, text rendering to libfont.so.
 //! Bitmap font rendering uses the embedded font_bitmap module.
 
 use crate::font_bitmap;
@@ -71,30 +71,105 @@ fn librender() -> &'static LibrenderExportsPartial {
     unsafe { &*(LIBRENDER_BASE as *const LibrenderExportsPartial) }
 }
 
-// ── libfont DLL access (at fixed address 0x04200000) ────────────────
+// ── libfont.so dynamic resolution ────────────────────────────────────
 
-const LIBFONT_BASE: usize = 0x0420_0000;
+type MeasureFn = extern "C" fn(u32, u16, *const u8, u32, *mut u32, *mut u32);
+type DrawFn = extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, u16, *const u8, u32);
 
-/// Partial mirror of libfont's export table — only the fields we need.
-#[repr(C)]
-struct LibfontExportsPartial {
-    _magic: [u8; 4],
-    _version: u32,
-    _num_exports: u32,
-    _pad: u32,
-    // offset 16
-    _init: usize,
-    _load_font: usize,
-    _unload_font: usize,
-    // offset 40
-    measure_string: extern "C" fn(u32, u16, *const u8, u32, *mut u32, *mut u32),
-    // offset 48
-    draw_string_buf: extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, u16, *const u8, u32),
+static mut FONT_MEASURE: Option<MeasureFn> = None;
+static mut FONT_DRAW: Option<DrawFn> = None;
+
+/// Ensure libfont.so is loaded and symbols are resolved.
+fn ensure_libfont() {
+    unsafe {
+        if FONT_MEASURE.is_some() { return; }
+        let base = crate::syscall::dll_load(b"/Libraries/libfont.so");
+        if base == 0 { return; }
+        FONT_MEASURE = resolve_sym(base, b"font_measure_string");
+        FONT_DRAW = resolve_sym(base, b"font_draw_string_buf");
+    }
 }
 
-#[inline(always)]
-fn libfont() -> &'static LibfontExportsPartial {
-    unsafe { &*(LIBFONT_BASE as *const LibfontExportsPartial) }
+/// Mini ELF64 symbol resolver — resolves a single symbol from a loaded .so.
+unsafe fn resolve_sym<T: Copy>(base: u64, name: &[u8]) -> Option<T> {
+    // ELF64 header
+    let ehdr = base as *const u8;
+    if *ehdr != 0x7F || *ehdr.add(1) != b'E' || *ehdr.add(2) != b'L' || *ehdr.add(3) != b'F' {
+        return None;
+    }
+    let e_phoff = *(ehdr.add(32) as *const u64);
+    let e_phnum = *(ehdr.add(56) as *const u16);
+
+    // Find PT_DYNAMIC
+    let mut dynamic_va: u64 = 0;
+    for i in 0..e_phnum as usize {
+        let ph = (base + e_phoff + (i as u64) * 56) as *const u8;
+        let p_type = *(ph as *const u32);
+        if p_type == 2 { // PT_DYNAMIC
+            dynamic_va = *(ph.add(16) as *const u64); // p_vaddr
+            break;
+        }
+    }
+    if dynamic_va == 0 { return None; }
+
+    // Walk .dynamic for DT_SYMTAB(6), DT_STRTAB(5), DT_HASH(4)
+    let mut symtab: u64 = 0;
+    let mut strtab: u64 = 0;
+    let mut hash: u64 = 0;
+    let dyn_ptr = dynamic_va as *const u8;
+    for i in 0..128 {
+        let entry = dyn_ptr.add(i * 16);
+        let d_tag = *(entry as *const i64);
+        let d_val = *(entry.add(8) as *const u64);
+        match d_tag {
+            6 => symtab = d_val,
+            5 => strtab = d_val,
+            4 => hash = d_val,
+            0 => break,
+            _ => {}
+        }
+    }
+    if symtab == 0 || strtab == 0 || hash == 0 { return None; }
+
+    // ELF hash lookup
+    let nbuckets = *(hash as *const u32);
+    let buckets = (hash as *const u32).add(2);
+    let chains = buckets.add(nbuckets as usize);
+
+    let h = elf_hash(name);
+    let mut idx = *buckets.add((h % nbuckets) as usize);
+    while idx != 0 {
+        // Elf64Sym: st_name(4) st_info(1) st_other(1) st_shndx(2) st_value(8) st_size(8) = 24 bytes
+        let sym = (symtab + idx as u64 * 24) as *const u8;
+        let st_name = *(sym as *const u32);
+        let st_value = *(sym.add(8) as *const u64);
+        if st_value != 0 && cstr_eq(strtab as *const u8, st_name as usize, name) {
+            return Some(core::mem::transmute_copy::<u64, T>(&st_value));
+        }
+        idx = *chains.add(idx as usize);
+    }
+    None
+}
+
+/// SysV ELF hash function.
+fn elf_hash(name: &[u8]) -> u32 {
+    let mut h: u32 = 0;
+    for &b in name {
+        h = (h << 4).wrapping_add(b as u32);
+        let g = h & 0xF000_0000;
+        if g != 0 { h ^= g >> 24; }
+        h &= !g;
+    }
+    h
+}
+
+/// Compare a symbol name from strtab with a byte slice.
+unsafe fn cstr_eq(strtab: *const u8, offset: usize, name: &[u8]) -> bool {
+    let s = strtab.add(offset);
+    for (i, &b) in name.iter().enumerate() {
+        if *s.add(i) != b { return false; }
+    }
+    *s.add(name.len()) == 0
 }
 
 // ── Constants ───────────────────────────────────────────────────────
@@ -177,7 +252,7 @@ pub fn draw_rounded_border(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, 
 
 // ── Text rendering ─────────────────────────────────────────────────
 
-/// Render TTF text onto a surface via libfont.dlib.
+/// Render TTF text onto a surface via libfont.so.
 /// Skipped if the text line is fully outside the clip rect.
 #[inline(always)]
 fn render_ttf(s: &Surface, x: i32, y: i32, color: u32, text: &[u8], font_id: u16, size: u16) {
@@ -189,12 +264,15 @@ fn render_ttf(s: &Surface, x: i32, y: i32, color: u32, text: &[u8], font_id: u16
     {
         return;
     }
-    (libfont().draw_string_buf)(
-        s.pixels, s.width, s.height,
-        x, y, color,
-        font_id as u32, size,
-        text.as_ptr(), text.len() as u32,
-    );
+    ensure_libfont();
+    if let Some(draw) = unsafe { FONT_DRAW } {
+        draw(
+            s.pixels, s.width, s.height,
+            x, y, color,
+            font_id as u32, size,
+            text.as_ptr(), text.len() as u32,
+        );
+    }
 }
 
 /// Draw text using the default system font at 13px.
@@ -231,7 +309,7 @@ pub fn draw_text_bitmap(s: &Surface, x: i32, y: i32, color: u32, text: &[u8]) {
 
 // ── Text measurement ───────────────────────────────────────────────
 
-/// Measure text extent using a specific font via libfont.dlib.
+/// Measure text extent using a specific font via libfont.so.
 /// Returns (width, height) in pixels.
 pub fn measure_text_ex(text: &[u8], font_id: u16, size: u16) -> (u32, u32) {
     let len = if !text.is_empty() && text[text.len() - 1] == 0 {
@@ -242,9 +320,12 @@ pub fn measure_text_ex(text: &[u8], font_id: u16, size: u16) -> (u32, u32) {
     if len == 0 {
         return (0, size as u32);
     }
+    ensure_libfont();
     let mut w = 0u32;
     let mut h = 0u32;
-    (libfont().measure_string)(font_id as u32, size, text.as_ptr(), len as u32, &mut w, &mut h);
+    if let Some(measure) = unsafe { FONT_MEASURE } {
+        measure(font_id as u32, size, text.as_ptr(), len as u32, &mut w, &mut h);
+    }
     (w, h)
 }
 
@@ -262,13 +343,16 @@ pub fn text_size_at(text: &[u8], size: u16) -> (u32, u32) {
 pub fn text_width_n(text: &[u8], n: usize) -> u32 {
     if n == 0 { return 0; }
     let len = n.min(text.len());
+    ensure_libfont();
     let mut w = 0u32;
     let mut h = 0u32;
-    (libfont().measure_string)(
-        DEFAULT_FONT_ID as u32, DEFAULT_FONT_SIZE,
-        text.as_ptr(), len as u32,
-        &mut w, &mut h,
-    );
+    if let Some(measure) = unsafe { FONT_MEASURE } {
+        measure(
+            DEFAULT_FONT_ID as u32, DEFAULT_FONT_SIZE,
+            text.as_ptr(), len as u32,
+            &mut w, &mut h,
+        );
+    }
     w
 }
 

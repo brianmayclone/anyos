@@ -12,6 +12,7 @@ const SYS_OPEN: u32 = 4;
 const SYS_CLOSE: u32 = 5;
 const SYS_SBRK: u32 = 9;
 const SYS_FSTAT: u32 = 106;
+const SYS_EXIT: u32 = 1;
 const SYS_GPU_HAS_ACCEL: u32 = 135;
 
 #[inline(always)]
@@ -116,6 +117,12 @@ pub fn close(fd: u32) {
 /// stat_buf layout: [u32 file_type, u32 size, u32 position]
 pub fn fstat(fd: u32, stat_buf: *mut u8) -> u32 {
     syscall2(SYS_FSTAT, fd as u64, stat_buf as u64) as u32
+}
+
+/// Exit the current process with the given exit code.
+pub fn exit(code: u32) -> ! {
+    syscall1(SYS_EXIT, code as u64);
+    loop {}
 }
 
 /// Query whether GPU acceleration is available.

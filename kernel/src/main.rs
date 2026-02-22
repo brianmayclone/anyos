@@ -237,10 +237,10 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     }
 
     // Phase 8c: Load shared DLIBs from filesystem
-    const DLLS: [(&str, u64); 5] = [
+    // Note: libfont is now a .so (loaded on demand via SYS_DLL_LOAD), not a boot-time DLIB.
+    const DLLS: [(&str, u64); 4] = [
         ("/Libraries/uisys.dlib", 0x0400_0000u64),
         ("/Libraries/libimage.dlib", 0x0410_0000u64),
-        ("/Libraries/libfont.dlib", 0x0420_0000u64),
         ("/Libraries/librender.dlib", 0x0430_0000u64),
         ("/Libraries/libcompositor.dlib", 0x0438_0000u64),
     ];

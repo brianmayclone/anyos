@@ -246,6 +246,11 @@ struct AnyuiLib {
     // Timer
     set_timer_fn: extern "C" fn(u32, Callback, u64) -> u32,
     kill_timer_fn: extern "C" fn(u32),
+    // File dialogs
+    open_folder_fn: extern "C" fn(*mut u8, u32) -> u32,
+    open_file_fn: extern "C" fn(*mut u8, u32) -> u32,
+    save_file_fn: extern "C" fn(*mut u8, u32, *const u8, u32) -> u32,
+    create_folder_fn: extern "C" fn(*mut u8, u32) -> u32,
 }
 
 static mut LIB: Option<AnyuiLib> = None;
@@ -396,6 +401,11 @@ pub fn init() -> bool {
             // Timer
             set_timer_fn: resolve(&handle, "anyui_set_timer"),
             kill_timer_fn: resolve(&handle, "anyui_kill_timer"),
+            // File dialogs
+            open_folder_fn: resolve(&handle, "anyui_open_folder"),
+            open_file_fn: resolve(&handle, "anyui_open_file"),
+            save_file_fn: resolve(&handle, "anyui_save_file"),
+            create_folder_fn: resolve(&handle, "anyui_create_folder"),
             _handle: handle,
         };
         (lib.init)();

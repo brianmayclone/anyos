@@ -102,7 +102,23 @@ impl Desktop {
             }
             proto::CMD_PRESENT => {
                 let window_id = cmd[1];
-                self.present_ipc_window(window_id);
+                // Extract optional dirty rect from packed fields:
+                // cmd[3] = (x << 16) | y, cmd[4] = (w << 16) | h
+                // Both zero = full present (backward compatible)
+                let dirty_rect = if cmd[3] != 0 || cmd[4] != 0 {
+                    let x = (cmd[3] >> 16) as u32;
+                    let y = (cmd[3] & 0xFFFF) as u32;
+                    let w = (cmd[4] >> 16) as u32;
+                    let h = (cmd[4] & 0xFFFF) as u32;
+                    if w > 0 && h > 0 {
+                        Some(Rect::new(x as i32, y as i32, w, h))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                self.present_ipc_window(window_id, dirty_rect);
                 None
             }
             proto::CMD_SET_TITLE => {
