@@ -346,7 +346,7 @@ int main(int argc, char **argv)
 
     /* Start listening */
     int listener = _syscall(SYS_TCP_LISTEN, port, 5, 0, 0);
-    if (listener == 0 || listener == (int)0xFFFFFFFF) {
+    if (listener < 0 || listener == (int)0xFFFFFFFF) {
         printf("sshd: failed to listen on port %d\n", port);
         return 1;
     }

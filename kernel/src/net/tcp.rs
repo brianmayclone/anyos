@@ -80,6 +80,9 @@ struct Tcb {
     // Server socket support
     parent_listener: Option<u8>,  // index of the listener that spawned this connection
     accepted: bool,               // has accept() claimed this connection?
+
+    // Ownership tracking for cleanup on process exit
+    owner_tid: u32,               // thread ID that owns this connection (0 = unowned)
 }
 
 impl Tcb {
@@ -109,6 +112,7 @@ impl Tcb {
             time_wait_start: 0,
             parent_listener: None,
             accepted: false,
+            owner_tid: 0,
         }
     }
 }
@@ -280,6 +284,7 @@ fn send_rst(seg: &TcpSegment) {
 pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32 {
     let cfg = super::config();
     let local_port = alloc_ephemeral_port();
+    let tid = crate::task::scheduler::current_tid();
 
     // Find a free slot and insert TCB
     let slot_id = {
@@ -296,6 +301,7 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
                 tcb.snd_nxt = tcb.snd_iss.wrapping_add(1);
                 tcb.last_sent_flags = SYN;
                 tcb.last_send_tick = crate::arch::x86::pit::get_ticks();
+                tcb.owner_tid = tid;
                 *slot = Some(tcb);
                 found = Some(i);
                 break;
@@ -369,6 +375,7 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
 /// Passive open: listen on a local port. Returns listener socket ID or u32::MAX.
 pub fn listen(port: u16, _backlog: u16) -> u32 {
     let cfg = super::config();
+    let tid = crate::task::scheduler::current_tid();
     let mut conns = TCP_CONNECTIONS.lock();
     let table = match conns.as_mut() {
         Some(t) => t,
@@ -376,10 +383,11 @@ pub fn listen(port: u16, _backlog: u16) -> u32 {
     };
 
     // Check if port is already in use (listen or active connection)
-    for slot in table.iter() {
+    for (i, slot) in table.iter().enumerate() {
         if let Some(tcb) = slot {
             if tcb.local_port == port && tcb.state == TcpState::Listen {
-                crate::serial_println!("TCP: port {} already listening", port);
+                crate::serial_println!("TCP: port {} already listening (slot {} owner_tid={})",
+                    port, i, tcb.owner_tid);
                 return u32::MAX;
             }
         }
@@ -391,6 +399,7 @@ pub fn listen(port: u16, _backlog: u16) -> u32 {
         if slot.is_none() {
             let mut tcb = Tcb::new(cfg.ip, port, Ipv4Addr([0, 0, 0, 0]), 0);
             tcb.state = TcpState::Listen;
+            tcb.owner_tid = tid;
             *slot = Some(tcb);
             found = Some(i);
             break;
@@ -451,6 +460,7 @@ pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
                     let tcb = table[i].as_mut().unwrap();
                     tcb.accepted = true;
                     tcb.parent_listener = None;
+                    tcb.owner_tid = crate::task::scheduler::current_tid();
                     let rip = tcb.remote_ip;
                     let rport = tcb.remote_port;
                     crate::serial_println!("TCP: accepted socket {} from {}:{}", i, rip, rport);
@@ -1280,6 +1290,125 @@ pub fn check_retransmissions() {
             return;
         }
     }
+}
+
+/// Clean up all TCP connections owned by a specific thread.
+/// Called from sys_exit() when a process terminates.
+/// Sends RST for established connections and frees listener slots + pending connections.
+pub fn cleanup_for_thread(tid: u32) {
+    // Collect RST info under lock, send RSTs outside lock
+    let mut rst_list: [(Ipv4Addr, u16, Ipv4Addr, u16, u32, u32); 16] =
+        [(Ipv4Addr([0;4]), 0, Ipv4Addr([0;4]), 0, 0, 0); 16];
+    let mut rst_count = 0usize;
+
+    {
+        let mut conns = TCP_CONNECTIONS.lock();
+        let table = match conns.as_mut() {
+            Some(t) => t,
+            None => return,
+        };
+
+        // First pass: close listeners and their pending (unaccepted) connections
+        for i in 0..table.len() {
+            let is_owned_listener = table[i].as_ref().map(|tcb| {
+                tcb.owner_tid == tid && tcb.state == TcpState::Listen
+            }).unwrap_or(false);
+
+            if is_owned_listener {
+                // Clean up pending connections spawned by this listener
+                let lid = i as u8;
+                for j in 0..table.len() {
+                    let is_pending = table[j].as_ref().map(|tcb| {
+                        tcb.parent_listener == Some(lid) && !tcb.accepted
+                    }).unwrap_or(false);
+                    if is_pending {
+                        // Collect RST info for SynReceived/Established pending connections
+                        if let Some(tcb) = &table[j] {
+                            if tcb.state != TcpState::Closed && rst_count < rst_list.len() {
+                                rst_list[rst_count] = (tcb.local_ip, tcb.local_port,
+                                    tcb.remote_ip, tcb.remote_port, tcb.snd_nxt, tcb.rcv_nxt);
+                                rst_count += 1;
+                            }
+                        }
+                        table[j] = None;
+                    }
+                }
+                table[i] = None;
+                crate::serial_println!("TCP: cleanup listener socket {} for TID {}", i, tid);
+            }
+        }
+
+        // Second pass: close active connections owned by this thread
+        for i in 0..table.len() {
+            let is_owned = table[i].as_ref().map(|tcb| {
+                tcb.owner_tid == tid
+            }).unwrap_or(false);
+
+            if is_owned {
+                if let Some(tcb) = &table[i] {
+                    match tcb.state {
+                        TcpState::Established | TcpState::SynSent | TcpState::SynReceived
+                        | TcpState::FinWait1 | TcpState::FinWait2 | TcpState::CloseWait => {
+                            if rst_count < rst_list.len() {
+                                rst_list[rst_count] = (tcb.local_ip, tcb.local_port,
+                                    tcb.remote_ip, tcb.remote_port, tcb.snd_nxt, tcb.rcv_nxt);
+                                rst_count += 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                table[i] = None;
+                crate::serial_println!("TCP: cleanup socket {} for TID {}", i, tid);
+            }
+        }
+    }
+
+    // Send RSTs outside the lock
+    for k in 0..rst_count {
+        let (lip, lp, rip, rp, seq, ack) = rst_list[k];
+        if rp != 0 {
+            send_segment(lip, lp, rip, rp, seq, ack, RST | ACK, &[]);
+        }
+    }
+}
+
+/// Connection info for netstat display.
+pub struct TcpConnInfo {
+    pub local_ip: Ipv4Addr,
+    pub local_port: u16,
+    pub remote_ip: Ipv4Addr,
+    pub remote_port: u16,
+    pub state: TcpState,
+    pub owner_tid: u32,
+    pub recv_buf_len: usize,
+}
+
+/// List all active TCP connections and listeners.
+/// Returns a Vec of connection info structs.
+pub fn list_connections() -> Vec<TcpConnInfo> {
+    let mut result = Vec::new();
+    let conns = TCP_CONNECTIONS.lock();
+    let table = match conns.as_ref() {
+        Some(t) => t,
+        None => return result,
+    };
+
+    for slot in table.iter() {
+        if let Some(tcb) = slot {
+            result.push(TcpConnInfo {
+                local_ip: tcb.local_ip,
+                local_port: tcb.local_port,
+                remote_ip: tcb.remote_ip,
+                remote_port: tcb.remote_port,
+                state: tcb.state,
+                owner_tid: tcb.owner_tid,
+                recv_buf_len: tcb.recv_buf.len(),
+            });
+        }
+    }
+
+    result
 }
 
 // Sequence number comparison helpers (wrapping-safe)

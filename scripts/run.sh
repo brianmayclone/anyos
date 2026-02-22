@@ -140,7 +140,7 @@ eval qemu-system-x86_64 \
     -smp cpus=4 \
     -serial stdio \
     -vga "$VGA" \
-    -netdev user,id=net0 -device e1000,netdev=net0 \
+    -netdev user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::8080-:8080 -device e1000,netdev=net0 \
     $AUDIO_FLAGS \
     $USB_FLAGS \
     -no-reboot \

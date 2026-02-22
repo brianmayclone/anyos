@@ -123,6 +123,37 @@ pub fn tcp_accept(listener_id: u32) -> (u32, [u8; 4], u16) {
     (sock_id, ip, port)
 }
 
+/// TCP connection info returned by `tcp_list()`.
+pub struct TcpConnInfo {
+    pub local_ip: [u8; 4],
+    pub local_port: u16,
+    pub remote_ip: [u8; 4],
+    pub remote_port: u16,
+    pub state: u8,
+    pub owner_tid: u8,
+    pub recv_buf_len: u16,
+}
+
+/// List all active TCP connections/listeners. Returns a Vec of connection info.
+pub fn tcp_list() -> alloc::vec::Vec<TcpConnInfo> {
+    let mut buf = [0u8; 64 * 16]; // max 64 entries * 16 bytes each
+    let count = syscall2(SYS_TCP_LIST, buf.as_mut_ptr() as u64, 64);
+    let mut result = alloc::vec::Vec::new();
+    for i in 0..count as usize {
+        let off = i * 16;
+        result.push(TcpConnInfo {
+            local_ip: [buf[off], buf[off+1], buf[off+2], buf[off+3]],
+            local_port: u16::from_be_bytes([buf[off+4], buf[off+5]]),
+            remote_ip: [buf[off+6], buf[off+7], buf[off+8], buf[off+9]],
+            remote_port: u16::from_be_bytes([buf[off+10], buf[off+11]]),
+            state: buf[off+12],
+            owner_tid: buf[off+13],
+            recv_buf_len: u16::from_le_bytes([buf[off+14], buf[off+15]]),
+        });
+    }
+    result
+}
+
 // =========================================================================
 // UDP
 // =========================================================================

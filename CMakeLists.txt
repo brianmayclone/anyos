@@ -608,6 +608,8 @@ add_rust_user_program(chmod      ${CMAKE_SOURCE_DIR}/bin/chmod)
 add_rust_user_program(chown      ${CMAKE_SOURCE_DIR}/bin/chown)
 add_rust_user_program(su         ${CMAKE_SOURCE_DIR}/bin/su)
 add_rust_user_program(echoserver ${CMAKE_SOURCE_DIR}/bin/echoserver)
+add_rust_user_program(netstat    ${CMAKE_SOURCE_DIR}/bin/netstat)
+add_rust_user_program(svc        ${CMAKE_SOURCE_DIR}/bin/svc)
 # Privileged sbin programs
 add_rust_sbin_program(adduser    ${CMAKE_SOURCE_DIR}/bin/adduser)
 add_rust_sbin_program(deluser    ${CMAKE_SOURCE_DIR}/bin/deluser)
@@ -1304,6 +1306,7 @@ add_custom_command(
 
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/bin/ssh
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/bin
   COMMAND ${CMAKE_COMMAND} -E copy ${SSH_CLIENT_ELF} ${SYSROOT_DIR}/bin/ssh
   DEPENDS ${SSH_CLIENT_ELF}
   COMMENT "Installing SSH client to /bin/ssh"

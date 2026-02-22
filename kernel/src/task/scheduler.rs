@@ -1989,6 +1989,34 @@ pub fn kill_thread(tid: u32) -> u32 {
         drop(guard);
     }
 
+    // Resource cleanup for killed thread (FDs, shared memory, TCP, env).
+    // Must happen AFTER scheduler lock is released (avoids lock-ordering deadlock).
+    {
+        use crate::fs::fd_table::FdKind;
+        let closed = close_all_fds_for_thread(tid);
+        for kind in closed.iter() {
+            match kind {
+                FdKind::File { global_id } => {
+                    crate::fs::vfs::decref(*global_id);
+                }
+                FdKind::PipeRead { pipe_id } => {
+                    crate::ipc::anon_pipe::decref_read(*pipe_id);
+                }
+                FdKind::PipeWrite { pipe_id } => {
+                    crate::ipc::anon_pipe::decref_write(*pipe_id);
+                }
+                FdKind::Tty | FdKind::None => {}
+            }
+        }
+    }
+    if pd_to_destroy.is_some() {
+        crate::ipc::shared_memory::cleanup_process(tid);
+    }
+    crate::net::tcp::cleanup_for_thread(tid);
+    if let Some(pd) = pd_to_destroy {
+        crate::task::env::cleanup(pd.as_u64());
+    }
+
     if let Some(pd) = pd_to_destroy {
         if running_on_other_cpu {
             DEFERRED_PD_DESTROY.lock().push(pd);

@@ -110,6 +110,8 @@ exclude = [
   "bin/chown",
   "bin/su",
   "bin/echoserver",
+  "bin/netstat",
+  "bin/svc",
   "apps/demo_anyui",
   "apps/anycode",
   "system/login",

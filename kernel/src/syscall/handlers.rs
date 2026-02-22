@@ -132,6 +132,9 @@ pub fn sys_exit(status: u32) -> u32 {
         crate::ipc::shared_memory::cleanup_process(tid);
     }
 
+    // Clean up TCP connections/listeners owned by this thread
+    crate::net::tcp::cleanup_for_thread(tid);
+
     // Clean up environment variables for this process
     if let Some(pd_phys) = pd {
         crate::task::env::cleanup(pd_phys.as_u64());
@@ -1602,6 +1605,36 @@ pub fn sys_tcp_accept(listener_id: u32, result_ptr: u32) -> u32 {
     result[10] = 0;
     result[11] = 0;
     0
+}
+
+/// sys_tcp_list - List all TCP connections.
+/// arg1=buf_ptr, arg2=max_entries. Each entry is 16 bytes:
+///   [local_ip:4, local_port:u16, remote_ip:4, remote_port:u16, state:u8, owner_tid_lo:u8, recv_buf_hi:u16]
+/// Returns number of entries written.
+pub fn sys_tcp_list(buf_ptr: u32, max_entries: u32) -> u32 {
+    if buf_ptr == 0 || max_entries == 0 { return 0; }
+    let conns = crate::net::tcp::list_connections();
+    let count = conns.len().min(max_entries as usize);
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count * 16) };
+
+    for (i, info) in conns.iter().take(count).enumerate() {
+        let off = i * 16;
+        buf[off..off+4].copy_from_slice(info.local_ip.as_bytes());
+        let lp = info.local_port.to_be_bytes();
+        buf[off+4] = lp[0];
+        buf[off+5] = lp[1];
+        buf[off+6..off+10].copy_from_slice(info.remote_ip.as_bytes());
+        let rp = info.remote_port.to_be_bytes();
+        buf[off+10] = rp[0];
+        buf[off+11] = rp[1];
+        buf[off+12] = info.state as u8;
+        buf[off+13] = (info.owner_tid & 0xFF) as u8;
+        let recv_len = (info.recv_buf_len as u16).to_le_bytes();
+        buf[off+14] = recv_len[0];
+        buf[off+15] = recv_len[1];
+    }
+
+    count as u32
 }
 
 /// sys_net_poll - Process pending network packets.

@@ -118,6 +118,7 @@ pub(crate) const SYS_TCP_CLOSE: u32 = 103;
 pub(crate) const SYS_TCP_STATUS: u32 = 104;
 pub(crate) const SYS_TCP_LISTEN: u32 = 132;
 pub(crate) const SYS_TCP_ACCEPT: u32 = 133;
+pub(crate) const SYS_TCP_LIST: u32 = 134;
 
 // Display / GPU / wallpaper
 pub(crate) const SYS_GPU_HAS_ACCEL: u32 = 135;

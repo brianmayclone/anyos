@@ -110,6 +110,7 @@ pub const SYS_TCP_RECV_AVAILABLE: u32 = 130;
 pub const SYS_TCP_SHUTDOWN_WR: u32 = 131;
 pub const SYS_TCP_LISTEN: u32 = 132;
 pub const SYS_TCP_ACCEPT: u32 = 133;
+pub const SYS_TCP_LIST: u32 = 134;
 
 // Network polling
 pub const SYS_NET_POLL: u32 = 50;
@@ -369,6 +370,7 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_TCP_SHUTDOWN_WR => handlers::sys_tcp_shutdown_wr(arg1),
         SYS_TCP_LISTEN => handlers::sys_tcp_listen(arg1, arg2),
         SYS_TCP_ACCEPT => handlers::sys_tcp_accept(arg1, arg2),
+        SYS_TCP_LIST => handlers::sys_tcp_list(arg1, arg2),
 
         // Network polling
         SYS_NET_POLL => handlers::sys_net_poll(),
