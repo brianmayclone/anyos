@@ -1395,7 +1395,8 @@ impl FatFs {
         };
         let total_slots = lfn_entries.len() + 1;
 
-        if parent_cluster == 0 {
+        if parent_cluster == 0 && self.fat_type != FatType::Fat32 {
+            // FAT12/16: fixed root directory area
             let root_size = (self.root_dir_sectors * 512) as usize;
             let mut buf = vec![0u8; root_size];
             self.read_sectors(self.first_root_dir_sector, self.root_dir_sectors, &mut buf)?;
@@ -1422,8 +1423,10 @@ impl FatFs {
             }
             Ok(())
         } else {
+            // Cluster chain (FAT32 root or any subdirectory)
+            let start = if parent_cluster == 0 { self.root_cluster } else { parent_cluster };
             let cluster_size = (self.sectors_per_cluster * 512) as usize;
-            let mut cur = parent_cluster;
+            let mut cur = start;
             loop {
                 let mut cbuf = vec![0u8; cluster_size];
                 self.read_cluster(cur, &mut cbuf)?;
@@ -1443,7 +1446,7 @@ impl FatFs {
                     Some(next) => cur = next,
                     None => {
                         let new = self.alloc_cluster()?;
-                        self.write_fat_entry(cur, new as u16)?;
+                        self.write_fat_entry(cur, new)?;
                         let mut new_buf = vec![0u8; cluster_size];
                         for (idx, lfn_entry) in lfn_entries.iter().enumerate() {
                             let off = idx * 32;
