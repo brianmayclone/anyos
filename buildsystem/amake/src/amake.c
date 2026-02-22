@@ -544,7 +544,7 @@ int main(int argc, char **argv) {
     int result = 0;
     if (dirty_count > 0) {
         Executor ex;
-        exec_init(&ex, max_jobs, verbose);
+        exec_init(&ex, max_jobs, verbose, ctx.amake_path);
         result = exec_run(&ex, dirty, dirty_count);
         exec_free(&ex);
     } else {

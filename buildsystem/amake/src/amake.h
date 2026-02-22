@@ -181,6 +181,7 @@ typedef struct {
     int          built_count;
     int          total_dirty;
     int          verbose;
+    const char  *amake_path;   /* for detecting -E builtins */
 } Executor;
 
 /* ── User-defined function ───────────────────────────────────────────── */
@@ -300,7 +301,7 @@ void       graph_free(BuildGraph *g);
 
 /* ── Executor (exec.c) ──────────────────────────────────────────────── */
 
-void  exec_init(Executor *ex, int max_jobs, int verbose);
+void  exec_init(Executor *ex, int max_jobs, int verbose, const char *amake_path);
 int   exec_run(Executor *ex, BuildRule **dirty, int dirty_count);
 void  exec_free(Executor *ex);
 
