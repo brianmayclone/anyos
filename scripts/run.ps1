@@ -7,7 +7,7 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU on Windows
-# Usage: .\scripts\run.ps1 [-Vmware] [-Std] [-Virtio] [-Ide] [-Cdrom] [-Audio] [-Usb] [-Uefi] [-Kvm] [-VBox]
+# Usage: .\scripts\run.ps1 [-Vmware] [-Std] [-Virtio] [-Ide] [-Cdrom] [-Audio] [-Usb] [-Uefi] [-Kvm] [-Fwd "H:G","H:G"] [-VBox]
 #
 #   -VBox     Start VirtualBox VM named 'anyos' and stream its COM1 serial output here
 #   -Vmware   VMware SVGA II (2D acceleration, HW cursor)
@@ -19,6 +19,8 @@
 #   -Usb      Enable USB controller with keyboard + mouse devices
 #   -Uefi     Boot via UEFI (OVMF) instead of BIOS
 #   -Kvm      Enable hardware virtualization (WHPX on Windows)
+#   -Fwd H:G  Forward host port H to guest port G (TCP). Repeatable.
+#             Example: -Fwd "2222:22","8080:8080"
 
 param(
     [switch]$VBox,
@@ -30,7 +32,8 @@ param(
     [switch]$Audio,
     [switch]$Usb,
     [switch]$Uefi,
-    [switch]$Kvm
+    [switch]$Kvm,
+    [string[]]$Fwd = @()
 )
 
 $ErrorActionPreference = "Stop"

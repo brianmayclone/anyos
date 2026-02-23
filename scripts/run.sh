@@ -38,6 +38,28 @@ FWD_RULES=""
 EXPECT_FWD=false
 
 for arg in "$@"; do
+    if [ "$EXPECT_FWD" = true ]; then
+        EXPECT_FWD=false
+        # Validate format: HOST:GUEST (both numeric)
+        case "$arg" in
+            *:*)
+                HOST_PORT="${arg%%:*}"
+                GUEST_PORT="${arg#*:}"
+                if [ -n "$HOST_PORT" ] && [ -n "$GUEST_PORT" ]; then
+                    FWD_RULES="${FWD_RULES},hostfwd=tcp::${HOST_PORT}-:${GUEST_PORT}"
+                else
+                    echo "Error: Invalid --fwd format '$arg'. Expected HOST:GUEST (e.g. 2222:22)"
+                    exit 1
+                fi
+                ;;
+            *)
+                echo "Error: Invalid --fwd format '$arg'. Expected HOST:GUEST (e.g. 2222:22)"
+                exit 1
+                ;;
+        esac
+        continue
+    fi
+
     case "$arg" in
         --vmware)
             VGA="vmware"
@@ -103,12 +125,20 @@ for arg in "$@"; do
                 fi
             fi
             ;;
+        --fwd)
+            EXPECT_FWD=true
+            ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm]"
+            echo "Usage: $0 [--vmware | --std | --virtio] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--fwd HOST:GUEST ...]"
             exit 1
             ;;
     esac
 done
+
+if [ "$EXPECT_FWD" = true ]; then
+    echo "Error: --fwd requires a HOST:GUEST argument (e.g. --fwd 2222:22)"
+    exit 1
+fi
 
 if [ "$CDROM_MODE" = true ]; then
     IMAGE="${SCRIPT_DIR}/../build/anyos.iso"
@@ -179,7 +209,7 @@ eval qemu-system-x86_64 \
     -smp cpus=4 \
     -serial stdio \
     -vga "$VGA" \
-    -netdev user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::8080-:8080 -device e1000,netdev=net0 \
+    -netdev user,id=net0${FWD_RULES} -device e1000,netdev=net0 \
     $AUDIO_FLAGS \
     $USB_FLAGS \
     -no-reboot \
