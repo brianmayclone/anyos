@@ -273,7 +273,10 @@ pub fn run_once() -> u32 {
                                     if let Some(idx2) = control::find_idx(&st.controls, target_id) {
                                         if let Some(menu_id) = st.controls[idx2].base().context_menu {
                                             if let Some(mi) = control::find_idx(&st.controls, menu_id) {
-                                                st.controls[mi].set_position(mx, my);
+                                                // Position relative to menu's parent so it appears at cursor
+                                                let parent_id = st.controls[mi].parent_id();
+                                                let (px, py) = control::abs_position(&st.controls, parent_id);
+                                                st.controls[mi].set_position(mx - px, my - py);
                                                 st.controls[mi].base_mut().visible = true;
                                                 st.controls[mi].base_mut().mark_dirty();
                                                 // Focus the menu so handle_blur hides it on outside click

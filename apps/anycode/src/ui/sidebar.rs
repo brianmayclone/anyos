@@ -87,6 +87,7 @@ impl Sidebar {
         // Context menu for folders
         let context_menu = ui::ContextMenu::new("New File|New Folder|Delete");
         tree.set_context_menu(&context_menu);
+        explorer_panel.add(&context_menu);
 
         // Inline rename field (hidden by default, DOCK_TOP overlay)
         let rename_field = ui::TextField::new();

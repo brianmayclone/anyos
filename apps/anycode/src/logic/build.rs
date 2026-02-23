@@ -180,8 +180,11 @@ impl BuildRules {
             Some(i) => (&expanded[..i], &expanded[i + 1..]),
             None => (expanded.as_str(), ""),
         };
-        // Resolve command path
+        // Resolve command path — return None if tool not found
         let cmd_path = resolve_tool(cmd, config);
+        if cmd_path.is_empty() {
+            return None;
+        }
         Some((cmd_path, String::from(args)))
     }
 
@@ -197,6 +200,9 @@ impl BuildRules {
             None => (expanded.as_str(), ""),
         };
         let cmd_path = resolve_tool(cmd, config);
+        if cmd_path.is_empty() {
+            return None;
+        }
         Some((cmd_path, String::from(args)))
     }
 }
