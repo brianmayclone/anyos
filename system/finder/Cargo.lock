@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "anyos_std"
 version = "0.1.0"
+dependencies = [
+ "libheap",
+]
 
 [[package]]
 name = "finder"
@@ -14,6 +17,10 @@ dependencies = [
  "libimage_client",
  "uisys_client",
 ]
+
+[[package]]
+name = "libheap"
+version = "0.1.0"
 
 [[package]]
 name = "libimage_client"

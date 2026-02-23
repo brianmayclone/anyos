@@ -289,6 +289,8 @@ set(STDLIB_DEPS
   ${CMAKE_SOURCE_DIR}/libs/stdlib/src/ui/mod.rs
   ${CMAKE_SOURCE_DIR}/libs/stdlib/src/ui/window.rs
   ${CMAKE_SOURCE_DIR}/libs/stdlib/link.ld
+  ${CMAKE_SOURCE_DIR}/libs/libheap/Cargo.toml
+  ${CMAKE_SOURCE_DIR}/libs/libheap/src/lib.rs
   ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
 )
 

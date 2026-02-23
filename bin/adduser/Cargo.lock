@@ -12,3 +12,10 @@ dependencies = [
 [[package]]
 name = "anyos_std"
 version = "0.1.0"
+dependencies = [
+ "libheap",
+]
+
+[[package]]
+name = "libheap"
+version = "0.1.0"

@@ -46,7 +46,7 @@ pub fn run() {
         // Adaptive sleep: fast polling when waiting for VSync ACK, idle sleep otherwise
         let st = crate::state();
         let any_pending = st.comp_windows.iter().any(|cw| cw.frame_presented);
-        let target: u32 = if any_pending { 2 } else { 16 };
+        let target: u32 = if any_pending { 8 } else { 16 };
         if elapsed < target {
             crate::syscall::sleep(target - elapsed);
         }
@@ -434,6 +434,32 @@ pub fn run_once() -> u32 {
     // ── Phase 3.6: Update scroll bounds ─────────────────────────────
     crate::controls::scroll_view::update_scroll_bounds(&mut st.controls);
 
+    // ── Phase 3.7: Compute per-window dirty flags (O(n) flat scan) ──
+    // Replaces the O(n²) recursive any_dirty() tree walk with a single
+    // linear pass over all controls.
+    for cw in st.comp_windows.iter_mut() {
+        cw.dirty = false;
+    }
+    'ctrl_scan: for ctrl in st.controls.iter() {
+        if !ctrl.base().dirty { continue; }
+        // Walk up parent chain to find which window this control belongs to
+        let mut cur_id = ctrl.id();
+        let mut cur_parent = ctrl.base().parent;
+        for _ in 0..32 {
+            // Check if cur_id is a window
+            if let Some(wi) = st.windows.iter().position(|&w| w == cur_id) {
+                st.comp_windows[wi].dirty = true;
+                continue 'ctrl_scan;
+            }
+            if cur_parent == 0 || cur_parent == cur_id { continue 'ctrl_scan; }
+            cur_id = cur_parent;
+            cur_parent = st.controls.iter()
+                .find(|c| c.id() == cur_id)
+                .map(|c| c.base().parent)
+                .unwrap_or(0);
+        }
+    }
+
     // ── Phase 4: Render dirty windows (with VSync back-pressure) ───
     let channel_id = st.channel_id;
     for wi in 0..st.windows.len() {
@@ -450,8 +476,8 @@ pub fn run_once() -> u32 {
             st.comp_windows[wi].frame_presented = false;
         }
 
-        // Skip rendering if no control in this window tree is dirty
-        if !any_dirty(&st.controls, win_id) {
+        // Skip rendering if no control in this window tree is dirty (O(1) check)
+        if !st.comp_windows[wi].dirty {
             continue;
         }
 
@@ -621,33 +647,19 @@ fn clear_tracking_for(st: &mut crate::AnyuiState, id: ControlId) {
 
 // ── Dirty tracking ─────────────────────────────────────────────────
 
-/// Check if any control in the subtree rooted at `id` is dirty.
-fn any_dirty(controls: &[Box<dyn Control>], id: ControlId) -> bool {
-    let idx = match control::find_idx(controls, id) {
-        Some(i) => i,
-        None => return false,
-    };
-    if controls[idx].base().dirty {
-        return true;
-    }
-    for &child_id in controls[idx].children() {
-        if any_dirty(controls, child_id) {
-            return true;
-        }
-    }
-    false
-}
-
 /// Clear dirty flags for all controls in the subtree rooted at `id`.
+/// Uses a stack buffer instead of Vec::to_vec() to avoid heap allocation per node.
 fn clear_dirty(controls: &mut [Box<dyn Control>], id: ControlId) {
     let idx = match control::find_idx(controls, id) {
         Some(i) => i,
         None => return,
     };
     controls[idx].base_mut().dirty = false;
-    let children: Vec<ControlId> = controls[idx].children().to_vec();
-    for &child_id in &children {
-        clear_dirty(controls, child_id);
+    let mut buf = [0u32; 64];
+    let n = controls[idx].children().len().min(64);
+    buf[..n].copy_from_slice(&controls[idx].children()[..n]);
+    for i in 0..n {
+        clear_dirty(controls, buf[i]);
     }
 }
 
@@ -675,7 +687,10 @@ fn render_tree(
     let child_abs_x = parent_abs_x + cx;
     let child_abs_y = parent_abs_y + cy;
 
-    let children: Vec<ControlId> = controls[idx].children().to_vec();
+    // Copy children to stack buffer to avoid Vec allocation
+    let mut child_buf = [0u32; 64];
+    let child_n = controls[idx].children().len().min(64);
+    child_buf[..child_n].copy_from_slice(&controls[idx].children()[..child_n]);
     // Skip children if this is a collapsed Expander
     if controls[idx].kind() == ControlKind::Expander && controls[idx].base().state == 0 {
         return;
@@ -699,8 +714,8 @@ fn render_tree(
         ),
         _ => (child_abs_y, *surface),
     };
-    for &child_id in &children {
-        render_tree(controls, child_id, &child_surface, child_abs_x, child_abs_y);
+    for i in 0..child_n {
+        render_tree(controls, child_buf[i], &child_surface, child_abs_x, child_abs_y);
     }
 }
 

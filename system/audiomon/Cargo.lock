@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "anyos_std"
 version = "0.1.0"
+dependencies = [
+ "libheap",
+]
 
 [[package]]
 name = "audiomon"
@@ -17,6 +20,10 @@ dependencies = [
 
 [[package]]
 name = "libcompositor_client"
+version = "0.1.0"
+
+[[package]]
+name = "libheap"
 version = "0.1.0"
 
 [[package]]

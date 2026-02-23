@@ -2,6 +2,7 @@
 members = ["kernel"]
 exclude = [
   # Libraries
+  "libs/libheap",
   "libs/stdlib",
   "libs/uisys",
   "libs/uisys_client",

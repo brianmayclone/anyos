@@ -14,6 +14,9 @@ dependencies = [
 [[package]]
 name = "anyos_std"
 version = "0.1.0"
+dependencies = [
+ "libheap",
+]
 
 [[package]]
 name = "dynlink"
@@ -30,6 +33,10 @@ dependencies = [
  "dynlink",
  "libimage_client",
 ]
+
+[[package]]
+name = "libheap"
+version = "0.1.0"
 
 [[package]]
 name = "libimage_client"
