@@ -163,9 +163,11 @@ fn dispi_read(index: u16) -> u16 {
 // Jenkins one-at-a-time hash (HGSMI checksum)
 // ──────────────────────────────────────────────
 
-fn hgsmi_checksum(data: &[u8]) -> u32 {
+/// Jenkins one-at-a-time hash over two contiguous slices (header + payload)
+/// without requiring a single contiguous buffer.
+fn hgsmi_checksum_two(a: &[u8], b: &[u8]) -> u32 {
     let mut hash: u32 = 0;
-    for &byte in data {
+    for &byte in a.iter().chain(b.iter()) {
         hash = hash.wrapping_add(byte as u32);
         hash = hash.wrapping_add(hash << 10);
         hash ^= hash >> 6;
@@ -253,11 +255,16 @@ impl VBoxVgaGpu {
             }
         }
 
-        // Calculate checksum over header + payload
-        let check_data = unsafe {
-            core::slice::from_raw_parts(virt as *const u8, 16 + data_size as usize)
+        // Calculate checksum from source data (NOT from VRAM — WC memory
+        // means reads may not see pending writes, producing wrong checksums;
+        // also avoids expensive VM-exit-triggering VRAM reads in VirtualBox).
+        let header_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &header as *const _ as *const u8,
+                core::mem::size_of::<HgsmiBufferHeader>(),
+            )
         };
-        let checksum = hgsmi_checksum(check_data);
+        let checksum = hgsmi_checksum_two(header_bytes, payload);
 
         // Write tail
         let tail = HgsmiBufferTail {
