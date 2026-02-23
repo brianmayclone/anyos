@@ -107,7 +107,17 @@ const ELFDATA2LSB: u8 = 1;
 const ET_DYN: u16 = 3;
 const EM_X86_64: u16 = 62;
 const PT_LOAD: u32 = 1;
+const PT_DYNAMIC: u32 = 2;
 const PF_W: u32 = 2;
+
+const DT_NULL: i64 = 0;
+const DT_HASH: i64 = 4;
+const DT_STRTAB: i64 = 5;
+const DT_SYMTAB: i64 = 6;
+const DT_RELA: i64 = 7;
+const DT_RELASZ: i64 = 8;
+
+const R_X86_64_RELATIVE: u32 = 8;
 
 // ELF64 header offsets
 const EI_CLASS: usize = 4;
@@ -186,15 +196,195 @@ fn alloc_and_copy_pages(
 
 // ── ELF64 ET_DYN loader ──────────────────────────────────────
 
+/// Patch a u64 value in a physical page identified by virtual address offset.
+///
+/// `va` is the base-relative virtual address to patch.
+/// `rw_start_va` is the link-time VA where the RW segment begins.
+fn patch_u64_in_page(
+    va: u64,
+    value: u64,
+    rw_start_va: u64,
+    ro_pages: &[PhysAddr],
+    data_template_pages: &[PhysAddr],
+    temp_virt: VirtAddr,
+) {
+    let page_offset = (va % PAGE_SIZE) as usize;
+
+    let frame = if va < rw_start_va {
+        // RO region
+        let page_idx = (va / PAGE_SIZE) as usize;
+        if page_idx >= ro_pages.len() {
+            return;
+        }
+        ro_pages[page_idx]
+    } else {
+        // Data region
+        let data_va = va - rw_start_va;
+        let page_idx = (data_va / PAGE_SIZE) as usize;
+        if page_idx >= data_template_pages.len() {
+            return;
+        }
+        data_template_pages[page_idx]
+    };
+
+    virtual_mem::map_page(temp_virt, frame, PAGE_WRITABLE);
+    unsafe {
+        let ptr = (temp_virt.as_u64() as *mut u8).add(page_offset) as *mut u64;
+        core::ptr::write(ptr, value);
+    }
+    virtual_mem::unmap_page(temp_virt);
+}
+
+/// Apply ELF runtime relocations and fixup .dynsym/.dynamic for relocated .so files.
+///
+/// Reads .dynamic from file data to find DT_RELA, DT_SYMTAB, DT_HASH etc.,
+/// then patches the already-allocated physical pages in place.
+fn apply_elf_relocations(
+    file_data: &[u8],
+    dyn_file_offset: u64,
+    dyn_filesz: u64,
+    load_bias: u64,
+    rw_start_va: u64,
+    ro_pages: &[PhysAddr],
+    data_template_pages: &[PhysAddr],
+    temp_virt: VirtAddr,
+) -> u32 {
+    // Parse .dynamic entries from raw file data
+    let mut rela_va: u64 = 0;
+    let mut rela_sz: u64 = 0;
+    let mut symtab_va: u64 = 0;
+    let mut hash_va: u64 = 0;
+    let mut _strtab_va: u64 = 0;
+
+    let dyn_off = dyn_file_offset as usize;
+    let dyn_end = (dyn_file_offset + dyn_filesz) as usize;
+    let mut pos = dyn_off;
+    while pos + 16 <= dyn_end && pos + 16 <= file_data.len() {
+        let d_tag = read_u64_le(file_data, pos) as i64;
+        let d_val = read_u64_le(file_data, pos + 8);
+        match d_tag {
+            DT_RELA => rela_va = d_val,
+            DT_RELASZ => rela_sz = d_val,
+            DT_SYMTAB => symtab_va = d_val,
+            DT_STRTAB => _strtab_va = d_val,
+            DT_HASH => hash_va = d_val,
+            DT_NULL => break,
+            _ => {}
+        }
+        pos += 16;
+    }
+
+    let mut reloc_count: u32 = 0;
+
+    // 1. Apply R_X86_64_RELATIVE relocations from .rela.dyn
+    // For base-0 .so files, VA == file offset, so we read from file_data at rela_va.
+    if rela_va > 0 && rela_sz > 0 {
+        let entry_size: u64 = 24; // sizeof(Elf64_Rela)
+        let nrelocs = rela_sz / entry_size;
+        for i in 0..nrelocs {
+            let off = rela_va as usize + (i as usize) * 24;
+            if off + 24 > file_data.len() {
+                break;
+            }
+
+            let r_offset = read_u64_le(file_data, off);
+            let r_info = read_u64_le(file_data, off + 8);
+            let r_addend = read_u64_le(file_data, off + 16); // treated as signed but stored u64
+
+            let r_type = (r_info & 0xFFFF_FFFF) as u32;
+            if r_type != R_X86_64_RELATIVE {
+                continue;
+            }
+
+            // Compute patched value: load_bias + r_addend
+            let value = load_bias.wrapping_add(r_addend);
+
+            // Patch the physical page at the relocated offset
+            patch_u64_in_page(
+                r_offset,
+                value,
+                rw_start_va,
+                ro_pages,
+                data_template_pages,
+                temp_virt,
+            );
+            reloc_count += 1;
+        }
+    }
+
+    // 2. Fixup .dynsym: add load_bias to each st_value != 0
+    if symtab_va > 0 && hash_va > 0 {
+        // Read nchain from ELF hash table header to get symbol count
+        let hash_off = hash_va as usize;
+        if hash_off + 8 <= file_data.len() {
+            let nchain = read_u32_le(file_data, hash_off + 4) as usize;
+            // Elf64_Sym layout: st_name(4) st_info(1) st_other(1) st_shndx(2) st_value(8) st_size(8) = 24 bytes
+            for i in 1..nchain {
+                let sym_file_off = symtab_va as usize + i * 24;
+                if sym_file_off + 24 > file_data.len() {
+                    break;
+                }
+                let st_value = read_u64_le(file_data, sym_file_off + 8);
+                if st_value == 0 {
+                    continue;
+                }
+                let new_value = st_value + load_bias;
+                // Patch st_value in the mapped page
+                let st_value_va = symtab_va + (i as u64) * 24 + 8;
+                patch_u64_in_page(
+                    st_value_va,
+                    new_value,
+                    rw_start_va,
+                    ro_pages,
+                    data_template_pages,
+                    temp_virt,
+                );
+            }
+        }
+    }
+
+    // 3. Fixup .dynamic: add load_bias to pointer-type DT entries
+    // .dynamic is in the RW segment. PT_DYNAMIC.p_vaddr gives its link-time VA.
+    // For base-0: the VA == file offset, and the .dynamic data is in the data template pages.
+    pos = dyn_off;
+    while pos + 16 <= dyn_end && pos + 16 <= file_data.len() {
+        let d_tag = read_u64_le(file_data, pos) as i64;
+        let d_val = read_u64_le(file_data, pos + 8);
+
+        let needs_fixup = matches!(d_tag, DT_HASH | DT_STRTAB | DT_SYMTAB | DT_RELA);
+
+        if needs_fixup && d_val != 0 {
+            let new_val = d_val + load_bias;
+            // The d_val field is at file offset pos+8, which for base-0 is also the VA
+            let val_va = (pos + 8) as u64;
+            patch_u64_in_page(
+                val_va,
+                new_val,
+                rw_start_va,
+                ro_pages,
+                data_template_pages,
+                temp_virt,
+            );
+        }
+
+        if d_tag == DT_NULL {
+            break;
+        }
+        pos += 16;
+    }
+
+    reloc_count
+}
+
 /// Load an ELF64 ET_DYN shared object into physical memory.
 ///
 /// Parses PT_LOAD segments from the ELF file:
 /// - RX segment (no PF_W) → shared read-only pages
 /// - RW segment (PF_W) → per-process .data template + .bss
 ///
-/// All relocations are pre-applied by anyld, so no runtime relocation is needed.
-/// The virtual addresses in PT_LOAD headers are absolute — the kernel maps pages
-/// at those exact addresses.
+/// For base-0 .so files (linked by anyld without -b), the kernel allocates a
+/// dynamic base address and applies R_X86_64_RELATIVE relocations at load time.
+/// For fixed-base .so files, pages are mapped at the exact addresses specified.
 fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
     // ── Validate ELF64 header ──
     if data.len() < 64 {
@@ -227,8 +417,7 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
         return None;
     }
 
-    // ── Collect PT_LOAD segments ──
-    // anyld produces exactly 2 PT_LOAD segments: RX (code+metadata) and RW (data+dynamic+bss)
+    // ── Collect PT_LOAD and PT_DYNAMIC segments ──
     let mut ro_vaddr: u64 = u64::MAX;
     let mut ro_offset: u64 = 0;
     let mut ro_filesz: u64 = 0;
@@ -239,32 +428,39 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
     let mut has_ro = false;
     let mut has_rw = false;
 
+    let mut pt_dyn_offset: u64 = 0;
+    let mut pt_dyn_filesz: u64 = 0;
+    let mut has_dynamic = false;
+
     for i in 0..phnum {
         let ph = phoff + i * phentsize;
         let p_type = read_u32_le(data, ph + PH_TYPE);
-        if p_type != PT_LOAD {
-            continue;
-        }
 
-        let p_flags = read_u32_le(data, ph + PH_FLAGS);
-        let p_offset = read_u64_le(data, ph + PH_OFFSET);
-        let p_vaddr = read_u64_le(data, ph + PH_VADDR);
-        let p_filesz = read_u64_le(data, ph + PH_FILESZ);
-        let p_memsz = read_u64_le(data, ph + PH_MEMSZ);
+        if p_type == PT_LOAD {
+            let p_flags = read_u32_le(data, ph + PH_FLAGS);
+            let p_offset = read_u64_le(data, ph + PH_OFFSET);
+            let p_vaddr = read_u64_le(data, ph + PH_VADDR);
+            let p_filesz = read_u64_le(data, ph + PH_FILESZ);
+            let p_memsz = read_u64_le(data, ph + PH_MEMSZ);
 
-        if (p_flags & PF_W) == 0 {
-            // RX segment (read-only, executable)
-            ro_vaddr = p_vaddr;
-            ro_offset = p_offset;
-            ro_filesz = p_filesz;
-            has_ro = true;
-        } else {
-            // RW segment (data + bss)
-            rw_vaddr = p_vaddr;
-            rw_offset = p_offset;
-            rw_filesz = p_filesz;
-            rw_memsz = p_memsz;
-            has_rw = true;
+            if (p_flags & PF_W) == 0 {
+                // RX segment (read-only, executable)
+                ro_vaddr = p_vaddr;
+                ro_offset = p_offset;
+                ro_filesz = p_filesz;
+                has_ro = true;
+            } else {
+                // RW segment (data + bss)
+                rw_vaddr = p_vaddr;
+                rw_offset = p_offset;
+                rw_filesz = p_filesz;
+                rw_memsz = p_memsz;
+                has_rw = true;
+            }
+        } else if p_type == PT_DYNAMIC {
+            pt_dyn_offset = read_u64_le(data, ph + PH_OFFSET);
+            pt_dyn_filesz = read_u64_le(data, ph + PH_FILESZ);
+            has_dynamic = true;
         }
     }
 
@@ -273,18 +469,15 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
         return None;
     }
 
-    // ── Determine base virtual address ──
-    let base = ro_vaddr; // Lowest PT_LOAD vaddr (anyld sets this to -b value)
+    // ── Determine actual base and load bias ──
+    let link_base = ro_vaddr; // Lowest PT_LOAD vaddr
 
-    // If base is 0, allocate dynamically
-    let base = if base == 0 {
-        // Calculate total virtual size
+    let (actual_base, load_bias) = if link_base == 0 {
+        // Base-0 .so: allocate dynamically in DLIB range
         let total_vsize = if has_rw {
-            let rw_end = rw_vaddr + rw_memsz;
-            rw_end // vaddr is relative to 0 when base=0
+            rw_vaddr + rw_memsz // vaddrs are 0-relative
         } else {
-            let ro_end_page = (ro_filesz + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-            ro_end_page
+            (ro_filesz + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
         };
         let aligned_size = (total_vsize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         let b = NEXT_DYNAMIC_BASE.fetch_add(aligned_size, Ordering::SeqCst);
@@ -292,19 +485,12 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
             crate::serial_println!("  dload: address space exhausted");
             return None;
         }
-        // Cannot relocate — anyld already resolved all symbols at link time.
-        // Base=0 with anyld means all addresses are 0-based, which conflicts
-        // with user address space. For now, reject base=0 .so files.
-        crate::serial_println!("  dload: base=0 not supported for .so (anyld requires fixed base)");
-        return None;
+        (b, b) // load_bias = actual_base since link_base = 0
     } else {
-        base
+        (link_base, 0u64) // Fixed base, no relocation needed
     };
 
-    // Sanity: stay within DLIB range
-    // If there's an RW segment, extend the RO region to cover the gap between
-    // the end of file content and the start of the RW segment. This ensures
-    // the page fault handler maps data pages at the correct virtual address.
+    // ── Compute page counts ──
     let ro_page_count = if has_rw && rw_vaddr > ro_vaddr {
         ((rw_vaddr - ro_vaddr + PAGE_SIZE - 1) / PAGE_SIZE) as u32
     } else {
@@ -320,15 +506,12 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
     } else {
         0
     };
-    // BSS immediately follows the .data page(s) in virtual space.
-    // anyld may place .dynamic after .data within the same pages, so BSS starts
-    // after the RW file content (page-aligned).
     let bss_page_count = ((bss_size + PAGE_SIZE - 1) / PAGE_SIZE) as u32;
     let total_pages = ro_page_count + data_page_count + bss_page_count;
 
-    let end_vaddr = base + (total_pages as u64) * PAGE_SIZE;
+    let end_vaddr = actual_base + (total_pages as u64) * PAGE_SIZE;
     if end_vaddr > 0x0800_0000 {
-        crate::serial_println!("  dload: .so at {:#x} exceeds DLIB range", base);
+        crate::serial_println!("  dload: .so at {:#x} exceeds DLIB range", actual_base);
         return None;
     }
 
@@ -337,10 +520,10 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
         let dlls = LOADED_DLLS.lock();
         for dll in dlls.iter() {
             let dll_end = dll.base_vaddr + (dll.total_pages as u64) * PAGE_SIZE;
-            if base < dll_end && end_vaddr > dll.base_vaddr {
+            if actual_base < dll_end && end_vaddr > dll.base_vaddr {
                 crate::serial_println!(
                     "  dload: address conflict: .so at {:#x} overlaps {} at {:#x}",
-                    base,
+                    actual_base,
                     core::str::from_utf8(&dll.name).unwrap_or("?"),
                     dll.base_vaddr
                 );
@@ -399,6 +582,22 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
         data_template_pages.push(frame);
     }
 
+    // ── Apply runtime relocations for base-0 .so ──
+    let reloc_count = if load_bias != 0 && has_dynamic {
+        apply_elf_relocations(
+            data,
+            pt_dyn_offset,
+            pt_dyn_filesz,
+            load_bias,
+            rw_vaddr, // link-time VA where RW starts (for base-0, this is a small offset)
+            &ro_pages,
+            &data_template_pages,
+            temp_virt,
+        )
+    } else {
+        0
+    };
+
     // ── Update NEXT_DYNAMIC_BASE if this fixed-base .so consumed the space ──
     loop {
         let current = NEXT_DYNAMIC_BASE.load(Ordering::SeqCst);
@@ -422,7 +621,7 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
     let mut dlls = LOADED_DLLS.lock();
     dlls.push(LoadedDll {
         name: name_buf,
-        base_vaddr: base,
+        base_vaddr: actual_base,
         ro_pages,
         data_template_pages,
         data_page_count,
@@ -430,16 +629,28 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
         total_pages,
     });
 
-    crate::serial_println!(
-        "[OK] dload ELF64 ET_DYN: '{}' at {:#010x} ({} RO + {} data + {} BSS pages)",
-        name,
-        base,
-        ro_page_count,
-        data_page_count,
-        bss_page_count
-    );
+    if load_bias != 0 {
+        crate::serial_println!(
+            "[OK] dload ELF64 ET_DYN: '{}' at {:#010x} (relocated, {} relocs, {} RO + {} data + {} BSS pages)",
+            name,
+            actual_base,
+            reloc_count,
+            ro_page_count,
+            data_page_count,
+            bss_page_count
+        );
+    } else {
+        crate::serial_println!(
+            "[OK] dload ELF64 ET_DYN: '{}' at {:#010x} ({} RO + {} data + {} BSS pages)",
+            name,
+            actual_base,
+            ro_page_count,
+            data_page_count,
+            bss_page_count
+        );
+    }
 
-    Some(base)
+    Some(actual_base)
 }
 
 // ── Public API ─────────────────────────────────────────────

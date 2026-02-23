@@ -476,14 +476,16 @@ fn read_file_to_buf(path: &str, buf: &mut [u8]) -> usize {
 /// Source an env file — supports:
 ///   KEY=VALUE
 ///   export KEY=VALUE
+///   alias NAME=VALUE
 ///   source /path/to/file
 ///   # comments
 /// `depth` prevents infinite recursion.
-fn source_env_file(path: &str, depth: u32) {
+/// `aliases` collects alias definitions if provided.
+fn source_env_file(path: &str, depth: u32, aliases: &mut Vec<(String, String)>) {
     if depth > 4 {
         return; // prevent infinite source loops
     }
-    let mut data = [0u8; 2048];
+    let mut data = [0u8; 4096];
     let total = read_file_to_buf(path, &mut data);
     if total == 0 {
         return;
@@ -503,7 +505,31 @@ fn source_env_file(path: &str, depth: u32) {
         if line.starts_with("source ") {
             let target = line[7..].trim();
             if !target.is_empty() {
-                source_env_file(target, depth + 1);
+                source_env_file(target, depth + 1, aliases);
+            }
+            continue;
+        }
+
+        // Handle 'alias NAME=VALUE' or "alias NAME='VALUE'"
+        if line.starts_with("alias ") {
+            let alias_def = line[6..].trim();
+            if let Some(eq) = alias_def.find('=') {
+                let name = alias_def[..eq].trim();
+                let mut val = alias_def[eq + 1..].trim();
+                // Strip surrounding quotes
+                if (val.starts_with('\'') && val.ends_with('\''))
+                    || (val.starts_with('"') && val.ends_with('"'))
+                {
+                    val = &val[1..val.len() - 1];
+                }
+                if !name.is_empty() {
+                    // Update existing or add new
+                    if let Some(existing) = aliases.iter_mut().find(|(n, _)| n == name) {
+                        existing.1 = String::from(val);
+                    } else {
+                        aliases.push((String::from(name), String::from(val)));
+                    }
+                }
             }
             continue;
         }
@@ -525,10 +551,12 @@ fn source_env_file(path: &str, depth: u32) {
     }
 }
 
-/// Load system and user env files.
-fn load_dotenv() {
+/// Load system and user env files. Returns collected aliases.
+fn load_dotenv() -> Vec<(String, String)> {
+    let mut aliases = Vec::new();
+
     // 1. System environment
-    source_env_file("/System/env", 0);
+    source_env_file("/System/env", 0, &mut aliases);
 
     // 2. User environment — determine username from uid
     let uid = anyos_std::process::getuid();
@@ -538,7 +566,7 @@ fn load_dotenv() {
         if let Ok(username) = core::str::from_utf8(&name_buf[..nlen as usize]) {
             if username != "root" {
                 let user_env = format!("/Users/{}/env", username);
-                source_env_file(&user_env, 0);
+                source_env_file(&user_env, 0, &mut aliases);
                 // Update HOME and USER based on actual identity
                 let home = format!("/Users/{}", username);
                 anyos_std::env::set("HOME", &home);
@@ -546,6 +574,8 @@ fn load_dotenv() {
             }
         }
     }
+
+    aliases
 }
 
 /// Resolve a bare command name via PATH env var.
@@ -582,6 +612,7 @@ struct Shell {
     history: Vec<String>,
     history_index: Option<usize>,
     cwd: String,
+    aliases: Vec<(String, String)>,
 }
 
 impl Shell {
@@ -592,6 +623,7 @@ impl Shell {
             history: Vec::new(),
             history_index: None,
             cwd: String::from("/"),
+            aliases: Vec::new(),
         }
     }
 
@@ -695,8 +727,19 @@ impl Shell {
             return (true, None, None);
         }
 
+        // Expand aliases: replace first word if it matches an alias
+        let expanded_line = {
+            let first_word = raw_line.split_whitespace().next().unwrap_or("");
+            if let Some((_, val)) = self.aliases.iter().find(|(n, _)| n == first_word) {
+                let rest = raw_line[first_word.len()..].to_string();
+                format!("{}{}", val, rest)
+            } else {
+                raw_line.clone()
+            }
+        };
+
         // Parse redirects BEFORE any command dispatch
-        let (line, redirect) = parse_redirects(&raw_line);
+        let (line, redirect) = parse_redirects(&expanded_line);
 
         // If there's a redirect, enable capture mode for builtins
         if redirect.is_some() {
@@ -728,6 +771,29 @@ impl Shell {
             "set" => self.cmd_set(args, buf),
             "export" => self.cmd_export(args, buf),
             "unset" => self.cmd_unset(args, buf),
+            "alias" => self.cmd_alias(args, buf),
+            "unalias" => self.cmd_unalias(args, buf),
+            "eval" => {
+                // Concatenate all args and execute as a command
+                let eval_line = args.trim().to_string();
+                if !eval_line.is_empty() {
+                    // Disable capture temporarily — eval will set up its own
+                    buf.capture = None;
+                    let saved_input = core::mem::replace(&mut self.input, eval_line);
+                    let saved_cursor = self.cursor;
+                    self.cursor = self.input.len();
+                    let (cont, fg, su) = self.submit(buf);
+                    self.input = saved_input;
+                    self.cursor = saved_cursor;
+                    if !cont {
+                        return (false, None, None);
+                    }
+                    if fg.is_some() || su.is_some() {
+                        return (cont, fg, su);
+                    }
+                }
+                return (true, None, None);
+            }
             "source" | "." => self.cmd_source(args, buf),
             "su" => {
                 // Disable capture for su (interactive)
@@ -966,6 +1032,9 @@ impl Shell {
         buf.write_str("    set      Set environment variable\n");
         buf.write_str("    export   Export environment variable\n");
         buf.write_str("    unset    Remove environment variable\n");
+        buf.write_str("    alias    Define/list aliases\n");
+        buf.write_str("    unalias  Remove an alias\n");
+        buf.write_str("    eval     Evaluate arguments as command\n");
         buf.write_str("    uname    System identification\n");
         buf.write_str("    exit     Exit terminal\n");
         buf.write_str("\n");
@@ -982,6 +1051,86 @@ impl Shell {
         buf.write_str("\n");
         buf.write_str("  Tip: append & to run in background\n");
         buf.write_str("  Tip: use | to pipe output: ls | cat\n");
+        buf.write_str("  Tip: use > to redirect: echo hello > file\n");
+    }
+
+    fn cmd_alias(&mut self, args: &str, buf: &mut TerminalBuffer) {
+        let args = args.trim();
+        if args.is_empty() {
+            // List all aliases
+            buf.current_color = COLOR_FG;
+            if self.aliases.is_empty() {
+                buf.write_str("No aliases defined.\n");
+            } else {
+                for (name, val) in &self.aliases {
+                    buf.write_str("alias ");
+                    buf.write_str(name);
+                    buf.write_str("='");
+                    buf.write_str(val);
+                    buf.write_str("'\n");
+                }
+            }
+            return;
+        }
+        // alias name=value or alias name='value with spaces'
+        if let Some(eq) = args.find('=') {
+            let name = args[..eq].trim();
+            let mut val = args[eq + 1..].trim();
+            // Strip surrounding quotes
+            if (val.starts_with('\'') && val.ends_with('\''))
+                || (val.starts_with('"') && val.ends_with('"'))
+            {
+                val = &val[1..val.len() - 1];
+            }
+            if name.is_empty() {
+                buf.current_color = COLOR_FG;
+                buf.write_str("alias: invalid name\n");
+                return;
+            }
+            // Update existing or add new
+            if let Some(existing) = self.aliases.iter_mut().find(|(n, _)| n == name) {
+                existing.1 = String::from(val);
+            } else {
+                self.aliases.push((String::from(name), String::from(val)));
+            }
+        } else {
+            // Show value of specific alias
+            if let Some((_, val)) = self.aliases.iter().find(|(n, _)| n == args) {
+                buf.current_color = COLOR_FG;
+                buf.write_str("alias ");
+                buf.write_str(args);
+                buf.write_str("='");
+                buf.write_str(val);
+                buf.write_str("'\n");
+            } else {
+                buf.current_color = COLOR_FG;
+                buf.write_str("alias: '");
+                buf.write_str(args);
+                buf.write_str("' not found\n");
+            }
+        }
+    }
+
+    fn cmd_unalias(&mut self, args: &str, buf: &mut TerminalBuffer) {
+        let name = args.trim();
+        if name.is_empty() {
+            buf.current_color = COLOR_FG;
+            buf.write_str("usage: unalias <name>\n");
+            return;
+        }
+        if name == "-a" {
+            // Remove all aliases
+            self.aliases.clear();
+            return;
+        }
+        let before = self.aliases.len();
+        self.aliases.retain(|(n, _)| n != name);
+        if self.aliases.len() == before {
+            buf.current_color = COLOR_FG;
+            buf.write_str("unalias: '");
+            buf.write_str(name);
+            buf.write_str("' not found\n");
+        }
     }
 
     fn cmd_set(&self, args: &str, buf: &mut TerminalBuffer) {
@@ -1175,6 +1324,8 @@ impl Shell {
                 "export" => self.cmd_export(cmd_args, buf),
                 "set" => self.cmd_set(cmd_args, buf),
                 "unset" => self.cmd_unset(cmd_args, buf),
+                "alias" => self.cmd_alias(cmd_args, buf),
+                "unalias" => self.cmd_unalias(cmd_args, buf),
                 "cd" => self.cmd_cd(cmd_args, buf),
                 "echo" => {
                     buf.current_color = COLOR_FG;
@@ -1532,8 +1683,8 @@ fn main() {
     let mut buf = TerminalBuffer::new(cols, rows);
     let mut shell = Shell::new();
 
-    // Load environment from /System/env
-    load_dotenv();
+    // Load environment from /System/env (and collect aliases)
+    shell.aliases = load_dotenv();
     anyos_std::env::set("PWD", "/"); // PWD is dynamic, always set
 
     // Set terminal size env vars so child programs can query dimensions

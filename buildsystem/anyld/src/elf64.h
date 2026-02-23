@@ -212,7 +212,11 @@ typedef struct {
 #define DT_SYMTAB   6   /* Address of .dynsym */
 #define DT_STRSZ    10  /* Size of .dynstr */
 #define DT_SYMENT   11  /* Size of one Elf64_Sym */
+#define DT_RELA     7   /* Address of Rela relocs */
+#define DT_RELASZ   8   /* Total size of Rela relocs */
+#define DT_RELAENT  9   /* Size of one Rela reloc entry */
 #define DT_SONAME   14  /* Shared object name */
+#define DT_RELACOUNT 0x6FFFFFF9  /* Count of RELATIVE relocs */
 
 /* ── ELF hash function ──────────────────────────────────────────────── */
 

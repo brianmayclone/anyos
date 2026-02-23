@@ -194,7 +194,7 @@ static void usage(void) {
         "\n"
         "Options:\n"
         "  -o <file>    Output file (required)\n"
-        "  -b <addr>    Base virtual address (default: 0x04000000)\n"
+        "  -b <addr>    Base virtual address (default: 0, kernel allocates)\n"
         "  -e <file>    Export symbol definition file (.def)\n"
         "  -v           Verbose output\n"
         "  -h           Show this help\n"
@@ -216,7 +216,7 @@ static void usage(void) {
 int main(int argc, char **argv) {
     Ctx ctx;
     memset(&ctx, 0, sizeof(ctx));
-    ctx.base_addr = 0x04000000;  /* Default: anyOS DLL base */
+    ctx.base_addr = 0;  /* Default: 0 (kernel allocates dynamically) */
 
     const char *def_path = NULL;
     int verbose = 0;

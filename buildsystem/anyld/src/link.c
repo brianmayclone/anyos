@@ -403,6 +403,15 @@ static int apply_relocs(Ctx *ctx) {
             case R_X86_64_64:
                 /* S + A (absolute 64-bit) */
                 *(uint64_t *)patch = (uint64_t)((int64_t)S + A);
+                /* Record runtime relocation for dynamic loading */
+                {
+                    Elf64_Rela rr;
+                    rr.r_offset = P;
+                    rr.r_info   = ELF64_R_INFO(0, R_X86_64_RELATIVE);
+                    rr.r_addend = *(int64_t *)patch;
+                    buf_append(&ctx->rela_dyn, &rr, sizeof(rr));
+                    ctx->nrela_dyn++;
+                }
                 break;
 
             case R_X86_64_PC32:
@@ -518,6 +527,27 @@ static int apply_relocs(Ctx *ctx) {
 
 int apply_relocations(Ctx *ctx) {
     if (collect_relocs(ctx) != 0) return -1;
+
+    /* Pre-size .rela.dyn so compute_layout() accounts for it.
+     * Every R_X86_64_64 relocation becomes an R_X86_64_RELATIVE entry.
+     * Without this, layout is computed with rela_dyn.size=0, causing
+     * section offsets to differ between symbol resolution and output. */
+    {
+        int n64 = 0;
+        for (int i = 0; i < ctx->nrelocs; i++) {
+            if (ctx->relocs[i].type == R_X86_64_64)
+                n64++;
+        }
+        if (n64 > 0) {
+            buf_append_zero(&ctx->rela_dyn,
+                            (size_t)n64 * sizeof(Elf64_Rela));
+            compute_layout(ctx);
+            /* Reset — apply_relocs() will fill it for real */
+            ctx->rela_dyn.size = 0;
+            ctx->nrela_dyn     = 0;
+        }
+    }
+
     finalize_symbol_values(ctx);
     return apply_relocs(ctx);
 }

@@ -15,7 +15,7 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 ![NASM](https://img.shields.io/badge/NASM-Assembly-0066B8?style=flat-square)
 ![x86_64](https://img.shields.io/badge/Arch-x86__64-4B7BEC?style=flat-square)
 ![License: MIT](https://img.shields.io/badge/License-MIT-2ecc71?style=flat-square)
-![Programs](https://img.shields.io/badge/Programs-115+-e67e22?style=flat-square)
+![Programs](https://img.shields.io/badge/Programs-125+-e67e22?style=flat-square)
 ![Syscalls](https://img.shields.io/badge/Syscalls-140-9b59b6?style=flat-square)
 
 <br>
@@ -160,7 +160,7 @@ All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, en
 
 ### User Programs
 
-115+ command-line and GUI applications:
+125+ command-line and GUI applications:
 
 **GUI Applications (13):** anyOS Code (IDE), Calculator, Clock, Diagnostics, Font Viewer, Image Viewer, Minesweeper, Notepad, Paint, Screenshot, Surf (web browser prototype), Video Player, anyui Demo
 
@@ -168,20 +168,21 @@ All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, en
 
 **Games (2):** DOOM (doomgeneric port), Quake (WinQuake software renderer port)
 
-**CLI Utilities (87):**
+**CLI Utilities (95):**
 
 | Category | Programs |
 |----------|----------|
-| File Management | `ls` `cat` `cp` `mv` `rm` `mkdir` `touch` `ln` `readlink` `find` `stat` `df` `mount` `umount` `fdisk` |
-| Text Processing | `echo` `grep` `sed` `wc` `head` `tail` `sort` `uniq` `rev` `strings` `base64` |
+| File Management | `ls` `cat` `cp` `mv` `rm` `mkdir` `touch` `ln` `readlink` `find` `stat` `df` `mount` `umount` `fdisk` `zip` `unzip` |
+| Text Processing | `echo` `grep` `sed` `awk` `wc` `head` `tail` `sort` `uniq` `rev` `strings` `base64` `xargs` |
 | System Info | `sysinfo` `dmesg` `devlist` `ps` `top` `htop` `free` `uptime` `uname` `hostname` `whoami` `which` `date` `cal` |
 | Networking | `ping` `dhcp` `dns` `ifconfig` `arp` `wget` `ftp` `curl` `netstat` `echoserver` |
 | User Mgmt | `chmod` `chown` `su` `listuser` `listgroups` `adduser` `deluser` `addgroup` `delgroup` `passwd` |
 | Shell & Process | `env` `set` `export` `pwd` `clear` `sleep` `seq` `yes` `true` `false` `nice` `kill` |
+| Shell Builtins | `alias` `unalias` `eval` (via dash) |
 | System Admin | `svc` `logd` `crond` `crontab` `ami` |
 | Binary/Hex | `hexdump` `xxd` |
 | Multimedia | `play` `pipes` |
-| Dev Tools | `cc` (TCC) `nasm` `make` `git` `open` `vi` |
+| Dev Tools | `cc` (TCC) `nasm` `make` `git` `open` `vi` `nano` |
 
 ---
 
@@ -373,7 +374,7 @@ anyos/
     librender_client/      Client stub crate for librender
     libcompositor/         libcompositor.dlib — Compositor client API DLL
     libcompositor_client/  Client stub crate for libcompositor
-  bin/                   CLI program sources (82 Rust programs)
+  bin/                   CLI program sources (87 Rust programs)
   apps/                  GUI application sources (13 .app bundles)
   system/                System programs (15)
     init/                  Init system (PID 1)
@@ -418,21 +419,21 @@ anyos/
 
 ### Shared Library Architecture
 
-anyOS uses two shared library formats, both loaded at fixed virtual addresses:
+anyOS uses two shared library formats with **dynamic kernel-managed addressing**. The kernel allocates virtual addresses at load time from a contiguous region (`0x04000000`–`0x07FFFFFF`), applies ELF relocations for position-independent `.so` files, and demand-pages `.data`/`.bss` sections per process:
 
-- **DLIB (legacy)**: Custom format with `DLIB` magic header + `#[repr(C)]` function pointer export table. Loaded by the kernel at boot into every process.
-- **.so (modern)**: ELF64 ET_DYN shared objects with `.dynsym`/`.hash` sections, linked by `anyld`. Loaded on demand via `SYS_DLL_LOAD`, symbols resolved via `dl_open`/`dl_sym`.
+- **DLIB v3**: Custom format with `DLIB` magic header + `#[repr(C)]` function pointer export table. Loaded by the kernel at boot into every process. `.rodata`/`.text` pages are shared read-only; `.data` pages are copied on demand per process.
+- **.so (ELF64 ET_DYN)**: Standard ELF shared objects with `.dynsym`/`.hash` sections, linked by `anyld`. Base-0 `.so` files receive a dynamically allocated address and are relocated at load time (`R_X86_64_RELATIVE`). Loaded on demand via `SYS_DLL_LOAD`, symbols resolved via `dl_open`/`dl_sym`.
 
-| Library | Format | Base Address | Exports | Purpose |
-|---------|--------|-------------|---------|---------|
-| uisys | DLIB | `0x04000000` | 80 | UI controls (buttons, text fields, scroll views, context menus, toolbars, ...) |
-| libimage | DLIB | `0x04100000` | 7 | Image decoding (PNG, BMP, JPEG, ICO) and scaling |
-| librender | DLIB | `0x04300000` | 18 | 2D drawing primitives (lines, rects, circles, gradients) |
-| libcompositor | DLIB | `0x04380000` | 16 | Window creation, event handling, IPC with compositor |
-| libanyui | .so | `0x04400000` | 112 | anyui UI framework (41 controls, Windows Forms-style) |
-| libfont | .so | `0x05000000` | 7 | TrueType font rendering with LCD subpixel AA (system fonts embedded in .rodata) |
+| Library | Format | Exports | Purpose |
+|---------|--------|---------|---------|
+| uisys | DLIB | 80 | UI controls (buttons, text fields, scroll views, context menus, toolbars, ...) |
+| libimage | DLIB | 7 | Image decoding (PNG, BMP, JPEG, ICO) and scaling |
+| librender | DLIB | 18 | 2D drawing primitives (lines, rects, circles, gradients) |
+| libcompositor | DLIB | 16 | Window creation, event handling, IPC with compositor |
+| libanyui | .so | 112 | anyui UI framework (41 controls, Windows Forms-style) |
+| libfont | .so | 7 | TrueType font rendering with LCD subpixel AA (system fonts embedded in .rodata) |
 
-DLIB programs link against lightweight client stub crates (e.g. `uisys_client`) that read the export table at the known base address. `.so` programs use `dynlink` crate (`dl_open`/`dl_sym`) for ELF symbol resolution.
+DLIB programs link against lightweight client stub crates (e.g. `uisys_client`) that read the export table at the kernel-assigned base address. `.so` programs use `dynlink` crate (`dl_open`/`dl_sym`) for ELF symbol resolution.
 
 ---
 

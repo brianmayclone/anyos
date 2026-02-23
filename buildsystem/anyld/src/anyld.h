@@ -124,6 +124,10 @@ typedef struct {
     uint64_t    bss_vaddr;
     uint64_t    dynamic_vaddr;
 
+    /* Runtime relocations (.rela.dyn) */
+    Buf         rela_dyn;
+    int         nrela_dyn;
+
     /* Export definitions from .def file */
     char      **exports;
     int         nexports;

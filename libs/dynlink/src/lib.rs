@@ -67,22 +67,39 @@ pub fn dl_open(path: &str) -> Option<DlHandle> {
         return None; // Not ET_DYN
     }
 
-    // Walk program headers to find PT_DYNAMIC
+    // Walk program headers to find PT_DYNAMIC and compute load_bias.
+    // For base-0 .so files (dynamically loaded), p_vaddr values are link-time
+    // offsets. The kernel loads them at `base`, so we need load_bias to find
+    // the actual VA of .dynamic. For fixed-base .so files, load_bias = 0.
     let phdr_base = (base + ehdr.e_phoff) as *const Elf64Phdr;
     let mut dynamic_va: u64 = 0;
+    let mut link_base: u64 = u64::MAX;
 
     for i in 0..ehdr.e_phnum as usize {
         let ph = unsafe { &*phdr_base.add(i) };
+        if ph.p_type == 1 {
+            // PT_LOAD — track lowest p_vaddr to determine link base
+            if ph.p_vaddr < link_base {
+                link_base = ph.p_vaddr;
+            }
+        }
         if ph.p_type == 2 {
             // PT_DYNAMIC
             dynamic_va = ph.p_vaddr;
-            break;
         }
     }
 
     if dynamic_va == 0 {
         return None; // No .dynamic section
     }
+
+    // Compute load bias: difference between actual base and link-time base
+    let load_bias = if link_base != u64::MAX {
+        base - link_base
+    } else {
+        0
+    };
+    dynamic_va += load_bias;
 
     // Walk .dynamic entries to find DT_SYMTAB, DT_STRTAB, DT_HASH
     let mut symtab_va: u64 = 0;

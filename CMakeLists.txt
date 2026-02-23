@@ -514,7 +514,7 @@ add_dll(librender ${CMAKE_SOURCE_DIR}/libs/librender)
 add_dll(libcompositor ${CMAKE_SOURCE_DIR}/libs/libcompositor)
 
 # Shared libraries (.so) — built via Cargo → .a → anyld → ET_DYN .so
-function(add_shared_lib NAME SRC_DIR BASE_ADDR)
+function(add_shared_lib NAME SRC_DIR)
   set(LIB_A "${CMAKE_BINARY_DIR}/shlib/${NAME}/x86_64-anyos-user/release/lib${NAME}.a")
   set(LIB_SO "${CMAKE_BINARY_DIR}/shlib/${NAME}.so")
   file(GLOB_RECURSE _SL_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
@@ -533,12 +533,11 @@ function(add_shared_lib NAME SRC_DIR BASE_ADDR)
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Building shared library: ${NAME} (Cargo)"
   )
-  # Step 2: anyld → .so (ET_DYN shared object)
+  # Step 2: anyld → .so (ET_DYN shared object, base=0 for dynamic loading)
   add_custom_command(
     OUTPUT ${LIB_SO}
     COMMAND ${ANYLD_EXECUTABLE}
       -o ${LIB_SO}
-      -b ${BASE_ADDR}
       -e ${SRC_DIR}/exports.def
       ${LIB_A}
     DEPENDS ${LIB_A} ${SRC_DIR}/exports.def ${ANYLD_EXECUTABLE}
@@ -554,10 +553,10 @@ function(add_shared_lib NAME SRC_DIR BASE_ADDR)
   set(DLL_BINS ${DLL_BINS} ${SYSROOT_DIR}/Libraries/${NAME}.so PARENT_SCOPE)
 endfunction()
 
-add_shared_lib(libanyui ${CMAKE_SOURCE_DIR}/libs/libanyui "0x04400000")
-add_shared_lib(libfont ${CMAKE_SOURCE_DIR}/libs/libfont "0x05000000")
-add_shared_lib(libdb ${CMAKE_SOURCE_DIR}/libs/libdb "0x07000000")
-add_shared_lib(libzip ${CMAKE_SOURCE_DIR}/libs/libzip "0x07800000")
+add_shared_lib(libanyui ${CMAKE_SOURCE_DIR}/libs/libanyui)
+add_shared_lib(libfont ${CMAKE_SOURCE_DIR}/libs/libfont)
+add_shared_lib(libdb ${CMAKE_SOURCE_DIR}/libs/libdb)
+add_shared_lib(libzip ${CMAKE_SOURCE_DIR}/libs/libzip)
 
 set(RUST_USER_BINS "")
 add_rust_user_program(ping       ${CMAKE_SOURCE_DIR}/bin/ping)
@@ -634,6 +633,9 @@ add_rust_user_program(vi         ${CMAKE_SOURCE_DIR}/bin/vi)
 add_rust_user_program(crond      ${CMAKE_SOURCE_DIR}/bin/crond)
 add_rust_user_program(crontab    ${CMAKE_SOURCE_DIR}/bin/crontab)
 add_rust_user_program(sed        ${CMAKE_SOURCE_DIR}/bin/sed)
+add_rust_user_program(xargs      ${CMAKE_SOURCE_DIR}/bin/xargs)
+add_rust_user_program(awk        ${CMAKE_SOURCE_DIR}/bin/awk)
+add_rust_user_program(nano       ${CMAKE_SOURCE_DIR}/bin/nano)
 add_rust_user_program(zip        ${CMAKE_SOURCE_DIR}/bin/zip)
 add_rust_user_program(unzip      ${CMAKE_SOURCE_DIR}/bin/unzip)
 # Privileged sbin programs

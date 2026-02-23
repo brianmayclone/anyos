@@ -5,7 +5,7 @@
  *   File Offset    Virtual Address     Content
  *   ──────────────────────────────────────────────────────
  *   0x0000         base+0x0000         ELF header + PHDRs
- *   0x00E8+        base+0x00E8+        .dynsym, .dynstr, .hash
+ *   0x00E8+        base+0x00E8+        .dynsym, .dynstr, .hash, .rela.dyn
  *   pad to 0x1000  base+0x1000         .text
  *   after text                         .rodata (16-byte aligned)
  *   pad to page    base+N*0x1000       .data
@@ -25,9 +25,10 @@
 #define SHIDX_DYNSYM    5
 #define SHIDX_DYNSTR    6
 #define SHIDX_HASH      7
-#define SHIDX_DYNAMIC   8
-#define SHIDX_SHSTRTAB  9
-#define NUM_SECTIONS    10
+#define SHIDX_RELADYN   8
+#define SHIDX_DYNAMIC   9
+#define SHIDX_SHSTRTAB  10
+#define NUM_SECTIONS    11
 
 #define NUM_PHDRS       3  /* PT_LOAD (RX), PT_LOAD (RW), PT_DYNAMIC */
 
@@ -125,7 +126,9 @@ static void build_hash(Buf *hash_buf, Buf *dynsym_buf, Buf *dynstr_buf,
 
 static void build_dynamic(Ctx *ctx, Buf *dyn_buf,
                           uint64_t dynsym_vaddr, uint64_t dynstr_vaddr,
-                          uint64_t dynstr_size, uint64_t hash_vaddr) {
+                          uint64_t dynstr_size, uint64_t hash_vaddr,
+                          uint64_t rela_vaddr, uint64_t rela_size,
+                          int rela_count) {
     buf_init(dyn_buf);
     Elf64_Dyn d;
 
@@ -154,6 +157,25 @@ static void build_dynamic(Ctx *ctx, Buf *dyn_buf,
     d.d_un.d_val = sizeof(Elf64_Sym);
     buf_append(dyn_buf, &d, sizeof(d));
 
+    /* DT_RELA / DT_RELASZ / DT_RELAENT / DT_RELACOUNT */
+    if (rela_count > 0) {
+        d.d_tag = DT_RELA;
+        d.d_un.d_ptr = rela_vaddr;
+        buf_append(dyn_buf, &d, sizeof(d));
+
+        d.d_tag = DT_RELASZ;
+        d.d_un.d_val = rela_size;
+        buf_append(dyn_buf, &d, sizeof(d));
+
+        d.d_tag = DT_RELAENT;
+        d.d_un.d_val = sizeof(Elf64_Rela);
+        buf_append(dyn_buf, &d, sizeof(d));
+
+        d.d_tag = DT_RELACOUNT;
+        d.d_un.d_val = (uint64_t)rela_count;
+        buf_append(dyn_buf, &d, sizeof(d));
+    }
+
     /* DT_SONAME (if library name set) */
     if (ctx->lib_name && ctx->lib_name[0]) {
         /* SONAME offset in dynstr: right after the empty string byte.
@@ -180,6 +202,7 @@ typedef struct {
     uint32_t dynsym_off;
     uint32_t dynstr_off;
     uint32_t hash_off;
+    uint32_t reladyn_off;
     uint32_t dynamic_off;
     uint32_t shstrtab_off;
 } ShstrOffsets;
@@ -204,6 +227,7 @@ static void build_shstrtab(Buf *shstrtab, ShstrOffsets *off) {
     ADD_NAME(dynsym_off,   ".dynsym");
     ADD_NAME(dynstr_off,   ".dynstr");
     ADD_NAME(hash_off,     ".hash");
+    ADD_NAME(reladyn_off,  ".rela.dyn");
     ADD_NAME(dynamic_off,  ".dynamic");
     ADD_NAME(shstrtab_off, ".shstrtab");
 
@@ -217,7 +241,7 @@ int compute_layout(Ctx *ctx) {
 
     /*
      * Metadata region: offset 0x0000 → just before .text
-     * [ELF header][PHDRs][.dynsym][.dynstr][.hash][pad to page]
+     * [ELF header][PHDRs][.dynsym][.dynstr][.hash][.rela.dyn][pad to page]
      *
      * Build temporary dynsym/dynstr/hash just to determine sizes
      * (symbol values don't matter — only entry count affects size).
@@ -232,7 +256,8 @@ int compute_layout(Ctx *ctx) {
     uint64_t dynsym_off = (meta_off + 7) & ~7ULL;
     uint64_t dynstr_off = dynsym_off + tmp_dynsym.size;
     uint64_t hash_off   = (dynstr_off + tmp_dynstr.size + 3) & ~3ULL;
-    uint64_t meta_end   = hash_off + tmp_hash.size;
+    uint64_t rela_off   = (hash_off + tmp_hash.size + 7) & ~7ULL;
+    uint64_t meta_end   = rela_off + ctx->rela_dyn.size;
 
     buf_free(&tmp_dynsym);
     buf_free(&tmp_dynstr);
@@ -257,8 +282,8 @@ int compute_layout(Ctx *ctx) {
     dyn_off = (dyn_off + 7) & ~7ULL;
     ctx->dynamic_vaddr = base + dyn_off;
 
-    /* Estimate .dynamic size (7 entries * 16 bytes = 112 max) */
-    uint64_t dyn_size_est = 7 * sizeof(Elf64_Dyn);
+    /* Estimate .dynamic size (11 entries * 16 bytes = 176 max) */
+    uint64_t dyn_size_est = 11 * sizeof(Elf64_Dyn);
     uint64_t rw_file_end  = dyn_off + dyn_size_est;
 
     /* .bss follows at next page boundary */
@@ -277,7 +302,7 @@ int write_output(Ctx *ctx) {
 
     /*
      * Metadata region: offset 0x0000 → just before .text
-     * [ELF header][PHDRs][.dynsym][.dynstr][.hash][pad to page]
+     * [ELF header][PHDRs][.dynsym][.dynstr][.hash][.rela.dyn][pad to page]
      */
     uint64_t meta_off = sizeof(Elf64_Ehdr) + NUM_PHDRS * sizeof(Elf64_Phdr);
 
@@ -290,10 +315,11 @@ int write_output(Ctx *ctx) {
     build_hash(&hash_buf, &dynsym_buf, &dynstr_buf, dynsym_count);
 
     /* Metadata layout (all within page 0) */
-    uint64_t dynsym_off = (meta_off + 7) & ~7ULL;  /* 8-byte align */
-    uint64_t dynstr_off = dynsym_off + dynsym_buf.size;
-    uint64_t hash_off   = (dynstr_off + dynstr_buf.size + 3) & ~3ULL;
-    uint64_t meta_end   = hash_off + hash_buf.size;
+    uint64_t dynsym_off  = (meta_off + 7) & ~7ULL;  /* 8-byte align */
+    uint64_t dynstr_off  = dynsym_off + dynsym_buf.size;
+    uint64_t hash_off    = (dynstr_off + dynstr_buf.size + 3) & ~3ULL;
+    uint64_t reladyn_off = (hash_off + hash_buf.size + 7) & ~7ULL;
+    uint64_t meta_end    = reladyn_off + ctx->rela_dyn.size;
 
     /* .text starts at next page */
     uint64_t text_off = PAGE_ALIGN(meta_end);
@@ -318,7 +344,10 @@ int write_output(Ctx *ctx) {
                   base + dynsym_off,
                   base + dynstr_off,
                   dynstr_buf.size,
-                  base + hash_off);
+                  base + hash_off,
+                  base + reladyn_off,
+                  ctx->rela_dyn.size,
+                  ctx->nrela_dyn);
 
     ctx->dynamic_vaddr = base + dyn_off;
     uint64_t rw_file_end = dyn_off + dyn_buf.size;
@@ -333,7 +362,10 @@ int write_output(Ctx *ctx) {
                   base + dynsym_off,
                   base + dynstr_off,
                   dynstr_buf.size,
-                  base + hash_off);
+                  base + hash_off,
+                  base + reladyn_off,
+                  ctx->rela_dyn.size,
+                  ctx->nrela_dyn);
 
     /* Section headers and .shstrtab go after all loaded data */
     ShstrOffsets shstr_off;
@@ -437,6 +469,11 @@ int write_output(Ctx *ctx) {
 
     PAD_TO(hash_off);
     fwrite(hash_buf.data, 1, hash_buf.size, fp);
+
+    /* .rela.dyn */
+    PAD_TO(reladyn_off);
+    if (ctx->rela_dyn.size > 0)
+        fwrite(ctx->rela_dyn.data, 1, ctx->rela_dyn.size, fp);
 
     /* ── .text ──────────────────────────────────────────────────────── */
 
@@ -553,7 +590,20 @@ int write_output(Ctx *ctx) {
     shdr.sh_entsize   = 4;
     fwrite(&shdr, sizeof(shdr), 1, fp);
 
-    /* Section 8: .dynamic */
+    /* Section 8: .rela.dyn */
+    memset(&shdr, 0, sizeof(shdr));
+    shdr.sh_name      = shstr_off.reladyn_off;
+    shdr.sh_type      = SHT_RELA;
+    shdr.sh_flags     = SHF_ALLOC;
+    shdr.sh_addr      = base + reladyn_off;
+    shdr.sh_offset    = reladyn_off;
+    shdr.sh_size      = ctx->rela_dyn.size;
+    shdr.sh_link      = SHIDX_DYNSYM;
+    shdr.sh_addralign = 8;
+    shdr.sh_entsize   = sizeof(Elf64_Rela);
+    fwrite(&shdr, sizeof(shdr), 1, fp);
+
+    /* Section 9: .dynamic */
     memset(&shdr, 0, sizeof(shdr));
     shdr.sh_name      = shstr_off.dynamic_off;
     shdr.sh_type      = SHT_DYNAMIC;
@@ -566,7 +616,7 @@ int write_output(Ctx *ctx) {
     shdr.sh_entsize   = sizeof(Elf64_Dyn);
     fwrite(&shdr, sizeof(shdr), 1, fp);
 
-    /* Section 9: .shstrtab */
+    /* Section 10: .shstrtab */
     memset(&shdr, 0, sizeof(shdr));
     shdr.sh_name      = shstr_off.shstrtab_off;
     shdr.sh_type      = SHT_STRTAB;
@@ -598,6 +648,8 @@ int write_output(Ctx *ctx) {
            (unsigned long long)ctx->bss_size,
            (unsigned long long)ctx->bss_vaddr);
     printf("  exports:  %d symbols\n", dynsym_count - 1);
+    if (ctx->nrela_dyn > 0)
+        printf("  relocs:   %d R_X86_64_RELATIVE entries\n", ctx->nrela_dyn);
 
     #undef PAD_TO
 
