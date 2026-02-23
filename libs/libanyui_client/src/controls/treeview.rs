@@ -114,4 +114,13 @@ impl TreeView {
         });
         (lib().on_click_fn)(self.ctrl.id, thunk, ud);
     }
+
+    /// Register a callback for when Enter is pressed on a selected node (rename).
+    pub fn on_enter(&self, mut f: impl FnMut(&SelectionChangedEvent) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| {
+            let index = Control::from_id(id).get_state();
+            f(&SelectionChangedEvent { id, index });
+        });
+        (lib().on_submit_fn)(self.ctrl.id, thunk, ud);
+    }
 }

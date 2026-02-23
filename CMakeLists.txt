@@ -427,6 +427,11 @@ function(add_app NAME SRC_DIR DISPLAY_NAME)
       list(APPEND _BUNDLE_DEPS ${_RES_FILES})
     endif()
   endforeach()
+  # Copy extra config files (e.g. build.conf)
+  if(EXISTS "${SRC_DIR}/build.conf")
+    list(APPEND _BUNDLE_ARGS -c "${SRC_DIR}/build.conf")
+    list(APPEND _BUNDLE_DEPS "${SRC_DIR}/build.conf")
+  endif()
   add_custom_command(
     OUTPUT "${APP_DIR}/${DISPLAY_NAME}"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${APP_DIR}"

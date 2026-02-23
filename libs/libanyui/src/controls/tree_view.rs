@@ -381,7 +381,7 @@ impl Control for TreeView {
             // Icon
             if !node.icon_pixels.is_empty() && node.icon_w > 0 && node.icon_h > 0 {
                 let icon_y = row_y + (rh - node.icon_h as i32) / 2;
-                crate::draw::blit_buffer(
+                crate::draw::blit_argb(
                     &clipped,
                     x_offset,
                     icon_y,
@@ -563,7 +563,7 @@ impl Control for TreeView {
                 EventResponse::CONSUMED
             }
             KEY_ENTER => {
-                EventResponse::CLICK
+                EventResponse::SUBMIT
             }
             _ => {
                 EventResponse::IGNORED

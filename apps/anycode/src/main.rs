@@ -41,6 +41,7 @@ struct AppState {
     config: config::Config,
     current_project: Option<project::Project>,
     build_process: Option<build::BuildProcess>,
+    build_rules: build::BuildRules,
     build_timer_id: u32,
     // Git integration
     git_state: git::GitState,
@@ -153,6 +154,9 @@ fn main() {
         git_state.is_repo = git::is_git_repo(&proj.root);
     }
 
+    // ── Load build rules from bundle ──
+    let build_rules = build::BuildRules::load(&config::bundle_path("build.conf"));
+
     // ── Initialize global state ──
     unsafe {
         APP = Some(AppState {
@@ -165,6 +169,7 @@ fn main() {
             config,
             current_project,
             build_process: None,
+            build_rules,
             build_timer_id: 0,
             git_state,
             git_process: None,
@@ -188,6 +193,14 @@ fn main() {
             trigger_git_refresh();
             // Start periodic git timer (every 5 seconds)
             s.git_timer_id = anyui::set_timer(5000, poll_git);
+        }
+    }
+
+    // ── Start terminal shell (if project open) ──
+    {
+        let s = app();
+        if let Some(ref proj) = s.current_project {
+            s.output.start_shell(&proj.root);
         }
     }
 
@@ -241,7 +254,13 @@ fn main() {
         let s = app();
         if let Some(ref proj) = s.current_project {
             s.output.clear();
-            let (cmd, args) = build::build_command(proj.build_type, &s.config);
+            // Try build rules first, fallback to legacy
+            let active_file = s.file_mgr.active_file().map(|f| f.path.as_str()).unwrap_or("");
+            let (cmd, args) = if let Some(ca) = s.build_rules.build_command(active_file, &proj.root, &s.config) {
+                ca
+            } else {
+                build::build_command(proj.build_type, &s.config)
+            };
             let msg = format!("$ {}", path::basename(&cmd));
             s.output.append_line(&msg);
             anyos_std::fs::chdir(&proj.root);
@@ -257,7 +276,12 @@ fn main() {
         let s = app();
         if let Some(ref proj) = s.current_project {
             s.output.clear();
-            let (cmd, args) = build::run_command(proj.build_type, &s.config);
+            let active_file = s.file_mgr.active_file().map(|f| f.path.as_str()).unwrap_or("");
+            let (cmd, args) = if let Some(ca) = s.build_rules.run_command(active_file, &proj.root, &s.config) {
+                ca
+            } else {
+                build::run_command(proj.build_type, &s.config)
+            };
             let msg = format!("$ {}", path::basename(&cmd));
             s.output.append_line(&msg);
             anyos_std::fs::chdir(&proj.root);
@@ -312,6 +336,62 @@ fn main() {
                 open_file(&owned);
                 update_status();
             }
+        }
+    });
+
+    // ── Tree context menu: New File / New Folder / Delete ──
+    app().sidebar.context_menu.on_item_click(|e| {
+        let s = app();
+        let dir = match s.sidebar.selected_dir() {
+            Some(d) => d,
+            None => return,
+        };
+        match e.index {
+            0 => {
+                // New File
+                let new_path = path::join(&dir, "untitled.txt");
+                let _ = anyos_std::fs::write_bytes(&new_path, b"");
+                if let Some(ref proj) = s.current_project {
+                    s.sidebar.refresh(&proj.root);
+                }
+            }
+            1 => {
+                // New Folder
+                let new_path = path::join(&dir, "new_folder");
+                let _ = anyos_std::fs::mkdir(&new_path);
+                if let Some(ref proj) = s.current_project {
+                    s.sidebar.refresh(&proj.root);
+                }
+            }
+            2 => {
+                // Delete selected
+                let sel = s.sidebar.tree.selected();
+                if sel != u32::MAX {
+                    if let Some(p) = s.sidebar.path_for_node(sel) {
+                        let owned = alloc::string::String::from(p);
+                        anyos_std::fs::unlink(&owned);
+                        if let Some(ref proj) = s.current_project {
+                            s.sidebar.refresh(&proj.root);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    });
+
+    // ── Tree: Enter key triggers inline rename ──
+    app().sidebar.tree.on_enter(|_e| {
+        let s = app();
+        s.sidebar.start_rename();
+    });
+
+    // ── Rename field: submit completes rename ──
+    app().sidebar.rename_field.on_submit(|_| {
+        let s = app();
+        s.sidebar.finish_rename();
+        if let Some(ref proj) = s.current_project {
+            s.sidebar.refresh(&proj.root);
         }
     });
 
@@ -418,12 +498,33 @@ fn main() {
         close_tab(e.index as usize);
     });
 
+    // ── Terminal: handle command input (Enter) ──
+    app().output.terminal_input.on_submit(|_| {
+        let s = app();
+        let mut buf = [0u8; 512];
+        let len = s.output.terminal_input.get_text(&mut buf);
+        if len > 0 {
+            if let Ok(cmd) = core::str::from_utf8(&buf[..len as usize]) {
+                s.output.send_to_shell(cmd);
+            }
+        }
+        s.output.terminal_input.set_text("");
+    });
+
     // ── Cursor position timer (500ms) ──
     anyui::set_timer(500, || {
         let s = app();
         if s.file_mgr.count() > 0 {
             let (row, col) = s.editor_view.get_cursor(s.file_mgr.active);
             s.status.set_cursor(row, col);
+        }
+    });
+
+    // ── Terminal output poll timer (200ms) ──
+    anyui::set_timer(200, || {
+        let s = app();
+        if s.output.shell_tid != 0 {
+            s.output.poll_shell_output();
         }
     });
 

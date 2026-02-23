@@ -42,6 +42,9 @@ pub struct Sidebar {
     pub explorer_panel: ui::View,
     pub search: ui::SearchField,
     pub tree: ui::TreeView,
+    pub context_menu: ui::ContextMenu,
+    pub rename_field: ui::TextField,
+    pub rename_node: u32,
     pub paths: Vec<String>,
     mime_db: anyos_std::icons::MimeDb,
     icon_cache: IconCache,
@@ -81,11 +84,27 @@ impl Sidebar {
         tree.set_row_height(22);
         explorer_panel.add(&tree);
 
+        // Context menu for folders
+        let context_menu = ui::ContextMenu::new("New File|New Folder|Delete");
+        tree.set_context_menu(&context_menu);
+
+        // Inline rename field (hidden by default, DOCK_TOP overlay)
+        let rename_field = ui::TextField::new();
+        rename_field.set_size(200, 22);
+        rename_field.set_font_size(12);
+        rename_field.set_color(0xFF3C3C3C);
+        rename_field.set_text_color(0xFFCCCCCC);
+        rename_field.set_visible(false);
+        explorer_panel.add(&rename_field);
+
         Self {
             panel,
             explorer_panel,
             search,
             tree,
+            context_menu,
+            rename_field,
+            rename_node: u32::MAX,
             paths: Vec::new(),
             mime_db: anyos_std::icons::MimeDb::load(),
             icon_cache: IconCache::new(),
@@ -125,6 +144,85 @@ impl Sidebar {
             Some(p) => path::is_directory(p),
             None => false,
         }
+    }
+
+    /// Get the directory path for context menu actions.
+    /// If selected node is a file, returns its parent directory.
+    pub fn selected_dir(&self) -> Option<String> {
+        let sel = self.tree.selected();
+        if sel == u32::MAX {
+            return None;
+        }
+        match self.path_for_node(sel) {
+            Some(p) => {
+                if path::is_directory(p) {
+                    Some(String::from(p))
+                } else {
+                    Some(String::from(path::parent(p)))
+                }
+            }
+            None => None,
+        }
+    }
+
+    /// Start inline rename for the currently selected node.
+    pub fn start_rename(&mut self) {
+        let sel = self.tree.selected();
+        if sel == u32::MAX {
+            return;
+        }
+        let name = match self.path_for_node(sel) {
+            Some(p) => String::from(path::basename(p)),
+            None => return,
+        };
+        self.rename_node = sel;
+        self.rename_field.set_text(&name);
+        self.rename_field.set_visible(true);
+        self.rename_field.focus();
+    }
+
+    /// Complete inline rename — called when the rename field is submitted.
+    /// Returns the new full path if rename succeeded, or None.
+    pub fn finish_rename(&mut self) -> Option<(String, String)> {
+        let node = self.rename_node;
+        self.rename_node = u32::MAX;
+        self.rename_field.set_visible(false);
+
+        if node == u32::MAX {
+            return None;
+        }
+
+        let mut buf = [0u8; 256];
+        let len = self.rename_field.get_text(&mut buf);
+        if len == 0 {
+            return None;
+        }
+        let new_name = match core::str::from_utf8(&buf[..len as usize]) {
+            Ok(s) => s.trim(),
+            Err(_) => return None,
+        };
+        if new_name.is_empty() {
+            return None;
+        }
+
+        let old_path = match self.path_for_node(node) {
+            Some(p) => String::from(p),
+            None => return None,
+        };
+        let dir = path::parent(&old_path);
+        let new_path = path::join(dir, new_name);
+
+        if anyos_std::fs::rename(&old_path, &new_path) == 0 {
+            Some((old_path, new_path))
+        } else {
+            None
+        }
+    }
+
+    /// Cancel inline rename.
+    pub fn cancel_rename(&mut self) {
+        self.rename_node = u32::MAX;
+        self.rename_field.set_visible(false);
     }
 
     /// Set a folder icon on a tree node.

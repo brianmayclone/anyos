@@ -145,7 +145,7 @@ fn bundle_dir() -> String {
 }
 
 /// Build a path relative to the app bundle directory.
-fn bundle_path(relative: &str) -> String {
+pub fn bundle_path(relative: &str) -> String {
     let base = bundle_dir();
     if base.ends_with('/') {
         format!("{}{}", base, relative)
@@ -156,6 +156,11 @@ fn bundle_path(relative: &str) -> String {
 
 /// Well-known system directories to search for binaries.
 const SYSTEM_DIRS: &[&str] = &["/bin", "/System/bin", "/usr/bin"];
+
+/// Public wrapper for find_in_path (used by build rules).
+pub fn find_tool(name: &str) -> String {
+    find_in_path(name)
+}
 
 /// Search for a binary by name using the PATH environment variable
 /// and well-known system directories.
