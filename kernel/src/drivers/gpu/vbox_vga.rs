@@ -134,11 +134,11 @@ struct VbvaInfoScreen {
     flags: u16,          // VBVA_SCREEN_F_ACTIVE
 }
 
-/// VBVA_INFO_CAPS payload.
+/// VBVA_INFO_CAPS payload (matches VBox VBVACAPS).
 #[repr(C, packed)]
 struct VbvaInfoCaps {
-    flags: u32,
-    _reserved: [u32; 3],
+    rc: i32,       // result code, set by host on completion
+    flags: u32,    // capability flags (e.g. VBVACAPS_DISABLE_CURSOR_INTEGRATION)
 }
 
 // ──────────────────────────────────────────────
@@ -305,8 +305,8 @@ impl VBoxVgaGpu {
     /// Send VBVA_INFO_CAPS to report guest driver capabilities.
     fn send_info_caps(&mut self) {
         let caps = VbvaInfoCaps {
+            rc: 0,
             flags: VBVACAPS_DISABLE_CURSOR_INTEGRATION,
-            _reserved: [0; 3],
         };
         let payload = unsafe {
             core::slice::from_raw_parts(
@@ -506,9 +506,7 @@ impl GpuDriver for VBoxVgaGpu {
 
         // Send cursor position via HGSMI
         let pos = VbvaCursorPosition {
-            report: 0, // report=0: update cursor image position only (no host sync)
-                       // report=1 would activate mouse integration, conflicting
-                       // with PS/2 relative input and causing host cursor jumps
+            report: 1, // report=1: tell VBox to update cursor position on screen
             x,
             y,
         };
@@ -525,8 +523,11 @@ impl GpuDriver for VBoxVgaGpu {
         if !self.hgsmi_supported {
             return;
         }
+        // define_cursor() already sets VISIBLE; only send when hiding
+        if visible && self.cursor_defined {
+            return;
+        }
 
-        // Send a minimal VBVA_MOUSE_POINTER_SHAPE with only the visibility flag
         let shape = VbvaMousePointerShape {
             result: 0,
             flags: if visible { VBOX_MOUSE_POINTER_VISIBLE } else { 0 },
