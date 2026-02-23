@@ -95,6 +95,19 @@ fn find_in(path: &str, pattern: &str, ignore_case: bool, type_filter: u8) {
     }
 }
 
+/// Strip surrounding quotes (" or ') from a string if present.
+fn strip_quotes(s: &str) -> &str {
+    let b = s.as_bytes();
+    if b.len() >= 2 {
+        if (b[0] == b'"' && b[b.len() - 1] == b'"')
+            || (b[0] == b'\'' && b[b.len() - 1] == b'\'')
+        {
+            return &s[1..s.len() - 1];
+        }
+    }
+    s
+}
+
 fn main() {
     let mut args_buf = [0u8; 256];
     let raw = anyos_std::process::args(&mut args_buf);
@@ -110,12 +123,12 @@ fn main() {
     while i < parts.len() {
         match parts[i] {
             "-name" if i + 1 < parts.len() => {
-                pattern = parts[i + 1];
+                pattern = strip_quotes(parts[i + 1]);
                 ignore_case = false;
                 i += 2;
             }
             "-iname" if i + 1 < parts.len() => {
-                pattern = parts[i + 1];
+                pattern = strip_quotes(parts[i + 1]);
                 ignore_case = true;
                 i += 2;
             }
