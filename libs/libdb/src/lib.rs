@@ -364,15 +364,13 @@ pub extern "C" fn libdb_result_get_text(
 pub extern "C" fn libdb_result_is_null(result_id: u32, row: u32, col: u32) -> u32 {
     if let Some(rs) = get_result(result_id) {
         if let Some(r) = rs.rows.get(row as usize) {
-            if let Some(Value::Null) = r.values.get(col as usize) {
-                return 1;
-            }
-            if r.values.get(col as usize).is_none() {
-                return 1;
+            match r.values.get(col as usize) {
+                Some(Value::Null) | None => return 1,
+                Some(_) => return 0,
             }
         }
     }
-    1 // Default: null if not found
+    1 // Result or row not found — treat as null
 }
 
 /// Free a result set.

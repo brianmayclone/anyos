@@ -87,7 +87,11 @@ fn main() {
         }
 
         // Show tables
-        if line.eq_ignore_ascii_case("tables") || line.eq_ignore_ascii_case("\\dt") {
+        if line.eq_ignore_ascii_case("tables")
+            || line.eq_ignore_ascii_case("list tables")
+            || line.eq_ignore_ascii_case("show tables")
+            || line.eq_ignore_ascii_case("\\dt")
+        {
             anyos_std::println!("Tables: hw, mem, cpu, threads, devices, disks, net, svc");
             continue;
         }
@@ -336,10 +340,11 @@ fn strip_quotes(s: &str) -> &str {
 /// Print help text.
 fn print_help() {
     anyos_std::println!("Available commands:");
-    anyos_std::println!("  SELECT ...   Execute a SQL query against amid's database");
-    anyos_std::println!("  tables       List available tables");
-    anyos_std::println!("  help         Show this help");
-    anyos_std::println!("  exit         Quit the REPL");
+    anyos_std::println!("  SELECT ...     Execute a SQL query against amid's database");
+    anyos_std::println!("  list tables    List available tables");
+    anyos_std::println!("  tables         List available tables (short)");
+    anyos_std::println!("  help           Show this help");
+    anyos_std::println!("  exit           Quit the REPL");
     anyos_std::println!("");
     anyos_std::println!("Tables: hw, mem, cpu, threads, devices, disks, net, svc");
     anyos_std::println!("");
