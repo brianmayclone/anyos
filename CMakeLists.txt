@@ -544,7 +544,7 @@ endfunction()
 
 add_shared_lib(libanyui ${CMAKE_SOURCE_DIR}/libs/libanyui "0x04400000")
 add_shared_lib(libfont ${CMAKE_SOURCE_DIR}/libs/libfont "0x05000000")
-add_shared_lib(libdb ${CMAKE_SOURCE_DIR}/libs/libdb "0x06000000")
+add_shared_lib(libdb ${CMAKE_SOURCE_DIR}/libs/libdb "0x07000000")
 
 set(RUST_USER_BINS "")
 add_rust_user_program(ping       ${CMAKE_SOURCE_DIR}/bin/ping)
@@ -683,7 +683,7 @@ add_rust_system_program(netmon      ${CMAKE_SOURCE_DIR}/system/netmon)
 add_rust_system_program(inputmon    ${CMAKE_SOURCE_DIR}/system/inputmon)
 add_rust_system_program(login       ${CMAKE_SOURCE_DIR}/system/login)
 add_rust_system_program(permdialog  ${CMAKE_SOURCE_DIR}/system/permdialog)
-add_rust_system_program(amid        ${CMAKE_SOURCE_DIR}/system/amid)
+add_rust_user_program(amid          ${CMAKE_SOURCE_DIR}/system/amid)
 
 # Desktop GUI applications → .app bundles in /Applications/
 set(APP_BINS "")
