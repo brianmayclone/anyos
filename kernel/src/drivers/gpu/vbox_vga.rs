@@ -691,9 +691,11 @@ pub fn init_and_register(pci_dev: &PciDevice) {
         for i in 0..HGSMI_HEAP_PAGES {
             let virt = VirtAddr::new(HGSMI_HEAP_VIRT_BASE + (i as u64) * 4096);
             let phys = PhysAddr::new(heap_phys as u64 + (i as u64) * 4096);
-            // Map as uncacheable (0x03 = Present + Writable, no WC)
-            // HGSMI control structures need strict ordering
-            crate::memory::virtual_mem::map_page(virt, phys, 0x03);
+            // Map as Write-Combining (PWT=1 → PAT entry 1 = WC).
+            // 0x03 alone would be Write-Back cached, causing writes to stay
+            // in the CPU cache and never reach VRAM — VBox would never see
+            // our HGSMI commands.
+            crate::memory::virtual_mem::map_page(virt, phys, 0x0B); // Present + Writable + PWT
         }
 
         // Zero the heap area
