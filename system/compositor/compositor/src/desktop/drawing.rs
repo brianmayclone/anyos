@@ -254,6 +254,74 @@ pub(crate) fn fill_rounded_rect_top(
     }
 }
 
+/// Linearly interpolate between two ARGB colors.
+/// `t` ranges from 0 (returns c0) to `total` (returns c1).
+fn lerp_color(c0: u32, c1: u32, t: u32, total: u32) -> u32 {
+    if total == 0 { return c0; }
+    let mix = |v0: u32, v1: u32| -> u32 {
+        (v0 as i32 + ((v1 as i32 - v0 as i32) * t as i32 / total as i32)) as u32 & 0xFF
+    };
+    let a = mix((c0 >> 24) & 0xFF, (c1 >> 24) & 0xFF);
+    let r = mix((c0 >> 16) & 0xFF, (c1 >> 16) & 0xFF);
+    let g = mix((c0 >> 8) & 0xFF, (c1 >> 8) & 0xFF);
+    let b = mix(c0 & 0xFF, c1 & 0xFF);
+    (a << 24) | (r << 16) | (g << 8) | b
+}
+
+/// Fill a rounded-top rect with a vertical gradient (top_color → bottom_color).
+/// Only top corners are rounded; bottom edge is square.
+pub(crate) fn fill_rounded_rect_top_gradient(
+    pixels: &mut [u32],
+    stride: u32,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    r: u32,
+    top_color: u32,
+    bottom_color: u32,
+) {
+    if h == 0 || w == 0 { return; }
+    let buf_h = stride; // assume buffer height >= stride
+    let r = if w < r * 2 { 0 } else { r };
+    let denom = h.saturating_sub(1).max(1);
+
+    for dy in 0..h {
+        let color = lerp_color(top_color, bottom_color, dy, denom);
+        if r > 0 && dy < r {
+            // Row within the corner zone: compute horizontal inset
+            let r2x4 = (2 * r as i32) * (2 * r as i32);
+            let cy = 2 * dy as i32 + 1 - 2 * r as i32;
+            let cy2 = cy * cy;
+            let mut fill_start = r;
+            for dx in 0..r {
+                let cx = 2 * dx as i32 + 1 - 2 * r as i32;
+                if cx * cx + cy2 <= r2x4 {
+                    fill_start = dx;
+                    break;
+                }
+            }
+            let fs = fill_start as i32;
+            // Left corner pixels
+            let lw = r - fill_start;
+            if lw > 0 {
+                fill_rect(pixels, stride, buf_h, x + fs, y + dy as i32, lw, 1, color);
+            }
+            // Center band
+            if w > r * 2 {
+                fill_rect(pixels, stride, buf_h, x + r as i32, y + dy as i32, w - r * 2, 1, color);
+            }
+            // Right corner pixels
+            if lw > 0 {
+                fill_rect(pixels, stride, buf_h, x + (w - r) as i32, y + dy as i32, lw, 1, color);
+            }
+        } else {
+            // Full-width row
+            fill_rect(pixels, stride, buf_h, x, y + dy as i32, w, 1, color);
+        }
+    }
+}
+
 /// Integer square root (no floating point needed).
 pub(crate) fn isqrt(n: i32) -> i32 {
     if n <= 0 {

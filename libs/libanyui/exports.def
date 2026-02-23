@@ -120,3 +120,7 @@ EXPORTS
     anyui_open_file
     anyui_save_file
     anyui_create_folder
+    anyui_on_submit
+    anyui_set_blur_behind
+    anyui_set_focus
+    anyui_screen_size

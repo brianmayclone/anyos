@@ -79,7 +79,8 @@ pub use texteditor::TextEditor;
 pub use treeview::TreeView;
 
 pub use expander::Expander;
-pub use window::Window;
+pub use window::{Window, WIN_FLAG_BORDERLESS, WIN_FLAG_NOT_RESIZABLE, WIN_FLAG_ALWAYS_ON_TOP,
+    WIN_FLAG_NO_CLOSE, WIN_FLAG_NO_MINIMIZE, WIN_FLAG_NO_MAXIMIZE, WIN_FLAG_SHADOW};
 pub use view::View;
 pub use card::Card;
 pub use groupbox::GroupBox;

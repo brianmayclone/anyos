@@ -17,6 +17,7 @@ use anyos_std::ipc;
 use anyos_std::process;
 use anyos_std::sys;
 use anyos_std::println;
+use anyos_std::Vec;
 
 mod compositor;
 mod config;
@@ -26,7 +27,7 @@ mod keys;
 mod menu;
 mod render;
 
-use render::{acquire_lock, release_lock, desktop_ref};
+use render::{acquire_lock, release_lock, desktop_ref, signal_render};
 
 anyos_std::entry!(main);
 
@@ -230,6 +231,7 @@ fn management_loop(
             desktop.damage_cursor();
             desktop.compositor.flush_gpu();
             release_lock();
+            signal_render();
         }
 
         // Poll IPC commands from apps (up to 16 per frame)
@@ -237,6 +239,10 @@ fn management_loop(
 
         // Poll system events (process exit, resolution change)
         handle_system_events(compositor_channel, sys_sub);
+
+        // Signal render thread if any IPC or system events were processed.
+        // (Cheap no-op if already signaled by input handling above.)
+        signal_render();
 
         // Drain window events under lock, then emit outside lock
         let ipc_events = {
@@ -267,153 +273,199 @@ fn management_loop(
 }
 
 /// Process IPC commands from apps (CMD_CREATE_WINDOW, CMD_SET_THEME, etc.)
+///
+/// Two-pass design to reduce flicker:
+/// 1. Poll all pending events into a buffer (no lock)
+/// 2. Process fast commands (CMD_PRESENT, etc.) under a SINGLE lock hold
+///    so the render thread can't fire between consecutive presents.
+/// Commands that need work outside the lock (CREATE_WINDOW, RESIZE_SHM,
+/// SET_THEME) are handled with their own lock cycles.
 fn handle_ipc_commands(
     compositor_channel: u32,
     compositor_sub: u32,
     ipc_buf: &mut [u32; 5],
 ) {
-    for _ in 0..16 {
+    // Pass 1: poll all pending IPC events into a local buffer
+    let mut cmds = [[0u32; 5]; 16];
+    let mut cmd_count = 0usize;
+    for i in 0..16 {
         if !ipc::evt_chan_poll(compositor_channel, compositor_sub, ipc_buf) {
             break;
         }
-        if ipc_buf[0] >= 0x1000 && ipc_buf[0] < 0x2000 {
-            let response = match ipc_buf[0] {
-                // CMD_CREATE_WINDOW: heavy work OUTSIDE lock, fast attach UNDER lock
-                ipc_protocol::CMD_CREATE_WINDOW => {
-                    let app_tid = ipc_buf[1];
-                    let wh = ipc_buf[2];
-                    let width = wh >> 16;
-                    let height = wh & 0xFFFF;
-                    let xy = ipc_buf[3];
-                    let raw_x = (xy >> 16) as u16;
-                    let raw_y = (xy & 0xFFFF) as u16;
-                    let shm_id_and_flags = ipc_buf[4];
-                    let shm_id = shm_id_and_flags >> 16;
-                    let flags = shm_id_and_flags & 0xFFFF;
+        cmds[i] = *ipc_buf;
+        cmd_count += 1;
+    }
+    if cmd_count == 0 {
+        return;
+    }
 
-                    if shm_id == 0 || width == 0 || height == 0 {
-                        None
-                    } else {
-                        // ── OUTSIDE LOCK: expensive operations ──
-                        let shm_addr = ipc::shm_map(shm_id);
-                        if shm_addr == 0 {
-                            None
+    // Collect responses to send outside lock
+    let mut responses: Vec<(Option<u32>, [u32; 5])> = Vec::new();
+
+    // Pass 2: process commands — batch fast ones under a single lock hold
+    let mut i = 0;
+    while i < cmd_count {
+        let cmd = cmds[i];
+        if cmd[0] < 0x1000 || cmd[0] >= 0x2000 {
+            i += 1;
+            continue;
+        }
+
+        match cmd[0] {
+            // CMD_CREATE_WINDOW: heavy work OUTSIDE lock, fast attach UNDER lock
+            ipc_protocol::CMD_CREATE_WINDOW => {
+                let app_tid = cmd[1];
+                let wh = cmd[2];
+                let width = wh >> 16;
+                let height = wh & 0xFFFF;
+                let xy = cmd[3];
+                let raw_x = (xy >> 16) as u16;
+                let raw_y = (xy & 0xFFFF) as u16;
+                let shm_id_and_flags = cmd[4];
+                let shm_id = shm_id_and_flags >> 16;
+                let flags = shm_id_and_flags & 0xFFFF;
+
+                if shm_id != 0 && width != 0 && height != 0 {
+                    // ── OUTSIDE LOCK: expensive operations ──
+                    let shm_addr = ipc::shm_map(shm_id);
+                    if shm_addr != 0 {
+                        let borderless = flags & desktop::WIN_FLAG_BORDERLESS != 0;
+                        let full_h = if borderless {
+                            height
                         } else {
-                            let borderless = flags & desktop::WIN_FLAG_BORDERLESS != 0;
-                            let full_h = if borderless {
-                                height
-                            } else {
-                                height + desktop::TITLE_BAR_HEIGHT
-                            };
+                            height + desktop::TITLE_BAR_HEIGHT
+                        };
 
-                            let mut pre_pixels =
-                                alloc::vec![0u32; (width * full_h) as usize];
+                        let mut pre_pixels =
+                            alloc::vec![0u32; (width * full_h) as usize];
 
-                            if !borderless {
-                                desktop::pre_render_chrome_ex(
-                                    &mut pre_pixels, width, full_h, "Window", true, flags,
-                                );
-                                desktop::copy_shm_to_pixels(
-                                    &mut pre_pixels,
-                                    width,
-                                    desktop::TITLE_BAR_HEIGHT,
-                                    shm_addr as *const u32,
-                                    width,
-                                    height,
-                                );
-                            }
-
-                            // ── UNDER LOCK: fast metadata-only operations ──
-                            acquire_lock();
-                            let desktop = unsafe { desktop_ref() };
-                            let win_id = desktop.create_ipc_window_fast(
-                                app_tid, width, height, flags,
-                                shm_id, shm_addr as *mut u32, pre_pixels,
-                                raw_x, raw_y,
+                        if !borderless {
+                            desktop::pre_render_chrome_ex(
+                                &mut pre_pixels, width, full_h, "Window", true, flags,
                             );
-                            let target = desktop.get_sub_id_for_tid(app_tid);
-                            release_lock();
-
-                            Some((
-                                target,
-                                [
-                                    ipc_protocol::RESP_WINDOW_CREATED,
-                                    win_id, shm_id, app_tid, 0,
-                                ],
-                            ))
+                            desktop::copy_shm_to_pixels(
+                                &mut pre_pixels,
+                                width,
+                                desktop::TITLE_BAR_HEIGHT,
+                                shm_addr as *const u32,
+                                width,
+                                height,
+                            );
                         }
-                    }
-                }
-                // CMD_RESIZE_SHM: shm_map OUTSIDE lock (potentially slow)
-                ipc_protocol::CMD_RESIZE_SHM => {
-                    let new_shm_id = ipc_buf[2];
-                    let shm_addr = if new_shm_id > 0 {
-                        ipc::shm_map(new_shm_id)
-                    } else {
-                        0
-                    };
-                    acquire_lock();
-                    let desktop = unsafe { desktop_ref() };
-                    let resp =
-                        desktop.handle_resize_shm_pre_mapped(ipc_buf, shm_addr as usize);
-                    release_lock();
-                    resp
-                }
-                // CMD_SET_THEME: write to shared DLL page + repaint
-                ipc_protocol::CMD_SET_THEME => {
-                    let new_theme = ipc_buf[1].min(1);
-                    let old_theme = unsafe {
-                        core::ptr::read_volatile(0x0400_000C as *const u32)
-                    };
-                    if new_theme != old_theme {
-                        desktop::set_theme(new_theme);
+
+                        // ── UNDER LOCK: fast metadata-only operations ──
                         acquire_lock();
                         let desktop = unsafe { desktop_ref() };
-                        desktop.on_theme_change();
+                        let win_id = desktop.create_ipc_window_fast(
+                            app_tid, width, height, flags,
+                            shm_id, shm_addr as *mut u32, pre_pixels,
+                            raw_x, raw_y,
+                        );
+                        let target = desktop.get_sub_id_for_tid(app_tid);
                         release_lock();
-                        ipc::evt_chan_emit(compositor_channel, &[
-                            ipc_protocol::EVT_THEME_CHANGED,
-                            new_theme, old_theme, 0, 0,
-                        ]);
+
+                        responses.push((
+                            target,
+                            [
+                                ipc_protocol::RESP_WINDOW_CREATED,
+                                win_id, shm_id, app_tid, 0,
+                            ],
+                        ));
                     }
-                    None
                 }
-                // All other commands: handle under lock (fast)
-                _ => {
+                i += 1;
+            }
+            // CMD_RESIZE_SHM: shm_map OUTSIDE lock (potentially slow)
+            ipc_protocol::CMD_RESIZE_SHM => {
+                let new_shm_id = cmd[2];
+                let shm_addr = if new_shm_id > 0 {
+                    ipc::shm_map(new_shm_id)
+                } else {
+                    0
+                };
+                acquire_lock();
+                let desktop = unsafe { desktop_ref() };
+                if let Some(resp) =
+                    desktop.handle_resize_shm_pre_mapped(&cmd, shm_addr as usize)
+                {
+                    responses.push(resp);
+                }
+                release_lock();
+                i += 1;
+            }
+            // CMD_SET_THEME: write to shared DLL page + repaint
+            ipc_protocol::CMD_SET_THEME => {
+                let new_theme = cmd[1].min(1);
+                let old_theme = unsafe {
+                    core::ptr::read_volatile(0x0400_000C as *const u32)
+                };
+                if new_theme != old_theme {
+                    desktop::set_theme(new_theme);
                     acquire_lock();
                     let desktop = unsafe { desktop_ref() };
-                    let resp = desktop.handle_ipc_command(ipc_buf);
+                    desktop.on_theme_change();
                     release_lock();
-                    resp
-                }
-            };
-
-            // Send response outside lock (just a syscall)
-            if let Some((target_sub, response)) = response {
-                if let Some(sub_id) = target_sub {
-                    ipc::evt_chan_emit_to(compositor_channel, sub_id, &response);
-                } else {
-                    ipc::evt_chan_emit(compositor_channel, &response);
-                }
-
-                // Broadcast window lifecycle events for dock filtering
-                if response[0] == ipc_protocol::RESP_WINDOW_CREATED {
                     ipc::evt_chan_emit(compositor_channel, &[
-                        ipc_protocol::EVT_WINDOW_OPENED,
-                        response[3], // app_tid
-                        response[1], // win_id
-                        0, 0,
+                        ipc_protocol::EVT_THEME_CHANGED,
+                        new_theme, old_theme, 0, 0,
                     ]);
-                } else if response[0] == ipc_protocol::RESP_WINDOW_DESTROYED {
-                    let app_tid = response[2];
-                    let remaining_windows = response[3];
-                    if remaining_windows == 0 {
-                        ipc::evt_chan_emit(compositor_channel, &[
-                            ipc_protocol::EVT_WINDOW_CLOSED,
-                            app_tid, 0, 0, 0,
-                        ]);
-                    }
                 }
+                i += 1;
+            }
+            // All other fast commands: batch under a single lock hold.
+            // This prevents the render thread from firing between consecutive
+            // CMD_PRESENTs during rapid scrolling (eliminates partial-update flicker).
+            _ => {
+                acquire_lock();
+                let desktop = unsafe { desktop_ref() };
+                // Process this and all consecutive fast commands under one lock
+                while i < cmd_count {
+                    let c = cmds[i];
+                    if c[0] < 0x1000 || c[0] >= 0x2000 {
+                        i += 1;
+                        continue;
+                    }
+                    // Break out for commands that need outside-lock work
+                    match c[0] {
+                        ipc_protocol::CMD_CREATE_WINDOW
+                        | ipc_protocol::CMD_RESIZE_SHM
+                        | ipc_protocol::CMD_SET_THEME => break,
+                        _ => {}
+                    }
+                    if let Some(resp) = desktop.handle_ipc_command(&c) {
+                        responses.push(resp);
+                    }
+                    i += 1;
+                }
+                release_lock();
+            }
+        }
+    }
+
+    // Send all responses outside lock
+    for (target_sub, response) in &responses {
+        if let Some(sub_id) = target_sub {
+            ipc::evt_chan_emit_to(compositor_channel, *sub_id, response);
+        } else {
+            ipc::evt_chan_emit(compositor_channel, response);
+        }
+
+        // Broadcast window lifecycle events for dock filtering
+        if response[0] == ipc_protocol::RESP_WINDOW_CREATED {
+            ipc::evt_chan_emit(compositor_channel, &[
+                ipc_protocol::EVT_WINDOW_OPENED,
+                response[3], // app_tid
+                response[1], // win_id
+                0, 0,
+            ]);
+        } else if response[0] == ipc_protocol::RESP_WINDOW_DESTROYED {
+            let app_tid = response[2];
+            let remaining_windows = response[3];
+            if remaining_windows == 0 {
+                ipc::evt_chan_emit(compositor_channel, &[
+                    ipc_protocol::EVT_WINDOW_CLOSED,
+                    app_tid, 0, 0, 0,
+                ]);
             }
         }
     }

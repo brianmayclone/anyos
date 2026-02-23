@@ -1,5 +1,5 @@
 use crate::{Control, Widget, lib, events, KIND_SEARCH_FIELD};
-use crate::events::{TextChangedEvent, ClickEvent};
+use crate::events::{TextChangedEvent, SubmitEvent};
 
 leaf_control!(SearchField, KIND_SEARCH_FIELD);
 
@@ -20,8 +20,8 @@ impl SearchField {
     }
 
     /// Called when the user presses Enter (submits the search).
-    pub fn on_submit(&self, mut f: impl FnMut(&ClickEvent) + 'static) {
-        let (thunk, ud) = events::register(move |id, _| f(&ClickEvent { id }));
-        (lib().on_click_fn)(self.ctrl.id, thunk, ud);
+    pub fn on_submit(&self, mut f: impl FnMut(&SubmitEvent) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| f(&SubmitEvent { id }));
+        (lib().on_submit_fn)(self.ctrl.id, thunk, ud);
     }
 }

@@ -3,6 +3,11 @@
 //! The Desktop is allocated once on the heap and accessed via a raw pointer
 //! behind a simple spinlock. The management thread (main) and render thread
 //! share access through acquire_lock/release_lock.
+//!
+//! Rendering is event-driven: the render thread sleeps until signaled that
+//! new work is available (damage, input, animations). This mirrors how
+//! macOS (CVDisplayLink) and Windows (DWM) compositors work — render only
+//! when there's something to display, not on a blind timer.
 
 use anyos_std::process;
 use anyos_std::sys;
@@ -18,6 +23,10 @@ static DESKTOP_LOCK: AtomicBool = AtomicBool::new(false);
 
 /// Raw pointer to the heap-allocated Desktop (set once during init, never freed).
 static mut DESKTOP_PTR: *mut Desktop = core::ptr::null_mut();
+
+/// Signal flag: set by management thread when new damage is available.
+/// The render thread checks this to decide whether to compose or sleep.
+static RENDER_NEEDED: AtomicBool = AtomicBool::new(true);
 
 pub fn acquire_lock() {
     while DESKTOP_LOCK
@@ -49,51 +58,81 @@ pub unsafe fn set_desktop_ptr(ptr: *mut Desktop) {
     DESKTOP_PTR = ptr;
 }
 
+/// Signal the render thread that new work is available (damage, input, etc.).
+/// Called by the management thread after processing events or IPC commands.
+pub fn signal_render() {
+    RENDER_NEEDED.store(true, Ordering::Release);
+}
+
 // ── Render Thread ────────────────────────────────────────────────────────────
 
-/// Render thread entry point — composites and flushes at ~60 Hz.
+/// Render thread entry point — event-driven compositing at up to ~60 Hz.
+///
+/// Instead of polling at a fixed 16ms interval, the render thread:
+/// 1. Checks if new work was signaled (RENDER_NEEDED flag)
+/// 2. If yes: compose and pace to 60fps
+/// 3. If no: sleep briefly and re-check (low CPU when idle)
 ///
 /// Animations and clock are ticked here (not in the management thread) so they
 /// stay smooth even when the management thread is busy with IPC / shm_map.
 ///
 /// CRITICAL: Uses try_lock() — NEVER blocks on the management thread.
-/// If the lock is held (e.g. during window creation), the render thread
-/// simply retries after a short sleep. The previous frame stays on-screen
-/// so the user sees no glitch — just a held frame for 2ms instead of
-/// a 200ms stall.
 pub fn render_thread_entry() {
     println!("compositor: render thread running");
     let mut frame: u32 = 0;
+    let mut idle_count: u32 = 0;
+
     loop {
-        let t0 = sys::uptime_ms();
+        // Check if the management thread signaled new work
+        let work_available = RENDER_NEEDED.swap(false, Ordering::Acquire);
 
-        if try_lock() {
-            // Refresh cached theme value ONCE per frame (avoids 28K+ volatile reads)
-            crate::desktop::theme::refresh_theme_cache();
-            let desktop = unsafe { desktop_ref() };
-            // Tick animations + clock before compositing so updated state is
-            // reflected in the same frame — no extra lock round-trip needed.
-            desktop.tick_animations();
-            if frame % 60 == 0 {
-                desktop.update_clock();
+        // Also compose periodically for clock updates (every ~1s)
+        let periodic = frame % 60 == 0;
+
+        if work_available || periodic {
+            idle_count = 0;
+            let t0 = sys::uptime_ms();
+
+            if try_lock() {
+                crate::desktop::theme::refresh_theme_cache();
+                let desktop = unsafe { desktop_ref() };
+                // Tick animations + clock before compositing so updated state is
+                // reflected in the same frame — no extra lock round-trip needed.
+                let has_animations = desktop.tick_animations();
+                if periodic {
+                    desktop.update_clock();
+                }
+                desktop.process_deferred_wallpaper();
+                desktop.compose();
+                release_lock();
+
+                // If animations are still active, keep rendering next frame
+                if has_animations {
+                    RENDER_NEEDED.store(true, Ordering::Release);
+                }
+
+                frame = frame.wrapping_add(1);
+            } else {
+                // Lock contended — management thread is doing work.
+                // Sleep briefly and retry. Previous frame stays on screen.
+                process::sleep(1);
+                RENDER_NEEDED.store(true, Ordering::Release);
+                continue;
             }
-            // Process deferred wallpaper reload (after resolution change)
-            desktop.process_deferred_wallpaper();
-            desktop.compose();
-            release_lock();
 
-            frame = frame.wrapping_add(1);
+            // Frame pacing: sleep remainder to hit ~60fps max
+            let elapsed = sys::uptime_ms().wrapping_sub(t0);
+            let target = 16u32;
+            if elapsed < target {
+                process::sleep(target - elapsed);
+            }
         } else {
-            // Lock contended — management thread is doing work (e.g. window creation).
-            // Sleep 1ms and retry. Previous frame stays on screen.
-            process::sleep(1);
-        }
-
-        // Dynamic frame pacing: sleep only the remainder to hit ~60fps
-        let elapsed = sys::uptime_ms().wrapping_sub(t0);
-        let target = 16u32;
-        if elapsed < target {
-            process::sleep(target - elapsed);
+            // No work signaled — idle sleep with adaptive interval.
+            // Start at 2ms, ramp up to 16ms after sustained idle.
+            idle_count = idle_count.saturating_add(1);
+            let sleep_ms = if idle_count < 8 { 2 } else { 16 };
+            process::sleep(sleep_ms);
+            frame = frame.wrapping_add(1);
         }
     }
 }

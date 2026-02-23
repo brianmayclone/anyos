@@ -41,9 +41,10 @@ pub const EVENT_MOUSE_LEAVE: u32 = 13;
 pub const EVENT_MOUSE_DOWN: u32 = 14;
 pub const EVENT_MOUSE_UP: u32 = 15;
 pub const EVENT_MOUSE_MOVE: u32 = 16;
+pub const EVENT_SUBMIT: u32 = 17;
 
-/// Number of callback slots (EVENT_CLICK=1 .. EVENT_MOUSE_MOVE=16, index 0 unused).
-const NUM_CALLBACK_SLOTS: usize = 17;
+/// Number of callback slots (EVENT_CLICK=1 .. EVENT_SUBMIT=17, index 0 unused).
+const NUM_CALLBACK_SLOTS: usize = 18;
 
 // ── Layout types (Windows Forms-inspired) ────────────────────────────
 
@@ -301,6 +302,13 @@ pub struct ControlBase {
     /// Whether this control needs to be redrawn.
     pub dirty: bool,
 
+    /// Whether the mouse cursor is currently over this control.
+    pub hovered: bool,
+    /// Whether this control currently has keyboard focus.
+    pub focused: bool,
+    /// Whether this control is disabled (non-interactive, dimmed appearance).
+    pub disabled: bool,
+
     // ── Layout properties (Windows Forms-style) ──
     pub padding: Padding,
     pub margin: Margin,
@@ -333,6 +341,9 @@ impl ControlBase {
             color: 0,
             state: 0,
             dirty: true,
+            hovered: false,
+            focused: false,
+            disabled: false,
             padding: Padding::default(),
             margin: Margin::default(),
             dock: DockStyle::None,
@@ -426,19 +437,22 @@ pub struct EventResponse {
     pub consumed: bool,
     pub fire_click: bool,
     pub fire_change: bool,
+    pub fire_submit: bool,
 }
 
 impl EventResponse {
     /// Event was ignored (not consumed).
-    pub const IGNORED: Self = Self { consumed: false, fire_click: false, fire_change: false };
+    pub const IGNORED: Self = Self { consumed: false, fire_click: false, fire_change: false, fire_submit: false };
     /// Event was consumed, but no callback needed.
-    pub const CONSUMED: Self = Self { consumed: true, fire_click: false, fire_change: false };
+    pub const CONSUMED: Self = Self { consumed: true, fire_click: false, fire_change: false, fire_submit: false };
     /// Event consumed -> fire on_click callback.
-    pub const CLICK: Self = Self { consumed: true, fire_click: true, fire_change: false };
+    pub const CLICK: Self = Self { consumed: true, fire_click: true, fire_change: false, fire_submit: false };
     /// Event consumed -> fire on_change callback.
-    pub const CHANGED: Self = Self { consumed: true, fire_click: false, fire_change: true };
+    pub const CHANGED: Self = Self { consumed: true, fire_click: false, fire_change: true, fire_submit: false };
     /// Event consumed -> fire both callbacks.
-    pub const CLICK_AND_CHANGED: Self = Self { consumed: true, fire_click: true, fire_change: true };
+    pub const CLICK_AND_CHANGED: Self = Self { consumed: true, fire_click: true, fire_change: true, fire_submit: false };
+    /// Event consumed -> fire on_submit callback (Enter key in text fields).
+    pub const SUBMIT: Self = Self { consumed: true, fire_click: false, fire_change: false, fire_submit: true };
 }
 
 // ── Control trait — virtual base class ──────────────────────────────
@@ -504,10 +518,16 @@ pub trait Control {
     // ── Virtual event handlers (override in subclasses) ──────────────
 
     /// Called when mouse cursor enters this control's bounds.
-    fn handle_mouse_enter(&mut self) {}
+    fn handle_mouse_enter(&mut self) {
+        self.base_mut().hovered = true;
+        self.base_mut().dirty = true;
+    }
 
     /// Called when mouse cursor leaves this control's bounds.
-    fn handle_mouse_leave(&mut self) {}
+    fn handle_mouse_leave(&mut self) {
+        self.base_mut().hovered = false;
+        self.base_mut().dirty = true;
+    }
 
     /// Called when mouse button is pressed on this control.
     /// `local_x/y` are relative to this control's top-left corner.
@@ -548,10 +568,16 @@ pub trait Control {
     }
 
     /// Called when this control receives keyboard focus.
-    fn handle_focus(&mut self) {}
+    fn handle_focus(&mut self) {
+        self.base_mut().focused = true;
+        self.base_mut().dirty = true;
+    }
 
     /// Called when this control loses keyboard focus.
-    fn handle_blur(&mut self) {}
+    fn handle_blur(&mut self) {
+        self.base_mut().focused = false;
+        self.base_mut().dirty = true;
+    }
 
     // ── Default property accessors (delegate to ControlBase) ────────
 

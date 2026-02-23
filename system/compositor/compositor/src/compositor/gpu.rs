@@ -68,18 +68,20 @@ impl Compositor {
 
     pub fn flush_gpu(&mut self) {
         if !self.gpu_cmds.is_empty() {
-            // Ensure all Write-Combining framebuffer stores are committed to VRAM
-            // before the GPU processes UPDATE/FLIP commands. Without this barrier,
-            // the CPU's WC buffers may not be flushed, causing the GPU to read
-            // stale framebuffer data (rendering artifacts / partial updates).
-            unsafe { core::arch::asm!("sfence", options(nostack, preserves_flags)); }
+            // Only issue sfence when VRAM was actually written (flush_region sets vram_dirty).
+            // Without this barrier after VRAM writes, the CPU's WC buffers may not be
+            // flushed, causing the GPU to read stale framebuffer data.
+            if self.vram_dirty {
+                unsafe { core::arch::asm!("sfence", options(nostack, preserves_flags)); }
+                self.vram_dirty = false;
+            }
             ipc::gpu_command(&self.gpu_cmds);
             self.gpu_cmds.clear();
         }
     }
 
     /// Flush a region from back buffer to the visible framebuffer (no offset).
-    pub fn flush_region_pub(&self, rect: &Rect) {
+    pub fn flush_region_pub(&mut self, rect: &Rect) {
         self.flush_region(rect, 0);
     }
 

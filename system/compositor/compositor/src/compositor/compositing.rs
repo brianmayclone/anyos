@@ -45,14 +45,15 @@ impl Compositor {
     }
 
     /// Main compositing function. Composites all dirty regions.
-    pub fn compose(&mut self) {
+    /// Returns `true` if any damage was processed (screen content changed).
+    pub fn compose(&mut self) -> bool {
         self.collect_dirty_damage();
 
         // Check for GPU-accelerated RECT_COPY path (window drag optimization)
         let hint = self.accel_move_hint.take();
 
         if self.damage.is_empty() {
-            return;
+            return false;
         }
 
         self.merge_damage_if_needed();
@@ -66,7 +67,7 @@ impl Compositor {
         self.damage.retain(|r| !r.is_empty());
 
         if self.damage.is_empty() {
-            return;
+            return false;
         }
 
         // Swap damage into compositing_damage (avoids drain+collect heap allocation).
@@ -82,7 +83,7 @@ impl Compositor {
                     let layer = &self.layers[moved_idx];
                     if layer.opaque || (layer.width > 16 && layer.height > 16) {
                         self.compose_with_rect_copy(h);
-                        return;
+                        return true;
                     }
                 }
             }
@@ -105,12 +106,15 @@ impl Compositor {
             } else {
                 0
             };
-            for rect in &self.prev_damage {
-                self.flush_region(rect, back_offset);
+            let prev_len = self.prev_damage.len();
+            for i in 0..prev_len {
+                let rect = self.prev_damage[i];
+                self.flush_region(&rect, back_offset);
             }
             let damage_len = self.compositing_damage.len();
             for i in 0..damage_len {
-                self.flush_region(&self.compositing_damage[i], back_offset);
+                let rect = self.compositing_damage[i];
+                self.flush_region(&rect, back_offset);
             }
             self.gpu_cmds.push([GPU_FLIP, 0, 0, 0, 0, 0, 0, 0, 0]);
             self.current_page = 1 - self.current_page;
@@ -129,6 +133,7 @@ impl Compositor {
         }
 
         self.flush_gpu();
+        true
     }
 
     /// GPU-accelerated compositing for window drag (RECT_COPY fast path).
@@ -181,53 +186,45 @@ impl Compositor {
             }
         }
 
+        // Check if any layer above the moved window overlapped the OLD position.
+        // RECT_COPY copies raw VRAM from old_b→new_b, which includes alpha-blended
+        // pixels from layers above (e.g. a semi-transparent Dock). These artifacts
+        // appear at wrong positions in new_b. If detected, flush entire new_b from
+        // back_buffer (which has the correct composited result from step above).
+        let mut need_full_flush = old_b.width != new_b.width || old_b.height != new_b.height;
+
         if let Some(moved_idx) = self.layer_index(hint.layer_id) {
-            for li in (moved_idx + 1)..self.layers.len() {
-                if !self.layers[li].visible {
-                    continue;
+            if !need_full_flush {
+                for li in (moved_idx + 1)..self.layers.len() {
+                    if !self.layers[li].visible { continue; }
+                    let above_bounds = self.layers[li].damage_bounds();
+                    if old_b.intersect(&above_bounds).is_some()
+                        || new_b.intersect(&above_bounds).is_some()
+                    {
+                        need_full_flush = true;
+                        break;
+                    }
                 }
-                let above_bounds = self.layers[li].damage_bounds();
-                if let Some(intersection) = new_b.intersect(&above_bounds) {
-                    self.flush_region(&intersection, 0);
-                    self.gpu_cmds.push([
-                        GPU_UPDATE,
-                        intersection.x as u32,
-                        intersection.y as u32,
-                        intersection.width,
-                        intersection.height,
-                        0, 0, 0, 0,
-                    ]);
+            }
+
+            if !need_full_flush {
+                // No above layers overlap — only fix non-opaque corners
+                if !self.layers[moved_idx].opaque {
+                    const CORNER_R: u32 = 8;
+                    let top_strip = Rect::new(new_b.x, new_b.y, new_b.width, CORNER_R);
+                    self.flush_region(&top_strip, 0);
+                    self.gpu_cmds.push([GPU_UPDATE, top_strip.x as u32, top_strip.y as u32,
+                        top_strip.width, top_strip.height, 0, 0, 0, 0]);
+                    let bot_strip = Rect::new(new_b.x, new_b.bottom() - CORNER_R as i32, new_b.width, CORNER_R);
+                    self.flush_region(&bot_strip, 0);
+                    self.gpu_cmds.push([GPU_UPDATE, bot_strip.x as u32, bot_strip.y as u32,
+                        bot_strip.width, bot_strip.height, 0, 0, 0, 0]);
                 }
             }
         }
 
-        // For non-opaque layers (rounded corners), flush corner strips from the back buffer
-        // to correct alpha-blended corner pixels that RECT_COPY carried from the old position.
-        // The back buffer has the correct compositing result from composite_rect(&new_b) above.
-        let is_opaque = if let Some(moved_idx) = self.layer_index(hint.layer_id) {
-            self.layers[moved_idx].opaque
-        } else {
-            true
-        };
-
-        if !is_opaque {
-            const CORNER_R: u32 = 8; // must match window corner radius
-            // Top strip (covers TL + TR corners)
-            let top_strip = Rect::new(new_b.x, new_b.y, new_b.width, CORNER_R);
-            self.flush_region(&top_strip, 0);
-            self.gpu_cmds.push([GPU_UPDATE, top_strip.x as u32, top_strip.y as u32,
-                top_strip.width, top_strip.height, 0, 0, 0, 0]);
-            // Bottom strip (covers BL + BR corners)
-            let bot_strip = Rect::new(new_b.x, new_b.bottom() - CORNER_R as i32, new_b.width, CORNER_R);
-            self.flush_region(&bot_strip, 0);
-            self.gpu_cmds.push([GPU_UPDATE, bot_strip.x as u32, bot_strip.y as u32,
-                bot_strip.width, bot_strip.height, 0, 0, 0, 0]);
-        }
-
-        // If the window was partially off-screen, old_b and new_b have different
-        // dimensions (screen clipping). RECT_COPY reads stale pixels for the area
-        // that was never composited. Flush entire new_b from back buffer to fix.
-        if old_b.width != new_b.width || old_b.height != new_b.height {
+        if need_full_flush {
+            // Flush entire new_b from back_buffer to overwrite RECT_COPY artifacts
             self.flush_region(&new_b, 0);
         }
 

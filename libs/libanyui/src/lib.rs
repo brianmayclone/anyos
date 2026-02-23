@@ -217,6 +217,7 @@ pub extern "C" fn anyui_shutdown() {
 
 /// Create a top-level window at position (x, y). Returns a ControlId (0 on failure).
 /// x/y: pixel coordinates, or -1 for compositor auto-placement (CW_USEDEFAULT).
+/// flags: window flags (borderless, shadow, etc.) — 0 for default decorated window.
 #[no_mangle]
 pub extern "C" fn anyui_create_window(
     title: *const u8,
@@ -225,6 +226,7 @@ pub extern "C" fn anyui_create_window(
     y: i32,
     w: u32,
     h: u32,
+    flags: u32,
 ) -> ControlId {
     let st = state();
     let id = st.next_id;
@@ -241,7 +243,7 @@ pub extern "C" fn anyui_create_window(
 
     // Create compositor window via DLL
     let (window_id, shm_id, surface) =
-        match compositor::create_window(st.channel_id, st.sub_id, x, y, w, h, 0) {
+        match compositor::create_window(st.channel_id, st.sub_id, x, y, w, h, flags) {
             Some(result) => result,
             None => return 0,
         };
@@ -1563,6 +1565,11 @@ pub extern "C" fn anyui_on_change(id: ControlId, cb: Callback, userdata: u64) {
 }
 
 #[no_mangle]
+pub extern "C" fn anyui_on_submit(id: ControlId, cb: Callback, userdata: u64) {
+    anyui_on_event(id, control::EVENT_SUBMIT, cb, userdata);
+}
+
+#[no_mangle]
 pub extern "C" fn anyui_set_context_menu(id: ControlId, menu_id: ControlId) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
@@ -1820,4 +1827,51 @@ fn collect_descendants(st: &AnyuiState, id: ControlId, out: &mut Vec<ControlId>)
             collect_descendants(st, child, out);
         }
     }
+}
+
+// ── Blur-behind ─────────────────────────────────────────────────────
+
+/// Enable or disable blur-behind on a window.
+/// radius=0 disables, radius>0 enables with given kernel radius.
+#[no_mangle]
+pub extern "C" fn anyui_set_blur_behind(id: ControlId, radius: u32) {
+    let st = state();
+    if let Some(idx) = st.windows.iter().position(|&w| w == id) {
+        compositor::set_blur_behind(
+            st.channel_id,
+            st.comp_windows[idx].window_id,
+            radius,
+        );
+    }
+}
+
+// ── Focus management ────────────────────────────────────────────────
+
+/// Programmatically set keyboard focus to a control.
+#[no_mangle]
+pub extern "C" fn anyui_set_focus(id: ControlId) {
+    let st = state();
+    // Blur the currently focused control
+    if let Some(old_id) = st.focused {
+        if old_id != id {
+            if let Some(idx) = control::find_idx(&st.controls, old_id) {
+                st.controls[idx].handle_blur();
+            }
+        }
+    }
+    // Focus the new control
+    if let Some(idx) = control::find_idx(&st.controls, id) {
+        st.controls[idx].handle_focus();
+        st.focused = Some(id);
+    }
+}
+
+// ── Screen size ─────────────────────────────────────────────────────
+
+/// Get screen dimensions. Returns (width, height) via out pointers.
+#[no_mangle]
+pub extern "C" fn anyui_screen_size(out_w: *mut u32, out_h: *mut u32) {
+    let (w, h) = compositor::screen_size();
+    if !out_w.is_null() { unsafe { *out_w = w; } }
+    if !out_h.is_null() { unsafe { *out_h = h; } }
 }

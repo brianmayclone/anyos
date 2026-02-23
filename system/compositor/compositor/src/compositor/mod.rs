@@ -71,6 +71,9 @@ pub struct Compositor {
 
     /// Reusable Vec for compositing loop (swap with self.damage to avoid drain+collect alloc).
     pub(crate) compositing_damage: Vec<Rect>,
+
+    /// Tracks whether VRAM was written since the last sfence.
+    pub(crate) vram_dirty: bool,
 }
 
 impl Compositor {
@@ -98,6 +101,7 @@ impl Compositor {
             vram_allocator: None,
             blur_temp: Vec::with_capacity(width.max(height) as usize),
             compositing_damage: Vec::with_capacity(32),
+            vram_dirty: false,
         }
     }
 
@@ -404,7 +408,7 @@ impl Compositor {
     // ── Framebuffer I/O ─────────────────────────────────────────────────
 
     /// Copy a region from back buffer to the framebuffer (at y_offset for double-buffering).
-    pub(crate) fn flush_region(&self, rect: &Rect, y_offset: u32) {
+    pub(crate) fn flush_region(&mut self, rect: &Rect, y_offset: u32) {
         let bb_stride = self.fb_width as usize;
         let fb_stride = (self.fb_pitch / 4) as usize;
 
@@ -424,6 +428,7 @@ impl Compositor {
                 );
             }
         }
+        self.vram_dirty = true;
     }
 
     /// Full-screen damage (force recomposition of everything).

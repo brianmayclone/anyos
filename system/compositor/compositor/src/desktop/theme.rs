@@ -64,6 +64,28 @@ pub(crate) fn color_titlebar_text() -> u32 {
     if is_light() { 0xFF1D1D1F } else { 0xFFE0E0E0 }
 }
 
+// ── Title Bar Gradient (top → bottom for subtle depth) ────────────────────
+
+#[inline(always)]
+pub(crate) fn color_titlebar_focused_top() -> u32 {
+    if is_light() { 0xFFEEEEEE } else { 0xFF454545 }
+}
+
+#[inline(always)]
+pub(crate) fn color_titlebar_focused_bottom() -> u32 {
+    if is_light() { 0xFFE0E0E0 } else { 0xFF353535 }
+}
+
+#[inline(always)]
+pub(crate) fn color_titlebar_unfocused_top() -> u32 {
+    if is_light() { 0xFFF4F4F4 } else { 0xFF303030 }
+}
+
+#[inline(always)]
+pub(crate) fn color_titlebar_unfocused_bottom() -> u32 {
+    if is_light() { 0xFFEAEAEA } else { 0xFF252525 }
+}
+
 // ── Window Colors ──────────────────────────────────────────────────────────
 
 #[inline(always)]

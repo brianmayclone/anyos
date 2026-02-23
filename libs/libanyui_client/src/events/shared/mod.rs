@@ -5,6 +5,7 @@ mod checked;
 mod common;
 mod scroll;
 mod selection;
+mod submit;
 mod text;
 mod value;
 
@@ -13,5 +14,6 @@ pub use checked::CheckedChangedEvent;
 pub use common::EventArgs;
 pub use scroll::ScrollChangedEvent;
 pub use selection::SelectionChangedEvent;
+pub use submit::SubmitEvent;
 pub use text::TextChangedEvent;
 pub use value::ValueChangedEvent;

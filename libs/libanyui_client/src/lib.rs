@@ -114,6 +114,7 @@ pub const EVENT_MOUSE_LEAVE: u32 = 13;
 pub const EVENT_MOUSE_DOWN: u32 = 14;
 pub const EVENT_MOUSE_UP: u32 = 15;
 pub const EVENT_MOUSE_MOVE: u32 = 16;
+pub const EVENT_SUBMIT: u32 = 17;
 
 /// Callback type: extern "C" fn(control_id: u32, event_type: u32, userdata: u64)
 pub type Callback = extern "C" fn(u32, u32, u64);
@@ -127,7 +128,7 @@ struct AnyuiLib {
     // Core
     init: extern "C" fn() -> u32,
     shutdown: extern "C" fn(),
-    create_window: extern "C" fn(*const u8, u32, i32, i32, u32, u32) -> u32,
+    create_window: extern "C" fn(*const u8, u32, i32, i32, u32, u32, u32) -> u32,
     add_control: extern "C" fn(u32, u32, i32, i32, u32, u32, *const u8, u32) -> u32,
     create_control: extern "C" fn(u32, *const u8, u32) -> u32,
     add_child: extern "C" fn(u32, u32),
@@ -142,6 +143,7 @@ struct AnyuiLib {
     on_event_fn: extern "C" fn(u32, u32, Callback, u64),
     on_click_fn: extern "C" fn(u32, Callback, u64),
     on_change_fn: extern "C" fn(u32, Callback, u64),
+    on_submit_fn: extern "C" fn(u32, Callback, u64),
     run_fn: extern "C" fn(),
     run_once_fn: extern "C" fn() -> u32,
     quit_fn: extern "C" fn(),
@@ -261,6 +263,12 @@ struct AnyuiLib {
     open_file_fn: extern "C" fn(*mut u8, u32) -> u32,
     save_file_fn: extern "C" fn(*mut u8, u32, *const u8, u32) -> u32,
     create_folder_fn: extern "C" fn(*mut u8, u32) -> u32,
+    // Blur-behind
+    set_blur_behind: extern "C" fn(u32, u32),
+    // Focus management
+    set_focus: extern "C" fn(u32),
+    // Screen size
+    screen_size: extern "C" fn(*mut u32, *mut u32),
 }
 
 static mut LIB: Option<AnyuiLib> = None;
@@ -307,6 +315,7 @@ pub fn init() -> bool {
             on_event_fn: resolve(&handle, "anyui_on_event"),
             on_click_fn: resolve(&handle, "anyui_on_click"),
             on_change_fn: resolve(&handle, "anyui_on_change"),
+            on_submit_fn: resolve(&handle, "anyui_on_submit"),
             run_fn: resolve(&handle, "anyui_run"),
             run_once_fn: resolve(&handle, "anyui_run_once"),
             quit_fn: resolve(&handle, "anyui_quit"),
@@ -426,6 +435,12 @@ pub fn init() -> bool {
             open_file_fn: resolve(&handle, "anyui_open_file"),
             save_file_fn: resolve(&handle, "anyui_save_file"),
             create_folder_fn: resolve(&handle, "anyui_create_folder"),
+            // Blur-behind
+            set_blur_behind: resolve(&handle, "anyui_set_blur_behind"),
+            // Focus management
+            set_focus: resolve(&handle, "anyui_set_focus"),
+            // Screen size
+            screen_size: resolve(&handle, "anyui_screen_size"),
             _handle: handle,
         };
         (lib.init)();
@@ -621,11 +636,22 @@ impl Control {
         self.on_event_raw(EVENT_MOUSE_UP, cb, userdata);
     }
 
+    pub fn on_submit_raw(&self, cb: Callback, userdata: u64) {
+        (lib().on_submit_fn)(self.id, cb, userdata);
+    }
+
     // ── Context menu ──
 
     /// Attach a context menu to this control. Shown on right-click.
     pub fn set_context_menu(&self, menu: &impl Widget) {
         (lib().set_context_menu)(self.id, menu.id());
+    }
+
+    // ── Focus ──
+
+    /// Programmatically set keyboard focus to this control.
+    pub fn focus(&self) {
+        (lib().set_focus)(self.id);
     }
 
     // ── Removal ──
@@ -761,4 +787,22 @@ pub fn set_timer(interval_ms: u32, mut f: impl FnMut() + 'static) -> u32 {
 /// Remove a previously registered timer. No-op if the ID is invalid.
 pub fn kill_timer(timer_id: u32) {
     (lib().kill_timer_fn)(timer_id);
+}
+
+// ── Blur-behind API ─────────────────────────────────────────────────
+
+/// Enable or disable blur-behind on a window (frosted glass effect).
+/// radius=0 disables, radius>0 enables with the given blur kernel radius.
+pub fn set_blur_behind(window: &impl Widget, radius: u32) {
+    (lib().set_blur_behind)(window.id(), radius);
+}
+
+// ── Screen size API ─────────────────────────────────────────────────
+
+/// Get screen dimensions.
+pub fn screen_size() -> (u32, u32) {
+    let mut w: u32 = 0;
+    let mut h: u32 = 0;
+    (lib().screen_size)(&mut w, &mut h);
+    (w, h)
 }

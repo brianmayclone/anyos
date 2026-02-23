@@ -292,12 +292,15 @@ pub fn run_once() -> u32 {
                     let keycode = ev[2];
                     let char_code = ev[3];
 
+                    let mut handled = false;
+
                     if let Some(focus_id) = st.focused {
                         if let Some(idx) = control::find_idx(&st.controls, focus_id) {
                             let resp = st.controls[idx].handle_key_down(keycode, char_code);
                             st.controls[idx].base_mut().dirty = true;
 
                             if resp.consumed {
+                                handled = true;
                                 fire_event_callback(&st.controls, focus_id, control::EVENT_KEY, &mut pending_cbs);
                             }
                             if resp.fire_change {
@@ -306,6 +309,19 @@ pub fn run_once() -> u32 {
                             if resp.fire_click {
                                 fire_event_callback(&st.controls, focus_id, control::EVENT_CLICK, &mut pending_cbs);
                             }
+                            if resp.fire_submit {
+                                fire_event_callback(&st.controls, focus_id, control::EVENT_SUBMIT, &mut pending_cbs);
+                            }
+                        }
+                    }
+
+                    if !handled {
+                        // Tab (scancode 0x0F): cycle focus to next focusable control
+                        if keycode == 0x0F {
+                            cycle_focus(st, win_id, &mut pending_cbs);
+                        } else {
+                            // Bubble unhandled key events to the window
+                            fire_event_callback(&st.controls, win_id, control::EVENT_KEY, &mut pending_cbs);
                         }
                     }
                 }
@@ -456,6 +472,58 @@ fn fire_event_callback(
                 userdata: slot.userdata,
             });
         }
+    }
+}
+
+/// Cycle keyboard focus to the next focusable control within the window.
+fn cycle_focus(
+    st: &mut crate::AnyuiState,
+    win_id: ControlId,
+    pending: &mut Vec<PendingCallback>,
+) {
+    // Collect all focusable controls that belong to this window
+    let focusable: Vec<ControlId> = st.controls.iter()
+        .filter(|c| c.accepts_focus() && c.id() != win_id)
+        .filter(|c| {
+            // Ensure the control belongs to this window by checking ancestry
+            let mut cur = c.parent_id();
+            loop {
+                if cur == win_id { return true; }
+                if cur == 0 { return false; }
+                match control::find_idx(&st.controls, cur) {
+                    Some(idx) => cur = st.controls[idx].parent_id(),
+                    None => return false,
+                }
+            }
+        })
+        .map(|c| c.id())
+        .collect();
+
+    if focusable.is_empty() { return; }
+
+    // Find current focused index
+    let cur_idx = st.focused
+        .and_then(|fid| focusable.iter().position(|&id| id == fid))
+        .unwrap_or(0);
+
+    let next_idx = (cur_idx + 1) % focusable.len();
+    let next_id = focusable[next_idx];
+
+    // Blur old
+    if let Some(old_id) = st.focused {
+        if let Some(idx) = control::find_idx(&st.controls, old_id) {
+            st.controls[idx].handle_blur();
+            st.controls[idx].base_mut().dirty = true;
+            fire_event_callback(&st.controls, old_id, control::EVENT_BLUR, pending);
+        }
+    }
+
+    // Focus new
+    if let Some(idx) = control::find_idx(&st.controls, next_id) {
+        st.controls[idx].handle_focus();
+        st.controls[idx].base_mut().dirty = true;
+        st.focused = Some(next_id);
+        fire_event_callback(&st.controls, next_id, control::EVENT_FOCUS, pending);
     }
 }
 

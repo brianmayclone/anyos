@@ -368,6 +368,31 @@ pub fn text_width_n(text: &[u8], n: usize) -> u32 {
     w
 }
 
+// ── Cheap depth effects (no SDF — just 1px color tricks) ──────────
+
+/// Draw a 1px highlight line inside the top of a rounded rect.
+/// Cost: 1 fill_rect call. Creates a subtle "raised" look.
+pub fn draw_top_highlight(s: &Surface, x: i32, y: i32, w: u32, r: u32, color: u32) {
+    if w <= r * 2 + 2 { return; }
+    fill_rect(s, x + r as i32 + 1, y + 1, w - r * 2 - 2, 1, color);
+}
+
+/// Draw a 1px shadow line below a rounded rect (just outside its bottom edge).
+/// Cost: 1 fill_rect call. Creates a subtle "elevated" look.
+pub fn draw_bottom_shadow(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, color: u32) {
+    if w <= r * 2 + 2 { return; }
+    fill_rect(s, x + r as i32 + 1, y + h as i32, w - r * 2 - 2, 1, color);
+}
+
+/// Draw a 2px focus ring around a rounded rect using the accent color.
+/// Cost: 2 draw_rounded_border calls. Used for keyboard focus indication.
+pub fn draw_focus_ring(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, color: u32) {
+    if w > 2 && h > 2 {
+        draw_rounded_border(s, x - 1, y - 1, w + 2, h + 2, r + 1, color);
+        draw_rounded_border(s, x - 2, y - 2, w + 4, h + 4, r + 2, crate::theme::with_alpha(color, 100));
+    }
+}
+
 // ── Shadow rendering ───────────────────────────────────────────────
 
 /// Integer square root (Newton's method).

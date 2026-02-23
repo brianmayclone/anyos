@@ -25,19 +25,44 @@ impl Control for Slider {
         let x = ax + self.base.x;
         let y = ay + self.base.y;
         let tc = crate::theme::colors();
+        let disabled = self.base.disabled;
+        let focused = self.base.focused;
         let track_y = y + (self.base.h as i32 - 4) / 2;
+
+        // Track background
         crate::draw::fill_rounded_rect(surface, x, track_y, self.base.w, 4, 2, tc.control_bg);
+
+        // Filled portion
         let val = self.base.state.min(100);
         let fill_w = (self.base.w as u64 * val as u64 / 100) as u32;
         if fill_w > 0 {
-            crate::draw::fill_rounded_rect(surface, x, track_y, fill_w, 4, 2, tc.accent);
+            let accent = if disabled { tc.toggle_off } else { tc.accent };
+            crate::draw::fill_rounded_rect(surface, x, track_y, fill_w, 4, 2, accent);
         }
+
+        // Thumb
         let thumb_x = x + fill_w as i32 - 9;
         let thumb_y = y + (self.base.h as i32 - 18) / 2;
-        crate::draw::fill_rounded_rect(surface, thumb_x, thumb_y, 18, 18, 9, tc.toggle_thumb);
+        let thumb_color = if disabled { crate::theme::darken(tc.toggle_thumb, 30) } else { tc.toggle_thumb };
+
+        // 1px shadow under thumb
+        if !disabled {
+            crate::draw::fill_rounded_rect(surface, thumb_x, thumb_y + 1, 18, 18, 9, crate::theme::with_alpha(0xFF000000, 20));
+        }
+        crate::draw::fill_rounded_rect(surface, thumb_x, thumb_y, 18, 18, 9, thumb_color);
+
+        // Subtle thumb border
+        if !disabled {
+            crate::draw::draw_rounded_border(surface, thumb_x, thumb_y, 18, 18, 9, crate::theme::with_alpha(0xFF000000, 15));
+        }
+
+        // Focus ring on thumb
+        if focused && !disabled {
+            crate::draw::draw_focus_ring(surface, thumb_x, thumb_y, 18, 18, 9, tc.accent);
+        }
     }
 
-    fn is_interactive(&self) -> bool { true }
+    fn is_interactive(&self) -> bool { !self.base.disabled }
 
     fn handle_mouse_down(&mut self, lx: i32, _ly: i32, _button: u32) -> EventResponse {
         self.dragging = true;

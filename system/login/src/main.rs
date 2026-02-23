@@ -4,13 +4,10 @@
 anyos_std::entry!(main);
 
 use anyos_std::process;
-use anyos_std::sys;
-use anyos_std::ui::window;
-use uisys_client::*;
+use libanyui_client as ui;
+use ui::Widget;
 
-mod alert;
 mod assets;
-mod auth;
 
 const DIALOG_W: u32 = 340;
 const DIALOG_H: u32 = 340;
@@ -20,194 +17,149 @@ const BTN_W: u32 = 280;
 const BTN_H: u32 = 34;
 const PAD: i32 = 30;
 
+/// Set by the login callback on success; read after ui::run() returns.
+static mut LOGIN_UID: u32 = u32::MAX;
+
 fn main() -> u32 {
-    let logo = assets::load_and_scale_logo(48);
-
-    let (sw, sh) = window::screen_size();
-    let wx = ((sw as i32 - DIALOG_W as i32) / 2).max(0);
-    let wy = ((sh as i32 - DIALOG_H as i32) / 2).max(0);
-
-    let flags = window::WIN_FLAG_BORDERLESS
-        | window::WIN_FLAG_SHADOW
-        | window::WIN_FLAG_NOT_RESIZABLE
-        | window::WIN_FLAG_NO_CLOSE
-        | window::WIN_FLAG_NO_MINIMIZE
-        | window::WIN_FLAG_NO_MAXIMIZE;
-    let win_id = window::create_ex(
-        "Login", wx as u16, wy as u16, DIALOG_W as u16, DIALOG_H as u16, flags,
-    );
-    if win_id == u32::MAX {
+    if !ui::init() {
         return 0;
     }
 
-    // Measure welcome text for centering
-    let welcome_text = "Welcome to .anyOS";
-    let (welcome_tw, _) = label_measure(welcome_text, FontSize::Title);
+    let (sw, sh) = ui::screen_size();
+    let wx = ((sw as i32 - DIALOG_W as i32) / 2).max(0);
+    let wy = ((sh as i32 - DIALOG_H as i32) / 2).max(0);
 
-    // Layout: compute Y positions
+    let flags = ui::WIN_FLAG_BORDERLESS
+        | ui::WIN_FLAG_SHADOW
+        | ui::WIN_FLAG_NOT_RESIZABLE
+        | ui::WIN_FLAG_NO_CLOSE
+        | ui::WIN_FLAG_NO_MINIMIZE
+        | ui::WIN_FLAG_NO_MAXIMIZE;
+    let win = ui::Window::new_with_flags("Login", wx, wy, DIALOG_W, DIALOG_H, flags);
+
+    // Semi-transparent background for blur-behind effect
+    win.set_color(0xD8F0F0F0);
+    ui::set_blur_behind(&win, 8);
+
+    // ── Logo ──
     let mut y_cursor: i32 = 30;
-
-    let logo_display_h: u32 = if logo.is_some() { 48 } else { 0 };
-    let logo_y = y_cursor;
-    if logo.is_some() {
-        y_cursor += logo_display_h as i32 + 40;
+    if let Some((pixels, dw, dh)) = assets::load_and_scale_logo(48) {
+        let logo = ui::ImageView::new(dw, dh);
+        logo.set_pixels(&pixels, dw, dh);
+        logo.set_position(((DIALOG_W as i32 - dw as i32) / 2).max(0), y_cursor);
+        win.add(&logo);
+        y_cursor += dh as i32 + 40;
     }
 
-    let welcome_x = ((DIALOG_W as i32 - welcome_tw as i32) / 2).max(0);
-    let welcome_y = y_cursor;
+    // ── Welcome label ──
+    let welcome = ui::Label::new("Welcome to .anyOS");
+    welcome.set_font_size(20);
+    welcome.set_position(PAD, y_cursor);
+    welcome.set_size(FIELD_W, 30);
+    win.add(&welcome);
     y_cursor += 46;
 
-    let user_label_y = y_cursor;
+    // ── Username ──
+    let user_lbl = ui::Label::new("Username");
+    user_lbl.set_font_size(11);
+    user_lbl.set_position(PAD, y_cursor);
+    win.add(&user_lbl);
     y_cursor += 16;
-    let user_field_y = y_cursor;
+
+    let user_field = ui::TextField::new();
+    user_field.set_placeholder("Enter username");
+    user_field.set_position(PAD, y_cursor);
+    user_field.set_size(FIELD_W, FIELD_H);
+    win.add(&user_field);
     y_cursor += FIELD_H as i32 + 12;
 
-    let pass_label_y = y_cursor;
+    // ── Password ──
+    let pass_lbl = ui::Label::new("Password");
+    pass_lbl.set_font_size(11);
+    pass_lbl.set_position(PAD, y_cursor);
+    win.add(&pass_lbl);
     y_cursor += 16;
-    let pass_field_y = y_cursor;
+
+    let pass_field = ui::TextField::new();
+    pass_field.set_password_mode(true);
+    pass_field.set_placeholder("Enter password");
+    pass_field.set_position(PAD, y_cursor);
+    pass_field.set_size(FIELD_W, FIELD_H);
+    win.add(&pass_field);
     y_cursor += FIELD_H as i32 + 16;
 
-    let btn_y = y_cursor;
+    // ── Login button ──
+    let login_btn = ui::Button::new("Log In");
+    login_btn.set_position(PAD, y_cursor);
+    login_btn.set_size(BTN_W, BTN_H);
+    login_btn.set_state(0); // disabled initially (username empty)
+    win.add(&login_btn);
 
-    let field_x = PAD;
-    let mut username_field = UiTextField::new(field_x, user_field_y, FIELD_W, FIELD_H);
-    username_field.focused = true;
+    // Initial focus on username field
+    user_field.focus();
 
-    let mut password_field = UiTextField::new(field_x, pass_field_y, FIELD_W, FIELD_H);
-    password_field.password = true;
+    // ── Callbacks ──
 
-    let mut login_btn = UiButton::new(PAD, btn_y, BTN_W, BTN_H, ButtonStyle::Primary);
+    // Enable/disable button when username text changes
+    let btn_id = login_btn.id();
+    let uf_id = user_field.id();
+    user_field.on_text_changed(move |_| {
+        let mut buf = [0u8; 128];
+        let len = ui::Control::from_id(uf_id).get_text(&mut buf);
+        ui::Control::from_id(btn_id).set_state(if len > 0 { 1 } else { 0 });
+    });
 
-    let mut focused_field: u8 = 0;
-    let mut dirty = true;
-    let mut event = [0u32; 5];
-
-    loop {
-        let t0 = sys::uptime_ms();
-        if dirty {
-            render_login(
-                win_id, &logo, logo_y,
-                welcome_x, welcome_y, welcome_text,
-                field_x, user_label_y, &username_field,
-                pass_label_y, &password_field,
-                &login_btn,
-            );
-            dirty = false;
+    // Button click → attempt login
+    let uf_id = user_field.id();
+    let pf_id = pass_field.id();
+    login_btn.on_click(move |_| {
+        if attempt_login(uf_id, pf_id) {
+            ui::quit();
         }
+    });
 
-        while window::get_event(win_id, &mut event) == 1 {
-            let ev = UiEvent::from_raw(&event);
-            dirty = true;
+    // Enter on username field → move focus to password
+    let pf_id2 = pass_field.id();
+    user_field.on_submit(move |_| {
+        ui::Control::from_id(pf_id2).focus();
+    });
 
-            if event[0] == EVENT_WINDOW_CLOSE {
-                continue;
-            }
-
-            // Tab switches focus between fields
-            if ev.is_key_down() && ev.key_code() == KEY_TAB {
-                if focused_field == 0 {
-                    focused_field = 1;
-                    username_field.focused = false;
-                    password_field.focused = true;
-                } else {
-                    focused_field = 0;
-                    username_field.focused = true;
-                    password_field.focused = false;
-                }
-                continue;
-            }
-
-            // Enter submits login
-            if ev.is_key_down() && ev.key_code() == KEY_ENTER {
-                if !username_field.text().is_empty() {
-                    let uid = auth::try_login(&username_field, &password_field);
-                    if uid != u32::MAX {
-                        window::destroy(win_id);
-                        return uid;
-                    }
-                    alert::show_error_alert(win_id);
-                    dirty = true;
-                }
-                continue;
-            }
-
-            // Mouse click to focus fields
-            if ev.is_mouse_down() {
-                let (mx, my) = ev.mouse_pos();
-                if textfield_hit_test(username_field.x, username_field.y, username_field.w, username_field.h, mx, my) {
-                    focused_field = 0;
-                    username_field.focused = true;
-                    password_field.focused = false;
-                } else if textfield_hit_test(password_field.x, password_field.y, password_field.w, password_field.h, mx, my) {
-                    focused_field = 1;
-                    username_field.focused = false;
-                    password_field.focused = true;
-                }
-            }
-
-            // Button click
-            if !username_field.text().is_empty() && login_btn.handle_event(&ev) {
-                let uid = auth::try_login(&username_field, &password_field);
-                if uid != u32::MAX {
-                    window::destroy(win_id);
-                    return uid;
-                }
-                alert::show_error_alert(win_id);
-                dirty = true;
-            }
-
-            // Forward events to focused field
-            if focused_field == 0 {
-                username_field.handle_event(&ev);
-            } else {
-                password_field.handle_event(&ev);
-            }
+    // Enter on password field → attempt login
+    let uf_id2 = user_field.id();
+    let pf_id3 = pass_field.id();
+    pass_field.on_submit(move |_| {
+        if attempt_login(uf_id2, pf_id3) {
+            ui::quit();
         }
+    });
 
-        let elapsed = sys::uptime_ms().wrapping_sub(t0);
-        if elapsed < 16 { process::sleep(16 - elapsed); }
-    }
+    // Blocks until quit() is called
+    ui::run();
+
+    unsafe { LOGIN_UID }
 }
 
-/// Render the full login dialog contents.
-#[allow(clippy::too_many_arguments)]
-fn render_login(
-    win_id: u32,
-    logo: &Option<(alloc::vec::Vec<u32>, u32, u32)>,
-    logo_y: i32,
-    welcome_x: i32,
-    welcome_y: i32,
-    welcome_text: &str,
-    field_x: i32,
-    user_label_y: i32,
-    username_field: &UiTextField,
-    pass_label_y: i32,
-    password_field: &UiTextField,
-    login_btn: &UiButton,
-) {
-    let bg = colors::WINDOW_BG();
-    window::fill_rect(win_id, 0, 0, DIALOG_W as u16, DIALOG_H as u16, bg);
-
-    if let Some((ref pixels, disp_w, disp_h)) = *logo {
-        let logo_x = ((DIALOG_W as i32 - disp_w as i32) / 2) as i16;
-        window::blit_alpha(win_id, logo_x, logo_y as i16, disp_w as u16, disp_h as u16, pixels);
+fn attempt_login(uf_id: u32, pf_id: u32) -> bool {
+    let mut ubuf = [0u8; 128];
+    let ulen = ui::Control::from_id(uf_id).get_text(&mut ubuf);
+    if ulen == 0 {
+        return false;
     }
+    let username = core::str::from_utf8(&ubuf[..ulen as usize]).unwrap_or("");
 
-    label(win_id, welcome_x, welcome_y, welcome_text, colors::TEXT(), FontSize::Title, TextAlign::Left);
+    let mut pbuf = [0u8; 128];
+    let plen = ui::Control::from_id(pf_id).get_text(&mut pbuf);
+    let password = core::str::from_utf8(&pbuf[..plen as usize]).unwrap_or("");
 
-    label(win_id, field_x, user_label_y, "Username", colors::TEXT_SECONDARY(), FontSize::Small, TextAlign::Left);
-    username_field.render(win_id, "Enter username");
-
-    label(win_id, field_x, pass_label_y, "Password", colors::TEXT_SECONDARY(), FontSize::Small, TextAlign::Left);
-    password_field.render(win_id, "Enter password");
-
-    let username_empty = username_field.text().is_empty();
-    if username_empty {
-        button(win_id, login_btn.x, login_btn.y, login_btn.w, login_btn.h,
-            "Log In", ButtonStyle::Primary, ButtonState::Disabled);
+    if process::authenticate(username, password) {
+        unsafe { LOGIN_UID = process::getuid() as u32; }
+        true
     } else {
-        login_btn.render(win_id, "Log In");
+        ui::MessageBox::show(
+            ui::MessageBoxType::Alert,
+            "Invalid username or password.\nPlease try again.",
+            Some("OK"),
+        );
+        false
     }
-
-    window::present(win_id);
 }

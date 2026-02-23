@@ -551,12 +551,12 @@ impl Desktop {
                     pixels, stride, full_h, 0, 0, cw, full_h, 8, color_window_border(),
                 );
 
-                let tb_color = if focused {
-                    color_titlebar_focused()
+                let (tb_top, tb_bot) = if focused {
+                    (color_titlebar_focused_top(), color_titlebar_focused_bottom())
                 } else {
-                    color_titlebar_unfocused()
+                    (color_titlebar_unfocused_top(), color_titlebar_unfocused_bottom())
                 };
-                fill_rounded_rect_top(pixels, stride, 0, 0, cw, TITLE_BAR_HEIGHT, 8, tb_color);
+                fill_rounded_rect_top_gradient(pixels, stride, 0, 0, cw, TITLE_BAR_HEIGHT, 8, tb_top, tb_bot);
 
                 let border_y = TITLE_BAR_HEIGHT - 1;
                 for x in 0..cw {
@@ -638,12 +638,12 @@ impl Desktop {
         if let Some(pixels) = self.compositor.layer_pixels(layer_id) {
             let stride = cw;
 
-            let tb_color = if focused {
-                color_titlebar_focused()
+            let (tb_top, tb_bot) = if focused {
+                (color_titlebar_focused_top(), color_titlebar_focused_bottom())
             } else {
-                color_titlebar_unfocused()
+                (color_titlebar_unfocused_top(), color_titlebar_unfocused_bottom())
             };
-            fill_rounded_rect_top(pixels, stride, 0, 0, cw, TITLE_BAR_HEIGHT, 8, tb_color);
+            fill_rounded_rect_top_gradient(pixels, stride, 0, 0, cw, TITLE_BAR_HEIGHT, 8, tb_top, tb_bot);
 
             let border_y = TITLE_BAR_HEIGHT - 1;
             for x in 0..cw {
@@ -1062,28 +1062,20 @@ impl Desktop {
                     let dst_off = ((content_y + dst_row) * stride) as usize;
                     let mut src_x_fp: u32 = 0;
 
-                    if borderless {
-                        for dst_col in 0..cw {
-                            let src_x = (src_x_fp >> 16).min(shm_w - 1) as usize;
-                            pixels[dst_off + dst_col as usize] =
-                                src_slice[src_row_off + src_x];
-                            src_x_fp += x_step;
-                        }
-                    } else {
-                        for dst_col in 0..cw {
-                            let src_x = (src_x_fp >> 16).min(shm_w - 1) as usize;
-                            let src_px = src_slice[src_row_off + src_x];
-                            if (src_px >> 24) > 0 {
-                                pixels[dst_off + dst_col as usize] = src_px;
-                            }
-                            src_x_fp += x_step;
-                        }
+                    // Content area is always opaque — no alpha check needed
+                    for dst_col in 0..cw {
+                        let src_x = (src_x_fp >> 16).min(shm_w - 1) as usize;
+                        pixels[dst_off + dst_col as usize] =
+                            src_slice[src_row_off + src_x];
+                        src_x_fp += x_step;
                     }
 
                     src_y_fp += y_step;
                 }
             } else {
                 // Non-scaled path with dirty rect support
+                // Content area is always opaque — alpha transparency for
+                // window chrome corners is handled during compositing.
                 for row in 0..copy_h {
                     let src_off = ((copy_y + row) * shm_w + copy_x) as usize;
                     let dst_off = ((content_y + copy_y + row) * stride + copy_x) as usize;
@@ -1092,17 +1084,8 @@ impl Desktop {
                     let dst_end = (dst_off + w).min(pixels.len());
                     let safe_w = (src_end - src_off).min(dst_end - dst_off);
                     if safe_w > 0 {
-                        if borderless {
-                            pixels[dst_off..dst_off + safe_w]
-                                .copy_from_slice(&src_slice[src_off..src_off + safe_w]);
-                        } else {
-                            for col in 0..safe_w {
-                                let src_px = src_slice[src_off + col];
-                                if (src_px >> 24) > 0 {
-                                    pixels[dst_off + col] = src_px;
-                                }
-                            }
-                        }
+                        pixels[dst_off..dst_off + safe_w]
+                            .copy_from_slice(&src_slice[src_off..src_off + safe_w]);
                     }
                 }
             }
@@ -1159,12 +1142,12 @@ pub fn pre_render_chrome_ex(
     fill_rounded_rect(pixels, stride, full_h, 0, 0, stride, full_h, 8, color_window_bg());
     draw_rounded_rect_outline(pixels, stride, full_h, 0, 0, stride, full_h, 8, color_window_border());
 
-    let tb_color = if focused {
-        color_titlebar_focused()
+    let (tb_top, tb_bot) = if focused {
+        (color_titlebar_focused_top(), color_titlebar_focused_bottom())
     } else {
-        color_titlebar_unfocused()
+        (color_titlebar_unfocused_top(), color_titlebar_unfocused_bottom())
     };
-    fill_rounded_rect_top(pixels, stride, 0, 0, stride, TITLE_BAR_HEIGHT, 8, tb_color);
+    fill_rounded_rect_top_gradient(pixels, stride, 0, 0, stride, TITLE_BAR_HEIGHT, 8, tb_top, tb_bot);
 
     let border_y = TITLE_BAR_HEIGHT - 1;
     for x in 0..stride {

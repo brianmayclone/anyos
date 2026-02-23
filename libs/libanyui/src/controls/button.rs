@@ -9,15 +9,6 @@ impl Button {
     pub fn new(text_base: TextControlBase) -> Self { Self { text_base, pressed: false } }
 }
 
-/// Darken a color by subtracting `amount` from each RGB channel.
-fn darken(color: u32, amount: u32) -> u32 {
-    let a = color & 0xFF000000;
-    let r = ((color >> 16) & 0xFF).saturating_sub(amount);
-    let g = ((color >> 8) & 0xFF).saturating_sub(amount);
-    let b = (color & 0xFF).saturating_sub(amount);
-    a | (r << 16) | (g << 8) | b
-}
-
 impl Control for Button {
     fn base(&self) -> &ControlBase { &self.text_base.base }
     fn base_mut(&mut self) -> &mut ControlBase { &mut self.text_base.base }
@@ -31,16 +22,47 @@ impl Control for Button {
         let w = self.text_base.base.w;
         let h = self.text_base.base.h;
         let tc = crate::theme::colors();
+        let disabled = self.text_base.base.disabled;
+        let hovered = self.text_base.base.hovered;
+        let focused = self.text_base.base.focused;
         let custom = self.text_base.base.color;
-        let bg = if self.pressed {
-            if custom != 0 { darken(custom, 30) } else { tc.control_pressed }
+        let corner = crate::theme::BUTTON_CORNER;
+
+        // Background color: pressed > hovered > normal, with custom color support
+        let bg = if disabled {
+            if custom != 0 { crate::theme::darken(custom, 20) } else { tc.control_bg }
+        } else if self.pressed {
+            if custom != 0 { crate::theme::darken(custom, 30) } else { tc.control_pressed }
+        } else if hovered {
+            if custom != 0 { crate::theme::lighten(custom, 12) } else { tc.control_hover }
         } else if custom != 0 {
             custom
         } else {
             tc.control_bg
         };
-        crate::draw::fill_rounded_rect(surface, x, y, w, h, crate::theme::BUTTON_CORNER, bg);
-        let text_color = if self.text_base.text_style.text_color != 0 {
+
+        // Bottom shadow line (1px below — cheap depth effect)
+        if !disabled && !self.pressed {
+            crate::draw::draw_bottom_shadow(surface, x, y, w, h, corner, crate::theme::darken(bg, 30));
+        }
+
+        // Main button body
+        crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, bg);
+
+        // Top highlight (1px lighter line at top — subtle raised effect)
+        if !disabled && !self.pressed {
+            crate::draw::draw_top_highlight(surface, x, y, w, corner, crate::theme::lighten(bg, 15));
+        }
+
+        // Focus ring
+        if focused && !disabled {
+            crate::draw::draw_focus_ring(surface, x, y, w, h, corner, tc.accent);
+        }
+
+        // Text color
+        let text_color = if disabled {
+            tc.text_disabled
+        } else if self.text_base.text_style.text_color != 0 {
             self.text_base.text_style.text_color
         } else {
             tc.text
@@ -52,7 +74,7 @@ impl Control for Button {
         crate::draw::draw_text_sized(surface, tx, ty, text_color, &self.text_base.text, font_size);
     }
 
-    fn is_interactive(&self) -> bool { true }
+    fn is_interactive(&self) -> bool { !self.text_base.base.disabled }
 
     fn handle_mouse_down(&mut self, _lx: i32, _ly: i32, _button: u32) -> EventResponse {
         self.pressed = true;

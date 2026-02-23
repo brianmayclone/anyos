@@ -1,5 +1,5 @@
 use crate::{Control, Widget, lib, events, KIND_TEXTFIELD};
-use crate::events::TextChangedEvent;
+use crate::events::{TextChangedEvent, SubmitEvent};
 
 leaf_control!(TextField, KIND_TEXTFIELD);
 
@@ -28,5 +28,11 @@ impl TextField {
     pub fn on_text_changed(&self, mut f: impl FnMut(&TextChangedEvent) + 'static) {
         let (thunk, ud) = events::register(move |id, _| f(&TextChangedEvent { id }));
         (lib().on_change_fn)(self.ctrl.id, thunk, ud);
+    }
+
+    /// Called when the user presses Enter while this field has focus.
+    pub fn on_submit(&self, mut f: impl FnMut(&SubmitEvent) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| f(&SubmitEvent { id }));
+        (lib().on_submit_fn)(self.ctrl.id, thunk, ud);
     }
 }

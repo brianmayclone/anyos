@@ -16,8 +16,19 @@ impl Control for Card {
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let x = ax + self.base.x;
         let y = ay + self.base.y;
+        let w = self.base.w;
+        let h = self.base.h;
         let tc = crate::theme::colors();
-        crate::draw::fill_rounded_rect(surface, x, y, self.base.w, self.base.h, crate::theme::CARD_CORNER, tc.card_bg);
-        crate::draw::draw_rounded_border(surface, x, y, self.base.w, self.base.h, crate::theme::CARD_CORNER, tc.card_border);
+        let corner = crate::theme::CARD_CORNER;
+
+        // Bottom shadow line (cheap elevation)
+        crate::draw::draw_bottom_shadow(surface, x, y, w, h, corner, crate::theme::darken(tc.card_border, 15));
+
+        // Card body + border
+        crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, tc.card_bg);
+        crate::draw::draw_rounded_border(surface, x, y, w, h, corner, tc.card_border);
+
+        // Top highlight
+        crate::draw::draw_top_highlight(surface, x, y, w, corner, crate::theme::lighten(tc.card_bg, 8));
     }
 }

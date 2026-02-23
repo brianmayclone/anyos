@@ -111,6 +111,34 @@ pub fn is_light() -> bool {
     val != 0
 }
 
+// ── Color utility functions (zero-cost color math) ───────────────────
+
+/// Darken a color by subtracting `amount` from each RGB channel.
+#[inline(always)]
+pub fn darken(color: u32, amount: u32) -> u32 {
+    let a = color & 0xFF000000;
+    let r = ((color >> 16) & 0xFF).saturating_sub(amount);
+    let g = ((color >> 8) & 0xFF).saturating_sub(amount);
+    let b = (color & 0xFF).saturating_sub(amount);
+    a | (r << 16) | (g << 8) | b
+}
+
+/// Lighten a color by adding `amount` to each RGB channel.
+#[inline(always)]
+pub fn lighten(color: u32, amount: u32) -> u32 {
+    let a = color & 0xFF000000;
+    let r = (((color >> 16) & 0xFF) + amount).min(255);
+    let g = (((color >> 8) & 0xFF) + amount).min(255);
+    let b = ((color & 0xFF) + amount).min(255);
+    a | (r << 16) | (g << 8) | b
+}
+
+/// Set the alpha channel of a color (0 = transparent, 255 = opaque).
+#[inline(always)]
+pub fn with_alpha(color: u32, alpha: u32) -> u32 {
+    (color & 0x00FFFFFF) | ((alpha & 0xFF) << 24)
+}
+
 // ── Sizing constants (theme-independent) ────────────────────────────
 
 pub const BUTTON_HEIGHT: u32     = 28;
@@ -131,3 +159,11 @@ pub const FONT_SIZE_TITLE: u16   = 24;
 pub const CARD_CORNER: u32       = 8;
 pub const TOOLTIP_CORNER: u32    = 6;
 pub const ALERT_CORNER: u32      = 10;
+
+/// Shadow spread for floating elements (Alert, Tooltip, ContextMenu).
+/// Small value to keep SDF cost low on software rendering.
+pub const POPUP_SHADOW_SPREAD: i32 = 8;
+/// Shadow alpha for floating elements.
+pub const POPUP_SHADOW_ALPHA: u32 = 50;
+/// Shadow Y-offset for floating elements (light comes from above).
+pub const POPUP_SHADOW_OFFSET_Y: i32 = 2;

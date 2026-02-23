@@ -2394,10 +2394,9 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
         for cmd in cmds {
             let cmd_type = cmd[0];
             let ok = match cmd_type {
-                1 => { // UPDATE(x, y, w, h) — transfer only, defer flush
+                1 => { // UPDATE(x, y, w, h) — accumulate bbox, defer transfer+flush
                     let (x, y, w, h) = (cmd[1], cmd[2], cmd[3], cmd[4]);
-                    g.transfer_rect(x, y, w, h);
-                    // Expand bounding box
+                    // Only expand bounding box; transfer is batched at the end
                     if w > 0 && h > 0 {
                         flush_x0 = flush_x0.min(x);
                         flush_y0 = flush_y0.min(y);
@@ -2459,9 +2458,12 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
             }
         }
 
-        // Single flush for all batched UPDATE transfers
+        // Single batched transfer + flush for all UPDATE rects
         if flush_x0 < flush_x1 && flush_y0 < flush_y1 {
-            g.flush_display(flush_x0, flush_y0, flush_x1 - flush_x0, flush_y1 - flush_y0);
+            let bw = flush_x1 - flush_x0;
+            let bh = flush_y1 - flush_y0;
+            g.transfer_rect(flush_x0, flush_y0, bw, bh);
+            g.flush_display(flush_x0, flush_y0, bw, bh);
         }
 
         executed

@@ -192,6 +192,20 @@ pub fn resize_shm(
     }
 }
 
+/// Enable or disable blur-behind on a compositor window.
+/// radius=0 disables blur, radius>0 enables with given kernel radius.
+pub fn set_blur_behind(channel_id: u32, window_id: u32, radius: u32) {
+    (exports().set_blur_behind)(channel_id, window_id, radius);
+}
+
+/// Get screen dimensions.
+pub fn screen_size() -> (u32, u32) {
+    let mut w: u32 = 0;
+    let mut h: u32 = 0;
+    (exports().screen_size)(&mut w, &mut h);
+    (w, h)
+}
+
 // ── Surface helpers ──────────────────────────────────────────────────
 
 /// Fill a rectangle on a window's SHM surface.

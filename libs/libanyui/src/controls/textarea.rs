@@ -77,8 +77,6 @@ impl Control for TextArea {
         // Background
         crate::draw::fill_rect(surface, x, y, w, h, bg);
 
-        if self.text_base.text.is_empty() { return; }
-
         // Clip text to control bounds
         let clipped = surface.with_clip(x, y, w, h);
         let text_color = if self.text_base.text_style.text_color != 0 {
@@ -92,33 +90,52 @@ impl Control for TextArea {
         let pad_y = 6;
         let font_id = self.text_base.text_style.font_id;
         let font_size = self.text_base.text_style.font_size;
-
-        // Render visible lines only
-        let viewport_h = h as i32 - pad_y * 2;
-        let first_vis = (self.scroll_y / lh).max(0) as usize;
-        let last_vis = ((self.scroll_y + viewport_h) / lh + 1) as usize;
-
-        let mut line_idx = 0usize;
-        let mut line_start = 0usize;
         let text = &self.text_base.text;
 
-        for i in 0..=text.len() {
-            let is_end = i == text.len() || text[i] == b'\n';
-            if is_end {
-                if line_idx >= first_vis && line_idx <= last_vis {
-                    let line_y = y + pad_y + (line_idx as i32) * lh - self.scroll_y;
-                    let line_data = &text[line_start..i];
-                    if !line_data.is_empty() {
-                        crate::draw::draw_text_ex(
-                            &clipped, x + pad_x, line_y, text_color,
-                            line_data, font_id, font_size,
-                        );
+        // Render visible lines only
+        if !text.is_empty() {
+            let viewport_h = h as i32 - pad_y * 2;
+            let first_vis = (self.scroll_y / lh).max(0) as usize;
+            let last_vis = ((self.scroll_y + viewport_h) / lh + 1) as usize;
+
+            let mut line_idx = 0usize;
+            let mut line_start = 0usize;
+
+            for i in 0..=text.len() {
+                let is_end = i == text.len() || text[i] == b'\n';
+                if is_end {
+                    if line_idx >= first_vis && line_idx <= last_vis {
+                        let line_y = y + pad_y + (line_idx as i32) * lh - self.scroll_y;
+                        let line_data = &text[line_start..i];
+                        if !line_data.is_empty() {
+                            crate::draw::draw_text_ex(
+                                &clipped, x + pad_x, line_y, text_color,
+                                line_data, font_id, font_size,
+                            );
+                        }
                     }
+                    if line_idx > last_vis { break; }
+                    line_idx += 1;
+                    line_start = i + 1;
                 }
-                if line_idx > last_vis { break; }
-                line_idx += 1;
-                line_start = i + 1;
             }
+        }
+
+        // Cursor
+        if self.focused {
+            let cpos = self.cursor_pos.min(text.len());
+            let mut cur_line = 0usize;
+            let mut col_start = 0usize;
+            for i in 0..cpos {
+                if text[i] == b'\n' {
+                    cur_line += 1;
+                    col_start = i + 1;
+                }
+            }
+            let col_slice = &text[col_start..cpos];
+            let cx_offset = crate::draw::text_width_n(col_slice, col_slice.len()) as i32;
+            let cy = y + pad_y + (cur_line as i32) * lh - self.scroll_y;
+            crate::draw::fill_rect(&clipped, x + pad_x + cx_offset, cy, 2, font_size as u32, tc.accent);
         }
 
         // Scrollbar
@@ -192,10 +209,14 @@ impl Control for TextArea {
 
     fn handle_focus(&mut self) {
         self.focused = true;
+        self.text_base.base.focused = true;
+        self.text_base.base.dirty = true;
         self.cursor_pos = self.text_base.text.len();
     }
 
     fn handle_blur(&mut self) {
         self.focused = false;
+        self.text_base.base.focused = false;
+        self.text_base.base.dirty = true;
     }
 }
