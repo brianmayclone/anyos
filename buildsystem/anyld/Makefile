@@ -7,6 +7,10 @@
 
 CC      ?= cc
 CFLAGS  ?= -Wall -Wextra -O2 -std=c99
+# Linux needs this to expose strdup() in <string.h> under -std=c99; macOS does not.
+ifeq ($(shell uname -s),Linux)
+  CFLAGS += -D_POSIX_C_SOURCE=200809L
+endif
 SRCDIR  = src
 SRCS    = $(SRCDIR)/anyld.c $(SRCDIR)/input.c $(SRCDIR)/link.c \
           $(SRCDIR)/output.c $(SRCDIR)/defs.c

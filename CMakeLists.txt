@@ -52,7 +52,7 @@ file(GLOB MKIMAGE_SRCS "${BUILDSYSTEM_DIR}/mkimage/src/*.c" "${BUILDSYSTEM_DIR}/
 add_custom_command(
   OUTPUT ${MKIMAGE_EXECUTABLE}
   COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/buildsystem"
-  COMMAND cc -Wall -O2 -std=c99 -o ${MKIMAGE_EXECUTABLE}
+  COMMAND cc -Wall -O2 -std=c99 ${POSIX_FLAG} -o ${MKIMAGE_EXECUTABLE}
     ${BUILDSYSTEM_DIR}/mkimage/src/mkimage.c
     ${BUILDSYSTEM_DIR}/mkimage/src/elf.c
     ${BUILDSYSTEM_DIR}/mkimage/src/fat16.c
@@ -63,13 +63,20 @@ add_custom_command(
   COMMENT "Building buildsystem tool: mkimage"
 )
 
+# On Linux, -std=c99 hides POSIX functions like strdup(); macOS exposes them by default.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(POSIX_FLAG "-D_POSIX_C_SOURCE=200809L")
+else()
+  set(POSIX_FLAG "")
+endif()
+
 # anyld — ELF64 shared object linker (for future .so builds)
 set(ANYLD_EXECUTABLE "${CMAKE_BINARY_DIR}/buildsystem/anyld")
 file(GLOB ANYLD_SRCS "${BUILDSYSTEM_DIR}/anyld/src/*.c" "${BUILDSYSTEM_DIR}/anyld/src/*.h")
 add_custom_command(
   OUTPUT ${ANYLD_EXECUTABLE}
   COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/buildsystem"
-  COMMAND cc -Wall -O2 -std=c99 -o ${ANYLD_EXECUTABLE}
+  COMMAND cc -Wall -O2 -std=c99 ${POSIX_FLAG} -o ${ANYLD_EXECUTABLE}
     ${BUILDSYSTEM_DIR}/anyld/src/anyld.c
     ${BUILDSYSTEM_DIR}/anyld/src/input.c
     ${BUILDSYSTEM_DIR}/anyld/src/link.c
