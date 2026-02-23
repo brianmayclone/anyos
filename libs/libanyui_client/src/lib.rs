@@ -274,6 +274,8 @@ struct AnyuiLib {
     set_tab_index: extern "C" fn(u32, u32),
     // Screen size
     screen_size: extern "C" fn(*mut u32, *mut u32),
+    // Notifications
+    show_notification: extern "C" fn(*const u8, u32, *const u8, u32, *const u32, u32),
 }
 
 static mut LIB: Option<AnyuiLib> = None;
@@ -451,6 +453,8 @@ pub fn init() -> bool {
             set_tab_index: resolve(&handle, "anyui_set_tab_index"),
             // Screen size
             screen_size: resolve(&handle, "anyui_screen_size"),
+            // Notifications
+            show_notification: resolve(&handle, "anyui_show_notification"),
             _handle: handle,
         };
         (lib.init)();
@@ -827,4 +831,24 @@ pub fn screen_size() -> (u32, u32) {
     let mut h: u32 = 0;
     (lib().screen_size)(&mut w, &mut h);
     (w, h)
+}
+
+// ── Notification API ─────────────────────────────────────────────────
+
+/// Show a notification banner via the compositor.
+///
+/// - `title`: notification title (max 64 bytes)
+/// - `message`: notification body (max 128 bytes)
+/// - `icon`: optional 16x16 ARGB pixel data (256 u32s), or None
+/// - `timeout_ms`: auto-dismiss timeout in milliseconds (0 = default 5s)
+pub fn show_notification(title: &str, message: &str, icon: Option<&[u32; 256]>, timeout_ms: u32) {
+    let icon_ptr = match icon {
+        Some(pixels) => pixels.as_ptr(),
+        None => core::ptr::null(),
+    };
+    (lib().show_notification)(
+        title.as_ptr(), title.len() as u32,
+        message.as_ptr(), message.len() as u32,
+        icon_ptr, timeout_ms,
+    );
 }

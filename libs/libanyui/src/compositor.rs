@@ -86,6 +86,22 @@ struct LibcompositorExports {
         out_stride: *mut u32,
         out_surface: *mut *mut u32,
     ) -> u32,
+
+    present_rect: extern "C" fn(channel_id: u32, window_id: u32, shm_id: u32, x: u32, y: u32, w: u32, h: u32),
+
+    set_clipboard: extern "C" fn(channel_id: u32, data_ptr: *const u8, data_len: u32, format: u32),
+
+    get_clipboard: extern "C" fn(channel_id: u32, sub_id: u32, out_ptr: *mut u8, out_cap: u32, out_format: *mut u32) -> u32,
+
+    show_notification: extern "C" fn(
+        channel_id: u32,
+        title_ptr: *const u8, title_len: u32,
+        msg_ptr: *const u8, msg_len: u32,
+        icon_ptr: *const u32,
+        timeout_ms: u32, flags: u32,
+    ),
+
+    dismiss_notification: extern "C" fn(channel_id: u32, notification_id: u32),
 }
 
 fn exports() -> &'static LibcompositorExports {
@@ -205,6 +221,24 @@ pub fn screen_size() -> (u32, u32) {
     let mut h: u32 = 0;
     (exports().screen_size)(&mut w, &mut h);
     (w, h)
+}
+
+/// Show a notification banner via the compositor.
+pub fn show_notification(
+    channel_id: u32,
+    title: &[u8],
+    message: &[u8],
+    icon: *const u32,
+    timeout_ms: u32,
+    flags: u32,
+) {
+    (exports().show_notification)(
+        channel_id,
+        title.as_ptr(), title.len() as u32,
+        message.as_ptr(), message.len() as u32,
+        icon,
+        timeout_ms, flags,
+    );
 }
 
 // ── Surface helpers ──────────────────────────────────────────────────

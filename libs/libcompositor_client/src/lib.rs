@@ -36,6 +36,7 @@ pub const EVT_MENU_ITEM: u32 = 0x3008;
 pub const EVT_STATUS_ICON_CLICK: u32 = 0x3009;
 pub const EVT_MOUSE_MOVE: u32 = 0x300A;
 pub const EVT_FRAME_ACK: u32 = 0x300B;
+pub const EVT_FOCUS_LOST: u32 = 0x300C;
 pub const EVT_NOTIFICATION_CLICK: u32 = 0x3010;
 pub const EVT_NOTIFICATION_DISMISSED: u32 = 0x3011;
 

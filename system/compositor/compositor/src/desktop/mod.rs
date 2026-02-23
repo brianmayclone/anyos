@@ -144,6 +144,18 @@ pub struct Desktop {
     /// Frame ACK queue: (sub_id, window_id) pairs to emit after compose.
     /// Populated during compose(), drained by render thread via evt_chan_emit_to.
     pub(crate) frame_ack_queue: Vec<(u32, u32)>,
+
+    /// Set to true when the user selects "Log Out" from the system menu.
+    /// The management loop checks this flag and initiates the logout sequence.
+    pub(crate) logout_requested: bool,
+
+    /// Menu logo (white variant for dark mode, ARGB pixels).
+    pub(crate) logo_white: Vec<u32>,
+    /// Menu logo (black variant for light mode, ARGB pixels).
+    pub(crate) logo_black: Vec<u32>,
+    /// Logo image dimensions (both variants have same size).
+    pub(crate) logo_w: u32,
+    pub(crate) logo_h: u32,
 }
 
 impl Desktop {
@@ -201,6 +213,11 @@ impl Desktop {
             cascade_x: 120,
             cascade_y: MENUBAR_HEIGHT as i32 + 50,
             frame_ack_queue: Vec::new(),
+            logout_requested: false,
+            logo_white: Vec::new(),
+            logo_black: Vec::new(),
+            logo_w: 0,
+            logo_h: 0,
         };
 
         if desktop.has_gpu_accel {
@@ -237,9 +254,79 @@ impl Desktop {
 
     /// Draw the initial desktop (background + menubar).
     pub fn init(&mut self) {
+        self.load_menu_logos();
         self.load_user_wallpaper();
         self.draw_menubar();
         self.compositor.damage_all();
+    }
+
+    /// Load menu logo PNGs from /System/media/ and scale to fit the menubar.
+    fn load_menu_logos(&mut self) {
+        self.load_one_logo("/System/media/menulogo_white.png", true);
+        self.load_one_logo("/System/media/menulogo_black.png", false);
+    }
+
+    fn load_one_logo(&mut self, path: &str, is_white: bool) {
+        use anyos_std::fs;
+
+        let fd = fs::open(path, 0);
+        if fd == u32::MAX { return; }
+        let mut stat_buf = [0u32; 4];
+        if fs::fstat(fd, &mut stat_buf) == u32::MAX {
+            fs::close(fd);
+            return;
+        }
+        let file_size = stat_buf[1] as usize;
+        if file_size == 0 || file_size > 32 * 1024 {
+            fs::close(fd);
+            return;
+        }
+
+        let mut data = vec![0u8; file_size];
+        let n = fs::read(fd, &mut data) as usize;
+        fs::close(fd);
+        if n == 0 { return; }
+
+        let info = match libimage_client::probe(&data[..n]) {
+            Some(i) => i,
+            None => return,
+        };
+        let src_w = info.width;
+        let src_h = info.height;
+        let pixel_count = (src_w * src_h) as usize;
+        if pixel_count == 0 || pixel_count > 4096 { return; }
+
+        let mut pixels = vec![0u32; pixel_count];
+        let mut scratch = vec![0u8; info.scratch_needed as usize];
+        if libimage_client::decode(&data[..n], &mut pixels, &mut scratch).is_err() {
+            return;
+        }
+
+        // Scale to fit menubar (14px height — compact, like macOS Apple logo)
+        let target_h: u32 = 14;
+        let target_w = (src_w * target_h + src_h / 2) / src_h.max(1);
+        if target_w == 0 { return; }
+
+        let mut scaled = vec![0u32; (target_w * target_h) as usize];
+        // Use libimage's area-averaging scaler for proper antialiasing
+        if !libimage_client::scale_image(
+            &pixels, src_w, src_h,
+            &mut scaled, target_w, target_h,
+            libimage_client::MODE_SCALE,
+        ) {
+            return;
+        }
+
+        if is_white {
+            self.logo_white = scaled;
+        } else {
+            self.logo_black = scaled;
+        }
+        self.logo_w = target_w;
+        self.logo_h = target_h;
+
+        anyos_std::println!("compositor: loaded menu logo '{}' ({}x{} → {}x{})",
+            path, src_w, src_h, target_w, target_h);
     }
 
     // ── Wallpaper ──────────────────────────────────────────────────────
@@ -531,11 +618,53 @@ impl Desktop {
                 pixels[(MENUBAR_HEIGHT * w + x) as usize] = color_menubar_border();
             }
 
-            let (_, fh) = anyos_std::ui::window::font_measure(FONT_ID_BOLD, FONT_SIZE, "anyOS");
-            let fy = ((MENUBAR_HEIGHT as i32 - fh as i32) / 2).max(0);
-            anyos_std::ui::window::font_render_buf(
-                FONT_ID_BOLD, FONT_SIZE, pixels, w, h, 10, fy, color_menubar_text(), "anyOS",
-            );
+            // Render logo (white for dark mode, black for light mode)
+            let logo = if is_light() { &self.logo_black } else { &self.logo_white };
+            if !logo.is_empty() && self.logo_w > 0 && self.logo_h > 0 {
+                let lx = 10i32;
+                let ly = ((MENUBAR_HEIGHT as i32 - self.logo_h as i32) / 2).max(0);
+                for row in 0..self.logo_h {
+                    let py = ly + row as i32;
+                    if py < 0 || py >= MENUBAR_HEIGHT as i32 { continue; }
+                    for col in 0..self.logo_w {
+                        let px = lx + col as i32;
+                        if px < 0 || px >= w as i32 { continue; }
+                        let src = logo[(row * self.logo_w + col) as usize];
+                        let a = (src >> 24) & 0xFF;
+                        if a == 0 { continue; }
+                        let didx = (py as u32 * w + px as u32) as usize;
+                        if didx < pixels.len() {
+                            if a >= 255 {
+                                pixels[didx] = src;
+                            } else {
+                                pixels[didx] = crate::compositor::alpha_blend(src, pixels[didx]);
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Fallback: render "anyOS" text if logos not loaded
+                let (_, fh) = anyos_std::ui::window::font_measure(FONT_ID_BOLD, FONT_SIZE, "anyOS");
+                let fy = ((MENUBAR_HEIGHT as i32 - fh as i32) / 2).max(0);
+                anyos_std::ui::window::font_render_buf(
+                    FONT_ID_BOLD, FONT_SIZE, pixels, w, h, 10, fy, color_menubar_text(), "anyOS",
+                );
+            }
+
+            // Render system menu highlight if the system dropdown is open
+            if self.menu_bar.system_menu_open {
+                let highlight_w = crate::menu::types::SYSTEM_MENU_WIDTH as u32;
+                for y in 0..MENUBAR_HEIGHT {
+                    for x in 0..highlight_w.min(w) {
+                        let idx = (y * w + x) as usize;
+                        if idx < pixels.len() {
+                            pixels[idx] = crate::compositor::alpha_blend(
+                                crate::menu::types::COLOR_MENUBAR_HIGHLIGHT, pixels[idx],
+                            );
+                        }
+                    }
+                }
+            }
 
             self.menu_bar.render_titles(pixels, w, h);
             draw_clock_to_menubar(pixels, w);

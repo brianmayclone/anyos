@@ -278,6 +278,8 @@ fn main() {
     let mut popup: Option<WindowHandle> = None;
     let mut popup_state: Option<PopupState> = None;
     let mut tick_count: u32 = 0;
+    let mut prev_link_up = info.link_up;
+    let mut prev_nic_enabled = info.nic_enabled;
 
     loop {
         // Single poll_event — handles ALL events (tray clicks + window events)
@@ -316,6 +318,8 @@ fn main() {
                                     }
                                     anyos_std::process::sleep(50);
                                     info = read_net_info();
+                                    prev_link_up = info.link_up;
+                                    prev_nic_enabled = info.nic_enabled;
                                     draw_popup(win, &info, state);
                                     client.present(win);
                                     update_icon(&client, &info, &mut icon_pixels);
@@ -372,6 +376,29 @@ fn main() {
             info = new_info;
 
             if changed {
+                // Notify on link state transitions
+                if info.nic_enabled && info.link_up && (!prev_link_up || !prev_nic_enabled) {
+                    let mut b = [0u8; 16];
+                    let ip = ip_str(&info.ip, &mut b);
+                    let mut msg_buf = [0u8; 32];
+                    let msg_len = fmt_notif_msg(ip, &mut msg_buf);
+                    client.show_notification(
+                        "Network Connected",
+                        core::str::from_utf8(&msg_buf[..msg_len]).unwrap_or(""),
+                        Some(&icon_pixels),
+                        3000,
+                    );
+                } else if prev_link_up && prev_nic_enabled && (!info.link_up || !info.nic_enabled) {
+                    client.show_notification(
+                        "Network Disconnected",
+                        "Ethernet link is down",
+                        Some(&icon_pixels),
+                        3000,
+                    );
+                }
+                prev_link_up = info.link_up;
+                prev_nic_enabled = info.nic_enabled;
+
                 update_icon(&client, &info, &mut icon_pixels);
                 if let Some(ref win) = popup {
                     if let Some(ref mut state) = popup_state {
@@ -407,6 +434,17 @@ fn open_popup(
     client.present(&win);
     *popup = Some(win);
     *popup_state = Some(state);
+}
+
+/// Format "IP: x.x.x.x" into a fixed buffer. Returns the number of bytes written.
+fn fmt_notif_msg(ip: &str, buf: &mut [u8; 32]) -> usize {
+    let prefix = b"IP: ";
+    let plen = prefix.len();
+    buf[..plen].copy_from_slice(prefix);
+    let ip_bytes = ip.as_bytes();
+    let copy_len = ip_bytes.len().min(buf.len() - plen);
+    buf[plen..plen + copy_len].copy_from_slice(&ip_bytes[..copy_len]);
+    plen + copy_len
 }
 
 fn update_icon(client: &TrayClient, info: &NetInfo, pixels: &mut [u32; 256]) {

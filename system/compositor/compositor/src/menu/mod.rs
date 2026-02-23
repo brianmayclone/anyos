@@ -2,12 +2,14 @@
 
 mod dropdown;
 mod rendering;
-mod types;
+pub(crate) mod types;
 
 pub use types::{
     MenuBarDef, MenuBarHit, MenuItem, Menu, OpenDropdown, StatusIcon,
     MENU_FLAG_SEPARATOR,
     APP_MENU_ABOUT, APP_MENU_HIDE, APP_MENU_QUIT,
+    SYS_MENU_ABOUT, SYS_MENU_SETTINGS, SYS_MENU_LOGOUT,
+    SYS_MENU_SLEEP, SYS_MENU_RESTART, SYS_MENU_SHUTDOWN,
 };
 
 use alloc::string::String;
@@ -34,6 +36,9 @@ pub struct MenuBar {
 
     /// The window_id whose menus are currently displayed
     pub(crate) active_window_id: Option<u32>,
+
+    /// Whether the system menu (logo dropdown) is currently open.
+    pub system_menu_open: bool,
 }
 
 impl MenuBar {
@@ -45,6 +50,7 @@ impl MenuBar {
             status_icons: Vec::with_capacity(8),
             status_icon_x: Vec::new(),
             active_window_id: None,
+            system_menu_open: false,
         }
     }
 

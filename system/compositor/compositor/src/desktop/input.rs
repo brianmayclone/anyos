@@ -145,16 +145,16 @@ impl Desktop {
 
         // Update dropdown hover state and menu-slide
         if self.menu_bar.is_dropdown_open() {
-            if self.menu_bar.update_hover(self.mouse_x, self.mouse_y) {
-                self.menu_bar.render_dropdown(&mut self.compositor);
-            }
-
-            if self.mouse_y < MENUBAR_HEIGHT as i32 {
-                if let MenuBarHit::MenuTitle { menu_idx } =
-                    self.menu_bar.hit_test_menubar(self.mouse_x, self.mouse_y)
-                {
-                    let current_idx = self.menu_bar.open_dropdown.as_ref().map(|d| d.menu_idx);
-                    if current_idx != Some(menu_idx) {
+            if self.menu_bar.system_menu_open {
+                // System menu hover update
+                if self.menu_bar.update_hover(self.mouse_x, self.mouse_y) {
+                    self.menu_bar.rerender_system_dropdown(&mut self.compositor);
+                }
+                // Slide from system menu to app menus
+                if self.mouse_y < MENUBAR_HEIGHT as i32 {
+                    if let MenuBarHit::MenuTitle { menu_idx } =
+                        self.menu_bar.hit_test_menubar(self.mouse_x, self.mouse_y)
+                    {
                         let owner_wid = self.focused_window.unwrap_or(0);
                         self.menu_bar
                             .close_dropdown_with_compositor(&mut self.compositor);
@@ -162,11 +162,44 @@ impl Desktop {
                             .open_menu(menu_idx, owner_wid, &mut self.compositor);
                         self.draw_menubar();
                         self.compositor.add_damage(Rect::new(
-                            0,
-                            0,
-                            self.screen_width,
-                            MENUBAR_HEIGHT + 1,
+                            0, 0, self.screen_width, MENUBAR_HEIGHT + 1,
                         ));
+                    }
+                }
+            } else {
+                // App menu hover update
+                if self.menu_bar.update_hover(self.mouse_x, self.mouse_y) {
+                    self.menu_bar.render_dropdown(&mut self.compositor);
+                }
+                // Slide between app menus or to system menu
+                if self.mouse_y < MENUBAR_HEIGHT as i32 {
+                    match self.menu_bar.hit_test_menubar(self.mouse_x, self.mouse_y) {
+                        MenuBarHit::SystemMenu => {
+                            self.menu_bar
+                                .close_dropdown_with_compositor(&mut self.compositor);
+                            self.menu_bar
+                                .open_system_menu(&mut self.compositor);
+                            self.draw_menubar();
+                            self.compositor.add_damage(Rect::new(
+                                0, 0, self.screen_width, MENUBAR_HEIGHT + 1,
+                            ));
+                        }
+                        MenuBarHit::MenuTitle { menu_idx } => {
+                            let current_idx =
+                                self.menu_bar.open_dropdown.as_ref().map(|d| d.menu_idx);
+                            if current_idx != Some(menu_idx) {
+                                let owner_wid = self.focused_window.unwrap_or(0);
+                                self.menu_bar
+                                    .close_dropdown_with_compositor(&mut self.compositor);
+                                self.menu_bar
+                                    .open_menu(menu_idx, owner_wid, &mut self.compositor);
+                                self.draw_menubar();
+                                self.compositor.add_damage(Rect::new(
+                                    0, 0, self.screen_width, MENUBAR_HEIGHT + 1,
+                                ));
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -308,7 +341,13 @@ impl Desktop {
             // Check if clicking within open dropdown
             if self.menu_bar.is_dropdown_open() {
                 if self.menu_bar.is_in_dropdown(self.mouse_x, self.mouse_y) {
-                    if let Some(item_id) = self.menu_bar.hit_test_dropdown(self.mouse_x, self.mouse_y) {
+                    if self.menu_bar.system_menu_open {
+                        // System menu dropdown click
+                        if let Some(item_id) = self.menu_bar.hit_test_system_menu(self.mouse_x, self.mouse_y) {
+                            self.handle_system_menu_action(item_id);
+                        }
+                    } else if let Some(item_id) = self.menu_bar.hit_test_dropdown(self.mouse_x, self.mouse_y) {
+                        // App menu dropdown click
                         if let Some(win_id) = self.focused_window {
                             match item_id {
                                 crate::menu::APP_MENU_QUIT => {
@@ -514,6 +553,18 @@ impl Desktop {
                     }
                     _ => {}
                 }
+            } else {
+                // Clicked on empty desktop — defocus current window
+                if let Some(old_id) = self.focused_window {
+                    if let Some(idx) = self.windows.iter().position(|w| w.id == old_id) {
+                        self.windows[idx].focused = false;
+                        let win_id = self.windows[idx].id;
+                        self.render_titlebar(win_id);
+                        self.push_event(win_id, [EVENT_FOCUS_LOST, 0, 0, 0, 0]);
+                    }
+                    self.focused_window = None;
+                    self.compositor.set_focused_layer(None);
+                }
             }
         } else {
             // Mouse up
@@ -637,12 +688,27 @@ impl Desktop {
         let mx = self.mouse_x;
         let my = self.mouse_y;
         match self.menu_bar.hit_test_menubar(mx, my) {
+            MenuBarHit::SystemMenu => {
+                let was_system = self.menu_bar.system_menu_open;
+                if self.menu_bar.is_dropdown_open() {
+                    self.menu_bar
+                        .close_dropdown_with_compositor(&mut self.compositor);
+                }
+                if !was_system {
+                    self.menu_bar
+                        .open_system_menu(&mut self.compositor);
+                }
+                self.draw_menubar();
+                self.compositor.add_damage(Rect::new(
+                    0, 0, self.screen_width, MENUBAR_HEIGHT + 1,
+                ));
+            }
             MenuBarHit::MenuTitle { menu_idx } => {
                 let same = self
                     .menu_bar
                     .open_dropdown
                     .as_ref()
-                    .map(|d| d.menu_idx == menu_idx)
+                    .map(|d| d.menu_idx == menu_idx && !self.menu_bar.system_menu_open)
                     .unwrap_or(false);
                 if self.menu_bar.is_dropdown_open() {
                     self.menu_bar
@@ -680,6 +746,23 @@ impl Desktop {
                     ));
                 }
             }
+        }
+    }
+
+    /// Handle an action from the system menu dropdown (logo menu).
+    fn handle_system_menu_action(&mut self, item_id: u32) {
+        match item_id {
+            crate::menu::SYS_MENU_LOGOUT => {
+                self.logout_requested = true;
+            }
+            crate::menu::SYS_MENU_ABOUT
+            | crate::menu::SYS_MENU_SETTINGS
+            | crate::menu::SYS_MENU_SLEEP
+            | crate::menu::SYS_MENU_RESTART
+            | crate::menu::SYS_MENU_SHUTDOWN => {
+                // Not yet implemented
+            }
+            _ => {}
         }
     }
 

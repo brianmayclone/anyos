@@ -2,6 +2,7 @@
 //!
 //! Supports section groups:
 //!   `[resolution]` — saved display resolution (width, height)
+//!   `[login]`      — programs to launch before the login screen (e.g. inputmon)
 //!   `[autostart]`  — programs to launch after compositor + dock are ready
 //!
 //! Example:
@@ -10,10 +11,12 @@
 //! width=1280
 //! height=1024
 //!
+//! [login]
+//! /System/inputmon
+//!
 //! [autostart]
 //! /System/netmon
 //! /System/audiomon
-//! /System/inputmon
 //! ```
 
 use anyos_std::println;
@@ -85,17 +88,52 @@ pub fn read_resolution() -> Option<SavedResolution> {
     }
 }
 
+/// Launch all programs listed in the `[login]` section.
+///
+/// These are services needed before the login screen (e.g. inputmon for keyboard layout).
+pub fn launch_login_services() {
+    let text = match read_conf() {
+        Some(t) => t,
+        None => return,
+    };
+
+    let mut in_login = false;
+
+    for line in text.split('\n') {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            in_login = line == "[login]";
+            continue;
+        }
+        if !in_login {
+            continue;
+        }
+        let tid = process::spawn(line, "");
+        if tid != 0 {
+            println!("compositor: [login] launched '{}' (TID={})", line, tid);
+        } else {
+            println!("compositor: [login] FAILED to launch '{}'", line);
+        }
+    }
+}
+
 /// Launch all programs listed in the `[autostart]` section.
-pub fn launch_autostart() {
+///
+/// Returns a `Vec<u32>` of successfully spawned TIDs (used for logout cleanup).
+pub fn launch_autostart() -> alloc::vec::Vec<u32> {
     let text = match read_conf() {
         Some(t) => t,
         None => {
             println!("compositor: no compositor.conf found");
-            return;
+            return alloc::vec::Vec::new();
         }
     };
 
     let mut in_autostart = false;
+    let mut tids = alloc::vec::Vec::new();
 
     for line in text.split('\n') {
         let line = line.trim();
@@ -111,12 +149,14 @@ pub fn launch_autostart() {
         }
         // Each non-empty line in [autostart] is a program path
         let tid = process::spawn(line, "");
-        if tid != 0 {
+        if tid != 0 && tid != u32::MAX {
             println!("compositor: launched '{}' (TID={})", line, tid);
+            tids.push(tid);
         } else {
             println!("compositor: FAILED to launch '{}'", line);
         }
     }
+    tids
 }
 
 /// Save the given resolution to the `[resolution]` section of compositor.conf.
