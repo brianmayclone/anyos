@@ -73,8 +73,8 @@ fi
 # Force full rebuild if --clean
 if [ "$CLEAN" -eq 1 ]; then
     echo "Cleaning build..."
-    "${SCRIPT_DIR}/clean.sh"
-    # Re-configure CMake after clean (build.ninja was deleted)
+    "${SCRIPT_DIR}/clean.sh" --all
+    # Re-configure CMake after clean (entire build dir was removed)
     echo "Configuring build..."
     cmake -B "$BUILD_DIR" -G Ninja $CMAKE_EXTRA_FLAGS "$PROJECT_DIR"
 fi

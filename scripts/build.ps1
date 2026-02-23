@@ -53,8 +53,8 @@ if (-not (Test-Path (Join-Path $BuildDir "build.ninja"))) {
 # Force full rebuild if -Clean
 if ($Clean) {
     Write-Host "Cleaning build..."
-    & (Join-Path $ScriptDir "clean.ps1")
-    # Re-configure CMake after clean
+    & (Join-Path $ScriptDir "clean.ps1") -All
+    # Re-configure CMake after clean (entire build dir was removed)
     Write-Host "Configuring build..."
     & cmake -B $BuildDir -G Ninja $cmakeExtra $ProjectDir
     if ($LASTEXITCODE -ne 0) {
