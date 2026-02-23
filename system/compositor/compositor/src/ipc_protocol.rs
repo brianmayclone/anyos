@@ -196,6 +196,10 @@ pub const EVT_MOUSE_MOVE: u32 = 0x300A;
 /// Apps use this for back-pressure: don't present a new frame until ACK.
 pub const EVT_FRAME_ACK: u32 = 0x300B;
 
+/// Focus lost: [EVT, window_id, 0, 0, 0]
+/// Sent when a window loses focus (another window was clicked or desktop background).
+pub const EVT_FOCUS_LOST: u32 = 0x300C;
+
 /// Window opened (broadcast): [EVT, app_tid, win_id, 0, 0]
 /// Emitted when any app creates a window. Used by dock for filtering.
 pub const EVT_WINDOW_OPENED: u32 = 0x0060;

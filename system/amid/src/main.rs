@@ -140,11 +140,12 @@ fn main() {
             last_slow = now;
         }
 
-        // Sleep to avoid busy-waiting
+        // Sleep to avoid busy-waiting.
+        // 200ms idle is fine — ami clients wait up to 3s for responses.
         if active {
-            anyos_std::process::sleep(10);
-        } else {
             anyos_std::process::sleep(50);
+        } else {
+            anyos_std::process::sleep(200);
         }
     }
 }

@@ -37,6 +37,7 @@ impl Desktop {
                     EVENT_MENU_ITEM => proto::EVT_MENU_ITEM,
                     EVENT_STATUS_ICON_CLICK => proto::EVT_STATUS_ICON_CLICK,
                     EVENT_MOUSE_MOVE => proto::EVT_MOUSE_MOVE,
+                    EVENT_FOCUS_LOST => proto::EVT_FOCUS_LOST,
                     _ => continue,
                 };
                 out.push((target_sub, [ipc_type, win.id, evt[1], evt[2], evt[3]]));
@@ -450,7 +451,7 @@ impl Desktop {
                     if icon_start + 1024 <= 4096 {
                         let icon_slice = unsafe {
                             core::slice::from_raw_parts(
-                                (shm_addr + icon_start) as *const u32,
+                                (shm_addr as usize + icon_start) as *const u32,
                                 256,
                             )
                         };

@@ -23,7 +23,10 @@ pub(crate) const COLOR_CHECK: u32 = 0xFF0A84FF;
 pub(crate) const ITEM_HEIGHT: u32 = 24;
 pub(crate) const SEPARATOR_HEIGHT: u32 = 9;
 pub(crate) const DROPDOWN_PADDING: i32 = 4;
-pub(crate) const MENU_TITLE_START_X: i32 = 60; // after "anyOS" text + gap
+pub(crate) const MENU_TITLE_START_X: i32 = 30; // after logo + gap
+
+/// Width of the system menu hit area in the menubar (logo + padding).
+pub(crate) const SYSTEM_MENU_WIDTH: i32 = 28;
 
 // ── Menu Item Flags ──────────────────────────────────────────────────────────
 
@@ -39,6 +42,15 @@ pub const APP_MENU_ABOUT: u32 = 0xFFF0;
 pub const APP_MENU_HIDE: u32 = 0xFFF1;
 /// "Quit <App>" menu item ID (auto-generated app menu).
 pub const APP_MENU_QUIT: u32 = 0xFFF2;
+
+// ── System Menu Item IDs ────────────────────────────────────────────────────
+
+pub const SYS_MENU_ABOUT: u32 = 0xFFE0;
+pub const SYS_MENU_SETTINGS: u32 = 0xFFE1;
+pub const SYS_MENU_LOGOUT: u32 = 0xFFE2;
+pub const SYS_MENU_SLEEP: u32 = 0xFFE3;
+pub const SYS_MENU_RESTART: u32 = 0xFFE4;
+pub const SYS_MENU_SHUTDOWN: u32 = 0xFFE5;
 
 // ── Data Structures ──────────────────────────────────────────────────────────
 
@@ -95,6 +107,7 @@ pub struct StatusIcon {
 
 pub enum MenuBarHit {
     None,
+    SystemMenu,
     MenuTitle { menu_idx: usize },
     StatusIcon { owner_tid: u32, icon_id: u32 },
 }

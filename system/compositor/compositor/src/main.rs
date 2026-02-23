@@ -129,8 +129,11 @@ fn main() {
     }
     spawn_render_thread();
 
-    // Step 8: Spawn login window — authentication happens in main loop
-    let login_tid = process::spawn("/System/login", "");
+    // Step 8: Launch login-time services (e.g. inputmon for keyboard layout)
+    config::launch_login_services();
+
+    // Step 9: Spawn login window — authentication happens in main loop
+    let mut login_tid = process::spawn("/System/login", "");
     let mut login_pending = login_tid != u32::MAX;
     let mut dock_spawned = false;
     if login_pending {
@@ -143,11 +146,17 @@ fn main() {
         println!("compositor: login not found, continuing as root");
     }
 
-    // Step 8b: If no login needed, spawn dock + conf immediately
+    // Service TIDs to kill during logout (dock + autostart programs, NOT login services)
+    let mut service_tids: Vec<u32> = Vec::new();
+
+    // Step 9b: If no login needed, spawn dock + conf immediately
     if !login_pending {
-        let _dock_tid = process::spawn("/System/compositor/dock", "");
+        let dock_tid = process::spawn("/System/compositor/dock", "");
+        if dock_tid != u32::MAX {
+            service_tids.push(dock_tid);
+        }
         println!("compositor: dock spawned");
-        config::launch_autostart();
+        service_tids.extend(config::launch_autostart());
         dock_spawned = true;
     }
 
@@ -157,7 +166,8 @@ fn main() {
 
     management_loop(
         compositor_channel, compositor_sub, sys_sub,
-        login_tid, &mut login_pending, &mut dock_spawned,
+        &mut login_tid, &mut login_pending, &mut dock_spawned,
+        &mut service_tids,
     );
 }
 
@@ -192,9 +202,10 @@ fn management_loop(
     compositor_channel: u32,
     compositor_sub: u32,
     sys_sub: u32,
-    login_tid: u32,
+    login_tid: &mut u32,
     login_pending: &mut bool,
     dock_spawned: &mut bool,
+    service_tids: &mut Vec<u32>,
 ) {
     let mut events_buf = [[0u32; 5]; 256];
     let mut ipc_buf = [0u32; 5];
@@ -206,26 +217,41 @@ fn management_loop(
 
         // ── Check if login window has exited ──
         if *login_pending {
-            let status = process::try_waitpid(login_tid);
+            let status = process::try_waitpid(*login_tid);
             if status != process::STILL_RUNNING {
-                *login_pending = false;
-                let exit_uid = status;
-                println!("compositor: authentication complete, uid={}", exit_uid);
+                // Check if login crashed (signal exit codes are > 128)
+                if status > 128 && status < 256 {
+                    println!("compositor: login crashed (exit={}), re-spawning...", status);
+                    let new_tid = process::spawn("/System/login", "");
+                    if new_tid != u32::MAX {
+                        *login_tid = new_tid;
+                        println!("compositor: login re-spawned (TID={})", new_tid);
+                    } else {
+                        // Login binary missing — can't recover
+                        println!("compositor: FATAL — cannot re-spawn login");
+                    }
+                    // Stay in login_pending state, don't proceed to desktop
+                } else {
+                    // Normal exit — authentication succeeded
+                    *login_pending = false;
+                    let exit_uid = status;
+                    println!("compositor: authentication complete, uid={}", exit_uid);
 
-                if exit_uid != u32::MAX && exit_uid != 0 {
-                    process::set_identity(exit_uid as u16);
-                    println!("compositor: identity switched to uid={}", exit_uid);
-                }
+                    if exit_uid != u32::MAX && exit_uid != 0 {
+                        process::set_identity(exit_uid as u16);
+                        println!("compositor: identity switched to uid={}", exit_uid);
+                    }
 
-                let uid = process::getuid();
-                let mut name_buf = [0u8; 32];
-                let nlen = process::getusername(uid, &mut name_buf);
-                if nlen != u32::MAX && nlen > 0 {
-                    if let Ok(username) = core::str::from_utf8(&name_buf[..nlen as usize]) {
-                        anyos_std::env::set("USER", username);
-                        if uid != 0 {
-                            let home = alloc::format!("/Users/{}", username);
-                            anyos_std::env::set("HOME", &home);
+                    let uid = process::getuid();
+                    let mut name_buf = [0u8; 32];
+                    let nlen = process::getusername(uid, &mut name_buf);
+                    if nlen != u32::MAX && nlen > 0 {
+                        if let Ok(username) = core::str::from_utf8(&name_buf[..nlen as usize]) {
+                            anyos_std::env::set("USER", username);
+                            if uid != 0 {
+                                let home = alloc::format!("/Users/{}", username);
+                                anyos_std::env::set("HOME", &home);
+                            }
                         }
                     }
                 }
@@ -239,9 +265,12 @@ fn management_loop(
             desktop.set_menubar_visible(true);
             release_lock();
 
-            let _dock_tid = process::spawn("/System/compositor/dock", "");
+            let dock_tid = process::spawn("/System/compositor/dock", "");
+            if dock_tid != u32::MAX {
+                service_tids.push(dock_tid);
+            }
             println!("compositor: dock spawned");
-            config::launch_autostart();
+            service_tids.extend(config::launch_autostart());
             *dock_spawned = true;
         }
 
@@ -290,6 +319,24 @@ fn management_loop(
                 } else {
                     ipc::evt_chan_emit(compositor_channel, evt);
                 }
+            }
+        }
+
+        // ── Check for logout request ──
+        {
+            acquire_lock();
+            let desktop = unsafe { desktop_ref() };
+            let logout = desktop.logout_requested;
+            if logout {
+                desktop.logout_requested = false;
+            }
+            release_lock();
+
+            if logout {
+                perform_logout(
+                    compositor_channel, login_tid, login_pending, dock_spawned,
+                    service_tids,
+                );
             }
         }
 
@@ -544,4 +591,88 @@ fn handle_system_events(compositor_channel: u32, sys_sub: u32) -> bool {
         }
     }
     had_work
+}
+
+/// Handle user logout: kill all user processes, clean up desktop state, re-spawn login.
+fn perform_logout(
+    compositor_channel: u32,
+    login_tid: &mut u32,
+    login_pending: &mut bool,
+    dock_spawned: &mut bool,
+    service_tids: &mut Vec<u32>,
+) {
+    println!("compositor: logout requested — terminating user processes...");
+
+    // Collect all known user TIDs from windows and app subscriptions
+    let mut tids_to_kill: Vec<u32>;
+    {
+        acquire_lock();
+        let desktop = unsafe { desktop_ref() };
+        tids_to_kill = Vec::with_capacity(desktop.windows.len() + desktop.app_subs.len());
+        for win in &desktop.windows {
+            if win.owner_tid != 0 && !tids_to_kill.contains(&win.owner_tid) {
+                tids_to_kill.push(win.owner_tid);
+            }
+        }
+        for &(tid, _) in &desktop.app_subs {
+            if tid != 0 && !tids_to_kill.contains(&tid) {
+                tids_to_kill.push(tid);
+            }
+        }
+        release_lock();
+    }
+
+    // Also kill tracked service TIDs (dock, autostart programs)
+    for &tid in service_tids.iter() {
+        if !tids_to_kill.contains(&tid) {
+            tids_to_kill.push(tid);
+        }
+    }
+    service_tids.clear();
+
+    // Send kill signal to each process
+    for &tid in &tids_to_kill {
+        process::kill(tid);
+    }
+
+    // Give processes time to exit
+    process::sleep(200);
+
+    // Force-clean remaining state (system events from killed processes will be
+    // drained by the regular management loop after we return)
+    {
+        acquire_lock();
+        let desktop = unsafe { desktop_ref() };
+
+        // Force-destroy any remaining windows (in case system events were missed)
+        let remaining: Vec<u32> = desktop.windows.iter().map(|w| w.id).collect();
+        for id in remaining {
+            desktop.destroy_window(id);
+        }
+
+        // Reset desktop state
+        desktop.app_subs.clear();
+        desktop.menu_bar = crate::menu::MenuBar::new();
+        desktop.focused_window = None;
+        desktop.crash_dialogs.clear();
+        desktop.tray_ipc_events.clear();
+        desktop.clipboard_data.clear();
+
+        // Hide menubar for login screen
+        desktop.set_menubar_visible(false);
+        desktop.compositor.damage_all();
+        release_lock();
+    }
+    signal_render();
+
+    // Re-spawn login
+    let new_tid = process::spawn("/System/login", "");
+    if new_tid != u32::MAX {
+        *login_tid = new_tid;
+        *login_pending = true;
+        *dock_spawned = false;
+        println!("compositor: logged out, login re-spawned (TID={})", new_tid);
+    } else {
+        println!("compositor: FATAL — cannot spawn login after logout");
+    }
 }

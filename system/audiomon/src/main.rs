@@ -4,7 +4,7 @@
 anyos_std::entry!(main);
 
 use libcompositor_client::{TrayClient, WindowHandle, EVT_STATUS_ICON_CLICK,
-    EVT_MOUSE_DOWN, EVT_MOUSE_UP, EVT_MOUSE_MOVE, EVT_WINDOW_CLOSE};
+    EVT_MOUSE_DOWN, EVT_MOUSE_UP, EVT_MOUSE_MOVE, EVT_WINDOW_CLOSE, EVT_FOCUS_LOST};
 
 use uisys_client::{self, ButtonStyle, ButtonState, FontSize, TextAlign, UiSlider, UiButton, UiEvent};
 use uisys_client::colors;
@@ -346,7 +346,7 @@ fn main() {
                         }
                     }
                 }
-                EVT_WINDOW_CLOSE => {
+                EVT_FOCUS_LOST | EVT_WINDOW_CLOSE => {
                     if let Some(ref win) = popup {
                         if event.window_id == win.id {
                             client.destroy_window(win);

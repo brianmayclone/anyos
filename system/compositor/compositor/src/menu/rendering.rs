@@ -200,7 +200,7 @@ impl MenuBar {
 // ── Drawing Helpers ──────────────────────────────────────────────────────────
 
 /// Draw a 1px rectangle outline (no rounded corners).
-fn draw_rect_outline(
+pub(crate) fn draw_rect_outline(
     pixels: &mut [u32],
     stride: u32,
     x: i32,

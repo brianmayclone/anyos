@@ -39,6 +39,7 @@ pub const EVENT_MOUSE_SCROLL: u32 = 7;
 pub const EVENT_WINDOW_CLOSE: u32 = 8;
 pub const EVENT_MENU_ITEM: u32 = 9;
 pub const EVENT_STATUS_ICON_CLICK: u32 = 10;
+pub const EVENT_FOCUS_LOST: u32 = 11;
 
 // ── Hit Test ───────────────────────────────────────────────────────────────
 
@@ -418,6 +419,7 @@ impl Desktop {
                     self.windows[idx].focused = false;
                     let win_id = self.windows[idx].id;
                     self.render_titlebar(win_id);
+                    self.push_event(win_id, [EVENT_FOCUS_LOST, 0, 0, 0, 0]);
                 }
             }
         }
@@ -452,6 +454,7 @@ impl Desktop {
                     self.windows[idx].focused = false;
                     let win_id = self.windows[idx].id;
                     self.render_titlebar(win_id);
+                    self.push_event(win_id, [EVENT_FOCUS_LOST, 0, 0, 0, 0]);
                 }
             }
         }

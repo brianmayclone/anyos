@@ -129,3 +129,4 @@ EXPORTS
     anyui_set_focus
     anyui_set_tab_index
     anyui_screen_size
+    anyui_show_notification

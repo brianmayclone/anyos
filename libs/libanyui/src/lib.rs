@@ -2057,3 +2057,32 @@ pub extern "C" fn anyui_screen_size(out_w: *mut u32, out_h: *mut u32) {
     if !out_w.is_null() { unsafe { *out_w = w; } }
     if !out_h.is_null() { unsafe { *out_h = h; } }
 }
+
+// ── Notifications ───────────────────────────────────────────────────
+
+/// Show a notification banner via the compositor.
+///
+/// `title_ptr`/`title_len`: notification title (UTF-8, max 64 bytes).
+/// `msg_ptr`/`msg_len`: notification message (UTF-8, max 128 bytes).
+/// `icon_ptr`: optional 16x16 ARGB pixel data (256 u32s), null for no icon.
+/// `timeout_ms`: auto-dismiss timeout (0 = default 5s).
+#[no_mangle]
+pub extern "C" fn anyui_show_notification(
+    title_ptr: *const u8, title_len: u32,
+    msg_ptr: *const u8, msg_len: u32,
+    icon_ptr: *const u32,
+    timeout_ms: u32,
+) {
+    let st = state();
+    let title = if !title_ptr.is_null() && title_len > 0 {
+        unsafe { core::slice::from_raw_parts(title_ptr, title_len as usize) }
+    } else {
+        b""
+    };
+    let message = if !msg_ptr.is_null() && msg_len > 0 {
+        unsafe { core::slice::from_raw_parts(msg_ptr, msg_len as usize) }
+    } else {
+        b""
+    };
+    compositor::show_notification(st.channel_id, title, message, icon_ptr, timeout_ms, 0);
+}
