@@ -313,7 +313,17 @@ $args += "-m", "1024M"
 $args += "-smp", "cpus=4"
 $args += "-serial", "stdio"
 $args += "-vga", $vga
-$args += "-netdev", "user,id=net0"
+# Port forwarding rules
+$fwdRules = ""
+foreach ($rule in $Fwd) {
+    if ($rule -match '^(\d+):(\d+)$') {
+        $fwdRules += ",hostfwd=tcp::$($Matches[1])-:$($Matches[2])"
+    } else {
+        Write-Host "Error: Invalid -Fwd format '$rule'. Expected HOST:GUEST (e.g. 2222:22)" -ForegroundColor Red
+        exit 1
+    }
+}
+$args += "-netdev", "user,id=net0$fwdRules"
 $args += "-device", "e1000,netdev=net0"
 $args += "-no-reboot"
 $args += "-no-shutdown"
@@ -358,7 +368,13 @@ if ($Virtio -and -not $Usb) {
     $args += "-device", "usb-tablet"
 }
 
+# Port forwarding label
+$fwdLabel = ""
+if ($Fwd.Count -gt 0) {
+    $fwdLabel = ", fwd: $($Fwd -join ',')"
+}
+
 # ── Launch ───────────────────────────────────────────────────────────────────
 
-Write-Host "Starting anyOS with $vgaLabel (-vga $vga), disk: $driveLabel$audioLabel$usbLabel$kvmLabel" -ForegroundColor Cyan
+Write-Host "Starting anyOS with $vgaLabel (-vga $vga), disk: $driveLabel$audioLabel$usbLabel$kvmLabel$fwdLabel" -ForegroundColor Cyan
 & $qemu @args

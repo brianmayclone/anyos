@@ -8,10 +8,11 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU
-# Usage: ./run.sh [--vmware | --std | --virtio] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--fwd HOST:GUEST ...]
+# Usage: ./run.sh [--vmware | --std | --virtio] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--fwd HOST:GUEST ...]
 #   --vmware   VMware SVGA II (2D acceleration, HW cursor)
 #   --std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
 #   --virtio   VirtIO GPU (modern transport, ARGB cursor)
+#   --res WxH  Set initial GPU resolution (VirtIO only). Example: --res 1280x1024
 #   --ide      Use legacy IDE (PIO) instead of AHCI (DMA) for disk I/O
 #   --cdrom    Boot from ISO image (CD-ROM) instead of hard drive
 #   --audio    Enable AC'97 audio device
@@ -36,8 +37,32 @@ KVM_FLAGS=""
 KVM_LABEL=""
 FWD_RULES=""
 EXPECT_FWD=false
+RESOLUTION=""
+EXPECT_RES=false
 
 for arg in "$@"; do
+    if [ "$EXPECT_RES" = true ]; then
+        EXPECT_RES=false
+        # Validate format: WIDTHxHEIGHT (both numeric)
+        case "$arg" in
+            *x*)
+                RES_W="${arg%%x*}"
+                RES_H="${arg#*x}"
+                if [ -n "$RES_W" ] && [ -n "$RES_H" ] && [ "$RES_W" -gt 0 ] 2>/dev/null && [ "$RES_H" -gt 0 ] 2>/dev/null; then
+                    RESOLUTION="${RES_W}x${RES_H}"
+                else
+                    echo "Error: Invalid --res format '$arg'. Expected WIDTHxHEIGHT (e.g. 1280x1024)"
+                    exit 1
+                fi
+                ;;
+            *)
+                echo "Error: Invalid --res format '$arg'. Expected WIDTHxHEIGHT (e.g. 1280x1024)"
+                exit 1
+                ;;
+        esac
+        continue
+    fi
+
     if [ "$EXPECT_FWD" = true ]; then
         EXPECT_FWD=false
         # Validate format: HOST:GUEST (both numeric)
@@ -125,18 +150,33 @@ for arg in "$@"; do
                 fi
             fi
             ;;
+        --res)
+            EXPECT_RES=true
+            ;;
         --fwd)
             EXPECT_FWD=true
             ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--fwd HOST:GUEST ...]"
+            echo "Usage: $0 [--vmware | --std | --virtio] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--fwd HOST:GUEST ...]"
             exit 1
             ;;
     esac
 done
 
+if [ "$EXPECT_RES" = true ]; then
+    echo "Error: --res requires a WIDTHxHEIGHT argument (e.g. --res 1280x1024)"
+    exit 1
+fi
+
 if [ "$EXPECT_FWD" = true ]; then
     echo "Error: --fwd requires a HOST:GUEST argument (e.g. --fwd 2222:22)"
+    exit 1
+fi
+
+# Validate --res is only used with --virtio
+if [ -n "$RESOLUTION" ] && [ "$VGA" != "virtio" ]; then
+    echo "Error: --res is only supported with --virtio (VirtIO GPU sets resolution via device properties)"
+    echo "Bochs VGA and VMware SVGA set resolution from the guest OS."
     exit 1
 fi
 
@@ -199,7 +239,18 @@ if [ ! -f "$IMAGE" ]; then
     exit 1
 fi
 
-echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL"
+# VGA device flags: use explicit -device for VirtIO with custom resolution
+VGA_FLAGS="-vga $VGA"
+RES_LABEL=""
+if [ "$VGA" = "virtio" ] && [ -n "$RESOLUTION" ]; then
+    RES_W="${RESOLUTION%%x*}"
+    RES_H="${RESOLUTION#*x}"
+    VGA_FLAGS="-vga none -device virtio-vga,xres=$RES_W,yres=$RES_H"
+    VGA_LABEL="Virtio GPU (${RES_W}x${RES_H})"
+    RES_LABEL=", res: ${RESOLUTION}"
+fi
+
+echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL"
 
 eval qemu-system-x86_64 \
     $KVM_FLAGS \
@@ -208,7 +259,7 @@ eval qemu-system-x86_64 \
     -m 1024M \
     -smp cpus=4 \
     -serial stdio \
-    -vga "$VGA" \
+    $VGA_FLAGS \
     -netdev user,id=net0${FWD_RULES} -device e1000,netdev=net0 \
     $AUDIO_FLAGS \
     $USB_FLAGS \
