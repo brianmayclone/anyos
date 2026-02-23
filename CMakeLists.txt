@@ -632,6 +632,7 @@ add_rust_user_program(ami        ${CMAKE_SOURCE_DIR}/bin/ami)
 add_rust_user_program(vi         ${CMAKE_SOURCE_DIR}/bin/vi)
 add_rust_user_program(crond      ${CMAKE_SOURCE_DIR}/bin/crond)
 add_rust_user_program(crontab    ${CMAKE_SOURCE_DIR}/bin/crontab)
+add_rust_user_program(sed        ${CMAKE_SOURCE_DIR}/bin/sed)
 # Privileged sbin programs
 add_rust_sbin_program(adduser    ${CMAKE_SOURCE_DIR}/bin/adduser)
 add_rust_sbin_program(deluser    ${CMAKE_SOURCE_DIR}/bin/deluser)

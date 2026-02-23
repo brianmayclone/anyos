@@ -124,6 +124,7 @@ exclude = [
   "bin/vi",
   "bin/crond",
   "bin/crontab",
+  "bin/sed",
   "apps/demo_anyui",
   "apps/anycode",
   "apps/paint",
