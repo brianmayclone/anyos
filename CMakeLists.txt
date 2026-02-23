@@ -34,7 +34,7 @@ find_program(PYTHON_EXECUTABLE NAMES python3 python)
 set(BUILDSYSTEM_DIR "${CMAKE_SOURCE_DIR}/buildsystem")
 
 # anyelf — ELF conversion tool (replaces elf2bin.py, elf2kdrv.py)
-set(ANYELF_EXECUTABLE "${CMAKE_BINARY_DIR}/buildsystem/anyelf")
+set(ANYELF_EXECUTABLE "${CMAKE_BINARY_DIR}/buildsystem/anyelf${CMAKE_EXECUTABLE_SUFFIX}")
 file(GLOB ANYELF_SRCS "${BUILDSYSTEM_DIR}/anyelf/src/*.c" "${BUILDSYSTEM_DIR}/anyelf/src/*.h")
 add_custom_command(
   OUTPUT ${ANYELF_EXECUTABLE}
@@ -47,7 +47,7 @@ add_custom_command(
 )
 
 # mkimage — disk image builder (replaces mkimage.py)
-set(MKIMAGE_EXECUTABLE "${CMAKE_BINARY_DIR}/buildsystem/mkimage")
+set(MKIMAGE_EXECUTABLE "${CMAKE_BINARY_DIR}/buildsystem/mkimage${CMAKE_EXECUTABLE_SUFFIX}")
 file(GLOB MKIMAGE_SRCS "${BUILDSYSTEM_DIR}/mkimage/src/*.c" "${BUILDSYSTEM_DIR}/mkimage/src/*.h")
 add_custom_command(
   OUTPUT ${MKIMAGE_EXECUTABLE}
@@ -71,7 +71,7 @@ else()
 endif()
 
 # anyld — ELF64 shared object linker (for future .so builds)
-set(ANYLD_EXECUTABLE "${CMAKE_BINARY_DIR}/buildsystem/anyld")
+set(ANYLD_EXECUTABLE "${CMAKE_BINARY_DIR}/buildsystem/anyld${CMAKE_EXECUTABLE_SUFFIX}")
 file(GLOB ANYLD_SRCS "${BUILDSYSTEM_DIR}/anyld/src/*.c" "${BUILDSYSTEM_DIR}/anyld/src/*.h")
 add_custom_command(
   OUTPUT ${ANYLD_EXECUTABLE}
@@ -87,7 +87,7 @@ add_custom_command(
 )
 
 # mkappbundle — .app bundle creator (validates & assembles .app directories)
-set(MKAPPBUNDLE_EXECUTABLE "${CMAKE_BINARY_DIR}/buildsystem/mkappbundle")
+set(MKAPPBUNDLE_EXECUTABLE "${CMAKE_BINARY_DIR}/buildsystem/mkappbundle${CMAKE_EXECUTABLE_SUFFIX}")
 file(GLOB MKAPPBUNDLE_SRCS "${BUILDSYSTEM_DIR}/mkappbundle/src/*.c" "${BUILDSYSTEM_DIR}/mkappbundle/src/*.h")
 add_custom_command(
   OUTPUT ${MKAPPBUNDLE_EXECUTABLE}

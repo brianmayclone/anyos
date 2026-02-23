@@ -166,7 +166,49 @@ static const char *basename_of(const char *path) {
     return p ? p + 1 : path;
 }
 
-#ifndef _WIN32
+#ifdef _WIN32
+static int copy_directory(const char *src_dir, const char *dst_dir) {
+    make_directories(dst_dir);
+
+    char pattern[MAX_PATH_LEN];
+    snprintf(pattern, sizeof(pattern), "%s/*", src_dir);
+
+    struct _finddata_t fd;
+    intptr_t handle = _findfirst(pattern, &fd);
+    if (handle == -1) {
+        fprintf(stderr, "mkappbundle: cannot open directory '%s': %s\n",
+                src_dir, strerror(errno));
+        return -1;
+    }
+
+    do {
+        if (fd.name[0] == '.' &&
+            (fd.name[1] == '\0' ||
+             (fd.name[1] == '.' && fd.name[2] == '\0')))
+            continue;
+
+        char src_path[MAX_PATH_LEN];
+        char dst_path[MAX_PATH_LEN];
+        snprintf(src_path, sizeof(src_path), "%s/%s", src_dir, fd.name);
+        snprintf(dst_path, sizeof(dst_path), "%s/%s", dst_dir, fd.name);
+
+        if (fd.attrib & _A_SUBDIR) {
+            if (copy_directory(src_path, dst_path) != 0) {
+                _findclose(handle);
+                return -1;
+            }
+        } else {
+            if (copy_file(src_path, dst_path) != 0) {
+                _findclose(handle);
+                return -1;
+            }
+        }
+    } while (_findnext(handle, &fd) == 0);
+
+    _findclose(handle);
+    return 0;
+}
+#else
 static int copy_directory(const char *src_dir, const char *dst_dir) {
     make_directories(dst_dir);
 
@@ -393,7 +435,10 @@ static int try_anyelf_convert(const char *elf_path, const char *out_path, int ve
     char cmd[MAX_PATH_LEN * 4];
     const char *anyelf = g_anyelf_path ? g_anyelf_path : "anyelf";
 #ifdef _WIN32
-    snprintf(cmd, sizeof(cmd), "\"%s\" bin \"%s\" \"%s\" > NUL 2>&1",
+    /* Windows cmd.exe /c strips the first and last quote when there are
+       more than two — wrapping the entire command in an extra pair of
+       quotes prevents this from mangling the inner quoted paths. */
+    snprintf(cmd, sizeof(cmd), "\"\"%s\" bin \"%s\" \"%s\" > NUL 2>&1\"",
              anyelf, elf_path, out_path);
 #else
     snprintf(cmd, sizeof(cmd), "\"%s\" bin \"%s\" \"%s\" > /dev/null 2>&1",
@@ -704,12 +749,8 @@ int main(int argc, char **argv) {
             char dst_dir[MAX_PATH_LEN];
             snprintf(dst_dir, sizeof(dst_dir), "%s/%s", output_path, dirname);
 
-#ifndef _WIN32
             if (copy_directory(clean, dst_dir) != 0)
                 fatal("failed to copy resource directory: %s", res);
-#else
-            fatal("directory copy not supported on this platform");
-#endif
             if (verbose) printf("  + %s/ (directory)\n", dirname);
         } else {
             const char *fname = basename_of(res);
