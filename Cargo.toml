@@ -19,6 +19,8 @@ exclude = [
   "libs/libanyui_client",
   "libs/libdb",
   "libs/libdb_client",
+  "libs/libzip",
+  "libs/libzip_client",
   # System daemons
   "system/init",
   "system/terminal",
@@ -125,6 +127,8 @@ exclude = [
   "bin/crond",
   "bin/crontab",
   "bin/sed",
+  "bin/zip",
+  "bin/unzip",
   "apps/demo_anyui",
   "apps/anycode",
   "apps/paint",

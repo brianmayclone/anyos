@@ -49,6 +49,74 @@ const EVENT_WINDOW_CLOSE: u32 = 8;
 // Modifier flags
 const MOD_CTRL: u32 = 2;
 
+// ─── Output Redirect ─────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+struct Redirect {
+    target: String,    // filename or "/dev/null"
+    append: bool,      // true = >>, false = >
+}
+
+/// Parse redirect operators from a command line.
+/// Returns (clean_command, Option<Redirect>).
+/// Handles: `>`, `>>`, `2>`, `2>>`, and `/dev/null` as target.
+fn parse_redirects(line: &str) -> (String, Option<Redirect>) {
+    // Scan for redirect operators (check longer patterns first)
+    // Order matters: check 2>> before 2>, >> before >
+    let patterns: &[(&str, bool)] = &[
+        ("2>>", true),   // stderr append
+        ("2>", false),   // stderr redirect
+        (">>", true),    // stdout append
+        (">", false),    // stdout redirect
+    ];
+
+    for &(pattern, is_append) in patterns {
+        if let Some(pos) = line.find(pattern) {
+            let cmd_part = line[..pos].trim();
+            let target_part = line[pos + pattern.len()..].trim();
+
+            // Target is everything after the operator (until next pipe or end)
+            let target = if target_part.is_empty() {
+                continue; // malformed, skip
+            } else {
+                // Take first word as target
+                target_part.split_whitespace().next().unwrap_or("")
+            };
+
+            if target.is_empty() {
+                continue;
+            }
+
+            return (
+                String::from(cmd_part),
+                Some(Redirect {
+                    target: String::from(target),
+                    append: is_append,
+                }),
+            );
+        }
+    }
+
+    (String::from(line), None)
+}
+
+/// Write data to a redirect target file.
+fn write_redirect(redirect: &Redirect, data: &str) {
+    if redirect.target == "/dev/null" {
+        return; // discard
+    }
+
+    if redirect.append {
+        // Append: read existing content, concat, write back
+        let existing = fs::read_to_string(&redirect.target).unwrap_or_default();
+        let combined = format!("{}{}", existing, data);
+        let _ = fs::write_bytes(&redirect.target, combined.as_bytes());
+    } else {
+        // Truncate: write new content
+        let _ = fs::write_bytes(&redirect.target, data.as_bytes());
+    }
+}
+
 // ─── Terminal Buffer ─────────────────────────────────────────────────────────
 
 struct TerminalBuffer {
@@ -64,6 +132,8 @@ struct TerminalBuffer {
     ansi_params: [u8; 16],
     ansi_param_len: usize,
     ansi_bold: bool,
+    // Capture mode: when set, write_char appends to this instead of terminal lines
+    capture: Option<String>,
 }
 
 impl TerminalBuffer {
@@ -82,6 +152,7 @@ impl TerminalBuffer {
             ansi_params: [0; 16],
             ansi_param_len: 0,
             ansi_bold: false,
+            capture: None,
         }
     }
 
@@ -92,6 +163,33 @@ impl TerminalBuffer {
     }
 
     fn write_char(&mut self, ch: char) {
+        // Capture mode: redirect output to capture buffer
+        if let Some(ref mut cap) = self.capture {
+            // In capture mode, still strip ANSI escapes but collect plain text
+            match self.ansi_state {
+                1 => {
+                    if ch == '[' { self.ansi_state = 2; } else { self.ansi_state = 0; }
+                    return;
+                }
+                2 => {
+                    let c = ch as u32;
+                    if (c >= b'0' as u32 && c <= b'9' as u32) || c == b';' as u32 {
+                        return;
+                    }
+                    self.ansi_state = 0;
+                    return; // discard CSI commands in capture mode
+                }
+                _ => {}
+            }
+            match ch {
+                '\x1B' => { self.ansi_state = 1; }
+                '\n' => { cap.push('\n'); }
+                '\r' => {}
+                _ => { cap.push(ch); }
+            }
+            return;
+        }
+
         // ANSI escape sequence state machine
         match self.ansi_state {
             1 => {
@@ -575,12 +673,12 @@ impl Shell {
 
     /// Execute command. Returns (should_continue, optional foreground process, optional pending su username).
     fn submit(&mut self, buf: &mut TerminalBuffer) -> (bool, Option<ForegroundProcess>, Option<String>) {
-        let line = self.input.trim_matches(|c: char| c == ' ').to_string();
+        let raw_line = self.input.trim_matches(|c: char| c == ' ').to_string();
         buf.write_char('\n');
 
-        if !line.is_empty() {
-            if self.history.last().map_or(true, |last| *last != line) {
-                self.history.push(line.clone());
+        if !raw_line.is_empty() {
+            if self.history.last().map_or(true, |last| *last != raw_line) {
+                self.history.push(raw_line.clone());
                 if self.history.len() > 64 {
                     self.history.remove(0);
                 }
@@ -591,8 +689,16 @@ impl Shell {
         self.cursor = 0;
         self.history_index = None;
 
-        if line.is_empty() {
+        if raw_line.is_empty() {
             return (true, None, None);
+        }
+
+        // Parse redirects BEFORE any command dispatch
+        let (line, redirect) = parse_redirects(&raw_line);
+
+        // If there's a redirect, enable capture mode for builtins
+        if redirect.is_some() {
+            buf.capture = Some(String::new());
         }
 
         let mut parts = line.splitn(2, ' ');
@@ -622,6 +728,12 @@ impl Shell {
             "unset" => self.cmd_unset(args, buf),
             "source" | "." => self.cmd_source(args, buf),
             "su" => {
+                // Disable capture for su (interactive)
+                if let Some(captured) = buf.capture.take() {
+                    if let Some(ref redir) = redirect {
+                        write_redirect(redir, &captured);
+                    }
+                }
                 let pending = self.cmd_su(args, buf);
                 if pending.is_some() {
                     return (true, None, pending);
@@ -631,14 +743,15 @@ impl Shell {
             "reboot" => {
                 buf.current_color = COLOR_FG;
                 buf.write_str("Rebooting...\n");
-                // Reboot via keyboard controller
-                // (this is a syscall-less hack — TODO: add reboot syscall)
                 process::exit(0);
             }
             _ => {
+                // Disable capture for external commands — they use pipe redirect instead
+                buf.capture = None;
+
                 // Check for pipeline: "cmd1 | cmd2 | cmd3"
                 if line.contains('|') {
-                    if let Some(fp) = self.execute_pipeline(&line, buf) {
+                    if let Some(fp) = self.execute_pipeline(&line, redirect, buf) {
                         return (true, Some(fp), None);
                     }
                     return (true, None, None);

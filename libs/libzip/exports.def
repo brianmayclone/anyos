@@ -1,0 +1,16 @@
+LIBRARY libzip
+EXPORTS
+    libzip_open
+    libzip_create
+    libzip_close
+    libzip_entry_count
+    libzip_entry_name
+    libzip_entry_size
+    libzip_entry_compressed_size
+    libzip_entry_method
+    libzip_entry_is_dir
+    libzip_extract
+    libzip_extract_to_file
+    libzip_add_file
+    libzip_add_dir
+    libzip_write_to_file
