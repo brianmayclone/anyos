@@ -39,7 +39,11 @@
 #include <stdarg.h>
 #include <stdint.h>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <direct.h>
+#include <io.h>
+#define unlink _unlink
+#else
 #include <dirent.h>
 #include <unistd.h>
 #endif
@@ -388,8 +392,13 @@ static int is_elf_file(const char *path) {
 static int try_anyelf_convert(const char *elf_path, const char *out_path, int verbose) {
     char cmd[MAX_PATH_LEN * 4];
     const char *anyelf = g_anyelf_path ? g_anyelf_path : "anyelf";
+#ifdef _WIN32
+    snprintf(cmd, sizeof(cmd), "\"%s\" bin \"%s\" \"%s\" > NUL 2>&1",
+             anyelf, elf_path, out_path);
+#else
     snprintf(cmd, sizeof(cmd), "\"%s\" bin \"%s\" \"%s\" > /dev/null 2>&1",
              anyelf, elf_path, out_path);
+#endif
 
     int ret = system(cmd);
     if (ret == 0) {
