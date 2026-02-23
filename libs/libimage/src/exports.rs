@@ -5,7 +5,7 @@
 
 use crate::types::{ImageInfo, VideoInfo};
 
-const NUM_EXPORTS: u32 = 7;
+const NUM_EXPORTS: u32 = 8;
 
 /// Export function table — must be first in the binary (`.exports` section).
 #[repr(C)]
@@ -25,6 +25,8 @@ pub struct LibimageExports {
     // ICO size-aware exports (appended — existing offsets unchanged)
     pub ico_probe_size: extern "C" fn(*const u8, u32, u32, *mut ImageInfo) -> i32,
     pub ico_decode_size: extern "C" fn(*const u8, u32, u32, *mut u32, u32, *mut u8, u32) -> i32,
+    // BMP encoder
+    pub image_encode: extern "C" fn(*const u32, u32, u32, *mut u8, u32) -> i32,
 }
 
 #[link_section = ".exports"]
@@ -42,6 +44,7 @@ pub static LIBIMAGE_EXPORTS: LibimageExports = LibimageExports {
     scale_image: scale_image_export,
     ico_probe_size: ico_probe_size_export,
     ico_decode_size: ico_decode_size_export,
+    image_encode: image_encode_export,
 };
 
 // ── Video exports ──────────────────────────────────────
@@ -220,4 +223,25 @@ extern "C" fn ico_decode_size_export(
     };
 
     crate::ico::decode_for_size(data, preferred_size, out, scratch)
+}
+
+// ── BMP encode export ───────────────────────────────
+
+/// Encode ARGB8888 pixels into BMP format.
+///
+/// - `pixels`/`width`/`height`: source image (ARGB8888, width*height u32s)
+/// - `out`/`out_len`: output buffer for BMP file bytes
+///
+/// Returns total bytes written on success, or a negative error code.
+extern "C" fn image_encode_export(
+    pixels: *const u32, width: u32, height: u32,
+    out: *mut u8, out_len: u32,
+) -> i32 {
+    if pixels.is_null() || out.is_null() || width == 0 || height == 0 {
+        return crate::types::ERR_INVALID_DATA;
+    }
+    let count = (width as usize) * (height as usize);
+    let px = unsafe { core::slice::from_raw_parts(pixels, count) };
+    let buf = unsafe { core::slice::from_raw_parts_mut(out, out_len as usize) };
+    crate::bmp::encode(px, width, height, buf)
 }

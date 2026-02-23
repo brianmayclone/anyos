@@ -177,6 +177,16 @@ struct AnyuiLib {
     canvas_fill_circle: extern "C" fn(u32, i32, i32, i32, u32),
     canvas_get_buffer: extern "C" fn(u32) -> *mut u32,
     canvas_get_stride: extern "C" fn(u32) -> u32,
+    // Canvas extensions
+    canvas_set_interactive: extern "C" fn(u32, u32),
+    canvas_get_mouse: extern "C" fn(u32, *mut i32, *mut i32, *mut u32),
+    canvas_fill_ellipse: extern "C" fn(u32, i32, i32, i32, i32, u32),
+    canvas_draw_ellipse: extern "C" fn(u32, i32, i32, i32, i32, u32),
+    canvas_flood_fill: extern "C" fn(u32, i32, i32, u32),
+    canvas_draw_thick_line: extern "C" fn(u32, i32, i32, i32, i32, u32, u32),
+    canvas_get_pixel: extern "C" fn(u32, i32, i32) -> u32,
+    canvas_copy_from: extern "C" fn(u32, *const u32, u32),
+    canvas_copy_to: extern "C" fn(u32, *mut u32, u32) -> u32,
     // TextField-specific
     textfield_set_prefix: extern "C" fn(u32, u32),
     textfield_set_postfix: extern "C" fn(u32, u32),
@@ -332,6 +342,16 @@ pub fn init() -> bool {
             canvas_fill_circle: resolve(&handle, "anyui_canvas_fill_circle"),
             canvas_get_buffer: resolve(&handle, "anyui_canvas_get_buffer"),
             canvas_get_stride: resolve(&handle, "anyui_canvas_get_stride"),
+            // Canvas extensions
+            canvas_set_interactive: resolve(&handle, "anyui_canvas_set_interactive"),
+            canvas_get_mouse: resolve(&handle, "anyui_canvas_get_mouse"),
+            canvas_fill_ellipse: resolve(&handle, "anyui_canvas_fill_ellipse"),
+            canvas_draw_ellipse: resolve(&handle, "anyui_canvas_draw_ellipse"),
+            canvas_flood_fill: resolve(&handle, "anyui_canvas_flood_fill"),
+            canvas_draw_thick_line: resolve(&handle, "anyui_canvas_draw_thick_line"),
+            canvas_get_pixel: resolve(&handle, "anyui_canvas_get_pixel"),
+            canvas_copy_from: resolve(&handle, "anyui_canvas_copy_from"),
+            canvas_copy_to: resolve(&handle, "anyui_canvas_copy_to"),
             // TextField-specific
             textfield_set_prefix: resolve(&handle, "anyui_textfield_set_prefix"),
             textfield_set_postfix: resolve(&handle, "anyui_textfield_set_postfix"),

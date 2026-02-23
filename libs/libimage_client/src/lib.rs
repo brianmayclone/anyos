@@ -114,6 +114,30 @@ pub fn decode_ico_size(
     if ret == 0 { Ok(()) } else { Err(err_from_code(ret)) }
 }
 
+// ── Encode API ──────────────────────────────────────
+
+/// Encode ARGB8888 pixels into BMP format.
+///
+/// - `pixels`: ARGB8888 pixel data (width * height elements)
+/// - `width`, `height`: image dimensions
+/// - `out`: output buffer for BMP file bytes (must be at least `54 + width*height*4` bytes)
+///
+/// Returns the number of bytes written on success, or an error.
+pub fn encode_bmp(pixels: &[u32], width: u32, height: u32, out: &mut [u8]) -> Result<usize, ImageError> {
+    let ret = (raw::exports().image_encode)(
+        pixels.as_ptr(),
+        width,
+        height,
+        out.as_mut_ptr(),
+        out.len() as u32,
+    );
+    if ret > 0 {
+        Ok(ret as usize)
+    } else {
+        Err(err_from_code(ret))
+    }
+}
+
 /// Get the format name as a string.
 pub fn format_name(format: u32) -> &'static str {
     match format {

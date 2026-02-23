@@ -3,6 +3,9 @@
 //! The Canvas owns an ARGB pixel buffer. Clients draw into it using
 //! functions like `clear`, `fill_rect`, `draw_line`, `draw_circle`, etc.
 //! The buffer is blitted to the window's SHM surface during rendering.
+//!
+//! When `interactive` is true, mouse move events are tracked and fire
+//! EVENT_CHANGE callbacks, enabling drag-to-draw behavior.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -11,6 +14,13 @@ use crate::control::{Control, ControlBase, ControlKind, EventResponse};
 pub struct Canvas {
     pub(crate) base: ControlBase,
     pub pixels: Vec<u32>,
+    /// Last known mouse position (local coordinates).
+    pub last_mouse_x: i32,
+    pub last_mouse_y: i32,
+    /// Mouse button state from last mouse_down (0 = none, 1 = left, 2 = right).
+    pub mouse_button: u32,
+    /// When true, handle_mouse_move fires EVENT_CHANGE for drag-drawing.
+    pub interactive: bool,
 }
 
 impl Canvas {
@@ -19,6 +29,10 @@ impl Canvas {
         Self {
             pixels: vec![0xFF000000; size], // opaque black
             base,
+            last_mouse_x: 0,
+            last_mouse_y: 0,
+            mouse_button: 0,
+            interactive: false,
         }
     }
 
@@ -35,6 +49,17 @@ impl Canvas {
         let h = self.height();
         if x >= 0 && y >= 0 && (x as u32) < w && (y as u32) < h {
             self.pixels[y as usize * w as usize + x as usize] = color;
+        }
+    }
+
+    /// Read a single pixel. Returns 0 if out of bounds.
+    pub fn get_pixel(&self, x: i32, y: i32) -> u32 {
+        let w = self.stride();
+        let h = self.height();
+        if x >= 0 && y >= 0 && (x as u32) < w && (y as u32) < h {
+            self.pixels[y as usize * w as usize + x as usize]
+        } else {
+            0
         }
     }
 
@@ -71,6 +96,36 @@ impl Canvas {
 
         loop {
             self.set_pixel(cx, cy, color);
+            if cx == x1 && cy == y1 { break; }
+            let e2 = 2 * err;
+            if e2 >= dy {
+                err += dy;
+                cx += sx;
+            }
+            if e2 <= dx {
+                err += dx;
+                cy += sy;
+            }
+        }
+    }
+
+    /// Draw a line with configurable thickness using filled circles at each point.
+    pub fn draw_thick_line(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, color: u32, thickness: u32) {
+        if thickness <= 1 {
+            self.draw_line(x0, y0, x1, y1, color);
+            return;
+        }
+        let radius = (thickness as i32) / 2;
+        let dx = (x1 - x0).abs();
+        let dy = -(y1 - y0).abs();
+        let sx: i32 = if x0 < x1 { 1 } else { -1 };
+        let sy: i32 = if y0 < y1 { 1 } else { -1 };
+        let mut err = dx + dy;
+        let mut cx = x0;
+        let mut cy = y0;
+
+        loop {
+            self.fill_circle(cx, cy, radius, color);
             if cx == x1 && cy == y1 { break; }
             let e2 = 2 * err;
             if e2 >= dy {
@@ -144,6 +199,155 @@ impl Canvas {
         }
     }
 
+    /// Draw an ellipse outline using midpoint ellipse algorithm.
+    pub fn draw_ellipse(&mut self, cx: i32, cy: i32, rx: i32, ry: i32, color: u32) {
+        if rx <= 0 || ry <= 0 { return; }
+        let rx2 = (rx as i64) * (rx as i64);
+        let ry2 = (ry as i64) * (ry as i64);
+        let mut x = 0i32;
+        let mut y = ry;
+        let mut px = 0i64;
+        let mut py = 2 * rx2 * (y as i64);
+
+        // Region 1
+        let mut p = ry2 - rx2 * (ry as i64) + rx2 / 4;
+        while px < py {
+            self.set_pixel(cx + x, cy + y, color);
+            self.set_pixel(cx - x, cy + y, color);
+            self.set_pixel(cx + x, cy - y, color);
+            self.set_pixel(cx - x, cy - y, color);
+            x += 1;
+            px += 2 * ry2;
+            if p < 0 {
+                p += ry2 + px;
+            } else {
+                y -= 1;
+                py -= 2 * rx2;
+                p += ry2 + px - py;
+            }
+        }
+
+        // Region 2
+        p = ry2 * ((x as i64) * (x as i64) + (x as i64))
+            + rx2 * ((y as i64 - 1) * (y as i64 - 1)) - rx2 * ry2;
+        while y >= 0 {
+            self.set_pixel(cx + x, cy + y, color);
+            self.set_pixel(cx - x, cy + y, color);
+            self.set_pixel(cx + x, cy - y, color);
+            self.set_pixel(cx - x, cy - y, color);
+            y -= 1;
+            py -= 2 * rx2;
+            if p > 0 {
+                p += rx2 - py;
+            } else {
+                x += 1;
+                px += 2 * ry2;
+                p += rx2 - py + px;
+            }
+        }
+    }
+
+    /// Draw a filled ellipse using horizontal scanlines.
+    pub fn fill_ellipse(&mut self, cx: i32, cy: i32, rx: i32, ry: i32, color: u32) {
+        if rx <= 0 || ry <= 0 { return; }
+        let rx2 = (rx as i64) * (rx as i64);
+        let ry2 = (ry as i64) * (ry as i64);
+        let mut x = 0i32;
+        let mut y = ry;
+        let mut px = 0i64;
+        let mut py = 2 * rx2 * (y as i64);
+
+        // Region 1
+        let mut p = ry2 - rx2 * (ry as i64) + rx2 / 4;
+        let mut last_y = y + 1;
+        while px < py {
+            if y != last_y {
+                self.draw_hline(cx - x, cx + x, cy + y, color);
+                self.draw_hline(cx - x, cx + x, cy - y, color);
+                last_y = y;
+            }
+            x += 1;
+            px += 2 * ry2;
+            if p < 0 {
+                p += ry2 + px;
+            } else {
+                self.draw_hline(cx - x, cx + x, cy + y, color);
+                self.draw_hline(cx - x, cx + x, cy - y, color);
+                y -= 1;
+                py -= 2 * rx2;
+                p += ry2 + px - py;
+                last_y = y;
+            }
+        }
+
+        // Region 2
+        p = ry2 * ((x as i64) * (x as i64) + (x as i64))
+            + rx2 * ((y as i64 - 1) * (y as i64 - 1)) - rx2 * ry2;
+        while y >= 0 {
+            self.draw_hline(cx - x, cx + x, cy + y, color);
+            self.draw_hline(cx - x, cx + x, cy - y, color);
+            y -= 1;
+            py -= 2 * rx2;
+            if p > 0 {
+                p += rx2 - py;
+            } else {
+                x += 1;
+                px += 2 * ry2;
+                p += rx2 - py + px;
+            }
+        }
+    }
+
+    /// Iterative scanline flood fill. Replaces `target_color` with `fill_color`.
+    pub fn flood_fill(&mut self, x: i32, y: i32, fill_color: u32) {
+        let w = self.stride() as i32;
+        let h = self.height() as i32;
+        if x < 0 || y < 0 || x >= w || y >= h { return; }
+
+        let target_color = self.get_pixel(x, y);
+        if target_color == fill_color { return; }
+
+        let mut stack: Vec<(i32, i32)> = Vec::new();
+        stack.push((x, y));
+
+        while let Some((sx, sy)) = stack.pop() {
+            let mut lx = sx;
+            while lx > 0 && self.get_pixel(lx - 1, sy) == target_color {
+                lx -= 1;
+            }
+            let mut cx = lx;
+            let mut above = false;
+            let mut below = false;
+            while cx < w && self.get_pixel(cx, sy) == target_color {
+                self.set_pixel(cx, sy, fill_color);
+                if sy > 0 {
+                    let c = self.get_pixel(cx, sy - 1) == target_color;
+                    if c && !above { stack.push((cx, sy - 1)); }
+                    above = c;
+                }
+                if sy < h - 1 {
+                    let c = self.get_pixel(cx, sy + 1) == target_color;
+                    if c && !below { stack.push((cx, sy + 1)); }
+                    below = c;
+                }
+                cx += 1;
+            }
+        }
+    }
+
+    /// Copy pixel data from a source slice into the canvas buffer.
+    pub fn copy_pixels_from(&mut self, src: &[u32]) {
+        let len = src.len().min(self.pixels.len());
+        self.pixels[..len].copy_from_slice(&src[..len]);
+    }
+
+    /// Copy canvas pixel data into a destination slice. Returns count copied.
+    pub fn copy_pixels_to(&self, dst: &mut [u32]) -> usize {
+        let len = dst.len().min(self.pixels.len());
+        dst[..len].copy_from_slice(&self.pixels[..len]);
+        len
+    }
+
     #[inline]
     fn draw_hline(&mut self, x0: i32, x1: i32, y: i32, color: u32) {
         let stride = self.stride() as i32;
@@ -172,11 +376,30 @@ impl Control for Canvas {
 
     fn is_interactive(&self) -> bool { true }
 
-    fn handle_mouse_down(&mut self, _lx: i32, _ly: i32, _button: u32) -> EventResponse {
-        EventResponse::CONSUMED
+    fn handle_mouse_down(&mut self, lx: i32, ly: i32, button: u32) -> EventResponse {
+        self.last_mouse_x = lx;
+        self.last_mouse_y = ly;
+        self.mouse_button = button;
+        self.base.dirty = true;
+        EventResponse::CLICK
     }
 
-    fn handle_mouse_up(&mut self, _lx: i32, _ly: i32, _button: u32) -> EventResponse {
+    fn handle_mouse_move(&mut self, lx: i32, ly: i32) -> EventResponse {
+        self.last_mouse_x = lx;
+        self.last_mouse_y = ly;
+        if self.interactive {
+            self.base.dirty = true;
+            EventResponse::CHANGED
+        } else {
+            EventResponse::CONSUMED
+        }
+    }
+
+    fn handle_mouse_up(&mut self, lx: i32, ly: i32, _button: u32) -> EventResponse {
+        self.last_mouse_x = lx;
+        self.last_mouse_y = ly;
+        self.mouse_button = 0;
+        self.base.dirty = true;
         EventResponse::CONSUMED
     }
 

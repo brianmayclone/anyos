@@ -782,6 +782,135 @@ pub extern "C" fn anyui_canvas_get_stride(id: ControlId) -> u32 {
     0
 }
 
+// ── Canvas extensions (interactive, drawing primitives) ──────────────
+
+fn as_canvas(ctrl: &mut Box<dyn Control>) -> Option<&mut controls::canvas::Canvas> {
+    if ctrl.kind() == ControlKind::Canvas {
+        let raw: *mut dyn Control = &mut **ctrl;
+        Some(unsafe { &mut *(raw as *mut controls::canvas::Canvas) })
+    } else {
+        None
+    }
+}
+
+fn as_canvas_ref(ctrl: &Box<dyn Control>) -> Option<&controls::canvas::Canvas> {
+    if ctrl.kind() == ControlKind::Canvas {
+        let raw: *const dyn Control = &**ctrl;
+        Some(unsafe { &*(raw as *const controls::canvas::Canvas) })
+    } else {
+        None
+    }
+}
+
+/// Enable or disable interactive mode (mouse move fires EVENT_CHANGE).
+#[no_mangle]
+pub extern "C" fn anyui_canvas_set_interactive(id: ControlId, enabled: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(cv) = as_canvas(ctrl) {
+            cv.interactive = enabled != 0;
+        }
+    }
+}
+
+/// Get last mouse position and button state. Returns via out pointers.
+#[no_mangle]
+pub extern "C" fn anyui_canvas_get_mouse(id: ControlId, out_x: *mut i32, out_y: *mut i32, out_button: *mut u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if let Some(cv) = as_canvas_ref(ctrl) {
+            if !out_x.is_null() { unsafe { *out_x = cv.last_mouse_x; } }
+            if !out_y.is_null() { unsafe { *out_y = cv.last_mouse_y; } }
+            if !out_button.is_null() { unsafe { *out_button = cv.mouse_button; } }
+        }
+    }
+}
+
+/// Draw a filled ellipse.
+#[no_mangle]
+pub extern "C" fn anyui_canvas_fill_ellipse(id: ControlId, cx: i32, cy: i32, rx: i32, ry: i32, color: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(cv) = as_canvas(ctrl) {
+            cv.fill_ellipse(cx, cy, rx, ry, color);
+        }
+    }
+}
+
+/// Draw an ellipse outline.
+#[no_mangle]
+pub extern "C" fn anyui_canvas_draw_ellipse(id: ControlId, cx: i32, cy: i32, rx: i32, ry: i32, color: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(cv) = as_canvas(ctrl) {
+            cv.draw_ellipse(cx, cy, rx, ry, color);
+        }
+    }
+}
+
+/// Flood fill starting from (x, y) with the given color.
+#[no_mangle]
+pub extern "C" fn anyui_canvas_flood_fill(id: ControlId, x: i32, y: i32, color: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(cv) = as_canvas(ctrl) {
+            cv.flood_fill(x, y, color);
+        }
+    }
+}
+
+/// Draw a thick line (filled circles at each Bresenham step).
+#[no_mangle]
+pub extern "C" fn anyui_canvas_draw_thick_line(id: ControlId, x0: i32, y0: i32, x1: i32, y1: i32, color: u32, thickness: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(cv) = as_canvas(ctrl) {
+            cv.draw_thick_line(x0, y0, x1, y1, color, thickness);
+        }
+    }
+}
+
+/// Read a single pixel value. Returns 0 if out of bounds.
+#[no_mangle]
+pub extern "C" fn anyui_canvas_get_pixel(id: ControlId, x: i32, y: i32) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if let Some(cv) = as_canvas_ref(ctrl) {
+            return cv.get_pixel(x, y);
+        }
+    }
+    0
+}
+
+/// Copy pixels from a source buffer into the canvas.
+#[no_mangle]
+pub extern "C" fn anyui_canvas_copy_from(id: ControlId, src: *const u32, len: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(cv) = as_canvas(ctrl) {
+            if !src.is_null() && len > 0 {
+                let slice = unsafe { core::slice::from_raw_parts(src, len as usize) };
+                cv.copy_pixels_from(slice);
+            }
+        }
+    }
+}
+
+/// Copy canvas pixels into a destination buffer. Returns number of pixels copied.
+#[no_mangle]
+pub extern "C" fn anyui_canvas_copy_to(id: ControlId, dst: *mut u32, len: u32) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if let Some(cv) = as_canvas_ref(ctrl) {
+            if !dst.is_null() && len > 0 {
+                let slice = unsafe { core::slice::from_raw_parts_mut(dst, len as usize) };
+                return cv.copy_pixels_to(slice) as u32;
+            }
+        }
+    }
+    0
+}
+
 // ── ImageView ────────────────────────────────────────────────────────
 
 /// Set pixel data for an ImageView from a decoded ARGB buffer.

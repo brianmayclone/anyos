@@ -47,6 +47,15 @@ EXPORTS
     anyui_canvas_fill_circle
     anyui_canvas_get_buffer
     anyui_canvas_get_stride
+    anyui_canvas_set_interactive
+    anyui_canvas_get_mouse
+    anyui_canvas_fill_ellipse
+    anyui_canvas_draw_ellipse
+    anyui_canvas_flood_fill
+    anyui_canvas_draw_thick_line
+    anyui_canvas_get_pixel
+    anyui_canvas_copy_from
+    anyui_canvas_copy_to
     anyui_textfield_set_prefix
     anyui_textfield_set_postfix
     anyui_textfield_set_password

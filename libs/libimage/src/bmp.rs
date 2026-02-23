@@ -59,6 +59,91 @@ pub fn probe(data: &[u8]) -> Option<ImageInfo> {
     })
 }
 
+/// Encode ARGB8888 pixels into BMP format (32-bit uncompressed).
+///
+/// - `pixels`: ARGB8888 pixel data (width * height elements)
+/// - `width`, `height`: image dimensions
+/// - `out`: output buffer for BMP file data
+///
+/// Returns total bytes written on success, or a negative error code.
+pub fn encode(pixels: &[u32], width: u32, height: u32, out: &mut [u8]) -> i32 {
+    let w = width as usize;
+    let h = height as usize;
+    if w == 0 || h == 0 || pixels.len() < w * h {
+        return ERR_INVALID_DATA;
+    }
+
+    let row_size = w * 4; // 32-bit, no padding needed (already 4-byte aligned)
+    let pixel_data_size = row_size * h;
+    let header_size = 14 + 40; // BMP header + BITMAPINFOHEADER
+    let file_size = header_size + pixel_data_size;
+
+    if out.len() < file_size {
+        return ERR_BUFFER_TOO_SMALL;
+    }
+
+    // ── BMP File Header (14 bytes) ──
+    out[0] = b'B';
+    out[1] = b'M';
+    write_u32(out, 2, file_size as u32);
+    write_u32(out, 6, 0);  // reserved
+    write_u32(out, 10, header_size as u32); // pixel data offset
+
+    // ── BITMAPINFOHEADER (40 bytes) ──
+    write_u32(out, 14, 40); // header size
+    write_i32(out, 18, width as i32);
+    write_i32(out, 22, -(height as i32)); // negative = top-down
+    write_u16(out, 26, 1);  // color planes
+    write_u16(out, 28, 32); // bits per pixel
+    write_u32(out, 30, 0);  // no compression
+    write_u32(out, 34, pixel_data_size as u32);
+    write_u32(out, 38, 2835); // ~72 DPI horizontal
+    write_u32(out, 42, 2835); // ~72 DPI vertical
+    write_u32(out, 46, 0);  // colors in palette
+    write_u32(out, 50, 0);  // important colors
+
+    // ── Pixel data (top-down, BGRA order) ──
+    let mut off = header_size;
+    for y in 0..h {
+        for x in 0..w {
+            let argb = pixels[y * w + x];
+            let a = (argb >> 24) & 0xFF;
+            let r = (argb >> 16) & 0xFF;
+            let g = (argb >> 8) & 0xFF;
+            let b = argb & 0xFF;
+            out[off] = b as u8;
+            out[off + 1] = g as u8;
+            out[off + 2] = r as u8;
+            out[off + 3] = a as u8;
+            off += 4;
+        }
+    }
+
+    file_size as i32
+}
+
+fn write_u16(buf: &mut [u8], off: usize, val: u16) {
+    let bytes = val.to_le_bytes();
+    buf[off] = bytes[0];
+    buf[off + 1] = bytes[1];
+}
+
+fn write_u32(buf: &mut [u8], off: usize, val: u32) {
+    let bytes = val.to_le_bytes();
+    buf[off] = bytes[0];
+    buf[off + 1] = bytes[1];
+    buf[off + 2] = bytes[2];
+    buf[off + 3] = bytes[3];
+}
+
+fn write_i32(buf: &mut [u8], off: usize, val: i32) {
+    let bytes = val.to_le_bytes();
+    buf[off] = bytes[0];
+    buf[off + 1] = bytes[1];
+    buf[off + 2] = bytes[2];
+    buf[off + 3] = bytes[3];
+}
+
 /// Decode BMP data into ARGB8888 pixels.
 pub fn decode(data: &[u8], out: &mut [u32]) -> i32 {
     if data.len() < 54 || data[0] != b'B' || data[1] != b'M' {

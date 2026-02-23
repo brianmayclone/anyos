@@ -116,6 +116,7 @@ exclude = [
   "bin/logd",
   "apps/demo_anyui",
   "apps/anycode",
+  "apps/paint",
   "system/eventviewer",
   "system/diskutil",
   "system/login",
