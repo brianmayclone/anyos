@@ -43,12 +43,30 @@ fn main() {
     }
 
     // Ensure database directory exists
-    let ret = anyos_std::fs::mkdir(DB_DIR);
-    if ret == u32::MAX {
-        anyos_std::println!("amid: warning: mkdir('{}') failed (may already exist)", DB_DIR);
+    anyos_std::fs::mkdir(DB_DIR);
+
+    // Pre-create the database file if it doesn't exist (using stdlib's
+    // proven file I/O so libdb only needs to open an existing file).
+    {
+        let probe = anyos_std::fs::open(DB_PATH, 0);
+        if probe == u32::MAX {
+            // File doesn't exist — create it via stdlib
+            let fd = anyos_std::fs::open(
+                DB_PATH,
+                anyos_std::fs::O_WRITE | anyos_std::fs::O_CREATE | anyos_std::fs::O_TRUNC,
+            );
+            if fd == u32::MAX {
+                anyos_std::println!("amid: failed to create database file at {}", DB_PATH);
+                return;
+            }
+            anyos_std::fs::close(fd);
+            anyos_std::println!("amid: created database file {}", DB_PATH);
+        } else {
+            anyos_std::fs::close(probe);
+        }
     }
 
-    // Open (or create) the database
+    // Open the database via libdb
     let db = match libdb_client::Database::open(DB_PATH) {
         Some(db) => db,
         None => {

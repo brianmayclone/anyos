@@ -7,13 +7,13 @@ use core::arch::asm;
 
 // Syscall numbers (must match kernel/src/syscall/mod.rs)
 const SYS_EXIT: u64 = 1;
-const SYS_WRITE: u64 = 4;
+const SYS_WRITE: u64 = 2;
 const SYS_READ: u64 = 3;
-const SYS_OPEN: u64 = 5;
-const SYS_CLOSE: u64 = 6;
+const SYS_OPEN: u64 = 4;
+const SYS_CLOSE: u64 = 5;
 const SYS_SBRK: u64 = 9;
-const SYS_LSEEK: u64 = 19;
-const SYS_FSTAT: u64 = 28;
+const SYS_LSEEK: u64 = 105;
+const SYS_FSTAT: u64 = 106;
 
 // Open flags (match kernel)
 pub const O_WRITE: u32 = 1;
