@@ -39,6 +39,8 @@ FWD_RULES=""
 EXPECT_FWD=false
 RESOLUTION=""
 EXPECT_RES=false
+MIN_RES_W=1024
+MIN_RES_H=768
 
 for arg in "$@"; do
     if [ "$EXPECT_RES" = true ]; then
@@ -180,6 +182,21 @@ if [ -n "$RESOLUTION" ] && [ "$VGA" != "virtio" ]; then
     exit 1
 fi
 
+# VirtIO GPU: default to 1024x768 if no --res specified
+if [ "$VGA" = "virtio" ] && [ -z "$RESOLUTION" ]; then
+    RESOLUTION="${MIN_RES_W}x${MIN_RES_H}"
+fi
+
+# Enforce minimum resolution (1024x768)
+if [ -n "$RESOLUTION" ]; then
+    RES_W="${RESOLUTION%%x*}"
+    RES_H="${RESOLUTION#*x}"
+    if [ "$RES_W" -lt "$MIN_RES_W" ] || [ "$RES_H" -lt "$MIN_RES_H" ]; then
+        echo "Error: Resolution ${RES_W}x${RES_H} is below minimum ${MIN_RES_W}x${MIN_RES_H}"
+        exit 1
+    fi
+fi
+
 if [ "$CDROM_MODE" = true ]; then
     IMAGE="${SCRIPT_DIR}/../build/anyos.iso"
     BIOS_FLAGS=""
@@ -239,13 +256,13 @@ if [ ! -f "$IMAGE" ]; then
     exit 1
 fi
 
-# VGA device flags: use explicit -device for VirtIO with custom resolution
+# VGA device flags: VirtIO always uses explicit -device with edid=on for reliable resolution
 VGA_FLAGS="-vga $VGA"
 RES_LABEL=""
-if [ "$VGA" = "virtio" ] && [ -n "$RESOLUTION" ]; then
+if [ "$VGA" = "virtio" ]; then
     RES_W="${RESOLUTION%%x*}"
     RES_H="${RESOLUTION#*x}"
-    VGA_FLAGS="-vga none -device virtio-vga,xres=$RES_W,yres=$RES_H"
+    VGA_FLAGS="-vga none -device virtio-vga,edid=on,xres=$RES_W,yres=$RES_H"
     VGA_LABEL="Virtio GPU (${RES_W}x${RES_H})"
     RES_LABEL=", res: ${RESOLUTION}"
 fi

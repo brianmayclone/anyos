@@ -93,6 +93,10 @@ pub(crate) struct CompWindow {
     /// Window-level dirty flag: true if any control in this window's subtree is dirty.
     /// Computed in a flat O(n) scan, replacing the O(n²) recursive any_dirty() tree walk.
     pub dirty: bool,
+    /// Local back buffer for flicker-free rendering. All drawing goes here first,
+    /// then a single memcpy to SHM before present() — the compositor never sees
+    /// a half-rendered frame (no background flash, no partial content).
+    pub back_buffer: Vec<u32>,
 }
 
 // ── Global state (per-process, lives in .data/.bss of the .so) ───────
@@ -303,6 +307,7 @@ pub extern "C" fn anyui_create_window(
     let ctrl = controls::create_control(ControlKind::Window, id, 0, 0, 0, w, h, &title_buf[..len]);
     st.controls.push(ctrl);
     st.windows.push(id);
+    let pixel_count = (w as usize) * (h as usize);
     st.comp_windows.push(CompWindow {
         window_id,
         shm_id,
@@ -312,6 +317,7 @@ pub extern "C" fn anyui_create_window(
         frame_presented: false,
         last_present_ms: 0,
         dirty: true,
+        back_buffer: alloc::vec![0u32; pixel_count],
     });
     id
 }

@@ -7,12 +7,13 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU on Windows
-# Usage: .\scripts\run.ps1 [-Vmware] [-Std] [-Virtio] [-Ide] [-Cdrom] [-Audio] [-Usb] [-Uefi] [-Kvm] [-Fwd "H:G","H:G"] [-VBox]
+# Usage: .\scripts\run.ps1 [-Vmware] [-Std] [-Virtio] [-Res "WxH"] [-Ide] [-Cdrom] [-Audio] [-Usb] [-Uefi] [-Kvm] [-Fwd "H:G","H:G"] [-VBox]
 #
 #   -VBox     Start VirtualBox VM named 'anyos' and stream its COM1 serial output here
 #   -Vmware   VMware SVGA II (2D acceleration, HW cursor)
 #   -Std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
 #   -Virtio   VirtIO GPU (modern transport, ARGB cursor)
+#   -Res WxH  Set initial GPU resolution (VirtIO only). Example: -Res "1280x1024"
 #   -Ide      Use legacy IDE (PIO) instead of AHCI (DMA) for disk I/O
 #   -Cdrom    Boot from ISO image (CD-ROM) instead of hard drive
 #   -Audio    Enable AC'97 audio device
@@ -33,6 +34,7 @@ param(
     [switch]$Usb,
     [switch]$Uefi,
     [switch]$Kvm,
+    [string]$Res = "",
     [string[]]$Fwd = @()
 )
 
@@ -254,6 +256,41 @@ if ($Vmware) {
     $vgaLabel = "Virtio GPU (paravirtualized)"
 }
 
+# ── Resolution validation ───────────────────────────────────────────────────
+
+$minResW = 1024
+$minResH = 768
+
+if ($Res -ne "") {
+    if (-not $Virtio) {
+        Write-Host "Error: -Res is only supported with -Virtio (VirtIO GPU sets resolution via device properties)" -ForegroundColor Red
+        Write-Host "Bochs VGA and VMware SVGA set resolution from the guest OS."
+        exit 1
+    }
+    if ($Res -match '^(\d+)x(\d+)$') {
+        $resW = [int]$Matches[1]
+        $resH = [int]$Matches[2]
+    } else {
+        Write-Host "Error: Invalid -Res format '$Res'. Expected WIDTHxHEIGHT (e.g. 1280x1024)" -ForegroundColor Red
+        exit 1
+    }
+}
+
+# VirtIO GPU: default to 1024x768 if no -Res specified
+if ($Virtio -and $Res -eq "") {
+    $Res = "${minResW}x${minResH}"
+    $resW = $minResW
+    $resH = $minResH
+}
+
+# Enforce minimum resolution (1024x768)
+if ($Res -ne "") {
+    if ($resW -lt $minResW -or $resH -lt $minResH) {
+        Write-Host "Error: Resolution ${resW}x${resH} is below minimum ${minResW}x${minResH}" -ForegroundColor Red
+        exit 1
+    }
+}
+
 # ── Build QEMU arguments ────────────────────────────────────────────────────
 
 $args = @()
@@ -312,7 +349,15 @@ if (-not (Test-Path $image)) {
 $args += "-m", "1024M"
 $args += "-smp", "cpus=4"
 $args += "-serial", "stdio"
-$args += "-vga", $vga
+
+# VGA device: VirtIO always uses explicit -device with edid=on for reliable resolution
+if ($Virtio) {
+    $args += "-vga", "none"
+    $args += "-device", "virtio-vga,edid=on,xres=$resW,yres=$resH"
+    $vgaLabel = "Virtio GPU (${resW}x${resH})"
+} else {
+    $args += "-vga", $vga
+}
 # Port forwarding rules
 $fwdRules = ""
 foreach ($rule in $Fwd) {
@@ -368,6 +413,12 @@ if ($Virtio -and -not $Usb) {
     $args += "-device", "usb-tablet"
 }
 
+# Resolution label
+$resLabel = ""
+if ($Res -ne "") {
+    $resLabel = ", res: $Res"
+}
+
 # Port forwarding label
 $fwdLabel = ""
 if ($Fwd.Count -gt 0) {
@@ -376,5 +427,5 @@ if ($Fwd.Count -gt 0) {
 
 # ── Launch ───────────────────────────────────────────────────────────────────
 
-Write-Host "Starting anyOS with $vgaLabel (-vga $vga), disk: $driveLabel$audioLabel$usbLabel$kvmLabel$fwdLabel" -ForegroundColor Cyan
+Write-Host "Starting anyOS with $vgaLabel (-vga $vga), disk: $driveLabel$audioLabel$usbLabel$kvmLabel$resLabel$fwdLabel" -ForegroundColor Cyan
 & $qemu @args

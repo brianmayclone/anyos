@@ -247,19 +247,29 @@ pub fn free_frames() -> usize {
     ALLOCATOR.lock().free_frames
 }
 
+/// Maximum physical address for contiguous allocations (128 MiB).
+///
+/// Contiguous allocations are used for DMA buffers and GPU framebuffers that are
+/// accessed via identity mapping (physical address == virtual address). The kernel
+/// identity-maps the first 128 MiB of physical memory, so contiguous allocations
+/// must not exceed this boundary.
+const CONTIGUOUS_MAX_FRAME: usize = (128 * 1024 * 1024) / FRAME_SIZE; // frame 32768
+
 /// Allocate `count` physically contiguous 4 KiB frames.
 ///
-/// Scans the bitmap for a run of `count` consecutive free frames (first-fit).
+/// Scans the bitmap for a run of `count` consecutive free frames (first-fit),
+/// constrained to the identity-mapped region (< 128 MiB) so the result is
+/// safely accessible via identity mapping from any CR3 context.
 /// Returns the physical address of the first frame, or `None` if unavailable.
 pub fn alloc_contiguous(count: usize) -> Option<PhysAddr> {
     if count == 0 {
         return None;
     }
     let mut alloc = ALLOCATOR.lock();
-    let total = alloc.total_frames;
+    let limit = alloc.total_frames.min(CONTIGUOUS_MAX_FRAME);
     let mut run_start = 0usize;
     let mut run_len = 0usize;
-    for i in 0..total {
+    for i in 0..limit {
         if !alloc.is_used(i) {
             if run_len == 0 {
                 run_start = i;

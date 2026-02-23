@@ -397,6 +397,10 @@ pub fn run_once() -> u32 {
                         }
                         cw.width = new_w;
                         cw.height = new_h;
+                        // Resize back buffer to match new dimensions
+                        let new_count = (new_w as usize) * (new_h as usize);
+                        cw.back_buffer.resize(new_count, 0);
+
                     }
                     if let Some(idx) = control::find_idx(&st.controls, win_id) {
                         st.controls[idx].set_size(new_w, new_h);
@@ -511,14 +515,21 @@ pub fn run_once() -> u32 {
         let comp_window_id = st.comp_windows[wi].window_id;
         let shm_id = st.comp_windows[wi].shm_id;
 
-        let surf = crate::draw::Surface::new(surface_ptr, sw, sh);
-
-        // No explicit background clear here — Window::render() paints its own
-        // background as the first step of render_tree. Avoiding a separate clear
-        // reduces the window where SHM contains a blank frame (present is async).
+        // Double-buffered rendering: draw to a local back buffer first, then
+        // copy the complete frame to SHM in one shot. This prevents the compositor
+        // from seeing a half-rendered frame (background cleared but children not
+        // yet drawn), eliminating the visible flicker on rerender.
+        let back_buf = st.comp_windows[wi].back_buffer.as_mut_ptr();
+        let surf = crate::draw::Surface::new(back_buf, sw, sh);
 
         // Render control tree (depth-first, parent before children)
         render_tree(&st.controls, win_id, &surf, 0, 0);
+
+        // Atomic copy: back buffer → SHM (compositor only ever sees complete frames)
+        let pixel_count = (sw as usize) * (sh as usize);
+        unsafe {
+            core::ptr::copy_nonoverlapping(back_buf, surface_ptr, pixel_count);
+        }
 
         // Clear dirty flags after rendering
         clear_dirty(&mut st.controls, win_id);

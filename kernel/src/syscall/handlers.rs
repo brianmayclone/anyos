@@ -1798,11 +1798,36 @@ pub fn sys_screen_size(buf_ptr: u32) -> u32 {
 // =========================================================================
 
 /// sys_set_resolution - Change display resolution via GPU driver.
+///
+/// IMPORTANT: set_mode() allocates new framebuffer pages via alloc_contiguous()
+/// and zeroes them using identity-mapped access (fb_phys as *mut u8). During a
+/// syscall, the CPU uses the user process's CR3 which only identity-maps 64 MiB
+/// (PD[0..31]). If the physical allocator returns pages above 64 MiB, the zero
+/// write would page-fault. We switch to the kernel CR3 (128 MiB identity-mapped)
+/// for the duration of set_mode() to prevent this.
 pub fn sys_set_resolution(width: u32, height: u32) -> u32 {
     if width == 0 || height == 0 || width > 4096 || height > 4096 {
         return u32::MAX;
     }
-    match crate::drivers::gpu::with_gpu(|g| g.set_mode(width, height, 32)) {
+
+    // Switch to kernel CR3 with interrupts disabled to prevent context-switch
+    // races (another CPU could restore a different CR3 via the scheduler).
+    let result: Option<Option<(u32, u32, u32, u32)>>;
+    unsafe {
+        let rflags: u64;
+        core::arch::asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
+        core::arch::asm!("cli", options(nomem, nostack));
+        let old_cr3 = crate::memory::virtual_mem::current_cr3();
+        let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
+        core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack));
+
+        result = crate::drivers::gpu::with_gpu(|g| g.set_mode(width, height, 32));
+
+        core::arch::asm!("mov cr3, {}", in(reg) old_cr3, options(nostack));
+        core::arch::asm!("push {}; popfq", in(reg) rflags, options(nomem));
+    }
+
+    match result {
         Some(Some(_)) => {
             // Update kernel-side cursor bounds for the new resolution
             crate::drivers::gpu::update_cursor_bounds(width, height);

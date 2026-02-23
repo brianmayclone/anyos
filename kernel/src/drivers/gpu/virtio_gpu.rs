@@ -1012,7 +1012,34 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     };
 
     // 9. Query native display resolution and build supported modes list.
-    let native = gpu.cmd_get_display_info().unwrap_or((1024, 768));
+    //
+    // With hardware acceleration (KVM/HVF/WHPX), the guest boots so fast that
+    // the EDID data from `edid=on,xres=...,yres=...` may not be ready when
+    // GET_DISPLAY_INFO fires for the first time. The device then reports the
+    // VGA-default 640x480 instead of the requested resolution.
+    //
+    // Retry up to 5 times with 50ms delays to give the host time to populate EDID.
+    let mut native = gpu.cmd_get_display_info().unwrap_or((1024, 768));
+    if native == (640, 480) {
+        crate::serial_println!("  VirtIO GPU: got 640x480 (VGA default), retrying for EDID...");
+        for attempt in 1..=5 {
+            crate::arch::x86::pit::delay_ms(50);
+            if let Some(res) = gpu.cmd_get_display_info() {
+                if res != (640, 480) {
+                    native = res;
+                    crate::serial_println!("  VirtIO GPU: EDID ready after {}ms: {}x{}",
+                        attempt * 50, res.0, res.1);
+                    break;
+                }
+            }
+        }
+    }
+    // Enforce minimum 1024x768 — never start with a smaller resolution.
+    if native.0 < 1024 || native.1 < 768 {
+        crate::serial_println!("  VirtIO GPU: {}x{} below minimum, forcing 1024x768",
+            native.0, native.1);
+        native = (1024, 768);
+    }
     crate::serial_println!("  VirtIO GPU: native display {}x{}", native.0, native.1);
 
     // Build supported modes: start with COMMON_MODES, add native if not already present
