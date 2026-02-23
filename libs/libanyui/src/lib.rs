@@ -132,18 +132,17 @@ pub(crate) fn state() -> &'static mut AnyuiState {
     unsafe { STATE.as_mut().expect("anyui not initialized") }
 }
 
-// ── Allocator (free-list with coalescing via sbrk) ───────────────────
+// ── Allocator (free-list + sbrk per-allocation for DLL coexistence) ──
+//
+// DLL allocators share the sbrk address space with stdlib. We MUST call
+// sbrk(0) + sbrk(n) for each new allocation to get fresh addresses that
+// don't overlap with stdlib. Freed blocks go into a free list for reuse.
 
 mod allocator {
     use core::alloc::{GlobalAlloc, Layout};
-    use core::sync::atomic::{AtomicBool, Ordering};
     use core::ptr;
 
     struct FreeListAllocator;
-
-    static LOCK: AtomicBool = AtomicBool::new(false);
-    static mut HEAP_POS: u64 = 0;
-    static mut HEAP_END: u64 = 0;
 
     #[repr(C)]
     struct FreeBlock {
@@ -169,19 +168,7 @@ mod allocator {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             let size = block_size(layout);
 
-            while LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-                core::hint::spin_loop();
-            }
-
-            // Initialize heap position on first call
-            if HEAP_POS == 0 {
-                let brk = crate::syscall::sbrk(0);
-                if brk == u64::MAX { LOCK.store(false, Ordering::Release); return ptr::null_mut(); }
-                HEAP_POS = brk;
-                HEAP_END = brk;
-            }
-
-            // 1) Search free list for first fit
+            // 1) Search free list for first fit (reuse freed memory)
             let mut prev: *mut FreeBlock = ptr::null_mut();
             let mut curr = FREE_LIST;
             while !curr.is_null() {
@@ -195,40 +182,22 @@ mod allocator {
                     } else {
                         if prev.is_null() { FREE_LIST = (*curr).next; } else { (*prev).next = (*curr).next; }
                     }
-                    LOCK.store(false, Ordering::Release);
                     return curr as *mut u8;
                 }
                 prev = curr;
                 curr = (*curr).next;
             }
 
-            // 2) Allocate from sbrk
+            // 2) No free block — get fresh memory from sbrk.
+            //    Must call sbrk(0) each time to get the CURRENT break,
+            //    since stdlib's allocator may have moved it.
+            let brk = crate::syscall::sbrk(0);
+            if brk == u64::MAX { return ptr::null_mut(); }
             let align = layout.align().max(16) as u64;
-            let aligned = (HEAP_POS + align - 1) & !(align - 1);
-            let new_pos = aligned + size as u64;
-
-            if new_pos > HEAP_END {
-                let grow = ((new_pos - HEAP_END + 4095) & !4095) as u32;
-                let result = crate::syscall::sbrk(grow);
-                if result == u64::MAX {
-                    LOCK.store(false, Ordering::Release);
-                    return ptr::null_mut();
-                }
-                let grow = grow as u64;
-                if result == HEAP_END {
-                    HEAP_END += grow;
-                } else {
-                    HEAP_END = result + grow;
-                    let aligned = (result + align - 1) & !(align - 1);
-                    let new_pos = aligned + size as u64;
-                    HEAP_POS = new_pos;
-                    LOCK.store(false, Ordering::Release);
-                    return aligned as *mut u8;
-                }
-            }
-
-            HEAP_POS = new_pos;
-            LOCK.store(false, Ordering::Release);
+            let aligned = (brk + align - 1) & !(align - 1);
+            let needed = (aligned - brk + size as u64) as u32;
+            let result = crate::syscall::sbrk(needed);
+            if result == u64::MAX { return ptr::null_mut(); }
             aligned as *mut u8
         }
 
@@ -236,14 +205,10 @@ mod allocator {
             if ptr.is_null() { return; }
             let size = block_size(layout);
 
-            while LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-                core::hint::spin_loop();
-            }
-
             let block = ptr as *mut FreeBlock;
             (*block).size = size;
 
-            // Insert sorted by address
+            // Insert sorted by address for coalescing
             let mut prev: *mut FreeBlock = ptr::null_mut();
             let mut curr = FREE_LIST;
             while !curr.is_null() && (curr as usize) < (block as usize) {
@@ -264,8 +229,6 @@ mod allocator {
                 (*prev).size += (*block).size;
                 (*prev).next = (*block).next;
             }
-
-            LOCK.store(false, Ordering::Release);
         }
     }
 

@@ -1,24 +1,14 @@
 //! DLL free-list allocator using per-process `.bss` statics.
 //!
-//! With DLIB v3, each process gets its own `.bss` section (zeroed on demand
-//! by the kernel). The heap position and end pointers live here as normal
-//! statics — no DLL state page needed.
-//!
-//! Memory is obtained from the process heap via `SYS_SBRK`. This coexists
-//! with stdlib's allocator — when sbrk returns non-contiguous memory (because
-//! the other allocator moved the break), we detect the gap and start fresh
-//! from the sbrk return value.
-//!
-//! Freed blocks are inserted into a sorted free list with coalescing.
+//! DLL allocators share the sbrk address space with stdlib. We call
+//! sbrk(0) + sbrk(n) for each new allocation to get fresh addresses
+//! that don't overlap with stdlib. Freed blocks go into a free list
+//! for reuse with coalescing.
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
 
 use crate::syscall;
-
-/// Heap state — lives in per-process .bss (zero-initialized per process).
-static mut HEAP_POS: u64 = 0;
-static mut HEAP_END: u64 = 0;
 
 #[global_allocator]
 static ALLOCATOR: DllFreeListAlloc = DllFreeListAlloc;
@@ -48,20 +38,8 @@ fn block_size(layout: Layout) -> usize {
 unsafe impl GlobalAlloc for DllFreeListAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let size = block_size(layout);
-        let mut pos = HEAP_POS;
 
-        // First allocation: initialize from current sbrk position
-        if pos == 0 {
-            let brk = syscall::sbrk(0) as u64;
-            if brk == u64::MAX {
-                return ptr::null_mut();
-            }
-            HEAP_POS = brk;
-            HEAP_END = brk;
-            pos = brk;
-        }
-
-        // 1) Search free list for first fit
+        // 1) Search free list for first fit (reuse freed memory)
         let mut prev: *mut FreeBlock = ptr::null_mut();
         let mut curr = FREE_LIST;
         while !curr.is_null() {
@@ -81,34 +59,16 @@ unsafe impl GlobalAlloc for DllFreeListAlloc {
             curr = (*curr).next;
         }
 
-        // 2) Allocate from sbrk
+        // 2) No free block — get fresh memory from sbrk.
+        //    Must call sbrk(0) each time to get the CURRENT break,
+        //    since stdlib's allocator may have moved it.
+        let brk = syscall::sbrk(0) as u64;
+        if brk == u64::MAX { return ptr::null_mut(); }
         let align = layout.align().max(16) as u64;
-        let aligned = (pos + align - 1) & !(align - 1);
-        let new_pos = aligned + size as u64;
-
-        let end = HEAP_END;
-        if new_pos > end {
-            let grow = ((size as u64 + align + 4095) & !4095) as usize;
-            let result = syscall::sbrk(grow as i32);
-            if result == usize::MAX {
-                return ptr::null_mut();
-            }
-            let result = result as u64;
-            let grow = grow as u64;
-
-            if result == end {
-                HEAP_END = end + grow;
-            } else {
-                // Non-contiguous: another allocator owns [end, result)
-                HEAP_END = result + grow;
-                let aligned = (result + align - 1) & !(align - 1);
-                let new_pos = aligned + size as u64;
-                HEAP_POS = new_pos;
-                return aligned as *mut u8;
-            }
-        }
-
-        HEAP_POS = new_pos;
+        let aligned = (brk + align - 1) & !(align - 1);
+        let needed = (aligned - brk + size as u64) as i32;
+        let result = syscall::sbrk(needed);
+        if result == usize::MAX { return ptr::null_mut(); }
         aligned as *mut u8
     }
 
@@ -119,7 +79,7 @@ unsafe impl GlobalAlloc for DllFreeListAlloc {
         let block = ptr as *mut FreeBlock;
         (*block).size = size;
 
-        // Insert sorted by address
+        // Insert sorted by address for coalescing
         let mut prev: *mut FreeBlock = ptr::null_mut();
         let mut curr = FREE_LIST;
         while !curr.is_null() && (curr as usize) < (block as usize) {
