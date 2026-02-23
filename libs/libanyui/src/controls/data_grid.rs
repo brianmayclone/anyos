@@ -34,6 +34,22 @@ pub enum SortDirection {
     Descending,
 }
 
+/// How a column's data should be compared when sorting.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SortType {
+    /// Lexicographic byte comparison (default).
+    String = 0,
+    /// Numeric comparison — parses leading digits, falls back to lexicographic.
+    Numeric = 1,
+}
+
+impl SortType {
+    pub fn from_u8(v: u8) -> Self {
+        match v { 1 => Self::Numeric, _ => Self::String }
+    }
+}
+
 /// A single column definition.
 #[derive(Clone)]
 pub struct Column {
@@ -41,6 +57,7 @@ pub struct Column {
     pub width: u32,
     pub min_width: u32,
     pub align: CellAlign,
+    pub sort_type: SortType,
 }
 
 /// Row selection mode.
@@ -110,21 +127,23 @@ impl DataGrid {
     pub fn set_columns_from_data(&mut self, data: &[u8]) {
         self.columns.clear();
         self.display_order.clear();
-        // Format: header\x1Fwidth\x1Falign\x1Eheader\x1Fwidth\x1Falign
+        // Format: header\x1Fwidth\x1Falign[\x1Fsort_type]\x1E...
         for (i, col_data) in data.split(|&b| b == 0x1E).enumerate() {
             let parts: Vec<&[u8]> = col_data.split(|&b| b == 0x1F).collect();
             let header = parts.first().copied().unwrap_or(&[]);
             let width = parts.get(1).and_then(|s| parse_u32(s)).unwrap_or(100);
             let align = parts.get(2).and_then(|s| s.first().map(|&b| CellAlign::from_u8(b.wrapping_sub(b'0')))).unwrap_or(CellAlign::Left);
+            let sort_type = parts.get(3).and_then(|s| s.first().map(|&b| SortType::from_u8(b.wrapping_sub(b'0')))).unwrap_or(SortType::String);
             self.columns.push(Column {
                 header: header.to_vec(),
                 width,
                 min_width: 30,
                 align,
+                sort_type,
             });
             self.display_order.push(i);
         }
-        self.base.dirty = true;
+        self.base.mark_dirty();
     }
 
     pub fn column_count(&self) -> usize { self.columns.len() }
@@ -132,7 +151,14 @@ impl DataGrid {
     pub fn set_column_width(&mut self, col_index: usize, width: u32) {
         if col_index < self.columns.len() {
             self.columns[col_index].width = width.max(self.columns[col_index].min_width);
-            self.base.dirty = true;
+            self.base.mark_dirty();
+        }
+    }
+
+    /// Set the sort comparison type for a column.
+    pub fn set_column_sort_type(&mut self, col_index: usize, sort_type: SortType) {
+        if col_index < self.columns.len() {
+            self.columns[col_index].sort_type = sort_type;
         }
     }
 
@@ -156,7 +182,7 @@ impl DataGrid {
         }
         self.ensure_selection_bits();
         self.rebuild_sort();
-        self.base.dirty = true;
+        self.base.mark_dirty();
     }
 
     pub fn set_row_count(&mut self, count: usize) {
@@ -171,7 +197,7 @@ impl DataGrid {
         self.row_count = count;
         self.ensure_selection_bits();
         self.rebuild_sort();
-        self.base.dirty = true;
+        self.base.mark_dirty();
     }
 
     pub fn set_cell(&mut self, row: usize, col: usize, text: &[u8]) {
@@ -181,7 +207,7 @@ impl DataGrid {
             if self.cell_data[idx].as_slice() != text {
                 self.cell_data[idx].clear();
                 self.cell_data[idx].extend_from_slice(text);
-                self.base.dirty = true;
+                self.base.mark_dirty();
             }
         }
     }
@@ -195,7 +221,7 @@ impl DataGrid {
     pub fn set_cell_colors(&mut self, colors: &[u32]) {
         if self.cell_colors.as_slice() != colors {
             self.cell_colors = colors.to_vec();
-            self.base.dirty = true;
+            self.base.mark_dirty();
         }
     }
 
@@ -212,7 +238,7 @@ impl DataGrid {
             width: w,
             height: h,
         });
-        self.base.dirty = true;
+        self.base.mark_dirty();
     }
 
     /// Get the first selected row index, or None.
@@ -263,7 +289,7 @@ impl DataGrid {
         self.sort_column = if direction == SortDirection::None { None } else { Some(column) };
         self.sort_direction = direction;
         self.rebuild_sort();
-        self.base.dirty = true;
+        self.base.mark_dirty();
     }
 
     fn rebuild_sort(&mut self) {
@@ -276,6 +302,8 @@ impl DataGrid {
             Some(dc) if dc < self.display_order.len() => self.display_order[dc],
             _ => { self.sorted_rows.clear(); return; }
         };
+        let numeric = logical_col < self.columns.len()
+            && self.columns[logical_col].sort_type == SortType::Numeric;
         self.sorted_rows = (0..self.row_count).collect();
         let ascending = self.sort_direction == SortDirection::Ascending;
         let data = &self.cell_data;
@@ -284,7 +312,11 @@ impl DataGrid {
             let b_idx = b * col_count + logical_col;
             let a_text = data.get(a_idx).map(|v| v.as_slice()).unwrap_or(&[]);
             let b_text = data.get(b_idx).map(|v| v.as_slice()).unwrap_or(&[]);
-            let ord = a_text.cmp(b_text);
+            let ord = if numeric {
+                parse_sort_key(a_text).cmp(&parse_sort_key(b_text))
+            } else {
+                a_text.cmp(b_text)
+            };
             if ascending { ord } else { ord.reverse() }
         });
     }
@@ -350,7 +382,7 @@ impl DataGrid {
         self.set_row_selected(data_row, true);
         self.base.state = data_row as u32;
         self.scroll_to_row(vis_row);
-        self.base.dirty = true;
+        self.base.mark_dirty();
     }
 
     /// Scroll to ensure a visual row is visible.
@@ -565,13 +597,13 @@ impl Control for DataGrid {
                 let min_w = self.columns[logical_col].min_width.max(30);
                 let new_width = (original_width as i32 + delta).max(min_w as i32) as u32;
                 self.columns[logical_col].width = new_width;
-                self.base.dirty = true;
+                self.base.mark_dirty();
                 EventResponse::CHANGED
             }
             DragMode::Reordering { drag_start_x, ref mut current_x, .. } => {
                 if (lx - drag_start_x).abs() > 5 {
                     *current_x = lx;
-                    self.base.dirty = true;
+                    self.base.mark_dirty();
                 }
                 EventResponse::CONSUMED
             }
@@ -580,11 +612,11 @@ impl Control for DataGrid {
                     let new_hover = self.row_at_y(ly);
                     if new_hover != self.hovered_row {
                         self.hovered_row = new_hover;
-                        self.base.dirty = true;
+                        self.base.mark_dirty();
                     }
                 } else if self.hovered_row.is_some() {
                     self.hovered_row = None;
-                    self.base.dirty = true;
+                    self.base.mark_dirty();
                 }
                 EventResponse::IGNORED
             }
@@ -603,11 +635,11 @@ impl Control for DataGrid {
                         }
                     }
                 }
-                self.base.dirty = true;
+                self.base.mark_dirty();
                 EventResponse::CHANGED
             }
             DragMode::Resizing { .. } => {
-                self.base.dirty = true;
+                self.base.mark_dirty();
                 EventResponse::CHANGED
             }
             DragMode::None => EventResponse::CONSUMED,
@@ -629,7 +661,7 @@ impl Control for DataGrid {
                     self.sort_direction = SortDirection::Ascending;
                 }
                 self.rebuild_sort();
-                self.base.dirty = true;
+                self.base.mark_dirty();
             }
             EventResponse::CHANGED
         } else {
@@ -648,7 +680,7 @@ impl Control for DataGrid {
                         self.base.state = data_row as u32;
                     }
                 }
-                self.base.dirty = true;
+                self.base.mark_dirty();
             }
             EventResponse::CHANGED
         }
@@ -659,14 +691,14 @@ impl Control for DataGrid {
         let viewport_h = self.base.h as i32 - self.header_height as i32;
         let max_scroll = (content_h - viewport_h).max(0);
         self.scroll_y = (self.scroll_y - delta * 20).max(0).min(max_scroll);
-        self.base.dirty = true;
+        self.base.mark_dirty();
         EventResponse::CONSUMED
     }
 
     fn handle_mouse_leave(&mut self) {
         if self.hovered_row.is_some() {
             self.hovered_row = None;
-            self.base.dirty = true;
+            self.base.mark_dirty();
         }
     }
 
@@ -740,4 +772,52 @@ fn parse_u32(s: &[u8]) -> Option<u32> {
         val = val * 10 + (b - b'0') as u32;
     }
     Some(val)
+}
+
+/// Parse a numeric sort key from a byte slice (zero-allocation).
+///
+/// Returns `(is_number, integer_part, fractional_part)`. Non-numeric text
+/// gets `is_number=false` and sorts after all numbers. Handles optional
+/// leading whitespace, negative sign, and decimal point. Trailing suffixes
+/// (e.g. "KB", "%") are ignored.
+fn parse_sort_key(s: &[u8]) -> (bool, i64, i64) {
+    let mut i = 0;
+    // Skip leading whitespace
+    while i < s.len() && s[i] == b' ' { i += 1; }
+    if i >= s.len() {
+        return (false, 0, 0);
+    }
+
+    let negative = s[i] == b'-';
+    if negative { i += 1; }
+
+    if i >= s.len() || s[i] < b'0' || s[i] > b'9' {
+        return (false, 0, 0);
+    }
+
+    // Integer part
+    let mut int_part: i64 = 0;
+    while i < s.len() && s[i] >= b'0' && s[i] <= b'9' {
+        int_part = int_part * 10 + (s[i] - b'0') as i64;
+        i += 1;
+    }
+
+    // Fractional part (fixed-point, 6 decimal places)
+    let mut frac_part: i64 = 0;
+    if i < s.len() && s[i] == b'.' {
+        i += 1;
+        let mut scale = 100_000i64;
+        while i < s.len() && s[i] >= b'0' && s[i] <= b'9' && scale > 0 {
+            frac_part += (s[i] - b'0') as i64 * scale;
+            scale /= 10;
+            i += 1;
+        }
+    }
+
+    if negative {
+        int_part = -int_part;
+        frac_part = -frac_part;
+    }
+
+    (true, int_part, frac_part)
 }

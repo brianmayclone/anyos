@@ -2197,6 +2197,57 @@ pub fn sys_evt_chan_emit_to(chan_id: u32, sub_id: u32, event_ptr: u32) -> u32 {
     0
 }
 
+/// Block until an event is available on a channel subscription, or timeout.
+///
+/// Returns 1 if events are available, 0 on timeout/spurious wake.
+/// `timeout_ms` = `u32::MAX` means wait indefinitely (capped at 60s safety net).
+pub fn sys_evt_chan_wait(chan_id: u32, sub_id: u32, timeout_ms: u32) -> u32 {
+    // Fast path: events already queued — return immediately.
+    if event_bus::channel_has_events(chan_id, sub_id) {
+        return 1;
+    }
+
+    let tid = crate::task::scheduler::current_tid();
+
+    // Register this thread as a waiter on the subscription.
+    // Returns false if events arrived between our check and the registration.
+    if !event_bus::channel_register_waiter(chan_id, sub_id, tid) {
+        return 1; // Events arrived — don't block
+    }
+
+    // Compute wake tick. Cap indefinite waits at 60 seconds as safety net.
+    let effective_ms = if timeout_ms == u32::MAX { 60_000 } else { timeout_ms };
+    let pit_hz = crate::arch::x86::pit::TICK_HZ;
+    let ticks = (effective_ms as u64 * pit_hz as u64 / 1000) as u32;
+    let ticks = if ticks == 0 { 1 } else { ticks };
+    let now = crate::arch::x86::pit::get_ticks();
+    let wake_at = now.wrapping_add(ticks);
+
+    // Block — thread sleeps until: emit wakes us, input IRQ wakes us, or timeout.
+    crate::task::scheduler::sleep_until(wake_at);
+
+    // Clean up waiter registration (may already be cleared by emit).
+    event_bus::channel_unregister_waiter(chan_id, sub_id);
+
+    // Check if events are available (handles spurious wakes gracefully).
+    if event_bus::channel_has_events(chan_id, sub_id) {
+        1
+    } else {
+        0 // Timeout or spurious wake — caller should check all event sources
+    }
+}
+
+/// Wake the compositor's management thread if it is blocked.
+///
+/// Safe to call from IRQ context — `wake_thread` is a no-op if the thread
+/// is not in Blocked state.
+pub fn wake_compositor_if_blocked() {
+    let tid = COMPOSITOR_TID.load(Ordering::Relaxed);
+    if tid != 0 {
+        crate::task::scheduler::wake_thread(tid);
+    }
+}
+
 // =========================================================================
 // Shared memory (SYS_SHM_CREATE, SYS_SHM_MAP, SYS_SHM_UNMAP, SYS_SHM_DESTROY)
 // =========================================================================

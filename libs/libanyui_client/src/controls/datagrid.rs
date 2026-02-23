@@ -18,11 +18,16 @@ pub const SORT_NONE: u32 = 0;
 pub const SORT_ASCENDING: u32 = 1;
 pub const SORT_DESCENDING: u32 = 2;
 
+/// Sort type constants.
+pub const SORT_STRING: u8 = 0;
+pub const SORT_NUMERIC: u8 = 1;
+
 /// Builder for column definitions.
 pub struct ColumnDef {
     header: Vec<u8>,
     width: u32,
     align: u8,
+    sort_type: u8,
 }
 
 impl ColumnDef {
@@ -31,6 +36,7 @@ impl ColumnDef {
             header: header.as_bytes().to_vec(),
             width: 100,
             align: ALIGN_LEFT,
+            sort_type: SORT_STRING,
         }
     }
 
@@ -41,6 +47,13 @@ impl ColumnDef {
 
     pub fn align(mut self, a: u8) -> Self {
         self.align = a;
+        self
+    }
+
+    /// Set numeric sort mode for this column. When sorted, values are
+    /// compared as numbers instead of lexicographically.
+    pub fn numeric(mut self) -> Self {
+        self.sort_type = SORT_NUMERIC;
         self
     }
 }
@@ -63,6 +76,8 @@ impl DataGrid {
             write_u32_ascii(&mut buf, col.width);
             buf.push(0x1F);
             buf.push(b'0' + col.align);
+            buf.push(0x1F);
+            buf.push(b'0' + col.sort_type);
         }
         (lib().datagrid_set_columns)(self.ctrl.id, buf.as_ptr(), buf.len() as u32);
     }
@@ -75,6 +90,12 @@ impl DataGrid {
     /// Set the width of a specific column.
     pub fn set_column_width(&self, col_index: u32, width: u32) {
         (lib().datagrid_set_column_width)(self.ctrl.id, col_index, width);
+    }
+
+    /// Set the sort comparison type for a column.
+    /// Use SORT_STRING (0) for lexicographic or SORT_NUMERIC (1) for numeric.
+    pub fn set_column_sort_type(&self, col_index: u32, sort_type: u32) {
+        (lib().datagrid_set_column_sort_type)(self.ctrl.id, col_index, sort_type);
     }
 
     /// Set all cell data at once. Each inner Vec is a row of cell strings.

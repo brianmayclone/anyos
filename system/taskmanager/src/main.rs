@@ -125,14 +125,14 @@ fn main() {
     proc_grid.set_dock(ui::DOCK_FILL);
     proc_grid.set_font_size(11);
     proc_grid.set_columns(&[
-        ColumnDef::new("TID").width(45).align(ALIGN_RIGHT),
+        ColumnDef::new("TID").width(45).align(ALIGN_RIGHT).numeric(),
         ColumnDef::new("Process").width(130),
         ColumnDef::new("User").width(65),
         ColumnDef::new("State").width(70),
         ColumnDef::new("Arch").width(50),
-        ColumnDef::new("CPU%").width(55).align(ALIGN_RIGHT),
-        ColumnDef::new("Memory").width(65).align(ALIGN_RIGHT),
-        ColumnDef::new("Priority").width(50).align(ALIGN_RIGHT),
+        ColumnDef::new("CPU%").width(55).align(ALIGN_RIGHT).numeric(),
+        ColumnDef::new("Memory").width(65).align(ALIGN_RIGHT).numeric(),
+        ColumnDef::new("Priority").width(50).align(ALIGN_RIGHT).numeric(),
     ]);
     proc_grid.set_row_height(20);
     panel_procs.add(&proc_grid);
@@ -183,10 +183,10 @@ fn main() {
     disk_grid.set_dock(ui::DOCK_FILL);
     disk_grid.set_font_size(11);
     disk_grid.set_columns(&[
-        ColumnDef::new("TID").width(50).align(ALIGN_RIGHT),
+        ColumnDef::new("TID").width(50).align(ALIGN_RIGHT).numeric(),
         ColumnDef::new("Process").width(160),
-        ColumnDef::new("Read").width(130).align(ALIGN_RIGHT),
-        ColumnDef::new("Written").width(130).align(ALIGN_RIGHT),
+        ColumnDef::new("Read").width(130).align(ALIGN_RIGHT).numeric(),
+        ColumnDef::new("Written").width(130).align(ALIGN_RIGHT).numeric(),
     ]);
     disk_grid.set_row_height(20);
     panel_disk.add(&disk_grid);
@@ -386,9 +386,9 @@ fn main() {
         }
     });
 
-    // ── Timer: refresh every 500ms ──
+    // ── Timer: refresh every 1s ──
     // All controls are Copy — captured directly by value.
-    ui::set_timer(500, move || {
+    ui::set_timer(1000, move || {
         let cpu_st = unsafe { &mut *CPU_STATE.unwrap() };
         let hist = unsafe { &mut *CPU_HISTORY.unwrap() };
         let prev = unsafe { &mut *PREV_TICKS.unwrap() };

@@ -4,6 +4,10 @@
 //! lifecycle and hardware events) and the **module bus** (named channels that any process
 //! can create, subscribe to, and emit events on). Each subscriber has a bounded per-sub
 //! queue; oldest events are dropped when the queue is full.
+//!
+//! **Blocking wait support**: Subscribers can register a waiter TID. When an event is
+//! emitted, blocked waiters are collected under the bus lock and woken *outside* the lock
+//! via `scheduler::wake_thread()` (same pattern as pipe blocking).
 
 use crate::sync::spinlock::Spinlock;
 use alloc::collections::BTreeMap;
@@ -62,6 +66,9 @@ struct Subscription {
     id: u32,
     filter: Option<u32>, // None = all events, Some(type) = only that type
     queue: VecDeque<EventData>,
+    /// TID of thread blocked in `evt_chan_wait` / `evt_sys_wait` on this subscription.
+    /// Cleared by emit (collected for wake) or by the waiter itself on timeout/return.
+    waiter_tid: Option<u32>,
 }
 
 // ── System Bus ──
@@ -70,16 +77,35 @@ static SYSTEM_BUS: Spinlock<Vec<Subscription>> = Spinlock::new(Vec::new());
 static NEXT_SUB_ID: AtomicU32 = AtomicU32::new(1);
 
 /// Emit an event to the system bus (kernel-only).
+///
+/// Collects blocked waiter TIDs under the lock, wakes them outside
+/// to avoid holding SYSTEM_BUS while acquiring SCHEDULER lock.
 pub fn system_emit(event: EventData) {
-    let mut bus = SYSTEM_BUS.lock();
-    for sub in bus.iter_mut() {
-        if sub.filter.is_none() || sub.filter == Some(event.event_type()) {
-            if sub.queue.len() >= MAX_QUEUE_DEPTH {
-                sub.queue.pop_front(); // Drop oldest
+    let mut tids_to_wake = [0u32; 8];
+    let mut wake_count = 0usize;
+    {
+        let mut bus = SYSTEM_BUS.lock();
+        for sub in bus.iter_mut() {
+            if sub.filter.is_none() || sub.filter == Some(event.event_type()) {
+                if sub.queue.len() >= MAX_QUEUE_DEPTH {
+                    sub.queue.pop_front(); // Drop oldest
+                }
+                sub.queue.push_back(event);
+                if let Some(tid) = sub.waiter_tid.take() {
+                    if wake_count < 8 {
+                        tids_to_wake[wake_count] = tid;
+                        wake_count += 1;
+                    }
+                }
             }
-            sub.queue.push_back(event);
         }
     }
+    for i in 0..wake_count {
+        crate::task::scheduler::wake_thread(tids_to_wake[i]);
+    }
+    // Also wake compositor — it may be blocked on a channel subscription,
+    // not the system bus, but still needs to process system events.
+    crate::syscall::handlers::wake_compositor_if_blocked();
 }
 
 /// Subscribe to system events. filter=0 means all events.
@@ -92,6 +118,7 @@ pub fn system_subscribe(filter: u32) -> u32 {
         id,
         filter,
         queue: VecDeque::new(),
+        waiter_tid: None,
     });
     id
 }
@@ -150,23 +177,40 @@ pub fn channel_subscribe(channel_id: u32, filter: u32) -> u32 {
             id: sub_id,
             filter,
             queue: VecDeque::new(),
+            waiter_tid: None,
         });
     }
     sub_id
 }
 
 /// Emit an event to a module channel (broadcast to all matching subscribers).
+///
+/// Collects blocked waiter TIDs under the lock, wakes them outside
+/// to avoid holding MODULE_BUS while acquiring SCHEDULER lock.
 pub fn channel_emit(channel_id: u32, event: EventData) {
-    let mut bus = MODULE_BUS.lock();
-    if let Some(channel) = bus.get_mut(&channel_id) {
-        for sub in channel.subs.iter_mut() {
-            if sub.filter.is_none() || sub.filter == Some(event.event_type()) {
-                if sub.queue.len() >= MAX_QUEUE_DEPTH {
-                    sub.queue.pop_front();
+    let mut tids_to_wake = [0u32; 8];
+    let mut wake_count = 0usize;
+    {
+        let mut bus = MODULE_BUS.lock();
+        if let Some(channel) = bus.get_mut(&channel_id) {
+            for sub in channel.subs.iter_mut() {
+                if sub.filter.is_none() || sub.filter == Some(event.event_type()) {
+                    if sub.queue.len() >= MAX_QUEUE_DEPTH {
+                        sub.queue.pop_front();
+                    }
+                    sub.queue.push_back(event);
+                    if let Some(tid) = sub.waiter_tid.take() {
+                        if wake_count < 8 {
+                            tids_to_wake[wake_count] = tid;
+                            wake_count += 1;
+                        }
+                    }
                 }
-                sub.queue.push_back(event);
             }
         }
+    }
+    for i in 0..wake_count {
+        crate::task::scheduler::wake_thread(tids_to_wake[i]);
     }
 }
 
@@ -176,17 +220,24 @@ pub fn channel_emit(channel_id: u32, event: EventData) {
 /// preventing other apps from receiving keyboard/mouse events for windows
 /// they don't own.
 pub fn channel_emit_to(channel_id: u32, target_sub_id: u32, event: EventData) {
-    let mut bus = MODULE_BUS.lock();
-    if let Some(channel) = bus.get_mut(&channel_id) {
-        for sub in channel.subs.iter_mut() {
-            if sub.id == target_sub_id {
-                if sub.queue.len() >= MAX_QUEUE_DEPTH {
-                    sub.queue.pop_front();
+    let mut tid_to_wake: Option<u32> = None;
+    {
+        let mut bus = MODULE_BUS.lock();
+        if let Some(channel) = bus.get_mut(&channel_id) {
+            for sub in channel.subs.iter_mut() {
+                if sub.id == target_sub_id {
+                    if sub.queue.len() >= MAX_QUEUE_DEPTH {
+                        sub.queue.pop_front();
+                    }
+                    sub.queue.push_back(event);
+                    tid_to_wake = sub.waiter_tid.take();
+                    break;
                 }
-                sub.queue.push_back(event);
-                break;
             }
         }
+    }
+    if let Some(tid) = tid_to_wake {
+        crate::task::scheduler::wake_thread(tid);
     }
 }
 
@@ -218,4 +269,43 @@ pub fn channel_destroy(channel_id: u32) {
 /// Lock-free check if SYSTEM_BUS or MODULE_BUS lock is currently held.
 pub fn is_any_bus_locked() -> bool {
     SYSTEM_BUS.is_locked() || MODULE_BUS.is_locked()
+}
+
+// ── Blocking wait helpers ──
+
+/// Register a waiter TID on a channel subscription. Returns `false` if the
+/// subscription already has queued events (caller should not block).
+pub fn channel_register_waiter(channel_id: u32, sub_id: u32, tid: u32) -> bool {
+    let mut bus = MODULE_BUS.lock();
+    if let Some(channel) = bus.get_mut(&channel_id) {
+        if let Some(sub) = channel.subs.iter_mut().find(|s| s.id == sub_id) {
+            if !sub.queue.is_empty() {
+                return false; // Events already queued — don't block
+            }
+            sub.waiter_tid = Some(tid);
+            return true; // Registered — caller should block
+        }
+    }
+    false
+}
+
+/// Clear the waiter TID on a channel subscription (called after waking).
+pub fn channel_unregister_waiter(channel_id: u32, sub_id: u32) {
+    let mut bus = MODULE_BUS.lock();
+    if let Some(channel) = bus.get_mut(&channel_id) {
+        if let Some(sub) = channel.subs.iter_mut().find(|s| s.id == sub_id) {
+            sub.waiter_tid = None;
+        }
+    }
+}
+
+/// Non-blocking check if a channel subscription has queued events.
+pub fn channel_has_events(channel_id: u32, sub_id: u32) -> bool {
+    let bus = MODULE_BUS.lock();
+    if let Some(channel) = bus.get(&channel_id) {
+        if let Some(sub) = channel.subs.iter().find(|s| s.id == sub_id) {
+            return !sub.queue.is_empty();
+        }
+    }
+    false
 }

@@ -177,9 +177,11 @@ fn management_loop(
 ) {
     let mut events_buf = [[0u32; 5]; 256];
     let mut ipc_buf = [0u32; 5];
-    let mut idle_count: u32 = 0;
     loop {
-        let t0 = sys::uptime_ms();
+        // Block until: IPC event arrives, input IRQ fires, or timeout.
+        // 16ms timeout gives ~60Hz max as safety net (clock updates, login checks).
+        let timeout = if *login_pending { 100 } else { 16 };
+        ipc::evt_chan_wait(compositor_channel, compositor_sub, timeout);
 
         // ── Check if login window has exited ──
         if *login_pending {
@@ -237,47 +239,42 @@ fn management_loop(
         }
 
         // Poll IPC commands from apps (up to 16 per frame)
-        handle_ipc_commands(compositor_channel, compositor_sub, &mut ipc_buf);
+        let had_ipc = handle_ipc_commands(compositor_channel, compositor_sub, &mut ipc_buf);
 
         // Poll system events (process exit, resolution change)
-        handle_system_events(compositor_channel, sys_sub);
+        let had_sys = handle_system_events(compositor_channel, sys_sub);
 
-        // Signal render thread if any IPC or system events were processed.
-        // (Cheap no-op if already signaled by input handling above.)
-        signal_render();
+        // Signal render thread ONLY when actual work was processed.
+        // Previously this was unconditional, causing the render thread to wake
+        // ~62.5 times/sec even when idle (both threads at 1-2% for zero work).
+        if had_ipc || had_sys {
+            signal_render();
+        }
 
-        // Drain window events under lock, then emit outside lock
-        let ipc_events = {
-            acquire_lock();
-            let desktop = unsafe { desktop_ref() };
-            let events = desktop.drain_ipc_events();
-            release_lock();
-            events
-        };
-        for (target_sub, evt) in &ipc_events {
-            if let Some(sub_id) = target_sub {
-                ipc::evt_chan_emit_to(compositor_channel, *sub_id, evt);
-            } else {
-                ipc::evt_chan_emit(compositor_channel, evt);
+        // Drain window events under lock, then emit outside lock.
+        // Only acquire the lock if there's reason to expect events (input, IPC, or
+        // system events could have generated outgoing events for apps).
+        let had_work = event_count > 0 || had_ipc || had_sys;
+        if had_work {
+            let ipc_events = {
+                acquire_lock();
+                let desktop = unsafe { desktop_ref() };
+                let events = desktop.drain_ipc_events();
+                release_lock();
+                events
+            };
+            for (target_sub, evt) in &ipc_events {
+                if let Some(sub_id) = target_sub {
+                    ipc::evt_chan_emit_to(compositor_channel, *sub_id, evt);
+                } else {
+                    ipc::evt_chan_emit(compositor_channel, evt);
+                }
             }
         }
 
         // NOTE: tick_animations(), update_clock(), and compose() are all handled
         // by the render thread — not called here.
-
-        // Adaptive sleep: react quickly when events are flowing, sleep longer when idle.
-        // This reduces CMD_PRESENT → compose latency from 0-16ms to 0-2ms.
-        let had_work = event_count > 0 || !ipc_events.is_empty();
-        if had_work {
-            idle_count = 0;
-        } else {
-            idle_count = idle_count.saturating_add(1);
-        }
-        let elapsed = sys::uptime_ms().wrapping_sub(t0);
-        let target = if idle_count < 4 { 2u32 } else { 16u32 };
-        if elapsed < target {
-            process::sleep(target - elapsed);
-        }
+        // No adaptive sleep needed — evt_chan_wait at the top of the loop handles it.
     }
 }
 
@@ -289,11 +286,13 @@ fn management_loop(
 ///    so the render thread can't fire between consecutive presents.
 /// Commands that need work outside the lock (CREATE_WINDOW, RESIZE_SHM,
 /// SET_THEME) are handled with their own lock cycles.
+///
+/// Returns `true` if any commands were processed.
 fn handle_ipc_commands(
     compositor_channel: u32,
     compositor_sub: u32,
     ipc_buf: &mut [u32; 5],
-) {
+) -> bool {
     // Pass 1: poll all pending IPC events into a local buffer
     let mut cmds = [[0u32; 5]; 16];
     let mut cmd_count = 0usize;
@@ -305,7 +304,7 @@ fn handle_ipc_commands(
         cmd_count += 1;
     }
     if cmd_count == 0 {
-        return;
+        return false;
     }
 
     // Collect responses to send outside lock
@@ -478,12 +477,17 @@ fn handle_ipc_commands(
             }
         }
     }
+    true
 }
 
 /// Process system events (process exit, resolution change).
-fn handle_system_events(compositor_channel: u32, sys_sub: u32) {
+///
+/// Returns `true` if any events were processed.
+fn handle_system_events(compositor_channel: u32, sys_sub: u32) -> bool {
     let mut sys_buf = [0u32; 5];
+    let mut had_work = false;
     while ipc::evt_sys_poll(sys_sub, &mut sys_buf) {
+        had_work = true;
         acquire_lock();
         let desktop = unsafe { desktop_ref() };
         if sys_buf[0] == 0x0021 {
@@ -517,4 +521,5 @@ fn handle_system_events(compositor_channel: u32, sys_sub: u32) {
             release_lock();
         }
     }
+    had_work
 }

@@ -173,7 +173,7 @@ impl Control for SplitView {
                 self.split_ratio = (self.divider_pos as u32 * 100) / total;
             }
             self.base.state = self.split_ratio;
-            self.base.dirty = true;
+            self.base.mark_dirty();
             EventResponse::CHANGED
         } else {
             EventResponse::IGNORED

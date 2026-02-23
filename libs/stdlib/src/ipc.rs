@@ -91,6 +91,14 @@ pub fn evt_chan_destroy(channel_id: u32) {
     syscall1(SYS_EVT_CHAN_DESTROY, channel_id as u64);
 }
 
+/// Block until an event is available on a channel subscription, or timeout.
+///
+/// Returns 1 if events are available, 0 on timeout/spurious wake.
+/// `timeout_ms` = `u32::MAX` means wait indefinitely (kernel caps at 60s safety net).
+pub fn evt_chan_wait(channel_id: u32, sub_id: u32, timeout_ms: u32) -> u32 {
+    syscall3(SYS_EVT_CHAN_WAIT, channel_id as u64, sub_id as u64, timeout_ms as u64)
+}
+
 // ─── Shared Memory ──────────────────────────────────────────────────
 
 /// Create a shared memory region. Returns shm_id (>0) or 0 on failure.

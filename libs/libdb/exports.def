@@ -1,0 +1,15 @@
+LIBRARY libdb
+EXPORTS
+    libdb_open
+    libdb_close
+    libdb_error
+    libdb_exec
+    libdb_query
+    libdb_result_row_count
+    libdb_result_col_count
+    libdb_result_col_name
+    libdb_result_get_int
+    libdb_result_get_int_hi
+    libdb_result_get_text
+    libdb_result_is_null
+    libdb_result_free

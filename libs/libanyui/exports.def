@@ -78,6 +78,7 @@ EXPORTS
     anyui_datagrid_set_columns
     anyui_datagrid_get_column_count
     anyui_datagrid_set_column_width
+    anyui_datagrid_set_column_sort_type
     anyui_datagrid_set_data
     anyui_datagrid_set_cell
     anyui_datagrid_get_cell

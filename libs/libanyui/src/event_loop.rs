@@ -34,21 +34,38 @@ struct PendingCallback {
 }
 
 /// Run the event loop. Blocks until all windows are closed or quit is requested.
-/// Adaptive frame pacing: polls quickly when waiting for VSync (FRAME_ACK),
-/// sleeps longer when idle. Matches Windows DWM / macOS CVDisplayLink model.
+/// Event-driven: blocks on `evt_chan_wait` until the compositor delivers an event
+/// or the next timer fires. VSync back-pressure uses a shorter timeout.
 pub fn run() {
     loop {
-        let t0 = crate::syscall::uptime_ms();
         if run_once() == 0 {
             break;
         }
-        let elapsed = crate::syscall::uptime_ms().wrapping_sub(t0);
-        // Adaptive sleep: fast polling when waiting for VSync ACK, idle sleep otherwise
+
+        // Compute time until next timer fires
         let st = crate::state();
-        let any_pending = st.comp_windows.iter().any(|cw| cw.frame_presented);
-        let target: u32 = if any_pending { 8 } else { 16 };
-        if elapsed < target {
-            crate::syscall::sleep(target - elapsed);
+        let now = crate::syscall::uptime_ms();
+        let mut min_wait: u32 = 1000; // default: wake every 1s max
+        for slot in &st.timers.slots {
+            let elapsed_since_fire = now.wrapping_sub(slot.last_fired_ms);
+            if elapsed_since_fire >= slot.interval_ms {
+                min_wait = 0; // timer already overdue — don't block
+                break;
+            }
+            let remaining = slot.interval_ms - elapsed_since_fire;
+            if remaining < min_wait {
+                min_wait = remaining;
+            }
+        }
+
+        // VSync back-pressure: poll faster when a frame is pending ACK
+        if st.comp_windows.iter().any(|cw| cw.frame_presented) {
+            min_wait = min_wait.min(8);
+        }
+
+        if min_wait > 0 {
+            // Block until compositor sends event OR timer timeout
+            crate::syscall::evt_chan_wait(st.channel_id, st.sub_id, min_wait);
         }
     }
 }
@@ -112,14 +129,14 @@ pub fn run_once() -> u32 {
                         if let Some(old_id) = old_hover {
                             if let Some(idx) = control::find_idx(&st.controls, old_id) {
                                 st.controls[idx].handle_mouse_leave();
-                                st.controls[idx].base_mut().dirty = true;
+                                st.controls[idx].base_mut().mark_dirty();
                                 fire_event_callback(&st.controls, old_id, control::EVENT_MOUSE_LEAVE, &mut pending_cbs);
                             }
                         }
                         if let Some(new_id) = new_hover {
                             if let Some(idx) = control::find_idx(&st.controls, new_id) {
                                 st.controls[idx].handle_mouse_enter();
-                                st.controls[idx].base_mut().dirty = true;
+                                st.controls[idx].base_mut().mark_dirty();
                                 fire_event_callback(&st.controls, new_id, control::EVENT_MOUSE_ENTER, &mut pending_cbs);
                             }
                         }
@@ -193,7 +210,7 @@ pub fn run_once() -> u32 {
                             let local_x = mx - ax;
                             let local_y = my - ay;
                             let resp = st.controls[idx].handle_mouse_down(local_x, local_y, button);
-                            st.controls[idx].base_mut().dirty = true;
+                            st.controls[idx].base_mut().mark_dirty();
 
                             fire_event_callback(&st.controls, target_id, control::EVENT_MOUSE_DOWN, &mut pending_cbs);
 
@@ -222,7 +239,7 @@ pub fn run_once() -> u32 {
                             let local_y = my - ay;
 
                             let resp = st.controls[idx].handle_mouse_up(local_x, local_y, button);
-                            st.controls[idx].base_mut().dirty = true;
+                            st.controls[idx].base_mut().mark_dirty();
                             fire_event_callback(&st.controls, target_id, control::EVENT_MOUSE_UP, &mut pending_cbs);
 
                             if resp.fire_change {
@@ -243,7 +260,7 @@ pub fn run_once() -> u32 {
                                             if let Some(mi) = control::find_idx(&st.controls, menu_id) {
                                                 st.controls[mi].set_position(mx, my);
                                                 st.controls[mi].base_mut().visible = true;
-                                                st.controls[mi].base_mut().dirty = true;
+                                                st.controls[mi].base_mut().mark_dirty();
                                                 // Focus the menu so handle_blur hides it on outside click
                                                 if let Some(old_fid) = st.focused {
                                                     if let Some(oi) = control::find_idx(&st.controls, old_fid) {
@@ -303,7 +320,7 @@ pub fn run_once() -> u32 {
                     if let Some(focus_id) = st.focused {
                         if let Some(idx) = control::find_idx(&st.controls, focus_id) {
                             let resp = st.controls[idx].handle_key_down(keycode, char_code);
-                            st.controls[idx].base_mut().dirty = true;
+                            st.controls[idx].base_mut().mark_dirty();
 
                             if resp.consumed {
                                 handled = true;
@@ -343,7 +360,7 @@ pub fn run_once() -> u32 {
                             if let Some(idx) = control::find_idx(&st.controls, cur) {
                                 let resp = st.controls[idx].handle_scroll(dz);
                                 if resp.consumed {
-                                    st.controls[idx].base_mut().dirty = true;
+                                    st.controls[idx].base_mut().mark_dirty();
                                     fire_event_callback(&st.controls, cur, control::EVENT_SCROLL, &mut pending_cbs);
                                     if resp.fire_change {
                                         fire_event_callback(&st.controls, cur, control::EVENT_CHANGE, &mut pending_cbs);
@@ -385,6 +402,7 @@ pub fn run_once() -> u32 {
                         st.controls[idx].set_size(new_w, new_h);
                         fire_event_callback(&st.controls, win_id, control::EVENT_RESIZE, &mut pending_cbs);
                     }
+                    st.needs_layout = true;
                 }
 
                 compositor::EVT_FRAME_ACK => {
@@ -425,39 +443,45 @@ pub fn run_once() -> u32 {
         return 0;
     }
 
-    // ── Phase 3.5: Layout ───────────────────────────────────────────
-    for wi in 0..st.windows.len() {
-        let win_id = st.windows[wi];
-        crate::layout::perform_layout(&mut st.controls, win_id);
-    }
-
-    // ── Phase 3.6: Update scroll bounds ─────────────────────────────
-    crate::controls::scroll_view::update_scroll_bounds(&mut st.controls);
-
-    // ── Phase 3.7: Compute per-window dirty flags (O(n) flat scan) ──
-    // Replaces the O(n²) recursive any_dirty() tree walk with a single
-    // linear pass over all controls.
-    for cw in st.comp_windows.iter_mut() {
-        cw.dirty = false;
-    }
-    'ctrl_scan: for ctrl in st.controls.iter() {
-        if !ctrl.base().dirty { continue; }
-        // Walk up parent chain to find which window this control belongs to
-        let mut cur_id = ctrl.id();
-        let mut cur_parent = ctrl.base().parent;
-        for _ in 0..32 {
-            // Check if cur_id is a window
-            if let Some(wi) = st.windows.iter().position(|&w| w == cur_id) {
-                st.comp_windows[wi].dirty = true;
-                continue 'ctrl_scan;
-            }
-            if cur_parent == 0 || cur_parent == cur_id { continue 'ctrl_scan; }
-            cur_id = cur_parent;
-            cur_parent = st.controls.iter()
-                .find(|c| c.id() == cur_id)
-                .map(|c| c.base().parent)
-                .unwrap_or(0);
+    // ── Phase 3.5: Layout (skipped when no layout-affecting changes) ──
+    if st.needs_layout {
+        for wi in 0..st.windows.len() {
+            let win_id = st.windows[wi];
+            crate::layout::perform_layout(&mut st.controls, win_id);
         }
+
+        // Phase 3.6: Update scroll bounds (only after layout)
+        crate::controls::scroll_view::update_scroll_bounds(&mut st.controls);
+
+        st.needs_layout = false;
+    }
+
+    // ── Phase 3.7: Compute per-window dirty flags ──────────────────
+    // Push-based: only scan when mark_dirty() was called since last render.
+    // On idle frames (no events, no timers), this entire phase is skipped.
+    if st.needs_repaint {
+        for cw in st.comp_windows.iter_mut() {
+            cw.dirty = false;
+        }
+        'ctrl_scan: for ctrl in st.controls.iter() {
+            if !ctrl.base().dirty { continue; }
+            // Walk up parent chain to find which window this control belongs to
+            let mut cur_id = ctrl.id();
+            let mut cur_parent = ctrl.base().parent;
+            for _ in 0..32 {
+                if let Some(wi) = st.windows.iter().position(|&w| w == cur_id) {
+                    st.comp_windows[wi].dirty = true;
+                    continue 'ctrl_scan;
+                }
+                if cur_parent == 0 || cur_parent == cur_id { continue 'ctrl_scan; }
+                cur_id = cur_parent;
+                cur_parent = st.controls.iter()
+                    .find(|c| c.id() == cur_id)
+                    .map(|c| c.base().parent)
+                    .unwrap_or(0);
+            }
+        }
+        st.needs_repaint = false;
     }
 
     // ── Phase 4: Render dirty windows (with VSync back-pressure) ───
@@ -594,7 +618,7 @@ fn cycle_focus(
     if let Some(old_id) = st.focused {
         if let Some(idx) = control::find_idx(&st.controls, old_id) {
             st.controls[idx].handle_blur();
-            st.controls[idx].base_mut().dirty = true;
+            st.controls[idx].base_mut().mark_dirty();
             fire_event_callback(&st.controls, old_id, control::EVENT_BLUR, pending);
         }
     }
@@ -602,7 +626,7 @@ fn cycle_focus(
     // Focus new
     if let Some(idx) = control::find_idx(&st.controls, next_id) {
         st.controls[idx].handle_focus();
-        st.controls[idx].base_mut().dirty = true;
+        st.controls[idx].base_mut().mark_dirty();
         st.focused = Some(next_id);
         fire_event_callback(&st.controls, next_id, control::EVENT_FOCUS, pending);
     }

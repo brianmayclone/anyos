@@ -447,7 +447,7 @@ fn set_control_dock(id: ControlId, dock: DockStyle) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         ctrl.base_mut().dock = dock;
-        ctrl.base_mut().dirty = true;
+        ctrl.base_mut().mark_dirty();
     }
 }
 

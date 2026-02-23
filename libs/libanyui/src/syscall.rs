@@ -16,6 +16,7 @@ const SYS_YIELD: u64 = 7;
 const SYS_SLEEP: u64 = 8;
 const SYS_SBRK: u64 = 9;
 const SYS_UPTIME_MS: u64 = 35;
+const SYS_EVT_CHAN_WAIT: u64 = 70;
 
 #[inline(always)]
 fn syscall0(num: u64) -> u64 {
@@ -146,4 +147,11 @@ pub fn mkdir(path: &[u8]) -> u32 {
 /// Write bytes to a file descriptor. fd=1 for stdout (serial).
 pub fn write(fd: u32, buf: &[u8]) -> u32 {
     syscall3(SYS_WRITE, fd as u64, buf.as_ptr() as u64, buf.len() as u64) as u32
+}
+
+/// Block until an event is available on a channel subscription, or timeout.
+///
+/// Returns 1 if events are available, 0 on timeout/spurious wake.
+pub fn evt_chan_wait(channel_id: u32, sub_id: u32, timeout_ms: u32) -> u32 {
+    syscall3(SYS_EVT_CHAN_WAIT, channel_id as u64, sub_id as u64, timeout_ms as u64) as u32
 }

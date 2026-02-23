@@ -187,10 +187,14 @@ pub fn handle_scancode(scancode: u8) {
         modifiers,
     };
 
-    let mut buf = KEY_BUFFER.lock();
-    if buf.len() < 256 {
-        buf.push_back(event);
+    {
+        let mut buf = KEY_BUFFER.lock();
+        if buf.len() < 256 {
+            buf.push_back(event);
+        }
     }
+    // Wake compositor outside KEY_BUFFER lock to avoid lock ordering issues.
+    crate::syscall::handlers::wake_compositor_if_blocked();
 }
 
 /// Read a key event from the buffer (non-blocking)

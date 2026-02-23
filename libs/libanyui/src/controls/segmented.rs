@@ -110,7 +110,7 @@ impl Control for SegmentedControl {
             let seg_idx = (lx / seg_width).max(0).min(n as i32 - 1) as u32;
             if self.text_base.base.state != seg_idx {
                 self.text_base.base.state = seg_idx;
-                self.text_base.base.dirty = true;
+                self.text_base.base.mark_dirty();
                 return EventResponse::CHANGED;
             }
         }

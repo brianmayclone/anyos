@@ -73,7 +73,7 @@ impl TreeView {
             style: 0,
             text_color: 0,
         });
-        self.base.dirty = true;
+        self.base.mark_dirty();
         idx
     }
 
@@ -147,7 +147,7 @@ impl TreeView {
             }
         }
 
-        self.base.dirty = true;
+        self.base.mark_dirty();
     }
 
     /// Get node text.
@@ -164,7 +164,7 @@ impl TreeView {
         if index < self.nodes.len() {
             self.nodes[index].text.clear();
             self.nodes[index].text.extend_from_slice(text);
-            self.base.dirty = true;
+            self.base.mark_dirty();
         }
     }
 
@@ -174,7 +174,7 @@ impl TreeView {
             self.nodes[index].icon_pixels = pixels.to_vec();
             self.nodes[index].icon_w = w;
             self.nodes[index].icon_h = h;
-            self.base.dirty = true;
+            self.base.mark_dirty();
         }
     }
 
@@ -182,7 +182,7 @@ impl TreeView {
     pub fn set_node_style(&mut self, index: usize, style: u32) {
         if index < self.nodes.len() {
             self.nodes[index].style = style;
-            self.base.dirty = true;
+            self.base.mark_dirty();
         }
     }
 
@@ -190,7 +190,7 @@ impl TreeView {
     pub fn set_node_text_color(&mut self, index: usize, color: u32) {
         if index < self.nodes.len() {
             self.nodes[index].text_color = color;
-            self.base.dirty = true;
+            self.base.mark_dirty();
         }
     }
 
@@ -198,7 +198,7 @@ impl TreeView {
     pub fn set_expanded(&mut self, index: usize, expanded: bool) {
         if index < self.nodes.len() {
             self.nodes[index].expanded = expanded;
-            self.base.dirty = true;
+            self.base.mark_dirty();
         }
     }
 
@@ -220,7 +220,7 @@ impl TreeView {
     pub fn set_selected(&mut self, index: Option<usize>) {
         if self.selected_node != index {
             self.selected_node = index;
-            self.base.dirty = true;
+            self.base.mark_dirty();
         }
     }
 
@@ -230,7 +230,7 @@ impl TreeView {
         self.selected_node = None;
         self.hovered_node = None;
         self.scroll_y = 0;
-        self.base.dirty = true;
+        self.base.mark_dirty();
     }
 
     /// Get the total number of nodes.
@@ -460,14 +460,14 @@ impl Control for TreeView {
             // Toggle expand/collapse
             self.nodes[node_idx].expanded = !self.nodes[node_idx].expanded;
             self.clamp_scroll();
-            self.base.dirty = true;
+            self.base.mark_dirty();
             return EventResponse::CHANGED;
         }
 
         // Select the node
         self.selected_node = Some(node_idx);
         self.base.state = node_idx as u32;
-        self.base.dirty = true;
+        self.base.mark_dirty();
         EventResponse::CHANGED
     }
 
@@ -484,7 +484,7 @@ impl Control for TreeView {
                             self.selected_node = Some(vis[pos - 1]);
                             self.base.state = vis[pos - 1] as u32;
                             self.ensure_selected_visible();
-                            self.base.dirty = true;
+                            self.base.mark_dirty();
                             return EventResponse::CHANGED;
                         }
                     }
@@ -492,7 +492,7 @@ impl Control for TreeView {
                     self.selected_node = Some(vis[0]);
                     self.base.state = vis[0] as u32;
                     self.ensure_selected_visible();
-                    self.base.dirty = true;
+                    self.base.mark_dirty();
                     return EventResponse::CHANGED;
                 }
                 EventResponse::CONSUMED
@@ -504,7 +504,7 @@ impl Control for TreeView {
                             self.selected_node = Some(vis[pos + 1]);
                             self.base.state = vis[pos + 1] as u32;
                             self.ensure_selected_visible();
-                            self.base.dirty = true;
+                            self.base.mark_dirty();
                             return EventResponse::CHANGED;
                         }
                     }
@@ -512,7 +512,7 @@ impl Control for TreeView {
                     self.selected_node = Some(vis[0]);
                     self.base.state = vis[0] as u32;
                     self.ensure_selected_visible();
-                    self.base.dirty = true;
+                    self.base.mark_dirty();
                     return EventResponse::CHANGED;
                 }
                 EventResponse::CONSUMED
@@ -523,13 +523,13 @@ impl Control for TreeView {
                         if self.nodes[sel].has_children && self.nodes[sel].expanded {
                             self.nodes[sel].expanded = false;
                             self.clamp_scroll();
-                            self.base.dirty = true;
+                            self.base.mark_dirty();
                             return EventResponse::CHANGED;
                         } else if let Some(parent_idx) = self.nodes[sel].parent {
                             self.selected_node = Some(parent_idx);
                             self.base.state = parent_idx as u32;
                             self.ensure_selected_visible();
-                            self.base.dirty = true;
+                            self.base.mark_dirty();
                             return EventResponse::CHANGED;
                         }
                     }
@@ -541,7 +541,7 @@ impl Control for TreeView {
                     if sel < self.nodes.len() {
                         if self.nodes[sel].has_children && !self.nodes[sel].expanded {
                             self.nodes[sel].expanded = true;
-                            self.base.dirty = true;
+                            self.base.mark_dirty();
                             return EventResponse::CHANGED;
                         } else if self.nodes[sel].has_children && self.nodes[sel].expanded {
                             let vis_after = self.visible_nodes();
@@ -552,7 +552,7 @@ impl Control for TreeView {
                                         self.selected_node = Some(next);
                                         self.base.state = next as u32;
                                         self.ensure_selected_visible();
-                                        self.base.dirty = true;
+                                        self.base.mark_dirty();
                                         return EventResponse::CHANGED;
                                     }
                                 }
@@ -576,7 +576,7 @@ impl Control for TreeView {
         let visible_h = self.base.h.saturating_sub(2) as i32;
         let max_scroll = (content_h - visible_h).max(0);
         self.scroll_y = (self.scroll_y - delta * 20).max(0).min(max_scroll);
-        self.base.dirty = true;
+        self.base.mark_dirty();
         EventResponse::CONSUMED
     }
 
@@ -593,7 +593,7 @@ impl Control for TreeView {
 
         if new_hover != self.hovered_node {
             self.hovered_node = new_hover;
-            self.base.dirty = true;
+            self.base.mark_dirty();
         }
         EventResponse::IGNORED
     }
@@ -601,17 +601,17 @@ impl Control for TreeView {
     fn handle_mouse_leave(&mut self) {
         if self.hovered_node.is_some() {
             self.hovered_node = None;
-            self.base.dirty = true;
+            self.base.mark_dirty();
         }
     }
 
     fn handle_focus(&mut self) {
         self.focused = true;
-        self.base.dirty = true;
+        self.base.mark_dirty();
     }
 
     fn handle_blur(&mut self) {
         self.focused = false;
-        self.base.dirty = true;
+        self.base.mark_dirty();
     }
 }

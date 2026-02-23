@@ -203,20 +203,20 @@ impl Control for TextArea {
     fn handle_scroll(&mut self, delta: i32) -> EventResponse {
         let lh = self.line_height();
         self.scroll_y = (self.scroll_y - delta * lh).clamp(0, self.max_scroll());
-        self.text_base.base.dirty = true;
+        self.text_base.base.mark_dirty();
         EventResponse::CONSUMED
     }
 
     fn handle_focus(&mut self) {
         self.focused = true;
         self.text_base.base.focused = true;
-        self.text_base.base.dirty = true;
+        self.text_base.base.mark_dirty();
         self.cursor_pos = self.text_base.text.len();
     }
 
     fn handle_blur(&mut self) {
         self.focused = false;
         self.text_base.base.focused = false;
-        self.text_base.base.dirty = true;
+        self.text_base.base.mark_dirty();
     }
 }

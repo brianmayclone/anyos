@@ -56,6 +56,11 @@ struct TerminalBuffer {
     cursor_col: usize,
     scroll_offset: usize,
     current_color: u32,
+    // ANSI escape sequence parser state
+    ansi_state: u8,          // 0=Normal, 1=Escape (\x1B seen), 2=CSI ([ seen)
+    ansi_params: [u8; 16],
+    ansi_param_len: usize,
+    ansi_bold: bool,
 }
 
 impl TerminalBuffer {
@@ -70,6 +75,10 @@ impl TerminalBuffer {
             cursor_col: 0,
             scroll_offset: 0,
             current_color: COLOR_FG,
+            ansi_state: 0,
+            ansi_params: [0; 16],
+            ansi_param_len: 0,
+            ansi_bold: false,
         }
     }
 
@@ -80,7 +89,41 @@ impl TerminalBuffer {
     }
 
     fn write_char(&mut self, ch: char) {
+        // ANSI escape sequence state machine
+        match self.ansi_state {
+            1 => {
+                // Saw \x1B, expecting '['
+                if ch == '[' {
+                    self.ansi_state = 2;
+                    self.ansi_param_len = 0;
+                } else {
+                    self.ansi_state = 0; // not a CSI sequence, discard
+                }
+                return;
+            }
+            2 => {
+                // Inside CSI sequence, collecting params until a letter
+                let c = ch as u32;
+                if (c >= b'0' as u32 && c <= b'9' as u32) || c == b';' as u32 {
+                    if self.ansi_param_len < self.ansi_params.len() {
+                        self.ansi_params[self.ansi_param_len] = ch as u8;
+                        self.ansi_param_len += 1;
+                    }
+                    return;
+                }
+                // Dispatch CSI command
+                self.ansi_state = 0;
+                self.dispatch_csi(ch);
+                return;
+            }
+            _ => {}
+        }
+
+        // Normal character processing
         match ch {
+            '\x1B' => {
+                self.ansi_state = 1;
+            }
             '\n' => {
                 self.cursor_row += 1;
                 self.cursor_col = 0;
@@ -115,6 +158,143 @@ impl TerminalBuffer {
                     }
                 }
             }
+        }
+    }
+
+    /// Dispatch a CSI escape sequence command.
+    fn dispatch_csi(&mut self, cmd: char) {
+        // Parse semicolon-separated numeric params
+        let params = &self.ansi_params[..self.ansi_param_len];
+        let mut nums = [0u32; 4];
+        let mut num_count = 0usize;
+        let mut val = 0u32;
+        let mut has_val = false;
+        for &b in params {
+            if b == b';' {
+                if num_count < nums.len() { nums[num_count] = val; num_count += 1; }
+                val = 0;
+                has_val = false;
+            } else if b >= b'0' && b <= b'9' {
+                val = val * 10 + (b - b'0') as u32;
+                has_val = true;
+            }
+        }
+        if has_val || num_count == 0 {
+            if num_count < nums.len() { nums[num_count] = val; num_count += 1; }
+        }
+
+        match cmd {
+            'J' => {
+                // Erase in display
+                let mode = if num_count > 0 { nums[0] } else { 0 };
+                if mode == 2 || mode == 3 {
+                    // Clear entire screen
+                    self.lines.clear();
+                    self.lines.push(Vec::new());
+                    self.cursor_row = 0;
+                    self.cursor_col = 0;
+                    self.scroll_offset = 0;
+                }
+            }
+            'H' | 'f' => {
+                // Cursor position (1-based, default 1;1)
+                let row = if num_count > 0 && nums[0] > 0 { nums[0] as usize - 1 } else { 0 };
+                let col = if num_count > 1 && nums[1] > 0 { nums[1] as usize - 1 } else { 0 };
+                self.cursor_row = self.scroll_offset + row;
+                self.cursor_col = col.min(self.cols.saturating_sub(1));
+                self.ensure_line(self.cursor_row);
+            }
+            'K' => {
+                // Erase in line
+                let mode = if num_count > 0 { nums[0] } else { 0 };
+                self.ensure_line(self.cursor_row);
+                let line = &mut self.lines[self.cursor_row];
+                match mode {
+                    0 => {
+                        // Erase from cursor to end of line
+                        line.truncate(self.cursor_col);
+                    }
+                    1 => {
+                        // Erase from start to cursor
+                        for i in 0..=self.cursor_col.min(line.len().saturating_sub(1)) {
+                            if i < line.len() { line[i] = (' ', COLOR_BG); }
+                        }
+                    }
+                    2 => {
+                        // Erase entire line
+                        line.clear();
+                    }
+                    _ => {}
+                }
+            }
+            'A' => {
+                // Cursor up
+                let n = if num_count > 0 && nums[0] > 0 { nums[0] as usize } else { 1 };
+                self.cursor_row = self.cursor_row.saturating_sub(n);
+            }
+            'B' => {
+                // Cursor down
+                let n = if num_count > 0 && nums[0] > 0 { nums[0] as usize } else { 1 };
+                self.cursor_row += n;
+                self.ensure_line(self.cursor_row);
+            }
+            'C' => {
+                // Cursor forward
+                let n = if num_count > 0 && nums[0] > 0 { nums[0] as usize } else { 1 };
+                self.cursor_col = (self.cursor_col + n).min(self.cols.saturating_sub(1));
+            }
+            'D' => {
+                // Cursor back
+                let n = if num_count > 0 && nums[0] > 0 { nums[0] as usize } else { 1 };
+                self.cursor_col = self.cursor_col.saturating_sub(n);
+            }
+            'm' => {
+                // SGR (Select Graphic Rendition) — foreground color/style codes
+                // Standard 8-color + bright 8-color palette (Dracula-inspired)
+                const COLORS: [u32; 8] = [
+                    0xFF505050, // 0 black
+                    0xFFFF5555, // 1 red
+                    0xFF50FA7B, // 2 green
+                    0xFFF1FA8C, // 3 yellow
+                    0xFF6272A4, // 4 blue
+                    0xFFFF79C6, // 5 magenta
+                    0xFF8BE9FD, // 6 cyan
+                    0xFFCCCCCC, // 7 white
+                ];
+                const BRIGHT: [u32; 8] = [
+                    0xFF6A6A6A, // 0 bright black
+                    0xFFFF6E6E, // 1 bright red
+                    0xFF69FF94, // 2 bright green
+                    0xFFFFFFA5, // 3 bright yellow
+                    0xFF7B8ABD, // 4 bright blue
+                    0xFFFF92DF, // 5 bright magenta
+                    0xFFA4F0FF, // 6 bright cyan
+                    0xFFFFFFFF, // 7 bright white
+                ];
+                if num_count == 0 || (num_count == 1 && nums[0] == 0) {
+                    // \x1B[m or \x1B[0m — reset
+                    self.current_color = COLOR_FG;
+                    self.ansi_bold = false;
+                } else {
+                    for idx in 0..num_count {
+                        match nums[idx] {
+                            0 => { self.current_color = COLOR_FG; self.ansi_bold = false; }
+                            1 => { self.ansi_bold = true; }
+                            22 => { self.ansi_bold = false; }
+                            30..=37 => {
+                                let c = (nums[idx] - 30) as usize;
+                                self.current_color = if self.ansi_bold { BRIGHT[c] } else { COLORS[c] };
+                            }
+                            39 => { self.current_color = COLOR_FG; }
+                            90..=97 => {
+                                self.current_color = BRIGHT[(nums[idx] - 90) as usize];
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => {} // Unknown CSI command, ignore
         }
     }
 

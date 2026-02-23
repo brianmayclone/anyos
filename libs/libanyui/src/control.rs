@@ -379,6 +379,16 @@ impl ControlBase {
         }
     }
 
+    /// Mark this control as needing a repaint and notify the global event loop.
+    /// Prefer this over setting `dirty = true` directly — it enables the event
+    /// loop to skip O(n) dirty scans on idle frames.
+    pub fn mark_dirty(&mut self) {
+        if !self.dirty {
+            self.dirty = true;
+            crate::mark_needs_repaint();
+        }
+    }
+
     pub fn with_color(mut self, color: u32) -> Self {
         self.color = color;
         self
@@ -433,7 +443,7 @@ impl TextControlBase {
         if self.text.as_slice() != t {
             self.text.clear();
             self.text.extend_from_slice(t);
-            self.base.dirty = true;
+            self.base.mark_dirty();
         }
     }
 
@@ -556,13 +566,13 @@ pub trait Control {
     /// Called when mouse cursor enters this control's bounds.
     fn handle_mouse_enter(&mut self) {
         self.base_mut().hovered = true;
-        self.base_mut().dirty = true;
+        self.base_mut().mark_dirty();
     }
 
     /// Called when mouse cursor leaves this control's bounds.
     fn handle_mouse_leave(&mut self) {
         self.base_mut().hovered = false;
-        self.base_mut().dirty = true;
+        self.base_mut().mark_dirty();
     }
 
     /// Called when mouse button is pressed on this control.
@@ -606,13 +616,13 @@ pub trait Control {
     /// Called when this control receives keyboard focus.
     fn handle_focus(&mut self) {
         self.base_mut().focused = true;
-        self.base_mut().dirty = true;
+        self.base_mut().mark_dirty();
     }
 
     /// Called when this control loses keyboard focus.
     fn handle_blur(&mut self) {
         self.base_mut().focused = false;
-        self.base_mut().dirty = true;
+        self.base_mut().mark_dirty();
     }
 
     // ── Default property accessors (delegate to ControlBase) ────────
@@ -643,7 +653,7 @@ pub trait Control {
         if b.x != x || b.y != y {
             b.x = x;
             b.y = y;
-            b.dirty = true;
+            b.mark_dirty();
         }
     }
     fn size(&self) -> (u32, u32) {
@@ -654,7 +664,7 @@ pub trait Control {
         if b.w != w || b.h != h {
             b.w = w;
             b.h = h;
-            b.dirty = true;
+            b.mark_dirty();
         }
     }
     fn visible(&self) -> bool {
@@ -664,7 +674,7 @@ pub trait Control {
         let b = self.base_mut();
         if b.visible != v {
             b.visible = v;
-            b.dirty = true;
+            b.mark_dirty();
         }
     }
     fn text(&self) -> &[u8] {
@@ -685,7 +695,7 @@ pub trait Control {
         let b = self.base_mut();
         if b.color != c {
             b.color = c;
-            b.dirty = true;
+            b.mark_dirty();
         }
     }
     fn state_val(&self) -> u32 {
@@ -695,7 +705,7 @@ pub trait Control {
         let b = self.base_mut();
         if b.state != s {
             b.state = s;
-            b.dirty = true;
+            b.mark_dirty();
         }
     }
 

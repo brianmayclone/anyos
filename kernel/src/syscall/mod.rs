@@ -129,6 +129,7 @@ pub const SYS_EVT_CHAN_POLL: u32 = 66;
 pub const SYS_EVT_CHAN_UNSUBSCRIBE: u32 = 67;
 pub const SYS_EVT_CHAN_DESTROY: u32 = 68;
 pub const SYS_EVT_CHAN_EMIT_TO: u32 = 69;
+pub const SYS_EVT_CHAN_WAIT: u32 = 70;
 
 // Display / GPU
 pub const SYS_SCREEN_SIZE: u32 = 72;
@@ -412,6 +413,7 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_EVT_CHAN_UNSUBSCRIBE => handlers::sys_evt_chan_unsubscribe(arg1, arg2),
         SYS_EVT_CHAN_DESTROY => handlers::sys_evt_chan_destroy(arg1),
         SYS_EVT_CHAN_EMIT_TO => handlers::sys_evt_chan_emit_to(arg1, arg2, arg3),
+        SYS_EVT_CHAN_WAIT => handlers::sys_evt_chan_wait(arg1, arg2, arg3),
 
         // Display / GPU
         SYS_SCREEN_SIZE => handlers::sys_screen_size(arg1),

@@ -371,7 +371,7 @@ impl Control for Canvas {
         if b.w != w || b.h != h {
             b.w = w;
             b.h = h;
-            b.dirty = true;
+            b.mark_dirty();
             // Resize pixel buffer to match new dimensions
             let expected = (w * h) as usize;
             if expected > 0 && self.pixels.len() != expected {
@@ -394,7 +394,7 @@ impl Control for Canvas {
         self.last_mouse_x = lx;
         self.last_mouse_y = ly;
         self.mouse_button = button;
-        self.base.dirty = true;
+        self.base.mark_dirty();
         EventResponse::CLICK
     }
 
@@ -402,7 +402,7 @@ impl Control for Canvas {
         self.last_mouse_x = lx;
         self.last_mouse_y = ly;
         if self.interactive {
-            self.base.dirty = true;
+            self.base.mark_dirty();
             EventResponse::CHANGED
         } else {
             EventResponse::CONSUMED
@@ -413,7 +413,7 @@ impl Control for Canvas {
         self.last_mouse_x = lx;
         self.last_mouse_y = ly;
         self.mouse_button = 0;
-        self.base.dirty = true;
+        self.base.mark_dirty();
         EventResponse::CONSUMED
     }
 

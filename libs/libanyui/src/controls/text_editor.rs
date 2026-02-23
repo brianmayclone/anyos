@@ -182,7 +182,7 @@ impl TextEditor {
         self.scroll_x = 0;
         self.selection = None;
         self.update_gutter_width();
-        self.base.dirty = true;
+        self.base.mark_dirty();
     }
 
     pub fn get_text(&self) -> Vec<u8> {
@@ -205,14 +205,14 @@ impl TextEditor {
         } else {
             crate::log!("[SYNTAX-SERVER] parse returned None");
         }
-        self.base.dirty = true;
+        self.base.mark_dirty();
     }
 
     pub fn set_cursor(&mut self, row: usize, col: usize) {
         self.cursor_row = row.min(self.lines.len().saturating_sub(1));
         self.cursor_col = col.min(self.lines[self.cursor_row].len());
         self.ensure_cursor_visible();
-        self.base.dirty = true;
+        self.base.mark_dirty();
     }
 
     pub fn cursor(&self) -> (usize, usize) {
@@ -233,7 +233,7 @@ impl TextEditor {
         }
         self.update_gutter_width();
         self.ensure_cursor_visible();
-        self.base.dirty = true;
+        self.base.mark_dirty();
     }
 
     pub fn line_count(&self) -> usize {
@@ -474,7 +474,7 @@ impl Control for TextEditor {
         let text_lx = lx - self.gutter_width as i32 - 1 + self.scroll_x;
         self.cursor_col = (text_lx / self.char_width as i32).max(0) as usize;
         self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
-        self.base.dirty = true;
+        self.base.mark_dirty();
         EventResponse::CONSUMED
     }
 
@@ -485,7 +485,7 @@ impl Control for TextEditor {
             self.lines[self.cursor_row].insert(self.cursor_col, char_code as u8);
             self.cursor_col += 1;
             self.ensure_cursor_visible();
-            self.base.dirty = true;
+            self.base.mark_dirty();
             return EventResponse::CHANGED;
         }
         // Enter
@@ -507,7 +507,7 @@ impl Control for TextEditor {
             self.lines.insert(self.cursor_row, new_line);
             self.update_gutter_width();
             self.ensure_cursor_visible();
-            self.base.dirty = true;
+            self.base.mark_dirty();
             return EventResponse::CHANGED;
         }
         use crate::control::*;
@@ -525,7 +525,7 @@ impl Control for TextEditor {
                 self.update_gutter_width();
             }
             self.ensure_cursor_visible();
-            self.base.dirty = true;
+            self.base.mark_dirty();
             return EventResponse::CHANGED;
         }
         // Delete
@@ -538,7 +538,7 @@ impl Control for TextEditor {
                 self.lines[self.cursor_row].extend_from_slice(&next_line);
                 self.update_gutter_width();
             }
-            self.base.dirty = true;
+            self.base.mark_dirty();
             return EventResponse::CHANGED;
         }
         // Tab — TextEditor inserts spaces (consumed, so global Tab-cycling won't fire)
@@ -549,7 +549,7 @@ impl Control for TextEditor {
                 self.cursor_col += 1;
             }
             self.ensure_cursor_visible();
-            self.base.dirty = true;
+            self.base.mark_dirty();
             return EventResponse::CHANGED;
         }
         // Left arrow
@@ -561,7 +561,7 @@ impl Control for TextEditor {
                 self.cursor_col = self.lines[self.cursor_row].len();
             }
             self.ensure_cursor_visible();
-            self.base.dirty = true;
+            self.base.mark_dirty();
             return EventResponse::CONSUMED;
         }
         // Right arrow
@@ -573,7 +573,7 @@ impl Control for TextEditor {
                 self.cursor_col = 0;
             }
             self.ensure_cursor_visible();
-            self.base.dirty = true;
+            self.base.mark_dirty();
             return EventResponse::CONSUMED;
         }
         // Up arrow
@@ -583,7 +583,7 @@ impl Control for TextEditor {
                 self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
             }
             self.ensure_cursor_visible();
-            self.base.dirty = true;
+            self.base.mark_dirty();
             return EventResponse::CONSUMED;
         }
         // Down arrow
@@ -593,21 +593,21 @@ impl Control for TextEditor {
                 self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
             }
             self.ensure_cursor_visible();
-            self.base.dirty = true;
+            self.base.mark_dirty();
             return EventResponse::CONSUMED;
         }
         // Home
         if keycode == KEY_HOME {
             self.cursor_col = 0;
             self.ensure_cursor_visible();
-            self.base.dirty = true;
+            self.base.mark_dirty();
             return EventResponse::CONSUMED;
         }
         // End
         if keycode == KEY_END {
             self.cursor_col = self.lines[self.cursor_row].len();
             self.ensure_cursor_visible();
-            self.base.dirty = true;
+            self.base.mark_dirty();
             return EventResponse::CONSUMED;
         }
         // Page Up
@@ -616,7 +616,7 @@ impl Control for TextEditor {
             self.cursor_row = self.cursor_row.saturating_sub(page);
             self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
             self.ensure_cursor_visible();
-            self.base.dirty = true;
+            self.base.mark_dirty();
             return EventResponse::CONSUMED;
         }
         // Page Down
@@ -625,7 +625,7 @@ impl Control for TextEditor {
             self.cursor_row = (self.cursor_row + page).min(self.lines.len().saturating_sub(1));
             self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
             self.ensure_cursor_visible();
-            self.base.dirty = true;
+            self.base.mark_dirty();
             return EventResponse::CONSUMED;
         }
         EventResponse::IGNORED
@@ -635,18 +635,18 @@ impl Control for TextEditor {
         let max_scroll = (self.content_height() - (self.base.h as i32 - 2)).max(0);
         self.scroll_y =
             (self.scroll_y - delta * self.line_height as i32).clamp(0, max_scroll);
-        self.base.dirty = true;
+        self.base.mark_dirty();
         EventResponse::CONSUMED
     }
 
     fn handle_focus(&mut self) {
         self.focused = true;
-        self.base.dirty = true;
+        self.base.mark_dirty();
     }
 
     fn handle_blur(&mut self) {
         self.focused = false;
-        self.base.dirty = true;
+        self.base.mark_dirty();
     }
 }
 

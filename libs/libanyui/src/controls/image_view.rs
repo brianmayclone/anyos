@@ -44,7 +44,7 @@ impl ImageView {
         self.pixels.extend_from_slice(&data[..expected]);
         self.img_w = w;
         self.img_h = h;
-        self.base.dirty = true;
+        self.base.mark_dirty();
     }
 
     /// Clear pixel data.
@@ -52,7 +52,7 @@ impl ImageView {
         self.pixels.clear();
         self.img_w = 0;
         self.img_h = 0;
-        self.base.dirty = true;
+        self.base.mark_dirty();
     }
 }
 

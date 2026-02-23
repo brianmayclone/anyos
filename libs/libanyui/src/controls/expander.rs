@@ -72,7 +72,7 @@ impl Control for Expander {
         if b.w != w || b.h != h {
             b.w = w;
             b.h = h;
-            b.dirty = true;
+            b.mark_dirty();
             // Track expanded height when in expanded state
             if b.state != 0 {
                 self.expanded_height = h;
@@ -95,7 +95,8 @@ impl Control for Expander {
                 self.text_base.base.h = self.expanded_height;
                 self.text_base.base.state = 1;
             }
-            self.text_base.base.dirty = true;
+            self.text_base.base.mark_dirty();
+            crate::mark_needs_layout();
             EventResponse::CHANGED
         } else {
             EventResponse::IGNORED

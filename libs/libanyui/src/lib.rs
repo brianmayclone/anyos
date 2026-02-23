@@ -127,6 +127,32 @@ pub(crate) struct AnyuiState {
 
     // ── Timers ───────────────────────────────────────────────────────
     pub timers: timer::TimerState,
+
+    // ── Dirty tracking (push-based, avoids per-frame O(n) scans) ─────
+    /// True when at least one control has been marked dirty since last render.
+    pub needs_repaint: bool,
+    /// True when layout-affecting properties changed since last layout pass.
+    pub needs_layout: bool,
+}
+
+/// Signal that at least one control needs repainting.
+/// Called from `ControlBase::mark_dirty()` — avoids per-frame O(n) dirty scan.
+pub(crate) fn mark_needs_repaint() {
+    unsafe {
+        if let Some(ref mut st) = STATE {
+            st.needs_repaint = true;
+        }
+    }
+}
+
+/// Signal that layout needs to be recalculated.
+/// Called when dock, padding, margin, visibility, or children change.
+pub(crate) fn mark_needs_layout() {
+    unsafe {
+        if let Some(ref mut st) = STATE {
+            st.needs_layout = true;
+        }
+    }
 }
 
 static mut STATE: Option<AnyuiState> = None;
@@ -218,6 +244,8 @@ pub extern "C" fn anyui_init() -> u32 {
             last_click_tick: 0,
             pressed_button: 0,
             timers: timer::TimerState::new(),
+            needs_repaint: true,
+            needs_layout: true,
         });
     }
     1
@@ -369,6 +397,7 @@ pub extern "C" fn anyui_add_child(parent: ControlId, child: ControlId) {
     if let Some(p) = st.controls.iter_mut().find(|c| c.id() == parent) {
         p.add_child(child);
     }
+    mark_needs_layout();
 }
 
 // ── Properties ───────────────────────────────────────────────────────
@@ -416,6 +445,7 @@ pub extern "C" fn anyui_set_size(id: ControlId, w: u32, h: u32) {
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         ctrl.set_size(w, h);
     }
+    mark_needs_layout();
 }
 
 #[no_mangle]
@@ -424,6 +454,7 @@ pub extern "C" fn anyui_set_visible(id: ControlId, visible: u32) {
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         ctrl.set_visible(visible != 0);
     }
+    mark_needs_layout();
 }
 
 #[no_mangle]
@@ -455,7 +486,9 @@ pub extern "C" fn anyui_set_padding(id: ControlId, left: i32, top: i32, right: i
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         ctrl.base_mut().padding = control::Padding { left, top, right, bottom };
+        ctrl.base_mut().mark_dirty();
     }
+    mark_needs_layout();
 }
 
 #[no_mangle]
@@ -463,7 +496,9 @@ pub extern "C" fn anyui_set_margin(id: ControlId, left: i32, top: i32, right: i3
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         ctrl.base_mut().margin = control::Margin { left, top, right, bottom };
+        ctrl.base_mut().mark_dirty();
     }
+    mark_needs_layout();
 }
 
 #[no_mangle]
@@ -471,7 +506,9 @@ pub extern "C" fn anyui_set_dock(id: ControlId, dock_style: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         ctrl.base_mut().dock = DockStyle::from_u32(dock_style);
+        ctrl.base_mut().mark_dirty();
     }
+    mark_needs_layout();
 }
 
 #[no_mangle]
@@ -482,7 +519,7 @@ pub extern "C" fn anyui_set_disabled(id: ControlId, disabled: u32) {
         let new_val = disabled != 0;
         if b.disabled != new_val {
             b.disabled = new_val;
-            b.dirty = true;
+            b.mark_dirty();
         }
     }
 }
@@ -493,6 +530,7 @@ pub extern "C" fn anyui_set_auto_size(id: ControlId, enabled: u32) {
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         ctrl.base_mut().auto_size = enabled != 0;
     }
+    mark_needs_layout();
 }
 
 #[no_mangle]
@@ -571,7 +609,7 @@ pub extern "C" fn anyui_set_orientation(id: ControlId, orientation: u32) {
                 if sv.orientation != new_orient {
                     sv.orientation = new_orient;
                     sv.sync_divider();
-                    sv.base.dirty = true;
+                    sv.base.mark_dirty();
                 }
             }
             _ => {}
@@ -627,7 +665,7 @@ pub extern "C" fn anyui_set_split_ratio(id: ControlId, ratio: u32) {
                 sv.split_ratio = r;
                 sv.sync_divider();
                 sv.base.state = r;
-                sv.base.dirty = true;
+                sv.base.mark_dirty();
             }
         }
     }
@@ -673,7 +711,7 @@ pub extern "C" fn anyui_textfield_set_prefix(id: ControlId, icon_code: u32) {
             let new_val = if icon_code == 0 { None } else { Some(icon_code) };
             if tf.prefix_icon != new_val {
                 tf.prefix_icon = new_val;
-                tf.text_base.base.dirty = true;
+                tf.text_base.base.mark_dirty();
             }
         }
     }
@@ -687,7 +725,7 @@ pub extern "C" fn anyui_textfield_set_postfix(id: ControlId, icon_code: u32) {
             let new_val = if icon_code == 0 { None } else { Some(icon_code) };
             if tf.postfix_icon != new_val {
                 tf.postfix_icon = new_val;
-                tf.text_base.base.dirty = true;
+                tf.text_base.base.mark_dirty();
             }
         }
     }
@@ -701,7 +739,7 @@ pub extern "C" fn anyui_textfield_set_password(id: ControlId, enabled: u32) {
             let new_val = enabled != 0;
             if tf.password_mode != new_val {
                 tf.password_mode = new_val;
-                tf.text_base.base.dirty = true;
+                tf.text_base.base.mark_dirty();
             }
         }
     }
@@ -720,7 +758,7 @@ pub extern "C" fn anyui_textfield_set_placeholder(id: ControlId, text: *const u8
             if tf.placeholder.as_slice() != new_text {
                 tf.placeholder.clear();
                 tf.placeholder.extend_from_slice(new_text);
-                tf.text_base.base.dirty = true;
+                tf.text_base.base.mark_dirty();
             }
         }
     }
@@ -1006,7 +1044,7 @@ pub extern "C" fn anyui_imageview_set_scale_mode(id: ControlId, mode: u32) {
             let iv = unsafe { &mut *(raw as *mut controls::image_view::ImageView) };
             if iv.scale_mode != mode {
                 iv.scale_mode = mode;
-                iv.base.dirty = true;
+                iv.base.mark_dirty();
             }
         }
     }
@@ -1091,6 +1129,20 @@ pub extern "C" fn anyui_datagrid_set_column_width(id: ControlId, col_index: u32,
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(dg) = as_data_grid(ctrl) {
             dg.set_column_width(col_index as usize, width);
+        }
+    }
+}
+
+/// Set the sort comparison type for a column (0 = string, 1 = numeric).
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_column_sort_type(id: ControlId, col_index: u32, sort_type: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            dg.set_column_sort_type(
+                col_index as usize,
+                controls::data_grid::SortType::from_u8(sort_type as u8),
+            );
         }
     }
 }
@@ -1209,7 +1261,7 @@ pub extern "C" fn anyui_datagrid_set_selected_row(id: ControlId, row: u32) {
                 dg.clear_selection();
                 dg.set_row_selected(row as usize, true);
                 dg.base.state = row;
-                dg.base.dirty = true;
+                dg.base.mark_dirty();
             }
         }
     }
@@ -1249,7 +1301,7 @@ pub extern "C" fn anyui_datagrid_set_row_height(id: ControlId, height: u32) {
             let h = height.max(16);
             if dg.row_height != h {
                 dg.row_height = h;
-                dg.base.dirty = true;
+                dg.base.mark_dirty();
             }
         }
     }
@@ -1263,7 +1315,7 @@ pub extern "C" fn anyui_datagrid_set_header_height(id: ControlId, height: u32) {
             let h = height.max(16);
             if dg.header_height != h {
                 dg.header_height = h;
-                dg.base.dirty = true;
+                dg.base.mark_dirty();
             }
         }
     }
@@ -1385,7 +1437,7 @@ pub extern "C" fn anyui_texteditor_set_line_height(id: ControlId, height: u32) {
             let h = height.max(12);
             if te.line_height != h {
                 te.line_height = h;
-                te.base.dirty = true;
+                te.base.mark_dirty();
             }
         }
     }
@@ -1409,7 +1461,7 @@ pub extern "C" fn anyui_texteditor_set_show_line_numbers(id: ControlId, show: u3
             let new_val = show != 0;
             if te.show_line_numbers != new_val {
                 te.show_line_numbers = new_val;
-                te.base.dirty = true;
+                te.base.mark_dirty();
             }
         }
     }
@@ -1427,7 +1479,7 @@ pub extern "C" fn anyui_texteditor_set_font(id: ControlId, font_id: u32, font_si
                 te.font_size = fsz;
                 let (cw, _) = crate::draw::measure_text_ex(b"M", te.font_id, te.font_size);
                 te.char_width = if cw > 0 { cw } else { 8 };
-                te.base.dirty = true;
+                te.base.mark_dirty();
             }
         }
     }
@@ -1628,7 +1680,7 @@ pub extern "C" fn anyui_treeview_set_indent_width(id: ControlId, width: u32) {
             let w = width.max(8);
             if tv.indent_width != w {
                 tv.indent_width = w;
-                tv.base.dirty = true;
+                tv.base.mark_dirty();
             }
         }
     }
@@ -1642,7 +1694,7 @@ pub extern "C" fn anyui_treeview_set_row_height(id: ControlId, height: u32) {
             let h = height.max(16);
             if tv.row_height != h {
                 tv.row_height = h;
-                tv.base.dirty = true;
+                tv.base.mark_dirty();
             }
         }
     }

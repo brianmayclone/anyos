@@ -95,7 +95,7 @@ impl Control for ContextMenu {
     fn handle_blur(&mut self) {
         // Hide context menu when focus leaves
         self.text_base.base.visible = false;
-        self.text_base.base.dirty = true;
+        self.text_base.base.mark_dirty();
     }
 
     fn accepts_focus(&self) -> bool { true }

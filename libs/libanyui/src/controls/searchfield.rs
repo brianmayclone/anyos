@@ -113,13 +113,13 @@ impl Control for SearchField {
     fn handle_focus(&mut self) {
         self.focused = true;
         self.text_base.base.focused = true;
-        self.text_base.base.dirty = true;
+        self.text_base.base.mark_dirty();
         self.cursor_pos = self.text_base.text.len();
     }
 
     fn handle_blur(&mut self) {
         self.focused = false;
         self.text_base.base.focused = false;
-        self.text_base.base.dirty = true;
+        self.text_base.base.mark_dirty();
     }
 }

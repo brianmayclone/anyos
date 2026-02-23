@@ -17,6 +17,8 @@ exclude = [
   "libs/dynlink",
   "libs/libanyui",
   "libs/libanyui_client",
+  "libs/libdb",
+  "libs/libdb_client",
   # System daemons
   "system/init",
   "system/terminal",
@@ -113,6 +115,8 @@ exclude = [
   "bin/su",
   "bin/echoserver",
   "bin/netstat",
+  "bin/top",
+  "bin/htop",
   "bin/svc",
   "bin/logd",
   "apps/demo_anyui",
@@ -122,6 +126,7 @@ exclude = [
   "system/diskutil",
   "system/login",
   "system/permdialog",
+  "system/ami",
   # Bootloader
   "bootloader/uefi",
 ]

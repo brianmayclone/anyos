@@ -243,10 +243,14 @@ fn process_packet(state: &mut MouseState, dz: i32) {
     // Actually we can just grab the buffer lock here since we don't hold any other lock
     // that MOUSE_BUFFER depends on — but we DO hold MOUSE_STATE. Since these are
     // independent locks and no code path holds both in reverse order, this is safe.
-    let mut buf = MOUSE_BUFFER.lock();
-    if buf.len() < 256 {
-        buf.push_back(event);
+    {
+        let mut buf = MOUSE_BUFFER.lock();
+        if buf.len() < 256 {
+            buf.push_back(event);
+        }
     }
+    // Wake compositor outside MOUSE_BUFFER lock to avoid lock ordering issues.
+    crate::syscall::handlers::wake_compositor_if_blocked();
 }
 
 /// Read a mouse event from the buffer (non-blocking)
