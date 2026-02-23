@@ -46,6 +46,13 @@ add_custom_command(
   COMMENT "Building buildsystem tool: anyelf"
 )
 
+# On Linux, -std=c99 hides POSIX functions like strdup(); macOS exposes them by default.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(POSIX_FLAG "-D_POSIX_C_SOURCE=200809L")
+else()
+  set(POSIX_FLAG "")
+endif()
+
 # mkimage — disk image builder (replaces mkimage.py)
 set(MKIMAGE_EXECUTABLE "${CMAKE_BINARY_DIR}/buildsystem/mkimage${CMAKE_EXECUTABLE_SUFFIX}")
 file(GLOB MKIMAGE_SRCS "${BUILDSYSTEM_DIR}/mkimage/src/*.c" "${BUILDSYSTEM_DIR}/mkimage/src/*.h")
@@ -62,13 +69,6 @@ add_custom_command(
   DEPENDS ${MKIMAGE_SRCS}
   COMMENT "Building buildsystem tool: mkimage"
 )
-
-# On Linux, -std=c99 hides POSIX functions like strdup(); macOS exposes them by default.
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  set(POSIX_FLAG "-D_POSIX_C_SOURCE=200809L")
-else()
-  set(POSIX_FLAG "")
-endif()
 
 # anyld — ELF64 shared object linker (for future .so builds)
 set(ANYLD_EXECUTABLE "${CMAKE_BINARY_DIR}/buildsystem/anyld${CMAKE_EXECUTABLE_SUFFIX}")
@@ -636,6 +636,11 @@ add_rust_user_program(crontab    ${CMAKE_SOURCE_DIR}/bin/crontab)
 add_rust_user_program(sed        ${CMAKE_SOURCE_DIR}/bin/sed)
 add_rust_user_program(zip        ${CMAKE_SOURCE_DIR}/bin/zip)
 add_rust_user_program(unzip      ${CMAKE_SOURCE_DIR}/bin/unzip)
+add_rust_user_program(banner     ${CMAKE_SOURCE_DIR}/bin/banner)
+add_rust_user_program(jp2a       ${CMAKE_SOURCE_DIR}/bin/jp2a)
+add_rust_user_program(nano       ${CMAKE_SOURCE_DIR}/bin/nano)
+add_rust_user_program(neofetch   ${CMAKE_SOURCE_DIR}/bin/neofetch)
+add_rust_user_program(nvi        ${CMAKE_SOURCE_DIR}/bin/nvi)
 # Privileged sbin programs
 add_rust_sbin_program(adduser    ${CMAKE_SOURCE_DIR}/bin/adduser)
 add_rust_sbin_program(deluser    ${CMAKE_SOURCE_DIR}/bin/deluser)
