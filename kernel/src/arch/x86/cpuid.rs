@@ -218,3 +218,71 @@ pub fn vendor() -> &'static [u8; 16] {
 pub fn brand() -> &'static [u8; 48] {
     unsafe { &CPU_BRAND }
 }
+
+/// Try to get the TSC frequency from hypervisor CPUID leaves.
+///
+/// Hypervisors expose the TSC frequency via synthetic CPUID leaves:
+/// - **VirtualBox**: leaf 0x40000010, EAX = TSC freq in kHz
+/// - **Hyper-V**: leaf 0x40000003, EAX = TSC freq in Hz (10 MHz units)
+/// - **CPUID leaf 0x15**: standard Intel TSC/crystal ratio (QEMU, bare metal)
+///
+/// Returns `Some(hz)` if a valid frequency was found, `None` otherwise.
+pub fn hypervisor_tsc_hz() -> Option<u64> {
+    // Check if a hypervisor is present (CPUID.1:ECX bit 31)
+    let (_, _, ecx1, _) = cpuid(1, 0);
+    let hypervisor_present = ecx1 & (1 << 31) != 0;
+
+    if hypervisor_present {
+        // Read hypervisor vendor string from leaf 0x40000000
+        let (max_hv_leaf, hbx, hcx, hdx) = cpuid(0x40000000, 0);
+        let mut hv_vendor = [0u8; 12];
+        hv_vendor[0..4].copy_from_slice(&hbx.to_le_bytes());
+        hv_vendor[4..8].copy_from_slice(&hcx.to_le_bytes());
+        hv_vendor[8..12].copy_from_slice(&hdx.to_le_bytes());
+
+        let hv_str = core::str::from_utf8(&hv_vendor).unwrap_or("???");
+        crate::serial_println!("  Hypervisor: \"{}\" (max leaf {:#x})", hv_str, max_hv_leaf);
+
+        // VirtualBox: leaf 0x40000010 → EAX = TSC freq in kHz
+        if &hv_vendor == b"VBoxVBoxVBox" && max_hv_leaf >= 0x40000010 {
+            let (tsc_khz, apic_khz, _, _) = cpuid(0x40000010, 0);
+            if tsc_khz > 0 {
+                crate::serial_println!("  VBox CPUID: TSC={}kHz, APIC={}kHz", tsc_khz, apic_khz);
+                return Some(tsc_khz as u64 * 1000);
+            }
+        }
+
+        // Hyper-V / Microsoft Hv: leaf 0x40000003 → EAX = TSC freq in Hz
+        if &hv_vendor == b"Microsoft Hv" && max_hv_leaf >= 0x40000003 {
+            let (tsc_hz, _, _, _) = cpuid(0x40000003, 0);
+            if tsc_hz > 0 {
+                crate::serial_println!("  Hyper-V CPUID: TSC={}Hz", tsc_hz);
+                return Some(tsc_hz as u64);
+            }
+        }
+
+        // KVM: leaf 0x40000010 → EAX = kHz (KVM also supports this leaf)
+        if &hv_vendor[0..4] == b"KVMK" && max_hv_leaf >= 0x40000010 {
+            let (tsc_khz, _, _, _) = cpuid(0x40000010, 0);
+            if tsc_khz > 0 {
+                crate::serial_println!("  KVM CPUID: TSC={}kHz", tsc_khz);
+                return Some(tsc_khz as u64 * 1000);
+            }
+        }
+    }
+
+    // Standard CPUID leaf 0x15: TSC / Core Crystal Clock ratio
+    // Available on newer Intel CPUs and some QEMU configurations.
+    let max_leaf = cpuid(0, 0).0;
+    if max_leaf >= 0x15 {
+        let (denom, numer, crystal_hz, _) = cpuid(0x15, 0);
+        if denom > 0 && numer > 0 && crystal_hz > 0 {
+            let tsc_hz = crystal_hz as u64 * numer as u64 / denom as u64;
+            crate::serial_println!("  CPUID 0x15: crystal={}Hz, ratio={}/{}, TSC={}Hz",
+                crystal_hz, numer, denom, tsc_hz);
+            return Some(tsc_hz);
+        }
+    }
+
+    None
+}

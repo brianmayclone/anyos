@@ -29,6 +29,7 @@ const COLOR_DIM: u32 = 0xFF969696;
 const KEY_ENTER: u32 = 0x100;
 const KEY_BACKSPACE: u32 = 0x101;
 const KEY_TAB: u32 = 0x102;
+const KEY_ESCAPE: u32 = 0x103;
 const KEY_UP: u32 = 0x105;
 const KEY_DOWN: u32 = 0x106;
 const KEY_LEFT: u32 = 0x107;
@@ -36,6 +37,8 @@ const KEY_RIGHT: u32 = 0x108;
 const KEY_DELETE: u32 = 0x120;
 const KEY_HOME: u32 = 0x121;
 const KEY_END: u32 = 0x122;
+const KEY_PAGE_UP: u32 = 0x123;
+const KEY_PAGE_DOWN: u32 = 0x124;
 
 // Event types
 const EVENT_KEY_DOWN: u32 = 1;
@@ -1410,6 +1413,10 @@ fn main() {
     load_dotenv();
     anyos_std::env::set("PWD", "/"); // PWD is dynamic, always set
 
+    // Set terminal size env vars so child programs can query dimensions
+    anyos_std::env::set("COLUMNS", &format!("{}", cols));
+    anyos_std::env::set("LINES", &format!("{}", rows));
+
     // Welcome message
     buf.current_color = COLOR_TITLE;
     buf.write_str(".anyOS Terminal v0.1\n");
@@ -1531,6 +1538,9 @@ fn main() {
                 let new_rows = (win_h.saturating_sub(TEXT_PAD as u32 * 2) / CELL_H as u32) as usize;
                 buf.cols = new_cols;
                 buf.visible_rows = new_rows;
+                // Update terminal size env vars for child processes
+                anyos_std::env::set("COLUMNS", &format!("{}", new_cols));
+                anyos_std::env::set("LINES", &format!("{}", new_rows));
                 dirty = true;
             } else if event[0] == EVENT_MOUSE_SCROLL {
                 let dz = event[1] as i32;
@@ -1725,14 +1735,39 @@ fn main() {
                     // Do NOT echo here; the child program controls echoing via stdout pipe.
                     if let Some(ref fp) = fg_proc {
                         if fp.stdin_pipe != 0 {
-                            if key_code == KEY_ENTER {
-                                ipc::pipe_write(fp.stdin_pipe, b"\n");
-                            } else if key_code == KEY_BACKSPACE {
-                                ipc::pipe_write(fp.stdin_pipe, &[8]); // BS
-                            } else if char_val > 0 && char_val < 128 && (mods & MOD_CTRL) == 0 {
-                                let c = char_val as u8;
-                                if c >= b' ' {
-                                    ipc::pipe_write(fp.stdin_pipe, &[c]);
+                            match key_code {
+                                KEY_ENTER => { ipc::pipe_write(fp.stdin_pipe, b"\n"); }
+                                KEY_BACKSPACE => { ipc::pipe_write(fp.stdin_pipe, &[0x7f]); }
+                                KEY_TAB => { ipc::pipe_write(fp.stdin_pipe, b"\t"); }
+                                KEY_ESCAPE => { ipc::pipe_write(fp.stdin_pipe, b"\x1b"); }
+                                KEY_UP => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[A"); }
+                                KEY_DOWN => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[B"); }
+                                KEY_RIGHT => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[C"); }
+                                KEY_LEFT => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[D"); }
+                                KEY_HOME => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[H"); }
+                                KEY_END => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[F"); }
+                                KEY_DELETE => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[3~"); }
+                                KEY_PAGE_UP => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[5~"); }
+                                KEY_PAGE_DOWN => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[6~"); }
+                                _ => {
+                                    if char_val > 0 && char_val < 128 {
+                                        let c = char_val as u8;
+                                        if (mods & MOD_CTRL) != 0 {
+                                            // Forward Ctrl combos as control codes (Ctrl+A=1 .. Ctrl+Z=26)
+                                            let ctrl_code = if c >= b'a' && c <= b'z' {
+                                                c - b'a' + 1
+                                            } else if c >= b'A' && c <= b'Z' {
+                                                c - b'A' + 1
+                                            } else {
+                                                0
+                                            };
+                                            if ctrl_code > 0 {
+                                                ipc::pipe_write(fp.stdin_pipe, &[ctrl_code]);
+                                            }
+                                        } else if c >= b' ' {
+                                            ipc::pipe_write(fp.stdin_pipe, &[c]);
+                                        }
+                                    }
                                 }
                             }
                         }

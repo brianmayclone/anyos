@@ -121,6 +121,7 @@ exclude = [
   "bin/svc",
   "bin/logd",
   "bin/ami",
+  "bin/vi",
   "apps/demo_anyui",
   "apps/anycode",
   "apps/paint",

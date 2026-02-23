@@ -624,6 +624,7 @@ add_rust_user_program(netstat    ${CMAKE_SOURCE_DIR}/bin/netstat)
 add_rust_user_program(svc        ${CMAKE_SOURCE_DIR}/bin/svc)
 add_rust_user_program(logd       ${CMAKE_SOURCE_DIR}/bin/logd)
 add_rust_user_program(ami        ${CMAKE_SOURCE_DIR}/bin/ami)
+add_rust_user_program(vi         ${CMAKE_SOURCE_DIR}/bin/vi)
 # Privileged sbin programs
 add_rust_sbin_program(adduser    ${CMAKE_SOURCE_DIR}/bin/adduser)
 add_rust_sbin_program(deluser    ${CMAKE_SOURCE_DIR}/bin/deluser)

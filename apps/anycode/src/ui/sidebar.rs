@@ -8,13 +8,43 @@ const STYLE_BOLD: u32 = 1;
 const DIR_COLOR: u32 = 0xFFCCCCCC;
 const FILE_COLOR: u32 = 0xFFBBBBBB;
 
+/// Simple icon cache: stores decoded 16x16 ARGB icons keyed by file path.
+struct IconCache {
+    entries: Vec<(String, Vec<u32>, u32, u32)>, // (icon_path, pixels, w, h)
+}
+
+impl IconCache {
+    fn new() -> Self {
+        Self { entries: Vec::new() }
+    }
+
+    /// Get or load an icon from an ICO file. Returns (pixels, w, h) or None.
+    fn get_or_load(&mut self, icon_path: &str) -> Option<(&[u32], u32, u32)> {
+        // Check cache first
+        if let Some(idx) = self.entries.iter().position(|e| e.0 == icon_path) {
+            let e = &self.entries[idx];
+            return Some((&e.1, e.2, e.3));
+        }
+        // Load from disk
+        if let Some(icon) = ui::Icon::load(icon_path, 16) {
+            self.entries.push((String::from(icon_path), icon.pixels, icon.width, icon.height));
+            let e = self.entries.last().unwrap();
+            Some((&e.1, e.2, e.3))
+        } else {
+            None
+        }
+    }
+}
+
 /// Sidebar panel with Explorer (tree view) — tab switching done via activity bar.
 pub struct Sidebar {
     pub panel: ui::View,
     pub explorer_panel: ui::View,
     pub search: ui::SearchField,
     pub tree: ui::TreeView,
-    paths: Vec<String>,
+    pub paths: Vec<String>,
+    mime_db: anyos_std::icons::MimeDb,
+    icon_cache: IconCache,
 }
 
 impl Sidebar {
@@ -57,6 +87,8 @@ impl Sidebar {
             search,
             tree,
             paths: Vec::new(),
+            mime_db: anyos_std::icons::MimeDb::load(),
+            icon_cache: IconCache::new(),
         }
     }
 
@@ -70,6 +102,8 @@ impl Sidebar {
         self.paths.push(String::from(root));
         self.tree.set_node_style(root_node, STYLE_BOLD);
         self.tree.set_node_text_color(root_node, DIR_COLOR);
+        // Folder icon for root
+        self.set_folder_icon(root_node);
 
         self.add_dir_entries(root_node, root, 0);
         self.tree.set_expanded(root_node, true);
@@ -90,6 +124,25 @@ impl Sidebar {
         match self.path_for_node(index) {
             Some(p) => path::is_directory(p),
             None => false,
+        }
+    }
+
+    /// Set a folder icon on a tree node.
+    fn set_folder_icon(&mut self, node: u32) {
+        if let Some((pixels, w, h)) = self.icon_cache.get_or_load(anyos_std::icons::FOLDER_ICON) {
+            self.tree.set_node_icon(node, pixels, w, h);
+        }
+    }
+
+    /// Set a file icon on a tree node based on its filename extension.
+    fn set_file_icon(&mut self, node: u32, filename: &str) {
+        let ext = match filename.rsplit('.').next() {
+            Some(e) if e != filename => e,
+            _ => return, // no extension
+        };
+        let icon_path = self.mime_db.icon_for_ext(ext);
+        if let Some((pixels, w, h)) = self.icon_cache.get_or_load(icon_path) {
+            self.tree.set_node_icon(node, pixels, w, h);
         }
     }
 
@@ -126,6 +179,7 @@ impl Sidebar {
             self.paths.push(full_path.clone());
             self.tree.set_node_style(node, STYLE_BOLD);
             self.tree.set_node_text_color(node, DIR_COLOR);
+            self.set_folder_icon(node);
             self.add_dir_entries(node, full_path, depth + 1);
         }
 
@@ -139,6 +193,7 @@ impl Sidebar {
             } else {
                 self.tree.set_node_text_color(node, FILE_COLOR);
             }
+            self.set_file_icon(node, name);
         }
     }
 }

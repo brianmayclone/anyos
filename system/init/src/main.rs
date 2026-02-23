@@ -13,19 +13,26 @@ anyos_std::entry!(main);
 
 /// Simple integer benchmark: counts how many iterations of a mixed
 /// arithmetic workload complete in the given number of PIT ticks.
+/// Each iteration = 1000 integer ops. Time is checked every 64 iterations
+/// to minimize syscall overhead (important in VMs where syscalls are expensive).
 fn benchmark_cpu(duration_ticks: u32) -> u32 {
     let start = sys::uptime();
     let mut iterations: u32 = 0;
     let mut acc: u32 = 0x12345678;
 
-    while sys::uptime().wrapping_sub(start) < duration_ticks {
-        // Mixed integer operations (add, xor, shift, multiply)
-        for _ in 0..1000 {
-            acc = acc.wrapping_mul(1103515245).wrapping_add(12345);
-            acc ^= acc >> 16;
-            acc = acc.wrapping_add(acc << 5);
+    loop {
+        // Do 64 batches of 1000 ops before checking time (reduces syscall overhead)
+        for _ in 0..64 {
+            for _ in 0..1000 {
+                acc = acc.wrapping_mul(1103515245).wrapping_add(12345);
+                acc ^= acc >> 16;
+                acc = acc.wrapping_add(acc << 5);
+            }
+            iterations += 1;
         }
-        iterations += 1;
+        if sys::uptime().wrapping_sub(start) >= duration_ticks {
+            break;
+        }
     }
 
     // Prevent optimizer from eliminating the loop
@@ -33,24 +40,30 @@ fn benchmark_cpu(duration_ticks: u32) -> u32 {
     iterations
 }
 
-/// Memory bandwidth benchmark: read/write 64 KiB buffer repeatedly.
+/// Memory bandwidth benchmark: read/write 16 KiB buffer repeatedly.
+/// Time is checked every 32 iterations to minimize syscall overhead.
 fn benchmark_memory(duration_ticks: u32) -> u32 {
     let start = sys::uptime();
     let mut iterations: u32 = 0;
     let mut buf = [0u32; 4096]; // 16 KiB
 
-    while sys::uptime().wrapping_sub(start) < duration_ticks {
-        // Write pass
-        for i in 0..buf.len() {
-            buf[i] = (i as u32).wrapping_mul(0xDEADBEEF);
+    loop {
+        for _ in 0..32 {
+            // Write pass
+            for i in 0..buf.len() {
+                buf[i] = (i as u32).wrapping_mul(0xDEADBEEF);
+            }
+            // Read + accumulate pass
+            let mut sum: u32 = 0;
+            for i in 0..buf.len() {
+                sum = sum.wrapping_add(buf[i]);
+            }
+            if sum == 0 { buf[0] = 1; } // prevent optimization
+            iterations += 1;
         }
-        // Read + accumulate pass
-        let mut sum: u32 = 0;
-        for i in 0..buf.len() {
-            sum = sum.wrapping_add(buf[i]);
+        if sys::uptime().wrapping_sub(start) >= duration_ticks {
+            break;
         }
-        if sum == 0 { buf[0] = 1; } // prevent optimization
-        iterations += 1;
     }
 
     iterations

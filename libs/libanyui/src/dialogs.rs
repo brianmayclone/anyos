@@ -439,6 +439,7 @@ fn add_child_to_parent(parent_id: ControlId, child_id: ControlId) {
     if let Some(p) = st.controls.iter_mut().find(|c| c.id() == parent_id) {
         p.add_child(child_id);
     }
+    crate::mark_needs_layout();
 }
 
 // ── Helper: set dock on a control ────────────────────────────────────
@@ -449,6 +450,7 @@ fn set_control_dock(id: ControlId, dock: DockStyle) {
         ctrl.base_mut().dock = dock;
         ctrl.base_mut().mark_dirty();
     }
+    crate::mark_needs_layout();
 }
 
 fn set_control_margin(id: ControlId, left: i32, top: i32, right: i32, bottom: i32) {
@@ -459,7 +461,9 @@ fn set_control_margin(id: ControlId, left: i32, top: i32, right: i32, bottom: i3
         b.margin.top = top;
         b.margin.right = right;
         b.margin.bottom = bottom;
+        b.mark_dirty();
     }
+    crate::mark_needs_layout();
 }
 
 // ── Common dialog creation ───────────────────────────────────────────

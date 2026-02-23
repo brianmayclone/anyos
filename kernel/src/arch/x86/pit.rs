@@ -53,70 +53,125 @@ pub fn init() {
     }
 }
 
-/// Calibrate TSC frequency using PIT channel 2 polled readback.
+/// Calibrate TSC frequency.
 ///
-/// Uses PIT channel 2 in mode 0 (one-shot), gated via port 0x61. The OUT2
-/// pin (port 0x61 bit 5) goes high when the count reaches zero. This is
-/// completely independent of IRQ delivery — works identically in BIOS and
-/// UEFI mode.
+/// Tries multiple methods in order of reliability:
+/// 1. Hypervisor CPUID leaves (VirtualBox, KVM, Hyper-V expose TSC freq)
+/// 2. PIT channel 2 polled readback (hardware, works on bare metal & QEMU)
+///
+/// The PIT method uses channel 2 in mode 0 (one-shot), gated via port 0x61.
+/// The OUT2 pin (port 0x61 bit 5) goes high when the count reaches zero.
+/// This is independent of IRQ delivery — works in both BIOS and UEFI mode.
 ///
 /// Can be called early (before sti, before IOAPIC init).
 pub fn calibrate_tsc() {
-    unsafe {
-        let port61_saved = inb(0x61);
+    // Method 1: Try hypervisor CPUID (reliable in VMs, avoids PIT emulation bugs)
+    if let Some(hv_tsc_hz) = crate::arch::x86::cpuid::hypervisor_tsc_hz() {
+        if hv_tsc_hz >= 100_000_000 {
+            // Plausible (≥100 MHz). Use it.
+            let tsc_now = rdtsc();
+            let current_ticks = TICK_COUNT.load(Ordering::Relaxed);
+            let tsc_boot_value = tsc_now - (current_ticks as u64 * hv_tsc_hz / TICK_HZ as u64);
 
-        // Gate OFF (bit 0 = 0) to stop channel 2, speaker OFF (bit 1 = 0)
-        outb(0x61, port61_saved & 0xFC);
+            TSC_BOOT.store(tsc_boot_value, Ordering::Relaxed);
+            TSC_HZ.store(hv_tsc_hz, Ordering::Release);
 
-        // Program channel 2: mode 0 (interrupt on terminal count),
-        // access lobyte/hibyte, binary counting
-        outb(PIT_CMD, 0xB0);
-
-        // Write max count: 65535 ticks ≈ 54.9ms at 1.193182 MHz
-        // Longer window = better precision
-        outb(0x42, 0xFF); // low byte
-        outb(0x42, 0xFF); // high byte
-
-        // Gate ON (rising edge loads count and starts counting)
-        // Keep speaker off (bit 1 = 0)
-        outb(0x61, (inb(0x61) | 0x01) & !0x02);
-
-        let tsc_start = rdtsc();
-
-        // Wait for OUT2 to go high (bit 5 of port 0x61).
-        // In mode 0: OUT starts LOW, goes HIGH when count reaches 0.
-        while inb(0x61) & 0x20 == 0 {
-            core::hint::spin_loop();
+            crate::serial_println!(
+                "TSC calibrated: {} MHz (hypervisor CPUID)",
+                hv_tsc_hz / 1_000_000,
+            );
+            return;
         }
-
-        let tsc_end = rdtsc();
-
-        // Restore port 0x61
-        outb(0x61, port61_saved);
-
-        let tsc_delta = tsc_end - tsc_start;
-        // PIT ran exactly 65535 cycles at 1,193,182 Hz.
-        // TSC_HZ = tsc_delta * PIT_FREQUENCY / 65535
-        let tsc_hz_value = tsc_delta * PIT_FREQUENCY as u64 / 0xFFFF;
-
-        // Set TSC_BOOT to the TSC value at calibration end.
-        // TICK_COUNT is 0 or nearly 0 at this early stage.
-        let current_ticks = TICK_COUNT.load(Ordering::Relaxed);
-        let tsc_boot_value = tsc_end - (current_ticks as u64 * tsc_hz_value / TICK_HZ as u64);
-
-        TSC_BOOT.store(tsc_boot_value, Ordering::Relaxed);
-        // Release store: all prior writes (TSC_BOOT) must be visible before
-        // other CPUs read TSC_HZ != 0 and use TSC-based get_ticks().
-        TSC_HZ.store(tsc_hz_value, Ordering::Release);
-
-        let cal_ms = 0xFFFFu64 * 1000 / PIT_FREQUENCY as u64;
-        crate::serial_println!(
-            "TSC calibrated: {} MHz (PIT ch2 polled, {} TSC cycles in ~{}ms)",
-            tsc_hz_value / 1_000_000,
-            tsc_delta,
-            cal_ms
-        );
     }
+
+    // Method 2: PIT channel 2 polled readback (hardware calibration)
+    let tsc_hz_value = unsafe { calibrate_tsc_pit() };
+
+    // Sanity check: a real x86 CPU runs at ≥100 MHz.
+    // If the result is below that, PIT emulation is likely broken.
+    if tsc_hz_value < 100_000_000 {
+        crate::serial_println!(
+            "[WARN] TSC calibration returned {} MHz — suspiciously low! Falling back to PIT IRQ ticks.",
+            tsc_hz_value / 1_000_000,
+        );
+        // Don't set TSC_HZ — get_ticks() will use PIT IRQ counter instead.
+        return;
+    }
+
+    let tsc_now = rdtsc();
+    let current_ticks = TICK_COUNT.load(Ordering::Relaxed);
+    let tsc_boot_value = tsc_now - (current_ticks as u64 * tsc_hz_value / TICK_HZ as u64);
+
+    TSC_BOOT.store(tsc_boot_value, Ordering::Relaxed);
+    // Release store: all prior writes (TSC_BOOT) must be visible before
+    // other CPUs read TSC_HZ != 0 and use TSC-based get_ticks().
+    TSC_HZ.store(tsc_hz_value, Ordering::Release);
+
+    crate::serial_println!(
+        "TSC calibrated: {} MHz (PIT ch2 polled)",
+        tsc_hz_value / 1_000_000,
+    );
+}
+
+/// PIT channel 2 polled calibration. Returns TSC frequency in Hz.
+///
+/// # Safety
+/// Accesses I/O ports 0x42, 0x43, 0x61 directly.
+unsafe fn calibrate_tsc_pit() -> u64 {
+    let port61_saved = inb(0x61);
+
+    // Gate OFF (bit 0 = 0) to stop channel 2, speaker OFF (bit 1 = 0)
+    outb(0x61, port61_saved & 0xFC);
+
+    // Program channel 2: mode 0 (interrupt on terminal count),
+    // access lobyte/hibyte, binary counting
+    outb(PIT_CMD, 0xB0);
+
+    // Write max count: 65535 ticks ≈ 54.9ms at 1.193182 MHz
+    // Longer window = better precision
+    outb(0x42, 0xFF); // low byte
+    outb(0x42, 0xFF); // high byte
+
+    // Gate ON (rising edge loads count and starts counting)
+    // Keep speaker off (bit 1 = 0)
+    outb(0x61, (inb(0x61) | 0x01) & !0x02);
+
+    let tsc_start = rdtsc();
+
+    // Wait for OUT2 to go high (bit 5 of port 0x61).
+    // In mode 0: OUT starts LOW, goes HIGH when count reaches 0.
+    // Safety: timeout after ~500ms of TSC cycles to avoid infinite loop
+    // if the hypervisor doesn't emulate OUT2 correctly.
+    let timeout_cycles = 5_000_000_000u64; // ~1-2 seconds at any reasonable clock
+    loop {
+        if inb(0x61) & 0x20 != 0 {
+            break;
+        }
+        if rdtsc() - tsc_start > timeout_cycles {
+            crate::serial_println!("[WARN] PIT ch2 OUT2 poll timed out — emulation broken?");
+            outb(0x61, port61_saved);
+            return 0; // Signal failure
+        }
+        core::hint::spin_loop();
+    }
+
+    let tsc_end = rdtsc();
+
+    // Restore port 0x61
+    outb(0x61, port61_saved);
+
+    let tsc_delta = tsc_end - tsc_start;
+    // PIT ran exactly 65535 cycles at 1,193,182 Hz.
+    // TSC_HZ = tsc_delta * PIT_FREQUENCY / 65535
+    let tsc_hz_value = tsc_delta * PIT_FREQUENCY as u64 / 0xFFFF;
+
+    let cal_ms = 0xFFFFu64 * 1000 / PIT_FREQUENCY as u64;
+    crate::serial_println!(
+        "  PIT ch2: {} TSC cycles in ~{}ms → {} MHz",
+        tsc_delta, cal_ms, tsc_hz_value / 1_000_000,
+    );
+
+    tsc_hz_value
 }
 
 /// Update the PIT IRQ tick counter. Called from the PIT IRQ handler.

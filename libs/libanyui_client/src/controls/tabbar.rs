@@ -17,6 +17,15 @@ impl TabBar {
         (lib().on_change_fn)(self.container.ctrl.id, thunk, ud);
     }
 
+    /// Called when a tab's close button (×) is clicked. `index` is the 0-based tab position.
+    pub fn on_tab_close(&self, mut f: impl FnMut(&SelectionChangedEvent) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| {
+            let index = Control::from_id(id).get_state();
+            f(&SelectionChangedEvent { id, index });
+        });
+        (lib().on_submit_fn)(self.container.ctrl.id, thunk, ud);
+    }
+
     /// Connect panel views to this tab bar for automatic tab switching.
     pub fn connect_panels(&self, panels: &[&impl crate::Widget]) {
         let ids: alloc::vec::Vec<u32> = panels.iter().map(|p| p.id()).collect();

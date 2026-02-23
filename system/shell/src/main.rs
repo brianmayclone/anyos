@@ -54,6 +54,7 @@ const ANSI_BRIGHT: [u32; 8] = [
 const KEY_ENTER: u32 = 0x100;
 const KEY_BACKSPACE: u32 = 0x101;
 const KEY_TAB: u32 = 0x102;
+const KEY_ESCAPE: u32 = 0x103;
 const KEY_UP: u32 = 0x105;
 const KEY_DOWN: u32 = 0x106;
 const KEY_LEFT: u32 = 0x107;
@@ -61,6 +62,8 @@ const KEY_RIGHT: u32 = 0x108;
 const KEY_DELETE: u32 = 0x120;
 const KEY_HOME: u32 = 0x121;
 const KEY_END: u32 = 0x122;
+const KEY_PAGE_UP: u32 = 0x123;
+const KEY_PAGE_DOWN: u32 = 0x124;
 
 // Event types
 const EVENT_KEY_DOWN: u32 = 1;
@@ -875,19 +878,8 @@ fn main() {
                     let char_val = event[2];
                     let mods = event[3];
 
-                    // Ctrl+C: send interrupt
-                    if (mods & MOD_CTRL) != 0 && char_val == 'c' as u32 {
-                        if !shell_exited {
-                            // Write ETX (Ctrl+C) to shell stdin
-                            shell_proc.write(&[3]);
-                        }
-                        dirty = true;
-                    } else if (mods & MOD_CTRL) != 0 && char_val == 'd' as u32 {
-                        if !shell_exited {
-                            // Write EOT (Ctrl+D)
-                            shell_proc.write(&[4]);
-                        }
-                    } else if (mods & MOD_CTRL) != 0 && char_val == '+' as u32 {
+                    // Ctrl+Plus/Minus: font size (local only)
+                    if (mods & MOD_CTRL) != 0 && char_val == '+' as u32 {
                         // Ctrl+Plus: increase font
                         if font_size_idx + 1 < FONT_SIZES.len() {
                             font_size_idx += 1;
@@ -906,7 +898,7 @@ fn main() {
                             dirty = true;
                         }
                     } else if !shell_exited {
-                        // Forward keystrokes to shell + local echo
+                        // Forward keystrokes to child process
                         match key_code {
                             KEY_ENTER => {
                                 shell_proc.write(b"\n");
@@ -923,7 +915,8 @@ fn main() {
                                     }
                                 }
                             }
-                            KEY_TAB => {}, // dash has no tab completion; ignore
+                            KEY_TAB => shell_proc.write(b"\t"),
+                            KEY_ESCAPE => shell_proc.write(b"\x1b"),
                             KEY_UP => shell_proc.write(b"\x1b[A"),
                             KEY_DOWN => shell_proc.write(b"\x1b[B"),
                             KEY_RIGHT => shell_proc.write(b"\x1b[C"),
@@ -931,10 +924,25 @@ fn main() {
                             KEY_HOME => shell_proc.write(b"\x1b[H"),
                             KEY_END => shell_proc.write(b"\x1b[F"),
                             KEY_DELETE => shell_proc.write(b"\x1b[3~"),
+                            KEY_PAGE_UP => shell_proc.write(b"\x1b[5~"),
+                            KEY_PAGE_DOWN => shell_proc.write(b"\x1b[6~"),
                             _ => {
-                                if char_val > 0 && char_val < 128 && (mods & MOD_CTRL) == 0 {
+                                if char_val > 0 && char_val < 128 {
                                     let c = char_val as u8;
-                                    if c >= b' ' {
+                                    if (mods & MOD_CTRL) != 0 {
+                                        // Forward Ctrl combinations as control codes
+                                        // Ctrl+A=1, Ctrl+B=2, ..., Ctrl+Z=26
+                                        let ctrl_code = if c >= b'a' && c <= b'z' {
+                                            c - b'a' + 1
+                                        } else if c >= b'A' && c <= b'Z' {
+                                            c - b'A' + 1
+                                        } else {
+                                            0
+                                        };
+                                        if ctrl_code > 0 {
+                                            shell_proc.write(&[ctrl_code]);
+                                        }
+                                    } else if c >= b' ' {
                                         shell_proc.write(&[c]);
                                         // Local echo
                                         buf.feed(&[c]);

@@ -143,6 +143,21 @@ pub fn run_once() -> u32 {
                         st.hovered = new_hover;
                     }
 
+                    // Dispatch mouse_move to hovered control (for internal hover tracking)
+                    if let Some(hover_id) = st.hovered {
+                        if Some(hover_id) != st.pressed {
+                            if let Some(idx) = control::find_idx(&st.controls, hover_id) {
+                                let (ax, ay) = control::abs_position(&st.controls, hover_id);
+                                let local_x = mx - ax;
+                                let local_y = my - ay;
+                                let resp = st.controls[idx].handle_mouse_move(local_x, local_y);
+                                if resp.consumed {
+                                    st.controls[idx].base_mut().mark_dirty();
+                                }
+                            }
+                        }
+                    }
+
                     // If a control is pressed, dispatch mouse_move for drag
                     if let Some(pressed_id) = st.pressed {
                         if let Some(idx) = control::find_idx(&st.controls, pressed_id) {
@@ -280,6 +295,10 @@ pub fn run_once() -> u32 {
 
                                         if click_resp.fire_change {
                                             fire_event_callback(&st.controls, target_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                        }
+
+                                        if click_resp.fire_submit {
+                                            fire_event_callback(&st.controls, target_id, control::EVENT_SUBMIT, &mut pending_cbs);
                                         }
 
                                         // Double-click detection

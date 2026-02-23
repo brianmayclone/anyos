@@ -413,6 +413,11 @@ fn main() {
         }
     });
 
+    // ── Tab bar: close tab ──
+    app().editor_view.tab_bar.on_tab_close(|e| {
+        close_tab(e.index as usize);
+    });
+
     // ── Cursor position timer (500ms) ──
     anyui::set_timer(500, || {
         let s = app();
@@ -481,6 +486,22 @@ fn save_all(s: &mut AppState) {
             }
         }
     }
+}
+
+fn close_tab(index: usize) {
+    let s = app();
+    if index >= s.file_mgr.count() {
+        return;
+    }
+    s.editor_view.remove_editor(index);
+    let new_active = s.file_mgr.remove(index);
+    if s.file_mgr.count() > 0 {
+        s.editor_view.set_active(new_active);
+        s.editor_view.update_tab_labels(&s.file_mgr.tab_labels(), new_active);
+    } else {
+        s.editor_view.update_tab_labels("", 0);
+    }
+    update_status();
 }
 
 fn update_status() {
