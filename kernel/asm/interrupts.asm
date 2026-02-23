@@ -173,13 +173,18 @@ isr_common_stub:
     ; Remove interrupt number and error code from stack
     add rsp, 16
 
-    ; Sanitise SS before IRETQ when returning to ring 3.
-    ; Some hypervisors (VirtualBox NEM/Hyper-V) leave SS.RPL=0 after SYSRETQ,
-    ; so the CPU pushes SS=0x20 (User Data, RPL=0) on the next interrupt.
-    ; IRETQ to ring 3 requires SS.RPL == target CPL (3), otherwise #GP(0x20).
-    ; Fix: OR the RPL bits into SS on the stack when CS indicates ring 3.
+    ; Restore user data segment and sanitise SS before IRETQ when returning to ring 3.
+    ; The entry code sets DS/ES to kernel 0x10; IRETQ does NOT restore DS/ES.
+    ; If we leave DS=0x10 (DPL=0), the CPU nulls DS on the CPL 0→3 transition,
+    ; causing #GP(0) on the first user-mode memory access (affects 32-bit compat procs).
+    ; Also fix SS.RPL for VirtualBox NEM/Hyper-V (see irq_common_stub comment).
     test qword [rsp + 8], 3        ; check CS.RPL (bits 0-1)
     jz .isr_iret_done              ; kernel return (RPL=0) — no fix needed
+    push rax
+    mov ax, 0x23                   ; user data segment (GDT entry 4 | RPL=3)
+    mov ds, ax
+    mov es, ax
+    pop rax
     or qword [rsp + 32], 3         ; force SS.RPL = 3 for user-mode return
 .isr_iret_done:
     iretq
@@ -278,9 +283,14 @@ irq_common_stub:
 
     add rsp, 16
 
-    ; Sanitise SS before IRETQ (same fix as isr_common_stub — see comment there).
+    ; Restore user data segment and sanitise SS before IRETQ (same fix as isr_common_stub).
     test qword [rsp + 8], 3        ; check CS.RPL
     jz .irq_iret_done
+    push rax
+    mov ax, 0x23                   ; user data segment (GDT entry 4 | RPL=3)
+    mov ds, ax
+    mov es, ax
+    pop rax
     or qword [rsp + 32], 3         ; force SS.RPL = 3
 .irq_iret_done:
     iretq
