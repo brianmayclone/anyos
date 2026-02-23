@@ -332,7 +332,30 @@ if ($Usb) {
     $usbLabel = ", USB: keyboard + mouse"
 }
 
+# Hardware virtualization (WHPX)
+$kvmLabel = ""
+if ($Kvm) {
+    # Check if Windows Hypervisor Platform is available
+    $whpx = Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -ErrorAction SilentlyContinue
+    if ($whpx -and $whpx.State -eq "Enabled") {
+        $args += "-accel", "whpx"
+        $args += "-cpu", "max"
+        $kvmLabel = ", WHPX enabled"
+    } else {
+        Write-Host "Error: Windows Hypervisor Platform (WHPX) is not enabled." -ForegroundColor Red
+        Write-Host "Enable with: Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform"
+        Write-Host "A reboot is required after enabling."
+        exit 1
+    }
+}
+
+# VirtIO GPU: add USB tablet for absolute mouse (no VMware backdoor)
+if ($Virtio -and -not $Usb) {
+    $args += "-usb"
+    $args += "-device", "usb-tablet"
+}
+
 # ── Launch ───────────────────────────────────────────────────────────────────
 
-Write-Host "Starting anyOS with $vgaLabel (-vga $vga), disk: $driveLabel$audioLabel$usbLabel" -ForegroundColor Cyan
+Write-Host "Starting anyOS with $vgaLabel (-vga $vga), disk: $driveLabel$audioLabel$usbLabel$kvmLabel" -ForegroundColor Cyan
 & $qemu @args

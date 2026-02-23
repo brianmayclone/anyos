@@ -8,7 +8,7 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU
-# Usage: ./run.sh [--vmware | --std | --virtio] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm]
+# Usage: ./run.sh [--vmware | --std | --virtio] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--fwd HOST:GUEST ...]
 #   --vmware   VMware SVGA II (2D acceleration, HW cursor)
 #   --std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
 #   --virtio   VirtIO GPU (modern transport, ARGB cursor)
@@ -18,6 +18,8 @@
 #   --usb      Enable USB controller with keyboard + mouse devices
 #   --uefi     Boot via UEFI (OVMF) instead of BIOS
 #   --kvm      Enable hardware virtualization (KVM on Linux, HVF on macOS)
+#   --fwd H:G  Forward host port H to guest port G (TCP). Repeatable.
+#              Example: --fwd 2222:22 --fwd 8080:8080
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -32,6 +34,8 @@ USB_FLAGS=""
 USB_LABEL=""
 KVM_FLAGS=""
 KVM_LABEL=""
+FWD_RULES=""
+EXPECT_FWD=false
 
 for arg in "$@"; do
     case "$arg" in
