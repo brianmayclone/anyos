@@ -67,10 +67,17 @@ syscall_entry:
     pop rbx
     pop rax
 
-    ; Sanitise SS before IRETQ (same VirtualBox NEM fix as interrupts.asm).
-    ; INT 0x80 always returns to ring 3, but check CS.RPL for safety.
-    test qword [rsp + 8], 3
+    ; Restore user data segment (0x23) before IRETQ.
+    ; The entry code sets DS/ES to kernel 0x10; IRETQ does NOT restore DS/ES.
+    ; If we leave DS=0x10 (DPL=0), the CPU nulls DS on the CPL 0→3 transition,
+    ; causing #GP(0) on the first user-mode memory access.
+    test qword [rsp + 8], 3       ; check CS.RPL on stack — returning to ring 3?
     jz .int80_iret_done
-    or qword [rsp + 32], 3
+    push rax
+    mov ax, 0x23                  ; user data segment (GDT entry 4 | RPL=3)
+    mov ds, ax
+    mov es, ax
+    pop rax
+    or qword [rsp + 32], 3       ; sanitise SS (VirtualBox NEM fix)
 .int80_iret_done:
     iretq
