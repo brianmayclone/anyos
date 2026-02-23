@@ -174,14 +174,14 @@ impl Control for TextArea {
             self.text_base.text.insert(self.cursor_pos, ch);
             self.cursor_pos += 1;
             EventResponse::CHANGED
-        } else if char_code == 0x0A || char_code == 0x0D {
+        } else if keycode == crate::control::KEY_ENTER {
             if self.cursor_pos > self.text_base.text.len() {
                 self.cursor_pos = self.text_base.text.len();
             }
             self.text_base.text.insert(self.cursor_pos, b'\n');
             self.cursor_pos += 1;
             EventResponse::CHANGED
-        } else if keycode == 0x0E || char_code == 0x08 {
+        } else if keycode == crate::control::KEY_BACKSPACE {
             if self.cursor_pos > 0 && !self.text_base.text.is_empty() {
                 self.cursor_pos -= 1;
                 self.text_base.text.remove(self.cursor_pos);
@@ -189,10 +189,10 @@ impl Control for TextArea {
             } else {
                 EventResponse::CONSUMED
             }
-        } else if keycode == 0x4B {
+        } else if keycode == crate::control::KEY_LEFT {
             if self.cursor_pos > 0 { self.cursor_pos -= 1; }
             EventResponse::CONSUMED
-        } else if keycode == 0x4D {
+        } else if keycode == crate::control::KEY_RIGHT {
             if self.cursor_pos < self.text_base.text.len() { self.cursor_pos += 1; }
             EventResponse::CONSUMED
         } else {

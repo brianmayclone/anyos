@@ -132,6 +132,7 @@ impl Control for TextField {
     }
 
     fn handle_key_down(&mut self, keycode: u32, char_code: u32) -> EventResponse {
+        use crate::control::*;
         if char_code >= 0x20 && char_code < 0x7F {
             let ch = char_code as u8;
             if self.cursor_pos > self.text_base.text.len() {
@@ -140,7 +141,7 @@ impl Control for TextField {
             self.text_base.text.insert(self.cursor_pos, ch);
             self.cursor_pos += 1;
             EventResponse::CHANGED
-        } else if keycode == 0x0E || char_code == 0x08 {
+        } else if keycode == KEY_BACKSPACE {
             if self.cursor_pos > 0 && !self.text_base.text.is_empty() {
                 self.cursor_pos -= 1;
                 self.text_base.text.remove(self.cursor_pos);
@@ -148,21 +149,26 @@ impl Control for TextField {
             } else {
                 EventResponse::CONSUMED
             }
-        } else if keycode == 0x53 || char_code == 0x7F {
+        } else if keycode == KEY_DELETE {
             if self.cursor_pos < self.text_base.text.len() {
                 self.text_base.text.remove(self.cursor_pos);
                 EventResponse::CHANGED
             } else {
                 EventResponse::CONSUMED
             }
-        } else if keycode == 0x4B {
+        } else if keycode == KEY_LEFT {
             if self.cursor_pos > 0 { self.cursor_pos -= 1; }
             EventResponse::CONSUMED
-        } else if keycode == 0x4D {
+        } else if keycode == KEY_RIGHT {
             if self.cursor_pos < self.text_base.text.len() { self.cursor_pos += 1; }
             EventResponse::CONSUMED
-        } else if keycode == 0x1C {
-            // Enter key → fire submit
+        } else if keycode == KEY_HOME {
+            self.cursor_pos = 0;
+            EventResponse::CONSUMED
+        } else if keycode == KEY_END {
+            self.cursor_pos = self.text_base.text.len();
+            EventResponse::CONSUMED
+        } else if keycode == KEY_ENTER {
             EventResponse::SUBMIT
         } else {
             EventResponse::IGNORED

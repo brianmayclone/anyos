@@ -138,6 +138,9 @@ pub struct Desktop {
     /// Cascading auto-placement state for new windows.
     pub(crate) cascade_x: i32,
     pub(crate) cascade_y: i32,
+    /// Frame ACK queue: (sub_id, window_id) pairs to emit after compose.
+    /// Populated during compose(), drained by render thread via evt_chan_emit_to.
+    pub(crate) frame_ack_queue: Vec<(u32, u32)>,
 }
 
 impl Desktop {
@@ -193,6 +196,7 @@ impl Desktop {
             crash_dialogs: Vec::new(),
             cascade_x: 120,
             cascade_y: MENUBAR_HEIGHT as i32 + 50,
+            frame_ack_queue: Vec::new(),
         };
 
         if desktop.has_gpu_accel {
@@ -599,7 +603,7 @@ impl Desktop {
 
     // ── Compose ────────────────────────────────────────────────────────
 
-    /// Run the full compose cycle (damage → composite → cursor → flush).
+    /// Run the full compose cycle (damage → composite → cursor → flush → collect ACKs).
     pub fn compose(&mut self) {
         let had_damage = self.compositor.compose();
 
@@ -622,6 +626,19 @@ impl Desktop {
                 .clip_to_screen(self.screen_width, self.screen_height);
                 if !rect.is_empty() {
                     self.compositor.flush_cursor_region(&rect);
+                }
+            }
+        }
+
+        // Collect frame ACKs for windows that presented content in this frame.
+        // The render thread emits these via evt_chan_emit_to after releasing the lock.
+        if had_damage {
+            for win in &mut self.windows {
+                if win.needs_frame_ack && win.owner_tid != 0 {
+                    if let Some((_, sub_id)) = self.app_subs.iter().find(|(t, _)| *t == win.owner_tid) {
+                        self.frame_ack_queue.push((*sub_id, win.id));
+                    }
+                    win.needs_frame_ack = false;
                 }
             }
         }

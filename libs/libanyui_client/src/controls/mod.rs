@@ -50,7 +50,7 @@ mod messagebox;
 mod filedialog;
 
 // ── Re-exports ──
-pub use label::Label;
+pub use label::{Label, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER, TEXT_ALIGN_RIGHT};
 pub use button::Button;
 pub use textfield::TextField;
 pub use toggle::Toggle;

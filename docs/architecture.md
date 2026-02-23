@@ -261,6 +261,47 @@ GPU auto-detection happens during PCI enumeration. The compositor uses whichever
   - `UPDATE` to notify GPU of changed regions
   - Hardware cursor (no software cursor drawing needed)
 
+### VSync & Frame Pacing
+
+anyOS implements event-driven frame pacing modeled after Windows DWM (`DwmFlush`) and macOS (`CVDisplayLink`). Instead of blind polling, the compositor signals apps when their content has been composited to the display.
+
+**VSync Mechanism:**
+
+VirtIO-GPU 2D has no hardware VSync interrupt. However, `RESOURCE_FLUSH` is a **synchronous** VirtIO command — when the kernel's `execute_sync()` returns, the frame is guaranteed to be on the virtual display. This return is the VSync moment.
+
+```
+App                     Compositor Mgmt Thread          Render Thread
+ |                              |                            |
+ |-- CMD_PRESENT -------------->|                            |
+ |                              |-- signal_render() -------->|
+ |                              |                            |-- compose()
+ |                              |                            |   flush_gpu() ← VSync
+ |<----- EVT_FRAME_ACK --------+--(direct from render thread)|   emit ACK
+ |                              |                            |
+ |-- next frame --------------->|                            |
+```
+
+**Key design decisions:**
+
+1. **Direct ACK from render thread**: The render thread emits `EVT_FRAME_ACK` via `evt_chan_emit_to()` immediately after `compose()` + `flush_gpu()` complete. This bypasses the management thread entirely, eliminating a full 16ms polling cycle from the latency path.
+
+2. **Event-driven render thread**: The render thread sleeps until the management thread signals `RENDER_NEEDED`. No blind 60fps loop — when idle, the render thread sleeps 2-16ms adaptively (2ms when recently active, ramping to 16ms after sustained idle).
+
+3. **Adaptive management thread**: The management thread uses adaptive sleep — 2ms after processing events (fast IPC turnaround), ramping to 16ms during idle periods (saves CPU).
+
+4. **Client-side back-pressure**: Apps track a `frame_presented` flag per window. After `present()`, the flag is set. On receiving `EVT_FRAME_ACK`, the flag is cleared. The UI framework skips rendering windows whose previous frame hasn't been composited yet, with a 64ms safety timeout (4 frames) to handle lost ACKs.
+
+**Latency comparison:**
+
+| Path | Before | After |
+|------|--------|-------|
+| CMD_PRESENT → compositor picks up | 0-16ms | 0-2ms (adaptive sleep) |
+| Compose + GPU flush | ~2-5ms | ~2-5ms |
+| ACK → app receives | 0-32ms (two polling cycles) | 0-2ms (direct + adaptive) |
+| **Total round-trip** | **~18-53ms** | **~4-9ms** |
+
+This is comparable to Windows DWM (~8-16ms per frame).
+
 ### Window Management
 
 - **Window = Layer + Content Surface**: Each window has chrome (title bar, buttons) and a client area

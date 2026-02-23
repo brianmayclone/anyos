@@ -475,9 +475,9 @@ impl Control for TreeView {
         let vis = self.visible_nodes();
         if vis.is_empty() { return EventResponse::IGNORED; }
 
+        use crate::control::*;
         match keycode {
-            // Up arrow
-            0x48 => {
+            KEY_UP => {
                 if let Some(sel) = self.selected_node {
                     if let Some(pos) = vis.iter().position(|&i| i == sel) {
                         if pos > 0 {
@@ -489,7 +489,6 @@ impl Control for TreeView {
                         }
                     }
                 } else {
-                    // No selection: select first visible
                     self.selected_node = Some(vis[0]);
                     self.base.state = vis[0] as u32;
                     self.ensure_selected_visible();
@@ -498,8 +497,7 @@ impl Control for TreeView {
                 }
                 EventResponse::CONSUMED
             }
-            // Down arrow
-            0x50 => {
+            KEY_DOWN => {
                 if let Some(sel) = self.selected_node {
                     if let Some(pos) = vis.iter().position(|&i| i == sel) {
                         if pos + 1 < vis.len() {
@@ -511,7 +509,6 @@ impl Control for TreeView {
                         }
                     }
                 } else {
-                    // No selection: select first visible
                     self.selected_node = Some(vis[0]);
                     self.base.state = vis[0] as u32;
                     self.ensure_selected_visible();
@@ -520,18 +517,15 @@ impl Control for TreeView {
                 }
                 EventResponse::CONSUMED
             }
-            // Left arrow: collapse current node (or move to parent)
-            0x4B => {
+            KEY_LEFT => {
                 if let Some(sel) = self.selected_node {
                     if sel < self.nodes.len() {
                         if self.nodes[sel].has_children && self.nodes[sel].expanded {
-                            // Collapse
                             self.nodes[sel].expanded = false;
                             self.clamp_scroll();
                             self.base.dirty = true;
                             return EventResponse::CHANGED;
                         } else if let Some(parent_idx) = self.nodes[sel].parent {
-                            // Move selection to parent
                             self.selected_node = Some(parent_idx);
                             self.base.state = parent_idx as u32;
                             self.ensure_selected_visible();
@@ -542,22 +536,18 @@ impl Control for TreeView {
                 }
                 EventResponse::CONSUMED
             }
-            // Right arrow: expand current node (or move to first child)
-            0x4D => {
+            KEY_RIGHT => {
                 if let Some(sel) = self.selected_node {
                     if sel < self.nodes.len() {
                         if self.nodes[sel].has_children && !self.nodes[sel].expanded {
-                            // Expand
                             self.nodes[sel].expanded = true;
                             self.base.dirty = true;
                             return EventResponse::CHANGED;
                         } else if self.nodes[sel].has_children && self.nodes[sel].expanded {
-                            // Move to first child
                             let vis_after = self.visible_nodes();
                             if let Some(pos) = vis_after.iter().position(|&i| i == sel) {
                                 if pos + 1 < vis_after.len() {
                                     let next = vis_after[pos + 1];
-                                    // Only move if it is actually a child
                                     if self.nodes[next].parent == Some(sel) {
                                         self.selected_node = Some(next);
                                         self.base.state = next as u32;
@@ -572,15 +562,10 @@ impl Control for TreeView {
                 }
                 EventResponse::CONSUMED
             }
-            // Enter
-            0x1C => {
+            KEY_ENTER => {
                 EventResponse::CLICK
             }
             _ => {
-                // Enter via char_code
-                if char_code == 0x0A || char_code == 0x0D {
-                    return EventResponse::CLICK;
-                }
                 EventResponse::IGNORED
             }
         }

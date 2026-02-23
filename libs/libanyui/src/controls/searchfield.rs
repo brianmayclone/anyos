@@ -79,7 +79,8 @@ impl Control for SearchField {
     }
 
     fn handle_key_down(&mut self, keycode: u32, char_code: u32) -> EventResponse {
-        if char_code == 0x0A || char_code == 0x0D || keycode == 0x1C {
+        use crate::control::*;
+        if keycode == KEY_ENTER {
             return EventResponse::SUBMIT;
         }
         if char_code >= 0x20 && char_code < 0x7F {
@@ -90,7 +91,7 @@ impl Control for SearchField {
             self.text_base.text.insert(self.cursor_pos, ch);
             self.cursor_pos += 1;
             EventResponse::CHANGED
-        } else if keycode == 0x0E || char_code == 0x08 {
+        } else if keycode == KEY_BACKSPACE {
             if self.cursor_pos > 0 && !self.text_base.text.is_empty() {
                 self.cursor_pos -= 1;
                 self.text_base.text.remove(self.cursor_pos);
@@ -98,10 +99,10 @@ impl Control for SearchField {
             } else {
                 EventResponse::CONSUMED
             }
-        } else if keycode == 0x4B {
+        } else if keycode == KEY_LEFT {
             if self.cursor_pos > 0 { self.cursor_pos -= 1; }
             EventResponse::CONSUMED
-        } else if keycode == 0x4D {
+        } else if keycode == KEY_RIGHT {
             if self.cursor_pos < self.text_base.text.len() { self.cursor_pos += 1; }
             EventResponse::CONSUMED
         } else {

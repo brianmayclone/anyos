@@ -366,6 +366,20 @@ impl Control for Canvas {
     fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
     fn kind(&self) -> ControlKind { ControlKind::Canvas }
 
+    fn set_size(&mut self, w: u32, h: u32) {
+        let b = self.base_mut();
+        if b.w != w || b.h != h {
+            b.w = w;
+            b.h = h;
+            b.dirty = true;
+            // Resize pixel buffer to match new dimensions
+            let expected = (w * h) as usize;
+            if expected > 0 && self.pixels.len() != expected {
+                self.pixels.resize(expected, 0xFF000000);
+            }
+        }
+    }
+
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         if self.pixels.is_empty() { return; }
         let x = ax + self.base.x;

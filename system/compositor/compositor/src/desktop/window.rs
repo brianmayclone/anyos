@@ -122,6 +122,8 @@ pub struct WindowInfo {
     /// SHM buffer dimensions (may lag behind content_width/height during resize).
     pub shm_width: u32,
     pub shm_height: u32,
+    /// Set true on CMD_PRESENT, cleared after compose emits EVT_FRAME_ACK.
+    pub needs_frame_ack: bool,
 }
 
 impl WindowInfo {
@@ -345,6 +347,7 @@ impl Desktop {
             shm_ptr: core::ptr::null_mut(),
             shm_width: 0,
             shm_height: 0,
+            needs_frame_ack: false,
         };
 
         self.windows.push(win);
@@ -823,6 +826,7 @@ impl Desktop {
             shm_ptr,
             shm_width: content_w,
             shm_height: content_h,
+            needs_frame_ack: false,
         };
 
         self.windows.push(win);
@@ -903,6 +907,7 @@ impl Desktop {
             shm_ptr: core::ptr::null_mut(),
             shm_width: content_w,
             shm_height: content_h,
+            needs_frame_ack: false,
         };
 
         self.windows.push(win);
@@ -983,6 +988,7 @@ impl Desktop {
             shm_ptr,
             shm_width: content_w,
             shm_height: content_h,
+            needs_frame_ack: false,
         };
 
         self.windows.push(win);
@@ -999,6 +1005,9 @@ impl Desktop {
             Some(i) => i,
             None => return,
         };
+
+        // Mark for frame ACK — render thread will send EVT_FRAME_ACK after compositing
+        self.windows[win_idx].needs_frame_ack = true;
 
         let layer_id = self.windows[win_idx].layer_id;
 

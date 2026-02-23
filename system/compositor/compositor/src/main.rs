@@ -104,6 +104,7 @@ fn main() {
     // Step 7: Move Desktop to global and spawn render thread
     unsafe {
         render::set_desktop_ptr(alloc::boxed::Box::into_raw(desktop));
+        render::set_compositor_channel(compositor_channel);
     }
     spawn_render_thread();
 
@@ -176,6 +177,7 @@ fn management_loop(
 ) {
     let mut events_buf = [[0u32; 5]; 256];
     let mut ipc_buf = [0u32; 5];
+    let mut idle_count: u32 = 0;
     loop {
         let t0 = sys::uptime_ms();
 
@@ -263,9 +265,16 @@ fn management_loop(
         // NOTE: tick_animations(), update_clock(), and compose() are all handled
         // by the render thread — not called here.
 
-        // Dynamic frame pacing: sleep only the remainder to hit ~60fps
+        // Adaptive sleep: react quickly when events are flowing, sleep longer when idle.
+        // This reduces CMD_PRESENT → compose latency from 0-16ms to 0-2ms.
+        let had_work = event_count > 0 || !ipc_events.is_empty();
+        if had_work {
+            idle_count = 0;
+        } else {
+            idle_count = idle_count.saturating_add(1);
+        }
         let elapsed = sys::uptime_ms().wrapping_sub(t0);
-        let target = 16u32;
+        let target = if idle_count < 4 { 2u32 } else { 16u32 };
         if elapsed < target {
             process::sleep(target - elapsed);
         }

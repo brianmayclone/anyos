@@ -169,6 +169,12 @@ pub const EVT_STATUS_ICON_CLICK: u32 = 0x3009;
 /// Mouse move: [EVT, window_id, local_x, local_y, 0]
 pub const EVT_MOUSE_MOVE: u32 = 0x300A;
 
+/// Frame acknowledgment: [EVT, window_id, 0, 0, 0]
+/// Sent by the render thread after compositing a window's content to screen
+/// (i.e. after VSync — RESOURCE_FLUSH completion on VirtIO-GPU).
+/// Apps use this for back-pressure: don't present a new frame until ACK.
+pub const EVT_FRAME_ACK: u32 = 0x300B;
+
 /// Window opened (broadcast): [EVT, app_tid, win_id, 0, 0]
 /// Emitted when any app creates a window. Used by dock for filtering.
 pub const EVT_WINDOW_OPENED: u32 = 0x0060;

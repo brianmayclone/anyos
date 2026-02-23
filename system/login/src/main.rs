@@ -56,6 +56,7 @@ fn main() -> u32 {
     welcome.set_font_size(20);
     welcome.set_position(PAD, y_cursor);
     welcome.set_size(FIELD_W, 30);
+    welcome.set_text_align(ui::TEXT_ALIGN_CENTER);
     win.add(&welcome);
     y_cursor += 46;
 

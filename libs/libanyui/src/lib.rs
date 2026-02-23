@@ -86,6 +86,10 @@ pub(crate) struct CompWindow {
     pub surface: *mut u32,
     pub width: u32,
     pub height: u32,
+    /// Back-pressure: true after present(), cleared on EVT_FRAME_ACK from compositor.
+    pub frame_presented: bool,
+    /// Timestamp of last present() call (for safety timeout).
+    pub last_present_ms: u32,
 }
 
 // ── Global state (per-process, lives in .data/.bss of the .so) ───────
@@ -260,6 +264,8 @@ pub extern "C" fn anyui_create_window(
         surface,
         width: w,
         height: h,
+        frame_presented: false,
+        last_present_ms: 0,
     });
     id
 }
@@ -484,9 +490,7 @@ pub extern "C" fn anyui_set_max_size(id: ControlId, max_w: u32, max_h: u32) {
 pub extern "C" fn anyui_set_font_size(id: ControlId, size: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if let Some(tb) = ctrl.text_base_mut() {
-            tb.text_style.font_size = size as u16;
-        }
+        ctrl.set_font_size(size as u16);
     }
 }
 
@@ -494,8 +498,7 @@ pub extern "C" fn anyui_set_font_size(id: ControlId, size: u32) {
 pub extern "C" fn anyui_get_font_size(id: ControlId) -> u32 {
     let st = state();
     st.controls.iter().find(|c| c.id() == id)
-        .and_then(|c| c.text_base())
-        .map_or(14, |tb| tb.text_style.font_size as u32)
+        .map_or(14, |c| c.get_font_size() as u32)
 }
 
 #[no_mangle]
@@ -779,6 +782,18 @@ pub extern "C" fn anyui_canvas_get_stride(id: ControlId) -> u32 {
     if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
         if ctrl.kind() == ControlKind::Canvas {
             return ctrl.base().w;
+        }
+    }
+    0
+}
+
+/// Get the canvas height (in pixels).
+#[no_mangle]
+pub extern "C" fn anyui_canvas_get_height(id: ControlId) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::Canvas {
+            return ctrl.base().h;
         }
     }
     0

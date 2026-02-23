@@ -46,6 +46,11 @@ impl Canvas {
         (lib().canvas_get_stride)(self.ctrl.id)
     }
 
+    /// Get the current canvas height in pixels (may change when docked).
+    pub fn get_height(&self) -> u32 {
+        (lib().canvas_get_height)(self.ctrl.id)
+    }
+
     /// Enable interactive mode: mouse_move fires EVENT_CHANGE for drag-drawing.
     pub fn set_interactive(&self, enabled: bool) {
         (lib().canvas_set_interactive)(self.ctrl.id, enabled as u32);

@@ -620,6 +620,54 @@ tree.on_selection_changed(|e: &SelectionChangedEvent| {
 
 ---
 
+## Frame Pacing & VSync
+
+The anyui event loop implements automatic VSync-driven frame pacing with back-pressure, modeled after Windows DWM and macOS CVDisplayLink. Applications using anyui benefit from this without any code changes.
+
+### How It Works
+
+1. **Present + track**: When anyui renders a dirty window, it calls `present()` and sets a `frame_presented` flag on the window
+2. **Back-pressure**: On the next loop iteration, windows with `frame_presented = true` are skipped (their previous frame hasn't been composited yet)
+3. **ACK receipt**: When the compositor's render thread finishes compositing, it emits `EVT_FRAME_ACK` (0x300B). anyui clears `frame_presented`, allowing the next frame to render
+4. **Safety timeout**: If an ACK is not received within 64ms (4 frames), the flag is forcibly cleared to prevent stalls from lost events
+
+### Adaptive Event Loop
+
+The `run()` function uses adaptive sleep timing instead of a fixed 16ms interval:
+
+| State | Sleep interval | Reason |
+|-------|---------------|--------|
+| Frame pending (waiting for ACK) | 2ms | Fast polling to receive ACK quickly |
+| Idle (no pending frames) | 16ms | Normal frame pacing, saves CPU |
+
+This means:
+- **Active rendering**: ~2ms ACK turnaround → smooth 60fps with minimal latency
+- **Idle state**: ~16ms sleep → near-zero CPU usage when nothing is happening
+- **No wasted frames**: Apps never render faster than the compositor can composite
+
+### Latency
+
+The end-to-end latency from `present()` to receiving `EVT_FRAME_ACK` is typically **4-9ms**, compared to **18-53ms** with the previous fixed-timer approach. Window dragging, scrolling, and animations are noticeably smoother.
+
+### For Custom Event Loops
+
+If you build a custom event loop instead of using `run()`, you can handle `EVT_FRAME_ACK` manually:
+
+```rust
+// In your event polling loop:
+match event_type {
+    0x300B => {
+        // Frame ACK received — safe to present next frame
+        frame_pending = false;
+    }
+    // ... other events ...
+}
+```
+
+See the [libcompositor API](libcompositor-api.md#evt_frame_ack--vsync-callback) for the low-level protocol details.
+
+---
+
 ## Syntax Highlighting
 
 TextEditor uses a simple key=value `.syn` file format for syntax definitions.

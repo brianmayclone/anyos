@@ -28,6 +28,10 @@ static mut DESKTOP_PTR: *mut Desktop = core::ptr::null_mut();
 /// The render thread checks this to decide whether to compose or sleep.
 static RENDER_NEEDED: AtomicBool = AtomicBool::new(true);
 
+/// Event channel ID for sending frame ACKs directly from the render thread.
+/// Set once during init by the management thread, never changed.
+static mut COMPOSITOR_CHANNEL: u32 = 0;
+
 pub fn acquire_lock() {
     while DESKTOP_LOCK
         .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -56,6 +60,11 @@ pub unsafe fn desktop_ref() -> &'static mut Desktop {
 /// Store the Desktop pointer for shared access. Called once during init.
 pub unsafe fn set_desktop_ptr(ptr: *mut Desktop) {
     DESKTOP_PTR = ptr;
+}
+
+/// Store the compositor event channel ID so the render thread can emit frame ACKs.
+pub unsafe fn set_compositor_channel(ch: u32) {
+    COMPOSITOR_CHANNEL = ch;
 }
 
 /// Signal the render thread that new work is available (damage, input, etc.).
@@ -104,6 +113,18 @@ pub fn render_thread_entry() {
                 }
                 desktop.process_deferred_wallpaper();
                 desktop.compose();
+
+                // Emit frame ACKs immediately after VSync (compose + flush_gpu).
+                // This is the VSync callback — apps learn their frame is on screen.
+                let channel = unsafe { COMPOSITOR_CHANNEL };
+                if channel != 0 && !desktop.frame_ack_queue.is_empty() {
+                    for &(sub_id, window_id) in &desktop.frame_ack_queue {
+                        anyos_std::ipc::evt_chan_emit_to(channel, sub_id, &[
+                            crate::ipc_protocol::EVT_FRAME_ACK, window_id, 0, 0, 0,
+                        ]);
+                    }
+                    desktop.frame_ack_queue.clear();
+                }
                 release_lock();
 
                 // If animations are still active, keep rendering next frame

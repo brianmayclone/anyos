@@ -489,7 +489,7 @@ impl Control for TextEditor {
             return EventResponse::CHANGED;
         }
         // Enter
-        if char_code == 0x0A || char_code == 0x0D {
+        if keycode == crate::control::KEY_ENTER {
             self.clamp_cursor();
             // Auto-indent: count leading spaces of current line
             let indent = self.lines[self.cursor_row]
@@ -510,8 +510,9 @@ impl Control for TextEditor {
             self.base.dirty = true;
             return EventResponse::CHANGED;
         }
+        use crate::control::*;
         // Backspace
-        if keycode == 0x0E || char_code == 0x08 {
+        if keycode == KEY_BACKSPACE {
             self.clamp_cursor();
             if self.cursor_col > 0 {
                 self.cursor_col -= 1;
@@ -528,7 +529,7 @@ impl Control for TextEditor {
             return EventResponse::CHANGED;
         }
         // Delete
-        if keycode == 0x53 {
+        if keycode == KEY_DELETE {
             self.clamp_cursor();
             if self.cursor_col < self.lines[self.cursor_row].len() {
                 self.lines[self.cursor_row].remove(self.cursor_col);
@@ -540,8 +541,8 @@ impl Control for TextEditor {
             self.base.dirty = true;
             return EventResponse::CHANGED;
         }
-        // Tab
-        if keycode == 0x0F || char_code == 0x09 {
+        // Tab — TextEditor inserts spaces (consumed, so global Tab-cycling won't fire)
+        if keycode == KEY_TAB {
             self.clamp_cursor();
             for _ in 0..self.tab_width {
                 self.lines[self.cursor_row].insert(self.cursor_col, b' ');
@@ -552,7 +553,7 @@ impl Control for TextEditor {
             return EventResponse::CHANGED;
         }
         // Left arrow
-        if keycode == 0x4B {
+        if keycode == KEY_LEFT {
             if self.cursor_col > 0 {
                 self.cursor_col -= 1;
             } else if self.cursor_row > 0 {
@@ -564,7 +565,7 @@ impl Control for TextEditor {
             return EventResponse::CONSUMED;
         }
         // Right arrow
-        if keycode == 0x4D {
+        if keycode == KEY_RIGHT {
             if self.cursor_col < self.lines[self.cursor_row].len() {
                 self.cursor_col += 1;
             } else if self.cursor_row + 1 < self.lines.len() {
@@ -576,7 +577,7 @@ impl Control for TextEditor {
             return EventResponse::CONSUMED;
         }
         // Up arrow
-        if keycode == 0x48 {
+        if keycode == KEY_UP {
             if self.cursor_row > 0 {
                 self.cursor_row -= 1;
                 self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
@@ -586,7 +587,7 @@ impl Control for TextEditor {
             return EventResponse::CONSUMED;
         }
         // Down arrow
-        if keycode == 0x50 {
+        if keycode == KEY_DOWN {
             if self.cursor_row + 1 < self.lines.len() {
                 self.cursor_row += 1;
                 self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
@@ -596,21 +597,21 @@ impl Control for TextEditor {
             return EventResponse::CONSUMED;
         }
         // Home
-        if keycode == 0x47 {
+        if keycode == KEY_HOME {
             self.cursor_col = 0;
             self.ensure_cursor_visible();
             self.base.dirty = true;
             return EventResponse::CONSUMED;
         }
         // End
-        if keycode == 0x4F {
+        if keycode == KEY_END {
             self.cursor_col = self.lines[self.cursor_row].len();
             self.ensure_cursor_visible();
             self.base.dirty = true;
             return EventResponse::CONSUMED;
         }
         // Page Up
-        if keycode == 0x49 {
+        if keycode == KEY_PAGE_UP {
             let page = (self.base.h / self.line_height).max(1) as usize;
             self.cursor_row = self.cursor_row.saturating_sub(page);
             self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
@@ -619,7 +620,7 @@ impl Control for TextEditor {
             return EventResponse::CONSUMED;
         }
         // Page Down
-        if keycode == 0x51 {
+        if keycode == KEY_PAGE_DOWN {
             let page = (self.base.h / self.line_height).max(1) as usize;
             self.cursor_row = (self.cursor_row + page).min(self.lines.len().saturating_sub(1));
             self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());

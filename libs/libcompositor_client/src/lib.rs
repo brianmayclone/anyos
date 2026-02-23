@@ -35,6 +35,7 @@ pub const EVT_WINDOW_CLOSE: u32 = 0x3007;
 pub const EVT_MENU_ITEM: u32 = 0x3008;
 pub const EVT_STATUS_ICON_CLICK: u32 = 0x3009;
 pub const EVT_MOUSE_MOVE: u32 = 0x300A;
+pub const EVT_FRAME_ACK: u32 = 0x300B;
 
 /// A handle to a compositor window.
 pub struct WindowHandle {

@@ -102,6 +102,7 @@ pub const EVT_MOUSE_SCROLL: u32 = 0x3005;
 pub const EVT_RESIZE: u32 = 0x3006;
 pub const EVT_WINDOW_CLOSE: u32 = 0x3007;
 pub const EVT_MOUSE_MOVE: u32 = 0x300A;
+pub const EVT_FRAME_ACK: u32 = 0x300B;
 
 // ── High-level wrappers ──────────────────────────────────────────────
 

@@ -34,8 +34,8 @@ struct PendingCallback {
 }
 
 /// Run the event loop. Blocks until all windows are closed or quit is requested.
-/// Uses dynamic frame pacing: measures frame time and sleeps only the remainder
-/// to hit ~60fps. If a frame takes longer than 16ms, no sleep occurs.
+/// Adaptive frame pacing: polls quickly when waiting for VSync (FRAME_ACK),
+/// sleeps longer when idle. Matches Windows DWM / macOS CVDisplayLink model.
 pub fn run() {
     loop {
         let t0 = crate::syscall::uptime_ms();
@@ -43,7 +43,10 @@ pub fn run() {
             break;
         }
         let elapsed = crate::syscall::uptime_ms().wrapping_sub(t0);
-        let target = 16; // ~60fps
+        // Adaptive sleep: fast polling when waiting for VSync ACK, idle sleep otherwise
+        let st = crate::state();
+        let any_pending = st.comp_windows.iter().any(|cw| cw.frame_presented);
+        let target: u32 = if any_pending { 2 } else { 16 };
         if elapsed < target {
             crate::syscall::sleep(target - elapsed);
         }
@@ -319,8 +322,8 @@ pub fn run_once() -> u32 {
                     }
 
                     if !handled {
-                        // Tab (scancode 0x0F): cycle focus to next focusable control
-                        if keycode == 0x0F {
+                        // Tab: cycle focus to next focusable control
+                        if keycode == control::KEY_TAB {
                             cycle_focus(st, win_id, &mut pending_cbs);
                         } else {
                             // Bubble unhandled key events to the window
@@ -384,6 +387,14 @@ pub fn run_once() -> u32 {
                     }
                 }
 
+                compositor::EVT_FRAME_ACK => {
+                    // VSync callback: compositor has composited our frame to screen.
+                    // Clear back-pressure so we can present the next frame.
+                    if wi < st.comp_windows.len() {
+                        st.comp_windows[wi].frame_presented = false;
+                    }
+                }
+
                 _ => {}
             }
             ev = [0u32; 5];
@@ -423,10 +434,21 @@ pub fn run_once() -> u32 {
     // ── Phase 3.6: Update scroll bounds ─────────────────────────────
     crate::controls::scroll_view::update_scroll_bounds(&mut st.controls);
 
-    // ── Phase 4: Render dirty windows ──────────────────────────────
+    // ── Phase 4: Render dirty windows (with VSync back-pressure) ───
     let channel_id = st.channel_id;
     for wi in 0..st.windows.len() {
         let win_id = st.windows[wi];
+
+        // Back-pressure: skip if previous frame hasn't been composited yet.
+        // This prevents overwriting SHM while compositor is reading it.
+        // Safety timeout after 64ms (~4 frames) to avoid hangs if ACK is lost.
+        if st.comp_windows[wi].frame_presented {
+            let now = crate::syscall::uptime_ms();
+            if now.wrapping_sub(st.comp_windows[wi].last_present_ms) < 64 {
+                continue;
+            }
+            st.comp_windows[wi].frame_presented = false;
+        }
 
         // Skip rendering if no control in this window tree is dirty
         if !any_dirty(&st.controls, win_id) {
@@ -451,8 +473,10 @@ pub fn run_once() -> u32 {
         // Clear dirty flags after rendering
         clear_dirty(&mut st.controls, win_id);
 
-        // Present via compositor DLL
+        // Present via compositor DLL + mark as pending VSync ACK
         compositor::present(channel_id, comp_window_id, shm_id);
+        st.comp_windows[wi].frame_presented = true;
+        st.comp_windows[wi].last_present_ms = crate::syscall::uptime_ms();
     }
 
     1

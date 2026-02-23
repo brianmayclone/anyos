@@ -68,8 +68,9 @@ client.destroy_window(win);
 2. `create_window()` — allocates SHM buffer, compositor creates window layer
 3. Application draws into SHM pixel buffer directly
 4. `present()` — notifies compositor that buffer is updated
-5. Compositor composites all windows to framebuffer on next vsync
-6. Events (keyboard, mouse, resize, close) flow back via channel
+5. Compositor composites all dirty windows → `flush_gpu()` (VSync)
+6. Compositor emits `EVT_FRAME_ACK` directly from render thread → app knows frame is on screen
+7. Events (keyboard, mouse, resize, close, frame ACK) flow back via channel
 
 ---
 
@@ -167,8 +168,46 @@ Events are 5 u32s: `[event_type, p1, p2, p3, p4]`.
 | `EVT_MENU_ITEM` | 0x3008 | item_id | — | — | — |
 | `EVT_STATUS_ICON_CLICK` | 0x3009 | icon_id | — | — | — |
 | `EVT_MOUSE_MOVE` | 0x300A | x | y | — | — |
+| `EVT_FRAME_ACK` | 0x300B | — | — | — | — |
 
 Mouse coordinates are relative to the window client area.
+
+### EVT_FRAME_ACK — VSync Callback
+
+`EVT_FRAME_ACK` is emitted by the compositor's render thread immediately after a window's content has been composited to the display (i.e., after VSync — the VirtIO-GPU `RESOURCE_FLUSH` completion). This is the anyOS equivalent of Windows `DwmFlush` / macOS `CVDisplayLink` callbacks.
+
+**Flow:**
+1. App calls `present()` → compositor marks window dirty
+2. Render thread composes all dirty windows → `flush_gpu()` (synchronous VirtIO RESOURCE_FLUSH)
+3. Render thread emits `EVT_FRAME_ACK` directly to the app via `evt_chan_emit_to()`
+4. App receives ACK → safe to prepare and present the next frame
+
+**Back-pressure:** Apps should not present a new frame until they receive the ACK for the previous one. This prevents wasted rendering when the compositor hasn't caught up yet. Implement a safety timeout (e.g., 64ms) to handle rare cases where an ACK might be lost.
+
+**Backward compatibility:** Apps that don't handle `EVT_FRAME_ACK` simply discard the event — no behavioral change. The event passes through the existing `poll_event()` filter (`event_type >= 0x3000`).
+
+```rust
+// Frame-paced rendering loop
+let mut frame_pending = false;
+
+loop {
+    if let Some(event) = client.poll_event(win) {
+        match event.event_type {
+            0x300B => frame_pending = false,  // EVT_FRAME_ACK
+            0x3007 => break,                   // EVT_WINDOW_CLOSE
+            _ => { /* handle other events */ }
+        }
+    }
+
+    if !frame_pending && needs_redraw {
+        draw_frame(client.surface(win));
+        client.present(win);
+        frame_pending = true;
+    }
+
+    anyos_std::process::sleep(2);
+}
+```
 
 ---
 

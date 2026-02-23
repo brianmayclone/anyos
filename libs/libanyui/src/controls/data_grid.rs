@@ -77,6 +77,7 @@ pub struct DataGrid {
     hovered_row: Option<usize>,
     pub(crate) header_height: u32,
     pub(crate) row_height: u32,
+    pub(crate) font_size: u16,
 }
 
 impl DataGrid {
@@ -100,6 +101,7 @@ impl DataGrid {
             hovered_row: None,
             header_height: 32,
             row_height: 28,
+            font_size: 0,
         }
     }
 
@@ -176,8 +178,11 @@ impl DataGrid {
         let col_count = self.columns.len().max(1);
         let idx = row * col_count + col;
         if idx < self.cell_data.len() {
-            self.cell_data[idx] = text.to_vec();
-            self.base.dirty = true;
+            if self.cell_data[idx].as_slice() != text {
+                self.cell_data[idx].clear();
+                self.cell_data[idx].extend_from_slice(text);
+                self.base.dirty = true;
+            }
         }
     }
 
@@ -188,8 +193,10 @@ impl DataGrid {
     }
 
     pub fn set_cell_colors(&mut self, colors: &[u32]) {
-        self.cell_colors = colors.to_vec();
-        self.base.dirty = true;
+        if self.cell_colors.as_slice() != colors {
+            self.cell_colors = colors.to_vec();
+            self.base.dirty = true;
+        }
     }
 
     /// Set an icon (ARGB pixels) for a specific cell. The icon is drawn before the text.
@@ -365,6 +372,9 @@ impl Control for DataGrid {
     fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
     fn kind(&self) -> ControlKind { ControlKind::DataGrid }
 
+    fn set_font_size(&mut self, size: u16) { self.font_size = size; }
+    fn get_font_size(&self) -> u16 { if self.font_size > 0 { self.font_size } else { 13 } }
+
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let x = ax + self.base.x;
         let y = ay + self.base.y;
@@ -435,19 +445,20 @@ impl Control for DataGrid {
                             tc.text
                         };
 
+                        let fs = if self.font_size > 0 { self.font_size } else { 13 };
                         let text_x = match col.align {
                             CellAlign::Left => col_x + 8 + icon_offset,
                             CellAlign::Center => {
-                                let (tw, _) = crate::draw::text_size(text);
+                                let (tw, _) = crate::draw::text_size_at(text, fs);
                                 col_x + icon_offset + (col.width as i32 - icon_offset - tw as i32) / 2
                             }
                             CellAlign::Right => {
-                                let (tw, _) = crate::draw::text_size(text);
+                                let (tw, _) = crate::draw::text_size_at(text, fs);
                                 col_x + col.width as i32 - 8 - tw as i32
                             }
                         };
-                        let text_y = row_y + (self.row_height as i32 - 13) / 2;
-                        crate::draw::draw_text(&cell_clip, text_x, text_y, color, text);
+                        let text_y = row_y + (self.row_height as i32 - fs as i32) / 2;
+                        crate::draw::draw_text_sized(&cell_clip, text_x, text_y, color, text, fs);
                     }
 
                     col_x += col.width as i32;
@@ -660,38 +671,34 @@ impl Control for DataGrid {
     }
 
     fn handle_key_down(&mut self, keycode: u32, _char_code: u32) -> EventResponse {
+        use crate::control::*;
         match keycode {
-            // Enter (0x1C) → SUBMIT
-            0x1C => {
+            KEY_ENTER => {
                 if self.selected_row().is_some() {
                     return EventResponse::SUBMIT;
                 }
                 EventResponse::CONSUMED
             }
-            // Up arrow (0x48)
-            0x48 => {
+            KEY_UP => {
                 if self.row_count == 0 { return EventResponse::CONSUMED; }
                 let vis = self.selected_visual_row().unwrap_or(0);
                 let new_vis = if vis > 0 { vis - 1 } else { 0 };
                 self.select_visual_row(new_vis);
                 EventResponse::CHANGED
             }
-            // Down arrow (0x50)
-            0x50 => {
+            KEY_DOWN => {
                 if self.row_count == 0 { return EventResponse::CONSUMED; }
                 let vis = self.selected_visual_row().unwrap_or(0);
                 let new_vis = if vis + 1 < self.row_count { vis + 1 } else { self.row_count - 1 };
                 self.select_visual_row(new_vis);
                 EventResponse::CHANGED
             }
-            // Home (0x47)
-            0x47 => {
+            KEY_HOME => {
                 if self.row_count == 0 { return EventResponse::CONSUMED; }
                 self.select_visual_row(0);
                 EventResponse::CHANGED
             }
-            // End (0x4F)
-            0x4F => {
+            KEY_END => {
                 if self.row_count == 0 { return EventResponse::CONSUMED; }
                 self.select_visual_row(self.row_count - 1);
                 EventResponse::CHANGED

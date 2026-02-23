@@ -46,6 +46,22 @@ pub const EVENT_SUBMIT: u32 = 17;
 /// Number of callback slots (EVENT_CLICK=1 .. EVENT_SUBMIT=17, index 0 unused).
 const NUM_CALLBACK_SLOTS: usize = 18;
 
+// ── Key codes (must match compositor's encode_scancode output) ───────
+
+pub const KEY_ENTER: u32     = 0x100;
+pub const KEY_BACKSPACE: u32 = 0x101;
+pub const KEY_TAB: u32       = 0x102;
+pub const KEY_ESCAPE: u32    = 0x103;
+pub const KEY_UP: u32        = 0x105;
+pub const KEY_DOWN: u32      = 0x106;
+pub const KEY_LEFT: u32      = 0x107;
+pub const KEY_RIGHT: u32     = 0x108;
+pub const KEY_DELETE: u32    = 0x120;
+pub const KEY_HOME: u32      = 0x121;
+pub const KEY_END: u32       = 0x122;
+pub const KEY_PAGE_UP: u32   = 0x123;
+pub const KEY_PAGE_DOWN: u32 = 0x124;
+
 // ── Layout types (Windows Forms-inspired) ────────────────────────────
 
 /// Inner spacing (space reserved inside a control for its children).
@@ -511,6 +527,18 @@ pub trait Control {
     fn text_base(&self) -> Option<&TextControlBase> { None }
     /// Mutable access to the TextControlBase.
     fn text_base_mut(&mut self) -> Option<&mut TextControlBase> { None }
+
+    /// Set font size. Default delegates to text_base_mut; override for non-text controls.
+    fn set_font_size(&mut self, size: u16) {
+        if let Some(tb) = self.text_base_mut() {
+            tb.text_style.font_size = size;
+        }
+    }
+
+    /// Get font size. Default delegates to text_base; override for non-text controls.
+    fn get_font_size(&self) -> u16 {
+        self.text_base().map_or(14, |tb| tb.text_style.font_size)
+    }
 
     /// Override for layout containers (StackPanel, FlowPanel, TableLayout).
     /// Called by the layout engine to position children according to the

@@ -179,6 +179,7 @@ struct AnyuiLib {
     canvas_fill_circle: extern "C" fn(u32, i32, i32, i32, u32),
     canvas_get_buffer: extern "C" fn(u32) -> *mut u32,
     canvas_get_stride: extern "C" fn(u32) -> u32,
+    canvas_get_height: extern "C" fn(u32) -> u32,
     // Canvas extensions
     canvas_set_interactive: extern "C" fn(u32, u32),
     canvas_get_mouse: extern "C" fn(u32, *mut i32, *mut i32, *mut u32),
@@ -353,6 +354,7 @@ pub fn init() -> bool {
             canvas_fill_circle: resolve(&handle, "anyui_canvas_fill_circle"),
             canvas_get_buffer: resolve(&handle, "anyui_canvas_get_buffer"),
             canvas_get_stride: resolve(&handle, "anyui_canvas_get_stride"),
+            canvas_get_height: resolve(&handle, "anyui_canvas_get_height"),
             // Canvas extensions
             canvas_set_interactive: resolve(&handle, "anyui_canvas_set_interactive"),
             canvas_get_mouse: resolve(&handle, "anyui_canvas_get_mouse"),

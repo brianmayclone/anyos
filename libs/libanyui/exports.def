@@ -47,6 +47,7 @@ EXPORTS
     anyui_canvas_fill_circle
     anyui_canvas_get_buffer
     anyui_canvas_get_stride
+    anyui_canvas_get_height
     anyui_canvas_set_interactive
     anyui_canvas_get_mouse
     anyui_canvas_fill_ellipse
