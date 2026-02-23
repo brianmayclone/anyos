@@ -59,16 +59,42 @@ fn main() {
         fb_info.fb_addr, fb_info.width, fb_info.height, fb_info.pitch
     );
 
-    let width = fb_info.width;
-    let height = fb_info.height;
-    let fb_ptr = fb_info.fb_addr as *mut u32;
+    let mut width = fb_info.width;
+    let mut height = fb_info.height;
+    let mut pitch = fb_info.pitch;
+    let mut fb_ptr = fb_info.fb_addr as *mut u32;
+
+    // Step 2b: Restore saved resolution from compositor.conf (if different from current)
+    if let Some(saved) = config::read_resolution() {
+        if saved.width != width || saved.height != height {
+            println!(
+                "compositor: restoring saved resolution {}x{} (current: {}x{})",
+                saved.width, saved.height, width, height
+            );
+            if anyos_std::ui::window::set_resolution(saved.width, saved.height) {
+                // Re-map framebuffer to pick up new dimensions
+                if let Some(new_fb) = ipc::map_framebuffer() {
+                    width = new_fb.width;
+                    height = new_fb.height;
+                    pitch = new_fb.pitch;
+                    fb_ptr = new_fb.fb_addr as *mut u32;
+                    println!(
+                        "compositor: resolution restored to {}x{} (pitch={})",
+                        width, height, pitch
+                    );
+                }
+            } else {
+                println!("compositor: failed to restore saved resolution, keeping {}x{}", width, height);
+            }
+        }
+    }
 
     // Step 3: Initialize fonts (must happen before any text rendering)
     libfont_client::init();
 
     // Step 4: Initialize desktop (single-threaded, no lock needed yet)
     let mut desktop = alloc::boxed::Box::new(desktop::Desktop::new(
-        fb_ptr, width, height, fb_info.pitch,
+        fb_ptr, width, height, pitch,
     ));
     desktop.init();
 
@@ -126,7 +152,7 @@ fn main() {
     if !login_pending {
         let _dock_tid = process::spawn("/System/compositor/dock", "");
         println!("compositor: dock spawned");
-        config::launch_compositor_conf();
+        config::launch_autostart();
         dock_spawned = true;
     }
 
@@ -220,7 +246,7 @@ fn management_loop(
 
             let _dock_tid = process::spawn("/System/compositor/dock", "");
             println!("compositor: dock spawned");
-            config::launch_compositor_conf();
+            config::launch_autostart();
             *dock_spawned = true;
         }
 
@@ -512,11 +538,12 @@ fn handle_system_events(compositor_channel: u32, sys_sub: u32) -> bool {
                 exited_tid, 0, 0, 0,
             ]);
         } else if sys_buf[0] == 0x0040 {
-            // EVT_RESOLUTION_CHANGED
+            // EVT_RESOLUTION_CHANGED — persist the new resolution to compositor.conf
             let new_w = sys_buf[1];
             let new_h = sys_buf[2];
             desktop.handle_resolution_change(new_w, new_h);
             release_lock();
+            config::save_resolution(new_w, new_h);
         } else {
             release_lock();
         }
