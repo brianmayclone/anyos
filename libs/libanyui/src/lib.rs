@@ -475,6 +475,19 @@ pub extern "C" fn anyui_set_dock(id: ControlId, dock_style: u32) {
 }
 
 #[no_mangle]
+pub extern "C" fn anyui_set_disabled(id: ControlId, disabled: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        let b = ctrl.base_mut();
+        let new_val = disabled != 0;
+        if b.disabled != new_val {
+            b.disabled = new_val;
+            b.dirty = true;
+        }
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn anyui_set_auto_size(id: ControlId, enabled: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {

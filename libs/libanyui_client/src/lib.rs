@@ -153,6 +153,7 @@ struct AnyuiLib {
     set_padding: extern "C" fn(u32, i32, i32, i32, i32),
     set_margin: extern "C" fn(u32, i32, i32, i32, i32),
     set_dock: extern "C" fn(u32, u32),
+    set_disabled: extern "C" fn(u32, u32),
     set_auto_size: extern "C" fn(u32, u32),
     set_min_size: extern "C" fn(u32, u32, u32),
     set_max_size: extern "C" fn(u32, u32, u32),
@@ -328,6 +329,7 @@ pub fn init() -> bool {
             set_padding: resolve(&handle, "anyui_set_padding"),
             set_margin: resolve(&handle, "anyui_set_margin"),
             set_dock: resolve(&handle, "anyui_set_dock"),
+            set_disabled: resolve(&handle, "anyui_set_disabled"),
             set_auto_size: resolve(&handle, "anyui_set_auto_size"),
             set_min_size: resolve(&handle, "anyui_set_min_size"),
             set_max_size: resolve(&handle, "anyui_set_max_size"),
@@ -560,6 +562,11 @@ impl Control {
 
     pub fn set_dock(&self, dock_style: u32) {
         (lib().set_dock)(self.id, dock_style);
+    }
+
+    /// Enable or disable the control. Disabled controls are non-interactive and dimmed.
+    pub fn set_enabled(&self, enabled: bool) {
+        (lib().set_disabled)(self.id, if enabled { 0 } else { 1 });
     }
 
     pub fn set_auto_size(&self, enabled: bool) {

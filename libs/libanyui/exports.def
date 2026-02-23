@@ -25,6 +25,7 @@ EXPORTS
     anyui_set_padding
     anyui_set_margin
     anyui_set_dock
+    anyui_set_disabled
     anyui_set_auto_size
     anyui_set_min_size
     anyui_set_max_size

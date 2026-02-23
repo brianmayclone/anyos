@@ -48,42 +48,48 @@ fn main() {
 
     let win = ui::Window::new("Activity Monitor", 100, 60, 580, 420);
 
-    // ── Header (DOCK_TOP, 76px) ──
+    // ── Header (DOCK_TOP) ──
     let header = ui::View::new();
-    header.set_size(0, 76);
+    header.set_size(0, 80);
     header.set_dock(ui::DOCK_TOP);
     header.set_color(0xFF2A2A2A);
-    header.set_padding(0, 0, 0, 4);
+    header.set_padding(0, 0, 0, 8);
     win.add(&header);
 
-    // Header top row (DOCK_TOP, 30px): segmented control + uptime
+    // Segmented control row (DOCK_TOP, 32px)
     let header_top = ui::View::new();
-    header_top.set_size(0, 30);
+    header_top.set_size(0, 32);
     header_top.set_dock(ui::DOCK_TOP);
     header_top.set_color(0xFF2A2A2A);
     header.add(&header_top);
 
+    // Centered segmented control (manually positioned)
     let seg = ui::SegmentedControl::new("Processes|Graphs|Disk|System");
     seg.set_size(380, 24);
-    seg.set_dock(ui::DOCK_LEFT);
-    seg.set_margin(8, 3, 0, 0);
+    seg.set_position((580 - 380) / 2, 4);
     header_top.add(&seg);
 
+    // Memory info row (DOCK_TOP, 20px): mem_label left, uptime right
+    let mem_row = ui::View::new();
+    mem_row.set_size(0, 20);
+    mem_row.set_dock(ui::DOCK_TOP);
+    mem_row.set_margin(0, 4, 0, 0);
+    header.add(&mem_row);
+
+    let mem_label = ui::Label::new("");
+    mem_label.set_size(300, 18);
+    mem_label.set_dock(ui::DOCK_LEFT);
+    mem_label.set_margin(8, 0, 0, 0);
+    mem_row.add(&mem_label);
+
     let uptime_label = ui::Label::new("");
-    uptime_label.set_size(170, 24);
+    uptime_label.set_size(200, 18);
     uptime_label.set_dock(ui::DOCK_RIGHT);
-    uptime_label.set_margin(0, 5, 8, 0);
-    uptime_label.set_text_color(0xFF8E8E93); // dimmed gray
+    uptime_label.set_margin(0, 0, 8, 0);
+    uptime_label.set_text_color(0xFF8E8E93);
     uptime_label.set_font_size(11);
     uptime_label.set_text_align(ui::TEXT_ALIGN_RIGHT);
-    header_top.add(&uptime_label);
-
-    // Memory info line (DOCK_TOP, 18px)
-    let mem_label = ui::Label::new("");
-    mem_label.set_size(0, 18);
-    mem_label.set_dock(ui::DOCK_TOP);
-    mem_label.set_margin(8, 0, 8, 0);
-    header.add(&mem_label);
+    mem_row.add(&uptime_label);
 
     // Memory bar (DOCK_TOP, 6px)
     let mem_bar = ui::ProgressBar::new(0);
@@ -106,6 +112,7 @@ fn main() {
     let kill_btn = ui::Button::new("Kill Process");
     kill_btn.set_position(8, 4);
     kill_btn.set_size(100, 24);
+    kill_btn.set_enabled(false); // enabled only when a process is selected
     proc_toolbar.add(&kill_btn);
 
     let proc_info_label = ui::Label::new("");
@@ -339,6 +346,30 @@ fn main() {
     unsafe { fetch_cpu(&mut *cpu_state); }
     unsafe { (*cpu_history).push(&*cpu_state); }
 
+    // ── Selection changed: enable/disable kill button ──
+    proc_grid.on_selection_changed(move |ev| {
+        let row = ev.index;
+        if row == u32::MAX {
+            kill_btn.set_enabled(false);
+            return;
+        }
+        // Read TID and process name to decide if killable
+        let mut tid_buf = [0u8; 12];
+        let tid_len = proc_grid.get_cell(row, 0, &mut tid_buf);
+        let tid = if tid_len > 0 {
+            parse_u32_bytes(&tid_buf[..tid_len as usize]).unwrap_or(0)
+        } else {
+            0
+        };
+        let mut name_buf = [0u8; 24];
+        let name_len = proc_grid.get_cell(row, 1, &mut name_buf);
+        let name = &name_buf[..name_len as usize];
+        // Disallow killing idle threads and critical system threads (TID <= 3)
+        let is_idle = name.starts_with(b"idle/");
+        let killable = tid > 3 && !is_idle;
+        kill_btn.set_enabled(killable);
+    });
+
     // ── Kill button handler ──
     kill_btn.on_click(move |_| {
         let sel = proc_grid.selected_row();
@@ -349,6 +380,7 @@ fn main() {
                 let tid = parse_u32_bytes(&tid_buf[..len as usize]).unwrap_or(0);
                 if tid > 3 {
                     process::kill(tid);
+                    kill_btn.set_enabled(false);
                 }
             }
         }

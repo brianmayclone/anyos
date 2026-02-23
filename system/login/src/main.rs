@@ -119,15 +119,21 @@ fn main() -> u32 {
         }
     });
 
+        // Enter on password field → attempt login
+    let uf_id2 = user_field.id();
+    let pf_id3 = pass_field.id();
+
     // Enter on username field → move focus to password
     let pf_id2 = pass_field.id();
     user_field.on_submit(move |_| {
-        ui::Control::from_id(pf_id2).focus();
+        if attempt_login(uf_id2, pf_id3) {
+            ui::quit();
+        } else {
+            ui::Control::from_id(pf_id2).focus();
+        }
     });
 
-    // Enter on password field → attempt login
-    let uf_id2 = user_field.id();
-    let pf_id3 = pass_field.id();
+
     pass_field.on_submit(move |_| {
         if attempt_login(uf_id2, pf_id3) {
             ui::quit();
