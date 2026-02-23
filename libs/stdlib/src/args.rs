@@ -14,7 +14,7 @@
 //! ```
 
 const MAX_FLAGS: usize = 16;
-const MAX_POSITIONAL: usize = 8;
+const MAX_POSITIONAL: usize = 32;
 const MAX_OPTS: usize = 8;
 
 /// Parsed command-line arguments.

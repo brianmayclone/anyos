@@ -8,7 +8,7 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU
-# Usage: ./run.sh [--vmware | --std | --virtio] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--fwd HOST:GUEST ...]
+# Usage: ./run.sh [--vmware | --std | --virtio] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...]
 #   --vmware   VMware SVGA II (2D acceleration, HW cursor)
 #   --std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
 #   --virtio   VirtIO GPU (modern transport, ARGB cursor)
@@ -19,6 +19,7 @@
 #   --usb      Enable USB controller with keyboard + mouse devices
 #   --uefi     Boot via UEFI (OVMF) instead of BIOS
 #   --kvm      Enable hardware virtualization (KVM on Linux, HVF on macOS)
+#   --kbd LAY  Set keyboard layout: us, de, ch, fr, pl (default: keep current)
 #   --fwd H:G  Forward host port H to guest port G (TCP). Repeatable.
 #              Example: --fwd 2222:22 --fwd 8080:8080
 
@@ -39,10 +40,28 @@ FWD_RULES=""
 EXPECT_FWD=false
 RESOLUTION=""
 EXPECT_RES=false
+KBD_LAYOUT=""
+EXPECT_KBD=false
 MIN_RES_W=1024
 MIN_RES_H=768
 
 for arg in "$@"; do
+    if [ "$EXPECT_KBD" = true ]; then
+        EXPECT_KBD=false
+        case "$arg" in
+            us|US)   KBD_LAYOUT=0 ;;
+            de|DE)   KBD_LAYOUT=1 ;;
+            ch|CH)   KBD_LAYOUT=2 ;;
+            fr|FR)   KBD_LAYOUT=3 ;;
+            pl|PL)   KBD_LAYOUT=4 ;;
+            *)
+                echo "Error: Unknown keyboard layout '$arg'. Available: us, de, ch, fr, pl"
+                exit 1
+                ;;
+        esac
+        continue
+    fi
+
     if [ "$EXPECT_RES" = true ]; then
         EXPECT_RES=false
         # Validate format: WIDTHxHEIGHT (both numeric)
@@ -155,11 +174,14 @@ for arg in "$@"; do
         --res)
             EXPECT_RES=true
             ;;
+        --kbd)
+            EXPECT_KBD=true
+            ;;
         --fwd)
             EXPECT_FWD=true
             ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--fwd HOST:GUEST ...]"
+            echo "Usage: $0 [--vmware | --std | --virtio] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...]"
             exit 1
             ;;
     esac
@@ -172,6 +194,11 @@ fi
 
 if [ "$EXPECT_FWD" = true ]; then
     echo "Error: --fwd requires a HOST:GUEST argument (e.g. --fwd 2222:22)"
+    exit 1
+fi
+
+if [ "$EXPECT_KBD" = true ]; then
+    echo "Error: --kbd requires a layout name (us, de, ch, fr, pl)"
     exit 1
 fi
 
@@ -256,6 +283,22 @@ if [ ! -f "$IMAGE" ]; then
     exit 1
 fi
 
+# Apply keyboard layout to disk image config if requested
+KBD_LABEL=""
+if [ -n "$KBD_LAYOUT" ]; then
+    CONF_FILE="${SCRIPT_DIR}/../sysroot/System/etc/inputmon.conf"
+    printf '[keyboard]\nlayout=%s\n' "$KBD_LAYOUT" > "$CONF_FILE"
+    # Also update the build sysroot so mkimage picks it up
+    BUILD_CONF="${SCRIPT_DIR}/../build/sysroot/System/etc/inputmon.conf"
+    if [ -d "$(dirname "$BUILD_CONF")" ]; then
+        cp "$CONF_FILE" "$BUILD_CONF"
+    fi
+    # Re-run mkimage to update the disk image with the new config
+    ninja -C "${SCRIPT_DIR}/../build" 2>/dev/null
+    LAYOUT_NAMES=("US" "DE" "CH" "FR" "PL")
+    KBD_LABEL=", kbd: ${LAYOUT_NAMES[$KBD_LAYOUT]}"
+fi
+
 # VGA device flags: VirtIO always uses explicit -device with edid=on for reliable resolution
 VGA_FLAGS="-vga $VGA"
 RES_LABEL=""
@@ -267,7 +310,7 @@ if [ "$VGA" = "virtio" ]; then
     RES_LABEL=", res: ${RESOLUTION}"
 fi
 
-echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL"
+echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL"
 
 eval qemu-system-x86_64 \
     $KVM_FLAGS \
