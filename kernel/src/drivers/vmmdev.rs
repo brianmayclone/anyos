@@ -321,50 +321,31 @@ pub fn init_and_register(pci: &PciDevice) {
         );
     }
 
-    // Step 3: Check if host supports absolute mouse BEFORE enabling it.
-    // CRITICAL: We must NEVER set GUEST_CAN_ABSOLUTE if the host doesn't support
-    // absolute mouse. Even briefly setting and then clearing it corrupts VirtualBox's
-    // PS/2 mouse emulation permanently for the session (no Y data, only positive X).
-    let check_req = VMMDevReqMouseStatus {
+    // Step 3: Enable absolute mouse.
+    // VMMDev (PCI 80EE:CAFE) only exists in VirtualBox — never in QEMU.
+    // VirtualBox requires the guest to set GUEST_CAN_ABSOLUTE first;
+    // only then does the host set HOST_WANTS_ABSOLUTE in response.
+    // So we always announce GUEST_CAN_ABSOLUTE here unconditionally.
+    // (The old fear of "corrupting PS/2" came from QEMU's vmport, which
+    // is handled by the vmmouse backdoor driver, not VMMDev.)
+    let mouse_req = VMMDevReqMouseStatus {
         header: VMMDevRequestHeader::new(
-            VMMDEVREQ_GET_MOUSE_STATUS,
+            VMMDEVREQ_SET_MOUSE_STATUS,
             core::mem::size_of::<VMMDevReqMouseStatus>() as u32,
         ),
-        mouse_features: 0,
+        mouse_features: VMMDEV_MOUSE_GUEST_CAN_ABSOLUTE
+            | VMMDEV_MOUSE_NEW_PROTOCOL
+            | VMMDEV_MOUSE_GUEST_NEEDS_HOST_CURSOR,
         pointer_x: 0,
         pointer_y: 0,
     };
-    let check_resp: VMMDevReqMouseStatus = unsafe { submit_request(&check_req) };
-    if check_resp.header.rc >= 0 {
-        crate::serial_println!(
-            "  VMMDev: GetMouseStatus features={:#06x} pos=({},{})",
-            check_resp.mouse_features, check_resp.pointer_x, check_resp.pointer_y,
-        );
-
-        if check_resp.mouse_features & VMMDEV_MOUSE_HOST_WANTS_ABSOLUTE != 0 {
-            // Host supports absolute mouse — now safe to set GUEST_CAN_ABSOLUTE
-            let mouse_req = VMMDevReqMouseStatus {
-                header: VMMDevRequestHeader::new(
-                    VMMDEVREQ_SET_MOUSE_STATUS,
-                    core::mem::size_of::<VMMDevReqMouseStatus>() as u32,
-                ),
-                mouse_features: VMMDEV_MOUSE_GUEST_CAN_ABSOLUTE | VMMDEV_MOUSE_NEW_PROTOCOL,
-                pointer_x: 0,
-                pointer_y: 0,
-            };
-            let mouse_resp: VMMDevReqMouseStatus = unsafe { submit_request(&mouse_req) };
-            if mouse_resp.header.rc < 0 {
-                crate::serial_println!("  VMMDev: SetMouseStatus failed (rc={})", mouse_resp.header.rc);
-            } else {
-                ABSOLUTE_AVAILABLE.store(true, Ordering::Relaxed);
-                crate::serial_println!("  VMMDev: Absolute mouse enabled (HOST_WANTS_ABSOLUTE + GUEST_CAN_ABSOLUTE)");
-            }
-        } else {
-            // Host does NOT support absolute mouse (e.g. VBoxVGA).
-            // Do NOT touch mouse status — leave PS/2 relative mode intact.
-            ABSOLUTE_AVAILABLE.store(false, Ordering::Relaxed);
-            crate::serial_println!("  VMMDev: No absolute mouse support (features={:#06x}), using PS/2 relative", check_resp.mouse_features);
-        }
+    let mouse_resp: VMMDevReqMouseStatus = unsafe { submit_request(&mouse_req) };
+    if mouse_resp.header.rc < 0 {
+        crate::serial_println!("  VMMDev: SetMouseStatus failed (rc={})", mouse_resp.header.rc);
+        ABSOLUTE_AVAILABLE.store(false, Ordering::Relaxed);
+    } else {
+        ABSOLUTE_AVAILABLE.store(true, Ordering::Relaxed);
+        crate::serial_println!("  VMMDev: Absolute mouse enabled (GUEST_CAN_ABSOLUTE)");
     }
 
     // Step 4: Set event filter (enable mouse capability change events)
