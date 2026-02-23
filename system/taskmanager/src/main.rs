@@ -7,7 +7,6 @@ mod format;
 mod icon_cache;
 mod graph;
 
-use alloc::vec;
 use alloc::vec::Vec;
 
 use anyos_std::sys;
@@ -37,6 +36,10 @@ static mut PREV_PROC_COUNT: usize = 0;
 static mut PREV_TASK_TIDS: Option<*mut Vec<u32>> = None;
 static mut PREV_TASK_STATES: Option<*mut Vec<u8>> = None;
 static mut PREV_DISK_COUNT: usize = 0;
+
+// Reusable buffers (avoid per-tick heap allocations)
+static mut TASKS_BUF: Option<*mut Vec<TaskEntry>> = None;
+static mut COLORS_BUF: Option<*mut Vec<u32>> = None;
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
@@ -318,6 +321,8 @@ fn main() {
 
     let prev_task_tids = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Vec::<u32>::new()));
     let prev_task_states = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Vec::<u8>::new()));
+    let tasks_buf = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Vec::<TaskEntry>::new()));
+    let colors_buf = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Vec::<u32>::new()));
 
     unsafe {
         PREV_TICKS = Some(prev_ticks);
@@ -326,6 +331,8 @@ fn main() {
         ICON_CACHE = Some(icon_cache);
         PREV_TASK_TIDS = Some(prev_task_tids);
         PREV_TASK_STATES = Some(prev_task_states);
+        TASKS_BUF = Some(tasks_buf);
+        COLORS_BUF = Some(colors_buf);
     }
 
     // Initial CPU fetch
@@ -355,18 +362,17 @@ fn main() {
         let prev = unsafe { &mut *PREV_TICKS.unwrap() };
         let cache = unsafe { &mut *ICON_CACHE.unwrap() };
         let tbuf = unsafe { &mut THREAD_BUF };
+        let prev_tids = unsafe { &mut *PREV_TASK_TIDS.unwrap() };
+        let prev_states = unsafe { &mut *PREV_TASK_STATES.unwrap() };
+        let tasks = unsafe { &mut *TASKS_BUF.unwrap() };
+        let colors = unsafe { &mut *COLORS_BUF.unwrap() };
 
-        // Fetch data
+        // Fetch data (always needed for CPU history + task tracking)
         fetch_cpu(cpu_st);
         hist.push(cpu_st);
-        let tasks = fetch_tasks(tbuf, prev, cpu_st.total_sched_ticks);
+        fetch_tasks(tbuf, prev, cpu_st.total_sched_ticks, tasks);
 
-        // Cache icons
-        for task in &tasks {
-            if let Ok(name) = core::str::from_utf8(&task.name[..task.name_len]) {
-                ensure_icon_cached(cache, name);
-            }
-        }
+        let active_tab = seg.get_state();
 
         // ── Update uptime label ──
         {
@@ -422,114 +428,133 @@ fn main() {
             }
         }
 
-        // ── Update processes tab ──
-        {
-            let mut ibuf = [0u8; 32];
-            let mut p = 0;
-            let mut t = [0u8; 12];
-            let s = fmt_u32(&mut t, tasks.len() as u32); ibuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-            ibuf[p..p + 11].copy_from_slice(b" proc  CPU:"); p += 11;
-            let s = fmt_u32(&mut t, cpu_st.overall_pct); ibuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-            ibuf[p] = b'%'; p += 1;
-            if let Ok(s) = core::str::from_utf8(&ibuf[..p]) {
-                proc_info_label.set_text(s);
-            }
-        }
-
-        // Build row data into a flat encoded buffer (0x1E = row sep, 0x1F = col sep)
-        let mut buf = Vec::new();
-        for (ri, task) in tasks.iter().enumerate() {
-            if ri > 0 { buf.push(0x1E); }
-            // TID
-            let mut t = [0u8; 12];
-            let s = fmt_u32(&mut t, task.tid);
-            buf.extend_from_slice(s.as_bytes());
-            buf.push(0x1F);
-            // Process name
-            buf.extend_from_slice(&task.name[..task.name_len]);
-            buf.push(0x1F);
-            // User
+        // ── Update processes tab (incremental) ──
+        if active_tab == 0 {
+            // Status bar
             {
-                let mut ubuf = [0u8; 16];
-                let nlen = process::getusername(task.uid, &mut ubuf);
-                if nlen != u32::MAX && nlen > 0 {
-                    buf.extend_from_slice(&ubuf[..nlen as usize]);
-                } else {
-                    buf.push(b'?');
+                let mut ibuf = [0u8; 32];
+                let mut p = 0;
+                let mut t = [0u8; 12];
+                let s = fmt_u32(&mut t, tasks.len() as u32); ibuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
+                ibuf[p..p + 11].copy_from_slice(b" proc  CPU:"); p += 11;
+                let s = fmt_u32(&mut t, cpu_st.overall_pct); ibuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
+                ibuf[p] = b'%'; p += 1;
+                if let Ok(s) = core::str::from_utf8(&ibuf[..p]) {
+                    proc_info_label.set_text(s);
                 }
             }
-            buf.push(0x1F);
-            // State
-            let state_str = match task.state {
-                0 => b"Ready" as &[u8],
-                1 => b"Running",
-                2 => b"Blocked",
-                3 => b"Terminated",
-                _ => b"Unknown",
-            };
-            buf.extend_from_slice(state_str);
-            buf.push(0x1F);
-            // Arch
-            let arch_str = if task.arch == 1 { b"x86" as &[u8] } else { b"x86_64" };
-            buf.extend_from_slice(arch_str);
-            buf.push(0x1F);
-            // CPU%
-            {
-                let mut cbuf = [0u8; 12];
-                let s = if task.cpu_pct_x10 > 0 {
-                    fmt_pct(&mut cbuf, task.cpu_pct_x10)
-                } else {
-                    "0.0%"
+
+            let old_count = unsafe { PREV_PROC_COUNT };
+            let new_count = tasks.len();
+            if new_count != old_count {
+                proc_grid.set_row_count(new_count as u32);
+            }
+
+            let mut colors_dirty = false;
+            let col_count = 8usize;
+            let needed = new_count * col_count;
+            colors.clear();
+            colors.resize(needed, 0u32);
+
+            for (ri, task) in tasks.iter().enumerate() {
+                let old_tid = prev_tids.get(ri).copied().unwrap_or(u32::MAX);
+                let old_state = prev_states.get(ri).copied().unwrap_or(255);
+                let is_new = ri >= old_count || old_tid != task.tid;
+
+                // Static columns: only when process is new or TID changed
+                if is_new {
+                    let mut t = [0u8; 12];
+                    let s = fmt_u32(&mut t, task.tid);
+                    proc_grid.set_cell(ri as u32, 0, s);
+                    proc_grid.set_cell(ri as u32, 1, core::str::from_utf8(&task.name[..task.name_len]).unwrap_or(""));
+                    {
+                        let mut ubuf = [0u8; 16];
+                        let nlen = process::getusername(task.uid, &mut ubuf);
+                        if nlen != u32::MAX && nlen > 0 {
+                            if let Ok(s) = core::str::from_utf8(&ubuf[..nlen as usize]) {
+                                proc_grid.set_cell(ri as u32, 2, s);
+                            }
+                        } else {
+                            proc_grid.set_cell(ri as u32, 2, "?");
+                        }
+                    }
+                    let arch_str = if task.arch == 1 { "x86" } else { "x86_64" };
+                    proc_grid.set_cell(ri as u32, 4, arch_str);
+                    {
+                        let mut t = [0u8; 12];
+                        let s = fmt_u32(&mut t, task.priority as u32);
+                        proc_grid.set_cell(ri as u32, 7, s);
+                    }
+
+                    // Icon only for new processes
+                    if let Ok(name) = core::str::from_utf8(&task.name[..task.name_len]) {
+                        ensure_icon_cached(cache, name);
+                        if let Some(pixels) = find_icon(cache, name) {
+                            proc_grid.set_cell_icon(ri as u32, 1, pixels, ICON_SIZE, ICON_SIZE);
+                        }
+                    }
+                }
+
+                // State: only when changed
+                if is_new || old_state != task.state {
+                    let state_str = match task.state {
+                        0 => "Ready",
+                        1 => "Running",
+                        2 => "Blocked",
+                        3 => "Terminated",
+                        _ => "Unknown",
+                    };
+                    proc_grid.set_cell(ri as u32, 3, state_str);
+                    colors_dirty = true;
+                }
+
+                // Volatile columns: always update (but set_cell checks for changes)
+                {
+                    let mut cbuf = [0u8; 12];
+                    let s = if task.cpu_pct_x10 > 0 {
+                        fmt_pct(&mut cbuf, task.cpu_pct_x10)
+                    } else {
+                        "0.0%"
+                    };
+                    proc_grid.set_cell(ri as u32, 5, s);
+                }
+                {
+                    let mut mbuf = [0u8; 16];
+                    let s = fmt_mem_pages(&mut mbuf, task.user_pages);
+                    proc_grid.set_cell(ri as u32, 6, s);
+                }
+
+                // Build colors row
+                let state_color = match task.state {
+                    0 => 0xFFFFD60A,
+                    1 => 0xFF30D158,
+                    2 => 0xFFFF3B30,
+                    3 => 0xFF8E8E93,
+                    _ => 0xFF8E8E93,
                 };
-                buf.extend_from_slice(s.as_bytes());
-            }
-            buf.push(0x1F);
-            // Memory
-            {
-                let mut mbuf = [0u8; 16];
-                let s = fmt_mem_pages(&mut mbuf, task.user_pages);
-                buf.extend_from_slice(s.as_bytes());
-            }
-            buf.push(0x1F);
-            // Priority
-            {
-                let mut pbuf = [0u8; 12];
-                let s = fmt_u32(&mut pbuf, task.priority as u32);
-                buf.extend_from_slice(s.as_bytes());
-            }
-        }
-
-        proc_grid.set_data_raw(&buf);
-
-        // Set icons for Process column (column 1)
-        for (ri, task) in tasks.iter().enumerate() {
-            if let Ok(name) = core::str::from_utf8(&task.name[..task.name_len]) {
-                if let Some(pixels) = find_icon(cache, name) {
-                    proc_grid.set_cell_icon(ri as u32, 1, pixels, ICON_SIZE, ICON_SIZE);
+                colors[ri * col_count + 3] = state_color;
+                if task.arch == 1 {
+                    colors[ri * col_count + 4] = 0xFFFF9500;
                 }
             }
-        }
 
-        // State colors
-        let col_count = 8u32;
-        let mut colors = vec![0u32; tasks.len() * col_count as usize];
-        for (ri, task) in tasks.iter().enumerate() {
-            let state_color = match task.state {
-                0 => 0xFFFFD60A,  // Ready = yellow
-                1 => 0xFF30D158,  // Running = green
-                2 => 0xFFFF3B30,  // Blocked = red
-                3 => 0xFF8E8E93,  // Terminated = gray
-                _ => 0xFF8E8E93,
-            };
-            colors[ri * col_count as usize + 3] = state_color; // State column
-            if task.arch == 1 {
-                colors[ri * col_count as usize + 4] = 0xFFFF9500; // Arch column for x86
+            // Colors: only update when something changed (set_cell_colors checks equality)
+            if colors_dirty || new_count != old_count {
+                proc_grid.set_cell_colors(&colors);
             }
+
+            // Update tracking state
+            prev_tids.clear();
+            prev_states.clear();
+            for task in tasks.iter() {
+                prev_tids.push(task.tid);
+                prev_states.push(task.state);
+            }
+            unsafe { PREV_PROC_COUNT = new_count; }
         }
-        proc_grid.set_cell_colors(&colors);
 
         // ── Update graphs tab ──
-        {
+        if active_tab == 1 {
             let ncpu = (cpu_st.num_cpus as usize).max(1).min(MAX_CPUS);
             let mut gbuf = [0u8; 24];
             let mut p = 0;
@@ -544,7 +569,6 @@ fn main() {
             }
             graph_bar.set_state(cpu_st.overall_pct);
 
-            // Draw CPU graphs on canvas (dynamic size via docking)
             let cw = cpu_canvas.get_stride();
             let ch = cpu_canvas.get_height();
             cpu_canvas.clear(0xFF1A1A1A);
@@ -567,11 +591,11 @@ fn main() {
             }
         }
 
-        // ── Update disk tab ──
-        {
+        // ── Update disk tab (incremental) ──
+        if active_tab == 2 {
             let mut total_read: u64 = 0;
             let mut total_write: u64 = 0;
-            for t in &tasks {
+            for t in tasks.iter() {
                 total_read += t.io_read_bytes;
                 total_write += t.io_write_bytes;
             }
@@ -590,36 +614,36 @@ fn main() {
                 disk_summary.set_text(s);
             }
 
-            // Build disk grid data (only processes with I/O)
-            let mut dbuf = Vec::new();
-            let mut first = true;
-            for task in &tasks {
+            // Incremental disk grid update (no Vec allocation)
+            let new_disk_count = tasks.iter().filter(|t| t.io_read_bytes > 0 || t.io_write_bytes > 0).count();
+            let old_disk_count = unsafe { PREV_DISK_COUNT };
+            if new_disk_count != old_disk_count {
+                disk_grid.set_row_count(new_disk_count as u32);
+            }
+            let mut ri = 0u32;
+            for task in tasks.iter() {
                 if task.io_read_bytes == 0 && task.io_write_bytes == 0 { continue; }
-                if !first { dbuf.push(0x1E); }
-                first = false;
-                // TID
                 let mut t = [0u8; 12];
                 let s = fmt_u32(&mut t, task.tid);
-                dbuf.extend_from_slice(s.as_bytes());
-                dbuf.push(0x1F);
-                // Process
-                dbuf.extend_from_slice(&task.name[..task.name_len]);
-                dbuf.push(0x1F);
-                // Read
-                let mut rb = [0u8; 20];
-                let rs = fmt_bytes(&mut rb, task.io_read_bytes);
-                dbuf.extend_from_slice(rs.as_bytes());
-                dbuf.push(0x1F);
-                // Written
-                let mut wb = [0u8; 20];
-                let ws = fmt_bytes(&mut wb, task.io_write_bytes);
-                dbuf.extend_from_slice(ws.as_bytes());
+                disk_grid.set_cell(ri, 0, s);
+                disk_grid.set_cell(ri, 1, core::str::from_utf8(&task.name[..task.name_len]).unwrap_or(""));
+                {
+                    let mut rb = [0u8; 20];
+                    let rs = fmt_bytes(&mut rb, task.io_read_bytes);
+                    disk_grid.set_cell(ri, 2, rs);
+                }
+                {
+                    let mut wb = [0u8; 20];
+                    let ws = fmt_bytes(&mut wb, task.io_write_bytes);
+                    disk_grid.set_cell(ri, 3, ws);
+                }
+                ri += 1;
             }
-            disk_grid.set_data_raw(&dbuf);
+            unsafe { PREV_DISK_COUNT = new_disk_count; }
         }
 
-        // ── Update system tab (individual card labels) ──
-        {
+        // ── Update system tab ──
+        if active_tab == 3 {
             let hw = fetch_hwinfo();
             let mut t = [0u8; 12];
 

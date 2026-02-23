@@ -132,36 +132,145 @@ pub(crate) fn state() -> &'static mut AnyuiState {
     unsafe { STATE.as_mut().expect("anyui not initialized") }
 }
 
-// ── Allocator (bump allocator via sbrk) ──────────────────────────────
+// ── Allocator (free-list with coalescing via sbrk) ───────────────────
 
 mod allocator {
     use core::alloc::{GlobalAlloc, Layout};
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::ptr;
 
-    struct BumpAllocator;
+    struct FreeListAllocator;
 
-    unsafe impl GlobalAlloc for BumpAllocator {
+    static LOCK: AtomicBool = AtomicBool::new(false);
+    static mut HEAP_POS: u64 = 0;
+    static mut HEAP_END: u64 = 0;
+
+    #[repr(C)]
+    struct FreeBlock {
+        size: usize,
+        next: *mut FreeBlock,
+    }
+
+    static mut FREE_LIST: *mut FreeBlock = ptr::null_mut();
+
+    const MIN_BLOCK: usize = 16;
+
+    #[inline]
+    fn align_up(value: usize, align: usize) -> usize {
+        (value + align - 1) & !(align - 1)
+    }
+
+    #[inline]
+    fn block_size(layout: Layout) -> usize {
+        align_up(layout.size().max(MIN_BLOCK), layout.align().max(16))
+    }
+
+    unsafe impl GlobalAlloc for FreeListAllocator {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            let align = layout.align();
-            let size = layout.size();
+            let size = block_size(layout);
 
-            let brk = crate::syscall::sbrk(0) as usize;
-            let aligned = (brk + align - 1) & !(align - 1);
-            let needed = aligned - brk + size;
-
-            let new_brk = crate::syscall::sbrk(needed as u32) as usize;
-            if new_brk == 0 || new_brk == usize::MAX {
-                return core::ptr::null_mut();
+            while LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+                core::hint::spin_loop();
             }
+
+            // Initialize heap position on first call
+            if HEAP_POS == 0 {
+                let brk = crate::syscall::sbrk(0);
+                if brk == u64::MAX { LOCK.store(false, Ordering::Release); return ptr::null_mut(); }
+                HEAP_POS = brk;
+                HEAP_END = brk;
+            }
+
+            // 1) Search free list for first fit
+            let mut prev: *mut FreeBlock = ptr::null_mut();
+            let mut curr = FREE_LIST;
+            while !curr.is_null() {
+                if (*curr).size >= size {
+                    let remaining = (*curr).size - size;
+                    if remaining >= MIN_BLOCK + 8 {
+                        let new_free = (curr as *mut u8).add(size) as *mut FreeBlock;
+                        (*new_free).size = remaining;
+                        (*new_free).next = (*curr).next;
+                        if prev.is_null() { FREE_LIST = new_free; } else { (*prev).next = new_free; }
+                    } else {
+                        if prev.is_null() { FREE_LIST = (*curr).next; } else { (*prev).next = (*curr).next; }
+                    }
+                    LOCK.store(false, Ordering::Release);
+                    return curr as *mut u8;
+                }
+                prev = curr;
+                curr = (*curr).next;
+            }
+
+            // 2) Allocate from sbrk
+            let align = layout.align().max(16) as u64;
+            let aligned = (HEAP_POS + align - 1) & !(align - 1);
+            let new_pos = aligned + size as u64;
+
+            if new_pos > HEAP_END {
+                let grow = ((new_pos - HEAP_END + 4095) & !4095) as u32;
+                let result = crate::syscall::sbrk(grow);
+                if result == u64::MAX {
+                    LOCK.store(false, Ordering::Release);
+                    return ptr::null_mut();
+                }
+                let grow = grow as u64;
+                if result == HEAP_END {
+                    HEAP_END += grow;
+                } else {
+                    HEAP_END = result + grow;
+                    let aligned = (result + align - 1) & !(align - 1);
+                    let new_pos = aligned + size as u64;
+                    HEAP_POS = new_pos;
+                    LOCK.store(false, Ordering::Release);
+                    return aligned as *mut u8;
+                }
+            }
+
+            HEAP_POS = new_pos;
+            LOCK.store(false, Ordering::Release);
             aligned as *mut u8
         }
 
-        unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
-            // Bump allocator never frees
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            if ptr.is_null() { return; }
+            let size = block_size(layout);
+
+            while LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+                core::hint::spin_loop();
+            }
+
+            let block = ptr as *mut FreeBlock;
+            (*block).size = size;
+
+            // Insert sorted by address
+            let mut prev: *mut FreeBlock = ptr::null_mut();
+            let mut curr = FREE_LIST;
+            while !curr.is_null() && (curr as usize) < (block as usize) {
+                prev = curr;
+                curr = (*curr).next;
+            }
+
+            (*block).next = curr;
+            if prev.is_null() { FREE_LIST = block; } else { (*prev).next = block; }
+
+            // Coalesce with next
+            if !curr.is_null() && (block as *mut u8).add((*block).size) == curr as *mut u8 {
+                (*block).size += (*curr).size;
+                (*block).next = (*curr).next;
+            }
+            // Coalesce with prev
+            if !prev.is_null() && (prev as *mut u8).add((*prev).size) == block as *mut u8 {
+                (*prev).size += (*block).size;
+                (*prev).next = (*block).next;
+            }
+
+            LOCK.store(false, Ordering::Release);
         }
     }
 
     #[global_allocator]
-    static ALLOCATOR: BumpAllocator = BumpAllocator;
+    static ALLOCATOR: FreeListAllocator = FreeListAllocator;
 }
 
 // ── Panic handler ────────────────────────────────────────────────────
@@ -536,9 +645,12 @@ pub extern "C" fn anyui_set_orientation(id: ControlId, orientation: u32) {
             ControlKind::SplitView => {
                 let raw: *mut dyn Control = &mut **ctrl;
                 let sv = unsafe { &mut *(raw as *mut controls::split_view::SplitView) };
-                sv.orientation = Orientation::from_u32(orientation);
-                sv.sync_divider();
-                sv.base.dirty = true;
+                let new_orient = Orientation::from_u32(orientation);
+                if sv.orientation != new_orient {
+                    sv.orientation = new_orient;
+                    sv.sync_divider();
+                    sv.base.dirty = true;
+                }
             }
             _ => {}
         }
@@ -589,10 +701,12 @@ pub extern "C" fn anyui_set_split_ratio(id: ControlId, ratio: u32) {
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(sv) = as_split_view(ctrl) {
             let r = ratio.min(100);
-            sv.split_ratio = r;
-            sv.sync_divider();
-            sv.base.state = r;
-            sv.base.dirty = true;
+            if sv.split_ratio != r {
+                sv.split_ratio = r;
+                sv.sync_divider();
+                sv.base.state = r;
+                sv.base.dirty = true;
+            }
         }
     }
 }
@@ -634,8 +748,11 @@ pub extern "C" fn anyui_textfield_set_prefix(id: ControlId, icon_code: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(tf) = as_textfield(ctrl) {
-            tf.prefix_icon = if icon_code == 0 { None } else { Some(icon_code) };
-            tf.text_base.base.dirty = true;
+            let new_val = if icon_code == 0 { None } else { Some(icon_code) };
+            if tf.prefix_icon != new_val {
+                tf.prefix_icon = new_val;
+                tf.text_base.base.dirty = true;
+            }
         }
     }
 }
@@ -645,8 +762,11 @@ pub extern "C" fn anyui_textfield_set_postfix(id: ControlId, icon_code: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(tf) = as_textfield(ctrl) {
-            tf.postfix_icon = if icon_code == 0 { None } else { Some(icon_code) };
-            tf.text_base.base.dirty = true;
+            let new_val = if icon_code == 0 { None } else { Some(icon_code) };
+            if tf.postfix_icon != new_val {
+                tf.postfix_icon = new_val;
+                tf.text_base.base.dirty = true;
+            }
         }
     }
 }
@@ -656,8 +776,11 @@ pub extern "C" fn anyui_textfield_set_password(id: ControlId, enabled: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(tf) = as_textfield(ctrl) {
-            tf.password_mode = enabled != 0;
-            tf.text_base.base.dirty = true;
+            let new_val = enabled != 0;
+            if tf.password_mode != new_val {
+                tf.password_mode = new_val;
+                tf.text_base.base.dirty = true;
+            }
         }
     }
 }
@@ -667,12 +790,16 @@ pub extern "C" fn anyui_textfield_set_placeholder(id: ControlId, text: *const u8
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(tf) = as_textfield(ctrl) {
-            tf.placeholder.clear();
-            if !text.is_null() && len > 0 {
-                let slice = unsafe { core::slice::from_raw_parts(text, len as usize) };
-                tf.placeholder.extend_from_slice(slice);
+            let new_text = if !text.is_null() && len > 0 {
+                unsafe { core::slice::from_raw_parts(text, len as usize) }
+            } else {
+                &[]
+            };
+            if tf.placeholder.as_slice() != new_text {
+                tf.placeholder.clear();
+                tf.placeholder.extend_from_slice(new_text);
+                tf.text_base.base.dirty = true;
             }
-            tf.text_base.base.dirty = true;
         }
     }
 }
@@ -955,8 +1082,10 @@ pub extern "C" fn anyui_imageview_set_scale_mode(id: ControlId, mode: u32) {
         if ctrl.kind() == ControlKind::ImageView {
             let raw: *mut dyn Control = &mut **ctrl;
             let iv = unsafe { &mut *(raw as *mut controls::image_view::ImageView) };
-            iv.scale_mode = mode;
-            iv.base.dirty = true;
+            if iv.scale_mode != mode {
+                iv.scale_mode = mode;
+                iv.base.dirty = true;
+            }
         }
     }
 }
@@ -1154,10 +1283,12 @@ pub extern "C" fn anyui_datagrid_set_selected_row(id: ControlId, row: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(dg) = as_data_grid(ctrl) {
-            dg.clear_selection();
-            dg.set_row_selected(row as usize, true);
-            dg.base.state = row;
-            dg.base.dirty = true;
+            if dg.base.state != row {
+                dg.clear_selection();
+                dg.set_row_selected(row as usize, true);
+                dg.base.state = row;
+                dg.base.dirty = true;
+            }
         }
     }
 }
@@ -1193,8 +1324,11 @@ pub extern "C" fn anyui_datagrid_set_row_height(id: ControlId, height: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(dg) = as_data_grid(ctrl) {
-            dg.row_height = height.max(16);
-            dg.base.dirty = true;
+            let h = height.max(16);
+            if dg.row_height != h {
+                dg.row_height = h;
+                dg.base.dirty = true;
+            }
         }
     }
 }
@@ -1204,8 +1338,11 @@ pub extern "C" fn anyui_datagrid_set_header_height(id: ControlId, height: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(dg) = as_data_grid(ctrl) {
-            dg.header_height = height.max(16);
-            dg.base.dirty = true;
+            let h = height.max(16);
+            if dg.header_height != h {
+                dg.header_height = h;
+                dg.base.dirty = true;
+            }
         }
     }
 }
@@ -1323,8 +1460,11 @@ pub extern "C" fn anyui_texteditor_set_line_height(id: ControlId, height: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(te) = as_text_editor(ctrl) {
-            te.line_height = height.max(12);
-            te.base.dirty = true;
+            let h = height.max(12);
+            if te.line_height != h {
+                te.line_height = h;
+                te.base.dirty = true;
+            }
         }
     }
 }
@@ -1344,8 +1484,11 @@ pub extern "C" fn anyui_texteditor_set_show_line_numbers(id: ControlId, show: u3
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(te) = as_text_editor(ctrl) {
-            te.show_line_numbers = show != 0;
-            te.base.dirty = true;
+            let new_val = show != 0;
+            if te.show_line_numbers != new_val {
+                te.show_line_numbers = new_val;
+                te.base.dirty = true;
+            }
         }
     }
 }
@@ -1355,11 +1498,15 @@ pub extern "C" fn anyui_texteditor_set_font(id: ControlId, font_id: u32, font_si
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(te) = as_text_editor(ctrl) {
-            te.font_id = font_id as u16;
-            te.font_size = font_size as u16;
-            let (cw, _) = crate::draw::measure_text_ex(b"M", te.font_id, te.font_size);
-            te.char_width = if cw > 0 { cw } else { 8 };
-            te.base.dirty = true;
+            let fid = font_id as u16;
+            let fsz = font_size as u16;
+            if te.font_id != fid || te.font_size != fsz {
+                te.font_id = fid;
+                te.font_size = fsz;
+                let (cw, _) = crate::draw::measure_text_ex(b"M", te.font_id, te.font_size);
+                te.char_width = if cw > 0 { cw } else { 8 };
+                te.base.dirty = true;
+            }
         }
     }
 }
@@ -1556,8 +1703,11 @@ pub extern "C" fn anyui_treeview_set_indent_width(id: ControlId, width: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(tv) = as_tree_view(ctrl) {
-            tv.indent_width = width.max(8);
-            tv.base.dirty = true;
+            let w = width.max(8);
+            if tv.indent_width != w {
+                tv.indent_width = w;
+                tv.base.dirty = true;
+            }
         }
     }
 }
@@ -1567,8 +1717,11 @@ pub extern "C" fn anyui_treeview_set_row_height(id: ControlId, height: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(tv) = as_tree_view(ctrl) {
-            tv.row_height = height.max(16);
-            tv.base.dirty = true;
+            let h = height.max(16);
+            if tv.row_height != h {
+                tv.row_height = h;
+                tv.base.dirty = true;
+            }
         }
     }
 }

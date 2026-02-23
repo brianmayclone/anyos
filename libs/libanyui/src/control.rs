@@ -428,11 +428,13 @@ impl TextControlBase {
         self
     }
 
-    /// Set the text content.
+    /// Set the text content. Only marks dirty if text actually changed.
     pub fn set_text(&mut self, t: &[u8]) {
-        self.text.clear();
-        self.text.extend_from_slice(t);
-        self.base.dirty = true;
+        if self.text.as_slice() != t {
+            self.text.clear();
+            self.text.extend_from_slice(t);
+            self.base.dirty = true;
+        }
     }
 
     /// Effective text color: uses text_style override or theme default.

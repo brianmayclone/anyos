@@ -2,10 +2,10 @@ use alloc::vec::Vec;
 use anyos_std::sys;
 use crate::types::*;
 
-pub fn fetch_tasks(buf: &mut [u8; THREAD_ENTRY_SIZE * 64], prev: &mut PrevTicks, total_sched_ticks: u32) -> Vec<TaskEntry> {
-    let mut result = Vec::new();
+pub fn fetch_tasks(buf: &mut [u8; THREAD_ENTRY_SIZE * 64], prev: &mut PrevTicks, total_sched_ticks: u32, result: &mut Vec<TaskEntry>) {
+    result.clear();
     let count = sys::sysinfo(1, buf);
-    if count == u32::MAX { return result; }
+    if count == u32::MAX { return; }
 
     let dt = total_sched_ticks.wrapping_sub(prev.prev_total);
 
@@ -59,8 +59,6 @@ pub fn fetch_tasks(buf: &mut [u8; THREAD_ENTRY_SIZE * 64], prev: &mut PrevTicks,
         prev.count += 1;
     }
     prev.prev_total = total_sched_ticks;
-
-    result
 }
 
 pub fn fetch_memory() -> Option<MemInfo> {
