@@ -314,6 +314,8 @@ fn main() {
                 trigger_git_refresh();
             }
             s.status.set_branch("");
+            // Start terminal shell for the new project
+            s.output.start_shell(&folder);
             update_status();
         }
     });

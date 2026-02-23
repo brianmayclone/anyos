@@ -125,8 +125,14 @@ impl OutputPanel {
 
     /// Start the shell process (/System/bin/sh) with piped I/O.
     pub fn start_shell(&mut self, working_dir: &str) {
+        // Kill existing shell if running
         if self.shell_tid != 0 {
-            return; // already running
+            anyos_std::process::kill(self.shell_tid);
+            anyos_std::ipc::pipe_close(self.shell_stdout_pipe);
+            anyos_std::ipc::pipe_close(self.shell_stdin_pipe);
+            self.shell_tid = 0;
+            self.shell_stdout_pipe = 0;
+            self.shell_stdin_pipe = 0;
         }
         let stdout_pipe = anyos_std::ipc::pipe_create("anycode:term:out");
         let stdin_pipe = anyos_std::ipc::pipe_create("anycode:term:in");
@@ -136,7 +142,7 @@ impl OutputPanel {
 
         anyos_std::fs::chdir(working_dir);
         let tid = anyos_std::process::spawn_piped_full(
-            "/System/bin/sh", "", stdout_pipe, stdin_pipe,
+            "/System/bin/sh", "sh -i", stdout_pipe, stdin_pipe,
         );
         if tid == u32::MAX {
             anyos_std::ipc::pipe_close(stdout_pipe);
@@ -154,7 +160,11 @@ impl OutputPanel {
         if self.shell_stdin_pipe == 0 {
             return;
         }
-        // Send command + newline
+        // Echo command to terminal area
+        self.append_terminal("$ ");
+        self.append_terminal(cmd);
+        self.append_terminal("\n");
+        // Send command + newline to shell
         let mut buf = [0u8; 512];
         let len = cmd.len().min(buf.len() - 1);
         buf[..len].copy_from_slice(&cmd.as_bytes()[..len]);

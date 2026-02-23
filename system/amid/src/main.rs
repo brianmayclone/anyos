@@ -26,10 +26,10 @@ const DB_DIR: &str = "/System/sysdb";
 const PIPE_NAME: &str = "ami";
 
 /// Fast refresh interval (memory, CPU, threads) in milliseconds.
-const FAST_INTERVAL_MS: u32 = 2000;
+const FAST_INTERVAL_MS: u32 = 30000;
 
 /// Slow refresh interval (devices, disks, network, services) in milliseconds.
-const SLOW_INTERVAL_MS: u32 = 10000;
+const SLOW_INTERVAL_MS: u32 = 30000;
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
@@ -141,11 +141,12 @@ fn main() {
         }
 
         // Sleep to avoid busy-waiting.
-        // 200ms idle is fine — ami clients wait up to 3s for responses.
         if active {
-            anyos_std::process::sleep(50);
+            anyos_std::process::sleep(100);
         } else {
-            anyos_std::process::sleep(200);
+            // Idle: sleep 1s — data only refreshes every 30s anyway.
+            // Pipe requests are checked each wake-up which is frequent enough.
+            anyos_std::process::sleep(1000);
         }
     }
 }
