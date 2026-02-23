@@ -273,6 +273,9 @@ pub fn run_once() -> u32 {
                                                 if dc_resp.fire_change {
                                                     fire_event_callback(&st.controls, target_id, control::EVENT_CHANGE, &mut pending_cbs);
                                                 }
+                                                if dc_resp.fire_submit {
+                                                    fire_event_callback(&st.controls, target_id, control::EVENT_SUBMIT, &mut pending_cbs);
+                                                }
                                             }
                                             st.last_click_id = None;
                                             st.last_click_tick = 0;
@@ -475,39 +478,67 @@ fn fire_event_callback(
     }
 }
 
+/// Build a cascaded tab sort key for a control: (parent_tab_index, own_tab_index, insertion_order).
+/// This ensures controls are grouped by parent tab_index first, then sorted within the group.
+fn tab_sort_key(controls: &[Box<dyn control::Control>], id: ControlId, insertion_idx: usize) -> (u32, u32, usize) {
+    let own = control::find_idx(controls, id)
+        .map(|i| controls[i].base().tab_index)
+        .unwrap_or(0);
+    let parent_id = control::find_idx(controls, id)
+        .map(|i| controls[i].parent_id())
+        .unwrap_or(0);
+    let parent_tab = control::find_idx(controls, parent_id)
+        .map(|i| controls[i].base().tab_index)
+        .unwrap_or(0);
+    (parent_tab, own, insertion_idx)
+}
+
 /// Cycle keyboard focus to the next focusable control within the window.
+/// Controls are ordered by cascaded tab_index (parent tab_index, own tab_index, insertion order).
 fn cycle_focus(
     st: &mut crate::AnyuiState,
     win_id: ControlId,
     pending: &mut Vec<PendingCallback>,
 ) {
-    // Collect all focusable controls that belong to this window
-    let focusable: Vec<ControlId> = st.controls.iter()
-        .filter(|c| c.accepts_focus() && c.id() != win_id)
-        .filter(|c| {
-            // Ensure the control belongs to this window by checking ancestry
-            let mut cur = c.parent_id();
-            loop {
-                if cur == win_id { return true; }
-                if cur == 0 { return false; }
-                match control::find_idx(&st.controls, cur) {
-                    Some(idx) => cur = st.controls[idx].parent_id(),
-                    None => return false,
+    // Collect all focusable controls that belong to this window (with insertion index for stable sort)
+    let mut focusable: Vec<(ControlId, usize)> = Vec::new();
+    for (ins_idx, c) in st.controls.iter().enumerate() {
+        if !c.accepts_focus() || c.id() == win_id || !c.base().visible { continue; }
+        // Check that this control belongs to the window
+        let mut cur = c.parent_id();
+        let belongs = loop {
+            if cur == win_id { break true; }
+            if cur == 0 { break false; }
+            match control::find_idx(&st.controls, cur) {
+                Some(idx) => {
+                    // Skip controls whose parent is invisible
+                    if !st.controls[idx].base().visible { break false; }
+                    cur = st.controls[idx].parent_id();
                 }
+                None => break false,
             }
-        })
-        .map(|c| c.id())
-        .collect();
+        };
+        if belongs { focusable.push((c.id(), ins_idx)); }
+    }
 
     if focusable.is_empty() { return; }
 
+    // Sort by cascaded tab_index
+    focusable.sort_by(|a, b| {
+        let ka = tab_sort_key(&st.controls, a.0, a.1);
+        let kb = tab_sort_key(&st.controls, b.0, b.1);
+        ka.cmp(&kb)
+    });
+
+    let ids: Vec<ControlId> = focusable.iter().map(|f| f.0).collect();
+
     // Find current focused index
     let cur_idx = st.focused
-        .and_then(|fid| focusable.iter().position(|&id| id == fid))
+        .and_then(|fid| ids.iter().position(|&id| id == fid))
         .unwrap_or(0);
 
-    let next_idx = (cur_idx + 1) % focusable.len();
-    let next_id = focusable[next_idx];
+    let next_idx = (cur_idx + 1) % ids.len();
+    let next_id = ids[next_idx];
 
     // Blur old
     if let Some(old_id) = st.focused {

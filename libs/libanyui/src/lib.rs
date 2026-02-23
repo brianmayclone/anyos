@@ -1195,6 +1195,28 @@ pub extern "C" fn anyui_datagrid_set_header_height(id: ControlId, height: u32) {
     }
 }
 
+/// Set an icon (ARGB pixels) for a specific cell. The icon is drawn before the text.
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_cell_icon(
+    id: ControlId,
+    row: u32,
+    col: u32,
+    pixels: *const u32,
+    w: u32,
+    h: u32,
+) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            if !pixels.is_null() && w > 0 && h > 0 {
+                let count = (w * h) as usize;
+                let slice = unsafe { core::slice::from_raw_parts(pixels, count) };
+                dg.set_cell_icon(row as usize, col as usize, slice, w as u16, h as u16);
+            }
+        }
+    }
+}
+
 // ── TextEditor ────────────────────────────────────────────────────────
 
 fn as_text_editor(ctrl: &mut alloc::boxed::Box<dyn Control>) -> Option<&mut controls::text_editor::TextEditor> {
@@ -1863,6 +1885,18 @@ pub extern "C" fn anyui_set_focus(id: ControlId) {
     if let Some(idx) = control::find_idx(&st.controls, id) {
         st.controls[idx].handle_focus();
         st.focused = Some(id);
+    }
+}
+
+/// Set the tab focus order index for a control.
+/// Controls with lower tab_index receive focus first when Tab is pressed.
+/// The index is cascaded: parent tab_index sorts first, then child tab_index.
+/// Default is 0 (insertion order).
+#[no_mangle]
+pub extern "C" fn anyui_set_tab_index(id: ControlId, index: u32) {
+    let st = state();
+    if let Some(idx) = control::find_idx(&st.controls, id) {
+        st.controls[idx].base_mut().tab_index = index;
     }
 }
 

@@ -19,6 +19,13 @@ impl CellAlign {
     }
 }
 
+/// Per-cell icon (ARGB pixel data).
+pub struct CellIcon {
+    pub pixels: Vec<u32>,
+    pub width: u16,
+    pub height: u16,
+}
+
 /// Sort direction for a column.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SortDirection {
@@ -57,6 +64,7 @@ pub struct DataGrid {
     display_order: Vec<usize>,
     cell_data: Vec<Vec<u8>>,
     cell_colors: Vec<u32>,
+    cell_icons: Vec<Option<CellIcon>>,
     pub(crate) row_count: usize,
     sort_column: Option<usize>,
     sort_direction: SortDirection,
@@ -79,6 +87,7 @@ impl DataGrid {
             display_order: Vec::new(),
             cell_data: Vec::new(),
             cell_colors: Vec::new(),
+            cell_icons: Vec::new(),
             row_count: 0,
             sort_column: None,
             sort_direction: SortDirection::None,
@@ -181,6 +190,30 @@ impl DataGrid {
     pub fn set_cell_colors(&mut self, colors: &[u32]) {
         self.cell_colors = colors.to_vec();
         self.base.dirty = true;
+    }
+
+    /// Set an icon (ARGB pixels) for a specific cell. The icon is drawn before the text.
+    pub fn set_cell_icon(&mut self, row: usize, col: usize, pixels: &[u32], w: u16, h: u16) {
+        let col_count = self.columns.len().max(1);
+        let idx = row * col_count + col;
+        // Extend the icons vec if needed
+        if idx >= self.cell_icons.len() {
+            self.cell_icons.resize_with(idx + 1, || None);
+        }
+        self.cell_icons[idx] = Some(CellIcon {
+            pixels: pixels.to_vec(),
+            width: w,
+            height: h,
+        });
+        self.base.dirty = true;
+    }
+
+    /// Get the first selected row index, or None.
+    pub fn selected_row(&self) -> Option<usize> {
+        for r in 0..self.row_count {
+            if self.is_row_selected(r) { return Some(r); }
+        }
+        None
     }
 
     // ── Selection ──────────────────────────────────────────────────
@@ -292,6 +325,39 @@ impl DataGrid {
     fn total_columns_width(&self) -> u32 {
         self.display_order.iter().map(|&i| self.columns[i].width).sum()
     }
+
+    /// Find the visual row index of the currently selected data row.
+    fn selected_visual_row(&self) -> Option<usize> {
+        let data_row = self.selected_row()?;
+        if self.sorted_rows.is_empty() {
+            Some(data_row)
+        } else {
+            self.sorted_rows.iter().position(|&r| r == data_row)
+        }
+    }
+
+    /// Select a visual row (handles sort mapping, clears old selection, scrolls into view).
+    fn select_visual_row(&mut self, vis_row: usize) {
+        let data_row = self.data_row(vis_row);
+        self.clear_selection();
+        self.set_row_selected(data_row, true);
+        self.base.state = data_row as u32;
+        self.scroll_to_row(vis_row);
+        self.base.dirty = true;
+    }
+
+    /// Scroll to ensure a visual row is visible.
+    fn scroll_to_row(&mut self, vis_row: usize) {
+        let rh = self.row_height as i32;
+        let row_top = vis_row as i32 * rh;
+        let row_bottom = row_top + rh;
+        let viewport_h = self.base.h as i32 - self.header_height as i32;
+        if row_top < self.scroll_y {
+            self.scroll_y = row_top;
+        } else if row_bottom > self.scroll_y + viewport_h {
+            self.scroll_y = row_bottom - viewport_h;
+        }
+    }
 }
 
 impl Control for DataGrid {
@@ -337,12 +403,27 @@ impl Control for DataGrid {
                     crate::draw::fill_rect(&clipped, x, row_y, w, self.row_height, 0xFF232323);
                 }
 
-                // Cell text
+                // Cell text + icons
                 let mut col_x = x - self.scroll_x;
                 for disp_col in 0..col_count {
                     let logical_col = self.display_order[disp_col];
                     let col = &self.columns[logical_col];
                     let cell_idx = data_row * col_count + logical_col;
+
+                    let cell_clip = clipped.with_clip(col_x, row_y, col.width, self.row_height);
+
+                    // Draw cell icon (if any)
+                    let mut icon_offset: i32 = 0;
+                    if cell_idx < self.cell_icons.len() {
+                        if let Some(ref icon) = self.cell_icons[cell_idx] {
+                            let iw = icon.width as i32;
+                            let ih = icon.height as i32;
+                            let ix = col_x + 4;
+                            let iy = row_y + (self.row_height as i32 - ih) / 2;
+                            crate::draw::blit_argb(&cell_clip, ix, iy, icon.width as u32, icon.height as u32, &icon.pixels);
+                            icon_offset = iw + 4;
+                        }
+                    }
 
                     if cell_idx < self.cell_data.len() && !self.cell_data[cell_idx].is_empty() {
                         let text = &self.cell_data[cell_idx];
@@ -355,10 +436,10 @@ impl Control for DataGrid {
                         };
 
                         let text_x = match col.align {
-                            CellAlign::Left => col_x + 8,
+                            CellAlign::Left => col_x + 8 + icon_offset,
                             CellAlign::Center => {
                                 let (tw, _) = crate::draw::text_size(text);
-                                col_x + (col.width as i32 - tw as i32) / 2
+                                col_x + icon_offset + (col.width as i32 - icon_offset - tw as i32) / 2
                             }
                             CellAlign::Right => {
                                 let (tw, _) = crate::draw::text_size(text);
@@ -366,8 +447,6 @@ impl Control for DataGrid {
                             }
                         };
                         let text_y = row_y + (self.row_height as i32 - 13) / 2;
-                        // Clip text to column bounds to prevent overflow into adjacent columns
-                        let cell_clip = clipped.with_clip(col_x, row_y, col.width, self.row_height);
                         crate::draw::draw_text(&cell_clip, text_x, text_y, color, text);
                     }
 
@@ -578,6 +657,57 @@ impl Control for DataGrid {
             self.hovered_row = None;
             self.base.dirty = true;
         }
+    }
+
+    fn handle_key_down(&mut self, keycode: u32, _char_code: u32) -> EventResponse {
+        match keycode {
+            // Enter (0x1C) → SUBMIT
+            0x1C => {
+                if self.selected_row().is_some() {
+                    return EventResponse::SUBMIT;
+                }
+                EventResponse::CONSUMED
+            }
+            // Up arrow (0x48)
+            0x48 => {
+                if self.row_count == 0 { return EventResponse::CONSUMED; }
+                let vis = self.selected_visual_row().unwrap_or(0);
+                let new_vis = if vis > 0 { vis - 1 } else { 0 };
+                self.select_visual_row(new_vis);
+                EventResponse::CHANGED
+            }
+            // Down arrow (0x50)
+            0x50 => {
+                if self.row_count == 0 { return EventResponse::CONSUMED; }
+                let vis = self.selected_visual_row().unwrap_or(0);
+                let new_vis = if vis + 1 < self.row_count { vis + 1 } else { self.row_count - 1 };
+                self.select_visual_row(new_vis);
+                EventResponse::CHANGED
+            }
+            // Home (0x47)
+            0x47 => {
+                if self.row_count == 0 { return EventResponse::CONSUMED; }
+                self.select_visual_row(0);
+                EventResponse::CHANGED
+            }
+            // End (0x4F)
+            0x4F => {
+                if self.row_count == 0 { return EventResponse::CONSUMED; }
+                self.select_visual_row(self.row_count - 1);
+                EventResponse::CHANGED
+            }
+            _ => EventResponse::IGNORED,
+        }
+    }
+
+    fn handle_double_click(&mut self, _lx: i32, ly: i32, _button: u32) -> EventResponse {
+        // Double-click on a data row → SUBMIT
+        if ly >= self.header_height as i32 {
+            if self.selected_row().is_some() {
+                return EventResponse::SUBMIT;
+            }
+        }
+        EventResponse::CONSUMED
     }
 }
 

@@ -322,6 +322,11 @@ pub struct ControlBase {
     /// Optional ContextMenu control ID to show on right-click.
     pub context_menu: Option<ControlId>,
 
+    /// Tab focus order index. Controls with lower tab_index get focus first.
+    /// 0 means "use insertion order" (default). Cascaded: parent tab_index
+    /// is used as the primary sort key, child tab_index as secondary.
+    pub tab_index: u32,
+
     /// Callback table indexed by event type (EVENT_CLICK=1 .. EVENT_MOUSE_MOVE=16).
     /// Index 0 is unused. Each slot has its own userdata.
     callbacks: [Option<CallbackSlot>; NUM_CALLBACK_SLOTS],
@@ -353,6 +358,7 @@ impl ControlBase {
             max_w: 0,
             max_h: 0,
             context_menu: None,
+            tab_index: 0,
             callbacks: [None; NUM_CALLBACK_SLOTS],
         }
     }

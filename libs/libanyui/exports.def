@@ -89,6 +89,7 @@ EXPORTS
     anyui_datagrid_sort
     anyui_datagrid_set_row_height
     anyui_datagrid_set_header_height
+    anyui_datagrid_set_cell_icon
     anyui_texteditor_set_text
     anyui_texteditor_get_text
     anyui_texteditor_set_syntax
@@ -123,4 +124,5 @@ EXPORTS
     anyui_on_submit
     anyui_set_blur_behind
     anyui_set_focus
+    anyui_set_tab_index
     anyui_screen_size

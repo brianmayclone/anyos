@@ -603,6 +603,44 @@ pub fn blur_rounded_rect(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: i32, ra
     blur_region_rounded(s.pixels, s.width, s.height, x, y, w, h, r, radius, passes);
 }
 
+/// Blit an ARGB pixel buffer with alpha blending onto the surface at (x, y).
+pub fn blit_argb(s: &Surface, x: i32, y: i32, w: u32, h: u32, src: &[u32]) {
+    if w == 0 || h == 0 || src.is_empty() { return; }
+    let sw = s.width as i32;
+    let sh = s.height as i32;
+    let clip_x0 = s.clip_x.max(0);
+    let clip_y0 = s.clip_y.max(0);
+    let clip_x1 = (s.clip_x + s.clip_w as i32).min(sw);
+    let clip_y1 = (s.clip_y + s.clip_h as i32).min(sh);
+    for row in 0..h as i32 {
+        let dy = y + row;
+        if dy < clip_y0 || dy >= clip_y1 { continue; }
+        let src_off = row as usize * w as usize;
+        let x0 = x.max(clip_x0);
+        let x1 = (x + w as i32).min(clip_x1);
+        if x0 >= x1 { continue; }
+        let skip = (x0 - x) as usize;
+        let count = (x1 - x0) as usize;
+        if src_off + skip + count > src.len() { continue; }
+        for col in 0..count {
+            let src_px = src[src_off + skip + col];
+            let alpha = (src_px >> 24) & 0xFF;
+            if alpha == 0 { continue; }
+            let dst_idx = dy as usize * s.width as usize + (x0 as usize + col);
+            if alpha == 255 {
+                unsafe { *s.pixels.add(dst_idx) = src_px; }
+            } else {
+                let dst_px = unsafe { *s.pixels.add(dst_idx) };
+                let inv = 255 - alpha;
+                let r = ((src_px >> 16) & 0xFF) * alpha + ((dst_px >> 16) & 0xFF) * inv;
+                let g = ((src_px >> 8) & 0xFF) * alpha + ((dst_px >> 8) & 0xFF) * inv;
+                let b = (src_px & 0xFF) * alpha + (dst_px & 0xFF) * inv;
+                unsafe { *s.pixels.add(dst_idx) = 0xFF000000 | ((r / 255) << 16) | ((g / 255) << 8) | (b / 255); }
+            }
+        }
+    }
+}
+
 /// Blit a pixel buffer onto the surface at (x, y), clipped to the surface's clip rect.
 pub fn blit_buffer(s: &Surface, x: i32, y: i32, w: u32, h: u32, src: &[u32]) {
     if w == 0 || h == 0 || src.is_empty() { return; }

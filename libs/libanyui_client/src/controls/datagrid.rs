@@ -160,6 +160,26 @@ impl DataGrid {
         });
         (lib().on_change_fn)(self.ctrl.id, thunk, ud);
     }
+
+    /// Register a callback for submit (Enter key or double-click on a row).
+    pub fn on_submit(&self, mut f: impl FnMut(&SelectionChangedEvent) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| {
+            let index = Control::from_id(id).get_state();
+            f(&SelectionChangedEvent { id, index });
+        });
+        (lib().on_submit_fn)(self.ctrl.id, thunk, ud);
+    }
+
+    /// Set an icon (ARGB pixels) for a specific cell.
+    pub fn set_cell_icon(&self, row: u32, col: u32, pixels: &[u32], w: u32, h: u32) {
+        (lib().datagrid_set_cell_icon)(self.ctrl.id, row, col, pixels.as_ptr(), w, h);
+    }
+
+    /// Set all cell data from a pre-encoded byte buffer.
+    /// Rows separated by 0x1E (record separator), columns by 0x1F (unit separator).
+    pub fn set_data_raw(&self, data: &[u8]) {
+        (lib().datagrid_set_data)(self.ctrl.id, data.as_ptr(), data.len() as u32);
+    }
 }
 
 fn write_u32_ascii(buf: &mut Vec<u8>, val: u32) {

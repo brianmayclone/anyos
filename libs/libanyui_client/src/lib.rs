@@ -228,6 +228,7 @@ struct AnyuiLib {
     datagrid_sort: extern "C" fn(u32, u32, u32),
     datagrid_set_row_height: extern "C" fn(u32, u32),
     datagrid_set_header_height: extern "C" fn(u32, u32),
+    datagrid_set_cell_icon: extern "C" fn(u32, u32, u32, *const u32, u32, u32),
     // TextEditor
     texteditor_set_text: extern "C" fn(u32, *const u8, u32),
     texteditor_get_text: extern "C" fn(u32, *mut u8, u32) -> u32,
@@ -267,13 +268,14 @@ struct AnyuiLib {
     set_blur_behind: extern "C" fn(u32, u32),
     // Focus management
     set_focus: extern "C" fn(u32),
+    set_tab_index: extern "C" fn(u32, u32),
     // Screen size
     screen_size: extern "C" fn(*mut u32, *mut u32),
 }
 
 static mut LIB: Option<AnyuiLib> = None;
 
-fn lib() -> &'static AnyuiLib {
+pub fn lib() -> &'static AnyuiLib {
     unsafe { LIB.as_ref().expect("libanyui not loaded") }
 }
 
@@ -400,6 +402,7 @@ pub fn init() -> bool {
             datagrid_sort: resolve(&handle, "anyui_datagrid_sort"),
             datagrid_set_row_height: resolve(&handle, "anyui_datagrid_set_row_height"),
             datagrid_set_header_height: resolve(&handle, "anyui_datagrid_set_header_height"),
+            datagrid_set_cell_icon: resolve(&handle, "anyui_datagrid_set_cell_icon"),
             // TextEditor
             texteditor_set_text: resolve(&handle, "anyui_texteditor_set_text"),
             texteditor_get_text: resolve(&handle, "anyui_texteditor_get_text"),
@@ -439,6 +442,7 @@ pub fn init() -> bool {
             set_blur_behind: resolve(&handle, "anyui_set_blur_behind"),
             // Focus management
             set_focus: resolve(&handle, "anyui_set_focus"),
+            set_tab_index: resolve(&handle, "anyui_set_tab_index"),
             // Screen size
             screen_size: resolve(&handle, "anyui_screen_size"),
             _handle: handle,
@@ -652,6 +656,13 @@ impl Control {
     /// Programmatically set keyboard focus to this control.
     pub fn focus(&self) {
         (lib().set_focus)(self.id);
+    }
+
+    /// Set the tab focus order index. Controls with lower tab_index get focus
+    /// first when Tab is pressed. The index is cascaded: parent tab_index sorts
+    /// first, then child tab_index. Default is 0 (insertion order).
+    pub fn set_tab_index(&self, index: u32) {
+        (lib().set_tab_index)(self.id, index);
     }
 
     // ── Removal ──

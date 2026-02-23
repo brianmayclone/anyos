@@ -138,8 +138,6 @@ pub struct Desktop {
     /// Cascading auto-placement state for new windows.
     pub(crate) cascade_x: i32,
     pub(crate) cascade_y: i32,
-    /// Fade overlay alpha (0 = no overlay, 255 = fully black). Used for login→desktop transition.
-    pub fade_alpha: u8,
 }
 
 impl Desktop {
@@ -195,7 +193,6 @@ impl Desktop {
             crash_dialogs: Vec::new(),
             cascade_x: 120,
             cascade_y: MENUBAR_HEIGHT as i32 + 50,
-            fade_alpha: 0,
         };
 
         if desktop.has_gpu_accel {
@@ -606,18 +603,6 @@ impl Desktop {
     pub fn compose(&mut self) {
         let had_damage = self.compositor.compose();
 
-        // Apply fade overlay (login→desktop transition)
-        if self.fade_alpha > 0 {
-            let alpha = self.fade_alpha as u32;
-            let inv = 255 - alpha;
-            for px in self.compositor.back_buffer.iter_mut() {
-                let r = ((*px >> 16) & 0xFF) * inv / 255;
-                let g = ((*px >> 8) & 0xFF) * inv / 255;
-                let b = (*px & 0xFF) * inv / 255;
-                *px = 0xFF000000 | (r << 16) | (g << 8) | b;
-            }
-        }
-
         if self.compositor.has_hw_cursor() {
             self.compositor.flush_gpu();
         } else {
@@ -639,14 +624,6 @@ impl Desktop {
                     self.compositor.flush_cursor_region(&rect);
                 }
             }
-        }
-    }
-
-    /// Set fade overlay alpha (0 = no overlay, 255 = fully black).
-    pub fn set_fade_overlay(&mut self, alpha: u8) {
-        self.fade_alpha = alpha;
-        if alpha > 0 {
-            self.compositor.damage_all();
         }
     }
 
