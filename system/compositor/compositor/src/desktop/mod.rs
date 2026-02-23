@@ -5,6 +5,7 @@ pub mod cursors;
 pub mod drawing;
 pub mod input;
 pub mod ipc;
+pub mod notifications;
 pub mod theme;
 pub mod window;
 
@@ -135,6 +136,8 @@ pub struct Desktop {
     pub(crate) clipboard_format: u32,
     /// Active crash dialogs (internal windows showing crash info).
     pub(crate) crash_dialogs: Vec<crash_dialog::CrashDialog>,
+    /// Notification banner manager.
+    pub(crate) notifications: notifications::NotificationManager,
     /// Cascading auto-placement state for new windows.
     pub(crate) cascade_x: i32,
     pub(crate) cascade_y: i32,
@@ -194,6 +197,7 @@ impl Desktop {
             clipboard_data: Vec::new(),
             clipboard_format: 0,
             crash_dialogs: Vec::new(),
+            notifications: notifications::NotificationManager::new(),
             cascade_x: 120,
             cascade_y: MENUBAR_HEIGHT as i32 + 50,
             frame_ack_queue: Vec::new(),

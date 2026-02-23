@@ -23,12 +23,14 @@ const CMD_SET_WALLPAPER: u32 = 0x100F;
 const CMD_CREATE_VRAM_WINDOW: u32 = 0x1010;
 const CMD_SET_CLIPBOARD: u32 = 0x1011;
 const CMD_GET_CLIPBOARD: u32 = 0x1012;
+const CMD_SHOW_NOTIFICATION: u32 = 0x1020;
+const CMD_DISMISS_NOTIFICATION: u32 = 0x1021;
 const RESP_WINDOW_CREATED: u32 = 0x2001;
 const RESP_VRAM_WINDOW_CREATED: u32 = 0x2004;
 const RESP_VRAM_WINDOW_FAILED: u32 = 0x2005;
 const RESP_CLIPBOARD_DATA: u32 = 0x2010;
 
-const NUM_EXPORTS: u32 = 20;
+const NUM_EXPORTS: u32 = 22;
 
 #[repr(C)]
 pub struct LibcompositorExports {
@@ -150,6 +152,19 @@ pub struct LibcompositorExports {
     /// Writes clipboard data into out_ptr (up to out_cap bytes).
     /// out_format receives the clipboard format.
     pub get_clipboard: extern "C" fn(channel_id: u32, sub_id: u32, out_ptr: *mut u8, out_cap: u32, out_format: *mut u32) -> u32,
+
+    /// Show a notification banner via the compositor.
+    /// icon_ptr may be null (no icon). timeout_ms=0 means default (5s).
+    pub show_notification: extern "C" fn(
+        channel_id: u32,
+        title_ptr: *const u8, title_len: u32,
+        msg_ptr: *const u8, msg_len: u32,
+        icon_ptr: *const u32,
+        timeout_ms: u32, flags: u32,
+    ),
+
+    /// Dismiss a notification by its ID.
+    pub dismiss_notification: extern "C" fn(channel_id: u32, notification_id: u32),
 }
 
 #[link_section = ".exports"]
@@ -180,6 +195,8 @@ pub static LIBCOMPOSITOR_EXPORTS: LibcompositorExports = LibcompositorExports {
     present_rect: export_present_rect,
     set_clipboard: export_set_clipboard,
     get_clipboard: export_get_clipboard,
+    show_notification: export_show_notification,
+    dismiss_notification: export_dismiss_notification,
 };
 
 // ── Export Implementations ───────────────────────────────────────────────────
@@ -672,4 +689,89 @@ extern "C" fn export_create_vram_window(
     }
 
     0 // Timeout
+}
+
+extern "C" fn export_show_notification(
+    channel_id: u32,
+    title_ptr: *const u8,
+    title_len: u32,
+    msg_ptr: *const u8,
+    msg_len: u32,
+    icon_ptr: *const u32,
+    timeout_ms: u32,
+    _flags: u32,
+) {
+    if title_ptr.is_null() || title_len == 0 {
+        return;
+    }
+
+    let title_len = title_len.min(64);
+    let msg_len = if msg_ptr.is_null() { 0 } else { msg_len.min(128) };
+    let has_icon = !icon_ptr.is_null();
+
+    // Compute SHM layout size:
+    // [title_len:u16, msg_len:u16, has_icon:u8, pad:3, title..., msg..., (align4) icon...]
+    let header = 8u32;
+    let data_end = header + title_len + msg_len;
+    let icon_start = if has_icon { (data_end + 3) & !3 } else { data_end };
+    let total = if has_icon { icon_start + 1024 } else { data_end };
+
+    let shm_id = syscall::shm_create(total);
+    if shm_id == 0 {
+        return;
+    }
+    let shm_addr = syscall::shm_map(shm_id);
+    if shm_addr == 0 {
+        syscall::shm_destroy(shm_id);
+        return;
+    }
+
+    let dst = shm_addr as *mut u8;
+    unsafe {
+        // Header: title_len (u16 LE), msg_len (u16 LE), has_icon (u8), padding (3 bytes)
+        *dst.add(0) = title_len as u8;
+        *dst.add(1) = (title_len >> 8) as u8;
+        *dst.add(2) = msg_len as u8;
+        *dst.add(3) = (msg_len >> 8) as u8;
+        *dst.add(4) = if has_icon { 1 } else { 0 };
+        *dst.add(5) = 0;
+        *dst.add(6) = 0;
+        *dst.add(7) = 0;
+
+        // Title
+        core::ptr::copy_nonoverlapping(title_ptr, dst.add(header as usize), title_len as usize);
+
+        // Message
+        if msg_len > 0 {
+            core::ptr::copy_nonoverlapping(
+                msg_ptr,
+                dst.add((header + title_len) as usize),
+                msg_len as usize,
+            );
+        }
+
+        // Icon (16x16 ARGB = 256 u32 = 1024 bytes)
+        if has_icon {
+            core::ptr::copy_nonoverlapping(
+                icon_ptr as *const u8,
+                dst.add(icon_start as usize),
+                1024,
+            );
+        }
+    }
+
+    // Send CMD_SHOW_NOTIFICATION: [CMD, sender_tid, shm_id, timeout_ms, flags]
+    let tid = syscall::get_tid();
+    let cmd: [u32; 5] = [CMD_SHOW_NOTIFICATION, tid, shm_id, timeout_ms, 0];
+    syscall::evt_chan_emit(channel_id, &cmd);
+
+    // Wait for compositor to read the SHM, then free it
+    syscall::sleep(32);
+    syscall::shm_unmap(shm_id);
+    syscall::shm_destroy(shm_id);
+}
+
+extern "C" fn export_dismiss_notification(channel_id: u32, notification_id: u32) {
+    let cmd: [u32; 5] = [CMD_DISMISS_NOTIFICATION, notification_id, 0, 0, 0];
+    syscall::evt_chan_emit(channel_id, &cmd);
 }

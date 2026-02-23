@@ -86,6 +86,20 @@ pub struct LibcompositorExports {
     ) -> u32,
 
     pub present_rect: extern "C" fn(channel_id: u32, window_id: u32, shm_id: u32, x: u32, y: u32, w: u32, h: u32),
+
+    pub set_clipboard: extern "C" fn(channel_id: u32, data_ptr: *const u8, data_len: u32, format: u32),
+
+    pub get_clipboard: extern "C" fn(channel_id: u32, sub_id: u32, out_ptr: *mut u8, out_cap: u32, out_format: *mut u32) -> u32,
+
+    pub show_notification: extern "C" fn(
+        channel_id: u32,
+        title_ptr: *const u8, title_len: u32,
+        msg_ptr: *const u8, msg_len: u32,
+        icon_ptr: *const u32,
+        timeout_ms: u32, flags: u32,
+    ),
+
+    pub dismiss_notification: extern "C" fn(channel_id: u32, notification_id: u32),
 }
 
 /// Get a reference to the libcompositor export table.

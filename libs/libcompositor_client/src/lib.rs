@@ -36,6 +36,8 @@ pub const EVT_MENU_ITEM: u32 = 0x3008;
 pub const EVT_STATUS_ICON_CLICK: u32 = 0x3009;
 pub const EVT_MOUSE_MOVE: u32 = 0x300A;
 pub const EVT_FRAME_ACK: u32 = 0x300B;
+pub const EVT_NOTIFICATION_CLICK: u32 = 0x3010;
+pub const EVT_NOTIFICATION_DISMISSED: u32 = 0x3011;
 
 /// A handle to a compositor window.
 pub struct WindowHandle {
@@ -311,6 +313,41 @@ impl CompositorClient {
         (raw::exports().set_blur_behind)(self.channel_id, handle.id, radius);
     }
 
+    /// Show a notification banner via the compositor.
+    ///
+    /// The banner appears in the upper-right corner with slide-in animation
+    /// and auto-dismisses after `timeout_ms` (0 = default 5 seconds).
+    /// `icon` is an optional 16x16 ARGB pixel array.
+    pub fn show_notification(
+        &self,
+        title: &str,
+        message: &str,
+        icon: Option<&[u32; 256]>,
+        timeout_ms: u32,
+    ) {
+        let title_bytes = title.as_bytes();
+        let msg_bytes = message.as_bytes();
+        let icon_ptr = match icon {
+            Some(px) => px.as_ptr(),
+            None => core::ptr::null(),
+        };
+        (raw::exports().show_notification)(
+            self.channel_id,
+            title_bytes.as_ptr(),
+            title_bytes.len() as u32,
+            msg_bytes.as_ptr(),
+            msg_bytes.len() as u32,
+            icon_ptr,
+            timeout_ms,
+            0,
+        );
+    }
+
+    /// Dismiss a notification by its ID.
+    pub fn dismiss_notification(&self, notification_id: u32) {
+        (raw::exports().dismiss_notification)(self.channel_id, notification_id);
+    }
+
     /// Set the desktop wallpaper by file path.
     /// The compositor loads the image, scales it to the screen, and recomposes.
     pub fn set_wallpaper(&self, path: &str) {
@@ -458,6 +495,41 @@ impl TrayClient {
         let mut h: u32 = 0;
         (raw::exports().screen_size)(&mut w, &mut h);
         (w, h)
+    }
+
+    /// Show a notification banner via the compositor.
+    ///
+    /// The banner appears in the upper-right corner with slide-in animation
+    /// and auto-dismisses after `timeout_ms` (0 = default 5 seconds).
+    /// `icon` is an optional 16x16 ARGB pixel array.
+    pub fn show_notification(
+        &self,
+        title: &str,
+        message: &str,
+        icon: Option<&[u32; 256]>,
+        timeout_ms: u32,
+    ) {
+        let title_bytes = title.as_bytes();
+        let msg_bytes = message.as_bytes();
+        let icon_ptr = match icon {
+            Some(px) => px.as_ptr(),
+            None => core::ptr::null(),
+        };
+        (raw::exports().show_notification)(
+            self.channel_id,
+            title_bytes.as_ptr(),
+            title_bytes.len() as u32,
+            msg_bytes.as_ptr(),
+            msg_bytes.len() as u32,
+            icon_ptr,
+            timeout_ms,
+            0,
+        );
+    }
+
+    /// Dismiss a notification by its ID.
+    pub fn dismiss_notification(&self, notification_id: u32) {
+        (raw::exports().dismiss_notification)(self.channel_id, notification_id);
     }
 }
 
