@@ -446,6 +446,8 @@ struct ForegroundProcess {
     /// Intermediate pipe IDs from a pipeline (cmd1 | cmd2 | cmd3).
     /// Closed when the pipeline exits.
     extra_pipes: Vec<u32>,
+    /// Output redirect: if set, pipe output goes to file instead of terminal.
+    redirect: Option<Redirect>,
 }
 
 // ─── Environment / PATH helpers ──────────────────────────────────────────────
@@ -840,9 +842,16 @@ impl Shell {
                         buf.write_str(bg_cmd);
                         buf.write_str("\nType 'help' for available commands.\n");
                     } else {
-                        return (true, Some(ForegroundProcess { tid, pipe_id, stdin_pipe, extra_pipes: Vec::new() }), None);
+                        return (true, Some(ForegroundProcess { tid, pipe_id, stdin_pipe, extra_pipes: Vec::new(), redirect: redirect.clone() }), None);
                     }
                 }
+            }
+        }
+
+        // Flush capture buffer for builtin commands with redirect
+        if let Some(captured) = buf.capture.take() {
+            if let Some(ref redir) = redirect {
+                write_redirect(redir, &captured);
             }
         }
 
@@ -851,7 +860,7 @@ impl Shell {
 
     /// Execute a pipeline (cmd1 | cmd2 | cmd3).
     /// Returns a ForegroundProcess tracking the last command + display pipe.
-    fn execute_pipeline(&mut self, line: &str, buf: &mut TerminalBuffer) -> Option<ForegroundProcess> {
+    fn execute_pipeline(&mut self, line: &str, redirect: Option<Redirect>, buf: &mut TerminalBuffer) -> Option<ForegroundProcess> {
         let segments: Vec<&str> = line.split('|').map(|s| s.trim()).collect();
         if segments.len() < 2 {
             return None;
@@ -939,6 +948,7 @@ impl Shell {
             pipe_id: display_pipe,
             stdin_pipe: 0, // pipelines don't get stdin forwarding
             extra_pipes,
+            redirect,
         })
     }
 
@@ -1562,9 +1572,13 @@ fn main() {
                 if n == 0 || n == u32::MAX {
                     break;
                 }
-                buf.current_color = COLOR_FG;
                 if let Ok(s) = core::str::from_utf8(&read_buf[..n as usize]) {
-                    buf.write_str(s);
+                    if let Some(ref redir) = fp.redirect {
+                        write_redirect(redir, s);
+                    } else {
+                        buf.current_color = COLOR_FG;
+                        buf.write_str(s);
+                    }
                 }
                 dirty = true;
             }
@@ -1578,9 +1592,13 @@ fn main() {
                     if n == 0 || n == u32::MAX {
                         break;
                     }
-                    buf.current_color = COLOR_FG;
                     if let Ok(s) = core::str::from_utf8(&read_buf[..n as usize]) {
-                        buf.write_str(s);
+                        if let Some(ref redir) = fp.redirect {
+                            write_redirect(redir, s);
+                        } else {
+                            buf.current_color = COLOR_FG;
+                            buf.write_str(s);
+                        }
                     }
                 }
                 // Copy out pipe IDs before dropping fg_proc
