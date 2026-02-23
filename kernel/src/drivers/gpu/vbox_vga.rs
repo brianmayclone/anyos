@@ -62,6 +62,11 @@ const VBOX_MOUSE_POINTER_SHAPE: u32   = 0x04;
 // VBVA_INFO_SCREEN flags
 const VBVA_SCREEN_F_ACTIVE: u16 = 0x01;
 
+// VBVA_INFO_CAPS flags
+/// Tell VirtualBox the guest renders its own cursor via HGSMI
+/// (disables the host-side cursor overlay that hides the guest cursor).
+const VBVACAPS_DISABLE_CURSOR_INTEGRATION: u32 = 0x08;
+
 // ──────────────────────────────────────────────
 // HGSMI heap layout
 // ──────────────────────────────────────────────
@@ -300,7 +305,7 @@ impl VBoxVgaGpu {
     /// Send VBVA_INFO_CAPS to report guest driver capabilities.
     fn send_info_caps(&mut self) {
         let caps = VbvaInfoCaps {
-            flags: 0, // no special capabilities for V1
+            flags: VBVACAPS_DISABLE_CURSOR_INTEGRATION,
             _reserved: [0; 3],
         };
         let payload = unsafe {

@@ -334,8 +334,7 @@ pub fn init_and_register(pci: &PciDevice) {
             core::mem::size_of::<VMMDevReqMouseStatus>() as u32,
         ),
         mouse_features: VMMDEV_MOUSE_GUEST_CAN_ABSOLUTE
-            | VMMDEV_MOUSE_NEW_PROTOCOL
-            | VMMDEV_MOUSE_GUEST_NEEDS_HOST_CURSOR,
+            | VMMDEV_MOUSE_NEW_PROTOCOL,
         pointer_x: 0,
         pointer_y: 0,
     };
