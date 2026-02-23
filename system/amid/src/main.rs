@@ -1,4 +1,4 @@
-//! ami — Anywhere Management Interface daemon.
+//! amid — Anywhere Management Interface daemon.
 //!
 //! Maintains a system information database at `/System/sysdb/ami.db`
 //! with tables for hardware, CPU, memory, threads, devices, disks,
@@ -34,11 +34,11 @@ const SLOW_INTERVAL_MS: u32 = 10000;
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
-    anyos_std::println!("ami: starting Anywhere Management Interface");
+    anyos_std::println!("amid: starting Anywhere Management Interface");
 
     // Initialize libdb client library
     if !libdb_client::init() {
-        anyos_std::println!("ami: failed to load libdb.so");
+        anyos_std::println!("amid: failed to load libdb.so");
         return;
     }
 
@@ -49,7 +49,7 @@ fn main() {
     let db = match libdb_client::Database::open(DB_PATH) {
         Some(db) => db,
         None => {
-            anyos_std::println!("ami: failed to open database at {}", DB_PATH);
+            anyos_std::println!("amid: failed to open database at {}", DB_PATH);
             return;
         }
     };
@@ -58,14 +58,14 @@ fn main() {
     schema::init_tables(&db);
 
     // Initial data collection — static tables first
-    anyos_std::println!("ami: collecting hardware info");
+    anyos_std::println!("amid: collecting hardware info");
     collect::collect_hw(&db);
 
     // CPU state for delta-based load calculation
     let mut cpu_state = collect::CpuState::new();
 
     // Initial population of all dynamic tables
-    anyos_std::println!("ami: collecting initial data");
+    anyos_std::println!("amid: collecting initial data");
     collect::collect_mem(&db);
     collect::collect_cpu(&db, &mut cpu_state);
     collect::collect_threads(&db);
@@ -77,11 +77,11 @@ fn main() {
     // Create the IPC pipe
     let pipe_id = anyos_std::ipc::pipe_create(PIPE_NAME);
     if pipe_id == 0 {
-        anyos_std::println!("ami: failed to create '{}' pipe", PIPE_NAME);
+        anyos_std::println!("amid: failed to create '{}' pipe", PIPE_NAME);
         return;
     }
 
-    anyos_std::println!("ami: ready (pipe='{}', db='{}')", PIPE_NAME, DB_PATH);
+    anyos_std::println!("amid: ready (pipe='{}', db='{}')", PIPE_NAME, DB_PATH);
 
     // Pipe read buffer
     let mut pipe_buf = [0u8; 4096];

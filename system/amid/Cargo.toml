@@ -1,0 +1,15 @@
+[package]
+name = "amid"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyos_std = { path = "../../libs/stdlib" }
+libdb_client = { path = "../../libs/libdb_client" }
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
+
+[profile.release]
+panic = "abort"

@@ -230,8 +230,10 @@ pub fn draw_rounded_border(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, 
         fill_rect(s, x, y + r as i32, 1, h - r * 2, color);
         fill_rect(s, x + w as i32 - 1, y + r as i32, 1, h - r * 2, color);
     }
-    // Corner arcs — draw only the outermost pixel on each scanline
+    // Corner arcs — draw outermost pixels, connecting to adjacent rows
+    // to avoid gaps where fill_start jumps by >1 between scanlines.
     let r2x4 = (2 * r as i32) * (2 * r as i32);
+    let mut prev_fs = r as i32; // previous row's fill_start (r = "no row yet")
     for dy in 0..r {
         let cy = 2 * dy as i32 + 1 - 2 * r as i32;
         let cy2 = cy * cy;
@@ -245,10 +247,18 @@ pub fn draw_rounded_border(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, 
         }
         if fill_start < r {
             let fs = fill_start as i32;
-            fill_rect(s, x + fs, y + dy as i32, 1, 1, color);
-            fill_rect(s, x + (w - 1 - fill_start) as i32, y + dy as i32, 1, 1, color);
-            fill_rect(s, x + fs, y + (h - 1 - dy) as i32, 1, 1, color);
-            fill_rect(s, x + (w - 1 - fill_start) as i32, y + (h - 1 - dy) as i32, 1, 1, color);
+            // Draw from fill_start to prev_fill_start-1 to close gaps
+            let end_x = if prev_fs > fs { prev_fs - 1 } else { fs };
+            let strip_w = (end_x - fs + 1) as u32;
+            // Top-left corner
+            fill_rect(s, x + fs, y + dy as i32, strip_w, 1, color);
+            // Top-right corner (mirrored x)
+            fill_rect(s, x + w as i32 - 1 - end_x, y + dy as i32, strip_w, 1, color);
+            // Bottom-left corner (mirrored y)
+            fill_rect(s, x + fs, y + (h - 1 - dy) as i32, strip_w, 1, color);
+            // Bottom-right corner (mirrored x+y)
+            fill_rect(s, x + w as i32 - 1 - end_x, y + (h - 1 - dy) as i32, strip_w, 1, color);
+            prev_fs = fs;
         }
     }
 }

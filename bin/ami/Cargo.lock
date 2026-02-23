@@ -7,7 +7,6 @@ name = "ami"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
- "libdb_client",
 ]
 
 [[package]]
@@ -15,21 +14,6 @@ name = "anyos_std"
 version = "0.1.0"
 dependencies = [
  "libheap",
-]
-
-[[package]]
-name = "dynlink"
-version = "0.1.0"
-dependencies = [
- "anyos_std",
-]
-
-[[package]]
-name = "libdb_client"
-version = "0.1.0"
-dependencies = [
- "anyos_std",
- "dynlink",
 ]
 
 [[package]]

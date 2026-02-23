@@ -16,13 +16,10 @@ pub const BTN_W: u32 = 130;
 pub const BTN_H: u32 = 34;
 pub const BTN_PAD: i32 = 12;
 
-/// Destroy windows, release lock pipe, and exit.
-pub fn cleanup(lock_pipe: u32, dim_win: u32, win: u32, code: u32) -> ! {
+/// Destroy window, release lock pipe, and exit.
+pub fn cleanup(lock_pipe: u32, win: u32, code: u32) -> ! {
     if win != u32::MAX {
         window::destroy(win);
-    }
-    if dim_win != u32::MAX {
-        window::destroy(dim_win);
     }
     if lock_pipe != 0 && lock_pipe != u32::MAX {
         ipc::pipe_close(lock_pipe);

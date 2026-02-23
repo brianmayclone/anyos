@@ -45,12 +45,12 @@ fn main() {
 
     if args_str.is_empty() {
         anyos_std::println!("[permdialog] empty args, exiting");
-        cleanup(lock_pipe, u32::MAX, u32::MAX, 1);
+        cleanup(lock_pipe, u32::MAX, 1);
     }
 
     let (app_id, app_name, declared_caps) = match parse_args(args_str) {
         Some(parsed) => parsed,
-        None => cleanup(lock_pipe, u32::MAX, u32::MAX, 1),
+        None => cleanup(lock_pipe, u32::MAX, 1),
     };
 
     // Determine which permission groups the app actually requests
@@ -70,30 +70,13 @@ fn main() {
 
     if num_active == 0 {
         permissions::perm_store(app_id, 0, 0);
-        cleanup(lock_pipe, u32::MAX, u32::MAX, 0);
+        cleanup(lock_pipe, u32::MAX, 0);
     }
 
-    // ── Create fullscreen dim overlay ──
-    anyos_std::println!("[permdialog] creating windows");
+    // ── Create the dialog window ──
+    anyos_std::println!("[permdialog] creating window");
     let (sw, sh) = window::screen_size();
 
-    let dim_flags = window::WIN_FLAG_BORDERLESS
-        | window::WIN_FLAG_SHADOW
-        | window::WIN_FLAG_ALWAYS_ON_TOP
-        | window::WIN_FLAG_NOT_RESIZABLE
-        | window::WIN_FLAG_NO_CLOSE
-        | window::WIN_FLAG_NO_MINIMIZE
-        | window::WIN_FLAG_NO_MAXIMIZE
-        | window::WIN_FLAG_NO_MOVE;
-
-    let dim_win = window::create_ex("", 0, 0, sw as u16, sh as u16, dim_flags);
-    if dim_win == u32::MAX {
-        cleanup(lock_pipe, u32::MAX, u32::MAX, 1);
-    }
-    window::fill_rect(dim_win, 0, 0, sw as u16, sh as u16, 0x80000000);
-    window::present(dim_win);
-
-    // ── Create the actual dialog ──
     let header_h: i32 = 80;
     let list_h = num_active as i32 * ROW_H;
     let footer_h: i32 = BTN_H as i32 + BTN_PAD * 2 + 8;
@@ -102,23 +85,19 @@ fn main() {
     let dx = ((sw as i32 - DIALOG_W as i32) / 2).max(0);
     let dy = ((sh as i32 - dialog_h as i32) / 2).max(0);
 
-    let dialog_flags = window::WIN_FLAG_BORDERLESS
-        | window::WIN_FLAG_SHADOW
-        | window::WIN_FLAG_NOT_RESIZABLE
-        | window::WIN_FLAG_ALWAYS_ON_TOP
+    let dialog_flags = window::WIN_FLAG_NOT_RESIZABLE
         | window::WIN_FLAG_NO_CLOSE
         | window::WIN_FLAG_NO_MINIMIZE
-        | window::WIN_FLAG_NO_MAXIMIZE
-        | window::WIN_FLAG_NO_MOVE;
+        | window::WIN_FLAG_NO_MAXIMIZE;
 
     let win = window::create_ex(
-        "", dx as u16, dy as u16, DIALOG_W as u16, dialog_h as u16, dialog_flags,
+        "Permissions", dx as u16, dy as u16, DIALOG_W as u16, dialog_h as u16, dialog_flags,
     );
     if win == u32::MAX {
-        cleanup(lock_pipe, dim_win, u32::MAX, 1);
+        cleanup(lock_pipe, u32::MAX, 1);
     }
 
-    anyos_std::println!("[permdialog] dim_win={} dialog_win={}", dim_win, win);
+    anyos_std::println!("[permdialog] dialog_win={}", win);
 
     // ── Build UI elements ──
     let cb_x = PAD;
@@ -167,7 +146,7 @@ fn main() {
             dirty = true;
 
             if ev.is_key_down() && ev.key_code() == KEY_ESCAPE {
-                cleanup(lock_pipe, dim_win, win, 1);
+                cleanup(lock_pipe, win, 1);
             }
 
             for i in 0..num_active {
@@ -177,7 +156,7 @@ fn main() {
             }
 
             if deny_btn.handle_event(&ev) {
-                cleanup(lock_pipe, dim_win, win, 1);
+                cleanup(lock_pipe, win, 1);
             }
 
             if allow_btn.handle_event(&ev) {
@@ -188,17 +167,13 @@ fn main() {
                     }
                 }
                 if permissions::perm_store(app_id, granted, 0) {
-                    cleanup(lock_pipe, dim_win, win, 0);
+                    cleanup(lock_pipe, win, 0);
                 } else {
                     // Store failed — exit with error so spawn() doesn't retry blindly
-                    cleanup(lock_pipe, dim_win, win, 2);
+                    cleanup(lock_pipe, win, 2);
                 }
             }
         }
-
-        // Drain events from dim overlay (prevents event queue buildup)
-        let mut dim_ev = [0u32; 5];
-        while window::get_event(dim_win, &mut dim_ev) == 1 {}
 
         let elapsed = sys::uptime_ms().wrapping_sub(t0);
         if elapsed < 16 { process::sleep(16 - elapsed); }

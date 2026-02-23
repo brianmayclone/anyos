@@ -119,6 +119,7 @@ exclude = [
   "bin/htop",
   "bin/svc",
   "bin/logd",
+  "bin/ami",
   "apps/demo_anyui",
   "apps/anycode",
   "apps/paint",
@@ -126,7 +127,7 @@ exclude = [
   "system/diskutil",
   "system/login",
   "system/permdialog",
-  "system/ami",
+  "system/amid",
   # Bootloader
   "bootloader/uefi",
 ]

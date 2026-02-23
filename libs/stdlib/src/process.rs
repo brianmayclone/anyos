@@ -53,7 +53,11 @@ pub fn munmap(addr: *mut u8, size: usize) -> bool {
 }
 
 pub fn waitpid(tid: u32) -> u32 {
-    syscall1(SYS_WAITPID, tid as u64)
+    // Must use syscall3 to explicitly pass child_tid_ptr=0, options=0.
+    // syscall1 leaves RDX (options) unset — if bit 0 is set by leftover
+    // register content, the kernel treats it as WNOHANG (non-blocking),
+    // causing waitpid to return STILL_RUNNING instead of blocking.
+    syscall3(SYS_WAITPID, tid as u64, 0, 0)
 }
 
 /// Non-blocking check if process exited.

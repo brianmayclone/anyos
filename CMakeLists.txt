@@ -616,6 +616,7 @@ add_rust_user_program(echoserver ${CMAKE_SOURCE_DIR}/bin/echoserver)
 add_rust_user_program(netstat    ${CMAKE_SOURCE_DIR}/bin/netstat)
 add_rust_user_program(svc        ${CMAKE_SOURCE_DIR}/bin/svc)
 add_rust_user_program(logd       ${CMAKE_SOURCE_DIR}/bin/logd)
+add_rust_user_program(ami        ${CMAKE_SOURCE_DIR}/bin/ami)
 # Privileged sbin programs
 add_rust_sbin_program(adduser    ${CMAKE_SOURCE_DIR}/bin/adduser)
 add_rust_sbin_program(deluser    ${CMAKE_SOURCE_DIR}/bin/deluser)
@@ -682,7 +683,7 @@ add_rust_system_program(netmon      ${CMAKE_SOURCE_DIR}/system/netmon)
 add_rust_system_program(inputmon    ${CMAKE_SOURCE_DIR}/system/inputmon)
 add_rust_system_program(login       ${CMAKE_SOURCE_DIR}/system/login)
 add_rust_system_program(permdialog  ${CMAKE_SOURCE_DIR}/system/permdialog)
-add_rust_system_program(ami         ${CMAKE_SOURCE_DIR}/system/ami)
+add_rust_system_program(amid        ${CMAKE_SOURCE_DIR}/system/amid)
 
 # Desktop GUI applications → .app bundles in /Applications/
 set(APP_BINS "")
