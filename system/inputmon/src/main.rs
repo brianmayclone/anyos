@@ -18,7 +18,7 @@ const BORDERLESS: u32 = 0x01;
 const PAD: i32 = 16;
 const ROW_H: i32 = 32;
 
-const CONF_PATH: &str = "/System/keyboard.conf";
+const CONF_PATH: &str = "/System/etc/inputmon.conf";
 
 // ── WinSurface for uisys DLL surface-mode rendering ──────────────────────────
 
@@ -134,31 +134,51 @@ fn find_label(layouts: &[anyos_std::kbd::LayoutInfo], id: u32) -> &[u8] {
     b"??"
 }
 
-// ── Config persistence ───────────────────────────────────────────────────────
+// ── Config persistence (INI-style: [keyboard] section with layout=N) ────────
 
 fn load_config() {
     let fd = anyos_std::fs::open(CONF_PATH, 0); // O_RDONLY
     if fd == u32::MAX { return; }
-    let mut buf = [0u8; 16];
+    let mut buf = [0u8; 256];
     let n = anyos_std::fs::read(fd, &mut buf) as usize;
     anyos_std::fs::close(fd);
     if n == 0 || n > buf.len() { return; }
-    // Parse ASCII decimal layout ID
-    let s = match core::str::from_utf8(&buf[..n]) {
-        Ok(s) => s.trim(),
+    let text = match core::str::from_utf8(&buf[..n]) {
+        Ok(s) => s,
         Err(_) => return,
     };
-    if let Some(id) = parse_u32(s) {
-        anyos_std::kbd::set_layout(id);
+
+    let mut in_keyboard = false;
+    for line in text.split('\n') {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        if line.starts_with('[') {
+            in_keyboard = line == "[keyboard]";
+            continue;
+        }
+        if !in_keyboard { continue; }
+        if let Some(val) = line.strip_prefix("layout=") {
+            if let Some(id) = parse_u32(val.trim()) {
+                anyos_std::kbd::set_layout(id);
+                return;
+            }
+        }
     }
 }
 
 fn save_config(id: u32) {
     let fd = anyos_std::fs::open(CONF_PATH, 1 | 4 | 8); // O_WRITE | O_CREATE | O_TRUNC
     if fd == u32::MAX { return; }
-    let mut buf = [0u8; 4];
-    let len = fmt_u32(id, &mut buf);
-    anyos_std::fs::write(fd, &buf[..len]);
+    let mut buf = [0u8; 32];
+    let header = b"[keyboard]\nlayout=";
+    let hlen = header.len();
+    buf[..hlen].copy_from_slice(header);
+    let vlen = fmt_u32(id, &mut [0u8; 4]);
+    let mut id_buf = [0u8; 4];
+    fmt_u32(id, &mut id_buf);
+    buf[hlen..hlen + vlen].copy_from_slice(&id_buf[..vlen]);
+    buf[hlen + vlen] = b'\n';
+    anyos_std::fs::write(fd, &buf[..hlen + vlen + 1]);
     anyos_std::fs::close(fd);
 }
 

@@ -9,8 +9,10 @@
 # Clean anyOS build artifacts on Windows
 # Usage: .\scripts\clean.ps1 [-All]
 #
-#   (no args)  Remove Cargo/program build artifacts (forces full rebuild)
-#   -All       Remove entire build directory (requires re-running CMake)
+#   (no args)  Remove all build artifacts (kernel, stdlib, DLLs, shared libs,
+#              user/system programs, libc, TCC, buildsystem tools, sysroot, image).
+#              Preserves CMake cache — just run: ninja -C build
+#   -All       Remove entire build directory (requires re-running CMake + ninja)
 
 param(
     [switch]$All
@@ -36,14 +38,14 @@ if ($All) {
     Write-Host "Removing entire build directory..."
     Remove-Item -Recurse -Force $BuildDir -ErrorAction SilentlyContinue
     # Also clean libc build artifacts in source tree
-    $libcDir = Join-Path $ProjectDir "programs\libc"
+    $libcDir = Join-Path $ProjectDir "libs\libc"
     if (Test-Path (Join-Path $libcDir "Makefile")) {
         $makeCmd = Get-Command "make" -ErrorAction SilentlyContinue
         if ($makeCmd) {
             & make -C $libcDir clean 2>$null
         }
     }
-    Write-Host "Done. Run .\scripts\build.ps1 to rebuild from scratch."
+    Write-Host "Done. Run: cmake -B build -G Ninja; ninja -C build"
     exit 0
 }
 
@@ -51,32 +53,27 @@ Write-Host "Cleaning build artifacts..."
 
 # Kernel
 Write-Host "  Kernel..."
-Remove-Quietly (Join-Path $BuildDir "kernel\x86_64-anyos")
+Remove-Quietly (Join-Path $BuildDir "kernel")
 
-# DLLs
+# DLLs (uisys, libcompositor, libimage, librender)
 Write-Host "  DLLs..."
 Remove-Quietly (Join-Path $BuildDir "dll")
 
+# Shared libraries (.so — libanyui, libfont, libdb)
+Write-Host "  Shared libraries..."
+Remove-Quietly (Join-Path $BuildDir "shlib")
+
 # User and system programs
 Write-Host "  Programs..."
-$programsDir = Join-Path $BuildDir "programs"
-if (Test-Path $programsDir) {
-    Get-ChildItem -Path $programsDir -Directory | ForEach-Object {
-        Remove-Quietly (Join-Path $_.FullName "x86_64-anyos-user")
-        Remove-Quietly (Join-Path $_.FullName "debug")
-        Remove-Quietly (Join-Path $_.FullName "release")
-        # Nested dirs (e.g. programs\compositor\dock)
-        Get-ChildItem -Path $_.FullName -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-            Remove-Quietly (Join-Path $_.FullName "x86_64-anyos-user")
-            Remove-Quietly (Join-Path $_.FullName "debug")
-            Remove-Quietly (Join-Path $_.FullName "release")
-        }
-    }
-}
+Remove-Quietly (Join-Path $BuildDir "programs")
 
-# Libc
+# Buildsystem tools (anyelf, anyld, mkimage, mkappbundle)
+Write-Host "  Buildsystem tools..."
+Remove-Quietly (Join-Path $BuildDir "buildsystem")
+
+# Libc (built in source tree via Makefile)
 Write-Host "  Libc..."
-$libcDir = Join-Path $ProjectDir "programs\libc"
+$libcDir = Join-Path $ProjectDir "libs\libc"
 if (Test-Path (Join-Path $libcDir "Makefile")) {
     $makeCmd = Get-Command "make" -ErrorAction SilentlyContinue
     if ($makeCmd) {
@@ -93,12 +90,14 @@ Remove-Item -Force (Join-Path $BuildDir "tcc.elf") -ErrorAction SilentlyContinue
 Write-Host "  Sysroot..."
 Remove-Quietly (Join-Path $BuildDir "sysroot")
 
-# Disk image
-Write-Host "  Disk image..."
+# Disk images
+Write-Host "  Disk images..."
 Remove-Item -Force (Join-Path $BuildDir "anyos.img") -ErrorAction SilentlyContinue
+Remove-Item -Force (Join-Path $BuildDir "anyos-uefi.img") -ErrorAction SilentlyContinue
+Remove-Item -Force (Join-Path $BuildDir "anyos.iso") -ErrorAction SilentlyContinue
 
 # Flat binaries
 Write-Host "  Flat binaries..."
 Remove-Item -Force (Join-Path $BuildDir "anyos_kernel.bin") -ErrorAction SilentlyContinue
 
-Write-Host "Done. Run .\scripts\build.ps1 to rebuild."
+Write-Host "Done. Run: ninja -C build"

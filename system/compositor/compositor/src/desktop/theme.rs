@@ -116,6 +116,28 @@ pub(crate) const COLOR_CLOSE_PRESS: u32 = 0xFFCC4C45;
 pub(crate) const COLOR_MIN_PRESS: u32 = 0xFFCB9724;
 pub(crate) const COLOR_MAX_PRESS: u32 = 0xFF1FA030;
 
+// ── Notification Colors ───────────────────────────────────────────────
+
+#[inline(always)]
+pub(crate) fn color_notif_bg() -> u32 {
+    if is_light() { 0xF0F5F5F7 } else { 0xF02C2C2E }
+}
+
+#[inline(always)]
+pub(crate) fn color_notif_title() -> u32 {
+    if is_light() { 0xFF1D1D1F } else { 0xFFE6E6E6 }
+}
+
+#[inline(always)]
+pub(crate) fn color_notif_message() -> u32 {
+    if is_light() { 0xFF6E6E73 } else { 0xFF969696 }
+}
+
+#[inline(always)]
+pub(crate) fn color_notif_time() -> u32 {
+    if is_light() { 0xFF8E8E93 } else { 0xFF6A6A6E }
+}
+
 // ── System Font ────────────────────────────────────────────────────────────
 
 pub(crate) const FONT_ID: u16 = 0;

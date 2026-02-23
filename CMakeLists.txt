@@ -790,6 +790,8 @@ add_custom_command(
           ${CMAKE_SOURCE_DIR}/sysroot/System/users/wallpapers
           ${CMAKE_SOURCE_DIR}/sysroot/System/media/icons
           ${CMAKE_SOURCE_DIR}/sysroot/System/media/icons/controls
+          ${CMAKE_SOURCE_DIR}/sysroot/System/compositor/compositor.conf
+          ${CMAKE_SOURCE_DIR}/sysroot/System/etc/inputmon.conf
   COMMENT "Populating sysroot from tools/sysroot"
 )
 

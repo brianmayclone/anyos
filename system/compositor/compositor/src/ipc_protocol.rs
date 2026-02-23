@@ -154,6 +154,27 @@ pub const CMD_SET_CLIPBOARD: u32 = 0x1011;
 /// and responds with RESP_CLIPBOARD_DATA.
 pub const CMD_GET_CLIPBOARD: u32 = 0x1012;
 
+// ── App → Compositor: Notification Commands ──────────────────────────────
+
+/// Show a notification banner.
+/// [CMD, sender_tid, shm_id, timeout_ms, flags]
+/// SHM layout: [title_len: u16, msg_len: u16, has_icon: u8, pad: 3 bytes,
+///              title_bytes..., msg_bytes..., icon_pixels (16×16 ARGB if has_icon)]
+pub const CMD_SHOW_NOTIFICATION: u32 = 0x1020;
+
+/// Dismiss a notification by ID.
+/// [CMD, notification_id, 0, 0, 0]
+pub const CMD_DISMISS_NOTIFICATION: u32 = 0x1021;
+
+// ── Compositor → App: Notification Events ────────────────────────────────
+
+/// Notification clicked by user: [EVT, notification_id, sender_tid, 0, 0]
+pub const EVT_NOTIFICATION_CLICK: u32 = 0x3010;
+
+/// Notification dismissed: [EVT, notification_id, sender_tid, reason, 0]
+/// reason: 0 = timeout, 1 = user click, 2 = programmatic dismiss
+pub const EVT_NOTIFICATION_DISMISSED: u32 = 0x3011;
+
 /// Theme changed notification (compositor → apps via channel).
 /// [EVT, new_theme, old_theme, 0, 0]
 pub const EVT_THEME_CHANGED: u32 = 0x0050;
