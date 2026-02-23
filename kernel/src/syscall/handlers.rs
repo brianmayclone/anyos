@@ -2239,12 +2239,23 @@ pub fn sys_evt_chan_wait(chan_id: u32, sub_id: u32, timeout_ms: u32) -> u32 {
 
 /// Wake the compositor's management thread if it is blocked.
 ///
-/// Safe to call from IRQ context — `wake_thread` is a no-op if the thread
-/// is not in Blocked state.
+/// Uses a two-tier approach for IRQ safety:
+///   1. `try_wake_thread()` — non-blocking attempt (succeeds if SCHEDULER lock
+///      is uncontended, which is the common case).
+///   2. `deferred_wake()` — lock-free atomic enqueue; the next timer tick drains
+///      deferred wakes under the already-held SCHEDULER lock.
+///
+/// This avoids ever calling the blocking `SCHEDULER.lock()` from IRQ context,
+/// which could stall the IRQ handler on a contended lock and interact badly
+/// with SMP context-switch timing (observed as GPF at irq_iret_done with
+/// RSP outside kernel stack bounds).
 pub fn wake_compositor_if_blocked() {
     let tid = COMPOSITOR_TID.load(Ordering::Relaxed);
     if tid != 0 {
-        crate::task::scheduler::wake_thread(tid);
+        if !crate::task::scheduler::try_wake_thread(tid) {
+            // Lock contended — defer to next timer tick (≤1ms latency).
+            crate::task::scheduler::deferred_wake(tid);
+        }
     }
 }
 

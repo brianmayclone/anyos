@@ -143,6 +143,36 @@ static mut SCRATCH_CTX: [CpuContext; MAX_CPUS] = {
 /// Per-CPU scratch FPU buffer for the same reaped-outgoing-thread case.
 static mut SCRATCH_FPU: [[u8; 512]; MAX_CPUS] = [[0u8; 512]; MAX_CPUS];
 
+// --- Deferred wake queue (IRQ-safe, lock-free) ---
+// IRQ handlers that need to wake a thread store TIDs here (via atomic swap).
+// The timer handler drains these every tick and calls wake_thread_inner under
+// the SCHEDULER lock.  This avoids blocking `SCHEDULER.lock()` in IRQ context,
+// which can cause RSP corruption when the IRQ handler stalls on a contended lock.
+
+/// Up to 4 deferred-wake TIDs (0 = empty slot).
+static DEFERRED_WAKE_TIDS: [AtomicU32; 4] = {
+    const INIT: AtomicU32 = AtomicU32::new(0);
+    [INIT; 4]
+};
+
+/// Enqueue a TID for deferred wake (called from IRQ context, lock-free).
+/// Overwrites the oldest slot if all slots are occupied.  Missing a wake
+/// is acceptable — the compositor's 16ms timeout provides a safety net.
+pub fn deferred_wake(tid: u32) {
+    for slot in &DEFERRED_WAKE_TIDS {
+        // Try to claim an empty slot (0 → tid).
+        if slot.compare_exchange(0, tid, Ordering::Release, Ordering::Relaxed).is_ok() {
+            return;
+        }
+        // If this slot already holds our TID, no-op (avoid duplicate wakes).
+        if slot.load(Ordering::Relaxed) == tid {
+            return;
+        }
+    }
+    // All slots full — overwrite slot 0 (best-effort; timeout covers misses).
+    DEFERRED_WAKE_TIDS[0].store(tid, Ordering::Release);
+}
+
 // --- Tick counters ---
 
 static TOTAL_SCHED_TICKS: AtomicU32 = AtomicU32::new(0);
@@ -844,6 +874,15 @@ fn schedule_inner(from_timer: bool) {
         // the lock often enough, causing terminated threads to accumulate.
         if from_timer {
             sched.reap_terminated();
+        }
+
+        // Drain deferred wakes (IRQ handlers store TIDs here lock-free).
+        // Process under the already-held lock to avoid extra lock/unlock.
+        for slot in &DEFERRED_WAKE_TIDS {
+            let tid = slot.swap(0, Ordering::Acquire);
+            if tid != 0 {
+                sched.wake_thread_inner(tid);
+            }
         }
 
         // CPU 0: periodic canary check on all non-Running threads.
@@ -2358,6 +2397,24 @@ pub fn wake_thread(tid: u32) {
     let mut guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_mut() {
         sched.wake_thread_inner(tid);
+    }
+}
+
+/// Try to wake a blocked thread by TID (non-blocking).
+///
+/// Uses `try_lock()` to avoid spinning on the SCHEDULER lock. Returns `true`
+/// if the thread was woken, `false` if the lock was contended (caller should
+/// retry later or use the deferred-wake mechanism).
+///
+/// Safe to call from IRQ context — never blocks.
+pub fn try_wake_thread(tid: u32) -> bool {
+    if let Some(mut guard) = SCHEDULER.try_lock() {
+        if let Some(sched) = guard.as_mut() {
+            sched.wake_thread_inner(tid);
+        }
+        true
+    } else {
+        false
     }
 }
 

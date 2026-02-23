@@ -8,7 +8,7 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU
-# Usage: ./run.sh [--vmware | --std | --virtio] [--ide] [--cdrom] [--audio] [--usb] [--uefi]
+# Usage: ./run.sh [--vmware | --std | --virtio] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm]
 #   --vmware   VMware SVGA II (2D acceleration, HW cursor)
 #   --std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
 #   --virtio   VirtIO GPU (modern transport, ARGB cursor)
@@ -17,6 +17,7 @@
 #   --audio    Enable AC'97 audio device
 #   --usb      Enable USB controller with keyboard + mouse devices
 #   --uefi     Boot via UEFI (OVMF) instead of BIOS
+#   --kvm      Enable hardware virtualization (KVM on Linux, HVF on macOS)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -29,6 +30,8 @@ AUDIO_FLAGS=""
 AUDIO_LABEL=""
 USB_FLAGS=""
 USB_LABEL=""
+KVM_FLAGS=""
+KVM_LABEL=""
 
 for arg in "$@"; do
     case "$arg" in
@@ -69,8 +72,35 @@ for arg in "$@"; do
         --uefi)
             UEFI_MODE=true
             ;;
+        --kvm)
+            if [ "$(uname -s)" = "Darwin" ]; then
+                # macOS: use Hypervisor.framework (HVF)
+                if sysctl kern.hv_support 2>/dev/null | grep -q '1'; then
+                    KVM_FLAGS="-accel hvf -cpu host"
+                    KVM_LABEL=", HVF enabled"
+                else
+                    echo "Warning: HVF not available on this Mac (missing Hypervisor.framework support)"
+                    echo "Continuing without hardware acceleration..."
+                fi
+            else
+                # Linux: use KVM
+                if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+                    KVM_FLAGS="-enable-kvm -cpu host"
+                    KVM_LABEL=", KVM enabled"
+                elif [ -e /dev/kvm ]; then
+                    echo "Error: /dev/kvm exists but is not accessible."
+                    echo "Fix permissions: sudo usermod -aG kvm $(whoami) && newgrp kvm"
+                    exit 1
+                else
+                    echo "Error: /dev/kvm not found. KVM is not available."
+                    echo "Enable with: sudo modprobe kvm && sudo modprobe kvm_intel  (or kvm_amd)"
+                    echo "Install with: sudo apt-get install qemu-kvm"
+                    exit 1
+                fi
+            fi
+            ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio] [--ide] [--cdrom] [--audio] [--usb] [--uefi]"
+            echo "Usage: $0 [--vmware | --std | --virtio] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm]"
             exit 1
             ;;
     esac
@@ -135,9 +165,10 @@ if [ ! -f "$IMAGE" ]; then
     exit 1
 fi
 
-echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL$USB_LABEL"
+echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL"
 
 eval qemu-system-x86_64 \
+    $KVM_FLAGS \
     $BIOS_FLAGS \
     $DRIVE_FLAGS \
     -m 1024M \
