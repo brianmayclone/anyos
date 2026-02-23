@@ -43,7 +43,10 @@ fn main() {
     }
 
     // Ensure database directory exists
-    anyos_std::fs::mkdir(DB_DIR);
+    let ret = anyos_std::fs::mkdir(DB_DIR);
+    if ret == u32::MAX {
+        anyos_std::println!("amid: warning: mkdir('{}') failed (may already exist)", DB_DIR);
+    }
 
     // Open (or create) the database
     let db = match libdb_client::Database::open(DB_PATH) {
