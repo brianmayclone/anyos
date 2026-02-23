@@ -59,12 +59,22 @@ fn main() {
         fb_info.fb_addr, fb_info.width, fb_info.height, fb_info.pitch
     );
 
-    let mut width = fb_info.width;
-    let mut height = fb_info.height;
-    let mut pitch = fb_info.pitch;
-    let mut fb_ptr = fb_info.fb_addr as *mut u32;
+    let width = fb_info.width;
+    let height = fb_info.height;
+    let fb_ptr = fb_info.fb_addr as *mut u32;
 
-    // Step 2b: Restore saved resolution from compositor.conf (if different from current)
+    // Step 3: Initialize fonts (must happen before any text rendering)
+    libfont_client::init();
+
+    // Step 4: Initialize desktop at current (boot) resolution
+    let mut desktop = alloc::boxed::Box::new(desktop::Desktop::new(
+        fb_ptr, width, height, fb_info.pitch,
+    ));
+    desktop.init();
+
+    // Step 4b: Restore saved resolution from compositor.conf (if different from current).
+    // Done AFTER Desktop::new so the well-tested handle_resolution_change() path
+    // handles all surface resizing, re-mapping, and recomposition.
     if let Some(saved) = config::read_resolution() {
         if saved.width != width || saved.height != height {
             println!(
@@ -72,31 +82,16 @@ fn main() {
                 saved.width, saved.height, width, height
             );
             if anyos_std::ui::window::set_resolution(saved.width, saved.height) {
-                // Re-map framebuffer to pick up new dimensions
-                if let Some(new_fb) = ipc::map_framebuffer() {
-                    width = new_fb.width;
-                    height = new_fb.height;
-                    pitch = new_fb.pitch;
-                    fb_ptr = new_fb.fb_addr as *mut u32;
-                    println!(
-                        "compositor: resolution restored to {}x{} (pitch={})",
-                        width, height, pitch
-                    );
-                }
+                desktop.handle_resolution_change(saved.width, saved.height);
+                println!(
+                    "compositor: resolution restored to {}x{}",
+                    saved.width, saved.height
+                );
             } else {
                 println!("compositor: failed to restore saved resolution, keeping {}x{}", width, height);
             }
         }
     }
-
-    // Step 3: Initialize fonts (must happen before any text rendering)
-    libfont_client::init();
-
-    // Step 4: Initialize desktop (single-threaded, no lock needed yet)
-    let mut desktop = alloc::boxed::Box::new(desktop::Desktop::new(
-        fb_ptr, width, height, pitch,
-    ));
-    desktop.init();
 
     // Step 3b: Take over cursor from kernel splash mode
     let (splash_x, splash_y) = ipc::cursor_takeover();
@@ -112,7 +107,7 @@ fn main() {
     desktop.compositor.damage_all();
     desktop.compose();
 
-    println!("compositor: desktop drawn ({}x{})", width, height);
+    println!("compositor: desktop drawn ({}x{})", desktop.screen_width, desktop.screen_height);
 
     // Step 5: Create event channel for app IPC
     let compositor_channel = ipc::evt_chan_create("compositor");
