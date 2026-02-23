@@ -36,9 +36,14 @@ impl Database {
     pub fn open(path: &str) -> DbResult<Database> {
         // Try to open existing file first
         let fd = syscall::open(path, 0); // read-only probe
-        if fd != u32::MAX {
-            // File exists — reopen for read+write
+        let file_exists = fd != u32::MAX;
+        let file_size = if file_exists { syscall::file_size(fd) } else { 0 };
+        if file_exists {
             syscall::close(fd);
+        }
+
+        if file_exists && file_size >= PAGE_SIZE as u32 {
+            // File exists with valid content — open for read+write
             let fd = syscall::open(path, syscall::O_WRITE);
             if fd == u32::MAX {
                 return Err(DbError::Io(String::from("Cannot open database for writing")));
@@ -55,8 +60,13 @@ impl Database {
             db.load_page0()?;
             Ok(db)
         } else {
-            // File does not exist — create new database
-            let fd = syscall::open(path, syscall::O_WRITE | syscall::O_CREATE | syscall::O_TRUNC);
+            // File does not exist or is empty — create/initialize new database
+            let flags = if file_exists {
+                syscall::O_WRITE | syscall::O_TRUNC
+            } else {
+                syscall::O_WRITE | syscall::O_CREATE | syscall::O_TRUNC
+            };
+            let fd = syscall::open(path, flags);
             if fd == u32::MAX {
                 return Err(DbError::Io(String::from("Cannot create database file")));
             }
