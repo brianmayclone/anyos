@@ -253,7 +253,7 @@ fn refresh_tree() {
         };
         let node = s.tree.add_child(s.sites_root, &label);
         if !site.enabled {
-            s.tree.set_node_text_color(node, 0xFF888888);
+            s.tree.set_node_text_color(node, ui::theme::colors().text_disabled);
         }
         if s.selected_site == Some(i) {
             s.tree.set_selected(node);
@@ -412,6 +412,7 @@ fn main() {
 
     // ── Main window ──
     let win = ui::Window::new("Web Manager", -1, -1, WIN_W, WIN_H);
+    let tc = ui::theme::colors();
 
     // ═══════════════════════════════════════════════════════════════
     //  Toolbar (DOCK_TOP)
@@ -422,22 +423,22 @@ fn main() {
     win.add(&toolbar);
 
     let btn_new = toolbar.add_icon_button("New Site");
-    btn_new.set_system_icon("circle-plus", ui::IconType::Outline, 0xFFCCCCCC, 24);
+    btn_new.set_system_icon("circle-plus", ui::IconType::Outline, tc.text, 24);
     toolbar.add_separator();
     let btn_delete = toolbar.add_icon_button("Delete");
-    btn_delete.set_system_icon("trash", ui::IconType::Outline, 0xFFCCCCCC, 24);
+    btn_delete.set_system_icon("trash", ui::IconType::Outline, tc.text, 24);
     btn_delete.set_enabled(false);
     toolbar.add_separator();
     let btn_start = toolbar.add_icon_button("Start");
-    btn_start.set_system_icon("player-play", ui::IconType::Filled, 0xFF4CD964, 24);
+    btn_start.set_system_icon("player-play", ui::IconType::Filled, tc.success, 24);
     let btn_stop = toolbar.add_icon_button("Stop");
-    btn_stop.set_system_icon("player-stop", ui::IconType::Filled, 0xFFFF3B30, 24);
+    btn_stop.set_system_icon("player-stop", ui::IconType::Filled, tc.destructive, 24);
     toolbar.add_separator();
     let btn_apply = toolbar.add_icon_button("Apply");
-    btn_apply.set_system_icon("device-floppy", ui::IconType::Outline, 0xFFCCCCCC, 24);
+    btn_apply.set_system_icon("device-floppy", ui::IconType::Outline, tc.text, 24);
     btn_apply.set_enabled(false);
     let btn_reload = toolbar.add_icon_button("Reload");
-    btn_reload.set_system_icon("refresh", ui::IconType::Outline, 0xFFCCCCCC, 24);
+    btn_reload.set_system_icon("refresh", ui::IconType::Outline, tc.text, 24);
 
     // ═══════════════════════════════════════════════════════════════
     //  Status bar (DOCK_BOTTOM)
@@ -446,8 +447,8 @@ fn main() {
     let status_label = ui::Label::new("  httpd: checking...");
     status_label.set_dock(ui::DOCK_BOTTOM);
     status_label.set_size(WIN_W, 24);
-    status_label.set_color(0xFF1C1C1E);
-    status_label.set_text_color(0xFFAAAAAA);
+    status_label.set_color(ui::theme::darken(tc.window_bg, 5));
+    status_label.set_text_color(tc.text_secondary);
     status_label.set_font_size(11);
     win.add(&status_label);
 
@@ -464,7 +465,7 @@ fn main() {
 
     // ── Left: TreeView sidebar ──
     let sidebar = ui::View::new();
-    sidebar.set_color(0xFF252526);
+    sidebar.set_color(tc.sidebar_bg);
     main_split.add(&sidebar);
 
     let tree = ui::TreeView::new(200, 500);
@@ -480,7 +481,7 @@ fn main() {
 
     // ── Right: Properties panel ──
     let right_panel = ui::View::new();
-    right_panel.set_color(0xFF1E1E1E);
+    right_panel.set_color(tc.window_bg);
     main_split.add(&right_panel);
 
     // ── Site Configuration Card ──
@@ -495,7 +496,7 @@ fn main() {
     title_label.set_position(16, 8);
     title_label.set_size(300, 22);
     title_label.set_font_size(14);
-    title_label.set_text_color(0xFF0A84FF);
+    title_label.set_text_color(tc.accent_hover);
     props_card.add(&title_label);
 
     // Form layout constants
@@ -510,7 +511,7 @@ fn main() {
     let lbl = ui::Label::new("Name:");
     lbl.set_position(form_x, y + 4);
     lbl.set_size(label_w, 20);
-    lbl.set_text_color(0xFFCCCCCC);
+    lbl.set_text_color(tc.text);
     props_card.add(&lbl);
     let name_field = ui::TextField::new();
     name_field.set_position(field_x, y);
@@ -523,7 +524,7 @@ fn main() {
     let lbl = ui::Label::new("Port:");
     lbl.set_position(form_x, y + 4);
     lbl.set_size(label_w, 20);
-    lbl.set_text_color(0xFFCCCCCC);
+    lbl.set_text_color(tc.text);
     props_card.add(&lbl);
     let port_field = ui::TextField::new();
     port_field.set_position(field_x, y);
@@ -536,7 +537,7 @@ fn main() {
     let lbl = ui::Label::new("SSL:");
     lbl.set_position(form_x, y + 4);
     lbl.set_size(label_w, 20);
-    lbl.set_text_color(0xFFCCCCCC);
+    lbl.set_text_color(tc.text);
     props_card.add(&lbl);
     let ssl_check = ui::Checkbox::new("Enable SSL");
     ssl_check.set_position(field_x, y + 2);
@@ -546,7 +547,7 @@ fn main() {
     let ssl_port_lbl = ui::Label::new("SSL Port:");
     ssl_port_lbl.set_position(field_x + 120, y + 4);
     ssl_port_lbl.set_size(70, 20);
-    ssl_port_lbl.set_text_color(0xFFCCCCCC);
+    ssl_port_lbl.set_text_color(tc.text);
     props_card.add(&ssl_port_lbl);
     let ssl_port_field = ui::TextField::new();
     ssl_port_field.set_position(field_x + 195, y);
@@ -560,7 +561,7 @@ fn main() {
     let lbl = ui::Label::new("Document Root:");
     lbl.set_position(form_x, y + 4);
     lbl.set_size(label_w, 20);
-    lbl.set_text_color(0xFFCCCCCC);
+    lbl.set_text_color(tc.text);
     props_card.add(&lbl);
     let root_field = ui::TextField::new();
     root_field.set_position(field_x, y);
@@ -578,7 +579,7 @@ fn main() {
     let lbl = ui::Label::new("Index Files:");
     lbl.set_position(form_x, y + 4);
     lbl.set_size(label_w, 20);
-    lbl.set_text_color(0xFFCCCCCC);
+    lbl.set_text_color(tc.text);
     props_card.add(&lbl);
     let index_field = ui::TextField::new();
     index_field.set_position(field_x, y);
@@ -591,7 +592,7 @@ fn main() {
     let lbl = ui::Label::new("Status:");
     lbl.set_position(form_x, y + 4);
     lbl.set_size(label_w, 20);
-    lbl.set_text_color(0xFFCCCCCC);
+    lbl.set_text_color(tc.text);
     props_card.add(&lbl);
     let enabled_check = ui::Checkbox::new("Enabled");
     enabled_check.set_position(field_x, y + 2);
@@ -602,14 +603,14 @@ fn main() {
     let rewrite_header = ui::View::new();
     rewrite_header.set_dock(ui::DOCK_TOP);
     rewrite_header.set_size(0, 36);
-    rewrite_header.set_color(0xFF252526);
+    rewrite_header.set_color(tc.sidebar_bg);
     right_panel.add(&rewrite_header);
 
     let rewrite_title = ui::Label::new("URL Rewrite Rules");
     rewrite_title.set_position(16, 8);
     rewrite_title.set_size(200, 20);
     rewrite_title.set_font_size(13);
-    rewrite_title.set_text_color(0xFF0A84FF);
+    rewrite_title.set_text_color(tc.accent_hover);
     rewrite_header.add(&rewrite_title);
 
     let btn_add_rule = ui::Button::new("+ Add");

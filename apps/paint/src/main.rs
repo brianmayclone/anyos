@@ -93,22 +93,30 @@ fn main() {
         return;
     }
 
-    let win = ui::Window::new("Paint", -1, -1, SIDEBAR_W + CANVAS_W + 4, CANVAS_H + 36 + 24 + 4);
+    let win = ui::Window::new("Paint", -1, -1, SIDEBAR_W + CANVAS_W + 4, CANVAS_H + 42 + 24 + 4);
+    let tc = ui::theme::colors();
 
     // ── Toolbar (top) ────────────────────────────────────────────────
     let toolbar = ui::Toolbar::new();
     toolbar.set_dock(ui::DOCK_TOP);
-    toolbar.set_size(SIDEBAR_W + CANVAS_W + 4, 36);
+    toolbar.set_size(SIDEBAR_W + CANVAS_W + 4, 42);
+    toolbar.set_padding(4, 4, 4, 4);
     win.add(&toolbar);
 
-    let btn_new = toolbar.add_button("New");
-    let btn_open = toolbar.add_button("Open");
-    let btn_save = toolbar.add_button("Save");
+    let btn_new = toolbar.add_icon_button("");
+    btn_new.set_size(34, 34);
+    btn_new.set_system_icon("file-plus", ui::IconType::Outline, tc.text, 24);
+    let btn_open = toolbar.add_icon_button("");
+    btn_open.set_size(34, 34);
+    btn_open.set_system_icon("folder-open", ui::IconType::Outline, tc.text, 24);
+    let btn_save = toolbar.add_icon_button("");
+    btn_save.set_size(34, 34);
+    btn_save.set_system_icon("device-floppy", ui::IconType::Outline, tc.text, 24);
     toolbar.add_separator();
 
     let size_label = ui::Label::new("Size: 3");
     size_label.set_size(52, 24);
-    size_label.set_text_color(0xFFDDDDDD);
+    size_label.set_text_color(tc.text);
     toolbar.add(&size_label);
 
     let btn_size_down = toolbar.add_button("-");
@@ -118,7 +126,7 @@ fn main() {
     let sidebar = ui::View::new();
     sidebar.set_dock(ui::DOCK_LEFT);
     sidebar.set_size(SIDEBAR_W, CANVAS_H + 24);
-    sidebar.set_color(0xFF1E1E1E);
+    sidebar.set_color(tc.window_bg);
     win.add(&sidebar);
 
     // Tool buttons
@@ -152,7 +160,7 @@ fn main() {
     let fg_label = ui::Label::new("FG");
     fg_label.set_position(4, palette_y + 44);
     fg_label.set_size(20, 16);
-    fg_label.set_text_color(0xFFAAAAAA);
+    fg_label.set_text_color(tc.text_secondary);
     fg_label.set_font_size(11);
     sidebar.add(&fg_label);
 
@@ -165,7 +173,7 @@ fn main() {
     let bg_label = ui::Label::new("BG");
     bg_label.set_position(4, palette_y + 68);
     bg_label.set_size(20, 16);
-    bg_label.set_text_color(0xFFAAAAAA);
+    bg_label.set_text_color(tc.text_secondary);
     bg_label.set_font_size(11);
     sidebar.add(&bg_label);
 
@@ -186,7 +194,7 @@ fn main() {
     let status = ui::View::new();
     status.set_dock(ui::DOCK_BOTTOM);
     status.set_size(SIDEBAR_W + CANVAS_W + 4, 22);
-    status.set_color(0xFF2D2D2D);
+    status.set_color(tc.control_bg);
     win.add(&status);
 
     let status_pos = ui::Label::new("0, 0");

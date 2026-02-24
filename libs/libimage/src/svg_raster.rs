@@ -696,12 +696,12 @@ fn flatten_arc(
 
     // Compute start and end angles using atan2 approximation
     let a1 = atan2_approx(
-        ((cy - center_y) as i64 * 256 / ry as i64.max(1)) as i32,
-        ((cx - center_x) as i64 * 256 / rx as i64.max(1)) as i32,
+        ((cy - center_y) as i64 * 256 / (ry as i64).max(1)) as i32,
+        ((cx - center_x) as i64 * 256 / (rx as i64).max(1)) as i32,
     );
     let a2 = atan2_approx(
-        ((ey - center_y) as i64 * 256 / ry as i64.max(1)) as i32,
-        ((ex - center_x) as i64 * 256 / rx as i64.max(1)) as i32,
+        ((ey - center_y) as i64 * 256 / (ry as i64).max(1)) as i32,
+        ((ex - center_x) as i64 * 256 / (rx as i64).max(1)) as i32,
     );
 
     // Determine sweep angle
