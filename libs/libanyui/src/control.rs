@@ -316,6 +316,13 @@ pub struct ControlBase {
     pub y: i32,
     pub w: u32,
     pub h: u32,
+    /// Previous position/size before last change — used by dirty-rect collector
+    /// to union old and new bounds so the vacated area is also repainted.
+    /// Reset to current values after each render pass.
+    pub prev_x: i32,
+    pub prev_y: i32,
+    pub prev_w: u32,
+    pub prev_h: u32,
     pub visible: bool,
     pub color: u32,
     pub state: u32,
@@ -363,6 +370,10 @@ impl ControlBase {
             y,
             w,
             h,
+            prev_x: x,
+            prev_y: y,
+            prev_w: w,
+            prev_h: h,
             visible: true,
             color: 0,
             state: 0,
@@ -656,6 +667,11 @@ pub trait Control {
     fn set_position(&mut self, x: i32, y: i32) {
         let b = self.base_mut();
         if b.x != x || b.y != y {
+            // Preserve old position so dirty-rect collector can union old + new bounds.
+            if !b.dirty {
+                b.prev_x = b.x;
+                b.prev_y = b.y;
+            }
             b.x = x;
             b.y = y;
             b.mark_dirty();
@@ -667,6 +683,11 @@ pub trait Control {
     fn set_size(&mut self, w: u32, h: u32) {
         let b = self.base_mut();
         if b.w != w || b.h != h {
+            // Preserve old size so dirty-rect collector can union old + new bounds.
+            if !b.dirty {
+                b.prev_w = b.w;
+                b.prev_h = b.h;
+            }
             b.w = w;
             b.h = h;
             b.mark_dirty();

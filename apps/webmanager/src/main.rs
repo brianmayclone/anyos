@@ -430,9 +430,9 @@ fn main() {
     btn_delete.set_enabled(false);
     toolbar.add_separator();
     let btn_start = toolbar.add_icon_button("Start");
-    btn_start.set_system_icon("player-play", ui::IconType::Filled, tc.success, 24);
+    btn_start.set_system_icon("player-play", ui::IconType::Outline, tc.success, 24);
     let btn_stop = toolbar.add_icon_button("Stop");
-    btn_stop.set_system_icon("player-stop", ui::IconType::Filled, tc.destructive, 24);
+    btn_stop.set_system_icon("player-stop", ui::IconType::Outline, tc.destructive, 24);
     toolbar.add_separator();
     let btn_apply = toolbar.add_icon_button("Apply");
     btn_apply.set_system_icon("device-floppy", ui::IconType::Outline, tc.text, 24);

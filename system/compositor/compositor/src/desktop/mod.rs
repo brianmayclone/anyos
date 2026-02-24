@@ -682,8 +682,9 @@ impl Desktop {
         self.compositor.set_layer_visible(self.menubar_layer_id, visible);
     }
 
-    /// Update the clock display (call periodically).
-    pub fn update_clock(&mut self) {
+    /// Update the clock display. Returns `true` if the minute changed and
+    /// damage was added (caller should compose). Returns `false` if no change.
+    pub fn update_clock(&mut self) -> bool {
         let mut time_buf = [0u8; 8];
         anyos_std::sys::time(&mut time_buf);
         let min = time_buf[5] as u32;
@@ -700,6 +701,9 @@ impl Desktop {
                 60,
                 MENUBAR_HEIGHT + 1,
             ));
+            true
+        } else {
+            false
         }
     }
 
@@ -741,7 +745,8 @@ impl Desktop {
     // ── Compose ────────────────────────────────────────────────────────
 
     /// Run the full compose cycle (damage → composite → cursor → flush → collect ACKs).
-    pub fn compose(&mut self) {
+    /// Returns `true` if actual damage was composited (pixels changed on screen).
+    pub fn compose(&mut self) -> bool {
         let had_damage = self.compositor.compose();
 
         if self.compositor.has_hw_cursor() {
@@ -779,6 +784,8 @@ impl Desktop {
                 }
             }
         }
+
+        had_damage
     }
 
     // ── Accessors ──────────────────────────────────────────────────────

@@ -40,7 +40,7 @@ impl AppToolbar {
 
         let btn_save_all = toolbar.add_icon_button("");
         btn_save_all.set_size(34, 34);
-        btn_save_all.set_system_icon("device-floppy", IconType::Filled, tc.text, ICON_SZ);
+        btn_save_all.set_system_icon("files", IconType::Outline, tc.text, ICON_SZ);
 
         toolbar.add_separator();
 
@@ -51,12 +51,12 @@ impl AppToolbar {
 
         let btn_run = toolbar.add_icon_button("");
         btn_run.set_size(34, 34);
-        btn_run.set_system_icon("player-play", IconType::Filled, tc.check_mark, ICON_SZ);
+        btn_run.set_system_icon("player-play", IconType::Outline, tc.check_mark, ICON_SZ);
         btn_run.set_color(tc.success);
 
         let btn_stop = toolbar.add_icon_button("");
         btn_stop.set_size(34, 34);
-        btn_stop.set_system_icon("player-stop", IconType::Filled, tc.text, ICON_SZ);
+        btn_stop.set_system_icon("player-stop", IconType::Outline, tc.text, ICON_SZ);
 
         toolbar.add_separator();
 

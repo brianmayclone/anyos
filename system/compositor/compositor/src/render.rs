@@ -80,7 +80,11 @@ pub fn signal_render() {
 /// Instead of polling at a fixed 16ms interval, the render thread:
 /// 1. Checks if new work was signaled (RENDER_NEEDED flag)
 /// 2. If yes: compose and pace to 60fps
-/// 3. If no: sleep briefly and re-check (low CPU when idle)
+/// 3. If no: sleep with adaptive interval (up to 250ms) and re-check
+///
+/// The clock is checked during idle at ~1Hz. If the minute changed,
+/// `signal_render()` triggers a compose for just the clock region — no
+/// forced periodic compositing needed.
 ///
 /// Animations and clock are ticked here (not in the management thread) so they
 /// stay smooth even when the management thread is busy with IPC / shm_map.
@@ -88,18 +92,41 @@ pub fn signal_render() {
 /// CRITICAL: Uses try_lock() — NEVER blocks on the management thread.
 pub fn render_thread_entry() {
     println!("compositor: render thread running");
-    let mut frame: u32 = 0;
     let mut idle_count: u32 = 0;
+    let mut last_clock_check: u32 = 0;
+
+    // ── Debug stats (reset every 5 seconds) ──
+    let mut stat_wakeups: u32 = 0;       // times work_available was true
+    let mut stat_damage: u32 = 0;        // times compose() had actual damage
+    let mut stat_animations: u32 = 0;    // times has_animations was true
+    let mut stat_no_damage: u32 = 0;     // times compose() had NO damage
+    let mut stat_lock_fail: u32 = 0;     // times try_lock() failed
+    let mut stat_idle_loops: u32 = 0;    // times we entered idle branch
+    let mut stat_last_report: u32 = sys::uptime_ms();
 
     loop {
+        // ── Periodic stats dump (every 5 seconds) ──
+        let now_ms = sys::uptime_ms();
+        if now_ms.wrapping_sub(stat_last_report) >= 5000 {
+            println!(
+                "GPU-STATS: wake={} dmg={} anim={} no_dmg={} lock_fail={} idle={}",
+                stat_wakeups, stat_damage, stat_animations,
+                stat_no_damage, stat_lock_fail, stat_idle_loops
+            );
+            stat_wakeups = 0;
+            stat_damage = 0;
+            stat_animations = 0;
+            stat_no_damage = 0;
+            stat_lock_fail = 0;
+            stat_idle_loops = 0;
+            stat_last_report = now_ms;
+        }
+
         // Check if the management thread signaled new work
         let work_available = RENDER_NEEDED.swap(false, Ordering::Acquire);
 
-        // Also compose periodically for clock updates (every ~1s)
-        let periodic = frame % 60 == 0;
-
-        if work_available || periodic {
-            idle_count = 0;
+        if work_available {
+            stat_wakeups += 1;
             let t0 = sys::uptime_ms();
 
             if try_lock() {
@@ -108,11 +135,9 @@ pub fn render_thread_entry() {
                 // Tick animations + clock before compositing so updated state is
                 // reflected in the same frame — no extra lock round-trip needed.
                 let has_animations = desktop.tick_animations();
-                if periodic {
-                    desktop.update_clock();
-                }
+                desktop.update_clock();
                 desktop.process_deferred_wallpaper();
-                desktop.compose();
+                let had_damage = desktop.compose();
 
                 // Emit frame ACKs immediately after VSync (compose + flush_gpu).
                 // This is the VSync callback — apps learn their frame is on screen.
@@ -127,33 +152,65 @@ pub fn render_thread_entry() {
                 }
                 release_lock();
 
+                if has_animations { stat_animations += 1; }
+                if had_damage { stat_damage += 1; } else { stat_no_damage += 1; }
+
                 // If animations are still active, keep rendering next frame
                 if has_animations {
                     RENDER_NEEDED.store(true, Ordering::Release);
                 }
 
-                frame = frame.wrapping_add(1);
+                // Frame pacing: only sleep when actual pixels were composited.
+                // If compose() had no damage, the cycle was nearly free — skip
+                // the 16ms sleep so the render thread returns to idle quickly.
+                if had_damage || has_animations {
+                    idle_count = 0;
+                    let elapsed = sys::uptime_ms().wrapping_sub(t0);
+                    let target = 16u32;
+                    if elapsed < target {
+                        process::sleep(target - elapsed);
+                    }
+                }
             } else {
+                stat_lock_fail += 1;
                 // Lock contended — management thread is doing work.
                 // Sleep briefly and retry. Previous frame stays on screen.
                 process::sleep(1);
                 RENDER_NEEDED.store(true, Ordering::Release);
                 continue;
             }
-
-            // Frame pacing: sleep remainder to hit ~60fps max
-            let elapsed = sys::uptime_ms().wrapping_sub(t0);
-            let target = 16u32;
-            if elapsed < target {
-                process::sleep(target - elapsed);
-            }
         } else {
+            stat_idle_loops += 1;
             // No work signaled — idle sleep with adaptive interval.
-            // Start at 2ms, ramp up to 16ms after sustained idle.
+            // Ramp: 2ms → 4ms → 8ms → 16ms → 50ms → 100ms → 250ms
+            // This reduces idle CPU from ~5% to <0.1% while still responding
+            // quickly when new work arrives (worst-case 250ms latency at deep idle).
             idle_count = idle_count.saturating_add(1);
-            let sleep_ms = if idle_count < 8 { 2 } else { 16 };
+            let sleep_ms = match idle_count {
+                0..=3 => 2,
+                4..=7 => 4,
+                8..=15 => 8,
+                16..=31 => 16,
+                32..=63 => 50,
+                64..=127 => 100,
+                _ => 250,
+            };
             process::sleep(sleep_ms);
-            frame = frame.wrapping_add(1);
+
+            // Check clock at ~1Hz during idle (cheap: just read time + compare minute).
+            // If the minute changed, signal_render() triggers a compose for the clock.
+            let now = sys::uptime_ms();
+            if now.wrapping_sub(last_clock_check) >= 1000 {
+                last_clock_check = now;
+                if try_lock() {
+                    let desktop = unsafe { desktop_ref() };
+                    let clock_changed = desktop.update_clock();
+                    release_lock();
+                    if clock_changed {
+                        signal_render();
+                    }
+                }
+            }
         }
     }
 }

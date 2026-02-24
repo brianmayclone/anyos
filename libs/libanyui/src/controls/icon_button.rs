@@ -15,7 +15,15 @@ impl IconButton {
         Self { text_base, pressed: false, icon_pixels: Vec::new(), icon_w: 0, icon_h: 0 }
     }
 
+    /// Horizontal padding inside the button (left and right).
+    const H_PAD: i32 = 6;
+    /// Gap between icon and text when both are present.
+    const ICON_TEXT_GAP: i32 = 4;
+
     /// Set pre-rendered icon pixel data.
+    ///
+    /// Auto-resizes the button width when text is present to fit
+    /// icon + gap + text horizontally.
     pub fn set_icon_pixels(&mut self, data: &[u32], w: u32, h: u32) {
         let expected = (w as usize) * (h as usize);
         if data.len() < expected { return; }
@@ -23,7 +31,25 @@ impl IconButton {
         self.icon_pixels.extend_from_slice(&data[..expected]);
         self.icon_w = w;
         self.icon_h = h;
+        self.auto_size();
         self.text_base.base.mark_dirty();
+    }
+
+    /// Recompute button size to fit its content.
+    fn auto_size(&mut self) {
+        let has_icon = !self.icon_pixels.is_empty() || self.text_base.base.state > 0;
+        let has_text = !self.text_base.text.is_empty();
+
+        if has_icon && has_text {
+            let iw = if !self.icon_pixels.is_empty() { self.icon_w as i32 } else { 16 };
+            let ih = if !self.icon_pixels.is_empty() { self.icon_h as i32 } else { 16 };
+            let font_size = self.text_base.text_style.font_size;
+            let (tw, _) = crate::draw::text_size_at(&self.text_base.text, font_size);
+            let needed_w = Self::H_PAD + iw + Self::ICON_TEXT_GAP + tw as i32 + Self::H_PAD;
+            let needed_h = (ih + 8).max(self.text_base.base.h as i32);
+            self.text_base.base.w = needed_w as u32;
+            self.text_base.base.h = needed_h as u32;
+        }
     }
 }
 
@@ -59,44 +85,56 @@ impl Control for IconButton {
             crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, custom);
         }
 
-        // Draw icon: prefer SVG pixel data, fall back to legacy pixel-art
-        if !self.icon_pixels.is_empty() {
-            let iw = self.icon_w as i32;
-            let ih = self.icon_h as i32;
-            let ix = x + (w as i32 - iw) / 2;
-            let iy = y + (h as i32 - ih) / 2;
-            blit_alpha(surface, ix, iy, self.icon_w, self.icon_h, &self.icon_pixels);
-        } else if icon_id > 0 {
-            let icon_color = if disabled {
-                tc.text_disabled
-            } else if self.text_base.text_style.text_color != 0 {
-                self.text_base.text_style.text_color
-            } else {
-                tc.text_secondary
-            };
-            let ix = x + (w as i32 - 16) / 2;
-            let iy = y + (h as i32 - 16) / 2;
-            crate::icons::draw_icon(surface, ix, iy, icon_id, icon_color);
-        }
+        let has_text = !self.text_base.text.is_empty();
+        let text_color = if disabled {
+            tc.text_disabled
+        } else if self.text_base.text_style.text_color != 0 {
+            self.text_base.text_style.text_color
+        } else {
+            tc.text
+        };
+        let icon_color = if disabled {
+            tc.text_disabled
+        } else if self.text_base.text_style.text_color != 0 {
+            self.text_base.text_style.text_color
+        } else {
+            tc.text_secondary
+        };
 
-        // Text label
-        if !self.text_base.text.is_empty() {
-            let text_color = if disabled {
-                tc.text_disabled
-            } else if self.text_base.text_style.text_color != 0 {
-                self.text_base.text_style.text_color
+        if has_icon && has_text {
+            // ── Horizontal layout: [pad | icon | gap | text | pad] ──
+            let iw = if !self.icon_pixels.is_empty() { self.icon_w as i32 } else { 16 };
+            let ih = if !self.icon_pixels.is_empty() { self.icon_h as i32 } else { 16 };
+            let ix = x + Self::H_PAD;
+            let iy = y + (h as i32 - ih) / 2;
+
+            if !self.icon_pixels.is_empty() {
+                blit_alpha(surface, ix, iy, self.icon_w, self.icon_h, &self.icon_pixels);
             } else {
-                tc.text
-            };
+                crate::icons::draw_icon(surface, ix, iy, icon_id, icon_color);
+            }
+
+            let font_size = self.text_base.text_style.font_size;
+            let tx = ix + iw + Self::ICON_TEXT_GAP;
+            let ty = y + (h as i32 - font_size as i32) / 2;
+            crate::draw::draw_text_sized(surface, tx, ty, text_color, &self.text_base.text, font_size);
+        } else if has_icon {
+            // ── Icon only: centered ──
+            if !self.icon_pixels.is_empty() {
+                let ix = x + (w as i32 - self.icon_w as i32) / 2;
+                let iy = y + (h as i32 - self.icon_h as i32) / 2;
+                blit_alpha(surface, ix, iy, self.icon_w, self.icon_h, &self.icon_pixels);
+            } else {
+                let ix = x + (w as i32 - 16) / 2;
+                let iy = y + (h as i32 - 16) / 2;
+                crate::icons::draw_icon(surface, ix, iy, icon_id, icon_color);
+            }
+        } else if has_text {
+            // ── Text only: centered ──
             let font_size = self.text_base.text_style.font_size;
             let (tw, _) = crate::draw::text_size_at(&self.text_base.text, font_size);
             let tx = x + (w as i32 - tw as i32) / 2;
-            let ty = if has_icon {
-                let icon_h = if !self.icon_pixels.is_empty() { self.icon_h as i32 } else { 16 };
-                y + (h as i32 - icon_h) / 2 + icon_h + 1
-            } else {
-                y + (h as i32 - font_size as i32) / 2
-            };
+            let ty = y + (h as i32 - font_size as i32) / 2;
             crate::draw::draw_text_sized(surface, tx, ty, text_color, &self.text_base.text, font_size);
         }
 

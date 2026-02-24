@@ -417,12 +417,17 @@ fn main() {
         let tasks = unsafe { &mut *TASKS_BUF.unwrap() };
         let colors = unsafe { &mut *COLORS_BUF.unwrap() };
 
-        // Fetch data (always needed for CPU history + task tracking)
+        // CPU data: always needed for history graph (even when on other tabs)
         fetch_cpu(cpu_st);
         hist.push(cpu_st);
-        fetch_tasks(tbuf, prev, cpu_st.total_sched_ticks, tasks);
 
         let active_tab = seg.get_state();
+
+        // Task data: only needed for Processes (tab 0) and Disk (tab 2) tabs.
+        // Skipping fetch_tasks() on Graphs/System tabs saves ~0.5ms per tick.
+        if active_tab == 0 || active_tab == 2 {
+            fetch_tasks(tbuf, prev, cpu_st.total_sched_ticks, tasks);
+        }
 
         // ── Update uptime label ──
         {

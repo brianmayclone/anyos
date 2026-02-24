@@ -39,6 +39,11 @@ fn fp_mul(a: i32, b: i32) -> i32 { ((a as i64 * b as i64) >> FP) as i32 }
 enum Cmd {
     MoveTo(i32, i32),
     LineTo(i32, i32),
+    /// Intermediate point from curve flattening (bezier/arc).
+    /// Same as LineTo for fill rendering, but stroke rendering
+    /// skips endpoint distance at junctions between CurvePt segments
+    /// to avoid visible dots along smooth curves.
+    CurvePt(i32, i32),
     Close,
 }
 
@@ -74,12 +79,12 @@ pub fn render_icon(
     }
 
     let sz = size as usize;
-    let scale = fp(size as i32); // scale = size * 256 (fixed-point)
+    let scale = fp(size as i32);
 
-    // Parse all paths and collect edges
-    let mut edges: Vec<Edge> = Vec::new();
+    // Parse all paths
+    let mut fill_edges: Vec<Edge> = Vec::new();
+    let mut stroke_segments: Vec<StrokeSegment> = Vec::new();
 
-    // Split on \0 for multiple paths
     let mut start = 0;
     loop {
         let end = path_data[start..].iter().position(|&b| b == 0)
@@ -87,46 +92,50 @@ pub fn render_icon(
             .unwrap_or(path_data.len());
 
         let path_str = &path_data[start..end];
-
-        // Check for translate prefix "Tx y\n"
         let (tx, ty, actual_path) = parse_translate_prefix(path_str);
-
         let cmds = parse_svg_path(actual_path, scale, tx, ty);
+
         if filled {
-            collect_fill_edges(&cmds, &mut edges);
+            collect_fill_edges(&cmds, &mut fill_edges);
         } else {
-            // Stroke width: 2.0 in 24×24 viewbox → scaled
-            let stroke_w = fp_mul(fp(2), scale) / 24;
-            collect_stroke_edges(&cmds, stroke_w, &mut edges);
+            collect_stroke_segments(&cmds, &mut stroke_segments);
         }
 
         if end >= path_data.len() { break; }
         start = end + 1;
     }
 
-    if edges.is_empty() {
-        // Clear output
-        for p in out[..sz * sz].iter_mut() { *p = 0; }
-        return 0;
-    }
-
-    // Rasterize edges to coverage bitmap
-    let coverage = rasterize_edges(&edges, size, size);
-
-    // Apply color
-    let ca = (color >> 24) & 0xFF;
-    let cr = (color >> 16) & 0xFF;
-    let cg = (color >> 8) & 0xFF;
-    let cb = color & 0xFF;
-
-    for i in 0..sz * sz {
-        let cov = coverage[i] as u32;
-        if cov == 0 {
-            out[i] = 0;
-        } else {
-            let a = (cov * ca + 127) / 255;
-            out[i] = (a << 24) | (cr << 16) | (cg << 8) | cb;
+    if filled {
+        // ── Fill mode: scanline rasterizer with non-zero winding ──
+        if fill_edges.is_empty() {
+            for p in out[..sz * sz].iter_mut() { *p = 0; }
+            return 0;
         }
+        let coverage = rasterize_edges(&fill_edges, size, size);
+        let ca = (color >> 24) & 0xFF;
+        let cr = (color >> 16) & 0xFF;
+        let cg = (color >> 8) & 0xFF;
+        let cb = color & 0xFF;
+        for i in 0..sz * sz {
+            let cov = coverage[i] as u32;
+            if cov == 0 {
+                out[i] = 0;
+            } else {
+                let a = (cov * ca + 127) / 255;
+                out[i] = (a << 24) | (cr << 16) | (cg << 8) | cb;
+            }
+        }
+    } else {
+        // ── Stroke mode: distance-based rasterizer ──
+        // For each pixel, compute the minimum distance to any path segment.
+        // Coverage is derived analytically from the distance to the stroke
+        // edge, giving perfect round caps/joins with no geometry gaps.
+        if stroke_segments.is_empty() {
+            for p in out[..sz * sz].iter_mut() { *p = 0; }
+            return 0;
+        }
+        let stroke_hw = fp_mul(fp(1), scale) / 24;
+        rasterize_stroke_distance(&stroke_segments, stroke_hw, size, color, out);
     }
 
     0
@@ -581,7 +590,7 @@ fn flatten_cubic_recursive(
 
     if depth >= 10 || ((d1 + d2) * (d1 + d2) <= threshold * threshold * len_sq.max(1)) {
         let (px, py) = viewbox_to_px(p3x, p3y, scale);
-        cmds.push(Cmd::LineTo(px, py));
+        cmds.push(Cmd::CurvePt(px, py));
         return;
     }
 
@@ -625,7 +634,7 @@ fn flatten_quad_recursive(
 
     if depth >= 8 || dist_sq <= threshold {
         let (px, py) = viewbox_to_px(p2x, p2y, scale);
-        cmds.push(Cmd::LineTo(px, py));
+        cmds.push(Cmd::CurvePt(px, py));
         return;
     }
 
@@ -720,14 +729,14 @@ fn flatten_arc(
         let px = center_x + ((rx as i64 * cos_a as i64) / 256) as i32;
         let py = center_y + ((ry as i64 * sin_a as i64) / 256) as i32;
         let (ppx, ppy) = viewbox_to_px(px, py, scale);
-        cmds.push(Cmd::LineTo(ppx, ppy));
+        cmds.push(Cmd::CurvePt(ppx, ppy));
     }
 
     // Ensure we end exactly at the endpoint
     let (epx, epy) = viewbox_to_px(ex, ey, scale);
-    if let Some(&Cmd::LineTo(lx, ly)) = cmds.last() {
+    if let Some(&Cmd::CurvePt(lx, ly)) = cmds.last() {
         if lx != epx || ly != epy {
-            cmds.push(Cmd::LineTo(epx, epy));
+            cmds.push(Cmd::CurvePt(epx, epy));
         }
     }
 }
@@ -737,10 +746,12 @@ fn flatten_arc(
 /// Integer square root of fixed-point value (input and output * 256).
 fn isqrt_fp(v: i32) -> i32 {
     if v <= 0 { return 0; }
-    // sqrt(v/256) * 256
+    // sqrt(v/256) * 256  via Newton's method
     let v64 = v as i64 * 256; // scale up for precision
-    let mut x = 256i64;
-    for _ in 0..16 {
+    // Start above the root: max(v, 256) >= sqrt(v*256) always holds,
+    // ensuring Newton's method converges downward from the first iteration.
+    let mut x = (v as i64).max(256);
+    for _ in 0..24 {
         let nx = (x + v64 / x) / 2;
         if nx >= x { break; }
         x = nx;
@@ -820,7 +831,7 @@ fn collect_fill_edges(cmds: &[Cmd], edges: &mut Vec<Edge>) {
             Cmd::MoveTo(x, y) => {
                 cx = x; cy = y;
             }
-            Cmd::LineTo(x, y) => {
+            Cmd::LineTo(x, y) | Cmd::CurvePt(x, y) => {
                 if cy != y { // skip horizontal edges
                     let (y0, y1, x0, x1, w) = if cy < y {
                         (cy, y, cx, x, 1)
@@ -838,93 +849,219 @@ fn collect_fill_edges(cmds: &[Cmd], edges: &mut Vec<Edge>) {
     }
 }
 
-/// Collect edges for stroked path rendering.
-/// Converts each line segment into a thick rectangle (parallelogram).
-fn collect_stroke_edges(cmds: &[Cmd], half_width: i32, edges: &mut Vec<Edge>) {
+// ── Distance-based stroke rendering ──────────────────────────────
+
+/// A line segment in pixel fixed-point coordinates with endpoint cap flags.
+///
+/// `cap_start`/`cap_end` control whether endpoint distance (round cap/join)
+/// is used when the projection falls outside [0,1]. For smooth curve
+/// intermediate points these are `false` — the neighboring segment handles
+/// those pixels instead, eliminating visible dots along flattened curves.
+#[derive(Clone)]
+struct StrokeSegment {
+    x0: i32, y0: i32,
+    x1: i32, y1: i32,
+    cap_start: bool,
+    cap_end: bool,
+}
+
+/// Extract line segments from parsed path commands for stroke rendering.
+///
+/// Marks endpoint caps based on command type:
+/// - `LineTo` vertices: cap = true (round join at explicit path vertex)
+/// - `CurvePt` ↔ `CurvePt` junctions: cap = false (smooth curve, no dots)
+/// - Open subpath ends: cap = true (round linecap)
+/// - `Close` vertex: cap = true (round join)
+fn collect_stroke_segments(cmds: &[Cmd], out: &mut Vec<StrokeSegment>) {
     let mut cx = 0i32;
     let mut cy = 0i32;
     let mut sx = 0i32;
     let mut sy = 0i32;
-    let hw = half_width;
+    let mut subpath_start = out.len();
+    let mut prev_from_curve = false;
 
     for &cmd in cmds {
         match cmd {
             Cmd::MoveTo(x, y) => {
+                // Mark open subpath endpoints as capped
+                mark_open_subpath_caps(out, subpath_start);
+                subpath_start = out.len();
                 cx = x; cy = y; sx = x; sy = y;
+                prev_from_curve = false;
             }
-            Cmd::LineTo(x, y) => {
+            Cmd::LineTo(x, y) | Cmd::CurvePt(x, y) => {
+                let from_curve = matches!(cmd, Cmd::CurvePt(_, _));
                 if cx != x || cy != y {
-                    stroke_segment(cx, cy, x, y, hw, edges);
+                    // Smooth junction only if BOTH sides are curve points
+                    let smooth = prev_from_curve && from_curve;
+                    out.push(StrokeSegment {
+                        x0: cx, y0: cy, x1: x, y1: y,
+                        cap_start: !smooth,
+                        cap_end: true, // tentative; updated by next segment
+                    });
+                    // Update previous segment's cap_end to match this joint
+                    let n = out.len();
+                    if n >= 2 && n - 2 >= subpath_start {
+                        out[n - 2].cap_end = !smooth;
+                    }
+                    prev_from_curve = from_curve;
                 }
                 cx = x; cy = y;
             }
             Cmd::Close => {
                 if cx != sx || cy != sy {
-                    stroke_segment(cx, cy, sx, sy, hw, edges);
+                    out.push(StrokeSegment {
+                        x0: cx, y0: cy, x1: sx, y1: sy,
+                        cap_start: true, // round join at vertex before close
+                        cap_end: true,   // round join at closing vertex
+                    });
+                    let n = out.len();
+                    if n >= 2 && n - 2 >= subpath_start {
+                        out[n - 2].cap_end = true;
+                    }
                 }
+                // Closed subpath: first segment start connects to last segment end
+                if subpath_start < out.len() {
+                    out[subpath_start].cap_start = true;
+                }
+                subpath_start = out.len();
                 cx = sx; cy = sy;
+                prev_from_curve = false;
             }
         }
     }
+    // Final open subpath
+    mark_open_subpath_caps(out, subpath_start);
 }
 
-/// Convert a line segment into edges for a thick stroke.
-/// Creates a rectangle perpendicular to the segment direction.
-fn stroke_segment(x0: i32, y0: i32, x1: i32, y1: i32, hw: i32, edges: &mut Vec<Edge>) {
-    let dx = x1 - x0;
-    let dy = y1 - y0;
-    let len = isqrt_fp(((dx as i64 * dx as i64 + dy as i64 * dy as i64) / 256) as i32);
-    if len == 0 { return; }
-
-    // Normal vector (perpendicular), scaled to half_width
-    let nx = ((-dy as i64 * hw as i64) / len as i64) as i32;
-    let ny = ((dx as i64 * hw as i64) / len as i64) as i32;
-
-    // Four corners of the stroke rectangle
-    let ax = x0 + nx; let ay = y0 + ny;
-    let bx = x0 - nx; let by = y0 - ny;
-    let ccx = x1 - nx; let ccy = y1 - ny;
-    let ddx = x1 + nx; let ddy = y1 + ny;
-
-    // Add rectangle as 4 edges (a→d, d→c, c→b, b→a)
-    add_fill_edge(ax, ay, ddx, ddy, edges);
-    add_fill_edge(ddx, ddy, ccx, ccy, edges);
-    add_fill_edge(ccx, ccy, bx, by, edges);
-    add_fill_edge(bx, by, ax, ay, edges);
-
-    // Round caps (approximated as circles at endpoints)
-    add_round_cap(x0, y0, hw, edges);
-    add_round_cap(x1, y1, hw, edges);
+/// Ensure open subpath start/end have round caps.
+fn mark_open_subpath_caps(segs: &mut Vec<StrokeSegment>, start: usize) {
+    if start < segs.len() {
+        segs[start].cap_start = true;
+        let last = segs.len() - 1;
+        segs[last].cap_end = true;
+    }
 }
 
-fn add_fill_edge(x0: i32, y0: i32, x1: i32, y1: i32, edges: &mut Vec<Edge>) {
-    if y0 == y1 { return; }
-    let (ey0, ey1, ex0, ex1, w) = if y0 < y1 {
-        (y0, y1, x0, x1, 1)
+/// Squared distance from point (px, py) to a stroke segment.
+///
+/// When the projection falls within [0,1], returns perpendicular distance².
+/// When outside, behaviour depends on the cap flag:
+/// - `cap = true`: returns endpoint distance² (round cap/join circle)
+/// - `cap = false`: returns i64::MAX (skip — neighboring segment handles it)
+#[inline]
+fn dist_to_segment_sq(px: i32, py: i32, seg: &StrokeSegment) -> i64 {
+    let dx = (seg.x1 - seg.x0) as i64;
+    let dy = (seg.y1 - seg.y0) as i64;
+    let len_sq = dx * dx + dy * dy;
+
+    let dpx = (px - seg.x0) as i64;
+    let dpy = (py - seg.y0) as i64;
+
+    if len_sq == 0 {
+        return if seg.cap_start || seg.cap_end {
+            dpx * dpx + dpy * dpy
+        } else {
+            i64::MAX
+        };
+    }
+
+    // Project point onto the line: t = dot(p-a, b-a) / |b-a|²
+    let t_num = dpx * dx + dpy * dy;
+
+    if t_num <= 0 {
+        if seg.cap_start {
+            dpx * dpx + dpy * dpy // round cap/join
+        } else {
+            i64::MAX // smooth curve interior — neighbor handles this
+        }
+    } else if t_num >= len_sq {
+        if seg.cap_end {
+            let epx = (px - seg.x1) as i64;
+            let epy = (py - seg.y1) as i64;
+            epx * epx + epy * epy // round cap/join
+        } else {
+            i64::MAX // smooth curve interior — neighbor handles this
+        }
     } else {
-        (y1, y0, x1, x0, -1)
-    };
-    edges.push(Edge { x0: ex0, y0: ey0, x1: ex1, y1: ey1, winding: w });
+        // Interior: perpendicular distance
+        let cross = dpx * dy - dpy * dx;
+        (cross * cross) / len_sq
+    }
 }
 
-/// Add a round cap (circle approximated as octagon) at the given point.
-fn add_round_cap(cx: i32, cy: i32, r: i32, edges: &mut Vec<Edge>) {
-    // Approximate circle with 8 segments
-    let r7 = r * 181 / 256; // r * cos(45°) ≈ r * 0.707
-    let pts: [(i32, i32); 8] = [
-        (cx + r, cy),
-        (cx + r7, cy + r7),
-        (cx, cy + r),
-        (cx - r7, cy + r7),
-        (cx - r, cy),
-        (cx - r7, cy - r7),
-        (cx, cy - r),
-        (cx + r7, cy - r7),
-    ];
-    for j in 0..8 {
-        let (ax, ay) = pts[j];
-        let (bx, by) = pts[(j + 1) % 8];
-        add_fill_edge(ax, ay, bx, by, edges);
+/// Integer square root (no fixed-point scaling).
+fn isqrt_i64(v: i64) -> i64 {
+    if v <= 0 { return 0; }
+    let mut x = v;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + v / x) / 2;
+    }
+    x
+}
+
+/// Distance-based stroke rasterizer.
+///
+/// For each pixel, computes the minimum distance to any path segment.
+/// Coverage is derived analytically: fully inside when dist < hw - 0.5px,
+/// fully outside when dist > hw + 0.5px, linear ramp in between.
+///
+/// This approach has no geometry gaps at joints — round caps and round joins
+/// emerge naturally from the distance-to-endpoint clamping.
+fn rasterize_stroke_distance(
+    segments: &[StrokeSegment],
+    half_width: i32,
+    size: u32,
+    color: u32,
+    out: &mut [u32],
+) {
+    let sz = size as usize;
+    let hw = half_width as i64;
+
+    // Anti-aliasing: 1-pixel transition band around the stroke edge
+    let aa_half = FP_ONE as i64 / 2; // half pixel
+    let inner = (hw - aa_half).max(0);
+    let outer = hw + aa_half;
+    let inner_sq = inner * inner;
+    let outer_sq = outer * outer;
+    let range = outer - inner; // width of AA band
+
+    let ca = (color >> 24) & 0xFF;
+    let cr = (color >> 16) & 0xFF;
+    let cg = (color >> 8) & 0xFF;
+    let cb = color & 0xFF;
+
+    for row in 0..sz {
+        let py = row as i32 * FP_ONE + FP_ONE / 2;
+        for col in 0..sz {
+            let px = col as i32 * FP_ONE + FP_ONE / 2;
+
+            // Find minimum squared distance to any segment
+            let mut min_dsq = i64::MAX;
+            for seg in segments {
+                let dsq = dist_to_segment_sq(px, py, seg);
+                if dsq < min_dsq {
+                    min_dsq = dsq;
+                    if dsq <= inner_sq { break; } // fully inside, no need to check more
+                }
+            }
+
+            let i = row * sz + col;
+            if min_dsq <= inner_sq {
+                out[i] = color;
+            } else if min_dsq >= outer_sq {
+                out[i] = 0;
+            } else {
+                // Anti-aliased edge pixel
+                let dist = isqrt_i64(min_dsq);
+                let edge = outer - dist;
+                let cov = ((edge * 255) / range.max(1)).max(0).min(255) as u32;
+                let a = (cov * ca + 127) / 255;
+                out[i] = (a << 24) | (cr << 16) | (cg << 8) | cb;
+            }
+        }
     }
 }
 

@@ -93,6 +93,10 @@ pub(crate) struct CompWindow {
     /// Window-level dirty flag: true if any control in this window's subtree is dirty.
     /// Computed in a flat O(n) scan, replacing the O(n²) recursive any_dirty() tree walk.
     pub dirty: bool,
+    /// Accumulated dirty region (union of all dirty controls' bounding rects).
+    /// `None` means full-window redraw (first frame, resize, etc.).
+    /// `Some((x, y, w, h))` in window-local coordinates for partial redraw.
+    pub dirty_rect: Option<(i32, i32, u32, u32)>,
     /// Local back buffer for flicker-free rendering. All drawing goes here first,
     /// then a single memcpy to SHM before present() — the compositor never sees
     /// a half-rendered frame (no background flash, no partial content).
@@ -317,6 +321,7 @@ pub extern "C" fn anyui_create_window(
         frame_presented: false,
         last_present_ms: 0,
         dirty: true,
+        dirty_rect: None,
         back_buffer: alloc::vec![0u32; pixel_count],
     });
     id
