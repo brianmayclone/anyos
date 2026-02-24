@@ -2118,10 +2118,12 @@ pub extern "C" fn anyui_show_notification(
 
 // ── Theme ────────────────────────────────────────────────────────────
 
+#[no_mangle]
 pub extern "C" fn anyui_set_theme(light: u32) {
     theme::set_theme(light != 0);
 }
 
+#[no_mangle]
 pub extern "C" fn anyui_get_theme() -> u32 {
     theme::get_theme()
 }

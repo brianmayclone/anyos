@@ -294,7 +294,10 @@ pub fn lib() -> &'static AnyuiLib {
 
 /// Resolve a function pointer from the loaded library, or panic.
 unsafe fn resolve<T: Copy>(handle: &DlHandle, name: &str) -> T {
-    let ptr = dl_sym(handle, name).expect("symbol not found in libanyui.so");
+    let ptr = match dl_sym(handle, name) {
+        Some(p) => p,
+        None => panic!("symbol '{}' not found in libanyui.so", name),
+    };
     core::mem::transmute_copy::<*const (), T>(&ptr)
 }
 

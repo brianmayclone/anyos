@@ -30,6 +30,30 @@ pub extern "C" fn _dll_start() -> ! {
 }
 
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    syscall::write(1, b"PANIC [libimage]: ");
+    if let Some(loc) = info.location() {
+        syscall::write(1, loc.file().as_bytes());
+        syscall::write(1, b":");
+        let mut buf = [0u8; 10];
+        let s = fmt_u32(loc.line(), &mut buf);
+        syscall::write(1, s);
+    }
+    syscall::write(1, b"\n");
     syscall::exit(1);
+}
+
+/// Format a u32 as decimal into a buffer, returning the used slice.
+fn fmt_u32(mut val: u32, buf: &mut [u8; 10]) -> &[u8] {
+    if val == 0 {
+        buf[9] = b'0';
+        return &buf[9..10];
+    }
+    let mut i = 10;
+    while val > 0 && i > 0 {
+        i -= 1;
+        buf[i] = b'0' + (val % 10) as u8;
+        val /= 10;
+    }
+    &buf[i..10]
 }
