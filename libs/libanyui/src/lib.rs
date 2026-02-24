@@ -2115,3 +2115,13 @@ pub extern "C" fn anyui_show_notification(
     };
     compositor::show_notification(st.channel_id, title, message, icon_ptr, timeout_ms, 0);
 }
+
+// ── Theme ────────────────────────────────────────────────────────────
+
+pub extern "C" fn anyui_set_theme(light: u32) {
+    theme::set_theme(light != 0);
+}
+
+pub extern "C" fn anyui_get_theme() -> u32 {
+    theme::get_theme()
+}

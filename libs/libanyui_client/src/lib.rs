@@ -36,6 +36,8 @@ pub use events::*;
 pub mod icon;
 pub use icon::{Icon, IconType};
 
+pub mod theme;
+
 use dynlink::{DlHandle, dl_open, dl_sym};
 
 // ── Control kind constants (match libanyui's ControlKind enum) ───────
@@ -279,6 +281,9 @@ struct AnyuiLib {
     screen_size: extern "C" fn(*mut u32, *mut u32),
     // Notifications
     show_notification: extern "C" fn(*const u8, u32, *const u8, u32, *const u32, u32),
+    // Theme
+    pub(crate) set_theme: extern "C" fn(u32),
+    pub(crate) get_theme: extern "C" fn() -> u32,
 }
 
 static mut LIB: Option<AnyuiLib> = None;
@@ -460,6 +465,9 @@ pub fn init() -> bool {
             screen_size: resolve(&handle, "anyui_screen_size"),
             // Notifications
             show_notification: resolve(&handle, "anyui_show_notification"),
+            // Theme
+            set_theme: resolve(&handle, "anyui_set_theme"),
+            get_theme: resolve(&handle, "anyui_get_theme"),
             _handle: handle,
         };
         (lib.init)();

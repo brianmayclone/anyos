@@ -1,8 +1,17 @@
-//! Theme color palette and sizing constants.
+//! Theme colors for applications.
 //!
-//! Colors are dynamic — they change based on the system theme (dark/light).
-//! The theme value is stored locally and set via `set_theme()`.
+//! Provides access to the current theme color palette. The theme flag
+//! is stored in libanyui and read via DLL call; color palettes are
+//! defined here to avoid serialization overhead.
+//!
+//! # Usage
+//! ```rust
+//! use libanyui_client as ui;
+//! let tc = ui::theme::colors();
+//! btn.set_system_icon("settings", ui::IconType::Outline, tc.text, 24);
+//! ```
 
+/// All semantic theme colors.
 pub struct ThemeColors {
     pub window_bg: u32,
     pub text: u32,
@@ -93,32 +102,23 @@ const LIGHT: ThemeColors = ThemeColors {
     check_mark:      0xFFFFFFFF,
 };
 
-/// Current theme flag: 0 = dark, 1 = light.
-static mut CURRENT_THEME: u32 = 0;
-
-/// Set the current theme (0 = dark, 1 = light).
-pub fn set_theme(light: bool) {
-    unsafe { CURRENT_THEME = if light { 1 } else { 0 }; }
-}
-
-/// Get the current theme flag (0 = dark, 1 = light).
-pub fn get_theme() -> u32 {
-    unsafe { CURRENT_THEME }
-}
-
-/// Get the current theme colors.
-#[inline(always)]
+/// Get the current theme colors (queries libanyui for the active theme).
 pub fn colors() -> &'static ThemeColors {
-    if unsafe { CURRENT_THEME } == 0 { &DARK } else { &LIGHT }
+    let theme = (crate::lib().get_theme)();
+    if theme == 0 { &DARK } else { &LIGHT }
+}
+
+/// Set the current theme (true = light, false = dark).
+pub fn set_theme(light: bool) {
+    (crate::lib().set_theme)(if light { 1 } else { 0 });
 }
 
 /// Check if the current theme is light.
-#[inline(always)]
 pub fn is_light() -> bool {
-    unsafe { CURRENT_THEME != 0 }
+    (crate::lib().get_theme)() != 0
 }
 
-// ── Color utility functions (zero-cost color math) ───────────────────
+// ── Color utility functions ──────────────────────────────────────────
 
 /// Darken a color by subtracting `amount` from each RGB channel.
 #[inline(always)]
@@ -145,32 +145,3 @@ pub fn lighten(color: u32, amount: u32) -> u32 {
 pub fn with_alpha(color: u32, alpha: u32) -> u32 {
     (color & 0x00FFFFFF) | ((alpha & 0xFF) << 24)
 }
-
-// ── Sizing constants (theme-independent) ────────────────────────────
-
-pub const BUTTON_HEIGHT: u32     = 28;
-pub const BUTTON_PADDING_H: u32  = 16;
-pub const BUTTON_CORNER: u32     = 6;
-pub const INPUT_HEIGHT: u32      = 28;
-pub const INPUT_CORNER: u32      = 6;
-pub const TOGGLE_WIDTH: u32      = 36;
-pub const TOGGLE_HEIGHT: u32     = 20;
-pub const TOGGLE_THUMB_SIZE: u32 = 16;
-pub const CHECKBOX_SIZE: u32     = 18;
-pub const RADIO_SIZE: u32        = 18;
-pub const FONT_SIZE_SMALL: u16   = 13;
-pub const FONT_SIZE_DEFAULT: u16 = 13;
-pub const FONT_SIZE_NORMAL: u16  = 16;
-pub const FONT_SIZE_LARGE: u16   = 20;
-pub const FONT_SIZE_TITLE: u16   = 24;
-pub const CARD_CORNER: u32       = 8;
-pub const TOOLTIP_CORNER: u32    = 6;
-pub const ALERT_CORNER: u32      = 10;
-
-/// Shadow spread for floating elements (Alert, Tooltip, ContextMenu).
-/// Small value to keep SDF cost low on software rendering.
-pub const POPUP_SHADOW_SPREAD: i32 = 8;
-/// Shadow alpha for floating elements.
-pub const POPUP_SHADOW_ALPHA: u32 = 50;
-/// Shadow Y-offset for floating elements (light comes from above).
-pub const POPUP_SHADOW_OFFSET_Y: i32 = 2;
