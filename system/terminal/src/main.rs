@@ -117,6 +117,241 @@ fn write_redirect(redirect: &Redirect, data: &str) {
     }
 }
 
+// ─── Glob Expansion (POSIX-style) ───────────────────────────────────────────
+
+/// Check if a string contains unquoted glob metacharacters.
+fn has_glob_chars(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\' && i + 1 < b.len() {
+            i += 2; // skip escaped char
+        } else if b[i] == b'*' || b[i] == b'?' || b[i] == b'[' {
+            return true;
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+/// Match a filename against a glob pattern (*, ?, [...]).
+fn glob_match(name: &str, pattern: &str) -> bool {
+    let pat = pattern.as_bytes();
+    let nam = name.as_bytes();
+    let mut pi = 0;
+    let mut ni = 0;
+    let mut star_pi = usize::MAX;
+    let mut star_ni: usize = 0;
+
+    while ni < nam.len() {
+        if pi < pat.len() && pat[pi] == b'*' {
+            star_pi = pi;
+            star_ni = ni;
+            pi += 1;
+        } else if pi < pat.len() && pat[pi] == b'?' {
+            pi += 1;
+            ni += 1;
+        } else if pi < pat.len() && pat[pi] == b'[' {
+            // Character class: [abc], [a-z], [!abc]
+            pi += 1;
+            let negate = pi < pat.len() && (pat[pi] == b'!' || pat[pi] == b'^');
+            if negate { pi += 1; }
+            let mut matched = false;
+            let ch = nam[ni];
+            while pi < pat.len() && pat[pi] != b']' {
+                if pi + 2 < pat.len() && pat[pi + 1] == b'-' {
+                    // Range
+                    if ch >= pat[pi] && ch <= pat[pi + 2] {
+                        matched = true;
+                    }
+                    pi += 3;
+                } else {
+                    if ch == pat[pi] {
+                        matched = true;
+                    }
+                    pi += 1;
+                }
+            }
+            if pi < pat.len() { pi += 1; } // skip ']'
+            if matched == negate {
+                // negate XOR matched: no match
+                if star_pi != usize::MAX {
+                    pi = star_pi + 1;
+                    star_ni += 1;
+                    ni = star_ni;
+                } else {
+                    return false;
+                }
+            } else {
+                ni += 1;
+            }
+        } else if pi < pat.len() && pat[pi] == nam[ni] {
+            pi += 1;
+            ni += 1;
+        } else if star_pi != usize::MAX {
+            pi = star_pi + 1;
+            star_ni += 1;
+            ni = star_ni;
+        } else {
+            return false;
+        }
+    }
+    while pi < pat.len() && pat[pi] == b'*' {
+        pi += 1;
+    }
+    pi == pat.len()
+}
+
+/// Expand a single glob token against the filesystem.
+/// Returns matching filenames sorted alphabetically, or empty if no matches.
+fn expand_glob_token(token: &str, cwd: &str) -> Vec<String> {
+    // Split into directory prefix and filename pattern at the last '/'
+    let (dir_to_read, pattern, user_prefix) = if let Some(pos) = token.rfind('/') {
+        let dir_part = &token[..=pos];   // e.g. "/etc/" or "subdir/"
+        let pat_part = &token[pos + 1..]; // e.g. "*.conf"
+        let full_dir = if dir_part.starts_with('/') {
+            String::from(dir_part)
+        } else if cwd == "/" {
+            format!("/{}", dir_part)
+        } else {
+            format!("{}/{}", cwd, dir_part)
+        };
+        (full_dir, pat_part, dir_part)
+    } else {
+        (String::from(cwd), token, "")
+    };
+
+    if pattern.is_empty() {
+        return Vec::new();
+    }
+
+    // Read directory
+    let mut dir_buf = [0u8; 64 * 128];
+    let count = fs::readdir(&dir_to_read, &mut dir_buf);
+    if count == u32::MAX {
+        return Vec::new();
+    }
+
+    let mut matches: Vec<String> = Vec::new();
+    for i in 0..count as usize {
+        let off = i * 64;
+        if off + 64 > dir_buf.len() { break; }
+        let name_len = dir_buf[off + 1] as usize;
+        let name_bytes = &dir_buf[off + 8..off + 8 + name_len.min(56)];
+        let name = match core::str::from_utf8(name_bytes) {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        if name.is_empty() || name == "." || name == ".." {
+            continue;
+        }
+        // Skip dotfiles unless pattern explicitly starts with '.'
+        if !pattern.starts_with('.') && name.starts_with('.') {
+            continue;
+        }
+        if glob_match(name, pattern) {
+            if user_prefix.is_empty() {
+                matches.push(String::from(name));
+            } else {
+                matches.push(format!("{}{}", user_prefix, name));
+            }
+        }
+    }
+
+    // Sort alphabetically
+    matches.sort_unstable();
+    matches
+}
+
+/// Expand all glob patterns in an argument string.
+/// Respects quoted tokens (single/double quotes are not expanded).
+fn expand_globs(args: &str, cwd: &str) -> String {
+    if args.is_empty() {
+        return String::new();
+    }
+
+    // Tokenize respecting quotes
+    let mut tokens: Vec<String> = Vec::new();
+    let bytes = args.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Skip whitespace
+        if bytes[i] == b' ' || bytes[i] == b'\t' {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        if bytes[i] == b'"' || bytes[i] == b'\'' {
+            // Quoted token — find matching close quote
+            let quote = bytes[i];
+            i += 1;
+            while i < bytes.len() && bytes[i] != quote {
+                i += 1;
+            }
+            if i < bytes.len() { i += 1; } // skip closing quote
+            // Strip quotes, no glob expansion
+            let inner = &args[start + 1..i.saturating_sub(1)];
+            tokens.push(String::from(inner));
+        } else {
+            // Unquoted token
+            while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'\t' {
+                i += 1;
+            }
+            let tok = &args[start..i];
+            if has_glob_chars(tok) {
+                let expanded = expand_glob_token(tok, cwd);
+                if expanded.is_empty() {
+                    tokens.push(String::from(tok)); // no match: keep literal
+                } else {
+                    tokens.extend(expanded);
+                }
+            } else {
+                tokens.push(String::from(tok));
+            }
+        }
+    }
+
+    tokens.join(" ")
+}
+
+// ─── Tilde Expansion ────────────────────────────────────────────────────────
+
+/// Expand leading ~ to the user's home directory.
+fn expand_tilde(token: &str) -> String {
+    if !token.starts_with('~') {
+        return String::from(token);
+    }
+    let mut home_buf = [0u8; 128];
+    let hlen = anyos_std::env::get("HOME", &mut home_buf);
+    if hlen == u32::MAX || hlen == 0 {
+        return String::from(token);
+    }
+    let home = core::str::from_utf8(&home_buf[..hlen as usize]).unwrap_or("");
+    if token.len() == 1 {
+        // Just "~"
+        String::from(home)
+    } else if token.as_bytes()[1] == b'/' {
+        // "~/..."
+        format!("{}{}", home, &token[1..])
+    } else {
+        String::from(token) // ~user not supported
+    }
+}
+
+/// Apply tilde expansion to all tokens in an argument string.
+fn expand_tildes(args: &str) -> String {
+    if !args.contains('~') {
+        return String::from(args);
+    }
+    let parts: Vec<&str> = args.split_whitespace().collect();
+    let mut result: Vec<String> = Vec::new();
+    for p in parts {
+        result.push(expand_tilde(p));
+    }
+    result.join(" ")
+}
+
 // ─── Terminal Buffer ─────────────────────────────────────────────────────────
 
 struct TerminalBuffer {
@@ -748,7 +983,14 @@ impl Shell {
 
         let mut parts = line.splitn(2, ' ');
         let cmd = parts.next().unwrap_or("");
-        let args = parts.next().unwrap_or("");
+        let raw_args = parts.next().unwrap_or("");
+
+        // POSIX-style expansions: tilde (~) and glob (*, ?, [...])
+        let expanded_args_buf = {
+            let t = expand_tildes(raw_args);
+            expand_globs(&t, &self.cwd)
+        };
+        let args = expanded_args_buf.as_str();
 
         match cmd {
             "help" => self.cmd_help(buf),
@@ -837,17 +1079,24 @@ impl Shell {
                 // Re-parse cmd and args from the (possibly trimmed) line
                 let mut bg_parts = cmd_line.splitn(2, ' ');
                 let bg_cmd = bg_parts.next().unwrap_or("");
-                let raw_args = bg_parts.next().unwrap_or("");
+                let raw_bg_args = bg_parts.next().unwrap_or("");
 
-                // Pass arguments as-is — programs resolve relative paths
-                // via PWD env var. Only special-case: ls defaults to cwd.
-                let bg_args = if raw_args.is_empty() {
+                // POSIX-style expansions: tilde and glob
+                let expanded_bg = {
+                    let t = expand_tildes(raw_bg_args);
+                    expand_globs(&t, &self.cwd)
+                };
+
+                // Default args for specific commands (e.g. ls defaults to cwd)
+                let bg_args_buf;
+                let bg_args = if expanded_bg.is_empty() {
                     match bg_cmd {
                         "ls" => self.cwd.as_str(),
                         _ => "",
                     }
                 } else {
-                    raw_args
+                    bg_args_buf = expanded_bg;
+                    bg_args_buf.as_str()
                 };
 
                 // Resolve command path:
@@ -954,14 +1203,20 @@ impl Shell {
                 continue;
             }
 
+            // POSIX-style expansions: tilde and glob
+            let expanded_buf = {
+                let t = expand_tildes(raw_args);
+                expand_globs(&t, &self.cwd)
+            };
+
             // Default args for specific commands
-            let effective_args = if raw_args.is_empty() {
+            let effective_args = if expanded_buf.is_empty() {
                 match cmd {
-                    "ls" => self.cwd.as_str(),
-                    _ => "",
+                    "ls" => String::from(self.cwd.as_str()),
+                    _ => String::new(),
                 }
             } else {
-                raw_args
+                expanded_buf
             };
 
             // Resolve command path
