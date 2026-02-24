@@ -14,6 +14,23 @@ struct Selection {
     end_col: usize,
 }
 
+impl Selection {
+    /// Return (start_row, start_col, end_row, end_col) in reading order.
+    fn ordered(&self) -> (usize, usize, usize, usize) {
+        if self.start_row < self.end_row
+            || (self.start_row == self.end_row && self.start_col <= self.end_col)
+        {
+            (self.start_row, self.start_col, self.end_row, self.end_col)
+        } else {
+            (self.end_row, self.end_col, self.start_row, self.start_col)
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.start_row == self.end_row && self.start_col == self.end_col
+    }
+}
+
 // ── Color span for syntax-highlighted text ───────────────────────────
 
 struct ColorSpan {
@@ -292,6 +309,84 @@ impl TextEditor {
             self.cursor_col = self.lines[self.cursor_row].len();
         }
     }
+
+    /// Convert local pixel coordinates to (row, col) in the buffer.
+    fn pixel_to_cursor(&self, lx: i32, ly: i32) -> (usize, usize) {
+        let row = ((ly - 1 + self.scroll_y) / self.line_height as i32).max(0) as usize;
+        let row = row.min(self.lines.len().saturating_sub(1));
+        let text_lx = lx - self.gutter_width as i32 - 1 + self.scroll_x;
+        let col = (text_lx / self.char_width as i32).max(0) as usize;
+        let col = col.min(self.lines[row].len());
+        (row, col)
+    }
+
+    /// Extract selected text as bytes. Returns None if no selection.
+    fn extract_selected_text(&self) -> Option<Vec<u8>> {
+        let sel = self.selection.as_ref()?;
+        if sel.is_empty() {
+            return None;
+        }
+        let (sr, sc, er, ec) = sel.ordered();
+        let mut out = Vec::new();
+        for row in sr..=er {
+            if row >= self.lines.len() {
+                break;
+            }
+            let line = &self.lines[row];
+            let c0 = if row == sr { sc.min(line.len()) } else { 0 };
+            let c1 = if row == er { ec.min(line.len()) } else { line.len() };
+            if c0 <= c1 {
+                out.extend_from_slice(&line[c0..c1]);
+            }
+            if row < er {
+                out.push(b'\n');
+            }
+        }
+        if out.is_empty() { None } else { Some(out) }
+    }
+
+    /// Delete the selected text and place cursor at the start of the selection.
+    fn delete_selection(&mut self) -> bool {
+        let sel = match self.selection.take() {
+            Some(s) if !s.is_empty() => s,
+            _ => return false,
+        };
+        let (sr, sc, er, ec) = sel.ordered();
+        if sr == er {
+            // Single line deletion
+            if sr < self.lines.len() {
+                let end = ec.min(self.lines[sr].len());
+                let start = sc.min(end);
+                self.lines[sr].drain(start..end);
+            }
+        } else {
+            // Multi-line deletion
+            let end_col = ec.min(self.lines.get(er).map_or(0, |l| l.len()));
+            // Keep tail of last line
+            let tail: Vec<u8> = if er < self.lines.len() {
+                self.lines[er][end_col..].to_vec()
+            } else {
+                Vec::new()
+            };
+            // Remove lines from sr+1 to er (inclusive)
+            let remove_end = (er + 1).min(self.lines.len());
+            if sr + 1 <= remove_end {
+                self.lines.drain(sr + 1..remove_end);
+            }
+            // Truncate first line at sc and append tail
+            if sr < self.lines.len() {
+                let start = sc.min(self.lines[sr].len());
+                self.lines[sr].truncate(start);
+                self.lines[sr].extend_from_slice(&tail);
+            }
+        }
+        self.cursor_row = sr.min(self.lines.len().saturating_sub(1));
+        self.cursor_col = sc.min(self.lines[self.cursor_row].len());
+        self.update_gutter_width();
+        self.ensure_cursor_visible();
+        self.base.mark_dirty();
+        true
+    }
 }
 
 // ── Control trait ────────────────────────────────────────────────────
@@ -360,6 +455,38 @@ impl Control for TextEditor {
                     self.line_height,
                     0xFF2A2D2E,
                 );
+            }
+
+            // Selection highlight
+            if let Some(ref sel) = self.selection {
+                if !sel.is_empty() {
+                    let (sr, sc, er, ec) = sel.ordered();
+                    if row >= sr && row <= er {
+                        let line_len = self.lines[row].len();
+                        let sel_start = if row == sr { sc.min(line_len) } else { 0 };
+                        let sel_end = if row == er { ec.min(line_len) } else { line_len };
+                        if sel_start < sel_end || (row > sr && row < er) {
+                            let sx = text_x_base + (sel_start as i32) * self.char_width as i32 - self.scroll_x;
+                            let sel_chars = if sel_end > sel_start { sel_end - sel_start } else { 0 };
+                            // For middle lines of multiline selection, extend to edge
+                            let sw = if row > sr && row < er && sel_chars == 0 {
+                                w.saturating_sub(self.gutter_width).saturating_sub(2)
+                            } else {
+                                (sel_chars as u32) * self.char_width
+                            };
+                            if sw > 0 {
+                                crate::draw::fill_rect(
+                                    &clipped,
+                                    sx,
+                                    row_y,
+                                    sw,
+                                    self.line_height,
+                                    0xFF264F78,
+                                );
+                            }
+                        }
+                    }
+                }
             }
 
             // Line number (gutter)
@@ -468,17 +595,200 @@ impl Control for TextEditor {
         }
     }
 
-    fn handle_click(&mut self, lx: i32, ly: i32, _button: u32) -> EventResponse {
-        let row = ((ly - 1 + self.scroll_y) / self.line_height as i32).max(0) as usize;
-        self.cursor_row = row.min(self.lines.len().saturating_sub(1));
-        let text_lx = lx - self.gutter_width as i32 - 1 + self.scroll_x;
-        self.cursor_col = (text_lx / self.char_width as i32).max(0) as usize;
-        self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
-        self.base.mark_dirty();
+    fn handle_mouse_down(&mut self, lx: i32, ly: i32, button: u32) -> EventResponse {
+        if button & 1 != 0 {
+            // Left button: start selection
+            let (row, col) = self.pixel_to_cursor(lx, ly);
+            self.cursor_row = row;
+            self.cursor_col = col;
+            self.selection = Some(Selection {
+                start_row: row,
+                start_col: col,
+                end_row: row,
+                end_col: col,
+            });
+            self.base.mark_dirty();
+            return EventResponse::CONSUMED;
+        }
+        if button & 4 != 0 {
+            // Middle button: paste clipboard
+            if let Some(data) = crate::compositor::clipboard_get() {
+                self.delete_selection();
+                self.clamp_cursor();
+                self.insert_text_at_cursor(&data);
+                return EventResponse::CHANGED;
+            }
+        }
         EventResponse::CONSUMED
     }
 
-    fn handle_key_down(&mut self, keycode: u32, char_code: u32) -> EventResponse {
+    fn handle_mouse_move(&mut self, lx: i32, ly: i32) -> EventResponse {
+        if self.selection.is_some() {
+            let (row, col) = self.pixel_to_cursor(lx, ly);
+            if let Some(ref mut sel) = self.selection {
+                sel.end_row = row;
+                sel.end_col = col;
+            }
+            self.cursor_row = row;
+            self.cursor_col = col;
+            self.ensure_cursor_visible();
+            self.base.mark_dirty();
+            return EventResponse::CONSUMED;
+        }
+        EventResponse::IGNORED
+    }
+
+    fn handle_mouse_up(&mut self, _lx: i32, _ly: i32, _button: u32) -> EventResponse {
+        if let Some(ref sel) = self.selection {
+            if sel.is_empty() {
+                // Single click, no drag — just position cursor
+                self.selection = None;
+            } else {
+                // Copy selected text to clipboard
+                if let Some(text) = self.extract_selected_text() {
+                    crate::compositor::clipboard_set(&text);
+                }
+            }
+            self.base.mark_dirty();
+        }
+        EventResponse::CONSUMED
+    }
+
+    fn handle_click(&mut self, _lx: i32, _ly: i32, _button: u32) -> EventResponse {
+        // Selection is already handled by mouse_down/move/up
+        EventResponse::CONSUMED
+    }
+
+    fn handle_key_down(&mut self, keycode: u32, char_code: u32, modifiers: u32) -> EventResponse {
+        use crate::control::*;
+        let has_ctrl = (modifiers & MOD_CTRL) != 0;
+        let has_shift = (modifiers & MOD_SHIFT) != 0;
+
+        // ── Ctrl shortcuts ──
+        if has_ctrl {
+            // Ctrl+C: copy
+            if char_code == b'c' as u32 {
+                if let Some(text) = self.extract_selected_text() {
+                    crate::compositor::clipboard_set(&text);
+                }
+                return EventResponse::CONSUMED;
+            }
+            // Ctrl+X: cut
+            if char_code == b'x' as u32 {
+                if let Some(text) = self.extract_selected_text() {
+                    crate::compositor::clipboard_set(&text);
+                    self.delete_selection();
+                }
+                return EventResponse::CHANGED;
+            }
+            // Ctrl+V: paste
+            if char_code == b'v' as u32 {
+                if let Some(data) = crate::compositor::clipboard_get() {
+                    self.delete_selection();
+                    self.clamp_cursor();
+                    self.insert_text_at_cursor(&data);
+                }
+                return EventResponse::CHANGED;
+            }
+            // Ctrl+A: select all
+            if char_code == b'a' as u32 {
+                let last_row = self.lines.len().saturating_sub(1);
+                let last_col = self.lines[last_row].len();
+                self.selection = Some(Selection {
+                    start_row: 0,
+                    start_col: 0,
+                    end_row: last_row,
+                    end_col: last_col,
+                });
+                self.cursor_row = last_row;
+                self.cursor_col = last_col;
+                self.base.mark_dirty();
+                return EventResponse::CONSUMED;
+            }
+            // Don't process Ctrl+key as printable
+            return EventResponse::IGNORED;
+        }
+
+        // ── Arrow keys with Shift: extend selection ──
+        if has_shift && matches!(keycode, KEY_LEFT | KEY_RIGHT | KEY_UP | KEY_DOWN | KEY_HOME | KEY_END) {
+            // Start selection at current cursor if none exists
+            if self.selection.is_none() {
+                self.selection = Some(Selection {
+                    start_row: self.cursor_row,
+                    start_col: self.cursor_col,
+                    end_row: self.cursor_row,
+                    end_col: self.cursor_col,
+                });
+            }
+            // Move cursor
+            match keycode {
+                KEY_LEFT => {
+                    if self.cursor_col > 0 {
+                        self.cursor_col -= 1;
+                    } else if self.cursor_row > 0 {
+                        self.cursor_row -= 1;
+                        self.cursor_col = self.lines[self.cursor_row].len();
+                    }
+                }
+                KEY_RIGHT => {
+                    if self.cursor_col < self.lines[self.cursor_row].len() {
+                        self.cursor_col += 1;
+                    } else if self.cursor_row + 1 < self.lines.len() {
+                        self.cursor_row += 1;
+                        self.cursor_col = 0;
+                    }
+                }
+                KEY_UP => {
+                    if self.cursor_row > 0 {
+                        self.cursor_row -= 1;
+                        self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
+                    }
+                }
+                KEY_DOWN => {
+                    if self.cursor_row + 1 < self.lines.len() {
+                        self.cursor_row += 1;
+                        self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
+                    }
+                }
+                KEY_HOME => { self.cursor_col = 0; }
+                KEY_END => { self.cursor_col = self.lines[self.cursor_row].len(); }
+                _ => {}
+            }
+            // Update selection endpoint
+            if let Some(ref mut sel) = self.selection {
+                sel.end_row = self.cursor_row;
+                sel.end_col = self.cursor_col;
+                if sel.is_empty() {
+                    self.selection = None;
+                }
+            }
+            self.ensure_cursor_visible();
+            self.base.mark_dirty();
+            return EventResponse::CONSUMED;
+        }
+
+        // ── Backspace / Delete with selection: delete selection ──
+        if keycode == KEY_BACKSPACE || keycode == KEY_DELETE {
+            if self.selection.as_ref().map_or(false, |s| !s.is_empty()) {
+                self.delete_selection();
+                return EventResponse::CHANGED;
+            }
+        }
+
+        // ── Clear selection on arrow keys without Shift ──
+        if matches!(keycode, KEY_LEFT | KEY_RIGHT | KEY_UP | KEY_DOWN | KEY_HOME | KEY_END
+                    | KEY_PAGE_UP | KEY_PAGE_DOWN) {
+            self.selection = None;
+        }
+
+        // ── Delete selection before inserting text ──
+        if char_code >= 0x20 && char_code < 0x7F {
+            self.delete_selection();
+        }
+        if keycode == KEY_ENTER || keycode == KEY_TAB {
+            self.delete_selection();
+        }
+
         // Printable ASCII
         if char_code >= 0x20 && char_code < 0x7F {
             self.clamp_cursor();
@@ -489,9 +799,8 @@ impl Control for TextEditor {
             return EventResponse::CHANGED;
         }
         // Enter
-        if keycode == crate::control::KEY_ENTER {
+        if keycode == KEY_ENTER {
             self.clamp_cursor();
-            // Auto-indent: count leading spaces of current line
             let indent = self.lines[self.cursor_row]
                 .iter()
                 .take_while(|&&b| b == b' ')
@@ -510,7 +819,6 @@ impl Control for TextEditor {
             self.base.mark_dirty();
             return EventResponse::CHANGED;
         }
-        use crate::control::*;
         // Backspace
         if keycode == KEY_BACKSPACE {
             self.clamp_cursor();
@@ -541,7 +849,7 @@ impl Control for TextEditor {
             self.base.mark_dirty();
             return EventResponse::CHANGED;
         }
-        // Tab — TextEditor inserts spaces (consumed, so global Tab-cycling won't fire)
+        // Tab
         if keycode == KEY_TAB {
             self.clamp_cursor();
             for _ in 0..self.tab_width {
@@ -612,6 +920,7 @@ impl Control for TextEditor {
         }
         // Page Up
         if keycode == KEY_PAGE_UP {
+            self.selection = None;
             let page = (self.base.h / self.line_height).max(1) as usize;
             self.cursor_row = self.cursor_row.saturating_sub(page);
             self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
@@ -621,6 +930,7 @@ impl Control for TextEditor {
         }
         // Page Down
         if keycode == KEY_PAGE_DOWN {
+            self.selection = None;
             let page = (self.base.h / self.line_height).max(1) as usize;
             self.cursor_row = (self.cursor_row + page).min(self.lines.len().saturating_sub(1));
             self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());

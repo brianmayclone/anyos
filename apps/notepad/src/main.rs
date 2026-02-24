@@ -246,6 +246,7 @@ fn main() {
     let text_area_h = (win_h as i32 - NAVBAR_H).max(0) as u32;
 
     let nav = UiNavbar::new(0, 0, win_w, false);
+    let mut btn_save = UiToolbarButton::new(win_w as i32 - 60, 8, 52, 28);
     let mut sb = UiScrollbar::new(
         win_w as i32 - SCROLLBAR_W as i32,
         NAVBAR_H,
@@ -274,6 +275,7 @@ fn main() {
                         let new_text_h = (win_h as i32 - NAVBAR_H).max(0) as u32;
                         sb.x = win_w as i32 - SCROLLBAR_W as i32;
                         sb.h = new_text_h;
+                        btn_save.x = win_w as i32 - 60;
                         update_scrollbar(&mut sb, &editor);
                         needs_redraw = true;
                     }
@@ -397,8 +399,13 @@ fn main() {
                     }
                 }
                 EVENT_MOUSE_DOWN | EVENT_MOUSE_UP | EVENT_MOUSE_MOVE => {
+                    // Save button
+                    if btn_save.handle_event(&ev) {
+                        editor.save();
+                        needs_redraw = true;
+                    }
                     // Scrollbar interaction
-                    if sb.handle_event(&ev).is_some() {
+                    else if sb.handle_event(&ev).is_some() {
                         needs_redraw = true;
                     } else if ev.event_type == EVENT_MOUSE_DOWN {
                         // Click to place cursor
@@ -467,7 +474,7 @@ fn main() {
         }
 
         if needs_redraw {
-            render(win, win_w, win_h, &nav, &sb, &editor, filename);
+            render(win, win_w, win_h, &nav, &btn_save, &sb, &editor, filename);
             needs_redraw = false;
         }
 
@@ -537,6 +544,7 @@ fn render(
     win_w: u32,
     win_h: u32,
     nav: &UiNavbar,
+    btn_save: &UiToolbarButton,
     sb: &UiScrollbar,
     editor: &Editor,
     filename: &str,
@@ -547,6 +555,9 @@ fn render(
     // Navbar
     let title = make_title(filename, editor.modified);
     nav.render(win, &title);
+
+    // Save button
+    btn_save.render(win, "Save");
 
     let text_area_h = (win_h as i32 - NAVBAR_H).max(0);
     let visible_lines = (text_area_h / LINE_H) + 1;

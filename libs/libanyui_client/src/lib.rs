@@ -209,6 +209,8 @@ struct AnyuiLib {
     marshal_dispatch: extern "C" fn(extern "C" fn(u64), u64),
     // Context menu
     set_context_menu: extern "C" fn(u32, u32),
+    // Tooltip
+    set_tooltip: extern "C" fn(u32, *const u8, u32),
     // MessageBox
     message_box: extern "C" fn(u32, *const u8, u32, *const u8, u32),
     // IconButton
@@ -227,6 +229,7 @@ struct AnyuiLib {
     datagrid_set_cell: extern "C" fn(u32, u32, u32, *const u8, u32),
     datagrid_get_cell: extern "C" fn(u32, u32, u32, *mut u8, u32) -> u32,
     datagrid_set_cell_colors: extern "C" fn(u32, *const u32, u32),
+    datagrid_set_cell_bg_colors: extern "C" fn(u32, *const u32, u32),
     datagrid_set_row_count: extern "C" fn(u32, u32),
     datagrid_get_row_count: extern "C" fn(u32) -> u32,
     datagrid_set_selection_mode: extern "C" fn(u32, u32),
@@ -236,6 +239,7 @@ struct AnyuiLib {
     datagrid_sort: extern "C" fn(u32, u32, u32),
     datagrid_set_row_height: extern "C" fn(u32, u32),
     datagrid_set_header_height: extern "C" fn(u32, u32),
+    datagrid_set_char_colors: extern "C" fn(u32, *const u32, u32, *const u32, u32),
     datagrid_set_cell_icon: extern "C" fn(u32, u32, u32, *const u32, u32, u32),
     // TextEditor
     texteditor_set_text: extern "C" fn(u32, *const u8, u32),
@@ -284,6 +288,19 @@ struct AnyuiLib {
     // Theme
     pub(crate) set_theme: extern "C" fn(u32),
     pub(crate) get_theme: extern "C" fn() -> u32,
+    // Window title
+    set_title: extern "C" fn(u32, *const u8, u32),
+    // Key event info
+    get_key_info: extern "C" fn(*mut u32, *mut u32, *mut u32),
+    // Clipboard
+    clipboard_set: extern "C" fn(*const u8, u32),
+    clipboard_get: extern "C" fn(*mut u8, u32) -> u32,
+    // Size/Position query
+    get_size: extern "C" fn(u32, *mut u32, *mut u32),
+    get_position: extern "C" fn(u32, *mut i32, *mut i32),
+    // DataGrid scroll
+    datagrid_get_scroll_offset: extern "C" fn(u32) -> u32,
+    datagrid_set_scroll_offset: extern "C" fn(u32, u32),
 }
 
 static mut LIB: Option<AnyuiLib> = None;
@@ -396,6 +413,8 @@ pub fn init() -> bool {
             marshal_dispatch: resolve(&handle, "anyui_marshal_dispatch"),
             // Context menu
             set_context_menu: resolve(&handle, "anyui_set_context_menu"),
+            // Tooltip
+            set_tooltip: resolve(&handle, "anyui_set_tooltip"),
             // MessageBox
             message_box: resolve(&handle, "anyui_message_box"),
             // IconButton
@@ -414,6 +433,7 @@ pub fn init() -> bool {
             datagrid_set_cell: resolve(&handle, "anyui_datagrid_set_cell"),
             datagrid_get_cell: resolve(&handle, "anyui_datagrid_get_cell"),
             datagrid_set_cell_colors: resolve(&handle, "anyui_datagrid_set_cell_colors"),
+            datagrid_set_cell_bg_colors: resolve(&handle, "anyui_datagrid_set_cell_bg_colors"),
             datagrid_set_row_count: resolve(&handle, "anyui_datagrid_set_row_count"),
             datagrid_get_row_count: resolve(&handle, "anyui_datagrid_get_row_count"),
             datagrid_set_selection_mode: resolve(&handle, "anyui_datagrid_set_selection_mode"),
@@ -423,6 +443,7 @@ pub fn init() -> bool {
             datagrid_sort: resolve(&handle, "anyui_datagrid_sort"),
             datagrid_set_row_height: resolve(&handle, "anyui_datagrid_set_row_height"),
             datagrid_set_header_height: resolve(&handle, "anyui_datagrid_set_header_height"),
+            datagrid_set_char_colors: resolve(&handle, "anyui_datagrid_set_char_colors"),
             datagrid_set_cell_icon: resolve(&handle, "anyui_datagrid_set_cell_icon"),
             // TextEditor
             texteditor_set_text: resolve(&handle, "anyui_texteditor_set_text"),
@@ -471,6 +492,19 @@ pub fn init() -> bool {
             // Theme
             set_theme: resolve(&handle, "anyui_set_theme"),
             get_theme: resolve(&handle, "anyui_get_theme"),
+            // Window title
+            set_title: resolve(&handle, "anyui_set_title"),
+            // Key event info
+            get_key_info: resolve(&handle, "anyui_get_key_info"),
+            // Clipboard
+            clipboard_set: resolve(&handle, "anyui_clipboard_set"),
+            clipboard_get: resolve(&handle, "anyui_clipboard_get"),
+            // Size/Position query
+            get_size: resolve(&handle, "anyui_get_size"),
+            get_position: resolve(&handle, "anyui_get_position"),
+            // DataGrid scroll
+            datagrid_get_scroll_offset: resolve(&handle, "anyui_datagrid_get_scroll_offset"),
+            datagrid_set_scroll_offset: resolve(&handle, "anyui_datagrid_set_scroll_offset"),
             _handle: handle,
         };
         (lib.init)();
@@ -538,6 +572,20 @@ impl Control {
 
     pub fn set_size(&self, w: u32, h: u32) {
         (lib().set_size)(self.id, w, h);
+    }
+
+    pub fn get_size(&self) -> (u32, u32) {
+        let mut w: u32 = 0;
+        let mut h: u32 = 0;
+        (lib().get_size)(self.id, &mut w, &mut h);
+        (w, h)
+    }
+
+    pub fn get_position(&self) -> (i32, i32) {
+        let mut x: i32 = 0;
+        let mut y: i32 = 0;
+        (lib().get_position)(self.id, &mut x, &mut y);
+        (x, y)
     }
 
     // ── Visibility ──
@@ -643,6 +691,18 @@ impl Control {
         self.on_event_raw(EVENT_MOUSE_LEAVE, cb, userdata);
     }
 
+    /// Register a closure for mouse-enter (hover start).
+    pub fn on_mouse_enter(&self, mut f: impl FnMut(u32) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| f(id));
+        self.on_mouse_enter_raw(thunk, ud);
+    }
+
+    /// Register a closure for mouse-leave (hover end).
+    pub fn on_mouse_leave(&self, mut f: impl FnMut(u32) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| f(id));
+        self.on_mouse_leave_raw(thunk, ud);
+    }
+
     pub fn on_double_click_raw(&self, cb: Callback, userdata: u64) {
         self.on_event_raw(EVENT_DOUBLE_CLICK, cb, userdata);
     }
@@ -680,6 +740,15 @@ impl Control {
     /// Attach a context menu to this control. Shown on right-click.
     pub fn set_context_menu(&self, menu: &impl Widget) {
         (lib().set_context_menu)(self.id, menu.id());
+    }
+
+    // ── Tooltip ──
+
+    /// Set tooltip text for this control. Shown automatically on hover.
+    /// Pass empty string to remove.
+    pub fn set_tooltip(&self, text: &str) {
+        let bytes = text.as_bytes();
+        (lib().set_tooltip)(self.id, bytes.as_ptr(), bytes.len() as u32);
     }
 
     // ── Focus ──
@@ -867,4 +936,99 @@ pub fn show_notification(title: &str, message: &str, icon: Option<&[u32; 256]>, 
         message.as_ptr(), message.len() as u32,
         icon_ptr, timeout_ms,
     );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  Key event API
+// ══════════════════════════════════════════════════════════════════════
+
+// Key codes (must match libanyui's control.rs constants)
+pub const KEY_ENTER: u32     = 0x100;
+pub const KEY_BACKSPACE: u32 = 0x101;
+pub const KEY_TAB: u32       = 0x102;
+pub const KEY_ESCAPE: u32    = 0x103;
+pub const KEY_UP: u32        = 0x105;
+pub const KEY_DOWN: u32      = 0x106;
+pub const KEY_LEFT: u32      = 0x107;
+pub const KEY_RIGHT: u32     = 0x108;
+pub const KEY_DELETE: u32    = 0x120;
+pub const KEY_HOME: u32      = 0x121;
+pub const KEY_END: u32       = 0x122;
+pub const KEY_PAGE_UP: u32   = 0x123;
+pub const KEY_PAGE_DOWN: u32 = 0x124;
+pub const KEY_F1: u32        = 0x130;
+pub const KEY_F2: u32        = 0x131;
+pub const KEY_F3: u32        = 0x132;
+pub const KEY_F4: u32        = 0x133;
+pub const KEY_F5: u32        = 0x134;
+pub const KEY_F6: u32        = 0x135;
+pub const KEY_F7: u32        = 0x136;
+pub const KEY_F8: u32        = 0x137;
+pub const KEY_F9: u32        = 0x138;
+pub const KEY_F10: u32       = 0x139;
+pub const KEY_F11: u32       = 0x13A;
+pub const KEY_F12: u32       = 0x13B;
+
+// Modifier flags
+pub const MOD_SHIFT: u32 = 1;
+pub const MOD_CTRL: u32  = 2;
+pub const MOD_ALT: u32   = 4;
+
+/// Information about a keyboard event.
+#[derive(Clone, Copy, Debug)]
+pub struct KeyEvent {
+    /// The virtual key code (KEY_* constants or ASCII value).
+    pub keycode: u32,
+    /// The character code (Unicode codepoint, 0 for non-printable keys).
+    pub char_code: u32,
+    /// Modifier flags (MOD_SHIFT, MOD_CTRL, MOD_ALT).
+    pub modifiers: u32,
+}
+
+impl KeyEvent {
+    pub fn shift(&self) -> bool { self.modifiers & MOD_SHIFT != 0 }
+    pub fn ctrl(&self) -> bool { self.modifiers & MOD_CTRL != 0 }
+    pub fn alt(&self) -> bool { self.modifiers & MOD_ALT != 0 }
+}
+
+/// Query the most recent key event info.
+/// Call this from inside an EVENT_KEY callback to get the key that was pressed.
+pub fn get_key_info() -> KeyEvent {
+    let mut keycode: u32 = 0;
+    let mut char_code: u32 = 0;
+    let mut modifiers: u32 = 0;
+    (lib().get_key_info)(&mut keycode, &mut char_code, &mut modifiers);
+    KeyEvent { keycode, char_code, modifiers }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  Clipboard API
+// ══════════════════════════════════════════════════════════════════════
+
+/// Copy text to the system clipboard.
+pub fn clipboard_set(text: &str) {
+    (lib().clipboard_set)(text.as_ptr(), text.len() as u32);
+}
+
+/// Copy a byte slice to the system clipboard.
+pub fn clipboard_set_bytes(data: &[u8]) {
+    (lib().clipboard_set)(data.as_ptr(), data.len() as u32);
+}
+
+/// Get text from the system clipboard into a buffer.
+/// Returns the number of bytes written, or 0 if clipboard is empty.
+pub fn clipboard_get(buf: &mut [u8]) -> u32 {
+    (lib().clipboard_get)(buf.as_mut_ptr(), buf.len() as u32)
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  Theme API
+// ══════════════════════════════════════════════════════════════════════
+
+pub fn set_theme(light: bool) {
+    (lib().set_theme)(light as u32);
+}
+
+pub fn get_theme() -> u32 {
+    (lib().get_theme)()
 }

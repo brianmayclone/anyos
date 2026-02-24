@@ -141,6 +141,62 @@ pub fn run_once() -> u32 {
                             }
                         }
                         st.hovered = new_hover;
+
+                        // --- Tooltip management ---
+                        // Hide tooltip when hover changes
+                        if let Some(tip_id) = st.active_tooltip {
+                            if let Some(ti) = control::find_idx(&st.controls, tip_id) {
+                                if st.controls[ti].base().visible {
+                                    st.controls[ti].base_mut().visible = false;
+                                    st.controls[ti].base_mut().mark_dirty();
+                                }
+                            }
+                        }
+                        // Show tooltip if newly hovered control has tooltip_text
+                        if let Some(new_id) = new_hover {
+                            let has_tip = control::find_idx(&st.controls, new_id)
+                                .map(|i| !st.controls[i].base().tooltip_text.is_empty())
+                                .unwrap_or(false);
+                            if has_tip {
+                                let idx2 = control::find_idx(&st.controls, new_id).unwrap();
+                                let text = st.controls[idx2].base().tooltip_text.clone();
+                                let (ax, ay) = control::abs_position(&st.controls, new_id);
+                                let ctrl_h = st.controls[idx2].base().h;
+                                // Estimate tooltip width: ~8px per char + 16px padding
+                                let tip_w = (text.len() as u32 * 8 + 16).max(40);
+
+                                // Lazily create the tooltip or reuse existing one
+                                let tip_id = if let Some(tid) = st.active_tooltip {
+                                    tid
+                                } else {
+                                    let tid = st.next_id;
+                                    st.next_id += 1;
+                                    let ctrl = crate::controls::create_control(
+                                        control::ControlKind::Tooltip, tid, win_id,
+                                        0, 0, 200, 28, &text,
+                                    );
+                                    st.controls.push(ctrl);
+                                    if let Some(p) = st.controls.iter_mut().find(|c| c.id() == win_id) {
+                                        p.add_child(tid);
+                                    }
+                                    st.active_tooltip = Some(tid);
+                                    tid
+                                };
+
+                                if let Some(ti) = control::find_idx(&st.controls, tip_id) {
+                                    // Update text
+                                    if let Some(tb) = st.controls[ti].text_base_mut() {
+                                        tb.text = text;
+                                    }
+                                    // Position below the hovered control
+                                    st.controls[ti].set_position(ax, ay + ctrl_h as i32 + 4);
+                                    st.controls[ti].base_mut().w = tip_w;
+                                    st.controls[ti].base_mut().h = 28;
+                                    st.controls[ti].base_mut().visible = true;
+                                    st.controls[ti].base_mut().mark_dirty();
+                                }
+                            }
+                        }
                     }
 
                     // Dispatch mouse_move to hovered control (for internal hover tracking)
@@ -339,12 +395,18 @@ pub fn run_once() -> u32 {
                     // arg1=scancode, arg2=char_code, arg3=modifiers
                     let keycode = ev[2];
                     let char_code = ev[3];
+                    let modifiers = ev[4];
+
+                    // Store last key event info for queryable API
+                    st.last_keycode = keycode;
+                    st.last_char_code = char_code;
+                    st.last_modifiers = modifiers;
 
                     let mut handled = false;
 
                     if let Some(focus_id) = st.focused {
                         if let Some(idx) = control::find_idx(&st.controls, focus_id) {
-                            let resp = st.controls[idx].handle_key_down(keycode, char_code);
+                            let resp = st.controls[idx].handle_key_down(keycode, char_code, modifiers);
                             st.controls[idx].base_mut().mark_dirty();
 
                             if resp.consumed {

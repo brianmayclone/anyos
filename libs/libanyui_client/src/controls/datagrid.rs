@@ -121,10 +121,16 @@ impl DataGrid {
         (lib().datagrid_get_cell)(self.ctrl.id, row, col, buf.as_mut_ptr(), buf.len() as u32)
     }
 
-    /// Set per-cell ARGB colors. Flat array indexed as row * col_count + col.
+    /// Set per-cell ARGB text colors. Flat array indexed as row * col_count + col.
     /// Pass 0 for default color.
     pub fn set_cell_colors(&self, colors: &[u32]) {
         (lib().datagrid_set_cell_colors)(self.ctrl.id, colors.as_ptr(), colors.len() as u32);
+    }
+
+    /// Set per-cell ARGB background colors. Flat array indexed as row * col_count + col.
+    /// Pass 0 for default (no custom background).
+    pub fn set_cell_bg_colors(&self, colors: &[u32]) {
+        (lib().datagrid_set_cell_bg_colors)(self.ctrl.id, colors.as_ptr(), colors.len() as u32);
     }
 
     /// Set the number of rows (adding empty rows or truncating).
@@ -191,6 +197,19 @@ impl DataGrid {
         (lib().on_submit_fn)(self.ctrl.id, thunk, ud);
     }
 
+    /// Set per-character text colors for cells.
+    /// `char_colors`: flat array of ARGB colors (one per character, 0 = use cell default).
+    /// `offsets`: one entry per cell — start index into `char_colors` (u32::MAX = no per-char colors).
+    pub fn set_char_colors(&self, char_colors: &[u32], offsets: &[u32]) {
+        (lib().datagrid_set_char_colors)(
+            self.ctrl.id,
+            char_colors.as_ptr(),
+            char_colors.len() as u32,
+            offsets.as_ptr(),
+            offsets.len() as u32,
+        );
+    }
+
     /// Set an icon (ARGB pixels) for a specific cell.
     pub fn set_cell_icon(&self, row: u32, col: u32, pixels: &[u32], w: u32, h: u32) {
         (lib().datagrid_set_cell_icon)(self.ctrl.id, row, col, pixels.as_ptr(), w, h);
@@ -200,6 +219,16 @@ impl DataGrid {
     /// Rows separated by 0x1E (record separator), columns by 0x1F (unit separator).
     pub fn set_data_raw(&self, data: &[u8]) {
         (lib().datagrid_set_data)(self.ctrl.id, data.as_ptr(), data.len() as u32);
+    }
+
+    /// Get the current scroll offset (first visible row).
+    pub fn scroll_offset(&self) -> u32 {
+        (lib().datagrid_get_scroll_offset)(self.ctrl.id)
+    }
+
+    /// Set the scroll offset (first visible row).
+    pub fn set_scroll_offset(&self, offset: u32) {
+        (lib().datagrid_set_scroll_offset)(self.ctrl.id, offset);
     }
 }
 

@@ -165,7 +165,7 @@ impl Control for TextArea {
         EventResponse::CONSUMED
     }
 
-    fn handle_key_down(&mut self, keycode: u32, char_code: u32) -> EventResponse {
+    fn handle_key_down(&mut self, keycode: u32, char_code: u32, _modifiers: u32) -> EventResponse {
         if char_code >= 0x20 && char_code < 0x7F {
             let ch = char_code as u8;
             if self.cursor_pos > self.text_base.text.len() {

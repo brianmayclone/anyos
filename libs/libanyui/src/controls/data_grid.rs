@@ -81,12 +81,18 @@ pub struct DataGrid {
     display_order: Vec<usize>,
     cell_data: Vec<Vec<u8>>,
     cell_colors: Vec<u32>,
+    cell_bg_colors: Vec<u32>,
+    /// Per-character text colors. Flat array of u32 ARGB values.
+    char_colors: Vec<u32>,
+    /// Per-cell offset into `char_colors`. One entry per cell.
+    /// `u32::MAX` means no per-char colors (use cell default).
+    char_color_offsets: Vec<u32>,
     cell_icons: Vec<Option<CellIcon>>,
     pub(crate) row_count: usize,
     sort_column: Option<usize>,
     sort_direction: SortDirection,
     sorted_rows: Vec<usize>,
-    scroll_y: i32,
+    pub(crate) scroll_y: i32,
     scroll_x: i32,
     selection_mode: SelectionMode,
     selected_rows: Vec<u8>,
@@ -105,6 +111,9 @@ impl DataGrid {
             display_order: Vec::new(),
             cell_data: Vec::new(),
             cell_colors: Vec::new(),
+            cell_bg_colors: Vec::new(),
+            char_colors: Vec::new(),
+            char_color_offsets: Vec::new(),
             cell_icons: Vec::new(),
             row_count: 0,
             sort_column: None,
@@ -223,6 +232,23 @@ impl DataGrid {
             self.cell_colors = colors.to_vec();
             self.base.mark_dirty();
         }
+    }
+
+    pub fn set_cell_bg_colors(&mut self, colors: &[u32]) {
+        if self.cell_bg_colors.as_slice() != colors {
+            self.cell_bg_colors = colors.to_vec();
+            self.base.mark_dirty();
+        }
+    }
+
+    /// Set per-character text colors for cells.
+    /// `colors`: flat array of u32 ARGB values (one per character).
+    /// `offsets`: one entry per cell — index into `colors` where that cell's
+    ///   per-char colors begin. Use `u32::MAX` for cells without per-char colors.
+    pub fn set_char_colors(&mut self, colors: &[u32], offsets: &[u32]) {
+        self.char_colors = colors.to_vec();
+        self.char_color_offsets = offsets.to_vec();
+        self.base.mark_dirty();
     }
 
     /// Set an icon (ARGB pixels) for a specific cell. The icon is drawn before the text.
@@ -386,7 +412,7 @@ impl DataGrid {
     }
 
     /// Scroll to ensure a visual row is visible.
-    fn scroll_to_row(&mut self, vis_row: usize) {
+    pub fn scroll_to_row(&mut self, vis_row: usize) {
         let rh = self.row_height as i32;
         let row_top = vis_row as i32 * rh;
         let row_bottom = row_top + rh;
@@ -454,6 +480,11 @@ impl Control for DataGrid {
 
                     let cell_clip = clipped.with_clip(col_x, row_y, col.width, self.row_height);
 
+                    // Draw per-cell background color (if set)
+                    if cell_idx < self.cell_bg_colors.len() && self.cell_bg_colors[cell_idx] != 0 {
+                        crate::draw::fill_rect(&cell_clip, col_x, row_y, col.width, self.row_height, self.cell_bg_colors[cell_idx]);
+                    }
+
                     // Draw cell icon (if any)
                     let mut icon_offset: i32 = 0;
                     if cell_idx < self.cell_icons.len() {
@@ -469,7 +500,7 @@ impl Control for DataGrid {
 
                     if cell_idx < self.cell_data.len() && !self.cell_data[cell_idx].is_empty() {
                         let text = &self.cell_data[cell_idx];
-                        let color = if cell_idx < self.cell_colors.len() && self.cell_colors[cell_idx] != 0 {
+                        let default_color = if cell_idx < self.cell_colors.len() && self.cell_colors[cell_idx] != 0 {
                             self.cell_colors[cell_idx]
                         } else if selected {
                             0xFFFFFFFF
@@ -490,7 +521,45 @@ impl Control for DataGrid {
                             }
                         };
                         let text_y = row_y + (self.row_height as i32 - fs as i32) / 2;
-                        crate::draw::draw_text_sized(&cell_clip, text_x, text_y, color, text, fs);
+
+                        // Check for per-character colors
+                        let has_char_colors = cell_idx < self.char_color_offsets.len()
+                            && self.char_color_offsets[cell_idx] != u32::MAX;
+
+                        if has_char_colors {
+                            let base_off = self.char_color_offsets[cell_idx] as usize;
+                            let text_len = text.len();
+                            // Draw spans of consecutive characters with the same color
+                            let mut cx = text_x;
+                            let mut span_start = 0usize;
+                            while span_start < text_len {
+                                let cc_idx = base_off + span_start;
+                                let span_color = if cc_idx < self.char_colors.len() && self.char_colors[cc_idx] != 0 {
+                                    self.char_colors[cc_idx]
+                                } else {
+                                    default_color
+                                };
+                                // Extend span while same color
+                                let mut span_end = span_start + 1;
+                                while span_end < text_len {
+                                    let next_idx = base_off + span_end;
+                                    let next_color = if next_idx < self.char_colors.len() && self.char_colors[next_idx] != 0 {
+                                        self.char_colors[next_idx]
+                                    } else {
+                                        default_color
+                                    };
+                                    if next_color != span_color { break; }
+                                    span_end += 1;
+                                }
+                                let span = &text[span_start..span_end];
+                                crate::draw::draw_text_sized(&cell_clip, cx, text_y, span_color, span, fs);
+                                let (sw, _) = crate::draw::text_size_at(span, fs);
+                                cx += sw as i32;
+                                span_start = span_end;
+                            }
+                        } else {
+                            crate::draw::draw_text_sized(&cell_clip, text_x, text_y, default_color, text, fs);
+                        }
                     }
 
                     col_x += col.width as i32;
@@ -702,7 +771,7 @@ impl Control for DataGrid {
         }
     }
 
-    fn handle_key_down(&mut self, keycode: u32, _char_code: u32) -> EventResponse {
+    fn handle_key_down(&mut self, keycode: u32, _char_code: u32, _modifiers: u32) -> EventResponse {
         use crate::control::*;
         match keycode {
             KEY_ENTER => {

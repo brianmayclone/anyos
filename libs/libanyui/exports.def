@@ -70,6 +70,7 @@ EXPORTS
     anyui_marshal_set_size
     anyui_marshal_dispatch
     anyui_set_context_menu
+    anyui_set_tooltip
     anyui_message_box
     anyui_iconbutton_set_pixels
     anyui_imageview_set_pixels
@@ -84,6 +85,7 @@ EXPORTS
     anyui_datagrid_set_cell
     anyui_datagrid_get_cell
     anyui_datagrid_set_cell_colors
+    anyui_datagrid_set_cell_bg_colors
     anyui_datagrid_set_row_count
     anyui_datagrid_get_row_count
     anyui_datagrid_set_selection_mode
@@ -93,6 +95,7 @@ EXPORTS
     anyui_datagrid_sort
     anyui_datagrid_set_row_height
     anyui_datagrid_set_header_height
+    anyui_datagrid_set_char_colors
     anyui_datagrid_set_cell_icon
     anyui_texteditor_set_text
     anyui_texteditor_get_text
@@ -133,3 +136,11 @@ EXPORTS
     anyui_show_notification
     anyui_set_theme
     anyui_get_theme
+    anyui_set_title
+    anyui_get_key_info
+    anyui_clipboard_set
+    anyui_clipboard_get
+    anyui_get_size
+    anyui_get_position
+    anyui_datagrid_get_scroll_offset
+    anyui_datagrid_set_scroll_offset

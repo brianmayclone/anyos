@@ -43,11 +43,98 @@ const KEY_PAGE_DOWN: u32 = 0x124;
 // Event types
 const EVENT_KEY_DOWN: u32 = 1;
 const EVENT_RESIZE: u32 = 3;
+const EVENT_MOUSE_DOWN: u32 = 4;
+const EVENT_MOUSE_UP: u32 = 5;
+const EVENT_MOUSE_MOVE: u32 = 6;
 const EVENT_MOUSE_SCROLL: u32 = 7;
 const EVENT_WINDOW_CLOSE: u32 = 8;
 
+// Mouse buttons (bitmask in event[3] for MOUSE_DOWN)
+const MOUSE_BUTTON_LEFT: u32 = 1;
+const MOUSE_BUTTON_MIDDLE: u32 = 4;
+
+// Selection highlight colors
+const COLOR_SELECT_BG: u32 = 0xFF3A5070;
+const COLOR_SELECT_FG: u32 = 0xFFFFFFFF;
+
 // Modifier flags
 const MOD_CTRL: u32 = 2;
+
+// ─── Text Selection ──────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy)]
+struct CellPos {
+    row: usize, // absolute line index in TerminalBuffer.lines[]
+    col: usize, // column index within that line
+}
+
+struct Selection {
+    dragging: bool,
+    anchor: CellPos,  // where the drag started
+    active: CellPos,  // current drag endpoint
+}
+
+impl Selection {
+    /// Return (start, end) in reading order.
+    fn ordered(&self) -> (CellPos, CellPos) {
+        if self.anchor.row < self.active.row
+            || (self.anchor.row == self.active.row && self.anchor.col <= self.active.col)
+        {
+            (self.anchor, self.active)
+        } else {
+            (self.active, self.anchor)
+        }
+    }
+}
+
+// ─── Selection Helpers ───────────────────────────────────────────────────────
+
+/// Convert pixel coordinates to a cell position in the buffer.
+fn pixel_to_cell(px: u32, py: u32, buf: &TerminalBuffer) -> CellPos {
+    let col = if px > TEXT_PAD as u32 {
+        ((px - TEXT_PAD as u32) / CELL_W as u32) as usize
+    } else {
+        0
+    };
+    let screen_row = if py > TEXT_PAD as u32 {
+        ((py - TEXT_PAD as u32) / CELL_H as u32) as usize
+    } else {
+        0
+    };
+    let row = buf.scroll_offset + screen_row;
+    // Clamp to valid range
+    let row = row.min(buf.lines.len().saturating_sub(1));
+    let col = col.min(buf.cols.saturating_sub(1));
+    CellPos { row, col }
+}
+
+/// Extract the selected text from the terminal buffer.
+fn extract_selected_text(buf: &TerminalBuffer, sel: &Selection) -> String {
+    let (start, end) = sel.ordered();
+    let mut result = String::new();
+    for row in start.row..=end.row {
+        if row >= buf.lines.len() {
+            break;
+        }
+        let line = &buf.lines[row];
+        let c0 = if row == start.row { start.col } else { 0 };
+        let c1 = if row == end.row { end.col + 1 } else { line.len() };
+        let c1 = c1.min(line.len());
+        let mut line_text = String::new();
+        for col in c0..c1 {
+            line_text.push(line[col].0);
+        }
+        // Trim trailing spaces
+        while line_text.ends_with(' ') {
+            line_text.pop();
+        }
+        if row > start.row {
+            result.push('\n');
+        }
+        result.push_str(&line_text);
+    }
+    result
+}
 
 // ─── Output Redirect ─────────────────────────────────────────────────────────
 
@@ -1094,6 +1181,10 @@ impl Shell {
                         "ls" => self.cwd.as_str(),
                         _ => "",
                     }
+                } else if bg_cmd == "ls" && expanded_bg.split_ascii_whitespace().all(|t| t.starts_with('-')) {
+                    // ls with only flags, no path — append cwd
+                    bg_args_buf = format!("{} {}", expanded_bg, self.cwd);
+                    bg_args_buf.as_str()
                 } else {
                     bg_args_buf = expanded_bg;
                     bg_args_buf.as_str()
@@ -1215,6 +1306,9 @@ impl Shell {
                     "ls" => String::from(self.cwd.as_str()),
                     _ => String::new(),
                 }
+            } else if cmd == "ls" && expanded_buf.split_ascii_whitespace().all(|t| t.starts_with('-')) {
+                // ls with only flags, no path — append cwd
+                format!("{} {}", expanded_buf, self.cwd)
             } else {
                 expanded_buf
             };
@@ -1488,6 +1582,8 @@ impl Shell {
         let target = args.trim();
         if target.is_empty() || target == "/" {
             self.cwd = String::from("/");
+            anyos_std::env::set("PWD", "/");
+            fs::chdir("/");
             return;
         }
 
@@ -1858,43 +1954,86 @@ fn handle_tab(shell: &mut Shell, buf: &mut TerminalBuffer) {
 
 // ─── Rendering ───────────────────────────────────────────────────────────────
 
-fn render_terminal(win_id: u32, buf: &TerminalBuffer, win_w: u32, win_h: u32) {
+fn render_terminal(win_id: u32, buf: &TerminalBuffer, win_w: u32, win_h: u32, sel: Option<&Selection>) {
     // Clear background
     window::fill_rect(win_id, 0, 0, win_w as u16, win_h as u16, COLOR_BG);
 
     let start_row = buf.scroll_offset;
     let end_row = (start_row + buf.visible_rows).min(buf.lines.len());
 
+    // Precompute selection range (if any)
+    let sel_range = sel.map(|s| s.ordered());
+
     // Build text line by line and draw
     for (screen_y, line_idx) in (start_row..end_row).enumerate() {
         let line = &buf.lines[line_idx];
         let py = TEXT_PAD + (screen_y as u16) * CELL_H;
 
-        // Group characters by color for efficient drawing
+        // Group characters by color AND selection state for efficient drawing
         let mut run_start = 0;
         let mut run_color = if !line.is_empty() { line[0].1 } else { COLOR_FG };
+        let mut run_selected = false;
         let mut text_buf = String::new();
 
         for (col, &(ch, color)) in line.iter().enumerate() {
             if col >= buf.cols {
                 break;
             }
-            if color != run_color && !text_buf.is_empty() {
+
+            // Check if this cell is within the selection
+            let selected = if let Some((ref s, ref e)) = sel_range {
+                if line_idx > s.row && line_idx < e.row {
+                    true
+                } else if line_idx == s.row && line_idx == e.row {
+                    col >= s.col && col <= e.col
+                } else if line_idx == s.row {
+                    col >= s.col
+                } else if line_idx == e.row {
+                    col <= e.col
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            let effective_color = if selected { COLOR_SELECT_FG } else { color };
+
+            if (!text_buf.is_empty()) && (effective_color != run_color || selected != run_selected) {
+                // Flush current run
+                if run_selected {
+                    let rx = TEXT_PAD + (run_start as u16) * CELL_W;
+                    let rw = (text_buf.len() as u16) * CELL_W;
+                    window::fill_rect(win_id, rx as i16, py as i16, rw, CELL_H, COLOR_SELECT_BG);
+                }
                 let px = TEXT_PAD + (run_start as u16) * CELL_W;
                 window::draw_text_mono(win_id, px as i16, py as i16, run_color, &text_buf);
                 text_buf.clear();
-                run_start = col;
-                run_color = color;
             }
             if text_buf.is_empty() {
                 run_start = col;
-                run_color = color;
+                run_color = effective_color;
+                run_selected = selected;
             }
             text_buf.push(ch);
         }
         if !text_buf.is_empty() {
+            if run_selected {
+                let rx = TEXT_PAD + (run_start as u16) * CELL_W;
+                let rw = (text_buf.len() as u16) * CELL_W;
+                window::fill_rect(win_id, rx as i16, py as i16, rw, CELL_H, COLOR_SELECT_BG);
+            }
             let px = TEXT_PAD + (run_start as u16) * CELL_W;
             window::draw_text_mono(win_id, px as i16, py as i16, run_color, &text_buf);
+        }
+
+        // For multiline selections: highlight empty area after line end on middle lines
+        if let Some((ref s, ref e)) = sel_range {
+            if line_idx > s.row && line_idx < e.row && line.len() < buf.cols {
+                let rx = TEXT_PAD + (line.len() as u16) * CELL_W;
+                let rw = ((buf.cols - line.len()) as u16) * CELL_W;
+                window::fill_rect(win_id, rx as i16, py as i16, rw, CELL_H, COLOR_SELECT_BG);
+            }
         }
     }
 
@@ -1937,10 +2076,12 @@ fn main() {
 
     let mut buf = TerminalBuffer::new(cols, rows);
     let mut shell = Shell::new();
+    let mut selection: Option<Selection> = None;
 
     // Load environment from /System/env (and collect aliases)
     shell.aliases = load_dotenv();
     anyos_std::env::set("PWD", "/"); // PWD is dynamic, always set
+    fs::chdir("/"); // Sync kernel CWD with shell's initial cwd
 
     // Set terminal size env vars so child programs can query dimensions
     anyos_std::env::set("COLUMNS", &format!("{}", cols));
@@ -1959,7 +2100,7 @@ fn main() {
     buf.current_color = COLOR_FG;
 
     // Initial render
-    render_terminal(win_id, &buf, win_w, win_h);
+    render_terminal(win_id, &buf, win_w, win_h, selection.as_ref());
 
     let mut dirty = false;
     let mut event = [0u32; 5];
@@ -2087,7 +2228,59 @@ fn main() {
                     buf.scroll_down(3);
                 }
                 dirty = true;
+            } else if event[0] == EVENT_MOUSE_DOWN {
+                let buttons = event[3];
+                if (buttons & MOUSE_BUTTON_LEFT) != 0 {
+                    let pos = pixel_to_cell(event[1], event[2], &buf);
+                    selection = Some(Selection {
+                        dragging: true,
+                        anchor: pos,
+                        active: pos,
+                    });
+                    dirty = true;
+                } else if (buttons & MOUSE_BUTTON_MIDDLE) != 0 {
+                    // Middle-click paste (Linux-style)
+                    if fg_proc.is_none() && su_pending_user.is_none() {
+                        if let Some(text) = window::clipboard_get() {
+                            for c in text.chars() {
+                                if c >= ' ' && (c as u32) < 128 {
+                                    shell.insert_char(c);
+                                }
+                            }
+                            redraw_input_line(&mut buf, &shell);
+                            dirty = true;
+                        }
+                    }
+                }
+            } else if event[0] == EVENT_MOUSE_MOVE {
+                if let Some(ref mut sel) = selection {
+                    if sel.dragging {
+                        sel.active = pixel_to_cell(event[1], event[2], &buf);
+                        dirty = true;
+                    }
+                }
+            } else if event[0] == EVENT_MOUSE_UP {
+                if let Some(ref mut sel) = selection {
+                    sel.dragging = false;
+                    let (s, e) = sel.ordered();
+                    if s.row == e.row && s.col == e.col {
+                        // Single click (no drag) — clear selection
+                        selection = None;
+                    } else {
+                        // Copy selected text to clipboard
+                        let text = extract_selected_text(&buf, sel);
+                        if !text.is_empty() {
+                            window::clipboard_set(&text);
+                        }
+                    }
+                    dirty = true;
+                }
             } else if event[0] == EVENT_KEY_DOWN {
+                // Clear selection on any keyboard input
+                if selection.is_some() {
+                    selection = None;
+                    dirty = true;
+                }
                 let key_code = event[1];
                 let char_val = event[2];
                 let mods = event[3];
@@ -2314,7 +2507,7 @@ fn main() {
         } else {
             // No event — render if dirty, then yield
             if dirty {
-                render_terminal(win_id, &buf, win_w, win_h);
+                render_terminal(win_id, &buf, win_w, win_h, selection.as_ref());
                 dirty = false;
             }
             process::sleep(8); // ~125 Hz poll for pipe output

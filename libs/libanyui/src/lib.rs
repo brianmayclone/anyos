@@ -133,6 +133,10 @@ pub(crate) struct AnyuiState {
     /// Which mouse button was pressed (for right-click detection).
     pub pressed_button: u32,
 
+    // ── Tooltip ──────────────────────────────────────────────────────
+    /// Framework-managed tooltip control ID (created lazily on first use).
+    pub active_tooltip: Option<ControlId>,
+
     // ── Timers ───────────────────────────────────────────────────────
     pub timers: timer::TimerState,
 
@@ -141,6 +145,14 @@ pub(crate) struct AnyuiState {
     pub needs_repaint: bool,
     /// True when layout-affecting properties changed since last layout pass.
     pub needs_layout: bool,
+
+    // ── Last key event (queryable by callbacks) ──────────────────────
+    /// Keycode from the most recent KEY_DOWN event.
+    pub last_keycode: u32,
+    /// Character code from the most recent KEY_DOWN event.
+    pub last_char_code: u32,
+    /// Modifier flags from the most recent KEY_DOWN event.
+    pub last_modifiers: u32,
 }
 
 /// Signal that at least one control needs repainting.
@@ -251,9 +263,13 @@ pub extern "C" fn anyui_init() -> u32 {
             last_click_id: None,
             last_click_tick: 0,
             pressed_button: 0,
+            active_tooltip: None,
             timers: timer::TimerState::new(),
             needs_repaint: true,
             needs_layout: true,
+            last_keycode: 0,
+            last_char_code: 0,
+            last_modifiers: 0,
         });
     }
     1
@@ -1248,6 +1264,21 @@ pub extern "C" fn anyui_datagrid_set_cell_colors(id: ControlId, colors: *const u
 }
 
 #[no_mangle]
+pub extern "C" fn anyui_datagrid_set_cell_bg_colors(id: ControlId, colors: *const u32, count: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            if !colors.is_null() && count > 0 {
+                let slice = unsafe { core::slice::from_raw_parts(colors, count as usize) };
+                dg.set_cell_bg_colors(slice);
+            } else {
+                dg.set_cell_bg_colors(&[]);
+            }
+        }
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn anyui_datagrid_set_row_count(id: ControlId, count: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
@@ -1298,12 +1329,11 @@ pub extern "C" fn anyui_datagrid_set_selected_row(id: ControlId, row: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(dg) = as_data_grid(ctrl) {
-            if dg.base.state != row {
-                dg.clear_selection();
-                dg.set_row_selected(row as usize, true);
-                dg.base.state = row;
-                dg.base.mark_dirty();
-            }
+            dg.clear_selection();
+            dg.set_row_selected(row as usize, true);
+            dg.base.state = row;
+            dg.scroll_to_row(row as usize);
+            dg.base.mark_dirty();
         }
     }
 }
@@ -1358,6 +1388,35 @@ pub extern "C" fn anyui_datagrid_set_header_height(id: ControlId, height: u32) {
                 dg.header_height = h;
                 dg.base.mark_dirty();
             }
+        }
+    }
+}
+
+/// Set per-character text colors for grid cells.
+/// `char_colors`/`char_colors_len`: flat array of ARGB colors, one per character.
+/// `offsets`/`offsets_len`: one u32 per cell — index into char_colors (u32::MAX = none).
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_char_colors(
+    id: ControlId,
+    char_colors: *const u32,
+    char_colors_len: u32,
+    offsets: *const u32,
+    offsets_len: u32,
+) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            let cc = if !char_colors.is_null() && char_colors_len > 0 {
+                unsafe { core::slice::from_raw_parts(char_colors, char_colors_len as usize) }
+            } else {
+                &[]
+            };
+            let off = if !offsets.is_null() && offsets_len > 0 {
+                unsafe { core::slice::from_raw_parts(offsets, offsets_len as usize) }
+            } else {
+                &[]
+            };
+            dg.set_char_colors(cc, off);
         }
     }
 }
@@ -1782,6 +1841,20 @@ pub extern "C" fn anyui_set_context_menu(id: ControlId, menu_id: ControlId) {
     }
 }
 
+/// Set tooltip text for a control. Pass empty text (len=0) to remove.
+#[no_mangle]
+pub extern "C" fn anyui_set_tooltip(id: ControlId, text: *const u8, len: u32) {
+    let st = state();
+    let bytes = if len > 0 && !text.is_null() {
+        unsafe { core::slice::from_raw_parts(text, len as usize) }.to_vec()
+    } else {
+        Vec::new()
+    };
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        ctrl.base_mut().tooltip_text = bytes;
+    }
+}
+
 // ── MessageBox ───────────────────────────────────────────────────────
 
 static mut MSGBOX_DISMISSED: bool = false;
@@ -2132,4 +2205,116 @@ pub extern "C" fn anyui_set_theme(light: u32) {
 #[no_mangle]
 pub extern "C" fn anyui_get_theme() -> u32 {
     theme::get_theme()
+}
+
+// ── Window title (post-creation) ─────────────────────────────────
+
+/// Set the title of a window after creation.
+#[no_mangle]
+pub extern "C" fn anyui_set_title(id: ControlId, title: *const u8, title_len: u32) {
+    let st = state();
+    if let Some(idx) = st.windows.iter().position(|&w| w == id) {
+        let text = if !title.is_null() && title_len > 0 {
+            unsafe { core::slice::from_raw_parts(title, title_len as usize) }
+        } else {
+            &[]
+        };
+        compositor::set_title(st.channel_id, st.comp_windows[idx].window_id, text);
+        // Also update the control's text
+        if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+            ctrl.set_text(text);
+        }
+    }
+}
+
+// ── Key event info ──────────────────────────────────────────────
+
+/// Query the last key event info. Returns keycode, char_code, modifiers via out pointers.
+/// Call this from inside a KEY event callback to get the key that was pressed.
+#[no_mangle]
+pub extern "C" fn anyui_get_key_info(
+    out_keycode: *mut u32,
+    out_char_code: *mut u32,
+    out_modifiers: *mut u32,
+) {
+    let st = state();
+    if !out_keycode.is_null() { unsafe { *out_keycode = st.last_keycode; } }
+    if !out_char_code.is_null() { unsafe { *out_char_code = st.last_char_code; } }
+    if !out_modifiers.is_null() { unsafe { *out_modifiers = st.last_modifiers; } }
+}
+
+// ── Clipboard ───────────────────────────────────────────────────
+
+/// Copy text to the system clipboard.
+#[no_mangle]
+pub extern "C" fn anyui_clipboard_set(data: *const u8, len: u32) {
+    if !data.is_null() && len > 0 {
+        let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
+        compositor::clipboard_set(slice);
+    }
+}
+
+/// Get text from the system clipboard. Returns number of bytes written.
+/// Returns 0 if clipboard is empty.
+#[no_mangle]
+pub extern "C" fn anyui_clipboard_get(out: *mut u8, capacity: u32) -> u32 {
+    if let Some(data) = compositor::clipboard_get() {
+        let copy_len = data.len().min(capacity as usize);
+        if !out.is_null() && copy_len > 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(data.as_ptr(), out, copy_len);
+            }
+        }
+        copy_len as u32
+    } else {
+        0
+    }
+}
+
+// ── Window size query ───────────────────────────────────────────
+
+/// Get the size of a control. Returns via out pointers.
+#[no_mangle]
+pub extern "C" fn anyui_get_size(id: ControlId, out_w: *mut u32, out_h: *mut u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if !out_w.is_null() { unsafe { *out_w = ctrl.base().w; } }
+        if !out_h.is_null() { unsafe { *out_h = ctrl.base().h; } }
+    }
+}
+
+/// Get the position of a control. Returns via out pointers.
+#[no_mangle]
+pub extern "C" fn anyui_get_position(id: ControlId, out_x: *mut i32, out_y: *mut i32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if !out_x.is_null() { unsafe { *out_x = ctrl.base().x; } }
+        if !out_y.is_null() { unsafe { *out_y = ctrl.base().y; } }
+    }
+}
+
+// ── DataGrid scroll position ────────────────────────────────────
+
+/// Get the current scroll Y position of a DataGrid (in pixels).
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_get_scroll_offset(id: ControlId) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid_ref(ctrl) {
+            return dg.scroll_y.max(0) as u32;
+        }
+    }
+    0
+}
+
+/// Set the scroll Y position of a DataGrid (in pixels).
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_scroll_offset(id: ControlId, offset: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            dg.scroll_y = offset as i32;
+            dg.base.mark_dirty();
+        }
+    }
 }

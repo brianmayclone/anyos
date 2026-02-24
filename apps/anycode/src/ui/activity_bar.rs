@@ -1,5 +1,6 @@
 use libanyui_client as ui;
 use ui::IconType;
+use ui::Widget;
 
 /// VS Code-style vertical activity bar on the left edge.
 pub struct ActivityBar {
@@ -40,6 +41,7 @@ impl ActivityBar {
         btn_files.set_size(BAR_WIDTH - 2, BTN_SIZE);
         btn_files.set_dock(ui::DOCK_FILL);
         btn_files.set_system_icon(ICON_NAMES[0], IconType::Outline, tc.text, ICON_SZ);
+        btn_files.set_tooltip("Explorer");
         row0.add(&btn_files);
         panel.add(&row0);
 
@@ -56,6 +58,7 @@ impl ActivityBar {
         btn_git.set_size(BAR_WIDTH - 2, BTN_SIZE);
         btn_git.set_dock(ui::DOCK_FILL);
         btn_git.set_system_icon(ICON_NAMES[1], IconType::Outline, tc.text_secondary, ICON_SZ);
+        btn_git.set_tooltip("Source Control");
         row1.add(&btn_git);
         panel.add(&row1);
 
@@ -72,6 +75,7 @@ impl ActivityBar {
         btn_search.set_size(BAR_WIDTH - 2, BTN_SIZE);
         btn_search.set_dock(ui::DOCK_FILL);
         btn_search.set_system_icon(ICON_NAMES[2], IconType::Outline, tc.text_secondary, ICON_SZ);
+        btn_search.set_tooltip("Search");
         row2.add(&btn_search);
         panel.add(&row2);
 

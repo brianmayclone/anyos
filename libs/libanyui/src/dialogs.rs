@@ -156,12 +156,6 @@ fn populate_file_list(show_files: bool) {
 
     let dir_path = unsafe { &DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN] };
 
-    // Update path label
-    let path_label_id = unsafe { DIALOG_PATH_LABEL_ID };
-    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == path_label_id) {
-        ctrl.set_text(dir_path);
-    }
-
     unsafe { DIALOG_ENTRY_COUNT = 0; }
 
     // Add ".." entry unless at root "/"
@@ -181,6 +175,9 @@ fn populate_file_list(show_files: bool) {
 
     let entries = list_directory(dir_path);
 
+    let mut num_dirs: usize = 0;
+    let mut num_files: usize = 0;
+
     for entry in &entries {
         if !entry.is_dir && !show_files {
             continue;
@@ -194,8 +191,10 @@ fn populate_file_list(show_files: bool) {
                 if entry.is_dir {
                     tv.set_node_style(node_idx, 1); // bold
                     tv.set_node_text_color(node_idx, 0xFFCCCCCC);
+                    num_dirs += 1;
                 } else {
                     tv.set_node_text_color(node_idx, 0xFFBBBBBB);
+                    num_files += 1;
                 }
             }
         }
@@ -205,6 +204,46 @@ fn populate_file_list(show_files: bool) {
             DIALOG_ENTRY_COUNT += 1;
         }
     }
+
+    // Update path label with entry counts for feedback
+    let path_label_id = unsafe { DIALOG_PATH_LABEL_ID };
+    // Build label: "<path>  (Xd Xf)"
+    let mut label_buf = [0u8; 300];
+    let mut pos = 0usize;
+    let dp_len = dir_path.len().min(240);
+    label_buf[..dp_len].copy_from_slice(&dir_path[..dp_len]);
+    pos = dp_len;
+    label_buf[pos] = b' '; pos += 1;
+    label_buf[pos] = b' '; pos += 1;
+    label_buf[pos] = b'('; pos += 1;
+    pos += write_usize(&mut label_buf[pos..], num_dirs);
+    label_buf[pos] = b'd'; pos += 1;
+    label_buf[pos] = b' '; pos += 1;
+    pos += write_usize(&mut label_buf[pos..], num_files);
+    label_buf[pos] = b'f'; pos += 1;
+    label_buf[pos] = b')'; pos += 1;
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == path_label_id) {
+        ctrl.set_text(&label_buf[..pos]);
+    }
+}
+
+fn write_usize(buf: &mut [u8], val: usize) -> usize {
+    if val == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+    let mut tmp = [0u8; 10];
+    let mut n = val;
+    let mut len = 0;
+    while n > 0 {
+        tmp[len] = b'0' + (n % 10) as u8;
+        n /= 10;
+        len += 1;
+    }
+    for i in 0..len {
+        buf[i] = tmp[len - 1 - i];
+    }
+    len
 }
 
 fn as_tree_view_mut(ctrl: &mut alloc::boxed::Box<dyn Control>) -> Option<&mut controls::tree_view::TreeView> {
@@ -493,9 +532,9 @@ fn run_file_dialog(
 
     // Dialog dimensions
     let (card_w, card_h, title, confirm_label, show_files, has_name_field, confirm_userdata) = match dialog_type {
-        DialogType::OpenFolder => (500u32, 400u32, b"Open Folder" as &[u8], b"Open" as &[u8], false, false, 0u64),
-        DialogType::OpenFile => (500u32, 400u32, b"Open File" as &[u8], b"Open" as &[u8], true, false, 1u64),
-        DialogType::SaveFile => (500u32, 400u32, b"Save File" as &[u8], b"Save" as &[u8], true, true, 2u64),
+        DialogType::OpenFolder => (600u32, 500u32, b"Open Folder" as &[u8], b"Open" as &[u8], false, false, 0u64),
+        DialogType::OpenFile => (600u32, 500u32, b"Open File" as &[u8], b"Open" as &[u8], true, false, 1u64),
+        DialogType::SaveFile => (600u32, 500u32, b"Save File" as &[u8], b"Save" as &[u8], true, true, 2u64),
         DialogType::CreateFolder => (350u32, 200u32, b"New Folder" as &[u8], b"Create" as &[u8], false, true, 3u64),
     };
 

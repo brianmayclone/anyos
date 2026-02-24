@@ -104,7 +104,9 @@ fn list_directory(path: &str, long: bool, all: bool, one_per_line: bool,
     }
 
     let mut entries = anyos_std::Vec::new();
-    for i in 0..count as usize {
+    let max_entries = buf.len() / 64;
+    let actual = (count as usize).min(max_entries);
+    for i in 0..actual {
         let raw_entry = &buf[i * 64..(i + 1) * 64];
         let entry_type = raw_entry[0];
         let name_len = raw_entry[1] as usize;

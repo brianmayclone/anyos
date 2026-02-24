@@ -78,7 +78,7 @@ impl Control for SearchField {
         EventResponse::CONSUMED
     }
 
-    fn handle_key_down(&mut self, keycode: u32, char_code: u32) -> EventResponse {
+    fn handle_key_down(&mut self, keycode: u32, char_code: u32, _modifiers: u32) -> EventResponse {
         use crate::control::*;
         if keycode == KEY_ENTER {
             return EventResponse::SUBMIT;

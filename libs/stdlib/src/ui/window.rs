@@ -406,6 +406,7 @@ pub fn get_event(window_id: u32, event: &mut [u32; 5]) -> u32 {
             0x3003 => EVENT_MOUSE_DOWN,
             0x3004 => EVENT_MOUSE_UP,
             0x3005 => EVENT_MOUSE_SCROLL,
+            0x300A => EVENT_MOUSE_MOVE,
             0x3006 => EVENT_RESIZE,
             0x3007 => EVENT_WINDOW_CLOSE,
             0x3008 => EVENT_MENU_ITEM,

@@ -471,7 +471,7 @@ impl Control for TreeView {
         EventResponse::CHANGED
     }
 
-    fn handle_key_down(&mut self, keycode: u32, char_code: u32) -> EventResponse {
+    fn handle_key_down(&mut self, keycode: u32, char_code: u32, _modifiers: u32) -> EventResponse {
         let vis = self.visible_nodes();
         if vis.is_empty() { return EventResponse::IGNORED; }
 

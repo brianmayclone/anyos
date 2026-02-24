@@ -247,6 +247,31 @@ pub fn show_notification(
     );
 }
 
+/// Copy text to the system clipboard.
+pub fn clipboard_set(text: &[u8]) {
+    let st = crate::state();
+    (exports().set_clipboard)(st.channel_id, text.as_ptr(), text.len() as u32, 0);
+}
+
+/// Get text from the system clipboard. Returns None if empty.
+pub fn clipboard_get() -> Option<alloc::vec::Vec<u8>> {
+    let st = crate::state();
+    let mut buf = [0u8; 4096];
+    let mut format: u32 = 0;
+    let len = (exports().get_clipboard)(
+        st.channel_id,
+        st.sub_id,
+        buf.as_mut_ptr(),
+        buf.len() as u32,
+        &mut format,
+    );
+    if len == 0 {
+        return None;
+    }
+    let actual = (len as usize).min(buf.len());
+    Some(buf[..actual].to_vec())
+}
+
 // ── Surface helpers ──────────────────────────────────────────────────
 
 /// Fill a rectangle on a window's SHM surface.

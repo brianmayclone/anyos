@@ -62,6 +62,10 @@ pub const KEY_END: u32       = 0x122;
 pub const KEY_PAGE_UP: u32   = 0x123;
 pub const KEY_PAGE_DOWN: u32 = 0x124;
 
+// Keyboard modifier flags (bitmask in event[4])
+pub const MOD_SHIFT: u32 = 1;
+pub const MOD_CTRL: u32 = 2;
+
 // ── Layout types (Windows Forms-inspired) ────────────────────────────
 
 /// Inner spacing (space reserved inside a control for its children).
@@ -350,6 +354,9 @@ pub struct ControlBase {
     /// Optional ContextMenu control ID to show on right-click.
     pub context_menu: Option<ControlId>,
 
+    /// Tooltip text to show on hover (empty = no tooltip).
+    pub tooltip_text: Vec<u8>,
+
     /// Tab focus order index. Controls with lower tab_index get focus first.
     /// 0 means "use insertion order" (default). Cascaded: parent tab_index
     /// is used as the primary sort key, child tab_index as secondary.
@@ -390,6 +397,7 @@ impl ControlBase {
             max_w: 0,
             max_h: 0,
             context_menu: None,
+            tooltip_text: Vec::new(),
             tab_index: 0,
             callbacks: [None; NUM_CALLBACK_SLOTS],
         }
@@ -620,7 +628,8 @@ pub trait Control {
 
     /// Called when a key is pressed while this control has focus.
     /// `char_code` is the ASCII character (0 if non-printable).
-    fn handle_key_down(&mut self, _keycode: u32, _char_code: u32) -> EventResponse {
+    /// `modifiers` is a bitmask of MOD_SHIFT, MOD_CTRL, etc.
+    fn handle_key_down(&mut self, _keycode: u32, _char_code: u32, _modifiers: u32) -> EventResponse {
         EventResponse::IGNORED
     }
 
@@ -833,6 +842,11 @@ pub fn hit_test_any(
     let b = controls[idx].base();
 
     if !b.visible {
+        return None;
+    }
+
+    // Framework-managed tooltips are non-interactive — skip hit testing.
+    if controls[idx].kind() == ControlKind::Tooltip {
         return None;
     }
 

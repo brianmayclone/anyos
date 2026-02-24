@@ -1,5 +1,6 @@
-use crate::{Container, Control, Widget, lib, events, KIND_WINDOW, EVENT_CLOSE, EVENT_RESIZE};
+use crate::{Container, Control, Widget, lib, events, KIND_WINDOW, EVENT_CLOSE, EVENT_RESIZE, EVENT_KEY};
 use crate::events::EventArgs;
+use crate::KeyEvent;
 
 container_control!(Window, KIND_WINDOW);
 
@@ -27,6 +28,11 @@ impl Window {
         Self { container: Container { ctrl: Control { id } } }
     }
 
+    /// Set the window title after creation.
+    pub fn set_title(&self, title: &str) {
+        (lib().set_title)(self.container.ctrl.id, title.as_ptr(), title.len() as u32);
+    }
+
     pub fn destroy(&self) {
         (lib().destroy_window)(self.container.ctrl.id);
     }
@@ -39,5 +45,16 @@ impl Window {
     pub fn on_resize(&self, mut f: impl FnMut(&EventArgs) + 'static) {
         let (thunk, ud) = events::register(move |id, _| f(&EventArgs { id }));
         (lib().on_event_fn)(self.container.ctrl.id, EVENT_RESIZE, thunk, ud);
+    }
+
+    /// Register a typed key-down handler on this window.
+    /// The closure receives a `KeyEvent` with keycode, char_code, and modifiers.
+    /// This fires for unhandled key events that bubble up to the window.
+    pub fn on_key_down(&self, mut f: impl FnMut(&KeyEvent) + 'static) {
+        let (thunk, ud) = events::register(move |_id, _| {
+            let ke = crate::get_key_info();
+            f(&ke);
+        });
+        (lib().on_event_fn)(self.container.ctrl.id, EVENT_KEY, thunk, ud);
     }
 }
