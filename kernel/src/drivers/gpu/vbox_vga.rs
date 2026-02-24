@@ -229,8 +229,23 @@ impl VBoxVgaGpu {
         let data_size = payload.len() as u32;
         let (virt, vram_off) = match self.hgsmi_alloc(data_size) {
             Some(v) => v,
-            None => return,
+            None => {
+                crate::serial_println!("  VBoxVGA: hgsmi_alloc FAILED for cmd={}", channel_info);
+                return;
+            }
         };
+
+        // Debug: log HGSMI submissions for cursor commands
+        if channel_info == VBVA_MOUSE_POINTER_SHAPE || channel_info == VBVA_CURSOR_POSITION {
+            static HGSMI_DBG_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            let n = HGSMI_DBG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if n < 10 {
+                crate::serial_println!(
+                    "  VBoxVGA: hgsmi_submit cmd={} data_size={} vram_off={:#x} heap_off={}",
+                    channel_info, data_size, vram_off, self.hgsmi_heap_offset,
+                );
+            }
+        }
 
         // Write header
         let header = HgsmiBufferHeader {
@@ -310,10 +325,18 @@ impl VBoxVgaGpu {
     }
 
     /// Send VBVA_INFO_CAPS to report guest driver capabilities.
+    ///
+    /// NOTE: Do NOT set VBVACAPS_DISABLE_CURSOR_INTEGRATION here.
+    /// That flag tells VBox "don't show any host cursor overlay, I draw the cursor
+    /// myself in the framebuffer." But we use HGSMI hardware cursor (= VBox host
+    /// overlay via VBVA_MOUSE_POINTER_SHAPE), not software cursor. Setting that
+    /// flag would suppress the overlay while the compositor skips SW cursor
+    /// drawing → no cursor visible at all.
     fn send_info_caps(&mut self) {
+        crate::serial_println!("  VBoxVGA: send_info_caps flags=0x0 (cursor integration ENABLED)");
         let caps = VbvaInfoCaps {
             rc: 0,
-            flags: VBVACAPS_DISABLE_CURSOR_INTEGRATION,
+            flags: 0, // no DISABLE_CURSOR_INTEGRATION — let VBox show HGSMI-defined cursor overlay
         };
         let payload = unsafe {
             core::slice::from_raw_parts(
@@ -469,10 +492,21 @@ impl GpuDriver for VBoxVgaGpu {
         }
 
         // Build VBVA_MOUSE_POINTER_SHAPE payload:
-        // [VbvaMousePointerShape header] [ARGB pixel data]
+        // [VbvaMousePointerShape header] [AND mask] [XOR/ARGB pixel data]
+        //
+        // VirtualBox requires the AND mask even when VBOX_MOUSE_POINTER_ALPHA
+        // is set (the host ignores its contents but expects it in the buffer).
+        //
+        // AND mask format (from VBoxVideo.h):
+        //   - 1 bpp bitmap, byte-aligned scanlines (NO per-row padding)
+        //   - cbAnd = (width + 7) / 8 * height
+        //   - TOTAL padded to 4-byte boundary before XOR data
+        //   - XOR starts at: (cbAnd + 3) & ~3
         let shape_size = core::mem::size_of::<VbvaMousePointerShape>();
+        let cb_and = (w + 7) / 8 * h;
+        let and_mask_size = ((cb_and + 3) & !3) as usize; // pad total to 4-byte boundary
         let pixel_bytes = (w * h * 4) as usize;
-        let total_payload = shape_size + pixel_bytes;
+        let total_payload = shape_size + and_mask_size + pixel_bytes;
 
         let mut payload = vec![0u8; total_payload];
 
@@ -493,22 +527,52 @@ impl GpuDriver for VBoxVgaGpu {
             );
         }
 
-        // Copy ARGB pixel data
+        // AND mask is already zeroed (vec![0u8; ...]), which means "fully opaque"
+        // — correct for alpha-blended cursors where transparency comes from the
+        // ARGB alpha channel.
+
+        // Copy ARGB pixel data after AND mask
         unsafe {
             core::ptr::copy_nonoverlapping(
                 pixels.as_ptr() as *const u8,
-                payload.as_mut_ptr().add(shape_size),
+                payload.as_mut_ptr().add(shape_size + and_mask_size),
                 pixel_bytes,
+            );
+        }
+
+        crate::serial_println!(
+            "  VBoxVGA: define_cursor {}x{} hot=({},{}) flags={:#x} and_mask={} px={} total={}",
+            w, h, hotx, hoty,
+            VBOX_MOUSE_POINTER_VISIBLE | VBOX_MOUSE_POINTER_ALPHA | VBOX_MOUSE_POINTER_SHAPE,
+            and_mask_size, pixel_bytes, total_payload,
+        );
+        // Dump first 4 ARGB pixels to verify data integrity
+        let px_off = shape_size + and_mask_size;
+        if total_payload >= px_off + 16 {
+            crate::serial_println!(
+                "  VBoxVGA: cursor px[0..4] = {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x}",
+                payload[px_off], payload[px_off+1], payload[px_off+2], payload[px_off+3],
+                payload[px_off+4], payload[px_off+5], payload[px_off+6], payload[px_off+7],
+                payload[px_off+8], payload[px_off+9], payload[px_off+10], payload[px_off+11],
+                payload[px_off+12], payload[px_off+13], payload[px_off+14], payload[px_off+15],
             );
         }
 
         self.hgsmi_submit(VBVA_MOUSE_POINTER_SHAPE, &payload);
         self.cursor_defined = true;
+        crate::serial_println!("  VBoxVGA: define_cursor submitted OK");
     }
 
     fn move_cursor(&mut self, x: u32, y: u32) {
         if !self.hgsmi_supported {
             return;
+        }
+
+        // Log first few moves
+        static MOVE_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        let n = MOVE_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if n < 5 {
+            crate::serial_println!("  VBoxVGA: move_cursor({}, {}) [#{}]", x, y, n);
         }
 
         // Send cursor position via HGSMI
@@ -530,6 +594,7 @@ impl GpuDriver for VBoxVgaGpu {
         if !self.hgsmi_supported {
             return;
         }
+        crate::serial_println!("  VBoxVGA: show_cursor(visible={}) cursor_defined={}", visible, self.cursor_defined);
         // define_cursor() already sets VISIBLE; only send when hiding
         if visible && self.cursor_defined {
             return;

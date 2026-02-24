@@ -190,11 +190,13 @@ pub fn poll_mouse() -> Option<(i32, i32, u32)> {
         return None;
     }
 
-    // One-shot debug: log the first GetMouseStatus response
-    if !MOUSE_POLL_LOGGED.swap(true, Ordering::Relaxed) {
+    // Debug: log first 10 polls and then every 500th
+    static POLL_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    let n = POLL_COUNT.fetch_add(1, Ordering::Relaxed);
+    if n < 10 || (n % 500 == 0) {
         crate::serial_println!(
-            "[vmmdev] GetMouseStatus: features={:#06x} pos=({},{}) screen={}x{}",
-            resp.mouse_features, resp.pointer_x, resp.pointer_y,
+            "[vmmdev] GetMouseStatus #{}: rc={} features={:#06x} pos=({},{}) screen={}x{}",
+            n, resp.header.rc, resp.mouse_features, resp.pointer_x, resp.pointer_y,
             SCREEN_WIDTH.load(Ordering::Relaxed), SCREEN_HEIGHT.load(Ordering::Relaxed),
         );
     }

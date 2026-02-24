@@ -350,6 +350,11 @@ pub fn inject_position(x: i32, y: i32) {
 /// PS/2 mouse IRQ handler (IRQ 12). Reads byte from port 0x60.
 /// When the VMware backdoor (vmmouse) is active, delegates to vmmouse instead.
 pub fn irq_handler(_irq: u8) {
+    static IRQ_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    let n = IRQ_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if n < 5 || (n % 500 == 0) {
+        crate::serial_println!("[mouse] IRQ12 #{}", n);
+    }
     // If vmmouse is active, the backdoor intercepts PS/2 data — read from backdoor instead.
     // Wake the compositor after draining all vmmouse packets so it can pick them up
     // via input_poll() — without this, the management thread sleeps until its timeout.

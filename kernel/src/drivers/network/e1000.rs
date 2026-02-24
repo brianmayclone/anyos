@@ -1,8 +1,9 @@
-//! Intel E1000 (82540EM) NIC driver.
+//! Intel E1000 NIC driver (82540EM / 82545EM).
 //!
 //! MMIO-based Ethernet controller with DMA ring buffers for RX/TX.
 //! Supports IRQ-driven and polled packet reception, transmit via descriptor rings,
-//! and MAC address reading from EEPROM/RAL registers. Used with QEMU `-device e1000`.
+//! and MAC address reading from EEPROM/RAL registers.
+//! Supports: 82540EM (8086:100E, QEMU) and 82545EM (8086:100F, VMware).
 
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
@@ -163,8 +164,12 @@ unsafe fn mmio_write(base: u64, reg: u32, value: u32) {
 
 /// Initialize the E1000 NIC. Call after PCI scan, heap init, and virtual memory init.
 pub fn init() -> bool {
-    // Find the E1000 on the PCI bus (Intel 82540EM: 8086:100E)
-    let pci_dev = match crate::drivers::pci::find_by_id(0x8086, 0x100E) {
+    // Find the E1000 on the PCI bus:
+    //   82540EM (8086:100E) — QEMU default
+    //   82545EM (8086:100F) — VMware Workstation default
+    let pci_dev = match crate::drivers::pci::find_by_id(0x8086, 0x100E)
+        .or_else(|| crate::drivers::pci::find_by_id(0x8086, 0x100F))
+    {
         Some(dev) => dev,
         None => {
             crate::serial_println!("  E1000: device not found on PCI bus");

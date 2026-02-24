@@ -57,6 +57,8 @@ pub(super) fn matches_pci(rule: &PciMatch, dev: &PciDevice) -> bool {
 // │ VendorDevice │ 80EE:BEEF│ VBoxVGA / VBoxSVGA (GPU, auto-detect)         │
 // │ VendorDevice │ 15AD:0405│ VMware SVGA II (GPU)                          │
 // │ VendorDevice │ 1AF4:1050│ VirtIO GPU                                    │
+// │ VendorDevice │ 8086:100E│ Intel 82540EM Ethernet (Network, QEMU)        │
+// │ VendorDevice │ 8086:100F│ Intel 82545EM Ethernet (Network, VMware)      │
 // │ VendorDevice │ 1000:0030│ LSI Logic Fusion-MPT SCSI (Storage)           │
 // │ VendorDevice │ 80EE:4E56│ VirtualBox NVMe (Storage)                     │
 // │ VendorDevice │ 80EE:CAFE│ VirtualBox VMMDev (Guest Integration)         │
@@ -94,6 +96,16 @@ pub(super) static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
     PciDriverEntry {
         match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1050 },
         factory: |pci| crate::drivers::gpu::virtio_gpu::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x100E },
+        factory: |pci| crate::drivers::network::e1000::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x100F },
+        factory: |pci| crate::drivers::network::e1000::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
