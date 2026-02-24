@@ -5,7 +5,8 @@
 //!
 //! Two rendering modes:
 //! - **Filled**: scanline rasterizer with non-zero winding rule
-//! - **Stroke**: distance-based coverage for each line segment
+//! - **Stroke**: converted to filled outlines (industry-standard approach),
+//!   then rasterized with the same scanline fill rasterizer
 //!
 //! The rasterizer uses fixed-point arithmetic (8 fractional bits) for
 //! no_std compatibility, same approach as libfont's TTF rasterizer.
@@ -81,9 +82,11 @@ pub fn render_icon(
     let sz = size as usize;
     let scale = fp(size as i32);
 
-    // Parse all paths
+    // Parse all paths and collect edges for the scanline fill rasterizer.
+    // Strokes are converted to filled outlines (sausage per segment).
     let mut fill_edges: Vec<Edge> = Vec::new();
-    let mut stroke_segments: Vec<StrokeSegment> = Vec::new();
+
+    let stroke_hw = if filled { 0 } else { fp_mul(fp(1), scale) / 24 };
 
     let mut start = 0;
     loop {
@@ -98,44 +101,31 @@ pub fn render_icon(
         if filled {
             collect_fill_edges(&cmds, &mut fill_edges);
         } else {
-            collect_stroke_segments(&cmds, &mut stroke_segments);
+            stroke_to_fill_edges(&cmds, stroke_hw, &mut fill_edges);
         }
 
         if end >= path_data.len() { break; }
         start = end + 1;
     }
 
-    if filled {
-        // ── Fill mode: scanline rasterizer with non-zero winding ──
-        if fill_edges.is_empty() {
-            for p in out[..sz * sz].iter_mut() { *p = 0; }
-            return 0;
+    if fill_edges.is_empty() {
+        for p in out[..sz * sz].iter_mut() { *p = 0; }
+        return 0;
+    }
+
+    let coverage = rasterize_edges(&fill_edges, size, size);
+    let ca = (color >> 24) & 0xFF;
+    let cr = (color >> 16) & 0xFF;
+    let cg = (color >> 8) & 0xFF;
+    let cb = color & 0xFF;
+    for i in 0..sz * sz {
+        let cov = coverage[i] as u32;
+        if cov == 0 {
+            out[i] = 0;
+        } else {
+            let a = (cov * ca + 127) / 255;
+            out[i] = (a << 24) | (cr << 16) | (cg << 8) | cb;
         }
-        let coverage = rasterize_edges(&fill_edges, size, size);
-        let ca = (color >> 24) & 0xFF;
-        let cr = (color >> 16) & 0xFF;
-        let cg = (color >> 8) & 0xFF;
-        let cb = color & 0xFF;
-        for i in 0..sz * sz {
-            let cov = coverage[i] as u32;
-            if cov == 0 {
-                out[i] = 0;
-            } else {
-                let a = (cov * ca + 127) / 255;
-                out[i] = (a << 24) | (cr << 16) | (cg << 8) | cb;
-            }
-        }
-    } else {
-        // ── Stroke mode: distance-based rasterizer ──
-        // For each pixel, compute the minimum distance to any path segment.
-        // Coverage is derived analytically from the distance to the stroke
-        // edge, giving perfect round caps/joins with no geometry gaps.
-        if stroke_segments.is_empty() {
-            for p in out[..sz * sz].iter_mut() { *p = 0; }
-            return 0;
-        }
-        let stroke_hw = fp_mul(fp(1), scale) / 24;
-        rasterize_stroke_distance(&stroke_segments, stroke_hw, size, color, out);
     }
 
     0
@@ -849,144 +839,131 @@ fn collect_fill_edges(cmds: &[Cmd], edges: &mut Vec<Edge>) {
     }
 }
 
-// ── Distance-based stroke rendering ──────────────────────────────
+// ── Stroke-to-outline conversion ─────────────────────────────────
+//
+// Industry-standard approach: each stroke segment is converted to a
+// filled "sausage" shape (rectangle body + semicircle end caps), then
+// rasterized with the same scanline fill rasterizer used for filled paths.
+// Overlapping sausages at joints merge via non-zero winding → perfect
+// round joins emerge naturally.
 
-/// A line segment in pixel fixed-point coordinates with endpoint cap flags.
+/// Convert stroked path commands to filled outline edges.
 ///
-/// `cap_start`/`cap_end` control whether endpoint distance (round cap/join)
-/// is used when the projection falls outside [0,1]. For smooth curve
-/// intermediate points these are `false` — the neighboring segment handles
-/// those pixels instead, eliminating visible dots along flattened curves.
-#[derive(Clone)]
-struct StrokeSegment {
-    x0: i32, y0: i32,
-    x1: i32, y1: i32,
-    cap_start: bool,
-    cap_end: bool,
-}
-
-/// Extract line segments from parsed path commands for stroke rendering.
-///
-/// Marks endpoint caps based on command type:
-/// - `LineTo` vertices: cap = true (round join at explicit path vertex)
-/// - `CurvePt` ↔ `CurvePt` junctions: cap = false (smooth curve, no dots)
-/// - Open subpath ends: cap = true (round linecap)
-/// - `Close` vertex: cap = true (round join)
-fn collect_stroke_segments(cmds: &[Cmd], out: &mut Vec<StrokeSegment>) {
+/// Each line segment becomes a closed "sausage" polygon (rectangle +
+/// semicircle caps at both ends). The non-zero winding rule merges
+/// overlapping shapes at joints, producing correct round joins.
+fn stroke_to_fill_edges(cmds: &[Cmd], hw: i32, edges: &mut Vec<Edge>) {
     let mut cx = 0i32;
     let mut cy = 0i32;
     let mut sx = 0i32;
     let mut sy = 0i32;
-    let mut subpath_start = out.len();
-    let mut prev_from_curve = false;
 
     for &cmd in cmds {
         match cmd {
             Cmd::MoveTo(x, y) => {
-                // Mark open subpath endpoints as capped
-                mark_open_subpath_caps(out, subpath_start);
-                subpath_start = out.len();
                 cx = x; cy = y; sx = x; sy = y;
-                prev_from_curve = false;
             }
             Cmd::LineTo(x, y) | Cmd::CurvePt(x, y) => {
-                let from_curve = matches!(cmd, Cmd::CurvePt(_, _));
                 if cx != x || cy != y {
-                    // Smooth junction only if BOTH sides are curve points
-                    let smooth = prev_from_curve && from_curve;
-                    out.push(StrokeSegment {
-                        x0: cx, y0: cy, x1: x, y1: y,
-                        cap_start: !smooth,
-                        cap_end: true, // tentative; updated by next segment
-                    });
-                    // Update previous segment's cap_end to match this joint
-                    let n = out.len();
-                    if n >= 2 && n - 2 >= subpath_start {
-                        out[n - 2].cap_end = !smooth;
-                    }
-                    prev_from_curve = from_curve;
+                    emit_sausage(cx, cy, x, y, hw, edges);
                 }
                 cx = x; cy = y;
             }
             Cmd::Close => {
                 if cx != sx || cy != sy {
-                    out.push(StrokeSegment {
-                        x0: cx, y0: cy, x1: sx, y1: sy,
-                        cap_start: true, // round join at vertex before close
-                        cap_end: true,   // round join at closing vertex
-                    });
-                    let n = out.len();
-                    if n >= 2 && n - 2 >= subpath_start {
-                        out[n - 2].cap_end = true;
-                    }
+                    emit_sausage(cx, cy, sx, sy, hw, edges);
                 }
-                // Closed subpath: first segment start connects to last segment end
-                if subpath_start < out.len() {
-                    out[subpath_start].cap_start = true;
-                }
-                subpath_start = out.len();
                 cx = sx; cy = sy;
-                prev_from_curve = false;
             }
         }
     }
-    // Final open subpath
-    mark_open_subpath_caps(out, subpath_start);
 }
 
-/// Ensure open subpath start/end have round caps.
-fn mark_open_subpath_caps(segs: &mut Vec<StrokeSegment>, start: usize) {
-    if start < segs.len() {
-        segs[start].cap_start = true;
-        let last = segs.len() - 1;
-        segs[last].cap_end = true;
-    }
-}
-
-/// Squared distance from point (px, py) to a stroke segment.
+/// Emit a "sausage" shape (rectangle + semicircle caps) for one segment.
 ///
-/// When the projection falls within [0,1], returns perpendicular distance².
-/// When outside, behaviour depends on the cap flag:
-/// - `cap = true`: returns endpoint distance² (round cap/join circle)
-/// - `cap = false`: returns i64::MAX (skip — neighboring segment handles it)
-#[inline]
-fn dist_to_segment_sq(px: i32, py: i32, seg: &StrokeSegment) -> i64 {
-    let dx = (seg.x1 - seg.x0) as i64;
-    let dy = (seg.y1 - seg.y0) as i64;
-    let len_sq = dx * dx + dy * dy;
+/// The outline polygon is:
+/// 1. A_left → B_left (left side, forward)
+/// 2. Semicircle at B from B_left to B_right (clockwise, forward-facing)
+/// 3. B_right → A_right (right side, backward)
+/// 4. Semicircle at A from A_right to A_left (clockwise, backward-facing)
+fn emit_sausage(x0: i32, y0: i32, x1: i32, y1: i32, hw: i32, edges: &mut Vec<Edge>) {
+    let (nx, ny) = offset_normal(x0, y0, x1, y1, hw);
 
-    let dpx = (px - seg.x0) as i64;
-    let dpy = (py - seg.y0) as i64;
+    // Semicircle resolution: 8 steps for small icons, more for larger radii
+    let cap_steps = if hw > 512 { 12 } else { 8 };
 
-    if len_sq == 0 {
-        return if seg.cap_start || seg.cap_end {
-            dpx * dpx + dpy * dpy
-        } else {
-            i64::MAX
-        };
+    let mut pts: Vec<(i32, i32)> = Vec::with_capacity(4 + 2 * cap_steps as usize);
+
+    // 1. Left side forward
+    pts.push((x0 + nx, y0 + ny));
+    pts.push((x1 + nx, y1 + ny));
+
+    // 2. End cap at B: semicircle from (nx,ny) to (-nx,-ny), clockwise
+    emit_semicircle_cw(x1, y1, nx, ny, &mut pts, cap_steps);
+
+    // 3. Right side backward
+    pts.push((x1 - nx, y1 - ny));
+    pts.push((x0 - nx, y0 - ny));
+
+    // 4. Start cap at A: semicircle from (-nx,-ny) to (nx,ny), clockwise
+    emit_semicircle_cw(x0, y0, -nx, -ny, &mut pts, cap_steps);
+
+    // Convert closed polygon to edges for scanline rasterizer
+    poly_to_edges(&pts, edges);
+}
+
+/// Emit intermediate points of a 180° clockwise arc.
+///
+/// Arc starts at (cx + nx, cy + ny) — already in `pts` from caller —
+/// and ends at (cx - nx, cy - ny) — added by caller after this returns.
+fn emit_semicircle_cw(
+    cx: i32, cy: i32,
+    nx: i32, ny: i32,
+    pts: &mut Vec<(i32, i32)>,
+    steps: i32,
+) {
+    for i in 1..steps {
+        let angle_deg256 = i * 180 * 256 / steps;
+        let (sin_a, cos_a) = sin_cos_approx(angle_deg256);
+        // Clockwise 2D rotation: x' = x·cos + y·sin, y' = -x·sin + y·cos
+        let rx = (nx as i64 * cos_a as i64 + ny as i64 * sin_a as i64) / 256;
+        let ry = (-nx as i64 * sin_a as i64 + ny as i64 * cos_a as i64) / 256;
+        pts.push((cx + rx as i32, cy + ry as i32));
     }
+}
 
-    // Project point onto the line: t = dot(p-a, b-a) / |b-a|²
-    let t_num = dpx * dx + dpy * dy;
+/// Compute the left-perpendicular offset vector of length `hw`.
+///
+/// For segment (x0,y0)→(x1,y1), the left normal is (-dy, dx) / len * hw.
+fn offset_normal(x0: i32, y0: i32, x1: i32, y1: i32, hw: i32) -> (i32, i32) {
+    let dx = (x1 - x0) as i64;
+    let dy = (y1 - y0) as i64;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq == 0 { return (0, hw); }
 
-    if t_num <= 0 {
-        if seg.cap_start {
-            dpx * dpx + dpy * dpy // round cap/join
+    let len = isqrt_i64(len_sq);
+    if len == 0 { return (0, hw); }
+
+    let nx = (-dy * hw as i64 / len) as i32;
+    let ny = (dx * hw as i64 / len) as i32;
+    (nx, ny)
+}
+
+/// Convert a closed polygon (point list) to scanline rasterizer edges.
+fn poly_to_edges(pts: &[(i32, i32)], edges: &mut Vec<Edge>) {
+    let n = pts.len();
+    if n < 2 { return; }
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (x0, y0) = pts[i];
+        let (x1, y1) = pts[j];
+        if y0 == y1 { continue; } // skip horizontal
+        let (ey0, ey1, ex0, ex1, w) = if y0 < y1 {
+            (y0, y1, x0, x1, 1)
         } else {
-            i64::MAX // smooth curve interior — neighbor handles this
-        }
-    } else if t_num >= len_sq {
-        if seg.cap_end {
-            let epx = (px - seg.x1) as i64;
-            let epy = (py - seg.y1) as i64;
-            epx * epx + epy * epy // round cap/join
-        } else {
-            i64::MAX // smooth curve interior — neighbor handles this
-        }
-    } else {
-        // Interior: perpendicular distance
-        let cross = dpx * dy - dpy * dx;
-        (cross * cross) / len_sq
+            (y1, y0, x1, x0, -1)
+        };
+        edges.push(Edge { x0: ex0, y0: ey0, x1: ex1, y1: ey1, winding: w });
     }
 }
 
@@ -1000,69 +977,6 @@ fn isqrt_i64(v: i64) -> i64 {
         y = (x + v / x) / 2;
     }
     x
-}
-
-/// Distance-based stroke rasterizer.
-///
-/// For each pixel, computes the minimum distance to any path segment.
-/// Coverage is derived analytically: fully inside when dist < hw - 0.5px,
-/// fully outside when dist > hw + 0.5px, linear ramp in between.
-///
-/// This approach has no geometry gaps at joints — round caps and round joins
-/// emerge naturally from the distance-to-endpoint clamping.
-fn rasterize_stroke_distance(
-    segments: &[StrokeSegment],
-    half_width: i32,
-    size: u32,
-    color: u32,
-    out: &mut [u32],
-) {
-    let sz = size as usize;
-    let hw = half_width as i64;
-
-    // Anti-aliasing: 1-pixel transition band around the stroke edge
-    let aa_half = FP_ONE as i64 / 2; // half pixel
-    let inner = (hw - aa_half).max(0);
-    let outer = hw + aa_half;
-    let inner_sq = inner * inner;
-    let outer_sq = outer * outer;
-    let range = outer - inner; // width of AA band
-
-    let ca = (color >> 24) & 0xFF;
-    let cr = (color >> 16) & 0xFF;
-    let cg = (color >> 8) & 0xFF;
-    let cb = color & 0xFF;
-
-    for row in 0..sz {
-        let py = row as i32 * FP_ONE + FP_ONE / 2;
-        for col in 0..sz {
-            let px = col as i32 * FP_ONE + FP_ONE / 2;
-
-            // Find minimum squared distance to any segment
-            let mut min_dsq = i64::MAX;
-            for seg in segments {
-                let dsq = dist_to_segment_sq(px, py, seg);
-                if dsq < min_dsq {
-                    min_dsq = dsq;
-                    if dsq <= inner_sq { break; } // fully inside, no need to check more
-                }
-            }
-
-            let i = row * sz + col;
-            if min_dsq <= inner_sq {
-                out[i] = color;
-            } else if min_dsq >= outer_sq {
-                out[i] = 0;
-            } else {
-                // Anti-aliased edge pixel
-                let dist = isqrt_i64(min_dsq);
-                let edge = outer - dist;
-                let cov = ((edge * 255) / range.max(1)).max(0).min(255) as u32;
-                let a = (cov * ca + 127) / 255;
-                out[i] = (a << 24) | (cr << 16) | (cg << 8) | cb;
-            }
-        }
-    }
 }
 
 // ── Scanline rasterizer ─────────────────────────────────────────────

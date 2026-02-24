@@ -807,6 +807,7 @@ pub extern "C" fn anyui_canvas_clear(id: ControlId, color: u32) {
             let raw: *mut dyn Control = &mut **ctrl;
             let canvas = unsafe { &mut *(raw as *mut controls::canvas::Canvas) };
             canvas.clear(color);
+            canvas.base.mark_dirty();
         }
     }
 }

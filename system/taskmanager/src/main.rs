@@ -98,6 +98,37 @@ fn main() {
     mem_bar.set_margin(8, 4, 8, 0);
     header.add(&mem_bar);
 
+    // ── Status bar (DOCK_BOTTOM, 22px) ──
+    let status_bar = ui::View::new();
+    status_bar.set_size(0, 22);
+    status_bar.set_dock(ui::DOCK_BOTTOM);
+    status_bar.set_color(0xFF007ACC);
+    win.add(&status_bar);
+
+    let sb_tasks_label = ui::Label::new("");
+    sb_tasks_label.set_position(8, 3);
+    sb_tasks_label.set_font_size(11);
+    sb_tasks_label.set_text_color(0xFFFFFFFF);
+    status_bar.add(&sb_tasks_label);
+
+    let sb_cpu_label = ui::Label::new("");
+    sb_cpu_label.set_position(140, 3);
+    sb_cpu_label.set_font_size(11);
+    sb_cpu_label.set_text_color(0xFFFFFFFF);
+    status_bar.add(&sb_cpu_label);
+
+    let sb_mem_label = ui::Label::new("");
+    sb_mem_label.set_position(260, 3);
+    sb_mem_label.set_font_size(11);
+    sb_mem_label.set_text_color(0xFFFFFFFF);
+    status_bar.add(&sb_mem_label);
+
+    let sb_sel_label = ui::Label::new("");
+    sb_sel_label.set_position(420, 3);
+    sb_sel_label.set_font_size(11);
+    sb_sel_label.set_text_color(0xFFFFFFFF);
+    status_bar.add(&sb_sel_label);
+
     // ── Panel: Processes (DOCK_FILL) ──
     let panel_procs = ui::View::new();
     panel_procs.set_dock(ui::DOCK_FILL);
@@ -351,6 +382,7 @@ fn main() {
         let row = ev.index;
         if row == u32::MAX {
             kill_btn.set_enabled(false);
+            sb_sel_label.set_text("");
             return;
         }
         // Read TID and process name to decide if killable
@@ -368,6 +400,19 @@ fn main() {
         let is_idle = name.starts_with(b"idle/");
         let killable = tid > 3 && !is_idle;
         kill_btn.set_enabled(killable);
+
+        // Update status bar selection info
+        let mut sbuf = [0u8; 48];
+        let mut p = 0;
+        let mut t = [0u8; 12];
+        sbuf[p..p + 4].copy_from_slice(b"TID "); p += 4;
+        let s = fmt_u32(&mut t, tid); sbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
+        sbuf[p..p + 2].copy_from_slice(b": "); p += 2;
+        let nl = (name_len as usize).min(24);
+        sbuf[p..p + nl].copy_from_slice(&name[..nl]); p += nl;
+        if let Ok(s) = core::str::from_utf8(&sbuf[..p]) {
+            sb_sel_label.set_text(s);
+        }
     });
 
     // ── Kill button handler ──
@@ -455,20 +500,24 @@ fn main() {
         }
 
         // ── Update memory info ──
+        let mut mem_used_mb: u32 = 0;
+        let mut mem_total_mb: u32 = 0;
         if let Some(mem) = fetch_memory() {
             let total_kb = mem.total_frames * 4;
             let free_kb = mem.free_frames * 4;
             let used_kb = total_kb - free_kb;
             let heap_kb = mem.heap_used / 1024;
             let heap_total_kb = mem.heap_total / 1024;
+            mem_used_mb = used_kb / 1024;
+            mem_total_mb = total_kb / 1024;
 
             let mut mbuf = [0u8; 80];
             let mut p = 0;
             let mut t = [0u8; 12];
             mbuf[p..p + 5].copy_from_slice(b"Mem: "); p += 5;
-            let s = fmt_u32(&mut t, used_kb / 1024); mbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
+            let s = fmt_u32(&mut t, mem_used_mb); mbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
             mbuf[p] = b'/'; p += 1;
-            let s = fmt_u32(&mut t, total_kb / 1024); mbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
+            let s = fmt_u32(&mut t, mem_total_mb); mbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
             mbuf[p..p + 8].copy_from_slice(b"M  Heap:"); p += 8;
             let s = fmt_u32(&mut t, heap_kb); mbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
             mbuf[p] = b'/'; p += 1;
@@ -483,9 +532,51 @@ fn main() {
             }
         }
 
+        // ── Update status bar ──
+        {
+            let mut t = [0u8; 12];
+
+            // Task count (from tasks buf — updated on tabs 0/2, retained otherwise)
+            if active_tab == 0 || active_tab == 2 {
+                let mut tbuf2 = [0u8; 24];
+                let mut p = 0;
+                let s = fmt_u32(&mut t, tasks.len() as u32); tbuf2[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
+                tbuf2[p..p + 10].copy_from_slice(b" Processes"); p += 10;
+                if let Ok(s) = core::str::from_utf8(&tbuf2[..p]) {
+                    sb_tasks_label.set_text(s);
+                }
+            }
+
+            // CPU label (always available)
+            {
+                let mut cbuf = [0u8; 16];
+                let mut p = 0;
+                cbuf[p..p + 5].copy_from_slice(b"CPU: "); p += 5;
+                let s = fmt_u32(&mut t, cpu_st.overall_pct); cbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
+                cbuf[p] = b'%'; p += 1;
+                if let Ok(s) = core::str::from_utf8(&cbuf[..p]) {
+                    sb_cpu_label.set_text(s);
+                }
+            }
+
+            // Memory summary (reuse values from header computation)
+            if mem_total_mb > 0 {
+                let mut mbuf2 = [0u8; 32];
+                let mut p = 0;
+                mbuf2[p..p + 5].copy_from_slice(b"Mem: "); p += 5;
+                let s = fmt_u32(&mut t, mem_used_mb); mbuf2[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
+                mbuf2[p] = b'/'; p += 1;
+                let s = fmt_u32(&mut t, mem_total_mb); mbuf2[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
+                mbuf2[p..p + 2].copy_from_slice(b" M"); p += 2;
+                if let Ok(s) = core::str::from_utf8(&mbuf2[..p]) {
+                    sb_mem_label.set_text(s);
+                }
+            }
+        }
+
         // ── Update processes tab (incremental) ──
         if active_tab == 0 {
-            // Status bar
+            // Toolbar info
             {
                 let mut ibuf = [0u8; 32];
                 let mut p = 0;
