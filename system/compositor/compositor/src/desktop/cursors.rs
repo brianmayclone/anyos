@@ -362,6 +362,11 @@ impl Desktop {
                 );
             }
         }
+        // Re-assert cursor position after shape change to ensure visibility.
+        // Without this, some GPU backends (VirtIO, VMware SVGA) may briefly
+        // hide or misplace the cursor during the shape transition.
+        self.compositor
+            .move_hw_cursor(self.mouse_x, self.mouse_y);
         self.compositor.flush_gpu();
     }
 

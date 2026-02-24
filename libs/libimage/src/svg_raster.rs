@@ -777,34 +777,33 @@ fn sin_cos_approx(angle_deg256: i32) -> (i32, i32) {
     let mut a = angle_deg256 % (360 * 256);
     if a < 0 { a += 360 * 256; }
 
-    // Convert to 0..1024 (quarter-turn units for table lookup)
+    // Map to 0..1023 (1024 steps per full revolution)
     let idx = ((a as i64 * 1024) / (360 * 256)) as i32;
 
-    // Use quadrant symmetry with a small sine table
-    let quadrant = (idx / 256) & 3;
-    let frac = idx & 255;
-
-    // Linear interpolation in sine table (256 entries per quadrant)
-    let sin_val = match quadrant {
-        0 => sin_table(frac),
-        1 => sin_table(256 - frac),
-        2 => -sin_table(frac),
-        _ => -sin_table(256 - frac),
-    };
-    let cos_val = match quadrant {
-        0 => sin_table(256 - frac),
-        1 => -sin_table(frac),
-        2 => -sin_table(256 - frac),
-        _ => sin_table(frac),
-    };
+    // Half-wave decomposition: sin_table is a half-wave parabola
+    // (0→256→0 for input 0→128→256). Split full circle into two halves.
+    let sin_val = half_wave_sin(idx);
+    let cos_val = half_wave_sin((idx + 256) & 1023); // cos = sin(angle + 90°)
 
     (sin_val, cos_val)
 }
 
-/// Simple sine lookup: input 0..256 (quarter turn), output 0..256 (amplitude).
+/// Evaluate sine using half-wave decomposition.
+/// Input: idx ∈ [0, 1023] (full circle). Output: [-256, 256].
+fn half_wave_sin(idx: i32) -> i32 {
+    if idx < 512 {
+        // 0°–180°: positive half-wave, map idx 0..511 → table input 0..255
+        sin_table(idx / 2)
+    } else {
+        // 180°–360°: negative half-wave
+        -sin_table((idx - 512) / 2)
+    }
+}
+
+/// Half-wave parabolic sine table.
+/// Input: t ∈ [0, 256]. Output: [0, 256].
+/// Peaks at t=128 with value 256. Zero at t=0 and t=256.
 fn sin_table(t: i32) -> i32 {
-    // Quadratic approximation: sin(t) ≈ 4t(256-t) / 256^2 * 256
-    // Peak at t=128 gives 256
     let t = t.max(0).min(256);
     ((4 * t as i64 * (256 - t) as i64) / 256) as i32
 }

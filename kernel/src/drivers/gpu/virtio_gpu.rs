@@ -226,9 +226,11 @@ pub struct VirtioGpu {
     cursor_resource_id: u32,
     next_resource_id: u32,
 
-    // Cursor hotspot (saved from define_cursor, reused in move/show)
+    // Cursor hotspot and position (saved from define_cursor/move_cursor)
     cursor_hot_x: u32,
     cursor_hot_y: u32,
+    cursor_x: u32,
+    cursor_y: u32,
 
     // Pre-allocated DMA buffers for commands/responses (identity-mapped phys)
     cmd_buf: u64,   // 1 page (4096 bytes) for command payloads
@@ -846,10 +848,10 @@ impl GpuDriver for VirtioGpu {
         self.cursor_hot_x = hotx;
         self.cursor_hot_y = hoty;
 
-        // Send UPDATE_CURSOR to set the cursor image
+        // Send UPDATE_CURSOR to set the cursor image at the current position
         let cmd = UpdateCursor {
             hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_UPDATE_CURSOR),
-            pos: CursorPos { scanout_id: 0, x: 0, y: 0, padding: 0 },
+            pos: CursorPos { scanout_id: 0, x: self.cursor_x, y: self.cursor_y, padding: 0 },
             resource_id: cursor_res,
             hot_x: hotx,
             hot_y: hoty,
@@ -862,6 +864,8 @@ impl GpuDriver for VirtioGpu {
     }
 
     fn move_cursor(&mut self, x: u32, y: u32) {
+        self.cursor_x = x;
+        self.cursor_y = y;
         let cmd = UpdateCursor {
             hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_MOVE_CURSOR),
             pos: CursorPos { scanout_id: 0, x, y, padding: 0 },
@@ -1005,6 +1009,8 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         next_resource_id: 1,
         cursor_hot_x: 0,
         cursor_hot_y: 0,
+        cursor_x: 0,
+        cursor_y: 0,
         cmd_buf,
         resp_buf,
         cursor_buf_phys,
