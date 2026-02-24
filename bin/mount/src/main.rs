@@ -6,6 +6,7 @@ anyos_std::entry!(main);
 /// Filesystem type constants (must match kernel).
 const FS_TYPE_FAT: u32 = 0;
 const FS_TYPE_ISO9660: u32 = 1;
+const FS_TYPE_SMB: u32 = 5;
 
 fn main() {
     let mut args_buf = [0u8; 256];
@@ -57,12 +58,31 @@ fn main() {
         }
     }
 
-    let (device, mount_point) = match (device, mount_point) {
-        (Some(d), Some(m)) => (d, m),
+    let (device, mount_point_str) = match (device, mount_point) {
+        (Some(d), Some(m)) => (d, anyos_std::String::from(m)),
+        (Some(d), None) => {
+            // Auto-generate mount point for SMB: //ip/share → /mnt/share
+            if d.starts_with("//") {
+                let stripped = &d[2..]; // ip/share
+                let share = if let Some(pos) = stripped.find('/') {
+                    &stripped[pos + 1..]
+                } else {
+                    stripped
+                };
+                let mut mp = anyos_std::String::from("/mnt/");
+                mp.push_str(share);
+                (d, mp)
+            } else {
+                anyos_std::println!("Usage: mount [-t fstype] device mountpoint");
+                anyos_std::println!("       mount                (list mounts)");
+                anyos_std::println!("Types: fat, iso9660, smb");
+                return;
+            }
+        }
         _ => {
             anyos_std::println!("Usage: mount [-t fstype] device mountpoint");
             anyos_std::println!("       mount                (list mounts)");
-            anyos_std::println!("Types: fat, iso9660");
+            anyos_std::println!("Types: fat, iso9660, smb");
             return;
         }
     };
@@ -70,6 +90,7 @@ fn main() {
     let fs_type = match fs_type_str {
         Some("fat") | Some("fat16") | Some("vfat") => FS_TYPE_FAT,
         Some("iso9660") | Some("iso") | Some("cdrom") => FS_TYPE_ISO9660,
+        Some("smb") | Some("cifs") | Some("samba") => FS_TYPE_SMB,
         Some(other) => {
             anyos_std::println!("mount: unknown filesystem type '{}'", other);
             return;
@@ -78,6 +99,8 @@ fn main() {
             // Try to auto-detect from device name
             if device.contains("cdrom") || device.contains("dvd") {
                 FS_TYPE_ISO9660
+            } else if device.starts_with("//") {
+                FS_TYPE_SMB
             } else {
                 anyos_std::println!("mount: specify filesystem type with -t");
                 return;
@@ -85,9 +108,9 @@ fn main() {
         }
     };
 
-    let result = anyos_std::fs::mount(mount_point, device, fs_type);
+    let result = anyos_std::fs::mount(&mount_point_str, device, fs_type);
     if result == u32::MAX {
-        anyos_std::println!("mount: failed to mount {} on {}", device, mount_point);
+        anyos_std::println!("mount: failed to mount {} on {}", device, mount_point_str);
     }
 }
 

@@ -10,4 +10,5 @@ pub mod ntfs;
 pub mod partition;
 pub mod path;
 pub mod permissions;
+pub mod smbfs;
 pub mod vfs;

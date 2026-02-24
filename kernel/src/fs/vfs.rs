@@ -6,6 +6,7 @@ use crate::fs::exfat::ExFatFs;
 use crate::fs::fat::FatFs;
 use crate::fs::iso9660::Iso9660Fs;
 use crate::fs::ntfs::NtfsFs;
+use crate::fs::smbfs::SmbFs;
 use crate::fs::file::{DirEntry, FileDescriptor, FileFlags, FileType, OpenFile};
 use crate::sync::mutex::Mutex;
 use alloc::string::String;
@@ -46,6 +47,9 @@ struct VfsState {
     iso9660_fs: Option<Iso9660Fs>,
     ntfs_fs: Option<NtfsFs>,
     devfs: Option<DevFs>,
+    /// SMB network filesystem instances (mount_path, instance).
+    /// Vec because multiple different SMB shares can be mounted simultaneously.
+    smbfs: Vec<(String, SmbFs)>,
 }
 
 impl VfsState {
@@ -85,6 +89,8 @@ pub enum FsType {
     Ntfs,
     /// In-memory device filesystem (/dev).
     DevFs,
+    /// SMB/CIFS network filesystem.
+    Smb,
 }
 
 /// Trait that all filesystem drivers must implement for the VFS.
@@ -154,11 +160,12 @@ fn dev_name(path: &str) -> &str {
 }
 
 /// Check if a path targets a /mnt/ mount point.
-/// Returns (mount_path, relative_path) if matched.
+/// Returns (mount_path, relative_path, fs_type) if matched.
 /// The relative_path always starts with "/" (e.g. "/" for the mount root, "/file.txt" for a file).
-fn find_mnt_mount<'a>(path: &'a str, mount_points: &[MountPoint]) -> Option<(&'a str, &'a str)> {
+fn find_mnt_mount<'a>(path: &'a str, mount_points: &[MountPoint]) -> Option<(&'a str, &'a str, FsType)> {
     // Find longest matching mount point under /mnt/
     let mut best_len: usize = 0;
+    let mut best_type = FsType::Fat;
     let mut found = false;
     for mp in mount_points {
         if !mp.path.starts_with("/mnt/") {
@@ -169,6 +176,7 @@ fn find_mnt_mount<'a>(path: &'a str, mount_points: &[MountPoint]) -> Option<(&'a
         if path == mp_path {
             if mp_path.len() > best_len {
                 best_len = mp_path.len();
+                best_type = mp.fs_type;
                 found = true;
             }
         } else if path.len() > mp_path.len()
@@ -177,6 +185,7 @@ fn find_mnt_mount<'a>(path: &'a str, mount_points: &[MountPoint]) -> Option<(&'a
         {
             if mp_path.len() > best_len {
                 best_len = mp_path.len();
+                best_type = mp.fs_type;
                 found = true;
             }
         }
@@ -187,7 +196,7 @@ fn find_mnt_mount<'a>(path: &'a str, mount_points: &[MountPoint]) -> Option<(&'a
         } else {
             "/"
         };
-        Some((&path[..best_len], relative))
+        Some((&path[..best_len], relative, best_type))
     } else {
         None
     }
@@ -347,6 +356,7 @@ pub fn init() {
         iso9660_fs: None,
         ntfs_fs: None,
         devfs: None,
+        smbfs: Vec::new(),
     });
 
     // Reserve fd 0, 1, 2
@@ -507,27 +517,98 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
         return Ok(slot_id);
     }
 
-    // --- Mount point path (e.g. /mnt/cdrom0/...) ---
-    if let Some((_mount_path, relative_path)) = find_mnt_mount(path, &state.mount_points) {
-        if let Some(ref iso) = state.iso9660_fs {
-            let (inode, file_type, size) = iso.lookup(relative_path)?;
-            let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
-            let file = OpenFile {
-                fd: slot_id,
-                path: String::from(path),
-                file_type,
-                flags,
-                position: 0,
-                size,
-                fs_id: 2, // ISO 9660
-                inode,
-                parent_cluster: 0,
-                refcount: 1,
-            };
-            state.open_files[slot_id as usize] = Some(file);
-            return Ok(slot_id);
+    // --- Mount point path (e.g. /mnt/cdrom0/..., /mnt/share/...) ---
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+        match mnt_fs_type {
+            FsType::Iso9660 => {
+                if let Some(ref iso) = state.iso9660_fs {
+                    let (inode, file_type, size) = iso.lookup(relative_path)?;
+                    let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
+                    let file = OpenFile {
+                        fd: slot_id,
+                        path: String::from(path),
+                        file_type,
+                        flags,
+                        position: 0,
+                        size,
+                        fs_id: 2, // ISO 9660
+                        inode,
+                        parent_cluster: 0,
+                        refcount: 1,
+                    };
+                    state.open_files[slot_id as usize] = Some(file);
+                    return Ok(slot_id);
+                }
+                return Err(FsError::NotFound);
+            }
+            FsType::Ntfs => {
+                if let Some(ref ntfs) = state.ntfs_fs {
+                    if flags.write || flags.create || flags.truncate || flags.append {
+                        return Err(FsError::PermissionDenied);
+                    }
+                    let (inode, file_type, size) = ntfs.lookup(relative_path)?;
+                    let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
+                    let file = OpenFile {
+                        fd: slot_id,
+                        path: String::from(path),
+                        file_type,
+                        flags,
+                        position: 0,
+                        size,
+                        fs_id: 4, // NTFS
+                        inode,
+                        parent_cluster: 0,
+                        refcount: 1,
+                    };
+                    state.open_files[slot_id as usize] = Some(file);
+                    return Ok(slot_id);
+                }
+                return Err(FsError::NotFound);
+            }
+            FsType::Smb => {
+                let mount_path_owned = String::from(mount_path);
+                let relative_path_owned = String::from(relative_path);
+                let smb = state.smbfs.iter_mut()
+                    .find(|(p, _)| *p == mount_path_owned)
+                    .map(|(_, s)| s)
+                    .ok_or(FsError::IoError)?;
+                let lookup_result = smb.lookup(&relative_path_owned);
+                let (inode, file_type, size) = match lookup_result {
+                    Ok(r) => r,
+                    Err(FsError::NotFound) if flags.create => {
+                        // Create file on the SMB share
+                        let rel = relative_path_owned.trim_end_matches('/');
+                        let (parent, name) = match rel.rfind('/') {
+                            Some(0) => ("/", &rel[1..]),
+                            Some(pos) => (&rel[..pos], &rel[pos + 1..]),
+                            None => ("/", rel),
+                        };
+                        let (parent_inode, _, _) = smb.lookup(parent)?;
+                        let new_inode = smb.create_entry(parent_inode, name, FileType::Regular)?;
+                        (new_inode, FileType::Regular, 0)
+                    }
+                    Err(e) => return Err(e),
+                };
+                let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
+                let file = OpenFile {
+                    fd: slot_id,
+                    path: String::from(path),
+                    file_type,
+                    flags,
+                    position: 0,
+                    size,
+                    fs_id: 5, // SMB
+                    inode,
+                    parent_cluster: 0,
+                    refcount: 1,
+                };
+                state.open_files[slot_id as usize] = Some(file);
+                return Ok(slot_id);
+            }
+            _ => {
+                return Err(FsError::NotFound);
+            }
         }
-        return Err(FsError::NotFound);
     }
 
     // --- exFAT path (primary OS filesystem, with symlink resolution) ---
@@ -777,6 +858,29 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
         return Ok(bytes_read);
     }
 
+    // --- SMB file (network) ---
+    if file.fs_id == 5 {
+        if file.position >= file.size {
+            return Ok(0);
+        }
+        let remaining = (file.size - file.position) as usize;
+        let to_read = buf.len().min(remaining);
+        let file_inode = file.inode;
+        let file_position = file.position;
+        let file_path = file.path.clone();
+        let smb = state.smbfs.iter_mut()
+            .find(|(p, _)| file_path.starts_with(p.as_str()))
+            .map(|(_, s)| s)
+            .ok_or(FsError::IoError)?;
+        let bytes_read = smb.read_file(file_inode, file_position, &mut buf[..to_read])?;
+        // Re-borrow file after mutable smb use
+        let file = state.open_files.get_mut(slot_id as usize)
+            .and_then(|e| e.as_mut())
+            .ok_or(FsError::BadFd)?;
+        file.position += bytes_read as u32;
+        return Ok(bytes_read);
+    }
+
     // --- exFAT / FAT file ---
     if file.position >= file.size {
         return Ok(0); // EOF
@@ -825,6 +929,27 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
         return Err(FsError::PermissionDenied);
     }
 
+    // --- SMB file (network) ---
+    if file.fs_id == 5 {
+        let file_inode = file.inode;
+        let file_position = file.position;
+        let file_path = file.path.clone();
+        let smb = state.smbfs.iter_mut()
+            .find(|(p, _)| file_path.starts_with(p.as_str()))
+            .map(|(_, s)| s)
+            .ok_or(FsError::IoError)?;
+        let bytes_written = smb.write_file(file_inode, file_position, buf)?;
+        // Re-borrow file after mutable smb use
+        let file = state.open_files.get_mut(slot_id as usize)
+            .and_then(|e| e.as_mut())
+            .ok_or(FsError::BadFd)?;
+        file.position += bytes_written as u32;
+        if file.position > file.size {
+            file.size = file.position;
+        }
+        return Ok(bytes_written);
+    }
+
     // --- exFAT / FAT file ---
     let old_inode = file.inode;
     let old_size = file.size;
@@ -868,8 +993,8 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
 /// Read directory entries at a given path.
 pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
     crate::debug_println!("  [VFS] read_dir: path='{}'", path);
-    let vfs = VFS.lock();
-    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+    let mut vfs = VFS.lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     // --- /dev directory ---
     if path == "/dev" || path == "/dev/" {
@@ -897,16 +1022,45 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
         return Ok(entries);
     }
 
-    // --- Mount point path (e.g. /mnt/cdrom0/...) ---
-    if let Some((_mount_path, relative_path)) = find_mnt_mount(path, &state.mount_points) {
-        if let Some(ref iso) = state.iso9660_fs {
-            let (lba, file_type, size) = iso.lookup(relative_path)?;
-            if file_type != FileType::Directory {
-                return Err(FsError::NotADirectory);
+    // --- Mount point path (e.g. /mnt/cdrom0/..., /mnt/share/...) ---
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+        match mnt_fs_type {
+            FsType::Iso9660 => {
+                if let Some(ref iso) = state.iso9660_fs {
+                    let (lba, file_type, size) = iso.lookup(relative_path)?;
+                    if file_type != FileType::Directory {
+                        return Err(FsError::NotADirectory);
+                    }
+                    return iso.read_dir(lba, size);
+                }
+                return Err(FsError::NotFound);
             }
-            return iso.read_dir(lba, size);
+            FsType::Ntfs => {
+                if let Some(ref ntfs) = state.ntfs_fs {
+                    let (mft_rec, file_type, _size) = ntfs.lookup(relative_path)?;
+                    if file_type != FileType::Directory {
+                        return Err(FsError::NotADirectory);
+                    }
+                    return ntfs.read_dir(mft_rec as u64);
+                }
+                return Err(FsError::NotFound);
+            }
+            FsType::Smb => {
+                let mount_path_owned = String::from(mount_path);
+                let smb = state.smbfs.iter_mut()
+                    .find(|(p, _)| *p == mount_path_owned)
+                    .map(|(_, s)| s)
+                    .ok_or(FsError::IoError)?;
+                let (inode, file_type, _size) = smb.lookup(relative_path)?;
+                if file_type != FileType::Directory {
+                    return Err(FsError::NotADirectory);
+                }
+                return smb.read_dir(inode);
+            }
+            _ => {
+                return Err(FsError::NotFound);
+            }
         }
-        return Err(FsError::NotFound);
     }
 
     // --- exFAT path (primary, with symlink resolution) ---
@@ -1034,15 +1188,35 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
         return Err(FsError::PermissionDenied);
     }
 
-    // Try mount point path (e.g. /mnt/cdrom0/...)
+    // Try mount point path (e.g. /mnt/cdrom0/..., /mnt/share/...)
     {
-        let vfs = VFS.lock();
-        let state = vfs.as_ref().ok_or(FsError::IoError)?;
-        if let Some((_mount_path, relative_path)) = find_mnt_mount(path, &state.mount_points) {
-            if let Some(ref iso) = state.iso9660_fs {
-                return iso.read_file_to_vec(relative_path);
+        let mut vfs = VFS.lock();
+        let state = vfs.as_mut().ok_or(FsError::IoError)?;
+        if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+            match mnt_fs_type {
+                FsType::Iso9660 => {
+                    if let Some(ref iso) = state.iso9660_fs {
+                        return iso.read_file_to_vec(relative_path);
+                    }
+                    return Err(FsError::NotFound);
+                }
+                FsType::Smb => {
+                    let mount_path_owned = String::from(mount_path);
+                    let smb = state.smbfs.iter_mut()
+                        .find(|(p, _)| *p == mount_path_owned)
+                        .map(|(_, s)| s)
+                        .ok_or(FsError::IoError)?;
+                    let (inode, file_type, size) = smb.lookup(relative_path)?;
+                    if file_type == FileType::Directory {
+                        return Err(FsError::IsADirectory);
+                    }
+                    let mut buf = alloc::vec![0u8; size as usize];
+                    let n = smb.read_file(inode, 0, &mut buf)?;
+                    buf.truncate(n);
+                    return Ok(buf);
+                }
+                _ => return Err(FsError::NotFound),
             }
-            return Err(FsError::NotFound);
         }
     }
 
@@ -1094,6 +1268,28 @@ pub fn delete(path: &str) -> Result<(), FsError> {
     if is_dev_path(path) { return Err(FsError::PermissionDenied); }
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
+
+    // --- Mount point path (SMB delete) ---
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+        if mnt_fs_type == FsType::Smb {
+            let mount_path_owned = String::from(mount_path);
+            let rel_parent_name = {
+                let rel = relative_path.trim_end_matches('/');
+                match rel.rfind('/') {
+                    Some(0) => ("/", &rel[1..]),
+                    Some(pos) => (&rel[..pos], &rel[pos + 1..]),
+                    None => ("/", rel),
+                }
+            };
+            let smb = state.smbfs.iter_mut()
+                .find(|(p, _)| *p == mount_path_owned)
+                .map(|(_, s)| s)
+                .ok_or(FsError::IoError)?;
+            let (parent_inode, _, _) = smb.lookup(rel_parent_name.0)?;
+            return smb.delete_entry(parent_inode, rel_parent_name.1);
+        }
+        return Err(FsError::PermissionDenied);
+    }
 
     let (parent_path, filename) = split_parent_name(path)?;
     if let Some(ref mut exfat) = state.exfat_fs {
@@ -1223,8 +1419,8 @@ pub fn lstat(path: &str) -> Result<StatResult, FsError> {
 }
 
 fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
-    let vfs = VFS.lock();
-    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+    let mut vfs = VFS.lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     let default_stat = |ft, sz, sym| StatResult {
         file_type: ft, size: sz, is_symlink: sym,
@@ -1250,12 +1446,33 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
     if path == "/dev" || path == "/dev/" { return Ok(default_stat(FileType::Directory, 0, false)); }
 
     // --- Mount point path ---
-    if let Some((_mount_path, relative_path)) = find_mnt_mount(path, &state.mount_points) {
-        if let Some(ref iso) = state.iso9660_fs {
-            let (_inode, file_type, size) = iso.lookup(relative_path)?;
-            return Ok(default_stat(file_type, size, false));
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+        match mnt_fs_type {
+            FsType::Iso9660 => {
+                if let Some(ref iso) = state.iso9660_fs {
+                    let (_inode, file_type, size) = iso.lookup(relative_path)?;
+                    return Ok(default_stat(file_type, size, false));
+                }
+                return Err(FsError::NotFound);
+            }
+            FsType::Ntfs => {
+                if let Some(ref ntfs) = state.ntfs_fs {
+                    let (_inode, file_type, size) = ntfs.lookup(relative_path)?;
+                    return Ok(default_stat(file_type, size, false));
+                }
+                return Err(FsError::NotFound);
+            }
+            FsType::Smb => {
+                let mount_path_owned = String::from(mount_path);
+                let smb = state.smbfs.iter_mut()
+                    .find(|(p, _)| *p == mount_path_owned)
+                    .map(|(_, s)| s)
+                    .ok_or(FsError::IoError)?;
+                let (_inode, file_type, size) = smb.lookup(relative_path)?;
+                return Ok(default_stat(file_type, size, false));
+            }
+            _ => return Err(FsError::NotFound),
         }
-        return Err(FsError::NotFound);
     }
 
     // --- exFAT path (with symlink resolution) ---
@@ -1348,11 +1565,11 @@ pub fn truncate(path: &str) -> Result<(), FsError> {
 /// Mount a filesystem at the given path from userspace (syscall handler).
 ///
 /// `mount_path`: where to mount (e.g. "/mnt/cdrom0")
-/// `device`: device path (e.g. "/dev/cdrom0") — currently only used for identification
-/// `fs_type_id`: 0=FAT, 1=ISO9660, 4=NTFS
+/// `device`: device path (e.g. "/dev/cdrom0" or "//ip/share" for SMB)
+/// `fs_type_id`: 0=FAT, 1=ISO9660, 4=NTFS, 5=SMB
 ///
 /// Returns Ok(()) on success.
-pub fn mount_fs(mount_path: &str, _device: &str, fs_type_id: u32) -> Result<(), FsError> {
+pub fn mount_fs(mount_path: &str, device: &str, fs_type_id: u32) -> Result<(), FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
@@ -1408,6 +1625,31 @@ pub fn mount_fs(mount_path: &str, _device: &str, fs_type_id: u32) -> Result<(), 
             crate::serial_println!("  Mounted NTFS (read-only) at '{}'", mount_path);
             Ok(())
         }
+        5 => {
+            // SMB (network filesystem)
+            // device = "//server_ip/share_name"
+            // Must drop VFS lock before TCP connect (TCP uses poll which might need VFS)
+            drop(vfs);
+            let smb = SmbFs::connect(device)?;
+            // Re-acquire lock to update state
+            let mut vfs = VFS.lock();
+            let state = vfs.as_mut().ok_or(FsError::IoError)?;
+            // Re-check for duplicate (could have been added while lock was dropped)
+            for mp in &state.mount_points {
+                if mp.path == mount_path {
+                    smb.disconnect();
+                    return Err(FsError::AlreadyExists);
+                }
+            }
+            state.mount_points.push(MountPoint {
+                path: String::from(mount_path),
+                fs_type: FsType::Smb,
+                device_id: 0,
+            });
+            state.smbfs.push((String::from(mount_path), smb));
+            crate::serial_println!("  Mounted SMB at '{}'", mount_path);
+            Ok(())
+        }
         _ => Err(FsError::InvalidPath),
     }
 }
@@ -1432,6 +1674,19 @@ pub fn umount_fs(mount_path: &str) -> Result<(), FsError> {
             let has_other_iso = state.mount_points.iter().any(|m| m.fs_type == FsType::Iso9660);
             if !has_other_iso {
                 state.iso9660_fs = None;
+            }
+        }
+
+        // If it was SMB, remove and disconnect the SmbFs instance
+        if mp.fs_type == FsType::Smb {
+            if let Some(idx) = state.smbfs.iter().position(|(p, _)| p == mount_path) {
+                let (_, smb) = state.smbfs.remove(idx);
+                // Drop VFS lock before TCP close (which may do network I/O)
+                drop(vfs);
+                smb.disconnect();
+                // Re-log after disconnect
+                crate::serial_println!("  Unmounted SMB '{}'", mount_path);
+                return Ok(());
             }
         }
 
@@ -1531,6 +1786,7 @@ pub fn list_mounts() -> Vec<(String, &'static str, u32)> {
                 FsType::Iso9660 => "iso9660",
                 FsType::Ntfs => "ntfs",
                 FsType::DevFs => "devfs",
+                FsType::Smb => "smb",
             };
             (mp.path.clone(), fs_name, mp.device_id)
         }).collect()

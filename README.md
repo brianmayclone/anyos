@@ -15,7 +15,7 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 ![NASM](https://img.shields.io/badge/NASM-Assembly-0066B8?style=flat-square)
 ![x86_64](https://img.shields.io/badge/Arch-x86__64-4B7BEC?style=flat-square)
 ![License: MIT](https://img.shields.io/badge/License-MIT-2ecc71?style=flat-square)
-![Programs](https://img.shields.io/badge/Programs-125+-e67e22?style=flat-square)
+![Programs](https://img.shields.io/badge/Programs-127+-e67e22?style=flat-square)
 ![Syscalls](https://img.shields.io/badge/Syscalls-140-9b59b6?style=flat-square)
 
 <br>
@@ -160,22 +160,22 @@ All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, en
 
 ### User Programs
 
-125+ command-line and GUI applications:
+127+ command-line and GUI applications:
 
-**GUI Applications (13):** anyOS Code (IDE), Calculator, Clock, Diagnostics, Font Viewer, Image Viewer, Minesweeper, Notepad, Paint, Screenshot, Surf (web browser prototype), Video Player, anyui Demo
+**GUI Applications (14):** anyOS Code (IDE), Calculator, Clock, Diagnostics, Font Viewer, Image Viewer, Minesweeper, Notepad, Paint, Screenshot, Surf (web browser prototype), Video Player, Web Manager, anyui Demo
 
 **System Applications (15):** Init, Login, Compositor, Terminal, Finder, Settings, Activity Monitor, Permission Dialog, Shell (dash), Audio Monitor, Network Monitor, Input Monitor, Event Viewer, Disk Utility, amid (statistics daemon)
 
 **Games (2):** DOOM (doomgeneric port), Quake (WinQuake software renderer port)
 
-**CLI Utilities (95):**
+**CLI Utilities (96):**
 
 | Category | Programs |
 |----------|----------|
 | File Management | `ls` `cat` `cp` `mv` `rm` `mkdir` `touch` `ln` `readlink` `find` `stat` `df` `mount` `umount` `fdisk` `zip` `unzip` |
 | Text Processing | `echo` `grep` `sed` `awk` `wc` `head` `tail` `sort` `uniq` `rev` `strings` `base64` `xargs` |
 | System Info | `sysinfo` `dmesg` `devlist` `ps` `top` `htop` `free` `uptime` `uname` `hostname` `whoami` `which` `date` `cal` |
-| Networking | `ping` `dhcp` `dns` `ifconfig` `arp` `wget` `ftp` `curl` `netstat` `echoserver` |
+| Networking | `ping` `dhcp` `dns` `ifconfig` `arp` `wget` `ftp` `curl` `netstat` `echoserver` `httpd` |
 | User Mgmt | `chmod` `chown` `su` `listuser` `listgroups` `adduser` `deluser` `addgroup` `delgroup` `passwd` |
 | Shell & Process | `env` `set` `export` `pwd` `clear` `sleep` `seq` `yes` `true` `false` `nice` `kill` |
 | Shell Builtins | `alias` `unalias` `eval` (via dash) |
@@ -374,8 +374,8 @@ anyos/
     librender_client/      Client stub crate for librender
     libcompositor/         libcompositor.dlib — Compositor client API DLL
     libcompositor_client/  Client stub crate for libcompositor
-  bin/                   CLI program sources (87 Rust programs)
-  apps/                  GUI application sources (13 .app bundles)
+  bin/                   CLI program sources (88 Rust programs)
+  apps/                  GUI application sources (14 .app bundles)
   system/                System programs (15)
     init/                  Init system (PID 1)
     login/                 Login manager
