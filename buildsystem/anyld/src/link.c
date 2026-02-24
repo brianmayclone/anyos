@@ -446,6 +446,15 @@ static int apply_relocs(Ctx *ctx) {
                         errors++;
                     }
                     *(uint32_t *)patch = (uint32_t)val;
+                    /* Record 32-bit runtime relocation */
+                    {
+                        Elf64_Rela rr;
+                        rr.r_offset = P;
+                        rr.r_info   = ELF64_R_INFO(0, R_X86_64_32);
+                        rr.r_addend = (int64_t)val;
+                        buf_append(&ctx->rela_dyn, &rr, sizeof(rr));
+                        ctx->nrela_dyn++;
+                    }
                 }
                 break;
 
@@ -463,6 +472,15 @@ static int apply_relocs(Ctx *ctx) {
                         errors++;
                     }
                     *(int32_t *)patch = (int32_t)val;
+                    /* Record 32-bit runtime relocation */
+                    {
+                        Elf64_Rela rr;
+                        rr.r_offset = P;
+                        rr.r_info   = ELF64_R_INFO(0, R_X86_64_32S);
+                        rr.r_addend = val;
+                        buf_append(&ctx->rela_dyn, &rr, sizeof(rr));
+                        ctx->nrela_dyn++;
+                    }
                 }
                 break;
 
@@ -475,18 +493,31 @@ static int apply_relocs(Ctx *ctx) {
             case R_X86_64_GOTPCRELX:
             case R_X86_64_REX_GOTPCRELX:
                 /*
-                 * GOT-relative relocations. For position-dependent code
-                 * with -C relocation-model=static, these shouldn't appear.
-                 * If they do, try to relax to direct PC-relative access.
+                 * GOT-relative → direct PC-relative relaxation.
                  *
-                 * GOTPCREL: *(int32_t*) = G + GOT + A - P
-                 * For us: treat as S + A - P (no GOT indirection).
+                 * The instruction loads a pointer FROM a GOT entry:
+                 *   mov reg, [rip + GOT(sym)]    (opcode 0x8b)
                  *
-                 * This works if the instruction is:
-                 *   mov (%rip), %reg → lea (%rip), %reg
-                 * We don't rewrite the instruction, just compute directly.
+                 * Since we have no GOT, relax to direct address:
+                 *   lea reg, [rip + sym]          (opcode 0x8d)
+                 *
+                 * The opcode byte is at patch[-2] (before ModRM + disp32).
+                 * Without this rewrite, the instruction would DEREFERENCE
+                 * the symbol address instead of loading it.
                  */
                 {
+                    /* Rewrite mov → lea for GOT relaxation */
+                    if (r->offset >= 2 && patch[-2] == 0x8b) {
+                        patch[-2] = 0x8d;  /* mov → lea */
+                    } else if (r->offset >= 2 && patch[-2] != 0x8d) {
+                        /* Non-mov GOT access (e.g. call/jmp indirect) */
+                        const char *sname = r->sym_idx < (uint32_t)ctx->nsyms
+                            ? ctx->syms[r->sym_idx].name : "?";
+                        fprintf(stderr,
+                                "anyld: warning: GOTPCREL with opcode 0x%02x"
+                                " for '%s' (cannot relax)\n",
+                                (unsigned)patch[-2], sname);
+                    }
                     int64_t val = (int64_t)S + A - (int64_t)P;
                     if (val < -2147483648LL || val > 2147483647LL) {
                         const char *sname = r->sym_idx < (uint32_t)ctx->nsyms
@@ -529,18 +560,19 @@ int apply_relocations(Ctx *ctx) {
     if (collect_relocs(ctx) != 0) return -1;
 
     /* Pre-size .rela.dyn so compute_layout() accounts for it.
-     * Every R_X86_64_64 relocation becomes an R_X86_64_RELATIVE entry.
-     * Without this, layout is computed with rela_dyn.size=0, causing
-     * section offsets to differ between symbol resolution and output. */
+     * Absolute relocations (R_X86_64_64, _32, _32S) each produce a runtime
+     * relocation entry. Without pre-sizing, layout is computed with
+     * rela_dyn.size=0, causing section offset mismatch. */
     {
-        int n64 = 0;
+        int nabs = 0;
         for (int i = 0; i < ctx->nrelocs; i++) {
-            if (ctx->relocs[i].type == R_X86_64_64)
-                n64++;
+            int t = ctx->relocs[i].type;
+            if (t == R_X86_64_64 || t == R_X86_64_32 || t == R_X86_64_32S)
+                nabs++;
         }
-        if (n64 > 0) {
+        if (nabs > 0) {
             buf_append_zero(&ctx->rela_dyn,
-                            (size_t)n64 * sizeof(Elf64_Rela));
+                            (size_t)nabs * sizeof(Elf64_Rela));
             compute_layout(ctx);
             /* Reset — apply_relocs() will fill it for real */
             ctx->rela_dyn.size = 0;

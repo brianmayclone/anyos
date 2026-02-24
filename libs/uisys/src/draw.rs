@@ -76,17 +76,23 @@ unsafe fn resolve_sym<T: Copy>(base: u64, name: &[u8]) -> Option<T> {
     let e_phoff = *(ehdr.add(32) as *const u64);
     let e_phnum = *(ehdr.add(56) as *const u16);
 
-    // Find PT_DYNAMIC
+    // Find PT_DYNAMIC and compute load_bias
     let mut dynamic_va: u64 = 0;
+    let mut link_base: u64 = u64::MAX;
     for i in 0..e_phnum as usize {
         let ph = (base + e_phoff + (i as u64) * 56) as *const u8;
         let p_type = *(ph as *const u32);
+        if p_type == 1 {
+            let p_vaddr = *(ph.add(16) as *const u64);
+            if p_vaddr < link_base { link_base = p_vaddr; }
+        }
         if p_type == 2 {
             dynamic_va = *(ph.add(16) as *const u64);
-            break;
         }
     }
     if dynamic_va == 0 { return None; }
+    let load_bias = if link_base != u64::MAX { base - link_base } else { 0 };
+    dynamic_va += load_bias;
 
     // Walk .dynamic for DT_SYMTAB(6), DT_STRTAB(5), DT_HASH(4)
     let mut symtab: u64 = 0;

@@ -223,15 +223,23 @@ unsafe fn resolve_sym<T: Copy>(base: u64, name: &[u8]) -> Option<T> {
     let e_phnum = *(ehdr.add(56) as *const u16);
 
     let mut dynamic_va: u64 = 0;
+    let mut link_base: u64 = u64::MAX;
     for i in 0..e_phnum as usize {
         let ph = (base + e_phoff + (i as u64) * 56) as *const u8;
         let p_type = *(ph as *const u32);
+        if p_type == 1 {
+            // PT_LOAD — track lowest p_vaddr
+            let p_vaddr = *(ph.add(16) as *const u64);
+            if p_vaddr < link_base { link_base = p_vaddr; }
+        }
         if p_type == 2 {
             dynamic_va = *(ph.add(16) as *const u64);
-            break;
         }
     }
     if dynamic_va == 0 { return None; }
+    // For base-0 .so files, p_vaddr is a link-time offset — add load_bias
+    let load_bias = if link_base != u64::MAX { base - link_base } else { 0 };
+    dynamic_va += load_bias;
 
     let mut symtab: u64 = 0;
     let mut strtab: u64 = 0;

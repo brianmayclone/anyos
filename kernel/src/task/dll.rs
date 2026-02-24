@@ -118,6 +118,8 @@ const DT_RELA: i64 = 7;
 const DT_RELASZ: i64 = 8;
 
 const R_X86_64_RELATIVE: u32 = 8;
+const R_X86_64_32: u32 = 10;
+const R_X86_64_32S: u32 = 11;
 
 // ELF64 header offsets
 const EI_CLASS: usize = 4;
@@ -196,10 +198,52 @@ fn alloc_and_copy_pages(
 
 // ── ELF64 ET_DYN loader ──────────────────────────────────────
 
+/// Look up the physical frame for a given link-time VA.
+fn get_page_frame(
+    va: u64,
+    rw_start_va: u64,
+    ro_pages: &[PhysAddr],
+    data_template_pages: &[PhysAddr],
+) -> Option<PhysAddr> {
+    if va < rw_start_va {
+        let page_idx = (va / PAGE_SIZE) as usize;
+        ro_pages.get(page_idx).copied()
+    } else {
+        let data_va = va - rw_start_va;
+        let page_idx = (data_va / PAGE_SIZE) as usize;
+        data_template_pages.get(page_idx).copied()
+    }
+}
+
+/// Write arbitrary bytes at a link-time VA, handling cross-page boundaries.
+fn patch_bytes_in_page(
+    va: u64,
+    bytes: &[u8],
+    rw_start_va: u64,
+    ro_pages: &[PhysAddr],
+    data_template_pages: &[PhysAddr],
+    temp_virt: VirtAddr,
+) {
+    let mut offset = 0usize;
+    while offset < bytes.len() {
+        let cur_va = va + offset as u64;
+        let page_off = (cur_va % PAGE_SIZE) as usize;
+        let page_remain = PAGE_SIZE as usize - page_off;
+        let to_write = core::cmp::min(bytes.len() - offset, page_remain);
+
+        if let Some(frame) = get_page_frame(cur_va, rw_start_va, ro_pages, data_template_pages) {
+            virtual_mem::map_page(temp_virt, frame, PAGE_WRITABLE);
+            unsafe {
+                let dest = (temp_virt.as_u64() as *mut u8).add(page_off);
+                core::ptr::copy_nonoverlapping(bytes.as_ptr().add(offset), dest, to_write);
+            }
+            virtual_mem::unmap_page(temp_virt);
+        }
+        offset += to_write;
+    }
+}
+
 /// Patch a u64 value in a physical page identified by virtual address offset.
-///
-/// `va` is the base-relative virtual address to patch.
-/// `rw_start_va` is the link-time VA where the RW segment begins.
 fn patch_u64_in_page(
     va: u64,
     value: u64,
@@ -210,29 +254,47 @@ fn patch_u64_in_page(
 ) {
     let page_offset = (va % PAGE_SIZE) as usize;
 
-    let frame = if va < rw_start_va {
-        // RO region
-        let page_idx = (va / PAGE_SIZE) as usize;
-        if page_idx >= ro_pages.len() {
-            return;
-        }
-        ro_pages[page_idx]
-    } else {
-        // Data region
-        let data_va = va - rw_start_va;
-        let page_idx = (data_va / PAGE_SIZE) as usize;
-        if page_idx >= data_template_pages.len() {
-            return;
-        }
-        data_template_pages[page_idx]
-    };
-
-    virtual_mem::map_page(temp_virt, frame, PAGE_WRITABLE);
-    unsafe {
-        let ptr = (temp_virt.as_u64() as *mut u8).add(page_offset) as *mut u64;
-        core::ptr::write(ptr, value);
+    if page_offset + 8 > PAGE_SIZE as usize {
+        // Cross-page boundary — split write
+        patch_bytes_in_page(va, &value.to_le_bytes(), rw_start_va, ro_pages, data_template_pages, temp_virt);
+        return;
     }
-    virtual_mem::unmap_page(temp_virt);
+
+    if let Some(frame) = get_page_frame(va, rw_start_va, ro_pages, data_template_pages) {
+        virtual_mem::map_page(temp_virt, frame, PAGE_WRITABLE);
+        unsafe {
+            let ptr = (temp_virt.as_u64() as *mut u8).add(page_offset) as *mut u64;
+            core::ptr::write(ptr, value);
+        }
+        virtual_mem::unmap_page(temp_virt);
+    }
+}
+
+/// Patch a u32 value in a physical page (for R_X86_64_32/32S text relocations).
+fn patch_u32_in_page(
+    va: u64,
+    value: u32,
+    rw_start_va: u64,
+    ro_pages: &[PhysAddr],
+    data_template_pages: &[PhysAddr],
+    temp_virt: VirtAddr,
+) {
+    let page_offset = (va % PAGE_SIZE) as usize;
+
+    if page_offset + 4 > PAGE_SIZE as usize {
+        // Cross-page boundary — split write
+        patch_bytes_in_page(va, &value.to_le_bytes(), rw_start_va, ro_pages, data_template_pages, temp_virt);
+        return;
+    }
+
+    if let Some(frame) = get_page_frame(va, rw_start_va, ro_pages, data_template_pages) {
+        virtual_mem::map_page(temp_virt, frame, PAGE_WRITABLE);
+        unsafe {
+            let ptr = (temp_virt.as_u64() as *mut u8).add(page_offset) as *mut u32;
+            core::ptr::write(ptr, value);
+        }
+        virtual_mem::unmap_page(temp_virt);
+    }
 }
 
 /// Apply ELF runtime relocations and fixup .dynsym/.dynamic for relocated .so files.
@@ -292,22 +354,29 @@ fn apply_elf_relocations(
             let r_addend = read_u64_le(file_data, off + 16); // treated as signed but stored u64
 
             let r_type = (r_info & 0xFFFF_FFFF) as u32;
-            if r_type != R_X86_64_RELATIVE {
-                continue;
-            }
 
             // Compute patched value: load_bias + r_addend
             let value = load_bias.wrapping_add(r_addend);
 
-            // Patch the physical page at the relocated offset
-            patch_u64_in_page(
-                r_offset,
-                value,
-                rw_start_va,
-                ro_pages,
-                data_template_pages,
-                temp_virt,
-            );
+            match r_type {
+                R_X86_64_RELATIVE => {
+                    // 64-bit absolute patch
+                    patch_u64_in_page(
+                        r_offset, value, rw_start_va,
+                        ro_pages, data_template_pages, temp_virt,
+                    );
+                }
+                R_X86_64_32 | R_X86_64_32S => {
+                    // 32-bit absolute patch (text relocations)
+                    patch_u32_in_page(
+                        r_offset, value as u32, rw_start_va,
+                        ro_pages, data_template_pages, temp_virt,
+                    );
+                }
+                _ => {
+                    continue;
+                }
+            }
             reloc_count += 1;
         }
     }
