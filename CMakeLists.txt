@@ -737,6 +737,7 @@ add_app(minesweeper ${CMAKE_SOURCE_DIR}/apps/minesweeper   "Minesweeper")
 add_app(webmanager  ${CMAKE_SOURCE_DIR}/apps/webmanager    "Web Manager")
 add_app(diff        ${CMAKE_SOURCE_DIR}/apps/diff           "Diff")
 add_app(mdview      ${CMAKE_SOURCE_DIR}/apps/mdview         "Markdown Viewer")
+add_app(clipman     ${CMAKE_SOURCE_DIR}/apps/clipman        "Clipboard Manager")
 
 # Build compositor binary (nested path: /System/compositor/compositor)
 set(COMPOSITOR_SRC_DIR ${CMAKE_SOURCE_DIR}/system/compositor/compositor)

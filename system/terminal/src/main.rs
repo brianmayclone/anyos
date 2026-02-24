@@ -188,7 +188,8 @@ fn parse_redirects(line: &str) -> (String, Option<Redirect>) {
 }
 
 /// Write data to a redirect target file.
-fn write_redirect(redirect: &Redirect, data: &str) {
+/// On first call with `>` mode, the file is truncated; subsequent calls append.
+fn write_redirect(redirect: &mut Redirect, data: &str) {
     if redirect.target == "/dev/null" {
         return; // discard
     }
@@ -199,8 +200,10 @@ fn write_redirect(redirect: &Redirect, data: &str) {
         let combined = format!("{}{}", existing, data);
         let _ = fs::write_bytes(&redirect.target, combined.as_bytes());
     } else {
-        // Truncate: write new content
+        // Truncate: write new content (first chunk only)
         let _ = fs::write_bytes(&redirect.target, data.as_bytes());
+        // Switch to append for subsequent chunks
+        redirect.append = true;
     }
 }
 
@@ -1061,7 +1064,7 @@ impl Shell {
         };
 
         // Parse redirects BEFORE any command dispatch
-        let (line, redirect) = parse_redirects(&expanded_line);
+        let (line, mut redirect) = parse_redirects(&expanded_line);
 
         // If there's a redirect, enable capture mode for builtins
         if redirect.is_some() {
@@ -1127,7 +1130,7 @@ impl Shell {
             "su" => {
                 // Disable capture for su (interactive)
                 if let Some(captured) = buf.capture.take() {
-                    if let Some(ref redir) = redirect {
+                    if let Some(ref mut redir) = redirect {
                         write_redirect(redir, &captured);
                     }
                 }
@@ -1256,7 +1259,7 @@ impl Shell {
 
         // Flush capture buffer for builtin commands with redirect
         if let Some(captured) = buf.capture.take() {
-            if let Some(ref redir) = redirect {
+            if let Some(ref mut redir) = redirect {
                 write_redirect(redir, &captured);
             }
         }
@@ -2112,7 +2115,7 @@ fn main() {
 
     loop {
         // Poll foreground process pipe for real-time output
-        if let Some(ref fp) = fg_proc {
+        if let Some(ref mut fp) = fg_proc {
             let mut read_buf = [0u8; 512];
             loop {
                 let n = ipc::pipe_read(fp.pipe_id, &mut read_buf);
@@ -2120,7 +2123,7 @@ fn main() {
                     break;
                 }
                 if let Ok(s) = core::str::from_utf8(&read_buf[..n as usize]) {
-                    if let Some(ref redir) = fp.redirect {
+                    if let Some(ref mut redir) = fp.redirect {
                         write_redirect(redir, s);
                     } else {
                         buf.current_color = COLOR_FG;
@@ -2140,7 +2143,7 @@ fn main() {
                         break;
                     }
                     if let Ok(s) = core::str::from_utf8(&read_buf[..n as usize]) {
-                        if let Some(ref redir) = fp.redirect {
+                        if let Some(ref mut redir) = fp.redirect {
                             write_redirect(redir, s);
                         } else {
                             buf.current_color = COLOR_FG;

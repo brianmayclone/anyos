@@ -9,6 +9,9 @@ struct Entry {
     size: u32,
     entry_type: u8,
     is_symlink: bool,
+    uid: u16,
+    gid: u16,
+    mode: u32,
 }
 
 fn format_size_human(buf: &mut [u8], size: u32) -> usize {
@@ -121,7 +124,21 @@ fn list_directory(path: &str, long: bool, all: bool, one_per_line: bool,
             continue;
         }
 
-        entries.push(Entry { name, name_len: nlen, size, entry_type, is_symlink });
+        // Get uid/gid/mode via stat if long format
+        let (uid, gid, mode) = if long {
+            let name_str = core::str::from_utf8(&name[..nlen]).unwrap_or("");
+            let full_path = build_path(path, name_str);
+            let mut stat_buf = [0u32; 7];
+            if anyos_std::fs::stat(&full_path, &mut stat_buf) == 0 {
+                (stat_buf[3] as u16, stat_buf[4] as u16, stat_buf[5])
+            } else {
+                (0u16, 0u16, 0u32)
+            }
+        } else {
+            (0, 0, 0)
+        };
+
+        entries.push(Entry { name, name_len: nlen, size, entry_type, is_symlink, uid, gid, mode });
     }
 
     // Sort
@@ -152,12 +169,92 @@ fn list_directory(path: &str, long: bool, all: bool, one_per_line: bool,
     }
 }
 
+/// Resolve a uid to a username string. Falls back to the numeric uid.
+fn uid_to_name(uid: u16, buf: &mut [u8; 32]) -> &str {
+    let n = anyos_std::process::getusername(uid, buf);
+    if n != u32::MAX && n > 0 {
+        let len = (n as usize).min(32);
+        core::str::from_utf8(&buf[..len]).unwrap_or("?")
+    } else {
+        // Fallback: format uid as number
+        let len = format_u32(buf, uid as u32, 0);
+        core::str::from_utf8(&buf[..len]).unwrap_or("?")
+    }
+}
+
+/// Resolve a gid to a group name by searching the listgroups output.
+/// Format: "gid:groupname\ngid:groupname\n..."
+/// Writes result to out_buf and returns the length.
+fn gid_to_name(gid: u16, groups_buf: &[u8], groups_len: usize, out_buf: &mut [u8; 32]) -> usize {
+    let data = &groups_buf[..groups_len];
+    let mut start = 0;
+    while start < data.len() {
+        let mut end = start;
+        while end < data.len() && data[end] != b'\n' {
+            end += 1;
+        }
+        let line = &data[start..end];
+        if let Some(colon) = line.iter().position(|&b| b == b':') {
+            let gid_part = &line[..colon];
+            let name_part = &line[colon + 1..];
+            let mut g: u32 = 0;
+            let mut valid = !gid_part.is_empty();
+            for &b in gid_part {
+                if b >= b'0' && b <= b'9' {
+                    g = g * 10 + (b - b'0') as u32;
+                } else {
+                    valid = false;
+                    break;
+                }
+            }
+            if valid && g == gid as u32 {
+                let nlen = name_part.len().min(32);
+                out_buf[..nlen].copy_from_slice(&name_part[..nlen]);
+                return nlen;
+            }
+        }
+        start = end + 1;
+    }
+    // Fallback: format gid as number
+    format_u32(out_buf, gid as u32, 0)
+}
+
+/// Format permission bits as rwxrwxrwx string.
+fn format_mode(buf: &mut [u8; 9], mode: u32) {
+    buf[0] = if mode & 0o400 != 0 { b'r' } else { b'-' };
+    buf[1] = if mode & 0o200 != 0 { b'w' } else { b'-' };
+    buf[2] = if mode & 0o100 != 0 { b'x' } else { b'-' };
+    buf[3] = if mode & 0o040 != 0 { b'r' } else { b'-' };
+    buf[4] = if mode & 0o020 != 0 { b'w' } else { b'-' };
+    buf[5] = if mode & 0o010 != 0 { b'x' } else { b'-' };
+    buf[6] = if mode & 0o004 != 0 { b'r' } else { b'-' };
+    buf[7] = if mode & 0o002 != 0 { b'w' } else { b'-' };
+    buf[8] = if mode & 0o001 != 0 { b'x' } else { b'-' };
+}
+
 /// Print a list of entries in the requested format.
 fn print_entries(entries: &[Entry], base_path: &str, long: bool, one_per_line: bool, human: bool) {
     if long {
+        // Pre-load group list once for all entries
+        let mut groups_raw = [0u8; 1024];
+        let groups_len = anyos_std::users::listgroups(&mut groups_raw) as usize;
+        let groups_len = groups_len.min(groups_raw.len());
+
         for e in entries {
             let type_char = if e.is_symlink { 'l' } else { match e.entry_type { 1 => 'd', 2 => 'c', _ => '-' } };
             let name_str = core::str::from_utf8(&e.name[..e.name_len]).unwrap_or("???");
+
+            // Permission string
+            let mut mode_buf = [b'-'; 9];
+            format_mode(&mut mode_buf, e.mode);
+            let mode_str = core::str::from_utf8(&mode_buf).unwrap_or("---------");
+
+            // Resolve user and group names
+            let mut ubuf = [0u8; 32];
+            let user_name = uid_to_name(e.uid, &mut ubuf);
+            let mut gbuf = [0u8; 32];
+            let glen = gid_to_name(e.gid, &groups_raw, groups_len, &mut gbuf);
+            let group_name = core::str::from_utf8(&gbuf[..glen]).unwrap_or("?");
 
             // For symlinks, try to read target
             let mut link_target = [0u8; 256];
@@ -187,16 +284,16 @@ fn print_entries(entries: &[Entry], base_path: &str, long: bool, one_per_line: b
                 let size_str = core::str::from_utf8(&sbuf[..slen]).unwrap_or("?");
                 if link_len > 0 {
                     let tgt = core::str::from_utf8(&link_target[..link_len]).unwrap_or("?");
-                    anyos_std::println!("{}  {:>6}  {} -> {}", type_char, size_str, name_str, tgt);
+                    anyos_std::println!("{}{} {:<8} {:<8} {:>6}  {} -> {}", type_char, mode_str, user_name, group_name, size_str, name_str, tgt);
                 } else {
-                    anyos_std::println!("{}  {:>6}  {}", type_char, size_str, name_str);
+                    anyos_std::println!("{}{} {:<8} {:<8} {:>6}  {}", type_char, mode_str, user_name, group_name, size_str, name_str);
                 }
             } else {
                 if link_len > 0 {
                     let tgt = core::str::from_utf8(&link_target[..link_len]).unwrap_or("?");
-                    anyos_std::println!("{}  {:>8}  {} -> {}", type_char, e.size, name_str, tgt);
+                    anyos_std::println!("{}{} {:<8} {:<8} {:>8}  {} -> {}", type_char, mode_str, user_name, group_name, e.size, name_str, tgt);
                 } else {
-                    anyos_std::println!("{}  {:>8}  {}", type_char, e.size, name_str);
+                    anyos_std::println!("{}{} {:<8} {:<8} {:>8}  {}", type_char, mode_str, user_name, group_name, e.size, name_str);
                 }
             }
         }
@@ -227,8 +324,9 @@ fn list_as_entries(paths: &[&str], long: bool, one_per_line: bool,
     for &p in paths {
         let mut stat_buf = [0u32; 7];
         let ret = anyos_std::fs::stat(p, &mut stat_buf);
-        let (etype, size, is_sym) = if ret == 0 {
-            (stat_buf[0] as u8, stat_buf[1], stat_buf[2] & 1 != 0)
+        let (etype, size, is_sym, uid, gid, mode) = if ret == 0 {
+            (stat_buf[0] as u8, stat_buf[1], stat_buf[2] & 1 != 0,
+             stat_buf[3] as u16, stat_buf[4] as u16, stat_buf[5])
         } else {
             anyos_std::println!("ls: cannot access '{}': No such file or directory", p);
             continue;
@@ -237,7 +335,7 @@ fn list_as_entries(paths: &[&str], long: bool, one_per_line: bool,
         let mut name = [0u8; 56];
         let nlen = p.len().min(56);
         name[..nlen].copy_from_slice(&p.as_bytes()[..nlen]);
-        entries.push(Entry { name, name_len: nlen, size, entry_type: etype, is_symlink: is_sym });
+        entries.push(Entry { name, name_len: nlen, size, entry_type: etype, is_symlink: is_sym, uid, gid, mode });
     }
     if sort_size {
         entries.sort_unstable_by(|a, b| b.size.cmp(&a.size));
@@ -258,13 +356,11 @@ fn list_files(args: &anyos_std::args::ParsedArgs, long: bool, one_per_line: bool
         // Stat the file to get type/size info
         let mut stat_buf = [0u32; 7];
         let ret = anyos_std::fs::stat(name_str, &mut stat_buf);
-        let (etype, size, is_sym) = if ret == 0 {
-            let t = stat_buf[0] as u8; // 0=file, 1=dir, 2=chardev
-            let s = stat_buf[1];
-            let sym = stat_buf[2] & 1 != 0;
-            (t, s, sym)
+        let (etype, size, is_sym, uid, gid, mode) = if ret == 0 {
+            (stat_buf[0] as u8, stat_buf[1], stat_buf[2] & 1 != 0,
+             stat_buf[3] as u16, stat_buf[4] as u16, stat_buf[5])
         } else {
-            (0u8, 0u32, false)
+            (0u8, 0u32, false, 0u16, 0u16, 0u32)
         };
 
         // Extract just the filename part for display
@@ -283,7 +379,7 @@ fn list_files(args: &anyos_std::args::ParsedArgs, long: bool, one_per_line: bool
             continue;
         }
 
-        entries.push(Entry { name, name_len: nlen, size, entry_type: etype, is_symlink: is_sym });
+        entries.push(Entry { name, name_len: nlen, size, entry_type: etype, is_symlink: is_sym, uid, gid, mode });
     }
 
     // Sort
@@ -358,8 +454,9 @@ fn main() {
             for name_str in &files {
                 let mut stat_buf = [0u32; 7];
                 let ret = anyos_std::fs::stat(name_str, &mut stat_buf);
-                let (etype, size, is_sym) = if ret == 0 {
-                    (stat_buf[0] as u8, stat_buf[1], stat_buf[2] & 1 != 0)
+                let (etype, size, is_sym, uid, gid, mode) = if ret == 0 {
+                    (stat_buf[0] as u8, stat_buf[1], stat_buf[2] & 1 != 0,
+                     stat_buf[3] as u16, stat_buf[4] as u16, stat_buf[5])
                 } else {
                     anyos_std::println!("ls: cannot access '{}': No such file or directory", name_str);
                     continue;
@@ -372,7 +469,7 @@ fn main() {
                 let mut name = [0u8; 56];
                 let nlen = display.len().min(56);
                 name[..nlen].copy_from_slice(&display.as_bytes()[..nlen]);
-                entries.push(Entry { name, name_len: nlen, size, entry_type: etype, is_symlink: is_sym });
+                entries.push(Entry { name, name_len: nlen, size, entry_type: etype, is_symlink: is_sym, uid, gid, mode });
             }
             if sort_size {
                 entries.sort_unstable_by(|a, b| b.size.cmp(&a.size));

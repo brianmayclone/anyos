@@ -46,6 +46,7 @@ exclude = [
   "apps/minesweeper",
   "apps/diff",
   "apps/mdview",
+  "apps/clipman",
   # CLI utilities
   "bin/ping",
   "bin/dhcp",
