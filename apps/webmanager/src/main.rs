@@ -8,13 +8,14 @@ use anyos_std::process;
 use anyos_std::println;
 use anyos_std::{String, Vec, format, vec};
 use libanyui_client as ui;
+use ui::ColumnDef;
 
 // ─── Constants ──────────────────────────────────────────────────────
 
 const SITES_DIR: &str = "/System/etc/httpd/sites";
 const IPC_PIPE_NAME: &str = "httpd";
 const WIN_W: u32 = 960;
-const WIN_H: u32 = 620;
+const WIN_H: u32 = 640;
 
 // ─── Data Model ─────────────────────────────────────────────────────
 
@@ -56,7 +57,6 @@ impl SiteConfig {
 struct AppState {
     sites: Vec<SiteConfig>,
     selected_site: Option<usize>,
-    modified: bool,
 
     // UI handles
     tree: ui::TreeView,
@@ -69,9 +69,13 @@ struct AppState {
     enabled_check: ui::Checkbox,
     rewrite_grid: ui::DataGrid,
     status_label: ui::Label,
-    props_card: ui::Card,
+    right_panel: ui::View,
 
-    // TreeView node indices
+    // Toolbar buttons (for enable/disable)
+    btn_delete: ui::Button,
+    btn_apply: ui::Button,
+
+    // TreeView root node index
     sites_root: u32,
 }
 
@@ -98,14 +102,20 @@ fn load_sites() -> Vec<SiteConfig> {
         }
         let entry_type = dir_buf[off];
         let name_len = dir_buf[off + 1] as usize;
+        if name_len == 0 || off + 8 + name_len > dir_buf.len() {
+            off += 64;
+            continue;
+        }
         let name_bytes = &dir_buf[off + 8..off + 8 + name_len];
 
         if entry_type == 0 {
             if let Ok(filename) = core::str::from_utf8(name_bytes) {
-                let path = format!("{}/{}", SITES_DIR, filename);
-                if let Ok(content) = fs::read_to_string(&path) {
-                    if let Some(site) = parse_site_file(&content, filename) {
-                        sites.push(site);
+                if !filename.starts_with('.') {
+                    let path = format!("{}/{}", SITES_DIR, filename);
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        if let Some(site) = parse_site_file(&content, filename) {
+                            sites.push(site);
+                        }
                     }
                 }
             }
@@ -117,7 +127,6 @@ fn load_sites() -> Vec<SiteConfig> {
 
 fn parse_site_file(content: &str, filename: &str) -> Option<SiteConfig> {
     let mut site = SiteConfig::new_default(filename);
-    site.filename = String::from(filename);
 
     for line in content.split('\n') {
         let line = line.trim();
@@ -180,12 +189,30 @@ fn delete_site_file(filename: &str) {
 // ─── Service Control ────────────────────────────────────────────────
 
 fn is_httpd_running() -> bool {
-    let tid = process::spawn("/System/bin/svc", "status httpd");
-    if tid == u32::MAX {
-        return false;
+    // Check by looking for a thread named "httpd" via sysinfo
+    let mut buf = [0u8; 60 * 128];
+    let count = anyos_std::sys::sysinfo(1, &mut buf) as usize;
+    let name_target = b"httpd";
+    for i in 0..count {
+        let off = i * 60;
+        if off + 60 > buf.len() {
+            break;
+        }
+        let state = buf[off + 5];
+        if state > 2 {
+            continue; // dead
+        }
+        let name_start = off + 8;
+        let mut len = 0;
+        for j in 0..23 {
+            if buf[name_start + j] == 0 { break; }
+            len += 1;
+        }
+        if len == name_target.len() && &buf[name_start..name_start + len] == name_target {
+            return true;
+        }
     }
-    let exit_code = process::waitpid(tid);
-    exit_code == 0
+    false
 }
 
 fn start_httpd() {
@@ -216,7 +243,7 @@ fn refresh_tree() {
     s.tree.clear();
     s.sites_root = s.tree.add_root("Sites");
     s.tree.set_expanded(s.sites_root, true);
-    s.tree.set_node_style(s.sites_root, 1); // STYLE_BOLD
+    s.tree.set_node_style(s.sites_root, ui::STYLE_BOLD);
 
     for (i, site) in s.sites.iter().enumerate() {
         let label = if site.enabled {
@@ -228,7 +255,6 @@ fn refresh_tree() {
         if !site.enabled {
             s.tree.set_node_text_color(node, 0xFF888888);
         }
-        // Select first or previously selected
         if s.selected_site == Some(i) {
             s.tree.set_selected(node);
         }
@@ -236,8 +262,14 @@ fn refresh_tree() {
 
     if s.selected_site.is_none() && !s.sites.is_empty() {
         s.selected_site = Some(0);
-        s.tree.set_selected(1); // node index 1 = first child after root
+        // Node 0 = root "Sites", node 1 = first site
+        s.tree.set_selected(1);
     }
+
+    // Update button states
+    let has_selection = s.selected_site.is_some();
+    s.btn_delete.set_enabled(has_selection);
+    s.btn_apply.set_enabled(has_selection);
 }
 
 fn load_site_into_form() {
@@ -245,18 +277,24 @@ fn load_site_into_form() {
     let idx = match s.selected_site {
         Some(i) if i < s.sites.len() => i,
         _ => {
-            s.props_card.set_visible(false);
+            // No selection — hide the right panel content
+            s.right_panel.set_visible(false);
+            s.btn_delete.set_enabled(false);
+            s.btn_apply.set_enabled(false);
             return;
         }
     };
 
-    s.props_card.set_visible(true);
+    s.right_panel.set_visible(true);
+    s.btn_delete.set_enabled(true);
+    s.btn_apply.set_enabled(true);
     let site = &s.sites[idx];
 
     s.name_field.set_text(&site.name);
     s.port_field.set_text(&format!("{}", site.port));
     s.ssl_check.set_state(if site.ssl { 1 } else { 0 });
     s.ssl_port_field.set_text(&format!("{}", site.ssl_port));
+    s.ssl_port_field.set_enabled(site.ssl);
     s.root_field.set_text(&site.root);
     s.index_field.set_text(&site.index);
     s.enabled_check.set_state(if site.enabled { 1 } else { 0 });
@@ -276,11 +314,13 @@ fn save_form_to_site() {
         _ => return,
     };
 
-    let mut buf = [0u8; 256];
+    let mut buf = [0u8; 512];
 
     let len = s.name_field.get_text(&mut buf);
-    let name = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
-    s.sites[idx].name = String::from(name);
+    if len > 0 {
+        let name = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
+        s.sites[idx].name = String::from(name);
+    }
 
     let len = s.port_field.get_text(&mut buf);
     let port_str = core::str::from_utf8(&buf[..len as usize]).unwrap_or("80");
@@ -293,12 +333,16 @@ fn save_form_to_site() {
     s.sites[idx].ssl_port = parse_u16(ssl_port_str).unwrap_or(443);
 
     let len = s.root_field.get_text(&mut buf);
-    let root = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
-    s.sites[idx].root = String::from(root);
+    if len > 0 {
+        let root = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
+        s.sites[idx].root = String::from(root);
+    }
 
     let len = s.index_field.get_text(&mut buf);
-    let index = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
-    s.sites[idx].index = String::from(index);
+    if len > 0 {
+        let index = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
+        s.sites[idx].index = String::from(index);
+    }
 
     s.sites[idx].enabled = s.enabled_check.get_state() == 1;
 }
@@ -309,21 +353,50 @@ fn update_status() {
     let status_str = if running { "Running" } else { "Stopped" };
     let site_count = s.sites.len();
     let enabled_count = s.sites.iter().filter(|s| s.enabled).count();
-    let ports: Vec<u16> = {
-        let mut v = Vec::new();
-        for site in &s.sites {
-            if site.enabled && !v.contains(&site.port) {
-                v.push(site.port);
-            }
+
+    let mut ports = Vec::new();
+    for site in &s.sites {
+        if site.enabled && !ports.contains(&site.port) {
+            ports.push(site.port);
         }
-        v
+    }
+
+    let ports_str = if ports.is_empty() {
+        String::from("none")
+    } else {
+        let mut s = String::new();
+        for (i, p) in ports.iter().enumerate() {
+            if i > 0 { s.push_str(", "); }
+            s.push_str(&format!("{}", p));
+        }
+        s
     };
 
     let text = format!(
-        "  httpd: {} | {} site(s), {} enabled | Ports: {:?}",
-        status_str, site_count, enabled_count, ports
+        "  httpd: {} | {} site(s), {} enabled | Ports: {}",
+        status_str, site_count, enabled_count, ports_str
     );
     s.status_label.set_text(&text);
+}
+
+fn generate_unique_filename(sites: &[SiteConfig]) -> String {
+    let mut num = 1u32;
+    loop {
+        let name = format!("site{}", num);
+        let path = format!("{}/{}", SITES_DIR, name);
+        let mut stat = [0u32; 7];
+        if fs::stat(&path, &mut stat) != 0 {
+            // Also check in-memory list
+            let exists = sites.iter().any(|s| s.filename == name);
+            if !exists {
+                return name;
+            }
+        }
+        num += 1;
+        if num > 999 {
+            return format!("site{}", sites.len() + 1);
+        }
+    }
 }
 
 // ─── Main ───────────────────────────────────────────────────────────
@@ -337,10 +410,13 @@ fn main() {
     // Ensure config directory exists
     fs::mkdir(SITES_DIR);
 
-    // Create main window
+    // ── Main window ──
     let win = ui::Window::new("Web Manager", -1, -1, WIN_W, WIN_H);
 
-    // ── Toolbar ──
+    // ═══════════════════════════════════════════════════════════════
+    //  Toolbar (DOCK_TOP)
+    // ═══════════════════════════════════════════════════════════════
+
     let toolbar = ui::Toolbar::new();
     toolbar.set_dock(ui::DOCK_TOP);
     win.add(&toolbar);
@@ -348,28 +424,36 @@ fn main() {
     let btn_new = toolbar.add_button("+ New Site");
     toolbar.add_separator();
     let btn_delete = toolbar.add_button("Delete");
+    btn_delete.set_enabled(false);
     toolbar.add_separator();
-    let btn_start = toolbar.add_button("Start");
-    let btn_stop = toolbar.add_button("Stop");
+    let btn_start = toolbar.add_button("Start httpd");
+    let btn_stop = toolbar.add_button("Stop httpd");
     toolbar.add_separator();
     let btn_apply = toolbar.add_button("Apply");
+    btn_apply.set_enabled(false);
     let btn_reload = toolbar.add_button("Reload");
 
-    // ── Status bar ──
+    // ═══════════════════════════════════════════════════════════════
+    //  Status bar (DOCK_BOTTOM)
+    // ═══════════════════════════════════════════════════════════════
+
     let status_label = ui::Label::new("  httpd: checking...");
     status_label.set_dock(ui::DOCK_BOTTOM);
     status_label.set_size(WIN_W, 24);
-    status_label.set_color(0xFF1E1E1E);
+    status_label.set_color(0xFF1C1C1E);
     status_label.set_text_color(0xFFAAAAAA);
     status_label.set_font_size(11);
     win.add(&status_label);
 
-    // ── Main split: sidebar | properties ──
+    // ═══════════════════════════════════════════════════════════════
+    //  Main split: sidebar (left) | properties (right)
+    // ═══════════════════════════════════════════════════════════════
+
     let main_split = ui::SplitView::new();
     main_split.set_dock(ui::DOCK_FILL);
     main_split.set_split_ratio(22);
     main_split.set_min_split(15);
-    main_split.set_max_split(35);
+    main_split.set_max_split(40);
     win.add(&main_split);
 
     // ── Left: TreeView sidebar ──
@@ -377,48 +461,54 @@ fn main() {
     sidebar.set_color(0xFF252526);
     main_split.add(&sidebar);
 
-    let tree = ui::TreeView::new(220, 500);
+    let tree = ui::TreeView::new(200, 500);
     tree.set_dock(ui::DOCK_FILL);
     tree.set_indent_width(16);
     tree.set_row_height(24);
     sidebar.add(&tree);
+
+    // Context menu for tree (right-click actions)
+    let tree_menu = ui::ContextMenu::new("New Site|Delete Site|Enable|Disable");
+    win.add(&tree_menu);
+    tree.set_context_menu(&tree_menu);
 
     // ── Right: Properties panel ──
     let right_panel = ui::View::new();
     right_panel.set_color(0xFF1E1E1E);
     main_split.add(&right_panel);
 
-    // Properties card
+    // ── Site Configuration Card ──
     let props_card = ui::Card::new();
     props_card.set_dock(ui::DOCK_TOP);
-    props_card.set_size(0, 320);
+    props_card.set_size(0, 340);
     props_card.set_padding(16, 12, 16, 12);
     right_panel.add(&props_card);
 
-    // Title label
+    // Title
     let title_label = ui::Label::new("Site Configuration");
     title_label.set_position(16, 8);
-    title_label.set_size(300, 20);
+    title_label.set_size(300, 22);
     title_label.set_font_size(14);
-    title_label.set_text_color(0xFFFFFFFF);
+    title_label.set_text_color(0xFF0A84FF);
     props_card.add(&title_label);
 
-    // Form fields with labels - use manual positioning
+    // Form layout constants
     let form_x: i32 = 16;
     let label_w: u32 = 110;
     let field_x: i32 = form_x + label_w as i32 + 8;
-    let field_w: u32 = 320;
-    let row_h: i32 = 32;
-    let mut y: i32 = 36;
+    let field_w: u32 = 340;
+    let row_h: i32 = 36;
+    let mut y: i32 = 38;
 
     // Name
     let lbl = ui::Label::new("Name:");
     lbl.set_position(form_x, y + 4);
     lbl.set_size(label_w, 20);
+    lbl.set_text_color(0xFFCCCCCC);
     props_card.add(&lbl);
     let name_field = ui::TextField::new();
     name_field.set_position(field_x, y);
-    name_field.set_size(field_w, 24);
+    name_field.set_size(field_w, 26);
     name_field.set_placeholder("Site name");
     props_card.add(&name_field);
     y += row_h;
@@ -427,28 +517,36 @@ fn main() {
     let lbl = ui::Label::new("Port:");
     lbl.set_position(form_x, y + 4);
     lbl.set_size(label_w, 20);
+    lbl.set_text_color(0xFFCCCCCC);
     props_card.add(&lbl);
     let port_field = ui::TextField::new();
     port_field.set_position(field_x, y);
-    port_field.set_size(80, 24);
+    port_field.set_size(80, 26);
     port_field.set_placeholder("80");
     props_card.add(&port_field);
     y += row_h;
 
     // SSL + SSL Port
-    let ssl_check = ui::Checkbox::new("SSL");
-    ssl_check.set_position(field_x, y);
-    ssl_check.set_size(60, 24);
+    let lbl = ui::Label::new("SSL:");
+    lbl.set_position(form_x, y + 4);
+    lbl.set_size(label_w, 20);
+    lbl.set_text_color(0xFFCCCCCC);
+    props_card.add(&lbl);
+    let ssl_check = ui::Checkbox::new("Enable SSL");
+    ssl_check.set_position(field_x, y + 2);
+    ssl_check.set_size(100, 22);
     props_card.add(&ssl_check);
 
-    let lbl = ui::Label::new("SSL Port:");
-    lbl.set_position(field_x + 80, y + 4);
-    lbl.set_size(70, 20);
-    props_card.add(&lbl);
+    let ssl_port_lbl = ui::Label::new("SSL Port:");
+    ssl_port_lbl.set_position(field_x + 120, y + 4);
+    ssl_port_lbl.set_size(70, 20);
+    ssl_port_lbl.set_text_color(0xFFCCCCCC);
+    props_card.add(&ssl_port_lbl);
     let ssl_port_field = ui::TextField::new();
-    ssl_port_field.set_position(field_x + 155, y);
-    ssl_port_field.set_size(80, 24);
+    ssl_port_field.set_position(field_x + 195, y);
+    ssl_port_field.set_size(80, 26);
     ssl_port_field.set_placeholder("443");
+    ssl_port_field.set_enabled(false);
     props_card.add(&ssl_port_field);
     y += row_h;
 
@@ -456,69 +554,83 @@ fn main() {
     let lbl = ui::Label::new("Document Root:");
     lbl.set_position(form_x, y + 4);
     lbl.set_size(label_w, 20);
+    lbl.set_text_color(0xFFCCCCCC);
     props_card.add(&lbl);
     let root_field = ui::TextField::new();
     root_field.set_position(field_x, y);
-    root_field.set_size(field_w, 24);
+    root_field.set_size(field_w - 80, 26);
     root_field.set_placeholder("/Users/Shared/www");
     props_card.add(&root_field);
+
+    let btn_browse = ui::Button::new("Browse");
+    btn_browse.set_position(field_x + (field_w as i32 - 70), y);
+    btn_browse.set_size(70, 26);
+    props_card.add(&btn_browse);
     y += row_h;
 
     // Index Files
     let lbl = ui::Label::new("Index Files:");
     lbl.set_position(form_x, y + 4);
     lbl.set_size(label_w, 20);
+    lbl.set_text_color(0xFFCCCCCC);
     props_card.add(&lbl);
     let index_field = ui::TextField::new();
     index_field.set_position(field_x, y);
-    index_field.set_size(field_w, 24);
+    index_field.set_size(field_w, 26);
     index_field.set_placeholder("index.html,index.htm");
     props_card.add(&index_field);
     y += row_h;
 
     // Enabled
+    let lbl = ui::Label::new("Status:");
+    lbl.set_position(form_x, y + 4);
+    lbl.set_size(label_w, 20);
+    lbl.set_text_color(0xFFCCCCCC);
+    props_card.add(&lbl);
     let enabled_check = ui::Checkbox::new("Enabled");
-    enabled_check.set_position(field_x, y);
-    enabled_check.set_size(100, 24);
+    enabled_check.set_position(field_x, y + 2);
+    enabled_check.set_size(100, 22);
     props_card.add(&enabled_check);
 
     // ── Rewrite Rules section ──
-    let rewrite_label = ui::Label::new("URL Rewrite Rules");
-    rewrite_label.set_dock(ui::DOCK_TOP);
-    rewrite_label.set_size(0, 28);
-    rewrite_label.set_padding(16, 6, 0, 0);
-    rewrite_label.set_font_size(13);
-    rewrite_label.set_text_color(0xFFCCCCCC);
-    right_panel.add(&rewrite_label);
+    let rewrite_header = ui::View::new();
+    rewrite_header.set_dock(ui::DOCK_TOP);
+    rewrite_header.set_size(0, 36);
+    rewrite_header.set_color(0xFF252526);
+    right_panel.add(&rewrite_header);
 
-    // Rewrite button bar
-    let rw_btn_bar = ui::View::new();
-    rw_btn_bar.set_dock(ui::DOCK_TOP);
-    rw_btn_bar.set_size(0, 32);
-    right_panel.add(&rw_btn_bar);
+    let rewrite_title = ui::Label::new("URL Rewrite Rules");
+    rewrite_title.set_position(16, 8);
+    rewrite_title.set_size(200, 20);
+    rewrite_title.set_font_size(13);
+    rewrite_title.set_text_color(0xFF0A84FF);
+    rewrite_header.add(&rewrite_title);
 
-    let btn_add_rule = ui::Button::new("+ Add Rule");
-    btn_add_rule.set_position(16, 2);
-    btn_add_rule.set_size(100, 26);
-    rw_btn_bar.add(&btn_add_rule);
+    let btn_add_rule = ui::Button::new("+ Add");
+    btn_add_rule.set_position(340, 5);
+    btn_add_rule.set_size(70, 26);
+    rewrite_header.add(&btn_add_rule);
 
     let btn_del_rule = ui::Button::new("- Remove");
-    btn_del_rule.set_position(124, 2);
-    btn_del_rule.set_size(90, 26);
-    rw_btn_bar.add(&btn_del_rule);
+    btn_del_rule.set_position(418, 5);
+    btn_del_rule.set_size(80, 26);
+    rewrite_header.add(&btn_del_rule);
 
     // Rewrite DataGrid
     let rewrite_grid = ui::DataGrid::new(700, 200);
     rewrite_grid.set_dock(ui::DOCK_FILL);
     rewrite_grid.set_columns(&[
-        ui::ColumnDef::new("Pattern").width(300),
-        ui::ColumnDef::new("Target").width(300),
+        ColumnDef::new("Pattern").width(300),
+        ColumnDef::new("Target").width(300),
     ]);
     rewrite_grid.set_row_height(22);
     rewrite_grid.set_selection_mode(ui::SELECTION_SINGLE);
     right_panel.add(&rewrite_grid);
 
-    // ── Initialize AppState ──
+    // ═══════════════════════════════════════════════════════════════
+    //  Initialize AppState
+    // ═══════════════════════════════════════════════════════════════
+
     let sites = load_sites();
     let selected = if sites.is_empty() { None } else { Some(0) };
 
@@ -526,7 +638,6 @@ fn main() {
         APP = Some(AppState {
             sites,
             selected_site: selected,
-            modified: false,
             tree,
             name_field,
             port_field,
@@ -537,7 +648,9 @@ fn main() {
             enabled_check,
             rewrite_grid,
             status_label,
-            props_card,
+            right_panel,
+            btn_delete: btn_delete,
+            btn_apply: btn_apply,
             sites_root: 0,
         });
     }
@@ -546,37 +659,115 @@ fn main() {
     load_site_into_form();
     update_status();
 
-    // ── Event Handlers ──
+    // ═══════════════════════════════════════════════════════════════
+    //  Event Handlers
+    // ═══════════════════════════════════════════════════════════════
 
-    // TreeView selection
+    // TreeView selection changed
+    // The event index is the flat row index: 0 = root "Sites", 1..N = site nodes
     app().tree.on_selection_changed(|e| {
         let s = app();
-        // Node 0 = root, nodes 1..N = sites
-        if e.index > 0 && (e.index - 1) < s.sites.len() as u32 {
-            // Save current form first
+        let row = e.index;
+        if row == 0 || row == u32::MAX {
+            // Root node or nothing — don't change selection
+            return;
+        }
+        let site_index = (row - 1) as usize;
+        if site_index < s.sites.len() {
+            // Save current form before switching
             if s.selected_site.is_some() {
                 save_form_to_site();
             }
-            s.selected_site = Some((e.index - 1) as usize);
+            s.selected_site = Some(site_index);
             load_site_into_form();
         }
     });
 
-    // New Site
+    // TreeView context menu handler
+    // Items: 0=New Site, 1=Delete Site, 2=Enable, 3=Disable
+    tree_menu.on_item_click(|e| {
+        match e.index {
+            0 => {
+                // New Site
+                let s = app();
+                let filename = generate_unique_filename(&s.sites);
+                let mut site = SiteConfig::new_default(&filename);
+                site.name = format!("New Site {}", s.sites.len() + 1);
+                save_site(&site);
+                s.sites.push(site);
+                s.selected_site = Some(s.sites.len() - 1);
+                refresh_tree();
+                load_site_into_form();
+                s.name_field.focus();
+            }
+            1 => {
+                // Delete Site
+                let s = app();
+                if let Some(idx) = s.selected_site {
+                    if idx < s.sites.len() {
+                        let filename = s.sites[idx].filename.clone();
+                        delete_site_file(&filename);
+                        s.sites.remove(idx);
+                        if s.sites.is_empty() {
+                            s.selected_site = None;
+                        } else if idx >= s.sites.len() {
+                            s.selected_site = Some(s.sites.len() - 1);
+                        } else {
+                            s.selected_site = Some(idx);
+                        }
+                        refresh_tree();
+                        load_site_into_form();
+                        update_status();
+                    }
+                }
+            }
+            2 => {
+                // Enable
+                let s = app();
+                if let Some(idx) = s.selected_site {
+                    if idx < s.sites.len() {
+                        s.sites[idx].enabled = true;
+                        save_site(&s.sites[idx]);
+                        s.enabled_check.set_state(1);
+                        refresh_tree();
+                        update_status();
+                    }
+                }
+            }
+            3 => {
+                // Disable
+                let s = app();
+                if let Some(idx) = s.selected_site {
+                    if idx < s.sites.len() {
+                        s.sites[idx].enabled = false;
+                        save_site(&s.sites[idx]);
+                        s.enabled_check.set_state(0);
+                        refresh_tree();
+                        update_status();
+                    }
+                }
+            }
+            _ => {}
+        }
+    });
+
+    // SSL checkbox toggles SSL port field
+    ssl_check.on_checked_changed(|e| {
+        let s = app();
+        s.ssl_port_field.set_enabled(e.checked);
+    });
+
+    // Browse button for document root
+    btn_browse.on_click(|_| {
+        if let Some(path) = ui::FileDialog::open_folder() {
+            app().root_field.set_text(&path);
+        }
+    });
+
+    // ── New Site ──
     btn_new.on_click(|_| {
         let s = app();
-        // Generate unique filename
-        let mut num = s.sites.len() + 1;
-        let filename = loop {
-            let name = format!("site{}", num);
-            let path = format!("{}/{}", SITES_DIR, name);
-            let mut stat = [0u32; 7];
-            if fs::stat(&path, &mut stat) != 0 {
-                break name;
-            }
-            num += 1;
-        };
-
+        let filename = generate_unique_filename(&s.sites);
         let mut site = SiteConfig::new_default(&filename);
         site.name = format!("New Site {}", s.sites.len() + 1);
         save_site(&site);
@@ -584,9 +775,11 @@ fn main() {
         s.selected_site = Some(s.sites.len() - 1);
         refresh_tree();
         load_site_into_form();
+        // Focus the name field for immediate editing
+        s.name_field.focus();
     });
 
-    // Delete Site
+    // ── Delete Site ──
     btn_delete.on_click(|_| {
         let s = app();
         if let Some(idx) = s.selected_site {
@@ -598,14 +791,17 @@ fn main() {
                     s.selected_site = None;
                 } else if idx >= s.sites.len() {
                     s.selected_site = Some(s.sites.len() - 1);
+                } else {
+                    s.selected_site = Some(idx);
                 }
                 refresh_tree();
                 load_site_into_form();
+                update_status();
             }
         }
     });
 
-    // Apply (save current site)
+    // ── Apply (save current site) ──
     btn_apply.on_click(|_| {
         let s = app();
         save_form_to_site();
@@ -618,21 +814,23 @@ fn main() {
         }
     });
 
-    // Start httpd
+    // ── Start httpd ──
     btn_start.on_click(|_| {
+        app().status_label.set_text("  httpd: starting...");
         start_httpd();
         process::sleep(500);
         update_status();
     });
 
-    // Stop httpd
+    // ── Stop httpd ──
     btn_stop.on_click(|_| {
+        app().status_label.set_text("  httpd: stopping...");
         stop_httpd();
         process::sleep(500);
         update_status();
     });
 
-    // Reload httpd
+    // ── Reload httpd config ──
     btn_reload.on_click(|_| {
         // Save all sites first
         let s = app();
@@ -640,21 +838,21 @@ fn main() {
         for site in &s.sites {
             save_site(site);
         }
+        s.status_label.set_text("  httpd: reloading...");
         reload_httpd();
         process::sleep(300);
         update_status();
     });
 
-    // Add rewrite rule
+    // ── Add rewrite rule ──
     btn_add_rule.on_click(|_| {
         let s = app();
         if let Some(idx) = s.selected_site {
             if idx < s.sites.len() {
                 s.sites[idx].rewrites.push(RewriteRule {
-                    pattern: String::from("/example"),
+                    pattern: String::from("/path"),
                     target: String::from("/new-path"),
                 });
-                // Refresh grid
                 let mut rows: Vec<Vec<&str>> = Vec::new();
                 for rw in &s.sites[idx].rewrites {
                     rows.push(vec![&rw.pattern, &rw.target]);
@@ -664,7 +862,7 @@ fn main() {
         }
     });
 
-    // Remove rewrite rule
+    // ── Remove rewrite rule ──
     btn_del_rule.on_click(|_| {
         let s = app();
         let sel_row = s.rewrite_grid.selected_row();
@@ -682,7 +880,7 @@ fn main() {
         }
     });
 
-    // Periodic status update
+    // ── Periodic status update (every 5s) ──
     ui::set_timer(5000, || {
         update_status();
     });
@@ -694,11 +892,11 @@ fn main() {
 // ─── Utilities ──────────────────────────────────────────────────────
 
 fn parse_u16(s: &str) -> Option<u16> {
-    let mut val: u32 = 0;
     let s = s.trim();
     if s.is_empty() {
         return None;
     }
+    let mut val: u32 = 0;
     for b in s.bytes() {
         if b < b'0' || b > b'9' {
             return None;

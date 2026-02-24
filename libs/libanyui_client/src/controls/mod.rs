@@ -44,6 +44,7 @@ mod tableview;
 mod stackpanel;
 mod flowpanel;
 mod tablelayout;
+mod radiogroup;
 
 // ── Static dialogs ──
 mod messagebox;
@@ -97,6 +98,7 @@ pub use tableview::TableView;
 pub use stackpanel::StackPanel;
 pub use flowpanel::FlowPanel;
 pub use tablelayout::TableLayout;
+pub use radiogroup::RadioGroup;
 
 pub use messagebox::{MessageBox, MessageBoxType};
 pub use filedialog::FileDialog;

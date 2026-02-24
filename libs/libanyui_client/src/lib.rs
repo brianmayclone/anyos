@@ -34,7 +34,7 @@ mod events;
 pub use events::*;
 
 pub mod icon;
-pub use icon::Icon;
+pub use icon::{Icon, IconType};
 
 use dynlink::{DlHandle, dl_open, dl_sym};
 
@@ -81,6 +81,7 @@ pub const KIND_EXPANDER: u32 = 37;
 pub const KIND_DATA_GRID: u32 = 38;
 pub const KIND_TEXT_EDITOR: u32 = 39;
 pub const KIND_TREE_VIEW: u32 = 40;
+pub const KIND_RADIO_GROUP: u32 = 41;
 
 // ── DockStyle constants ─────────────────────────────────────────────
 

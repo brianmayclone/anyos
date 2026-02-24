@@ -6,11 +6,19 @@
 //! let image_view = icon.into_image_view(32, 32);
 //!
 //! let app_icon = Icon::for_application("terminal").unwrap();
+//! let sys_icon = Icon::system("heart", IconType::Filled, 0xFF007AFF, 32).unwrap();
 //! ```
 
 use alloc::vec;
 use alloc::vec::Vec;
 use crate::controls::ImageView;
+
+/// Icon style variant.
+#[derive(Copy, Clone, PartialEq)]
+pub enum IconType {
+    Filled,
+    Outline,
+}
 
 /// A decoded icon with its pixel data.
 pub struct Icon {
@@ -22,7 +30,104 @@ pub struct Icon {
     pub height: u32,
 }
 
+// ── ico.pak cache ─────────────────────────────────────
+
+const ICO_PAK_PATH: &str = "/System/media/ico.pak";
+
+static mut PAK_DATA: Option<Vec<u8>> = None;
+
+fn pak_data() -> Option<&'static [u8]> {
+    unsafe {
+        if PAK_DATA.is_none() {
+            PAK_DATA = Some(anyos_std::fs::read_to_vec(ICO_PAK_PATH).ok()?);
+        }
+        PAK_DATA.as_deref()
+    }
+}
+
+// ── Rendered icon cache (fixed-size ring buffer) ──────
+
+const ICON_CACHE_SIZE: usize = 64;
+
+struct CacheEntry {
+    key: u64,
+    pixels: Vec<u32>,
+    size: u32,
+}
+
+static mut ICON_CACHE: Option<Vec<CacheEntry>> = None;
+
+fn icon_cache_key(name: &str, filled: bool, size: u32, color: u32) -> u64 {
+    let mut h: u64 = if filled { 0x100000000 } else { 0 };
+    h ^= (size as u64) << 40;
+    h ^= color as u64;
+    // FNV-1a hash of name
+    let mut fnv: u64 = 0xcbf29ce484222325;
+    for &b in name.as_bytes() {
+        fnv ^= b as u64;
+        fnv = fnv.wrapping_mul(0x100000001b3);
+    }
+    h ^= fnv << 8;
+    h
+}
+
+fn icon_cache_lookup(key: u64) -> Option<(Vec<u32>, u32)> {
+    unsafe {
+        let cache = ICON_CACHE.as_ref()?;
+        for entry in cache.iter() {
+            if entry.key == key {
+                return Some((entry.pixels.clone(), entry.size));
+            }
+        }
+        None
+    }
+}
+
+fn icon_cache_insert(key: u64, pixels: Vec<u32>, size: u32) {
+    unsafe {
+        if ICON_CACHE.is_none() {
+            ICON_CACHE = Some(Vec::new());
+        }
+        let cache = ICON_CACHE.as_mut().unwrap();
+        // Evict oldest if full
+        if cache.len() >= ICON_CACHE_SIZE {
+            cache.remove(0);
+        }
+        cache.push(CacheEntry { key, pixels, size });
+    }
+}
+
 impl Icon {
+    /// Load a system icon from ico.pak by name, type, color, and size.
+    ///
+    /// Icons are cached after first render — repeated calls with the same
+    /// parameters return cached pixel data.
+    ///
+    /// # Example
+    /// ```rust
+    /// let icon = Icon::system("heart", IconType::Filled, 0xFF007AFF, 32).unwrap();
+    /// ```
+    pub fn system(name: &str, icon_type: IconType, color: u32, size: u32) -> Option<Self> {
+        let filled = icon_type == IconType::Filled;
+        let key = icon_cache_key(name, filled, size, color);
+
+        // Check cache first
+        if let Some((pixels, sz)) = icon_cache_lookup(key) {
+            return Some(Self { pixels, width: sz, height: sz });
+        }
+
+        // Load pak and render
+        let pak = pak_data()?;
+        let pixel_count = (size as usize) * (size as usize);
+        let mut pixels = vec![0u32; pixel_count];
+        libimage_client::iconpack_render(pak, name, filled, size, color, &mut pixels).ok()?;
+
+        // Cache the result
+        icon_cache_insert(key, pixels.clone(), size);
+
+        Some(Self { pixels, width: size, height: size })
+    }
+
     /// Load an icon for a file extension (e.g., "txt", "png", "rs").
     ///
     /// Reads `/System/media/icons/mimetypes.conf` to map extension to icon name,

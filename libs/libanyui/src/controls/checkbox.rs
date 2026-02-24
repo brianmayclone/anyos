@@ -41,16 +41,21 @@ impl Control for Checkbox {
             crate::draw::draw_rounded_border(surface, x, y, sz, sz, 4, if hovered && !disabled { tc.accent } else { tc.input_border });
         }
 
-        // Checkmark (two small rectangles forming a check shape)
+        // Checkmark — 2px thick diagonal lines forming a ✓ shape
+        // Short leg: (4,9) → (6,11), Long leg: (6,11) → (13,4)
         if checked {
             let cm = tc.check_mark;
-            // Short leg: bottom-left to center
-            crate::draw::fill_rect(surface, x + 4, y + 9, 2, 4, cm);
-            crate::draw::fill_rect(surface, x + 5, y + 10, 2, 3, cm);
-            // Long leg: center to top-right
-            crate::draw::fill_rect(surface, x + 7, y + 8, 2, 3, cm);
-            crate::draw::fill_rect(surface, x + 9, y + 6, 2, 4, cm);
-            crate::draw::fill_rect(surface, x + 11, y + 4, 2, 4, cm);
+            // Short leg (bottom-left to center-bottom), 2px wide
+            crate::draw::fill_rect(surface, x + 4, y + 8,  2, 2, cm);
+            crate::draw::fill_rect(surface, x + 5, y + 9,  2, 2, cm);
+            crate::draw::fill_rect(surface, x + 6, y + 10, 2, 2, cm);
+            // Long leg (center-bottom to top-right), 2px wide
+            crate::draw::fill_rect(surface, x + 7,  y + 9,  2, 2, cm);
+            crate::draw::fill_rect(surface, x + 8,  y + 8,  2, 2, cm);
+            crate::draw::fill_rect(surface, x + 9,  y + 7,  2, 2, cm);
+            crate::draw::fill_rect(surface, x + 10, y + 6,  2, 2, cm);
+            crate::draw::fill_rect(surface, x + 11, y + 5,  2, 2, cm);
+            crate::draw::fill_rect(surface, x + 12, y + 4,  2, 2, cm);
         }
 
         // Focus ring

@@ -204,6 +204,7 @@ pub enum ControlKind {
     DataGrid = 38,
     TextEditor = 39,
     TreeView = 40,
+    RadioGroup = 41,
 }
 
 impl ControlKind {
@@ -250,6 +251,7 @@ impl ControlKind {
             38 => Self::DataGrid,
             39 => Self::TextEditor,
             40 => Self::TreeView,
+            41 => Self::RadioGroup,
             _ => Self::View,
         }
     }
@@ -274,6 +276,9 @@ impl ControlKind {
             Self::Tooltip => (150, 24),
             Self::Canvas => (200, 200),
             Self::Expander => (200, 32),
+            Self::Toolbar => (0, 36),
+            Self::NavigationBar => (0, 44),
+            Self::TabBar => (0, 32),
             _ => (0, 0),
         }
     }
@@ -726,6 +731,9 @@ pub trait Control {
     fn set_on_change(&mut self, cb: Callback, ud: u64) {
         self.base_mut().set_callback(EVENT_CHANGE, cb, ud);
     }
+
+    /// Set the RadioGroup this control belongs to. Only meaningful for RadioButton.
+    fn set_radio_group(&mut self, _group_id: ControlId) {}
 }
 
 // ── Tree utilities ──────────────────────────────────────────────────

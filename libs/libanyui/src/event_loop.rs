@@ -294,6 +294,9 @@ pub fn run_once() -> u32 {
                                     if let Some(idx2) = control::find_idx(&st.controls, target_id) {
                                         let click_resp = st.controls[idx2].handle_click(local_x, local_y, button);
 
+                                        // RadioGroup: drain deferred deselection requests
+                                        crate::controls::radio_group::drain_deselects(&mut st.controls);
+
                                         fire_event_callback(&st.controls, target_id, control::EVENT_CLICK, &mut pending_cbs);
 
                                         if click_resp.fire_change {

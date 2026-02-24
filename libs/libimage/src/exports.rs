@@ -5,7 +5,7 @@
 
 use crate::types::{ImageInfo, VideoInfo};
 
-const NUM_EXPORTS: u32 = 8;
+const NUM_EXPORTS: u32 = 9;
 
 /// Export function table — must be first in the binary (`.exports` section).
 #[repr(C)]
@@ -27,6 +27,8 @@ pub struct LibimageExports {
     pub ico_decode_size: extern "C" fn(*const u8, u32, u32, *mut u32, u32, *mut u8, u32) -> i32,
     // BMP encoder
     pub image_encode: extern "C" fn(*const u32, u32, u32, *mut u8, u32) -> i32,
+    // Iconpack SVG renderer
+    pub iconpack_render: extern "C" fn(*const u8, u32, *const u8, u32, u32, u32, u32, *mut u32) -> i32,
 }
 
 #[link_section = ".exports"]
@@ -45,6 +47,7 @@ pub static LIBIMAGE_EXPORTS: LibimageExports = LibimageExports {
     ico_probe_size: ico_probe_size_export,
     ico_decode_size: ico_decode_size_export,
     image_encode: image_encode_export,
+    iconpack_render: iconpack_render_export,
 };
 
 // ── Video exports ──────────────────────────────────────
@@ -244,4 +247,38 @@ extern "C" fn image_encode_export(
     let px = unsafe { core::slice::from_raw_parts(pixels, count) };
     let buf = unsafe { core::slice::from_raw_parts_mut(out, out_len as usize) };
     crate::bmp::encode(px, width, height, buf)
+}
+
+// ── Iconpack SVG render export ──────────────────────
+
+/// Render a system icon from an ico.pak file to ARGB8888 pixels.
+///
+/// - `pak`/`pak_len`: ico.pak file data
+/// - `name`/`name_len`: icon name (UTF-8)
+/// - `filled`: 1 for filled, 0 for outline
+/// - `size`: target pixel size (square)
+/// - `color`: ARGB8888 color
+/// - `out_pixels`: output buffer (size*size u32s)
+///
+/// Returns 0 on success, negative on error.
+extern "C" fn iconpack_render_export(
+    pak: *const u8, pak_len: u32,
+    name: *const u8, name_len: u32,
+    filled: u32, size: u32, color: u32,
+    out_pixels: *mut u32,
+) -> i32 {
+    if pak.is_null() || name.is_null() || out_pixels.is_null() || size == 0 || size > 512 {
+        return crate::types::ERR_INVALID_DATA;
+    }
+    let pak_data = unsafe { core::slice::from_raw_parts(pak, pak_len as usize) };
+    let name_data = unsafe { core::slice::from_raw_parts(name, name_len as usize) };
+    let pixel_count = (size as usize) * (size as usize);
+    let out = unsafe { core::slice::from_raw_parts_mut(out_pixels, pixel_count) };
+
+    let entry = match crate::iconpack::lookup(pak_data, name_data, filled != 0) {
+        Some(e) => e,
+        None => return crate::types::ERR_UNSUPPORTED,
+    };
+
+    crate::svg_raster::render_icon(entry.data, filled != 0, size, color, out)
 }

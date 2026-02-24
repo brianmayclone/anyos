@@ -138,6 +138,31 @@ pub fn encode_bmp(pixels: &[u32], width: u32, height: u32, out: &mut [u8]) -> Re
     }
 }
 
+// ── Iconpack API ──────────────────────────────────────
+
+/// Render a system icon from an ico.pak file into ARGB8888 pixels.
+///
+/// - `pak`: the ico.pak file data
+/// - `name`: icon name (e.g. "heart")
+/// - `filled`: true for filled variant, false for outline
+/// - `size`: target pixel size (square)
+/// - `color`: ARGB8888 color
+/// - `out`: output pixel buffer (must be size*size elements)
+///
+/// Returns `Ok(())` on success, or an error.
+pub fn iconpack_render(
+    pak: &[u8], name: &str, filled: bool, size: u32, color: u32, out: &mut [u32],
+) -> Result<(), ImageError> {
+    let ret = (raw::exports().iconpack_render)(
+        pak.as_ptr(), pak.len() as u32,
+        name.as_ptr(), name.len() as u32,
+        if filled { 1 } else { 0 },
+        size, color,
+        out.as_mut_ptr(),
+    );
+    if ret == 0 { Ok(()) } else { Err(err_from_code(ret)) }
+}
+
 /// Get the format name as a string.
 pub fn format_name(format: u32) -> &'static str {
     match format {

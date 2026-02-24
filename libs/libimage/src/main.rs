@@ -4,6 +4,8 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 pub mod types;
 pub mod exports;
 pub mod bmp;
@@ -16,6 +18,10 @@ pub mod ico;
 pub mod lzw;
 pub mod video;
 pub mod scale;
+pub mod iconpack;
+pub mod svg_raster;
+mod syscall;
+mod heap;
 
 /// Dummy entry point (never called — DLL has no entry).
 #[no_mangle]
@@ -25,5 +31,5 @@ pub extern "C" fn _dll_start() -> ! {
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
+    syscall::exit(1);
 }

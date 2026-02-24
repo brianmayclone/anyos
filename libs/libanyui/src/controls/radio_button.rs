@@ -1,11 +1,13 @@
-use crate::control::{Control, ControlBase, TextControlBase, ControlKind, EventResponse};
+use crate::control::{Control, ControlBase, ControlId, TextControlBase, ControlKind, EventResponse};
 
 pub struct RadioButton {
     pub(crate) text_base: TextControlBase,
+    /// The RadioGroup this button belongs to (0 = none).
+    pub(crate) group: ControlId,
 }
 
 impl RadioButton {
-    pub fn new(text_base: TextControlBase) -> Self { Self { text_base } }
+    pub fn new(text_base: TextControlBase) -> Self { Self { text_base, group: 0 } }
 }
 
 impl Control for RadioButton {
@@ -66,8 +68,16 @@ impl Control for RadioButton {
 
     fn is_interactive(&self) -> bool { !self.text_base.base.disabled }
 
+    fn set_radio_group(&mut self, group_id: ControlId) {
+        self.group = group_id;
+    }
+
     fn handle_click(&mut self, _lx: i32, _ly: i32, _button: u32) -> EventResponse {
         self.text_base.base.state = 1;
+        // If inside a RadioGroup, post deferred deselection of siblings
+        if self.group != 0 {
+            crate::controls::radio_group::post_deselect(self.group, self.text_base.base.id);
+        }
         EventResponse::CHANGED
     }
 }

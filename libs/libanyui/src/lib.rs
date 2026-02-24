@@ -400,8 +400,18 @@ pub extern "C" fn anyui_add_child(parent: ControlId, child: ControlId) {
         c.set_parent(parent);
     }
     // Add to parent's children list
+    let parent_is_radio_group = st.controls.iter()
+        .find(|c| c.id() == parent)
+        .map(|c| c.kind() == control::ControlKind::RadioGroup)
+        .unwrap_or(false);
     if let Some(p) = st.controls.iter_mut().find(|c| c.id() == parent) {
         p.add_child(child);
+    }
+    // If parent is a RadioGroup, set group pointer on the child RadioButton
+    if parent_is_radio_group {
+        if let Some(c) = st.controls.iter_mut().find(|c| c.id() == child) {
+            c.set_radio_group(parent);
+        }
     }
     mark_needs_layout();
 }
