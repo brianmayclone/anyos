@@ -224,7 +224,7 @@ fn management_loop(
     loop {
         // ── Periodic stats dump ──
         let now_ms = sys::uptime_ms();
-        if now_ms.wrapping_sub(mgmt_last_report) >= 5000 {
+        if now_ms.wrapping_sub(mgmt_last_report) >= 30000 {
             println!(
                 "MGMT-STATS: loops={} input={} ipc={} sys={} idle={}",
                 mgmt_loops, mgmt_input, mgmt_ipc, mgmt_sys, mgmt_idle

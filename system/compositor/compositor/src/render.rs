@@ -105,9 +105,9 @@ pub fn render_thread_entry() {
     let mut stat_last_report: u32 = sys::uptime_ms();
 
     loop {
-        // ── Periodic stats dump (every 5 seconds) ──
+        // ── Periodic stats dump (every 30 seconds) ──
         let now_ms = sys::uptime_ms();
-        if now_ms.wrapping_sub(stat_last_report) >= 5000 {
+        if now_ms.wrapping_sub(stat_last_report) >= 30000 {
             println!(
                 "GPU-STATS: wake={} dmg={} anim={} no_dmg={} lock_fail={} idle={}",
                 stat_wakeups, stat_damage, stat_animations,
