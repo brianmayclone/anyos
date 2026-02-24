@@ -93,6 +93,10 @@ pub(crate) struct CompWindow {
     /// Window-level dirty flag: true if any control in this window's subtree is dirty.
     /// Computed in a flat O(n) scan, replacing the O(n²) recursive any_dirty() tree walk.
     pub dirty: bool,
+    /// Accumulated dirty region (union of all dirty controls' bounding rects).
+    /// `None` means full-window redraw (first frame, resize, etc.).
+    /// `Some((x, y, w, h))` in window-local coordinates for partial redraw.
+    pub dirty_rect: Option<(i32, i32, u32, u32)>,
     /// Local back buffer for flicker-free rendering. All drawing goes here first,
     /// then a single memcpy to SHM before present() — the compositor never sees
     /// a half-rendered frame (no background flash, no partial content).
@@ -317,6 +321,7 @@ pub extern "C" fn anyui_create_window(
         frame_presented: false,
         last_present_ms: 0,
         dirty: true,
+        dirty_rect: None,
         back_buffer: alloc::vec![0u32; pixel_count],
     });
     id
@@ -400,8 +405,18 @@ pub extern "C" fn anyui_add_child(parent: ControlId, child: ControlId) {
         c.set_parent(parent);
     }
     // Add to parent's children list
+    let parent_is_radio_group = st.controls.iter()
+        .find(|c| c.id() == parent)
+        .map(|c| c.kind() == control::ControlKind::RadioGroup)
+        .unwrap_or(false);
     if let Some(p) = st.controls.iter_mut().find(|c| c.id() == parent) {
         p.add_child(child);
+    }
+    // If parent is a RadioGroup, set group pointer on the child RadioButton
+    if parent_is_radio_group {
+        if let Some(c) = st.controls.iter_mut().find(|c| c.id() == child) {
+            c.set_radio_group(parent);
+        }
     }
     mark_needs_layout();
 }
@@ -792,6 +807,7 @@ pub extern "C" fn anyui_canvas_clear(id: ControlId, color: u32) {
             let raw: *mut dyn Control = &mut **ctrl;
             let canvas = unsafe { &mut *(raw as *mut controls::canvas::Canvas) };
             canvas.clear(color);
+            canvas.base.mark_dirty();
         }
     }
 }
@@ -1081,6 +1097,25 @@ pub extern "C" fn anyui_imageview_clear(id: ControlId) {
             let raw: *mut dyn Control = &mut **ctrl;
             let iv = unsafe { &mut *(raw as *mut controls::image_view::ImageView) };
             iv.clear();
+        }
+    }
+}
+
+// ── IconButton ───────────────────────────────────────────────────────
+
+/// Set pre-rendered icon pixel data for an IconButton.
+#[no_mangle]
+pub extern "C" fn anyui_iconbutton_set_pixels(id: ControlId, data: *const u32, w: u32, h: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::IconButton {
+            let count = (w as usize) * (h as usize);
+            if !data.is_null() && count > 0 {
+                let slice = unsafe { core::slice::from_raw_parts(data, count) };
+                let raw: *mut dyn Control = &mut **ctrl;
+                let ib = unsafe { &mut *(raw as *mut controls::icon_button::IconButton) };
+                ib.set_icon_pixels(slice, w, h);
+            }
         }
     }
 }
@@ -2085,4 +2120,16 @@ pub extern "C" fn anyui_show_notification(
         b""
     };
     compositor::show_notification(st.channel_id, title, message, icon_ptr, timeout_ms, 0);
+}
+
+// ── Theme ────────────────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn anyui_set_theme(light: u32) {
+    theme::set_theme(light != 0);
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_get_theme() -> u32 {
+    theme::get_theme()
 }

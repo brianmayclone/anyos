@@ -294,6 +294,9 @@ pub fn run_once() -> u32 {
                                     if let Some(idx2) = control::find_idx(&st.controls, target_id) {
                                         let click_resp = st.controls[idx2].handle_click(local_x, local_y, button);
 
+                                        // RadioGroup: drain deferred deselection requests
+                                        crate::controls::radio_group::drain_deselects(&mut st.controls);
+
                                         fire_event_callback(&st.controls, target_id, control::EVENT_CLICK, &mut pending_cbs);
 
                                         if click_resp.fire_change {
@@ -482,35 +485,29 @@ pub fn run_once() -> u32 {
         st.needs_layout = false;
     }
 
-    // ── Phase 3.7: Compute per-window dirty flags ──────────────────
+    // ── Phase 3.7: Compute per-window dirty flags + dirty rects ─────
     // Push-based: only scan when mark_dirty() was called since last render.
     // On idle frames (no events, no timers), this entire phase is skipped.
+    // Walks the control tree to compute absolute positions and union dirty
+    // rects — enabling selective rendering in Phase 4 (only controls that
+    // intersect the dirty rect are re-rendered).
     if st.needs_repaint {
         for cw in st.comp_windows.iter_mut() {
             cw.dirty = false;
+            cw.dirty_rect = None;
         }
-        'ctrl_scan: for ctrl in st.controls.iter() {
-            if !ctrl.base().dirty { continue; }
-            // Walk up parent chain to find which window this control belongs to
-            let mut cur_id = ctrl.id();
-            let mut cur_parent = ctrl.base().parent;
-            for _ in 0..32 {
-                if let Some(wi) = st.windows.iter().position(|&w| w == cur_id) {
-                    st.comp_windows[wi].dirty = true;
-                    continue 'ctrl_scan;
-                }
-                if cur_parent == 0 || cur_parent == cur_id { continue 'ctrl_scan; }
-                cur_id = cur_parent;
-                cur_parent = st.controls.iter()
-                    .find(|c| c.id() == cur_id)
-                    .map(|c| c.base().parent)
-                    .unwrap_or(0);
-            }
+        for wi in 0..st.windows.len() {
+            let win_id = st.windows[wi];
+            collect_dirty_rects(&st.controls, win_id, 0, 0, &mut st.comp_windows[wi]);
         }
         st.needs_repaint = false;
     }
 
     // ── Phase 4: Render dirty windows (with VSync back-pressure) ───
+    // Incremental rendering: only re-render controls that intersect the dirty
+    // rect, copy only the dirty region to SHM, and tell the compositor which
+    // rect changed. For typical interactions (hover, click, typing) this is
+    // 50-500x faster than a full-window redraw.
     let channel_id = st.channel_id;
     for wi in 0..st.windows.len() {
         let win_id = st.windows[wi];
@@ -536,28 +533,78 @@ pub fn run_once() -> u32 {
         let sh = st.comp_windows[wi].height;
         let comp_window_id = st.comp_windows[wi].window_id;
         let shm_id = st.comp_windows[wi].shm_id;
+        let dirty_rect = st.comp_windows[wi].dirty_rect;
+
+        // Clamp dirty rect to window bounds (controls may report negative coords or overflow)
+        let clamped_dr = dirty_rect.map(|(dx, dy, dw, dh)| {
+            let x0 = dx.max(0) as u32;
+            let y0 = dy.max(0) as u32;
+            let x1 = ((dx + dw as i32).max(0) as u32).min(sw);
+            let y1 = ((dy + dh as i32).max(0) as u32).min(sh);
+            (x0 as i32, y0 as i32, x1.saturating_sub(x0), y1.saturating_sub(y0))
+        }).filter(|&(_, _, w, h)| w > 0 && h > 0);
 
         // Double-buffered rendering: draw to a local back buffer first, then
-        // copy the complete frame to SHM in one shot. This prevents the compositor
-        // from seeing a half-rendered frame (background cleared but children not
-        // yet drawn), eliminating the visible flicker on rerender.
+        // copy the changed region to SHM in one shot.
         let back_buf = st.comp_windows[wi].back_buffer.as_mut_ptr();
-        let surf = crate::draw::Surface::new(back_buf, sw, sh);
+        let full_surf = crate::draw::Surface::new(back_buf, sw, sh);
 
-        // Render control tree (depth-first, parent before children)
-        render_tree(&st.controls, win_id, &surf, 0, 0);
+        // CRITICAL: Clip the surface to the dirty rect so that Window::render()
+        // (which fills the entire background) only touches pixels inside the dirty
+        // region. Pixels outside are retained from the previous frame.
+        let surf = if let Some((dx, dy, dw, dh)) = clamped_dr {
+            full_surf.with_clip(dx, dy, dw, dh)
+        } else {
+            full_surf
+        };
 
-        // Atomic copy: back buffer → SHM (compositor only ever sees complete frames)
-        let pixel_count = (sw as usize) * (sh as usize);
+        // Render control tree — only controls intersecting the dirty rect are drawn.
+        // The surface clip rect ensures drawing ops outside the dirty region are discarded.
+        render_tree(&st.controls, win_id, &surf, 0, 0, clamped_dr);
+
+        // Copy back buffer → SHM: either the dirty region or the full buffer.
         unsafe {
-            core::ptr::copy_nonoverlapping(back_buf, surface_ptr, pixel_count);
+            if let Some((dx, dy, dw, dh)) = clamped_dr {
+                // Partial copy: only the dirty region (row by row)
+                let dx = dx as usize;
+                let dy = dy as usize;
+                let dw = dw as usize;
+                let stride = sw as usize;
+                for row in 0..dh as usize {
+                    let off = (dy + row) * stride + dx;
+                    core::ptr::copy_nonoverlapping(
+                        back_buf.add(off),
+                        surface_ptr.add(off),
+                        dw,
+                    );
+                }
+            } else {
+                // Full copy (fallback for first frame, resize, etc.)
+                let pixel_count = (sw as usize) * (sh as usize);
+                core::ptr::copy_nonoverlapping(back_buf, surface_ptr, pixel_count);
+            }
         }
 
-        // Clear dirty flags after rendering
+        // Clear dirty flags + reset prev_x/y/w/h after rendering
         clear_dirty(&mut st.controls, win_id);
 
-        // Present via compositor DLL + mark as pending VSync ACK
-        compositor::present(channel_id, comp_window_id, shm_id);
+        // Clear the CompWindow dirty state — without this, cw.dirty stays true
+        // forever (Phase 3.7 only resets it when needs_repaint is true, but no
+        // control calls mark_dirty() after clear_dirty), causing an infinite
+        // render→present→frame_ack→render loop (~42 fps idle).
+        st.comp_windows[wi].dirty = false;
+        st.comp_windows[wi].dirty_rect = None;
+
+        // Present via compositor DLL — pass dirty rect if available so the
+        // compositor only copies and recomposites the changed region.
+        if let Some((dx, dy, dw, dh)) = clamped_dr {
+            compositor::present_rect(
+                channel_id, comp_window_id, shm_id,
+                dx as u32, dy as u32, dw, dh,
+            );
+        } else {
+            compositor::present(channel_id, comp_window_id, shm_id);
+        }
         st.comp_windows[wi].frame_presented = true;
         st.comp_windows[wi].last_present_ms = crate::syscall::uptime_ms();
     }
@@ -704,14 +751,19 @@ fn clear_tracking_for(st: &mut crate::AnyuiState, id: ControlId) {
 
 // ── Dirty tracking ─────────────────────────────────────────────────
 
-/// Clear dirty flags for all controls in the subtree rooted at `id`.
+/// Clear dirty flags and reset prev_x/y/w/h for all controls in the subtree rooted at `id`.
 /// Uses a stack buffer instead of Vec::to_vec() to avoid heap allocation per node.
 fn clear_dirty(controls: &mut [Box<dyn Control>], id: ControlId) {
     let idx = match control::find_idx(controls, id) {
         Some(i) => i,
         None => return,
     };
-    controls[idx].base_mut().dirty = false;
+    let b = controls[idx].base_mut();
+    b.dirty = false;
+    b.prev_x = b.x;
+    b.prev_y = b.y;
+    b.prev_w = b.w;
+    b.prev_h = b.h;
     let mut buf = [0u32; 64];
     let n = controls[idx].children().len().min(64);
     buf[..n].copy_from_slice(&controls[idx].children()[..n]);
@@ -720,14 +772,99 @@ fn clear_dirty(controls: &mut [Box<dyn Control>], id: ControlId) {
     }
 }
 
+// ── Dirty rect collection ───────────────────────────────────────────
+
+/// Union two rects: expand `existing` to also cover `(x, y, w, h)`.
+fn union_rect(existing: Option<(i32, i32, u32, u32)>, x: i32, y: i32, w: u32, h: u32) -> (i32, i32, u32, u32) {
+    if w == 0 || h == 0 { return existing.unwrap_or((x, y, w, h)); }
+    match existing {
+        None => (x, y, w, h),
+        Some((ex, ey, ew, eh)) => {
+            let x0 = ex.min(x);
+            let y0 = ey.min(y);
+            let x1 = (ex + ew as i32).max(x + w as i32);
+            let y1 = (ey + eh as i32).max(y + h as i32);
+            (x0, y0, (x1 - x0).max(0) as u32, (y1 - y0).max(0) as u32)
+        }
+    }
+}
+
+/// Check if two rectangles intersect.
+fn rects_intersect(ax: i32, ay: i32, aw: u32, ah: u32, bx: i32, by: i32, bw: u32, bh: u32) -> bool {
+    ax < bx + bw as i32 && ax + aw as i32 > bx && ay < by + bh as i32 && ay + ah as i32 > by
+}
+
+/// Walk the control tree, compute absolute positions, and union dirty controls'
+/// bounding rects into `cw.dirty_rect`. If the root Window control itself is dirty,
+/// forces a full-window redraw (dirty_rect = None).
+fn collect_dirty_rects(
+    controls: &[Box<dyn Control>],
+    id: ControlId,
+    parent_abs_x: i32,
+    parent_abs_y: i32,
+    cw: &mut crate::CompWindow,
+) {
+    let idx = match control::find_idx(controls, id) {
+        Some(i) => i,
+        None => return,
+    };
+    if !controls[idx].visible() { return; }
+
+    let b = controls[idx].base();
+    let abs_x = parent_abs_x + b.x;
+    let abs_y = parent_abs_y + b.y;
+
+    if b.dirty {
+        cw.dirty = true;
+
+        // If the top-level Window control itself is dirty, force full redraw
+        // (covers resize, theme changes, initial render).
+        if controls[idx].kind() == ControlKind::Window {
+            cw.dirty_rect = None;
+            return; // No need to recurse — full render
+        }
+
+        // Union current bounds with dirty rect
+        cw.dirty_rect = Some(union_rect(cw.dirty_rect, abs_x, abs_y, b.w, b.h));
+
+        // If position or size changed, also union the old bounds to repaint the vacated area.
+        if b.prev_x != b.x || b.prev_y != b.y || b.prev_w != b.w || b.prev_h != b.h {
+            let prev_abs_x = parent_abs_x + b.prev_x;
+            let prev_abs_y = parent_abs_y + b.prev_y;
+            cw.dirty_rect = Some(union_rect(cw.dirty_rect, prev_abs_x, prev_abs_y, b.prev_w, b.prev_h));
+        }
+    }
+
+    // Copy children to stack buffer (same pattern as render_tree)
+    let mut child_buf = [0u32; 64];
+    let child_n = controls[idx].children().len().min(64);
+    child_buf[..child_n].copy_from_slice(&controls[idx].children()[..child_n]);
+
+    // Handle ScrollView offset for child absolute positions
+    let child_abs_y = match controls[idx].kind() {
+        ControlKind::ScrollView => abs_y - b.state as i32,
+        ControlKind::Expander => abs_y + crate::controls::expander::HEADER_HEIGHT as i32,
+        _ => abs_y,
+    };
+
+    for i in 0..child_n {
+        collect_dirty_rects(controls, child_buf[i], abs_x, child_abs_y, cw);
+    }
+}
+
 // ── Tree rendering ──────────────────────────────────────────────────
 
+/// Render the control tree, optionally skipping controls outside `dirty_rect`.
+/// When `dirty_rect` is `Some`, only controls whose bounds intersect the dirty
+/// region are rendered — all other controls retain their pixels from the
+/// previous frame in the persistent back buffer.
 fn render_tree(
     controls: &[Box<dyn Control>],
     id: ControlId,
     surface: &crate::draw::Surface,
     parent_abs_x: i32,
     parent_abs_y: i32,
+    dirty_rect: Option<(i32, i32, u32, u32)>,
 ) {
     let idx = match control::find_idx(controls, id) {
         Some(i) => i,
@@ -738,11 +875,24 @@ fn render_tree(
         return;
     }
 
+    let (cx, cy) = controls[idx].position();
+    let abs_x = parent_abs_x + cx;
+    let abs_y = parent_abs_y + cy;
+    let (cw, ch) = controls[idx].size();
+
+    // Skip entire subtree if this control doesn't intersect the dirty rect.
+    // The back buffer retains pixels from the previous frame, so unchanged
+    // controls don't need to be redrawn.
+    if let Some((dx, dy, dw, dh)) = dirty_rect {
+        if !rects_intersect(abs_x, abs_y, cw, ch, dx, dy, dw, dh) {
+            return;
+        }
+    }
+
     controls[idx].render(surface, parent_abs_x, parent_abs_y);
 
-    let (cx, cy) = controls[idx].position();
-    let child_abs_x = parent_abs_x + cx;
-    let child_abs_y = parent_abs_y + cy;
+    let child_abs_x = abs_x;
+    let child_abs_y = abs_y;
 
     // Copy children to stack buffer to avoid Vec allocation
     let mut child_buf = [0u32; 64];
@@ -772,7 +922,7 @@ fn render_tree(
         _ => (child_abs_y, *surface),
     };
     for i in 0..child_n {
-        render_tree(controls, child_buf[i], &child_surface, child_abs_x, child_abs_y);
+        render_tree(controls, child_buf[i], &child_surface, child_abs_x, child_abs_y, dirty_rect);
     }
 }
 

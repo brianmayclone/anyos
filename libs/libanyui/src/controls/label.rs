@@ -18,17 +18,29 @@ impl Control for Label {
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let bx = ax + self.text_base.base.x;
         let by = ay + self.text_base.base.y;
-        let color = if self.text_base.base.color != 0 {
-            self.text_base.base.color
+        let w = self.text_base.base.w;
+        let h = self.text_base.base.h;
+
+        // Background (only if set_color() was called with a non-zero color)
+        if self.text_base.base.color != 0 {
+            crate::draw::fill_rect(surface, bx, by, w, h, self.text_base.base.color);
+        }
+
+        // Text color: set_text_color() > theme default
+        let text_color = if self.text_base.text_style.text_color != 0 {
+            self.text_base.text_style.text_color
         } else {
             crate::theme::colors().text
         };
         let fs = self.text_base.text_style.font_size;
         let align = self.text_base.base.state; // 0=left, 1=center, 2=right
+        let pad = &self.text_base.base.padding;
 
         // Handle multiline text (split on '\n')
         let text = &self.text_base.text;
-        let mut line_y = by;
+        let text_x = bx + pad.left;
+        let text_w = w as i32 - pad.left - pad.right;
+        let mut line_y = by + pad.top;
         let line_h = fs as i32 + 2;
         let mut start = 0;
         loop {
@@ -38,16 +50,16 @@ impl Control for Label {
             let tx = if align == 1 {
                 // Center
                 let (tw, _) = crate::draw::text_size_at(line, fs);
-                bx + (self.text_base.base.w as i32 - tw as i32) / 2
+                text_x + (text_w - tw as i32) / 2
             } else if align == 2 {
                 // Right
                 let (tw, _) = crate::draw::text_size_at(line, fs);
-                bx + self.text_base.base.w as i32 - tw as i32
+                text_x + text_w - tw as i32
             } else {
-                bx
+                text_x
             };
 
-            crate::draw::draw_text_sized(surface, tx, line_y, color, line, fs);
+            crate::draw::draw_text_sized(surface, tx, line_y, text_color, line, fs);
             line_y += line_h;
 
             if end >= text.len() { break; }

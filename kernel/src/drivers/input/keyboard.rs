@@ -45,6 +45,9 @@ pub enum Key {
     End,
     PageUp,
     PageDown,
+    VolumeUp,
+    VolumeDown,
+    VolumeMute,
     Unknown,
 }
 
@@ -88,6 +91,9 @@ fn scancode_to_key(scancode: u8, is_e0: bool, mods: &Modifiers) -> Key {
             0x53 => Key::Delete,
             0x1D => Key::RightCtrl,
             0x38 => Key::RightAlt,
+            0x30 => Key::VolumeUp,
+            0x2E => Key::VolumeDown,
+            0x20 => Key::VolumeMute,
             _ => Key::Unknown,
         };
     }

@@ -169,6 +169,12 @@ pub fn present(channel_id: u32, window_id: u32, shm_id: u32) {
     (exports().present)(channel_id, window_id, shm_id);
 }
 
+/// Signal the compositor that a specific region of the window content was updated.
+/// The compositor will only copy and recomposite the dirty rectangle.
+pub fn present_rect(channel_id: u32, window_id: u32, shm_id: u32, x: u32, y: u32, w: u32, h: u32) {
+    (exports().present_rect)(channel_id, window_id, shm_id, x, y, w, h);
+}
+
 /// Poll for the next event. Returns true if an event was received.
 /// Buffer layout: [event_type, window_id, arg1, arg2, arg3]
 pub fn poll_event(

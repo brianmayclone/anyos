@@ -34,7 +34,9 @@ mod events;
 pub use events::*;
 
 pub mod icon;
-pub use icon::Icon;
+pub use icon::{Icon, IconType};
+
+pub mod theme;
 
 use dynlink::{DlHandle, dl_open, dl_sym};
 
@@ -81,6 +83,7 @@ pub const KIND_EXPANDER: u32 = 37;
 pub const KIND_DATA_GRID: u32 = 38;
 pub const KIND_TEXT_EDITOR: u32 = 39;
 pub const KIND_TREE_VIEW: u32 = 40;
+pub const KIND_RADIO_GROUP: u32 = 41;
 
 // ── DockStyle constants ─────────────────────────────────────────────
 
@@ -208,6 +211,8 @@ struct AnyuiLib {
     set_context_menu: extern "C" fn(u32, u32),
     // MessageBox
     message_box: extern "C" fn(u32, *const u8, u32, *const u8, u32),
+    // IconButton
+    iconbutton_set_pixels: extern "C" fn(u32, *const u32, u32, u32),
     // ImageView
     imageview_set_pixels: extern "C" fn(u32, *const u32, u32, u32),
     imageview_set_scale_mode: extern "C" fn(u32, u32),
@@ -276,6 +281,9 @@ struct AnyuiLib {
     screen_size: extern "C" fn(*mut u32, *mut u32),
     // Notifications
     show_notification: extern "C" fn(*const u8, u32, *const u8, u32, *const u32, u32),
+    // Theme
+    pub(crate) set_theme: extern "C" fn(u32),
+    pub(crate) get_theme: extern "C" fn() -> u32,
 }
 
 static mut LIB: Option<AnyuiLib> = None;
@@ -286,7 +294,10 @@ pub fn lib() -> &'static AnyuiLib {
 
 /// Resolve a function pointer from the loaded library, or panic.
 unsafe fn resolve<T: Copy>(handle: &DlHandle, name: &str) -> T {
-    let ptr = dl_sym(handle, name).expect("symbol not found in libanyui.so");
+    let ptr = match dl_sym(handle, name) {
+        Some(p) => p,
+        None => panic!("symbol '{}' not found in libanyui.so", name),
+    };
     core::mem::transmute_copy::<*const (), T>(&ptr)
 }
 
@@ -387,6 +398,8 @@ pub fn init() -> bool {
             set_context_menu: resolve(&handle, "anyui_set_context_menu"),
             // MessageBox
             message_box: resolve(&handle, "anyui_message_box"),
+            // IconButton
+            iconbutton_set_pixels: resolve(&handle, "anyui_iconbutton_set_pixels"),
             // ImageView
             imageview_set_pixels: resolve(&handle, "anyui_imageview_set_pixels"),
             imageview_set_scale_mode: resolve(&handle, "anyui_imageview_set_scale_mode"),
@@ -455,6 +468,9 @@ pub fn init() -> bool {
             screen_size: resolve(&handle, "anyui_screen_size"),
             // Notifications
             show_notification: resolve(&handle, "anyui_show_notification"),
+            // Theme
+            set_theme: resolve(&handle, "anyui_set_theme"),
+            get_theme: resolve(&handle, "anyui_get_theme"),
             _handle: handle,
         };
         (lib.init)();

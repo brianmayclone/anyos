@@ -34,6 +34,10 @@ pub const KEY_F10: u32 = 0x149;
 pub const KEY_F11: u32 = 0x14A;
 pub const KEY_F12: u32 = 0x14B;
 
+pub const KEY_VOLUME_UP: u32   = 0x160;
+pub const KEY_VOLUME_DOWN: u32 = 0x161;
+pub const KEY_VOLUME_MUTE: u32 = 0x162;
+
 // ── Scancode Translation ─────────────────────────────────────────────────────
 
 /// Translate a raw PS/2 scancode into a `KEY_*` code.
@@ -69,6 +73,10 @@ pub fn encode_scancode(scancode: u32) -> u32 {
         0x44 => KEY_F10,
         0x57 => KEY_F11,
         0x58 => KEY_F12,
+        // Multimedia keys (virtual scancodes from kernel, E0-prefixed)
+        0x130 => KEY_VOLUME_UP,
+        0x12E => KEY_VOLUME_DOWN,
+        0x120 => KEY_VOLUME_MUTE,
         // All other scancodes pass through (apps use chr value)
         other => other,
     }

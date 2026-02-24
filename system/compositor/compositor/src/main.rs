@@ -209,35 +209,82 @@ fn management_loop(
 ) {
     let mut events_buf = [[0u32; 5]; 256];
     let mut ipc_buf = [0u32; 5];
+    let mut login_retries: u32 = 0;
+    let mut login_failed = false;
+    const MAX_LOGIN_RETRIES: u32 = 10;
+
+    // ── Debug stats (reset every 5 seconds) ──
+    let mut mgmt_loops: u32 = 0;
+    let mut mgmt_input: u32 = 0;
+    let mut mgmt_ipc: u32 = 0;
+    let mut mgmt_sys: u32 = 0;
+    let mut mgmt_idle: u32 = 0;
+    let mut mgmt_last_report: u32 = sys::uptime_ms();
+
     loop {
+        // ── Periodic stats dump ──
+        let now_ms = sys::uptime_ms();
+        if now_ms.wrapping_sub(mgmt_last_report) >= 30000 {
+            println!(
+                "MGMT-STATS: loops={} input={} ipc={} sys={} idle={}",
+                mgmt_loops, mgmt_input, mgmt_ipc, mgmt_sys, mgmt_idle
+            );
+            mgmt_loops = 0;
+            mgmt_input = 0;
+            mgmt_ipc = 0;
+            mgmt_sys = 0;
+            mgmt_idle = 0;
+            mgmt_last_report = now_ms;
+        }
+        mgmt_loops += 1;
+
         // Block until: IPC event arrives, input IRQ fires, or timeout.
-        // 16ms timeout gives ~60Hz max as safety net (clock updates, login checks).
-        let timeout = if *login_pending { 100 } else { 16 };
+        // Input IRQs (keyboard/mouse) call wake_compositor_if_blocked() in the
+        // kernel, so we don't need a short polling timeout. Use a large timeout
+        // and let the kernel wake us on demand — reduces idle wakeups from
+        // 62.5/sec (16ms) to near zero.
+        let timeout = if *login_pending { 100 } else { 5000 };
         ipc::evt_chan_wait(compositor_channel, compositor_sub, timeout);
 
         // ── Check if login window has exited ──
         if *login_pending {
             let status = process::try_waitpid(*login_tid);
             if status != process::STILL_RUNNING {
-                // Check if login crashed (signal exit codes are > 128)
-                if status > 128 && status < 256 {
-                    println!("compositor: login crashed (exit={}), re-spawning...", status);
-                    let new_tid = process::spawn("/System/login", "");
-                    if new_tid != u32::MAX {
-                        *login_tid = new_tid;
-                        println!("compositor: login re-spawned (TID={})", new_tid);
+                // Determine if login failed:
+                // - Crash: signal exit codes 129-255
+                // - Cancelled/no auth: u32::MAX
+                let is_crash = status > 128 && status < 256;
+                let is_cancelled = status == u32::MAX;
+
+                if is_crash || is_cancelled {
+                    login_retries += 1;
+                    if is_crash {
+                        println!("compositor: login crashed (exit={}), attempt {}/{}", status, login_retries, MAX_LOGIN_RETRIES);
                     } else {
-                        // Login binary missing — can't recover
-                        println!("compositor: FATAL — cannot re-spawn login");
+                        println!("compositor: login exited without authentication, attempt {}/{}", login_retries, MAX_LOGIN_RETRIES);
                     }
-                    // Stay in login_pending state, don't proceed to desktop
+
+                    if login_retries >= MAX_LOGIN_RETRIES {
+                        println!("compositor: FATAL — login failed {} times, giving up", MAX_LOGIN_RETRIES);
+                        *login_pending = false;
+                        login_failed = true;
+                    } else {
+                        let new_tid = process::spawn("/System/login", "");
+                        if new_tid != u32::MAX {
+                            *login_tid = new_tid;
+                            println!("compositor: login re-spawned (TID={})", new_tid);
+                        } else {
+                            println!("compositor: FATAL — cannot re-spawn login");
+                            *login_pending = false;
+                        }
+                    }
                 } else {
-                    // Normal exit — authentication succeeded
+                    // Valid uid — authentication succeeded (uid=0 for root, 1000+ for users)
                     *login_pending = false;
                     let exit_uid = status;
                     println!("compositor: authentication complete, uid={}", exit_uid);
 
-                    if exit_uid != u32::MAX && exit_uid != 0 {
+                    if exit_uid != 0 {
                         process::set_identity(exit_uid as u16);
                         println!("compositor: identity switched to uid={}", exit_uid);
                     }
@@ -248,18 +295,16 @@ fn management_loop(
                     if nlen != u32::MAX && nlen > 0 {
                         if let Ok(username) = core::str::from_utf8(&name_buf[..nlen as usize]) {
                             anyos_std::env::set("USER", username);
-                            if uid != 0 {
-                                let home = alloc::format!("/Users/{}", username);
-                                anyos_std::env::set("HOME", &home);
-                            }
+                            let home = alloc::format!("/Users/{}", username);
+                            anyos_std::env::set("HOME", &home);
                         }
                     }
                 }
             }
         }
 
-        // Spawn dock + conf programs once login is done
-        if !*login_pending && !*dock_spawned {
+        // Spawn dock + conf programs once login succeeded (not if login failed)
+        if !*login_pending && !*dock_spawned && !login_failed {
             acquire_lock();
             let desktop = unsafe { desktop_ref() };
             desktop.set_menubar_visible(true);
@@ -279,6 +324,7 @@ fn management_loop(
 
         // Process input under lock (skip entirely if no events — avoids lock contention)
         if event_count > 0 {
+            mgmt_input += 1;
             acquire_lock();
             let desktop = unsafe { desktop_ref() };
             desktop.process_input(&events_buf, event_count);
@@ -293,6 +339,10 @@ fn management_loop(
 
         // Poll system events (process exit, resolution change)
         let had_sys = handle_system_events(compositor_channel, sys_sub);
+
+        if had_ipc { mgmt_ipc += 1; }
+        if had_sys { mgmt_sys += 1; }
+        if event_count == 0 && !had_ipc && !had_sys { mgmt_idle += 1; }
 
         // Signal render thread ONLY when actual work was processed.
         // Previously this was unconditional, causing the render thread to wake

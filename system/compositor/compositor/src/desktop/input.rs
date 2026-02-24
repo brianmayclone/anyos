@@ -1,7 +1,7 @@
 //! Input handling — mouse, keyboard, scroll, drag, and resize interaction.
 
 use crate::compositor::Rect;
-use crate::keys::encode_scancode;
+use crate::keys::{encode_scancode, KEY_VOLUME_UP, KEY_VOLUME_DOWN, KEY_VOLUME_MUTE};
 use crate::menu::MenuBarHit;
 
 use super::cursors::CursorShape;
@@ -331,7 +331,10 @@ impl Desktop {
         let sw = self.screen_width;
         let notif_active = self.notifications.tick(&mut self.compositor, sw);
 
-        wid_count > 0 || notif_active
+        // Tick volume HUD animation and auto-dismiss
+        let hud_active = self.volume_hud.tick(&mut self.compositor);
+
+        wid_count > 0 || notif_active || hud_active
     }
 
     pub(crate) fn handle_mouse_button(&mut self, buttons: u32, down: bool) {
@@ -677,9 +680,52 @@ impl Desktop {
     }
 
     fn handle_key(&mut self, scancode: u32, chr: u32, mods: u32, down: bool) {
+        let key_code = encode_scancode(scancode);
+
+        // Volume keys: intercept globally, don't forward to apps
+        if down {
+            match key_code {
+                KEY_VOLUME_UP => {
+                    let vol = anyos_std::audio::audio_get_volume();
+                    let new_vol = (vol as u32 + 5).min(100) as u8;
+                    anyos_std::audio::audio_set_volume(new_vol);
+                    let (sw, sh, mb) = (self.screen_width, self.screen_height, self.menubar_layer_id);
+                    self.volume_hud.show(&mut self.compositor, sw, sh, new_vol, false, mb);
+                    return;
+                }
+                KEY_VOLUME_DOWN => {
+                    let vol = anyos_std::audio::audio_get_volume();
+                    let new_vol = vol.saturating_sub(5);
+                    anyos_std::audio::audio_set_volume(new_vol);
+                    let (sw, sh, mb) = (self.screen_width, self.screen_height, self.menubar_layer_id);
+                    self.volume_hud.show(&mut self.compositor, sw, sh, new_vol, false, mb);
+                    return;
+                }
+                KEY_VOLUME_MUTE => {
+                    let vol = anyos_std::audio::audio_get_volume();
+                    if vol > 0 {
+                        self.volume_hud.saved_volume = vol;
+                        anyos_std::audio::audio_set_volume(0);
+                        let (sw, sh, mb) = (self.screen_width, self.screen_height, self.menubar_layer_id);
+                        self.volume_hud.show(&mut self.compositor, sw, sh, 0, true, mb);
+                    } else {
+                        let restore = if self.volume_hud.saved_volume > 0 {
+                            self.volume_hud.saved_volume
+                        } else {
+                            50
+                        };
+                        anyos_std::audio::audio_set_volume(restore);
+                        let (sw, sh, mb) = (self.screen_width, self.screen_height, self.menubar_layer_id);
+                        self.volume_hud.show(&mut self.compositor, sw, sh, restore, false, mb);
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         if let Some(win_id) = self.focused_window {
             let evt_type = if down { EVENT_KEY_DOWN } else { EVENT_KEY_UP };
-            let key_code = encode_scancode(scancode);
             self.push_event(win_id, [evt_type, key_code, chr, mods, 0]);
         }
     }

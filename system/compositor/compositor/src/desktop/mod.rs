@@ -7,6 +7,7 @@ pub mod input;
 pub mod ipc;
 pub mod notifications;
 pub mod theme;
+pub mod volume_hud;
 pub mod window;
 
 // Re-export public API used by main.rs and other crates
@@ -138,6 +139,8 @@ pub struct Desktop {
     pub(crate) crash_dialogs: Vec<crash_dialog::CrashDialog>,
     /// Notification banner manager.
     pub(crate) notifications: notifications::NotificationManager,
+    /// Volume HUD overlay (centered-bottom).
+    pub(crate) volume_hud: volume_hud::VolumeHud,
     /// Cascading auto-placement state for new windows.
     pub(crate) cascade_x: i32,
     pub(crate) cascade_y: i32,
@@ -210,6 +213,7 @@ impl Desktop {
             clipboard_format: 0,
             crash_dialogs: Vec::new(),
             notifications: notifications::NotificationManager::new(),
+            volume_hud: volume_hud::VolumeHud::new(),
             cascade_x: 120,
             cascade_y: MENUBAR_HEIGHT as i32 + 50,
             frame_ack_queue: Vec::new(),
@@ -678,8 +682,9 @@ impl Desktop {
         self.compositor.set_layer_visible(self.menubar_layer_id, visible);
     }
 
-    /// Update the clock display (call periodically).
-    pub fn update_clock(&mut self) {
+    /// Update the clock display. Returns `true` if the minute changed and
+    /// damage was added (caller should compose). Returns `false` if no change.
+    pub fn update_clock(&mut self) -> bool {
         let mut time_buf = [0u8; 8];
         anyos_std::sys::time(&mut time_buf);
         let min = time_buf[5] as u32;
@@ -696,6 +701,9 @@ impl Desktop {
                 60,
                 MENUBAR_HEIGHT + 1,
             ));
+            true
+        } else {
+            false
         }
     }
 
@@ -737,7 +745,8 @@ impl Desktop {
     // ── Compose ────────────────────────────────────────────────────────
 
     /// Run the full compose cycle (damage → composite → cursor → flush → collect ACKs).
-    pub fn compose(&mut self) {
+    /// Returns `true` if actual damage was composited (pixels changed on screen).
+    pub fn compose(&mut self) -> bool {
         let had_damage = self.compositor.compose();
 
         if self.compositor.has_hw_cursor() {
@@ -775,6 +784,8 @@ impl Desktop {
                 }
             }
         }
+
+        had_damage
     }
 
     // ── Accessors ──────────────────────────────────────────────────────

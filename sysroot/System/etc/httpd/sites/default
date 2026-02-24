@@ -1,0 +1,7 @@
+name=Default Web Site
+port=80
+ssl=false
+ssl_port=443
+root=/Users/Shared/www
+index=index.html,index.htm
+enabled=true

@@ -1,8 +1,14 @@
 //! Toolbar — horizontal bar that lays out children left-to-right with spacing.
+//!
+//! Enforces a minimum height of 36px (or the tallest child + padding,
+//! whichever is larger) so toolbar buttons are always visible.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use crate::control::{Control, ControlBase, ControlKind, ChildLayout, find_idx};
+
+/// Absolute minimum toolbar height in pixels.
+const MIN_HEIGHT: u32 = 36;
 
 pub struct Toolbar {
     pub(crate) base: ControlBase,
@@ -12,7 +18,12 @@ pub struct Toolbar {
 
 impl Toolbar {
     pub fn new(base: ControlBase) -> Self {
-        Self { base, spacing: 4 }
+        let mut tb = Self { base, spacing: 4 };
+        // Enforce minimum height at creation time
+        if tb.base.h < MIN_HEIGHT {
+            tb.base.h = MIN_HEIGHT;
+        }
+        tb
     }
 }
 
@@ -50,17 +61,32 @@ impl Control for Toolbar {
                 continue;
             }
 
+            let child_h = controls[ci].base().h as i32;
+            // Center children vertically if they are shorter than the toolbar
+            let cy = if child_h < inner_h {
+                pad.top + (inner_h - child_h) / 2
+            } else {
+                pad.top
+            };
+
             result.push(ChildLayout {
                 id: child_id,
                 x: x_offset,
-                y: pad.top,
+                y: cy,
                 w: None,
-                h: if inner_h > 0 { Some(inner_h as u32) } else { None },
+                h: None, // keep child's own height
             });
 
             x_offset += controls[ci].base().w as i32 + self.spacing as i32;
         }
 
         Some(result)
+    }
+
+    fn set_size(&mut self, w: u32, h: u32) {
+        self.base.w = w;
+        // Enforce minimum height on resize too
+        self.base.h = if h < MIN_HEIGHT { MIN_HEIGHT } else { h };
+        self.base.mark_dirty();
     }
 }

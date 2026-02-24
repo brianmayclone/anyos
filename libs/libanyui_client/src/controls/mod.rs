@@ -44,6 +44,7 @@ mod tableview;
 mod stackpanel;
 mod flowpanel;
 mod tablelayout;
+mod radiogroup;
 
 // ── Static dialogs ──
 mod messagebox;
@@ -77,7 +78,7 @@ pub use datagrid::{DataGrid, ColumnDef, ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT,
     SELECTION_SINGLE, SELECTION_MULTI, SORT_NONE, SORT_ASCENDING, SORT_DESCENDING,
     SORT_STRING, SORT_NUMERIC};
 pub use texteditor::TextEditor;
-pub use treeview::TreeView;
+pub use treeview::{TreeView, STYLE_NORMAL, STYLE_BOLD};
 
 pub use expander::Expander;
 pub use window::{Window, WIN_FLAG_BORDERLESS, WIN_FLAG_NOT_RESIZABLE, WIN_FLAG_ALWAYS_ON_TOP,
@@ -97,6 +98,7 @@ pub use tableview::TableView;
 pub use stackpanel::StackPanel;
 pub use flowpanel::FlowPanel;
 pub use tablelayout::TableLayout;
+pub use radiogroup::RadioGroup;
 
 pub use messagebox::{MessageBox, MessageBoxType};
 pub use filedialog::FileDialog;

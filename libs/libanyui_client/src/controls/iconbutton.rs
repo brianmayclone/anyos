@@ -1,7 +1,8 @@
 use crate::{Control, Widget, lib, events, KIND_ICON_BUTTON};
 use crate::events::ClickEvent;
+use crate::icon::IconType;
 
-// ── Icon ID constants ────────────────────────────────────────────────
+// ── Legacy Icon ID constants (kept for backwards compatibility) ──────
 pub const ICON_NEW_FILE: u32 = 1;
 pub const ICON_FOLDER_OPEN: u32 = 2;
 pub const ICON_SAVE: u32 = 3;
@@ -23,7 +24,22 @@ impl IconButton {
         Self { ctrl: Control { id } }
     }
 
-    /// Set which built-in icon to display (use ICON_* constants).
+    /// Set a system SVG icon by name from ico.pak.
+    ///
+    /// Renders the icon at the given size and color via libimage's SVG rasterizer,
+    /// with caching so repeated calls are free.
+    ///
+    /// # Example
+    /// ```rust
+    /// btn.set_system_icon("device-floppy", IconType::Outline, 0xFFCCCCCC, 18);
+    /// ```
+    pub fn set_system_icon(&self, name: &str, icon_type: IconType, color: u32, size: u32) {
+        if let Some(icon) = crate::icon::Icon::system(name, icon_type, color, size) {
+            (lib().iconbutton_set_pixels)(self.ctrl.id, icon.pixels.as_ptr(), icon.width, icon.height);
+        }
+    }
+
+    /// Set which built-in pixel-art icon to display (legacy, use ICON_* constants).
     pub fn set_icon(&self, icon_id: u32) {
         self.ctrl.set_state(icon_id);
     }

@@ -2609,7 +2609,15 @@ pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
                     | ((key_evt.modifiers.caps_lock as u32) << 3)
                     | ((key_evt.modifiers.altgr as u32) << 4);
 
-                events[count] = [event_type, key_evt.scancode as u32, char_val, mods, 0];
+                // Virtual scancodes for E0-prefixed multimedia keys
+                // (raw scancodes 0x30/0x2E/0x20 collide with letter keys)
+                let scancode_out = match key_evt.key {
+                    crate::drivers::input::keyboard::Key::VolumeUp => 0x130u32,
+                    crate::drivers::input::keyboard::Key::VolumeDown => 0x12E,
+                    crate::drivers::input::keyboard::Key::VolumeMute => 0x120,
+                    _ => key_evt.scancode as u32,
+                };
+                events[count] = [event_type, scancode_out, char_val, mods, 0];
                 count += 1;
             }
             None => break,

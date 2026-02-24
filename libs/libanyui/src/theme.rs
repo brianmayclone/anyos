@@ -1,7 +1,7 @@
 //! Theme color palette and sizing constants.
 //!
 //! Colors are dynamic — they change based on the system theme (dark/light).
-//! The theme value is read from the uisys DLL's shared page (volatile).
+//! The theme value is stored locally and set via `set_theme()`.
 
 pub struct ThemeColors {
     pub window_bg: u32,
@@ -93,22 +93,29 @@ const LIGHT: ThemeColors = ThemeColors {
     check_mark:      0xFFFFFFFF,
 };
 
-/// Address of the `theme` field in the UisysExports struct (DLL base + 12).
-/// Written by compositor, shared across all processes via DLL shared pages.
-const THEME_ADDR: *const u32 = 0x0400_000C as *const u32;
+/// Current theme flag: 0 = dark, 1 = light.
+static mut CURRENT_THEME: u32 = 0;
 
-/// Get the current theme colors (reads theme flag from uisys DLL page).
+/// Set the current theme (0 = dark, 1 = light).
+pub fn set_theme(light: bool) {
+    unsafe { CURRENT_THEME = if light { 1 } else { 0 }; }
+}
+
+/// Get the current theme flag (0 = dark, 1 = light).
+pub fn get_theme() -> u32 {
+    unsafe { CURRENT_THEME }
+}
+
+/// Get the current theme colors.
 #[inline(always)]
 pub fn colors() -> &'static ThemeColors {
-    let theme = unsafe { core::ptr::read_volatile(THEME_ADDR) };
-    if theme == 0 { &DARK } else { &LIGHT }
+    if unsafe { CURRENT_THEME } == 0 { &DARK } else { &LIGHT }
 }
 
 /// Check if the current theme is light.
 #[inline(always)]
 pub fn is_light() -> bool {
-    let val: u32 = unsafe { core::ptr::read_volatile(THEME_ADDR) };
-    val != 0
+    unsafe { CURRENT_THEME != 0 }
 }
 
 // ── Color utility functions (zero-cost color math) ───────────────────

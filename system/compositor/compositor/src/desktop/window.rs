@@ -161,46 +161,46 @@ impl WindowInfo {
         let fw = self.full_width() as i32;
         let fh = self.full_height() as i32;
 
+        // Resize zones extend 2px outside the window bounds for easier targeting.
+        // Check the outer margin first, before the normal bounds check.
+        let outer = 2i32;
+        if self.is_resizable() && !self.maximized && !self.is_borderless() {
+            if wx >= -outer && wy >= -outer && wx < fw + outer && wy < fh + outer {
+                let inner = 6i32; // inner border from edge
+                let top = wy < inner;
+                let bottom = wy >= fh - inner;
+                let left = wx < inner;
+                let right = wx >= fw - inner;
+
+                // Corner zones (inner+outer = 8px grab area on each axis)
+                if top && left { return HitTest::ResizeTopLeft; }
+                if top && right { return HitTest::ResizeTopRight; }
+                if bottom && left { return HitTest::ResizeBottomLeft; }
+                if bottom && right { return HitTest::ResizeBottomRight; }
+
+                // Edge zones (only if cursor is outside window or within inner border)
+                if wx < 0 || wy < 0 || wx >= fw || wy >= fh {
+                    // Outside bounds — must be a resize edge
+                    if top || wy < 0 { return HitTest::ResizeTop; }
+                    if bottom || wy >= fh { return HitTest::ResizeBottom; }
+                    if left || wx < 0 { return HitTest::ResizeLeft; }
+                    if right || wx >= fw { return HitTest::ResizeRight; }
+                }
+
+                // Inside bounds — check inner border
+                if top { return HitTest::ResizeTop; }
+                if bottom { return HitTest::ResizeBottom; }
+                if left { return HitTest::ResizeLeft; }
+                if right { return HitTest::ResizeRight; }
+            }
+        }
+
         if wx < 0 || wy < 0 || wx >= fw || wy >= fh {
             return HitTest::None;
         }
 
         if self.is_borderless() {
             return HitTest::Content;
-        }
-
-        // Resize edges (4px border)
-        if self.is_resizable() && !self.maximized {
-            let edge = 4;
-            let top = wy < edge;
-            let bottom = wy >= fh - edge;
-            let left = wx < edge;
-            let right = wx >= fw - edge;
-
-            if top && left {
-                return HitTest::ResizeTopLeft;
-            }
-            if top && right {
-                return HitTest::ResizeTopRight;
-            }
-            if bottom && left {
-                return HitTest::ResizeBottomLeft;
-            }
-            if bottom && right {
-                return HitTest::ResizeBottomRight;
-            }
-            if top {
-                return HitTest::ResizeTop;
-            }
-            if bottom {
-                return HitTest::ResizeBottom;
-            }
-            if left {
-                return HitTest::ResizeLeft;
-            }
-            if right {
-                return HitTest::ResizeRight;
-            }
         }
 
         // Title bar
