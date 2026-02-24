@@ -138,6 +138,28 @@ pub(crate) fn color_notif_time() -> u32 {
     if is_light() { 0xFF8E8E93 } else { 0xFF6A6A6E }
 }
 
+// ── Volume HUD Colors ─────────────────────────────────────────────────
+
+#[inline(always)]
+pub(crate) fn color_hud_bg() -> u32 {
+    if is_light() { 0xE6F0F0F5 } else { 0xE61C1C1E }
+}
+
+#[inline(always)]
+pub(crate) fn color_hud_bar() -> u32 {
+    if is_light() { 0xFF007AFF } else { 0xFF0A84FF }
+}
+
+#[inline(always)]
+pub(crate) fn color_hud_bar_bg() -> u32 {
+    if is_light() { 0xFFD1D1D6 } else { 0xFF3A3A3C }
+}
+
+#[inline(always)]
+pub(crate) fn color_hud_text() -> u32 {
+    if is_light() { 0xFF1D1D1F } else { 0xFFE6E6E6 }
+}
+
 // ── System Font ────────────────────────────────────────────────────────────
 
 pub(crate) const FONT_ID: u16 = 0;

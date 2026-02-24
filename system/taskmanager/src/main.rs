@@ -379,8 +379,26 @@ fn main() {
             if len > 0 {
                 let tid = parse_u32_bytes(&tid_buf[..len as usize]).unwrap_or(0);
                 if tid > 3 {
+                    // Read process name for notification
+                    let mut name_buf = [0u8; 24];
+                    let name_len = proc_grid.get_cell(sel, 1, &mut name_buf);
+
                     process::kill(tid);
                     kill_btn.set_enabled(false);
+
+                    // Show notification
+                    if name_len > 0 {
+                        if let Ok(name) = core::str::from_utf8(&name_buf[..name_len as usize]) {
+                            let mut msg = [0u8; 48];
+                            let mut p = 0;
+                            let nl = name.len().min(32);
+                            msg[p..p + nl].copy_from_slice(&name.as_bytes()[..nl]); p += nl;
+                            msg[p..p + 7].copy_from_slice(b" killed"); p += 7;
+                            if let Ok(m) = core::str::from_utf8(&msg[..p]) {
+                                ui::show_notification("Process Terminated", m, None, 3000);
+                            }
+                        }
+                    }
                 }
             }
         }

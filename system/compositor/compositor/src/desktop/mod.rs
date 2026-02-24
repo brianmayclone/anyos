@@ -7,6 +7,7 @@ pub mod input;
 pub mod ipc;
 pub mod notifications;
 pub mod theme;
+pub mod volume_hud;
 pub mod window;
 
 // Re-export public API used by main.rs and other crates
@@ -138,6 +139,8 @@ pub struct Desktop {
     pub(crate) crash_dialogs: Vec<crash_dialog::CrashDialog>,
     /// Notification banner manager.
     pub(crate) notifications: notifications::NotificationManager,
+    /// Volume HUD overlay (centered-bottom).
+    pub(crate) volume_hud: volume_hud::VolumeHud,
     /// Cascading auto-placement state for new windows.
     pub(crate) cascade_x: i32,
     pub(crate) cascade_y: i32,
@@ -210,6 +213,7 @@ impl Desktop {
             clipboard_format: 0,
             crash_dialogs: Vec::new(),
             notifications: notifications::NotificationManager::new(),
+            volume_hud: volume_hud::VolumeHud::new(),
             cascade_x: 120,
             cascade_y: MENUBAR_HEIGHT as i32 + 50,
             frame_ack_queue: Vec::new(),
