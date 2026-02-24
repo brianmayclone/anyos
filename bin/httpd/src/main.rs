@@ -721,11 +721,16 @@ fn main() {
             }
         }
 
-        // Check if workers are still alive
-        for w in &workers {
-            let ret = process::try_waitpid(w.tid);
-            if ret != u32::MAX {
-                println!("httpd: worker for port {} (pid {}) exited", w.port, w.tid);
+        // Check if any workers exited (try_waitpid returns u32::MAX-1 if still running)
+        let mut i = 0;
+        while i < workers.len() {
+            let ret = process::try_waitpid(workers[i].tid);
+            if ret != u32::MAX && ret != u32::MAX - 1 {
+                println!("httpd: worker for port {} (pid {}) exited (code {})",
+                    workers[i].port, workers[i].tid, ret);
+                workers.remove(i);
+            } else {
+                i += 1;
             }
         }
 
