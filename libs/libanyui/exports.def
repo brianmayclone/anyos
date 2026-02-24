@@ -71,6 +71,7 @@ EXPORTS
     anyui_marshal_dispatch
     anyui_set_context_menu
     anyui_message_box
+    anyui_iconbutton_set_pixels
     anyui_imageview_set_pixels
     anyui_imageview_set_scale_mode
     anyui_imageview_get_image_size
@@ -130,3 +131,5 @@ EXPORTS
     anyui_set_tab_index
     anyui_screen_size
     anyui_show_notification
+    anyui_set_theme
+    anyui_get_theme
