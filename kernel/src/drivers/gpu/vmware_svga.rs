@@ -229,11 +229,9 @@ impl VmwareSvgaGpu {
     /// Define a primary screen object via SVGA_CMD_DEFINE_SCREEN.
     /// The screen is backed by the current GMRFB (VRAM or GMR).
     fn define_screen_object(&mut self, id: u32, w: u32, h: u32) {
-        // SVGAScreenObject structure (14 dwords total):
-        //   structSize, id, flags, width, height, root_x, root_y,
-        //   backingStore: { ptr: {gmrId, offset}, pitch },
-        //   cloneCount
-        let struct_size: u32 = 14 * 4; // bytes
+        // SVGAScreenObject: structSize, id, flags, size{w,h}, root{x,y},
+        //   backingStore{ptr{gmrId,offset}, pitch}, cloneCount = 11 dwords
+        let struct_size: u32 = 11 * 4; // 44 bytes
         let flags = SVGA_SCREEN_MUST_BE_SET | SVGA_SCREEN_IS_PRIMARY;
         let backing_pitch = w * 4; // ARGB8888
         #[allow(unused)]
