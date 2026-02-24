@@ -943,7 +943,7 @@ fn rasterize_edges(edges: &[Edge], width: u32, height: u32) -> Vec<u8> {
         if ey0 >= ey1 { continue; }
 
         let row_start = fp_floor(ey0).max(0) as usize;
-        let row_end = fp_ceil(ey1).min(height as i32) as usize;
+        let row_end = fp_ceil(ey1).min(height as i32).max(0) as usize;
         if row_start >= row_end { continue; }
 
         let dy = ey1 - ey0;
