@@ -7,8 +7,9 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Run anyOS in QEMU
-# Usage: ./run.sh [--vmware | --std | --virtio] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...]
+# Run anyOS in QEMU (or VMware Workstation)
+# Usage: ./run.sh [--vmware | --std | --virtio] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--vmware-ws]
+#   --vmware-ws Start VMware Workstation VM named 'anyos' and stream its COM1 serial output
 #   --vmware   VMware SVGA II (2D acceleration, HW cursor)
 #   --std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
 #   --virtio   VirtIO GPU (modern transport, ARGB cursor)
@@ -42,6 +43,7 @@ RESOLUTION=""
 EXPECT_RES=false
 KBD_LAYOUT=""
 EXPECT_KBD=false
+VMWARE_WS=false
 MIN_RES_W=1024
 MIN_RES_H=768
 
@@ -107,6 +109,9 @@ for arg in "$@"; do
     fi
 
     case "$arg" in
+        --vmware-ws)
+            VMWARE_WS=true
+            ;;
         --vmware)
             VGA="vmware"
             VGA_LABEL="VMware SVGA II (accelerated)"
@@ -200,6 +205,164 @@ fi
 if [ "$EXPECT_KBD" = true ]; then
     echo "Error: --kbd requires a layout name (us, de, ch, fr, pl)"
     exit 1
+fi
+
+# ── VMware Workstation mode ─────────────────────────────────────────────────
+
+if [ "$VMWARE_WS" = true ]; then
+    BUILD_DIR="${SCRIPT_DIR}/../build"
+    IMG_PATH="${BUILD_DIR}/anyos.img"
+    VM_NAME="anyos"
+
+    # ── Find VBoxManage (for raw → VMDK conversion) ─────────────────────
+    VBOXMANAGE="$(command -v VBoxManage 2>/dev/null || true)"
+    if [ -z "$VBOXMANAGE" ]; then
+        echo "Error: VBoxManage not found (needed for VMDK conversion)"
+        exit 1
+    fi
+
+    # ── Find vmrun ──────────────────────────────────────────────────────
+    VMRUN="$(command -v vmrun 2>/dev/null || true)"
+    if [ -z "$VMRUN" ]; then
+        if [ "$(uname -s)" = "Darwin" ]; then
+            for p in \
+                "/Applications/VMware Fusion.app/Contents/Public/vmrun" \
+                "/Applications/VMware Fusion.app/Contents/Library/vmrun"; do
+                [ -x "$p" ] && VMRUN="$p" && break
+            done
+        fi
+    fi
+    if [ -z "$VMRUN" ]; then
+        echo "Error: vmrun not found in PATH"
+        exit 1
+    fi
+
+    # ── Locate .vmx file ───────────────────────────────────────────────
+    VMX_PATH=""
+
+    # 1. Environment variable override
+    if [ -n "$ANYOS_VMX" ] && [ -f "$ANYOS_VMX" ]; then
+        VMX_PATH="$ANYOS_VMX"
+    fi
+
+    # 2. Parse VMware inventory
+    if [ -z "$VMX_PATH" ]; then
+        if [ "$(uname -s)" = "Darwin" ]; then
+            INV_FILE="$HOME/Library/Application Support/VMware Fusion/vmInventory"
+        else
+            INV_FILE="$HOME/.vmware/inventory.vmls"
+        fi
+        if [ -f "$INV_FILE" ]; then
+            CANDIDATE=$(grep -oP '\.config\s*=\s*"\K[^"]*anyos[^"]*\.vmx' "$INV_FILE" 2>/dev/null | head -1)
+            [ -n "$CANDIDATE" ] && [ -f "$CANDIDATE" ] && VMX_PATH="$CANDIDATE"
+        fi
+    fi
+
+    # 3. Search default paths
+    if [ -z "$VMX_PATH" ]; then
+        for dir in \
+            "$HOME/vmware/$VM_NAME" \
+            "$HOME/Virtual Machines/$VM_NAME" \
+            "$HOME/Documents/Virtual Machines/$VM_NAME" \
+            "$HOME/Virtual Machines.localized/$VM_NAME.vmwarevm"; do
+            if [ -f "$dir/$VM_NAME.vmx" ]; then
+                VMX_PATH="$dir/$VM_NAME.vmx"
+                break
+            fi
+        done
+    fi
+
+    if [ -z "$VMX_PATH" ]; then
+        echo "Error: Could not find '$VM_NAME' VM. Set ANYOS_VMX to the .vmx path."
+        exit 1
+    fi
+
+    VM_DIR="$(dirname "$VMX_PATH")"
+    SERIAL_SOCK="/tmp/anyos-serial"
+
+    echo "VMware VM: $VMX_PATH"
+
+    # ── Check if VM is already running ─────────────────────────────────
+    if "$VMRUN" list 2>/dev/null | grep -qiF "$VMX_PATH"; then
+        echo "VM '$VM_NAME' is already running - skipping configuration."
+    else
+        if [ ! -f "$IMG_PATH" ]; then
+            echo "Error: $IMG_PATH not found. Run ./scripts/build.sh first."
+            exit 1
+        fi
+
+        # Find existing disk filename in .vmx
+        DISK_FILE=$(grep -oP '(scsi|sata|ide|nvme)\d+:\d+\.fileName\s*=\s*"\K[^"]+\.vmdk' "$VMX_PATH" 2>/dev/null | head -1)
+        [ -z "$DISK_FILE" ] && DISK_FILE="$VM_NAME.vmdk"
+
+        case "$DISK_FILE" in
+            /*) DISK_FULL="$DISK_FILE" ;;
+            *)  DISK_FULL="$VM_DIR/$DISK_FILE" ;;
+        esac
+
+        echo "Refreshing disk image ..."
+
+        # Remove old VMDK files and stale locks
+        BASE_NAME="${DISK_FILE%.vmdk}"
+        rm -f "$VM_DIR/$BASE_NAME"*.vmdk 2>/dev/null
+        rm -rf "$VM_DIR"/*.lck 2>/dev/null
+
+        echo "  Converting anyos.img -> $DISK_FILE ..."
+        "$VBOXMANAGE" convertfromraw "$IMG_PATH" "$DISK_FULL" --format VMDK
+        echo "[OK] Disk refreshed."
+
+        # ── Configure serial port as pipe in .vmx ──────────────────────
+        echo "Configuring COM1 -> pipe $SERIAL_SOCK"
+        grep -v '^\s*serial0\.' "$VMX_PATH" > "${VMX_PATH}.tmp"
+        cat >> "${VMX_PATH}.tmp" <<'SERIAL'
+serial0.present = "TRUE"
+serial0.fileType = "pipe"
+serial0.yieldOnMsrRead = "TRUE"
+serial0.startConnected = "TRUE"
+SERIAL
+        echo "serial0.fileName = \"$SERIAL_SOCK\"" >> "${VMX_PATH}.tmp"
+        echo 'serial0.pipe.endPoint = "server"' >> "${VMX_PATH}.tmp"
+        mv "${VMX_PATH}.tmp" "$VMX_PATH"
+
+        # Remove stale socket
+        rm -f "$SERIAL_SOCK" 2>/dev/null
+
+        # ── Start the VM ───────────────────────────────────────────────
+        echo "Starting VMware VM '$VM_NAME' ..."
+        "$VMRUN" start "$VMX_PATH" gui
+    fi
+
+    # ── Connect to serial socket ───────────────────────────────────────
+    if ! command -v socat &>/dev/null; then
+        echo "Error: socat not found (needed to read VMware serial pipe)"
+        echo "Install: sudo apt-get install socat  (or: brew install socat)"
+        exit 1
+    fi
+
+    echo "Waiting for serial socket $SERIAL_SOCK ..."
+    DEADLINE=$(($(date +%s) + 30))
+    while [ ! -S "$SERIAL_SOCK" ] && [ "$(date +%s)" -lt "$DEADLINE" ]; do
+        sleep 0.5
+    done
+
+    if [ ! -S "$SERIAL_SOCK" ]; then
+        echo "Error: Serial socket $SERIAL_SOCK not found after 30 s."
+        exit 1
+    fi
+
+    echo ""
+    echo "============================================================"
+    echo "  anyOS Serial Output  (Ctrl+C to disconnect)"
+    echo "============================================================"
+    echo ""
+
+    socat UNIX-CONNECT:"$SERIAL_SOCK" STDOUT
+
+    echo ""
+    echo "============================================================"
+    echo "  Serial session ended."
+    echo "============================================================"
+    exit 0
 fi
 
 # Validate --res is only used with --virtio

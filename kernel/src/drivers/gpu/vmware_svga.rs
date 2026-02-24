@@ -37,13 +37,27 @@ const SVGA_REG_BYTES_PER_LINE: u32 = 12;
 // Version negotiation IDs
 const SVGA_ID_2: u32 = 0x9000_0002;
 
-// Capabilities
-const SVGA_CAP_RECT_FILL: u32 = 1 << 0;
-const SVGA_CAP_RECT_COPY: u32 = 1 << 1;
-const SVGA_CAP_CURSOR: u32 = 1 << 5;
-const SVGA_CAP_CURSOR_BYPASS: u32 = 1 << 6;
-const SVGA_CAP_CURSOR_BYPASS_2: u32 = 1 << 7;
-const SVGA_CAP_ALPHA_CURSOR: u32 = 1 << 23;
+// Capabilities (from VMware svga_reg.h)
+const SVGA_CAP_RECT_FILL: u32          = 1 << 0;
+const SVGA_CAP_RECT_COPY: u32          = 1 << 1;
+const SVGA_CAP_CURSOR: u32             = 1 << 5;
+const SVGA_CAP_CURSOR_BYPASS: u32      = 1 << 6;
+const SVGA_CAP_CURSOR_BYPASS_2: u32    = 1 << 7;
+const SVGA_CAP_8BIT_EMULATION: u32     = 1 << 8;
+const SVGA_CAP_ALPHA_CURSOR: u32       = 1 << 9;
+const SVGA_CAP_3D: u32                 = 1 << 14;
+const SVGA_CAP_EXTENDED_FIFO: u32      = 1 << 15;
+const SVGA_CAP_PITCHLOCK: u32          = 1 << 17;
+const SVGA_CAP_IRQMASK: u32            = 1 << 18;
+const SVGA_CAP_GMR: u32                = 1 << 20;
+const SVGA_CAP_TRACES: u32             = 1 << 21;
+const SVGA_CAP_GMR2: u32               = 1 << 22;
+const SVGA_CAP_SCREEN_OBJECT_2: u32    = 1 << 23;
+const SVGA_CAP_COMMAND_BUFFERS: u32    = 1 << 24;
+const SVGA_CAP_CMD_BUFFERS_2: u32      = 1 << 26;
+const SVGA_CAP_GBOBJECTS: u32          = 1 << 27;
+const SVGA_CAP_DX: u32                 = 1 << 28;
+const SVGA_CAP_CAP2_REGISTER: u32      = 1 << 31;
 
 // FIFO register offsets (in u32 units)
 const SVGA_FIFO_MIN: usize = 0;
@@ -406,20 +420,34 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     // 2. Read capabilities
     gpu.capabilities = gpu.reg_read(SVGA_REG_CAPABILITIES);
     crate::serial_println!("  SVGA II: capabilities = {:#010x}", gpu.capabilities);
-    if gpu.capabilities & SVGA_CAP_RECT_FILL != 0 {
-        crate::serial_println!("    - RECT_FILL");
-    }
-    if gpu.capabilities & SVGA_CAP_RECT_COPY != 0 {
-        crate::serial_println!("    - RECT_COPY");
-    }
-    if gpu.capabilities & SVGA_CAP_CURSOR != 0 {
-        crate::serial_println!("    - CURSOR");
-    }
-    if gpu.capabilities & SVGA_CAP_CURSOR_BYPASS != 0 {
-        crate::serial_println!("    - CURSOR_BYPASS");
-    }
-    if gpu.capabilities & SVGA_CAP_ALPHA_CURSOR != 0 {
-        crate::serial_println!("    - ALPHA_CURSOR");
+
+    // Log all capability flags
+    let cap_flags: &[(u32, &str)] = &[
+        (SVGA_CAP_RECT_FILL,       "RECT_FILL"),
+        (SVGA_CAP_RECT_COPY,       "RECT_COPY"),
+        (SVGA_CAP_CURSOR,          "CURSOR"),
+        (SVGA_CAP_CURSOR_BYPASS,   "CURSOR_BYPASS"),
+        (SVGA_CAP_CURSOR_BYPASS_2, "CURSOR_BYPASS_2"),
+        (SVGA_CAP_8BIT_EMULATION,  "8BIT_EMULATION"),
+        (SVGA_CAP_ALPHA_CURSOR,    "ALPHA_CURSOR"),
+        (SVGA_CAP_3D,              "3D"),
+        (SVGA_CAP_EXTENDED_FIFO,   "EXTENDED_FIFO"),
+        (SVGA_CAP_PITCHLOCK,       "PITCHLOCK"),
+        (SVGA_CAP_IRQMASK,         "IRQMASK"),
+        (SVGA_CAP_GMR,             "GMR"),
+        (SVGA_CAP_TRACES,          "TRACES"),
+        (SVGA_CAP_GMR2,            "GMR2"),
+        (SVGA_CAP_SCREEN_OBJECT_2, "SCREEN_OBJECT_2"),
+        (SVGA_CAP_COMMAND_BUFFERS, "COMMAND_BUFFERS"),
+        (SVGA_CAP_CMD_BUFFERS_2,   "CMD_BUFFERS_2"),
+        (SVGA_CAP_GBOBJECTS,       "GBOBJECTS"),
+        (SVGA_CAP_DX,              "DX"),
+        (SVGA_CAP_CAP2_REGISTER,   "CAP2_REGISTER"),
+    ];
+    for &(flag, name) in cap_flags {
+        if gpu.capabilities & flag != 0 {
+            crate::serial_println!("    - {}", name);
+        }
     }
 
     // 3. Enable SVGA FIRST — must be enabled before setting mode or reading FB info

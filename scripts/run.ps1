@@ -7,9 +7,10 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU on Windows
-# Usage: .\scripts\run.ps1 [-Vmware] [-Std] [-Virtio] [-Res "WxH"] [-Ide] [-Cdrom] [-Audio] [-Usb] [-Uefi] [-Kvm] [-Fwd "H:G","H:G"] [-VBox]
+# Usage: .\scripts\run.ps1 [-Vmware] [-Std] [-Virtio] [-Res "WxH"] [-Ide] [-Cdrom] [-Audio] [-Usb] [-Uefi] [-Kvm] [-Fwd "H:G","H:G"] [-VBox] [-VMwareWS]
 #
 #   -VBox     Start VirtualBox VM named 'anyos' and stream its COM1 serial output here
+#   -VMwareWS Start VMware Workstation VM named 'anyos' and stream its COM1 serial output here
 #   -Vmware   VMware SVGA II (2D acceleration, HW cursor)
 #   -Std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
 #   -Virtio   VirtIO GPU (modern transport, ARGB cursor)
@@ -25,6 +26,7 @@
 
 param(
     [switch]$VBox,
+    [switch]$VMwareWS,
     [switch]$Vmware,
     [switch]$Std,
     [switch]$Virtio,
@@ -212,6 +214,204 @@ if ($VBox) {
         }
     } catch {
         # IOException = VM shut down (normal); anything else print message
+        if ($_.Exception -isnot [System.IO.IOException]) {
+            Write-Host "`nPipe error: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    } finally {
+        if ($null -ne $pipe) { $pipe.Dispose() }
+    }
+
+    Write-Host ""
+    Write-Host ("=" * 60) -ForegroundColor Magenta
+    Write-Host "  Serial session ended." -ForegroundColor Magenta
+    Write-Host ("=" * 60) -ForegroundColor Magenta
+    exit 0
+}
+
+# ── VMware Workstation mode ───────────────────────────────────────────────────
+
+if ($VMwareWS) {
+    # Find VBoxManage (for raw → VMDK conversion)
+    $vbm = Get-Command "VBoxManage" -ErrorAction SilentlyContinue
+    if (-not $vbm) {
+        $vbmDefault = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
+        if (Test-Path $vbmDefault) {
+            $vbm = $vbmDefault
+        } else {
+            Write-Host "Error: VBoxManage not found (needed for VMDK conversion)" -ForegroundColor Red
+            exit 1
+        }
+    } else {
+        $vbm = $vbm.Source
+    }
+
+    # Find vmrun
+    $vmrun = Get-Command "vmrun" -ErrorAction SilentlyContinue
+    if (-not $vmrun) {
+        $vmrunDefault = "C:\Program Files (x86)\VMware\VMware Workstation\vmrun.exe"
+        if (Test-Path $vmrunDefault) {
+            $vmrun = $vmrunDefault
+        } else {
+            Write-Host "Error: vmrun not found in PATH or '$vmrunDefault'" -ForegroundColor Red
+            exit 1
+        }
+    } else {
+        $vmrun = $vmrun.Source
+    }
+
+    $vmName   = "anyos"
+    $pipeName = "anyos-serial"
+    $pipePath = "\\.\pipe\$pipeName"
+
+    # ── Locate .vmx file ─────────────────────────────────────────────────
+    $vmxPath = $null
+
+    # 1. Environment variable override
+    if ($env:ANYOS_VMX -and (Test-Path $env:ANYOS_VMX)) {
+        $vmxPath = $env:ANYOS_VMX
+    }
+
+    # 2. Parse VMware inventory
+    if (-not $vmxPath) {
+        $invPath = "$env:APPDATA\VMware\inventory.vmls"
+        if (Test-Path $invPath) {
+            foreach ($line in (Get-Content $invPath)) {
+                if ($line -match '\.config\s*=\s*"(.+[/\\]anyos[^"]*\.vmx)"') {
+                    $candidate = $Matches[1]
+                    if (Test-Path $candidate) { $vmxPath = $candidate; break }
+                }
+            }
+        }
+    }
+
+    # 3. Search default directories
+    if (-not $vmxPath) {
+        $searchPaths = @(
+            "$env:USERPROFILE\Documents\Virtual Machines\$vmName\$vmName.vmx",
+            "$env:USERPROFILE\Virtual Machines\$vmName\$vmName.vmx"
+        )
+        foreach ($p in $searchPaths) {
+            if (Test-Path $p) { $vmxPath = $p; break }
+        }
+    }
+
+    if (-not $vmxPath) {
+        Write-Host "Error: Could not find '$vmName' VM." -ForegroundColor Red
+        Write-Host "Set `$env:ANYOS_VMX to the path of your .vmx file."
+        exit 1
+    }
+
+    $vmDir = Split-Path -Parent $vmxPath
+    Write-Host "VMware VM: $vmxPath" -ForegroundColor Cyan
+
+    # ── Check if VM is already running ───────────────────────────────────
+    $runList = (& $vmrun list 2>&1) | Out-String
+    $isRunning = $runList.ToLower().Contains($vmxPath.ToLower())
+
+    if ($isRunning) {
+        Write-Host "VM '$vmName' is already running - skipping configuration." -ForegroundColor Yellow
+    } else {
+        # ── Refresh disk image ───────────────────────────────────────────
+        $imgPath = Join-Path $BuildDir "anyos.img"
+        if (-not (Test-Path $imgPath)) {
+            Write-Host "Error: $imgPath not found. Run .\scripts\build.ps1 first." -ForegroundColor Red
+            exit 1
+        }
+
+        # Read .vmx to find the existing disk filename
+        $vmxLines = Get-Content $vmxPath
+        $diskFileName = $null
+        foreach ($line in $vmxLines) {
+            if ($line -match '^\s*(scsi|sata|ide|nvme)\d+:\d+\.fileName\s*=\s*"(.+\.vmdk)"') {
+                $diskFileName = $Matches[2]
+                break
+            }
+        }
+        if (-not $diskFileName) { $diskFileName = "$vmName.vmdk" }
+
+        if ([System.IO.Path]::IsPathRooted($diskFileName)) {
+            $diskFullPath = $diskFileName
+        } else {
+            $diskFullPath = Join-Path $vmDir $diskFileName
+        }
+
+        Write-Host "Refreshing disk image ..." -ForegroundColor Cyan
+
+        # Remove old VMDK files (flat, split, descriptor) and stale locks
+        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($diskFileName)
+        Get-ChildItem -Path $vmDir -Filter "$baseName*.vmdk" -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+        Get-ChildItem -Path $vmDir -Directory -Filter "*.lck" -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+        Write-Host "  Converting anyos.img -> $diskFileName ..." -ForegroundColor DarkGray
+        & $vbm convertfromraw $imgPath $diskFullPath --format VMDK
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Error: VBoxManage convertfromraw failed." -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "[OK] Disk refreshed." -ForegroundColor Green
+
+        # ── Configure serial port as named pipe in .vmx ──────────────────
+        Write-Host "Configuring COM1 -> named pipe $pipePath" -ForegroundColor Cyan
+        $vmxLines = $vmxLines | Where-Object { $_ -notmatch '^\s*serial0\.' }
+        $vmxLines += 'serial0.present = "TRUE"'
+        $vmxLines += 'serial0.fileType = "pipe"'
+        $vmxLines += "serial0.fileName = `"$pipePath`""
+        $vmxLines += 'serial0.pipe.endPoint = "server"'
+        $vmxLines += 'serial0.yieldOnMsrRead = "TRUE"'
+        $vmxLines += 'serial0.startConnected = "TRUE"'
+        $vmxLines | Set-Content $vmxPath -Encoding ASCII
+
+        # ── Start the VM ─────────────────────────────────────────────────
+        Write-Host "Starting VMware VM '$vmName' ..." -ForegroundColor Cyan
+        & $vmrun start $vmxPath gui
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Error: Failed to start VM." -ForegroundColor Red
+            exit 1
+        }
+    }
+
+    # ── Connect to serial named pipe ─────────────────────────────────────
+    Write-Host "Waiting for serial pipe $pipePath ..." -ForegroundColor Cyan
+    $pipe    = $null
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(
+                ".", $pipeName,
+                [System.IO.Pipes.PipeDirection]::InOut,
+                [System.IO.Pipes.PipeOptions]::None
+            )
+            $pipe.Connect(500)
+            break
+        } catch {
+            if ($null -ne $pipe) { $pipe.Dispose(); $pipe = $null }
+            Start-Sleep -Milliseconds 300
+        }
+    }
+
+    if ($null -eq $pipe -or -not $pipe.IsConnected) {
+        Write-Host "Error: Could not connect to $pipePath after 30 s." -ForegroundColor Red
+        exit 1
+    }
+
+    Write-Host ""
+    Write-Host ("=" * 60) -ForegroundColor Magenta
+    Write-Host "  anyOS Serial Output  (Ctrl+C to disconnect)" -ForegroundColor Magenta
+    Write-Host ("=" * 60) -ForegroundColor Magenta
+    Write-Host ""
+
+    try {
+        $buf = New-Object byte[] 512
+        while ($true) {
+            $read = $pipe.Read($buf, 0, $buf.Length)
+            if ($read -le 0) { break }
+            $text = [System.Text.Encoding]::ASCII.GetString($buf, 0, $read)
+            $text = $text -replace "`r`n", "`n" -replace "`r", ""
+            Write-Host -NoNewline $text
+        }
+    } catch {
         if ($_.Exception -isnot [System.IO.IOException]) {
             Write-Host "`nPipe error: $($_.Exception.Message)" -ForegroundColor Yellow
         }
