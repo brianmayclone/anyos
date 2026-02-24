@@ -165,6 +165,13 @@ pub fn vram_map(target_tid: u32, vram_byte_offset: u32, num_bytes: u32) -> u32 {
     syscall3(SYS_VRAM_MAP, target_tid as u64, vram_byte_offset as u64, num_bytes as u64)
 }
 
+/// Register the compositor's back buffer for GPU DMA transfers (GMR).
+/// After success (returns 0), the GPU reads directly from the back buffer
+/// via DMA instead of requiring a CPU memcpy to VRAM.
+pub fn gpu_register_backbuffer(buf_ptr: u32, buf_size: u32) -> u32 {
+    syscall2(SYS_GPU_REGISTER_BACKBUFFER, buf_ptr as u64, buf_size as u64)
+}
+
 /// Poll raw input events. Returns number of events written to buf.
 /// Each event is [u32; 5]: { event_type, arg0, arg1, arg2, arg3 }.
 pub fn input_poll(buf: &mut [[u32; 5]]) -> u32 {

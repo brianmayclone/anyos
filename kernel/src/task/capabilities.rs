@@ -221,7 +221,8 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_CURSOR_TAKEOVER
         | syscall::SYS_BOOT_READY
         | syscall::SYS_GPU_VRAM_SIZE
-        | syscall::SYS_VRAM_MAP => CAP_COMPOSITOR,
+        | syscall::SYS_VRAM_MAP
+        | syscall::SYS_GPU_REGISTER_BACKBUFFER => CAP_COMPOSITOR,
 
         // System admin
         syscall::SYS_SYSINFO

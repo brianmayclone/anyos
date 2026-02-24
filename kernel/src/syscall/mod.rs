@@ -224,9 +224,10 @@ pub const SYS_SIGRETURN: u32 = 246;
 // Process identity (extended)
 pub const SYS_GETPPID: u32 = 247;
 
-// VRAM direct surface
+// VRAM direct surface / GPU DMA
 pub const SYS_GPU_VRAM_SIZE: u32 = 256;
 pub const SYS_VRAM_MAP: u32 = 257;
+pub const SYS_GPU_REGISTER_BACKBUFFER: u32 = 258;
 
 // App permissions
 pub const SYS_PERM_CHECK: u32 = 250;
@@ -503,6 +504,7 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         // VRAM direct surface
         SYS_GPU_VRAM_SIZE => handlers::sys_gpu_vram_size(),
         SYS_VRAM_MAP => handlers::sys_vram_map(arg1, arg2, arg3),
+        SYS_GPU_REGISTER_BACKBUFFER => handlers::sys_gpu_register_backbuffer(arg1, arg2),
 
         // App permissions
         SYS_PERM_CHECK => handlers::sys_perm_check(arg1, arg2),

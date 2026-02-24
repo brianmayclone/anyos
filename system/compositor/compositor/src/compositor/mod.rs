@@ -74,6 +74,9 @@ pub struct Compositor {
 
     /// Tracks whether VRAM was written since the last sfence.
     pub(crate) vram_dirty: bool,
+
+    /// GPU DMA mode: back_buffer is registered as a GMR, no memcpy to VRAM needed.
+    pub(crate) gmr_active: bool,
 }
 
 impl Compositor {
@@ -102,6 +105,7 @@ impl Compositor {
             blur_temp: Vec::with_capacity(width.max(height) as usize),
             compositing_damage: Vec::with_capacity(32),
             vram_dirty: false,
+            gmr_active: false,
         }
     }
 
@@ -408,7 +412,15 @@ impl Compositor {
     // ── Framebuffer I/O ─────────────────────────────────────────────────
 
     /// Copy a region from back buffer to the framebuffer (at y_offset for double-buffering).
+    /// When GMR DMA mode is active, the GPU reads directly from the back buffer
+    /// via DMA — no CPU memcpy needed. The kernel's transfer_rect handles the blit.
     pub(crate) fn flush_region(&mut self, rect: &Rect, y_offset: u32) {
+        // In GMR mode, the GPU will DMA-read from back_buffer directly.
+        // Skip the CPU memcpy to VRAM entirely.
+        if self.gmr_active && y_offset == 0 {
+            return;
+        }
+
         let bb_stride = self.fb_width as usize;
         let fb_stride = (self.fb_pitch / 4) as usize;
 
@@ -445,6 +457,11 @@ impl Compositor {
         self.fb_pitch = new_pitch;
         let pixel_count = (new_width * new_height) as usize;
         self.back_buffer = vec![0u32; pixel_count];
+        // GMR must be re-registered since back_buffer was reallocated
+        if self.gmr_active {
+            self.gmr_active = false;
+            self.try_enable_gmr();
+        }
         // Disable double-buffering — VRAM may be too small for 2x height at new res
         self.hw_double_buffer = false;
         self.current_page = 0;

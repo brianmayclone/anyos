@@ -226,10 +226,15 @@ impl Desktop {
 
         if desktop.has_gpu_accel {
             desktop.compositor.enable_gpu_accel();
+            // Try to register back buffer as GPU GMR for DMA transfers.
+            // If successful, flush_region() skips CPU memcpy to VRAM.
+            desktop.compositor.try_enable_gmr();
             // Initialize VRAM allocator if enough off-screen VRAM is available
-            let vram_total = anyos_std::ipc::gpu_vram_size();
-            if vram_total > 0 {
-                desktop.compositor.init_vram_allocator(vram_total);
+            if !desktop.compositor.gmr_active {
+                let vram_total = anyos_std::ipc::gpu_vram_size();
+                if vram_total > 0 {
+                    desktop.compositor.init_vram_allocator(vram_total);
+                }
             }
         }
 

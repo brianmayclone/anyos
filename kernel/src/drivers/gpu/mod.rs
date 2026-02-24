@@ -123,6 +123,16 @@ pub trait GpuDriver: Send {
     /// Show or hide the hardware cursor.
     fn show_cursor(&mut self, _visible: bool) {}
 
+    // ── DMA Back Buffer (GMR) ───────────────────────────
+
+    /// Register userspace back_buffer physical pages as GPU-accessible memory.
+    /// After registration, transfer_rect uses GPU DMA from this buffer
+    /// instead of reading VRAM. Returns true if successful.
+    fn register_back_buffer(&mut self, _phys_pages: &[u64]) -> bool { false }
+
+    /// Whether DMA back_buffer mode is active (GMR registered).
+    fn has_dma_back_buffer(&self) -> bool { false }
+
     // ── Double Buffering ─────────────────────────────────
 
     /// Returns true if hardware double-buffering is available.

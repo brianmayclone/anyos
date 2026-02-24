@@ -90,6 +90,7 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_PERM_PENDING_INFO, "perm_pending_info"),
     (SYS_GPU_VRAM_SIZE, "gpu_vram_size"),
     (SYS_VRAM_MAP, "vram_map"),
+    (SYS_GPU_REGISTER_BACKBUFFER, "gpu_register_backbuffer"),
     (SYS_GET_CRASH_INFO, "get_crash_info"),
     (SYS_TCP_CONNECT, "tcp_connect"),
     (SYS_TCP_SEND, "tcp_send"),

@@ -3986,6 +3986,66 @@ pub fn sys_vram_map(target_tid: u32, vram_offset: u32, num_bytes: u32) -> u32 {
     user_va_base as u32
 }
 
+/// SYS_GPU_REGISTER_BACKBUFFER (258): Register a userspace back buffer for GPU DMA.
+///
+/// The compositor calls this with a pointer to its `back_buffer` and size.
+/// The kernel walks the page tables to collect physical pages, then registers
+/// them as a GMR with the GPU driver. After this, `transfer_rect` uses GPU
+/// DMA from the back buffer instead of requiring a CPU memcpy to VRAM.
+///
+/// arg1 = buffer virtual address (user-space pointer)
+/// arg2 = buffer size in bytes
+///
+/// Returns 0 on success, u32::MAX on failure.
+pub fn sys_gpu_register_backbuffer(buf_ptr: u32, buf_size: u32) -> u32 {
+    if !is_compositor() {
+        return u32::MAX;
+    }
+    if buf_size == 0 || buf_ptr == 0 {
+        return u32::MAX;
+    }
+
+    let pages = ((buf_size as usize) + 4095) / 4096;
+    let mut phys_pages: alloc::vec::Vec<u64> = alloc::vec::Vec::with_capacity(pages);
+
+    // Walk page tables to collect physical addresses for each page
+    for i in 0..pages {
+        let va = buf_ptr as u64 + (i as u64) * 4096;
+        let pte = crate::memory::virtual_mem::read_pte(
+            crate::memory::address::VirtAddr::new(va),
+        );
+        if pte & 1 == 0 {
+            // Page not present — cannot register
+            crate::serial_println!(
+                "GPU_REGISTER_BACKBUFFER: page {} not present (va={:#x})",
+                i, va
+            );
+            return u32::MAX;
+        }
+        let phys = pte & 0x000F_FFFF_FFFF_F000;
+        phys_pages.push(phys);
+    }
+
+    // Register with GPU driver
+    let ok = crate::drivers::gpu::with_gpu(|g| {
+        g.register_back_buffer(&phys_pages)
+    });
+
+    match ok {
+        Some(true) => {
+            crate::serial_println!(
+                "GPU_REGISTER_BACKBUFFER: registered {} pages (buf={:#x}, size={})",
+                pages, buf_ptr, buf_size
+            );
+            0
+        }
+        _ => {
+            crate::serial_println!("GPU_REGISTER_BACKBUFFER: GPU driver rejected registration");
+            u32::MAX
+        }
+    }
+}
+
 // =========================================================================
 // App permission syscalls
 // =========================================================================

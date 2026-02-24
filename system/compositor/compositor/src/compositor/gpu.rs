@@ -26,6 +26,17 @@ impl Compositor {
         self.gpu_accel = true;
     }
 
+    /// Try to register the back buffer as a GPU GMR for DMA transfers.
+    /// If successful, flush_region() skips the CPU memcpy to VRAM.
+    pub fn try_enable_gmr(&mut self) {
+        let ptr = self.back_buffer.as_ptr() as u32;
+        let size = (self.back_buffer.len() * 4) as u32;
+        let result = ipc::gpu_register_backbuffer(ptr, size);
+        if result == 0 {
+            self.gmr_active = true;
+        }
+    }
+
     pub fn enable_hw_cursor(&mut self) {
         self.hw_cursor = true;
         self.gpu_cmds.push([GPU_CURSOR_SHOW, 1, 0, 0, 0, 0, 0, 0, 0]);
@@ -71,7 +82,8 @@ impl Compositor {
             // Only issue sfence when VRAM was actually written (flush_region sets vram_dirty).
             // Without this barrier after VRAM writes, the CPU's WC buffers may not be
             // flushed, causing the GPU to read stale framebuffer data.
-            if self.vram_dirty {
+            // In GMR mode, back_buffer is in normal cacheable RAM — no sfence needed.
+            if self.vram_dirty && !self.gmr_active {
                 unsafe { core::arch::asm!("sfence", options(nostack, preserves_flags)); }
                 self.vram_dirty = false;
             }

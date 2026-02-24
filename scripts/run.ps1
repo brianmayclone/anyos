@@ -338,13 +338,17 @@ if ($VMwareWS) {
         Write-Host "Refreshing disk image ..." -ForegroundColor Cyan
 
         # Remove old VMDK files (flat, split, descriptor) and stale locks
+        # Delete the exact target path first (may be outside $vmDir, e.g. build/)
+        $diskDir = Split-Path -Parent $diskFullPath
         $baseName = [System.IO.Path]::GetFileNameWithoutExtension($diskFileName)
-        Get-ChildItem -Path $vmDir -Filter "$baseName*.vmdk" -ErrorAction SilentlyContinue |
-            Remove-Item -Force -ErrorAction SilentlyContinue
+        foreach ($dir in @($diskDir, $vmDir) | Select-Object -Unique) {
+            Get-ChildItem -Path $dir -Filter "$baseName*.vmdk" -ErrorAction SilentlyContinue |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+        }
         Get-ChildItem -Path $vmDir -Directory -Filter "*.lck" -ErrorAction SilentlyContinue |
             Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
-        Write-Host "  Converting anyos.img -> $diskFileName ..." -ForegroundColor DarkGray
+        Write-Host "  Converting anyos.img -> $diskFullPath ..." -ForegroundColor DarkGray
         & $vbm convertfromraw $imgPath $diskFullPath --format VMDK
         if ($LASTEXITCODE -ne 0) {
             Write-Host "Error: VBoxManage convertfromraw failed." -ForegroundColor Red
