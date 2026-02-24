@@ -1095,6 +1095,25 @@ pub extern "C" fn anyui_imageview_clear(id: ControlId) {
     }
 }
 
+// ── IconButton ───────────────────────────────────────────────────────
+
+/// Set pre-rendered icon pixel data for an IconButton.
+#[no_mangle]
+pub extern "C" fn anyui_iconbutton_set_pixels(id: ControlId, data: *const u32, w: u32, h: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::IconButton {
+            let count = (w as usize) * (h as usize);
+            if !data.is_null() && count > 0 {
+                let slice = unsafe { core::slice::from_raw_parts(data, count) };
+                let raw: *mut dyn Control = &mut **ctrl;
+                let ib = unsafe { &mut *(raw as *mut controls::icon_button::IconButton) };
+                ib.set_icon_pixels(slice, w, h);
+            }
+        }
+    }
+}
+
 // ── DataGrid ─────────────────────────────────────────────────────────
 
 fn as_data_grid(ctrl: &mut alloc::boxed::Box<dyn Control>) -> Option<&mut controls::data_grid::DataGrid> {

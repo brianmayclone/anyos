@@ -72,8 +72,8 @@ struct AppState {
     right_panel: ui::View,
 
     // Toolbar buttons (for enable/disable)
-    btn_delete: ui::Button,
-    btn_apply: ui::Button,
+    btn_delete: ui::IconButton,
+    btn_apply: ui::IconButton,
 
     // TreeView root node index
     sites_root: u32,
@@ -421,17 +421,23 @@ fn main() {
     toolbar.set_dock(ui::DOCK_TOP);
     win.add(&toolbar);
 
-    let btn_new = toolbar.add_button("+ New Site");
+    let btn_new = toolbar.add_icon_button("New Site");
+    btn_new.set_system_icon("circle-plus", ui::IconType::Outline, 0xFFCCCCCC, 24);
     toolbar.add_separator();
-    let btn_delete = toolbar.add_button("Delete");
+    let btn_delete = toolbar.add_icon_button("Delete");
+    btn_delete.set_system_icon("trash", ui::IconType::Outline, 0xFFCCCCCC, 24);
     btn_delete.set_enabled(false);
     toolbar.add_separator();
-    let btn_start = toolbar.add_button("Start httpd");
-    let btn_stop = toolbar.add_button("Stop httpd");
+    let btn_start = toolbar.add_icon_button("Start");
+    btn_start.set_system_icon("player-play", ui::IconType::Filled, 0xFF4CD964, 24);
+    let btn_stop = toolbar.add_icon_button("Stop");
+    btn_stop.set_system_icon("player-stop", ui::IconType::Filled, 0xFFFF3B30, 24);
     toolbar.add_separator();
-    let btn_apply = toolbar.add_button("Apply");
+    let btn_apply = toolbar.add_icon_button("Apply");
+    btn_apply.set_system_icon("device-floppy", ui::IconType::Outline, 0xFFCCCCCC, 24);
     btn_apply.set_enabled(false);
-    let btn_reload = toolbar.add_button("Reload");
+    let btn_reload = toolbar.add_icon_button("Reload");
+    btn_reload.set_system_icon("refresh", ui::IconType::Outline, 0xFFCCCCCC, 24);
 
     // ═══════════════════════════════════════════════════════════════
     //  Status bar (DOCK_BOTTOM)

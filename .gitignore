@@ -16,3 +16,4 @@ buildsystem/build/
 CLAUDE.md
 # Optional third-party sources (cloned separately, not tracked)
 third_party/classicube/
+assets/icons/svg

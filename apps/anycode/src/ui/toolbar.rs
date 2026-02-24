@@ -1,4 +1,8 @@
 use libanyui_client as ui;
+use ui::IconType;
+
+const ICON_COLOR: u32 = 0xFFCCCCCC;
+const ICON_SZ: u32 = 24;
 
 /// Toolbar button handles for event wiring.
 pub struct AppToolbar {
@@ -18,47 +22,47 @@ impl AppToolbar {
     pub fn new(_parent: &impl ui::Widget) -> Self {
         let toolbar = ui::Toolbar::new();
         toolbar.set_dock(ui::DOCK_TOP);
-        toolbar.set_size(900, 36);
+        toolbar.set_size(900, 42);
         toolbar.set_color(0xFF252526);
         toolbar.set_padding(4, 4, 4, 4);
 
         let btn_new = toolbar.add_icon_button("");
-        btn_new.set_size(28, 28);
-        btn_new.set_icon(ui::ICON_NEW_FILE);
+        btn_new.set_size(34, 34);
+        btn_new.set_system_icon("file-plus", IconType::Outline, ICON_COLOR, ICON_SZ);
 
         let btn_open = toolbar.add_icon_button("");
-        btn_open.set_size(28, 28);
-        btn_open.set_icon(ui::ICON_FOLDER_OPEN);
+        btn_open.set_size(34, 34);
+        btn_open.set_system_icon("folder-open", IconType::Outline, ICON_COLOR, ICON_SZ);
 
         let btn_save = toolbar.add_icon_button("");
-        btn_save.set_size(28, 28);
-        btn_save.set_icon(ui::ICON_SAVE);
+        btn_save.set_size(34, 34);
+        btn_save.set_system_icon("device-floppy", IconType::Outline, ICON_COLOR, ICON_SZ);
 
         let btn_save_all = toolbar.add_icon_button("");
-        btn_save_all.set_size(28, 28);
-        btn_save_all.set_icon(ui::ICON_SAVE_ALL);
+        btn_save_all.set_size(34, 34);
+        btn_save_all.set_system_icon("device-floppy", IconType::Filled, ICON_COLOR, ICON_SZ);
 
         toolbar.add_separator();
 
         let btn_build = toolbar.add_icon_button("");
-        btn_build.set_size(28, 28);
-        btn_build.set_icon(ui::ICON_BUILD);
+        btn_build.set_size(34, 34);
+        btn_build.set_system_icon("hammer", IconType::Outline, 0xFFFFFFFF, ICON_SZ);
         btn_build.set_color(0xFF0E639C);
 
         let btn_run = toolbar.add_icon_button("");
-        btn_run.set_size(28, 28);
-        btn_run.set_icon(ui::ICON_PLAY);
+        btn_run.set_size(34, 34);
+        btn_run.set_system_icon("player-play", IconType::Filled, 0xFFFFFFFF, ICON_SZ);
         btn_run.set_color(0xFF388A34);
 
         let btn_stop = toolbar.add_icon_button("");
-        btn_stop.set_size(28, 28);
-        btn_stop.set_icon(ui::ICON_STOP);
+        btn_stop.set_size(34, 34);
+        btn_stop.set_system_icon("player-stop", IconType::Filled, ICON_COLOR, ICON_SZ);
 
         toolbar.add_separator();
 
         let btn_settings = toolbar.add_icon_button("");
-        btn_settings.set_size(28, 28);
-        btn_settings.set_icon(ui::ICON_SETTINGS);
+        btn_settings.set_size(34, 34);
+        btn_settings.set_system_icon("settings", IconType::Outline, ICON_COLOR, ICON_SZ);
 
         Self {
             toolbar,
