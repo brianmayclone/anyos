@@ -1010,11 +1010,57 @@ fn apply_author_rules(
     set_flags
 }
 
-/// Resolve var() references in a declaration's value.
-fn resolve_var_in_decl(decl: &Declaration, custom_props: &[(String, String)]) -> Declaration {
+/// Store a custom property in a node's custom property list.
+fn store_custom_prop(cp: &mut Vec<(String, String)>, name: &str, val: &str) {
+    if let Some(existing) = cp.iter_mut().find(|(k, _)| k == name) {
+        existing.1.clear();
+        existing.1.push_str(val);
+    } else {
+        cp.push((String::from(name), String::from(val)));
+    }
+}
+
+/// Look up a custom property by walking the DOM parent chain.
+///
+/// Checks the current node's own custom properties first, then walks up
+/// the ancestor chain. Returns the raw value string if found.
+fn lookup_custom_property<'a>(
+    name: &str,
+    node_cp: &'a [(String, String)],
+    dom: &Dom,
+    node_id: NodeId,
+    ancestors_cp: &'a [Vec<(String, String)>],
+) -> Option<&'a str> {
+    // Check this node's own custom properties first.
+    if let Some((_, val)) = node_cp.iter().find(|(k, _)| k == name) {
+        return Some(val.as_str());
+    }
+    // Walk up the parent chain.
+    let mut cur = dom.nodes[node_id].parent;
+    while let Some(pid) = cur {
+        if pid < ancestors_cp.len() {
+            if let Some((_, val)) = ancestors_cp[pid].iter().find(|(k, _)| k == name) {
+                return Some(val.as_str());
+            }
+            cur = dom.nodes[pid].parent;
+        } else {
+            break;
+        }
+    }
+    None
+}
+
+/// Resolve var() references by walking the DOM parent chain.
+fn resolve_var_in_decl(
+    decl: &Declaration,
+    dom: &Dom,
+    node_id: NodeId,
+    node_cp: &[(String, String)],
+    ancestors_cp: &[Vec<(String, String)>],
+) -> Declaration {
     if let CssValue::Var(ref name, ref fallback) = decl.value {
-        // Look up custom property.
-        if let Some((_, val)) = custom_props.iter().find(|(k, _)| k == name) {
+        // Look up custom property via parent chain walk.
+        if let Some(val) = lookup_custom_property(name, node_cp, dom, node_id, ancestors_cp) {
             // Re-parse the raw value string as the target property.
             let resolved = crate::css::parse_value(&decl.property, val);
             return Declaration {
