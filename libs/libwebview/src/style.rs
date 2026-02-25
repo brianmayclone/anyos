@@ -1014,7 +1014,11 @@ pub fn apply_declaration(
             if let CssValue::Color(c) = decl.value { style.color = c; }
         }
         Property::BackgroundColor | Property::Background => {
-            if let CssValue::Color(c) = decl.value { style.background_color = c; }
+            match decl.value {
+                CssValue::Color(c) => { style.background_color = c; }
+                CssValue::None => { style.background_color = 0x00000000; }
+                _ => {}
+            }
         }
         Property::FontSize => {
             if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {

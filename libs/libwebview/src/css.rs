@@ -960,6 +960,7 @@ fn is_expandable_shorthand(p: Property) -> bool {
         p,
         Property::Margin | Property::Padding | Property::Border
         | Property::Flex | Property::Gap | Property::Overflow
+        | Property::Background
     )
 }
 
@@ -980,6 +981,7 @@ fn expand_shorthand(property: Property, value_str: &str) -> Vec<Declaration> {
         Property::Flex => expand_flex_shorthand(value_str),
         Property::Gap => expand_gap_shorthand(value_str),
         Property::Overflow => expand_overflow_shorthand(value_str),
+        Property::Background => expand_background_shorthand(value_str),
         _ => {
             let value = parse_value(property, value_str);
             let mut v = Vec::new();
@@ -1129,6 +1131,116 @@ fn expand_overflow_shorthand(value_str: &str) -> Vec<Declaration> {
     let y = if parts.len() >= 2 { parts[1] } else { parts[0] };
     decls.push(Declaration { property: Property::OverflowY, value: parse_value(Property::OverflowY, y), important: false });
     decls
+}
+
+/// Expand `background` shorthand — extract color and ignore image/repeat/position.
+fn expand_background_shorthand(value_str: &str) -> Vec<Declaration> {
+    let s = value_str.trim();
+    let lower = to_ascii_lower(s);
+
+    // Handle simple keywords.
+    if lower == "none" || lower == "transparent" {
+        let mut v = Vec::new();
+        v.push(Declaration {
+            property: Property::BackgroundColor,
+            value: CssValue::Color(0x00000000),
+            important: false,
+        });
+        return v;
+    }
+    if lower == "inherit" {
+        let mut v = Vec::new();
+        v.push(Declaration {
+            property: Property::BackgroundColor,
+            value: CssValue::Inherit,
+            important: false,
+        });
+        return v;
+    }
+
+    // Scan tokens for a color value; skip url(...), gradient functions, and keywords
+    // like no-repeat, center, cover, etc.
+    let mut found_color: Option<u32> = None;
+    let parts: Vec<&str> = split_background_tokens(s);
+    for part in &parts {
+        let pl = to_ascii_lower(part);
+        // Skip url(...) and gradient functions.
+        if pl.starts_with("url(") || pl.starts_with("linear-gradient(")
+            || pl.starts_with("radial-gradient(") || pl.starts_with("conic-gradient(")
+            || pl.starts_with("repeating-") {
+            continue;
+        }
+        // Skip layout/repeat keywords.
+        if matches!(pl.as_str(),
+            "no-repeat" | "repeat" | "repeat-x" | "repeat-y"
+            | "center" | "left" | "right" | "top" | "bottom"
+            | "cover" | "contain" | "fixed" | "scroll" | "local"
+            | "border-box" | "padding-box" | "content-box"
+        ) {
+            continue;
+        }
+        // Skip if it looks like a size (e.g., 100%, 50px, 0).
+        if pl.ends_with('%') || pl.ends_with("px") || pl.ends_with("em")
+            || pl.ends_with("rem") || pl.ends_with("vw") || pl.ends_with("vh") {
+            continue;
+        }
+        // Try parsing as a color.
+        if pl == "transparent" {
+            found_color = Some(0x00000000);
+            continue;
+        }
+        if let Some(c) = try_parse_color(part) {
+            found_color = Some(c);
+            continue;
+        }
+        if let Some(c) = named_color(&pl) {
+            found_color = Some(c);
+            continue;
+        }
+    }
+
+    let mut v = Vec::new();
+    if let Some(c) = found_color {
+        v.push(Declaration {
+            property: Property::BackgroundColor,
+            value: CssValue::Color(c),
+            important: false,
+        });
+    }
+    v
+}
+
+/// Split a `background` shorthand value into tokens, respecting parentheses.
+fn split_background_tokens(s: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let bytes = s.as_bytes();
+    let mut start = 0;
+    let mut depth = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => { if depth > 0 { depth -= 1; } }
+            b' ' | b'\t' if depth == 0 => {
+                if start < i {
+                    tokens.push(&s[start..i]);
+                }
+                start = i + 1;
+            }
+            b',' if depth == 0 => {
+                if start < i {
+                    tokens.push(&s[start..i]);
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if start < bytes.len() {
+        tokens.push(&s[start..]);
+    }
+    tokens
 }
 
 // ---------------------------------------------------------------------------

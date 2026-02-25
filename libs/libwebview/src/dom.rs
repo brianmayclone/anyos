@@ -176,6 +176,54 @@ impl Tag {
         )
     }
 
+    /// Return the uppercase tag name string (e.g., "DIV", "A", "INPUT").
+    pub fn tag_name(&self) -> &'static str {
+        match self {
+            Tag::Html => "HTML", Tag::Head => "HEAD", Tag::Title => "TITLE",
+            Tag::Body => "BODY", Tag::Style => "STYLE", Tag::Link => "LINK",
+            Tag::Meta => "META", Tag::Script => "SCRIPT", Tag::Noscript => "NOSCRIPT",
+            Tag::Template => "TEMPLATE",
+            Tag::H1 => "H1", Tag::H2 => "H2", Tag::H3 => "H3",
+            Tag::H4 => "H4", Tag::H5 => "H5", Tag::H6 => "H6",
+            Tag::Div => "DIV", Tag::Section => "SECTION", Tag::Header => "HEADER",
+            Tag::Footer => "FOOTER", Tag::Nav => "NAV", Tag::Main => "MAIN",
+            Tag::Article => "ARTICLE", Tag::Aside => "ASIDE", Tag::Hgroup => "HGROUP",
+            Tag::Address => "ADDRESS",
+            Tag::P => "P", Tag::Br => "BR", Tag::Hr => "HR", Tag::Pre => "PRE",
+            Tag::Blockquote => "BLOCKQUOTE", Tag::Figure => "FIGURE",
+            Tag::Figcaption => "FIGCAPTION", Tag::Details => "DETAILS",
+            Tag::Summary => "SUMMARY", Tag::Dialog => "DIALOG",
+            Tag::A => "A", Tag::Span => "SPAN", Tag::Em => "EM",
+            Tag::Strong => "STRONG", Tag::B => "B", Tag::I => "I",
+            Tag::U => "U", Tag::S => "S", Tag::Code => "CODE",
+            Tag::Mark => "MARK", Tag::Small => "SMALL",
+            Tag::Sub => "SUB", Tag::Sup => "SUP", Tag::Kbd => "KBD",
+            Tag::Samp => "SAMP", Tag::Var => "VAR", Tag::Abbr => "ABBR",
+            Tag::Cite => "CITE", Tag::Dfn => "DFN", Tag::Q => "Q",
+            Tag::Time => "TIME", Tag::Del => "DEL", Tag::Ins => "INS",
+            Tag::Bdi => "BDI", Tag::Bdo => "BDO", Tag::Data => "DATA",
+            Tag::Ruby => "RUBY", Tag::Rt => "RT", Tag::Rp => "RP", Tag::Wbr => "WBR",
+            Tag::Ul => "UL", Tag::Ol => "OL", Tag::Li => "LI",
+            Tag::Dl => "DL", Tag::Dt => "DT", Tag::Dd => "DD",
+            Tag::Table => "TABLE", Tag::Thead => "THEAD", Tag::Tbody => "TBODY",
+            Tag::Tfoot => "TFOOT", Tag::Tr => "TR", Tag::Th => "TH", Tag::Td => "TD",
+            Tag::Caption => "CAPTION", Tag::Colgroup => "COLGROUP", Tag::Col => "COL",
+            Tag::Form => "FORM", Tag::Input => "INPUT", Tag::Button => "BUTTON",
+            Tag::Textarea => "TEXTAREA", Tag::Select => "SELECT", Tag::Option => "OPTION",
+            Tag::Optgroup => "OPTGROUP", Tag::Label => "LABEL",
+            Tag::Fieldset => "FIELDSET", Tag::Legend => "LEGEND",
+            Tag::Datalist => "DATALIST", Tag::Output => "OUTPUT",
+            Tag::Progress => "PROGRESS", Tag::Meter => "METER",
+            Tag::Img => "IMG", Tag::Audio => "AUDIO", Tag::Video => "VIDEO",
+            Tag::Source => "SOURCE", Tag::Track => "TRACK", Tag::Canvas => "CANVAS",
+            Tag::Svg => "SVG", Tag::Iframe => "IFRAME", Tag::Embed => "EMBED",
+            Tag::Object => "OBJECT", Tag::Param => "PARAM", Tag::Picture => "PICTURE",
+            Tag::Map => "MAP", Tag::Area => "AREA",
+            Tag::Center => "CENTER", Tag::Font => "FONT", Tag::Nobr => "NOBR", Tag::Tt => "TT",
+            Tag::Unknown => "UNKNOWN",
+        }
+    }
+
     /// Inline elements flow within text.
     pub fn is_inline(&self) -> bool {
         matches!(

@@ -4,7 +4,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, NodeType, Tag};
-use crate::style::{ComputedStyle, Display, WhiteSpace, TextDeco, TextTransform};
+use crate::style::{ComputedStyle, Display, WhiteSpace, TextDeco, TextTransform, TextAlignVal};
 use crate::ImageCache;
 
 use super::{
@@ -32,6 +32,7 @@ pub fn layout_inline_content(
     available_width: i32,
     start_x: i32,
     images: &ImageCache,
+    text_align: TextAlignVal,
 ) -> Vec<LayoutBox> {
     // 1. Flatten all inline children into fragments.
     let mut fragments: Vec<InlineFragment> = Vec::new();
@@ -96,7 +97,30 @@ pub fn layout_inline_content(
         lines.push(line);
     }
 
-    // 3. Baseline-align children inside each line.
+    // 3. Apply text-align: shift children within each line box.
+    if text_align != TextAlignVal::Left {
+        for ln in &mut lines {
+            // Calculate used width of content in this line.
+            let used: i32 = ln.children.last()
+                .map(|c| (c.x - start_x) + c.width)
+                .unwrap_or(0);
+            let free = available_width - used;
+            if free > 0 {
+                let shift = match text_align {
+                    TextAlignVal::Center => free / 2,
+                    TextAlignVal::Right => free,
+                    _ => 0,
+                };
+                if shift > 0 {
+                    for child in &mut ln.children {
+                        child.x += shift;
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Baseline-align children inside each line.
     for ln in &mut lines {
         let lh = ln.height;
         for child in &mut ln.children {
@@ -289,18 +313,23 @@ fn emit_input_fragment(
             let w = (bw + 24).max(60);
             let mut btn = LayoutBox::new(Some(node_id), BoxType::Inline);
             btn.form_field = Some(FormFieldKind::Submit);
+            btn.text = Some(String::from(label));
             out.push(InlineFragment { width: w, height: 28, layout_box: btn, breaks_after: false });
         }
         "password" => {
             let w = size_attr_width(dom, node_id, 200);
             let mut tf = LayoutBox::new(Some(node_id), BoxType::Inline);
             tf.form_field = Some(FormFieldKind::Password);
+            tf.form_placeholder = dom.attr(node_id, "placeholder").map(String::from);
+            tf.form_value = dom.attr(node_id, "value").map(String::from);
             out.push(InlineFragment { width: w, height: 28, layout_box: tf, breaks_after: false });
         }
         _ => {
             let w = size_attr_width(dom, node_id, 200);
             let mut tf = LayoutBox::new(Some(node_id), BoxType::Inline);
             tf.form_field = Some(FormFieldKind::TextInput);
+            tf.form_placeholder = dom.attr(node_id, "placeholder").map(String::from);
+            tf.form_value = dom.attr(node_id, "value").map(String::from);
             out.push(InlineFragment { width: w, height: 28, layout_box: tf, breaks_after: false });
         }
     }
@@ -321,6 +350,7 @@ fn emit_button_fragment(
     let kind = if btn_type == "submit" { FormFieldKind::Submit } else { FormFieldKind::ButtonEl };
     let mut btn = LayoutBox::new(Some(node_id), BoxType::Inline);
     btn.form_field = Some(kind);
+    btn.text = Some(String::from(label));
     out.push(InlineFragment { width: w, height: 28, layout_box: btn, breaks_after: false });
 }
 

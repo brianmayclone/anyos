@@ -36,12 +36,37 @@ const ICO_PAK_PATH: &str = "/System/media/ico.pak";
 
 static mut PAK_DATA: Option<Vec<u8>> = None;
 
+/// Pre-load the ico.pak file into memory. Call this early (e.g. during init)
+/// so that the first icon render doesn't stall on disk I/O.
+pub fn preload_iconpak() {
+    unsafe {
+        if PAK_DATA.is_none() {
+            if let Ok(data) = anyos_std::fs::read_to_vec(ICO_PAK_PATH) {
+                PAK_DATA = Some(data);
+            }
+        }
+    }
+}
+
 fn pak_data() -> Option<&'static [u8]> {
     unsafe {
         if PAK_DATA.is_none() {
             PAK_DATA = Some(anyos_std::fs::read_to_vec(ICO_PAK_PATH).ok()?);
         }
         PAK_DATA.as_deref()
+    }
+}
+
+// ── mimetypes.conf cache ──────────────────────────────
+
+static mut MIMETYPE_CONF: Option<Vec<u8>> = None;
+
+fn mimetype_conf() -> Option<&'static [u8]> {
+    unsafe {
+        if MIMETYPE_CONF.is_none() {
+            MIMETYPE_CONF = Some(anyos_std::fs::read_to_vec("/System/media/icons/mimetypes.conf").ok()?);
+        }
+        MIMETYPE_CONF.as_deref()
     }
 }
 
@@ -138,9 +163,9 @@ impl Icon {
 
     /// Load an icon for a file extension at a specific size.
     pub fn for_filetype_sized(ext: &str, size: u32) -> Option<Self> {
-        // Read mimetypes.conf to find the icon name for this extension
-        let conf = anyos_std::fs::read_to_vec("/System/media/icons/mimetypes.conf").ok()?;
-        let icon_name = parse_mimetype_conf(&conf, ext.as_bytes())?;
+        // Read mimetypes.conf (cached in memory after first load)
+        let conf = mimetype_conf()?;
+        let icon_name = parse_mimetype_conf(conf, ext.as_bytes())?;
 
         // Load the ICO file
         let mut path_buf = [0u8; 128];

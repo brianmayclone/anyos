@@ -64,6 +64,10 @@ pub struct LayoutBox {
     pub image_height: Option<i32>,
     /// Form field kind (for `<input>`, `<button>`, `<textarea>`, `<select>`).
     pub form_field: Option<FormFieldKind>,
+    /// Placeholder text for form text inputs.
+    pub form_placeholder: Option<String>,
+    /// Default value for form text inputs.
+    pub form_value: Option<String>,
     /// If true, children that extend outside this box should be clipped.
     pub overflow_hidden: bool,
     /// If true, this box is invisible but still takes up space.
@@ -136,6 +140,8 @@ impl LayoutBox {
             image_width: None,
             image_height: None,
             form_field: None,
+            form_placeholder: None,
+            form_value: None,
             overflow_hidden: false,
             visibility_hidden: false,
             opacity: 255,
@@ -408,8 +414,10 @@ pub(super) fn layout_children(
                 i += 1;
             }
             let inline_ids: Vec<NodeId> = child_ids[run_start..i].iter().copied().collect();
+            let parent_align = styles[_parent_node].text_align;
             let line_boxes = layout_inline_content(
                 dom, styles, &inline_ids, available_width, parent.padding.left, images,
+                parent_align,
             );
             for lb in line_boxes {
                 let h = lb.height;

@@ -220,6 +220,12 @@ impl Renderer {
                 let tf = ui::TextField::new();
                 tf.set_position(x, y);
                 tf.set_size(bx.width as u32, bx.height as u32);
+                if let Some(ref ph) = bx.form_placeholder {
+                    tf.set_placeholder(ph);
+                }
+                if let Some(ref val) = bx.form_value {
+                    tf.set_text(val);
+                }
                 parent.add(&tf);
                 self.controls.push(tf.id());
             }
@@ -228,6 +234,12 @@ impl Renderer {
                 tf.set_password_mode(true);
                 tf.set_position(x, y);
                 tf.set_size(bx.width as u32, bx.height as u32);
+                if let Some(ref ph) = bx.form_placeholder {
+                    tf.set_placeholder(ph);
+                }
+                if let Some(ref val) = bx.form_value {
+                    tf.set_text(val);
+                }
                 parent.add(&tf);
                 self.controls.push(tf.id());
             }

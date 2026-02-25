@@ -64,6 +64,7 @@ static HAS_HWP: AtomicBool = AtomicBool::new(false);
 static HAS_TURBO: AtomicBool = AtomicBool::new(false);
 static HAS_APERF_MPERF: AtomicBool = AtomicBool::new(false);
 static IS_AMD: AtomicBool = AtomicBool::new(false);
+static LEGACY_PSTATE_OK: AtomicBool = AtomicBool::new(false); // MSR_PERF_CTL is safe to write
 static MAX_FREQ_MHZ: AtomicU32 = AtomicU32::new(0);
 static BASE_FREQ_MHZ: AtomicU32 = AtomicU32::new(0);
 static MAX_CSTATE: AtomicU32 = AtomicU32::new(1); // default C1
@@ -194,8 +195,8 @@ pub fn init_ap() {
             let request = highest | (highest << 8); // min=max=highest
             wrmsr(MSR_HWP_REQUEST, request);
         }
-    } else {
-        // Legacy: set max P-state ratio
+    } else if LEGACY_PSTATE_OK.load(Ordering::Relaxed) {
+        // Legacy: set max P-state ratio (only if BSP confirmed MSR is available)
         let max_ratio = MAX_FREQ_MHZ.load(Ordering::Relaxed) as u64 / 100;
         if max_ratio > 0 {
             unsafe { wrmsr(MSR_PERF_CTL, max_ratio << 8); }
@@ -243,6 +244,7 @@ fn init_intel_legacy_pstate() {
             let max_mhz = max_ratio * 100;
             MAX_FREQ_MHZ.store(max_mhz, Ordering::Relaxed);
             BASE_FREQ_MHZ.store(max_mhz, Ordering::Relaxed);
+            LEGACY_PSTATE_OK.store(true, Ordering::Relaxed);
 
             // Request max performance
             wrmsr(MSR_PERF_CTL, (max_ratio as u64) << 8);
