@@ -111,7 +111,16 @@ impl Vm {
                 let kind = func_rc.borrow().kind.clone();
 
                 // Use Constructor.prototype as the new object's prototype (JS spec).
-                let ctor_proto = func_rc.borrow().prototype.clone();
+                // Prefer own_props["prototype"] (set by `Dog.prototype = ...` assignments)
+                // over the internal prototype field.
+                let ctor_proto = {
+                    let f = func_rc.borrow();
+                    if let Some(JsValue::Object(proto_obj)) = f.own_props.get("prototype") {
+                        Some(proto_obj.clone())
+                    } else {
+                        f.prototype.clone()
+                    }
+                };
                 let new_obj = JsValue::Object(Rc::new(RefCell::new(JsObject {
                     properties: alloc::collections::BTreeMap::new(),
                     prototype: ctor_proto.or(Some(self.object_proto.clone())),

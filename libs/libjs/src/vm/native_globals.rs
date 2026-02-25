@@ -161,6 +161,34 @@ pub fn ctor_boolean(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 // ═══════════════════════════════════════════════════════════
+// Number static methods
+// ═══════════════════════════════════════════════════════════
+
+/// `Number.isNaN(value)` — strict NaN check (no coercion).
+pub fn number_is_nan(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match args.first() {
+        Some(JsValue::Number(n)) => JsValue::Bool(n.is_nan()),
+        _ => JsValue::Bool(false),
+    }
+}
+
+/// `Number.isFinite(value)` — strict finite check (no coercion).
+pub fn number_is_finite(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match args.first() {
+        Some(JsValue::Number(n)) => JsValue::Bool(n.is_finite()),
+        _ => JsValue::Bool(false),
+    }
+}
+
+/// `Number.isInteger(value)` — true if value is a finite integer.
+pub fn number_is_integer(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match args.first() {
+        Some(JsValue::Number(n)) => JsValue::Bool(n.is_finite() && *n % 1.0 == 0.0),
+        _ => JsValue::Bool(false),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════
 

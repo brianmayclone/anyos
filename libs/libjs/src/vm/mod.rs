@@ -389,9 +389,12 @@ impl Vm {
                         };
                         upvalue_cells.push(cell);
                     }
+                    // Populate `params` with `param_count` entries so `fn.length` works.
+                    let param_stubs: Vec<alloc::string::String> =
+                        (0..chunk.param_count).map(|_| alloc::string::String::new()).collect();
                     let func = JsFunction {
                         name: chunk.name.clone(),
-                        params: Vec::new(),
+                        params: param_stubs,
                         kind: FnKind::Bytecode(chunk),
                         this_binding: None,
                         upvalues: upvalue_cells,
@@ -413,7 +416,19 @@ impl Vm {
                     let val = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let key = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let obj = self.stack.pop().unwrap_or(JsValue::Undefined);
-                    obj.set_property(key.to_js_string(), val.clone());
+                    let key_str = key.to_js_string();
+                    // `__proto__` assignment updates the actual prototype chain.
+                    if key_str == "__proto__" {
+                        if let JsValue::Object(obj_rc) = &obj {
+                            match &val {
+                                JsValue::Object(proto_rc) => { obj_rc.borrow_mut().prototype = Some(proto_rc.clone()); }
+                                JsValue::Null => { obj_rc.borrow_mut().prototype = None; }
+                                _ => {}
+                            }
+                        }
+                    } else {
+                        obj.set_property(key_str, val.clone());
+                    }
                     self.stack.push(val);
                 }
                 Op::GetPropNamed(name_idx) => {
@@ -426,7 +441,18 @@ impl Vm {
                     let name = self.get_const_string(frame_idx, name_idx);
                     let val = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let obj = self.stack.pop().unwrap_or(JsValue::Undefined);
-                    obj.set_property(name, val.clone());
+                    // `__proto__` assignment updates the actual prototype chain.
+                    if name == "__proto__" {
+                        if let JsValue::Object(obj_rc) = &obj {
+                            match &val {
+                                JsValue::Object(proto_rc) => { obj_rc.borrow_mut().prototype = Some(proto_rc.clone()); }
+                                JsValue::Null => { obj_rc.borrow_mut().prototype = None; }
+                                _ => {}
+                            }
+                        }
+                    } else {
+                        obj.set_property(name, val.clone());
+                    }
                     // Push the assigned value (ECMAScript: assignment evaluates
                     // to the right-hand side). The compiler always emits a Pop
                     // or uses this value directly — both cases are correct.
@@ -661,6 +687,45 @@ impl Vm {
                 }
 
                 Op::Debugger | Op::Nop => {}
+
+                Op::ObjectRest(count) => {
+                    // Pop `count` excluded key strings, then pop source object.
+                    // Push new object with all enumerable own properties except excluded ones.
+                    let count = count as usize;
+                    let mut excluded: Vec<String> = (0..count)
+                        .map(|_| self.stack.pop().unwrap_or(JsValue::Undefined).to_js_string())
+                        .collect();
+                    excluded.reverse();
+                    let src = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let result = JsValue::new_object();
+                    if let JsValue::Object(src_rc) = &src {
+                        let keys = src_rc.borrow().keys();
+                        for key in keys {
+                            if !excluded.contains(&key) {
+                                let val = src_rc.borrow().get(&key);
+                                result.set_property(key, val);
+                            }
+                        }
+                    }
+                    self.stack.push(result);
+                }
+
+                Op::CloneLocal(slot) => {
+                    // Create a fresh Rc<RefCell<JsValue>> for this local slot,
+                    // copying the current value.  Closures created after this
+                    // point capture the new cell (per-iteration let binding).
+                    let slot = slot as usize;
+                    let current_val = self.frames[frame_idx].locals
+                        .get(slot)
+                        .map(|c| c.borrow().clone())
+                        .unwrap_or(JsValue::Undefined);
+                    let new_cell = Rc::new(RefCell::new(current_val));
+                    let frame = &mut self.frames[frame_idx];
+                    while frame.locals.len() <= slot {
+                        frame.locals.push(Rc::new(RefCell::new(JsValue::Undefined)));
+                    }
+                    frame.locals[slot] = new_cell;
+                }
             }
         }
     }
@@ -672,9 +737,11 @@ impl Vm {
             Constant::Number(n) => JsValue::Number(*n),
             Constant::String(s) => JsValue::String(s.clone()),
             Constant::Function(chunk) => {
+                let param_stubs: Vec<alloc::string::String> =
+                    (0..chunk.param_count).map(|_| alloc::string::String::new()).collect();
                 let func = JsFunction {
                     name: chunk.name.clone(),
-                    params: Vec::new(),
+                    params: param_stubs,
                     kind: FnKind::Bytecode(chunk.clone()),
                     this_binding: None,
                     upvalues: Vec::new(),

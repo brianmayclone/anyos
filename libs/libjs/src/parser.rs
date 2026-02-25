@@ -88,6 +88,46 @@ impl Parser {
                 self.pos += 1;
                 s
             }
+            // Keywords are valid property names after `.` in member expressions.
+            TokenKind::Delete => { self.pos += 1; String::from("delete") }
+            TokenKind::In => { self.pos += 1; String::from("in") }
+            TokenKind::Return => { self.pos += 1; String::from("return") }
+            TokenKind::New => { self.pos += 1; String::from("new") }
+            TokenKind::Class => { self.pos += 1; String::from("class") }
+            TokenKind::Super => { self.pos += 1; String::from("super") }
+            TokenKind::This => { self.pos += 1; String::from("this") }
+            TokenKind::Default => { self.pos += 1; String::from("default") }
+            TokenKind::Var => { self.pos += 1; String::from("var") }
+            TokenKind::Let => { self.pos += 1; String::from("let") }
+            TokenKind::Const => { self.pos += 1; String::from("const") }
+            TokenKind::Function => { self.pos += 1; String::from("function") }
+            TokenKind::If => { self.pos += 1; String::from("if") }
+            TokenKind::Else => { self.pos += 1; String::from("else") }
+            TokenKind::While => { self.pos += 1; String::from("while") }
+            TokenKind::For => { self.pos += 1; String::from("for") }
+            TokenKind::Do => { self.pos += 1; String::from("do") }
+            TokenKind::Switch => { self.pos += 1; String::from("switch") }
+            TokenKind::Case => { self.pos += 1; String::from("case") }
+            TokenKind::Break => { self.pos += 1; String::from("break") }
+            TokenKind::Continue => { self.pos += 1; String::from("continue") }
+            TokenKind::Throw => { self.pos += 1; String::from("throw") }
+            TokenKind::Try => { self.pos += 1; String::from("try") }
+            TokenKind::Catch => { self.pos += 1; String::from("catch") }
+            TokenKind::Finally => { self.pos += 1; String::from("finally") }
+            TokenKind::Typeof => { self.pos += 1; String::from("typeof") }
+            TokenKind::Void => { self.pos += 1; String::from("void") }
+            TokenKind::Instanceof => { self.pos += 1; String::from("instanceof") }
+            TokenKind::Extends => { self.pos += 1; String::from("extends") }
+            TokenKind::Import => { self.pos += 1; String::from("import") }
+            TokenKind::Export => { self.pos += 1; String::from("export") }
+            TokenKind::Async => { self.pos += 1; String::from("async") }
+            TokenKind::Await => { self.pos += 1; String::from("await") }
+            TokenKind::Yield => { self.pos += 1; String::from("yield") }
+            TokenKind::Of => { self.pos += 1; String::from("of") }
+            TokenKind::From => { self.pos += 1; String::from("from") }
+            TokenKind::As => { self.pos += 1; String::from("as") }
+            TokenKind::With => { self.pos += 1; String::from("with") }
+            TokenKind::Debugger => { self.pos += 1; String::from("debugger") }
             _ => {
                 self.pos += 1;
                 String::from("_error_")
@@ -213,6 +253,13 @@ impl Parser {
                 elements.push(None);
                 continue;
             }
+            // Rest element: `...binding` — must be last
+            if self.eat(&TokenKind::DotDotDot) {
+                let inner = self.parse_binding_pattern();
+                elements.push(Some(Pattern::Rest(Box::new(inner))));
+                self.eat(&TokenKind::Comma); // optional trailing comma
+                break; // rest must be the last element
+            }
             let pat = self.parse_binding_pattern();
             let pat = if self.eat(&TokenKind::Eq) {
                 let def = self.parse_assignment_expr();
@@ -233,6 +280,14 @@ impl Parser {
         self.expect(&TokenKind::LBrace);
         let mut props = Vec::new();
         while !matches!(self.peek(), TokenKind::RBrace | TokenKind::Eof) {
+            // Rest element: `...binding` — must be last
+            if self.eat(&TokenKind::DotDotDot) {
+                let inner = self.parse_binding_pattern();
+                // Use empty key as sentinel; compiler checks Pattern::Rest on value
+                props.push(ObjPatProp { key: String::new(), value: Pattern::Rest(Box::new(inner)) });
+                self.eat(&TokenKind::Comma);
+                break;
+            }
             let key = self.ident_str();
             let value = if self.eat(&TokenKind::Colon) {
                 self.parse_binding_pattern()

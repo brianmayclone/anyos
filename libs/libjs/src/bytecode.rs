@@ -189,6 +189,17 @@ pub enum Op {
 
     // ── No-op ──
     Nop,
+
+    /// Create a rest object from the source object on top of stack by copying all
+    /// own enumerable properties except for `n` excluded keys (also on stack).
+    /// Stack before: [..., source_obj, key1, ..., keyN]
+    /// Stack after:  [..., rest_object]
+    ObjectRest(u8),
+
+    /// Replace local slot `slot` with a fresh `Rc<RefCell<JsValue>>` cell containing
+    /// the same value.  Used for per-iteration `let` binding in `for` loops so that
+    /// closures created in each iteration capture their own cell.
+    CloneLocal(u16),
 }
 
 /// Describes how a compiled function captures one upvalue from its enclosing scope.

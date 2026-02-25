@@ -12,8 +12,26 @@ use super::Vm;
 // ═══════════════════════════════════════════════════════════
 
 /// `new Error(message)` or `Error(message)` — creates an error object.
+///
+/// When called as `super(msg)` from a derived class constructor, `vm.current_this`
+/// is already the derived instance; we set `message`/`name` on it and return it.
+/// For a plain `new Error(msg)`, we set up the pre-created `new_obj` (which is
+/// `vm.current_this`) and return it so `new_object` uses it.
 pub fn ctor_error(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let message = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    if let JsValue::Object(obj_rc) = &vm.current_this.clone() {
+        // Called as a constructor or super() — set properties on the existing object.
+        let mut o = obj_rc.borrow_mut();
+        o.set(String::from("message"), JsValue::String(message));
+        o.set(String::from("name"), JsValue::String(String::from("Error")));
+        // Ensure the prototype is error_proto if not already set to something useful.
+        if o.prototype.is_none() {
+            o.prototype = Some(vm.error_proto.clone());
+        }
+        drop(o);
+        return vm.current_this.clone();
+    }
+    // Called as a plain function (rare) — create a new error object.
     let mut obj = JsObject::new();
     obj.prototype = Some(vm.error_proto.clone());
     obj.set(String::from("message"), JsValue::String(message));

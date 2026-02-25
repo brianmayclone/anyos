@@ -171,6 +171,12 @@ impl Vm {
         // ── Array static methods ──
         self.init_array_statics();
 
+        // ── Number static methods ──
+        self.init_number_statics();
+
+        // ── Error prototype link ──
+        self.init_error_statics();
+
         // ── Promise ──
         self.set_global("Promise", native_fn("Promise", native_promise::ctor_promise));
         self.init_promise_statics();
@@ -279,6 +285,35 @@ impl Vm {
             arr_ctor.set_property(String::from("isArray"), native_fn("isArray", native_array::array_is_array));
             arr_ctor.set_property(String::from("from"), native_fn("from", native_array::array_from));
             arr_ctor.set_property(String::from("of"), native_fn("of", native_array::array_of));
+            // Link Array.prototype so `Array.prototype.slice.call(...)` works.
+            arr_ctor.set_property(String::from("prototype"), JsValue::Object(self.array_proto.clone()));
+        }
+    }
+
+    fn init_number_statics(&mut self) {
+        if let JsValue::Function(f) = self.globals.get("Number") {
+            let num_ctor = JsValue::Function(f.clone());
+            num_ctor.set_property(String::from("isNaN"), native_fn("isNaN", native_globals::number_is_nan));
+            num_ctor.set_property(String::from("isFinite"), native_fn("isFinite", native_globals::number_is_finite));
+            num_ctor.set_property(String::from("isInteger"), native_fn("isInteger", native_globals::number_is_integer));
+            num_ctor.set_property(String::from("MAX_SAFE_INTEGER"), JsValue::Number(9007199254740991.0));
+            num_ctor.set_property(String::from("MIN_SAFE_INTEGER"), JsValue::Number(-9007199254740991.0));
+            num_ctor.set_property(String::from("EPSILON"), JsValue::Number(f64::EPSILON));
+            num_ctor.set_property(String::from("MAX_VALUE"), JsValue::Number(f64::MAX));
+            num_ctor.set_property(String::from("MIN_VALUE"), JsValue::Number(f64::MIN_POSITIVE));
+            num_ctor.set_property(String::from("POSITIVE_INFINITY"), JsValue::Number(f64::INFINITY));
+            num_ctor.set_property(String::from("NEGATIVE_INFINITY"), JsValue::Number(f64::NEG_INFINITY));
+            num_ctor.set_property(String::from("NaN"), JsValue::Number(f64::NAN));
+        }
+    }
+
+    fn init_error_statics(&mut self) {
+        // Link Error.prototype so that `new Error()` gets error_proto as its prototype.
+        for name in ["Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError"] {
+            if let JsValue::Function(f) = self.globals.get(name) {
+                let ctor = JsValue::Function(f.clone());
+                ctor.set_property(String::from("prototype"), JsValue::Object(self.error_proto.clone()));
+            }
         }
     }
 

@@ -190,11 +190,26 @@ pub fn map_for_each(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 // Set constructor and prototype
 // ═══════════════════════════════════════════════════════════
 
-pub fn ctor_set(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+pub fn ctor_set(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let mut obj = JsObject::new();
     obj.internal_tag = Some(String::from("__set__"));
-    obj.set(String::from("__items"), JsValue::new_array(Vec::new()));
-    obj.set(String::from("size"), JsValue::Number(0.0));
+    // Pre-populate from iterable argument (array) if provided.
+    let initial: Vec<JsValue> = match args.first() {
+        Some(JsValue::Array(arr)) => {
+            let a = arr.borrow();
+            let mut seen: Vec<JsValue> = Vec::new();
+            for v in &a.elements {
+                if !seen.iter().any(|s| s.strict_eq(v)) {
+                    seen.push(v.clone());
+                }
+            }
+            seen
+        }
+        _ => Vec::new(),
+    };
+    let size = initial.len() as f64;
+    obj.set(String::from("__items"), JsValue::new_array(initial));
+    obj.set(String::from("size"), JsValue::Number(size));
     obj.set(String::from("add"), native_fn("add", set_add));
     obj.set(String::from("has"), native_fn("has", set_has));
     obj.set(String::from("delete"), native_fn("delete", set_delete));

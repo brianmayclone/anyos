@@ -555,7 +555,9 @@ ssize_t readlink(const char *path, char *buf, size_t bufsiz) {
 }
 
 int chown(const char *path, unsigned int owner, unsigned int group) {
-    (void)path; (void)owner; (void)group;
+    if (!path) { errno = EINVAL; return -1; }
+    long r = _syscall(225 /*SYS_CHOWN*/, (long)path, (long)owner, (long)group, 0, 0);
+    if (r < 0) { errno = (int)-r; return -1; }
     return 0;
 }
 
@@ -616,27 +618,73 @@ int utimes(const char *filename, const struct timeval times[2]) {
 /* pwd.h stubs */
 #include <pwd.h>
 
+/* Shared static storage for getpwuid() / getpwnam(). */
+static char _pw_name_buf[64];
+static char _pw_dir_buf[128];
+static struct passwd _pw_entry;
+
+/* Populate _pw_entry for the given uid using kernel syscalls. */
+static struct passwd *_pw_fill(uid_t uid) {
+    /* Look up username by UID (SYS_GETUSERNAME = 232). */
+    _pw_name_buf[0] = '\0';
+    _syscall(232, (long)(unsigned int)uid, (long)_pw_name_buf,
+             (long)sizeof(_pw_name_buf), 0, 0);
+    if (_pw_name_buf[0] == '\0')
+        snprintf(_pw_name_buf, sizeof(_pw_name_buf), "user%u", (unsigned int)uid);
+
+    /* Home directory: /root for root, /home/<name> for others. */
+    if (uid == 0)
+        snprintf(_pw_dir_buf, sizeof(_pw_dir_buf), "/root");
+    else
+        snprintf(_pw_dir_buf, sizeof(_pw_dir_buf), "/home/%s", _pw_name_buf);
+
+    _pw_entry.pw_name  = _pw_name_buf;
+    _pw_entry.pw_dir   = _pw_dir_buf;
+    _pw_entry.pw_shell = "/bin/sh";
+    _pw_entry.pw_uid   = uid;
+    /* Use caller's GID when looking up the current user, else fall back to uid. */
+    _pw_entry.pw_gid   = ((unsigned int)_syscall(221, 0, 0, 0, 0, 0) == (unsigned int)uid)
+                         ? (gid_t)_syscall(222, 0, 0, 0, 0, 0)
+                         : (gid_t)uid;
+    return &_pw_entry;
+}
+
 struct passwd *getpwuid(uid_t uid) {
-    static struct passwd pw = { "user", "/home/user", "/bin/sh", 0, 0 };
-    (void)uid;
-    return &pw;
+    return _pw_fill(uid);
 }
 
 struct passwd *getpwnam(const char *name) {
+    /* Look up by current user's name; fall back to current user for all queries. */
     (void)name;
-    static struct passwd pw = { "user", "/home/user", "/bin/sh", 0, 0 };
-    return &pw;
+    return _pw_fill((uid_t)_syscall(221, 0, 0, 0, 0, 0));
 }
 
-int getpwuid_r(uid_t uid, struct passwd *pwd, char *buf, size_t buflen, struct passwd **result) {
-    (void)uid; (void)buf; (void)buflen;
-    if (pwd) {
-        pwd->pw_name = "user";
-        pwd->pw_dir = "/home/user";
-        pwd->pw_shell = "/bin/sh";
-        pwd->pw_uid = 0;
-        pwd->pw_gid = 0;
+int getpwuid_r(uid_t uid, struct passwd *pwd, char *buf, size_t buflen,
+               struct passwd **result) {
+    if (!pwd || !buf || buflen < 128) {
+        if (result) *result = NULL;
+        return ERANGE;
     }
+    /* Layout: [0..63] = name, [64..127+] = home dir */
+    char *name = buf;
+    name[0] = '\0';
+    _syscall(232, (long)(unsigned int)uid, (long)name, 63, 0, 0);
+    if (name[0] == '\0')
+        snprintf(name, 64, "user%u", (unsigned int)uid);
+
+    char *dir = buf + 64;
+    if (uid == 0)
+        snprintf(dir, buflen - 64, "/root");
+    else
+        snprintf(dir, buflen - 64, "/home/%s", name);
+
+    pwd->pw_name  = name;
+    pwd->pw_dir   = dir;
+    pwd->pw_shell = "/bin/sh";
+    pwd->pw_uid   = uid;
+    pwd->pw_gid   = ((unsigned int)_syscall(221, 0, 0, 0, 0, 0) == (unsigned int)uid)
+                    ? (gid_t)_syscall(222, 0, 0, 0, 0, 0)
+                    : (gid_t)uid;
     if (result) *result = pwd;
     return 0;
 }

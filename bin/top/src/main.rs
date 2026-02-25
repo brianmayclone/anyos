@@ -34,6 +34,38 @@ struct TaskEntry {
     cpu_pct_x10: u32, // CPU% * 10 (e.g. 123 = 12.3%)
 }
 
+// ─── Terminal size ───────────────────────────────────────────────────────────
+
+/// Read LINES and COLUMNS from environment variables set by the terminal.
+/// Falls back to 24 rows × 80 cols if the variables are absent or invalid.
+fn get_terminal_size() -> (usize, usize) {
+    let mut buf = [0u8; 8];
+    let rows = {
+        let n = anyos_std::env::get("LINES", &mut buf);
+        if n != u32::MAX && n > 0 { parse_uint(&buf[..n as usize]).unwrap_or(24) } else { 24 }
+    };
+    let cols = {
+        let n = anyos_std::env::get("COLUMNS", &mut buf);
+        if n != u32::MAX && n > 0 { parse_uint(&buf[..n as usize]).unwrap_or(80) } else { 80 }
+    };
+    (rows.max(8), cols.max(40))
+}
+
+/// Parse an ASCII decimal string, stopping at the first non-digit byte.
+fn parse_uint(bytes: &[u8]) -> Option<usize> {
+    let mut val: usize = 0;
+    let mut any = false;
+    for &b in bytes {
+        if b >= b'0' && b <= b'9' {
+            val = val * 10 + (b - b'0') as usize;
+            any = true;
+        } else {
+            break;
+        }
+    }
+    if any { Some(val) } else { None }
+}
+
 // ─── Formatting helpers ──────────────────────────────────────────────────────
 
 /// Format a u32 into a decimal string, returning the str slice.
@@ -272,6 +304,8 @@ fn main() {
         // Flicker-free: on first frame clear screen, then only cursor-home +
         // overwrite each line with \x1B[K (erase to EOL) to avoid blanking.
 
+        let (term_rows, term_cols) = get_terminal_size();
+
         if first_frame {
             anyos_std::print!("\x1B[2J");
             first_frame = false;
@@ -310,17 +344,27 @@ fn main() {
         line_count += 1;
 
         // Table header
+        // Fixed columns before NAME: "TID"(5) + " "(1) + "USER"(10) + " "(1) + "PRI"(3) + " "(1)
+        //   + "STATE"(8) + " "(1) + "CPU%"(5) + " "(1) + "MEM"(6) + " "(1) = 43 chars
+        let name_col_width = term_cols.saturating_sub(43).max(4);
         anyos_std::print!("{:>5} {:<10} {:>3} {:<8} {:>5} {:>6} {}", "TID", "USER", "PRI", "STATE", "CPU%", "MEM", "NAME");
         anyos_std::println!("\x1B[K");
         line_count += 1;
-        anyos_std::print!("------------------------------------------------------");
+        // Dynamic separator spanning the terminal width
+        let sep_len = term_cols.min(256);
+        for _ in 0..sep_len { anyos_std::print!("-"); }
         anyos_std::println!("\x1B[K");
         line_count += 1;
 
-        // Table rows
-        for i in 0..task_count {
+        // Table rows — limit to remaining terminal rows (5 header lines above)
+        let max_proc_rows = term_rows.saturating_sub(line_count);
+        let visible_tasks = task_count.min(max_proc_rows);
+        for i in 0..visible_tasks {
             let task = &tasks[i];
-            let name = core::str::from_utf8(&task.name[..task.name_len]).unwrap_or("???");
+            let name_bytes = &task.name[..task.name_len];
+            // Truncate name to available column width (safe: name is ASCII)
+            let name_len = task.name_len.min(name_col_width);
+            let name = core::str::from_utf8(&name_bytes[..name_len]).unwrap_or("???");
 
             let state_str = match task.state {
                 0 => "Ready",

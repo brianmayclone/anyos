@@ -7,9 +7,38 @@ const MAX_TASKS: usize = 64;
 const MAX_CPUS: usize = 16;
 const THREAD_ENTRY_SIZE: usize = 60;
 const REFRESH_MS: u32 = 2000;
-const BAR_WIDTH: usize = 20;
-/// Maximum visible rows in terminal (safe default — prevents scrolling).
-const MAX_VISIBLE_ROWS: usize = 24;
+
+// ─── Terminal size ───────────────────────────────────────────────────────────
+
+/// Read LINES and COLUMNS from environment variables set by the terminal.
+/// Falls back to 24 rows × 80 cols if the variables are absent or invalid.
+fn get_terminal_size() -> (usize, usize) {
+    let mut buf = [0u8; 8];
+    let rows = {
+        let n = anyos_std::env::get("LINES", &mut buf);
+        if n != u32::MAX && n > 0 { parse_uint(&buf[..n as usize]).unwrap_or(24) } else { 24 }
+    };
+    let cols = {
+        let n = anyos_std::env::get("COLUMNS", &mut buf);
+        if n != u32::MAX && n > 0 { parse_uint(&buf[..n as usize]).unwrap_or(80) } else { 80 }
+    };
+    (rows.max(8), cols.max(40))
+}
+
+/// Parse an ASCII decimal string, stopping at the first non-digit byte.
+fn parse_uint(bytes: &[u8]) -> Option<usize> {
+    let mut val: usize = 0;
+    let mut any = false;
+    for &b in bytes {
+        if b >= b'0' && b <= b'9' {
+            val = val * 10 + (b - b'0') as usize;
+            any = true;
+        } else {
+            break;
+        }
+    }
+    if any { Some(val) } else { None }
+}
 
 // ANSI color codes
 const RESET: &str = "\x1B[0m";
@@ -240,10 +269,10 @@ fn pct_color(pct: u32, yellow_thresh: u32, red_thresh: u32) -> &'static str {
 }
 
 /// Print a colored bar: `label[||||       XX%]`
-/// `label_width` is the fixed-width label area (right-aligned).
-fn print_bar(label: &str, pct: u32, color: &str) {
-    let filled = (pct as usize * BAR_WIDTH / 100).min(BAR_WIDTH);
-    let empty = BAR_WIDTH - filled;
+/// `bar_width` controls the width of the fill area in characters.
+fn print_bar(label: &str, pct: u32, color: &str, bar_width: usize) {
+    let filled = (pct as usize * bar_width / 100).min(bar_width);
+    let empty = bar_width - filled;
 
     anyos_std::print!("{}[", label);
     anyos_std::print!("{}", color);
@@ -338,6 +367,11 @@ fn main() {
         let secs = total_secs % 60;
 
         // ── Render ──
+        let (term_rows, term_cols) = get_terminal_size();
+        // Bar width: half the terminal width minus labels/gaps, clamped to a sensible range.
+        // Layout per CPU row: "NN[...bar...]  NN[...bar...]" — each side uses ~(bar_width+8) chars.
+        let bar_width = ((term_cols.saturating_sub(16)) / 2).clamp(10, 40);
+
         if first_frame {
             anyos_std::print!("\x1B[2J");
             first_frame = false;
@@ -353,22 +387,17 @@ fn main() {
             let left = row * 2;
             let right = left + 1;
 
-            // Left bar
-            // Label: core number, padded to 2 chars
-            if left < 10 {
-                anyos_std::print!("{}", fmt_u32(&mut t, left as u32));
-            } else {
-                anyos_std::print!("{}", fmt_u32(&mut t, left as u32));
-            }
+            // Left bar (core number label + bar)
+            anyos_std::print!("{}", fmt_u32(&mut t, left as u32));
             let left_pct = cpu_state.core_pct[left];
-            print_bar("", left_pct, pct_color(left_pct, 50, 75));
+            print_bar("", left_pct, pct_color(left_pct, 50, 75), bar_width);
 
             // Right bar (if exists)
             if right < ncpu {
                 anyos_std::print!("  ");
                 anyos_std::print!("{}", fmt_u32(&mut t, right as u32));
                 let right_pct = cpu_state.core_pct[right];
-                print_bar("", right_pct, pct_color(right_pct, 50, 75));
+                print_bar("", right_pct, pct_color(right_pct, 50, 75), bar_width);
             }
 
             anyos_std::println!("\x1B[K");
@@ -377,7 +406,7 @@ fn main() {
 
         // ── Memory bar ──
         anyos_std::print!("Mem ");
-        print_bar("", mem_pct, pct_color(mem_pct, 60, 80));
+        print_bar("", mem_pct, pct_color(mem_pct, 60, 80), bar_width);
         anyos_std::print!("  {}", fmt_u32(&mut t, used_kb / 1024));
         anyos_std::print!("/{}M", fmt_u32(&mut t, total_kb / 1024));
         anyos_std::println!("\x1B[K");
@@ -385,7 +414,7 @@ fn main() {
 
         // ── Heap bar ──
         anyos_std::print!("Heap");
-        print_bar("", heap_pct, CYAN);
+        print_bar("", heap_pct, CYAN, bar_width);
         anyos_std::print!("  {}", fmt_u32(&mut t, heap_used / 1024));
         anyos_std::print!("/{}K", fmt_u32(&mut t, heap_total / 1024));
         anyos_std::println!("\x1B[K");
@@ -409,6 +438,8 @@ fn main() {
         line_count += 1;
 
         // ── Table header ──
+        // Fixed columns before NAME: 43 chars (same as top)
+        let name_col_width = term_cols.saturating_sub(43).max(4);
         anyos_std::print!("{}{}", BOLD, CYAN);
         anyos_std::print!("{:>5} {:<10} {:>3} {:<8} {:>5} {:>6} {}", "TID", "USER", "PRI", "STATE", "CPU%", "MEM", "NAME");
         anyos_std::print!("{}", RESET);
@@ -416,17 +447,20 @@ fn main() {
         line_count += 1;
 
         anyos_std::print!("{}", DIM);
-        anyos_std::print!("------------------------------------------------------");
+        let sep_len = term_cols.min(256);
+        for _ in 0..sep_len { anyos_std::print!("-"); }
         anyos_std::print!("{}", RESET);
         anyos_std::println!("\x1B[K");
         line_count += 1;
 
-        // ── Process rows (limited to fit terminal height) ──
-        let max_proc_rows = MAX_VISIBLE_ROWS.saturating_sub(line_count);
+        // ── Process rows (limited to remaining terminal height) ──
+        let max_proc_rows = term_rows.saturating_sub(line_count);
         let visible_tasks = task_count.min(max_proc_rows);
         for i in 0..visible_tasks {
             let task = &tasks[i];
-            let name = core::str::from_utf8(&task.name[..task.name_len]).unwrap_or("???");
+            let name_bytes = &task.name[..task.name_len];
+            let name_len = task.name_len.min(name_col_width);
+            let name = core::str::from_utf8(&name_bytes[..name_len]).unwrap_or("???");
 
             let (state_str, state_color) = match task.state {
                 0 => ("Ready", YELLOW),

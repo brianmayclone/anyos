@@ -304,6 +304,8 @@ pub enum Pattern {
     Array(Vec<Option<Pattern>>),
     Object(Vec<ObjPatProp>),
     Assign(Box<Pattern>, Box<Expr>), // pattern = default
+    /// Rest element: `...binding` in array or object destructuring.
+    Rest(Box<Pattern>),
 }
 
 /// Object pattern property.

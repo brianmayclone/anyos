@@ -40,6 +40,9 @@ struct Scope {
     /// body is compiled (while, do-while, for-in, for-of).
     continue_target: Option<usize>,
     scope_depth: u32,
+    /// Stack of finally-block statement lists that must run before any `return`
+    /// inside the try body (innermost last).
+    pending_finallies: Vec<Vec<Stmt>>,
 }
 
 struct Local {
@@ -57,6 +60,7 @@ impl Scope {
             continue_jumps: Vec::new(),
             continue_target: None,
             scope_depth: 0,
+            pending_finallies: Vec::new(),
         }
     }
 
@@ -328,12 +332,27 @@ impl Compiler {
             }
             Stmt::For { init, test, update, body } => {
                 self.begin_scope();
+                // Track which locals are `let`/`const` from the for-init so we can
+                // clone them each iteration (per-iteration let binding for closures).
+                let mut let_slots: Vec<u16> = Vec::new();
                 if let Some(init) = init {
                     match init.as_ref() {
                         ForInit::VarDecl { kind, decls } => {
                             let is_global = *kind == VarKind::Var && self.is_global_scope();
-                            for d in decls {
-                                self.compile_var_decl(d, is_global);
+                            if *kind != VarKind::Var && !is_global {
+                                // Record slot indices before and after to find new let/const bindings.
+                                let before = self.scope().locals.len() as u16;
+                                for d in decls {
+                                    self.compile_var_decl(d, false);
+                                }
+                                let after = self.scope().locals.len() as u16;
+                                for slot in before..after {
+                                    let_slots.push(slot);
+                                }
+                            } else {
+                                for d in decls {
+                                    self.compile_var_decl(d, is_global);
+                                }
                             }
                         }
                         ForInit::Expr(e) => {
@@ -358,11 +377,19 @@ impl Compiler {
 
                 self.compile_stmt(body);
 
-                // Patch all forward continue-jumps to the update expression.
+                // Patch all forward continue-jumps to here (before update).
                 let continue_pos = self.offset();
                 let cont_jumps = core::mem::take(&mut self.scope_mut().continue_jumps);
                 for cj in &cont_jumps {
                     self.patch_jump_to_pos(*cj, continue_pos);
+                }
+
+                // Clone let/const bindings AFTER body, BEFORE update so that each
+                // iteration's closures capture a pre-increment snapshot of the variable.
+                // The clone creates a fresh cell for the NEXT iteration; the update
+                // modifies this fresh cell, leaving the captured (body-era) cell intact.
+                for slot in &let_slots {
+                    self.emit(Op::CloneLocal(*slot));
                 }
 
                 if let Some(update) = update {
@@ -397,6 +424,13 @@ impl Compiler {
                     self.compile_expr(v);
                 } else {
                     self.emit(Op::LoadUndefined);
+                }
+                // Inline any pending finally blocks before returning (innermost first).
+                let finallies = self.scope().pending_finallies.clone();
+                for fin in finallies.iter().rev() {
+                    for s in fin {
+                        self.compile_stmt(s);
+                    }
                 }
                 self.emit(Op::Return);
             }
@@ -496,32 +530,89 @@ impl Compiler {
                 }
                 self.compile_pattern_binding(pat);
             }
+            Pattern::Rest(_) => {
+                // Bare rest in var decl — just load undefined (degenerate case).
+                self.emit(Op::LoadUndefined);
+                self.emit(Op::Pop);
+            }
         }
         self.binding_is_global = prev;
     }
 
     fn compile_array_destructure(&mut self, elements: &[Option<Pattern>]) {
-        // Array is on top of stack
+        // Array is on top of stack.
         for (i, elem) in elements.iter().enumerate() {
             if let Some(pat) = elem {
-                self.emit(Op::Dup);
-                let idx = self.add_const(Constant::Number(i as f64));
-                self.emit(Op::LoadConst(idx));
-                self.emit(Op::GetProp);
-                self.compile_pattern_binding(pat);
+                match pat {
+                    Pattern::Rest(inner) => {
+                        // Call arr.slice(i) to get remaining elements.
+                        // Need: [..., arr, arr, slice_fn, i] for CallMethod(1).
+                        // First Dup keeps `arr` on stack for the final Pop.
+                        // Second Dup is the `this` for CallMethod.
+                        self.emit(Op::Dup); // arr stays for final Pop
+                        self.emit(Op::Dup); // this for CallMethod
+                        let slice_ci = self.add_const(Constant::String(String::from("slice")));
+                        self.emit(Op::GetPropNamed(slice_ci)); // [..., arr, slice_fn]
+                        let i_ci = self.add_const(Constant::Number(i as f64));
+                        self.emit(Op::LoadConst(i_ci));        // [..., arr, slice_fn, i]
+                        self.emit(Op::CallMethod(1));           // [..., arr, rest_array]
+                        self.compile_pattern_binding(inner);
+                    }
+                    _ => {
+                        self.emit(Op::Dup);
+                        let idx = self.add_const(Constant::Number(i as f64));
+                        self.emit(Op::LoadConst(idx));
+                        self.emit(Op::GetProp);
+                        self.compile_pattern_binding(pat);
+                    }
+                }
             }
         }
         self.emit(Op::Pop); // pop the array
     }
 
     fn compile_object_destructure(&mut self, props: &[ObjPatProp]) {
+        // Collect the non-rest keys (for building the exclusion list for the rest element).
+        let mut excluded_keys: Vec<String> = Vec::new();
+        let mut has_rest = false;
         for prop in props {
+            if matches!(&prop.value, Pattern::Rest(_)) {
+                has_rest = true;
+            } else {
+                excluded_keys.push(prop.key.clone());
+            }
+        }
+
+        // Emit normal property extractions first.
+        for prop in props {
+            if matches!(&prop.value, Pattern::Rest(_)) {
+                continue;
+            }
             self.emit(Op::Dup);
             let name_idx = self.add_const(Constant::String(prop.key.clone()));
             self.emit(Op::GetPropNamed(name_idx));
             self.compile_pattern_binding(&prop.value);
         }
-        self.emit(Op::Pop); // pop the object
+
+        // Emit rest object creation if present.
+        if has_rest {
+            for prop in props {
+                if let Pattern::Rest(inner) = &prop.value {
+                    // Stack: [..., src_obj] — Dup it, push excluded keys, emit ObjectRest.
+                    self.emit(Op::Dup);
+                    for key in &excluded_keys {
+                        let ki = self.add_const(Constant::String(key.clone()));
+                        self.emit(Op::LoadConst(ki));
+                    }
+                    let n = excluded_keys.len() as u8;
+                    self.emit(Op::ObjectRest(n));
+                    self.compile_pattern_binding(inner);
+                    break;
+                }
+            }
+        }
+
+        self.emit(Op::Pop); // pop the source object
     }
 
     fn compile_pattern_binding(&mut self, pat: &Pattern) {
@@ -547,6 +638,10 @@ impl Compiler {
             }
             Pattern::Object(props) => {
                 self.compile_object_destructure(props);
+            }
+            Pattern::Rest(inner) => {
+                // A bare rest pattern (e.g. as a function parameter) — just bind the value.
+                self.compile_pattern_binding(inner);
             }
         }
     }
@@ -602,6 +697,9 @@ impl Compiler {
                             self.compile_object_destructure(props);
                         }
                         Pattern::Assign(inner, _) => {
+                            self.compile_pattern_binding(inner);
+                        }
+                        Pattern::Rest(inner) => {
                             self.compile_pattern_binding(inner);
                         }
                     }
@@ -704,11 +802,21 @@ impl Compiler {
     ) {
         let catch_offset_slot = self.emit(Op::TryCatch(0, 0));
 
+        // Push finally stmts so that any `return` inside the try body inlines them.
+        if let Some(fin) = finally {
+            self.scope_mut().pending_finallies.push(fin.clone());
+        }
+
         // Try block
         for s in block {
             self.compile_stmt(s);
         }
         let try_end_jump = self.emit(Op::Jump(0));
+
+        // Pop pending finally (we're leaving the try body).
+        if finally.is_some() {
+            self.scope_mut().pending_finallies.pop();
+        }
 
         // Patch catch offset
         let catch_pos = self.offset();
@@ -736,7 +844,7 @@ impl Compiler {
         self.patch_jump(try_end_jump);
         self.emit(Op::TryEnd);
 
-        // Finally block
+        // Finally block (normal path — no exception, no early return).
         if let Some(fin) = finally {
             for s in fin {
                 self.compile_stmt(s);
