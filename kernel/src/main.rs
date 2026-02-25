@@ -257,11 +257,15 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     task::users::init();
 
     // Phase 8: Initialize mouse
+    serial_println!("  Phase 8: Initializing mouse...");
     drivers::input::mouse::init();
 
     // Phase 8a: Try VMware backdoor (vmmouse) for absolute mouse in VMs
     // Must be after PS/2 init — if backdoor is present, IRQ12 will use it instead of PS/2.
+    serial_println!("  Phase 8a: Detecting vmmouse...");
     drivers::input::vmmouse::init();
+
+    serial_println!("  Phase 8a done.");
 
     // Emit boot complete event
     ipc::event_bus::system_emit(ipc::event_bus::EventData::new(

@@ -1,6 +1,6 @@
 # anyOS Syscall Reference
 
-Complete reference for all 140+ system calls in anyOS. Syscalls are the interface between user-space programs and the kernel.
+Complete reference for all 155+ system calls in anyOS. Syscalls are the interface between user-space programs and the kernel.
 
 ## Calling Conventions
 
@@ -141,6 +141,9 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 | 104 | `tcp_status` | socket_id | state_enum | Get TCP connection state |
 | 130 | `tcp_recv_available` | socket_id | bytes or 0xFFFFFFFE (EOF) | Check bytes available without blocking |
 | 131 | `tcp_shutdown_wr` | socket_id | 0 | Half-close: send FIN, can still receive |
+| 132 | `tcp_listen` | port, backlog | listener_id or 0xFFFFFFFF | Listen for incoming TCP connections on port |
+| 133 | `tcp_accept` | listener_id, result_ptr | 0 or 0xFFFFFFFF | Accept connection. Writes to result_ptr: [socket_id:u32, ip:u8[4], port:u16, pad:u16] |
+| 134 | `tcp_list` | buf_ptr, buf_size | entry_count | List all active TCP connections |
 
 ## Networking — UDP
 
@@ -193,6 +196,7 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 | 67 | `evt_chan_unsubscribe` | chan_id, sub_id | 0 | Unsubscribe from channel |
 | 68 | `evt_chan_destroy` | chan_id | 0 | Destroy channel (creator only) |
 | 69 | `evt_chan_emit_to` | chan_id, sub_id, event_ptr | 0 | Unicast event to specific subscriber |
+| 70 | `evt_chan_wait` | chan_id, sub_id, timeout_ms | 1 or 0 | Blocking wait for channel event with timeout |
 
 ## Display / GPU
 
@@ -206,6 +210,7 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 | 137 | `boot_ready` | — | 0 | Signal desktop is fully loaded (boot timing marker) |
 | 138 | `gpu_has_hw_cursor` | — | 1 or 0 | Query if GPU hardware cursor is available |
 | 161 | `capture_screen` | buf_ptr, buf_size, info_ptr | 0, 1 (no GPU), or 2 (too small) | Capture framebuffer to user buffer |
+| 258 | `gpu_register_backbuffer` | buf_ptr, buf_size | 0 or error | Register GPU backbuffer for DMA write (compositor-only) |
 
 ## Audio
 
@@ -366,3 +371,15 @@ Runtime per-user, per-app permission management. Apps declare capabilities in th
 | # | Name | Args | Return | Description |
 |---|------|------|--------|-------------|
 | 260 | `get_crash_info` | tid, buf_ptr, buf_size | bytes_written or 0 | Get crash report for a terminated thread. Copies raw CrashReport struct to user buffer |
+
+## Disk / Partition Management
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 270 | `disk_list` | buf_ptr, buf_size | device_count | List disk devices |
+| 271 | `disk_partitions` | disk_id, buf_ptr, buf_size | partition_count | List partitions on a disk |
+| 272 | `disk_read` | device_id, lba, count, buf_ptr, buf_size | bytes_read or error | Read sectors by LBA |
+| 273 | `disk_write` | device_id, lba, count, buf_ptr, buf_size | bytes_written or error | Write sectors by LBA |
+| 274 | `partition_create` | disk_id, entry_ptr, entry_size | 0 or error | Create a new partition entry |
+| 275 | `partition_delete` | disk_id, index | 0 or error | Delete a partition |
+| 276 | `partition_rescan` | disk_id | 0 or error | Rescan disk partitions |

@@ -14,14 +14,26 @@ name = "dock"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
- "libcompositor_client",
+ "dynlink",
+ "libanyui_client",
  "libimage_client",
- "uisys_client",
 ]
 
 [[package]]
-name = "libcompositor_client"
+name = "dynlink"
 version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "libanyui_client"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libimage_client",
+]
 
 [[package]]
 name = "libheap"
@@ -30,11 +42,3 @@ version = "0.1.0"
 [[package]]
 name = "libimage_client"
 version = "0.1.0"
-
-[[package]]
-name = "uisys_client"
-version = "0.1.0"
-dependencies = [
- "anyos_std",
- "libimage_client",
-]

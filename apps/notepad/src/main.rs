@@ -89,6 +89,26 @@ fn main() {
     btn_save_as.set_system_icon("file-export", IconType::Outline, tc.text, 24);
     btn_save_as.set_tooltip("Save As");
 
+    // Separator
+    let sep = toolbar.add_icon_button("");
+    sep.set_size(2, 28);
+    sep.set_color(0xFF555555);
+
+    let btn_cut = toolbar.add_icon_button("");
+    btn_cut.set_size(34, 34);
+    btn_cut.set_system_icon("cut", IconType::Outline, tc.text, 24);
+    btn_cut.set_tooltip("Cut (Ctrl+X)");
+
+    let btn_copy = toolbar.add_icon_button("");
+    btn_copy.set_size(34, 34);
+    btn_copy.set_system_icon("copy", IconType::Outline, tc.text, 24);
+    btn_copy.set_tooltip("Copy (Ctrl+C)");
+
+    let btn_paste = toolbar.add_icon_button("");
+    btn_paste.set_size(34, 34);
+    btn_paste.set_system_icon("clipboard", IconType::Outline, tc.text, 24);
+    btn_paste.set_tooltip("Paste (Ctrl+V)");
+
     win.add(&toolbar);
 
     // ── Status bar (DOCK_BOTTOM) ──
@@ -183,7 +203,34 @@ fn main() {
         save_as();
     });
 
+    // ── Clipboard toolbar buttons ──
+    btn_copy.on_click(|_| {
+        app().editor.copy();
+    });
+
+    btn_cut.on_click(|_| {
+        if app().editor.cut() {
+            let s = app();
+            if !s.modified {
+                s.modified = true;
+                update_title(s);
+            }
+        }
+    });
+
+    btn_paste.on_click(|_| {
+        if app().editor.paste() > 0 {
+            let s = app();
+            if !s.modified {
+                s.modified = true;
+                update_title(s);
+            }
+        }
+    });
+
     // ── Keyboard shortcuts ──
+    // Note: Ctrl+C/V/X/A are handled internally by the TextEditor widget.
+    // The window on_key_down only receives keys NOT consumed by the focused control.
     app().win.on_key_down(|ke| {
         if ke.ctrl() {
             match ke.char_code {

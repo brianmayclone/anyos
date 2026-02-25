@@ -233,14 +233,20 @@ char *strchrnul(const char *s, int c);
 ssize_t read(int fd, void *buf, size_t count);
 ssize_t write(int fd, const void *buf, size_t count);
 int     close(int fd);
-off_t   lseek(int fd, off_t offset, int whence);
+int     lseek(int fd, int offset, int whence);
 int     isatty(int fd);
 char   *getcwd(char *buf, size_t size);
+int     chdir(const char *path);
 void    _exit(int status);
-void   *sbrk(intptr_t increment);
+void   *sbrk(int increment);
 int     unlink(const char *path);
-int     access(const char *path, int mode);     // stub: always 0
-int     ftruncate(int fd, off_t length);
+int     access(const char *path, int mode);
+int     ftruncate(int fd, unsigned int length);
+pid_t   fork(void);
+pid_t   waitpid(pid_t pid, int *status, int options);
+int     execv(const char *path, char *const argv[]);
+int     execvp(const char *file, char *const argv[]);
+int     execve(const char *path, char *const argv[], char *const envp[]);
 int     dup(int oldfd);                          // stub
 int     dup2(int oldfd, int newfd);              // stub
 int     pipe(int pipefd[2]);                     // stub
@@ -258,6 +264,26 @@ uid_t   getuid(void);
 gid_t   getgid(void);
 uid_t   geteuid(void);        // returns getuid()
 gid_t   getegid(void);        // returns getgid()
+pid_t   getppid(void);
+pid_t   getpgid(pid_t pid);
+int     setpgid(pid_t pid, pid_t pgid);
+pid_t   getpgrp(void);
+pid_t   setpgrp(void);
+pid_t   setsid(void);
+pid_t   getsid(pid_t pid);
+pid_t   vfork(void);
+unsigned int alarm(unsigned int seconds);
+ssize_t pread(int fd, void *buf, size_t count, off_t offset);
+ssize_t pwrite(int fd, const void *buf, size_t count, off_t offset);
+int     ioctl(int fd, unsigned long request, ...);
+int     lstat(const char *path, struct stat *buf);
+int     fchmod(int fd, mode_t mode);
+int     fsync(int fd);
+int     fdatasync(int fd);
+mode_t  umask(mode_t cmask);
+long    sysconf(int name);
+int     faccessat(int dirfd, const char *path, int mode, int flags);
+int     unlinkat(int dirfd, const char *path, int flags);
 ```
 
 ---
@@ -269,8 +295,8 @@ gid_t   getegid(void);        // returns getgid()
 #define O_RDONLY    0x0000
 #define O_WRONLY    0x0001
 #define O_RDWR      0x0002
-#define O_CREAT     0x0040
-#define O_TRUNC     0x0200
+#define O_CREAT     0x04
+#define O_TRUNC     0x08
 #define O_APPEND    0x0400
 #define O_NONBLOCK  0x0800
 #define O_EXCL      0x0080
@@ -363,6 +389,7 @@ struct tm *localtime_r(const time_t *timep, struct tm *result);
 struct tm *gmtime_r(const time_t *timep, struct tm *result);
 size_t     strftime(char *s, size_t max, const char *fmt, const struct tm *tm);
 int        nanosleep(const struct timespec *req, struct timespec *rem);
+int        gettimeofday(struct timeval *tv, struct timezone *tz);
 ```
 
 ---
@@ -391,9 +418,10 @@ double asin(double x);
 double acos(double x);
 double fmod(double x, double y);
 // float variants: fabsf, sqrtf, sinf, cosf, atan2f, fmodf, floorf, ceilf, powf, logf, expf
+// Additional: log2f, log10f
 ```
 
-Constants: `M_PI`, `M_E`, `M_LN2`, `M_LOG2E`, `M_LOG10E`, `M_SQRT2`, `HUGE_VAL`, `INFINITY`, `NAN`
+Constants: `M_PI`, `M_PI_2`, `M_PI_4`, `M_E`, `M_LN2`, `HUGE_VAL`, `INFINITY`, `NAN`
 
 ---
 
@@ -404,9 +432,15 @@ typedef void (*sighandler_t)(int);
 
 sighandler_t signal(int signum, sighandler_t handler);
 int          raise(int sig);
+int          kill(int pid, int sig);
+int          sigprocmask(int how, const sigset_t *set, sigset_t *oldset);
+int          sigaction(int signum, const struct sigaction *act, struct sigaction *oldact);
+int          sigsuspend(const sigset_t *mask);
+int          sigpending(sigset_t *set);
+int          siginterrupt(int sig, int flag);
 ```
 
-Signals: `SIGINT`, `SIGILL`, `SIGABRT`, `SIGFPE`, `SIGKILL`, `SIGSEGV`, `SIGPIPE`, `SIGALRM`, `SIGTERM`, `SIGCHLD`
+Signals: `SIGHUP`(1), `SIGINT`(2), `SIGQUIT`(3), `SIGILL`(4), `SIGTRAP`(5), `SIGABRT`(6), `SIGBUS`(7), `SIGFPE`(8), `SIGKILL`(9), `SIGUSR1`(10), `SIGSEGV`(11), `SIGUSR2`(12), `SIGPIPE`(13), `SIGALRM`(14), `SIGTERM`(15), `SIGCHLD`(17), `SIGCONT`(18), `SIGSTOP`(19), `SIGTSTP`(20), `SIGTTIN`(21), `SIGTTOU`(22)
 Special handlers: `SIG_DFL`, `SIG_IGN`, `SIG_ERR`
 
 ---
@@ -426,7 +460,7 @@ Implemented in assembly for i686.
 
 ## errno.h
 
-Global `errno` variable with 40+ POSIX error constants:
+Global `errno` variable with 65+ POSIX error constants:
 
 `EPERM`(1), `ENOENT`(2), `ESRCH`(3), `EINTR`(4), `EIO`(5), `ENXIO`(6), `E2BIG`(7), `ENOEXEC`(8), `EBADF`(9), `ECHILD`(10), `EAGAIN`(11), `ENOMEM`(12), `EACCES`(13), `EFAULT`(14), `EBUSY`(16), `EEXIST`(17), `EXDEV`(18), `ENODEV`(19), `ENOTDIR`(20), `EISDIR`(21), `EINVAL`(22), `ENFILE`(23), `EMFILE`(24), `ENOTTY`(25), `EFBIG`(27), `ENOSPC`(28), `ESPIPE`(29), `EROFS`(30), `EPIPE`(32), `EDOM`(33), `ERANGE`(34), `ENOSYS`(38), `ELOOP`(40), `ENAMETOOLONG`(36), `ENOTEMPTY`(39), `ECONNREFUSED`(111), `ECONNRESET`(104), `ETIMEDOUT`(110), `EHOSTUNREACH`(113), `ENETUNREACH`(101), `EADDRINUSE`(98), `EADDRNOTAVAIL`(99), `EAFNOSUPPORT`(97), `EALREADY`(114), `EISCONN`(106), `ENOTCONN`(107), `ENOTSOCK`(88), `EMSGSIZE`(90), `EOPNOTSUPP`(95), `EWOULDBLOCK`(=EAGAIN)
 
@@ -492,6 +526,9 @@ int getaddrinfo(const char *node, const char *service,
                 const struct addrinfo *hints, struct addrinfo **res);
 void freeaddrinfo(struct addrinfo *res);
 const char *gai_strerror(int errcode);
+int getnameinfo(const struct sockaddr *sa, socklen_t salen,
+                char *host, socklen_t hostlen,
+                char *serv, socklen_t servlen, int flags);
 ```
 
 ---
@@ -506,13 +543,17 @@ const char *gai_strerror(int errcode);
 | `stdarg.h` | `va_list`, `va_start`, `va_end`, `va_arg`, `va_copy` |
 | `limits.h` | `INT_MIN`, `INT_MAX`, `UINT_MAX`, `LONG_MIN`, `LONG_MAX`, `PATH_MAX` (4096) |
 | `assert.h` | `assert(expr)` macro (calls `abort()` on failure) |
-| `spawn.h` | `posix_spawn`, `posix_spawnp` (stubs) |
+| `spawn.h` | `posix_spawn`, `posix_spawnp` with attribute init/destroy functions |
 | `sys/time.h` | `timeval`, `timezone`, `gettimeofday`, `utimes` |
-| `sys/select.h` | `fd_set`, `FD_ZERO/SET/CLR/ISSET`, `select`, `pselect` (stubs) |
-| `poll.h` | `pollfd`, `POLLIN`, `POLLOUT`, `poll` (stub) |
-| `pwd.h` | `passwd`, `getpwuid`, `getpwnam` |
-| `sys/mman.h` | `mmap`, `munmap` (stubs) |
+| `sys/select.h` | `fd_set`, `FD_ZERO/SET/CLR/ISSET`, `select`, `pselect` |
+| `poll.h` | `pollfd`, `POLLIN/POLLOUT/POLLERR/POLLHUP/POLLNVAL/POLLPRI/POLLRDNORM/POLLWRNORM`, `poll` |
+| `pwd.h` | `passwd`, `getpwuid`, `getpwnam`, `getpwuid_r` |
+| `sys/mman.h` | `mmap`, `munmap`, `mprotect` (stubs) |
 | `sys/utsname.h` | `utsname`, `uname` (stub) |
+| `termios.h` | `tcgetattr`, `tcsetattr`, `cfgetispeed`, `cfgetospeed`, `tcgetpgrp`, `tcsetpgrp` |
+| `regex.h` | `regcomp`, `regexec`, `regfree`, `regerror` |
+| `sys/resource.h` | `getrlimit`, `setrlimit`, `rlimit` |
+| `inttypes.h` | `strtoimax`, `strtoumax`, PRId64/PRIu64 format macros |
 
 ---
 

@@ -22,6 +22,9 @@ pub const FOLDER_ICON: &str = "/System/media/icons/folder.ico";
 /// Mimetype configuration file path.
 const MIMETYPES_CONF: &str = "/System/mimetypes.conf";
 
+/// Path for user mimetype overrides (JSON).
+const USER_MIMETYPES_PATH: &str = "/System/user_mimetypes.json";
+
 /// Check if a path refers to a .app bundle (directory ending in `.app`).
 pub fn is_app_bundle(path: &str) -> bool {
     path.ends_with(".app")
@@ -122,15 +125,27 @@ pub struct MimeEntry {
     pub icon_path: String,
 }
 
-/// A collection of mimetype associations loaded from mimetypes.conf.
+/// A user override: extension -> preferred application path.
+pub struct MimeOverride {
+    pub ext: String,
+    pub app: String,
+}
+
+/// A collection of mimetype associations loaded from mimetypes.conf,
+/// with optional user overrides from user_mimetypes.json.
 pub struct MimeDb {
     entries: Vec<MimeEntry>,
+    overrides: Vec<MimeOverride>,
 }
 
 impl MimeDb {
-    /// Load the mimetype database from /System/mimetypes.conf.
+    /// Load the mimetype database from /System/mimetypes.conf
+    /// and user overrides from /System/user_mimetypes.json.
     pub fn load() -> Self {
-        Self { entries: load_mimetypes_inner() }
+        Self {
+            entries: load_mimetypes_inner(),
+            overrides: load_user_overrides(),
+        }
     }
 
     /// Look up a mimetype entry by file extension (e.g. "txt", "png").
@@ -148,11 +163,32 @@ impl MimeDb {
     }
 
     /// Look up the application path for a file extension.
+    /// User overrides take priority over system defaults.
     pub fn app_for_ext(&self, ext: &str) -> Option<&str> {
+        // Check user overrides first
+        if let Some(ovr) = self.overrides.iter().find(|o| o.ext == ext) {
+            if !ovr.app.is_empty() {
+                return Some(&ovr.app);
+            }
+        }
+        // Fall back to system default
         match self.lookup(ext) {
             Some(entry) if !entry.app.is_empty() => Some(&entry.app),
             _ => None,
         }
+    }
+
+    /// Set a user override for an extension. Persists to disk.
+    pub fn set_user_default(&mut self, ext: &str, app_path: &str) {
+        if let Some(ovr) = self.overrides.iter_mut().find(|o| o.ext == ext) {
+            ovr.app = String::from(app_path);
+        } else {
+            self.overrides.push(MimeOverride {
+                ext: String::from(ext),
+                app: String::from(app_path),
+            });
+        }
+        save_user_overrides(&self.overrides);
     }
 }
 
@@ -202,4 +238,60 @@ fn load_mimetypes_inner() -> Vec<MimeEntry> {
         }
     }
     entries
+}
+
+fn load_user_overrides() -> Vec<MimeOverride> {
+    let fd = fs::open(USER_MIMETYPES_PATH, 0);
+    if fd == u32::MAX {
+        return Vec::new();
+    }
+    let mut data = Vec::new();
+    let mut buf = [0u8; 512];
+    loop {
+        let n = fs::read(fd, &mut buf);
+        if n == 0 || n == u32::MAX { break; }
+        data.extend_from_slice(&buf[..n as usize]);
+    }
+    fs::close(fd);
+
+    let text = match core::str::from_utf8(&data) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let json = match crate::json::Value::parse(text) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut overrides = Vec::new();
+    if let Some(arr) = json["overrides"].as_array() {
+        for item in arr {
+            let ext = item["ext"].as_str().unwrap_or("");
+            let app = item["app"].as_str().unwrap_or("");
+            if !ext.is_empty() {
+                overrides.push(MimeOverride {
+                    ext: String::from(ext),
+                    app: String::from(app),
+                });
+            }
+        }
+    }
+    overrides
+}
+
+fn save_user_overrides(overrides: &[MimeOverride]) {
+    use crate::json::Value;
+
+    let mut root = Value::new_object();
+    let mut arr = Value::new_array();
+    for ovr in overrides {
+        let mut obj = Value::new_object();
+        obj.set("ext", Value::from(ovr.ext.as_str()));
+        obj.set("app", Value::from(ovr.app.as_str()));
+        arr.push(obj);
+    }
+    root.set("overrides", arr);
+
+    let json_str = root.to_json_string_pretty();
+    let _ = fs::write_bytes(USER_MIMETYPES_PATH, json_str.as_bytes());
 }

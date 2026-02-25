@@ -3,9 +3,11 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::process;
+use anyos_std::{process, fs};
 use libanyui_client as ui;
 use ui::Widget;
+
+const LAST_USER_PATH: &str = "/System/etc/last_user";
 
 mod assets;
 
@@ -96,8 +98,33 @@ fn main() -> u32 {
     login_btn.set_state(0); // disabled initially (username empty)
     win.add(&login_btn);
 
-    // Initial focus on username field
-    user_field.focus();
+    // Pre-fill last username if available
+    let mut has_last_user = false;
+    {
+        let fd = fs::open(LAST_USER_PATH, 0);
+        if fd != u32::MAX {
+            let mut buf = [0u8; 128];
+            let n = fs::read(fd, &mut buf);
+            fs::close(fd);
+            if n > 0 {
+                if let Ok(name) = core::str::from_utf8(&buf[..n as usize]) {
+                    let name = name.trim();
+                    if !name.is_empty() {
+                        user_field.set_text(name);
+                        login_btn.set_state(1); // enable button
+                        has_last_user = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Focus password field if username is pre-filled, otherwise username field
+    if has_last_user {
+        pass_field.focus();
+    } else {
+        user_field.focus();
+    }
 
     // ── Callbacks ──
 
@@ -160,6 +187,8 @@ fn attempt_login(uf_id: u32, pf_id: u32) -> bool {
 
     if process::authenticate(username, password) {
         unsafe { LOGIN_UID = process::getuid() as u32; }
+        // Remember last username for next login
+        let _ = fs::write_bytes(LAST_USER_PATH, username.as_bytes());
         true
     } else {
         ui::MessageBox::show(

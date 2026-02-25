@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 
 use crate::ttf::TtfFont;
 use crate::ttf_rasterizer;
+use crate::png_decode;
 use crate::syscall;
 
 /// FontManager pointer — lives in per-process .bss (zero-initialized per process).
@@ -37,6 +38,8 @@ pub const SYSTEM_FONT_BOLD: u16 = 1;
 pub const SYSTEM_FONT_THIN: u16 = 2;
 pub const SYSTEM_FONT_ITALIC: u16 = 3;
 pub const SYSTEM_FONT_MONO: u16 = 4;
+/// System emoji font (NotoColorEmoji), loaded as font ID 5.
+pub const SYSTEM_FONT_EMOJI: u16 = 5;
 
 /// Fast exact division by 255 (same as compositor's div255).
 #[inline(always)]
@@ -80,6 +83,8 @@ struct CachedGlyph {
     glyph_id: u16,
     size: u16,
     subpixel: bool,
+    /// True if `coverage` contains RGBA data (4 bytes per pixel) instead of greyscale.
+    is_color: bool,
     width: u32,
     height: u32,
     x_offset: i32,
@@ -249,6 +254,7 @@ impl FontManager {
         let idx = self.cache.len();
         self.cache.push(CachedGlyph {
             font_id, glyph_id, size, subpixel,
+            is_color: false,
             width: bitmap.width, height: bitmap.height,
             x_offset: bitmap.x_offset, y_offset: bitmap.y_offset,
             advance: bitmap.advance,
@@ -261,25 +267,77 @@ impl FontManager {
         idx
     }
 
+    fn cache_color_glyph(
+        &mut self, font_id: u16, glyph_id: u16, size: u16, subpixel: bool,
+        width: u32, height: u32, x_offset: i32, y_offset: i32, advance: u32,
+        rgba_data: Vec<u8>,
+    ) -> usize {
+        self.evict_if_needed();
+        self.access_counter += 1;
+        let idx = self.cache.len();
+        self.cache.push(CachedGlyph {
+            font_id, glyph_id, size, subpixel,
+            is_color: true,
+            width, height, x_offset, y_offset, advance,
+            coverage: rgba_data,
+            use_count: self.access_counter,
+        });
+        let hash = glyph_hash_index(font_id, glyph_id, size, subpixel);
+        self.glyph_hash[hash] = idx as u16;
+        idx
+    }
+
     fn rasterize_and_cache(
         &mut self, font_id: u16, glyph_id: u16, size: u16, subpixel: bool,
     ) -> Option<usize> {
         let ttf = self.get_font(font_id)?;
-        let outline = ttf.glyph_outline(glyph_id)?;
         let units_per_em = ttf.units_per_em;
         let advance_fu = ttf.advance_width(glyph_id);
         let advance_px = (advance_fu as u32 * size as u32 + units_per_em as u32 / 2)
             / units_per_em as u32;
 
-        let mut bitmap = if subpixel {
-            ttf_rasterizer::rasterize_subpixel(&outline, size as u32, units_per_em)?
-        } else {
-            ttf_rasterizer::rasterize(&outline, size as u32, units_per_em)?
-        };
+        // Try outline rasterization first
+        if ttf.has_outlines {
+            if let Some(outline) = ttf.glyph_outline(glyph_id) {
+                let mut bitmap = if subpixel {
+                    ttf_rasterizer::rasterize_subpixel(&outline, size as u32, units_per_em)?
+                } else {
+                    ttf_rasterizer::rasterize(&outline, size as u32, units_per_em)?
+                };
+                bitmap.advance = advance_px;
+                return Some(self.cache_glyph(font_id, glyph_id, size, subpixel, bitmap));
+            }
+        }
 
-        bitmap.advance = advance_px;
+        // Try bitmap glyph (CBDT/CBLC) — e.g. NotoColorEmoji
+        if ttf.has_bitmaps {
+            if let Some(bmp) = ttf.get_bitmap_glyph(glyph_id) {
+                if let Some(png) = png_decode::decode_png(bmp.png_data) {
+                    let scale_num = size as u32;
+                    let scale_den = bmp.strike_ppem as u32;
+                    if scale_den == 0 { return None; }
+                    let scaled_w = ((png.width * scale_num) + scale_den / 2) / scale_den;
+                    let scaled_h = ((png.height * scale_num) + scale_den / 2) / scale_den;
+                    if scaled_w == 0 || scaled_h == 0 { return None; }
 
-        Some(self.cache_glyph(font_id, glyph_id, size, subpixel, bitmap))
+                    let rgba = if scaled_w == png.width && scaled_h == png.height {
+                        png.data
+                    } else {
+                        png_decode::scale_rgba(&png.data, png.width, png.height, scaled_w, scaled_h)
+                    };
+
+                    let x_offset = (bmp.bearing_x as i32 * scale_num as i32) / scale_den as i32;
+                    let y_offset = (bmp.bearing_y as i32 * scale_num as i32) / scale_den as i32;
+
+                    return Some(self.cache_color_glyph(
+                        font_id, glyph_id, size, subpixel,
+                        scaled_w, scaled_h, x_offset, y_offset, advance_px, rgba,
+                    ));
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -378,6 +436,13 @@ pub fn init() {
         } else {
             mgr.fonts.push(None);
         }
+    }
+
+    // Load emoji font (ID 5 = SYSTEM_FONT_EMOJI)
+    if let Some(ttf) = TtfFont::parse_static(crate::FONT_EMOJI) {
+        mgr.add_font(ttf);
+    } else {
+        mgr.fonts.push(None);
     }
 
     if syscall::gpu_has_accel() != 0 {
@@ -482,9 +547,28 @@ pub fn measure_string(text: &str, font_id: u16, size: u16) -> (u32, u32) {
             }
             continue;
         }
-        // Use ASCII cache for char→glyph lookup
+
+        // Get glyph from primary font
+        let gid = match mgr.get_font_mut(actual_font_id) {
+            Some(font) => font.char_to_glyph_cached(ch as u32),
+            None => 0,
+        };
+
+        // Fallback to emoji font if glyph missing
+        if gid == 0 && actual_font_id != SYSTEM_FONT_EMOJI {
+            if let Some(emoji_font) = mgr.get_font_mut(SYSTEM_FONT_EMOJI) {
+                let emoji_gid = emoji_font.char_to_glyph_cached(ch as u32);
+                if emoji_gid != 0 {
+                    let adv = emoji_font.ttf.advance_width(emoji_gid) as u32;
+                    let emoji_upm = emoji_font.ttf.units_per_em as u32;
+                    width += (adv * size as u32 + emoji_upm / 2) / emoji_upm;
+                    continue;
+                }
+            }
+        }
+
+        // Use primary font advance
         if let Some(font) = mgr.get_font_mut(actual_font_id) {
-            let gid = font.char_to_glyph_cached(ch as u32);
             let adv = font.ttf.advance_width(gid) as u32;
             width += (adv * size as u32 + upm / 2) / upm;
         }
@@ -566,21 +650,41 @@ pub fn draw_string_buf_clipped(
             continue;
         }
 
-        let (gid, advance_px) = {
-            let font = match mgr.get_font_mut(actual_font_id) {
-                Some(f) => f,
-                None => continue,
-            };
-            let gid = font.char_to_glyph_cached(ch as u32);
-            let adv_fu = font.ttf.advance_width(gid);
-            (gid, (adv_fu as u32 * size as u32 + upm / 2) / upm)
+        // Step 1: Get glyph ID from primary font
+        let primary_gid = match mgr.get_font_mut(actual_font_id) {
+            Some(f) => f.char_to_glyph_cached(ch as u32),
+            None => continue,
         };
 
-        let cache_idx = mgr.find_cached(actual_font_id, gid, size, subpixel);
+        // Step 2: Fallback to emoji font if glyph missing
+        let (gid, render_font_id) = if primary_gid == 0 && actual_font_id != SYSTEM_FONT_EMOJI {
+            match mgr.get_font_mut(SYSTEM_FONT_EMOJI) {
+                Some(ef) => {
+                    let eid = ef.char_to_glyph_cached(ch as u32);
+                    if eid != 0 { (eid, SYSTEM_FONT_EMOJI) } else { (primary_gid, actual_font_id) }
+                }
+                None => (primary_gid, actual_font_id),
+            }
+        } else {
+            (primary_gid, actual_font_id)
+        };
+
+        // Step 3: Compute advance width from the resolved font
+        let advance_px = match mgr.get_font(render_font_id) {
+            Some(ttf) => {
+                let adv_fu = ttf.advance_width(gid);
+                let font_upm = ttf.units_per_em as u32;
+                (adv_fu as u32 * size as u32 + font_upm / 2) / font_upm
+            }
+            None => continue,
+        };
+
+        // Step 4: Rasterize/cache and draw
+        let cache_idx = mgr.find_cached(render_font_id, gid, size, subpixel);
         let idx = if let Some(i) = cache_idx {
             i
         } else {
-            match mgr.rasterize_and_cache(actual_font_id, gid, size, subpixel) {
+            match mgr.rasterize_and_cache(render_font_id, gid, size, subpixel) {
                 Some(i) => i,
                 None => {
                     cx += advance_px as i32;
@@ -591,15 +695,23 @@ pub fn draw_string_buf_clipped(
 
         let glyph = &mgr.cache[idx];
         if glyph.width > 0 && glyph.height > 0 {
-            let gx = cx + if glyph.subpixel { glyph.x_offset / 3 } else { glyph.x_offset };
-            let gy = cy + ascent_px as i32 - glyph.y_offset;
-
-            if subpixel && glyph.subpixel {
-                draw_glyph_subpixel_buf(buf, buf_w, buf_h, gx, gy, glyph, col_a, col_r, col_g, col_b,
+            if glyph.is_color {
+                // Color bitmap glyph (emoji)
+                let gx = cx + glyph.x_offset;
+                let gy = cy + ascent_px as i32 - glyph.y_offset;
+                draw_glyph_color_buf(buf, buf_w, buf_h, gx, gy, glyph,
                     clip_x, clip_y, clip_r, clip_b);
             } else {
-                draw_glyph_greyscale_buf(buf, buf_w, buf_h, gx, gy, glyph, col_a, col_r, col_g, col_b,
-                    clip_x, clip_y, clip_r, clip_b);
+                let gx = cx + if glyph.subpixel { glyph.x_offset / 3 } else { glyph.x_offset };
+                let gy = cy + ascent_px as i32 - glyph.y_offset;
+
+                if subpixel && glyph.subpixel {
+                    draw_glyph_subpixel_buf(buf, buf_w, buf_h, gx, gy, glyph, col_a, col_r, col_g, col_b,
+                        clip_x, clip_y, clip_r, clip_b);
+                } else {
+                    draw_glyph_greyscale_buf(buf, buf_w, buf_h, gx, gy, glyph, col_a, col_r, col_g, col_b,
+                        clip_x, clip_y, clip_r, clip_b);
+                }
             }
         }
 
@@ -693,6 +805,49 @@ fn draw_glyph_subpixel_buf(
             let dst = unsafe { *buf.add(idx) };
             let blended = subpixel_blend(dst, r_filt, g_filt, b_filt, col_r, col_g, col_b);
             unsafe { *buf.add(idx) = blended; }
+        }
+    }
+}
+
+/// Draw a color (RGBA) bitmap glyph — used for emoji.
+fn draw_glyph_color_buf(
+    buf: *mut u32, sw: u32, _sh: u32,
+    x: i32, y: i32, glyph: &CachedGlyph,
+    clip_x: i32, clip_y: i32, clip_r: i32, clip_b: i32,
+) {
+    let bw = glyph.width as i32;
+    let bh = glyph.height as i32;
+
+    for row in 0..bh {
+        let py = y + row;
+        if py < clip_y || py >= clip_b { continue; }
+        for col in 0..bw {
+            let px = x + col;
+            if px < clip_x || px >= clip_r { continue; }
+
+            let si = (row * bw + col) as usize * 4;
+            if si + 3 >= glyph.coverage.len() { continue; }
+            let sr = glyph.coverage[si] as u32;
+            let sg = glyph.coverage[si + 1] as u32;
+            let sb = glyph.coverage[si + 2] as u32;
+            let sa = glyph.coverage[si + 3] as u32;
+
+            if sa == 0 { continue; }
+
+            let idx = (py as u32 * sw + px as u32) as usize;
+            if sa == 255 {
+                unsafe { *buf.add(idx) = 0xFF000000 | (sr << 16) | (sg << 8) | sb; }
+            } else {
+                let dst = unsafe { *buf.add(idx) };
+                let inv = 255 - sa;
+                let dr = (dst >> 16) & 0xFF;
+                let dg = (dst >> 8) & 0xFF;
+                let db = dst & 0xFF;
+                let nr = div255(sr * sa + dr * inv);
+                let ng = div255(sg * sa + dg * inv);
+                let nb = div255(sb * sa + db * inv);
+                unsafe { *buf.add(idx) = 0xFF000000 | (nr << 16) | (ng << 8) | nb; }
+            }
         }
     }
 }

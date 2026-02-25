@@ -339,6 +339,7 @@ impl Canvas {
     pub fn copy_pixels_from(&mut self, src: &[u32]) {
         let len = src.len().min(self.pixels.len());
         self.pixels[..len].copy_from_slice(&src[..len]);
+        self.base.mark_dirty();
     }
 
     /// Copy canvas pixel data into a destination slice. Returns count copied.

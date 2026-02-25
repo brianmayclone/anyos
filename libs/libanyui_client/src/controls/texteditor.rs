@@ -98,6 +98,26 @@ impl TextEditor {
         (lib().texteditor_get_line_count)(self.ctrl.id)
     }
 
+    /// Copy selected text to system clipboard. Returns true if text was copied.
+    pub fn copy(&self) -> bool {
+        (lib().texteditor_copy)(self.ctrl.id) != 0
+    }
+
+    /// Cut selected text to system clipboard. Returns true if text was cut.
+    pub fn cut(&self) -> bool {
+        (lib().texteditor_cut)(self.ctrl.id) != 0
+    }
+
+    /// Paste from system clipboard at cursor position. Returns number of bytes pasted.
+    pub fn paste(&self) -> u32 {
+        (lib().texteditor_paste)(self.ctrl.id)
+    }
+
+    /// Select all text in the editor.
+    pub fn select_all(&self) {
+        (lib().texteditor_select_all)(self.ctrl.id);
+    }
+
     /// Register a callback for when the text changes.
     pub fn on_text_changed(&self, mut f: impl FnMut(&crate::events::TextChangedEvent) + 'static) {
         let (thunk, ud) = events::register(move |id, _| {

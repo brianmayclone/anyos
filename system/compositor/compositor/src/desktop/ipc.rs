@@ -307,6 +307,32 @@ impl Desktop {
                 }
                 None
             }
+            proto::CMD_HIDE_BY_TID => {
+                let owner_tid = cmd[1];
+                // Hide all windows of this TID (save bounds, move off-screen)
+                for idx in 0..self.windows.len() {
+                    if self.windows[idx].owner_tid == owner_tid && self.windows[idx].x >= 0 {
+                        if self.windows[idx].saved_bounds.is_none() {
+                            self.windows[idx].saved_bounds = Some((
+                                self.windows[idx].x,
+                                self.windows[idx].y,
+                                self.windows[idx].content_width,
+                                self.windows[idx].full_height(),
+                            ));
+                        }
+                        let layer_id = self.windows[idx].layer_id;
+                        self.compositor.move_layer(layer_id, -10000, -10000);
+                    }
+                }
+                // Focus next visible window
+                if let Some(next_id) = self.windows.iter().rev()
+                    .find(|w| w.owner_tid != owner_tid && w.x >= 0)
+                    .map(|w| w.id)
+                {
+                    self.focus_window(next_id);
+                }
+                None
+            }
             proto::CMD_SET_BLUR_BEHIND => {
                 let window_id = cmd[1];
                 let radius = cmd[2];
@@ -348,10 +374,12 @@ impl Desktop {
                 let len = cmd[2] as usize;
                 let format = cmd[3];
                 if shm_id == 0 || len == 0 || len > 65536 {
+                    anyos_std::println!("[clipboard] SET rejected: shm={} len={}", shm_id, len);
                     return None;
                 }
                 let shm_addr = anyos_std::ipc::shm_map(shm_id);
                 if shm_addr == 0 {
+                    anyos_std::println!("[clipboard] SET shm_map failed for shm_id={}", shm_id);
                     return None;
                 }
                 let data = unsafe {
@@ -360,6 +388,9 @@ impl Desktop {
                 self.clipboard_data = data.to_vec();
                 self.clipboard_format = format;
                 anyos_std::ipc::shm_unmap(shm_id);
+                let preview_len = len.min(40);
+                let preview = core::str::from_utf8(&self.clipboard_data[..preview_len]).unwrap_or("(binary)");
+                anyos_std::println!("[clipboard] SET ok: {} bytes, preview='{}'", len, preview);
                 None
             }
             proto::CMD_GET_CLIPBOARD => {
@@ -367,11 +398,13 @@ impl Desktop {
                 let capacity = cmd[2] as usize;
                 let requester_tid = cmd[3];
                 if shm_id == 0 || capacity == 0 {
+                    anyos_std::println!("[clipboard] GET rejected: shm={} cap={}", shm_id, capacity);
                     let target = self.get_sub_id_for_tid(requester_tid);
                     return Some((target, [proto::RESP_CLIPBOARD_DATA, 0, 0, 0, requester_tid]));
                 }
                 let shm_addr = anyos_std::ipc::shm_map(shm_id);
                 if shm_addr == 0 {
+                    anyos_std::println!("[clipboard] GET shm_map failed for shm_id={}", shm_id);
                     let target = self.get_sub_id_for_tid(requester_tid);
                     return Some((target, [proto::RESP_CLIPBOARD_DATA, 0, 0, 0, requester_tid]));
                 }
@@ -384,6 +417,7 @@ impl Desktop {
                 }
                 anyos_std::ipc::shm_unmap(shm_id);
                 let target = self.get_sub_id_for_tid(requester_tid);
+                anyos_std::println!("[clipboard] GET: stored={} bytes, returning {} to tid={}", self.clipboard_data.len(), copy_len, requester_tid);
                 Some((target, [proto::RESP_CLIPBOARD_DATA, shm_id, copy_len as u32, self.clipboard_format, requester_tid]))
             }
             proto::CMD_SET_WALLPAPER => {

@@ -862,6 +862,26 @@ add_custom_command(
   COMMENT "Populating sysroot from tools/sysroot"
 )
 
+# User provisioning from config/users.conf
+set(PROVISION_DEPS "")
+if(EXISTS "${CMAKE_SOURCE_DIR}/config/users.conf")
+  add_custom_command(
+    OUTPUT ${SYSROOT_DIR}/System/users/.provisioned
+    COMMAND ${CMAKE_COMMAND}
+      -DUSERS_CONF=${CMAKE_SOURCE_DIR}/config/users.conf
+      -DCONFIG_DIR=${CMAKE_SOURCE_DIR}/config
+      -DSYSROOT_DIR=${SYSROOT_DIR}
+      -P ${CMAKE_SOURCE_DIR}/config/provision_users.cmake
+    COMMAND ${CMAKE_COMMAND} -E touch ${SYSROOT_DIR}/System/users/.provisioned
+    DEPENDS
+      ${CMAKE_SOURCE_DIR}/config/users.conf
+      ${CMAKE_SOURCE_DIR}/config/provision_users.cmake
+      ${SYSROOT_DIR}/.stamp
+    COMMENT "Provisioning users from config/users.conf"
+  )
+  set(PROVISION_DEPS ${SYSROOT_DIR}/System/users/.provisioned)
+endif()
+
 # ============================================================
 # C Library, TCC, and Games (require i686-elf cross-compiler)
 # ============================================================
@@ -1678,6 +1698,7 @@ add_custom_command(
     ${SYSROOT_DIR}/.stamp
     ${C_TOOLCHAIN_DEPS}
     ${MKIMAGE_EXECUTABLE}
+    ${PROVISION_DEPS}
   COMMENT "Creating bootable disk image (256 MiB, exFAT filesystem)"
 )
 

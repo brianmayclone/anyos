@@ -1,12 +1,40 @@
 # anyOS Service System
 
-The anyOS service system provides a unified mechanism for managing background daemons, centralized logging, and log inspection. It consists of three components:
+The anyOS service system provides a unified mechanism for managing background daemons, centralized logging, and log inspection. It consists of the following components:
 
 | Component | Type | Source | Binary |
 |-----------|------|--------|--------|
 | **svc** | CLI tool | `bin/svc/` | `/System/bin/svc` |
 | **logd** | System daemon | `bin/logd/` | `/System/bin/logd` |
-| **Event Viewer** | GUI application | `apps/eventviewer/` | `/System/bin/eventviewer` |
+| **crond** | System daemon | `bin/crond/` | `/System/bin/crond` |
+| **httpd** | System daemon | `bin/httpd/` | `/System/bin/httpd` |
+| **amid** | System daemon | `system/amid/` | `/System/bin/amid` |
+| **Event Viewer** | GUI application | `system/eventviewer/` | `/Applications/Event Viewer.app` |
+
+### Managed Services
+
+The following services are configured in `/System/etc/svc/` and started at boot via `svc start-all`:
+
+| Service | Description |
+|---------|-------------|
+| **logd** | Centralized logging daemon (collects app + kernel messages) |
+| **sshd** | SSH server |
+| **echoserver** | Echo test server |
+| **crond** | Cron job scheduler (periodic task execution) |
+| **httpd** | HTTP web server |
+
+### System Daemons (non-svc)
+
+These daemons are started directly by the compositor or init, not managed by `svc`:
+
+| Daemon | Description |
+|--------|-------------|
+| **amid** | Anywhere Management Interface — system information database with SQL query interface |
+| **audiomon** | Audio monitoring service |
+| **inputmon** | Input device monitoring |
+| **netmon** | Network monitoring |
+| **login** | Login manager |
+| **permdialog** | Permission dialog daemon |
 
 ---
 
@@ -110,7 +138,19 @@ exec=/System/bin/logd
 args=
 ```
 
-**Service with dependencies:**
+**`/System/etc/svc/crond`**
+```
+exec=/System/bin/crond
+args=
+```
+
+**`/System/etc/svc/httpd`**
+```
+exec=/System/bin/httpd
+args=
+```
+
+**Service with dependencies (example):**
 ```
 exec=/System/bin/webapp
 args=--port 8080

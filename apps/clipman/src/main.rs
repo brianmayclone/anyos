@@ -33,6 +33,11 @@ struct AppState {
     retention_field: anyui::TextField,
     settings_active: bool,
 
+    // Add-text panel
+    add_panel: anyui::View,
+    add_field: anyui::TextField,
+    add_active: bool,
+
     entries: Vec<ClipEntry>,
     retention_days: u32,
     last_clipboard: String,
@@ -246,18 +251,18 @@ fn make_preview(text: &str) -> String {
 fn update_status(s: &AppState) {
     let count = s.entries.len();
     let status = if count == 1 {
-        String::from("1 Eintrag")
+        String::from("1 entry")
     } else {
-        anyos_std::format!("{} Eintraege", count)
+        anyos_std::format!("{} entries", count)
     };
     s.status_label.set_text(&status);
 
     let retention = if s.retention_days == 0 {
-        String::from("Aufbewahrung: unbegrenzt")
+        String::from("Retention: unlimited")
     } else if s.retention_days == 1 {
-        String::from("Aufbewahrung: 1 Tag")
+        String::from("Retention: 1 day")
     } else {
-        anyos_std::format!("Aufbewahrung: {} Tage", s.retention_days)
+        anyos_std::format!("Retention: {} days", s.retention_days)
     };
     s.retention_label.set_text(&retention);
 }
@@ -289,6 +294,7 @@ fn poll_clipboard() {
     s.entries.retain(|e| e.text != text_owned);
 
     // Insert at front (newest first)
+    let preview = make_preview(text);
     s.entries.insert(0, ClipEntry {
         text: text_owned,
         time: now_string(),
@@ -296,6 +302,11 @@ fn poll_clipboard() {
 
     save_history(s);
     populate_grid(s);
+
+    // Visual feedback: select the new row and show status
+    s.grid.set_selected_row(0);
+    let msg = anyos_std::format!("New: {}", preview);
+    s.status_label.set_text(&msg);
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────
@@ -340,7 +351,7 @@ fn clear_all() {
     s.entries.clear();
     save_history(s);
     populate_grid(s);
-    s.status_label.set_text("Alle Eintraege geloescht");
+    s.status_label.set_text("All entries cleared");
 }
 
 fn toggle_settings() {
@@ -354,6 +365,7 @@ fn toggle_settings() {
 
 fn open_settings() {
     let s = app();
+    if s.add_active { close_add_panel(); }
     s.settings_active = true;
     s.settings_panel.set_visible(true);
     let val = anyos_std::format!("{}", s.retention_days);
@@ -391,6 +403,117 @@ fn refresh() {
     populate_grid(s);
 }
 
+fn copy_file_to_clipboard() {
+    let path = match anyui::FileDialog::open_file() {
+        Some(p) => p,
+        None => return,
+    };
+    let data = match read_file(&path) {
+        Some(d) => d,
+        None => {
+            app().status_label.set_text("Error: Could not read file");
+            return;
+        }
+    };
+    let text = match core::str::from_utf8(&data) {
+        Ok(s) => s,
+        Err(_) => {
+            app().status_label.set_text("Error: File is not a text file");
+            return;
+        }
+    };
+    if text.trim().is_empty() {
+        app().status_label.set_text("File is empty");
+        return;
+    }
+
+    let s = app();
+    s.paused = true;
+    s.last_clipboard = String::from(text);
+    anyui::clipboard_set(text);
+
+    // Add to history
+    let text_owned = String::from(text);
+    s.entries.retain(|e| e.text != text_owned);
+    s.entries.insert(0, ClipEntry {
+        text: text_owned,
+        time: now_string(),
+    });
+    save_history(s);
+    populate_grid(s);
+    s.grid.set_selected_row(0);
+
+    // Extract filename for status
+    let filename = path.rsplit('/').next().unwrap_or(&path);
+    let msg = anyos_std::format!("File copied: {}", filename);
+    s.status_label.set_text(&msg);
+
+    anyui::set_timer(1000, || { app().paused = false; });
+}
+
+fn toggle_add_panel() {
+    let s = app();
+    if s.add_active {
+        close_add_panel();
+    } else {
+        open_add_panel();
+    }
+}
+
+fn open_add_panel() {
+    let s = app();
+    if s.settings_active { close_settings(); }
+    s.add_active = true;
+    s.add_panel.set_visible(true);
+    s.add_field.set_text("");
+    s.add_field.focus();
+}
+
+fn close_add_panel() {
+    let s = app();
+    s.add_active = false;
+    s.add_panel.set_visible(false);
+}
+
+fn submit_add_text() {
+    let s = app();
+    let mut buf = [0u8; 4096];
+    let len = s.add_field.get_text(&mut buf);
+    if len == 0 {
+        close_add_panel();
+        return;
+    }
+    let text = match core::str::from_utf8(&buf[..len as usize]) {
+        Ok(t) => t,
+        Err(_) => { close_add_panel(); return; }
+    };
+    if text.trim().is_empty() {
+        close_add_panel();
+        return;
+    }
+
+    s.paused = true;
+    s.last_clipboard = String::from(text);
+    anyui::clipboard_set(text);
+
+    let text_owned = String::from(text);
+    let preview = make_preview(text);
+    s.entries.retain(|e| e.text != text_owned);
+    s.entries.insert(0, ClipEntry {
+        text: text_owned,
+        time: now_string(),
+    });
+    save_history(s);
+    populate_grid(s);
+    s.grid.set_selected_row(0);
+
+    let msg = anyos_std::format!("Copied: {}", preview);
+    s.status_label.set_text(&msg);
+
+    close_add_panel();
+    anyui::set_timer(1000, || { app().paused = false; });
+}
+
 // ── Keyboard handler ─────────────────────────────────────────────────────────
 
 fn handle_key(ke: &anyui::KeyEvent) {
@@ -404,10 +527,12 @@ fn handle_key(ke: &anyui::KeyEvent) {
         delete_selected();
         return;
     }
-    // Escape: Close settings or app
+    // Escape: Close panels or app
     if ke.keycode == anyui::KEY_ESCAPE {
         let s = app();
-        if s.settings_active {
+        if s.add_active {
+            close_add_panel();
+        } else if s.settings_active {
             close_settings();
         } else {
             anyui::quit();
@@ -427,6 +552,16 @@ fn handle_key(ke: &anyui::KeyEvent) {
     // Ctrl+S: Open settings
     if ke.ctrl() && (ke.char_code == b's' as u32 || ke.char_code == b'S' as u32) {
         toggle_settings();
+        return;
+    }
+    // Ctrl+N: Add text
+    if ke.ctrl() && (ke.char_code == b'n' as u32 || ke.char_code == b'N' as u32) {
+        toggle_add_panel();
+        return;
+    }
+    // Ctrl+O: From file
+    if ke.ctrl() && (ke.char_code == b'o' as u32 || ke.char_code == b'O' as u32) {
+        copy_file_to_clipboard();
         return;
     }
 }
@@ -475,6 +610,14 @@ fn main() {
 
     toolbar.add_separator();
 
+    let btn_add_text = toolbar.add_icon_button("Add Text");
+    btn_add_text.set_size(68, 28);
+
+    let btn_from_file = toolbar.add_icon_button("From File");
+    btn_from_file.set_size(72, 28);
+
+    toolbar.add_separator();
+
     let btn_settings = toolbar.add_icon_button("Settings");
     btn_settings.set_size(68, 28);
 
@@ -510,7 +653,7 @@ fn main() {
     settings_panel.set_color(0xFF2D2D30);
     settings_panel.set_visible(false);
 
-    let settings_lbl = anyui::Label::new("Aufbewahrung (Tage, 0=unbegrenzt):");
+    let settings_lbl = anyui::Label::new("Retention (days, 0=unlimited):");
     settings_lbl.set_position(8, 9);
     settings_lbl.set_text_color(0xFFCCCCCC);
     settings_lbl.set_font_size(13);
@@ -533,6 +676,36 @@ fn main() {
 
     win.add(&settings_panel);
 
+    // ── Add-text panel (DOCK_BOTTOM, above settings) ──
+    let add_panel = anyui::View::new();
+    add_panel.set_dock(anyui::DOCK_BOTTOM);
+    add_panel.set_size(600, 36);
+    add_panel.set_color(0xFF2D2D30);
+    add_panel.set_visible(false);
+
+    let add_lbl = anyui::Label::new("Text:");
+    add_lbl.set_position(8, 9);
+    add_lbl.set_text_color(0xFFCCCCCC);
+    add_lbl.set_font_size(13);
+    add_panel.add(&add_lbl);
+
+    let add_field = anyui::TextField::new();
+    add_field.set_position(50, 4);
+    add_field.set_size(440, 26);
+    add_panel.add(&add_field);
+
+    let btn_add_ok = anyui::Button::new("Copy");
+    btn_add_ok.set_position(500, 4);
+    btn_add_ok.set_size(50, 26);
+    add_panel.add(&btn_add_ok);
+
+    let btn_add_cancel = anyui::Button::new("X");
+    btn_add_cancel.set_position(556, 4);
+    btn_add_cancel.set_size(28, 26);
+    add_panel.add(&btn_add_cancel);
+
+    win.add(&add_panel);
+
     // ── DataGrid ──
     let grid = anyui::DataGrid::new(580, 340);
     grid.set_dock(anyui::DOCK_FILL);
@@ -540,13 +713,13 @@ fn main() {
     grid.set_header_height(24);
     grid.set_columns(&[
         anyui::ColumnDef::new("#").width(40).align(anyui::ALIGN_RIGHT),
-        anyui::ColumnDef::new("Inhalt").width(400),
-        anyui::ColumnDef::new("Zeit").width(140),
+        anyui::ColumnDef::new("Content").width(400),
+        anyui::ColumnDef::new("Time").width(140),
     ]);
 
     // Context menu
     let ctx_menu = anyui::ContextMenu::new(
-        "In Zwischenablage kopieren|Eintrag loeschen|Alle loeschen"
+        "Copy to Clipboard|Delete Entry|Delete All|Add Text|Load from File"
     );
     grid.set_context_menu(&ctx_menu);
 
@@ -572,6 +745,9 @@ fn main() {
             settings_panel,
             retention_field,
             settings_active: false,
+            add_panel,
+            add_field,
+            add_active: false,
             entries,
             retention_days,
             last_clipboard,
@@ -590,9 +766,14 @@ fn main() {
     btn_clear.on_click(|_| { clear_all(); });
     btn_settings.on_click(|_| { toggle_settings(); });
     btn_refresh.on_click(|_| { refresh(); });
+    btn_add_text.on_click(|_| { toggle_add_panel(); });
+    btn_from_file.on_click(|_| { copy_file_to_clipboard(); });
     btn_apply.on_click(|_| { apply_settings(); });
     btn_cancel.on_click(|_| { close_settings(); });
     retention_field.on_submit(|_| { apply_settings(); });
+    btn_add_ok.on_click(|_| { submit_add_text(); });
+    btn_add_cancel.on_click(|_| { close_add_panel(); });
+    add_field.on_submit(|_| { submit_add_text(); });
 
     // Context menu
     ctx_menu.on_item_click(|e| {
@@ -600,6 +781,8 @@ fn main() {
             0 => copy_to_clipboard(),
             1 => delete_selected(),
             2 => clear_all(),
+            3 => toggle_add_panel(),
+            4 => copy_file_to_clipboard(),
             _ => {}
         }
     });

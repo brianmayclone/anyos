@@ -40,7 +40,11 @@ const WRAP_WIDTH: usize = 110;
 
 struct OpenFile {
     path: String,
+    content: String,
     panel: anyui::StackPanel,
+    source_editor: Option<anyui::TextEditor>,
+    showing_source: bool,
+    modified: bool,
 }
 
 struct AppState {
@@ -68,6 +72,7 @@ fn tab_labels(files: &[OpenFile]) -> String {
     let mut s = String::new();
     for (i, f) in files.iter().enumerate() {
         if i > 0 { s.push('|'); }
+        if f.modified { s.push('*'); }
         s.push_str(basename(&f.path));
     }
     s
@@ -96,7 +101,411 @@ fn word_wrap(text: &str, max_chars: usize) -> String {
     result
 }
 
+// ── Emoji shortcode replacement ──────────────────────────────────────────────
+
+/// Map emoji shortcodes to Unicode emoji characters.
+/// Rendered via NotoColorEmoji bitmap font (CBDT/CBLC) with cross-font fallback.
+fn emoji_for_shortcode(code: &str) -> Option<&'static str> {
+    match code {
+        // Faces
+        "smile" | "smiley" | "grinning" => Some("\u{1F600}"),
+        "grin" => Some("\u{1F601}"),
+        "laughing" | "satisfied" => Some("\u{1F606}"),
+        "joy" => Some("\u{1F602}"),
+        "wink" => Some("\u{1F609}"),
+        "blush" => Some("\u{1F60A}"),
+        "heart_eyes" => Some("\u{1F60D}"),
+        "kissing_heart" => Some("\u{1F618}"),
+        "yum" => Some("\u{1F60B}"),
+        "sunglasses" | "cool" => Some("\u{1F60E}"),
+        "smirk" => Some("\u{1F60F}"),
+        "relaxed" => Some("\u{263A}"),
+        "stuck_out_tongue" => Some("\u{1F61B}"),
+        "stuck_out_tongue_winking_eye" => Some("\u{1F61C}"),
+        "stuck_out_tongue_closed_eyes" => Some("\u{1F61D}"),
+        "disappointed" | "sad" => Some("\u{1F61E}"),
+        "worried" => Some("\u{1F61F}"),
+        "angry" => Some("\u{1F620}"),
+        "rage" => Some("\u{1F621}"),
+        "cry" => Some("\u{1F622}"),
+        "sob" => Some("\u{1F62D}"),
+        "fearful" => Some("\u{1F628}"),
+        "scream" => Some("\u{1F631}"),
+        "sweat" => Some("\u{1F613}"),
+        "sweat_smile" => Some("\u{1F605}"),
+        "confused" => Some("\u{1F615}"),
+        "pensive" => Some("\u{1F614}"),
+        "flushed" => Some("\u{1F633}"),
+        "sleeping" | "zzz" => Some("\u{1F634}"),
+        "sleepy" => Some("\u{1F62A}"),
+        "mask" => Some("\u{1F637}"),
+        "neutral_face" => Some("\u{1F610}"),
+        "expressionless" => Some("\u{1F611}"),
+        "unamused" => Some("\u{1F612}"),
+        "thinking" | "thinking_face" => Some("\u{1F914}"),
+        "innocent" | "angel" => Some("\u{1F607}"),
+        "imp" | "devil" => Some("\u{1F608}"),
+        // Symbols
+        "heart" => Some("\u{2764}"),
+        "broken_heart" => Some("\u{1F494}"),
+        "star" => Some("\u{2B50}"),
+        "fire" | "flame" => Some("\u{1F525}"),
+        "thumbsup" | "+1" => Some("\u{1F44D}"),
+        "thumbsdown" | "-1" => Some("\u{1F44E}"),
+        "clap" => Some("\u{1F44F}"),
+        "wave" => Some("\u{1F44B}"),
+        "ok_hand" => Some("\u{1F44C}"),
+        "point_up" => Some("\u{261D}"),
+        "point_down" => Some("\u{1F447}"),
+        "point_left" => Some("\u{1F448}"),
+        "point_right" => Some("\u{1F449}"),
+        "raised_hands" => Some("\u{1F64C}"),
+        "pray" => Some("\u{1F64F}"),
+        "muscle" => Some("\u{1F4AA}"),
+        "eyes" => Some("\u{1F440}"),
+        "warning" => Some("\u{26A0}"),
+        "white_check_mark" | "check" => Some("\u{2705}"),
+        "x" | "cross_mark" => Some("\u{274C}"),
+        "exclamation" | "heavy_exclamation_mark" => Some("\u{2757}"),
+        "question" => Some("\u{2753}"),
+        "100" => Some("\u{1F4AF}"),
+        "rocket" => Some("\u{1F680}"),
+        "tada" => Some("\u{1F389}"),
+        "sparkles" => Some("\u{2728}"),
+        "zap" | "lightning" => Some("\u{26A1}"),
+        "bulb" => Some("\u{1F4A1}"),
+        "bug" => Some("\u{1F41B}"),
+        "gear" => Some("\u{2699}"),
+        "lock" => Some("\u{1F512}"),
+        "key" => Some("\u{1F511}"),
+        "hammer" => Some("\u{1F528}"),
+        "wrench" => Some("\u{1F527}"),
+        "package" => Some("\u{1F4E6}"),
+        "book" | "open_book" => Some("\u{1F4D6}"),
+        "memo" | "pencil" => Some("\u{1F4DD}"),
+        "clipboard" => Some("\u{1F4CB}"),
+        "calendar" => Some("\u{1F4C5}"),
+        "link" => Some("\u{1F517}"),
+        "email" | "envelope" => Some("\u{1F4E7}"),
+        "computer" | "desktop_computer" => Some("\u{1F4BB}"),
+        "phone" | "telephone" => Some("\u{1F4DE}"),
+        "globe_with_meridians" | "earth_americas" => Some("\u{1F30E}"),
+        "sun" | "sunny" => Some("\u{2600}"),
+        "cloud" => Some("\u{2601}"),
+        "umbrella" => Some("\u{2614}"),
+        "snowflake" => Some("\u{2744}"),
+        "coffee" => Some("\u{2615}"),
+        "pizza" => Some("\u{1F355}"),
+        "beer" => Some("\u{1F37A}"),
+        "trophy" => Some("\u{1F3C6}"),
+        "gem" => Some("\u{1F48E}"),
+        "crown" => Some("\u{1F451}"),
+        "bell" => Some("\u{1F514}"),
+        "mega" | "loudspeaker" => Some("\u{1F4E2}"),
+        "speech_balloon" => Some("\u{1F4AC}"),
+        "thought_balloon" => Some("\u{1F4AD}"),
+        _ => None,
+    }
+}
+
+// ── UTF-8 helper ────────────────────────────────────────────────────────────
+
+/// Push one UTF-8 character from `bytes` at `pos` into `out`.
+/// Returns the number of bytes consumed.
+fn push_utf8(out: &mut String, bytes: &[u8], pos: usize) -> usize {
+    let b = bytes[pos];
+    let seq_len = if b < 0x80 { 1 }
+        else if b < 0xE0 { 2 }
+        else if b < 0xF0 { 3 }
+        else { 4 };
+    let end = (pos + seq_len).min(bytes.len());
+    if let Ok(s) = core::str::from_utf8(&bytes[pos..end]) {
+        out.push_str(s);
+    } else {
+        out.push(b as char);
+    }
+    end - pos
+}
+
+// ── Typographic replacements ────────────────────────────────────────────────
+
+/// Replace typographic shortcuts: (c)→©, (r)→®, (tm)→™, (p)→§, +-→±, ...→…, --→–, ---→—
+fn replace_typographic(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut out = String::new();
+    let mut i = 0;
+
+    while i < len {
+        // (tm) (TM) (Tm) → ™  (4 chars, check before 3-char patterns)
+        if i + 3 < len && bytes[i] == b'(' {
+            let b1 = bytes[i + 1];
+            let b2 = bytes[i + 2];
+            let b3 = bytes[i + 3];
+            if (b1 == b't' || b1 == b'T') && (b2 == b'm' || b2 == b'M') && b3 == b')' {
+                out.push('\u{2122}');
+                i += 4;
+                continue;
+            }
+        }
+        // (c) (C) → ©
+        if i + 2 < len && bytes[i] == b'(' && (bytes[i + 1] == b'c' || bytes[i + 1] == b'C') && bytes[i + 2] == b')' {
+            out.push('\u{00A9}');
+            i += 3;
+            continue;
+        }
+        // (r) (R) → ®
+        if i + 2 < len && bytes[i] == b'(' && (bytes[i + 1] == b'r' || bytes[i + 1] == b'R') && bytes[i + 2] == b')' {
+            out.push('\u{00AE}');
+            i += 3;
+            continue;
+        }
+        // (p) (P) → §
+        if i + 2 < len && bytes[i] == b'(' && (bytes[i + 1] == b'p' || bytes[i + 1] == b'P') && bytes[i + 2] == b')' {
+            out.push('\u{00A7}');
+            i += 3;
+            continue;
+        }
+        // --- → em dash (before --)
+        if i + 2 < len && bytes[i] == b'-' && bytes[i + 1] == b'-' && bytes[i + 2] == b'-' {
+            out.push('\u{2014}');
+            i += 3;
+            continue;
+        }
+        // -- → en dash
+        if i + 1 < len && bytes[i] == b'-' && bytes[i + 1] == b'-' {
+            out.push('\u{2013}');
+            i += 2;
+            continue;
+        }
+        // ... → ellipsis
+        if i + 2 < len && bytes[i] == b'.' && bytes[i + 1] == b'.' && bytes[i + 2] == b'.' {
+            out.push('\u{2026}');
+            i += 3;
+            continue;
+        }
+        // +- → ±
+        if i + 1 < len && bytes[i] == b'+' && bytes[i + 1] == b'-' {
+            out.push('\u{00B1}');
+            i += 2;
+            continue;
+        }
+        i += push_utf8(&mut out, bytes, i);
+    }
+    out
+}
+
+/// Try to match an emoticon shortcut at position `i`. Returns (emoji, length) or None.
+fn match_emoticon(bytes: &[u8], i: usize) -> Option<(&'static str, usize)> {
+    let rem = bytes.len() - i;
+    // 3-char emoticons
+    if rem >= 3 {
+        match &bytes[i..i + 3] {
+            b":-)" => return Some(("\u{1F642}", 3)),  // slightly smiling face
+            b":-(" => return Some(("\u{1F61E}", 3)),  // disappointed face
+            b":-D" => return Some(("\u{1F600}", 3)),  // grinning face
+            b":-P" => return Some(("\u{1F61B}", 3)),  // tongue out
+            b":-O" => return Some(("\u{1F62E}", 3)),  // open mouth
+            b":-/" => return Some(("\u{1F615}", 3)),  // confused
+            b":-|" => return Some(("\u{1F610}", 3)),  // neutral
+            b":-*" => return Some(("\u{1F618}", 3)),  // kissing
+            b"8-)" => return Some(("\u{1F60E}", 3)),  // sunglasses
+            b";-)" => return Some(("\u{1F609}", 3)),  // winking
+            b">:(" => return Some(("\u{1F620}", 3)),  // angry
+            b">:)" => return Some(("\u{1F608}", 3)),  // devil
+            _ => {}
+        }
+    }
+    // 2-char emoticons
+    if rem >= 2 {
+        match &bytes[i..i + 2] {
+            b":)" => return Some(("\u{1F642}", 2)),   // slightly smiling
+            b":(" => return Some(("\u{1F61E}", 2)),   // disappointed
+            b":D" => return Some(("\u{1F600}", 2)),   // grinning
+            b":P" => return Some(("\u{1F61B}", 2)),   // tongue out
+            b":O" => return Some(("\u{1F62E}", 2)),   // open mouth
+            b";)" => return Some(("\u{1F609}", 2)),   // winking
+            b"<3" => return Some(("\u{2764}", 2)),    // heart
+            _ => {}
+        }
+    }
+    None
+}
+
+fn replace_emojis(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut out = String::new();
+    let mut i = 0;
+
+    while i < len {
+        // Emoji shortcode :name:
+        if bytes[i] == b':' && i + 2 < len {
+            let start = i + 1;
+            let mut end = start;
+            while end < len && bytes[end] != b':' && bytes[end] != b' ' && bytes[end] != b'\n' {
+                end += 1;
+            }
+            if end < len && bytes[end] == b':' && end > start {
+                let code = &text[start..end];
+                if let Some(emoji) = emoji_for_shortcode(code) {
+                    out.push_str(emoji);
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+        // Emoticon shortcuts (:-) 8-) ;) etc.)
+        // Only match if preceded by whitespace/start or follows whitespace
+        let at_boundary = i == 0 || bytes[i - 1] == b' ' || bytes[i - 1] == b'\n' || bytes[i - 1] == b'\t';
+        if at_boundary {
+            if let Some((emoji, consumed)) = match_emoticon(bytes, i) {
+                // Check that emoticon ends at boundary (space, newline, end, or punctuation)
+                let after = i + consumed;
+                let end_ok = after >= len
+                    || bytes[after] == b' '
+                    || bytes[after] == b'\n'
+                    || bytes[after] == b'\t'
+                    || bytes[after] == b','
+                    || bytes[after] == b'.'
+                    || bytes[after] == b'!'
+                    || bytes[after] == b'?';
+                if end_ok {
+                    out.push_str(emoji);
+                    i += consumed;
+                    continue;
+                }
+            }
+        }
+        i += push_utf8(&mut out, bytes, i);
+    }
+    out
+}
+
+// ── Link extraction ─────────────────────────────────────────────────────────
+
+struct LinkInfo {
+    display: String,
+    url: String,
+}
+
+/// Extract [text](url) links and bare https:// URLs from markdown text.
+fn extract_links(text: &str) -> Vec<LinkInfo> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut links = Vec::new();
+    let mut i = 0;
+
+    while i < len {
+        // ![alt](url) — skip images
+        if bytes[i] == b'!' && i + 1 < len && bytes[i+1] == b'[' {
+            i += 2;
+            while i < len && bytes[i] != b']' { i += 1; }
+            if i < len { i += 1; }
+            if i < len && bytes[i] == b'(' {
+                i += 1;
+                while i < len && bytes[i] != b')' { i += 1; }
+                if i < len { i += 1; }
+            }
+            continue;
+        }
+        // [text](url)
+        if bytes[i] == b'[' && (i == 0 || bytes[i-1] != b'!') {
+            let bracket_start = i;
+            i += 1;
+            let text_start = i;
+            while i < len && bytes[i] != b']' { i += 1; }
+            if i >= len { continue; }
+            let link_text = &text[text_start..i];
+            i += 1; // skip ]
+            if i < len && bytes[i] == b'(' {
+                i += 1;
+                let url_start = i;
+                // Handle optional title: [text](url "title")
+                let mut paren_depth = 1;
+                while i < len && paren_depth > 0 {
+                    if bytes[i] == b'(' { paren_depth += 1; }
+                    if bytes[i] == b')' { paren_depth -= 1; }
+                    if paren_depth > 0 { i += 1; }
+                }
+                let url_raw = &text[url_start..i];
+                // Strip title if present
+                let url = if let Some(space) = url_raw.find(' ') {
+                    url_raw[..space].trim()
+                } else {
+                    url_raw.trim()
+                };
+                if i < len { i += 1; } // skip )
+                if !url.is_empty() && (url.starts_with("http://") || url.starts_with("https://")) {
+                    links.push(LinkInfo {
+                        display: String::from(link_text),
+                        url: String::from(url),
+                    });
+                }
+            }
+            continue;
+        }
+        // Bare URL: http:// or https://
+        if i + 7 < len && (text[i..].starts_with("http://") || text[i..].starts_with("https://")) {
+            let url_start = i;
+            while i < len && bytes[i] != b' ' && bytes[i] != b'\n' && bytes[i] != b')' && bytes[i] != b'>' {
+                i += 1;
+            }
+            let url = &text[url_start..i];
+            links.push(LinkInfo {
+                display: String::from(url),
+                url: String::from(url),
+            });
+            continue;
+        }
+        // Skip one full UTF-8 character
+        let b = bytes[i];
+        i += if b < 0x80 { 1 } else if b < 0xE0 { 2 } else if b < 0xF0 { 3 } else { 4 };
+    }
+    links
+}
+
 // ── Inline markdown stripping ────────────────────────────────────────────────
+
+/// Try to process a markdown link `[text](url)` or image `![alt](url)` at position `i`.
+/// Returns `Some(new_i)` if handled (writing result to `out`), or `None`.
+fn try_strip_link(text: &str, bytes: &[u8], i: usize, out: &mut String) -> Option<usize> {
+    let len = bytes.len();
+    // ![alt](url) → [Image: alt]
+    if bytes[i] == b'!' && i + 1 < len && bytes[i+1] == b'[' {
+        let mut j = i + 2;
+        let start = j;
+        while j < len && bytes[j] != b']' { j += 1; }
+        let alt = &text[start..j];
+        if j < len { j += 1; }
+        if j < len && bytes[j] == b'(' {
+            j += 1;
+            while j < len && bytes[j] != b')' { j += 1; }
+            if j < len { j += 1; }
+        }
+        out.push_str("[Image: ");
+        out.push_str(alt);
+        out.push(']');
+        return Some(j);
+    }
+    // [text](url) → text  or  [text] → text
+    if bytes[i] == b'[' {
+        if i + 1 < len && bytes[i+1] == b'^' { return None; }
+        let mut j = i + 1;
+        let start = j;
+        while j < len && bytes[j] != b']' { j += 1; }
+        let link_text = &text[start..j];
+        if j < len { j += 1; }
+        if j < len && bytes[j] == b'(' {
+            j += 1;
+            while j < len && bytes[j] != b')' { j += 1; }
+            if j < len { j += 1; }
+        }
+        out.push_str(link_text);
+        return Some(j);
+    }
+    None
+}
 
 /// Strip common inline markers: **bold**, *italic*, `code`, [text](url)
 fn strip_inline(text: &str) -> String {
@@ -106,13 +515,23 @@ fn strip_inline(text: &str) -> String {
     let mut i = 0;
 
     while i < len {
+        // ~~strikethrough~~
+        if i + 1 < len && bytes[i] == b'~' && bytes[i+1] == b'~' {
+            i += 2;
+            while i + 1 < len && !(bytes[i] == b'~' && bytes[i+1] == b'~') {
+                if let Some(ni) = try_strip_link(text, bytes, i, &mut out) { i = ni; continue; }
+                i += push_utf8(&mut out, bytes, i);
+            }
+            if i + 1 < len { i += 2; }
+            continue;
+        }
         // **bold** or __bold__
         if i + 1 < len && ((bytes[i] == b'*' && bytes[i+1] == b'*') || (bytes[i] == b'_' && bytes[i+1] == b'_')) {
             let marker = bytes[i];
             i += 2;
             while i + 1 < len && !(bytes[i] == marker && bytes[i+1] == marker) {
-                out.push(bytes[i] as char);
-                i += 1;
+                if let Some(ni) = try_strip_link(text, bytes, i, &mut out) { i = ni; continue; }
+                i += push_utf8(&mut out, bytes, i);
             }
             if i + 1 < len { i += 2; }
             continue;
@@ -122,61 +541,27 @@ fn strip_inline(text: &str) -> String {
             let marker = bytes[i];
             i += 1;
             while i < len && bytes[i] != marker {
-                out.push(bytes[i] as char);
-                i += 1;
+                if let Some(ni) = try_strip_link(text, bytes, i, &mut out) { i = ni; continue; }
+                i += push_utf8(&mut out, bytes, i);
             }
             if i < len { i += 1; }
             continue;
         }
-        // `inline code`
+        // `inline code` — push content verbatim (no link processing)
         if bytes[i] == b'`' {
             i += 1;
             while i < len && bytes[i] != b'`' {
-                out.push(bytes[i] as char);
-                i += 1;
+                i += push_utf8(&mut out, bytes, i);
             }
             if i < len { i += 1; }
             continue;
         }
-        // [text](url) → just text
-        if bytes[i] == b'[' {
-            i += 1;
-            let start = i;
-            while i < len && bytes[i] != b']' {
-                i += 1;
-            }
-            let link_text = &text[start..i];
-            if i < len { i += 1; } // skip ]
-            // skip (url) if present
-            if i < len && bytes[i] == b'(' {
-                i += 1;
-                while i < len && bytes[i] != b')' { i += 1; }
-                if i < len { i += 1; }
-            }
-            out.push_str(link_text);
-            continue;
-        }
-        // ![alt](url) → [Image: alt]
-        if bytes[i] == b'!' && i + 1 < len && bytes[i+1] == b'[' {
-            i += 2;
-            let start = i;
-            while i < len && bytes[i] != b']' { i += 1; }
-            let alt = &text[start..i];
-            if i < len { i += 1; }
-            if i < len && bytes[i] == b'(' {
-                i += 1;
-                while i < len && bytes[i] != b')' { i += 1; }
-                if i < len { i += 1; }
-            }
-            out.push_str("[Image: ");
-            out.push_str(alt);
-            out.push(']');
-            continue;
-        }
-        out.push(bytes[i] as char);
-        i += 1;
+        // Links and images
+        if let Some(ni) = try_strip_link(text, bytes, i, &mut out) { i = ni; continue; }
+        i += push_utf8(&mut out, bytes, i);
     }
-    out
+    let typographic = replace_typographic(&out);
+    replace_emojis(&typographic)
 }
 
 // ── Markdown renderer ────────────────────────────────────────────────────────
@@ -213,6 +598,9 @@ fn add_heading(panel: &anyui::StackPanel, text: &str, level: usize) {
 }
 
 fn add_paragraph(panel: &anyui::StackPanel, text: &str) {
+    // Extract links before stripping inline markers
+    let links = extract_links(text);
+
     let stripped = strip_inline(text);
     let wrapped = word_wrap(&stripped, WRAP_WIDTH);
     let label = anyui::Label::new(&wrapped);
@@ -222,6 +610,29 @@ fn add_paragraph(panel: &anyui::StackPanel, text: &str) {
     label.set_padding(16, 4, 16, 4);
     label.set_auto_size(true);
     panel.add(&label);
+
+    // Render clickable link tags below the paragraph text
+    for link in &links {
+        let display = if link.display == link.url {
+            // Bare URL — show as-is
+            anyos_std::format!("  \u{1F517} {}", link.url)
+        } else {
+            anyos_std::format!("  \u{1F517} {} \u{2014} {}", link.display, link.url)
+        };
+        let tag = anyui::Tag::new(&display);
+        tag.set_text_color(TEXT_LINK);
+        tag.set_color(0xFF2D2D30); // subtle dark background for link tags
+        tag.set_font_size(12);
+        // Measure text to set correct tag size (auto_size not implemented for Tags)
+        let (tw, _th) = anyui::measure_text(&display, 0, 12);
+        tag.set_size(tw + 16, 22); // 8px padding on each side, 22px height
+        tag.set_padding(20, 0, 16, 2);
+        let url = link.url.clone();
+        tag.on_click(move |_| {
+            anyos_std::process::spawn("/Applications/Surf.app", &url);
+        });
+        panel.add(&tag);
+    }
 }
 
 fn add_code_block(panel: &anyui::StackPanel, lines: &[&str]) {
@@ -250,12 +661,23 @@ fn add_code_block(panel: &anyui::StackPanel, lines: &[&str]) {
     panel.add(&container);
 }
 
-fn add_list_item(panel: &anyui::StackPanel, text: &str, ordered: bool, number: usize) {
+fn add_list_item(panel: &anyui::StackPanel, text: &str, ordered: bool, number: usize, indent_level: usize) {
     let stripped = strip_inline(text);
+    // Build indent prefix: 2 spaces per indent level
+    let mut prefix = String::new();
+    prefix.push_str("  ");
+    for _ in 0..indent_level {
+        prefix.push_str("    ");
+    }
     let prefixed = if ordered {
-        anyos_std::format!("  {}. {}", number, stripped)
+        anyos_std::format!("{}{}. {}", prefix, number, stripped)
     } else {
-        anyos_std::format!("  \u{2022} {}", stripped)
+        let bullet = match indent_level {
+            0 => "\u{2022}",  // •
+            1 => "\u{25E6}",  // ◦
+            _ => "\u{2023}",  // ‣
+        };
+        anyos_std::format!("{}{} {}", prefix, bullet, stripped)
     };
     let wrapped = word_wrap(&prefixed, WRAP_WIDTH);
     let label = anyui::Label::new(&wrapped);
@@ -267,14 +689,21 @@ fn add_list_item(panel: &anyui::StackPanel, text: &str, ordered: bool, number: u
     panel.add(&label);
 }
 
-fn add_blockquote(panel: &anyui::StackPanel, text: &str) {
+fn add_blockquote(panel: &anyui::StackPanel, text: &str, depth: usize) {
     let stripped = strip_inline(text);
-    let prefixed = anyos_std::format!("  \u{2502} {}", stripped);
-    let wrapped = word_wrap(&prefixed, WRAP_WIDTH - 4);
+    // Build bar prefix: one │ per nesting level
+    let mut prefix = String::from("  ");
+    for _ in 0..depth {
+        prefix.push('\u{2502}');
+        prefix.push(' ');
+    }
+    let prefixed = anyos_std::format!("{}{}", prefix, stripped);
+    let wrapped = word_wrap(&prefixed, WRAP_WIDTH - 4 * depth);
 
     let container = anyui::View::new();
     container.set_color(BG_QUOTE);
-    container.set_margin(16, 2, 16, 2);
+    let left_margin = 16 + (depth.saturating_sub(1) * 8) as i32;
+    container.set_margin(left_margin, 2, 16, 2);
     container.set_padding(8, 4, 8, 4);
     container.set_auto_size(true);
 
@@ -296,6 +725,96 @@ fn add_horizontal_rule(panel: &anyui::StackPanel) {
     div.set_margin(16, 0, 16, 0);
     panel.add(&div);
     add_spacing(panel, 6);
+}
+
+fn is_table_separator(line: &str) -> bool {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('|') { return false; }
+    // Check if all cells are separator cells like ---, :---, ---:, :---:
+    for cell in trimmed.split('|') {
+        let c = cell.trim();
+        if c.is_empty() { continue; }
+        let stripped = c.trim_start_matches(':').trim_end_matches(':');
+        if stripped.is_empty() || !stripped.as_bytes().iter().all(|&b| b == b'-') {
+            return false;
+        }
+    }
+    true
+}
+
+fn parse_table_row(line: &str) -> Vec<String> {
+    let trimmed = line.trim();
+    // Strip leading/trailing |
+    let inner = if trimmed.starts_with('|') && trimmed.ends_with('|') {
+        &trimmed[1..trimmed.len()-1]
+    } else if trimmed.starts_with('|') {
+        &trimmed[1..]
+    } else {
+        trimmed
+    };
+    inner.split('|').map(|cell| String::from(strip_inline(cell.trim()))).collect()
+}
+
+fn add_table(panel: &anyui::StackPanel, header: &[String], rows: &[Vec<String>]) {
+    let num_cols = header.len();
+    if num_cols == 0 { return; }
+
+    // Calculate column widths (char-based, minimum 6)
+    let mut col_widths: Vec<usize> = header.iter().map(|h| h.len().max(6)).collect();
+    for row in rows {
+        for (c, cell) in row.iter().enumerate() {
+            if c < col_widths.len() {
+                col_widths[c] = col_widths[c].max(cell.len());
+            }
+        }
+    }
+
+    // Build a text-based table
+    let mut table_text = String::new();
+
+    // Header row
+    for (c, h) in header.iter().enumerate() {
+        if c > 0 { table_text.push_str(" \u{2502} "); }
+        table_text.push_str(h);
+        let pad = col_widths.get(c).copied().unwrap_or(0).saturating_sub(h.len());
+        for _ in 0..pad { table_text.push(' '); }
+    }
+    table_text.push('\n');
+
+    // Separator
+    for (c, w) in col_widths.iter().enumerate() {
+        if c > 0 { table_text.push_str("\u{2500}\u{253C}\u{2500}"); }
+        for _ in 0..*w { table_text.push('\u{2500}'); }
+    }
+    table_text.push('\n');
+
+    // Data rows
+    for row in rows {
+        for c in 0..num_cols {
+            if c > 0 { table_text.push_str(" \u{2502} "); }
+            let cell = row.get(c).map(|s| s.as_str()).unwrap_or("");
+            table_text.push_str(cell);
+            let pad = col_widths.get(c).copied().unwrap_or(0).saturating_sub(cell.len());
+            for _ in 0..pad { table_text.push(' '); }
+        }
+        table_text.push('\n');
+    }
+
+    // Render as a code-like block
+    let container = anyui::View::new();
+    container.set_color(BG_CODE_BLOCK);
+    container.set_margin(16, 4, 16, 4);
+    container.set_padding(12, 8, 12, 8);
+    container.set_auto_size(true);
+
+    let label = anyui::Label::new(table_text.trim_end());
+    label.set_font(FONT_MONO);
+    label.set_font_size(13);
+    label.set_text_color(TEXT_CODE);
+    label.set_auto_size(true);
+    container.add(&label);
+
+    panel.add(&container);
 }
 
 fn is_hr_line(line: &str) -> bool {
@@ -320,11 +839,14 @@ fn heading_level(line: &str) -> Option<(usize, &str)> {
     }
 }
 
-fn list_item_text(line: &str) -> Option<(bool, &str)> {
+/// Returns (ordered, text, indent_level) where indent_level is number of leading spaces / 2.
+fn list_item_text(line: &str) -> Option<(bool, &str, usize)> {
+    let indent = line.len() - line.trim_start().len();
+    let indent_level = indent / 2;
     let trimmed = line.trim_start();
-    // Unordered: - item, * item
-    if trimmed.len() >= 2 && (trimmed.starts_with("- ") || trimmed.starts_with("* ")) {
-        return Some((false, &trimmed[2..]));
+    // Unordered: - item, * item, + item
+    if trimmed.len() >= 2 && (trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ")) {
+        return Some((false, &trimmed[2..], indent_level));
     }
     // Ordered: 1. item, 12. item
     let bytes = trimmed.as_bytes();
@@ -333,20 +855,29 @@ fn list_item_text(line: &str) -> Option<(bool, &str)> {
         i += 1;
     }
     if i > 0 && i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1] == b' ' {
-        return Some((true, &trimmed[i + 2..]));
+        return Some((true, &trimmed[i + 2..], indent_level));
     }
     None
 }
 
-fn blockquote_text(line: &str) -> Option<&str> {
+/// Returns (text, nesting_depth) for blockquote lines.
+fn blockquote_text(line: &str) -> Option<(&str, usize)> {
     let trimmed = line.trim_start();
-    if trimmed.starts_with("> ") {
-        Some(&trimmed[2..])
-    } else if trimmed == ">" {
-        Some("")
-    } else {
-        None
+    if !trimmed.starts_with('>') {
+        return None;
     }
+    let mut depth = 0usize;
+    let bytes = trimmed.as_bytes();
+    let mut pos = 0;
+    while pos < bytes.len() && bytes[pos] == b'>' {
+        depth += 1;
+        pos += 1;
+        // Skip optional space after >
+        if pos < bytes.len() && bytes[pos] == b' ' {
+            pos += 1;
+        }
+    }
+    Some((&trimmed[pos..], depth))
 }
 
 fn render_markdown(md: &str, panel: &anyui::StackPanel) {
@@ -373,6 +904,43 @@ fn render_markdown(md: &str, panel: &anyui::StackPanel) {
                 i += 1;
             }
             if i < total { i += 1; } // skip closing ```
+            add_code_block(panel, &code_lines);
+            continue;
+        }
+
+        // Indented code block (4 spaces or 1 tab)
+        if (line.starts_with("    ") || line.starts_with("\t")) && para_buf.is_empty() {
+            let mut code_lines: Vec<&str> = Vec::new();
+            while i < total {
+                let cl = lines[i];
+                if cl.starts_with("    ") {
+                    code_lines.push(&cl[4..]);
+                    i += 1;
+                } else if cl.starts_with("\t") {
+                    code_lines.push(&cl[1..]);
+                    i += 1;
+                } else if cl.trim().is_empty() {
+                    // Blank line inside indented block — include only if more indented lines follow
+                    let mut has_more = false;
+                    let mut j = i + 1;
+                    while j < total {
+                        if lines[j].starts_with("    ") || lines[j].starts_with("\t") {
+                            has_more = true;
+                            break;
+                        }
+                        if !lines[j].trim().is_empty() { break; }
+                        j += 1;
+                    }
+                    if has_more {
+                        code_lines.push("");
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
             add_code_block(panel, &code_lines);
             continue;
         }
@@ -412,18 +980,18 @@ fn render_markdown(md: &str, panel: &anyui::StackPanel) {
         }
 
         // Blockquote
-        if let Some(text) = blockquote_text(line) {
+        if let Some((text, depth)) = blockquote_text(line) {
             if !para_buf.is_empty() {
                 add_paragraph(panel, &para_buf);
                 para_buf.clear();
             }
-            add_blockquote(panel, text);
+            add_blockquote(panel, text, depth);
             i += 1;
             continue;
         }
 
         // List item
-        if let Some((ordered, text)) = list_item_text(line) {
+        if let Some((ordered, text, indent_level)) = list_item_text(line) {
             if !para_buf.is_empty() {
                 add_paragraph(panel, &para_buf);
                 para_buf.clear();
@@ -431,8 +999,25 @@ fn render_markdown(md: &str, panel: &anyui::StackPanel) {
             if ordered {
                 ordered_counter += 1;
             }
-            add_list_item(panel, text, ordered, ordered_counter);
+            add_list_item(panel, text, ordered, ordered_counter, indent_level);
             i += 1;
+            continue;
+        }
+
+        // Table: line with | and next line is separator
+        if line.contains('|') && i + 1 < total && is_table_separator(lines[i + 1]) {
+            if !para_buf.is_empty() {
+                add_paragraph(panel, &para_buf);
+                para_buf.clear();
+            }
+            let header = parse_table_row(line);
+            i += 2; // skip header + separator
+            let mut rows: Vec<Vec<String>> = Vec::new();
+            while i < total && lines[i].contains('|') && !lines[i].trim().is_empty() {
+                rows.push(parse_table_row(lines[i]));
+                i += 1;
+            }
+            add_table(panel, &header, &rows);
             continue;
         }
 
@@ -475,9 +1060,12 @@ fn open_file(path: &str) {
         }
     };
 
-    // Hide current active panel
+    // Hide current active panel and source editor
     if !s.files.is_empty() && s.active < s.files.len() {
         s.files[s.active].panel.set_visible(false);
+        if let Some(ref editor) = s.files[s.active].source_editor {
+            editor.set_visible(false);
+        }
     }
 
     // Create content panel
@@ -496,7 +1084,11 @@ fn open_file(path: &str) {
     let idx = s.files.len();
     s.files.push(OpenFile {
         path: String::from(path),
+        content,
         panel,
+        source_editor: None,
+        showing_source: false,
+        modified: false,
     });
     s.active = idx;
 
@@ -513,8 +1105,11 @@ fn close_tab(index: usize) {
     let s = app();
     if index >= s.files.len() { return; }
 
-    // Remove panel from scroll view
+    // Remove panel and source editor from scroll view
     s.files[index].panel.remove();
+    if let Some(ref editor) = s.files[index].source_editor {
+        editor.remove();
+    }
     s.files.remove(index);
 
     if s.files.is_empty() {
@@ -545,13 +1140,150 @@ fn switch_tab(index: usize) {
     let s = app();
     if index >= s.files.len() { return; }
 
-    // Hide all, show target
+    // Hide all panels and source editors, show target
     for (i, f) in s.files.iter().enumerate() {
-        f.panel.set_visible(i == index);
+        if i == index {
+            if f.showing_source {
+                f.panel.set_visible(false);
+                if let Some(ref editor) = f.source_editor {
+                    editor.set_visible(true);
+                }
+            } else {
+                f.panel.set_visible(true);
+                if let Some(ref editor) = f.source_editor {
+                    editor.set_visible(false);
+                }
+            }
+        } else {
+            f.panel.set_visible(false);
+            if let Some(ref editor) = f.source_editor {
+                editor.set_visible(false);
+            }
+        }
     }
     s.active = index;
     s.tab_bar.set_state(index as u32);
     update_status();
+}
+
+/// Re-render the markdown panel for the active file from its `content`.
+fn rerender_active() {
+    let s = app();
+    if s.files.is_empty() { return; }
+    let idx = s.active;
+
+    // Remove old rendered panel
+    s.files[idx].panel.remove();
+
+    // Create new rendered panel
+    let panel = anyui::StackPanel::vertical();
+    panel.set_dock(anyui::DOCK_TOP);
+    panel.set_auto_size(true);
+    panel.set_padding(0, 8, 0, 8);
+    render_markdown(&s.files[idx].content, &panel);
+    s.scroll.add(&panel);
+
+    s.files[idx].panel = panel;
+}
+
+/// Read editor text back into `content`, mark modified if changed.
+fn sync_editor_to_content() {
+    let s = app();
+    if s.files.is_empty() { return; }
+    let idx = s.active;
+    let file = &mut s.files[idx];
+    if let Some(ref editor) = file.source_editor {
+        let mut buf = [0u8; 256 * 1024]; // 256 KB buffer
+        let len = editor.get_text(&mut buf) as usize;
+        let new_content = core::str::from_utf8(&buf[..len]).unwrap_or("");
+        if new_content != file.content.as_str() {
+            file.content = String::from(new_content);
+            file.modified = true;
+        }
+    }
+}
+
+fn toggle_source() {
+    let s = app();
+    if s.files.is_empty() { return; }
+    let idx = s.active;
+
+    if s.files[idx].showing_source {
+        // Sync editor content back and re-render
+        sync_editor_to_content();
+        if let Some(ref editor) = s.files[idx].source_editor {
+            editor.set_visible(false);
+        }
+        // Re-render markdown from (possibly updated) content
+        rerender_active();
+        s.files[idx].panel.set_visible(true);
+        s.files[idx].showing_source = false;
+        update_tab_labels();
+    } else {
+        // Switch to source view
+        s.files[idx].panel.set_visible(false);
+
+        if s.files[idx].source_editor.is_none() {
+            // Create source editor on first use
+            let editor = anyui::TextEditor::new(900, 600);
+            editor.set_dock(anyui::DOCK_FILL);
+            editor.set_text(&s.files[idx].content);
+            editor.set_show_line_numbers(true);
+            editor.set_editor_font(FONT_MONO, 13);
+            s.scroll.add(&editor);
+            s.files[idx].source_editor = Some(editor);
+        } else {
+            s.files[idx].source_editor.as_ref().unwrap().set_visible(true);
+        }
+        s.files[idx].showing_source = true;
+    }
+}
+
+fn update_tab_labels() {
+    let s = app();
+    let labels = tab_labels(&s.files);
+    s.tab_bar.set_text(&labels);
+}
+
+fn save_file() {
+    let s = app();
+    if s.files.is_empty() { return; }
+    let idx = s.active;
+
+    // If source editor is visible, sync content first
+    if s.files[idx].showing_source {
+        sync_editor_to_content();
+    }
+
+    let path = s.files[idx].path.clone();
+    let content = s.files[idx].content.as_bytes();
+    if anyos_std::fs::write_bytes(&path, content).is_ok() {
+        s.files[idx].modified = false;
+        update_tab_labels();
+        update_status();
+    }
+}
+
+fn save_file_as() {
+    let s = app();
+    if s.files.is_empty() { return; }
+    let idx = s.active;
+
+    // If source editor is visible, sync content first
+    if s.files[idx].showing_source {
+        sync_editor_to_content();
+    }
+
+    let default_name = basename(&s.files[idx].path);
+    if let Some(new_path) = anyui::FileDialog::save_file(default_name) {
+        let content = s.files[idx].content.as_bytes();
+        if anyos_std::fs::write_bytes(&new_path, content).is_ok() {
+            s.files[idx].path = new_path;
+            s.files[idx].modified = false;
+            update_tab_labels();
+            update_status();
+        }
+    }
 }
 
 fn update_status() {
@@ -595,6 +1327,18 @@ fn main() {
     let btn_open = toolbar.add_icon_button("Open");
     btn_open.set_size(60, 28);
     btn_open.set_icon(anyui::ICON_FOLDER_OPEN);
+
+    let btn_source = toolbar.add_icon_button("Source");
+    btn_source.set_size(70, 28);
+    btn_source.set_icon(anyui::ICON_FILES);
+
+    let btn_save = toolbar.add_icon_button("Save");
+    btn_save.set_size(60, 28);
+    btn_save.set_icon(anyui::ICON_SAVE);
+
+    let btn_save_as = toolbar.add_icon_button("Save As");
+    btn_save_as.set_size(70, 28);
+    btn_save_as.set_icon(anyui::ICON_SAVE_ALL);
 
     toolbar.add_separator();
 
@@ -648,6 +1392,18 @@ fn main() {
         if let Some(path) = anyui::FileDialog::open_file() {
             open_file(&path);
         }
+    });
+
+    btn_source.on_click(|_| {
+        toggle_source();
+    });
+
+    btn_save.on_click(|_| {
+        save_file();
+    });
+
+    btn_save_as.on_click(|_| {
+        save_file_as();
     });
 
     app().tab_bar.on_active_changed(|e| {

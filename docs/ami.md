@@ -38,8 +38,8 @@ ami (client)                     amid (daemon)
 
 | Interval | Tables |
 |----------|--------|
-| 2 s | `mem`, `cpu`, `threads` |
-| 10 s | `devices`, `disks`, `net`, `svc` |
+| 30 s | `mem`, `cpu`, `threads` |
+| 30 s | `devices`, `disks`, `net`, `svc` |
 
 ### Database Schema (8 Tables)
 

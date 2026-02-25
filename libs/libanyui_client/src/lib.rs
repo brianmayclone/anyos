@@ -255,6 +255,10 @@ struct AnyuiLib {
     texteditor_set_font: extern "C" fn(u32, u32, u32),
     texteditor_insert_text: extern "C" fn(u32, *const u8, u32),
     texteditor_get_line_count: extern "C" fn(u32) -> u32,
+    texteditor_copy: extern "C" fn(u32) -> u32,
+    texteditor_cut: extern "C" fn(u32) -> u32,
+    texteditor_paste: extern "C" fn(u32) -> u32,
+    texteditor_select_all: extern "C" fn(u32),
     // TreeView
     treeview_add_node: extern "C" fn(u32, u32, *const u8, u32) -> u32,
     treeview_remove_node: extern "C" fn(u32, u32),
@@ -305,6 +309,13 @@ struct AnyuiLib {
     datagrid_set_scroll_offset: extern "C" fn(u32, u32),
     // Text measurement
     measure_text_fn: extern "C" fn(*const u8, u32, u16, u16) -> u64,
+    // Compositor channel access
+    get_compositor_channel_fn: extern "C" fn() -> u32,
+    // Window lifecycle callbacks
+    on_window_opened_fn: extern "C" fn(Callback, u64),
+    on_window_closed_fn: extern "C" fn(Callback, u64),
+    // Focus by task ID
+    focus_by_tid_fn: extern "C" fn(u32),
 }
 
 static mut LIB: Option<AnyuiLib> = None;
@@ -463,6 +474,10 @@ pub fn init() -> bool {
             texteditor_set_font: resolve(&handle, "anyui_texteditor_set_font"),
             texteditor_insert_text: resolve(&handle, "anyui_texteditor_insert_text"),
             texteditor_get_line_count: resolve(&handle, "anyui_texteditor_get_line_count"),
+            texteditor_copy: resolve(&handle, "anyui_texteditor_copy"),
+            texteditor_cut: resolve(&handle, "anyui_texteditor_cut"),
+            texteditor_paste: resolve(&handle, "anyui_texteditor_paste"),
+            texteditor_select_all: resolve(&handle, "anyui_texteditor_select_all"),
             // TreeView
             treeview_add_node: resolve(&handle, "anyui_treeview_add_node"),
             treeview_remove_node: resolve(&handle, "anyui_treeview_remove_node"),
@@ -512,6 +527,10 @@ pub fn init() -> bool {
             datagrid_get_scroll_offset: resolve(&handle, "anyui_datagrid_get_scroll_offset"),
             datagrid_set_scroll_offset: resolve(&handle, "anyui_datagrid_set_scroll_offset"),
             measure_text_fn: resolve(&handle, "anyui_measure_text"),
+            get_compositor_channel_fn: resolve(&handle, "anyui_get_compositor_channel"),
+            on_window_opened_fn: resolve(&handle, "anyui_on_window_opened"),
+            on_window_closed_fn: resolve(&handle, "anyui_on_window_closed"),
+            focus_by_tid_fn: resolve(&handle, "anyui_focus_by_tid"),
             _handle: handle,
         };
         (lib.init)();
@@ -547,6 +566,30 @@ pub fn quit() {
 pub fn measure_text(text: &str, font_id: u16, font_size: u16) -> (u32, u32) {
     let packed = (lib().measure_text_fn)(text.as_ptr(), text.len() as u32, font_id, font_size);
     ((packed >> 32) as u32, packed as u32)
+}
+
+/// Get the compositor event channel ID for direct IPC commands.
+pub fn get_compositor_channel() -> u32 {
+    (lib().get_compositor_channel_fn)()
+}
+
+/// Register a callback for when any window is opened.
+/// Callback receives (app_tid, 0x0060, userdata).
+pub fn on_window_opened(mut f: impl FnMut(u32) + 'static) {
+    let (thunk, ud) = events::register(move |id, _| f(id));
+    (lib().on_window_opened_fn)(thunk, ud);
+}
+
+/// Register a callback for when an app's last window is closed.
+/// Callback receives (app_tid, 0x0061, userdata).
+pub fn on_window_closed(mut f: impl FnMut(u32) + 'static) {
+    let (thunk, ud) = events::register(move |id, _| f(id));
+    (lib().on_window_closed_fn)(thunk, ud);
+}
+
+/// Focus the window belonging to a specific task ID via compositor IPC.
+pub fn focus_by_tid(tid: u32) {
+    (lib().focus_by_tid_fn)(tid);
 }
 
 // ══════════════════════════════════════════════════════════════════════

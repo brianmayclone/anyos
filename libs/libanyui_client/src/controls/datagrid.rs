@@ -66,6 +66,11 @@ impl DataGrid {
         Self { ctrl: Control { id } }
     }
 
+    /// Wrap an existing control ID as a DataGrid.
+    pub fn from_id(id: u32) -> Self {
+        Self { ctrl: Control { id } }
+    }
+
     /// Define columns from a slice of ColumnDef builders.
     pub fn set_columns(&self, cols: &[ColumnDef]) {
         let mut buf = Vec::new();

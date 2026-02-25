@@ -695,6 +695,108 @@ fn load_dotenv() {
     }
 }
 
+// ─── Tab Completion ──────────────────────────────────────────────────────
+
+const BUILTIN_COMMANDS: &[&str] = &[
+    ".", "alias", "bg", "break", "cd", "command", "continue",
+    "echo", "eval", "exec", "exit", "export", "false",
+    "fg", "getopts", "hash", "jobs", "kill", "local",
+    "printf", "pwd", "read", "readonly", "return", "set",
+    "shift", "source", "test", "times", "trap", "true", "type",
+    "ulimit", "umask", "unalias", "unset", "wait",
+];
+
+fn find_file_completions(partial: &str) -> Vec<String> {
+    let (dir_path, prefix) = match partial.rfind('/') {
+        Some(pos) => {
+            let d = if pos == 0 { "/" } else { &partial[..pos] };
+            (d, &partial[pos + 1..])
+        }
+        None => (".", partial),
+    };
+
+    let mut entry_buf = [0u8; 64 * 64];
+    let count = fs::readdir(dir_path, &mut entry_buf);
+    if count == u32::MAX {
+        return Vec::new();
+    }
+
+    let mut results = Vec::new();
+    for i in 0..count as usize {
+        let base = i * 64;
+        let entry_type = entry_buf[base];
+        let name_len = (entry_buf[base + 1] as usize).min(56);
+        if let Ok(name) = core::str::from_utf8(&entry_buf[base + 8..base + 8 + name_len]) {
+            if name == "." || name == ".." { continue; }
+            if name.starts_with(prefix) {
+                let mut s = String::from(name);
+                if entry_type == 1 { s.push('/'); }
+                results.push(s);
+            }
+        }
+    }
+    results
+}
+
+fn find_command_completions(partial: &str) -> Vec<String> {
+    let mut results = Vec::new();
+
+    // Builtins
+    for &cmd in BUILTIN_COMMANDS {
+        if cmd.starts_with(partial) {
+            results.push(String::from(cmd));
+        }
+    }
+
+    // Scan PATH directories
+    let mut path_buf = [0u8; 512];
+    let path_len = anyos_std::env::get("PATH", &mut path_buf);
+    if path_len != u32::MAX && (path_len as usize) <= path_buf.len() {
+        if let Ok(path_str) = core::str::from_utf8(&path_buf[..path_len as usize]) {
+            for dir in path_str.split(':') {
+                if dir.is_empty() { continue; }
+                let mut entry_buf = [0u8; 64 * 64];
+                let count = fs::readdir(dir, &mut entry_buf);
+                if count == u32::MAX { continue; }
+                for i in 0..count as usize {
+                    let base = i * 64;
+                    let entry_type = entry_buf[base];
+                    let name_len = (entry_buf[base + 1] as usize).min(56);
+                    if entry_type != 0 { continue; } // Only regular files
+                    if let Ok(name) = core::str::from_utf8(&entry_buf[base + 8..base + 8 + name_len]) {
+                        if name.starts_with(partial) && !results.iter().any(|r: &String| r.as_str() == name) {
+                            results.push(String::from(name));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    results
+}
+
+fn longest_common_prefix(strings: &[String]) -> String {
+    if strings.is_empty() { return String::new(); }
+    let first = strings[0].as_bytes();
+    let mut len = first.len();
+    for s in &strings[1..] {
+        let b = s.as_bytes();
+        len = len.min(b.len());
+        for i in 0..len {
+            if first[i] != b[i] {
+                len = i;
+                break;
+            }
+        }
+    }
+    if let Ok(s) = core::str::from_utf8(&first[..len]) {
+        String::from(s)
+    } else {
+        String::new()
+    }
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -763,6 +865,10 @@ fn main() {
     let mut dirty = false;
     let mut event = [0u32; 5];
     let mut shell_exited = false;
+
+    // Tab completion state
+    let mut input_line: Vec<u8> = Vec::new();
+    let mut tab_count: u32 = 0;
 
     loop {
         // Poll shell stdout for output
@@ -903,6 +1009,8 @@ fn main() {
                             KEY_ENTER => {
                                 shell_proc.write(b"\n");
                                 buf.feed(b"\n");
+                                input_line.clear();
+                                tab_count = 0;
                             }
                             KEY_BACKSPACE => {
                                 shell_proc.write(&[0x7f]);
@@ -914,8 +1022,84 @@ fn main() {
                                         buf.lines[buf.cursor_row].truncate(buf.cursor_col);
                                     }
                                 }
+                                input_line.pop();
+                                tab_count = 0;
                             }
-                            KEY_TAB => shell_proc.write(b"\t"),
+                            KEY_TAB => {
+                                // Tab completion
+                                let word_start = input_line.iter().rposition(|&b| b == b' ')
+                                    .map(|p| p + 1).unwrap_or(0);
+                                let partial = &input_line[word_start..];
+
+                                if partial.is_empty() {
+                                    // No partial word, just insert tab
+                                    shell_proc.write(b"\t");
+                                    buf.feed(b"\t");
+                                } else {
+                                    let is_first_word = word_start == 0;
+                                    let partial_str = core::str::from_utf8(partial).unwrap_or("");
+
+                                    let matches = if is_first_word && !partial_str.contains('/') {
+                                        find_command_completions(partial_str)
+                                    } else {
+                                        find_file_completions(partial_str)
+                                    };
+
+                                    tab_count += 1;
+
+                                    if matches.len() == 1 {
+                                        // Single match: complete it
+                                        let m = &matches[0];
+                                        let file_prefix_len = match partial_str.rfind('/') {
+                                            Some(pos) => partial_str.len() - pos - 1,
+                                            None => partial_str.len(),
+                                        };
+                                        let insert = &m[file_prefix_len..];
+                                        if !insert.is_empty() {
+                                            shell_proc.write(insert.as_bytes());
+                                            buf.feed(insert.as_bytes());
+                                            input_line.extend_from_slice(insert.as_bytes());
+                                        }
+                                        // Add trailing space if not a directory
+                                        if !m.ends_with('/') {
+                                            shell_proc.write(b" ");
+                                            buf.feed(b" ");
+                                            input_line.push(b' ');
+                                        }
+                                        tab_count = 0;
+                                    } else if matches.len() > 1 {
+                                        // Multiple matches: insert common prefix
+                                        let lcp = longest_common_prefix(&matches);
+                                        let file_prefix_len = match partial_str.rfind('/') {
+                                            Some(pos) => partial_str.len() - pos - 1,
+                                            None => partial_str.len(),
+                                        };
+                                        if lcp.len() > file_prefix_len {
+                                            let insert = &lcp[file_prefix_len..];
+                                            shell_proc.write(insert.as_bytes());
+                                            buf.feed(insert.as_bytes());
+                                            input_line.extend_from_slice(insert.as_bytes());
+                                        }
+                                        // On double-tab, show all matches
+                                        if tab_count >= 2 {
+                                            buf.feed(b"\r\n");
+                                            let show_count = matches.len().min(30);
+                                            for i in 0..show_count {
+                                                buf.feed(matches[i].as_bytes());
+                                                buf.feed(b"  ");
+                                            }
+                                            if matches.len() > 30 {
+                                                let msg = format!("... ({} total)", matches.len());
+                                                buf.feed(msg.as_bytes());
+                                            }
+                                            buf.feed(b"\r\n$ ");
+                                            buf.feed(&input_line);
+                                            tab_count = 0;
+                                        }
+                                    }
+                                    // No matches: do nothing
+                                }
+                            }
                             KEY_ESCAPE => shell_proc.write(b"\x1b"),
                             KEY_UP => shell_proc.write(b"\x1b[A"),
                             KEY_DOWN => shell_proc.write(b"\x1b[B"),
@@ -941,13 +1125,19 @@ fn main() {
                                         };
                                         if ctrl_code > 0 {
                                             shell_proc.write(&[ctrl_code]);
+                                            // Ctrl+C or Ctrl+U: clear input line
+                                            if ctrl_code == 3 || ctrl_code == 21 {
+                                                input_line.clear();
+                                            }
                                         }
                                     } else if c >= b' ' {
                                         shell_proc.write(&[c]);
                                         // Local echo
                                         buf.feed(&[c]);
+                                        input_line.push(c);
                                     }
                                 }
+                                tab_count = 0;
                             }
                         }
                         // Scroll to bottom on any key input

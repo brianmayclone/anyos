@@ -1,1325 +1,683 @@
 #![no_std]
 #![no_main]
 
-use anyos_std::sys;
-use anyos_std::net;
-use anyos_std::process;
-use anyos_std::fs;
-use anyos_std::permissions;
-use anyos_std::ui::window;
+use alloc::string::String;
+use alloc::vec::Vec;
+use anyos_std::json::Value;
+use libanyui_client as ui;
+use ui::Widget;
+
+mod types;
+mod config_io;
+mod module_loader;
+mod form_builder;
+mod builtin_general;
+mod builtin_display;
+mod builtin_wallpaper;
+mod builtin_network;
+mod builtin_apps;
+mod builtin_about;
+
+use types::*;
 
 anyos_std::entry!(main);
 
-use uisys_client::*;
+// ── Global state ────────────────────────────────────────────────────────────
 
-// Layout
-const SIDEBAR_W: u32 = 160;
-const PAD: i32 = 16;
-const ROW_H: i32 = 40;
-
-// Pages
-const PAGE_GENERAL: usize = 0;
-const PAGE_DISPLAY: usize = 1;
-const PAGE_WALLPAPER: usize = 2;
-const PAGE_NETWORK: usize = 3;
-const PAGE_APPS: usize = 4;
-const PAGE_ABOUT: usize = 5;
-const PAGE_NAMES: [&str; 6] = ["General", "Display", "Wallpaper", "Network", "Apps", "About"];
-
-// Wallpaper thumbnail dimensions
-const THUMB_W: u32 = 120;
-const THUMB_H: u32 = 80;
-const THUMB_PAD: i32 = 12;
-const MAX_WALLPAPERS: usize = 16;
-
-// ── Capability bit definitions (must match kernel) ──────────────────────────
-const CAP_FILESYSTEM: u32  = 1 << 0;
-const CAP_NETWORK: u32     = 1 << 1;
-const CAP_AUDIO: u32       = 1 << 2;
-const CAP_DISPLAY: u32     = 1 << 3;
-const CAP_DEVICE: u32      = 1 << 4;
-const CAP_PROCESS: u32     = 1 << 5;
-const CAP_COMPOSITOR: u32  = 1 << 9;
-const CAP_SYSTEM: u32      = 1 << 10;
-
-struct PermGroup {
-    mask: u32,
-    name: &'static str,
+struct AppState {
+    modules: Vec<ModuleEntry>,
+    sidebar_ids: Vec<u32>,
+    active_idx: usize,
+    content_scroll: ui::ScrollView,
+    status_label: ui::Label,
+    edit_panel: ui::View,
+    edit_fields: Vec<ui::TextField>,
+    edit_grid_id: u32,
+    edit_row: u32,
+    edit_columns: Vec<ColumnSpec>,
+    uid: u16,
+    username: String,
+    home: String,
 }
 
-const PERM_GROUPS: &[PermGroup] = &[
-    PermGroup { mask: CAP_FILESYSTEM, name: "Files & Storage" },
-    PermGroup { mask: CAP_NETWORK, name: "Internet & Network" },
-    PermGroup { mask: CAP_AUDIO, name: "Audio" },
-    PermGroup { mask: CAP_DISPLAY | CAP_COMPOSITOR, name: "Display" },
-    PermGroup { mask: CAP_DEVICE, name: "Devices" },
-    PermGroup { mask: CAP_PROCESS | CAP_SYSTEM, name: "System" },
-];
-
-const MAX_APPS: usize = 32;
-
-struct AppEntry {
-    app_id: [u8; 64],
-    app_id_len: usize,
-    granted: u32,
+static mut APP: Option<AppState> = None;
+fn app() -> &'static mut AppState {
+    unsafe { APP.as_mut().unwrap() }
 }
 
-/// Compute how many thumbnail columns fit in the content area.
-fn thumb_cols(win_w: u32) -> usize {
-    let cw = win_w.saturating_sub(SIDEBAR_W + 40);
-    let inner = cw.saturating_sub(PAD as u32 * 2);
-    let col_w = THUMB_W + THUMB_PAD as u32;
-    // (inner + THUMB_PAD) / col_w — the extra THUMB_PAD accounts for no trailing pad
-    let cols = (inner + THUMB_PAD as u32) / col_w;
-    (cols as usize).max(1)
-}
-
-struct WallpaperEntry {
-    name: [u8; 56],
-    name_len: usize,
-    path: [u8; 128],
-    path_len: usize,
-    thumbnail: alloc::vec::Vec<u32>,
-    loaded: bool,
-}
+// ── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
-    let win = window::create("Settings", 180, 100, 560, 400);
-    if win == u32::MAX { return; }
-
-    // Set up menu bar
-    let mut mb = window::MenuBarBuilder::new()
-        .menu("File")
-            .item(1, "Close", 0)
-        .end_menu()
-        .menu("View")
-            .item(10, "General", 0)
-            .item(11, "Display", 0)
-            .item(12, "Wallpaper", 0)
-            .item(13, "Network", 0)
-            .item(14, "Apps", 0)
-            .item(15, "About", 0)
-        .end_menu();
-    let data = mb.build();
-    window::set_menu(win, data);
-
-    let (mut win_w, mut win_h) = window::get_size(win).unwrap_or((560, 400));
-
-    // --- Components with built-in event handling ---
-    let mut sidebar = UiSidebar::new(0, 0, SIDEBAR_W, win_h);
-    let content_x = SIDEBAR_W as i32 + 20;
-
-    // General page toggles
-    let mut dark_toggle = UiToggle::new(0, 0, window::get_theme() == 0);
-    let mut sound_toggle = UiToggle::new(0, 0, true);
-    let mut notif_toggle = UiToggle::new(0, 0, true);
-
-    // Display page slider + resolution radio
-    let mut brightness = UiSlider::new(0, 0, 200, 0, 100, 80);
-    let mut res_radio = UiRadioGroup::new(0, 0, 24);
-
-    // Fetch available resolutions
-    let resolutions = window::list_resolutions();
-    let (cur_w, cur_h) = window::screen_size();
-    // Find current resolution index
-    for (i, &(rw, rh)) in resolutions.iter().enumerate() {
-        if rw == cur_w && rh == cur_h {
-            res_radio.selected = i;
-            break;
-        }
+    if !ui::init() {
+        return;
     }
 
-    // Wallpaper state
-    let mut wallpapers: alloc::vec::Vec<WallpaperEntry> = alloc::vec::Vec::new();
-    let mut wallpaper_selected: usize = 0;
-    let mut wallpapers_scanned = false;
+    let (uid, username, home) = module_loader::resolve_user();
+    let modules = module_loader::load_all_modules(uid, &username, &home);
 
-    // Apps page state
-    let mut apps: alloc::vec::Vec<AppEntry> = alloc::vec::Vec::new();
-    let mut apps_scanned = false;
-    let mut apps_detail: Option<usize> = None;
-    let mut perm_toggles: [UiToggle; 6] = [
-        UiToggle::new(0, 0, false), UiToggle::new(0, 0, false),
-        UiToggle::new(0, 0, false), UiToggle::new(0, 0, false),
-        UiToggle::new(0, 0, false), UiToggle::new(0, 0, false),
-    ];
-    let mut reset_btn = UiButton::new(0, 0, 160, 34, ButtonStyle::Destructive);
-    let mut back_btn = UiButton::new(0, 0, 60, 28, ButtonStyle::Plain);
+    let win = ui::Window::new("Settings", -1, -1, 780, 500);
 
-    let mut event = [0u32; 5];
-    let mut needs_redraw = true;
-    let mut scroll_y: u32 = 0;
-    let mut prev_page = sidebar.selected;
+    // ── Toolbar ─────────────────────────────────────────────────────────
+    let toolbar = ui::Toolbar::new();
+    toolbar.set_dock(ui::DOCK_TOP);
+    toolbar.set_size(780, 36);
+    toolbar.set_color(0xFF252526);
+    toolbar.set_padding(4, 4, 4, 4);
 
-    // Suppress unused variable warning
-    let _ = content_x;
+    let btn_apply = toolbar.add_icon_button("Apply");
+    btn_apply.set_size(60, 28);
+    btn_apply.on_click(|_| {
+        apply_settings();
+    });
 
-    loop {
-        let t0 = sys::uptime_ms();
-        // Lazy-load wallpaper thumbnails when page is first shown
-        if sidebar.selected == PAGE_WALLPAPER && !wallpapers_scanned {
-            scan_wallpapers(&mut wallpapers, &mut wallpaper_selected);
-            wallpapers_scanned = true;
-            needs_redraw = true;
-        }
+    let btn_reset = toolbar.add_icon_button("Reset");
+    btn_reset.set_size(60, 28);
+    btn_reset.on_click(|_| {
+        reset_settings();
+    });
 
-        // Lazy-load app permissions when page is first shown
-        if sidebar.selected == PAGE_APPS && !apps_scanned {
-            scan_apps(&mut apps);
-            apps_scanned = true;
-            needs_redraw = true;
-        }
+    let btn_reload = toolbar.add_icon_button("Reload");
+    btn_reload.set_size(70, 28);
+    btn_reload.on_click(|_| {
+        reload_module();
+    });
 
-        while window::get_event(win, &mut event) == 1 {
-            let ui_event = UiEvent::from_raw(&event);
+    win.add(&toolbar);
 
-            match event[0] {
-                window::EVENT_KEY_DOWN => {
-                    if event[1] == 0x103 {
-                        window::destroy(win);
-                        return;
-                    }
-                }
-                window::EVENT_RESIZE => {
-                    win_w = event[1];
-                    win_h = event[2];
-                    sidebar.h = win_h;
-                    needs_redraw = true;
-                }
-                window::EVENT_MOUSE_DOWN => {
-                    // Update component positions before hit testing
-                    update_positions(&sidebar, &mut dark_toggle, &mut sound_toggle, &mut notif_toggle, &mut brightness, &mut res_radio, resolutions.len(), win_w, scroll_y);
+    // ── Status bar (DOCK_BOTTOM, add before DOCK_FILL) ──────────────────
+    let status_bar = ui::View::new();
+    status_bar.set_dock(ui::DOCK_BOTTOM);
+    status_bar.set_size(780, 24);
+    status_bar.set_color(0xFF252525);
 
-                    // Let each component handle the event
-                    if sidebar.handle_event(&ui_event, PAGE_NAMES.len()).is_some() {
-                        needs_redraw = true;
-                    }
+    let status_label = ui::Label::new("Ready");
+    status_label.set_position(8, 4);
+    status_label.set_size(500, 16);
+    status_label.set_font_size(11);
+    status_label.set_text_color(0xFF808080);
+    status_bar.add(&status_label);
 
-                    if sidebar.selected == PAGE_GENERAL {
-                        if dark_toggle.handle_event(&ui_event).is_some() {
-                            window::set_theme(if dark_toggle.on { 0 } else { 1 });
-                            needs_redraw = true;
-                        }
-                        if sound_toggle.handle_event(&ui_event).is_some() {
-                            needs_redraw = true;
-                        }
-                        if notif_toggle.handle_event(&ui_event).is_some() {
-                            needs_redraw = true;
-                        }
-                    }
+    win.add(&status_bar);
 
-                    if sidebar.selected == PAGE_DISPLAY {
-                        if brightness.handle_event(&ui_event).is_some() {
-                            needs_redraw = true;
-                        }
-                        if let Some(idx) = res_radio.handle_event(&ui_event, resolutions.len()) {
-                            if idx < resolutions.len() {
-                                let (rw, rh) = resolutions[idx];
-                                if window::set_resolution(rw, rh) {
-                                    if let Some((nw, nh)) = window::get_size(win) {
-                                        win_w = nw;
-                                        win_h = nh;
-                                        sidebar.h = win_h;
-                                    }
-                                }
-                                needs_redraw = true;
-                            }
-                        }
-                    }
+    // ── Edit panel (DOCK_BOTTOM, for table row editing) ─────────────────
+    let edit_panel = ui::View::new();
+    edit_panel.set_dock(ui::DOCK_BOTTOM);
+    edit_panel.set_size(780, 44);
+    edit_panel.set_color(0xFF2D2D30);
+    edit_panel.set_visible(false);
+    win.add(&edit_panel);
 
-                    if sidebar.selected == PAGE_WALLPAPER {
-                        if let Some(idx) = hit_test_wallpaper(&wallpapers, &ui_event, SIDEBAR_W as i32 + 20, scroll_y, win_w) {
-                            if idx != wallpaper_selected {
-                                wallpaper_selected = idx;
-                                let wp = &wallpapers[idx];
-                                let path = core::str::from_utf8(&wp.path[..wp.path_len]).unwrap_or("");
-                                window::set_wallpaper(path);
-                                save_wallpaper_preference(path);
-                                needs_redraw = true;
-                            }
-                        }
-                    }
+    // ── SplitView (DOCK_FILL, add last) ─────────────────────────────────
+    let split = ui::SplitView::new();
+    split.set_dock(ui::DOCK_FILL);
+    split.set_orientation(ui::ORIENTATION_HORIZONTAL);
+    split.set_split_ratio(25);
+    split.set_min_split(15);
+    split.set_max_split(40);
+    win.add(&split);
 
-                    if sidebar.selected == PAGE_APPS {
-                        let cx = SIDEBAR_W as i32 + 20;
-                        let cw = win_w as i32 - SIDEBAR_W as i32 - 40;
-                        let sy = scroll_y as i32;
-                        if let Some(detail_idx) = apps_detail {
-                            // Detail view: position components then handle events
-                            let toggle_x = cx + cw - PAD - 36;
-                            let card_y = 86 - sy;
-                            for i in 0..6 {
-                                perm_toggles[i].x = toggle_x;
-                                perm_toggles[i].y = card_y + PAD + (i as i32 * ROW_H) + 8;
-                            }
-                            let num_rows = 6i32;
-                            reset_btn.x = cx;
-                            reset_btn.y = card_y + PAD * 2 + num_rows * ROW_H + 16;
-                            back_btn.x = cx;
-                            back_btn.y = 20 - sy;
+    // ── Left: Sidebar ───────────────────────────────────────────────────
+    let sidebar_panel = ui::View::new();
+    sidebar_panel.set_dock(ui::DOCK_FILL);
+    sidebar_panel.set_color(0xFF1E1E1E);
 
-                            if back_btn.handle_event(&ui_event) {
-                                apps_detail = None;
-                                scroll_y = 0;
-                                needs_redraw = true;
-                            }
-                            for i in 0..6 {
-                                if let Some(new_state) = perm_toggles[i].handle_event(&ui_event) {
-                                    if detail_idx < apps.len() {
-                                        if new_state {
-                                            apps[detail_idx].granted |= PERM_GROUPS[i].mask;
-                                        } else {
-                                            apps[detail_idx].granted &= !PERM_GROUPS[i].mask;
-                                        }
-                                        let a = &apps[detail_idx];
-                                        let id = core::str::from_utf8(&a.app_id[..a.app_id_len]).unwrap_or("");
-                                        permissions::perm_store(id, a.granted, 0);
-                                        needs_redraw = true;
-                                    }
-                                }
-                            }
-                            if reset_btn.handle_event(&ui_event) {
-                                if detail_idx < apps.len() {
-                                    let a = &apps[detail_idx];
-                                    let id = core::str::from_utf8(&a.app_id[..a.app_id_len]).unwrap_or("");
-                                    permissions::perm_delete(id);
-                                    apps.remove(detail_idx);
-                                    apps_detail = None;
-                                    scroll_y = 0;
-                                    needs_redraw = true;
-                                }
-                            }
-                        } else {
-                            // List view: hit test app rows
-                            if let Some(idx) = hit_test_app_row(&apps, &ui_event, cx, scroll_y) {
-                                apps_detail = Some(idx);
-                                for i in 0..6 {
-                                    perm_toggles[i].on = apps[idx].granted & PERM_GROUPS[i].mask != 0;
-                                }
-                                scroll_y = 0;
-                                needs_redraw = true;
-                            }
-                        }
-                    }
-                }
-                7 => { // EVENT_MOUSE_SCROLL
-                    let dz = event[1] as i32;
-                    let content_h = page_content_height(sidebar.selected, resolutions.len(), wallpapers.len(), win_w, apps.len(), apps_detail.is_some());
-                    let max_scroll = content_h.saturating_sub(win_h);
-                    if dz < 0 {
-                        scroll_y = scroll_y.saturating_sub((-dz) as u32 * 30);
-                    } else if dz > 0 {
-                        scroll_y = (scroll_y + dz as u32 * 30).min(max_scroll);
-                    }
-                    needs_redraw = true;
-                }
-                window::EVENT_MENU_ITEM => {
-                    let item_id = event[2];
-                    match item_id {
-                        1 => { window::destroy(win); return; }
-                        10 => { sidebar.selected = PAGE_GENERAL; needs_redraw = true; }
-                        11 => { sidebar.selected = PAGE_DISPLAY; needs_redraw = true; }
-                        12 => { sidebar.selected = PAGE_WALLPAPER; needs_redraw = true; }
-                        13 => { sidebar.selected = PAGE_NETWORK; needs_redraw = true; }
-                        14 => { sidebar.selected = PAGE_APPS; needs_redraw = true; }
-                        15 => { sidebar.selected = PAGE_ABOUT; needs_redraw = true; }
-                        _ => {}
-                    }
-                }
-                window::EVENT_WINDOW_CLOSE => {
-                    window::destroy(win);
-                    return;
-                }
-                0x0050 => {
-                    dark_toggle.on = window::get_theme() == 0;
-                    needs_redraw = true;
-                }
-                _ => {}
+    let sidebar_header = ui::Label::new("SETTINGS");
+    sidebar_header.set_dock(ui::DOCK_TOP);
+    sidebar_header.set_size(180, 24);
+    sidebar_header.set_font_size(11);
+    sidebar_header.set_text_color(0xFF777777);
+    sidebar_header.set_margin(12, 8, 0, 4);
+    sidebar_panel.add(&sidebar_header);
+
+    let mut sidebar_ids: Vec<u32> = Vec::new();
+    let mut last_category = String::new();
+
+    for (i, module) in modules.iter().enumerate() {
+        // Category header if changed
+        if module.category != last_category {
+            if !last_category.is_empty() {
+                // Spacer
+                let spacer = ui::View::new();
+                spacer.set_dock(ui::DOCK_TOP);
+                spacer.set_size(180, 8);
+                sidebar_panel.add(&spacer);
             }
-        }
-
-        if sidebar.selected != prev_page {
-            scroll_y = 0;
-            if prev_page == PAGE_APPS {
-                apps_detail = None;
+            if module.category != "System" {
+                let cat_label = ui::Label::new(&module.category);
+                cat_label.set_dock(ui::DOCK_TOP);
+                cat_label.set_size(180, 20);
+                cat_label.set_font_size(10);
+                cat_label.set_text_color(0xFF666666);
+                cat_label.set_margin(12, 2, 0, 2);
+                sidebar_panel.add(&cat_label);
             }
-            prev_page = sidebar.selected;
+            last_category = module.category.clone();
         }
 
-        if needs_redraw {
-            update_positions(&sidebar, &mut dark_toggle, &mut sound_toggle, &mut notif_toggle, &mut brightness, &mut res_radio, resolutions.len(), win_w, scroll_y);
-            render(win, &sidebar, &dark_toggle, &sound_toggle, &notif_toggle, &brightness, &res_radio, &resolutions, &wallpapers, wallpaper_selected, &apps, apps_detail, &perm_toggles, &reset_btn, &back_btn, win_w, win_h, scroll_y);
-            window::present(win);
-            needs_redraw = false;
+        let item = ui::Label::new(&module.name);
+        item.set_dock(ui::DOCK_TOP);
+        item.set_size(180, 30);
+        item.set_font_size(13);
+        item.set_text_color(if i == 0 { 0xFFFFFFFF } else { 0xFFCCCCCC });
+        item.set_padding(28, 6, 8, 6);
+        item.set_margin(4, 1, 4, 1);
+        if i == 0 {
+            item.set_color(0xFF094771);
         }
+        item.on_click_raw(sidebar_click_handler, i as u64);
+        sidebar_ids.push(item.id());
+        sidebar_panel.add(&item);
+    }
 
-        let elapsed = sys::uptime_ms().wrapping_sub(t0);
-        if elapsed < 16 { process::sleep(16 - elapsed); }
+    split.add(&sidebar_panel);
+
+    // ── Right: Content ScrollView ───────────────────────────────────────
+    let content_scroll = ui::ScrollView::new();
+    content_scroll.set_dock(ui::DOCK_FILL);
+    content_scroll.set_color(0xFF1E1E1E);
+
+    split.add(&content_scroll);
+
+    // ── Initialize state ────────────────────────────────────────────────
+    unsafe {
+        APP = Some(AppState {
+            modules,
+            sidebar_ids,
+            active_idx: 0,
+            content_scroll,
+            status_label,
+            edit_panel,
+            edit_fields: Vec::new(),
+            edit_grid_id: 0,
+            edit_row: u32::MAX,
+            edit_columns: Vec::new(),
+            uid,
+            username,
+            home,
+        });
+    }
+
+    // Build the first module panel
+    build_module_panel(0);
+
+    // ── Keyboard shortcuts ──────────────────────────────────────────────
+    win.on_key_down(|e| {
+        if e.ctrl() && e.char_code == b's' as u32 {
+            apply_settings();
+        } else if e.keycode == ui::KEY_ESCAPE {
+            hide_edit_panel();
+        } else if e.keycode == ui::KEY_F5 {
+            reload_module();
+        }
+    });
+
+    win.on_close(|_| {
+        ui::quit();
+    });
+
+    ui::run();
+}
+
+// ── Sidebar click handler ───────────────────────────────────────────────────
+
+extern "C" fn sidebar_click_handler(_control_id: u32, _event_type: u32, userdata: u64) {
+    let idx = userdata as usize;
+    switch_module(idx);
+}
+
+fn switch_module(idx: usize) {
+    let s = app();
+    if idx >= s.modules.len() || idx == s.active_idx {
+        return;
+    }
+
+    let old_idx = s.active_idx;
+    s.active_idx = idx;
+
+    // Update sidebar highlight
+    if old_idx < s.sidebar_ids.len() {
+        let old_lbl = ui::Control::from_id(s.sidebar_ids[old_idx]);
+        old_lbl.set_color(0x00000000);
+        old_lbl.set_text_color(0xFFCCCCCC);
+    }
+    if idx < s.sidebar_ids.len() {
+        let new_lbl = ui::Control::from_id(s.sidebar_ids[idx]);
+        new_lbl.set_color(0xFF094771);
+        new_lbl.set_text_color(0xFFFFFFFF);
+    }
+
+    // Hide old panel
+    if s.modules[old_idx].panel_id != 0 {
+        let old_panel = ui::Control::from_id(s.modules[old_idx].panel_id);
+        old_panel.set_visible(false);
+    }
+
+    // Show/build new panel
+    build_module_panel(idx);
+
+    // Hide edit panel
+    hide_edit_panel();
+    s.status_label.set_text("Ready");
+}
+
+fn build_module_panel(idx: usize) {
+    let s = app();
+    if idx >= s.modules.len() {
+        return;
+    }
+
+    if s.modules[idx].panel_id != 0 {
+        // Already built, just show
+        let panel = ui::Control::from_id(s.modules[idx].panel_id);
+        panel.set_visible(true);
+        return;
+    }
+
+    // Build the panel
+    let scroll = &s.content_scroll;
+    let panel_id = match &s.modules[idx].kind {
+        ModuleKind::Builtin(id) => match id {
+            BuiltinId::General => builtin_general::build(scroll),
+            BuiltinId::Display => builtin_display::build(scroll),
+            BuiltinId::Wallpaper => builtin_wallpaper::build(scroll),
+            BuiltinId::Network => builtin_network::build(scroll),
+            BuiltinId::Apps => builtin_apps::build(scroll),
+            BuiltinId::About => builtin_about::build(scroll),
+        },
+        ModuleKind::External(desc) => {
+            let values = &s.modules[idx].values;
+            let (pid, ctrl_ids) = form_builder::build_form(scroll, desc, values);
+            s.modules[idx].field_ctrl_ids = ctrl_ids;
+            pid
+        }
+    };
+    s.modules[idx].panel_id = panel_id;
+}
+
+// ── Apply / Reset / Reload ──────────────────────────────────────────────────
+
+fn apply_settings() {
+    let s = app();
+    let idx = s.active_idx;
+    if idx >= s.modules.len() {
+        return;
+    }
+
+    // Extract what we need from the descriptor before mutating
+    let (is_external, path, format, columns, ipc_name, new_values) = {
+        if let ModuleKind::External(desc) = &s.modules[idx].kind {
+            let fields = &desc.fields;
+            let ctrl_ids = &s.modules[idx].field_ctrl_ids;
+            let table_values = &s.modules[idx].values;
+            let new_values = form_builder::collect_values(fields, ctrl_ids, table_values);
+            let columns = first_table_columns(fields);
+            let path = desc.resolved_path.clone();
+            let format = desc.config_format;
+            let ipc_name = desc.on_apply_ipc.clone();
+            (true, path, format, columns, ipc_name, new_values)
+        } else {
+            s.status_label.set_text("Built-in modules apply immediately.");
+            return;
+        }
+    };
+
+    if is_external {
+        if config_io::save_config(&path, format, &new_values, &columns) {
+            s.modules[idx].values = new_values;
+            s.modules[idx].dirty = false;
+            s.status_label.set_text("Settings saved.");
+
+            if !ipc_name.is_empty() {
+                let chan = anyos_std::ipc::evt_chan_create(&ipc_name);
+                anyos_std::ipc::evt_chan_emit(chan, &[1, 0, 0, 0, 0]);
+            }
+        } else {
+            s.status_label.set_text("Error saving settings.");
+        }
     }
 }
 
-// ============================================================================
-// Wallpaper scanning & thumbnail generation
-// ============================================================================
-
-fn scan_wallpapers(wallpapers: &mut alloc::vec::Vec<WallpaperEntry>, selected: &mut usize) {
-    let mut dir_buf = [0u8; 64 * 32];
-    let count = fs::readdir("/media/wallpapers", &mut dir_buf);
-    if count == u32::MAX || count == 0 { return; }
-
-    let mut current_path = [0u8; 128];
-    let mut current_path_len = 0usize;
-    read_current_wallpaper_pref(&mut current_path, &mut current_path_len);
-
-    for i in 0..count as usize {
-        if wallpapers.len() >= MAX_WALLPAPERS { break; }
-
-        let raw_entry = &dir_buf[i * 64..(i + 1) * 64];
-        let entry_type = raw_entry[0];
-        let name_len = raw_entry[1] as usize;
-        if entry_type != 0 || name_len == 0 { continue; }
-
-        let nlen = name_len.min(56);
-        let name_bytes = &raw_entry[8..8 + nlen];
-
-        if !is_image_file(name_bytes, nlen) { continue; }
-
-        let prefix = b"/media/wallpapers/";
-        let path_len = prefix.len() + nlen;
-        if path_len > 127 { continue; }
-
-        let mut path = [0u8; 128];
-        path[..prefix.len()].copy_from_slice(prefix);
-        path[prefix.len()..prefix.len() + nlen].copy_from_slice(&name_bytes[..nlen]);
-
-        let mut entry = WallpaperEntry {
-            name: [0u8; 56],
-            name_len: nlen,
-            path,
-            path_len,
-            thumbnail: alloc::vec::Vec::new(),
-            loaded: false,
-        };
-        entry.name[..nlen].copy_from_slice(&name_bytes[..nlen]);
-        wallpapers.push(entry);
+fn reset_settings() {
+    let s = app();
+    let idx = s.active_idx;
+    if idx >= s.modules.len() {
+        return;
     }
 
-    wallpapers.sort_unstable_by(|a, b| {
-        cmp_name_ci(&a.name[..a.name_len], &b.name[..b.name_len])
-    });
+    let reload_info = if let ModuleKind::External(desc) = &s.modules[idx].kind {
+        let columns = first_table_columns(&desc.fields);
+        let path = desc.resolved_path.clone();
+        let format = desc.config_format;
+        Some((path, format, columns))
+    } else {
+        None
+    };
 
-    // Find selected index after sort
-    if current_path_len > 0 {
-        for (i, wp) in wallpapers.iter().enumerate() {
-            if wp.path_len == current_path_len &&
-               wp.path[..wp.path_len] == current_path[..current_path_len] {
-                *selected = i;
+    if let Some((path, format, columns)) = reload_info {
+        let values = config_io::load_config(&path, format, &columns);
+        s.modules[idx].values = values;
+        s.modules[idx].dirty = false;
+
+        if s.modules[idx].panel_id != 0 {
+            let old = ui::Control::from_id(s.modules[idx].panel_id);
+            old.set_visible(false);
+            s.modules[idx].panel_id = 0;
+            build_module_panel(idx);
+        }
+        s.status_label.set_text("Settings reset.");
+    }
+}
+
+fn reload_module() {
+    let s = app();
+    let idx = s.active_idx;
+    if idx >= s.modules.len() {
+        return;
+    }
+
+    // For built-in modules: tear down and rebuild
+    if s.modules[idx].panel_id != 0 {
+        let old = ui::Control::from_id(s.modules[idx].panel_id);
+        old.set_visible(false);
+        s.modules[idx].panel_id = 0;
+    }
+
+    // For external: also reload values from file
+    let reload_info = if let ModuleKind::External(desc) = &s.modules[idx].kind {
+        let columns = first_table_columns(&desc.fields);
+        let path = desc.resolved_path.clone();
+        let format = desc.config_format;
+        Some((path, format, columns))
+    } else {
+        None
+    };
+    if let Some((path, format, columns)) = reload_info {
+        let values = config_io::load_config(&path, format, &columns);
+        s.modules[idx].values = values;
+        s.modules[idx].dirty = false;
+    }
+
+    build_module_panel(idx);
+    s.status_label.set_text("Module reloaded.");
+}
+
+// ── Table editing (for external modules with table fields) ──────────────────
+
+pub fn open_table_edit(grid_id: u32, row: u32) {
+    let s = app();
+    let idx = s.active_idx;
+    if idx >= s.modules.len() {
+        return;
+    }
+
+    // Find the table field and its columns
+    let columns = if let ModuleKind::External(desc) = &s.modules[idx].kind {
+        let mut cols = Vec::new();
+        for f in &desc.fields {
+            if let FieldType::Table { columns } = &f.field_type {
+                for c in columns {
+                    cols.push(ColumnSpec {
+                        key: c.key.clone(),
+                        label: c.label.clone(),
+                        placeholder: c.placeholder.clone(),
+                        width: c.width,
+                    });
+                }
+                break;
+            }
+        }
+        cols
+    } else {
+        return;
+    };
+
+    if columns.is_empty() {
+        return;
+    }
+
+    // Clear and rebuild edit panel fields
+    s.edit_panel.set_visible(true);
+    // Resize for columns
+    let panel_h = 44i32;
+    s.edit_panel.set_size(780, panel_h as u32);
+
+    // Remove old fields
+    s.edit_fields.clear();
+
+    let mut x = 8i32;
+    for col in &columns {
+        let tf = ui::TextField::new();
+        tf.set_position(x, 8);
+        let w = (col.width as i32).max(60);
+        tf.set_size(w as u32, 28);
+        tf.set_placeholder(&col.placeholder);
+
+        // Populate from existing row data
+        if row != u32::MAX {
+            let val = get_table_cell_value(idx, &col.key, row as usize);
+            if !val.is_empty() {
+                tf.set_text(&val);
+            }
+        }
+
+        s.edit_panel.add(&tf);
+        s.edit_fields.push(tf);
+        x += w + 4;
+    }
+
+    // OK button
+    let btn_ok = ui::IconButton::new("OK");
+    btn_ok.set_position(x, 8);
+    btn_ok.set_size(40, 28);
+    btn_ok.on_click(|_| {
+        confirm_table_edit();
+    });
+    s.edit_panel.add(&btn_ok);
+
+    // Cancel button
+    let btn_cancel = ui::IconButton::new("X");
+    btn_cancel.set_position(x + 44, 8);
+    btn_cancel.set_size(28, 28);
+    btn_cancel.on_click(|_| {
+        hide_edit_panel();
+    });
+    s.edit_panel.add(&btn_cancel);
+
+    s.edit_grid_id = grid_id;
+    s.edit_row = row;
+    s.edit_columns = columns;
+}
+
+fn confirm_table_edit() {
+    let s = app();
+    let idx = s.active_idx;
+    if idx >= s.modules.len() {
+        return;
+    }
+
+    // Build a new row object from edit fields
+    let mut row_obj = Value::new_object();
+    for (i, col) in s.edit_columns.iter().enumerate() {
+        if i < s.edit_fields.len() {
+            let mut buf = [0u8; 1024];
+            let len = s.edit_fields[i].get_text(&mut buf) as usize;
+            let text = core::str::from_utf8(&buf[..len]).unwrap_or("");
+            row_obj.set(&col.key, text.into());
+        }
+    }
+
+    // Find the table field key
+    let table_key = if let ModuleKind::External(desc) = &s.modules[idx].kind {
+        let mut key = String::new();
+        for f in &desc.fields {
+            if let FieldType::Table { .. } = &f.field_type {
+                key = f.key.clone();
+                break;
+            }
+        }
+        key
+    } else {
+        return;
+    };
+
+    // Update values
+    let values = &mut s.modules[idx].values;
+    if values.is_null() {
+        *values = Value::new_object();
+    }
+
+    // Ensure the table array exists
+    if values[table_key.as_str()].is_null() {
+        values.set(table_key.as_str(), Value::new_array());
+    }
+
+    let edit_row = s.edit_row;
+    if let Some(obj) = values.as_object_mut() {
+        if let Some(arr_val) = obj.get_mut(table_key.as_str()) {
+            if let Some(a) = arr_val.as_array_mut() {
+                if edit_row == u32::MAX {
+                    a.push(row_obj);
+                } else if (edit_row as usize) < a.len() {
+                    a[edit_row as usize] = row_obj;
+                }
+            }
+        }
+    }
+
+    s.modules[idx].dirty = true;
+
+    // Refresh grid
+    refresh_table_grid(idx, &table_key);
+    hide_edit_panel();
+}
+
+pub fn delete_table_row(grid_id: u32) {
+    let s = app();
+    let idx = s.active_idx;
+    if idx >= s.modules.len() {
+        return;
+    }
+
+    let grid = ui::DataGrid::from_id(grid_id);
+    let sel = grid.selected_row();
+    if sel == u32::MAX {
+        return;
+    }
+
+    // Find table field key
+    let table_key = if let ModuleKind::External(desc) = &s.modules[idx].kind {
+        let mut key = String::new();
+        for f in &desc.fields {
+            if let FieldType::Table { .. } = &f.field_type {
+                key = f.key.clone();
+                break;
+            }
+        }
+        key
+    } else {
+        return;
+    };
+
+    // Remove from values
+    if let Some(obj) = s.modules[idx].values.as_object_mut() {
+        if let Some(arr_val) = obj.get_mut(table_key.as_str()) {
+            if let Some(a) = arr_val.as_array_mut() {
+                if (sel as usize) < a.len() {
+                    a.remove(sel as usize);
+                }
+            }
+        }
+    }
+
+    s.modules[idx].dirty = true;
+    refresh_table_grid(idx, &table_key);
+}
+
+fn refresh_table_grid(idx: usize, table_key: &str) {
+    let s = app();
+
+    // Get columns
+    let columns = if let ModuleKind::External(desc) = &s.modules[idx].kind {
+        let mut cols = Vec::new();
+        for f in &desc.fields {
+            if let FieldType::Table { columns } = &f.field_type {
+                for c in columns {
+                    cols.push(ColumnSpec {
+                        key: c.key.clone(),
+                        label: c.label.clone(),
+                        placeholder: c.placeholder.clone(),
+                        width: c.width,
+                    });
+                }
+                break;
+            }
+        }
+        cols
+    } else {
+        return;
+    };
+
+    // Find grid ID from ctrl_ids (the table field)
+    if let ModuleKind::External(desc) = &s.modules[idx].kind {
+        for (fi, f) in desc.fields.iter().enumerate() {
+            if let FieldType::Table { .. } = &f.field_type {
+                if fi < s.modules[idx].field_ctrl_ids.len() {
+                    let gid = s.modules[idx].field_ctrl_ids[fi];
+                    let grid = ui::DataGrid::from_id(gid);
+                    form_builder::populate_grid(&grid, &s.modules[idx].values[table_key], &columns);
+                }
                 break;
             }
         }
     }
+}
 
-    // Use mmap for large temporary buffers — munmap actually frees the memory,
-    // unlike the bump allocator (sbrk) where dealloc is a no-op.
-    const MAX_PIX: usize = 1920 * 1200;
-    const FILE_BUF_SIZE: usize = 4 * 1024 * 1024;
-    const SCRATCH_SIZE: usize = 32768 + (1920 * 4 + 1) * 1200 + FILE_BUF_SIZE;
-    const PIXEL_BUF_SIZE: usize = MAX_PIX * 4; // u32 pixels
+fn hide_edit_panel() {
+    let s = app();
+    s.edit_panel.set_visible(false);
+    s.edit_grid_id = 0;
+    s.edit_row = u32::MAX;
+}
 
-    let file_ptr = process::mmap(FILE_BUF_SIZE);
-    let pixel_ptr = process::mmap(PIXEL_BUF_SIZE);
-    let scratch_ptr = process::mmap(SCRATCH_SIZE);
-
-    if !file_ptr.is_null() && !pixel_ptr.is_null() && !scratch_ptr.is_null() {
-        let file_buf = unsafe { core::slice::from_raw_parts_mut(file_ptr, FILE_BUF_SIZE) };
-        let pixel_buf = unsafe { core::slice::from_raw_parts_mut(pixel_ptr as *mut u32, MAX_PIX) };
-        let scratch_buf = unsafe { core::slice::from_raw_parts_mut(scratch_ptr, SCRATCH_SIZE) };
-
-        for wp in wallpapers.iter_mut() {
-            load_thumbnail_mmap(wp, file_buf, pixel_buf, scratch_buf);
+fn get_table_cell_value(module_idx: usize, col_key: &str, row: usize) -> String {
+    let s = app();
+    let table_key = if let ModuleKind::External(desc) = &s.modules[module_idx].kind {
+        let mut key = String::new();
+        for f in &desc.fields {
+            if let FieldType::Table { .. } = &f.field_type {
+                key = f.key.clone();
+                break;
+            }
         }
-    }
-
-    // Free all temporary buffers — physical memory is reclaimed
-    if !scratch_ptr.is_null() { process::munmap(scratch_ptr, SCRATCH_SIZE); }
-    if !pixel_ptr.is_null() { process::munmap(pixel_ptr, PIXEL_BUF_SIZE); }
-    if !file_ptr.is_null() { process::munmap(file_ptr, FILE_BUF_SIZE); }
-}
-
-fn is_image_file(name: &[u8], len: usize) -> bool {
-    if len < 4 { return false; }
-    let lower = |b: u8| -> u8 { if b >= b'A' && b <= b'Z' { b + 32 } else { b } };
-    if len >= 4 && lower(name[len-4]) == b'.' && lower(name[len-3]) == b'p' &&
-       lower(name[len-2]) == b'n' && lower(name[len-1]) == b'g' { return true; }
-    if len >= 4 && lower(name[len-4]) == b'.' && lower(name[len-3]) == b'j' &&
-       lower(name[len-2]) == b'p' && lower(name[len-1]) == b'g' { return true; }
-    if len >= 5 && lower(name[len-5]) == b'.' && lower(name[len-4]) == b'j' &&
-       lower(name[len-3]) == b'p' && lower(name[len-2]) == b'e' && lower(name[len-1]) == b'g' { return true; }
-    if len >= 4 && lower(name[len-4]) == b'.' && lower(name[len-3]) == b'b' &&
-       lower(name[len-2]) == b'm' && lower(name[len-1]) == b'p' { return true; }
-    if len >= 4 && lower(name[len-4]) == b'.' && lower(name[len-3]) == b'g' &&
-       lower(name[len-2]) == b'i' && lower(name[len-1]) == b'f' { return true; }
-    false
-}
-
-
-fn load_thumbnail_mmap(
-    wp: &mut WallpaperEntry,
-    file_buf: &mut [u8],
-    pixel_buf: &mut [u32],
-    scratch_buf: &mut [u8],
-) {
-    let path = match core::str::from_utf8(&wp.path[..wp.path_len]) {
-        Ok(s) => s,
-        Err(_) => return,
+        key
+    } else {
+        return String::new();
     };
 
-    let fd = fs::open(path, 0);
-    if fd == u32::MAX { return; }
-
-    let mut stat_buf = [0u32; 4];
-    if fs::fstat(fd, &mut stat_buf) == u32::MAX {
-        fs::close(fd);
-        return;
-    }
-    let file_size = stat_buf[1] as usize;
-    if file_size == 0 || file_size > file_buf.len() {
-        fs::close(fd);
-        return;
-    }
-
-    let bytes_read = fs::read(fd, &mut file_buf[..file_size]) as usize;
-    fs::close(fd);
-    if bytes_read == 0 { return; }
-
-    let info = match libimage_client::probe(&file_buf[..bytes_read]) {
-        Some(i) => i,
-        None => return,
-    };
-
-    let pixel_count = (info.width * info.height) as usize;
-    if pixel_count > pixel_buf.len() { return; }
-
-    let scratch_needed = info.scratch_needed as usize;
-    if scratch_needed > scratch_buf.len() { return; }
-
-    let mut j = 0;
-    while j < pixel_count { pixel_buf[j] = 0; j += 1; }
-
-    if libimage_client::decode(
-        &file_buf[..bytes_read],
-        &mut pixel_buf[..pixel_count],
-        &mut scratch_buf[..scratch_needed],
-    ).is_err() {
-        return;
-    }
-
-    let thumb_size = (THUMB_W * THUMB_H) as usize;
-    let mut thumb = alloc::vec![0u32; thumb_size];
-    if libimage_client::scale_image(
-        &pixel_buf[..pixel_count], info.width, info.height,
-        &mut thumb, THUMB_W, THUMB_H,
-        libimage_client::MODE_COVER,
-    ) {
-        wp.thumbnail = thumb;
-        wp.loaded = true;
-    }
-}
-
-fn read_current_wallpaper_pref(path: &mut [u8; 128], path_len: &mut usize) {
-    let uid = process::getuid() as u32;
-    let fd = fs::open("/System/users/wallpapers", 0);
-    if fd == u32::MAX { return; }
-
-    let mut buf = [0u8; 512];
-    let n = fs::read(fd, &mut buf) as usize;
-    fs::close(fd);
-
-    let data = &buf[..n];
-    let mut pos = 0;
-    while pos < data.len() {
-        let line_end = data[pos..].iter().position(|&b| b == b'\n')
-            .map(|p| pos + p).unwrap_or(data.len());
-        let line = &data[pos..line_end];
-        pos = line_end + 1;
-
-        if let Some(colon) = line.iter().position(|&b| b == b':') {
-            let uid_str = &line[..colon];
-            let mut parsed_uid: u32 = 0;
-            let mut valid = !uid_str.is_empty();
-            for &b in uid_str {
-                if b >= b'0' && b <= b'9' {
-                    parsed_uid = parsed_uid * 10 + (b - b'0') as u32;
-                } else { valid = false; break; }
-            }
-            if valid && parsed_uid == uid {
-                let p = &line[colon + 1..];
-                let len = p.len().min(127);
-                path[..len].copy_from_slice(&p[..len]);
-                *path_len = len;
-                return;
-            }
+    let arr = &s.modules[module_idx].values[table_key.as_str()];
+    if let Some(a) = arr.as_array() {
+        if row < a.len() {
+            return String::from(a[row][col_key].as_str().unwrap_or(""));
         }
     }
+    String::new()
 }
 
-fn save_wallpaper_preference(wallpaper_path: &str) {
-    let uid = process::getuid() as u32;
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
-    let mut existing = [0u8; 512];
-    let mut existing_len = 0usize;
-    let fd = fs::open("/System/users/wallpapers", 0);
-    if fd != u32::MAX {
-        existing_len = fs::read(fd, &mut existing) as usize;
-        fs::close(fd);
-    }
-
-    let mut out = [0u8; 512];
-    let mut op = 0usize;
-    let mut found = false;
-
-    let data = &existing[..existing_len];
-    let mut pos = 0;
-    while pos < data.len() {
-        let line_end = data[pos..].iter().position(|&b| b == b'\n')
-            .map(|p| pos + p).unwrap_or(data.len());
-        let line = &data[pos..line_end];
-        pos = line_end + 1;
-
-        if line.is_empty() { continue; }
-
-        let is_our_uid = if let Some(colon) = line.iter().position(|&b| b == b':') {
-            let uid_str = &line[..colon];
-            let mut parsed_uid: u32 = 0;
-            let mut valid = !uid_str.is_empty();
-            for &b in uid_str {
-                if b >= b'0' && b <= b'9' {
-                    parsed_uid = parsed_uid * 10 + (b - b'0') as u32;
-                } else { valid = false; break; }
-            }
-            valid && parsed_uid == uid
-        } else {
-            false
-        };
-
-        if is_our_uid {
-            let uid_bytes = fmt_uid_buf(uid);
-            if op + uid_bytes.len() + 1 + wallpaper_path.len() + 1 < out.len() {
-                out[op..op + uid_bytes.len()].copy_from_slice(uid_bytes);
-                op += uid_bytes.len();
-                out[op] = b':';
-                op += 1;
-                out[op..op + wallpaper_path.len()].copy_from_slice(wallpaper_path.as_bytes());
-                op += wallpaper_path.len();
-                out[op] = b'\n';
-                op += 1;
-            }
-            found = true;
-        } else {
-            if op + line.len() + 1 < out.len() {
-                out[op..op + line.len()].copy_from_slice(line);
-                op += line.len();
-                out[op] = b'\n';
-                op += 1;
-            }
+fn first_table_columns(fields: &[FieldDef]) -> Vec<ColumnSpec> {
+    for f in fields {
+        if let FieldType::Table { columns } = &f.field_type {
+            return columns
+                .iter()
+                .map(|c| ColumnSpec {
+                    key: c.key.clone(),
+                    label: c.label.clone(),
+                    placeholder: c.placeholder.clone(),
+                    width: c.width,
+                })
+                .collect();
         }
     }
-
-    if !found {
-        let uid_bytes = fmt_uid_buf(uid);
-        if op + uid_bytes.len() + 1 + wallpaper_path.len() + 1 < out.len() {
-            out[op..op + uid_bytes.len()].copy_from_slice(uid_bytes);
-            op += uid_bytes.len();
-            out[op] = b':';
-            op += 1;
-            out[op..op + wallpaper_path.len()].copy_from_slice(wallpaper_path.as_bytes());
-            op += wallpaper_path.len();
-            out[op] = b'\n';
-            op += 1;
-        }
-    }
-
-    let fd = fs::open("/System/users/wallpapers", fs::O_CREATE | fs::O_TRUNC);
-    if fd != u32::MAX {
-        fs::write(fd, &out[..op]);
-        fs::close(fd);
-    }
-}
-
-fn fmt_uid_buf(uid: u32) -> &'static [u8] {
-    static mut BUF: [u8; 8] = [0u8; 8];
-    static mut LEN: usize = 0;
-    unsafe {
-        if uid == 0 {
-            BUF[0] = b'0';
-            LEN = 1;
-        } else {
-            let mut v = uid;
-            let mut tmp = [0u8; 8];
-            let mut n = 0;
-            while v > 0 { tmp[n] = b'0' + (v % 10) as u8; v /= 10; n += 1; }
-            for i in 0..n { BUF[i] = tmp[n - 1 - i]; }
-            LEN = n;
-        }
-        &BUF[..LEN]
-    }
-}
-
-fn hit_test_wallpaper(
-    wallpapers: &[WallpaperEntry],
-    event: &UiEvent,
-    cx: i32,
-    scroll_y: u32,
-    win_w: u32,
-) -> Option<usize> {
-    if event.event_type != window::EVENT_MOUSE_DOWN { return None; }
-    let (mx, my) = event.mouse_pos();
-
-    let cols = thumb_cols(win_w);
-    let sy = scroll_y as i32;
-    let card_y = 54 - sy;
-    let grid_y = card_y + PAD + 36;
-    let grid_x = cx + PAD;
-
-    for (i, _wp) in wallpapers.iter().enumerate() {
-        let col = i % cols;
-        let row = i / cols;
-        let tx = grid_x + col as i32 * (THUMB_W as i32 + THUMB_PAD);
-        let ty = grid_y + row as i32 * (THUMB_H as i32 + THUMB_PAD + 16);
-
-        if mx >= tx && mx < tx + THUMB_W as i32 &&
-           my >= ty && my < ty + THUMB_H as i32 {
-            return Some(i);
-        }
-    }
-    None
-}
-
-fn cmp_name_ci(a: &[u8], b: &[u8]) -> core::cmp::Ordering {
-    let lower = |c: u8| -> u8 { if c >= b'A' && c <= b'Z' { c + 32 } else { c } };
-    let len = a.len().min(b.len());
-    for i in 0..len {
-        let la = lower(a[i]);
-        let lb = lower(b[i]);
-        if la != lb { return la.cmp(&lb); }
-    }
-    a.len().cmp(&b.len())
-}
-
-fn update_positions(
-    sidebar: &UiSidebar,
-    dark: &mut UiToggle,
-    sound: &mut UiToggle,
-    notif: &mut UiToggle,
-    brightness: &mut UiSlider,
-    res_radio: &mut UiRadioGroup,
-    num_resolutions: usize,
-    win_w: u32,
-    scroll_y: u32,
-) {
-    let cx = SIDEBAR_W as i32 + 20;
-    let cw = win_w as i32 - SIDEBAR_W as i32 - 40;
-    let sy = scroll_y as i32;
-    let card_y = 54 - sy;
-    let toggle_x = cx + cw - PAD - 36;
-
-    dark.x = toggle_x;
-    dark.y = card_y + PAD + ROW_H + 10;
-
-    sound.x = toggle_x;
-    sound.y = card_y + PAD + ROW_H * 2 + 10;
-
-    notif.x = toggle_x;
-    notif.y = card_y + PAD + ROW_H * 3 + 10;
-
-    let brightness_row_y = card_y + PAD + ROW_H * 2;
-    brightness.x = cx + PAD + 100;
-    brightness.y = brightness_row_y + 6;
-    brightness.w = (cw - PAD * 2 - 100) as u32;
-
-    let res_card_y = card_y + PAD * 2 + ROW_H * 3 + 16;
-    res_radio.x = cx + PAD;
-    res_radio.y = res_card_y + PAD + ROW_H + 4;
-    res_radio.spacing = 24;
-}
-
-fn page_content_height(page: usize, num_resolutions: usize, num_wallpapers: usize, win_w: u32, num_apps: usize, apps_detail: bool) -> u32 {
-    match page {
-        PAGE_GENERAL => (54 + PAD * 2 + ROW_H * 4 + 20) as u32,
-        PAGE_DISPLAY => {
-            let card1_h = PAD * 2 + ROW_H * 3;
-            let card2_h = PAD * 2 + ROW_H + num_resolutions as i32 * 24;
-            (54 + card1_h + 32 + card2_h + 20) as u32
-        }
-        PAGE_WALLPAPER => {
-            let cols = thumb_cols(win_w);
-            let rows = (num_wallpapers.max(1) + cols - 1) / cols;
-            let grid_h = rows as i32 * (THUMB_H as i32 + THUMB_PAD + 16);
-            (54 + PAD * 2 + 36 + grid_h + 20) as u32
-        }
-        PAGE_NETWORK => (54 + PAD * 2 + ROW_H * 6 + 20) as u32,
-        PAGE_APPS => {
-            if apps_detail {
-                // Back label + app name + card with 6 rows + reset button
-                (86 + PAD * 2 + ROW_H * 6 + 60) as u32
-            } else {
-                let rows = num_apps.max(1) as i32;
-                (54 + PAD * 2 + rows * ROW_H + 20) as u32
-            }
-        }
-        PAGE_ABOUT => (54 + PAD * 2 + ROW_H * 5 + 20) as u32,
-        _ => 400,
-    }
-}
-
-// ============================================================================
-// Rendering
-// ============================================================================
-
-fn render(
-    win: u32,
-    sidebar_c: &UiSidebar,
-    dark: &UiToggle,
-    sound: &UiToggle,
-    notif: &UiToggle,
-    brightness: &UiSlider,
-    res_radio: &UiRadioGroup,
-    resolutions: &[(u32, u32)],
-    wallpapers: &[WallpaperEntry],
-    wallpaper_selected: usize,
-    apps: &[AppEntry],
-    apps_detail: Option<usize>,
-    perm_toggles: &[UiToggle; 6],
-    reset_btn: &UiButton,
-    back_btn: &UiButton,
-    win_w: u32, win_h: u32,
-    scroll_y: u32,
-) {
-    window::fill_rect(win, 0, 0, win_w as u16, win_h as u16, colors::WINDOW_BG());
-
-    sidebar_c.render(win, "SETTINGS", &PAGE_NAMES);
-
-    let cx = SIDEBAR_W as i32 + 20;
-    let cw = (win_w - SIDEBAR_W - 40) as u32;
-    let sy = scroll_y as i32;
-
-    match sidebar_c.selected {
-        PAGE_GENERAL => render_general(win, dark, sound, notif, cx, cw, sy),
-        PAGE_DISPLAY => render_display(win, brightness, res_radio, resolutions, cx, cw, sy),
-        PAGE_WALLPAPER => render_wallpaper(win, wallpapers, wallpaper_selected, cx, cw, sy, win_w),
-        PAGE_NETWORK => render_network(win, cx, cw, sy),
-        PAGE_APPS => render_apps(win, apps, apps_detail, perm_toggles, reset_btn, back_btn, cx, cw, sy),
-        PAGE_ABOUT => render_about(win, cx, cw, sy),
-        _ => {}
-    }
-
-    let content_h = page_content_height(sidebar_c.selected, resolutions.len(), wallpapers.len(), win_w, apps.len(), apps_detail.is_some());
-    let sb_x = SIDEBAR_W as i32;
-    let sb_w = win_w - SIDEBAR_W;
-    scrollbar(win, sb_x, 0, sb_w, win_h, content_h, scroll_y);
-}
-
-fn render_general(win: u32, dark: &UiToggle, sound: &UiToggle, notif: &UiToggle, cx: i32, cw: u32, sy: i32) {
-    label(win, cx, 20 - sy, "General", colors::TEXT(), FontSize::Title, TextAlign::Left);
-
-    let card_y = 54 - sy;
-    card(win, cx, card_y, cw, (PAD * 2 + ROW_H * 4) as u32);
-
-    let ry = card_y + PAD;
-    label(win, cx + PAD, ry + 12, "Device Name", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-    label(win, cx + PAD + 140, ry + 12, "anyOS Computer", colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
-
-    let ry = ry + ROW_H;
-    divider_h(win, cx + PAD, ry, cw - PAD as u32 * 2);
-    label(win, cx + PAD, ry + 12, "Dark Mode", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-    dark.render(win);
-
-    let ry = ry + ROW_H;
-    divider_h(win, cx + PAD, ry, cw - PAD as u32 * 2);
-    label(win, cx + PAD, ry + 12, "Sound", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-    sound.render(win);
-
-    let ry = ry + ROW_H;
-    divider_h(win, cx + PAD, ry, cw - PAD as u32 * 2);
-    label(win, cx + PAD, ry + 12, "Notifications", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-    notif.render(win);
-}
-
-fn render_display(win: u32, brightness: &UiSlider, res_radio: &UiRadioGroup, resolutions: &[(u32, u32)], cx: i32, cw: u32, sy: i32) {
-    label(win, cx, 20 - sy, "Display", colors::TEXT(), FontSize::Title, TextAlign::Left);
-
-    let card_y = 54 - sy;
-    card(win, cx, card_y, cw, (PAD * 2 + ROW_H * 3) as u32);
-
-    let ry = card_y + PAD;
-    label(win, cx + PAD, ry + 12, "GPU Driver", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-    let gpu_name = window::gpu_name();
-    label(win, cx + PAD + 120, ry + 12, &gpu_name, colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
-
-    let ry = ry + ROW_H;
-    divider_h(win, cx + PAD, ry, cw - PAD as u32 * 2);
-    label(win, cx + PAD, ry + 12, "Resolution", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-    let (sw, sh) = window::screen_size();
-    let mut buf = [0u8; 32];
-    let res = fmt_resolution(&mut buf, sw, sh);
-    label(win, cx + PAD + 120, ry + 12, res, colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
-
-    let ry = ry + ROW_H;
-    divider_h(win, cx + PAD, ry, cw - PAD as u32 * 2);
-    label(win, cx + PAD, ry + 12, "Brightness", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-    brightness.render(win);
-
-    let res_card_y = card_y + PAD * 2 + ROW_H * 3 + 16;
-    let num_res = resolutions.len();
-    let res_card_h = (PAD * 2 + ROW_H + num_res as i32 * 24) as u32;
-    card(win, cx, res_card_y, cw, res_card_h);
-
-    let ry = res_card_y + PAD;
-    label(win, cx + PAD, ry + 4, "Change Resolution", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-
-    let mut label_bufs: [[u8; 32]; 16] = [[0u8; 32]; 16];
-    let mut label_lens: [usize; 16] = [0; 16];
-    let count = num_res.min(16);
-    for i in 0..count {
-        let (rw, rh) = resolutions[i];
-        let s = fmt_resolution(&mut label_bufs[i], rw, rh);
-        label_lens[i] = s.len();
-    }
-    let mut labels: [&str; 16] = [""; 16];
-    for i in 0..count {
-        labels[i] = unsafe { core::str::from_utf8_unchecked(&label_bufs[i][..label_lens[i]]) };
-    }
-    res_radio.render(win, &labels[..count]);
-}
-
-fn render_wallpaper(
-    win: u32,
-    wallpapers: &[WallpaperEntry],
-    selected: usize,
-    cx: i32,
-    cw: u32,
-    sy: i32,
-    win_w: u32,
-) {
-    label(win, cx, 20 - sy, "Wallpaper", colors::TEXT(), FontSize::Title, TextAlign::Left);
-
-    let cols = thumb_cols(win_w);
-    let card_y = 54 - sy;
-    let rows = (wallpapers.len().max(1) + cols - 1) / cols;
-    let grid_h = rows as i32 * (THUMB_H as i32 + THUMB_PAD + 16);
-    let card_h = (PAD * 2 + 36 + grid_h) as u32;
-    card(win, cx, card_y, cw, card_h);
-
-    label(win, cx + PAD, card_y + PAD + 4, "Choose a wallpaper", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-
-    let grid_y = card_y + PAD + 36;
-    let grid_x = cx + PAD;
-    let accent = colors::ACCENT();
-    let border_color = colors::SEPARATOR();
-
-    for (i, wp) in wallpapers.iter().enumerate() {
-        let col = i % cols;
-        let row = i / cols;
-        let tx = grid_x + col as i32 * (THUMB_W as i32 + THUMB_PAD);
-        let ty = grid_y + row as i32 * (THUMB_H as i32 + THUMB_PAD + 16);
-
-        let is_selected = i == selected;
-
-        if is_selected {
-            window::fill_rect(win, (tx - 3) as i16, (ty - 3) as i16,
-                (THUMB_W + 6) as u16, (THUMB_H + 6) as u16, accent);
-        } else {
-            window::fill_rect(win, (tx - 1) as i16, (ty - 1) as i16,
-                (THUMB_W + 2) as u16, (THUMB_H + 2) as u16, border_color);
-        }
-
-        if wp.loaded && wp.thumbnail.len() == (THUMB_W * THUMB_H) as usize {
-            window::blit(win, tx as i16, ty as i16, THUMB_W as u16, THUMB_H as u16, &wp.thumbnail);
-        } else {
-            window::fill_rect(win, tx as i16, ty as i16, THUMB_W as u16, THUMB_H as u16, 0xFF3A3A3E);
-        }
-
-        let name = display_name(&wp.name, wp.name_len);
-        label(win, tx, ty + THUMB_H as i32 + 4, name,
-            if is_selected { accent } else { colors::TEXT_SECONDARY() },
-            FontSize::Small, TextAlign::Left);
-    }
-}
-
-fn display_name<'a>(name: &'a [u8], len: usize) -> &'a str {
-    let end = name[..len].iter().rposition(|&b| b == b'.').unwrap_or(len);
-    core::str::from_utf8(&name[..end]).unwrap_or("?")
-}
-
-fn render_network(win: u32, cx: i32, cw: u32, sy: i32) {
-    label(win, cx, 20 - sy, "Network", colors::TEXT(), FontSize::Title, TextAlign::Left);
-
-    let mut net_buf = [0u8; 24];
-    net::get_config(&mut net_buf);
-
-    let ip = [net_buf[0], net_buf[1], net_buf[2], net_buf[3]];
-    let mask = [net_buf[4], net_buf[5], net_buf[6], net_buf[7]];
-    let gw = [net_buf[8], net_buf[9], net_buf[10], net_buf[11]];
-    let dns_ip = [net_buf[12], net_buf[13], net_buf[14], net_buf[15]];
-    let mac = [net_buf[16], net_buf[17], net_buf[18], net_buf[19], net_buf[20], net_buf[21]];
-    let link_up = net_buf[22] != 0;
-
-    let card_y = 54 - sy;
-    card(win, cx, card_y, cw, (PAD * 2 + ROW_H * 6) as u32);
-
-    let lx = cx + PAD;
-    let vx = cx + PAD + 130;
-
-    let ry = card_y + PAD;
-    label(win, lx, ry + 12, "Status", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-    let kind = if link_up { StatusKind::Online } else { StatusKind::Offline };
-    let text = if link_up { "Connected" } else { "Disconnected" };
-    status_indicator(win, vx, ry + 12, kind, text);
-
-    let ry = ry + ROW_H;
-    divider_h(win, lx, ry, cw - PAD as u32 * 2);
-    label(win, lx, ry + 12, "IP Address", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-    let mut b = [0u8; 20]; label(win, vx, ry + 12, fmt_ip(&mut b, &ip), colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
-
-    let ry = ry + ROW_H;
-    divider_h(win, lx, ry, cw - PAD as u32 * 2);
-    label(win, lx, ry + 12, "Subnet Mask", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-    let mut b = [0u8; 20]; label(win, vx, ry + 12, fmt_ip(&mut b, &mask), colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
-
-    let ry = ry + ROW_H;
-    divider_h(win, lx, ry, cw - PAD as u32 * 2);
-    label(win, lx, ry + 12, "Gateway", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-    let mut b = [0u8; 20]; label(win, vx, ry + 12, fmt_ip(&mut b, &gw), colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
-
-    let ry = ry + ROW_H;
-    divider_h(win, lx, ry, cw - PAD as u32 * 2);
-    label(win, lx, ry + 12, "DNS Server", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-    let mut b = [0u8; 20]; label(win, vx, ry + 12, fmt_ip(&mut b, &dns_ip), colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
-
-    let ry = ry + ROW_H;
-    divider_h(win, lx, ry, cw - PAD as u32 * 2);
-    label(win, lx, ry + 12, "MAC Address", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-    let mut b = [0u8; 20]; label(win, vx, ry + 12, fmt_mac(&mut b, &mac), colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
-}
-
-fn render_about(win: u32, cx: i32, cw: u32, sy: i32) {
-    label(win, cx, 20 - sy, "About", colors::TEXT(), FontSize::Title, TextAlign::Left);
-
-    let card_y = 54 - sy;
-    card(win, cx, card_y, cw, (PAD * 2 + ROW_H * 5) as u32);
-
-    let lx = cx + PAD;
-    let vx = cx + PAD + 130;
-
-    let ry = card_y + PAD;
-    label(win, lx, ry + 12, "OS", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-    label(win, vx, ry + 12, "anyOS 1.0", colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
-
-    let ry = ry + ROW_H;
-    divider_h(win, lx, ry, cw - PAD as u32 * 2);
-    label(win, lx, ry + 12, "Kernel", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-    label(win, vx, ry + 12, "x86_64-anyos", colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
-
-    let ry = ry + ROW_H;
-    divider_h(win, lx, ry, cw - PAD as u32 * 2);
-    label(win, lx, ry + 12, "CPUs", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-    let cpu_count = sys::sysinfo(2, &mut [0u8; 4]);
-    let mut b = [0u8; 8];
-    label(win, vx, ry + 12, fmt_u32(&mut b, cpu_count), colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
-
-    let ry = ry + ROW_H;
-    divider_h(win, lx, ry, cw - PAD as u32 * 2);
-    label(win, lx, ry + 12, "Memory", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-    let mut mem = [0u8; 8];
-    sys::sysinfo(0, &mut mem);
-    let total = u32::from_le_bytes([mem[0], mem[1], mem[2], mem[3]]);
-    let free = u32::from_le_bytes([mem[4], mem[5], mem[6], mem[7]]);
-    let mut b = [0u8; 32];
-    label(win, vx, ry + 12, fmt_mem(&mut b, (total * 4) / 1024, (free * 4) / 1024), colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
-
-    let ry = ry + ROW_H;
-    divider_h(win, lx, ry, cw - PAD as u32 * 2);
-    label(win, lx, ry + 12, "Uptime", colors::TEXT(), FontSize::Normal, TextAlign::Left);
-    let mut b = [0u8; 32];
-    let hz = sys::tick_hz().max(1);
-    label(win, vx, ry + 12, fmt_uptime(&mut b, sys::uptime() / hz), colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
-}
-
-fn render_apps(
-    win: u32,
-    apps: &[AppEntry],
-    detail: Option<usize>,
-    perm_toggles: &[UiToggle; 6],
-    reset_btn: &UiButton,
-    back_btn: &UiButton,
-    cx: i32,
-    cw: u32,
-    sy: i32,
-) {
-    if let Some(idx) = detail {
-        render_apps_detail(win, apps, idx, perm_toggles, reset_btn, back_btn, cx, cw, sy);
-    } else {
-        render_apps_list(win, apps, cx, cw, sy);
-    }
-}
-
-fn render_apps_list(win: u32, apps: &[AppEntry], cx: i32, cw: u32, sy: i32) {
-    label(win, cx, 20 - sy, "Apps", colors::TEXT(), FontSize::Title, TextAlign::Left);
-
-    if apps.is_empty() {
-        label(win, cx + PAD, 70 - sy, "No apps with stored permissions.",
-            colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
-        return;
-    }
-
-    let num_rows = apps.len() as i32;
-    let card_y = 54 - sy;
-    let card_h = (PAD * 2 + num_rows * ROW_H) as u32;
-    card(win, cx, card_y, cw, card_h);
-
-    let lx = cx + PAD;
-
-    for (i, app) in apps.iter().enumerate() {
-        let ry = card_y + PAD + i as i32 * ROW_H;
-
-        if i > 0 {
-            divider_h(win, lx, ry, cw - PAD as u32 * 2);
-        }
-
-        let app_id = core::str::from_utf8(&app.app_id[..app.app_id_len]).unwrap_or("?");
-        label(win, lx, ry + 12, app_id, colors::TEXT(), FontSize::Normal, TextAlign::Left);
-
-        // Show permission count as secondary text
-        let count = count_granted_groups(app.granted);
-        let mut b = [0u8; 32];
-        let desc = fmt_perm_count(&mut b, count);
-        label(win, cx + cw as i32 - PAD - 140, ry + 12, desc, colors::TEXT_SECONDARY(), FontSize::Small, TextAlign::Right);
-
-        // Arrow indicator
-        label(win, cx + cw as i32 - PAD - 8, ry + 12, ">", colors::TEXT_SECONDARY(), FontSize::Normal, TextAlign::Left);
-    }
-}
-
-fn render_apps_detail(
-    win: u32,
-    apps: &[AppEntry],
-    idx: usize,
-    perm_toggles: &[UiToggle; 6],
-    reset_btn: &UiButton,
-    back_btn: &UiButton,
-    cx: i32,
-    cw: u32,
-    sy: i32,
-) {
-    if idx >= apps.len() { return; }
-
-    // Back button
-    back_btn.render(win, "\u{2190} Back");
-
-    // App name title
-    let app_id = core::str::from_utf8(&apps[idx].app_id[..apps[idx].app_id_len]).unwrap_or("?");
-    let mut title_buf = [0u8; 80];
-    let title_len = fmt_app_title(app_id, &mut title_buf);
-    let title = core::str::from_utf8(&title_buf[..title_len]).unwrap_or(app_id);
-    label(win, cx, 54 - sy, title, colors::TEXT(), FontSize::Title, TextAlign::Left);
-
-    // Permission toggles card
-    let card_y = 86 - sy;
-    let card_h = (PAD * 2 + 6 * ROW_H) as u32;
-    card(win, cx, card_y, cw, card_h);
-
-    let lx = cx + PAD;
-
-    for i in 0..6 {
-        let ry = card_y + PAD + i as i32 * ROW_H;
-
-        if i > 0 {
-            divider_h(win, lx, ry, cw - PAD as u32 * 2);
-        }
-
-        label(win, lx, ry + 12, PERM_GROUPS[i].name, colors::TEXT(), FontSize::Normal, TextAlign::Left);
-        perm_toggles[i].render(win);
-    }
-
-    // Reset button
-    reset_btn.render(win, "Reset Permissions");
-}
-
-fn count_granted_groups(granted: u32) -> u32 {
-    let mut count = 0u32;
-    for g in PERM_GROUPS.iter() {
-        if granted & g.mask != 0 { count += 1; }
-    }
-    count
-}
-
-fn fmt_perm_count<'a>(buf: &'a mut [u8; 32], count: u32) -> &'a str {
-    let mut p = 0usize;
-    let mut t = [0u8; 8];
-    let s = fmt_u32(&mut t, count);
-    buf[p..p + s.len()].copy_from_slice(s.as_bytes());
-    p += s.len();
-    if count == 1 {
-        buf[p..p + 11].copy_from_slice(b" permission");
-        p += 11;
-    } else {
-        buf[p..p + 12].copy_from_slice(b" permissions");
-        p += 12;
-    }
-    unsafe { core::str::from_utf8_unchecked(&buf[..p]) }
-}
-
-fn fmt_app_title<'a>(app_id: &str, buf: &'a mut [u8; 80]) -> usize {
-    let mut p = 0usize;
-    let max = buf.len() - 1;
-    for &b in app_id.as_bytes() {
-        if p >= max { break; }
-        buf[p] = b;
-        p += 1;
-    }
-    p
-}
-
-fn hit_test_app_row(apps: &[AppEntry], event: &UiEvent, cx: i32, scroll_y: u32) -> Option<usize> {
-    if event.event_type != window::EVENT_MOUSE_DOWN { return None; }
-    let (mx, my) = event.mouse_pos();
-
-    let sy = scroll_y as i32;
-    let card_y = 54 - sy;
-
-    for i in 0..apps.len() {
-        let ry = card_y + PAD + i as i32 * ROW_H;
-        if mx >= cx && my >= ry && my < ry + ROW_H {
-            return Some(i);
-        }
-    }
-    None
-}
-
-// ============================================================================
-// Apps permission scanning
-// ============================================================================
-
-fn scan_apps(apps: &mut alloc::vec::Vec<AppEntry>) {
-    apps.clear();
-    let mut buf = [0u8; 4096];
-    let count = permissions::perm_list(&mut buf);
-    if count == 0 || count == u32::MAX { return; }
-
-    // Parse "app_id\x1Fgranted_hex\n" entries
-    let mut pos = 0usize;
-    let data = &buf[..];
-    let mut entries = 0u32;
-
-    while pos < data.len() && entries < count && apps.len() < MAX_APPS {
-        // Find end of line
-        let line_end = data[pos..].iter().position(|&b| b == b'\n')
-            .map(|p| pos + p).unwrap_or(data.len());
-        let line = &data[pos..line_end];
-        pos = line_end + 1;
-
-        if line.is_empty() { continue; }
-
-        // Split by \x1F
-        if let Some(sep) = line.iter().position(|&b| b == 0x1F) {
-            let id_bytes = &line[..sep];
-            let hex_bytes = &line[sep + 1..];
-
-            if !id_bytes.is_empty() && id_bytes.len() <= 64 {
-                let mut entry = AppEntry {
-                    app_id: [0u8; 64],
-                    app_id_len: id_bytes.len(),
-                    granted: parse_hex(hex_bytes),
-                };
-                entry.app_id[..id_bytes.len()].copy_from_slice(id_bytes);
-                apps.push(entry);
-                entries += 1;
-            }
-        }
-    }
-
-    // Sort by app_id
-    apps.sort_unstable_by(|a, b| {
-        cmp_name_ci(&a.app_id[..a.app_id_len], &b.app_id[..b.app_id_len])
-    });
-}
-
-fn parse_hex(s: &[u8]) -> u32 {
-    let mut val: u32 = 0;
-    for &b in s {
-        let digit = match b {
-            b'0'..=b'9' => b - b'0',
-            b'a'..=b'f' => b - b'a' + 10,
-            b'A'..=b'F' => b - b'A' + 10,
-            _ => continue,
-        };
-        val = val.wrapping_shl(4) | digit as u32;
-    }
-    val
-}
-
-// ============================================================================
-// Formatting
-// ============================================================================
-
-fn fmt_ip<'a>(buf: &'a mut [u8; 20], ip: &[u8; 4]) -> &'a str {
-    let mut p = 0;
-    for i in 0..4 {
-        p = write_u8_dec(buf, p, ip[i]);
-        if i < 3 { buf[p] = b'.'; p += 1; }
-    }
-    unsafe { core::str::from_utf8_unchecked(&buf[..p]) }
-}
-
-fn fmt_mac<'a>(buf: &'a mut [u8; 20], mac: &[u8; 6]) -> &'a str {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut p = 0;
-    for i in 0..6 {
-        buf[p] = HEX[(mac[i] >> 4) as usize]; buf[p + 1] = HEX[(mac[i] & 0xF) as usize]; p += 2;
-        if i < 5 { buf[p] = b':'; p += 1; }
-    }
-    unsafe { core::str::from_utf8_unchecked(&buf[..p]) }
-}
-
-fn fmt_u32<'a>(buf: &'a mut [u8; 8], val: u32) -> &'a str {
-    if val == 0 { buf[0] = b'0'; return unsafe { core::str::from_utf8_unchecked(&buf[..1]) }; }
-    let mut v = val; let mut tmp = [0u8; 8]; let mut n = 0;
-    while v > 0 { tmp[n] = b'0' + (v % 10) as u8; v /= 10; n += 1; }
-    for i in 0..n { buf[i] = tmp[n - 1 - i]; }
-    unsafe { core::str::from_utf8_unchecked(&buf[..n]) }
-}
-
-fn fmt_resolution<'a>(buf: &'a mut [u8; 32], w: u32, h: u32) -> &'a str {
-    let mut p = 0; let mut t = [0u8; 8];
-    let s = fmt_u32(&mut t, w); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-    buf[p..p + 3].copy_from_slice(b" x "); p += 3;
-    let s = fmt_u32(&mut t, h); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-    unsafe { core::str::from_utf8_unchecked(&buf[..p]) }
-}
-
-fn fmt_mem<'a>(buf: &'a mut [u8; 32], total: u32, free: u32) -> &'a str {
-    let mut p = 0; let mut t = [0u8; 8];
-    let s = fmt_u32(&mut t, total); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-    buf[p..p + 5].copy_from_slice(b" MB ("); p += 5;
-    let s = fmt_u32(&mut t, free); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-    buf[p..p + 9].copy_from_slice(b" MB free)"); p += 9;
-    unsafe { core::str::from_utf8_unchecked(&buf[..p]) }
-}
-
-fn fmt_uptime<'a>(buf: &'a mut [u8; 32], secs: u32) -> &'a str {
-    let mut p = 0; let mut t = [0u8; 8];
-    let s = fmt_u32(&mut t, secs / 3600); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-    buf[p..p + 2].copy_from_slice(b"h "); p += 2;
-    let s = fmt_u32(&mut t, (secs % 3600) / 60); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-    buf[p..p + 2].copy_from_slice(b"m "); p += 2;
-    let s = fmt_u32(&mut t, secs % 60); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-    buf[p] = b's'; p += 1;
-    unsafe { core::str::from_utf8_unchecked(&buf[..p]) }
-}
-
-fn write_u8_dec(buf: &mut [u8], pos: usize, val: u8) -> usize {
-    let mut p = pos;
-    if val >= 100 { buf[p] = b'0' + val / 100; p += 1; }
-    if val >= 10 { buf[p] = b'0' + (val / 10) % 10; p += 1; }
-    buf[p] = b'0' + val % 10; p + 1
+    Vec::new()
 }

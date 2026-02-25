@@ -65,7 +65,8 @@ fn main() {
     let db = MimeDb::load();
     match db.app_for_ext(ext) {
         Some(app_path) => {
-            let tid = process::spawn(app_path, path);
+            let args = alloc::format!("\"{}\" {}", app_path, path);
+            let tid = process::spawn(app_path, &args);
             if tid == u32::MAX {
                 anyos_std::println!("open: failed to launch {} for {}", app_path, path);
             }

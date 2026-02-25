@@ -39,15 +39,22 @@ pub(crate) fn post_deselect(group_id: ControlId, selected_id: ControlId) {
 
 /// Drain pending deselection requests. Called from event loop after handle_click.
 /// Deselects all RadioButton children in the group except the selected one.
-pub(crate) fn drain_deselects(controls: &mut [Box<dyn Control>]) {
+/// Returns the list of group IDs that were affected (for firing change events).
+pub(crate) fn drain_deselects(controls: &mut [Box<dyn Control>]) -> Vec<ControlId> {
     let count = unsafe { PENDING_COUNT };
-    if count == 0 { return; }
+    if count == 0 { return Vec::new(); }
 
+    let mut affected_groups = Vec::new();
     for i in 0..count {
         let (group_id, selected_id) = unsafe { PENDING[i] };
         if let Some(gi) = find_idx(controls, group_id) {
+            // Update RadioGroup state to the index of the selected child
             let children: Vec<ControlId> = controls[gi].base().children.to_vec();
-            for &child_id in &children {
+            let mut sel_index = 0u32;
+            for (ci_idx, &child_id) in children.iter().enumerate() {
+                if child_id == selected_id {
+                    sel_index = ci_idx as u32;
+                }
                 if child_id != selected_id {
                     if let Some(ci) = find_idx(controls, child_id) {
                         if controls[ci].kind() == ControlKind::RadioButton
@@ -59,9 +66,14 @@ pub(crate) fn drain_deselects(controls: &mut [Box<dyn Control>]) {
                     }
                 }
             }
+            // Set group state to selected index
+            controls[gi].base_mut().state = sel_index;
+            controls[gi].base_mut().mark_dirty();
+            affected_groups.push(group_id);
         }
     }
     unsafe { PENDING_COUNT = 0; }
+    affected_groups
 }
 
 // ── Control implementation ──────────────────────────────────────────

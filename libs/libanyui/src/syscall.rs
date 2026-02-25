@@ -16,6 +16,7 @@ const SYS_YIELD: u64 = 7;
 const SYS_SLEEP: u64 = 8;
 const SYS_SBRK: u64 = 9;
 const SYS_UPTIME_MS: u64 = 35;
+const SYS_EVT_CHAN_EMIT: u64 = 65;
 const SYS_EVT_CHAN_POLL: u64 = 66;
 const SYS_EVT_CHAN_WAIT: u64 = 70;
 
@@ -161,4 +162,9 @@ pub fn evt_chan_poll(channel_id: u32, sub_id: u32, buf: &mut [u32; 5]) -> bool {
 /// Returns 1 if events are available, 0 on timeout/spurious wake.
 pub fn evt_chan_wait(channel_id: u32, sub_id: u32, timeout_ms: u32) -> u32 {
     syscall3(SYS_EVT_CHAN_WAIT, channel_id as u64, sub_id as u64, timeout_ms as u64) as u32
+}
+
+/// Emit an event to a channel. `event` is a 5×u32 event payload.
+pub fn evt_chan_emit(channel_id: u32, event: &[u32; 5]) {
+    syscall2(SYS_EVT_CHAN_EMIT, channel_id as u64, event.as_ptr() as u64);
 }

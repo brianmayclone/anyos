@@ -1,0 +1,26 @@
+{
+  "id": "crond",
+  "name": "Scheduled Tasks",
+  "icon": "clock-hour-4",
+  "category": "Services",
+  "order": 10,
+  "config_path": "/System/etc/crond/{uid}",
+  "config_format": "crontab",
+  "on_apply_ipc": "crond",
+  "description": "Schedule commands to run at specific times.",
+  "fields": [
+    {
+      "key": "jobs",
+      "type": "table",
+      "label": "Cron Jobs",
+      "columns": [
+        { "key": "minute", "label": "Minute", "width": 60, "placeholder": "*" },
+        { "key": "hour", "label": "Hour", "width": 60, "placeholder": "*" },
+        { "key": "day", "label": "Day", "width": 50, "placeholder": "*" },
+        { "key": "month", "label": "Month", "width": 60, "placeholder": "*" },
+        { "key": "weekday", "label": "Weekday", "width": 70, "placeholder": "*" },
+        { "key": "command", "label": "Command", "width": 250, "placeholder": "/System/bin/..." }
+      ]
+    }
+  ]
+}

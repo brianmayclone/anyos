@@ -1,10 +1,10 @@
 # anyui Controls Framework API Reference
 
-The **anyui** framework is a Windows Forms-inspired UI toolkit providing 41 control types for anyOS GUI applications. It consists of a server-side library (**libanyui**, `.so` at `0x04400000`) compiled into the compositor, and a client-side wrapper (**libanyui_client**) that user programs link against.
+The **anyui** framework is a Windows Forms-inspired UI toolkit providing 42 control types for anyOS GUI applications. It consists of a server-side library (**libanyui**, `.so` at `0x04400000`) compiled into the compositor, and a client-side wrapper (**libanyui_client**) that user programs link against.
 
-**Exports:** 112+ (C ABI, `#[no_mangle]`)
+**Exports:** 120+ (C ABI, `#[no_mangle]`)
 **Client crate:** `libanyui_client`
-**Controls:** 41 types (ControlKind 0-40)
+**Controls:** 42 types (ControlKind 0-41)
 **Symbol resolution:** `dl_open`/`dl_sym` (ELF `.dynsym`/`.hash`)
 
 ---
@@ -42,6 +42,7 @@ The **anyui** framework is a Windows Forms-inspired UI toolkit providing 41 cont
   - [DataGrid](#datagrid)
   - [TextEditor](#texteditor)
   - [TreeView](#treeview)
+  - [ImageButton](#imagebutton)
 - [Container Controls](#container-controls)
   - [Card](#card)
   - [GroupBox](#groupbox)
@@ -59,12 +60,16 @@ The **anyui** framework is a Windows Forms-inspired UI toolkit providing 41 cont
   - [StackPanel](#stackpanel)
   - [FlowPanel](#flowpanel)
   - [TableLayout](#tablelayout)
+  - [RadioGroup](#radiogroup)
 - [Dialogs](#dialogs)
 - [Icon System](#icon-system)
 - [Events Reference](#events-reference)
 - [Layout System](#layout-system)
 - [Timer API](#timer-api)
 - [Marshal API (Cross-Thread)](#marshal-api)
+- [Clipboard API](#clipboard-api)
+- [Theme API](#theme-api)
+- [Key Constants](#key-constants)
 - [Utilities](#utilities)
 - [Syntax Highlighting](#syntax-highlighting)
 - [Frame Pacing & VSync](#frame-pacing--vsync)
@@ -267,7 +272,8 @@ KIND_IMAGE_VIEW = 25, KIND_STATUS_INDICATOR = 26, KIND_COLOR_WELL = 27,
 KIND_SEARCH_FIELD = 28, KIND_TEXT_AREA = 29, KIND_ICON_BUTTON = 30,
 KIND_BADGE = 31, KIND_TAG = 32, KIND_STACK_PANEL = 33, KIND_FLOW_PANEL = 34,
 KIND_TABLE_LAYOUT = 35, KIND_CANVAS = 36, KIND_EXPANDER = 37,
-KIND_DATA_GRID = 38, KIND_TEXT_EDITOR = 39, KIND_TREE_VIEW = 40
+KIND_DATA_GRID = 38, KIND_TEXT_EDITOR = 39, KIND_TREE_VIEW = 40,
+KIND_RADIO_GROUP = 41
 ```
 
 ---
@@ -320,6 +326,19 @@ fn set_padding(&self, left: i32, top: i32, right: i32, bottom: i32)
 fn set_margin(&self, left: i32, top: i32, right: i32, bottom: i32)
 ```
 
+### Queries
+
+```rust
+fn get_size(&self) -> (u32, u32)         // Returns (width, height)
+fn get_position(&self) -> (i32, i32)     // Returns (x, y)
+```
+
+### Tooltip
+
+```rust
+fn set_tooltip(&self, text: &str)        // Shown on hover
+```
+
 ### Focus & Misc
 
 ```rust
@@ -354,12 +373,12 @@ Window::new(title: &str, x: i32, y: i32, w: u32, h: u32) -> Self
 Window::new_with_flags(title: &str, x: i32, y: i32, w: u32, h: u32, flags: u32) -> Self
 // x, y = -1 for auto-placement
 
+fn set_title(&self, title: &str)         // Change window title after creation
 fn destroy(&self)
 fn on_close(&self, f: impl FnMut(&EventArgs) + 'static)
 fn on_resize(&self, f: impl FnMut(&EventArgs) + 'static)
+fn on_key_down(&self, f: impl FnMut(&KeyEvent) + 'static)  // Unhandled key events that bubble up
 ```
-
-**Note:** No `set_title()` method -- title is set only at construction time.
 
 ### View
 
@@ -541,12 +560,24 @@ fn on_submit(&self, f: impl FnMut(&SubmitEvent) + 'static)
 
 ### IconButton
 
-Button with built-in icon.
+Button with built-in icon. Supports legacy pixel-art icons (ICON_* constants) and system SVG icons from ico.pak.
 
 ```rust
 IconButton::new(icon_text: &str) -> Self
-fn set_icon(&self, icon_id: u32)            // ICON_* constants
+fn set_icon(&self, icon_id: u32)            // Legacy ICON_* constants
+fn set_system_icon(&self, name: &str, icon_type: IconType, color: u32, size: u32)
+                                            // Render SVG from ico.pak (6000+ Tabler Icons)
+fn set_pixels(&self, pixels: &[u32], w: u32, h: u32)  // Raw ARGB pixel data
 fn on_click(&self, f: impl FnMut(&ClickEvent) + 'static)
+```
+
+Example with system icons:
+
+```rust
+let btn = toolbar.add_icon_button("");
+btn.set_size(34, 34);
+btn.set_system_icon("device-floppy", IconType::Outline, 0xFFCCCCCC, 24);
+btn.set_tooltip("Save");
 ```
 
 ### Badge
@@ -629,11 +660,16 @@ fn row_count(&self) -> u32
 // Cell styling (flat arrays: index = row * col_count + col)
 fn set_cell_colors(&self, colors: &[u32])      // ARGB text colors (0=default)
 fn set_cell_bg_colors(&self, colors: &[u32])   // ARGB background colors (0=transparent)
+fn set_char_colors(&self, char_colors: &[u32], offsets: &[u32])  // Per-character text colors
 fn set_cell_icon(&self, row: u32, col: u32, pixels: &[u32], w: u32, h: u32)
 
 // Display
 fn set_row_height(&self, height: u32)           // Min 16
 fn set_header_height(&self, height: u32)        // Min 16
+
+// Scroll
+fn scroll_offset(&self) -> u32                  // First visible row
+fn set_scroll_offset(&self, offset: u32)        // Set first visible row
 
 // Selection
 fn set_selection_mode(&self, mode: u32)          // SELECTION_SINGLE or SELECTION_MULTI
@@ -693,11 +729,17 @@ fn set_tab_width(&self, w: u32)           // Spaces per Tab
 fn set_show_line_numbers(&self, show: bool)
 fn set_editor_font(&self, font_id: u32, size: u32)
 
+// Clipboard
+fn copy(&self) -> bool                   // Copy selection to system clipboard
+fn cut(&self) -> bool                    // Cut selection to system clipboard
+fn paste(&self) -> u32                   // Paste from clipboard; returns bytes pasted
+fn select_all(&self)                     // Select all text
+
 // Events
 fn on_text_changed(&self, f: impl FnMut(&TextChangedEvent) + 'static)
 ```
 
-**Keyboard:** Arrow keys, Home/End, Page Up/Down, Backspace, Delete, Tab (inserts spaces), Enter (auto-indent).
+**Keyboard:** Arrow keys, Home/End, Page Up/Down, Backspace, Delete, Tab (inserts spaces), Enter (auto-indent), Ctrl+C/X/V (copy/cut/paste), Ctrl+A (select all).
 
 ### TreeView
 
@@ -737,6 +779,20 @@ fn on_enter(&self, f: impl FnMut(&SelectionChangedEvent) + 'static)
 ```
 
 **Keyboard:** Up/Down = navigate, Left = collapse/parent, Right = expand/child, Enter = fire click.
+
+### ImageButton
+
+Clickable button that displays an image (PNG, ICO, BMP, JPEG, GIF) instead of text.
+
+```rust
+ImageButton::new(w: u32, h: u32) -> Self
+
+fn load_file(&self, path: &str)
+fn load_bytes(&self, data: &[u8])
+fn load_ico(&self, path: &str, preferred_size: u32)
+fn set_pixels(&self, pixels: &[u32], w: u32, h: u32)  // Raw ARGB
+fn on_click(&self, f: impl FnMut(&ClickEvent) + 'static)
+```
 
 ---
 
@@ -905,6 +961,16 @@ fn set_columns(&self, columns: u32)
 fn set_row_height(&self, row_height: u32)
 ```
 
+### RadioGroup
+
+Container for grouping RadioButton controls. Provides mutual exclusion so only one RadioButton within the group can be selected at a time.
+
+```rust
+RadioGroup::new() -> Self
+```
+
+Add RadioButton children with `add()`. When one is checked, the others are automatically unchecked.
+
 ---
 
 ## Dialogs
@@ -941,7 +1007,18 @@ MessageBox::show(msg_type: MessageBoxType, text: &str, button_text: Option<&str>
 
 ## Icon System
 
-Load and display icons from files or raw data.
+Load and display icons from files, system icon packs, or raw data.
+
+### IconType
+
+```rust
+pub enum IconType {
+    Filled,
+    Outline,
+}
+```
+
+### Icon
 
 ```rust
 pub struct Icon {
@@ -950,7 +1027,13 @@ pub struct Icon {
     pub height: u32,
 }
 
-// From file types (loads from /System/media/icons/)
+// System SVG icons from ico.pak (6000+ Tabler Icons, cached)
+Icon::system(name: &str, icon_type: IconType, color: u32, size: u32) -> Option<Self>
+
+// Control icons (from /System/media/icons/controls/, .png then .ico fallback)
+Icon::control(name: &str, size: u32) -> Option<Self>
+
+// From file types (loads from /System/media/icons/ via mimetypes.conf)
 Icon::for_filetype(ext: &str) -> Option<Self>
 Icon::for_filetype_sized(ext: &str, size: u32) -> Option<Self>
 
@@ -963,10 +1046,15 @@ Icon::load(path: &str, preferred_size: u32) -> Option<Self>
 Icon::from_ico_bytes(data: &[u8], preferred_size: u32) -> Option<Self>
 Icon::from_bytes(data: &[u8]) -> Option<Self>
 
+// Manipulation
+fn recolor(&mut self, color: u32)        // Recolor all non-transparent pixels (preserves alpha)
+
 // Convert to ImageView
 fn into_image_view(self, display_w: u32, display_h: u32) -> ImageView
 fn apply_to(&self, image_view: &ImageView)
 ```
+
+`Icon::system()` uses a built-in render cache (128 entries) so repeated calls with the same name/color/size are instant.
 
 ---
 
@@ -985,6 +1073,30 @@ fn apply_to(&self, image_view: &ImageView)
 | `ScrollChangedEvent` | `id: u32, offset: u32` | ScrollView |
 | `EventArgs` | `id: u32` | Window (close, resize) |
 | `ColorSelectedEvent` | `id: u32, color: u32` | ColorWell |
+| `KeyEvent` | `keycode: u32, char_code: u32, modifiers: u32` | Window (on_key_down) |
+
+### KeyEvent
+
+```rust
+pub struct KeyEvent {
+    pub keycode: u32,        // KEY_* constants or ASCII
+    pub char_code: u32,      // Unicode codepoint, 0 for non-printable
+    pub modifiers: u32,      // MOD_SHIFT | MOD_CTRL | MOD_ALT
+}
+
+impl KeyEvent {
+    fn shift(&self) -> bool
+    fn ctrl(&self) -> bool
+    fn alt(&self) -> bool
+}
+```
+
+### Standalone Key Functions
+
+```rust
+fn get_key_info() -> KeyEvent       // Get key info for current event
+fn get_modifiers() -> u32           // Get current modifier state
+```
 
 ### Event Registration Pattern
 
@@ -1081,6 +1193,105 @@ fn marshal_set_visible(id: u32, visible: bool)
 fn marshal_set_position(id: u32, x: i32, y: i32)
 fn marshal_set_size(id: u32, w: u32, h: u32)
 fn marshal_dispatch(cb: extern "C" fn(u64), userdata: u64)
+```
+
+---
+
+## Clipboard API
+
+System clipboard access for copy/paste between applications.
+
+```rust
+fn clipboard_set(text: &str)                // Copy text to clipboard
+fn clipboard_set_bytes(data: &[u8])         // Copy raw bytes to clipboard
+fn clipboard_get(buf: &mut [u8]) -> u32     // Read clipboard; returns bytes read (0 if empty)
+```
+
+Example:
+
+```rust
+anyui::clipboard_set("Hello");
+let mut buf = [0u8; 4096];
+let len = anyui::clipboard_get(&mut buf);
+let text = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
+```
+
+---
+
+## Theme API
+
+Color theming support with dark/light mode.
+
+```rust
+// Global theme switching
+fn set_theme(light: bool)                   // Switch to light (true) or dark (false) theme
+fn get_theme() -> u32                       // Get current theme ID
+
+// Theme module
+pub mod theme {
+    fn colors() -> ThemeColors              // Get current theme colors
+    fn set_theme(light: bool)               // Switch theme
+    fn is_light() -> bool                   // Check if light mode is active
+
+    // Color utilities
+    fn darken(color: u32, amount: u32) -> u32    // Darken ARGB color (amount: 0-255)
+    fn lighten(color: u32, amount: u32) -> u32   // Lighten ARGB color (amount: 0-255)
+    fn with_alpha(color: u32, alpha: u32) -> u32 // Set alpha on ARGB color
+}
+```
+
+### ThemeColors
+
+```rust
+pub struct ThemeColors {
+    pub bg: u32,              // Main background
+    pub text: u32,            // Default text
+    pub sidebar_bg: u32,      // Sidebar/toolbar background
+    pub border: u32,          // Border color
+    pub accent: u32,          // Accent / selection color
+    pub hover: u32,           // Hover highlight
+    pub selected_bg: u32,     // Selected item background
+    pub selected_text: u32,   // Selected item text
+    // ... additional fields
+}
+```
+
+---
+
+## Key Constants
+
+### Keyboard Keys (KEY_*)
+
+```rust
+KEY_ENTER = 0x0D, KEY_ESCAPE = 0x1B, KEY_TAB = 0x09, KEY_BACKSPACE = 0x08,
+KEY_DELETE = 0x7F, KEY_SPACE = 0x20,
+
+KEY_UP = 0x80, KEY_DOWN = 0x81, KEY_LEFT = 0x82, KEY_RIGHT = 0x83,
+KEY_HOME = 0x84, KEY_END = 0x85, KEY_PAGE_UP = 0x86, KEY_PAGE_DOWN = 0x87,
+
+KEY_F1 = 0x90, KEY_F2 = 0x91, KEY_F3 = 0x92, KEY_F4 = 0x93,
+KEY_F5 = 0x94, KEY_F6 = 0x95, KEY_F7 = 0x96, KEY_F8 = 0x97,
+KEY_F9 = 0x98, KEY_F10 = 0x99, KEY_F11 = 0x9A, KEY_F12 = 0x9B,
+
+KEY_INSERT = 0x9C
+```
+
+### Modifier Keys (MOD_*)
+
+```rust
+MOD_SHIFT = 0x01
+MOD_CTRL  = 0x02
+MOD_ALT   = 0x04
+```
+
+Use with `KeyEvent.modifiers` or `get_modifiers()`:
+
+```rust
+win.on_key_down(|e| {
+    if e.ctrl() && e.keycode == b'S' as u32 {
+        save_file();
+    }
+});
 ```
 
 ---
@@ -1184,6 +1395,7 @@ End-to-end latency: **4-9ms** (vs 18-53ms with fixed timer).
 | 38 | DataGrid | Leaf | Data grid/spreadsheet |
 | 39 | TextEditor | Leaf | Code editor |
 | 40 | TreeView | Leaf | Hierarchical tree |
+| 41 | RadioGroup | Container | Radio button group |
 
 ---
 
@@ -1208,7 +1420,8 @@ End-to-end latency: **4-9ms** (vs 18-53ms with fixed timer).
 | TreeView | `on_selection_changed`, `on_node_clicked`, `on_enter` |
 | SearchField | `on_text_changed`, `on_submit` |
 | ColorWell | `on_color_selected` |
-| Window | `on_close`, `on_resize` |
+| ImageButton | `on_click` |
+| Window | `on_close`, `on_resize`, `on_key_down` |
 | SplitView | `on_split_changed` |
 | ScrollView | `on_scroll` |
 | Sidebar | `on_selection_changed` |

@@ -111,3 +111,51 @@ Perform alpha-blend of `src` over `dst` using standard src-over compositing. Bot
 ```rust
 let result = render::blend_color(0x80FF0000, 0xFF0000FF); // semi-transparent red over blue
 ```
+
+---
+
+## Client Wrapper: `Surface`
+
+The `librender_client` crate provides a typed `Surface` struct that wraps a raw pixel buffer. All 17 shape functions have method wrappers on `Surface`.
+
+### Construction
+
+```rust
+// Unsafe: buffer must be valid for w * h u32 values
+let mut surface = unsafe { render::Surface::from_raw(pixels.as_mut_ptr(), w, h) };
+```
+
+### Methods
+
+All methods mirror the free functions above:
+
+```rust
+surface.fill(color);                                    // fill_surface
+surface.fill_rect(x, y, rw, rh, color);               // fill_rect
+surface.put_pixel(x, y, color);                        // put_pixel (alpha-blended)
+surface.get_pixel(x, y) -> u32;                        // get_pixel
+surface.blit_rect(dx, dy, src, sw, sh, sx, sy, cw, ch, opaque);
+surface.put_pixel_subpixel(x, y, r, g, b, color);     // LCD subpixel
+surface.fill_rounded_rect(x, y, rw, rh, radius, color);
+surface.fill_rounded_rect_aa(x, y, rw, rh, radius, color);
+surface.fill_circle(cx, cy, radius, color);
+surface.fill_circle_aa(cx, cy, radius, color);
+surface.draw_line(x0, y0, x1, y1, color);
+surface.draw_rect(x, y, rw, rh, color, thickness);    // thickness in pixels
+surface.draw_circle(cx, cy, radius, color);
+surface.draw_circle_aa(cx, cy, radius, color);
+surface.draw_rounded_rect_aa(x, y, rw, rh, radius, color);
+surface.fill_gradient_h(x, y, rw, rh, color_left, color_right);
+surface.fill_gradient_v(x, y, rw, rh, color_top, color_bottom);
+```
+
+### Blending Behavior
+
+- `fill()` — Direct write, no alpha blending
+- `put_pixel()` — Alpha-blended (src-over compositing)
+- All shape functions — Alpha-blended
+- `blit_rect()` with `opaque=true` — Direct copy (faster), `opaque=false` — blended
+
+### Bounds Checking
+
+All coordinates are clipped to surface bounds. Out-of-bounds operations are silently ignored — no panics or undefined behavior.

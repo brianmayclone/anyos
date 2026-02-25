@@ -23,6 +23,8 @@ mod heap;
 pub(crate) mod syscall;
 pub(crate) mod ttf;
 mod ttf_rasterizer;
+pub(crate) mod inflate;
+pub(crate) mod png_decode;
 pub(crate) mod font_manager;
 
 // ── Embedded system fonts (.rodata — shared across all processes) ────
@@ -32,6 +34,7 @@ pub(crate) static FONT_SFPRO_BOLD: &[u8] = include_bytes!("../../../sysroot/Syst
 pub(crate) static FONT_SFPRO_THIN: &[u8] = include_bytes!("../../../sysroot/System/fonts/sfpro-thin.ttf");
 pub(crate) static FONT_SFPRO_ITALIC: &[u8] = include_bytes!("../../../sysroot/System/fonts/sfpro-italic.ttf");
 pub(crate) static FONT_ANDALE_MONO: &[u8] = include_bytes!("../../../sysroot/System/fonts/andale-mono.ttf");
+pub(crate) static FONT_EMOJI: &[u8] = include_bytes!("../../../sysroot/System/fonts/NotoColorEmoji.ttf");
 
 // ── Exported C API (resolved via dl_sym) ────────────────────────────
 

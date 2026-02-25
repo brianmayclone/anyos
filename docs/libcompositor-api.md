@@ -4,7 +4,7 @@ The **libcompositor** DLL provides IPC-based window management for GUI applicati
 
 **DLL Address:** `0x04380000`
 **Version:** 1
-**Exports:** 16
+**Exports:** 23
 **Client crate:** `libcompositor_client`
 
 ---
@@ -24,7 +24,7 @@ libcompositor_client = { path = "../../libs/libcompositor_client" }
 ```rust
 use libcompositor_client::CompositorClient;
 
-let mut client = CompositorClient::connect().expect("compositor not running");
+let mut client = CompositorClient::init().expect("compositor not running");
 let win = client.create_window(400, 300, 0).expect("create failed");
 
 // Get pixel buffer (ARGB8888, width * height u32s)
@@ -108,7 +108,7 @@ Poll for window-specific events. Returns 1 if an event was written to buf (5 u32
 
 ### `set_title(channel_id, window_id, title_ptr, title_len)`
 
-Set the window title bar text (max 64 characters).
+Set the window title bar text (max 12 ASCII characters — longer titles are truncated).
 
 ### `screen_size(out_w, out_h)`
 
@@ -169,6 +169,9 @@ Events are 5 u32s: `[event_type, p1, p2, p3, p4]`.
 | `EVT_STATUS_ICON_CLICK` | 0x3009 | icon_id | — | — | — |
 | `EVT_MOUSE_MOVE` | 0x300A | x | y | — | — |
 | `EVT_FRAME_ACK` | 0x300B | — | — | — | — |
+| `EVT_FOCUS_LOST` | 0x300C | — | — | — | — |
+| `EVT_NOTIFICATION_CLICK` | 0x3010 | notification_id | — | — | — |
+| `EVT_NOTIFICATION_DISMISSED` | 0x3011 | notification_id | — | — | — |
 
 Mouse coordinates are relative to the window client area.
 
@@ -216,24 +219,64 @@ loop {
 ### `CompositorClient`
 
 High-level wrapper for windowed applications:
-- `connect() -> Option<Self>` — Initialize connection
-- `create_window(w, h, flags) -> Option<WindowId>`
+- `init() -> Option<Self>` — Initialize connection to compositor
+- `create_window(x, y, w, h, flags) -> Option<WindowHandle>`
 - `surface(win) -> &mut [u32]` — Get mutable pixel buffer
-- `present(win)` — Submit frame
+- `surface_slice(win) -> &mut [u32]` — Alias for surface
+- `present(win)` — Submit full frame
+- `present_rect(win, x, y, w, h)` — Submit dirty rectangle only (optimization)
 - `poll_event(win) -> Option<Event>`
-- `set_title(win, title)`
+- `set_title(win, title)` — Max 12 ASCII characters
 - `destroy_window(win)`
-- `resize(win, w, h) -> bool`
-- `set_menu(win, menu)`
-- `set_blur_behind(win, radius)`
+- `resize_window(win, new_w, new_h) -> bool` — Resize window and reallocate SHM
+- `move_window(win, x, y)` — Move window to screen position
+- `set_menu(win, menu)` — Set menu bar
+- `set_blur_behind(win, radius)` — Frosted-glass effect
+- `set_wallpaper(path)` — Set desktop wallpaper
+- `show_notification(title, message, icon, timeout_ms)` — Show system notification
+- `dismiss_notification(notification_id)` — Dismiss notification
+- `screen_size() -> (u32, u32)` — Get screen resolution
+
+### `VramWindowHandle`
+
+Direct VRAM-backed window for high-performance rendering:
+- `id: u32` — Window ID
+- `surface_ptr: *mut u32` — Raw VRAM surface pointer
+- `width: u32, height: u32, stride: u32`
+- `surface() -> *mut u32` — Get raw surface pointer
+- `surface_slice() -> &mut [u32]` — Get surface as mutable slice
+- `put_pixel(x, y, color)` — Set a single pixel
+
+Created/destroyed via `CompositorClient`:
+- `create_vram_window(x, y, w, h, flags) -> Option<VramWindowHandle>`
+- `destroy_vram_window(handle)`
+- `present_vram(handle)` — Present VRAM window
+- `poll_event_vram(handle) -> Option<Event>`
 
 ### `TrayClient`
 
 For windowless tray-icon applications:
-- `connect() -> Option<Self>`
-- `add_icon(id, pixels)`
-- `remove_icon(id)`
+- `init() -> Option<Self>` — Connect as tray client
+- `add_icon(id, pixels)` — Register 16x16 tray icon
+- `set_icon(id, pixels)` — Update existing icon
+- `remove_icon(id)` — Remove tray icon
+- `create_window(x, y, w, h, flags)` — Create popup window
+- `destroy_window(handle)` — Destroy popup window
+- `present(handle)` — Present popup
+- `present_rect(handle, x, y, w, h)` — Present dirty rect
+- `move_window(handle, x, y)` — Move popup
+- `screen_size() -> (u32, u32)` — Get screen resolution
 - `poll_event() -> Option<Event>`
+- `show_notification(title, msg, icon, timeout_ms)` — Show notification
+- `dismiss_notification(notification_id)` — Dismiss notification
+
+### Menu Item Flags
+
+```rust
+pub const MENU_FLAG_DISABLED: u32 = 0x01;  // Greyed-out, non-clickable
+pub const MENU_FLAG_SEPARATOR: u32 = 0x02; // Horizontal line separator
+pub const MENU_FLAG_CHECKED: u32 = 0x04;   // Checkmark indicator
+```
 
 ### `MenuBarBuilder`
 
@@ -241,13 +284,16 @@ Fluent API for building menu definitions:
 ```rust
 let menu = MenuBarBuilder::new()
     .menu("File")
-        .item(1, "New", "Cmd+N")
-        .item(2, "Open...", "Cmd+O")
+        .item(1, "New", 0)
+        .item(2, "Open...", 0)
         .separator()
-        .item(3, "Quit", "Cmd+Q")
+        .item(3, "Quit", 0)
+    .end_menu()
     .menu("Edit")
-        .item(10, "Cut", "Cmd+X")
-        .item(11, "Copy", "Cmd+C")
-        .item(12, "Paste", "Cmd+V")
+        .item(10, "Cut", 0)
+        .item(11, "Copy", 0)
+        .item(12, "Paste", 0)
+        .item(13, "Toggle", MENU_FLAG_CHECKED)  // checked item
+    .end_menu()
     .build();
 ```

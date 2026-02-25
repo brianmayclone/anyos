@@ -3,7 +3,6 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-pub const CMD_FOCUS_BY_TID: u32 = 0x100A;
 pub const STILL_RUNNING: u32 = u32::MAX - 1;
 
 /// A decoded icon image ready for blitting.

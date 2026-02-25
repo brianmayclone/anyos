@@ -1,0 +1,50 @@
+{
+  "id": "logd",
+  "name": "Logging",
+  "icon": "file-text",
+  "category": "Services",
+  "order": 30,
+  "config_path": "/System/etc/logd.conf",
+  "config_format": "keyvalue",
+  "on_apply_ipc": "logd",
+  "description": "Configure the system logging daemon.",
+  "fields": [
+    {
+      "key": "log_dir",
+      "type": "path",
+      "label": "Log Directory",
+      "default": "/System/var/log",
+      "browse": "folder"
+    },
+    {
+      "key": "max_size",
+      "type": "number",
+      "label": "Max File Size (KB)",
+      "default": "1024",
+      "min": 64,
+      "max": 65536
+    },
+    {
+      "key": "max_files",
+      "type": "number",
+      "label": "Max Log Files",
+      "default": "5",
+      "min": 1,
+      "max": 100
+    },
+    {
+      "key": "kernel",
+      "type": "bool",
+      "label": "Log Kernel Messages",
+      "default": "true"
+    },
+    {
+      "key": "flush_interval",
+      "type": "number",
+      "label": "Flush Interval (sec)",
+      "default": "5",
+      "min": 1,
+      "max": 300
+    }
+  ]
+}

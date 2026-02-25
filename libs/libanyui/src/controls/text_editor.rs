@@ -301,7 +301,7 @@ impl TextEditor {
         (self.lines.len() as i32) * self.line_height as i32
     }
 
-    fn clamp_cursor(&mut self) {
+    pub fn clamp_cursor(&mut self) {
         if self.cursor_row >= self.lines.len() {
             self.cursor_row = self.lines.len().saturating_sub(1);
         }
@@ -321,7 +321,7 @@ impl TextEditor {
     }
 
     /// Extract selected text as bytes. Returns None if no selection.
-    fn extract_selected_text(&self) -> Option<Vec<u8>> {
+    pub fn extract_selected_text(&self) -> Option<Vec<u8>> {
         let sel = self.selection.as_ref()?;
         if sel.is_empty() {
             return None;
@@ -345,8 +345,22 @@ impl TextEditor {
         if out.is_empty() { None } else { Some(out) }
     }
 
+    /// Select all text.
+    pub fn select_all(&mut self) {
+        let last_row = self.lines.len().saturating_sub(1);
+        let last_col = self.lines[last_row].len();
+        self.selection = Some(Selection {
+            start_row: 0,
+            start_col: 0,
+            end_row: last_row,
+            end_col: last_col,
+        });
+        self.cursor_row = last_row;
+        self.cursor_col = last_col;
+    }
+
     /// Delete the selected text and place cursor at the start of the selection.
-    fn delete_selection(&mut self) -> bool {
+    pub fn delete_selection(&mut self) -> bool {
         let sel = match self.selection.take() {
             Some(s) if !s.is_empty() => s,
             _ => return false,
@@ -667,14 +681,15 @@ impl Control for TextEditor {
         // ── Ctrl shortcuts ──
         if has_ctrl {
             // Ctrl+C: copy
-            if char_code == b'c' as u32 {
+            if char_code == b'c' as u32 || char_code == b'C' as u32 {
                 if let Some(text) = self.extract_selected_text() {
                     crate::compositor::clipboard_set(&text);
+                } else {
                 }
                 return EventResponse::CONSUMED;
             }
             // Ctrl+X: cut
-            if char_code == b'x' as u32 {
+            if char_code == b'x' as u32 || char_code == b'X' as u32 {
                 if let Some(text) = self.extract_selected_text() {
                     crate::compositor::clipboard_set(&text);
                     self.delete_selection();
@@ -682,7 +697,7 @@ impl Control for TextEditor {
                 return EventResponse::CHANGED;
             }
             // Ctrl+V: paste
-            if char_code == b'v' as u32 {
+            if char_code == b'v' as u32 || char_code == b'V' as u32 {
                 if let Some(data) = crate::compositor::clipboard_get() {
                     self.delete_selection();
                     self.clamp_cursor();
@@ -691,7 +706,7 @@ impl Control for TextEditor {
                 return EventResponse::CHANGED;
             }
             // Ctrl+A: select all
-            if char_code == b'a' as u32 {
+            if char_code == b'a' as u32 || char_code == b'A' as u32 {
                 let last_row = self.lines.len().saturating_sub(1);
                 let last_col = self.lines[last_row].len();
                 self.selection = Some(Selection {

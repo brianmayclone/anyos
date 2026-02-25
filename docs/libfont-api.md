@@ -4,7 +4,7 @@ The **libfont** shared library provides TrueType font loading and text rendering
 
 **Format:** ELF64 shared object (.so), loaded on demand via `SYS_DLL_LOAD`
 **Load Address:** `0x05000000`
-**Exports:** 7
+**Exports:** 8
 **Client crate:** `libfont_client` (uses `dynlink::dl_open` / `dl_sym`)
 
 System fonts (SF Pro family + Andale Mono, ~17 MiB) are embedded in `.rodata` via `include_bytes!()`. Since `.rodata` pages are shared read-only across all processes, the font data exists once in physical RAM — zero disk I/O at init, zero per-process memory duplication.
@@ -116,6 +116,27 @@ When subpixel rendering is enabled, each glyph pixel is rendered with separate R
 
 ---
 
+### `draw_string_buf_clipped(buf, buf_w, buf_h, x, y, color, font_id, size, text, clip_x, clip_y, clip_r, clip_b)`
+
+Render text with clip rectangle. Same as `draw_string_buf` but only draws pixels within the specified clip region.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| buf | `*mut u32` | Target pixel buffer (ARGB8888) |
+| buf_w | `u32` | Buffer width in pixels |
+| buf_h | `u32` | Buffer height in pixels |
+| x, y | `i32` | Top-left position to start rendering |
+| color | `u32` | Text color (ARGB8888) |
+| font_id | `u32` | Font ID (0 = system font) |
+| size | `u16` | Font size in pixels |
+| text | `&str` | Text string to render |
+| clip_x, clip_y | `i32` | Clip rectangle left, top (pixels) |
+| clip_r, clip_b | `i32` | Clip rectangle right, bottom (pixels) |
+
+**Note:** This function is exported from `libfont.so` but has no wrapper in `libfont_client` — use the raw FFI export directly if clipped rendering is needed.
+
+---
+
 ### `line_height(font_id, size) -> u32`
 
 Get the line height for a font at a given size. Useful for multi-line text layout.
@@ -156,7 +177,7 @@ These fonts are compiled into `libfont.so`'s `.rodata` section and shared across
 
 libfont uses two library formats:
 
-- **libfont** (`libs/libfont/`) — the shared library itself, built as a `staticlib` and linked by `anyld` into an ELF64 `.so`. Exports 7 `#[no_mangle] pub extern "C"` symbols.
+- **libfont** (`libs/libfont/`) — the shared library itself, built as a `staticlib` and linked by `anyld` into an ELF64 `.so`. Exports 8 `#[no_mangle] pub extern "C"` symbols (the client wraps 7 of them; `draw_string_buf_clipped` is server-only).
 - **libfont_client** (`libs/libfont_client/`) — client wrapper that resolves symbols via `dynlink::dl_open("/Libraries/libfont.so")` + `dl_sym()`. Caches function pointers in a static `FontLib` struct.
 
 Other libraries (libanyui, uisys, stdlib) that need font rendering resolve libfont symbols directly via inline ELF parsing of the mapped `.so` at runtime.

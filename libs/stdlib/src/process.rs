@@ -248,12 +248,22 @@ pub fn getargs(buf: &mut [u8]) -> usize {
 
 /// Get command-line arguments, skipping argv[0] (the program name).
 /// Returns the argument portion of the args string (after the first space).
+///
+/// Handles quoted argv[0] for paths with spaces (e.g. `"/Applications/My App.app" file.md`).
 pub fn args(buf: &mut [u8; 256]) -> &str {
     let len = getargs(buf);
     let all = core::str::from_utf8(&buf[..len]).unwrap_or("");
-    match all.find(' ') {
-        Some(idx) => all[idx + 1..].trim_start(),
-        None => "",
+    if all.starts_with('"') {
+        // Quoted argv[0]: skip to closing quote
+        match all[1..].find('"') {
+            Some(close) => all[close + 2..].trim_start(),
+            None => "",
+        }
+    } else {
+        match all.find(' ') {
+            Some(idx) => all[idx + 1..].trim_start(),
+            None => "",
+        }
     }
 }
 

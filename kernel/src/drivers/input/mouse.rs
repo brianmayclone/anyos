@@ -52,7 +52,7 @@ struct MouseState {
 }
 
 fn mouse_wait_input() {
-    for _ in 0..100_000 {
+    for _ in 0..10_000 {
         if unsafe { inb(0x64) } & 0x02 == 0 {
             return;
         }
@@ -60,7 +60,7 @@ fn mouse_wait_input() {
 }
 
 fn mouse_wait_output() {
-    for _ in 0..100_000 {
+    for _ in 0..10_000 {
         if unsafe { inb(0x64) } & 0x01 != 0 {
             return;
         }

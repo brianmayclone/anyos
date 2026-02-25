@@ -33,6 +33,7 @@ impl Control for Label {
             crate::theme::colors().text
         };
         let fs = self.text_base.text_style.font_size;
+        let fid = self.text_base.text_style.font_id;
         let align = self.text_base.base.state; // 0=left, 1=center, 2=right
         let pad = &self.text_base.base.padding;
 
@@ -49,17 +50,17 @@ impl Control for Label {
 
             let tx = if align == 1 {
                 // Center
-                let (tw, _) = crate::draw::text_size_at(line, fs);
+                let (tw, _) = crate::draw::measure_text_ex(line, fid, fs);
                 text_x + (text_w - tw as i32) / 2
             } else if align == 2 {
                 // Right
-                let (tw, _) = crate::draw::text_size_at(line, fs);
+                let (tw, _) = crate::draw::measure_text_ex(line, fid, fs);
                 text_x + text_w - tw as i32
             } else {
                 text_x
             };
 
-            crate::draw::draw_text_sized(surface, tx, line_y, text_color, line, fs);
+            crate::draw::draw_text_ex(surface, tx, line_y, text_color, line, fid, fs);
             line_y += line_h;
 
             if end >= text.len() { break; }

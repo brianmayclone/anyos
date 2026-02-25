@@ -1,10 +1,10 @@
 # anyOS Image Library (libimage) API Reference
 
-The **libimage** DLL is a shared library for decoding images and video frames into ARGB8888 pixel buffers. It supports BMP, PNG, JPEG, GIF, and ICO image formats plus MJV video, and includes a scaling API.
+The **libimage** DLL is a shared library for decoding/encoding images and video frames into ARGB8888 pixel buffers. It supports BMP, PNG, JPEG, GIF, and ICO image formats plus MJV video, and includes scaling, BMP encoding, and icon pack rendering APIs.
 
 **DLL Address:** `0x04100000`
 **Version:** 1
-**Exports:** 7
+**Exports:** 10
 **Client crate:** `libimage_client`
 
 ---
@@ -25,6 +25,11 @@ The **libimage** DLL is a shared library for decoding images and video frames in
   - [video_decode_frame](#video_decode_frame)
 - [Scale Functions](#scale-functions)
   - [scale_image](#scale_image)
+- [Encode Functions](#encode-functions)
+  - [encode_bmp](#encode_bmp)
+- [Iconpack Functions](#iconpack-functions)
+  - [iconpack_render](#iconpack_render)
+  - [iconpack_render_cached](#iconpack_render_cached)
 - [Format Support](#format-support)
   - [BMP](#bmp)
   - [PNG](#png)
@@ -102,7 +107,7 @@ fn main() {
 
 ### Memory Model
 
-The DLL is **stateless** and uses **no heap**. All memory is provided by the caller:
+The DLL is mostly **stateless** with caller-provided buffers. The only internal state is the `iconpack_render_cached` function which lazy-loads and caches `/System/media/ico.pak` on first call:
 
 1. **Image data** (`&[u8]`): The raw file bytes (read from disk)
 2. **Pixel buffer** (`&mut [u32]`): Output ARGB8888 pixels, `width * height` elements
@@ -370,6 +375,90 @@ Scale an ARGB8888 image to a new size.
 - `MODE_SCALE` (0): Stretches source to fill destination exactly. Aspect ratio is not preserved.
 - `MODE_CONTAIN` (1): Fits source within destination while preserving aspect ratio. Unused areas are filled with transparent black (`0x00000000`). The scaled image is centered in the destination.
 - `MODE_COVER` (2): Fills destination while preserving aspect ratio. Excess source area is cropped (centered). No transparent pixels are produced.
+
+---
+
+## Encode Functions
+
+### encode_bmp
+
+```rust
+pub fn encode_bmp(pixels: &[u32], width: u32, height: u32, out: &mut [u8]) -> Result<usize, ImageError>
+```
+
+Encode ARGB8888 pixels to BMP format.
+
+**Parameters:**
+- `pixels` -- Source ARGB8888 pixel buffer (`width * height` elements)
+- `width`, `height` -- Image dimensions
+- `out` -- Output buffer for BMP file data
+
+**Returns:**
+- `Ok(bytes_written)` on success
+- `Err(ImageError)` on failure (buffer too small, invalid dimensions)
+
+**Buffer size:** The output buffer should be at least `54 + width * height * 4` bytes (BMP header + 32-bit pixel data).
+
+---
+
+## Iconpack Functions
+
+The icon pack system renders SVG icons from the binary `ico.pak` file containing 6000+ Tabler Icons in both filled and outline variants.
+
+**Icon pack format (IPAK v2):**
+
+| Offset | Size | Field |
+|--------|------|-------|
+| 0 | 4 | Magic: `IPAK` |
+| 4 | 2 | Version (2) |
+| 6 | 2 | Filled icon count |
+| 8 | 2 | Outline icon count |
+| 10 | 2 | Pre-rasterized icon size (pixels) |
+| 12 | 4 | Names section offset |
+| 16 | 4 | Data section offset |
+
+Icons are looked up by name (e.g. `"device-floppy"`, `"folder-open"`) and rendered with a caller-specified color and size.
+
+### iconpack_render
+
+```rust
+pub fn iconpack_render(
+    pak: &[u8], name: &str, filled: bool, size: u32, color: u32, out: &mut [u32],
+) -> Result<(), ImageError>
+```
+
+Render an icon from a caller-provided pak buffer.
+
+**Parameters:**
+- `pak` -- Raw ico.pak file data
+- `name` -- Icon name (e.g. `"heart"`, `"folder-open"`)
+- `filled` -- `true` for filled variant, `false` for outline
+- `size` -- Desired output size in pixels (1-512)
+- `color` -- ARGB color to apply (e.g. `0xFFCCCCCC`)
+- `out` -- Output pixel buffer (`size * size` elements)
+
+### iconpack_render_cached
+
+```rust
+pub fn iconpack_render_cached(
+    name: &str, filled: bool, size: u32, color: u32, out: &mut [u32],
+) -> Result<(), ImageError>
+```
+
+Render an icon using the DLL's internal ico.pak cache. The DLL lazy-loads `/System/media/ico.pak` on first call -- no client-side file reads needed. Preferred over `iconpack_render` for normal use.
+
+**Parameters:**
+- `name` -- Icon name (e.g. `"device-floppy"`, `"arrow-back-up"`)
+- `filled` -- `true` for filled variant, `false` for outline
+- `size` -- Desired output size in pixels (1-512)
+- `color` -- ARGB color to apply
+- `out` -- Output pixel buffer (`size * size` elements)
+
+**Notes:**
+- The pak file is loaded once and cached for the lifetime of the process
+- If the requested size doesn't match the pre-rasterized size, the icon is scaled automatically
+- Returns `Err(Unsupported)` if the icon name is not found or the pak file cannot be loaded
+- Maximum pak file size: 2 MiB
 
 ---
 

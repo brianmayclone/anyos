@@ -561,7 +561,7 @@ anyOS supports two syscall paths:
 
 ### Syscall Categories
 
-There are 140 syscalls organized by category:
+There are 155+ syscalls organized by category:
 
 | Category | Count | Examples |
 |----------|-------|----------|
@@ -605,12 +605,19 @@ anyOS uses two shared library formats at fixed virtual addresses (0x04000000+):
 
 | Library | Format | Base Address | Exports | Description |
 |---------|--------|-------------|---------|-------------|
-| **uisys** | DLIB | `0x04000000` | 80 | macOS-style UI components (31 component types) |
-| **libimage** | DLIB | `0x04100000` | 7 | Image/video decoding (BMP, PNG, JPEG, GIF, ICO, MJV) + scaling |
+| **uisys** | DLIB | `0x04000000` | 80 | Legacy UI components (31 types, deprecated — use libanyui) |
+| **libimage** | DLIB | `0x04100000` | 10 | Image/video decoding (BMP, PNG, JPEG, GIF, ICO, MJV) + scaling + BMP encoding + iconpack rendering |
 | **librender** | DLIB | `0x04300000` | 18 | 2D rendering primitives (shapes, gradients, anti-aliasing) |
 | **libcompositor** | DLIB | `0x04380000` | 16 | Window management IPC (SHM surfaces, event channels) |
-| **libanyui** | .so | `0x04400000` | 112 | anyui UI framework (41 controls, Windows Forms-style) |
+| **libanyui** | .so | `0x04400000` | 120+ | anyui UI framework (42 controls, Windows Forms-style, clipboard, theming, tooltips) |
 | **libfont** | .so | `0x05000000` | 7 | TrueType font rendering (gamma-corrected greyscale + LCD subpixel AA), system fonts embedded in .rodata |
+| **libjs** | .so | — | — | JavaScript engine (ES5+ support) |
+| **libwebview** | .so | — | — | Web view component (HTML/CSS rendering) |
+| **libsvg** | .so | — | — | SVG rendering library |
+| **libzip** | .so | — | — | ZIP archive handling |
+| **libdb** | .so | — | — | Key-value database |
+| **libc64** | static | — | — | 64-bit C standard library |
+| **libcxx** | static | — | — | 64-bit C++ standard library |
 
 ### uisys.dlib
 
@@ -625,16 +632,17 @@ See [uisys API](uisys-api.md) for the complete component reference.
 
 ### libimage.dlib
 
-Image and video decoding library. Stateless, heap-free -- callers provide all memory.
+Image and video decoding/encoding library. Uses caller-provided memory for most operations; the `iconpack_render_cached` function lazy-loads and caches ico.pak internally.
 
 | Format | Features |
 |--------|----------|
-| **BMP** | 24-bit RGB, 32-bit ARGB |
+| **BMP** | 24-bit RGB, 32-bit ARGB (decode + encode) |
 | **PNG** | 8-bit RGB/RGBA/grayscale, DEFLATE, all filter types |
 | **JPEG** | Baseline DCT, 4:2:0/4:2:2/4:4:4, LLM fast integer IDCT |
 | **GIF** | LZW, transparency, interlacing (first frame) |
 | **ICO** | Multi-size selection, BMP-in-ICO (1/4/8/24/32bpp), PNG-in-ICO |
 | **MJV** | Motion JPEG Video container (per-frame JPEG decode) |
+| **IPAK** | Icon pack v2 (6000+ Tabler Icons, pre-rasterized alpha maps) |
 
 Also provides bilinear image scaling (stretch/contain/cover modes).
 
@@ -760,6 +768,67 @@ version=1.0                 # Version string (required)
 category=Utilities          # Category (required)
 capabilities=filesystem,dll # Comma-separated capability list
 ```
+
+---
+
+## Applications & Programs
+
+### GUI Applications (`apps/`)
+
+| App | Description |
+|-----|-------------|
+| **anycode** | Code editor (VSCode-like, reference anyui app) |
+| **calc** | Calculator |
+| **clipman** | Clipboard history manager |
+| **clock** | Clock widget |
+| **demo_anyui** | anyui widget demo/showcase |
+| **diagnostics** | System diagnostics |
+| **diff** | Diff/merge tool (Meld-like) |
+| **fontviewer** | Font browser |
+| **imgview** | Image viewer |
+| **mdview** | Markdown viewer |
+| **minesweeper** | Minesweeper game |
+| **notepad** | Simple text editor |
+| **paint** | Paint application (Canvas-based) |
+| **screenshot** | Screenshot tool |
+| **surf** | Web browser |
+| **videoplayer** | Video player |
+| **webmanager** | Web management tool |
+
+### System Services (`system/`)
+
+| Service | Description |
+|---------|-------------|
+| **amid** | Anywhere Management Interface daemon (system info database) |
+| **audiomon** | Audio monitoring service |
+| **compositor** | Display server / window manager |
+| **diskutil** | Disk utility GUI |
+| **eventviewer** | Event/log viewer GUI |
+| **finder** | File manager/browser |
+| **init** | Boot initialization |
+| **inputmon** | Input device monitoring |
+| **login** | Login manager |
+| **netmon** | Network monitoring |
+| **permdialog** | Permission dialog daemon |
+| **settings** | System settings GUI |
+| **shell** | Command-line shell |
+| **taskmanager** | Task manager / activity monitor |
+| **terminal** | Terminal emulator |
+
+### CLI Programs (`bin/`)
+
+98+ Unix-like CLI tools including:
+- **Standard tools**: ls, cat, cp, mv, rm, mkdir, rmdir, grep, find, head, tail, sort, uniq, wc, tee, xargs, tr, cut, seq, basename, dirname, readlink, realpath, env, export, which, whoami, uname, hostname
+- **Editors**: nano, vi, nvi, sed, awk
+- **Archive**: tar, zip, unzip, gzip
+- **Network**: ping, ssh, sshd, wget, ftp, dhcp, dns, ifconfig, arp, httpd
+- **System**: ps, top, htop, mount, umount, sysinfo, dmesg, neofetch, stat, df, du, lsblk, fdisk, free
+- **Version control**: git
+- **Package manager**: ami
+- **Process management**: kill, nice, nohup, crond, crontab
+- **Service manager**: svc
+
+---
 
 ### Self-Hosting
 

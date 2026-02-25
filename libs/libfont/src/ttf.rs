@@ -2,8 +2,8 @@
 //! TrueType font parser for `no_std` environments.
 //!
 //! Zero-copy parser that operates on `&[u8]` references into raw TTF data.
-//! Supports simple and composite glyphs, cmap format 4 character mapping,
-//! and horizontal metrics.
+//! Supports simple and composite glyphs, cmap format 4 and 12 character mapping,
+//! horizontal metrics, and CBDT/CBLC color bitmap lookup.
 
 use alloc::vec::Vec;
 
@@ -102,6 +102,23 @@ const WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x0040;
 const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
 
 // ---------------------------------------------------------------------------
+// Bitmap glyph data (from CBDT/CBLC)
+// ---------------------------------------------------------------------------
+
+/// Bitmap glyph data extracted from CBDT, with metrics from SmallGlyphMetrics.
+pub struct BitmapGlyphData<'a> {
+    pub width: u8,
+    pub height: u8,
+    pub bearing_x: i8,
+    pub bearing_y: i8,
+    pub advance: u8,
+    /// The ppem of the strike this glyph came from.
+    pub strike_ppem: u8,
+    /// Raw PNG data from CBDT (imageFormat 17).
+    pub png_data: &'a [u8],
+}
+
+// ---------------------------------------------------------------------------
 // TtfFont
 // ---------------------------------------------------------------------------
 
@@ -134,6 +151,15 @@ pub struct TtfFont {
 
     /// Number of long horizontal metrics (from `hhea`).
     pub num_h_metrics: u16,
+
+    /// True if font has glyf/loca tables (outline glyphs).
+    pub has_outlines: bool,
+    /// True if font has CBLC/CBDT tables (bitmap glyphs).
+    pub has_bitmaps: bool,
+    /// Byte offset of the `CBLC` table.
+    pub cblc_offset: usize,
+    /// Byte offset of the `CBDT` table.
+    pub cbdt_offset: usize,
 }
 
 impl TtfFont {
@@ -173,6 +199,8 @@ impl TtfFont {
         let mut hmtx_off: Option<usize> = None;
         let mut loca_off: Option<usize> = None;
         let mut glyf_off: Option<usize> = None;
+        let mut cblc_off: Option<usize> = None;
+        let mut cbdt_off: Option<usize> = None;
 
         for i in 0..num_tables {
             let rec = 12 + i * 16;
@@ -187,17 +215,28 @@ impl TtfFont {
                 0x686D7478 => hmtx_off = Some(offset), // 'hmtx'
                 0x6C6F6361 => loca_off = Some(offset), // 'loca'
                 0x676C7966 => glyf_off = Some(offset), // 'glyf'
+                0x43424C43 => cblc_off = Some(offset), // 'CBLC'
+                0x43424454 => cbdt_off = Some(offset), // 'CBDT'
                 _ => {}
             }
         }
 
+        // Required tables
         let head_off = head_off?;
         let maxp_off = maxp_off?;
         let cmap_off = cmap_off?;
         let hhea_off = hhea_off?;
         let hmtx_off = hmtx_off?;
-        let loca_off = loca_off?;
-        let glyf_off = glyf_off?;
+
+        // Outline tables are optional (bitmap-only fonts like NotoColorEmoji)
+        let has_outlines = loca_off.is_some() && glyf_off.is_some();
+        let glyf_off = glyf_off.unwrap_or(0);
+        let loca_off = loca_off.unwrap_or(0);
+
+        // Bitmap tables are optional
+        let has_bitmaps = cblc_off.is_some() && cbdt_off.is_some();
+        let cblc_off = cblc_off.unwrap_or(0);
+        let cbdt_off = cbdt_off.unwrap_or(0);
 
         if data.len() < head_off + 54 { return None; }
         let units_per_em = read_u16_be(&data, head_off + 18);
@@ -225,19 +264,18 @@ impl TtfFont {
             loca_offset: loca_off,
             hmtx_offset: hmtx_off,
             num_h_metrics,
+            has_outlines,
+            has_bitmaps,
+            cblc_offset: cblc_off,
+            cbdt_offset: cbdt_off,
         })
     }
 
     // ------------------------------------------------------------------
-    // cmap: character -> glyph mapping (format 4)
+    // cmap: character -> glyph mapping (format 4 + format 12)
     // ------------------------------------------------------------------
 
     pub fn char_to_glyph(&self, codepoint: u32) -> u16 {
-        if codepoint > 0xFFFF {
-            return 0;
-        }
-        let cp = codepoint as u16;
-
         let d = &self.data;
         let cmap = self.cmap_offset;
 
@@ -246,7 +284,10 @@ impl TtfFont {
         let num_subtables = read_u16_be(d, cmap + 2) as usize;
         if d.len() < cmap + 4 + num_subtables * 8 { return 0; }
 
-        let mut subtable_offset: Option<usize> = None;
+        // Scan subtables: prefer format 12 (full Unicode), fall back to format 4 (BMP)
+        let mut fmt12_offset: Option<usize> = None;
+        let mut fmt4_offset: Option<usize> = None;
+
         for i in 0..num_subtables {
             let rec = cmap + 4 + i * 8;
             let platform = read_u16_be(d, rec);
@@ -256,21 +297,73 @@ impl TtfFont {
 
             if d.len() < abs + 4 { continue; }
             let format = read_u16_be(d, abs);
-            if format != 4 { continue; }
 
-            if platform == 3 && encoding == 1 {
-                subtable_offset = Some(abs);
-                break;
-            }
-            if platform == 0 && subtable_offset.is_none() {
-                subtable_offset = Some(abs);
+            if format == 12 && platform == 3 && encoding == 10 {
+                fmt12_offset = Some(abs);
+            } else if format == 4 {
+                if platform == 3 && encoding == 1 {
+                    fmt4_offset = Some(abs);
+                } else if platform == 0 && fmt4_offset.is_none() {
+                    fmt4_offset = Some(abs);
+                }
             }
         }
 
-        let sub = match subtable_offset {
-            Some(o) => o,
-            None => return 0,
-        };
+        // Try format 12 first (supports all Unicode codepoints)
+        if let Some(sub) = fmt12_offset {
+            let gid = self.cmap_format12_lookup(sub, codepoint);
+            if gid != 0 { return gid; }
+        }
+
+        // Fall back to format 4 (BMP only)
+        if codepoint <= 0xFFFF {
+            if let Some(sub) = fmt4_offset {
+                return self.cmap_format4_lookup(sub, codepoint as u16);
+            }
+        }
+
+        0
+    }
+
+    /// Lookup codepoint in a cmap format 12 subtable (segmented coverage, 32-bit).
+    fn cmap_format12_lookup(&self, sub: usize, codepoint: u32) -> u16 {
+        let d = &self.data;
+        // Format 12 header: format(2) + reserved(2) + length(4) + language(4) + numGroups(4) = 16 bytes
+        if d.len() < sub + 16 { return 0; }
+        let num_groups = read_u32_be(d, sub + 12) as usize;
+        if d.len() < sub + 16 + num_groups * 12 { return 0; }
+
+        // Binary search through groups
+        let groups_base = sub + 16;
+        let mut lo: usize = 0;
+        let mut hi: usize = num_groups;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let entry = groups_base + mid * 12;
+            let end_char = read_u32_be(d, entry + 4);
+            if end_char < codepoint {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+
+        if lo >= num_groups { return 0; }
+        let entry = groups_base + lo * 12;
+        let start_char = read_u32_be(d, entry);
+        let end_char = read_u32_be(d, entry + 4);
+        let start_glyph = read_u32_be(d, entry + 8);
+
+        if codepoint >= start_char && codepoint <= end_char {
+            (start_glyph + (codepoint - start_char)) as u16
+        } else {
+            0
+        }
+    }
+
+    /// Lookup codepoint in a cmap format 4 subtable (segmented mapping, 16-bit BMP).
+    fn cmap_format4_lookup(&self, sub: usize, cp: u16) -> u16 {
+        let d = &self.data;
 
         if d.len() < sub + 14 { return 0; }
         let seg_count_x2 = read_u16_be(d, sub + 6) as usize;
@@ -330,6 +423,7 @@ impl TtfFont {
     // ------------------------------------------------------------------
 
     pub fn glyph_offset(&self, glyph_id: u16) -> Option<usize> {
+        if !self.has_outlines { return None; }
         if glyph_id >= self.num_glyphs {
             return None;
         }
@@ -400,6 +494,7 @@ impl TtfFont {
     // ------------------------------------------------------------------
 
     pub fn glyph_outline(&self, glyph_id: u16) -> Option<GlyphOutline> {
+        if !self.has_outlines { return None; }
         self.glyph_outline_depth(glyph_id, 0)
     }
 
@@ -622,5 +717,98 @@ impl TtfFont {
             contour_ends: all_contour_ends,
             points: all_points,
         })
+    }
+
+    // ------------------------------------------------------------------
+    // CBLC/CBDT: bitmap glyph lookup
+    // ------------------------------------------------------------------
+
+    /// Look up a bitmap glyph from CBLC/CBDT tables.
+    /// Returns the raw PNG data and metrics for imageFormat 17.
+    pub fn get_bitmap_glyph(&self, glyph_id: u16) -> Option<BitmapGlyphData> {
+        if !self.has_bitmaps { return None; }
+        let d = &self.data;
+        let cblc = self.cblc_offset;
+        let cbdt = self.cbdt_offset;
+
+        if d.len() < cblc + 8 { return None; }
+        let num_sizes = read_u32_be(d, cblc + 4) as usize;
+
+        // Iterate BitmapSize records (48 bytes each, starting at offset 8)
+        for s in 0..num_sizes {
+            let bs = cblc + 8 + s * 48;
+            if d.len() < bs + 48 { continue; }
+
+            let start_glyph = read_u16_be(d, bs + 40);
+            let end_glyph = read_u16_be(d, bs + 42);
+            if glyph_id < start_glyph || glyph_id > end_glyph { continue; }
+
+            let ppem_x = d[bs + 44];
+            let index_sub_array_off = read_u32_be(d, bs) as usize;
+            let num_index_sub_tables = read_u32_be(d, bs + 8) as usize;
+
+            let arr_base = cblc + index_sub_array_off;
+
+            // Search IndexSubTableArray entries (8 bytes each)
+            for ist in 0..num_index_sub_tables {
+                let entry = arr_base + ist * 8;
+                if d.len() < entry + 8 { continue; }
+
+                let first = read_u16_be(d, entry);
+                let last = read_u16_be(d, entry + 2);
+                if glyph_id < first || glyph_id > last { continue; }
+
+                let additional_off = read_u32_be(d, entry + 4) as usize;
+                let sub_table = arr_base + additional_off;
+                if d.len() < sub_table + 8 { continue; }
+
+                let index_format = read_u16_be(d, sub_table);
+                let image_format = read_u16_be(d, sub_table + 2);
+                let image_data_offset = read_u32_be(d, sub_table + 4) as usize;
+
+                // Only support imageFormat 17 (SmallGlyphMetrics + PNG data)
+                if image_format != 17 { continue; }
+
+                let glyph_idx = (glyph_id - first) as usize;
+
+                let data_offset = match index_format {
+                    1 => {
+                        // IndexSubTable1: array of u32 sbitOffsets
+                        let off_entry = sub_table + 8 + glyph_idx * 4;
+                        if d.len() < off_entry + 4 { continue; }
+                        let off = read_u32_be(d, off_entry) as usize;
+                        cbdt + image_data_offset + off
+                    }
+                    3 => {
+                        // IndexSubTable3: array of u16 sbitOffsets
+                        let off_entry = sub_table + 8 + glyph_idx * 2;
+                        if d.len() < off_entry + 2 { continue; }
+                        let off = read_u16_be(d, off_entry) as usize;
+                        cbdt + image_data_offset + off
+                    }
+                    _ => continue,
+                };
+
+                // SmallGlyphMetrics (5 bytes) + dataLen (4 bytes) + PNG data
+                if d.len() < data_offset + 9 { continue; }
+                let height = d[data_offset];
+                let width = d[data_offset + 1];
+                let bearing_x = d[data_offset + 2] as i8;
+                let bearing_y = d[data_offset + 3] as i8;
+                let advance = d[data_offset + 4];
+                let data_len = read_u32_be(d, data_offset + 5) as usize;
+
+                if d.len() < data_offset + 9 + data_len { continue; }
+                let png_data = &d[data_offset + 9..data_offset + 9 + data_len];
+
+                return Some(BitmapGlyphData {
+                    width, height, bearing_x, bearing_y, advance,
+                    strike_ppem: ppem_x,
+                    png_data,
+                });
+            }
+        }
+
+        None
     }
 }

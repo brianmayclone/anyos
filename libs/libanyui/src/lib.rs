@@ -181,6 +181,12 @@ pub(crate) struct AnyuiState {
     pub last_char_code: u32,
     /// Modifier flags from the most recent KEY_DOWN event.
     pub last_modifiers: u32,
+
+    // ── Window lifecycle callbacks (for dock/system integration) ──────
+    /// Callback for EVT_WINDOW_OPENED (0x0060). Called with (app_tid, 0x0060, userdata).
+    pub on_window_opened: Option<(Callback, u64)>,
+    /// Callback for EVT_WINDOW_CLOSED (0x0061). Called with (app_tid, 0x0061, userdata).
+    pub on_window_closed: Option<(Callback, u64)>,
 }
 
 /// Signal that at least one control needs repainting.
@@ -300,6 +306,8 @@ pub extern "C" fn anyui_init() -> u32 {
             last_keycode: 0,
             last_char_code: 0,
             last_modifiers: 0,
+            on_window_opened: None,
+            on_window_closed: None,
         });
     }
     1
@@ -1675,6 +1683,68 @@ pub extern "C" fn anyui_texteditor_get_line_count(id: ControlId) -> u32 {
     0
 }
 
+/// Copy selected text to system clipboard. Returns 1 if text was copied, 0 if no selection.
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_copy(id: ControlId) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor_ref(ctrl) {
+            if let Some(text) = te.extract_selected_text() {
+                compositor::clipboard_set(&text);
+                return 1;
+            }
+        }
+    }
+    0
+}
+
+/// Cut selected text to system clipboard. Returns 1 if text was cut, 0 if no selection.
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_cut(id: ControlId) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor(ctrl) {
+            if let Some(text) = te.extract_selected_text() {
+                compositor::clipboard_set(&text);
+                te.delete_selection();
+                te.base_mut().mark_dirty();
+                return 1;
+            }
+        }
+    }
+    0
+}
+
+/// Paste from system clipboard at cursor position.
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_paste(id: ControlId) -> u32 {
+    if let Some(data) = compositor::clipboard_get() {
+        let st = state();
+        if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+            if let Some(te) = as_text_editor(ctrl) {
+                te.delete_selection();
+                te.clamp_cursor();
+                te.insert_text_at_cursor(&data);
+                te.base_mut().mark_dirty();
+                return data.len() as u32;
+            }
+        }
+    }
+    0
+}
+
+/// Select all text in the editor.
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_select_all(id: ControlId) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor(ctrl) {
+            te.select_all();
+            te.base_mut().mark_dirty();
+        }
+    }
+}
+
 // ── TreeView ──────────────────────────────────────────────────────────
 
 fn as_tree_view(ctrl: &mut alloc::boxed::Box<dyn Control>) -> Option<&mut controls::tree_view::TreeView> {
@@ -2331,8 +2401,12 @@ pub extern "C" fn anyui_clipboard_get(out: *mut u8, capacity: u32) -> u32 {
                 core::ptr::copy_nonoverlapping(data.as_ptr(), out, copy_len);
             }
         }
+        let preview_len = copy_len.min(30);
+        let preview = core::str::from_utf8(&data[..preview_len]).unwrap_or("?");
+        crate::log!("[anyui_clipboard_get] got {} bytes: '{}'", copy_len, preview);
         copy_len as u32
     } else {
+        crate::log!("[anyui_clipboard_get] empty");
         0
     }
 }
@@ -2383,6 +2457,41 @@ pub extern "C" fn anyui_datagrid_set_scroll_offset(id: ControlId, offset: u32) {
             dg.base.mark_dirty();
         }
     }
+}
+
+// ── Compositor channel access ────────────────────────────────────
+
+/// Return the compositor event channel ID for direct IPC commands.
+#[no_mangle]
+pub extern "C" fn anyui_get_compositor_channel() -> u32 {
+    state().channel_id
+}
+
+// ── Window lifecycle callbacks ──────────────────────────────────
+
+/// Register a callback for EVT_WINDOW_OPENED (0x0060).
+/// Callback receives (app_tid, 0x0060, userdata).
+#[no_mangle]
+pub extern "C" fn anyui_on_window_opened(cb: Callback, userdata: u64) {
+    state().on_window_opened = Some((cb, userdata));
+}
+
+/// Register a callback for EVT_WINDOW_CLOSED (0x0061).
+/// Callback receives (app_tid, 0x0061, userdata).
+#[no_mangle]
+pub extern "C" fn anyui_on_window_closed(cb: Callback, userdata: u64) {
+    state().on_window_closed = Some((cb, userdata));
+}
+
+// ── Focus by task ID ────────────────────────────────────────────────
+
+/// Send CMD_FOCUS_BY_TID to the compositor to bring a window to the front.
+#[no_mangle]
+pub extern "C" fn anyui_focus_by_tid(tid: u32) {
+    let channel_id = state().channel_id;
+    if channel_id == 0 { return; }
+    let cmd: [u32; 5] = [0x100A, tid, 0, 0, 0]; // CMD_FOCUS_BY_TID
+    syscall::evt_chan_emit(channel_id, &cmd);
 }
 
 // ── Text measurement (for libwebview layout engine) ──────────────────

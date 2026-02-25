@@ -143,7 +143,7 @@ Output goes to file descriptor 1 (stdout) via the `fs::write()` syscall.
 | `try_waitpid` | `fn try_waitpid(tid: u32) -> u32` | Non-blocking wait. Returns exit code, `STILL_RUNNING`, or `u32::MAX`. |
 | `kill` | `fn kill(tid: u32) -> u32` | Kill a thread. Returns 0 on success. |
 | `getargs` | `fn getargs(buf: &mut [u8]) -> usize` | Get raw command-line arguments (includes argv[0]). |
-| `args` | `fn args(buf: &mut [u8; 256]) -> &str` | Get arguments, skipping program name. |
+| `args` | `fn args(buf: &mut [u8; 256]) -> &str` | Get arguments, skipping program name. Handles quoted argv[0] for paths with spaces (e.g. `"/Applications/My App.app" file.md`). |
 | `thread_create` | `fn thread_create(entry: fn(), stack_top: usize, name: &str) -> u32` | Create a new thread. Returns TID. |
 | `thread_create_with_priority` | `fn thread_create_with_priority(entry: fn(), stack_top: usize, name: &str, priority: u8) -> u32` | Create thread with priority. |
 | `set_priority` | `fn set_priority(tid: u32, priority: u8) -> u32` | Set thread priority (0=highest, 255=lowest). |
@@ -443,7 +443,7 @@ Per-process key-value environment variable storage.
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `set` | `fn set(key: &str, value: &str) -> u32` | Set variable. 0 on success. |
-| `unset` | `fn unset(key: &str) -> u32` | Remove variable. Pass empty value to `set`. |
+| `unset` | `fn unset(key: &str) -> u32` | Remove variable (calls syscall with null pointer to clear the key). |
 | `get` | `fn get(key: &str, buf: &mut [u8]) -> u32` | Get variable value. Returns length or 0 if not found. |
 | `list` | `fn list(buf: &mut [u8]) -> u32` | List all variables. Returns bytes written. |
 
@@ -786,10 +786,22 @@ pub struct MimeEntry {
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `load` | `fn load() -> Self` | Load MIME database from disk. |
+| `load` | `fn load() -> Self` | Load MIME database from disk (system + user overrides). |
 | `lookup` | `fn lookup(&self, ext: &str) -> Option<&MimeEntry>` | Lookup by file extension. |
 | `icon_for_ext` | `fn icon_for_ext(&self, ext: &str) -> &str` | Get icon path for extension. |
 | `app_for_ext` | `fn app_for_ext(&self, ext: &str) -> Option<&str>` | Get default app for extension. |
+| `set_user_default` | `fn set_user_default(&mut self, ext: &str, app_path: &str)` | Set a per-user default app for an extension. Persists to `$HOME/.mime_overrides.json`. |
+
+#### MimeOverride
+
+Per-user MIME association override.
+
+```rust
+pub struct MimeOverride {
+    pub ext: String,
+    pub app: String,
+}
+```
 
 ### Utility Functions
 

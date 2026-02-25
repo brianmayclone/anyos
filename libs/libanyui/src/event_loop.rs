@@ -215,6 +215,36 @@ pub fn run_once() -> u32 {
         }
     }
 
+    // ── Phase 1.2: Process window lifecycle broadcasts (0x0060/0x0061) ──
+    for ev in all_events.iter() {
+        if ev[0] == 0 { continue; }
+        match ev[0] {
+            0x0060 => {
+                // EVT_WINDOW_OPENED: ev[1] = app_tid
+                if let Some((cb, ud)) = st.on_window_opened {
+                    pending_cbs.push(PendingCallback {
+                        id: ev[1],
+                        event_type: 0x0060,
+                        cb,
+                        userdata: ud,
+                    });
+                }
+            }
+            0x0061 => {
+                // EVT_WINDOW_CLOSED: ev[1] = app_tid
+                if let Some((cb, ud)) = st.on_window_closed {
+                    pending_cbs.push(PendingCallback {
+                        id: ev[1],
+                        event_type: 0x0061,
+                        cb,
+                        userdata: ud,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
     let win_count = st.windows.len();
     for wi in 0..win_count {
         if wi >= st.windows.len() { break; }
@@ -524,12 +554,17 @@ pub fn run_once() -> u32 {
                                         let click_resp = st.controls[idx2].handle_click(local_x, local_y, button);
 
                                         // RadioGroup: drain deferred deselection requests
-                                        crate::controls::radio_group::drain_deselects(&mut st.controls);
+                                        let radio_groups = crate::controls::radio_group::drain_deselects(&mut st.controls);
 
                                         fire_event_callback(&st.controls, target_id, control::EVENT_CLICK, &mut pending_cbs);
 
                                         if click_resp.fire_change {
                                             fire_event_callback(&st.controls, target_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                        }
+
+                                        // Fire EVENT_CHANGE on RadioGroup parents so on_selection_changed works
+                                        for group_id in radio_groups {
+                                            fire_event_callback(&st.controls, group_id, control::EVENT_CHANGE, &mut pending_cbs);
                                         }
 
                                         if click_resp.fire_submit {

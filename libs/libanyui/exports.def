@@ -110,6 +110,10 @@ EXPORTS
     anyui_texteditor_set_font
     anyui_texteditor_insert_text
     anyui_texteditor_get_line_count
+    anyui_texteditor_copy
+    anyui_texteditor_cut
+    anyui_texteditor_paste
+    anyui_texteditor_select_all
     anyui_treeview_add_node
     anyui_treeview_remove_node
     anyui_treeview_set_node_text
@@ -147,3 +151,7 @@ EXPORTS
     anyui_datagrid_get_scroll_offset
     anyui_datagrid_set_scroll_offset
     anyui_measure_text
+    anyui_get_compositor_channel
+    anyui_on_window_opened
+    anyui_on_window_closed
+    anyui_focus_by_tid

@@ -175,6 +175,12 @@ pub const CMD_DISMISS_NOTIFICATION: u32 = 0x1021;
 /// Compositor responds with RESP_WINDOW_POS containing content_x, content_y.
 pub const CMD_GET_WINDOW_POS: u32 = 0x1013;
 
+/// Hide all windows of a given TID (move off-screen with saved bounds).
+/// [CMD, owner_tid, 0, 0, 0]
+/// Windows are moved to (-10000, -10000) and their original position is saved
+/// in `saved_bounds` so CMD_FOCUS_BY_TID can restore them later.
+pub const CMD_HIDE_BY_TID: u32 = 0x1014;
+
 /// Inject a synthetic key event into the focused window.
 /// [CMD, scancode, char_val, is_down (1=down/0=up), modifiers]
 /// vncd maps RFB KeySyms → (scancode, char_val) before emitting this command.
