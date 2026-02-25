@@ -74,6 +74,8 @@ pub struct Vm {
     pub userdata: *mut u8,
     /// Current `this` binding for the active native call.
     pub current_this: JsValue,
+    /// Target frame depth for re-entrant run() calls (0 = run to completion).
+    pub run_target_depth: usize,
 }
 
 impl Vm {
@@ -95,6 +97,7 @@ impl Vm {
             steps: 0,
             userdata: core::ptr::null_mut(),
             current_this: JsValue::Undefined,
+            run_target_depth: 0,
         };
         vm.init_prototypes();
         vm.init_globals();
@@ -153,14 +156,14 @@ impl Vm {
                 return JsValue::Undefined;
             }
 
-            if self.frames.is_empty() {
+            if self.frames.is_empty() || self.frames.len() <= self.run_target_depth {
                 return self.stack.pop().unwrap_or(JsValue::Undefined);
             }
 
             let frame_idx = self.frames.len() - 1;
             let ip = self.frames[frame_idx].ip;
             if ip >= self.frames[frame_idx].chunk.code.len() {
-                if self.frames.len() <= 1 {
+                if self.frames.len() <= self.run_target_depth + 1 {
                     self.frames.pop();
                     return self.stack.pop().unwrap_or(JsValue::Undefined);
                 }
@@ -325,7 +328,7 @@ impl Vm {
                     let frame = self.frames.pop().unwrap();
                     self.stack.truncate(frame.stack_base);
                     self.stack.push(val.clone());
-                    if self.frames.is_empty() {
+                    if self.frames.is_empty() || self.frames.len() <= self.run_target_depth {
                         return val;
                     }
                 }
@@ -376,6 +379,8 @@ impl Vm {
                         properties: BTreeMap::new(),
                         prototype: Some(self.object_proto.clone()),
                         internal_tag: None,
+                        set_hook: None,
+                        set_hook_data: core::ptr::null_mut(),
                     };
                     self.stack.push(JsValue::Object(Rc::new(RefCell::new(obj))));
                 }

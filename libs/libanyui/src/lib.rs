@@ -804,6 +804,16 @@ pub extern "C" fn anyui_textfield_set_placeholder(id: ControlId, text: *const u8
     }
 }
 
+#[no_mangle]
+pub extern "C" fn anyui_textfield_select_all(id: ControlId) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tf) = as_textfield(ctrl) {
+            tf.select_all();
+        }
+    }
+}
+
 // ── Canvas operations ────────────────────────────────────────────────
 
 #[no_mangle]

@@ -33,6 +33,7 @@ pub fn layout_inline_content(
     start_x: i32,
     images: &ImageCache,
     text_align: TextAlignVal,
+    line_height: i32,
 ) -> Vec<LayoutBox> {
     // 1. Flatten all inline children into fragments.
     let mut fragments: Vec<InlineFragment> = Vec::new();
@@ -41,7 +42,7 @@ pub fn layout_inline_content(
         if style.display == Display::None {
             continue;
         }
-        collect_inline_fragments(dom, styles, cid, &mut fragments, available_width, images);
+        collect_inline_fragments(dom, styles, cid, &mut fragments, available_width, images, 0);
     }
 
     // 2. Break fragments into lines.
@@ -58,7 +59,7 @@ pub fn layout_inline_content(
 
         // Check if we need to wrap.
         if line_x > 0 && line_x + fw > available_width && !line.children.is_empty() {
-            line.height = line_h;
+            line.height = line_h.max(line_height);
             lines.push(line);
             line = LayoutBox::new(None, BoxType::LineBox);
             line.x = start_x;
@@ -81,7 +82,7 @@ pub fn layout_inline_content(
         line.children.push(child);
 
         if frag.breaks_after {
-            line.height = if line_h > 0 { line_h } else { 16 };
+            line.height = if line_h > 0 { line_h.max(line_height) } else { line_height.max(16) };
             lines.push(line);
             line = LayoutBox::new(None, BoxType::LineBox);
             line.x = start_x;
@@ -93,7 +94,7 @@ pub fn layout_inline_content(
 
     // Flush last line.
     if !line.children.is_empty() {
-        line.height = line_h;
+        line.height = line_h.max(line_height);
         lines.push(line);
     }
 
@@ -139,6 +140,7 @@ fn collect_inline_fragments(
     out: &mut Vec<InlineFragment>,
     available_width: i32,
     images: &ImageCache,
+    inherited_bg: u32,
 ) {
     let node = dom.get(node_id);
     let style = &styles[node_id];
@@ -159,13 +161,21 @@ fn collect_inline_fragments(
                 String::from(text.as_str())
             };
 
+            let start_idx = out.len();
             if style.white_space == WhiteSpace::Pre || style.white_space == WhiteSpace::PreWrap {
                 emit_preformatted_fragments(&transformed, fs, bold, italic, color, link, deco, out);
             } else if style.white_space == WhiteSpace::Nowrap {
-                // Nowrap: emit as single fragment (no word breaking)
                 emit_nowrap_fragments(&transformed, fs, bold, italic, color, link, deco, out);
             } else {
                 emit_word_fragments(&transformed, fs, bold, italic, color, link, deco, out);
+            }
+            // Propagate inherited background color to newly emitted text fragments.
+            if inherited_bg != 0 {
+                for frag in &mut out[start_idx..] {
+                    if frag.layout_box.bg_color == 0 {
+                        frag.layout_box.bg_color = inherited_bg;
+                    }
+                }
             }
         }
         NodeType::Element { tag, .. } => {
@@ -233,6 +243,17 @@ fn collect_inline_fragments(
                 return;
             }
 
+            // Handle display: inline-block / inline-flex — lay out as block, emit as inline fragment.
+            if matches!(style.display, Display::InlineBlock | Display::InlineFlex) {
+                use super::block::build_block;
+                let mut block_box = build_block(dom, styles, node_id, available_width, images);
+                block_box.box_type = BoxType::InlineBlock;
+                let w = block_box.width + block_box.margin.left + block_box.margin.right;
+                let h = block_box.height + block_box.margin.top + block_box.margin.bottom;
+                out.push(InlineFragment { width: w, height: h, layout_box: block_box, breaks_after: false });
+                return;
+            }
+
             // Recurse into inline children, applying inline margin/padding.
             let ml = style.margin_left.max(0);
             let mr = style.margin_right.max(0);
@@ -247,12 +268,13 @@ fn collect_inline_fragments(
             }
 
             let children: Vec<NodeId> = node.children.iter().copied().collect();
+            let child_bg = if style.background_color != 0 { style.background_color } else { inherited_bg };
             for &cid in &children {
                 let cs = &styles[cid];
                 if cs.display == Display::None {
                     continue;
                 }
-                collect_inline_fragments(dom, styles, cid, out, available_width, images);
+                collect_inline_fragments(dom, styles, cid, out, available_width, images, child_bg);
             }
 
             // Right padding + margin → insert spacer.

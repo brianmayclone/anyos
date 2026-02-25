@@ -15,6 +15,7 @@ mod storage;
 mod http;
 mod selector;
 
+use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -25,6 +26,79 @@ use libjs::value::JsArray;
 use libjs::vm::native_fn;
 
 use crate::dom::{Dom, NodeType, Tag};
+
+// ═══════════════════════════════════════════════════════════
+// Property write interception — static target for set_hook
+// ═══════════════════════════════════════════════════════════
+
+/// Points to the current DomBridge.mutations during JS execution.
+/// Set before executing JS, cleared after. Used by dom_property_hook.
+static mut MUTATION_TARGET: *mut Vec<DomMutation> = core::ptr::null_mut();
+
+/// Hook called by JsObject::set() on DOM element objects.
+/// Records DOM mutations when JS writes to properties like
+/// textContent, innerHTML, className, value, etc.
+fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
+    let mutations = unsafe {
+        if MUTATION_TARGET.is_null() { return; }
+        &mut *MUTATION_TARGET
+    };
+    // Decode node_id from pointer (round-trips correctly for negative i64 on 64-bit).
+    let node_id = data as usize as i64;
+
+    match key {
+        "textContent" | "innerText" => {
+            if node_id >= 0 {
+                mutations.push(DomMutation::SetTextContent {
+                    node_id: node_id as usize,
+                    text: value.to_js_string(),
+                });
+            }
+        }
+        "innerHTML" => {
+            mutations.push(DomMutation::SetInnerHTML {
+                node_id,
+                html: value.to_js_string(),
+            });
+        }
+        "className" => {
+            if node_id >= 0 {
+                mutations.push(DomMutation::SetAttribute {
+                    node_id: node_id as usize,
+                    name: String::from("class"),
+                    value: value.to_js_string(),
+                });
+            }
+        }
+        "value" | "src" | "href" | "id" | "name" | "type" => {
+            if node_id >= 0 {
+                mutations.push(DomMutation::SetAttribute {
+                    node_id: node_id as usize,
+                    name: String::from(key),
+                    value: value.to_js_string(),
+                });
+            }
+        }
+        "checked" | "disabled" => {
+            if node_id >= 0 {
+                if value.to_boolean() {
+                    mutations.push(DomMutation::SetAttribute {
+                        node_id: node_id as usize,
+                        name: String::from(key),
+                        value: String::new(),
+                    });
+                } else {
+                    mutations.push(DomMutation::RemoveAttribute {
+                        node_id: node_id as usize,
+                        name: String::from(key),
+                    });
+                }
+            }
+        }
+        // Ignore internal properties and methods.
+        _ => {}
+    }
+}
 
 // ═══════════════════════════════════════════════════════════
 // DomBridge — stored in vm.userdata so native fns can reach the DOM
@@ -40,6 +114,10 @@ struct DomBridge {
     virtual_nodes: Vec<VirtualNode>,
     /// Pending HTTP requests from XHR / fetch.
     pending_http_requests: Vec<PendingHttpRequest>,
+    /// Pending timers (setTimeout / setInterval).
+    timers: Vec<PendingTimer>,
+    /// Next timer ID.
+    next_timer_id: u32,
 }
 
 impl DomBridge {
@@ -115,7 +193,18 @@ pub struct PendingHttpRequest {
 pub struct EventListener {
     pub node_id: usize,
     pub event: String,
-    pub callback_index: usize,
+    pub callback: JsValue,
+}
+
+/// A pending timer (setTimeout or setInterval).
+#[derive(Clone)]
+pub struct PendingTimer {
+    pub id: u32,
+    pub callback: JsValue,
+    pub delay_ms: u64,
+    pub repeat: bool,
+    /// Accumulated time since creation/last fire.
+    pub elapsed_ms: u64,
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -128,6 +217,8 @@ pub struct JsRuntime {
     pub mutations: Vec<DomMutation>,
     pub event_listeners: Vec<EventListener>,
     pub pending_http_requests: Vec<PendingHttpRequest>,
+    pub timers: Vec<PendingTimer>,
+    next_timer_id: u32,
 }
 
 impl JsRuntime {
@@ -139,6 +230,8 @@ impl JsRuntime {
             mutations: Vec::new(),
             event_listeners: Vec::new(),
             pending_http_requests: Vec::new(),
+            timers: Vec::new(),
+            next_timer_id: 1,
         }
     }
 
@@ -175,16 +268,24 @@ impl JsRuntime {
             next_virtual_id: -1,
             virtual_nodes: Vec::new(),
             pending_http_requests: Vec::new(),
+            timers: Vec::new(),
+            next_timer_id: 1,
         };
         self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
 
         // Set up native host objects (document, window, etc.).
         self.setup_native_api(dom);
 
+        // Enable property-write interception.
+        unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; }
+
         // Execute each script.
         for script in &scripts {
             self.engine.eval(script);
         }
+
+        // Disable interception.
+        unsafe { MUTATION_TARGET = core::ptr::null_mut(); }
 
         // Capture output.
         for msg in self.engine.console_output() {
@@ -195,6 +296,7 @@ impl JsRuntime {
         self.mutations = bridge.mutations;
         self.event_listeners = bridge.event_listeners;
         self.pending_http_requests = bridge.pending_http_requests;
+        self.timers.extend(bridge.timers);
         self.engine.vm().userdata = core::ptr::null_mut();
     }
 
@@ -221,6 +323,14 @@ impl JsRuntime {
         vm.set_global("XMLHttpRequest", xhr::make_xhr_constructor());
         vm.set_global("Headers", native_fn("Headers", fetch::native_headers_ctor));
         vm.set_global("Image", native_fn("Image", document::native_image_ctor));
+
+        // Timer globals.
+        vm.set_global("setTimeout", native_fn("setTimeout", native_set_timeout));
+        vm.set_global("setInterval", native_fn("setInterval", native_set_interval));
+        vm.set_global("clearTimeout", native_fn("clearTimeout", native_clear_timeout));
+        vm.set_global("clearInterval", native_fn("clearInterval", native_clear_interval));
+        vm.set_global("requestAnimationFrame", native_fn("requestAnimationFrame", native_request_animation_frame));
+        vm.set_global("cancelAnimationFrame", native_fn("cancelAnimationFrame", native_clear_timeout));
     }
 
     pub fn eval(&mut self, source: &str) -> JsValue {
@@ -240,9 +350,15 @@ impl JsRuntime {
             next_virtual_id: -1,
             virtual_nodes: Vec::new(),
             pending_http_requests: Vec::new(),
+            timers: Vec::new(),
+            next_timer_id: self.next_timer_id,
         };
         self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
+
+        unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; }
         let result = self.engine.eval(source);
+        unsafe { MUTATION_TARGET = core::ptr::null_mut(); }
+
         for msg in self.engine.console_output() {
             self.console.push(msg.clone());
         }
@@ -250,6 +366,8 @@ impl JsRuntime {
         self.mutations.extend(bridge.mutations);
         self.event_listeners.extend(bridge.event_listeners);
         self.pending_http_requests.extend(bridge.pending_http_requests);
+        self.next_timer_id = bridge.next_timer_id;
+        self.timers.extend(bridge.timers);
         self.engine.vm().userdata = core::ptr::null_mut();
         result
     }
@@ -267,6 +385,209 @@ impl JsRuntime {
 
     pub fn take_pending_http_requests(&mut self) -> Vec<PendingHttpRequest> {
         core::mem::take(&mut self.pending_http_requests)
+    }
+
+    pub fn take_timers(&mut self) -> Vec<PendingTimer> {
+        core::mem::take(&mut self.timers)
+    }
+
+    /// Apply recorded mutations to the real DOM.
+    /// Returns a map from virtual_id → real NodeId for newly created elements.
+    pub fn apply_mutations(&mut self, dom: &mut Dom) -> BTreeMap<i64, usize> {
+        let mutations = core::mem::take(&mut self.mutations);
+        let mut id_map: BTreeMap<i64, usize> = BTreeMap::new();
+
+        for m in &mutations {
+            match m {
+                DomMutation::CreateElement { virtual_id, tag } => {
+                    let real_tag = Tag::from_str(tag);
+                    let real_id = dom.add_node(NodeType::Element { tag: real_tag, attrs: Vec::new() }, None);
+                    id_map.insert(*virtual_id, real_id);
+                }
+                DomMutation::SetAttribute { node_id, name, value } => {
+                    dom.set_attr(*node_id, name, value);
+                }
+                DomMutation::RemoveAttribute { node_id, name } => {
+                    dom.remove_attr(*node_id, name);
+                }
+                DomMutation::SetTextContent { node_id, text } => {
+                    dom.set_text(*node_id, text);
+                }
+                DomMutation::AppendChild { parent_id, child_id } => {
+                    let real_parent = resolve_id(*parent_id, &id_map);
+                    let real_child = resolve_id(*child_id, &id_map);
+                    if let (Some(p), Some(c)) = (real_parent, real_child) {
+                        dom.append_child(p, c);
+                    }
+                }
+                DomMutation::RemoveChild { parent_id, child_id } => {
+                    let real_parent = resolve_id(*parent_id, &id_map);
+                    let real_child = resolve_id(*child_id, &id_map);
+                    if let (Some(p), Some(c)) = (real_parent, real_child) {
+                        dom.remove_child(p, c);
+                    }
+                }
+                DomMutation::InsertBefore { parent_id, new_child_id, ref_child_id } => {
+                    let real_parent = resolve_id(*parent_id, &id_map);
+                    let real_new = resolve_id(*new_child_id, &id_map);
+                    let real_ref = resolve_id(*ref_child_id, &id_map);
+                    if let (Some(p), Some(n), Some(r)) = (real_parent, real_new, real_ref) {
+                        dom.insert_before(p, n, r);
+                    }
+                }
+                DomMutation::ReplaceChild { parent_id, new_child_id, old_child_id } => {
+                    let real_parent = resolve_id(*parent_id, &id_map);
+                    let real_new = resolve_id(*new_child_id, &id_map);
+                    let real_old = resolve_id(*old_child_id, &id_map);
+                    if let (Some(p), Some(n), Some(o)) = (real_parent, real_new, real_old) {
+                        dom.remove_child(p, o);
+                        dom.append_child(p, n);
+                    }
+                }
+                DomMutation::RemoveNode { node_id } => {
+                    if let Some(real_id) = resolve_id(*node_id, &id_map) {
+                        // Remove from parent.
+                        if let Some(pid) = dom.nodes.get(real_id).and_then(|n| n.parent) {
+                            dom.remove_child(pid, real_id);
+                        }
+                    }
+                }
+                DomMutation::SetInnerHTML { node_id, html: _ } => {
+                    // Full innerHTML parsing is complex; for now clear children.
+                    if let Some(real_id) = resolve_id(*node_id, &id_map) {
+                        let children: Vec<usize> = dom.nodes.get(real_id)
+                            .map(|n| n.children.clone())
+                            .unwrap_or_default();
+                        for cid in children {
+                            dom.remove_child(real_id, cid);
+                        }
+                    }
+                }
+                DomMutation::SetStyleProperty { node_id, property, value } => {
+                    // Store style as a `style` attribute for now.
+                    if let Some(real_id) = resolve_id(*node_id, &id_map) {
+                        let existing = String::from(dom.attr(real_id, "style")
+                            .unwrap_or(""));
+                        let new_style = if existing.is_empty() {
+                            alloc::format!("{}: {}", property, value)
+                        } else {
+                            alloc::format!("{}; {}: {}", existing, property, value)
+                        };
+                        dom.set_attr(real_id, "style", &new_style);
+                    }
+                }
+            }
+        }
+        id_map
+    }
+
+    /// Dispatch an event to all matching listeners.
+    /// Calls the JS callback functions via the VM.
+    pub fn dispatch_event(&mut self, dom: &Dom, node_id: usize, event_name: &str) {
+        // Find matching listeners.
+        let matching: Vec<JsValue> = self.event_listeners.iter()
+            .filter(|l| l.node_id == node_id && l.event == event_name)
+            .map(|l| l.callback.clone())
+            .collect();
+
+        if matching.is_empty() { return; }
+
+        // Create event object.
+        let evt = JsValue::new_object();
+        evt.set_property(String::from("type"), JsValue::String(String::from(event_name)));
+        let target_el = element::make_element(self.engine.vm(), node_id as i64);
+        evt.set_property(String::from("target"), target_el.clone());
+        evt.set_property(String::from("currentTarget"), target_el);
+        evt.set_property(String::from("preventDefault"), native_fn("preventDefault", |_,_| JsValue::Undefined));
+        evt.set_property(String::from("stopPropagation"), native_fn("stopPropagation", |_,_| JsValue::Undefined));
+        evt.set_property(String::from("bubbles"), JsValue::Bool(true));
+        evt.set_property(String::from("cancelable"), JsValue::Bool(true));
+
+        // Set up bridge for DOM access during callback.
+        let mut bridge = DomBridge {
+            dom: dom as *const Dom,
+            mutations: Vec::new(),
+            event_listeners: Vec::new(),
+            next_virtual_id: -1,
+            virtual_nodes: Vec::new(),
+            pending_http_requests: Vec::new(),
+            timers: Vec::new(),
+            next_timer_id: self.next_timer_id,
+        };
+        self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
+        unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; }
+
+        // Invoke each callback.
+        for cb in &matching {
+            self.engine.vm().call_value(cb, &[evt.clone()], JsValue::Undefined);
+        }
+
+        unsafe { MUTATION_TARGET = core::ptr::null_mut(); }
+
+        // Capture side effects.
+        for msg in self.engine.console_output() {
+            self.console.push(msg.clone());
+        }
+        self.engine.clear_console();
+        self.mutations.extend(bridge.mutations);
+        self.event_listeners.extend(bridge.event_listeners);
+        self.pending_http_requests.extend(bridge.pending_http_requests);
+        self.next_timer_id = bridge.next_timer_id;
+        self.timers.extend(bridge.timers);
+        self.engine.vm().userdata = core::ptr::null_mut();
+    }
+
+    /// Advance timers by `delta_ms` and execute any that are due.
+    /// Returns the number of timers fired.
+    pub fn tick(&mut self, dom: &Dom, delta_ms: u64) -> usize {
+        let mut fired = 0usize;
+        let mut keep = Vec::new();
+        let timers = core::mem::take(&mut self.timers);
+
+        for mut t in timers {
+            t.elapsed_ms += delta_ms;
+            if t.elapsed_ms >= t.delay_ms {
+                // Timer is due — execute callback.
+                let mut bridge = DomBridge {
+                    dom: dom as *const Dom,
+                    mutations: Vec::new(),
+                    event_listeners: Vec::new(),
+                    next_virtual_id: -1,
+                    virtual_nodes: Vec::new(),
+                    pending_http_requests: Vec::new(),
+                    timers: Vec::new(),
+                    next_timer_id: self.next_timer_id,
+                };
+                self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
+                unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; }
+
+                self.engine.vm().call_value(&t.callback, &[], JsValue::Undefined);
+
+                unsafe { MUTATION_TARGET = core::ptr::null_mut(); }
+                for msg in self.engine.console_output() {
+                    self.console.push(msg.clone());
+                }
+                self.engine.clear_console();
+                self.mutations.extend(bridge.mutations);
+                self.event_listeners.extend(bridge.event_listeners);
+                self.pending_http_requests.extend(bridge.pending_http_requests);
+                self.next_timer_id = bridge.next_timer_id;
+                // New timers created during callback.
+                keep.extend(bridge.timers);
+                self.engine.vm().userdata = core::ptr::null_mut();
+
+                fired += 1;
+
+                if t.repeat {
+                    t.elapsed_ms = 0;
+                    keep.push(t);
+                }
+            } else {
+                keep.push(t);
+            }
+        }
+        self.timers = keep;
+        fired
     }
 
     pub fn engine(&mut self) -> &mut JsEngine { &mut self.engine }
@@ -467,4 +788,83 @@ fn js_escape_string(s: &str) -> String {
         }
     }
     out
+}
+
+/// Resolve a (possibly virtual) node ID to a real DOM NodeId.
+fn resolve_id(id: i64, map: &BTreeMap<i64, usize>) -> Option<usize> {
+    if id >= 0 {
+        Some(id as usize)
+    } else {
+        map.get(&id).copied()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Native timer functions
+// ═══════════════════════════════════════════════════════════
+
+fn native_set_timeout(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let delay = args.get(1).map(|v| v.to_number().max(0.0) as u64).unwrap_or(0);
+    if let Some(bridge) = get_bridge(vm) {
+        let id = bridge.next_timer_id;
+        bridge.next_timer_id += 1;
+        bridge.timers.push(PendingTimer {
+            id,
+            callback,
+            delay_ms: delay,
+            repeat: false,
+            elapsed_ms: 0,
+        });
+        return JsValue::Number(id as f64);
+    }
+    JsValue::Number(0.0)
+}
+
+fn native_set_interval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let delay = args.get(1).map(|v| v.to_number().max(1.0) as u64).unwrap_or(10);
+    if let Some(bridge) = get_bridge(vm) {
+        let id = bridge.next_timer_id;
+        bridge.next_timer_id += 1;
+        bridge.timers.push(PendingTimer {
+            id,
+            callback,
+            delay_ms: delay,
+            repeat: true,
+            elapsed_ms: 0,
+        });
+        return JsValue::Number(id as f64);
+    }
+    JsValue::Number(0.0)
+}
+
+fn native_clear_timeout(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let id = args.first().map(|v| v.to_number() as u32).unwrap_or(0);
+    if let Some(bridge) = get_bridge(vm) {
+        bridge.timers.retain(|t| t.id != id);
+    }
+    JsValue::Undefined
+}
+
+fn native_clear_interval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    native_clear_timeout(vm, args)
+}
+
+fn native_request_animation_frame(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    // Treat as a ~16ms setTimeout (60fps).
+    let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
+    if let Some(bridge) = get_bridge(vm) {
+        let id = bridge.next_timer_id;
+        bridge.next_timer_id += 1;
+        bridge.timers.push(PendingTimer {
+            id,
+            callback,
+            delay_ms: 16,
+            repeat: false,
+            elapsed_ms: 0,
+        });
+        return JsValue::Number(id as f64);
+    }
+    JsValue::Number(0.0)
 }

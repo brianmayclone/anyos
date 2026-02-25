@@ -851,11 +851,20 @@ set(LIBC_CRT0 "${LIBC_DIR}/obj/crt0.o")
 
 get_filename_component(CROSS_BIN_DIR "${I686_ELF_GCC}" DIRECTORY)
 set(I686_ELF_AR  "${CROSS_BIN_DIR}/i686-elf-ar${CMAKE_EXECUTABLE_SUFFIX}")
+get_filename_component(MSYS_USR_BIN "${MAKE_EXECUTABLE}" DIRECTORY)
+
+# On Windows, cross-compiler binaries (MSYS2) need msys-2.0.dll in PATH.
+# Wrap all cross-compiler invocations with cmake -E env to inject the right PATH.
+if(WIN32)
+  set(CROSS_ENV ${CMAKE_COMMAND} -E env "PATH=${CROSS_BIN_DIR}$<SEMICOLON>${MSYS_USR_BIN}$<SEMICOLON>$ENV{PATH}")
+else()
+  set(CROSS_ENV "")
+endif()
 
 add_custom_command(
   OUTPUT ${LIBC_A} ${LIBC_CRT0}
-  COMMAND ${MAKE_EXECUTABLE} -C ${LIBC_DIR} clean CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC}
-  COMMAND ${MAKE_EXECUTABLE} -C ${LIBC_DIR} CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC}
+  COMMAND ${CROSS_ENV} ${MAKE_EXECUTABLE} -C ${LIBC_DIR} clean CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC}
+  COMMAND ${CROSS_ENV} ${MAKE_EXECUTABLE} -C ${LIBC_DIR} CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC}
   DEPENDS
     ${LIBC_DIR}/Makefile
     ${LIBC_DIR}/src/crt0.S
@@ -883,9 +892,9 @@ set(LIBC_CRTN "${LIBC_DIR}/obj/crtn.o")
 set(LIBC_LIBTCC1 "${LIBC_DIR}/libtcc1.a")
 add_custom_command(
   OUTPUT ${LIBC_CRTI} ${LIBC_CRTN} ${LIBC_LIBTCC1}
-  COMMAND ${I686_ELF_GCC} -m32 -c ${LIBC_DIR}/src/crti.S -o ${LIBC_CRTI}
-  COMMAND ${I686_ELF_GCC} -m32 -c ${LIBC_DIR}/src/crtn.S -o ${LIBC_CRTN}
-  COMMAND ${I686_ELF_AR} rcs ${LIBC_LIBTCC1}
+  COMMAND ${CROSS_ENV} ${I686_ELF_GCC} -m32 -c ${LIBC_DIR}/src/crti.S -o ${LIBC_CRTI}
+  COMMAND ${CROSS_ENV} ${I686_ELF_GCC} -m32 -c ${LIBC_DIR}/src/crtn.S -o ${LIBC_CRTN}
+  COMMAND ${CROSS_ENV} ${I686_ELF_AR} rcs ${LIBC_LIBTCC1}
   DEPENDS ${LIBC_A} ${LIBC_DIR}/src/crti.S ${LIBC_DIR}/src/crtn.S
   COMMENT "Creating CRT stubs and libtcc1.a for TCC"
 )
@@ -933,7 +942,7 @@ set(TCC_CFLAGS
 
 add_custom_command(
   OUTPUT ${TCC_OBJ}
-  COMMAND ${I686_ELF_GCC}
+  COMMAND ${CROSS_ENV} ${I686_ELF_GCC}
     ${TCC_CFLAGS}
     -I${TCC_DIR}
     -I${LIBC_DIR}/include
@@ -946,7 +955,7 @@ add_custom_command(
 
 add_custom_command(
   OUTPUT ${TCC_ELF}
-  COMMAND ${I686_ELF_GCC}
+  COMMAND ${CROSS_ENV} ${I686_ELF_GCC}
     -nostdlib -static -m32
     -T ${LIBC_DIR}/link.ld
     -o ${TCC_ELF}
@@ -1040,7 +1049,7 @@ set(MAKE_ELF "${CMAKE_SOURCE_DIR}/bin/make/make.elf")
 
 add_custom_command(
   OUTPUT ${MAKE_OBJ}
-  COMMAND ${I686_ELF_GCC}
+  COMMAND ${CROSS_ENV} ${I686_ELF_GCC}
     -ffreestanding -nostdlib -nostdinc -fno-builtin -fno-stack-protector
     -I${LIBC_DIR}/include -O2 -m32 -w
     -c ${MAKE_SRC} -o ${MAKE_OBJ}
@@ -1050,7 +1059,7 @@ add_custom_command(
 
 add_custom_command(
   OUTPUT ${MAKE_ELF}
-  COMMAND ${I686_ELF_GCC}
+  COMMAND ${CROSS_ENV} ${I686_ELF_GCC}
     -nostdlib -static -m32
     -T ${LIBC_DIR}/link.ld
     -o ${MAKE_ELF}
@@ -1079,8 +1088,8 @@ set(DOOM_APP "${SYSROOT_DIR}/Applications/DOOM.app")
 file(GLOB DOOM_SOURCES "${DOOM_DIR}/src/*.c" "${DOOM_DIR}/src/*.h" "${DOOM_DIR}/Makefile")
 add_custom_command(
   OUTPUT ${DOOM_ELF}
-  COMMAND ${MAKE_EXECUTABLE} -C ${DOOM_DIR} clean CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC}
-  COMMAND ${MAKE_EXECUTABLE} -C ${DOOM_DIR} CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC} LIBC_DIR=${LIBC_DIR}
+  COMMAND ${CROSS_ENV} ${MAKE_EXECUTABLE} -C ${DOOM_DIR} clean CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC}
+  COMMAND ${CROSS_ENV} ${MAKE_EXECUTABLE} -C ${DOOM_DIR} CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC} LIBC_DIR=${LIBC_DIR}
   DEPENDS ${LIBC_A} ${LIBC_CRT0} ${DOOM_SOURCES}
   COMMENT "Building DOOM for anyOS"
 )
@@ -1111,8 +1120,8 @@ set(QUAKE_APP "${SYSROOT_DIR}/Applications/Quake.app")
 file(GLOB QUAKE_SOURCES "${QUAKE_DIR}/WinQuake/*.c" "${QUAKE_DIR}/WinQuake/*.h" "${QUAKE_DIR}/Makefile")
 add_custom_command(
   OUTPUT ${QUAKE_ELF}
-  COMMAND ${MAKE_EXECUTABLE} -C ${QUAKE_DIR} clean CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC}
-  COMMAND ${MAKE_EXECUTABLE} -C ${QUAKE_DIR} CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC} LIBC_DIR=${LIBC_DIR}
+  COMMAND ${CROSS_ENV} ${MAKE_EXECUTABLE} -C ${QUAKE_DIR} clean CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC}
+  COMMAND ${CROSS_ENV} ${MAKE_EXECUTABLE} -C ${QUAKE_DIR} CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC} LIBC_DIR=${LIBC_DIR}
   DEPENDS ${LIBC_A} ${LIBC_CRT0} ${QUAKE_SOURCES}
   COMMENT "Building Quake for anyOS"
 )
@@ -1144,8 +1153,8 @@ set(TINYGL_A "${TINYGL_DIR}/libtinygl.a")
 file(GLOB TINYGL_SOURCES "${TINYGL_DIR}/src/*.c" "${TINYGL_DIR}/src/*.h" "${TINYGL_DIR}/Makefile")
 add_custom_command(
   OUTPUT ${TINYGL_A}
-  COMMAND ${MAKE_EXECUTABLE} -C ${TINYGL_DIR} clean CC=${I686_ELF_GCC} AR=${I686_ELF_AR}
-  COMMAND ${MAKE_EXECUTABLE} -C ${TINYGL_DIR} CC=${I686_ELF_GCC} AR=${I686_ELF_AR} LIBC_DIR=${LIBC_DIR}
+  COMMAND ${CROSS_ENV} ${MAKE_EXECUTABLE} -C ${TINYGL_DIR} clean CC=${I686_ELF_GCC} AR=${I686_ELF_AR}
+  COMMAND ${CROSS_ENV} ${MAKE_EXECUTABLE} -C ${TINYGL_DIR} CC=${I686_ELF_GCC} AR=${I686_ELF_AR} LIBC_DIR=${LIBC_DIR}
   DEPENDS ${LIBC_A} ${TINYGL_SOURCES}
   COMMENT "Building TinyGL library for anyOS"
 )
@@ -1160,8 +1169,8 @@ set(GLCUBE_APP "${SYSROOT_DIR}/Applications/GLCube.app")
 file(GLOB GLCUBE_SOURCES "${GLCUBE_DIR}/*.c" "${GLCUBE_DIR}/Makefile")
 add_custom_command(
   OUTPUT ${GLCUBE_ELF}
-  COMMAND ${MAKE_EXECUTABLE} -C ${GLCUBE_DIR} clean CC=${I686_ELF_GCC}
-  COMMAND ${MAKE_EXECUTABLE} -C ${GLCUBE_DIR} CC=${I686_ELF_GCC} LIBC_DIR=${LIBC_DIR} TINYGL_DIR=${TINYGL_DIR}
+  COMMAND ${CROSS_ENV} ${MAKE_EXECUTABLE} -C ${GLCUBE_DIR} clean CC=${I686_ELF_GCC}
+  COMMAND ${CROSS_ENV} ${MAKE_EXECUTABLE} -C ${GLCUBE_DIR} CC=${I686_ELF_GCC} LIBC_DIR=${LIBC_DIR} TINYGL_DIR=${TINYGL_DIR}
   DEPENDS ${LIBC_A} ${LIBC_CRT0} ${TINYGL_A} ${GLCUBE_SOURCES}
   COMMENT "Building GLCube demo for anyOS"
 )
@@ -1196,8 +1205,8 @@ if(EXISTS "${CLASSICUBE_DIR}/src/Core.h")
   )
   add_custom_command(
     OUTPUT ${CLASSICUBE_ELF}
-    COMMAND ${MAKE_EXECUTABLE} -C ${CLASSICUBE_DIR} -f misc/anyos/Makefile clean
-    COMMAND ${MAKE_EXECUTABLE} -C ${CLASSICUBE_DIR} -f misc/anyos/Makefile CC=${I686_ELF_GCC} LIBC_DIR=${LIBC_DIR}
+    COMMAND ${CROSS_ENV} ${MAKE_EXECUTABLE} -C ${CLASSICUBE_DIR} -f misc/anyos/Makefile clean
+    COMMAND ${CROSS_ENV} ${MAKE_EXECUTABLE} -C ${CLASSICUBE_DIR} -f misc/anyos/Makefile CC=${I686_ELF_GCC} LIBC_DIR=${LIBC_DIR}
     DEPENDS ${LIBC_A} ${LIBC_CRT0} ${CLASSICUBE_SOURCES}
     COMMENT "Building ClassiCube for anyOS"
   )
@@ -1262,7 +1271,7 @@ add_custom_command(
 
 add_custom_command(
   OUTPUT ${CURL_ELF}
-  COMMAND ${I686_ELF_GCC}
+  COMMAND ${CROSS_ENV} ${I686_ELF_GCC}
     -nostdlib -static -m32
     -T ${LIBC_DIR}/link.ld
     -o ${CURL_ELF}
@@ -1303,7 +1312,7 @@ add_custom_command(
 
 add_custom_command(
   OUTPUT ${DASH_ELF}
-  COMMAND ${I686_ELF_GCC}
+  COMMAND ${CROSS_ENV} ${I686_ELF_GCC}
     -nostdlib -static -m32
     -T ${LIBC_DIR}/link.ld
     -o ${DASH_ELF}
@@ -1350,11 +1359,11 @@ add_custom_command(
 # Build SSH client (ssh.elf)
 add_custom_command(
   OUTPUT ${SSH_CLIENT_ELF}
-  COMMAND ${I686_ELF_GCC}
+  COMMAND ${CROSS_ENV} ${I686_ELF_GCC}
     -m32 -O2 -ffreestanding -nostdlib -nostdinc -fno-builtin -fno-stack-protector -std=c99 -w
     -I${SSH_DIR}/include -I${BEARSSL_DIR}/inc -I${LIBC_DIR}/include
     -c ${SSH_CLIENT_DIR}/src/main.c -o ${SSH_CLIENT_DIR}/main.o
-  COMMAND ${I686_ELF_GCC}
+  COMMAND ${CROSS_ENV} ${I686_ELF_GCC}
     -nostdlib -static -m32
     -T ${LIBC_DIR}/link.ld
     -o ${SSH_CLIENT_ELF}
@@ -1382,11 +1391,11 @@ add_custom_command(
 # Build SSH server (sshd.elf)
 add_custom_command(
   OUTPUT ${SSHD_ELF}
-  COMMAND ${I686_ELF_GCC}
+  COMMAND ${CROSS_ENV} ${I686_ELF_GCC}
     -m32 -O2 -ffreestanding -nostdlib -nostdinc -fno-builtin -fno-stack-protector -std=c99 -w
     -I${SSH_DIR}/include -I${BEARSSL_DIR}/inc -I${LIBC_DIR}/include
     -c ${SSHD_DIR}/src/main.c -o ${SSHD_DIR}/main.o
-  COMMAND ${I686_ELF_GCC}
+  COMMAND ${CROSS_ENV} ${I686_ELF_GCC}
     -nostdlib -static -m32
     -T ${LIBC_DIR}/link.ld
     -o ${SSHD_ELF}

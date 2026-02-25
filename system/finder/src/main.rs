@@ -348,6 +348,18 @@ fn resolve_icon_path(s: &AppState, entry_idx: usize) -> String {
 // ============================================================================
 
 fn navigate(path: &str) {
+    // Validate that the path exists and is a directory.
+    let mut stat_buf = [0u32; 7];
+    let stat_ok = fs::stat(path, &mut stat_buf);
+    if stat_ok != 0 || stat_buf[0] != TYPE_DIR as u32 {
+        let msg = anyos_std::format!("Path not found:\n{}", path);
+        ui::MessageBox::show(ui::MessageBoxType::Alert, &msg, None);
+        let s = app();
+        s.path_field.set_text(&s.cwd);
+        s.path_field.select_all();
+        return;
+    }
+
     let s = app();
     if s.history_pos + 1 < s.history.len() {
         s.history.truncate(s.history_pos + 1);

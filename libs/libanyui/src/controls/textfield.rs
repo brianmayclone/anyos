@@ -43,6 +43,13 @@ impl TextField {
         }
     }
 
+    pub(crate) fn select_all(&mut self) {
+        self.sel_anchor = 0;
+        self.cursor_pos = self.text_base.text.len();
+        self.ensure_cursor_visible();
+        self.text_base.base.mark_dirty();
+    }
+
     /// Left edge of the text area (after prefix).
     fn text_area_left(&self) -> i32 {
         if self.prefix_icon.is_some() { self.prefix_width as i32 } else { 8 }

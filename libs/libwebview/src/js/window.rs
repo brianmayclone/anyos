@@ -64,20 +64,20 @@ pub fn make_window(_vm: &mut Vm, document: JsValue) -> JsValue {
     obj.set(String::from("scrollX"), JsValue::Number(0.0));
     obj.set(String::from("scrollY"), JsValue::Number(0.0));
 
-    // Timer stubs (already registered as globals by libjs).
+    // Timer functions (backed by real timer infrastructure in mod.rs).
     obj.set(String::from("alert"), native_fn("alert", native_alert));
-    obj.set(String::from("setTimeout"), native_fn("setTimeout", win_noop_num));
-    obj.set(String::from("setInterval"), native_fn("setInterval", win_noop_num));
-    obj.set(String::from("clearTimeout"), native_fn("clearTimeout", win_noop));
-    obj.set(String::from("clearInterval"), native_fn("clearInterval", win_noop));
+    obj.set(String::from("setTimeout"), native_fn("setTimeout", super::native_set_timeout));
+    obj.set(String::from("setInterval"), native_fn("setInterval", super::native_set_interval));
+    obj.set(String::from("clearTimeout"), native_fn("clearTimeout", super::native_clear_timeout));
+    obj.set(String::from("clearInterval"), native_fn("clearInterval", super::native_clear_interval));
 
     // Style.
     obj.set(String::from("getComputedStyle"), native_fn("getComputedStyle", win_get_computed_style));
-    obj.set(String::from("requestAnimationFrame"), native_fn("requestAnimationFrame", win_noop_num));
-    obj.set(String::from("cancelAnimationFrame"), native_fn("cancelAnimationFrame", win_noop));
+    obj.set(String::from("requestAnimationFrame"), native_fn("requestAnimationFrame", super::native_request_animation_frame));
+    obj.set(String::from("cancelAnimationFrame"), native_fn("cancelAnimationFrame", super::native_clear_timeout));
 
     // Events.
-    obj.set(String::from("addEventListener"), native_fn("addEventListener", win_noop));
+    obj.set(String::from("addEventListener"), native_fn("addEventListener", win_add_event_listener));
     obj.set(String::from("removeEventListener"), native_fn("removeEventListener", win_noop));
     obj.set(String::from("dispatchEvent"), native_fn("dispatchEvent", |_,_| JsValue::Bool(true)));
 
@@ -165,8 +165,30 @@ pub fn native_alert(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Undefined
 }
 
+fn win_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let event = super::arg_string(args, 0);
+    let callback = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+
+    // For load/DOMContentLoaded, fire immediately.
+    if event == "load" || event == "DOMContentLoaded" {
+        if let JsValue::Function(_) = &callback {
+            vm.call_value(&callback, &[], JsValue::Undefined);
+        }
+        return JsValue::Undefined;
+    }
+
+    // Store for later dispatch.
+    if let Some(bridge) = super::get_bridge(vm) {
+        bridge.event_listeners.push(super::EventListener {
+            node_id: usize::MAX, // window pseudo-node
+            event,
+            callback,
+        });
+    }
+    JsValue::Undefined
+}
+
 fn win_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue { JsValue::Undefined }
-fn win_noop_num(_vm: &mut Vm, _args: &[JsValue]) -> JsValue { JsValue::Number(0.0) }
 fn win_noop_obj(_vm: &mut Vm, _args: &[JsValue]) -> JsValue { JsValue::new_object() }
 
 fn win_passthrough(_vm: &mut Vm, args: &[JsValue]) -> JsValue {

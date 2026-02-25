@@ -21,6 +21,10 @@ impl TextField {
         (lib().textfield_set_postfix)(self.ctrl.id, icon_code);
     }
 
+    pub fn select_all(&self) {
+        (lib().textfield_select_all)(self.ctrl.id);
+    }
+
     pub fn set_password_mode(&self, enabled: bool) {
         (lib().textfield_set_password)(self.ctrl.id, enabled as u32);
     }

@@ -12,7 +12,7 @@ use libjs::vm::native_fn;
 
 use crate::dom::{Dom, NodeType, Tag};
 
-use super::{get_bridge, arg_string, make_array, DomMutation, VirtualNode};
+use super::{get_bridge, arg_string, make_array, dom_property_hook, DomMutation, VirtualNode};
 use super::element;
 use super::selector;
 
@@ -72,7 +72,7 @@ pub fn make_document(vm: &mut Vm, dom: &Dom) -> JsValue {
     obj.set(String::from("createDocumentFragment"), native_fn("createDocumentFragment", doc_create_document_fragment));
     obj.set(String::from("createComment"), native_fn("createComment", doc_create_comment));
     obj.set(String::from("createEvent"), native_fn("createEvent", doc_create_event));
-    obj.set(String::from("addEventListener"), native_fn("addEventListener", doc_noop));
+    obj.set(String::from("addEventListener"), native_fn("addEventListener", doc_add_event_listener));
     obj.set(String::from("removeEventListener"), native_fn("removeEventListener", doc_noop));
 
     JsValue::Object(Rc::new(RefCell::new(obj)))
@@ -178,13 +178,20 @@ fn doc_create_element(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     element::make_element(vm, virtual_id)
 }
 
-fn doc_create_text_node(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+fn doc_create_text_node(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let text = arg_string(args, 0);
+    let virtual_id = if let Some(bridge) = get_bridge(vm) {
+        bridge.alloc_virtual_id()
+    } else {
+        -9999
+    };
     let mut obj = JsObject::new();
-    obj.set(String::from("__nodeId"), JsValue::Number(-9999.0));
+    obj.set(String::from("__nodeId"), JsValue::Number(virtual_id as f64));
     obj.set(String::from("nodeType"), JsValue::Number(3.0));
     obj.set(String::from("textContent"), JsValue::String(text.clone()));
     obj.set(String::from("innerText"), JsValue::String(text));
+    obj.set_hook = Some(dom_property_hook);
+    obj.set_hook_data = virtual_id as usize as *mut u8;
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
 
@@ -216,6 +223,29 @@ fn doc_create_event(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     evt.set_property(String::from("preventDefault"), native_fn("preventDefault", doc_noop));
     evt.set_property(String::from("stopPropagation"), native_fn("stopPropagation", doc_noop));
     evt
+}
+
+fn doc_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let event = arg_string(args, 0);
+    let callback = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+
+    // For DOMContentLoaded/load, fire immediately since doc is already loaded.
+    if event == "DOMContentLoaded" || event == "load" || event == "readystatechange" {
+        if let JsValue::Function(_) = &callback {
+            vm.call_value(&callback, &[], JsValue::Undefined);
+        }
+        return JsValue::Undefined;
+    }
+
+    // Store for other events (node_id 0 = document root).
+    if let Some(bridge) = get_bridge(vm) {
+        bridge.event_listeners.push(super::EventListener {
+            node_id: 0,
+            event,
+            callback,
+        });
+    }
+    JsValue::Undefined
 }
 
 fn doc_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue { JsValue::Undefined }

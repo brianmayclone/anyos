@@ -21,7 +21,7 @@ use alloc::vec::Vec;
 use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
     ComputedStyle, Display, FontWeight, FontStyleVal, TextAlignVal,
-    ListStyle, TextDeco, TextTransform, FloatVal,
+    ListStyle, TextDeco, TextTransform, FloatVal, Position, ClearVal,
 };
 use crate::ImageCache;
 
@@ -365,13 +365,10 @@ pub(super) fn layout_children(
 ) -> i32 {
     let mut cursor_y: i32 = parent.padding.top;
     let mut prev_margin_bottom: i32 = 0;
+    let mut float_ctx = FloatContext::new(available_width);
 
-    // Float tracking: left floats consume space from the left,
-    // right floats consume space from the right.
-    let mut float_left_x: i32 = 0;       // right edge of left floats
-    let mut float_left_bottom: i32 = 0;  // bottom of left float region
-    let mut float_right_x: i32 = 0;       // width consumed from right
-    let mut float_right_bottom: i32 = 0; // bottom of right float region
+    // Collect absolutely/fixed-positioned children to lay out after normal flow.
+    let mut deferred_abs: Vec<NodeId> = Vec::new();
 
     let mut i = 0;
     while i < child_ids.len() {
@@ -383,60 +380,73 @@ pub(super) fn layout_children(
             continue;
         }
 
+        // Skip absolute/fixed from normal flow — position them after.
+        if matches!(style.position, Position::Absolute | Position::Fixed) {
+            deferred_abs.push(cid);
+            i += 1;
+            continue;
+        }
+
+        // Handle `clear` property — advance cursor past cleared floats.
+        if style.clear != ClearVal::None {
+            let clear_to = float_ctx.clear_y(style.clear);
+            if clear_to > cursor_y {
+                cursor_y = clear_to;
+            }
+        }
+
         let is_block = is_block_level(dom, cid, style);
 
         if is_block {
-            // Check if this is a floated element.
             let float_val = style.float;
 
-            // For floated elements, use a narrower available width.
-            let float_avail = if float_val != FloatVal::None {
-                // Floated elements shrink-to-fit: use available minus other floats.
-                available_width - float_left_x - float_right_x
-            } else {
-                available_width
-            };
-
-            let child_box = if is_table_element(dom, cid) {
-                table::layout_table(dom, styles, cid, float_avail, images)
-            } else {
-                build_block(dom, styles, cid, float_avail, images)
-            };
-
-            if float_val == FloatVal::Left {
-                // Place at current float_left_x position.
-                let mut placed = child_box;
-                let place_y = cursor_y.max(float_left_bottom.min(cursor_y + placed.margin.top));
-                placed.x = parent.padding.left + float_left_x + placed.margin.left;
-                placed.y = if cursor_y == parent.padding.top {
-                    cursor_y + placed.margin.top
+            // ── Floated elements ──
+            if float_val != FloatVal::None {
+                let stf_width = shrink_to_fit_width(dom, styles, cid, available_width, images);
+                let mut placed = if is_table_element(dom, cid) {
+                    table::layout_table(dom, styles, cid, stf_width, images)
                 } else {
-                    cursor_y
+                    build_block(dom, styles, cid, stf_width, images)
                 };
-                float_left_x += placed.width + placed.margin.left + placed.margin.right;
-                float_left_bottom = placed.y + placed.height + placed.margin.bottom;
-                parent.children.push(placed);
-                i += 1;
-                continue;
-            } else if float_val == FloatVal::Right {
-                let mut placed = child_box;
-                placed.y = if cursor_y == parent.padding.top {
-                    cursor_y + placed.margin.top
+
+                let total_w = placed.width + placed.margin.left + placed.margin.right;
+                let total_h = placed.height + placed.margin.top + placed.margin.bottom;
+                let place_y = float_ctx.find_y_for_float(float_val, total_w, total_h, cursor_y);
+
+                let li = float_ctx.left_intrusion_at(place_y, total_h);
+                let ri = float_ctx.right_intrusion_at(place_y, total_h);
+
+                if float_val == FloatVal::Left {
+                    placed.x = parent.padding.left + li + placed.margin.left;
                 } else {
-                    cursor_y
-                };
-                let right_edge = available_width - float_right_x;
-                placed.x = parent.padding.left + right_edge - placed.width - placed.margin.right;
-                float_right_x += placed.width + placed.margin.left + placed.margin.right;
-                float_right_bottom = placed.y + placed.height + placed.margin.bottom;
+                    let right_edge = available_width - ri;
+                    placed.x = parent.padding.left + right_edge - placed.width - placed.margin.right;
+                }
+                placed.y = place_y + placed.margin.top;
+
+                float_ctx.add(PlacedFloat {
+                    side: float_val,
+                    x: placed.x - placed.margin.left,
+                    y: place_y,
+                    width: total_w,
+                    height: total_h,
+                });
+
                 parent.children.push(placed);
                 i += 1;
                 continue;
             }
 
-            // Clear floats if past their bottom edge.
-            if cursor_y >= float_left_bottom { float_left_x = 0; }
-            if cursor_y >= float_right_bottom { float_right_x = 0; }
+            // ── Normal block flow ──
+            let li = float_ctx.left_intrusion_at(cursor_y, 1);
+            let ri = float_ctx.right_intrusion_at(cursor_y, 1);
+            let effective_avail = (available_width - li - ri).max(0);
+
+            let child_box = if is_table_element(dom, cid) {
+                table::layout_table(dom, styles, cid, effective_avail, images)
+            } else {
+                build_block(dom, styles, cid, effective_avail, images)
+            };
 
             let collapsed = if prev_margin_bottom > child_box.margin.top {
                 prev_margin_bottom
@@ -450,28 +460,19 @@ pub(super) fn layout_children(
             }
 
             let mut placed = child_box;
-            placed.x = parent.padding.left + placed.margin.left + float_left_x;
+            placed.x = parent.padding.left + placed.margin.left + li;
 
-            // Adjust width for floats.
-            let effective_avail = available_width - float_left_x - float_right_x;
-            if float_left_x > 0 || float_right_x > 0 {
-                let max_w = effective_avail - placed.margin.left - placed.margin.right;
-                if placed.width > max_w && max_w > 0 {
-                    placed.width = max_w;
-                }
-            }
-
-            // Center block children when parent has text-align: center
+            // Center/right block alignment.
             let parent_align = styles[_parent_node].text_align;
             if parent_align == TextAlignVal::Center {
                 let total_child_w = placed.width + placed.margin.left + placed.margin.right;
                 if total_child_w < effective_avail {
-                    placed.x = parent.padding.left + float_left_x + (effective_avail - total_child_w) / 2;
+                    placed.x = parent.padding.left + li + (effective_avail - total_child_w) / 2;
                 }
             } else if parent_align == TextAlignVal::Right {
                 let total_child_w = placed.width + placed.margin.left + placed.margin.right;
                 if total_child_w < effective_avail {
-                    placed.x = parent.padding.left + float_left_x + effective_avail - total_child_w;
+                    placed.x = parent.padding.left + li + effective_avail - total_child_w;
                 }
             }
 
@@ -482,6 +483,7 @@ pub(super) fn layout_children(
             parent.children.push(placed);
             i += 1;
         } else {
+            // ── Inline run ──
             let run_start = i;
             while i < child_ids.len() {
                 let sid = child_ids[i];
@@ -496,10 +498,17 @@ pub(super) fn layout_children(
                 i += 1;
             }
             let inline_ids: Vec<NodeId> = child_ids[run_start..i].iter().copied().collect();
-            let parent_align = styles[_parent_node].text_align;
+
+            // Query float intrusions for inline content.
+            let li = float_ctx.left_intrusion_at(cursor_y, 1);
+            let ri = float_ctx.right_intrusion_at(cursor_y, 1);
+            let inline_avail = (available_width - li - ri).max(0);
+
+            let parent_style = &styles[_parent_node];
+            let parent_align = parent_style.text_align;
             let line_boxes = layout_inline_content(
-                dom, styles, &inline_ids, available_width, parent.padding.left, images,
-                parent_align,
+                dom, styles, &inline_ids, inline_avail, parent.padding.left + li, images,
+                parent_align, parent_style.line_height,
             );
             for lb in line_boxes {
                 let h = lb.height;
@@ -510,6 +519,38 @@ pub(super) fn layout_children(
             }
             prev_margin_bottom = 0;
         }
+    }
+
+    // Position absolutely/fixed elements out of flow.
+    for &abs_id in &deferred_abs {
+        let abs_style = &styles[abs_id];
+        let mut abs_box = if is_table_element(dom, abs_id) {
+            table::layout_table(dom, styles, abs_id, available_width, images)
+        } else {
+            build_block(dom, styles, abs_id, available_width, images)
+        };
+
+        // Position using top/left/right/bottom offsets relative to parent.
+        let t = abs_style.top.unwrap_or(0);
+        let l = abs_style.left_offset.unwrap_or(0);
+
+        abs_box.x = parent.padding.left + l + abs_box.margin.left;
+        abs_box.y = parent.padding.top + t + abs_box.margin.top;
+
+        // right/bottom override if left/top not set.
+        if abs_style.left_offset.is_none() {
+            if let Some(r) = abs_style.right_offset {
+                abs_box.x = available_width - r - abs_box.width - abs_box.margin.right;
+            }
+        }
+        if abs_style.top.is_none() {
+            if let Some(b) = abs_style.bottom_offset {
+                // Position from bottom of current content area.
+                abs_box.y = cursor_y - b - abs_box.height - abs_box.margin.bottom;
+            }
+        }
+
+        parent.children.push(abs_box);
     }
 
     cursor_y
@@ -558,7 +599,7 @@ fn is_block_level(dom: &Dom, node_id: NodeId, style: &ComputedStyle) -> bool {
         if tag == Tag::Hr || tag == Tag::Table {
             return true;
         }
-        if tag.is_block() && style.display != Display::Inline && style.display != Display::InlineFlex {
+        if tag.is_block() && style.display != Display::Inline && style.display != Display::InlineFlex && style.display != Display::InlineBlock {
             return true;
         }
     }
@@ -567,4 +608,121 @@ fn is_block_level(dom: &Dom, node_id: NodeId, style: &ComputedStyle) -> bool {
 
 fn is_table_element(dom: &Dom, node_id: NodeId) -> bool {
     matches!(dom.tag(node_id), Some(Tag::Table))
+}
+
+// ---------------------------------------------------------------------------
+// Float context — tracks placed floats for correct flow-around behaviour.
+// ---------------------------------------------------------------------------
+
+struct PlacedFloat {
+    side: FloatVal,  // Left or Right
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
+
+struct FloatContext {
+    floats: Vec<PlacedFloat>,
+    container_width: i32,
+}
+
+impl FloatContext {
+    fn new(container_width: i32) -> Self {
+        FloatContext { floats: Vec::new(), container_width }
+    }
+
+    /// Total width consumed by left floats overlapping the given Y band.
+    fn left_intrusion_at(&self, y: i32, h: i32) -> i32 {
+        let mut max_right = 0i32;
+        for f in &self.floats {
+            if f.side == FloatVal::Left && f.y < y + h && f.y + f.height > y {
+                let right = f.x + f.width;
+                if right > max_right { max_right = right; }
+            }
+        }
+        max_right
+    }
+
+    /// Total width consumed by right floats overlapping the given Y band.
+    fn right_intrusion_at(&self, y: i32, h: i32) -> i32 {
+        let mut max_left = self.container_width;
+        for f in &self.floats {
+            if f.side == FloatVal::Right && f.y < y + h && f.y + f.height > y {
+                if f.x < max_left { max_left = f.x; }
+            }
+        }
+        self.container_width - max_left
+    }
+
+    /// Available horizontal space at a given Y band.
+    fn available_width_at(&self, y: i32, h: i32) -> i32 {
+        let li = self.left_intrusion_at(y, h);
+        let ri = self.right_intrusion_at(y, h);
+        (self.container_width - li - ri).max(0)
+    }
+
+    /// Y position past which all floats matching `clear` are cleared.
+    fn clear_y(&self, clear: ClearVal) -> i32 {
+        let mut max_bottom = 0i32;
+        for f in &self.floats {
+            let dominated = match clear {
+                ClearVal::Left => f.side == FloatVal::Left,
+                ClearVal::Right => f.side == FloatVal::Right,
+                ClearVal::Both => true,
+                ClearVal::None => false,
+            };
+            if dominated {
+                let bot = f.y + f.height;
+                if bot > max_bottom { max_bottom = bot; }
+            }
+        }
+        max_bottom
+    }
+
+    /// Find the Y position where a float of `width` can be placed.
+    /// Scans downward from `start_y` in 1-px increments until there's room.
+    fn find_y_for_float(&self, _side: FloatVal, width: i32, height: i32, start_y: i32) -> i32 {
+        let mut y = start_y;
+        loop {
+            let li = self.left_intrusion_at(y, height);
+            let ri = self.right_intrusion_at(y, height);
+            let avail = self.container_width - li - ri;
+            if avail >= width {
+                return y;
+            }
+            y += 1;
+            if y > start_y + 10000 { return y; } // safety cap
+        }
+    }
+
+    fn add(&mut self, pf: PlacedFloat) {
+        self.floats.push(pf);
+    }
+}
+
+/// Compute shrink-to-fit width for a float element.
+/// Uses the child's laid-out width if no explicit width was set.
+fn shrink_to_fit_width(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    node_id: NodeId,
+    max_width: i32,
+    images: &ImageCache,
+) -> i32 {
+    let style = &styles[node_id];
+    // If explicit width is set, use it.
+    if let Some(w) = style.width {
+        if w > 0 { return w.min(max_width); }
+    }
+    // Otherwise, lay out with max_width and use the resulting content width.
+    let trial = build_block(dom, styles, node_id, max_width, images);
+    // Shrink-to-fit: use the content width (sum of children) capped at max_width.
+    let content_w = trial.children.iter()
+        .map(|c| c.x + c.width + c.margin.right)
+        .max()
+        .unwrap_or(0);
+    let fit_w = content_w + trial.padding.left + trial.padding.right
+        + trial.border_width * 2;
+    fit_w.max(1).min(max_width)
 }

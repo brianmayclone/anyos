@@ -149,6 +149,8 @@ pub fn object_create(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         properties: alloc::collections::BTreeMap::new(),
         prototype: proto,
         internal_tag: None,
+        set_hook: None,
+        set_hook_data: core::ptr::null_mut(),
     };
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }

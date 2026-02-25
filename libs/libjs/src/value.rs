@@ -62,6 +62,9 @@ pub struct JsObject {
     pub properties: BTreeMap<String, Property>,
     pub prototype: Option<Rc<RefCell<JsObject>>>,
     pub internal_tag: Option<String>,
+    /// Optional hook called when a property is set. Args: (userdata, key, value).
+    pub set_hook: Option<fn(*mut u8, &str, &JsValue)>,
+    pub set_hook_data: *mut u8,
 }
 
 /// A property descriptor (simplified).
@@ -108,6 +111,8 @@ impl JsObject {
             properties: BTreeMap::new(),
             prototype: None,
             internal_tag: None,
+            set_hook: None,
+            set_hook_data: core::ptr::null_mut(),
         }
     }
 
@@ -116,6 +121,8 @@ impl JsObject {
             properties: BTreeMap::new(),
             prototype: None,
             internal_tag: Some(String::from(tag)),
+            set_hook: None,
+            set_hook_data: core::ptr::null_mut(),
         }
     }
 
@@ -130,6 +137,9 @@ impl JsObject {
     }
 
     pub fn set(&mut self, key: String, value: JsValue) {
+        if let Some(hook) = self.set_hook {
+            hook(self.set_hook_data, &key, &value);
+        }
         self.properties.insert(key, Property::data(value));
     }
 

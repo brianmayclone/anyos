@@ -109,6 +109,8 @@ impl Vm {
                     properties: alloc::collections::BTreeMap::new(),
                     prototype: Some(self.object_proto.clone()),
                     internal_tag: None,
+                    set_hook: None,
+                    set_hook_data: core::ptr::null_mut(),
                 })));
 
                 self.current_this = new_obj.clone();
@@ -146,6 +148,25 @@ impl Vm {
                 self.stack.push(JsValue::Undefined);
             }
         }
+    }
+
+    /// Call a JS function value directly from Rust.
+    /// Handles both native and bytecode functions, including re-entrant execution.
+    pub fn call_value(&mut self, callee: &JsValue, args: &[JsValue], this_val: JsValue) -> JsValue {
+        let saved_depth = self.frames.len();
+        self.invoke_function(callee, args, this_val);
+
+        // Native function: result already on stack, no new frame pushed.
+        if self.frames.len() <= saved_depth {
+            return self.stack.pop().unwrap_or(JsValue::Undefined);
+        }
+
+        // Bytecode function: run until we're back to saved depth.
+        let prev_target = self.run_target_depth;
+        self.run_target_depth = saved_depth;
+        let result = self.run();
+        self.run_target_depth = prev_target;
+        result
     }
 
     /// Simplified instanceof check.

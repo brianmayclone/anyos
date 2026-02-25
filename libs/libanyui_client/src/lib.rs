@@ -199,6 +199,7 @@ struct AnyuiLib {
     textfield_set_postfix: extern "C" fn(u32, u32),
     textfield_set_password: extern "C" fn(u32, u32),
     textfield_set_placeholder: extern "C" fn(u32, *const u8, u32),
+    textfield_select_all: extern "C" fn(u32),
     // Marshal (cross-thread)
     marshal_set_text: extern "C" fn(u32, *const u8, u32),
     marshal_set_color: extern "C" fn(u32, u32),
@@ -405,6 +406,7 @@ pub fn init() -> bool {
             textfield_set_postfix: resolve(&handle, "anyui_textfield_set_postfix"),
             textfield_set_password: resolve(&handle, "anyui_textfield_set_password"),
             textfield_set_placeholder: resolve(&handle, "anyui_textfield_set_placeholder"),
+            textfield_select_all: resolve(&handle, "anyui_textfield_select_all"),
             // Marshal (cross-thread)
             marshal_set_text: resolve(&handle, "anyui_marshal_set_text"),
             marshal_set_color: resolve(&handle, "anyui_marshal_set_color"),

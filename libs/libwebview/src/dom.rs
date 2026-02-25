@@ -330,6 +330,76 @@ impl Dom {
         None
     }
 
+    // -- mutation methods ---------------------------------------------------
+
+    /// Set or add an attribute on an element node.
+    pub fn set_attr(&mut self, id: NodeId, name: &str, value: &str) {
+        if id >= self.nodes.len() { return; }
+        if let NodeType::Element { attrs, .. } = &mut self.nodes[id].node_type {
+            if let Some(attr) = attrs.iter_mut().find(|a| a.name == name) {
+                attr.value = String::from(value);
+            } else {
+                attrs.push(Attr { name: String::from(name), value: String::from(value) });
+            }
+        }
+    }
+
+    /// Remove an attribute from an element node.
+    pub fn remove_attr(&mut self, id: NodeId, name: &str) {
+        if id >= self.nodes.len() { return; }
+        if let NodeType::Element { attrs, .. } = &mut self.nodes[id].node_type {
+            attrs.retain(|a| a.name != name);
+        }
+    }
+
+    /// Replace all children with a single text node.
+    pub fn set_text(&mut self, id: NodeId, text: &str) {
+        if id >= self.nodes.len() { return; }
+        // Clear existing children.
+        self.nodes[id].children.clear();
+        // Add text node if non-empty.
+        if !text.is_empty() {
+            let _text_id = self.add_node(NodeType::Text(String::from(text)), Some(id));
+        }
+    }
+
+    /// Move a child node under a new parent (appended at end).
+    pub fn append_child(&mut self, parent: NodeId, child: NodeId) {
+        if parent >= self.nodes.len() || child >= self.nodes.len() { return; }
+        // Remove from old parent.
+        if let Some(old_parent) = self.nodes[child].parent {
+            if old_parent < self.nodes.len() {
+                self.nodes[old_parent].children.retain(|&c| c != child);
+            }
+        }
+        self.nodes[child].parent = Some(parent);
+        self.nodes[parent].children.push(child);
+    }
+
+    /// Remove a child from a parent.
+    pub fn remove_child(&mut self, parent: NodeId, child: NodeId) {
+        if parent >= self.nodes.len() || child >= self.nodes.len() { return; }
+        self.nodes[parent].children.retain(|&c| c != child);
+        self.nodes[child].parent = None;
+    }
+
+    /// Insert new_child before ref_child under parent.
+    pub fn insert_before(&mut self, parent: NodeId, new_child: NodeId, ref_child: NodeId) {
+        if parent >= self.nodes.len() || new_child >= self.nodes.len() { return; }
+        // Remove from old parent.
+        if let Some(old_parent) = self.nodes[new_child].parent {
+            if old_parent < self.nodes.len() {
+                self.nodes[old_parent].children.retain(|&c| c != new_child);
+            }
+        }
+        self.nodes[new_child].parent = Some(parent);
+        if let Some(pos) = self.nodes[parent].children.iter().position(|&c| c == ref_child) {
+            self.nodes[parent].children.insert(pos, new_child);
+        } else {
+            self.nodes[parent].children.push(new_child);
+        }
+    }
+
     // -- private helpers ----------------------------------------------------
 
     fn collect_text(&self, id: NodeId, out: &mut String) {

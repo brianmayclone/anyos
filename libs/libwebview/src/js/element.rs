@@ -17,7 +17,7 @@ use super::{
     get_bridge, this_node_id, arg_string, make_array,
     read_attribute, read_text_content, read_tag_name,
     read_child_ids, read_node_type, read_inner_html,
-    DomMutation,
+    dom_property_hook, DomMutation,
 };
 use super::classlist;
 use super::selector;
@@ -148,6 +148,11 @@ pub fn make_element(vm: &mut Vm, node_id: i64) -> JsValue {
     obj.set(String::from("getClientRects"), native_fn("getClientRects", el_get_client_rects));
     obj.set(String::from("toString"), native_fn("toString", el_to_string));
 
+    // Set property-write interception hook so that assignments like
+    // el.textContent = "x" record DOM mutations.
+    obj.set_hook = Some(dom_property_hook);
+    obj.set_hook_data = node_id as usize as *mut u8;
+
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
 
@@ -224,12 +229,12 @@ fn el_has_attribute(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 fn el_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let nid = this_node_id(vm);
     let event = arg_string(args, 0);
+    let callback = args.get(1).cloned().unwrap_or(JsValue::Undefined);
     if let Some(bridge) = get_bridge(vm) {
-        let index = bridge.event_listeners.len();
         bridge.event_listeners.push(super::EventListener {
             node_id: if nid >= 0 { nid as usize } else { usize::MAX },
             event,
-            callback_index: index,
+            callback,
         });
     }
     JsValue::Undefined

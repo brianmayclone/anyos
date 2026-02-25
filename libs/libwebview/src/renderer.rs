@@ -120,8 +120,31 @@ impl Renderer {
             return;
         }
 
-        // Background/border box — create a View if there's a visible bg or border.
-        if bx.bg_color != 0 && bx.bg_color != 0x00000000 {
+        // Background/border box — create View(s) for visible bg and/or border.
+        let has_bg = bx.bg_color != 0 && bx.bg_color != 0x00000000;
+        let has_border = bx.border_width > 0 && bx.border_color != 0 && bx.border_color != 0x00000000;
+        if has_border {
+            // Outer view = border color, full box size.
+            let outer = ui::View::new();
+            outer.set_position(abs_x, abs_y);
+            outer.set_size(bx.width as u32, bx.height as u32);
+            outer.set_color(bx.border_color);
+            parent.add(&outer);
+            self.controls.push(outer.id());
+            // Inner view = background color, inset by border width.
+            let bw = bx.border_width;
+            let inner_w = (bx.width - bw * 2).max(0) as u32;
+            let inner_h = (bx.height - bw * 2).max(0) as u32;
+            if inner_w > 0 && inner_h > 0 {
+                let inner = ui::View::new();
+                inner.set_position(abs_x + bw, abs_y + bw);
+                inner.set_size(inner_w, inner_h);
+                let bg = if has_bg { bx.bg_color } else { 0xFFFFFFFF };
+                inner.set_color(bg);
+                parent.add(&inner);
+                self.controls.push(inner.id());
+            }
+        } else if has_bg {
             let view = ui::View::new();
             view.set_position(abs_x, abs_y);
             view.set_size(bx.width as u32, bx.height as u32);
