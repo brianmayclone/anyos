@@ -278,6 +278,11 @@ add_custom_command(
   COMMENT "Installing buildsystem tool sources to sysroot"
 )
 
+# Shared target directory for all user-space Rust programs.
+# By sharing one --target-dir, Cargo caches compiled dependencies (stdlib,
+# libheap, etc.) once instead of rebuilding them per-program (~113×).
+set(USER_TARGET_DIR "${CMAKE_BINARY_DIR}/user-target")
+
 # --- Helper: build a Rust user program ---
 set(STDLIB_DEPS
   ${CMAKE_SOURCE_DIR}/libs/stdlib/Cargo.toml
@@ -302,14 +307,14 @@ set(STDLIB_DEPS
 )
 
 function(add_rust_user_program NAME SRC_DIR)
-  set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos-user/release/${NAME}.elf")
+  set(ELF "${USER_TARGET_DIR}/x86_64-anyos-user/release/${NAME}.elf")
   file(GLOB_RECURSE _PROG_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
   add_custom_command(
     OUTPUT ${ELF}
     COMMAND ${CARGO_EXECUTABLE} build --release
       --manifest-path ${SRC_DIR}/Cargo.toml
       --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
-      --target-dir ${CMAKE_BINARY_DIR}/programs/${NAME}
+      --target-dir ${USER_TARGET_DIR}
     DEPENDS
       ${SRC_DIR}/Cargo.toml
       ${SRC_DIR}/build.rs
@@ -331,14 +336,14 @@ endfunction()
 
 # Variant for system programs (placed in /System/ instead of /bin/)
 function(add_rust_system_program NAME SRC_DIR)
-  set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos-user/release/${NAME}.elf")
+  set(ELF "${USER_TARGET_DIR}/x86_64-anyos-user/release/${NAME}.elf")
   file(GLOB_RECURSE _PROG_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
   add_custom_command(
     OUTPUT ${ELF}
     COMMAND ${CARGO_EXECUTABLE} build --release
       --manifest-path ${SRC_DIR}/Cargo.toml
       --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
-      --target-dir ${CMAKE_BINARY_DIR}/programs/${NAME}
+      --target-dir ${USER_TARGET_DIR}
     DEPENDS
       ${SRC_DIR}/Cargo.toml
       ${SRC_DIR}/build.rs
@@ -360,14 +365,14 @@ endfunction()
 
 # Variant for privileged sbin programs (placed in /System/sbin/)
 function(add_rust_sbin_program NAME SRC_DIR)
-  set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos-user/release/${NAME}.elf")
+  set(ELF "${USER_TARGET_DIR}/x86_64-anyos-user/release/${NAME}.elf")
   file(GLOB_RECURSE _PROG_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
   add_custom_command(
     OUTPUT ${ELF}
     COMMAND ${CARGO_EXECUTABLE} build --release
       --manifest-path ${SRC_DIR}/Cargo.toml
       --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
-      --target-dir ${CMAKE_BINARY_DIR}/programs/${NAME}
+      --target-dir ${USER_TARGET_DIR}
     DEPENDS
       ${SRC_DIR}/Cargo.toml
       ${SRC_DIR}/build.rs
@@ -391,14 +396,14 @@ endfunction()
 # Uses mkappbundle for validated bundling with ELF auto-conversion via anyelf.
 function(add_app NAME SRC_DIR DISPLAY_NAME)
   set(APP_DIR "${SYSROOT_DIR}/Applications/${DISPLAY_NAME}.app")
-  set(ELF "${CMAKE_BINARY_DIR}/programs/${NAME}/x86_64-anyos-user/release/${NAME}.elf")
+  set(ELF "${USER_TARGET_DIR}/x86_64-anyos-user/release/${NAME}.elf")
   file(GLOB_RECURSE _PROG_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
   add_custom_command(
     OUTPUT ${ELF}
     COMMAND ${CARGO_EXECUTABLE} build --release
       --manifest-path ${SRC_DIR}/Cargo.toml
       --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
-      --target-dir ${CMAKE_BINARY_DIR}/programs/${NAME}
+      --target-dir ${USER_TARGET_DIR}
     DEPENDS
       ${SRC_DIR}/Cargo.toml
       ${SRC_DIR}/build.rs
@@ -443,15 +448,18 @@ function(add_app NAME SRC_DIR DISPLAY_NAME)
 endfunction()
 
 # Variant for DLLs (placed in /Libraries/)
+# DLLs use custom link.ld scripts, so they share their own target dir
+# (separate from user programs to avoid linker script conflicts).
+set(DLL_TARGET_DIR "${CMAKE_BINARY_DIR}/dll-target")
 function(add_dll NAME SRC_DIR)
-  set(DLL_ELF "${CMAKE_BINARY_DIR}/dll/${NAME}/x86_64-anyos-user/release/${NAME}.elf")
+  set(DLL_ELF "${DLL_TARGET_DIR}/x86_64-anyos-user/release/${NAME}.elf")
   file(GLOB_RECURSE _DLL_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
   add_custom_command(
     OUTPUT ${DLL_ELF}
     COMMAND ${CARGO_EXECUTABLE} build --release
       --manifest-path ${SRC_DIR}/Cargo.toml
       --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
-      --target-dir ${CMAKE_BINARY_DIR}/dll/${NAME}
+      --target-dir ${DLL_TARGET_DIR}
     DEPENDS
       ${SRC_DIR}/Cargo.toml
       ${SRC_DIR}/build.rs
@@ -514,8 +522,10 @@ add_dll(librender ${CMAKE_SOURCE_DIR}/libs/librender)
 add_dll(libcompositor ${CMAKE_SOURCE_DIR}/libs/libcompositor)
 
 # Shared libraries (.so) — built via Cargo → .a → anyld → ET_DYN .so
+# These use -Z build-std so they share a separate target dir from user programs.
+set(SHLIB_TARGET_DIR "${CMAKE_BINARY_DIR}/shlib-target")
 function(add_shared_lib NAME SRC_DIR)
-  set(LIB_A "${CMAKE_BINARY_DIR}/shlib/${NAME}/x86_64-anyos-user/release/lib${NAME}.a")
+  set(LIB_A "${SHLIB_TARGET_DIR}/x86_64-anyos-user/release/lib${NAME}.a")
   set(LIB_SO "${CMAKE_BINARY_DIR}/shlib/${NAME}.so")
   file(GLOB_RECURSE _SL_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
   # Step 1: Cargo → static archive (.a)
@@ -524,7 +534,7 @@ function(add_shared_lib NAME SRC_DIR)
     COMMAND ${CARGO_EXECUTABLE} build --release
       --manifest-path ${SRC_DIR}/Cargo.toml
       --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
-      --target-dir ${CMAKE_BINARY_DIR}/shlib/${NAME}
+      --target-dir ${SHLIB_TARGET_DIR}
       -Z build-std=core,alloc
     DEPENDS
       ${SRC_DIR}/Cargo.toml
@@ -651,7 +661,6 @@ add_custom_command(
 set(RUST_USER_BINS ${RUST_USER_BINS} ${SYSROOT_DIR}/System/bin/gunzip)
 add_rust_user_program(banner     ${CMAKE_SOURCE_DIR}/bin/banner)
 add_rust_user_program(jp2a       ${CMAKE_SOURCE_DIR}/bin/jp2a)
-add_rust_user_program(nano       ${CMAKE_SOURCE_DIR}/bin/nano)
 add_rust_user_program(neofetch   ${CMAKE_SOURCE_DIR}/bin/neofetch)
 add_rust_user_program(nvi        ${CMAKE_SOURCE_DIR}/bin/nvi)
 # Privileged sbin programs
@@ -663,13 +672,13 @@ add_rust_sbin_program(passwd     ${CMAKE_SOURCE_DIR}/bin/passwd)
 add_rust_sbin_program(fdisk      ${CMAKE_SOURCE_DIR}/bin/fdisk)
 
 # true/false: package names are true_cmd/false_cmd (Rust keywords) but binaries named true/false
-set(TRUE_ELF "${CMAKE_BINARY_DIR}/programs/true_cmd/x86_64-anyos-user/release/true_cmd.elf")
+set(TRUE_ELF "${USER_TARGET_DIR}/x86_64-anyos-user/release/true_cmd.elf")
 add_custom_command(
   OUTPUT ${TRUE_ELF}
   COMMAND ${CARGO_EXECUTABLE} build --release
     --manifest-path ${CMAKE_SOURCE_DIR}/bin/true/Cargo.toml
     --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
-    --target-dir ${CMAKE_BINARY_DIR}/programs/true_cmd
+    --target-dir ${USER_TARGET_DIR}
   DEPENDS
     ${CMAKE_SOURCE_DIR}/bin/true/Cargo.toml
     ${CMAKE_SOURCE_DIR}/bin/true/build.rs
@@ -688,13 +697,13 @@ add_custom_command(
 )
 list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/bin/true)
 
-set(FALSE_ELF "${CMAKE_BINARY_DIR}/programs/false_cmd/x86_64-anyos-user/release/false_cmd.elf")
+set(FALSE_ELF "${USER_TARGET_DIR}/x86_64-anyos-user/release/false_cmd.elf")
 add_custom_command(
   OUTPUT ${FALSE_ELF}
   COMMAND ${CARGO_EXECUTABLE} build --release
     --manifest-path ${CMAKE_SOURCE_DIR}/bin/false/Cargo.toml
     --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
-    --target-dir ${CMAKE_BINARY_DIR}/programs/false_cmd
+    --target-dir ${USER_TARGET_DIR}
   DEPENDS
     ${CMAKE_SOURCE_DIR}/bin/false/Cargo.toml
     ${CMAKE_SOURCE_DIR}/bin/false/build.rs
@@ -751,13 +760,13 @@ add_app(clipman     ${CMAKE_SOURCE_DIR}/apps/clipman        "Clipboard Manager")
 
 # Build compositor binary (nested path: /System/compositor/compositor)
 set(COMPOSITOR_SRC_DIR ${CMAKE_SOURCE_DIR}/system/compositor/compositor)
-set(COMPOSITOR_ELF "${CMAKE_BINARY_DIR}/programs/compositor/x86_64-anyos-user/release/compositor.elf")
+set(COMPOSITOR_ELF "${USER_TARGET_DIR}/x86_64-anyos-user/release/compositor.elf")
 add_custom_command(
   OUTPUT ${COMPOSITOR_ELF}
   COMMAND ${CARGO_EXECUTABLE} build --release
     --manifest-path ${COMPOSITOR_SRC_DIR}/Cargo.toml
     --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
-    --target-dir ${CMAKE_BINARY_DIR}/programs/compositor
+    --target-dir ${USER_TARGET_DIR}
   DEPENDS
     ${COMPOSITOR_SRC_DIR}/Cargo.toml
     ${COMPOSITOR_SRC_DIR}/build.rs
@@ -779,13 +788,13 @@ list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/System/compositor/compositor)
 
 # Build dock program (nested path: /System/compositor/dock)
 set(DOCK_SRC_DIR ${CMAKE_SOURCE_DIR}/system/compositor/dock)
-set(DOCK_ELF "${CMAKE_BINARY_DIR}/programs/dock/x86_64-anyos/release/dock.elf")
+set(DOCK_ELF "${CMAKE_BINARY_DIR}/kernel/x86_64-anyos/release/dock.elf")
 add_custom_command(
   OUTPUT ${DOCK_ELF}
   COMMAND ${CARGO_EXECUTABLE} build --release
     --manifest-path ${DOCK_SRC_DIR}/Cargo.toml
     --target ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
-    --target-dir ${CMAKE_BINARY_DIR}/programs/dock
+    --target-dir ${CMAKE_BINARY_DIR}/kernel
   DEPENDS
     ${DOCK_SRC_DIR}/Cargo.toml
     ${DOCK_SRC_DIR}/build.rs
