@@ -21,7 +21,12 @@ pub fn math_ceil(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn math_round(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    JsValue::Number(floor_f64(arg_num(args, 0) + 0.5))
+    let n = arg_num(args, 0);
+    // Preserve -0: Math.round(-0) = -0
+    if n == 0.0 && n.is_sign_negative() { return JsValue::Number(n); }
+    // Special case: Math.round(-0.5) = -0 (ties go to positive infinity, so -0.5 → -0)
+    if n == -0.5 { return JsValue::Number(-0.0_f64); }
+    JsValue::Number(floor_f64(n + 0.5))
 }
 
 pub fn math_trunc(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -78,11 +83,37 @@ pub fn math_log_fn(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn math_log2(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    JsValue::Number(ln_approx(arg_num(args, 0)) / core::f64::consts::LN_2)
+    let n = arg_num(args, 0);
+    // Exact result for exact powers of 2 using IEEE 754 exponent extraction
+    if n > 0.0 && n.is_finite() {
+        let bits = n.to_bits();
+        let mantissa = bits & 0x000F_FFFF_FFFF_FFFF;
+        if mantissa == 0 {
+            let exp = ((bits >> 52) & 0x7FF) as i32 - 1023;
+            return JsValue::Number(exp as f64);
+        }
+    }
+    JsValue::Number(ln_approx(n) / core::f64::consts::LN_2)
 }
 
 pub fn math_log10(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    JsValue::Number(ln_approx(arg_num(args, 0)) / core::f64::consts::LN_10)
+    let n = arg_num(args, 0);
+    // Exact result for exact powers of 10
+    if n > 0.0 && n.is_finite() {
+        let mut check = 1.0_f64;
+        for exp in 0i32..=308 {
+            if check == n { return JsValue::Number(exp as f64); }
+            if check > n { break; }
+            check *= 10.0;
+        }
+        let mut check = 0.1_f64;
+        for exp in 1i32..=323 {
+            if check == n { return JsValue::Number(-(exp as f64)); }
+            if check < n { break; }
+            check /= 10.0;
+        }
+    }
+    JsValue::Number(ln_approx(n) / core::f64::consts::LN_10)
 }
 
 pub fn math_sin(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -105,13 +136,21 @@ pub fn math_atan2(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn math_hypot(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    // If any arg is ±Infinity → +Infinity (before checking NaN)
+    let mut has_nan = false;
     let mut sum = 0.0f64;
-    for a in args { sum += a.to_number() * a.to_number(); }
+    for a in args {
+        let n = a.to_number();
+        if n.is_infinite() { return JsValue::Number(f64::INFINITY); }
+        if n.is_nan() { has_nan = true; } else { sum += n * n; }
+    }
+    if has_nan { return JsValue::Number(f64::NAN); }
     JsValue::Number(sqrt_f64(sum))
 }
 
 pub fn math_clz32(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let n = arg_num(args, 0) as u32;
+    // ToUint32: NaN, ±0, ±Infinity all become 0 → 32 leading zeros
+    let n = to_uint32(arg_num(args, 0));
     JsValue::Number(if n == 0 { 32.0 } else { n.leading_zeros() as f64 })
 }
 
@@ -137,6 +176,8 @@ pub fn math_exp(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn math_expm1(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let x = arg_num(args, 0);
     if x.is_nan() { return JsValue::Number(f64::NAN); }
+    // Preserve -0: expm1(-0) = -0
+    if x == 0.0 { return JsValue::Number(x); }
     if x.is_infinite() { return JsValue::Number(if x > 0.0 { f64::INFINITY } else { -1.0 }); }
     // For small x use Taylor series for precision: x + x²/2! + x³/3! + ...
     if x.abs() < 1e-4 {
@@ -189,6 +230,8 @@ pub fn math_atan(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn math_sinh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let x = arg_num(args, 0);
     if x.is_nan() { return JsValue::Number(f64::NAN); }
+    // Preserve -0: sinh(-0) = -0
+    if x == 0.0 { return JsValue::Number(x); }
     if x.is_infinite() { return JsValue::Number(x); }
     JsValue::Number((exp_approx(x) - exp_approx(-x)) / 2.0)
 }
@@ -204,7 +247,8 @@ pub fn math_tanh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let x = arg_num(args, 0);
     if x.is_nan() { return JsValue::Number(f64::NAN); }
     if x.is_infinite() { return JsValue::Number(if x > 0.0 { 1.0 } else { -1.0 }); }
-    if x == 0.0 { return JsValue::Number(0.0); }
+    // Preserve -0: tanh(-0) = -0
+    if x == 0.0 { return JsValue::Number(x); }
     let ex = exp_approx(x);
     let enx = exp_approx(-x);
     JsValue::Number((ex - enx) / (ex + enx))
@@ -222,7 +266,8 @@ pub fn math_asinh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let x = arg_num(args, 0);
     if x.is_nan() { return JsValue::Number(f64::NAN); }
     if x.is_infinite() { return JsValue::Number(x); }
-    if x == 0.0 { return JsValue::Number(0.0); }
+    // Preserve -0: asinh(-0) = -0
+    if x == 0.0 { return JsValue::Number(x); }
     let sign = if x < 0.0 { -1.0 } else { 1.0 };
     let ax = x * sign;
     JsValue::Number(sign * ln_approx(ax + sqrt_f64(ax * ax + 1.0)))
@@ -233,13 +278,15 @@ pub fn math_atanh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if x.is_nan() || x.abs() > 1.0 { return JsValue::Number(f64::NAN); }
     if x == 1.0 { return JsValue::Number(f64::INFINITY); }
     if x == -1.0 { return JsValue::Number(f64::NEG_INFINITY); }
-    if x == 0.0 { return JsValue::Number(0.0); }
+    // Preserve -0: atanh(-0) = -0
+    if x == 0.0 { return JsValue::Number(x); }
     JsValue::Number(ln_approx((1.0 + x) / (1.0 - x)) / 2.0)
 }
 
 pub fn math_imul(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let a = arg_num(args, 0) as i32;
-    let b = arg_num(args, 1) as i32;
+    // Spec: ToUint32 each arg, then multiply modulo 2^32, then interpret as i32
+    let a = to_uint32(arg_num(args, 0)) as i32;
+    let b = to_uint32(arg_num(args, 1)) as i32;
     JsValue::Number(a.wrapping_mul(b) as f64)
 }
 
@@ -259,12 +306,16 @@ pub fn floor_f64(n: f64) -> f64 {
 
 pub fn ceil_f64(n: f64) -> f64 {
     if n.is_nan() || n.is_infinite() { return n; }
+    // For values in (-1, 0): ceil is -0 (same as -Math.floor(-x) rule)
+    if n > -1.0 && n < 0.0 { return -0.0_f64; }
     let i = n as i64;
     if (i as f64) >= n { i as f64 } else { (i + 1) as f64 }
 }
 
 pub fn trunc_f64(n: f64) -> f64 {
     if n.is_nan() || n.is_infinite() { return n; }
+    // Values in (-1, 0): trunc toward zero gives -0 (matching Math.ceil for negatives)
+    if n > -1.0 && n < 0.0 { return -0.0_f64; }
     n as i64 as f64
 }
 
@@ -282,22 +333,95 @@ pub fn sqrt_f64(n: f64) -> f64 {
 }
 
 pub fn pow_f64(base: f64, exp: f64) -> f64 {
+    // ECMAScript spec section 21.3.2.26 / applying-the-exp-operator rules:
+
+    // If exp is ±0, result is always 1 (even for NaN base)
     if exp == 0.0 { return 1.0; }
-    if base == 1.0 { return 1.0; }
+    // If exp is NaN, result is NaN
     if exp.is_nan() { return f64::NAN; }
-    if exp == (exp as i32) as f64 && exp.abs() < 100.0 {
-        let n = exp as i32;
+    // If base is NaN, result is NaN
+    if base.is_nan() { return f64::NAN; }
+
+    let abs_base = base.abs();
+
+    // Infinite exponent rules
+    if exp.is_infinite() {
+        // |base| == 1 with infinite exp → NaN
+        if abs_base == 1.0 { return f64::NAN; }
+        if exp > 0.0 {
+            return if abs_base > 1.0 { f64::INFINITY } else { 0.0 };
+        } else {
+            return if abs_base > 1.0 { 0.0 } else { f64::INFINITY };
+        }
+    }
+
+    // Infinite base rules
+    if base.is_infinite() {
+        if base > 0.0 {
+            // +Infinity
+            return if exp > 0.0 { f64::INFINITY } else { 0.0 };
+        } else {
+            // -Infinity
+            let odd = is_odd_integer(exp);
+            if exp > 0.0 {
+                return if odd { f64::NEG_INFINITY } else { f64::INFINITY };
+            } else {
+                return if odd { -0.0_f64 } else { 0.0 };
+            }
+        }
+    }
+
+    // Zero base rules (including -0)
+    if base == 0.0 {
+        let neg_base = base.is_sign_negative();
+        let odd = is_odd_integer(exp);
+        if exp > 0.0 {
+            return if neg_base && odd { -0.0_f64 } else { 0.0 };
+        } else {
+            // exp < 0
+            return if neg_base && odd { f64::NEG_INFINITY } else { f64::INFINITY };
+        }
+    }
+
+    // Negative base with non-integer exponent → NaN
+    if base < 0.0 {
+        if !is_integer_finite(exp) { return f64::NAN; }
+        let abs_result = pow_positive(-base, exp.abs());
+        let negate = is_odd_integer(exp);
+        let result = if negate { -abs_result } else { abs_result };
+        return if exp < 0.0 { 1.0 / result } else { result };
+    }
+
+    // Normal positive base
+    pow_positive(base, exp)
+}
+
+fn is_integer_finite(n: f64) -> bool {
+    n.is_finite() && n == floor_f64(n)
+}
+
+fn is_odd_integer(n: f64) -> bool {
+    is_integer_finite(n) && {
+        // n % 2 != 0 but safe for large values
+        let half = n / 2.0;
+        half != floor_f64(half)
+    }
+}
+
+fn pow_positive(base: f64, exp: f64) -> f64 {
+    // Integer exponent fast path (for small exponents)
+    if exp == floor_f64(exp) && exp.abs() < 1000.0 {
+        let n = exp as i64;
         if n >= 0 {
-            let mut r = 1.0;
+            let mut r = 1.0_f64;
             for _ in 0..n { r *= base; }
             r
         } else {
-            let mut r = 1.0;
+            let mut r = 1.0_f64;
             for _ in 0..(-n) { r *= base; }
             1.0 / r
         }
     } else {
-        if base <= 0.0 { return f64::NAN; }
         exp_approx(exp * ln_approx(base))
     }
 }
@@ -359,13 +483,43 @@ fn sin_approx(x: f64) -> f64 {
 }
 
 fn cos_approx(x: f64) -> f64 {
+    if x.is_nan() || x.is_infinite() { return f64::NAN; }
+    // cos(0) = 1 exactly
+    if x == 0.0 { return 1.0; }
     sin_approx(x + core::f64::consts::FRAC_PI_2)
 }
 
 fn atan2_approx(y: f64, x: f64) -> f64 {
+    // NaN in either arg → NaN
+    if y.is_nan() || x.is_nan() { return f64::NAN; }
     let pi = core::f64::consts::PI;
+    // Handle infinities per spec
+    if y.is_infinite() && x.is_infinite() {
+        return if y > 0.0 {
+            if x > 0.0 { pi / 4.0 } else { 3.0 * pi / 4.0 }
+        } else {
+            if x > 0.0 { -pi / 4.0 } else { -3.0 * pi / 4.0 }
+        };
+    }
+    if x.is_infinite() {
+        return if x > 0.0 {
+            if y.is_sign_negative() { -0.0_f64 } else { 0.0 }
+        } else {
+            if y < 0.0 { -pi } else { pi }
+        };
+    }
+    if y.is_infinite() {
+        return if y > 0.0 { pi / 2.0 } else { -pi / 2.0 };
+    }
     if x == 0.0 {
-        return if y > 0.0 { pi / 2.0 } else if y < 0.0 { -pi / 2.0 } else { 0.0 };
+        if y == 0.0 {
+            return if x.is_sign_negative() {
+                if y.is_sign_negative() { -pi } else { pi }
+            } else {
+                if y.is_sign_negative() { -0.0_f64 } else { 0.0 }
+            };
+        }
+        return if y > 0.0 { pi / 2.0 } else { -pi / 2.0 };
     }
     let a = atan_approx(y / x);
     if x > 0.0 { a }
@@ -388,4 +542,13 @@ fn atan_approx(x: f64) -> f64 {
         sum += term / (2 * i + 1) as f64;
     }
     sum
+}
+
+/// Convert f64 to u32 following ECMAScript ToUint32 semantics.
+/// NaN, ±0, ±Infinity all map to 0.
+pub fn to_uint32(n: f64) -> u32 {
+    if !n.is_finite() || n == 0.0 { return 0; }
+    // Truncate to integer, then take modulo 2^32
+    let trunc = n as i64;  // truncates toward zero
+    trunc as u32
 }
