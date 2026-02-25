@@ -358,8 +358,8 @@ fn main() {
     tl.set_position(8, 22);
     tl.set_size(WIN_W - 40, 155);
     tl.set_row_height(34);
-    // col 0 = 130 px labels, col 1 = 10 px gap, col 2 = remaining for controls
-    tl.set_column_widths(&[130, 10]);
+    // col 0 = 130 px labels, col 1 = 10 px gap, col 2 = 260 px controls
+    tl.set_column_widths(&[130, 10, WIN_W - 40 - 130 - 10]);
     grp_server.add(&tl);
 
     // Helper macro: add one spacer view in the middle column.
