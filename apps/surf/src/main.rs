@@ -23,6 +23,21 @@ use alloc::vec;
 use libanyui_client as ui;
 use ui::Widget;
 
+/// Return current stack pointer for debug tracing.
+#[cfg(feature = "debug_surf")]
+#[inline(always)]
+fn debug_rsp() -> u64 {
+    let rsp: u64;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp); }
+    rsp
+}
+
+/// Return current heap break position for debug tracing.
+#[cfg(feature = "debug_surf")]
+fn debug_heap() -> u64 {
+    anyos_std::process::sbrk(0) as u64
+}
+
 // ---------------------------------------------------------------------------
 // Per-tab state
 // ---------------------------------------------------------------------------
@@ -146,15 +161,21 @@ fn navigate(url_str: &str) {
 
     let body_text = decode_http_body(&response.body, &response.headers);
     anyos_std::println!("[surf] received {} bytes, parsing HTML...", body_text.len());
+    #[cfg(feature = "debug_surf")]
+    anyos_std::println!("[surf-dbg] pre-parse RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap());
 
     st.tabs[st.active_tab].status_text = String::from("Rendering page...");
     update_status();
 
     // Clear external stylesheets from previous page.
     st.tabs[st.active_tab].webview.clear_stylesheets();
+    #[cfg(feature = "debug_surf")]
+    anyos_std::println!("[surf-dbg] calling set_html ({} bytes)...", body_text.len());
     // Set HTML content — this parses, lays out, and renders controls immediately.
     st.tabs[st.active_tab].webview.set_html(&body_text);
     anyos_std::println!("[surf] render complete");
+    #[cfg(feature = "debug_surf")]
+    anyos_std::println!("[surf-dbg] post-render RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap());
 
     // Print JS console output.
     for line in st.tabs[st.active_tab].webview.js_console() {
@@ -183,12 +204,20 @@ fn navigate(url_str: &str) {
     }
 
     // Parse DOM for resource discovery (stylesheets, images).
+    #[cfg(feature = "debug_surf")]
+    anyos_std::println!("[surf-dbg] second html::parse start");
     let dom_for_resources = libwebview::html::parse(&body_text);
     anyos_std::println!("[surf] DOM: {} nodes", dom_for_resources.nodes.len());
+    #[cfg(feature = "debug_surf")]
+    anyos_std::println!("[surf-dbg] post-DOM RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap());
     let tab_idx = st.active_tab;
 
     // Fetch external stylesheets (<link rel="stylesheet">) and apply them.
+    #[cfg(feature = "debug_surf")]
+    anyos_std::println!("[surf-dbg] fetch_stylesheets start");
     fetch_stylesheets(&dom_for_resources, &base_url, tab_idx);
+    #[cfg(feature = "debug_surf")]
+    anyos_std::println!("[surf-dbg] fetch_stylesheets done, RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap());
 
     // Cancel any pending image fetches from previous page.
     if st.image_timer != 0 {
@@ -208,6 +237,8 @@ fn navigate(url_str: &str) {
     update_title();
     update_status();
     update_tab_labels();
+    #[cfg(feature = "debug_surf")]
+    anyos_std::println!("[surf-dbg] navigate complete, RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap());
 }
 
 fn navigate_post(url_str: &str, body: &str) {

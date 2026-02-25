@@ -104,6 +104,7 @@ add_custom_target(buildsystem-tools
 )
 
 option(ANYOS_DEBUG_VERBOSE "Enable verbose debug output" OFF)
+option(ANYOS_DEBUG_SURF "Enable Surf browser debug logging" OFF)
 option(ANYOS_NO_CROSS "Disable cross-compilation (skip libc, TCC, games, curl)" OFF)
 option(ANYOS_RESET "Force fresh disk image rebuild (destroy runtime data)" OFF)
 
@@ -395,12 +396,18 @@ endfunction()
 # Variant for .app bundles (placed in /Applications/{DISPLAY_NAME}.app/)
 # Uses mkappbundle for validated bundling with ELF auto-conversion via anyelf.
 function(add_app NAME SRC_DIR DISPLAY_NAME)
+  cmake_parse_arguments(APP "" "FEATURES" "" ${ARGN})
+  set(_APP_FEATURES_ARG "")
+  if(APP_FEATURES)
+    set(_APP_FEATURES_ARG "--features;${APP_FEATURES}")
+  endif()
   set(APP_DIR "${SYSROOT_DIR}/Applications/${DISPLAY_NAME}.app")
   set(ELF "${USER_TARGET_DIR}/x86_64-anyos-user/release/${NAME}.elf")
   file(GLOB_RECURSE _PROG_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
   add_custom_command(
     OUTPUT ${ELF}
     COMMAND ${CARGO_EXECUTABLE} build --release
+      ${_APP_FEATURES_ARG}
       --manifest-path ${SRC_DIR}/Cargo.toml
       --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
       --target-dir ${USER_TARGET_DIR}
@@ -748,7 +755,11 @@ add_app(calc        ${CMAKE_SOURCE_DIR}/apps/calc           "Calculator")
 add_app(fontviewer  ${CMAKE_SOURCE_DIR}/apps/fontviewer     "Font Viewer")
 add_app(clock       ${CMAKE_SOURCE_DIR}/apps/clock          "Clock")
 add_app(screenshot  ${CMAKE_SOURCE_DIR}/apps/screenshot     "Screenshot")
-add_app(surf        ${CMAKE_SOURCE_DIR}/apps/surf            "Surf")
+if(ANYOS_DEBUG_SURF)
+  add_app(surf        ${CMAKE_SOURCE_DIR}/apps/surf            "Surf" FEATURES debug_surf)
+else()
+  add_app(surf        ${CMAKE_SOURCE_DIR}/apps/surf            "Surf")
+endif()
 add_app(demo_anyui  ${CMAKE_SOURCE_DIR}/apps/demo_anyui     "anyUI Demo")
 add_app(anycode     ${CMAKE_SOURCE_DIR}/apps/anycode        "anyOS Code")
 add_app(paint       ${CMAKE_SOURCE_DIR}/apps/paint          "Paint")

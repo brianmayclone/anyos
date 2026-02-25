@@ -16,6 +16,7 @@ param(
     [switch]$Iso,
     [switch]$All,
     [switch]$Debug,
+    [switch]$DebugSurf,
     [switch]$NoCross
 )
 
@@ -35,10 +36,11 @@ if (Test-Path $cargoDir) {
 }
 
 # CMake flags
-$debugFlag   = if ($Debug)   { "ON" } else { "OFF" }
-$noCrossFlag = if ($NoCross) { "ON" } else { "OFF" }
-$resetFlag   = if ($Reset)   { "ON" } else { "OFF" }
-$cmakeExtra  = "-DANYOS_DEBUG_VERBOSE=$debugFlag", "-DANYOS_NO_CROSS=$noCrossFlag", "-DANYOS_RESET=$resetFlag"
+$debugFlag     = if ($Debug)     { "ON" } else { "OFF" }
+$debugSurfFlag = if ($DebugSurf) { "ON" } else { "OFF" }
+$noCrossFlag   = if ($NoCross)   { "ON" } else { "OFF" }
+$resetFlag     = if ($Reset)     { "ON" } else { "OFF" }
+$cmakeExtra    = "-DANYOS_DEBUG_VERBOSE=$debugFlag", "-DANYOS_DEBUG_SURF=$debugSurfFlag", "-DANYOS_NO_CROSS=$noCrossFlag", "-DANYOS_RESET=$resetFlag"
 
 # Ensure build directory exists and is configured
 if (-not (Test-Path (Join-Path $BuildDir "build.ninja"))) {

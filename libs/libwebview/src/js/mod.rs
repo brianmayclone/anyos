@@ -258,7 +258,15 @@ impl JsRuntime {
             }
         }
 
+        crate::debug_surf!("[js] execute_scripts: {} script(s) found", scripts.len());
         if scripts.is_empty() { return; }
+
+        #[cfg(feature = "debug_surf")]
+        {
+            let total_bytes: usize = scripts.iter().map(|s| s.len()).sum();
+            crate::debug_surf!("[js] total script bytes: {}", total_bytes);
+            crate::debug_surf!("[js]   RSP=0x{:X} heap=0x{:X}", crate::debug_rsp(), crate::debug_heap_pos());
+        }
 
         // Set up DOM bridge via userdata.
         let mut bridge = DomBridge {
@@ -280,8 +288,10 @@ impl JsRuntime {
         unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; }
 
         // Execute each script.
-        for script in &scripts {
+        for (idx, script) in scripts.iter().enumerate() {
+            crate::debug_surf!("[js] eval script #{}: {} bytes", idx, script.len());
             self.engine.eval(script);
+            crate::debug_surf!("[js] eval script #{} done", idx);
         }
 
         // Disable interception.
@@ -298,6 +308,8 @@ impl JsRuntime {
         self.pending_http_requests = bridge.pending_http_requests;
         self.timers.extend(bridge.timers);
         self.engine.vm().userdata = core::ptr::null_mut();
+        crate::debug_surf!("[js] execute_scripts complete: {} mutations, {} listeners",
+            self.mutations.len(), self.event_listeners.len());
     }
 
     /// Set up all native host objects — zero JS injection.

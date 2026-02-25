@@ -1,0 +1,596 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * <algorithm> — common algorithms: sort, find, copy, fill, etc.
+ */
+
+#ifndef _LIBCXX_ALGORITHM
+#define _LIBCXX_ALGORITHM
+
+#include <cstddef>
+#include <iterator>
+#include <utility>
+
+namespace std {
+
+/* ── Non-modifying sequence operations ─────────────────────────────── */
+
+template <class It, class T>
+constexpr It find(It first, It last, const T& value) {
+    for (; first != last; ++first)
+        if (*first == value) return first;
+    return last;
+}
+
+template <class It, class Pred>
+constexpr It find_if(It first, It last, Pred pred) {
+    for (; first != last; ++first)
+        if (pred(*first)) return first;
+    return last;
+}
+
+template <class It, class Pred>
+constexpr It find_if_not(It first, It last, Pred pred) {
+    for (; first != last; ++first)
+        if (!pred(*first)) return first;
+    return last;
+}
+
+template <class It, class Pred>
+constexpr bool all_of(It first, It last, Pred pred) {
+    for (; first != last; ++first)
+        if (!pred(*first)) return false;
+    return true;
+}
+
+template <class It, class Pred>
+constexpr bool any_of(It first, It last, Pred pred) {
+    for (; first != last; ++first)
+        if (pred(*first)) return true;
+    return false;
+}
+
+template <class It, class Pred>
+constexpr bool none_of(It first, It last, Pred pred) {
+    for (; first != last; ++first)
+        if (pred(*first)) return false;
+    return true;
+}
+
+template <class It, class Fn>
+constexpr Fn for_each(It first, It last, Fn fn) {
+    for (; first != last; ++first)
+        fn(*first);
+    return fn;
+}
+
+template <class It, class T>
+constexpr typename iterator_traits<It>::difference_type
+count(It first, It last, const T& value) {
+    typename iterator_traits<It>::difference_type n = 0;
+    for (; first != last; ++first)
+        if (*first == value) ++n;
+    return n;
+}
+
+template <class It, class Pred>
+constexpr typename iterator_traits<It>::difference_type
+count_if(It first, It last, Pred pred) {
+    typename iterator_traits<It>::difference_type n = 0;
+    for (; first != last; ++first)
+        if (pred(*first)) ++n;
+    return n;
+}
+
+/* ── Comparison ────────────────────────────────────────────────────── */
+
+template <class It1, class It2>
+constexpr bool equal(It1 first1, It1 last1, It2 first2) {
+    for (; first1 != last1; ++first1, ++first2)
+        if (!(*first1 == *first2)) return false;
+    return true;
+}
+
+template <class It1, class It2>
+constexpr bool lexicographical_compare(It1 f1, It1 l1, It2 f2, It2 l2) {
+    for (; f1 != l1 && f2 != l2; ++f1, ++f2) {
+        if (*f1 < *f2) return true;
+        if (*f2 < *f1) return false;
+    }
+    return (f1 == l1) && (f2 != l2);
+}
+
+template <class It1, class It2, class Cmp>
+constexpr bool lexicographical_compare(It1 f1, It1 l1, It2 f2, It2 l2, Cmp comp) {
+    for (; f1 != l1 && f2 != l2; ++f1, ++f2) {
+        if (comp(*f1, *f2)) return true;
+        if (comp(*f2, *f1)) return false;
+    }
+    return (f1 == l1) && (f2 != l2);
+}
+
+template <class It1, class It2>
+constexpr pair<It1, It2> mismatch(It1 first1, It1 last1, It2 first2) {
+    while (first1 != last1 && *first1 == *first2) {
+        ++first1; ++first2;
+    }
+    return {first1, first2};
+}
+
+/* ── Modifying sequence operations ─────────────────────────────────── */
+
+template <class InIt, class OutIt>
+constexpr OutIt copy(InIt first, InIt last, OutIt dest) {
+    while (first != last) {
+        *dest = *first;
+        ++dest; ++first;
+    }
+    return dest;
+}
+
+template <class InIt, class OutIt>
+constexpr OutIt copy_backward(InIt first, InIt last, OutIt d_last) {
+    while (first != last)
+        *(--d_last) = *(--last);
+    return d_last;
+}
+
+template <class InIt, class OutIt, class Pred>
+constexpr OutIt copy_if(InIt first, InIt last, OutIt dest, Pred pred) {
+    for (; first != last; ++first)
+        if (pred(*first)) { *dest = *first; ++dest; }
+    return dest;
+}
+
+template <class InIt, class Size, class OutIt>
+constexpr OutIt copy_n(InIt first, Size n, OutIt dest) {
+    for (Size i = 0; i < n; ++i) {
+        *dest = *first;
+        ++dest; ++first;
+    }
+    return dest;
+}
+
+template <class InIt, class OutIt>
+constexpr OutIt move(InIt first, InIt last, OutIt dest) {
+    while (first != last) {
+        *dest = std::move(*first);
+        ++dest; ++first;
+    }
+    return dest;
+}
+
+template <class InIt, class OutIt>
+constexpr OutIt move_backward(InIt first, InIt last, OutIt d_last) {
+    while (first != last)
+        *(--d_last) = std::move(*(--last));
+    return d_last;
+}
+
+template <class FwdIt, class T>
+constexpr void fill(FwdIt first, FwdIt last, const T& value) {
+    for (; first != last; ++first)
+        *first = value;
+}
+
+template <class OutIt, class Size, class T>
+constexpr OutIt fill_n(OutIt first, Size n, const T& value) {
+    for (Size i = 0; i < n; ++i) {
+        *first = value;
+        ++first;
+    }
+    return first;
+}
+
+template <class FwdIt, class Gen>
+constexpr void generate(FwdIt first, FwdIt last, Gen gen) {
+    for (; first != last; ++first)
+        *first = gen();
+}
+
+template <class InIt, class OutIt, class UnaryOp>
+constexpr OutIt transform(InIt first, InIt last, OutIt dest, UnaryOp op) {
+    for (; first != last; ++first, ++dest)
+        *dest = op(*first);
+    return dest;
+}
+
+template <class It, class T>
+constexpr void replace(It first, It last, const T& old_val, const T& new_val) {
+    for (; first != last; ++first)
+        if (*first == old_val) *first = new_val;
+}
+
+template <class FwdIt>
+constexpr FwdIt unique(FwdIt first, FwdIt last) {
+    if (first == last) return last;
+    FwdIt result = first;
+    while (++first != last) {
+        if (!(*result == *first))
+            *(++result) = std::move(*first);
+    }
+    return ++result;
+}
+
+template <class FwdIt, class T>
+constexpr FwdIt remove(FwdIt first, FwdIt last, const T& value) {
+    first = find(first, last, value);
+    if (first == last) return last;
+    FwdIt result = first;
+    ++first;
+    for (; first != last; ++first) {
+        if (!(*first == value)) {
+            *result = std::move(*first);
+            ++result;
+        }
+    }
+    return result;
+}
+
+template <class FwdIt, class Pred>
+constexpr FwdIt remove_if(FwdIt first, FwdIt last, Pred pred) {
+    first = find_if(first, last, pred);
+    if (first == last) return last;
+    FwdIt result = first;
+    ++first;
+    for (; first != last; ++first) {
+        if (!pred(*first)) {
+            *result = std::move(*first);
+            ++result;
+        }
+    }
+    return result;
+}
+
+template <class BidIt>
+constexpr void reverse(BidIt first, BidIt last) {
+    while (first != last && first != --last) {
+        std::swap(*first, *last);
+        ++first;
+    }
+}
+
+/* ── Min / Max ─────────────────────────────────────────────────────── */
+
+template <class T>
+constexpr const T& min(const T& a, const T& b) {
+    return (b < a) ? b : a;
+}
+
+template <class T, class Cmp>
+constexpr const T& min(const T& a, const T& b, Cmp comp) {
+    return comp(b, a) ? b : a;
+}
+
+template <class T>
+constexpr const T& max(const T& a, const T& b) {
+    return (a < b) ? b : a;
+}
+
+template <class T, class Cmp>
+constexpr const T& max(const T& a, const T& b, Cmp comp) {
+    return comp(a, b) ? b : a;
+}
+
+template <class T>
+constexpr const T& clamp(const T& v, const T& lo, const T& hi) {
+    return (v < lo) ? lo : (hi < v) ? hi : v;
+}
+
+template <class T>
+constexpr T min(initializer_list<T> il) {
+    const T* best = il.begin();
+    for (auto it = il.begin() + 1; it != il.end(); ++it)
+        if (*it < *best) best = it;
+    return *best;
+}
+
+template <class T>
+constexpr T max(initializer_list<T> il) {
+    const T* best = il.begin();
+    for (auto it = il.begin() + 1; it != il.end(); ++it)
+        if (*best < *it) best = it;
+    return *best;
+}
+
+template <class FwdIt>
+constexpr FwdIt min_element(FwdIt first, FwdIt last) {
+    if (first == last) return last;
+    FwdIt smallest = first;
+    while (++first != last)
+        if (*first < *smallest) smallest = first;
+    return smallest;
+}
+
+template <class FwdIt>
+constexpr FwdIt max_element(FwdIt first, FwdIt last) {
+    if (first == last) return last;
+    FwdIt largest = first;
+    while (++first != last)
+        if (*largest < *first) largest = first;
+    return largest;
+}
+
+/* ── Binary search (sorted ranges) ─────────────────────────────────── */
+
+template <class FwdIt, class T>
+constexpr FwdIt lower_bound(FwdIt first, FwdIt last, const T& value) {
+    auto len = distance(first, last);
+    while (len > 0) {
+        auto half = len / 2;
+        auto mid = first;
+        advance(mid, half);
+        if (*mid < value) {
+            first = ++mid;
+            len -= half + 1;
+        } else {
+            len = half;
+        }
+    }
+    return first;
+}
+
+template <class FwdIt, class T>
+constexpr FwdIt upper_bound(FwdIt first, FwdIt last, const T& value) {
+    auto len = distance(first, last);
+    while (len > 0) {
+        auto half = len / 2;
+        auto mid = first;
+        advance(mid, half);
+        if (!(value < *mid)) {
+            first = ++mid;
+            len -= half + 1;
+        } else {
+            len = half;
+        }
+    }
+    return first;
+}
+
+template <class FwdIt, class T>
+constexpr bool binary_search(FwdIt first, FwdIt last, const T& value) {
+    first = lower_bound(first, last, value);
+    return first != last && !(value < *first);
+}
+
+template <class FwdIt, class T>
+constexpr pair<FwdIt, FwdIt> equal_range(FwdIt first, FwdIt last, const T& value) {
+    return {lower_bound(first, last, value), upper_bound(first, last, value)};
+}
+
+/* ── Sorting (introsort: quicksort + insertion sort fallback) ──────── */
+
+namespace detail {
+    template <class It>
+    constexpr void insertion_sort(It first, It last) {
+        if (first == last) return;
+        for (It i = first + 1; i != last; ++i) {
+            auto key = std::move(*i);
+            It j = i;
+            while (j != first && key < *(j - 1)) {
+                *j = std::move(*(j - 1));
+                --j;
+            }
+            *j = std::move(key);
+        }
+    }
+
+    template <class It>
+    constexpr It median_of_three(It a, It b, It c) {
+        if (*a < *b) {
+            if (*b < *c) return b;
+            if (*a < *c) return c;
+            return a;
+        }
+        if (*a < *c) return a;
+        if (*b < *c) return c;
+        return b;
+    }
+
+    template <class It>
+    constexpr void introsort_impl(It first, It last, int depth_limit) {
+        while (last - first > 16) {
+            if (depth_limit == 0) {
+                /* Fall back to insertion sort for small/degenerate cases */
+                insertion_sort(first, last);
+                return;
+            }
+            --depth_limit;
+
+            It mid = first + (last - first) / 2;
+            It pivot_it = median_of_three(first, mid, last - 1);
+            std::swap(*pivot_it, *(last - 1));
+            auto& pivot = *(last - 1);
+
+            It i = first;
+            It j = last - 2;
+            for (;;) {
+                while (i <= j && *i < pivot) ++i;
+                while (i <= j && pivot < *j) --j;
+                if (i >= j) break;
+                std::swap(*i, *j);
+                ++i; --j;
+            }
+            std::swap(*i, *(last - 1));
+
+            /* Recurse on shorter partition, iterate on longer */
+            if (i - first < last - (i + 1)) {
+                introsort_impl(first, i, depth_limit);
+                first = i + 1;
+            } else {
+                introsort_impl(i + 1, last, depth_limit);
+                last = i;
+            }
+        }
+        insertion_sort(first, last);
+    }
+}
+
+template <class It>
+constexpr void sort(It first, It last) {
+    if (first == last) return;
+    auto n = distance(first, last);
+    int depth = 0;
+    for (auto t = n; t > 1; t >>= 1) ++depth;
+    depth *= 2;
+    detail::introsort_impl(first, last, depth);
+}
+
+template <class It, class Cmp>
+constexpr void sort(It first, It last, Cmp comp) {
+    /* Simple insertion sort with custom comparator */
+    if (first == last) return;
+    for (It i = first + 1; i != last; ++i) {
+        auto key = std::move(*i);
+        It j = i;
+        while (j != first && comp(key, *(j - 1))) {
+            *j = std::move(*(j - 1));
+            --j;
+        }
+        *j = std::move(key);
+    }
+}
+
+template <class It>
+constexpr void stable_sort(It first, It last) {
+    /* Insertion sort is stable */
+    detail::insertion_sort(first, last);
+}
+
+/* ── Partitioning ──────────────────────────────────────────────────── */
+
+template <class FwdIt, class Pred>
+constexpr FwdIt partition(FwdIt first, FwdIt last, Pred pred) {
+    first = find_if_not(first, last, pred);
+    if (first == last) return first;
+    for (auto it = next(first); it != last; ++it) {
+        if (pred(*it)) {
+            std::swap(*first, *it);
+            ++first;
+        }
+    }
+    return first;
+}
+
+template <class It, class Pred>
+constexpr bool is_sorted_until(It first, It last, Pred pred) {
+    if (first == last) return true;
+    auto prev = first;
+    while (++first != last) {
+        if (pred(*first, *prev)) return false;
+        prev = first;
+    }
+    return true;
+}
+
+template <class It>
+constexpr bool is_sorted(It first, It last) {
+    if (first == last) return true;
+    auto prev = first;
+    while (++first != last) {
+        if (*first < *prev) return false;
+        prev = first;
+    }
+    return true;
+}
+
+/* ── Heap operations ───────────────────────────────────────────────── */
+
+namespace detail {
+    template <class It, class Diff>
+    constexpr void sift_down(It first, Diff len, Diff start) {
+        Diff child = 2 * start + 1;
+        while (child < len) {
+            if (child + 1 < len && *(first + child) < *(first + child + 1))
+                ++child;
+            if (!(*(first + start) < *(first + child)))
+                return;
+            std::swap(*(first + start), *(first + child));
+            start = child;
+            child = 2 * start + 1;
+        }
+    }
+}
+
+template <class It>
+constexpr void make_heap(It first, It last) {
+    auto n = distance(first, last);
+    for (auto i = n / 2 - 1; i >= 0; --i)
+        detail::sift_down(first, n, i);
+}
+
+template <class It>
+constexpr void push_heap(It first, It last) {
+    auto i = distance(first, last) - 1;
+    while (i > 0) {
+        auto parent = (i - 1) / 2;
+        if (!(*(first + parent) < *(first + i))) break;
+        std::swap(*(first + parent), *(first + i));
+        i = parent;
+    }
+}
+
+template <class It>
+constexpr void pop_heap(It first, It last) {
+    auto n = distance(first, last);
+    if (n < 2) return;
+    std::swap(*first, *(last - 1));
+    detail::sift_down(first, n - 1, decltype(n)(0));
+}
+
+template <class It>
+constexpr void sort_heap(It first, It last) {
+    while (last - first > 1) {
+        pop_heap(first, last);
+        --last;
+    }
+}
+
+/* ── Rotate ────────────────────────────────────────────────────────── */
+
+template <class FwdIt>
+constexpr FwdIt rotate(FwdIt first, FwdIt middle, FwdIt last) {
+    if (first == middle) return last;
+    if (middle == last) return first;
+
+    reverse(first, middle);
+    reverse(middle, last);
+    reverse(first, last);
+    return first + (last - middle);
+}
+
+/* ── Merge ─────────────────────────────────────────────────────────── */
+
+template <class In1, class In2, class Out>
+constexpr Out merge(In1 f1, In1 l1, In2 f2, In2 l2, Out dest) {
+    while (f1 != l1 && f2 != l2) {
+        if (*f2 < *f1) { *dest = *f2; ++f2; }
+        else           { *dest = *f1; ++f1; }
+        ++dest;
+    }
+    dest = copy(f1, l1, dest);
+    dest = copy(f2, l2, dest);
+    return dest;
+}
+
+/* ── swap_ranges ───────────────────────────────────────────────────── */
+
+template <class FwdIt1, class FwdIt2>
+constexpr FwdIt2 swap_ranges(FwdIt1 first1, FwdIt1 last1, FwdIt2 first2) {
+    for (; first1 != last1; ++first1, ++first2)
+        std::swap(*first1, *first2);
+    return first2;
+}
+
+/* ── nth_element (partial) ─────────────────────────────────────────── */
+
+template <class It>
+constexpr void nth_element(It first, It nth, It last) {
+    /* Simple approach: sort the whole range (good enough for small ranges) */
+    sort(first, last);
+}
+
+} // namespace std
+
+#endif

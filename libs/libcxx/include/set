@@ -1,0 +1,450 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * <set> — ordered set container backed by Red-Black tree.
+ *         Reuses the rb_tree from <map> with value as key.
+ */
+
+#ifndef _LIBCXX_SET
+#define _LIBCXX_SET
+
+#include <cstddef>
+#include <cstdlib>
+#include <functional>
+#include <initializer_list>
+#include <iterator>
+#include <new>
+#include <utility>
+
+namespace std {
+
+namespace detail {
+
+/* Lightweight RB tree for sets (key only, no value) */
+
+template <class K>
+struct rb_set_node {
+    K key;
+    rb_set_node* left;
+    rb_set_node* right;
+    rb_set_node* parent;
+    rb_color color;
+
+    template <class... Args>
+    rb_set_node(Args&&... args)
+        : key(forward<Args>(args)...), left(nullptr), right(nullptr),
+          parent(nullptr), color(RED) {}
+};
+
+template <class K, class Compare>
+class rb_set_tree {
+public:
+    using node_type = rb_set_node<K>;
+
+private:
+    node_type* _root;
+    size_t     _count;
+    Compare    _comp;
+
+    void _rotate_left(node_type* x) {
+        node_type* y = x->right;
+        x->right = y->left;
+        if (y->left) y->left->parent = x;
+        y->parent = x->parent;
+        if (!x->parent) _root = y;
+        else if (x == x->parent->left) x->parent->left = y;
+        else x->parent->right = y;
+        y->left = x;
+        x->parent = y;
+    }
+
+    void _rotate_right(node_type* x) {
+        node_type* y = x->left;
+        x->left = y->right;
+        if (y->right) y->right->parent = x;
+        y->parent = x->parent;
+        if (!x->parent) _root = y;
+        else if (x == x->parent->right) x->parent->right = y;
+        else x->parent->left = y;
+        y->right = x;
+        x->parent = y;
+    }
+
+    void _insert_fix(node_type* z) {
+        while (z->parent && z->parent->color == RED) {
+            if (z->parent == z->parent->parent->left) {
+                node_type* y = z->parent->parent->right;
+                if (y && y->color == RED) {
+                    z->parent->color = BLACK;
+                    y->color = BLACK;
+                    z->parent->parent->color = RED;
+                    z = z->parent->parent;
+                } else {
+                    if (z == z->parent->right) { z = z->parent; _rotate_left(z); }
+                    z->parent->color = BLACK;
+                    z->parent->parent->color = RED;
+                    _rotate_right(z->parent->parent);
+                }
+            } else {
+                node_type* y = z->parent->parent->left;
+                if (y && y->color == RED) {
+                    z->parent->color = BLACK;
+                    y->color = BLACK;
+                    z->parent->parent->color = RED;
+                    z = z->parent->parent;
+                } else {
+                    if (z == z->parent->left) { z = z->parent; _rotate_right(z); }
+                    z->parent->color = BLACK;
+                    z->parent->parent->color = RED;
+                    _rotate_left(z->parent->parent);
+                }
+            }
+        }
+        _root->color = BLACK;
+    }
+
+    void _transplant(node_type* u, node_type* v) {
+        if (!u->parent) _root = v;
+        else if (u == u->parent->left) u->parent->left = v;
+        else u->parent->right = v;
+        if (v) v->parent = u->parent;
+    }
+
+    void _erase_fix(node_type* x, node_type* x_parent) {
+        while (x != _root && (!x || x->color == BLACK)) {
+            if (x == (x_parent ? x_parent->left : nullptr)) {
+                node_type* w = x_parent->right;
+                if (w && w->color == RED) {
+                    w->color = BLACK; x_parent->color = RED;
+                    _rotate_left(x_parent); w = x_parent->right;
+                }
+                if ((!w->left || w->left->color == BLACK) &&
+                    (!w->right || w->right->color == BLACK)) {
+                    w->color = RED; x = x_parent; x_parent = x->parent;
+                } else {
+                    if (!w->right || w->right->color == BLACK) {
+                        if (w->left) w->left->color = BLACK;
+                        w->color = RED; _rotate_right(w); w = x_parent->right;
+                    }
+                    w->color = x_parent->color; x_parent->color = BLACK;
+                    if (w->right) w->right->color = BLACK;
+                    _rotate_left(x_parent); x = _root;
+                }
+            } else {
+                node_type* w = x_parent->left;
+                if (w && w->color == RED) {
+                    w->color = BLACK; x_parent->color = RED;
+                    _rotate_right(x_parent); w = x_parent->left;
+                }
+                if ((!w->right || w->right->color == BLACK) &&
+                    (!w->left || w->left->color == BLACK)) {
+                    w->color = RED; x = x_parent; x_parent = x->parent;
+                } else {
+                    if (!w->left || w->left->color == BLACK) {
+                        if (w->right) w->right->color = BLACK;
+                        w->color = RED; _rotate_left(w); w = x_parent->left;
+                    }
+                    w->color = x_parent->color; x_parent->color = BLACK;
+                    if (w->left) w->left->color = BLACK;
+                    _rotate_right(x_parent); x = _root;
+                }
+            }
+        }
+        if (x) x->color = BLACK;
+    }
+
+    static node_type* _minimum(node_type* n) { while (n->left) n = n->left; return n; }
+
+    static node_type* _successor(node_type* n) {
+        if (n->right) return _minimum(n->right);
+        node_type* p = n->parent;
+        while (p && n == p->right) { n = p; p = p->parent; }
+        return p;
+    }
+
+    void _destroy(node_type* n) {
+        if (!n) return;
+        _destroy(n->left);
+        _destroy(n->right);
+        n->key.~K();
+        std::free(n);
+    }
+
+    node_type* _clone(const node_type* n, node_type* parent) {
+        if (!n) return nullptr;
+        void* mem = std::malloc(sizeof(node_type));
+        if (!mem) std::abort();
+        node_type* c = ::new (mem) node_type(n->key);
+        c->color = n->color;
+        c->parent = parent;
+        c->left  = _clone(n->left, c);
+        c->right = _clone(n->right, c);
+        return c;
+    }
+
+public:
+    rb_set_tree() : _root(nullptr), _count(0), _comp() {}
+    rb_set_tree(const Compare& comp) : _root(nullptr), _count(0), _comp(comp) {}
+
+    rb_set_tree(const rb_set_tree& other) : _root(nullptr), _count(other._count), _comp(other._comp) {
+        _root = _clone(other._root, nullptr);
+    }
+
+    rb_set_tree(rb_set_tree&& other) noexcept
+        : _root(other._root), _count(other._count), _comp(std::move(other._comp)) {
+        other._root = nullptr; other._count = 0;
+    }
+
+    ~rb_set_tree() { _destroy(_root); }
+
+    rb_set_tree& operator=(rb_set_tree other) { swap(other); return *this; }
+
+    size_t size() const { return _count; }
+    bool empty() const { return _count == 0; }
+
+    node_type* first() { return _root ? _minimum(_root) : nullptr; }
+    const node_type* first() const { return _root ? _minimum(const_cast<node_type*>(_root)) : nullptr; }
+
+    static node_type* next(node_type* n) { return _successor(n); }
+    static const node_type* next(const node_type* n) { return _successor(const_cast<node_type*>(n)); }
+
+    node_type* find_node(const K& key) {
+        node_type* n = _root;
+        while (n) {
+            if (_comp(key, n->key)) n = n->left;
+            else if (_comp(n->key, key)) n = n->right;
+            else return n;
+        }
+        return nullptr;
+    }
+
+    const node_type* find_node(const K& key) const {
+        return const_cast<rb_set_tree*>(this)->find_node(key);
+    }
+
+    node_type* lower_bound_node(const K& key) {
+        node_type* result = nullptr;
+        node_type* n = _root;
+        while (n) {
+            if (!_comp(n->key, key)) { result = n; n = n->left; }
+            else n = n->right;
+        }
+        return result;
+    }
+
+    pair<node_type*, bool> insert_unique(const K& key) {
+        node_type* parent = nullptr;
+        node_type* n = _root;
+        while (n) {
+            parent = n;
+            if (_comp(key, n->key)) n = n->left;
+            else if (_comp(n->key, key)) n = n->right;
+            else return {n, false};
+        }
+
+        void* mem = std::malloc(sizeof(node_type));
+        if (!mem) std::abort();
+        node_type* z = ::new (mem) node_type(key);
+        z->parent = parent;
+        if (!parent) _root = z;
+        else if (_comp(key, parent->key)) parent->left = z;
+        else parent->right = z;
+
+        _insert_fix(z);
+        ++_count;
+        return {z, true};
+    }
+
+    template <class... Args>
+    pair<node_type*, bool> emplace_unique(Args&&... args) {
+        void* mem = std::malloc(sizeof(node_type));
+        if (!mem) std::abort();
+        node_type* z = ::new (mem) node_type(forward<Args>(args)...);
+
+        node_type* parent = nullptr;
+        node_type* n = _root;
+        while (n) {
+            parent = n;
+            if (_comp(z->key, n->key)) n = n->left;
+            else if (_comp(n->key, z->key)) n = n->right;
+            else { z->key.~K(); std::free(z); return {n, false}; }
+        }
+
+        z->parent = parent;
+        if (!parent) _root = z;
+        else if (_comp(z->key, parent->key)) parent->left = z;
+        else parent->right = z;
+
+        _insert_fix(z);
+        ++_count;
+        return {z, true};
+    }
+
+    void erase_node(node_type* z) {
+        if (!z) return;
+        node_type* y = z;
+        node_type* x = nullptr;
+        node_type* x_parent = nullptr;
+        rb_color y_orig_color = y->color;
+
+        if (!z->left) {
+            x = z->right; x_parent = z->parent;
+            _transplant(z, z->right);
+        } else if (!z->right) {
+            x = z->left; x_parent = z->parent;
+            _transplant(z, z->left);
+        } else {
+            y = _minimum(z->right);
+            y_orig_color = y->color;
+            x = y->right;
+            if (y->parent == z) { x_parent = y; }
+            else {
+                x_parent = y->parent;
+                _transplant(y, y->right);
+                y->right = z->right; y->right->parent = y;
+            }
+            _transplant(z, y);
+            y->left = z->left; y->left->parent = y; y->color = z->color;
+        }
+        if (y_orig_color == BLACK && _root) _erase_fix(x, x_parent);
+        z->key.~K();
+        std::free(z);
+        --_count;
+    }
+
+    void clear() { _destroy(_root); _root = nullptr; _count = 0; }
+    void swap(rb_set_tree& other) noexcept {
+        std::swap(_root, other._root);
+        std::swap(_count, other._count);
+        std::swap(_comp, other._comp);
+    }
+};
+
+} // namespace detail
+
+/* ── set ───────────────────────────────────────────────────────────── */
+
+template <class K, class Compare = less<K>>
+class set {
+    using tree_type = detail::rb_set_tree<K, Compare>;
+    using node_type = typename tree_type::node_type;
+
+    tree_type _tree;
+
+public:
+    using key_type        = K;
+    using value_type      = K;
+    using size_type       = size_t;
+    using difference_type = ptrdiff_t;
+    using key_compare     = Compare;
+
+    class iterator {
+        const node_type* _node;
+        friend class set;
+    public:
+        using value_type        = K;
+        using reference         = const K&;
+        using pointer           = const K*;
+        using difference_type   = ptrdiff_t;
+        using iterator_category = bidirectional_iterator_tag;
+
+        iterator() : _node(nullptr) {}
+        explicit iterator(const node_type* n) : _node(n) {}
+
+        reference operator*()  const { return _node->key; }
+        pointer   operator->() const { return &_node->key; }
+
+        iterator& operator++() { _node = tree_type::next(_node); return *this; }
+        iterator  operator++(int) { auto t = *this; ++*this; return t; }
+
+        bool operator==(const iterator& o) const { return _node == o._node; }
+        bool operator!=(const iterator& o) const { return _node != o._node; }
+    };
+
+    using const_iterator = iterator; /* Set values are always const */
+
+    /* Constructors */
+    set() : _tree() {}
+    explicit set(const Compare& comp) : _tree(comp) {}
+
+    set(initializer_list<K> il) : _tree() {
+        for (auto& v : il) _tree.insert_unique(v);
+    }
+
+    template <class It>
+    set(It first, It last) : _tree() {
+        for (; first != last; ++first) _tree.insert_unique(*first);
+    }
+
+    set(const set&) = default;
+    set(set&&) noexcept = default;
+    set& operator=(const set&) = default;
+    set& operator=(set&&) noexcept = default;
+
+    /* Capacity */
+    [[nodiscard]] bool empty() const { return _tree.empty(); }
+    size_type size() const { return _tree.size(); }
+
+    /* Iterators */
+    iterator       begin()  const { return iterator(_tree.first()); }
+    const_iterator cbegin() const { return iterator(_tree.first()); }
+    iterator       end()    const { return iterator(nullptr); }
+    const_iterator cend()   const { return iterator(nullptr); }
+
+    /* Lookup */
+    iterator find(const K& key) const { return iterator(_tree.find_node(key)); }
+    size_type count(const K& key) const { return _tree.find_node(key) ? 1 : 0; }
+    bool contains(const K& key) const { return _tree.find_node(key) != nullptr; }
+
+    iterator lower_bound(const K& key) {
+        return iterator(const_cast<tree_type&>(_tree).lower_bound_node(key));
+    }
+
+    /* Modifiers */
+    pair<iterator, bool> insert(const K& key) {
+        auto [node, inserted] = const_cast<tree_type&>(_tree).insert_unique(key);
+        return {iterator(node), inserted};
+    }
+
+    template <class... Args>
+    pair<iterator, bool> emplace(Args&&... args) {
+        auto [node, inserted] = const_cast<tree_type&>(_tree).emplace_unique(forward<Args>(args)...);
+        return {iterator(node), inserted};
+    }
+
+    iterator erase(iterator pos) {
+        const node_type* cn = pos._node;
+        const node_type* next_cn = tree_type::next(cn);
+        const_cast<tree_type&>(_tree).erase_node(const_cast<node_type*>(cn));
+        return iterator(next_cn);
+    }
+
+    size_type erase(const K& key) {
+        node_type* n = const_cast<tree_type&>(_tree).find_node(key);
+        if (!n) return 0;
+        const_cast<tree_type&>(_tree).erase_node(n);
+        return 1;
+    }
+
+    void clear() { _tree.clear(); }
+    void swap(set& other) noexcept { _tree.swap(other._tree); }
+};
+
+/* ── set comparison ────────────────────────────────────────────────── */
+
+template <class K, class C>
+bool operator==(const set<K,C>& a, const set<K,C>& b) {
+    if (a.size() != b.size()) return false;
+    auto ai = a.begin(), bi = b.begin();
+    for (; ai != a.end(); ++ai, ++bi)
+        if (!(*ai == *bi)) return false;
+    return true;
+}
+
+template <class K, class C>
+bool operator!=(const set<K,C>& a, const set<K,C>& b) { return !(a == b); }
+
+} // namespace std
+
+#endif

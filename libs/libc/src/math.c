@@ -229,6 +229,8 @@ float floorf(float x) { return (float)floor((double)x); }
 float ceilf(float x) { return (float)ceil((double)x); }
 float powf(float x, float y) { return (float)pow((double)x, (double)y); }
 float logf(float x) { return (float)log((double)x); }
+float log2f(float x) { return (float)log2((double)x); }
+float log10f(float x) { return (float)log10((double)x); }
 float expf(float x) { return (float)exp((double)x); }
 
 /* Parse a floating-point number string */

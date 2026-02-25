@@ -8,5 +8,8 @@ anyos_std = { path = "../stdlib" }
 libanyui_client = { path = "../libanyui_client" }
 libjs = { path = "../libjs" }
 
+[features]
+debug_surf = []
+
 [lib]
 name = "libwebview"

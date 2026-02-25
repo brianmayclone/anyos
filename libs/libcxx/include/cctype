@@ -1,0 +1,27 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ */
+
+#ifndef _LIBCXX_CCTYPE
+#define _LIBCXX_CCTYPE
+
+#include <ctype.h>
+
+namespace std {
+    using ::isalpha;
+    using ::isdigit;
+    using ::isalnum;
+    using ::isspace;
+    using ::isupper;
+    using ::islower;
+    using ::isprint;
+    using ::ispunct;
+    using ::isxdigit;
+    using ::iscntrl;
+    using ::isgraph;
+    using ::toupper;
+    using ::tolower;
+}
+
+#endif

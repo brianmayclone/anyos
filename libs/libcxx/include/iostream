@@ -1,0 +1,379 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * <iostream> — minimal I/O streams: cout, cerr, cin.
+ * Routes to libc64 printf/puts/getchar.
+ */
+
+#ifndef _LIBCXX_IOSTREAM
+#define _LIBCXX_IOSTREAM
+
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <string_view>
+
+namespace std {
+
+/* ── Stream base ───────────────────────────────────────────────────── */
+
+class ios_base {
+public:
+    enum fmtflags : unsigned {
+        dec      = 0x01,
+        hex      = 0x02,
+        oct      = 0x04,
+        basefield = dec | hex | oct,
+        left     = 0x08,
+        right    = 0x10,
+        internal = 0x20,
+        adjustfield = left | right | internal,
+        boolalpha = 0x40,
+        showbase  = 0x80,
+        showpos   = 0x100,
+        uppercase = 0x200,
+        fixed     = 0x400,
+        scientific = 0x800,
+        floatfield = fixed | scientific,
+    };
+
+    enum iostate : unsigned {
+        goodbit = 0x0,
+        badbit  = 0x1,
+        eofbit  = 0x2,
+        failbit = 0x4,
+    };
+
+protected:
+    fmtflags _flags;
+    iostate  _state;
+    int      _width;
+
+    ios_base() : _flags(dec), _state(goodbit), _width(0) {}
+
+public:
+    fmtflags flags() const { return _flags; }
+    fmtflags flags(fmtflags f) { fmtflags old = _flags; _flags = f; return old; }
+    fmtflags setf(fmtflags f) { fmtflags old = _flags; _flags = static_cast<fmtflags>(_flags | f); return old; }
+    fmtflags setf(fmtflags f, fmtflags mask) {
+        fmtflags old = _flags;
+        _flags = static_cast<fmtflags>((_flags & ~mask) | (f & mask));
+        return old;
+    }
+    void unsetf(fmtflags f) { _flags = static_cast<fmtflags>(_flags & ~f); }
+
+    int width() const { return _width; }
+    int width(int w) { int old = _width; _width = w; return old; }
+
+    bool good() const { return _state == goodbit; }
+    bool eof()  const { return _state & eofbit; }
+    bool fail() const { return _state & (failbit | badbit); }
+    bool bad()  const { return _state & badbit; }
+    explicit operator bool() const { return !fail(); }
+    bool operator!() const { return fail(); }
+
+    void clear(iostate s = goodbit) { _state = s; }
+    void setstate(iostate s) { _state = static_cast<iostate>(_state | s); }
+    iostate rdstate() const { return _state; }
+};
+
+/* ── ostream ───────────────────────────────────────────────────────── */
+
+class ostream : public ios_base {
+    FILE* _file;
+
+    void _put_padded(const char* s, size_t len) {
+        if (_width > 0 && static_cast<size_t>(_width) > len) {
+            size_t pad = _width - len;
+            if (_flags & left) {
+                std::fwrite(s, 1, len, _file);
+                for (size_t i = 0; i < pad; ++i) std::fputc(' ', _file);
+            } else {
+                for (size_t i = 0; i < pad; ++i) std::fputc(' ', _file);
+                std::fwrite(s, 1, len, _file);
+            }
+            _width = 0;
+        } else {
+            std::fwrite(s, 1, len, _file);
+        }
+    }
+
+public:
+    explicit ostream(FILE* f) : _file(f) {}
+
+    ostream& operator<<(const char* s) {
+        if (s) _put_padded(s, std::strlen(s));
+        return *this;
+    }
+
+    ostream& operator<<(char c) {
+        char buf[1] = {c};
+        _put_padded(buf, 1);
+        return *this;
+    }
+
+    ostream& operator<<(bool b) {
+        if (_flags & boolalpha)
+            return *this << (b ? "true" : "false");
+        return *this << (b ? '1' : '0');
+    }
+
+    ostream& operator<<(int n) {
+        char buf[32];
+        int len;
+        if (_flags & hex) {
+            if (_flags & uppercase)
+                len = std::snprintf(buf, sizeof(buf), "%X", static_cast<unsigned>(n));
+            else
+                len = std::snprintf(buf, sizeof(buf), "%x", static_cast<unsigned>(n));
+        } else if (_flags & oct) {
+            len = std::snprintf(buf, sizeof(buf), "%o", static_cast<unsigned>(n));
+        } else {
+            len = std::snprintf(buf, sizeof(buf), "%d", n);
+        }
+        _put_padded(buf, len);
+        return *this;
+    }
+
+    ostream& operator<<(unsigned int n) {
+        char buf[32];
+        int len;
+        if (_flags & hex)
+            len = std::snprintf(buf, sizeof(buf), (_flags & uppercase) ? "%X" : "%x", n);
+        else if (_flags & oct)
+            len = std::snprintf(buf, sizeof(buf), "%o", n);
+        else
+            len = std::snprintf(buf, sizeof(buf), "%u", n);
+        _put_padded(buf, len);
+        return *this;
+    }
+
+    ostream& operator<<(long n) {
+        char buf[32];
+        int len = std::snprintf(buf, sizeof(buf), "%ld", n);
+        _put_padded(buf, len);
+        return *this;
+    }
+
+    ostream& operator<<(unsigned long n) {
+        char buf[32];
+        int len = std::snprintf(buf, sizeof(buf), "%lu", n);
+        _put_padded(buf, len);
+        return *this;
+    }
+
+    ostream& operator<<(long long n) {
+        char buf[32];
+        int len = std::snprintf(buf, sizeof(buf), "%lld", n);
+        _put_padded(buf, len);
+        return *this;
+    }
+
+    ostream& operator<<(unsigned long long n) {
+        char buf[32];
+        int len = std::snprintf(buf, sizeof(buf), "%llu", n);
+        _put_padded(buf, len);
+        return *this;
+    }
+
+    ostream& operator<<(double d) {
+        char buf[64];
+        int len;
+        if (_flags & fixed)
+            len = std::snprintf(buf, sizeof(buf), "%f", d);
+        else if (_flags & scientific)
+            len = std::snprintf(buf, sizeof(buf), "%e", d);
+        else
+            len = std::snprintf(buf, sizeof(buf), "%g", d);
+        _put_padded(buf, len);
+        return *this;
+    }
+
+    ostream& operator<<(float f) { return *this << static_cast<double>(f); }
+
+    ostream& operator<<(const void* p) {
+        char buf[32];
+        int len = std::snprintf(buf, sizeof(buf), "%p", p);
+        _put_padded(buf, len);
+        return *this;
+    }
+
+    ostream& operator<<(const string& s) {
+        _put_padded(s.c_str(), s.size());
+        return *this;
+    }
+
+    ostream& operator<<(string_view sv) {
+        _put_padded(sv.data(), sv.size());
+        return *this;
+    }
+
+    /* Manipulators */
+    ostream& operator<<(ostream& (*manip)(ostream&)) {
+        return manip(*this);
+    }
+
+    ostream& put(char c) {
+        std::fputc(c, _file);
+        return *this;
+    }
+
+    ostream& write(const char* s, size_t n) {
+        std::fwrite(s, 1, n, _file);
+        return *this;
+    }
+
+    ostream& flush() {
+        std::fflush(_file);
+        return *this;
+    }
+};
+
+/* ── istream ───────────────────────────────────────────────────────── */
+
+class istream : public ios_base {
+    FILE* _file;
+
+    void _skip_ws() {
+        int c;
+        while ((c = std::fgetc(_file)) != EOF) {
+            if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+                ungetc(c, _file);
+                return;
+            }
+        }
+        setstate(eofbit);
+    }
+
+public:
+    explicit istream(FILE* f) : _file(f) {}
+
+    istream& operator>>(char& c) {
+        _skip_ws();
+        int ch = std::fgetc(_file);
+        if (ch == EOF) { setstate(static_cast<iostate>(eofbit | failbit)); return *this; }
+        c = static_cast<char>(ch);
+        return *this;
+    }
+
+    istream& operator>>(int& n) {
+        _skip_ws();
+        char buf[32];
+        int len = 0;
+        int c = std::fgetc(_file);
+        if (c == '-' || c == '+') { buf[len++] = c; c = std::fgetc(_file); }
+        while (c >= '0' && c <= '9' && len < 30) {
+            buf[len++] = c;
+            c = std::fgetc(_file);
+        }
+        if (c != EOF) ungetc(c, _file);
+        buf[len] = '\0';
+        if (len == 0 || (len == 1 && (buf[0] == '-' || buf[0] == '+'))) {
+            setstate(failbit); return *this;
+        }
+        n = static_cast<int>(strtol(buf, nullptr, 10));
+        return *this;
+    }
+
+    istream& operator>>(long& n) {
+        int tmp;
+        *this >> tmp;
+        n = tmp;
+        return *this;
+    }
+
+    istream& operator>>(string& s) {
+        _skip_ws();
+        s.clear();
+        int c;
+        while ((c = std::fgetc(_file)) != EOF) {
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                ungetc(c, _file);
+                break;
+            }
+            s.push_back(static_cast<char>(c));
+        }
+        if (s.empty() && c == EOF) setstate(static_cast<iostate>(eofbit | failbit));
+        return *this;
+    }
+
+    int get() {
+        int c = std::fgetc(_file);
+        if (c == EOF) setstate(static_cast<iostate>(eofbit | failbit));
+        return c;
+    }
+
+    istream& getline(char* buf, size_t count, char delim = '\n') {
+        size_t i = 0;
+        int c;
+        while (i + 1 < count && (c = std::fgetc(_file)) != EOF) {
+            if (static_cast<char>(c) == delim) break;
+            buf[i++] = static_cast<char>(c);
+        }
+        buf[i] = '\0';
+        if (i == 0 && c == EOF) setstate(static_cast<iostate>(eofbit | failbit));
+        return *this;
+    }
+
+    istream& ignore(size_t count = 1, int delim = '\n') {
+        for (size_t i = 0; i < count; ++i) {
+            int c = std::fgetc(_file);
+            if (c == EOF || c == delim) break;
+        }
+        return *this;
+    }
+
+    int peek() {
+        int c = std::fgetc(_file);
+        if (c != EOF) ungetc(c, _file);
+        else setstate(eofbit);
+        return c;
+    }
+};
+
+/* ── Free-function getline ─────────────────────────────────────────── */
+
+inline istream& getline(istream& is, string& str, char delim = '\n') {
+    str.clear();
+    int c;
+    while ((c = is.get()) != EOF) {
+        if (static_cast<char>(c) == delim) break;
+        str.push_back(static_cast<char>(c));
+    }
+    return is;
+}
+
+/* ── Manipulators ──────────────────────────────────────────────────── */
+
+inline ostream& endl(ostream& os) { os.put('\n'); os.flush(); return os; }
+inline ostream& flush(ostream& os) { os.flush(); return os; }
+
+inline ostream& hex(ostream& os) { os.setf(ios_base::hex, ios_base::basefield); return os; }
+inline ostream& dec(ostream& os) { os.setf(ios_base::dec, ios_base::basefield); return os; }
+inline ostream& oct(ostream& os) { os.setf(ios_base::oct, ios_base::basefield); return os; }
+
+inline ostream& boolalpha(ostream& os) { os.setf(ios_base::boolalpha); return os; }
+inline ostream& noboolalpha(ostream& os) { os.unsetf(ios_base::boolalpha); return os; }
+
+inline ostream& fixed(ostream& os) { os.setf(ios_base::fixed, ios_base::floatfield); return os; }
+inline ostream& scientific(ostream& os) { os.setf(ios_base::scientific, ios_base::floatfield); return os; }
+
+inline ostream& left(ostream& os) { os.setf(ios_base::left, ios_base::adjustfield); return os; }
+inline ostream& right(ostream& os) { os.setf(ios_base::right, ios_base::adjustfield); return os; }
+
+/* ── setw helper ───────────────────────────────────────────────────── */
+
+struct _setw_helper { int _w; };
+inline _setw_helper setw(int w) { return {w}; }
+inline ostream& operator<<(ostream& os, _setw_helper h) { os.width(h._w); return os; }
+
+/* ── Global streams (defined in iostream.cpp) ──────────────────────── */
+
+extern ostream cout;
+extern ostream cerr;
+extern istream cin;
+
+} // namespace std
+
+#endif

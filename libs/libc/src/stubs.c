@@ -485,7 +485,11 @@ double difftime(time_t time1, time_t time0) {
 }
 
 int nanosleep(const struct timespec *req, struct timespec *rem) {
-    (void)req; (void)rem;
+    if (!req) { errno = EINVAL; return -1; }
+    /* Convert timespec to milliseconds for SYS_SLEEP (8) */
+    unsigned int ms = (unsigned int)(req->tv_sec * 1000 + req->tv_nsec / 1000000);
+    if (ms > 0) _syscall(8 /*SYS_SLEEP*/, (int)ms, 0, 0, 0);
+    if (rem) { rem->tv_sec = 0; rem->tv_nsec = 0; }
     return 0;
 }
 
@@ -522,9 +526,10 @@ int unlinkat(int dirfd, const char *pathname, int flags) {
 }
 
 int rmdir(const char *pathname) {
-    (void)pathname;
-    errno = ENOSYS;
-    return -1;
+    if (!pathname) { errno = EINVAL; return -1; }
+    int r = _syscall(91 /*SYS_UNLINK*/, (int)pathname, 0, 0, 0);
+    if (r < 0) { errno = -r; return -1; }
+    return 0;
 }
 
 /* mkdir lives in stat.c with real SYS_MKDIR implementation */
@@ -583,7 +588,12 @@ int posix_spawnattr_destroy(posix_spawnattr_t *attr) { (void)attr; return 0; }
 
 int fsync(int fd) { (void)fd; return 0; }
 int fdatasync(int fd) { (void)fd; return 0; }
-int chmod(const char *path, unsigned int mode) { (void)path; (void)mode; return 0; }
+int chmod(const char *path, unsigned int mode) {
+    if (!path) { errno = EINVAL; return -1; }
+    int r = _syscall(224 /*SYS_CHMOD*/, (int)path, (int)mode, 0, 0);
+    if (r < 0) { errno = -r; return -1; }
+    return 0;
+}
 int fchmod(int fd, unsigned int mode) { (void)fd; (void)mode; return 0; }
 
 extern int _syscall(int num, int a1, int a2, int a3, int a4);
@@ -604,15 +614,17 @@ int link(const char *oldpath, const char *newpath) {
 }
 
 int symlink(const char *target, const char *linkpath) {
-    (void)target; (void)linkpath;
-    errno = ENOSYS;
-    return -1;
+    if (!target || !linkpath) { errno = EINVAL; return -1; }
+    int r = _syscall(96 /*SYS_SYMLINK*/, (int)target, (int)linkpath, 0, 0);
+    if (r < 0) { errno = -r; return -1; }
+    return 0;
 }
 
 int readlink(const char *path, char *buf, size_t bufsiz) {
-    (void)path; (void)buf; (void)bufsiz;
-    errno = EINVAL;
-    return -1;
+    if (!path || !buf) { errno = EINVAL; return -1; }
+    int r = _syscall(97 /*SYS_READLINK*/, (int)path, (int)buf, (int)bufsiz, 0);
+    if (r < 0) { errno = -r; return -1; }
+    return r;
 }
 
 int chown(const char *path, unsigned int owner, unsigned int group) {

@@ -1,0 +1,230 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * <functional> — function objects, comparators, hash.
+ */
+
+#ifndef _LIBCXX_FUNCTIONAL
+#define _LIBCXX_FUNCTIONAL
+
+#include <cstddef>
+#include <type_traits>
+#include <utility>
+
+namespace std {
+
+/* ── Arithmetic function objects ───────────────────────────────────── */
+
+template <class T = void> struct plus {
+    constexpr T operator()(const T& a, const T& b) const { return a + b; }
+};
+template <> struct plus<void> {
+    template <class T, class U>
+    constexpr auto operator()(T&& a, U&& b) const -> decltype(forward<T>(a) + forward<U>(b)) {
+        return forward<T>(a) + forward<U>(b);
+    }
+};
+
+template <class T = void> struct minus {
+    constexpr T operator()(const T& a, const T& b) const { return a - b; }
+};
+template <> struct minus<void> {
+    template <class T, class U>
+    constexpr auto operator()(T&& a, U&& b) const -> decltype(forward<T>(a) - forward<U>(b)) {
+        return forward<T>(a) - forward<U>(b);
+    }
+};
+
+template <class T = void> struct multiplies {
+    constexpr T operator()(const T& a, const T& b) const { return a * b; }
+};
+
+template <class T = void> struct divides {
+    constexpr T operator()(const T& a, const T& b) const { return a / b; }
+};
+
+template <class T = void> struct modulus {
+    constexpr T operator()(const T& a, const T& b) const { return a % b; }
+};
+
+template <class T = void> struct negate {
+    constexpr T operator()(const T& a) const { return -a; }
+};
+
+/* ── Comparison function objects ───────────────────────────────────── */
+
+template <class T = void> struct equal_to {
+    constexpr bool operator()(const T& a, const T& b) const { return a == b; }
+};
+template <> struct equal_to<void> {
+    template <class T, class U>
+    constexpr auto operator()(T&& a, U&& b) const -> decltype(forward<T>(a) == forward<U>(b)) {
+        return forward<T>(a) == forward<U>(b);
+    }
+};
+
+template <class T = void> struct not_equal_to {
+    constexpr bool operator()(const T& a, const T& b) const { return a != b; }
+};
+
+template <class T = void> struct less {
+    constexpr bool operator()(const T& a, const T& b) const { return a < b; }
+};
+template <> struct less<void> {
+    template <class T, class U>
+    constexpr auto operator()(T&& a, U&& b) const -> decltype(forward<T>(a) < forward<U>(b)) {
+        return forward<T>(a) < forward<U>(b);
+    }
+};
+
+template <class T = void> struct greater {
+    constexpr bool operator()(const T& a, const T& b) const { return a > b; }
+};
+template <> struct greater<void> {
+    template <class T, class U>
+    constexpr auto operator()(T&& a, U&& b) const -> decltype(forward<T>(a) > forward<U>(b)) {
+        return forward<T>(a) > forward<U>(b);
+    }
+};
+
+template <class T = void> struct less_equal {
+    constexpr bool operator()(const T& a, const T& b) const { return a <= b; }
+};
+
+template <class T = void> struct greater_equal {
+    constexpr bool operator()(const T& a, const T& b) const { return a >= b; }
+};
+
+/* ── Logical function objects ──────────────────────────────────────── */
+
+template <class T = void> struct logical_and {
+    constexpr bool operator()(const T& a, const T& b) const { return a && b; }
+};
+
+template <class T = void> struct logical_or {
+    constexpr bool operator()(const T& a, const T& b) const { return a || b; }
+};
+
+template <class T = void> struct logical_not {
+    constexpr bool operator()(const T& a) const { return !a; }
+};
+
+/* ── Bitwise function objects ──────────────────────────────────────── */
+
+template <class T = void> struct bit_and {
+    constexpr T operator()(const T& a, const T& b) const { return a & b; }
+};
+
+template <class T = void> struct bit_or {
+    constexpr T operator()(const T& a, const T& b) const { return a | b; }
+};
+
+template <class T = void> struct bit_xor {
+    constexpr T operator()(const T& a, const T& b) const { return a ^ b; }
+};
+
+template <class T = void> struct bit_not {
+    constexpr T operator()(const T& a) const { return ~a; }
+};
+
+/* ── hash ──────────────────────────────────────────────────────────── */
+
+template <class T> struct hash;
+
+/* FNV-1a hash for byte sequences */
+namespace detail {
+    inline constexpr size_t fnv_offset = sizeof(size_t) == 8
+        ? 14695981039346656037ULL : 2166136261U;
+    inline constexpr size_t fnv_prime = sizeof(size_t) == 8
+        ? 1099511628211ULL : 16777619U;
+
+    inline constexpr size_t fnv1a(const void* data, size_t len) {
+        size_t h = fnv_offset;
+        const auto* p = static_cast<const unsigned char*>(data);
+        for (size_t i = 0; i < len; ++i) {
+            h ^= p[i];
+            h *= fnv_prime;
+        }
+        return h;
+    }
+}
+
+/* Integer hash: simple multiply-shift */
+#define _LIBCXX_HASH_INT(TYPE) \
+template <> struct hash<TYPE> { \
+    constexpr size_t operator()(TYPE v) const noexcept { \
+        return static_cast<size_t>(v) * 2654435761ULL; \
+    } \
+};
+
+_LIBCXX_HASH_INT(bool)
+_LIBCXX_HASH_INT(char)
+_LIBCXX_HASH_INT(signed char)
+_LIBCXX_HASH_INT(unsigned char)
+_LIBCXX_HASH_INT(short)
+_LIBCXX_HASH_INT(unsigned short)
+_LIBCXX_HASH_INT(int)
+_LIBCXX_HASH_INT(unsigned int)
+_LIBCXX_HASH_INT(long)
+_LIBCXX_HASH_INT(unsigned long)
+_LIBCXX_HASH_INT(long long)
+_LIBCXX_HASH_INT(unsigned long long)
+_LIBCXX_HASH_INT(char16_t)
+_LIBCXX_HASH_INT(char32_t)
+_LIBCXX_HASH_INT(wchar_t)
+
+#undef _LIBCXX_HASH_INT
+
+/* Pointer hash */
+template <class T> struct hash<T*> {
+    size_t operator()(T* p) const noexcept {
+        return static_cast<size_t>(reinterpret_cast<uintptr_t>(p)) * 2654435761ULL;
+    }
+};
+
+/* Float hash via FNV-1a on byte representation */
+template <> struct hash<float> {
+    size_t operator()(float v) const noexcept {
+        if (v == 0.0f) v = 0.0f; /* normalize -0.0 */
+        return detail::fnv1a(&v, sizeof(v));
+    }
+};
+
+template <> struct hash<double> {
+    size_t operator()(double v) const noexcept {
+        if (v == 0.0) v = 0.0;
+        return detail::fnv1a(&v, sizeof(v));
+    }
+};
+
+/* ── reference_wrapper ─────────────────────────────────────────────── */
+
+template <class T>
+class reference_wrapper {
+    T* _ptr;
+public:
+    using type = T;
+
+    reference_wrapper(T& ref) noexcept : _ptr(&ref) {}
+    reference_wrapper(const reference_wrapper&) = default;
+    reference_wrapper& operator=(const reference_wrapper&) = default;
+
+    operator T&() const noexcept { return *_ptr; }
+    T& get() const noexcept { return *_ptr; }
+
+    template <class... Args>
+    auto operator()(Args&&... args) const -> decltype((*_ptr)(forward<Args>(args)...)) {
+        return (*_ptr)(forward<Args>(args)...);
+    }
+};
+
+template <class T>
+reference_wrapper<T> ref(T& t) noexcept { return reference_wrapper<T>(t); }
+
+template <class T>
+reference_wrapper<const T> cref(const T& t) noexcept { return reference_wrapper<const T>(t); }
+
+} // namespace std
+
+#endif

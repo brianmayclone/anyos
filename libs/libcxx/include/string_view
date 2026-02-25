@@ -1,0 +1,265 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * <string_view> — non-owning string reference.
+ */
+
+#ifndef _LIBCXX_STRING_VIEW
+#define _LIBCXX_STRING_VIEW
+
+#include <cstddef>
+#include <cstring>
+#include <algorithm>
+#include <iterator>
+#include <limits>
+
+namespace std {
+
+class string_view {
+public:
+    using value_type      = char;
+    using pointer         = const char*;
+    using const_pointer   = const char*;
+    using reference       = const char&;
+    using const_reference = const char&;
+    using const_iterator  = const char*;
+    using iterator        = const_iterator;
+    using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+    using reverse_iterator       = const_reverse_iterator;
+    using size_type       = size_t;
+    using difference_type = ptrdiff_t;
+
+    static constexpr size_type npos = size_type(-1);
+
+private:
+    const char* _data;
+    size_type   _size;
+
+public:
+    /* ── Constructors ──────────────────────────────────────────────── */
+
+    constexpr string_view() noexcept : _data(nullptr), _size(0) {}
+    constexpr string_view(const char* s, size_type count) : _data(s), _size(count) {}
+    constexpr string_view(const char* s) : _data(s), _size(0) {
+        if (s) while (s[_size]) ++_size;
+    }
+    constexpr string_view(const string_view&) noexcept = default;
+    constexpr string_view& operator=(const string_view&) noexcept = default;
+
+    /* ── Iterators ─────────────────────────────────────────────────── */
+
+    constexpr const_iterator begin()  const noexcept { return _data; }
+    constexpr const_iterator end()    const noexcept { return _data + _size; }
+    constexpr const_iterator cbegin() const noexcept { return _data; }
+    constexpr const_iterator cend()   const noexcept { return _data + _size; }
+
+    constexpr const_reverse_iterator rbegin()  const noexcept { return const_reverse_iterator(end()); }
+    constexpr const_reverse_iterator rend()    const noexcept { return const_reverse_iterator(begin()); }
+
+    /* ── Capacity ──────────────────────────────────────────────────── */
+
+    constexpr size_type size()     const noexcept { return _size; }
+    constexpr size_type length()   const noexcept { return _size; }
+    constexpr size_type max_size() const noexcept { return numeric_limits<size_type>::max(); }
+    [[nodiscard]] constexpr bool empty() const noexcept { return _size == 0; }
+
+    /* ── Element access ────────────────────────────────────────────── */
+
+    constexpr const_reference operator[](size_type pos) const { return _data[pos]; }
+    constexpr const_reference at(size_type pos)         const { return _data[pos]; }
+    constexpr const_reference front()                   const { return _data[0]; }
+    constexpr const_reference back()                    const { return _data[_size - 1]; }
+    constexpr const_pointer   data()                    const noexcept { return _data; }
+
+    /* ── Modifiers ─────────────────────────────────────────────────── */
+
+    constexpr void remove_prefix(size_type n) { _data += n; _size -= n; }
+    constexpr void remove_suffix(size_type n) { _size -= n; }
+
+    constexpr void swap(string_view& other) noexcept {
+        auto tmp = *this;
+        *this = other;
+        other = tmp;
+    }
+
+    /* ── Operations ────────────────────────────────────────────────── */
+
+    constexpr size_type copy(char* dest, size_type count, size_type pos = 0) const {
+        size_type rcount = min(count, _size - pos);
+        for (size_type i = 0; i < rcount; ++i)
+            dest[i] = _data[pos + i];
+        return rcount;
+    }
+
+    constexpr string_view substr(size_type pos = 0, size_type count = npos) const {
+        size_type rcount = min(count, _size - pos);
+        return string_view(_data + pos, rcount);
+    }
+
+    constexpr int compare(string_view sv) const noexcept {
+        size_type rlen = min(_size, sv._size);
+        for (size_type i = 0; i < rlen; ++i) {
+            if (_data[i] < sv._data[i]) return -1;
+            if (_data[i] > sv._data[i]) return  1;
+        }
+        if (_size < sv._size) return -1;
+        if (_size > sv._size) return  1;
+        return 0;
+    }
+
+    constexpr int compare(size_type pos, size_type count, string_view sv) const {
+        return substr(pos, count).compare(sv);
+    }
+
+    constexpr int compare(const char* s) const { return compare(string_view(s)); }
+
+    /* ── Search ────────────────────────────────────────────────────── */
+
+    constexpr size_type find(string_view sv, size_type pos = 0) const noexcept {
+        if (sv._size == 0) return (pos <= _size) ? pos : npos;
+        if (pos + sv._size > _size) return npos;
+        for (size_type i = pos; i <= _size - sv._size; ++i) {
+            bool match = true;
+            for (size_type j = 0; j < sv._size; ++j) {
+                if (_data[i + j] != sv._data[j]) { match = false; break; }
+            }
+            if (match) return i;
+        }
+        return npos;
+    }
+
+    constexpr size_type find(char c, size_type pos = 0) const noexcept {
+        for (size_type i = pos; i < _size; ++i)
+            if (_data[i] == c) return i;
+        return npos;
+    }
+
+    constexpr size_type find(const char* s, size_type pos = 0) const {
+        return find(string_view(s), pos);
+    }
+
+    constexpr size_type rfind(string_view sv, size_type pos = npos) const noexcept {
+        if (sv._size > _size) return npos;
+        size_type start = min(pos, _size - sv._size);
+        for (size_type i = start + 1; i > 0; --i) {
+            bool match = true;
+            for (size_type j = 0; j < sv._size; ++j) {
+                if (_data[i - 1 + j] != sv._data[j]) { match = false; break; }
+            }
+            if (match) return i - 1;
+        }
+        return npos;
+    }
+
+    constexpr size_type rfind(char c, size_type pos = npos) const noexcept {
+        if (_size == 0) return npos;
+        size_type start = min(pos, _size - 1);
+        for (size_type i = start + 1; i > 0; --i)
+            if (_data[i - 1] == c) return i - 1;
+        return npos;
+    }
+
+    constexpr size_type find_first_of(string_view sv, size_type pos = 0) const noexcept {
+        for (size_type i = pos; i < _size; ++i)
+            for (size_type j = 0; j < sv._size; ++j)
+                if (_data[i] == sv._data[j]) return i;
+        return npos;
+    }
+
+    constexpr size_type find_first_of(char c, size_type pos = 0) const noexcept {
+        return find(c, pos);
+    }
+
+    constexpr size_type find_last_of(string_view sv, size_type pos = npos) const noexcept {
+        if (_size == 0) return npos;
+        size_type start = min(pos, _size - 1);
+        for (size_type i = start + 1; i > 0; --i)
+            for (size_type j = 0; j < sv._size; ++j)
+                if (_data[i - 1] == sv._data[j]) return i - 1;
+        return npos;
+    }
+
+    constexpr size_type find_first_not_of(string_view sv, size_type pos = 0) const noexcept {
+        for (size_type i = pos; i < _size; ++i) {
+            bool found = false;
+            for (size_type j = 0; j < sv._size; ++j)
+                if (_data[i] == sv._data[j]) { found = true; break; }
+            if (!found) return i;
+        }
+        return npos;
+    }
+
+    constexpr size_type find_first_not_of(char c, size_type pos = 0) const noexcept {
+        for (size_type i = pos; i < _size; ++i)
+            if (_data[i] != c) return i;
+        return npos;
+    }
+
+    /* ── Prefix / Suffix (C++20) ───────────────────────────────────── */
+
+    constexpr bool starts_with(string_view sv) const noexcept {
+        return _size >= sv._size && compare(0, sv._size, sv) == 0;
+    }
+
+    constexpr bool starts_with(char c) const noexcept {
+        return _size > 0 && _data[0] == c;
+    }
+
+    constexpr bool ends_with(string_view sv) const noexcept {
+        return _size >= sv._size && compare(_size - sv._size, sv._size, sv) == 0;
+    }
+
+    constexpr bool ends_with(char c) const noexcept {
+        return _size > 0 && _data[_size - 1] == c;
+    }
+
+    constexpr bool contains(string_view sv) const noexcept {
+        return find(sv) != npos;
+    }
+
+    constexpr bool contains(char c) const noexcept {
+        return find(c) != npos;
+    }
+};
+
+/* ── Comparison operators ──────────────────────────────────────────── */
+
+inline constexpr bool operator==(string_view a, string_view b) noexcept {
+    return a.size() == b.size() && a.compare(b) == 0;
+}
+inline constexpr bool operator!=(string_view a, string_view b) noexcept { return !(a == b); }
+inline constexpr bool operator< (string_view a, string_view b) noexcept { return a.compare(b) < 0; }
+inline constexpr bool operator> (string_view a, string_view b) noexcept { return b < a; }
+inline constexpr bool operator<=(string_view a, string_view b) noexcept { return !(b < a); }
+inline constexpr bool operator>=(string_view a, string_view b) noexcept { return !(a < b); }
+
+/* ── hash specialization ───────────────────────────────────────────── */
+
+template <class T> struct hash; /* Forward declaration */
+
+template <> struct hash<string_view> {
+    size_t operator()(string_view sv) const noexcept {
+        size_t h = sizeof(size_t) == 8 ? 14695981039346656037ULL : 2166136261U;
+        size_t p = sizeof(size_t) == 8 ? 1099511628211ULL : 16777619U;
+        for (size_t i = 0; i < sv.size(); ++i) {
+            h ^= static_cast<unsigned char>(sv[i]);
+            h *= p;
+        }
+        return h;
+    }
+};
+
+/* ── Literal operator ──────────────────────────────────────────────── */
+
+inline namespace literals {
+inline namespace string_view_literals {
+    constexpr string_view operator""_sv(const char* str, size_t len) noexcept {
+        return string_view(str, len);
+    }
+}
+}
+
+} // namespace std
+
+#endif

@@ -1,0 +1,491 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * <unordered_map> — hash table based associative container.
+ */
+
+#ifndef _LIBCXX_UNORDERED_MAP
+#define _LIBCXX_UNORDERED_MAP
+
+#include <cstddef>
+#include <cstdlib>
+#include <cstring>
+#include <functional>
+#include <initializer_list>
+#include <iterator>
+#include <new>
+#include <utility>
+#include <vector>
+
+namespace std {
+
+template <class K, class V, class Hash = hash<K>, class KeyEqual = equal_to<K>>
+class unordered_map {
+public:
+    using key_type        = K;
+    using mapped_type     = V;
+    using value_type      = pair<const K, V>;
+    using size_type       = size_t;
+    using difference_type = ptrdiff_t;
+    using hasher          = Hash;
+    using key_equal       = KeyEqual;
+    using reference       = value_type&;
+    using const_reference = const value_type&;
+
+private:
+    struct Node {
+        value_type kv;
+        Node*      next;
+
+        template <class... Args>
+        Node(Args&&... args) : kv(forward<Args>(args)...), next(nullptr) {}
+    };
+
+    Node**    _buckets;
+    size_type _bucket_count;
+    size_type _size;
+    float     _max_load;
+    Hash      _hasher;
+    KeyEqual  _eq;
+
+    size_type _bucket_for(const K& key) const {
+        return _hasher(key) % _bucket_count;
+    }
+
+    void _rehash(size_type new_count) {
+        Node** new_buckets = static_cast<Node**>(std::calloc(new_count, sizeof(Node*)));
+        if (!new_buckets) std::abort();
+
+        for (size_type i = 0; i < _bucket_count; ++i) {
+            Node* n = _buckets[i];
+            while (n) {
+                Node* next = n->next;
+                size_type idx = _hasher(n->kv.first) % new_count;
+                n->next = new_buckets[idx];
+                new_buckets[idx] = n;
+                n = next;
+            }
+        }
+        std::free(_buckets);
+        _buckets = new_buckets;
+        _bucket_count = new_count;
+    }
+
+    void _maybe_rehash() {
+        if (_size > static_cast<size_type>(_bucket_count * _max_load)) {
+            _rehash(_bucket_count * 2);
+        }
+    }
+
+    void _destroy_all() {
+        for (size_type i = 0; i < _bucket_count; ++i) {
+            Node* n = _buckets[i];
+            while (n) {
+                Node* next = n->next;
+                n->kv.~value_type();
+                std::free(n);
+                n = next;
+            }
+            _buckets[i] = nullptr;
+        }
+        _size = 0;
+    }
+
+    void _copy_from(const unordered_map& other) {
+        for (size_type i = 0; i < other._bucket_count; ++i) {
+            const Node* n = other._buckets[i];
+            while (n) {
+                size_type idx = _hasher(n->kv.first) % _bucket_count;
+                void* mem = std::malloc(sizeof(Node));
+                if (!mem) std::abort();
+                Node* copy = ::new (mem) Node(n->kv);
+                copy->next = _buckets[idx];
+                _buckets[idx] = copy;
+                n = n->next;
+            }
+        }
+        _size = other._size;
+    }
+
+    /* Find first non-empty bucket from 'start' */
+    size_type _next_bucket(size_type start) const {
+        for (size_type i = start; i < _bucket_count; ++i)
+            if (_buckets[i]) return i;
+        return _bucket_count;
+    }
+
+public:
+    /* ── Iterator ──────────────────────────────────────────────────── */
+
+    class iterator {
+        const unordered_map* _map;
+        size_type            _bucket;
+        Node*                _node;
+        friend class unordered_map;
+
+        void _advance() {
+            if (_node->next) { _node = _node->next; return; }
+            for (size_type i = _bucket + 1; i < _map->_bucket_count; ++i) {
+                if (_map->_buckets[i]) { _bucket = i; _node = _map->_buckets[i]; return; }
+            }
+            _node = nullptr;
+            _bucket = _map->_bucket_count;
+        }
+
+    public:
+        using value_type        = pair<const K, V>;
+        using reference         = value_type&;
+        using pointer           = value_type*;
+        using difference_type   = ptrdiff_t;
+        using iterator_category = forward_iterator_tag;
+
+        iterator() : _map(nullptr), _bucket(0), _node(nullptr) {}
+        iterator(const unordered_map* m, size_type b, Node* n)
+            : _map(m), _bucket(b), _node(n) {}
+
+        reference operator*()  const { return _node->kv; }
+        pointer   operator->() const { return &_node->kv; }
+
+        iterator& operator++() { _advance(); return *this; }
+        iterator  operator++(int) { auto t = *this; _advance(); return t; }
+
+        bool operator==(const iterator& o) const { return _node == o._node; }
+        bool operator!=(const iterator& o) const { return _node != o._node; }
+    };
+
+    class const_iterator {
+        const unordered_map* _map;
+        size_type            _bucket;
+        const Node*          _node;
+        friend class unordered_map;
+
+        void _advance() {
+            if (_node->next) { _node = _node->next; return; }
+            for (size_type i = _bucket + 1; i < _map->_bucket_count; ++i) {
+                if (_map->_buckets[i]) { _bucket = i; _node = _map->_buckets[i]; return; }
+            }
+            _node = nullptr;
+            _bucket = _map->_bucket_count;
+        }
+
+    public:
+        using value_type        = pair<const K, V>;
+        using reference         = const value_type&;
+        using pointer           = const value_type*;
+        using difference_type   = ptrdiff_t;
+        using iterator_category = forward_iterator_tag;
+
+        const_iterator() : _map(nullptr), _bucket(0), _node(nullptr) {}
+        const_iterator(const unordered_map* m, size_type b, const Node* n)
+            : _map(m), _bucket(b), _node(n) {}
+        const_iterator(const iterator& it)
+            : _map(it._map), _bucket(it._bucket), _node(it._node) {}
+
+        reference operator*()  const { return _node->kv; }
+        pointer   operator->() const { return &_node->kv; }
+
+        const_iterator& operator++() { _advance(); return *this; }
+        const_iterator  operator++(int) { auto t = *this; _advance(); return t; }
+
+        bool operator==(const const_iterator& o) const { return _node == o._node; }
+        bool operator!=(const const_iterator& o) const { return _node != o._node; }
+    };
+
+    /* ── Constructors / Destructor ─────────────────────────────────── */
+
+    explicit unordered_map(size_type bucket_count = 16)
+        : _bucket_count(bucket_count < 4 ? 4 : bucket_count),
+          _size(0), _max_load(1.0f), _hasher(), _eq()
+    {
+        _buckets = static_cast<Node**>(std::calloc(_bucket_count, sizeof(Node*)));
+        if (!_buckets) std::abort();
+    }
+
+    unordered_map(initializer_list<value_type> il)
+        : unordered_map(il.size() * 2)
+    {
+        for (auto& p : il) insert(p);
+    }
+
+    unordered_map(const unordered_map& other)
+        : _bucket_count(other._bucket_count), _size(0),
+          _max_load(other._max_load), _hasher(other._hasher), _eq(other._eq)
+    {
+        _buckets = static_cast<Node**>(std::calloc(_bucket_count, sizeof(Node*)));
+        if (!_buckets) std::abort();
+        _copy_from(other);
+    }
+
+    unordered_map(unordered_map&& other) noexcept
+        : _buckets(other._buckets), _bucket_count(other._bucket_count),
+          _size(other._size), _max_load(other._max_load),
+          _hasher(std::move(other._hasher)), _eq(std::move(other._eq))
+    {
+        other._buckets = nullptr;
+        other._bucket_count = 0;
+        other._size = 0;
+    }
+
+    ~unordered_map() {
+        if (_buckets) {
+            _destroy_all();
+            std::free(_buckets);
+        }
+    }
+
+    /* ── Assignment ────────────────────────────────────────────────── */
+
+    unordered_map& operator=(const unordered_map& other) {
+        if (this != &other) {
+            _destroy_all();
+            std::free(_buckets);
+            _bucket_count = other._bucket_count;
+            _max_load = other._max_load;
+            _hasher = other._hasher;
+            _eq = other._eq;
+            _buckets = static_cast<Node**>(std::calloc(_bucket_count, sizeof(Node*)));
+            if (!_buckets) std::abort();
+            _copy_from(other);
+        }
+        return *this;
+    }
+
+    unordered_map& operator=(unordered_map&& other) noexcept {
+        if (this != &other) {
+            if (_buckets) { _destroy_all(); std::free(_buckets); }
+            _buckets = other._buckets;
+            _bucket_count = other._bucket_count;
+            _size = other._size;
+            _max_load = other._max_load;
+            _hasher = std::move(other._hasher);
+            _eq = std::move(other._eq);
+            other._buckets = nullptr;
+            other._bucket_count = 0;
+            other._size = 0;
+        }
+        return *this;
+    }
+
+    /* ── Capacity ──────────────────────────────────────────────────── */
+
+    [[nodiscard]] bool empty() const { return _size == 0; }
+    size_type size() const { return _size; }
+    size_type bucket_count() const { return _bucket_count; }
+
+    float load_factor() const {
+        return _bucket_count ? static_cast<float>(_size) / _bucket_count : 0;
+    }
+
+    float max_load_factor() const { return _max_load; }
+    void max_load_factor(float ml) { _max_load = ml; }
+
+    /* ── Iterators ─────────────────────────────────────────────────── */
+
+    iterator begin() {
+        size_type b = _next_bucket(0);
+        if (b >= _bucket_count) return end();
+        return iterator(this, b, _buckets[b]);
+    }
+
+    const_iterator begin() const {
+        size_type b = _next_bucket(0);
+        if (b >= _bucket_count) return end();
+        return const_iterator(this, b, _buckets[b]);
+    }
+
+    const_iterator cbegin() const { return begin(); }
+
+    iterator       end()        { return iterator(this, _bucket_count, nullptr); }
+    const_iterator end()  const { return const_iterator(this, _bucket_count, nullptr); }
+    const_iterator cend() const { return const_iterator(this, _bucket_count, nullptr); }
+
+    /* ── Element access ────────────────────────────────────────────── */
+
+    V& operator[](const K& key) {
+        size_type idx = _bucket_for(key);
+        for (Node* n = _buckets[idx]; n; n = n->next)
+            if (_eq(n->kv.first, key)) return n->kv.second;
+        /* Insert new */
+        _maybe_rehash();
+        idx = _bucket_for(key);
+        void* mem = std::malloc(sizeof(Node));
+        if (!mem) std::abort();
+        Node* node = ::new (mem) Node(key, V());
+        node->next = _buckets[idx];
+        _buckets[idx] = node;
+        ++_size;
+        return node->kv.second;
+    }
+
+    V& operator[](K&& key) {
+        size_type idx = _bucket_for(key);
+        for (Node* n = _buckets[idx]; n; n = n->next)
+            if (_eq(n->kv.first, key)) return n->kv.second;
+        _maybe_rehash();
+        idx = _bucket_for(key);
+        void* mem = std::malloc(sizeof(Node));
+        if (!mem) std::abort();
+        Node* node = ::new (mem) Node(std::move(key), V());
+        node->next = _buckets[idx];
+        _buckets[idx] = node;
+        ++_size;
+        return node->kv.second;
+    }
+
+    V& at(const K& key) {
+        size_type idx = _bucket_for(key);
+        for (Node* n = _buckets[idx]; n; n = n->next)
+            if (_eq(n->kv.first, key)) return n->kv.second;
+        std::abort(); /* Key not found — no exceptions */
+    }
+
+    const V& at(const K& key) const {
+        size_type idx = _bucket_for(key);
+        for (const Node* n = _buckets[idx]; n; n = n->next)
+            if (_eq(n->kv.first, key)) return n->kv.second;
+        std::abort();
+    }
+
+    /* ── Lookup ────────────────────────────────────────────────────── */
+
+    iterator find(const K& key) {
+        size_type idx = _bucket_for(key);
+        for (Node* n = _buckets[idx]; n; n = n->next)
+            if (_eq(n->kv.first, key)) return iterator(this, idx, n);
+        return end();
+    }
+
+    const_iterator find(const K& key) const {
+        size_type idx = _bucket_for(key);
+        for (const Node* n = _buckets[idx]; n; n = n->next)
+            if (_eq(n->kv.first, key)) return const_iterator(this, idx, n);
+        return end();
+    }
+
+    size_type count(const K& key) const {
+        size_type idx = _bucket_for(key);
+        for (const Node* n = _buckets[idx]; n; n = n->next)
+            if (_eq(n->kv.first, key)) return 1;
+        return 0;
+    }
+
+    bool contains(const K& key) const { return count(key) > 0; }
+
+    /* ── Modifiers ─────────────────────────────────────────────────── */
+
+    pair<iterator, bool> insert(const value_type& kv) {
+        size_type idx = _bucket_for(kv.first);
+        for (Node* n = _buckets[idx]; n; n = n->next)
+            if (_eq(n->kv.first, kv.first)) return {iterator(this, idx, n), false};
+
+        _maybe_rehash();
+        idx = _bucket_for(kv.first);
+        void* mem = std::malloc(sizeof(Node));
+        if (!mem) std::abort();
+        Node* node = ::new (mem) Node(kv);
+        node->next = _buckets[idx];
+        _buckets[idx] = node;
+        ++_size;
+        return {iterator(this, idx, node), true};
+    }
+
+    template <class... Args>
+    pair<iterator, bool> emplace(Args&&... args) {
+        /* Build node, check if key exists, insert or destroy */
+        void* mem = std::malloc(sizeof(Node));
+        if (!mem) std::abort();
+        Node* node = ::new (mem) Node(forward<Args>(args)...);
+
+        size_type idx = _bucket_for(node->kv.first);
+        for (Node* n = _buckets[idx]; n; n = n->next) {
+            if (_eq(n->kv.first, node->kv.first)) {
+                node->kv.~value_type();
+                std::free(node);
+                return {iterator(this, idx, n), false};
+            }
+        }
+
+        _maybe_rehash();
+        idx = _bucket_for(node->kv.first);
+        node->next = _buckets[idx];
+        _buckets[idx] = node;
+        ++_size;
+        return {iterator(this, idx, node), true};
+    }
+
+    iterator erase(iterator pos) {
+        size_type idx = pos._bucket;
+        Node* target = pos._node;
+        /* Advance iterator before erasing */
+        iterator next_it = pos;
+        ++next_it;
+
+        /* Remove from chain */
+        Node* prev = nullptr;
+        for (Node* n = _buckets[idx]; n; prev = n, n = n->next) {
+            if (n == target) {
+                if (prev) prev->next = n->next;
+                else _buckets[idx] = n->next;
+                n->kv.~value_type();
+                std::free(n);
+                --_size;
+                break;
+            }
+        }
+        return next_it;
+    }
+
+    size_type erase(const K& key) {
+        size_type idx = _bucket_for(key);
+        Node* prev = nullptr;
+        for (Node* n = _buckets[idx]; n; prev = n, n = n->next) {
+            if (_eq(n->kv.first, key)) {
+                if (prev) prev->next = n->next;
+                else _buckets[idx] = n->next;
+                n->kv.~value_type();
+                std::free(n);
+                --_size;
+                return 1;
+            }
+        }
+        return 0;
+    }
+
+    void clear() { _destroy_all(); }
+
+    void reserve(size_type count) {
+        size_type needed = static_cast<size_type>(count / _max_load) + 1;
+        if (needed > _bucket_count) _rehash(needed);
+    }
+
+    void swap(unordered_map& other) noexcept {
+        std::swap(_buckets, other._buckets);
+        std::swap(_bucket_count, other._bucket_count);
+        std::swap(_size, other._size);
+        std::swap(_max_load, other._max_load);
+        std::swap(_hasher, other._hasher);
+        std::swap(_eq, other._eq);
+    }
+};
+
+/* ── Comparison ────────────────────────────────────────────────────── */
+
+template <class K, class V, class H, class E>
+bool operator==(const unordered_map<K,V,H,E>& a, const unordered_map<K,V,H,E>& b) {
+    if (a.size() != b.size()) return false;
+    for (auto& [k, v] : a) {
+        auto it = b.find(k);
+        if (it == b.end() || !(it->second == v)) return false;
+    }
+    return true;
+}
+
+template <class K, class V, class H, class E>
+bool operator!=(const unordered_map<K,V,H,E>& a, const unordered_map<K,V,H,E>& b) {
+    return !(a == b);
+}
+
+} // namespace std
+
+#endif

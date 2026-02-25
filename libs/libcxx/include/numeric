@@ -1,0 +1,145 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * <numeric> — numeric algorithms: accumulate, iota, gcd, lcm, etc.
+ */
+
+#ifndef _LIBCXX_NUMERIC
+#define _LIBCXX_NUMERIC
+
+#include <type_traits>
+#include <utility>
+
+namespace std {
+
+/* ── accumulate ────────────────────────────────────────────────────── */
+
+template <class It, class T>
+constexpr T accumulate(It first, It last, T init) {
+    for (; first != last; ++first)
+        init = init + *first;
+    return init;
+}
+
+template <class It, class T, class BinOp>
+constexpr T accumulate(It first, It last, T init, BinOp op) {
+    for (; first != last; ++first)
+        init = op(init, *first);
+    return init;
+}
+
+/* ── reduce (C++17) ────────────────────────────────────────────────── */
+
+template <class It, class T, class BinOp>
+constexpr T reduce(It first, It last, T init, BinOp op) {
+    for (; first != last; ++first)
+        init = op(init, *first);
+    return init;
+}
+
+template <class It, class T>
+constexpr T reduce(It first, It last, T init) {
+    for (; first != last; ++first)
+        init = init + *first;
+    return init;
+}
+
+/* ── inner_product ─────────────────────────────────────────────────── */
+
+template <class It1, class It2, class T>
+constexpr T inner_product(It1 first1, It1 last1, It2 first2, T init) {
+    for (; first1 != last1; ++first1, ++first2)
+        init = init + (*first1) * (*first2);
+    return init;
+}
+
+template <class It1, class It2, class T, class BinOp1, class BinOp2>
+constexpr T inner_product(It1 first1, It1 last1, It2 first2, T init,
+                          BinOp1 op1, BinOp2 op2) {
+    for (; first1 != last1; ++first1, ++first2)
+        init = op1(init, op2(*first1, *first2));
+    return init;
+}
+
+/* ── partial_sum ───────────────────────────────────────────────────── */
+
+template <class InIt, class OutIt>
+constexpr OutIt partial_sum(InIt first, InIt last, OutIt dest) {
+    if (first == last) return dest;
+    auto sum = *first;
+    *dest = sum;
+    while (++first != last) {
+        sum = sum + *first;
+        *++dest = sum;
+    }
+    return ++dest;
+}
+
+/* ── adjacent_difference ───────────────────────────────────────────── */
+
+template <class InIt, class OutIt>
+constexpr OutIt adjacent_difference(InIt first, InIt last, OutIt dest) {
+    if (first == last) return dest;
+    auto prev = *first;
+    *dest = prev;
+    while (++first != last) {
+        auto val = *first;
+        *++dest = val - prev;
+        prev = val;
+    }
+    return ++dest;
+}
+
+/* ── iota ──────────────────────────────────────────────────────────── */
+
+template <class FwdIt, class T>
+constexpr void iota(FwdIt first, FwdIt last, T value) {
+    for (; first != last; ++first, ++value)
+        *first = value;
+}
+
+/* ── gcd / lcm (C++17) ────────────────────────────────────────────── */
+
+template <class T>
+constexpr T gcd(T a, T b) {
+    if (a < 0) a = -a;
+    if (b < 0) b = -b;
+    while (b != 0) {
+        T t = b;
+        b = a % b;
+        a = t;
+    }
+    return a;
+}
+
+template <class T>
+constexpr T lcm(T a, T b) {
+    if (a == 0 || b == 0) return 0;
+    if (a < 0) a = -a;
+    if (b < 0) b = -b;
+    return (a / gcd(a, b)) * b;
+}
+
+/* ── midpoint (C++20) ──────────────────────────────────────────────── */
+
+template <class T>
+constexpr enable_if_t<is_integral_v<T>, T>
+midpoint(T a, T b) noexcept {
+    using U = make_unsigned_t<T>;
+    int sign = 1;
+    U m = a;
+    U M = b;
+    if (a > b) { sign = -1; m = b; M = a; }
+    return a + sign * static_cast<T>(static_cast<U>(M - m) / 2);
+}
+
+template <class T>
+constexpr enable_if_t<is_floating_point_v<T>, T>
+midpoint(T a, T b) noexcept {
+    return a / 2 + b / 2;
+}
+
+} // namespace std
+
+#endif

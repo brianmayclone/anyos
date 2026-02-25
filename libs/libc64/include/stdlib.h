@@ -20,7 +20,32 @@ void   exit(int status);
 void   abort(void);
 int    atoi(const char *nptr);
 long   atol(const char *nptr);
+long long atoll(const char *nptr);
 long   strtol(const char *nptr, char **endptr, int base);
 unsigned long strtoul(const char *nptr, char **endptr, int base);
+long long strtoll(const char *nptr, char **endptr, int base);
+unsigned long long strtoull(const char *nptr, char **endptr, int base);
+int    rand(void);
+void   srand(unsigned int seed);
+void   qsort(void *base, size_t nmemb, size_t size,
+              int (*compar)(const void *, const void *));
+void  *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
+               int (*compar)(const void *, const void *));
+int    abs(int j);
+long   labs(long j);
+char  *getenv(const char *name);
+int    setenv(const char *name, const char *value, int overwrite);
+int    unsetenv(const char *name);
+int    atexit(void (*function)(void));
+int    mkstemp(char *tmpl);
+char  *mktemp(char *tmpl);
+char  *realpath(const char *path, char *resolved_path);
+double atof(const char *nptr);
+double strtod(const char *nptr, char **endptr);
+float  strtof(const char *nptr, char **endptr);
+long double strtold(const char *nptr, char **endptr);
+int    system(const char *command);
+
+extern char **environ;
 
 #endif

@@ -1,0 +1,34 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ */
+
+#ifndef _LIBCXX_CSTDLIB
+#define _LIBCXX_CSTDLIB
+
+#include <stdlib.h>
+
+namespace std {
+    using ::malloc;
+    using ::calloc;
+    using ::realloc;
+    using ::free;
+    using ::abort;
+    using ::exit;
+    using ::atoi;
+    using ::atol;
+    using ::atof;
+    using ::strtol;
+    using ::strtoul;
+    using ::strtod;
+    using ::abs;
+    using ::labs;
+    using ::rand;
+    using ::srand;
+    using ::qsort;
+    using ::bsearch;
+    using ::getenv;
+    using ::system;
+}
+
+#endif

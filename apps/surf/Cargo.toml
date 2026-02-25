@@ -3,6 +3,9 @@ name = "surf"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+debug_surf = ["libwebview/debug_surf"]
+
 [dependencies]
 anyos_std = { path = "../../libs/stdlib" }
 libanyui_client = { path = "../../libs/libanyui_client" }

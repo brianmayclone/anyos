@@ -1,0 +1,11 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ */
+
+#ifndef _LIBCXX_CLIMITS
+#define _LIBCXX_CLIMITS
+
+#include <limits.h>
+
+#endif

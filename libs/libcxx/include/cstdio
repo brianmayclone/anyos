@@ -1,0 +1,39 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ */
+
+#ifndef _LIBCXX_CSTDIO
+#define _LIBCXX_CSTDIO
+
+#include <stdio.h>
+
+namespace std {
+    using ::FILE;
+    using ::fopen;
+    using ::fclose;
+    using ::fread;
+    using ::fwrite;
+    using ::fseek;
+    using ::ftell;
+    using ::rewind;
+    using ::feof;
+    using ::ferror;
+    using ::fflush;
+    using ::fgetc;
+    using ::fputc;
+    using ::fgets;
+    using ::fputs;
+    using ::getchar;
+    using ::putchar;
+    using ::puts;
+    using ::printf;
+    using ::fprintf;
+    using ::sprintf;
+    using ::snprintf;
+    using ::sscanf;
+    using ::rename;
+    using ::remove;
+}
+
+#endif

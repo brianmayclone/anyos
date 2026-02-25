@@ -73,6 +73,11 @@ impl Renderer {
         Self { controls: Vec::new(), link_map: Vec::new(), form_controls: Vec::new() }
     }
 
+    /// Return the number of controls currently tracked.
+    pub fn control_count(&self) -> usize {
+        self.controls.len()
+    }
+
     /// Remove all previously created controls from the UI tree.
     pub fn clear(&mut self) {
         for &id in &self.controls {
@@ -97,7 +102,13 @@ impl Renderer {
         submit_cb: Option<ui::Callback>,
         submit_cb_ud: u64,
     ) {
+        crate::debug_surf!("[render] render start");
+        #[cfg(feature = "debug_surf")]
+        crate::debug_surf!("[render]   RSP=0x{:X} heap=0x{:X}", crate::debug_rsp(), crate::debug_heap_pos());
         self.walk(root, parent, images, 0, 0, link_cb, link_cb_ud, submit_cb, submit_cb_ud);
+        crate::debug_surf!("[render] render done: {} controls created", self.controls.len());
+        #[cfg(feature = "debug_surf")]
+        crate::debug_surf!("[render]   RSP=0x{:X} heap=0x{:X}", crate::debug_rsp(), crate::debug_heap_pos());
     }
 
     fn walk(

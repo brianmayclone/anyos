@@ -357,6 +357,7 @@ impl<'a> Parser<'a> {
 // ---------------------------------------------------------------------------
 
 pub fn parse_stylesheet(css: &str) -> Stylesheet {
+    crate::debug_surf!("[css] parse_stylesheet: {} bytes", css.len());
     let mut p = Parser::new(css);
     let mut rules = Vec::new();
     let mut media_rules = Vec::new();
@@ -412,6 +413,7 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
         }
     }
 
+    crate::debug_surf!("[css] parse_stylesheet done: {} rules, {} @media", rules.len(), media_rules.len());
     Stylesheet { rules, media_rules }
 }
 

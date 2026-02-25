@@ -1,0 +1,217 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * <sstream> — string-based streams: ostringstream, istringstream.
+ * Self-contained implementation (does not derive from iostream).
+ */
+
+#ifndef _LIBCXX_SSTREAM
+#define _LIBCXX_SSTREAM
+
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <string_view>
+
+namespace std {
+
+/* ── ostringstream ─────────────────────────────────────────────────── */
+
+class ostringstream {
+    string _buf;
+
+public:
+    ostringstream() = default;
+    explicit ostringstream(const string& s) : _buf(s) {}
+
+    string str() const { return _buf; }
+    void str(const string& s) { _buf = s; }
+
+    ostringstream& operator<<(const char* s) {
+        if (s) _buf.append(s);
+        return *this;
+    }
+
+    ostringstream& operator<<(char c) {
+        _buf.push_back(c);
+        return *this;
+    }
+
+    ostringstream& operator<<(const string& s) {
+        _buf.append(s);
+        return *this;
+    }
+
+    ostringstream& operator<<(string_view sv) {
+        _buf.append(sv.data(), sv.size());
+        return *this;
+    }
+
+    ostringstream& operator<<(int n) {
+        char buf[32];
+        int len = std::snprintf(buf, sizeof(buf), "%d", n);
+        _buf.append(buf, len);
+        return *this;
+    }
+
+    ostringstream& operator<<(unsigned int n) {
+        char buf[32];
+        int len = std::snprintf(buf, sizeof(buf), "%u", n);
+        _buf.append(buf, len);
+        return *this;
+    }
+
+    ostringstream& operator<<(long n) {
+        char buf[32];
+        int len = std::snprintf(buf, sizeof(buf), "%ld", n);
+        _buf.append(buf, len);
+        return *this;
+    }
+
+    ostringstream& operator<<(unsigned long n) {
+        char buf[32];
+        int len = std::snprintf(buf, sizeof(buf), "%lu", n);
+        _buf.append(buf, len);
+        return *this;
+    }
+
+    ostringstream& operator<<(long long n) {
+        char buf[32];
+        int len = std::snprintf(buf, sizeof(buf), "%lld", n);
+        _buf.append(buf, len);
+        return *this;
+    }
+
+    ostringstream& operator<<(unsigned long long n) {
+        char buf[32];
+        int len = std::snprintf(buf, sizeof(buf), "%llu", n);
+        _buf.append(buf, len);
+        return *this;
+    }
+
+    ostringstream& operator<<(double d) {
+        char buf[64];
+        int len = std::snprintf(buf, sizeof(buf), "%g", d);
+        _buf.append(buf, len);
+        return *this;
+    }
+
+    ostringstream& operator<<(float f) { return *this << static_cast<double>(f); }
+
+    ostringstream& operator<<(bool b) {
+        _buf.append(b ? "1" : "0", 1);
+        return *this;
+    }
+
+    ostringstream& operator<<(const void* p) {
+        char buf[32];
+        int len = std::snprintf(buf, sizeof(buf), "%p", p);
+        _buf.append(buf, len);
+        return *this;
+    }
+
+    bool good() const { return true; }
+    explicit operator bool() const { return true; }
+};
+
+/* ── istringstream ─────────────────────────────────────────────────── */
+
+class istringstream {
+    string _buf;
+    size_t _pos;
+    bool   _fail;
+
+    void _skip_ws() {
+        while (_pos < _buf.size()) {
+            char c = _buf[_pos];
+            if (c != ' ' && c != '\t' && c != '\n' && c != '\r') break;
+            ++_pos;
+        }
+    }
+
+public:
+    istringstream() : _pos(0), _fail(false) {}
+    explicit istringstream(const string& s) : _buf(s), _pos(0), _fail(false) {}
+
+    string str() const { return _buf; }
+    void str(const string& s) { _buf = s; _pos = 0; _fail = false; }
+
+    bool good() const { return !_fail && _pos < _buf.size(); }
+    bool eof()  const { return _pos >= _buf.size(); }
+    bool fail() const { return _fail; }
+    explicit operator bool() const { return good(); }
+    bool operator!() const { return !good(); }
+
+    istringstream& operator>>(char& c) {
+        _skip_ws();
+        if (_pos >= _buf.size()) { _fail = true; return *this; }
+        c = _buf[_pos++];
+        return *this;
+    }
+
+    istringstream& operator>>(int& n) {
+        _skip_ws();
+        if (_pos >= _buf.size()) { _fail = true; return *this; }
+        const char* start = _buf.c_str() + _pos;
+        char* end = nullptr;
+        long val = strtol(start, &end, 10);
+        if (end == start) { _fail = true; return *this; }
+        n = static_cast<int>(val);
+        _pos += (end - start);
+        return *this;
+    }
+
+    istringstream& operator>>(long& n) {
+        _skip_ws();
+        if (_pos >= _buf.size()) { _fail = true; return *this; }
+        const char* start = _buf.c_str() + _pos;
+        char* end = nullptr;
+        n = strtol(start, &end, 10);
+        if (end == start) { _fail = true; return *this; }
+        _pos += (end - start);
+        return *this;
+    }
+
+    istringstream& operator>>(double& d) {
+        _skip_ws();
+        if (_pos >= _buf.size()) { _fail = true; return *this; }
+        const char* start = _buf.c_str() + _pos;
+        char* end = nullptr;
+        d = strtod(start, &end);
+        if (end == start) { _fail = true; return *this; }
+        _pos += (end - start);
+        return *this;
+    }
+
+    istringstream& operator>>(string& s) {
+        _skip_ws();
+        s.clear();
+        while (_pos < _buf.size()) {
+            char c = _buf[_pos];
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') break;
+            s.push_back(c);
+            ++_pos;
+        }
+        if (s.empty()) _fail = true;
+        return *this;
+    }
+
+    /* getline from stringstream */
+    friend istringstream& getline(istringstream& iss, string& str, char delim);
+};
+
+inline istringstream& getline(istringstream& iss, string& str, char delim = '\n') {
+    str.clear();
+    while (iss._pos < iss._buf.size()) {
+        char c = iss._buf[iss._pos++];
+        if (c == delim) return iss;
+        str.push_back(c);
+    }
+    if (str.empty()) iss._fail = true;
+    return iss;
+}
+
+} // namespace std
+
+#endif

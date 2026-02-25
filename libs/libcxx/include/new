@@ -1,0 +1,37 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * operator new/delete — routes to libc malloc/free.
+ * No exceptions (-fno-exceptions), so nothrow variants only.
+ */
+
+#ifndef _LIBCXX_NEW
+#define _LIBCXX_NEW
+
+#include <cstddef>
+
+namespace std {
+    struct nothrow_t { explicit nothrow_t() = default; };
+    inline constexpr nothrow_t nothrow{};
+
+    enum class align_val_t : size_t {};
+}
+
+/* Regular new/delete — call abort on failure since we have no exceptions */
+void* operator new(std::size_t size);
+void* operator new[](std::size_t size);
+void  operator delete(void* ptr) noexcept;
+void  operator delete[](void* ptr) noexcept;
+void  operator delete(void* ptr, std::size_t size) noexcept;
+void  operator delete[](void* ptr, std::size_t size) noexcept;
+
+/* Nothrow variants — return nullptr on failure */
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept;
+void* operator new[](std::size_t size, const std::nothrow_t&) noexcept;
+
+/* Placement new — no allocation, just returns the pointer */
+inline void* operator new(std::size_t, void* ptr) noexcept { return ptr; }
+inline void* operator new[](std::size_t, void* ptr) noexcept { return ptr; }
+
+#endif

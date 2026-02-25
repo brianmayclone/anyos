@@ -320,6 +320,10 @@ pub(super) fn size_attr_width(dom: &Dom, node_id: NodeId, default: i32) -> i32 {
 
 /// Build a layout tree from the DOM and computed styles.
 pub fn layout(dom: &Dom, styles: &[ComputedStyle], viewport_width: i32, images: &ImageCache) -> LayoutBox {
+    crate::debug_surf!("[layout] layout start: {} nodes, viewport_width={}", dom.nodes.len(), viewport_width);
+    #[cfg(feature = "debug_surf")]
+    crate::debug_surf!("[layout]   RSP=0x{:X} heap=0x{:X}", crate::debug_rsp(), crate::debug_heap_pos());
+
     let body_id = dom.find_body().unwrap_or(0);
     let style = &styles[body_id];
 
@@ -341,9 +345,13 @@ pub fn layout(dom: &Dom, styles: &[ComputedStyle], viewport_width: i32, images: 
 
     let children = &dom.get(body_id).children;
     let child_ids: Vec<NodeId> = children.iter().copied().collect();
+    crate::debug_surf!("[layout] body has {} direct children, content_width={}", child_ids.len(), content_width);
     let height = layout_children(dom, styles, &child_ids, content_width, &mut root, body_id, images);
 
     root.height = height + root.padding.top + root.padding.bottom;
+    crate::debug_surf!("[layout] layout done: root height={}", root.height);
+    #[cfg(feature = "debug_surf")]
+    crate::debug_surf!("[layout]   RSP=0x{:X} heap=0x{:X}", crate::debug_rsp(), crate::debug_heap_pos());
     root
 }
 

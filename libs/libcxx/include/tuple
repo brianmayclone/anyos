@@ -1,0 +1,230 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * <tuple> — heterogeneous fixed-size container.
+ */
+
+#ifndef _LIBCXX_TUPLE
+#define _LIBCXX_TUPLE
+
+#include <cstddef>
+#include <type_traits>
+#include <utility>
+
+namespace std {
+
+/* ── tuple_element / tuple_size forward declarations ───────────────── */
+
+template <class T> struct tuple_size;
+template <size_t I, class T> struct tuple_element;
+
+/* ── Recursive tuple implementation ────────────────────────────────── */
+
+namespace detail {
+    template <size_t I, class T>
+    struct tuple_leaf {
+        T value;
+
+        constexpr tuple_leaf() : value() {}
+        constexpr tuple_leaf(const T& v) : value(v) {}
+        constexpr tuple_leaf(T&& v) : value(move(v)) {}
+
+        template <class U>
+        constexpr tuple_leaf(U&& v) : value(forward<U>(v)) {}
+    };
+
+    template <class Seq, class... Ts>
+    struct tuple_impl;
+
+    template <size_t... Is, class... Ts>
+    struct tuple_impl<index_sequence<Is...>, Ts...> : tuple_leaf<Is, Ts>... {
+        constexpr tuple_impl() : tuple_leaf<Is, Ts>()... {}
+
+        constexpr tuple_impl(const Ts&... args)
+            : tuple_leaf<Is, Ts>(args)... {}
+
+        template <class... Us>
+        constexpr tuple_impl(Us&&... args)
+            : tuple_leaf<Is, Ts>(forward<Us>(args))... {}
+    };
+
+    /* get helper */
+    template <size_t I, class T>
+    constexpr T& get_leaf(tuple_leaf<I, T>& leaf) { return leaf.value; }
+
+    template <size_t I, class T>
+    constexpr const T& get_leaf(const tuple_leaf<I, T>& leaf) { return leaf.value; }
+
+    template <size_t I, class T>
+    constexpr T&& get_leaf(tuple_leaf<I, T>&& leaf) { return move(leaf.value); }
+}
+
+/* ── tuple ─────────────────────────────────────────────────────────── */
+
+template <class... Ts>
+class tuple : public detail::tuple_impl<make_index_sequence<sizeof...(Ts)>, Ts...> {
+    using Base = detail::tuple_impl<make_index_sequence<sizeof...(Ts)>, Ts...>;
+public:
+    constexpr tuple() : Base() {}
+
+    constexpr tuple(const Ts&... args) : Base(args...) {}
+
+    template <class... Us, class = enable_if_t<sizeof...(Us) == sizeof...(Ts)>>
+    constexpr tuple(Us&&... args) : Base(forward<Us>(args)...) {}
+
+    tuple(const tuple&) = default;
+    tuple(tuple&&) = default;
+    tuple& operator=(const tuple&) = default;
+    tuple& operator=(tuple&&) = default;
+};
+
+/* Zero-element specialization */
+template <>
+class tuple<> {
+public:
+    constexpr tuple() = default;
+};
+
+/* ── tuple_size ────────────────────────────────────────────────────── */
+
+template <class... Ts>
+struct tuple_size<tuple<Ts...>>
+    : integral_constant<size_t, sizeof...(Ts)> {};
+
+/* ── tuple_element ─────────────────────────────────────────────────── */
+
+namespace detail {
+    template <size_t I, class Head, class... Tail>
+    struct nth_type : nth_type<I - 1, Tail...> {};
+
+    template <class Head, class... Tail>
+    struct nth_type<0, Head, Tail...> { using type = Head; };
+}
+
+template <size_t I, class... Ts>
+struct tuple_element<I, tuple<Ts...>> {
+    using type = typename detail::nth_type<I, Ts...>::type;
+};
+
+template <size_t I, class T>
+using tuple_element_t = typename tuple_element<I, T>::type;
+
+/* ── get<I> ────────────────────────────────────────────────────────── */
+
+template <size_t I, class... Ts>
+constexpr tuple_element_t<I, tuple<Ts...>>&
+get(tuple<Ts...>& t) noexcept {
+    return detail::get_leaf<I>(t);
+}
+
+template <size_t I, class... Ts>
+constexpr const tuple_element_t<I, tuple<Ts...>>&
+get(const tuple<Ts...>& t) noexcept {
+    return detail::get_leaf<I>(t);
+}
+
+template <size_t I, class... Ts>
+constexpr tuple_element_t<I, tuple<Ts...>>&&
+get(tuple<Ts...>&& t) noexcept {
+    return detail::get_leaf<I>(move(t));
+}
+
+/* ── make_tuple ────────────────────────────────────────────────────── */
+
+template <class... Ts>
+constexpr tuple<decay_t<Ts>...> make_tuple(Ts&&... args) {
+    return tuple<decay_t<Ts>...>(forward<Ts>(args)...);
+}
+
+/* ── tie ───────────────────────────────────────────────────────────── */
+
+struct ignore_t {
+    template <class T>
+    const ignore_t& operator=(const T&) const { return *this; }
+};
+
+inline constexpr ignore_t ignore{};
+
+template <class... Ts>
+constexpr tuple<Ts&...> tie(Ts&... args) noexcept {
+    return tuple<Ts&...>(args...);
+}
+
+/* ── forward_as_tuple ──────────────────────────────────────────────── */
+
+template <class... Ts>
+constexpr tuple<Ts&&...> forward_as_tuple(Ts&&... args) noexcept {
+    return tuple<Ts&&...>(forward<Ts>(args)...);
+}
+
+/* ── tuple comparison ──────────────────────────────────────────────── */
+
+namespace detail {
+    template <size_t I, size_t N>
+    struct tuple_eq {
+        template <class T1, class T2>
+        static constexpr bool apply(const T1& a, const T2& b) {
+            return get<I>(a) == get<I>(b) && tuple_eq<I + 1, N>::apply(a, b);
+        }
+    };
+    template <size_t N>
+    struct tuple_eq<N, N> {
+        template <class T1, class T2>
+        static constexpr bool apply(const T1&, const T2&) { return true; }
+    };
+
+    template <size_t I, size_t N>
+    struct tuple_lt {
+        template <class T1, class T2>
+        static constexpr bool apply(const T1& a, const T2& b) {
+            if (get<I>(a) < get<I>(b)) return true;
+            if (get<I>(b) < get<I>(a)) return false;
+            return tuple_lt<I + 1, N>::apply(a, b);
+        }
+    };
+    template <size_t N>
+    struct tuple_lt<N, N> {
+        template <class T1, class T2>
+        static constexpr bool apply(const T1&, const T2&) { return false; }
+    };
+}
+
+template <class... Ts, class... Us>
+constexpr bool operator==(const tuple<Ts...>& a, const tuple<Us...>& b) {
+    static_assert(sizeof...(Ts) == sizeof...(Us), "tuple sizes must match");
+    return detail::tuple_eq<0, sizeof...(Ts)>::apply(a, b);
+}
+
+template <class... Ts, class... Us>
+constexpr bool operator!=(const tuple<Ts...>& a, const tuple<Us...>& b) {
+    return !(a == b);
+}
+
+template <class... Ts, class... Us>
+constexpr bool operator<(const tuple<Ts...>& a, const tuple<Us...>& b) {
+    return detail::tuple_lt<0, sizeof...(Ts)>::apply(a, b);
+}
+
+/* ── tuple_size / tuple_element for pair ───────────────────────────── */
+
+template <class T1, class T2>
+struct tuple_size<pair<T1, T2>> : integral_constant<size_t, 2> {};
+
+template <class T1, class T2>
+struct tuple_element<0, pair<T1, T2>> { using type = T1; };
+
+template <class T1, class T2>
+struct tuple_element<1, pair<T1, T2>> { using type = T2; };
+
+/* ── tuple_size / tuple_element for array ──────────────────────────── */
+
+template <class T, size_t N>
+struct tuple_size<array<T, N>> : integral_constant<size_t, N> {};
+
+template <size_t I, class T, size_t N>
+struct tuple_element<I, array<T, N>> { using type = T; };
+
+} // namespace std
+
+#endif

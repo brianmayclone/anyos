@@ -1,0 +1,187 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * <limits> — std::numeric_limits for fundamental types.
+ */
+
+#ifndef _LIBCXX_LIMITS
+#define _LIBCXX_LIMITS
+
+#include <climits>
+#include <cstdint>
+
+namespace std {
+
+enum float_round_style {
+    round_indeterminate       = -1,
+    round_toward_zero         =  0,
+    round_to_nearest          =  1,
+    round_toward_infinity     =  2,
+    round_toward_neg_infinity =  3
+};
+
+enum float_denorm_style {
+    denorm_indeterminate = -1,
+    denorm_absent        =  0,
+    denorm_present       =  1
+};
+
+/* ── Base template (no specialization = not specialized) ───────────── */
+
+template <class T>
+class numeric_limits {
+public:
+    static constexpr bool is_specialized = false;
+    static constexpr T min() noexcept { return T(); }
+    static constexpr T max() noexcept { return T(); }
+    static constexpr T lowest() noexcept { return T(); }
+    static constexpr int digits       = 0;
+    static constexpr int digits10     = 0;
+    static constexpr int max_digits10 = 0;
+    static constexpr bool is_signed   = false;
+    static constexpr bool is_integer  = false;
+    static constexpr bool is_exact    = false;
+    static constexpr int radix        = 0;
+    static constexpr T epsilon() noexcept { return T(); }
+    static constexpr T round_error() noexcept { return T(); }
+    static constexpr int min_exponent   = 0;
+    static constexpr int min_exponent10 = 0;
+    static constexpr int max_exponent   = 0;
+    static constexpr int max_exponent10 = 0;
+    static constexpr bool has_infinity      = false;
+    static constexpr bool has_quiet_NaN     = false;
+    static constexpr bool has_signaling_NaN = false;
+    static constexpr float_denorm_style has_denorm = denorm_absent;
+    static constexpr bool has_denorm_loss   = false;
+    static constexpr T infinity() noexcept { return T(); }
+    static constexpr T quiet_NaN() noexcept { return T(); }
+    static constexpr T signaling_NaN() noexcept { return T(); }
+    static constexpr T denorm_min() noexcept { return T(); }
+    static constexpr bool is_iec559  = false;
+    static constexpr bool is_bounded = false;
+    static constexpr bool is_modulo  = false;
+    static constexpr bool traps      = false;
+    static constexpr bool tinyness_before = false;
+    static constexpr float_round_style round_style = round_toward_zero;
+};
+
+/* ── Macro to define integer specializations ───────────────────────── */
+
+#define _LIBCXX_INT_LIMITS(TYPE, IS_SIGNED, BITS, MIN_VAL, MAX_VAL) \
+template <> class numeric_limits<TYPE> { \
+public: \
+    static constexpr bool is_specialized = true; \
+    static constexpr TYPE min() noexcept { return MIN_VAL; } \
+    static constexpr TYPE max() noexcept { return MAX_VAL; } \
+    static constexpr TYPE lowest() noexcept { return MIN_VAL; } \
+    static constexpr int digits       = BITS - (IS_SIGNED ? 1 : 0); \
+    static constexpr int digits10     = (digits * 301) / 1000; \
+    static constexpr int max_digits10 = 0; \
+    static constexpr bool is_signed   = IS_SIGNED; \
+    static constexpr bool is_integer  = true; \
+    static constexpr bool is_exact    = true; \
+    static constexpr int radix        = 2; \
+    static constexpr TYPE epsilon() noexcept { return 0; } \
+    static constexpr TYPE round_error() noexcept { return 0; } \
+    static constexpr int min_exponent   = 0; \
+    static constexpr int min_exponent10 = 0; \
+    static constexpr int max_exponent   = 0; \
+    static constexpr int max_exponent10 = 0; \
+    static constexpr bool has_infinity      = false; \
+    static constexpr bool has_quiet_NaN     = false; \
+    static constexpr bool has_signaling_NaN = false; \
+    static constexpr float_denorm_style has_denorm = denorm_absent; \
+    static constexpr bool has_denorm_loss   = false; \
+    static constexpr TYPE infinity() noexcept { return 0; } \
+    static constexpr TYPE quiet_NaN() noexcept { return 0; } \
+    static constexpr TYPE signaling_NaN() noexcept { return 0; } \
+    static constexpr TYPE denorm_min() noexcept { return 0; } \
+    static constexpr bool is_iec559  = false; \
+    static constexpr bool is_bounded = true; \
+    static constexpr bool is_modulo  = !IS_SIGNED; \
+    static constexpr bool traps      = false; \
+    static constexpr bool tinyness_before = false; \
+    static constexpr float_round_style round_style = round_toward_zero; \
+};
+
+_LIBCXX_INT_LIMITS(bool,               false,  1, false, true)
+_LIBCXX_INT_LIMITS(char,               true,   8, CHAR_MIN, CHAR_MAX)
+_LIBCXX_INT_LIMITS(signed char,        true,   8, SCHAR_MIN, SCHAR_MAX)
+_LIBCXX_INT_LIMITS(unsigned char,      false,  8, 0, UCHAR_MAX)
+_LIBCXX_INT_LIMITS(short,              true,  16, SHRT_MIN, SHRT_MAX)
+_LIBCXX_INT_LIMITS(unsigned short,     false, 16, 0, USHRT_MAX)
+_LIBCXX_INT_LIMITS(int,                true,  32, INT_MIN, INT_MAX)
+_LIBCXX_INT_LIMITS(unsigned int,       false, 32, 0, UINT_MAX)
+_LIBCXX_INT_LIMITS(long,               true,  64, LONG_MIN, LONG_MAX)
+_LIBCXX_INT_LIMITS(unsigned long,      false, 64, 0, ULONG_MAX)
+_LIBCXX_INT_LIMITS(long long,          true,  64, LLONG_MIN, LLONG_MAX)
+_LIBCXX_INT_LIMITS(unsigned long long, false, 64, 0, ULLONG_MAX)
+
+#undef _LIBCXX_INT_LIMITS
+
+/* ── Macro to define floating-point specializations ────────────────── */
+
+#define _LIBCXX_FLOAT_LIMITS(TYPE, MANT_DIG, DIG, MAX_DIG10, \
+    MIN_EXP, MIN_EXP10, MAX_EXP, MAX_EXP10, \
+    MIN_VAL, MAX_VAL, EPS, INF_EXPR, NAN_EXPR, DENORM_VAL) \
+template <> class numeric_limits<TYPE> { \
+public: \
+    static constexpr bool is_specialized = true; \
+    static constexpr TYPE min() noexcept { return MIN_VAL; } \
+    static constexpr TYPE max() noexcept { return MAX_VAL; } \
+    static constexpr TYPE lowest() noexcept { return -(MAX_VAL); } \
+    static constexpr int digits       = MANT_DIG; \
+    static constexpr int digits10     = DIG; \
+    static constexpr int max_digits10 = MAX_DIG10; \
+    static constexpr bool is_signed   = true; \
+    static constexpr bool is_integer  = false; \
+    static constexpr bool is_exact    = false; \
+    static constexpr int radix        = 2; \
+    static constexpr TYPE epsilon() noexcept { return EPS; } \
+    static constexpr TYPE round_error() noexcept { return (TYPE)0.5; } \
+    static constexpr int min_exponent   = MIN_EXP; \
+    static constexpr int min_exponent10 = MIN_EXP10; \
+    static constexpr int max_exponent   = MAX_EXP; \
+    static constexpr int max_exponent10 = MAX_EXP10; \
+    static constexpr bool has_infinity      = true; \
+    static constexpr bool has_quiet_NaN     = true; \
+    static constexpr bool has_signaling_NaN = true; \
+    static constexpr float_denorm_style has_denorm = denorm_present; \
+    static constexpr bool has_denorm_loss   = false; \
+    static constexpr TYPE infinity() noexcept { return INF_EXPR; } \
+    static constexpr TYPE quiet_NaN() noexcept { return NAN_EXPR; } \
+    static constexpr TYPE signaling_NaN() noexcept { return NAN_EXPR; } \
+    static constexpr TYPE denorm_min() noexcept { return DENORM_VAL; } \
+    static constexpr bool is_iec559  = true; \
+    static constexpr bool is_bounded = true; \
+    static constexpr bool is_modulo  = false; \
+    static constexpr bool traps      = false; \
+    static constexpr bool tinyness_before = false; \
+    static constexpr float_round_style round_style = round_to_nearest; \
+};
+
+_LIBCXX_FLOAT_LIMITS(float, 24, 6, 9,
+    -125, -37, 128, 38,
+    1.17549435e-38F, 3.40282347e+38F, 1.19209290e-07F,
+    __builtin_huge_valf(), __builtin_nanf(""),
+    1.40129846e-45F)
+
+_LIBCXX_FLOAT_LIMITS(double, 53, 15, 17,
+    -1021, -307, 1024, 308,
+    2.2250738585072014e-308, 1.7976931348623158e+308, 2.2204460492503131e-16,
+    __builtin_huge_val(), __builtin_nan(""),
+    4.9406564584124654e-324)
+
+_LIBCXX_FLOAT_LIMITS(long double, 64, 18, 21,
+    -16381, -4931, 16384, 4932,
+    3.36210314311209350626e-4932L, 1.18973149535723176502e+4932L,
+    1.08420217248550443401e-19L,
+    __builtin_huge_vall(), __builtin_nanl(""),
+    3.64519953188247460253e-4951L)
+
+#undef _LIBCXX_FLOAT_LIMITS
+
+} // namespace std
+
+#endif

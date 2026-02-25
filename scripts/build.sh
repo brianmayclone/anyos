@@ -21,6 +21,7 @@ BUILD_UEFI=0
 BUILD_ISO=0
 BUILD_ALL=0
 DEBUG_VERBOSE=0
+DEBUG_SURF=0
 NO_CROSS=0
 
 for arg in "$@"; do
@@ -43,26 +44,30 @@ for arg in "$@"; do
         --debug)
             DEBUG_VERBOSE=1
             ;;
+        --debug-surf)
+            DEBUG_SURF=1
+            ;;
         --no-cross)
             NO_CROSS=1
             ;;
         *)
-            echo "Usage: $0 [--clean] [--reset] [--uefi] [--iso] [--all] [--debug] [--no-cross]"
+            echo "Usage: $0 [--clean] [--reset] [--uefi] [--iso] [--all] [--debug] [--debug-surf] [--no-cross]"
             echo ""
-            echo "  --clean     Force full rebuild of all components"
-            echo "  --reset     Force fresh disk image (destroy runtime data)"
-            echo "  --uefi      Build UEFI disk image (in addition to BIOS)"
-            echo "  --iso       Build bootable ISO 9660 image (El Torito, CD-ROM)"
-            echo "  --all       Build BIOS, UEFI, and ISO images"
-            echo "  --debug     Enable verbose kernel debug prints"
-            echo "  --no-cross  Disable cross-compilation (skip libc, TCC, games, curl)"
+            echo "  --clean       Force full rebuild of all components"
+            echo "  --reset       Force fresh disk image (destroy runtime data)"
+            echo "  --uefi        Build UEFI disk image (in addition to BIOS)"
+            echo "  --iso         Build bootable ISO 9660 image (El Torito, CD-ROM)"
+            echo "  --all         Build BIOS, UEFI, and ISO images"
+            echo "  --debug       Enable verbose kernel debug prints"
+            echo "  --debug-surf  Enable Surf browser debug logging (HTML/CSS/JS pipeline)"
+            echo "  --no-cross    Disable cross-compilation (skip libc, TCC, games, curl)"
             exit 1
             ;;
     esac
 done
 
 # CMake flags
-CMAKE_EXTRA_FLAGS="-DANYOS_DEBUG_VERBOSE=$([ "$DEBUG_VERBOSE" -eq 1 ] && echo ON || echo OFF) -DANYOS_NO_CROSS=$([ "$NO_CROSS" -eq 1 ] && echo ON || echo OFF) -DANYOS_RESET=$([ "$RESET" -eq 1 ] && echo ON || echo OFF)"
+CMAKE_EXTRA_FLAGS="-DANYOS_DEBUG_VERBOSE=$([ "$DEBUG_VERBOSE" -eq 1 ] && echo ON || echo OFF) -DANYOS_DEBUG_SURF=$([ "$DEBUG_SURF" -eq 1 ] && echo ON || echo OFF) -DANYOS_NO_CROSS=$([ "$NO_CROSS" -eq 1 ] && echo ON || echo OFF) -DANYOS_RESET=$([ "$RESET" -eq 1 ] && echo ON || echo OFF)"
 
 # Ensure build directory exists
 if [ ! -f "${BUILD_DIR}/build.ninja" ]; then

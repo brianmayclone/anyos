@@ -212,8 +212,6 @@ pub struct ComputedStyle {
     // calc() components: (px * 100, pct * 100) for width/height
     pub width_calc: Option<(i32, i32)>,
     pub height_calc: Option<(i32, i32)>,
-    /// CSS custom properties (--name → raw value string).
-    pub custom_properties: Vec<(String, String)>,
 }
 
 // Bitflags for tracking which inheritable properties were explicitly set.
@@ -296,8 +294,6 @@ pub fn default_style() -> ComputedStyle {
         // Calc
         width_calc: Option::None,
         height_calc: Option::None,
-        // Custom properties
-        custom_properties: Vec::new(),
     }
 }
 
@@ -472,6 +468,10 @@ pub fn user_agent_styles(tag: Tag) -> ComputedStyle {
 
 /// Check if a CSS selector matches a DOM element node.
 fn selector_matches(selector: &Selector, dom: &Dom, node_id: NodeId) -> bool {
+    // Bounds check to prevent crashes from corrupted node indices.
+    if node_id >= dom.nodes.len() {
+        return false;
+    }
     match selector {
         Selector::Universal => {
             matches!(dom.nodes[node_id].node_type, NodeType::Element { .. })
@@ -483,6 +483,7 @@ fn selector_matches(selector: &Selector, dom: &Dom, node_id: NodeId) -> bool {
             }
             let mut cur = dom.nodes[node_id].parent;
             while let Some(pid) = cur {
+                if pid >= dom.nodes.len() { break; }
                 if selector_matches(ancestor_sel, dom, pid) {
                     return true;
                 }
@@ -495,6 +496,7 @@ fn selector_matches(selector: &Selector, dom: &Dom, node_id: NodeId) -> bool {
                 return false;
             }
             if let Some(pid) = dom.nodes[node_id].parent {
+                if pid >= dom.nodes.len() { return false; }
                 selector_matches(parent_sel, dom, pid)
             } else {
                 false
@@ -543,6 +545,7 @@ fn preceding_element_sibling(dom: &Dom, node_id: NodeId) -> Option<NodeId> {
 }
 
 fn simple_matches(sel: &SimpleSelector, dom: &Dom, node_id: NodeId) -> bool {
+    if node_id >= dom.nodes.len() { return false; }
     let node = &dom.nodes[node_id];
     let (tag, attrs) = match &node.node_type {
         NodeType::Element { tag, attrs } => (*tag, attrs),
@@ -799,13 +802,55 @@ fn has_class(class_str: &str, needle: &str) -> bool {
 /// Returns a `Vec<ComputedStyle>` indexed by `NodeId`.
 pub fn resolve_styles(dom: &Dom, stylesheets: &[Stylesheet], viewport_width: i32, viewport_height: i32) -> Vec<ComputedStyle> {
     let count = dom.nodes.len();
-    let mut styles: Vec<ComputedStyle> = Vec::with_capacity(count);
+    crate::debug_surf!("[style] resolve_styles: {} nodes, {} stylesheets", count, stylesheets.len());
+    #[cfg(feature = "debug_surf")]
+    crate::debug_surf!("[style]   RSP=0x{:X} heap=0x{:X}", crate::debug_rsp(), crate::debug_heap_pos());
 
+    let mut styles: Vec<ComputedStyle> = Vec::with_capacity(count);
     let root_font_size: i32 = 16;
 
+    // ── Pre-collect all applicable CSS rules ONCE (node-independent). ──
+    let mut all_rules: Vec<(&Rule, usize)> = Vec::new();
+    let mut order = 0usize;
+    for sheet in stylesheets {
+        for rule in &sheet.rules {
+            all_rules.push((rule, order));
+            order += 1;
+        }
+        for mr in &sheet.media_rules {
+            if crate::css::evaluate_media_query(&mr.query, viewport_width, viewport_height) {
+                for rule in &mr.rules {
+                    all_rules.push((rule, order));
+                    order += 1;
+                }
+            }
+        }
+    }
+    crate::debug_surf!("[style] collected {} applicable rules (once)", all_rules.len());
+
+    // Reusable scratch buffer for per-node matching (avoids repeated alloc/free).
+    let mut matches: Vec<((u32, u32, u32), usize)> = Vec::with_capacity(64);
+
+    // Separate storage for custom properties (--name: value).
+    // Only nodes that DEFINE custom properties have non-empty entries.
+    // var() references are resolved on-demand by walking the DOM parent chain,
+    // eliminating the per-node clone that caused heap-stack collision on large
+    // pages (~54 MiB for chip.de's 6228 nodes).
+    let mut custom_props: Vec<Vec<(String, String)>> = vec![Vec::new(); count];
+
     for id in 0..count {
+        #[cfg(feature = "debug_surf")]
+        {
+            if id < 5 || id % 1000 == 0 {
+                crate::debug_surf!("[style] node {}/{} RSP=0x{:X} heap=0x{:X}",
+                    id, count, crate::debug_rsp(), crate::debug_heap_pos());
+            }
+        }
+
         let node = &dom.nodes[id];
-        let parent_fs = node.parent.map_or(16, |pid| styles[pid].font_size);
+        let parent_fs = node.parent.map_or(16, |pid| {
+            if pid < id { styles[pid].font_size } else { 16 }
+        });
 
         // Phase 1: Start from UA defaults (elements) or initial values (text).
         let (mut style, mut set_flags) = match &node.node_type {
@@ -813,38 +858,58 @@ pub fn resolve_styles(dom: &Dom, stylesheets: &[Stylesheet], viewport_width: i32
             NodeType::Text(_) => (default_style(), 0u16),
         };
 
-        // Phase 2: Apply author stylesheet rules sorted by specificity.
+        // Phase 2 + 3: Apply author rules and inline styles.
+        // Custom property declarations are stored in custom_props[id].
+        // var() references are resolved by walking the parent chain.
         if matches!(node.node_type, NodeType::Element { .. }) {
+            let (ancestors_cp, current_and_rest) = custom_props.split_at_mut(id);
+            let node_cp = &mut current_and_rest[0];
+
             set_flags |= apply_author_rules(
-                &mut style, dom, id, stylesheets, parent_fs, root_font_size,
-                viewport_width, viewport_height,
+                &mut style, dom, id, &all_rules, &mut matches,
+                parent_fs, root_font_size, node_cp, ancestors_cp,
             );
 
             // Phase 3: Apply inline styles (highest specificity).
-            let inline_decls = get_inline_decls(dom, id);
-            for decl in &inline_decls {
-                set_flags |= decl_set_flag(&decl.property);
-                apply_declaration(&mut style, decl, parent_fs, root_font_size);
+            if let NodeType::Element { attrs, .. } = &node.node_type {
+                for a in attrs {
+                    if eq_ignore_ascii_case(&a.name, "style") {
+                        let inline_decls = crate::css::parse_inline_style(&a.value);
+                        for decl in &inline_decls {
+                            if let Property::CustomProperty(ref name) = decl.property {
+                                if let CssValue::Keyword(ref val) = decl.value {
+                                    store_custom_prop(node_cp, name, val);
+                                }
+                            } else if let CssValue::Var(_, _) = &decl.value {
+                                let resolved = resolve_var_in_decl(
+                                    decl, dom, id, node_cp, ancestors_cp,
+                                );
+                                set_flags |= decl_set_flag(&resolved.property);
+                                apply_declaration(
+                                    &mut style, &resolved, parent_fs, root_font_size,
+                                );
+                            } else {
+                                set_flags |= decl_set_flag(&decl.property);
+                                apply_declaration(
+                                    &mut style, decl, parent_fs, root_font_size,
+                                );
+                            }
+                        }
+                        break;
+                    }
+                }
             }
         }
 
-        // Phase 3b: Inherit custom properties from parent.
-        if let Some(pid) = node.parent {
-            // Start with parent's custom props, then overlay our own.
-            let mut props = styles[pid].custom_properties.clone();
-            for (k, v) in &style.custom_properties {
-                if let Some(existing) = props.iter_mut().find(|(ek, _)| ek == k) {
-                    existing.1 = v.clone();
-                } else {
-                    props.push((k.clone(), v.clone()));
-                }
-            }
-            style.custom_properties = props;
-        }
+        // (Phase 3b removed: custom properties are resolved on-demand via
+        // parent chain walk, eliminating the per-node clone that caused
+        // heap-stack collision on large pages.)
 
         // Phase 4: Inherit inheritable properties NOT explicitly set.
         if let Some(pid) = node.parent {
-            inherit_unset(&mut style, &styles[pid], set_flags);
+            if pid < id {
+                inherit_unset(&mut style, &styles[pid], set_flags);
+            }
         }
 
         // Phase 5: Resolve `li` list_style from parent (ol -> decimal).
@@ -860,70 +925,31 @@ pub fn resolve_styles(dom: &Dom, stylesheets: &[Stylesheet], viewport_width: i32
 
         // Phase 6: Resolve auto line_height.
         if style.line_height == 0 {
-            // Approximate 1.2x: (font_size * 6 + 2) / 5
             style.line_height = (style.font_size * 6 + 2) / 5;
         }
 
         styles.push(style);
     }
 
+    crate::debug_surf!("[style] resolve_styles done: {} styles", styles.len());
+    #[cfg(feature = "debug_surf")]
+    crate::debug_surf!("[style]   RSP=0x{:X} heap=0x{:X}", crate::debug_rsp(), crate::debug_heap_pos());
     styles
-}
-
-/// Parse inline `style="..."` attribute into declarations.
-fn get_inline_decls(dom: &Dom, node_id: NodeId) -> Vec<Declaration> {
-    if let NodeType::Element { attrs, .. } = &dom.nodes[node_id].node_type {
-        for a in attrs {
-            if eq_ignore_ascii_case(&a.name, "style") {
-                return crate::css::parse_inline_style(&a.value);
-            }
-        }
-    }
-    Vec::new()
-}
-
-// ---------------------------------------------------------------------------
-// Author rule application
-// ---------------------------------------------------------------------------
-
-/// Matched rule entry: (specificity, sheet_index, rule_index).
-struct MatchEntry {
-    spec: (u32, u32, u32),
-    sheet_idx: usize,
-    rule_idx: usize,
 }
 
 fn apply_author_rules(
     style: &mut ComputedStyle,
     dom: &Dom,
     node_id: NodeId,
-    stylesheets: &[Stylesheet],
+    all_rules: &[(&Rule, usize)],
+    matches: &mut Vec<((u32, u32, u32), usize)>,
     parent_fs: i32,
     root_fs: i32,
-    viewport_width: i32,
-    viewport_height: i32,
+    node_cp: &mut Vec<(String, String)>,
+    ancestors_cp: &[Vec<(String, String)>],
 ) -> u16 {
-    // Collect all applicable rules: regular + matching @media rules.
-    let mut all_rules: Vec<(&Rule, usize)> = Vec::new(); // (rule, source_order)
-    let mut order = 0usize;
-
-    for sheet in stylesheets {
-        for rule in &sheet.rules {
-            all_rules.push((rule, order));
-            order += 1;
-        }
-        // Include media rules whose query matches the viewport.
-        for mr in &sheet.media_rules {
-            if crate::css::evaluate_media_query(&mr.query, viewport_width, viewport_height) {
-                for rule in &mr.rules {
-                    all_rules.push((rule, order));
-                    order += 1;
-                }
-            }
-        }
-    }
-
-    let mut matches: Vec<(/*spec*/(u32,u32,u32), /*rule_idx*/usize)> = Vec::new();
+    // Reuse the caller's matches buffer (avoids alloc/free per node).
+    matches.clear();
 
     for (idx, (rule, _order)) in all_rules.iter().enumerate() {
         for sel in &rule.selectors {
@@ -940,25 +966,43 @@ fn apply_author_rules(
     let mut set_flags: u16 = 0;
 
     // Phase 1: Apply normal (non-!important) declarations.
-    for &(_, idx) in &matches {
+    for &(_, idx) in matches.iter() {
         let (rule, _) = all_rules[idx];
         for decl in &rule.declarations {
             if !decl.important {
-                let resolved = resolve_var_in_decl(decl, &style.custom_properties);
-                set_flags |= decl_set_flag(&resolved.property);
-                apply_declaration(style, &resolved, parent_fs, root_fs);
+                if let Property::CustomProperty(ref name) = decl.property {
+                    if let CssValue::Keyword(ref val) = decl.value {
+                        store_custom_prop(node_cp, name, val);
+                    }
+                } else if let CssValue::Var(_, _) = &decl.value {
+                    let resolved = resolve_var_in_decl(decl, dom, node_id, node_cp, ancestors_cp);
+                    set_flags |= decl_set_flag(&resolved.property);
+                    apply_declaration(style, &resolved, parent_fs, root_fs);
+                } else {
+                    set_flags |= decl_set_flag(&decl.property);
+                    apply_declaration(style, decl, parent_fs, root_fs);
+                }
             }
         }
     }
 
     // Phase 2: Apply !important declarations (override normal ones).
-    for &(_, idx) in &matches {
+    for &(_, idx) in matches.iter() {
         let (rule, _) = all_rules[idx];
         for decl in &rule.declarations {
             if decl.important {
-                let resolved = resolve_var_in_decl(decl, &style.custom_properties);
-                set_flags |= decl_set_flag(&resolved.property);
-                apply_declaration(style, &resolved, parent_fs, root_fs);
+                if let Property::CustomProperty(ref name) = decl.property {
+                    if let CssValue::Keyword(ref val) = decl.value {
+                        store_custom_prop(node_cp, name, val);
+                    }
+                } else if let CssValue::Var(_, _) = &decl.value {
+                    let resolved = resolve_var_in_decl(decl, dom, node_id, node_cp, ancestors_cp);
+                    set_flags |= decl_set_flag(&resolved.property);
+                    apply_declaration(style, &resolved, parent_fs, root_fs);
+                } else {
+                    set_flags |= decl_set_flag(&decl.property);
+                    apply_declaration(style, decl, parent_fs, root_fs);
+                }
             }
         }
     }

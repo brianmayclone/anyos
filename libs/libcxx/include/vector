@@ -1,0 +1,351 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * <vector> — dynamic array container.
+ */
+
+#ifndef _LIBCXX_VECTOR
+#define _LIBCXX_VECTOR
+
+#include <cstddef>
+#include <cstdlib>
+#include <cstring>
+#include <initializer_list>
+#include <iterator>
+#include <algorithm>
+#include <new>
+#include <type_traits>
+#include <utility>
+
+namespace std {
+
+template <class T>
+class vector {
+public:
+    using value_type      = T;
+    using size_type       = size_t;
+    using difference_type = ptrdiff_t;
+    using reference       = T&;
+    using const_reference = const T&;
+    using pointer         = T*;
+    using const_pointer   = const T*;
+    using iterator        = T*;
+    using const_iterator  = const T*;
+    using reverse_iterator       = std::reverse_iterator<iterator>;
+    using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+
+private:
+    T*        _data;
+    size_type _size;
+    size_type _cap;
+
+    void _grow(size_type new_cap) {
+        T* new_data = static_cast<T*>(std::malloc(new_cap * sizeof(T)));
+        if (!new_data) std::abort();
+        for (size_type i = 0; i < _size; ++i) {
+            ::new (static_cast<void*>(new_data + i)) T(std::move(_data[i]));
+            _data[i].~T();
+        }
+        std::free(_data);
+        _data = new_data;
+        _cap  = new_cap;
+    }
+
+    size_type _next_cap(size_type needed) const {
+        size_type c = _cap ? _cap * 2 : 4;
+        return (c < needed) ? needed : c;
+    }
+
+    void _destroy_all() {
+        for (size_type i = 0; i < _size; ++i)
+            _data[i].~T();
+    }
+
+public:
+    /* ── Constructors / Destructor ─────────────────────────────────── */
+
+    vector() noexcept : _data(nullptr), _size(0), _cap(0) {}
+
+    explicit vector(size_type count) : _data(nullptr), _size(0), _cap(0) {
+        resize(count);
+    }
+
+    vector(size_type count, const T& value) : _data(nullptr), _size(0), _cap(0) {
+        reserve(count);
+        for (size_type i = 0; i < count; ++i)
+            push_back(value);
+    }
+
+    template <class It, class = enable_if_t<!is_integral<It>::value>>
+    vector(It first, It last) : _data(nullptr), _size(0), _cap(0) {
+        for (; first != last; ++first)
+            push_back(*first);
+    }
+
+    vector(initializer_list<T> il) : _data(nullptr), _size(0), _cap(0) {
+        reserve(il.size());
+        for (auto& v : il)
+            push_back(v);
+    }
+
+    vector(const vector& other) : _data(nullptr), _size(0), _cap(0) {
+        reserve(other._size);
+        for (size_type i = 0; i < other._size; ++i)
+            push_back(other._data[i]);
+    }
+
+    vector(vector&& other) noexcept
+        : _data(other._data), _size(other._size), _cap(other._cap) {
+        other._data = nullptr;
+        other._size = 0;
+        other._cap  = 0;
+    }
+
+    ~vector() {
+        _destroy_all();
+        std::free(_data);
+    }
+
+    /* ── Assignment ────────────────────────────────────────────────── */
+
+    vector& operator=(const vector& other) {
+        if (this != &other) {
+            clear();
+            reserve(other._size);
+            for (size_type i = 0; i < other._size; ++i)
+                push_back(other._data[i]);
+        }
+        return *this;
+    }
+
+    vector& operator=(vector&& other) noexcept {
+        if (this != &other) {
+            _destroy_all();
+            std::free(_data);
+            _data = other._data;
+            _size = other._size;
+            _cap  = other._cap;
+            other._data = nullptr;
+            other._size = 0;
+            other._cap  = 0;
+        }
+        return *this;
+    }
+
+    vector& operator=(initializer_list<T> il) {
+        clear();
+        reserve(il.size());
+        for (auto& v : il)
+            push_back(v);
+        return *this;
+    }
+
+    void assign(size_type count, const T& value) {
+        clear();
+        reserve(count);
+        for (size_type i = 0; i < count; ++i)
+            push_back(value);
+    }
+
+    /* ── Element access ────────────────────────────────────────────── */
+
+    reference       operator[](size_type i)       { return _data[i]; }
+    const_reference operator[](size_type i) const { return _data[i]; }
+
+    reference       at(size_type i)       { return _data[i]; }
+    const_reference at(size_type i) const { return _data[i]; }
+
+    reference       front()       { return _data[0]; }
+    const_reference front() const { return _data[0]; }
+
+    reference       back()       { return _data[_size - 1]; }
+    const_reference back() const { return _data[_size - 1]; }
+
+    pointer       data()       noexcept { return _data; }
+    const_pointer data() const noexcept { return _data; }
+
+    /* ── Iterators ─────────────────────────────────────────────────── */
+
+    iterator       begin()        noexcept { return _data; }
+    const_iterator begin()  const noexcept { return _data; }
+    const_iterator cbegin() const noexcept { return _data; }
+
+    iterator       end()        noexcept { return _data + _size; }
+    const_iterator end()  const noexcept { return _data + _size; }
+    const_iterator cend() const noexcept { return _data + _size; }
+
+    reverse_iterator       rbegin()        noexcept { return reverse_iterator(end()); }
+    const_reverse_iterator rbegin()  const noexcept { return const_reverse_iterator(end()); }
+    reverse_iterator       rend()          noexcept { return reverse_iterator(begin()); }
+    const_reverse_iterator rend()    const noexcept { return const_reverse_iterator(begin()); }
+
+    /* ── Capacity ──────────────────────────────────────────────────── */
+
+    [[nodiscard]] bool empty()    const noexcept { return _size == 0; }
+    size_type          size()     const noexcept { return _size; }
+    size_type          max_size() const noexcept { return size_type(-1) / sizeof(T); }
+    size_type          capacity() const noexcept { return _cap; }
+
+    void reserve(size_type new_cap) {
+        if (new_cap > _cap)
+            _grow(new_cap);
+    }
+
+    void shrink_to_fit() {
+        if (_size < _cap) {
+            if (_size == 0) {
+                std::free(_data);
+                _data = nullptr;
+                _cap = 0;
+            } else {
+                _grow(_size);
+            }
+        }
+    }
+
+    /* ── Modifiers ─────────────────────────────────────────────────── */
+
+    void clear() noexcept {
+        _destroy_all();
+        _size = 0;
+    }
+
+    void push_back(const T& value) {
+        if (_size == _cap) _grow(_next_cap(_size + 1));
+        ::new (static_cast<void*>(_data + _size)) T(value);
+        ++_size;
+    }
+
+    void push_back(T&& value) {
+        if (_size == _cap) _grow(_next_cap(_size + 1));
+        ::new (static_cast<void*>(_data + _size)) T(std::move(value));
+        ++_size;
+    }
+
+    template <class... Args>
+    reference emplace_back(Args&&... args) {
+        if (_size == _cap) _grow(_next_cap(_size + 1));
+        ::new (static_cast<void*>(_data + _size)) T(std::forward<Args>(args)...);
+        return _data[_size++];
+    }
+
+    void pop_back() {
+        --_size;
+        _data[_size].~T();
+    }
+
+    void resize(size_type count) {
+        if (count < _size) {
+            for (size_type i = count; i < _size; ++i)
+                _data[i].~T();
+        } else if (count > _size) {
+            reserve(count);
+            for (size_type i = _size; i < count; ++i)
+                ::new (static_cast<void*>(_data + i)) T();
+        }
+        _size = count;
+    }
+
+    void resize(size_type count, const T& value) {
+        if (count < _size) {
+            for (size_type i = count; i < _size; ++i)
+                _data[i].~T();
+        } else if (count > _size) {
+            reserve(count);
+            for (size_type i = _size; i < count; ++i)
+                ::new (static_cast<void*>(_data + i)) T(value);
+        }
+        _size = count;
+    }
+
+    iterator insert(const_iterator pos, const T& value) {
+        size_type idx = pos - _data;
+        if (_size == _cap) _grow(_next_cap(_size + 1));
+        /* Shift elements right */
+        if (_size > idx) {
+            ::new (static_cast<void*>(_data + _size)) T(std::move(_data[_size - 1]));
+            for (size_type i = _size - 1; i > idx; --i)
+                _data[i] = std::move(_data[i - 1]);
+            _data[idx] = value;
+        } else {
+            ::new (static_cast<void*>(_data + idx)) T(value);
+        }
+        ++_size;
+        return _data + idx;
+    }
+
+    iterator insert(const_iterator pos, T&& value) {
+        size_type idx = pos - _data;
+        if (_size == _cap) _grow(_next_cap(_size + 1));
+        if (_size > idx) {
+            ::new (static_cast<void*>(_data + _size)) T(std::move(_data[_size - 1]));
+            for (size_type i = _size - 1; i > idx; --i)
+                _data[i] = std::move(_data[i - 1]);
+            _data[idx] = std::move(value);
+        } else {
+            ::new (static_cast<void*>(_data + idx)) T(std::move(value));
+        }
+        ++_size;
+        return _data + idx;
+    }
+
+    iterator erase(const_iterator pos) {
+        size_type idx = pos - _data;
+        _data[idx].~T();
+        for (size_type i = idx; i + 1 < _size; ++i)
+            _data[i] = std::move(_data[i + 1]);
+        if (_size > 0) {
+            --_size;
+            _data[_size].~T();
+        }
+        return _data + idx;
+    }
+
+    iterator erase(const_iterator first, const_iterator last) {
+        size_type idx   = first - _data;
+        size_type count = last - first;
+        if (count == 0) return _data + idx;
+
+        for (size_type i = idx; i < idx + count; ++i)
+            _data[i].~T();
+
+        size_type tail = _size - idx - count;
+        for (size_type i = 0; i < tail; ++i)
+            _data[idx + i] = std::move(_data[idx + count + i]);
+
+        for (size_type i = 0; i < count; ++i)
+            _data[_size - 1 - i].~T();
+
+        _size -= count;
+        return _data + idx;
+    }
+
+    void swap(vector& other) noexcept {
+        std::swap(_data, other._data);
+        std::swap(_size, other._size);
+        std::swap(_cap,  other._cap);
+    }
+};
+
+/* ── Comparison ────────────────────────────────────────────────────── */
+
+template <class T>
+bool operator==(const vector<T>& a, const vector<T>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (!(a[i] == b[i])) return false;
+    return true;
+}
+
+template <class T>
+bool operator!=(const vector<T>& a, const vector<T>& b) { return !(a == b); }
+
+template <class T>
+bool operator<(const vector<T>& a, const vector<T>& b) {
+    return lexicographical_compare(a.begin(), a.end(), b.begin(), b.end());
+}
+
+} // namespace std
+
+#endif

@@ -17,6 +17,42 @@
 
 extern crate alloc;
 
+// ═══════════════════════════════════════════════════════════
+// Debug logging macro — enabled by `debug_surf` feature flag
+// ═══════════════════════════════════════════════════════════
+
+/// Debug logging macro for the Surf browser pipeline.
+/// Compiles to a no-op when the `debug_surf` feature is not enabled.
+#[cfg(feature = "debug_surf")]
+#[macro_export]
+macro_rules! debug_surf {
+    ($($arg:tt)*) => {
+        anyos_std::println!($($arg)*);
+    };
+}
+
+#[cfg(not(feature = "debug_surf"))]
+#[macro_export]
+macro_rules! debug_surf {
+    ($($arg:tt)*) => {};
+}
+
+/// Return current stack pointer (approximate) for debug tracing.
+#[cfg(feature = "debug_surf")]
+#[inline(always)]
+pub fn debug_rsp() -> u64 {
+    let rsp: u64;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp); }
+    rsp
+}
+
+/// Return current heap break position for debug tracing.
+#[cfg(feature = "debug_surf")]
+pub fn debug_heap_pos() -> u64 {
+    // sbrk(0) returns current break without changing it.
+    anyos_std::process::sbrk(0) as u64
+}
+
 pub mod dom;
 pub mod html;
 pub mod css;
@@ -122,14 +158,27 @@ impl WebView {
 
     /// Set HTML content and render it.
     pub fn set_html(&mut self, html_text: &str) {
+        debug_surf!("[webview] set_html: {} bytes input", html_text.len());
+        #[cfg(feature = "debug_surf")]
+        {
+            let rsp0 = debug_rsp();
+            let heap0 = debug_heap_pos();
+            anyos_std::println!("[webview] set_html: RSP=0x{:X} heap=0x{:X}", rsp0, heap0);
+        }
+
         // Parse HTML → DOM.
+        debug_surf!("[webview] html::parse start");
         let parsed_dom = html::parse(html_text);
+        debug_surf!("[webview] html::parse done: {} nodes", parsed_dom.nodes.len());
+        #[cfg(feature = "debug_surf")]
+        anyos_std::println!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
 
         // Collect stylesheets and resolve + layout + render.
         self.do_layout_and_render(&parsed_dom);
 
         // Store DOM for title queries etc.
         self.dom_val = Some(parsed_dom);
+        debug_surf!("[webview] set_html complete");
     }
 
     /// Get the page title from the current DOM (if any).
@@ -184,6 +233,8 @@ impl WebView {
 
     /// Internal: collect stylesheets, resolve styles, layout, and render controls.
     fn do_layout_and_render(&mut self, d: &dom::Dom) {
+        debug_surf!("[webview] do_layout_and_render: {} DOM nodes", d.nodes.len());
+
         // Collect all stylesheets.
         let mut all_sheets: Vec<css::Stylesheet> = Vec::new();
 
@@ -191,27 +242,51 @@ impl WebView {
         all_sheets.push(css::parse_stylesheet(DEFAULT_CSS));
 
         // External stylesheets (added via add_stylesheet).
-        for css_text in &self.external_css {
+        for (idx, css_text) in self.external_css.iter().enumerate() {
+            debug_surf!("[webview] parse external stylesheet #{}: {} bytes", idx, css_text.len());
             all_sheets.push(css::parse_stylesheet(css_text));
         }
 
         // Inline <style> elements from DOM.
+        let mut inline_count = 0u32;
         for (i, node) in d.nodes.iter().enumerate() {
             if let dom::NodeType::Element { tag: dom::Tag::Style, .. } = &node.node_type {
                 let css_text = d.text_content(i);
                 if !css_text.is_empty() {
+                    debug_surf!("[webview] parse inline <style> #{}: {} bytes", inline_count, css_text.len());
                     all_sheets.push(css::parse_stylesheet(&css_text));
+                    inline_count += 1;
                 }
             }
         }
 
+        debug_surf!("[webview] total stylesheets: {} (1 default + {} external + {} inline)",
+            all_sheets.len(), self.external_css.len(), inline_count);
+        #[cfg(feature = "debug_surf")]
+        {
+            let total_rules: usize = all_sheets.iter().map(|s| s.rules.len()).sum();
+            debug_surf!("[webview] total CSS rules: {}", total_rules);
+            debug_surf!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
+        }
+
         // Resolve styles (pass viewport dimensions for @media queries).
+        debug_surf!("[webview] resolve_styles start ({} nodes)", d.nodes.len());
         let vh = self.total_height_val.max(self.viewport_width); // approximate viewport height
         let styles = style::resolve_styles(d, &all_sheets, self.viewport_width, vh);
+        debug_surf!("[webview] resolve_styles done: {} styles", styles.len());
+        #[cfg(feature = "debug_surf")]
+        debug_surf!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
 
         // Layout.
+        debug_surf!("[webview] layout start (viewport_width={})", self.viewport_width);
         let root = layout::layout(d, &styles, self.viewport_width, &self.images);
         self.total_height_val = calc_total_height(&root);
+        #[cfg(feature = "debug_surf")]
+        {
+            let box_count = count_layout_boxes(&root);
+            debug_surf!("[webview] layout done: {} boxes, height={}", box_count, self.total_height_val);
+            debug_surf!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
+        }
 
         // Clear old controls.
         self.renderer.clear();
@@ -221,6 +296,7 @@ impl WebView {
         self.content_view.set_size(self.viewport_width as u32, content_h);
 
         // Render new controls.
+        debug_surf!("[webview] renderer start");
         self.renderer.render(
             &root,
             &self.content_view,
@@ -230,9 +306,15 @@ impl WebView {
             self.submit_cb,
             self.submit_cb_ud,
         );
+        debug_surf!("[webview] renderer done: {} controls", self.renderer.control_count());
+        #[cfg(feature = "debug_surf")]
+        debug_surf!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
 
         // Execute JavaScript <script> tags.
+        debug_surf!("[webview] JS execute_scripts start");
         self.js_runtime.execute_scripts(d);
+        debug_surf!("[webview] JS execute_scripts done: {} console lines, {} mutations",
+            self.js_runtime.console.len(), self.js_runtime.mutations.len());
     }
 
     /// Access the JS runtime (e.g. for evaluating additional scripts or reading console).
@@ -350,6 +432,16 @@ impl WebView {
         }
         data
     }
+}
+
+/// Count total layout boxes in the tree (debug only).
+#[cfg(feature = "debug_surf")]
+fn count_layout_boxes(root: &LayoutBox) -> usize {
+    let mut count = 1usize;
+    for child in &root.children {
+        count += count_layout_boxes(child);
+    }
+    count
 }
 
 /// Calculate total document height from the root layout box.

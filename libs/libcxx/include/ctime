@@ -1,0 +1,24 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ */
+
+#ifndef _LIBCXX_CTIME
+#define _LIBCXX_CTIME
+
+#include <time.h>
+
+namespace std {
+    using ::time_t;
+    using ::clock_t;
+    using ::tm;
+    using ::time;
+    using ::clock;
+    using ::localtime;
+    using ::gmtime;
+    using ::mktime;
+    using ::strftime;
+    using ::difftime;
+}
+
+#endif

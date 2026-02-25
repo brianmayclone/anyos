@@ -358,6 +358,7 @@ fn read_attr_value(bytes: &[u8], pos: &mut usize) -> String {
 }
 
 pub fn tokenize(html: &str) -> Vec<Token> {
+    crate::debug_surf!("[html] tokenize: {} bytes input", html.len());
     let bytes = html.as_bytes();
     let mut pos: usize = 0;
     let mut tokens = Vec::new();
@@ -468,6 +469,7 @@ pub fn tokenize(html: &str) -> Vec<Token> {
         }
     }
 
+    crate::debug_surf!("[html] tokenize done: {} tokens", tokens.len());
     tokens
 }
 
@@ -556,6 +558,9 @@ fn in_pre(dom: &Dom, stack: &[NodeId]) -> bool {
 
 pub fn parse(html: &str) -> Dom {
     let tokens = tokenize(html);
+    crate::debug_surf!("[html] tree build start: {} tokens", tokens.len());
+    #[cfg(feature = "debug_surf")]
+    crate::debug_surf!("[html]   RSP=0x{:X} heap=0x{:X}", crate::debug_rsp(), crate::debug_heap_pos());
     let mut dom = Dom::new();
 
     // Create implicit root (html-like)
@@ -811,6 +816,22 @@ pub fn parse(html: &str) -> Dom {
                 dom.add_node(NodeType::Text(processed), Some(parent));
             }
         }
+    }
+
+    #[cfg(feature = "debug_surf")]
+    {
+        let max_depth = dom.nodes.iter().map(|n| {
+            let mut depth = 0u32;
+            let mut cur = n.parent;
+            while let Some(pid) = cur {
+                depth += 1;
+                cur = dom.nodes.get(pid).and_then(|p| p.parent);
+                if depth > 500 { break; } // safety
+            }
+            depth
+        }).max().unwrap_or(0);
+        crate::debug_surf!("[html] tree build done: {} nodes, max_depth={}", dom.nodes.len(), max_depth);
+        crate::debug_surf!("[html]   RSP=0x{:X} heap=0x{:X}", crate::debug_rsp(), crate::debug_heap_pos());
     }
 
     dom

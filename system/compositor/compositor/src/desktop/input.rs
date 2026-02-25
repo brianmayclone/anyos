@@ -731,8 +731,6 @@ impl Desktop {
                     } else {
                         nh.saturating_sub(TITLE_BAR_HEIGHT)
                     };
-                    let is_ipc = self.windows[idx].owner_tid != 0
-                        && !self.windows[idx].shm_ptr.is_null();
                     let win_id = resize.window_id;
 
                     self.windows[idx].x = nx;
@@ -740,23 +738,19 @@ impl Desktop {
                     let layer_id = self.windows[idx].layer_id;
                     self.compositor.move_layer(layer_id, nx, ny);
 
-                    let scale_content = self.windows[idx].flags & WIN_FLAG_SCALE_CONTENT != 0;
-                    if is_ipc && !scale_content {
-                        self.push_event(
-                            win_id,
-                            [EVENT_RESIZE, nw, content_h, 0, 0],
-                        );
-                    } else {
-                        self.windows[idx].content_width = nw;
-                        self.windows[idx].content_height = content_h;
-                        let full_h = self.windows[idx].full_height();
-                        self.compositor.resize_layer(layer_id, nw, full_h);
-                        self.render_window(win_id);
-                        self.push_event(
-                            win_id,
-                            [EVENT_RESIZE, nw, content_h, 0, 0],
-                        );
-                    }
+                    // Always resize the layer immediately so the compositor
+                    // repaints the exposed background in the same frame.
+                    // For IPC windows the old SHM content is clipped to the
+                    // new dimensions until the client provides new content.
+                    self.windows[idx].content_width = nw;
+                    self.windows[idx].content_height = content_h;
+                    let full_h = self.windows[idx].full_height();
+                    self.compositor.resize_layer(layer_id, nw, full_h);
+                    self.render_window(win_id);
+                    self.push_event(
+                        win_id,
+                        [EVENT_RESIZE, nw, content_h, 0, 0],
+                    );
                 }
             }
 
