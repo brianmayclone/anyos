@@ -13,6 +13,29 @@ use crate::dom::Tag;
 
 pub struct Stylesheet {
     pub rules: Vec<Rule>,
+    /// @media rules: each contains a query and the rules inside it.
+    pub media_rules: Vec<MediaRule>,
+}
+
+/// A @media rule: query + inner rules.
+pub struct MediaRule {
+    pub query: MediaQuery,
+    pub rules: Vec<Rule>,
+}
+
+/// Parsed @media query.
+pub struct MediaQuery {
+    pub conditions: Vec<MediaCondition>,
+}
+
+/// A single media condition.
+pub enum MediaCondition {
+    MinWidth(i32),
+    MaxWidth(i32),
+    MinHeight(i32),
+    MaxHeight(i32),
+    /// `prefers-color-scheme: dark` etc.
+    PrefersColorScheme(String),
 }
 
 pub struct Rule {
@@ -177,6 +200,11 @@ pub enum CssValue {
     Auto,
     None,
     Inherit,
+    /// `var(--name)` or `var(--name, fallback)`.
+    Var(String, Option<Box<CssValue>>),
+    /// `calc(expr)` — stores (px_component * 100, pct_component * 100).
+    /// At layout time: result = (container_width * pct / 10000) + (px / 100).
+    Calc(i32, i32),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -328,6 +356,7 @@ impl<'a> Parser<'a> {
 pub fn parse_stylesheet(css: &str) -> Stylesheet {
     let mut p = Parser::new(css);
     let mut rules = Vec::new();
+    let mut media_rules = Vec::new();
 
     loop {
         p.skip_whitespace();
@@ -335,11 +364,21 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
             break;
         }
 
-        // Skip at-rules
+        // At-rules
         if p.peek() == b'@' {
             p.pos += 1;
-            let _keyword = p.read_ident();
-            // Skip to opening brace or semicolon
+            let keyword = p.read_ident();
+            let kw_lower = keyword.to_ascii_lowercase();
+
+            if kw_lower == "media" {
+                // Parse @media query and inner rules.
+                if let Some(mr) = parse_media_rule(&mut p) {
+                    media_rules.push(mr);
+                }
+                continue;
+            }
+
+            // Skip other at-rules.
             loop {
                 p.skip_whitespace();
                 if p.eof() {
@@ -370,7 +409,171 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
         }
     }
 
-    Stylesheet { rules }
+    Stylesheet { rules, media_rules }
+}
+
+/// Parse a @media rule: query { rules }.
+fn parse_media_rule(p: &mut Parser) -> Option<MediaRule> {
+    p.skip_whitespace();
+
+    // Read everything until '{' as the media query text.
+    let query_start = p.pos;
+    while !p.eof() && p.peek() != b'{' {
+        p.pos += 1;
+    }
+    let query_text = core::str::from_utf8(&p.input[query_start..p.pos]).unwrap_or("");
+    let query = parse_media_query(query_text);
+
+    if p.eof() { return None; }
+    p.pos += 1; // consume '{'
+
+    // Parse inner rules until matching '}'.
+    let mut inner_rules = Vec::new();
+    loop {
+        p.skip_whitespace();
+        if p.eof() { break; }
+        if p.peek() == b'}' {
+            p.pos += 1;
+            break;
+        }
+        // Skip nested at-rules inside @media.
+        if p.peek() == b'@' {
+            p.pos += 1;
+            let _kw = p.read_ident();
+            loop {
+                p.skip_whitespace();
+                if p.eof() { break; }
+                if p.peek() == b'{' { p.skip_block(); break; }
+                if p.peek() == b';' { p.pos += 1; break; }
+                p.pos += 1;
+            }
+            continue;
+        }
+        if let Some(rule) = parse_rule(p) {
+            inner_rules.push(rule);
+        }
+    }
+
+    Some(MediaRule { query, rules: inner_rules })
+}
+
+/// Parse a media query string like `screen and (max-width: 768px)`.
+fn parse_media_query(text: &str) -> MediaQuery {
+    let mut conditions = Vec::new();
+    let trimmed = text.trim();
+
+    // Split on "and" (case-insensitive).
+    for part in split_and(trimmed) {
+        let p = part.trim();
+        if p.is_empty() { continue; }
+
+        // Skip media types: "screen", "all", "print", "not", "only".
+        let lower = p.to_ascii_lowercase();
+        if lower == "screen" || lower == "all" || lower == "print"
+            || lower == "not" || lower == "only"
+        {
+            continue;
+        }
+
+        // Parenthesized condition: (min-width: 768px)
+        if p.starts_with('(') && p.ends_with(')') {
+            let inner = &p[1..p.len() - 1];
+            if let Some(cond) = parse_media_condition(inner) {
+                conditions.push(cond);
+            }
+        }
+    }
+
+    MediaQuery { conditions }
+}
+
+/// Split a media query string on " and " (case-insensitive).
+fn split_and(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let bytes = s.as_bytes();
+    let mut start = 0;
+
+    for i in 0..bytes.len() {
+        // Check for " and " (with spaces).
+        if i + 5 <= bytes.len() {
+            let chunk = &bytes[i..i + 5];
+            if (chunk[0] == b' ')
+                && (chunk[1] | 32 == b'a')
+                && (chunk[2] | 32 == b'n')
+                && (chunk[3] | 32 == b'd')
+                && (chunk[4] == b' ')
+            {
+                parts.push(&s[start..i]);
+                start = i + 5;
+            }
+        }
+    }
+    parts.push(&s[start..]);
+    parts
+}
+
+/// Parse a single media condition like `max-width: 768px`.
+fn parse_media_condition(inner: &str) -> Option<MediaCondition> {
+    let colon = inner.find(':')?;
+    let name = inner[..colon].trim().to_ascii_lowercase();
+    let value_str = inner[colon + 1..].trim();
+
+    match name.as_str() {
+        "min-width" => {
+            let px = parse_px_value(value_str)?;
+            Some(MediaCondition::MinWidth(px))
+        }
+        "max-width" => {
+            let px = parse_px_value(value_str)?;
+            Some(MediaCondition::MaxWidth(px))
+        }
+        "min-height" => {
+            let px = parse_px_value(value_str)?;
+            Some(MediaCondition::MinHeight(px))
+        }
+        "max-height" => {
+            let px = parse_px_value(value_str)?;
+            Some(MediaCondition::MaxHeight(px))
+        }
+        "prefers-color-scheme" => {
+            Some(MediaCondition::PrefersColorScheme(String::from(value_str.trim())))
+        }
+        _ => None,
+    }
+}
+
+/// Parse a CSS pixel value like "768px" or "1024" into i32.
+fn parse_px_value(s: &str) -> Option<i32> {
+    let s = s.trim().trim_end_matches("px").trim();
+    let mut val: i32 = 0;
+    for b in s.as_bytes() {
+        if *b >= b'0' && *b <= b'9' {
+            val = val * 10 + (*b - b'0') as i32;
+        } else if *b == b'.' {
+            break; // ignore fractional part
+        } else {
+            break;
+        }
+    }
+    if val > 0 || s == "0" { Some(val) } else { None }
+}
+
+/// Evaluate a media query against viewport dimensions.
+pub fn evaluate_media_query(query: &MediaQuery, viewport_width: i32, viewport_height: i32) -> bool {
+    for cond in &query.conditions {
+        let ok = match cond {
+            MediaCondition::MinWidth(w) => viewport_width >= *w,
+            MediaCondition::MaxWidth(w) => viewport_width <= *w,
+            MediaCondition::MinHeight(h) => viewport_height >= *h,
+            MediaCondition::MaxHeight(h) => viewport_height <= *h,
+            MediaCondition::PrefersColorScheme(scheme) => {
+                // anyOS uses dark theme.
+                scheme == "dark"
+            }
+        };
+        if !ok { return false; }
+    }
+    true
 }
 
 fn parse_rule(p: &mut Parser) -> Option<Rule> {
@@ -914,6 +1117,16 @@ pub fn parse_value(property: Property, value_str: &str) -> CssValue {
         _ => {}
     }
 
+    // var() — CSS custom property reference.
+    if lower.starts_with("var(") {
+        return parse_var_value(s);
+    }
+
+    // calc() — CSS math expression.
+    if lower.starts_with("calc(") {
+        return parse_calc_value(s);
+    }
+
     // Color properties — try color parsing
     if is_color_property(property) {
         if let Some(c) = try_parse_color(s) {
@@ -942,6 +1155,177 @@ pub fn parse_value(property: Property, value_str: &str) -> CssValue {
 
     // Fall back to keyword
     CssValue::Keyword(lower)
+}
+
+/// Parse `var(--name)` or `var(--name, fallback)`.
+fn parse_var_value(s: &str) -> CssValue {
+    // Strip "var(" and trailing ")".
+    let inner = s.trim();
+    let inner = if inner.starts_with("var(") || inner.starts_with("VAR(") {
+        &inner[4..]
+    } else { inner };
+    let inner = inner.trim_end_matches(')').trim();
+
+    // Split on first comma for fallback.
+    if let Some(comma) = inner.find(',') {
+        let name = inner[..comma].trim();
+        let fallback_str = inner[comma + 1..].trim();
+        let fallback = if fallback_str.is_empty() {
+            None
+        } else {
+            Some(Box::new(parse_value(Property::Color, fallback_str)))
+        };
+        CssValue::Var(String::from(name), fallback)
+    } else {
+        CssValue::Var(String::from(inner), None)
+    }
+}
+
+/// Parse `calc(expr)` into (px_component, pct_component).
+/// Supports: `calc(100% - 32px)`, `calc(50% + 10px)`, `calc(16px * 2)`.
+fn parse_calc_value(s: &str) -> CssValue {
+    // Strip "calc(" and trailing ")".
+    let inner = s.trim();
+    let inner = if let Some(stripped) = inner.strip_prefix("calc(")
+        .or_else(|| inner.strip_prefix("CALC("))
+    {
+        stripped
+    } else { inner };
+    let inner = inner.trim_end_matches(')').trim();
+
+    // Try to find an operator (+ or - surrounded by spaces, or * or /).
+    // We need to find the operator that splits the expression into two operands.
+    let mut px: i32 = 0;
+    let mut pct: i32 = 0;
+
+    // Find the main binary operator (look for + or - with spaces).
+    if let Some((left, op, right)) = split_calc_expr(inner) {
+        let (lpx, lpct) = parse_calc_operand(left.trim());
+        let (rpx, rpct) = parse_calc_operand(right.trim());
+
+        match op {
+            b'+' => { px = lpx + rpx; pct = lpct + rpct; }
+            b'-' => { px = lpx - rpx; pct = lpct - rpct; }
+            b'*' => {
+                // Only one side should be a number (no unit).
+                if lpct == 0 && rpct == 0 {
+                    px = lpx * rpx / 100; // both are *100, one division to normalize
+                } else {
+                    px = lpx * rpx / 100;
+                    pct = lpct * rpx / 100;
+                }
+            }
+            b'/' => {
+                if rpx != 0 {
+                    px = lpx * 100 / rpx;
+                    pct = lpct * 100 / rpx;
+                }
+            }
+            _ => {}
+        }
+    } else {
+        // Single operand — just parse it.
+        let (p, pc) = parse_calc_operand(inner);
+        px = p;
+        pct = pc;
+    }
+
+    // If pure px, return as Length. If pure pct, return as Percentage.
+    if pct == 0 {
+        CssValue::Length(px, Unit::Px)
+    } else if px == 0 {
+        CssValue::Percentage(pct)
+    } else {
+        CssValue::Calc(px, pct)
+    }
+}
+
+/// Split a calc expression on the main binary operator.
+/// Handles `100% - 32px`, `50% + 10px`, `16px * 2`.
+fn split_calc_expr(s: &str) -> Option<(&str, u8, &str)> {
+    let bytes = s.as_bytes();
+    // Look for ` + ` or ` - ` first (addition/subtraction have lower precedence).
+    for i in 1..bytes.len().saturating_sub(1) {
+        if bytes[i] == b'+' && bytes[i - 1] == b' ' && i + 1 < bytes.len() && bytes[i + 1] == b' ' {
+            return Some((&s[..i - 1], b'+', &s[i + 2..]));
+        }
+        if bytes[i] == b'-' && bytes[i - 1] == b' ' && i + 1 < bytes.len() && bytes[i + 1] == b' ' {
+            return Some((&s[..i - 1], b'-', &s[i + 2..]));
+        }
+    }
+    // Look for * or / (no space requirement).
+    for i in 0..bytes.len() {
+        if bytes[i] == b'*' {
+            return Some((&s[..i], b'*', &s[i + 1..]));
+        }
+        if bytes[i] == b'/' {
+            return Some((&s[..i], b'/', &s[i + 1..]));
+        }
+    }
+    None
+}
+
+/// Parse a single calc operand into (px * 100, pct * 100).
+fn parse_calc_operand(s: &str) -> (i32, i32) {
+    let s = s.trim();
+    if s.ends_with('%') {
+        let num = &s[..s.len() - 1];
+        let val = parse_fixed_100(num);
+        (0, val)
+    } else if s.ends_with("px") {
+        let num = &s[..s.len() - 2];
+        let val = parse_fixed_100(num);
+        (val, 0)
+    } else if s.ends_with("em") {
+        let num = &s[..s.len() - 2];
+        let val = parse_fixed_100(num);
+        // Treat em as px * 16 (approximate).
+        (val * 16, 0)
+    } else if s.ends_with("rem") {
+        let num = &s[..s.len() - 3];
+        let val = parse_fixed_100(num);
+        (val * 16, 0)
+    } else {
+        // Pure number.
+        let val = parse_fixed_100(s);
+        (val, 0)
+    }
+}
+
+/// Parse a number string into fixed-point * 100.
+fn parse_fixed_100(s: &str) -> i32 {
+    let s = s.trim();
+    let neg = s.starts_with('-');
+    let s = if neg { &s[1..] } else { s };
+    let mut int_part: i32 = 0;
+    let mut frac_part: i32 = 0;
+    let mut in_frac = false;
+    let mut frac_digits = 0;
+    for b in s.as_bytes() {
+        if *b == b'.' {
+            in_frac = true;
+            continue;
+        }
+        if *b >= b'0' && *b <= b'9' {
+            if in_frac {
+                if frac_digits < 2 {
+                    frac_part = frac_part * 10 + (*b - b'0') as i32;
+                    frac_digits += 1;
+                }
+            } else {
+                int_part = int_part * 10 + (*b - b'0') as i32;
+            }
+        } else {
+            break;
+        }
+    }
+    // Pad fraction to 2 digits.
+    while frac_digits < 2 {
+        frac_part *= 10;
+        frac_digits += 1;
+    }
+    let val = int_part * 100 + frac_part;
+    if neg { -val } else { val }
 }
 
 fn is_color_property(p: Property) -> bool {

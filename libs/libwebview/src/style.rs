@@ -8,7 +8,8 @@
 use alloc::vec::Vec;
 
 use crate::css::{
-    AttrOp, CssValue, Declaration, PseudoClass, Property, Selector, SimpleSelector, Stylesheet, Unit,
+    AttrOp, CssValue, Declaration, PseudoClass, Property, Rule, Selector, SimpleSelector,
+    Stylesheet, Unit,
 };
 use crate::dom::{Dom, NodeId, NodeType, Tag};
 
@@ -784,7 +785,7 @@ fn has_class(class_str: &str, needle: &str) -> bool {
 
 /// Compute the final resolved style for every node in the DOM.
 /// Returns a `Vec<ComputedStyle>` indexed by `NodeId`.
-pub fn resolve_styles(dom: &Dom, stylesheets: &[Stylesheet]) -> Vec<ComputedStyle> {
+pub fn resolve_styles(dom: &Dom, stylesheets: &[Stylesheet], viewport_width: i32, viewport_height: i32) -> Vec<ComputedStyle> {
     let count = dom.nodes.len();
     let mut styles: Vec<ComputedStyle> = Vec::with_capacity(count);
 
@@ -804,6 +805,7 @@ pub fn resolve_styles(dom: &Dom, stylesheets: &[Stylesheet]) -> Vec<ComputedStyl
         if matches!(node.node_type, NodeType::Element { .. }) {
             set_flags |= apply_author_rules(
                 &mut style, dom, id, stylesheets, parent_fs, root_font_size,
+                viewport_width, viewport_height,
             );
 
             // Phase 3: Apply inline styles (highest specificity).
@@ -872,32 +874,48 @@ fn apply_author_rules(
     stylesheets: &[Stylesheet],
     parent_fs: i32,
     root_fs: i32,
+    viewport_width: i32,
+    viewport_height: i32,
 ) -> u16 {
-    let mut matches: Vec<MatchEntry> = Vec::new();
+    // Collect all applicable rules: regular + matching @media rules.
+    let mut all_rules: Vec<(&Rule, usize)> = Vec::new(); // (rule, source_order)
+    let mut order = 0usize;
 
-    for (si, sheet) in stylesheets.iter().enumerate() {
-        for (ri, rule) in sheet.rules.iter().enumerate() {
-            for sel in &rule.selectors {
-                if selector_matches(sel, dom, node_id) {
-                    matches.push(MatchEntry {
-                        spec: sel.specificity(),
-                        sheet_idx: si,
-                        rule_idx: ri,
-                    });
-                    break;
+    for sheet in stylesheets {
+        for rule in &sheet.rules {
+            all_rules.push((rule, order));
+            order += 1;
+        }
+        // Include media rules whose query matches the viewport.
+        for mr in &sheet.media_rules {
+            if crate::css::evaluate_media_query(&mr.query, viewport_width, viewport_height) {
+                for rule in &mr.rules {
+                    all_rules.push((rule, order));
+                    order += 1;
                 }
             }
         }
     }
 
+    let mut matches: Vec<(/*spec*/(u32,u32,u32), /*rule_idx*/usize)> = Vec::new();
+
+    for (idx, (rule, _order)) in all_rules.iter().enumerate() {
+        for sel in &rule.selectors {
+            if selector_matches(sel, dom, node_id) {
+                matches.push((sel.specificity(), idx));
+                break;
+            }
+        }
+    }
+
     // Sort by specificity (ascending); equal specificity keeps source order.
-    matches.sort_by(|a, b| a.spec.cmp(&b.spec));
+    matches.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
     let mut set_flags: u16 = 0;
 
     // Phase 1: Apply normal (non-!important) declarations.
-    for m in &matches {
-        let rule = &stylesheets[m.sheet_idx].rules[m.rule_idx];
+    for &(_, idx) in &matches {
+        let (rule, _) = all_rules[idx];
         for decl in &rule.declarations {
             if !decl.important {
                 set_flags |= decl_set_flag(decl.property);
@@ -907,8 +925,8 @@ fn apply_author_rules(
     }
 
     // Phase 2: Apply !important declarations (override normal ones).
-    for m in &matches {
-        let rule = &stylesheets[m.sheet_idx].rules[m.rule_idx];
+    for &(_, idx) in &matches {
+        let (rule, _) = all_rules[idx];
         for decl in &rule.declarations {
             if decl.important {
                 set_flags |= decl_set_flag(decl.property);

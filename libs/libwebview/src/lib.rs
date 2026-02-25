@@ -205,8 +205,9 @@ impl WebView {
             }
         }
 
-        // Resolve styles.
-        let styles = style::resolve_styles(d, &all_sheets);
+        // Resolve styles (pass viewport dimensions for @media queries).
+        let vh = self.total_height_val.max(self.viewport_width); // approximate viewport height
+        let styles = style::resolve_styles(d, &all_sheets, self.viewport_width, vh);
 
         // Layout.
         let root = layout::layout(d, &styles, self.viewport_width, &self.images);
