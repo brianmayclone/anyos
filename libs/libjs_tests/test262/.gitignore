@@ -1,0 +1,5 @@
+# test262 files are downloaded at dev time, not committed.
+# Run: ./scripts/download_test262.sh
+*
+!.gitignore
+!README.md
