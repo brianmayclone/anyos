@@ -13,10 +13,11 @@ extern void bearssl_stream_register(void);
 
 static void die(const char *msg, int err) {
     const git_error *e = git_error_last();
-    if (e)
+    if (e && e->klass != 0)
         fprintf(stderr, "fatal: %s: %s\n", msg, e->message);
     else
-        fprintf(stderr, "fatal: %s (error %d)\n", msg, err);
+        fprintf(stderr, "fatal: %s (error %d, klass %d: %s)\n",
+                msg, err, e ? e->klass : -1, e ? e->message : "(null)");
     exit(1);
 }
 

@@ -30,6 +30,7 @@ impl Vm {
         {
             let mut p = self.object_proto.borrow_mut();
             p.set(String::from("hasOwnProperty"), native_fn("hasOwnProperty", native_object::object_has_own_property));
+            p.set(String::from("isPrototypeOf"), native_fn("isPrototypeOf", native_object::object_is_prototype_of));
             p.set(String::from("toString"), native_fn("toString", native_object::object_to_string));
             p.set(String::from("valueOf"), native_fn("valueOf", native_object::object_value_of));
             p.set(String::from("keys"), native_fn("keys", native_object::object_keys_method));
@@ -112,6 +113,14 @@ impl Vm {
             p.set(String::from("toFixed"), native_fn("toFixed", native_number::number_to_fixed));
         }
 
+        // ── Boolean.prototype ──
+        {
+            let mut p = self.boolean_proto.borrow_mut();
+            p.prototype = Some(self.object_proto.clone());
+            p.set(String::from("toString"), native_fn("toString", native_globals::boolean_to_string));
+            p.set(String::from("valueOf"), native_fn("valueOf", native_globals::boolean_value_of));
+        }
+
         // ── Function.prototype ──
         {
             let mut p = self.function_proto.borrow_mut();
@@ -176,6 +185,9 @@ impl Vm {
 
         // ── Error prototype link ──
         self.init_error_statics();
+
+        // ── Boolean prototype link ──
+        self.init_boolean_statics();
 
         // ── Promise ──
         self.set_global("Promise", native_fn("Promise", native_promise::ctor_promise));
@@ -333,6 +345,19 @@ impl Vm {
             let ctor = JsValue::Function(f.clone());
             ctor.set_property(String::from("now"), native_fn("now", native_date::date_now));
             ctor.set_property(String::from("parse"), native_fn("parse", native_date::date_parse));
+        }
+    }
+
+    /// Install `Boolean.prototype` as an own property on the Boolean constructor
+    /// so that `Boolean.hasOwnProperty("prototype")` is `true`, and wire back
+    /// `Boolean.prototype.constructor = Boolean`.
+    fn init_boolean_statics(&mut self) {
+        if let JsValue::Function(f) = self.globals.get("Boolean") {
+            let ctor = JsValue::Function(f.clone());
+            // Boolean.prototype → boolean_proto (own_prop so hasOwnProperty works)
+            ctor.set_property(String::from("prototype"), JsValue::Object(self.boolean_proto.clone()));
+            // Boolean.prototype.constructor → Boolean
+            self.boolean_proto.borrow_mut().set(String::from("constructor"), ctor);
         }
     }
 }

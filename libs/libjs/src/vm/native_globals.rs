@@ -154,10 +154,58 @@ pub fn ctor_number(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number(n)
 }
 
-/// `Boolean(value)` — converts to boolean.
-pub fn ctor_boolean(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+/// `Boolean(value)` — converts to boolean, or creates a wrapper object when called as `new`.
+///
+/// When called as `new Boolean(x)`, `vm.current_this` is the freshly allocated
+/// object (set by `new_object()`).  We tag it with `__bool_data__` and return it
+/// so the caller receives the wrapper.  When called as a plain function,
+/// `current_this` is `undefined` and we return the primitive bool.
+pub fn ctor_boolean(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let b = args.first().map(|v| v.to_boolean()).unwrap_or(false);
+    // Detect `new Boolean(x)` by checking whether `current_this` is an Object.
+    if let JsValue::Object(obj) = vm.current_this.clone() {
+        let mut o = obj.borrow_mut();
+        o.internal_tag = Some(String::from("__boolean__"));
+        o.set(String::from("__bool_data__"), JsValue::Bool(b));
+        drop(o);
+        return vm.current_this.clone();
+    }
     JsValue::Bool(b)
+}
+
+// ═══════════════════════════════════════════════════════════
+// Boolean.prototype methods
+// ═══════════════════════════════════════════════════════════
+
+/// `Boolean.prototype.valueOf()` — returns the boolean primitive value.
+pub fn boolean_value_of(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    extract_bool_this(vm)
+}
+
+/// `Boolean.prototype.toString()` — returns "true" or "false".
+pub fn boolean_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    match extract_bool_this(vm) {
+        JsValue::Bool(true)  => JsValue::String(String::from("true")),
+        JsValue::Bool(false) => JsValue::String(String::from("false")),
+        _ => JsValue::String(String::from("false")),
+    }
+}
+
+/// Extract the boolean value from `this`, handling both `Bool` primitives and
+/// `Boolean` wrapper objects (tagged with `__bool_data__`).
+fn extract_bool_this(vm: &Vm) -> JsValue {
+    match &vm.current_this {
+        JsValue::Bool(_) => vm.current_this.clone(),
+        JsValue::Object(obj) => {
+            let o = obj.borrow();
+            if let Some(prop) = o.properties.get("__bool_data__") {
+                prop.value.clone()
+            } else {
+                JsValue::Bool(false)
+            }
+        }
+        _ => JsValue::Bool(false),
+    }
 }
 
 // ═══════════════════════════════════════════════════════════

@@ -24,8 +24,34 @@ pub fn object_has_own_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 JsValue::Bool(a.properties.contains_key(&key))
             }
         }
+        // Function values store own properties in `own_props` (e.g. Constructor.prototype).
+        JsValue::Function(f) => JsValue::Bool(f.borrow().own_props.contains_key(&key)),
         _ => JsValue::Bool(false),
     }
+}
+
+/// `Object.prototype.isPrototypeOf(V)` — returns true if `this` appears anywhere
+/// in the prototype chain of `V`.
+pub fn object_is_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    // `this` is the candidate prototype; arg[0] is the object whose chain we walk.
+    let self_rc = match &vm.current_this {
+        JsValue::Object(rc) => rc.clone(),
+        _ => return JsValue::Bool(false),
+    };
+
+    // Walk the [[Prototype]] chain of `args[0]`.
+    let mut maybe_proto: Option<Rc<RefCell<JsObject>>> = match args.first() {
+        Some(JsValue::Object(obj)) => obj.borrow().prototype.clone(),
+        _ => return JsValue::Bool(false),
+    };
+
+    while let Some(proto_rc) = maybe_proto {
+        if Rc::ptr_eq(&proto_rc, &self_rc) {
+            return JsValue::Bool(true);
+        }
+        maybe_proto = proto_rc.borrow().prototype.clone();
+    }
+    JsValue::Bool(false)
 }
 
 pub fn object_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {

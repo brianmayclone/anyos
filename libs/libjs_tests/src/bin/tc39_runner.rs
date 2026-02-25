@@ -327,23 +327,28 @@ fn main() {
 
     for path in &files {
         let rel = path.strip_prefix(target).unwrap_or(path);
+        // Always print current test to stderr before running, so a hang is identifiable.
+        eprint!("  RUN   {}", rel.display());
         let outcome = run_test(path, verbose);
 
         match &outcome {
             Outcome::Pass => {
                 pass += 1;
+                eprintln!("  … PASS");
                 if verbose {
                     println!("  PASS  {}", rel.display());
                 }
             }
             Outcome::Skip(reason) => {
                 skip += 1;
+                eprintln!("  … SKIP ({})", reason);
                 if verbose {
                     println!("  SKIP  {} ({})", rel.display(), reason);
                 }
             }
             Outcome::Fail(reason) => {
                 fail += 1;
+                eprintln!("  … FAIL");
                 println!("  FAIL  {}", rel.display());
                 println!("        {}", reason);
                 failures.push((path.clone(), reason.clone()));
