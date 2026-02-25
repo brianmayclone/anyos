@@ -34,11 +34,6 @@ const SVGA_REG_SYNC: u32 = 21;
 const SVGA_REG_BUSY: u32 = 22;
 const SVGA_REG_BYTES_PER_LINE: u32 = 12;
 
-// GMR registers
-const SVGA_REG_GMR_ID: u32 = 41;
-const SVGA_REG_GMR_MAX_IDS: u32 = 43;
-const SVGA_REG_GMRS_MAX_PAGES: u32 = 46;
-
 // Version negotiation IDs
 const SVGA_ID_2: u32 = 0x9000_0002;
 
@@ -56,13 +51,6 @@ const SVGA_CAP_PITCHLOCK: u32          = 1 << 17;
 const SVGA_CAP_IRQMASK: u32            = 1 << 18;
 const SVGA_CAP_GMR: u32                = 1 << 20;
 const SVGA_CAP_TRACES: u32             = 1 << 21;
-const SVGA_CAP_GMR2: u32               = 1 << 22;
-const SVGA_CAP_SCREEN_OBJECT_2: u32    = 1 << 23;
-const SVGA_CAP_COMMAND_BUFFERS: u32    = 1 << 24;
-const SVGA_CAP_CMD_BUFFERS_2: u32      = 1 << 26;
-const SVGA_CAP_GBOBJECTS: u32          = 1 << 27;
-const SVGA_CAP_DX: u32                 = 1 << 28;
-const SVGA_CAP_CAP2_REGISTER: u32      = 1 << 31;
 
 // FIFO register offsets (in u32 units)
 const SVGA_FIFO_MIN: usize = 0;
@@ -80,9 +68,6 @@ const SVGA_FIFO_CURSOR_COUNT: usize = 9;
 
 // FIFO capability flags
 const SVGA_FIFO_CAP_CURSOR_BYPASS_3: u32 = 1 << 4;
-const SVGA_FIFO_CAP_SCREEN_OBJECT: u32 = 1 << 7;
-const SVGA_FIFO_CAP_GMR2: u32 = 1 << 8;
-const SVGA_FIFO_CAP_SCREEN_OBJECT_2: u32 = 1 << 9;
 
 // Cursor I/O registers (guest writes cursor position here for cursor bypass 1/2)
 const SVGA_REG_CURSOR_ID: u32 = 24;
@@ -108,24 +93,6 @@ const SVGA_CMD_RECT_COPY: u32 = 3;
 const SVGA_CMD_DEFINE_CURSOR: u32 = 19;
 const SVGA_CMD_DEFINE_ALPHA_CURSOR: u32 = 22;
 
-// GMR2 / Screen Object FIFO commands
-const SVGA_CMD_DEFINE_SCREEN: u32 = 34;
-const SVGA_CMD_DESTROY_SCREEN: u32 = 35;
-const SVGA_CMD_DEFINE_GMRFB: u32 = 36;
-const SVGA_CMD_BLIT_GMRFB_TO_SCREEN: u32 = 37;
-const SVGA_CMD_DEFINE_GMR2: u32 = 41;
-const SVGA_CMD_REMAP_GMR2: u32 = 42;
-
-// Special GMR IDs
-const SVGA_GMR_FRAMEBUFFER: u32 = 0xFFFF_FFFF;
-
-// Screen object flags
-const SVGA_SCREEN_MUST_BE_SET: u32 = 1 << 0;
-const SVGA_SCREEN_IS_PRIMARY: u32 = 1 << 1;
-
-// REMAP_GMR2 flags
-const SVGA_REMAP_GMR2_PPN32: u32 = 0; // default: 32-bit PPNs
-
 // Virtual address for FIFO mapping (kernel higher-half MMIO region)
 const FIFO_VIRT_BASE: u64 = 0xFFFF_FFFF_D002_0000;
 const FIFO_MAP_PAGES: usize = 64; // 256 KiB
@@ -143,10 +110,6 @@ pub struct VmwareSvgaGpu {
     pitch: u32,
     vram_size_bytes: u32,
     supported: Vec<(u32, u32)>,
-    // GMR2 / Screen Object state
-    fifo_caps: u32,
-    screen_object_active: bool,
-    gmr_back_active: bool,
 }
 
 impl VmwareSvgaGpu {
@@ -224,80 +187,6 @@ impl VmwareSvgaGpu {
         }
     }
 
-    // ── GMR2 / Screen Object methods ──────────────────────────
-
-    /// Define a primary screen object via SVGA_CMD_DEFINE_SCREEN.
-    /// The screen is backed by the current GMRFB (VRAM or GMR).
-    fn define_screen_object(&mut self, id: u32, w: u32, h: u32) {
-        // SVGAScreenObject: structSize, id, flags, size{w,h}, root{x,y},
-        //   backingStore{ptr{gmrId,offset}, pitch}, cloneCount = 11 dwords
-        let struct_size: u32 = 11 * 4; // 44 bytes
-        let flags = SVGA_SCREEN_MUST_BE_SET | SVGA_SCREEN_IS_PRIMARY;
-        let backing_pitch = w * 4; // ARGB8888
-        #[allow(unused)]
-        let cmd = [
-            SVGA_CMD_DEFINE_SCREEN,
-            // SVGAScreenObject fields:
-            struct_size,
-            id,
-            flags,
-            w,              // size.width
-            h,              // size.height
-            0,              // root.x
-            0,              // root.y
-            SVGA_GMR_FRAMEBUFFER, // backingStore.ptr.gmrId
-            0,              // backingStore.ptr.offset
-            backing_pitch,  // backingStore.pitch
-            0,              // cloneCount
-        ];
-        self.fifo_write_cmd(&cmd);
-    }
-
-    /// Define a GMR2 region (declares ID + total page count).
-    fn define_gmr2(&self, gmr_id: u32, num_pages: u32) {
-        self.fifo_write_cmd(&[SVGA_CMD_DEFINE_GMR2, gmr_id, num_pages]);
-    }
-
-    /// Remap GMR2: fill in the physical page numbers (PPNs).
-    /// `ppns` contains one u32 per page (phys_addr >> 12).
-    fn remap_gmr2(&self, gmr_id: u32, ppns: &[u32]) {
-        // Header: cmd, gmrId, flags, offsetPages, numPages
-        // Followed by: ppn[0], ppn[1], ...
-        let mut cmd = Vec::with_capacity(5 + ppns.len());
-        cmd.push(SVGA_CMD_REMAP_GMR2);
-        cmd.push(gmr_id);
-        cmd.push(SVGA_REMAP_GMR2_PPN32); // flags: 32-bit PPNs
-        cmd.push(0);                       // offsetPages
-        cmd.push(ppns.len() as u32);       // numPages
-        cmd.extend_from_slice(ppns);
-        self.fifo_write_cmd(&cmd);
-    }
-
-    /// Set the active GMRFB (source for BLIT_GMRFB_TO_SCREEN).
-    fn set_gmrfb(&self, gmr_id: u32, offset: u32, pitch: u32) {
-        // SVGA_CMD_DEFINE_GMRFB: ptr.gmrId, ptr.offset, bytesPerLine, format
-        // Format: bitsPerPixel=32, colorDepth=24 → 32 | (24 << 8) = 0x1820
-        let format: u32 = 32 | (24 << 8);
-        self.fifo_write_cmd(&[
-            SVGA_CMD_DEFINE_GMRFB, gmr_id, offset, pitch, format,
-        ]);
-    }
-
-    /// DMA blit from the active GMRFB to a screen object.
-    fn blit_gmrfb_to_screen(&self, src_x: i32, src_y: i32,
-                             left: i32, top: i32, right: i32, bottom: i32,
-                             screen_id: u32) {
-        self.fifo_write_cmd(&[
-            SVGA_CMD_BLIT_GMRFB_TO_SCREEN,
-            src_x as u32,       // srcOrigin.x
-            src_y as u32,       // srcOrigin.y
-            left as u32,        // destRect.left
-            top as u32,         // destRect.top
-            right as u32,       // destRect.right
-            bottom as u32,      // destRect.bottom
-            screen_id,          // destScreenId
-        ]);
-    }
 }
 
 impl GpuDriver for VmwareSvgaGpu {
@@ -325,24 +214,6 @@ impl GpuDriver for VmwareSvgaGpu {
             "  SVGA II: mode set to {}x{}x{} (pitch={}, fb={:#x})",
             actual_w, actual_h, bpp, pitch, fb
         );
-
-        // Recreate screen object for new resolution
-        if self.screen_object_active {
-            self.define_screen_object(0, actual_w, actual_h);
-            // If GMR was active, invalidate it — compositor must re-register
-            if self.gmr_back_active {
-                self.gmr_back_active = false;
-                self.set_gmrfb(SVGA_GMR_FRAMEBUFFER, 0, pitch);
-                crate::serial_println!("  SVGA II: GMR invalidated (resolution change), falling back to VRAM");
-            }
-            self.blit_gmrfb_to_screen(
-                0, 0,
-                0, 0, actual_w as i32, actual_h as i32,
-                0,
-            );
-            self.sync_fifo();
-            crate::serial_println!("  SVGA II: Screen Object 0 redefined ({}x{})", actual_w, actual_h);
-        }
 
         Some((actual_w, actual_h, pitch, fb))
     }
@@ -379,31 +250,11 @@ impl GpuDriver for VmwareSvgaGpu {
     }
 
     fn update_rect(&mut self, x: u32, y: u32, w: u32, h: u32) {
-        if self.screen_object_active {
-            // BLIT from GMRFB (VRAM or GMR) to screen object
-            self.blit_gmrfb_to_screen(
-                x as i32, y as i32,
-                x as i32, y as i32,
-                (x + w) as i32, (y + h) as i32,
-                0,
-            );
-        } else {
-            self.fifo_write_cmd(&[SVGA_CMD_UPDATE, x, y, w, h]);
-        }
+        self.fifo_write_cmd(&[SVGA_CMD_UPDATE, x, y, w, h]);
     }
 
     fn transfer_rect(&mut self, x: u32, y: u32, w: u32, h: u32) {
-        if self.screen_object_active {
-            // BLIT from GMRFB to screen object — handles both VRAM and GMR mode
-            self.blit_gmrfb_to_screen(
-                x as i32, y as i32,
-                x as i32, y as i32,
-                (x + w) as i32, (y + h) as i32,
-                0,
-            );
-        } else {
-            self.fifo_write_cmd(&[SVGA_CMD_UPDATE, x, y, w, h]);
-        }
+        self.fifo_write_cmd(&[SVGA_CMD_UPDATE, x, y, w, h]);
     }
 
     fn has_hw_cursor(&self) -> bool {
@@ -492,38 +343,6 @@ impl GpuDriver for VmwareSvgaGpu {
         self.reg_write(SVGA_REG_CURSOR_ON, if visible { 1 } else { 0 });
     }
 
-    fn register_back_buffer(&mut self, phys_pages: &[u64]) -> bool {
-        if !self.screen_object_active {
-            return false;
-        }
-
-        let gmr_id: u32 = 1;
-        let num_pages = phys_pages.len() as u32;
-
-        // Convert to 32-bit PPNs (phys >> 12)
-        let ppns: Vec<u32> = phys_pages.iter().map(|&p| (p >> 12) as u32).collect();
-
-        // Define and populate GMR2
-        self.define_gmr2(gmr_id, num_pages);
-        self.remap_gmr2(gmr_id, &ppns);
-        self.sync_fifo();
-
-        // Switch GMRFB to point at this GMR
-        let pitch = self.width * 4; // ARGB8888
-        self.set_gmrfb(gmr_id, 0, pitch);
-        self.gmr_back_active = true;
-
-        crate::serial_println!(
-            "  SVGA II: GMR {} registered ({} pages, pitch={}), DMA blit active",
-            gmr_id, num_pages, pitch
-        );
-        true
-    }
-
-    fn has_dma_back_buffer(&self) -> bool {
-        self.gmr_back_active
-    }
-
     // VMware SVGA II does NOT use double-buffering — it uses FIFO + UPDATE
     fn has_double_buffer(&self) -> bool { false }
 
@@ -584,9 +403,6 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         pitch: 0,
         vram_size_bytes: 0,
         supported: Vec::new(),
-        fifo_caps: 0,
-        screen_object_active: false,
-        gmr_back_active: false,
     };
 
     // 1. Version negotiation
@@ -616,13 +432,6 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         (SVGA_CAP_IRQMASK,         "IRQMASK"),
         (SVGA_CAP_GMR,             "GMR"),
         (SVGA_CAP_TRACES,          "TRACES"),
-        (SVGA_CAP_GMR2,            "GMR2"),
-        (SVGA_CAP_SCREEN_OBJECT_2, "SCREEN_OBJECT_2"),
-        (SVGA_CAP_COMMAND_BUFFERS, "COMMAND_BUFFERS"),
-        (SVGA_CAP_CMD_BUFFERS_2,   "CMD_BUFFERS_2"),
-        (SVGA_CAP_GBOBJECTS,       "GBOBJECTS"),
-        (SVGA_CAP_DX,              "DX"),
-        (SVGA_CAP_CAP2_REGISTER,   "CAP2_REGISTER"),
     ];
     for &(flag, name) in cap_flags {
         if gpu.capabilities & flag != 0 {
@@ -676,60 +485,16 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
 
     // 8. Read FIFO capabilities and check for cursor bypass 3
     SVGA_FIFO_VIRT.store(gpu.fifo_virt, Ordering::Relaxed);
-    gpu.fifo_caps = gpu.fifo_read(SVGA_FIFO_CAPABILITIES);
-    crate::serial_println!("  SVGA II: FIFO caps = {:#06x}", gpu.fifo_caps);
-    if gpu.fifo_caps & SVGA_FIFO_CAP_CURSOR_BYPASS_3 != 0 {
+    let fifo_caps = gpu.fifo_read(SVGA_FIFO_CAPABILITIES);
+    crate::serial_println!("  SVGA II: FIFO caps = {:#06x}", fifo_caps);
+    if fifo_caps & SVGA_FIFO_CAP_CURSOR_BYPASS_3 != 0 {
         CURSOR_BYPASS_ACTIVE.store(true, Ordering::Relaxed);
         crate::serial_println!("    - CURSOR_BYPASS_3");
     }
 
-    // Log all FIFO capability flags
-    let fifo_cap_flags: &[(u32, &str)] = &[
-        (SVGA_FIFO_CAP_SCREEN_OBJECT,   "SCREEN_OBJECT"),
-        (SVGA_FIFO_CAP_GMR2,            "GMR2"),
-        (SVGA_FIFO_CAP_SCREEN_OBJECT_2, "SCREEN_OBJECT_2"),
-    ];
-    for &(flag, name) in fifo_cap_flags {
-        if gpu.fifo_caps & flag != 0 {
-            crate::serial_println!("    - {}", name);
-        }
-    }
-
-    // 9. Set up GMR2 + SCREEN_OBJECT_2 if supported
-    let has_gmr2 = (gpu.capabilities & SVGA_CAP_GMR2 != 0)
-        && (gpu.fifo_caps & SVGA_FIFO_CAP_GMR2 != 0);
-    let has_screen_obj2 = (gpu.capabilities & SVGA_CAP_SCREEN_OBJECT_2 != 0)
-        && (gpu.fifo_caps & SVGA_FIFO_CAP_SCREEN_OBJECT_2 != 0);
-
-    if has_gmr2 && has_screen_obj2 {
-        let max_gmr_ids = gpu.reg_read(SVGA_REG_GMR_MAX_IDS);
-        let max_gmr_pages = gpu.reg_read(SVGA_REG_GMRS_MAX_PAGES);
-        crate::serial_println!(
-            "  SVGA II: GMR2 enabled (max {} IDs, {} pages)",
-            max_gmr_ids, max_gmr_pages
-        );
-
-        // Define primary screen object backed by VRAM framebuffer
-        gpu.define_screen_object(0, gpu.width, gpu.height);
-        gpu.set_gmrfb(SVGA_GMR_FRAMEBUFFER, 0, gpu.pitch);
-        gpu.screen_object_active = true;
-
-        // Initial blit from VRAM framebuffer to screen
-        gpu.blit_gmrfb_to_screen(
-            0, 0,
-            0, 0, gpu.width as i32, gpu.height as i32,
-            0,
-        );
-        gpu.sync_fifo();
-        crate::serial_println!(
-            "  SVGA II: Screen Object 0 defined ({}x{}, VRAM-backed)",
-            gpu.width, gpu.height
-        );
-    } else {
-        // 9b. Legacy path: send initial full-screen UPDATE
-        gpu.fifo_write_cmd(&[SVGA_CMD_UPDATE, 0, 0, gpu.width, gpu.height]);
-        gpu.sync_fifo();
-    }
+    // 9. Initial full-screen UPDATE (legacy path)
+    gpu.fifo_write_cmd(&[SVGA_CMD_UPDATE, 0, 0, gpu.width, gpu.height]);
+    gpu.sync_fifo();
 
     crate::serial_println!(
         "  SVGA II: initialized {}x{} (pitch={}, fb={:#x})",

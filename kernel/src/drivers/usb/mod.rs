@@ -165,6 +165,31 @@ pub fn hid_control_transfer(
     }
 }
 
+/// Perform a bulk transfer to/from a USB device.
+/// Dispatches to the correct controller driver based on controller type.
+/// `endpoint`: bit 7 = direction (0x80=IN), bits 3-0 = endpoint number.
+/// `toggle`: caller's data toggle state, updated on return.
+/// `data_phys`: physical address of DMA-accessible buffer.
+pub fn bulk_transfer(
+    dev_addr: u8,
+    controller: ControllerType,
+    speed: UsbSpeed,
+    endpoint: u8,
+    max_packet: u16,
+    toggle: &mut u8,
+    data_phys: u64,
+    len: usize,
+) -> Result<usize, &'static str> {
+    match controller {
+        ControllerType::Uhci => uhci::bulk_transfer(
+            dev_addr, endpoint, max_packet, toggle, data_phys, len,
+        ),
+        ControllerType::Ehci => ehci::bulk_transfer(
+            dev_addr, speed, endpoint, max_packet, toggle, data_phys, len,
+        ),
+    }
+}
+
 fn class_name(class: u8) -> &'static str {
     match class {
         0x00 => "Composite",

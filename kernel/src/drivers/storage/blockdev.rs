@@ -36,6 +36,16 @@ impl BlockDevice {
             return false;
         }
         let abs_lba = self.start_lba as u32 + relative_lba;
+        // Check for per-device I/O override (USB storage, etc.)
+        {
+            let overrides = super::IO_OVERRIDES.lock();
+            if let Some(handler) = overrides.iter().find(|h| h.disk_id == self.disk_id) {
+                let f = handler.read_fn;
+                let did = self.disk_id;
+                drop(overrides);
+                return f(did, abs_lba, count, buf);
+            }
+        }
         super::read_sectors(abs_lba, count, buf)
     }
 
@@ -51,6 +61,16 @@ impl BlockDevice {
             return false;
         }
         let abs_lba = self.start_lba as u32 + relative_lba;
+        // Check for per-device I/O override (USB storage, etc.)
+        {
+            let overrides = super::IO_OVERRIDES.lock();
+            if let Some(handler) = overrides.iter().find(|h| h.disk_id == self.disk_id) {
+                let f = handler.write_fn;
+                let did = self.disk_id;
+                drop(overrides);
+                return f(did, abs_lba, count, buf);
+            }
+        }
         super::write_sectors(abs_lba, count, buf)
     }
 
@@ -137,9 +157,8 @@ pub fn scan_and_register_partitions(disk_id: u8) {
     };
 
     let table = partition::scan_disk(|lba, buf| {
-        let abs = whole_disk.start_lba as u32 + lba as u32;
         let mut sector_buf = [0u8; 512];
-        if !super::read_sectors(abs, 1, &mut sector_buf) {
+        if !whole_disk.read_sectors(lba as u32, 1, &mut sector_buf) {
             return false;
         }
         buf[..512].copy_from_slice(&sector_buf);

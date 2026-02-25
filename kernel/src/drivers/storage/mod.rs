@@ -13,7 +13,36 @@ pub mod blockdev;
 pub mod nvme;
 pub mod lsi_scsi;
 
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
+use crate::sync::spinlock::Spinlock;
+
+// ── Per-Device I/O Override ──────────────────────────────────────────────────
+// Secondary storage drivers (USB mass storage, etc.) register their own
+// read/write handlers for specific disk IDs, bypassing the global backend.
+
+/// I/O handler override for a specific disk.
+pub(crate) struct DeviceIoHandler {
+    pub disk_id: u8,
+    pub read_fn: fn(u8, u32, u32, &mut [u8]) -> bool,  // (disk_id, lba, count, buf)
+    pub write_fn: fn(u8, u32, u32, &[u8]) -> bool,      // (disk_id, lba, count, buf)
+}
+
+pub(crate) static IO_OVERRIDES: Spinlock<Vec<DeviceIoHandler>> = Spinlock::new(Vec::new());
+
+/// Register a per-device I/O handler (called by USB storage driver, etc.).
+pub fn register_device_io(
+    disk_id: u8,
+    read_fn: fn(u8, u32, u32, &mut [u8]) -> bool,
+    write_fn: fn(u8, u32, u32, &[u8]) -> bool,
+) {
+    IO_OVERRIDES.lock().push(DeviceIoHandler { disk_id, read_fn, write_fn });
+}
+
+/// Remove a per-device I/O handler (for hot-unplug).
+pub fn unregister_device_io(disk_id: u8) {
+    IO_OVERRIDES.lock().retain(|h| h.disk_id != disk_id);
+}
 
 #[derive(Copy, Clone, PartialEq)]
 enum StorageBackend {

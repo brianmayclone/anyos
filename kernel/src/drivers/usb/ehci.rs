@@ -334,6 +334,176 @@ fn read_transfer_data(ctrl: &EhciController, buf: &mut [u8], len: usize) {
     }
 }
 
+// ── Bulk Transfer ──────────────────────────────
+
+/// Execute a bulk transfer on a non-zero endpoint.
+/// `endpoint`: endpoint address (bit 7 = direction: 0x80=IN, 0x00=OUT)
+/// `toggle`: pointer to caller's data toggle state (0 or 1), updated on return
+/// `data_phys`: physical address of DMA-accessible buffer
+/// `len`: number of bytes to transfer
+/// Returns number of bytes actually transferred.
+fn bulk_transfer_inner(
+    ctrl: &EhciController,
+    dev_addr: u8,
+    speed: UsbSpeed,
+    endpoint: u8,
+    max_packet: u16,
+    toggle: &mut u8,
+    data_phys: u64,
+    len: usize,
+) -> Result<usize, &'static str> {
+    if len == 0 { return Ok(0); }
+    let max_pkt = (max_packet as usize).max(1);
+
+    let qh_phys = ctrl.async_qh_phys;
+    let td_base = ctrl.td_pool_phys;
+    let ep_num = endpoint & 0x0F;
+    let is_in = (endpoint & 0x80) != 0;
+    let pid = if is_in { QTD_PID_IN } else { QTD_PID_OUT };
+
+    // Max qTDs: (4096 - 256) / 32 = 120
+    let max_tds: usize = 120;
+    let num_tds = ((len + max_pkt - 1) / max_pkt).min(max_tds);
+
+    // Build qTD chain
+    for i in 0..num_tds {
+        let this_qtd = td_base + (i as u64) * 32;
+        let offset = i * max_pkt;
+        let chunk = if i == num_tds - 1 {
+            (len - offset).min(max_pkt)
+        } else {
+            max_pkt
+        };
+
+        let next_link = if i + 1 < num_tds {
+            (td_base + ((i + 1) as u64) * 32) as u32
+        } else {
+            LP_T
+        };
+
+        let mut token = make_qtd_token(pid, *toggle, chunk as u16);
+        if i + 1 == num_tds { token |= QTD_IOC; }
+
+        unsafe {
+            let qtd = this_qtd as *mut EhciQtd;
+            (*qtd).next_qtd = next_link;
+            (*qtd).alt_next_qtd = LP_T;
+            (*qtd).token = token;
+            (*qtd).buffer[0] = (data_phys + offset as u64) as u32;
+            // EHCI buffer pointers are per-4K page; set additional pages if crossing
+            let start_page = (data_phys + offset as u64) & !0xFFF;
+            for b in 1..5u64 {
+                (*qtd).buffer[b as usize] = (start_page + b * 4096) as u32;
+            }
+        }
+        *toggle ^= 1;
+    }
+
+    // Configure QH for this endpoint
+    let mps = if max_packet == 0 { 8 } else { max_packet };
+    unsafe {
+        let qh = qh_phys as *mut EhciQh;
+        // Keep H=1, DTC=1, set endpoint, device address, speed, max packet
+        (*qh).characteristics = make_qh_chars(dev_addr, ep_num, speed, mps);
+        (*qh).capabilities = make_qh_caps(speed);
+        (*qh).current_qtd = 0;
+        (*qh).next_qtd = td_base as u32;
+        (*qh).alt_next_qtd = LP_T;
+        (*qh).token = 0; // clear overlay
+        for b in &mut (*qh).buffer { *b = 0; }
+    }
+
+    // Ensure async schedule is enabled
+    let usbcmd = mmio_read32(ctrl.op_base, OP_USBCMD);
+    if usbcmd & CMD_ASYNC_ENABLE == 0 {
+        mmio_write32(ctrl.op_base, OP_USBCMD, usbcmd | CMD_ASYNC_ENABLE);
+    }
+
+    // Poll last qTD for completion
+    let last_qtd = td_base + ((num_tds - 1) as u64) * 32;
+    let timeout = 5000u32; // 5 seconds
+    let start = crate::arch::x86::pit::get_ticks();
+
+    loop {
+        let token = unsafe {
+            let qtd = last_qtd as *mut EhciQtd;
+            core::ptr::read_volatile(&(*qtd).token)
+        };
+
+        if token & QTD_ACTIVE == 0 {
+            if token & QTD_ERR_MASK != 0 {
+                // Deactivate QH
+                unsafe {
+                    let qh = qh_phys as *mut EhciQh;
+                    (*qh).next_qtd = LP_T;
+                    (*qh).token = 0;
+                }
+                return Err("EHCI bulk transfer error");
+            }
+            break;
+        }
+
+        if crate::arch::x86::pit::get_ticks().wrapping_sub(start) > timeout {
+            unsafe {
+                let qh = qh_phys as *mut EhciQh;
+                (*qh).next_qtd = LP_T;
+                (*qh).token = 0;
+            }
+            return Err("EHCI bulk transfer timeout");
+        }
+
+        core::hint::spin_loop();
+    }
+
+    // Deactivate QH
+    unsafe {
+        let qh = qh_phys as *mut EhciQh;
+        (*qh).next_qtd = LP_T;
+        (*qh).token = 0;
+    }
+
+    // Calculate actual bytes transferred from qTD token fields
+    let mut total = 0usize;
+    for i in 0..num_tds {
+        let qtd_phys = td_base + (i as u64) * 32;
+        let token = unsafe {
+            let qtd = qtd_phys as *mut EhciQtd;
+            core::ptr::read_volatile(&(*qtd).token)
+        };
+        if token & QTD_ACTIVE != 0 {
+            break;
+        }
+        let bytes_left = ((token >> 16) & 0x7FFF) as usize;
+        let expected = if i == num_tds - 1 {
+            (len - i * max_pkt).min(max_pkt)
+        } else {
+            max_pkt
+        };
+        let actual = expected.saturating_sub(bytes_left);
+        total += actual;
+        if actual < max_pkt {
+            break; // short packet
+        }
+    }
+
+    Ok(total)
+}
+
+/// Public bulk transfer. Locks EHCI_CTRL internally.
+pub fn bulk_transfer(
+    dev_addr: u8,
+    speed: UsbSpeed,
+    endpoint: u8,
+    max_packet: u16,
+    toggle: &mut u8,
+    data_phys: u64,
+    len: usize,
+) -> Result<usize, &'static str> {
+    let guard = EHCI_CTRL.lock();
+    let ctrl = guard.as_ref().ok_or("EHCI not initialized")?;
+    bulk_transfer_inner(ctrl, dev_addr, speed, endpoint, max_packet, toggle, data_phys, len)
+}
+
 // ── Device Enumeration ─────────────────────────
 
 fn enumerate_device(ctrl: &EhciController, port: u8, speed: UsbSpeed) {

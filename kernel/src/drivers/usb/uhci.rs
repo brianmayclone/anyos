@@ -271,6 +271,163 @@ fn read_transfer_data(ctrl: &UhciController, buf: &mut [u8], len: usize) {
     }
 }
 
+// ── Bulk Transfer ───────────────────────────────
+
+/// Execute a bulk transfer on a non-zero endpoint.
+/// `endpoint`: endpoint address (bit 7 = direction: 0x80=IN, 0x00=OUT)
+/// `toggle`: pointer to caller's data toggle state (0 or 1), updated on return
+/// `data_phys`: physical address of DMA-accessible buffer
+/// `len`: number of bytes to transfer
+/// Returns number of bytes actually transferred.
+fn bulk_transfer_inner(
+    ctrl: &UhciController,
+    dev_addr: u8,
+    endpoint: u8,
+    max_packet: u16,
+    toggle: &mut u8,
+    data_phys: u64,
+    len: usize,
+) -> Result<usize, &'static str> {
+    if len == 0 { return Ok(0); }
+    let max_pkt = (max_packet as usize).max(1);
+
+    let td_base = ctrl.td_pool_phys;
+    let ep_num = endpoint & 0x0F;
+    let is_in = (endpoint & 0x80) != 0;
+    let pid = if is_in { PID_IN } else { PID_OUT };
+
+    // Max TDs we can fit: (4096 - 256) / 32 = 120
+    let max_tds: usize = 120;
+    let num_tds = ((len + max_pkt - 1) / max_pkt).min(max_tds);
+    let transfer_len = (num_tds * max_pkt).min(len);
+
+    // Clear pending status
+    reg_write16(ctrl.io_base, REG_USBSTS, 0xFFFF);
+
+    // Build TD chain
+    for i in 0..num_tds {
+        let this_td = td_base + (i as u64) * 32;
+        let offset = i * max_pkt;
+        let chunk = if i == num_tds - 1 {
+            len - offset // last TD gets exact remaining bytes
+        } else {
+            max_pkt
+        };
+        let chunk = chunk.min(max_pkt);
+
+        let next_link = if i + 1 < num_tds {
+            (td_base + ((i + 1) as u64) * 32) as u32 | LP_DEPTH
+        } else {
+            LP_TERMINATE
+        };
+
+        let mut status = TD_ACTIVE | (3 << 27); // 3 error retries
+        if is_in { status |= TD_SPD; } // short packet detect for IN
+        if i + 1 == num_tds { status |= TD_IOC; } // interrupt on last TD
+
+        unsafe {
+            let td = this_td as *mut UhciTd;
+            (*td).link_ptr = next_link;
+            (*td).ctrl_status = status;
+            (*td).token = make_token(pid, dev_addr, ep_num, *toggle, chunk as u16);
+            (*td).buffer_ptr = (data_phys + offset as u64) as u32;
+        }
+        *toggle ^= 1;
+    }
+
+    // Point QH to first TD
+    unsafe {
+        let qh = ctrl.qh_phys as *mut UhciQh;
+        (*qh).element_link = td_base as u32;
+    }
+
+    // Poll last TD for completion
+    let last_td = td_base + ((num_tds - 1) as u64) * 32;
+    let timeout = 5000u32; // 5 seconds (USB storage can be slow)
+    let start = crate::arch::x86::pit::get_ticks();
+
+    loop {
+        let status = unsafe {
+            let td = last_td as *mut UhciTd;
+            core::ptr::read_volatile(&(*td).ctrl_status)
+        };
+
+        if status & TD_ACTIVE == 0 {
+            if status & TD_ERR_MASK != 0 {
+                // Deactivate QH
+                unsafe {
+                    let qh = ctrl.qh_phys as *mut UhciQh;
+                    (*qh).element_link = LP_TERMINATE;
+                }
+                return Err("USB bulk transfer error");
+            }
+            break;
+        }
+
+        // Check for short packet on earlier TDs (IN only) — host may have stopped early
+        if is_in {
+            let qh_elem = unsafe {
+                let qh = ctrl.qh_phys as *mut UhciQh;
+                core::ptr::read_volatile(&(*qh).element_link)
+            };
+            if qh_elem & LP_TERMINATE != 0 {
+                break; // QH stopped processing — short packet terminated the chain
+            }
+        }
+
+        if crate::arch::x86::pit::get_ticks().wrapping_sub(start) > timeout {
+            unsafe {
+                let qh = ctrl.qh_phys as *mut UhciQh;
+                (*qh).element_link = LP_TERMINATE;
+            }
+            return Err("USB bulk transfer timeout");
+        }
+
+        core::hint::spin_loop();
+    }
+
+    // Deactivate QH
+    unsafe {
+        let qh = ctrl.qh_phys as *mut UhciQh;
+        (*qh).element_link = LP_TERMINATE;
+    }
+
+    // Calculate actual bytes transferred from TD actual-length fields
+    let mut total = 0usize;
+    for i in 0..num_tds {
+        let td_phys = td_base + (i as u64) * 32;
+        let ctrl_status = unsafe {
+            let td = td_phys as *mut UhciTd;
+            core::ptr::read_volatile(&(*td).ctrl_status)
+        };
+        if ctrl_status & TD_ACTIVE != 0 {
+            break; // This TD and all following were not executed
+        }
+        let actual = ((ctrl_status + 1) & 0x7FF) as usize;
+        total += actual;
+        // Short packet: device sent less than max_packet — stop counting
+        if actual < max_pkt {
+            break;
+        }
+    }
+
+    Ok(total)
+}
+
+/// Public bulk transfer. Locks UHCI_CTRL internally.
+pub fn bulk_transfer(
+    dev_addr: u8,
+    endpoint: u8,
+    max_packet: u16,
+    toggle: &mut u8,
+    data_phys: u64,
+    len: usize,
+) -> Result<usize, &'static str> {
+    let guard = UHCI_CTRL.lock();
+    let ctrl = guard.as_ref().ok_or("UHCI not initialized")?;
+    bulk_transfer_inner(ctrl, dev_addr, endpoint, max_packet, toggle, data_phys, len)
+}
+
 // ── Device Enumeration ──────────────────────────
 
 fn enumerate_device(ctrl: &UhciController, port: u8, speed: UsbSpeed) {
