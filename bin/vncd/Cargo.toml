@@ -1,12 +1,10 @@
 [package]
-name = "permdialog"
+name = "vncd"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 anyos_std = { path = "../../libs/stdlib" }
-libanyui_client = { path = "../../libs/libanyui_client" }
-dynlink = { path = "../../libs/dynlink" }
 
 [profile.dev]
 panic = "abort"

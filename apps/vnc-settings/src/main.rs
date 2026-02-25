@@ -1,0 +1,428 @@
+//! VNC Settings — anyOS GUI for configuring the vncd daemon.
+//!
+//! Reads and writes `/System/etc/vncd.conf`, then signals the running daemon
+//! via the "vncd" named pipe so it reloads without restarting.
+//!
+//! # Layout
+//! ```
+//! ┌─ VNC Settings ──────────────────────────────────────────┐
+//! │ [Save]                                        (toolbar) │
+//! │                                                         │
+//! │ ┌─ VNC Server ──────────────────────────────────────┐  │
+//! │ │  VNC Access     [●] on                            │  │
+//! │ │  Port           [5900          ]                  │  │
+//! │ │  VNC Password   [anyos         ]                  │  │
+//! │ │  Allow Root     [●] on                            │  │
+//! │ └───────────────────────────────────────────────────┘  │
+//! │ ┌─ Allowed Users ───────────────────────────────────┐  │
+//! │ │  New username:  [alice         ] [ + Add ]        │  │
+//! │ │  ┌──────────────────────────────────────────────┐ │  │
+//! │ │  │ alice                                        │ │  │
+//! │ │  │ bob                                          │ │  │
+//! │ │  └──────────────────────────────────────────────┘ │  │
+//! │ │  [ − Remove Selected ]                            │  │
+//! │ └───────────────────────────────────────────────────┘  │
+//! │                   [ Apply ]   [ Cancel ]               │
+//! │                                             (status)   │
+//! └─────────────────────────────────────────────────────────┘
+//! ```
+
+#![no_std]
+#![no_main]
+
+anyos_std::entry!(main);
+
+use anyos_std::{ipc, println, String, Vec, format};
+use anyos_std::users;
+use libanyui_client as ui;
+use ui::ColumnDef;
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const CONF_PATH: &str = "/System/etc/vncd.conf";
+const VNCD_PIPE: &str = "vncd";
+const WIN_W: u32 = 440;
+const WIN_H: u32 = 560;
+
+// ── Config model ──────────────────────────────────────────────────────────────
+
+struct VncConf {
+    enabled: bool,
+    port: u16,
+    allow_root: bool,
+    password: String,
+    allowed_users: Vec<String>,
+}
+
+impl VncConf {
+    fn default_conf() -> Self {
+        VncConf {
+            enabled: false,
+            port: 5900,
+            allow_root: false,
+            password: String::from("anyos"),
+            allowed_users: Vec::new(),
+        }
+    }
+}
+
+// ── Config I/O ────────────────────────────────────────────────────────────────
+
+fn load_conf() -> VncConf {
+    let mut cfg = VncConf::default_conf();
+    let content = match anyos_std::fs::read_to_string(CONF_PATH) {
+        Ok(s) => s,
+        Err(_) => return cfg,
+    };
+    for line in content.split('\n') {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(val) = line.strip_prefix("enabled=") {
+            cfg.enabled = matches!(val.trim(), "yes" | "true" | "1");
+        } else if let Some(val) = line.strip_prefix("port=") {
+            if let Ok(p) = val.trim().parse::<u16>() {
+                if p > 0 { cfg.port = p; }
+            }
+        } else if let Some(val) = line.strip_prefix("allow_root=") {
+            cfg.allow_root = matches!(val.trim(), "yes" | "true" | "1");
+        } else if let Some(val) = line.strip_prefix("password=") {
+            cfg.password = String::from(val.trim());
+        } else if let Some(val) = line.strip_prefix("allowed_users=") {
+            for user in val.split(',') {
+                let u = user.trim();
+                if !u.is_empty() {
+                    cfg.allowed_users.push(String::from(u));
+                }
+            }
+        }
+    }
+    cfg
+}
+
+fn save_conf(cfg: &VncConf) {
+    let mut out = String::new();
+    out.push_str("# anyOS VNC Server Configuration\n");
+    out.push_str(if cfg.enabled { "enabled=yes\n" } else { "enabled=no\n" });
+    out.push_str(&format!("port={}\n", cfg.port));
+    out.push_str(if cfg.allow_root { "allow_root=yes\n" } else { "allow_root=no\n" });
+    out.push_str("allowed_users=");
+    for (i, u) in cfg.allowed_users.iter().enumerate() {
+        if i > 0 { out.push(','); }
+        out.push_str(u);
+    }
+    out.push('\n');
+    out.push_str(&format!("password={}\n", cfg.password));
+
+    // Write file.
+    let fd = anyos_std::fs::open(CONF_PATH, anyos_std::fs::O_WRITE | anyos_std::fs::O_CREATE | anyos_std::fs::O_TRUNC);
+    if fd != u32::MAX {
+        anyos_std::fs::write(fd, out.as_bytes());
+        anyos_std::fs::close(fd);
+    }
+}
+
+/// Return `true` if `username` exists in the local user database.
+fn user_exists(username: &str) -> bool {
+    let mut buf = [0u8; 2048];
+    let n = users::listusers(&mut buf);
+    if n == 0 || n == u32::MAX {
+        return false;
+    }
+    // Format from kernel: "uid:username\n" per line.
+    let text = core::str::from_utf8(&buf[..n as usize]).unwrap_or("");
+    for line in text.split('\n') {
+        let parts: Vec<&str> = line.splitn(2, ':').collect();
+        if parts.len() == 2 && parts[1].trim() == username {
+            return true;
+        }
+    }
+    false
+}
+
+// ── App state ─────────────────────────────────────────────────────────────────
+
+struct AppState {
+    cfg: VncConf,
+
+    // ── UI handles ──
+    toggle_enabled: ui::Toggle,
+    toggle_root: ui::Toggle,
+    port_field: ui::TextField,
+    pw_field: ui::TextField,
+    new_user_field: ui::TextField,
+    user_grid: ui::DataGrid,
+    status_label: ui::Label,
+    btn_remove: ui::Button,
+}
+
+static mut APP: Option<AppState> = None;
+
+fn app() -> &'static mut AppState {
+    unsafe { APP.as_mut().expect("APP not initialized") }
+}
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
+
+fn refresh_user_grid() {
+    let s = app();
+    s.user_grid.clear_rows();
+    for user in &s.cfg.allowed_users {
+        s.user_grid.add_row(&[user.as_str()]);
+    }
+    s.btn_remove.set_enabled(!s.cfg.allowed_users.is_empty());
+}
+
+fn read_form_into_cfg() {
+    let s = app();
+
+    s.cfg.enabled = s.toggle_enabled.get_state() != 0;
+    s.cfg.allow_root = s.toggle_root.get_state() != 0;
+
+    let mut buf = [0u8; 16];
+    let n = s.port_field.get_text(&mut buf);
+    if n > 0 && n != u32::MAX {
+        if let Ok(text) = core::str::from_utf8(&buf[..n as usize]) {
+            if let Ok(p) = text.trim().parse::<u16>() {
+                if p > 0 { s.cfg.port = p; }
+            }
+        }
+    }
+
+    let mut pw_buf = [0u8; 64];
+    let pn = s.pw_field.get_text(&mut pw_buf);
+    if pn > 0 && pn != u32::MAX {
+        if let Ok(text) = core::str::from_utf8(&pw_buf[..pn as usize]) {
+            let t = text.trim();
+            if !t.is_empty() {
+                s.cfg.password = String::from(t);
+            }
+        }
+    }
+}
+
+fn apply() {
+    read_form_into_cfg();
+    save_conf(&app().cfg);
+
+    // Signal running daemon to reload without restarting.
+    let pipe = ipc::pipe_open(VNCD_PIPE);
+    if pipe != 0 && pipe != u32::MAX {
+        ipc::pipe_write(pipe, b"reload\n");
+    }
+
+    let s = app();
+    let status = if s.cfg.enabled {
+        format!("  Saved. VNC enabled on port {}.", s.cfg.port)
+    } else {
+        String::from("  Saved. VNC access disabled.")
+    };
+    s.status_label.set_text(&status);
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
+fn main() {
+    if !ui::init() {
+        println!("[VNC Settings] Failed to init libanyui");
+        return;
+    }
+
+    let cfg = load_conf();
+
+    // ── Window ───────────────────────────────────────────────────────────────
+    let win = ui::Window::new("VNC Settings", -1, -1, WIN_W, WIN_H);
+    let tc = ui::theme::colors();
+
+    // ── Toolbar ──────────────────────────────────────────────────────────────
+    let toolbar = ui::Toolbar::new();
+    toolbar.set_dock(ui::DOCK_TOP);
+    win.add(&toolbar);
+
+    let btn_save_tb = toolbar.add_icon_button("Save");
+    btn_save_tb.set_system_icon("device-floppy", ui::IconType::Outline, tc.text, 24);
+
+    // ── Status bar ───────────────────────────────────────────────────────────
+    let status_label = ui::Label::new("  VNC Settings");
+    status_label.set_dock(ui::DOCK_BOTTOM);
+    status_label.set_size(WIN_W, 24);
+    status_label.set_color(ui::theme::darken(tc.window_bg, 5));
+    status_label.set_text_color(tc.text_secondary);
+    status_label.set_font_size(11);
+    win.add(&status_label);
+
+    // ── Content scroll area ───────────────────────────────────────────────────
+    let scroll = ui::ScrollView::new();
+    scroll.set_dock(ui::DOCK_FILL);
+    win.add(&scroll);
+
+    // ════════════════════════════════════════════════════════════════
+    //  "VNC Server" section
+    // ════════════════════════════════════════════════════════════════
+    let grp_server = ui::GroupBox::new("VNC Server");
+    grp_server.set_position(12, 8);
+    grp_server.set_size(WIN_W - 24, 185);
+    scroll.add(&grp_server);
+
+    let tl = ui::TableLayout::new(2, 4);
+    tl.set_position(8, 22);
+    tl.set_size(WIN_W - 40, 155);
+    tl.set_column_width(0, 130);
+    tl.set_column_width(1, 240);
+    tl.set_row_height(34);
+    grp_server.add(&tl);
+
+    // Row 0: VNC Access toggle
+    let lbl_enabled = ui::Label::new("VNC Access");
+    lbl_enabled.set_text_align(ui::ALIGN_RIGHT);
+    tl.add_at(&lbl_enabled, 0, 0);
+    let toggle_enabled = ui::Toggle::new(cfg.enabled);
+    tl.add_at(&toggle_enabled, 1, 0);
+
+    // Row 1: Port
+    let lbl_port = ui::Label::new("Port");
+    lbl_port.set_text_align(ui::ALIGN_RIGHT);
+    tl.add_at(&lbl_port, 0, 1);
+    let port_field = ui::TextField::new(&format!("{}", cfg.port));
+    port_field.set_size(80, 26);
+    tl.add_at(&port_field, 1, 1);
+
+    // Row 2: VNC Password
+    let lbl_pw = ui::Label::new("VNC Password");
+    lbl_pw.set_text_align(ui::ALIGN_RIGHT);
+    tl.add_at(&lbl_pw, 0, 2);
+    let pw_field = ui::TextField::new(&cfg.password);
+    pw_field.set_size(160, 26);
+    tl.add_at(&pw_field, 1, 2);
+
+    // Row 3: Allow Root
+    let lbl_root = ui::Label::new("Allow Root");
+    lbl_root.set_text_align(ui::ALIGN_RIGHT);
+    tl.add_at(&lbl_root, 0, 3);
+    let toggle_root = ui::Toggle::new(cfg.allow_root);
+    tl.add_at(&toggle_root, 1, 3);
+
+    // ════════════════════════════════════════════════════════════════
+    //  "Allowed Users" section
+    // ════════════════════════════════════════════════════════════════
+    let grp_users = ui::GroupBox::new("Allowed Users (must exist locally)");
+    grp_users.set_position(12, 200);
+    grp_users.set_size(WIN_W - 24, 268);
+    scroll.add(&grp_users);
+
+    // Add row: label + text field + button
+    let lbl_new = ui::Label::new("Add username:");
+    lbl_new.set_position(8, 24);
+    lbl_new.set_size(100, 22);
+    grp_users.add(&lbl_new);
+
+    let new_user_field = ui::TextField::new("");
+    new_user_field.set_position(112, 22);
+    new_user_field.set_size(180, 26);
+    grp_users.add(&new_user_field);
+
+    let btn_add = ui::Button::new("+ Add");
+    btn_add.set_position(298, 22);
+    btn_add.set_size(70, 26);
+    grp_users.add(&btn_add);
+
+    // Users list DataGrid.
+    let user_grid = ui::DataGrid::new(WIN_W - 40, 160);
+    user_grid.set_position(8, 56);
+    user_grid.set_columns(&[ColumnDef::new("Username").width((WIN_W - 40) as i32)]);
+    user_grid.set_row_height(22);
+    user_grid.set_selection_mode(ui::SELECTION_SINGLE);
+    grp_users.add(&user_grid);
+
+    // Remove button below grid.
+    let btn_remove = ui::Button::new("− Remove Selected");
+    btn_remove.set_position(8, 222);
+    btn_remove.set_size(150, 28);
+    btn_remove.set_enabled(!cfg.allowed_users.is_empty());
+    grp_users.add(&btn_remove);
+
+    // ════════════════════════════════════════════════════════════════
+    //  Bottom action buttons
+    // ════════════════════════════════════════════════════════════════
+    let btn_panel = ui::FlowPanel::new();
+    btn_panel.set_position(12, 476);
+    btn_panel.set_size(WIN_W - 24, 40);
+    scroll.add(&btn_panel);
+
+    let btn_cancel = ui::Button::new("Cancel");
+    btn_cancel.set_size(90, 28);
+    btn_panel.add(&btn_cancel);
+
+    let btn_apply = ui::Button::new("Apply");
+    btn_apply.set_size(90, 28);
+    btn_panel.add(&btn_apply);
+
+    // ── Initialize AppState ───────────────────────────────────────────────────
+    unsafe {
+        APP = Some(AppState {
+            cfg,
+            toggle_enabled,
+            toggle_root,
+            port_field,
+            pw_field,
+            new_user_field,
+            user_grid,
+            status_label,
+            btn_remove,
+        });
+    }
+
+    refresh_user_grid();
+
+    // ── Event handlers ────────────────────────────────────────────────────────
+
+    btn_save_tb.on_click(|_| apply());
+    btn_apply.on_click(|_| apply());
+
+    btn_cancel.on_click(|_| {
+        anyos_std::process::exit(0);
+    });
+
+    // Add User: read the inline TextField, validate user exists locally, add to list.
+    btn_add.on_click(|_| {
+        let s = app();
+        let mut buf = [0u8; 64];
+        let n = s.new_user_field.get_text(&mut buf);
+        if n == 0 || n == u32::MAX {
+            return;
+        }
+        let name = match core::str::from_utf8(&buf[..n as usize]) {
+            Ok(t) => t.trim(),
+            Err(_) => return,
+        };
+        if name.is_empty() {
+            return;
+        }
+        if !user_exists(name) {
+            s.status_label.set_text("  Error: user does not exist locally.");
+            return;
+        }
+        if s.cfg.allowed_users.iter().any(|u| u.as_str() == name) {
+            s.status_label.set_text("  User already in list.");
+            return;
+        }
+        s.cfg.allowed_users.push(String::from(name));
+        s.new_user_field.set_text(""); // clear input field
+        s.status_label.set_text("  User added.");
+        refresh_user_grid();
+    });
+
+    // Remove selected user from list.
+    btn_remove.on_click(|_| {
+        let s = app();
+        let sel = s.user_grid.get_selected_row();
+        if sel != u32::MAX && (sel as usize) < s.cfg.allowed_users.len() {
+            s.cfg.allowed_users.remove(sel as usize);
+            s.status_label.set_text("  User removed.");
+            refresh_user_grid();
+        }
+    });
+
+    ui::run();
+}

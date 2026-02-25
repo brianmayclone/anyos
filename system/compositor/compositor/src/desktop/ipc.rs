@@ -513,6 +513,25 @@ impl Desktop {
                     Some((target, [proto::RESP_WINDOW_POS, window_id, 0, 0, requester_tid]))
                 }
             }
+            proto::CMD_INJECT_KEY => {
+                // vncd: relay keyboard input from VNC client into the focused window.
+                // [CMD, scancode, char_val, is_down (1/0), modifiers]
+                let scancode = cmd[1];
+                let char_val = cmd[2];
+                let is_down = cmd[3] != 0;
+                let mods = cmd[4];
+                self.inject_key_event(scancode, char_val, mods, is_down);
+                None
+            }
+            proto::CMD_INJECT_POINTER => {
+                // vncd: relay pointer input from VNC client — move cursor and dispatch click.
+                // [CMD, x, y, buttons_mask, 0]
+                let x = cmd[1] as i32;
+                let y = cmd[2] as i32;
+                let buttons = cmd[3] as u8;
+                self.inject_pointer_event(x, y, buttons);
+                None
+            }
             _ => None,
         }
     }

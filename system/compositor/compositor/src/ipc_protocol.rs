@@ -175,6 +175,18 @@ pub const CMD_DISMISS_NOTIFICATION: u32 = 0x1021;
 /// Compositor responds with RESP_WINDOW_POS containing content_x, content_y.
 pub const CMD_GET_WINDOW_POS: u32 = 0x1013;
 
+/// Inject a synthetic key event into the focused window.
+/// [CMD, scancode, char_val, is_down (1=down/0=up), modifiers]
+/// vncd maps RFB KeySyms → (scancode, char_val) before emitting this command.
+/// Sent by vncd after successful authentication to relay keyboard input.
+pub const CMD_INJECT_KEY: u32 = 0x1022;
+
+/// Inject a synthetic pointer (mouse) event and move the cursor.
+/// [CMD, x (abs screen coords), y (abs screen coords), buttons_mask, 0]
+/// buttons_mask: bit 0 = left, bit 1 = middle, bit 2 = right (RFB convention).
+/// Sent by vncd to relay VNC client pointer events into the desktop.
+pub const CMD_INJECT_POINTER: u32 = 0x1023;
+
 // ── Compositor → App: Notification Events ────────────────────────────────
 
 /// Notification clicked by user: [EVT, notification_id, sender_tid, 0, 0]

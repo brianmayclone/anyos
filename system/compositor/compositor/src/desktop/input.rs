@@ -928,4 +928,48 @@ impl Desktop {
             ));
         }
     }
+
+    // ── VNC Injection ──────────────────────────────────────────────────
+
+    /// Synthesize a key event from a VNC client into the focused window.
+    ///
+    /// `keysym` follows the X11 / RFB KeySym convention; `vncd`'s `input.rs`
+    /// maps RFB keysyms to `(scancode, char_val)` before calling this.
+    /// `mods` uses the same modifier bit encoding as hardware key events.
+    pub(crate) fn inject_key_event(&mut self, scancode: u32, char_val: u32, mods: u32, down: bool) {
+        // Reuse the hardware path — volume-key intercept is intentionally skipped
+        // for injected events so vncd cannot mute/unmute the system.
+        self.current_modifiers = mods;
+        if let Some(win_id) = self.focused_window {
+            let key_code = encode_scancode(scancode);
+            let evt_type = if down { EVENT_KEY_DOWN } else { EVENT_KEY_UP };
+            self.push_event(win_id, [evt_type, key_code, char_val, mods, 0]);
+        }
+    }
+
+    /// Synthesize an absolute pointer event from a VNC client.
+    ///
+    /// Moves the compositor cursor to `(x, y)` and dispatches a button
+    /// state change if any button bit differs from the previous state.
+    /// `buttons` uses the RFB mask: bit 0 = left, bit 1 = middle, bit 2 = right.
+    pub(crate) fn inject_pointer_event(&mut self, x: i32, y: i32, buttons: u8) {
+        // Move cursor to the absolute position.
+        self.apply_mouse_move_absolute(x, y);
+
+        // Determine which buttons changed state since last injection.
+        // We track the previous VNC button mask in a dedicated field so that
+        // we can synthesise proper press/release pairs.
+        let prev = self.vnc_buttons;
+        let changed = prev ^ buttons;
+
+        for bit in 0..3u8 {
+            if changed & (1 << bit) != 0 {
+                let btn_mask = 1u32 << bit;
+                let down = (buttons & (1 << bit)) != 0;
+                self.handle_mouse_button(btn_mask, down);
+            }
+        }
+
+        self.vnc_buttons = buttons;
+    }
 }
