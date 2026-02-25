@@ -30,7 +30,7 @@ use alloc::vec::Vec;
 
 use libanyui_client::{self as ui};
 
-pub use renderer::{ImageCache, ImageEntry};
+pub use renderer::{ImageCache, ImageEntry, FormControl};
 pub use layout::{LayoutBox, FormFieldKind};
 
 /// A WebView renders HTML content inside a ScrollView using libanyui controls.
@@ -228,6 +228,112 @@ impl WebView {
     /// Get console output from JavaScript execution.
     pub fn js_console(&self) -> &[String] {
         self.js_runtime.get_console()
+    }
+
+    /// Get all rendered form controls (for form submission).
+    pub fn form_controls(&self) -> &[FormControl] {
+        &self.renderer.form_controls
+    }
+
+    /// Check if a control ID belongs to a submit button.
+    pub fn is_submit_button(&self, control_id: u32) -> bool {
+        self.renderer.form_controls.iter().any(|fc| {
+            fc.control_id == control_id
+                && matches!(fc.kind, FormFieldKind::Submit | FormFieldKind::ButtonEl)
+        })
+    }
+
+    /// Find the form action URL for a submit button click.
+    /// Walks up the DOM from the button to find the parent `<form>` and its action attribute.
+    pub fn form_action_for(&self, control_id: u32) -> Option<(String, String)> {
+        let dom = self.dom_val.as_ref()?;
+        let fc = self.renderer.form_controls.iter().find(|fc| fc.control_id == control_id)?;
+        // Walk up to find parent <form>.
+        let mut cur = Some(fc.node_id);
+        while let Some(id) = cur {
+            if dom.tag(id) == Some(dom::Tag::Form) {
+                let action = dom.attr(id, "action").unwrap_or("");
+                let method = dom.attr(id, "method").unwrap_or("GET");
+                return Some((String::from(action), method.to_ascii_uppercase()));
+            }
+            cur = dom.get(id).parent;
+        }
+        None
+    }
+
+    /// Collect form data (name=value pairs) for the form containing `control_id`.
+    /// Reads current values from the libanyui TextFields/Checkboxes.
+    pub fn collect_form_data(&self, control_id: u32) -> Vec<(String, String)> {
+        let dom = match self.dom_val.as_ref() { Some(d) => d, None => return Vec::new() };
+
+        // Find the parent <form> node.
+        let fc = match self.renderer.form_controls.iter().find(|fc| fc.control_id == control_id) {
+            Some(f) => f,
+            None => return Vec::new(),
+        };
+        let mut form_node = None;
+        let mut cur = Some(fc.node_id);
+        while let Some(id) = cur {
+            if dom.tag(id) == Some(dom::Tag::Form) {
+                form_node = Some(id);
+                break;
+            }
+            cur = dom.get(id).parent;
+        }
+        let form_id = match form_node { Some(id) => id, None => return Vec::new() };
+
+        // Collect all form controls that are descendants of this form.
+        let mut data = Vec::new();
+        for fc in &self.renderer.form_controls {
+            // Check if this control is a descendant of form_id.
+            let mut is_child = false;
+            let mut up = Some(fc.node_id);
+            while let Some(id) = up {
+                if id == form_id { is_child = true; break; }
+                up = dom.get(id).parent;
+            }
+            if !is_child { continue; }
+
+            let name = dom.attr(fc.node_id, "name").unwrap_or("");
+            if name.is_empty() { continue; }
+
+            match fc.kind {
+                FormFieldKind::TextInput | FormFieldKind::Password => {
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    let mut buf = [0u8; 2048];
+                    let len = ctrl.get_text(&mut buf);
+                    let val = core::str::from_utf8(&buf[..len]).unwrap_or("");
+                    data.push((String::from(name), String::from(val)));
+                }
+                FormFieldKind::Checkbox => {
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    if ctrl.get_state() != 0 {
+                        let val = dom.attr(fc.node_id, "value").unwrap_or("on");
+                        data.push((String::from(name), String::from(val)));
+                    }
+                }
+                FormFieldKind::Radio => {
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    if ctrl.get_state() != 0 {
+                        let val = dom.attr(fc.node_id, "value").unwrap_or("");
+                        data.push((String::from(name), String::from(val)));
+                    }
+                }
+                FormFieldKind::Hidden => {
+                    let val = dom.attr(fc.node_id, "value").unwrap_or("");
+                    data.push((String::from(name), String::from(val)));
+                }
+                FormFieldKind::Textarea => {
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    let mut buf = [0u8; 8192];
+                    let len = ctrl.get_text(&mut buf);
+                    let val = core::str::from_utf8(&buf[..len]).unwrap_or("");
+                    data.push((String::from(name), String::from(val)));
+                }
+                _ => {}
+            }
+        }
+        data
     }
 }
 

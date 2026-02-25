@@ -30,31 +30,126 @@ pub struct Icon {
     pub height: u32,
 }
 
-// ── ico.pak cache ─────────────────────────────────────
+// ── ico.pak pre-extracted icon atlas ──────────────────
+//
+// At init time the entire ico.pak is parsed and every icon's alpha map is
+// extracted into a hash table in RAM.  Icon::system() applies the requested
+// color directly — no DLL call, no binary search, no disk I/O.
 
 const ICO_PAK_PATH: &str = "/System/media/ico.pak";
 
-static mut PAK_DATA: Option<Vec<u8>> = None;
+/// One pre-extracted icon alpha map.
+struct AlphaEntry {
+    /// FNV-1a hash of (name, filled) for O(1) bucket lookup.
+    key: u64,
+    /// Raw alpha map (icon_size × icon_size bytes).
+    alpha: Vec<u8>,
+    /// Native size of this alpha map.
+    icon_size: u16,
+}
 
-/// Pre-load the ico.pak file into memory. Call this early (e.g. during init)
-/// so that the first icon render doesn't stall on disk I/O.
-pub fn preload_iconpak() {
-    unsafe {
-        if PAK_DATA.is_none() {
-            if let Ok(data) = anyos_std::fs::read_to_vec(ICO_PAK_PATH) {
-                PAK_DATA = Some(data);
+/// Hash table of all icons extracted from ico.pak.
+/// Uses open addressing with linear probing (power-of-two size).
+struct IconAtlas {
+    buckets: Vec<Option<AlphaEntry>>,
+    mask: usize,
+}
+
+impl IconAtlas {
+    fn with_capacity(cap: usize) -> Self {
+        // Round up to power of two
+        let mut sz = 16;
+        while sz < cap * 2 { sz <<= 1; }
+        let mut buckets = Vec::with_capacity(sz);
+        for _ in 0..sz { buckets.push(None); }
+        Self { buckets, mask: sz - 1 }
+    }
+
+    fn insert(&mut self, key: u64, alpha: Vec<u8>, icon_size: u16) {
+        let mut idx = (key as usize) & self.mask;
+        loop {
+            if self.buckets[idx].is_none() {
+                self.buckets[idx] = Some(AlphaEntry { key, alpha, icon_size });
+                return;
+            }
+            idx = (idx + 1) & self.mask;
+        }
+    }
+
+    fn get(&self, key: u64) -> Option<&AlphaEntry> {
+        let mut idx = (key as usize) & self.mask;
+        loop {
+            match &self.buckets[idx] {
+                Some(e) if e.key == key => return Some(e),
+                Some(_) => idx = (idx + 1) & self.mask,
+                None => return None,
             }
         }
     }
 }
 
-fn pak_data() -> Option<&'static [u8]> {
-    unsafe {
-        if PAK_DATA.is_none() {
-            PAK_DATA = Some(anyos_std::fs::read_to_vec(ICO_PAK_PATH).ok()?);
-        }
-        PAK_DATA.as_deref()
+fn atlas_key(name: &[u8], filled: bool) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325; // FNV-1a
+    for &b in name {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
     }
+    if filled { h ^= 0x8000000000000000; }
+    h
+}
+
+static mut ICON_ATLAS: Option<IconAtlas> = None;
+
+/// Pre-load ico.pak: parse ALL icons and store alpha maps in a hash table.
+/// Call once during init(). After this, Icon::system() is pure RAM lookups.
+pub fn preload_iconpak() {
+    let pak = match anyos_std::fs::read_to_vec(ICO_PAK_PATH) {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    if pak.len() < 6 || &pak[0..4] != b"IPAK" {
+        return;
+    }
+    let ver = u16::from_le_bytes([pak[4], pak[5]]);
+    if ver == 2 {
+        preload_v2(&pak);
+    }
+    // v1 (SVG) icons still fall back to the DLL at render time
+}
+
+fn preload_v2(pak: &[u8]) {
+    if pak.len() < 20 { return; }
+    let filled_count = u16::from_le_bytes([pak[6], pak[7]]) as usize;
+    let outline_count = u16::from_le_bytes([pak[8], pak[9]]) as usize;
+    let icon_size = u16::from_le_bytes([pak[10], pak[11]]);
+    let names_offset = u32::from_le_bytes([pak[12], pak[13], pak[14], pak[15]]) as usize;
+    let data_offset = u32::from_le_bytes([pak[16], pak[17], pak[18], pak[19]]) as usize;
+
+    let alpha_len = (icon_size as usize) * (icon_size as usize);
+    let total = filled_count + outline_count;
+
+    let mut atlas = IconAtlas::with_capacity(total);
+
+    for i in 0..total {
+        let filled = i < filled_count;
+        let entry_off = 20 + i * 16;
+        if entry_off + 16 > pak.len() { break; }
+
+        let name_off = u32::from_le_bytes([pak[entry_off], pak[entry_off+1], pak[entry_off+2], pak[entry_off+3]]) as usize;
+        let name_len = u16::from_le_bytes([pak[entry_off+4], pak[entry_off+5]]) as usize;
+        let d_off = u32::from_le_bytes([pak[entry_off+8], pak[entry_off+9], pak[entry_off+10], pak[entry_off+11]]) as usize;
+
+        let abs_name = names_offset + name_off;
+        let abs_data = data_offset + d_off;
+        if abs_name + name_len > pak.len() || abs_data + alpha_len > pak.len() { continue; }
+
+        let name = &pak[abs_name..abs_name + name_len];
+        let alpha = Vec::from(&pak[abs_data..abs_data + alpha_len]);
+        let key = atlas_key(name, filled);
+        atlas.insert(key, alpha, icon_size);
+    }
+
+    unsafe { ICON_ATLAS = Some(atlas); }
 }
 
 // ── mimetypes.conf cache ──────────────────────────────
@@ -70,9 +165,9 @@ fn mimetype_conf() -> Option<&'static [u8]> {
     }
 }
 
-// ── Rendered icon cache (fixed-size ring buffer) ──────
+// ── Rendered icon cache (colored pixels) ──────────────
 
-const ICON_CACHE_SIZE: usize = 64;
+const ICON_CACHE_SIZE: usize = 128;
 
 struct CacheEntry {
     key: u64,
@@ -82,11 +177,10 @@ struct CacheEntry {
 
 static mut ICON_CACHE: Option<Vec<CacheEntry>> = None;
 
-fn icon_cache_key(name: &str, filled: bool, size: u32, color: u32) -> u64 {
+fn render_cache_key(name: &str, filled: bool, size: u32, color: u32) -> u64 {
     let mut h: u64 = if filled { 0x100000000 } else { 0 };
     h ^= (size as u64) << 40;
     h ^= color as u64;
-    // FNV-1a hash of name
     let mut fnv: u64 = 0xcbf29ce484222325;
     for &b in name.as_bytes() {
         fnv ^= b as u64;
@@ -96,7 +190,7 @@ fn icon_cache_key(name: &str, filled: bool, size: u32, color: u32) -> u64 {
     h
 }
 
-fn icon_cache_lookup(key: u64) -> Option<(Vec<u32>, u32)> {
+fn render_cache_lookup(key: u64) -> Option<(Vec<u32>, u32)> {
     unsafe {
         let cache = ICON_CACHE.as_ref()?;
         for entry in cache.iter() {
@@ -108,13 +202,12 @@ fn icon_cache_lookup(key: u64) -> Option<(Vec<u32>, u32)> {
     }
 }
 
-fn icon_cache_insert(key: u64, pixels: Vec<u32>, size: u32) {
+fn render_cache_insert(key: u64, pixels: Vec<u32>, size: u32) {
     unsafe {
         if ICON_CACHE.is_none() {
             ICON_CACHE = Some(Vec::new());
         }
         let cache = ICON_CACHE.as_mut().unwrap();
-        // Evict oldest if full
         if cache.len() >= ICON_CACHE_SIZE {
             cache.remove(0);
         }
@@ -122,34 +215,75 @@ fn icon_cache_insert(key: u64, pixels: Vec<u32>, size: u32) {
     }
 }
 
+/// Apply color to an alpha map and produce ARGB pixels.
+/// If target size differs from alpha map size, uses nearest-neighbor scaling.
+fn render_from_alpha(alpha: &[u8], icon_size: u16, color: u32, target_size: u32) -> Vec<u32> {
+    let ca = (color >> 24) & 0xFF;
+    let rgb = color & 0x00FFFFFF;
+    let isz = icon_size as u32;
+    let pixel_count = (target_size * target_size) as usize;
+    let mut out = vec![0u32; pixel_count];
+
+    if target_size == isz {
+        for i in 0..pixel_count {
+            let a = alpha[i] as u32;
+            if a != 0 {
+                out[i] = (((a * ca + 127) / 255) << 24) | rgb;
+            }
+        }
+    } else {
+        // Nearest-neighbor scale
+        for y in 0..target_size {
+            let sy = ((y * isz) / target_size) as usize;
+            for x in 0..target_size {
+                let sx = ((x * isz) / target_size) as usize;
+                let a = alpha[sy * (isz as usize) + sx] as u32;
+                if a != 0 {
+                    out[(y * target_size + x) as usize] = (((a * ca + 127) / 255) << 24) | rgb;
+                }
+            }
+        }
+    }
+    out
+}
+
 impl Icon {
-    /// Load a system icon from ico.pak by name, type, color, and size.
+    /// Load a system icon from the pre-loaded icon atlas.
     ///
-    /// Icons are cached after first render — repeated calls with the same
-    /// parameters return cached pixel data.
-    ///
-    /// # Example
-    /// ```rust
-    /// let icon = Icon::system("heart", IconType::Filled, 0xFF007AFF, 32).unwrap();
-    /// ```
+    /// Flow: atlas lookup (O(1)) → apply color → cache colored result.
+    /// No DLL calls, no disk I/O, no binary search.
     pub fn system(name: &str, icon_type: IconType, color: u32, size: u32) -> Option<Self> {
         let filled = icon_type == IconType::Filled;
-        let key = icon_cache_key(name, filled, size, color);
+        let rkey = render_cache_key(name, filled, size, color);
 
-        // Check cache first
-        if let Some((pixels, sz)) = icon_cache_lookup(key) {
+        // Check rendered pixel cache first
+        if let Some((pixels, sz)) = render_cache_lookup(rkey) {
             return Some(Self { pixels, width: sz, height: sz });
         }
 
-        // Load pak and render
-        let pak = pak_data()?;
+        // Look up alpha map from pre-extracted atlas
+        let akey = atlas_key(name.as_bytes(), filled);
+        let atlas = unsafe { ICON_ATLAS.as_ref() };
+        if let Some(atlas) = atlas {
+            if let Some(entry) = atlas.get(akey) {
+                let pixels = render_from_alpha(&entry.alpha, entry.icon_size, color, size);
+                render_cache_insert(rkey, pixels.clone(), size);
+                return Some(Self { pixels, width: size, height: size });
+            }
+        }
+
+        // Fallback: v1 pak or atlas not loaded — use DLL
+        let pak = unsafe {
+            static mut PAK_DATA: Option<Vec<u8>> = None;
+            if PAK_DATA.is_none() {
+                PAK_DATA = Some(anyos_std::fs::read_to_vec(ICO_PAK_PATH).ok()?);
+            }
+            PAK_DATA.as_deref()?
+        };
         let pixel_count = (size as usize) * (size as usize);
         let mut pixels = vec![0u32; pixel_count];
         libimage_client::iconpack_render(pak, name, filled, size, color, &mut pixels).ok()?;
-
-        // Cache the result
-        icon_cache_insert(key, pixels.clone(), size);
-
+        render_cache_insert(rkey, pixels.clone(), size);
         Some(Self { pixels, width: size, height: size })
     }
 

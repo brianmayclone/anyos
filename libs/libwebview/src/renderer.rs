@@ -46,17 +46,31 @@ impl ImageCache {
     }
 }
 
+/// Information about a rendered form control.
+pub struct FormControl {
+    /// The libanyui control ID.
+    pub control_id: u32,
+    /// The DOM node ID of the form element.
+    pub node_id: usize,
+    /// The form field kind.
+    pub kind: FormFieldKind,
+    /// The input name attribute (for form submission).
+    pub name: String,
+}
+
 /// Tracks all controls created for a page, allowing bulk cleanup.
 pub(crate) struct Renderer {
     /// Control IDs of all controls created for the current page.
     controls: Vec<u32>,
     /// Mapping from control ID → link URL for click handling.
     pub link_map: Vec<(u32, String)>,
+    /// Mapping of form controls for data collection.
+    pub form_controls: Vec<FormControl>,
 }
 
 impl Renderer {
     pub fn new() -> Self {
-        Self { controls: Vec::new(), link_map: Vec::new() }
+        Self { controls: Vec::new(), link_map: Vec::new(), form_controls: Vec::new() }
     }
 
     /// Remove all previously created controls from the UI tree.
@@ -66,6 +80,7 @@ impl Renderer {
         }
         self.controls.clear();
         self.link_map.clear();
+        self.form_controls.clear();
     }
 
     /// Walk the layout tree and create libanyui controls inside `parent`.
@@ -227,7 +242,9 @@ impl Renderer {
                     tf.set_text(val);
                 }
                 parent.add(&tf);
-                self.controls.push(tf.id());
+                let id = tf.id();
+                self.controls.push(id);
+                self.register_form_control(id, bx, kind);
             }
             FormFieldKind::Password => {
                 let tf = ui::TextField::new();
@@ -241,7 +258,9 @@ impl Renderer {
                     tf.set_text(val);
                 }
                 parent.add(&tf);
-                self.controls.push(tf.id());
+                let id = tf.id();
+                self.controls.push(id);
+                self.register_form_control(id, bx, kind);
             }
             FormFieldKind::Submit | FormFieldKind::ButtonEl => {
                 let label = if let Some(ref t) = bx.text { t.as_str() } else { "Submit" };
@@ -249,30 +268,50 @@ impl Renderer {
                 btn.set_position(x, y);
                 btn.set_size(bx.width as u32, bx.height as u32);
                 parent.add(&btn);
-                self.controls.push(btn.id());
+                let id = btn.id();
+                self.controls.push(id);
+                self.register_form_control(id, bx, kind);
             }
             FormFieldKind::Checkbox => {
                 let cb = ui::Checkbox::new("");
                 cb.set_position(x, y);
                 cb.set_size(bx.width as u32, bx.height as u32);
                 parent.add(&cb);
-                self.controls.push(cb.id());
+                let id = cb.id();
+                self.controls.push(id);
+                self.register_form_control(id, bx, kind);
             }
             FormFieldKind::Radio => {
                 let rb = ui::RadioButton::new("");
                 rb.set_position(x, y);
                 rb.set_size(bx.width as u32, bx.height as u32);
                 parent.add(&rb);
-                self.controls.push(rb.id());
+                let id = rb.id();
+                self.controls.push(id);
+                self.register_form_control(id, bx, kind);
             }
             FormFieldKind::Textarea => {
                 let ta = ui::TextArea::new();
                 ta.set_position(x, y);
                 ta.set_size(bx.width as u32, bx.height as u32);
                 parent.add(&ta);
-                self.controls.push(ta.id());
+                let id = ta.id();
+                self.controls.push(id);
+                self.register_form_control(id, bx, kind);
             }
             FormFieldKind::Hidden => {}
         }
+    }
+
+    fn register_form_control(&mut self, control_id: u32, bx: &LayoutBox, kind: FormFieldKind) {
+        let node_id = bx.node_id.unwrap_or(0);
+        // Get the name from form_value metadata or leave empty.
+        // The actual name is read from the DOM at form submission time.
+        self.form_controls.push(FormControl {
+            control_id,
+            node_id,
+            kind,
+            name: String::new(), // populated at form collection time
+        });
     }
 }
