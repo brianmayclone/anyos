@@ -504,7 +504,7 @@ impl Desktop {
                     let content_y = if win.is_borderless() {
                         win.y
                     } else {
-                        win.y + window::TITLE_BAR_HEIGHT as i32
+                        win.y + TITLE_BAR_HEIGHT as i32
                     };
                     let target = self.get_sub_id_for_tid(requester_tid);
                     Some((target, [proto::RESP_WINDOW_POS, window_id, content_x as u32, content_y as u32, requester_tid]))
