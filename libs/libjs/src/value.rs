@@ -1,0 +1,656 @@
+//! JavaScript runtime value types.
+
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::vec::Vec;
+use alloc::format;
+use alloc::string::ToString;
+use core::fmt;
+
+use crate::bytecode::Chunk;
+
+/// A JavaScript value.
+#[derive(Clone)]
+pub enum JsValue {
+    Undefined,
+    Null,
+    Bool(bool),
+    Number(f64),
+    String(String),
+    Object(Box<JsObject>),
+    Array(Box<JsArray>),
+    Function(Box<JsFunction>),
+}
+
+impl fmt::Debug for JsValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            JsValue::Undefined => write!(f, "undefined"),
+            JsValue::Null => write!(f, "null"),
+            JsValue::Bool(b) => write!(f, "{}", b),
+            JsValue::Number(n) => write!(f, "{}", format_number(*n)),
+            JsValue::String(s) => write!(f, "\"{}\"", s),
+            JsValue::Object(_) => write!(f, "[object Object]"),
+            JsValue::Array(a) => write!(f, "[Array({})]", a.elements.len()),
+            JsValue::Function(func) => {
+                if let Some(ref name) = func.name {
+                    write!(f, "function {}()", name)
+                } else {
+                    write!(f, "function()")
+                }
+            }
+        }
+    }
+}
+
+/// A JavaScript object (property map).
+#[derive(Clone, Debug)]
+pub struct JsObject {
+    pub properties: BTreeMap<String, Property>,
+    pub prototype: Option<Box<JsObject>>,
+}
+
+/// A property descriptor (simplified).
+#[derive(Clone, Debug)]
+pub struct Property {
+    pub value: JsValue,
+    pub writable: bool,
+    pub enumerable: bool,
+    pub configurable: bool,
+}
+
+impl Property {
+    pub fn data(value: JsValue) -> Self {
+        Property {
+            value,
+            writable: true,
+            enumerable: true,
+            configurable: true,
+        }
+    }
+
+    pub fn readonly(value: JsValue) -> Self {
+        Property {
+            value,
+            writable: false,
+            enumerable: true,
+            configurable: false,
+        }
+    }
+}
+
+impl JsObject {
+    pub fn new() -> Self {
+        JsObject {
+            properties: BTreeMap::new(),
+            prototype: None,
+        }
+    }
+
+    pub fn get(&self, key: &str) -> JsValue {
+        if let Some(prop) = self.properties.get(key) {
+            return prop.value.clone();
+        }
+        if let Some(ref proto) = self.prototype {
+            return proto.get(key);
+        }
+        JsValue::Undefined
+    }
+
+    pub fn set(&mut self, key: String, value: JsValue) {
+        self.properties.insert(key, Property::data(value));
+    }
+
+    pub fn has(&self, key: &str) -> bool {
+        if self.properties.contains_key(key) {
+            return true;
+        }
+        if let Some(ref proto) = self.prototype {
+            return proto.has(key);
+        }
+        false
+    }
+
+    pub fn delete(&mut self, key: &str) -> bool {
+        if let Some(prop) = self.properties.get(key) {
+            if !prop.configurable {
+                return false;
+            }
+        }
+        self.properties.remove(key).is_some()
+    }
+
+    pub fn keys(&self) -> Vec<String> {
+        self.properties
+            .iter()
+            .filter(|(_, p)| p.enumerable)
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+}
+
+/// A JavaScript array.
+#[derive(Clone, Debug)]
+pub struct JsArray {
+    pub elements: Vec<JsValue>,
+    pub properties: BTreeMap<String, Property>,
+}
+
+impl JsArray {
+    pub fn new() -> Self {
+        JsArray {
+            elements: Vec::new(),
+            properties: BTreeMap::new(),
+        }
+    }
+
+    pub fn from_vec(elements: Vec<JsValue>) -> Self {
+        JsArray {
+            elements,
+            properties: BTreeMap::new(),
+        }
+    }
+
+    pub fn get(&self, index: usize) -> JsValue {
+        self.elements.get(index).cloned().unwrap_or(JsValue::Undefined)
+    }
+
+    pub fn set(&mut self, index: usize, value: JsValue) {
+        while self.elements.len() <= index {
+            self.elements.push(JsValue::Undefined);
+        }
+        self.elements[index] = value;
+    }
+
+    pub fn push(&mut self, value: JsValue) {
+        self.elements.push(value);
+    }
+
+    pub fn len(&self) -> usize {
+        self.elements.len()
+    }
+}
+
+/// Compiled or native JavaScript function.
+#[derive(Clone)]
+pub struct JsFunction {
+    pub name: Option<String>,
+    pub params: Vec<String>,
+    pub kind: FnKind,
+    pub this_binding: Option<Box<JsValue>>,
+}
+
+impl fmt::Debug for JsFunction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "JsFunction({:?})", self.name)
+    }
+}
+
+/// Function implementation: either bytecode or a native Rust function.
+#[derive(Clone)]
+pub enum FnKind {
+    Bytecode(Chunk),
+    Native(fn(&mut crate::vm::Vm, &[JsValue]) -> JsValue),
+}
+
+impl JsValue {
+    // ── Type checks ──
+
+    pub fn is_undefined(&self) -> bool {
+        matches!(self, JsValue::Undefined)
+    }
+
+    pub fn is_null(&self) -> bool {
+        matches!(self, JsValue::Null)
+    }
+
+    pub fn is_nullish(&self) -> bool {
+        matches!(self, JsValue::Undefined | JsValue::Null)
+    }
+
+    pub fn is_number(&self) -> bool {
+        matches!(self, JsValue::Number(_))
+    }
+
+    pub fn is_string(&self) -> bool {
+        matches!(self, JsValue::String(_))
+    }
+
+    pub fn is_bool(&self) -> bool {
+        matches!(self, JsValue::Bool(_))
+    }
+
+    pub fn is_object(&self) -> bool {
+        matches!(self, JsValue::Object(_))
+    }
+
+    pub fn is_array(&self) -> bool {
+        matches!(self, JsValue::Array(_))
+    }
+
+    pub fn is_function(&self) -> bool {
+        matches!(self, JsValue::Function(_))
+    }
+
+    // ── Type conversions (ECMAScript abstract operations) ──
+
+    /// ToBoolean
+    pub fn to_boolean(&self) -> bool {
+        match self {
+            JsValue::Undefined | JsValue::Null => false,
+            JsValue::Bool(b) => *b,
+            JsValue::Number(n) => *n != 0.0 && !n.is_nan(),
+            JsValue::String(s) => !s.is_empty(),
+            JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_) => true,
+        }
+    }
+
+    /// ToNumber
+    pub fn to_number(&self) -> f64 {
+        match self {
+            JsValue::Undefined => f64::NAN,
+            JsValue::Null => 0.0,
+            JsValue::Bool(true) => 1.0,
+            JsValue::Bool(false) => 0.0,
+            JsValue::Number(n) => *n,
+            JsValue::String(s) => parse_js_float(s),
+            JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_) => f64::NAN,
+        }
+    }
+
+    /// ToString
+    pub fn to_js_string(&self) -> String {
+        match self {
+            JsValue::Undefined => String::from("undefined"),
+            JsValue::Null => String::from("null"),
+            JsValue::Bool(true) => String::from("true"),
+            JsValue::Bool(false) => String::from("false"),
+            JsValue::Number(n) => format_number(*n),
+            JsValue::String(s) => s.clone(),
+            JsValue::Object(_) => String::from("[object Object]"),
+            JsValue::Array(a) => {
+                let parts: Vec<String> = a.elements.iter().map(|v| v.to_js_string()).collect();
+                let mut out = String::new();
+                for (i, p) in parts.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(p);
+                }
+                out
+            }
+            JsValue::Function(f) => {
+                if let Some(ref name) = f.name {
+                    format!("function {}() {{ [native code] }}", name)
+                } else {
+                    String::from("function() { [native code] }")
+                }
+            }
+        }
+    }
+
+    /// typeof operator result
+    pub fn type_of(&self) -> &'static str {
+        match self {
+            JsValue::Undefined => "undefined",
+            JsValue::Null => "object", // historical JS quirk
+            JsValue::Bool(_) => "boolean",
+            JsValue::Number(_) => "number",
+            JsValue::String(_) => "string",
+            JsValue::Object(_) | JsValue::Array(_) => "object",
+            JsValue::Function(_) => "function",
+        }
+    }
+
+    /// Abstract equality (==)
+    pub fn abstract_eq(&self, other: &JsValue) -> bool {
+        match (self, other) {
+            // Same type
+            (JsValue::Undefined, JsValue::Undefined) => true,
+            (JsValue::Null, JsValue::Null) => true,
+            (JsValue::Undefined, JsValue::Null) | (JsValue::Null, JsValue::Undefined) => true,
+            (JsValue::Number(a), JsValue::Number(b)) => *a == *b,
+            (JsValue::String(a), JsValue::String(b)) => *a == *b,
+            (JsValue::Bool(a), JsValue::Bool(b)) => *a == *b,
+            // Coercions
+            (JsValue::Number(_), JsValue::String(_)) => {
+                self.to_number() == other.to_number()
+            }
+            (JsValue::String(_), JsValue::Number(_)) => {
+                self.to_number() == other.to_number()
+            }
+            (JsValue::Bool(_), _) => JsValue::Number(self.to_number()).abstract_eq(other),
+            (_, JsValue::Bool(_)) => self.abstract_eq(&JsValue::Number(other.to_number())),
+            _ => false, // object identity not supported in simplified version
+        }
+    }
+
+    /// Strict equality (===)
+    pub fn strict_eq(&self, other: &JsValue) -> bool {
+        match (self, other) {
+            (JsValue::Undefined, JsValue::Undefined) => true,
+            (JsValue::Null, JsValue::Null) => true,
+            (JsValue::Number(a), JsValue::Number(b)) => *a == *b,
+            (JsValue::String(a), JsValue::String(b)) => *a == *b,
+            (JsValue::Bool(a), JsValue::Bool(b)) => *a == *b,
+            _ => false,
+        }
+    }
+
+    /// Get a property (works on objects, arrays, strings).
+    pub fn get_property(&self, key: &str) -> JsValue {
+        match self {
+            JsValue::Object(obj) => obj.get(key),
+            JsValue::Array(arr) => {
+                if key == "length" {
+                    return JsValue::Number(arr.elements.len() as f64);
+                }
+                if let Some(idx) = parse_index(key) {
+                    return arr.get(idx);
+                }
+                if let Some(prop) = arr.properties.get(key) {
+                    return prop.value.clone();
+                }
+                JsValue::Undefined
+            }
+            JsValue::String(s) => {
+                if key == "length" {
+                    return JsValue::Number(s.len() as f64);
+                }
+                if let Some(idx) = parse_index(key) {
+                    if let Some(ch) = s.chars().nth(idx) {
+                        let mut buf = String::new();
+                        buf.push(ch);
+                        return JsValue::String(buf);
+                    }
+                }
+                JsValue::Undefined
+            }
+            _ => JsValue::Undefined,
+        }
+    }
+
+    /// Set a property.
+    pub fn set_property(&mut self, key: String, value: JsValue) {
+        match self {
+            JsValue::Object(obj) => {
+                obj.set(key, value);
+            }
+            JsValue::Array(arr) => {
+                if let Some(idx) = parse_index(&key) {
+                    arr.set(idx, value);
+                } else {
+                    arr.properties.insert(key, Property::data(value));
+                }
+            }
+            _ => {} // silently ignore
+        }
+    }
+}
+
+fn parse_index(s: &str) -> Option<usize> {
+    if s.is_empty() {
+        return None;
+    }
+    let mut n: usize = 0;
+    for b in s.bytes() {
+        if b < b'0' || b > b'9' {
+            return None;
+        }
+        n = n.checked_mul(10)?.checked_add((b - b'0') as usize)?;
+    }
+    Some(n)
+}
+
+/// Parse a string to f64 (no_std compatible).
+pub fn parse_js_float(s: &str) -> f64 {
+    let s = s.trim();
+    if s.is_empty() {
+        return 0.0;
+    }
+    if s == "Infinity" || s == "+Infinity" {
+        return f64::INFINITY;
+    }
+    if s == "-Infinity" {
+        return f64::NEG_INFINITY;
+    }
+    if s == "NaN" {
+        return f64::NAN;
+    }
+
+    // Hex
+    if s.starts_with("0x") || s.starts_with("0X") {
+        return parse_hex_float(&s[2..]);
+    }
+
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    let negative = if i < bytes.len() && bytes[i] == b'-' {
+        i += 1;
+        true
+    } else {
+        if i < bytes.len() && bytes[i] == b'+' {
+            i += 1;
+        }
+        false
+    };
+
+    let mut integer: f64 = 0.0;
+    let mut has_digits = false;
+    while i < bytes.len() && bytes[i] >= b'0' && bytes[i] <= b'9' {
+        integer = integer * 10.0 + (bytes[i] - b'0') as f64;
+        i += 1;
+        has_digits = true;
+    }
+
+    let mut frac: f64 = 0.0;
+    if i < bytes.len() && bytes[i] == b'.' {
+        i += 1;
+        let mut divisor: f64 = 10.0;
+        while i < bytes.len() && bytes[i] >= b'0' && bytes[i] <= b'9' {
+            frac += (bytes[i] - b'0') as f64 / divisor;
+            divisor *= 10.0;
+            i += 1;
+            has_digits = true;
+        }
+    }
+
+    if !has_digits {
+        return f64::NAN;
+    }
+
+    let mut result = integer + frac;
+
+    // Exponent
+    if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+        i += 1;
+        let exp_neg = if i < bytes.len() && bytes[i] == b'-' {
+            i += 1;
+            true
+        } else {
+            if i < bytes.len() && bytes[i] == b'+' {
+                i += 1;
+            }
+            false
+        };
+        let mut exp: i32 = 0;
+        while i < bytes.len() && bytes[i] >= b'0' && bytes[i] <= b'9' {
+            exp = exp * 10 + (bytes[i] - b'0') as i32;
+            i += 1;
+        }
+        if exp_neg {
+            exp = -exp;
+        }
+        result *= pow10(exp);
+    }
+
+    if i < bytes.len() {
+        // trailing garbage
+        return f64::NAN;
+    }
+
+    if negative {
+        -result
+    } else {
+        result
+    }
+}
+
+fn parse_hex_float(s: &str) -> f64 {
+    let mut result: f64 = 0.0;
+    for b in s.bytes() {
+        let digit = match b {
+            b'0'..=b'9' => (b - b'0') as f64,
+            b'a'..=b'f' => (b - b'a' + 10) as f64,
+            b'A'..=b'F' => (b - b'A' + 10) as f64,
+            _ => return f64::NAN,
+        };
+        result = result * 16.0 + digit;
+    }
+    result
+}
+
+fn pow10(exp: i32) -> f64 {
+    if exp >= 0 {
+        let mut result = 1.0f64;
+        for _ in 0..exp.min(308) {
+            result *= 10.0;
+        }
+        result
+    } else {
+        let mut result = 1.0f64;
+        for _ in 0..(-exp).min(308) {
+            result /= 10.0;
+        }
+        result
+    }
+}
+
+/// Format a number for JavaScript string output.
+pub fn format_number(n: f64) -> String {
+    if n.is_nan() {
+        return String::from("NaN");
+    }
+    if n.is_infinite() {
+        return if n > 0.0 {
+            String::from("Infinity")
+        } else {
+            String::from("-Infinity")
+        };
+    }
+    if n == 0.0 {
+        return String::from("0");
+    }
+
+    // Integer check
+    if n == (n as i64) as f64 && n.abs() < 1e15 {
+        return format_i64(n as i64);
+    }
+
+    // Float formatting
+    format_float(n)
+}
+
+fn format_i64(mut n: i64) -> String {
+    if n == 0 {
+        return String::from("0");
+    }
+    let negative = n < 0;
+    if negative {
+        n = -n;
+    }
+    let mut buf = Vec::new();
+    while n > 0 {
+        buf.push(b'0' + (n % 10) as u8);
+        n /= 10;
+    }
+    if negative {
+        buf.push(b'-');
+    }
+    buf.reverse();
+    // SAFETY: buf contains only ASCII digits and '-'
+    unsafe { String::from_utf8_unchecked(buf) }
+}
+
+fn format_float(n: f64) -> String {
+    // Simple float formatter for no_std.
+    // We use a fixed number of significant digits.
+    let negative = n < 0.0;
+    let abs = if negative { -n } else { n };
+
+    // Find exponent
+    let mut exp: i32 = 0;
+    let mut val = abs;
+    if val >= 10.0 {
+        while val >= 10.0 {
+            val /= 10.0;
+            exp += 1;
+        }
+    } else if val > 0.0 && val < 1.0 {
+        while val < 1.0 {
+            val *= 10.0;
+            exp -= 1;
+        }
+    }
+
+    // Extract up to 17 significant digits
+    let mut digits = Vec::with_capacity(17);
+    let mut v = val;
+    for _ in 0..17 {
+        let d = v as u8;
+        digits.push(d);
+        v = (v - d as f64) * 10.0;
+    }
+
+    // Trim trailing zeros
+    while digits.len() > 1 && digits[digits.len() - 1] == 0 {
+        digits.pop();
+    }
+
+    let mut out = String::new();
+    if negative {
+        out.push('-');
+    }
+
+    // Use plain notation for reasonable exponents
+    if exp >= 0 && exp < 21 {
+        let exp = exp as usize;
+        for (i, &d) in digits.iter().enumerate() {
+            out.push((b'0' + d) as char);
+            if i == exp && i + 1 < digits.len() {
+                out.push('.');
+            }
+        }
+        // Pad with zeros if needed
+        if exp >= digits.len() {
+            for _ in 0..(exp + 1 - digits.len()) {
+                out.push('0');
+            }
+        }
+    } else if exp < 0 && exp > -7 {
+        out.push_str("0.");
+        for _ in 0..(-exp - 1) {
+            out.push('0');
+        }
+        for &d in &digits {
+            out.push((b'0' + d) as char);
+        }
+    } else {
+        // Scientific notation
+        out.push((b'0' + digits[0]) as char);
+        if digits.len() > 1 {
+            out.push('.');
+            for &d in &digits[1..] {
+                out.push((b'0' + d) as char);
+            }
+        }
+        out.push('e');
+        if exp >= 0 {
+            out.push('+');
+        }
+        let exp_s = format_i64(exp as i64);
+        out.push_str(&exp_s);
+    }
+    out
+}

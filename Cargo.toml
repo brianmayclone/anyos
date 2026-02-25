@@ -18,6 +18,7 @@ exclude = [
   "libs/libanyui",
   "libs/libanyui_client",
   "libs/libwebview",
+  "libs/libjs",
   "libs/libdb",
   "libs/libdb_client",
   "libs/libzip",
