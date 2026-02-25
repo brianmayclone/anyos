@@ -10,12 +10,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "dynlink"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
 name = "finder"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libanyui_client",
  "libimage_client",
- "uisys_client",
+]
+
+[[package]]
+name = "libanyui_client"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libimage_client",
 ]
 
 [[package]]
@@ -25,11 +41,3 @@ version = "0.1.0"
 [[package]]
 name = "libimage_client"
 version = "0.1.0"
-
-[[package]]
-name = "uisys_client"
-version = "0.1.0"
-dependencies = [
- "anyos_std",
- "libimage_client",
-]

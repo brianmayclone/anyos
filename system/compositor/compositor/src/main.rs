@@ -151,6 +151,11 @@ fn main() {
 
     // Step 9b: If no login needed, spawn dock + conf immediately
     if !login_pending {
+        acquire_lock();
+        let desktop = unsafe { desktop_ref() };
+        desktop.init_desktop_icons();
+        release_lock();
+
         let dock_tid = process::spawn("/System/compositor/dock", "");
         if dock_tid != u32::MAX {
             service_tids.push(dock_tid);
@@ -308,6 +313,7 @@ fn management_loop(
             acquire_lock();
             let desktop = unsafe { desktop_ref() };
             desktop.set_menubar_visible(true);
+            desktop.init_desktop_icons();
             release_lock();
 
             let dock_tid = process::spawn("/System/compositor/dock", "");
@@ -344,10 +350,21 @@ fn management_loop(
         if had_sys { mgmt_sys += 1; }
         if event_count == 0 && !had_ipc && !had_sys { mgmt_idle += 1; }
 
+        // Poll desktop icons for mount changes (only after login, every ~3s)
+        let had_mounts = if !*login_pending && *dock_spawned {
+            acquire_lock();
+            let desktop = unsafe { desktop_ref() };
+            let changed = desktop.poll_desktop_icons();
+            release_lock();
+            changed
+        } else {
+            false
+        };
+
         // Signal render thread ONLY when actual work was processed.
         // Previously this was unconditional, causing the render thread to wake
         // ~62.5 times/sec even when idle (both threads at 1-2% for zero work).
-        if had_ipc || had_sys {
+        if had_ipc || had_sys || had_mounts {
             signal_render();
         }
 
@@ -707,9 +724,12 @@ fn perform_logout(
         desktop.crash_dialogs.clear();
         desktop.tray_ipc_events.clear();
         desktop.clipboard_data.clear();
+        desktop.desktop_icons.icons.clear();
+        desktop.desktop_icons.selected_icon = None;
 
-        // Hide menubar for login screen
+        // Hide menubar and clear desktop icons for login screen
         desktop.set_menubar_visible(false);
+        desktop.reload_wallpaper_and_icons();
         desktop.compositor.damage_all();
         release_lock();
     }

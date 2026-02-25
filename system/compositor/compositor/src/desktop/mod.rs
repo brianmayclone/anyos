@@ -2,6 +2,7 @@
 
 pub mod crash_dialog;
 pub mod cursors;
+pub mod desktop_icons;
 pub mod drawing;
 pub mod input;
 pub mod ipc;
@@ -159,6 +160,17 @@ pub struct Desktop {
     /// Logo image dimensions (both variants have same size).
     pub(crate) logo_w: u32,
     pub(crate) logo_h: u32,
+
+    /// Desktop drive icons manager (macOS-style mounted volume icons).
+    pub(crate) desktop_icons: desktop_icons::DesktopIconManager,
+    /// Cached clean wallpaper pixels (without icons), to avoid reloading from disk.
+    pub(crate) wallpaper_pixel_cache: Vec<u32>,
+    /// Double-click detection: timestamp of last click (uptime_ms).
+    pub(crate) last_click_time: u32,
+    /// Double-click detection: x position of last click.
+    pub(crate) last_click_x: i32,
+    /// Double-click detection: y position of last click.
+    pub(crate) last_click_y: i32,
 }
 
 impl Desktop {
@@ -222,6 +234,11 @@ impl Desktop {
             logo_black: Vec::new(),
             logo_w: 0,
             logo_h: 0,
+            desktop_icons: desktop_icons::DesktopIconManager::new(),
+            wallpaper_pixel_cache: Vec::new(),
+            last_click_time: 0,
+            last_click_x: 0,
+            last_click_y: 0,
         };
 
         if desktop.has_gpu_accel {
@@ -261,11 +278,60 @@ impl Desktop {
         self.prev_cursor_y = self.mouse_y;
     }
 
-    /// Draw the initial desktop (background + menubar).
+    /// Draw the initial desktop (background + menubar). Desktop icons are
+    /// initialized separately after login via `init_desktop_icons()`.
     pub fn init(&mut self) {
         self.load_menu_logos();
         self.load_user_wallpaper();
         self.draw_menubar();
+        self.compositor.damage_all();
+    }
+
+    /// Initialize desktop drive icons. Call once after login succeeds.
+    pub fn init_desktop_icons(&mut self) {
+        let sw = self.screen_width;
+        self.desktop_icons.init(sw);
+        self.render_desktop_icons();
+        self.compositor.mark_layer_dirty(self.bg_layer_id);
+    }
+
+    /// Render desktop icons onto the background layer.
+    pub(crate) fn render_desktop_icons(&mut self) {
+        let sw = self.screen_width;
+        let sh = self.screen_height;
+        let bg_id = self.bg_layer_id;
+        if let Some(bg_pixels) = self.compositor.layer_pixels(bg_id) {
+            self.desktop_icons.render_icons(bg_pixels, sw, sh);
+        }
+        self.compositor.mark_layer_dirty(bg_id);
+    }
+
+    /// Poll mounts and update desktop icons. Returns true if icons changed.
+    pub fn poll_desktop_icons(&mut self) -> bool {
+        let sw = self.screen_width;
+        if self.desktop_icons.poll_mounts(sw) {
+            // Mounts changed — reload wallpaper region and re-render icons
+            self.reload_wallpaper_and_icons();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Reload wallpaper then render icons on top (used after icon changes).
+    pub(crate) fn reload_wallpaper_and_icons(&mut self) {
+        // Reload wallpaper to restore clean background
+        let path = core::str::from_utf8(&self.wallpaper_path[..self.wallpaper_path_len])
+            .unwrap_or("/media/wallpapers/default.png");
+        let mut path_buf = [0u8; 128];
+        let len = path.len().min(127);
+        path_buf[..len].copy_from_slice(&path.as_bytes()[..len]);
+        let path_str = core::str::from_utf8(&path_buf[..len]).unwrap_or("");
+        if !self.load_wallpaper(path_str) {
+            self.draw_gradient_background();
+        }
+        // Re-render icons on fresh wallpaper
+        self.render_desktop_icons();
         self.compositor.damage_all();
     }
 
@@ -516,6 +582,8 @@ impl Desktop {
         path_buf[..len].copy_from_slice(&path.as_bytes()[..len]);
         let path_str = core::str::from_utf8(&path_buf[..len]).unwrap_or("");
         if self.load_wallpaper(path_str) {
+            // Re-render desktop icons on top of the fresh wallpaper
+            self.render_desktop_icons();
             self.compositor.damage_all();
         }
     }
@@ -587,6 +655,11 @@ impl Desktop {
             }
         }
 
+        // Cache the clean wallpaper pixels (without icons) for fast restore
+        if let Some(bg_pixels) = self.compositor.layer_pixels(self.bg_layer_id) {
+            self.wallpaper_pixel_cache = bg_pixels.to_vec();
+        }
+
         anyos_std::println!("compositor: wallpaper loaded ({}x{} {})",
             info.width, info.height,
             libimage_client::format_name(info.format));
@@ -608,6 +681,8 @@ impl Desktop {
                     pixels[(y * w + x) as usize] = color;
                 }
             }
+            // Cache the clean gradient pixels
+            self.wallpaper_pixel_cache = pixels.to_vec();
         }
     }
 

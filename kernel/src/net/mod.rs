@@ -72,6 +72,11 @@ pub fn poll() {
         ethernet::handle_frame(&packet);
     }
 
+    // Process CDC-ECM (USB Ethernet) RX packets
+    while let Some(packet) = crate::drivers::usb::cdc_ecm::recv_packet() {
+        ethernet::handle_frame(&packet);
+    }
+
     // TCP retransmission and TIME_WAIT cleanup
     tcp::check_retransmissions();
 }

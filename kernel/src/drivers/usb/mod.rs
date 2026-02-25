@@ -1,12 +1,15 @@
 //! USB subsystem — host controller drivers and class drivers.
 //!
 //! Supports UHCI (USB 1.x, I/O port based) and EHCI (USB 2.0, MMIO based).
-//! Class drivers: HID (keyboard/mouse) and Mass Storage (SCSI bulk-only).
+//! Class drivers: HID, Mass Storage, Hub, CDC-ACM (serial), CDC-ECM (Ethernet).
 
 pub mod uhci;
 pub mod ehci;
 pub mod hid;
 pub mod storage;
+pub mod hub;
+pub mod cdc_acm;
+pub mod cdc_ecm;
 
 use crate::drivers::pci::PciDevice;
 use crate::sync::spinlock::Spinlock;
@@ -45,6 +48,8 @@ pub struct UsbDevice {
     pub protocol: u8,
     pub num_configs: u8,
     pub interfaces: Vec<UsbInterface>,
+    /// Raw configuration descriptor bytes (for class-specific descriptor parsing).
+    pub config_raw: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -94,8 +99,14 @@ pub fn register_device(dev: UsbDevice) {
     // Dispatch to class drivers
     for iface in &dev.interfaces {
         match iface.class {
+            0x02 => match iface.subclass {
+                0x02 => cdc_acm::probe(&dev, iface),
+                0x06 => cdc_ecm::probe(&dev, iface),
+                _ => {}
+            },
             0x03 => hid::probe(&dev, iface),
             0x08 => storage::probe(&dev, iface),
+            0x09 => hub::probe(&dev, iface),
             _ => {}
         }
     }
@@ -129,8 +140,11 @@ pub fn poll_all_controllers() {
 pub extern "C" fn poll_thread() {
     let mut port_counter: u32 = 0;
     loop {
-        // Poll HID devices (keyboard/mouse reports)
+        // Poll class drivers
         hid::poll_all();
+        hub::poll_all();
+        cdc_acm::poll_all();
+        cdc_ecm::poll_all();
 
         // Poll USB ports for hot-plug every 500ms (every 50 iterations of 10ms)
         port_counter += 1;
@@ -296,6 +310,7 @@ pub const REQ_SET_PROTOCOL: u8 = 0x0B;
 // Descriptor types
 pub const DESC_DEVICE: u16 = 0x0100;
 pub const DESC_CONFIG: u16 = 0x0200;
+pub const DESC_STRING: u16 = 0x0300;
 
 // Transfer direction
 pub const DIR_HOST_TO_DEVICE: u8 = 0x00;
@@ -351,6 +366,63 @@ pub fn parse_config(data: &[u8]) -> Vec<UsbInterface> {
     }
 
     interfaces
+}
+
+// ── String Descriptor ────────────────────────────
+
+/// Fetch a USB string descriptor and decode from UTF-16LE to ASCII.
+pub fn get_string_descriptor(
+    addr: u8,
+    controller: ControllerType,
+    speed: UsbSpeed,
+    max_packet: u16,
+    index: u8,
+) -> Result<alloc::string::String, &'static str> {
+    if index == 0 {
+        return Err("string index 0 is language table");
+    }
+
+    // Request 4 bytes to learn actual length
+    let setup = SetupPacket {
+        bm_request_type: DIR_DEVICE_TO_HOST,
+        b_request: REQ_GET_DESCRIPTOR,
+        w_value: DESC_STRING | (index as u16),
+        w_index: 0x0409, // English US
+        w_length: 4,
+    };
+    let header = hid_control_transfer(addr, controller, speed, max_packet, &setup, true, 4)?;
+    if header.len() < 2 || header[1] != 0x03 {
+        return Err("invalid string descriptor");
+    }
+    let total_len = header[0] as u16;
+    if total_len < 2 {
+        return Err("string descriptor too short");
+    }
+
+    // Request full string
+    let setup_full = SetupPacket {
+        bm_request_type: DIR_DEVICE_TO_HOST,
+        b_request: REQ_GET_DESCRIPTOR,
+        w_value: DESC_STRING | (index as u16),
+        w_index: 0x0409,
+        w_length: total_len,
+    };
+    let data = hid_control_transfer(addr, controller, speed, max_packet, &setup_full, true, total_len)?;
+    if data.len() < 2 {
+        return Err("string descriptor read failed");
+    }
+
+    // Decode UTF-16LE to ASCII
+    let end = (data[0] as usize).min(data.len());
+    let utf16_bytes = &data[2..end];
+    let mut result = alloc::string::String::new();
+    for chunk in utf16_bytes.chunks(2) {
+        if chunk.len() == 2 {
+            let ch = u16::from_le_bytes([chunk[0], chunk[1]]);
+            result.push(if ch < 0x80 { ch as u8 as char } else { '?' });
+        }
+    }
+    Ok(result)
 }
 
 // ── HAL integration ─────────────────────────────────────────────────────────

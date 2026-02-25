@@ -408,6 +408,8 @@ impl Desktop {
                         path_buf[..path_len].copy_from_slice(&data[..path_len]);
                         let path_str = core::str::from_utf8(&path_buf[..path_len]).unwrap_or("");
                         if self.load_wallpaper(path_str) {
+                            // Re-render desktop icons on top of new wallpaper
+                            self.render_desktop_icons();
                             self.compositor.damage_all();
                         }
                     }

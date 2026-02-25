@@ -44,6 +44,15 @@ pub fn unregister_device_io(disk_id: u8) {
     IO_OVERRIDES.lock().retain(|h| h.disk_id != disk_id);
 }
 
+/// Read sectors via a per-device I/O override (for ISO 9660 USB CDROM integration).
+pub fn read_via_override(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> bool {
+    let overrides = IO_OVERRIDES.lock();
+    if let Some(handler) = overrides.iter().find(|h| h.disk_id == disk_id) {
+        return (handler.read_fn)(disk_id, lba, count, buf);
+    }
+    false
+}
+
 #[derive(Copy, Clone, PartialEq)]
 enum StorageBackend {
     Ata,

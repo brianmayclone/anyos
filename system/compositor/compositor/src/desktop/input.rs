@@ -108,7 +108,24 @@ impl Desktop {
         self.mouse_x = (self.mouse_x + dx).clamp(0, self.screen_width as i32 - 1);
         self.mouse_y = (self.mouse_y + dy).clamp(0, self.screen_height as i32 - 1);
 
-        // Handle drag
+        // Handle desktop icon drag (start drag if mouse moved enough while held)
+        if !self.desktop_icons.is_dragging() {
+            if let Some((icon_idx, down_x, down_y)) = self.desktop_icons.mouse_down_icon {
+                let move_dx = (self.mouse_x - down_x).abs();
+                let move_dy = (self.mouse_y - down_y).abs();
+                if move_dx > 4 || move_dy > 4 {
+                    self.desktop_icons.start_drag(icon_idx, down_x, down_y);
+                    self.desktop_icons.mouse_down_icon = None;
+                }
+            }
+        }
+        if self.desktop_icons.is_dragging() {
+            if let Some((_old_rect, _new_rect)) = self.desktop_icons.update_drag(self.mouse_x, self.mouse_y) {
+                self.reload_wallpaper_and_icons();
+            }
+        }
+
+        // Handle window drag
         if let Some(ref drag) = self.dragging {
             let win_id = drag.window_id;
             let new_x = self.mouse_x - drag.offset_x;
@@ -202,6 +219,13 @@ impl Desktop {
                         _ => {}
                     }
                 }
+            }
+        }
+
+        // Update desktop icon context menu hover
+        if self.desktop_icons.has_context_menu() {
+            if self.desktop_icons.update_context_hover(self.mouse_x, self.mouse_y) {
+                self.desktop_icons.render_context_menu(&mut self.compositor);
             }
         }
 
@@ -340,6 +364,31 @@ impl Desktop {
     pub(crate) fn handle_mouse_button(&mut self, buttons: u32, down: bool) {
         if down {
             self.mouse_buttons = buttons;
+
+            // Check if clicking within open desktop icon context menu
+            if self.desktop_icons.has_context_menu() {
+                if self.desktop_icons.is_in_context_menu(self.mouse_x, self.mouse_y) {
+                    if let Some((item_id, icon_idx)) = self.desktop_icons.hit_test_context_menu(self.mouse_x, self.mouse_y) {
+                        let action = self.desktop_icons.handle_context_action(item_id, icon_idx);
+                        self.desktop_icons.close_context_menu(&mut self.compositor);
+                        match action {
+                            super::desktop_icons::ContextAction::OpenFinder(path) => {
+                                anyos_std::process::spawn("/Applications/Finder.app", &path);
+                            }
+                            super::desktop_icons::ContextAction::Eject(path) => {
+                                anyos_std::fs::umount(&path);
+                                // Icons will update on next poll_mounts cycle
+                            }
+                            super::desktop_icons::ContextAction::None => {}
+                        }
+                    } else {
+                        self.desktop_icons.close_context_menu(&mut self.compositor);
+                    }
+                    return;
+                }
+                // Clicked outside context menu — close it
+                self.desktop_icons.close_context_menu(&mut self.compositor);
+            }
 
             // Check if clicking within open dropdown
             if self.menu_bar.is_dropdown_open() {
@@ -557,21 +606,73 @@ impl Desktop {
                     _ => {}
                 }
             } else {
-                // Clicked on empty desktop — defocus current window
-                if let Some(old_id) = self.focused_window {
-                    if let Some(idx) = self.windows.iter().position(|w| w.id == old_id) {
-                        self.windows[idx].focused = false;
-                        let win_id = self.windows[idx].id;
-                        self.render_titlebar(win_id);
-                        self.push_event(win_id, [EVENT_FOCUS_LOST, 0, 0, 0, 0]);
+                // Clicked on empty desktop — check desktop icons first
+                let is_right_click = buttons & 2 != 0;
+                let mut needs_icon_redraw = false;
+
+                // Double-click detection
+                let now = anyos_std::sys::uptime_ms();
+                let dt = now.wrapping_sub(self.last_click_time);
+                let click_dx = (mx - self.last_click_x).abs();
+                let click_dy = (my - self.last_click_y).abs();
+                let is_double = dt < 400 && click_dx < 5 && click_dy < 5 && !is_right_click;
+                self.last_click_time = now;
+                self.last_click_x = mx;
+                self.last_click_y = my;
+
+                if let Some(icon_idx) = self.desktop_icons.hit_test(mx, my) {
+                    if is_right_click {
+                        // Right-click → open context menu
+                        self.desktop_icons.selected_icon = Some(icon_idx);
+                        self.desktop_icons.open_context_menu(icon_idx, mx, my, &mut self.compositor);
+                        needs_icon_redraw = true;
+                    } else if is_double {
+                        // Double-click → open Finder at mount path
+                        let mount_path = self.desktop_icons.icons[icon_idx].mount_path_str();
+                        let path = alloc::string::String::from(mount_path);
+                        anyos_std::process::spawn("/Applications/Finder.app", &path);
+                    } else {
+                        // Single click → select icon and prepare for drag on move
+                        let old_sel = self.desktop_icons.selected_icon;
+                        self.desktop_icons.selected_icon = Some(icon_idx);
+                        self.desktop_icons.mouse_down_icon = Some((icon_idx, mx, my));
+                        if old_sel != Some(icon_idx) {
+                            needs_icon_redraw = true;
+                        }
                     }
-                    self.focused_window = None;
-                    self.compositor.set_focused_layer(None);
+                } else {
+                    // Clicked on empty desktop (no icon) — deselect icon & defocus window
+                    if self.desktop_icons.selected_icon.is_some() {
+                        self.desktop_icons.selected_icon = None;
+                        needs_icon_redraw = true;
+                    }
+                    if let Some(old_id) = self.focused_window {
+                        if let Some(idx) = self.windows.iter().position(|w| w.id == old_id) {
+                            self.windows[idx].focused = false;
+                            let win_id = self.windows[idx].id;
+                            self.render_titlebar(win_id);
+                            self.push_event(win_id, [EVENT_FOCUS_LOST, 0, 0, 0, 0]);
+                        }
+                        self.focused_window = None;
+                        self.compositor.set_focused_layer(None);
+                    }
+                }
+
+                if needs_icon_redraw {
+                    self.reload_wallpaper_and_icons();
                 }
             }
         } else {
             // Mouse up
             self.mouse_buttons = 0;
+
+            // Clear mouse_down_icon state
+            self.desktop_icons.mouse_down_icon = None;
+
+            // End desktop icon drag
+            if self.desktop_icons.end_drag() {
+                self.reload_wallpaper_and_icons();
+            }
 
             if let Some((wid, btn)) = self.btn_pressed.take() {
                 if self.has_gpu_accel {

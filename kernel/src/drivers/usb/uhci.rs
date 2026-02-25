@@ -592,6 +592,7 @@ fn enumerate_device(ctrl: &UhciController, port: u8, speed: UsbSpeed) {
         protocol: dev_protocol,
         num_configs: dev_desc.b_num_configurations,
         interfaces,
+        config_raw: config_buf[..config_len as usize].to_vec(),
     };
 
     register_device(usb_dev);
@@ -845,7 +846,13 @@ pub fn poll_ports() {
             // Clear status change bits
             reg_write16(ctrl.io_base, port_reg, status | PORT_CSC | PORT_PEC);
 
-            // TODO: remove_device() when we track port→address mapping
+            // Clean up class drivers and USB device registry
+            let port_num = (i + 1) as u8;
+            super::hub::disconnect(port_num, super::ControllerType::Uhci);
+            super::cdc_acm::disconnect(port_num, super::ControllerType::Uhci);
+            super::cdc_ecm::disconnect(port_num, super::ControllerType::Uhci);
+            super::storage::disconnect(port_num, super::ControllerType::Uhci);
+            super::remove_device(port_num, super::ControllerType::Uhci);
         }
     }
 }

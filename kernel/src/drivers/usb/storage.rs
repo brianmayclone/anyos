@@ -1,9 +1,10 @@
 //! USB Mass Storage class driver (Bulk-Only Transport).
 //!
-//! Supports SCSI transparent command set (subclass 0x06) with
-//! bulk-only transport protocol (protocol 0x50).
+//! Supports SCSI transparent command set (subclass 0x06) and ATAPI
+//! (subclass 0x02, for CD/DVD-ROM) with bulk-only transport (protocol 0x50).
 //!
-//! Implements: INQUIRY, TEST_UNIT_READY, READ_CAPACITY, READ_10, WRITE_10.
+//! Implements: INQUIRY, TEST_UNIT_READY, READ_CAPACITY, READ_10, WRITE_10,
+//! REQUEST_SENSE, START_STOP_UNIT (eject).
 
 use super::{UsbDevice, UsbInterface, ControllerType, UsbSpeed};
 use crate::memory::physical;
@@ -40,10 +41,15 @@ const CBW_FLAG_OUT: u8 = 0x00;
 
 // SCSI commands
 const SCSI_TEST_UNIT_READY: u8 = 0x00;
+const SCSI_REQUEST_SENSE: u8 = 0x03;
 const SCSI_INQUIRY: u8 = 0x12;
+const SCSI_START_STOP_UNIT: u8 = 0x1B;
 const SCSI_READ_CAPACITY: u8 = 0x25;
 const SCSI_READ_10: u8 = 0x28;
 const SCSI_WRITE_10: u8 = 0x2A;
+
+/// SCSI device type from INQUIRY byte 0 (bits 4:0).
+const SCSI_DEVTYPE_CDROM: u8 = 0x05;
 
 /// Bounce buffer size: 64 KiB (128 sectors).
 const BOUNCE_PAGES: usize = 16;
@@ -72,6 +78,12 @@ struct UsbStorageDevice {
     bounce_phys: u64,
     /// Assigned disk_id in the block device registry.
     disk_id: u8,
+    /// True for CD-ROM/DVD-ROM devices (read-only, 2048-byte sectors).
+    is_cdrom: bool,
+    /// SCSI device type from INQUIRY byte 0 (0x00=disk, 0x05=CDROM).
+    device_type: u8,
+    /// CDROM index for /dev/cdrom{N} (only valid if is_cdrom).
+    cdrom_index: u8,
 }
 
 impl UsbStorageDevice {
@@ -88,11 +100,21 @@ static USB_STORAGE_DEVICES: Spinlock<Vec<UsbStorageDevice>> = Spinlock::new(Vec:
 /// Next available disk_id for USB storage (boot disk is 0).
 static NEXT_USB_DISK_ID: Spinlock<u8> = Spinlock::new(1);
 
+/// Next available CDROM index (0 reserved for IDE ATAPI /dev/cdrom0).
+static NEXT_USB_CDROM_INDEX: Spinlock<u8> = Spinlock::new(1);
+
 fn alloc_disk_id() -> u8 {
     let mut id = NEXT_USB_DISK_ID.lock();
     let d = *id;
     *id = id.wrapping_add(1);
     d
+}
+
+fn alloc_cdrom_index() -> u8 {
+    let mut idx = NEXT_USB_CDROM_INDEX.lock();
+    let i = *idx;
+    *idx = idx.wrapping_add(1);
+    i
 }
 
 // ── CBW / CSW Transfer ───────────────────────────
@@ -272,6 +294,97 @@ fn scsi_write_10(dev: &mut UsbStorageDevice, lba: u32, count: u16) -> Result<(),
     Ok(())
 }
 
+fn scsi_request_sense(dev: &mut UsbStorageDevice) -> Result<[u8; 18], &'static str> {
+    let tag = dev.next_tag();
+    let cbw = Cbw {
+        signature: CBW_SIGNATURE, tag,
+        data_transfer_length: 18,
+        flags: CBW_FLAG_IN, lun: 0, cb_length: 6,
+        cb: [SCSI_REQUEST_SENSE, 0, 0, 0, 18, 0, 0,0,0,0,0,0,0,0,0,0],
+    };
+    send_cbw(dev, &cbw)?;
+    super::bulk_transfer(
+        dev.usb_addr, dev.controller, dev.speed,
+        dev.ep_in, dev.max_packet_in,
+        &mut dev.toggle_in,
+        dev.bounce_phys, 18,
+    )?;
+    let mut result = [0u8; 18];
+    unsafe {
+        core::ptr::copy_nonoverlapping(dev.bounce_phys as *const u8, result.as_mut_ptr(), 18);
+    }
+    recv_csw(dev, tag)?;
+    Ok(result)
+}
+
+/// START STOP UNIT — start/stop the drive motor, or eject media.
+/// `start`: 1 = start motor, 0 = stop motor.
+/// `loej`: 1 = load/eject (with start=0 → eject, start=1 → load).
+fn scsi_start_stop_unit(dev: &mut UsbStorageDevice, start: bool, loej: bool) -> Result<(), &'static str> {
+    let tag = dev.next_tag();
+    let byte4 = (start as u8) | ((loej as u8) << 1);
+    let cbw = Cbw {
+        signature: CBW_SIGNATURE, tag,
+        data_transfer_length: 0,
+        flags: CBW_FLAG_OUT, lun: 0, cb_length: 6,
+        cb: [SCSI_START_STOP_UNIT, 0, 0, 0, byte4, 0, 0,0,0,0,0,0,0,0,0,0],
+    };
+    send_cbw(dev, &cbw)?;
+    recv_csw(dev, tag)?;
+    Ok(())
+}
+
+// ── Error Recovery ───────────────────────────────
+
+/// Bulk-Only Mass Storage Reset (class request 0xFF).
+/// Resets the BOT state machine without affecting USB address/config.
+fn bot_reset(dev: &mut UsbStorageDevice) -> Result<(), &'static str> {
+    let setup = super::SetupPacket {
+        bm_request_type: 0x21, // Class, Interface, Host-to-Device
+        b_request: 0xFF,       // Bulk-Only Mass Storage Reset
+        w_value: 0,
+        w_index: 0,            // interface number
+        w_length: 0,
+    };
+    let _ = super::hid_control_transfer(
+        dev.usb_addr, dev.controller, dev.speed,
+        dev.max_packet_in.max(dev.max_packet_out),
+        &setup, false, 0,
+    )?;
+    Ok(())
+}
+
+/// CLEAR_FEATURE(ENDPOINT_HALT) — unstall a specific endpoint.
+fn clear_halt(dev: &UsbStorageDevice, endpoint: u8) -> Result<(), &'static str> {
+    let setup = super::SetupPacket {
+        bm_request_type: 0x02, // Standard, Endpoint, Host-to-Device
+        b_request: 0x01,       // CLEAR_FEATURE
+        w_value: 0,            // ENDPOINT_HALT feature selector
+        w_index: endpoint as u16,
+        w_length: 0,
+    };
+    let _ = super::hid_control_transfer(
+        dev.usb_addr, dev.controller, dev.speed,
+        dev.max_packet_in.max(dev.max_packet_out),
+        &setup, false, 0,
+    )?;
+    Ok(())
+}
+
+/// Full BOT error recovery sequence:
+/// 1. Bulk-Only Mass Storage Reset
+/// 2. CLEAR_FEATURE(ENDPOINT_HALT) on bulk IN
+/// 3. CLEAR_FEATURE(ENDPOINT_HALT) on bulk OUT
+/// 4. Reset data toggles
+fn bot_error_recovery(dev: &mut UsbStorageDevice) {
+    crate::serial_println!("  USB Storage: BOT error recovery (disk {})", dev.disk_id);
+    let _ = bot_reset(dev);
+    let _ = clear_halt(dev, dev.ep_in);
+    let _ = clear_halt(dev, dev.ep_out);
+    dev.toggle_in = 0;
+    dev.toggle_out = 0;
+}
+
 // ── Block Device Read/Write Dispatch ─────────────
 
 /// Read sectors from a USB storage device. Registered as I/O override.
@@ -290,9 +403,15 @@ pub fn usb_storage_read(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> bo
 
     while remaining > 0 {
         let batch = remaining.min(max_sectors);
-        if scsi_read_10(dev, cur_lba, batch as u16).is_err() {
-            return false;
+        let mut ok = false;
+        for _retry in 0..2 {
+            if scsi_read_10(dev, cur_lba, batch as u16).is_ok() {
+                ok = true;
+                break;
+            }
+            bot_error_recovery(dev);
         }
+        if !ok { return false; }
         let bytes = batch as usize * bs;
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -306,6 +425,11 @@ pub fn usb_storage_read(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> bo
         remaining -= batch;
     }
     true
+}
+
+/// Write noop for read-only devices (CDROM). Always returns false.
+fn usb_storage_write_noop(_disk_id: u8, _lba: u32, _count: u32, _buf: &[u8]) -> bool {
+    false
 }
 
 /// Write sectors to a USB storage device. Registered as I/O override.
@@ -332,9 +456,23 @@ pub fn usb_storage_write(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool 
                 bytes,
             );
         }
-        if scsi_write_10(dev, cur_lba, batch as u16).is_err() {
-            return false;
+        let mut ok = false;
+        for _retry in 0..2 {
+            if scsi_write_10(dev, cur_lba, batch as u16).is_ok() {
+                ok = true;
+                break;
+            }
+            // Re-copy data to bounce buffer after recovery (toggles reset)
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    buf[offset..].as_ptr(),
+                    dev.bounce_phys as *mut u8,
+                    bytes,
+                );
+            }
+            bot_error_recovery(dev);
         }
+        if !ok { return false; }
         offset += bytes;
         cur_lba += batch;
         remaining -= batch;
@@ -397,13 +535,15 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         }
     };
 
-    // Only support SCSI transparent (0x06) + Bulk-Only (0x50) for now
-    if iface.subclass != 0x06 || iface.protocol != 0x50 {
+    // Support SCSI transparent (0x06) and ATAPI (0x02) with Bulk-Only (0x50)
+    if (iface.subclass != 0x06 && iface.subclass != 0x02) || iface.protocol != 0x50 {
         crate::serial_println!(
             "  USB Storage: unsupported subclass/protocol combination"
         );
         return;
     }
+
+    let is_atapi_subclass = iface.subclass == 0x02;
 
     // Allocate DMA memory for CBW/CSW (1 page, identity-mapped)
     let cbw_csw_phys = match physical::alloc_frame() {
@@ -443,29 +583,53 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         cbw_csw_phys,
         bounce_phys,
         disk_id: 0,
+        is_cdrom: is_atapi_subclass,
+        device_type: 0,
+        cdrom_index: 0,
     };
 
-    // TEST_UNIT_READY with retry (device may be spinning up)
+    // TEST_UNIT_READY with retry (CDROMs may need longer spin-up)
+    let max_retries = if stor_dev.is_cdrom { 20 } else { 10 };
+    let delay_ms = if stor_dev.is_cdrom { 500 } else { 200 };
     let mut ready = false;
-    for attempt in 0..10 {
+    for attempt in 0..max_retries {
         if scsi_test_unit_ready(&mut stor_dev).is_ok() {
             ready = true;
             break;
         }
-        crate::serial_println!("  USB Storage: TEST_UNIT_READY attempt {} failed", attempt + 1);
-        crate::arch::x86::pit::delay_ms(200);
+        // For CDROMs, check REQUEST_SENSE for "becoming ready" (ASC=0x04, ASCQ=0x01)
+        if stor_dev.is_cdrom {
+            if let Ok(sense) = scsi_request_sense(&mut stor_dev) {
+                let asc = sense[12];
+                let ascq = sense[13];
+                if asc == 0x04 && ascq == 0x01 {
+                    crate::serial_println!("  USB Storage: CDROM spinning up (attempt {})", attempt + 1);
+                } else if asc == 0x3A {
+                    crate::serial_println!("  USB Storage: no medium in CDROM drive");
+                    return;
+                }
+            }
+        } else {
+            crate::serial_println!("  USB Storage: TEST_UNIT_READY attempt {} failed", attempt + 1);
+        }
+        crate::arch::x86::pit::delay_ms(delay_ms);
     }
     if !ready {
         crate::serial_println!("  USB Storage: device not ready after retries");
         return;
     }
 
-    // INQUIRY
+    // INQUIRY — detect device type (disk vs CDROM)
     match scsi_inquiry(&mut stor_dev) {
         Ok(inquiry) => {
             let vendor = core::str::from_utf8(&inquiry[8..16]).unwrap_or("?").trim();
             let product = core::str::from_utf8(&inquiry[16..32]).unwrap_or("?").trim();
-            crate::serial_println!("  USB Storage: {} {}", vendor, product);
+            stor_dev.device_type = inquiry[0] & 0x1F;
+            if stor_dev.device_type == SCSI_DEVTYPE_CDROM {
+                stor_dev.is_cdrom = true;
+            }
+            let type_str = if stor_dev.is_cdrom { "CD/DVD-ROM" } else { "Disk" };
+            crate::serial_println!("  USB Storage: {} {} [{}]", vendor, product, type_str);
         }
         Err(e) => {
             crate::serial_println!("  USB Storage: INQUIRY failed: {}", e);
@@ -502,20 +666,62 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         size_sectors: stor_dev.block_count as u64,
     });
 
-    // Register I/O override
-    crate::drivers::storage::register_device_io(
-        disk_id,
-        usb_storage_read,
-        usb_storage_write,
-    );
+    if stor_dev.is_cdrom {
+        // CDROM: register read-only I/O override
+        crate::drivers::storage::register_device_io(
+            disk_id,
+            usb_storage_read,
+            usb_storage_write_noop,
+        );
 
-    // Store device before partition scanning (read dispatch needs it)
-    USB_STORAGE_DEVICES.lock().push(stor_dev);
+        let cdrom_idx = alloc_cdrom_index();
+        stor_dev.cdrom_index = cdrom_idx;
 
-    // Scan for partitions
-    blockdev::scan_and_register_partitions(disk_id);
+        // Store device before HAL registration (read dispatch needs it)
+        USB_STORAGE_DEVICES.lock().push(stor_dev);
 
-    crate::serial_println!("  USB Storage: registered as disk {} (hd{})", disk_id, disk_id);
+        // Register HAL device at /dev/cdrom{N}
+        let path = alloc::format!("/dev/cdrom{}", cdrom_idx);
+        crate::drivers::hal::register_device(
+            &path,
+            alloc::boxed::Box::new(UsbCdromHalDriver { disk_id }),
+            None,
+        );
+
+        crate::serial_println!(
+            "  USB Storage: registered as /dev/cdrom{} (USB CD/DVD-ROM, disk {})",
+            cdrom_idx, disk_id
+        );
+    } else {
+        // Regular disk: read+write I/O override + partition scan
+        crate::drivers::storage::register_device_io(
+            disk_id,
+            usb_storage_read,
+            usb_storage_write,
+        );
+
+        // Store device before partition scanning (read dispatch needs it)
+        USB_STORAGE_DEVICES.lock().push(stor_dev);
+
+        // Scan for partitions (CDROMs don't have MBR/GPT)
+        blockdev::scan_and_register_partitions(disk_id);
+
+        crate::serial_println!("  USB Storage: registered as disk {} (hd{})", disk_id, disk_id);
+    }
+}
+
+/// Return the disk_id of the first USB CDROM device (for ISO 9660 integration).
+pub fn first_cdrom_disk_id() -> Option<u8> {
+    let devs = USB_STORAGE_DEVICES.lock();
+    devs.iter().find(|d| d.is_cdrom).map(|d| d.disk_id)
+}
+
+/// Eject a USB CDROM by disk_id.
+pub fn eject_cdrom(disk_id: u8) -> Result<(), &'static str> {
+    let mut devs = USB_STORAGE_DEVICES.lock();
+    let dev = devs.iter_mut().find(|d| d.disk_id == disk_id && d.is_cdrom)
+        .ok_or("CDROM not found")?;
+    scsi_start_stop_unit(dev, false, true) // start=0, loej=1 → eject
 }
 
 /// Called when a USB device is disconnected. Cleans up storage state.
@@ -524,6 +730,8 @@ pub fn disconnect(port: u8, controller: ControllerType) {
     if let Some(idx) = devs.iter().position(|d| d.port == port && d.controller == controller) {
         let dev = devs.remove(idx);
         let disk_id = dev.disk_id;
+        let is_cdrom = dev.is_cdrom;
+        let cdrom_index = dev.cdrom_index;
         drop(devs);
 
         // Remove block devices
@@ -533,8 +741,51 @@ pub fn disconnect(port: u8, controller: ControllerType) {
         // Unregister I/O override
         crate::drivers::storage::unregister_device_io(disk_id);
 
-        // TODO: free DMA memory (cbw_csw_phys, bounce_phys) back to physical allocator
+        if is_cdrom {
+            crate::serial_println!(
+                "  USB Storage: /dev/cdrom{} removed (disk {})", cdrom_index, disk_id
+            );
+        } else {
+            crate::serial_println!("  USB Storage: disk {} (hd{}) removed", disk_id, disk_id);
+        }
+    }
+}
 
-        crate::serial_println!("  USB Storage: disk {} (hd{}) removed", disk_id, disk_id);
+// ── HAL CDROM Driver ────────────────────────────
+
+use crate::drivers::hal::{Driver, DriverType, DriverError};
+
+struct UsbCdromHalDriver {
+    disk_id: u8,
+}
+
+impl Driver for UsbCdromHalDriver {
+    fn name(&self) -> &str { "USB CD/DVD-ROM" }
+    fn driver_type(&self) -> DriverType { DriverType::Block }
+    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+
+    fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize, DriverError> {
+        let lba = (offset / 2048) as u32;
+        let blocks = ((buf.len() + 2047) / 2048) as u32;
+        if usb_storage_read(self.disk_id, lba, blocks, buf) {
+            Ok(blocks as usize * 2048)
+        } else {
+            Err(DriverError::IoError)
+        }
+    }
+
+    fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize, DriverError> {
+        Err(DriverError::NotSupported) // CDROMs are read-only
+    }
+
+    fn ioctl(&mut self, cmd: u32, _arg: u32) -> Result<u32, DriverError> {
+        match cmd {
+            1 => {
+                // Eject
+                eject_cdrom(self.disk_id).map_err(|_| DriverError::IoError)?;
+                Ok(0)
+            }
+            _ => Err(DriverError::NotSupported),
+        }
     }
 }

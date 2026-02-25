@@ -1,7 +1,7 @@
 //! MenuBar — macOS-like global menu bar with per-app menus, dropdowns, and status icons.
 
 mod dropdown;
-mod rendering;
+pub(crate) mod rendering;
 pub(crate) mod types;
 
 pub use types::{
