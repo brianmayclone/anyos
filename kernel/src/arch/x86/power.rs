@@ -94,14 +94,16 @@ pub fn current_frequency_mhz() -> u32 {
         return amd_current_frequency();
     }
 
-    // Intel legacy: read current ratio from PERF_STATUS
-    let status = unsafe { rdmsr(MSR_PERF_STATUS) };
-    let ratio = ((status >> 8) & 0xFF) as u32;
-    if ratio > 0 {
-        ratio * 100 // assume 100 MHz bus clock
-    } else {
-        BASE_FREQ_MHZ.load(Ordering::Relaxed)
+    // Intel legacy: read current ratio from PERF_STATUS (only if MSR is available)
+    if LEGACY_PSTATE_OK.load(Ordering::Relaxed) {
+        let status = unsafe { rdmsr(MSR_PERF_STATUS) };
+        let ratio = ((status >> 8) & 0xFF) as u32;
+        if ratio > 0 {
+            return ratio * 100; // assume 100 MHz bus clock
+        }
     }
+
+    BASE_FREQ_MHZ.load(Ordering::Relaxed)
 }
 
 /// Power features as a bitfield for sysinfo.
