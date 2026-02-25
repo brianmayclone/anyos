@@ -5,6 +5,7 @@
 //! specificity) -> inline styles.  Inheritable properties that are not
 //! explicitly set by any declaration are inherited from the parent node.
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::string::String;
