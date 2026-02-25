@@ -188,6 +188,8 @@ pub enum Property {
     BorderCollapse,
     BorderSpacing,
     TableLayout,
+    /// CSS custom property (--name). Value stored in Declaration.value as Keyword.
+    CustomProperty(String),
 }
 
 #[derive(Clone)]
