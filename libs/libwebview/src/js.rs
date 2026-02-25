@@ -4,13 +4,14 @@
 //! so that JavaScript can interact with the page (document.getElementById,
 //! element.textContent, element.style, console.log, etc.).
 
-use alloc::boxed::Box;
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 
 use libjs::{JsEngine, JsValue, Vm};
-use libjs::value::{JsObject, JsFunction, FnKind, Property};
+use libjs::value::{JsObject, JsArray, JsFunction, FnKind};
 
 use crate::dom::{Dom, NodeType, Tag};
 
@@ -670,8 +671,8 @@ fn dom_create_element(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     obj.set(String::from("textContent"), JsValue::String(String::new()));
     obj.set(String::from("innerHTML"), JsValue::String(String::new()));
     obj.set(String::from("innerText"), JsValue::String(String::new()));
-    obj.set(String::from("style"), JsValue::Object(Box::new(JsObject::new())));
-    obj.set(String::from("children"), JsValue::Array(Box::new(libjs::value::JsArray::new())));
+    obj.set(String::from("style"), JsValue::Object(Rc::new(RefCell::new(JsObject::new()))));
+    obj.set(String::from("children"), JsValue::Array(Rc::new(RefCell::new(JsArray::new()))));
 
     // Stub methods.
     let noop = make_noop();
@@ -686,7 +687,7 @@ fn dom_create_element(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     obj.set(String::from("focus"), noop.clone());
     obj.set(String::from("blur"), noop);
 
-    JsValue::Object(Box::new(obj))
+    JsValue::Object(Rc::new(RefCell::new(obj)))
 }
 
 /// __dom_addEventListener(nodeId, event, callback)
@@ -830,17 +831,17 @@ fn arg_string(args: &[JsValue], index: usize) -> String {
 
 /// Create a JS array value from a Vec<JsValue>.
 fn make_array(elements: Vec<JsValue>) -> JsValue {
-    JsValue::Array(Box::new(libjs::value::JsArray::from_vec(elements)))
+    JsValue::Array(Rc::new(RefCell::new(JsArray::from_vec(elements))))
 }
 
 /// Create a noop JS function.
 fn make_noop() -> JsValue {
-    JsValue::Function(Box::new(JsFunction {
+    JsValue::Function(Rc::new(RefCell::new(JsFunction {
         name: None,
         params: Vec::new(),
         kind: FnKind::Native(noop_fn),
         this_binding: None,
-    }))
+    })))
 }
 
 fn noop_fn(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
@@ -855,7 +856,7 @@ fn make_element_call(node_id: usize) -> JsValue {
     // The document.getElementById wrapper in JS will call __makeElement on it.
     let mut obj = JsObject::new();
     obj.set(String::from("__nodeId"), JsValue::Number(node_id as f64));
-    JsValue::Object(Box::new(obj))
+    JsValue::Object(Rc::new(RefCell::new(obj)))
 }
 
 /// Serialize a DOM node to HTML string (simplified).

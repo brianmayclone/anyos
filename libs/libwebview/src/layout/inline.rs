@@ -233,7 +233,19 @@ fn collect_inline_fragments(
                 return;
             }
 
-            // Recurse into inline children.
+            // Recurse into inline children, applying inline margin/padding.
+            let ml = style.margin_left.max(0);
+            let mr = style.margin_right.max(0);
+            let pl = style.padding_left.max(0);
+            let pr = style.padding_right.max(0);
+
+            // Left margin + padding → insert spacer.
+            let left_space = ml + pl;
+            if left_space > 0 {
+                let spacer = LayoutBox::new(None, BoxType::Inline);
+                out.push(InlineFragment { width: left_space, height: 0, layout_box: spacer, breaks_after: false });
+            }
+
             let children: Vec<NodeId> = node.children.iter().copied().collect();
             for &cid in &children {
                 let cs = &styles[cid];
@@ -241,6 +253,13 @@ fn collect_inline_fragments(
                     continue;
                 }
                 collect_inline_fragments(dom, styles, cid, out, available_width, images);
+            }
+
+            // Right padding + margin → insert spacer.
+            let right_space = pr + mr;
+            if right_space > 0 {
+                let spacer = LayoutBox::new(None, BoxType::Inline);
+                out.push(InlineFragment { width: right_space, height: 0, layout_box: spacer, breaks_after: false });
             }
         }
     }

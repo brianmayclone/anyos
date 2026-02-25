@@ -19,14 +19,14 @@ const ACK: u8 = 0x10;
 
 const TCP_HEADER_LEN: usize = 20;
 const MAX_CONNECTIONS: usize = 64;
-const RECV_BUF_SIZE: usize = 16384;
-const WINDOW_SIZE: u16 = 8192;
+const RECV_BUF_SIZE: usize = 65536;
+const WINDOW_SIZE: u16 = 65535;
 const MSS: usize = 1460;
 const RETRANSMIT_TICKS: u32 = 300; // 3 seconds at 100Hz
 const MAX_RETRANSMITS: u32 = 5;
 const TIME_WAIT_TICKS: u32 = 200; // 2 seconds at 100Hz
 const MAX_BACKLOG: usize = 16;    // max pending connections per listener
-const POLL_SLEEP_MS: u32 = 10;    // sleep interval between poll attempts
+const POLL_SLEEP_MS: u32 = 1;     // sleep interval between poll attempts
 
 /// Sleep the current thread briefly to avoid busy-waiting in poll loops.
 /// This blocks the thread via the scheduler so it consumes zero CPU.
@@ -530,85 +530,123 @@ pub fn close_listener(socket_id: u32) -> u32 {
     0
 }
 
+/// Maximum bytes in flight (sliding window send limit).
+const MAX_IN_FLIGHT: usize = 32768;
+
 /// Send data on an established connection. Returns bytes sent or u32::MAX on error.
-/// Uses stop-and-wait: sends one MSS-sized segment, waits for ACK, repeats.
+/// Uses sliding window: sends multiple segments before waiting for ACKs.
 pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
     let id = socket_id as usize;
-    if id >= MAX_CONNECTIONS {
-        return u32::MAX;
+    if id >= MAX_CONNECTIONS || data.is_empty() {
+        return if data.is_empty() { 0 } else { u32::MAX };
     }
 
-    let mut offset = 0usize;
-    while offset < data.len() {
-        let chunk_end = (offset + MSS).min(data.len());
-        let chunk = &data[offset..chunk_end];
+    // Record the sequence number at the start of our data.
+    let send_base_seq = {
+        let conns = TCP_CONNECTIONS.lock();
+        let table = match conns.as_ref() {
+            Some(t) => t,
+            None => return u32::MAX,
+        };
+        match &table[id] {
+            Some(tcb) if tcb.state == TcpState::Established => tcb.snd_nxt,
+            _ => return u32::MAX,
+        }
+    };
 
-        // Get connection info and send (with lock)
-        let (local_ip, local_port, remote_ip, remote_port, seq, ack_num) = {
-            let mut conns = TCP_CONNECTIONS.lock();
-            let table = match conns.as_mut() {
-                Some(t) => t,
+    let start = crate::arch::x86::pit::get_ticks();
+    let mut send_offset = 0usize; // next byte index to send (relative to data)
+
+    loop {
+        // Determine how many bytes have been acknowledged.
+        let ack_offset = {
+            let conns = TCP_CONNECTIONS.lock();
+            let table = conns.as_ref().unwrap();
+            match &table[id] {
+                Some(tcb) => {
+                    if tcb.reset_received || tcb.state == TcpState::Closed {
+                        return if send_offset > 0 { send_offset as u32 } else { u32::MAX };
+                    }
+                    let acked_bytes = tcb.snd_una.wrapping_sub(send_base_seq) as usize;
+                    acked_bytes.min(data.len())
+                }
                 None => return u32::MAX,
-            };
-            let tcb = match table[id].as_mut() {
-                Some(t) => t,
-                None => return u32::MAX,
-            };
-            if tcb.state != TcpState::Established {
-                return if offset > 0 { offset as u32 } else { u32::MAX };
             }
-            let info = (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
-                       tcb.snd_nxt, tcb.rcv_nxt);
-            tcb.last_sent_data = Vec::from(chunk);
-            tcb.last_sent_seq = tcb.snd_nxt;
-            tcb.last_sent_flags = PSH | ACK;
-            tcb.last_send_tick = crate::arch::x86::pit::get_ticks();
-            tcb.retransmit_count = 0;
-            tcb.snd_nxt = tcb.snd_nxt.wrapping_add(chunk.len() as u32);
-            info
         };
 
-        // Send segment (outside lock)
-        send_segment(local_ip, local_port, remote_ip, remote_port,
-                     seq, ack_num, PSH | ACK, chunk);
+        // All data acknowledged — done!
+        if ack_offset >= data.len() {
+            return data.len() as u32;
+        }
 
-        // Wait for ACK
-        let start = crate::arch::x86::pit::get_ticks();
-        loop {
-            super::poll();
-
-            let acked = {
+        // Send as many segments as the window allows.
+        let mut sent_any = false;
+        while send_offset < data.len() {
+            let in_flight = send_offset - ack_offset;
+            // Get remote window size.
+            let snd_wnd = {
                 let conns = TCP_CONNECTIONS.lock();
-                let table = conns.as_ref().unwrap();
-                if let Some(tcb) = &table[id] {
-                    if tcb.reset_received || tcb.state == TcpState::Closed {
-                        return if offset > 0 { offset as u32 } else { u32::MAX };
-                    }
-                    // Check if our data was acknowledged
-                    let expected_ack = seq.wrapping_add(chunk.len() as u32);
-                    is_seq_gte(tcb.snd_una, expected_ack)
+                if let Some(Some(tcb)) = conns.as_ref().map(|t| &t[id]) {
+                    (tcb.snd_wnd as usize).max(MSS)
                 } else {
                     return u32::MAX;
                 }
             };
-
-            if acked {
-                break;
+            let window = snd_wnd.min(MAX_IN_FLIGHT);
+            if in_flight >= window {
+                break; // window full
             }
 
-            let now = crate::arch::x86::pit::get_ticks();
-            if now.wrapping_sub(start) >= timeout_ticks {
-                crate::serial_println!("TCP: send timeout on socket {}", socket_id);
-                return if offset > 0 { offset as u32 } else { u32::MAX };
-            }
+            let remaining_window = window - in_flight;
+            let chunk_end = (send_offset + MSS).min(data.len()).min(send_offset + remaining_window);
+            let chunk = &data[send_offset..chunk_end];
 
-            poll_sleep();
+            let (local_ip, local_port, remote_ip, remote_port, seq, ack_num) = {
+                let mut conns = TCP_CONNECTIONS.lock();
+                let table = match conns.as_mut() {
+                    Some(t) => t,
+                    None => return u32::MAX,
+                };
+                let tcb = match table[id].as_mut() {
+                    Some(t) => t,
+                    None => return u32::MAX,
+                };
+                if tcb.state != TcpState::Established {
+                    return if send_offset > 0 { send_offset as u32 } else { u32::MAX };
+                }
+                let info = (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
+                           tcb.snd_nxt, tcb.rcv_nxt);
+                tcb.last_sent_data = Vec::from(chunk);
+                tcb.last_sent_seq = tcb.snd_nxt;
+                tcb.last_sent_flags = PSH | ACK;
+                tcb.last_send_tick = crate::arch::x86::pit::get_ticks();
+                tcb.retransmit_count = 0;
+                tcb.snd_nxt = tcb.snd_nxt.wrapping_add(chunk.len() as u32);
+                info
+            };
+
+            send_segment(local_ip, local_port, remote_ip, remote_port,
+                         seq, ack_num, PSH | ACK, chunk);
+
+            send_offset = chunk_end;
+            sent_any = true;
         }
 
-        offset = chunk_end;
-    }
+        // Poll network for incoming ACKs.
+        super::poll();
 
-    offset as u32
+        // Check timeout.
+        let now = crate::arch::x86::pit::get_ticks();
+        if now.wrapping_sub(start) >= timeout_ticks {
+            crate::serial_println!("TCP: send timeout on socket {}", socket_id);
+            return if ack_offset > 0 { ack_offset as u32 } else { u32::MAX };
+        }
+
+        // If we couldn't send anything (window full), sleep briefly for ACKs.
+        if !sent_any {
+            poll_sleep();
+        }
+    }
 }
 
 /// Receive data from an established connection.
@@ -638,12 +676,12 @@ pub fn recv(socket_id: u32, buf: &mut [u8], timeout_ticks: u32) -> u32 {
                 return u32::MAX;
             }
 
-            // Drain data from recv buffer
+            // Drain data from recv buffer using efficient slice copy.
             if !tcb.recv_buf.is_empty() {
                 let n = tcb.recv_buf.len().min(buf.len());
-                for i in 0..n {
-                    buf[i] = tcb.recv_buf.pop_front().unwrap();
-                }
+                // VecDeque::drain copies contiguous slices efficiently.
+                let drained: Vec<u8> = tcb.recv_buf.drain(..n).collect();
+                buf[..n].copy_from_slice(&drained);
                 return n as u32;
             }
 
@@ -1196,9 +1234,7 @@ fn accept_data_deferred(tcb: &mut Tcb, seg: &TcpSegment) -> Option<DeferredSend>
     if seg.seq == tcb.rcv_nxt {
         let space = RECV_BUF_SIZE - tcb.recv_buf.len();
         let take = seg.payload.len().min(space);
-        for i in 0..take {
-            tcb.recv_buf.push_back(seg.payload[i]);
-        }
+        tcb.recv_buf.extend(&seg.payload[..take]);
         tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(take as u32);
         Some(DeferredSend {
             local_ip: tcb.local_ip, local_port: tcb.local_port,

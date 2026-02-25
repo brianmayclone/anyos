@@ -1,13 +1,71 @@
 //! DNS resolver -- resolves hostnames to IPv4 addresses via UDP queries to port 53.
-//! Supports A record lookups with a fixed transaction ID and 5-second timeout.
+//! Supports A record lookups with caching and 500ms timeout.
 
+use alloc::string::String;
 use alloc::vec::Vec;
 use super::types::Ipv4Addr;
+use crate::sync::spinlock::Spinlock;
 
 const DNS_PORT: u16 = 53;
+const DNS_CACHE_SIZE: usize = 64;
+
+/// A cached DNS entry.
+struct DnsCacheEntry {
+    hostname: String,
+    addr: Ipv4Addr,
+    /// PIT tick when this entry was cached.
+    cached_at: u32,
+}
+
+/// Simple DNS cache — stores up to DNS_CACHE_SIZE entries, evicts oldest on overflow.
+static DNS_CACHE: Spinlock<Vec<DnsCacheEntry>> = Spinlock::new(Vec::new());
+
+/// Look up a cached DNS entry. Returns None if not cached or expired (5 min TTL).
+fn cache_lookup(hostname: &str) -> Option<Ipv4Addr> {
+    let cache = DNS_CACHE.lock();
+    let now = crate::arch::x86::pit::get_ticks();
+    let ttl_ticks = 300 * crate::arch::x86::pit::TICK_HZ; // 5 minutes
+    for entry in cache.iter() {
+        if entry.hostname == hostname {
+            if now.wrapping_sub(entry.cached_at) < ttl_ticks {
+                return Some(entry.addr);
+            }
+        }
+    }
+    None
+}
+
+/// Insert or update a DNS cache entry.
+fn cache_insert(hostname: &str, addr: Ipv4Addr) {
+    let mut cache = DNS_CACHE.lock();
+    let now = crate::arch::x86::pit::get_ticks();
+    // Update existing entry if present.
+    for entry in cache.iter_mut() {
+        if entry.hostname == hostname {
+            entry.addr = addr;
+            entry.cached_at = now;
+            return;
+        }
+    }
+    // Evict oldest if at capacity.
+    if cache.len() >= DNS_CACHE_SIZE {
+        cache.remove(0);
+    }
+    cache.push(DnsCacheEntry {
+        hostname: String::from(hostname),
+        addr,
+        cached_at: now,
+    });
+}
 
 /// Resolve a hostname to an IPv4 address using the configured DNS server.
+/// Results are cached for 5 minutes.
 pub fn resolve(hostname: &str) -> Result<Ipv4Addr, &'static str> {
+    // Check cache first.
+    if let Some(addr) = cache_lookup(hostname) {
+        return Ok(addr);
+    }
+
     let cfg = super::config();
     if cfg.dns == Ipv4Addr::ZERO {
         return Err("No DNS server configured");
@@ -30,6 +88,12 @@ pub fn resolve(hostname: &str) -> Result<Ipv4Addr, &'static str> {
     };
 
     super::udp::unbind(src_port);
+
+    // Cache successful results.
+    if let Ok(addr) = result {
+        cache_insert(hostname, addr);
+    }
+
     result
 }
 

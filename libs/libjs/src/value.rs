@@ -1,16 +1,24 @@
 //! JavaScript runtime value types.
+//!
+//! Uses Rc<RefCell<>> for Object/Array/Function to provide proper
+//! reference semantics — mutations are visible to all holders.
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::format;
-use alloc::string::ToString;
+
+use core::cell::RefCell;
 use core::fmt;
 
 use crate::bytecode::Chunk;
 
 /// A JavaScript value.
+///
+/// Objects, Arrays, and Functions use Rc for reference semantics:
+/// cloning a JsValue only bumps the reference count, so mutations
+/// through one handle are visible through all others.
 #[derive(Clone)]
 pub enum JsValue {
     Undefined,
@@ -18,9 +26,9 @@ pub enum JsValue {
     Bool(bool),
     Number(f64),
     String(String),
-    Object(Box<JsObject>),
-    Array(Box<JsArray>),
-    Function(Box<JsFunction>),
+    Object(Rc<RefCell<JsObject>>),
+    Array(Rc<RefCell<JsArray>>),
+    Function(Rc<RefCell<JsFunction>>),
 }
 
 impl fmt::Debug for JsValue {
@@ -32,9 +40,13 @@ impl fmt::Debug for JsValue {
             JsValue::Number(n) => write!(f, "{}", format_number(*n)),
             JsValue::String(s) => write!(f, "\"{}\"", s),
             JsValue::Object(_) => write!(f, "[object Object]"),
-            JsValue::Array(a) => write!(f, "[Array({})]", a.elements.len()),
+            JsValue::Array(a) => {
+                let arr = a.borrow();
+                write!(f, "[Array({})]", arr.elements.len())
+            }
             JsValue::Function(func) => {
-                if let Some(ref name) = func.name {
+                let fun = func.borrow();
+                if let Some(ref name) = fun.name {
                     write!(f, "function {}()", name)
                 } else {
                     write!(f, "function()")
@@ -48,7 +60,8 @@ impl fmt::Debug for JsValue {
 #[derive(Clone, Debug)]
 pub struct JsObject {
     pub properties: BTreeMap<String, Property>,
-    pub prototype: Option<Box<JsObject>>,
+    pub prototype: Option<Rc<RefCell<JsObject>>>,
+    pub internal_tag: Option<String>,
 }
 
 /// A property descriptor (simplified).
@@ -78,6 +91,15 @@ impl Property {
             configurable: false,
         }
     }
+
+    pub fn hidden(value: JsValue) -> Self {
+        Property {
+            value,
+            writable: true,
+            enumerable: false,
+            configurable: true,
+        }
+    }
 }
 
 impl JsObject {
@@ -85,6 +107,15 @@ impl JsObject {
         JsObject {
             properties: BTreeMap::new(),
             prototype: None,
+            internal_tag: None,
+        }
+    }
+
+    pub fn with_tag(tag: &str) -> Self {
+        JsObject {
+            properties: BTreeMap::new(),
+            prototype: None,
+            internal_tag: Some(String::from(tag)),
         }
     }
 
@@ -93,7 +124,7 @@ impl JsObject {
             return prop.value.clone();
         }
         if let Some(ref proto) = self.prototype {
-            return proto.get(key);
+            return proto.borrow().get(key);
         }
         JsValue::Undefined
     }
@@ -102,14 +133,22 @@ impl JsObject {
         self.properties.insert(key, Property::data(value));
     }
 
+    pub fn set_hidden(&mut self, key: String, value: JsValue) {
+        self.properties.insert(key, Property::hidden(value));
+    }
+
     pub fn has(&self, key: &str) -> bool {
         if self.properties.contains_key(key) {
             return true;
         }
         if let Some(ref proto) = self.prototype {
-            return proto.has(key);
+            return proto.borrow().has(key);
         }
         false
+    }
+
+    pub fn has_own(&self, key: &str) -> bool {
+        self.properties.contains_key(key)
     }
 
     pub fn delete(&mut self, key: &str) -> bool {
@@ -178,7 +217,7 @@ pub struct JsFunction {
     pub name: Option<String>,
     pub params: Vec<String>,
     pub kind: FnKind,
-    pub this_binding: Option<Box<JsValue>>,
+    pub this_binding: Option<JsValue>,
 }
 
 impl fmt::Debug for JsFunction {
@@ -194,9 +233,28 @@ pub enum FnKind {
     Native(fn(&mut crate::vm::Vm, &[JsValue]) -> JsValue),
 }
 
-impl JsValue {
-    // ── Type checks ──
+// ── Constructors ──
 
+impl JsValue {
+    /// Create a new empty JS object wrapped in Rc<RefCell>.
+    pub fn new_object() -> JsValue {
+        JsValue::Object(Rc::new(RefCell::new(JsObject::new())))
+    }
+
+    /// Create a new JS array from elements.
+    pub fn new_array(elements: Vec<JsValue>) -> JsValue {
+        JsValue::Array(Rc::new(RefCell::new(JsArray::from_vec(elements))))
+    }
+
+    /// Create a new JS function.
+    pub fn new_function(func: JsFunction) -> JsValue {
+        JsValue::Function(Rc::new(RefCell::new(func)))
+    }
+}
+
+// ── Type checks ──
+
+impl JsValue {
     pub fn is_undefined(&self) -> bool {
         matches!(self, JsValue::Undefined)
     }
@@ -270,7 +328,8 @@ impl JsValue {
             JsValue::String(s) => s.clone(),
             JsValue::Object(_) => String::from("[object Object]"),
             JsValue::Array(a) => {
-                let parts: Vec<String> = a.elements.iter().map(|v| v.to_js_string()).collect();
+                let arr = a.borrow();
+                let parts: Vec<String> = arr.elements.iter().map(|v| v.to_js_string()).collect();
                 let mut out = String::new();
                 for (i, p) in parts.iter().enumerate() {
                     if i > 0 {
@@ -281,7 +340,8 @@ impl JsValue {
                 out
             }
             JsValue::Function(f) => {
-                if let Some(ref name) = f.name {
+                let fun = f.borrow();
+                if let Some(ref name) = fun.name {
                     format!("function {}() {{ [native code] }}", name)
                 } else {
                     String::from("function() { [native code] }")
@@ -306,14 +366,12 @@ impl JsValue {
     /// Abstract equality (==)
     pub fn abstract_eq(&self, other: &JsValue) -> bool {
         match (self, other) {
-            // Same type
             (JsValue::Undefined, JsValue::Undefined) => true,
             (JsValue::Null, JsValue::Null) => true,
             (JsValue::Undefined, JsValue::Null) | (JsValue::Null, JsValue::Undefined) => true,
             (JsValue::Number(a), JsValue::Number(b)) => *a == *b,
             (JsValue::String(a), JsValue::String(b)) => *a == *b,
             (JsValue::Bool(a), JsValue::Bool(b)) => *a == *b,
-            // Coercions
             (JsValue::Number(_), JsValue::String(_)) => {
                 self.to_number() == other.to_number()
             }
@@ -322,7 +380,11 @@ impl JsValue {
             }
             (JsValue::Bool(_), _) => JsValue::Number(self.to_number()).abstract_eq(other),
             (_, JsValue::Bool(_)) => self.abstract_eq(&JsValue::Number(other.to_number())),
-            _ => false, // object identity not supported in simplified version
+            // Object identity via Rc pointer equality
+            (JsValue::Object(a), JsValue::Object(b)) => Rc::ptr_eq(a, b),
+            (JsValue::Array(a), JsValue::Array(b)) => Rc::ptr_eq(a, b),
+            (JsValue::Function(a), JsValue::Function(b)) => Rc::ptr_eq(a, b),
+            _ => false,
         }
     }
 
@@ -334,6 +396,9 @@ impl JsValue {
             (JsValue::Number(a), JsValue::Number(b)) => *a == *b,
             (JsValue::String(a), JsValue::String(b)) => *a == *b,
             (JsValue::Bool(a), JsValue::Bool(b)) => *a == *b,
+            (JsValue::Object(a), JsValue::Object(b)) => Rc::ptr_eq(a, b),
+            (JsValue::Array(a), JsValue::Array(b)) => Rc::ptr_eq(a, b),
+            (JsValue::Function(a), JsValue::Function(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -341,22 +406,23 @@ impl JsValue {
     /// Get a property (works on objects, arrays, strings).
     pub fn get_property(&self, key: &str) -> JsValue {
         match self {
-            JsValue::Object(obj) => obj.get(key),
+            JsValue::Object(obj) => obj.borrow().get(key),
             JsValue::Array(arr) => {
+                let a = arr.borrow();
                 if key == "length" {
-                    return JsValue::Number(arr.elements.len() as f64);
+                    return JsValue::Number(a.elements.len() as f64);
                 }
                 if let Some(idx) = parse_index(key) {
-                    return arr.get(idx);
+                    return a.get(idx);
                 }
-                if let Some(prop) = arr.properties.get(key) {
+                if let Some(prop) = a.properties.get(key) {
                     return prop.value.clone();
                 }
                 JsValue::Undefined
             }
             JsValue::String(s) => {
                 if key == "length" {
-                    return JsValue::Number(s.len() as f64);
+                    return JsValue::Number(s.chars().count() as f64);
                 }
                 if let Some(idx) = parse_index(key) {
                     if let Some(ch) = s.chars().nth(idx) {
@@ -372,19 +438,36 @@ impl JsValue {
     }
 
     /// Set a property.
-    pub fn set_property(&mut self, key: String, value: JsValue) {
+    pub fn set_property(&self, key: String, value: JsValue) {
         match self {
             JsValue::Object(obj) => {
-                obj.set(key, value);
+                obj.borrow_mut().set(key, value);
             }
             JsValue::Array(arr) => {
+                let mut a = arr.borrow_mut();
                 if let Some(idx) = parse_index(&key) {
-                    arr.set(idx, value);
+                    a.set(idx, value);
+                } else if key == "length" {
+                    if let JsValue::Number(n) = &value {
+                        let new_len = *n as usize;
+                        a.elements.truncate(new_len);
+                        while a.elements.len() < new_len {
+                            a.elements.push(JsValue::Undefined);
+                        }
+                    }
                 } else {
-                    arr.properties.insert(key, Property::data(value));
+                    a.properties.insert(key, Property::data(value));
                 }
             }
             _ => {} // silently ignore
+        }
+    }
+
+    /// Delete a property.
+    pub fn delete_property(&self, key: &str) -> bool {
+        match self {
+            JsValue::Object(obj) => obj.borrow_mut().delete(key),
+            _ => true,
         }
     }
 }
@@ -486,7 +569,6 @@ pub fn parse_js_float(s: &str) -> f64 {
     }
 
     if i < bytes.len() {
-        // trailing garbage
         return f64::NAN;
     }
 
@@ -574,12 +656,9 @@ fn format_i64(mut n: i64) -> String {
 }
 
 fn format_float(n: f64) -> String {
-    // Simple float formatter for no_std.
-    // We use a fixed number of significant digits.
     let negative = n < 0.0;
     let abs = if negative { -n } else { n };
 
-    // Find exponent
     let mut exp: i32 = 0;
     let mut val = abs;
     if val >= 10.0 {
@@ -594,7 +673,6 @@ fn format_float(n: f64) -> String {
         }
     }
 
-    // Extract up to 17 significant digits
     let mut digits = Vec::with_capacity(17);
     let mut v = val;
     for _ in 0..17 {
@@ -603,7 +681,6 @@ fn format_float(n: f64) -> String {
         v = (v - d as f64) * 10.0;
     }
 
-    // Trim trailing zeros
     while digits.len() > 1 && digits[digits.len() - 1] == 0 {
         digits.pop();
     }
@@ -613,7 +690,6 @@ fn format_float(n: f64) -> String {
         out.push('-');
     }
 
-    // Use plain notation for reasonable exponents
     if exp >= 0 && exp < 21 {
         let exp = exp as usize;
         for (i, &d) in digits.iter().enumerate() {
@@ -622,7 +698,6 @@ fn format_float(n: f64) -> String {
                 out.push('.');
             }
         }
-        // Pad with zeros if needed
         if exp >= digits.len() {
             for _ in 0..(exp + 1 - digits.len()) {
                 out.push('0');
@@ -637,7 +712,6 @@ fn format_float(n: f64) -> String {
             out.push((b'0' + d) as char);
         }
     } else {
-        // Scientific notation
         out.push((b'0' + digits[0]) as char);
         if digits.len() > 1 {
             out.push('.');

@@ -742,14 +742,26 @@ impl Compiler {
                 // Check for method call: obj.method(args)
                 match callee.as_ref() {
                     Expr::Member { object, property, .. } => {
-                        self.compile_expr(object);
-                        self.emit(Op::Dup); // this binding
+                        // Stack: [..., this_obj, method_fn, arg1, ..., argN]
+                        self.compile_expr(object);   // push this
+                        self.emit(Op::Dup);          // dup for GetPropNamed
                         let ci = self.add_const(Constant::String(property.clone()));
-                        self.emit(Op::GetPropNamed(ci));
+                        self.emit(Op::GetPropNamed(ci)); // pop dup, push method
                         for arg in arguments {
                             self.compile_expr(arg);
                         }
-                        self.emit(Op::Call(arguments.len() as u8 + 1)); // +1 for this
+                        self.emit(Op::CallMethod(arguments.len() as u8));
+                    }
+                    Expr::Index { object, index } => {
+                        // Computed method call: obj[expr](args)
+                        self.compile_expr(object);
+                        self.emit(Op::Dup);
+                        self.compile_expr(index);
+                        self.emit(Op::GetProp);
+                        for arg in arguments {
+                            self.compile_expr(arg);
+                        }
+                        self.emit(Op::CallMethod(arguments.len() as u8));
                     }
                     _ => {
                         self.compile_expr(callee);

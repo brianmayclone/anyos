@@ -81,6 +81,12 @@ struct AppState {
     tabs: Vec<TabState>,
     active_tab: usize,
     cookies: http::CookieJar,
+    /// Pending image fetch queue: (tab_index, img_src, resolved_url).
+    image_queue: Vec<(usize, String, http::Url)>,
+    /// Timer ID for async image loading (0 = no timer).
+    image_timer: u32,
+    /// HTTP connection pool for reusing TCP/TLS connections.
+    conn_pool: http::ConnPool,
 }
 
 static mut STATE: Option<AppState> = None;
@@ -111,7 +117,7 @@ fn navigate(url_str: &str) {
     st.tabs[st.active_tab].status_text = loading_msg;
     update_status();
 
-    let response = match http::fetch(&url, &mut st.cookies) {
+    let response = match http::fetch(&url, &mut st.cookies, &mut st.conn_pool) {
         Ok(r) => r,
         Err(e) => {
             let msg = match e {
@@ -139,40 +145,56 @@ fn navigate(url_str: &str) {
     let base_url = response.final_url.unwrap_or_else(|| http::clone_url(&url));
 
     let body_text = decode_http_body(&response.body, &response.headers);
+    anyos_std::println!("[surf] received {} bytes, parsing HTML...", body_text.len());
 
-    // Collect and fetch images from HTML.
-    let dom_for_images = libwebview::html::parse(&body_text);
-    let tab = &mut st.tabs[st.active_tab];
-    collect_and_fetch_images(&dom_for_images, &base_url, &mut tab.webview, &mut st.cookies);
+    st.tabs[st.active_tab].status_text = String::from("Rendering page...");
+    update_status();
 
-    // Set HTML content — this parses, lays out, and renders controls.
-    let tab = &mut st.tabs[st.active_tab];
-    tab.webview.set_html(&body_text);
+    // Set HTML content — this parses, lays out, and renders controls immediately.
+    st.tabs[st.active_tab].webview.set_html(&body_text);
+    anyos_std::println!("[surf] render complete");
 
     // Print JS console output.
-    for line in tab.webview.js_console() {
+    for line in st.tabs[st.active_tab].webview.js_console() {
         anyos_std::println!("[js] {}", line);
     }
 
     // Extract title.
-    let title = tab.webview.get_title().unwrap_or_else(|| String::from("Untitled"));
+    let title = st.tabs[st.active_tab].webview.get_title().unwrap_or_else(|| String::from("Untitled"));
 
     // Update URL history — use final URL.
     let url_string = format_url(&base_url);
-    if tab.history.is_empty() || tab.history_pos >= tab.history.len()
-        || tab.history[tab.history_pos] != url_string
     {
-        if tab.history_pos + 1 < tab.history.len() {
-            tab.history.truncate(tab.history_pos + 1);
+        let tab = &mut st.tabs[st.active_tab];
+        if tab.history.is_empty() || tab.history_pos >= tab.history.len()
+            || tab.history[tab.history_pos] != url_string
+        {
+            if tab.history_pos + 1 < tab.history.len() {
+                tab.history.truncate(tab.history_pos + 1);
+            }
+            tab.history.push(url_string.clone());
+            tab.history_pos = tab.history.len() - 1;
         }
-        tab.history.push(url_string.clone());
-        tab.history_pos = tab.history.len() - 1;
+        tab.page_title = title;
+        tab.url_text = url_string.clone();
+        tab.status_text = String::from("Done");
     }
 
-    tab.current_url = Some(base_url);
-    tab.page_title = title;
-    tab.url_text = url_string.clone();
-    tab.status_text = String::from("Done");
+    // Queue images for async loading (page is already visible).
+    let dom_for_images = libwebview::html::parse(&body_text);
+    anyos_std::println!("[surf] DOM: {} nodes", dom_for_images.nodes.len());
+    let tab_idx = st.active_tab;
+
+    // Cancel any pending image fetches from previous page.
+    if st.image_timer != 0 {
+        ui::kill_timer(st.image_timer);
+        st.image_timer = 0;
+    }
+    st.image_queue.clear();
+
+    queue_images(&dom_for_images, &base_url, tab_idx);
+
+    st.tabs[st.active_tab].current_url = Some(base_url);
 
     // Update UI.
     let st = state();
@@ -196,7 +218,7 @@ fn navigate_post(url_str: &str, body: &str) {
     st.tabs[st.active_tab].status_text = String::from("Submitting...");
     update_status();
 
-    let response = match http::fetch_post(&url, body, &mut st.cookies) {
+    let response = match http::fetch_post(&url, body, &mut st.cookies, &mut st.conn_pool) {
         Ok(r) => r,
         Err(_) => {
             st.tabs[st.active_tab].status_text = String::from("Submit failed");
@@ -215,10 +237,7 @@ fn navigate_post(url_str: &str, body: &str) {
 
     let body_text = decode_http_body(&response.body, &response.headers);
 
-    let dom_for_images = libwebview::html::parse(&body_text);
-    let tab = &mut st.tabs[st.active_tab];
-    collect_and_fetch_images(&dom_for_images, &base_url, &mut tab.webview, &mut st.cookies);
-
+    // Render page immediately (without images).
     let tab = &mut st.tabs[st.active_tab];
     tab.webview.set_html(&body_text);
 
@@ -239,10 +258,22 @@ fn navigate_post(url_str: &str, body: &str) {
         tab.history_pos = tab.history.len() - 1;
     }
 
-    tab.current_url = Some(base_url);
     tab.page_title = title;
     tab.url_text = url_string.clone();
     tab.status_text = String::from("Done");
+
+    // Queue images for async loading.
+    let dom_for_images = libwebview::html::parse(&body_text);
+    let tab_idx = st.active_tab;
+    if st.image_timer != 0 {
+        ui::kill_timer(st.image_timer);
+        st.image_timer = 0;
+    }
+    st.image_queue.clear();
+    queue_images(&dom_for_images, &base_url, tab_idx);
+
+    let tab = &mut st.tabs[st.active_tab];
+    tab.current_url = Some(base_url);
 
     let st = state();
     st.url_field.set_text(&st.tabs[st.active_tab].url_text);
@@ -362,43 +393,83 @@ fn latin1_to_utf8(bytes: &[u8]) -> String {
 // Image collection
 // ---------------------------------------------------------------------------
 
-fn collect_and_fetch_images(
+/// Collect all image URLs from DOM and queue them for async fetching.
+fn queue_images(
     dom: &libwebview::dom::Dom,
     base_url: &http::Url,
-    webview: &mut libwebview::WebView,
-    cookies: &mut http::CookieJar,
+    tab_index: usize,
 ) {
+    let st = state();
     for (i, node) in dom.nodes.iter().enumerate() {
         if let libwebview::dom::NodeType::Element { tag: libwebview::dom::Tag::Img, .. } = &node.node_type {
             if let Some(src) = dom.attr(i, "src") {
-                // Skip data: URIs and empty sources — they're not fetchable.
                 if src.is_empty() || src.starts_with("data:") {
                     continue;
                 }
                 let img_url = http::resolve_url(base_url, src);
-                // Show fetch URL in status bar.
-                {
-                    let st = state();
-                    let mut status = String::from("Loading: ");
-                    status.push_str(&format_url(&img_url));
-                    st.status_label.set_text(&status);
-                }
-                match http::fetch(&img_url, cookies) {
-                    Ok(resp) => {
-                        if let Some(info) = libimage_client::probe(&resp.body) {
-                            let w = info.width as usize;
-                            let h = info.height as usize;
-                            let mut pixels = vec![0u32; w * h];
-                            let mut scratch = vec![0u8; info.scratch_needed as usize];
-                            if libimage_client::decode(&resp.body, &mut pixels, &mut scratch).is_ok() {
-                                webview.add_image(src, pixels, info.width, info.height);
-                            }
-                        }
+                st.image_queue.push((tab_index, String::from(src), img_url));
+            }
+        }
+    }
+    if !st.image_queue.is_empty() {
+        anyos_std::println!("[surf] queued {} images for async loading", st.image_queue.len());
+        start_image_timer();
+    }
+}
+
+/// Start the image fetch timer if not already running.
+fn start_image_timer() {
+    let st = state();
+    if st.image_timer != 0 {
+        return; // already running
+    }
+    st.image_timer = ui::set_timer(10, || {
+        fetch_next_image();
+    });
+}
+
+/// Fetch the next image in the queue. Called by timer.
+fn fetch_next_image() {
+    let st = state();
+    if st.image_queue.is_empty() {
+        // All done — stop timer.
+        if st.image_timer != 0 {
+            ui::kill_timer(st.image_timer);
+            st.image_timer = 0;
+        }
+        st.tabs[st.active_tab].status_text = String::from("Done");
+        update_status();
+        return;
+    }
+
+    let (tab_idx, src, img_url) = st.image_queue.remove(0);
+
+    // Update status bar.
+    let remaining = st.image_queue.len();
+    let mut status = String::from("Loading image (");
+    push_u32(&mut status, remaining as u32 + 1);
+    status.push_str(" left): ");
+    status.push_str(&format_url(&img_url));
+    st.status_label.set_text(&status);
+
+    // Fetch the image.
+    match http::fetch(&img_url, &mut st.cookies, &mut st.conn_pool) {
+        Ok(resp) => {
+            if let Some(info) = libimage_client::probe(&resp.body) {
+                let w = info.width as usize;
+                let h = info.height as usize;
+                let mut pixels = vec![0u32; w * h];
+                let mut scratch = vec![0u8; info.scratch_needed as usize];
+                if libimage_client::decode(&resp.body, &mut pixels, &mut scratch).is_ok() {
+                    if tab_idx < st.tabs.len() {
+                        st.tabs[tab_idx].webview.add_image(&src, pixels, info.width, info.height);
+                        // Re-render the page with the new image.
+                        st.tabs[tab_idx].webview.relayout();
                     }
-                    Err(_) => {}
                 }
             }
         }
+        Err(_) => {}
     }
 }
 
@@ -690,6 +761,9 @@ fn main() {
             tabs: vec![initial_tab],
             active_tab: 0,
             cookies: http::CookieJar { cookies: Vec::new() },
+            image_queue: Vec::new(),
+            image_timer: 0,
+            conn_pool: http::ConnPool::new(),
         });
     }
 

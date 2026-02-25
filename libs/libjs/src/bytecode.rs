@@ -83,6 +83,10 @@ pub enum Op {
     // ── Functions ──
     /// Call a function: Call(arg_count). Callee is below args on stack.
     Call(u8),
+    /// Method call: CallMethod(arg_count).
+    /// Stack: [..., this_obj, method_fn, arg1, ..., argN]
+    /// Pops args, method, and this; calls method with this binding.
+    CallMethod(u8),
     /// Return from function. Return value is on top of stack.
     Return,
     /// Create a closure from a function prototype (constant pool index).
