@@ -815,3 +815,99 @@ pub fn parse(html: &str) -> Dom {
 
     dom
 }
+
+/// Parse an HTML fragment (for innerHTML). No implicit html/head/body wrapping.
+/// Returns a DOM whose root is a synthetic container; the useful nodes are root's children.
+pub fn parse_fragment(html: &str) -> Dom {
+    let tokens = tokenize(html);
+    let mut dom = Dom::new();
+
+    // Create a synthetic root container (not html/head/body).
+    let root = dom.add_node(
+        NodeType::Element {
+            tag: Tag::Div,
+            attrs: Vec::new(),
+        },
+        None,
+    );
+
+    let mut stack: Vec<NodeId> = Vec::new();
+    stack.push(root);
+
+    for tok in tokens {
+        match tok {
+            Token::Doctype | Token::Comment => {}
+
+            Token::StartTag {
+                name,
+                attrs,
+                self_closing,
+            } => {
+                let tag = Tag::from_str(&name);
+                let dom_attrs: Vec<Attr> = attrs
+                    .into_iter()
+                    .map(|(n, v)| Attr { name: n, value: v })
+                    .collect();
+
+                // Skip structural tags in fragments — flatten content.
+                if matches!(tag, Tag::Html | Tag::Head | Tag::Body) {
+                    continue;
+                }
+
+                // Auto-close <p> when block element opens inside it.
+                if closes_p(tag) && stack_has(&dom, &stack, Tag::P) {
+                    pop_to(&dom, &mut stack, Tag::P);
+                }
+
+                // Auto-close <li>/<td>/<th>/<tr> as in full parser.
+                if tag == Tag::Li {
+                    if let Some(&top) = stack.last() {
+                        if node_tag(&dom, top) == Some(Tag::Li) { stack.pop(); }
+                    }
+                }
+                if tag == Tag::Td || tag == Tag::Th {
+                    if let Some(&top) = stack.last() {
+                        let t = node_tag(&dom, top);
+                        if t == Some(Tag::Td) || t == Some(Tag::Th) { stack.pop(); }
+                    }
+                }
+                if tag == Tag::Tr {
+                    if let Some(&top) = stack.last() {
+                        if node_tag(&dom, top) == Some(Tag::Tr) { stack.pop(); }
+                    }
+                }
+
+                let parent = stack.last().copied().unwrap_or(root);
+                let id = dom.add_node(
+                    NodeType::Element { tag, attrs: dom_attrs },
+                    Some(parent),
+                );
+                if !tag.is_void() && !self_closing {
+                    stack.push(id);
+                }
+            }
+
+            Token::EndTag { name } => {
+                let tag = Tag::from_str(&name);
+                if matches!(tag, Tag::Html | Tag::Head | Tag::Body) { continue; }
+                if stack_has(&dom, &stack, tag) {
+                    pop_to(&dom, &mut stack, tag);
+                }
+            }
+
+            Token::Text(text) => {
+                if text.is_empty() { continue; }
+                let processed = if in_pre(&dom, &stack) {
+                    text
+                } else {
+                    collapse_whitespace(&text)
+                };
+                if processed.is_empty() { continue; }
+                let parent = stack.last().copied().unwrap_or(root);
+                dom.add_node(NodeType::Text(processed), Some(parent));
+            }
+        }
+    }
+
+    dom
+}

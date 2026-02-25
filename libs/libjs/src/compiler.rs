@@ -268,8 +268,8 @@ impl Compiler {
             Stmt::Try { block, catch, finally } => {
                 self.compile_try(block, catch, finally);
             }
-            Stmt::FunctionDecl { name, params, body, is_async: _ } => {
-                self.compile_function(Some(name), params, body);
+            Stmt::FunctionDecl { name, params, body, is_async } => {
+                self.compile_function(Some(name), params, body, *is_async);
                 let slot = self.scope_mut().add_local(name.clone());
                 self.emit(Op::StoreLocal(slot));
                 self.emit(Op::Pop);
@@ -576,6 +576,7 @@ impl Compiler {
         name: Option<&String>,
         params: &[Param],
         body: &[Stmt],
+        is_async: bool,
     ) {
         let mut func_scope = Scope::new();
         func_scope.chunk.name = name.cloned();
@@ -608,9 +609,16 @@ impl Compiler {
             self.compile_stmt(s);
         }
 
-        // Implicit return undefined
-        self.emit(Op::LoadUndefined);
-        self.emit(Op::Return);
+        if is_async {
+            // Async functions: wrap implicit return undefined in Promise.resolve().
+            self.emit(Op::LoadUndefined);
+            self.emit(Op::Await);
+            self.emit(Op::Return);
+        } else {
+            // Implicit return undefined
+            self.emit(Op::LoadUndefined);
+            self.emit(Op::Return);
+        }
 
         let func_chunk = self.scopes.pop().unwrap().chunk;
         let ci = self.add_const(Constant::Function(func_chunk));
@@ -633,11 +641,11 @@ impl Compiler {
 
         if let Some(ctor_member) = ctor {
             if let ClassMemberKind::Constructor { ref params, ref body } = ctor_member.kind {
-                self.compile_function(name, params, body);
+                self.compile_function(name, params, body, false);
             }
         } else {
             // Empty constructor
-            self.compile_function(name, &[], &[]);
+            self.compile_function(name, &[], &[], false);
         }
 
         // Methods: set on the function's prototype
@@ -651,7 +659,7 @@ impl Compiler {
                     PropKey::Ident(s) | PropKey::String(s) => s.clone(),
                     _ => String::from("_method_"),
                 };
-                self.compile_function(Some(&key_name), params, body);
+                self.compile_function(Some(&key_name), params, body, false);
                 let name_idx = self.add_const(Constant::String(key_name));
                 self.emit(Op::SetPropNamed(name_idx));
                 self.emit(Op::Pop);
@@ -869,18 +877,18 @@ impl Compiler {
                     }
                 }
             }
-            Expr::FunctionExpr { name, params, body, is_async: _ } => {
-                self.compile_function(name.as_ref(), params, body);
+            Expr::FunctionExpr { name, params, body, is_async } => {
+                self.compile_function(name.as_ref(), params, body, *is_async);
             }
-            Expr::Arrow { params, body, is_async: _ } => {
+            Expr::Arrow { params, body, is_async } => {
                 match body {
                     ArrowBody::Block(stmts) => {
-                        self.compile_function(None, params, stmts);
+                        self.compile_function(None, params, stmts, *is_async);
                     }
                     ArrowBody::Expr(expr) => {
                         // Convert expression body to return statement
                         let return_stmt = Stmt::Return(Some(expr.as_ref().clone()));
-                        self.compile_function(None, params, &[return_stmt]);
+                        self.compile_function(None, params, &[return_stmt], *is_async);
                     }
                 }
             }
@@ -925,7 +933,7 @@ impl Compiler {
             }
             Expr::Await(inner) => {
                 self.compile_expr(inner);
-                // Simplified: await is a no-op for now
+                self.emit(Op::Await);
             }
             Expr::ClassExpr { name, super_class, body } => {
                 let sc = super_class.as_ref().map(|b| b.as_ref().clone());

@@ -487,6 +487,31 @@ impl Vm {
                 // ── Spread ──
                 Op::Spread => { /* handled during NewArray */ }
 
+                // ── Async ──
+                Op::Await => {
+                    let val = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    // Check if the value is a Promise (has __state property).
+                    if let JsValue::Object(ref obj) = val {
+                        let state = obj.borrow().get("__state").to_js_string();
+                        if state == "fulfilled" {
+                            let resolved = obj.borrow().get("__value");
+                            self.stack.push(resolved);
+                        } else if state == "rejected" {
+                            let reason = obj.borrow().get("__value");
+                            // Throw the rejection reason.
+                            if !self.handle_exception(reason) {
+                                return JsValue::Undefined;
+                            }
+                        } else {
+                            // Pending promise — push undefined (no event loop to wait).
+                            self.stack.push(JsValue::Undefined);
+                        }
+                    } else {
+                        // Non-promise value — pass through unchanged.
+                        self.stack.push(val);
+                    }
+                }
+
                 Op::Debugger | Op::Nop => {}
             }
         }

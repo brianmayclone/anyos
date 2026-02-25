@@ -400,6 +400,39 @@ impl Dom {
         }
     }
 
+    /// Adopt all root-level children from a parsed fragment DOM into `parent_id`.
+    /// Copies nodes recursively, remapping IDs to fit into this DOM.
+    pub fn adopt_children_from(&mut self, parent_id: NodeId, fragment: &Dom) {
+        // The fragment's root is node 0; its children are the elements to adopt.
+        if fragment.nodes.is_empty() { return; }
+        let root_children = fragment.nodes[0].children.clone();
+        for &frag_child in &root_children {
+            self.deep_copy_node(parent_id, fragment, frag_child);
+        }
+    }
+
+    /// Recursively copy a node (and all descendants) from `src` DOM into `self`
+    /// under `parent_id`.
+    fn deep_copy_node(&mut self, parent_id: NodeId, src: &Dom, src_id: NodeId) {
+        let src_node = &src.nodes[src_id];
+        let new_type = match &src_node.node_type {
+            NodeType::Text(t) => NodeType::Text(t.clone()),
+            NodeType::Element { tag, attrs } => NodeType::Element {
+                tag: *tag,
+                attrs: attrs.iter().map(|a| Attr {
+                    name: a.name.clone(),
+                    value: a.value.clone(),
+                }).collect(),
+            },
+        };
+        let new_id = self.add_node(new_type, Some(parent_id));
+        // Recursively copy children.
+        let children = src_node.children.clone();
+        for &child_id in &children {
+            self.deep_copy_node(new_id, src, child_id);
+        }
+    }
+
     // -- private helpers ----------------------------------------------------
 
     fn collect_text(&self, id: NodeId, out: &mut String) {

@@ -452,14 +452,19 @@ impl JsRuntime {
                         }
                     }
                 }
-                DomMutation::SetInnerHTML { node_id, html: _ } => {
-                    // Full innerHTML parsing is complex; for now clear children.
+                DomMutation::SetInnerHTML { node_id, html } => {
                     if let Some(real_id) = resolve_id(*node_id, &id_map) {
+                        // Remove old children.
                         let children: Vec<usize> = dom.nodes.get(real_id)
                             .map(|n| n.children.clone())
                             .unwrap_or_default();
                         for cid in children {
                             dom.remove_child(real_id, cid);
+                        }
+                        // Parse HTML fragment and adopt new children.
+                        if !html.is_empty() {
+                            let fragment = crate::html::parse_fragment(html);
+                            dom.adopt_children_from(real_id, &fragment);
                         }
                     }
                 }

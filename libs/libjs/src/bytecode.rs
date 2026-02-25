@@ -158,6 +158,12 @@ pub enum Op {
     // ── Debugger ──
     Debugger,
 
+    // ── Async ──
+    /// Await a value: if it's a fulfilled Promise, push its resolved value.
+    /// If it's a rejected Promise, throw the rejection reason.
+    /// If it's a non-Promise value, push it back unchanged.
+    Await,
+
     // ── No-op ──
     Nop,
 }
