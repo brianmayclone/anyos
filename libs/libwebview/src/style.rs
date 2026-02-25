@@ -7,6 +7,8 @@
 
 use alloc::vec::Vec;
 
+use alloc::string::String;
+
 use crate::css::{
     AttrOp, CssValue, Declaration, PseudoClass, Property, Rule, Selector, SimpleSelector,
     Stylesheet, Unit,
@@ -207,6 +209,11 @@ pub struct ComputedStyle {
     // Width/height percentages (stored as fixed-point * 100, None if not percentage)
     pub width_pct: Option<i32>,
     pub height_pct: Option<i32>,
+    // calc() components: (px * 100, pct * 100) for width/height
+    pub width_calc: Option<(i32, i32)>,
+    pub height_calc: Option<(i32, i32)>,
+    /// CSS custom properties (--name → raw value string).
+    pub custom_properties: Vec<(String, String)>,
 }
 
 // Bitflags for tracking which inheritable properties were explicitly set.
@@ -286,6 +293,11 @@ pub fn default_style() -> ComputedStyle {
         // Percentages
         width_pct: Option::None,
         height_pct: Option::None,
+        // Calc
+        width_calc: Option::None,
+        height_calc: Option::None,
+        // Custom properties
+        custom_properties: Vec::new(),
     }
 }
 
@@ -816,6 +828,20 @@ pub fn resolve_styles(dom: &Dom, stylesheets: &[Stylesheet], viewport_width: i32
             }
         }
 
+        // Phase 3b: Inherit custom properties from parent.
+        if let Some(pid) = node.parent {
+            // Start with parent's custom props, then overlay our own.
+            let mut props = styles[pid].custom_properties.clone();
+            for (k, v) in &style.custom_properties {
+                if let Some(existing) = props.iter_mut().find(|(ek, _)| ek == k) {
+                    existing.1 = v.clone();
+                } else {
+                    props.push((k.clone(), v.clone()));
+                }
+            }
+            style.custom_properties = props;
+        }
+
         // Phase 4: Inherit inheritable properties NOT explicitly set.
         if let Some(pid) = node.parent {
             inherit_unset(&mut style, &styles[pid], set_flags);
@@ -997,6 +1023,11 @@ fn resolve_length(val: &CssValue, parent_fs: i32, root_fs: i32) -> Option<i32> {
         CssValue::Length(_, Unit::Percent) => Option::None,
         CssValue::Number(v) => Some(v / 100),
         CssValue::Percentage(_) => Option::None,
+        CssValue::Calc(px, _pct) => {
+            // For margin/padding/etc (non-width/height), evaluate calc as best we can.
+            // The px component is always resolved; the pct component is lost here.
+            Some(px / 100)
+        }
         _ => Option::None,
     }
 }
@@ -1115,24 +1146,28 @@ pub fn apply_declaration(
         }
         Property::Width => {
             match decl.value {
-                CssValue::Auto => { style.width = Option::None; style.width_pct = Option::None; }
-                CssValue::Percentage(v) => { style.width_pct = Some(v); style.width = Option::None; }
+                CssValue::Auto => { style.width = Option::None; style.width_pct = Option::None; style.width_calc = Option::None; }
+                CssValue::Percentage(v) => { style.width_pct = Some(v); style.width = Option::None; style.width_calc = Option::None; }
+                CssValue::Calc(px, pct) => { style.width_calc = Some((px, pct)); style.width = Option::None; style.width_pct = Option::None; }
                 _ => {
                     if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                         style.width = Some(px);
                         style.width_pct = Option::None;
+                        style.width_calc = Option::None;
                     }
                 }
             }
         }
         Property::Height => {
             match decl.value {
-                CssValue::Auto => { style.height = Option::None; style.height_pct = Option::None; }
-                CssValue::Percentage(v) => { style.height_pct = Some(v); style.height = Option::None; }
+                CssValue::Auto => { style.height = Option::None; style.height_pct = Option::None; style.height_calc = Option::None; }
+                CssValue::Percentage(v) => { style.height_pct = Some(v); style.height = Option::None; style.height_calc = Option::None; }
+                CssValue::Calc(px, pct) => { style.height_calc = Some((px, pct)); style.height = Option::None; style.height_pct = Option::None; }
                 _ => {
                     if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                         style.height = Some(px);
                         style.height_pct = Option::None;
+                        style.height_calc = Option::None;
                     }
                 }
             }

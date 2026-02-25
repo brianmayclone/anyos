@@ -920,7 +920,16 @@ fn parse_declarations(p: &mut Parser) -> Vec<Declaration> {
             p.pos += 1;
         }
 
-        if let Some(property) = parse_property(&prop_name) {
+        // Custom properties (--*) — store raw value as Keyword.
+        if prop_name.starts_with("--") {
+            let trimmed = value_str.trim();
+            let (trimmed, important) = strip_important(trimmed);
+            decls.push(Declaration {
+                property: Property::CustomProperty(String::from(&prop_name)),
+                value: CssValue::Keyword(String::from(trimmed)),
+                important,
+            });
+        } else if let Some(property) = parse_property(&prop_name) {
             let trimmed = value_str.trim();
             // Detect and strip !important
             let (trimmed, important) = strip_important(trimmed);
