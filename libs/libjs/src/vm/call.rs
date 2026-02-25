@@ -107,10 +107,11 @@ impl Vm {
             JsValue::Function(func_rc) => {
                 let kind = func_rc.borrow().kind.clone();
 
-                // Create new object with prototype
+                // Use Constructor.prototype as the new object's prototype (JS spec).
+                let ctor_proto = func_rc.borrow().prototype.clone();
                 let new_obj = JsValue::Object(Rc::new(RefCell::new(JsObject {
                     properties: alloc::collections::BTreeMap::new(),
-                    prototype: Some(self.object_proto.clone()),
+                    prototype: ctor_proto.or(Some(self.object_proto.clone())),
                     internal_tag: None,
                     set_hook: None,
                     set_hook_data: core::ptr::null_mut(),
