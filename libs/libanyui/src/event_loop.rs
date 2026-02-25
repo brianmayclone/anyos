@@ -240,6 +240,7 @@ pub fn run_once() -> u32 {
                             let local_y = my - ay;
                             let resp = st.controls[idx].handle_mouse_move(local_x, local_y);
                             if resp.consumed {
+                                st.controls[idx].base_mut().mark_dirty();
                                 fire_event_callback(&st.controls, pressed_id, control::EVENT_MOUSE_MOVE, &mut pending_cbs);
                                 if resp.fire_change {
                                     fire_event_callback(&st.controls, pressed_id, control::EVENT_CHANGE, &mut pending_cbs);
@@ -383,26 +384,40 @@ pub fn run_once() -> u32 {
                                             fire_event_callback(&st.controls, target_id, control::EVENT_SUBMIT, &mut pending_cbs);
                                         }
 
-                                        // Double-click detection (time-based, not frame-based)
+                                        // Multi-click detection (double & triple click)
                                         let now_ms = crate::syscall::uptime_ms();
                                         if st.last_click_id == Some(target_id)
                                             && now_ms.wrapping_sub(st.last_click_tick) <= DOUBLE_CLICK_MS
                                         {
-                                            if let Some(idx3) = control::find_idx(&st.controls, target_id) {
-                                                let dc_resp = st.controls[idx3].handle_double_click(local_x, local_y, button);
-                                                fire_event_callback(&st.controls, target_id, control::EVENT_DOUBLE_CLICK, &mut pending_cbs);
-                                                if dc_resp.fire_change {
-                                                    fire_event_callback(&st.controls, target_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                            st.click_count += 1;
+                                            st.last_click_tick = now_ms;
+
+                                            if st.click_count == 2 {
+                                                if let Some(idx3) = control::find_idx(&st.controls, target_id) {
+                                                    let dc_resp = st.controls[idx3].handle_double_click(local_x, local_y, button);
+                                                    fire_event_callback(&st.controls, target_id, control::EVENT_DOUBLE_CLICK, &mut pending_cbs);
+                                                    if dc_resp.fire_change {
+                                                        fire_event_callback(&st.controls, target_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                                    }
+                                                    if dc_resp.fire_submit {
+                                                        fire_event_callback(&st.controls, target_id, control::EVENT_SUBMIT, &mut pending_cbs);
+                                                    }
                                                 }
-                                                if dc_resp.fire_submit {
-                                                    fire_event_callback(&st.controls, target_id, control::EVENT_SUBMIT, &mut pending_cbs);
+                                            } else if st.click_count >= 3 {
+                                                if let Some(idx3) = control::find_idx(&st.controls, target_id) {
+                                                    let tc_resp = st.controls[idx3].handle_triple_click(local_x, local_y, button);
+                                                    if tc_resp.fire_change {
+                                                        fire_event_callback(&st.controls, target_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                                    }
                                                 }
+                                                // Reset after triple click.
+                                                st.click_count = 0;
+                                                st.last_click_id = None;
                                             }
-                                            st.last_click_id = None;
-                                            st.last_click_tick = 0;
                                         } else {
                                             st.last_click_id = Some(target_id);
                                             st.last_click_tick = now_ms;
+                                            st.click_count = 1;
                                         }
                                     }
                                 }

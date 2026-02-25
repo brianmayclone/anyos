@@ -369,6 +369,11 @@ pub fn text_size_at(text: &[u8], size: u16) -> (u32, u32) {
 
 /// Measure text width of the first `n` bytes using the default system font.
 pub fn text_width_n(text: &[u8], n: usize) -> u32 {
+    text_width_n_at(text, n, DEFAULT_FONT_SIZE)
+}
+
+/// Measure text width of the first `n` bytes at a specific font size.
+pub fn text_width_n_at(text: &[u8], n: usize, size: u16) -> u32 {
     if n == 0 { return 0; }
     let len = n.min(text.len());
     ensure_libfont();
@@ -376,12 +381,29 @@ pub fn text_width_n(text: &[u8], n: usize) -> u32 {
     let mut h = 0u32;
     if let Some(measure) = unsafe { FONT_MEASURE } {
         measure(
-            DEFAULT_FONT_ID as u32, DEFAULT_FONT_SIZE,
+            DEFAULT_FONT_ID as u32, size,
             text.as_ptr(), len as u32,
             &mut w, &mut h,
         );
     }
     w
+}
+
+/// Given a text and a pixel x-offset, find the byte position closest to that offset.
+pub fn text_hit_test(text: &[u8], x_offset: i32, font_size: u16) -> usize {
+    if text.is_empty() || x_offset <= 0 { return 0; }
+    let mut prev_w: i32 = 0;
+    for i in 1..=text.len() {
+        let w = text_width_n_at(text, i, font_size) as i32;
+        // If click is between prev char end and current char end,
+        // pick the closer boundary.
+        if x_offset < w {
+            let mid = (prev_w + w) / 2;
+            return if x_offset < mid { i - 1 } else { i };
+        }
+        prev_w = w;
+    }
+    text.len()
 }
 
 // ── Cheap depth effects (no SDF — just 1px color tricks) ──────────

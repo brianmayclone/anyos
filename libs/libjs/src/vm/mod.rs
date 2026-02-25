@@ -31,6 +31,8 @@ pub mod native_promise;
 pub mod native_map;
 pub mod native_date;
 pub mod native_timer;
+pub mod native_symbol;
+pub mod native_proxy;
 pub mod iter;
 
 // ── Internal structures ──

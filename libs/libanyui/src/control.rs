@@ -626,6 +626,11 @@ pub trait Control {
         EventResponse::IGNORED
     }
 
+    /// Called when mouse is triple-clicked (three clicks within 400ms each).
+    fn handle_triple_click(&mut self, _local_x: i32, _local_y: i32, _button: u32) -> EventResponse {
+        EventResponse::IGNORED
+    }
+
     /// Called when a key is pressed while this control has focus.
     /// `char_code` is the ASCII character (0 if non-printable).
     /// `modifiers` is a bitmask of MOD_SHIFT, MOD_CTRL, etc.

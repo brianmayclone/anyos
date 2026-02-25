@@ -27,6 +27,38 @@ pub const WIN_FLAG_NO_MOVE: u32 = 0x100;
 pub const MENUBAR_HEIGHT: u32 = 24;
 pub const TITLE_BAR_HEIGHT: u32 = 28;
 
+/// Minimum padding (px) between traffic-light buttons / window edge and the title text.
+const TITLE_PADDING: i32 = 8;
+/// Right-edge of the last traffic-light button (8 + 2*20 + 12 = 60).
+const TITLE_BUTTONS_RIGHT: i32 = 8 + 2 * TITLE_BTN_SPACING as i32 + TITLE_BTN_SIZE as i32;
+
+/// Truncate a title string so that it fits within `max_width` pixels.
+/// If the full title fits, returns it unchanged.
+/// Otherwise appends "..." and shortens until it fits.
+/// Returns the displayable slice length (byte offset, always on a char boundary).
+fn title_display_len(title: &str, max_width: u32) -> usize {
+    let (tw, _) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, title);
+    if tw <= max_width {
+        return title.len();
+    }
+    // Measure ellipsis width once
+    let (ew, _) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, "...");
+    if max_width <= ew {
+        return 0;
+    }
+    let target = max_width - ew;
+    // Walk backwards through chars to find the longest prefix that fits
+    let mut best = 0usize;
+    for (i, _) in title.char_indices() {
+        let (w, _) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, &title[..i]);
+        if w > target {
+            break;
+        }
+        best = i;
+    }
+    best
+}
+
 // ── Event Types ────────────────────────────────────────────────────────────
 
 pub const EVENT_KEY_DOWN: u32 = 1;
@@ -526,8 +558,8 @@ impl Desktop {
         let focused = self.windows[win_idx].focused;
         let full_h = self.windows[win_idx].full_height();
         // Stack-copy title to avoid heap allocation (title.clone())
-        let mut title_buf = [0u8; 128];
-        let title_len = self.windows[win_idx].title.len().min(128);
+        let mut title_buf = [0u8; 256];
+        let title_len = self.windows[win_idx].title.len().min(256);
         title_buf[..title_len].copy_from_slice(&self.windows[win_idx].title.as_bytes()[..title_len]);
         let title_str = core::str::from_utf8(&title_buf[..title_len]).unwrap_or("");
 
@@ -605,13 +637,42 @@ impl Desktop {
                     fill_circle(pixels, stride, full_h, cx, cy, (TITLE_BTN_SIZE / 2) as i32, color);
                 }
 
-                let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, title_str);
-                let tx = (cw as i32 - tw as i32) / 2;
-                let ty = ((TITLE_BAR_HEIGHT as i32 - th as i32) / 2).max(0);
-                anyos_std::ui::window::font_render_buf(
-                    FONT_ID, FONT_SIZE, pixels, stride, full_h, tx, ty,
-                    color_titlebar_text(), title_str,
-                );
+                // Available width for title: between buttons (left) and window edge (right), with padding
+                let left_bound = TITLE_BUTTONS_RIGHT + TITLE_PADDING;
+                let max_title_w = if (cw as i32) > left_bound + TITLE_PADDING {
+                    (cw as i32 - left_bound - TITLE_PADDING) as u32
+                } else {
+                    0
+                };
+
+                let trunc_len = title_display_len(title_str, max_title_w);
+                let mut display_buf = [0u8; 260];
+                let display_str = if trunc_len < title_str.len() && trunc_len > 0 {
+                    let total = trunc_len + 3;
+                    display_buf[..trunc_len].copy_from_slice(&title_str.as_bytes()[..trunc_len]);
+                    display_buf[trunc_len..trunc_len + 3].copy_from_slice(b"...");
+                    core::str::from_utf8(&display_buf[..total]).unwrap_or(title_str)
+                } else if trunc_len == 0 {
+                    ""
+                } else {
+                    title_str
+                };
+
+                if !display_str.is_empty() {
+                    let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, display_str);
+                    // Center within available area (right of buttons)
+                    let center_area = cw as i32;
+                    let mut tx = (center_area - tw as i32) / 2;
+                    // Ensure title doesn't overlap buttons
+                    if tx < left_bound {
+                        tx = left_bound;
+                    }
+                    let ty = ((TITLE_BAR_HEIGHT as i32 - th as i32) / 2).max(0);
+                    anyos_std::ui::window::font_render_buf(
+                        FONT_ID, FONT_SIZE, pixels, stride, full_h, tx, ty,
+                        color_titlebar_text(), display_str,
+                    );
+                }
             }
         }
 
@@ -634,8 +695,8 @@ impl Desktop {
         let focused = self.windows[win_idx].focused;
         let full_h = self.windows[win_idx].full_height();
         // Stack-copy title to avoid heap allocation (title.clone())
-        let mut title_buf = [0u8; 128];
-        let title_len = self.windows[win_idx].title.len().min(128);
+        let mut title_buf = [0u8; 256];
+        let title_len = self.windows[win_idx].title.len().min(256);
         title_buf[..title_len].copy_from_slice(&self.windows[win_idx].title.as_bytes()[..title_len]);
         let title_str = core::str::from_utf8(&title_buf[..title_len]).unwrap_or("");
 
@@ -685,13 +746,39 @@ impl Desktop {
                 fill_circle(pixels, stride, full_h, cx, cy, (TITLE_BTN_SIZE / 2) as i32, color);
             }
 
-            let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, title_str);
-            let tx = (cw as i32 - tw as i32) / 2;
-            let ty = ((TITLE_BAR_HEIGHT as i32 - th as i32) / 2).max(0);
-            anyos_std::ui::window::font_render_buf(
-                FONT_ID, FONT_SIZE, pixels, stride, full_h, tx, ty,
-                color_titlebar_text(), title_str,
-            );
+            let left_bound = TITLE_BUTTONS_RIGHT + TITLE_PADDING;
+            let max_title_w = if (cw as i32) > left_bound + TITLE_PADDING {
+                (cw as i32 - left_bound - TITLE_PADDING) as u32
+            } else {
+                0
+            };
+
+            let trunc_len = title_display_len(title_str, max_title_w);
+            let mut display_buf = [0u8; 260];
+            let display_str = if trunc_len < title_str.len() && trunc_len > 0 {
+                let total = trunc_len + 3;
+                display_buf[..trunc_len].copy_from_slice(&title_str.as_bytes()[..trunc_len]);
+                display_buf[trunc_len..trunc_len + 3].copy_from_slice(b"...");
+                core::str::from_utf8(&display_buf[..total]).unwrap_or(title_str)
+            } else if trunc_len == 0 {
+                ""
+            } else {
+                title_str
+            };
+
+            if !display_str.is_empty() {
+                let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, display_str);
+                let center_area = cw as i32;
+                let mut tx = (center_area - tw as i32) / 2;
+                if tx < left_bound {
+                    tx = left_bound;
+                }
+                let ty = ((TITLE_BAR_HEIGHT as i32 - th as i32) / 2).max(0);
+                anyos_std::ui::window::font_render_buf(
+                    FONT_ID, FONT_SIZE, pixels, stride, full_h, tx, ty,
+                    color_titlebar_text(), display_str,
+                );
+            }
         }
 
         self.compositor.mark_layer_dirty(layer_id);
@@ -1188,13 +1275,39 @@ pub fn pre_render_chrome_ex(
         fill_circle(pixels, stride, full_h, cx, cy, (TITLE_BTN_SIZE / 2) as i32, color);
     }
 
-    let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, title);
-    let tx = (stride as i32 - tw as i32) / 2;
-    let ty = ((TITLE_BAR_HEIGHT as i32 - th as i32) / 2).max(0);
-    anyos_std::ui::window::font_render_buf(
-        FONT_ID, FONT_SIZE, pixels, stride, full_h, tx, ty,
-        color_titlebar_text(), title,
-    );
+    let cw = stride;
+    let left_bound = TITLE_BUTTONS_RIGHT + TITLE_PADDING;
+    let max_title_w = if (cw as i32) > left_bound + TITLE_PADDING {
+        (cw as i32 - left_bound - TITLE_PADDING) as u32
+    } else {
+        0
+    };
+
+    let trunc_len = title_display_len(title, max_title_w);
+    let mut display_buf = [0u8; 260];
+    let display_str = if trunc_len < title.len() && trunc_len > 0 {
+        let total = trunc_len + 3;
+        display_buf[..trunc_len].copy_from_slice(&title.as_bytes()[..trunc_len]);
+        display_buf[trunc_len..trunc_len + 3].copy_from_slice(b"...");
+        core::str::from_utf8(&display_buf[..total]).unwrap_or(title)
+    } else if trunc_len == 0 {
+        ""
+    } else {
+        title
+    };
+
+    if !display_str.is_empty() {
+        let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, display_str);
+        let mut tx = (cw as i32 - tw as i32) / 2;
+        if tx < left_bound {
+            tx = left_bound;
+        }
+        let ty = ((TITLE_BAR_HEIGHT as i32 - th as i32) / 2).max(0);
+        anyos_std::ui::window::font_render_buf(
+            FONT_ID, FONT_SIZE, pixels, stride, full_h, tx, ty,
+            color_titlebar_text(), display_str,
+        );
+    }
 }
 
 /// Copy SHM content into a pre-rendered pixel buffer at the content area offset.

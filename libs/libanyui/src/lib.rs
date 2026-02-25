@@ -126,10 +126,12 @@ pub(crate) struct AnyuiState {
     pub pressed: Option<ControlId>,
     /// Currently hovered control (mouse cursor is over).
     pub hovered: Option<ControlId>,
-    /// Control ID of the last click (for double-click detection).
+    /// Control ID of the last click (for multi-click detection).
     pub last_click_id: Option<ControlId>,
-    /// Timestamp (ms) of the last click (for double-click detection).
+    /// Timestamp (ms) of the last click (for multi-click detection).
     pub last_click_tick: u32,
+    /// Click count (1=single, 2=double, 3=triple) for multi-click detection.
+    pub click_count: u32,
     /// Which mouse button was pressed (for right-click detection).
     pub pressed_button: u32,
 
@@ -262,6 +264,7 @@ pub extern "C" fn anyui_init() -> u32 {
             hovered: None,
             last_click_id: None,
             last_click_tick: 0,
+            click_count: 0,
             pressed_button: 0,
             active_tooltip: None,
             timers: timer::TimerState::new(),

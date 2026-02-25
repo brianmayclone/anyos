@@ -18,6 +18,8 @@ use super::native_promise;
 use super::native_map;
 use super::native_date;
 use super::native_timer;
+use super::native_symbol;
+use super::native_proxy;
 
 impl Vm {
     /// Populate all built-in prototypes with their methods.
@@ -186,6 +188,16 @@ impl Vm {
         self.set_global("setInterval", native_fn("setInterval", native_timer::set_interval));
         self.set_global("clearTimeout", native_fn("clearTimeout", native_timer::clear_timeout));
         self.set_global("clearInterval", native_fn("clearInterval", native_timer::clear_interval));
+
+        // ── Symbol ──
+        let symbol_ctor = native_fn("Symbol", native_symbol::ctor_symbol);
+        native_symbol::install_well_known_symbols(&symbol_ctor);
+        self.set_global("Symbol", symbol_ctor);
+
+        // ── Proxy ──
+        let proxy_ctor = native_fn("Proxy", native_proxy::ctor_proxy);
+        proxy_ctor.set_property(String::from("revocable"), native_fn("revocable", native_proxy::proxy_revocable));
+        self.set_global("Proxy", proxy_ctor);
 
         // ── Number constants ──
         self.set_global("Infinity", JsValue::Number(f64::INFINITY));

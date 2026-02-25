@@ -345,7 +345,7 @@ extern "C" fn export_set_title(
     title_ptr: *const u8,
     title_len: u32,
 ) {
-    // Pack title bytes into 3 u32 words
+    // Pack title bytes into 3 u32 words (max 12 chars)
     let mut packed = [0u32; 3];
     let len = (title_len as usize).min(12);
     for i in 0..len {
