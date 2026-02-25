@@ -191,6 +191,7 @@ impl DataGrid {
             }
             self.row_count += 1;
         }
+        self.clamp_scroll();
         self.ensure_selection_bits();
         self.rebuild_sort();
         self.base.mark_dirty();
@@ -206,6 +207,7 @@ impl DataGrid {
             self.cell_data.truncate(count * col_count);
         }
         self.row_count = count;
+        self.clamp_scroll();
         self.ensure_selection_bits();
         self.rebuild_sort();
         self.base.mark_dirty();
@@ -275,6 +277,16 @@ impl DataGrid {
             if self.is_row_selected(r) { return Some(r); }
         }
         None
+    }
+
+    /// Clamp scroll_y so the viewport doesn't extend past the last row.
+    fn clamp_scroll(&mut self) {
+        let content_h = self.row_count as i32 * self.row_height as i32;
+        let viewport_h = (self.base.h as i32).saturating_sub(self.header_height as i32);
+        let max_scroll = (content_h - viewport_h).max(0);
+        if self.scroll_y > max_scroll {
+            self.scroll_y = max_scroll;
+        }
     }
 
     // ── Selection ──────────────────────────────────────────────────
