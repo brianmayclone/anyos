@@ -218,10 +218,12 @@ struct AppState {
     icon_item_ids: Vec<u32>,   // track created items for cleanup
     icon_selected: usize,      // selected index in icon view (usize::MAX = none)
     path_field: ui::TextField,
-    status_label: ui::Label,
     btn_back: ui::IconButton,
     btn_fwd: ui::IconButton,
     sidebar_item_ids: Vec<u32>,
+    // Status bar
+    sb_items_label: ui::Label,
+    sb_sel_label: ui::Label,
     // Context menu
     ctx_menu: ui::ContextMenu,
 }
@@ -548,7 +550,8 @@ fn refresh_ui() {
     s.path_field.set_text(&s.cwd);
 
     let count_str = anyos_std::format!("{} items", s.entries.len());
-    s.status_label.set_text(&count_str);
+    s.sb_items_label.set_text(&count_str);
+    s.sb_sel_label.set_text("");
 
     s.btn_back.set_enabled(s.history_pos > 0);
     s.btn_fwd.set_enabled(s.history_pos + 1 < s.history.len());
@@ -695,6 +698,21 @@ fn populate_icon_view() {
     }
 }
 
+fn update_selection_status(idx: usize) {
+    let s = app();
+    if idx < s.entries.len() {
+        let name = s.entries[idx].name_str();
+        let text = if s.entries[idx].entry_type == TYPE_DIR {
+            anyos_std::format!("\"{}\" selected", name)
+        } else {
+            anyos_std::format!("\"{}\" — {}", name, fmt_size(s.entries[idx].size))
+        };
+        s.sb_sel_label.set_text(&text);
+    } else {
+        s.sb_sel_label.set_text("");
+    }
+}
+
 fn select_icon_item(idx: usize) {
     let s = app();
     if idx >= s.entries.len() { return; }
@@ -713,6 +731,7 @@ fn select_icon_item(idx: usize) {
 
     // Sync DataGrid selection for context menu
     s.grid.set_selected_row(idx as u32);
+    update_selection_status(idx);
 }
 
 extern "C" fn icon_item_click_handler(_control_id: u32, _event_type: u32, userdata: u64) {
@@ -808,13 +827,24 @@ fn main() {
     btn_grid.set_system_icon("grid-dots", ui::IconType::Outline, 0xFFCCCCCC, 16);
     btn_grid.set_tooltip("Icon view");
 
-    // Item count
-    let status_label = ui::Label::new("0 items");
-    status_label.set_size(80, 26);
-    status_label.set_text_color(0xFF888888);
-    status_label.set_font_size(12);
-    status_label.set_text_align(ui::TEXT_ALIGN_RIGHT);
-    toolbar.add(&status_label);
+    // ── Status bar (bottom) ────────────────────────────────────────────
+    let status_bar = ui::View::new();
+    status_bar.set_size(0, 22);
+    status_bar.set_dock(ui::DOCK_BOTTOM);
+    status_bar.set_color(0xFF007ACC);
+    win.add(&status_bar);
+
+    let sb_items_label = ui::Label::new("0 items");
+    sb_items_label.set_position(8, 3);
+    sb_items_label.set_font_size(11);
+    sb_items_label.set_text_color(0xFFFFFFFF);
+    status_bar.add(&sb_items_label);
+
+    let sb_sel_label = ui::Label::new("");
+    sb_sel_label.set_position(140, 3);
+    sb_sel_label.set_font_size(11);
+    sb_sel_label.set_text_color(0xFFFFFFFF);
+    status_bar.add(&sb_sel_label);
 
     // ── Main area: SplitView ─────────────────────────────────────────────
     let split = ui::SplitView::new();
@@ -913,10 +943,11 @@ fn main() {
             icon_item_ids: Vec::new(),
             icon_selected: usize::MAX,
             path_field,
-            status_label,
             btn_back,
             btn_fwd,
             sidebar_item_ids,
+            sb_items_label,
+            sb_sel_label,
             ctx_menu,
         });
     }
@@ -961,9 +992,15 @@ fn main() {
         }
     });
 
-    // DataGrid: selection changed → update context menu
+    // DataGrid: selection changed → update context menu + status bar
     grid.on_selection_changed(|_| {
         update_context_menu();
+        let sel = app().grid.selected_row();
+        if sel != u32::MAX {
+            update_selection_status(sel as usize);
+        } else {
+            app().sb_sel_label.set_text("");
+        }
     });
 
     // Keyboard shortcuts

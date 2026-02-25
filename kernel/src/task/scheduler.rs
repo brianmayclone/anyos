@@ -363,10 +363,37 @@ pub struct Scheduler {
     idle_tid: [u32; MAX_CPUS],
 }
 
-/// Idle thread entry point. Halts until the next interrupt.
+/// Idle thread entry point. Uses MONITOR/MWAIT when available (faster wake-up,
+/// better VMware scheduling), falling back to STI;HLT otherwise.
 extern "C" fn idle_thread_entry() {
-    loop {
-        unsafe { core::arch::asm!("sti; hlt"); }
+    let use_mwait = crate::arch::x86::cpuid::HAS_MWAIT
+        .load(core::sync::atomic::Ordering::Relaxed);
+
+    if use_mwait {
+        // MWAIT with "interrupts as break events" (ECX bit 0 = 1) exits on
+        // any interrupt, matching HLT semantics. EAX=0x00 requests C1 (lowest
+        // latency). The watched address is a dummy — wake is interrupt-driven.
+        let watch: u64 = 0;
+        loop {
+            unsafe {
+                core::arch::asm!(
+                    "sti",
+                    "mov rax, {addr}",
+                    "xor ecx, ecx",
+                    "xor edx, edx",
+                    "monitor",
+                    "xor eax, eax",
+                    "mov ecx, 1",
+                    "mwait",
+                    addr = in(reg) &watch as *const u64 as u64,
+                    options(nomem, nostack),
+                );
+            }
+        }
+    } else {
+        loop {
+            unsafe { core::arch::asm!("sti; hlt"); }
+        }
     }
 }
 

@@ -7,6 +7,8 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 static DETECTED: AtomicBool = AtomicBool::new(false);
+/// Set once at boot after detect(). Read by the idle loop for MONITOR/MWAIT.
+pub static HAS_MWAIT: AtomicBool = AtomicBool::new(false);
 static mut FEATURES: CpuFeatures = CpuFeatures::empty();
 /// 12-byte vendor string from CPUID leaf 0 (e.g. "GenuineIntel"), null-padded to 16.
 static mut CPU_VENDOR: [u8; 16] = [0; 16];
@@ -31,6 +33,7 @@ pub struct CpuFeatures {
     pub xsave: bool,
     pub rdrand: bool,
     pub pcid: bool,
+    pub mwait: bool,
     // Extended leaf 0x80000001 EDX
     pub nx: bool,
     pub syscall: bool,
@@ -60,6 +63,7 @@ impl CpuFeatures {
             xsave: false,
             rdrand: false,
             pcid: false,
+            mwait: false,
             nx: false,
             syscall: false,
             avx2: false,
@@ -126,6 +130,7 @@ pub fn detect() {
     f.xsave = ecx & (1 << 26) != 0;
     f.rdrand = ecx & (1 << 30) != 0;
     f.pcid = ecx & (1 << 17) != 0;
+    f.mwait = ecx & (1 << 3) != 0;
 
     // Extended leaf 0x80000001: NX, SYSCALL
     let max_ext = cpuid(0x80000000, 0).0;
@@ -164,6 +169,7 @@ pub fn detect() {
     // Store and mark detected
     unsafe { FEATURES = f; }
     DETECTED.store(true, Ordering::Release);
+    HAS_MWAIT.store(f.mwait, Ordering::Release);
 
     // Log vendor and brand
     let vendor_str = unsafe {
@@ -188,8 +194,8 @@ pub fn detect() {
         f.avx, f.avx2, f.aes_ni, f.xsave
     );
     crate::serial_println!(
-        "  NX={} SYSCALL={} PCID={} RDRAND={}",
-        f.nx, f.syscall, f.pcid, f.rdrand
+        "  NX={} SYSCALL={} PCID={} RDRAND={} MWAIT={}",
+        f.nx, f.syscall, f.pcid, f.rdrand, f.mwait
     );
     crate::serial_println!(
         "  ERMS={} FSGSBASE={} BMI1={} BMI2={}",
@@ -223,6 +229,7 @@ pub fn brand() -> &'static [u8; 48] {
 ///
 /// Hypervisors expose the TSC frequency via synthetic CPUID leaves:
 /// - **VirtualBox**: leaf 0x40000010, EAX = TSC freq in kHz
+/// - **VMware**: leaf 0x40000010, EAX = TSC freq in kHz
 /// - **Hyper-V**: leaf 0x40000003, EAX = TSC freq in Hz (10 MHz units)
 /// - **CPUID leaf 0x15**: standard Intel TSC/crystal ratio (QEMU, bare metal)
 ///
@@ -248,6 +255,15 @@ pub fn hypervisor_tsc_hz() -> Option<u64> {
             let (tsc_khz, apic_khz, _, _) = cpuid(0x40000010, 0);
             if tsc_khz > 0 {
                 crate::serial_println!("  VBox CPUID: TSC={}kHz, APIC={}kHz", tsc_khz, apic_khz);
+                return Some(tsc_khz as u64 * 1000);
+            }
+        }
+
+        // VMware: leaf 0x40000010 → EAX = TSC freq in kHz
+        if &hv_vendor == b"VMwareVMware" && max_hv_leaf >= 0x40000010 {
+            let (tsc_khz, _, _, _) = cpuid(0x40000010, 0);
+            if tsc_khz > 0 {
+                crate::serial_println!("  VMware CPUID: TSC={}kHz", tsc_khz);
                 return Some(tsc_khz as u64 * 1000);
             }
         }

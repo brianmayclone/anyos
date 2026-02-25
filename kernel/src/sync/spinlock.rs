@@ -162,9 +162,18 @@ impl<T> Spinlock<T> {
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
+            // Exponential PAUSE backoff: 1, 2, 4, 8, 16, 32, 64 PAUSEs per check.
+            // Reduces cache-line bouncing under contention and helps VMware's
+            // "PAUSE Loop Exiting" (PLE) detect spin-waiting vCPUs.
+            let mut backoff: u32 = 1;
             while self.lock.load(Ordering::Relaxed) {
-                core::hint::spin_loop();
-                spin_count += 1;
+                for _ in 0..backoff {
+                    core::hint::spin_loop();
+                }
+                spin_count += backoff;
+                if backoff < 64 {
+                    backoff <<= 1;
+                }
 
                 if !reported && spin_count >= SPIN_TIMEOUT {
                     reported = true;
