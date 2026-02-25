@@ -530,8 +530,8 @@ int chmod(const char *path, unsigned int mode) {
 
 int fchmod(int fd, unsigned int mode) { (void)fd; (void)mode; return 0; }
 
-unsigned int getuid(void) { return 0; }
-unsigned int getgid(void) { return 0; }
+unsigned int getuid(void)  { return (unsigned int)_syscall(221, 0, 0, 0, 0, 0); }
+unsigned int getgid(void)  { return (unsigned int)_syscall(222, 0, 0, 0, 0, 0); }
 unsigned int umask(unsigned int mask) { (void)mask; return 022; }
 
 int link(const char *oldpath, const char *newpath) {
@@ -570,8 +570,8 @@ int getpgid(int pid) { (void)pid; return getpid(); }
 int setpgid(int pid, int pgid) { (void)pid; (void)pgid; return 0; }
 int setpgrp(void) { return 0; }
 int getpgrp(void) { return getpid(); }
-unsigned int geteuid(void) { return 0; }
-unsigned int getegid(void) { return 0; }
+unsigned int geteuid(void) { return (unsigned int)_syscall(221, 0, 0, 0, 0, 0); }
+unsigned int getegid(void) { return (unsigned int)_syscall(222, 0, 0, 0, 0, 0); }
 int getsid(int pid) { (void)pid; return getpid(); }
 int setsid(void) { return getpid(); }
 unsigned int alarm(unsigned int seconds) { (void)seconds; return 0; }

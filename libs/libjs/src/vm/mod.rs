@@ -545,9 +545,9 @@ impl Vm {
                 // ── Spread / ArrayPush ──
                 Op::Spread => {
                     // Stack: [..., target_array, value_to_spread]
-                    // Append all elements of `value_to_spread` into `target_array`.
+                    // Pop both, extend target with elements of value, push target back.
                     let src = self.stack.pop().unwrap_or(JsValue::Undefined);
-                    let tgt = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
+                    let tgt = self.stack.pop().unwrap_or(JsValue::Undefined);
                     if let JsValue::Array(tgt_rc) = &tgt {
                         match &src {
                             JsValue::Array(src_rc) => {
@@ -566,7 +566,7 @@ impl Vm {
                             _ => {}
                         }
                     }
-                    // target_array already on top of stack; nothing to push
+                    self.stack.push(tgt);
                 }
                 Op::ObjectSpread => {
                     // Stack: [..., target_object, source_object]
@@ -593,13 +593,13 @@ impl Vm {
                 }
                 Op::ArrayPush => {
                     // Stack: [..., target_array, value]
-                    // Append `value` to `target_array`.
+                    // Pop both, push value to target, push target back.
                     let val = self.stack.pop().unwrap_or(JsValue::Undefined);
-                    let tgt = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
+                    let tgt = self.stack.pop().unwrap_or(JsValue::Undefined);
                     if let JsValue::Array(tgt_rc) = &tgt {
                         tgt_rc.borrow_mut().elements.push(val);
                     }
-                    // target_array stays on top of stack
+                    self.stack.push(tgt);
                 }
                 Op::LoadArgsArray(start) => {
                     // Create an Array containing all call arguments from index `start` onward.

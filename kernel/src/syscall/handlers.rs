@@ -814,12 +814,17 @@ pub fn sys_stat(path_ptr: u32, buf_ptr: u32) -> u32 {
                     _ => 0, // Regular
                 };
                 let flags: u32 = if st.is_symlink { 1 } else { 0 };
+                // Filesystems without UID storage (FAT, NTFS, ISO) always return
+                // uid=0.  Substitute the caller's real UID so that ownership
+                // checks (e.g. libgit2) work correctly for non-root users.
+                let caller_uid = crate::task::scheduler::current_thread_uid() as u32;
+                let file_uid = if st.uid == 0 { caller_uid } else { st.uid as u32 };
                 unsafe {
                     let buf = buf_ptr as *mut u32;
                     *buf = type_val;
                     *buf.add(1) = st.size;
                     *buf.add(2) = flags;
-                    *buf.add(3) = st.uid as u32;
+                    *buf.add(3) = file_uid;
                     *buf.add(4) = st.gid as u32;
                     *buf.add(5) = st.mode as u32;
                     *buf.add(6) = st.mtime;
@@ -847,12 +852,14 @@ pub fn sys_lstat(path_ptr: u32, buf_ptr: u32) -> u32 {
                     _ => 0, // Regular
                 };
                 let flags: u32 = if st.is_symlink { 1 } else { 0 };
+                let caller_uid = crate::task::scheduler::current_thread_uid() as u32;
+                let file_uid = if st.uid == 0 { caller_uid } else { st.uid as u32 };
                 unsafe {
                     let buf = buf_ptr as *mut u32;
                     *buf = type_val;
                     *buf.add(1) = st.size;
                     *buf.add(2) = flags;
-                    *buf.add(3) = st.uid as u32;
+                    *buf.add(3) = file_uid;
                     *buf.add(4) = st.gid as u32;
                     *buf.add(5) = st.mode as u32;
                     *buf.add(6) = st.mtime;

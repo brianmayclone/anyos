@@ -16,12 +16,13 @@ extern long _syscall(long num, long a1, long a2, long a3, long a4, long a5);
 #define SYS_MKDIR  90
 
 int stat(const char *path, struct stat *buf) {
-    unsigned long info[7]; /* type, size, flags, uid, gid, mode, mtime */
+    /* Kernel writes 7 × u32 (4 bytes each); use unsigned int to match. */
+    unsigned int info[7]; /* type, size, flags, uid, gid, mode, mtime */
     long ret = _syscall(SYS_STAT, (long)path, (long)info, 0, 0, 0);
     if (ret < 0) { errno = (int)-ret; return -1; }
     if (buf) {
         memset(buf, 0, sizeof(*buf));
-        unsigned long mode = info[5];
+        unsigned int mode = info[5];
         if (info[0] == 1)
             buf->st_mode = S_IFDIR | (mode ? (mode & 0777) : 0755);
         else if (info[0] == 2)
@@ -40,7 +41,8 @@ int stat(const char *path, struct stat *buf) {
 }
 
 int fstat(int fd, struct stat *buf) {
-    unsigned long info[4]; /* type, size, position, mtime */
+    /* Kernel writes 4 × u32 (4 bytes each); use unsigned int to match. */
+    unsigned int info[4]; /* type, size, position, mtime */
     long ret = _syscall(SYS_FSTAT, fd, (long)info, 0, 0, 0);
     if (ret < 0) { errno = (int)-ret; return -1; }
     if (buf) {

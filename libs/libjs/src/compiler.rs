@@ -31,9 +31,13 @@ struct Scope {
     locals: Vec<Local>,
     /// Upvalues captured by this function from enclosing function scopes.
     upvalues: Vec<UpvalueDesc>,
-    /// Break target offsets to patch.
+    /// Break target offsets to patch (forward jumps).
     break_jumps: Vec<usize>,
-    /// Continue target offset.
+    /// Continue forward-jump instruction indices to patch (for `for` loops
+    /// where the update position is unknown until after the body).
+    continue_jumps: Vec<usize>,
+    /// Continue target offset for loops where the target is known before the
+    /// body is compiled (while, do-while, for-in, for-of).
     continue_target: Option<usize>,
     scope_depth: u32,
 }
@@ -50,6 +54,7 @@ impl Scope {
             locals: Vec::new(),
             upvalues: Vec::new(),
             break_jumps: Vec::new(),
+            continue_jumps: Vec::new(),
             continue_target: None,
             scope_depth: 0,
         }
@@ -149,6 +154,10 @@ impl Compiler {
 
     fn patch_jump(&mut self, idx: usize) {
         self.scope_mut().chunk.patch_jump(idx);
+    }
+
+    fn patch_jump_to_pos(&mut self, idx: usize, pos: usize) {
+        self.scope_mut().chunk.patch_jump_to_pos(idx, pos);
     }
 
     // ── Upvalue resolution ──
@@ -336,7 +345,9 @@ impl Compiler {
 
                 let loop_start = self.offset();
                 let old_continue = self.scope_mut().continue_target.take();
+                let old_continue_jumps = core::mem::take(&mut self.scope_mut().continue_jumps);
                 let old_breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
+                // continue_target stays None during body so Continue emits forward jumps.
 
                 let exit_jump = if let Some(test) = test {
                     self.compile_expr(test);
@@ -347,8 +358,12 @@ impl Compiler {
 
                 self.compile_stmt(body);
 
+                // Patch all forward continue-jumps to the update expression.
                 let continue_pos = self.offset();
-                self.scope_mut().continue_target = Some(continue_pos);
+                let cont_jumps = core::mem::take(&mut self.scope_mut().continue_jumps);
+                for cj in &cont_jumps {
+                    self.patch_jump_to_pos(*cj, continue_pos);
+                }
 
                 if let Some(update) = update {
                     self.compile_expr(update);
@@ -367,6 +382,7 @@ impl Compiler {
                     self.patch_jump(b);
                 }
                 self.scope_mut().break_jumps = old_breaks;
+                self.scope_mut().continue_jumps = old_continue_jumps;
                 self.scope_mut().continue_target = old_continue;
                 self.end_scope();
             }
@@ -390,8 +406,13 @@ impl Compiler {
             }
             Stmt::Continue(_label) => {
                 if let Some(target) = self.scope().continue_target {
+                    // Known target (while/do-while/for-in/for-of) → backward jump.
                     let back = target as i32 - self.offset() as i32 - 1;
                     self.emit(Op::Jump(back));
+                } else {
+                    // Unknown target (for loop update) → forward jump, patched later.
+                    let idx = self.emit(Op::Jump(0));
+                    self.scope_mut().continue_jumps.push(idx);
                 }
             }
             Stmt::Switch { discriminant, cases } => {
@@ -561,18 +582,32 @@ impl Compiler {
         // Let's just push the value; the VM's IterNext returns Undefined when done
         let exit_jump = self.emit(Op::JumpIfFalse(0)); // done flag
 
-        // Bind the iteration value to the loop variable
+        // Bind the iteration value to the loop variable.
+        // The current iteration value is on top of the stack.
         match left {
             ForInit::VarDecl { kind, decls } => {
                 if let Some(decl) = decls.first() {
                     let is_global = *kind == VarKind::Var && self.is_global_scope();
-                    if let Pattern::Ident(name) = &decl.name {
-                        let name_clone = name.clone();
-                        let prev = self.binding_is_global;
-                        self.binding_is_global = is_global;
-                        self.bind_ident(&name_clone);
-                        self.binding_is_global = prev;
+                    let prev = self.binding_is_global;
+                    self.binding_is_global = is_global;
+                    match &decl.name {
+                        Pattern::Ident(name) => {
+                            let name_clone = name.clone();
+                            self.bind_ident(&name_clone);
+                        }
+                        Pattern::Array(elems) => {
+                            self.compile_array_destructure(elems);
+                        }
+                        Pattern::Object(props) => {
+                            self.compile_object_destructure(props);
+                        }
+                        Pattern::Assign(inner, _) => {
+                            self.compile_pattern_binding(inner);
+                        }
                     }
+                    self.binding_is_global = prev;
+                } else {
+                    self.emit(Op::Pop);
                 }
             }
             ForInit::Expr(Expr::Ident(name)) => {
@@ -611,64 +646,49 @@ impl Compiler {
         self.compile_expr(discriminant);
         let old_breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
 
-        let mut case_jumps: Vec<usize> = Vec::new();
-        let mut default_jump: Option<usize> = None;
-        let mut body_positions: Vec<usize> = Vec::new();
+        // First pass: emit Dup+compare+JumpIfTrue for each non-default case.
+        // Collect the instruction index of each JumpIfTrue for later patching.
+        let mut case_jumps: Vec<Option<usize>> = Vec::new(); // None for default
+        let mut default_idx: Option<usize> = None;
 
-        // First pass: emit comparisons and conditional jumps
-        for case in cases {
+        for (i, case) in cases.iter().enumerate() {
             if let Some(ref test) = case.test {
                 self.emit(Op::Dup);
                 self.compile_expr(test);
                 self.emit(Op::StrictEq);
                 let j = self.emit(Op::JumpIfTrue(0));
-                case_jumps.push(j);
+                case_jumps.push(Some(j));
             } else {
-                // default case - we'll jump here if nothing else matches
-                case_jumps.push(0); // placeholder
-                default_jump = Some(case_jumps.len() - 1);
+                default_idx = Some(i);
+                case_jumps.push(None);
             }
         }
 
-        // Jump to default or end if no case matched
-        let end_no_match = if default_jump.is_some() {
-            None
-        } else {
-            Some(self.emit(Op::Jump(0)))
-        };
+        // Emit the "no match" jump: goes to default body (if any) or past all bodies.
+        let no_match_jump = self.emit(Op::Jump(0));
 
-        // Second pass: emit case bodies
+        // Second pass: emit bodies; patch each case's JumpIfTrue to its body start.
+        let mut body_positions: Vec<usize> = Vec::new();
         for (i, case) in cases.iter().enumerate() {
             body_positions.push(self.offset());
-            // Patch the jump for this case to here
-            if case.test.is_some() || default_jump == Some(i) {
-                if i < case_jumps.len() && case_jumps[i] != 0 {
-                    self.patch_jump(case_jumps[i]);
-                }
+            if let Some(j) = case_jumps[i] {
+                self.patch_jump(j); // patch JumpIfTrue to this case's body
             }
             for s in &case.consequent {
                 self.compile_stmt(s);
             }
         }
 
-        if let Some(ej) = end_no_match {
-            self.patch_jump(ej);
-        }
-
-        // If default exists, patch the default jump
-        if let Some(di) = default_jump {
-            if di < body_positions.len() {
-                // Patch default case entry point
-                let default_pos = body_positions[di];
-                if di < case_jumps.len() && case_jumps[di] == 0 {
-                    // We need a separate jump to default
-                    // This is already handled by fallthrough
-                }
-            }
+        // Patch the "no match" jump to the default body or past all bodies.
+        if let Some(di) = default_idx {
+            self.patch_jump_to_pos(no_match_jump, body_positions[di]);
+        } else {
+            self.patch_jump(no_match_jump);
         }
 
         self.emit(Op::Pop); // pop discriminant
 
+        // Patch all break jumps to after the Pop.
         let breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
         for b in breaks {
             self.patch_jump(b);
@@ -1086,15 +1106,15 @@ impl Compiler {
                 let has_spread = elements.iter().any(|e| matches!(e, Some(Expr::Spread(_))));
                 if has_spread {
                     // Build incrementally: start with empty array, then push/spread each element.
+                    // Spread/ArrayPush use pop-modify-push semantics: no Dup needed.
                     self.emit(Op::NewArray(0));
                     for elem in elements {
-                        self.emit(Op::Dup); // dup target array
                         if let Some(Expr::Spread(inner)) = elem {
                             self.compile_expr(inner);
-                            self.emit(Op::Spread); // spread `inner` into target array
+                            self.emit(Op::Spread);
                         } else if let Some(e) = elem {
                             self.compile_expr(e);
-                            self.emit(Op::ArrayPush); // push value into target array
+                            self.emit(Op::ArrayPush);
                         } else {
                             self.emit(Op::LoadUndefined);
                             self.emit(Op::ArrayPush);
@@ -1573,15 +1593,15 @@ impl Compiler {
     /// Compile a list of call arguments into an Array on the stack,
     /// correctly handling spread elements (`...expr`).
     fn compile_args_as_array(&mut self, args: &[Expr]) {
+        // Spread/ArrayPush use pop-modify-push semantics: no Dup needed.
         self.emit(Op::NewArray(0));
         for arg in args {
-            self.emit(Op::Dup); // dup target array
             if let Expr::Spread(inner) = arg {
                 self.compile_expr(inner);
-                self.emit(Op::Spread); // spread elements into target array
+                self.emit(Op::Spread);
             } else {
                 self.compile_expr(arg);
-                self.emit(Op::ArrayPush); // push single value
+                self.emit(Op::ArrayPush);
             }
         }
     }

@@ -257,7 +257,12 @@ impl Chunk {
 
     /// Patch a jump instruction at `idx` to jump to current offset.
     pub fn patch_jump(&mut self, idx: usize) {
-        let target = self.code.len() as i32 - idx as i32 - 1;
+        self.patch_jump_to_pos(idx, self.code.len());
+    }
+
+    /// Patch a jump instruction at `idx` to jump to a specific absolute position.
+    pub fn patch_jump_to_pos(&mut self, idx: usize, pos: usize) {
+        let target = pos as i32 - idx as i32 - 1;
         match &mut self.code[idx] {
             Op::Jump(ref mut off) => *off = target,
             Op::JumpIfTrue(ref mut off) => *off = target,
