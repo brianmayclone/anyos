@@ -23,7 +23,10 @@ pub struct Rule {
 #[derive(Clone)]
 pub enum Selector {
     Simple(SimpleSelector),
-    Descendant(Box<Selector>, SimpleSelector),
+    Descendant(Box<Selector>, SimpleSelector),    // A B
+    Child(Box<Selector>, SimpleSelector),         // A > B
+    AdjacentSibling(Box<Selector>, SimpleSelector), // A + B
+    GeneralSibling(Box<Selector>, SimpleSelector),  // A ~ B
     Universal,
 }
 
@@ -32,11 +35,54 @@ pub struct SimpleSelector {
     pub tag: Option<Tag>,
     pub id: Option<String>,
     pub classes: Vec<String>,
+    pub attrs: Vec<AttrSelector>,
+    pub pseudo_classes: Vec<PseudoClass>,
+}
+
+/// Attribute selector: [attr], [attr=val], [attr~=val], etc.
+#[derive(Clone)]
+pub struct AttrSelector {
+    pub name: String,
+    pub op: AttrOp,
+    pub value: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AttrOp {
+    Exists,     // [attr]
+    Exact,      // [attr=val]
+    Contains,   // [attr~=val] (word in space-separated)
+    Prefix,     // [attr^=val]
+    Suffix,     // [attr$=val]
+    Substring,  // [attr*=val]
+    DashMatch,  // [attr|=val]
+}
+
+/// Pseudo-class selectors.
+#[derive(Clone)]
+pub enum PseudoClass {
+    Hover,
+    Active,
+    Focus,
+    Visited,
+    FirstChild,
+    LastChild,
+    NthChild(i32),
+    NthLastChild(i32),
+    FirstOfType,
+    LastOfType,
+    Not(Box<SimpleSelector>),
+    Empty,
+    Checked,
+    Disabled,
+    Enabled,
+    Root,
 }
 
 pub struct Declaration {
     pub property: Property,
     pub value: CssValue,
+    pub important: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -152,7 +198,10 @@ impl Selector {
         match self {
             Selector::Universal => (0, 0, 0),
             Selector::Simple(s) => s.specificity(),
-            Selector::Descendant(ancestor, leaf) => {
+            Selector::Descendant(ancestor, leaf)
+            | Selector::Child(ancestor, leaf)
+            | Selector::AdjacentSibling(ancestor, leaf)
+            | Selector::GeneralSibling(ancestor, leaf) => {
                 let (a1, b1, c1) = ancestor.specificity();
                 let (a2, b2, c2) = leaf.specificity();
                 (a1 + a2, b1 + b2, c1 + c2)
@@ -164,7 +213,9 @@ impl Selector {
 impl SimpleSelector {
     fn specificity(&self) -> (u32, u32, u32) {
         let ids = if self.id.is_some() { 1 } else { 0 };
-        let classes = self.classes.len() as u32;
+        let classes = self.classes.len() as u32
+            + self.attrs.len() as u32
+            + self.pseudo_classes.len() as u32;
         let tags = if self.tag.is_some() { 1 } else { 0 };
         (ids, classes, tags)
     }
@@ -386,17 +437,47 @@ fn parse_selector(p: &mut Parser) -> Selector {
     };
 
     loop {
-        // Check for whitespace (descendant combinator) but NOT '{' or ','
         let had_space = skip_spaces_only(p);
         if p.eof() || p.peek() == b'{' || p.peek() == b',' {
             break;
         }
-        if !had_space {
-            break;
+        // Check for explicit combinators: > + ~
+        let combinator = if p.peek() == b'>' {
+            p.pos += 1;
+            skip_spaces_only(p);
+            Some(b'>')
+        } else if p.peek() == b'+' {
+            p.pos += 1;
+            skip_spaces_only(p);
+            Some(b'+')
+        } else if p.peek() == b'~' {
+            p.pos += 1;
+            skip_spaces_only(p);
+            Some(b'~')
+        } else if had_space {
+            Some(b' ')
+        } else {
+            None
+        };
+        match combinator {
+            Some(b'>') => {
+                let next = parse_simple_selector(p);
+                result = Selector::Child(Box::new(result), next);
+            }
+            Some(b'+') => {
+                let next = parse_simple_selector(p);
+                result = Selector::AdjacentSibling(Box::new(result), next);
+            }
+            Some(b'~') => {
+                let next = parse_simple_selector(p);
+                result = Selector::GeneralSibling(Box::new(result), next);
+            }
+            Some(b' ') => {
+                let next = parse_simple_selector(p);
+                result = Selector::Descendant(Box::new(result), next);
+            }
+            _ => break,
         }
-        // We have a descendant combinator
-        let next = parse_simple_selector(p);
-        result = Selector::Descendant(Box::new(result), next);
     }
 
     result
@@ -421,22 +502,24 @@ fn skip_spaces_only(p: &mut Parser) -> bool {
 
 fn is_universal(s: &SimpleSelector) -> bool {
     s.tag.is_none() && s.id.is_none() && s.classes.is_empty()
+        && s.attrs.is_empty() && s.pseudo_classes.is_empty()
 }
 
 fn parse_simple_selector(p: &mut Parser) -> SimpleSelector {
     let mut tag = Option::None;
     let mut id = Option::None;
     let mut classes = Vec::new();
+    let mut attrs = Vec::new();
+    let mut pseudo_classes = Vec::new();
 
     if p.peek() == b'*' {
         p.pos += 1;
-        // Universal — but may still have .class or #id attached
     } else if p.peek().is_ascii_alphabetic() {
         let name = p.read_ident();
         tag = Some(Tag::from_str(&name));
     }
 
-    // Parse chained #id and .class (no spaces between them)
+    // Parse chained #id, .class, [attr], :pseudo (no spaces between them)
     loop {
         if p.peek() == b'#' {
             p.pos += 1;
@@ -444,12 +527,150 @@ fn parse_simple_selector(p: &mut Parser) -> SimpleSelector {
         } else if p.peek() == b'.' {
             p.pos += 1;
             classes.push(p.read_ident());
+        } else if p.peek() == b'[' {
+            if let Some(attr) = parse_attr_selector(p) {
+                attrs.push(attr);
+            }
+        } else if p.peek() == b':' && !p.starts_with(b"::") {
+            p.pos += 1;
+            if let Some(pc) = parse_pseudo_class(p) {
+                pseudo_classes.push(pc);
+            }
         } else {
             break;
         }
     }
 
-    SimpleSelector { tag, id, classes }
+    SimpleSelector { tag, id, classes, attrs, pseudo_classes }
+}
+
+fn parse_attr_selector(p: &mut Parser) -> Option<AttrSelector> {
+    p.pos += 1; // skip '['
+    skip_spaces_only(p);
+    let name = p.read_ident();
+    if name.is_empty() {
+        while !p.eof() && p.peek() != b']' { p.pos += 1; }
+        if p.peek() == b']' { p.pos += 1; }
+        return Option::None;
+    }
+    skip_spaces_only(p);
+    if p.peek() == b']' {
+        p.pos += 1;
+        return Some(AttrSelector { name, op: AttrOp::Exists, value: Option::None });
+    }
+
+    let op = if p.starts_with(b"~=") { p.pos += 2; AttrOp::Contains }
+        else if p.starts_with(b"^=") { p.pos += 2; AttrOp::Prefix }
+        else if p.starts_with(b"$=") { p.pos += 2; AttrOp::Suffix }
+        else if p.starts_with(b"*=") { p.pos += 2; AttrOp::Substring }
+        else if p.starts_with(b"|=") { p.pos += 2; AttrOp::DashMatch }
+        else if p.peek() == b'=' { p.pos += 1; AttrOp::Exact }
+        else {
+            while !p.eof() && p.peek() != b']' { p.pos += 1; }
+            if p.peek() == b']' { p.pos += 1; }
+            return Option::None;
+        };
+
+    skip_spaces_only(p);
+    let value = if p.peek() == b'"' || p.peek() == b'\'' {
+        let quote = p.advance();
+        let start = p.pos;
+        while !p.eof() && p.peek() != quote { p.pos += 1; }
+        let val = String::from_utf8_lossy(&p.input[start..p.pos]).into_owned();
+        if p.peek() == quote { p.pos += 1; }
+        val
+    } else {
+        p.read_ident()
+    };
+
+    skip_spaces_only(p);
+    if p.peek() == b']' { p.pos += 1; }
+    Some(AttrSelector { name, op, value: Some(value) })
+}
+
+fn parse_pseudo_class(p: &mut Parser) -> Option<PseudoClass> {
+    let name = p.read_ident();
+    let lower = to_ascii_lower(&name);
+    match lower.as_str() {
+        "hover" => Some(PseudoClass::Hover),
+        "active" => Some(PseudoClass::Active),
+        "focus" => Some(PseudoClass::Focus),
+        "visited" => Some(PseudoClass::Visited),
+        "first-child" => Some(PseudoClass::FirstChild),
+        "last-child" => Some(PseudoClass::LastChild),
+        "first-of-type" => Some(PseudoClass::FirstOfType),
+        "last-of-type" => Some(PseudoClass::LastOfType),
+        "empty" => Some(PseudoClass::Empty),
+        "checked" => Some(PseudoClass::Checked),
+        "disabled" => Some(PseudoClass::Disabled),
+        "enabled" => Some(PseudoClass::Enabled),
+        "root" => Some(PseudoClass::Root),
+        "nth-child" => {
+            if p.peek() == b'(' {
+                p.pos += 1;
+                skip_spaces_only(p);
+                let n = parse_nth_arg(p);
+                skip_spaces_only(p);
+                if p.peek() == b')' { p.pos += 1; }
+                Some(PseudoClass::NthChild(n))
+            } else {
+                Some(PseudoClass::NthChild(1))
+            }
+        }
+        "nth-last-child" => {
+            if p.peek() == b'(' {
+                p.pos += 1;
+                skip_spaces_only(p);
+                let n = parse_nth_arg(p);
+                skip_spaces_only(p);
+                if p.peek() == b')' { p.pos += 1; }
+                Some(PseudoClass::NthLastChild(n))
+            } else {
+                Some(PseudoClass::NthLastChild(1))
+            }
+        }
+        "not" => {
+            if p.peek() == b'(' {
+                p.pos += 1;
+                skip_spaces_only(p);
+                let inner = parse_simple_selector(p);
+                skip_spaces_only(p);
+                if p.peek() == b')' { p.pos += 1; }
+                Some(PseudoClass::Not(Box::new(inner)))
+            } else {
+                Option::None
+            }
+        }
+        _ => {
+            // Skip unknown pseudo-class arguments
+            if p.peek() == b'(' {
+                let mut depth: u32 = 1;
+                p.pos += 1;
+                while !p.eof() && depth > 0 {
+                    match p.advance() {
+                        b'(' => depth += 1,
+                        b')' => depth -= 1,
+                        _ => {}
+                    }
+                }
+            }
+            Option::None
+        }
+    }
+}
+
+fn parse_nth_arg(p: &mut Parser) -> i32 {
+    let start = p.pos;
+    while !p.eof() && p.peek() != b')' {
+        p.pos += 1;
+    }
+    let arg = core::str::from_utf8(&p.input[start..p.pos]).unwrap_or("");
+    let arg = arg.trim();
+    match arg {
+        "odd" => 1,
+        "even" => 2,
+        _ => parse_int(arg).unwrap_or(1),
+    }
 }
 
 // ---------------------------------------------------------------------------
