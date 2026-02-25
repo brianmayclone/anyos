@@ -96,6 +96,7 @@ pub struct DataGrid {
     scroll_x: i32,
     selection_mode: SelectionMode,
     selected_rows: Vec<u8>,
+    anchor_row: Option<usize>,
     drag_mode: DragMode,
     hovered_row: Option<usize>,
     pub(crate) header_height: u32,
@@ -123,6 +124,7 @@ impl DataGrid {
             scroll_x: 0,
             selection_mode: SelectionMode::Single,
             selected_rows: Vec::new(),
+            anchor_row: None,
             drag_mode: DragMode::None,
             hovered_row: None,
             header_height: 32,
@@ -737,15 +739,40 @@ impl Control for DataGrid {
             // Row selection
             if let Some(vis_row) = self.row_at_y(ly) {
                 let data_row = self.data_row(vis_row);
+                let mods = crate::state().last_modifiers;
+                let ctrl = mods & 2 != 0;
+                let shift = mods & 1 != 0;
+
                 match self.selection_mode {
                     SelectionMode::Single => {
                         self.clear_selection();
                         self.set_row_selected(data_row, true);
+                        self.anchor_row = Some(data_row);
                         self.base.state = data_row as u32;
                     }
                     SelectionMode::Multi => {
-                        let was = self.is_row_selected(data_row);
-                        self.set_row_selected(data_row, !was);
+                        if ctrl {
+                            // Ctrl+Click: toggle individual row
+                            let was = self.is_row_selected(data_row);
+                            self.set_row_selected(data_row, !was);
+                            if !was {
+                                self.anchor_row = Some(data_row);
+                            }
+                        } else if shift {
+                            // Shift+Click: range select from anchor
+                            let anchor = self.anchor_row.unwrap_or(0);
+                            let lo = anchor.min(data_row);
+                            let hi = anchor.max(data_row);
+                            self.clear_selection();
+                            for r in lo..=hi {
+                                self.set_row_selected(r, true);
+                            }
+                        } else {
+                            // Plain click: select only this row
+                            self.clear_selection();
+                            self.set_row_selected(data_row, true);
+                            self.anchor_row = Some(data_row);
+                        }
                         self.base.state = data_row as u32;
                     }
                 }

@@ -186,6 +186,9 @@ extern "C" fn ap_entry() -> ! {
     crate::arch::x86::syscall_msr::init_ap(cpu_id);
     crate::debug_println!("  [SMP] AP#{}: SYSCALL MSRs configured", cpu_id);
 
+    // Initialize per-AP power management (HWP / P-state)
+    crate::arch::x86::power::init_ap();
+
     // Register ourselves in CPU_DATA BEFORE signaling ready and enabling
     // interrupts.  This prevents a race where the LAPIC timer fires and
     // schedule_inner → current_cpu_id() can't find our LAPIC ID in

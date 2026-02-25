@@ -321,8 +321,10 @@ impl Desktop {
         };
 
         let force_shadow = flags & WIN_FLAG_SHADOW != 0;
-        let opaque = borderless && !force_shadow;
-        let layer_id = self.compositor.add_layer(x, y, content_w, full_h, opaque);
+        // Client windows are never assumed opaque — borderless windows (dock, overlays)
+        // may have transparent pixels, and the compositor cannot know at creation time.
+        // Only compositor-internal layers (background, menubar) should be explicitly opaque.
+        let layer_id = self.compositor.add_layer(x, y, content_w, full_h, false);
 
         if !borderless || force_shadow {
             if let Some(layer) = self.compositor.get_layer_mut(layer_id) {

@@ -1001,6 +1001,16 @@ pub fn get_key_info() -> KeyEvent {
     KeyEvent { keycode, char_code, modifiers }
 }
 
+/// Query the current modifier key state (Shift=1, Ctrl=2, Alt=4).
+///
+/// Valid inside any event callback (key, click, mouse down/up).
+/// The framework updates this on both keyboard and mouse events.
+pub fn get_modifiers() -> u32 {
+    let mut modifiers: u32 = 0;
+    (lib().get_key_info)(core::ptr::null_mut(), core::ptr::null_mut(), &mut modifiers);
+    modifiers
+}
+
 // ══════════════════════════════════════════════════════════════════════
 //  Clipboard API
 // ══════════════════════════════════════════════════════════════════════

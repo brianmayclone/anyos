@@ -1357,20 +1357,24 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
             0
         }
         4 => {
-            // Hardware info: 96-byte struct
-            //   [0..48]  CPU brand string (null-terminated)
-            //   [48..64] CPU vendor string (null-terminated)
-            //   [64..68] TSC frequency in MHz (u32 LE)
-            //   [68..72] CPU count (u32 LE)
-            //   [72..76] Boot mode: 0=BIOS, 1=UEFI (u32 LE)
-            //   [76..80] Total physical memory in MiB (u32 LE)
-            //   [80..84] Free physical memory in MiB (u32 LE)
-            //   [84..88] Framebuffer width (u32 LE)
-            //   [88..92] Framebuffer height (u32 LE)
-            //   [92..96] Framebuffer BPP (u32 LE)
+            // Hardware info: up to 108-byte struct (backwards-compatible)
+            //   [0..48]    CPU brand string (null-terminated)
+            //   [48..64]   CPU vendor string (null-terminated)
+            //   [64..68]   TSC frequency in MHz (u32 LE)
+            //   [68..72]   CPU count (u32 LE)
+            //   [72..76]   Boot mode: 0=BIOS, 1=UEFI (u32 LE)
+            //   [76..80]   Total physical memory in MiB (u32 LE)
+            //   [80..84]   Free physical memory in MiB (u32 LE)
+            //   [84..88]   Framebuffer width (u32 LE)
+            //   [88..92]   Framebuffer height (u32 LE)
+            //   [92..96]   Framebuffer BPP (u32 LE)
+            //   [96..100]  Current CPU frequency in MHz (u32 LE)
+            //   [100..104] Max CPU frequency in MHz (u32 LE)
+            //   [104..108] Power features: bit0=HWP, bit1=Turbo, bit2=APERF (u32 LE)
             if buf_ptr == 0 || buf_size < 96 { return u32::MAX; }
-            if !is_valid_user_ptr(buf_ptr as u64, 96) { return u32::MAX; }
-            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, 96) };
+            let actual_size = if buf_size >= 108 { 108usize } else { 96usize };
+            if !is_valid_user_ptr(buf_ptr as u64, actual_size as u64) { return u32::MAX; }
+            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, actual_size) };
             buf.fill(0);
 
             // CPU brand (48 bytes) and vendor (16 bytes)
@@ -1404,7 +1408,17 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
                 buf[92..96].copy_from_slice(&(fb.bpp as u32).to_le_bytes());
             }
 
-            96
+            // Extended fields (108-byte callers only)
+            if actual_size >= 108 {
+                let cur_freq = crate::arch::x86::power::current_frequency_mhz();
+                let max_freq = crate::arch::x86::power::max_frequency_mhz();
+                let features = crate::arch::x86::power::features_bitfield();
+                buf[96..100].copy_from_slice(&cur_freq.to_le_bytes());
+                buf[100..104].copy_from_slice(&max_freq.to_le_bytes());
+                buf[104..108].copy_from_slice(&features.to_le_bytes());
+            }
+
+            actual_size as u32
         }
         _ => u32::MAX,
     }

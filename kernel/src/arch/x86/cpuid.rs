@@ -78,7 +78,7 @@ impl CpuFeatures {
 
 /// Execute CPUID instruction.
 #[inline]
-fn cpuid(leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
+pub(crate) fn cpuid(leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
     let eax: u32;
     let ebx: u32;
     let ecx: u32;

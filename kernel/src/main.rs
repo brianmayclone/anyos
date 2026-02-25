@@ -93,6 +93,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     // Must be done before LAPIC timer calibration which depends on TSC.
     arch::x86::pit::calibrate_tsc();
 
+    // CPU power management: P-states, C-states, frequency detection
+    arch::x86::power::init();
+
     // Phase 3: Memory
     arch::x86::pat::init(); // Program PAT before mapping framebuffer with WC
     memory::physical::init(boot_info);

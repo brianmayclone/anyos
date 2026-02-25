@@ -267,7 +267,12 @@ impl Compositor {
                     skip_bg_clear = true;
                     break;
                 }
-            } else {
+            } else if self.layers[li].has_shadow {
+                // Inner-rect optimization: only for decorated windows (has_shadow)
+                // where only the rounded corners are transparent and the interior
+                // is fully opaque. NOT safe for layers with arbitrary transparency
+                // (e.g. the dock, tooltips, overlays) which would skip compositing
+                // of layers below, revealing stale back buffer content.
                 let inner = bounds.shrink(CORNER_RADIUS);
                 if !inner.is_empty() && inner.fully_contains(rect) {
                     base_layer_idx = li;

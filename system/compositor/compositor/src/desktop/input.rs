@@ -583,7 +583,7 @@ impl Desktop {
                             }
                             self.push_event(
                                 win_id,
-                                [EVENT_MOUSE_DOWN, lx as u32, content_ly as u32, buttons, 0],
+                                [EVENT_MOUSE_DOWN, lx as u32, content_ly as u32, buttons | (self.current_modifiers << 8), 0],
                             );
                         }
                     }
@@ -768,7 +768,7 @@ impl Desktop {
                     if !self.windows[idx].is_borderless() {
                         ly -= TITLE_BAR_HEIGHT as i32;
                     }
-                    self.push_event(win_id, [EVENT_MOUSE_UP, lx as u32, ly as u32, 0, 0]);
+                    self.push_event(win_id, [EVENT_MOUSE_UP, lx as u32, ly as u32, self.current_modifiers << 8, 0]);
                 }
             }
         }
@@ -781,6 +781,7 @@ impl Desktop {
     }
 
     fn handle_key(&mut self, scancode: u32, chr: u32, mods: u32, down: bool) {
+        self.current_modifiers = mods;
         let key_code = encode_scancode(scancode);
 
         // Volume keys: intercept globally, don't forward to apps

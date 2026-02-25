@@ -110,7 +110,7 @@ pub fn fetch_cpu(state: &mut CpuState) {
 }
 
 pub fn fetch_hwinfo() -> HwInfo {
-    let mut buf = [0u8; 96];
+    let mut buf = [0u8; 108];
     sys::sysinfo(4, &mut buf);
     let mut brand = [0u8; 48];
     let mut vendor = [0u8; 16];
@@ -126,5 +126,8 @@ pub fn fetch_hwinfo() -> HwInfo {
         fb_width: u32::from_le_bytes([buf[84], buf[85], buf[86], buf[87]]),
         fb_height: u32::from_le_bytes([buf[88], buf[89], buf[90], buf[91]]),
         fb_bpp: u32::from_le_bytes([buf[92], buf[93], buf[94], buf[95]]),
+        cpu_freq_mhz: u32::from_le_bytes([buf[96], buf[97], buf[98], buf[99]]),
+        max_freq_mhz: u32::from_le_bytes([buf[100], buf[101], buf[102], buf[103]]),
+        power_features: u32::from_le_bytes([buf[104], buf[105], buf[106], buf[107]]),
     }
 }

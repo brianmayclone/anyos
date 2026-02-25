@@ -216,7 +216,8 @@ struct AppState {
     icon_scroll: ui::ScrollView,
     icon_flow: ui::FlowPanel,
     icon_item_ids: Vec<u32>,   // track created items for cleanup
-    icon_selected: usize,      // selected index in icon view (usize::MAX = none)
+    icon_selected: Vec<bool>,  // per-item selection state in icon view
+    icon_anchor: usize,        // anchor index for Shift+Click range selection
     path_field: ui::TextField,
     btn_back: ui::IconButton,
     btn_fwd: ui::IconButton,
@@ -636,6 +637,7 @@ fn populate_icon_view() {
         ui::Control::from_id(id).remove();
     }
     s.icon_item_ids.clear();
+    s.icon_selected.clear();
 
     let n = s.entries.len();
 
@@ -695,6 +697,31 @@ fn populate_icon_view() {
 
         s.icon_flow.add(&cell);
         s.icon_item_ids.push(cell.id());
+        s.icon_selected.push(false);
+    }
+}
+
+fn update_selection_status_multi() {
+    let s = app();
+    let sel_count = s.icon_selected.iter().filter(|&&b| b).count();
+    if sel_count == 0 {
+        s.sb_sel_label.set_text("");
+    } else if sel_count == 1 {
+        // Find the single selected entry
+        if let Some(idx) = s.icon_selected.iter().position(|&b| b) {
+            if idx < s.entries.len() {
+                let name = s.entries[idx].name_str();
+                let text = if s.entries[idx].entry_type == TYPE_DIR {
+                    anyos_std::format!("\"{}\" selected", name)
+                } else {
+                    anyos_std::format!("\"{}\" — {}", name, fmt_size(s.entries[idx].size))
+                };
+                s.sb_sel_label.set_text(&text);
+            }
+        }
+    } else {
+        let text = anyos_std::format!("{} items selected", sel_count);
+        s.sb_sel_label.set_text(&text);
     }
 }
 
@@ -713,25 +740,63 @@ fn update_selection_status(idx: usize) {
     }
 }
 
+fn icon_clear_selection() {
+    let s = app();
+    for i in 0..s.icon_selected.len() {
+        if s.icon_selected[i] {
+            s.icon_selected[i] = false;
+            if i < s.icon_item_ids.len() {
+                ui::Control::from_id(s.icon_item_ids[i]).set_color(0x00000000);
+            }
+        }
+    }
+}
+
+fn icon_set_selected(idx: usize, selected: bool) {
+    let s = app();
+    if idx >= s.icon_selected.len() { return; }
+    s.icon_selected[idx] = selected;
+    if idx < s.icon_item_ids.len() {
+        let color = if selected { 0xFF0A54C4 } else { 0x00000000 };
+        ui::Control::from_id(s.icon_item_ids[idx]).set_color(color);
+    }
+}
+
 fn select_icon_item(idx: usize) {
     let s = app();
     if idx >= s.entries.len() { return; }
 
-    // Deselect previous
-    let prev = s.icon_selected;
-    if prev < s.icon_item_ids.len() {
-        ui::Control::from_id(s.icon_item_ids[prev]).set_color(0x00000000);
+    let mods = ui::get_modifiers();
+    let ctrl = mods & ui::MOD_CTRL != 0;
+    let shift = mods & ui::MOD_SHIFT != 0;
+
+    if ctrl {
+        // Ctrl+Click: toggle this item
+        let was = s.icon_selected.get(idx).copied().unwrap_or(false);
+        icon_set_selected(idx, !was);
+        if !was {
+            app().icon_anchor = idx;
+        }
+    } else if shift {
+        // Shift+Click: range select from anchor
+        let anchor = s.icon_anchor;
+        let lo = anchor.min(idx);
+        let hi = anchor.max(idx);
+        icon_clear_selection();
+        for r in lo..=hi {
+            icon_set_selected(r, true);
+        }
+    } else {
+        // Plain click: select only this item
+        icon_clear_selection();
+        icon_set_selected(idx, true);
+        app().icon_anchor = idx;
     }
 
-    // Highlight new
-    s.icon_selected = idx;
-    if idx < s.icon_item_ids.len() {
-        ui::Control::from_id(s.icon_item_ids[idx]).set_color(0xFF0A54C4);
-    }
-
-    // Sync DataGrid selection for context menu
+    // Sync DataGrid selection for context menu (use first selected)
+    let s = app();
     s.grid.set_selected_row(idx as u32);
-    update_selection_status(idx);
+    update_selection_status_multi();
 }
 
 extern "C" fn icon_item_click_handler(_control_id: u32, _event_type: u32, userdata: u64) {
@@ -898,7 +963,7 @@ fn main() {
     ]);
     grid.set_row_height(26);
     grid.set_header_height(28);
-    grid.set_selection_mode(ui::SELECTION_SINGLE);
+    grid.set_selection_mode(ui::SELECTION_MULTI);
 
     // Context menu — attached to grid AND added to parent panel (required!)
     let ctx_menu = ui::ContextMenu::new("Open|Copy Path");
@@ -941,7 +1006,8 @@ fn main() {
             icon_scroll,
             icon_flow,
             icon_item_ids: Vec::new(),
-            icon_selected: usize::MAX,
+            icon_selected: Vec::new(),
+            icon_anchor: 0,
             path_field,
             btn_back,
             btn_fwd,
@@ -995,11 +1061,24 @@ fn main() {
     // DataGrid: selection changed → update context menu + status bar
     grid.on_selection_changed(|_| {
         update_context_menu();
-        let sel = app().grid.selected_row();
-        if sel != u32::MAX {
-            update_selection_status(sel as usize);
+        // Count how many rows are selected
+        let s = app();
+        let n = s.entries.len();
+        let mut sel_count = 0usize;
+        let mut last_sel = usize::MAX;
+        for i in 0..n {
+            if s.grid.is_row_selected(i as u32) {
+                sel_count += 1;
+                last_sel = i;
+            }
+        }
+        if sel_count == 0 {
+            s.sb_sel_label.set_text("");
+        } else if sel_count == 1 {
+            update_selection_status(last_sel);
         } else {
-            app().sb_sel_label.set_text("");
+            let text = anyos_std::format!("{} items selected", sel_count);
+            s.sb_sel_label.set_text(&text);
         }
     });
 

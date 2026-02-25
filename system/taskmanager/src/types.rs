@@ -44,6 +44,9 @@ pub struct HwInfo {
     pub fb_width: u32,
     pub fb_height: u32,
     pub fb_bpp: u32,
+    pub cpu_freq_mhz: u32,
+    pub max_freq_mhz: u32,
+    pub power_features: u32,
 }
 
 pub struct CpuState {

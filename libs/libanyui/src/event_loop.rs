@@ -235,10 +235,11 @@ pub fn run_once() -> u32 {
                 }
 
                 compositor::EVT_MOUSE_DOWN => {
-                    // arg1=local_x, arg2=local_y, arg3=buttons
+                    // arg1=local_x, arg2=local_y, arg3=buttons|modifiers<<8
                     let mx = ev[2] as i32;
                     let my = ev[3] as i32;
-                    let button = ev[4];
+                    let button = ev[4] & 0xFF;
+                    st.last_modifiers = (ev[4] >> 8) & 0xFF;
 
                     let hit_id = control::hit_test(&st.controls, win_id, mx, my, 0, 0);
 
@@ -296,10 +297,11 @@ pub fn run_once() -> u32 {
                 }
 
                 compositor::EVT_MOUSE_UP => {
-                    // arg1=local_x, arg2=local_y
+                    // arg1=local_x, arg2=local_y, arg3=modifiers<<8
                     let mx = ev[2] as i32;
                     let my = ev[3] as i32;
-                    let button = ev[4];
+                    let button = ev[4] & 0xFF;
+                    st.last_modifiers = (ev[4] >> 8) & 0xFF;
 
                     let pressed_id = st.pressed.take();
 

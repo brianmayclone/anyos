@@ -89,6 +89,8 @@ pub struct Desktop {
     pub mouse_x: i32,
     pub mouse_y: i32,
     pub(crate) mouse_buttons: u32,
+    /// Current keyboard modifier state (Shift=1, Ctrl=2, Alt=4), updated on key events.
+    pub(crate) current_modifiers: u32,
 
     // SW cursor
     pub(crate) cursor_save: Vec<u32>,
@@ -199,6 +201,7 @@ impl Desktop {
             mouse_x: width as i32 / 2,
             mouse_y: height as i32 / 2,
             mouse_buttons: 0,
+            current_modifiers: 0,
             cursor_save: vec![0u32; (CURSOR_W * CURSOR_H) as usize],
             cursor_drawn: false,
             prev_cursor_x: width as i32 / 2,

@@ -8,14 +8,19 @@ use crate::ipc::pipe;
 use crate::task::scheduler;
 
 static mut CPU_PIPE_ID: u32 = 0;
+static mut FREQ_PIPE_ID: u32 = 0;
 
 /// Entry point for the cpu_monitor kernel thread.
 pub extern "C" fn start() {
     crate::serial_println!("  cpu_monitor started");
 
-    // Create the named pipe for CPU load data
+    // Create named pipes for CPU load and frequency data
     let pipe_id = pipe::create("sys:cpu_load");
-    unsafe { CPU_PIPE_ID = pipe_id; }
+    let freq_pipe = pipe::create("sys:cpu_freq");
+    unsafe {
+        CPU_PIPE_ID = pipe_id;
+        FREQ_PIPE_ID = freq_pipe;
+    }
 
     let mut prev_total = scheduler::total_sched_ticks();
     let mut prev_idle = scheduler::idle_sched_ticks();
@@ -45,5 +50,11 @@ pub extern "C" fn start() {
         pipe::clear(pipe_id);
         let bytes = cpu_pct.to_le_bytes();
         pipe::write(pipe_id, &bytes);
+
+        // Write current CPU frequency (MHz) as 4 bytes LE
+        let freq = crate::arch::x86::power::current_frequency_mhz();
+        pipe::clear(freq_pipe);
+        let freq_bytes = freq.to_le_bytes();
+        pipe::write(freq_pipe, &freq_bytes);
     }
 }

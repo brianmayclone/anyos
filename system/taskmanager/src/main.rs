@@ -819,11 +819,17 @@ fn main() {
                 let s = fmt_u32(&mut t, hw.cpu_count); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
                 if let Ok(s) = core::str::from_utf8(&buf[..p]) { cpu_cores_label.set_text(s); }
 
-                let mut buf = [0u8; 32];
+                let mut buf = [0u8; 48];
                 let mut p = 0;
                 buf[p..p + 8].copy_from_slice(b"Speed:  "); p += 8;
-                let s = fmt_u32(&mut t, hw.tsc_mhz); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
+                let freq = if hw.cpu_freq_mhz > 0 { hw.cpu_freq_mhz } else { hw.tsc_mhz };
+                let s = fmt_u32(&mut t, freq); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
                 buf[p..p + 4].copy_from_slice(b" MHz"); p += 4;
+                if hw.max_freq_mhz > 0 && hw.max_freq_mhz != freq {
+                    buf[p..p + 6].copy_from_slice(b" (max "); p += 6;
+                    let s = fmt_u32(&mut t, hw.max_freq_mhz); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
+                    buf[p] = b')'; p += 1;
+                }
                 if let Ok(s) = core::str::from_utf8(&buf[..p]) { cpu_speed_label.set_text(s); }
             }
 

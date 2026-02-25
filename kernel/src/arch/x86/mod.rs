@@ -15,5 +15,6 @@ pub mod pic;
 pub mod pit;
 pub mod port;
 pub mod smp;
+pub mod power;
 pub mod syscall_msr;
 pub mod tss;
