@@ -16,6 +16,7 @@ const SYS_YIELD: u64 = 7;
 const SYS_SLEEP: u64 = 8;
 const SYS_SBRK: u64 = 9;
 const SYS_UPTIME_MS: u64 = 35;
+const SYS_EVT_CHAN_POLL: u64 = 66;
 const SYS_EVT_CHAN_WAIT: u64 = 70;
 
 #[inline(always)]
@@ -147,6 +148,12 @@ pub fn mkdir(path: &[u8]) -> u32 {
 /// Write bytes to a file descriptor. fd=1 for stdout (serial).
 pub fn write(fd: u32, buf: &[u8]) -> u32 {
     syscall3(SYS_WRITE, fd as u64, buf.as_ptr() as u64, buf.len() as u64) as u32
+}
+
+/// Non-blocking poll: dequeue one event from a channel subscription.
+/// Returns true if an event was available.
+pub fn evt_chan_poll(channel_id: u32, sub_id: u32, buf: &mut [u32; 5]) -> bool {
+    syscall3(SYS_EVT_CHAN_POLL, channel_id as u64, sub_id as u64, buf.as_mut_ptr() as u64) != 0
 }
 
 /// Block until an event is available on a channel subscription, or timeout.

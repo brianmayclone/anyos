@@ -100,16 +100,34 @@ pub fn run_once() -> u32 {
     }
 
     // ── Phase 1: Poll events from all windows ──────────────────────
+    // Drain ALL events from the channel first, then dispatch per window.
+    // This avoids the compositor's poll_event discarding events for other
+    // windows when multiple windows share the same event channel.
+    let mut all_events: Vec<[u32; 5]> = Vec::new();
+    {
+        let mut tmp = [0u32; 5];
+        while crate::syscall::evt_chan_poll(st.channel_id, st.sub_id, &mut tmp) {
+            all_events.push(tmp);
+            tmp = [0u32; 5];
+        }
+    }
+
     let win_count = st.windows.len();
     for wi in 0..win_count {
         if wi >= st.windows.len() { break; }
         let win_id = st.windows[wi];
         let comp_window_id = st.comp_windows[wi].window_id;
 
-        let mut ev = [0u32; 5];
-        // Poll events via compositor DLL
+        // Process events that belong to this window
         // Buffer layout: [event_type, window_id, arg1, arg2, arg3]
-        while compositor::poll_event(st.channel_id, st.sub_id, comp_window_id, &mut ev) {
+        for ev in all_events.iter() {
+            // Window-specific events (0x3000+): filter by window_id
+            if ev[0] >= 0x3000 && ev[1] != comp_window_id { continue; }
+            // Broadcast events (<0x1000): only process on first window
+            if ev[0] < 0x1000 && wi > 0 { continue; }
+            // Skip unknown range
+            if ev[0] >= 0x1000 && ev[0] < 0x3000 { continue; }
+
             match ev[0] {
                 compositor::EVT_WINDOW_CLOSE => {
                     fire_event_callback(&st.controls, win_id, control::EVENT_CLOSE, &mut pending_cbs);
@@ -508,7 +526,6 @@ pub fn run_once() -> u32 {
 
                 _ => {}
             }
-            ev = [0u32; 5];
         }
     }
 

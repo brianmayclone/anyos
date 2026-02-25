@@ -51,6 +51,9 @@ pub struct Vm {
     /// Maximum execution steps (to prevent infinite loops).
     step_limit: u64,
     steps: u64,
+    /// Opaque userdata pointer for host integration (e.g., DOM bridge).
+    /// The host sets this before calling into the VM; native functions read it.
+    pub userdata: *mut u8,
 }
 
 impl Vm {
@@ -68,6 +71,7 @@ impl Vm {
             number_proto: Box::new(JsObject::new()),
             step_limit: 10_000_000,
             steps: 0,
+            userdata: core::ptr::null_mut(),
         };
         vm.init_prototypes();
         vm.init_globals();
