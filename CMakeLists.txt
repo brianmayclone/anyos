@@ -1530,6 +1530,108 @@ endif()
 
 endif() # HAS_CROSS_COMPILER
 
+# ============================================================
+# 64-bit C Library (libc64 — uses clang, no cross-compiler needed)
+# ============================================================
+set(LIBC64_DIR "${CMAKE_SOURCE_DIR}/libs/libc64")
+set(LIBC64_A "${LIBC64_DIR}/libc64.a")
+set(LIBC64_CRT0 "${LIBC64_DIR}/obj/crt0.o")
+set(LIBC64_CRTI "${LIBC64_DIR}/obj/crti.o")
+set(LIBC64_CRTN "${LIBC64_DIR}/obj/crtn.o")
+
+add_custom_command(
+  OUTPUT ${LIBC64_A} ${LIBC64_CRT0} ${LIBC64_CRTI} ${LIBC64_CRTN}
+  COMMAND ${MAKE_EXECUTABLE} -C ${LIBC64_DIR} clean
+  COMMAND ${MAKE_EXECUTABLE} -C ${LIBC64_DIR}
+  DEPENDS
+    ${LIBC64_DIR}/Makefile
+    ${LIBC64_DIR}/src/crt0.S
+    ${LIBC64_DIR}/src/syscall.S
+    ${LIBC64_DIR}/src/setjmp.S
+    ${LIBC64_DIR}/src/crti.S
+    ${LIBC64_DIR}/src/crtn.S
+    ${LIBC64_DIR}/src/string.c
+    ${LIBC64_DIR}/src/stdlib.c
+    ${LIBC64_DIR}/src/stdio.c
+    ${LIBC64_DIR}/src/unistd.c
+    ${LIBC64_DIR}/src/ctype.c
+    ${LIBC64_DIR}/src/signal.c
+    ${LIBC64_DIR}/src/stat.c
+    ${LIBC64_DIR}/src/time.c
+    ${LIBC64_DIR}/src/math.c
+    ${LIBC64_DIR}/src/mman.c
+    ${LIBC64_DIR}/src/start.c
+    ${LIBC64_DIR}/src/socket.c
+    ${LIBC64_DIR}/src/stubs.c
+  COMMENT "Building 64-bit C library (libc64.a)"
+)
+
+# Copy libc64 artifacts to sysroot
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/Libraries/libc64/lib/libc64.a
+         ${SYSROOT_DIR}/Libraries/libc64/lib/crt0.o
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC64_A} ${SYSROOT_DIR}/Libraries/libc64/lib/libc64.a
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC64_CRT0} ${SYSROOT_DIR}/Libraries/libc64/lib/crt0.o
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC64_CRT0} ${SYSROOT_DIR}/Libraries/libc64/lib/crt1.o
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC64_CRTI} ${SYSROOT_DIR}/Libraries/libc64/lib/crti.o
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBC64_CRTN} ${SYSROOT_DIR}/Libraries/libc64/lib/crtn.o
+  DEPENDS ${LIBC64_A} ${LIBC64_CRT0} ${LIBC64_CRTI} ${LIBC64_CRTN}
+  COMMENT "Installing libc64 to sysroot"
+)
+
+# Copy libc64 headers to sysroot
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/Libraries/libc64/include/.stamp
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${LIBC64_DIR}/include ${SYSROOT_DIR}/Libraries/libc64/include
+  COMMAND ${CMAKE_COMMAND} -E touch ${SYSROOT_DIR}/Libraries/libc64/include/.stamp
+  DEPENDS ${LIBC64_A}
+  COMMENT "Installing 64-bit C headers to sysroot"
+)
+
+# ============================================================
+# C++ Standard Library (libcxx — uses clang++, depends on libc64)
+# ============================================================
+set(LIBCXX_DIR "${CMAKE_SOURCE_DIR}/libs/libcxx")
+set(LIBCXX_A "${LIBCXX_DIR}/libcxx.a")
+
+add_custom_command(
+  OUTPUT ${LIBCXX_A}
+  COMMAND ${MAKE_EXECUTABLE} -C ${LIBCXX_DIR} clean
+  COMMAND ${MAKE_EXECUTABLE} -C ${LIBCXX_DIR}
+  DEPENDS
+    ${LIBC64_A}
+    ${LIBCXX_DIR}/Makefile
+    ${LIBCXX_DIR}/src/new.cpp
+    ${LIBCXX_DIR}/src/iostream.cpp
+  COMMENT "Building C++ standard library (libcxx.a)"
+)
+
+# Copy libcxx artifacts to sysroot
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/Libraries/libcxx/lib/libcxx.a
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBCXX_A} ${SYSROOT_DIR}/Libraries/libcxx/lib/libcxx.a
+  DEPENDS ${LIBCXX_A}
+  COMMENT "Installing libcxx.a to sysroot"
+)
+
+# Copy libcxx headers to sysroot
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/Libraries/libcxx/include/.stamp
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${LIBCXX_DIR}/include ${SYSROOT_DIR}/Libraries/libcxx/include
+  COMMAND ${CMAKE_COMMAND} -E touch ${SYSROOT_DIR}/Libraries/libcxx/include/.stamp
+  DEPENDS ${LIBCXX_A}
+  COMMENT "Installing C++ headers to sysroot"
+)
+
+# Aggregate dependency list for 64-bit toolchain
+set(CXX_TOOLCHAIN_DEPS
+  ${SYSROOT_DIR}/Libraries/libc64/lib/libc64.a
+  ${SYSROOT_DIR}/Libraries/libc64/lib/crt0.o
+  ${SYSROOT_DIR}/Libraries/libc64/include/.stamp
+  ${SYSROOT_DIR}/Libraries/libcxx/lib/libcxx.a
+  ${SYSROOT_DIR}/Libraries/libcxx/include/.stamp
+)
+
 add_custom_target(programs DEPENDS
   ${RUST_USER_BINS}
   ${SYSTEM_BINS}
@@ -1539,6 +1641,7 @@ add_custom_target(programs DEPENDS
   ${SYSROOT_DIR}/.stamp
   ${SYSROOT_DIR}/Libraries/system/buildsystem/.stamp
   ${C_TOOLCHAIN_DEPS}
+  ${CXX_TOOLCHAIN_DEPS}
 )
 
 # ============================================================
