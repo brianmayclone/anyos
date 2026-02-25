@@ -183,6 +183,82 @@ impl Icon {
         Self::load(path, size)
     }
 
+    /// Load a control icon by name from `/System/media/icons/controls/`.
+    ///
+    /// Uses pre-sized file reading (via fstat) and optional scaling.
+    /// Available icons: left, right, refresh, folder, check, clear, help, etc.
+    ///
+    /// # Example
+    /// ```rust
+    /// let icon = Icon::control("refresh", 16).unwrap();
+    /// ```
+    pub fn control(name: &str, size: u32) -> Option<Self> {
+        const DIR: &str = "/System/media/icons/controls/";
+        let mut path = [0u8; 128];
+        let prefix = DIR.as_bytes();
+        let name_b = name.as_bytes();
+        let suffix = b".png";
+        let total = prefix.len() + name_b.len() + suffix.len();
+        if total >= path.len() { return None; }
+        path[..prefix.len()].copy_from_slice(prefix);
+        path[prefix.len()..prefix.len() + name_b.len()].copy_from_slice(name_b);
+        path[prefix.len() + name_b.len()..total].copy_from_slice(suffix);
+        let path_str = core::str::from_utf8(&path[..total]).ok()?;
+
+        let icon = Self::load_file_sized(path_str)?;
+
+        if size > 0 && (icon.width != size || icon.height != size) {
+            let mut scaled = vec![0u32; (size * size) as usize];
+            if libimage_client::scale_image(
+                &icon.pixels, icon.width, icon.height,
+                &mut scaled, size, size,
+                libimage_client::MODE_CONTAIN,
+            ) {
+                Some(Self { pixels: scaled, width: size, height: size })
+            } else {
+                Some(icon)
+            }
+        } else {
+            Some(icon)
+        }
+    }
+
+    /// Load any image file with pre-sized allocation (fstat + exact read).
+    /// Caps at 256 KB file size.
+    fn load_file_sized(path: &str) -> Option<Self> {
+        let fd = anyos_std::fs::open(path, 0);
+        if fd == u32::MAX { return None; }
+
+        let mut stat = [0u32; 4];
+        if anyos_std::fs::fstat(fd, &mut stat) != 0 {
+            anyos_std::fs::close(fd);
+            return None;
+        }
+        let file_size = stat[1] as usize;
+        if file_size == 0 || file_size > 256 * 1024 {
+            anyos_std::fs::close(fd);
+            return None;
+        }
+
+        let mut data = vec![0u8; file_size];
+        let mut read = 0usize;
+        while read < file_size {
+            let n = anyos_std::fs::read(fd, &mut data[read..]);
+            if n == 0 || n == u32::MAX { break; }
+            read += n as usize;
+        }
+        anyos_std::fs::close(fd);
+        if read == 0 { return None; }
+
+        let info = libimage_client::probe(&data[..read])?;
+        let pixel_count = (info.width as usize) * (info.height as usize);
+        let mut pixels = vec![0u32; pixel_count];
+        let mut scratch = vec![0u8; info.scratch_needed as usize];
+        libimage_client::decode(&data[..read], &mut pixels, &mut scratch).ok()?;
+
+        Some(Self { pixels, width: info.width, height: info.height })
+    }
+
     /// Load an icon from an ICO file at a preferred size.
     pub fn load(path: &str, preferred_size: u32) -> Option<Self> {
         let data = anyos_std::fs::read_to_vec(path).ok()?;

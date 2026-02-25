@@ -25,6 +25,7 @@ use dynlink::{dl_open, dl_sym, DlHandle};
 
 struct LibZip {
     _handle: DlHandle,
+    // Zip functions
     open: extern "C" fn(*const u8, u32) -> u32,
     create: extern "C" fn() -> u32,
     close: extern "C" fn(u32),
@@ -39,6 +40,22 @@ struct LibZip {
     add_file: extern "C" fn(u32, *const u8, u32, *const u8, u32, u32) -> u32,
     add_dir: extern "C" fn(u32, *const u8, u32) -> u32,
     write_to_file: extern "C" fn(u32, *const u8, u32) -> u32,
+    // Gzip functions
+    gzip_compress_file: extern "C" fn(*const u8, u32, *const u8, u32) -> u32,
+    gzip_decompress_file: extern "C" fn(*const u8, u32, *const u8, u32) -> u32,
+    // Tar functions
+    tar_open: extern "C" fn(*const u8, u32) -> u32,
+    tar_create: extern "C" fn() -> u32,
+    tar_close: extern "C" fn(u32),
+    tar_entry_count: extern "C" fn(u32) -> u32,
+    tar_entry_name: extern "C" fn(u32, u32, *mut u8, u32) -> u32,
+    tar_entry_size: extern "C" fn(u32, u32) -> u32,
+    tar_entry_is_dir: extern "C" fn(u32, u32) -> u32,
+    tar_extract: extern "C" fn(u32, u32, *mut u8, u32) -> u32,
+    tar_extract_to_file: extern "C" fn(u32, u32, *const u8, u32) -> u32,
+    tar_add_file: extern "C" fn(u32, *const u8, u32, *const u8, u32) -> u32,
+    tar_add_dir: extern "C" fn(u32, *const u8, u32) -> u32,
+    tar_write_to_file: extern "C" fn(u32, *const u8, u32, u32) -> u32,
 }
 
 static mut LIB: Option<LibZip> = None;
@@ -78,6 +95,22 @@ pub fn init() -> bool {
             add_file: resolve(&handle, "libzip_add_file"),
             add_dir: resolve(&handle, "libzip_add_dir"),
             write_to_file: resolve(&handle, "libzip_write_to_file"),
+            // Gzip
+            gzip_compress_file: resolve(&handle, "libzip_gzip_compress_file"),
+            gzip_decompress_file: resolve(&handle, "libzip_gzip_decompress_file"),
+            // Tar
+            tar_open: resolve(&handle, "libzip_tar_open"),
+            tar_create: resolve(&handle, "libzip_tar_create"),
+            tar_close: resolve(&handle, "libzip_tar_close"),
+            tar_entry_count: resolve(&handle, "libzip_tar_entry_count"),
+            tar_entry_name: resolve(&handle, "libzip_tar_entry_name"),
+            tar_entry_size: resolve(&handle, "libzip_tar_entry_size"),
+            tar_entry_is_dir: resolve(&handle, "libzip_tar_entry_is_dir"),
+            tar_extract: resolve(&handle, "libzip_tar_extract"),
+            tar_extract_to_file: resolve(&handle, "libzip_tar_extract_to_file"),
+            tar_add_file: resolve(&handle, "libzip_tar_add_file"),
+            tar_add_dir: resolve(&handle, "libzip_tar_add_dir"),
+            tar_write_to_file: resolve(&handle, "libzip_tar_write_to_file"),
             _handle: handle,
         };
         LIB = Some(lib);
@@ -199,6 +232,135 @@ impl Drop for ZipWriter {
     fn drop(&mut self) {
         if self.handle != 0 {
             (lib().close)(self.handle);
+        }
+    }
+}
+
+// ── Gzip ────────────────────────────────────────────────────────────────────
+
+/// Compress a file with gzip. Returns true on success.
+pub fn gzip_compress_file(in_path: &str, out_path: &str) -> bool {
+    (lib().gzip_compress_file)(
+        in_path.as_ptr(), in_path.len() as u32,
+        out_path.as_ptr(), out_path.len() as u32,
+    ) == 0
+}
+
+/// Decompress a gzip file. Returns true on success.
+pub fn gzip_decompress_file(in_path: &str, out_path: &str) -> bool {
+    (lib().gzip_decompress_file)(
+        in_path.as_ptr(), in_path.len() as u32,
+        out_path.as_ptr(), out_path.len() as u32,
+    ) == 0
+}
+
+// ── TarReader ───────────────────────────────────────────────────────────────
+
+/// An open tar archive for reading.
+pub struct TarReader {
+    handle: u32,
+}
+
+impl TarReader {
+    /// Open a tar (or .tar.gz) archive for reading.
+    pub fn open(path: &str) -> Option<TarReader> {
+        let h = (lib().tar_open)(path.as_ptr(), path.len() as u32);
+        if h == 0 { None } else { Some(TarReader { handle: h }) }
+    }
+
+    /// Number of entries in the archive.
+    pub fn entry_count(&self) -> u32 {
+        (lib().tar_entry_count)(self.handle)
+    }
+
+    /// Get entry name by index.
+    pub fn entry_name(&self, index: u32) -> String {
+        let mut buf = [0u8; 512];
+        let n = (lib().tar_entry_name)(self.handle, index, buf.as_mut_ptr(), 512);
+        let s = core::str::from_utf8(&buf[..n as usize]).unwrap_or("");
+        String::from(s)
+    }
+
+    /// Get size of an entry.
+    pub fn entry_size(&self, index: u32) -> u32 {
+        (lib().tar_entry_size)(self.handle, index)
+    }
+
+    /// Check if entry is a directory.
+    pub fn entry_is_dir(&self, index: u32) -> bool {
+        (lib().tar_entry_is_dir)(self.handle, index) == 1
+    }
+
+    /// Extract an entry to a byte vector.
+    pub fn extract(&self, index: u32) -> Option<alloc::vec::Vec<u8>> {
+        let size = self.entry_size(index);
+        if size == 0 {
+            return Some(alloc::vec::Vec::new());
+        }
+        let mut buf = vec![0u8; size as usize];
+        let n = (lib().tar_extract)(self.handle, index, buf.as_mut_ptr(), size);
+        if n == u32::MAX { None } else { buf.truncate(n as usize); Some(buf) }
+    }
+
+    /// Extract an entry directly to a file.
+    pub fn extract_to_file(&self, index: u32, path: &str) -> bool {
+        (lib().tar_extract_to_file)(self.handle, index, path.as_ptr(), path.len() as u32) == 0
+    }
+}
+
+impl Drop for TarReader {
+    fn drop(&mut self) {
+        if self.handle != 0 {
+            (lib().tar_close)(self.handle);
+        }
+    }
+}
+
+// ── TarWriter ───────────────────────────────────────────────────────────────
+
+/// A tar archive being created.
+pub struct TarWriter {
+    handle: u32,
+}
+
+impl TarWriter {
+    /// Create a new empty tar archive.
+    pub fn new() -> Option<TarWriter> {
+        let h = (lib().tar_create)();
+        if h == 0 { None } else { Some(TarWriter { handle: h }) }
+    }
+
+    /// Add a file with data.
+    pub fn add_file(&self, name: &str, data: &[u8]) -> bool {
+        (lib().tar_add_file)(
+            self.handle,
+            name.as_ptr(), name.len() as u32,
+            data.as_ptr(), data.len() as u32,
+        ) == 0
+    }
+
+    /// Add a directory entry.
+    pub fn add_dir(&self, name: &str) -> bool {
+        (lib().tar_add_dir)(self.handle, name.as_ptr(), name.len() as u32) == 0
+    }
+
+    /// Finalize and write the archive to a file.
+    /// If `compress` is true, output is gzip-compressed (.tar.gz).
+    /// Consumes the writer handle.
+    pub fn write_to_file(self, path: &str, compress: bool) -> bool {
+        let result = (lib().tar_write_to_file)(
+            self.handle, path.as_ptr(), path.len() as u32,
+            if compress { 1 } else { 0 },
+        ) == 0;
+        core::mem::forget(self);
+        result
+    }
+}
+
+impl Drop for TarWriter {
+    fn drop(&mut self) {
+        if self.handle != 0 {
+            (lib().tar_close)(self.handle);
         }
     }
 }

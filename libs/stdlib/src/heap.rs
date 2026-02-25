@@ -86,10 +86,26 @@ unsafe impl GlobalAlloc for FreeListAlloc {
                 // Contiguous extension
                 HEAP_END += grow;
             } else {
-                // Non-contiguous: another allocator moved the break
-                HEAP_END = result + grow;
+                // Non-contiguous: another allocator (DLL) moved the break.
+                // Relocate the allocation to start at `result`.
                 let aligned = (result + align - 1) & !(align - 1);
                 let new_pos = aligned + size as u64;
+                let mapped_end = result + grow;
+
+                // The original `grow` may not cover the full allocation
+                // from the new position — request extra pages if needed.
+                if new_pos > mapped_end {
+                    let extra = ((new_pos - mapped_end + 4095) & !4095) as usize;
+                    let r2 = crate::process::sbrk(extra as i32);
+                    if r2 == u32::MAX as usize {
+                        unlock();
+                        return ptr::null_mut();
+                    }
+                    HEAP_END = mapped_end + extra as u64;
+                } else {
+                    HEAP_END = mapped_end;
+                }
+
                 HEAP_POS = new_pos;
                 unlock();
                 return aligned as *mut u8;

@@ -135,6 +135,8 @@ exclude = [
   "bin/nano",
   "bin/zip",
   "bin/unzip",
+  "bin/gzip",
+  "bin/tar",
   "bin/banner",
   "bin/jp2a",
   "bin/nano",

@@ -745,28 +745,36 @@ fn main() {
     toolbar.set_padding(4, 4, 4, 4);
     win.add(&toolbar);
 
-    // Nav buttons — ImageButton loads PNGs/ICOs from /System/media/icons/controls/
+    // Nav buttons — load icons via Icon::control() (proven fstat+decode path)
     let btn_back = ui::ImageButton::new(30, 28);
-    btn_back.load_file("/System/media/icons/controls/left.png");
+    if let Some(icon) = ui::Icon::control("left", 24) {
+        btn_back.set_pixels(&icon.pixels, icon.width, icon.height);
+    }
     btn_back.set_enabled(false);
     btn_back.set_tooltip("Back (Alt+Left)");
     toolbar.add(&btn_back);
 
     let btn_fwd = ui::ImageButton::new(30, 28);
-    btn_fwd.load_file("/System/media/icons/controls/right.png");
+    if let Some(icon) = ui::Icon::control("right", 24) {
+        btn_fwd.set_pixels(&icon.pixels, icon.width, icon.height);
+    }
     btn_fwd.set_enabled(false);
     btn_fwd.set_tooltip("Forward (Alt+Right)");
     toolbar.add(&btn_fwd);
 
     let btn_up = ui::ImageButton::new(30, 28);
-    btn_up.load_ico("/System/media/icons/controls/folder.ico", 16);
+    if let Some(icon) = ui::Icon::control("folder", 24) {
+        btn_up.set_pixels(&icon.pixels, icon.width, icon.height);
+    }
     btn_up.set_tooltip("Parent folder (Backspace)");
     toolbar.add(&btn_up);
 
     toolbar.add_separator();
 
     let btn_refresh = ui::ImageButton::new(30, 28);
-    btn_refresh.load_file("/System/media/icons/controls/refresh.png");
+    if let Some(icon) = ui::Icon::control("refresh", 24) {
+        btn_refresh.set_pixels(&icon.pixels, icon.width, icon.height);
+    }
     btn_refresh.set_tooltip("Refresh (F5)");
     toolbar.add(&btn_refresh);
 

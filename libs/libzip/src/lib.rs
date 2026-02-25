@@ -22,9 +22,12 @@ pub mod crc32;
 pub mod inflate;
 pub mod deflate;
 pub mod zip;
+pub mod gzip;
+pub mod tar;
 
 use alloc::vec::Vec;
 use zip::{ZipReader, ZipWriter};
+use tar::{TarReader, TarWriter};
 
 // ── Allocator ───────────────────────────────────────────────────────────────
 
@@ -76,6 +79,8 @@ enum ZipHandle {
     Empty,
     Reader(ZipReader),
     Writer(ZipWriter),
+    TarReader(TarReader),
+    TarWriter(TarWriter),
 }
 
 static mut HANDLES: [Option<ZipHandle>; MAX_HANDLES] = [
@@ -111,6 +116,28 @@ fn get_writer(handle: u32) -> Option<&'static mut ZipWriter> {
     unsafe {
         match &mut HANDLES[idx - 1] {
             Some(ZipHandle::Writer(w)) => Some(w),
+            _ => None,
+        }
+    }
+}
+
+fn get_tar_reader(handle: u32) -> Option<&'static TarReader> {
+    let idx = handle as usize;
+    if idx == 0 || idx > MAX_HANDLES { return None; }
+    unsafe {
+        match &HANDLES[idx - 1] {
+            Some(ZipHandle::TarReader(r)) => Some(r),
+            _ => None,
+        }
+    }
+}
+
+fn get_tar_writer(handle: u32) -> Option<&'static mut TarWriter> {
+    let idx = handle as usize;
+    if idx == 0 || idx > MAX_HANDLES { return None; }
+    unsafe {
+        match &mut HANDLES[idx - 1] {
+            Some(ZipHandle::TarWriter(w)) => Some(w),
             _ => None,
         }
     }
@@ -374,4 +401,273 @@ pub extern "C" fn libzip_write_to_file(handle: u32, path_ptr: *const u8, path_le
     syscall::close(fd);
 
     if written == data.len() { 0 } else { u32::MAX }
+}
+
+// ── Helper: file I/O ────────────────────────────────────────────────────────
+
+fn read_file_to_vec(path: &str) -> Option<Vec<u8>> {
+    let fd = syscall::open(path, 0);
+    if fd == u32::MAX { return None; }
+    let size = syscall::file_size(fd) as usize;
+    let mut data = alloc::vec![0u8; size];
+    let mut read = 0usize;
+    while read < size {
+        let n = syscall::read(fd, &mut data[read..]);
+        if n == 0 || n == u32::MAX { break; }
+        read += n as usize;
+    }
+    syscall::close(fd);
+    if read < size { data.truncate(read); }
+    Some(data)
+}
+
+fn write_vec_to_file(path: &str, data: &[u8]) -> bool {
+    let fd = syscall::open(path, syscall::O_WRITE | syscall::O_CREATE | syscall::O_TRUNC);
+    if fd == u32::MAX { return false; }
+    let mut written = 0usize;
+    while written < data.len() {
+        let n = syscall::write(fd, &data[written..]);
+        if n == u32::MAX { break; }
+        written += n as usize;
+    }
+    syscall::close(fd);
+    written == data.len()
+}
+
+// ── Gzip C ABI Exports ─────────────────────────────────────────────────────
+
+/// Compress a file with gzip. Returns 0 on success, u32::MAX on error.
+#[no_mangle]
+pub extern "C" fn libzip_gzip_compress_file(
+    in_path_ptr: *const u8, in_path_len: u32,
+    out_path_ptr: *const u8, out_path_len: u32,
+) -> u32 {
+    let in_path = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(in_path_ptr, in_path_len as usize))
+    };
+    let out_path = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(out_path_ptr, out_path_len as usize))
+    };
+
+    let data = match read_file_to_vec(in_path) {
+        Some(d) => d,
+        None => return u32::MAX,
+    };
+
+    let compressed = gzip::gzip_compress(&data);
+    if write_vec_to_file(out_path, &compressed) { 0 } else { u32::MAX }
+}
+
+/// Decompress a gzip file. Returns 0 on success, u32::MAX on error.
+#[no_mangle]
+pub extern "C" fn libzip_gzip_decompress_file(
+    in_path_ptr: *const u8, in_path_len: u32,
+    out_path_ptr: *const u8, out_path_len: u32,
+) -> u32 {
+    let in_path = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(in_path_ptr, in_path_len as usize))
+    };
+    let out_path = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(out_path_ptr, out_path_len as usize))
+    };
+
+    let data = match read_file_to_vec(in_path) {
+        Some(d) => d,
+        None => return u32::MAX,
+    };
+
+    let decompressed = match gzip::gzip_decompress(&data) {
+        Some(d) => d,
+        None => return u32::MAX,
+    };
+
+    if write_vec_to_file(out_path, &decompressed) { 0 } else { u32::MAX }
+}
+
+// ── Tar C ABI Exports ──────────────────────────────────────────────────────
+
+/// Open a tar (or tar.gz) archive for reading.
+#[no_mangle]
+pub extern "C" fn libzip_tar_open(path_ptr: *const u8, path_len: u32) -> u32 {
+    let path = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(path_ptr, path_len as usize))
+    };
+
+    let data = match read_file_to_vec(path) {
+        Some(d) => d,
+        None => return 0,
+    };
+
+    match TarReader::parse(data) {
+        Some(reader) => alloc_handle(ZipHandle::TarReader(reader)),
+        None => 0,
+    }
+}
+
+/// Create a new tar archive for writing.
+#[no_mangle]
+pub extern "C" fn libzip_tar_create() -> u32 {
+    alloc_handle(ZipHandle::TarWriter(TarWriter::new()))
+}
+
+/// Close a tar handle.
+#[no_mangle]
+pub extern "C" fn libzip_tar_close(handle: u32) {
+    free_handle(handle);
+}
+
+/// Get the number of entries in a tar archive.
+#[no_mangle]
+pub extern "C" fn libzip_tar_entry_count(handle: u32) -> u32 {
+    match get_tar_reader(handle) {
+        Some(r) => r.entry_count() as u32,
+        None => 0,
+    }
+}
+
+/// Get the name of a tar entry.
+#[no_mangle]
+pub extern "C" fn libzip_tar_entry_name(handle: u32, index: u32, buf: *mut u8, buf_len: u32) -> u32 {
+    let reader = match get_tar_reader(handle) {
+        Some(r) => r,
+        None => return 0,
+    };
+    let entry = match reader.entries.get(index as usize) {
+        Some(e) => e,
+        None => return 0,
+    };
+    let name = entry.name.as_bytes();
+    let copy_len = name.len().min(buf_len as usize);
+    unsafe {
+        core::ptr::copy_nonoverlapping(name.as_ptr(), buf, copy_len);
+    }
+    copy_len as u32
+}
+
+/// Get size of a tar entry.
+#[no_mangle]
+pub extern "C" fn libzip_tar_entry_size(handle: u32, index: u32) -> u32 {
+    match get_tar_reader(handle) {
+        Some(r) => r.entries.get(index as usize).map(|e| e.size as u32).unwrap_or(0),
+        None => 0,
+    }
+}
+
+/// Check if tar entry is a directory.
+#[no_mangle]
+pub extern "C" fn libzip_tar_entry_is_dir(handle: u32, index: u32) -> u32 {
+    match get_tar_reader(handle) {
+        Some(r) => match r.entries.get(index as usize) {
+            Some(e) => if e.is_dir { 1 } else { 0 },
+            None => 0,
+        },
+        None => 0,
+    }
+}
+
+/// Extract a tar entry to a buffer.
+#[no_mangle]
+pub extern "C" fn libzip_tar_extract(handle: u32, index: u32, buf: *mut u8, buf_len: u32) -> u32 {
+    let reader = match get_tar_reader(handle) {
+        Some(r) => r,
+        None => return u32::MAX,
+    };
+    let data = match reader.extract(index as usize) {
+        Some(d) => d,
+        None => return u32::MAX,
+    };
+    let copy_len = data.len().min(buf_len as usize);
+    unsafe {
+        core::ptr::copy_nonoverlapping(data.as_ptr(), buf, copy_len);
+    }
+    copy_len as u32
+}
+
+/// Extract a tar entry directly to a file.
+#[no_mangle]
+pub extern "C" fn libzip_tar_extract_to_file(
+    handle: u32, index: u32, path_ptr: *const u8, path_len: u32,
+) -> u32 {
+    let reader = match get_tar_reader(handle) {
+        Some(r) => r,
+        None => return u32::MAX,
+    };
+    let data = match reader.extract(index as usize) {
+        Some(d) => d,
+        None => return u32::MAX,
+    };
+    let path = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(path_ptr, path_len as usize))
+    };
+    if write_vec_to_file(path, &data) { 0 } else { u32::MAX }
+}
+
+/// Add a file to a tar writer.
+#[no_mangle]
+pub extern "C" fn libzip_tar_add_file(
+    handle: u32,
+    name_ptr: *const u8, name_len: u32,
+    data_ptr: *const u8, data_len: u32,
+) -> u32 {
+    let writer = match get_tar_writer(handle) {
+        Some(w) => w,
+        None => return u32::MAX,
+    };
+    let name = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(name_ptr, name_len as usize))
+    };
+    let data = unsafe {
+        core::slice::from_raw_parts(data_ptr, data_len as usize)
+    };
+    writer.add_file(name, data);
+    0
+}
+
+/// Add a directory entry to a tar writer.
+#[no_mangle]
+pub extern "C" fn libzip_tar_add_dir(
+    handle: u32, name_ptr: *const u8, name_len: u32,
+) -> u32 {
+    let writer = match get_tar_writer(handle) {
+        Some(w) => w,
+        None => return u32::MAX,
+    };
+    let name = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(name_ptr, name_len as usize))
+    };
+    writer.add_directory(name);
+    0
+}
+
+/// Finalize tar writer and write to file. compress!=0 → .tar.gz.
+/// Handle is consumed by this call.
+#[no_mangle]
+pub extern "C" fn libzip_tar_write_to_file(
+    handle: u32, path_ptr: *const u8, path_len: u32, compress: u32,
+) -> u32 {
+    let idx = handle as usize;
+    if idx == 0 || idx > MAX_HANDLES { return u32::MAX; }
+
+    let writer = unsafe {
+        match HANDLES[idx - 1].take() {
+            Some(ZipHandle::TarWriter(w)) => w,
+            other => {
+                HANDLES[idx - 1] = other;
+                return u32::MAX;
+            }
+        }
+    };
+
+    let tar_data = writer.finish();
+    let output = if compress != 0 {
+        gzip::gzip_compress(&tar_data)
+    } else {
+        tar_data
+    };
+
+    let path = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(path_ptr, path_len as usize))
+    };
+
+    if write_vec_to_file(path, &output) { 0 } else { u32::MAX }
 }

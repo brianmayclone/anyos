@@ -259,6 +259,8 @@ impl DesktopIconManager {
 
         self.icons = new_icons;
         self.wallpaper_cache.clear();
+        // Apply saved positions from disk (overrides defaults for known mounts)
+        self.load_positions(screen_width);
         true
     }
 

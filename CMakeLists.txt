@@ -639,6 +639,16 @@ add_rust_user_program(nano       ${CMAKE_SOURCE_DIR}/bin/nano)
 add_rust_user_program(httpd      ${CMAKE_SOURCE_DIR}/bin/httpd)
 add_rust_user_program(zip        ${CMAKE_SOURCE_DIR}/bin/zip)
 add_rust_user_program(unzip      ${CMAKE_SOURCE_DIR}/bin/unzip)
+add_rust_user_program(gzip       ${CMAKE_SOURCE_DIR}/bin/gzip)
+add_rust_user_program(tar        ${CMAKE_SOURCE_DIR}/bin/tar)
+# gunzip is a copy of gzip (detects via argv[0])
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/bin/gunzip
+  COMMAND ${CMAKE_COMMAND} -E copy ${SYSROOT_DIR}/System/bin/gzip ${SYSROOT_DIR}/System/bin/gunzip
+  DEPENDS ${SYSROOT_DIR}/System/bin/gzip
+  COMMENT "Creating gunzip (copy of gzip)"
+)
+set(RUST_USER_BINS ${RUST_USER_BINS} ${SYSROOT_DIR}/System/bin/gunzip)
 add_rust_user_program(banner     ${CMAKE_SOURCE_DIR}/bin/banner)
 add_rust_user_program(jp2a       ${CMAKE_SOURCE_DIR}/bin/jp2a)
 add_rust_user_program(nano       ${CMAKE_SOURCE_DIR}/bin/nano)

@@ -14,3 +14,17 @@ EXPORTS
     libzip_add_file
     libzip_add_dir
     libzip_write_to_file
+    libzip_gzip_compress_file
+    libzip_gzip_decompress_file
+    libzip_tar_open
+    libzip_tar_create
+    libzip_tar_close
+    libzip_tar_entry_count
+    libzip_tar_entry_name
+    libzip_tar_entry_size
+    libzip_tar_entry_is_dir
+    libzip_tar_extract
+    libzip_tar_extract_to_file
+    libzip_tar_add_file
+    libzip_tar_add_dir
+    libzip_tar_write_to_file
