@@ -1,0 +1,43 @@
+Aktueller Stand — Was schon da ist
+Bereich	Status
+HTTP/1.1 GET+POST	Voll funktional, Chunked, Gzip, Keep-Alive Pool
+TLS/HTTPS (BearSSL)	Funktional
+Cookie Jar (in-memory)	Funktional
+CSS Parser + Selektoren	Sehr gut (Specificity, !important, Combinators)
+HTML Parser + Entities	Gut (200+ Entities, Auto-Close)
+JS Engine	Funktional (Closures, Prototypes, JSON, Math, Date, Promise)
+DOM API	Grundlegend (querySelector, createElement, Events)
+fetch() + XHR	Funktional (synchron)
+Timers	Funktional (setTimeout, setInterval, rAF)
+localStorage/sessionStorage	In-memory
+Kritische Lücken — Priorisierte Roadmap
+Priorität 1 — Ohne diese bricht fast jede echte Website
+Feature	Warum kritisch
+<link rel="stylesheet"> Laden	Externe CSS-Dateien werden nicht gefetcht — die meisten Sites haben kein Styling!
+@media Queries	Werden komplett ignoriert — Responsive Design kaputt
+innerHTML Parser	Setter löscht Children, parst aber kein HTML — React/Vue/Angular sind tot
+CSS calc() + var()	Tailwind, Bootstrap 5+ brechen
+await / async richtig	Wird als No-Op behandelt — modernes JS funktioniert nicht
+Selector Combinators in JS	querySelector("div p") geht nicht — nur einfache Selektoren
+Priorität 2 — Die von dir genannten + High-Impact Features
+Feature	Aufwand	Impact
+WebSocket (RFC 6455)	~400 Zeilen Protokoll + ~200 JS API	Echtzeit-Apps, Chat, Live-Updates
+HTTP/2	~800-1200 Zeilen (HPACK, Streams, Frames)	Schnelleres Laden, Multiplexing
+getBoundingClientRect	~80 Zeilen	Layout-sensitives JS repariert
+window.location korrekt	~50 Zeilen	Navigation/History in JS
+document.cookie anbinden	~60 Zeilen	Cookie-basierte Auth in JS
+Event Bubbling	~100 Zeilen	jQuery, React Event-Delegation
+nextSibling/previousSibling	~40 Zeilen	DOM Traversal komplett
+Priorität 3 — Für "Wow-Effekt"
+Feature	Beschreibung
+Canvas 2D API	<canvas> mit getContext('2d') — Spiele, Diagramme
+CSS Grid	Neben Flexbox das wichtigste moderne Layout
+CSS Transitions/Animations	transition, @keyframes
+<video>/<audio> Playback	OS hat schon Audio-Driver + Videoplayer
+DevTools Console	JS-Konsole als UI-Panel
+Persistent localStorage	Auf Disk schreiben
+Willst du mit WebSocket + HTTP/2 anfangen wie du vorgeschlagen hast? Dann würde ich folgende Reihenfolge vorschlagen:
+
+WebSocket zuerst (schnellerer Win, klar abgegrenzt)
+HTTP/2 danach (komplexer, aber massiver Performance-Gewinn)
+Parallel dazu die Prio-1 Lücken fixen (<link> laden, @media, innerHTML, etc.)
