@@ -20,6 +20,7 @@ mod textarea;
 mod iconbutton;
 mod badge;
 mod tag;
+mod imagebutton;
 mod canvas;
 mod datagrid;
 mod texteditor;
@@ -72,6 +73,7 @@ pub use iconbutton::{IconButton, ICON_NEW_FILE, ICON_FOLDER_OPEN, ICON_SAVE, ICO
     ICON_BUILD, ICON_PLAY, ICON_STOP, ICON_SETTINGS, ICON_FILES, ICON_GIT_BRANCH, ICON_SEARCH,
     ICON_REFRESH};
 pub use badge::Badge;
+pub use imagebutton::ImageButton;
 pub use tag::Tag;
 pub use canvas::Canvas;
 pub use datagrid::{DataGrid, ColumnDef, ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT,

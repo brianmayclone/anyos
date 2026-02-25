@@ -315,6 +315,7 @@ fn management_loop(
             desktop.set_menubar_visible(true);
             desktop.init_desktop_icons();
             release_lock();
+            signal_render();
 
             let dock_tid = process::spawn("/System/compositor/dock", "");
             if dock_tid != u32::MAX {

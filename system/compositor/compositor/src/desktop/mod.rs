@@ -292,7 +292,7 @@ impl Desktop {
         let sw = self.screen_width;
         self.desktop_icons.init(sw);
         self.render_desktop_icons();
-        self.compositor.mark_layer_dirty(self.bg_layer_id);
+        self.compositor.damage_all();
     }
 
     /// Render desktop icons onto the background layer.
@@ -320,14 +320,13 @@ impl Desktop {
 
     /// Reload wallpaper then render icons on top (used after icon changes).
     pub(crate) fn reload_wallpaper_and_icons(&mut self) {
-        // Reload wallpaper to restore clean background
-        let path = core::str::from_utf8(&self.wallpaper_path[..self.wallpaper_path_len])
-            .unwrap_or("/media/wallpapers/default.png");
-        let mut path_buf = [0u8; 128];
-        let len = path.len().min(127);
-        path_buf[..len].copy_from_slice(&path.as_bytes()[..len]);
-        let path_str = core::str::from_utf8(&path_buf[..len]).unwrap_or("");
-        if !self.load_wallpaper(path_str) {
+        // Restore clean wallpaper from in-memory cache (no disk I/O!)
+        if !self.wallpaper_pixel_cache.is_empty() {
+            if let Some(bg_pixels) = self.compositor.layer_pixels(self.bg_layer_id) {
+                let copy_len = bg_pixels.len().min(self.wallpaper_pixel_cache.len());
+                bg_pixels[..copy_len].copy_from_slice(&self.wallpaper_pixel_cache[..copy_len]);
+            }
+        } else {
             self.draw_gradient_background();
         }
         // Re-render icons on fresh wallpaper

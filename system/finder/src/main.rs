@@ -197,37 +197,6 @@ impl IconCache {
     }
 }
 
-/// Load a control icon PNG from /System/media/icons/controls/{name}.png,
-/// decode and scale to target_size.
-fn load_control_icon(name: &str, target_size: u32) -> Option<Vec<u32>> {
-    let path = anyos_std::format!("/System/media/icons/controls/{}.png", name);
-    let data = match fs::read_to_vec(&path) {
-        Ok(d) => d,
-        Err(_) => return None,
-    };
-    let info = libimage_client::probe(&data)?;
-    let src_count = (info.width as usize) * (info.height as usize);
-    let mut src_pixels = Vec::new();
-    src_pixels.resize(src_count, 0u32);
-    let mut scratch = Vec::new();
-    scratch.resize(info.scratch_needed as usize, 0u8);
-    if libimage_client::decode(&data, &mut src_pixels, &mut scratch).is_err() {
-        return None;
-    }
-    if info.width == target_size && info.height == target_size {
-        return Some(src_pixels);
-    }
-    let dst_count = (target_size * target_size) as usize;
-    let mut dst = Vec::new();
-    dst.resize(dst_count, 0u32);
-    libimage_client::scale_image(
-        &src_pixels, info.width, info.height,
-        &mut dst, target_size, target_size,
-        libimage_client::MODE_CONTAIN,
-    );
-    Some(dst)
-}
-
 // ============================================================================
 // Application state
 // ============================================================================
@@ -250,8 +219,8 @@ struct AppState {
     icon_selected: usize,      // selected index in icon view (usize::MAX = none)
     path_field: ui::TextField,
     status_label: ui::Label,
-    btn_back: ui::IconButton,
-    btn_fwd: ui::IconButton,
+    btn_back: ui::ImageButton,
+    btn_fwd: ui::ImageButton,
     sidebar_item_ids: Vec<u32>,
     // Context menu
     ctx_menu: ui::ContextMenu,
@@ -776,38 +745,30 @@ fn main() {
     toolbar.set_padding(4, 4, 4, 4);
     win.add(&toolbar);
 
-    // Nav buttons — load .ico/.png from /System/media/icons/controls/
-    let btn_back = toolbar.add_icon_button("");
-    btn_back.set_size(30, 28);
-    if let Some(px) = load_control_icon("left", 16) {
-        btn_back.set_pixels(&px, 16, 16);
-    }
+    // Nav buttons — ImageButton loads PNGs/ICOs from /System/media/icons/controls/
+    let btn_back = ui::ImageButton::new(30, 28);
+    btn_back.load_file("/System/media/icons/controls/left.png");
     btn_back.set_enabled(false);
     btn_back.set_tooltip("Back (Alt+Left)");
+    toolbar.add(&btn_back);
 
-    let btn_fwd = toolbar.add_icon_button("");
-    btn_fwd.set_size(30, 28);
-    if let Some(px) = load_control_icon("right", 16) {
-        btn_fwd.set_pixels(&px, 16, 16);
-    }
+    let btn_fwd = ui::ImageButton::new(30, 28);
+    btn_fwd.load_file("/System/media/icons/controls/right.png");
     btn_fwd.set_enabled(false);
     btn_fwd.set_tooltip("Forward (Alt+Right)");
+    toolbar.add(&btn_fwd);
 
-    let btn_up = toolbar.add_icon_button("");
-    btn_up.set_size(30, 28);
-    if let Some(icon) = Icon::load("/System/media/icons/controls/folder.ico", 16) {
-        btn_up.set_pixels(&icon.pixels, icon.width, icon.height);
-    }
+    let btn_up = ui::ImageButton::new(30, 28);
+    btn_up.load_ico("/System/media/icons/controls/folder.ico", 16);
     btn_up.set_tooltip("Parent folder (Backspace)");
+    toolbar.add(&btn_up);
 
     toolbar.add_separator();
 
-    let btn_refresh = toolbar.add_icon_button("");
-    btn_refresh.set_size(30, 28);
-    if let Some(px) = load_control_icon("refresh", 16) {
-        btn_refresh.set_pixels(&px, 16, 16);
-    }
+    let btn_refresh = ui::ImageButton::new(30, 28);
+    btn_refresh.load_file("/System/media/icons/controls/refresh.png");
     btn_refresh.set_tooltip("Refresh (F5)");
+    toolbar.add(&btn_refresh);
 
     toolbar.add_separator();
 
