@@ -433,20 +433,18 @@ fn main() {
     grp_users.add(&user_grid);
 
     // ════════════════════════════════════════════════════════════════
-    //  Bottom action buttons
+    //  Bottom action buttons — positioned manually (8 px gap like
+    //  the Add/Remove buttons above)
     // ════════════════════════════════════════════════════════════════
-    let btn_panel = ui::FlowPanel::new();
-    btn_panel.set_position(12, 442);
-    btn_panel.set_size(WIN_W - 24, 40);
-    scroll.add(&btn_panel);
-
     let btn_cancel = ui::Button::new("Cancel");
+    btn_cancel.set_position(12, 442);
     btn_cancel.set_size(90, 28);
-    btn_panel.add(&btn_cancel);
+    scroll.add(&btn_cancel);
 
     let btn_apply = ui::Button::new("Apply");
+    btn_apply.set_position(12 + 90 + 8, 442);   // 8 px gap after Cancel
     btn_apply.set_size(90, 28);
-    btn_panel.add(&btn_apply);
+    scroll.add(&btn_apply);
 
     // ── Initialize AppState ───────────────────────────────────────────────────
     unsafe {
