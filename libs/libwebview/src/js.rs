@@ -6,6 +6,7 @@
 
 use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use libjs::{JsEngine, JsValue, Vm};
