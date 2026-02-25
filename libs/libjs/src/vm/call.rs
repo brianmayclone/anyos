@@ -45,7 +45,7 @@ impl Vm {
     }
 
     /// Invoke a function value with the given arguments and this binding.
-    fn invoke_function(&mut self, callee: &JsValue, args: &[JsValue], this_val: JsValue) {
+    pub(super) fn invoke_function(&mut self, callee: &JsValue, args: &[JsValue], this_val: JsValue) {
         match callee {
             JsValue::Function(func_rc) => {
                 // Extract what we need before any mutable VM operations
@@ -79,6 +79,8 @@ impl Vm {
                             upvalue_cells: captured_upvalues,
                             this_val: effective_this,
                             is_constructor: false,
+                            all_args: args.to_vec(),
+                            self_ref: callee.clone(),
                         };
                         self.frames.push(frame);
                     }
@@ -140,6 +142,7 @@ impl Vm {
                                 *locals[i].borrow_mut() = arg.clone();
                             }
                         }
+                        let ctor_ref = JsValue::Function(func_rc.clone());
                         let frame = CallFrame {
                             chunk,
                             ip: 0,
@@ -148,6 +151,8 @@ impl Vm {
                             upvalue_cells: captured_upvalues,
                             this_val: new_obj,
                             is_constructor: true,
+                            all_args: args.to_vec(),
+                            self_ref: ctor_ref,
                         };
                         self.frames.push(frame);
                     }

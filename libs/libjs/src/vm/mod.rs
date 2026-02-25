@@ -51,6 +51,10 @@ pub struct CallFrame {
     /// True when this frame was entered via `new Constructor()`.
     /// On Return, if the constructor returned a non-object, `this_val` is used instead.
     pub is_constructor: bool,
+    /// All arguments passed to this call (used by rest params, `arguments` object, etc.).
+    pub all_args: Vec<JsValue>,
+    /// The function value currently executing (used by `LoadSelf` for named function exprs).
+    pub self_ref: JsValue,
 }
 
 /// Exception handler for try-catch.
@@ -127,6 +131,8 @@ impl Vm {
             upvalue_cells: Vec::new(),
             this_val: JsValue::Undefined,
             is_constructor: false,
+            all_args: Vec::new(),
+            self_ref: JsValue::Undefined,
         };
         self.frames.push(frame);
         self.run()
@@ -562,6 +568,29 @@ impl Vm {
                     }
                     // target_array already on top of stack; nothing to push
                 }
+                Op::ObjectSpread => {
+                    // Stack: [..., target_object, source_object]
+                    // Copy all own enumerable properties of source into target.
+                    let src = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let tgt = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
+                    if let JsValue::Object(tgt_rc) = &tgt {
+                        match &src {
+                            JsValue::Object(src_rc) => {
+                                let props: Vec<(String, JsValue)> = src_rc.borrow()
+                                    .properties.iter()
+                                    .filter(|(_, p)| p.enumerable)
+                                    .map(|(k, p)| (k.clone(), p.value.clone()))
+                                    .collect();
+                                let mut t = tgt_rc.borrow_mut();
+                                for (k, v) in props {
+                                    t.set(k, v);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    // target_object already on top of stack; nothing to push
+                }
                 Op::ArrayPush => {
                     // Stack: [..., target_array, value]
                     // Append `value` to `target_array`.
@@ -571,6 +600,39 @@ impl Vm {
                         tgt_rc.borrow_mut().elements.push(val);
                     }
                     // target_array stays on top of stack
+                }
+                Op::LoadArgsArray(start) => {
+                    // Create an Array containing all call arguments from index `start` onward.
+                    let all = self.frames[frame_idx].all_args.clone();
+                    let elems: Vec<JsValue> = all.into_iter().skip(start as usize).collect();
+                    self.stack.push(JsValue::new_array(elems));
+                }
+                Op::LoadSelf => {
+                    let self_val = self.frames[frame_idx].self_ref.clone();
+                    self.stack.push(self_val);
+                }
+                Op::CallSpread => {
+                    // Stack: [..., callee, args_array]
+                    let args_val = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let callee = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let args: Vec<JsValue> = match &args_val {
+                        JsValue::Array(arr) => arr.borrow().elements.clone(),
+                        _ => Vec::new(),
+                    };
+                    self.current_this = JsValue::Undefined;
+                    self.invoke_function(&callee, &args, JsValue::Undefined);
+                }
+                Op::CallMethodSpread => {
+                    // Stack: [..., this_obj, method_fn, args_array]
+                    let args_val = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let callee = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let this_val = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let args: Vec<JsValue> = match &args_val {
+                        JsValue::Array(arr) => arr.borrow().elements.clone(),
+                        _ => Vec::new(),
+                    };
+                    self.current_this = this_val.clone();
+                    self.invoke_function(&callee, &args, this_val);
                 }
 
                 // ── Async ──

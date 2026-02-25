@@ -318,6 +318,8 @@ pub struct ObjPatProp {
 pub struct Param {
     pub pattern: Pattern,
     pub default: Option<Expr>,
+    /// True when this is a rest parameter (`...name`); always the last param.
+    pub is_rest: bool,
 }
 
 /// Object property in literal.

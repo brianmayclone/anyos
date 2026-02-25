@@ -226,7 +226,7 @@ fn collect_inline_fragments(
 
             // Handle <button>
             if *tag == Tag::Button {
-                emit_button_fragment(dom, node_id, out);
+                emit_button_fragment(dom, styles, node_id, out);
                 return;
             }
 
@@ -336,13 +336,21 @@ fn collapse_whitespace(text: &str) -> String {
 /// Emit an `<input>` form field fragment.
 fn emit_input_fragment(
     dom: &Dom,
-    _styles: &[ComputedStyle],
+    styles: &[ComputedStyle],
     node_id: NodeId,
     out: &mut Vec<InlineFragment>,
 ) {
     let input_type = dom.attr(node_id, "type").unwrap_or("text");
     let mut lower_buf = [0u8; 16];
     let lower = ascii_lower_str(input_type, &mut lower_buf);
+
+    // Propagate CSS-declared background and text colors to the fragment so the
+    // renderer can apply them to the native widget instead of its theme default.
+    let (css_bg, css_fg) = if node_id < styles.len() {
+        (styles[node_id].background_color, styles[node_id].color)
+    } else {
+        (0, 0)
+    };
 
     match lower {
         "hidden" => {
@@ -371,6 +379,8 @@ fn emit_input_fragment(
             let mut btn = LayoutBox::new(Some(node_id), BoxType::Inline);
             btn.form_field = Some(FormFieldKind::Submit);
             btn.text = Some(String::from(label));
+            btn.bg_color = css_bg;
+            btn.color = css_fg;
             out.push(InlineFragment { width: w, height: 28, layout_box: btn, breaks_after: false });
         }
         "password" => {
@@ -379,6 +389,8 @@ fn emit_input_fragment(
             tf.form_field = Some(FormFieldKind::Password);
             tf.form_placeholder = dom.attr(node_id, "placeholder").map(String::from);
             tf.form_value = dom.attr(node_id, "value").map(String::from);
+            tf.bg_color = css_bg;
+            tf.color = css_fg;
             out.push(InlineFragment { width: w, height: 28, layout_box: tf, breaks_after: false });
         }
         _ => {
@@ -387,6 +399,8 @@ fn emit_input_fragment(
             tf.form_field = Some(FormFieldKind::TextInput);
             tf.form_placeholder = dom.attr(node_id, "placeholder").map(String::from);
             tf.form_value = dom.attr(node_id, "value").map(String::from);
+            tf.bg_color = css_bg;
+            tf.color = css_fg;
             out.push(InlineFragment { width: w, height: 28, layout_box: tf, breaks_after: false });
         }
     }
@@ -395,6 +409,7 @@ fn emit_input_fragment(
 /// Emit a `<button>` form field fragment.
 fn emit_button_fragment(
     dom: &Dom,
+    styles: &[ComputedStyle],
     node_id: NodeId,
     out: &mut Vec<InlineFragment>,
 ) {
@@ -408,6 +423,11 @@ fn emit_button_fragment(
     let mut btn = LayoutBox::new(Some(node_id), BoxType::Inline);
     btn.form_field = Some(kind);
     btn.text = Some(String::from(label));
+    // Apply CSS colors so the renderer can style the button widget.
+    if node_id < styles.len() {
+        btn.bg_color = styles[node_id].background_color;
+        btn.color = styles[node_id].color;
+    }
     out.push(InlineFragment { width: w, height: 28, layout_box: btn, breaks_after: false });
 }
 

@@ -277,9 +277,11 @@ impl Renderer {
                 let tf = ui::TextField::new();
                 tf.set_position(x, y);
                 tf.set_size(bx.width as u32, bx.height as u32);
-                // Web-style appearance: white background, dark text.
-                tf.set_color(0xFFFFFFFF);
-                tf.set_text_color(0xFF000000);
+                // Prefer CSS-declared colors; fall back to web-standard white/black.
+                let bg = if bx.bg_color != 0 { bx.bg_color } else { 0xFFFFFFFF };
+                let fg = if bx.color != 0 { bx.color } else { 0xFF000000 };
+                tf.set_color(bg);
+                tf.set_text_color(fg);
                 if let Some(ref ph) = bx.form_placeholder {
                     tf.set_placeholder(ph);
                 }
@@ -296,9 +298,11 @@ impl Renderer {
                 tf.set_password_mode(true);
                 tf.set_position(x, y);
                 tf.set_size(bx.width as u32, bx.height as u32);
-                // Web-style appearance: white background, dark text.
-                tf.set_color(0xFFFFFFFF);
-                tf.set_text_color(0xFF000000);
+                // Prefer CSS-declared colors; fall back to web-standard white/black.
+                let bg = if bx.bg_color != 0 { bx.bg_color } else { 0xFFFFFFFF };
+                let fg = if bx.color != 0 { bx.color } else { 0xFF000000 };
+                tf.set_color(bg);
+                tf.set_text_color(fg);
                 if let Some(ref ph) = bx.form_placeholder {
                     tf.set_placeholder(ph);
                 }
@@ -315,6 +319,13 @@ impl Renderer {
                 let btn = ui::Button::new(label);
                 btn.set_position(x, y);
                 btn.set_size(bx.width as u32, bx.height as u32);
+                // Apply CSS-declared background and text colors when present.
+                if bx.bg_color != 0 {
+                    btn.set_color(bx.bg_color);
+                }
+                if bx.color != 0 {
+                    btn.set_text_color(bx.color);
+                }
                 parent.add(&btn);
                 let id = btn.id();
                 self.controls.push(id);

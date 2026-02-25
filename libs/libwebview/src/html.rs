@@ -231,10 +231,15 @@ fn collect_raw_text(bytes: &[u8], pos: &mut usize, tag_name: &str) -> String {
                 return out;
             }
         }
-        if let Ok(s) = core::str::from_utf8(&bytes[*pos..*pos + 1]) {
+        // Advance past the full UTF-8 character (1-4 bytes) so multi-byte
+        // sequences in CSS/script content aren't silently dropped.
+        let b = bytes[*pos];
+        let char_len = if b < 0x80 { 1 } else if b < 0xE0 { 2 } else if b < 0xF0 { 3 } else { 4 };
+        let end = (*pos + char_len).min(bytes.len());
+        if let Ok(s) = core::str::from_utf8(&bytes[*pos..end]) {
             out.push_str(s);
         }
-        *pos += 1;
+        *pos = end;
     }
     out
 }
@@ -312,6 +317,10 @@ fn parse_attrs(bytes: &[u8], pos: &mut usize) -> (Vec<(String, String)>, bool) {
 }
 
 /// Read an attribute value: quoted or unquoted.
+///
+/// Non-entity bytes are decoded as UTF-8 runs rather than one byte at a time,
+/// so multi-byte sequences (e.g. ü = 0xC3 0xBC) are preserved correctly instead
+/// of being mis-rendered as two Latin-1 glyphs (Ã + ¼).
 fn read_attr_value(bytes: &[u8], pos: &mut usize) -> String {
     if *pos >= bytes.len() {
         return String::new();
@@ -327,8 +336,20 @@ fn read_attr_value(bytes: &[u8], pos: &mut usize) -> String {
                 val.push(ch);
                 *pos += consumed;
             } else {
-                val.push(bytes[*pos] as char);
-                *pos += 1;
+                // Collect a run of non-entity, non-terminator bytes and decode
+                // as a UTF-8 chunk — avoids treating each high byte as Latin-1.
+                let start = *pos;
+                while *pos < bytes.len() && bytes[*pos] != quote && bytes[*pos] != b'&' {
+                    *pos += 1;
+                }
+                if let Ok(s) = core::str::from_utf8(&bytes[start..*pos]) {
+                    val.push_str(s);
+                } else {
+                    // Shouldn't happen for valid UTF-8 HTML input; fall back.
+                    for &b in &bytes[start..*pos] {
+                        val.push(b as char);
+                    }
+                }
             }
         }
         if *pos < bytes.len() {
@@ -349,8 +370,23 @@ fn read_attr_value(bytes: &[u8], pos: &mut usize) -> String {
                 val.push(ch);
                 *pos += consumed;
             } else {
-                val.push(bytes[*pos] as char);
-                *pos += 1;
+                // Collect run of non-special bytes, decode as UTF-8.
+                let start = *pos;
+                while *pos < bytes.len()
+                    && !is_ws(bytes[*pos])
+                    && bytes[*pos] != b'>'
+                    && bytes[*pos] != b'/'
+                    && bytes[*pos] != b'&'
+                {
+                    *pos += 1;
+                }
+                if let Ok(s) = core::str::from_utf8(&bytes[start..*pos]) {
+                    val.push_str(s);
+                } else {
+                    for &b in &bytes[start..*pos] {
+                        val.push(b as char);
+                    }
+                }
             }
         }
         val

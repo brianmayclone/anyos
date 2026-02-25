@@ -156,10 +156,27 @@ pub enum Op {
     /// Stack before: [..., target_array, value_to_spread]
     /// Stack after:  [..., target_array]  (value's elements appended to target)
     Spread,
+    /// Spread an object's own enumerable properties into a target object.
+    /// Stack before: [..., target_object, source_object]
+    /// Stack after:  [..., target_object]  (source's properties copied to target)
+    ObjectSpread,
     /// Push a single value into an array that sits below it on the stack.
     /// Stack before: [..., target_array, value]
     /// Stack after:  [..., target_array]  (value appended to target)
     ArrayPush,
+    /// Build an array from all call arguments starting at index `n`.
+    /// Stack before: [...] → Stack after: [..., Array(args[n..])]
+    LoadArgsArray(u16),
+    /// Call a function with arguments supplied as an array on the stack.
+    /// Stack before: [..., callee, args_array]
+    /// Stack after:  [..., return_value]
+    CallSpread,
+    /// Call a method with arguments supplied as an array on the stack.
+    /// Stack before: [..., this_obj, method_fn, args_array]
+    /// Stack after:  [..., return_value]
+    CallMethodSpread,
+    /// Load the currently-executing function value (for named function expressions).
+    LoadSelf,
 
     // ── Debugger ──
     Debugger,

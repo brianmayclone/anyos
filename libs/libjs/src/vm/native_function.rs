@@ -119,6 +119,8 @@ fn invoke_with_this(vm: &mut Vm, func: &JsValue, this_val: &JsValue, args: &[JsV
                         upvalue_cells: captured_upvalues,
                         this_val: this_val.clone(),
                         is_constructor: false,
+                        all_args: args.to_vec(),
+                        self_ref: func.clone(),
                     };
                     vm.frames.push(frame);
                     vm.run()

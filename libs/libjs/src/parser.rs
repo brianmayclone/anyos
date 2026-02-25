@@ -614,7 +614,7 @@ impl Parser {
             // Rest parameter
             if self.eat(&TokenKind::DotDotDot) {
                 let pattern = self.parse_binding_pattern();
-                params.push(Param { pattern, default: None });
+                params.push(Param { pattern, default: None, is_rest: true });
                 break;
             }
             let pattern = self.parse_binding_pattern();
@@ -623,7 +623,7 @@ impl Parser {
             } else {
                 None
             };
-            params.push(Param { pattern, default });
+            params.push(Param { pattern, default, is_rest: false });
             if !self.eat(&TokenKind::Comma) {
                 break;
             }
@@ -713,6 +713,7 @@ impl Parser {
             vec![Param {
                 pattern: Pattern::Ident(name),
                 default: None,
+                is_rest: false,
             }]
         } else {
             self.parse_params()
