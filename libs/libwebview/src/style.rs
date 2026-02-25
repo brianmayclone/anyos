@@ -1663,15 +1663,8 @@ pub fn apply_declaration(
         | Property::AlignContent | Property::Flex
         | Property::Gap | Property::Cursor
         | Property::BorderCollapse | Property::BorderSpacing | Property::TableLayout => {}
-        Property::CustomProperty(ref name) => {
-            // Store custom property value as raw string.
-            if let CssValue::Keyword(ref val) = decl.value {
-                if let Some(existing) = style.custom_properties.iter_mut().find(|(k, _)| k == name) {
-                    existing.1 = val.clone();
-                } else {
-                    style.custom_properties.push((name.clone(), val.clone()));
-                }
-            }
+        Property::CustomProperty(_) => {
+            // Custom properties stored separately in resolve_styles; no-op here.
         }
     }
 }
