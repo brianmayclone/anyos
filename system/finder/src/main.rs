@@ -466,7 +466,7 @@ fn handle_context_action(index: u32) {
     let is_app = s.entries[idx].is_app_bundle();
 
     if is_app {
-        // Menu: Open | Show Package Contents | Copy Path
+        // Menu: Open | Show Package Contents | Copy Path | Properties
         match index {
             0 => open_entry(idx),
             1 => show_package_contents(idx),
@@ -475,10 +475,11 @@ fn handle_context_action(index: u32) {
                 let fp = build_full_path(&s.cwd, name);
                 ui::clipboard_set(&fp);
             }
+            3 => show_properties(idx),
             _ => {}
         }
     } else {
-        // Menu: Open | Copy Path
+        // Menu: Open | Copy Path | Properties
         match index {
             0 => open_entry(idx),
             1 => {
@@ -486,6 +487,7 @@ fn handle_context_action(index: u32) {
                 let fp = build_full_path(&s.cwd, name);
                 ui::clipboard_set(&fp);
             }
+            2 => show_properties(idx),
             _ => {}
         }
     }
@@ -501,13 +503,323 @@ fn update_context_menu() {
     let is_app = s.entries[idx].is_app_bundle();
 
     let menu_text = if is_app {
-        "Open|Show Package Contents|Copy Path"
+        "Open|Show Package Contents|Copy Path|Properties"
     } else {
-        "Open|Copy Path"
+        "Open|Copy Path|Properties"
     };
 
     // Update existing context menu text (don't create a new one — it wouldn't have a parent)
     s.ctx_menu.set_text(menu_text);
+}
+
+// ============================================================================
+// Properties dialog
+// ============================================================================
+
+/// Recursively count files and sum sizes in a directory.
+/// Returns (file_count, total_bytes). Caps recursion at `max_depth` levels.
+fn count_dir_contents_inner(path: &str, max_depth: u32) -> (u32, u64) {
+    if max_depth == 0 { return (0, 0); }
+
+    let mut buf = [0u8; 256 * 64];
+    let count = fs::readdir(path, &mut buf);
+    if count == u32::MAX { return (0, 0); }
+
+    let mut files = 0u32;
+    let mut bytes = 0u64;
+
+    for i in 0..count as usize {
+        let off = i * 64;
+        let entry_type = buf[off];
+        let name_len = buf[off + 1] as usize;
+        let size = u32::from_le_bytes([buf[off + 4], buf[off + 5], buf[off + 6], buf[off + 7]]);
+        let name = &buf[off + 8..off + 8 + name_len.min(55)];
+
+        // Skip . and ..
+        if name == b"." || name == b".." { continue; }
+
+        if entry_type == TYPE_DIR {
+            if let Ok(name_str) = core::str::from_utf8(name) {
+                let child = build_full_path(path, name_str);
+                let (cf, cb) = count_dir_contents_inner(&child, max_depth - 1);
+                files += cf;
+                bytes += cb;
+            }
+        } else {
+            files += 1;
+            bytes += size as u64;
+        }
+    }
+
+    (files, bytes)
+}
+
+fn count_dir_contents(path: &str) -> (u32, u64) {
+    count_dir_contents_inner(path, 10)
+}
+
+/// Format a u64 byte count as a human-readable size string.
+fn fmt_size64(size: u64) -> String {
+    if size >= 1024 * 1024 * 1024 {
+        let gb = size / (1024 * 1024 * 1024);
+        let frac = ((size % (1024 * 1024 * 1024)) * 10 / (1024 * 1024 * 1024)).min(9);
+        anyos_std::format!("{}.{} GB", gb, frac)
+    } else if size >= 1024 * 1024 {
+        let mb = size / (1024 * 1024);
+        let frac = ((size % (1024 * 1024)) * 10 / (1024 * 1024)).min(9);
+        anyos_std::format!("{}.{} MB", mb, frac)
+    } else if size >= 1024 {
+        let kb = size / 1024;
+        anyos_std::format!("{} KB", kb)
+    } else {
+        anyos_std::format!("{} B", size)
+    }
+}
+
+/// Convert a Unix timestamp to "YYYY-MM-DD HH:MM" string.
+fn fmt_date(ts: u32) -> String {
+    if ts == 0 { return String::from("--"); }
+
+    let secs = ts as u64;
+    let days = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hours = (time_of_day / 3600) as u32;
+    let minutes = ((time_of_day % 3600) / 60) as u32;
+
+    // Calculate year/month/day from days since 1970-01-01
+    let mut y = 1970u32;
+    let mut remaining = days;
+    loop {
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366u64 } else { 365u64 };
+        if remaining < days_in_year { break; }
+        remaining -= days_in_year;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let mdays: [u32; 12] = [31, if leap {29} else {28}, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut m = 0u32;
+    for i in 0..12 {
+        if remaining < mdays[i] as u64 { m = i as u32 + 1; break; }
+        remaining -= mdays[i] as u64;
+    }
+    if m == 0 { m = 12; }
+    let d = remaining as u32 + 1;
+
+    anyos_std::format!("{}-{:02}-{:02} {:02}:{:02}", y, m, d, hours, minutes)
+}
+
+/// Format Unix permission bits as "rwxrwxrwx" string.
+fn fmt_mode(mode: u32, is_dir: bool) -> String {
+    let mut s = String::new();
+    s.push(if is_dir { 'd' } else { '-' });
+    let bits = [
+        (mode >> 8) & 7, // owner
+        (mode >> 4) & 7, // group (adjusted for 12-bit mode)
+        mode & 7,        // other
+    ];
+    // Actually mode is stored as 12-bit: bits 11-9 = owner, 8-6 = group, 5-3 = other
+    // But let's use the simpler 9-bit convention: rwx for owner (bits 8-6), group (5-3), other (2-0)
+    for shift in [6u32, 3, 0] {
+        let b = (mode >> shift) & 7;
+        s.push(if b & 4 != 0 { 'r' } else { '-' });
+        s.push(if b & 2 != 0 { 'w' } else { '-' });
+        s.push(if b & 1 != 0 { 'x' } else { '-' });
+    }
+    s
+}
+
+fn show_properties(idx: usize) {
+    let s = app();
+    if idx >= s.entries.len() { return; }
+
+    let entry = &s.entries[idx];
+    let name = String::from(entry.name_str());
+    let is_dir = entry.entry_type == TYPE_DIR;
+    let is_app = entry.is_app_bundle();
+    let full_path = build_full_path(&s.cwd, &name);
+    let location = String::from(s.cwd.as_str());
+
+    // Get icon
+    let icon_path = resolve_icon_path(s, idx);
+
+    // Stat the file for metadata
+    let mut stat_buf = [0u32; 7];
+    let has_stat = fs::stat(&full_path, &mut stat_buf) == 0;
+    let file_size = if has_stat { stat_buf[1] } else { entry.size };
+    let mtime = if has_stat { stat_buf[6] } else { 0 };
+    let mode = if has_stat { stat_buf[5] } else { 0 };
+
+    // Type description
+    let type_str = if is_app {
+        String::from("Application")
+    } else if is_dir {
+        String::from("Folder")
+    } else {
+        match get_extension(&name) {
+            Some(ext) => {
+                let mut t = String::from(ext);
+                t.push_str(" File");
+                t
+            }
+            None => String::from("File"),
+        }
+    };
+
+    // For directories, count contents
+    let (dir_files, dir_bytes) = if is_dir {
+        count_dir_contents(&full_path)
+    } else {
+        (0, 0)
+    };
+
+    // Display name (strip .app suffix for bundles)
+    let display_name = if is_app {
+        String::from(name.as_str().strip_suffix(".app").unwrap_or(&name))
+    } else {
+        name.clone()
+    };
+
+    // ── Build the properties window ──
+    let win_title = anyos_std::format!("{} \u{2014} Properties", display_name);
+    let win = ui::Window::new_with_flags(
+        &win_title, -1, -1, 340, 360,
+        ui::WIN_FLAG_NOT_RESIZABLE | ui::WIN_FLAG_NO_MINIMIZE | ui::WIN_FLAG_NO_MAXIMIZE,
+    );
+    win.set_color(0xFF1E1E1E);
+
+    // ── Header: icon + name ──
+    let header = ui::View::new();
+    header.set_dock(ui::DOCK_TOP);
+    header.set_size(0, 70);
+    header.set_color(0xFF1E1E1E);
+
+    let icon_iv = ui::ImageView::new(48, 48);
+    icon_iv.set_position(16, 11);
+    if let Some((pixels, w, h)) = s.icon_cache.get_or_load(&icon_path, ICON_SIZE_LARGE) {
+        icon_iv.set_pixels(pixels, w, h);
+    }
+    header.add(&icon_iv);
+
+    let name_lbl = ui::Label::new(&display_name);
+    name_lbl.set_position(76, 14);
+    name_lbl.set_size(240, 20);
+    name_lbl.set_font_size(15);
+    name_lbl.set_text_color(0xFFFFFFFF);
+    header.add(&name_lbl);
+
+    // Subtitle (full filename)
+    if is_app || display_name.as_str() != name.as_str() {
+        let sub_lbl = ui::Label::new(&name);
+        sub_lbl.set_position(76, 38);
+        sub_lbl.set_size(240, 16);
+        sub_lbl.set_font_size(11);
+        sub_lbl.set_text_color(0xFF888888);
+        header.add(&sub_lbl);
+    }
+
+    win.add(&header);
+
+    // ── Divider ──
+    let div1 = ui::Divider::new();
+    div1.set_dock(ui::DOCK_TOP);
+    div1.set_size(0, 1);
+    win.add(&div1);
+
+    // ── Properties grid ──
+    let props = ui::View::new();
+    props.set_dock(ui::DOCK_FILL);
+    props.set_color(0xFF1E1E1E);
+
+    let label_x: i32 = 16;
+    let value_x: i32 = 110;
+    let mut y: i32 = 12;
+    let row_h: i32 = 24;
+    let label_color: u32 = 0xFF888888;
+    let value_color: u32 = 0xFFDDDDDD;
+
+    // Helper: add a row with label + value
+    macro_rules! prop_row {
+        ($label:expr, $value:expr) => {{
+            let lbl = ui::Label::new($label);
+            lbl.set_position(label_x, y);
+            lbl.set_size(90, 18);
+            lbl.set_font_size(12);
+            lbl.set_text_color(label_color);
+            props.add(&lbl);
+
+            let val = ui::Label::new($value);
+            val.set_position(value_x, y);
+            val.set_size(210, 18);
+            val.set_font_size(12);
+            val.set_text_color(value_color);
+            props.add(&val);
+
+            y += row_h;
+        }};
+    }
+
+    prop_row!("Type:", &type_str);
+    prop_row!("Location:", &location);
+
+    if is_dir {
+        let size_str = fmt_size64(dir_bytes);
+        prop_row!("Size:", &size_str);
+
+        let contains_str = if dir_files == 1 {
+            String::from("1 file")
+        } else {
+            anyos_std::format!("{} files", dir_files)
+        };
+        prop_row!("Contains:", &contains_str);
+    } else {
+        let size_str = if file_size >= 1024 {
+            anyos_std::format!("{} ({} bytes)", fmt_size(file_size), file_size)
+        } else {
+            anyos_std::format!("{} bytes", file_size)
+        };
+        prop_row!("Size:", &size_str);
+    }
+
+    let date_str = fmt_date(mtime);
+    prop_row!("Modified:", &date_str);
+
+    if mode != 0 {
+        let mode_str = fmt_mode(mode, is_dir);
+        prop_row!("Mode:", &mode_str);
+    }
+
+    prop_row!("Path:", &full_path);
+
+    win.add(&props);
+
+    // ── Bottom bar with OK button ──
+    let bottom = ui::View::new();
+    bottom.set_dock(ui::DOCK_BOTTOM);
+    bottom.set_size(0, 50);
+    bottom.set_color(0xFF1E1E1E);
+
+    let div2 = ui::Divider::new();
+    div2.set_dock(ui::DOCK_TOP);
+    div2.set_size(0, 1);
+    bottom.add(&div2);
+
+    let ok_btn = ui::Button::new("OK");
+    ok_btn.set_size(80, 28);
+    ok_btn.set_position(130, 12);
+    ok_btn.on_click(move |_| {
+        win.destroy();
+    });
+    bottom.add(&ok_btn);
+
+    win.add(&bottom);
+
+    // Escape or window close destroys the dialog
+    win.on_close(move |_| { win.destroy(); });
+    win.on_key_down(move |ke| {
+        if ke.keycode == ui::KEY_ESCAPE {
+            win.destroy();
+        }
+    });
 }
 
 // ============================================================================

@@ -39,62 +39,36 @@ pub struct Attr {
 }
 
 // ---------------------------------------------------------------------------
-// HTML tag enum (~40 tags + Unknown fallback)
+// HTML tag enum — comprehensive HTML5 support
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tag {
-    Html,
-    Head,
-    Title,
-    Body,
-    Style,
-    Link,
-    Meta,
-    Script,
-    H1,
-    H2,
-    H3,
-    H4,
-    H5,
-    H6,
-    P,
-    Br,
-    Hr,
-    Pre,
-    Blockquote,
-    A,
-    Img,
-    Span,
-    Em,
-    Strong,
-    B,
-    I,
-    U,
-    Code,
-    Div,
-    Section,
-    Header,
-    Footer,
-    Nav,
-    Main,
-    Article,
-    Ul,
-    Ol,
-    Li,
-    Table,
-    Thead,
-    Tbody,
-    Tr,
-    Th,
-    Td,
-    Form,
-    Input,
-    Button,
-    Textarea,
-    Select,
-    Option,
-    Label,
+    // Document structure
+    Html, Head, Title, Body, Style, Link, Meta, Script, Noscript, Template,
+    // Headings
+    H1, H2, H3, H4, H5, H6,
+    // Content sectioning
+    Div, Section, Header, Footer, Nav, Main, Article, Aside, Hgroup, Address,
+    // Text content
+    P, Br, Hr, Pre, Blockquote, Figure, Figcaption, Details, Summary, Dialog,
+    // Inline text semantics
+    A, Span, Em, Strong, B, I, U, S, Code, Mark, Small, Sub, Sup,
+    Kbd, Samp, Var, Abbr, Cite, Dfn, Q, Time, Del, Ins, Bdi, Bdo,
+    Data, Ruby, Rt, Rp, Wbr,
+    // Lists
+    Ul, Ol, Li, Dl, Dt, Dd,
+    // Tables
+    Table, Thead, Tbody, Tfoot, Tr, Th, Td, Caption, Colgroup, Col,
+    // Forms
+    Form, Input, Button, Textarea, Select, Option, Optgroup, Label,
+    Fieldset, Legend, Datalist, Output, Progress, Meter,
+    // Media/embedded
+    Img, Audio, Video, Source, Track, Canvas, Svg, Iframe, Embed, Object, Param,
+    Picture, Map, Area,
+    // Deprecated but still encountered
+    Center, Font, Nobr, Tt,
+    // Unknown fallback
     Unknown,
 }
 
@@ -105,8 +79,6 @@ pub enum Tag {
 impl Tag {
     /// Case-insensitive lookup from a tag name string.
     pub fn from_str(name: &str) -> Tag {
-        // Fast path: compare lowercased bytes against known tags.
-        // We lowercase into a small stack buffer to avoid allocation.
         let mut buf = [0u8; 16];
         let len = name.len().min(buf.len());
         for i in 0..len {
@@ -115,57 +87,62 @@ impl Tag {
         let lower = &buf[..len];
 
         match lower {
-            b"html" => Tag::Html,
-            b"head" => Tag::Head,
-            b"title" => Tag::Title,
-            b"body" => Tag::Body,
-            b"style" => Tag::Style,
-            b"link" => Tag::Link,
-            b"meta" => Tag::Meta,
-            b"script" => Tag::Script,
-            b"h1" => Tag::H1,
-            b"h2" => Tag::H2,
-            b"h3" => Tag::H3,
-            b"h4" => Tag::H4,
-            b"h5" => Tag::H5,
-            b"h6" => Tag::H6,
-            b"p" => Tag::P,
-            b"br" => Tag::Br,
-            b"hr" => Tag::Hr,
-            b"pre" => Tag::Pre,
-            b"blockquote" => Tag::Blockquote,
-            b"a" => Tag::A,
-            b"img" => Tag::Img,
-            b"span" => Tag::Span,
-            b"em" => Tag::Em,
-            b"strong" => Tag::Strong,
-            b"b" => Tag::B,
-            b"i" => Tag::I,
-            b"u" => Tag::U,
-            b"code" => Tag::Code,
-            b"div" => Tag::Div,
-            b"section" => Tag::Section,
-            b"header" => Tag::Header,
-            b"footer" => Tag::Footer,
-            b"nav" => Tag::Nav,
-            b"main" => Tag::Main,
-            b"article" => Tag::Article,
-            b"ul" => Tag::Ul,
-            b"ol" => Tag::Ol,
-            b"li" => Tag::Li,
-            b"table" => Tag::Table,
-            b"thead" => Tag::Thead,
-            b"tbody" => Tag::Tbody,
-            b"tr" => Tag::Tr,
-            b"th" => Tag::Th,
-            b"td" => Tag::Td,
-            b"form" => Tag::Form,
-            b"input" => Tag::Input,
-            b"button" => Tag::Button,
-            b"textarea" => Tag::Textarea,
-            b"select" => Tag::Select,
-            b"option" => Tag::Option,
-            b"label" => Tag::Label,
+            // Document structure
+            b"html" => Tag::Html, b"head" => Tag::Head, b"title" => Tag::Title,
+            b"body" => Tag::Body, b"style" => Tag::Style, b"link" => Tag::Link,
+            b"meta" => Tag::Meta, b"script" => Tag::Script, b"noscript" => Tag::Noscript,
+            b"template" => Tag::Template,
+            // Headings
+            b"h1" => Tag::H1, b"h2" => Tag::H2, b"h3" => Tag::H3,
+            b"h4" => Tag::H4, b"h5" => Tag::H5, b"h6" => Tag::H6,
+            // Content sectioning
+            b"div" => Tag::Div, b"section" => Tag::Section, b"header" => Tag::Header,
+            b"footer" => Tag::Footer, b"nav" => Tag::Nav, b"main" => Tag::Main,
+            b"article" => Tag::Article, b"aside" => Tag::Aside, b"hgroup" => Tag::Hgroup,
+            b"address" => Tag::Address,
+            // Text content
+            b"p" => Tag::P, b"br" => Tag::Br, b"hr" => Tag::Hr, b"pre" => Tag::Pre,
+            b"blockquote" => Tag::Blockquote, b"figure" => Tag::Figure,
+            b"figcaption" => Tag::Figcaption, b"details" => Tag::Details,
+            b"summary" => Tag::Summary, b"dialog" => Tag::Dialog,
+            // Inline text
+            b"a" => Tag::A, b"span" => Tag::Span, b"em" => Tag::Em,
+            b"strong" => Tag::Strong, b"b" => Tag::B, b"i" => Tag::I,
+            b"u" => Tag::U, b"s" => Tag::S, b"code" => Tag::Code,
+            b"mark" => Tag::Mark, b"small" => Tag::Small,
+            b"sub" => Tag::Sub, b"sup" => Tag::Sup, b"kbd" => Tag::Kbd,
+            b"samp" => Tag::Samp, b"var" => Tag::Var, b"abbr" => Tag::Abbr,
+            b"cite" => Tag::Cite, b"dfn" => Tag::Dfn, b"q" => Tag::Q,
+            b"time" => Tag::Time, b"del" => Tag::Del, b"ins" => Tag::Ins,
+            b"bdi" => Tag::Bdi, b"bdo" => Tag::Bdo, b"data" => Tag::Data,
+            b"ruby" => Tag::Ruby, b"rt" => Tag::Rt, b"rp" => Tag::Rp,
+            b"wbr" => Tag::Wbr,
+            // Lists
+            b"ul" => Tag::Ul, b"ol" => Tag::Ol, b"li" => Tag::Li,
+            b"dl" => Tag::Dl, b"dt" => Tag::Dt, b"dd" => Tag::Dd,
+            // Tables
+            b"table" => Tag::Table, b"thead" => Tag::Thead, b"tbody" => Tag::Tbody,
+            b"tfoot" => Tag::Tfoot, b"tr" => Tag::Tr, b"th" => Tag::Th,
+            b"td" => Tag::Td, b"caption" => Tag::Caption,
+            b"colgroup" => Tag::Colgroup, b"col" => Tag::Col,
+            // Forms
+            b"form" => Tag::Form, b"input" => Tag::Input, b"button" => Tag::Button,
+            b"textarea" => Tag::Textarea, b"select" => Tag::Select,
+            b"option" => Tag::Option, b"optgroup" => Tag::Optgroup,
+            b"label" => Tag::Label, b"fieldset" => Tag::Fieldset,
+            b"legend" => Tag::Legend, b"datalist" => Tag::Datalist,
+            b"output" => Tag::Output, b"progress" => Tag::Progress,
+            b"meter" => Tag::Meter,
+            // Media/embedded
+            b"img" => Tag::Img, b"audio" => Tag::Audio, b"video" => Tag::Video,
+            b"source" => Tag::Source, b"track" => Tag::Track,
+            b"canvas" => Tag::Canvas, b"svg" => Tag::Svg,
+            b"iframe" => Tag::Iframe, b"embed" => Tag::Embed,
+            b"object" => Tag::Object, b"param" => Tag::Param,
+            b"picture" => Tag::Picture, b"map" => Tag::Map, b"area" => Tag::Area,
+            // Deprecated
+            b"center" => Tag::Center, b"font" => Tag::Font,
+            b"nobr" => Tag::Nobr, b"tt" => Tag::Tt,
             _ => Tag::Unknown,
         }
     }
@@ -175,6 +152,8 @@ impl Tag {
         matches!(
             self,
             Tag::Br | Tag::Hr | Tag::Img | Tag::Input | Tag::Meta | Tag::Link
+                | Tag::Col | Tag::Embed | Tag::Source | Tag::Track | Tag::Wbr
+                | Tag::Area | Tag::Param
         )
     }
 
@@ -182,29 +161,18 @@ impl Tag {
     pub fn is_block(&self) -> bool {
         matches!(
             self,
-            Tag::Div
-                | Tag::P
-                | Tag::H1
-                | Tag::H2
-                | Tag::H3
-                | Tag::H4
-                | Tag::H5
-                | Tag::H6
-                | Tag::Ul
-                | Tag::Ol
-                | Tag::Li
-                | Tag::Table
-                | Tag::Tr
-                | Tag::Blockquote
-                | Tag::Pre
-                | Tag::Section
-                | Tag::Article
-                | Tag::Header
-                | Tag::Footer
-                | Tag::Nav
-                | Tag::Main
-                | Tag::Form
-                | Tag::Hr
+            Tag::Div | Tag::P
+                | Tag::H1 | Tag::H2 | Tag::H3 | Tag::H4 | Tag::H5 | Tag::H6
+                | Tag::Ul | Tag::Ol | Tag::Li | Tag::Dl | Tag::Dt | Tag::Dd
+                | Tag::Table | Tag::Thead | Tag::Tbody | Tag::Tfoot | Tag::Tr
+                | Tag::Caption | Tag::Colgroup
+                | Tag::Blockquote | Tag::Pre | Tag::Figure | Tag::Figcaption
+                | Tag::Section | Tag::Article | Tag::Header | Tag::Footer
+                | Tag::Nav | Tag::Main | Tag::Aside | Tag::Hgroup | Tag::Address
+                | Tag::Details | Tag::Summary | Tag::Dialog
+                | Tag::Form | Tag::Fieldset | Tag::Legend
+                | Tag::Hr | Tag::Center
+                | Tag::Noscript | Tag::Canvas | Tag::Video | Tag::Audio
         )
     }
 
@@ -212,20 +180,15 @@ impl Tag {
     pub fn is_inline(&self) -> bool {
         matches!(
             self,
-            Tag::A
-                | Tag::Span
-                | Tag::Em
-                | Tag::Strong
-                | Tag::B
-                | Tag::I
-                | Tag::U
-                | Tag::Code
-                | Tag::Img
-                | Tag::Input
-                | Tag::Button
-                | Tag::Label
-                | Tag::Select
-                | Tag::Textarea
+            Tag::A | Tag::Span | Tag::Em | Tag::Strong | Tag::B | Tag::I
+                | Tag::U | Tag::S | Tag::Code | Tag::Mark | Tag::Small
+                | Tag::Sub | Tag::Sup | Tag::Kbd | Tag::Samp | Tag::Var
+                | Tag::Abbr | Tag::Cite | Tag::Dfn | Tag::Q | Tag::Time
+                | Tag::Del | Tag::Ins | Tag::Bdi | Tag::Bdo | Tag::Data
+                | Tag::Ruby | Tag::Rt | Tag::Rp | Tag::Wbr
+                | Tag::Img | Tag::Input | Tag::Button | Tag::Label
+                | Tag::Select | Tag::Textarea | Tag::Output | Tag::Progress
+                | Tag::Meter | Tag::Nobr | Tag::Tt | Tag::Font
         )
     }
 }
