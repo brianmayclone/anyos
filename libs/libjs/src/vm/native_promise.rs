@@ -69,6 +69,7 @@ pub fn ctor_promise(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                     locals,
                     upvalue_cells: Vec::new(),
                     this_val: JsValue::Undefined,
+                    is_constructor: false,
                 };
                 vm.frames.push(frame);
                 vm.run();
@@ -351,6 +352,7 @@ fn call_callback(vm: &mut Vm, callback: &JsValue, args: &[JsValue]) -> JsValue {
                         locals,
                         upvalue_cells: Vec::new(),
                         this_val: JsValue::Undefined,
+                        is_constructor: false,
                     };
                     vm.frames.push(frame);
                     vm.run()
