@@ -130,6 +130,119 @@ pub fn math_random(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     }
 }
 
+pub fn math_exp(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    JsValue::Number(exp_approx(arg_num(args, 0)))
+}
+
+pub fn math_expm1(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = arg_num(args, 0);
+    if x.is_nan() { return JsValue::Number(f64::NAN); }
+    if x.is_infinite() { return JsValue::Number(if x > 0.0 { f64::INFINITY } else { -1.0 }); }
+    // For small x use Taylor series for precision: x + x²/2! + x³/3! + ...
+    if x.abs() < 1e-4 {
+        let x2 = x * x;
+        return JsValue::Number(x + x2 / 2.0 + x2 * x / 6.0 + x2 * x2 / 24.0);
+    }
+    JsValue::Number(exp_approx(x) - 1.0)
+}
+
+pub fn math_log1p(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = arg_num(args, 0);
+    if x.is_nan() { return JsValue::Number(f64::NAN); }
+    if x < -1.0 { return JsValue::Number(f64::NAN); }
+    if x == -1.0 { return JsValue::Number(f64::NEG_INFINITY); }
+    if x.is_infinite() { return JsValue::Number(f64::INFINITY); }
+    // For small x use Taylor series: x - x²/2 + x³/3 - x⁴/4 + ...
+    if x.abs() < 1e-4 {
+        let x2 = x * x;
+        return JsValue::Number(x - x2 / 2.0 + x2 * x / 3.0 - x2 * x2 / 4.0);
+    }
+    JsValue::Number(ln_approx(1.0 + x))
+}
+
+pub fn math_asin(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = arg_num(args, 0);
+    if x.is_nan() || x.abs() > 1.0 { return JsValue::Number(f64::NAN); }
+    if x == 1.0 { return JsValue::Number(core::f64::consts::FRAC_PI_2); }
+    if x == -1.0 { return JsValue::Number(-core::f64::consts::FRAC_PI_2); }
+    if x == 0.0 { return JsValue::Number(0.0); }
+    JsValue::Number(atan_approx(x / sqrt_f64(1.0 - x * x)))
+}
+
+pub fn math_acos(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = arg_num(args, 0);
+    if x.is_nan() || x.abs() > 1.0 { return JsValue::Number(f64::NAN); }
+    if x == 1.0 { return JsValue::Number(0.0); }
+    if x == -1.0 { return JsValue::Number(core::f64::consts::PI); }
+    JsValue::Number(core::f64::consts::FRAC_PI_2 - atan_approx(x / sqrt_f64(1.0 - x * x)))
+}
+
+pub fn math_atan(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = arg_num(args, 0);
+    if x.is_nan() { return JsValue::Number(f64::NAN); }
+    if x.is_infinite() {
+        return JsValue::Number(if x > 0.0 { core::f64::consts::FRAC_PI_2 } else { -core::f64::consts::FRAC_PI_2 });
+    }
+    JsValue::Number(atan_approx(x))
+}
+
+pub fn math_sinh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = arg_num(args, 0);
+    if x.is_nan() { return JsValue::Number(f64::NAN); }
+    if x.is_infinite() { return JsValue::Number(x); }
+    JsValue::Number((exp_approx(x) - exp_approx(-x)) / 2.0)
+}
+
+pub fn math_cosh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = arg_num(args, 0);
+    if x.is_nan() { return JsValue::Number(f64::NAN); }
+    if x.is_infinite() { return JsValue::Number(f64::INFINITY); }
+    JsValue::Number((exp_approx(x) + exp_approx(-x)) / 2.0)
+}
+
+pub fn math_tanh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = arg_num(args, 0);
+    if x.is_nan() { return JsValue::Number(f64::NAN); }
+    if x.is_infinite() { return JsValue::Number(if x > 0.0 { 1.0 } else { -1.0 }); }
+    if x == 0.0 { return JsValue::Number(0.0); }
+    let ex = exp_approx(x);
+    let enx = exp_approx(-x);
+    JsValue::Number((ex - enx) / (ex + enx))
+}
+
+pub fn math_acosh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = arg_num(args, 0);
+    if x.is_nan() || x < 1.0 { return JsValue::Number(f64::NAN); }
+    if x == 1.0 { return JsValue::Number(0.0); }
+    if x.is_infinite() { return JsValue::Number(f64::INFINITY); }
+    JsValue::Number(ln_approx(x + sqrt_f64(x * x - 1.0)))
+}
+
+pub fn math_asinh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = arg_num(args, 0);
+    if x.is_nan() { return JsValue::Number(f64::NAN); }
+    if x.is_infinite() { return JsValue::Number(x); }
+    if x == 0.0 { return JsValue::Number(0.0); }
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    let ax = x * sign;
+    JsValue::Number(sign * ln_approx(ax + sqrt_f64(ax * ax + 1.0)))
+}
+
+pub fn math_atanh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = arg_num(args, 0);
+    if x.is_nan() || x.abs() > 1.0 { return JsValue::Number(f64::NAN); }
+    if x == 1.0 { return JsValue::Number(f64::INFINITY); }
+    if x == -1.0 { return JsValue::Number(f64::NEG_INFINITY); }
+    if x == 0.0 { return JsValue::Number(0.0); }
+    JsValue::Number(ln_approx((1.0 + x) / (1.0 - x)) / 2.0)
+}
+
+pub fn math_imul(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let a = arg_num(args, 0) as i32;
+    let b = arg_num(args, 1) as i32;
+    JsValue::Number(a.wrapping_mul(b) as f64)
+}
+
 // ═══════════════════════════════════════════════════════════
 // no_std math utilities
 // ═══════════════════════════════════════════════════════════
@@ -190,7 +303,10 @@ pub fn pow_f64(base: f64, exp: f64) -> f64 {
 }
 
 pub fn ln_approx(x: f64) -> f64 {
-    if x <= 0.0 { return f64::NEG_INFINITY; }
+    if x.is_nan() { return f64::NAN; }
+    if x < 0.0 { return f64::NAN; }
+    if x == 0.0 { return f64::NEG_INFINITY; }
+    if x.is_infinite() { return f64::INFINITY; }
     let mut val = x;
     let mut e: f64 = 0.0;
     while val > 2.0 { val /= 2.0; e += 1.0; }

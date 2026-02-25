@@ -59,7 +59,14 @@ impl Vm {
                 match kind {
                     FnKind::Native(native_fn) => {
                         let result = native_fn(self, args);
-                        self.stack.push(result);
+                        // Check if the native function signalled an exception.
+                        if let Some(exc) = self.pending_exception.take() {
+                            if !self.handle_exception(exc) {
+                                self.stack.push(JsValue::Undefined);
+                            }
+                        } else {
+                            self.stack.push(result);
+                        }
                     }
                     FnKind::Bytecode(chunk) => {
                         let local_count = chunk.local_count as usize;
@@ -125,6 +132,7 @@ impl Vm {
                     properties: alloc::collections::BTreeMap::new(),
                     prototype: ctor_proto.or(Some(self.object_proto.clone())),
                     internal_tag: None,
+                    primitive_value: None,
                     set_hook: None,
                     set_hook_data: core::ptr::null_mut(),
                 })));
@@ -134,7 +142,11 @@ impl Vm {
                 match kind {
                     FnKind::Native(native_fn) => {
                         let result = native_fn(self, &args);
-                        if result.is_object() || result.is_array() {
+                        if let Some(exc) = self.pending_exception.take() {
+                            if !self.handle_exception(exc) {
+                                self.stack.push(JsValue::Undefined);
+                            }
+                        } else if result.is_object() || result.is_array() {
                             self.stack.push(result);
                         } else {
                             self.stack.push(new_obj);

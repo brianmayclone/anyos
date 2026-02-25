@@ -20,6 +20,7 @@
 
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Instant;
@@ -327,29 +328,26 @@ fn main() {
 
     for path in &files {
         let rel = path.strip_prefix(target).unwrap_or(path);
-        // Always print current test to stderr before running, so a hang is identifiable.
-        eprint!("  RUN   {}", rel.display());
+        // Print name to stdout BEFORE running — flush immediately so a hang is visible.
+        print!("  RUN   {} ...", rel.display());
+        let _ = std::io::stdout().flush();
         let outcome = run_test(path, verbose);
 
         match &outcome {
             Outcome::Pass => {
                 pass += 1;
-                eprintln!("  … PASS");
+                println!(" PASS");
                 if verbose {
-                    println!("  PASS  {}", rel.display());
+                    // extra detail already shown above
                 }
             }
             Outcome::Skip(reason) => {
                 skip += 1;
-                eprintln!("  … SKIP ({})", reason);
-                if verbose {
-                    println!("  SKIP  {} ({})", rel.display(), reason);
-                }
+                println!(" SKIP ({})", reason);
             }
             Outcome::Fail(reason) => {
                 fail += 1;
-                eprintln!("  … FAIL");
-                println!("  FAIL  {}", rel.display());
+                println!(" FAIL");
                 println!("        {}", reason);
                 failures.push((path.clone(), reason.clone()));
                 if bail {

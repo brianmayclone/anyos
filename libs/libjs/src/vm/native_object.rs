@@ -40,8 +40,11 @@ pub fn object_is_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     };
 
     // Walk the [[Prototype]] chain of `args[0]`.
+    // Functions inherit from function_proto, so treat them specially.
     let mut maybe_proto: Option<Rc<RefCell<JsObject>>> = match args.first() {
         Some(JsValue::Object(obj)) => obj.borrow().prototype.clone(),
+        // Functions' implicit [[Prototype]] is Function.prototype.
+        Some(JsValue::Function(_)) => Some(vm.function_proto.clone()),
         _ => return JsValue::Bool(false),
     };
 
@@ -60,6 +63,19 @@ pub fn object_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
         JsValue::Function(_) => JsValue::String(String::from("[object Function]")),
         JsValue::Null => JsValue::String(String::from("[object Null]")),
         JsValue::Undefined => JsValue::String(String::from("[object Undefined]")),
+        JsValue::Object(obj) => {
+            // Return the appropriate [object X] tag based on the object's internal tag.
+            let tag = obj.borrow().internal_tag.clone();
+            let kind = match tag.as_deref() {
+                Some("__boolean__") => "Boolean",
+                Some("__number__")  => "Number",
+                Some("__string__")  => "String",
+                Some("__regexp__")  => "RegExp",
+                Some("__date__")    => "Date",
+                _                   => "Object",
+            };
+            JsValue::String(alloc::format!("[object {}]", kind))
+        }
         _ => JsValue::String(String::from("[object Object]")),
     }
 }
@@ -175,6 +191,7 @@ pub fn object_create(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         properties: alloc::collections::BTreeMap::new(),
         prototype: proto,
         internal_tag: None,
+        primitive_value: None,
         set_hook: None,
         set_hook_data: core::ptr::null_mut(),
     };

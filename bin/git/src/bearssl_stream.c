@@ -81,6 +81,11 @@ static void nocheck_end_cert(const br_x509_class **ctx)
         if (pk) {
             nc->pkey = *pk;
             nc->pkey_valid = 1;
+            fprintf(stderr, "[bearssl] cert pkey extracted (key_type=%d)\n",
+                    (int)pk->key_type);
+        } else {
+            int derr = br_x509_decoder_last_error(&nc->decoder);
+            fprintf(stderr, "[bearssl] cert pkey extraction FAILED (decoder err=%d)\n", derr);
         }
         nc->first_cert = 0;
     }
@@ -99,6 +104,9 @@ static const br_x509_pkey *nocheck_get_pkey(const br_x509_class *const *ctx,
     const br_x509_nocheck_context *nc = (const br_x509_nocheck_context *)ctx;
     if (usages != NULL)
         *usages = BR_KEYTYPE_KEYX | BR_KEYTYPE_SIGN;
+    if (!nc->pkey_valid) {
+        fprintf(stderr, "[bearssl] get_pkey: no valid key (handshake will fail)\n");
+    }
     return nc->pkey_valid ? &nc->pkey : NULL;
 }
 
@@ -154,19 +162,25 @@ static int bearssl_connect(git_stream *stream)
     struct addrinfo hints, *res = NULL;
     int err;
 
+    fprintf(stderr, "[bearssl] connecting to %s:%s\n", bs->host, bs->port);
+
     memset(&hints, 0, sizeof(hints));
     hints.ai_family   = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
 
     err = getaddrinfo(bs->host, bs->port, &hints, &res);
     if (err != 0 || !res) {
+        fprintf(stderr, "[bearssl] DNS failed for %s: err=%d %s\n",
+                bs->host, err, gai_strerror(err));
         git_error_set(GIT_ERROR_NET,
             "Failed to resolve host '%s': %s", bs->host, gai_strerror(err));
         return -1;
     }
+    fprintf(stderr, "[bearssl] DNS OK for %s\n", bs->host);
 
     bs->socket = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (bs->socket < 0) {
+        fprintf(stderr, "[bearssl] socket() failed: %s\n", strerror(errno));
         git_error_set(GIT_ERROR_NET,
             "Failed to create socket: %s", strerror(errno));
         freeaddrinfo(res);
@@ -174,6 +188,7 @@ static int bearssl_connect(git_stream *stream)
     }
 
     if (connect(bs->socket, res->ai_addr, res->ai_addrlen) < 0) {
+        fprintf(stderr, "[bearssl] connect() failed: %s\n", strerror(errno));
         git_error_set(GIT_ERROR_NET,
             "Failed to connect to '%s:%s': %s",
             bs->host, bs->port, strerror(errno));
@@ -183,6 +198,8 @@ static int bearssl_connect(git_stream *stream)
         return -1;
     }
     freeaddrinfo(res);
+    fprintf(stderr, "[bearssl] TCP connected to %s:%s (fd=%d)\n",
+            bs->host, bs->port, bs->socket);
 
     /*
      * Initialize the TLS engine.  br_ssl_client_init_full sets up the cipher
@@ -201,6 +218,7 @@ static int bearssl_connect(git_stream *stream)
                   sock_write, &bs->socket);
 
     bs->connected = 1;
+    fprintf(stderr, "[bearssl] TLS engine initialized, handshake deferred\n");
     return 0;
 }
 
@@ -216,8 +234,11 @@ static ssize_t bearssl_read(git_stream *stream, void *data, size_t len)
 {
     bearssl_stream *bs = (bearssl_stream *)stream;
     int n = br_sslio_read(&bs->ioc, data, len);
-    if (n < 0) {
+    if (n <= 0) {
+        /* n == 0 means clean close, n < 0 means error. Both are fatal. */
         int ssl_err = (int)br_ssl_engine_last_error(&bs->sc.eng);
+        fprintf(stderr, "[bearssl] read failed n=%d BearSSL_err=%d\n",
+                n, ssl_err);
         git_error_set(GIT_ERROR_SSL,
             "TLS read failed (BearSSL error %d)", ssl_err);
         return -1;
@@ -234,6 +255,7 @@ static ssize_t bearssl_write(git_stream *stream, const char *data, size_t len,
     int n = br_sslio_write_all(&bs->ioc, data, len);
     if (n < 0) {
         int ssl_err = (int)br_ssl_engine_last_error(&bs->sc.eng);
+        fprintf(stderr, "[bearssl] write_all failed BearSSL_err=%d\n", ssl_err);
         git_error_set(GIT_ERROR_SSL,
             "TLS write failed (BearSSL error %d)", ssl_err);
         return -1;
@@ -241,11 +263,13 @@ static ssize_t bearssl_write(git_stream *stream, const char *data, size_t len,
 
     if (br_sslio_flush(&bs->ioc) < 0) {
         int ssl_err = (int)br_ssl_engine_last_error(&bs->sc.eng);
+        fprintf(stderr, "[bearssl] flush failed BearSSL_err=%d\n", ssl_err);
         git_error_set(GIT_ERROR_SSL,
             "TLS flush failed (BearSSL error %d)", ssl_err);
         return -1;
     }
 
+    fprintf(stderr, "[bearssl] write OK (%zu bytes)\n", len);
     return (ssize_t)len;
 }
 
@@ -271,6 +295,9 @@ static void bearssl_free(git_stream *stream)
 
 int bearssl_stream_new(git_stream **out, const char *host, const char *port)
 {
+    fprintf(stderr, "[bearssl] stream_new(%s, %s)\n",
+            host ? host : "(null)", port ? port : "(null)");
+
     bearssl_stream *bs = calloc(1, sizeof(bearssl_stream));
     if (!bs) {
         git_error_set_oom();
@@ -305,5 +332,6 @@ int bearssl_stream_new(git_stream **out, const char *host, const char *port)
 /** Register BearSSL as the TLS stream provider for libgit2. */
 void bearssl_stream_register(void)
 {
-    git_stream_register_tls(bearssl_stream_new);
+    int ret = git_stream_register_tls(bearssl_stream_new);
+    fprintf(stderr, "[bearssl] stream registered (ret=%d)\n", ret);
 }

@@ -62,6 +62,10 @@ pub struct JsObject {
     pub properties: BTreeMap<String, Property>,
     pub prototype: Option<Rc<RefCell<JsObject>>>,
     pub internal_tag: Option<String>,
+    /// The `[[PrimitiveValue]]` for wrapper objects (Boolean, Number, String).
+    /// Used in abstract equality (`==`) and ToPrimitive coercion so that e.g.
+    /// `new Boolean(false) == false` evaluates to `true`.
+    pub primitive_value: Option<Box<JsValue>>,
     /// Optional hook called when a property is set. Args: (userdata, key, value).
     pub set_hook: Option<fn(*mut u8, &str, &JsValue)>,
     pub set_hook_data: *mut u8,
@@ -111,6 +115,7 @@ impl JsObject {
             properties: BTreeMap::new(),
             prototype: None,
             internal_tag: None,
+            primitive_value: None,
             set_hook: None,
             set_hook_data: core::ptr::null_mut(),
         }
@@ -121,6 +126,7 @@ impl JsObject {
             properties: BTreeMap::new(),
             prototype: None,
             internal_tag: Some(String::from(tag)),
+            primitive_value: None,
             set_hook: None,
             set_hook_data: core::ptr::null_mut(),
         }
@@ -396,10 +402,27 @@ impl JsValue {
             }
             (JsValue::Bool(_), _) => JsValue::Number(self.to_number()).abstract_eq(other),
             (_, JsValue::Bool(_)) => self.abstract_eq(&JsValue::Number(other.to_number())),
-            // Object identity via Rc pointer equality
+            // Object identity via Rc pointer equality (same-type)
             (JsValue::Object(a), JsValue::Object(b)) => Rc::ptr_eq(a, b),
             (JsValue::Array(a), JsValue::Array(b)) => Rc::ptr_eq(a, b),
             (JsValue::Function(a), JsValue::Function(b)) => Rc::ptr_eq(a, b),
+            // Object vs primitive: apply ToPrimitive via [[PrimitiveValue]] if present.
+            (JsValue::Object(obj), _) => {
+                if let Some(prim) = &obj.borrow().primitive_value {
+                    let prim_clone = (**prim).clone();
+                    prim_clone.abstract_eq(other)
+                } else {
+                    false
+                }
+            }
+            (_, JsValue::Object(obj)) => {
+                if let Some(prim) = &obj.borrow().primitive_value {
+                    let prim_clone = (**prim).clone();
+                    self.abstract_eq(&prim_clone)
+                } else {
+                    false
+                }
+            }
             _ => false,
         }
     }

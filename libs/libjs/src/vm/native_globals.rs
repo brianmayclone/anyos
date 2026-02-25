@@ -154,6 +154,18 @@ pub fn ctor_number(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number(n)
 }
 
+/// `Function([...bodyArgs])` — stub constructor.
+///
+/// A full implementation would compile the body source string.  This stub
+/// creates a no-op function, which is enough to make `new Function()` return
+/// a truthy callable value and `Function.prototype.isPrototypeOf(Boolean)` work.
+pub fn ctor_function(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    // Return undefined so that `new_object()` uses the pre-allocated new_obj
+    // (which has Function.prototype in its chain).  The new_obj is an Object,
+    // not a real function; a proper implementation would return a JsValue::Function.
+    JsValue::Undefined
+}
+
 /// `Boolean(value)` — converts to boolean, or creates a wrapper object when called as `new`.
 ///
 /// When called as `new Boolean(x)`, `vm.current_this` is the freshly allocated
@@ -166,6 +178,9 @@ pub fn ctor_boolean(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if let JsValue::Object(obj) = vm.current_this.clone() {
         let mut o = obj.borrow_mut();
         o.internal_tag = Some(String::from("__boolean__"));
+        // Store the bool both as [[PrimitiveValue]] (for abstract equality) and
+        // as a named property (for backward compatibility with extract_bool_this).
+        o.primitive_value = Some(Box::new(JsValue::Bool(b)));
         o.set(String::from("__bool_data__"), JsValue::Bool(b));
         drop(o);
         return vm.current_this.clone();
@@ -178,33 +193,52 @@ pub fn ctor_boolean(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 // ═══════════════════════════════════════════════════════════
 
 /// `Boolean.prototype.valueOf()` — returns the boolean primitive value.
+/// Throws TypeError when called on a non-Boolean `this`.
 pub fn boolean_value_of(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    extract_bool_this(vm)
-}
-
-/// `Boolean.prototype.toString()` — returns "true" or "false".
-pub fn boolean_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     match extract_bool_this(vm) {
-        JsValue::Bool(true)  => JsValue::String(String::from("true")),
-        JsValue::Bool(false) => JsValue::String(String::from("false")),
-        _ => JsValue::String(String::from("false")),
+        Some(v) => v,
+        None => {
+            let err = vm.make_type_error("Boolean.prototype.valueOf called on non-Boolean");
+            vm.throw_native(err);
+            JsValue::Undefined
+        }
     }
 }
 
-/// Extract the boolean value from `this`, handling both `Bool` primitives and
-/// `Boolean` wrapper objects (tagged with `__bool_data__`).
-fn extract_bool_this(vm: &Vm) -> JsValue {
+/// `Boolean.prototype.toString()` — returns "true" or "false".
+/// Throws TypeError when called on a non-Boolean `this`.
+pub fn boolean_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    match extract_bool_this(vm) {
+        Some(JsValue::Bool(true))  => JsValue::String(String::from("true")),
+        Some(JsValue::Bool(false)) => JsValue::String(String::from("false")),
+        Some(_) => JsValue::String(String::from("false")),
+        None => {
+            let err = vm.make_type_error("Boolean.prototype.toString called on non-Boolean");
+            vm.throw_native(err);
+            JsValue::Undefined
+        }
+    }
+}
+
+/// Try to extract the boolean value from `this`.
+/// Returns `Some(Bool)` for Boolean primitives and `Boolean` wrapper objects.
+/// Returns `None` for any other type (caller should throw TypeError).
+fn extract_bool_this(vm: &Vm) -> Option<JsValue> {
     match &vm.current_this {
-        JsValue::Bool(_) => vm.current_this.clone(),
+        JsValue::Bool(_) => Some(vm.current_this.clone()),
         JsValue::Object(obj) => {
             let o = obj.borrow();
-            if let Some(prop) = o.properties.get("__bool_data__") {
-                prop.value.clone()
+            if o.internal_tag.as_deref() == Some("__boolean__") {
+                if let Some(prop) = o.properties.get("__bool_data__") {
+                    Some(prop.value.clone())
+                } else {
+                    Some(JsValue::Bool(false))
+                }
             } else {
-                JsValue::Bool(false)
+                None
             }
         }
-        _ => JsValue::Bool(false),
+        _ => None,
     }
 }
 

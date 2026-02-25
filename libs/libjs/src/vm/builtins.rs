@@ -114,9 +114,13 @@ impl Vm {
         }
 
         // ── Boolean.prototype ──
+        // Per the spec: Boolean.prototype is itself a Boolean object with [[BooleanData]] = false.
         {
             let mut p = self.boolean_proto.borrow_mut();
             p.prototype = Some(self.object_proto.clone());
+            p.internal_tag = Some(String::from("__boolean__"));
+            p.primitive_value = Some(Box::new(JsValue::Bool(false)));
+            p.set(String::from("__bool_data__"), JsValue::Bool(false));
             p.set(String::from("toString"), native_fn("toString", native_globals::boolean_to_string));
             p.set(String::from("valueOf"), native_fn("valueOf", native_globals::boolean_value_of));
         }
@@ -159,6 +163,10 @@ impl Vm {
         self.set_global("String", native_fn("String", native_globals::ctor_string));
         self.set_global("Number", native_fn("Number", native_globals::ctor_number));
         self.set_global("Boolean", native_fn("Boolean", native_globals::ctor_boolean));
+        // Function constructor stub — creates an empty no-op function. Full source
+        // evaluation is not implemented; this satisfies `new Function()` being callable
+        // and truthy, and makes Function.prototype.isPrototypeOf(Boolean) work.
+        self.set_global("Function", native_fn("Function", native_globals::ctor_function));
         self.set_global("Error", native_fn("Error", native_error::ctor_error));
         self.set_global("TypeError", native_fn("TypeError", native_error::ctor_error));
         self.set_global("RangeError", native_fn("RangeError", native_error::ctor_error));
@@ -188,6 +196,9 @@ impl Vm {
 
         // ── Boolean prototype link ──
         self.init_boolean_statics();
+
+        // ── Function prototype link ──
+        self.init_function_statics();
 
         // ── Promise ──
         self.set_global("Promise", native_fn("Promise", native_promise::ctor_promise));
@@ -267,6 +278,19 @@ impl Vm {
         math.set_property(String::from("clz32"), native_fn("clz32", native_math::math_clz32));
         math.set_property(String::from("fround"), native_fn("fround", native_math::math_fround));
         math.set_property(String::from("random"), native_fn("random", native_math::math_random));
+        math.set_property(String::from("exp"),    native_fn("exp",    native_math::math_exp));
+        math.set_property(String::from("expm1"),  native_fn("expm1",  native_math::math_expm1));
+        math.set_property(String::from("log1p"),  native_fn("log1p",  native_math::math_log1p));
+        math.set_property(String::from("asin"),   native_fn("asin",   native_math::math_asin));
+        math.set_property(String::from("acos"),   native_fn("acos",   native_math::math_acos));
+        math.set_property(String::from("atan"),   native_fn("atan",   native_math::math_atan));
+        math.set_property(String::from("sinh"),   native_fn("sinh",   native_math::math_sinh));
+        math.set_property(String::from("cosh"),   native_fn("cosh",   native_math::math_cosh));
+        math.set_property(String::from("tanh"),   native_fn("tanh",   native_math::math_tanh));
+        math.set_property(String::from("acosh"),  native_fn("acosh",  native_math::math_acosh));
+        math.set_property(String::from("asinh"),  native_fn("asinh",  native_math::math_asinh));
+        math.set_property(String::from("atanh"),  native_fn("atanh",  native_math::math_atanh));
+        math.set_property(String::from("imul"),   native_fn("imul",   native_math::math_imul));
         self.set_global("Math", math);
     }
 
@@ -288,6 +312,10 @@ impl Vm {
             obj_ctor.set_property(String::from("create"), native_fn("create", native_object::object_create));
             obj_ctor.set_property(String::from("defineProperty"), native_fn("defineProperty", native_object::object_define_property));
             obj_ctor.set_property(String::from("getPrototypeOf"), native_fn("getPrototypeOf", native_object::object_get_prototype_of));
+            // Expose object_proto as Object.prototype own_prop so that
+            // `Object.hasOwnProperty("prototype")` is true and
+            // `Object.prototype.isPrototypeOf(x)` resolves correctly.
+            obj_ctor.set_property(String::from("prototype"), JsValue::Object(self.object_proto.clone()));
         }
     }
 
@@ -350,14 +378,27 @@ impl Vm {
 
     /// Install `Boolean.prototype` as an own property on the Boolean constructor
     /// so that `Boolean.hasOwnProperty("prototype")` is `true`, and wire back
-    /// `Boolean.prototype.constructor = Boolean`.
+    /// `Boolean.prototype.constructor = Boolean`.  Also sets `Boolean.length = 1`.
     fn init_boolean_statics(&mut self) {
         if let JsValue::Function(f) = self.globals.get("Boolean") {
             let ctor = JsValue::Function(f.clone());
             // Boolean.prototype → boolean_proto (own_prop so hasOwnProperty works)
             ctor.set_property(String::from("prototype"), JsValue::Object(self.boolean_proto.clone()));
+            // Boolean.length = 1 (accepts one parameter)
+            ctor.set_property(String::from("length"), JsValue::Number(1.0));
             // Boolean.prototype.constructor → Boolean
             self.boolean_proto.borrow_mut().set(String::from("constructor"), ctor);
+        }
+    }
+
+    /// Install `Function.prototype` as an own property on the Function constructor.
+    fn init_function_statics(&mut self) {
+        if let JsValue::Function(f) = self.globals.get("Function") {
+            let ctor = JsValue::Function(f.clone());
+            // Function.prototype → function_proto (own_prop for hasOwnProperty + isPrototypeOf)
+            ctor.set_property(String::from("prototype"), JsValue::Object(self.function_proto.clone()));
+            // Function.prototype.constructor → Function
+            self.function_proto.borrow_mut().set(String::from("constructor"), ctor);
         }
     }
 }

@@ -88,6 +88,9 @@ pub struct Vm {
     pub current_this: JsValue,
     /// Target frame depth for re-entrant run() calls (0 = run to completion).
     pub run_target_depth: usize,
+    /// Pending exception set by native functions via `throw_native()`.
+    /// Checked after every native call and turned into a VM-level throw.
+    pub pending_exception: Option<JsValue>,
 }
 
 impl Vm {
@@ -111,6 +114,7 @@ impl Vm {
             userdata: core::ptr::null_mut(),
             current_this: JsValue::Undefined,
             run_target_depth: 0,
+            pending_exception: None,
         };
         vm.init_prototypes();
         vm.init_globals();
@@ -120,6 +124,23 @@ impl Vm {
 
     pub fn set_step_limit(&mut self, limit: u64) {
         self.step_limit = limit;
+    }
+
+    /// Signal an exception from a native Rust function.
+    ///
+    /// The exception is stored in `pending_exception` and processed by
+    /// `invoke_function`/`new_object` after the native call returns.
+    pub fn throw_native(&mut self, val: JsValue) {
+        self.pending_exception = Some(val);
+    }
+
+    /// Create a `TypeError` object (for use in native function throws).
+    pub fn make_type_error(&self, message: &str) -> JsValue {
+        let mut obj = JsObject::new();
+        obj.prototype = Some(self.error_proto.clone());
+        obj.set(String::from("name"), JsValue::String(String::from("TypeError")));
+        obj.set(String::from("message"), JsValue::String(String::from(message)));
+        JsValue::Object(Rc::new(RefCell::new(obj)))
     }
 
     pub fn execute(&mut self, chunk: Chunk) -> JsValue {
@@ -465,6 +486,7 @@ impl Vm {
                         properties: BTreeMap::new(),
                         prototype: Some(self.object_proto.clone()),
                         internal_tag: None,
+                        primitive_value: None,
                         set_hook: None,
                         set_hook_data: core::ptr::null_mut(),
                     };

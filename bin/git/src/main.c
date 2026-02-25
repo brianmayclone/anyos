@@ -669,7 +669,16 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    git_libgit2_init();
+    int init_ret = git_libgit2_init();
+    if (init_ret < 0) {
+        const git_error *init_err = git_error_last();
+        fprintf(stderr, "[git] WARNING: git_libgit2_init failed (ret=%d, klass=%d): %s\n",
+                init_ret,
+                init_err ? init_err->klass : -1,
+                init_err ? init_err->message : "(null)");
+    } else {
+        fprintf(stderr, "[git] git_libgit2_init ok (ret=%d)\n", init_ret);
+    }
     bearssl_stream_register();
 
     /* Configure libgit2 search paths for anyOS filesystem layout */
