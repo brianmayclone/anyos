@@ -854,9 +854,11 @@ set(I686_ELF_AR  "${CROSS_BIN_DIR}/i686-elf-ar${CMAKE_EXECUTABLE_SUFFIX}")
 get_filename_component(MSYS_USR_BIN "${MAKE_EXECUTABLE}" DIRECTORY)
 
 # On Windows, cross-compiler binaries (MSYS2) need msys-2.0.dll in PATH.
-# Wrap all cross-compiler invocations with cmake -E env to inject the right PATH.
+# Generate a wrapper script that prepends the cross-compiler and MSYS2 dirs to PATH.
 if(WIN32)
-  set(CROSS_ENV ${CMAKE_COMMAND} -E env "PATH=${CROSS_BIN_DIR}$<SEMICOLON>${MSYS_USR_BIN}$<SEMICOLON>$ENV{PATH}")
+  set(CROSS_WRAPPER "${CMAKE_BINARY_DIR}/cross_env.cmd")
+  file(WRITE "${CROSS_WRAPPER}" "@set \"PATH=${CROSS_BIN_DIR};${MSYS_USR_BIN};%PATH%\"\n@%*\n")
+  set(CROSS_ENV "${CROSS_WRAPPER}")
 else()
   set(CROSS_ENV "")
 endif()
@@ -1245,12 +1247,21 @@ set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES ${THIRD_PARTY_CLEA
 # ============================================================
 set(BEARSSL_DIR "${CMAKE_SOURCE_DIR}/third_party/bearssl")
 set(BEARSSL_A "${BEARSSL_DIR}/build/libbearssl.a")
-add_custom_command(
-  OUTPUT ${BEARSSL_A}
-  COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/build_bearssl.sh
-  DEPENDS ${LIBC_A}
-  COMMENT "Building BearSSL for anyOS"
-)
+if(WIN32)
+  add_custom_command(
+    OUTPUT ${BEARSSL_A}
+    COMMAND ${CROSS_ENV} powershell -ExecutionPolicy Bypass -File ${CMAKE_SOURCE_DIR}/scripts/build_bearssl.ps1
+    DEPENDS ${LIBC_A}
+    COMMENT "Building BearSSL for anyOS"
+  )
+else()
+  add_custom_command(
+    OUTPUT ${BEARSSL_A}
+    COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/build_bearssl.sh
+    DEPENDS ${LIBC_A}
+    COMMENT "Building BearSSL for anyOS"
+  )
+endif()
 
 # ============================================================
 # curl (HTTP/FTP client, cross-compiled C program)
@@ -1259,15 +1270,27 @@ set(CURL_DIR "${CMAKE_SOURCE_DIR}/third_party/curl")
 set(CURL_LIB "${CURL_DIR}/libcurl.a")
 set(CURL_ELF "${CURL_DIR}/curl.elf")
 
-add_custom_command(
-  OUTPUT ${CURL_LIB}
-  COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/build_curl.sh
-  DEPENDS
-    ${LIBC_A}
-    ${CMAKE_SOURCE_DIR}/scripts/build_curl.sh
-    ${CURL_DIR}/lib/config-anyos.h
-  COMMENT "Building libcurl for anyOS"
-)
+if(WIN32)
+  add_custom_command(
+    OUTPUT ${CURL_LIB}
+    COMMAND ${CROSS_ENV} powershell -ExecutionPolicy Bypass -File ${CMAKE_SOURCE_DIR}/scripts/build_curl.ps1
+    DEPENDS
+      ${LIBC_A}
+      ${CMAKE_SOURCE_DIR}/scripts/build_curl.ps1
+      ${CURL_DIR}/lib/config-anyos.h
+    COMMENT "Building libcurl for anyOS"
+  )
+else()
+  add_custom_command(
+    OUTPUT ${CURL_LIB}
+    COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/build_curl.sh
+    DEPENDS
+      ${LIBC_A}
+      ${CMAKE_SOURCE_DIR}/scripts/build_curl.sh
+      ${CURL_DIR}/lib/config-anyos.h
+    COMMENT "Building libcurl for anyOS"
+  )
+endif()
 
 add_custom_command(
   OUTPUT ${CURL_ELF}
@@ -1300,15 +1323,27 @@ set(DASH_DIR "${CMAKE_SOURCE_DIR}/third_party/dash-0.5.12")
 set(DASH_LIB "${DASH_DIR}/dash.a")
 set(DASH_ELF "${DASH_DIR}/dash.elf")
 
-add_custom_command(
-  OUTPUT ${DASH_LIB}
-  COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/build_dash.sh
-  DEPENDS
-    ${LIBC_A}
-    ${CMAKE_SOURCE_DIR}/scripts/build_dash.sh
-    ${DASH_DIR}/config.h
-  COMMENT "Building dash for anyOS"
-)
+if(WIN32)
+  add_custom_command(
+    OUTPUT ${DASH_LIB}
+    COMMAND ${CROSS_ENV} powershell -ExecutionPolicy Bypass -File ${CMAKE_SOURCE_DIR}/scripts/build_dash.ps1
+    DEPENDS
+      ${LIBC_A}
+      ${CMAKE_SOURCE_DIR}/scripts/build_dash.ps1
+      ${DASH_DIR}/config.h
+    COMMENT "Building dash for anyOS"
+  )
+else()
+  add_custom_command(
+    OUTPUT ${DASH_LIB}
+    COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/build_dash.sh
+    DEPENDS
+      ${LIBC_A}
+      ${CMAKE_SOURCE_DIR}/scripts/build_dash.sh
+      ${DASH_DIR}/config.h
+    COMMENT "Building dash for anyOS"
+  )
+endif()
 
 add_custom_command(
   OUTPUT ${DASH_ELF}
@@ -1344,17 +1379,31 @@ set(SSHD_DIR "${CMAKE_SOURCE_DIR}/bin/sshd")
 set(SSHD_ELF "${SSHD_DIR}/sshd.elf")
 
 # Build libssh.a
-add_custom_command(
-  OUTPUT ${SSH_LIB}
-  COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/build_ssh.sh
-  DEPENDS
-    ${BEARSSL_A}
-    ${LIBC_A}
-    ${SSH_DIR}/src/ssh.c
-    ${SSH_DIR}/include/ssh.h
-    ${CMAKE_SOURCE_DIR}/scripts/build_ssh.sh
-  COMMENT "Building SSH library for anyOS"
-)
+if(WIN32)
+  add_custom_command(
+    OUTPUT ${SSH_LIB}
+    COMMAND ${CROSS_ENV} powershell -ExecutionPolicy Bypass -File ${CMAKE_SOURCE_DIR}/scripts/build_ssh.ps1
+    DEPENDS
+      ${BEARSSL_A}
+      ${LIBC_A}
+      ${SSH_DIR}/src/ssh.c
+      ${SSH_DIR}/include/ssh.h
+      ${CMAKE_SOURCE_DIR}/scripts/build_ssh.ps1
+    COMMENT "Building SSH library for anyOS"
+  )
+else()
+  add_custom_command(
+    OUTPUT ${SSH_LIB}
+    COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/build_ssh.sh
+    DEPENDS
+      ${BEARSSL_A}
+      ${LIBC_A}
+      ${SSH_DIR}/src/ssh.c
+      ${SSH_DIR}/include/ssh.h
+      ${CMAKE_SOURCE_DIR}/scripts/build_ssh.sh
+    COMMENT "Building SSH library for anyOS"
+  )
+endif()
 
 # Build SSH client (ssh.elf)
 add_custom_command(

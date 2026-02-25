@@ -14,9 +14,9 @@
 $ErrorActionPreference = "Continue"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ProjectDir = Split-Path -Parent $ScriptDir
-$CurlDir = Join-Path $ProjectDir "third_party\curl"
-$ObjDir = Join-Path $CurlDir "obj"
+$ProjectDir = ((Split-Path -Parent $ScriptDir) -replace '\\','/') -replace '^([A-Za-z]):','/$1'
+$CurlDir = "$ProjectDir/third_party/curl"
+$ObjDir = "$CurlDir/obj"
 
 # ── Find cross-compiler ──────────────────────────────────────────────────────
 
@@ -39,9 +39,9 @@ if (-not $CC -or -not $AR) {
     $AR = $AR.Source
 }
 
-$LibcInclude = Join-Path $ProjectDir "libs\libc\include"
-$BearsslInc = Join-Path $ProjectDir "third_party\bearssl\inc"
-$ConfigAnyos = Join-Path $CurlDir "lib\config-anyos.h"
+$LibcInclude = "$ProjectDir/libs/libc/include"
+$BearsslInc = "$ProjectDir/third_party/bearssl/inc"
+$ConfigAnyos = "$CurlDir/lib/config-anyos.h"
 
 $CFLAGS = @(
     "-O2", "-ffreestanding", "-nostdlib", "-fno-builtin", "-m32", "-std=gnu99", "-w",
@@ -50,9 +50,9 @@ $CFLAGS = @(
     "-include", "stdbool.h",
     "-include", $ConfigAnyos,
     "-DCURL_STATICLIB",
-    "-I$($CurlDir)\include",
-    "-I$($CurlDir)\lib",
-    "-I$($CurlDir)\src",
+    "-I$CurlDir/include",
+    "-I$CurlDir/lib",
+    "-I$CurlDir/src",
     "-I$BearsslInc"
 )
 
