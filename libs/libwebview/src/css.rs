@@ -102,13 +102,14 @@ pub enum PseudoClass {
     Root,
 }
 
+#[derive(Clone)]
 pub struct Declaration {
     pub property: Property,
     pub value: CssValue,
     pub important: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Property {
     Display,
     Color,
@@ -934,7 +935,7 @@ fn parse_declarations(p: &mut Parser) -> Vec<Declaration> {
             // Detect and strip !important
             let (trimmed, important) = strip_important(trimmed);
             // Expand shorthand properties into individual declarations.
-            if is_expandable_shorthand(property) {
+            if is_expandable_shorthand(&property) {
                 let mut expanded = expand_shorthand(property, trimmed);
                 if important {
                     for d in &mut expanded {
@@ -945,7 +946,7 @@ fn parse_declarations(p: &mut Parser) -> Vec<Declaration> {
                     decls.push(d);
                 }
             } else {
-                let value = parse_value(property, trimmed);
+                let value = parse_value(&property, trimmed);
                 decls.push(Declaration { property, value, important });
             }
         }
@@ -1112,7 +1113,7 @@ pub fn parse_property(name: &str) -> Option<Property> {
 // Value parser
 // ---------------------------------------------------------------------------
 
-pub fn parse_value(property: Property, value_str: &str) -> CssValue {
+pub fn parse_value(property: &Property, value_str: &str) -> CssValue {
     let s = value_str.trim();
     if s.is_empty() {
         return CssValue::None;
@@ -1184,7 +1185,7 @@ fn parse_var_value(s: &str) -> CssValue {
         let fallback = if fallback_str.is_empty() {
             None
         } else {
-            Some(Box::new(parse_value(Property::Color, fallback_str)))
+            Some(Box::new(parse_value(&Property::Color, fallback_str)))
         };
         CssValue::Var(String::from(name), fallback)
     } else {
@@ -1339,7 +1340,7 @@ fn parse_fixed_100(s: &str) -> i32 {
     if neg { -val } else { val }
 }
 
-fn is_color_property(p: Property) -> bool {
+fn is_color_property(p: &Property) -> bool {
     matches!(
         p,
         Property::Color
@@ -1350,7 +1351,7 @@ fn is_color_property(p: Property) -> bool {
 }
 
 /// Check if a property is a shorthand that should be expanded in the parser.
-fn is_expandable_shorthand(p: Property) -> bool {
+fn is_expandable_shorthand(p: &Property) -> bool {
     matches!(
         p,
         Property::Margin | Property::Padding | Property::Border
@@ -1361,7 +1362,7 @@ fn is_expandable_shorthand(p: Property) -> bool {
 
 /// Expand a shorthand property into individual declarations.
 fn expand_shorthand(property: Property, value_str: &str) -> Vec<Declaration> {
-    match property {
+    match &property {
         Property::Margin => expand_box_shorthand(
             value_str,
             Property::MarginTop, Property::MarginRight,
@@ -1378,9 +1379,9 @@ fn expand_shorthand(property: Property, value_str: &str) -> Vec<Declaration> {
         Property::Overflow => expand_overflow_shorthand(value_str),
         Property::Background => expand_background_shorthand(value_str),
         _ => {
-            let value = parse_value(property, value_str);
+            let value = parse_value(&property, value_str);
             let mut v = Vec::new();
-            v.push(Declaration { property, value, important: false });
+            v.push(Declaration { property: property.clone(), value, important: false });
             v
         }
     }
@@ -1402,10 +1403,14 @@ fn expand_box_shorthand(
         _ => (parts[0], parts[1], parts[2], parts[3]),
     };
     let mut v = Vec::with_capacity(4);
-    v.push(Declaration { property: top, value: parse_value(top, t), important: false });
-    v.push(Declaration { property: right, value: parse_value(right, r), important: false });
-    v.push(Declaration { property: bottom, value: parse_value(bottom, b), important: false });
-    v.push(Declaration { property: left, value: parse_value(left, l), important: false });
+    let v_t = parse_value(&top, t);
+    v.push(Declaration { property: top, value: v_t, important: false });
+    let v_r = parse_value(&right, r);
+    v.push(Declaration { property: right, value: v_r, important: false });
+    let v_b = parse_value(&bottom, b);
+    v.push(Declaration { property: bottom, value: v_b, important: false });
+    let v_l = parse_value(&left, l);
+    v.push(Declaration { property: left, value: v_l, important: false });
     v
 }
 
@@ -1475,7 +1480,7 @@ fn expand_flex_shorthand(value_str: &str) -> Vec<Declaration> {
     }
 
     decls.push(Declaration {
-        property: Property::FlexGrow, value: parse_value(Property::FlexGrow, parts[0]), important: false,
+        property: Property::FlexGrow, value: parse_value(&Property::FlexGrow, parts[0]), important: false,
     });
 
     if parts.len() >= 2 {
@@ -1488,14 +1493,14 @@ fn expand_flex_shorthand(value_str: &str) -> Vec<Declaration> {
             }
         } else {
             decls.push(Declaration {
-                property: Property::FlexShrink, value: parse_value(Property::FlexShrink, parts[1]), important: false,
+                property: Property::FlexShrink, value: parse_value(&Property::FlexShrink, parts[1]), important: false,
             });
         }
     }
 
     if parts.len() >= 3 {
         decls.push(Declaration {
-            property: Property::FlexBasis, value: parse_value(Property::FlexBasis, parts[2]), important: false,
+            property: Property::FlexBasis, value: parse_value(&Property::FlexBasis, parts[2]), important: false,
         });
     }
 
@@ -1509,9 +1514,9 @@ fn expand_gap_shorthand(value_str: &str) -> Vec<Declaration> {
     if parts.is_empty() {
         return decls;
     }
-    decls.push(Declaration { property: Property::RowGap, value: parse_value(Property::RowGap, parts[0]), important: false });
+    decls.push(Declaration { property: Property::RowGap, value: parse_value(&Property::RowGap, parts[0]), important: false });
     let col = if parts.len() >= 2 { parts[1] } else { parts[0] };
-    decls.push(Declaration { property: Property::ColumnGap, value: parse_value(Property::ColumnGap, col), important: false });
+    decls.push(Declaration { property: Property::ColumnGap, value: parse_value(&Property::ColumnGap, col), important: false });
     decls
 }
 
@@ -1522,9 +1527,9 @@ fn expand_overflow_shorthand(value_str: &str) -> Vec<Declaration> {
     if parts.is_empty() {
         return decls;
     }
-    decls.push(Declaration { property: Property::OverflowX, value: parse_value(Property::OverflowX, parts[0]), important: false });
+    decls.push(Declaration { property: Property::OverflowX, value: parse_value(&Property::OverflowX, parts[0]), important: false });
     let y = if parts.len() >= 2 { parts[1] } else { parts[0] };
-    decls.push(Declaration { property: Property::OverflowY, value: parse_value(Property::OverflowY, y), important: false });
+    decls.push(Declaration { property: Property::OverflowY, value: parse_value(&Property::OverflowY, y), important: false });
     decls
 }
 

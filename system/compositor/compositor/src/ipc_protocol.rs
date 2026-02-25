@@ -56,6 +56,10 @@ pub const RESP_VRAM_WINDOW_FAILED: u32 = 0x2005;
 /// Sent in response to CMD_GET_CLIPBOARD. len=0 means clipboard is empty.
 pub const RESP_CLIPBOARD_DATA: u32 = 0x2010;
 
+/// Window position response: [RESP, window_id, content_x (as u32), content_y (as u32), requester_tid]
+/// content_x/content_y are the screen coordinates of the window's content area top-left.
+pub const RESP_WINDOW_POS: u32 = 0x2006;
+
 // ── Compositor → App Input Events ────────────────────────────────────────────
 
 /// Key down: [EVT, window_id, scancode, char_code, modifiers]
@@ -165,6 +169,11 @@ pub const CMD_SHOW_NOTIFICATION: u32 = 0x1020;
 /// Dismiss a notification by ID.
 /// [CMD, notification_id, 0, 0, 0]
 pub const CMD_DISMISS_NOTIFICATION: u32 = 0x1021;
+
+/// Get a window's content area screen position.
+/// [CMD, window_id, requester_tid, 0, 0]
+/// Compositor responds with RESP_WINDOW_POS containing content_x, content_y.
+pub const CMD_GET_WINDOW_POS: u32 = 0x1013;
 
 // ── Compositor → App: Notification Events ────────────────────────────────
 

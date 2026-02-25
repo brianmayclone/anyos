@@ -52,11 +52,16 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], node_id: NodeId, availab
     let border2 = bx.border_width * 2;
     let is_border_box = matches!(style.box_sizing, BoxSizing::BorderBox);
 
-    // Resolve explicit width (px or percentage).
+    // Resolve explicit width (px, percentage, or calc).
     let explicit_w = if let Some(w) = style.width {
         Some(w)
     } else if let Some(pct) = style.width_pct {
         Some((available_width as i64 * pct as i64 / 10000) as i32)
+    } else if let Some((px100, pct100)) = style.width_calc {
+        // calc(): px component (fixed-100) + pct component (fixed-100) of container width.
+        let px_part = px100 / 100;
+        let pct_part = (available_width as i64 * pct100 as i64 / 10000) as i32;
+        Some(px_part + pct_part)
     } else {
         None
     };
@@ -163,6 +168,10 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], node_id: NodeId, availab
         } else {
             None
         }
+    } else if let Some((px100, pct100)) = style.height_calc {
+        let px_part = px100 / 100;
+        let pct_part = (available_width as i64 * pct100 as i64 / 10000) as i32;
+        Some(px_part + pct_part)
     } else {
         None
     };

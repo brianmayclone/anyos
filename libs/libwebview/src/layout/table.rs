@@ -64,6 +64,8 @@ pub fn layout_table(
         w
     } else if let Some(pct) = style.width_pct {
         (available_width as i64 * pct as i64 / 10000) as i32
+    } else if let Some((px100, pct100)) = style.width_calc {
+        px100 / 100 + (available_width as i64 * pct100 as i64 / 10000) as i32
     } else {
         // Tables without explicit width use available width.
         available_width - bx.margin.left - bx.margin.right
@@ -154,6 +156,8 @@ pub fn layout_table(
                 Some(w)
             } else if let Some(pct) = cell_style.width_pct {
                 Some((content_width as i64 * pct as i64 / 10000) as i32)
+            } else if let Some((px100, pct100)) = cell_style.width_calc {
+                Some(px100 / 100 + (content_width as i64 * pct100 as i64 / 10000) as i32)
             } else {
                 parse_int_attr(dom, cell_id, "width")
             };

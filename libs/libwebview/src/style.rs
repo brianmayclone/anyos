@@ -823,7 +823,7 @@ pub fn resolve_styles(dom: &Dom, stylesheets: &[Stylesheet], viewport_width: i32
             // Phase 3: Apply inline styles (highest specificity).
             let inline_decls = get_inline_decls(dom, id);
             for decl in &inline_decls {
-                set_flags |= decl_set_flag(decl.property);
+                set_flags |= decl_set_flag(&decl.property);
                 apply_declaration(&mut style, decl, parent_fs, root_font_size);
             }
         }
@@ -944,8 +944,9 @@ fn apply_author_rules(
         let (rule, _) = all_rules[idx];
         for decl in &rule.declarations {
             if !decl.important {
-                set_flags |= decl_set_flag(decl.property);
-                apply_declaration(style, decl, parent_fs, root_fs);
+                let resolved = resolve_var_in_decl(decl, &style.custom_properties);
+                set_flags |= decl_set_flag(&resolved.property);
+                apply_declaration(style, &resolved, parent_fs, root_fs);
             }
         }
     }
@@ -955,13 +956,41 @@ fn apply_author_rules(
         let (rule, _) = all_rules[idx];
         for decl in &rule.declarations {
             if decl.important {
-                set_flags |= decl_set_flag(decl.property);
-                apply_declaration(style, decl, parent_fs, root_fs);
+                let resolved = resolve_var_in_decl(decl, &style.custom_properties);
+                set_flags |= decl_set_flag(&resolved.property);
+                apply_declaration(style, &resolved, parent_fs, root_fs);
             }
         }
     }
 
     set_flags
+}
+
+/// Resolve var() references in a declaration's value.
+fn resolve_var_in_decl(decl: &Declaration, custom_props: &[(String, String)]) -> Declaration {
+    if let CssValue::Var(ref name, ref fallback) = decl.value {
+        // Look up custom property.
+        if let Some((_, val)) = custom_props.iter().find(|(k, _)| k == name) {
+            // Re-parse the raw value string as the target property.
+            let resolved = crate::css::parse_value(&decl.property, val);
+            return Declaration {
+                property: decl.property.clone(),
+                value: resolved,
+                important: decl.important,
+            };
+        }
+        // Use fallback if available.
+        if let Some(fb) = fallback {
+            return Declaration {
+                property: decl.property.clone(),
+                value: (**fb).clone(),
+                important: decl.important,
+            };
+        }
+        // No value found — return as-is (will be treated as unknown).
+        return decl.clone();
+    }
+    decl.clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -983,7 +1012,7 @@ fn inherit_unset(child: &mut ComputedStyle, parent: &ComputedStyle, set: u16) {
 }
 
 /// Map a CSS property to the inheritable-set bitflag (0 if not inheritable).
-fn decl_set_flag(prop: Property) -> u16 {
+fn decl_set_flag(prop: &Property) -> u16 {
     match prop {
         Property::Color => SET_COLOR,
         Property::FontSize => SET_FONT_SIZE,
@@ -1544,6 +1573,16 @@ pub fn apply_declaration(
         | Property::AlignContent | Property::Flex
         | Property::Gap | Property::Cursor
         | Property::BorderCollapse | Property::BorderSpacing | Property::TableLayout => {}
+        Property::CustomProperty(ref name) => {
+            // Store custom property value as raw string.
+            if let CssValue::Keyword(ref val) = decl.value {
+                if let Some(existing) = style.custom_properties.iter_mut().find(|(k, _)| k == name) {
+                    existing.1 = val.clone();
+                } else {
+                    style.custom_properties.push((name.clone(), val.clone()));
+                }
+            }
+        }
     }
 }
 

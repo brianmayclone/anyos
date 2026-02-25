@@ -102,6 +102,8 @@ struct LibcompositorExports {
     ),
 
     dismiss_notification: extern "C" fn(channel_id: u32, notification_id: u32),
+
+    get_window_position: extern "C" fn(channel_id: u32, sub_id: u32, window_id: u32, out_x: *mut i32, out_y: *mut i32) -> u32,
 }
 
 fn exports() -> &'static LibcompositorExports {
@@ -119,6 +121,7 @@ pub const EVT_RESIZE: u32 = 0x3006;
 pub const EVT_WINDOW_CLOSE: u32 = 0x3007;
 pub const EVT_MOUSE_MOVE: u32 = 0x300A;
 pub const EVT_FRAME_ACK: u32 = 0x300B;
+pub const EVT_FOCUS_LOST: u32 = 0x300C;
 
 // ── High-level wrappers ──────────────────────────────────────────────
 
@@ -245,6 +248,15 @@ pub fn show_notification(
         icon,
         timeout_ms, flags,
     );
+}
+
+/// Get a window's content area screen position.
+/// Returns (content_x, content_y) or (0, 0) on failure/timeout.
+pub fn get_window_position(channel_id: u32, sub_id: u32, window_id: u32) -> (i32, i32) {
+    let mut x: i32 = 0;
+    let mut y: i32 = 0;
+    (exports().get_window_position)(channel_id, sub_id, window_id, &mut x, &mut y);
+    (x, y)
 }
 
 /// Copy text to the system clipboard.

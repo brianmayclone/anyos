@@ -150,6 +150,8 @@ fn navigate(url_str: &str) {
     st.tabs[st.active_tab].status_text = String::from("Rendering page...");
     update_status();
 
+    // Clear external stylesheets from previous page.
+    st.tabs[st.active_tab].webview.clear_stylesheets();
     // Set HTML content — this parses, lays out, and renders controls immediately.
     st.tabs[st.active_tab].webview.set_html(&body_text);
     anyos_std::println!("[surf] render complete");
@@ -180,10 +182,13 @@ fn navigate(url_str: &str) {
         tab.status_text = String::from("Done");
     }
 
-    // Queue images for async loading (page is already visible).
-    let dom_for_images = libwebview::html::parse(&body_text);
-    anyos_std::println!("[surf] DOM: {} nodes", dom_for_images.nodes.len());
+    // Parse DOM for resource discovery (stylesheets, images).
+    let dom_for_resources = libwebview::html::parse(&body_text);
+    anyos_std::println!("[surf] DOM: {} nodes", dom_for_resources.nodes.len());
     let tab_idx = st.active_tab;
+
+    // Fetch external stylesheets (<link rel="stylesheet">) and apply them.
+    fetch_stylesheets(&dom_for_resources, &base_url, tab_idx);
 
     // Cancel any pending image fetches from previous page.
     if st.image_timer != 0 {
@@ -192,7 +197,8 @@ fn navigate(url_str: &str) {
     }
     st.image_queue.clear();
 
-    queue_images(&dom_for_images, &base_url, tab_idx);
+    // Queue images for async loading (page is already visible).
+    queue_images(&dom_for_resources, &base_url, tab_idx);
 
     st.tabs[st.active_tab].current_url = Some(base_url);
 
@@ -239,6 +245,7 @@ fn navigate_post(url_str: &str, body: &str) {
 
     // Render page immediately (without images).
     let tab = &mut st.tabs[st.active_tab];
+    tab.webview.clear_stylesheets();
     tab.webview.set_html(&body_text);
 
     for line in tab.webview.js_console() {
@@ -262,15 +269,20 @@ fn navigate_post(url_str: &str, body: &str) {
     tab.url_text = url_string.clone();
     tab.status_text = String::from("Done");
 
-    // Queue images for async loading.
-    let dom_for_images = libwebview::html::parse(&body_text);
+    // Parse DOM for resource discovery.
+    let dom_for_resources = libwebview::html::parse(&body_text);
     let tab_idx = st.active_tab;
+
+    // Fetch external stylesheets.
+    fetch_stylesheets(&dom_for_resources, &base_url, tab_idx);
+
+    // Queue images for async loading.
     if st.image_timer != 0 {
         ui::kill_timer(st.image_timer);
         st.image_timer = 0;
     }
     st.image_queue.clear();
-    queue_images(&dom_for_images, &base_url, tab_idx);
+    queue_images(&dom_for_resources, &base_url, tab_idx);
 
     let tab = &mut st.tabs[st.active_tab];
     tab.current_url = Some(base_url);
@@ -387,6 +399,64 @@ fn latin1_to_utf8(bytes: &[u8]) -> String {
         out.push(b as char); // Rust `char` from u8 is correct for Latin-1 → Unicode
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// External stylesheet fetching
+// ---------------------------------------------------------------------------
+
+/// Fetch external CSS stylesheets referenced by `<link rel="stylesheet">` tags.
+/// Stylesheets are fetched synchronously (they're typically small) and added
+/// to the webview, then relayout is triggered.
+fn fetch_stylesheets(
+    dom: &libwebview::dom::Dom,
+    base_url: &http::Url,
+    tab_index: usize,
+) {
+    let mut hrefs: Vec<String> = Vec::new();
+    for (i, node) in dom.nodes.iter().enumerate() {
+        if let libwebview::dom::NodeType::Element { tag: libwebview::dom::Tag::Link, .. } = &node.node_type {
+            // Check rel="stylesheet"
+            let rel = dom.attr(i, "rel").unwrap_or("");
+            if !rel.eq_ignore_ascii_case("stylesheet") {
+                continue;
+            }
+            if let Some(href) = dom.attr(i, "href") {
+                if !href.is_empty() {
+                    hrefs.push(String::from(href));
+                }
+            }
+        }
+    }
+
+    if hrefs.is_empty() {
+        return;
+    }
+
+    anyos_std::println!("[surf] fetching {} external stylesheet(s)", hrefs.len());
+    let st = state();
+    let mut added = 0;
+
+    for href in &hrefs {
+        let css_url = http::resolve_url(base_url, href);
+        match http::fetch(&css_url, &mut st.cookies, &mut st.conn_pool) {
+            Ok(resp) => {
+                if resp.status >= 200 && resp.status < 400 && !resp.body.is_empty() {
+                    let css_text = decode_http_body(&resp.body, &resp.headers);
+                    st.tabs[tab_index].webview.add_stylesheet(&css_text);
+                    added += 1;
+                    anyos_std::println!("[surf]   loaded: {} ({} bytes)", href, css_text.len());
+                }
+            }
+            Err(_) => {
+                anyos_std::println!("[surf]   failed: {}", href);
+            }
+        }
+    }
+
+    if added > 0 {
+        st.tabs[tab_index].webview.relayout();
+    }
 }
 
 // ---------------------------------------------------------------------------

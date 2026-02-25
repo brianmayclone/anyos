@@ -85,6 +85,8 @@ pub fn layout_flex(
                 item.main_base = w;
             } else if let Some(pct) = st.width_pct {
                 item.main_base = (available_width as i64 * pct as i64 / 10000) as i32;
+            } else if let Some((px100, pct100)) = st.width_calc {
+                item.main_base = px100 / 100 + (available_width as i64 * pct100 as i64 / 10000) as i32;
             } else {
                 let child_box = build_block(dom, styles, item.node_id, available_width, images);
                 item.main_base = child_box.width + child_box.margin.left + child_box.margin.right;

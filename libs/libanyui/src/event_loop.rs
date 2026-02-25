@@ -112,6 +112,109 @@ pub fn run_once() -> u32 {
         }
     }
 
+    // ── Phase 1.1: Process popup events (before per-window dispatch) ──
+    // Context menu popups are separate compositor windows. Their events must
+    // be handled before normal window events to ensure dismiss-on-outside-click.
+    {
+        let popup_wid = st.popup.as_ref().map(|p| p.window_id);
+        if let Some(popup_window_id) = popup_wid {
+            for ev in all_events.iter_mut() {
+                // Handle events for the popup window
+                if ev[0] >= 0x3000 && ev[1] == popup_window_id {
+                    match ev[0] {
+                        compositor::EVT_MOUSE_MOVE => {
+                            let mx = ev[2] as i32;
+                            let my = ev[3] as i32;
+                            // Extract popup data to release borrow before accessing controls
+                            let popup_data = st.popup.as_ref().map(|p| (p.margin, p.menu_id));
+                            if let Some((margin, menu_id)) = popup_data {
+                                if let Some(idx) = control::find_idx(&st.controls, menu_id) {
+                                    let mw = st.controls[idx].base().w;
+                                    let mh = st.controls[idx].base().h;
+                                    if mx >= margin && my >= margin
+                                        && mx < margin + mw as i32 && my < margin + mh as i32
+                                    {
+                                        // Inside menu bounds → dispatch move
+                                        let local_x = mx - margin;
+                                        let local_y = my - margin;
+                                        st.controls[idx].handle_mouse_move(local_x, local_y);
+                                    } else {
+                                        // In margin area → de-highlight
+                                        st.controls[idx].handle_mouse_leave();
+                                    }
+                                    if let Some(ref mut p) = st.popup {
+                                        p.dirty = true;
+                                    }
+                                }
+                            }
+                        }
+                        compositor::EVT_MOUSE_DOWN => {
+                            let mx = ev[2] as i32;
+                            let my = ev[3] as i32;
+                            let popup_data = st.popup.as_ref().map(|p| (p.margin, p.menu_id));
+                            if let Some((margin, menu_id)) = popup_data {
+                                if let Some(idx) = control::find_idx(&st.controls, menu_id) {
+                                    let mw = st.controls[idx].base().w;
+                                    let mh = st.controls[idx].base().h;
+                                    if mx >= margin && my >= margin
+                                        && mx < margin + mw as i32 && my < margin + mh as i32
+                                    {
+                                        st.pressed = Some(menu_id);
+                                        st.pressed_button = ev[4] & 0xFF;
+                                    } else {
+                                        // Click outside menu area in popup → dismiss
+                                        dismiss_popup(st);
+                                    }
+                                }
+                            }
+                        }
+                        compositor::EVT_MOUSE_UP => {
+                            let mx = ev[2] as i32;
+                            let my = ev[3] as i32;
+                            if let Some(menu_id) = st.pressed.take() {
+                                let margin = st.popup.as_ref().map(|p| p.margin).unwrap_or(0);
+                                if let Some(idx) = control::find_idx(&st.controls, menu_id) {
+                                    let (ax, ay) = (st.controls[idx].base().x, st.controls[idx].base().y);
+                                    let local_x = mx - margin - ax;
+                                    let local_y = my - margin - ay;
+                                    let click_resp = st.controls[idx].handle_click(local_x, local_y, 0x01);
+                                    // Dismiss popup BEFORE firing callback
+                                    dismiss_popup(st);
+                                    if click_resp.fire_click {
+                                        fire_event_callback(&st.controls, menu_id, control::EVENT_CLICK, &mut pending_cbs);
+                                    }
+                                }
+                            }
+                        }
+                        compositor::EVT_FOCUS_LOST => {
+                            // Another window gained focus → dismiss popup
+                            dismiss_popup(st);
+                        }
+                        compositor::EVT_KEY_DOWN => {
+                            let keycode = ev[2];
+                            if keycode == control::KEY_ESCAPE {
+                                dismiss_popup(st);
+                            }
+                        }
+                        _ => {}
+                    }
+                    // Mark event as consumed so per-window loop skips it
+                    ev[0] = 0;
+                }
+            }
+
+            // Check if any MOUSE_DOWN for a non-popup window while popup is active → dismiss
+            if st.popup.is_some() {
+                for ev in all_events.iter_mut() {
+                    if ev[0] == compositor::EVT_MOUSE_DOWN && ev[1] != popup_window_id {
+                        dismiss_popup(st);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     let win_count = st.windows.len();
     for wi in 0..win_count {
         if wi >= st.windows.len() { break; }
@@ -121,6 +224,8 @@ pub fn run_once() -> u32 {
         // Process events that belong to this window
         // Buffer layout: [event_type, window_id, arg1, arg2, arg3]
         for ev in all_events.iter() {
+            // Skip consumed popup events
+            if ev[0] == 0 { continue; }
             // Window-specific events (0x3000+): filter by window_id
             if ev[0] >= 0x3000 && ev[1] != comp_window_id { continue; }
             // Broadcast events (<0x1000): only process on first window
@@ -346,23 +451,70 @@ pub fn run_once() -> u32 {
                                     // Right-click → fire EVENT_CONTEXT_MENU
                                     fire_event_callback(&st.controls, target_id, control::EVENT_CONTEXT_MENU, &mut pending_cbs);
 
-                                    // If control has a context menu, show it at cursor position
+                                    // If control has a context menu, show it as a popup window
                                     if let Some(idx2) = control::find_idx(&st.controls, target_id) {
                                         if let Some(menu_id) = st.controls[idx2].base().context_menu {
                                             if let Some(mi) = control::find_idx(&st.controls, menu_id) {
-                                                // Position relative to menu's parent so it appears at cursor
-                                                let parent_id = st.controls[mi].parent_id();
-                                                let (px, py) = control::abs_position(&st.controls, parent_id);
-                                                st.controls[mi].set_position(mx - px, my - py);
-                                                st.controls[mi].base_mut().visible = true;
-                                                st.controls[mi].base_mut().mark_dirty();
-                                                // Focus the menu so handle_blur hides it on outside click
-                                                if let Some(old_fid) = st.focused {
-                                                    if let Some(oi) = control::find_idx(&st.controls, old_fid) {
-                                                        st.controls[oi].handle_blur();
-                                                    }
+                                                // Dismiss any existing popup first
+                                                dismiss_popup(st);
+
+                                                // Get menu dimensions
+                                                let menu_w = st.controls[mi].base().w;
+                                                let menu_h = st.controls[mi].base().h;
+
+                                                // Shadow margin: context menu shadow spread=12, y_offset=3
+                                                let margin: i32 = 16;
+                                                let popup_w = menu_w + (margin as u32) * 2;
+                                                let popup_h = menu_h + (margin as u32) * 2;
+
+                                                // Get parent window's content-area screen position
+                                                let (content_x, content_y) = compositor::get_window_position(
+                                                    st.channel_id, st.sub_id, comp_window_id,
+                                                );
+
+                                                // Calculate popup screen position (menu at cursor)
+                                                let mut popup_x = content_x + mx - margin;
+                                                let mut popup_y = content_y + my - margin;
+
+                                                // Clamp to screen bounds
+                                                let (scr_w, scr_h) = compositor::screen_size();
+                                                if popup_x + popup_w as i32 > scr_w as i32 {
+                                                    popup_x = scr_w as i32 - popup_w as i32;
                                                 }
-                                                st.focused = Some(menu_id);
+                                                if popup_y + popup_h as i32 > scr_h as i32 {
+                                                    popup_y = scr_h as i32 - popup_h as i32;
+                                                }
+                                                if popup_x < 0 { popup_x = 0; }
+                                                if popup_y < 0 { popup_y = 0; }
+
+                                                // Create popup compositor window (borderless, always-on-top, immovable)
+                                                // Flags: BORDERLESS=0x01 | NOT_RESIZABLE=0x02 | ALWAYS_ON_TOP=0x04 | NO_MOVE=0x100
+                                                let popup_flags: u32 = 0x01 | 0x02 | 0x04 | 0x100;
+                                                if let Some((popup_win_id, shm_id, surface)) = compositor::create_window(
+                                                    st.channel_id, st.sub_id,
+                                                    popup_x, popup_y,
+                                                    popup_w, popup_h,
+                                                    popup_flags,
+                                                ) {
+                                                    // Position menu at origin for clean popup rendering
+                                                    st.controls[mi].set_position(0, 0);
+                                                    // Menu stays invisible in parent (rendered directly in popup)
+                                                    st.controls[mi].base_mut().visible = false;
+
+                                                    let back_buffer = alloc::vec![0u32; (popup_w * popup_h) as usize];
+                                                    st.popup = Some(crate::PopupInfo {
+                                                        window_id: popup_win_id,
+                                                        shm_id,
+                                                        surface,
+                                                        width: popup_w,
+                                                        height: popup_h,
+                                                        back_buffer,
+                                                        menu_id,
+                                                        owner_win_idx: wi,
+                                                        margin,
+                                                        dirty: true,
+                                                    });
+                                                }
                                             }
                                         }
                                     }
@@ -705,6 +857,44 @@ pub fn run_once() -> u32 {
         st.comp_windows[wi].last_present_ms = crate::syscall::uptime_ms();
     }
 
+    // ── Phase 4.1: Render popup (if active and dirty) ──────────────
+    // Popup rendering is separate from regular windows because the popup
+    // is not tracked in comp_windows. It has its own back buffer and SHM.
+    // We use popup.dirty (not the control's dirty flag) because Phase 4's
+    // clear_dirty already cleared the menu control's flag.
+    let popup_render_info: Option<(control::ControlId, i32, u32, u32, *mut u32, u32, u32)> = {
+        if let Some(ref popup) = st.popup {
+            if popup.dirty {
+                Some((popup.menu_id, popup.margin, popup.width, popup.height,
+                       popup.surface, popup.window_id, popup.shm_id))
+            } else { None }
+        } else { None }
+    };
+
+    if let Some((menu_id, margin, pw, ph, surface, popup_win_id, shm_id)) = popup_render_info {
+        // Clear dirty flag and back buffer
+        if let Some(ref mut p) = st.popup {
+            p.dirty = false;
+            p.back_buffer.fill(0x00000000);
+        }
+        let back_ptr = st.popup.as_mut().unwrap().back_buffer.as_mut_ptr();
+        let surf = crate::draw::Surface::new(back_ptr, pw, ph);
+
+        // Render menu directly (bypasses render_tree visibility check)
+        if let Some(idx) = control::find_idx(&st.controls, menu_id) {
+            st.controls[idx].render(&surf, margin, margin);
+        }
+
+        // Copy back buffer → SHM
+        unsafe {
+            let pixel_count = (pw as usize) * (ph as usize);
+            core::ptr::copy_nonoverlapping(back_ptr, surface, pixel_count);
+        }
+
+        // Present the popup
+        compositor::present(st.channel_id, popup_win_id, shm_id);
+    }
+
     1
 }
 
@@ -837,6 +1027,16 @@ fn clear_tracking_for(st: &mut crate::AnyuiState, id: ControlId) {
     }
 }
 
+// ── Popup dismiss ──────────────────────────────────────────────────
+
+/// Dismiss the active context menu popup window.
+/// Destroys the compositor window and clears the popup state.
+fn dismiss_popup(st: &mut crate::AnyuiState) {
+    if let Some(popup) = st.popup.take() {
+        compositor::destroy_window(st.channel_id, popup.window_id, popup.shm_id);
+    }
+}
+
 // ── Dirty tracking ─────────────────────────────────────────────────
 
 /// Clear dirty flags and reset prev_x/y/w/h for all controls in the subtree rooted at `id`.
@@ -896,7 +1096,19 @@ fn collect_dirty_rects(
         Some(i) => i,
         None => return,
     };
-    if !controls[idx].visible() { return; }
+    if !controls[idx].visible() {
+        // Even when invisible, if the control is dirty its area must be included
+        // in the dirty rect so the background behind it gets repainted.
+        // Without this, hiding a control (e.g. context menu) leaves stale pixels.
+        let b = controls[idx].base();
+        if b.dirty {
+            cw.dirty = true;
+            let abs_x = parent_abs_x + b.x;
+            let abs_y = parent_abs_y + b.y;
+            cw.dirty_rect = Some(union_rect(cw.dirty_rect, abs_x, abs_y, b.w, b.h));
+        }
+        return;
+    }
 
     let b = controls[idx].base();
     let abs_x = parent_abs_x + b.x;

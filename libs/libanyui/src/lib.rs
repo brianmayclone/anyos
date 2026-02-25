@@ -103,6 +103,28 @@ pub(crate) struct CompWindow {
     pub back_buffer: Vec<u32>,
 }
 
+// ── Context menu popup window ─────────────────────────────────────────
+
+/// State for a context menu rendered as a separate compositor popup window.
+/// The popup is borderless, always-on-top, and destroyed when the menu is dismissed.
+pub(crate) struct PopupInfo {
+    pub window_id: u32,
+    pub shm_id: u32,
+    pub surface: *mut u32,
+    pub width: u32,
+    pub height: u32,
+    pub back_buffer: Vec<u32>,
+    /// The context menu control being displayed in the popup.
+    pub menu_id: ControlId,
+    /// Index into st.windows for the parent window that owns the menu.
+    pub owner_win_idx: usize,
+    /// Shadow margin (pixels of padding around the menu for shadow rendering).
+    pub margin: i32,
+    /// Whether the popup needs to be re-rendered (independent of control dirty flag,
+    /// because Phase 4's clear_dirty clears the menu control's flag before popup render).
+    pub dirty: bool,
+}
+
 // ── Global state (per-process, lives in .data/.bss of the .so) ───────
 
 pub(crate) struct AnyuiState {
@@ -138,6 +160,10 @@ pub(crate) struct AnyuiState {
     // ── Tooltip ──────────────────────────────────────────────────────
     /// Framework-managed tooltip control ID (created lazily on first use).
     pub active_tooltip: Option<ControlId>,
+
+    // ── Context menu popup ──────────────────────────────────────────
+    /// Active popup window for context menus (at most one at a time).
+    pub popup: Option<PopupInfo>,
 
     // ── Timers ───────────────────────────────────────────────────────
     pub timers: timer::TimerState,
@@ -267,6 +293,7 @@ pub extern "C" fn anyui_init() -> u32 {
             click_count: 0,
             pressed_button: 0,
             active_tooltip: None,
+            popup: None,
             timers: timer::TimerState::new(),
             needs_repaint: true,
             needs_layout: true,
@@ -283,6 +310,10 @@ pub extern "C" fn anyui_init() -> u32 {
 pub extern "C" fn anyui_shutdown() {
     let st = state();
     let channel_id = st.channel_id;
+    // Destroy popup window if active
+    if let Some(popup) = st.popup.take() {
+        compositor::destroy_window(channel_id, popup.window_id, popup.shm_id);
+    }
     for cw in &st.comp_windows {
         compositor::destroy_window(channel_id, cw.window_id, cw.shm_id);
     }

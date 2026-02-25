@@ -495,6 +495,24 @@ impl Desktop {
                 self.notifications.dismiss(notif_id, sw);
                 None
             }
+            proto::CMD_GET_WINDOW_POS => {
+                let window_id = cmd[1];
+                let requester_tid = cmd[2];
+                if let Some(idx) = self.windows.iter().position(|w| w.id == window_id) {
+                    let win = &self.windows[idx];
+                    let content_x = win.x;
+                    let content_y = if win.is_borderless() {
+                        win.y
+                    } else {
+                        win.y + window::TITLE_BAR_HEIGHT as i32
+                    };
+                    let target = self.get_sub_id_for_tid(requester_tid);
+                    Some((target, [proto::RESP_WINDOW_POS, window_id, content_x as u32, content_y as u32, requester_tid]))
+                } else {
+                    let target = self.get_sub_id_for_tid(requester_tid);
+                    Some((target, [proto::RESP_WINDOW_POS, window_id, 0, 0, requester_tid]))
+                }
+            }
             _ => None,
         }
     }

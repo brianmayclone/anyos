@@ -23,14 +23,16 @@ const CMD_SET_WALLPAPER: u32 = 0x100F;
 const CMD_CREATE_VRAM_WINDOW: u32 = 0x1010;
 const CMD_SET_CLIPBOARD: u32 = 0x1011;
 const CMD_GET_CLIPBOARD: u32 = 0x1012;
+const CMD_GET_WINDOW_POS: u32 = 0x1013;
 const CMD_SHOW_NOTIFICATION: u32 = 0x1020;
 const CMD_DISMISS_NOTIFICATION: u32 = 0x1021;
 const RESP_WINDOW_CREATED: u32 = 0x2001;
 const RESP_VRAM_WINDOW_CREATED: u32 = 0x2004;
 const RESP_VRAM_WINDOW_FAILED: u32 = 0x2005;
+const RESP_WINDOW_POS: u32 = 0x2006;
 const RESP_CLIPBOARD_DATA: u32 = 0x2010;
 
-const NUM_EXPORTS: u32 = 22;
+const NUM_EXPORTS: u32 = 23;
 
 #[repr(C)]
 pub struct LibcompositorExports {
@@ -165,6 +167,10 @@ pub struct LibcompositorExports {
 
     /// Dismiss a notification by its ID.
     pub dismiss_notification: extern "C" fn(channel_id: u32, notification_id: u32),
+
+    /// Get a window's content area screen position.
+    /// Returns 1 on success, 0 on failure/timeout.
+    pub get_window_position: extern "C" fn(channel_id: u32, sub_id: u32, window_id: u32, out_x: *mut i32, out_y: *mut i32) -> u32,
 }
 
 #[link_section = ".exports"]
@@ -197,6 +203,7 @@ pub static LIBCOMPOSITOR_EXPORTS: LibcompositorExports = LibcompositorExports {
     get_clipboard: export_get_clipboard,
     show_notification: export_show_notification,
     dismiss_notification: export_dismiss_notification,
+    get_window_position: export_get_window_position,
 };
 
 // ── Export Implementations ───────────────────────────────────────────────────
@@ -774,4 +781,32 @@ extern "C" fn export_show_notification(
 extern "C" fn export_dismiss_notification(channel_id: u32, notification_id: u32) {
     let cmd: [u32; 5] = [CMD_DISMISS_NOTIFICATION, notification_id, 0, 0, 0];
     syscall::evt_chan_emit(channel_id, &cmd);
+}
+
+extern "C" fn export_get_window_position(
+    channel_id: u32,
+    sub_id: u32,
+    window_id: u32,
+    out_x: *mut i32,
+    out_y: *mut i32,
+) -> u32 {
+    let tid = syscall::get_tid();
+    let cmd: [u32; 5] = [CMD_GET_WINDOW_POS, window_id, tid, 0, 0];
+    syscall::evt_chan_emit(channel_id, &cmd);
+
+    // Poll for RESP_WINDOW_POS
+    let mut response = [0u32; 5];
+    for _ in 0..50 {
+        while syscall::evt_chan_poll(channel_id, sub_id, &mut response) {
+            if response[0] == RESP_WINDOW_POS && response[4] == tid {
+                unsafe {
+                    *out_x = response[2] as i32;
+                    *out_y = response[3] as i32;
+                }
+                return 1;
+            }
+        }
+        syscall::sleep(5);
+    }
+    0 // Timeout
 }
