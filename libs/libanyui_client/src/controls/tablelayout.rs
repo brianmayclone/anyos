@@ -16,4 +16,17 @@ impl TableLayout {
     pub fn set_row_height(&self, row_height: u32) {
         (lib().set_row_height)(self.container.ctrl.id, row_height);
     }
+
+    /// Set per-column pixel widths.
+    ///
+    /// The first `widths.len() - 1` entries are used verbatim; the last
+    /// column receives the remaining available width. Pass an empty slice
+    /// to reset to equal distribution.
+    pub fn set_column_widths(&self, widths: &[u32]) {
+        (lib().set_column_widths)(
+            self.container.ctrl.id,
+            widths.as_ptr(),
+            widths.len() as u32,
+        );
+    }
 }
