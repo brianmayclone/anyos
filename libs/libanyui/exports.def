@@ -36,6 +36,7 @@ EXPORTS
     anyui_set_orientation
     anyui_set_columns
     anyui_set_row_height
+    anyui_set_column_widths
     anyui_set_split_ratio
     anyui_set_min_split
     anyui_set_max_split

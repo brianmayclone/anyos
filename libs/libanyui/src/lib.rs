@@ -714,6 +714,28 @@ pub extern "C" fn anyui_set_row_height(id: ControlId, row_height: u32) {
     }
 }
 
+/// Set per-column pixel widths for a TableLayout.
+///
+/// `widths` is a pointer to an array of `len` u32 values. The first N-1
+/// entries are used as-is; the last column receives the remaining available
+/// width. Passing `len=0` resets to equal-distribution (default).
+#[no_mangle]
+pub extern "C" fn anyui_set_column_widths(id: ControlId, widths: *const u32, len: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if ctrl.kind() == ControlKind::TableLayout {
+            let raw: *mut dyn Control = &mut **ctrl;
+            let tl = unsafe { &mut *(raw as *mut controls::table_layout::TableLayout) };
+            if len == 0 || widths.is_null() {
+                tl.col_widths.clear();
+            } else {
+                let slice = unsafe { core::slice::from_raw_parts(widths, len as usize) };
+                tl.col_widths = slice.to_vec();
+            }
+        }
+    }
+}
+
 // ── SplitView properties ─────────────────────────────────────────────
 
 /// Helper to downcast a control to SplitView.

@@ -169,6 +169,7 @@ struct AnyuiLib {
     set_orientation: extern "C" fn(u32, u32),
     set_columns: extern "C" fn(u32, u32),
     set_row_height: extern "C" fn(u32, u32),
+    set_column_widths: extern "C" fn(u32, *const u32, u32),
     // SplitView properties
     set_split_ratio: extern "C" fn(u32, u32),
     set_min_split: extern "C" fn(u32, u32),
@@ -376,6 +377,7 @@ pub fn init() -> bool {
             set_orientation: resolve(&handle, "anyui_set_orientation"),
             set_columns: resolve(&handle, "anyui_set_columns"),
             set_row_height: resolve(&handle, "anyui_set_row_height"),
+            set_column_widths: resolve(&handle, "anyui_set_column_widths"),
             // SplitView properties
             set_split_ratio: resolve(&handle, "anyui_set_split_ratio"),
             set_min_split: resolve(&handle, "anyui_set_min_split"),
