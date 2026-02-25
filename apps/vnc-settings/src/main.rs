@@ -15,16 +15,23 @@
 //! │ │  Allow Root     [●] on                            │  │
 //! │ └───────────────────────────────────────────────────┘  │
 //! │ ┌─ Allowed Users ───────────────────────────────────┐  │
-//! │ │  New username:  [alice         ] [ + Add ]        │  │
+//! │ │  [ + Add User… ]   [ − Remove Selected ]          │  │
 //! │ │  ┌──────────────────────────────────────────────┐ │  │
 //! │ │  │ alice                                        │ │  │
 //! │ │  │ bob                                          │ │  │
 //! │ │  └──────────────────────────────────────────────┘ │  │
-//! │ │  [ − Remove Selected ]                            │  │
 //! │ └───────────────────────────────────────────────────┘  │
 //! │                   [ Apply ]   [ Cancel ]               │
 //! │                                             (status)   │
 //! └─────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! Adding a user opens a small dialog window (non-modal, Finder-style):
+//! ```
+//! ┌─ Add Allowed User ──────────────────┐
+//! │  Username: [                      ] │
+//! │                 [ Cancel ]  [ OK ] │
+//! └─────────────────────────────────────┘
 //! ```
 
 #![no_std]
@@ -42,7 +49,7 @@ use ui::ColumnDef;
 const CONF_PATH: &str = "/System/etc/vncd.conf";
 const VNCD_PIPE: &str = "vncd";
 const WIN_W: u32 = 440;
-const WIN_H: u32 = 560;
+const WIN_H: u32 = 520;
 
 // ── Config model ──────────────────────────────────────────────────────────────
 
@@ -115,7 +122,6 @@ fn save_conf(cfg: &VncConf) {
     out.push('\n');
     out.push_str(&format!("password={}\n", cfg.password));
 
-    // Write file.
     let fd = anyos_std::fs::open(CONF_PATH, anyos_std::fs::O_WRITE | anyos_std::fs::O_CREATE | anyos_std::fs::O_TRUNC);
     if fd != u32::MAX {
         anyos_std::fs::write(fd, out.as_bytes());
@@ -151,7 +157,6 @@ struct AppState {
     toggle_root: ui::Toggle,
     port_field: ui::TextField,
     pw_field: ui::TextField,
-    new_user_field: ui::TextField,
     user_grid: ui::DataGrid,
     status_label: ui::Label,
     btn_remove: ui::Button,
@@ -219,6 +224,89 @@ fn apply() {
         String::from("  Saved. VNC access disabled.")
     };
     s.status_label.set_text(&status);
+}
+
+// ── Add-user dialog (Finder-style non-blocking property window) ───────────────
+
+/// Open a small dialog window to add a new allowed user.
+///
+/// The dialog is non-blocking: it registers its button handlers and returns
+/// immediately. The user interacts with it as part of the normal event loop,
+/// exactly like Finder property windows.
+fn show_add_user_dialog() {
+    let dlg = ui::Window::new_with_flags(
+        "Add Allowed User", -1, -1, 340, 120,
+        ui::WIN_FLAG_NOT_RESIZABLE | ui::WIN_FLAG_NO_MINIMIZE | ui::WIN_FLAG_NO_MAXIMIZE,
+    );
+
+    // "Username:" label
+    let lbl = ui::Label::new("Username:");
+    lbl.set_position(12, 18);
+    lbl.set_size(80, 22);
+    dlg.add(&lbl);
+
+    // Input field
+    let input = ui::TextField::new("");
+    input.set_position(96, 16);
+    input.set_size(228, 26);
+    dlg.add(&input);
+
+    // Cancel button
+    let btn_cancel = ui::Button::new("Cancel");
+    btn_cancel.set_position(156, 58);
+    btn_cancel.set_size(80, 28);
+    dlg.add(&btn_cancel);
+
+    // OK button
+    let btn_ok = ui::Button::new("OK");
+    btn_ok.set_position(244, 58);
+    btn_ok.set_size(80, 28);
+    dlg.add(&btn_ok);
+
+    // OK: validate, add to list, close dialog.
+    {
+        let input_ref = input.clone();
+        let dlg_ok = dlg.clone();
+        btn_ok.on_click(move |_| {
+            let mut buf = [0u8; 64];
+            let n = input_ref.get_text(&mut buf);
+            if n == 0 || n == u32::MAX {
+                return;
+            }
+            let name = match core::str::from_utf8(&buf[..n as usize]) {
+                Ok(t) => t.trim(),
+                Err(_) => return,
+            };
+            if name.is_empty() {
+                return;
+            }
+
+            dlg_ok.destroy();
+
+            if !user_exists(name) {
+                app().status_label.set_text("  Error: user does not exist locally.");
+                return;
+            }
+            let s = app();
+            if s.cfg.allowed_users.iter().any(|u| u.as_str() == name) {
+                s.status_label.set_text("  User already in list.");
+                return;
+            }
+            s.cfg.allowed_users.push(String::from(name));
+            s.status_label.set_text("  User added.");
+            refresh_user_grid();
+        });
+    }
+
+    // Cancel: just close.
+    {
+        let dlg_cancel = dlg.clone();
+        btn_cancel.on_click(move |_| {
+            dlg_cancel.destroy();
+        });
+    }
+
+    // Return immediately — dialog lives in the main event loop.
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -308,45 +396,34 @@ fn main() {
     // ════════════════════════════════════════════════════════════════
     let grp_users = ui::GroupBox::new("Allowed Users (must exist locally)");
     grp_users.set_position(12, 200);
-    grp_users.set_size(WIN_W - 24, 268);
+    grp_users.set_size(WIN_W - 24, 234);
     scroll.add(&grp_users);
 
-    // Add row: label + text field + button
-    let lbl_new = ui::Label::new("Add username:");
-    lbl_new.set_position(8, 24);
-    lbl_new.set_size(100, 22);
-    grp_users.add(&lbl_new);
-
-    let new_user_field = ui::TextField::new("");
-    new_user_field.set_position(112, 22);
-    new_user_field.set_size(180, 26);
-    grp_users.add(&new_user_field);
-
-    let btn_add = ui::Button::new("+ Add");
-    btn_add.set_position(298, 22);
-    btn_add.set_size(70, 26);
+    // Action buttons row: Add and Remove side by side.
+    let btn_add = ui::Button::new("+ Add User…");
+    btn_add.set_position(8, 24);
+    btn_add.set_size(110, 26);
     grp_users.add(&btn_add);
 
+    let btn_remove = ui::Button::new("− Remove Selected");
+    btn_remove.set_position(126, 24);
+    btn_remove.set_size(150, 26);
+    btn_remove.set_enabled(!cfg.allowed_users.is_empty());
+    grp_users.add(&btn_remove);
+
     // Users list DataGrid.
-    let user_grid = ui::DataGrid::new(WIN_W - 40, 160);
-    user_grid.set_position(8, 56);
+    let user_grid = ui::DataGrid::new(WIN_W - 40, 168);
+    user_grid.set_position(8, 58);
     user_grid.set_columns(&[ColumnDef::new("Username").width((WIN_W - 40) as i32)]);
     user_grid.set_row_height(22);
     user_grid.set_selection_mode(ui::SELECTION_SINGLE);
     grp_users.add(&user_grid);
 
-    // Remove button below grid.
-    let btn_remove = ui::Button::new("− Remove Selected");
-    btn_remove.set_position(8, 222);
-    btn_remove.set_size(150, 28);
-    btn_remove.set_enabled(!cfg.allowed_users.is_empty());
-    grp_users.add(&btn_remove);
-
     // ════════════════════════════════════════════════════════════════
     //  Bottom action buttons
     // ════════════════════════════════════════════════════════════════
     let btn_panel = ui::FlowPanel::new();
-    btn_panel.set_position(12, 476);
+    btn_panel.set_position(12, 442);
     btn_panel.set_size(WIN_W - 24, 40);
     scroll.add(&btn_panel);
 
@@ -366,7 +443,6 @@ fn main() {
             toggle_root,
             port_field,
             pw_field,
-            new_user_field,
             user_grid,
             status_label,
             btn_remove,
@@ -384,33 +460,9 @@ fn main() {
         anyos_std::process::exit(0);
     });
 
-    // Add User: read the inline TextField, validate user exists locally, add to list.
+    // "+ Add User…": open a Finder-style property dialog window.
     btn_add.on_click(|_| {
-        let s = app();
-        let mut buf = [0u8; 64];
-        let n = s.new_user_field.get_text(&mut buf);
-        if n == 0 || n == u32::MAX {
-            return;
-        }
-        let name = match core::str::from_utf8(&buf[..n as usize]) {
-            Ok(t) => t.trim(),
-            Err(_) => return,
-        };
-        if name.is_empty() {
-            return;
-        }
-        if !user_exists(name) {
-            s.status_label.set_text("  Error: user does not exist locally.");
-            return;
-        }
-        if s.cfg.allowed_users.iter().any(|u| u.as_str() == name) {
-            s.status_label.set_text("  User already in list.");
-            return;
-        }
-        s.cfg.allowed_users.push(String::from(name));
-        s.new_user_field.set_text(""); // clear input field
-        s.status_label.set_text("  User added.");
-        refresh_user_grid();
+        show_add_user_dialog();
     });
 
     // Remove selected user from list.
