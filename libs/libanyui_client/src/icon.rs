@@ -197,15 +197,19 @@ impl Icon {
         let mut path = [0u8; 128];
         let prefix = DIR.as_bytes();
         let name_b = name.as_bytes();
-        let suffix = b".png";
-        let total = prefix.len() + name_b.len() + suffix.len();
-        if total >= path.len() { return None; }
+        let base_len = prefix.len() + name_b.len();
+        if base_len + 4 >= path.len() { return None; }
         path[..prefix.len()].copy_from_slice(prefix);
-        path[prefix.len()..prefix.len() + name_b.len()].copy_from_slice(name_b);
-        path[prefix.len() + name_b.len()..total].copy_from_slice(suffix);
-        let path_str = core::str::from_utf8(&path[..total]).ok()?;
+        path[prefix.len()..base_len].copy_from_slice(name_b);
 
-        let icon = Self::load_file_sized(path_str)?;
+        // Try .png first, then .ico fallback
+        path[base_len..base_len + 4].copy_from_slice(b".png");
+        let png_path = core::str::from_utf8(&path[..base_len + 4]).ok()?;
+        let icon = Self::load_file_sized(png_path).or_else(|| {
+            path[base_len..base_len + 4].copy_from_slice(b".ico");
+            let ico_path = core::str::from_utf8(&path[..base_len + 4]).ok()?;
+            Self::load_ico_sized(ico_path, size)
+        })?;
 
         if size > 0 && (icon.width != size || icon.height != size) {
             let mut scaled = vec![0u32; (size * size) as usize];
@@ -221,6 +225,35 @@ impl Icon {
         } else {
             Some(icon)
         }
+    }
+
+    /// Load an ICO file with pre-sized allocation and ICO-specific decoder.
+    fn load_ico_sized(path: &str, preferred_size: u32) -> Option<Self> {
+        let fd = anyos_std::fs::open(path, 0);
+        if fd == u32::MAX { return None; }
+
+        let mut stat = [0u32; 4];
+        if anyos_std::fs::fstat(fd, &mut stat) != 0 {
+            anyos_std::fs::close(fd);
+            return None;
+        }
+        let file_size = stat[1] as usize;
+        if file_size == 0 || file_size > 256 * 1024 {
+            anyos_std::fs::close(fd);
+            return None;
+        }
+
+        let mut data = vec![0u8; file_size];
+        let mut read = 0usize;
+        while read < file_size {
+            let n = anyos_std::fs::read(fd, &mut data[read..]);
+            if n == 0 || n == u32::MAX { break; }
+            read += n as usize;
+        }
+        anyos_std::fs::close(fd);
+        if read == 0 { return None; }
+
+        Self::from_ico_bytes(&data[..read], preferred_size)
     }
 
     /// Load any image file with pre-sized allocation (fstat + exact read).
@@ -298,6 +331,18 @@ impl Icon {
         let iv = ImageView::new(display_w, display_h);
         iv.set_pixels(&self.pixels, self.width, self.height);
         iv
+    }
+
+    /// Recolor all non-transparent pixels to the given ARGB color,
+    /// preserving the original alpha channel.
+    pub fn recolor(&mut self, color: u32) {
+        let rgb = color & 0x00FFFFFF;
+        for px in self.pixels.iter_mut() {
+            let a = *px & 0xFF000000;
+            if a != 0 {
+                *px = a | rgb;
+            }
+        }
     }
 
     /// Set this icon's pixels into an existing ImageView.

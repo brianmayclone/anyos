@@ -219,8 +219,8 @@ struct AppState {
     icon_selected: usize,      // selected index in icon view (usize::MAX = none)
     path_field: ui::TextField,
     status_label: ui::Label,
-    btn_back: ui::ImageButton,
-    btn_fwd: ui::ImageButton,
+    btn_back: ui::IconButton,
+    btn_fwd: ui::IconButton,
     sidebar_item_ids: Vec<u32>,
     // Context menu
     ctx_menu: ui::ContextMenu,
@@ -745,25 +745,31 @@ fn main() {
     toolbar.set_padding(4, 4, 4, 4);
     win.add(&toolbar);
 
-    // Nav buttons — load icons via Icon::control() (proven fstat+decode path)
-    let btn_back = ui::ImageButton::new(30, 28);
-    if let Some(icon) = ui::Icon::control("left", 24) {
+    // Nav buttons — IconButton with custom pixel icons (server-side hover/press/disabled)
+    let btn_back = ui::IconButton::new("");
+    btn_back.set_size(30, 28);
+    if let Some(mut icon) = ui::Icon::control("left", 18) {
+        icon.recolor(0xFFCCCCCC);
         btn_back.set_pixels(&icon.pixels, icon.width, icon.height);
     }
     btn_back.set_enabled(false);
     btn_back.set_tooltip("Back (Alt+Left)");
     toolbar.add(&btn_back);
 
-    let btn_fwd = ui::ImageButton::new(30, 28);
-    if let Some(icon) = ui::Icon::control("right", 24) {
+    let btn_fwd = ui::IconButton::new("");
+    btn_fwd.set_size(30, 28);
+    if let Some(mut icon) = ui::Icon::control("right", 18) {
+        icon.recolor(0xFFCCCCCC);
         btn_fwd.set_pixels(&icon.pixels, icon.width, icon.height);
     }
     btn_fwd.set_enabled(false);
     btn_fwd.set_tooltip("Forward (Alt+Right)");
     toolbar.add(&btn_fwd);
 
-    let btn_up = ui::ImageButton::new(30, 28);
-    if let Some(icon) = ui::Icon::control("folder", 24) {
+    let btn_up = ui::IconButton::new("");
+    btn_up.set_size(30, 28);
+    if let Some(mut icon) = ui::Icon::control("folder", 18) {
+        icon.recolor(0xFFCCCCCC);
         btn_up.set_pixels(&icon.pixels, icon.width, icon.height);
     }
     btn_up.set_tooltip("Parent folder (Backspace)");
@@ -771,8 +777,10 @@ fn main() {
 
     toolbar.add_separator();
 
-    let btn_refresh = ui::ImageButton::new(30, 28);
-    if let Some(icon) = ui::Icon::control("refresh", 24) {
+    let btn_refresh = ui::IconButton::new("");
+    btn_refresh.set_size(30, 28);
+    if let Some(mut icon) = ui::Icon::control("refresh", 18) {
+        icon.recolor(0xFFCCCCCC);
         btn_refresh.set_pixels(&icon.pixels, icon.width, icon.height);
     }
     btn_refresh.set_tooltip("Refresh (F5)");

@@ -39,6 +39,14 @@ impl IconButton {
         }
     }
 
+    /// Set raw ARGB pixel data as the icon.
+    ///
+    /// This calls the server-side IconButton's `set_icon_pixels`, so the icon
+    /// gets proper hover, pressed, disabled, and focus-ring rendering for free.
+    pub fn set_pixels(&self, pixels: &[u32], w: u32, h: u32) {
+        (lib().iconbutton_set_pixels)(self.ctrl.id, pixels.as_ptr(), w, h);
+    }
+
     /// Set which built-in pixel-art icon to display (legacy, use ICON_* constants).
     pub fn set_icon(&self, icon_id: u32) {
         self.ctrl.set_state(icon_id);

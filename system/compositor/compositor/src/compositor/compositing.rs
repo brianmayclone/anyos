@@ -16,15 +16,13 @@ use super::gpu::{GPU_UPDATE, GPU_FLIP, GPU_RECT_COPY, GPU_SYNC};
 
 impl Compositor {
     /// Collect damage from all dirty layers.
-    /// Single pass: visible dirty layers already had damage added by the caller
-    /// (present, move, resize). Invisible dirty layers get their bounds added
-    /// to ensure correct repainting when they become visible.
+    /// Any dirty layer (visible or invisible) gets its bounds added as damage.
+    /// This ensures that resized, moved, or content-updated layers always
+    /// trigger recomposition of their region.
     fn collect_dirty_damage(&mut self) {
         for i in 0..self.layers.len() {
             if self.layers[i].dirty {
-                if !self.layers[i].visible {
-                    self.damage.push(self.layers[i].damage_bounds());
-                }
+                self.damage.push(self.layers[i].damage_bounds());
                 self.layers[i].dirty = false;
             }
         }
@@ -77,7 +75,10 @@ impl Compositor {
         // Try GPU RECT_COPY fast path for window drags (requires gpu_accel + valid hint).
         // Works for both opaque and non-opaque layers (decorated windows with rounded corners).
         // For non-opaque layers, corner strips are flushed from back buffer after RECT_COPY.
-        if self.gpu_accel && !self.hw_double_buffer {
+        // Disabled in GMR mode: RECT_COPY operates on the back buffer (registered as GPU
+        // framebuffer), which corrupts freshly composited content. Since flush_region is
+        // already a no-op in GMR mode, there's no VRAM memcpy cost to optimize away.
+        if self.gpu_accel && !self.hw_double_buffer && !self.gmr_active {
             if let Some(ref h) = hint {
                 if let Some(moved_idx) = self.layer_index(h.layer_id) {
                     let layer = &self.layers[moved_idx];
