@@ -144,3 +144,4 @@ EXPORTS
     anyui_get_position
     anyui_datagrid_get_scroll_offset
     anyui_datagrid_set_scroll_offset
+    anyui_measure_text
