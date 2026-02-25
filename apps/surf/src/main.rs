@@ -304,8 +304,9 @@ fn collect_and_fetch_images(
 fn add_tab() {
     let st = state();
     let mut tab = TabState::new();
-    // Set up link callback for the new webview.
+    // Set up callbacks for the new webview.
     tab.webview.set_link_callback(on_link_click, 0);
+    tab.webview.set_submit_callback(on_form_submit, 0);
     // Add the scroll view to our content area.
     st.content_view.add(tab.webview.scroll_view());
     tab.webview.scroll_view().set_dock(ui::DOCK_FILL);
@@ -427,6 +428,71 @@ extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata: u64) {
     }
 }
 
+extern "C" fn on_form_submit(ctrl_id: u32, _event_type: u32, _userdata: u64) {
+    let st = state();
+    let tab = &st.tabs[st.active_tab];
+
+    if !tab.webview.is_submit_button(ctrl_id) {
+        return;
+    }
+
+    // Get form action and method.
+    let (action, method) = match tab.webview.form_action_for(ctrl_id) {
+        Some(am) => am,
+        None => return,
+    };
+
+    // Collect form data.
+    let data = tab.webview.collect_form_data(ctrl_id);
+
+    // URL-encode the form data.
+    let mut encoded = String::new();
+    for (i, (name, value)) in data.iter().enumerate() {
+        if i > 0 { encoded.push('&'); }
+        url_encode_into(&mut encoded, name);
+        encoded.push('=');
+        url_encode_into(&mut encoded, value);
+    }
+
+    // Resolve action URL relative to current page.
+    let resolved_action = if let Some(ref base) = tab.current_url {
+        let action_url = http::resolve_url(base, &action);
+        format_url(&action_url)
+    } else {
+        action
+    };
+
+    if method == "POST" {
+        navigate_post(&resolved_action, &encoded);
+    } else {
+        // GET: append query string to URL.
+        let mut url = resolved_action;
+        if !encoded.is_empty() {
+            url.push(if url.contains('?') { '&' } else { '?' });
+            url.push_str(&encoded);
+        }
+        navigate(&url);
+    }
+}
+
+fn url_encode_into(out: &mut String, s: &str) {
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            b' ' => out.push('+'),
+            _ => {
+                out.push('%');
+                let hi = b >> 4;
+                let lo = b & 0xF;
+                out.push(if hi < 10 { (b'0' + hi) as char } else { (b'A' + hi - 10) as char });
+                out.push(if lo < 10 { (b'0' + lo) as char } else { (b'A' + lo - 10) as char });
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -501,6 +567,7 @@ fn main() {
     // Create initial tab.
     let mut initial_tab = TabState::new();
     initial_tab.webview.set_link_callback(on_link_click, 0);
+    initial_tab.webview.set_submit_callback(on_form_submit, 0);
     content_view.add(initial_tab.webview.scroll_view());
     initial_tab.webview.scroll_view().set_dock(ui::DOCK_FILL);
 

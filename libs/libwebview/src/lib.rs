@@ -46,6 +46,9 @@ pub struct WebView {
     total_height_val: i32,
     link_cb: Option<ui::Callback>,
     link_cb_ud: u64,
+    /// Form submit callback (called when a submit button is clicked).
+    submit_cb: Option<ui::Callback>,
+    submit_cb_ud: u64,
     /// JavaScript runtime for executing <script> tags.
     js_runtime: js::JsRuntime,
 }
@@ -72,6 +75,8 @@ impl WebView {
             total_height_val: 0,
             link_cb: None,
             link_cb_ud: 0,
+            submit_cb: None,
+            submit_cb_ud: 0,
             js_runtime: js::JsRuntime::new(),
         }
     }
@@ -91,6 +96,13 @@ impl WebView {
     pub fn set_link_callback(&mut self, cb: ui::Callback, userdata: u64) {
         self.link_cb = Some(cb);
         self.link_cb_ud = userdata;
+    }
+
+    /// Set the form-submit callback (extern "C" function pointer).
+    /// The callback will be called with the control ID of the clicked submit button.
+    pub fn set_submit_callback(&mut self, cb: ui::Callback, userdata: u64) {
+        self.submit_cb = Some(cb);
+        self.submit_cb_ud = userdata;
     }
 
     /// Add an external CSS stylesheet (as text). Applied on next `set_html()` or `relayout()`.
@@ -214,6 +226,8 @@ impl WebView {
             &self.images,
             self.link_cb,
             self.link_cb_ud,
+            self.submit_cb,
+            self.submit_cb_ud,
         );
 
         // Execute JavaScript <script> tags.
@@ -302,7 +316,7 @@ impl WebView {
                     let ctrl = ui::Control::from_id(fc.control_id);
                     let mut buf = [0u8; 2048];
                     let len = ctrl.get_text(&mut buf);
-                    let val = core::str::from_utf8(&buf[..len]).unwrap_or("");
+                    let val = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
                     data.push((String::from(name), String::from(val)));
                 }
                 FormFieldKind::Checkbox => {
@@ -327,7 +341,7 @@ impl WebView {
                     let ctrl = ui::Control::from_id(fc.control_id);
                     let mut buf = [0u8; 8192];
                     let len = ctrl.get_text(&mut buf);
-                    let val = core::str::from_utf8(&buf[..len]).unwrap_or("");
+                    let val = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
                     data.push((String::from(name), String::from(val)));
                 }
                 _ => {}

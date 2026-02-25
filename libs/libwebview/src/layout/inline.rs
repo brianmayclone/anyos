@@ -296,7 +296,15 @@ fn emit_input_fragment(
     let lower = ascii_lower_str(input_type, &mut lower_buf);
 
     match lower {
-        "hidden" => return,
+        "hidden" => {
+            // Hidden inputs have no visual representation but must be tracked
+            // for form submission. Create a zero-size layout box.
+            let mut hid = LayoutBox::new(Some(node_id), BoxType::Inline);
+            hid.form_field = Some(FormFieldKind::Hidden);
+            hid.form_value = dom.attr(node_id, "value").map(String::from);
+            out.push(InlineFragment { width: 0, height: 0, layout_box: hid, breaks_after: false });
+            return;
+        }
         "checkbox" => {
             let mut cb = LayoutBox::new(Some(node_id), BoxType::Inline);
             cb.form_field = Some(FormFieldKind::Checkbox);

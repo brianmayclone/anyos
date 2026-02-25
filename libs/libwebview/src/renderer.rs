@@ -94,8 +94,10 @@ impl Renderer {
         images: &ImageCache,
         link_cb: Option<ui::Callback>,
         link_cb_ud: u64,
+        submit_cb: Option<ui::Callback>,
+        submit_cb_ud: u64,
     ) {
-        self.walk(root, parent, images, 0, 0, link_cb, link_cb_ud);
+        self.walk(root, parent, images, 0, 0, link_cb, link_cb_ud, submit_cb, submit_cb_ud);
     }
 
     fn walk(
@@ -107,6 +109,8 @@ impl Renderer {
         offset_y: i32,
         link_cb: Option<ui::Callback>,
         link_cb_ud: u64,
+        submit_cb: Option<ui::Callback>,
+        submit_cb_ud: u64,
     ) {
         let abs_x = offset_x + bx.x;
         let abs_y = offset_y + bx.y;
@@ -213,12 +217,12 @@ impl Renderer {
 
         // Form fields.
         if let Some(kind) = bx.form_field {
-            self.emit_form_control(kind, bx, abs_x, abs_y, parent);
+            self.emit_form_control(kind, bx, abs_x, abs_y, parent, submit_cb, submit_cb_ud);
         }
 
         // Recurse into children.
         for child in &bx.children {
-            self.walk(child, parent, images, abs_x, abs_y, link_cb, link_cb_ud);
+            self.walk(child, parent, images, abs_x, abs_y, link_cb, link_cb_ud, submit_cb, submit_cb_ud);
         }
     }
 
@@ -229,6 +233,8 @@ impl Renderer {
         x: i32,
         y: i32,
         parent: &ui::View,
+        submit_cb: Option<ui::Callback>,
+        submit_cb_ud: u64,
     ) {
         match kind {
             FormFieldKind::TextInput => {
@@ -271,6 +277,10 @@ impl Renderer {
                 let id = btn.id();
                 self.controls.push(id);
                 self.register_form_control(id, bx, kind);
+                // Wire submit callback.
+                if let Some(cb) = submit_cb {
+                    btn.on_click_raw(cb, submit_cb_ud);
+                }
             }
             FormFieldKind::Checkbox => {
                 let cb = ui::Checkbox::new("");
@@ -299,7 +309,16 @@ impl Renderer {
                 self.controls.push(id);
                 self.register_form_control(id, bx, kind);
             }
-            FormFieldKind::Hidden => {}
+            FormFieldKind::Hidden => {
+                // No visible control, but register for form data collection.
+                let node_id = bx.node_id.unwrap_or(0);
+                self.form_controls.push(FormControl {
+                    control_id: 0, // no UI control
+                    node_id,
+                    kind,
+                    name: String::new(),
+                });
+            }
         }
     }
 
