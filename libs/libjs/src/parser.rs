@@ -591,13 +591,11 @@ impl Parser {
             _ => {
                 // Use keyword as identifier name
                 let s = match self.peek() {
-                    TokenKind::Get | TokenKind::Default | TokenKind::New |
+                    TokenKind::Default | TokenKind::New |
                     TokenKind::Delete | TokenKind::In | TokenKind::Return |
                     TokenKind::Class | TokenKind::Super | TokenKind::This => {
-                        let tok = self.advance();
-                        match &tok.kind {
-                            _ => String::from("_kw_"),
-                        }
+                        self.pos += 1;
+                        String::from("_kw_")
                     }
                     _ => {
                         self.pos += 1;

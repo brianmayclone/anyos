@@ -412,7 +412,7 @@ impl Compiler {
         let exit_jump = self.emit(Op::JumpIfFalse(0)); // done flag
 
         // Bind the iteration value to the loop variable
-        match left.as_ref() {
+        match left {
             ForInit::VarDecl { kind: _, decls } => {
                 if let Some(decl) = decls.first() {
                     if let Pattern::Ident(name) = &decl.name {
@@ -423,7 +423,7 @@ impl Compiler {
                 }
             }
             ForInit::Expr(Expr::Ident(name)) => {
-                if let Some(slot) = self.scope().resolve_local(name) {
+                if let Some(slot) = self.scope().resolve_local(name.as_str()) {
                     self.emit(Op::StoreLocal(slot));
                     self.emit(Op::Pop);
                 } else {
@@ -916,7 +916,8 @@ impl Compiler {
                 // Simplified: await is a no-op for now
             }
             Expr::ClassExpr { name, super_class, body } => {
-                self.compile_class(name.as_ref(), super_class, body);
+                let sc = super_class.as_ref().map(|b| b.as_ref().clone());
+                self.compile_class(name.as_ref(), &sc, body);
             }
             Expr::OptionalChain { object, property } => {
                 self.compile_expr(object);

@@ -396,8 +396,9 @@ impl Vm {
                     let result = match &obj {
                         JsValue::Object(o) => o.has(&key_str),
                         JsValue::Array(a) => {
-                            if let Some(idx) = crate::value::parse_js_float(&key_str) as usize as usize {
-                                idx < a.elements.len()
+                            let f = crate::value::parse_js_float(&key_str);
+                            if !f.is_nan() && f >= 0.0 {
+                                (f as usize) < a.elements.len()
                             } else {
                                 a.properties.contains_key(&key_str)
                             }
@@ -1018,7 +1019,8 @@ fn exp_approx(x: f64) -> f64 {
     if x > 709.0 { return f64::INFINITY; }
     if x < -709.0 { return 0.0; }
     // Use Taylor series around 0
-    let k = (x / core::f64::consts::LN_2).round() as i32;
+    let ratio = x / core::f64::consts::LN_2;
+    let k = floor_f64(ratio + 0.5) as i32;
     let r = x - k as f64 * core::f64::consts::LN_2;
     let mut sum = 1.0;
     let mut term = 1.0;
