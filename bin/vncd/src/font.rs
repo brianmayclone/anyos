@@ -1,12 +1,12 @@
 //! Minimal 8×8 bitmapped ASCII font for the VNC pre-auth login screen.
 //!
-//! Covers printable ASCII (0x20 Space through 0x7E `~`), 96 glyphs total.
+//! Covers printable ASCII (0x20 Space through 0x7F DEL), 96 glyphs total.
 //! Each glyph is 8 bytes — one byte per row, MSB = leftmost pixel.
 //! Glyphs below 0x20 or above 0x7E are rendered as a solid block.
 //!
 //! Source: based on the classic IBM PC 8×8 character ROM (public domain).
 
-/// Number of glyphs in the font (printable ASCII 0x20–0x7E).
+/// Number of glyphs in the font (printable ASCII 0x20–0x7F), 96 glyphs total.
 pub const GLYPH_COUNT: usize = 96;
 
 /// Width and height of each glyph in pixels.
@@ -206,6 +206,8 @@ pub static FONT8X8: [u8; GLYPH_COUNT * GLYPH_H] = [
     0x07,0x0C,0x0C,0x38,0x0C,0x0C,0x07,0x00,
     // 0x7E ~
     0x6E,0x3B,0x00,0x00,0x00,0x00,0x00,0x00,
+    // 0x7F DEL (solid block, used as fallback/replacement glyph)
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
 ];
 
 /// Draw a single character at pixel position `(px, py)` into an ARGB framebuffer.

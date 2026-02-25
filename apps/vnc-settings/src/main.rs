@@ -170,12 +170,14 @@ fn app() -> &'static mut AppState {
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
 
+/// Rebuild the user DataGrid from the current config.
 fn refresh_user_grid() {
     let s = app();
-    s.user_grid.clear_rows();
-    for user in &s.cfg.allowed_users {
-        s.user_grid.add_row(&[user.as_str()]);
-    }
+    // Build row data and pass to set_data for a full refresh.
+    let rows: Vec<Vec<&str>> = s.cfg.allowed_users.iter()
+        .map(|u| { let mut v = Vec::new(); v.push(u.as_str()); v })
+        .collect();
+    s.user_grid.set_data(&rows);
     s.btn_remove.set_enabled(!s.cfg.allowed_users.is_empty());
 }
 
@@ -219,9 +221,9 @@ fn apply() {
 
     let s = app();
     let status = if s.cfg.enabled {
-        format!("  Saved. VNC enabled on port {}.", s.cfg.port)
+        format!("    Saved. VNC enabled on port {}.", s.cfg.port)
     } else {
-        String::from("  Saved. VNC access disabled.")
+        String::from("    Saved. VNC access disabled.")
     };
     s.status_label.set_text(&status);
 }
@@ -239,25 +241,21 @@ fn show_add_user_dialog() {
         ui::WIN_FLAG_NOT_RESIZABLE | ui::WIN_FLAG_NO_MINIMIZE | ui::WIN_FLAG_NO_MAXIMIZE,
     );
 
-    // "Username:" label
     let lbl = ui::Label::new("Username:");
     lbl.set_position(12, 18);
     lbl.set_size(80, 22);
     dlg.add(&lbl);
 
-    // Input field
-    let input = ui::TextField::new("");
+    let input = ui::TextField::new();
     input.set_position(96, 16);
     input.set_size(228, 26);
     dlg.add(&input);
 
-    // Cancel button
     let btn_cancel = ui::Button::new("Cancel");
     btn_cancel.set_position(156, 58);
     btn_cancel.set_size(80, 28);
     dlg.add(&btn_cancel);
 
-    // OK button
     let btn_ok = ui::Button::new("OK");
     btn_ok.set_position(244, 58);
     btn_ok.set_size(80, 28);
@@ -284,16 +282,16 @@ fn show_add_user_dialog() {
             dlg_ok.destroy();
 
             if !user_exists(name) {
-                app().status_label.set_text("  Error: user does not exist locally.");
+                app().status_label.set_text("    Error: user does not exist locally.");
                 return;
             }
             let s = app();
             if s.cfg.allowed_users.iter().any(|u| u.as_str() == name) {
-                s.status_label.set_text("  User already in list.");
+                s.status_label.set_text("    User already in list.");
                 return;
             }
             s.cfg.allowed_users.push(String::from(name));
-            s.status_label.set_text("  User added.");
+            s.status_label.set_text("    User added.");
             refresh_user_grid();
         });
     }
@@ -323,73 +321,88 @@ fn main() {
     let win = ui::Window::new("VNC Settings", -1, -1, WIN_W, WIN_H);
     let tc = ui::theme::colors();
 
-    // ── Toolbar ──────────────────────────────────────────────────────────────
-    let toolbar = ui::Toolbar::new();
-    toolbar.set_dock(ui::DOCK_TOP);
-    win.add(&toolbar);
-
-    let btn_save_tb = toolbar.add_icon_button("Save");
-    btn_save_tb.set_system_icon("device-floppy", ui::IconType::Outline, tc.text, 24);
-
-    // ── Status bar ───────────────────────────────────────────────────────────
-    let status_label = ui::Label::new("  VNC Settings");
-    status_label.set_dock(ui::DOCK_BOTTOM);
-    status_label.set_size(WIN_W, 24);
-    status_label.set_color(ui::theme::darken(tc.window_bg, 5));
-    status_label.set_text_color(tc.text_secondary);
-    status_label.set_font_size(11);
-    win.add(&status_label);
-
     // ── Content scroll area ───────────────────────────────────────────────────
     let scroll = ui::ScrollView::new();
     scroll.set_dock(ui::DOCK_FILL);
     win.add(&scroll);
 
+    // ── Status bar — added last so it is never occluded by other controls ────
+    // Use a View as the coloured container so we can position the label with
+    // explicit 4 px top offset (no set_padding API on Label).
+    let status_bar = ui::View::new();
+    status_bar.set_dock(ui::DOCK_BOTTOM);
+    status_bar.set_size(WIN_W, 26);
+    status_bar.set_color(tc.accent);
+    win.add(&status_bar);
+
+    let status_label = ui::Label::new("    VNC Settings");
+    status_label.set_position(0, 4);
+    status_label.set_size(WIN_W, 18);
+    status_label.set_color(tc.accent);
+    status_label.set_text_color(0xFFFFFFFF);
+    status_label.set_font_size(11);
+    status_bar.add(&status_label);
+
     // ════════════════════════════════════════════════════════════════
-    //  "VNC Server" section
+    //  "VNC Server" section — 3-column TableLayout:
+    //  col 0 = label (right-aligned), col 1 = 10 px spacer, col 2 = control
+    //  Total inner width = WIN_W-40 = 400 px → columns [130, 10, 260]
+    //  We nest a fixed-size View in col 1 to enforce the 10 px width.
     // ════════════════════════════════════════════════════════════════
     let grp_server = ui::GroupBox::new("VNC Server");
     grp_server.set_position(12, 8);
     grp_server.set_size(WIN_W - 24, 185);
     scroll.add(&grp_server);
 
-    let tl = ui::TableLayout::new(2, 4);
+    let tl = ui::TableLayout::new(3);
     tl.set_position(8, 22);
     tl.set_size(WIN_W - 40, 155);
-    tl.set_column_width(0, 130);
-    tl.set_column_width(1, 240);
     tl.set_row_height(34);
     grp_server.add(&tl);
 
-    // Row 0: VNC Access toggle
+    // Helper macro: add one spacer view in the middle column.
+    // (A Label with no text — the layout engine sizes the cell, the view
+    //  sits invisibly in between labels and controls.)
+    macro_rules! spacer {
+        () => {{
+            let s = ui::Label::new("");
+            tl.add(&s);
+        }};
+    }
+
+    // Row 0: VNC Access
     let lbl_enabled = ui::Label::new("VNC Access");
-    lbl_enabled.set_text_align(ui::ALIGN_RIGHT);
-    tl.add_at(&lbl_enabled, 0, 0);
+    lbl_enabled.set_text_align(ui::TEXT_ALIGN_RIGHT);
+    tl.add(&lbl_enabled);
+    spacer!();
     let toggle_enabled = ui::Toggle::new(cfg.enabled);
-    tl.add_at(&toggle_enabled, 1, 0);
+    tl.add(&toggle_enabled);
 
     // Row 1: Port
     let lbl_port = ui::Label::new("Port");
-    lbl_port.set_text_align(ui::ALIGN_RIGHT);
-    tl.add_at(&lbl_port, 0, 1);
-    let port_field = ui::TextField::new(&format!("{}", cfg.port));
-    port_field.set_size(80, 26);
-    tl.add_at(&port_field, 1, 1);
+    lbl_port.set_text_align(ui::TEXT_ALIGN_RIGHT);
+    tl.add(&lbl_port);
+    spacer!();
+    let port_field = ui::TextField::new();
+    port_field.set_text(&format!("{}", cfg.port));
+    tl.add(&port_field);
 
     // Row 2: VNC Password
     let lbl_pw = ui::Label::new("VNC Password");
-    lbl_pw.set_text_align(ui::ALIGN_RIGHT);
-    tl.add_at(&lbl_pw, 0, 2);
-    let pw_field = ui::TextField::new(&cfg.password);
-    pw_field.set_size(160, 26);
-    tl.add_at(&pw_field, 1, 2);
+    lbl_pw.set_text_align(ui::TEXT_ALIGN_RIGHT);
+    tl.add(&lbl_pw);
+    spacer!();
+    let pw_field = ui::TextField::new();
+    pw_field.set_text(&cfg.password);
+    tl.add(&pw_field);
 
     // Row 3: Allow Root
     let lbl_root = ui::Label::new("Allow Root");
-    lbl_root.set_text_align(ui::ALIGN_RIGHT);
-    tl.add_at(&lbl_root, 0, 3);
+    lbl_root.set_text_align(ui::TEXT_ALIGN_RIGHT);
+    tl.add(&lbl_root);
+    spacer!();
     let toggle_root = ui::Toggle::new(cfg.allow_root);
-    tl.add_at(&toggle_root, 1, 3);
+    tl.add(&toggle_root);
 
     // ════════════════════════════════════════════════════════════════
     //  "Allowed Users" section
@@ -399,7 +412,6 @@ fn main() {
     grp_users.set_size(WIN_W - 24, 234);
     scroll.add(&grp_users);
 
-    // Action buttons row: Add and Remove side by side.
     let btn_add = ui::Button::new("+ Add User…");
     btn_add.set_position(8, 24);
     btn_add.set_size(110, 26);
@@ -411,10 +423,9 @@ fn main() {
     btn_remove.set_enabled(!cfg.allowed_users.is_empty());
     grp_users.add(&btn_remove);
 
-    // Users list DataGrid.
     let user_grid = ui::DataGrid::new(WIN_W - 40, 168);
     user_grid.set_position(8, 58);
-    user_grid.set_columns(&[ColumnDef::new("Username").width((WIN_W - 40) as i32)]);
+    user_grid.set_columns(&[ColumnDef::new("Username").width(WIN_W - 40)]);
     user_grid.set_row_height(22);
     user_grid.set_selection_mode(ui::SELECTION_SINGLE);
     grp_users.add(&user_grid);
@@ -453,25 +464,22 @@ fn main() {
 
     // ── Event handlers ────────────────────────────────────────────────────────
 
-    btn_save_tb.on_click(|_| apply());
     btn_apply.on_click(|_| apply());
 
     btn_cancel.on_click(|_| {
         anyos_std::process::exit(0);
     });
 
-    // "+ Add User…": open a Finder-style property dialog window.
     btn_add.on_click(|_| {
         show_add_user_dialog();
     });
 
-    // Remove selected user from list.
     btn_remove.on_click(|_| {
         let s = app();
-        let sel = s.user_grid.get_selected_row();
+        let sel = s.user_grid.selected_row();
         if sel != u32::MAX && (sel as usize) < s.cfg.allowed_users.len() {
             s.cfg.allowed_users.remove(sel as usize);
-            s.status_label.set_text("  User removed.");
+            s.status_label.set_text("    User removed.");
             refresh_user_grid();
         }
     });

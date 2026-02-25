@@ -51,6 +51,7 @@ exclude = [
   "apps/diff",
   "apps/mdview",
   "apps/clipman",
+  "apps/vnc-settings",
   # CLI utilities
   "bin/ping",
   "bin/dhcp",
@@ -147,6 +148,7 @@ exclude = [
   "bin/neofetch",
   "bin/nvi",
   "bin/httpd",
+  "bin/vncd",
   "apps/demo_anyui",
   "apps/anycode",
   "apps/paint",
