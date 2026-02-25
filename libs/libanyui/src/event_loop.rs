@@ -22,8 +22,8 @@ use alloc::vec::Vec;
 use crate::compositor;
 use crate::control::{self, ControlId, ControlKind, Control, Callback};
 
-/// Double-click threshold in frames (~400ms at 30fps).
-const DOUBLE_CLICK_FRAMES: u64 = 12;
+/// Double-click threshold in milliseconds (standard: 400ms).
+const DOUBLE_CLICK_MS: u32 = 400;
 
 /// A pending callback to fire after all event processing.
 struct PendingCallback {
@@ -365,10 +365,10 @@ pub fn run_once() -> u32 {
                                             fire_event_callback(&st.controls, target_id, control::EVENT_SUBMIT, &mut pending_cbs);
                                         }
 
-                                        // Double-click detection
-                                        let tick = frame_tick();
+                                        // Double-click detection (time-based, not frame-based)
+                                        let now_ms = crate::syscall::uptime_ms();
                                         if st.last_click_id == Some(target_id)
-                                            && tick.wrapping_sub(st.last_click_tick) <= DOUBLE_CLICK_FRAMES
+                                            && now_ms.wrapping_sub(st.last_click_tick) <= DOUBLE_CLICK_MS
                                         {
                                             if let Some(idx3) = control::find_idx(&st.controls, target_id) {
                                                 let dc_resp = st.controls[idx3].handle_double_click(local_x, local_y, button);
@@ -384,7 +384,7 @@ pub fn run_once() -> u32 {
                                             st.last_click_tick = 0;
                                         } else {
                                             st.last_click_id = Some(target_id);
-                                            st.last_click_tick = tick;
+                                            st.last_click_tick = now_ms;
                                         }
                                     }
                                 }
@@ -791,14 +791,6 @@ fn is_point_in_control(
     }
 }
 
-static mut FRAME_COUNTER: u64 = 0;
-
-fn frame_tick() -> u64 {
-    unsafe {
-        FRAME_COUNTER += 1;
-        FRAME_COUNTER
-    }
-}
 
 fn clear_tracking_for(st: &mut crate::AnyuiState, id: ControlId) {
     if st.focused == Some(id) { st.focused = None; }

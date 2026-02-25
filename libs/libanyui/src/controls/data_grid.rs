@@ -597,8 +597,9 @@ impl Control for DataGrid {
             }
 
             col_x += col.width as i32;
-            // Column separator line
-            crate::draw::fill_rect(&clipped, col_x - 1, y, 1, h, tc.separator);
+            // Column separator line — only draw down to content, not full control height
+            let sep_h = (self.header_height + self.row_count as u32 * self.row_height).min(h);
+            crate::draw::fill_rect(&clipped, col_x - 1, y, 1, sep_h, tc.separator);
         }
 
         // Header bottom border
@@ -635,7 +636,7 @@ impl Control for DataGrid {
 
     fn is_interactive(&self) -> bool { true }
 
-    fn handle_mouse_down(&mut self, lx: i32, ly: i32, _button: u32) -> EventResponse {
+    fn handle_mouse_down(&mut self, lx: i32, ly: i32, button: u32) -> EventResponse {
         if ly < self.header_height as i32 {
             // Check resize handle first (4px near column edge)
             if let Some((col_idx, _edge_x)) = self.column_edge_at_x(lx) {
@@ -657,6 +658,22 @@ impl Control for DataGrid {
                 return EventResponse::CONSUMED;
             }
         }
+
+        // Right-click on a row: select it so context menu targets the right entry
+        if button & 0x02 != 0 {
+            if let Some(vis_row) = self.row_at_y(ly) {
+                let data_row = self.data_row(vis_row);
+                if !self.is_row_selected(data_row) {
+                    self.clear_selection();
+                    self.set_row_selected(data_row, true);
+                    self.anchor_row = Some(data_row);
+                    self.base.state = data_row as u32;
+                    self.base.mark_dirty();
+                }
+                return EventResponse::CHANGED;
+            }
+        }
+
         EventResponse::CONSUMED
     }
 
@@ -844,6 +861,8 @@ impl Control for DataGrid {
         }
         EventResponse::CONSUMED
     }
+
+    fn accepts_focus(&self) -> bool { true }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────

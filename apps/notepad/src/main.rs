@@ -1,627 +1,321 @@
+//! Notepad — Simple text editor for anyOS using libanyui.
+//!
+//! Layout: Toolbar (DOCK_TOP) | TextEditor (DOCK_FILL) | StatusBar (DOCK_BOTTOM)
+
 #![no_std]
 #![no_main]
 
-use anyos_std::String;
-use anyos_std::Vec;
-use anyos_std::ui::window;
-use uisys_client::*;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec;
+use libanyui_client as anyui;
+use anyui::IconType;
 
 anyos_std::entry!(main);
 
-// Layout constants
-const NAVBAR_H: i32 = 44;
-const GUTTER_W: i32 = 48;
-const SCROLLBAR_W: u32 = 8;
-const LINE_H: i32 = 16;
-const CHAR_W: i32 = 8;
-const PADDING_X: i32 = 6;
-const EVENT_MOUSE_SCROLL: u32 = 7;
+// ════════════════════════════════════════════════════════════════
+//  Global application state
+// ════════════════════════════════════════════════════════════════
 
-// Colors
-const BG: u32 = 0xFF1E1E1E;
-const GUTTER_BG: u32 = 0xFF252525;
-const GUTTER_SEP: u32 = 0xFF3D3D3D;
-const LINE_NUM_COLOR: u32 = 0xFF606060;
-const TEXT_COLOR: u32 = 0xFFE6E6E6;
-const CURSOR_COLOR: u32 = 0xFFD4D4D4;
-
-struct Editor {
-    lines: Vec<String>,
-    cursor_line: usize,
-    cursor_col: usize,
-    modified: bool,
+struct AppState {
+    editor: anyui::TextEditor,
+    status_file: anyui::Label,
+    status_cursor: anyui::Label,
+    status_encoding: anyui::Label,
     file_path: String,
+    modified: bool,
+    win: anyui::Window,
 }
 
-impl Editor {
-    fn new(content: &str, path: &str) -> Self {
-        let mut lines: Vec<String> = content.split('\n').map(String::from).collect();
-        if lines.is_empty() {
-            lines.push(String::new());
-        }
-        Editor {
-            lines,
-            cursor_line: 0,
-            cursor_col: 0,
-            modified: false,
-            file_path: String::from(path),
-        }
-    }
+static mut APP: Option<AppState> = None;
 
-    fn new_empty(path: &str) -> Self {
-        let mut lines = Vec::new();
-        lines.push(String::new());
-        Editor {
-            lines,
-            cursor_line: 0,
-            cursor_col: 0,
-            modified: false,
-            file_path: String::from(path),
-        }
-    }
-
-    fn line_count(&self) -> usize {
-        self.lines.len()
-    }
-
-    fn insert_char(&mut self, ch: u8) {
-        let line = &mut self.lines[self.cursor_line];
-        if self.cursor_col >= line.len() {
-            line.push(ch as char);
-        } else {
-            line.insert(self.cursor_col, ch as char);
-        }
-        self.cursor_col += 1;
-        self.modified = true;
-    }
-
-    fn insert_newline(&mut self) {
-        let line = &mut self.lines[self.cursor_line];
-        let rest = String::from(&line[self.cursor_col..]);
-        line.truncate(self.cursor_col);
-        self.cursor_line += 1;
-        self.lines.insert(self.cursor_line, rest);
-        self.cursor_col = 0;
-        self.modified = true;
-    }
-
-    fn backspace(&mut self) {
-        if self.cursor_col > 0 {
-            let line = &mut self.lines[self.cursor_line];
-            line.remove(self.cursor_col - 1);
-            self.cursor_col -= 1;
-            self.modified = true;
-        } else if self.cursor_line > 0 {
-            // Merge with previous line
-            let current = self.lines.remove(self.cursor_line);
-            self.cursor_line -= 1;
-            self.cursor_col = self.lines[self.cursor_line].len();
-            self.lines[self.cursor_line].push_str(&current);
-            self.modified = true;
-        }
-    }
-
-    fn delete(&mut self) {
-        let line_len = self.lines[self.cursor_line].len();
-        if self.cursor_col < line_len {
-            self.lines[self.cursor_line].remove(self.cursor_col);
-            self.modified = true;
-        } else if self.cursor_line + 1 < self.lines.len() {
-            // Merge next line into current
-            let next = self.lines.remove(self.cursor_line + 1);
-            self.lines[self.cursor_line].push_str(&next);
-            self.modified = true;
-        }
-    }
-
-    fn insert_tab(&mut self) {
-        // Insert 4 spaces
-        for _ in 0..4 {
-            self.insert_char(b' ');
-        }
-    }
-
-    fn move_left(&mut self) {
-        if self.cursor_col > 0 {
-            self.cursor_col -= 1;
-        } else if self.cursor_line > 0 {
-            self.cursor_line -= 1;
-            self.cursor_col = self.lines[self.cursor_line].len();
-        }
-    }
-
-    fn move_right(&mut self) {
-        let line_len = self.lines[self.cursor_line].len();
-        if self.cursor_col < line_len {
-            self.cursor_col += 1;
-        } else if self.cursor_line + 1 < self.lines.len() {
-            self.cursor_line += 1;
-            self.cursor_col = 0;
-        }
-    }
-
-    fn move_up(&mut self) {
-        if self.cursor_line > 0 {
-            self.cursor_line -= 1;
-            let line_len = self.lines[self.cursor_line].len();
-            if self.cursor_col > line_len {
-                self.cursor_col = line_len;
-            }
-        }
-    }
-
-    fn move_down(&mut self) {
-        if self.cursor_line + 1 < self.lines.len() {
-            self.cursor_line += 1;
-            let line_len = self.lines[self.cursor_line].len();
-            if self.cursor_col > line_len {
-                self.cursor_col = line_len;
-            }
-        }
-    }
-
-    fn move_home(&mut self) {
-        self.cursor_col = 0;
-    }
-
-    fn move_end(&mut self) {
-        self.cursor_col = self.lines[self.cursor_line].len();
-    }
-
-    fn save(&mut self) -> bool {
-        use anyos_std::fs;
-        // Truncate then write
-        fs::truncate(&self.file_path);
-
-        let fd = fs::open(&self.file_path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
-        if fd == u32::MAX {
-            return false;
-        }
-
-        for (i, line) in self.lines.iter().enumerate() {
-            if !line.is_empty() {
-                fs::write(fd, line.as_bytes());
-            }
-            if i + 1 < self.lines.len() {
-                fs::write(fd, b"\n");
-            }
-        }
-        fs::close(fd);
-        self.modified = false;
-        true
-    }
-
+fn app() -> &'static mut AppState {
+    unsafe { APP.as_mut().expect("app not initialized") }
 }
+
+// ════════════════════════════════════════════════════════════════
+//  Entry point
+// ════════════════════════════════════════════════════════════════
 
 fn main() {
-    // Get file path from arguments
-    let mut args_buf = [0u8; 256];
-    let path = anyos_std::process::args(&mut args_buf).trim();
-
-    if path.is_empty() {
-        anyos_std::println!("notepad: no file specified");
+    if !anyui::init() {
+        anyos_std::println!("notepad: failed to load libanyui.so");
         return;
     }
 
-    // Read file content or start empty for new files
-    let mut editor = match read_file(path) {
-        Some(data) => {
-            let text = core::str::from_utf8(&data).unwrap_or("");
-            Editor::new(text, path)
-        }
-        None => {
-            // New file
-            Editor::new_empty(path)
-        }
+    // ── Parse command-line args ──
+    let mut args_buf = [0u8; 256];
+    let raw_args = anyos_std::process::args(&mut args_buf);
+    let arg_path = raw_args.trim();
+
+    // Determine initial file path and content
+    let (initial_path, initial_content) = if !arg_path.is_empty() {
+        let content = read_file(arg_path);
+        (String::from(arg_path), content)
+    } else {
+        (String::new(), None)
     };
 
-    // Extract filename for title
-    let filename = path.rsplit('/').next().unwrap_or(path);
+    let title = make_title(&initial_path, false);
 
-    // Create window
-    let win = window::create_ex(&make_title(filename, editor.modified), 100, 60, 600, 400, 0);
-    if win == u32::MAX {
-        anyos_std::println!("notepad: failed to create window");
-        return;
+    // ── Create window ──
+    let win = anyui::Window::new(&title, -1, -1, 700, 500);
+
+    // ── Toolbar (DOCK_TOP) ──
+    let tc = anyui::theme::colors();
+    let toolbar = anyui::Toolbar::new();
+    toolbar.set_dock(anyui::DOCK_TOP);
+    toolbar.set_size(700, 42);
+    toolbar.set_color(tc.sidebar_bg);
+    toolbar.set_padding(4, 4, 4, 4);
+
+    let btn_new = toolbar.add_icon_button("");
+    btn_new.set_size(34, 34);
+    btn_new.set_system_icon("file-plus", IconType::Outline, tc.text, 24);
+    btn_new.set_tooltip("New");
+
+    let btn_open = toolbar.add_icon_button("");
+    btn_open.set_size(34, 34);
+    btn_open.set_system_icon("folder-open", IconType::Outline, tc.text, 24);
+    btn_open.set_tooltip("Open");
+
+    let btn_save = toolbar.add_icon_button("");
+    btn_save.set_size(34, 34);
+    btn_save.set_system_icon("device-floppy", IconType::Outline, tc.text, 24);
+    btn_save.set_tooltip("Save");
+
+    let btn_save_as = toolbar.add_icon_button("");
+    btn_save_as.set_size(34, 34);
+    btn_save_as.set_system_icon("file-export", IconType::Outline, tc.text, 24);
+    btn_save_as.set_tooltip("Save As");
+
+    win.add(&toolbar);
+
+    // ── Status bar (DOCK_BOTTOM) ──
+    let status_panel = anyui::View::new();
+    status_panel.set_color(0xFF007ACC);
+    status_panel.set_size(700, 22);
+    status_panel.set_dock(anyui::DOCK_BOTTOM);
+
+    let status_file = anyui::Label::new(&display_filename(&initial_path));
+    status_file.set_position(8, 3);
+    status_file.set_font_size(11);
+    status_file.set_text_color(0xFFFFFFFF);
+    status_panel.add(&status_file);
+
+    let status_cursor = anyui::Label::new("Ln 1, Col 1");
+    status_cursor.set_position(350, 3);
+    status_cursor.set_font_size(11);
+    status_cursor.set_text_color(0xFFFFFFFF);
+    status_panel.add(&status_cursor);
+
+    let status_encoding = anyui::Label::new("UTF-8");
+    status_encoding.set_position(550, 3);
+    status_encoding.set_font_size(11);
+    status_encoding.set_text_color(0xFFFFFFFF);
+    status_panel.add(&status_encoding);
+
+    win.add(&status_panel);
+
+    // ── TextEditor (DOCK_FILL) ──
+    let editor = anyui::TextEditor::new(700, 400);
+    editor.set_dock(anyui::DOCK_FILL);
+    editor.set_editor_font(0, 13);
+    editor.set_tab_width(4);
+    editor.set_show_line_numbers(true);
+
+    if let Some(ref data) = initial_content {
+        editor.set_text_bytes(data);
     }
 
-    // Set up menu bar
-    let mut mb = window::MenuBarBuilder::new()
-        .menu("File")
-            .item(1, "Save", 0)
-            .separator()
-            .item(2, "Close", 0)
-        .end_menu()
-        .menu("Edit")
-            .item(10, "Copy Line", 0)
-            .item(11, "Cut Line", 0)
-            .item(12, "Paste", 0)
-        .end_menu();
-    let data = mb.build();
-    window::set_menu(win, data);
+    win.add(&editor);
 
-    let (mut win_w, mut win_h) = window::get_size(win).unwrap_or((600, 400));
+    // ── Initialize global state ──
+    unsafe {
+        APP = Some(AppState {
+            editor,
+            status_file,
+            status_cursor,
+            status_encoding,
+            file_path: initial_path,
+            modified: false,
+            win,
+        });
+    }
 
-    let content_h = (editor.line_count() as u32) * (LINE_H as u32);
-    let text_area_h = (win_h as i32 - NAVBAR_H).max(0) as u32;
+    // ════════════════════════════════════════════════════════════════
+    //  Event wiring
+    // ════════════════════════════════════════════════════════════════
 
-    let nav = UiNavbar::new(0, 0, win_w, false);
-    let mut btn_save = UiToolbarButton::new(win_w as i32 - 60, 8, 52, 28);
-    let mut sb = UiScrollbar::new(
-        win_w as i32 - SCROLLBAR_W as i32,
-        NAVBAR_H,
-        SCROLLBAR_W,
-        text_area_h,
-        content_h,
-    );
+    // ── New ──
+    btn_new.on_click(|_| {
+        let s = app();
+        s.editor.set_text_bytes(b"");
+        s.file_path = String::new();
+        s.modified = false;
+        update_title(s);
+        s.status_file.set_text("Untitled");
+    });
 
-    let mut needs_redraw = true;
-    let mut was_modified = false;
+    // ── Open ──
+    btn_open.on_click(|_| {
+        if let Some(path) = anyui::FileDialog::open_file() {
+            let s = app();
+            if let Some(data) = read_file(&path) {
+                s.editor.set_text_bytes(&data);
+            } else {
+                s.editor.set_text_bytes(b"");
+            }
+            s.file_path = path;
+            s.modified = false;
+            update_title(s);
+            s.status_file.set_text(&display_filename(&s.file_path));
+        }
+    });
 
-    loop {
-        let t0 = anyos_std::sys::uptime_ms();
-        // Poll events
-        let mut event_raw = [0u32; 5];
-        while window::get_event(win, &mut event_raw) != 0 {
-            let ev = UiEvent::from_raw(&event_raw);
+    // ── Save ──
+    btn_save.on_click(|_| {
+        save_current();
+    });
 
-            match ev.event_type {
-                EVENT_RESIZE => {
-                    let new_w = ev.p1;
-                    let new_h = ev.p2;
-                    if new_w != win_w || new_h != win_h {
-                        win_w = new_w;
-                        win_h = new_h;
-                        let new_text_h = (win_h as i32 - NAVBAR_H).max(0) as u32;
-                        sb.x = win_w as i32 - SCROLLBAR_W as i32;
-                        sb.h = new_text_h;
-                        btn_save.x = win_w as i32 - 60;
-                        update_scrollbar(&mut sb, &editor);
-                        needs_redraw = true;
+    // ── Save As ──
+    btn_save_as.on_click(|_| {
+        save_as();
+    });
+
+    // ── Keyboard shortcuts ──
+    app().win.on_key_down(|ke| {
+        if ke.ctrl() {
+            match ke.char_code {
+                0x73 => save_current(),                   // Ctrl+S
+                0x6F => {                                 // Ctrl+O
+                    if let Some(path) = anyui::FileDialog::open_file() {
+                        let s = app();
+                        if let Some(data) = read_file(&path) {
+                            s.editor.set_text_bytes(&data);
+                        } else {
+                            s.editor.set_text_bytes(b"");
+                        }
+                        s.file_path = path;
+                        s.modified = false;
+                        update_title(s);
+                        s.status_file.set_text(&display_filename(&s.file_path));
                     }
                 }
-                EVENT_KEY_DOWN => {
-                    let key = ev.key_code();
-                    let ch = ev.char_val();
-
-                    match key {
-                        KEY_UP => {
-                            editor.move_up();
-                            ensure_cursor_visible(&mut sb, &editor, win_h);
-                            needs_redraw = true;
-                        }
-                        KEY_DOWN => {
-                            editor.move_down();
-                            ensure_cursor_visible(&mut sb, &editor, win_h);
-                            needs_redraw = true;
-                        }
-                        KEY_LEFT => {
-                            editor.move_left();
-                            ensure_cursor_visible(&mut sb, &editor, win_h);
-                            needs_redraw = true;
-                        }
-                        KEY_RIGHT => {
-                            editor.move_right();
-                            ensure_cursor_visible(&mut sb, &editor, win_h);
-                            needs_redraw = true;
-                        }
-                        KEY_HOME => {
-                            editor.move_home();
-                            needs_redraw = true;
-                        }
-                        KEY_END => {
-                            editor.move_end();
-                            needs_redraw = true;
-                        }
-                        KEY_BACKSPACE => {
-                            editor.backspace();
-                            update_scrollbar(&mut sb, &editor);
-                            ensure_cursor_visible(&mut sb, &editor, win_h);
-                            needs_redraw = true;
-                        }
-                        KEY_DELETE => {
-                            editor.delete();
-                            update_scrollbar(&mut sb, &editor);
-                            needs_redraw = true;
-                        }
-                        KEY_ENTER => {
-                            editor.insert_newline();
-                            update_scrollbar(&mut sb, &editor);
-                            ensure_cursor_visible(&mut sb, &editor, win_h);
-                            needs_redraw = true;
-                        }
-                        KEY_TAB => {
-                            editor.insert_tab();
-                            needs_redraw = true;
-                        }
-                        KEY_ESCAPE => {
-                            window::destroy(win);
-                            return;
-                        }
-                        _ => {
-                            let mods = ev.modifiers();
-                            let ctrl = (mods & 2) != 0;
-
-                            if ctrl && ch == 's' as u32 {
-                                // Ctrl+S: save
-                                editor.save();
-                                needs_redraw = true;
-                            } else if ctrl && ch == 'c' as u32 {
-                                // Ctrl+C: copy current line
-                                let line = editor.lines[editor.cursor_line].clone();
-                                window::clipboard_set(&line);
-                            } else if ctrl && ch == 'x' as u32 {
-                                // Ctrl+X: cut current line
-                                let line = editor.lines[editor.cursor_line].clone();
-                                window::clipboard_set(&line);
-                                editor.lines[editor.cursor_line].clear();
-                                editor.cursor_col = 0;
-                                editor.modified = true;
-                                update_scrollbar(&mut sb, &editor);
-                                needs_redraw = true;
-                            } else if ctrl && ch == 'v' as u32 {
-                                // Ctrl+V: paste from clipboard
-                                if let Some(text) = window::clipboard_get() {
-                                    for c in text.chars() {
-                                        if c == '\n' {
-                                            editor.insert_newline();
-                                        } else if c >= ' ' && (c as u32) < 0x7F {
-                                            editor.insert_char(c as u8);
-                                        }
-                                    }
-                                    update_scrollbar(&mut sb, &editor);
-                                    ensure_cursor_visible(&mut sb, &editor, win_h);
-                                    needs_redraw = true;
-                                }
-                            } else if key == KEY_PAGE_UP {
-                                // Page Up
-                                let page_lines = ((win_h as i32 - NAVBAR_H) / LINE_H).max(1) as usize;
-                                for _ in 0..page_lines {
-                                    editor.move_up();
-                                }
-                                ensure_cursor_visible(&mut sb, &editor, win_h);
-                                needs_redraw = true;
-                            } else if key == KEY_PAGE_DOWN {
-                                // Page Down
-                                let page_lines = ((win_h as i32 - NAVBAR_H) / LINE_H).max(1) as usize;
-                                for _ in 0..page_lines {
-                                    editor.move_down();
-                                }
-                                ensure_cursor_visible(&mut sb, &editor, win_h);
-                                needs_redraw = true;
-                            } else if ch >= 0x20 && ch < 0x7F {
-                                // Printable ASCII
-                                editor.insert_char(ch as u8);
-                                ensure_cursor_visible(&mut sb, &editor, win_h);
-                                needs_redraw = true;
-                            }
-                        }
-                    }
-                }
-                EVENT_MOUSE_DOWN | EVENT_MOUSE_UP | EVENT_MOUSE_MOVE => {
-                    // Save button
-                    if btn_save.handle_event(&ev) {
-                        editor.save();
-                        needs_redraw = true;
-                    }
-                    // Scrollbar interaction
-                    else if sb.handle_event(&ev).is_some() {
-                        needs_redraw = true;
-                    } else if ev.event_type == EVENT_MOUSE_DOWN {
-                        // Click to place cursor
-                        let (mx, my) = ev.mouse_pos();
-                        click_to_cursor(&mut editor, &sb, mx, my, win_w);
-                        needs_redraw = true;
-                    }
-                }
-                EVENT_MOUSE_SCROLL => {
-                    let dz = ev.p1 as i32;
-                    let step = (dz.unsigned_abs() as u32) * LINE_H as u32 * 3;
-                    if dz < 0 {
-                        sb.scroll = sb.scroll.saturating_sub(step);
-                    } else {
-                        sb.scroll = (sb.scroll + step).min(sb.max_scroll());
-                    }
-                    needs_redraw = true;
-                }
-                window::EVENT_MENU_ITEM => {
-                    let item_id = ev.p2;
-                    match item_id {
-                        1 => { editor.save(); needs_redraw = true; } // Save
-                        2 => { window::destroy(win); return; }       // Close
-                        10 => { // Copy Line
-                            let line = editor.lines[editor.cursor_line].clone();
-                            window::clipboard_set(&line);
-                        }
-                        11 => { // Cut Line
-                            let line = editor.lines[editor.cursor_line].clone();
-                            window::clipboard_set(&line);
-                            editor.lines[editor.cursor_line].clear();
-                            editor.cursor_col = 0;
-                            editor.modified = true;
-                            update_scrollbar(&mut sb, &editor);
-                            needs_redraw = true;
-                        }
-                        12 => { // Paste
-                            if let Some(text) = window::clipboard_get() {
-                                for c in text.chars() {
-                                    if c == '\n' {
-                                        editor.insert_newline();
-                                    } else if c >= ' ' && (c as u32) < 0x7F {
-                                        editor.insert_char(c as u8);
-                                    }
-                                }
-                                update_scrollbar(&mut sb, &editor);
-                                ensure_cursor_visible(&mut sb, &editor, win_h);
-                                needs_redraw = true;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                EVENT_WINDOW_CLOSE => {
-                    window::destroy(win);
-                    return;
+                0x6E => {                                 // Ctrl+N
+                    let s = app();
+                    s.editor.set_text_bytes(b"");
+                    s.file_path = String::new();
+                    s.modified = false;
+                    update_title(s);
+                    s.status_file.set_text("Untitled");
                 }
                 _ => {}
             }
         }
+    });
 
-        // Update title if modified state changed
-        if editor.modified != was_modified {
-            was_modified = editor.modified;
-            window::set_title(win, &make_title(filename, editor.modified));
+    // ── Text change tracking ──
+    app().editor.on_text_changed(|_| {
+        let s = app();
+        if !s.modified {
+            s.modified = true;
+            update_title(s);
         }
+    });
 
-        if needs_redraw {
-            render(win, win_w, win_h, &nav, &btn_save, &sb, &editor, filename);
-            needs_redraw = false;
-        }
+    // ── Cursor position timer (500ms) ──
+    anyui::set_timer(500, || {
+        let s = app();
+        let (row, col) = s.editor.cursor();
+        let text = format!("Ln {}, Col {}", row + 1, col + 1);
+        s.status_cursor.set_text(&text);
+    });
 
-        let elapsed = anyos_std::sys::uptime_ms().wrapping_sub(t0);
-        if elapsed < 16 { anyos_std::process::sleep(16 - elapsed); }
+    // ════════════════════════════════════════════════════════════════
+    //  Run event loop
+    // ════════════════════════════════════════════════════════════════
+
+    anyui::run();
+}
+
+// ════════════════════════════════════════════════════════════════
+//  Helper functions
+// ════════════════════════════════════════════════════════════════
+
+fn save_current() {
+    let s = app();
+    if s.file_path.is_empty() {
+        // No path yet — do Save As
+        save_as();
+        return;
+    }
+    let mut buf = vec![0u8; 128 * 1024];
+    let len = s.editor.get_text(&mut buf);
+    if write_file(&s.file_path, &buf[..len as usize]) {
+        s.modified = false;
+        update_title(s);
     }
 }
 
-fn make_title(filename: &str, modified: bool) -> String {
+fn save_as() {
+    let default = if app().file_path.is_empty() {
+        "untitled.txt"
+    } else {
+        basename(&app().file_path)
+    };
+    if let Some(path) = anyui::FileDialog::save_file(default) {
+        let s = app();
+        let mut buf = vec![0u8; 128 * 1024];
+        let len = s.editor.get_text(&mut buf);
+        if write_file(&path, &buf[..len as usize]) {
+            s.file_path = path;
+            s.modified = false;
+            update_title(s);
+            s.status_file.set_text(&display_filename(&s.file_path));
+        }
+    }
+}
+
+fn update_title(s: &AppState) {
+    let title = make_title(&s.file_path, s.modified);
+    s.win.set_title(&title);
+}
+
+fn make_title(path: &str, modified: bool) -> String {
+    let name = if path.is_empty() {
+        "Untitled"
+    } else {
+        basename(path)
+    };
     let mut t = String::new();
     if modified {
         t.push_str("* ");
     }
-    t.push_str(filename);
+    t.push_str(name);
     t.push_str(" - Notepad");
     t
 }
 
-fn update_scrollbar(sb: &mut UiScrollbar, editor: &Editor) {
-    sb.content_h = (editor.line_count() as u32) * (LINE_H as u32);
-    if sb.scroll > sb.max_scroll() {
-        sb.scroll = sb.max_scroll();
-    }
-}
-
-fn ensure_cursor_visible(sb: &mut UiScrollbar, editor: &Editor, win_h: u32) {
-    let cursor_y = (editor.cursor_line as u32) * (LINE_H as u32);
-    let text_area_h = (win_h as i32 - NAVBAR_H).max(0) as u32;
-
-    // Scroll up if cursor is above visible area
-    if cursor_y < sb.scroll {
-        sb.scroll = cursor_y;
-    }
-    // Scroll down if cursor is below visible area
-    if cursor_y + LINE_H as u32 > sb.scroll + text_area_h {
-        sb.scroll = (cursor_y + LINE_H as u32).saturating_sub(text_area_h);
-    }
-    if sb.scroll > sb.max_scroll() {
-        sb.scroll = sb.max_scroll();
-    }
-}
-
-fn click_to_cursor(editor: &mut Editor, sb: &UiScrollbar, mx: i32, my: i32, _win_w: u32) {
-    let text_x = GUTTER_W + PADDING_X;
-    if my < NAVBAR_H || mx < text_x {
-        return;
-    }
-
-    let pixel_y = (my - NAVBAR_H) as u32 + sb.scroll;
-    let line = (pixel_y / LINE_H as u32) as usize;
-    let line = line.min(editor.line_count().saturating_sub(1));
-
-    let col_offset = mx - text_x;
-    let col = if col_offset > 0 {
-        (col_offset / CHAR_W) as usize
+fn display_filename(path: &str) -> String {
+    if path.is_empty() {
+        String::from("Untitled")
     } else {
-        0
-    };
-    let col = col.min(editor.lines[line].len());
-
-    editor.cursor_line = line;
-    editor.cursor_col = col;
+        String::from(basename(path))
+    }
 }
 
-fn render(
-    win: u32,
-    win_w: u32,
-    win_h: u32,
-    nav: &UiNavbar,
-    btn_save: &UiToolbarButton,
-    sb: &UiScrollbar,
-    editor: &Editor,
-    filename: &str,
-) {
-    // Clear background
-    window::fill_rect(win, 0, 0, win_w as u16, win_h as u16, BG);
-
-    // Navbar
-    let title = make_title(filename, editor.modified);
-    nav.render(win, &title);
-
-    // Save button
-    btn_save.render(win, "Save");
-
-    let text_area_h = (win_h as i32 - NAVBAR_H).max(0);
-    let visible_lines = (text_area_h / LINE_H) + 1;
-    let first_line = (sb.scroll as i32 / LINE_H) as usize;
-    let pixel_offset = sb.scroll as i32 % LINE_H;
-
-    // Gutter background
-    window::fill_rect(win, 0, NAVBAR_H as i16, GUTTER_W as u16, text_area_h as u16, GUTTER_BG);
-    // Gutter separator
-    window::fill_rect(win, (GUTTER_W - 1) as i16, NAVBAR_H as i16, 1, text_area_h as u16, GUTTER_SEP);
-
-    // Draw visible lines
-    let mut num_buf = [0u8; 8];
-    for i in 0..visible_lines as usize {
-        let line_idx = first_line + i;
-        if line_idx >= editor.lines.len() {
-            break;
-        }
-
-        let y = NAVBAR_H + (i as i32 * LINE_H) - pixel_offset;
-        if y + LINE_H <= NAVBAR_H || y >= win_h as i32 {
-            continue;
-        }
-
-        // Line number (right-aligned in gutter)
-        let num = line_idx + 1;
-        let num_str = format_num(num, &mut num_buf);
-        let num_w = num_str.len() as i32 * CHAR_W;
-        let num_x = GUTTER_W - PADDING_X - num_w;
-        window::draw_text_mono(win, num_x as i16, y as i16, LINE_NUM_COLOR, num_str);
-
-        // Line text (clipped to window width)
-        let text_x = GUTTER_W + PADDING_X;
-        let max_chars = ((win_w as i32 - text_x - SCROLLBAR_W as i32) / CHAR_W).max(0) as usize;
-        let line = &editor.lines[line_idx];
-        if !line.is_empty() && max_chars > 0 {
-            let display = if line.len() > max_chars { &line[..max_chars] } else { line.as_str() };
-            window::draw_text_mono(win, text_x as i16, y as i16, TEXT_COLOR, display);
-        }
-
-        // Cursor on this line
-        if line_idx == editor.cursor_line {
-            let cursor_x = text_x + (editor.cursor_col as i32) * CHAR_W;
-            // Draw cursor bar
-            window::fill_rect(win, cursor_x as i16, y as i16, 2, LINE_H as u16, CURSOR_COLOR);
-        }
-    }
-
-    // Scrollbar
-    if sb.content_h > sb.h {
-        sb.render(win);
-    }
-
-    window::present(win);
+fn basename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
 }
 
-fn read_file(path: &str) -> Option<Vec<u8>> {
+fn read_file(path: &str) -> Option<alloc::vec::Vec<u8>> {
     let fd = anyos_std::fs::open(path, 0);
     if fd == u32::MAX {
         return None;
     }
-
-    let mut content = Vec::new();
-    let mut buf = [0u8; 512];
+    let mut content = alloc::vec::Vec::new();
+    let mut buf = [0u8; 4096];
     loop {
         let n = anyos_std::fs::read(fd, &mut buf);
         if n == 0 || n == u32::MAX {
@@ -633,16 +327,14 @@ fn read_file(path: &str) -> Option<Vec<u8>> {
     Some(content)
 }
 
-fn format_num(mut n: usize, buf: &mut [u8; 8]) -> &str {
-    if n == 0 {
-        buf[0] = b'0';
-        return unsafe { core::str::from_utf8_unchecked(&buf[..1]) };
+fn write_file(path: &str, data: &[u8]) -> bool {
+    use anyos_std::fs;
+    fs::truncate(path);
+    let fd = fs::open(path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+    if fd == u32::MAX {
+        return false;
     }
-    let mut pos = 8;
-    while n > 0 && pos > 0 {
-        pos -= 1;
-        buf[pos] = b'0' + (n % 10) as u8;
-        n /= 10;
-    }
-    unsafe { core::str::from_utf8_unchecked(&buf[pos..]) }
+    fs::write(fd, data);
+    fs::close(fd);
+    true
 }

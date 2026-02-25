@@ -2,11 +2,12 @@ use crate::control::{Control, ControlBase, TextControlBase, ControlKind, EventRe
 
 pub struct ContextMenu {
     pub(crate) text_base: TextControlBase,
+    hovered_item: u32,
 }
 
 impl ContextMenu {
     pub fn new(text_base: TextControlBase) -> Self {
-        let mut cm = Self { text_base };
+        let mut cm = Self { text_base, hovered_item: u32::MAX };
         // Start hidden
         cm.text_base.base.visible = false;
         cm.recompute_size();
@@ -70,13 +71,13 @@ impl Control for ContextMenu {
             let iy = y + 4 + (i as i32) * 28;
 
             // Highlight hovered item
-            if i as u32 == self.text_base.base.state {
+            if i as u32 == self.hovered_item {
                 crate::draw::fill_rounded_rect(surface, x + 4, iy, w - 8, 28, 4, tc.accent);
             }
 
             // Item text
             if !item_text.is_empty() {
-                let text_color = if i as u32 == self.text_base.base.state { 0xFFFFFFFF } else { tc.text };
+                let text_color = if i as u32 == self.hovered_item { 0xFFFFFFFF } else { tc.text };
                 crate::draw::draw_text(surface, x + 12, iy + 6, text_color, item_text);
             }
         }
@@ -84,17 +85,35 @@ impl Control for ContextMenu {
 
     fn is_interactive(&self) -> bool { true }
 
+    fn handle_mouse_move(&mut self, _lx: i32, ly: i32) -> EventResponse {
+        let item_idx = ((ly - 4) / 28).max(0) as u32;
+        if item_idx != self.hovered_item {
+            self.hovered_item = item_idx;
+            self.text_base.base.mark_dirty();
+        }
+        EventResponse::CONSUMED
+    }
+
+    fn handle_mouse_leave(&mut self) {
+        if self.hovered_item != u32::MAX {
+            self.hovered_item = u32::MAX;
+            self.text_base.base.mark_dirty();
+        }
+    }
+
     fn handle_click(&mut self, _lx: i32, ly: i32, _button: u32) -> EventResponse {
         let item_idx = ((ly - 4) / 28).max(0) as u32;
         self.text_base.base.state = item_idx;
         // Hide after selection
         self.text_base.base.visible = false;
+        self.hovered_item = u32::MAX;
         EventResponse::CLICK
     }
 
     fn handle_blur(&mut self) {
         // Hide context menu when focus leaves
         self.text_base.base.visible = false;
+        self.hovered_item = u32::MAX;
         self.text_base.base.mark_dirty();
     }
 

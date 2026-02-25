@@ -506,10 +506,8 @@ fn update_context_menu() {
         "Open|Copy Path"
     };
 
-    let new_ctx = ui::ContextMenu::new(menu_text);
-    new_ctx.on_item_click(|e| { handle_context_action(e.index); });
-    s.grid.set_context_menu(&new_ctx);
-    s.ctx_menu = new_ctx;
+    // Update existing context menu text (don't create a new one — it wouldn't have a parent)
+    s.ctx_menu.set_text(menu_text);
 }
 
 // ============================================================================
@@ -691,9 +689,11 @@ fn populate_icon_view() {
         lbl.set_text_align(ui::TEXT_ALIGN_CENTER);
         cell.add(&lbl);
 
-        // Click → select, double-click → open
+        // Click → select, double-click → open, right-click → select + context menu
         cell.on_click_raw(icon_item_click_handler, i as u64);
         cell.on_double_click_raw(icon_item_dblclick_handler, i as u64);
+        cell.on_event_raw(ui::EVENT_CONTEXT_MENU, icon_item_context_handler, i as u64);
+        cell.set_context_menu(&s.ctx_menu);
 
         s.icon_flow.add(&cell);
         s.icon_item_ids.push(cell.id());
@@ -763,10 +763,13 @@ fn icon_set_selected(idx: usize, selected: bool) {
 }
 
 fn select_icon_item(idx: usize) {
+    select_icon_item_with_mods(idx, ui::get_modifiers());
+}
+
+fn select_icon_item_with_mods(idx: usize, mods: u32) {
     let s = app();
     if idx >= s.entries.len() { return; }
 
-    let mods = ui::get_modifiers();
     let ctrl = mods & ui::MOD_CTRL != 0;
     let shift = mods & ui::MOD_SHIFT != 0;
 
@@ -799,6 +802,23 @@ fn select_icon_item(idx: usize) {
     update_selection_status_multi();
 }
 
+/// Get the currently focused icon index (anchor or first selected).
+fn icon_focused_index() -> Option<usize> {
+    let s = app();
+    if s.icon_anchor < s.icon_selected.len() && s.icon_selected[s.icon_anchor] {
+        return Some(s.icon_anchor);
+    }
+    s.icon_selected.iter().position(|&b| b)
+}
+
+/// Compute how many columns fit per row in the icon flow panel.
+fn icon_cols_per_row() -> usize {
+    let s = app();
+    let (w, _) = s.icon_flow.get_size();
+    if w == 0 { return 1; }
+    (w as usize / GRID_CELL_W as usize).max(1)
+}
+
 extern "C" fn icon_item_click_handler(_control_id: u32, _event_type: u32, userdata: u64) {
     select_icon_item(userdata as usize);
 }
@@ -806,6 +826,20 @@ extern "C" fn icon_item_click_handler(_control_id: u32, _event_type: u32, userda
 extern "C" fn icon_item_dblclick_handler(_control_id: u32, _event_type: u32, userdata: u64) {
     let idx = userdata as usize;
     open_entry(idx);
+}
+
+extern "C" fn icon_item_context_handler(_control_id: u32, _event_type: u32, userdata: u64) {
+    let idx = userdata as usize;
+    let s = app();
+    // Select this item on right-click (if not already selected, preserve multi-selection)
+    if idx < s.icon_selected.len() && !s.icon_selected[idx] {
+        icon_clear_selection();
+        icon_set_selected(idx, true);
+        app().icon_anchor = idx;
+    }
+    app().grid.set_selected_row(idx as u32);
+    update_context_menu();
+    update_selection_status_multi();
 }
 
 // ============================================================================
@@ -1117,6 +1151,28 @@ fn main() {
 
         if ke.keycode == ui::KEY_F5 {
             refresh_current();
+            return;
+        }
+
+        // Arrow key navigation in icon view
+        let s = app();
+        if s.view_mode == VIEW_ICONS && !s.entries.is_empty() {
+            let n = s.entries.len();
+            let cols = icon_cols_per_row();
+            let cur = icon_focused_index().unwrap_or(0);
+            let new_idx = match ke.keycode {
+                ui::KEY_LEFT  => if cur > 0 { Some(cur - 1) } else { None },
+                ui::KEY_RIGHT => if cur + 1 < n { Some(cur + 1) } else { None },
+                ui::KEY_UP    => if cur >= cols { Some(cur - cols) } else { None },
+                ui::KEY_DOWN  => if cur + cols < n { Some(cur + cols) } else { None },
+                ui::KEY_HOME  => Some(0),
+                ui::KEY_END   => Some(n - 1),
+                ui::KEY_ENTER => { open_entry(cur); None },
+                _ => None,
+            };
+            if let Some(idx) = new_idx {
+                select_icon_item_with_mods(idx, ke.modifiers);
+            }
         }
     });
 

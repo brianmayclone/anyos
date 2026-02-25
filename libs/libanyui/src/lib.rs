@@ -128,8 +128,8 @@ pub(crate) struct AnyuiState {
     pub hovered: Option<ControlId>,
     /// Control ID of the last click (for double-click detection).
     pub last_click_id: Option<ControlId>,
-    /// Tick count of the last click (for double-click detection).
-    pub last_click_tick: u64,
+    /// Timestamp (ms) of the last click (for double-click detection).
+    pub last_click_tick: u32,
     /// Which mouse button was pressed (for right-click detection).
     pub pressed_button: u32,
 
