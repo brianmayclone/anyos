@@ -13,6 +13,7 @@ pub mod block;
 pub mod flex;
 pub mod inline;
 pub mod form;
+pub mod table;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -20,7 +21,7 @@ use alloc::vec::Vec;
 use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
     ComputedStyle, Display, FontWeight, FontStyleVal, TextAlignVal,
-    ListStyle, TextDeco, TextTransform,
+    ListStyle, TextDeco, TextTransform, FloatVal,
 };
 use crate::ImageCache;
 
@@ -365,6 +366,13 @@ pub(super) fn layout_children(
     let mut cursor_y: i32 = parent.padding.top;
     let mut prev_margin_bottom: i32 = 0;
 
+    // Float tracking: left floats consume space from the left,
+    // right floats consume space from the right.
+    let mut float_left_x: i32 = 0;       // right edge of left floats
+    let mut float_left_bottom: i32 = 0;  // bottom of left float region
+    let mut float_right_x: i32 = 0;       // width consumed from right
+    let mut float_right_bottom: i32 = 0; // bottom of right float region
+
     let mut i = 0;
     while i < child_ids.len() {
         let cid = child_ids[i];
@@ -378,7 +386,57 @@ pub(super) fn layout_children(
         let is_block = is_block_level(dom, cid, style);
 
         if is_block {
-            let child_box = build_block(dom, styles, cid, available_width, images);
+            // Check if this is a floated element.
+            let float_val = style.float;
+
+            // For floated elements, use a narrower available width.
+            let float_avail = if float_val != FloatVal::None {
+                // Floated elements shrink-to-fit: use available minus other floats.
+                available_width - float_left_x - float_right_x
+            } else {
+                available_width
+            };
+
+            let child_box = if is_table_element(dom, cid) {
+                table::layout_table(dom, styles, cid, float_avail, images)
+            } else {
+                build_block(dom, styles, cid, float_avail, images)
+            };
+
+            if float_val == FloatVal::Left {
+                // Place at current float_left_x position.
+                let mut placed = child_box;
+                let place_y = cursor_y.max(float_left_bottom.min(cursor_y + placed.margin.top));
+                placed.x = parent.padding.left + float_left_x + placed.margin.left;
+                placed.y = if cursor_y == parent.padding.top {
+                    cursor_y + placed.margin.top
+                } else {
+                    cursor_y
+                };
+                float_left_x += placed.width + placed.margin.left + placed.margin.right;
+                float_left_bottom = placed.y + placed.height + placed.margin.bottom;
+                parent.children.push(placed);
+                i += 1;
+                continue;
+            } else if float_val == FloatVal::Right {
+                let mut placed = child_box;
+                placed.y = if cursor_y == parent.padding.top {
+                    cursor_y + placed.margin.top
+                } else {
+                    cursor_y
+                };
+                let right_edge = available_width - float_right_x;
+                placed.x = parent.padding.left + right_edge - placed.width - placed.margin.right;
+                float_right_x += placed.width + placed.margin.left + placed.margin.right;
+                float_right_bottom = placed.y + placed.height + placed.margin.bottom;
+                parent.children.push(placed);
+                i += 1;
+                continue;
+            }
+
+            // Clear floats if past their bottom edge.
+            if cursor_y >= float_left_bottom { float_left_x = 0; }
+            if cursor_y >= float_right_bottom { float_right_x = 0; }
 
             let collapsed = if prev_margin_bottom > child_box.margin.top {
                 prev_margin_bottom
@@ -392,7 +450,31 @@ pub(super) fn layout_children(
             }
 
             let mut placed = child_box;
-            placed.x = parent.padding.left + placed.margin.left;
+            placed.x = parent.padding.left + placed.margin.left + float_left_x;
+
+            // Adjust width for floats.
+            let effective_avail = available_width - float_left_x - float_right_x;
+            if float_left_x > 0 || float_right_x > 0 {
+                let max_w = effective_avail - placed.margin.left - placed.margin.right;
+                if placed.width > max_w && max_w > 0 {
+                    placed.width = max_w;
+                }
+            }
+
+            // Center block children when parent has text-align: center
+            let parent_align = styles[_parent_node].text_align;
+            if parent_align == TextAlignVal::Center {
+                let total_child_w = placed.width + placed.margin.left + placed.margin.right;
+                if total_child_w < effective_avail {
+                    placed.x = parent.padding.left + float_left_x + (effective_avail - total_child_w) / 2;
+                }
+            } else if parent_align == TextAlignVal::Right {
+                let total_child_w = placed.width + placed.margin.left + placed.margin.right;
+                if total_child_w < effective_avail {
+                    placed.x = parent.padding.left + float_left_x + effective_avail - total_child_w;
+                }
+            }
+
             placed.y = cursor_y;
             cursor_y += placed.height + placed.margin.bottom;
             prev_margin_bottom = placed.margin.bottom;
@@ -473,7 +555,7 @@ fn is_block_level(dom: &Dom, node_id: NodeId, style: &ComputedStyle) -> bool {
         return true;
     }
     if let Some(tag) = dom.tag(node_id) {
-        if tag == Tag::Hr {
+        if tag == Tag::Hr || tag == Tag::Table {
             return true;
         }
         if tag.is_block() && style.display != Display::Inline && style.display != Display::InlineFlex {
@@ -481,4 +563,8 @@ fn is_block_level(dom: &Dom, node_id: NodeId, style: &ComputedStyle) -> bool {
         }
     }
     false
+}
+
+fn is_table_element(dom: &Dom, node_id: NodeId) -> bool {
+    matches!(dom.tag(node_id), Some(Tag::Table))
 }

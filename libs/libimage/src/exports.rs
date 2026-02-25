@@ -5,7 +5,7 @@
 
 use crate::types::{ImageInfo, VideoInfo};
 
-const NUM_EXPORTS: u32 = 9;
+const NUM_EXPORTS: u32 = 10;
 
 /// Export function table — must be first in the binary (`.exports` section).
 #[repr(C)]
@@ -29,6 +29,8 @@ pub struct LibimageExports {
     pub image_encode: extern "C" fn(*const u32, u32, u32, *mut u8, u32) -> i32,
     // Iconpack SVG renderer
     pub iconpack_render: extern "C" fn(*const u8, u32, *const u8, u32, u32, u32, u32, *mut u32) -> i32,
+    // Iconpack cached render (no pak data needed — uses internal cache)
+    pub iconpack_render_cached: extern "C" fn(*const u8, u32, u32, u32, u32, *mut u32) -> i32,
 }
 
 #[link_section = ".exports"]
@@ -48,6 +50,7 @@ pub static LIBIMAGE_EXPORTS: LibimageExports = LibimageExports {
     ico_decode_size: ico_decode_size_export,
     image_encode: image_encode_export,
     iconpack_render: iconpack_render_export,
+    iconpack_render_cached: iconpack_render_cached_export,
 };
 
 // ── Video exports ──────────────────────────────────────
@@ -278,23 +281,46 @@ extern "C" fn iconpack_render_export(
     let pixel_count = (size as usize) * (size as usize);
     let out = unsafe { core::slice::from_raw_parts_mut(out_pixels, pixel_count) };
 
+    render_from_pak(pak_data, name_data, filled != 0, size, color, out)
+}
+
+/// Cached variant: uses ico.pak from internal cache (lazy-loaded on first call).
+extern "C" fn iconpack_render_cached_export(
+    name: *const u8, name_len: u32,
+    filled: u32, size: u32, color: u32,
+    out_pixels: *mut u32,
+) -> i32 {
+    if name.is_null() || out_pixels.is_null() || size == 0 || size > 512 {
+        return crate::types::ERR_INVALID_DATA;
+    }
+    let name_data = unsafe { core::slice::from_raw_parts(name, name_len as usize) };
+    let pixel_count = (size as usize) * (size as usize);
+    let out = unsafe { core::slice::from_raw_parts_mut(out_pixels, pixel_count) };
+
+    let pak_data = match crate::iconpack::cached_pak() {
+        Some(d) => d,
+        None => return crate::types::ERR_UNSUPPORTED,
+    };
+
+    render_from_pak(pak_data, name_data, filled != 0, size, color, out)
+}
+
+/// Shared render logic for both export variants.
+fn render_from_pak(pak_data: &[u8], name_data: &[u8], filled: bool, size: u32, color: u32, out: &mut [u32]) -> i32 {
+    let pixel_count = (size as usize) * (size as usize);
     let ver = crate::iconpack::version(pak_data);
 
     if ver == 2 {
-        // v2: pre-rasterized alpha maps — apply color and scale
-        let entry = match crate::iconpack::lookup_v2(pak_data, name_data, filled != 0) {
+        let entry = match crate::iconpack::lookup_v2(pak_data, name_data, filled) {
             Some(e) => e,
             None => return crate::types::ERR_UNSUPPORTED,
         };
 
         let isz = entry.icon_size as u32;
-
-        // Apply color to alpha map → ARGB pixels
         let ca = (color >> 24) & 0xFF;
         let color_rgb = color & 0x00FFFFFF;
 
         if size == isz {
-            // Direct: no scaling needed
             for i in 0..pixel_count {
                 let alpha = entry.alpha[i] as u32;
                 if alpha == 0 {
@@ -305,7 +331,6 @@ extern "C" fn iconpack_render_export(
                 }
             }
         } else {
-            // Need scaling: apply color to temp buffer, then scale
             let src_count = (isz * isz) as usize;
             let mut tmp = alloc::vec![0u32; src_count];
             for i in 0..src_count {
@@ -319,19 +344,18 @@ extern "C" fn iconpack_render_export(
             }
             crate::scale::scale_image(
                 tmp.as_ptr(), isz, isz,
-                out_pixels, size, size,
+                out.as_mut_ptr(), size, size,
                 crate::scale::MODE_SCALE,
             );
         }
 
         0
     } else {
-        // v1: SVG path strings — runtime rasterization
-        let entry = match crate::iconpack::lookup(pak_data, name_data, filled != 0) {
+        let entry = match crate::iconpack::lookup(pak_data, name_data, filled) {
             Some(e) => e,
             None => return crate::types::ERR_UNSUPPORTED,
         };
 
-        crate::svg_raster::render_icon(entry.data, filled != 0, size, color, out)
+        crate::svg_raster::render_icon(entry.data, filled, size, color, out)
     }
 }

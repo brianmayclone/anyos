@@ -63,8 +63,13 @@ impl Control for TextField {
         let hovered = self.text_base.base.hovered;
         let corner = crate::theme::INPUT_CORNER;
 
-        // Background
-        let bg = if disabled { crate::theme::darken(tc.input_bg, 10) } else { tc.input_bg };
+        // Background: use custom color if set, otherwise theme color.
+        let custom = self.text_base.base.color;
+        let bg = if custom != 0 {
+            if disabled { crate::theme::darken(custom, 10) } else { custom }
+        } else {
+            if disabled { crate::theme::darken(tc.input_bg, 10) } else { tc.input_bg }
+        };
         crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, bg);
 
         // Border: focus (accent) > hover (lighter) > normal

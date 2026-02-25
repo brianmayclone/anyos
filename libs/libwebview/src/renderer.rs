@@ -199,20 +199,18 @@ impl Renderer {
             }
         }
 
-        // Image.
+        // Image — only render if image data is available (avoid black rectangles).
         if let Some(ref src) = bx.image_src {
-            let iw = bx.image_width.unwrap_or(bx.width) as u32;
-            let ih = bx.image_height.unwrap_or(bx.height) as u32;
-            let img = ui::ImageView::new(iw, ih);
-            img.set_position(abs_x, abs_y);
-            img.set_size(iw, ih);
-
             if let Some(entry) = images.get(src) {
+                let iw = bx.image_width.unwrap_or(bx.width) as u32;
+                let ih = bx.image_height.unwrap_or(bx.height) as u32;
+                let img = ui::ImageView::new(iw, ih);
+                img.set_position(abs_x, abs_y);
+                img.set_size(iw, ih);
                 img.set_pixels(&entry.pixels, entry.width, entry.height);
+                parent.add(&img);
+                self.controls.push(img.id());
             }
-
-            parent.add(&img);
-            self.controls.push(img.id());
         }
 
         // Form fields.
@@ -241,6 +239,9 @@ impl Renderer {
                 let tf = ui::TextField::new();
                 tf.set_position(x, y);
                 tf.set_size(bx.width as u32, bx.height as u32);
+                // Web-style appearance: white background, dark text.
+                tf.set_color(0xFFFFFFFF);
+                tf.set_text_color(0xFF000000);
                 if let Some(ref ph) = bx.form_placeholder {
                     tf.set_placeholder(ph);
                 }
@@ -257,6 +258,9 @@ impl Renderer {
                 tf.set_password_mode(true);
                 tf.set_position(x, y);
                 tf.set_size(bx.width as u32, bx.height as u32);
+                // Web-style appearance: white background, dark text.
+                tf.set_color(0xFFFFFFFF);
+                tf.set_text_color(0xFF000000);
                 if let Some(ref ph) = bx.form_placeholder {
                     tf.set_placeholder(ph);
                 }
@@ -304,6 +308,8 @@ impl Renderer {
                 let ta = ui::TextArea::new();
                 ta.set_position(x, y);
                 ta.set_size(bx.width as u32, bx.height as u32);
+                ta.set_color(0xFFFFFFFF);
+                ta.set_text_color(0xFF000000);
                 parent.add(&ta);
                 let id = ta.id();
                 self.controls.push(id);

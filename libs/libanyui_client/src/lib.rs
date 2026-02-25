@@ -514,9 +514,6 @@ pub fn init() -> bool {
         LIB = Some(lib);
     }
 
-    // Pre-load ico.pak into memory so icon rendering doesn't stall on first use
-    crate::icon::preload_iconpak();
-
     true
 }
 

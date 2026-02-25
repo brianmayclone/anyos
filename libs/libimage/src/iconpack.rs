@@ -159,6 +159,58 @@ pub fn lookup<'a>(pak: &'a [u8], name: &[u8], filled: bool) -> Option<IconEntry<
     None
 }
 
+// ── Static PAK cache ────────────────────────────────────────────────
+//
+// Loaded once on first use, then all subsequent icon renders use the
+// cached data.  No per-app file reads needed.
+
+use alloc::vec::Vec;
+
+const ICO_PAK_PATH: &[u8] = b"/System/media/ico.pak";
+
+static mut PAK_CACHE: Option<Vec<u8>> = None;
+
+/// Get a reference to the cached ico.pak data.
+/// Lazy-loads from disk on first call; subsequent calls are free.
+pub fn cached_pak() -> Option<&'static [u8]> {
+    unsafe {
+        if PAK_CACHE.is_none() {
+            PAK_CACHE = Some(load_file(ICO_PAK_PATH)?);
+        }
+        PAK_CACHE.as_deref()
+    }
+}
+
+/// Read an entire file into a Vec<u8> using raw syscalls.
+fn load_file(path: &[u8]) -> Option<Vec<u8>> {
+    let fd = crate::syscall::open(path);
+    if fd == u32::MAX { return None; }
+
+    let mut stat = [0u32; 4];
+    if crate::syscall::fstat(fd, &mut stat) != 0 {
+        crate::syscall::close(fd);
+        return None;
+    }
+    let file_size = stat[1] as usize;
+    if file_size == 0 || file_size > 2 * 1024 * 1024 {
+        crate::syscall::close(fd);
+        return None;
+    }
+
+    let mut data = alloc::vec![0u8; file_size];
+    let mut read = 0usize;
+    while read < file_size {
+        let n = crate::syscall::read(fd, &mut data[read..]);
+        if n == 0 || n == u32::MAX { break; }
+        read += n as usize;
+    }
+    crate::syscall::close(fd);
+
+    if read == 0 { return None; }
+    data.truncate(read);
+    Some(data)
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────
 
 fn u16_le(b: &[u8]) -> u16 {

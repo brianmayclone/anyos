@@ -163,6 +163,21 @@ pub fn iconpack_render(
     if ret == 0 { Ok(()) } else { Err(err_from_code(ret)) }
 }
 
+/// Render a system icon using the DLL's internal ico.pak cache.
+///
+/// The DLL lazy-loads ico.pak on first call — no client-side file reads needed.
+pub fn iconpack_render_cached(
+    name: &str, filled: bool, size: u32, color: u32, out: &mut [u32],
+) -> Result<(), ImageError> {
+    let ret = (raw::exports().iconpack_render_cached)(
+        name.as_ptr(), name.len() as u32,
+        if filled { 1 } else { 0 },
+        size, color,
+        out.as_mut_ptr(),
+    );
+    if ret == 0 { Ok(()) } else { Err(err_from_code(ret)) }
+}
+
 /// Get the format name as a string.
 pub fn format_name(format: u32) -> &'static str {
     match format {

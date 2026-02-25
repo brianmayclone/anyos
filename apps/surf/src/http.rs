@@ -26,6 +26,8 @@ pub struct Response {
     pub status: u16,
     pub headers: String,
     pub body: Vec<u8>,
+    /// The final URL after all redirects.
+    pub final_url: Option<Url>,
 }
 
 pub enum FetchError {
@@ -323,17 +325,14 @@ pub fn resolve_url(base: &Url, relative: &str) -> Url {
 pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError> {
     let mut current = clone_url(url);
 
-    for redirect_n in 0..MAX_REDIRECTS {
+    for _redirect_n in 0..MAX_REDIRECTS {
         let is_https = current.scheme == "https";
         anyos_std::println!("[http] {} GET {}:{}{}", if is_https { "HTTPS" } else { "HTTP" },
             current.host, current.port, current.path);
 
         // 1. DNS resolve
         let ip = match resolve_host(&current.host) {
-            Some(ip) => {
-                anyos_std::println!("[http] DNS: {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
-                ip
-            }
+            Some(ip) => ip,
             None => {
                 anyos_std::println!("[http] DNS failed for {}", current.host);
                 return Err(FetchError::DnsFailure);
@@ -346,18 +345,15 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
             anyos_std::println!("[http] TCP connect failed");
             return Err(FetchError::ConnectFailure);
         }
-        anyos_std::println!("[http] TCP connected (sock={})", sock);
 
         // 3. TLS handshake for HTTPS
         if is_https {
-            anyos_std::println!("[http] TLS handshake with {}...", current.host);
             let ret = crate::tls::connect(sock, &current.host);
             if ret != 0 {
                 anyos_std::println!("[http] TLS handshake FAILED (err={})", ret);
                 net::tcp_close(sock);
                 return Err(FetchError::TlsHandshakeFailed);
             }
-            anyos_std::println!("[http] TLS handshake OK");
         }
 
         // 4. Build and send GET request
@@ -373,7 +369,6 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
             net::tcp_close(sock);
             return Err(FetchError::SendFailure);
         }
-        anyos_std::println!("[http] sent {} bytes", request.len());
 
         // 5. Receive headers
         let mut response_buf: Vec<u8> = Vec::new();
@@ -422,11 +417,10 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
             if is_https { crate::tls::close(); }
             net::tcp_close(sock);
             if let Some(location) = find_header_value(header_str, "location") {
-                anyos_std::println!("[http] redirect #{} -> {}", redirect_n + 1, location);
                 current = resolve_url(&current, location);
                 continue;
             }
-            return Ok(Response { status, headers, body: Vec::new() });
+            return Ok(Response { status, headers, body: Vec::new(), final_url: Some(clone_url(&current)) });
         }
 
         // 8. Read body (chunked or content-length or until close)
@@ -436,17 +430,6 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
         let content_length = parse_content_length(header_str);
         let content_encoding = find_header_value(header_str, "content-encoding")
             .map(|v| String::from(v));
-
-        if is_chunked {
-            anyos_std::println!("[http] body: chunked transfer-encoding");
-        } else if let Some(cl) = content_length {
-            anyos_std::println!("[http] body: content-length={}", cl);
-        } else {
-            anyos_std::println!("[http] body: read until close");
-        }
-        if let Some(ref enc) = content_encoding {
-            anyos_std::println!("[http] content-encoding: {}", enc);
-        }
 
         // Remaining data already read past the header
         let mut trailing = Vec::new();
@@ -468,17 +451,13 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
 
         if is_https { crate::tls::close(); }
         net::tcp_close(sock);
-        anyos_std::println!("[http] raw body: {} bytes", raw_body.len());
 
         // 9. Decompress if content-encoded
         let body = if let Some(ref enc) = content_encoding {
             let enc_lower = enc.to_ascii_lowercase();
             if enc_lower.contains("gzip") {
                 match deflate::decompress_gzip(&raw_body) {
-                    Some(decoded) => {
-                        anyos_std::println!("[http] gzip decompressed: {} -> {} bytes", raw_body.len(), decoded.len());
-                        decoded
-                    }
+                    Some(decoded) => decoded,
                     None => {
                         anyos_std::println!("[http] gzip decompression FAILED, using raw");
                         raw_body
@@ -488,10 +467,7 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
                 match deflate::decompress_zlib(&raw_body)
                     .or_else(|| deflate::decompress_deflate(&raw_body))
                 {
-                    Some(decoded) => {
-                        anyos_std::println!("[http] deflate decompressed: {} -> {} bytes", raw_body.len(), decoded.len());
-                        decoded
-                    }
+                    Some(decoded) => decoded,
                     None => {
                         anyos_std::println!("[http] deflate decompression FAILED, using raw");
                         raw_body
@@ -504,8 +480,7 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar) -> Result<Response, FetchError>
             raw_body
         };
 
-        anyos_std::println!("[http] final body: {} bytes", body.len());
-        return Ok(Response { status, headers, body });
+        return Ok(Response { status, headers, body, final_url: Some(clone_url(&current)) });
     }
 
     anyos_std::println!("[http] too many redirects");
@@ -587,7 +562,7 @@ pub fn fetch_post(url: &Url, body: &str, cookies: &mut CookieJar) -> Result<Resp
         let header_str = core::str::from_utf8(&response_buf[..header_end]).unwrap_or("");
         let (status, _reason) = parse_status_line(header_str);
         let headers = String::from(header_str);
-        anyos_std::println!("[http] POST response: HTTP {} {}", status, _reason);
+        anyos_std::println!("[http] HTTP {} {}", status, _reason);
 
         cookies.store_from_headers(header_str, &current.host, &current.path);
 
@@ -598,7 +573,7 @@ pub fn fetch_post(url: &Url, body: &str, cookies: &mut CookieJar) -> Result<Resp
                 current = resolve_url(&current, location);
                 continue;
             }
-            return Ok(Response { status, headers, body: Vec::new() });
+            return Ok(Response { status, headers, body: Vec::new(), final_url: Some(clone_url(&current)) });
         }
 
         let is_chunked = find_header_value(header_str, "transfer-encoding")
@@ -635,7 +610,7 @@ pub fn fetch_post(url: &Url, body: &str, cookies: &mut CookieJar) -> Result<Resp
             } else { raw_body }
         } else { raw_body };
 
-        return Ok(Response { status, headers, body: resp_body });
+        return Ok(Response { status, headers, body: resp_body, final_url: Some(clone_url(&current)) });
     }
 
     Err(FetchError::TooManyRedirects)

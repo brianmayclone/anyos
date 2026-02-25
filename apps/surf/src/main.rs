@@ -106,7 +106,9 @@ fn navigate(url_str: &str) {
         }
     };
 
-    st.tabs[st.active_tab].status_text = String::from("Loading...");
+    let mut loading_msg = String::from("Loading: ");
+    loading_msg.push_str(url_str);
+    st.tabs[st.active_tab].status_text = loading_msg;
     update_status();
 
     let response = match http::fetch(&url, &mut st.cookies) {
@@ -133,22 +135,30 @@ fn navigate(url_str: &str) {
         return;
     }
 
-    let body_text = String::from_utf8_lossy(&response.body).into_owned();
+    // Use the final URL after redirects as base for image resolution.
+    let base_url = response.final_url.unwrap_or_else(|| http::clone_url(&url));
+
+    let body_text = decode_http_body(&response.body, &response.headers);
 
     // Collect and fetch images from HTML.
     let dom_for_images = libwebview::html::parse(&body_text);
     let tab = &mut st.tabs[st.active_tab];
-    collect_and_fetch_images(&dom_for_images, &url, &mut tab.webview, &mut st.cookies);
+    collect_and_fetch_images(&dom_for_images, &base_url, &mut tab.webview, &mut st.cookies);
 
     // Set HTML content — this parses, lays out, and renders controls.
     let tab = &mut st.tabs[st.active_tab];
     tab.webview.set_html(&body_text);
 
+    // Print JS console output.
+    for line in tab.webview.js_console() {
+        anyos_std::println!("[js] {}", line);
+    }
+
     // Extract title.
     let title = tab.webview.get_title().unwrap_or_else(|| String::from("Untitled"));
 
-    // Update URL history.
-    let url_string = format_url(&url);
+    // Update URL history — use final URL.
+    let url_string = format_url(&base_url);
     if tab.history.is_empty() || tab.history_pos >= tab.history.len()
         || tab.history[tab.history_pos] != url_string
     {
@@ -159,7 +169,7 @@ fn navigate(url_str: &str) {
         tab.history_pos = tab.history.len() - 1;
     }
 
-    tab.current_url = Some(url);
+    tab.current_url = Some(base_url);
     tab.page_title = title;
     tab.url_text = url_string.clone();
     tab.status_text = String::from("Done");
@@ -201,17 +211,24 @@ fn navigate_post(url_str: &str, body: &str) {
         return;
     }
 
-    let body_text = String::from_utf8_lossy(&response.body).into_owned();
+    let base_url = response.final_url.unwrap_or_else(|| http::clone_url(&url));
+
+    let body_text = decode_http_body(&response.body, &response.headers);
 
     let dom_for_images = libwebview::html::parse(&body_text);
     let tab = &mut st.tabs[st.active_tab];
-    collect_and_fetch_images(&dom_for_images, &url, &mut tab.webview, &mut st.cookies);
+    collect_and_fetch_images(&dom_for_images, &base_url, &mut tab.webview, &mut st.cookies);
 
     let tab = &mut st.tabs[st.active_tab];
     tab.webview.set_html(&body_text);
+
+    for line in tab.webview.js_console() {
+        anyos_std::println!("[js] {}", line);
+    }
+
     let title = tab.webview.get_title().unwrap_or_else(|| String::from("Untitled"));
 
-    let url_string = format_url(&url);
+    let url_string = format_url(&base_url);
     if tab.history.is_empty() || tab.history_pos >= tab.history.len()
         || tab.history[tab.history_pos] != url_string
     {
@@ -222,7 +239,7 @@ fn navigate_post(url_str: &str, body: &str) {
         tab.history_pos = tab.history.len() - 1;
     }
 
-    tab.current_url = Some(url);
+    tab.current_url = Some(base_url);
     tab.page_title = title;
     tab.url_text = url_string.clone();
     tab.status_text = String::from("Done");
@@ -265,6 +282,83 @@ fn reload() {
 }
 
 // ---------------------------------------------------------------------------
+// Charset detection and body decoding
+// ---------------------------------------------------------------------------
+
+/// Decode HTTP response body to a UTF-8 string, handling charset detection.
+fn decode_http_body(body: &[u8], headers: &str) -> String {
+    // First: if the body is valid UTF-8, just use it directly.
+    // Many servers (e.g. Google) claim ISO-8859-1 in headers but send UTF-8.
+    if core::str::from_utf8(body).is_ok() {
+        return String::from(core::str::from_utf8(body).unwrap());
+    }
+
+    // Body is NOT valid UTF-8 — check charset declaration.
+    let charset = detect_charset_from_headers(headers)
+        .or_else(|| detect_charset_from_html_bytes(body));
+
+    match charset.as_deref() {
+        Some("iso-8859-1") | Some("latin1") | Some("latin-1") | Some("windows-1252") | None => {
+            // Non-UTF-8 body: treat as Latin-1 (superset of ASCII, covers most Western pages).
+            latin1_to_utf8(body)
+        }
+        _ => {
+            String::from_utf8_lossy(body).into_owned()
+        }
+    }
+}
+
+fn detect_charset_from_headers(headers: &str) -> Option<String> {
+    let ct = http::find_header_value(headers, "content-type")?;
+    extract_charset(ct)
+}
+
+fn detect_charset_from_html_bytes(body: &[u8]) -> Option<String> {
+    // Quick scan of first 2048 bytes for charset= (ASCII-safe scan).
+    let scan_len = body.len().min(2048);
+    // Try to get a string; for non-UTF-8, scan only the ASCII portion.
+    let text = core::str::from_utf8(&body[..scan_len]).unwrap_or("");
+    let lower = text.to_ascii_lowercase();
+
+    // Look for charset= in meta tags.
+    if let Some(pos) = lower.find("charset=") {
+        let rest = &lower[pos + 8..];
+        let rest = rest.trim_start_matches(['"', '\'', ' '].as_ref());
+        let end = rest.find(|c: char| c == '"' || c == '\'' || c == ';' || c == ' ' || c == '>')
+            .unwrap_or(rest.len());
+        let charset = rest[..end].trim();
+        if !charset.is_empty() {
+            return Some(String::from(charset));
+        }
+    }
+    None
+}
+
+fn extract_charset(content_type: &str) -> Option<String> {
+    let lower = content_type.to_ascii_lowercase();
+    if let Some(pos) = lower.find("charset=") {
+        let rest = &lower[pos + 8..];
+        let rest = rest.trim_start_matches(['"', '\''].as_ref());
+        let end = rest.find(|c: char| c == '"' || c == '\'' || c == ';' || c == ' ')
+            .unwrap_or(rest.len());
+        let charset = rest[..end].trim();
+        if !charset.is_empty() {
+            return Some(String::from(charset));
+        }
+    }
+    None
+}
+
+/// Convert ISO-8859-1 / Latin-1 bytes to a UTF-8 String.
+fn latin1_to_utf8(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(b as char); // Rust `char` from u8 is correct for Latin-1 → Unicode
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Image collection
 // ---------------------------------------------------------------------------
 
@@ -277,7 +371,18 @@ fn collect_and_fetch_images(
     for (i, node) in dom.nodes.iter().enumerate() {
         if let libwebview::dom::NodeType::Element { tag: libwebview::dom::Tag::Img, .. } = &node.node_type {
             if let Some(src) = dom.attr(i, "src") {
+                // Skip data: URIs and empty sources — they're not fetchable.
+                if src.is_empty() || src.starts_with("data:") {
+                    continue;
+                }
                 let img_url = http::resolve_url(base_url, src);
+                // Show fetch URL in status bar.
+                {
+                    let st = state();
+                    let mut status = String::from("Loading: ");
+                    status.push_str(&format_url(&img_url));
+                    st.status_label.set_text(&status);
+                }
                 match http::fetch(&img_url, cookies) {
                     Ok(resp) => {
                         if let Some(info) = libimage_client::probe(&resp.body) {
