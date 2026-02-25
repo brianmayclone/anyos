@@ -11,6 +11,7 @@ use crate::dom::Tag;
 // Data structures
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct Stylesheet {
     pub rules: Vec<Rule>,
     /// @media rules: each contains a query and the rules inside it.
@@ -20,6 +21,7 @@ pub struct Stylesheet {
 }
 
 /// A complete `@keyframes name { … }` block.
+#[derive(Clone)]
 pub struct KeyframeSet {
     /// The animation name exactly as declared (case-sensitive after lowercase).
     pub name: String,
@@ -28,6 +30,7 @@ pub struct KeyframeSet {
 }
 
 /// One stop inside a `@keyframes` block, e.g. `50% { opacity: 0; }`.
+#[derive(Clone)]
 pub struct KeyframeStop {
     /// Offset in the range 0–100 (percent).  `from` → 0, `to` → 100.
     pub offset: i32,
@@ -35,17 +38,20 @@ pub struct KeyframeStop {
 }
 
 /// A @media rule: query + inner rules.
+#[derive(Clone)]
 pub struct MediaRule {
     pub query: MediaQuery,
     pub rules: Vec<Rule>,
 }
 
 /// Parsed @media query.
+#[derive(Clone)]
 pub struct MediaQuery {
     pub conditions: Vec<MediaCondition>,
 }
 
 /// A single media condition.
+#[derive(Clone)]
 pub enum MediaCondition {
     MinWidth(i32),
     MaxWidth(i32),
@@ -55,6 +61,7 @@ pub enum MediaCondition {
     PrefersColorScheme(String),
 }
 
+#[derive(Clone)]
 pub struct Rule {
     pub selectors: Vec<Selector>,
     pub declarations: Vec<Declaration>,

@@ -76,6 +76,10 @@ struct AppState {
     tabs: Vec<tab::TabState>,
     active_tab: usize,
     cookies: http::CookieJar,
+    /// Pending CSS fetch queue: (tab_index, href_attr, resolved_url).
+    css_queue: Vec<(usize, String, http::Url)>,
+    /// Timer ID for the async CSS fetch loop (0 = not running).
+    css_timer: u32,
     /// Pending image fetch queue: (tab_index, img_src_attr, resolved_url).
     image_queue: Vec<(usize, String, http::Url)>,
     /// Timer ID for the async image fetch loop (0 = not running).
@@ -348,6 +352,8 @@ fn main() {
             tabs: vec![initial_tab],
             active_tab: 0,
             cookies: http::CookieJar { cookies: Vec::new() },
+            css_queue: Vec::new(),
+            css_timer: 0,
             image_queue: Vec::new(),
             image_timer: 0,
             conn_pool: http::ConnPool::new(),

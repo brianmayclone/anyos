@@ -101,21 +101,21 @@ fn latin1_to_utf8(bytes: &[u8]) -> String {
 }
 
 // ═══════════════════════════════════════════════════════════
-// External stylesheet fetching
+// Asynchronous CSS stylesheet loading
 // ═══════════════════════════════════════════════════════════
 
-/// Fetch external CSS stylesheets referenced by `<link rel="stylesheet">` tags.
+/// Scan the DOM for `<link rel="stylesheet">` tags and enqueue them for async
+/// fetching.
 ///
-/// Stylesheets are fetched synchronously (they are typically small) and added
-/// to the webview for `tab_index`.  A relayout is triggered when at least one
-/// stylesheet was loaded successfully.
-pub(crate) fn fetch_stylesheets(
+/// The page is rendered immediately with only the built-in user-agent CSS;
+/// each external stylesheet is applied and the layout refreshed as it arrives,
+/// giving a progressive-rendering effect without blocking the UI thread.
+pub(crate) fn queue_stylesheets(
     dom: &libwebview::dom::Dom,
     base_url: &crate::http::Url,
     tab_index: usize,
 ) {
-    // Collect hrefs first to avoid holding a DOM reference during fetching.
-    let mut hrefs: Vec<String> = Vec::new();
+    let st = crate::state();
     for (i, node) in dom.nodes.iter().enumerate() {
         if let libwebview::dom::NodeType::Element {
             tag: libwebview::dom::Tag::Link,
@@ -128,37 +128,79 @@ pub(crate) fn fetch_stylesheets(
             }
             if let Some(href) = dom.attr(i, "href") {
                 if !href.is_empty() {
-                    hrefs.push(String::from(href));
+                    let css_url = crate::http::resolve_url(base_url, href);
+                    st.css_queue.push((tab_index, String::from(href), css_url));
                 }
             }
         }
     }
 
-    if hrefs.is_empty() {
+    if !st.css_queue.is_empty() {
+        anyos_std::println!(
+            "[surf] queued {} stylesheet(s) for async loading",
+            st.css_queue.len()
+        );
+        start_css_timer();
+    }
+}
+
+/// Start the CSS fetch timer if it is not already running.
+///
+/// The timer fires every 10 ms so that one stylesheet is fetched per tick
+/// without starving the UI event loop.
+pub(crate) fn start_css_timer() {
+    let st = crate::state();
+    if st.css_timer != 0 {
+        return;
+    }
+    st.css_timer = ui::set_timer(10, || {
+        fetch_next_css();
+    });
+}
+
+/// Fetch the next stylesheet from the queue.  Called by the recurring timer.
+///
+/// Applies the loaded CSS to the owning tab's webview and triggers a relayout
+/// so the page progressively improves its appearance as stylesheets arrive.
+/// Stops the timer when the queue is empty.
+pub(crate) fn fetch_next_css() {
+    let st = crate::state();
+
+    if st.css_queue.is_empty() {
+        if st.css_timer != 0 {
+            ui::kill_timer(st.css_timer);
+            st.css_timer = 0;
+        }
+        // Show "Done" only when the image queue is also fully drained.
+        if st.image_queue.is_empty() {
+            st.tabs[st.active_tab].status_text = String::from("Done");
+            crate::ui::update_status();
+        }
         return;
     }
 
-    anyos_std::println!("[surf] fetching {} external stylesheet(s)", hrefs.len());
-    let st = crate::state();
-    let mut added = 0usize;
+    let (tab_idx, href, css_url) = st.css_queue.remove(0);
 
-    for href in &hrefs {
-        let css_url = crate::http::resolve_url(base_url, href);
-        match crate::http::fetch(&css_url, &mut st.cookies, &mut st.conn_pool) {
-            Ok(resp) if resp.status >= 200 && resp.status < 400 && !resp.body.is_empty() => {
-                let css_text = decode_http_body(&resp.body, &resp.headers);
-                st.tabs[tab_index].webview.add_stylesheet(&css_text);
-                added += 1;
-                anyos_std::println!("[surf]   loaded: {} ({} bytes)", href, css_text.len());
-            }
-            _ => {
-                anyos_std::println!("[surf]   failed: {}", href);
+    // Show progress in the status bar.
+    let remaining = st.css_queue.len();
+    let mut status = String::from("Loading CSS (");
+    crate::ui::push_u32(&mut status, remaining as u32 + 1);
+    status.push_str(" left)");
+    st.status_label.set_text(&status);
+
+    anyos_std::println!("[surf]   fetching CSS: {}", href);
+    match crate::http::fetch(&css_url, &mut st.cookies, &mut st.conn_pool) {
+        Ok(resp) if resp.status >= 200 && resp.status < 400 && !resp.body.is_empty() => {
+            let css_text = decode_http_body(&resp.body, &resp.headers);
+            anyos_std::println!("[surf]   loaded CSS: {} ({} bytes)", href, css_text.len());
+            if tab_idx < st.tabs.len() {
+                st.tabs[tab_idx].webview.add_stylesheet(&css_text);
+                st.tabs[tab_idx].webview.relayout();
             }
         }
-    }
-
-    if added > 0 {
-        st.tabs[tab_index].webview.relayout();
+        _ => {
+            anyos_std::println!("[surf]   CSS fetch failed: {}", href);
+        }
     }
 }
 
@@ -219,8 +261,11 @@ pub(crate) fn fetch_next_image() {
             ui::kill_timer(st.image_timer);
             st.image_timer = 0;
         }
-        st.tabs[st.active_tab].status_text = String::from("Done");
-        crate::ui::update_status();
+        // Show "Done" only when the CSS queue is also fully drained.
+        if st.css_queue.is_empty() {
+            st.tabs[st.active_tab].status_text = String::from("Done");
+            crate::ui::update_status();
+        }
         return;
     }
 

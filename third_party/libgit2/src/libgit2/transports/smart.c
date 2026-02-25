@@ -141,11 +141,17 @@ static int git_smart__connect(
 	git_vector symrefs;
 	git_smart_service_t service;
 
+	fprintf(stderr, "[smart] connect: reset_stream\n");
 	if (git_smart__reset_stream(t, true) < 0)
 		return -1;
 
-	if (git_remote_connect_options_normalize(&t->connect_opts, t->owner->repo, connect_opts) < 0)
+	fprintf(stderr, "[smart] connect: normalize opts\n");
+	if (git_remote_connect_options_normalize(&t->connect_opts, t->owner->repo, connect_opts) < 0) {
+		const git_error *e = git_error_last();
+		fprintf(stderr, "[smart] connect: normalize opts FAILED (klass=%d: %s)\n",
+			e ? e->klass : -1, e ? e->message : "(null)");
 		return -1;
+	}
 
 	t->url = git__strdup(url);
 	GIT_ERROR_CHECK_ALLOC(t->url);
@@ -161,15 +167,23 @@ static int git_smart__connect(
 		return -1;
 	}
 
-	if ((error = t->wrapped->action(&stream, t->wrapped, t->url, service)) < 0)
+	fprintf(stderr, "[smart] connect: action (url=%s)\n", t->url ? t->url : "(null)");
+	if ((error = t->wrapped->action(&stream, t->wrapped, t->url, service)) < 0) {
+		fprintf(stderr, "[smart] connect: action FAILED (error=%d)\n", error);
 		return error;
+	}
 
 	/* Save off the current stream (i.e. socket) that we are working with */
 	t->current_stream = stream;
 
 	/* 2 flushes for RPC; 1 for stateful */
-	if ((error = git_smart__store_refs(t, t->rpc ? 2 : 1)) < 0)
+	fprintf(stderr, "[smart] connect: store_refs (rpc=%d)\n", t->rpc);
+	if ((error = git_smart__store_refs(t, t->rpc ? 2 : 1)) < 0) {
+		const git_error *e = git_error_last();
+		fprintf(stderr, "[smart] connect: store_refs FAILED (error=%d, klass=%d: %s)\n",
+			error, e ? e->klass : -1, e ? e->message : "(null)");
 		return error;
+	}
 
 	/* Strip the comment packet for RPC */
 	if (t->rpc) {

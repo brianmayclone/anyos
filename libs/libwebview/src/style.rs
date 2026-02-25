@@ -322,11 +322,11 @@ const SET_TEXT_TRANSFORM: u16 = 1 << 10;
 // Defaults
 // ---------------------------------------------------------------------------
 
-/// Reasonable defaults: dark-theme light text, transparent background.
+/// Reasonable defaults: black text, transparent background (light-theme base).
 pub fn default_style() -> ComputedStyle {
     ComputedStyle {
         display: Display::Block,
-        color: 0xFFE6E6E6,
+        color: 0xFF000000,
         background_color: 0,
         font_size: 16,
         font_weight: FontWeight::Normal,
@@ -906,7 +906,7 @@ fn has_class(class_str: &str, needle: &str) -> bool {
 
 /// Compute the final resolved style for every node in the DOM.
 /// Returns a `Vec<ComputedStyle>` indexed by `NodeId`.
-pub fn resolve_styles(dom: &Dom, stylesheets: &[Stylesheet], viewport_width: i32, viewport_height: i32) -> Vec<ComputedStyle> {
+pub fn resolve_styles(dom: &Dom, stylesheets: &[&Stylesheet], viewport_width: i32, viewport_height: i32) -> Vec<ComputedStyle> {
     let count = dom.nodes.len();
     crate::debug_surf!("[style] resolve_styles: {} nodes, {} stylesheets", count, stylesheets.len());
     #[cfg(feature = "debug_surf")]

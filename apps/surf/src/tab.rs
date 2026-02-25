@@ -178,30 +178,35 @@ pub(crate) fn navigate(url_str: &str) {
     let tab_idx = st.active_tab;
     crate::connect_pending_ws(tab_idx);
 
+    // Update the URL bar and chrome immediately so the user sees the page as
+    // loaded before we block on external CSS / image downloads.
+    let st = crate::state();
+    st.url_field.set_text(&st.tabs[st.active_tab].url_text.clone());
+    crate::ui::update_title();
+    crate::ui::update_status();
+    crate::ui::update_tab_labels();
+
     // Parse the body again for resource discovery (stylesheets, images).
     // A second parse is cheaper than complicating set_html to return DOM info.
     let dom_for_resources = libwebview::html::parse(&body_text);
     anyos_std::println!("[surf] DOM: {} nodes", dom_for_resources.nodes.len());
 
-    crate::resources::fetch_stylesheets(&dom_for_resources, &base_url, tab_idx);
-
-    // Cancel stale image fetches from the previous page.
+    // Cancel any stale CSS / image fetches left over from the previous page.
+    if st.css_timer != 0 {
+        ui::kill_timer(st.css_timer);
+        st.css_timer = 0;
+    }
+    st.css_queue.clear();
     if st.image_timer != 0 {
         ui::kill_timer(st.image_timer);
         st.image_timer = 0;
     }
     st.image_queue.clear();
 
+    crate::resources::queue_stylesheets(&dom_for_resources, &base_url, tab_idx);
     crate::resources::queue_images(&dom_for_resources, &base_url, tab_idx);
 
     st.tabs[st.active_tab].current_url = Some(base_url);
-
-    // Refresh the URL bar and all chrome.
-    let st = crate::state();
-    st.url_field.set_text(&st.tabs[st.active_tab].url_text.clone());
-    crate::ui::update_title();
-    crate::ui::update_status();
-    crate::ui::update_tab_labels();
 }
 
 /// Navigate the active tab using a form POST request.
@@ -280,24 +285,31 @@ pub(crate) fn navigate_post(url_str: &str, body: &str) {
     let tab_idx = st.active_tab;
     crate::connect_pending_ws(tab_idx);
 
-    let dom_for_resources = libwebview::html::parse(&body_text);
-
-    crate::resources::fetch_stylesheets(&dom_for_resources, &base_url, tab_idx);
-
-    if st.image_timer != 0 {
-        ui::kill_timer(st.image_timer);
-        st.image_timer = 0;
-    }
-    st.image_queue.clear();
-    crate::resources::queue_images(&dom_for_resources, &base_url, tab_idx);
-
-    st.tabs[st.active_tab].current_url = Some(base_url);
-
+    // Update chrome immediately before blocking on CSS/image downloads.
     let st = crate::state();
     st.url_field.set_text(&st.tabs[st.active_tab].url_text.clone());
     crate::ui::update_title();
     crate::ui::update_status();
     crate::ui::update_tab_labels();
+
+    let dom_for_resources = libwebview::html::parse(&body_text);
+
+    // Cancel any stale CSS / image fetches left over from the previous page.
+    if st.css_timer != 0 {
+        ui::kill_timer(st.css_timer);
+        st.css_timer = 0;
+    }
+    st.css_queue.clear();
+    if st.image_timer != 0 {
+        ui::kill_timer(st.image_timer);
+        st.image_timer = 0;
+    }
+    st.image_queue.clear();
+
+    crate::resources::queue_stylesheets(&dom_for_resources, &base_url, tab_idx);
+    crate::resources::queue_images(&dom_for_resources, &base_url, tab_idx);
+
+    st.tabs[st.active_tab].current_url = Some(base_url);
 }
 
 /// Navigate the active tab one step back in its history.

@@ -422,11 +422,13 @@ static int clone_into(
 	GIT_ASSERT_ARG(repo);
 	GIT_ASSERT_ARG(_remote);
 
+	fprintf(stderr, "[clone] clone_into: checking is_empty\n");
 	if (!git_repository_is_empty(repo)) {
 		git_error_set(GIT_ERROR_INVALID, "the repository is not empty");
 		return -1;
 	}
 
+	fprintf(stderr, "[clone] clone_into: remote_dup\n");
 	if ((error = git_remote_dup(&remote, _remote)) < 0)
 		return error;
 
@@ -436,8 +438,11 @@ static int clone_into(
 	if (!opts->depth)
 		fetch_opts.download_tags = GIT_REMOTE_DOWNLOAD_TAGS_ALL;
 
-	if ((error = git_remote_connect_options__from_fetch_opts(&connect_opts, remote, &fetch_opts)) < 0)
+	fprintf(stderr, "[clone] clone_into: connect_opts_from_fetch_opts\n");
+	if ((error = git_remote_connect_options__from_fetch_opts(&connect_opts, remote, &fetch_opts)) < 0) {
+		fprintf(stderr, "[clone] clone_into: connect_opts_from_fetch_opts FAILED (error=%d)\n", error);
 		goto cleanup;
+	}
 
 	git_str_printf(&reflog_message, "clone: from %s", git_remote_url(remote));
 
@@ -446,9 +451,15 @@ static int clone_into(
 	 * object format.
 	 */
 
+	fprintf(stderr, "[clone] clone_into: remote_connect_ext url=%s\n", git_remote_url(remote));
 	if ((error = git_remote_connect_ext(remote, GIT_DIRECTION_FETCH,
-			&connect_opts)) < 0)
+			&connect_opts)) < 0) {
+		const git_error *e = git_error_last();
+		fprintf(stderr, "[clone] clone_into: remote_connect_ext FAILED (error=%d, klass=%d: %s)\n",
+			error, e ? e->klass : -1, e ? e->message : "(null)");
 		goto cleanup;
+	}
+	fprintf(stderr, "[clone] clone_into: remote_connect_ext OK\n");
 
 	if ((error = git_remote_oid_type(&oid_type, remote)) < 0 ||
 	    (error = git_repository__set_objectformat(repo, oid_type)) < 0)
