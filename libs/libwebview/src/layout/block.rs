@@ -19,7 +19,10 @@ use super::flex::layout_flex;
 use super::grid::layout_grid;
 
 /// Build a block-level layout box for a single DOM node.
-pub fn build_block(dom: &Dom, styles: &[ComputedStyle], node_id: NodeId, available_width: i32, images: &ImageCache) -> LayoutBox {
+///
+/// `viewport_w` is the full viewport width, passed down to child layout calls
+/// so that `position:fixed` descendants can be positioned correctly.
+pub fn build_block(dom: &Dom, styles: &[ComputedStyle], node_id: NodeId, available_width: i32, images: &ImageCache, viewport_w: i32) -> LayoutBox {
     let style = &styles[node_id];
     let tag = dom.tag(node_id);
 
@@ -151,11 +154,11 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], node_id: NodeId, availab
     // Lay out children — dispatch to flex, grid, or block flow.
     let children: Vec<NodeId> = dom.get(node_id).children.iter().copied().collect();
     let content_h = if matches!(style.display, Display::Flex | Display::InlineFlex) {
-        layout_flex(dom, styles, &children, inner_w, &mut bx, images)
+        layout_flex(dom, styles, &children, inner_w, &mut bx, images, viewport_w)
     } else if matches!(style.display, Display::Grid | Display::InlineGrid) {
-        layout_grid(dom, styles, &children, inner_w, &mut bx, images)
+        layout_grid(dom, styles, &children, inner_w, &mut bx, images, viewport_w)
     } else {
-        layout_children(dom, styles, &children, inner_w, &mut bx, node_id, images)
+        layout_children(dom, styles, &children, inner_w, &mut bx, node_id, images, viewport_w)
     };
 
     // ---- Height resolution ----
@@ -186,7 +189,9 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], node_id: NodeId, availab
             bx.height = h + bx.padding.top + bx.padding.bottom + border2;
         }
     } else {
-        bx.height = content_h + bx.padding.bottom + border2;
+        // content_h from layout_children already includes border_width (top) + padding.top.
+        // Add padding.bottom + border_width (bottom) to get the full outer height.
+        bx.height = content_h + bx.padding.bottom + bx.border_width;
     }
 
     // Apply min-height / max-height.

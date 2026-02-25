@@ -516,10 +516,13 @@ fn count_layout_boxes(root: &LayoutBox) -> usize {
 }
 
 /// Calculate total document height from the root layout box.
+/// Fixed-position boxes are excluded — they are viewport-anchored and do not
+/// contribute to the scrollable document height.
 fn calc_total_height(root: &LayoutBox) -> i32 {
     let bottom = root.y + root.height;
     let mut max = bottom;
     for child in &root.children {
+        if child.is_fixed { continue; }
         let ch = child_total_height(child, root.y);
         if ch > max {
             max = ch;
@@ -533,6 +536,7 @@ fn child_total_height(bx: &LayoutBox, parent_y: i32) -> i32 {
     let bottom = abs_y + bx.height;
     let mut max = bottom;
     for child in &bx.children {
+        if child.is_fixed { continue; }
         let ch = child_total_height(child, abs_y);
         if ch > max {
             max = ch;

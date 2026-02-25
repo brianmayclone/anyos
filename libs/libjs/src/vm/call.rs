@@ -78,6 +78,7 @@ impl Vm {
                             locals,
                             upvalue_cells: captured_upvalues,
                             this_val: effective_this,
+                            is_constructor: false,
                         };
                         self.frames.push(frame);
                     }
@@ -146,6 +147,7 @@ impl Vm {
                             locals,
                             upvalue_cells: captured_upvalues,
                             this_val: new_obj,
+                            is_constructor: true,
                         };
                         self.frames.push(frame);
                     }

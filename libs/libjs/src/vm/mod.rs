@@ -48,6 +48,9 @@ pub struct CallFrame {
     /// Upvalue cells captured by this function's closure.
     pub upvalue_cells: Vec<Rc<RefCell<JsValue>>>,
     pub this_val: JsValue,
+    /// True when this frame was entered via `new Constructor()`.
+    /// On Return, if the constructor returned a non-object, `this_val` is used instead.
+    pub is_constructor: bool,
 }
 
 /// Exception handler for try-catch.
@@ -123,6 +126,7 @@ impl Vm {
             locals: (0..local_count).map(|_| Rc::new(RefCell::new(JsValue::Undefined))).collect(),
             upvalue_cells: Vec::new(),
             this_val: JsValue::Undefined,
+            is_constructor: false,
         };
         self.frames.push(frame);
         self.run()
@@ -345,9 +349,15 @@ impl Vm {
                     let val = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let frame = self.frames.pop().unwrap();
                     self.stack.truncate(frame.stack_base);
-                    self.stack.push(val.clone());
+                    // `new` calls: if constructor returned non-object, return `this` instead.
+                    let ret = if frame.is_constructor && !val.is_object() && !matches!(val, JsValue::Function(_)) {
+                        frame.this_val
+                    } else {
+                        val
+                    };
+                    self.stack.push(ret.clone());
                     if self.frames.is_empty() || self.frames.len() <= self.run_target_depth {
-                        return val;
+                        return ret;
                     }
                 }
                 Op::Closure(idx) => {

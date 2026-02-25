@@ -40,6 +40,7 @@ pub fn layout_grid(
     available_width: i32,
     parent: &mut LayoutBox,
     images: &ImageCache,
+    viewport_w: i32,
 ) -> i32 {
     let parent_idx = parent.node_id.unwrap_or(0);
     let parent_style = &styles[parent_idx];
@@ -108,7 +109,7 @@ pub fn layout_grid(
     // ── 7. Measure each item at its column span width ─────────────────────
     for item in &mut items {
         let col_w = span_width(&col_widths, item.placed_col, item.span_cols, col_gap);
-        let bx = build_block(dom, styles, item.node_id, col_w, images);
+        let bx = build_block(dom, styles, item.node_id, col_w, images, viewport_w);
         item.layout = Some(bx);
     }
 

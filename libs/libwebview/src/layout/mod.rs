@@ -150,6 +150,7 @@ impl LayoutBox {
             overflow_hidden: false,
             visibility_hidden: false,
             opacity: 255,
+            is_fixed: false,
         }
     }
 
@@ -350,7 +351,7 @@ pub fn layout(dom: &Dom, styles: &[ComputedStyle], viewport_width: i32, images: 
     let children = &dom.get(body_id).children;
     let child_ids: Vec<NodeId> = children.iter().copied().collect();
     crate::debug_surf!("[layout] body has {} direct children, content_width={}", child_ids.len(), content_width);
-    let height = layout_children(dom, styles, &child_ids, content_width, &mut root, body_id, images);
+    let height = layout_children(dom, styles, &child_ids, content_width, &mut root, body_id, images, viewport_width);
 
     root.height = height + root.padding.top + root.padding.bottom;
     crate::debug_surf!("[layout] layout done: root height={}", root.height);
@@ -366,6 +367,9 @@ pub fn layout(dom: &Dom, styles: &[ComputedStyle], viewport_width: i32, images: 
 /// Layout a list of child node IDs within the given available width.
 /// Appends resulting `LayoutBox`es to `parent.children` and returns the total
 /// height consumed.
+///
+/// `viewport_w` is the full viewport width; required for correct `position:fixed`
+/// sizing and placement (independent of the current containing block width).
 pub(super) fn layout_children(
     dom: &Dom,
     styles: &[ComputedStyle],
@@ -374,8 +378,11 @@ pub(super) fn layout_children(
     parent: &mut LayoutBox,
     _parent_node: NodeId,
     images: &ImageCache,
+    viewport_w: i32,
 ) -> i32 {
-    let mut cursor_y: i32 = parent.padding.top;
+    // Children start after the border and padding on the top-left.
+    let bw = parent.border_width;
+    let mut cursor_y: i32 = bw + parent.padding.top;
     let mut prev_margin_bottom: i32 = 0;
     let mut float_ctx = FloatContext::new(available_width);
 
@@ -414,11 +421,11 @@ pub(super) fn layout_children(
 
             // ── Floated elements ──
             if float_val != FloatVal::None {
-                let stf_width = shrink_to_fit_width(dom, styles, cid, available_width, images);
+                let stf_width = shrink_to_fit_width(dom, styles, cid, available_width, images, viewport_w);
                 let mut placed = if is_table_element(dom, cid) {
-                    table::layout_table(dom, styles, cid, stf_width, images)
+                    table::layout_table(dom, styles, cid, stf_width, images, viewport_w)
                 } else {
-                    build_block(dom, styles, cid, stf_width, images)
+                    build_block(dom, styles, cid, stf_width, images, viewport_w)
                 };
 
                 let total_w = placed.width + placed.margin.left + placed.margin.right;
@@ -429,10 +436,10 @@ pub(super) fn layout_children(
                 let ri = float_ctx.right_intrusion_at(place_y, total_h);
 
                 if float_val == FloatVal::Left {
-                    placed.x = parent.padding.left + li + placed.margin.left;
+                    placed.x = bw + parent.padding.left + li + placed.margin.left;
                 } else {
                     let right_edge = available_width - ri;
-                    placed.x = parent.padding.left + right_edge - placed.width - placed.margin.right;
+                    placed.x = bw + parent.padding.left + right_edge - placed.width - placed.margin.right;
                 }
                 placed.y = place_y + placed.margin.top;
 
@@ -455,9 +462,9 @@ pub(super) fn layout_children(
             let effective_avail = (available_width - li - ri).max(0);
 
             let child_box = if is_table_element(dom, cid) {
-                table::layout_table(dom, styles, cid, effective_avail, images)
+                table::layout_table(dom, styles, cid, effective_avail, images, viewport_w)
             } else {
-                build_block(dom, styles, cid, effective_avail, images)
+                build_block(dom, styles, cid, effective_avail, images, viewport_w)
             };
 
             let collapsed = if prev_margin_bottom > child_box.margin.top {
@@ -465,26 +472,26 @@ pub(super) fn layout_children(
             } else {
                 child_box.margin.top
             };
-            if cursor_y == parent.padding.top {
+            if cursor_y == bw + parent.padding.top {
                 cursor_y += child_box.margin.top;
             } else {
                 cursor_y += collapsed - prev_margin_bottom;
             }
 
             let mut placed = child_box;
-            placed.x = parent.padding.left + placed.margin.left + li;
+            placed.x = bw + parent.padding.left + placed.margin.left + li;
 
             // Center/right block alignment.
             let parent_align = styles[_parent_node].text_align;
             if parent_align == TextAlignVal::Center {
                 let total_child_w = placed.width + placed.margin.left + placed.margin.right;
                 if total_child_w < effective_avail {
-                    placed.x = parent.padding.left + li + (effective_avail - total_child_w) / 2;
+                    placed.x = bw + parent.padding.left + li + (effective_avail - total_child_w) / 2;
                 }
             } else if parent_align == TextAlignVal::Right {
                 let total_child_w = placed.width + placed.margin.left + placed.margin.right;
                 if total_child_w < effective_avail {
-                    placed.x = parent.padding.left + li + effective_avail - total_child_w;
+                    placed.x = bw + parent.padding.left + li + effective_avail - total_child_w;
                 }
             }
 
@@ -519,8 +526,8 @@ pub(super) fn layout_children(
             let parent_style = &styles[_parent_node];
             let parent_align = parent_style.text_align;
             let line_boxes = layout_inline_content(
-                dom, styles, &inline_ids, inline_avail, parent.padding.left + li, images,
-                parent_align, parent_style.line_height,
+                dom, styles, &inline_ids, inline_avail, bw + parent.padding.left + li, images,
+                parent_align, parent_style.line_height, viewport_w,
             );
             for lb in line_boxes {
                 let h = lb.height;
@@ -536,29 +543,52 @@ pub(super) fn layout_children(
     // Position absolutely/fixed elements out of flow.
     for &abs_id in &deferred_abs {
         let abs_style = &styles[abs_id];
+        let is_fixed_pos = abs_style.position == Position::Fixed;
+
+        // Fixed elements are sized against the viewport; absolute elements against the container.
+        let sizing_width = if is_fixed_pos { viewport_w } else { available_width };
+
         let mut abs_box = if is_table_element(dom, abs_id) {
-            table::layout_table(dom, styles, abs_id, available_width, images)
+            table::layout_table(dom, styles, abs_id, sizing_width, images, viewport_w)
         } else {
-            build_block(dom, styles, abs_id, available_width, images)
+            build_block(dom, styles, abs_id, sizing_width, images, viewport_w)
         };
 
-        // Position using top/left/right/bottom offsets relative to parent.
-        let t = abs_style.top.unwrap_or(0);
-        let l = abs_style.left_offset.unwrap_or(0);
+        if is_fixed_pos {
+            // position:fixed — coordinates are viewport-relative.
+            // The renderer honours `is_fixed = true` by ignoring accumulated parent offsets.
+            let t = abs_style.top.unwrap_or(0);
+            let l = abs_style.left_offset.unwrap_or(0);
 
-        abs_box.x = parent.padding.left + l + abs_box.margin.left;
-        abs_box.y = parent.padding.top + t + abs_box.margin.top;
+            abs_box.x = l + abs_box.margin.left;
+            abs_box.y = t + abs_box.margin.top;
 
-        // right/bottom override if left/top not set.
-        if abs_style.left_offset.is_none() {
-            if let Some(r) = abs_style.right_offset {
-                abs_box.x = available_width - r - abs_box.width - abs_box.margin.right;
+            if abs_style.left_offset.is_none() {
+                if let Some(r) = abs_style.right_offset {
+                    abs_box.x = (viewport_w - r - abs_box.width - abs_box.margin.right).max(0);
+                }
             }
-        }
-        if abs_style.top.is_none() {
-            if let Some(b) = abs_style.bottom_offset {
-                // Position from bottom of current content area.
-                abs_box.y = cursor_y - b - abs_box.height - abs_box.margin.bottom;
+            // bottom: on fixed elements requires viewport height, which we don't track yet.
+            // Leave y as-is when only bottom: is set (element appears at top of viewport).
+
+            abs_box.is_fixed = true;
+        } else {
+            // position:absolute — coordinates relative to the direct containing block (parent box).
+            let t = abs_style.top.unwrap_or(0);
+            let l = abs_style.left_offset.unwrap_or(0);
+
+            abs_box.x = bw + parent.padding.left + l + abs_box.margin.left;
+            abs_box.y = bw + parent.padding.top + t + abs_box.margin.top;
+
+            if abs_style.left_offset.is_none() {
+                if let Some(r) = abs_style.right_offset {
+                    abs_box.x = available_width - r - abs_box.width - abs_box.margin.right;
+                }
+            }
+            if abs_style.top.is_none() {
+                if let Some(b) = abs_style.bottom_offset {
+                    abs_box.y = cursor_y - b - abs_box.height - abs_box.margin.bottom;
+                }
             }
         }
 
@@ -721,6 +751,7 @@ fn shrink_to_fit_width(
     node_id: NodeId,
     max_width: i32,
     images: &ImageCache,
+    viewport_w: i32,
 ) -> i32 {
     let style = &styles[node_id];
     // If explicit width is set, use it.
@@ -728,7 +759,7 @@ fn shrink_to_fit_width(
         if w > 0 { return w.min(max_width); }
     }
     // Otherwise, lay out with max_width and use the resulting content width.
-    let trial = build_block(dom, styles, node_id, max_width, images);
+    let trial = build_block(dom, styles, node_id, max_width, images, viewport_w);
     // Shrink-to-fit: use the content width (sum of children) capped at max_width.
     let content_w = trial.children.iter()
         .map(|c| c.x + c.width + c.margin.right)

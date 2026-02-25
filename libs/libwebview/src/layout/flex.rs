@@ -41,6 +41,7 @@ pub fn layout_flex(
     available_width: i32,
     parent: &mut LayoutBox,
     images: &ImageCache,
+    viewport_w: i32,
 ) -> i32 {
     let parent_style_idx = parent.node_id.unwrap_or(0);
     let parent_style = &styles[parent_style_idx];
@@ -88,7 +89,7 @@ pub fn layout_flex(
             } else if let Some((px100, pct100)) = st.width_calc {
                 item.main_base = px100 / 100 + (available_width as i64 * pct100 as i64 / 10000) as i32;
             } else {
-                let child_box = build_block(dom, styles, item.node_id, available_width, images);
+                let child_box = build_block(dom, styles, item.node_id, available_width, images, viewport_w);
                 item.main_base = child_box.width + child_box.margin.left + child_box.margin.right;
                 item.cross_base = child_box.height + child_box.margin.top + child_box.margin.bottom;
                 item.layout = Some(child_box);
@@ -97,7 +98,7 @@ pub fn layout_flex(
             if let Some(h) = st.height {
                 item.main_base = h;
             } else {
-                let child_box = build_block(dom, styles, item.node_id, available_width, images);
+                let child_box = build_block(dom, styles, item.node_id, available_width, images, viewport_w);
                 item.main_base = child_box.height + child_box.margin.top + child_box.margin.bottom;
                 item.cross_base = child_box.width + child_box.margin.left + child_box.margin.right;
                 item.layout = Some(child_box);
@@ -130,7 +131,8 @@ pub fn layout_flex(
 
     // Phase 3: Resolve flexible lengths and position items.
     let cross_gap = if is_row { row_gap } else { col_gap };
-    let mut cross_cursor: i32 = parent.padding.top;
+    let bw = parent.border_width;
+    let mut cross_cursor: i32 = bw + parent.padding.top;
 
     for line in &lines {
         let count = line.end - line.start;
@@ -166,12 +168,12 @@ pub fn layout_flex(
             let child_avail = if is_row { item_main } else { available_width };
             let mut child_box = if let Some(existing) = items[i].layout.take() {
                 if is_row && (existing.width + existing.margin.left + existing.margin.right) != item_main {
-                    build_block(dom, styles, items[i].node_id, child_avail, images)
+                    build_block(dom, styles, items[i].node_id, child_avail, images, viewport_w)
                 } else {
                     existing
                 }
             } else {
-                build_block(dom, styles, items[i].node_id, child_avail, images)
+                build_block(dom, styles, items[i].node_id, child_avail, images, viewport_w)
             };
 
             if is_row && total_grow > 0 && items[i].grow > 0 {
@@ -229,10 +231,10 @@ pub fn layout_flex(
             if is_row {
                 if is_reverse {
                     main_cursor -= item_main;
-                    child_box.x = parent.padding.left + main_cursor + child_box.margin.left;
+                    child_box.x = bw + parent.padding.left + main_cursor + child_box.margin.left;
                     if idx > 0 { main_cursor -= gap + main_gap_extra; }
                 } else {
-                    child_box.x = parent.padding.left + main_cursor + child_box.margin.left;
+                    child_box.x = bw + parent.padding.left + main_cursor + child_box.margin.left;
                     main_cursor += item_main + gap;
                     if idx < count - 1 { main_cursor += main_gap_extra; }
                 }
@@ -275,7 +277,7 @@ pub fn layout_flex(
                     }
                     AlignItems::Baseline => 0,
                 };
-                child_box.x = parent.padding.left + cross_offset + child_box.margin.left;
+                child_box.x = bw + parent.padding.left + cross_offset + child_box.margin.left;
             }
         }
 

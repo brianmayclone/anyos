@@ -4,7 +4,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, NodeType, Tag};
-use crate::style::{ComputedStyle, Display, WhiteSpace, TextDeco, TextTransform, TextAlignVal};
+use crate::style::{ComputedStyle, Display, Position, WhiteSpace, TextDeco, TextTransform, TextAlignVal};
 use crate::ImageCache;
 
 use super::{
@@ -34,6 +34,7 @@ pub fn layout_inline_content(
     images: &ImageCache,
     text_align: TextAlignVal,
     line_height: i32,
+    viewport_w: i32,
 ) -> Vec<LayoutBox> {
     // 1. Flatten all inline children into fragments.
     let mut fragments: Vec<InlineFragment> = Vec::new();
@@ -42,7 +43,7 @@ pub fn layout_inline_content(
         if style.display == Display::None {
             continue;
         }
-        collect_inline_fragments(dom, styles, cid, &mut fragments, available_width, images, 0);
+        collect_inline_fragments(dom, styles, cid, &mut fragments, available_width, images, 0, viewport_w);
     }
 
     // 2. Break fragments into lines.
@@ -141,9 +142,16 @@ fn collect_inline_fragments(
     available_width: i32,
     images: &ImageCache,
     inherited_bg: u32,
+    viewport_w: i32,
 ) {
     let node = dom.get(node_id);
     let style = &styles[node_id];
+
+    // Absolutely/fixed-positioned elements are removed from inline flow.
+    // They are handled as deferred boxes in layout_children instead.
+    if matches!(style.position, Position::Absolute | Position::Fixed) {
+        return;
+    }
 
     match &node.node_type {
         NodeType::Text(text) => {
@@ -246,7 +254,7 @@ fn collect_inline_fragments(
             // Handle display: inline-block / inline-flex — lay out as block, emit as inline fragment.
             if matches!(style.display, Display::InlineBlock | Display::InlineFlex) {
                 use super::block::build_block;
-                let mut block_box = build_block(dom, styles, node_id, available_width, images);
+                let mut block_box = build_block(dom, styles, node_id, available_width, images, viewport_w);
                 block_box.box_type = BoxType::InlineBlock;
                 let w = block_box.width + block_box.margin.left + block_box.margin.right;
                 let h = block_box.height + block_box.margin.top + block_box.margin.bottom;
@@ -274,7 +282,7 @@ fn collect_inline_fragments(
                 if cs.display == Display::None {
                     continue;
                 }
-                collect_inline_fragments(dom, styles, cid, out, available_width, images, child_bg);
+                collect_inline_fragments(dom, styles, cid, out, available_width, images, child_bg, viewport_w);
             }
 
             // Right padding + margin → insert spacer.

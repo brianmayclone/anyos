@@ -33,6 +33,7 @@ pub fn layout_table(
     node_id: NodeId,
     available_width: i32,
     images: &ImageCache,
+    viewport_w: i32,
 ) -> LayoutBox {
     let style = &styles[node_id];
     let tag = dom.tag(node_id);
@@ -169,7 +170,7 @@ pub fn layout_table(
 
             // Try laying out with generous width to get preferred width.
             let test_w = content_width;
-            let cell_box = layout_cell(dom, styles, cell_id, test_w, cellpadding, table_border, images);
+            let cell_box = layout_cell(dom, styles, cell_id, test_w, cellpadding, table_border, images, viewport_w);
             let pref_w = cell_content_width(&cell_box) + cell_overhead;
 
             if colspan == 1 {
@@ -245,7 +246,7 @@ pub fn layout_table(
 
     // Layout caption if present.
     if let Some(cap_id) = caption_id {
-        let cap_box = build_block(dom, styles, cap_id, table_width - bx.padding.left - bx.padding.right, images);
+        let cap_box = build_block(dom, styles, cap_id, table_width - bx.padding.left - bx.padding.right, images, viewport_w);
         let mut placed = cap_box;
         placed.x = bx.padding.left;
         placed.y = cursor_y;
@@ -281,7 +282,7 @@ pub fn layout_table(
             }
 
             // Layout cell content.
-            let cell_box = layout_cell(dom, styles, cell_id, cell_w, cellpadding, table_border, images);
+            let cell_box = layout_cell(dom, styles, cell_id, cell_w, cellpadding, table_border, images, viewport_w);
             let ch = cell_box.height;
             if ch > row_height { row_height = ch; }
 
@@ -326,6 +327,7 @@ fn layout_cell(
     cellpadding: i32,
     table_border: i32,
     images: &ImageCache,
+    viewport_w: i32,
 ) -> LayoutBox {
     let style = &styles[cell_id];
     let cell_border = if table_border > 0 { 1 } else { style.border_width };
@@ -354,7 +356,7 @@ fn layout_cell(
     let inner_w = inner_w.max(0);
 
     let child_ids: Vec<NodeId> = dom.get(cell_id).children.iter().copied().collect();
-    let height = layout_children(dom, styles, &child_ids, inner_w, &mut bx, cell_id, images);
+    let height = layout_children(dom, styles, &child_ids, inner_w, &mut bx, cell_id, images, viewport_w);
 
     bx.height = height + bx.padding.top + bx.padding.bottom + cell_border * 2;
     bx

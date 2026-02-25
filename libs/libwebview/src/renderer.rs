@@ -123,8 +123,12 @@ impl Renderer {
         submit_cb: Option<ui::Callback>,
         submit_cb_ud: u64,
     ) {
-        let abs_x = offset_x + bx.x;
-        let abs_y = offset_y + bx.y;
+        // position:fixed boxes use viewport-absolute coordinates; ignore parent offsets.
+        let (abs_x, abs_y) = if bx.is_fixed {
+            (bx.x, bx.y)
+        } else {
+            (offset_x + bx.x, offset_y + bx.y)
+        };
 
         // Skip invisible boxes.
         if bx.visibility_hidden {

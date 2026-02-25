@@ -787,43 +787,92 @@ impl Compiler {
     fn compile_class(
         &mut self,
         name: Option<&String>,
-        _super_class: &Option<Expr>,
+        super_class: &Option<Expr>,
         body: &[ClassMember],
     ) {
-        // Simplified class compilation:
-        // 1. Create constructor function
-        // 2. Add methods to prototype
-        // 3. Push class as a function
-
-        // Find constructor
+        // Step 1: compile the constructor (or a default one).
         let ctor = body.iter().find(|m| matches!(m.kind, ClassMemberKind::Constructor { .. }));
-
         if let Some(ctor_member) = ctor {
             if let ClassMemberKind::Constructor { ref params, ref body } = ctor_member.kind {
                 self.compile_function(name, params, body, false);
             }
+        } else if let Some(ref super_expr) = super_class {
+            // Default constructor for derived class: constructor(...args) { super(...args); }
+            // Simplified: just compile an empty constructor — super() support is separate.
+            self.compile_function(name, &[], &[], false);
         } else {
-            // Empty constructor
+            // Default constructor for base class: constructor() {}
             self.compile_function(name, &[], &[], false);
         }
+        // Stack: [..., Constructor]
 
-        // Methods: set on the function's prototype
+        // Step 2: if there's a super class, set up prototype chain.
+        if let Some(ref super_expr) = super_class {
+            // Stack: [..., Constructor]
+            self.emit(Op::Dup);                        // [..., Constructor, Constructor]
+            let proto_idx = self.add_const(Constant::String(String::from("prototype")));
+            self.emit(Op::GetPropNamed(proto_idx));    // [..., Constructor, Constructor.prototype]
+            self.compile_expr(super_expr);             // [..., Constructor, Constructor.prototype, SuperClass]
+            let proto_idx2 = self.add_const(Constant::String(String::from("prototype")));
+            self.emit(Op::GetPropNamed(proto_idx2));   // [..., Constructor, Constructor.prototype, SuperClass.prototype]
+            // Set Constructor.prototype.__proto__ = SuperClass.prototype
+            let proto_key_idx = self.add_const(Constant::String(String::from("__proto__")));
+            self.emit(Op::SetPropNamed(proto_key_idx)); // [..., Constructor, SuperClass.prototype]
+            self.emit(Op::Pop);                         // [..., Constructor]
+        }
+
+        // Step 3: add instance methods to Constructor.prototype.
         for member in body {
             if matches!(member.kind, ClassMemberKind::Constructor { .. }) {
                 continue;
             }
-            if let ClassMemberKind::Method { ref params, ref body } = member.kind {
-                self.emit(Op::Dup); // dup constructor
-                let key_name = match &member.key {
-                    PropKey::Ident(s) | PropKey::String(s) => s.clone(),
-                    _ => String::from("_method_"),
-                };
-                self.compile_function(Some(&key_name), params, body, false);
-                let name_idx = self.add_const(Constant::String(key_name));
-                self.emit(Op::SetPropNamed(name_idx));
-                self.emit(Op::Pop);
+            let key_name = match &member.key {
+                PropKey::Ident(s) | PropKey::String(s) => s.clone(),
+                _ => String::from("_member_"),
+            };
+            if member.is_static {
+                // Static methods/properties: set directly on Constructor.
+                match &member.kind {
+                    ClassMemberKind::Method { params, body } => {
+                        self.emit(Op::Dup); // dup Constructor
+                        self.compile_function(Some(&key_name), params, body, false);
+                        let ki = self.add_const(Constant::String(key_name));
+                        self.emit(Op::SetPropNamed(ki));
+                        self.emit(Op::Pop);
+                    }
+                    ClassMemberKind::Property { value } => {
+                        self.emit(Op::Dup);
+                        if let Some(v) = value { self.compile_expr(v); } else { self.emit(Op::LoadUndefined); }
+                        let ki = self.add_const(Constant::String(key_name));
+                        self.emit(Op::SetPropNamed(ki));
+                        self.emit(Op::Pop);
+                    }
+                    _ => {}
+                }
+            } else {
+                // Instance methods: set on Constructor.prototype.
+                match &member.kind {
+                    ClassMemberKind::Method { params, body } => {
+                        // Stack before: [..., Constructor]
+                        self.emit(Op::Dup); // [..., Constructor, Constructor]
+                        let proto_idx = self.add_const(Constant::String(String::from("prototype")));
+                        self.emit(Op::GetPropNamed(proto_idx));
+                        // GetPropNamed pops Constructor-dup, pushes prototype
+                        // Stack: [..., Constructor, Constructor.prototype]
+                        self.compile_function(Some(&key_name), params, body, false);
+                        // Stack: [..., Constructor, Constructor.prototype, methodFn]
+                        let ki = self.add_const(Constant::String(key_name));
+                        self.emit(Op::SetPropNamed(ki));
+                        // SetPropNamed pops methodFn+prototype, sets prop, pushes methodFn
+                        // Stack: [..., Constructor, methodFn]
+                        self.emit(Op::Pop); // pop methodFn
+                        // Stack: [..., Constructor]
+                    }
+                    _ => {}
+                }
             }
         }
+        // Stack: [..., Constructor]
     }
 
     // ── Template literal interpolation ──
