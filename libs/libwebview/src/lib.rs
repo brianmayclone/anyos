@@ -22,6 +22,7 @@ pub mod html;
 pub mod css;
 pub mod style;
 pub mod layout;
+pub mod js;
 mod renderer;
 
 use alloc::string::String;
@@ -45,6 +46,8 @@ pub struct WebView {
     total_height_val: i32,
     link_cb: Option<ui::Callback>,
     link_cb_ud: u64,
+    /// JavaScript runtime for executing <script> tags.
+    js_runtime: js::JsRuntime,
 }
 
 impl WebView {
@@ -69,6 +72,7 @@ impl WebView {
             total_height_val: 0,
             link_cb: None,
             link_cb_ud: 0,
+            js_runtime: js::JsRuntime::new(),
         }
     }
 
@@ -193,7 +197,7 @@ impl WebView {
         let styles = style::resolve_styles(d, &all_sheets);
 
         // Layout.
-        let root = layout::layout(d, &styles, self.viewport_width);
+        let root = layout::layout(d, &styles, self.viewport_width, &self.images);
         self.total_height_val = calc_total_height(&root);
 
         // Clear old controls.
@@ -211,6 +215,19 @@ impl WebView {
             self.link_cb,
             self.link_cb_ud,
         );
+
+        // Execute JavaScript <script> tags.
+        self.js_runtime.execute_scripts(d);
+    }
+
+    /// Access the JS runtime (e.g. for evaluating additional scripts or reading console).
+    pub fn js_runtime(&mut self) -> &mut js::JsRuntime {
+        &mut self.js_runtime
+    }
+
+    /// Get console output from JavaScript execution.
+    pub fn js_console(&self) -> &[String] {
+        self.js_runtime.get_console()
     }
 }
 

@@ -20,8 +20,9 @@ use alloc::vec::Vec;
 use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
     ComputedStyle, Display, FontWeight, FontStyleVal, TextAlignVal,
-    ListStyle, TextDeco,
+    ListStyle, TextDeco, TextTransform,
 };
+use crate::ImageCache;
 
 // Re-export sub-module public items.
 pub use form::{FormFieldPos, collect_form_positions};
@@ -245,11 +246,21 @@ fn format_decimal(out: &mut String, mut n: u32) {
     }
 }
 
-pub(super) fn image_dimensions(dom: &Dom, node_id: NodeId, max_width: i32) -> (i32, i32) {
-    let w = dom.attr(node_id, "width").and_then(parse_attr_int).unwrap_or(300);
-    let h = dom.attr(node_id, "height").and_then(parse_attr_int).unwrap_or(150);
+pub(super) fn image_dimensions(dom: &Dom, node_id: NodeId, max_width: i32, images: &ImageCache) -> (i32, i32) {
+    // Get natural dimensions from image cache (actual decoded image size).
+    let src = dom.attr(node_id, "src");
+    let natural = src.and_then(|s| images.get(s)).map(|e| (e.width as i32, e.height as i32));
 
-    if w > max_width && w > 0 {
+    // HTML attributes override natural size; fall back to natural; then 300x150.
+    let w = dom.attr(node_id, "width").and_then(parse_attr_int)
+        .or(natural.map(|(w, _)| w))
+        .unwrap_or(300);
+    let h = dom.attr(node_id, "height").and_then(parse_attr_int)
+        .or(natural.map(|(_, h)| h))
+        .unwrap_or(150);
+
+    // Scale down proportionally if wider than container.
+    if w > max_width && max_width > 0 && w > 0 {
         let scaled_h = (h as i64 * max_width as i64 / w as i64) as i32;
         (max_width, scaled_h.max(1))
     } else {
@@ -301,7 +312,7 @@ pub(super) fn size_attr_width(dom: &Dom, node_id: NodeId, default: i32) -> i32 {
 // ---------------------------------------------------------------------------
 
 /// Build a layout tree from the DOM and computed styles.
-pub fn layout(dom: &Dom, styles: &[ComputedStyle], viewport_width: i32) -> LayoutBox {
+pub fn layout(dom: &Dom, styles: &[ComputedStyle], viewport_width: i32, images: &ImageCache) -> LayoutBox {
     let body_id = dom.find_body().unwrap_or(0);
     let style = &styles[body_id];
 
@@ -323,7 +334,7 @@ pub fn layout(dom: &Dom, styles: &[ComputedStyle], viewport_width: i32) -> Layou
 
     let children = &dom.get(body_id).children;
     let child_ids: Vec<NodeId> = children.iter().copied().collect();
-    let height = layout_children(dom, styles, &child_ids, content_width, &mut root, body_id);
+    let height = layout_children(dom, styles, &child_ids, content_width, &mut root, body_id, images);
 
     root.height = height + root.padding.top + root.padding.bottom;
     root
@@ -343,6 +354,7 @@ pub(super) fn layout_children(
     available_width: i32,
     parent: &mut LayoutBox,
     _parent_node: NodeId,
+    images: &ImageCache,
 ) -> i32 {
     let mut cursor_y: i32 = parent.padding.top;
     let mut prev_margin_bottom: i32 = 0;
@@ -360,7 +372,7 @@ pub(super) fn layout_children(
         let is_block = is_block_level(dom, cid, style);
 
         if is_block {
-            let child_box = build_block(dom, styles, cid, available_width);
+            let child_box = build_block(dom, styles, cid, available_width, images);
 
             let collapsed = if prev_margin_bottom > child_box.margin.top {
                 prev_margin_bottom
@@ -397,7 +409,7 @@ pub(super) fn layout_children(
             }
             let inline_ids: Vec<NodeId> = child_ids[run_start..i].iter().copied().collect();
             let line_boxes = layout_inline_content(
-                dom, styles, &inline_ids, available_width, parent.padding.left,
+                dom, styles, &inline_ids, available_width, parent.padding.left, images,
             );
             for lb in line_boxes {
                 let h = lb.height;
@@ -411,6 +423,40 @@ pub(super) fn layout_children(
     }
 
     cursor_y
+}
+
+/// Apply text-transform to a string.
+pub(super) fn apply_text_transform(text: &str, transform: TextTransform) -> String {
+    match transform {
+        TextTransform::None => String::from(text),
+        TextTransform::Uppercase => {
+            let mut out = String::with_capacity(text.len());
+            for ch in text.chars() {
+                for c in ch.to_uppercase() { out.push(c); }
+            }
+            out
+        }
+        TextTransform::Lowercase => {
+            let mut out = String::with_capacity(text.len());
+            for ch in text.chars() {
+                for c in ch.to_lowercase() { out.push(c); }
+            }
+            out
+        }
+        TextTransform::Capitalize => {
+            let mut out = String::with_capacity(text.len());
+            let mut prev_ws = true;
+            for ch in text.chars() {
+                if prev_ws && ch.is_alphabetic() {
+                    for c in ch.to_uppercase() { out.push(c); }
+                } else {
+                    out.push(ch);
+                }
+                prev_ws = ch.is_whitespace();
+            }
+            out
+        }
+    }
 }
 
 /// Determine whether a node should generate a block-level box.

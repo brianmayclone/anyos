@@ -34,11 +34,19 @@ name = "libimage_client"
 version = "0.1.0"
 
 [[package]]
+name = "libjs"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
 name = "libwebview"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
  "libanyui_client",
+ "libjs",
 ]
 
 [[package]]

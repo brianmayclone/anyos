@@ -7,6 +7,7 @@ use crate::style::{
     ComputedStyle, Display, Position, FlexDirection, FlexWrap,
     JustifyContent, AlignItems,
 };
+use crate::ImageCache;
 
 use super::LayoutBox;
 use super::block::build_block;
@@ -39,6 +40,7 @@ pub fn layout_flex(
     child_ids: &[NodeId],
     available_width: i32,
     parent: &mut LayoutBox,
+    images: &ImageCache,
 ) -> i32 {
     let parent_style_idx = parent.node_id.unwrap_or(0);
     let parent_style = &styles[parent_style_idx];
@@ -84,7 +86,7 @@ pub fn layout_flex(
             } else if let Some(pct) = st.width_pct {
                 item.main_base = (available_width as i64 * pct as i64 / 10000) as i32;
             } else {
-                let child_box = build_block(dom, styles, item.node_id, available_width);
+                let child_box = build_block(dom, styles, item.node_id, available_width, images);
                 item.main_base = child_box.width + child_box.margin.left + child_box.margin.right;
                 item.cross_base = child_box.height + child_box.margin.top + child_box.margin.bottom;
                 item.layout = Some(child_box);
@@ -93,7 +95,7 @@ pub fn layout_flex(
             if let Some(h) = st.height {
                 item.main_base = h;
             } else {
-                let child_box = build_block(dom, styles, item.node_id, available_width);
+                let child_box = build_block(dom, styles, item.node_id, available_width, images);
                 item.main_base = child_box.height + child_box.margin.top + child_box.margin.bottom;
                 item.cross_base = child_box.width + child_box.margin.left + child_box.margin.right;
                 item.layout = Some(child_box);
@@ -162,12 +164,12 @@ pub fn layout_flex(
             let child_avail = if is_row { item_main } else { available_width };
             let mut child_box = if let Some(existing) = items[i].layout.take() {
                 if is_row && (existing.width + existing.margin.left + existing.margin.right) != item_main {
-                    build_block(dom, styles, items[i].node_id, child_avail)
+                    build_block(dom, styles, items[i].node_id, child_avail, images)
                 } else {
                     existing
                 }
             } else {
-                build_block(dom, styles, items[i].node_id, child_avail)
+                build_block(dom, styles, items[i].node_id, child_avail, images)
             };
 
             if is_row && total_grow > 0 && items[i].grow > 0 {

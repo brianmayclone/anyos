@@ -717,20 +717,53 @@ fn parse_declarations(p: &mut Parser) -> Vec<Declaration> {
 
         if let Some(property) = parse_property(&prop_name) {
             let trimmed = value_str.trim();
+            // Detect and strip !important
+            let (trimmed, important) = strip_important(trimmed);
             // Expand shorthand properties into individual declarations.
             if is_expandable_shorthand(property) {
-                let expanded = expand_shorthand(property, trimmed);
+                let mut expanded = expand_shorthand(property, trimmed);
+                if important {
+                    for d in &mut expanded {
+                        d.important = true;
+                    }
+                }
                 for d in expanded {
                     decls.push(d);
                 }
             } else {
                 let value = parse_value(property, trimmed);
-                decls.push(Declaration { property, value });
+                decls.push(Declaration { property, value, important });
             }
         }
     }
 
     decls
+}
+
+/// Strip `!important` from end of a CSS value string.
+fn strip_important(s: &str) -> (&str, bool) {
+    let bytes = s.as_bytes();
+    if bytes.len() < 10 {
+        return (s, false);
+    }
+    // Check last 10 chars case-insensitively for "!important"
+    let end = &bytes[bytes.len() - 10..];
+    let matches = end[0] == b'!'
+        && (end[1] == b'i' || end[1] == b'I')
+        && (end[2] == b'm' || end[2] == b'M')
+        && (end[3] == b'p' || end[3] == b'P')
+        && (end[4] == b'o' || end[4] == b'O')
+        && (end[5] == b'r' || end[5] == b'R')
+        && (end[6] == b't' || end[6] == b'T')
+        && (end[7] == b'a' || end[7] == b'A')
+        && (end[8] == b'n' || end[8] == b'N')
+        && (end[9] == b't' || end[9] == b'T');
+    if matches {
+        let trimmed = s[..s.len() - 10].trim_end();
+        (trimmed, true)
+    } else {
+        (s, false)
+    }
 }
 
 fn read_value_str(p: &mut Parser) -> String {
@@ -950,7 +983,7 @@ fn expand_shorthand(property: Property, value_str: &str) -> Vec<Declaration> {
         _ => {
             let value = parse_value(property, value_str);
             let mut v = Vec::new();
-            v.push(Declaration { property, value });
+            v.push(Declaration { property, value, important: false });
             v
         }
     }
@@ -972,10 +1005,10 @@ fn expand_box_shorthand(
         _ => (parts[0], parts[1], parts[2], parts[3]),
     };
     let mut v = Vec::with_capacity(4);
-    v.push(Declaration { property: top, value: parse_value(top, t) });
-    v.push(Declaration { property: right, value: parse_value(right, r) });
-    v.push(Declaration { property: bottom, value: parse_value(bottom, b) });
-    v.push(Declaration { property: left, value: parse_value(left, l) });
+    v.push(Declaration { property: top, value: parse_value(top, t), important: false });
+    v.push(Declaration { property: right, value: parse_value(right, r), important: false });
+    v.push(Declaration { property: bottom, value: parse_value(bottom, b), important: false });
+    v.push(Declaration { property: left, value: parse_value(left, l), important: false });
     v
 }
 
@@ -985,41 +1018,33 @@ fn expand_border_shorthand(value_str: &str) -> Vec<Declaration> {
     let parts: Vec<&str> = value_str.split_whitespace().collect();
     for part in &parts {
         let lower = to_ascii_lower(part);
-        // Check if it's a border style keyword.
         if matches!(lower.as_str(), "solid" | "dashed" | "dotted" | "double"
             | "groove" | "ridge" | "inset" | "outset" | "hidden") {
             decls.push(Declaration {
-                property: Property::BorderStyle,
-                value: CssValue::Keyword(lower),
+                property: Property::BorderStyle, value: CssValue::Keyword(lower), important: false,
             });
         } else if let Some(c) = try_parse_color(part) {
             decls.push(Declaration {
-                property: Property::BorderColor,
-                value: CssValue::Color(c),
+                property: Property::BorderColor, value: CssValue::Color(c), important: false,
             });
         } else if let Some(c) = named_color(&lower) {
             decls.push(Declaration {
-                property: Property::BorderColor,
-                value: CssValue::Color(c),
+                property: Property::BorderColor, value: CssValue::Color(c), important: false,
             });
         } else if let Some(dim) = try_parse_dimension(part) {
             decls.push(Declaration {
-                property: Property::BorderWidth,
-                value: dim,
+                property: Property::BorderWidth, value: dim, important: false,
             });
         } else if matches!(lower.as_str(), "thin" | "medium" | "thick") {
             decls.push(Declaration {
-                property: Property::BorderWidth,
-                value: CssValue::Keyword(lower),
+                property: Property::BorderWidth, value: CssValue::Keyword(lower), important: false,
             });
         } else if lower == "none" {
             decls.push(Declaration {
-                property: Property::BorderStyle,
-                value: CssValue::None,
+                property: Property::BorderStyle, value: CssValue::None, important: false,
             });
             decls.push(Declaration {
-                property: Property::BorderWidth,
-                value: CssValue::Length(0, Unit::Px),
+                property: Property::BorderWidth, value: CssValue::Length(0, Unit::Px), important: false,
             });
         }
     }
@@ -1031,18 +1056,17 @@ fn expand_flex_shorthand(value_str: &str) -> Vec<Declaration> {
     let lower = to_ascii_lower(value_str);
     let mut decls = Vec::new();
 
-    // Handle keyword values.
     match lower.as_str() {
         "none" => {
-            decls.push(Declaration { property: Property::FlexGrow, value: CssValue::Number(0) });
-            decls.push(Declaration { property: Property::FlexShrink, value: CssValue::Number(0) });
-            decls.push(Declaration { property: Property::FlexBasis, value: CssValue::Auto });
+            decls.push(Declaration { property: Property::FlexGrow, value: CssValue::Number(0), important: false });
+            decls.push(Declaration { property: Property::FlexShrink, value: CssValue::Number(0), important: false });
+            decls.push(Declaration { property: Property::FlexBasis, value: CssValue::Auto, important: false });
             return decls;
         }
         "auto" => {
-            decls.push(Declaration { property: Property::FlexGrow, value: CssValue::Number(100) });
-            decls.push(Declaration { property: Property::FlexShrink, value: CssValue::Number(100) });
-            decls.push(Declaration { property: Property::FlexBasis, value: CssValue::Auto });
+            decls.push(Declaration { property: Property::FlexGrow, value: CssValue::Number(100), important: false });
+            decls.push(Declaration { property: Property::FlexShrink, value: CssValue::Number(100), important: false });
+            decls.push(Declaration { property: Property::FlexBasis, value: CssValue::Auto, important: false });
             return decls;
         }
         _ => {}
@@ -1053,34 +1077,28 @@ fn expand_flex_shorthand(value_str: &str) -> Vec<Declaration> {
         return decls;
     }
 
-    // First value: flex-grow (number).
     decls.push(Declaration {
-        property: Property::FlexGrow,
-        value: parse_value(Property::FlexGrow, parts[0]),
+        property: Property::FlexGrow, value: parse_value(Property::FlexGrow, parts[0]), important: false,
     });
 
     if parts.len() >= 2 {
-        // Could be shrink or basis.
         if let Some(dim) = try_parse_dimension(parts[1]) {
-            // If it has a unit, it's flex-basis.
             if matches!(dim, CssValue::Length(_, _) | CssValue::Percentage(_)) {
-                decls.push(Declaration { property: Property::FlexShrink, value: CssValue::Number(100) });
-                decls.push(Declaration { property: Property::FlexBasis, value: dim });
+                decls.push(Declaration { property: Property::FlexShrink, value: CssValue::Number(100), important: false });
+                decls.push(Declaration { property: Property::FlexBasis, value: dim, important: false });
             } else {
-                decls.push(Declaration { property: Property::FlexShrink, value: dim });
+                decls.push(Declaration { property: Property::FlexShrink, value: dim, important: false });
             }
         } else {
             decls.push(Declaration {
-                property: Property::FlexShrink,
-                value: parse_value(Property::FlexShrink, parts[1]),
+                property: Property::FlexShrink, value: parse_value(Property::FlexShrink, parts[1]), important: false,
             });
         }
     }
 
     if parts.len() >= 3 {
         decls.push(Declaration {
-            property: Property::FlexBasis,
-            value: parse_value(Property::FlexBasis, parts[2]),
+            property: Property::FlexBasis, value: parse_value(Property::FlexBasis, parts[2]), important: false,
         });
     }
 
@@ -1094,9 +1112,9 @@ fn expand_gap_shorthand(value_str: &str) -> Vec<Declaration> {
     if parts.is_empty() {
         return decls;
     }
-    decls.push(Declaration { property: Property::RowGap, value: parse_value(Property::RowGap, parts[0]) });
+    decls.push(Declaration { property: Property::RowGap, value: parse_value(Property::RowGap, parts[0]), important: false });
     let col = if parts.len() >= 2 { parts[1] } else { parts[0] };
-    decls.push(Declaration { property: Property::ColumnGap, value: parse_value(Property::ColumnGap, col) });
+    decls.push(Declaration { property: Property::ColumnGap, value: parse_value(Property::ColumnGap, col), important: false });
     decls
 }
 
@@ -1107,9 +1125,9 @@ fn expand_overflow_shorthand(value_str: &str) -> Vec<Declaration> {
     if parts.is_empty() {
         return decls;
     }
-    decls.push(Declaration { property: Property::OverflowX, value: parse_value(Property::OverflowX, parts[0]) });
+    decls.push(Declaration { property: Property::OverflowX, value: parse_value(Property::OverflowX, parts[0]), important: false });
     let y = if parts.len() >= 2 { parts[1] } else { parts[0] };
-    decls.push(Declaration { property: Property::OverflowY, value: parse_value(Property::OverflowY, y) });
+    decls.push(Declaration { property: Property::OverflowY, value: parse_value(Property::OverflowY, y), important: false });
     decls
 }
 
@@ -1128,6 +1146,12 @@ fn try_parse_color(s: &str) -> Option<u32> {
     }
     if lower.starts_with("rgb(") && lower.ends_with(')') {
         return parse_rgb_func(&lower[4..lower.len() - 1]);
+    }
+    if lower.starts_with("hsla(") && lower.ends_with(')') {
+        return parse_hsla_func(&lower[5..lower.len() - 1]);
+    }
+    if lower.starts_with("hsl(") && lower.ends_with(')') {
+        return parse_hsl_func(&lower[4..lower.len() - 1]);
     }
     named_color(&lower)
 }
@@ -1236,8 +1260,102 @@ fn split_args(s: &str) -> Vec<&str> {
     }
 }
 
+fn parse_hsl_func(args: &str) -> Option<u32> {
+    let parts = split_args(args);
+    if parts.len() < 3 { return Option::None; }
+    let h = parse_hue(parts[0])?;
+    let s = parse_percent_val(parts[1])?;
+    let l = parse_percent_val(parts[2])?;
+    let (r, g, b) = hsl_to_rgb(h, s, l);
+    Some(0xFF000000 | (r << 16) | (g << 8) | b)
+}
+
+fn parse_hsla_func(args: &str) -> Option<u32> {
+    let parts = split_args(args);
+    if parts.len() < 4 { return Option::None; }
+    let h = parse_hue(parts[0])?;
+    let s = parse_percent_val(parts[1])?;
+    let l = parse_percent_val(parts[2])?;
+    let a_str = parts[3].trim();
+    let a = if a_str.contains('.') {
+        let fp = parse_fixed_point(a_str)?;
+        ((fp * 255) / 100).max(0).min(255) as u32
+    } else if a_str.ends_with('%') {
+        let pct = parse_int(&a_str[..a_str.len() - 1])?;
+        ((pct.max(0).min(100) as u32) * 255) / 100
+    } else {
+        parse_int(a_str)?.max(0).min(255) as u32
+    };
+    let (r, g, b) = hsl_to_rgb(h, s, l);
+    Some((a << 24) | (r << 16) | (g << 8) | b)
+}
+
+fn parse_hue(s: &str) -> Option<i32> {
+    let t = s.trim();
+    // Hue can be a number (degrees) or have "deg" suffix.
+    let t = if t.ends_with("deg") { &t[..t.len() - 3] } else { t };
+    parse_int(t.trim())
+}
+
+fn parse_percent_val(s: &str) -> Option<i32> {
+    let t = s.trim();
+    if t.ends_with('%') {
+        parse_int(&t[..t.len() - 1])
+    } else {
+        parse_int(t)
+    }
+}
+
+/// Convert HSL to RGB. h in degrees [0..360], s and l in percent [0..100].
+/// Returns (r, g, b) each in [0..255].
+fn hsl_to_rgb(h: i32, s: i32, l: i32) -> (u32, u32, u32) {
+    let h = ((h % 360) + 360) % 360;
+    let s = s.max(0).min(100);
+    let l = l.max(0).min(100);
+
+    if s == 0 {
+        let v = (l * 255 / 100) as u32;
+        return (v, v, v);
+    }
+
+    // Use fixed-point * 1000 arithmetic.
+    let l1000 = l as i64 * 10; // l in 0..1000
+    let s1000 = s as i64 * 10;
+
+    let q = if l1000 < 500 {
+        l1000 * (1000 + s1000) / 1000
+    } else {
+        l1000 + s1000 - (l1000 * s1000 / 1000)
+    };
+    let p = 2 * l1000 - q;
+
+    let r = hue_to_rgb_channel(p, q, h as i64 + 120);
+    let g = hue_to_rgb_channel(p, q, h as i64);
+    let b = hue_to_rgb_channel(p, q, h as i64 - 120);
+
+    (r as u32, g as u32, b as u32)
+}
+
+fn hue_to_rgb_channel(p: i64, q: i64, mut h: i64) -> i64 {
+    if h < 0 { h += 360; }
+    if h >= 360 { h -= 360; }
+
+    let val = if h < 60 {
+        p + (q - p) * h / 60
+    } else if h < 180 {
+        q
+    } else if h < 240 {
+        p + (q - p) * (240 - h) / 60
+    } else {
+        p
+    };
+
+    (val * 255 / 1000).max(0).min(255)
+}
+
 fn named_color(name: &str) -> Option<u32> {
     match name {
+        // Basic colors
         "black" => Some(0xFF000000),
         "white" => Some(0xFFFFFFFF),
         "red" => Some(0xFFFF0000),
@@ -1248,23 +1366,144 @@ fn named_color(name: &str) -> Option<u32> {
         "orange" => Some(0xFFFFA500),
         "purple" => Some(0xFF800080),
         "gray" | "grey" => Some(0xFF808080),
-        "darkgray" | "darkgrey" => Some(0xFFA9A9A9),
-        "lightgray" | "lightgrey" => Some(0xFFD3D3D3),
         "silver" => Some(0xFFC0C0C0),
         "cyan" | "aqua" => Some(0xFF00FFFF),
         "magenta" | "fuchsia" => Some(0xFFFF00FF),
-        "pink" => Some(0xFFFFC0CB),
-        "brown" => Some(0xFFA52A2A),
         "navy" => Some(0xFF000080),
         "teal" => Some(0xFF008080),
         "maroon" => Some(0xFF800000),
         "olive" => Some(0xFF808000),
-        "coral" => Some(0xFFFF7F50),
-        "salmon" => Some(0xFFFA8072),
-        "gold" => Some(0xFFFFD700),
-        "ivory" => Some(0xFFFFFFF0),
-        "tomato" => Some(0xFFFF6347),
         "transparent" => Some(0x00000000),
+        // Reds/pinks
+        "indianred" => Some(0xFFCD5C5C),
+        "lightcoral" => Some(0xFFF08080),
+        "salmon" => Some(0xFFFA8072),
+        "darksalmon" => Some(0xFFE9967A),
+        "lightsalmon" => Some(0xFFFFA07A),
+        "crimson" => Some(0xFFDC143C),
+        "firebrick" => Some(0xFFB22222),
+        "darkred" => Some(0xFF8B0000),
+        "pink" => Some(0xFFFFC0CB),
+        "lightpink" => Some(0xFFFFB6C1),
+        "hotpink" => Some(0xFFFF69B4),
+        "deeppink" => Some(0xFFFF1493),
+        "mediumvioletred" => Some(0xFFC71585),
+        "palevioletred" => Some(0xFFDB7093),
+        // Oranges
+        "coral" => Some(0xFFFF7F50),
+        "tomato" => Some(0xFFFF6347),
+        "orangered" => Some(0xFFFF4500),
+        "darkorange" => Some(0xFFFF8C00),
+        // Yellows
+        "gold" => Some(0xFFFFD700),
+        "lightyellow" => Some(0xFFFFFFE0),
+        "lemonchiffon" => Some(0xFFFFFACD),
+        "papayawhip" => Some(0xFFFFEFD5),
+        "moccasin" => Some(0xFFFFE4B5),
+        "peachpuff" => Some(0xFFFFDAB9),
+        "palegoldenrod" => Some(0xFFEEE8AA),
+        "khaki" => Some(0xFFF0E68C),
+        "darkkhaki" => Some(0xFFBDB76B),
+        // Greens
+        "lawngreen" => Some(0xFF7CFC00),
+        "chartreuse" => Some(0xFF7FFF00),
+        "limegreen" => Some(0xFF32CD32),
+        "forestgreen" => Some(0xFF228B22),
+        "darkgreen" => Some(0xFF006400),
+        "greenyellow" => Some(0xFFADFF2F),
+        "yellowgreen" => Some(0xFF9ACD32),
+        "springgreen" => Some(0xFF00FF7F),
+        "mediumspringgreen" => Some(0xFF00FA9A),
+        "lightgreen" => Some(0xFF90EE90),
+        "palegreen" => Some(0xFF98FB98),
+        "darkseagreen" => Some(0xFF8FBC8F),
+        "mediumseagreen" => Some(0xFF3CB371),
+        "seagreen" => Some(0xFF2E8B57),
+        "olivedrab" => Some(0xFF6B8E23),
+        "darkolivegreen" => Some(0xFF556B2F),
+        // Cyans
+        "lightcyan" => Some(0xFFE0FFFF),
+        "paleturquoise" => Some(0xFFAFEEEE),
+        "aquamarine" => Some(0xFF7FFFD4),
+        "turquoise" => Some(0xFF40E0D0),
+        "mediumturquoise" => Some(0xFF48D1CC),
+        "darkturquoise" => Some(0xFF00CED1),
+        "lightseagreen" => Some(0xFF20B2AA),
+        "cadetblue" => Some(0xFF5F9EA0),
+        "darkcyan" => Some(0xFF008B8B),
+        // Blues
+        "lightsteelblue" => Some(0xFFB0C4DE),
+        "powderblue" => Some(0xFFB0E0E6),
+        "lightblue" => Some(0xFFADD8E6),
+        "skyblue" => Some(0xFF87CEEB),
+        "lightskyblue" => Some(0xFF87CEFA),
+        "deepskyblue" => Some(0xFF00BFFF),
+        "dodgerblue" => Some(0xFF1E90FF),
+        "cornflowerblue" => Some(0xFF6495ED),
+        "steelblue" => Some(0xFF4682B4),
+        "royalblue" => Some(0xFF4169E1),
+        "mediumblue" => Some(0xFF0000CD),
+        "darkblue" => Some(0xFF00008B),
+        "midnightblue" => Some(0xFF191970),
+        // Purples
+        "lavender" => Some(0xFFE6E6FA),
+        "thistle" => Some(0xFFD8BFD8),
+        "plum" => Some(0xFFDDA0DD),
+        "violet" => Some(0xFFEE82EE),
+        "orchid" => Some(0xFFDA70D6),
+        "mediumorchid" => Some(0xFFBA55D3),
+        "mediumpurple" => Some(0xFF9370DB),
+        "rebeccapurple" => Some(0xFF663399),
+        "blueviolet" => Some(0xFF8A2BE2),
+        "darkviolet" => Some(0xFF9400D3),
+        "darkorchid" => Some(0xFF9932CC),
+        "darkmagenta" => Some(0xFF8B008B),
+        "indigo" => Some(0xFF4B0082),
+        "slateblue" => Some(0xFF6A5ACD),
+        "darkslateblue" => Some(0xFF483D8B),
+        "mediumslateblue" => Some(0xFF7B68EE),
+        // Browns
+        "brown" => Some(0xFFA52A2A),
+        "cornsilk" => Some(0xFFFFF8DC),
+        "blanchedalmond" => Some(0xFFFFEBCD),
+        "bisque" => Some(0xFFFFE4C4),
+        "navajowhite" => Some(0xFFFFDEAD),
+        "wheat" => Some(0xFFF5DEB3),
+        "burlywood" => Some(0xFFDEB887),
+        "tan" => Some(0xFFD2B48C),
+        "rosybrown" => Some(0xFFBC8F8F),
+        "sandybrown" => Some(0xFFF4A460),
+        "goldenrod" => Some(0xFFDAA520),
+        "darkgoldenrod" => Some(0xFFB8860B),
+        "peru" => Some(0xFFCD853F),
+        "chocolate" => Some(0xFFD2691E),
+        "saddlebrown" => Some(0xFF8B4513),
+        "sienna" => Some(0xFFA0522D),
+        // Whites
+        "snow" => Some(0xFFFFFAFA),
+        "honeydew" => Some(0xFFF0FFF0),
+        "mintcream" => Some(0xFFF5FFFA),
+        "azure" => Some(0xFFF0FFFF),
+        "aliceblue" => Some(0xFFF0F8FF),
+        "ghostwhite" => Some(0xFFF8F8FF),
+        "whitesmoke" => Some(0xFFF5F5F5),
+        "seashell" => Some(0xFFFFF5EE),
+        "beige" => Some(0xFFF5F5DC),
+        "oldlace" => Some(0xFFFDF5E6),
+        "floralwhite" => Some(0xFFFFFAF0),
+        "ivory" => Some(0xFFFFFFF0),
+        "antiquewhite" => Some(0xFFFAEBD7),
+        "linen" => Some(0xFFFAF0E6),
+        "lavenderblush" => Some(0xFFFFF0F5),
+        "mistyrose" => Some(0xFFFFE4E1),
+        // Grays
+        "gainsboro" => Some(0xFFDCDCDC),
+        "lightgray" | "lightgrey" => Some(0xFFD3D3D3),
+        "darkgray" | "darkgrey" => Some(0xFFA9A9A9),
+        "dimgray" | "dimgrey" => Some(0xFF696969),
+        "lightslategray" | "lightslategrey" => Some(0xFF778899),
+        "slategray" | "slategrey" => Some(0xFF708090),
+        "darkslategray" | "darkslategrey" => Some(0xFF2F4F4F),
         _ => Option::None,
     }
 }

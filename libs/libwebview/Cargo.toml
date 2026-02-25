@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyos_std = { path = "../stdlib" }
 libanyui_client = { path = "../libanyui_client" }
+libjs = { path = "../libjs" }
 
 [lib]
 name = "libwebview"

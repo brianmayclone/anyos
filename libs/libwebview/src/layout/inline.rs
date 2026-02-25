@@ -4,13 +4,15 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, NodeType, Tag};
-use crate::style::{ComputedStyle, Display, WhiteSpace, TextDeco};
+use crate::style::{ComputedStyle, Display, WhiteSpace, TextDeco, TextTransform};
+use crate::ImageCache;
 
 use super::{
     LayoutBox, BoxType, FormFieldKind,
     font_size_px, is_bold, is_italic, inherited_link,
     image_dimensions, measure_text, parse_attr_int,
     is_ascii_ws, ascii_lower_str, size_attr_width,
+    apply_text_transform,
 };
 
 /// Represents a single inline fragment before line-breaking.
@@ -29,6 +31,7 @@ pub fn layout_inline_content(
     child_ids: &[NodeId],
     available_width: i32,
     start_x: i32,
+    images: &ImageCache,
 ) -> Vec<LayoutBox> {
     // 1. Flatten all inline children into fragments.
     let mut fragments: Vec<InlineFragment> = Vec::new();
@@ -37,7 +40,7 @@ pub fn layout_inline_content(
         if style.display == Display::None {
             continue;
         }
-        collect_inline_fragments(dom, styles, cid, &mut fragments);
+        collect_inline_fragments(dom, styles, cid, &mut fragments, available_width, images);
     }
 
     // 2. Break fragments into lines.
@@ -110,6 +113,8 @@ fn collect_inline_fragments(
     styles: &[ComputedStyle],
     node_id: NodeId,
     out: &mut Vec<InlineFragment>,
+    available_width: i32,
+    images: &ImageCache,
 ) {
     let node = dom.get(node_id);
     let style = &styles[node_id];
@@ -123,10 +128,20 @@ fn collect_inline_fragments(
             let link = inherited_link(dom, node_id);
             let deco = style.text_decoration;
 
-            if style.white_space == WhiteSpace::Pre {
-                emit_preformatted_fragments(text, fs, bold, italic, color, link, deco, out);
+            // Apply text-transform
+            let transformed = if style.text_transform != TextTransform::None {
+                apply_text_transform(text, style.text_transform)
             } else {
-                emit_word_fragments(text, fs, bold, italic, color, link, deco, out);
+                String::from(text.as_str())
+            };
+
+            if style.white_space == WhiteSpace::Pre || style.white_space == WhiteSpace::PreWrap {
+                emit_preformatted_fragments(&transformed, fs, bold, italic, color, link, deco, out);
+            } else if style.white_space == WhiteSpace::Nowrap {
+                // Nowrap: emit as single fragment (no word breaking)
+                emit_nowrap_fragments(&transformed, fs, bold, italic, color, link, deco, out);
+            } else {
+                emit_word_fragments(&transformed, fs, bold, italic, color, link, deco, out);
             }
         }
         NodeType::Element { tag, .. } => {
@@ -143,9 +158,9 @@ fn collect_inline_fragments(
                 return;
             }
 
-            // Handle inline <img>
+            // Handle inline <img> — use available_width instead of hardcoded 300
             if *tag == Tag::Img {
-                let (iw, ih) = image_dimensions(dom, node_id, 300);
+                let (iw, ih) = image_dimensions(dom, node_id, available_width, images);
                 let mut img = LayoutBox::new(Some(node_id), BoxType::Inline);
                 img.image_src = dom.attr(node_id, "src").map(|s| String::from(s));
                 img.image_width = Some(iw);
@@ -201,10 +216,48 @@ fn collect_inline_fragments(
                 if cs.display == Display::None {
                     continue;
                 }
-                collect_inline_fragments(dom, styles, cid, out);
+                collect_inline_fragments(dom, styles, cid, out, available_width, images);
             }
         }
     }
+}
+
+/// Emit fragments for nowrap text (no line breaking within words or between them).
+fn emit_nowrap_fragments(
+    text: &str,
+    font_size: i32,
+    bold: bool,
+    italic: bool,
+    color: u32,
+    link: Option<String>,
+    deco: TextDeco,
+    out: &mut Vec<InlineFragment>,
+) {
+    let collapsed = collapse_whitespace(text);
+    if collapsed.is_empty() { return; }
+    let (w, h) = measure_text(&collapsed, font_size, bold);
+    let mut wbox = LayoutBox::new_text(collapsed, font_size, bold, italic, color);
+    wbox.link_url = link;
+    wbox.text_decoration = deco;
+    out.push(InlineFragment { width: w, height: h, layout_box: wbox, breaks_after: false });
+}
+
+/// Collapse whitespace sequences to single spaces.
+fn collapse_whitespace(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_ws = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            if !in_ws {
+                out.push(' ');
+                in_ws = true;
+            }
+        } else {
+            out.push(ch);
+            in_ws = false;
+        }
+    }
+    out
 }
 
 /// Emit an `<input>` form field fragment.

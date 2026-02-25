@@ -790,8 +790,6 @@ fn show_properties(idx: usize) {
 
     prop_row!("Path:", &full_path);
 
-    win.add(&props);
-
     // ── Bottom bar with OK button ──
     let bottom = ui::View::new();
     bottom.set_dock(ui::DOCK_BOTTOM);
@@ -811,10 +809,11 @@ fn show_properties(idx: usize) {
     });
     bottom.add(&ok_btn);
 
+    // DOCK_BOTTOM must be added before DOCK_FILL so layout reserves bottom space first
     win.add(&bottom);
+    win.add(&props);
 
-    // Escape or window close destroys the dialog
-    win.on_close(move |_| { win.destroy(); });
+    // Escape key destroys the dialog; close button is handled by the event loop automatically
     win.on_key_down(move |ke| {
         if ke.keycode == ui::KEY_ESCAPE {
             win.destroy();

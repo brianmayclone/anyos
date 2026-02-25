@@ -7,7 +7,9 @@
 
 use alloc::vec::Vec;
 
-use crate::css::{CssValue, Declaration, Property, Selector, SimpleSelector, Stylesheet, Unit};
+use crate::css::{
+    AttrOp, CssValue, Declaration, PseudoClass, Property, Selector, SimpleSelector, Stylesheet, Unit,
+};
 use crate::dom::{Dom, NodeId, NodeType, Tag};
 
 // ---------------------------------------------------------------------------
@@ -393,9 +395,51 @@ fn ua_style_and_flags(tag: Tag) -> (ComputedStyle, u16) {
             s.padding_bottom = 4; s.padding_left = 4;
             flags |= SET_FONT_WEIGHT;
         }
-        Tag::Head | Tag::Title | Tag::Meta | Tag::Link | Tag::Style | Tag::Script => {
+        Tag::Head | Tag::Title | Tag::Meta | Tag::Link | Tag::Style | Tag::Script
+        | Tag::Noscript | Tag::Template => {
             s.display = Display::None;
         }
+        // Inline semantic text elements
+        Tag::Small => { s.display = Display::Inline; s.font_size = 13; flags |= SET_FONT_SIZE; }
+        Tag::S | Tag::Del => { s.display = Display::Inline; s.text_decoration = TextDeco::LineThrough; flags |= SET_TEXT_DECO; }
+        Tag::Ins => { s.display = Display::Inline; s.text_decoration = TextDeco::Underline; flags |= SET_TEXT_DECO; }
+        Tag::Mark => {
+            s.display = Display::Inline;
+            s.background_color = 0xFFFFFF00; // yellow highlight
+            s.color = 0xFF000000;
+            flags |= SET_COLOR;
+        }
+        Tag::Sub | Tag::Sup | Tag::Kbd | Tag::Samp | Tag::Var | Tag::Abbr
+        | Tag::Cite | Tag::Dfn | Tag::Q | Tag::Time | Tag::Bdi | Tag::Bdo
+        | Tag::Data | Tag::Ruby | Tag::Rt | Tag::Rp | Tag::Wbr | Tag::Nobr | Tag::Tt => {
+            s.display = Display::Inline;
+        }
+        // Definition list
+        Tag::Dl => { s.margin_top = 16; s.margin_bottom = 16; }
+        Tag::Dt => { s.font_weight = FontWeight::Bold; flags |= SET_FONT_WEIGHT; }
+        Tag::Dd => { s.margin_left = 40; }
+        // Figure
+        Tag::Figure => { s.margin_top = 16; s.margin_bottom = 16; s.margin_left = 40; s.margin_right = 40; }
+        Tag::Figcaption => { s.text_align = TextAlignVal::Center; flags |= SET_TEXT_ALIGN; }
+        // Details/Summary
+        Tag::Details => {}
+        Tag::Summary => { s.display = Display::Block; s.font_weight = FontWeight::Bold; flags |= SET_FONT_WEIGHT; }
+        // Dialog
+        Tag::Dialog => { s.display = Display::Block; s.position = Position::Absolute; }
+        // Sectioning
+        Tag::Aside | Tag::Hgroup | Tag::Address => {}
+        // Table extensions
+        Tag::Tfoot => { s.display = Display::TableRow; }
+        Tag::Caption => { s.text_align = TextAlignVal::Center; flags |= SET_TEXT_ALIGN; }
+        // Form elements
+        Tag::Fieldset => { s.border_width = 1; s.padding_top = 8; s.padding_right = 12; s.padding_bottom = 8; s.padding_left = 12; }
+        Tag::Legend => { s.display = Display::Inline; s.font_weight = FontWeight::Bold; flags |= SET_FONT_WEIGHT; }
+        Tag::Optgroup => {}
+        Tag::Datalist | Tag::Output => { s.display = Display::Inline; }
+        Tag::Progress | Tag::Meter => { s.display = Display::Inline; }
+        // Deprecated
+        Tag::Center => { s.text_align = TextAlignVal::Center; flags |= SET_TEXT_ALIGN; }
+        Tag::Font => { s.display = Display::Inline; }
         // Block-level elements that just use defaults.
         Tag::Div | Tag::Section | Tag::Article | Tag::Header | Tag::Footer
         | Tag::Nav | Tag::Main | Tag::Form | Tag::Thead | Tag::Tbody => {}
@@ -417,7 +461,6 @@ pub fn user_agent_styles(tag: Tag) -> ComputedStyle {
 fn selector_matches(selector: &Selector, dom: &Dom, node_id: NodeId) -> bool {
     match selector {
         Selector::Universal => {
-            // Universal matches any element (not text nodes).
             matches!(dom.nodes[node_id].node_type, NodeType::Element { .. })
         }
         Selector::Simple(simple) => simple_matches(simple, dom, node_id),
@@ -425,7 +468,6 @@ fn selector_matches(selector: &Selector, dom: &Dom, node_id: NodeId) -> bool {
             if !simple_matches(leaf, dom, node_id) {
                 return false;
             }
-            // Walk up ancestors looking for a match of the outer selector.
             let mut cur = dom.nodes[node_id].parent;
             while let Some(pid) = cur {
                 if selector_matches(ancestor_sel, dom, pid) {
@@ -435,7 +477,56 @@ fn selector_matches(selector: &Selector, dom: &Dom, node_id: NodeId) -> bool {
             }
             false
         }
+        Selector::Child(parent_sel, leaf) => {
+            if !simple_matches(leaf, dom, node_id) {
+                return false;
+            }
+            if let Some(pid) = dom.nodes[node_id].parent {
+                selector_matches(parent_sel, dom, pid)
+            } else {
+                false
+            }
+        }
+        Selector::AdjacentSibling(prev_sel, leaf) => {
+            if !simple_matches(leaf, dom, node_id) {
+                return false;
+            }
+            // Find preceding sibling element
+            if let Some(sib) = preceding_element_sibling(dom, node_id) {
+                selector_matches(prev_sel, dom, sib)
+            } else {
+                false
+            }
+        }
+        Selector::GeneralSibling(prev_sel, leaf) => {
+            if !simple_matches(leaf, dom, node_id) {
+                return false;
+            }
+            // Check all preceding sibling elements
+            let mut sib = preceding_element_sibling(dom, node_id);
+            while let Some(sid) = sib {
+                if selector_matches(prev_sel, dom, sid) {
+                    return true;
+                }
+                sib = preceding_element_sibling(dom, sid);
+            }
+            false
+        }
     }
+}
+
+/// Find the immediately preceding element sibling of `node_id`.
+fn preceding_element_sibling(dom: &Dom, node_id: NodeId) -> Option<NodeId> {
+    let parent = dom.nodes[node_id].parent?;
+    let children = &dom.nodes[parent].children;
+    let pos = children.iter().position(|&c| c == node_id)?;
+    // Walk backwards from pos-1 to find first element
+    for i in (0..pos).rev() {
+        if matches!(dom.nodes[children[i]].node_type, NodeType::Element { .. }) {
+            return Some(children[i]);
+        }
+    }
+    Option::None
 }
 
 fn simple_matches(sel: &SimpleSelector, dom: &Dom, node_id: NodeId) -> bool {
@@ -475,7 +566,205 @@ fn simple_matches(sel: &SimpleSelector, dom: &Dom, node_id: NodeId) -> bool {
         }
     }
 
+    // Attribute selector check.
+    for attr_sel in &sel.attrs {
+        let node_attr = attrs.iter().find(|a| eq_ignore_ascii_case(&a.name, &attr_sel.name));
+        match attr_sel.op {
+            AttrOp::Exists => {
+                if node_attr.is_none() { return false; }
+            }
+            AttrOp::Exact => {
+                match (node_attr, &attr_sel.value) {
+                    (Some(a), Some(v)) if eq_ignore_ascii_case(&a.value, v) => {}
+                    _ => return false,
+                }
+            }
+            AttrOp::Contains => {
+                // [attr~=val]: word in space-separated list
+                match (node_attr, &attr_sel.value) {
+                    (Some(a), Some(v)) if has_class(&a.value, v) => {}
+                    _ => return false,
+                }
+            }
+            AttrOp::Prefix => {
+                match (node_attr, &attr_sel.value) {
+                    (Some(a), Some(v)) => {
+                        if !starts_with_ignore_case(&a.value, v) { return false; }
+                    }
+                    _ => return false,
+                }
+            }
+            AttrOp::Suffix => {
+                match (node_attr, &attr_sel.value) {
+                    (Some(a), Some(v)) => {
+                        if !ends_with_ignore_case(&a.value, v) { return false; }
+                    }
+                    _ => return false,
+                }
+            }
+            AttrOp::Substring => {
+                match (node_attr, &attr_sel.value) {
+                    (Some(a), Some(v)) => {
+                        if !contains_ignore_case(&a.value, v) { return false; }
+                    }
+                    _ => return false,
+                }
+            }
+            AttrOp::DashMatch => {
+                // [attr|=val]: exact or starts with val-
+                match (node_attr, &attr_sel.value) {
+                    (Some(a), Some(v)) => {
+                        if !eq_ignore_ascii_case(&a.value, v)
+                            && !starts_with_ignore_case(&a.value, &{
+                                let mut s = v.clone();
+                                s.push('-');
+                                s
+                            })
+                        {
+                            return false;
+                        }
+                    }
+                    _ => return false,
+                }
+            }
+        }
+    }
+
+    // Pseudo-class check.
+    for pc in &sel.pseudo_classes {
+        if !pseudo_class_matches(pc, dom, node_id) {
+            return false;
+        }
+    }
+
     true
+}
+
+fn pseudo_class_matches(pc: &PseudoClass, dom: &Dom, node_id: NodeId) -> bool {
+    match pc {
+        PseudoClass::Root => {
+            // Root is the <html> element (no parent or parent is document root)
+            dom.nodes[node_id].parent.is_none()
+                || dom.nodes[node_id].parent == Some(0)
+        }
+        PseudoClass::FirstChild => {
+            if let Some(pid) = dom.nodes[node_id].parent {
+                let children = &dom.nodes[pid].children;
+                children.iter()
+                    .find(|&&c| matches!(dom.nodes[c].node_type, NodeType::Element { .. }))
+                    == Some(&node_id)
+            } else {
+                false
+            }
+        }
+        PseudoClass::LastChild => {
+            if let Some(pid) = dom.nodes[node_id].parent {
+                let children = &dom.nodes[pid].children;
+                children.iter().rev()
+                    .find(|&&c| matches!(dom.nodes[c].node_type, NodeType::Element { .. }))
+                    == Some(&node_id)
+            } else {
+                false
+            }
+        }
+        PseudoClass::NthChild(n) => {
+            if let Some(pid) = dom.nodes[node_id].parent {
+                let children = &dom.nodes[pid].children;
+                let mut count = 0i32;
+                for &c in children {
+                    if matches!(dom.nodes[c].node_type, NodeType::Element { .. }) {
+                        count += 1;
+                        if c == node_id {
+                            return count == *n;
+                        }
+                    }
+                }
+            }
+            false
+        }
+        PseudoClass::NthLastChild(n) => {
+            if let Some(pid) = dom.nodes[node_id].parent {
+                let children = &dom.nodes[pid].children;
+                let mut count = 0i32;
+                for &c in children.iter().rev() {
+                    if matches!(dom.nodes[c].node_type, NodeType::Element { .. }) {
+                        count += 1;
+                        if c == node_id {
+                            return count == *n;
+                        }
+                    }
+                }
+            }
+            false
+        }
+        PseudoClass::FirstOfType => {
+            if let Some(pid) = dom.nodes[node_id].parent {
+                let my_tag = dom.tag(node_id);
+                let children = &dom.nodes[pid].children;
+                for &c in children {
+                    if dom.tag(c) == my_tag {
+                        return c == node_id;
+                    }
+                }
+            }
+            false
+        }
+        PseudoClass::LastOfType => {
+            if let Some(pid) = dom.nodes[node_id].parent {
+                let my_tag = dom.tag(node_id);
+                let children = &dom.nodes[pid].children;
+                for &c in children.iter().rev() {
+                    if dom.tag(c) == my_tag {
+                        return c == node_id;
+                    }
+                }
+            }
+            false
+        }
+        PseudoClass::Empty => {
+            dom.nodes[node_id].children.is_empty()
+        }
+        PseudoClass::Not(inner) => {
+            !simple_matches(inner, dom, node_id)
+        }
+        PseudoClass::Checked | PseudoClass::Disabled | PseudoClass::Enabled => {
+            // Check for corresponding HTML attributes
+            if let NodeType::Element { attrs, .. } = &dom.nodes[node_id].node_type {
+                match pc {
+                    PseudoClass::Checked => attrs.iter().any(|a| eq_ignore_ascii_case(&a.name, "checked")),
+                    PseudoClass::Disabled => attrs.iter().any(|a| eq_ignore_ascii_case(&a.name, "disabled")),
+                    PseudoClass::Enabled => !attrs.iter().any(|a| eq_ignore_ascii_case(&a.name, "disabled")),
+                    _ => false,
+                }
+            } else {
+                false
+            }
+        }
+        // Stateful pseudo-classes (hover, active, focus, visited) are not
+        // applicable in static rendering; always return false.
+        PseudoClass::Hover | PseudoClass::Active | PseudoClass::Focus | PseudoClass::Visited => false,
+    }
+}
+
+fn starts_with_ignore_case(haystack: &str, needle: &str) -> bool {
+    if haystack.len() < needle.len() { return false; }
+    eq_ignore_ascii_case(&haystack[..needle.len()], needle)
+}
+
+fn ends_with_ignore_case(haystack: &str, needle: &str) -> bool {
+    if haystack.len() < needle.len() { return false; }
+    eq_ignore_ascii_case(&haystack[haystack.len() - needle.len()..], needle)
+}
+
+fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() { return true; }
+    if haystack.len() < needle.len() { return false; }
+    for i in 0..=(haystack.len() - needle.len()) {
+        if eq_ignore_ascii_case(&haystack[i..i + needle.len()], needle) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Check if `class_str` (space-separated class list) contains `needle`
@@ -606,11 +895,25 @@ fn apply_author_rules(
 
     let mut set_flags: u16 = 0;
 
+    // Phase 1: Apply normal (non-!important) declarations.
     for m in &matches {
         let rule = &stylesheets[m.sheet_idx].rules[m.rule_idx];
         for decl in &rule.declarations {
-            set_flags |= decl_set_flag(decl.property);
-            apply_declaration(style, decl, parent_fs, root_fs);
+            if !decl.important {
+                set_flags |= decl_set_flag(decl.property);
+                apply_declaration(style, decl, parent_fs, root_fs);
+            }
+        }
+    }
+
+    // Phase 2: Apply !important declarations (override normal ones).
+    for m in &matches {
+        let rule = &stylesheets[m.sheet_idx].rules[m.rule_idx];
+        for decl in &rule.declarations {
+            if decl.important {
+                set_flags |= decl_set_flag(decl.property);
+                apply_declaration(style, decl, parent_fs, root_fs);
+            }
         }
     }
 

@@ -7,6 +7,7 @@ use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
     ComputedStyle, Display, BoxSizing, OverflowVal, Visibility, Position,
 };
+use crate::ImageCache;
 
 use super::{
     LayoutBox, BoxType,
@@ -17,7 +18,7 @@ use super::{
 use super::flex::layout_flex;
 
 /// Build a block-level layout box for a single DOM node.
-pub fn build_block(dom: &Dom, styles: &[ComputedStyle], node_id: NodeId, available_width: i32) -> LayoutBox {
+pub fn build_block(dom: &Dom, styles: &[ComputedStyle], node_id: NodeId, available_width: i32, images: &ImageCache) -> LayoutBox {
     let style = &styles[node_id];
     let tag = dom.tag(node_id);
 
@@ -128,7 +129,7 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], node_id: NodeId, availab
 
     // Handle <img> as block/inline-block replaced element.
     if tag == Some(Tag::Img) {
-        let (iw, ih) = image_dimensions(dom, node_id, bx.width);
+        let (iw, ih) = image_dimensions(dom, node_id, bx.width, images);
         bx.image_src = dom.attr(node_id, "src").map(|s| String::from(s));
         bx.image_width = Some(iw);
         bx.image_height = Some(ih);
@@ -144,16 +145,24 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], node_id: NodeId, availab
     // Lay out children — dispatch to flex or block flow.
     let children: Vec<NodeId> = dom.get(node_id).children.iter().copied().collect();
     let content_h = if matches!(style.display, Display::Flex | Display::InlineFlex) {
-        layout_flex(dom, styles, &children, inner_w, &mut bx)
+        layout_flex(dom, styles, &children, inner_w, &mut bx, images)
     } else {
-        layout_children(dom, styles, &children, inner_w, &mut bx, node_id)
+        layout_children(dom, styles, &children, inner_w, &mut bx, node_id, images)
     };
 
     // ---- Height resolution ----
     let explicit_h = if let Some(h) = style.height {
         Some(h)
-    } else if let Some(_pct) = style.height_pct {
-        None
+    } else if let Some(pct) = style.height_pct {
+        // Percentage heights require a definite parent height.
+        // For now, compute against viewport height (approximated as available_width
+        // since we don't track parent heights separately). This is imperfect but
+        // handles common cases like `height: 100%` on body children.
+        if pct > 0 {
+            Some((available_width as i64 * pct as i64 / 10000) as i32)
+        } else {
+            None
+        }
     } else {
         None
     };
