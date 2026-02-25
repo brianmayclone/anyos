@@ -301,6 +301,8 @@ struct AnyuiLib {
     // DataGrid scroll
     datagrid_get_scroll_offset: extern "C" fn(u32) -> u32,
     datagrid_set_scroll_offset: extern "C" fn(u32, u32),
+    // Text measurement
+    measure_text_fn: extern "C" fn(*const u8, u32, u16, u16) -> u64,
 }
 
 static mut LIB: Option<AnyuiLib> = None;
@@ -505,6 +507,7 @@ pub fn init() -> bool {
             // DataGrid scroll
             datagrid_get_scroll_offset: resolve(&handle, "anyui_datagrid_get_scroll_offset"),
             datagrid_set_scroll_offset: resolve(&handle, "anyui_datagrid_set_scroll_offset"),
+            measure_text_fn: resolve(&handle, "anyui_measure_text"),
             _handle: handle,
         };
         (lib.init)();
@@ -532,6 +535,14 @@ pub fn run_once() -> bool {
 /// Signal the event loop to exit.
 pub fn quit() {
     (lib().quit_fn)();
+}
+
+/// Measure text dimensions using the font engine.
+/// Returns (width, height) in pixels.
+/// `font_id`: 0 = normal, 1 = bold.
+pub fn measure_text(text: &str, font_id: u16, font_size: u16) -> (u32, u32) {
+    let packed = (lib().measure_text_fn)(text.as_ptr(), text.len() as u32, font_id, font_size);
+    ((packed >> 32) as u32, packed as u32)
 }
 
 // ══════════════════════════════════════════════════════════════════════

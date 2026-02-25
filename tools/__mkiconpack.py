@@ -1,136 +1,135 @@
 #!/usr/bin/env python3
 """
-mkiconpack.py — Pack SVG icons into a binary ico.pak file for anyOS.
+mkiconpack.py — Pack pre-rasterized SVG icons into a binary ico.pak (v2) for anyOS.
 
-Reads SVG files from assets/icons/svg/{filled,outline}/, extracts raw SVG
-path d="" strings, and packs them into a single binary file with an index.
+Reads SVG files from assets/icons/svg/{filled,outline}/, rasterizes each at
+4× supersampling using cairosvg, downscales with Pillow LANCZOS, and stores
+the alpha channel as raw 32×32 bitmaps.
 
-The SVG path strings are stored as-is (not pre-parsed) so the runtime
-SVG path parser/rasterizer can scale to any size.
+Dependencies:
+    pip install cairosvg Pillow
 
 Usage:
     python3 tools/__mkiconpack.py
 
-Binary format (ico.pak):
+Binary format (ico.pak v2):
 
-    Header (18 bytes):
+    Header (20 bytes):
         [0..4]   magic "IPAK"
-        [4..6]   version u16 LE = 1
+        [4..6]   version u16 LE = 2
         [6..8]   filled_count u16
         [8..10]  outline_count u16
-        [10..14] names_offset u32 (byte offset to names section)
-        [14..18] data_offset u32 (byte offset to path data section)
+        [10..12] icon_size u16 (e.g. 32)
+        [12..16] names_offset u32
+        [16..20] data_offset u32
 
-    Index Table (N * 12 bytes, sorted by name within each group):
+    Index Table (16 bytes per entry, sorted by name within each group):
         First: filled_count entries
         Then:  outline_count entries
-        Each entry (12 bytes):
+        Each entry (16 bytes):
             [0..4]   name_off: u32 (offset into names section)
             [4..6]   name_len: u16
-            [6..8]   data_off_hi_and_path_count: u16
-                     - bits 0..11: path_count (max 4095)
-                     - bits 12..15: data_off bits 16..19 (overflow)
-            [8..12]  data_off_lo_and_len: u32
-                     - bits 0..15: data_off low 16 bits  ... no this is getting complex
-
-    Actually simpler — 14 bytes per entry:
-        [0..4]   name_off: u32 (offset into names section)
-        [4..6]   name_len: u16
-        [6..8]   path_count: u16
-        [8..12]  data_off: u32 (offset into data section)
-        [12..16] data_len: u32
+            [6..8]   reserved: u16 (0)
+            [8..12]  data_off: u32 (offset into data section)
+            [12..16] reserved: u32 (0)
 
     Names Section:
         Concatenated UTF-8 icon names (sorted, no separators — use name_len)
 
     Data Section:
-        For each icon: raw SVG path d="" strings.
-        Multiple paths per icon separated by \\0 (null byte).
+        Per icon: icon_size × icon_size bytes of alpha data (u8).
+        0 = fully transparent, 255 = fully opaque.
 """
 
+import io
 import os
-import re
 import struct
 import sys
-import xml.etree.ElementTree as ET
 
-# ── SVG File Parser ──────────────────────────────────────────────────
+try:
+    import cairosvg
+except ImportError:
+    print("ERROR: cairosvg not installed. Run: pip install cairosvg")
+    sys.exit(1)
 
-def extract_svg_paths(filepath):
+try:
+    from PIL import Image, ImageFilter
+except ImportError:
+    print("ERROR: Pillow not installed. Run: pip install Pillow")
+    sys.exit(1)
+
+# Pre-rendered icon size (pixels). All runtime sizes are scaled from this.
+ICON_SIZE = 32
+
+# Supersampling factor for high-quality anti-aliasing.
+SUPERSAMPLE = 4
+
+# Optional Gaussian blur sigma for smoother edges (0 = disabled).
+BLUR_SIGMA = 0.3
+
+# ── Rasterize a single SVG file to an alpha map ─────────────────────
+
+def rasterize_svg(filepath):
+    """Rasterize an SVG file to a ICON_SIZE×ICON_SIZE alpha map.
+
+    Returns bytes of length ICON_SIZE² (one u8 per pixel), or None on error.
     """
-    Extract raw SVG path d="" strings from an SVG file.
-    Handles <g transform="translate(x,y)"> — prepends a synthetic
-    M offset to the path (translate becomes part of the path string).
-    Returns list of path d-strings.
-    """
+    render_size = ICON_SIZE * SUPERSAMPLE
+
     try:
-        tree = ET.parse(filepath)
-    except ET.ParseError:
-        return []
+        png_data = cairosvg.svg2png(
+            url=filepath,
+            output_width=render_size,
+            output_height=render_size,
+        )
+    except Exception as e:
+        print(f"  WARNING: cairosvg failed for {filepath}: {e}")
+        return None
 
-    root = tree.getroot()
-    paths = []
+    img = Image.open(io.BytesIO(png_data)).convert('RGBA')
 
-    def process_element(elem, tx=0.0, ty=0.0):
-        tag = elem.tag
-        if '}' in tag:
-            tag = tag.split('}', 1)[1]
+    # Extract alpha channel
+    alpha = img.split()[3]
 
-        if tag == 'g':
-            transform = elem.get('transform', '')
-            gtx, gty = tx, ty
-            m = re.match(r'translate\(\s*([^,\s]+)\s*,?\s*([^)]*)\)', transform)
-            if m:
-                gtx += float(m.group(1))
-                gty += float(m.group(2)) if m.group(2).strip() else 0.0
-            for child in elem:
-                process_element(child, gtx, gty)
-        elif tag == 'path':
-            d = elem.get('d', '').strip()
-            if d:
-                # If there's a translate offset, we need to inform the runtime.
-                # We encode it by wrapping the path: prepend a comment-like marker.
-                # Actually: just store the translate as metadata prefix "T tx ty\n" + path
-                if tx != 0.0 or ty != 0.0:
-                    d = f"T{tx} {ty}\n{d}"
-                paths.append(d)
-        else:
-            for child in elem:
-                process_element(child, tx, ty)
+    # Downscale with LANCZOS (high-quality anti-aliased resampling)
+    alpha = alpha.resize((ICON_SIZE, ICON_SIZE), Image.LANCZOS)
 
-    for child in root:
-        process_element(child)
+    # Optional Gaussian blur for softer edges
+    if BLUR_SIGMA > 0:
+        alpha = alpha.filter(ImageFilter.GaussianBlur(radius=BLUR_SIGMA))
 
-    return paths
+    return alpha.tobytes()
 
 # ── Collect icons from directory ─────────────────────────────────────
 
 def collect_icons(svg_dir):
-    """Collect SVG icons from a directory.
-    Returns sorted list of (name, path_count, data_bytes)."""
+    """Collect and rasterize SVG icons from a directory.
+    Returns sorted list of (name, alpha_bytes)."""
     icons = []
     if not os.path.isdir(svg_dir):
         return icons
 
-    for fname in sorted(os.listdir(svg_dir)):
-        if not fname.endswith('.svg'):
-            continue
+    filenames = sorted(f for f in os.listdir(svg_dir) if f.endswith('.svg'))
+    total = len(filenames)
+
+    for idx, fname in enumerate(filenames):
         name = fname[:-4]
         fpath = os.path.join(svg_dir, fname)
-        paths = extract_svg_paths(fpath)
-        if not paths:
+        alpha = rasterize_svg(fpath)
+        if alpha is None:
             continue
+        icons.append((name, alpha))
 
-        # Join multiple paths with null separator
-        data = b'\x00'.join(p.encode('utf-8') for p in paths)
-        icons.append((name, len(paths), data))
+        # Progress indicator every 100 icons
+        if (idx + 1) % 100 == 0 or idx + 1 == total:
+            print(f"  [{idx + 1}/{total}] rasterized")
 
     return icons
 
-# ── Write .pak file ──────────────────────────────────────────────────
+# ── Write .pak v2 file ───────────────────────────────────────────────
 
-def write_pak(filled_icons, outline_icons, output_path):
-    """Write the binary ico.pak file."""
+def write_pak_v2(filled_icons, outline_icons, output_path):
+    """Write the binary ico.pak v2 file with alpha maps."""
     filled_count = len(filled_icons)
     outline_count = len(outline_icons)
     total = filled_count + outline_count
@@ -139,38 +138,44 @@ def write_pak(filled_icons, outline_icons, output_path):
     data_blob = bytearray()
     entries = []
 
+    alpha_size = ICON_SIZE * ICON_SIZE
+
     for icons_list in [filled_icons, outline_icons]:
-        for name, path_count, data in icons_list:
+        for name, alpha_data in icons_list:
+            assert len(alpha_data) == alpha_size, \
+                f"Icon '{name}' alpha size {len(alpha_data)} != {alpha_size}"
+
             name_bytes = name.encode('utf-8')
             name_off = len(names_blob)
             names_blob += name_bytes
             data_off = len(data_blob)
-            data_blob += data
-            entries.append((name_off, len(name_bytes), path_count, data_off, len(data)))
+            data_blob += alpha_data
+            entries.append((name_off, len(name_bytes), data_off))
 
     # Layout
-    header_size = 18
-    index_entry_size = 16  # 4 + 2 + 2 + 4 + 4
+    header_size = 20
+    index_entry_size = 16
     index_size = total * index_entry_size
     names_offset = header_size + index_size
     data_offset = names_offset + len(names_blob)
 
     with open(output_path, 'wb') as f:
-        # Header (18 bytes)
+        # Header (20 bytes)
         f.write(b'IPAK')                            # magic
-        f.write(struct.pack('<H', 1))                # version
+        f.write(struct.pack('<H', 2))                # version = 2
         f.write(struct.pack('<H', filled_count))
         f.write(struct.pack('<H', outline_count))
+        f.write(struct.pack('<H', ICON_SIZE))        # icon_size
         f.write(struct.pack('<I', names_offset))
         f.write(struct.pack('<I', data_offset))
 
         # Index table (16 bytes per entry)
-        for name_off, name_len, path_count, data_off, data_len in entries:
+        for name_off, name_len, data_off in entries:
             f.write(struct.pack('<I', name_off))     # 4: name offset
             f.write(struct.pack('<H', name_len))     # 2: name length
-            f.write(struct.pack('<H', path_count))   # 2: number of paths
+            f.write(struct.pack('<H', 0))            # 2: reserved
             f.write(struct.pack('<I', data_off))     # 4: data offset
-            f.write(struct.pack('<I', data_len))     # 4: data length
+            f.write(struct.pack('<I', 0))            # 4: reserved
 
         # Names section
         f.write(names_blob)
@@ -192,26 +197,36 @@ def main():
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
+    print(f"Icon size: {ICON_SIZE}px (rendered at {ICON_SIZE * SUPERSAMPLE}px, "
+          f"downscaled with LANCZOS)")
+    if BLUR_SIGMA > 0:
+        print(f"Gaussian blur: sigma={BLUR_SIGMA}")
+    print()
+
     print(f"Scanning filled icons: {filled_dir}")
     filled = collect_icons(filled_dir)
-    print(f"  Found {len(filled)} filled icons")
+    print(f"  Found {len(filled)} filled icons\n")
 
     print(f"Scanning outline icons: {outline_dir}")
     outline = collect_icons(outline_dir)
-    print(f"  Found {len(outline)} outline icons")
+    print(f"  Found {len(outline)} outline icons\n")
 
     if not filled and not outline:
         print("ERROR: No icons found!")
+        print(f"  Expected SVGs in:")
+        print(f"    {filled_dir}")
+        print(f"    {outline_dir}")
         sys.exit(1)
 
-    print(f"\nWriting {output_path}")
-    total_size = write_pak(filled, outline, output_path)
-    print(f"  Total: {len(filled) + len(outline)} icons, {total_size:,} bytes ({total_size / 1024:.1f} KB)")
+    print(f"Writing {output_path}")
+    total_size = write_pak_v2(filled, outline, output_path)
+    icon_count = len(filled) + len(outline)
+    alpha_data_size = icon_count * ICON_SIZE * ICON_SIZE
 
-    filled_data = sum(len(d) for _, _, d in filled)
-    outline_data = sum(len(d) for _, _, d in outline)
-    print(f"  Filled path data:  {filled_data:,} bytes ({filled_data / 1024:.1f} KB)")
-    print(f"  Outline path data: {outline_data:,} bytes ({outline_data / 1024:.1f} KB)")
+    print(f"  Format:     IPAK v2 ({ICON_SIZE}×{ICON_SIZE} alpha maps)")
+    print(f"  Icons:      {icon_count} ({len(filled)} filled + {len(outline)} outline)")
+    print(f"  Alpha data: {alpha_data_size:,} bytes ({alpha_data_size / 1024:.1f} KB)")
+    print(f"  Total file: {total_size:,} bytes ({total_size / 1024:.1f} KB)")
 
     # Compare with original SVG sizes
     svg_total = 0
@@ -221,10 +236,8 @@ def main():
                 if f.endswith('.svg'):
                     svg_total += os.path.getsize(os.path.join(d, f))
     if svg_total > 0:
-        ratio = total_size / svg_total * 100
         print(f"\n  Original SVGs: {svg_total:,} bytes ({svg_total / 1024:.1f} KB)")
-        print(f"  Compression:   {ratio:.1f}% of original ({svg_total - total_size:,} bytes saved)")
-        print(f"  File count:    {len(filled) + len(outline)} icons in 1 file (was {len(filled) + len(outline)} files)")
+        print(f"  Ratio: {total_size / svg_total * 100:.1f}% of original")
 
 if __name__ == '__main__':
     main()

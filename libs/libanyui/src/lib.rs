@@ -2318,3 +2318,18 @@ pub extern "C" fn anyui_datagrid_set_scroll_offset(id: ControlId, offset: u32) {
         }
     }
 }
+
+// ── Text measurement (for libwebview layout engine) ──────────────────
+
+/// Measure a text string and return packed (width << 32 | height).
+#[no_mangle]
+pub extern "C" fn anyui_measure_text(
+    text_ptr: *const u8,
+    text_len: u32,
+    font_id: u16,
+    font_size: u16,
+) -> u64 {
+    let text = unsafe { core::slice::from_raw_parts(text_ptr, text_len as usize) };
+    let (w, h) = draw::measure_text_ex(text, font_id, font_size);
+    ((w as u64) << 32) | (h as u64)
+}

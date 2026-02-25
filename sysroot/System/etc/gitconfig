@@ -1,0 +1,8 @@
+[http]
+	followRedirects = true
+	sslVerify = false
+[user]
+	name = anyOS User
+	email = user@anyos
+[init]
+	defaultBranch = main

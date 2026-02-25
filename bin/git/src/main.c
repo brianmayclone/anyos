@@ -305,6 +305,7 @@ static int cmd_clone(int argc, char **argv) {
     printf("Cloning into '%s'...\n", path);
 
     git_clone_options opts = GIT_CLONE_OPTIONS_INIT;
+    opts.fetch_opts.follow_redirects = GIT_REMOTE_REDIRECT_ALL;
     git_repository *repo = NULL;
     int err = git_clone(&repo, url, path, &opts);
     if (err < 0) die("git_clone", err);
@@ -542,7 +543,7 @@ static int cmd_push(int argc, char **argv) {
 
 /* ---- git config ---- */
 static int cmd_config(int argc, char **argv) {
-    int global = 0;
+    int scope = 0; /* 0=local, 1=global, 2=system */
     int list = 0;
     int unset = 0;
     int argi = 0;
@@ -550,9 +551,11 @@ static int cmd_config(int argc, char **argv) {
     /* Parse flags */
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "--global") == 0)
-            global = 1;
+            scope = 1;
+        else if (strcmp(argv[i], "--system") == 0)
+            scope = 2;
         else if (strcmp(argv[i], "--local") == 0)
-            global = 0;
+            scope = 0;
         else if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--list") == 0)
             list = 1;
         else if (strcmp(argv[i], "--unset") == 0)
@@ -565,11 +568,13 @@ static int cmd_config(int argc, char **argv) {
     git_config *cfg = NULL;
     int err;
 
-    if (global) {
-        /* Open/create global config (~/.gitconfig) */
-        char path[256];
-        snprintf(path, sizeof(path), "/Users/.gitconfig");
-        err = git_config_open_ondisk(&cfg, path);
+    if (scope == 2) {
+        /* Open/create system config (/System/etc/gitconfig) */
+        err = git_config_open_ondisk(&cfg, "/System/etc/gitconfig");
+        if (err < 0) die("Cannot open system config", err);
+    } else if (scope == 1) {
+        /* Open/create global config (/Users/.gitconfig) */
+        err = git_config_open_ondisk(&cfg, "/Users/.gitconfig");
         if (err < 0) die("Cannot open global config", err);
     } else {
         /* Open repo-level config */
@@ -610,9 +615,9 @@ static int cmd_config(int argc, char **argv) {
     }
 
     if (argi >= argc) {
-        fprintf(stderr, "usage: git config [--global] <key> [<value>]\n");
-        fprintf(stderr, "       git config [--global] --list\n");
-        fprintf(stderr, "       git config [--global] --unset <key>\n");
+        fprintf(stderr, "usage: git config [--global|--system] <key> [<value>]\n");
+        fprintf(stderr, "       git config [--global|--system] --list\n");
+        fprintf(stderr, "       git config [--global|--system] --unset <key>\n");
         git_config_free(cfg);
         return 1;
     }
@@ -665,6 +670,11 @@ int main(int argc, char **argv) {
 
     git_libgit2_init();
     bearssl_stream_register();
+
+    /* Configure libgit2 search paths for anyOS filesystem layout */
+    git_libgit2_opts(GIT_OPT_SET_SEARCH_PATH, GIT_CONFIG_LEVEL_SYSTEM, "/System/etc");
+    git_libgit2_opts(GIT_OPT_SET_SEARCH_PATH, GIT_CONFIG_LEVEL_GLOBAL, "/Users");
+    git_libgit2_opts(GIT_OPT_SET_SEARCH_PATH, GIT_CONFIG_LEVEL_XDG, "/Users/.config");
 
     const char *cmd = argv[1];
     int ret;

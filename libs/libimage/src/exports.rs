@@ -249,7 +249,7 @@ extern "C" fn image_encode_export(
     crate::bmp::encode(px, width, height, buf)
 }
 
-// ── Iconpack SVG render export ──────────────────────
+// ── Iconpack render export ───────────────────────────
 
 /// Render a system icon from an ico.pak file to ARGB8888 pixels.
 ///
@@ -261,6 +261,9 @@ extern "C" fn image_encode_export(
 /// - `out_pixels`: output buffer (size*size u32s)
 ///
 /// Returns 0 on success, negative on error.
+///
+/// Supports both IPAK v1 (SVG paths, runtime rasterized) and v2 (pre-rasterized
+/// alpha maps, color applied at runtime).
 extern "C" fn iconpack_render_export(
     pak: *const u8, pak_len: u32,
     name: *const u8, name_len: u32,
@@ -275,10 +278,60 @@ extern "C" fn iconpack_render_export(
     let pixel_count = (size as usize) * (size as usize);
     let out = unsafe { core::slice::from_raw_parts_mut(out_pixels, pixel_count) };
 
-    let entry = match crate::iconpack::lookup(pak_data, name_data, filled != 0) {
-        Some(e) => e,
-        None => return crate::types::ERR_UNSUPPORTED,
-    };
+    let ver = crate::iconpack::version(pak_data);
 
-    crate::svg_raster::render_icon(entry.data, filled != 0, size, color, out)
+    if ver == 2 {
+        // v2: pre-rasterized alpha maps — apply color and scale
+        let entry = match crate::iconpack::lookup_v2(pak_data, name_data, filled != 0) {
+            Some(e) => e,
+            None => return crate::types::ERR_UNSUPPORTED,
+        };
+
+        let isz = entry.icon_size as u32;
+
+        // Apply color to alpha map → ARGB pixels
+        let ca = (color >> 24) & 0xFF;
+        let color_rgb = color & 0x00FFFFFF;
+
+        if size == isz {
+            // Direct: no scaling needed
+            for i in 0..pixel_count {
+                let alpha = entry.alpha[i] as u32;
+                if alpha == 0 {
+                    out[i] = 0;
+                } else {
+                    let a = (alpha * ca + 127) / 255;
+                    out[i] = (a << 24) | color_rgb;
+                }
+            }
+        } else {
+            // Need scaling: apply color to temp buffer, then scale
+            let src_count = (isz * isz) as usize;
+            let mut tmp = alloc::vec![0u32; src_count];
+            for i in 0..src_count {
+                let alpha = entry.alpha[i] as u32;
+                if alpha == 0 {
+                    tmp[i] = 0;
+                } else {
+                    let a = (alpha * ca + 127) / 255;
+                    tmp[i] = (a << 24) | color_rgb;
+                }
+            }
+            crate::scale::scale_image(
+                tmp.as_ptr(), isz, isz,
+                out_pixels, size, size,
+                crate::scale::MODE_SCALE,
+            );
+        }
+
+        0
+    } else {
+        // v1: SVG path strings — runtime rasterization
+        let entry = match crate::iconpack::lookup(pak_data, name_data, filled != 0) {
+            Some(e) => e,
+            None => return crate::types::ERR_UNSUPPORTED,
+        };
+
+        crate::svg_raster::render_icon(entry.data, filled != 0, size, color, out)
+    }
 }
