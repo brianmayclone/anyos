@@ -17,7 +17,10 @@ use super::xhr;
 use super::fetch;
 
 /// Create the native `window` host object.
-pub fn make_window(_vm: &mut Vm, document: JsValue) -> JsValue {
+///
+/// * `origin` — the page origin (e.g. `"https://example.com"`) used to key
+///   the persistent localStorage file.
+pub fn make_window(_vm: &mut Vm, document: JsValue, origin: &str) -> JsValue {
     let mut obj = JsObject::new();
 
     obj.set(String::from("document"), document.clone());
@@ -32,7 +35,7 @@ pub fn make_window(_vm: &mut Vm, document: JsValue) -> JsValue {
     nav.set_property(String::from("language"), JsValue::String(String::from("en-US")));
     nav.set_property(String::from("languages"), make_array(vec![JsValue::String(String::from("en-US"))]));
     nav.set_property(String::from("platform"), JsValue::String(String::from("anyOS")));
-    nav.set_property(String::from("cookieEnabled"), JsValue::Bool(false));
+    nav.set_property(String::from("cookieEnabled"), JsValue::Bool(true));
     nav.set_property(String::from("onLine"), JsValue::Bool(true));
     nav.set_property(String::from("vendor"), JsValue::String(String::from("anyOS")));
     nav.set_property(String::from("appName"), JsValue::String(String::from("Surf")));
@@ -99,8 +102,8 @@ pub fn make_window(_vm: &mut Vm, document: JsValue) -> JsValue {
     obj.set(String::from("performance"), perf);
 
     // Storage.
-    obj.set(String::from("localStorage"), storage::make_storage());
-    obj.set(String::from("sessionStorage"), storage::make_storage());
+    obj.set(String::from("localStorage"), storage::make_storage(origin, true));
+    obj.set(String::from("sessionStorage"), storage::make_storage(origin, false));
 
     // History.
     let history = JsValue::new_object();

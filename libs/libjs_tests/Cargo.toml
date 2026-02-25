@@ -1,0 +1,18 @@
+[package]
+name = "libjs_tests"
+version = "0.1.0"
+edition = "2021"
+description = "Host-native ECMAScript test harness for libjs (runs on macOS without anyOS)"
+
+# No anyos_std dependency — uses the host system allocator via std.
+# The libjs source files are included directly via #[path] in src/lib.rs.
+
+# Exclude from the anyOS workspace (this is a host-native test crate)
+[workspace]
+
+[lib]
+name = "libjs_tests"
+
+[[bin]]
+name = "tc39_runner"
+path = "src/bin/tc39_runner.rs"

@@ -1,7 +1,7 @@
 // Copyright (c) 2024-2026 Christian Moeller
 // SPDX-License-Identifier: MIT
 
-//! Surf -- a tabbed web browser for anyOS.
+//! Surf — a tabbed web browser for anyOS.
 //!
 //! Renders HTML pages with CSS styling, fetched over HTTP/1.1.
 //! Uses libanyui for the UI chrome (toolbar, tabs, status bar) and
@@ -13,6 +13,11 @@
 mod http;
 mod deflate;
 mod tls;
+mod tab;
+mod resources;
+mod ui;
+mod callbacks;
+mod ws;
 
 anyos_std::entry!(main);
 
@@ -20,13 +25,17 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::vec;
 
-use libanyui_client as ui;
-use ui::Widget;
+use libanyui_client as ui_lib;
+use ui_lib::Widget;
+
+// ═══════════════════════════════════════════════════════════
+// Debug helpers (feature-gated)
+// ═══════════════════════════════════════════════════════════
 
 /// Return current stack pointer for debug tracing.
 #[cfg(feature = "debug_surf")]
 #[inline(always)]
-fn debug_rsp() -> u64 {
+pub(crate) fn debug_rsp() -> u64 {
     let rsp: u64;
     unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp); }
     rsp
@@ -34,800 +43,271 @@ fn debug_rsp() -> u64 {
 
 /// Return current heap break position for debug tracing.
 #[cfg(feature = "debug_surf")]
-fn debug_heap() -> u64 {
+pub(crate) fn debug_heap() -> u64 {
     anyos_std::process::sbrk(0) as u64
 }
 
-// ---------------------------------------------------------------------------
-// Per-tab state
-// ---------------------------------------------------------------------------
-
-struct TabState {
-    webview: libwebview::WebView,
-    url_text: String,
-    current_url: Option<http::Url>,
-    page_title: String,
-    history: Vec<String>,
-    history_pos: usize,
-    status_text: String,
-}
-
-impl TabState {
-    fn new() -> Self {
-        Self {
-            webview: libwebview::WebView::new(800, 600),
-            url_text: String::new(),
-            current_url: None,
-            page_title: String::new(),
-            history: Vec::new(),
-            history_pos: 0,
-            status_text: String::from("Ready"),
-        }
-    }
-
-    fn can_go_back(&self) -> bool { self.history_pos > 0 }
-    fn can_go_forward(&self) -> bool { self.history_pos + 1 < self.history.len() }
-
-    fn tab_label(&self) -> &str {
-        if !self.page_title.is_empty() {
-            &self.page_title
-        } else if !self.url_text.is_empty() {
-            &self.url_text
-        } else {
-            "New Tab"
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
+// ═══════════════════════════════════════════════════════════
 // Global application state
-// ---------------------------------------------------------------------------
+// ═══════════════════════════════════════════════════════════
 
 struct AppState {
-    win: ui::Window,
-    toolbar: ui::View,
-    btn_back: ui::Button,
-    btn_forward: ui::Button,
-    btn_reload: ui::Button,
-    url_field: ui::TextField,
-    tab_bar_view: ui::TabBar,
-    content_view: ui::View,
-    status_label: ui::Label,
-    tabs: Vec<TabState>,
+    win: ui_lib::Window,
+    toolbar: ui_lib::View,
+    btn_back: ui_lib::Button,
+    btn_forward: ui_lib::Button,
+    btn_reload: ui_lib::Button,
+    url_field: ui_lib::TextField,
+    /// DevTools toggle button (right of URL field).
+    btn_devtools: ui_lib::Button,
+    /// Floating popup menu that appears below the DevTools button.
+    devtools_menu: ui_lib::View,
+    tab_bar_view: ui_lib::TabBar,
+    content_view: ui_lib::View,
+    status_label: ui_lib::Label,
+    /// DevTools console panel (DOCK_BOTTOM, hidden when closed).
+    devtools_panel: ui_lib::View,
+    /// Label inside the console panel showing JS console output.
+    devtools_label: ui_lib::Label,
+    /// Whether the DevTools console is currently visible.
+    devtools_open: bool,
+    /// Whether the DevTools popup menu is currently visible.
+    devtools_menu_visible: bool,
+    tabs: Vec<tab::TabState>,
     active_tab: usize,
     cookies: http::CookieJar,
-    /// Pending image fetch queue: (tab_index, img_src, resolved_url).
+    /// Pending image fetch queue: (tab_index, img_src_attr, resolved_url).
     image_queue: Vec<(usize, String, http::Url)>,
-    /// Timer ID for async image loading (0 = no timer).
+    /// Timer ID for the async image fetch loop (0 = not running).
     image_timer: u32,
     /// HTTP connection pool for reusing TCP/TLS connections.
     conn_pool: http::ConnPool,
+    /// All live WebSocket connections across all tabs.
+    ws_connections: Vec<ws::WsConn>,
+    /// Timer ID for the WebSocket poll loop (0 = not running).
+    ws_poll_timer: u32,
+    /// Timer ID for the CSS animation tick (0 = not running).
+    anim_timer: u32,
 }
 
 static mut STATE: Option<AppState> = None;
 
-fn state() -> &'static mut AppState {
+/// Return a mutable reference to the global `AppState`.
+///
+/// # Panics
+/// Panics if called before `STATE` is initialised in `main`.
+pub(crate) fn state() -> &'static mut AppState {
     unsafe { STATE.as_mut().unwrap() }
 }
 
-// ---------------------------------------------------------------------------
-// Navigation
-// ---------------------------------------------------------------------------
+// ═══════════════════════════════════════════════════════════
+// WebSocket integration helpers
+// ═══════════════════════════════════════════════════════════
 
-fn navigate(url_str: &str) {
+/// Drain the pending-connect queue for `tab_idx` and open the TCP connections.
+///
+/// Called after each `set_html` invocation so that WebSocket constructors
+/// executed by page scripts are immediately connected.
+pub(crate) fn connect_pending_ws(tab_idx: usize) {
     let st = state();
-    anyos_std::println!("[surf] navigating to: {}", url_str);
-
-    let url = match http::parse_url(url_str) {
-        Ok(u) => u,
-        Err(_) => {
-            st.tabs[st.active_tab].status_text = String::from("Invalid URL");
-            update_status();
-            return;
-        }
-    };
-
-    let mut loading_msg = String::from("Loading: ");
-    loading_msg.push_str(url_str);
-    st.tabs[st.active_tab].status_text = loading_msg;
-    update_status();
-
-    let response = match http::fetch(&url, &mut st.cookies, &mut st.conn_pool) {
-        Ok(r) => r,
-        Err(e) => {
-            let msg = match e {
-                http::FetchError::InvalidUrl => "Invalid URL",
-                http::FetchError::DnsFailure => "DNS lookup failed",
-                http::FetchError::ConnectFailure => "Connection failed",
-                http::FetchError::SendFailure => "Send failed",
-                http::FetchError::NoResponse => "No response",
-                http::FetchError::TooManyRedirects => "Too many redirects",
-                http::FetchError::TlsHandshakeFailed => "TLS handshake failed",
-            };
-            st.tabs[st.active_tab].status_text = String::from(msg);
-            update_status();
-            return;
-        }
-    };
-
-    if response.status < 200 || response.status >= 400 {
-        st.tabs[st.active_tab].status_text = String::from("HTTP error");
-        update_status();
+    let connects = st.tabs[tab_idx].webview.js_runtime().take_ws_connects();
+    if connects.is_empty() {
         return;
     }
-
-    // Use the final URL after redirects as base for image resolution.
-    let base_url = response.final_url.unwrap_or_else(|| http::clone_url(&url));
-
-    let body_text = decode_http_body(&response.body, &response.headers);
-    anyos_std::println!("[surf] received {} bytes, parsing HTML...", body_text.len());
-    #[cfg(feature = "debug_surf")]
-    anyos_std::println!("[surf-dbg] pre-parse RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap());
-
-    st.tabs[st.active_tab].status_text = String::from("Rendering page...");
-    update_status();
-
-    // Clear external stylesheets from previous page.
-    st.tabs[st.active_tab].webview.clear_stylesheets();
-    #[cfg(feature = "debug_surf")]
-    anyos_std::println!("[surf-dbg] calling set_html ({} bytes)...", body_text.len());
-    // Set HTML content — this parses, lays out, and renders controls immediately.
-    st.tabs[st.active_tab].webview.set_html(&body_text);
-    anyos_std::println!("[surf] render complete");
-    #[cfg(feature = "debug_surf")]
-    anyos_std::println!("[surf-dbg] post-render RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap());
-
-    // Print JS console output.
-    for line in st.tabs[st.active_tab].webview.js_console() {
-        anyos_std::println!("[js] {}", line);
+    for req in connects {
+        // Borrow-split: we need both `ws_connections` and the tab's runtime.
+        let runtime = st.tabs[tab_idx].webview.js_runtime();
+        ws::handle_connect(req, &mut st.ws_connections, runtime, &st.cookies, tab_idx);
     }
-
-    // Extract title.
-    let title = st.tabs[st.active_tab].webview.get_title().unwrap_or_else(|| String::from("Untitled"));
-
-    // Update URL history — use final URL.
-    let url_string = format_url(&base_url);
-    {
-        let tab = &mut st.tabs[st.active_tab];
-        if tab.history.is_empty() || tab.history_pos >= tab.history.len()
-            || tab.history[tab.history_pos] != url_string
-        {
-            if tab.history_pos + 1 < tab.history.len() {
-                tab.history.truncate(tab.history_pos + 1);
-            }
-            tab.history.push(url_string.clone());
-            tab.history_pos = tab.history.len() - 1;
-        }
-        tab.page_title = title;
-        tab.url_text = url_string.clone();
-        tab.status_text = String::from("Done");
-    }
-
-    // Parse DOM for resource discovery (stylesheets, images).
-    #[cfg(feature = "debug_surf")]
-    anyos_std::println!("[surf-dbg] second html::parse start");
-    let dom_for_resources = libwebview::html::parse(&body_text);
-    anyos_std::println!("[surf] DOM: {} nodes", dom_for_resources.nodes.len());
-    #[cfg(feature = "debug_surf")]
-    anyos_std::println!("[surf-dbg] post-DOM RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap());
-    let tab_idx = st.active_tab;
-
-    // Fetch external stylesheets (<link rel="stylesheet">) and apply them.
-    #[cfg(feature = "debug_surf")]
-    anyos_std::println!("[surf-dbg] fetch_stylesheets start");
-    fetch_stylesheets(&dom_for_resources, &base_url, tab_idx);
-    #[cfg(feature = "debug_surf")]
-    anyos_std::println!("[surf-dbg] fetch_stylesheets done, RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap());
-
-    // Cancel any pending image fetches from previous page.
-    if st.image_timer != 0 {
-        ui::kill_timer(st.image_timer);
-        st.image_timer = 0;
-    }
-    st.image_queue.clear();
-
-    // Queue images for async loading (page is already visible).
-    queue_images(&dom_for_resources, &base_url, tab_idx);
-
-    st.tabs[st.active_tab].current_url = Some(base_url);
-
-    // Update UI.
-    let st = state();
-    st.url_field.set_text(&st.tabs[st.active_tab].url_text);
-    update_title();
-    update_status();
-    update_tab_labels();
-    #[cfg(feature = "debug_surf")]
-    anyos_std::println!("[surf-dbg] navigate complete, RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap());
+    ws_start_poll_timer();
 }
 
-fn navigate_post(url_str: &str, body: &str) {
+/// Start the WebSocket poll timer if it is not already running.
+///
+/// The timer fires every 50 ms, handles outbound sends/closes, and polls all
+/// connections for incoming frames, routing each message to the JS runtime of
+/// the tab that owns the connection.
+fn ws_start_poll_timer() {
     let st = state();
-    let url = match http::parse_url(url_str) {
-        Ok(u) => u,
-        Err(_) => {
-            st.tabs[st.active_tab].status_text = String::from("Invalid URL");
-            update_status();
-            return;
-        }
-    };
-
-    st.tabs[st.active_tab].status_text = String::from("Submitting...");
-    update_status();
-
-    let response = match http::fetch_post(&url, body, &mut st.cookies, &mut st.conn_pool) {
-        Ok(r) => r,
-        Err(_) => {
-            st.tabs[st.active_tab].status_text = String::from("Submit failed");
-            update_status();
-            return;
-        }
-    };
-
-    if response.status < 200 || response.status >= 400 {
-        st.tabs[st.active_tab].status_text = String::from("HTTP error");
-        update_status();
+    if st.ws_poll_timer != 0 {
         return;
     }
+    st.ws_poll_timer = ui_lib::set_timer(50, || {
+        let st = state();
 
-    let base_url = response.final_url.unwrap_or_else(|| http::clone_url(&url));
+        // Outbound: flush sends and closes from every tab's runtime.
+        for tab_i in 0..st.tabs.len() {
+            let sends = st.tabs[tab_i].webview.js_runtime().take_ws_sends();
+            ws::handle_sends(sends, &mut st.ws_connections);
 
-    let body_text = decode_http_body(&response.body, &response.headers);
-
-    // Render page immediately (without images).
-    let tab = &mut st.tabs[st.active_tab];
-    tab.webview.clear_stylesheets();
-    tab.webview.set_html(&body_text);
-
-    for line in tab.webview.js_console() {
-        anyos_std::println!("[js] {}", line);
-    }
-
-    let title = tab.webview.get_title().unwrap_or_else(|| String::from("Untitled"));
-
-    let url_string = format_url(&base_url);
-    if tab.history.is_empty() || tab.history_pos >= tab.history.len()
-        || tab.history[tab.history_pos] != url_string
-    {
-        if tab.history_pos + 1 < tab.history.len() {
-            tab.history.truncate(tab.history_pos + 1);
+            let closes = st.tabs[tab_i].webview.js_runtime().take_ws_closes();
+            let to_remove = ws::handle_closes(
+                closes,
+                &mut st.ws_connections,
+                st.tabs[tab_i].webview.js_runtime(),
+            );
+            ws::remove_connections(&mut st.ws_connections, &to_remove);
         }
-        tab.history.push(url_string.clone());
-        tab.history_pos = tab.history.len() - 1;
-    }
 
-    tab.page_title = title;
-    tab.url_text = url_string.clone();
-    tab.status_text = String::from("Done");
+        // Inbound: poll each connection and deliver to the owning tab's runtime.
+        for tab_i in 0..st.tabs.len() {
+            let tab_conn_ids: Vec<u64> = st.ws_connections
+                .iter()
+                .filter(|c| c.tab_idx == tab_i)
+                .map(|c| c.id)
+                .collect();
+            if tab_conn_ids.is_empty() { continue; }
 
-    // Parse DOM for resource discovery.
-    let dom_for_resources = libwebview::html::parse(&body_text);
-    let tab_idx = st.active_tab;
-
-    // Fetch external stylesheets.
-    fetch_stylesheets(&dom_for_resources, &base_url, tab_idx);
-
-    // Queue images for async loading.
-    if st.image_timer != 0 {
-        ui::kill_timer(st.image_timer);
-        st.image_timer = 0;
-    }
-    st.image_queue.clear();
-    queue_images(&dom_for_resources, &base_url, tab_idx);
-
-    let tab = &mut st.tabs[st.active_tab];
-    tab.current_url = Some(base_url);
-
-    let st = state();
-    st.url_field.set_text(&st.tabs[st.active_tab].url_text);
-    update_title();
-    update_status();
-    update_tab_labels();
-}
-
-fn go_back() {
-    let st = state();
-    let tab = &st.tabs[st.active_tab];
-    if tab.can_go_back() {
-        let new_pos = tab.history_pos - 1;
-        let url = tab.history[new_pos].clone();
-        st.tabs[st.active_tab].history_pos = new_pos;
-        navigate(&url);
-    }
-}
-
-fn go_forward() {
-    let st = state();
-    let tab = &st.tabs[st.active_tab];
-    if tab.can_go_forward() {
-        let new_pos = tab.history_pos + 1;
-        let url = tab.history[new_pos].clone();
-        st.tabs[st.active_tab].history_pos = new_pos;
-        navigate(&url);
-    }
-}
-
-fn reload() {
-    let st = state();
-    let url = st.tabs[st.active_tab].url_text.clone();
-    if !url.is_empty() {
-        navigate(&url);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Charset detection and body decoding
-// ---------------------------------------------------------------------------
-
-/// Decode HTTP response body to a UTF-8 string, handling charset detection.
-fn decode_http_body(body: &[u8], headers: &str) -> String {
-    // First: if the body is valid UTF-8, just use it directly.
-    // Many servers (e.g. Google) claim ISO-8859-1 in headers but send UTF-8.
-    if core::str::from_utf8(body).is_ok() {
-        return String::from(core::str::from_utf8(body).unwrap());
-    }
-
-    // Body is NOT valid UTF-8 — check charset declaration.
-    let charset = detect_charset_from_headers(headers)
-        .or_else(|| detect_charset_from_html_bytes(body));
-
-    match charset.as_deref() {
-        Some("iso-8859-1") | Some("latin1") | Some("latin-1") | Some("windows-1252") | None => {
-            // Non-UTF-8 body: treat as Latin-1 (superset of ASCII, covers most Western pages).
-            latin1_to_utf8(body)
-        }
-        _ => {
-            String::from_utf8_lossy(body).into_owned()
-        }
-    }
-}
-
-fn detect_charset_from_headers(headers: &str) -> Option<String> {
-    let ct = http::find_header_value(headers, "content-type")?;
-    extract_charset(ct)
-}
-
-fn detect_charset_from_html_bytes(body: &[u8]) -> Option<String> {
-    // Quick scan of first 2048 bytes for charset= (ASCII-safe scan).
-    let scan_len = body.len().min(2048);
-    // Try to get a string; for non-UTF-8, scan only the ASCII portion.
-    let text = core::str::from_utf8(&body[..scan_len]).unwrap_or("");
-    let lower = text.to_ascii_lowercase();
-
-    // Look for charset= in meta tags.
-    if let Some(pos) = lower.find("charset=") {
-        let rest = &lower[pos + 8..];
-        let rest = rest.trim_start_matches(['"', '\'', ' '].as_ref());
-        let end = rest.find(|c: char| c == '"' || c == '\'' || c == ';' || c == ' ' || c == '>')
-            .unwrap_or(rest.len());
-        let charset = rest[..end].trim();
-        if !charset.is_empty() {
-            return Some(String::from(charset));
-        }
-    }
-    None
-}
-
-fn extract_charset(content_type: &str) -> Option<String> {
-    let lower = content_type.to_ascii_lowercase();
-    if let Some(pos) = lower.find("charset=") {
-        let rest = &lower[pos + 8..];
-        let rest = rest.trim_start_matches(['"', '\''].as_ref());
-        let end = rest.find(|c: char| c == '"' || c == '\'' || c == ';' || c == ' ')
-            .unwrap_or(rest.len());
-        let charset = rest[..end].trim();
-        if !charset.is_empty() {
-            return Some(String::from(charset));
-        }
-    }
-    None
-}
-
-/// Convert ISO-8859-1 / Latin-1 bytes to a UTF-8 String.
-fn latin1_to_utf8(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        out.push(b as char); // Rust `char` from u8 is correct for Latin-1 → Unicode
-    }
-    out
-}
-
-// ---------------------------------------------------------------------------
-// External stylesheet fetching
-// ---------------------------------------------------------------------------
-
-/// Fetch external CSS stylesheets referenced by `<link rel="stylesheet">` tags.
-/// Stylesheets are fetched synchronously (they're typically small) and added
-/// to the webview, then relayout is triggered.
-fn fetch_stylesheets(
-    dom: &libwebview::dom::Dom,
-    base_url: &http::Url,
-    tab_index: usize,
-) {
-    let mut hrefs: Vec<String> = Vec::new();
-    for (i, node) in dom.nodes.iter().enumerate() {
-        if let libwebview::dom::NodeType::Element { tag: libwebview::dom::Tag::Link, .. } = &node.node_type {
-            // Check rel="stylesheet"
-            let rel = dom.attr(i, "rel").unwrap_or("");
-            if !rel.eq_ignore_ascii_case("stylesheet") {
-                continue;
+            let runtime = st.tabs[tab_i].webview.js_runtime();
+            let mut tab_conns: Vec<ws::WsConn> = Vec::new();
+            let mut rest: Vec<ws::WsConn> = Vec::new();
+            let all = core::mem::replace(&mut st.ws_connections, Vec::new());
+            for c in all {
+                if c.tab_idx == tab_i { tab_conns.push(c); } else { rest.push(c); }
             }
-            if let Some(href) = dom.attr(i, "href") {
-                if !href.is_empty() {
-                    hrefs.push(String::from(href));
-                }
-            }
+            let to_close = ws::poll_connections(&mut tab_conns, runtime);
+            ws::remove_connections(&mut tab_conns, &to_close);
+            for c in tab_conns { st.ws_connections.push(c); }
+            for c in rest { st.ws_connections.push(c); }
         }
-    }
 
-    if hrefs.is_empty() {
-        return;
-    }
-
-    anyos_std::println!("[surf] fetching {} external stylesheet(s)", hrefs.len());
-    let st = state();
-    let mut added = 0;
-
-    for href in &hrefs {
-        let css_url = http::resolve_url(base_url, href);
-        match http::fetch(&css_url, &mut st.cookies, &mut st.conn_pool) {
-            Ok(resp) => {
-                if resp.status >= 200 && resp.status < 400 && !resp.body.is_empty() {
-                    let css_text = decode_http_body(&resp.body, &resp.headers);
-                    st.tabs[tab_index].webview.add_stylesheet(&css_text);
-                    added += 1;
-                    anyos_std::println!("[surf]   loaded: {} ({} bytes)", href, css_text.len());
-                }
-            }
-            Err(_) => {
-                anyos_std::println!("[surf]   failed: {}", href);
-            }
+        if st.ws_connections.is_empty() {
+            ui_lib::kill_timer(st.ws_poll_timer);
+            st.ws_poll_timer = 0;
         }
-    }
-
-    if added > 0 {
-        st.tabs[tab_index].webview.relayout();
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Image collection
-// ---------------------------------------------------------------------------
-
-/// Collect all image URLs from DOM and queue them for async fetching.
-fn queue_images(
-    dom: &libwebview::dom::Dom,
-    base_url: &http::Url,
-    tab_index: usize,
-) {
-    let st = state();
-    for (i, node) in dom.nodes.iter().enumerate() {
-        if let libwebview::dom::NodeType::Element { tag: libwebview::dom::Tag::Img, .. } = &node.node_type {
-            if let Some(src) = dom.attr(i, "src") {
-                if src.is_empty() || src.starts_with("data:") {
-                    continue;
-                }
-                let img_url = http::resolve_url(base_url, src);
-                st.image_queue.push((tab_index, String::from(src), img_url));
-            }
-        }
-    }
-    if !st.image_queue.is_empty() {
-        anyos_std::println!("[surf] queued {} images for async loading", st.image_queue.len());
-        start_image_timer();
-    }
-}
-
-/// Start the image fetch timer if not already running.
-fn start_image_timer() {
-    let st = state();
-    if st.image_timer != 0 {
-        return; // already running
-    }
-    st.image_timer = ui::set_timer(10, || {
-        fetch_next_image();
     });
 }
 
-/// Fetch the next image in the queue. Called by timer.
-fn fetch_next_image() {
+// ═══════════════════════════════════════════════════════════
+// CSS animation tick
+// ═══════════════════════════════════════════════════════════
+
+/// Start the 16 ms CSS animation tick timer (60 fps).
+///
+/// Each tick calls `WebView::tick(16)` on the active tab.  When the JS
+/// runtime has active animations the webview relayouts automatically.
+pub(crate) fn start_anim_timer() {
     let st = state();
-    if st.image_queue.is_empty() {
-        // All done — stop timer.
-        if st.image_timer != 0 {
-            ui::kill_timer(st.image_timer);
-            st.image_timer = 0;
+    if st.anim_timer != 0 { return; }
+    st.anim_timer = ui_lib::set_timer(16, || {
+        let st = state();
+        if st.tabs[st.active_tab].webview.tick(16) {
+            // Animation is active — relayout was already done inside tick().
         }
-        st.tabs[st.active_tab].status_text = String::from("Done");
-        update_status();
-        return;
-    }
-
-    let (tab_idx, src, img_url) = st.image_queue.remove(0);
-
-    // Update status bar.
-    let remaining = st.image_queue.len();
-    let mut status = String::from("Loading image (");
-    push_u32(&mut status, remaining as u32 + 1);
-    status.push_str(" left): ");
-    status.push_str(&format_url(&img_url));
-    st.status_label.set_text(&status);
-
-    // Fetch the image.
-    match http::fetch(&img_url, &mut st.cookies, &mut st.conn_pool) {
-        Ok(resp) => {
-            if let Some(info) = libimage_client::probe(&resp.body) {
-                let w = info.width as usize;
-                let h = info.height as usize;
-                let mut pixels = vec![0u32; w * h];
-                let mut scratch = vec![0u8; info.scratch_needed as usize];
-                if libimage_client::decode(&resp.body, &mut pixels, &mut scratch).is_ok() {
-                    if tab_idx < st.tabs.len() {
-                        st.tabs[tab_idx].webview.add_image(&src, pixels, info.width, info.height);
-                        // Re-render the page with the new image.
-                        st.tabs[tab_idx].webview.relayout();
-                    }
-                }
-            }
-        }
-        Err(_) => {}
-    }
+        // Forward timer tick to JS setTimeout/setInterval/requestAnimationFrame.
+        // (tick() handles this internally via JsRuntime::tick)
+    });
 }
 
-// ---------------------------------------------------------------------------
-// Tab management
-// ---------------------------------------------------------------------------
-
-fn add_tab() {
-    let st = state();
-    let mut tab = TabState::new();
-    // Set up callbacks for the new webview.
-    tab.webview.set_link_callback(on_link_click, 0);
-    tab.webview.set_submit_callback(on_form_submit, 0);
-    // Add the scroll view to our content area.
-    st.content_view.add(tab.webview.scroll_view());
-    tab.webview.scroll_view().set_dock(ui::DOCK_FILL);
-    // Hide all existing tabs' scroll views.
-    for t in &st.tabs {
-        t.webview.scroll_view().set_visible(false);
-    }
-    st.tabs.push(tab);
-    st.active_tab = st.tabs.len() - 1;
-    st.url_field.set_text("");
-    update_title();
-    update_tab_labels();
-}
-
-fn close_tab(idx: usize) {
-    let st = state();
-    if st.tabs.len() <= 1 {
-        ui::quit();
-        return;
-    }
-    // Remove the scroll view from the content area.
-    st.tabs[idx].webview.scroll_view().remove();
-    st.tabs.remove(idx);
-    if st.active_tab >= st.tabs.len() {
-        st.active_tab = st.tabs.len() - 1;
-    }
-    switch_tab(st.active_tab);
-}
-
-fn switch_tab(idx: usize) {
-    let st = state();
-    if idx >= st.tabs.len() { return; }
-    // Hide old tab's scroll view.
-    st.tabs[st.active_tab].webview.scroll_view().set_visible(false);
-    st.active_tab = idx;
-    // Show new tab's scroll view.
-    st.tabs[st.active_tab].webview.scroll_view().set_visible(true);
-    // Update URL bar and title.
-    st.url_field.set_text(&st.tabs[st.active_tab].url_text);
-    update_title();
-    update_status();
-    update_tab_labels();
-}
-
-// ---------------------------------------------------------------------------
-// UI helpers
-// ---------------------------------------------------------------------------
-
-fn update_title() {
-    let st = state();
-    let tab = &st.tabs[st.active_tab];
-    if tab.page_title.is_empty() {
-        st.win.set_title("Surf");
-    } else {
-        let mut title = String::from("Surf - ");
-        title.push_str(&tab.page_title);
-        st.win.set_title(&title);
-    }
-}
-
-fn update_status() {
-    let st = state();
-    let tab = &st.tabs[st.active_tab];
-    st.status_label.set_text(&tab.status_text);
-}
-
-fn update_tab_labels() {
-    // Build tab labels string for tab bar. Pipe-separated labels.
-    let st = state();
-    let mut labels = String::new();
-    for (i, tab) in st.tabs.iter().enumerate() {
-        if i > 0 { labels.push('|'); }
-        let label = tab.tab_label();
-        // Truncate long labels.
-        if label.len() > 20 {
-            labels.push_str(&label[..20]);
-            labels.push_str("...");
-        } else {
-            labels.push_str(label);
-        }
-    }
-    st.tab_bar_view.set_text(&labels);
-    st.tab_bar_view.set_state(st.active_tab as u32);
-}
-
-fn format_url(url: &http::Url) -> String {
-    let mut s = String::new();
-    s.push_str(&url.scheme);
-    s.push_str("://");
-    s.push_str(&url.host);
-    if (url.scheme == "http" && url.port != 80) || (url.scheme == "https" && url.port != 443) {
-        s.push(':');
-        push_u32(&mut s, url.port as u32);
-    }
-    s.push_str(&url.path);
-    s
-}
-
-fn push_u32(s: &mut String, val: u32) {
-    if val >= 10 { push_u32(s, val / 10); }
-    s.push((b'0' + (val % 10) as u8) as char);
-}
-
-// ---------------------------------------------------------------------------
-// Callbacks
-// ---------------------------------------------------------------------------
-
-extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata: u64) {
-    let st = state();
-    let tab = &st.tabs[st.active_tab];
-    if let Some(link_url) = tab.webview.link_url_for(ctrl_id) {
-        let resolved = if let Some(ref base) = tab.current_url {
-            let resolved_url = http::resolve_url(base, link_url);
-            format_url(&resolved_url)
-        } else {
-            String::from(link_url)
-        };
-        navigate(&resolved);
-    }
-}
-
-extern "C" fn on_form_submit(ctrl_id: u32, _event_type: u32, _userdata: u64) {
-    let st = state();
-    let tab = &st.tabs[st.active_tab];
-
-    if !tab.webview.is_submit_button(ctrl_id) {
-        return;
-    }
-
-    // Get form action and method.
-    let (action, method) = match tab.webview.form_action_for(ctrl_id) {
-        Some(am) => am,
-        None => return,
-    };
-
-    // Collect form data.
-    let data = tab.webview.collect_form_data(ctrl_id);
-
-    // URL-encode the form data.
-    let mut encoded = String::new();
-    for (i, (name, value)) in data.iter().enumerate() {
-        if i > 0 { encoded.push('&'); }
-        url_encode_into(&mut encoded, name);
-        encoded.push('=');
-        url_encode_into(&mut encoded, value);
-    }
-
-    // Resolve action URL relative to current page.
-    let resolved_action = if let Some(ref base) = tab.current_url {
-        let action_url = http::resolve_url(base, &action);
-        format_url(&action_url)
-    } else {
-        action
-    };
-
-    if method == "POST" {
-        navigate_post(&resolved_action, &encoded);
-    } else {
-        // GET: append query string to URL.
-        let mut url = resolved_action;
-        if !encoded.is_empty() {
-            url.push(if url.contains('?') { '&' } else { '?' });
-            url.push_str(&encoded);
-        }
-        navigate(&url);
-    }
-}
-
-fn url_encode_into(out: &mut String, s: &str) {
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            b' ' => out.push('+'),
-            _ => {
-                out.push('%');
-                let hi = b >> 4;
-                let lo = b & 0xF;
-                out.push(if hi < 10 { (b'0' + hi) as char } else { (b'A' + hi - 10) as char });
-                out.push(if lo < 10 { (b'0' + lo) as char } else { (b'A' + lo - 10) as char });
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
+// ═══════════════════════════════════════════════════════════
+// Entry point
+// ═══════════════════════════════════════════════════════════
 
 fn main() {
     anyos_std::println!("[surf] starting...");
 
-    if !ui::init() {
+    if !ui_lib::init() {
         anyos_std::println!("[surf] ERROR: failed to init libanyui");
         return;
     }
 
-    // Check if URL argument was provided.
+    if !libsvg_client::init() {
+        anyos_std::println!("[surf] WARN: libsvg.so not available — SVG images disabled");
+    }
+
+    // Optional startup URL from the process argument string.
     let mut args_buf = [0u8; 256];
     let raw_args = anyos_std::process::args(&mut args_buf);
     let arg_url = raw_args.trim();
     let start_url = if arg_url.is_empty() { None } else { Some(String::from(arg_url)) };
 
-    // Create window.
-    let win = ui::Window::new("Surf", -1, -1, 900, 700);
+    // ── Window ──────────────────────────────────────────────────────────────
+    let win = ui_lib::Window::new("Surf", -1, -1, 900, 700);
 
-    // -- Toolbar (DOCK_TOP, 40px) --
-    let toolbar = ui::View::new();
-    toolbar.set_dock(ui::DOCK_TOP);
+    // ── Toolbar (DOCK_TOP, 40 px) ────────────────────────────────────────────
+    let toolbar = ui_lib::View::new();
+    toolbar.set_dock(ui_lib::DOCK_TOP);
     toolbar.set_size(0, 40);
     toolbar.set_color(0xFF2A2A2C);
     win.add(&toolbar);
 
-    let btn_back = ui::Button::new("<");
+    let btn_back = ui_lib::Button::new("<");
     btn_back.set_position(8, 6);
     btn_back.set_size(32, 28);
     toolbar.add(&btn_back);
 
-    let btn_forward = ui::Button::new(">");
+    let btn_forward = ui_lib::Button::new(">");
     btn_forward.set_position(42, 6);
     btn_forward.set_size(32, 28);
     toolbar.add(&btn_forward);
 
-    let btn_reload = ui::Button::new("R");
+    let btn_reload = ui_lib::Button::new("R");
     btn_reload.set_position(76, 6);
     btn_reload.set_size(32, 28);
     toolbar.add(&btn_reload);
 
-    let url_field = ui::TextField::new();
+    // URL field — shortened by 84 px to make room for the DevTools button.
+    let url_field = ui_lib::TextField::new();
     url_field.set_position(116, 6);
-    url_field.set_size(750, 28);
+    url_field.set_size(666, 28);
     url_field.set_placeholder("Enter URL...");
     toolbar.add(&url_field);
 
-    // -- Tab bar (DOCK_TOP, 30px) — using TabBar control --
-    let tab_bar_view = ui::TabBar::new("New Tab");
-    tab_bar_view.set_dock(ui::DOCK_TOP);
+    // DevTools button — right of URL field.
+    let btn_devtools = ui_lib::Button::new("DevTools \u{25BC}");   // ▼
+    btn_devtools.set_position(786, 6);
+    btn_devtools.set_size(106, 28);
+    toolbar.add(&btn_devtools);
+
+    // ── DevTools popup menu (appears below toolbar, overlaid on content) ──────
+    // The menu View is added to the window with an absolute position; it is
+    // normally hidden and popped into view when the DevTools button is clicked.
+    let devtools_menu = ui_lib::View::new();
+    devtools_menu.set_size(180, 80);
+    devtools_menu.set_color(0xFF3A3A3C);
+    devtools_menu.set_visible(false);
+    win.add(&devtools_menu);
+
+    let menu_item_console = ui_lib::Label::new("  Show Console");
+    menu_item_console.set_position(0, 0);
+    menu_item_console.set_size(180, 38);
+    menu_item_console.set_color(0xFF3A3A3C);
+    menu_item_console.set_text_color(0xFFE5E5EA);
+    menu_item_console.set_font_size(14);
+    devtools_menu.add(&menu_item_console);
+
+    let menu_item_clear = ui_lib::Label::new("  Clear Console");
+    menu_item_clear.set_position(0, 40);
+    menu_item_clear.set_size(180, 38);
+    menu_item_clear.set_color(0xFF3A3A3C);
+    menu_item_clear.set_text_color(0xFFE5E5EA);
+    menu_item_clear.set_font_size(14);
+    devtools_menu.add(&menu_item_clear);
+
+    // ── Tab bar (DOCK_TOP, 30 px) ────────────────────────────────────────────
+    let tab_bar_view = ui_lib::TabBar::new("New Tab");
+    tab_bar_view.set_dock(ui_lib::DOCK_TOP);
     tab_bar_view.set_size(0, 30);
     win.add(&tab_bar_view);
 
-    // -- Status bar (DOCK_BOTTOM, 24px) --
-    let status_label = ui::Label::new("Ready");
-    status_label.set_dock(ui::DOCK_BOTTOM);
+    // ── DevTools console panel (DOCK_BOTTOM, initially height=0/hidden) ───────
+    let devtools_panel = ui_lib::View::new();
+    devtools_panel.set_dock(ui_lib::DOCK_BOTTOM);
+    devtools_panel.set_size(0, 0);
+    devtools_panel.set_color(0xFF1C1C1E);
+    win.add(&devtools_panel);
+
+    let devtools_label = ui_lib::Label::new("");
+    devtools_label.set_dock(ui_lib::DOCK_FILL);
+    devtools_label.set_color(0xFF1C1C1E);
+    devtools_label.set_text_color(0xFF30D158);   // green console text
+    devtools_label.set_font_size(12);
+    devtools_label.set_padding(8, 8, 8, 8);
+    devtools_panel.add(&devtools_label);
+
+    // ── Status bar (DOCK_BOTTOM, 24 px) ─────────────────────────────────────
+    let status_label = ui_lib::Label::new("Ready");
+    status_label.set_dock(ui_lib::DOCK_BOTTOM);
     status_label.set_size(0, 24);
     status_label.set_color(0xFF252525);
     status_label.set_text_color(0xFF969696);
@@ -835,18 +315,18 @@ fn main() {
     status_label.set_padding(8, 4, 0, 0);
     win.add(&status_label);
 
-    // -- Content area (DOCK_FILL) --
-    let content_view = ui::View::new();
-    content_view.set_dock(ui::DOCK_FILL);
+    // ── Content area (DOCK_FILL) ─────────────────────────────────────────────
+    let content_view = ui_lib::View::new();
+    content_view.set_dock(ui_lib::DOCK_FILL);
     content_view.set_color(0xFFFFFFFF);
     win.add(&content_view);
 
-    // Create initial tab.
-    let mut initial_tab = TabState::new();
-    initial_tab.webview.set_link_callback(on_link_click, 0);
-    initial_tab.webview.set_submit_callback(on_form_submit, 0);
+    // ── Initial tab ──────────────────────────────────────────────────────────
+    let mut initial_tab = tab::TabState::new();
+    initial_tab.webview.set_link_callback(callbacks::on_link_click, 0);
+    initial_tab.webview.set_submit_callback(callbacks::on_form_submit, 0);
     content_view.add(initial_tab.webview.scroll_view());
-    initial_tab.webview.scroll_view().set_dock(ui::DOCK_FILL);
+    initial_tab.webview.scroll_view().set_dock(ui_lib::DOCK_FILL);
 
     unsafe {
         STATE = Some(AppState {
@@ -856,80 +336,135 @@ fn main() {
             btn_forward,
             btn_reload,
             url_field,
+            btn_devtools,
+            devtools_menu,
             tab_bar_view,
             content_view,
             status_label,
+            devtools_panel,
+            devtools_label,
+            devtools_open: false,
+            devtools_menu_visible: false,
             tabs: vec![initial_tab],
             active_tab: 0,
             cookies: http::CookieJar { cookies: Vec::new() },
             image_queue: Vec::new(),
             image_timer: 0,
             conn_pool: http::ConnPool::new(),
+            ws_connections: Vec::new(),
+            ws_poll_timer: 0,
+            anim_timer: 0,
         });
     }
 
-    // Set up button callbacks.
+    // ── Button callbacks ─────────────────────────────────────────────────────
     let st = state();
-    st.btn_back.on_click(|_| { go_back(); });
-    st.btn_forward.on_click(|_| { go_forward(); });
-    st.btn_reload.on_click(|_| { reload(); });
+    st.btn_back.on_click(|_| { tab::go_back(); });
+    st.btn_forward.on_click(|_| { tab::go_forward(); });
+    st.btn_reload.on_click(|_| { tab::reload(); });
+
+    // DevTools button: show/hide the popup menu.
+    btn_devtools.on_click(|_| {
+        let st = state();
+        let menu_visible = !st.devtools_menu_visible;
+        st.devtools_menu_visible = menu_visible;
+        if menu_visible {
+            // Position the menu just below the DevTools button.
+            // The button is at toolbar x=786, toolbar height=40, tabbar=30 → y=70.
+            st.devtools_menu.set_position(720, 70);
+        }
+        st.devtools_menu.set_visible(menu_visible);
+    });
+
+    // Menu items.
+    menu_item_console.on_click(|_| {
+        let st = state();
+        st.devtools_menu_visible = false;
+        st.devtools_menu.set_visible(false);
+        ui::toggle_devtools();
+    });
+    menu_item_clear.on_click(|_| {
+        let st = state();
+        st.devtools_menu_visible = false;
+        st.devtools_menu.set_visible(false);
+        ui::clear_devtools();
+    });
 
     // URL field: navigate on Enter.
     st.url_field.on_submit(|e| {
         let st = state();
         let mut buf = [0u8; 2048];
-        let len = ui::Control::from_id(e.id).get_text(&mut buf);
+        let len = ui_lib::Control::from_id(e.id).get_text(&mut buf);
         if len > 0 {
             if let Ok(url_str) = core::str::from_utf8(&buf[..len as usize]) {
                 let url = String::from(url_str);
                 st.tabs[st.active_tab].url_text = url.clone();
-                navigate(&url);
+                tab::navigate(&url);
             }
         }
     });
 
-    // Tab bar: switch tabs on selection change.
+    // Tab bar: switch tabs when the active segment changes.
     tab_bar_view.on_active_changed(|e| {
-        switch_tab(e.index as usize);
+        ui::switch_tab(e.index as usize);
     });
 
-    // Window keyboard shortcuts.
+    // Keyboard shortcuts.
     win.on_key_down(|e| {
         let mods = e.modifiers;
         let key = e.keycode;
         let ctrl = mods & 2 != 0;
+        let shift = mods & 1 != 0;
 
         if ctrl && key == b'T' as u32 {
-            add_tab();
+            ui::add_tab();
         } else if ctrl && key == b'W' as u32 {
             let st = state();
-            close_tab(st.active_tab);
+            ui::close_tab(st.active_tab);
         } else if ctrl && key == b'L' as u32 {
             let st = state();
             st.url_field.focus();
         } else if ctrl && key == b'R' as u32 {
-            reload();
+            tab::reload();
+        } else if ctrl && shift && key == b'J' as u32 {
+            // Ctrl+Shift+J — toggle DevTools console (Chrome shortcut).
+            ui::toggle_devtools();
+        } else if ctrl && shift && key == b'I' as u32 {
+            // Ctrl+Shift+I — also toggle DevTools (Chrome/Firefox shortcut).
+            ui::toggle_devtools();
         }
     });
 
-    // Window resize: update webview.
+    // Close popup menu when window is clicked anywhere else.
+    win.on_click(|_| {
+        let st = state();
+        if st.devtools_menu_visible {
+            st.devtools_menu_visible = false;
+            st.devtools_menu.set_visible(false);
+        }
+    });
+
+    // Viewport resize: re-layout the active tab's webview.
     win.on_resize(|_| {
         let st = state();
         let (w, h) = st.content_view.get_size();
         if w > 0 && h > 0 {
-            let tab = &mut st.tabs[st.active_tab];
-            tab.webview.resize(w, h);
+            let t = &mut st.tabs[st.active_tab];
+            t.webview.resize(w, h);
         }
     });
 
-    // Navigate to initial URL if provided.
+    // Start the CSS animation tick timer.
+    start_anim_timer();
+
+    // Navigate to the initial URL if one was provided on the command line.
     if let Some(url) = start_url {
         let st = state();
         st.tabs[st.active_tab].url_text = url.clone();
         st.url_field.set_text(&url);
-        navigate(&url);
+        tab::navigate(&url);
     }
 
     anyos_std::println!("[surf] entering event loop");
-    ui::run();
+    ui_lib::run();
 }

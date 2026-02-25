@@ -11,6 +11,7 @@
 
 pub mod block;
 pub mod flex;
+pub mod grid;
 pub mod inline;
 pub mod form;
 pub mod table;
@@ -75,6 +76,9 @@ pub struct LayoutBox {
     pub visibility_hidden: bool,
     /// Opacity: 0..255 (255 = fully opaque).
     pub opacity: i32,
+    /// If true, this box is `position:fixed` and its x/y are viewport-relative.
+    /// The renderer will ignore accumulated parent offsets and use x/y directly.
+    pub is_fixed: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -600,14 +604,14 @@ pub(super) fn apply_text_transform(text: &str, transform: TextTransform) -> Stri
 
 /// Determine whether a node should generate a block-level box.
 fn is_block_level(dom: &Dom, node_id: NodeId, style: &ComputedStyle) -> bool {
-    if matches!(style.display, Display::Block | Display::Flex | Display::ListItem) {
+    if matches!(style.display, Display::Block | Display::Flex | Display::Grid | Display::ListItem) {
         return true;
     }
     if let Some(tag) = dom.tag(node_id) {
         if tag == Tag::Hr || tag == Tag::Table {
             return true;
         }
-        if tag.is_block() && style.display != Display::Inline && style.display != Display::InlineFlex && style.display != Display::InlineBlock {
+        if tag.is_block() && style.display != Display::Inline && style.display != Display::InlineFlex && style.display != Display::InlineBlock && style.display != Display::InlineGrid {
             return true;
         }
     }

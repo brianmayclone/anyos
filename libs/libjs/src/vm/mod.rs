@@ -42,7 +42,11 @@ pub struct CallFrame {
     pub chunk: Chunk,
     pub ip: usize,
     pub stack_base: usize,
-    pub locals: Vec<JsValue>,
+    /// Local variable cells — each is a shared Rc<RefCell<JsValue>> so that closures
+    /// can capture locals by reference and maintain mutable shared state.
+    pub locals: Vec<Rc<RefCell<JsValue>>>,
+    /// Upvalue cells captured by this function's closure.
+    pub upvalue_cells: Vec<Rc<RefCell<JsValue>>>,
     pub this_val: JsValue,
 }
 
@@ -116,7 +120,8 @@ impl Vm {
             chunk,
             ip: 0,
             stack_base: self.stack.len(),
-            locals: vec![JsValue::Undefined; local_count],
+            locals: (0..local_count).map(|_| Rc::new(RefCell::new(JsValue::Undefined))).collect(),
+            upvalue_cells: Vec::new(),
             this_val: JsValue::Undefined,
         };
         self.frames.push(frame);
@@ -137,6 +142,9 @@ impl Vm {
             params: Vec::new(),
             kind: FnKind::Native(func),
             this_binding: None,
+            upvalues: Vec::new(),
+            prototype: None,
+            own_props: BTreeMap::new(),
         };
         self.set_global(name, JsValue::Function(Rc::new(RefCell::new(f))));
     }
@@ -194,7 +202,8 @@ impl Vm {
                 // ── Variables ──
                 Op::LoadLocal(slot) => {
                     let val = self.frames[frame_idx].locals
-                        .get(slot as usize).cloned()
+                        .get(slot as usize)
+                        .map(|c| c.borrow().clone())
                         .unwrap_or(JsValue::Undefined);
                     self.stack.push(val);
                 }
@@ -202,9 +211,9 @@ impl Vm {
                     let val = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
                     let locals = &mut self.frames[frame_idx].locals;
                     while locals.len() <= slot as usize {
-                        locals.push(JsValue::Undefined);
+                        locals.push(Rc::new(RefCell::new(JsValue::Undefined)));
                     }
-                    locals[slot as usize] = val;
+                    *locals[slot as usize].borrow_mut() = val;
                 }
                 Op::LoadGlobal(name_idx) => {
                     let name = self.get_const_string(frame_idx, name_idx);
@@ -216,9 +225,18 @@ impl Vm {
                     let val = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
                     self.globals.set(name, val);
                 }
-                Op::LoadUpvalue(_) | Op::StoreUpvalue(_) => {
-                    // Simplified: treat upvalues as undefined for now
-                    self.stack.push(JsValue::Undefined);
+                Op::LoadUpvalue(idx) => {
+                    let val = self.frames[frame_idx].upvalue_cells
+                        .get(idx as usize)
+                        .map(|c| c.borrow().clone())
+                        .unwrap_or(JsValue::Undefined);
+                    self.stack.push(val);
+                }
+                Op::StoreUpvalue(idx) => {
+                    let val = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
+                    if let Some(cell) = self.frames[frame_idx].upvalue_cells.get(idx as usize) {
+                        *cell.borrow_mut() = val;
+                    }
                 }
 
                 // ── Arithmetic ──
@@ -337,11 +355,32 @@ impl Vm {
                         Constant::Function(c) => c.clone(),
                         _ => Chunk::new(),
                     };
+                    // Capture upvalue cells as described by the chunk's upvalue_refs.
+                    let mut upvalue_cells: Vec<Rc<RefCell<JsValue>>> = Vec::new();
+                    for uv_ref in &chunk.upvalues.clone() {
+                        let cell = if uv_ref.is_local {
+                            // Capture the Rc<RefCell> of a local from the current frame.
+                            self.frames[frame_idx].locals
+                                .get(uv_ref.index as usize)
+                                .cloned()
+                                .unwrap_or_else(|| Rc::new(RefCell::new(JsValue::Undefined)))
+                        } else {
+                            // Re-capture from this frame's own upvalue cells (upvalue-of-upvalue).
+                            self.frames[frame_idx].upvalue_cells
+                                .get(uv_ref.index as usize)
+                                .cloned()
+                                .unwrap_or_else(|| Rc::new(RefCell::new(JsValue::Undefined)))
+                        };
+                        upvalue_cells.push(cell);
+                    }
                     let func = JsFunction {
                         name: chunk.name.clone(),
                         params: Vec::new(),
                         kind: FnKind::Bytecode(chunk),
                         this_binding: None,
+                        upvalues: upvalue_cells,
+                        prototype: Some(Rc::new(RefCell::new(JsObject::new()))),
+                        own_props: BTreeMap::new(),
                     };
                     self.stack.push(JsValue::Function(Rc::new(RefCell::new(func))));
                 }
@@ -372,7 +411,10 @@ impl Vm {
                     let val = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let obj = self.stack.pop().unwrap_or(JsValue::Undefined);
                     obj.set_property(name, val.clone());
-                    self.stack.push(obj);
+                    // Push the assigned value (ECMAScript: assignment evaluates
+                    // to the right-hand side). The compiler always emits a Pop
+                    // or uses this value directly — both cases are correct.
+                    self.stack.push(val);
                 }
                 Op::NewObject => {
                     let obj = JsObject {
@@ -484,8 +526,42 @@ impl Vm {
                     self.stack.push(this_val);
                 }
 
-                // ── Spread ──
-                Op::Spread => { /* handled during NewArray */ }
+                // ── Spread / ArrayPush ──
+                Op::Spread => {
+                    // Stack: [..., target_array, value_to_spread]
+                    // Append all elements of `value_to_spread` into `target_array`.
+                    let src = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let tgt = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
+                    if let JsValue::Array(tgt_rc) = &tgt {
+                        match &src {
+                            JsValue::Array(src_rc) => {
+                                let elems = src_rc.borrow().elements.clone();
+                                for el in elems {
+                                    tgt_rc.borrow_mut().elements.push(el);
+                                }
+                            }
+                            JsValue::String(s) => {
+                                for ch in s.chars() {
+                                    let mut cs = String::new();
+                                    cs.push(ch);
+                                    tgt_rc.borrow_mut().elements.push(JsValue::String(cs));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    // target_array already on top of stack; nothing to push
+                }
+                Op::ArrayPush => {
+                    // Stack: [..., target_array, value]
+                    // Append `value` to `target_array`.
+                    let val = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let tgt = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
+                    if let JsValue::Array(tgt_rc) = &tgt {
+                        tgt_rc.borrow_mut().elements.push(val);
+                    }
+                    // target_array stays on top of stack
+                }
 
                 // ── Async ──
                 Op::Await => {
@@ -529,6 +605,9 @@ impl Vm {
                     params: Vec::new(),
                     kind: FnKind::Bytecode(chunk.clone()),
                     this_binding: None,
+                    upvalues: Vec::new(),
+                    prototype: None,
+                    own_props: BTreeMap::new(),
                 };
                 JsValue::Function(Rc::new(RefCell::new(func)))
             }
@@ -591,6 +670,10 @@ impl Vm {
             }
             JsValue::Function(f) => {
                 let func = f.borrow();
+                // Check own properties first (static methods etc.)
+                if let Some(v) = func.own_props.get(key) {
+                    return v.clone();
+                }
                 if key == "name" {
                     return func.name.as_ref()
                         .map(|n| JsValue::String(n.clone()))
@@ -600,7 +683,15 @@ impl Vm {
                     return JsValue::Number(func.params.len() as f64);
                 }
                 if key == "prototype" {
-                    return JsValue::Object(Rc::new(RefCell::new(JsObject::new())));
+                    // Return the stored prototype object (shared across new calls).
+                    if let Some(ref proto) = func.prototype {
+                        return JsValue::Object(proto.clone());
+                    }
+                    // Create and cache a new prototype on first access.
+                    drop(func);
+                    let proto = Rc::new(RefCell::new(JsObject::new()));
+                    f.borrow_mut().prototype = Some(proto.clone());
+                    return JsValue::Object(proto);
                 }
                 drop(func);
                 get_proto_prop_rc(&self.function_proto, key)
@@ -699,5 +790,8 @@ pub fn native_fn(name: &str, f: fn(&mut Vm, &[JsValue]) -> JsValue) -> JsValue {
         params: Vec::new(),
         kind: FnKind::Native(f),
         this_binding: None,
+        upvalues: Vec::new(),
+        prototype: None,
+        own_props: BTreeMap::new(),
     })))
 }

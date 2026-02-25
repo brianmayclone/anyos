@@ -1,5 +1,5 @@
 use crate::{Container, Control, Widget, lib, events, KIND_WINDOW, EVENT_CLOSE, EVENT_RESIZE, EVENT_KEY};
-use crate::events::EventArgs;
+use crate::events::{EventArgs, ClickEvent};
 use crate::KeyEvent;
 
 container_control!(Window, KIND_WINDOW);
@@ -35,6 +35,12 @@ impl Window {
 
     pub fn destroy(&self) {
         (lib().destroy_window)(self.container.ctrl.id);
+    }
+
+    /// Register a closure to be called when the window background is clicked.
+    pub fn on_click(&self, mut f: impl FnMut(&ClickEvent) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| f(&ClickEvent { id }));
+        (lib().on_click_fn)(self.container.ctrl.id, thunk, ud);
     }
 
     pub fn on_close(&self, mut f: impl FnMut(&EventArgs) + 'static) {

@@ -10,6 +10,7 @@ debug_surf = ["libwebview/debug_surf"]
 anyos_std = { path = "../../libs/stdlib" }
 libanyui_client = { path = "../../libs/libanyui_client" }
 libimage_client = { path = "../../libs/libimage_client" }
+libsvg_client = { path = "../../libs/libsvg_client" }
 libwebview = { path = "../../libs/libwebview" }
 
 [profile.dev]

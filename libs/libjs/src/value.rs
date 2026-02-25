@@ -228,6 +228,12 @@ pub struct JsFunction {
     pub params: Vec<String>,
     pub kind: FnKind,
     pub this_binding: Option<JsValue>,
+    /// Captured upvalue cells — shared `Rc<RefCell<JsValue>>` for each closed-over variable.
+    pub upvalues: Vec<Rc<RefCell<JsValue>>>,
+    /// The function's `.prototype` object (instance methods for classes, shared across `new` calls).
+    pub prototype: Option<Rc<RefCell<JsObject>>>,
+    /// Own properties stored directly on the function (e.g. static class methods).
+    pub own_props: BTreeMap<String, JsValue>,
 }
 
 impl fmt::Debug for JsFunction {
@@ -469,6 +475,9 @@ impl JsValue {
                     a.properties.insert(key, Property::data(value));
                 }
             }
+            JsValue::Function(f) => {
+                f.borrow_mut().own_props.insert(key, value);
+            }
             _ => {} // silently ignore
         }
     }
@@ -665,76 +674,65 @@ fn format_i64(mut n: i64) -> String {
     unsafe { String::from_utf8_unchecked(buf) }
 }
 
-fn format_float(n: f64) -> String {
-    let negative = n < 0.0;
-    let abs = if negative { -n } else { n };
-
-    let mut exp: i32 = 0;
-    let mut val = abs;
-    if val >= 10.0 {
-        while val >= 10.0 {
-            val /= 10.0;
+/// Compute floor(log10(x)) without using f64::log10 (unavailable in no_std).
+/// Precondition: x > 0 and finite.
+fn floor_log10(x: f64) -> i32 {
+    let mut exp = 0i32;
+    let mut v = x;
+    if v >= 10.0 {
+        while v >= 10.0 {
+            v /= 10.0;
             exp += 1;
         }
-    } else if val > 0.0 && val < 1.0 {
-        while val < 1.0 {
-            val *= 10.0;
+    } else if v < 1.0 {
+        while v < 1.0 {
+            v *= 10.0;
             exp -= 1;
         }
     }
+    exp
+}
 
-    let mut digits = Vec::with_capacity(17);
-    let mut v = val;
-    for _ in 0..17 {
-        let d = v as u8;
-        digits.push(d);
-        v = (v - d as f64) * 10.0;
+fn format_float(n: f64) -> String {
+    // Use Rust's built-in float formatter which implements the Grisu3 algorithm
+    // for the shortest decimal representation that round-trips back to the same
+    // f64 bit pattern (e.g. 3.14 not 3.1400000000000001).
+    //
+    // Rust's `{}` formatting matches JavaScript's Number-to-String for the
+    // common range.  For values >= 1e21 or with exponent < -6 we apply
+    // JavaScript's exponential-notation rules manually.
+    let abs_val = if n < 0.0 { -n } else { n };
+
+    // Determine the base-10 exponent without using log10 (unavailable in no_std)
+    let exp = floor_log10(abs_val);
+
+    if exp >= 21 || exp < -6 {
+        return format_float_exponential(n, exp);
     }
 
-    while digits.len() > 1 && digits[digits.len() - 1] == 0 {
-        digits.pop();
-    }
+    // For the normal range, Rust's {} gives the shortest round-trip representation
+    alloc::format!("{}", n)
+}
+
+fn format_float_exponential(n: f64, exp: i32) -> String {
+    // Build JS-style exponential: coefficient × 10^exponent with "e+" or "e-"
+    let negative = n < 0.0;
+    let abs_val = if negative { -n } else { n };
+    let coeff = abs_val / pow10(exp);
+
+    let coeff_str = alloc::format!("{}", coeff);
+    // Strip trailing ".0" if it's an integer coefficient
+    let coeff_str = if coeff_str.ends_with(".0") {
+        String::from(&coeff_str[..coeff_str.len() - 2])
+    } else {
+        coeff_str
+    };
 
     let mut out = String::new();
-    if negative {
-        out.push('-');
-    }
-
-    if exp >= 0 && exp < 21 {
-        let exp = exp as usize;
-        for (i, &d) in digits.iter().enumerate() {
-            out.push((b'0' + d) as char);
-            if i == exp && i + 1 < digits.len() {
-                out.push('.');
-            }
-        }
-        if exp >= digits.len() {
-            for _ in 0..(exp + 1 - digits.len()) {
-                out.push('0');
-            }
-        }
-    } else if exp < 0 && exp > -7 {
-        out.push_str("0.");
-        for _ in 0..(-exp - 1) {
-            out.push('0');
-        }
-        for &d in &digits {
-            out.push((b'0' + d) as char);
-        }
-    } else {
-        out.push((b'0' + digits[0]) as char);
-        if digits.len() > 1 {
-            out.push('.');
-            for &d in &digits[1..] {
-                out.push((b'0' + d) as char);
-            }
-        }
-        out.push('e');
-        if exp >= 0 {
-            out.push('+');
-        }
-        let exp_s = format_i64(exp as i64);
-        out.push_str(&exp_s);
-    }
+    if negative { out.push('-'); }
+    out.push_str(&coeff_str);
+    out.push('e');
+    if exp >= 0 { out.push('+'); }
+    out.push_str(&format_i64(exp as i64));
     out
 }

@@ -1,7 +1,6 @@
 //! Function call, method call, and constructor handling.
 
 use alloc::rc::Rc;
-use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
@@ -52,6 +51,7 @@ impl Vm {
                 // Extract what we need before any mutable VM operations
                 let kind = func_rc.borrow().kind.clone();
                 let this_bind = func_rc.borrow().this_binding.clone();
+                let captured_upvalues = func_rc.borrow().upvalues.clone();
 
                 let effective_this = this_bind.unwrap_or(this_val);
                 self.current_this = effective_this.clone();
@@ -63,10 +63,12 @@ impl Vm {
                     }
                     FnKind::Bytecode(chunk) => {
                         let local_count = chunk.local_count as usize;
-                        let mut locals = vec![JsValue::Undefined; local_count];
+                        let mut locals: Vec<Rc<RefCell<JsValue>>> = (0..local_count)
+                            .map(|_| Rc::new(RefCell::new(JsValue::Undefined)))
+                            .collect();
                         for (i, arg) in args.iter().enumerate() {
                             if i < local_count {
-                                locals[i] = arg.clone();
+                                *locals[i].borrow_mut() = arg.clone();
                             }
                         }
                         let frame = CallFrame {
@@ -74,6 +76,7 @@ impl Vm {
                             ip: 0,
                             stack_base: self.stack.len(),
                             locals,
+                            upvalue_cells: captured_upvalues,
                             this_val: effective_this,
                         };
                         self.frames.push(frame);
@@ -125,11 +128,14 @@ impl Vm {
                         }
                     }
                     FnKind::Bytecode(chunk) => {
+                        let captured_upvalues = func_rc.borrow().upvalues.clone();
                         let local_count = chunk.local_count as usize;
-                        let mut locals = vec![JsValue::Undefined; local_count];
+                        let mut locals: Vec<Rc<RefCell<JsValue>>> = (0..local_count)
+                            .map(|_| Rc::new(RefCell::new(JsValue::Undefined)))
+                            .collect();
                         for (i, arg) in args.iter().enumerate() {
                             if i < local_count {
-                                locals[i] = arg.clone();
+                                *locals[i].borrow_mut() = arg.clone();
                             }
                         }
                         let frame = CallFrame {
@@ -137,6 +143,7 @@ impl Vm {
                             ip: 0,
                             stack_base: self.stack.len(),
                             locals,
+                            upvalue_cells: captured_upvalues,
                             this_val: new_obj,
                         };
                         self.frames.push(frame);

@@ -65,6 +65,9 @@ pub fn function_bind(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 params: original.params.clone(),
                 kind: original.kind.clone(),
                 this_binding: Some(bound_this),
+                upvalues: original.upvalues.clone(),
+                prototype: original.prototype.clone(),
+                own_props: original.own_props.clone(),
             };
             drop(original);
             JsValue::Function(Rc::new(RefCell::new(bound)))
@@ -101,16 +104,19 @@ fn invoke_with_this(vm: &mut Vm, func: &JsValue, this_val: &JsValue, args: &[JsV
             match kind {
                 FnKind::Native(native) => native(vm, args),
                 FnKind::Bytecode(chunk) => {
+                    let captured_upvalues = func_rc.borrow().upvalues.clone();
                     let local_count = chunk.local_count as usize;
-                    let mut locals = alloc::vec![JsValue::Undefined; local_count];
+                    let mut locals: alloc::vec::Vec<alloc::rc::Rc<core::cell::RefCell<JsValue>>> =
+                        (0..local_count).map(|_| alloc::rc::Rc::new(core::cell::RefCell::new(JsValue::Undefined))).collect();
                     for (i, arg) in args.iter().enumerate() {
-                        if i < local_count { locals[i] = arg.clone(); }
+                        if i < local_count { *locals[i].borrow_mut() = arg.clone(); }
                     }
                     let frame = super::CallFrame {
                         chunk,
                         ip: 0,
                         stack_base: vm.stack.len(),
                         locals,
+                        upvalue_cells: captured_upvalues,
                         this_val: this_val.clone(),
                     };
                     vm.frames.push(frame);

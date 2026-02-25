@@ -16,8 +16,97 @@ use super::{get_bridge, arg_string, make_array, dom_property_hook, DomMutation, 
 use super::element;
 use super::selector;
 
+// ═══════════════════════════════════════════════════════════
+// URL parsing helper
+// ═══════════════════════════════════════════════════════════
+
+/// Parse a URL string into its Location object fields.
+/// Returns `(protocol, hostname, port, pathname, search, hash, origin)`.
+fn parse_location_fields(url: &str) -> (String, String, String, String, String, String, String) {
+    let mut s = url;
+
+    // protocol (scheme + colon, e.g. "https:")
+    let (protocol, after_scheme) = if let Some(pos) = s.find("://") {
+        let proto = String::from(&s[..pos + 1]); // "http:" or "https:"
+        (proto, &s[pos + 3..])
+    } else {
+        (String::from("http:"), s)
+    };
+    s = after_scheme;
+
+    // hostname (and optional port after ':')
+    let (host_port, path_etc) = if let Some(pos) = s.find('/') {
+        (&s[..pos], &s[pos..])
+    } else {
+        (s, "/")
+    };
+
+    let (hostname, port) = if let Some(pos) = host_port.rfind(':') {
+        // Only treat as port if it looks numeric
+        let maybe_port = &host_port[pos + 1..];
+        if maybe_port.bytes().all(|b| b.is_ascii_digit()) {
+            (String::from(&host_port[..pos]), String::from(maybe_port))
+        } else {
+            (String::from(host_port), String::new())
+        }
+    } else {
+        (String::from(host_port), String::new())
+    };
+
+    // hash
+    let (path_search, hash) = if let Some(pos) = path_etc.find('#') {
+        (&path_etc[..pos], String::from(&path_etc[pos..]))
+    } else {
+        (path_etc, String::new())
+    };
+
+    // search (query string)
+    let (pathname, search) = if let Some(pos) = path_search.find('?') {
+        (String::from(&path_search[..pos]), String::from(&path_search[pos..]))
+    } else {
+        (String::from(path_search), String::new())
+    };
+
+    // origin = protocol + "//" + hostname (+ port if non-standard)
+    let mut origin = protocol.clone();
+    origin.push_str("//");
+    origin.push_str(&hostname);
+    if !port.is_empty() {
+        let is_default = (protocol == "http:" && port == "80")
+            || (protocol == "https:" && port == "443");
+        if !is_default {
+            origin.push(':');
+            origin.push_str(&port);
+        }
+    }
+
+    (protocol, hostname, port, pathname, search, hash, origin)
+}
+
+// ═══════════════════════════════════════════════════════════
+// Document cookie write hook
+// ═══════════════════════════════════════════════════════════
+
+/// Property-write hook installed on the document JsObject.
+/// Intercepts `document.cookie = "name=value"` writes and records them as
+/// `DomMutation::SetCookie` so the host application (e.g. surf) can update
+/// its cookie jar.
+fn doc_property_hook(_data: *mut u8, key: &str, value: &libjs::JsValue) {
+    if key != "cookie" { return; }
+    let mutations = unsafe {
+        if super::MUTATION_TARGET.is_null() { return; }
+        &mut *super::MUTATION_TARGET
+    };
+    mutations.push(DomMutation::SetCookie { value: value.to_js_string() });
+}
+
 /// Create the native `document` host object.
-pub fn make_document(vm: &mut Vm, dom: &Dom) -> JsValue {
+///
+/// * `url`     — the current page URL (used to populate `document.location`).
+/// * `cookies` — the `Cookie` header value for this domain, used to populate
+///               `document.cookie`.  Writes to `document.cookie` are recorded
+///               as `DomMutation::SetCookie` mutations.
+pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValue {
     let body_id = dom.find_body().unwrap_or(0);
     let head_id: usize = dom.nodes.iter().enumerate()
         .find(|(_, n)| matches!(&n.node_type, NodeType::Element { tag: Tag::Head, .. }))
@@ -29,6 +118,11 @@ pub fn make_document(vm: &mut Vm, dom: &Dom) -> JsValue {
     let body_el = element::make_element(vm, body_id as i64);
     let head_el = element::make_element(vm, head_id as i64);
 
+    // Parse URL into location fields.
+    let href = String::from(url);
+    let (protocol, hostname, port, pathname, search, hash, origin) =
+        parse_location_fields(url);
+
     let mut obj = JsObject::new();
 
     // Properties.
@@ -36,24 +130,30 @@ pub fn make_document(vm: &mut Vm, dom: &Dom) -> JsValue {
     obj.set(String::from("documentElement"), doc_el);
     obj.set(String::from("body"), body_el);
     obj.set(String::from("head"), head_el);
-    obj.set(String::from("cookie"), JsValue::String(String::new()));
+    // cookie — readable; writes are intercepted by doc_property_hook
+    obj.set(String::from("cookie"), JsValue::String(String::from(cookies)));
     obj.set(String::from("readyState"), JsValue::String(String::from("complete")));
     obj.set(String::from("referrer"), JsValue::String(String::new()));
-    obj.set(String::from("domain"), JsValue::String(String::new()));
-    obj.set(String::from("URL"), JsValue::String(String::new()));
+    obj.set(String::from("domain"), JsValue::String(hostname.clone()));
+    obj.set(String::from("URL"), JsValue::String(href.clone()));
     obj.set(String::from("characterSet"), JsValue::String(String::from("UTF-8")));
     obj.set(String::from("contentType"), JsValue::String(String::from("text/html")));
     obj.set(String::from("compatMode"), JsValue::String(String::from("CSS1Compat")));
     obj.set(String::from("defaultView"), JsValue::Null);
 
-    // location sub-object.
+    // location sub-object — all fields populated from the current URL.
     let loc = JsValue::new_object();
-    loc.set_property(String::from("href"), JsValue::String(String::new()));
-    loc.set_property(String::from("hostname"), JsValue::String(String::new()));
-    loc.set_property(String::from("pathname"), JsValue::String(String::from("/")));
-    loc.set_property(String::from("protocol"), JsValue::String(String::from("http:")));
-    loc.set_property(String::from("search"), JsValue::String(String::new()));
-    loc.set_property(String::from("hash"), JsValue::String(String::new()));
+    loc.set_property(String::from("href"), JsValue::String(href));
+    loc.set_property(String::from("hostname"), JsValue::String(hostname));
+    loc.set_property(String::from("port"), JsValue::String(port));
+    loc.set_property(String::from("pathname"), JsValue::String(pathname));
+    loc.set_property(String::from("protocol"), JsValue::String(protocol));
+    loc.set_property(String::from("search"), JsValue::String(search));
+    loc.set_property(String::from("hash"), JsValue::String(hash));
+    loc.set_property(String::from("origin"), JsValue::String(origin));
+    loc.set_property(String::from("assign"), native_fn("assign", |_,_| JsValue::Undefined));
+    loc.set_property(String::from("replace"), native_fn("replace", |_,_| JsValue::Undefined));
+    loc.set_property(String::from("reload"), native_fn("reload", |_,_| JsValue::Undefined));
     obj.set(String::from("location"), loc);
 
     // implementation sub-object.
@@ -74,6 +174,10 @@ pub fn make_document(vm: &mut Vm, dom: &Dom) -> JsValue {
     obj.set(String::from("createEvent"), native_fn("createEvent", doc_create_event));
     obj.set(String::from("addEventListener"), native_fn("addEventListener", doc_add_event_listener));
     obj.set(String::from("removeEventListener"), native_fn("removeEventListener", doc_noop));
+
+    // Install property-write hook to intercept `document.cookie = "..."`.
+    obj.set_hook = Some(doc_property_hook);
+    obj.set_hook_data = core::ptr::null_mut();
 
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }

@@ -1,0 +1,9 @@
+# Override the workspace-wide anyOS cross-compile settings.
+# This crate compiles for the host (macOS) so we can run cargo test locally.
+[build]
+target = "aarch64-apple-darwin"
+
+# Disable build-std from the parent config — host target has std prebuilt.
+[unstable]
+build-std = []
+build-std-features = []

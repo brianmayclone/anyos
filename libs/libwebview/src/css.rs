@@ -15,6 +15,23 @@ pub struct Stylesheet {
     pub rules: Vec<Rule>,
     /// @media rules: each contains a query and the rules inside it.
     pub media_rules: Vec<MediaRule>,
+    /// @keyframes blocks indexed by animation name.
+    pub keyframes: Vec<KeyframeSet>,
+}
+
+/// A complete `@keyframes name { … }` block.
+pub struct KeyframeSet {
+    /// The animation name exactly as declared (case-sensitive after lowercase).
+    pub name: String,
+    /// Keyframe stops in declaration order (not necessarily sorted).
+    pub stops: Vec<KeyframeStop>,
+}
+
+/// One stop inside a `@keyframes` block, e.g. `50% { opacity: 0; }`.
+pub struct KeyframeStop {
+    /// Offset in the range 0–100 (percent).  `from` → 0, `to` → 100.
+    pub offset: i32,
+    pub declarations: Vec<Declaration>,
 }
 
 /// A @media rule: query + inner rules.
@@ -189,6 +206,37 @@ pub enum Property {
     BorderCollapse,
     BorderSpacing,
     TableLayout,
+    // Transitions
+    Transition,
+    TransitionProperty,
+    TransitionDuration,
+    TransitionTimingFunction,
+    TransitionDelay,
+    // Animations
+    Animation,
+    AnimationName,
+    AnimationDuration,
+    AnimationTimingFunction,
+    AnimationDelay,
+    AnimationIterationCount,
+    AnimationDirection,
+    AnimationFillMode,
+    AnimationPlayState,
+    // Grid container
+    GridTemplateColumns,
+    GridTemplateRows,
+    GridAutoColumns,
+    GridAutoRows,
+    GridAutoFlow,
+    JustifyItems,
+    // Grid item placement
+    GridColumn,
+    GridColumnStart,
+    GridColumnEnd,
+    GridRow,
+    GridRowStart,
+    GridRowEnd,
+    GridArea,
     /// CSS custom property (--name). Value stored in Declaration.value as Keyword.
     CustomProperty(String),
 }
@@ -217,6 +265,8 @@ pub enum Unit {
     Rem,
     Pt,
     Percent,
+    /// CSS `fr` unit (fractional share of free space in a grid).
+    Fr,
 }
 
 // ---------------------------------------------------------------------------
@@ -361,6 +411,7 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
     let mut p = Parser::new(css);
     let mut rules = Vec::new();
     let mut media_rules = Vec::new();
+    let mut keyframes = Vec::new();
 
     loop {
         p.skip_whitespace();
@@ -378,6 +429,13 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
                 // Parse @media query and inner rules.
                 if let Some(mr) = parse_media_rule(&mut p) {
                     media_rules.push(mr);
+                }
+                continue;
+            }
+
+            if kw_lower == "keyframes" || kw_lower == "-webkit-keyframes" {
+                if let Some(kf) = parse_keyframes(&mut p) {
+                    keyframes.push(kf);
                 }
                 continue;
             }
@@ -413,8 +471,9 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
         }
     }
 
-    crate::debug_surf!("[css] parse_stylesheet done: {} rules, {} @media", rules.len(), media_rules.len());
-    Stylesheet { rules, media_rules }
+    crate::debug_surf!("[css] parse_stylesheet done: {} rules, {} @media, {} @keyframes",
+        rules.len(), media_rules.len(), keyframes.len());
+    Stylesheet { rules, media_rules, keyframes }
 }
 
 /// Parse a @media rule: query { rules }.
@@ -579,6 +638,113 @@ pub fn evaluate_media_query(query: &MediaQuery, viewport_width: i32, viewport_he
         if !ok { return false; }
     }
     true
+}
+
+/// Parse a `@keyframes name { stop { … } … }` block.
+fn parse_keyframes(p: &mut Parser) -> Option<KeyframeSet> {
+    p.skip_whitespace();
+
+    // Read animation name (may be quoted or an ident).
+    let name = if p.peek() == b'"' || p.peek() == b'\'' {
+        p.pos += 1; // skip opening quote
+        let start = p.pos;
+        let q = p.input[p.pos - 1];
+        while p.pos < p.input.len() && p.input[p.pos] != q {
+            p.pos += 1;
+        }
+        let name = core::str::from_utf8(&p.input[start..p.pos]).unwrap_or("").to_ascii_lowercase();
+        if !p.eof() { p.pos += 1; } // skip closing quote
+        name
+    } else {
+        p.read_ident().to_ascii_lowercase()
+    };
+
+    if name.is_empty() {
+        p.skip_block();
+        return None;
+    }
+
+    p.skip_whitespace();
+    if p.eof() || p.peek() != b'{' { return None; }
+    p.pos += 1; // consume '{'
+
+    let mut stops = Vec::new();
+
+    loop {
+        p.skip_whitespace();
+        if p.eof() || p.peek() == b'}' {
+            if !p.eof() { p.pos += 1; } // consume '}'
+            break;
+        }
+
+        // Read keyframe selectors: `from`, `to`, `50%` separated by commas.
+        let mut offsets: Vec<i32> = Vec::new();
+        loop {
+            p.skip_whitespace();
+            let token_start = p.pos;
+            while p.pos < p.input.len()
+                && p.input[p.pos] != b','
+                && p.input[p.pos] != b'{'
+                && p.input[p.pos] != b'}' {
+                p.pos += 1;
+            }
+            let token = core::str::from_utf8(&p.input[token_start..p.pos])
+                .unwrap_or("").trim().to_ascii_lowercase();
+            if !token.is_empty() {
+                let offset = if token == "from" {
+                    0
+                } else if token == "to" {
+                    100
+                } else if let Some(pct_str) = token.strip_suffix('%') {
+                    pct_str.trim().parse::<f32>().map(|v| v as i32).unwrap_or(0)
+                } else {
+                    0
+                };
+                offsets.push(offset);
+            }
+            p.skip_whitespace();
+            if p.eof() || p.peek() != b',' { break; }
+            p.pos += 1; // consume ','
+        }
+
+        p.skip_whitespace();
+        if p.eof() || p.peek() != b'{' {
+            while !p.eof() && p.peek() != b'}' { p.pos += 1; }
+            continue;
+        }
+        // Parse the declarations block for this stop.
+        let decls = parse_declarations_block(p);
+
+        for offset in offsets {
+            stops.push(KeyframeStop { offset, declarations: decls.clone() });
+        }
+    }
+
+    stops.sort_by_key(|s| s.offset);
+    Some(KeyframeSet { name, stops })
+}
+
+/// Parse a `{ declaration; ... }` block and return the declarations.
+/// Expects the opening `{` to be the next character; consumes through the matching `}`.
+fn parse_declarations_block(p: &mut Parser) -> Vec<Declaration> {
+    if p.eof() || p.peek() != b'{' { return Vec::new(); }
+    p.pos += 1; // consume '{'
+    let start = p.pos;
+    let mut depth = 1u32;
+    while p.pos < p.input.len() {
+        match p.input[p.pos] {
+            b'{' => { depth += 1; p.pos += 1; }
+            b'}' => {
+                depth -= 1;
+                p.pos += 1;
+                if depth == 0 { break; }
+            }
+            _ => { p.pos += 1; }
+        }
+    }
+    let block_text = core::str::from_utf8(&p.input[start..p.pos.saturating_sub(1)]).unwrap_or("");
+    let mut inner = Parser::new(block_text);
+    parse_declarations(&mut inner)
 }
 
 fn parse_rule(p: &mut Parser) -> Option<Rule> {
@@ -1107,6 +1273,36 @@ pub fn parse_property(name: &str) -> Option<Property> {
         "text-transform" => Some(Property::TextTransform),
         "cursor" => Some(Property::Cursor),
         "table-layout" => Some(Property::TableLayout),
+        // Transitions
+        "transition"                  => Some(Property::Transition),
+        "transition-property"         => Some(Property::TransitionProperty),
+        "transition-duration"         => Some(Property::TransitionDuration),
+        "transition-timing-function"  => Some(Property::TransitionTimingFunction),
+        "transition-delay"            => Some(Property::TransitionDelay),
+        // Animations
+        "animation"                   => Some(Property::Animation),
+        "animation-name"              => Some(Property::AnimationName),
+        "animation-duration"          => Some(Property::AnimationDuration),
+        "animation-timing-function"   => Some(Property::AnimationTimingFunction),
+        "animation-delay"             => Some(Property::AnimationDelay),
+        "animation-iteration-count"   => Some(Property::AnimationIterationCount),
+        "animation-direction"         => Some(Property::AnimationDirection),
+        "animation-fill-mode"         => Some(Property::AnimationFillMode),
+        "animation-play-state"        => Some(Property::AnimationPlayState),
+        // Grid
+        "grid-template-columns" => Some(Property::GridTemplateColumns),
+        "grid-template-rows"    => Some(Property::GridTemplateRows),
+        "grid-auto-columns"     => Some(Property::GridAutoColumns),
+        "grid-auto-rows"        => Some(Property::GridAutoRows),
+        "grid-auto-flow"        => Some(Property::GridAutoFlow),
+        "justify-items"         => Some(Property::JustifyItems),
+        "grid-column"           => Some(Property::GridColumn),
+        "grid-column-start"     => Some(Property::GridColumnStart),
+        "grid-column-end"       => Some(Property::GridColumnEnd),
+        "grid-row"              => Some(Property::GridRow),
+        "grid-row-start"        => Some(Property::GridRowStart),
+        "grid-row-end"          => Some(Property::GridRowEnd),
+        "grid-area"             => Some(Property::GridArea),
         _ => Option::None,
     }
 }
@@ -2077,6 +2273,8 @@ fn try_parse_dimension(s: &str) -> Option<CssValue> {
         "rem" => Some(CssValue::Length(val, Unit::Rem)),
         "pt" => Some(CssValue::Length(val, Unit::Pt)),
         "%" => Some(CssValue::Percentage(val)),
+        // `fr` unit for CSS Grid fractional tracks (stored as Length with Fr unit)
+        "fr" => Some(CssValue::Length(val, Unit::Fr)),
         _ => Option::None,
     }
 }

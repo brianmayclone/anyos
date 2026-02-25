@@ -23,6 +23,8 @@ exclude = [
   "libs/libdb_client",
   "libs/libzip",
   "libs/libzip_client",
+  "libs/libsvg",
+  "libs/libsvg_client",
   # System daemons
   "system/init",
   "system/terminal",

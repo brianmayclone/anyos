@@ -582,6 +582,7 @@ add_shared_lib(libanyui ${CMAKE_SOURCE_DIR}/libs/libanyui)
 add_shared_lib(libfont ${CMAKE_SOURCE_DIR}/libs/libfont)
 add_shared_lib(libdb ${CMAKE_SOURCE_DIR}/libs/libdb)
 add_shared_lib(libzip ${CMAKE_SOURCE_DIR}/libs/libzip)
+add_shared_lib(libsvg ${CMAKE_SOURCE_DIR}/libs/libsvg)
 
 set(RUST_USER_BINS "")
 add_rust_user_program(ping       ${CMAKE_SOURCE_DIR}/bin/ping)

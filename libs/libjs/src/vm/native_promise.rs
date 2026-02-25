@@ -58,14 +58,16 @@ pub fn ctor_promise(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             }
             FnKind::Bytecode(chunk) => {
                 let local_count = chunk.local_count as usize;
-                let mut locals = vec![JsValue::Undefined; local_count];
-                if local_count > 0 { locals[0] = resolve_fn; }
-                if local_count > 1 { locals[1] = reject_fn; }
+                let mut locals: Vec<Rc<RefCell<JsValue>>> =
+                    (0..local_count).map(|_| Rc::new(RefCell::new(JsValue::Undefined))).collect();
+                if local_count > 0 { *locals[0].borrow_mut() = resolve_fn; }
+                if local_count > 1 { *locals[1].borrow_mut() = reject_fn; }
                 let frame = CallFrame {
                     chunk,
                     ip: 0,
                     stack_base: vm.stack.len(),
                     locals,
+                    upvalue_cells: Vec::new(),
                     this_val: JsValue::Undefined,
                 };
                 vm.frames.push(frame);
@@ -337,15 +339,17 @@ fn call_callback(vm: &mut Vm, callback: &JsValue, args: &[JsValue]) -> JsValue {
                 FnKind::Native(f) => f(vm, args),
                 FnKind::Bytecode(chunk) => {
                     let local_count = chunk.local_count as usize;
-                    let mut locals = vec![JsValue::Undefined; local_count];
+                    let mut locals: Vec<Rc<RefCell<JsValue>>> =
+                        (0..local_count).map(|_| Rc::new(RefCell::new(JsValue::Undefined))).collect();
                     for (i, arg) in args.iter().enumerate() {
-                        if i < local_count { locals[i] = arg.clone(); }
+                        if i < local_count { *locals[i].borrow_mut() = arg.clone(); }
                     }
                     let frame = CallFrame {
                         chunk,
                         ip: 0,
                         stack_base: vm.stack.len(),
                         locals,
+                        upvalue_cells: Vec::new(),
                         this_val: JsValue::Undefined,
                     };
                     vm.frames.push(frame);

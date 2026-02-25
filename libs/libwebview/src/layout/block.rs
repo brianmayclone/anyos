@@ -16,6 +16,7 @@ use super::{
     layout_children,
 };
 use super::flex::layout_flex;
+use super::grid::layout_grid;
 
 /// Build a block-level layout box for a single DOM node.
 pub fn build_block(dom: &Dom, styles: &[ComputedStyle], node_id: NodeId, available_width: i32, images: &ImageCache) -> LayoutBox {
@@ -147,10 +148,12 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], node_id: NodeId, availab
     let inner_w = bx.width - bx.padding.left - bx.padding.right - border2;
     let inner_w = inner_w.max(0);
 
-    // Lay out children — dispatch to flex or block flow.
+    // Lay out children — dispatch to flex, grid, or block flow.
     let children: Vec<NodeId> = dom.get(node_id).children.iter().copied().collect();
     let content_h = if matches!(style.display, Display::Flex | Display::InlineFlex) {
         layout_flex(dom, styles, &children, inner_w, &mut bx, images)
+    } else if matches!(style.display, Display::Grid | Display::InlineGrid) {
+        layout_grid(dom, styles, &children, inner_w, &mut bx, images)
     } else {
         layout_children(dom, styles, &children, inner_w, &mut bx, node_id, images)
     };

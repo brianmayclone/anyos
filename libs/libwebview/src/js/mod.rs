@@ -14,10 +14,12 @@ mod fetch;
 mod storage;
 mod http;
 mod selector;
+pub mod websocket;
 
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
@@ -25,7 +27,9 @@ use libjs::{JsEngine, JsValue, Vm};
 use libjs::value::JsArray;
 use libjs::vm::native_fn;
 
-use crate::dom::{Dom, NodeType, Tag};
+use crate::dom::{Dom, NodeId, NodeType, Tag};
+use crate::css::{Declaration, KeyframeSet};
+use crate::style::{apply_timing, TimingFunction, TransitionDef};
 
 // ═══════════════════════════════════════════════════════════
 // Property write interception — static target for set_hook
@@ -118,6 +122,16 @@ struct DomBridge {
     timers: Vec<PendingTimer>,
     /// Next timer ID.
     next_timer_id: u32,
+    /// Set by `stopPropagation()` during event dispatch to halt bubbling.
+    propagation_stopped: bool,
+    /// Pending WebSocket connect requests from `new WebSocket(url)`.
+    pending_ws_connects: Vec<PendingWsConnect>,
+    /// Pending WebSocket send requests from `ws.send(data)`.
+    pending_ws_sends: Vec<PendingWsSend>,
+    /// Pending WebSocket close requests from `ws.close()`.
+    pending_ws_closes: Vec<PendingWsClose>,
+    /// Live WebSocket objects: (ws_id → JsValue clone) for callback delivery.
+    ws_registry: Vec<(u64, JsValue)>,
 }
 
 impl DomBridge {
@@ -176,6 +190,10 @@ pub enum DomMutation {
     RemoveNode { node_id: i64 },
     SetInnerHTML { node_id: i64, html: String },
     SetStyleProperty { node_id: i64, property: String, value: String },
+    /// A `document.cookie = "..."` assignment from JavaScript.
+    /// The host application should parse this Set-Cookie string and update its
+    /// cookie jar accordingly.
+    SetCookie { value: String },
 }
 
 /// A pending HTTP request from XMLHttpRequest / fetch.
@@ -196,6 +214,42 @@ pub struct EventListener {
     pub callback: JsValue,
 }
 
+/// A `new WebSocket(url)` call from JavaScript — the host must open the
+/// TCP connection and perform the HTTP Upgrade handshake.
+#[derive(Clone)]
+pub struct PendingWsConnect {
+    /// Unique identifier for this WebSocket instance.
+    pub id: u64,
+    /// The `ws://` or `wss://` URL to connect to.
+    pub url: String,
+    /// Requested sub-protocols (may be empty).
+    pub protocols: Vec<String>,
+}
+
+/// A `ws.send(data)` call — the host must encode as a WebSocket text frame
+/// and write it to the corresponding TCP socket.
+#[derive(Clone)]
+pub struct PendingWsSend {
+    /// WebSocket instance identifier.
+    pub id: u64,
+    /// Raw payload bytes (UTF-8 for text frames).
+    pub data: Vec<u8>,
+    /// True for binary frames, false for text.
+    pub is_binary: bool,
+}
+
+/// A `ws.close(code, reason)` call — the host must send a Close frame and
+/// shut down the TCP connection.
+#[derive(Clone)]
+pub struct PendingWsClose {
+    /// WebSocket instance identifier.
+    pub id: u64,
+    /// Status code (1000 = normal closure).
+    pub code: u16,
+    /// Optional textual reason.
+    pub reason: String,
+}
+
 /// A pending timer (setTimeout or setInterval).
 #[derive(Clone)]
 pub struct PendingTimer {
@@ -211,6 +265,38 @@ pub struct PendingTimer {
 // JsRuntime — public API
 // ═══════════════════════════════════════════════════════════
 
+/// A running CSS `@keyframes` animation for one DOM node.
+pub struct ActiveAnimation {
+    pub node_id: NodeId,
+    /// Name of the `@keyframes` block.
+    pub keyframe_name: String,
+    pub duration_ms: u32,
+    pub timing: TimingFunction,
+    pub delay_ms: u32,
+    /// 0 = infinite.
+    pub iteration_count: u32,
+    pub alternate: bool,
+    /// Elapsed time since the animation started (after delay).
+    pub elapsed_ms: u64,
+    /// Current iteration number (0-based).
+    pub current_iteration: u32,
+}
+
+/// A running CSS transition for one property on one DOM node.
+pub struct ActiveTransition {
+    pub node_id: NodeId,
+    /// CSS property name (e.g. `"opacity"`, `"color"`).
+    pub property: String,
+    pub duration_ms: u32,
+    pub timing: TimingFunction,
+    pub delay_ms: u32,
+    pub elapsed_ms: u64,
+    /// Declarations that represent the *from* state of the property.
+    pub from_decl: Option<Declaration>,
+    /// Declarations that represent the *to* state of the property.
+    pub to_decl: Declaration,
+}
+
 pub struct JsRuntime {
     engine: JsEngine,
     pub console: Vec<String>,
@@ -219,6 +305,21 @@ pub struct JsRuntime {
     pub pending_http_requests: Vec<PendingHttpRequest>,
     pub timers: Vec<PendingTimer>,
     next_timer_id: u32,
+    /// Cookie string for the current page (e.g. `"name=value; n2=v2"`).
+    /// Set by the host before calling `execute_scripts`.
+    pub cookies: String,
+    /// Pending WebSocket connection requests (from `new WebSocket(url)`).
+    pub pending_ws_connects: Vec<PendingWsConnect>,
+    /// Pending WebSocket send requests (from `ws.send(data)`).
+    pub pending_ws_sends: Vec<PendingWsSend>,
+    /// Pending WebSocket close requests (from `ws.close()`).
+    pub pending_ws_closes: Vec<PendingWsClose>,
+    /// Registry of live WebSocket JS objects: (id, JsValue) for callback delivery.
+    ws_registry: Vec<(u64, JsValue)>,
+    /// Currently running `@keyframes` animations.
+    pub active_animations: Vec<ActiveAnimation>,
+    /// Currently running CSS transitions.
+    pub active_transitions: Vec<ActiveTransition>,
 }
 
 impl JsRuntime {
@@ -232,11 +333,28 @@ impl JsRuntime {
             pending_http_requests: Vec::new(),
             timers: Vec::new(),
             next_timer_id: 1,
+            cookies: String::new(),
+            pending_ws_connects: Vec::new(),
+            pending_ws_sends: Vec::new(),
+            pending_ws_closes: Vec::new(),
+            ws_registry: Vec::new(),
+            active_animations: Vec::new(),
+            active_transitions: Vec::new(),
         }
     }
 
+    /// Set the cookie string that will be exposed as `document.cookie` during
+    /// the next `execute_scripts` call.  The value should be in the same format
+    /// as the `Cookie` HTTP request header: `"name=value; name2=value2"`.
+    pub fn set_cookies(&mut self, cookies: &str) {
+        self.cookies = String::from(cookies);
+    }
+
     /// Execute all `<script>` tags in the DOM.
-    pub fn execute_scripts(&mut self, dom: &Dom) {
+    ///
+    /// * `url` — the current page URL, used to populate `window.location` /
+    ///   `document.location` inside the JS environment.
+    pub fn execute_scripts(&mut self, dom: &Dom, url: &str) {
         let mut scripts: Vec<String> = Vec::new();
         for i in 0..dom.nodes.len() {
             if let NodeType::Element { tag: Tag::Script, attrs } = &dom.nodes[i].node_type {
@@ -278,11 +396,16 @@ impl JsRuntime {
             pending_http_requests: Vec::new(),
             timers: Vec::new(),
             next_timer_id: 1,
+            propagation_stopped: false,
+            pending_ws_connects: Vec::new(),
+            pending_ws_sends: Vec::new(),
+            pending_ws_closes: Vec::new(),
+            ws_registry: Vec::new(),
         };
         self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
 
         // Set up native host objects (document, window, etc.).
-        self.setup_native_api(dom);
+        self.setup_native_api(dom, url, &self.cookies.clone());
 
         // Enable property-write interception.
         unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; }
@@ -307,24 +430,34 @@ impl JsRuntime {
         self.event_listeners = bridge.event_listeners;
         self.pending_http_requests = bridge.pending_http_requests;
         self.timers.extend(bridge.timers);
+        self.pending_ws_connects.extend(bridge.pending_ws_connects);
+        self.pending_ws_sends.extend(bridge.pending_ws_sends);
+        self.pending_ws_closes.extend(bridge.pending_ws_closes);
+        self.ws_registry.extend(bridge.ws_registry);
         self.engine.vm().userdata = core::ptr::null_mut();
         crate::debug_surf!("[js] execute_scripts complete: {} mutations, {} listeners",
             self.mutations.len(), self.event_listeners.len());
     }
 
     /// Set up all native host objects — zero JS injection.
-    fn setup_native_api(&mut self, dom: &Dom) {
+    ///
+    /// * `url`     — current page URL (populates `window.location`).
+    /// * `cookies` — cookie string for this domain (populates `document.cookie`).
+    fn setup_native_api(&mut self, dom: &Dom, url: &str, cookies: &str) {
         let vm = self.engine.vm();
 
         // Event callback storage (only tiny bit of eval for array init).
         vm.set_global("__eventCallbacks", JsValue::Array(Rc::new(RefCell::new(JsArray::new()))));
 
         // Create document object natively.
-        let doc = document::make_document(vm, dom);
+        let doc = document::make_document(vm, dom, url, cookies);
         vm.set_global("document", doc.clone());
 
+        // Extract origin (scheme + "://" + host) for localStorage key isolation.
+        let origin = extract_origin(url);
+
         // Create window object natively.
-        let win = window::make_window(vm, doc);
+        let win = window::make_window(vm, doc, &origin);
         vm.set_global("window", win.clone());
         vm.set_global("self", win.clone());
         vm.set_global("globalThis", win);
@@ -333,6 +466,7 @@ impl JsRuntime {
         vm.set_global("alert", native_fn("alert", window::native_alert));
         vm.set_global("fetch", native_fn("fetch", fetch::native_fetch));
         vm.set_global("XMLHttpRequest", xhr::make_xhr_constructor());
+        vm.set_global("WebSocket", websocket::make_ws_constructor());
         vm.set_global("Headers", native_fn("Headers", fetch::native_headers_ctor));
         vm.set_global("Image", native_fn("Image", document::native_image_ctor));
 
@@ -364,6 +498,11 @@ impl JsRuntime {
             pending_http_requests: Vec::new(),
             timers: Vec::new(),
             next_timer_id: self.next_timer_id,
+            propagation_stopped: false,
+            pending_ws_connects: Vec::new(),
+            pending_ws_sends: Vec::new(),
+            pending_ws_closes: Vec::new(),
+            ws_registry: Vec::new(),
         };
         self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
 
@@ -401,6 +540,108 @@ impl JsRuntime {
 
     pub fn take_timers(&mut self) -> Vec<PendingTimer> {
         core::mem::take(&mut self.timers)
+    }
+
+    /// Take all pending WebSocket connection requests recorded during script execution.
+    pub fn take_ws_connects(&mut self) -> Vec<PendingWsConnect> {
+        core::mem::take(&mut self.pending_ws_connects)
+    }
+
+    /// Take all pending WebSocket send requests.
+    pub fn take_ws_sends(&mut self) -> Vec<PendingWsSend> {
+        core::mem::take(&mut self.pending_ws_sends)
+    }
+
+    /// Take all pending WebSocket close requests.
+    pub fn take_ws_closes(&mut self) -> Vec<PendingWsClose> {
+        core::mem::take(&mut self.pending_ws_closes)
+    }
+
+    // ── WebSocket callback delivery ──────────────────────────────────────────
+
+    /// Called by the host when a WebSocket connection is established.
+    /// Sets `readyState = OPEN` and fires `onopen`.
+    pub fn ws_opened(&mut self, id: u64, negotiated_protocol: &str) {
+        if let Some(ws_obj) = self.find_ws(id) {
+            ws_obj.set_property(String::from("readyState"), JsValue::Number(1.0));
+            ws_obj.set_property(
+                String::from("protocol"),
+                JsValue::String(String::from(negotiated_protocol)),
+            );
+            let cb = ws_obj.get_property("onopen");
+            self.fire_ws_callback(cb, &ws_obj, &[]);
+        }
+    }
+
+    /// Called by the host when a text message frame is received.
+    /// Fires `onmessage` with a MessageEvent-like object.
+    pub fn ws_message(&mut self, id: u64, data: &str) {
+        if let Some(ws_obj) = self.find_ws(id) {
+            let evt = JsValue::new_object();
+            evt.set_property(String::from("data"), JsValue::String(String::from(data)));
+            evt.set_property(String::from("type"), JsValue::String(String::from("message")));
+            evt.set_property(String::from("origin"), JsValue::String(String::new()));
+            evt.set_property(String::from("source"), JsValue::Null);
+            let cb = ws_obj.get_property("onmessage");
+            self.fire_ws_callback(cb, &ws_obj, &[evt]);
+        }
+    }
+
+    /// Called by the host when a binary frame is received.
+    /// Fires `onmessage` with the data represented as a JS string (UTF-8 lossy).
+    pub fn ws_message_binary(&mut self, id: u64, data: &[u8]) {
+        let text = core::str::from_utf8(data).unwrap_or("[binary]");
+        self.ws_message(id, text);
+    }
+
+    /// Called by the host when a connection error occurs.
+    /// Sets `readyState = CLOSED` and fires `onerror` then `onclose`.
+    pub fn ws_error(&mut self, id: u64) {
+        if let Some(ws_obj) = self.find_ws(id) {
+            ws_obj.set_property(String::from("readyState"), JsValue::Number(3.0));
+            let err_cb = ws_obj.get_property("onerror");
+            let close_cb = ws_obj.get_property("onclose");
+            self.fire_ws_callback(err_cb, &ws_obj, &[]);
+            let close_evt = make_close_event(1006, "Abnormal closure", false);
+            self.fire_ws_callback(close_cb, &ws_obj, &[close_evt]);
+            self.remove_ws(id);
+        }
+    }
+
+    /// Called by the host when the connection is cleanly closed.
+    /// Sets `readyState = CLOSED` and fires `onclose`.
+    pub fn ws_closed(&mut self, id: u64, code: u16, reason: &str, clean: bool) {
+        if let Some(ws_obj) = self.find_ws(id) {
+            ws_obj.set_property(String::from("readyState"), JsValue::Number(3.0));
+            let cb = ws_obj.get_property("onclose");
+            let close_evt = make_close_event(code, reason, clean);
+            self.fire_ws_callback(cb, &ws_obj, &[close_evt]);
+            self.remove_ws(id);
+        }
+    }
+
+    // ── Private WS helpers ───────────────────────────────────────────────────
+
+    /// Find a WebSocket JS object in the registry by ID.
+    fn find_ws(&self, id: u64) -> Option<JsValue> {
+        self.ws_registry.iter()
+            .find(|(wid, _)| *wid == id)
+            .map(|(_, v)| v.clone())
+    }
+
+    /// Remove a closed WebSocket from the registry.
+    fn remove_ws(&mut self, id: u64) {
+        self.ws_registry.retain(|(wid, _)| *wid != id);
+    }
+
+    /// Fire a WS callback (onopen/onmessage/onerror/onclose) through the VM.
+    fn fire_ws_callback(&mut self, cb: JsValue, this: &JsValue, args: &[JsValue]) {
+        if !matches!(cb, JsValue::Function(_)) { return; }
+        self.engine.vm().call_value(&cb, args, this.clone());
+        for msg in self.engine.console_output() {
+            self.console.push(msg.clone());
+        }
+        self.engine.clear_console();
     }
 
     /// Apply recorded mutations to the real DOM.
@@ -493,21 +734,38 @@ impl JsRuntime {
                         dom.set_attr(real_id, "style", &new_style);
                     }
                 }
+                DomMutation::SetCookie { .. } => {
+                    // Cookie mutations do not modify the DOM tree.
+                    // The host application (e.g. surf) reads these via
+                    // `take_mutations()` and updates its cookie jar.
+                }
             }
         }
         id_map
     }
 
-    /// Dispatch an event to all matching listeners.
-    /// Calls the JS callback functions via the VM.
+    /// Dispatch an event to matching listeners, bubbling up the DOM ancestor chain.
+    ///
+    /// Fires the event at `node_id` first (target phase), then walks up through
+    /// parent nodes (bubble phase).  A listener calling `event.stopPropagation()`
+    /// halts the walk.
     pub fn dispatch_event(&mut self, dom: &Dom, node_id: usize, event_name: &str) {
-        // Find matching listeners.
-        let matching: Vec<JsValue> = self.event_listeners.iter()
-            .filter(|l| l.node_id == node_id && l.event == event_name)
-            .map(|l| l.callback.clone())
-            .collect();
+        // Build the ancestor chain for bubbling: [target, parent, grandparent, …]
+        let ancestors: Vec<usize> = {
+            let mut chain = Vec::new();
+            let mut cur = Some(node_id);
+            while let Some(id) = cur {
+                chain.push(id);
+                cur = dom.nodes.get(id).and_then(|n| n.parent);
+            }
+            chain
+        };
 
-        if matching.is_empty() { return; }
+        // Fast exit: skip if no listener in the entire ancestor chain.
+        let has_any = ancestors.iter().any(|&nid|
+            self.event_listeners.iter().any(|l| l.node_id == nid && l.event == event_name)
+        );
+        if !has_any { return; }
 
         // Create event object.
         let evt = JsValue::new_object();
@@ -516,11 +774,13 @@ impl JsRuntime {
         evt.set_property(String::from("target"), target_el.clone());
         evt.set_property(String::from("currentTarget"), target_el);
         evt.set_property(String::from("preventDefault"), native_fn("preventDefault", |_,_| JsValue::Undefined));
-        evt.set_property(String::from("stopPropagation"), native_fn("stopPropagation", |_,_| JsValue::Undefined));
+        // stopPropagation sets the bridge flag, halting the bubble walk.
+        evt.set_property(String::from("stopPropagation"), native_fn("stopPropagation", native_stop_propagation));
+        evt.set_property(String::from("stopImmediatePropagation"), native_fn("stopImmediatePropagation", native_stop_propagation));
         evt.set_property(String::from("bubbles"), JsValue::Bool(true));
         evt.set_property(String::from("cancelable"), JsValue::Bool(true));
 
-        // Set up bridge for DOM access during callback.
+        // Set up bridge for DOM access during callbacks.
         let mut bridge = DomBridge {
             dom: dom as *const Dom,
             mutations: Vec::new(),
@@ -530,13 +790,30 @@ impl JsRuntime {
             pending_http_requests: Vec::new(),
             timers: Vec::new(),
             next_timer_id: self.next_timer_id,
+            propagation_stopped: false,
+            pending_ws_connects: Vec::new(),
+            pending_ws_sends: Vec::new(),
+            pending_ws_closes: Vec::new(),
+            ws_registry: Vec::new(),
         };
         self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
         unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; }
 
-        // Invoke each callback.
-        for cb in &matching {
-            self.engine.vm().call_value(cb, &[evt.clone()], JsValue::Undefined);
+        // Fire at target then bubble up.
+        'bubble: for &nid in &ancestors {
+            // Update currentTarget so listeners can distinguish target vs ancestor.
+            let cur_el = element::make_element(self.engine.vm(), nid as i64);
+            evt.set_property(String::from("currentTarget"), cur_el);
+
+            let matching: Vec<JsValue> = self.event_listeners.iter()
+                .filter(|l| l.node_id == nid && l.event == event_name)
+                .map(|l| l.callback.clone())
+                .collect();
+
+            for cb in &matching {
+                self.engine.vm().call_value(cb, &[evt.clone()], JsValue::Undefined);
+                if bridge.propagation_stopped { break 'bubble; }
+            }
         }
 
         unsafe { MUTATION_TARGET = core::ptr::null_mut(); }
@@ -574,6 +851,11 @@ impl JsRuntime {
                     pending_http_requests: Vec::new(),
                     timers: Vec::new(),
                     next_timer_id: self.next_timer_id,
+                    propagation_stopped: false,
+            pending_ws_connects: Vec::new(),
+            pending_ws_sends: Vec::new(),
+            pending_ws_closes: Vec::new(),
+            ws_registry: Vec::new(),
                 };
                 self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
                 unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; }
@@ -608,6 +890,124 @@ impl JsRuntime {
     }
 
     pub fn engine(&mut self) -> &mut JsEngine { &mut self.engine }
+
+    /// Register `@keyframes` animation starts for every node whose computed
+    /// style requests an animation that is not already running.
+    ///
+    /// Call this after `execute_scripts()` / relayout when styles change.
+    pub fn start_animations(
+        &mut self,
+        styles: &[crate::style::ComputedStyle],
+    ) {
+        for (node_id, style) in styles.iter().enumerate() {
+            'anim: for adef in &style.animations {
+                if adef.name.is_empty() || adef.duration_ms == 0 { continue; }
+                // Check if this animation is already running for this node.
+                for active in &self.active_animations {
+                    if active.node_id == node_id && active.keyframe_name == adef.name {
+                        continue 'anim;
+                    }
+                }
+                self.active_animations.push(ActiveAnimation {
+                    node_id,
+                    keyframe_name: adef.name.clone(),
+                    duration_ms: adef.duration_ms,
+                    timing: adef.timing,
+                    delay_ms: adef.delay_ms,
+                    iteration_count: adef.iteration_count,
+                    alternate: adef.alternate,
+                    elapsed_ms: 0,
+                    current_iteration: 0,
+                });
+            }
+        }
+    }
+
+    /// Advance all active animations and transitions by `delta_ms`.
+    ///
+    /// Returns a Vec of `(node_id, Vec<Declaration>)` — style overrides to
+    /// apply on top of computed styles before the next relayout.
+    /// Returns `true` if any animation is still running (relayout needed).
+    pub fn advance_animations(
+        &mut self,
+        delta_ms: u64,
+        keyframe_sets: &[KeyframeSet],
+    ) -> (bool, Vec<(NodeId, Vec<Declaration>)>) {
+        let mut overrides: Vec<(NodeId, Vec<Declaration>)> = Vec::new();
+        let mut any_active = false;
+
+        // ── Keyframe animations ──────────────────────────────────────────────
+        let anims = core::mem::take(&mut self.active_animations);
+        let mut keep_anims = Vec::new();
+        for mut anim in anims {
+            // Respect delay.
+            if (anim.elapsed_ms as u32) < anim.delay_ms {
+                anim.elapsed_ms += delta_ms;
+                any_active = true;
+                keep_anims.push(anim);
+                continue;
+            }
+            let anim_elapsed = anim.elapsed_ms.saturating_sub(anim.delay_ms as u64) + delta_ms;
+            anim.elapsed_ms = anim_elapsed + anim.delay_ms as u64;
+
+            let dur = anim.duration_ms as u64;
+            if dur == 0 { continue; }
+
+            // Compute t ∈ [0, 1000] within the current iteration.
+            let iter_elapsed = anim_elapsed % dur;
+            let t_raw = ((iter_elapsed * 1000) / dur) as i32;
+            let t_raw = if anim.alternate && anim.current_iteration % 2 == 1 {
+                1000 - t_raw
+            } else {
+                t_raw
+            };
+            let t = apply_timing(anim.timing, t_raw).clamp(0, 1000);
+
+            if let Some(kf) = keyframe_sets.iter().find(|k| k.name == anim.keyframe_name) {
+                let decls = interpolate_keyframe(kf, t);
+                if !decls.is_empty() {
+                    overrides.push((anim.node_id, decls));
+                }
+            }
+
+            let finished = if anim_elapsed >= dur {
+                anim.current_iteration += 1;
+                anim.iteration_count != 0 && anim.current_iteration >= anim.iteration_count
+            } else {
+                false
+            };
+
+            if !finished {
+                any_active = true;
+                keep_anims.push(anim);
+            }
+        }
+        self.active_animations = keep_anims;
+
+        // ── CSS transitions ──────────────────────────────────────────────────
+        let transitions = core::mem::take(&mut self.active_transitions);
+        let mut keep_transitions = Vec::new();
+        for mut tr in transitions {
+            if tr.duration_ms == 0 { continue; }
+            tr.elapsed_ms += delta_ms;
+            let elapsed = tr.elapsed_ms.saturating_sub(tr.delay_ms as u64);
+            let t_raw = ((elapsed * 1000) / tr.duration_ms as u64).min(1000) as i32;
+            let t = apply_timing(tr.timing, t_raw).clamp(0, 1000);
+
+            let decl = interpolate_decl(tr.from_decl.as_ref(), &tr.to_decl, t);
+            if let Some(d) = decl {
+                overrides.push((tr.node_id, vec![d]));
+            }
+
+            if t < 1000 {
+                any_active = true;
+                keep_transitions.push(tr);
+            }
+        }
+        self.active_transitions = keep_transitions;
+
+        (any_active, overrides)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -817,6 +1217,60 @@ fn resolve_id(id: i64, map: &BTreeMap<i64, usize>) -> Option<usize> {
 }
 
 // ═══════════════════════════════════════════════════════════
+// WebSocket CloseEvent factory
+// ═══════════════════════════════════════════════════════════
+
+/// Build a CloseEvent-like JS object for `onclose` callbacks.
+fn make_close_event(code: u16, reason: &str, was_clean: bool) -> JsValue {
+    let evt = JsValue::new_object();
+    evt.set_property(String::from("type"),     JsValue::String(String::from("close")));
+    evt.set_property(String::from("code"),     JsValue::Number(code as f64));
+    evt.set_property(String::from("reason"),   JsValue::String(String::from(reason)));
+    evt.set_property(String::from("wasClean"), JsValue::Bool(was_clean));
+    evt
+}
+
+// ═══════════════════════════════════════════════════════════
+// Native event functions
+// ═══════════════════════════════════════════════════════════
+
+/// Native `stopPropagation()` / `stopImmediatePropagation()` handler.
+/// Sets `DomBridge.propagation_stopped` so `dispatch_event` halts bubbling.
+fn native_stop_propagation(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    if let Some(bridge) = get_bridge(vm) {
+        bridge.propagation_stopped = true;
+    }
+    JsValue::Undefined
+}
+
+// ═══════════════════════════════════════════════════════════
+// URL helpers
+// ═══════════════════════════════════════════════════════════
+
+/// Extract the origin (`scheme://host[:port]`) from a full URL string.
+///
+/// Returns an empty string for malformed URLs so the caller can silently
+/// skip persistence (the storage still works, just in-memory only).
+fn extract_origin(url: &str) -> String {
+    // Find "://"
+    let after_scheme = match url.find("://") {
+        Some(pos) => pos + 3,
+        None => return String::new(),
+    };
+    let scheme = &url[..after_scheme - 3];
+    let rest = &url[after_scheme..];
+    // Host ends at '/', '?', '#' or end of string.
+    let host_end = rest
+        .find(|c| c == '/' || c == '?' || c == '#')
+        .unwrap_or(rest.len());
+    let host = &rest[..host_end];
+    let mut origin = String::from(scheme);
+    origin.push_str("://");
+    origin.push_str(host);
+    origin
+}
+
+// ═══════════════════════════════════════════════════════════
 // Native timer functions
 // ═══════════════════════════════════════════════════════════
 
@@ -884,4 +1338,108 @@ fn native_request_animation_frame(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         return JsValue::Number(id as f64);
     }
     JsValue::Number(0.0)
+}
+
+// ═══════════════════════════════════════════════════════════
+// Animation / transition interpolation
+// ═══════════════════════════════════════════════════════════
+
+/// Interpolate a complete keyframe set at time `t` (0–1000 fixed-point).
+fn interpolate_keyframe(kf: &KeyframeSet, t: i32) -> Vec<crate::css::Declaration> {
+    if kf.stops.is_empty() { return Vec::new(); }
+
+    let t_pct = t / 10; // map 0–1000 → 0–100
+
+    // Find the two surrounding stops (stops are sorted by offset 0–100).
+    let mut prev_idx = 0usize;
+    let mut next_idx = 0usize;
+    for (i, stop) in kf.stops.iter().enumerate() {
+        if stop.offset <= t_pct { prev_idx = i; }
+    }
+    next_idx = prev_idx;
+    for (i, stop) in kf.stops.iter().enumerate() {
+        if stop.offset >= t_pct {
+            next_idx = i;
+            break;
+        }
+    }
+
+    let prev = &kf.stops[prev_idx];
+    let next = &kf.stops[next_idx];
+
+    if prev_idx == next_idx {
+        return prev.declarations.clone();
+    }
+
+    // Local t within the segment [prev.offset, next.offset].
+    let seg_len = (next.offset - prev.offset).max(1);
+    let seg_t = ((t_pct - prev.offset) * 1000 / seg_len).clamp(0, 1000);
+
+    let mut result = Vec::new();
+    for next_decl in &next.declarations {
+        let from_decl = prev.declarations.iter()
+            .find(|d| core::mem::discriminant(&d.property) == core::mem::discriminant(&next_decl.property));
+        if let Some(blended) = interpolate_decl(from_decl, next_decl, seg_t) {
+            result.push(blended);
+        }
+    }
+    result
+}
+
+/// Interpolate one declaration from `from` to `to` at `t` (0–1000).
+fn interpolate_decl(
+    from: Option<&crate::css::Declaration>,
+    to: &crate::css::Declaration,
+    t: i32,
+) -> Option<crate::css::Declaration> {
+    use crate::css::CssValue;
+
+    let from_val = from.map(|d| &d.value);
+    let blended = match (&from_val, &to.value) {
+        (Some(CssValue::Number(a)), CssValue::Number(b)) => {
+            CssValue::Number(lerp_i32(*a, *b, t))
+        }
+        (Some(CssValue::Length(a, ua)), CssValue::Length(b, ub)) if ua == ub => {
+            CssValue::Length(lerp_i32(*a, *b, t), *ub)
+        }
+        (Some(CssValue::Percentage(a)), CssValue::Percentage(b)) => {
+            CssValue::Percentage(lerp_i32(*a, *b, t))
+        }
+        (Some(CssValue::Color(a)), CssValue::Color(b)) => {
+            CssValue::Color(lerp_color(*a, *b, t))
+        }
+        _ => {
+            if t >= 1000 {
+                to.value.clone()
+            } else if let Some(f) = from_val {
+                f.clone()
+            } else {
+                to.value.clone()
+            }
+        }
+    };
+
+    Some(crate::css::Declaration {
+        property: to.property.clone(),
+        value: blended,
+        important: to.important,
+    })
+}
+
+/// Linear interpolation for i32 fixed-point values.
+#[inline]
+fn lerp_i32(a: i32, b: i32, t: i32) -> i32 {
+    a + (((b - a) as i64 * t as i64) / 1000) as i32
+}
+
+/// Per-channel linear interpolation for packed ARGB colors.
+fn lerp_color(a: u32, b: u32, t: i32) -> u32 {
+    let la = [(a >> 24) & 0xFF, (a >> 16) & 0xFF, (a >> 8) & 0xFF, a & 0xFF];
+    let lb = [(b >> 24) & 0xFF, (b >> 16) & 0xFF, (b >> 8) & 0xFF, b & 0xFF];
+    let mut out = 0u32;
+    for i in 0..4 {
+        let v = lerp_i32(la[i] as i32 * 100, lb[i] as i32 * 100, t) / 100;
+        out = (out << 8) | (v.clamp(0, 255) as u32);
+    }
+    out
 }

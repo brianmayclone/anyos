@@ -41,6 +41,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "libsvg_client"
+version = "0.1.0"
+dependencies = [
+ "dynlink",
+]
+
+[[package]]
 name = "libwebview"
 version = "0.1.0"
 dependencies = [
@@ -56,5 +63,6 @@ dependencies = [
  "anyos_std",
  "libanyui_client",
  "libimage_client",
+ "libsvg_client",
  "libwebview",
 ]

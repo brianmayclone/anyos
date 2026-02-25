@@ -152,8 +152,14 @@ pub enum Op {
     LoadThis,
 
     // ── Spread/Rest ──
-    /// Spread array elements onto stack.
+    /// Spread array-or-iterable into target array.
+    /// Stack before: [..., target_array, value_to_spread]
+    /// Stack after:  [..., target_array]  (value's elements appended to target)
     Spread,
+    /// Push a single value into an array that sits below it on the stack.
+    /// Stack before: [..., target_array, value]
+    /// Stack after:  [..., target_array]  (value appended to target)
+    ArrayPush,
 
     // ── Debugger ──
     Debugger,
@@ -166,6 +172,16 @@ pub enum Op {
 
     // ── No-op ──
     Nop,
+}
+
+/// Describes how a compiled function captures one upvalue from its enclosing scope.
+#[derive(Debug, Clone)]
+pub struct UpvalueRef {
+    /// If `true`, capture local slot `index` from the immediately enclosing function's locals.
+    /// If `false`, capture upvalue `index` from the immediately enclosing function's upvalue list.
+    pub is_local: bool,
+    /// Slot index (local or upvalue) in the immediately enclosing function.
+    pub index: u16,
 }
 
 /// A compiled function / code block.
@@ -181,6 +197,8 @@ pub struct Chunk {
     pub param_count: u16,
     /// Function name (for debugging).
     pub name: Option<String>,
+    /// Upvalue capture descriptors — one entry per upvalue the function closes over.
+    pub upvalues: Vec<UpvalueRef>,
 }
 
 impl Chunk {
@@ -191,6 +209,7 @@ impl Chunk {
             local_count: 0,
             param_count: 0,
             name: None,
+            upvalues: Vec::new(),
         }
     }
 

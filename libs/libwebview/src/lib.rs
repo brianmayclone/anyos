@@ -87,6 +87,10 @@ pub struct WebView {
     submit_cb_ud: u64,
     /// JavaScript runtime for executing <script> tags.
     js_runtime: js::JsRuntime,
+    /// Current page URL — exposed as `window.location` inside JS.
+    current_url: String,
+    /// All @keyframes blocks from the last parsed stylesheets (for animation tick).
+    keyframes: Vec<css::KeyframeSet>,
 }
 
 impl WebView {
@@ -114,6 +118,8 @@ impl WebView {
             submit_cb: None,
             submit_cb_ud: 0,
             js_runtime: js::JsRuntime::new(),
+            current_url: String::new(),
+            keyframes: Vec::new(),
         }
     }
 
@@ -139,6 +145,13 @@ impl WebView {
     pub fn set_submit_callback(&mut self, cb: ui::Callback, userdata: u64) {
         self.submit_cb = Some(cb);
         self.submit_cb_ud = userdata;
+    }
+
+    /// Set the current page URL.  Must be called before `set_html()` so that
+    /// the JS environment has the correct `window.location` / `document.location`
+    /// values when scripts run.
+    pub fn set_url(&mut self, url: &str) {
+        self.current_url = String::from(url);
     }
 
     /// Add an external CSS stylesheet (as text). Applied on next `set_html()` or `relayout()`.
@@ -211,6 +224,45 @@ impl WebView {
         }
     }
 
+    /// Advance CSS animations/transitions and JS timers by `delta_ms` milliseconds.
+    ///
+    /// Returns `true` if any animation changed the document (relayout was performed).
+    /// Call at ~60 fps when any page may have running animations.
+    pub fn tick(&mut self, delta_ms: u64) -> bool {
+        // ── 1. Advance JS timers (setTimeout / setInterval / requestAnimationFrame). ──
+        if let Some(ref d) = self.dom_val.as_ref().map(|_| ()) {
+            let _ = d; // borrow trick — we need to pass the dom
+        }
+        // We can't borrow dom_val and js_runtime simultaneously, so take dom temporarily.
+        let dom_opt = self.dom_val.take();
+        if let Some(ref d) = dom_opt {
+            self.js_runtime.tick(d, delta_ms);
+        }
+        self.dom_val = dom_opt;
+
+        // ── 2. Advance CSS animations. ──────────────────────────────────────────────
+        // We pass keyframes by reference (they are stored in WebView).
+        // advance_animations returns (any_active, overrides).
+        // If there are no active animations, skip the expensive relayout.
+        if self.js_runtime.active_animations.is_empty()
+            && self.js_runtime.active_transitions.is_empty()
+        {
+            return false;
+        }
+
+        let (any_active, _overrides) =
+            self.js_runtime.advance_animations(delta_ms, &self.keyframes);
+
+        if any_active {
+            // Re-layout with current overrides applied.
+            // For simplicity we do a full relayout; a future optimisation could
+            // apply only the overridden node styles.
+            self.relayout();
+            return true;
+        }
+        false
+    }
+
     /// Clear all content (remove all controls, reset DOM).
     pub fn clear(&mut self) {
         self.renderer.clear();
@@ -269,11 +321,30 @@ impl WebView {
             debug_surf!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
         }
 
+        // Collect all @keyframes from all stylesheets for use by the animation tick.
+        self.keyframes.clear();
+        for sheet in &all_sheets {
+            for kf in &sheet.keyframes {
+                // Only keep the last definition for each name (CSS spec behaviour).
+                self.keyframes.retain(|k: &css::KeyframeSet| k.name != kf.name);
+                self.keyframes.push(css::KeyframeSet {
+                    name: kf.name.clone(),
+                    stops: kf.stops.iter().map(|s| css::KeyframeStop {
+                        offset: s.offset,
+                        declarations: s.declarations.clone(),
+                    }).collect(),
+                });
+            }
+        }
+
         // Resolve styles (pass viewport dimensions for @media queries).
         debug_surf!("[webview] resolve_styles start ({} nodes)", d.nodes.len());
         let vh = self.total_height_val.max(self.viewport_width); // approximate viewport height
         let styles = style::resolve_styles(d, &all_sheets, self.viewport_width, vh);
         debug_surf!("[webview] resolve_styles done: {} styles", styles.len());
+
+        // Register new @keyframe animations for nodes that request them.
+        self.js_runtime.start_animations(&styles);
         #[cfg(feature = "debug_surf")]
         debug_surf!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
 
@@ -312,7 +383,7 @@ impl WebView {
 
         // Execute JavaScript <script> tags.
         debug_surf!("[webview] JS execute_scripts start");
-        self.js_runtime.execute_scripts(d);
+        self.js_runtime.execute_scripts(d, &self.current_url);
         debug_surf!("[webview] JS execute_scripts done: {} console lines, {} mutations",
             self.js_runtime.console.len(), self.js_runtime.mutations.len());
     }

@@ -1,0 +1,5 @@
+LIBRARY libsvg
+EXPORTS
+    svg_probe
+    svg_render
+    svg_render_to_size

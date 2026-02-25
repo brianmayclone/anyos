@@ -125,15 +125,14 @@ pub fn array_sort(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             a.elements.clone()
         };
 
-        if let Some(JsValue::Function(cmp_fn)) = &comparefn {
-            let cmp_rc = cmp_fn.clone();
-            // Sort with comparator — use simple bubble sort to avoid closure issues
-            let len = elements.len();
-            for i in 0..len {
-                for j in 0..len - 1 - i {
-                    let kind = cmp_rc.borrow().kind.clone();
-                    if let FnKind::Native(native) = kind {
-                        let result = native(vm, &[elements[j].clone(), elements[j + 1].clone()]);
+        if let Some(cmp) = &comparefn {
+            if matches!(cmp, JsValue::Function(_)) {
+                let cmp = cmp.clone();
+                // Bubble sort using call_callback so bytecode comparators work correctly.
+                let len = elements.len();
+                for i in 0..len {
+                    for j in 0..len.saturating_sub(1 + i) {
+                        let result = call_callback(vm, &cmp, &[elements[j].clone(), elements[j + 1].clone()]);
                         if result.to_number() > 0.0 {
                             elements.swap(j, j + 1);
                         }
@@ -365,29 +364,11 @@ pub fn call_callback_pub(vm: &mut Vm, callback: &JsValue, args: &[JsValue]) -> J
 
 /// Helper: call a callback function with given args.
 fn call_callback(vm: &mut Vm, callback: &JsValue, args: &[JsValue]) -> JsValue {
+    // Use call_value which correctly saves/restores run_target_depth so that
+    // vm.run() stops after the callback returns without continuing into the
+    // caller's frame (which is suspended inside the native array method).
     match callback {
-        JsValue::Function(func_rc) => {
-            let kind = func_rc.borrow().kind.clone();
-            match kind {
-                FnKind::Native(f) => f(vm, args),
-                FnKind::Bytecode(chunk) => {
-                    let local_count = chunk.local_count as usize;
-                    let mut locals = vec![JsValue::Undefined; local_count];
-                    for (i, arg) in args.iter().enumerate() {
-                        if i < local_count { locals[i] = arg.clone(); }
-                    }
-                    let frame = super::CallFrame {
-                        chunk,
-                        ip: 0,
-                        stack_base: vm.stack.len(),
-                        locals,
-                        this_val: JsValue::Undefined,
-                    };
-                    vm.frames.push(frame);
-                    vm.run()
-                }
-            }
-        }
+        JsValue::Function(_) => vm.call_value(callback, args, JsValue::Undefined),
         _ => JsValue::Undefined,
     }
 }

@@ -23,13 +23,72 @@ use super::classlist;
 use super::selector;
 
 // ═══════════════════════════════════════════════════════════
+// Sibling helpers
+// ═══════════════════════════════════════════════════════════
+
+/// Compute the previous and next sibling node IDs for the given real DOM node.
+/// Returns `(prev_element_id, next_element_id, prev_any_id, next_any_id)`,
+/// where `*_element_id` skips text nodes and `*_any_id` includes all node types.
+/// Returns `None` when no such sibling exists.
+fn compute_sibling_ids(
+    vm: &mut Vm,
+    node_id: usize,
+) -> (Option<usize>, Option<usize>, Option<usize>, Option<usize>) {
+    if let Some(bridge) = get_bridge(vm) {
+        let dom = bridge.dom();
+        if let Some(parent_id) = dom.nodes.get(node_id).and_then(|n| n.parent) {
+            let siblings = &dom.nodes[parent_id].children;
+            if let Some(pos) = siblings.iter().position(|&id| id == node_id) {
+                // prev/next for *any* node type
+                let prev_any = if pos > 0 { Some(siblings[pos - 1]) } else { None };
+                let next_any = if pos + 1 < siblings.len() { Some(siblings[pos + 1]) } else { None };
+
+                // prev/next for element nodes only (nodeType == 1)
+                let prev_el = (0..pos).rev()
+                    .find(|&i| matches!(
+                        &dom.nodes[siblings[i]].node_type,
+                        crate::dom::NodeType::Element { .. }
+                    ))
+                    .map(|i| siblings[i]);
+                let next_el = (pos + 1..siblings.len())
+                    .find(|&i| matches!(
+                        &dom.nodes[siblings[i]].node_type,
+                        crate::dom::NodeType::Element { .. }
+                    ))
+                    .map(|i| siblings[i]);
+
+                return (prev_el, next_el, prev_any, next_any);
+            }
+        }
+    }
+    (None, None, None, None)
+}
+
+// ═══════════════════════════════════════════════════════════
 // Element factory
 // ═══════════════════════════════════════════════════════════
 
-/// Create a fully-populated native Element JsObject.
-/// This is the equivalent of what real browsers do when exposing a DOM
-/// node to JavaScript — a host object with native method bindings.
+/// Create a native Element JsObject for a single DOM node.
+///
+/// Children are intentionally **not** built eagerly — doing so for a large
+/// DOM (e.g. 14 000+ nodes) causes an O(N × properties) allocation storm
+/// that exhausts the heap and corrupts the BTreeMap internal tree.
+/// Scripts that need child elements should use `querySelector` /
+/// `querySelectorAll` / `getElementById`, which create elements on demand.
+///
+/// Sibling properties (`nextSibling`, `previousSibling`, `nextElementSibling`,
+/// `previousElementSibling`) are computed one level deep: the returned sibling
+/// objects themselves have `Null` for their own siblings, preventing O(N²)
+/// allocation chains for large flat lists. Full sibling traversal loops should
+/// use `querySelectorAll` instead.
 pub fn make_element(vm: &mut Vm, node_id: i64) -> JsValue {
+    make_element_impl(vm, node_id, true)
+}
+
+/// Internal factory.  When `include_siblings` is `false` the sibling
+/// properties are set to `Null` — used when creating sibling JsObjects to
+/// prevent recursive depth growth.
+fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsValue {
     // Read properties from DOM or virtual node store.
     let tag_name = read_tag_name(vm, node_id);
     let text = read_text_content(vm, node_id);
@@ -39,15 +98,6 @@ pub fn make_element(vm: &mut Vm, node_id: i64) -> JsValue {
         JsValue::String(s) => s,
         _ => String::new(),
     };
-    let _is_virtual = node_id < 0;
-
-    // Build children array (recursive).
-    let child_ids = read_child_ids(vm, node_id);
-    let mut children = Vec::new();
-    for &cid in &child_ids {
-        children.push(make_element(vm, cid));
-    }
-    let child_arr = JsValue::Array(Rc::new(RefCell::new(JsArray::from_vec(children.clone()))));
 
     // Helper to read a string attribute or empty string.
     let attr_or_empty = |vm: &mut Vm, name: &str| -> String {
@@ -66,8 +116,14 @@ pub fn make_element(vm: &mut Vm, node_id: i64) -> JsValue {
     let checked = !matches!(read_attribute(vm, node_id, "checked"), JsValue::Null);
     let disabled = !matches!(read_attribute(vm, node_id, "disabled"), JsValue::Null);
 
-    let first_child = if children.is_empty() { JsValue::Null } else { children[0].clone() };
-    let last_child = if children.is_empty() { JsValue::Null } else { children.last().unwrap().clone() };
+    // Compute the number of direct element children so scripts can query
+    // `el.childElementCount` without building child JsObjects.
+    let child_count = read_child_ids(vm, node_id).len();
+
+    // Empty child arrays — populated lazily via querySelector/querySelectorAll.
+    let child_arr = JsValue::Array(Rc::new(RefCell::new(JsArray::new())));
+    let first_child = JsValue::Null;
+    let last_child = JsValue::Null;
 
     // Build the element object.
     let mut obj = JsObject::new();
@@ -91,15 +147,34 @@ pub fn make_element(vm: &mut Vm, node_id: i64) -> JsValue {
     obj.set(String::from("checked"), JsValue::Bool(checked));
     obj.set(String::from("disabled"), JsValue::Bool(disabled));
 
-    // Tree references.
+    // Sibling references — computed one level deep for real DOM nodes.
+    // When `include_siblings` is false (we're already building a sibling object)
+    // they stay Null to prevent O(N²) allocation chains on large flat lists.
+    let (prev_sib, next_sib, prev_any, next_any) = if include_siblings && node_id >= 0 {
+        let (pe, ne, pa, na) = compute_sibling_ids(vm, node_id as usize);
+        (
+            pe.map(|id| make_element_impl(vm, id as i64, false)).unwrap_or(JsValue::Null),
+            ne.map(|id| make_element_impl(vm, id as i64, false)).unwrap_or(JsValue::Null),
+            pa.map(|id| make_element_impl(vm, id as i64, false)).unwrap_or(JsValue::Null),
+            na.map(|id| make_element_impl(vm, id as i64, false)).unwrap_or(JsValue::Null),
+        )
+    } else {
+        (JsValue::Null, JsValue::Null, JsValue::Null, JsValue::Null)
+    };
+
+    // Tree references.  children/childNodes are empty — scripts should use
+    // querySelector/querySelectorAll to traverse the DOM on demand.
     obj.set(String::from("children"), child_arr.clone());
     obj.set(String::from("childNodes"), child_arr);
+    obj.set(String::from("childElementCount"), JsValue::Number(child_count as f64));
     obj.set(String::from("firstChild"), first_child);
     obj.set(String::from("lastChild"), last_child);
     obj.set(String::from("parentNode"), JsValue::Null);
     obj.set(String::from("parentElement"), JsValue::Null);
-    obj.set(String::from("nextSibling"), JsValue::Null);
-    obj.set(String::from("previousSibling"), JsValue::Null);
+    obj.set(String::from("previousSibling"), prev_any);
+    obj.set(String::from("nextSibling"), next_any);
+    obj.set(String::from("previousElementSibling"), prev_sib);
+    obj.set(String::from("nextElementSibling"), next_sib);
 
     // Style and dataset.
     obj.set(String::from("style"), JsValue::Object(Rc::new(RefCell::new(JsObject::new()))));

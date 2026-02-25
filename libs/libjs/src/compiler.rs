@@ -5,12 +5,32 @@ use alloc::vec::Vec;
 use alloc::string::ToString;
 
 use crate::ast::*;
-use crate::bytecode::{Chunk, Constant, Op};
+use crate::bytecode::{Chunk, Constant, Op, UpvalueRef};
+use crate::lexer::Lexer;
+use crate::parser::Parser;
+
+/// How a name was resolved during compilation.
+enum NameLookup {
+    Local(u16),
+    Upvalue(u16),
+    Global,
+}
+
+/// Descriptor for a variable captured from an enclosing function scope.
+struct UpvalueDesc {
+    name: String,
+    /// If true, captures from the enclosing function's local slot `index`.
+    /// If false, captures from the enclosing function's upvalue slot `index`.
+    is_local: bool,
+    index: u16,
+}
 
 /// Compiler state for a single scope/function.
 struct Scope {
     chunk: Chunk,
     locals: Vec<Local>,
+    /// Upvalues captured by this function from enclosing function scopes.
+    upvalues: Vec<UpvalueDesc>,
     /// Break target offsets to patch.
     break_jumps: Vec<usize>,
     /// Continue target offset.
@@ -28,6 +48,7 @@ impl Scope {
         Scope {
             chunk: Chunk::new(),
             locals: Vec::new(),
+            upvalues: Vec::new(),
             break_jumps: Vec::new(),
             continue_target: None,
             scope_depth: 0,
@@ -58,12 +79,39 @@ impl Scope {
 
 pub struct Compiler {
     scopes: Vec<Scope>,
+    /// Set to `true` while compiling a top-level `var` binding so that
+    /// `bind_ident` and `compile_pattern_binding` emit StoreGlobal instead
+    /// of StoreLocal.  Mirrors JavaScript's var-hoisting-to-global behaviour.
+    binding_is_global: bool,
 }
 
 impl Compiler {
     pub fn new() -> Self {
         Compiler {
             scopes: Vec::new(),
+            binding_is_global: false,
+        }
+    }
+
+    /// Returns true when we are at the outermost (global) function scope,
+    /// i.e. not inside any compiled function body.
+    fn is_global_scope(&self) -> bool {
+        self.scopes.len() == 1
+    }
+
+    /// Emit a variable binding for `name`.  If `self.binding_is_global` the
+    /// variable is stored in the global environment (StoreGlobal); otherwise
+    /// it is allocated as a stack local (StoreLocal).  Either way the value
+    /// is popped from the stack afterwards.
+    fn bind_ident(&mut self, name: &str) {
+        if self.binding_is_global {
+            let ci = self.add_const(Constant::String(name.to_string()));
+            self.emit(Op::StoreGlobal(ci));
+            self.emit(Op::Pop);
+        } else {
+            let slot = self.scope_mut().add_local(name.to_string());
+            self.emit(Op::StoreLocal(slot));
+            self.emit(Op::Pop);
         }
     }
 
@@ -103,6 +151,92 @@ impl Compiler {
         self.scope_mut().chunk.patch_jump(idx);
     }
 
+    // ── Upvalue resolution ──
+
+    /// Walk outer function scopes starting at `scope_idx - 1` looking for `name`.
+    /// Returns the upvalue index in `scopes[scope_idx]` if found, None otherwise.
+    /// Does not look into `scopes[0]` (the top-level script scope) as a local
+    /// capture target — its `var` bindings are globals, but `let`/`const` there
+    /// can still be captured.
+    fn resolve_upvalue_in_scope(&mut self, scope_idx: usize, name: &str) -> Option<u16> {
+        if scope_idx == 0 {
+            return None; // nothing above global scope
+        }
+        // Try as a direct local in the immediately enclosing scope.
+        if let Some(local_slot) = self.scopes[scope_idx - 1].resolve_local(name) {
+            return Some(self.add_upvalue(scope_idx, name, true, local_slot));
+        }
+        // Recurse: try as an upvalue of the immediately enclosing scope.
+        if let Some(outer_uv) = self.resolve_upvalue_in_scope(scope_idx - 1, name) {
+            return Some(self.add_upvalue(scope_idx, name, false, outer_uv));
+        }
+        None
+    }
+
+    /// Add (or deduplicate) an upvalue descriptor in `scopes[scope_idx]`.
+    fn add_upvalue(&mut self, scope_idx: usize, name: &str, is_local: bool, index: u16) -> u16 {
+        for (i, uv) in self.scopes[scope_idx].upvalues.iter().enumerate() {
+            if uv.name == name {
+                return i as u16;
+            }
+        }
+        let idx = self.scopes[scope_idx].upvalues.len() as u16;
+        self.scopes[scope_idx].upvalues.push(UpvalueDesc {
+            name: String::from(name),
+            is_local,
+            index,
+        });
+        idx
+    }
+
+    /// Resolve `name` from the current (innermost) scope, returning how to access it.
+    fn resolve_name(&mut self, name: &str) -> NameLookup {
+        if let Some(slot) = self.scopes.last().unwrap().resolve_local(name) {
+            return NameLookup::Local(slot);
+        }
+        let current = self.scopes.len() - 1;
+        if current >= 1 {
+            if let Some(uv_idx) = self.resolve_upvalue_in_scope(current, name) {
+                return NameLookup::Upvalue(uv_idx);
+            }
+        }
+        NameLookup::Global
+    }
+
+    /// Emit a load for `name` using the appropriate opcode.
+    fn emit_load_name(&mut self, name: &str) {
+        match self.resolve_name(name) {
+            NameLookup::Local(slot) => { self.emit(Op::LoadLocal(slot)); }
+            NameLookup::Upvalue(idx) => { self.emit(Op::LoadUpvalue(idx)); }
+            NameLookup::Global => {
+                let ci = self.add_const(Constant::String(name.to_string()));
+                self.emit(Op::LoadGlobal(ci));
+            }
+        }
+    }
+
+    /// Emit a store for `name` (leaves value on stack, used for assignment expressions).
+    fn emit_store_name(&mut self, name: &str) {
+        match self.resolve_name(name) {
+            NameLookup::Local(slot) => {
+                self.emit(Op::Dup);
+                self.emit(Op::StoreLocal(slot));
+                self.emit(Op::Pop);
+            }
+            NameLookup::Upvalue(idx) => {
+                self.emit(Op::Dup);
+                self.emit(Op::StoreUpvalue(idx));
+                self.emit(Op::Pop);
+            }
+            NameLookup::Global => {
+                let ci = self.add_const(Constant::String(name.to_string()));
+                self.emit(Op::Dup);
+                self.emit(Op::StoreGlobal(ci));
+                self.emit(Op::Pop);
+            }
+        }
+    }
+
     // ── Statements ──
 
     fn compile_stmt(&mut self, stmt: &Stmt) {
@@ -111,9 +245,10 @@ impl Compiler {
                 self.compile_expr(expr);
                 self.emit(Op::Pop);
             }
-            Stmt::VarDecl { kind: _, decls } => {
+            Stmt::VarDecl { kind, decls } => {
+                let is_global = *kind == VarKind::Var && self.is_global_scope();
                 for decl in decls {
-                    self.compile_var_decl(decl);
+                    self.compile_var_decl(decl, is_global);
                 }
             }
             Stmt::Block(stmts) => {
@@ -186,9 +321,10 @@ impl Compiler {
                 self.begin_scope();
                 if let Some(init) = init {
                     match init.as_ref() {
-                        ForInit::VarDecl { kind: _, decls } => {
+                        ForInit::VarDecl { kind, decls } => {
+                            let is_global = *kind == VarKind::Var && self.is_global_scope();
                             for d in decls {
-                                self.compile_var_decl(d);
+                                self.compile_var_decl(d, is_global);
                             }
                         }
                         ForInit::Expr(e) => {
@@ -270,15 +406,28 @@ impl Compiler {
             }
             Stmt::FunctionDecl { name, params, body, is_async } => {
                 self.compile_function(Some(name), params, body, *is_async);
-                let slot = self.scope_mut().add_local(name.clone());
-                self.emit(Op::StoreLocal(slot));
-                self.emit(Op::Pop);
+                // At the global scope function declarations are global bindings.
+                if self.is_global_scope() {
+                    let ci = self.add_const(Constant::String(name.clone()));
+                    self.emit(Op::StoreGlobal(ci));
+                    self.emit(Op::Pop);
+                } else {
+                    let slot = self.scope_mut().add_local(name.clone());
+                    self.emit(Op::StoreLocal(slot));
+                    self.emit(Op::Pop);
+                }
             }
             Stmt::ClassDecl { name, super_class, body } => {
                 self.compile_class(Some(name), super_class, body);
-                let slot = self.scope_mut().add_local(name.clone());
-                self.emit(Op::StoreLocal(slot));
-                self.emit(Op::Pop);
+                if self.is_global_scope() {
+                    let ci = self.add_const(Constant::String(name.clone()));
+                    self.emit(Op::StoreGlobal(ci));
+                    self.emit(Op::Pop);
+                } else {
+                    let slot = self.scope_mut().add_local(name.clone());
+                    self.emit(Op::StoreLocal(slot));
+                    self.emit(Op::Pop);
+                }
             }
             Stmt::Labeled { label: _, body } => {
                 self.compile_stmt(body);
@@ -289,7 +438,9 @@ impl Compiler {
         }
     }
 
-    fn compile_var_decl(&mut self, decl: &VarDeclarator) {
+    fn compile_var_decl(&mut self, decl: &VarDeclarator, is_global_var: bool) {
+        let prev = self.binding_is_global;
+        self.binding_is_global = is_global_var;
         match &decl.name {
             Pattern::Ident(name) => {
                 if let Some(init) = &decl.init {
@@ -297,9 +448,8 @@ impl Compiler {
                 } else {
                     self.emit(Op::LoadUndefined);
                 }
-                let slot = self.scope_mut().add_local(name.clone());
-                self.emit(Op::StoreLocal(slot));
-                self.emit(Op::Pop);
+                let name_clone = name.clone();
+                self.bind_ident(&name_clone);
             }
             Pattern::Array(elements) => {
                 if let Some(init) = &decl.init {
@@ -326,6 +476,7 @@ impl Compiler {
                 self.compile_pattern_binding(pat);
             }
         }
+        self.binding_is_global = prev;
     }
 
     fn compile_array_destructure(&mut self, elements: &[Option<Pattern>]) {
@@ -355,9 +506,8 @@ impl Compiler {
     fn compile_pattern_binding(&mut self, pat: &Pattern) {
         match pat {
             Pattern::Ident(name) => {
-                let slot = self.scope_mut().add_local(name.clone());
-                self.emit(Op::StoreLocal(slot));
-                self.emit(Op::Pop);
+                let name_clone = name.clone();
+                self.bind_ident(&name_clone);
             }
             Pattern::Assign(inner, default) => {
                 // If value is undefined, use default
@@ -413,12 +563,15 @@ impl Compiler {
 
         // Bind the iteration value to the loop variable
         match left {
-            ForInit::VarDecl { kind: _, decls } => {
+            ForInit::VarDecl { kind, decls } => {
                 if let Some(decl) = decls.first() {
+                    let is_global = *kind == VarKind::Var && self.is_global_scope();
                     if let Pattern::Ident(name) = &decl.name {
-                        let slot = self.scope_mut().add_local(name.clone());
-                        self.emit(Op::StoreLocal(slot));
-                        self.emit(Op::Pop);
+                        let name_clone = name.clone();
+                        let prev = self.binding_is_global;
+                        self.binding_is_global = is_global;
+                        self.bind_ident(&name_clone);
+                        self.binding_is_global = prev;
                     }
                 }
             }
@@ -620,7 +773,13 @@ impl Compiler {
             self.emit(Op::Return);
         }
 
-        let func_chunk = self.scopes.pop().unwrap().chunk;
+        let func_scope = self.scopes.pop().unwrap();
+        let mut func_chunk = func_scope.chunk;
+        // Copy upvalue descriptors into the chunk so the VM knows how to capture them.
+        func_chunk.upvalues = func_scope.upvalues.iter().map(|uv| UpvalueRef {
+            is_local: uv.is_local,
+            index: uv.index,
+        }).collect();
         let ci = self.add_const(Constant::Function(func_chunk));
         self.emit(Op::Closure(ci));
     }
@@ -667,6 +826,95 @@ impl Compiler {
         }
     }
 
+    // ── Template literal interpolation ──
+
+    /// Compile a template literal string that may contain `${...}` expressions.
+    /// The lexer stores the entire template (static parts + raw expression
+    /// source) as a single string.  This method re-parses the expression
+    /// segments and emits string-concatenation bytecode.
+    fn compile_template_literal(&mut self, s: &str) {
+        // Split the template string into alternating static/expression parts.
+        let mut parts: Vec<Result<String, String>> = Vec::new(); // Ok = static, Err = expr src
+        let bytes = s.as_bytes();
+        let mut i = 0;
+        let mut current = String::new();
+        while i < bytes.len() {
+            if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+                parts.push(Ok(current.clone()));
+                current.clear();
+                i += 2; // skip ${
+                let mut depth = 1u32;
+                let mut expr_src = String::new();
+                while i < bytes.len() && depth > 0 {
+                    match bytes[i] {
+                        b'{' => { depth += 1; expr_src.push(bytes[i] as char); i += 1; }
+                        b'}' => {
+                            depth -= 1;
+                            if depth > 0 { expr_src.push(b'}' as char); }
+                            i += 1;
+                        }
+                        _ => {
+                            // Handle multi-byte UTF-8 safely
+                            if bytes[i] < 0x80 {
+                                expr_src.push(bytes[i] as char);
+                                i += 1;
+                            } else {
+                                // Find the end of this UTF-8 sequence
+                                let start = i;
+                                i += 1;
+                                while i < bytes.len() && (bytes[i] & 0xC0) == 0x80 { i += 1; }
+                                if let Ok(ch_str) = core::str::from_utf8(&bytes[start..i]) {
+                                    expr_src.push_str(ch_str);
+                                }
+                            }
+                        }
+                    }
+                }
+                parts.push(Err(expr_src));
+            } else if bytes[i] < 0x80 {
+                current.push(bytes[i] as char);
+                i += 1;
+            } else {
+                let start = i;
+                i += 1;
+                while i < bytes.len() && (bytes[i] & 0xC0) == 0x80 { i += 1; }
+                if let Ok(ch_str) = core::str::from_utf8(&bytes[start..i]) {
+                    current.push_str(ch_str);
+                }
+            }
+        }
+        parts.push(Ok(current));
+
+        // Emit code: start with empty string, then + each part
+        let empty_ci = self.add_const(Constant::String(String::new()));
+        self.emit(Op::LoadConst(empty_ci));
+
+        for part in &parts {
+            match part {
+                Ok(text) => {
+                    if !text.is_empty() {
+                        let ci = self.add_const(Constant::String(text.clone()));
+                        self.emit(Op::LoadConst(ci));
+                        self.emit(Op::Add);
+                    }
+                }
+                Err(expr_src) => {
+                    // Re-parse and compile the expression by wrapping it in a
+                    // minimal program and extracting the first statement.
+                    let tokens = Lexer::tokenize(expr_src);
+                    let mut p = Parser::new(tokens);
+                    let prog = p.parse_program();
+                    if let Some(Stmt::Expr(inner)) = prog.body.into_iter().next() {
+                        self.compile_expr(&inner);
+                    } else {
+                        self.emit(Op::LoadUndefined);
+                    }
+                    self.emit(Op::Add);
+                }
+            }
+        }
+    }
+
     // ── Expressions ──
 
     fn compile_expr(&mut self, expr: &Expr) {
@@ -680,8 +928,7 @@ impl Compiler {
                 self.emit(Op::LoadConst(ci));
             }
             Expr::Template(s) => {
-                let ci = self.add_const(Constant::String(s.clone()));
-                self.emit(Op::LoadConst(ci));
+                self.compile_template_literal(s);
             }
             Expr::Bool(true) => { self.emit(Op::LoadTrue); }
             Expr::Bool(false) => { self.emit(Op::LoadFalse); }
@@ -689,22 +936,37 @@ impl Compiler {
             Expr::Undefined => { self.emit(Op::LoadUndefined); }
             Expr::This => { self.emit(Op::LoadThis); }
             Expr::Ident(name) => {
-                if let Some(slot) = self.scope().resolve_local(name) {
-                    self.emit(Op::LoadLocal(slot));
-                } else {
-                    let ci = self.add_const(Constant::String(name.clone()));
-                    self.emit(Op::LoadGlobal(ci));
-                }
+                let name = name.clone();
+                self.emit_load_name(&name);
             }
             Expr::Array(elements) => {
-                for elem in elements {
-                    if let Some(e) = elem {
-                        self.compile_expr(e);
-                    } else {
-                        self.emit(Op::LoadUndefined);
+                let has_spread = elements.iter().any(|e| matches!(e, Some(Expr::Spread(_))));
+                if has_spread {
+                    // Build incrementally: start with empty array, then push/spread each element.
+                    self.emit(Op::NewArray(0));
+                    for elem in elements {
+                        self.emit(Op::Dup); // dup target array
+                        if let Some(Expr::Spread(inner)) = elem {
+                            self.compile_expr(inner);
+                            self.emit(Op::Spread); // spread `inner` into target array
+                        } else if let Some(e) = elem {
+                            self.compile_expr(e);
+                            self.emit(Op::ArrayPush); // push value into target array
+                        } else {
+                            self.emit(Op::LoadUndefined);
+                            self.emit(Op::ArrayPush);
+                        }
                     }
+                } else {
+                    for elem in elements {
+                        if let Some(e) = elem {
+                            self.compile_expr(e);
+                        } else {
+                            self.emit(Op::LoadUndefined);
+                        }
+                    }
+                    self.emit(Op::NewArray(elements.len() as u16));
                 }
-                self.emit(Op::NewArray(elements.len() as u16));
             }
             Expr::Object(props) => {
                 self.emit(Op::NewObject);
@@ -964,29 +1226,17 @@ impl Compiler {
     fn compile_assignment(&mut self, op: &AssignOp, left: &Expr, right: &Expr) {
         match left {
             Expr::Ident(name) => {
+                let name = name.clone();
                 if *op != AssignOp::Assign {
                     // Compound assignment: load current value first
-                    if let Some(slot) = self.scope().resolve_local(name) {
-                        self.emit(Op::LoadLocal(slot));
-                    } else {
-                        let ci = self.add_const(Constant::String(name.clone()));
-                        self.emit(Op::LoadGlobal(ci));
-                    }
+                    self.emit_load_name(&name);
                     self.compile_expr(right);
                     self.emit_compound_op(op);
                 } else {
                     self.compile_expr(right);
                 }
-                if let Some(slot) = self.scope().resolve_local(name) {
-                    self.emit(Op::Dup);
-                    self.emit(Op::StoreLocal(slot));
-                    self.emit(Op::Pop);
-                } else {
-                    let ci = self.add_const(Constant::String(name.clone()));
-                    self.emit(Op::Dup);
-                    self.emit(Op::StoreGlobal(ci));
-                    self.emit(Op::Pop);
-                }
+                // emit_store_name emits Dup, store, Pop — leaving value on stack
+                self.emit_store_name(&name);
             }
             Expr::Member { object, property, .. } => {
                 self.compile_expr(object);
@@ -1042,39 +1292,57 @@ impl Compiler {
     fn compile_update(&mut self, op: &UpdateOp, argument: &Expr, prefix: bool) {
         match argument {
             Expr::Ident(name) => {
-                if let Some(slot) = self.scope().resolve_local(name) {
-                    if !prefix {
-                        self.emit(Op::LoadLocal(slot)); // push old value
-                    }
-                    self.emit(Op::LoadLocal(slot));
-                    match op {
-                        UpdateOp::Inc => { self.emit(Op::Inc); }
-                        UpdateOp::Dec => { self.emit(Op::Dec); }
-                    }
-                    self.emit(Op::StoreLocal(slot));
-                    if prefix {
-                        // value is on stack from StoreLocal... need Dup before store
-                        // Actually let's rethink: StoreLocal pops.
-                        // We need to leave the new value on stack.
+                let name = name.clone();
+                let lookup = self.resolve_name(&name);
+                match lookup {
+                    NameLookup::Local(slot) => {
+                        if !prefix {
+                            self.emit(Op::LoadLocal(slot)); // push old value (post-increment)
+                        }
                         self.emit(Op::LoadLocal(slot));
-                    } else {
-                        self.emit(Op::Pop); // pop the stored value, keep old
+                        match op {
+                            UpdateOp::Inc => { self.emit(Op::Inc); }
+                            UpdateOp::Dec => { self.emit(Op::Dec); }
+                        }
+                        self.emit(Op::StoreLocal(slot));
+                        if prefix {
+                            self.emit(Op::LoadLocal(slot)); // reload after store
+                        } else {
+                            self.emit(Op::Pop); // pop stored value, old value remains
+                        }
                     }
-                } else {
-                    let ci = self.add_const(Constant::String(name.clone()));
-                    if !prefix {
+                    NameLookup::Upvalue(idx) => {
+                        if !prefix {
+                            self.emit(Op::LoadUpvalue(idx));
+                        }
+                        self.emit(Op::LoadUpvalue(idx));
+                        match op {
+                            UpdateOp::Inc => { self.emit(Op::Inc); }
+                            UpdateOp::Dec => { self.emit(Op::Dec); }
+                        }
+                        self.emit(Op::StoreUpvalue(idx));
+                        if prefix {
+                            self.emit(Op::LoadUpvalue(idx));
+                        } else {
+                            self.emit(Op::Pop);
+                        }
+                    }
+                    NameLookup::Global => {
+                        let ci = self.add_const(Constant::String(name.clone()));
+                        if !prefix {
+                            self.emit(Op::LoadGlobal(ci));
+                        }
                         self.emit(Op::LoadGlobal(ci));
-                    }
-                    self.emit(Op::LoadGlobal(ci));
-                    match op {
-                        UpdateOp::Inc => { self.emit(Op::Inc); }
-                        UpdateOp::Dec => { self.emit(Op::Dec); }
-                    }
-                    self.emit(Op::StoreGlobal(ci));
-                    if prefix {
-                        self.emit(Op::LoadGlobal(ci));
-                    } else {
-                        self.emit(Op::Pop);
+                        match op {
+                            UpdateOp::Inc => { self.emit(Op::Inc); }
+                            UpdateOp::Dec => { self.emit(Op::Dec); }
+                        }
+                        self.emit(Op::StoreGlobal(ci));
+                        if prefix {
+                            self.emit(Op::LoadGlobal(ci));
+                        } else {
+                            self.emit(Op::Pop);
+                        }
                     }
                 }
             }
