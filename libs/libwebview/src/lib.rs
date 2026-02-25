@@ -27,7 +27,7 @@ mod renderer;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use libanyui_client::{self as ui, Widget};
+use libanyui_client::{self as ui};
 
 pub use renderer::{ImageCache, ImageEntry};
 pub use layout::{LayoutBox, FormFieldKind};
@@ -37,11 +37,12 @@ pub struct WebView {
     scroll_view: ui::ScrollView,
     content_view: ui::View,
     renderer: renderer::Renderer,
-    dom: Option<dom::Dom>,
-    stylesheets: Vec<css::Stylesheet>,
+    dom_val: Option<dom::Dom>,
+    /// External CSS text (added via add_stylesheet), re-parsed on each render.
+    external_css: Vec<String>,
     pub images: ImageCache,
     viewport_width: i32,
-    total_height: i32,
+    total_height_val: i32,
     link_cb: Option<ui::Callback>,
     link_cb_ud: u64,
 }
@@ -61,11 +62,11 @@ impl WebView {
             scroll_view,
             content_view,
             renderer: renderer::Renderer::new(),
-            dom: None,
-            stylesheets: Vec::new(),
+            dom_val: None,
+            external_css: Vec::new(),
             images: ImageCache::new(),
             viewport_width: w as i32,
-            total_height: 0,
+            total_height_val: 0,
             link_cb: None,
             link_cb_ud: 0,
         }
@@ -83,21 +84,19 @@ impl WebView {
 
     /// Set the raw link-click callback (extern "C" function pointer).
     /// The callback will be called with the control ID of the clicked label.
-    /// Use `get_link_url(control_id)` inside the callback to get the URL.
     pub fn set_link_callback(&mut self, cb: ui::Callback, userdata: u64) {
         self.link_cb = Some(cb);
         self.link_cb_ud = userdata;
     }
 
-    /// Add an external CSS stylesheet. Applied on next `set_html()` or `relayout()`.
+    /// Add an external CSS stylesheet (as text). Applied on next `set_html()` or `relayout()`.
     pub fn add_stylesheet(&mut self, css_text: &str) {
-        let sheet = css::parse_css(css_text);
-        self.stylesheets.push(sheet);
+        self.external_css.push(String::from(css_text));
     }
 
     /// Clear all added stylesheets.
     pub fn clear_stylesheets(&mut self) {
-        self.stylesheets.clear();
+        self.external_css.clear();
     }
 
     /// Add a decoded image to the cache. Will be displayed on next render.
@@ -106,39 +105,102 @@ impl WebView {
     }
 
     /// Set HTML content and render it.
-    pub fn set_html(&mut self, html: &str) {
+    pub fn set_html(&mut self, html_text: &str) {
         // Parse HTML → DOM.
-        let dom = html::parse_html(html);
+        let parsed_dom = html::parse(html_text);
 
-        // Collect all stylesheets: inline <style> + external.
+        // Collect stylesheets and resolve + layout + render.
+        self.do_layout_and_render(&parsed_dom);
+
+        // Store DOM for title queries etc.
+        self.dom_val = Some(parsed_dom);
+    }
+
+    /// Get the page title from the current DOM (if any).
+    pub fn get_title(&self) -> Option<String> {
+        self.dom_val.as_ref().and_then(|d| d.find_title())
+    }
+
+    /// Get the total document height in pixels.
+    pub fn total_height(&self) -> i32 {
+        self.total_height_val
+    }
+
+    /// Resize the viewport and re-layout.
+    pub fn resize(&mut self, w: u32, h: u32) {
+        self.viewport_width = w as i32;
+        self.scroll_view.set_size(w, h);
+
+        // If we have a DOM, re-layout.
+        if self.dom_val.is_some() {
+            self.relayout();
+        }
+    }
+
+    /// Re-run layout and rendering with current DOM/stylesheets.
+    pub fn relayout(&mut self) {
+        // Need to temporarily take the DOM to avoid borrow conflict.
+        if let Some(d) = self.dom_val.take() {
+            self.do_layout_and_render(&d);
+            self.dom_val = Some(d);
+        }
+    }
+
+    /// Clear all content (remove all controls, reset DOM).
+    pub fn clear(&mut self) {
+        self.renderer.clear();
+        self.dom_val = None;
+        self.total_height_val = 0;
+        self.content_view.set_size(self.viewport_width as u32, 1);
+    }
+
+    /// Access the current DOM (if set).
+    pub fn dom(&self) -> Option<&dom::Dom> {
+        self.dom_val.as_ref()
+    }
+
+    /// Look up the link URL for a control ID (used in click callbacks).
+    pub fn link_url_for(&self, control_id: u32) -> Option<&str> {
+        self.renderer.link_map.iter()
+            .find(|(id, _)| *id == control_id)
+            .map(|(_, url)| url.as_str())
+    }
+
+    /// Internal: collect stylesheets, resolve styles, layout, and render controls.
+    fn do_layout_and_render(&mut self, d: &dom::Dom) {
+        // Collect all stylesheets.
         let mut all_sheets: Vec<css::Stylesheet> = Vec::new();
 
-        // Add browser default stylesheet.
-        all_sheets.push(css::parse_css(DEFAULT_CSS));
+        // Browser default stylesheet.
+        all_sheets.push(css::parse_stylesheet(DEFAULT_CSS));
 
-        // Add external stylesheets (added via add_stylesheet).
-        for sheet in &self.stylesheets {
-            all_sheets.push(sheet.clone());
+        // External stylesheets (added via add_stylesheet).
+        for css_text in &self.external_css {
+            all_sheets.push(css::parse_stylesheet(css_text));
         }
 
-        // Extract inline <style> elements from DOM.
-        let inline_css = dom.collect_style_text();
-        if !inline_css.is_empty() {
-            all_sheets.push(css::parse_css(&inline_css));
+        // Inline <style> elements from DOM.
+        for (i, node) in d.nodes.iter().enumerate() {
+            if let dom::NodeType::Element { tag: dom::Tag::Style, .. } = &node.node_type {
+                let css_text = d.text_content(i);
+                if !css_text.is_empty() {
+                    all_sheets.push(css::parse_stylesheet(&css_text));
+                }
+            }
         }
 
         // Resolve styles.
-        let styles = style::resolve_styles(&dom, &all_sheets);
+        let styles = style::resolve_styles(d, &all_sheets);
 
         // Layout.
-        let root = layout::layout(&dom, &styles, self.viewport_width);
-        self.total_height = total_height(&root);
+        let root = layout::layout(d, &styles, self.viewport_width);
+        self.total_height_val = calc_total_height(&root);
 
         // Clear old controls.
         self.renderer.clear();
 
         // Set content view height to document height.
-        let content_h = (self.total_height as u32).max(1);
+        let content_h = (self.total_height_val as u32).max(1);
         self.content_view.set_size(self.viewport_width as u32, content_h);
 
         // Render new controls.
@@ -149,79 +211,11 @@ impl WebView {
             self.link_cb,
             self.link_cb_ud,
         );
-
-        // Store DOM for title queries etc.
-        self.dom = Some(dom);
-    }
-
-    /// Get the page title from the current DOM (if any).
-    pub fn get_title(&self) -> Option<String> {
-        self.dom.as_ref().and_then(|d| d.find_title())
-    }
-
-    /// Get the total document height in pixels.
-    pub fn total_height(&self) -> i32 {
-        self.total_height
-    }
-
-    /// Resize the viewport and re-layout.
-    pub fn resize(&mut self, w: u32, h: u32) {
-        self.viewport_width = w as i32;
-        self.scroll_view.set_size(w, h);
-
-        // If we have a DOM, re-layout.
-        if self.dom.is_some() {
-            self.relayout();
-        }
-    }
-
-    /// Re-run layout and rendering with current DOM/stylesheets.
-    pub fn relayout(&mut self) {
-        if let Some(ref dom) = self.dom {
-            let mut all_sheets: Vec<css::Stylesheet> = Vec::new();
-            all_sheets.push(css::parse_css(DEFAULT_CSS));
-            for sheet in &self.stylesheets {
-                all_sheets.push(sheet.clone());
-            }
-            let inline_css = dom.collect_style_text();
-            if !inline_css.is_empty() {
-                all_sheets.push(css::parse_css(&inline_css));
-            }
-
-            let styles = style::resolve_styles(dom, &all_sheets);
-            let root = layout::layout(dom, &styles, self.viewport_width);
-            self.total_height = total_height(&root);
-
-            self.renderer.clear();
-            let content_h = (self.total_height as u32).max(1);
-            self.content_view.set_size(self.viewport_width as u32, content_h);
-
-            self.renderer.render(
-                &root,
-                &self.content_view,
-                &self.images,
-                self.link_cb,
-                self.link_cb_ud,
-            );
-        }
-    }
-
-    /// Clear all content (remove all controls, reset DOM).
-    pub fn clear(&mut self) {
-        self.renderer.clear();
-        self.dom = None;
-        self.total_height = 0;
-        self.content_view.set_size(self.viewport_width as u32, 1);
-    }
-
-    /// Access the current DOM (if set).
-    pub fn dom(&self) -> Option<&dom::Dom> {
-        self.dom.as_ref()
     }
 }
 
 /// Calculate total document height from the root layout box.
-fn total_height(root: &LayoutBox) -> i32 {
+fn calc_total_height(root: &LayoutBox) -> i32 {
     let bottom = root.y + root.height;
     let mut max = bottom;
     for child in &root.children {

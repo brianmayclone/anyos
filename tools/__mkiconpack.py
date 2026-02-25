@@ -45,6 +45,7 @@ import io
 import os
 import struct
 import sys
+import re
 
 try:
     import cairosvg
@@ -69,6 +70,14 @@ BLUR_SIGMA = 0.3
 
 # ── Rasterize a single SVG file to an alpha map ─────────────────────
 
+def patch_svg_linecap(svg_bytes):
+    """Replace stroke-linecap="round" with "square" to avoid round bubbles
+    at stroke endpoints / intersections."""
+    return svg_bytes.replace(
+        b'stroke-linecap="round"',
+        b'stroke-linecap="square"',
+    )
+
 def rasterize_svg(filepath):
     """Rasterize an SVG file to a ICON_SIZE×ICON_SIZE alpha map.
 
@@ -76,9 +85,14 @@ def rasterize_svg(filepath):
     """
     render_size = ICON_SIZE * SUPERSAMPLE
 
+    # Read SVG and patch stroke-linecap before rendering
+    with open(filepath, 'rb') as f:
+        svg_data = f.read()
+    svg_data = patch_svg_linecap(svg_data)
+
     try:
         png_data = cairosvg.svg2png(
-            url=filepath,
+            bytestring=svg_data,
             output_width=render_size,
             output_height=render_size,
         )

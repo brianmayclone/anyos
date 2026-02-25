@@ -17,6 +17,7 @@ exclude = [
   "libs/dynlink",
   "libs/libanyui",
   "libs/libanyui_client",
+  "libs/libwebview",
   "libs/libdb",
   "libs/libdb_client",
   "libs/libzip",

@@ -40,13 +40,3 @@ dependencies = [
  "anyos_std",
  "libanyui_client",
 ]
-
-[[package]]
-name = "surf"
-version = "0.1.0"
-dependencies = [
- "anyos_std",
- "libanyui_client",
- "libimage_client",
- "libwebview",
-]

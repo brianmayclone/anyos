@@ -50,11 +50,13 @@ impl ImageCache {
 pub(crate) struct Renderer {
     /// Control IDs of all controls created for the current page.
     controls: Vec<u32>,
+    /// Mapping from control ID → link URL for click handling.
+    pub link_map: Vec<(u32, String)>,
 }
 
 impl Renderer {
     pub fn new() -> Self {
-        Self { controls: Vec::new() }
+        Self { controls: Vec::new(), link_map: Vec::new() }
     }
 
     /// Remove all previously created controls from the UI tree.
@@ -63,6 +65,7 @@ impl Renderer {
             ui::Control::from_id(id).remove();
         }
         self.controls.clear();
+        self.link_map.clear();
     }
 
     /// Walk the layout tree and create libanyui controls inside `parent`.
@@ -168,7 +171,8 @@ impl Renderer {
                 }
 
                 // Link click handler.
-                if bx.link_url.is_some() {
+                if let Some(ref url) = bx.link_url {
+                    self.link_map.push((lbl.id(), url.clone()));
                     if let Some(cb) = link_cb {
                         lbl.on_click_raw(cb, link_cb_ud);
                     }
