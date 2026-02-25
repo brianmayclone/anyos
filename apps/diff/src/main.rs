@@ -4,6 +4,7 @@
 use anyos_std::String;
 use anyos_std::Vec;
 use libanyui_client as anyui;
+use anyui::IconType;
 
 anyos_std::entry!(main);
 
@@ -2401,52 +2402,81 @@ fn main() {
     toolbar.set_color(0xFF252526);
     toolbar.set_padding(4, 4, 4, 4);
 
-    let btn_open_left = toolbar.add_icon_button("Open L");
-    btn_open_left.set_size(60, 28);
+    let ic = 0xFFCCCCCC; // icon color
+    let isz: u32 = 18;   // icon size
 
-    let btn_open_right = toolbar.add_icon_button("Open R");
-    btn_open_right.set_size(60, 28);
+    let btn_open_left = toolbar.add_icon_button("");
+    btn_open_left.set_size(34, 28);
+    btn_open_left.set_system_icon("folder-open", IconType::Outline, ic, isz);
+    btn_open_left.set_tooltip("Open Left");
 
-    let btn_refresh = toolbar.add_icon_button("Reload");
-    btn_refresh.set_size(52, 28);
+    let btn_open_right = toolbar.add_icon_button("");
+    btn_open_right.set_size(34, 28);
+    btn_open_right.set_system_icon("folder-open", IconType::Outline, ic, isz);
+    btn_open_right.set_tooltip("Open Right");
 
-    toolbar.add_separator();
-
-    let btn_undo = toolbar.add_icon_button("Undo");
-    btn_undo.set_size(44, 28);
-
-    let btn_redo = toolbar.add_icon_button("Redo");
-    btn_redo.set_size(44, 28);
-
-    toolbar.add_separator();
-
-    let btn_prev = toolbar.add_icon_button("<<");
-    btn_prev.set_size(28, 28);
-
-    let btn_next = toolbar.add_icon_button(">>");
-    btn_next.set_size(28, 28);
+    let btn_refresh = toolbar.add_icon_button("");
+    btn_refresh.set_size(34, 28);
+    btn_refresh.set_system_icon("refresh", IconType::Outline, ic, isz);
+    btn_refresh.set_tooltip("Reload");
 
     toolbar.add_separator();
 
-    let btn_merge_right = toolbar.add_icon_button("Merge >");
-    btn_merge_right.set_size(64, 28);
+    let btn_undo = toolbar.add_icon_button("");
+    btn_undo.set_size(34, 28);
+    btn_undo.set_system_icon("arrow-back-up", IconType::Outline, ic, isz);
+    btn_undo.set_tooltip("Undo");
 
-    let btn_merge_left = toolbar.add_icon_button("< Merge");
-    btn_merge_left.set_size(64, 28);
-
-    let btn_del_left = toolbar.add_icon_button("Del L");
-    btn_del_left.set_size(44, 28);
-
-    let btn_del_right = toolbar.add_icon_button("Del R");
-    btn_del_right.set_size(44, 28);
+    let btn_redo = toolbar.add_icon_button("");
+    btn_redo.set_size(34, 28);
+    btn_redo.set_system_icon("arrow-forward-up", IconType::Outline, ic, isz);
+    btn_redo.set_tooltip("Redo");
 
     toolbar.add_separator();
 
-    let btn_save_left = toolbar.add_icon_button("Save L");
-    btn_save_left.set_size(52, 28);
+    let btn_prev = toolbar.add_icon_button("");
+    btn_prev.set_size(34, 28);
+    btn_prev.set_system_icon("chevrons-left", IconType::Outline, ic, isz);
+    btn_prev.set_tooltip("Previous Hunk");
 
-    let btn_save_right = toolbar.add_icon_button("Save R");
-    btn_save_right.set_size(52, 28);
+    let btn_next = toolbar.add_icon_button("");
+    btn_next.set_size(34, 28);
+    btn_next.set_system_icon("chevrons-right", IconType::Outline, ic, isz);
+    btn_next.set_tooltip("Next Hunk");
+
+    toolbar.add_separator();
+
+    let btn_merge_right = toolbar.add_icon_button("");
+    btn_merge_right.set_size(34, 28);
+    btn_merge_right.set_system_icon("arrow-bar-to-right", IconType::Outline, ic, isz);
+    btn_merge_right.set_tooltip("Merge Right");
+
+    let btn_merge_left = toolbar.add_icon_button("");
+    btn_merge_left.set_size(34, 28);
+    btn_merge_left.set_system_icon("arrow-bar-to-left", IconType::Outline, ic, isz);
+    btn_merge_left.set_tooltip("Merge Left");
+
+    let btn_del_left = toolbar.add_icon_button("");
+    btn_del_left.set_size(34, 28);
+    btn_del_left.set_system_icon("trash", IconType::Outline, 0xFFCC6666, isz);
+    btn_del_left.set_tooltip("Delete Left");
+
+    let btn_del_right = toolbar.add_icon_button("");
+    btn_del_right.set_size(34, 28);
+    btn_del_right.set_system_icon("trash", IconType::Outline, 0xFFCC6666, isz);
+    btn_del_right.set_tooltip("Delete Right");
+
+    toolbar.add_separator();
+
+    let btn_save_left = toolbar.add_icon_button("");
+    btn_save_left.set_size(34, 28);
+    btn_save_left.set_system_icon("device-floppy", IconType::Outline, ic, isz);
+    btn_save_left.set_tooltip("Save Left");
+
+    let btn_save_right = toolbar.add_icon_button("");
+    btn_save_right.set_size(34, 28);
+    btn_save_right.set_system_icon("device-floppy", IconType::Outline, ic, isz);
+    btn_save_right.set_tooltip("Save Right");
 
     toolbar.add_separator();
 
