@@ -22,10 +22,11 @@ pub fn math_ceil(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn math_round(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let n = arg_num(args, 0);
-    // Preserve -0: Math.round(-0) = -0
-    if n == 0.0 && n.is_sign_negative() { return JsValue::Number(n); }
-    // Special case: Math.round(-0.5) = -0 (ties go to positive infinity, so -0.5 → -0)
-    if n == -0.5 { return JsValue::Number(-0.0_f64); }
+    if n.is_nan() || n.is_infinite() { return JsValue::Number(n); }
+    // Preserve -0
+    if n == 0.0 { return JsValue::Number(n); }
+    // Per spec: for n in [-0.5, 0), return -0 (ties go to +∞, so -0.5 rounds to -0 too)
+    if n >= -0.5 && n < 0.0 { return JsValue::Number(-0.0_f64); }
     JsValue::Number(floor_f64(n + 0.5))
 }
 
@@ -298,35 +299,57 @@ fn arg_num(args: &[JsValue], i: usize) -> f64 {
     args.get(i).map(|v| v.to_number()).unwrap_or(f64::NAN)
 }
 
+/// Safe i64 range for float-to-integer conversions (beyond this all floats are already integers).
+const I64_MAX_F64: f64 = 9.2233720368547758e18_f64;
+
 pub fn floor_f64(n: f64) -> f64 {
     if n.is_nan() || n.is_infinite() { return n; }
+    // Preserve -0
+    if n == 0.0 { return n; }
+    // Beyond i64 range all floats are exact integers already
+    if n >= I64_MAX_F64 || n <= -I64_MAX_F64 { return n; }
     let i = n as i64;
     if (i as f64) <= n { i as f64 } else { (i - 1) as f64 }
 }
 
 pub fn ceil_f64(n: f64) -> f64 {
     if n.is_nan() || n.is_infinite() { return n; }
+    // Preserve -0
+    if n == 0.0 { return n; }
     // For values in (-1, 0): ceil is -0 (same as -Math.floor(-x) rule)
     if n > -1.0 && n < 0.0 { return -0.0_f64; }
+    // Beyond i64 range all floats are exact integers already
+    if n >= I64_MAX_F64 || n <= -I64_MAX_F64 { return n; }
     let i = n as i64;
     if (i as f64) >= n { i as f64 } else { (i + 1) as f64 }
 }
 
 pub fn trunc_f64(n: f64) -> f64 {
     if n.is_nan() || n.is_infinite() { return n; }
+    // Preserve -0
+    if n == 0.0 { return n; }
     // Values in (-1, 0): trunc toward zero gives -0 (matching Math.ceil for negatives)
     if n > -1.0 && n < 0.0 { return -0.0_f64; }
+    // Beyond i64 range all floats are exact integers already
+    if n >= I64_MAX_F64 || n <= -I64_MAX_F64 { return n; }
     n as i64 as f64
 }
 
 pub fn sqrt_f64(n: f64) -> f64 {
-    if n < 0.0 { return f64::NAN; }
-    if n == 0.0 || n == 1.0 { return n; }
-    if n.is_nan() || n.is_infinite() { return n; }
-    let mut x = n / 2.0;
-    for _ in 0..64 {
-        let next = (x + n / x) / 2.0;
-        if (next - x).abs() < 1e-15 { break; }
+    if n.is_nan() || n < 0.0 { return f64::NAN; }
+    if n == 0.0 { return n; } // preserve -0 if ever passed
+    if n.is_infinite() { return f64::INFINITY; }
+    if n == 1.0 { return 1.0; }
+    // Use IEEE 754 bit trick for initial estimate, then Newton-Raphson
+    let bits = n.to_bits();
+    let exp = (bits >> 52) as i64 - 1023;
+    // Initial estimate: 2^(exp/2), accurate to ~50%
+    let init_exp = ((exp / 2) + 1023) as u64;
+    let mut x = f64::from_bits(init_exp << 52);
+    // Newton-Raphson: converges quadratically, ~7 iterations for full f64 precision
+    for _ in 0..8 {
+        let next = (x + n / x) * 0.5;
+        if next == x { break; }
         x = next;
     }
     x

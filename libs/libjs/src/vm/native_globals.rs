@@ -2,6 +2,7 @@
 //! parseInt, parseFloat, isNaN, isFinite, encodeURIComponent,
 //! decodeURIComponent, Object, Array, String, Number, Boolean.
 
+use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;

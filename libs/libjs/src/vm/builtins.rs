@@ -1,5 +1,6 @@
 //! Prototype initialization and global object setup.
 
+use alloc::boxed::Box;
 use alloc::string::String;
 
 use crate::value::*;
@@ -248,6 +249,10 @@ impl Vm {
 
     fn init_math(&mut self) {
         let math = JsValue::new_object();
+        // Math.[[Prototype]] = Object.prototype (per spec)
+        if let JsValue::Object(obj) = &math {
+            obj.borrow_mut().prototype = Some(self.object_proto.clone());
+        }
         math.set_property(String::from("PI"), JsValue::Number(core::f64::consts::PI));
         math.set_property(String::from("E"), JsValue::Number(core::f64::consts::E));
         math.set_property(String::from("LN2"), JsValue::Number(core::f64::consts::LN_2));
@@ -261,8 +266,13 @@ impl Vm {
         math.set_property(String::from("ceil"), native_fn("ceil", native_math::math_ceil));
         math.set_property(String::from("round"), native_fn("round", native_math::math_round));
         math.set_property(String::from("trunc"), native_fn("trunc", native_math::math_trunc));
-        math.set_property(String::from("max"), native_fn("max", native_math::math_max));
-        math.set_property(String::from("min"), native_fn("min", native_math::math_min));
+        // Math.max.length = 2, Math.min.length = 2 per spec
+        let max_fn = native_fn("max", native_math::math_max);
+        max_fn.set_property(String::from("length"), JsValue::Number(2.0));
+        math.set_property(String::from("max"), max_fn);
+        let min_fn = native_fn("min", native_math::math_min);
+        min_fn.set_property(String::from("length"), JsValue::Number(2.0));
+        math.set_property(String::from("min"), min_fn);
         math.set_property(String::from("pow"), native_fn("pow", native_math::math_pow));
         math.set_property(String::from("sqrt"), native_fn("sqrt", native_math::math_sqrt));
         math.set_property(String::from("cbrt"), native_fn("cbrt", native_math::math_cbrt));

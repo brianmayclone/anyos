@@ -3,6 +3,7 @@
 //! Uses Rc<RefCell<>> for Object/Array/Function to provide proper
 //! reference semantics — mutations are visible to all holders.
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use alloc::string::String;
