@@ -636,20 +636,22 @@ int write_output(Ctx *ctx) {
     fclose(fp);
 
     /* Statistics */
-    printf("anyld: '%s' created\n", ctx->output_path);
-    printf("  base:     0x%llx\n", (unsigned long long)base);
-    printf("  .text:    %zu bytes at 0x%llx\n",
-           ctx->text.size, (unsigned long long)ctx->text_vaddr);
-    printf("  .rodata:  %zu bytes at 0x%llx\n",
-           ctx->rodata.size, (unsigned long long)ctx->rodata_vaddr);
-    printf("  .data:    %zu bytes at 0x%llx\n",
-           ctx->data.size, (unsigned long long)ctx->data_vaddr);
-    printf("  .bss:     %llu bytes at 0x%llx\n",
-           (unsigned long long)ctx->bss_size,
-           (unsigned long long)ctx->bss_vaddr);
-    printf("  exports:  %d symbols\n", dynsym_count - 1);
-    if (ctx->nrela_dyn > 0)
-        printf("  relocs:   %d R_X86_64_RELATIVE entries\n", ctx->nrela_dyn);
+    if (!ctx->quiet) {
+        printf("anyld: '%s' created\n", ctx->output_path);
+        printf("  base:     0x%llx\n", (unsigned long long)base);
+        printf("  .text:    %zu bytes at 0x%llx\n",
+               ctx->text.size, (unsigned long long)ctx->text_vaddr);
+        printf("  .rodata:  %zu bytes at 0x%llx\n",
+               ctx->rodata.size, (unsigned long long)ctx->rodata_vaddr);
+        printf("  .data:    %zu bytes at 0x%llx\n",
+               ctx->data.size, (unsigned long long)ctx->data_vaddr);
+        printf("  .bss:     %llu bytes at 0x%llx\n",
+               (unsigned long long)ctx->bss_size,
+               (unsigned long long)ctx->bss_vaddr);
+        printf("  exports:  %d symbols\n", dynsym_count - 1);
+        if (ctx->nrela_dyn > 0)
+            printf("  relocs:   %d R_X86_64_RELATIVE entries\n", ctx->nrela_dyn);
+    }
 
     #undef PAD_TO
 

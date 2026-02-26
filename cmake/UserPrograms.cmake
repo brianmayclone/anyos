@@ -313,7 +313,7 @@ function(add_shared_lib NAME SRC_DIR)
   # Step 2: anyld -> .so (ET_DYN shared object, base=0 for dynamic loading)
   add_custom_command(
     OUTPUT ${LIB_SO}
-    COMMAND ${ANYLD_EXECUTABLE}
+    COMMAND ${ANYLD_EXECUTABLE} -q
       -o ${LIB_SO}
       -e ${SRC_DIR}/exports.def
       ${LIB_A}

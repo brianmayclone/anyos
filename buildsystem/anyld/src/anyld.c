@@ -197,6 +197,7 @@ static void usage(void) {
         "  -b <addr>    Base virtual address (default: 0, kernel allocates)\n"
         "  -e <file>    Export symbol definition file (.def)\n"
         "  -v           Verbose output\n"
+        "  -q           Quiet (suppress summary output)\n"
         "  -h           Show this help\n"
         "\n"
         "Input files can be ELF64 relocatable objects (.o) or\n"
@@ -220,6 +221,7 @@ int main(int argc, char **argv) {
 
     const char *def_path = NULL;
     int verbose = 0;
+    int quiet = 0;
 
     /* Collect input file paths */
     const char *inputs[512];
@@ -240,6 +242,8 @@ int main(int argc, char **argv) {
                 def_path = argv[i];
             } else if (strcmp(argv[i], "-v") == 0) {
                 verbose = 1;
+            } else if (strcmp(argv[i], "-q") == 0) {
+                quiet = 1;
             } else if (strcmp(argv[i], "-h") == 0 ||
                        strcmp(argv[i], "--help") == 0) {
                 usage();
@@ -341,6 +345,8 @@ int main(int argc, char **argv) {
 
     if (verbose)
         printf("anyld: %d relocations applied\n", ctx.nrelocs);
+
+    ctx.quiet = quiet;
 
     /* ── Step 8: Write output ───────────────────────────────────────── */
     if (write_output(&ctx) != 0)

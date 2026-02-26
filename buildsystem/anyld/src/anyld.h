@@ -136,6 +136,7 @@ typedef struct {
 
     /* Paths */
     const char *output_path;
+    int         quiet;
 } Ctx;
 
 /* ── input.c ────────────────────────────────────────────────────────── */
