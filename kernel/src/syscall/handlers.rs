@@ -2867,18 +2867,19 @@ pub fn sys_capture_screen(buf_ptr: u32, buf_size: u32, info_ptr: u32) -> u32 {
         None => return 1,
     };
 
-    let needed = width * height * 4;
-    if buf_size < needed {
-        return 2;
-    }
-
-    // Write dimensions to info struct
+    // Always write dimensions to info struct (even if buffer too small),
+    // so callers can probe the resolution without a full-size buffer.
     if info_ptr != 0 {
         unsafe {
             let info = info_ptr as *mut u32;
             *info = width;
             *info.add(1) = height;
         }
+    }
+
+    let needed = width * height * 4;
+    if buf_size < needed {
+        return 2;
     }
 
     // Map framebuffer physical pages into the current process at 0x30000000

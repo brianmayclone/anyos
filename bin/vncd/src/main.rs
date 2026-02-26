@@ -184,26 +184,27 @@ fn main() {
 
         // Fork a child process to handle this VNC session.
         // The child inherits `sock`, `comp_chan`, and a copy of `cfg`.
+        //
+        // NOTE: anyOS socket IDs are global — NOT per-process file descriptors.
+        // tcp_close() on a socket ID destroys it system-wide.  Therefore:
+        //   - Child must NOT close the listener (parent needs it).
+        //   - Parent must NOT close the accepted socket (child needs it).
         let cfg_snapshot = cfg.clone();
         let tid = process::fork();
         if tid == 0 {
             // ── Child process ─────────────────────────────────────────────
-            // Close the listener socket in the child — parent owns it.
-            net::tcp_close(current_listener);
-
             // Run the RFB session (blocks until client disconnects).
             rfb::run_session(sock, &cfg_snapshot, comp_chan);
             process::exit(0);
         } else if tid != u32::MAX {
             // ── Parent process ────────────────────────────────────────────
-            // Close our copy of the accepted socket — child owns it.
-            net::tcp_close(sock);
+            // Do NOT close `sock` — child owns it and will close on exit.
             if child_count < MAX_CLIENTS {
                 children[child_count] = tid;
                 child_count += 1;
             }
         } else {
-            // Fork failed — close socket and log.
+            // Fork failed — close socket (no child will use it).
             println!("vncd: fork failed");
             net::tcp_close(sock);
         }

@@ -201,9 +201,11 @@ fn key_schedule(key64: u64) -> [u64; 16] {
     let permuted = permute_64(key64, &PC1);
 
     // Split into C (bits 1-28) and D (bits 29-56) of the 56-bit value.
-    // Stored in u32, left-justified within 28 significant bits.
-    let mut c = ((permuted >> 28) as u32) & 0x0FFF_FFFF;
-    let mut d = (permuted as u32) & 0x0FFF_FFFF;
+    // permute_64 stores output MSB-aligned: bit 1 at u64 position 63, bit 56 at position 8.
+    // C = bits 1-28  → u64 positions 63-36 → shift right by 36 to get lower 28 bits.
+    // D = bits 29-56 → u64 positions 35-8  → shift right by 8 to get lower 28 bits.
+    let mut c = ((permuted >> 36) as u32) & 0x0FFF_FFFF;
+    let mut d = ((permuted >> 8) as u32) & 0x0FFF_FFFF;
 
     let mut subkeys = [0u64; 16];
     for (round, &shift) in SHIFTS.iter().enumerate() {
