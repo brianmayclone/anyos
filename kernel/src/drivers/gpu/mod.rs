@@ -109,10 +109,6 @@ pub trait GpuDriver: Send {
     /// Total VRAM size in bytes (0 if unknown).
     fn vram_size(&self) -> u32 { 0 }
 
-    /// Poll for host-initiated display resolution changes.
-    /// Returns Some((new_w, new_h)) if the host changed the resolution.
-    fn check_display_change(&mut self) -> Option<(u32, u32)> { None }
-
     // ── Hardware Cursor ──────────────────────────────────
 
     /// Returns true if hardware cursor is supported.

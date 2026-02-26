@@ -505,6 +505,7 @@ add_app(diff        ${CMAKE_SOURCE_DIR}/apps/diff           "Diff")
 add_app(mdview      ${CMAKE_SOURCE_DIR}/apps/mdview         "Markdown Viewer")
 add_app(clipman     ${CMAKE_SOURCE_DIR}/apps/clipman        "Clipboard Manager")
 add_app(vnc-settings ${CMAKE_SOURCE_DIR}/apps/vnc-settings "VNC Settings")
+add_app(anybench    ${CMAKE_SOURCE_DIR}/apps/anybench      "anyBench")
 
 # ============================================================
 # Compositor and Dock
