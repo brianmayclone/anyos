@@ -830,6 +830,23 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             }
             if try_kill_faulting_thread(139, frame) { return; }
 
+            // Detect kernel stack guard-page overflow before general diagnostics.
+            if err_not_present {
+                let page_va = crate::memory::address::VirtAddr::new(cr2 & !0xFFF);
+                if crate::memory::virtual_mem::read_pte(page_va)
+                    & crate::memory::virtual_mem::PTE_GUARD != 0
+                {
+                    crate::drivers::serial::enter_panic_mode();
+                    crate::serial_println!(
+                        "KERNEL STACK OVERFLOW! guard page hit at {:#018x} RIP={:#018x} TID={}",
+                        cr2, frame.rip,
+                        crate::task::scheduler::debug_current_tid()
+                    );
+                    crate::drivers::rsod::show_exception(frame, "Kernel Stack Overflow (guard page)");
+                    loop { unsafe { core::arch::asm!("cli; hlt"); } }
+                }
+            }
+
             // Fatal kernel page fault — enter panic mode (halt other CPUs)
             // so diagnostics are not interleaved with other crashes
             crate::drivers::serial::enter_panic_mode();

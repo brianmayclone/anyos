@@ -2,6 +2,21 @@
 
 use crate::raw::*;
 
+// ─── Anonymous pipe FD helpers ────────────────────────────────────────
+
+/// Non-blocking check of an anonymous pipe FD (e.g. created via `SYS_PIPE2`).
+///
+/// Returns:
+/// - `> 0`: bytes available in the buffer (data ready to read).
+/// - `0`: pipe is empty but the write end is still open (more data may arrive).
+/// - `u32::MAX - 1` (EOF sentinel): write end closed, buffer empty — next read returns 0.
+/// - `u32::MAX`: `fd` is not a pipe-read FD (regular file, socket, etc.).
+///
+/// Use this to poll a pipe without blocking, e.g. in a `select`-like loop.
+pub fn pipe_bytes_available_fd(fd: u32) -> u32 {
+    syscall1(SYS_PIPE_BYTES_AVAILABLE, fd as u64)
+}
+
 // ─── Named Pipes ──────────────────────────────────────────────────────
 
 /// Create a named pipe. Returns pipe_id (always > 0).

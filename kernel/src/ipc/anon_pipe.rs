@@ -16,7 +16,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 const MAX_PIPES: usize = 64;
 
 /// Pipe buffer capacity in bytes.
-const PIPE_BUF_SIZE: usize = 4096;
+pub const PIPE_BUF_SIZE: usize = 4096;
 
 /// Maximum blocked TIDs per side (readers or writers).
 const MAX_BLOCKED: usize = 8;

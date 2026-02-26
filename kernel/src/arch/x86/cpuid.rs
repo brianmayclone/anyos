@@ -45,6 +45,8 @@ pub struct CpuFeatures {
     pub bmi2: bool,
     // Leaf 7 ECX
     pub rdpid: bool,
+    // Leaf 7 EBX (supervisor-mode protection)
+    pub smep: bool,
 }
 
 impl CpuFeatures {
@@ -72,6 +74,7 @@ impl CpuFeatures {
             bmi1: false,
             bmi2: false,
             rdpid: false,
+            smep: false,
         }
     }
 }
@@ -160,6 +163,7 @@ pub fn detect() {
         let (_eax, ebx, ecx, _edx) = cpuid(7, 0);
         f.fsgsbase = ebx & (1 << 0) != 0;
         f.bmi1 = ebx & (1 << 3) != 0;
+        f.smep = ebx & (1 << 7) != 0;
         f.avx2 = ebx & (1 << 5) != 0;
         f.bmi2 = ebx & (1 << 8) != 0;
         f.erms = ebx & (1 << 9) != 0;
@@ -198,8 +202,8 @@ pub fn detect() {
         f.nx, f.syscall, f.pcid, f.rdrand, f.mwait
     );
     crate::serial_println!(
-        "  ERMS={} FSGSBASE={} BMI1={} BMI2={}",
-        f.erms, f.fsgsbase, f.bmi1, f.bmi2
+        "  ERMS={} FSGSBASE={} BMI1={} BMI2={} SMEP={}",
+        f.erms, f.fsgsbase, f.bmi1, f.bmi2, f.smep
     );
 
     // Assert mandatory features for x86_64
@@ -301,4 +305,24 @@ pub fn hypervisor_tsc_hz() -> Option<u64> {
     }
 
     None
+}
+
+/// Enable SMEP (Supervisor Mode Execution Prevention) if the CPU supports it.
+///
+/// Sets CR4 bit 20. After this, any attempt by ring-0 code to execute
+/// instructions at a user-mode (non-canonical, < 0x8000_0000_0000) virtual
+/// address raises a #PF, preventing privilege-escalation exploits that hijack
+/// ring-0 control flow by redirecting it to user-space shellcode.
+///
+/// Safe to call from both BSP and AP initialization paths.
+pub fn enable_smep() {
+    if !features().smep {
+        return;
+    }
+    unsafe {
+        let cr4: u64;
+        core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nostack, nomem, preserves_flags));
+        core::arch::asm!("mov cr4, {}", in(reg) cr4 | (1u64 << 20), options(nostack, nomem, preserves_flags));
+    }
+    crate::serial_println!("  SMEP enabled (CR4.SMEP=1)");
 }

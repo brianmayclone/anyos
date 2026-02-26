@@ -8,9 +8,71 @@ use crate::ipc::signal::SignalState;
 use crate::memory::address::PhysAddr;
 use crate::task::capabilities::CapSet;
 use crate::task::context::CpuContext;
-use alloc::boxed::Box;
-use alloc::vec;
 use core::sync::atomic::{AtomicU32, Ordering};
+
+/// A page-aligned kernel stack allocation.
+///
+/// The kernel heap allocator (`heap.rs`) ignores the `align` field in `Layout` and
+/// returns the raw free-list pointer, so `alloc_zeroed(…, align=4096)` silently gives
+/// back a non-page-aligned pointer.  `set_guard_page()` on a non-aligned pointer marks
+/// a 4K page that also contains adjacent heap data → false-positive guard faults.
+///
+/// Work-around: allocate `size + PAGE_SIZE` extra bytes (standard alignment), then
+/// manually round the pointer up to the next 4K boundary.  The guard page is
+/// installed at that aligned pointer, which is guaranteed to be on a page owned
+/// exclusively by this stack.
+const PAGE_SIZE: usize = 4096;
+
+struct PageAlignedStack {
+    /// Original pointer returned by the allocator (may not be page-aligned).
+    raw_ptr: *mut u8,
+    /// Layout used for the raw allocation (for deallocation).
+    raw_layout: core::alloc::Layout,
+    /// Page-aligned pointer to the actual bottom of the usable stack.
+    ptr: *mut u8,
+    /// Usable stack size in bytes (= KERNEL_STACK_SIZE).
+    size: usize,
+}
+
+// SAFETY: the raw pointer is owned exclusively; no aliasing across threads.
+unsafe impl Send for PageAlignedStack {}
+unsafe impl Sync for PageAlignedStack {}
+
+impl PageAlignedStack {
+    /// Allocate a zero-filled, page-aligned stack of `size` usable bytes.
+    fn alloc(size: usize) -> Self {
+        use alloc::alloc::{alloc_zeroed, Layout};
+        // Over-allocate by PAGE_SIZE so we can align the usable region upward even
+        // in the worst case (raw pointer just 1 byte past a page boundary).
+        let raw_size = size + PAGE_SIZE;
+        let raw_layout = Layout::from_size_align(raw_size, 1)
+            .expect("kernel stack raw layout invalid");
+        let raw_ptr = unsafe { alloc_zeroed(raw_layout) };
+        assert!(!raw_ptr.is_null(), "kernel stack allocation failed");
+        // Round up to the next page boundary.
+        let aligned = (raw_ptr as usize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        let ptr = aligned as *mut u8;
+        PageAlignedStack { raw_ptr, raw_layout, ptr, size }
+    }
+
+    fn as_ptr(&self) -> *mut u8 { self.ptr }
+    fn len(&self) -> usize { self.size }
+}
+
+impl Drop for PageAlignedStack {
+    fn drop(&mut self) {
+        use alloc::alloc::dealloc;
+        // Restore the guard page BEFORE freeing.
+        // The heap writes an in-band FreeBlock header at raw_ptr on dealloc.
+        // If raw_ptr == ptr (already aligned), that byte range is the guard page
+        // (PRESENT=0) → PF inside the heap deallocator with lock held → deadlock.
+        // restore_guard_page is a no-op if the page is already present, so it is
+        // safe to call unconditionally here.
+        let virt = crate::memory::address::VirtAddr::new(self.ptr as u64);
+        crate::memory::virtual_mem::restore_guard_page(virt);
+        unsafe { dealloc(self.raw_ptr, self.raw_layout); }
+    }
+}
 
 static NEXT_TID: AtomicU32 = AtomicU32::new(1);
 
@@ -67,7 +129,7 @@ pub struct Thread {
     pub tid: u32,
     pub state: ThreadState,
     pub context: CpuContext,
-    pub kernel_stack: Box<[u8]>,
+    pub kernel_stack: PageAlignedStack,
     pub priority: u8,
     pub name: [u8; 32],
     pub exit_code: Option<u32>,
@@ -140,8 +202,8 @@ pub struct Thread {
 /// IRQ frames landing on top of in-progress syscall stacks.
 const KERNEL_STACK_SIZE: usize = 512 * 1024; // 512 KiB per thread
 
-/// Magic canary value placed at the bottom of each kernel stack.
-/// If this gets overwritten, the stack has overflowed.
+/// Magic canary value placed just above the guard page of each kernel stack.
+/// Written at `ptr + PAGE_SIZE`; if overwritten, the stack has grown into the guard zone.
 pub const STACK_CANARY: u64 = 0xDEAD_BEEF_CAFE_BABE;
 
 impl Thread {
@@ -156,16 +218,24 @@ impl Thread {
             tid = NEXT_TID.fetch_add(1, Ordering::Relaxed);
         }
 
-        // Allocate kernel stack on the heap directly (NOT via Box::new which
-        // would create a 16 KiB temporary on the current stack — fatal when
-        // called from a syscall where the kernel stack is only 16 KiB).
-        let stack: Box<[u8]> = vec![0u8; KERNEL_STACK_SIZE].into_boxed_slice();
+        // Allocate kernel stack with 4096-byte alignment so set_guard_page()
+        // marks only the first page of the stack — not adjacent heap data.
+        let stack = PageAlignedStack::alloc(KERNEL_STACK_SIZE);
         let stack_top = stack.as_ptr() as u64 + KERNEL_STACK_SIZE as u64;
 
-        // Write canary at the bottom of the stack to detect overflow
+        // Write canary at the first word ABOVE the guard page.
+        // Layout (low → high): [guard page 4K | canary 8B | ... usable stack ... | stack_top]
+        // alloc_zeroed has already demand-paged all frames including the guard page itself,
+        // so set_guard_page can immediately mark it PRESENT=0 without a prior touch.
+        // The canary lives at ptr+PAGE_SIZE (PRESENT=1) and is safe to read back.
         unsafe {
-            *(stack.as_ptr() as *mut u64) = STACK_CANARY;
+            *((stack.as_ptr() as usize + PAGE_SIZE) as *mut u64) = STACK_CANARY;
         }
+
+        // Mark the very bottom 4 KiB as a guard page (PRESENT=0, PTE_GUARD=1).
+        // Stack overflows beyond the canary trigger an immediate detectable #PF.
+        let bottom_va = crate::memory::address::VirtAddr::new(stack.as_ptr() as u64);
+        crate::memory::virtual_mem::set_guard_page(bottom_va);
 
         // Write exit trampoline address at stack_top - 8 so that when the
         // entry function does `ret`, it returns into kernel_thread_exit()
@@ -199,7 +269,7 @@ impl Thread {
             tid,
             state: ThreadState::Ready,
             context,
-            kernel_stack: stack as Box<[u8]>,
+            kernel_stack: stack,
             priority,
             name: name_buf,
             exit_code: None,
@@ -243,14 +313,19 @@ impl Thread {
         self.kernel_stack.as_ptr() as u64 + self.kernel_stack.len() as u64
     }
 
-    /// Return the bottom (lowest address) of this thread's kernel stack.
+    /// Return the bottom (lowest usable address) of this thread's kernel stack.
+    ///
+    /// Returns `ptr + PAGE_SIZE` — the first byte above the guard page — NOT `ptr`
+    /// itself.  `ptr` is the guard page (PRESENT=0); dereferencing it causes a #PF.
+    /// This value is stored in `PER_CPU_STACK_BOTTOM` and read by the IRQ canary
+    /// check (`idt.rs:*(stack_bottom as *const u64)`), so it must be dereferenceable.
     pub fn kernel_stack_bottom(&self) -> u64 {
-        self.kernel_stack.as_ptr() as u64
+        self.kernel_stack.as_ptr() as u64 + PAGE_SIZE as u64
     }
 
     /// Check if the stack canary is intact. Returns false if the stack overflowed.
     pub fn check_stack_canary(&self) -> bool {
-        unsafe { *(self.kernel_stack.as_ptr() as *const u64) == STACK_CANARY }
+        unsafe { *(self.kernel_stack_bottom() as *const u64) == STACK_CANARY }
     }
 
     /// Return the thread name as a UTF-8 string slice.
@@ -286,6 +361,7 @@ impl Thread {
         crate::serial_println!("  Gap between fpu_state and context: {} bytes", gap);
     }
 }
+
 
 /// Trampoline for kernel threads: called when a kernel thread's entry function
 /// returns via `ret`. Without this, the thread would jump to address 0.

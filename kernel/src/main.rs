@@ -85,6 +85,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     serial_println!("[OK] PIC remapped (IRQ 0-15 -> INT 32-47)");
 
     arch::x86::cpuid::detect();
+    arch::x86::cpuid::enable_smep();
 
     arch::x86::pit::init();
     serial_println!("[OK] PIT configured at {} Hz", arch::x86::pit::TICK_HZ);
@@ -124,6 +125,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         arch::x86::ioapic::disable_legacy_pic();
         arch::x86::smp::init_bsp();
         arch::x86::smp::register_halt_ipi();
+        arch::x86::smp::register_tlb_shootdown_ipi();
         arch::x86::syscall_msr::init_bsp();
     } else {
         serial_println!("  ACPI not found, using legacy PIC");

@@ -28,11 +28,13 @@ pub enum FdKind {
 pub struct FdFlags {
     /// Close this FD on exec().
     pub cloexec: bool,
+    /// Non-blocking I/O: read/write returns EAGAIN instead of blocking.
+    pub nonblock: bool,
 }
 
 impl Default for FdFlags {
     fn default() -> Self {
-        FdFlags { cloexec: false }
+        FdFlags { cloexec: false, nonblock: false }
     }
 }
 
@@ -46,7 +48,7 @@ pub struct FdEntry {
 impl FdEntry {
     pub const EMPTY: FdEntry = FdEntry {
         kind: FdKind::None,
-        flags: FdFlags { cloexec: false },
+        flags: FdFlags { cloexec: false, nonblock: false },
     };
 }
 
@@ -153,6 +155,13 @@ impl FdTable {
     pub fn set_cloexec(&mut self, fd: u32, cloexec: bool) {
         if (fd as usize) < MAX_FDS {
             self.entries[fd as usize].flags.cloexec = cloexec;
+        }
+    }
+
+    /// Set or clear the O_NONBLOCK flag on an FD.
+    pub fn set_nonblock(&mut self, fd: u32, nonblock: bool) {
+        if (fd as usize) < MAX_FDS {
+            self.entries[fd as usize].flags.nonblock = nonblock;
         }
     }
 

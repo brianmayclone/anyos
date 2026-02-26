@@ -3,7 +3,7 @@
 /// Starts Application Processors (APs) using the INIT-SIPI-SIPI sequence.
 /// Each AP gets its own stack, GDT, TSS, and enters the scheduler loop.
 
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use crate::arch::x86::acpi::ProcessorInfo;
 
 /// Maximum number of CPUs supported
@@ -186,6 +186,9 @@ extern "C" fn ap_entry() -> ! {
     crate::arch::x86::syscall_msr::init_ap(cpu_id);
     crate::debug_println!("  [SMP] AP#{}: SYSCALL MSRs configured", cpu_id);
 
+    // Enable SMEP on this AP (CPUID already detected by BSP; features() is global)
+    crate::arch::x86::cpuid::enable_smep();
+
     // Initialize per-AP power management (HWP / P-state)
     crate::arch::x86::power::init_ap();
 
@@ -285,6 +288,78 @@ pub fn current_cpu_id() -> u8 {
 /// Check if the current CPU is the BSP.
 pub fn is_bsp() -> bool {
     current_cpu_id() == 0
+}
+
+/// Virtual address to invalidate in the TLB shootdown IPI handler.
+/// `u64::MAX` means "full TLB flush" (invpcid/CR3 reload).
+static TLB_FLUSH_VA: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// Number of CPUs that still need to acknowledge the TLB shootdown.
+static TLB_ACK_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Register the TLB shootdown IPI handler (IRQ 20 = INT 52).
+/// Must be called after IDT is initialized (same time as halt IPI).
+pub fn register_tlb_shootdown_ipi() {
+    crate::arch::x86::irq::register_irq(20, tlb_shootdown_ipi_handler);
+}
+
+/// IRQ 20 handler: invalidate the TLB entry for `TLB_FLUSH_VA` and acknowledge.
+fn tlb_shootdown_ipi_handler(_irq: u8) {
+    let va = TLB_FLUSH_VA.load(Ordering::Acquire);
+    unsafe {
+        if va == u64::MAX {
+            // Full TLB flush via CR3 reload (flushes all non-global entries)
+            let cr3: u64;
+            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nostack, nomem));
+            core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, nomem));
+        } else {
+            core::arch::asm!("invlpg [{}]", in(reg) va, options(nostack, preserves_flags));
+        }
+    }
+    TLB_ACK_COUNT.fetch_sub(1, Ordering::Release);
+}
+
+/// Send a TLB shootdown IPI to all other online CPUs and wait for acknowledgment.
+///
+/// `va` is the virtual address to invalidate.  Pass `u64::MAX` to request a
+/// full TLB flush on each remote CPU.  The caller must have already performed
+/// its own `invlpg` (or CR3 reload) for the same address.
+///
+/// **Must not be called with IF=0 when other CPUs also have IF=0**, as the
+/// IPI delivery is held pending until the receiver enables interrupts — which
+/// would cause a deadlock.  All callers in this kernel (Thread::new/drop,
+/// unmap_page) run with IF=1 in kernel thread context.
+pub fn tlb_shootdown(va: u64) {
+    if !crate::arch::x86::apic::is_initialized() {
+        return; // Single-CPU or APIC not yet up
+    }
+    let count = cpu_count() as u32;
+    if count <= 1 {
+        return; // Nothing to shoot down
+    }
+
+    let my_cpu = current_cpu_id();
+    let others = count - 1;
+
+    TLB_FLUSH_VA.store(va, Ordering::Release);
+    TLB_ACK_COUNT.store(others, Ordering::Release);
+
+    // Ensure the stores are visible to other CPUs before IPIs arrive
+    core::sync::atomic::fence(Ordering::SeqCst);
+
+    // Send IPI to every other online CPU
+    for i in 0..count as usize {
+        if i as u8 == my_cpu {
+            continue;
+        }
+        let lapic_id = unsafe { CPU_DATA[i].lapic_id };
+        crate::arch::x86::apic::send_ipi(lapic_id, crate::arch::x86::apic::VECTOR_IPI_TLB);
+    }
+
+    // Spin until all remote CPUs have acknowledged
+    while TLB_ACK_COUNT.load(Ordering::Acquire) > 0 {
+        core::hint::spin_loop();
+    }
 }
 
 /// Register the halt IPI handler (IRQ 21 = INT 53).

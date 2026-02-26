@@ -3003,6 +3003,17 @@ pub fn current_fd_set_cloexec(fd: u32, cloexec: bool) {
     }
 }
 
+/// Set or clear O_NONBLOCK on an FD in the current thread's FD table.
+pub fn current_fd_set_nonblock(fd: u32, nonblock: bool) {
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        let cpu = get_cpu_id();
+        if let Some(idx) = sched.current_idx(cpu) {
+            sched.threads[idx].fd_table.set_nonblock(fd, nonblock);
+        }
+    }
+}
+
 /// Set the FD table on a thread (for fork child setup).
 pub fn set_thread_fd_table(tid: u32, table: FdTable) {
     let mut guard = SCHEDULER.lock();

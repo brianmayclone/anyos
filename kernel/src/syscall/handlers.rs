@@ -214,6 +214,14 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
                     }
                 }
                 FdKind::PipeWrite { pipe_id } => {
+                    if entry.flags.nonblock {
+                        // O_NONBLOCK: return EAGAIN if no buffer space available
+                        use crate::ipc::anon_pipe::PIPE_BUF_SIZE;
+                        let avail = crate::ipc::anon_pipe::bytes_available(pipe_id);
+                        if avail >= PIPE_BUF_SIZE as u32 {
+                            return u32::MAX - 10; // EAGAIN sentinel
+                        }
+                    }
                     crate::ipc::anon_pipe::write(pipe_id, buf)
                 }
                 FdKind::Tty => {
@@ -281,6 +289,13 @@ pub fn sys_read(fd: u32, buf_ptr: u32, len: u32) -> u32 {
                     }
                 }
                 FdKind::PipeRead { pipe_id } => {
+                    if entry.flags.nonblock {
+                        // O_NONBLOCK: return EAGAIN (-11 as u32) if pipe is empty and open
+                        let avail = crate::ipc::anon_pipe::bytes_available(pipe_id);
+                        if avail == 0 && !crate::ipc::anon_pipe::is_write_closed(pipe_id) {
+                            return u32::MAX - 10; // EAGAIN sentinel
+                        }
+                    }
                     crate::ipc::anon_pipe::read(pipe_id, buf)
                 }
                 FdKind::Tty => {
@@ -3807,8 +3822,16 @@ pub fn sys_fcntl(fd: u32, cmd: u32, arg: u32) -> u32 {
             crate::task::scheduler::current_fd_set_cloexec(fd, (arg & FD_CLOEXEC) != 0);
             0
         }
-        F_GETFL | F_SETFL => {
-            // Minimal: return 0 for get, succeed for set
+        F_GETFL => {
+            const O_NONBLOCK: u32 = 0x800;
+            match crate::task::scheduler::current_fd_get(fd) {
+                Some(e) => if e.flags.nonblock { O_NONBLOCK } else { 0 },
+                None => u32::MAX,
+            }
+        }
+        F_SETFL => {
+            const O_NONBLOCK: u32 = 0x800;
+            crate::task::scheduler::current_fd_set_nonblock(fd, (arg & O_NONBLOCK) != 0);
             0
         }
         _ => u32::MAX,

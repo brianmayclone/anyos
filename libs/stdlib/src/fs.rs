@@ -81,6 +81,29 @@ pub fn read(fd: u32, buf: &mut [u8]) -> u32 {
     sys_err(syscall3(SYS_READ, fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64))
 }
 
+/// Non-blocking read from an FD.
+///
+/// Returns the number of bytes read on success (≥ 0), or a negative value on
+/// error:
+/// - `-11` (EAGAIN / EWOULDBLOCK): O_NONBLOCK set and the pipe is empty.
+/// - `-1`: other error (bad FD, EPIPE, etc.).
+///
+/// Callers must call [`set_fd_nonblock`] first to enable non-blocking mode.
+pub fn read_nonblock(fd: u32, buf: &mut [u8]) -> i32 {
+    let raw = syscall3(SYS_READ, fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64);
+    raw as i32 // EAGAIN sentinel (u32::MAX-10) becomes -11; other errors are negative; success ≥ 0
+}
+
+/// Set or clear O_NONBLOCK on a file descriptor.
+///
+/// When set, [`read_nonblock`] returns immediately with EAGAIN (-11) if no
+/// data is available on an anonymous pipe, instead of blocking the thread.
+pub fn set_fd_nonblock(fd: u32, nonblock: bool) {
+    const F_SETFL: u32 = 4;
+    const O_NONBLOCK: u32 = 0x800;
+    syscall3(SYS_FCNTL_SC, fd as u64, F_SETFL as u64, if nonblock { O_NONBLOCK as u64 } else { 0 });
+}
+
 pub fn open(path: &str, flags: u32) -> u32 {
     let mut buf = [0u8; 257];
     prepare_path(path, &mut buf);

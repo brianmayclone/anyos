@@ -34,6 +34,14 @@ const PAGE_PWT: u64 = 1 << 3;
 /// Used for pages mapped from the GPU's framebuffer into user processes.
 pub const PTE_VRAM: u64 = 1 << 9;
 
+/// OS-available PTE bit 10: kernel stack guard page marker.
+///
+/// Set by [`set_guard_page`] together with PRESENT=0.  The physical address is
+/// retained in bits 12-51 so [`restore_guard_page`] can re-enable the page.
+/// When the demand-page fault handler sees this bit it refuses to allocate a
+/// new frame, letting the kernel page-fault handler report a stack overflow.
+pub const PTE_GUARD: u64 = 1 << 10;
+
 /// Page table entry flag: No-Execute (NX / Execute Disable).
 /// Bit 63 of a leaf PTE. Requires EFER.NXE=1 (set in syscall_msr::setup_msrs).
 /// Without EFER.NXE the CPU treats bit 63 as reserved and raises #GP on access.
@@ -481,6 +489,77 @@ pub fn read_pte(virt: VirtAddr) -> u64 {
         let pt_ptr = recursive_pt_base(virt) as *const u64;
         pt_ptr.add(pti).read_volatile()
     }
+}
+
+/// Mark a kernel heap page as a guard page (not-present, access causes #PF).
+///
+/// Clears `PAGE_PRESENT` and sets `PTE_GUARD` in the leaf PTE.  The physical
+/// address is preserved so [`restore_guard_page`] can re-enable access.
+///
+/// Used to protect the bottom page of each kernel thread stack: a stack
+/// overflow that steps below the canary will fault here instead of silently
+/// corrupting adjacent heap data.
+///
+/// **Must only be called for pages that are already mapped in the current
+/// (kernel) page table.**  Call [`restore_guard_page`] before the underlying
+/// `Box` allocation is freed.
+pub fn set_guard_page(virt: VirtAddr) {
+    let pml4i = virt.pml4_index();
+    let pdpti = virt.pdpt_index();
+    let pdi = virt.pd_index();
+    let pti = virt.pt_index();
+
+    unsafe {
+        // All intermediate levels must be present
+        let pml4_ptr = RECURSIVE_PML4_BASE as *const u64;
+        if pml4_ptr.add(pml4i).read_volatile() & PAGE_PRESENT == 0 { return; }
+        let pdpt_ptr = recursive_pdpt_base(virt) as *const u64;
+        if pdpt_ptr.add(pdpti).read_volatile() & PAGE_PRESENT == 0 { return; }
+        let pd_ptr = recursive_pd_base(virt) as *const u64;
+        if pd_ptr.add(pdi).read_volatile() & PAGE_PRESENT == 0 { return; }
+
+        let pt_ptr = recursive_pt_base(virt) as *mut u64;
+        let pte = pt_ptr.add(pti).read_volatile();
+        // Keep physical address + all other flags; clear PRESENT, set GUARD marker
+        let new_pte = (pte & !PAGE_PRESENT) | PTE_GUARD;
+        pt_ptr.add(pti).write_volatile(new_pte);
+        asm!("invlpg [{}]", in(reg) virt.as_u64(), options(nostack, preserves_flags));
+    }
+    // Notify other CPUs to invalidate their TLB for this address
+    crate::arch::x86::smp::tlb_shootdown(virt.as_u64());
+}
+
+/// Restore a guard page to accessible (present + writable).
+///
+/// Only acts if `PTE_GUARD` is set in the leaf PTE.  Must be called before
+/// the underlying `Box` allocation is freed so the heap allocator can safely
+/// write its in-band free-list header at the start of the freed region.
+pub fn restore_guard_page(virt: VirtAddr) {
+    let pml4i = virt.pml4_index();
+    let pdpti = virt.pdpt_index();
+    let pdi = virt.pd_index();
+    let pti = virt.pt_index();
+
+    unsafe {
+        let pml4_ptr = RECURSIVE_PML4_BASE as *const u64;
+        if pml4_ptr.add(pml4i).read_volatile() & PAGE_PRESENT == 0 { return; }
+        let pdpt_ptr = recursive_pdpt_base(virt) as *const u64;
+        if pdpt_ptr.add(pdpti).read_volatile() & PAGE_PRESENT == 0 { return; }
+        let pd_ptr = recursive_pd_base(virt) as *const u64;
+        if pd_ptr.add(pdi).read_volatile() & PAGE_PRESENT == 0 { return; }
+
+        let pt_ptr = recursive_pt_base(virt) as *mut u64;
+        let pte = pt_ptr.add(pti).read_volatile();
+        if pte & PTE_GUARD == 0 {
+            return; // Not a guard page — nothing to restore
+        }
+        // Re-enable present + writable; clear guard marker
+        let new_pte = (pte | PAGE_PRESENT | PAGE_WRITABLE) & !PTE_GUARD;
+        pt_ptr.add(pti).write_volatile(new_pte);
+        asm!("invlpg [{}]", in(reg) virt.as_u64(), options(nostack, preserves_flags));
+    }
+    // Notify other CPUs so they don't use a stale not-present TLB entry
+    crate::arch::x86::smp::tlb_shootdown(virt.as_u64());
 }
 
 /// Get the kernel PML4's physical address.
@@ -1003,6 +1082,14 @@ pub fn handle_heap_demand_page(vaddr: u64) -> bool {
     }
 
     let page_addr = VirtAddr::new(vaddr & !0xFFF);
+
+    // Guard-page check: if the PTE has PTE_GUARD set (PRESENT=0 but physical
+    // address retained), this is a kernel stack overflow — refuse to map and
+    // let the caller print a stack-overflow diagnostic.
+    let raw_pte = read_pte(page_addr);
+    if raw_pte & PTE_GUARD != 0 {
+        return false; // stack overflow into guard page — not a demand fault
+    }
 
     // Serialize demand page faults across CPUs. This prevents the TOCTOU race
     // where two CPUs fault on the same unmapped page simultaneously — without
