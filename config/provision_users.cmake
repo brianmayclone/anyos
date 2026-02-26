@@ -206,7 +206,7 @@ while(I LESS USER_COUNT)
         file(COPY "${TEMPLATE_PATH}/" DESTINATION "${SYSROOT_HOME}")
         message(STATUS "Copied template '${UTEMPLATE}' to ${UHOME}")
       else()
-        message(WARNING "Template directory not found: ${TEMPLATE_PATH}")
+        message(STATUS "Template directory not found: ${TEMPLATE_PATH} (skipped)")
       endif()
     endif()
 

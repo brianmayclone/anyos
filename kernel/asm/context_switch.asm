@@ -33,6 +33,7 @@
 
 [BITS 64]
 global context_switch
+extern PCID_NOFLUSH_MASK
 
 ; Polled serial output: write immediate byte to COM1 (clobbers AL, DX)
 %macro SERIAL_PUTC_POLL 1
@@ -175,11 +176,17 @@ context_switch:
 
     ; --- Load new context from [RSI] ---
 
-    ; Load CR3 if different (avoid TLB flush if same address space)
+    ; Load CR3 if different (avoid TLB flush if same address space).
+    ; With PCID enabled, context.cr3 = PML4_phys | pcid (bits 0-11).
+    ; PCID_NOFLUSH_MASK is (1<<63) when PCID active, 0 otherwise.
+    ; Setting bit 63 tells the CPU to preserve TLB entries tagged with
+    ; other PCIDs, so switching between processes doesn't destroy each
+    ; other's cached translations.
     mov rax, [rsi + 144]
     mov rcx, cr3
     cmp rax, rcx
     je .skip_cr3
+    or  rax, [rel PCID_NOFLUSH_MASK]
     mov cr3, rax
 .skip_cr3:
 

@@ -748,7 +748,7 @@ fn emit_spawn_event(tid: u32, name: &str) {
 
 /// Create a new thread within the same address space as the currently running thread.
 pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &str, priority: u8) -> u32 {
-    let (pd, arch_mode, brk, parent_pri, parent_cwd, parent_caps, parent_uid, parent_gid) = {
+    let (pd, arch_mode, brk, parent_pri, parent_cwd, parent_caps, parent_uid, parent_gid, parent_pcid) = {
         let guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
         let sched = match guard.as_ref() { Some(s) => s, None => return 0 };
@@ -756,7 +756,7 @@ pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &st
         let idx = match sched.find_idx(current_tid) { Some(i) => i, None => return 0 };
         let thread = &sched.threads[idx];
         let pd = match thread.page_directory { Some(pd) => pd, None => return 0 };
-        (pd, thread.arch_mode, thread.brk, thread.priority, thread.cwd, thread.capabilities, thread.uid, thread.gid)
+        (pd, thread.arch_mode, thread.brk, thread.priority, thread.cwd, thread.capabilities, thread.uid, thread.gid, thread.pcid)
     };
 
     let effective_pri = if priority == 0 { parent_pri } else { priority };
@@ -768,7 +768,8 @@ pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &st
         let sched = guard.as_mut().expect("Scheduler not initialized");
         if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
             thread.page_directory = Some(pd);
-            thread.context.cr3 = pd.as_u64();
+            thread.pcid = parent_pcid; // Same address space = same PCID
+            thread.context.cr3 = pd.as_u64() | parent_pcid as u64;
             thread.context.checksum = thread.context.compute_checksum();
             thread.is_user = true;
             thread.brk = brk;
@@ -1540,7 +1541,8 @@ pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u32) {
     let sched = guard.as_mut().expect("Scheduler not initialized");
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.page_directory = Some(pd);
-        thread.context.cr3 = pd.as_u64();
+        thread.pcid = crate::memory::virtual_mem::allocate_pcid();
+        thread.context.cr3 = pd.as_u64() | thread.pcid as u64;
         thread.context.checksum = thread.context.compute_checksum();
         thread.is_user = true;
         thread.brk = brk;
@@ -2695,7 +2697,8 @@ pub fn exec_update_thread(
     let sched = guard.as_mut().expect("Scheduler not initialized");
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.page_directory = Some(new_pd);
-        thread.context.cr3 = new_pd.as_u64();
+        thread.pcid = crate::memory::virtual_mem::allocate_pcid();
+        thread.context.cr3 = new_pd.as_u64() | thread.pcid as u64;
         thread.brk = brk;
         // ASLR: randomize the mmap base within [0x20000000, 0x20000000 + 16 MiB)
         let mmap_rand = crate::task::loader::random_page_offset(

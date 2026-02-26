@@ -3,7 +3,7 @@
 # ============================================================
 add_custom_command(
   OUTPUT ${CMAKE_BINARY_DIR}/stage1.bin
-  COMMAND ${NASM_EXECUTABLE} -f bin
+  COMMAND ${NASM_EXECUTABLE} -w-all -f bin
     -o ${CMAKE_BINARY_DIR}/stage1.bin
     ${CMAKE_SOURCE_DIR}/bootloader/stage1/boot.asm
   DEPENDS ${CMAKE_SOURCE_DIR}/bootloader/stage1/boot.asm
@@ -19,7 +19,7 @@ set(STAGE2_SOURCES
 
 add_custom_command(
   OUTPUT ${CMAKE_BINARY_DIR}/stage2.bin
-  COMMAND ${NASM_EXECUTABLE} -f bin
+  COMMAND ${NASM_EXECUTABLE} -w-all -f bin
     -I ${CMAKE_SOURCE_DIR}/bootloader/stage2/
     -o ${CMAKE_BINARY_DIR}/stage2.bin
     ${CMAKE_SOURCE_DIR}/bootloader/stage2/stage2.asm
@@ -49,7 +49,7 @@ foreach(ASM_SRC ${KERNEL_ASM_SOURCES})
   set(ASM_OBJ ${CMAKE_BINARY_DIR}/kernel_asm_${ASM_NAME}.o)
   add_custom_command(
     OUTPUT ${ASM_OBJ}
-    COMMAND ${NASM_EXECUTABLE} -f elf64
+    COMMAND ${NASM_EXECUTABLE} -w-all -f elf64
       -o ${ASM_OBJ}
       ${ASM_SRC}
     DEPENDS ${ASM_SRC}
@@ -65,7 +65,7 @@ string(REPLACE ";" "," KERNEL_ASM_OBJECTS_STR "${KERNEL_ASM_OBJECTS}")
 set(AP_TRAMPOLINE_BIN ${CMAKE_BINARY_DIR}/ap_trampoline.bin)
 add_custom_command(
   OUTPUT ${AP_TRAMPOLINE_BIN}
-  COMMAND ${NASM_EXECUTABLE} -f bin
+  COMMAND ${NASM_EXECUTABLE} -w-all -f bin
     -o ${AP_TRAMPOLINE_BIN}
     ${CMAKE_SOURCE_DIR}/kernel/asm/ap_trampoline.asm
   DEPENDS ${CMAKE_SOURCE_DIR}/kernel/asm/ap_trampoline.asm

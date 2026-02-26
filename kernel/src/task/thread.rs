@@ -158,6 +158,8 @@ pub struct Thread {
     /// True if this thread shares its page directory with another thread (intra-process child).
     /// When true, sys_exit must NOT destroy the page directory.
     pub pd_shared: bool,
+    /// PCID (Process Context Identifier) for TLB tagging. 0 = kernel, 1-4095 = user.
+    pub pcid: u16,
     /// Last CPU this thread ran on (updated every context switch).
     pub last_cpu: usize,
     /// Stable CPU affinity — set at spawn to `least_loaded_cpu()`.
@@ -286,6 +288,7 @@ impl Thread {
             wake_at_tick: None,
             terminated_at_tick: None,
             pd_shared: false,
+            pcid: 0,
             last_cpu: 0,
             affinity_cpu: 0,
             is_idle: false,

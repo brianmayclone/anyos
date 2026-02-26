@@ -12,13 +12,60 @@ use crate::memory::address::{PhysAddr, VirtAddr};
 use crate::memory::physical;
 use crate::memory::FRAME_SIZE;
 use core::arch::asm;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 /// Spinlock for serializing demand page faults across CPUs.
 /// Prevents TOCTOU race where two CPUs fault on the same unmapped page simultaneously,
 /// both allocate frames, and the second overwrites the first's PTE (leaking the frame
 /// and zeroing data the first CPU already wrote).
 static DEMAND_PAGE_LOCK: AtomicBool = AtomicBool::new(false);
+
+// =============================================================================
+// PCID (Process Context Identifier) support
+// =============================================================================
+
+/// Whether PCID is enabled (CR4.PCIDE=1). Read by context_switch.asm.
+static PCID_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Noflush mask for CR3 writes during context switch.
+/// 0 when PCID disabled, (1 << 63) when PCID enabled.
+/// Referenced by context_switch.asm to avoid flushing TLB on address-space switch.
+#[no_mangle]
+pub static mut PCID_NOFLUSH_MASK: u64 = 0;
+
+/// Next PCID to allocate. 0 = kernel, 1-4095 = user processes.
+static NEXT_PCID: AtomicU16 = AtomicU16::new(1);
+
+/// Allocate a PCID for a new user process. Returns 0 if PCID is disabled.
+pub fn allocate_pcid() -> u16 {
+    if !PCID_ACTIVE.load(Ordering::Relaxed) { return 0; }
+    loop {
+        let pcid = NEXT_PCID.fetch_add(1, Ordering::Relaxed);
+        if pcid > 0 && pcid < 4096 { return pcid; }
+        // Wrapped — reset to 1 (PCID 0 reserved for kernel)
+        NEXT_PCID.store(1, Ordering::Relaxed);
+    }
+}
+
+/// Check if PCID is active.
+pub fn pcid_enabled() -> bool {
+    PCID_ACTIVE.load(Ordering::Relaxed)
+}
+
+/// Enable PCID if the CPU supports it. Called at the end of init().
+fn enable_pcid() {
+    if !crate::arch::x86::cpuid::features().pcid { return; }
+    // CR4.PCIDE can only be set when CR3[11:0] = 0 (PCID 0).
+    // Our kernel PML4 is page-aligned, so bits 0-11 are already 0.
+    unsafe {
+        let cr4: u64;
+        asm!("mov {}, cr4", out(reg) cr4, options(nostack, nomem, preserves_flags));
+        asm!("mov cr4, {}", in(reg) cr4 | (1u64 << 17), options(nostack, nomem, preserves_flags));
+        PCID_NOFLUSH_MASK = 1u64 << 63;
+    }
+    PCID_ACTIVE.store(true, Ordering::Release);
+    crate::serial_println!("[OK] PCID enabled (CR4.PCIDE=1) — TLB preserved across context switches");
+}
 
 /// Page table entry flag: page is present in physical memory.
 const PAGE_PRESENT: u64 = 1 << 0;
@@ -306,6 +353,9 @@ pub fn init(boot_info: &BootInfo) {
     }
 
     crate::serial_println!("4-level paging enabled (identity + higher-half at {:#018x})", KERNEL_VIRT_BASE);
+
+    // Enable PCID after paging is fully set up (CR3 already has PCID 0 = page-aligned)
+    enable_pcid();
 }
 
 /// Ensure a page table entry at `index` in `table` exists.
