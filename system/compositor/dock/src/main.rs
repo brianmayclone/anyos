@@ -39,6 +39,10 @@ const MENU_EMPTY: &str = " ";
 /// IPC channel name for dock reload notifications.
 const DOCK_CHANNEL_NAME: &str = "dock";
 
+/// Timer intervals for adaptive tick rate.
+const TIMER_FAST_MS: u32 = 16;  // ~60 Hz for animations / drag
+const TIMER_IDLE_MS: u32 = 200; // 5 Hz for idle polling
+
 struct DockApp {
     canvas: anyui::Canvas,
     items: Vec<DockItem>,
@@ -66,10 +70,38 @@ struct DockApp {
     // IPC channel for reload notifications
     dock_chan: u32,
     dock_sub: u32,
+    // Adaptive timer: 16ms when active, 200ms when idle
+    timer_id: u32,
+    fast_timer: bool,
 }
 
 static mut APP: Option<DockApp> = None;
 fn app() -> &'static mut DockApp { unsafe { APP.as_mut().unwrap() } }
+
+/// Returns true when the dock needs the fast 16ms timer (animations, drag, bounces).
+fn needs_fast_timer() -> bool {
+    let a = app();
+    let now = anyos_std::sys::uptime();
+    a.drag_active || a.drag_mouse_down || !a.bounce_items.is_empty() || a.anims.has_active(now)
+}
+
+/// Switch to fast (16ms) timer. No-op if already fast.
+fn ensure_fast_timer() {
+    let a = app();
+    if a.fast_timer { return; }
+    anyui::kill_timer(a.timer_id);
+    a.timer_id = anyui::set_timer(TIMER_FAST_MS, || { tick(); });
+    a.fast_timer = true;
+}
+
+/// Switch to idle (200ms) timer. No-op if already idle.
+fn ensure_idle_timer() {
+    let a = app();
+    if !a.fast_timer { return; }
+    anyui::kill_timer(a.timer_id);
+    a.timer_id = anyui::set_timer(TIMER_IDLE_MS, || { tick(); });
+    a.fast_timer = false;
+}
 
 fn main() {
     println!("dock: starting with anyui...");
@@ -152,6 +184,8 @@ fn main() {
             drag_active: false,
             dock_chan,
             dock_sub,
+            timer_id: 0,
+            fast_timer: false,
         });
     }
 
@@ -180,6 +214,7 @@ fn main() {
                 a.drag_start_x = x;
                 a.drag_start_y = y;
                 a.drag_idx = idx;
+                ensure_fast_timer();
             }
         }
         // Right-click context menu is handled automatically by anyui
@@ -202,6 +237,7 @@ fn main() {
     // Window lifecycle: add transient items only when a window is actually opened
     anyui::on_window_opened(|app_tid| {
         handle_window_opened(app_tid);
+        ensure_fast_timer(); // bounce animation
     });
 
     // Window lifecycle: remove transient items when last window closes
@@ -209,8 +245,8 @@ fn main() {
         handle_window_closed(app_tid);
     });
 
-    // Timer for hover, system events, animations, drag
-    anyui::set_timer(16, || {
+    // Start with idle timer — switches to fast (16ms) when animations/drag are active
+    app().timer_id = anyui::set_timer(TIMER_IDLE_MS, || {
         tick();
     });
 
@@ -315,6 +351,13 @@ fn tick() {
         a.canvas.copy_pixels_from(&a.fb.pixels);
         a.needs_redraw = false;
     }
+
+    // Adaptive timer: switch between 16ms (active) and 200ms (idle)
+    if needs_fast_timer() {
+        ensure_fast_timer();
+    } else {
+        ensure_idle_timer();
+    }
 }
 
 /// Update context menu text based on the currently hovered dock item.
@@ -379,6 +422,7 @@ fn handle_dock_click(lx: i32, ly: i32) {
         item.running = true;
         if a.has_gpu {
             a.bounce_items.push((idx, anyos_std::sys::uptime()));
+            ensure_fast_timer();
         }
         a.needs_redraw = true;
     }
@@ -474,6 +518,7 @@ fn action_open(idx: usize) {
             item.running = true;
             if a.has_gpu {
                 a.bounce_items.push((idx, anyos_std::sys::uptime()));
+                ensure_fast_timer();
             }
             a.needs_redraw = true;
         }
