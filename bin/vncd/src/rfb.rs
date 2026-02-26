@@ -407,7 +407,7 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
 
     // ── 5. Capture screen to get dimensions ──────────────────────────────────
     // Probe with a tiny buffer — kernel now writes dimensions even on "buf too small".
-    let mut screen_info = [0u32; 2];
+    let mut screen_info = [0u32; 3]; // [width, height, pitch_bytes]
     let mut tmp_buf = [0u32; 4];
     let _ = sys::capture_screen(&mut tmp_buf, &mut screen_info);
     let sw = if screen_info[0] > 0 { (screen_info[0] as usize).min(MAX_SCREEN_DIM) } else { 1024 };
@@ -681,8 +681,17 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
 
     let mut mods = ModifierState::default();
     let mut last_frame_ms = sys::uptime_ms().wrapping_sub(MIN_FRAME_INTERVAL_MS + 1);
-    let mut update_requested = false;
+    let mut update_requested = true; // send first desktop frame immediately (client is already waiting)
     let mut need_full = true; // first frame is always full
+
+    // Direct framebuffer access: after the first capture_screen call establishes
+    // the GPU framebuffer mapping at 0x30000000, we read directly from that
+    // mapped memory instead of calling the syscall every frame.  This eliminates
+    // the 3 MB kernel→user memcpy per frame entirely.
+    let mut fb_mapped = false;
+    let fb_pitch: usize = if screen_info[2] > 0 { screen_info[2] as usize } else { sw * 4 };
+    let fb_contiguous = fb_pitch == sw * 4; // true → can use zero-copy slice
+    println!("vncd: fb_pitch={} contiguous={}", fb_pitch, fb_contiguous);
 
     loop {
         // Non-blocking message read.
@@ -697,17 +706,47 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
             if update_requested {
                 let now = sys::uptime_ms();
                 if now.wrapping_sub(last_frame_ms) >= MIN_FRAME_INTERVAL_MS {
-                    // Capture screen into screen_buf.
-                    let mut info = [0u32; 2];
-                    let ok = sys::capture_screen(&mut screen_buf, &mut info);
-                    if !ok || info[0] == 0 || info[1] == 0 {
-                        println!("vncd: capture_screen failed: ok={} dims={}x{} buf_len={}",
-                            ok, info[0], info[1], screen_buf.len());
-                        break;
-                    }
-                    // Send only dirty tiles (or full if non-incremental) — single TCP write.
-                    if !send_dirty_update(sock, &screen_buf, &mut prev_buf, sw, sh, need_full, &mut send_buf) {
-                        break;
+                    if !fb_mapped {
+                        // First frame: call capture_screen to establish the FB mapping
+                        // at 0x30000000 and fill screen_buf.
+                        let mut info = [0u32; 3];
+                        let ok = sys::capture_screen(&mut screen_buf, &mut info);
+                        if !ok || info[0] == 0 || info[1] == 0 {
+                            println!("vncd: capture_screen failed: ok={} dims={}x{} buf_len={}",
+                                ok, info[0], info[1], screen_buf.len());
+                            break;
+                        }
+                        fb_mapped = true;
+                        if !send_dirty_update(sock, &screen_buf, &mut prev_buf, sw, sh, need_full, &mut send_buf) {
+                            break;
+                        }
+                    } else {
+                        // Subsequent frames: read directly from the mapped framebuffer
+                        // at 0x30000000 — no syscall, no 3 MB kernel→user copy.
+                        let cur = if fb_contiguous {
+                            // pitch == width*4: memory is contiguous, zero-copy slice.
+                            unsafe {
+                                core::slice::from_raw_parts(0x3000_0000 as *const u32, sw * sh)
+                            }
+                        } else {
+                            // pitch != width*4: copy row-by-row into screen_buf.
+                            unsafe {
+                                let src = 0x3000_0000 as *const u8;
+                                for y in 0..sh {
+                                    let src_row = src.add(y * fb_pitch);
+                                    let dst_off = y * sw;
+                                    core::ptr::copy_nonoverlapping(
+                                        src_row as *const u32,
+                                        screen_buf[dst_off..].as_mut_ptr(),
+                                        sw,
+                                    );
+                                }
+                            }
+                            &screen_buf
+                        };
+                        if !send_dirty_update(sock, cur, &mut prev_buf, sw, sh, need_full, &mut send_buf) {
+                            break;
+                        }
                     }
                     last_frame_ms = now;
                     update_requested = false;

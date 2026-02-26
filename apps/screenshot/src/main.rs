@@ -232,7 +232,7 @@ fn capture_screen() -> Option<(u32, u32, Vec<u32>)> {
     let mut buf: Vec<u32> = Vec::with_capacity(pixel_count);
     buf.resize(pixel_count, 0);
 
-    let mut info = [0u32; 2];
+    let mut info = [0u32; 3];
     if sys::capture_screen(&mut buf, &mut info) {
         Some((info[0], info[1], buf))
     } else {

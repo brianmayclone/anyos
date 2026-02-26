@@ -40,9 +40,9 @@ pub fn boot_ready() {
 }
 
 /// Capture the current screen contents into a pixel buffer.
-/// Returns (width, height) on success, None on failure.
 /// The buffer must be large enough for width*height u32 pixels.
-pub fn capture_screen(buf: &mut [u32], info: &mut [u32; 2]) -> bool {
+/// info layout: [width, height, pitch_bytes].
+pub fn capture_screen(buf: &mut [u32], info: &mut [u32; 3]) -> bool {
     let ret = syscall3(
         SYS_CAPTURE_SCREEN,
         buf.as_mut_ptr() as u64,

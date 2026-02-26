@@ -2867,13 +2867,15 @@ pub fn sys_capture_screen(buf_ptr: u32, buf_size: u32, info_ptr: u32) -> u32 {
         None => return 1,
     };
 
-    // Always write dimensions to info struct (even if buffer too small),
+    // Always write dimensions + pitch to info struct (even if buffer too small),
     // so callers can probe the resolution without a full-size buffer.
+    // info layout: [width: u32, height: u32, pitch: u32]
     if info_ptr != 0 {
         unsafe {
             let info = info_ptr as *mut u32;
             *info = width;
             *info.add(1) = height;
+            *info.add(2) = pitch;
         }
     }
 
