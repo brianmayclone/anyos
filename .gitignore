@@ -17,4 +17,3 @@ CLAUDE.md
 # Optional third-party sources (cloned separately, not tracked)
 third_party/classicube/
 assets/icons/svg
-third_party/libgit2/libgit2.a
