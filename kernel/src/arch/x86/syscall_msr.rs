@@ -17,7 +17,8 @@ const MSR_SFMASK: u32 = 0xC000_0084;
 const MSR_KERNEL_GS_BASE: u32 = 0xC000_0102;
 
 // EFER bits
-const EFER_SCE: u64 = 1 << 0; // Syscall Enable
+const EFER_SCE: u64 = 1 << 0;  // Syscall Enable
+const EFER_NXE: u64 = 1 << 11; // No-Execute Enable (must be set for PAGE_NX in PTEs to work)
 
 // SFMASK: bits cleared in RFLAGS on SYSCALL entry
 // Clear TF (bit 8), IF (bit 9), DF (bit 10)
@@ -102,9 +103,12 @@ fn setup_msrs(cpu_id: usize) {
         LAPIC_TO_PERCPU[lapic_id as usize] =
             &PERCPU[cpu_id] as *const SyscallPerCpu as u64;
 
-        // Enable SYSCALL/SYSRET in IA32_EFER
+        // Enable SYSCALL/SYSRET and NX (No-Execute) in IA32_EFER.
+        // EFER.NXE (bit 11) must be set before any PTE with bit 63 set is loaded;
+        // without it the CPU treats bit 63 as reserved and raises #GP.
         let efer = rdmsr(MSR_EFER);
-        wrmsr(MSR_EFER, efer | EFER_SCE);
+        let nx_bit = if crate::arch::x86::cpuid::features().nx { EFER_NXE } else { 0 };
+        wrmsr(MSR_EFER, efer | EFER_SCE | nx_bit);
 
         // STAR: kernel/user segment selectors
         wrmsr(MSR_STAR, crate::arch::x86::gdt::STAR_MSR_VALUE);

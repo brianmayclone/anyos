@@ -16,7 +16,7 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 ![x86_64](https://img.shields.io/badge/Arch-x86__64-4B7BEC?style=flat-square)
 ![License: MIT](https://img.shields.io/badge/License-MIT-2ecc71?style=flat-square)
 ![Programs](https://img.shields.io/badge/Programs-127+-e67e22?style=flat-square)
-![Syscalls](https://img.shields.io/badge/Syscalls-140-9b59b6?style=flat-square)
+![Syscalls](https://img.shields.io/badge/Syscalls-141-9b59b6?style=flat-square)
 
 <br>
 
@@ -85,7 +85,7 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 - **SMP support** — multi-core (up to 16 CPUs) via LAPIC/IOAPIC with per-CPU idle threads and work stealing
 - **Per-process address spaces** with isolated PML4 page directories
 - **Ring 3 user mode** with dual syscall interface: `SYSCALL/SYSRET` (64-bit) and `INT 0x80` (32-bit compat)
-- **140 system calls** across 22 categories (process, file I/O, networking, IPC, display, audio, USB, permissions, signals, ...)
+- **141 system calls** across 22 categories (process, file I/O, networking, IPC, display, audio, USB, permissions, signals, ...)
 - **Physical + virtual memory manager** with kernel heap allocator
 - **exFAT filesystem** with long filename support, symlinks, mount points, chmod/chown
 - **Storage drivers**: ATA PIO, **AHCI** (SATA DMA), **NVMe** (PCIe), ATAPI (CD-ROM), LSI SCSI
@@ -93,7 +93,8 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 - **Loadable kernel drivers** (KDRV format) with PCI device matching and hot-loading from `.ddv` bundles
 - **FPU/SSE support** with lazy save/restore (CR0.TS flag) per context switch
 - **TSC-calibrated timekeeping** via PIT channel 2 polled (no IRQ dependency)
-- **POSIX compatibility**: `fork`, `exec`, `pipe`, `dup2`, `signals` (SIGUSR1, SIGCHLD, SIG_IGN)
+- **POSIX compatibility**: `fork`, `exec`, `pipe`, `dup2`, `signals` (SIGUSR1, SIGCHLD, SIG_IGN), `poll()` for pipes and files
+- **Security hardening**: NX-bit / DEP (EFER.NXE + per-segment ELF page flags), ASLR (stack + mmap randomization via RDRAND/TSC), up to 256 FDs per process with separated socket namespace
 - **User identity system** — UID/GID, user accounts, groups, authentication
 - **Runtime app permissions** — per-user capability grants with consent dialog on first launch, reviewable in Settings
 

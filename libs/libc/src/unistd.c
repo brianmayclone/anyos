@@ -30,8 +30,8 @@ extern int _syscall(int num, int a1, int a2, int a3, int a4);
 #define SYS_DUP2_SC 242
 #define SYS_FCNTL_SC 243
 
-/* Socket fd base — socket fds start at 128 */
-#define SOCKET_FD_BASE 128
+/* Socket fd base — socket fds start at 256 (file fds now use 0-255) */
+#define SOCKET_FD_BASE 256
 
 /* Defined in socket.c — handles socket fd I/O */
 extern ssize_t recv(int sockfd, void *buf, size_t len, int flags);

@@ -12,8 +12,8 @@ use crate::sync::mutex::Mutex;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-/// Maximum number of simultaneously open file descriptors.
-const MAX_OPEN_FILES: usize = 256;
+/// Maximum number of simultaneously open file descriptors (system-wide).
+const MAX_OPEN_FILES: usize = 1024;
 
 /// Default partition start sector (used when no MBR/GPT partition table is found).
 /// Must match mkimage.py --fs-start for backward compatibility.

@@ -353,10 +353,13 @@ Runtime per-user, per-app permission management. Apps declare capabilities in th
 
 | # | Name | Args | Return | Description |
 |---|------|------|--------|-------------|
+| 157 | `pipe_bytes_available` | fd | bytes, 0, `u32::MAX-1`, or `u32::MAX` | Non-blocking pipe poll by FD number. Returns: `>0`=bytes ready, `0`=pipe open but empty, `u32::MAX-1`=EOF (write end closed + empty), `u32::MAX`=FD is not a pipe read-end (regular file/Tty, libc `poll()` treats these as always readable) |
 | 240 | `pipe2` | pipefd_ptr (int[2]), flags | 0 or error | Create anonymous pipe. Writes [read_fd, write_fd] to pipefd_ptr. Flags: 0x10=O_CLOEXEC |
 | 241 | `dup` | old_fd | new_fd or error | Duplicate file descriptor, returns lowest available FD |
 | 242 | `dup2` | old_fd, new_fd | new_fd or error | Duplicate old_fd to new_fd; closes new_fd first if open |
 | 243 | `fcntl` | fd, cmd, arg | result or error | File control. cmd: 0=F_DUPFD, 1=F_GETFD, 2=F_SETFD, 3=F_GETFL, 4=F_SETFL, 1030=F_DUPFD_CLOEXEC |
+
+> **FD limits**: Each process has up to **256** open file descriptors (FDs 0–255). Socket FDs start at 256 (`SOCKET_FD_BASE`) to avoid namespace collision with file FDs. The global open-file table supports **1024** concurrent open slots across all processes.
 
 ## POSIX Signals
 

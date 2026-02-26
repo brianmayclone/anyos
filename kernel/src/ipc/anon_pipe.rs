@@ -291,6 +291,38 @@ pub fn write(pipe_id: u32, data: &[u8]) -> u32 {
     }
 }
 
+/// Return the number of bytes currently buffered in the pipe (non-blocking).
+///
+/// Returns 0 if the pipe does not exist or is empty.
+/// Callers can use this together with `is_write_closed()` to distinguish
+/// "empty but more data may arrive" from "empty and at EOF".
+pub fn bytes_available(pipe_id: u32) -> u32 {
+    let guard = PIPES.lock();
+    guard.iter()
+        .find_map(|slot| {
+            slot.as_ref()
+                .filter(|p| p.id == pipe_id)
+                .map(|p| p.buffer.len() as u32)
+        })
+        .unwrap_or(0)
+}
+
+/// Return true if the write end of the pipe has been fully closed.
+///
+/// When the write end is closed and the buffer is empty, `read()` returns 0
+/// (EOF).  A `poll()` caller can combine this with `bytes_available() == 0`
+/// to report `POLLHUP`.
+pub fn is_write_closed(pipe_id: u32) -> bool {
+    let guard = PIPES.lock();
+    guard.iter()
+        .find_map(|slot| {
+            slot.as_ref()
+                .filter(|p| p.id == pipe_id)
+                .map(|p| p.write_refs == 0)
+        })
+        .unwrap_or(true) // pipe not found → treat as closed
+}
+
 // ---- Internal helpers ----
 
 fn find_pipe<'a>(slots: &'a mut [Option<AnonPipe>; MAX_PIPES], id: u32) -> Option<&'a mut AnonPipe> {

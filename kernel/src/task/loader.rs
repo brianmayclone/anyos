@@ -23,6 +23,64 @@ const PAGE_SIZE: u64 = 4096;
 const PAGE_WRITABLE: u64 = 0x02;
 const PAGE_USER: u64 = 0x04;
 
+/// ELF program header flag: segment is executable.
+const PF_X: u32 = 1;
+/// ELF program header flag: segment is writable.
+const PF_W: u32 = 2;
+
+/// Maximum random page offset applied to the stack top (ASLR).
+/// 256 pages = 1 MiB of entropy. The allocated 8 MiB stack region provides
+/// ample headroom, so the bottom of the used region still has plenty of space.
+const ASLR_STACK_MAX_PAGES: u32 = 256;
+
+/// Maximum random page offset applied to the mmap base (ASLR).
+/// 4096 pages = 16 MiB of entropy within the 512 MiB mmap region.
+pub const ASLR_MMAP_MAX_PAGES: u32 = 4096;
+
+/// Generate a random page offset in `[0, max_pages)` using RDRAND with a
+/// TSC-based xorshift64 fallback on CPUs that don't support RDRAND.
+///
+/// Returns a page count (multiply by PAGE_SIZE to get a byte offset).
+pub fn random_page_offset(max_pages: u32) -> u32 {
+    if max_pages == 0 {
+        return 0;
+    }
+    // Only attempt RDRAND if the CPU advertises support via CPUID.
+    // Executing RDRAND on a CPU without it raises #UD (Invalid Opcode).
+    let entropy: u64 = if crate::arch::x86::cpuid::features().rdrand {
+        let raw: u64;
+        let ok: u8;
+        unsafe {
+            // CF=1 on success, CF=0 if the hardware entropy pool is empty.
+            core::arch::asm!(
+                "rdrand {val}",
+                "setc {ok}",
+                val = out(reg) raw,
+                ok  = out(reg_byte) ok,
+                options(nostack, nomem),
+            );
+        }
+        if ok != 0 { raw } else { tsc_entropy() }
+    } else {
+        tsc_entropy()
+    };
+    (entropy % max_pages as u64) as u32
+}
+
+/// TSC-based entropy fallback for CPUs without RDRAND.
+/// Deterministic within a single boot, but varies between boots and
+/// between programs launched at different wall-clock times.
+fn tsc_entropy() -> u64 {
+    let lo: u32;
+    let hi: u32;
+    unsafe {
+        core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nostack, nomem));
+    }
+    // Mix upper and lower halves to spread entropy across all bits.
+    let tsc = ((hi as u64) << 32) | (lo as u64);
+    tsc ^ (tsc >> 17) ^ (tsc << 31)
+}
+
 /// Max concurrent pending programs (no heap allocation needed).
 const MAX_PENDING: usize = 16;
 
@@ -332,12 +390,23 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
         let page_end = (vaddr + memsz + PAGE_SIZE - 1) & !0xFFF;
         let num_pages = (page_end - page_start) / PAGE_SIZE;
 
+        // Derive PTE flags from ELF p_flags:
+        //   PF_W set              → data/bss: writable + non-executable
+        //   PF_X set, no PF_W    → code: executable, read-only
+        //   PF_X | PF_W (rare)   → RWX (e.g. JIT buffers): writable, executable
+        let seg_flags = phdr.p_flags;
+        let is_writable = (seg_flags & PF_W) != 0;
+        let is_exec     = (seg_flags & PF_X) != 0;
+        let pte_flags: u64 = PAGE_USER
+            | if is_writable { PAGE_WRITABLE } else { 0 }
+            | if !is_exec { virtual_mem::page_nx_flag() } else { 0 };
+
         for p in 0..num_pages {
             let page_virt = VirtAddr::new(page_start + p * PAGE_SIZE);
             if !virtual_mem::is_mapped_in_pd(pd_phys, page_virt) {
                 let phys = physical::alloc_frame()
                     .ok_or("Failed to allocate frame for ELF64 segment")?;
-                virtual_mem::map_page_in_pd(pd_phys, page_virt, phys, PAGE_WRITABLE | PAGE_USER);
+                virtual_mem::map_page_in_pd(pd_phys, page_virt, phys, pte_flags);
                 total_pages += 1;
             }
         }
@@ -440,12 +509,20 @@ fn load_elf32(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
         let page_end = (vaddr + memsz + PAGE_SIZE - 1) & !0xFFF;
         let num_pages = (page_end - page_start) / PAGE_SIZE;
 
+        // Derive PTE flags from ELF p_flags (same logic as ELF64 above).
+        let seg_flags = phdr.p_flags;
+        let is_writable = (seg_flags & PF_W) != 0;
+        let is_exec     = (seg_flags & PF_X) != 0;
+        let pte_flags: u64 = PAGE_USER
+            | if is_writable { PAGE_WRITABLE } else { 0 }
+            | if !is_exec { virtual_mem::page_nx_flag() } else { 0 };
+
         for p in 0..num_pages {
             let page_virt = VirtAddr::new(page_start + p * PAGE_SIZE);
             if !virtual_mem::is_mapped_in_pd(pd_phys, page_virt) {
                 let phys = physical::alloc_frame()
                     .ok_or("Failed to allocate frame for ELF32 segment")?;
-                virtual_mem::map_page_in_pd(pd_phys, page_virt, phys, PAGE_WRITABLE | PAGE_USER);
+                virtual_mem::map_page_in_pd(pd_phys, page_virt, phys, pte_flags);
                 total_pages += 1;
             }
         }
@@ -521,6 +598,8 @@ pub struct LoadResult {
     pub brk: u64,
     pub is_compat32: bool,
     pub user_pages: u32,
+    /// Initial user stack pointer (ASLR-randomized, ABI-aligned: `stack_top % 16 == 8`).
+    pub stack_top: u64,
 }
 
 /// Load a binary (ELF64/ELF32/flat) into an already-created page directory.
@@ -534,7 +613,15 @@ pub fn load_binary_into_pd(
     }
 
     let mut total_user_pages: u32 = 0;
-    let stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
+    // ASLR: randomize the stack top within the 8 MiB region.
+    // The offset is subtracted from USER_STACK_TOP so the stack starts a
+    // random number of pages below the fixed top.  The full 8 MiB is still
+    // allocated, so the random gap is simply unused guard space above.
+    let stack_aslr_offset = random_page_offset(ASLR_STACK_MAX_PAGES) as u64 * PAGE_SIZE;
+    let aslr_stack_top = USER_STACK_TOP - stack_aslr_offset;
+    let stack_bottom = aslr_stack_top - USER_STACK_PAGES * PAGE_SIZE;
+    // Stack is data — writable but never executed.
+    let stack_flags = PAGE_WRITABLE | PAGE_USER | virtual_mem::page_nx_flag();
 
     let class = elf_class(data);
     if class == ELFCLASS64 {
@@ -542,7 +629,7 @@ pub fn load_binary_into_pd(
             pd_phys,
             VirtAddr::new(stack_bottom),
             USER_STACK_PAGES,
-            PAGE_WRITABLE | PAGE_USER,
+            stack_flags,
             true,
         )?;
         let elf_result = load_elf64(data, pd_phys)?;
@@ -552,13 +639,15 @@ pub fn load_binary_into_pd(
             brk: elf_result.brk,
             is_compat32: false,
             user_pages: total_user_pages,
+            // x86-64 ABI: RSP % 16 == 8 at function entry (simulates `call` push).
+            stack_top: aslr_stack_top - 8,
         })
     } else if class == ELFCLASS32 {
         let stack_mapped = virtual_mem::map_pages_range_in_pd(
             pd_phys,
             VirtAddr::new(stack_bottom),
             USER_STACK_PAGES,
-            PAGE_WRITABLE | PAGE_USER,
+            stack_flags,
             true,
         )?;
         let elf_result = load_elf32(data, pd_phys)?;
@@ -568,11 +657,13 @@ pub fn load_binary_into_pd(
             brk: elf_result.brk,
             is_compat32: true,
             user_pages: total_user_pages,
+            stack_top: aslr_stack_top - 8,
         })
     } else if is_elf(data) {
         Err("Unknown ELF class (not ELF32 or ELF64)")
     } else {
-        // Flat binary
+        // Flat binary: no ELF headers so we cannot know which sections are
+        // code vs. data.  Map everything RWX for backwards compatibility.
         let code_pages = (data.len() as u64 + PAGE_SIZE - 1) / PAGE_SIZE;
         let code_mapped = virtual_mem::map_pages_range_in_pd(
             pd_phys,
@@ -585,7 +676,7 @@ pub fn load_binary_into_pd(
             pd_phys,
             VirtAddr::new(stack_bottom),
             USER_STACK_PAGES,
-            PAGE_WRITABLE | PAGE_USER,
+            stack_flags,
             true,
         )?;
 
@@ -610,6 +701,7 @@ pub fn load_binary_into_pd(
             brk: PROGRAM_LOAD_ADDR + code_pages * PAGE_SIZE,
             is_compat32: false,
             user_pages: total_user_pages,
+            stack_top: aslr_stack_top - 8,
         })
     }
 }
@@ -675,8 +767,9 @@ pub fn exec_current_process(data: &[u8], args: &str) -> &'static str {
     // Destroy old PD (safe: we're now running on new PD, kernel pages are shared)
     virtual_mem::destroy_user_page_directory(old_pd);
 
-    // Re-enable interrupts and jump to user mode (never returns)
-    let user_stack = USER_STACK_TOP - 8;
+    // Re-enable interrupts and jump to user mode (never returns).
+    // stack_top already includes ABI alignment (-8) and ASLR offset.
+    let user_stack = result.stack_top;
 
     let fmt = if result.is_compat32 { "elf32" } else { "elf64" };
     crate::serial_println!("exec: T{} -> ({}, {} pages, entry={:#x})",
@@ -804,17 +897,23 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     let mut is_compat32 = false;
     let mut total_user_pages: u32 = 0;
 
+    // ASLR: randomize the stack top within the 8 MiB region.
+    let stack_aslr_offset = random_page_offset(ASLR_STACK_MAX_PAGES) as u64 * PAGE_SIZE;
+    let aslr_stack_top = USER_STACK_TOP - stack_aslr_offset;
+    // Stack is data — writable but never executed.
+    let stack_flags = PAGE_WRITABLE | PAGE_USER | virtual_mem::page_nx_flag();
+
     let class = elf_class(&data);
     if class == ELFCLASS64 {
         // ---- ELF64 binary path ----
 
         // Allocate, map, and zero stack pages (single CR3 switch)
-        let stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
+        let stack_bottom = aslr_stack_top - USER_STACK_PAGES * PAGE_SIZE;
         let stack_mapped = virtual_mem::map_pages_range_in_pd(
             pd_phys,
             VirtAddr::new(stack_bottom),
             USER_STACK_PAGES,
-            PAGE_WRITABLE | PAGE_USER,
+            stack_flags,
             true,
         )?;
 
@@ -834,12 +933,12 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     } else if class == ELFCLASS32 {
         // ---- ELF32 binary path (32-bit compatibility) ----
 
-        let stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
+        let stack_bottom = aslr_stack_top - USER_STACK_PAGES * PAGE_SIZE;
         let stack_mapped = virtual_mem::map_pages_range_in_pd(
             pd_phys,
             VirtAddr::new(stack_bottom),
             USER_STACK_PAGES,
-            PAGE_WRITABLE | PAGE_USER,
+            stack_flags,
             true,
         )?;
 
@@ -855,7 +954,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     } else if is_elf(&data) {
         return Err("Unknown ELF class (not ELF32 or ELF64)");
     } else {
-        // ---- Flat binary path ----
+        // ---- Flat binary path (no ELF headers → map code RWX for compat) ----
         let code_pages = (data.len() as u64 + PAGE_SIZE - 1) / PAGE_SIZE;
         let code_mapped = virtual_mem::map_pages_range_in_pd(
             pd_phys,
@@ -865,12 +964,12 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             true,
         )?;
 
-        let stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
+        let stack_bottom = aslr_stack_top - USER_STACK_PAGES * PAGE_SIZE;
         let stack_mapped = virtual_mem::map_pages_range_in_pd(
             pd_phys,
             VirtAddr::new(stack_bottom),
             USER_STACK_PAGES,
-            PAGE_WRITABLE | PAGE_USER,
+            stack_flags,
             true,
         )?;
 
@@ -902,6 +1001,12 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     // (including APs) until we explicitly wake it.  This prevents the SMP race
     // where an AP runs the trampoline before we store pending-program data.
     let tid = crate::task::scheduler::spawn_blocked(user_thread_trampoline, 100, name);
+    // ASLR: randomize mmap base for each new process so mmap allocations
+    // land at a different address than the previous run.
+    let mmap_rand = random_page_offset(ASLR_MMAP_MAX_PAGES);
+    crate::task::scheduler::set_thread_mmap_next(
+        tid, 0x2000_0000u32.wrapping_add(mmap_rand * 4096),
+    );
     crate::task::scheduler::set_thread_user_info(tid, pd_phys, brk as u32);
     if total_user_pages > 0 {
         crate::task::scheduler::adjust_thread_user_pages(tid, total_user_pages as i32);
@@ -921,10 +1026,10 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             .expect("Too many pending programs");
         slot.tid = tid;
         slot.entry = entry_point;
-        // Subtract 8 from stack top: x86_64 ABI requires RSP % 16 == 8 at
-        // function entry (as if `call` pushed an 8-byte return address). Since
-        // _start is entered via iret (no call), we simulate this alignment.
-        slot.user_stack = USER_STACK_TOP - 8;
+        // aslr_stack_top - 8: the -8 satisfies the x86-64 ABI requirement
+        // RSP % 16 == 8 at function entry (simulates a `call` push).
+        // aslr_stack_top already incorporates the random ASLR offset.
+        slot.user_stack = aslr_stack_top - 8;
         slot.is_compat32 = is_compat32;
         slot.used = true;
     }

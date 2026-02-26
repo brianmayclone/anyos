@@ -104,6 +104,7 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_TCP_LIST, "tcp_list"),
     (SYS_UDP_LIST, "udp_list"),
     (SYS_NET_STATS, "net_stats"),
+    (SYS_PIPE_BYTES_AVAILABLE, "pipe_bytes_available"),
 ];
 
 /// Look up the human-readable name for a syscall number.

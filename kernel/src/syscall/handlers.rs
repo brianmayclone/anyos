@@ -17,7 +17,7 @@ fn resolve_path(path: &str) -> String {
     let abs = if path.starts_with('/') {
         String::from(path)
     } else {
-        let mut cwd_buf = [0u8; 256];
+        let mut cwd_buf = [0u8; 512];
         let cwd_len = crate::task::scheduler::current_thread_cwd(&mut cwd_buf);
         let cwd = core::str::from_utf8(&cwd_buf[..cwd_len]).unwrap_or("/");
         if cwd == "/" || cwd.is_empty() {
@@ -64,7 +64,7 @@ fn is_valid_user_ptr(ptr: u64, len: u64) -> bool {
     }
 }
 
-/// Read a null-terminated string from user memory (max 256 bytes).
+/// Read a null-terminated string from user memory (max 4096 bytes).
 /// Returns None if the pointer is invalid.
 fn read_user_str_safe(ptr: u32) -> Option<&'static str> {
     if !is_valid_user_ptr(ptr as u64, 1) {
@@ -73,14 +73,14 @@ fn read_user_str_safe(ptr: u32) -> Option<&'static str> {
     let p = ptr as *const u8;
     let mut len = 0usize;
     unsafe {
-        while len < 256 && *p.add(len) != 0 {
+        while len < 4096 && *p.add(len) != 0 {
             len += 1;
         }
         Some(core::str::from_utf8_unchecked(core::slice::from_raw_parts(p, len)))
     }
 }
 
-/// Read a null-terminated string from user memory (max 256 bytes).
+/// Read a null-terminated string from user memory (max 4096 bytes).
 /// Returns "" if the pointer is invalid (NULL or kernel space).
 unsafe fn read_user_str(ptr: u32) -> &'static str {
     if !is_valid_user_ptr(ptr as u64, 1) {
@@ -88,7 +88,7 @@ unsafe fn read_user_str(ptr: u32) -> &'static str {
     }
     let p = ptr as *const u8;
     let mut len = 0usize;
-    while len < 256 && *p.add(len) != 0 {
+    while len < 4096 && *p.add(len) != 0 {
         len += 1;
     }
     core::str::from_utf8_unchecked(core::slice::from_raw_parts(p, len))
@@ -710,7 +710,7 @@ pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32
             // Inherit parent's cwd — but NOT for .app bundles, which already
             // had their CWD set from Info.conf inside load_and_run_with_args.
             if !path.ends_with(".app") {
-                let mut cwd_buf = [0u8; 256];
+                let mut cwd_buf = [0u8; 512];
                 let cwd_len = crate::task::scheduler::current_thread_cwd(&mut cwd_buf);
                 if cwd_len > 0 {
                     if let Ok(cwd) = core::str::from_utf8(&cwd_buf[..cwd_len]) {
@@ -1845,6 +1845,38 @@ pub fn sys_net_stats(buf_ptr: u32, buf_size: u32) -> u32 {
     buf[100..104].copy_from_slice(&(ts.conn_errors as u32).to_le_bytes());
 
     0
+}
+
+/// sys_pipe_bytes_available — Non-blocking poll of a pipe read-end FD.
+///
+/// `fd` must be a `FdKind::PipeRead` in the calling thread's FD table.
+///
+/// Return values (mirror `SYS_TCP_RECV_AVAILABLE` convention for libc parity):
+/// - `> 0`        — that many bytes are ready to read from the pipe
+/// - `0`          — pipe is open but currently empty (no data yet)
+/// - `u32::MAX-1` — EOF: pipe is empty **and** all write ends are closed
+/// - `u32::MAX`   — FD is not a pipe read-end (regular file, Tty, or invalid)
+///                  libc `poll()` treats this as "always readable" for files.
+pub fn sys_pipe_bytes_available(fd: u32) -> u32 {
+    use crate::fs::fd_table::FdKind;
+    let entry = match crate::task::scheduler::current_fd_get(fd) {
+        Some(e) => e,
+        None => return u32::MAX, // FD not open
+    };
+    match entry.kind {
+        FdKind::PipeRead { pipe_id } => {
+            let avail = crate::ipc::anon_pipe::bytes_available(pipe_id);
+            if avail > 0 {
+                avail
+            } else if crate::ipc::anon_pipe::is_write_closed(pipe_id) {
+                u32::MAX - 1 // EOF sentinel
+            } else {
+                0 // pipe open but empty
+            }
+        }
+        // Regular files, Tty, write-end pipes — poll() treats these as always ready
+        _ => u32::MAX,
+    }
 }
 
 /// sys_net_arp - Get ARP table. arg1=buf_ptr, arg2=buf_size

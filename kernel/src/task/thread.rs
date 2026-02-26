@@ -116,10 +116,10 @@ pub struct Thread {
     /// Next virtual address for mmap allocations (bump pointer in the mmap region).
     /// Starts at MMAP_BASE (0x20000000) and grows upward.
     pub mmap_next: u32,
-    /// Current working directory (null-terminated, max 255 chars).
+    /// Current working directory (null-terminated, max 511 chars).
     /// Defaults to "/" for kernel threads and non-bundle processes.
     /// For .app bundles, set to the bundle directory (or per Info.conf working_dir).
-    pub cwd: [u8; 256],
+    pub cwd: [u8; 512],
     /// Capability bitmask — gates which syscalls this thread may invoke.
     /// Set from Info.conf for .app bundles, inherited (capped) for CLI programs.
     pub capabilities: CapSet,
@@ -225,7 +225,7 @@ impl Thread {
             user_pages: 0,
             mmap_next: 0x2000_0000,
             cwd: {
-                let mut c = [0u8; 256];
+                let mut c = [0u8; 512];
                 c[0] = b'/';
                 c
             },

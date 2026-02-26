@@ -8,6 +8,7 @@ This document describes the internal architecture of anyOS, from boot to desktop
 - [Memory Layout](#memory-layout)
 - [Kernel Architecture](#kernel-architecture)
 - [Process Model](#process-model)
+- [Security](#security)
 - [Graphics & Compositor](#graphics--compositor)
 - [Filesystem](#filesystem)
 - [Networking](#networking)
@@ -111,11 +112,14 @@ PML4[510] recursive self-mapping              Page table access
                              0x04380000 = libcompositor.dlib
                              0x04400000 = libanyui.so
                              0x05000000 = libfont.so (~17 MiB, embedded fonts)
-0x08000000 - 0x080XXXXX    Program text + data + BSS
+0x08000000 - 0x080XXXXX    Program text + data + BSS (ELF64/ELF32)
 0x080XXXXX - 0x0BFEFFFF    Heap (grows via sbrk)
-0x0BFF0000 - 0x0BFFFFFF    User stack (64 KiB, grows downward)
+0x20000000+                mmap region (base randomized ±16 MiB by ASLR)
+0x0BFF0000 - 0x0BFFFFFF    User stack (64 KiB, top randomized ±1 MiB by ASLR)
 0xFFFFFFFF80000000+         Kernel space (not accessible from Ring 3)
 ```
+
+> **ASLR**: Stack top and mmap base are randomized at each process launch using RDRAND hardware entropy (TSC-based xorshift64 fallback on CPUs without RDRAND). ET_EXEC program text remains at fixed ELF-header addresses; PIE binaries would be required for full load-address randomization.
 
 ### Paging
 
@@ -228,9 +232,47 @@ See [services.md](services.md) for the full service system documentation.
 
 1. `sys_spawn(path, args)` -- Kernel reads ELF/flat binary from disk
 2. `create_user_page_directory()` -- Clone kernel PDEs, allocate user pages
-3. `load_elf()` / `load_flat()` -- Map program segments, zero BSS
-4. Thread starts at entry point in Ring 3 via `iret`
+3. `load_elf()` / `load_flat()` -- Map program segments with NX flags, zero BSS
+4. Thread starts at entry point in Ring 3 via `iret` (ASLR-randomised stack)
 5. `sys_exit(code)` -- Thread terminates, pages freed
+
+---
+
+## Security
+
+### NX-Bit / Data Execution Prevention (DEP)
+
+anyOS enforces hardware DEP via the x86-64 NX (No-Execute) bit in page table entries:
+
+- **EFER.NXE** (bit 11 of `IA32_EFER` MSR) is set at boot on every CPU after verifying CPUID `NX=true`. Without this bit, bit 63 in a PTE is treated as reserved and raises `#GP`; DEP only becomes active once the MSR is set.
+- **`PAGE_NX` flag** (`bit 63` of any PTE): set by the virtual memory layer on data pages, cleared on executable pages.
+- **ELF segment flags**: the loader reads `p_flags` (`PF_X=1`, `PF_W=2`) for each `PT_LOAD` segment and derives the mapping flags per segment:
+  - Read-only executable code → `PAGE_USER` (no NX, no write)
+  - Writable data / BSS / heap → `PAGE_USER | PAGE_WRITABLE | PAGE_NX`
+  - Stack → `PAGE_USER | PAGE_WRITABLE | PAGE_NX`
+- **`clone_user_page_directory`** preserves bit 63 when copying PTEs (earlier `pte & 0xFFF` mask silently stripped the NX flag during fork/exec; fixed to `(pte & 0xFFF) | (pte & PAGE_NX)`).
+- Flat binaries (no ELF `p_flags`) are mapped RWX for backward compatibility.
+
+### Address Space Layout Randomization (ASLR)
+
+Stack and mmap base addresses are randomized at process spawn using hardware entropy:
+
+| Region | Randomization | Entropy |
+|--------|--------------|---------|
+| **User stack** | ±1 MiB (256 pages) below `USER_STACK_TOP` | RDRAND (TSC fallback if CPU lacks RDRAND) |
+| **mmap base** | ±16 MiB (4096 pages) above `0x20000000` | Same |
+
+Implementation notes:
+- `random_page_offset(max_pages)` in `loader.rs` checks CPUID `RDRAND` before executing the instruction (executing RDRAND on a CPU without it raises `#UD`). Falls back to a TSC-based xorshift64 on CPUs that report `RDRAND=false`.
+- ET_EXEC (non-PIE) binaries cannot have their text base randomized without recompilation as PIE; only stack and mmap are affected.
+- The stack ASLR offset is returned via `LoadResult.stack_top` so all code paths (`exec`, `spawn`, flat binary) use the same randomised pointer.
+
+### File Descriptor Namespace
+
+- **MAX_FDS = 256**: each process may have up to 256 simultaneously open file descriptors (FDs 0–255). The per-process `FdTable` is a fixed-size array on the thread struct (3 KiB, no heap allocation).
+- **SOCKET_FD_BASE = 256**: socket FDs in libc start at 256 to avoid colliding with file FDs 0–255. This separation prevents ambiguous `read()`/`write()` routing.
+- **MAX_OPEN_FILES = 1024**: global VFS open-file table supports up to 1024 simultaneous open file slots across all processes.
+- **PATH_MAX = 4096**: `read_user_str` reads up to 4096 bytes when copying path strings from user space.
 
 ---
 
@@ -561,7 +603,7 @@ anyOS supports two syscall paths:
 
 ### Syscall Categories
 
-There are 155+ syscalls organized by category:
+There are 141+ syscalls organized by category:
 
 | Category | Count | Examples |
 |----------|-------|----------|
@@ -570,9 +612,9 @@ There are 155+ syscalls organized by category:
 | File I/O | 16 | read, write, open, close, readdir, stat, mkdir, symlink, rename |
 | Mount | 3 | mount, umount, list_mounts |
 | Memory | 3 | sbrk, mmap, munmap |
-| Networking | 24 | ping, dhcp, dns, tcp_*, udp_*, net_poll |
+| Networking | 24 | ping, dhcp, dns, tcp_*, udp_*, net_poll, net_stats |
 | Pipes/IPC | 11 | pipe_create/read/write, evt_chan_*, evt_sys_* |
-| POSIX Pipes/FD | 4 | pipe2, dup, dup2, fcntl |
+| POSIX Pipes/FD | 5 | pipe2, dup, dup2, fcntl, **pipe_bytes_available** |
 | Shared Memory | 4 | shm_create, shm_map, shm_unmap, shm_destroy |
 | Signals | 2 | sigaction, sigprocmask |
 | Window Manager | 13 | win_create, draw_text, blit, present |

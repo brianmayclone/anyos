@@ -2344,7 +2344,7 @@ pub fn set_thread_cwd(tid: u32, cwd: &str) {
     let sched = guard.as_mut().expect("Scheduler not initialized");
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         let bytes = cwd.as_bytes();
-        let len = bytes.len().min(255);
+        let len = bytes.len().min(511);
         thread.cwd[..len].copy_from_slice(&bytes[..len]);
         thread.cwd[len] = 0;
     }
@@ -2357,7 +2357,7 @@ pub fn current_thread_cwd(buf: &mut [u8]) -> usize {
     if let Some(sched) = guard.as_ref() {
         if let Some(idx) = sched.current_idx(cpu_id) {
             let cwd = &sched.threads[idx].cwd;
-            let len = cwd.iter().position(|&b| b == 0).unwrap_or(256);
+            let len = cwd.iter().position(|&b| b == 0).unwrap_or(512);
             let copy_len = len.min(buf.len());
             buf[..copy_len].copy_from_slice(&cwd[..copy_len]);
             return copy_len;
@@ -2610,7 +2610,7 @@ pub struct ForkSnapshot {
     pub brk: u32,
     pub arch_mode: crate::task::thread::ArchMode,
     pub args: [u8; 256],
-    pub cwd: [u8; 256],
+    pub cwd: [u8; 512],
     pub capabilities: crate::task::capabilities::CapSet,
     pub uid: u16,
     pub gid: u16,
@@ -2697,7 +2697,11 @@ pub fn exec_update_thread(
         thread.page_directory = Some(new_pd);
         thread.context.cr3 = new_pd.as_u64();
         thread.brk = brk;
-        thread.mmap_next = 0x2000_0000;
+        // ASLR: randomize the mmap base within [0x20000000, 0x20000000 + 16 MiB)
+        let mmap_rand = crate::task::loader::random_page_offset(
+            crate::task::loader::ASLR_MMAP_MAX_PAGES,
+        );
+        thread.mmap_next = 0x2000_0000u32.wrapping_add(mmap_rand * 4096);
         thread.fpu_state = crate::task::thread::FxState::new_default();
         thread.user_pages = user_pages;
         thread.arch_mode = arch_mode;

@@ -34,6 +34,20 @@ const PAGE_PWT: u64 = 1 << 3;
 /// Used for pages mapped from the GPU's framebuffer into user processes.
 pub const PTE_VRAM: u64 = 1 << 9;
 
+/// Page table entry flag: No-Execute (NX / Execute Disable).
+/// Bit 63 of a leaf PTE. Requires EFER.NXE=1 (set in syscall_msr::setup_msrs).
+/// Without EFER.NXE the CPU treats bit 63 as reserved and raises #GP on access.
+/// Always use `page_nx_flag()` instead of this constant directly to avoid
+/// setting NX on CPUs that don't support it.
+pub const PAGE_NX: u64 = 1u64 << 63;
+
+/// Returns `PAGE_NX` if the CPU supports No-Execute (NX/XD), or `0` otherwise.
+/// Safe to OR into any PTE flags value.
+#[inline]
+pub fn page_nx_flag() -> u64 {
+    if crate::arch::x86::cpuid::features().nx { PAGE_NX } else { 0 }
+}
+
 /// Number of entries in a page table (512 for x86-64).
 const ENTRIES_PER_TABLE: usize = 512;
 
@@ -665,7 +679,11 @@ pub fn clone_user_page_directory(parent_pd: PhysAddr) -> Option<PhysAddr> {
                         }
 
                         let parent_phys = pte & ADDR_MASK;
-                        let pte_flags = pte & 0xFFF; // lower 12 bits = flags
+                        // Preserve bits 0-11 (standard flags) and bit 63 (NX).
+                        // A plain `& 0xFFF` would strip the NX bit, causing the
+                        // child's pages to become executable even when the parent
+                        // mapped them as non-executable (data/stack segments).
+                        let pte_flags = (pte & 0xFFF) | (pte & PAGE_NX);
 
                         // Compute virtual address
                         let vaddr = (pml4i as u64) << 39

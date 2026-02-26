@@ -5,7 +5,7 @@
 //! Fixed-size array — no heap allocation, trivially cloneable for fork().
 
 /// Maximum number of file descriptors per process.
-pub const MAX_FDS: usize = 64;
+pub const MAX_FDS: usize = 256;
 
 /// What kind of kernel resource a file descriptor points to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,7 +51,7 @@ impl FdEntry {
 }
 
 /// Per-process file descriptor table. Fixed-size array, no heap allocation.
-/// Size: MAX_FDS * size_of::<FdEntry>() = 64 * 12 = 768 bytes.
+/// Size: MAX_FDS * size_of::<FdEntry>() = 256 * 12 = 3072 bytes.
 #[derive(Clone)]
 pub struct FdTable {
     pub entries: [FdEntry; MAX_FDS],

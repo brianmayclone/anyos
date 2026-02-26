@@ -49,6 +49,8 @@ extern int _syscall(int num, int a1, int a2, int a3, int a4);
 #define SYS_UDP_UNBIND      151
 #define SYS_UDP_SENDTO      152
 #define SYS_UDP_RECVFROM    153
+/* Pipe FD availability check (returns bytes, 0xFFFFFFFE=EOF, 0xFFFFFFFF=not-a-pipe) */
+#define SYS_PIPE_BYTES_AVAILABLE 157
 
 /* TCP status codes from kernel */
 #define TCP_STATE_CLOSED        0
@@ -64,8 +66,8 @@ extern int _syscall(int num, int a1, int a2, int a3, int a4);
  * Internal socket table
  * ========================================================================= */
 
-#define MAX_SOCKETS         16
-#define SOCKET_FD_BASE      128  /* Socket fds start at 128 to avoid file fd conflicts */
+#define MAX_SOCKETS         64
+#define SOCKET_FD_BASE      256  /* Socket fds start at 256 (file fds now use 0-255) */
 
 typedef struct {
     int      in_use;
@@ -716,6 +718,27 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout)
 
         for (nfds_t i = 0; i < nfds; i++) {
             fds[i].revents = 0;
+
+            /* Non-socket FDs (files, pipes, Tty) are below SOCKET_FD_BASE */
+            if (fds[i].fd < SOCKET_FD_BASE) {
+                unsigned int avail = (unsigned int)_syscall(
+                    SYS_PIPE_BYTES_AVAILABLE, fds[i].fd, 0, 0, 0);
+                if (avail == 0xFFFFFFFFu) {
+                    /* Regular file / Tty: always considered readable/writable */
+                    if (fds[i].events & POLLIN)  fds[i].revents |= POLLIN;
+                    if (fds[i].events & POLLOUT) fds[i].revents |= POLLOUT;
+                } else if (avail == 0xFFFFFFFEu) {
+                    /* EOF: write end closed and buffer empty */
+                    if (fds[i].events & POLLIN)  fds[i].revents |= POLLIN | POLLHUP;
+                } else if (avail > 0) {
+                    /* Data available in pipe buffer */
+                    if (fds[i].events & POLLIN)  fds[i].revents |= POLLIN;
+                }
+                /* avail == 0: pipe open but empty — no event, keep waiting */
+                if (fds[i].revents) ready++;
+                continue;
+            }
+
             socket_entry_t *s = get_socket(fds[i].fd);
             if (!s) {
                 fds[i].revents = POLLNVAL;
