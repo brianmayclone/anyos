@@ -10,28 +10,70 @@
 #include <ctype.h>
 
 void *memcpy(void *dest, const void *src, size_t n) {
-    unsigned char *d = (unsigned char *)dest;
-    const unsigned char *s = (const unsigned char *)src;
-    while (n--) *d++ = *s++;
-    return dest;
+    /* rep movsb — ERMS-accelerated on modern CPUs (Ivy Bridge+).
+     * Reaches near memory bandwidth without touching XMM/YMM registers. */
+    void *ret = dest;
+    __asm__ __volatile__(
+        "rep movsb"
+        : "+D"(dest), "+S"(src), "+c"(n)
+        :
+        : "memory"
+    );
+    return ret;
 }
 
 void *memmove(void *dest, const void *src, size_t n) {
-    unsigned char *d = (unsigned char *)dest;
-    const unsigned char *s = (const unsigned char *)src;
-    if (d < s) {
-        while (n--) *d++ = *s++;
+    void *ret = dest;
+    if (dest <= src || (char *)dest >= (char *)src + n) {
+        /* Forward copy — no overlap risk */
+        __asm__ __volatile__(
+            "rep movsb"
+            : "+D"(dest), "+S"(src), "+c"(n)
+            :
+            : "memory"
+        );
     } else {
-        d += n; s += n;
-        while (n--) *--d = *--s;
+        /* Backward copy — std reverses direction, cld restores */
+        dest = (char *)dest + n - 1;
+        src  = (const char *)src + n - 1;
+        __asm__ __volatile__(
+            "std\n\t"
+            "rep movsb\n\t"
+            "cld"
+            : "+D"(dest), "+S"(src), "+c"(n)
+            :
+            : "memory"
+        );
     }
-    return dest;
+    return ret;
 }
 
 void *memset(void *s, int c, size_t n) {
-    unsigned char *p = (unsigned char *)s;
-    while (n--) *p++ = (unsigned char)c;
-    return s;
+    void *ret = s;
+    /* Broadcast byte to qword: 0xAB → 0xABABABABABABABAB */
+    unsigned long long fill = (unsigned char)c;
+    fill |= fill << 8;
+    fill |= fill << 16;
+    fill |= fill << 32;
+
+    /* Fill 8 bytes at a time with rep stosq, then remaining bytes */
+    size_t qwords = n >> 3;
+    size_t tail   = n & 7;
+    __asm__ __volatile__(
+        "rep stosq"
+        : "+D"(s), "+c"(qwords)
+        : "a"(fill)
+        : "memory"
+    );
+    if (tail) {
+        __asm__ __volatile__(
+            "rep stosb"
+            : "+D"(s), "+c"(tail)
+            : "a"(fill)
+            : "memory"
+        );
+    }
+    return ret;
 }
 
 int memcmp(const void *s1, const void *s2, size_t n) {

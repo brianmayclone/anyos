@@ -14,28 +14,65 @@
 #include <ctype.h>
 
 void *memcpy(void *dest, const void *src, size_t n) {
-    unsigned char *d = dest;
-    const unsigned char *s = src;
-    while (n--) *d++ = *s++;
-    return dest;
+    /* rep movsb — ERMS-accelerated on modern CPUs (Ivy Bridge+). */
+    void *ret = dest;
+    __asm__ __volatile__(
+        "rep movsb"
+        : "+D"(dest), "+S"(src), "+c"(n)
+        :
+        : "memory"
+    );
+    return ret;
 }
 
 void *memmove(void *dest, const void *src, size_t n) {
-    unsigned char *d = dest;
-    const unsigned char *s = src;
-    if (d < s) {
-        while (n--) *d++ = *s++;
+    void *ret = dest;
+    if (dest <= src || (char *)dest >= (char *)src + n) {
+        __asm__ __volatile__(
+            "rep movsb"
+            : "+D"(dest), "+S"(src), "+c"(n)
+            :
+            : "memory"
+        );
     } else {
-        d += n; s += n;
-        while (n--) *--d = *--s;
+        dest = (char *)dest + n - 1;
+        src  = (const char *)src + n - 1;
+        __asm__ __volatile__(
+            "std\n\t"
+            "rep movsb\n\t"
+            "cld"
+            : "+D"(dest), "+S"(src), "+c"(n)
+            :
+            : "memory"
+        );
     }
-    return dest;
+    return ret;
 }
 
 void *memset(void *s, int c, size_t n) {
-    unsigned char *p = s;
-    while (n--) *p++ = (unsigned char)c;
-    return s;
+    void *ret = s;
+    /* Broadcast byte to dword: 0xAB → 0xABABABAB */
+    unsigned int fill = (unsigned char)c;
+    fill |= fill << 8;
+    fill |= fill << 16;
+
+    size_t dwords = n >> 2;
+    size_t tail   = n & 3;
+    __asm__ __volatile__(
+        "rep stosl"
+        : "+D"(s), "+c"(dwords)
+        : "a"(fill)
+        : "memory"
+    );
+    if (tail) {
+        __asm__ __volatile__(
+            "rep stosb"
+            : "+D"(s), "+c"(tail)
+            : "a"(fill)
+            : "memory"
+        );
+    }
+    return ret;
 }
 
 int memcmp(const void *s1, const void *s2, size_t n) {
