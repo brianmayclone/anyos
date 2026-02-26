@@ -205,3 +205,69 @@ pub fn udp_recvfrom(port: u16, buf: &mut [u8]) -> u32 {
 pub fn udp_set_opt(port: u16, opt: u32, val: u32) -> u32 {
     syscall3(SYS_UDP_SET_OPT, port as u64, opt as u64, val as u64)
 }
+
+/// UDP binding info returned by `udp_list()`.
+pub struct UdpBindInfo {
+    pub port: u16,
+    pub owner_tid: u16,
+    pub recv_queue_len: u16,
+}
+
+/// List all bound UDP ports. Returns a Vec of binding info.
+pub fn udp_list() -> alloc::vec::Vec<UdpBindInfo> {
+    let mut buf = [0u8; 64 * 8]; // max 64 entries * 8 bytes each
+    let count = syscall2(SYS_UDP_LIST, buf.as_mut_ptr() as u64, 64);
+    let mut result = alloc::vec::Vec::new();
+    for i in 0..count as usize {
+        let off = i * 8;
+        result.push(UdpBindInfo {
+            port: u16::from_le_bytes([buf[off], buf[off + 1]]),
+            owner_tid: u16::from_le_bytes([buf[off + 2], buf[off + 3]]),
+            recv_queue_len: u16::from_le_bytes([buf[off + 4], buf[off + 5]]),
+        });
+    }
+    result
+}
+
+/// Network statistics snapshot.
+pub struct NetStats {
+    // NIC
+    pub rx_packets: u64,
+    pub tx_packets: u64,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    pub rx_errors: u64,
+    pub tx_errors: u64,
+    // TCP
+    pub tcp_active_opens: u64,
+    pub tcp_passive_opens: u64,
+    pub tcp_segments_sent: u64,
+    pub tcp_segments_recv: u64,
+    pub tcp_retransmits: u64,
+    pub tcp_resets_sent: u64,
+    pub tcp_curr_established: u32,
+    pub tcp_conn_errors: u32,
+}
+
+/// Get network protocol statistics.
+pub fn net_stats() -> Option<NetStats> {
+    let mut buf = [0u8; 104];
+    let rc = syscall2(SYS_NET_STATS, buf.as_mut_ptr() as u64, 104);
+    if rc != 0 { return None; }
+    Some(NetStats {
+        rx_packets: u64::from_le_bytes(buf[0..8].try_into().unwrap()),
+        tx_packets: u64::from_le_bytes(buf[8..16].try_into().unwrap()),
+        rx_bytes: u64::from_le_bytes(buf[16..24].try_into().unwrap()),
+        tx_bytes: u64::from_le_bytes(buf[24..32].try_into().unwrap()),
+        rx_errors: u64::from_le_bytes(buf[32..40].try_into().unwrap()),
+        tx_errors: u64::from_le_bytes(buf[40..48].try_into().unwrap()),
+        tcp_active_opens: u64::from_le_bytes(buf[48..56].try_into().unwrap()),
+        tcp_passive_opens: u64::from_le_bytes(buf[56..64].try_into().unwrap()),
+        tcp_segments_sent: u64::from_le_bytes(buf[64..72].try_into().unwrap()),
+        tcp_segments_recv: u64::from_le_bytes(buf[72..80].try_into().unwrap()),
+        tcp_retransmits: u64::from_le_bytes(buf[80..88].try_into().unwrap()),
+        tcp_resets_sent: u64::from_le_bytes(buf[88..96].try_into().unwrap()),
+        tcp_curr_established: u32::from_le_bytes(buf[96..100].try_into().unwrap()),
+        tcp_conn_errors: u32::from_le_bytes(buf[100..104].try_into().unwrap()),
+    })
+}

@@ -97,7 +97,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
         rg.set_margin(16, 4, 16, 8);
 
         // Create individual RadioButton controls for each resolution
-        for (i, &(rw, rh)) in resolutions.iter().enumerate() {
+        for &(rw, rh) in resolutions.iter() {
             let label = format!("{} x {}", rw, rh);
             let rb = ui::RadioButton::new(&label);
             rb.set_size(500, 24);

@@ -140,6 +140,14 @@ struct E1000 {
 
     // IRQ line
     irq: u8,
+
+    // Statistics
+    rx_packets: u64,
+    tx_packets: u64,
+    rx_bytes: u64,
+    tx_bytes: u64,
+    rx_errors: u64,
+    tx_errors: u64,
 }
 
 static E1000_STATE: Spinlock<Option<E1000>> = Spinlock::new(None);
@@ -365,6 +373,12 @@ pub fn init() -> bool {
         tx_tail: 0,
         rx_queue: VecDeque::new(),
         irq,
+        rx_packets: 0,
+        tx_packets: 0,
+        rx_bytes: 0,
+        tx_bytes: 0,
+        rx_errors: 0,
+        tx_errors: 0,
     };
 
     {
@@ -427,6 +441,10 @@ pub fn transmit(data: &[u8]) -> bool {
         (*desc_ptr).cmd = TDESC_CMD_EOP | TDESC_CMD_IFCS | TDESC_CMD_RS;
         (*desc_ptr).status = 0; // Clear DD
     }
+
+    // Statistics
+    e1000.tx_packets += 1;
+    e1000.tx_bytes += data.len() as u64;
 
     // Advance tail
     e1000.tx_tail = ((idx + 1) % NUM_TX_DESC) as u16;
@@ -500,6 +518,16 @@ pub fn is_link_up() -> bool {
     }
 }
 
+/// Get NIC statistics: (rx_packets, tx_packets, rx_bytes, tx_bytes, rx_errors, tx_errors).
+pub fn get_stats() -> (u64, u64, u64, u64, u64, u64) {
+    let state = E1000_STATE.lock();
+    if let Some(e) = state.as_ref() {
+        (e.rx_packets, e.tx_packets, e.rx_bytes, e.tx_bytes, e.rx_errors, e.tx_errors)
+    } else {
+        (0, 0, 0, 0, 0, 0)
+    }
+}
+
 /// Poll for received packets (non-interrupt driven).
 /// Call this to process any packets that arrived since last check.
 pub fn poll_rx() {
@@ -538,10 +566,16 @@ fn process_rx_ring(e1000: &mut E1000) {
                 core::ptr::copy_nonoverlapping(buf_ptr, packet.as_mut_ptr(), length);
             }
 
+            // Statistics
+            e1000.rx_packets += 1;
+            e1000.rx_bytes += length as u64;
+
             // Don't grow the queue unboundedly
             if e1000.rx_queue.len() < 256 {
                 e1000.rx_queue.push_back(packet);
             }
+        } else if length > 0 {
+            e1000.rx_errors += 1;
         }
 
         // Reset descriptor for reuse

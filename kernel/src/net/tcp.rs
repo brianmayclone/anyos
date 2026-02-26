@@ -39,6 +39,50 @@ fn poll_sleep() {
     crate::task::scheduler::sleep_until(wake_at);
 }
 
+// ── Global TCP statistics ────────────────────────────────────────────
+use core::sync::atomic::{AtomicU64, Ordering};
+
+static TCP_ACTIVE_OPENS: AtomicU64 = AtomicU64::new(0);   // connect() calls
+static TCP_PASSIVE_OPENS: AtomicU64 = AtomicU64::new(0);  // accept() completions
+static TCP_SEGMENTS_SENT: AtomicU64 = AtomicU64::new(0);
+static TCP_SEGMENTS_RECV: AtomicU64 = AtomicU64::new(0);
+static TCP_RETRANSMITS: AtomicU64 = AtomicU64::new(0);
+static TCP_RESETS_SENT: AtomicU64 = AtomicU64::new(0);
+static TCP_CONN_ERRORS: AtomicU64 = AtomicU64::new(0);
+
+/// Snapshot of TCP protocol statistics.
+pub struct TcpStats {
+    pub active_opens: u64,
+    pub passive_opens: u64,
+    pub segments_sent: u64,
+    pub segments_recv: u64,
+    pub retransmits: u64,
+    pub resets_sent: u64,
+    pub conn_errors: u64,
+    pub curr_established: u32,
+}
+
+/// Get a snapshot of TCP protocol statistics.
+pub fn get_stats() -> TcpStats {
+    let conns = TCP_CONNECTIONS.lock();
+    let established = match conns.as_ref() {
+        Some(table) => table.iter()
+            .filter(|s| s.as_ref().map(|t| t.state == TcpState::Established).unwrap_or(false))
+            .count() as u32,
+        None => 0,
+    };
+    TcpStats {
+        active_opens: TCP_ACTIVE_OPENS.load(Ordering::Relaxed),
+        passive_opens: TCP_PASSIVE_OPENS.load(Ordering::Relaxed),
+        segments_sent: TCP_SEGMENTS_SENT.load(Ordering::Relaxed),
+        segments_recv: TCP_SEGMENTS_RECV.load(Ordering::Relaxed),
+        retransmits: TCP_RETRANSMITS.load(Ordering::Relaxed),
+        resets_sent: TCP_RESETS_SENT.load(Ordering::Relaxed),
+        conn_errors: TCP_CONN_ERRORS.load(Ordering::Relaxed),
+        curr_established: established,
+    }
+}
+
 /// TCP connection state machine states per RFC 793.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TcpState {
@@ -271,6 +315,10 @@ fn send_segment(
     segment[16] = (cksum >> 8) as u8;
     segment[17] = (cksum & 0xFF) as u8;
 
+    TCP_SEGMENTS_SENT.fetch_add(1, Ordering::Relaxed);
+    if flags & RST != 0 {
+        TCP_RESETS_SENT.fetch_add(1, Ordering::Relaxed);
+    }
     super::ipv4::send_ipv4(remote_ip, super::ipv4::PROTO_TCP, &segment)
 }
 
@@ -333,6 +381,7 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
     };
 
     crate::serial_println!("TCP: connecting to {}:{} from port {}", remote_ip, remote_port, local_port);
+    TCP_ACTIVE_OPENS.fetch_add(1, Ordering::Relaxed);
     send_segment(cfg.ip, local_port, remote_ip, remote_port, iss, 0, SYN, &[]);
 
     // Wait for connection to establish
@@ -476,6 +525,7 @@ pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
                     let rip = tcb.remote_ip;
                     let rport = tcb.remote_port;
                     crate::serial_println!("TCP: accepted socket {} from {}:{}", i, rip, rport);
+                    TCP_PASSIVE_OPENS.fetch_add(1, Ordering::Relaxed);
                     return (i as u32, rip, rport);
                 }
             }
@@ -940,6 +990,7 @@ pub fn handle_tcp(pkt: &Ipv4Packet<'_>) {
         Some(s) => s,
         None => return,
     };
+    TCP_SEGMENTS_RECV.fetch_add(1, Ordering::Relaxed);
 
     // Process segment under lock, collect deferred sends
     let deferred: Option<DeferredSend> = {
@@ -1309,6 +1360,7 @@ pub fn check_retransmissions() {
         if should_syn_retransmit {
             let tcb = table[i].as_mut().unwrap();
             tcb.retransmit_count += 1;
+            TCP_RETRANSMITS.fetch_add(1, Ordering::Relaxed);
             tcb.last_send_tick = now;
             let (lip, lp, rip, rp) = (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port);
             let iss = tcb.snd_iss;
@@ -1322,6 +1374,7 @@ pub fn check_retransmissions() {
         if should_retransmit {
             let tcb = table[i].as_mut().unwrap();
             tcb.retransmit_count += 1;
+            TCP_RETRANSMITS.fetch_add(1, Ordering::Relaxed);
             tcb.last_send_tick = now;
             let data = tcb.last_sent_data.clone();
             let flags = tcb.last_sent_flags;

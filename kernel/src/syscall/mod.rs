@@ -156,6 +156,8 @@ pub const SYS_UDP_UNBIND: u32 = 151;
 pub const SYS_UDP_SENDTO: u32 = 152;
 pub const SYS_UDP_RECVFROM: u32 = 153;
 pub const SYS_UDP_SET_OPT: u32 = 154;
+pub const SYS_UDP_LIST: u32 = 155;
+pub const SYS_NET_STATS: u32 = 156;
 
 // Compositor-privileged syscalls
 pub const SYS_MAP_FRAMEBUFFER: u32 = 144;
@@ -392,6 +394,8 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_UDP_SENDTO => handlers::sys_udp_sendto(arg1),
         SYS_UDP_RECVFROM => handlers::sys_udp_recvfrom(arg1, arg2, arg3),
         SYS_UDP_SET_OPT => handlers::sys_udp_set_opt(arg1, arg2, arg3),
+        SYS_UDP_LIST => handlers::sys_udp_list(arg1, arg2),
+        SYS_NET_STATS => handlers::sys_net_stats(arg1, arg2),
 
         // Pipes
         SYS_PIPE_CREATE => handlers::sys_pipe_create(arg1),

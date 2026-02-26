@@ -602,6 +602,13 @@ impl Desktop {
 
         anyos_std::println!("compositor: loading wallpaper from '{}'...", path);
 
+        // Free old wallpaper cache first to reduce heap pressure before
+        // allocating large temporary buffers for the new image.
+        let had_cache = !self.wallpaper_pixel_cache.is_empty();
+        if had_cache {
+            self.wallpaper_pixel_cache = Vec::new();
+        }
+
         let fd = fs::open(path, 0);
         if fd == u32::MAX { return false; }
 

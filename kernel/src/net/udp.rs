@@ -28,16 +28,25 @@ struct PortConfig {
     queue: VecDeque<UdpDatagram>,
     broadcast: bool,
     timeout_ms: u32,
+    owner_tid: u32,
 }
 
 impl PortConfig {
-    fn new() -> Self {
+    fn new(tid: u32) -> Self {
         PortConfig {
             queue: VecDeque::new(),
             broadcast: false,
             timeout_ms: 0,
+            owner_tid: tid,
         }
     }
+}
+
+/// UDP binding info returned by `list_bindings()`.
+pub struct UdpBindInfo {
+    pub port: u16,
+    pub owner_tid: u32,
+    pub recv_queue_len: u16,
 }
 
 /// Port bindings: port -> config + queue of received datagrams
@@ -51,12 +60,18 @@ pub fn init() {
 
 /// Bind to a UDP port (creates a receive queue). Returns true if newly bound.
 pub fn bind(port: u16) -> bool {
+    let tid = crate::task::scheduler::current_tid();
+    bind_with_tid(port, tid)
+}
+
+/// Bind to a UDP port with an explicit owner TID. Used by internal callers.
+pub fn bind_with_tid(port: u16, tid: u32) -> bool {
     let mut ports = UDP_PORTS.lock();
     if let Some(map) = ports.as_mut() {
         if map.contains_key(&port) {
             return false; // already bound
         }
-        map.insert(port, PortConfig::new());
+        map.insert(port, PortConfig::new(tid));
         true
     } else {
         false
@@ -213,4 +228,20 @@ pub fn handle_udp(pkt: &Ipv4Packet<'_>) {
             }
         }
     }
+}
+
+/// List all bound UDP ports with owner and queue info.
+pub fn list_bindings() -> Vec<UdpBindInfo> {
+    let mut result = Vec::new();
+    let ports = UDP_PORTS.lock();
+    if let Some(map) = ports.as_ref() {
+        for (&port, cfg) in map.iter() {
+            result.push(UdpBindInfo {
+                port,
+                owner_tid: cfg.owner_tid,
+                recv_queue_len: cfg.queue.len().min(u16::MAX as usize) as u16,
+            });
+        }
+    }
+    result
 }

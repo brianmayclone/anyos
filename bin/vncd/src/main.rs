@@ -60,6 +60,14 @@ fn main() {
     // already created it, this returns the existing channel's ID (idempotent).
     let comp_chan = ipc::evt_chan_create(COMPOSITOR_CHAN);
 
+    // Query local IP for log output.
+    let mut net_cfg = [0u8; 24];
+    let mut local_ip = if net::get_config(&mut net_cfg) == 0 {
+        [net_cfg[0], net_cfg[1], net_cfg[2], net_cfg[3]]
+    } else {
+        [0u8; 4]
+    };
+
     // Start TCP listener.
     let listener = if cfg.enabled {
         let l = net::tcp_listen(cfg.port, 4);
@@ -67,7 +75,8 @@ fn main() {
             println!("vncd: tcp_listen failed on port {}", cfg.port);
             u32::MAX
         } else {
-            println!("vncd: listening on port {}", cfg.port);
+            println!("vncd: listening on {}.{}.{}.{}:{}",
+                local_ip[0], local_ip[1], local_ip[2], local_ip[3], cfg.port);
             l
         }
     } else {
@@ -104,6 +113,10 @@ fn main() {
                     "reload" => {
                         println!("vncd: reloading config");
                         cfg = config::load();
+                        // Re-query local IP (may have changed via DHCP).
+                        if net::get_config(&mut net_cfg) == 0 {
+                            local_ip = [net_cfg[0], net_cfg[1], net_cfg[2], net_cfg[3]];
+                        }
                         // Restart listener if needed.
                         if current_listener != u32::MAX {
                             net::tcp_close(current_listener);
@@ -113,7 +126,8 @@ fn main() {
                             if current_listener == u32::MAX {
                                 println!("vncd: tcp_listen failed on port {}", cfg.port);
                             } else {
-                                println!("vncd: listening on port {}", cfg.port);
+                                println!("vncd: listening on {}.{}.{}.{}:{}",
+                                    local_ip[0], local_ip[1], local_ip[2], local_ip[3], cfg.port);
                             }
                         } else {
                             println!("vncd: disabled after reload");

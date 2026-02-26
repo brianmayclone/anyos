@@ -456,6 +456,13 @@ pub fn sys_sbrk(increment: i32) -> u32 {
 
     if increment > 0 {
         let new_brk = old_brk + increment as u32;
+
+        // Prevent heap from growing into the DLIB region (0x0400_0000 - 0x07FF_FFFF).
+        // DLLs are demand-paged there; heap writes would corrupt their export tables.
+        const DLIB_REGION_START: u32 = 0x0400_0000;
+        if old_brk < DLIB_REGION_START && new_brk >= DLIB_REGION_START {
+            return u32::MAX;
+        }
         let old_page_end = (old_brk + page_size - 1) & !(page_size - 1);
         let new_page_end = (new_brk + page_size - 1) & !(page_size - 1);
 
@@ -1765,6 +1772,79 @@ pub fn sys_udp_recvfrom(port: u32, buf_ptr: u32, buf_len: u32) -> u32 {
 pub fn sys_udp_set_opt(port: u32, opt: u32, val: u32) -> u32 {
     if port == 0 || port > 65535 { return u32::MAX; }
     if crate::net::udp::set_opt(port as u16, opt, val) { 0 } else { u32::MAX }
+}
+
+/// sys_udp_list - List all bound UDP ports.
+/// arg1=buf_ptr, arg2=max_entries. Each entry is 8 bytes:
+///   [port:u16, owner_tid:u16, recv_queue_len:u16, pad:u16]
+/// Returns number of entries written.
+pub fn sys_udp_list(buf_ptr: u32, max_entries: u32) -> u32 {
+    if buf_ptr == 0 || max_entries == 0 { return 0; }
+    let bindings = crate::net::udp::list_bindings();
+    let count = bindings.len().min(max_entries as usize);
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count * 8) };
+
+    for (i, info) in bindings.iter().take(count).enumerate() {
+        let off = i * 8;
+        let port_bytes = info.port.to_le_bytes();
+        buf[off] = port_bytes[0];
+        buf[off + 1] = port_bytes[1];
+        let tid_bytes = (info.owner_tid as u16).to_le_bytes();
+        buf[off + 2] = tid_bytes[0];
+        buf[off + 3] = tid_bytes[1];
+        let qlen_bytes = info.recv_queue_len.to_le_bytes();
+        buf[off + 4] = qlen_bytes[0];
+        buf[off + 5] = qlen_bytes[1];
+        buf[off + 6] = 0;
+        buf[off + 7] = 0;
+    }
+
+    count as u32
+}
+
+/// sys_net_stats - Get network protocol statistics.
+/// arg1=buf_ptr, arg2=buf_size (must be >= 104).
+/// Buffer layout (all little-endian):
+///   [0..8]   rx_packets (u64)     — NIC
+///   [8..16]  tx_packets (u64)
+///   [16..24] rx_bytes (u64)
+///   [24..32] tx_bytes (u64)
+///   [32..40] rx_errors (u64)
+///   [40..48] tx_errors (u64)
+///   [48..56] tcp_active_opens (u64)
+///   [56..64] tcp_passive_opens (u64)
+///   [64..72] tcp_segments_sent (u64)
+///   [72..80] tcp_segments_recv (u64)
+///   [80..88] tcp_retransmits (u64)
+///   [88..96] tcp_resets_sent (u64)
+///   [96..100] tcp_curr_established (u32)
+///   [100..104] tcp_conn_errors_lo (u32)
+/// Returns 0 on success.
+pub fn sys_net_stats(buf_ptr: u32, buf_size: u32) -> u32 {
+    if buf_ptr == 0 || buf_size < 104 { return u32::MAX; }
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, 104) };
+
+    // NIC stats
+    let (rxp, txp, rxb, txb, rxe, txe) = crate::drivers::network::e1000::get_stats();
+    buf[0..8].copy_from_slice(&rxp.to_le_bytes());
+    buf[8..16].copy_from_slice(&txp.to_le_bytes());
+    buf[16..24].copy_from_slice(&rxb.to_le_bytes());
+    buf[24..32].copy_from_slice(&txb.to_le_bytes());
+    buf[32..40].copy_from_slice(&rxe.to_le_bytes());
+    buf[40..48].copy_from_slice(&txe.to_le_bytes());
+
+    // TCP stats
+    let ts = crate::net::tcp::get_stats();
+    buf[48..56].copy_from_slice(&ts.active_opens.to_le_bytes());
+    buf[56..64].copy_from_slice(&ts.passive_opens.to_le_bytes());
+    buf[64..72].copy_from_slice(&ts.segments_sent.to_le_bytes());
+    buf[72..80].copy_from_slice(&ts.segments_recv.to_le_bytes());
+    buf[80..88].copy_from_slice(&ts.retransmits.to_le_bytes());
+    buf[88..96].copy_from_slice(&ts.resets_sent.to_le_bytes());
+    buf[96..100].copy_from_slice(&ts.curr_established.to_le_bytes());
+    buf[100..104].copy_from_slice(&(ts.conn_errors as u32).to_le_bytes());
+
+    0
 }
 
 /// sys_net_arp - Get ARP table. arg1=buf_ptr, arg2=buf_size
