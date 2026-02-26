@@ -18,17 +18,17 @@
 #![no_std]
 #![no_main]
 
-extern crate alloc;
-
 use alloc::format;
-use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use libanyui_client as anyui;
-use anyui::label::TEXT_ALIGN_CENTER;
+use anyui::Widget;
 
 anyos_std::entry!(main);
+
+const TEXT_ALIGN_CENTER: u32 = 1;
+const TEXT_ALIGN_RIGHT: u32 = 2;
 
 // ════════════════════════════════════════════════════════════════════════
 //  Constants
@@ -66,21 +66,21 @@ const TEXT_SECONDARY: u32 = 0xFF8E8E93;
 const SCORE_GOLD: u32    = 0xFFFFD60A;
 
 // ════════════════════════════════════════════════════════════════════════
-//  Shared state for worker threads
+//  Shared state for benchmark workers (fork-based)
 // ════════════════════════════════════════════════════════════════════════
 
 // Which benchmark to run (1-6 for CPU tests)
 static BENCH_ID: AtomicU32 = AtomicU32::new(0);
-// How many threads to use
-static NUM_WORKERS: AtomicU32 = AtomicU32::new(0);
-// Thread index counter (each worker grabs one)
-static THREAD_INDEX: AtomicU32 = AtomicU32::new(0);
-// Completion counter
-static THREADS_DONE: AtomicU32 = AtomicU32::new(0);
-// Per-thread raw results
-static mut THREAD_RESULTS: [u64; MAX_CORES] = [0; MAX_CORES];
-// Duration in ms for the single-core test
-static BENCH_DURATION_MS: AtomicU32 = AtomicU32::new(0);
+// Child process TIDs from fork()
+static mut CHILD_TIDS: [u32; MAX_CORES] = [0; MAX_CORES];
+// Results collected from child exit codes
+static mut CHILD_RESULTS: [u64; MAX_CORES] = [0; MAX_CORES];
+// How many children were forked so far (may still be forking one per tick)
+static mut CHILDREN_FORKED: u32 = 0;
+// Total children needed for this test
+static mut NUM_CHILDREN: u32 = 0;
+// How many have been reaped via waitpid
+static mut CHILDREN_REAPED: u32 = 0;
 
 // ════════════════════════════════════════════════════════════════════════
 //  Global application state
@@ -368,14 +368,12 @@ fn quicksort(arr: &mut [u32]) {
 }
 
 // ════════════════════════════════════════════════════════════════════════
-//  Worker thread entry point (for multi-core tests)
+//  Fork-based benchmark worker
 // ════════════════════════════════════════════════════════════════════════
 
-fn worker_entry() {
-    let my_index = THREAD_INDEX.fetch_add(1, Ordering::SeqCst) as usize;
-    let bench = BENCH_ID.load(Ordering::SeqCst);
-
-    let result = match bench {
+/// Run a CPU benchmark by ID. Returns the raw score.
+fn run_cpu_bench(bench_id: u32) -> u64 {
+    match bench_id {
         1 => bench_prime_sieve(),
         2 => bench_mandelbrot(),
         3 => bench_memory_copy(),
@@ -383,10 +381,22 @@ fn worker_entry() {
         5 => bench_crypto_hash(),
         6 => bench_sort(),
         _ => 0,
-    };
+    }
+}
 
-    unsafe { THREAD_RESULTS[my_index] = result; }
-    THREADS_DONE.fetch_add(1, Ordering::SeqCst);
+/// Fork a child process that runs the given benchmark and exits with the result.
+/// Returns the child TID in the parent, or 0 on fork failure.
+fn fork_bench_worker(bench_id: u32) -> u32 {
+    let child = anyos_std::process::fork();
+    if child == 0 {
+        // Child process: run benchmark, exit with result as exit code
+        let result = run_cpu_bench(bench_id);
+        // Cap at u32::MAX - 2 to avoid conflicting with STILL_RUNNING / error sentinels
+        let code = if result > 0xFFFF_FFFD { 0xFFFF_FFFD } else { result as u32 };
+        anyos_std::process::exit(code);
+    }
+    // Parent: child == child TID (>0), or u32::MAX on error
+    if child == u32::MAX { 0 } else { child }
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -810,27 +820,26 @@ const GPU_TEST_NAMES: [&str; NUM_GPU_TESTS] = [
 //  UI Construction
 // ════════════════════════════════════════════════════════════════════════
 
-fn make_label_pair(parent: &impl anyui::Widget, name: &str, y: i32) -> (anyui::Label, anyui::Label) {
+fn make_label_pair(parent: &anyui::View, name: &str, y: i32) -> (anyui::Label, anyui::Label) {
     let lbl_name = anyui::Label::new(name);
     lbl_name.set_position(16, y);
     lbl_name.set_size(200, 20);
     lbl_name.set_text_color(TEXT_PRIMARY);
     lbl_name.set_font_size(13);
-    (anyui::lib().add_child)(parent.id(), lbl_name.id());
+    parent.add(&lbl_name);
 
-    let lbl_score = anyui::Label::new("—");
+    let lbl_score = anyui::Label::new("-");
     lbl_score.set_position(230, y);
     lbl_score.set_size(100, 20);
     lbl_score.set_text_color(TEXT_SECONDARY);
     lbl_score.set_font_size(13);
     lbl_score.set_state(TEXT_ALIGN_CENTER);
-    (anyui::lib().add_child)(parent.id(), lbl_score.id());
+    parent.add(&lbl_score);
 
     (lbl_name, lbl_score)
 }
 
 fn build_ui() {
-    let tc = anyui::theme::colors();
     let win = anyui::Window::new("anyBench", -1, -1, 640, 520);
     win.set_color(BG_DARK);
 
@@ -911,7 +920,7 @@ fn build_ui() {
     let card_labels = ["CPU Single-Core", "CPU Multi-Core", "GPU OnScreen", "GPU OffScreen"];
     let card_x = [32, 172, 340, 480];
     // We'll display these scores when available
-    let lbl_summary_titles: Vec<anyui::Label> = (0..4).map(|i| {
+    let _lbl_summary_titles: Vec<anyui::Label> = (0..4).map(|i| {
         let l = anyui::Label::new(card_labels[i]);
         l.set_position(card_x[i], 285);
         l.set_size(130, 16);
@@ -923,7 +932,7 @@ fn build_ui() {
     }).collect();
 
     let lbl_summary_scores: Vec<anyui::Label> = (0..4).map(|i| {
-        let l = anyui::Label::new("—");
+        let l = anyui::Label::new("-");
         l.set_position(card_x[i], 305);
         l.set_size(130, 28);
         l.set_font_size(22);
@@ -935,12 +944,9 @@ fn build_ui() {
     }).collect();
 
     // Divider
-    let div = anyui::Label::new("────────────────────────────────────────────────────────────────────────");
-    div.set_position(0, 350);
-    div.set_size(640, 12);
-    div.set_font_size(10);
-    div.set_text_color(0xFF3A3A3C);
-    div.set_state(TEXT_ALIGN_CENTER);
+    let div = anyui::Divider::new();
+    div.set_position(32, 350);
+    div.set_size(576, 1);
     panel_overview.add(&div);
 
     let lbl_info = anyui::Label::new("anyBench measures CPU and GPU performance with standardized workloads.");
@@ -978,13 +984,13 @@ fn build_ui() {
     lbl_sc_header.set_text_color(TEXT_PRIMARY);
     panel_cpu.add(&lbl_sc_header);
 
-    let lbl_cpu_single_score = anyui::Label::new("Score: —");
+    let lbl_cpu_single_score = anyui::Label::new("Score: -");
     lbl_cpu_single_score.set_position(400, 12);
     lbl_cpu_single_score.set_size(220, 24);
     lbl_cpu_single_score.set_font_size(16);
     lbl_cpu_single_score.set_font(1);
     lbl_cpu_single_score.set_text_color(SCORE_GOLD);
-    lbl_cpu_single_score.set_state(anyui::label::TEXT_ALIGN_RIGHT);
+    lbl_cpu_single_score.set_state(TEXT_ALIGN_RIGHT);
     panel_cpu.add(&lbl_cpu_single_score);
 
     let mut cpu_single_labels = [anyui::Label::new(""); NUM_CPU_TESTS];
@@ -1012,13 +1018,13 @@ fn build_ui() {
     lbl_mc_cores.set_text_color(TEXT_SECONDARY);
     panel_cpu.add(&lbl_mc_cores);
 
-    let lbl_cpu_multi_score = anyui::Label::new("Score: —");
+    let lbl_cpu_multi_score = anyui::Label::new("Score: -");
     lbl_cpu_multi_score.set_position(400, 226);
     lbl_cpu_multi_score.set_size(220, 24);
     lbl_cpu_multi_score.set_font_size(16);
     lbl_cpu_multi_score.set_font(1);
     lbl_cpu_multi_score.set_text_color(SCORE_GOLD);
-    lbl_cpu_multi_score.set_state(anyui::label::TEXT_ALIGN_RIGHT);
+    lbl_cpu_multi_score.set_state(TEXT_ALIGN_RIGHT);
     panel_cpu.add(&lbl_cpu_multi_score);
 
     let mut cpu_multi_labels = [anyui::Label::new(""); NUM_CPU_TESTS];
@@ -1064,13 +1070,13 @@ fn build_ui() {
     lbl_on_header.set_text_color(TEXT_PRIMARY);
     panel_gpu.add(&lbl_on_header);
 
-    let lbl_gpu_onscreen_score = anyui::Label::new("Score: —");
+    let lbl_gpu_onscreen_score = anyui::Label::new("Score: -");
     lbl_gpu_onscreen_score.set_position(140, 12);
     lbl_gpu_onscreen_score.set_size(160, 24);
     lbl_gpu_onscreen_score.set_font_size(16);
     lbl_gpu_onscreen_score.set_font(1);
     lbl_gpu_onscreen_score.set_text_color(SCORE_GOLD);
-    lbl_gpu_onscreen_score.set_state(anyui::label::TEXT_ALIGN_RIGHT);
+    lbl_gpu_onscreen_score.set_state(TEXT_ALIGN_RIGHT);
     panel_gpu.add(&lbl_gpu_onscreen_score);
 
     let mut gpu_on_labels = [anyui::Label::new(""); NUM_GPU_TESTS];
@@ -1091,13 +1097,13 @@ fn build_ui() {
     lbl_off_header.set_text_color(TEXT_PRIMARY);
     panel_gpu.add(&lbl_off_header);
 
-    let lbl_gpu_offscreen_score = anyui::Label::new("Score: —");
+    let lbl_gpu_offscreen_score = anyui::Label::new("Score: -");
     lbl_gpu_offscreen_score.set_position(140, 230);
     lbl_gpu_offscreen_score.set_size(160, 24);
     lbl_gpu_offscreen_score.set_font_size(16);
     lbl_gpu_offscreen_score.set_font(1);
     lbl_gpu_offscreen_score.set_text_color(SCORE_GOLD);
-    lbl_gpu_offscreen_score.set_state(anyui::label::TEXT_ALIGN_RIGHT);
+    lbl_gpu_offscreen_score.set_state(TEXT_ALIGN_RIGHT);
     panel_gpu.add(&lbl_gpu_offscreen_score);
 
     let mut gpu_off_labels = [anyui::Label::new(""); NUM_GPU_TESTS];
@@ -1200,17 +1206,17 @@ fn start_benchmark(mode: BenchMode) {
 
     // Reset UI score labels
     for i in 0..NUM_CPU_TESTS {
-        a.cpu_single_scores[i].set_text("\xE2\x80\x94"); // —
-        a.cpu_multi_scores[i].set_text("\xE2\x80\x94");
+        a.cpu_single_scores[i].set_text("-"); // —
+        a.cpu_multi_scores[i].set_text("-");
     }
     for i in 0..NUM_GPU_TESTS {
-        a.gpu_on_scores[i].set_text("\xE2\x80\x94");
-        a.gpu_off_scores[i].set_text("\xE2\x80\x94");
+        a.gpu_on_scores[i].set_text("-");
+        a.gpu_off_scores[i].set_text("-");
     }
-    a.lbl_cpu_single_score.set_text("Score: \xE2\x80\x94");
-    a.lbl_cpu_multi_score.set_text("Score: \xE2\x80\x94");
-    a.lbl_gpu_onscreen_score.set_text("Score: \xE2\x80\x94");
-    a.lbl_gpu_offscreen_score.set_text("Score: \xE2\x80\x94");
+    a.lbl_cpu_single_score.set_text("Score: -");
+    a.lbl_cpu_multi_score.set_text("Score: -");
+    a.lbl_gpu_onscreen_score.set_text("Score: -");
+    a.lbl_gpu_offscreen_score.set_text("Score: -");
 
     // Disable buttons
     a.btn_run_all.set_enabled(false);
@@ -1266,8 +1272,6 @@ fn current_step() -> u32 {
 
 // State machine for driving benchmarks asynchronously
 static BENCH_STATE: AtomicU32 = AtomicU32::new(0); // 0=ready, 1=running, 2=done
-static SINGLE_RESULT: AtomicU32 = AtomicU32::new(0);
-static mut SINGLE_RESULT_U64: u64 = 0;
 
 fn tick_benchmark() {
     let a = app();
@@ -1297,19 +1301,17 @@ fn tick_benchmark() {
                 a.cpu_single_scores[a.current_test].set_text("...");
                 a.cpu_single_scores[a.current_test].set_text_color(ACCENT);
 
-                // Run single-core test on a worker thread
-                BENCH_ID.store((a.current_test + 1) as u32, Ordering::SeqCst);
-                THREAD_INDEX.store(0, Ordering::SeqCst);
-                THREADS_DONE.store(0, Ordering::SeqCst);
-                NUM_WORKERS.store(1, Ordering::SeqCst);
-                BENCH_STATE.store(1, Ordering::SeqCst);
-
-                let start = anyos_std::sys::uptime_ms();
-                BENCH_DURATION_MS.store(start, Ordering::SeqCst);
-
-                if let Ok(_t) = anyos_std::process::Thread::spawn(worker_entry, "bench-worker") {
-                    core::mem::forget(_t); // don't join in Drop
+                // Run single-core test in a forked child process
+                let bench_id = (a.current_test + 1) as u32;
+                BENCH_ID.store(bench_id, Ordering::SeqCst);
+                unsafe {
+                    NUM_CHILDREN = 1;
+                    CHILDREN_FORKED = 1;
+                    CHILDREN_REAPED = 0;
+                    CHILD_RESULTS[0] = 0;
+                    CHILD_TIDS[0] = fork_bench_worker(bench_id);
                 }
+                BENCH_STATE.store(1, Ordering::SeqCst);
             }
             BenchPhase::CpuMulti => {
                 if a.current_test >= NUM_CPU_TESTS {
@@ -1330,21 +1332,17 @@ fn tick_benchmark() {
                 a.cpu_multi_scores[a.current_test].set_text("...");
                 a.cpu_multi_scores[a.current_test].set_text_color(ACCENT);
 
-                BENCH_ID.store((a.current_test + 1) as u32, Ordering::SeqCst);
-                THREAD_INDEX.store(0, Ordering::SeqCst);
-                THREADS_DONE.store(0, Ordering::SeqCst);
+                let bench_id = (a.current_test + 1) as u32;
+                BENCH_ID.store(bench_id, Ordering::SeqCst);
                 let n = a.num_cpus.min(MAX_CORES as u32);
-                NUM_WORKERS.store(n, Ordering::SeqCst);
-                BENCH_STATE.store(1, Ordering::SeqCst);
-
-                let start = anyos_std::sys::uptime_ms();
-                BENCH_DURATION_MS.store(start, Ordering::SeqCst);
-
-                for _ in 0..n {
-                    if let Ok(_t) = anyos_std::process::Thread::spawn(worker_entry, "bench-mt") {
-                        core::mem::forget(_t);
-                    }
+                unsafe {
+                    NUM_CHILDREN = n;
+                    CHILDREN_FORKED = 1; // fork first child now, rest one per tick
+                    CHILDREN_REAPED = 0;
+                    CHILD_RESULTS[0] = 0;
+                    CHILD_TIDS[0] = fork_bench_worker(bench_id);
                 }
+                BENCH_STATE.store(1, Ordering::SeqCst);
             }
             BenchPhase::GpuOnScreen => {
                 if a.current_test >= NUM_GPU_TESTS {
@@ -1393,19 +1391,42 @@ fn tick_benchmark() {
             BenchPhase::Idle => {}
         }
     } else if state == 1 {
-        // Check if worker threads are done
-        let done = THREADS_DONE.load(Ordering::SeqCst);
-        let expected = NUM_WORKERS.load(Ordering::SeqCst);
-        if done >= expected {
-            // Collect results
-            let n = expected as usize;
+        // First: fork remaining children one per tick (avoids kernel lock contention)
+        let forked = unsafe { CHILDREN_FORKED };
+        let total = unsafe { NUM_CHILDREN };
+        if forked < total {
+            let i = forked as usize;
+            let bench_id = BENCH_ID.load(Ordering::SeqCst);
+            unsafe {
+                CHILD_RESULTS[i] = 0;
+                CHILD_TIDS[i] = fork_bench_worker(bench_id);
+                CHILDREN_FORKED += 1;
+            }
+            return; // wait for next tick before forking more
+        }
+
+        // All children forked — check if they are done via try_waitpid
+        let n = total as usize;
+        for i in 0..n {
+            let tid = unsafe { CHILD_TIDS[i] };
+            if tid == 0 { continue; } // already reaped
+            let status = anyos_std::process::try_waitpid(tid);
+            if status != anyos_std::process::STILL_RUNNING && status != u32::MAX {
+                // Child exited — collect its result
+                unsafe {
+                    CHILD_RESULTS[i] = status as u64;
+                    CHILD_TIDS[i] = 0; // mark as reaped
+                    CHILDREN_REAPED += 1;
+                }
+            }
+        }
+
+        if unsafe { CHILDREN_REAPED } >= unsafe { NUM_CHILDREN } {
+            // All children done — sum up results
             let mut total: u64 = 0;
             for i in 0..n {
-                total += unsafe { THREAD_RESULTS[i] };
+                total += unsafe { CHILD_RESULTS[i] };
             }
-
-            let elapsed = anyos_std::sys::uptime_ms().wrapping_sub(BENCH_DURATION_MS.load(Ordering::SeqCst));
-            let _ = elapsed; // could use for throughput calc
 
             match a.phase {
                 BenchPhase::CpuSingle => {
