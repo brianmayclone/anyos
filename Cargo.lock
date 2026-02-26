@@ -3,5 +3,1060 @@
 version = 4
 
 [[package]]
+name = "addgroup"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "adduser"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "ami"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "amid"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libdb_client",
+]
+
+[[package]]
+name = "anycode"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
 name = "anyos_kernel"
 version = "0.1.0"
+
+[[package]]
+name = "anyos_std"
+version = "0.1.0"
+dependencies = [
+ "libheap",
+]
+
+[[package]]
+name = "arp"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "audiomon"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libcompositor_client",
+ "uisys_client",
+]
+
+[[package]]
+name = "awk"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "banner"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "base64"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "cal"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "calc"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "cat"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "chmod"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "chown"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "clear"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "clipman"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
+name = "clock"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "compositor"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libfont_client",
+ "libimage_client",
+ "librender_client",
+]
+
+[[package]]
+name = "cp"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "crond"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "crontab"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "date"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "delgroup"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "deluser"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "demo_anyui"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
+name = "devlist"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "df"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "dhcp"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "diagnostics"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "uisys_client",
+]
+
+[[package]]
+name = "diff"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
+name = "diskutil"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
+name = "dmesg"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "dns"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "dynlink"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "echo"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "echoserver"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "env"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "eventviewer"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libanyui_client",
+]
+
+[[package]]
+name = "export"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "false_cmd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "fdisk"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "find"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "finder"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libanyui_client",
+ "libimage_client",
+]
+
+[[package]]
+name = "fontviewer"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "free"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "ftp"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "grep"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "gzip"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libzip_client",
+]
+
+[[package]]
+name = "head"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "hexdump"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "hostname"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "htop"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "httpd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "ifconfig"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "imgview"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libimage_client",
+ "uisys_client",
+]
+
+[[package]]
+name = "init"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "inputmon"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libcompositor_client",
+ "uisys_client",
+]
+
+[[package]]
+name = "jp2a"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libimage_client",
+]
+
+[[package]]
+name = "kill"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "libanyui_client"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libimage_client",
+]
+
+[[package]]
+name = "libcompositor_client"
+version = "0.1.0"
+
+[[package]]
+name = "libdb_client"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+]
+
+[[package]]
+name = "libfont_client"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+]
+
+[[package]]
+name = "libheap"
+version = "0.1.0"
+
+[[package]]
+name = "libimage_client"
+version = "0.1.0"
+
+[[package]]
+name = "libjs"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "librender_client"
+version = "0.1.0"
+
+[[package]]
+name = "libsvg_client"
+version = "0.1.0"
+dependencies = [
+ "dynlink",
+]
+
+[[package]]
+name = "libwebview"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libanyui_client",
+ "libjs",
+]
+
+[[package]]
+name = "libzip_client"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+]
+
+[[package]]
+name = "listgroups"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "listuser"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "ln"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "logd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "login"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+ "libimage_client",
+]
+
+[[package]]
+name = "ls"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "mdview"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
+name = "minesweeper"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
+name = "mkdir"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "mount"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "mv"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "nano"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "neofetch"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "netmon"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libcompositor_client",
+ "uisys_client",
+]
+
+[[package]]
+name = "netstat"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "nice"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "notepad"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
+name = "nvi"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "open"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "paint"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+ "libimage_client",
+]
+
+[[package]]
+name = "passwd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "permdialog"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
+name = "ping"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "pipes"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "play"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "ps"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "pwd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "readlink"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "rev"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "rm"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "screenshot"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "sed"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "seq"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "set"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "settings"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+ "libimage_client",
+]
+
+[[package]]
+name = "shell"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "sleep"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "sort"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "stat"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "strings"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "su"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "surf"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libanyui_client",
+ "libimage_client",
+ "libsvg_client",
+ "libwebview",
+]
+
+[[package]]
+name = "svc"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "sysinfo"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "tail"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "tar"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libzip_client",
+]
+
+[[package]]
+name = "taskmanager"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+ "libimage_client",
+]
+
+[[package]]
+name = "terminal"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "top"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "touch"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "true_cmd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "uisys_client"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libimage_client",
+]
+
+[[package]]
+name = "umount"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "uname"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "uniq"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "unzip"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libzip_client",
+]
+
+[[package]]
+name = "uptime"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "vi"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "videoplayer"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libimage_client",
+ "uisys_client",
+]
+
+[[package]]
+name = "vnc-settings"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
+name = "vncd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "wc"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "webmanager"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
+name = "wget"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "which"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "whoami"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "xargs"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "xxd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "yes"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "zip"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libzip_client",
+]

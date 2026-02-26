@@ -14,6 +14,13 @@ exclude = [
   "system/compositor/dock",
   # UEFI bootloader uses x86_64-unknown-uefi target, built separately
   "bootloader/uefi",
+  # Non-Rust directories (C programs, placeholder stubs)
+  "bin/git",
+  "bin/make",
+  "bin/ssh",
+  "bin/sshd",
+  # Parent directory (compositor/compositor is the actual crate)
+  "system/compositor",
 ]
 resolver = "2"
 

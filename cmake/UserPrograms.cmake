@@ -49,11 +49,9 @@ add_custom_command(
 )
 
 # Shared target directory for all user-space Rust programs.
-# By sharing one --target-dir, Cargo caches compiled dependencies (stdlib,
-# libheap, etc.) once instead of rebuilding them per-program (~113×).
 set(USER_TARGET_DIR "${CMAKE_BINARY_DIR}/user-target")
 
-# --- Helper: build a Rust user program ---
+# Standard library dependencies (used by DLLs/shared libs that still build individually)
 set(STDLIB_DEPS
   ${CMAKE_SOURCE_DIR}/libs/stdlib/Cargo.toml
   ${CMAKE_SOURCE_DIR}/libs/stdlib/src/lib.rs
@@ -76,118 +74,108 @@ set(STDLIB_DEPS
   ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
 )
 
-function(add_rust_user_program NAME SRC_DIR)
-  set(ELF "${USER_TARGET_DIR}/x86_64-anyos-user/release/${NAME}.elf")
-  file(GLOB_RECURSE _PROG_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
-  add_custom_command(
-    OUTPUT ${ELF}
-    COMMAND ${CARGO_EXECUTABLE} build --release
-      --manifest-path ${SRC_DIR}/Cargo.toml
-      --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
-      --target-dir ${USER_TARGET_DIR}
-    DEPENDS
-      ${SRC_DIR}/Cargo.toml
-      ${SRC_DIR}/build.rs
-      ${_PROG_RS}
-      ${STDLIB_DEPS}
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    COMMENT "Building Rust user program: ${NAME}"
-  )
+# ============================================================
+# Workspace build — compiles ALL user-space programs in parallel
+# ============================================================
+# Instead of 100+ individual cargo build calls (serialized by Cargo's
+# target-dir lockfile), one workspace build lets Cargo parallelize
+# compilation across all CPU cores.
+
+file(GLOB_RECURSE _WS_RS CONFIGURE_DEPENDS
+  "${CMAKE_SOURCE_DIR}/bin/*/src/*.rs"
+  "${CMAKE_SOURCE_DIR}/apps/*/src/*.rs"
+  "${CMAKE_SOURCE_DIR}/system/*/src/*.rs"
+  "${CMAKE_SOURCE_DIR}/system/compositor/compositor/src/*.rs"
+)
+file(GLOB _WS_TOMLS CONFIGURE_DEPENDS
+  "${CMAKE_SOURCE_DIR}/bin/*/Cargo.toml"
+  "${CMAKE_SOURCE_DIR}/apps/*/Cargo.toml"
+  "${CMAKE_SOURCE_DIR}/system/*/Cargo.toml"
+  "${CMAKE_SOURCE_DIR}/system/compositor/compositor/Cargo.toml"
+)
+file(GLOB _WS_BUILD_RS CONFIGURE_DEPENDS
+  "${CMAKE_SOURCE_DIR}/bin/*/build.rs"
+  "${CMAKE_SOURCE_DIR}/apps/*/build.rs"
+  "${CMAKE_SOURCE_DIR}/system/*/build.rs"
+  "${CMAKE_SOURCE_DIR}/system/compositor/compositor/build.rs"
+)
+
+set(WORKSPACE_STAMP "${USER_TARGET_DIR}/.workspace-stamp")
+
+# Optional features for workspace build
+set(_WS_FEATURES "")
+if(ANYOS_DEBUG_SURF)
+  set(_WS_FEATURES "--features;surf/debug_surf")
+endif()
+
+add_custom_command(
+  OUTPUT ${WORKSPACE_STAMP}
+  COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings"
+    ${CARGO_EXECUTABLE} build --workspace
+    --exclude anyos_kernel
+    --release --quiet
+    --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
+    --target-dir ${USER_TARGET_DIR}
+    ${_WS_FEATURES}
+  COMMAND ${CMAKE_COMMAND} -E touch ${WORKSPACE_STAMP}
+  DEPENDS
+    ${CMAKE_SOURCE_DIR}/Cargo.toml
+    ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
+    ${_WS_TOMLS}
+    ${_WS_BUILD_RS}
+    ${_WS_RS}
+    ${STDLIB_DEPS}
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Building all user-space programs (cargo workspace, parallel)"
+)
+
+# ============================================================
+# ELF-to-flat-binary conversion helpers (post-workspace-build)
+# ============================================================
+# These functions only perform the anyelf ELF -> flat binary conversion.
+# The actual Rust compilation is handled by the workspace build above.
+
+function(add_rust_user_program NAME)
   add_custom_command(
     OUTPUT ${SYSROOT_DIR}/System/bin/${NAME}
     COMMAND ${ANYELF_EXECUTABLE} bin
-      ${ELF}
+      ${USER_TARGET_DIR}/x86_64-anyos-user/release/${NAME}.elf
       ${SYSROOT_DIR}/System/bin/${NAME}
-    DEPENDS ${ELF} ${ANYELF_EXECUTABLE}
+    DEPENDS ${WORKSPACE_STAMP} ${ANYELF_EXECUTABLE}
     COMMENT "Converting ${NAME} ELF to flat binary"
   )
   set(RUST_USER_BINS ${RUST_USER_BINS} ${SYSROOT_DIR}/System/bin/${NAME} PARENT_SCOPE)
 endfunction()
 
-# Variant for system programs (placed in /System/ instead of /bin/)
-function(add_rust_system_program NAME SRC_DIR)
-  set(ELF "${USER_TARGET_DIR}/x86_64-anyos-user/release/${NAME}.elf")
-  file(GLOB_RECURSE _PROG_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
-  add_custom_command(
-    OUTPUT ${ELF}
-    COMMAND ${CARGO_EXECUTABLE} build --release
-      --manifest-path ${SRC_DIR}/Cargo.toml
-      --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
-      --target-dir ${USER_TARGET_DIR}
-    DEPENDS
-      ${SRC_DIR}/Cargo.toml
-      ${SRC_DIR}/build.rs
-      ${_PROG_RS}
-      ${STDLIB_DEPS}
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    COMMENT "Building system program: ${NAME}"
-  )
+function(add_rust_system_program NAME)
   add_custom_command(
     OUTPUT ${SYSROOT_DIR}/System/${NAME}
     COMMAND ${ANYELF_EXECUTABLE} bin
-      ${ELF}
+      ${USER_TARGET_DIR}/x86_64-anyos-user/release/${NAME}.elf
       ${SYSROOT_DIR}/System/${NAME}
-    DEPENDS ${ELF} ${ANYELF_EXECUTABLE}
+    DEPENDS ${WORKSPACE_STAMP} ${ANYELF_EXECUTABLE}
     COMMENT "Converting ${NAME} ELF to flat binary"
   )
   set(SYSTEM_BINS ${SYSTEM_BINS} ${SYSROOT_DIR}/System/${NAME} PARENT_SCOPE)
 endfunction()
 
-# Variant for privileged sbin programs (placed in /System/sbin/)
-function(add_rust_sbin_program NAME SRC_DIR)
-  set(ELF "${USER_TARGET_DIR}/x86_64-anyos-user/release/${NAME}.elf")
-  file(GLOB_RECURSE _PROG_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
-  add_custom_command(
-    OUTPUT ${ELF}
-    COMMAND ${CARGO_EXECUTABLE} build --release
-      --manifest-path ${SRC_DIR}/Cargo.toml
-      --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
-      --target-dir ${USER_TARGET_DIR}
-    DEPENDS
-      ${SRC_DIR}/Cargo.toml
-      ${SRC_DIR}/build.rs
-      ${_PROG_RS}
-      ${STDLIB_DEPS}
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    COMMENT "Building sbin program: ${NAME}"
-  )
+function(add_rust_sbin_program NAME)
   add_custom_command(
     OUTPUT ${SYSROOT_DIR}/System/sbin/${NAME}
     COMMAND ${ANYELF_EXECUTABLE} bin
-      ${ELF}
+      ${USER_TARGET_DIR}/x86_64-anyos-user/release/${NAME}.elf
       ${SYSROOT_DIR}/System/sbin/${NAME}
-    DEPENDS ${ELF} ${ANYELF_EXECUTABLE}
+    DEPENDS ${WORKSPACE_STAMP} ${ANYELF_EXECUTABLE}
     COMMENT "Converting ${NAME} ELF to flat binary (sbin)"
   )
   set(RUST_USER_BINS ${RUST_USER_BINS} ${SYSROOT_DIR}/System/sbin/${NAME} PARENT_SCOPE)
 endfunction()
 
-# Variant for .app bundles (placed in /Applications/{DISPLAY_NAME}.app/)
+# .app bundles (placed in /Applications/{DISPLAY_NAME}.app/)
 # Uses mkappbundle for validated bundling with ELF auto-conversion via anyelf.
 function(add_app NAME SRC_DIR DISPLAY_NAME)
-  cmake_parse_arguments(APP "" "FEATURES" "" ${ARGN})
-  set(_APP_FEATURES_ARG "")
-  if(APP_FEATURES)
-    set(_APP_FEATURES_ARG "--features;${APP_FEATURES}")
-  endif()
   set(APP_DIR "${SYSROOT_DIR}/Applications/${DISPLAY_NAME}.app")
   set(ELF "${USER_TARGET_DIR}/x86_64-anyos-user/release/${NAME}.elf")
-  file(GLOB_RECURSE _PROG_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
-  add_custom_command(
-    OUTPUT ${ELF}
-    COMMAND ${CARGO_EXECUTABLE} build --release
-      ${_APP_FEATURES_ARG}
-      --manifest-path ${SRC_DIR}/Cargo.toml
-      --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
-      --target-dir ${USER_TARGET_DIR}
-    DEPENDS
-      ${SRC_DIR}/Cargo.toml
-      ${SRC_DIR}/build.rs
-      ${_PROG_RS}
-      ${STDLIB_DEPS}
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    COMMENT "Building app: ${DISPLAY_NAME}"
-  )
   # Collect mkappbundle arguments and dependencies
   set(_BUNDLE_ARGS
     -i "${SRC_DIR}/Info.conf"
@@ -196,7 +184,7 @@ function(add_app NAME SRC_DIR DISPLAY_NAME)
     -o "${APP_DIR}"
     --force
   )
-  set(_BUNDLE_DEPS ${ELF} "${SRC_DIR}/Info.conf" ${ANYELF_EXECUTABLE} ${MKAPPBUNDLE_EXECUTABLE})
+  set(_BUNDLE_DEPS ${WORKSPACE_STAMP} "${SRC_DIR}/Info.conf" ${ANYELF_EXECUTABLE} ${MKAPPBUNDLE_EXECUTABLE})
   if(EXISTS "${SRC_DIR}/Icon.ico")
     list(APPEND _BUNDLE_ARGS -c "${SRC_DIR}/Icon.ico")
     list(APPEND _BUNDLE_DEPS "${SRC_DIR}/Icon.ico")
@@ -232,7 +220,8 @@ function(add_dll NAME SRC_DIR)
   file(GLOB_RECURSE _DLL_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
   add_custom_command(
     OUTPUT ${DLL_ELF}
-    COMMAND ${CARGO_EXECUTABLE} build --release
+    COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings"
+      ${CARGO_EXECUTABLE} build --release --quiet
       --manifest-path ${SRC_DIR}/Cargo.toml
       --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
       --target-dir ${DLL_TARGET_DIR}
@@ -264,7 +253,8 @@ function(add_driver NAME SRC_DIR DISPLAY_NAME CATEGORY)
   file(GLOB_RECURSE _DRV_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
   add_custom_command(
     OUTPUT ${DRV_ELF}
-    COMMAND ${CARGO_EXECUTABLE} build --release
+    COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings"
+      ${CARGO_EXECUTABLE} build --release --quiet
       --manifest-path ${SRC_DIR}/Cargo.toml
       --target ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
       --target-dir ${CMAKE_BINARY_DIR}/drivers/${NAME}
@@ -297,17 +287,18 @@ add_dll(libimage ${CMAKE_SOURCE_DIR}/libs/libimage)
 add_dll(librender ${CMAKE_SOURCE_DIR}/libs/librender)
 add_dll(libcompositor ${CMAKE_SOURCE_DIR}/libs/libcompositor)
 
-# Shared libraries (.so) — built via Cargo → .a → anyld → ET_DYN .so
+# Shared libraries (.so) — built via Cargo -> .a -> anyld -> ET_DYN .so
 # These use -Z build-std so they share a separate target dir from user programs.
 set(SHLIB_TARGET_DIR "${CMAKE_BINARY_DIR}/shlib-target")
 function(add_shared_lib NAME SRC_DIR)
   set(LIB_A "${SHLIB_TARGET_DIR}/x86_64-anyos-user/release/lib${NAME}.a")
   set(LIB_SO "${CMAKE_BINARY_DIR}/shlib/${NAME}.so")
   file(GLOB_RECURSE _SL_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
-  # Step 1: Cargo → static archive (.a)
+  # Step 1: Cargo -> static archive (.a)
   add_custom_command(
     OUTPUT ${LIB_A}
-    COMMAND ${CARGO_EXECUTABLE} build --release
+    COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings"
+      ${CARGO_EXECUTABLE} build --release --quiet
       --manifest-path ${SRC_DIR}/Cargo.toml
       --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
       --target-dir ${SHLIB_TARGET_DIR}
@@ -319,7 +310,7 @@ function(add_shared_lib NAME SRC_DIR)
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Building shared library: ${NAME} (Cargo)"
   )
-  # Step 2: anyld → .so (ET_DYN shared object, base=0 for dynamic loading)
+  # Step 2: anyld -> .so (ET_DYN shared object, base=0 for dynamic loading)
   add_custom_command(
     OUTPUT ${LIB_SO}
     COMMAND ${ANYLD_EXECUTABLE}
@@ -345,90 +336,93 @@ add_shared_lib(libdb ${CMAKE_SOURCE_DIR}/libs/libdb)
 add_shared_lib(libzip ${CMAKE_SOURCE_DIR}/libs/libzip)
 add_shared_lib(libsvg ${CMAKE_SOURCE_DIR}/libs/libsvg)
 
+# ============================================================
+# User programs (/System/bin/)
+# ============================================================
 set(RUST_USER_BINS "")
-add_rust_user_program(ping       ${CMAKE_SOURCE_DIR}/bin/ping)
-add_rust_user_program(dhcp       ${CMAKE_SOURCE_DIR}/bin/dhcp)
-add_rust_user_program(dns        ${CMAKE_SOURCE_DIR}/bin/dns)
-add_rust_user_program(ls         ${CMAKE_SOURCE_DIR}/bin/ls)
-add_rust_user_program(cat        ${CMAKE_SOURCE_DIR}/bin/cat)
-add_rust_user_program(ifconfig   ${CMAKE_SOURCE_DIR}/bin/ifconfig)
-add_rust_user_program(arp        ${CMAKE_SOURCE_DIR}/bin/arp)
-add_rust_user_program(sysinfo    ${CMAKE_SOURCE_DIR}/bin/sysinfo)
-add_rust_user_program(dmesg      ${CMAKE_SOURCE_DIR}/bin/dmesg)
-add_rust_user_program(mkdir      ${CMAKE_SOURCE_DIR}/bin/mkdir)
-add_rust_user_program(rm         ${CMAKE_SOURCE_DIR}/bin/rm)
-add_rust_user_program(touch      ${CMAKE_SOURCE_DIR}/bin/touch)
-add_rust_user_program(cp         ${CMAKE_SOURCE_DIR}/bin/cp)
-add_rust_user_program(mv         ${CMAKE_SOURCE_DIR}/bin/mv)
-add_rust_user_program(date       ${CMAKE_SOURCE_DIR}/bin/date)
-add_rust_user_program(sleep      ${CMAKE_SOURCE_DIR}/bin/sleep)
-add_rust_user_program(hostname   ${CMAKE_SOURCE_DIR}/bin/hostname)
-add_rust_user_program(ftp        ${CMAKE_SOURCE_DIR}/bin/ftp)
-add_rust_user_program(wget       ${CMAKE_SOURCE_DIR}/bin/wget)
-add_rust_user_program(play       ${CMAKE_SOURCE_DIR}/bin/play)
-add_rust_user_program(pipes      ${CMAKE_SOURCE_DIR}/bin/pipes)
-add_rust_user_program(devlist    ${CMAKE_SOURCE_DIR}/bin/devlist)
-add_rust_user_program(echo       ${CMAKE_SOURCE_DIR}/bin/echo)
-add_rust_user_program(ps         ${CMAKE_SOURCE_DIR}/bin/ps)
-add_rust_user_program(top        ${CMAKE_SOURCE_DIR}/bin/top)
-add_rust_user_program(htop       ${CMAKE_SOURCE_DIR}/bin/htop)
-add_rust_user_program(kill       ${CMAKE_SOURCE_DIR}/bin/kill)
-add_rust_user_program(nice       ${CMAKE_SOURCE_DIR}/bin/nice)
-add_rust_user_program(free       ${CMAKE_SOURCE_DIR}/bin/free)
-add_rust_user_program(uptime     ${CMAKE_SOURCE_DIR}/bin/uptime)
-add_rust_user_program(uname      ${CMAKE_SOURCE_DIR}/bin/uname)
-add_rust_user_program(pwd        ${CMAKE_SOURCE_DIR}/bin/pwd)
-add_rust_user_program(wc         ${CMAKE_SOURCE_DIR}/bin/wc)
-add_rust_user_program(hexdump    ${CMAKE_SOURCE_DIR}/bin/hexdump)
-add_rust_user_program(head       ${CMAKE_SOURCE_DIR}/bin/head)
-add_rust_user_program(tail       ${CMAKE_SOURCE_DIR}/bin/tail)
-add_rust_user_program(clear      ${CMAKE_SOURCE_DIR}/bin/clear)
-add_rust_user_program(env        ${CMAKE_SOURCE_DIR}/bin/env)
-add_rust_user_program(grep       ${CMAKE_SOURCE_DIR}/bin/grep)
-add_rust_user_program(find       ${CMAKE_SOURCE_DIR}/bin/find)
-add_rust_user_program(sort       ${CMAKE_SOURCE_DIR}/bin/sort)
-add_rust_user_program(uniq       ${CMAKE_SOURCE_DIR}/bin/uniq)
-add_rust_user_program(rev        ${CMAKE_SOURCE_DIR}/bin/rev)
-add_rust_user_program(stat       ${CMAKE_SOURCE_DIR}/bin/stat)
-add_rust_user_program(ln         ${CMAKE_SOURCE_DIR}/bin/ln)
-add_rust_user_program(readlink   ${CMAKE_SOURCE_DIR}/bin/readlink)
-add_rust_user_program(df         ${CMAKE_SOURCE_DIR}/bin/df)
-add_rust_user_program(cal        ${CMAKE_SOURCE_DIR}/bin/cal)
-add_rust_user_program(seq        ${CMAKE_SOURCE_DIR}/bin/seq)
-add_rust_user_program(yes        ${CMAKE_SOURCE_DIR}/bin/yes)
-add_rust_user_program(whoami     ${CMAKE_SOURCE_DIR}/bin/whoami)
-add_rust_user_program(which      ${CMAKE_SOURCE_DIR}/bin/which)
-add_rust_user_program(strings    ${CMAKE_SOURCE_DIR}/bin/strings)
-add_rust_user_program(base64     ${CMAKE_SOURCE_DIR}/bin/base64)
-add_rust_user_program(xxd        ${CMAKE_SOURCE_DIR}/bin/xxd)
-add_rust_user_program(set        ${CMAKE_SOURCE_DIR}/bin/set)
-add_rust_user_program(export     ${CMAKE_SOURCE_DIR}/bin/export)
-add_rust_user_program(mount      ${CMAKE_SOURCE_DIR}/bin/mount)
-add_rust_user_program(umount     ${CMAKE_SOURCE_DIR}/bin/umount)
-add_rust_user_program(open       ${CMAKE_SOURCE_DIR}/bin/open)
-add_rust_user_program(listuser   ${CMAKE_SOURCE_DIR}/bin/listuser)
-add_rust_user_program(listgroups ${CMAKE_SOURCE_DIR}/bin/listgroups)
-add_rust_user_program(chmod      ${CMAKE_SOURCE_DIR}/bin/chmod)
-add_rust_user_program(chown      ${CMAKE_SOURCE_DIR}/bin/chown)
-add_rust_user_program(su         ${CMAKE_SOURCE_DIR}/bin/su)
-add_rust_user_program(echoserver ${CMAKE_SOURCE_DIR}/bin/echoserver)
-add_rust_user_program(netstat    ${CMAKE_SOURCE_DIR}/bin/netstat)
-add_rust_user_program(svc        ${CMAKE_SOURCE_DIR}/bin/svc)
-add_rust_user_program(logd       ${CMAKE_SOURCE_DIR}/bin/logd)
-add_rust_user_program(ami        ${CMAKE_SOURCE_DIR}/bin/ami)
-add_rust_user_program(vi         ${CMAKE_SOURCE_DIR}/bin/vi)
-add_rust_user_program(crond      ${CMAKE_SOURCE_DIR}/bin/crond)
-add_rust_user_program(crontab    ${CMAKE_SOURCE_DIR}/bin/crontab)
-add_rust_user_program(sed        ${CMAKE_SOURCE_DIR}/bin/sed)
-add_rust_user_program(xargs      ${CMAKE_SOURCE_DIR}/bin/xargs)
-add_rust_user_program(awk        ${CMAKE_SOURCE_DIR}/bin/awk)
-add_rust_user_program(nano       ${CMAKE_SOURCE_DIR}/bin/nano)
-add_rust_user_program(httpd      ${CMAKE_SOURCE_DIR}/bin/httpd)
-add_rust_user_program(vncd       ${CMAKE_SOURCE_DIR}/bin/vncd)
-add_rust_user_program(zip        ${CMAKE_SOURCE_DIR}/bin/zip)
-add_rust_user_program(unzip      ${CMAKE_SOURCE_DIR}/bin/unzip)
-add_rust_user_program(gzip       ${CMAKE_SOURCE_DIR}/bin/gzip)
-add_rust_user_program(tar        ${CMAKE_SOURCE_DIR}/bin/tar)
+add_rust_user_program(ping)
+add_rust_user_program(dhcp)
+add_rust_user_program(dns)
+add_rust_user_program(ls)
+add_rust_user_program(cat)
+add_rust_user_program(ifconfig)
+add_rust_user_program(arp)
+add_rust_user_program(sysinfo)
+add_rust_user_program(dmesg)
+add_rust_user_program(mkdir)
+add_rust_user_program(rm)
+add_rust_user_program(touch)
+add_rust_user_program(cp)
+add_rust_user_program(mv)
+add_rust_user_program(date)
+add_rust_user_program(sleep)
+add_rust_user_program(hostname)
+add_rust_user_program(ftp)
+add_rust_user_program(wget)
+add_rust_user_program(play)
+add_rust_user_program(pipes)
+add_rust_user_program(devlist)
+add_rust_user_program(echo)
+add_rust_user_program(ps)
+add_rust_user_program(top)
+add_rust_user_program(htop)
+add_rust_user_program(kill)
+add_rust_user_program(nice)
+add_rust_user_program(free)
+add_rust_user_program(uptime)
+add_rust_user_program(uname)
+add_rust_user_program(pwd)
+add_rust_user_program(wc)
+add_rust_user_program(hexdump)
+add_rust_user_program(head)
+add_rust_user_program(tail)
+add_rust_user_program(clear)
+add_rust_user_program(env)
+add_rust_user_program(grep)
+add_rust_user_program(find)
+add_rust_user_program(sort)
+add_rust_user_program(uniq)
+add_rust_user_program(rev)
+add_rust_user_program(stat)
+add_rust_user_program(ln)
+add_rust_user_program(readlink)
+add_rust_user_program(df)
+add_rust_user_program(cal)
+add_rust_user_program(seq)
+add_rust_user_program(yes)
+add_rust_user_program(whoami)
+add_rust_user_program(which)
+add_rust_user_program(strings)
+add_rust_user_program(base64)
+add_rust_user_program(xxd)
+add_rust_user_program(set)
+add_rust_user_program(export)
+add_rust_user_program(mount)
+add_rust_user_program(umount)
+add_rust_user_program(open)
+add_rust_user_program(listuser)
+add_rust_user_program(listgroups)
+add_rust_user_program(chmod)
+add_rust_user_program(chown)
+add_rust_user_program(su)
+add_rust_user_program(echoserver)
+add_rust_user_program(netstat)
+add_rust_user_program(svc)
+add_rust_user_program(logd)
+add_rust_user_program(ami)
+add_rust_user_program(vi)
+add_rust_user_program(crond)
+add_rust_user_program(crontab)
+add_rust_user_program(sed)
+add_rust_user_program(xargs)
+add_rust_user_program(awk)
+add_rust_user_program(nano)
+add_rust_user_program(httpd)
+add_rust_user_program(vncd)
+add_rust_user_program(zip)
+add_rust_user_program(unzip)
+add_rust_user_program(gzip)
+add_rust_user_program(tar)
 # gunzip is a copy of gzip (detects via argv[0])
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/bin/gunzip
@@ -437,79 +431,54 @@ add_custom_command(
   COMMENT "Creating gunzip (copy of gzip)"
 )
 set(RUST_USER_BINS ${RUST_USER_BINS} ${SYSROOT_DIR}/System/bin/gunzip)
-add_rust_user_program(banner     ${CMAKE_SOURCE_DIR}/bin/banner)
-add_rust_user_program(jp2a       ${CMAKE_SOURCE_DIR}/bin/jp2a)
-add_rust_user_program(neofetch   ${CMAKE_SOURCE_DIR}/bin/neofetch)
-add_rust_user_program(nvi        ${CMAKE_SOURCE_DIR}/bin/nvi)
+add_rust_user_program(banner)
+add_rust_user_program(jp2a)
+add_rust_user_program(neofetch)
+add_rust_user_program(nvi)
 # Privileged sbin programs
-add_rust_sbin_program(adduser    ${CMAKE_SOURCE_DIR}/bin/adduser)
-add_rust_sbin_program(deluser    ${CMAKE_SOURCE_DIR}/bin/deluser)
-add_rust_sbin_program(addgroup   ${CMAKE_SOURCE_DIR}/bin/addgroup)
-add_rust_sbin_program(delgroup   ${CMAKE_SOURCE_DIR}/bin/delgroup)
-add_rust_sbin_program(passwd     ${CMAKE_SOURCE_DIR}/bin/passwd)
-add_rust_sbin_program(fdisk      ${CMAKE_SOURCE_DIR}/bin/fdisk)
+add_rust_sbin_program(adduser)
+add_rust_sbin_program(deluser)
+add_rust_sbin_program(addgroup)
+add_rust_sbin_program(delgroup)
+add_rust_sbin_program(passwd)
+add_rust_sbin_program(fdisk)
 
 # true/false: package names are true_cmd/false_cmd (Rust keywords) but binaries named true/false
-set(TRUE_ELF "${USER_TARGET_DIR}/x86_64-anyos-user/release/true_cmd.elf")
-add_custom_command(
-  OUTPUT ${TRUE_ELF}
-  COMMAND ${CARGO_EXECUTABLE} build --release
-    --manifest-path ${CMAKE_SOURCE_DIR}/bin/true/Cargo.toml
-    --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
-    --target-dir ${USER_TARGET_DIR}
-  DEPENDS
-    ${CMAKE_SOURCE_DIR}/bin/true/Cargo.toml
-    ${CMAKE_SOURCE_DIR}/bin/true/build.rs
-    ${CMAKE_SOURCE_DIR}/bin/true/src/main.rs
-    ${STDLIB_DEPS}
-  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-  COMMENT "Building Rust user program: true"
-)
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/bin/true
   COMMAND ${ANYELF_EXECUTABLE} bin
-    ${TRUE_ELF}
+    ${USER_TARGET_DIR}/x86_64-anyos-user/release/true_cmd.elf
     ${SYSROOT_DIR}/System/bin/true
-  DEPENDS ${TRUE_ELF} ${ANYELF_EXECUTABLE}
+  DEPENDS ${WORKSPACE_STAMP} ${ANYELF_EXECUTABLE}
   COMMENT "Converting true ELF to flat binary"
 )
 list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/bin/true)
 
-set(FALSE_ELF "${USER_TARGET_DIR}/x86_64-anyos-user/release/false_cmd.elf")
-add_custom_command(
-  OUTPUT ${FALSE_ELF}
-  COMMAND ${CARGO_EXECUTABLE} build --release
-    --manifest-path ${CMAKE_SOURCE_DIR}/bin/false/Cargo.toml
-    --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
-    --target-dir ${USER_TARGET_DIR}
-  DEPENDS
-    ${CMAKE_SOURCE_DIR}/bin/false/Cargo.toml
-    ${CMAKE_SOURCE_DIR}/bin/false/build.rs
-    ${CMAKE_SOURCE_DIR}/bin/false/src/main.rs
-    ${STDLIB_DEPS}
-  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-  COMMENT "Building Rust user program: false"
-)
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/bin/false
   COMMAND ${ANYELF_EXECUTABLE} bin
-    ${FALSE_ELF}
+    ${USER_TARGET_DIR}/x86_64-anyos-user/release/false_cmd.elf
     ${SYSROOT_DIR}/System/bin/false
-  DEPENDS ${FALSE_ELF} ${ANYELF_EXECUTABLE}
+  DEPENDS ${WORKSPACE_STAMP} ${ANYELF_EXECUTABLE}
   COMMENT "Converting false ELF to flat binary"
 )
 list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/bin/false)
 
+# ============================================================
+# System programs (/System/)
+# ============================================================
 set(SYSTEM_BINS "")
-add_rust_system_program(init        ${CMAKE_SOURCE_DIR}/system/init)
-add_rust_system_program(audiomon    ${CMAKE_SOURCE_DIR}/system/audiomon)
-add_rust_system_program(netmon      ${CMAKE_SOURCE_DIR}/system/netmon)
-add_rust_system_program(inputmon    ${CMAKE_SOURCE_DIR}/system/inputmon)
-add_rust_system_program(login       ${CMAKE_SOURCE_DIR}/system/login)
-add_rust_system_program(permdialog  ${CMAKE_SOURCE_DIR}/system/permdialog)
-add_rust_user_program(amid          ${CMAKE_SOURCE_DIR}/system/amid)
+add_rust_system_program(init)
+add_rust_system_program(audiomon)
+add_rust_system_program(netmon)
+add_rust_system_program(inputmon)
+add_rust_system_program(login)
+add_rust_system_program(permdialog)
+add_rust_user_program(amid)
 
-# Desktop GUI applications → .app bundles in /Applications/
+# ============================================================
+# Desktop GUI applications -> .app bundles in /Applications/
+# ============================================================
 set(APP_BINS "")
 add_app(terminal    ${CMAKE_SOURCE_DIR}/system/terminal     "Terminal")
 add_app(shell       ${CMAKE_SOURCE_DIR}/system/shell        "Shell")
@@ -526,11 +495,7 @@ add_app(calc        ${CMAKE_SOURCE_DIR}/apps/calc           "Calculator")
 add_app(fontviewer  ${CMAKE_SOURCE_DIR}/apps/fontviewer     "Font Viewer")
 add_app(clock       ${CMAKE_SOURCE_DIR}/apps/clock          "Clock")
 add_app(screenshot  ${CMAKE_SOURCE_DIR}/apps/screenshot     "Screenshot")
-if(ANYOS_DEBUG_SURF)
-  add_app(surf        ${CMAKE_SOURCE_DIR}/apps/surf            "Surf" FEATURES debug_surf)
-else()
-  add_app(surf        ${CMAKE_SOURCE_DIR}/apps/surf            "Surf")
-endif()
+add_app(surf        ${CMAKE_SOURCE_DIR}/apps/surf           "Surf")
 add_app(demo_anyui  ${CMAKE_SOURCE_DIR}/apps/demo_anyui     "anyUI Demo")
 add_app(anycode     ${CMAKE_SOURCE_DIR}/apps/anycode        "anyOS Code")
 add_app(paint       ${CMAKE_SOURCE_DIR}/apps/paint          "Paint")
@@ -541,40 +506,28 @@ add_app(mdview      ${CMAKE_SOURCE_DIR}/apps/mdview         "Markdown Viewer")
 add_app(clipman     ${CMAKE_SOURCE_DIR}/apps/clipman        "Clipboard Manager")
 add_app(vnc-settings ${CMAKE_SOURCE_DIR}/apps/vnc-settings "VNC Settings")
 
-# Build compositor binary (nested path: /System/compositor/compositor)
-set(COMPOSITOR_SRC_DIR ${CMAKE_SOURCE_DIR}/system/compositor/compositor)
-set(COMPOSITOR_ELF "${USER_TARGET_DIR}/x86_64-anyos-user/release/compositor.elf")
-add_custom_command(
-  OUTPUT ${COMPOSITOR_ELF}
-  COMMAND ${CARGO_EXECUTABLE} build --release
-    --manifest-path ${COMPOSITOR_SRC_DIR}/Cargo.toml
-    --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
-    --target-dir ${USER_TARGET_DIR}
-  DEPENDS
-    ${COMPOSITOR_SRC_DIR}/Cargo.toml
-    ${COMPOSITOR_SRC_DIR}/build.rs
-    ${COMPOSITOR_SRC_DIR}/src/main.rs
-    ${STDLIB_DEPS}
-  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-  COMMENT "Building system program: compositor"
-)
+# ============================================================
+# Compositor and Dock
+# ============================================================
+# Compositor (special output path: /System/compositor/compositor)
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/compositor/compositor
   COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/System/compositor
   COMMAND ${ANYELF_EXECUTABLE} bin
-    ${COMPOSITOR_ELF}
+    ${USER_TARGET_DIR}/x86_64-anyos-user/release/compositor.elf
     ${SYSROOT_DIR}/System/compositor/compositor
-  DEPENDS ${COMPOSITOR_ELF} ${ANYELF_EXECUTABLE}
+  DEPENDS ${WORKSPACE_STAMP} ${ANYELF_EXECUTABLE}
   COMMENT "Converting compositor ELF to flat binary"
 )
 list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/System/compositor/compositor)
 
-# Build dock program (nested path: /System/compositor/dock)
+# Dock (uses kernel target x86_64-anyos.json, built separately)
 set(DOCK_SRC_DIR ${CMAKE_SOURCE_DIR}/system/compositor/dock)
 set(DOCK_ELF "${CMAKE_BINARY_DIR}/kernel/x86_64-anyos/release/dock.elf")
 add_custom_command(
   OUTPUT ${DOCK_ELF}
-  COMMAND ${CARGO_EXECUTABLE} build --release
+  COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings"
+    ${CARGO_EXECUTABLE} build --release --quiet
     --manifest-path ${DOCK_SRC_DIR}/Cargo.toml
     --target ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
     --target-dir ${CMAKE_BINARY_DIR}/kernel
@@ -597,6 +550,9 @@ add_custom_command(
 )
 list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/System/compositor/dock)
 
+# ============================================================
+# Sysroot overlay and user provisioning
+# ============================================================
 # Copy any extra sysroot files from tools/sysroot
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/.stamp

@@ -13,7 +13,7 @@ file(GLOB ANYELF_SRCS "${BUILDSYSTEM_DIR}/anyelf/src/*.c" "${BUILDSYSTEM_DIR}/an
 add_custom_command(
   OUTPUT ${ANYELF_EXECUTABLE}
   COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/buildsystem"
-  COMMAND cc -Wall -O2 -std=c99 -o ${ANYELF_EXECUTABLE}
+  COMMAND cc -w -O2 -std=c99 -o ${ANYELF_EXECUTABLE}
     ${BUILDSYSTEM_DIR}/anyelf/src/anyelf.c
     ${BUILDSYSTEM_DIR}/anyelf/src/convert.c
   DEPENDS ${ANYELF_SRCS}
@@ -33,7 +33,7 @@ file(GLOB MKIMAGE_SRCS "${BUILDSYSTEM_DIR}/mkimage/src/*.c" "${BUILDSYSTEM_DIR}/
 add_custom_command(
   OUTPUT ${MKIMAGE_EXECUTABLE}
   COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/buildsystem"
-  COMMAND cc -Wall -O2 -std=c99 ${POSIX_FLAG} -o ${MKIMAGE_EXECUTABLE}
+  COMMAND cc -w -O2 -std=c99 ${POSIX_FLAG} -o ${MKIMAGE_EXECUTABLE}
     ${BUILDSYSTEM_DIR}/mkimage/src/mkimage.c
     ${BUILDSYSTEM_DIR}/mkimage/src/elf.c
     ${BUILDSYSTEM_DIR}/mkimage/src/fat16.c
@@ -50,7 +50,7 @@ file(GLOB ANYLD_SRCS "${BUILDSYSTEM_DIR}/anyld/src/*.c" "${BUILDSYSTEM_DIR}/anyl
 add_custom_command(
   OUTPUT ${ANYLD_EXECUTABLE}
   COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/buildsystem"
-  COMMAND cc -Wall -O2 -std=c99 ${POSIX_FLAG} -o ${ANYLD_EXECUTABLE}
+  COMMAND cc -w -O2 -std=c99 ${POSIX_FLAG} -o ${ANYLD_EXECUTABLE}
     ${BUILDSYSTEM_DIR}/anyld/src/anyld.c
     ${BUILDSYSTEM_DIR}/anyld/src/input.c
     ${BUILDSYSTEM_DIR}/anyld/src/link.c
@@ -66,7 +66,7 @@ file(GLOB MKAPPBUNDLE_SRCS "${BUILDSYSTEM_DIR}/mkappbundle/src/*.c" "${BUILDSYST
 add_custom_command(
   OUTPUT ${MKAPPBUNDLE_EXECUTABLE}
   COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/buildsystem"
-  COMMAND cc -Wall -O2 -std=c99 -o ${MKAPPBUNDLE_EXECUTABLE}
+  COMMAND cc -w -O2 -std=c99 -o ${MKAPPBUNDLE_EXECUTABLE}
     ${BUILDSYSTEM_DIR}/mkappbundle/src/mkappbundle.c
   DEPENDS ${MKAPPBUNDLE_SRCS}
   COMMENT "Building buildsystem tool: mkappbundle"

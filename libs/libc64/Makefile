@@ -3,7 +3,7 @@ AR = ar
 AS = clang
 
 CFLAGS = --target=x86_64-unknown-none-elf -ffreestanding -nostdlib -nostdinc \
-         -fno-builtin -fno-stack-protector -Wall -Wextra -O2 -I include
+         -fno-builtin -fno-stack-protector -Wall -Wextra -O2 -I include $(EXTRA_CFLAGS)
 ASFLAGS = --target=x86_64-unknown-none-elf -c
 
 SRCDIR = src

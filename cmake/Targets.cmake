@@ -206,7 +206,8 @@ set(OVMF_FW "/opt/homebrew/share/qemu/edk2-x86_64-code.fd")
 # Build UEFI bootloader
 add_custom_command(
   OUTPUT ${UEFI_BOOTLOADER_EFI}
-  COMMAND ${CARGO_EXECUTABLE} build --release
+  COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings"
+    ${CARGO_EXECUTABLE} build --release --quiet
     --manifest-path ${CMAKE_SOURCE_DIR}/bootloader/uefi/Cargo.toml
     --target-dir ${CMAKE_BINARY_DIR}/uefi-boot
     --target x86_64-unknown-uefi

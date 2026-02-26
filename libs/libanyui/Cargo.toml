@@ -8,3 +8,5 @@ crate-type = ["staticlib"]
 
 [dependencies]
 libheap = { path = "../libheap" }
+
+[workspace]

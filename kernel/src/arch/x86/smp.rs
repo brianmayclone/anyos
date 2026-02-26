@@ -37,6 +37,16 @@ static CPU_COUNT: AtomicU8 = AtomicU8::new(0);
 static AP_STARTED: AtomicU32 = AtomicU32::new(0);
 static BSP_LAPIC_ID: AtomicU8 = AtomicU8::new(0);
 
+/// Fast LAPIC-ID → CPU-index lookup table (populated during init_bsp / ap_entry).
+/// Index = LAPIC ID (max 255), value = cpu_id (0xFF = unmapped).
+static mut LAPIC_TO_CPU: [u8; 256] = [0xFF; 256];
+
+/// IA32_TSC_AUX MSR number — written with cpu_id for RDPID.
+const IA32_TSC_AUX: u32 = 0xC0000103;
+
+/// Whether RDPID fast path is available.
+static HAS_RDPID: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 /// Physical address of the AP trampoline code (must be < 1MB, page-aligned)
 const AP_TRAMPOLINE_PHYS: u32 = 0x8000;
 
@@ -66,8 +76,28 @@ pub fn init_bsp() {
             is_bsp: true,
             initialized: true,
         };
+        LAPIC_TO_CPU[bsp_id as usize] = 0;
     }
     CPU_COUNT.store(1, Ordering::SeqCst);
+
+    // Enable RDPID fast path: write cpu_id into IA32_TSC_AUX MSR
+    let has_rdpid = crate::arch::x86::cpuid::features().rdpid;
+    HAS_RDPID.store(has_rdpid, Ordering::Release);
+    if has_rdpid {
+        unsafe { write_tsc_aux(0); }
+        crate::serial_println!("  SMP: RDPID available — fast cpu_id path enabled");
+    }
+}
+
+/// Write `cpu_id` into IA32_TSC_AUX so RDPID returns it directly.
+unsafe fn write_tsc_aux(cpu_id: u32) {
+    core::arch::asm!(
+        "wrmsr",
+        in("ecx") IA32_TSC_AUX,
+        in("eax") cpu_id,
+        in("edx") 0u32,
+        options(nostack, preserves_flags),
+    );
 }
 
 /// Start all Application Processors.
@@ -206,6 +236,11 @@ extern "C" fn ap_entry() -> ! {
             is_bsp: false,
             initialized: true,
         };
+        LAPIC_TO_CPU[lapic_id as usize] = cpu_id as u8;
+    }
+    // Write IA32_TSC_AUX for RDPID on this AP
+    if HAS_RDPID.load(Ordering::Acquire) {
+        unsafe { write_tsc_aux(cpu_id as u32); }
     }
     crate::debug_println!("  [SMP] AP#{}: CPU_DATA set", cpu_id);
 
@@ -270,19 +305,41 @@ pub fn cpu_count() -> u8 {
 
 /// Get the current CPU's index (0 = BSP).
 ///
-/// Scans ALL `MAX_CPUS` entries (not just `cpu_count()`) because an AP may
-/// have registered itself in `CPU_DATA` before the BSP incremented the count.
+/// Three tiers, fastest first:
+/// 1. **RDPID** (1 instruction) — reads IA32_TSC_AUX, set to cpu_id at boot.
+/// 2. **LAPIC + lookup table** (1 MMIO read + 1 array access) — O(1).
+/// 3. **Legacy linear scan** — fallback during early boot only.
+#[inline]
 pub fn current_cpu_id() -> u8 {
+    // Fast path: RDPID — single instruction, ~1 cycle
+    // Encoded as raw bytes because LLVM's assembler doesn't support rdpid in 64-bit mode.
+    // F3 48 0F C7 F8 = RDPID RAX (REX.W + opcode 0F C7 /7, ModRM=F8 → rax)
+    if HAS_RDPID.load(Ordering::Relaxed) {
+        let id: u64;
+        unsafe {
+            core::arch::asm!(".byte 0xF3, 0x48, 0x0F, 0xC7, 0xF8", out("rax") id, options(nostack, nomem, preserves_flags));
+        }
+        if (id as usize) < MAX_CPUS { return id as u8; }
+    }
+
     if !crate::arch::x86::apic::is_initialized() {
         return 0; // Before APIC init, always BSP
     }
-    let lapic_id = crate::arch::x86::apic::lapic_id();
+
+    // Medium path: LAPIC read + O(1) lookup table
+    let lapic_id = crate::arch::x86::apic::lapic_id() as usize;
+    let cpu = unsafe { LAPIC_TO_CPU[lapic_id] };
+    if cpu != 0xFF && (cpu as usize) < MAX_CPUS {
+        return cpu;
+    }
+
+    // Slow fallback: linear scan (only during early AP init)
     for i in 0..MAX_CPUS {
-        if unsafe { CPU_DATA[i].initialized && CPU_DATA[i].lapic_id == lapic_id } {
+        if unsafe { CPU_DATA[i].initialized && CPU_DATA[i].lapic_id == lapic_id as u8 } {
             return i as u8;
         }
     }
-    0 // fallback — should only happen on BSP before init_bsp
+    0
 }
 
 /// Check if the current CPU is the BSP.

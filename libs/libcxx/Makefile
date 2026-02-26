@@ -5,7 +5,7 @@ CXX      = clang++
 AR       = ar
 CXXFLAGS = --target=x86_64-unknown-none-elf -ffreestanding -nostdlib \
            -fno-exceptions -fno-rtti -std=c++20 -O2 \
-           -I include -I ../libc64/include -Wall -Wextra -Wno-unused-parameter
+           -I include -I ../libc64/include -Wall -Wextra -Wno-unused-parameter $(EXTRA_CXXFLAGS)
 
 SRCDIR = src
 OBJDIR = obj
@@ -18,7 +18,6 @@ TARGET = libcxx.a
 .PHONY: all clean
 
 all: $(TARGET)
-	@echo "=== libcxx.a built ==="
 
 $(TARGET): $(OBJECTS)
 	$(AR) rcs $@ $^
