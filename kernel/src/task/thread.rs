@@ -98,16 +98,22 @@ pub enum ThreadState {
     Terminated,
 }
 
-/// Saved FPU/SSE state for FXSAVE/FXRSTOR (512 bytes, 16-byte aligned).
-#[repr(C, align(16))]
+/// Size of the FPU/SSE/AVX save area.
+/// 832 bytes = XSAVE with x87 + SSE + AVX (512 legacy + 64 header + 256 YMM_Hi128).
+/// Falls back to using only the first 512 bytes (FXSAVE) on CPUs without XSAVE.
+pub const FPU_STATE_SIZE: usize = 832;
+
+/// Saved FPU/SSE/AVX state for XSAVE/XRSTOR (832 bytes, 64-byte aligned).
+/// On CPUs without XSAVE, only the first 512 bytes are used (FXSAVE format).
+#[repr(C, align(64))]
 pub struct FxState {
-    pub data: [u8; 512],
+    pub data: [u8; FPU_STATE_SIZE],
 }
 
 impl FxState {
     /// Create a new FxState with default values (all exceptions masked).
     pub fn new_default() -> Self {
-        let mut s = FxState { data: [0u8; 512] };
+        let mut s = FxState { data: [0u8; FPU_STATE_SIZE] };
         // FCW (x87 control word) at offset 0: 0x037F = all x87 exceptions masked
         s.data[0] = 0x7F;
         s.data[1] = 0x03;
@@ -149,7 +155,7 @@ pub struct Thread {
     pub cpu_ticks: u32,
     /// Architecture mode for user threads (Native64 or Compat32).
     pub arch_mode: ArchMode,
-    /// Saved FPU/SSE register state (512 bytes, FXSAVE format).
+    /// Saved FPU/SSE/AVX register state (832 bytes, XSAVE format).
     pub fpu_state: FxState,
     /// PIT tick at which a sleeping thread should be woken (None = not sleeping).
     pub wake_at_tick: Option<u32>,
@@ -338,7 +344,7 @@ impl Thread {
     }
 
     /// Print the memory layout of Thread fields (offsets of context and fpu_state).
-    /// Called once at boot to verify FXSAVE can't corrupt CpuContext.
+    /// Called once at boot to verify XSAVE/FXSAVE can't corrupt CpuContext.
     pub fn print_layout_diagnostics(&self) {
         let base = self as *const Self as usize;
         let ctx_off = &self.context as *const CpuContext as usize - base;
@@ -346,11 +352,11 @@ impl Thread {
         let name_off = self.name.as_ptr() as usize - base;
         let size = core::mem::size_of::<Self>();
         crate::serial_println!(
-            "  Thread layout: size={}, context@+{:#x}({}B), fpu@+{:#x}(512B), name@+{:#x}(32B)",
-            size, ctx_off, core::mem::size_of::<CpuContext>(), fpu_off, name_off,
+            "  Thread layout: size={}, context@+{:#x}({}B), fpu@+{:#x}({}B), name@+{:#x}(32B)",
+            size, ctx_off, core::mem::size_of::<CpuContext>(), fpu_off, FPU_STATE_SIZE, name_off,
         );
-        // Check if fxsave (512 bytes at fpu_off) could overwrite context
-        let fpu_end = fpu_off + 512;
+        // Check if xsave/fxsave area could overwrite context
+        let fpu_end = fpu_off + FPU_STATE_SIZE;
         if (fpu_off < ctx_off + core::mem::size_of::<CpuContext>()) && (fpu_end > ctx_off) {
             crate::serial_println!("  WARNING: fpu_state and context OVERLAP in Thread layout!");
         }

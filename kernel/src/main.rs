@@ -86,6 +86,8 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
 
     arch::x86::cpuid::detect();
     arch::x86::cpuid::enable_smep();
+    // TODO: enable_xsave() causes SIGSEGV in VMware — disabled until investigated
+    // arch::x86::cpuid::enable_xsave();
 
     arch::x86::pit::init();
     serial_println!("[OK] PIT configured at {} Hz", arch::x86::pit::TICK_HZ);

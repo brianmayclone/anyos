@@ -127,8 +127,10 @@ pub trait GpuDriver: Send {
 
     /// Register userspace back_buffer physical pages as GPU-accessible memory.
     /// After registration, transfer_rect uses GPU DMA from this buffer
-    /// instead of reading VRAM. Returns true if successful.
-    fn register_back_buffer(&mut self, _phys_pages: &[u64]) -> bool { false }
+    /// instead of reading VRAM. `sub_page_offset` is the byte offset within
+    /// the first page where pixel data starts (buf_ptr & 0xFFF).
+    /// Returns true if successful.
+    fn register_back_buffer(&mut self, _phys_pages: &[u64], _sub_page_offset: u32) -> bool { false }
 
     /// Whether DMA back_buffer mode is active (GMR registered).
     fn has_dma_back_buffer(&self) -> bool { false }

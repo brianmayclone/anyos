@@ -2,9 +2,9 @@
 //!
 //! 128 priority levels (0–127, higher = more important) with O(1) bitmap-indexed
 //! thread selection. Each CPU maintains its own set of priority queues. Idle CPUs
-//! steal work from the busiest CPU. Lazy FPU/SSE switching via CR0.TS avoids
-//! saving/restoring 512 bytes of FXSAVE state on every context switch — only
-//! threads that actually use FPU/SSE pay the cost.
+//! steal work from the busiest CPU. Lazy FPU/SSE/AVX switching via CR0.TS avoids
+//! saving/restoring XSAVE state (832 bytes with AVX) on every context switch —
+//! only threads that actually use FPU/SSE/AVX pay the cost.
 
 use crate::memory::address::PhysAddr;
 use crate::sync::spinlock::Spinlock;
@@ -109,14 +109,14 @@ static PER_CPU_IDLE_STACK_TOP: [AtomicU64; MAX_CPUS] = {
 
 // --- Lazy FPU per-CPU state ---
 
-/// TID whose FPU/SSE state is currently loaded in this CPU's XMM registers.
-/// 0 = no owner (default state after boot or after fxsave).
+/// TID whose FPU/SSE/AVX state is currently loaded in this CPU's registers.
+/// 0 = no owner (default state after boot or after xsave/fxsave).
 static PER_CPU_FPU_OWNER: [AtomicU32; MAX_CPUS] = {
     const INIT: AtomicU32 = AtomicU32::new(0);
     [INIT; MAX_CPUS]
 };
 
-/// Raw pointer to the current thread's FxState data buffer.
+/// Raw pointer to the current thread's FxState data buffer (64-byte aligned).
 /// Set by schedule_inner, read by the #NM handler (lock-free).
 static PER_CPU_FPU_PTR: [AtomicU64; MAX_CPUS] = {
     const INIT: AtomicU64 = AtomicU64::new(0);
@@ -141,7 +141,13 @@ static mut SCRATCH_CTX: [CpuContext; MAX_CPUS] = {
 };
 
 /// Per-CPU scratch FPU buffer for the same reaped-outgoing-thread case.
-static mut SCRATCH_FPU: [[u8; 512]; MAX_CPUS] = [[0u8; 512]; MAX_CPUS];
+/// Sized for XSAVE (832 bytes), aligned to 64 bytes for XSAVE requirement.
+#[repr(C, align(64))]
+struct AlignedFpuBuf([u8; crate::task::thread::FPU_STATE_SIZE]);
+static mut SCRATCH_FPU: [AlignedFpuBuf; MAX_CPUS] = {
+    const INIT: AlignedFpuBuf = AlignedFpuBuf([0u8; crate::task::thread::FPU_STATE_SIZE]);
+    [INIT; MAX_CPUS]
+};
 
 // --- Deferred wake queue (IRQ-safe, lock-free) ---
 // IRQ handlers that need to wake a thread store TIDs here (via atomic swap).
@@ -1217,7 +1223,7 @@ fn schedule_inner(from_timer: bool) {
                     );
                     let scratch_ctx = unsafe { &mut SCRATCH_CTX[cpu_id] as *mut CpuContext };
                     let idle_ctx = &sched.threads[idle_idx].context as *const CpuContext;
-                    let scratch_fpu = unsafe { SCRATCH_FPU[cpu_id].as_mut_ptr() };
+                    let scratch_fpu = unsafe { SCRATCH_FPU[cpu_id].0.as_mut_ptr() };
                     let new_fpu = sched.threads[idle_idx].fpu_state.data.as_ptr();
                     Some((scratch_ctx, idle_ctx, scratch_fpu, new_fpu, idle_tid, idle_tid))
                 }
@@ -1348,7 +1354,18 @@ fn schedule_inner(from_timer: bool) {
         let fpu_owner = PER_CPU_FPU_OWNER[cpu_id].load(Ordering::Relaxed);
         if fpu_owner != 0 && fpu_owner == outgoing_tid {
             unsafe {
-                core::arch::asm!("fxsave [{}]", in(reg) old_fpu, options(nostack, preserves_flags));
+                if crate::arch::x86::cpuid::HAS_XSAVE.load(Ordering::Relaxed) {
+                    // XSAVE with mask -1 saves all XCR0-enabled components (x87+SSE+AVX)
+                    core::arch::asm!(
+                        "xsave [{}]",
+                        in(reg) old_fpu,
+                        in("eax") 0xFFFF_FFFFu32,
+                        in("edx") 0xFFFF_FFFFu32,
+                        options(nostack, preserves_flags),
+                    );
+                } else {
+                    core::arch::asm!("fxsave [{}]", in(reg) old_fpu, options(nostack, preserves_flags));
+                }
             }
             PER_CPU_FPU_OWNER[cpu_id].store(0, Ordering::Relaxed);
         }
@@ -1402,11 +1419,22 @@ pub fn handle_device_not_available() {
     // Clear TS first — FXRSTOR also traps on CR0.TS=1
     unsafe { core::arch::asm!("clts", options(nostack, preserves_flags)); }
 
-    // Load this thread's FPU/SSE state
+    // Load this thread's FPU/SSE/AVX state
     let fpu_ptr = PER_CPU_FPU_PTR[cpu_id].load(Ordering::Relaxed);
     if fpu_ptr != 0 {
         unsafe {
-            core::arch::asm!("fxrstor [{}]", in(reg) fpu_ptr, options(nostack, preserves_flags));
+            if crate::arch::x86::cpuid::HAS_XSAVE.load(Ordering::Relaxed) {
+                // XRSTOR with mask -1 restores all XCR0-enabled components
+                core::arch::asm!(
+                    "xrstor [{}]",
+                    in(reg) fpu_ptr,
+                    in("eax") 0xFFFF_FFFFu32,
+                    in("edx") 0xFFFF_FFFFu32,
+                    options(nostack, preserves_flags),
+                );
+            } else {
+                core::arch::asm!("fxrstor [{}]", in(reg) fpu_ptr, options(nostack, preserves_flags));
+            }
         }
         PER_CPU_FPU_OWNER[cpu_id].store(current_tid, Ordering::Relaxed);
     }
@@ -2618,7 +2646,7 @@ pub struct ForkSnapshot {
     pub gid: u16,
     pub stdout_pipe: u32,
     pub stdin_pipe: u32,
-    pub fpu_data: [u8; 512],
+    pub fpu_data: [u8; crate::task::thread::FPU_STATE_SIZE],
     pub mmap_next: u32,
     pub user_pages: u32,
     pub priority: u8,
@@ -2659,7 +2687,7 @@ pub fn current_thread_fork_snapshot() -> Option<ForkSnapshot> {
 }
 
 /// Set the FPU state on a thread (for fork child).
-pub fn set_thread_fpu_state(tid: u32, data: &[u8; 512]) {
+pub fn set_thread_fpu_state(tid: u32, data: &[u8; crate::task::thread::FPU_STATE_SIZE]) {
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("Scheduler not initialized");
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {

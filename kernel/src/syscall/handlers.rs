@@ -4169,12 +4169,16 @@ pub fn sys_gpu_register_backbuffer(buf_ptr: u32, buf_size: u32) -> u32 {
         return u32::MAX;
     }
 
-    let pages = ((buf_size as usize) + 4095) / 4096;
+    // Account for sub-page offset: data starts at buf_ptr & 0xFFF within the
+    // first page, so we need extra page(s) to cover the tail of the buffer.
+    let sub_page_offset = (buf_ptr as usize) & 0xFFF;
+    let pages = (buf_size as usize + sub_page_offset + 4095) / 4096;
+    let page_base = (buf_ptr as u64) & !0xFFF; // align down to page boundary
     let mut phys_pages: alloc::vec::Vec<u64> = alloc::vec::Vec::with_capacity(pages);
 
     // Walk page tables to collect physical addresses for each page
     for i in 0..pages {
-        let va = buf_ptr as u64 + (i as u64) * 4096;
+        let va = page_base + (i as u64) * 4096;
         let pte = crate::memory::virtual_mem::read_pte(
             crate::memory::address::VirtAddr::new(va),
         );
@@ -4190,9 +4194,10 @@ pub fn sys_gpu_register_backbuffer(buf_ptr: u32, buf_size: u32) -> u32 {
         phys_pages.push(phys);
     }
 
-    // Register with GPU driver
+    // Register with GPU driver (pass sub-page offset so GMR blit aligns correctly)
+    let sub_page_offset = (buf_ptr as u32) & 0xFFF;
     let ok = crate::drivers::gpu::with_gpu(|g| {
-        g.register_back_buffer(&phys_pages)
+        g.register_back_buffer(&phys_pages, sub_page_offset)
     });
 
     match ok {

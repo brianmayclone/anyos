@@ -200,6 +200,7 @@ pub struct VmwareSvgaGpu {
     gmr_max_ids: u32,
     gmr_max_pages: u32,
     back_buffer_gmr: Option<u32>,
+    back_buffer_offset: u32,
     gmr_pages: Vec<u64>,
     next_gmr_id: u32,
 }
@@ -714,8 +715,8 @@ impl GpuDriver for VmwareSvgaGpu {
         if self.has_screen_object {
             if let Some(gmr_id) = self.back_buffer_gmr {
                 // DMA blit: GMR back-buffer → Screen Object 0
-                // Back buffer pitch = width * 4 (dense pixel array, no padding)
-                self.define_gmrfb(gmr_id, 0, self.width * 4, 32);
+                // back_buffer_offset accounts for sub-page alignment of Vec<u32>
+                self.define_gmrfb(gmr_id, self.back_buffer_offset, self.width * 4, 32);
             } else {
                 // No GMR: blit from VRAM → Screen Object 0
                 // (SVGA_CMD_UPDATE is deprecated in Screen Object mode)
@@ -834,7 +835,7 @@ impl GpuDriver for VmwareSvgaGpu {
         self.vram_size_bytes
     }
 
-    fn register_back_buffer(&mut self, phys_pages: &[u64]) -> bool {
+    fn register_back_buffer(&mut self, phys_pages: &[u64], sub_page_offset: u32) -> bool {
         if !self.has_gmr2 || !self.has_screen_object || phys_pages.is_empty() {
             return false;
         }
@@ -851,7 +852,8 @@ impl GpuDriver for VmwareSvgaGpu {
                 self.sync_fifo();
                 self.gmr_pages = phys_pages.to_vec();
                 self.back_buffer_gmr = Some(gmr_id);
-                crate::serial_println!("  SVGA: GMR {} defined ({} pages)", gmr_id, phys_pages.len());
+                self.back_buffer_offset = sub_page_offset;
+                crate::serial_println!("  SVGA: GMR {} defined ({} pages, offset={})", gmr_id, phys_pages.len(), sub_page_offset);
                 true
             }
             None => false,
@@ -925,6 +927,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         gmr_max_ids: 0,
         gmr_max_pages: 0,
         back_buffer_gmr: None,
+        back_buffer_offset: 0,
         gmr_pages: Vec::new(),
         next_gmr_id: 0,
     };

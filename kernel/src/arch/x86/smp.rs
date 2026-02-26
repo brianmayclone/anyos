@@ -218,6 +218,8 @@ extern "C" fn ap_entry() -> ! {
 
     // Enable SMEP on this AP (CPUID already detected by BSP; features() is global)
     crate::arch::x86::cpuid::enable_smep();
+    // TODO: enable_xsave() disabled — see main.rs
+    // crate::arch::x86::cpuid::enable_xsave();
 
     // Initialize per-AP power management (HWP / P-state)
     crate::arch::x86::power::init_ap();

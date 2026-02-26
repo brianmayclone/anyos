@@ -9,6 +9,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 static DETECTED: AtomicBool = AtomicBool::new(false);
 /// Set once at boot after detect(). Read by the idle loop for MONITOR/MWAIT.
 pub static HAS_MWAIT: AtomicBool = AtomicBool::new(false);
+/// Set once at boot after enable_xsave(). Checked by the scheduler to choose
+/// between XSAVE/XRSTOR (AVX-capable) and FXSAVE/FXRSTOR (legacy fallback).
+pub static HAS_XSAVE: AtomicBool = AtomicBool::new(false);
 static mut FEATURES: CpuFeatures = CpuFeatures::empty();
 /// 12-byte vendor string from CPUID leaf 0 (e.g. "GenuineIntel"), null-padded to 16.
 static mut CPU_VENDOR: [u8; 16] = [0; 16];
@@ -47,6 +50,9 @@ pub struct CpuFeatures {
     pub rdpid: bool,
     // Leaf 7 EBX (supervisor-mode protection)
     pub smep: bool,
+    // Leaf 0xD: XSAVE area size (bytes) for all enabled components.
+    // 0 if XSAVE is not supported.
+    pub xsave_size: u32,
 }
 
 impl CpuFeatures {
@@ -75,6 +81,7 @@ impl CpuFeatures {
             bmi2: false,
             rdpid: false,
             smep: false,
+            xsave_size: 0,
         }
     }
 }
@@ -168,6 +175,16 @@ pub fn detect() {
         f.bmi2 = ebx & (1 << 8) != 0;
         f.erms = ebx & (1 << 9) != 0;
         f.rdpid = ecx & (1 << 22) != 0;
+    }
+
+    // Leaf 0xD subleaf 0: XSAVE area size for all XCR0-enabled components
+    if f.xsave && max_leaf >= 0xD {
+        let (_eax, ebx, ecx, _edx) = cpuid(0xD, 0);
+        // ECX = maximum size for all supported components (including supervisor)
+        // EBX = size for currently enabled components in XCR0
+        // Before enable_xsave() sets XCR0, EBX may only reflect x87+SSE (576).
+        // Use ECX (max possible) so the buffer is large enough after XCR0 is set.
+        f.xsave_size = ecx;
     }
 
     // Store and mark detected
@@ -325,4 +342,59 @@ pub fn enable_smep() {
         core::arch::asm!("mov cr4, {}", in(reg) cr4 | (1u64 << 20), options(nostack, nomem, preserves_flags));
     }
     crate::serial_println!("  SMEP enabled (CR4.SMEP=1)");
+}
+
+/// Enable XSAVE/XRSTOR and set XCR0 to enable x87 + SSE + AVX state.
+///
+/// Sets CR4.OSXSAVE (bit 18) to allow XGETBV/XSETBV/XSAVE/XRSTOR, then
+/// programs XCR0 to include x87 (bit 0), SSE (bit 1), and AVX (bit 2).
+/// After this, XSAVE/XRSTOR save 832 bytes (instead of 512 for FXSAVE).
+///
+/// Safe to call from both BSP and AP initialization paths.
+pub fn enable_xsave() {
+    let f = features();
+    if !f.xsave {
+        return;
+    }
+
+    unsafe {
+        // Set CR4.OSXSAVE (bit 18) — required before XGETBV/XSETBV
+        let cr4: u64;
+        core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nostack, nomem, preserves_flags));
+        core::arch::asm!("mov cr4, {}", in(reg) cr4 | (1u64 << 18), options(nostack, nomem, preserves_flags));
+
+        // Read current XCR0
+        let xcr0_lo: u32;
+        let xcr0_hi: u32;
+        core::arch::asm!(
+            "xgetbv",
+            in("ecx") 0u32,
+            out("eax") xcr0_lo,
+            out("edx") xcr0_hi,
+            options(nostack, nomem, preserves_flags),
+        );
+
+        // Enable x87 (bit 0) + SSE (bit 1) + AVX (bit 2) if CPU supports AVX
+        let mut new_xcr0 = ((xcr0_hi as u64) << 32) | (xcr0_lo as u64);
+        new_xcr0 |= 0x3; // x87 + SSE (always)
+        if f.avx {
+            new_xcr0 |= 0x4; // AVX (YMM high halves)
+        }
+
+        core::arch::asm!(
+            "xsetbv",
+            in("ecx") 0u32,
+            in("eax") new_xcr0 as u32,
+            in("edx") (new_xcr0 >> 32) as u32,
+            options(nostack, nomem, preserves_flags),
+        );
+    }
+
+    HAS_XSAVE.store(true, Ordering::Release);
+
+    crate::serial_println!(
+        "  XSAVE enabled (CR4.OSXSAVE=1, XCR0={:#x}, area={}B)",
+        if f.avx { 0x7u64 } else { 0x3u64 },
+        f.xsave_size,
+    );
 }
