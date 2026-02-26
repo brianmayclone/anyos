@@ -1556,6 +1556,37 @@ endif() # HAS_CROSS_COMPILER
 # ============================================================
 # 64-bit C Library (libc64 — uses clang, no cross-compiler needed)
 # ============================================================
+find_program(CLANG_EXECUTABLE NAMES clang
+  HINTS /usr/bin /usr/local/bin
+        "$ENV{HOME}/opt/cross/bin"
+        "C:/msys64/mingw64/bin"
+        "C:/msys64/clang64/bin"
+)
+if(NOT CLANG_EXECUTABLE)
+  message(FATAL_ERROR "clang not found. Install clang (e.g. pacman -S mingw-w64-x86_64-clang on MSYS2).")
+endif()
+find_program(CLANGXX_EXECUTABLE NAMES clang++
+  HINTS /usr/bin /usr/local/bin
+        "$ENV{HOME}/opt/cross/bin"
+        "C:/msys64/mingw64/bin"
+        "C:/msys64/clang64/bin"
+)
+get_filename_component(CLANG_BIN_DIR "${CLANG_EXECUTABLE}" DIRECTORY)
+find_program(LLVM_AR_EXECUTABLE NAMES llvm-ar ar HINTS "${CLANG_BIN_DIR}")
+message(STATUS "Found clang: ${CLANG_EXECUTABLE}")
+message(STATUS "Found clang++: ${CLANGXX_EXECUTABLE}")
+message(STATUS "Found ar (for 64-bit): ${LLVM_AR_EXECUTABLE}")
+
+# On Windows, clang may not be in PATH when invoked from cmd.exe.
+# Generate a wrapper script that prepends the clang bin dir to PATH.
+if(WIN32)
+  set(CLANG_WRAPPER "${CMAKE_BINARY_DIR}/clang_env.cmd")
+  file(WRITE "${CLANG_WRAPPER}" "@set \"PATH=${CLANG_BIN_DIR};%PATH%\"\n@%*\n")
+  set(CLANG_ENV "${CLANG_WRAPPER}")
+else()
+  set(CLANG_ENV "")
+endif()
+
 set(LIBC64_DIR "${CMAKE_SOURCE_DIR}/libs/libc64")
 set(LIBC64_A "${LIBC64_DIR}/libc64.a")
 set(LIBC64_CRT0 "${LIBC64_DIR}/obj/crt0.o")
@@ -1564,8 +1595,8 @@ set(LIBC64_CRTN "${LIBC64_DIR}/obj/crtn.o")
 
 add_custom_command(
   OUTPUT ${LIBC64_A} ${LIBC64_CRT0} ${LIBC64_CRTI} ${LIBC64_CRTN}
-  COMMAND ${MAKE_EXECUTABLE} -C ${LIBC64_DIR} clean
-  COMMAND ${MAKE_EXECUTABLE} -C ${LIBC64_DIR}
+  COMMAND ${CLANG_ENV} ${MAKE_EXECUTABLE} -C ${LIBC64_DIR} clean CC=${CLANG_EXECUTABLE} AR=${LLVM_AR_EXECUTABLE} AS=${CLANG_EXECUTABLE}
+  COMMAND ${CLANG_ENV} ${MAKE_EXECUTABLE} -C ${LIBC64_DIR} CC=${CLANG_EXECUTABLE} AR=${LLVM_AR_EXECUTABLE} AS=${CLANG_EXECUTABLE}
   DEPENDS
     ${LIBC64_DIR}/Makefile
     ${LIBC64_DIR}/src/crt0.S
@@ -1619,8 +1650,8 @@ set(LIBCXX_A "${LIBCXX_DIR}/libcxx.a")
 
 add_custom_command(
   OUTPUT ${LIBCXX_A}
-  COMMAND ${MAKE_EXECUTABLE} -C ${LIBCXX_DIR} clean
-  COMMAND ${MAKE_EXECUTABLE} -C ${LIBCXX_DIR}
+  COMMAND ${CLANG_ENV} ${MAKE_EXECUTABLE} -C ${LIBCXX_DIR} clean CXX=${CLANGXX_EXECUTABLE} AR=${LLVM_AR_EXECUTABLE}
+  COMMAND ${CLANG_ENV} ${MAKE_EXECUTABLE} -C ${LIBCXX_DIR} CXX=${CLANGXX_EXECUTABLE} AR=${LLVM_AR_EXECUTABLE}
   DEPENDS
     ${LIBC64_A}
     ${LIBCXX_DIR}/Makefile
