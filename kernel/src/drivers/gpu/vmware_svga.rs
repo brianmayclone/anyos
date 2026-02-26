@@ -128,6 +128,20 @@ const SVGA_REG_GMR_MAX_IDS: u32 = 43;
 const SVGA_REG_GMR_MAX_DESCRIPTOR_LENGTH: u32 = 44;
 const SVGA_REG_GMRS_MAX_PAGES: u32 = 46;
 
+// Display topology registers (host-writable, for detecting window resize)
+#[allow(dead_code)]
+const SVGA_REG_NUM_DISPLAYS: u32 = 31;
+#[allow(dead_code)]
+const SVGA_REG_DISPLAY_ID: u32 = 35;
+#[allow(dead_code)]
+const SVGA_REG_DISPLAY_POSITION_X: u32 = 37;
+#[allow(dead_code)]
+const SVGA_REG_DISPLAY_POSITION_Y: u32 = 38;
+#[allow(dead_code)]
+const SVGA_REG_DISPLAY_WIDTH: u32 = 39;
+#[allow(dead_code)]
+const SVGA_REG_DISPLAY_HEIGHT: u32 = 40;
+
 // IRQ status port offset from io_base (read to get pending, write to acknowledge)
 const SVGA_IRQSTATUS_OFFSET: u16 = 0x8;
 
