@@ -72,11 +72,12 @@ fn send_all(sock: u32, data: &[u8]) -> bool {
     while sent < data.len() {
         let n = net::tcp_send(sock, &data[sent..]);
         if n == 0 {
-            return false; // Connection closed
+            return false;
         }
         if n == u32::MAX {
-            // Send buffer full — yield and retry.
-            process::sleep(1);
+            // Send buffer full — yield CPU (don't sleep!) to let TCP
+            // stack process ACKs and free buffer space.
+            process::yield_cpu();
             continue;
         }
         sent += n as usize;
@@ -84,18 +85,18 @@ fn send_all(sock: u32, data: &[u8]) -> bool {
     true
 }
 
-/// Receive exactly `buf.len()` bytes, sleeping when no data is available.
+/// Receive exactly `buf.len()` bytes, yielding when no data is available.
 /// Returns `false` on EOF (connection closed).
 fn recv_exact(sock: u32, buf: &mut [u8]) -> bool {
     let mut received = 0usize;
     while received < buf.len() {
         let n = net::tcp_recv(sock, &mut buf[received..]);
         if n == 0 {
-            return false; // EOF — peer closed connection
+            return false;
         }
         if n == u32::MAX {
-            // No data yet — sleep briefly to let TCP stack process segments.
-            process::sleep(5);
+            // No data yet — yield CPU to let TCP stack receive segments.
+            process::yield_cpu();
             continue;
         }
         received += n as usize;
@@ -148,26 +149,23 @@ fn send_full_update(sock: u32, w: u16, h: u16, pixels: &[u32]) -> bool {
     send_all(sock, byte_data)
 }
 
-/// Send a single Raw-encoded rectangle (part of a multi-rect update).
-/// The caller must have already sent the FramebufferUpdate header.
-fn send_raw_rect(sock: u32, fb: &[u32], stride: usize, x: usize, y: usize, w: usize, h: usize) -> bool {
-    let mut rect_hdr = [0u8; 12];
-    rect_hdr[0..2].copy_from_slice(&be16(x as u16));
-    rect_hdr[2..4].copy_from_slice(&be16(y as u16));
-    rect_hdr[4..6].copy_from_slice(&be16(w as u16));
-    rect_hdr[6..8].copy_from_slice(&be16(h as u16));
-    // encoding = 0 (Raw)
-    if !send_all(sock, &rect_hdr) { return false; }
+/// Append a raw rectangle (header + pixel data) to a byte buffer.
+fn append_raw_rect(out: &mut anyos_std::Vec<u8>, fb: &[u32], stride: usize, x: usize, y: usize, w: usize, h: usize) {
+    // Rectangle header: x, y, w, h (BE16 each), encoding=0 (Raw, BE32)
+    out.extend_from_slice(&be16(x as u16));
+    out.extend_from_slice(&be16(y as u16));
+    out.extend_from_slice(&be16(w as u16));
+    out.extend_from_slice(&be16(h as u16));
+    out.extend_from_slice(&[0, 0, 0, 0]); // encoding = Raw
 
-    // Send row by row (tile may not be contiguous in the framebuffer).
+    // Pixel data row by row.
     for row in y..y + h {
         let off = row * stride + x;
-        let row_data = unsafe {
+        let row_bytes = unsafe {
             core::slice::from_raw_parts(fb[off..].as_ptr() as *const u8, w * 4)
         };
-        if !send_all(sock, row_data) { return false; }
+        out.extend_from_slice(row_bytes);
     }
-    true
 }
 
 /// Check if a tile differs between `cur` and `prev` framebuffers.
@@ -181,15 +179,8 @@ fn tile_dirty(cur: &[u32], prev: &[u32], stride: usize, tx: usize, ty: usize, tw
     false
 }
 
-/// Dirty-tile info: position and size of one changed tile.
-struct DirtyTile {
-    x: u16,
-    y: u16,
-    w: u16,
-    h: u16,
-}
-
 /// Send a FramebufferUpdate containing only the dirty tiles.
+/// All tile data is collected into one buffer and sent in a single TCP write.
 /// Returns `false` on connection error. Updates `prev` with `cur` for dirty regions.
 fn send_dirty_update(
     sock: u32,
@@ -198,17 +189,24 @@ fn send_dirty_update(
     sw: usize,
     sh: usize,
     full: bool,
+    send_buf: &mut anyos_std::Vec<u8>,
 ) -> bool {
+    send_buf.clear();
+
     if full {
-        // Full (non-incremental) update: send everything.
+        // Full (non-incremental) update: send everything in one call.
         prev.copy_from_slice(&cur[..sw * sh]);
         return send_full_update(sock, sw as u16, sh as u16, cur);
     }
 
-    // Collect dirty tiles.
+    // Scan for dirty tiles and build the complete message in send_buf.
     let tiles_x = (sw + TILE_SIZE - 1) / TILE_SIZE;
     let tiles_y = (sh + TILE_SIZE - 1) / TILE_SIZE;
-    let mut dirty = anyos_std::Vec::new();
+    let mut n_dirty: u16 = 0;
+
+    // Reserve space for the FramebufferUpdate header (4 bytes).
+    // We'll fill in the rectangle count after scanning.
+    send_buf.extend_from_slice(&[0u8; 4]);
 
     for ty_idx in 0..tiles_y {
         for tx_idx in 0..tiles_x {
@@ -218,45 +216,33 @@ fn send_dirty_update(
             let th = TILE_SIZE.min(sh - ty);
 
             if tile_dirty(cur, prev, sw, tx, ty, tw, th) {
-                dirty.push(DirtyTile {
-                    x: tx as u16,
-                    y: ty as u16,
-                    w: tw as u16,
-                    h: th as u16,
-                });
+                // Append this tile's rect to the send buffer.
+                append_raw_rect(send_buf, cur, sw, tx, ty, tw, th);
+                n_dirty += 1;
+
+                // Update prev buffer for this tile.
+                for row in ty..ty + th {
+                    let off = row * sw + tx;
+                    prev[off..off + tw].copy_from_slice(&cur[off..off + tw]);
+                }
             }
         }
     }
 
-    if dirty.is_empty() {
-        // Nothing changed — send an empty update (0 rectangles).
-        let hdr: [u8; 4] = [0, 0, 0, 0];
-        return send_all(sock, &hdr);
+    if n_dirty == 0 {
+        // Nothing changed — send empty update (0 rectangles).
+        send_buf.clear();
+        send_buf.extend_from_slice(&[0u8; 4]); // type=0, pad=0, nrects=0
+        return send_all(sock, send_buf);
     }
 
-    // Send FramebufferUpdate header with rectangle count.
-    let n = dirty.len().min(0xFFFF) as u16;
-    let mut hdr = [0u8; 4];
-    hdr[2..4].copy_from_slice(&be16(n));
-    if !send_all(sock, &hdr) { return false; }
+    // Patch the rectangle count into the header.
+    let count_bytes = be16(n_dirty);
+    send_buf[2] = count_bytes[0];
+    send_buf[3] = count_bytes[1];
 
-    // Send each dirty tile.
-    for tile in &dirty {
-        if !send_raw_rect(sock, cur, sw, tile.x as usize, tile.y as usize, tile.w as usize, tile.h as usize) {
-            return false;
-        }
-        // Update prev buffer for this tile.
-        let tx = tile.x as usize;
-        let ty = tile.y as usize;
-        let tw = tile.w as usize;
-        let th = tile.h as usize;
-        for row in ty..ty + th {
-            let off = row * sw + tx;
-            prev[off..off + tw].copy_from_slice(&cur[off..off + tw]);
-        }
-    }
-
-    true
+    // Single TCP send for the entire update.
+    send_all(sock, send_buf)
 }
 
 // ── Login screen helpers ──────────────────────────────────────────────────────
@@ -455,6 +441,11 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
     // Stack-allocating 1.2 MB would overflow the process stack.
     let mut login_panel: anyos_std::Vec<u32> = anyos_std::vec![0u32; LOGIN_W * LOGIN_H];
 
+    // Previous-frame buffer and send buffer for tile-based dirty detection.
+    let mut login_prev: anyos_std::Vec<u32> = anyos_std::vec![0u32; sw * sh];
+    let mut login_send_buf: anyos_std::Vec<u8> = anyos_std::Vec::new();
+    let mut login_first_frame = true;
+
     // ── 8. OS login screen phase ──────────────────────────────────────────────
     let mut username_buf = [0u8; 64];
     let mut username_len = 0usize;
@@ -479,7 +470,7 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
             pending_update = true;
         }
 
-        // Send login screen frame if needed.
+        // Send login screen frame if needed (tile-based dirty detection).
         if pending_update && now.wrapping_sub(last_update) >= MIN_FRAME_INTERVAL_MS {
             let uname = &username_buf[..username_len];
             let state = LoginState {
@@ -490,7 +481,11 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                 error_msg: login_error,
             };
             render_login_overlay(&mut screen_buf, sw, sh, &state, &mut login_panel);
-            let ok = send_full_update(sock, sw as u16, sh as u16, &screen_buf);
+            let ok = send_dirty_update(
+                sock, &screen_buf, &mut login_prev, sw, sh,
+                login_first_frame, &mut login_send_buf,
+            );
+            login_first_frame = false;
             if !ok {
                 net::tcp_close(sock);
                 return;
@@ -680,6 +675,9 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
 
     // Previous-frame buffer for dirty-tile detection.
     let mut prev_buf: anyos_std::Vec<u32> = anyos_std::vec![0u32; n_pixels];
+    // Reusable send buffer — pre-allocate with generous capacity to avoid
+    // per-frame allocations. Worst case: full screen of 64x64 tiles.
+    let mut send_buf: anyos_std::Vec<u8> = anyos_std::Vec::new();
 
     let mut mods = ModifierState::default();
     let mut last_frame_ms = sys::uptime_ms().wrapping_sub(MIN_FRAME_INTERVAL_MS + 1);
@@ -707,8 +705,8 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                             ok, info[0], info[1], screen_buf.len());
                         break;
                     }
-                    // Send only dirty tiles (or full if non-incremental).
-                    if !send_dirty_update(sock, &screen_buf, &mut prev_buf, sw, sh, need_full) {
+                    // Send only dirty tiles (or full if non-incremental) — single TCP write.
+                    if !send_dirty_update(sock, &screen_buf, &mut prev_buf, sw, sh, need_full, &mut send_buf) {
                         break;
                     }
                     last_frame_ms = now;

@@ -2883,19 +2883,24 @@ pub fn sys_capture_screen(buf_ptr: u32, buf_size: u32, info_ptr: u32) -> u32 {
     }
 
     // Map framebuffer physical pages into the current process at 0x30000000
-    // (read-only user access: PAGE_PRESENT | PAGE_USER)
+    // (read-only user access: PAGE_PRESENT | PAGE_USER).
+    // Skip re-mapping if already mapped (check first page's PTE).
     let fb_map_base: u64 = 0x3000_0000;
     let fb_total_bytes = height as usize * pitch as usize;
     let fb_pages = (fb_total_bytes + 0xFFF) / 0x1000;
 
-    for i in 0..fb_pages {
-        let phys = crate::memory::address::PhysAddr::new(
-            fb_phys as u64 + (i * 0x1000) as u64,
-        );
-        let virt = crate::memory::address::VirtAddr::new(
-            fb_map_base + (i * 0x1000) as u64,
-        );
-        crate::memory::virtual_mem::map_page(virt, phys, 0x05);
+    let first_virt = crate::memory::address::VirtAddr::new(fb_map_base);
+    let already_mapped = crate::memory::virtual_mem::read_pte(first_virt) & 0x01 != 0;
+    if !already_mapped {
+        for i in 0..fb_pages {
+            let phys = crate::memory::address::PhysAddr::new(
+                fb_phys as u64 + (i * 0x1000) as u64,
+            );
+            let virt = crate::memory::address::VirtAddr::new(
+                fb_map_base + (i * 0x1000) as u64,
+            );
+            crate::memory::virtual_mem::map_page(virt, phys, 0x05);
+        }
     }
 
     // Copy pixels row by row (pitch may differ from width*4)
