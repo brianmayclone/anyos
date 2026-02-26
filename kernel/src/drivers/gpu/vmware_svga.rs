@@ -54,6 +54,13 @@ const SVGA_CAP_TRACES: u32             = 1 << 21;
 const SVGA_CAP_GMR2: u32               = 1 << 22;
 const SVGA_CAP_SCREEN_OBJECT_2: u32    = 1 << 23;
 
+// Screen Object flags
+const SVGA_SCREEN_MUST_BE_SET: u32     = 1 << 0;
+const SVGA_SCREEN_IS_PRIMARY: u32      = 1 << 1;
+
+// Special GMR IDs
+const SVGA_GMR_FRAMEBUFFER: u32        = 0xFFFF_FFFE;
+
 // FIFO register offsets (in u32 units)
 const SVGA_FIFO_MIN: usize = 0;
 const SVGA_FIFO_MAX: usize = 1;
@@ -82,7 +89,9 @@ const SVGA_FIFO_CAP_FENCE: u32          = 1 << 0;
 const SVGA_FIFO_CAP_ACCELFRONT: u32     = 1 << 1;
 const SVGA_FIFO_CAP_CURSOR_BYPASS_3: u32 = 1 << 4;
 const SVGA_FIFO_CAP_RESERVE: u32        = 1 << 6;
+const SVGA_FIFO_CAP_SCREEN_OBJECT: u32  = 1 << 7;
 const SVGA_FIFO_CAP_GMR2: u32           = 1 << 8;
+const SVGA_FIFO_CAP_SCREEN_OBJECT_2: u32 = 1 << 9;
 
 // Cursor I/O registers (guest writes cursor position here for cursor bypass 1/2)
 const SVGA_REG_CURSOR_ID: u32 = 24;
@@ -134,6 +143,9 @@ const SVGA_CMD_RECT_COPY: u32 = 3;
 const SVGA_CMD_DEFINE_CURSOR: u32 = 19;
 const SVGA_CMD_DEFINE_ALPHA_CURSOR: u32 = 22;
 const SVGA_CMD_FENCE: u32 = 30;
+const SVGA_CMD_DEFINE_SCREEN: u32 = 34;
+#[allow(dead_code)]
+const SVGA_CMD_DESTROY_SCREEN: u32 = 35;
 const SVGA_CMD_DEFINE_GMRFB: u32 = 36;
 const SVGA_CMD_BLIT_GMRFB_TO_SCREEN: u32 = 37;
 #[allow(dead_code)]
@@ -179,6 +191,9 @@ pub struct VmwareSvgaGpu {
     bounce_virt: u64,
     reserved_size: u32,
     using_bounce: bool,
+
+    // Screen Objects (required for GMRFB blits)
+    has_screen_object: bool,
 
     // GMR2 (Guest Memory Regions for DMA)
     has_gmr2: bool,
@@ -394,11 +409,12 @@ impl VmwareSvgaGpu {
         self.using_bounce = false;
     }
 
-    /// Commit the entire reserved region.
+    /// Commit the entire reserved region and ring the doorbell.
     fn fifo_commit_all(&mut self) {
         let size = self.reserved_size;
         if size > 0 {
             self.fifo_commit(size);
+            self.ring_doorbell();
         }
     }
 
@@ -554,15 +570,53 @@ impl VmwareSvgaGpu {
 
     /// Set the GMRFB (off-screen surface pointer) for blit operations.
     fn define_gmrfb(&mut self, gmr_id: u32, offset: u32, bytes_per_line: u32, bpp: u32) {
-        // SVGAGuestPtr: gmrId, offset
-        // SVGAGMRImageFormat: bitsPerPixel | (colorDepth << 8)
-        let format = bpp | ((bpp & 0xFF) << 8); // e.g. 32bpp → 0x2020
+        // SVGAGMRImageFormat: bitsPerPixel[7:0] | colorDepth[15:8]
+        // For XRGB8888: bpp=32, colorDepth=24 (R8G8B8 + 8 unused)
+        let color_depth = if bpp == 32 { 24u32 } else { bpp };
+        let format = (bpp & 0xFF) | ((color_depth & 0xFF) << 8);
         self.fifo_write_cmd(&[
             SVGA_CMD_DEFINE_GMRFB,
             gmr_id, offset,          // SVGAGuestPtr
             bytes_per_line,           // bytesPerLine
             format,                   // SVGAGMRImageFormat
         ]);
+    }
+
+    /// Define Screen Object 0 (primary display).
+    /// Required before SVGA_CMD_BLIT_GMRFB_TO_SCREEN can target it.
+    fn define_screen_0(&mut self) {
+        if !self.has_screen_object {
+            return;
+        }
+
+        if self.fifo_caps & SVGA_FIFO_CAP_SCREEN_OBJECT_2 != 0 {
+            // Screen Object v2: full struct with backing store → VRAM
+            self.fifo_write_cmd(&[
+                SVGA_CMD_DEFINE_SCREEN,
+                44,                                         // structSize
+                0,                                          // id = 0 (primary)
+                SVGA_SCREEN_MUST_BE_SET | SVGA_SCREEN_IS_PRIMARY,
+                self.width,
+                self.height,
+                0, 0,                                       // root.x, root.y
+                SVGA_GMR_FRAMEBUFFER,                       // backingStore → BAR1 VRAM
+                0,                                          // offset
+                self.pitch,                                 // bytesPerLine
+                0,                                          // cloneCount
+            ]);
+        } else {
+            // Screen Object v1: truncated struct (no backing store)
+            self.fifo_write_cmd(&[
+                SVGA_CMD_DEFINE_SCREEN,
+                28,                                         // structSize
+                0,                                          // id = 0
+                SVGA_SCREEN_MUST_BE_SET | SVGA_SCREEN_IS_PRIMARY,
+                self.width,
+                self.height,
+                0, 0,                                       // root.x, root.y
+            ]);
+        }
+        self.sync_fifo();
     }
 
     /// Blit from GMRFB to screen.
@@ -605,6 +659,9 @@ impl GpuDriver for VmwareSvgaGpu {
             actual_w, actual_h, bpp, pitch, fb
         );
 
+        // Redefine Screen Object 0 with new dimensions
+        self.define_screen_0();
+
         Some((actual_w, actual_h, pitch, fb))
     }
 
@@ -640,22 +697,39 @@ impl GpuDriver for VmwareSvgaGpu {
     }
 
     fn update_rect(&mut self, x: u32, y: u32, w: u32, h: u32) {
-        self.fifo_write_cmd(&[SVGA_CMD_UPDATE, x, y, w, h]);
-    }
-
-    fn transfer_rect(&mut self, x: u32, y: u32, w: u32, h: u32) {
-        if let Some(gmr_id) = self.back_buffer_gmr {
-            // Use GMR DMA blit path
-            self.define_gmrfb(gmr_id, 0, self.pitch, 32);
+        if self.has_screen_object {
+            // Screen Object mode: blit VRAM region → screen
+            self.define_gmrfb(SVGA_GMR_FRAMEBUFFER, 0, self.pitch, 32);
             self.blit_gmrfb_to_screen(
                 x as i32, y as i32,
                 x as i32, y as i32,
                 (x + w) as i32, (y + h) as i32,
             );
         } else {
-            // Legacy UPDATE command
             self.fifo_write_cmd(&[SVGA_CMD_UPDATE, x, y, w, h]);
         }
+    }
+
+    fn transfer_rect(&mut self, x: u32, y: u32, w: u32, h: u32) {
+        if self.has_screen_object {
+            if let Some(gmr_id) = self.back_buffer_gmr {
+                // DMA blit: GMR back-buffer → Screen Object 0
+                // Back buffer pitch = width * 4 (dense pixel array, no padding)
+                self.define_gmrfb(gmr_id, 0, self.width * 4, 32);
+            } else {
+                // No GMR: blit from VRAM → Screen Object 0
+                // (SVGA_CMD_UPDATE is deprecated in Screen Object mode)
+                self.define_gmrfb(SVGA_GMR_FRAMEBUFFER, 0, self.pitch, 32);
+            }
+            self.blit_gmrfb_to_screen(
+                x as i32, y as i32,
+                x as i32, y as i32,
+                (x + w) as i32, (y + h) as i32,
+            );
+            return;
+        }
+        // Legacy UPDATE (no Screen Objects — e.g. QEMU)
+        self.fifo_write_cmd(&[SVGA_CMD_UPDATE, x, y, w, h]);
     }
 
     fn has_hw_cursor(&self) -> bool {
@@ -761,7 +835,7 @@ impl GpuDriver for VmwareSvgaGpu {
     }
 
     fn register_back_buffer(&mut self, phys_pages: &[u64]) -> bool {
-        if !self.has_gmr2 || phys_pages.is_empty() {
+        if !self.has_gmr2 || !self.has_screen_object || phys_pages.is_empty() {
             return false;
         }
         // Undefine previous GMR if any
@@ -773,6 +847,8 @@ impl GpuDriver for VmwareSvgaGpu {
         // Define new GMR with the provided pages
         match self.gmr2_define(phys_pages) {
             Some(gmr_id) => {
+                // Sync: ensure DEFINE+REMAP commands are processed before first blit
+                self.sync_fifo();
                 self.gmr_pages = phys_pages.to_vec();
                 self.back_buffer_gmr = Some(gmr_id);
                 crate::serial_println!("  SVGA: GMR {} defined ({} pages)", gmr_id, phys_pages.len());
@@ -844,6 +920,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         bounce_virt: 0,
         reserved_size: 0,
         using_bounce: false,
+        has_screen_object: false,
         has_gmr2: false,
         gmr_max_ids: 0,
         gmr_max_pages: 0,
@@ -975,6 +1052,15 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         gpu.gmr_max_ids = gpu.reg_read(SVGA_REG_GMR_MAX_IDS);
         gpu.gmr_max_pages = gpu.reg_read(SVGA_REG_GMRS_MAX_PAGES);
         crate::serial_println!("    - GMR2 (max {} IDs, {} pages)", gpu.gmr_max_ids, gpu.gmr_max_pages);
+    }
+
+    // 8d. Screen Object support (required for GMRFB blits)
+    gpu.has_screen_object = (fifo_caps & SVGA_FIFO_CAP_SCREEN_OBJECT != 0)
+        || (fifo_caps & SVGA_FIFO_CAP_SCREEN_OBJECT_2 != 0);
+    if gpu.has_screen_object {
+        let ver = if fifo_caps & SVGA_FIFO_CAP_SCREEN_OBJECT_2 != 0 { "v2" } else { "v1" };
+        crate::serial_println!("    - SCREEN_OBJECT ({})", ver);
+        gpu.define_screen_0();
     }
 
     // 9. IRQ setup (if device supports IRQMASK)
