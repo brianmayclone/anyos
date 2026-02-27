@@ -87,6 +87,7 @@ struct LibGl {
     _handle: DlHandle,
     // anyOS extensions
     init: extern "C" fn(u32, u32),
+    resize: extern "C" fn(u32, u32),
     swap_buffers: extern "C" fn() -> *const u32,
     get_backbuffer: extern "C" fn() -> *const u32,
     // State
@@ -208,6 +209,7 @@ pub fn init() -> bool {
     unsafe {
         let lib = LibGl {
             init: resolve(&handle, "gl_init"),
+            resize: resolve(&handle, "gl_resize"),
             swap_buffers: resolve(&handle, "gl_swap_buffers"),
             get_backbuffer: resolve(&handle, "gl_get_backbuffer"),
             get_error: resolve(&handle, "glGetError"),
@@ -304,6 +306,9 @@ pub fn init() -> bool {
 
 /// Initialize the GL context with framebuffer dimensions.
 pub fn gl_init(width: u32, height: u32) { (lib().init)(width, height); }
+
+/// Resize the GL framebuffer (preserves shaders, buffers, textures).
+pub fn gl_resize(width: u32, height: u32) { (lib().resize)(width, height); }
 
 /// Swap buffers. Returns pointer to ARGB color data.
 pub fn swap_buffers() -> *const u32 { (lib().swap_buffers)() }

@@ -16,8 +16,10 @@ use crate::simd::Vec4;
 
 /// Maximum number of registers in the shader register file.
 ///
-/// Sufficient for complex Phong shaders with multiple lights (~40 regs).
-pub const MAX_REGS: usize = 64;
+/// The IR compiler uses SSA-style allocation (no register reuse), so complex
+/// shaders (Phong with 2+ lights, normalize, pow, vec3/vec4 constructors)
+/// can easily need 70–100 registers. 128 provides comfortable headroom.
+pub const MAX_REGS: usize = 128;
 
 /// Callback for texture sampling.
 pub type TexSampleFn = fn(unit: u32, u: f32, v: f32) -> [f32; 4];

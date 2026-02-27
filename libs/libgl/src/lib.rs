@@ -166,6 +166,13 @@ pub extern "C" fn gl_init(width: u32, height: u32) {
     serial_println!("[libgl] gl_init done ({}x{}, hw={})", width, height, unsafe { USE_HW_BACKEND });
 }
 
+/// Resize the GL framebuffer without destroying shaders, buffers, or textures.
+#[no_mangle]
+pub extern "C" fn gl_resize(width: u32, height: u32) {
+    let c = ctx();
+    c.default_fb.resize(width, height);
+}
+
 /// Swap buffers — returns a pointer to the ARGB color buffer.
 ///
 /// When using the SVGA3D hardware backend, reads back the GPU render target

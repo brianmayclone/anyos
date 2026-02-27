@@ -202,8 +202,8 @@ fn generate_sphere(rings: u32, sectors: u32) -> (Vec<f32>, Vec<u16>) {
             let i2 = ((r + 1) * row_len + s) as u16;
             let i3 = ((r + 1) * row_len + s + 1) as u16;
 
-            indices.extend_from_slice(&[i0, i2, i1]);
-            indices.extend_from_slice(&[i1, i2, i3]);
+            indices.extend_from_slice(&[i0, i1, i2]);
+            indices.extend_from_slice(&[i1, i3, i2]);
         }
     }
 
@@ -332,6 +332,17 @@ fn render_frame() {
     let s = unsafe { STATE.as_mut().unwrap() };
     s.frame += 1;
 
+    // Dynamic resize: query actual canvas dimensions each frame
+    let cur_w = s.canvas.get_stride();
+    let cur_h = s.canvas.get_height();
+    if cur_w == 0 || cur_h == 0 { return; }
+    if cur_w != s.fb_w || cur_h != s.fb_h {
+        s.fb_w = cur_w;
+        s.fb_h = cur_h;
+        gl::gl_resize(cur_w, cur_h);
+        gl::viewport(0, 0, cur_w as i32, cur_h as i32);
+    }
+
     let t = s.frame as f32 * 0.02; // time in pseudo-seconds
 
     // ── Setup ────────────────────────────────────────────────────────────
@@ -339,11 +350,11 @@ fn render_frame() {
     gl::clear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
 
     // Camera
-    let eye = [0.0f32, 1.5, 4.0];
+    let eye = [0.0f32, 2.0, 5.0];
     let aspect = s.fb_w as f32 / s.fb_h as f32;
-    let proj = mat4_perspective(0.9, aspect, 0.1, 50.0);
+    let proj = mat4_perspective(0.8, aspect, 0.1, 50.0);
     // Simple look-at: translate to eye position + tilt down
-    let view = mat4_mul(&mat4_rotate_x(-0.3), &mat4_translate(-eye[0], -eye[1], -eye[2]));
+    let view = mat4_mul(&mat4_rotate_x(-0.35), &mat4_translate(-eye[0], -eye[1], -eye[2]));
 
     // Animated lights
     let l0_x = gl::sin(t * 0.7) * 3.0;
@@ -482,24 +493,25 @@ fn main() {
     libanyui_client::init();
     let window = libanyui_client::Window::new("GL Demo - Phong", 80, 60, 420, 460);
 
+    // Canvas fills the entire window client area
     let canvas = libanyui_client::Canvas::new(400, 400);
-    canvas.set_position(0, 0);
+    canvas.set_dock(libanyui_client::DOCK_FILL);
     window.add(&canvas);
     window.set_visible(true);
 
     let fb_w = canvas.get_stride();
     let fb_h = canvas.get_height();
     anyos_std::println!("gldemo: canvas {}x{}", fb_w, fb_h);
-    if fb_w == 0 || fb_h == 0 {
-        anyos_std::println!("gldemo: canvas dimensions zero, aborting");
-        return;
-    }
 
     // Initialize libgl
     if !gl::init() {
         anyos_std::println!("gldemo: failed to load libgl.so");
         return;
     }
+
+    // Use actual canvas size (may differ from initial 400x400 due to dock)
+    let fb_w = if fb_w > 0 { fb_w } else { 400 };
+    let fb_h = if fb_h > 0 { fb_h } else { 400 };
 
     gl::gl_init(fb_w, fb_h);
     gl::viewport(0, 0, fb_w as i32, fb_h as i32);
@@ -509,16 +521,16 @@ fn main() {
     gl::cull_face(gl::GL_BACK);
     gl::set_fxaa(false);
 
-    // HW/SW toggle
+    // HW/SW toggle (overlaid on canvas)
     let hw_available = gl::has_hw_backend();
     let hw_label = libanyui_client::Label::new("HW");
-    hw_label.set_position(10, 406);
+    hw_label.set_position(10, 6);
     hw_label.set_text_color(0xFFCCCCCC);
     hw_label.set_font_size(13);
     window.add(&hw_label);
 
     let hw_toggle = libanyui_client::Toggle::new(hw_available);
-    hw_toggle.set_position(40, 404);
+    hw_toggle.set_position(40, 4);
     hw_toggle.on_checked_changed(|e| { gl::set_hw_backend(e.checked); });
     window.add(&hw_toggle);
 

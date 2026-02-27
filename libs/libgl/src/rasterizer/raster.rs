@@ -47,7 +47,10 @@ pub fn rasterize_triangle(
     // ── Triangle area + degenerate check ─────────────────────────────────
     let area = edge_fn(s0, s1, s2);
     if area.abs() < 1e-6 { return; }
-    let inv_area = 1.0 / area;
+    // inv_area must always be positive so barycentric coordinates are correct.
+    // When area < 0 (CW screen-space winding from viewport Y-flip), we negate
+    // edge values and increments so the inside test (>= 0) works uniformly.
+    let inv_area = 1.0 / area.abs();
 
     // ── Clip-space W for perspective correction ──────────────────────────
     let w0_clip = v0.position[3];
@@ -111,6 +114,19 @@ pub fn rasterize_triangle(
     let mut w0_row = (s2[0] - s1[0]) * (p0y - s1[1]) - (s2[1] - s1[1]) * (p0x - s1[0]);
     let mut w1_row = (s0[0] - s2[0]) * (p0y - s2[1]) - (s0[1] - s2[1]) * (p0x - s2[0]);
     let mut w2_row = (s1[0] - s0[0]) * (p0y - s0[1]) - (s1[1] - s0[1]) * (p0x - s0[0]);
+
+    // Normalize sign: when area < 0 (CW screen winding), flip all edge
+    // values and increments so the inside test (>= 0) works uniformly.
+    let (mut a12, mut b12, mut a20, mut b20, mut a01, mut b01) =
+        (a12, b12, a20, b20, a01, b01);
+    if area < 0.0 {
+        w0_row = -w0_row;
+        w1_row = -w1_row;
+        w2_row = -w2_row;
+        a12 = -a12; b12 = -b12;
+        a20 = -a20; b20 = -b20;
+        a01 = -a01; b01 = -b01;
+    }
 
     // Stack-allocated varying interpolation buffer (zero heap alloc)
     let mut varying_buf = [[0.0f32; 4]; MAX_VARYINGS];
