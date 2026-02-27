@@ -3,9 +3,10 @@
 The **libgl** shared library provides an OpenGL ES 2.0 compatible 3D graphics engine with a built-in GLSL ES 1.00 shader compiler and software rasterizer. It renders 3D scenes entirely in software, producing an ARGB framebuffer that can be displayed on any anyOS surface (e.g. anyui Canvas).
 
 **Format:** ELF64 shared object (.so), loaded via `dl_open("/Libraries/libgl.so")`
-**Exports:** 68
+**Exports:** 86
 **Client crate:** `libgl_client` (uses `dynlink::dl_open` / `dl_sym`)
 **API level:** OpenGL ES 2.0 (Phase 1 subset)
+**Shader execution:** JIT-compiled x86_64 SSE (primary) with IR interpreter fallback
 
 ---
 
@@ -176,9 +177,12 @@ libs/libgl/src/
   state.rs               GlContext state machine
   buffer.rs              VBO/EBO storage
   texture.rs             Texture objects with sampling
-  shader.rs              Shader/Program objects
+  shader.rs              Shader/Program objects, link-time JIT compilation
   framebuffer.rs         SwFramebuffer (ARGB color + f32 depth)
   draw.rs                Draw dispatch
+  simd.rs                SSE-accelerated Vec4 (wraps __m128)
+  fxaa.rs                FXAA post-processing
+  svga3d.rs              SVGA3D GPU command generation
   syscall.rs             Minimal syscalls (sbrk, exit)
   compiler/
     mod.rs               Compile pipeline orchestration
@@ -186,13 +190,15 @@ libs/libgl/src/
     ast.rs               AST node definitions
     parser.rs            Recursive-descent parser
     ir.rs                SSA-style intermediate representation (~35 opcodes)
-    lower.rs             AST -> IR lowering
+    lower.rs             AST -> IR lowering (with running uniform offset)
     backend_sw.rs        IR interpreter (register file: [f32; 4] per register)
+    backend_jit.rs       x86_64 SSE JIT compiler (IR -> native machine code)
+    backend_dx9.rs       IR -> DX9 SM 2.0 bytecode (SVGA3D)
   rasterizer/
-    mod.rs               Pipeline orchestration
+    mod.rs               Pipeline orchestration, fast-path dispatch
     vertex.rs            Vertex attribute fetching from VBOs
     clipper.rs           Sutherland-Hodgman frustum clipping
-    raster.rs            Edge-function triangle rasterization
+    raster.rs            Edge-function rasterization + fast-path rasterizer
     fragment.rs          Depth test, blending
     math.rs              Transcendental functions without libm
 ```
@@ -208,7 +214,8 @@ Vertex Assembly
   |
   v
 Vertex Shader (per vertex)
-  IR interpreter executes compiled GLSL vertex shader
+  JIT-compiled native x86_64 SSE code (preferred)
+  Fallback: IR interpreter when JIT unavailable
   Outputs: gl_Position (clip-space), varyings
   |
   v
@@ -217,8 +224,8 @@ Primitive Assembly
   |
   v
 Frustum Clipping
-  Sutherland-Hodgman algorithm against 6 clip planes in clip space
-  One triangle may produce 0-N output triangles
+  Trivial-accept test: skip clipping if all 3 vertices inside frustum
+  Slow path: Sutherland-Hodgman against 6 clip planes (may produce 0-N triangles)
   |
   v
 Perspective Divide
@@ -233,30 +240,49 @@ Backface Culling
   Discard triangles facing away from camera (if GL_CULL_FACE enabled)
   |
   v
-Rasterization
-  Edge-function scan with barycentric coordinates per pixel
-  |
-  v
-Fragment Shader (per pixel)
-  IR interpreter with perspective-correct interpolated varyings
-  Outputs: gl_FragColor
+Rasterization (one of two paths)
+  [FAST PATH] Textured + vertex-lit triangles:
+    Zero per-pixel function calls; inline texture sampling + color math
+    Activated when: FS ≤ 20 instructions, ≥ 2 varyings, no blending, texture bound
+  [STANDARD PATH] General fragment shaders:
+    JIT-compiled native code (preferred) or IR interpreter fallback
+    Incremental edge functions with scanline span clipping
+    Perspective-correct varying interpolation (SIMD Vec4)
   |
   v
 Per-Fragment Operations
-  Depth test -> Blending -> Color write -> SwFramebuffer
+  Early depth test (before fragment shader) -> Blending -> Color write -> SwFramebuffer
 ```
 
 ### GLSL Compiler
 
-The built-in GLSL compiler processes shader source through 4 stages:
+The built-in GLSL compiler processes shader source through 4 stages, with 3 execution backends:
+
+#### Compilation Stages
 
 1. **Lexer** (`compiler/lexer.rs`) — Tokenizes GLSL source into ~40 token types (keywords, identifiers, numbers, operators, punctuation). Handles C-style comments, preprocessor lines, hex/float literals.
 
 2. **Parser** (`compiler/parser.rs`) — Recursive-descent parser with precedence climbing. Produces an AST representing declarations (precision, variables, functions), statements (assign, return, if, for, discard), and expressions (binary, unary, ternary, call, swizzle, constructor).
 
-3. **IR Lowering** (`compiler/lower.rs`) — Converts AST to a register-based IR. Each register holds `[f32; 4]`. Allocates registers for attributes, uniforms, varyings, and locals. Lowers built-in functions, type constructors, swizzle operations, and matrix operations to IR instructions.
+3. **IR Lowering** (`compiler/lower.rs`) — Converts AST to a register-based IR. Each register holds `[f32; 4]`. Allocates registers for attributes, uniforms, varyings, and locals. Lowers built-in functions, type constructors, swizzle operations, and matrix operations to IR instructions. Uses a running uniform offset counter to correctly index mixed mat4/scalar uniforms (mat4 = 4 slots, others = 1 slot).
 
-4. **SW Backend** (`compiler/backend_sw.rs`) — Interprets IR instructions against a register file. Executes per-vertex (vertex shader) and per-fragment (fragment shader). Uses polynomial math approximations from `rasterizer/math.rs`.
+4. **Link-time Processing** (`shader.rs`) — `link_program()` merges VS and FS IR, resolves uniform/attribute/varying bindings, patches FS `LoadUniform` indices by the VS uniform slot count (since the combined uniform array places VS uniforms first), and JIT-compiles both shaders to native x86_64 code.
+
+#### Execution Backends
+
+**JIT Backend** (`compiler/backend_jit.rs`) — Compiles IR to native x86_64 SSE machine code at `glLinkProgram()` time. The compiled code is cached in `GlProgram.vs_jit` / `GlProgram.fs_jit` and reused every frame. This eliminates the ~15-cycle branch-misprediction penalty per IR instruction from the interpreter's match dispatch.
+
+Architecture:
+- Calling convention: `extern "C" fn(ctx: *const JitContext)`
+- Register allocation: RBX = register file base, R12 = uniforms, R13 = attributes, R14 = varyings in, R15 = varyings out, RBP = ctx pointer
+- Shader virtual registers (up to 128) live in memory at `[RBX + reg * 16]`
+- Each instruction does load → SSE operate → store, emitting straight-line code with zero branching
+- Supports all ~35 IR opcodes including `TexSample` (calls out to `real_tex_sample`)
+- For a typical 70-instruction fragment shader executed ~80K times per frame, eliminates ~84M wasted cycles
+
+**SW Backend** (`compiler/backend_sw.rs`) — Interprets IR instructions against a register file. Fallback when JIT compilation fails. Executes per-vertex (vertex shader) and per-fragment (fragment shader). Uses polynomial math approximations from `rasterizer/math.rs`.
+
+**DX9 Backend** (`compiler/backend_dx9.rs`) — Translates IR to DX9 Shader Model 2.0 bytecode for SVGA3D GPU acceleration (Phase 2).
 
 #### IR Opcodes (~35)
 
@@ -275,33 +301,86 @@ The built-in GLSL compiler processes shader source through 4 stages:
 
 ### Software Rasterizer
 
-**Triangle rasterization** uses the edge-function algorithm:
-- Compute bounding box of the projected triangle
-- For each pixel in the bounding box, compute barycentric coordinates via edge functions
-- Skip pixels outside the triangle (any barycentric < 0)
-- Interpolate varyings with perspective correction: `(w0*v0/w0_clip + w1*v1/w1_clip + w2*v2/w2_clip) * correction_factor`
-- Run the fragment shader on interpolated varyings
-- Apply depth test (8 comparison functions) and blending
+#### Standard Path (raster.rs — `rasterize_triangle`)
 
-**Frustum clipping** uses Sutherland-Hodgman against 6 planes in clip space (`-w <= x,y,z <= w`). A single triangle can produce 0 to N output triangles.
+The standard rasterizer handles arbitrary fragment shaders via the JIT backend or interpreter:
 
-**Math functions** (`rasterizer/math.rs`) are implemented without libm:
+**Incremental edge functions** — Instead of evaluating 3 edge functions from scratch per pixel (6 multiplications), the rasterizer steps them incrementally: 3 additions per pixel.
+
+**Scanline span clipping** — Instead of testing every pixel in the bounding box, computes the exact x-range per scanline where all 3 edge functions are non-negative. For a sphere with 320 thin triangles, this eliminates ~95% of rejected pixel iterations (from ~7M down to ~50K). The algorithm:
+- For each edge function `w(x) = w_row + a * (x - min_x)`:
+  - If `a > 0` and `w_row < 0`: left bound at `x = min_x + ceil(-w_row / a)`
+  - If `a < 0` and `w_row >= 0`: right bound at `x = min_x + floor(w_row / |a|)`
+  - If `a ≈ 0` and `w_row < 0`: entire scanline is outside
+
+**Perspective-correct varying interpolation** — Pre-divides varyings by clip-space W per vertex before the scanline loop. Per pixel: multiply-add chains + one `fast_rcp()` correction. Uses SIMD `Vec4` for 4-wide packed operations.
+
+**Early depth test** — Depth comparison runs before varying interpolation and fragment shader, skipping expensive fragment work for occluded pixels.
+
+**Fast reciprocal** — `fast_rcp()` uses SSE `rcpss` instruction (~4 cycles) with Newton-Raphson refinement, vs ~20 cycles for `divss`. Accuracy is sufficient for perspective correction.
+
+**Winding normalization** — When screen-space triangle area is negative (CW winding from viewport Y-flip), all edge values and increments are negated so the inside test (`>= 0`) works uniformly.
+
+#### Fast Path (raster.rs — `rasterize_triangle_fast`)
+
+A specialized rasterizer for the common "textured + vertex-lit" case that eliminates **all per-pixel function calls**:
+
+**Activation criteria:**
+- Fragment shader has ≤ 20 IR instructions
+- At least 2 varyings (lighting + texcoord)
+- Blending is disabled
+- A texture is bound on unit 0
+
+**What it inlines per pixel (zero function call overhead):**
+- Texture coordinate wrapping (`GL_REPEAT` via integer truncation)
+- Nearest-neighbor texture sampling (direct pointer arithmetic into texture data)
+- ARGB unpack/repack
+- Color math: `lighting × texel_byte × matColor` → clamped u32
+
+**Varyings layout:**
+- Varying 0 = lighting (R, G, B in components [0], [1], [2])
+- Varying 1 = texcoord (U, V in components [0], [1])
+
+This matches the output of a Gouraud (per-vertex) lighting vertex shader.
+
+**Pre-resolved texture** — `ResolvedTexture` resolves the bound texture's data pointer, dimensions, and length once before the draw loop, avoiding per-pixel indirection through the texture store.
+
+**`FastPathInfo`** — Holds the resolved texture and pre-extracted material color (matColor RGB), resolved once per draw call by searching for a uniform whose name contains "MatColor".
+
+#### Frustum Clipping
+
+Uses Sutherland-Hodgman against 6 planes in clip space (`-w <= x,y,z <= w`). A single triangle can produce 0 to N output triangles.
+
+**Trivial-accept optimization** — `trivially_inside()` checks if all 3 vertices of a triangle satisfy `-w <= x,y,z <= w`. If so, clipping is skipped entirely — a significant win since clipping involves `Vec` allocations for variable-length output.
+
+#### SIMD Vec4 (simd.rs)
+
+`Vec4` wraps `__m128` (one XMM register, 4 × f32). Used in the rasterizer inner loop for varying interpolation:
+- `load` / `store` — Memory transfer (unaligned supported)
+- `splat` — Broadcast scalar to all 4 lanes
+- `add`, `sub`, `mul` — Packed SSE operations (1 cycle each)
+- Replaces 4 scalar operations with 1 SIMD instruction per varying component
+
+#### Math Functions (rasterizer/math.rs)
+
+All implemented without libm (no_std compatible):
 - `sqrt` — Quake III fast inverse sqrt + 3 Newton iterations
 - `sin` — Parabola approximation with refinement pass
 - `pow` — `exp2(exp * log2(base))` with IEEE 754 bit manipulation
 - `log2` — IEEE 754 exponent extraction + polynomial for mantissa
 - `exp2` — Minimax polynomial approximation
+- `ceil` — Integer ceiling via cast + conditional increment
 
 ---
 
 ## Client API (libgl_client)
 
-The `libgl_client` crate provides ergonomic Rust wrappers around the 68 C ABI exports. All functions are free-standing (no receiver) and operate on the global GL context.
+The `libgl_client` crate provides ergonomic Rust wrappers around the 86 C ABI exports. All functions are free-standing (no receiver) and operate on the global GL context.
 
 ### Initialization
 
 ```rust
-/// Load libgl.so and resolve all 68 function pointers.
+/// Load libgl.so and resolve all 86 function pointers.
 /// Returns false if loading fails.
 pub fn init() -> bool;
 
@@ -398,7 +477,7 @@ pub fn finish();
 
 ## C ABI Exports
 
-All 68 exported functions use `extern "C"` with `#[no_mangle]`. Strings are null-terminated C strings. Object handles (shaders, programs, buffers, textures) are 1-based unsigned integers; 0 indicates "none" or failure.
+All 86 exported functions use `extern "C"` with `#[no_mangle]`. Strings are null-terminated C strings. Object handles (shaders, programs, buffers, textures) are 1-based unsigned integers; 0 indicates "none" or failure.
 
 ### anyOS Extensions (3)
 
@@ -674,6 +753,26 @@ The following GLSL features are **not yet supported** and will be added in futur
 
 ---
 
+## Performance Optimization Summary
+
+The software rasterizer has been tuned for maximum throughput under QEMU TCG emulation (which adds 5–10× overhead, especially for indirect function calls):
+
+| Optimization | Location | Impact |
+|-------------|----------|--------|
+| JIT compilation | `backend_jit.rs` | Eliminates ~15-cycle branch misprediction per IR instruction |
+| Fast-path rasterizer | `raster.rs` | Zero per-pixel function calls for textured+lit geometry |
+| Scanline span clipping | `raster.rs` | Eliminates ~95% of rejected pixel iterations |
+| Incremental edge functions | `raster.rs` | 3 additions/pixel vs 6 multiplications |
+| SIMD Vec4 interpolation | `simd.rs` + `raster.rs` | 1 SSE instruction vs 4 scalar operations per varying |
+| SSE fast reciprocal | `raster.rs` | ~4 cycles vs ~20 for division |
+| Early depth test | `raster.rs` | Skips fragment shader for occluded pixels |
+| Trivial frustum accept | `rasterizer/mod.rs` | Skips clipping (and its Vec allocation) for fully-visible triangles |
+| Post-transform vertex cache | `rasterizer/mod.rs` | Avoids re-executing VS for shared vertices in indexed draws |
+| Pre-divided varyings | `raster.rs` | Moves per-vertex division out of per-pixel loop |
+| Gouraud (per-vertex) shading | Application-side | Lighting at ~187 vertices vs ~90K pixels (500× reduction) |
+
+---
+
 ## Phase 2 Roadmap (SVGA3D)
 
 Phase 2 will add hardware-accelerated rendering via the VMware SVGA3D command interface:
@@ -681,6 +780,10 @@ Phase 2 will add hardware-accelerated rendering via the VMware SVGA3D command in
 ```
 libgl.so
   |-- Software Rasterizer (Phase 1, always available)
+  |   |-- JIT Backend (x86_64 SSE native code)
+  |   |-- SW Backend (IR interpreter fallback)
+  |   |-- Fast-Path Rasterizer (textured + vertex-lit)
+  |
   |-- SVGA3D Backend (Phase 2, when SVGA_CAP_3D detected)
         |
         v
@@ -698,13 +801,14 @@ libgl.so
 
 **Phase 2 additions:**
 - SVGA3D command buffer generation (surface create, shader define, draw primitives)
-- IR -> DX9 SM 2.0 bytecode compiler backend
+- IR -> DX9 SM 2.0 bytecode compiler backend (`backend_dx9.rs`)
 - GPU 3D syscalls starting at number 512 (`SYS_GPU_3D_SUBMIT`, `SYS_GPU_3D_SURFACE_CREATE`, etc.)
 - Automatic fallback to software rasterizer when 3D hardware is not available
 - Shared surface management between GPU and CPU
 
 **Phase 3 additions:**
-- GLSL `if/else`, `for`, `while`, `discard`
+- GLSL `if/else`, `for`, `while` with proper control flow (currently parsed but flattened)
+- GLSL `discard` statement (currently parsed, no-op)
 - User-defined GLSL functions
 - `struct` types
 - Mipmap generation

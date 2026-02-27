@@ -1443,6 +1443,21 @@ fn schedule_inner(from_timer: bool) {
         }
     }
 
+    // Drop reaped threads NOW — BEFORE context_switch, while interrupts are
+    // disabled and the stack frame is pristine.  Previously the implicit drop
+    // happened at function return (AFTER context_switch + sti), which is
+    // problematic:
+    //   1. context_switch suspends this function; the resume may be on a
+    //      different CPU tick, and the compiler's drop-glue register state
+    //      (base pointer for the array iteration) can be corrupted if a
+    //      callee-saved register spill slot on the stack is overwritten.
+    //   2. After sti, a timer interrupt can fire mid-drop, re-entering
+    //      schedule_inner and pushing a deep stack frame that overlaps
+    //      with the reaped_threads array.
+    // By dropping here (lock released, IF=0), we avoid both issues and
+    // still keep dealloc contention outside the SCHEDULER lock.
+    drop(reaped_threads);
+
     // Context switch with lock released, interrupts still disabled
     if let Some((old_ctx, new_ctx, old_fpu, _new_fpu, outgoing_tid, _next_tid)) = switch_info {
         // --- Lazy FPU: save outgoing thread's state if this CPU owns it ---
