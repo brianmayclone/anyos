@@ -1,0 +1,71 @@
+// -*- C++ -*-
+// condition_variable — Condition variable support for anyOS libcxx
+#ifndef _ANYOS_CONDITION_VARIABLE
+#define _ANYOS_CONDITION_VARIABLE
+
+#include <mutex>
+extern "C" {
+#include <pthread.h>
+}
+
+namespace std {
+
+enum class cv_status { no_timeout, timeout };
+
+/// Condition variable backed by pthread_cond_t.
+class condition_variable {
+    pthread_cond_t _cv = PTHREAD_COND_INITIALIZER;
+public:
+    condition_variable() noexcept = default;
+    ~condition_variable() { pthread_cond_destroy(&_cv); }
+    condition_variable(const condition_variable&) = delete;
+    condition_variable& operator=(const condition_variable&) = delete;
+
+    void notify_one() noexcept { pthread_cond_signal(&_cv); }
+    void notify_all() noexcept { pthread_cond_broadcast(&_cv); }
+
+    void wait(unique_lock<mutex>& lock) {
+        pthread_cond_wait(&_cv, lock.mutex()->native_handle());
+    }
+
+    template<typename Predicate>
+    void wait(unique_lock<mutex>& lock, Predicate pred) {
+        while (!pred()) wait(lock);
+    }
+
+    // Timed wait is not implemented yet (needs chrono + timed pthread_cond_timedwait)
+};
+
+/// Condition variable that works with any lockable type.
+class condition_variable_any {
+    pthread_cond_t _cv = PTHREAD_COND_INITIALIZER;
+    mutex _internal_mutex;
+public:
+    condition_variable_any() noexcept = default;
+    ~condition_variable_any() { pthread_cond_destroy(&_cv); }
+    condition_variable_any(const condition_variable_any&) = delete;
+    condition_variable_any& operator=(const condition_variable_any&) = delete;
+
+    void notify_one() noexcept { pthread_cond_signal(&_cv); }
+    void notify_all() noexcept { pthread_cond_broadcast(&_cv); }
+
+    template<typename Lock>
+    void wait(Lock& lock) {
+        // For non-std::mutex locks, we use a double-lock pattern:
+        // unlock external lock, wait on internal mutex, re-lock external
+        unique_lock<mutex> internal(_internal_mutex);
+        lock.unlock();
+        pthread_cond_wait(&_cv, _internal_mutex.native_handle());
+        internal.unlock();
+        lock.lock();
+    }
+
+    template<typename Lock, typename Predicate>
+    void wait(Lock& lock, Predicate pred) {
+        while (!pred()) wait(lock);
+    }
+};
+
+} // namespace std
+
+#endif // _ANYOS_CONDITION_VARIABLE

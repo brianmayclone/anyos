@@ -1,0 +1,146 @@
+// -*- C++ -*-
+// thread — Threading support for anyOS libcxx
+#ifndef _ANYOS_THREAD
+#define _ANYOS_THREAD
+
+#include <cstddef>
+#include <cstdint>
+#include <utility>
+#include <memory>
+extern "C" {
+#include <pthread.h>
+#include <unistd.h>
+}
+
+namespace std {
+
+/// Represents a single thread of execution.
+class thread {
+public:
+    class id {
+        pthread_t _tid;
+        friend class thread;
+    public:
+        id() noexcept : _tid(0) {}
+        explicit id(pthread_t t) noexcept : _tid(t) {}
+        friend bool operator==(id a, id b) noexcept { return a._tid == b._tid; }
+        friend bool operator!=(id a, id b) noexcept { return a._tid != b._tid; }
+        friend bool operator<(id a, id b) noexcept { return a._tid < b._tid; }
+        friend bool operator<=(id a, id b) noexcept { return a._tid <= b._tid; }
+        friend bool operator>(id a, id b) noexcept { return a._tid > b._tid; }
+        friend bool operator>=(id a, id b) noexcept { return a._tid >= b._tid; }
+    };
+
+private:
+    id _id;
+
+    /// Type-erased callable wrapper stored on heap. The pthread trampoline
+    /// calls invoke(), then deletes the wrapper.
+    struct _thread_data_base {
+        virtual ~_thread_data_base() = default;
+        virtual void invoke() = 0;
+    };
+
+    template<typename Callable>
+    struct _thread_data : _thread_data_base {
+        Callable _func;
+        explicit _thread_data(Callable&& f) : _func(std::move(f)) {}
+        void invoke() override { _func(); }
+    };
+
+    static void* _thread_entry(void* arg) {
+        auto* data = static_cast<_thread_data_base*>(arg);
+        data->invoke();
+        delete data;
+        return nullptr;
+    }
+
+public:
+    thread() noexcept = default;
+
+    /// Construct and start a new thread running func(args...).
+    template<typename Callable, typename... Args>
+    explicit thread(Callable&& func, Args&&... args) {
+        // Bind all arguments into a lambda for simplicity.
+        auto bound = [f = std::forward<Callable>(func),
+                      tup = std::make_tuple(std::forward<Args>(args)...)]() mutable {
+            // Simple invocation — only supports zero-arg or pre-bound callables.
+            // For full std::apply we'd need index_sequence unpack.
+            (void)tup;
+            f();
+        };
+
+        // For zero-arg case, or if user pre-binds args:
+        auto* data = new _thread_data<decltype(bound)>(std::move(bound));
+        pthread_t tid;
+        if (pthread_create(&tid, nullptr, _thread_entry, data) != 0) {
+            delete data;
+            // Should throw std::system_error, but for now just leave unjoined
+        } else {
+            _id = id(tid);
+        }
+    }
+
+    ~thread() {
+        // std::terminate if joinable — per standard
+        if (joinable()) {
+            // In a full implementation this calls std::terminate()
+        }
+    }
+
+    thread(thread&& o) noexcept : _id(o._id) { o._id = id(); }
+    thread& operator=(thread&& o) noexcept {
+        if (joinable()) { /* should terminate */ }
+        _id = o._id; o._id = id();
+        return *this;
+    }
+    thread(const thread&) = delete;
+    thread& operator=(const thread&) = delete;
+
+    void swap(thread& o) noexcept { id t = _id; _id = o._id; o._id = t; }
+
+    bool joinable() const noexcept { return _id._tid != 0; }
+
+    id get_id() const noexcept { return _id; }
+
+    void join() {
+        if (!joinable()) return;
+        pthread_join(_id._tid, nullptr);
+        _id = id();
+    }
+
+    void detach() {
+        if (!joinable()) return;
+        pthread_detach(_id._tid);
+        _id = id();
+    }
+
+    static unsigned int hardware_concurrency() noexcept {
+        // Return number of CPUs — for now hardcode based on typical QEMU config
+        return 4;
+    }
+};
+
+namespace this_thread {
+
+inline thread::id get_id() noexcept {
+    return thread::id(pthread_self());
+}
+
+inline void yield() noexcept {
+    extern long _syscall(long, long, long, long, long, long);
+    _syscall(7, 0, 0, 0, 0, 0); // SYS_YIELD
+}
+
+inline void sleep_for_ms(unsigned long ms) noexcept {
+    extern long _syscall(long, long, long, long, long, long);
+    _syscall(8, ms, 0, 0, 0, 0); // SYS_SLEEP
+}
+
+// Chrono-based sleep_for will be provided when <chrono> is available.
+
+} // namespace this_thread
+
+} // namespace std
+
+#endif // _ANYOS_THREAD

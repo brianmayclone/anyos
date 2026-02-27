@@ -1,0 +1,25 @@
+--- gcc/config.gcc.orig
++++ gcc/config.gcc
+@@ -xxx,6 +xxx,14 @@
+ # Common parts for widely ported systems.
+
++# anyOS — bare-metal x86_64 OS with custom libc64/libcxx
++*-*-anyos*)
++  gas=yes
++  gnu_ld=yes
++  default_use_cxa_atexit=yes
++  use_gcc_stdint=provide
++  ;;
++
+ # Newlib-based systems with targets supported in libgloss.
+
+@@ -xxx,6 +xxx,12 @@
+ # Machine-specific cases.
+
++x86_64-*-anyos*)
++  tm_file="${tm_file} i386/unix.h i386/att.h dbxelf.h elfos.h i386/i386elf.h i386/x86-64.h anyos.h"
++  tmake_file="${tmake_file} i386/t-i386elf"
++  extra_options="${extra_options} i386/elf.opt"
++  ;;
++
+ # Architecture descriptions.

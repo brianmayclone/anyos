@@ -751,3 +751,64 @@ int faccessat(int dirfd, const char *pathname, int mode, int flags) {
 int vfork(void) {
     return fork();
 }
+
+/* ── grp.h — group database (minimal) ── */
+#include <grp.h>
+
+static char  _gr_name_buf[64];
+static char *_gr_mem_empty[] = { NULL };
+static struct group _gr_entry;
+
+struct group *getgrgid(gid_t gid) {
+    snprintf(_gr_name_buf, sizeof(_gr_name_buf), "group%u", (unsigned int)gid);
+    _gr_entry.gr_name   = _gr_name_buf;
+    _gr_entry.gr_passwd = "";
+    _gr_entry.gr_gid    = gid;
+    _gr_entry.gr_mem    = _gr_mem_empty;
+    return &_gr_entry;
+}
+
+struct group *getgrnam(const char *name) {
+    if (!name) return NULL;
+    size_t len = strlen(name);
+    if (len >= sizeof(_gr_name_buf)) len = sizeof(_gr_name_buf) - 1;
+    memcpy(_gr_name_buf, name, len);
+    _gr_name_buf[len] = '\0';
+    _gr_entry.gr_name   = _gr_name_buf;
+    _gr_entry.gr_passwd = "";
+    _gr_entry.gr_gid    = (gid_t)_syscall(222, 0, 0, 0, 0, 0);
+    _gr_entry.gr_mem    = _gr_mem_empty;
+    return &_gr_entry;
+}
+
+void setgrent(void) {}
+void endgrent(void) {}
+struct group *getgrent(void) { return NULL; }
+
+/* ── readv / writev — scatter/gather I/O ── */
+struct iovec {
+    void  *iov_base;
+    size_t iov_len;
+};
+
+ssize_t readv(int fd, const struct iovec *iov, int iovcnt) {
+    ssize_t total = 0;
+    for (int i = 0; i < iovcnt; i++) {
+        ssize_t r = read(fd, iov[i].iov_base, iov[i].iov_len);
+        if (r < 0) return total > 0 ? total : r;
+        total += r;
+        if ((size_t)r < iov[i].iov_len) break;
+    }
+    return total;
+}
+
+ssize_t writev(int fd, const struct iovec *iov, int iovcnt) {
+    ssize_t total = 0;
+    for (int i = 0; i < iovcnt; i++) {
+        ssize_t r = write(fd, iov[i].iov_base, iov[i].iov_len);
+        if (r < 0) return total > 0 ? total : r;
+        total += r;
+        if ((size_t)r < iov[i].iov_len) break;
+    }
+    return total;
+}

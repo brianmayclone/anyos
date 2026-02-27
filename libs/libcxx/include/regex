@@ -1,0 +1,129 @@
+// -*- C++ -*-
+// regex — Regular expression wrapper for anyOS libcxx
+// Wraps POSIX regex from libc64 (when available) with a simplified API.
+#ifndef _ANYOS_REGEX
+#define _ANYOS_REGEX
+
+#include <string>
+#include <vector>
+#include <cstddef>
+#include <stdexcept>
+
+namespace std {
+
+/// Simplified regex — stores the pattern string for basic matching.
+/// Full POSIX regex wrapping will be added when libc64 provides regex.h.
+class regex {
+    string _pattern;
+public:
+    regex() = default;
+    explicit regex(const char* pattern) : _pattern(pattern) {}
+    explicit regex(const string& pattern) : _pattern(pattern) {}
+
+    const string& pattern() const { return _pattern; }
+};
+
+/// Match results for string matching.
+class smatch {
+    friend bool regex_search(const string&, smatch&, const regex&);
+    friend bool regex_match(const string&, smatch&, const regex&);
+
+    struct _sub {
+        string str;
+        size_t pos;
+        size_t len;
+        bool matched;
+    };
+    vector<_sub> _subs;
+public:
+    smatch() = default;
+
+    size_t size() const { return _subs.size(); }
+    bool empty() const { return _subs.empty(); }
+
+    struct sub_match {
+        string str() const { return _str; }
+        size_t position() const { return _pos; }
+        size_t length() const { return _len; }
+        bool matched() const { return _matched; }
+
+        string _str;
+        size_t _pos;
+        size_t _len;
+        bool _matched;
+    };
+
+    sub_match operator[](size_t i) const {
+        if (i >= _subs.size()) return {"", 0, 0, false};
+        return {_subs[i].str, _subs[i].pos, _subs[i].len, _subs[i].matched};
+    }
+
+    string str(size_t i = 0) const {
+        if (i >= _subs.size()) return "";
+        return _subs[i].str;
+    }
+
+    size_t position(size_t i = 0) const {
+        if (i >= _subs.size()) return string::npos;
+        return _subs[i].pos;
+    }
+
+    size_t length(size_t i = 0) const {
+        if (i >= _subs.size()) return 0;
+        return _subs[i].len;
+    }
+
+    string prefix() const { return _prefix; }
+    string suffix() const { return _suffix; }
+
+    string _prefix;
+    string _suffix;
+};
+
+/// Simple brute-force substring search (placeholder until POSIX regex is available).
+inline bool regex_search(const string& s, smatch& m, const regex& re) {
+    const string& pat = re.pattern();
+    if (pat.empty()) return false;
+
+    auto pos = s.find(pat);
+    if (pos == string::npos) return false;
+
+    m._subs.clear();
+    m._subs.push_back({pat, pos, pat.size(), true});
+    m._prefix = s.substr(0, pos);
+    m._suffix = s.substr(pos + pat.size());
+    return true;
+}
+
+/// Check if the entire string matches the pattern.
+inline bool regex_match(const string& s, smatch& m, const regex& re) {
+    if (s == re.pattern()) {
+        m._subs.clear();
+        m._subs.push_back({s, 0, s.size(), true});
+        m._prefix.clear();
+        m._suffix.clear();
+        return true;
+    }
+    return false;
+}
+
+inline bool regex_match(const string& s, const regex& re) {
+    smatch m;
+    return regex_match(s, m, re);
+}
+
+inline bool regex_search(const string& s, const regex& re) {
+    smatch m;
+    return regex_search(s, m, re);
+}
+
+/// Replace first occurrence.
+inline string regex_replace(const string& s, const regex& re, const string& replacement) {
+    auto pos = s.find(re.pattern());
+    if (pos == string::npos) return s;
+    return s.substr(0, pos) + replacement + s.substr(pos + re.pattern().size());
+}
+
+} // namespace std
+
+#endif // _ANYOS_REGEX

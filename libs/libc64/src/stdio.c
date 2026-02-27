@@ -160,6 +160,141 @@ static int _put_string(char *buf, size_t pos, size_t max, const char *s) {
     return n;
 }
 
+/* --- Float formatting helpers for %f, %e, %g --- */
+
+/* Union for IEEE 754 double bit access. */
+typedef union { double d; unsigned long long u; } _double_bits;
+
+static int _is_nan(double v) { _double_bits b; b.d = v; return ((b.u >> 52) & 0x7FF) == 0x7FF && (b.u & 0x000FFFFFFFFFFFFFULL); }
+static int _is_inf(double v) { _double_bits b; b.d = v; return ((b.u >> 52) & 0x7FF) == 0x7FF && (b.u & 0x000FFFFFFFFFFFFFULL) == 0; }
+static int _is_neg(double v) { _double_bits b; b.d = v; return (b.u >> 63) != 0; }
+
+/* Format a double as %f (fixed-point). Returns chars written. */
+static int _put_float_f(char *buf, size_t pos, size_t max, double val, int prec, int width, int zero_pad) {
+    int n = 0;
+    if (_is_nan(val)) return _put_string(buf, pos, max, "nan");
+    if (_is_inf(val)) return _put_string(buf, pos, max, _is_neg(val) ? "-inf" : "inf");
+    if (_is_neg(val)) { n += _put_char(buf, pos + n, max, '-'); val = -val; }
+
+    if (prec < 0) prec = 6;
+
+    /* Separate integer and fractional parts. */
+    unsigned long long int_part = (unsigned long long)val;
+    double frac = val - (double)int_part;
+
+    /* Round the fractional part. */
+    double round_add = 0.5;
+    for (int i = 0; i < prec; i++) round_add /= 10.0;
+    frac += round_add;
+    if (frac >= 1.0) { int_part++; frac -= 1.0; }
+
+    /* Integer digits. */
+    char itmp[24]; int ilen = 0;
+    if (int_part == 0) itmp[ilen++] = '0';
+    else { unsigned long long iv = int_part; while (iv) { itmp[ilen++] = '0' + (char)(iv % 10); iv /= 10; } }
+
+    /* Width padding (before sign which is already written). */
+    int total_len = ilen + (prec > 0 ? 1 + prec : 0);
+    if (width > total_len + n) {
+        int pad = width - total_len - n;
+        char pc = zero_pad ? '0' : ' ';
+        while (pad-- > 0) n += _put_char(buf, pos + n, max, pc);
+    }
+
+    while (ilen > 0) n += _put_char(buf, pos + n, max, itmp[--ilen]);
+
+    if (prec > 0) {
+        n += _put_char(buf, pos + n, max, '.');
+        for (int i = 0; i < prec; i++) {
+            frac *= 10.0;
+            int digit = (int)frac;
+            if (digit > 9) digit = 9;
+            n += _put_char(buf, pos + n, max, '0' + digit);
+            frac -= digit;
+        }
+    }
+    return n;
+}
+
+/* Format a double as %e (scientific notation). */
+static int _put_float_e(char *buf, size_t pos, size_t max, double val, int prec, int uppercase) {
+    int n = 0;
+    if (_is_nan(val)) return _put_string(buf, pos, max, uppercase ? "NAN" : "nan");
+    if (_is_inf(val)) return _put_string(buf, pos, max, _is_neg(val) ? (uppercase ? "-INF" : "-inf") : (uppercase ? "INF" : "inf"));
+    if (_is_neg(val)) { n += _put_char(buf, pos + n, max, '-'); val = -val; }
+
+    if (prec < 0) prec = 6;
+
+    int exponent = 0;
+    if (val != 0.0) {
+        while (val >= 10.0) { val /= 10.0; exponent++; }
+        while (val < 1.0) { val *= 10.0; exponent--; }
+    }
+
+    /* val is now in [1.0, 10.0) — format as %f with that mantissa */
+    n += _put_float_f(buf, pos + n, max, val, prec, 0, 0);
+    n += _put_char(buf, pos + n, max, uppercase ? 'E' : 'e');
+    n += _put_char(buf, pos + n, max, exponent >= 0 ? '+' : '-');
+    if (exponent < 0) exponent = -exponent;
+    if (exponent < 10) n += _put_char(buf, pos + n, max, '0');
+    /* Print exponent digits. */
+    char etmp[8]; int elen = 0;
+    if (exponent == 0) etmp[elen++] = '0';
+    else { while (exponent) { etmp[elen++] = '0' + (exponent % 10); exponent /= 10; } }
+    while (elen > 0) n += _put_char(buf, pos + n, max, etmp[--elen]);
+    return n;
+}
+
+/* Format a double as %g (shortest of %f or %e, trailing zeros stripped). */
+static int _put_float_g(char *buf, size_t pos, size_t max, double val, int prec, int uppercase) {
+    if (prec < 0) prec = 6;
+    if (prec == 0) prec = 1;
+
+    if (_is_nan(val) || _is_inf(val))
+        return _put_float_e(buf, pos, max, val, prec, uppercase);
+
+    double aval = val < 0 ? -val : val;
+    int exponent = 0;
+    if (aval != 0.0) {
+        double tmp = aval;
+        while (tmp >= 10.0) { tmp /= 10.0; exponent++; }
+        while (tmp < 1.0) { tmp *= 10.0; exponent--; }
+    }
+
+    /* Use %e if exponent < -4 or >= precision. */
+    char tmp_buf[128];
+    int len;
+    if (exponent < -4 || exponent >= prec)
+        len = _put_float_e(tmp_buf, 0, sizeof(tmp_buf) - 1, val, prec - 1, uppercase);
+    else
+        len = _put_float_f(tmp_buf, 0, sizeof(tmp_buf) - 1, val, prec - 1 - exponent, 0, 0);
+    tmp_buf[len] = '\0';
+
+    /* Strip trailing zeros after decimal point. */
+    int has_dot = 0;
+    for (int i = 0; i < len; i++) { if (tmp_buf[i] == '.') { has_dot = 1; break; } if (tmp_buf[i] == 'e' || tmp_buf[i] == 'E') break; }
+    if (has_dot) {
+        int e_pos = len;
+        for (int i = 0; i < len; i++) if (tmp_buf[i] == 'e' || tmp_buf[i] == 'E') { e_pos = i; break; }
+        int trail = e_pos - 1;
+        while (trail > 0 && tmp_buf[trail] == '0') trail--;
+        if (tmp_buf[trail] == '.') trail--;
+        /* Rebuild: prefix + exponent part. */
+        if (e_pos < len) {
+            int elen = len - e_pos;
+            for (int i = 0; i < elen; i++) tmp_buf[trail + 1 + i] = tmp_buf[e_pos + i];
+            len = trail + 1 + (len - e_pos);
+        } else {
+            len = trail + 1;
+        }
+        tmp_buf[len] = '\0';
+    }
+
+    int n = 0;
+    for (int i = 0; i < len; i++) n += _put_char(buf, pos + n, max, tmp_buf[i]);
+    return n;
+}
+
 static int _put_uint(char *buf, size_t pos, size_t max, unsigned long val, int base, int uppercase, int width, int zero_pad) {
     char tmp[32];
     int i = 0;
@@ -286,6 +421,21 @@ int vsnprintf(char *str, size_t size, const char *format, va_list ap) {
             case '%':
                 pos += _put_char(str, pos, max, '%');
                 break;
+            case 'f': case 'F': {
+                double val = va_arg(ap, double);
+                pos += _put_float_f(str, pos, max, val, precision, width, zero_pad);
+                break;
+            }
+            case 'e': case 'E': {
+                double val = va_arg(ap, double);
+                pos += _put_float_e(str, pos, max, val, precision, *format == 'E');
+                break;
+            }
+            case 'g': case 'G': {
+                double val = va_arg(ap, double);
+                pos += _put_float_g(str, pos, max, val, precision, *format == 'G');
+                break;
+            }
             case 'n': {
                 int *n = va_arg(ap, int *);
                 if (n) *n = (int)pos;

@@ -1,0 +1,174 @@
+// -*- C++ -*-
+// random — Random number generation for anyOS libcxx
+#ifndef _ANYOS_RANDOM
+#define _ANYOS_RANDOM
+
+#include <cstdint>
+#include <limits>
+
+namespace std {
+
+// ── Linear congruential engine ───────────────────────────────────────────
+
+template<typename UIntType, UIntType a, UIntType c, UIntType m>
+class linear_congruential_engine {
+    UIntType _state;
+public:
+    using result_type = UIntType;
+    static constexpr result_type min() { return c == 0 ? 1 : 0; }
+    static constexpr result_type max() { return m - 1; }
+
+    explicit linear_congruential_engine(result_type s = 1) : _state(s % m) {
+        if (_state == 0 && c == 0) _state = 1;
+    }
+    void seed(result_type s = 1) { _state = s % m; if (_state == 0 && c == 0) _state = 1; }
+    result_type operator()() {
+        _state = (static_cast<uint64_t>(a) * _state + c) % m;
+        return _state;
+    }
+    void discard(unsigned long long z) { while (z--) (*this)(); }
+};
+
+using minstd_rand0 = linear_congruential_engine<uint32_t, 16807, 0, 2147483647>;
+using minstd_rand  = linear_congruential_engine<uint32_t, 48271, 0, 2147483647>;
+
+// ── Mersenne Twister ─────────────────────────────────────────────────────
+
+template<typename UIntType, size_t w, size_t n, size_t m, size_t r,
+         UIntType a_val, size_t u, UIntType d,
+         size_t s, UIntType b, size_t t, UIntType c_val,
+         size_t l, UIntType f>
+class mersenne_twister_engine {
+    UIntType _mt[n];
+    size_t _idx;
+
+    static constexpr UIntType _lower_mask = (static_cast<UIntType>(1) << r) - 1;
+    static constexpr UIntType _upper_mask = ~_lower_mask;
+
+    void _generate() {
+        for (size_t i = 0; i < n; ++i) {
+            UIntType y = (_mt[i] & _upper_mask) | (_mt[(i + 1) % n] & _lower_mask);
+            _mt[i] = _mt[(i + m) % n] ^ (y >> 1);
+            if (y & 1) _mt[i] ^= a_val;
+        }
+        _idx = 0;
+    }
+public:
+    using result_type = UIntType;
+    static constexpr result_type min() { return 0; }
+    static constexpr result_type max() { return ~UIntType(0); }
+
+    explicit mersenne_twister_engine(result_type seed_val = 5489) { seed(seed_val); }
+
+    void seed(result_type s = 5489) {
+        _mt[0] = s;
+        for (size_t i = 1; i < n; ++i)
+            _mt[i] = f * (_mt[i-1] ^ (_mt[i-1] >> (w - 2))) + static_cast<UIntType>(i);
+        _idx = n;
+    }
+
+    result_type operator()() {
+        if (_idx >= n) _generate();
+        UIntType y = _mt[_idx++];
+        y ^= (y >> u) & d;
+        y ^= (y << s) & b;
+        y ^= (y << t) & c_val;
+        y ^= (y >> l);
+        return y;
+    }
+
+    void discard(unsigned long long z) { while (z--) (*this)(); }
+};
+
+using mt19937 = mersenne_twister_engine<uint32_t,
+    32, 624, 397, 31,
+    0x9908B0DF, 11, 0xFFFFFFFF,
+    7, 0x9D2C5680, 15, 0xEFC60000,
+    18, 1812433253>;
+
+using mt19937_64 = mersenne_twister_engine<uint64_t,
+    64, 312, 156, 31,
+    0xB5026F5AA96619E9ULL, 29, 0x5555555555555555ULL,
+    17, 0x71D67FFFEDA60000ULL, 37, 0xFFF7EEE000000000ULL,
+    43, 6364136223846793005ULL>;
+
+// ── Distributions ────────────────────────────────────────────────────────
+
+/// Uniform integer distribution in [a, b].
+template<typename IntType = int>
+class uniform_int_distribution {
+    IntType _a, _b;
+public:
+    using result_type = IntType;
+
+    explicit uniform_int_distribution(IntType a = 0,
+                                      IntType b = numeric_limits<IntType>::max())
+        : _a(a), _b(b) {}
+
+    IntType a() const { return _a; }
+    IntType b() const { return _b; }
+
+    template<typename Generator>
+    result_type operator()(Generator& g) {
+        using UType = typename make_unsigned<IntType>::type;
+        UType range = static_cast<UType>(_b) - static_cast<UType>(_a);
+        if (range == 0) return _a;
+        UType mask = range;
+        mask |= (mask >> 1);  mask |= (mask >> 2);
+        mask |= (mask >> 4);  mask |= (mask >> 8);
+        mask |= (mask >> 16);
+        UType val;
+        do { val = static_cast<UType>(g()) & mask; } while (val > range);
+        return static_cast<IntType>(val + static_cast<UType>(_a));
+    }
+};
+
+/// Uniform real distribution in [a, b).
+template<typename RealType = double>
+class uniform_real_distribution {
+    RealType _a, _b;
+public:
+    using result_type = RealType;
+
+    explicit uniform_real_distribution(RealType a = 0.0, RealType b = 1.0)
+        : _a(a), _b(b) {}
+
+    RealType a() const { return _a; }
+    RealType b() const { return _b; }
+
+    template<typename Generator>
+    result_type operator()(Generator& g) {
+        // Map g() to [0, 1) then scale to [a, b)
+        constexpr auto gmax = static_cast<RealType>(Generator::max());
+        RealType u = static_cast<RealType>(g()) / (gmax + static_cast<RealType>(1));
+        return _a + u * (_b - _a);
+    }
+};
+
+// ── Random device (seed source) ──────────────────────────────────────────
+
+/// Non-deterministic random number generator using kernel entropy.
+class random_device {
+public:
+    using result_type = unsigned int;
+    static constexpr result_type min() { return 0; }
+    static constexpr result_type max() { return ~result_type(0); }
+
+    random_device() = default;
+
+    result_type operator()() {
+        extern long _syscall(long, long, long, long, long, long);
+        // SYS_RANDOM = 182 — returns random bytes from kernel PRNG
+        unsigned int val = 0;
+        _syscall(182, (long)&val, sizeof(val), 0, 0, 0);
+        return val;
+    }
+
+    // Non-copyable
+    random_device(const random_device&) = delete;
+    random_device& operator=(const random_device&) = delete;
+};
+
+} // namespace std
+
+#endif // _ANYOS_RANDOM

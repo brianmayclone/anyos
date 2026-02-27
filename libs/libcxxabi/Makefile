@@ -1,11 +1,11 @@
-# libcxx — Minimal C++ Standard Library for anyOS (x86_64)
-# Depends on libc64 for malloc/free/printf/memcpy etc.
+# libc++abi — Itanium C++ ABI runtime for anyOS (x86_64)
+# Depends on libc64 + libunwind
 
 CXX      = clang++
 AR       = ar
 CXXFLAGS = --target=x86_64-unknown-none-elf -ffreestanding -nostdlib \
-           -fexceptions -frtti -std=c++20 -O2 \
-           -I include -I ../libc64/include -I ../libunwind/include -I ../libcxxabi/include \
+           -fno-exceptions -std=c++20 -O2 \
+           -I include -I ../libc64/include -I ../libunwind/include -I ../libcxx/include \
            -Wall -Wextra -Wno-unused-parameter $(EXTRA_CXXFLAGS)
 
 SRCDIR = src
@@ -14,7 +14,7 @@ OBJDIR = obj
 SOURCES = $(wildcard $(SRCDIR)/*.cpp)
 OBJECTS = $(patsubst $(SRCDIR)/%.cpp,$(OBJDIR)/%.o,$(SOURCES))
 
-TARGET = libcxx.a
+TARGET = libc++abi.a
 
 .PHONY: all clean
 

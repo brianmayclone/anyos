@@ -101,3 +101,123 @@ add_custom_target(buildsystem-tools
   DEPENDS ${ANYELF_EXECUTABLE} ${MKIMAGE_EXECUTABLE} ${ANYLD_EXECUTABLE} ${MKAPPBUNDLE_EXECUTABLE}
           ${APKG_BUILD_EXECUTABLE} ${APKG_INDEX_EXECUTABLE}
 )
+
+# ============================================================
+# add_cxx_program() — Build a 64-bit C++ program for anyOS
+# ============================================================
+# Usage:
+#   add_cxx_program(myapp
+#     SOURCES src/main.cpp src/util.cpp
+#     [C_SOURCES src/helper.c]
+#     [INSTALL_DIR System/bin]
+#   )
+#
+# Compiles C/C++ sources with the anyOS cross-compiler, links against
+# crt0 + libc64 + libcxx + libc++abi + libunwind, produces an ELF64
+# binary, converts to anyOS flat format, and installs to the sysroot.
+#
+function(add_cxx_program NAME)
+  cmake_parse_arguments(CXX "" "INSTALL_DIR" "SOURCES;C_SOURCES" ${ARGN})
+
+  if(NOT CXX_INSTALL_DIR)
+    set(CXX_INSTALL_DIR "System/bin")
+  endif()
+
+  set(CXX_OUT_DIR "${CMAKE_BINARY_DIR}/cxx_programs/${NAME}")
+  set(ELF_OUTPUT "${CXX_OUT_DIR}/${NAME}.elf")
+  set(BIN_OUTPUT "${CXX_OUT_DIR}/${NAME}")
+
+  set(LIBC64_DIR_  "${CMAKE_SOURCE_DIR}/libs/libc64")
+  set(LIBCXX_DIR_  "${CMAKE_SOURCE_DIR}/libs/libcxx")
+  set(LIBUNWIND_DIR_ "${CMAKE_SOURCE_DIR}/libs/libunwind")
+  set(LIBCXXABI_DIR_ "${CMAKE_SOURCE_DIR}/libs/libcxxabi")
+
+  set(CXX_FLAGS
+    --target=x86_64-unknown-none-elf
+    -ffreestanding -nostdlib -fexceptions -frtti -std=c++20 -O2 -w
+    -I${LIBCXX_DIR_}/include
+    -I${LIBC64_DIR_}/include
+    -I${LIBUNWIND_DIR_}/include
+    -I${LIBCXXABI_DIR_}/include
+  )
+
+  set(C_FLAGS
+    --target=x86_64-unknown-none-elf
+    -ffreestanding -nostdlib -fno-builtin -O2 -w
+    -I${LIBC64_DIR_}/include
+  )
+
+  # Compile C++ sources
+  set(ALL_OBJECTS "")
+  foreach(SRC ${CXX_SOURCES})
+    get_filename_component(SRC_NAME ${SRC} NAME_WE)
+    set(OBJ "${CXX_OUT_DIR}/${SRC_NAME}.cpp.o")
+    add_custom_command(
+      OUTPUT ${OBJ}
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${CXX_OUT_DIR}
+      COMMAND ${CLANGXX_EXECUTABLE} ${CXX_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/${SRC} -o ${OBJ}
+      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${SRC} ${CXX_TOOLCHAIN_DEPS}
+      COMMENT "Compiling C++ ${SRC} for ${NAME}"
+    )
+    list(APPEND ALL_OBJECTS ${OBJ})
+  endforeach()
+
+  # Compile C sources (if any)
+  foreach(SRC ${CXX_C_SOURCES})
+    get_filename_component(SRC_NAME ${SRC} NAME_WE)
+    set(OBJ "${CXX_OUT_DIR}/${SRC_NAME}.c.o")
+    add_custom_command(
+      OUTPUT ${OBJ}
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${CXX_OUT_DIR}
+      COMMAND ${CLANG_EXECUTABLE} ${C_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/${SRC} -o ${OBJ}
+      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${SRC} ${CXX_TOOLCHAIN_DEPS}
+      COMMENT "Compiling C ${SRC} for ${NAME}"
+    )
+    list(APPEND ALL_OBJECTS ${OBJ})
+  endforeach()
+
+  # Link: crt0 + crti + objects + libcxx + libc++abi + libunwind + libc64 + crtn
+  # Use clang as the linker driver (invokes ld.lld internally via -fuse-ld=lld).
+  add_custom_command(
+    OUTPUT ${ELF_OUTPUT}
+    COMMAND ${CLANGXX_EXECUTABLE}
+      --target=x86_64-unknown-none-elf
+      -nostdlib -static -fuse-ld=lld
+      -T ${LIBC64_DIR_}/link.ld
+      ${LIBC64_DIR_}/obj/crt0.o
+      ${LIBC64_DIR_}/obj/crti.o
+      ${ALL_OBJECTS}
+      ${LIBCXX_DIR_}/libcxx.a
+      ${LIBCXXABI_DIR_}/libc++abi.a
+      ${LIBUNWIND_DIR_}/libunwind.a
+      ${LIBC64_DIR_}/libc64.a
+      ${LIBC64_DIR_}/obj/crtn.o
+      -o ${ELF_OUTPUT}
+    DEPENDS ${ALL_OBJECTS}
+      ${LIBC64_DIR_}/libc64.a
+      ${LIBCXX_DIR_}/libcxx.a
+      ${LIBCXXABI_DIR_}/libc++abi.a
+      ${LIBUNWIND_DIR_}/libunwind.a
+      ${LIBC64_DIR_}/link.ld
+    COMMENT "Linking ${NAME}.elf"
+  )
+
+  # Convert ELF → anyOS flat binary
+  add_custom_command(
+    OUTPUT ${BIN_OUTPUT}
+    COMMAND ${ANYELF_EXECUTABLE} -f flat -o ${BIN_OUTPUT} ${ELF_OUTPUT}
+    DEPENDS ${ELF_OUTPUT} ${ANYELF_EXECUTABLE}
+    COMMENT "Converting ${NAME}.elf → ${NAME} (flat binary)"
+  )
+
+  # Install to sysroot
+  set(SYSROOT_DEST "${SYSROOT_DIR}/${CXX_INSTALL_DIR}/${NAME}")
+  add_custom_command(
+    OUTPUT ${SYSROOT_DEST}
+    COMMAND ${CMAKE_COMMAND} -E copy ${BIN_OUTPUT} ${SYSROOT_DEST}
+    DEPENDS ${BIN_OUTPUT}
+    COMMENT "Installing ${NAME} to ${CXX_INSTALL_DIR}"
+  )
+
+  add_custom_target(${NAME} ALL DEPENDS ${SYSROOT_DEST})
+endfunction()

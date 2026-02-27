@@ -1,0 +1,82 @@
+// -*- C++ -*-
+// exception — C++ exception support for anyOS libcxx
+#ifndef _ANYOS_EXCEPTION
+#define _ANYOS_EXCEPTION
+
+#include <cstdlib>
+
+namespace std {
+
+class exception {
+public:
+    exception() noexcept {}
+    exception(const exception&) noexcept = default;
+    exception& operator=(const exception&) noexcept = default;
+    virtual ~exception() noexcept {}
+    virtual const char* what() const noexcept { return "std::exception"; }
+};
+
+class bad_exception : public exception {
+public:
+    const char* what() const noexcept override { return "std::bad_exception"; }
+};
+
+class bad_alloc : public exception {
+public:
+    const char* what() const noexcept override { return "std::bad_alloc"; }
+};
+
+class bad_cast : public exception {
+public:
+    const char* what() const noexcept override { return "std::bad_cast"; }
+};
+
+class bad_typeid : public exception {
+public:
+    const char* what() const noexcept override { return "std::bad_typeid"; }
+};
+
+using terminate_handler = void (*)();
+terminate_handler set_terminate(terminate_handler f) noexcept;
+[[noreturn]] void terminate() noexcept;
+
+using unexpected_handler = void (*)();
+
+// Exception pointer support
+class exception_ptr {
+    void* _ptr;
+public:
+    exception_ptr() noexcept : _ptr(nullptr) {}
+    exception_ptr(nullptr_t) noexcept : _ptr(nullptr) {}
+    exception_ptr(const exception_ptr& o) noexcept : _ptr(o._ptr) {}
+    exception_ptr& operator=(const exception_ptr& o) noexcept { _ptr = o._ptr; return *this; }
+    explicit operator bool() const noexcept { return _ptr != nullptr; }
+    friend bool operator==(const exception_ptr& a, const exception_ptr& b) noexcept { return a._ptr == b._ptr; }
+    friend bool operator!=(const exception_ptr& a, const exception_ptr& b) noexcept { return a._ptr != b._ptr; }
+};
+
+exception_ptr current_exception() noexcept;
+[[noreturn]] void rethrow_exception(exception_ptr p);
+
+template<class E>
+exception_ptr make_exception_ptr(E e) noexcept {
+    // Simplified: just return null for now until full exception infra is working
+    (void)e;
+    return exception_ptr();
+}
+
+int uncaught_exceptions() noexcept;
+
+/// Nested exception support.
+class nested_exception {
+    exception_ptr _nested;
+public:
+    nested_exception() noexcept : _nested(current_exception()) {}
+    virtual ~nested_exception() noexcept = default;
+    [[noreturn]] void rethrow_nested() const { if (_nested) rethrow_exception(_nested); terminate(); }
+    exception_ptr nested_ptr() const noexcept { return _nested; }
+};
+
+} // namespace std
+
+#endif // _ANYOS_EXCEPTION

@@ -1,0 +1,113 @@
+// -*- C++ -*-
+// iomanip — I/O manipulators for anyOS libcxx
+#ifndef _ANYOS_IOMANIP
+#define _ANYOS_IOMANIP
+
+#include <iostream>
+
+namespace std {
+
+// ── Manipulator helper types ─────────────────────────────────────────────
+
+struct _Setw { int _width; };
+struct _Setprecision { int _prec; };
+struct _Setfill { char _fill; };
+struct _Setbase { int _base; };
+
+/// Set field width for the next formatted output.
+inline _Setw setw(int n) { return {n}; }
+
+/// Set floating-point precision.
+inline _Setprecision setprecision(int n) { return {n}; }
+
+/// Set the fill character.
+inline _Setfill setfill(char c) { return {c}; }
+
+/// Set the integer base (8, 10, or 16).
+inline _Setbase setbase(int b) { return {b}; }
+
+// ostream operators for manipulators — these set flags on ios_base
+// that are checked during formatted output.
+
+inline ostream& operator<<(ostream& os, const _Setw& m) {
+    os.width(m._width);
+    return os;
+}
+
+inline ostream& operator<<(ostream& os, const _Setprecision& m) {
+    os.precision(m._prec);
+    return os;
+}
+
+inline ostream& operator<<(ostream& os, const _Setfill& m) {
+    os.fill(m._fill);
+    return os;
+}
+
+inline ostream& operator<<(ostream& os, const _Setbase& m) {
+    switch (m._base) {
+        case 8:  os.setf(ios_base::oct, ios_base::basefield); break;
+        case 16: os.setf(ios_base::hex, ios_base::basefield); break;
+        default: os.setf(ios_base::dec, ios_base::basefield); break;
+    }
+    return os;
+}
+
+// ── Format flag manipulators ─────────────────────────────────────────────
+
+// These are already partially defined in <iostream>; these are the
+// manipulator-function forms that ostream::operator<< can call.
+
+inline ostream& hex(ostream& os) {
+    os.setf(ios_base::hex, ios_base::basefield);
+    return os;
+}
+
+inline ostream& dec(ostream& os) {
+    os.setf(ios_base::dec, ios_base::basefield);
+    return os;
+}
+
+inline ostream& oct(ostream& os) {
+    os.setf(ios_base::oct, ios_base::basefield);
+    return os;
+}
+
+inline ostream& fixed(ostream& os) {
+    os.setf(ios_base::fixed, ios_base::floatfield);
+    return os;
+}
+
+inline ostream& scientific(ostream& os) {
+    os.setf(ios_base::scientific, ios_base::floatfield);
+    return os;
+}
+
+inline ostream& left(ostream& os) {
+    os.setf(ios_base::left, ios_base::adjustfield);
+    return os;
+}
+
+inline ostream& right(ostream& os) {
+    os.setf(ios_base::right, ios_base::adjustfield);
+    return os;
+}
+
+inline ostream& boolalpha(ostream& os) {
+    os.setf(ios_base::boolalpha);
+    return os;
+}
+
+inline ostream& showbase(ostream& os) {
+    os.setf(ios_base::showbase);
+    return os;
+}
+
+inline ostream& uppercase(ostream& os) {
+    os.setf(ios_base::uppercase);
+    return os;
+}
+
+} // namespace std
+
+#endif // _ANYOS_IOMANIP

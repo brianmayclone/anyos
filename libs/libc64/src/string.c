@@ -309,3 +309,66 @@ char *strsignal(int sig) {
     }
     return "Unknown signal";
 }
+
+/* ── strsep — extract token from string, destructive ── */
+char *strsep(char **stringp, const char *delim) {
+    if (!stringp || !*stringp) return NULL;
+    char *s = *stringp;
+    char *end = s;
+    while (*end) {
+        for (const char *d = delim; *d; d++) {
+            if (*end == *d) {
+                *end = '\0';
+                *stringp = end + 1;
+                return s;
+            }
+        }
+        end++;
+    }
+    *stringp = NULL;
+    return s;
+}
+
+/* ── strtok_r — reentrant tokenizer ── */
+char *strtok_r(char *str, const char *delim, char **saveptr) {
+    if (!saveptr) return NULL;
+    char *s = str ? str : *saveptr;
+    if (!s) return NULL;
+
+    /* Skip leading delimiters */
+    while (*s) {
+        int is_delim = 0;
+        for (const char *d = delim; *d; d++) {
+            if (*s == *d) { is_delim = 1; break; }
+        }
+        if (!is_delim) break;
+        s++;
+    }
+    if (*s == '\0') { *saveptr = NULL; return NULL; }
+
+    /* Find end of token */
+    char *tok = s;
+    while (*s) {
+        for (const char *d = delim; *d; d++) {
+            if (*s == *d) {
+                *s = '\0';
+                *saveptr = s + 1;
+                return tok;
+            }
+        }
+        s++;
+    }
+    *saveptr = NULL;
+    return tok;
+}
+
+/* ── strerror_r — thread-safe error string ── */
+int strerror_r(int errnum, char *buf, size_t buflen) {
+    const char *msg = strerror(errnum);
+    if (!buf || buflen == 0) return -1;
+    size_t len = strlen(msg);
+    if (len >= buflen) len = buflen - 1;
+    memcpy(buf, msg, len);
+    buf[len] = '\0';
+    return 0;
+}

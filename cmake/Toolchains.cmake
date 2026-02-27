@@ -687,6 +687,7 @@ add_custom_command(
     ${LIBC64_DIR}/src/start.c
     ${LIBC64_DIR}/src/socket.c
     ${LIBC64_DIR}/src/stubs.c
+    ${LIBC64_DIR}/src/pthread.c
   COMMENT "Building 64-bit C library (libc64.a)"
 )
 
@@ -747,6 +748,79 @@ add_custom_command(
   COMMENT "Installing C++ headers to sysroot"
 )
 
+# ============================================================
+# Stack Unwinder (libunwind — depends on libc64)
+# ============================================================
+set(LIBUNWIND_DIR "${CMAKE_SOURCE_DIR}/libs/libunwind")
+set(LIBUNWIND_A "${LIBUNWIND_DIR}/libunwind.a")
+
+add_custom_command(
+  OUTPUT ${LIBUNWIND_A}
+  COMMAND ${CLANG_ENV} ${MAKE_EXECUTABLE} -s -C ${LIBUNWIND_DIR} clean CC=${CLANG_EXECUTABLE} AR=${LLVM_AR_EXECUTABLE} AS=${CLANG_EXECUTABLE}
+  COMMAND ${CLANG_ENV} ${MAKE_EXECUTABLE} -s -j${NPROC} -C ${LIBUNWIND_DIR} CC=${CLANG_EXECUTABLE} AR=${LLVM_AR_EXECUTABLE} AS=${CLANG_EXECUTABLE} EXTRA_CFLAGS=-w
+  DEPENDS
+    ${LIBC64_A}
+    ${LIBUNWIND_DIR}/Makefile
+    ${LIBUNWIND_DIR}/src/unwind.c
+    ${LIBUNWIND_DIR}/src/unwind_registers.S
+    ${LIBUNWIND_DIR}/include/unwind.h
+  COMMENT "Building stack unwinder (libunwind.a)"
+)
+
+# Copy libunwind to sysroot
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/Libraries/libcxx/lib/libunwind.a
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBUNWIND_A} ${SYSROOT_DIR}/Libraries/libcxx/lib/libunwind.a
+  DEPENDS ${LIBUNWIND_A}
+  COMMENT "Installing libunwind.a to sysroot"
+)
+
+# Copy libunwind headers to sysroot (unwind.h is needed by user code)
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/Libraries/libcxx/include/unwind.h
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBUNWIND_DIR}/include/unwind.h ${SYSROOT_DIR}/Libraries/libcxx/include/unwind.h
+  DEPENDS ${LIBUNWIND_A}
+  COMMENT "Installing unwind.h to sysroot"
+)
+
+# ============================================================
+# C++ ABI Runtime (libc++abi — depends on libc64, libunwind, libcxx headers)
+# ============================================================
+set(LIBCXXABI_DIR "${CMAKE_SOURCE_DIR}/libs/libcxxabi")
+set(LIBCXXABI_A "${LIBCXXABI_DIR}/libc++abi.a")
+
+add_custom_command(
+  OUTPUT ${LIBCXXABI_A}
+  COMMAND ${CLANG_ENV} ${MAKE_EXECUTABLE} -s -C ${LIBCXXABI_DIR} clean CXX=${CLANGXX_EXECUTABLE} AR=${LLVM_AR_EXECUTABLE}
+  COMMAND ${CLANG_ENV} ${MAKE_EXECUTABLE} -s -j${NPROC} -C ${LIBCXXABI_DIR} CXX=${CLANGXX_EXECUTABLE} AR=${LLVM_AR_EXECUTABLE} EXTRA_CXXFLAGS=-w
+  DEPENDS
+    ${LIBC64_A}
+    ${LIBUNWIND_A}
+    ${LIBCXXABI_DIR}/Makefile
+    ${LIBCXXABI_DIR}/src/cxa_exception.cpp
+    ${LIBCXXABI_DIR}/src/cxa_guard.cpp
+    ${LIBCXXABI_DIR}/src/cxa_handlers.cpp
+    ${LIBCXXABI_DIR}/src/cxa_rtti.cpp
+    ${LIBCXXABI_DIR}/include/cxxabi.h
+  COMMENT "Building C++ ABI runtime (libc++abi.a)"
+)
+
+# Copy libc++abi to sysroot
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/Libraries/libcxx/lib/libc++abi.a
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBCXXABI_A} ${SYSROOT_DIR}/Libraries/libcxx/lib/libc++abi.a
+  DEPENDS ${LIBCXXABI_A}
+  COMMENT "Installing libc++abi.a to sysroot"
+)
+
+# Copy cxxabi.h to sysroot
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/Libraries/libcxx/include/cxxabi.h
+  COMMAND ${CMAKE_COMMAND} -E copy ${LIBCXXABI_DIR}/include/cxxabi.h ${SYSROOT_DIR}/Libraries/libcxx/include/cxxabi.h
+  DEPENDS ${LIBCXXABI_A}
+  COMMENT "Installing cxxabi.h to sysroot"
+)
+
 # Aggregate dependency list for 64-bit toolchain
 set(CXX_TOOLCHAIN_DEPS
   ${SYSROOT_DIR}/Libraries/libc64/lib/libc64.a
@@ -754,4 +828,8 @@ set(CXX_TOOLCHAIN_DEPS
   ${SYSROOT_DIR}/Libraries/libc64/include/.stamp
   ${SYSROOT_DIR}/Libraries/libcxx/lib/libcxx.a
   ${SYSROOT_DIR}/Libraries/libcxx/include/.stamp
+  ${SYSROOT_DIR}/Libraries/libcxx/lib/libunwind.a
+  ${SYSROOT_DIR}/Libraries/libcxx/include/unwind.h
+  ${SYSROOT_DIR}/Libraries/libcxx/lib/libc++abi.a
+  ${SYSROOT_DIR}/Libraries/libcxx/include/cxxabi.h
 )

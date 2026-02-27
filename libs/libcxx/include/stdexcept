@@ -1,0 +1,83 @@
+// -*- C++ -*-
+// stdexcept — Standard exception classes for anyOS libcxx
+#ifndef _ANYOS_STDEXCEPT
+#define _ANYOS_STDEXCEPT
+
+#include <exception>
+#include <string>
+
+namespace std {
+
+// ── Logic errors (programmer mistakes) ──
+
+class logic_error : public exception {
+    string _msg;
+public:
+    explicit logic_error(const string& what_arg) : _msg(what_arg) {}
+    explicit logic_error(const char* what_arg) : _msg(what_arg) {}
+    const char* what() const noexcept override { return _msg.c_str(); }
+};
+
+class invalid_argument : public logic_error {
+public:
+    explicit invalid_argument(const string& what_arg) : logic_error(what_arg) {}
+    explicit invalid_argument(const char* what_arg) : logic_error(what_arg) {}
+};
+
+class domain_error : public logic_error {
+public:
+    explicit domain_error(const string& what_arg) : logic_error(what_arg) {}
+    explicit domain_error(const char* what_arg) : logic_error(what_arg) {}
+};
+
+class length_error : public logic_error {
+public:
+    explicit length_error(const string& what_arg) : logic_error(what_arg) {}
+    explicit length_error(const char* what_arg) : logic_error(what_arg) {}
+};
+
+class out_of_range : public logic_error {
+public:
+    explicit out_of_range(const string& what_arg) : logic_error(what_arg) {}
+    explicit out_of_range(const char* what_arg) : logic_error(what_arg) {}
+};
+
+// ── Runtime errors (detected at runtime) ──
+
+class runtime_error : public exception {
+    string _msg;
+public:
+    explicit runtime_error(const string& what_arg) : _msg(what_arg) {}
+    explicit runtime_error(const char* what_arg) : _msg(what_arg) {}
+    const char* what() const noexcept override { return _msg.c_str(); }
+};
+
+class range_error : public runtime_error {
+public:
+    explicit range_error(const string& what_arg) : runtime_error(what_arg) {}
+    explicit range_error(const char* what_arg) : runtime_error(what_arg) {}
+};
+
+class overflow_error : public runtime_error {
+public:
+    explicit overflow_error(const string& what_arg) : runtime_error(what_arg) {}
+    explicit overflow_error(const char* what_arg) : runtime_error(what_arg) {}
+};
+
+class underflow_error : public runtime_error {
+public:
+    explicit underflow_error(const string& what_arg) : runtime_error(what_arg) {}
+    explicit underflow_error(const char* what_arg) : runtime_error(what_arg) {}
+};
+
+class system_error : public runtime_error {
+    int _code;
+public:
+    system_error(int code, const string& what_arg) : runtime_error(what_arg), _code(code) {}
+    system_error(int code, const char* what_arg) : runtime_error(what_arg), _code(code) {}
+    int code() const noexcept { return _code; }
+};
+
+} // namespace std
+
+#endif // _ANYOS_STDEXCEPT

@@ -1,0 +1,282 @@
+// -*- C++ -*-
+// variant — Type-safe discriminated union for anyOS libcxx
+#ifndef _ANYOS_VARIANT
+#define _ANYOS_VARIANT
+
+#include <cstddef>
+#include <type_traits>
+#include <utility>
+#include <new>
+
+namespace std {
+
+inline constexpr size_t variant_npos = static_cast<size_t>(-1);
+
+/// Exception thrown on invalid variant access.
+class bad_variant_access {
+public:
+    const char* what() const noexcept { return "bad variant access"; }
+};
+
+// ── Type list helpers ────────────────────────────────────────────────────
+
+namespace _variant_detail {
+
+template<size_t I, typename T, typename... Ts>
+struct type_at_index : type_at_index<I - 1, Ts...> {};
+
+template<typename T, typename... Ts>
+struct type_at_index<0, T, Ts...> { using type = T; };
+
+template<typename T, typename... Ts>
+struct index_of;
+
+template<typename T, typename First, typename... Rest>
+struct index_of<T, First, Rest...> {
+    static constexpr size_t value = is_same<T, First>::value
+        ? 0 : 1 + index_of<T, Rest...>::value;
+};
+
+template<typename T>
+struct index_of<T> {
+    static constexpr size_t value = 0; // will never match
+};
+
+template<typename... Ts>
+constexpr size_t max_size() {
+    size_t m = 0;
+    size_t sizes[] = {sizeof(Ts)...};
+    for (auto s : sizes) if (s > m) m = s;
+    return m;
+}
+
+template<typename... Ts>
+constexpr size_t max_align() {
+    size_t m = 1;
+    size_t aligns[] = {alignof(Ts)...};
+    for (auto a : aligns) if (a > m) m = a;
+    return m;
+}
+
+// Destructor dispatch
+template<size_t I, typename... Ts>
+struct destroy_at_index;
+
+template<size_t I, typename T, typename... Ts>
+struct destroy_at_index<I, T, Ts...> {
+    static void call(size_t idx, void* storage) {
+        if (idx == I) {
+            static_cast<T*>(storage)->~T();
+        } else {
+            destroy_at_index<I + 1, Ts...>::call(idx, storage);
+        }
+    }
+};
+
+template<size_t I>
+struct destroy_at_index<I> {
+    static void call(size_t, void*) {}
+};
+
+// Copy construction dispatch
+template<size_t I, typename... Ts>
+struct copy_at_index;
+
+template<size_t I, typename T, typename... Ts>
+struct copy_at_index<I, T, Ts...> {
+    static void call(size_t idx, void* dst, const void* src) {
+        if (idx == I) {
+            new (dst) T(*static_cast<const T*>(src));
+        } else {
+            copy_at_index<I + 1, Ts...>::call(idx, dst, src);
+        }
+    }
+};
+
+template<size_t I>
+struct copy_at_index<I> {
+    static void call(size_t, void*, const void*) {}
+};
+
+// Move construction dispatch
+template<size_t I, typename... Ts>
+struct move_at_index;
+
+template<size_t I, typename T, typename... Ts>
+struct move_at_index<I, T, Ts...> {
+    static void call(size_t idx, void* dst, void* src) {
+        if (idx == I) {
+            new (dst) T(std::move(*static_cast<T*>(src)));
+        } else {
+            move_at_index<I + 1, Ts...>::call(idx, dst, src);
+        }
+    }
+};
+
+template<size_t I>
+struct move_at_index<I> {
+    static void call(size_t, void*, void*) {}
+};
+
+} // namespace _variant_detail
+
+/// A type-safe discriminated union that can hold one of Types...
+template<typename... Types>
+class variant {
+    static_assert(sizeof...(Types) > 0, "variant must have at least one alternative");
+
+    alignas(_variant_detail::max_align<Types...>())
+    char _storage[_variant_detail::max_size<Types...>()];
+    size_t _index;
+
+    void _destroy() {
+        if (_index != variant_npos) {
+            _variant_detail::destroy_at_index<0, Types...>::call(_index, &_storage);
+            _index = variant_npos;
+        }
+    }
+
+public:
+    /// Default construct: initializes with the first alternative.
+    variant() : _index(0) {
+        using T0 = typename _variant_detail::type_at_index<0, Types...>::type;
+        new (&_storage) T0();
+    }
+
+    ~variant() { _destroy(); }
+
+    /// Construct from a value of type T (must be one of Types...).
+    template<typename T, typename = enable_if_t<
+        (_variant_detail::index_of<decay_t<T>, Types...>::value < sizeof...(Types))>>
+    variant(T&& val) : _index(_variant_detail::index_of<decay_t<T>, Types...>::value) {
+        new (&_storage) decay_t<T>(std::forward<T>(val));
+    }
+
+    variant(const variant& o) : _index(o._index) {
+        if (_index != variant_npos)
+            _variant_detail::copy_at_index<0, Types...>::call(_index, &_storage, &o._storage);
+    }
+
+    variant(variant&& o) noexcept : _index(o._index) {
+        if (_index != variant_npos)
+            _variant_detail::move_at_index<0, Types...>::call(_index, &_storage, &o._storage);
+    }
+
+    variant& operator=(const variant& o) {
+        if (this != &o) {
+            _destroy();
+            _index = o._index;
+            if (_index != variant_npos)
+                _variant_detail::copy_at_index<0, Types...>::call(_index, &_storage, &o._storage);
+        }
+        return *this;
+    }
+
+    variant& operator=(variant&& o) noexcept {
+        if (this != &o) {
+            _destroy();
+            _index = o._index;
+            if (_index != variant_npos)
+                _variant_detail::move_at_index<0, Types...>::call(_index, &_storage, &o._storage);
+        }
+        return *this;
+    }
+
+    template<typename T>
+    variant& operator=(T&& val) {
+        _destroy();
+        _index = _variant_detail::index_of<decay_t<T>, Types...>::value;
+        new (&_storage) decay_t<T>(std::forward<T>(val));
+        return *this;
+    }
+
+    size_t index() const noexcept { return _index; }
+    bool valueless_by_exception() const noexcept { return _index == variant_npos; }
+
+    template<size_t I>
+    auto& _get_impl() {
+        using T = typename _variant_detail::type_at_index<I, Types...>::type;
+        return *static_cast<T*>(static_cast<void*>(&_storage));
+    }
+
+    template<size_t I>
+    const auto& _get_impl() const {
+        using T = typename _variant_detail::type_at_index<I, Types...>::type;
+        return *static_cast<const T*>(static_cast<const void*>(&_storage));
+    }
+};
+
+/// Access variant by index.
+template<size_t I, typename... Types>
+auto& get(variant<Types...>& v) {
+    if (v.index() != I) {
+        // In a full implementation, throw bad_variant_access
+        __builtin_trap();
+    }
+    return v.template _get_impl<I>();
+}
+
+template<size_t I, typename... Types>
+const auto& get(const variant<Types...>& v) {
+    if (v.index() != I) {
+        __builtin_trap();
+    }
+    return v.template _get_impl<I>();
+}
+
+/// Check if variant currently holds alternative T.
+template<typename T, typename... Types>
+bool holds_alternative(const variant<Types...>& v) noexcept {
+    return v.index() == _variant_detail::index_of<T, Types...>::value;
+}
+
+/// Access variant by type.
+template<typename T, typename... Types>
+T& get(variant<Types...>& v) {
+    constexpr size_t I = _variant_detail::index_of<T, Types...>::value;
+    return get<I>(v);
+}
+
+template<typename T, typename... Types>
+const T& get(const variant<Types...>& v) {
+    constexpr size_t I = _variant_detail::index_of<T, Types...>::value;
+    return get<I>(v);
+}
+
+/// Get a pointer to the alternative (nullptr if wrong type).
+template<size_t I, typename... Types>
+auto* get_if(variant<Types...>* v) noexcept {
+    if (!v || v->index() != I) return decltype(&v->template _get_impl<I>())(nullptr);
+    return &v->template _get_impl<I>();
+}
+
+/// Visit — apply a callable to the current alternative.
+/// Simplified: only supports single variant argument.
+template<typename Visitor, typename... Types>
+auto visit(Visitor&& vis, variant<Types...>& v) -> decltype(auto) {
+    // Simple dispatch — uses a recursive helper
+    return _visit_impl<0>(std::forward<Visitor>(vis), v);
+}
+
+namespace _visit_detail {
+template<size_t I, typename Visitor, typename Variant>
+decltype(auto) _dispatch(Visitor&& vis, Variant& v) {
+    return std::forward<Visitor>(vis)(v.template _get_impl<I>());
+}
+}
+
+template<size_t I, typename Visitor, typename... Types>
+decltype(auto) _visit_impl(Visitor&& vis, variant<Types...>& v) {
+    if (v.index() == I) {
+        return _visit_detail::_dispatch<I>(std::forward<Visitor>(vis), v);
+    }
+    if constexpr (I + 1 < sizeof...(Types)) {
+        return _visit_impl<I + 1>(std::forward<Visitor>(vis), v);
+    } else {
+        __builtin_trap();
+    }
+}
+
+} // namespace std
+
+#endif // _ANYOS_VARIANT

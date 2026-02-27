@@ -1,0 +1,200 @@
+// -*- C++ -*-
+// filesystem — Basic filesystem operations for anyOS libcxx
+#ifndef _ANYOS_FILESYSTEM
+#define _ANYOS_FILESYSTEM
+
+#include <string>
+#include <cstddef>
+extern "C" {
+#include <sys/stat.h>
+#include <dirent.h>
+#include <unistd.h>
+}
+
+namespace std {
+namespace filesystem {
+
+/// A filesystem path.
+class path {
+    string _path;
+public:
+    using value_type = char;
+    using string_type = std::string;
+    static constexpr value_type preferred_separator = '/';
+
+    path() = default;
+    path(const char* s) : _path(s) {}
+    path(const string& s) : _path(s) {}
+    path(string&& s) : _path(std::move(s)) {}
+
+    // Concatenation
+    path& operator/=(const path& p) {
+        if (!_path.empty() && _path.back() != '/')
+            _path += '/';
+        _path += p._path;
+        return *this;
+    }
+
+    friend path operator/(const path& lhs, const path& rhs) {
+        path r = lhs;
+        r /= rhs;
+        return r;
+    }
+
+    path& operator+=(const path& p) { _path += p._path; return *this; }
+    path& operator+=(const char* s) { _path += s; return *this; }
+
+    // Observers
+    const char* c_str() const noexcept { return _path.c_str(); }
+    const string& native() const noexcept { return _path; }
+    const string& string() const noexcept { return _path; } // simplified
+    operator const std::string&() const noexcept { return _path; }
+
+    bool empty() const noexcept { return _path.empty(); }
+
+    /// Return the filename component (after last separator).
+    path filename() const {
+        auto pos = _path.rfind('/');
+        if (pos == std::string::npos) return *this;
+        return path(_path.substr(pos + 1));
+    }
+
+    /// Return the extension (including the dot).
+    path extension() const {
+        auto fn = filename()._path;
+        auto pos = fn.rfind('.');
+        if (pos == std::string::npos || pos == 0) return path();
+        return path(fn.substr(pos));
+    }
+
+    /// Return path without the filename.
+    path parent_path() const {
+        auto pos = _path.rfind('/');
+        if (pos == std::string::npos) return path();
+        if (pos == 0) return path("/");
+        return path(_path.substr(0, pos));
+    }
+
+    /// Return path without the extension.
+    path stem() const {
+        auto fn = filename()._path;
+        auto pos = fn.rfind('.');
+        if (pos == std::string::npos || pos == 0) return path(fn);
+        return path(fn.substr(0, pos));
+    }
+
+    bool has_filename() const { return !filename().empty(); }
+    bool has_extension() const { return !extension().empty(); }
+    bool has_parent_path() const { return !parent_path().empty(); }
+
+    // Comparison
+    friend bool operator==(const path& a, const path& b) { return a._path == b._path; }
+    friend bool operator!=(const path& a, const path& b) { return a._path != b._path; }
+    friend bool operator<(const path& a, const path& b) { return a._path < b._path; }
+};
+
+/// Check if a path exists.
+inline bool exists(const path& p) {
+    struct stat st;
+    return ::stat(p.c_str(), &st) == 0;
+}
+
+/// Check if a path is a regular file.
+inline bool is_regular_file(const path& p) {
+    struct stat st;
+    if (::stat(p.c_str(), &st) != 0) return false;
+    return S_ISREG(st.st_mode);
+}
+
+/// Check if a path is a directory.
+inline bool is_directory(const path& p) {
+    struct stat st;
+    if (::stat(p.c_str(), &st) != 0) return false;
+    return S_ISDIR(st.st_mode);
+}
+
+/// Get file size.
+inline uintmax_t file_size(const path& p) {
+    struct stat st;
+    if (::stat(p.c_str(), &st) != 0) return static_cast<uintmax_t>(-1);
+    return static_cast<uintmax_t>(st.st_size);
+}
+
+/// Remove a file or empty directory.
+inline bool remove(const path& p) {
+    return ::unlink(p.c_str()) == 0;
+}
+
+/// Create a directory.
+inline bool create_directory(const path& p) {
+    return ::mkdir(p.c_str(), 0755) == 0;
+}
+
+/// Directory entry returned by directory_iterator.
+class directory_entry {
+    path _path;
+public:
+    directory_entry() = default;
+    explicit directory_entry(const filesystem::path& p) : _path(p) {}
+
+    const filesystem::path& path() const noexcept { return _path; }
+    bool exists() const { return filesystem::exists(_path); }
+    bool is_regular_file() const { return filesystem::is_regular_file(_path); }
+    bool is_directory() const { return filesystem::is_directory(_path); }
+};
+
+/// Simple directory iterator.
+class directory_iterator {
+    DIR* _dir = nullptr;
+    directory_entry _entry;
+    path _base;
+
+    void _advance() {
+        if (!_dir) return;
+        struct dirent* de = ::readdir(_dir);
+        while (de) {
+            // Skip . and ..
+            if (de->d_name[0] == '.' &&
+                (de->d_name[1] == '\0' ||
+                 (de->d_name[1] == '.' && de->d_name[2] == '\0'))) {
+                de = ::readdir(_dir);
+                continue;
+            }
+            _entry = directory_entry(_base / path(de->d_name));
+            return;
+        }
+        // End of directory
+        ::closedir(_dir);
+        _dir = nullptr;
+        _entry = directory_entry();
+    }
+public:
+    directory_iterator() = default;
+    explicit directory_iterator(const path& p) : _base(p) {
+        _dir = ::opendir(p.c_str());
+        if (_dir) _advance();
+    }
+
+    ~directory_iterator() { if (_dir) ::closedir(_dir); }
+
+    const directory_entry& operator*() const { return _entry; }
+    const directory_entry* operator->() const { return &_entry; }
+
+    directory_iterator& operator++() { _advance(); return *this; }
+
+    friend bool operator==(const directory_iterator& a, const directory_iterator& b) {
+        return a._dir == b._dir;
+    }
+    friend bool operator!=(const directory_iterator& a, const directory_iterator& b) {
+        return a._dir != b._dir;
+    }
+
+    // Range support
+    directory_iterator begin() { return std::move(*this); }
+    directory_iterator end() { return directory_iterator(); }
+};
+
+} // namespace filesystem
+} // namespace std
+
+#endif // _ANYOS_FILESYSTEM

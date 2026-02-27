@@ -1,0 +1,235 @@
+// -*- C++ -*-
+// future — Asynchronous computation for anyOS libcxx
+#ifndef _ANYOS_FUTURE
+#define _ANYOS_FUTURE
+
+#include <memory>
+#include <mutex>
+#include <condition_variable>
+#include <functional>
+#include <thread>
+#include <atomic>
+#include <utility>
+
+namespace std {
+
+/// Errors for future/promise operations.
+enum class future_errc {
+    broken_promise = 1,
+    future_already_retrieved = 2,
+    promise_already_satisfied = 3,
+    no_state = 4
+};
+
+/// Launch policy for std::async.
+enum class launch {
+    async  = 1,
+    deferred = 2
+};
+
+// ── Shared state between promise and future ──────────────────────────────
+
+namespace _future_detail {
+
+template<typename T>
+struct shared_state {
+    mutex _mtx;
+    condition_variable _cv;
+    bool _ready = false;
+    bool _retrieved = false;
+    T _value;
+
+    void set_value(const T& val) {
+        unique_lock<mutex> lock(_mtx);
+        _value = val;
+        _ready = true;
+        _cv.notify_all();
+    }
+
+    void set_value(T&& val) {
+        unique_lock<mutex> lock(_mtx);
+        _value = std::move(val);
+        _ready = true;
+        _cv.notify_all();
+    }
+
+    T get() {
+        unique_lock<mutex> lock(_mtx);
+        _cv.wait(lock, [this]{ return _ready; });
+        return std::move(_value);
+    }
+
+    void wait() {
+        unique_lock<mutex> lock(_mtx);
+        _cv.wait(lock, [this]{ return _ready; });
+    }
+};
+
+template<>
+struct shared_state<void> {
+    mutex _mtx;
+    condition_variable _cv;
+    bool _ready = false;
+
+    void set_value() {
+        unique_lock<mutex> lock(_mtx);
+        _ready = true;
+        _cv.notify_all();
+    }
+
+    void get() {
+        unique_lock<mutex> lock(_mtx);
+        _cv.wait(lock, [this]{ return _ready; });
+    }
+
+    void wait() {
+        unique_lock<mutex> lock(_mtx);
+        _cv.wait(lock, [this]{ return _ready; });
+    }
+};
+
+} // namespace _future_detail
+
+// ── future ───────────────────────────────────────────────────────────────
+
+template<typename T>
+class future {
+    shared_ptr<_future_detail::shared_state<T>> _state;
+
+    template<typename> friend class promise;
+    explicit future(shared_ptr<_future_detail::shared_state<T>> s) : _state(std::move(s)) {}
+public:
+    future() noexcept = default;
+    future(future&& o) noexcept : _state(std::move(o._state)) {}
+    future& operator=(future&& o) noexcept { _state = std::move(o._state); return *this; }
+
+    future(const future&) = delete;
+    future& operator=(const future&) = delete;
+
+    bool valid() const noexcept { return _state != nullptr; }
+
+    T get() {
+        if (!_state) __builtin_trap(); // no_state
+        return _state->get();
+    }
+
+    void wait() const {
+        if (_state) _state->wait();
+    }
+};
+
+template<>
+class future<void> {
+    shared_ptr<_future_detail::shared_state<void>> _state;
+
+    template<typename> friend class promise;
+    explicit future(shared_ptr<_future_detail::shared_state<void>> s) : _state(std::move(s)) {}
+public:
+    future() noexcept = default;
+    future(future&& o) noexcept : _state(std::move(o._state)) {}
+    future& operator=(future&& o) noexcept { _state = std::move(o._state); return *this; }
+
+    future(const future&) = delete;
+    future& operator=(const future&) = delete;
+
+    bool valid() const noexcept { return _state != nullptr; }
+
+    void get() {
+        if (!_state) __builtin_trap();
+        _state->get();
+    }
+
+    void wait() const {
+        if (_state) _state->wait();
+    }
+};
+
+// ── promise ──────────────────────────────────────────────────────────────
+
+template<typename T>
+class promise {
+    shared_ptr<_future_detail::shared_state<T>> _state;
+public:
+    promise() : _state(make_shared<_future_detail::shared_state<T>>()) {}
+    ~promise() = default;
+
+    promise(promise&& o) noexcept : _state(std::move(o._state)) {}
+    promise& operator=(promise&& o) noexcept { _state = std::move(o._state); return *this; }
+
+    promise(const promise&) = delete;
+    promise& operator=(const promise&) = delete;
+
+    future<T> get_future() {
+        return future<T>(_state);
+    }
+
+    void set_value(const T& val) {
+        if (!_state) __builtin_trap();
+        _state->set_value(val);
+    }
+
+    void set_value(T&& val) {
+        if (!_state) __builtin_trap();
+        _state->set_value(std::move(val));
+    }
+};
+
+template<>
+class promise<void> {
+    shared_ptr<_future_detail::shared_state<void>> _state;
+public:
+    promise() : _state(make_shared<_future_detail::shared_state<void>>()) {}
+    ~promise() = default;
+
+    promise(promise&& o) noexcept : _state(std::move(o._state)) {}
+    promise& operator=(promise&& o) noexcept { _state = std::move(o._state); return *this; }
+
+    promise(const promise&) = delete;
+    promise& operator=(const promise&) = delete;
+
+    future<void> get_future() {
+        return future<void>(_state);
+    }
+
+    void set_value() {
+        if (!_state) __builtin_trap();
+        _state->set_value();
+    }
+};
+
+// ── async ────────────────────────────────────────────────────────────────
+
+/// Launch a function asynchronously and return a future to its result.
+template<typename F, typename... Args>
+auto async(launch policy, F&& f, Args&&... args) -> future<decltype(f(args...))> {
+    using R = decltype(f(args...));
+
+    promise<R> p;
+    auto fut = p.get_future();
+
+    if (static_cast<int>(policy) & static_cast<int>(launch::async)) {
+        thread t([p = std::move(p), f = std::forward<F>(f),
+                  args = std::make_tuple(std::forward<Args>(args)...)]() mutable {
+            if constexpr (is_void<R>::value) {
+                f();
+                p.set_value();
+            } else {
+                p.set_value(f());
+            }
+        });
+        t.detach();
+    }
+    // deferred policy: not implemented (would need lazy evaluation)
+
+    return fut;
+}
+
+/// async with default policy (async).
+template<typename F, typename... Args>
+auto async(F&& f, Args&&... args) -> future<decltype(f(args...))> {
+    return async(launch::async, std::forward<F>(f), std::forward<Args>(args)...);
+}
+
+} // namespace std
+
+#endif // _ANYOS_FUTURE

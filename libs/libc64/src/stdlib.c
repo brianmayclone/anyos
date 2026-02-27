@@ -305,3 +305,34 @@ int system(const char *command) {
     int status = (int)_syscall(SYS_WAITPID_STDLIB, tid, 0, 0, 0, 0);
     return status;
 }
+
+/* ── Integer division with quotient + remainder ── */
+
+typedef struct { int quot; int rem; } div_t;
+typedef struct { long quot; long rem; } ldiv_t;
+typedef struct { long long quot; long long rem; } lldiv_t;
+
+div_t div(int numer, int denom) {
+    div_t r;
+    r.quot = numer / denom;
+    r.rem  = numer % denom;
+    return r;
+}
+
+ldiv_t ldiv(long numer, long denom) {
+    ldiv_t r;
+    r.quot = numer / denom;
+    r.rem  = numer % denom;
+    return r;
+}
+
+lldiv_t lldiv(long long numer, long long denom) {
+    lldiv_t r;
+    r.quot = numer / denom;
+    r.rem  = numer % denom;
+    return r;
+}
+
+long long llabs(long long n) {
+    return n < 0 ? -n : n;
+}

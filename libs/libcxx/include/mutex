@@ -1,0 +1,167 @@
+// -*- C++ -*-
+// mutex — Mutex and lock types for anyOS libcxx
+#ifndef _ANYOS_MUTEX
+#define _ANYOS_MUTEX
+
+#include <cstddef>
+extern "C" {
+#include <pthread.h>
+}
+
+namespace std {
+
+/// Basic non-recursive mutex backed by pthread_mutex_t.
+class mutex {
+    pthread_mutex_t _m = PTHREAD_MUTEX_INITIALIZER;
+public:
+    constexpr mutex() noexcept = default;
+    ~mutex() { pthread_mutex_destroy(&_m); }
+    mutex(const mutex&) = delete;
+    mutex& operator=(const mutex&) = delete;
+
+    void lock() { pthread_mutex_lock(&_m); }
+    bool try_lock() { return pthread_mutex_trylock(&_m) == 0; }
+    void unlock() { pthread_mutex_unlock(&_m); }
+
+    using native_handle_type = pthread_mutex_t*;
+    native_handle_type native_handle() { return &_m; }
+};
+
+/// Recursive mutex.
+class recursive_mutex {
+    pthread_mutex_t _m;
+public:
+    recursive_mutex() {
+        pthread_mutexattr_t attr;
+        pthread_mutexattr_init(&attr);
+        pthread_mutexattr_settype(&attr, 1); // PTHREAD_MUTEX_RECURSIVE
+        pthread_mutex_init(&_m, &attr);
+        pthread_mutexattr_destroy(&attr);
+    }
+    ~recursive_mutex() { pthread_mutex_destroy(&_m); }
+    recursive_mutex(const recursive_mutex&) = delete;
+    recursive_mutex& operator=(const recursive_mutex&) = delete;
+
+    void lock() { pthread_mutex_lock(&_m); }
+    bool try_lock() { return pthread_mutex_trylock(&_m) == 0; }
+    void unlock() { pthread_mutex_unlock(&_m); }
+};
+
+/// RAII lock guard — locks on construction, unlocks on destruction.
+template<typename Mutex>
+class lock_guard {
+    Mutex& _m;
+public:
+    using mutex_type = Mutex;
+    explicit lock_guard(Mutex& m) : _m(m) { _m.lock(); }
+    lock_guard(Mutex& m, adopt_lock_t) noexcept : _m(m) {}
+    ~lock_guard() { _m.unlock(); }
+    lock_guard(const lock_guard&) = delete;
+    lock_guard& operator=(const lock_guard&) = delete;
+};
+
+/// Tag types for lock constructors.
+struct defer_lock_t { explicit defer_lock_t() = default; };
+struct try_to_lock_t { explicit try_to_lock_t() = default; };
+struct adopt_lock_t { explicit adopt_lock_t() = default; };
+inline constexpr defer_lock_t defer_lock{};
+inline constexpr try_to_lock_t try_to_lock{};
+inline constexpr adopt_lock_t adopt_lock{};
+
+/// Unique lock — movable, supports deferred/try locking.
+template<typename Mutex>
+class unique_lock {
+    Mutex* _m;
+    bool _owns;
+public:
+    using mutex_type = Mutex;
+
+    unique_lock() noexcept : _m(nullptr), _owns(false) {}
+    explicit unique_lock(Mutex& m) : _m(&m), _owns(true) { _m->lock(); }
+    unique_lock(Mutex& m, defer_lock_t) noexcept : _m(&m), _owns(false) {}
+    unique_lock(Mutex& m, try_to_lock_t) : _m(&m), _owns(_m->try_lock()) {}
+    unique_lock(Mutex& m, adopt_lock_t) noexcept : _m(&m), _owns(true) {}
+
+    ~unique_lock() { if (_owns) _m->unlock(); }
+
+    unique_lock(unique_lock&& o) noexcept : _m(o._m), _owns(o._owns) { o._m = nullptr; o._owns = false; }
+    unique_lock& operator=(unique_lock&& o) noexcept {
+        if (_owns) _m->unlock();
+        _m = o._m; _owns = o._owns;
+        o._m = nullptr; o._owns = false;
+        return *this;
+    }
+    unique_lock(const unique_lock&) = delete;
+    unique_lock& operator=(const unique_lock&) = delete;
+
+    void lock() { _m->lock(); _owns = true; }
+    bool try_lock() { _owns = _m->try_lock(); return _owns; }
+    void unlock() { _m->unlock(); _owns = false; }
+
+    void swap(unique_lock& o) noexcept {
+        Mutex* tm = _m; _m = o._m; o._m = tm;
+        bool to = _owns; _owns = o._owns; o._owns = to;
+    }
+
+    Mutex* release() noexcept { Mutex* r = _m; _m = nullptr; _owns = false; return r; }
+    bool owns_lock() const noexcept { return _owns; }
+    explicit operator bool() const noexcept { return _owns; }
+    Mutex* mutex() const noexcept { return _m; }
+};
+
+/// Scoped lock — locks multiple mutexes simultaneously (C++17).
+template<typename... MutexTypes>
+class scoped_lock;
+
+template<typename Mutex>
+class scoped_lock<Mutex> {
+    Mutex& _m;
+public:
+    explicit scoped_lock(Mutex& m) : _m(m) { _m.lock(); }
+    scoped_lock(Mutex& m, adopt_lock_t) noexcept : _m(m) {}
+    ~scoped_lock() { _m.unlock(); }
+    scoped_lock(const scoped_lock&) = delete;
+    scoped_lock& operator=(const scoped_lock&) = delete;
+};
+
+template<>
+class scoped_lock<> {
+public:
+    explicit scoped_lock() = default;
+    ~scoped_lock() = default;
+};
+
+/// Once flag and call_once.
+struct once_flag {
+    pthread_once_t _once = PTHREAD_ONCE_INIT;
+    once_flag() = default;
+    once_flag(const once_flag&) = delete;
+    once_flag& operator=(const once_flag&) = delete;
+};
+
+// Simplified call_once: only supports function pointers (no captures) due to
+// pthread_once limitations. Full lambda support would require a trampoline.
+namespace _detail {
+    inline void (*_once_func)() = nullptr;
+    inline void _once_trampoline() { if (_once_func) _once_func(); }
+}
+
+template<typename Callable>
+void call_once(once_flag& flag, Callable&& func) {
+    // Simple implementation: use CAS on the internal flag
+    int* p = reinterpret_cast<int*>(&flag._once);
+    if (__atomic_load_n(p, __ATOMIC_ACQUIRE) == 2) return; // already done
+    int expected = 0;
+    if (__atomic_compare_exchange_n(p, &expected, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        func();
+        __atomic_store_n(p, 2, __ATOMIC_RELEASE);
+    } else {
+        while (__atomic_load_n(p, __ATOMIC_ACQUIRE) != 2) {
+            // spin
+        }
+    }
+}
+
+} // namespace std
+
+#endif // _ANYOS_MUTEX

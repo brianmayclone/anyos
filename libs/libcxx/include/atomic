@@ -1,0 +1,148 @@
+// -*- C++ -*-
+// atomic — Atomic operations for anyOS libcxx (uses compiler builtins)
+#ifndef _ANYOS_ATOMIC
+#define _ANYOS_ATOMIC
+
+#include <cstddef>
+#include <cstdint>
+#include <type_traits>
+
+namespace std {
+
+enum memory_order {
+    memory_order_relaxed = __ATOMIC_RELAXED,
+    memory_order_consume = __ATOMIC_CONSUME,
+    memory_order_acquire = __ATOMIC_ACQUIRE,
+    memory_order_release = __ATOMIC_RELEASE,
+    memory_order_acq_rel = __ATOMIC_ACQ_REL,
+    memory_order_seq_cst = __ATOMIC_SEQ_CST
+};
+
+inline void atomic_thread_fence(memory_order order) noexcept {
+    __atomic_thread_fence(static_cast<int>(order));
+}
+
+inline void atomic_signal_fence(memory_order order) noexcept {
+    __atomic_signal_fence(static_cast<int>(order));
+}
+
+/// Generic atomic type backed by compiler builtins.
+template<typename T>
+class atomic {
+    T _value;
+public:
+    atomic() noexcept = default;
+    constexpr atomic(T desired) noexcept : _value(desired) {}
+    atomic(const atomic&) = delete;
+    atomic& operator=(const atomic&) = delete;
+
+    T load(memory_order order = memory_order_seq_cst) const noexcept {
+        return __atomic_load_n(&_value, static_cast<int>(order));
+    }
+
+    void store(T desired, memory_order order = memory_order_seq_cst) noexcept {
+        __atomic_store_n(&_value, desired, static_cast<int>(order));
+    }
+
+    T exchange(T desired, memory_order order = memory_order_seq_cst) noexcept {
+        return __atomic_exchange_n(&_value, desired, static_cast<int>(order));
+    }
+
+    bool compare_exchange_weak(T& expected, T desired,
+                               memory_order success = memory_order_seq_cst,
+                               memory_order failure = memory_order_seq_cst) noexcept {
+        return __atomic_compare_exchange_n(&_value, &expected, desired, true,
+                                           static_cast<int>(success), static_cast<int>(failure));
+    }
+
+    bool compare_exchange_strong(T& expected, T desired,
+                                 memory_order success = memory_order_seq_cst,
+                                 memory_order failure = memory_order_seq_cst) noexcept {
+        return __atomic_compare_exchange_n(&_value, &expected, desired, false,
+                                           static_cast<int>(success), static_cast<int>(failure));
+    }
+
+    operator T() const noexcept { return load(); }
+    T operator=(T desired) noexcept { store(desired); return desired; }
+
+    // Arithmetic operations (only for integral and pointer types)
+    T fetch_add(T arg, memory_order order = memory_order_seq_cst) noexcept {
+        return __atomic_fetch_add(&_value, arg, static_cast<int>(order));
+    }
+    T fetch_sub(T arg, memory_order order = memory_order_seq_cst) noexcept {
+        return __atomic_fetch_sub(&_value, arg, static_cast<int>(order));
+    }
+    T fetch_and(T arg, memory_order order = memory_order_seq_cst) noexcept {
+        return __atomic_fetch_and(&_value, arg, static_cast<int>(order));
+    }
+    T fetch_or(T arg, memory_order order = memory_order_seq_cst) noexcept {
+        return __atomic_fetch_or(&_value, arg, static_cast<int>(order));
+    }
+    T fetch_xor(T arg, memory_order order = memory_order_seq_cst) noexcept {
+        return __atomic_fetch_xor(&_value, arg, static_cast<int>(order));
+    }
+
+    T operator++() noexcept { return fetch_add(1) + 1; }
+    T operator++(int) noexcept { return fetch_add(1); }
+    T operator--() noexcept { return fetch_sub(1) - 1; }
+    T operator--(int) noexcept { return fetch_sub(1); }
+    T operator+=(T arg) noexcept { return fetch_add(arg) + arg; }
+    T operator-=(T arg) noexcept { return fetch_sub(arg) - arg; }
+    T operator&=(T arg) noexcept { return fetch_and(arg) & arg; }
+    T operator|=(T arg) noexcept { return fetch_or(arg) | arg; }
+    T operator^=(T arg) noexcept { return fetch_xor(arg) ^ arg; }
+
+    bool is_lock_free() const noexcept { return __atomic_is_lock_free(sizeof(T), &_value); }
+    static constexpr bool is_always_lock_free = __atomic_always_lock_free(sizeof(T), nullptr);
+};
+
+/// Atomic flag — guaranteed lock-free boolean.
+class atomic_flag {
+    bool _value = false;
+public:
+    atomic_flag() noexcept = default;
+    atomic_flag(const atomic_flag&) = delete;
+    atomic_flag& operator=(const atomic_flag&) = delete;
+
+    bool test_and_set(memory_order order = memory_order_seq_cst) noexcept {
+        return __atomic_test_and_set(&_value, static_cast<int>(order));
+    }
+    void clear(memory_order order = memory_order_seq_cst) noexcept {
+        __atomic_clear(&_value, static_cast<int>(order));
+    }
+    bool test(memory_order order = memory_order_seq_cst) const noexcept {
+        return __atomic_load_n(&_value, static_cast<int>(order));
+    }
+};
+
+#define ATOMIC_FLAG_INIT {}
+
+// Common type aliases
+using atomic_bool     = atomic<bool>;
+using atomic_char     = atomic<char>;
+using atomic_schar    = atomic<signed char>;
+using atomic_uchar    = atomic<unsigned char>;
+using atomic_short    = atomic<short>;
+using atomic_ushort   = atomic<unsigned short>;
+using atomic_int      = atomic<int>;
+using atomic_uint     = atomic<unsigned int>;
+using atomic_long     = atomic<long>;
+using atomic_ulong    = atomic<unsigned long>;
+using atomic_llong    = atomic<long long>;
+using atomic_ullong   = atomic<unsigned long long>;
+using atomic_size_t   = atomic<size_t>;
+using atomic_ptrdiff_t = atomic<ptrdiff_t>;
+using atomic_intptr_t  = atomic<intptr_t>;
+using atomic_uintptr_t = atomic<uintptr_t>;
+using atomic_int8_t    = atomic<int8_t>;
+using atomic_uint8_t   = atomic<uint8_t>;
+using atomic_int16_t   = atomic<int16_t>;
+using atomic_uint16_t  = atomic<uint16_t>;
+using atomic_int32_t   = atomic<int32_t>;
+using atomic_uint32_t  = atomic<uint32_t>;
+using atomic_int64_t   = atomic<int64_t>;
+using atomic_uint64_t  = atomic<uint64_t>;
+
+} // namespace std
+
+#endif // _ANYOS_ATOMIC

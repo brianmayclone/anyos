@@ -1,0 +1,55 @@
+// -*- C++ -*-
+// typeinfo — Runtime type information for anyOS libcxx
+#ifndef _ANYOS_TYPEINFO
+#define _ANYOS_TYPEINFO
+
+#include <cstddef>
+
+namespace std {
+
+/// Base class for type information, used by typeid and dynamic_cast.
+class type_info {
+    const char* __name;
+protected:
+    explicit type_info(const char* name) : __name(name) {}
+public:
+    virtual ~type_info();
+
+    const char* name() const noexcept { return __name; }
+
+    bool operator==(const type_info& rhs) const noexcept {
+        // Itanium ABI: type_info names are unique pointers (NTBS comparison).
+        return __name == rhs.__name;
+    }
+    bool operator!=(const type_info& rhs) const noexcept {
+        return !(*this == rhs);
+    }
+
+    bool before(const type_info& rhs) const noexcept {
+        return __name < rhs.__name;
+    }
+
+    // Non-copyable
+    type_info(const type_info&) = delete;
+    type_info& operator=(const type_info&) = delete;
+};
+
+/// Thrown by a failed dynamic_cast on a reference type.
+class bad_cast {
+public:
+    bad_cast() noexcept = default;
+    virtual ~bad_cast() noexcept = default;
+    virtual const char* what() const noexcept { return "std::bad_cast"; }
+};
+
+/// Thrown by typeid applied to a null pointer of a polymorphic type.
+class bad_typeid {
+public:
+    bad_typeid() noexcept = default;
+    virtual ~bad_typeid() noexcept = default;
+    virtual const char* what() const noexcept { return "std::bad_typeid"; }
+};
+
+} // namespace std
+
+#endif // _ANYOS_TYPEINFO

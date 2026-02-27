@@ -1,0 +1,186 @@
+// -*- C++ -*-
+// any — Type-erased container for anyOS libcxx
+#ifndef _ANYOS_ANY
+#define _ANYOS_ANY
+
+#include <cstddef>
+#include <type_traits>
+#include <utility>
+#include <new>
+#include <typeinfo>
+
+namespace std {
+
+/// Exception thrown on invalid any_cast.
+class bad_any_cast {
+public:
+    const char* what() const noexcept { return "bad any_cast"; }
+};
+
+/// A type-safe container for single values of any copy-constructible type.
+class any {
+    // Small buffer optimisation: store small types inline (up to 2 pointers).
+    static constexpr size_t _BufSize = 2 * sizeof(void*);
+    static constexpr size_t _BufAlign = alignof(void*);
+
+    /// Virtual table for type-erased operations.
+    struct _VTable {
+        void (*destroy)(void* storage);
+        void (*copy)(void* dst, const void* src);
+        void (*move_fn)(void* dst, void* src);
+        const type_info* type;
+        bool small; // true if stored inline
+    };
+
+    template<typename T, bool Small>
+    struct _VTableFor;
+
+    // Small object: stored directly in _storage buffer.
+    template<typename T>
+    struct _VTableFor<T, true> {
+        static void destroy(void* s) { static_cast<T*>(s)->~T(); }
+        static void copy(void* d, const void* s) { new (d) T(*static_cast<const T*>(s)); }
+        static void move_fn(void* d, void* s) { new (d) T(std::move(*static_cast<T*>(s))); }
+        static const _VTable vtable;
+    };
+
+    // Large object: heap-allocated.
+    template<typename T>
+    struct _VTableFor<T, false> {
+        static void destroy(void* s) {
+            T** pp = static_cast<T**>(s);
+            delete *pp;
+            *pp = nullptr;
+        }
+        static void copy(void* d, const void* s) {
+            *static_cast<T**>(d) = new T(**static_cast<T* const*>(s));
+        }
+        static void move_fn(void* d, void* s) {
+            *static_cast<T**>(d) = *static_cast<T**>(s);
+            *static_cast<T**>(s) = nullptr;
+        }
+        static const _VTable vtable;
+    };
+
+    template<typename T>
+    static constexpr bool _is_small = sizeof(T) <= _BufSize && alignof(T) <= _BufAlign
+                                      && is_nothrow_move_constructible<T>::value;
+
+    alignas(_BufAlign) char _storage[_BufSize];
+    const _VTable* _vtable = nullptr;
+
+    void _destroy() {
+        if (_vtable) { _vtable->destroy(&_storage); _vtable = nullptr; }
+    }
+
+    template<typename T>
+    T* _ptr() {
+        if constexpr (_is_small<T>) return static_cast<T*>(static_cast<void*>(&_storage));
+        else return *static_cast<T**>(static_cast<void*>(&_storage));
+    }
+
+    template<typename T>
+    const T* _ptr() const {
+        if constexpr (_is_small<T>) return static_cast<const T*>(static_cast<const void*>(&_storage));
+        else return *static_cast<T* const*>(static_cast<const void*>(&_storage));
+    }
+
+public:
+    any() noexcept = default;
+
+    any(const any& o) : _vtable(o._vtable) {
+        if (_vtable) _vtable->copy(&_storage, &o._storage);
+    }
+
+    any(any&& o) noexcept : _vtable(o._vtable) {
+        if (_vtable) {
+            _vtable->move_fn(&_storage, &o._storage);
+            o._vtable = nullptr;
+        }
+    }
+
+    template<typename T, typename = enable_if_t<!is_same<decay_t<T>, any>::value>>
+    any(T&& val) {
+        using VT = decay_t<T>;
+        constexpr bool small = _is_small<VT>;
+        _vtable = &_VTableFor<VT, small>::vtable;
+        if constexpr (small) {
+            new (&_storage) VT(std::forward<T>(val));
+        } else {
+            *reinterpret_cast<VT**>(&_storage) = new VT(std::forward<T>(val));
+        }
+    }
+
+    ~any() { _destroy(); }
+
+    any& operator=(const any& o) {
+        if (this != &o) { _destroy(); _vtable = o._vtable; if (_vtable) _vtable->copy(&_storage, &o._storage); }
+        return *this;
+    }
+
+    any& operator=(any&& o) noexcept {
+        if (this != &o) { _destroy(); _vtable = o._vtable; if (_vtable) { _vtable->move_fn(&_storage, &o._storage); o._vtable = nullptr; } }
+        return *this;
+    }
+
+    template<typename T, typename = enable_if_t<!is_same<decay_t<T>, any>::value>>
+    any& operator=(T&& val) {
+        *this = any(std::forward<T>(val));
+        return *this;
+    }
+
+    bool has_value() const noexcept { return _vtable != nullptr; }
+    const type_info& type() const noexcept {
+        return _vtable ? *_vtable->type : typeid(void);
+    }
+    void reset() noexcept { _destroy(); }
+
+    template<typename T>
+    friend T* any_cast(any* a) noexcept;
+
+    template<typename T>
+    friend const T* any_cast(const any* a) noexcept;
+};
+
+// Static vtable definitions
+template<typename T>
+const any::_VTable any::_VTableFor<T, true>::vtable = {
+    &destroy, &copy, &move_fn, &typeid(T), true
+};
+
+template<typename T>
+const any::_VTable any::_VTableFor<T, false>::vtable = {
+    &destroy, &copy, &move_fn, &typeid(T), false
+};
+
+/// Safe access — returns nullptr on type mismatch.
+template<typename T>
+T* any_cast(any* a) noexcept {
+    if (!a || !a->_vtable || a->_vtable->type != &typeid(T)) return nullptr;
+    return a->template _ptr<T>();
+}
+
+template<typename T>
+const T* any_cast(const any* a) noexcept {
+    if (!a || !a->_vtable || a->_vtable->type != &typeid(T)) return nullptr;
+    return a->template _ptr<T>();
+}
+
+/// Throwing access.
+template<typename T>
+T any_cast(const any& a) {
+    auto* p = any_cast<remove_reference_t<T>>(&const_cast<any&>(a));
+    if (!p) __builtin_trap(); // bad_any_cast
+    return *p;
+}
+
+template<typename T>
+T any_cast(any& a) {
+    auto* p = any_cast<remove_reference_t<T>>(&a);
+    if (!p) __builtin_trap();
+    return *p;
+}
+
+} // namespace std
+
+#endif // _ANYOS_ANY

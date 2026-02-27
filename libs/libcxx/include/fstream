@@ -1,0 +1,252 @@
+// -*- C++ -*-
+// fstream — File stream classes for anyOS libcxx
+#ifndef _ANYOS_FSTREAM
+#define _ANYOS_FSTREAM
+
+#include <string>
+#include <cstdio>
+extern "C" {
+#include <stdio.h>
+}
+
+namespace std {
+
+/// Input/output mode flags for file streams.
+namespace _fstream_detail {
+    inline const char* mode_string(ios_base::openmode mode) {
+        bool in  = (mode & ios_base::in) != 0;
+        bool out = (mode & ios_base::out) != 0;
+        bool app = (mode & ios_base::app) != 0;
+        bool trunc = (mode & ios_base::trunc) != 0;
+        bool bin = (mode & ios_base::binary) != 0;
+
+        if (in && out && trunc) return bin ? "w+b" : "w+";
+        if (in && out && app)   return bin ? "a+b" : "a+";
+        if (in && out)          return bin ? "r+b" : "r+";
+        if (out && trunc)       return bin ? "wb"  : "w";
+        if (out && app)         return bin ? "ab"  : "a";
+        if (out)                return bin ? "wb"  : "w";
+        if (in)                 return bin ? "rb"  : "r";
+        return "r";
+    }
+}
+
+/// Basic file buffer backed by libc64 FILE*.
+class filebuf {
+    FILE* _fp = nullptr;
+    bool _owned = false;
+public:
+    filebuf() = default;
+    ~filebuf() { close(); }
+
+    filebuf(filebuf&& o) noexcept : _fp(o._fp), _owned(o._owned) {
+        o._fp = nullptr; o._owned = false;
+    }
+    filebuf& operator=(filebuf&& o) noexcept {
+        close();
+        _fp = o._fp; _owned = o._owned;
+        o._fp = nullptr; o._owned = false;
+        return *this;
+    }
+
+    bool is_open() const { return _fp != nullptr; }
+
+    filebuf* open(const char* filename, ios_base::openmode mode) {
+        close();
+        _fp = fopen(filename, _fstream_detail::mode_string(mode));
+        if (!_fp) return nullptr;
+        _owned = true;
+        return this;
+    }
+
+    filebuf* close() {
+        if (_fp && _owned) { fclose(_fp); }
+        _fp = nullptr; _owned = false;
+        return this;
+    }
+
+    FILE* file() const { return _fp; }
+};
+
+/// Input file stream.
+class ifstream {
+    filebuf _buf;
+    bool _good = false;
+    bool _eof = false;
+    bool _fail = false;
+public:
+    ifstream() = default;
+    explicit ifstream(const char* filename, ios_base::openmode mode = ios_base::in) {
+        open(filename, mode);
+    }
+    explicit ifstream(const string& filename, ios_base::openmode mode = ios_base::in) {
+        open(filename.c_str(), mode);
+    }
+
+    void open(const char* filename, ios_base::openmode mode = ios_base::in) {
+        if (_buf.open(filename, mode | ios_base::in)) _good = true;
+        else _fail = true;
+    }
+    void close() { _buf.close(); _good = false; }
+    bool is_open() const { return _buf.is_open(); }
+    bool good() const { return _good && !_eof && !_fail; }
+    bool eof() const { return _eof; }
+    bool fail() const { return _fail; }
+    explicit operator bool() const { return good(); }
+    bool operator!() const { return !good(); }
+
+    ifstream& read(char* buf, size_t count) {
+        if (!_buf.file()) { _fail = true; return *this; }
+        size_t n = fread(buf, 1, count, _buf.file());
+        if (n < count) {
+            if (feof(_buf.file())) _eof = true;
+            else _fail = true;
+        }
+        return *this;
+    }
+
+    int get() {
+        if (!_buf.file()) { _fail = true; return -1; }
+        int c = fgetc(_buf.file());
+        if (c == EOF) _eof = true;
+        return c;
+    }
+
+    ifstream& getline(char* buf, size_t count) {
+        if (!_buf.file()) { _fail = true; return *this; }
+        if (!fgets(buf, (int)count, _buf.file())) {
+            _eof = true;
+        } else {
+            // Remove trailing newline if present
+            size_t len = 0;
+            while (buf[len]) ++len;
+            if (len > 0 && buf[len-1] == '\n') buf[len-1] = '\0';
+        }
+        return *this;
+    }
+
+    /// Read a line into a std::string.
+    ifstream& getline(string& s) {
+        s.clear();
+        int c;
+        while ((c = get()) != EOF && c != '\n') {
+            s += (char)c;
+        }
+        if (c == EOF && s.empty()) _eof = true;
+        return *this;
+    }
+};
+
+/// Output file stream.
+class ofstream {
+    filebuf _buf;
+    bool _good = false;
+    bool _fail = false;
+public:
+    ofstream() = default;
+    explicit ofstream(const char* filename, ios_base::openmode mode = ios_base::out) {
+        open(filename, mode);
+    }
+    explicit ofstream(const string& filename, ios_base::openmode mode = ios_base::out) {
+        open(filename.c_str(), mode);
+    }
+
+    void open(const char* filename, ios_base::openmode mode = ios_base::out) {
+        if (_buf.open(filename, mode | ios_base::out)) _good = true;
+        else _fail = true;
+    }
+    void close() { _buf.close(); _good = false; }
+    bool is_open() const { return _buf.is_open(); }
+    bool good() const { return _good && !_fail; }
+    bool fail() const { return _fail; }
+    explicit operator bool() const { return good(); }
+    bool operator!() const { return !good(); }
+
+    ofstream& write(const char* buf, size_t count) {
+        if (!_buf.file()) { _fail = true; return *this; }
+        size_t n = fwrite(buf, 1, count, _buf.file());
+        if (n < count) _fail = true;
+        return *this;
+    }
+
+    ofstream& put(char c) {
+        if (!_buf.file()) { _fail = true; return *this; }
+        if (fputc(c, _buf.file()) == EOF) _fail = true;
+        return *this;
+    }
+
+    ofstream& operator<<(const char* s) {
+        if (!_buf.file()) { _fail = true; return *this; }
+        fputs(s, _buf.file());
+        return *this;
+    }
+
+    ofstream& operator<<(const string& s) {
+        return *this << s.c_str();
+    }
+
+    ofstream& operator<<(int v) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%d", v);
+        return *this << buf;
+    }
+
+    ofstream& operator<<(long v) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%ld", v);
+        return *this << buf;
+    }
+
+    ofstream& operator<<(unsigned v) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%u", v);
+        return *this << buf;
+    }
+
+    ofstream& operator<<(double v) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%g", v);
+        return *this << buf;
+    }
+
+    ofstream& operator<<(char c) { return put(c); }
+
+    void flush() {
+        if (_buf.file()) fflush(_buf.file());
+    }
+};
+
+/// Bidirectional file stream.
+class fstream {
+    filebuf _buf;
+    bool _good = false;
+    bool _eof = false;
+    bool _fail = false;
+public:
+    fstream() = default;
+    explicit fstream(const char* filename,
+                     ios_base::openmode mode = ios_base::in | ios_base::out) {
+        open(filename, mode);
+    }
+
+    void open(const char* filename,
+              ios_base::openmode mode = ios_base::in | ios_base::out) {
+        if (_buf.open(filename, mode)) _good = true;
+        else _fail = true;
+    }
+    void close() { _buf.close(); _good = false; }
+    bool is_open() const { return _buf.is_open(); }
+    bool good() const { return _good && !_eof && !_fail; }
+    bool eof() const { return _eof; }
+    bool fail() const { return _fail; }
+    explicit operator bool() const { return good(); }
+};
+
+/// Free function: read an entire line from an ifstream into a string.
+inline ifstream& getline(ifstream& is, string& s) {
+    return is.getline(s);
+}
+
+} // namespace std
+
+#endif // _ANYOS_FSTREAM
