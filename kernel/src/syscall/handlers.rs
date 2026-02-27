@@ -4639,8 +4639,8 @@ pub fn sys_gpu_3d_submit(buf_ptr: u32, word_count: u32) -> u32 {
     let count = word_count.min(4096) as usize;
     let byte_size = (count * 4) as u64;
 
-    // Validate pointer is in user space
-    if (buf_ptr as u64) + byte_size > 0x0000_8000_0000_0000 {
+    // Validate pointer is in user space and properly mapped
+    if !is_valid_user_ptr(buf_ptr as u64, byte_size) {
         return u32::MAX;
     }
 
@@ -4684,6 +4684,27 @@ pub fn sys_gpu_3d_sync() -> u32 {
     crate::drivers::gpu::with_gpu(|g| {
         g.sync();
         0u32
+    }).unwrap_or(u32::MAX)
+}
+
+/// SYS_GPU_3D_SURFACE_DMA (515): Upload data to a GPU surface via DMA.
+/// arg1: surface ID
+/// arg2: user pointer to data buffer
+/// arg3: data length in bytes
+/// arg4: surface width (pixels)
+/// arg5: surface height (pixels)
+pub fn sys_gpu_3d_surface_dma(sid: u32, buf_ptr: u32, buf_len: u32, width: u32, height: u32) -> u32 {
+    if buf_ptr == 0 || buf_len == 0 || width == 0 || height == 0 {
+        return u32::MAX;
+    }
+    // Cap at 64 KiB per upload
+    let len = buf_len.min(65536) as usize;
+    if !is_valid_user_ptr(buf_ptr as u64, len as u64) {
+        return u32::MAX;
+    }
+    let data = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len) };
+    crate::drivers::gpu::with_gpu(|g| {
+        if g.dma_surface_upload(sid, data, width, height) { 0u32 } else { u32::MAX }
     }).unwrap_or(u32::MAX)
 }
 

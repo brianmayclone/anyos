@@ -12,9 +12,11 @@ use crate::rasterizer;
 pub fn draw_arrays(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsizei) {
     if unsafe { crate::USE_HW_BACKEND } {
         draw_arrays_hw(ctx, mode, first, count);
-    } else {
-        rasterizer::draw(ctx, mode, first, count);
     }
+    // Always run SW rasterizer for display output.
+    // GPU readback (SURFACE_DMA from render target) is not yet implemented,
+    // so the compositor still needs the SW framebuffer for compositing.
+    rasterizer::draw(ctx, mode, first, count);
 }
 
 /// Execute glDrawElements.
@@ -99,7 +101,12 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
     use crate::svga3d::*;
     use crate::compiler::backend_dx9;
 
+    static mut DRAW_DBG: u32 = 0;
     if count <= 0 { return; }
+    let dbg = unsafe { DRAW_DBG < 3 };
+    if dbg {
+        crate::serial_println!("[libgl] draw_arrays_hw: mode={} first={} count={}", mode, first, count);
+    }
 
     let prim_type = match gl_mode_to_svga3d(mode) {
         Some(pt) => pt,
@@ -198,17 +205,29 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
 
     // Create a vertex buffer surface
     let vb_sid = svga.alloc_surface();
-    let vb_width = total_bytes;
-    svga.cmd.surface_define(vb_sid, SVGA3D_SURFACE_HINT_VERTEXBUFFER, SVGA3D_X8R8G8B8, vb_width / 4, 1);
+    let vb_width_pixels = total_bytes / 4; // X8R8G8B8 = 4 bytes per pixel
+    svga.cmd.surface_define(vb_sid, SVGA3D_SURFACE_HINT_VERTEXBUFFER, SVGA3D_X8R8G8B8, vb_width_pixels, 1);
 
-    // DMA vertex data to the surface
-    // We use SVGA_GMR_FRAMEBUFFER as source and copy from guest memory offset.
-    // For now, write vertex data via surface DMA from the framebuffer GMR region.
-    // This requires the vertex data to be accessible by the GPU.
-    // NOTE: In a real implementation, we'd register the vertex data pages as a GMR.
-    // For Phase 2 MVP, we write the vertex data to the VRAM-mapped region and DMA from there.
+    // Submit surface definition before DMA (kernel DMA needs the surface to exist)
+    svga.cmd.submit();
 
-    // Submit everything accumulated so far + draw call
+    // DMA vertex data to the surface via kernel GMR
+    let vb_bytes: &[u8] = unsafe {
+        core::slice::from_raw_parts(
+            vertex_data.as_ptr() as *const u8,
+            vertex_data.len() * 4,
+        )
+    };
+    let dma_result = crate::syscall::gpu_3d_surface_dma(vb_sid, vb_bytes, vb_width_pixels, 1);
+    if dbg {
+        crate::serial_println!("[libgl] VB DMA: sid={} bytes={} w={} result={}", vb_sid, vb_bytes.len(), vb_width_pixels, dma_result);
+    }
+    if dma_result != 0 {
+        // DMA failed — clean up and bail
+        svga.cmd.surface_destroy(vb_sid);
+        svga.cmd.submit();
+        return;
+    }
     // Build vertex declaration array
     let mut vertex_decl_words: Vec<u32> = Vec::new();
     for (ai, attr) in program.attributes.iter().enumerate() {
@@ -263,7 +282,11 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
     );
 
     // Submit all commands
-    svga.cmd.submit();
+    let draw_result = svga.cmd.submit();
+    if dbg {
+        crate::serial_println!("[libgl] DRAW_PRIMITIVES: attribs={} prims={} submit={}", attrib_count, prim_count, draw_result);
+        unsafe { DRAW_DBG += 1; }
+    }
 
     // Clean up: destroy vertex buffer and shaders
     svga.cmd.surface_destroy(vb_sid);

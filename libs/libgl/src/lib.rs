@@ -111,6 +111,8 @@ fn ctx() -> &'static mut GlContext {
 fn check_cpu_features() {
     use core::arch::x86_64::__cpuid;
 
+    serial_println!("[libgl] Checking CPU SIMD features...");
+
     let leaf1 = unsafe { __cpuid(1) };
     let ecx = leaf1.ecx;
 
@@ -136,31 +138,42 @@ fn check_cpu_features() {
 /// Falls back to the software rasterizer if no 3D hardware is detected.
 #[no_mangle]
 pub extern "C" fn gl_init(width: u32, height: u32) {
+    serial_println!("[libgl] gl_init({}x{}) entry", width, height);
     check_cpu_features();
+    serial_println!("[libgl] CPU features OK");
 
     // Try to initialize SVGA3D hardware backend
-    if syscall::gpu_3d_has_hw() {
+    serial_println!("[libgl] querying 3D hardware...");
+    let has_hw = syscall::gpu_3d_has_hw();
+    serial_println!("[libgl] has_3d = {}", has_hw);
+
+    if has_hw {
         let hw_ver = syscall::gpu_3d_hw_version();
         serial_println!("[libgl] SVGA3D hardware detected (version {:#x})", hw_ver);
 
+        serial_println!("[libgl] creating Svga3dState...");
         let mut state = svga3d::Svga3dState::new();
+        serial_println!("[libgl] calling state.init({}x{})...", width, height);
         if state.init(width, height) {
             serial_println!("[libgl] SVGA3D hardware backend initialized ({}x{})", width, height);
             unsafe {
                 SVGA3D = Some(state);
                 USE_HW_BACKEND = true;
             }
+            serial_println!("[libgl] USE_HW_BACKEND = true");
         } else {
-            serial_println!("[libgl] SVGA3D init failed, falling back to software");
+            serial_println!("[libgl] SVGA3D init failed (submit returned error), falling back to software");
         }
     } else {
         serial_println!("[libgl] No 3D hardware, using software rasterizer");
     }
 
     // Always initialize the software context (needed for state tracking and fallback)
+    serial_println!("[libgl] creating GlContext...");
     unsafe {
         CTX = Some(GlContext::new(width, height));
     }
+    serial_println!("[libgl] gl_init done (hw={})", unsafe { USE_HW_BACKEND });
 }
 
 /// Swap buffers — returns a pointer to the ARGB color buffer.
@@ -170,13 +183,20 @@ pub extern "C" fn gl_init(width: u32, height: u32) {
 /// When using the software rasterizer, runs FXAA and returns the buffer pointer.
 #[no_mangle]
 pub extern "C" fn gl_swap_buffers() -> *const u32 {
+    static mut SWAP_DBG: u32 = 0;
     if unsafe { USE_HW_BACKEND } {
         if let Some(svga) = unsafe { SVGA3D.as_mut() } {
             let w = svga.width;
             let h = svga.height;
+            if unsafe { SWAP_DBG < 3 } {
+                serial_println!("[libgl] swap_buffers: PRESENT sid={} ({}x{})", svga.color_sid, w, h);
+            }
             svga.cmd.present(svga.color_sid, &[(0, 0, w, h)]);
-            svga.cmd.submit();
-            syscall::gpu_3d_sync();
+            let r = svga.cmd.submit();
+            if unsafe { SWAP_DBG < 3 } {
+                serial_println!("[libgl] swap_buffers: submit result={}", r);
+                unsafe { SWAP_DBG += 1; }
+            }
         }
     }
 
@@ -326,6 +346,7 @@ pub extern "C" fn glClear(mask: GLbitfield) {
     let c = ctx();
 
     // SVGA3D hardware clear
+    static mut CLEAR_DBG: u32 = 0;
     if unsafe { USE_HW_BACKEND } {
         if let Some(svga) = unsafe { SVGA3D.as_mut() } {
             let mut clear_flags = 0u32;
@@ -346,6 +367,9 @@ pub extern "C" fn glClear(mask: GLbitfield) {
             if clear_flags != 0 {
                 let w = svga.width;
                 let h = svga.height;
+                if unsafe { CLEAR_DBG < 3 } {
+                    serial_println!("[libgl] glClear: flags={:#x} color={:#010x} cid={} rect={}x{}", clear_flags, color, svga.context_id, w, h);
+                }
                 svga.cmd.clear(
                     svga.context_id,
                     clear_flags,
@@ -354,7 +378,11 @@ pub extern "C" fn glClear(mask: GLbitfield) {
                     0, // stencil
                     &[(0, 0, w, h)],
                 );
-                svga.cmd.submit();
+                let r = svga.cmd.submit();
+                if unsafe { CLEAR_DBG < 3 } {
+                    serial_println!("[libgl] glClear: submit result={}", r);
+                    unsafe { CLEAR_DBG += 1; }
+                }
             }
         }
     }

@@ -800,10 +800,13 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 }
             }
 
-            // DLL demand paging: if a user process accesses an unmapped DLL page,
-            // map the shared physical frame on-demand and retry the instruction.
-            if err_not_present && is_user_mode {
-                if crate::task::dll::handle_dll_demand_page(cr2) {
+            // DLL demand paging: if an unmapped DLL page is accessed, map the
+            // shared physical frame on-demand and retry the instruction.
+            // This must also handle kernel-mode faults (e.g. sys_write reading
+            // from a user buffer whose DLL page hasn't been faulted in yet).
+            if err_not_present {
+                let is_dll_range = cr2 >= 0x0400_0000 && cr2 < 0x0800_0000;
+                if (is_user_mode || is_dll_range) && crate::task::dll::handle_dll_demand_page(cr2) {
                     return; // DLL page mapped — retry faulting instruction via iretq
                 }
             }

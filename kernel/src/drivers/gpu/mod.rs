@@ -157,6 +157,12 @@ pub trait GpuDriver: Send {
     /// Submit raw SVGA3D command words to the GPU FIFO.
     /// The buffer must contain correctly formatted 3D command sequences.
     fn submit_3d_commands(&mut self, _words: &[u32]) -> bool { false }
+
+    /// Upload data from kernel buffer to a GPU surface via DMA (GMR).
+    /// `sid`: target surface ID. `data`: raw bytes to upload.
+    /// `width`, `height`: surface dimensions (for DMA copy box).
+    /// Returns true on success.
+    fn dma_surface_upload(&mut self, _sid: u32, _data: &[u8], _width: u32, _height: u32) -> bool { false }
 }
 
 // ──────────────────────────────────────────────

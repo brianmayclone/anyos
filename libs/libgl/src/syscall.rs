@@ -128,3 +128,41 @@ pub fn gpu_3d_submit(words: &[u32]) -> u32 {
 pub fn gpu_3d_sync() {
     syscall1(SYS_GPU_3D_SYNC, 0);
 }
+
+const SYS_GPU_3D_SURFACE_DMA: u64 = 515;
+
+#[inline(always)]
+fn syscall5(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> u64 {
+    let ret: u64;
+    unsafe {
+        asm!(
+            "push rbx",
+            "mov rbx, {a1}",
+            "syscall",
+            "pop rbx",
+            a1 = in(reg) a1,
+            in("r10") a2,
+            in("rdx") a3,
+            in("rsi") a4,
+            in("rdi") a5,
+            inlateout("rax") num => ret,
+            out("rcx") _,
+            out("r11") _,
+        );
+    }
+    ret
+}
+
+/// Upload data to a GPU surface via kernel-mediated DMA.
+/// Returns 0 on success.
+pub fn gpu_3d_surface_dma(sid: u32, data: &[u8], width: u32, height: u32) -> u32 {
+    if data.is_empty() { return 0; }
+    syscall5(
+        SYS_GPU_3D_SURFACE_DMA,
+        sid as u64,
+        data.as_ptr() as u64,
+        data.len() as u64,
+        width as u64,
+        height as u64,
+    ) as u32
+}

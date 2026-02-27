@@ -142,7 +142,12 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_SCREEN_SIZE
         | syscall::SYS_GPU_INFO
         | syscall::SYS_GPU_HAS_ACCEL
-        | syscall::SYS_GPU_HAS_HW_CURSOR => 0,
+        | syscall::SYS_GPU_HAS_HW_CURSOR
+        // GPU 3D acceleration — always allowed (contexts/surfaces are GPU-isolated)
+        | syscall::SYS_GPU_3D_SUBMIT
+        | syscall::SYS_GPU_3D_QUERY
+        | syscall::SYS_GPU_3D_SYNC
+        | syscall::SYS_GPU_3D_SURFACE_DMA => 0,
 
         // Networking
         syscall::SYS_NET_CONFIG

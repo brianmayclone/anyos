@@ -915,6 +915,80 @@ impl GpuDriver for VmwareSvgaGpu {
         self.fifo_write_cmd(words);
         true
     }
+
+    fn dma_surface_upload(&mut self, sid: u32, data: &[u8], width: u32, height: u32) -> bool {
+        if !self.has_3d() || !self.has_gmr2 || data.is_empty() {
+            return false;
+        }
+
+        // Allocate contiguous physical pages for the data
+        let num_pages = (data.len() + 4095) / 4096;
+        let phys = match crate::memory::physical::alloc_contiguous(num_pages) {
+            Some(p) => p,
+            None => return false,
+        };
+
+        // Copy data to the identity-mapped physical pages
+        let virt = phys.as_u64() as *mut u8;
+        unsafe {
+            core::ptr::copy_nonoverlapping(data.as_ptr(), virt, data.len());
+            // Zero remaining bytes in the last page
+            let remainder = num_pages * 4096 - data.len();
+            if remainder > 0 {
+                core::ptr::write_bytes(virt.add(data.len()), 0, remainder);
+            }
+        }
+
+        // Build physical page list for GMR
+        let phys_pages: alloc::vec::Vec<u64> = (0..num_pages)
+            .map(|i| phys.as_u64() + (i * 4096) as u64)
+            .collect();
+
+        // Define a temporary GMR
+        let gmr_id = match self.gmr2_define(&phys_pages) {
+            Some(id) => id,
+            None => {
+                for i in 0..num_pages {
+                    crate::memory::physical::free_frame(
+                        crate::memory::address::PhysAddr::new(phys.as_u64() + (i * 4096) as u64)
+                    );
+                }
+                return false;
+            }
+        };
+
+        // Issue SURFACE_DMA: GMR → surface (WRITE_HOST_VRAM)
+        let pitch = width * 4;
+        let max_offset = height * pitch;
+        let cmd_words = [
+            SVGA_3D_CMD_SURFACE_DMA,
+            (20 * 4) as u32, // size_bytes: 20 payload u32s
+            // guest image: { gmr_id, offset, pitch }
+            gmr_id, 0, pitch,
+            // host image: { sid, face, mipmap }
+            sid, 0, 0,
+            // transfer type: WRITE_HOST_VRAM = 1
+            1,
+            // copy box: { x, y, z, w, h, d, srcx, srcy, srcz }
+            0, 0, 0, width, height, 1, 0, 0, 0,
+            // suffix: { suffixSize, maximumOffset, flags }
+            12, max_offset, 0,
+        ];
+        self.fifo_write_cmd(&cmd_words);
+
+        // Sync to ensure GPU has read the data before we free the pages
+        self.sync_fifo();
+
+        // Clean up: undefine GMR and free physical pages
+        self.gmr2_undefine(gmr_id);
+        for i in 0..num_pages {
+            crate::memory::physical::free_frame(
+                crate::memory::address::PhysAddr::new(phys.as_u64() + (i * 4096) as u64)
+            );
+        }
+
+        true
+    }
 }
 
 // ──────────────────────────────────────────────
