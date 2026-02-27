@@ -6,7 +6,7 @@ use core::arch::asm;
 use core::fmt::{self, Write};
 
 const SYS_EXIT: u64 = 1;
-const SYS_WRITE: u64 = 4;
+const SYS_WRITE: u64 = 2;
 const SYS_SBRK: u64 = 9;
 
 #[inline(always)]
@@ -34,18 +34,14 @@ fn syscall3(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
         asm!(
             "push rbx",
             "mov rbx, {a1}",
-            "mov rdi, {a2}",
-            "mov rsi, {a3}",
             "syscall",
             "pop rbx",
             a1 = in(reg) a1,
-            a2 = in(reg) a2,
-            a3 = in(reg) a3,
+            in("r10") a2,
+            in("rdx") a3,
             inlateout("rax") num => ret,
             out("rcx") _,
             out("r11") _,
-            out("rdi") _,
-            out("rsi") _,
         );
     }
     ret

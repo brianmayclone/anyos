@@ -151,7 +151,8 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
                             _ => false,
                         };
                         if dbg && clip_survive <= 2 {
-                            serial_println!("libgl:  cull area={} front={} cull={}", fmt_f32(area), front, cull);
+                            serial_println!("libgl:  cull area={} front={} cull={}",
+                                fmt_f32(area), front as u32, cull as u32);
                         }
                         if cull { continue; }
                     }

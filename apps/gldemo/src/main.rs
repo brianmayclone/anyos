@@ -80,6 +80,50 @@ void main() {
 }
 ";
 
+/// Mutable render state accessed from the timer callback.
+struct RenderState {
+    canvas: libanyui_client::Canvas,
+    fb_w: u32,
+    fb_h: u32,
+    loc_mvp: i32,
+    angle: f32,
+    frame: u32,
+}
+
+static mut STATE: Option<RenderState> = None;
+
+fn render_frame() {
+    let s = unsafe { STATE.as_mut().unwrap() };
+
+    // Build MVP matrix
+    let mvp = build_mvp(s.angle);
+    if s.loc_mvp >= 0 {
+        gl::uniform_matrix4fv(s.loc_mvp, false, &mvp);
+    }
+
+    // Render
+    gl::clear_color(0.1, 0.1, 0.15, 1.0);
+    gl::clear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
+    gl::draw_arrays(gl::GL_TRIANGLES, 0, 36);
+
+    // Copy to canvas
+    let fb_ptr = gl::swap_buffers();
+    if !fb_ptr.is_null() {
+        let pixels = unsafe {
+            core::slice::from_raw_parts(fb_ptr, (s.fb_w * s.fb_h) as usize)
+        };
+        if s.frame == 0 {
+            let center = 200 * s.fb_w as usize + 200;
+            anyos_std::println!("gldemo: frame0 center={:#010x}", pixels[center]);
+        }
+        s.canvas.copy_pixels_from(pixels);
+    }
+
+    s.angle += 0.02;
+    if s.angle > 6.28318 { s.angle -= 6.28318; }
+    s.frame += 1;
+}
+
 fn main() {
     anyos_std::println!("gldemo: starting");
 
@@ -89,7 +133,6 @@ fn main() {
 
     let canvas = libanyui_client::Canvas::new(400, 400);
     canvas.set_position(0, 0);
-    canvas.clear(0xFF191926); // Fill with opaque dark background immediately
     window.add(&canvas);
     window.set_visible(true);
 
@@ -117,25 +160,20 @@ fn main() {
 
     // Compile shaders
     let vs = gl::create_shader(gl::GL_VERTEX_SHADER);
-    anyos_std::println!("gldemo: VS id={}", vs);
     gl::shader_source(vs, VS_SOURCE);
     gl::compile_shader(vs);
     if !gl::get_shader_compile_status(vs) {
-        let log = gl::get_shader_info_log(vs);
-        anyos_std::println!("gldemo: VS compile FAILED: {}", log);
+        anyos_std::println!("gldemo: VS compile FAILED");
         return;
     }
-    anyos_std::println!("gldemo: VS compiled OK");
 
     let fs = gl::create_shader(gl::GL_FRAGMENT_SHADER);
     gl::shader_source(fs, FS_SOURCE);
     gl::compile_shader(fs);
     if !gl::get_shader_compile_status(fs) {
-        let log = gl::get_shader_info_log(fs);
-        anyos_std::println!("gldemo: FS compile FAILED: {}", log);
+        anyos_std::println!("gldemo: FS compile FAILED");
         return;
     }
-    anyos_std::println!("gldemo: FS compiled OK");
 
     let program = gl::create_program();
     gl::attach_shader(program, vs);
@@ -146,20 +184,18 @@ fn main() {
         return;
     }
     gl::use_program(program);
-    anyos_std::println!("gldemo: program linked OK");
+    anyos_std::println!("gldemo: shaders OK");
 
     // Get locations
     let loc_pos = gl::get_attrib_location(program, "aPosition");
     let loc_col = gl::get_attrib_location(program, "aColor");
     let loc_mvp = gl::get_uniform_location(program, "uMVP");
-    anyos_std::println!("gldemo: loc_pos={} loc_col={} loc_mvp={}", loc_pos, loc_col, loc_mvp);
 
     // Upload vertex data
     let mut vbo = [0u32; 1];
     gl::gen_buffers(1, &mut vbo);
     gl::bind_buffer(gl::GL_ARRAY_BUFFER, vbo[0]);
     gl::buffer_data_f32(gl::GL_ARRAY_BUFFER, &CUBE_VERTICES, gl::GL_STATIC_DRAW);
-    anyos_std::println!("gldemo: VBO={} uploaded {} floats", vbo[0], CUBE_VERTICES.len());
 
     // Configure vertex attributes (stride = 6 floats * 4 bytes = 24)
     if loc_pos >= 0 {
@@ -171,47 +207,25 @@ fn main() {
         gl::vertex_attrib_pointer(loc_col as u32, 3, gl::GL_FLOAT, false, 24, 12);
     }
 
-    // Render loop
-    let mut angle: f32 = 0.0;
-    let mut frame: u32 = 0;
-    loop {
-        // Build MVP matrix
-        let mvp = build_mvp(angle);
-        if loc_mvp >= 0 {
-            gl::uniform_matrix4fv(loc_mvp, false, &mvp);
-        }
-
-        // Render
-        gl::clear_color(0.1, 0.1, 0.15, 1.0);
-        gl::clear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
-        gl::draw_arrays(gl::GL_TRIANGLES, 0, 36);
-
-        // Copy to canvas
-        let fb_ptr = gl::swap_buffers();
-        if frame == 0 {
-            anyos_std::println!("gldemo: swap_buffers ptr={:#x}", fb_ptr as usize);
-        }
-        if !fb_ptr.is_null() {
-            let pixels = unsafe {
-                core::slice::from_raw_parts(fb_ptr, (fb_w * fb_h) as usize)
-            };
-            if frame == 0 {
-                // Print first few pixel values for debugging
-                anyos_std::println!("gldemo: pixel[0]={:#010x} pixel[100]={:#010x} pixel[80000]={:#010x}",
-                    pixels[0], pixels[100],
-                    if pixels.len() > 80000 { pixels[80000] } else { 0 });
-            }
-            canvas.copy_pixels_from(pixels);
-        } else if frame == 0 {
-            anyos_std::println!("gldemo: swap_buffers returned NULL!");
-        }
-
-        angle += 0.02;
-        if angle > 6.28318 { angle -= 6.28318; }
-
-        frame += 1;
-        anyos_std::process::sleep(16); // ~60 FPS
+    // Store render state for timer callback
+    unsafe {
+        STATE = Some(RenderState {
+            canvas,
+            fb_w,
+            fb_h,
+            loc_mvp,
+            angle: 0.0,
+            frame: 0,
+        });
     }
+
+    // Register 60fps animation timer — anyui event loop handles presentation
+    libanyui_client::set_timer(16, || {
+        render_frame();
+    });
+
+    // Run the anyui event loop (blocks, handles events + timer + compositor)
+    libanyui_client::run();
 }
 
 /// Build a model-view-projection matrix for the rotating cube.
@@ -222,16 +236,6 @@ fn build_mvp(angle: f32) -> [f32; 16] {
     let proj = mat4_perspective(45.0, 1.0, 0.1, 100.0);
     let mv = mat4_mul(&view, &model);
     mat4_mul(&proj, &mv)
-}
-
-/// 4x4 identity matrix.
-fn mat4_identity() -> [f32; 16] {
-    [
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0,
-        0.0, 0.0, 0.0, 1.0,
-    ]
 }
 
 /// Rotation around Y axis (column-major).
