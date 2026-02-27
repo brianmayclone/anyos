@@ -1,25 +1,30 @@
---- gcc/config.gcc.orig
-+++ gcc/config.gcc
-@@ -xxx,6 +xxx,14 @@
- # Common parts for widely ported systems.
+Patches applied programmatically by scripts/build_gcc_toolchain.sh
+==================================================================
 
-+# anyOS — bare-metal x86_64 OS with custom libc64/libcxx
-+*-*-anyos*)
-+  gas=yes
-+  gnu_ld=yes
-+  default_use_cxa_atexit=yes
-+  use_gcc_stdint=provide
-+  ;;
-+
- # Newlib-based systems with targets supported in libgloss.
+The build script applies the following patches via sed to the GCC and
+Binutils source trees.  This file documents the changes for reference.
 
-@@ -xxx,6 +xxx,12 @@
- # Machine-specific cases.
+1. config.sub (binutils + GCC)
+   Add "anyos*" to the recognized OS list.
 
-+x86_64-*-anyos*)
-+  tm_file="${tm_file} i386/unix.h i386/att.h dbxelf.h elfos.h i386/i386elf.h i386/x86-64.h anyos.h"
-+  tmake_file="${tmake_file} i386/t-i386elf"
-+  extra_options="${extra_options} i386/elf.opt"
-+  ;;
-+
- # Architecture descriptions.
+2. bfd/config.bfd (binutils)
+   Map x86_64-*-anyos* to x86_64_elf64_vec (standard ELF64).
+
+3. gas/configure.tgt (binutils)
+   Map x86_64-*-anyos* to fmt=elf.
+
+4. ld/configure.tgt (binutils)
+   Map x86_64-*-anyos* to targ_emul=elf_x86_64.
+
+5. gcc/config.gcc
+   Add common OS stanza (*-*-anyos*) with gas=yes, gnu_ld=yes, cxa_atexit.
+   Add machine stanza (x86_64-*-anyos*) with tm_file including anyos.h.
+
+6. gcc/config/anyos.h (new file)
+   OS-specific target configuration — see gcc-config-anyos.h.
+
+7. libgcc/config.host
+   Map x86_64-*-anyos* to produce crtbegin.o, crtend.o.
+
+8. fixincludes/mkfixinc.sh
+   Disable fixincludes for anyos target.

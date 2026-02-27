@@ -821,6 +821,79 @@ add_custom_command(
   COMMENT "Installing cxxabi.h to sysroot"
 )
 
+# ============================================================
+# GCC Cross-Compiler Detection (x86_64-anyos-gcc)
+# ============================================================
+# If the user has built the GCC cross-compiler (via scripts/build_gcc_toolchain.sh),
+# detect it and install libgcc.a + toolchain binaries to the sysroot.
+find_program(ANYOS_GCC NAMES x86_64-anyos-gcc
+  HINTS "$ENV{HOME}/opt/anyos-toolchain/bin"
+        "$ENV{ANYOS_TOOLCHAIN}/bin"
+)
+if(ANYOS_GCC)
+  message(STATUS "Found x86_64-anyos-gcc: ${ANYOS_GCC}")
+  get_filename_component(ANYOS_GCC_BIN_DIR "${ANYOS_GCC}" DIRECTORY)
+  get_filename_component(ANYOS_GCC_PREFIX "${ANYOS_GCC_BIN_DIR}" DIRECTORY)
+
+  # Detect libgcc.a location
+  execute_process(
+    COMMAND ${ANYOS_GCC} -print-libgcc-file-name
+    OUTPUT_VARIABLE ANYOS_LIBGCC_PATH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+
+  if(EXISTS "${ANYOS_LIBGCC_PATH}")
+    message(STATUS "Found libgcc.a: ${ANYOS_LIBGCC_PATH}")
+
+    # Copy libgcc.a to sysroot
+    add_custom_command(
+      OUTPUT ${SYSROOT_DIR}/Libraries/libc64/lib/libgcc.a
+      COMMAND ${CMAKE_COMMAND} -E copy ${ANYOS_LIBGCC_PATH} ${SYSROOT_DIR}/Libraries/libc64/lib/libgcc.a
+      DEPENDS ${ANYOS_LIBGCC_PATH}
+      COMMENT "Installing libgcc.a to sysroot"
+    )
+    set(LIBGCC_SYSROOT_DEP ${SYSROOT_DIR}/Libraries/libc64/lib/libgcc.a)
+  else()
+    message(STATUS "libgcc.a not found at ${ANYOS_LIBGCC_PATH} — skipping")
+    set(LIBGCC_SYSROOT_DEP "")
+  endif()
+
+  # Install GCC toolchain binaries to /System/Toolchain/bin/ on disk
+  set(ANYOS_TOOLCHAIN_BINS gcc g++ as ld ar nm objdump objcopy ranlib strip)
+  set(TOOLCHAIN_SYSROOT_DEPS "")
+  foreach(TOOL ${ANYOS_TOOLCHAIN_BINS})
+    set(TOOL_PATH "${ANYOS_GCC_BIN_DIR}/x86_64-anyos-${TOOL}${CMAKE_EXECUTABLE_SUFFIX}")
+    if(EXISTS "${TOOL_PATH}")
+      set(DEST "${SYSROOT_DIR}/System/Toolchain/bin/${TOOL}")
+      add_custom_command(
+        OUTPUT ${DEST}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/System/Toolchain/bin
+        COMMAND ${CMAKE_COMMAND} -E copy ${TOOL_PATH} ${DEST}
+        DEPENDS ${TOOL_PATH}
+        COMMENT "Installing ${TOOL} to /System/Toolchain/bin/"
+      )
+      list(APPEND TOOLCHAIN_SYSROOT_DEPS ${DEST})
+    endif()
+  endforeach()
+
+  # Copy the linker script for the toolchain
+  add_custom_command(
+    OUTPUT ${SYSROOT_DIR}/System/Toolchain/lib/link.ld
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/System/Toolchain/lib
+    COMMAND ${CMAKE_COMMAND} -E copy ${LIBC64_DIR}/link.ld ${SYSROOT_DIR}/System/Toolchain/lib/link.ld
+    DEPENDS ${LIBC64_DIR}/link.ld
+    COMMENT "Installing linker script to /System/Toolchain/lib/"
+  )
+  list(APPEND TOOLCHAIN_SYSROOT_DEPS ${SYSROOT_DIR}/System/Toolchain/lib/link.ld)
+
+else()
+  message(STATUS "x86_64-anyos-gcc not found — GCC toolchain will not be installed to sysroot")
+  message(STATUS "  Run scripts/build_gcc_toolchain.sh to build it")
+  set(LIBGCC_SYSROOT_DEP "")
+  set(TOOLCHAIN_SYSROOT_DEPS "")
+endif()
+
 # Aggregate dependency list for 64-bit toolchain
 set(CXX_TOOLCHAIN_DEPS
   ${SYSROOT_DIR}/Libraries/libc64/lib/libc64.a
@@ -832,4 +905,6 @@ set(CXX_TOOLCHAIN_DEPS
   ${SYSROOT_DIR}/Libraries/libcxx/include/unwind.h
   ${SYSROOT_DIR}/Libraries/libcxx/lib/libc++abi.a
   ${SYSROOT_DIR}/Libraries/libcxx/include/cxxabi.h
+  ${LIBGCC_SYSROOT_DEP}
+  ${TOOLCHAIN_SYSROOT_DEPS}
 )

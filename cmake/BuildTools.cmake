@@ -176,8 +176,17 @@ function(add_cxx_program NAME)
     list(APPEND ALL_OBJECTS ${OBJ})
   endforeach()
 
-  # Link: crt0 + crti + objects + libcxx + libc++abi + libunwind + libc64 + crtn
+  # Link: crt0 + crti + objects + libcxx + libc++abi + libunwind + libc64 [+ libgcc] + crtn
   # Use clang as the linker driver (invokes ld.lld internally via -fuse-ld=lld).
+  # If libgcc.a exists (from GCC cross-compiler), include it for runtime helpers
+  # (__divti3, __udivti3, __int128 arithmetic, etc.).
+  set(LIBGCC_LINK "")
+  set(LIBGCC_DEP "")
+  if(EXISTS "${LIBC64_DIR_}/libgcc.a")
+    set(LIBGCC_LINK "${LIBC64_DIR_}/libgcc.a")
+    set(LIBGCC_DEP "${LIBC64_DIR_}/libgcc.a")
+  endif()
+
   add_custom_command(
     OUTPUT ${ELF_OUTPUT}
     COMMAND ${CLANGXX_EXECUTABLE}
@@ -191,6 +200,7 @@ function(add_cxx_program NAME)
       ${LIBCXXABI_DIR_}/libc++abi.a
       ${LIBUNWIND_DIR_}/libunwind.a
       ${LIBC64_DIR_}/libc64.a
+      ${LIBGCC_LINK}
       ${LIBC64_DIR_}/obj/crtn.o
       -o ${ELF_OUTPUT}
     DEPENDS ${ALL_OBJECTS}
@@ -199,6 +209,7 @@ function(add_cxx_program NAME)
       ${LIBCXXABI_DIR_}/libc++abi.a
       ${LIBUNWIND_DIR_}/libunwind.a
       ${LIBC64_DIR_}/link.ld
+      ${LIBGCC_DEP}
     COMMENT "Linking ${NAME}.elf"
   )
 
