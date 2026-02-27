@@ -189,6 +189,11 @@ impl<T> Spinlock<T> {
                         diag_puts(b"NONE");
                     } else {
                         diag_dec(owner);
+                        // Print the SCHEDULER lock phase of the owner CPU so we
+                        // know which function is holding the lock for 100-400 ms.
+                        let phase = crate::sched_diag::get(owner as usize);
+                        diag_puts(b" phase=");
+                        diag_puts(crate::sched_diag::name(phase));
                     }
                     diag_putc(b'\n');
                 }

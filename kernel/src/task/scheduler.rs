@@ -519,26 +519,34 @@ impl Scheduler {
 
     /// Add a thread to the scheduler and enqueue on the least-loaded CPU.
     /// Sets both `last_cpu` and `affinity_cpu` to the selected CPU.
-    fn add_thread(&mut self, mut thread: Thread) -> u32 {
+    ///
+    /// Accepts a pre-boxed `Thread` so that the heap allocation happens
+    /// **before** the caller acquires the SCHEDULER lock — preventing
+    /// ALLOCATOR contention from holding SCHEDULER for 100-400 ms during
+    /// fork storms (clone_pd + thousands of free_frame calls contend the
+    /// ALLOCATOR lock; Box::new inside SCHEDULER would block there).
+    fn add_thread(&mut self, mut thread: Box<Thread>) -> u32 {
         let tid = thread.tid;
         let cpu = self.least_loaded_cpu();
         let pri = thread.priority;
         thread.last_cpu = cpu;
         thread.affinity_cpu = cpu;
-        self.threads.push(Box::new(thread));
+        self.threads.push(thread);
         self.per_cpu[cpu].run_queue.enqueue(tid, pri);
         tid
     }
 
     /// Add a thread in Blocked state without putting it in any ready queue.
     /// Sets `affinity_cpu` to the least-loaded CPU so the first wake goes there.
-    fn add_thread_blocked(&mut self, mut thread: Thread) -> u32 {
+    ///
+    /// See [`add_thread`] — pre-boxing avoids ALLOCATOR contention inside the lock.
+    fn add_thread_blocked(&mut self, mut thread: Box<Thread>) -> u32 {
         let tid = thread.tid;
         thread.state = ThreadState::Blocked;
         let cpu = self.least_loaded_cpu();
         thread.last_cpu = cpu;
         thread.affinity_cpu = cpu;
-        self.threads.push(Box::new(thread));
+        self.threads.push(thread);
         tid
     }
 
@@ -550,7 +558,15 @@ impl Scheduler {
     }
 
     /// Reap terminated threads whose exit code has been consumed or auto-reaped.
-    fn reap_terminated(&mut self) {
+    ///
+    /// Returns up to 8 reaped `Box<Thread>` objects so the caller can drop
+    /// them **outside** the SCHEDULER lock.  Dropping `Box<Thread>` calls
+    /// `dealloc` on the ~68 KiB kernel stack; doing that under the lock while
+    /// other CPUs contest the ALLOCATOR (e.g. during a fork storm) causes a
+    /// 100–400 ms SPIN TIMEOUT.
+    fn reap_terminated(&mut self) -> [Option<Box<Thread>>; 8] {
+        let mut reaped: [Option<Box<Thread>>; 8] = Default::default();
+        let mut reap_count = 0usize;
         let current_tick = crate::arch::x86::pit::get_ticks();
         let mut i = 0;
         while i < self.threads.len() {
@@ -598,7 +614,11 @@ impl Scheduler {
                     }
 
                     self.remove_from_all_queues(tid);
-                    self.threads.swap_remove(i);
+                    // swap_remove RETURNS the Box<Thread> — do NOT let it drop here.
+                    // We collect it and drop it after releasing the SCHEDULER lock
+                    // (see schedule_inner) so dealloc doesn't contend the ALLOCATOR
+                    // while we hold the lock.
+                    let thread = self.threads.swap_remove(i);
                     // Maintain current_idx caches: swap_remove moved the
                     // last element into position i.
                     let moved_from = self.threads.len();
@@ -609,6 +629,10 @@ impl Scheduler {
                             }
                         }
                     }
+                    if reap_count < 8 {
+                        reaped[reap_count] = Some(thread);
+                        reap_count += 1;
+                    }
                     // Don't increment — check swapped-in element
                 } else {
                     i += 1;
@@ -617,6 +641,7 @@ impl Scheduler {
                 i += 1;
             }
         }
+        reaped
     }
 
     /// Pick the next thread for this CPU: local queue first, then work stealing.
@@ -736,7 +761,11 @@ pub fn per_cpu_idle_ticks(cpu: usize) -> u32 {
 pub fn spawn(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
     let priority = clamp_priority(priority, name);
     let tid = {
-        let thread = Thread::new(entry, priority, name);
+        // Box the thread BEFORE acquiring SCHEDULER — prevents ALLOCATOR
+        // contention (from concurrent clone_pd) from holding SCHEDULER for
+        // 100-400 ms and causing SPIN TIMEOUT on other CPUs.
+        let thread = Box::new(Thread::new(entry, priority, name));
+        crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SPAWN);
         let mut sched = SCHEDULER.lock();
         let sched = sched.as_mut().expect("Scheduler not initialized");
         sched.add_thread(thread)
@@ -754,7 +783,9 @@ pub fn spawn(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
 pub fn spawn_blocked(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
     let priority = clamp_priority(priority, name);
     let tid = {
-        let thread = Thread::new(entry, priority, name);
+        // Box the thread BEFORE acquiring SCHEDULER — same reasoning as spawn().
+        let thread = Box::new(Thread::new(entry, priority, name));
+        crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SPAWN_BLOCKED);
         let mut sched = SCHEDULER.lock();
         let sched = sched.as_mut().expect("Scheduler not initialized");
         sched.add_thread_blocked(thread)
@@ -784,6 +815,7 @@ fn emit_spawn_event(tid: u32, name: &str) {
 /// Create a new thread within the same address space as the currently running thread.
 pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &str, priority: u8) -> u32 {
     let (pd, arch_mode, brk, parent_pri, parent_cwd, parent_caps, parent_uid, parent_gid, parent_pcid) = {
+        crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_CREATE_THREAD);
         let guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
         let sched = match guard.as_ref() { Some(s) => s, None => return 0 };
@@ -799,6 +831,7 @@ pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &st
     let tid = spawn_blocked(crate::task::loader::thread_create_trampoline, effective_pri, name);
 
     {
+        crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_CREATE_THREAD);
         let mut guard = SCHEDULER.lock();
         let sched = guard.as_mut().expect("Scheduler not initialized");
         if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
@@ -915,6 +948,11 @@ fn schedule_inner(from_timer: bool) {
     }
 
     // Lock acquisition: try_lock for timer (non-blocking), spin for voluntary
+    crate::sched_diag::set(cpu_id_early, if from_timer {
+        crate::sched_diag::PHASE_SCHEDULE_TIMER
+    } else {
+        crate::sched_diag::PHASE_SCHEDULE_VOLUNTARY
+    });
     let mut guard = if from_timer {
         match SCHEDULER.try_lock() {
             Some(s) => s,
@@ -944,6 +982,11 @@ fn schedule_inner(from_timer: bool) {
     // Extract context switch parameters under the lock
     let mut switch_info: Option<(*mut CpuContext, *const CpuContext, *mut u8, *const u8, u32, u32)>;
     let mut corrupt_diag: Option<(&'static str, u32, *const CpuContext)> = None;
+    // Reaped Box<Thread> objects deferred for drop AFTER lock release.
+    // Dropping Box<Thread> frees the ~68 KiB kernel stack via dealloc; doing
+    // that under the SCHEDULER lock while the ALLOCATOR is contended (fork
+    // storms with concurrent clone_user_page_directory) causes SPIN TIMEOUT.
+    let mut reaped_threads: [Option<Box<Thread>>; 8] = Default::default();
 
     {
         let sched = match guard.as_mut() {
@@ -959,7 +1002,7 @@ fn schedule_inner(from_timer: bool) {
         // (e.g., stress test with serial debug output) CPU 0 may not get
         // the lock often enough, causing terminated threads to accumulate.
         if from_timer {
-            sched.reap_terminated();
+            reaped_threads = sched.reap_terminated();
         }
 
         // Drain deferred wakes (IRQ handlers store TIDs here lock-free).
@@ -1617,6 +1660,7 @@ pub fn get_stack_bounds(cpu_id: usize) -> (u64, u64) {
 
 /// Configure a thread as a user process.
 pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u32) {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("Scheduler not initialized");
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
@@ -1679,6 +1723,7 @@ pub fn current_thread_pd_shared() -> bool {
 
 /// Check if any OTHER live thread shares the same page directory.
 pub fn has_live_pd_siblings() -> bool {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_HAS_LIVE_PD_SIBS);
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
@@ -1698,6 +1743,7 @@ pub fn has_live_pd_siblings() -> bool {
 
 /// Atomically get all info needed for sys_exit.
 pub fn current_exit_info() -> (u32, Option<PhysAddr>, bool) {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_CURRENT_EXIT_INFO);
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
@@ -1721,6 +1767,7 @@ pub fn current_exit_info() -> (u32, Option<PhysAddr>, bool) {
 
 /// Get the current thread's program break.
 pub fn current_thread_brk() -> u32 {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_BRK);
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
@@ -1733,6 +1780,7 @@ pub fn current_thread_brk() -> u32 {
 
 /// Set the current thread's program break, syncing across sibling threads.
 pub fn set_current_thread_brk(brk: u32) {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_BRK);
     let mut guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_mut() {
@@ -1752,6 +1800,7 @@ pub fn set_current_thread_brk(brk: u32) {
 
 /// Return the current thread's mmap bump pointer.
 pub fn current_thread_mmap_next() -> u32 {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_MMAP);
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
@@ -1764,6 +1813,7 @@ pub fn current_thread_mmap_next() -> u32 {
 
 /// Set the current thread's mmap bump pointer, syncing across sibling threads.
 pub fn set_current_thread_mmap_next(val: u32) {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_MMAP);
     let mut guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_mut() {
@@ -1787,9 +1837,11 @@ pub fn set_current_thread_mmap_next(val: u32) {
 
 /// Terminate the current thread with an exit code. Wakes any waitpid waiter.
 pub fn exit_current(code: u32) {
+    let my_cpu = get_cpu_id();
     let tid;
     let mut pd_to_destroy: Option<PhysAddr> = None;
     let parent_tid_for_sigchld: u32;
+    crate::sched_diag::set(my_cpu, crate::sched_diag::PHASE_EXIT_CURRENT);
     let mut guard = SCHEDULER.lock();
     {
         let cpu_id = get_cpu_id();
@@ -1833,11 +1885,14 @@ pub fn exit_current(code: u32) {
     // This closes the race where a timer could context-switch away a Terminated
     // thread before PD destruction and system_emit run.
     guard.release_no_irq_restore();
-    // Destroy page directory (switch to kernel CR3 first)
+    // Defer page directory destruction to CPU 0's timer tick (drains DEFERRED_PD_DESTROY
+    // before acquiring the SCHEDULER lock). This avoids competing for the ALLOCATOR lock
+    // (2600+ free_frame calls) with other exiting CPUs while SCHEDULER lock is contested.
+    // tid=0: cleanup_process already ran in sys_exit before exit_current was called.
     if let Some(pd) = pd_to_destroy {
         let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
         unsafe { core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3); }
-        crate::memory::virtual_mem::destroy_user_page_directory(pd);
+        DEFERRED_PD_DESTROY.lock().push(pd, 0);
     }
     crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
         crate::ipc::event_bus::EVT_PROCESS_EXITED, tid, code, 0, 0,
@@ -1849,8 +1904,10 @@ pub fn exit_current(code: u32) {
 
 /// Try to terminate the current thread (non-blocking lock acquisition).
 pub fn try_exit_current(code: u32) -> bool {
+    let my_cpu = get_cpu_id();
     let tid;
     let mut pd_to_destroy: Option<PhysAddr> = None;
+    crate::sched_diag::set(my_cpu, crate::sched_diag::PHASE_TRY_EXIT_CURRENT);
     let mut guard = match SCHEDULER.try_lock() {
         Some(g) => g,
         None => return false,
@@ -1893,10 +1950,12 @@ pub fn try_exit_current(code: u32) -> bool {
     }
     // Release lock but keep IF=0 (same pattern as exit_current)
     guard.release_no_irq_restore();
+    // Defer PD destruction — same reasoning as exit_current.
+    // tid=0: cleanup_process already ran before try_exit_current was called.
     if let Some(pd) = pd_to_destroy {
         let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
         unsafe { core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3); }
-        crate::memory::virtual_mem::destroy_user_page_directory(pd);
+        DEFERRED_PD_DESTROY.lock().push(pd, 0);
     }
     crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
         crate::ipc::event_bus::EVT_PROCESS_EXITED, tid, code, 0, 0,
@@ -2084,6 +2143,7 @@ pub fn kill_thread(tid: u32) -> u32 {
     let is_current;
     let running_on_other_cpu;
 
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_KILL_THREAD);
     let mut guard = SCHEDULER.lock();
     {
         let cpu_id = get_cpu_id();
@@ -2232,6 +2292,7 @@ pub fn kill_thread(tid: u32) -> u32 {
 /// Wait for a thread to terminate and return its exit code.
 pub fn waitpid(tid: u32) -> u32 {
     {
+        crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_WAITPID);
         let mut guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
         let sched = guard.as_mut().expect("Scheduler not initialized");
@@ -2261,6 +2322,7 @@ pub fn waitpid(tid: u32) -> u32 {
     loop {
         unsafe { core::arch::asm!("sti; hlt"); }
         {
+            crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_WAITPID);
             let mut guard = SCHEDULER.lock();
             if let Some(sched) = guard.as_mut() {
                 if let Some(target) = sched.threads.iter_mut().find(|t| t.tid == tid) {
@@ -2280,6 +2342,7 @@ pub fn waitpid(tid: u32) -> u32 {
 pub fn waitpid_any() -> (u32, u32) {
     let current_tid;
     {
+        crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_WAITPID_ANY);
         let mut guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
         let sched = guard.as_mut().expect("Scheduler not initialized");
@@ -2323,6 +2386,7 @@ pub fn waitpid_any() -> (u32, u32) {
     loop {
         unsafe { core::arch::asm!("sti; hlt"); }
         {
+            crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_WAITPID_ANY);
             let mut guard = SCHEDULER.lock();
             if let Some(sched) = guard.as_mut() {
                 if let Some(child_idx) = sched.threads.iter().position(|t|
@@ -2347,6 +2411,7 @@ pub fn waitpid_any() -> (u32, u32) {
 /// Non-blocking wait for any child (used by WNOHANG).
 /// Returns (child_tid, exit_code), or (u32::MAX-1, u32::MAX-1) if children exist but none terminated.
 pub fn try_waitpid_any() -> (u32, u32) {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_TRY_WAITPID_ANY);
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("Scheduler not initialized");
     let current_tid = match sched.per_cpu[get_cpu_id()].current_tid {
@@ -2376,6 +2441,7 @@ pub fn try_waitpid_any() -> (u32, u32) {
 /// Also marks the target with `waiting_tid` so the auto-reaper won't
 /// discard the exit code before the caller can retrieve it.
 pub fn try_waitpid(tid: u32) -> u32 {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_TRY_WAITPID);
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("Scheduler not initialized");
     let caller_tid = sched.per_cpu[get_cpu_id()].current_tid.unwrap_or(0);
@@ -2398,6 +2464,7 @@ pub fn try_waitpid(tid: u32) -> u32 {
 /// Block the current thread until the given PIT tick is reached.
 pub fn sleep_until(wake_at: u32) {
     {
+        crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SLEEP_UNTIL);
         let mut guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
         let sched = guard.as_mut().expect("Scheduler not initialized");
@@ -2414,6 +2481,7 @@ pub fn sleep_until(wake_at: u32) {
 /// Block the current thread unconditionally (no wake condition).
 pub fn block_current_thread() {
     {
+        crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_BLOCK_CURRENT);
         let mut guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
         let sched = guard.as_mut().expect("Scheduler not initialized");
@@ -2431,6 +2499,7 @@ pub fn block_current_thread() {
 // =============================================================================
 
 pub fn set_thread_args(tid: u32, args: &str) {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_ARGS);
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("Scheduler not initialized");
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
@@ -2442,6 +2511,7 @@ pub fn set_thread_args(tid: u32, args: &str) {
 }
 
 pub fn current_thread_args(buf: &mut [u8]) -> usize {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
@@ -2458,6 +2528,7 @@ pub fn current_thread_args(buf: &mut [u8]) -> usize {
 
 /// Set the current working directory for a thread.
 pub fn set_thread_cwd(tid: u32, cwd: &str) {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_CWD);
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("Scheduler not initialized");
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
@@ -2470,6 +2541,7 @@ pub fn set_thread_cwd(tid: u32, cwd: &str) {
 
 /// Get the current working directory for the running thread.
 pub fn current_thread_cwd(buf: &mut [u8]) -> usize {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
@@ -2485,6 +2557,7 @@ pub fn current_thread_cwd(buf: &mut [u8]) -> usize {
 }
 
 pub fn set_thread_stdout_pipe(tid: u32, pipe_id: u32) {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_PIPE);
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("Scheduler not initialized");
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
@@ -2493,6 +2566,7 @@ pub fn set_thread_stdout_pipe(tid: u32, pipe_id: u32) {
 }
 
 pub fn current_thread_stdout_pipe() -> u32 {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
@@ -2504,6 +2578,7 @@ pub fn current_thread_stdout_pipe() -> u32 {
 }
 
 pub fn set_thread_stdin_pipe(tid: u32, pipe_id: u32) {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_PIPE);
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("Scheduler not initialized");
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
@@ -2512,6 +2587,7 @@ pub fn set_thread_stdin_pipe(tid: u32, pipe_id: u32) {
 }
 
 pub fn current_thread_stdin_pipe() -> u32 {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
@@ -2529,6 +2605,7 @@ pub fn current_thread_stdin_pipe() -> u32 {
 /// Set the priority of a thread by TID (clamped to 0–127).
 pub fn set_thread_priority(tid: u32, priority: u8) {
     let priority = clamp_priority(priority, "set_thread_priority");
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_PRIORITY);
     let mut guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_mut() {
         if let Some(idx) = sched.find_idx(tid) {
@@ -2539,6 +2616,7 @@ pub fn set_thread_priority(tid: u32, priority: u8) {
 
 /// Wake a blocked thread by TID.
 pub fn wake_thread(tid: u32) {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_WAKE_THREAD);
     let mut guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_mut() {
         sched.wake_thread_inner(tid);
@@ -2565,6 +2643,7 @@ pub fn try_wake_thread(tid: u32) -> bool {
 
 /// Mark a thread as critical (will not be killed by RSP recovery).
 pub fn set_thread_critical(tid: u32) {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("Scheduler not initialized");
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
@@ -2575,6 +2654,7 @@ pub fn set_thread_critical(tid: u32) {
 
 /// Get the capability bitmask for the currently running thread.
 pub fn current_thread_capabilities() -> crate::task::capabilities::CapSet {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     let sched = guard.as_ref().expect("Scheduler not initialized");
@@ -2586,6 +2666,7 @@ pub fn current_thread_capabilities() -> crate::task::capabilities::CapSet {
 
 /// Set the capability bitmask for a thread (called by loader after spawn).
 pub fn set_thread_capabilities(tid: u32, caps: crate::task::capabilities::CapSet) {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("Scheduler not initialized");
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
@@ -2595,6 +2676,7 @@ pub fn set_thread_capabilities(tid: u32, caps: crate::task::capabilities::CapSet
 
 /// Get the user ID of the currently running thread.
 pub fn current_thread_uid() -> u16 {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     let sched = guard.as_ref().expect("Scheduler not initialized");
@@ -2746,6 +2828,7 @@ pub struct ForkSnapshot {
 
 /// Capture all fork-relevant fields from the current thread in a single lock.
 pub fn current_thread_fork_snapshot() -> Option<ForkSnapshot> {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let guard = SCHEDULER.lock();
     let sched = guard.as_ref()?;
     let cpu = get_cpu_id();
@@ -3135,6 +3218,7 @@ pub fn current_fd_set_nonblock(fd: u32, nonblock: bool) {
 
 /// Set the FD table on a thread (for fork child setup).
 pub fn set_thread_fd_table(tid: u32, table: FdTable) {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("Scheduler not initialized");
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
@@ -3172,6 +3256,7 @@ pub fn current_fd_close_cloexec() -> [FdKind; MAX_FDS] {
 /// Used during sys_exit before destroying the page directory.
 pub fn close_all_fds_for_thread(tid: u32) -> [FdKind; MAX_FDS] {
     let mut out = [FdKind::None; MAX_FDS];
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let mut guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_mut() {
         if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
@@ -3273,6 +3358,7 @@ pub fn current_has_pending_signal() -> bool {
 
 /// Set parent_tid on a thread (for fork/spawn child).
 pub fn set_thread_parent_tid(tid: u32, parent: u32) {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let mut guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_mut() {
         if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {

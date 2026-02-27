@@ -822,13 +822,11 @@ fn tick_benchmark() {
                 }
             }
         }
-
         if unsafe { CHILDREN_REAPED } >= unsafe { NUM_CHILDREN } {
             let mut total: u64 = 0;
             for i in 0..n {
                 total += unsafe { CHILD_RESULTS[i] };
             }
-
             match a.phase {
                 BenchPhase::CpuSingle => {
                     a.cpu_single_raw[a.current_test] = total;

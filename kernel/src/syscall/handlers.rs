@@ -3496,6 +3496,7 @@ pub fn sys_fork(regs: &super::SyscallRegs) -> u32 {
         }
     };
 
+    let t_fork0 = crate::arch::x86::pit::get_ticks();
     crate::serial_println!(
         "sys_fork: parent T{} pd={:#x} brk={:#x}",
         scheduler::current_tid(), snap.pd.0, snap.brk
@@ -3509,6 +3510,8 @@ pub fn sys_fork(regs: &super::SyscallRegs) -> u32 {
             return u32::MAX;
         }
     };
+    let t_fork_cloned = crate::arch::x86::pit::get_ticks();
+    crate::serial_println!("sys_fork: clone_pd={}ms", t_fork_cloned.wrapping_sub(t_fork0));
 
     // 3. Build child name: "parent_name(fork)"
     let name_len = snap.name.iter().position(|&b| b == 0).unwrap_or(snap.name.len());
@@ -3587,10 +3590,17 @@ pub fn sys_fork(regs: &super::SyscallRegs) -> u32 {
     scheduler::set_thread_signals(child_tid, snap.signals.clone());
 
     // 6. Clone environment
+    let t_fork_env0 = crate::arch::x86::pit::get_ticks();
     env::clone_env(snap.pd.0, child_pd.0);
+    let t_fork_env1 = crate::arch::x86::pit::get_ticks();
 
     // 7. Map DLLs into child address space (RO pages shared)
     dll::map_all_dlls_into(child_pd);
+    let t_fork_dll = crate::arch::x86::pit::get_ticks();
+    crate::serial_println!("sys_fork: T{} env={}ms dlls={}ms",
+        child_tid,
+        t_fork_env1.wrapping_sub(t_fork_env0),
+        t_fork_dll.wrapping_sub(t_fork_env1));
 
     // 8. Build ForkChildRegs from parent's register frame
     let child_regs = ForkChildRegs {
@@ -3619,8 +3629,9 @@ pub fn sys_fork(regs: &super::SyscallRegs) -> u32 {
 
     // 9. Wake child — it will run fork_child_trampoline and IRETQ with RAX=0
     scheduler::wake_thread(child_tid);
-
-    crate::serial_println!("sys_fork: parent returning child_tid={}", child_tid);
+    let t_fork_total = crate::arch::x86::pit::get_ticks();
+    crate::serial_println!("sys_fork: parent returning child_tid={} total={}ms",
+        child_tid, t_fork_total.wrapping_sub(t_fork0));
 
     // Parent returns child TID
     child_tid

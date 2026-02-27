@@ -18,6 +18,7 @@ mod ipc;
 mod memory;
 mod net;
 mod panic;
+pub mod sched_diag;
 mod sync;
 mod syscall;
 mod task;

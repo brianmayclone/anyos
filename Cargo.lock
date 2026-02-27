@@ -372,6 +372,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gldemo"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+ "libgl_client",
+]
+
+[[package]]
 name = "grep"
 version = "0.1.0"
 dependencies = [
@@ -492,6 +502,14 @@ dependencies = [
 
 [[package]]
 name = "libfont_client"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+]
+
+[[package]]
+name = "libgl_client"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
