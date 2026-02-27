@@ -152,6 +152,8 @@ struct AnyuiLib {
     run_once_fn: extern "C" fn() -> u32,
     quit_fn: extern "C" fn(),
     remove_fn: extern "C" fn(u32),
+    remove_child_fn: extern "C" fn(u32, u32),
+    clear_children_fn: extern "C" fn(u32),
     destroy_window: extern "C" fn(u32),
     resize_window: extern "C" fn(u32, u32, u32),
     move_window: extern "C" fn(u32, i32, i32),
@@ -379,6 +381,8 @@ pub fn init() -> bool {
             run_once_fn: resolve(&handle, "anyui_run_once"),
             quit_fn: resolve(&handle, "anyui_quit"),
             remove_fn: resolve(&handle, "anyui_remove"),
+            remove_child_fn: resolve(&handle, "anyui_remove_child"),
+            clear_children_fn: resolve(&handle, "anyui_clear_children"),
             destroy_window: resolve(&handle, "anyui_destroy_window"),
             resize_window: resolve(&handle, "anyui_resize_window"),
             move_window: resolve(&handle, "anyui_move_window"),
@@ -879,6 +883,17 @@ impl Container {
     /// Attach a child widget to this container.
     pub fn add(&self, child: &impl Widget) {
         (lib().add_child)(self.ctrl.id, child.id());
+    }
+
+    /// Remove a specific child from this container and destroy it (including descendants).
+    pub fn remove_child(&self, child: &impl Widget) {
+        (lib().remove_child_fn)(self.ctrl.id, child.id());
+    }
+
+    /// Remove and destroy ALL children of this container.
+    /// The container itself is preserved.
+    pub fn clear(&self) {
+        (lib().clear_children_fn)(self.ctrl.id);
     }
 }
 

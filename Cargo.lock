@@ -61,6 +61,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "apkg"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libzip_client",
+]
+
+[[package]]
 name = "arp"
 version = "0.1.0"
 dependencies = [
@@ -857,6 +866,15 @@ name = "stat"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+]
+
+[[package]]
+name = "store"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
 ]
 
 [[package]]

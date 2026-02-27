@@ -1,13 +1,8 @@
 fn main() {
-    println!("cargo:rerun-if-env-changed=ANYOS_VERSION");
-    if let Ok(ver) = std::env::var("ANYOS_VERSION") {
-        println!("cargo:rustc-env=ANYOS_VERSION={}", ver);
-    }
-
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let project_root = std::path::PathBuf::from(&manifest_dir)
         .parent()
-        .unwrap() // bin/
+        .unwrap() // apps/
         .parent()
         .unwrap() // project root
         .to_path_buf();

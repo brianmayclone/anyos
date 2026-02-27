@@ -22,6 +22,7 @@
  *   -c <path>           Icon file (must be valid ICO format)
  *   -r <path>           Resource file or directory (repeatable, max 64)
  *   --anyelf-path <p>   Path to anyelf for ELF auto-conversion
+ *   --version <ver>     Override version field in Info.conf
  *   -v                  Verbose output
  *   --force             Skip validation warnings (errors still abort)
  *
@@ -570,6 +571,7 @@ static void usage(void) {
         "  -c <path>           Icon file (validated as ICO format)\n"
         "  -r <path>           Resource file or directory (repeatable, max %d)\n"
         "  --anyelf-path <p>   Path to anyelf binary (for ELF auto-conversion)\n"
+        "  --version <ver>     Override version field in Info.conf\n"
         "  --keep-elf          Bundle ELF binaries as-is (no conversion)\n"
         "  -v                  Verbose output\n"
         "  --force             Continue despite warnings\n"
@@ -591,10 +593,11 @@ static void usage(void) {
 /* ── Main ─────────────────────────────────────────────────────────────── */
 
 int main(int argc, char **argv) {
-    const char *info_path   = NULL;
-    const char *exec_path   = NULL;
-    const char *icon_path   = NULL;
-    const char *output_path = NULL;
+    const char *info_path       = NULL;
+    const char *exec_path       = NULL;
+    const char *icon_path       = NULL;
+    const char *output_path     = NULL;
+    const char *version_override = NULL;
     const char *resources[MAX_RESOURCES];
     int         num_resources = 0;
     int         verbose       = 0;
@@ -623,6 +626,8 @@ int main(int argc, char **argv) {
             g_keep_elf = 1;
         } else if (strcmp(argv[i], "--anyelf-path") == 0 && i + 1 < argc) {
             g_anyelf_path = argv[++i];
+        } else if (strcmp(argv[i], "--version") == 0 && i + 1 < argc) {
+            version_override = argv[++i];
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             usage();
         } else {
@@ -656,6 +661,12 @@ int main(int argc, char **argv) {
     InfoConf info;
     if (validate_info_conf(info_path, &info) != 0)
         fatal("Info.conf validation failed");
+
+    /* Apply version override from --version flag */
+    if (version_override) {
+        strncpy(info.version, version_override, sizeof(info.version) - 1);
+        info.version[sizeof(info.version) - 1] = '\0';
+    }
 
     /* Validate binary (may auto-convert ELF → flat via anyelf) */
     char converted_path[MAX_PATH_LEN];
@@ -696,12 +707,30 @@ int main(int argc, char **argv) {
 
     make_directories(output_path);
 
-    /* Copy Info.conf */
+    /* Write Info.conf (with version override if --version was given) */
     {
         char dst[MAX_PATH_LEN];
         snprintf(dst, sizeof(dst), "%s/Info.conf", output_path);
-        if (copy_file(info_path, dst) != 0)
-            fatal("failed to copy Info.conf");
+        if (version_override) {
+            /* Read source and replace the version= line */
+            FILE *in = fopen(info_path, "r");
+            if (!in) fatal("cannot open Info.conf: %s", strerror(errno));
+            FILE *out = fopen(dst, "w");
+            if (!out) { fclose(in); fatal("cannot create %s: %s", dst, strerror(errno)); }
+            char line[MAX_LINE_LEN];
+            while (fgets(line, sizeof(line), in)) {
+                if (strncmp(line, "version=", 8) == 0) {
+                    fprintf(out, "version=%s\n", info.version);
+                } else {
+                    fputs(line, out);
+                }
+            }
+            fclose(in);
+            fclose(out);
+        } else {
+            if (copy_file(info_path, dst) != 0)
+                fatal("failed to copy Info.conf");
+        }
         if (verbose) printf("  + Info.conf\n");
     }
 

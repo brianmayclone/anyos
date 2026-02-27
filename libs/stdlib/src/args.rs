@@ -91,7 +91,71 @@ fn parse_u32_str(s: &str) -> Option<u32> {
     Some(n)
 }
 
+/// Tokenize a raw argument string respecting POSIX shell quoting.
+///
+/// - Single quotes `'...'`: literal content, no escaping.
+/// - Double quotes `"..."`: content between quotes returned as-is (backslash
+///   escapes are preserved since we return slices into the original string).
+/// - Unquoted tokens: split on ASCII whitespace.
+///
+/// Returns slices referencing the original `raw` string (zero-copy for the
+/// common case of no backslash escapes inside double quotes).
+fn tokenize_quoted<'a>(raw: &'a str, out: &mut [&'a str], max: usize) -> usize {
+    let bytes = raw.as_bytes();
+    let len = bytes.len();
+    let mut count = 0;
+    let mut i = 0;
+
+    while i < len && count < max {
+        // Skip whitespace
+        if bytes[i] == b' ' || bytes[i] == b'\t' {
+            i += 1;
+            continue;
+        }
+
+        if bytes[i] == b'"' {
+            // Double-quoted token: return content between quotes
+            i += 1; // skip opening quote
+            let start = i;
+            while i < len && bytes[i] != b'"' {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 1; // skip escaped char
+                }
+                i += 1;
+            }
+            let end = i;
+            if i < len { i += 1; } // skip closing quote
+            out[count] = &raw[start..end];
+            count += 1;
+        } else if bytes[i] == b'\'' {
+            // Single-quoted token: literal content
+            i += 1; // skip opening quote
+            let start = i;
+            while i < len && bytes[i] != b'\'' {
+                i += 1;
+            }
+            let end = i;
+            if i < len { i += 1; } // skip closing quote
+            out[count] = &raw[start..end];
+            count += 1;
+        } else {
+            // Unquoted token
+            let start = i;
+            while i < len && bytes[i] != b' ' && bytes[i] != b'\t' {
+                i += 1;
+            }
+            out[count] = &raw[start..i];
+            count += 1;
+        }
+    }
+
+    count
+}
+
 /// Parse a raw argument string into flags, options, and positional args.
+///
+/// Supports POSIX shell quoting: double-quoted (`"..."`) and single-quoted
+/// (`'...'`) tokens are treated as single arguments even if they contain spaces.
 ///
 /// `opts_with_values` lists flag characters that consume the next token as a value.
 ///
@@ -99,6 +163,7 @@ fn parse_u32_str(s: &str) -> Option<u32> {
 /// - `parse("-la file.txt", b"")` → flags `[l, a]`, positional `["file.txt"]`
 /// - `parse("-n 5 file.txt", b"n")` → opts `[(n, "5")]`, positional `["file.txt"]`
 /// - `parse("-- -f", b"")` → positional `["-f"]` (no flags after `--`)
+/// - `parse("\"hello world\" foo", b"")` → positional `["hello world", "foo"]`
 pub fn parse<'a>(raw: &'a str, opts_with_values: &[u8]) -> ParsedArgs<'a> {
     let mut result = ParsedArgs {
         flags: [0; MAX_FLAGS],
@@ -109,16 +174,10 @@ pub fn parse<'a>(raw: &'a str, opts_with_values: &[u8]) -> ParsedArgs<'a> {
         pos_count: 0,
     };
 
-    // Collect tokens into a fixed array for indexed access
+    // Collect tokens into a fixed array for indexed access (quote-aware)
     const MAX_TOKENS: usize = 32;
     let mut tokens: [&str; MAX_TOKENS] = [""; MAX_TOKENS];
-    let mut token_count = 0;
-    for token in raw.split_ascii_whitespace() {
-        if token_count < MAX_TOKENS {
-            tokens[token_count] = token;
-            token_count += 1;
-        }
-    }
+    let token_count = tokenize_quoted(raw, &mut tokens, MAX_TOKENS);
 
     let mut i = 0;
     let mut stop_flags = false;

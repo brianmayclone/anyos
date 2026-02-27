@@ -16,7 +16,7 @@ pub fn run() {
     let mut removed = 0u32;
     let mut freed: u64 = 0;
 
-    for entry in &entries {
+    for entry in entries {
         if entry.is_dir() {
             continue;
         }

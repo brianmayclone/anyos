@@ -162,3 +162,5 @@ EXPORTS
     anyui_apply_accent_style
     anyui_set_font_smoothing
     anyui_get_font_smoothing
+    anyui_remove_child
+    anyui_clear_children

@@ -207,6 +207,103 @@ fn write_redirect(redirect: &mut Redirect, data: &str) {
     }
 }
 
+// ─── POSIX Shell Tokenizer ──────────────────────────────────────────────────
+
+/// Tokenize a string following POSIX shell quoting rules.
+///
+/// - Single quotes `'...'`: literal content, no escaping inside.
+/// - Double quotes `"..."`: supports `\"` and `\\` escapes inside.
+/// - Backslash outside quotes: escapes the next character (e.g., `\ ` = literal space).
+/// - Whitespace (space/tab) separates tokens.
+///
+/// Returns a `Vec<String>` of unquoted/unescaped tokens.
+fn tokenize_shell(input: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let bytes = input.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        // Skip whitespace between tokens
+        if bytes[i] == b' ' || bytes[i] == b'\t' {
+            i += 1;
+            continue;
+        }
+
+        // Build a single token (may span multiple quoted/unquoted segments)
+        let mut token = String::new();
+        while i < len && bytes[i] != b' ' && bytes[i] != b'\t' {
+            if bytes[i] == b'\'' {
+                // Single-quoted segment: literal until closing quote
+                i += 1;
+                while i < len && bytes[i] != b'\'' {
+                    token.push(bytes[i] as char);
+                    i += 1;
+                }
+                if i < len { i += 1; } // skip closing quote
+            } else if bytes[i] == b'"' {
+                // Double-quoted segment: supports \" and \\ escapes
+                i += 1;
+                while i < len && bytes[i] != b'"' {
+                    if bytes[i] == b'\\' && i + 1 < len {
+                        let next = bytes[i + 1];
+                        if next == b'"' || next == b'\\' {
+                            token.push(next as char);
+                            i += 2;
+                            continue;
+                        }
+                    }
+                    token.push(bytes[i] as char);
+                    i += 1;
+                }
+                if i < len { i += 1; } // skip closing quote
+            } else if bytes[i] == b'\\' && i + 1 < len {
+                // Backslash escape outside quotes
+                i += 1;
+                token.push(bytes[i] as char);
+                i += 1;
+            } else {
+                token.push(bytes[i] as char);
+                i += 1;
+            }
+        }
+
+        if !token.is_empty() {
+            tokens.push(token);
+        }
+    }
+
+    tokens
+}
+
+/// Re-join tokens into a shell-compatible string with proper quoting.
+///
+/// Tokens containing whitespace, double quotes, or single quotes are wrapped
+/// in double quotes with internal `"` and `\` escaped.
+fn shell_join(tokens: &[String]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for token in tokens {
+        if token.contains(' ') || token.contains('\t')
+            || token.contains('"') || token.contains('\'')
+        {
+            // Wrap in double quotes, escaping \ and "
+            let mut quoted = String::with_capacity(token.len() + 2);
+            quoted.push('"');
+            for ch in token.chars() {
+                if ch == '"' || ch == '\\' {
+                    quoted.push('\\');
+                }
+                quoted.push(ch);
+            }
+            quoted.push('"');
+            parts.push(quoted);
+        } else {
+            parts.push(token.clone());
+        }
+    }
+    parts.join(" ")
+}
+
 // ─── Glob Expansion (POSIX-style) ───────────────────────────────────────────
 
 /// Check if a string contains unquoted glob metacharacters.
@@ -354,55 +451,40 @@ fn expand_glob_token(token: &str, cwd: &str) -> Vec<String> {
     matches
 }
 
-/// Expand all glob patterns in an argument string.
-/// Respects quoted tokens (single/double quotes are not expanded).
-fn expand_globs(args: &str, cwd: &str) -> String {
-    if args.is_empty() {
-        return String::new();
-    }
-
-    // Tokenize respecting quotes
-    let mut tokens: Vec<String> = Vec::new();
-    let bytes = args.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        // Skip whitespace
-        if bytes[i] == b' ' || bytes[i] == b'\t' {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        if bytes[i] == b'"' || bytes[i] == b'\'' {
-            // Quoted token — find matching close quote
-            let quote = bytes[i];
-            i += 1;
-            while i < bytes.len() && bytes[i] != quote {
-                i += 1;
-            }
-            if i < bytes.len() { i += 1; } // skip closing quote
-            // Strip quotes, no glob expansion
-            let inner = &args[start + 1..i.saturating_sub(1)];
-            tokens.push(String::from(inner));
-        } else {
-            // Unquoted token
-            while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'\t' {
-                i += 1;
-            }
-            let tok = &args[start..i];
-            if has_glob_chars(tok) {
-                let expanded = expand_glob_token(tok, cwd);
-                if expanded.is_empty() {
-                    tokens.push(String::from(tok)); // no match: keep literal
-                } else {
-                    tokens.extend(expanded);
-                }
+/// Expand glob patterns in pre-tokenized arguments.
+///
+/// Tokens containing glob metacharacters (`*`, `?`, `[`) are expanded against
+/// the filesystem. Tokens without globs are passed through unchanged.
+fn expand_globs_vec(tokens: Vec<String>, cwd: &str) -> Vec<String> {
+    let mut result: Vec<String> = Vec::new();
+    for tok in tokens {
+        if has_glob_chars(&tok) {
+            let expanded = expand_glob_token(&tok, cwd);
+            if expanded.is_empty() {
+                result.push(tok); // no match: keep literal
             } else {
-                tokens.push(String::from(tok));
+                result.extend(expanded);
             }
+        } else {
+            result.push(tok);
         }
     }
+    result
+}
 
-    tokens.join(" ")
+/// Tokenize, expand tildes/globs, and return individual argument tokens.
+///
+/// This is the main POSIX-style argument expansion pipeline:
+/// 1. `tokenize_shell()` — split respecting quotes
+/// 2. `expand_tildes_vec()` — expand `~` per token
+/// 3. `expand_globs_vec()` — expand `*`, `?`, `[` per token
+fn expand_args(raw: &str, cwd: &str) -> Vec<String> {
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    let tokens = tokenize_shell(raw);
+    let tokens = expand_tildes_vec(tokens);
+    expand_globs_vec(tokens, cwd)
 }
 
 // ─── Tilde Expansion ────────────────────────────────────────────────────────
@@ -429,17 +511,15 @@ fn expand_tilde(token: &str) -> String {
     }
 }
 
-/// Apply tilde expansion to all tokens in an argument string.
-fn expand_tildes(args: &str) -> String {
-    if !args.contains('~') {
-        return String::from(args);
+/// Apply tilde expansion to pre-tokenized arguments.
+///
+/// Expands leading `~` or `~/` to the user's home directory on each token.
+fn expand_tildes_vec(tokens: Vec<String>) -> Vec<String> {
+    let mut result: Vec<String> = Vec::with_capacity(tokens.len());
+    for t in tokens {
+        result.push(expand_tilde(&t));
     }
-    let parts: Vec<&str> = args.split_whitespace().collect();
-    let mut result: Vec<String> = Vec::new();
-    for p in parts {
-        result.push(expand_tilde(p));
-    }
-    result.join(" ")
+    result
 }
 
 // ─── Terminal Buffer ─────────────────────────────────────────────────────────
@@ -1076,10 +1156,8 @@ impl Shell {
         let raw_args = parts.next().unwrap_or("");
 
         // POSIX-style expansions: tilde (~) and glob (*, ?, [...])
-        let expanded_args_buf = {
-            let t = expand_tildes(raw_args);
-            expand_globs(&t, &self.cwd)
-        };
+        let tokens = expand_args(raw_args, &self.cwd);
+        let expanded_args_buf = tokens.join(" ");
         let args = expanded_args_buf.as_str();
 
         match cmd {
@@ -1092,7 +1170,9 @@ impl Shell {
             "clear" => buf.clear(),
             "uname" => {
                 buf.current_color = COLOR_FG;
-                buf.write_str(".anyOS v0.1 x86_64\n");
+                buf.write_str(".anyOS v");
+                buf.write_str(env!("ANYOS_VERSION"));
+                buf.write_str(" x86_64\n");
             }
             "cd" => self.cmd_cd(args, buf),
             "pwd" => {
@@ -1172,26 +1252,17 @@ impl Shell {
                 let raw_bg_args = bg_parts.next().unwrap_or("");
 
                 // POSIX-style expansions: tilde and glob
-                let expanded_bg = {
-                    let t = expand_tildes(raw_bg_args);
-                    expand_globs(&t, &self.cwd)
-                };
+                let mut bg_tokens = expand_args(raw_bg_args, &self.cwd);
 
                 // Default args for specific commands (e.g. ls defaults to cwd)
-                let bg_args_buf;
-                let bg_args = if expanded_bg.is_empty() {
-                    match bg_cmd {
-                        "ls" => self.cwd.as_str(),
-                        _ => "",
+                if bg_tokens.is_empty() {
+                    if bg_cmd == "ls" {
+                        bg_tokens.push(String::from(self.cwd.as_str()));
                     }
-                } else if bg_cmd == "ls" && expanded_bg.split_ascii_whitespace().all(|t| t.starts_with('-')) {
+                } else if bg_cmd == "ls" && bg_tokens.iter().all(|t| t.starts_with('-')) {
                     // ls with only flags, no path — append cwd
-                    bg_args_buf = format!("{} {}", expanded_bg, self.cwd);
-                    bg_args_buf.as_str()
-                } else {
-                    bg_args_buf = expanded_bg;
-                    bg_args_buf.as_str()
-                };
+                    bg_tokens.push(String::from(self.cwd.as_str()));
+                }
 
                 // Resolve command path:
                 // - Absolute paths (/foo/bar) used as-is
@@ -1213,12 +1284,14 @@ impl Shell {
                     }
                 };
 
-                // Build full args string with program name as argv[0]
+                // Build full args string with program name as argv[0],
+                // quoting tokens that contain spaces (POSIX-compliant).
                 let full_args_buf;
-                let full_args = if bg_args.is_empty() {
+                let bg_args_quoted = shell_join(&bg_tokens);
+                let full_args = if bg_args_quoted.is_empty() {
                     bg_cmd
                 } else {
-                    full_args_buf = format!("{} {}", bg_cmd, bg_args);
+                    full_args_buf = format!("{} {}", bg_cmd, bg_args_quoted);
                     &full_args_buf
                 };
 
@@ -1298,23 +1371,17 @@ impl Shell {
             }
 
             // POSIX-style expansions: tilde and glob
-            let expanded_buf = {
-                let t = expand_tildes(raw_args);
-                expand_globs(&t, &self.cwd)
-            };
+            let mut pipe_tokens = expand_args(raw_args, &self.cwd);
 
             // Default args for specific commands
-            let effective_args = if expanded_buf.is_empty() {
-                match cmd {
-                    "ls" => String::from(self.cwd.as_str()),
-                    _ => String::new(),
+            if pipe_tokens.is_empty() {
+                if cmd == "ls" {
+                    pipe_tokens.push(String::from(self.cwd.as_str()));
                 }
-            } else if cmd == "ls" && expanded_buf.split_ascii_whitespace().all(|t| t.starts_with('-')) {
+            } else if cmd == "ls" && pipe_tokens.iter().all(|t| t.starts_with('-')) {
                 // ls with only flags, no path — append cwd
-                format!("{} {}", expanded_buf, self.cwd)
-            } else {
-                expanded_buf
-            };
+                pipe_tokens.push(String::from(self.cwd.as_str()));
+            }
 
             // Resolve command path
             let path = if cmd.starts_with('/') {
@@ -1333,11 +1400,13 @@ impl Shell {
                 }
             };
 
-            // Build full args with program name as argv[0]
-            let full_args = if effective_args.is_empty() {
+            // Build full args with program name as argv[0],
+            // quoting tokens that contain spaces (POSIX-compliant).
+            let pipe_args_quoted = shell_join(&pipe_tokens);
+            let full_args = if pipe_args_quoted.is_empty() {
                 String::from(cmd)
             } else {
-                format!("{} {}", cmd, effective_args)
+                format!("{} {}", cmd, pipe_args_quoted)
             };
 
             let stdin_pipe = if i > 0 { pipes[i - 1] } else { 0 };
@@ -2092,7 +2161,9 @@ fn main() {
 
     // Welcome message
     buf.current_color = COLOR_TITLE;
-    buf.write_str(".anyOS Terminal v0.1\n");
+    buf.write_str(".anyOS Terminal v");
+    buf.write_str(env!("ANYOS_VERSION"));
+    buf.write_str("\n");
     buf.current_color = COLOR_DIM;
     buf.write_str("Type 'help' for available commands.\n\n");
 

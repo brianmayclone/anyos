@@ -20,8 +20,6 @@
 #![no_std]
 #![no_main]
 
-extern crate alloc;
-
 use anyos_std::println;
 
 anyos_std::entry!(main);
@@ -46,7 +44,7 @@ fn main() {
     config::ensure_dirs();
 
     // Parse arguments
-    let mut args_buf = [0u8; 512];
+    let mut args_buf = [0u8; 256];
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
@@ -109,7 +107,7 @@ fn main() {
             print_usage();
         }
         "version" | "--version" | "-V" => {
-            println!("apkg 0.1.0");
+            println!("apkg {}", env!("ANYOS_VERSION"));
         }
         _ => {
             println!("apkg: unknown command '{}'", command);

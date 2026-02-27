@@ -110,7 +110,7 @@ endif()
 
 add_custom_command(
   OUTPUT ${WORKSPACE_STAMP}
-  COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings"
+  COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings" "ANYOS_VERSION=${ANYOS_VERSION}"
     ${CARGO_EXECUTABLE} build --workspace
     --exclude anyos_kernel
     --release --quiet
@@ -181,6 +181,7 @@ function(add_app NAME SRC_DIR DISPLAY_NAME)
     -i "${SRC_DIR}/Info.conf"
     -e ${ELF}
     --anyelf-path ${ANYELF_EXECUTABLE}
+    --version ${ANYOS_VERSION}
     -o "${APP_DIR}"
     --force
   )
@@ -511,6 +512,7 @@ add_app(clipman     ${CMAKE_SOURCE_DIR}/apps/clipman        "Clipboard Manager")
 add_app(vnc-settings ${CMAKE_SOURCE_DIR}/apps/vnc-settings "VNC Settings")
 add_app(anybench    ${CMAKE_SOURCE_DIR}/apps/anybench      "anyBench")
 add_app(gldemo      ${CMAKE_SOURCE_DIR}/apps/gldemo        "GL Demo")
+add_app(store       ${CMAKE_SOURCE_DIR}/apps/store         "App Store")
 
 # ============================================================
 # Compositor and Dock
