@@ -298,6 +298,8 @@ struct AnyuiLib {
     // Theme
     pub(crate) set_theme: extern "C" fn(u32),
     pub(crate) get_theme: extern "C" fn() -> u32,
+    pub(crate) get_theme_colors_ptr: extern "C" fn() -> *const u8,
+    pub(crate) apply_accent_style: extern "C" fn(u32, u32, u32, u32),
     // Window title
     set_title: extern "C" fn(u32, *const u8, u32),
     // Key event info
@@ -520,6 +522,8 @@ pub fn init() -> bool {
             // Theme
             set_theme: resolve(&handle, "anyui_set_theme"),
             get_theme: resolve(&handle, "anyui_get_theme"),
+            get_theme_colors_ptr: resolve(&handle, "anyui_get_theme_colors_ptr"),
+            apply_accent_style: resolve(&handle, "anyui_apply_accent_style"),
             // Window title
             set_title: resolve(&handle, "anyui_set_title"),
             // Key event info

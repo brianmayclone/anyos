@@ -285,6 +285,10 @@ pub extern "C" fn anyui_init() -> u32 {
         return 0;
     }
 
+    // Load theme palettes from /System/compositor/themes/{dark,light}.conf.
+    // Falls back to built-in defaults for missing files / keys.
+    theme::load_from_disk();
+
     unsafe {
         STATE = Some(AnyuiState {
             controls: Vec::new(),
@@ -2385,14 +2389,46 @@ pub extern "C" fn anyui_show_notification(
 
 // ── Theme ────────────────────────────────────────────────────────────
 
+/// Set the system theme.
+///
+/// Updates the local fallback AND sends CMD_SET_THEME (0x100D) to the
+/// compositor, which writes to the shared uisys DLIB page so all apps
+/// pick up the new theme and persists the choice to `compositor.conf`.
 #[no_mangle]
 pub extern "C" fn anyui_set_theme(light: u32) {
-    theme::set_theme(light != 0);
+    let val = light.min(1);
+    theme::set_theme(val != 0);
+    // Notify the compositor so it updates the shared page + persists.
+    let channel_id = state().channel_id;
+    if channel_id != 0 {
+        let cmd: [u32; 5] = [0x100D, val, 0, 0, 0]; // CMD_SET_THEME
+        syscall::evt_chan_emit(channel_id, &cmd);
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn anyui_get_theme() -> u32 {
     theme::get_theme()
+}
+
+/// Return a pointer to the live theme palette.
+///
+/// Client code in the same address space can dereference this directly
+/// instead of duplicating the color data.
+#[no_mangle]
+pub extern "C" fn anyui_get_theme_colors_ptr() -> *const theme::ThemeColors {
+    theme::colors_ptr()
+}
+
+/// Apply accent style overrides to both dark and light palettes.
+#[no_mangle]
+pub extern "C" fn anyui_apply_accent_style(
+    dark_accent: u32,
+    dark_hover: u32,
+    light_accent: u32,
+    light_hover: u32,
+) {
+    theme::apply_accent_style(dark_accent, dark_hover, light_accent, light_hover);
 }
 
 // ── Window title (post-creation) ─────────────────────────────────

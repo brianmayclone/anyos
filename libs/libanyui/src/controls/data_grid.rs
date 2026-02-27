@@ -482,7 +482,7 @@ impl Control for DataGrid {
                 } else if Some(vis_row) == self.hovered_row {
                     crate::draw::fill_rect(&clipped, x, row_y, w, self.row_height, tc.control_hover);
                 } else if vis_row % 2 == 1 {
-                    crate::draw::fill_rect(&clipped, x, row_y, w, self.row_height, 0xFF232323);
+                    crate::draw::fill_rect(&clipped, x, row_y, w, self.row_height, tc.alt_row_bg);
                 }
 
                 // Cell text + icons

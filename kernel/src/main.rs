@@ -261,6 +261,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     // Phase 7g: User database (requires VFS)
     task::users::init();
 
+    // Phase 7h: Network config files (hosts, interfaces — requires VFS)
+    net::load_config_files();
+
     // Phase 8: Initialize mouse
     serial_println!("  Phase 8: Initializing mouse...");
     drivers::input::mouse::init();

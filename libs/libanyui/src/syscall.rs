@@ -91,6 +91,9 @@ fn syscall3(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 }
 
 const SYS_WRITE: u64 = 2;
+const SYS_READ: u64 = 3;
+const SYS_OPEN: u64 = 4;
+const SYS_CLOSE: u64 = 5;
 
 const SYS_DLL_LOAD: u64 = 80;
 const SYS_READDIR: u64 = 23;
@@ -149,6 +152,25 @@ pub fn mkdir(path: &[u8]) -> u32 {
 /// Write bytes to a file descriptor. fd=1 for stdout (serial).
 pub fn write(fd: u32, buf: &[u8]) -> u32 {
     syscall3(SYS_WRITE, fd as u64, buf.as_ptr() as u64, buf.len() as u64) as u32
+}
+
+/// Open a file by path.  Returns a file descriptor, or `u32::MAX` on failure.
+pub fn open(path: &str, flags: u32) -> u32 {
+    let mut buf = [0u8; 257];
+    let len = path.len().min(256);
+    buf[..len].copy_from_slice(path.as_bytes());
+    buf[len] = 0;
+    syscall3(SYS_OPEN, buf.as_ptr() as u64, flags as u64, 0) as u32
+}
+
+/// Read from a file descriptor into `buf`.  Returns the number of bytes read.
+pub fn read(fd: u32, buf: &mut [u8]) -> u32 {
+    syscall3(SYS_READ, fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64) as u32
+}
+
+/// Close a file descriptor.
+pub fn close(fd: u32) {
+    syscall1(SYS_CLOSE, fd as u64);
 }
 
 /// Non-blocking poll: dequeue one event from a channel subscription.

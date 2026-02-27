@@ -13,7 +13,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     let panel = ui::View::new();
     panel.set_dock(ui::DOCK_TOP);
     panel.set_auto_size(true);
-    panel.set_color(layout::BG);
+    panel.set_color(layout::bg());
 
     layout::build_page_header(&panel, "Update", "System updates");
 
@@ -25,7 +25,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     status_lbl.set_dock(ui::DOCK_TOP);
     status_lbl.set_size(400, 24);
     status_lbl.set_font_size(16);
-    status_lbl.set_text_color(0xFF4EC970);
+    status_lbl.set_text_color(ui::theme::colors().success);
     status_lbl.set_margin(24, 16, 24, 0);
     card.add(&status_lbl);
 
@@ -34,7 +34,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     ver_lbl.set_dock(ui::DOCK_TOP);
     ver_lbl.set_size(400, 18);
     ver_lbl.set_font_size(12);
-    ver_lbl.set_text_color(layout::TEXT_DIM);
+    ver_lbl.set_text_color(layout::text_dim());
     ver_lbl.set_margin(24, 6, 24, 0);
     card.add(&ver_lbl);
 

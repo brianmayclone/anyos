@@ -1,0 +1,12 @@
+# anyOS network interfaces configuration
+#
+# Syntax:
+#   iface <name> dhcp
+#
+#   iface <name> static
+#     address <ip>
+#     netmask <mask>
+#     gateway <gw>
+#     dns <dns>
+
+iface eth0 dhcp

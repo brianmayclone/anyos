@@ -19,7 +19,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     let panel = ui::View::new();
     panel.set_dock(ui::DOCK_TOP);
     panel.set_auto_size(true);
-    panel.set_color(layout::BG);
+    panel.set_color(layout::bg());
 
     layout::build_page_header(&panel, "Dashboard", "");
 
@@ -49,7 +49,7 @@ fn build_hero_section(panel: &ui::View) {
     name_lbl.set_dock(ui::DOCK_TOP);
     name_lbl.set_size(350, 28);
     name_lbl.set_font_size(18);
-    name_lbl.set_text_color(0xFFFFFFFF);
+    name_lbl.set_text_color(layout::text());
     name_lbl.set_margin(24, 16, 24, 0);
     card.add(&name_lbl);
 
@@ -58,7 +58,7 @@ fn build_hero_section(panel: &ui::View) {
     os_lbl.set_dock(ui::DOCK_TOP);
     os_lbl.set_size(200, 18);
     os_lbl.set_font_size(12);
-    os_lbl.set_text_color(0xFF808080);
+    os_lbl.set_text_color(layout::text_dim());
     os_lbl.set_margin(24, 2, 24, 0);
     card.add(&os_lbl);
 
@@ -89,7 +89,7 @@ fn build_quick_access(panel: &ui::View) {
     section_lbl.set_dock(ui::DOCK_TOP);
     section_lbl.set_size(600, 24);
     section_lbl.set_font_size(13);
-    section_lbl.set_text_color(layout::TEXT);
+    section_lbl.set_text_color(layout::text());
     section_lbl.set_margin(24, 12, 24, 0);
     panel.add(&section_lbl);
 
@@ -103,13 +103,13 @@ fn build_quick_access(panel: &ui::View) {
         let tile = ui::Card::new();
         tile.set_size(130, 80);
         tile.set_margin(4, 4, 4, 4);
-        tile.set_color(layout::CARD_BG);
+        tile.set_color(layout::card_bg());
 
         let lbl = ui::Label::new(label);
         lbl.set_position(12, 30);
         lbl.set_size(106, 20);
         lbl.set_font_size(13);
-        lbl.set_text_color(layout::TEXT);
+        lbl.set_text_color(layout::text());
         tile.add(&lbl);
 
         flow.add(&tile);
@@ -126,7 +126,7 @@ fn build_system_info(panel: &ui::View) {
     section_lbl.set_dock(ui::DOCK_TOP);
     section_lbl.set_size(600, 24);
     section_lbl.set_font_size(13);
-    section_lbl.set_text_color(layout::TEXT);
+    section_lbl.set_text_color(layout::text());
     section_lbl.set_margin(24, 12, 24, 0);
     panel.add(&section_lbl);
 
@@ -176,7 +176,7 @@ fn build_system_info(panel: &ui::View) {
         &flow,
         "Network",
         &net_str,
-        if link_up { 0xFF4EC970 } else { 0xFFE06C75 },
+        if link_up { ui::theme::colors().success } else { ui::theme::colors().destructive },
     );
 
     // Uptime card
@@ -201,13 +201,13 @@ fn build_info_tile_colored(flow: &ui::FlowPanel, title: &str, value: &str, color
     let tile = ui::Card::new();
     tile.set_size(170, 88);
     tile.set_margin(4, 4, 4, 4);
-    tile.set_color(layout::CARD_BG);
+    tile.set_color(layout::card_bg());
 
     let title_lbl = ui::Label::new(title);
     title_lbl.set_position(14, 12);
     title_lbl.set_size(142, 20);
     title_lbl.set_font_size(11);
-    title_lbl.set_text_color(0xFF808080);
+    title_lbl.set_text_color(layout::text_dim());
     tile.add(&title_lbl);
 
     let val_lbl = ui::Label::new(value);

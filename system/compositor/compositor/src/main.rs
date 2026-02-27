@@ -93,6 +93,17 @@ fn main() {
         }
     }
 
+    // Step 4c: Restore saved theme from compositor.conf
+    if let Some(saved_theme) = config::read_theme() {
+        let is_light = saved_theme.mode == "light";
+        if is_light {
+            desktop::set_theme(1);
+            println!("compositor: restored theme: light");
+        } else {
+            println!("compositor: restored theme: dark");
+        }
+    }
+
     // Step 3b: Take over cursor from kernel splash mode
     let (splash_x, splash_y) = ipc::cursor_takeover();
     desktop.set_cursor_pos(splash_x, splash_y);
@@ -545,6 +556,8 @@ fn handle_ipc_commands(
                 };
                 if new_theme != old_theme {
                     desktop::set_theme(new_theme);
+                    // Persist theme choice to compositor.conf
+                    config::save_theme(if new_theme == 0 { "dark" } else { "light" }, "");
                     acquire_lock();
                     let desktop = unsafe { desktop_ref() };
                     desktop.on_theme_change();

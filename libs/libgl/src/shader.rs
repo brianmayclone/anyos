@@ -7,6 +7,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use crate::types::*;
 use crate::compiler;
+use crate::compiler::backend_jit::{JitCode, JitFn};
 
 /// Maximum uniforms per program.
 pub const MAX_UNIFORMS: usize = 64;
@@ -72,6 +73,10 @@ pub struct GlProgram {
     pub fs_ir: Option<compiler::ir::Program>,
     /// Manual attribute location bindings (glBindAttribLocation).
     pub attrib_bindings: Vec<(String, i32)>,
+    /// JIT-compiled vertex shader (cached, compiled on first draw).
+    pub vs_jit: Option<JitCode>,
+    /// JIT-compiled fragment shader (cached, compiled on first draw).
+    pub fs_jit: Option<JitCode>,
 }
 
 /// Storage for shader and program objects.
@@ -148,6 +153,8 @@ impl ShaderStore {
             vs_ir: None,
             fs_ir: None,
             attrib_bindings: Vec::new(),
+            vs_jit: None,
+            fs_jit: None,
         });
         id
     }
@@ -270,12 +277,25 @@ impl ShaderStore {
             Some(p) => p,
             None => return,
         };
+        // JIT-compile both shaders for fast execution
+        let vs_jit = compiler::backend_jit::compile_jit(&vs_ir);
+        let fs_jit = compiler::backend_jit::compile_jit(&fs_ir);
+        crate::serial_println!(
+            "[libgl] JIT: VS={} ({} bytes), FS={} ({} bytes)",
+            vs_jit.is_some(),
+            vs_jit.as_ref().map_or(0, |j| j.code_len()),
+            fs_jit.is_some(),
+            fs_jit.as_ref().map_or(0, |j| j.code_len()),
+        );
+
         prog.linked = true;
         prog.info_log.clear();
         prog.uniforms = uniforms;
         prog.attributes = attributes;
         prog.varyings = varyings;
         prog.varying_count = varying_offset;
+        prog.vs_jit = vs_jit;
+        prog.fs_jit = fs_jit;
         prog.vs_ir = Some(vs_ir);
         prog.fs_ir = Some(fs_ir);
     }

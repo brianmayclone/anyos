@@ -142,6 +142,7 @@ EXPORTS
     anyui_show_notification
     anyui_set_theme
     anyui_get_theme
+    anyui_get_theme_colors_ptr
     anyui_set_title
     anyui_get_key_info
     anyui_clipboard_set
@@ -158,3 +159,4 @@ EXPORTS
     anyui_resize_window
     anyui_move_window
     anyui_minimize_window
+    anyui_apply_accent_style

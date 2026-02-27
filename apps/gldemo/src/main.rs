@@ -349,12 +349,11 @@ fn render_frame() {
     gl::clear_color(0.05, 0.05, 0.12, 1.0);
     gl::clear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
 
-    // Camera
-    let eye = [0.0f32, 2.0, 5.0];
+    // Camera — view = Rx(pitch) * T(-eye), positive pitch tilts down
+    let eye = [0.0f32, 1.8, 4.5];
     let aspect = s.fb_w as f32 / s.fb_h as f32;
-    let proj = mat4_perspective(0.8, aspect, 0.1, 50.0);
-    // Simple look-at: translate to eye position + tilt down
-    let view = mat4_mul(&mat4_rotate_x(-0.35), &mat4_translate(-eye[0], -eye[1], -eye[2]));
+    let proj = mat4_perspective(0.9, aspect, 0.1, 50.0);
+    let view = mat4_mul(&mat4_rotate_x(0.38), &mat4_translate(-eye[0], -eye[1], -eye[2]));
 
     // Animated lights
     let l0_x = gl::sin(t * 0.7) * 3.0;

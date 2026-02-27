@@ -1,5 +1,7 @@
 //! DNS resolver -- resolves hostnames to IPv4 addresses via UDP queries to port 53.
-//! Supports A record lookups with caching and 500ms timeout.
+//! Supports A record lookups with caching, 500ms timeout, and static hosts file.
+//!
+//! Resolution order: hosts file → cache → DNS query.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -8,6 +10,90 @@ use crate::sync::spinlock::Spinlock;
 
 const DNS_PORT: u16 = 53;
 const DNS_CACHE_SIZE: usize = 64;
+const HOSTS_PATH: &str = "/System/etc/network/hosts";
+const MAX_HOSTS_ENTRIES: usize = 128;
+
+// ── Hosts file ──────────────────────────────────────────────────────────────
+
+/// A static hostname→IP mapping from the hosts file.
+struct HostEntry {
+    hostname: String,
+    addr: Ipv4Addr,
+}
+
+/// Static hosts table loaded from `/System/etc/network/hosts`.
+static HOSTS_TABLE: Spinlock<Vec<HostEntry>> = Spinlock::new(Vec::new());
+
+/// Load (or reload) the hosts file from disk into the in-memory table.
+/// Called at boot after VFS init, and on demand via syscall when the file changes.
+pub fn load_hosts() {
+    let data = match crate::fs::vfs::read_file_to_vec(HOSTS_PATH) {
+        Ok(d) => d,
+        Err(_) => {
+            crate::serial_println!("[NET] hosts file not found: {}", HOSTS_PATH);
+            return;
+        }
+    };
+
+    let text = match core::str::from_utf8(&data) {
+        Ok(t) => t,
+        Err(_) => {
+            crate::serial_println!("[NET] hosts file is not valid UTF-8");
+            return;
+        }
+    };
+
+    let mut entries: Vec<HostEntry> = Vec::new();
+
+    for line in text.split('\n') {
+        let line = line.trim();
+        // Skip empty lines and comments
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        // Split on whitespace: first token is IP, rest are hostnames/aliases
+        let mut parts = line.split_whitespace();
+        let ip_str = match parts.next() {
+            Some(s) => s,
+            None => continue,
+        };
+
+        let ip = match Ipv4Addr::parse(ip_str) {
+            Some(a) => a,
+            None => continue,
+        };
+
+        // Each remaining token is a hostname or alias
+        for name in parts {
+            if entries.len() >= MAX_HOSTS_ENTRIES {
+                break;
+            }
+            entries.push(HostEntry {
+                hostname: String::from(name),
+                addr: ip,
+            });
+        }
+    }
+
+    let count = entries.len();
+    {
+        let mut table = HOSTS_TABLE.lock();
+        *table = entries;
+    }
+    crate::serial_println!("[OK] Loaded {} hosts entries from {}", count, HOSTS_PATH);
+}
+
+/// Look up a hostname in the static hosts table.
+fn hosts_lookup(hostname: &str) -> Option<Ipv4Addr> {
+    let table = HOSTS_TABLE.lock();
+    for entry in table.iter() {
+        if entry.hostname.eq_ignore_ascii_case(hostname) {
+            return Some(entry.addr);
+        }
+    }
+    None
+}
 
 /// A cached DNS entry.
 struct DnsCacheEntry {
@@ -58,10 +144,17 @@ fn cache_insert(hostname: &str, addr: Ipv4Addr) {
     });
 }
 
-/// Resolve a hostname to an IPv4 address using the configured DNS server.
-/// Results are cached for 5 minutes.
+/// Resolve a hostname to an IPv4 address.
+///
+/// Resolution order: hosts file → cache → DNS query.
+/// DNS results are cached for 5 minutes.
 pub fn resolve(hostname: &str) -> Result<Ipv4Addr, &'static str> {
-    // Check cache first.
+    // 1. Check static hosts file.
+    if let Some(addr) = hosts_lookup(hostname) {
+        return Ok(addr);
+    }
+
+    // 2. Check DNS cache.
     if let Some(addr) = cache_lookup(hostname) {
         return Ok(addr);
     }

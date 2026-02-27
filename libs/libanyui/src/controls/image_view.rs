@@ -69,7 +69,7 @@ impl Control for ImageView {
 
         if self.pixels.is_empty() || self.img_w == 0 || self.img_h == 0 {
             // No image loaded — draw placeholder
-            crate::draw::fill_rect(surface, x, y, cw, ch, 0xFF2A2A2A);
+            crate::draw::fill_rect(surface, x, y, cw, ch, crate::theme::colors().placeholder_bg);
             return;
         }
 

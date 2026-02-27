@@ -1,8 +1,9 @@
 //! Theme colors for applications.
 //!
-//! Provides access to the current theme color palette. The theme flag
-//! is stored in libanyui and read via DLL call; color palettes are
-//! defined here to avoid serialization overhead.
+//! Provides access to the current theme color palette.  The palette lives in
+//! the server-side libanyui (loaded as a DLL into the same address space) and
+//! is accessed via a raw pointer obtained from `anyui_get_theme_colors_ptr()`.
+//! This gives zero-cost, always-in-sync reads with no serialization overhead.
 //!
 //! # Usage
 //! ```rust
@@ -12,6 +13,10 @@
 //! ```
 
 /// All semantic theme colors.
+///
+/// Layout **must** match `libs/libanyui/src/theme.rs` exactly — the client
+/// reads the server-side struct through a raw pointer.
+#[repr(C)]
 pub struct ThemeColors {
     pub window_bg: u32,
     pub text: u32,
@@ -40,72 +45,70 @@ pub struct ThemeColors {
     pub scrollbar: u32,
     pub scrollbar_track: u32,
     pub check_mark: u32,
+    // ── Extended fields (controls that previously hardcoded colors) ───
+    pub toolbar_bg: u32,
+    pub tab_inactive_bg: u32,
+    pub tab_hover_bg: u32,
+    pub tab_border_active: u32,
+    pub editor_bg: u32,
+    pub editor_line_hl: u32,
+    pub editor_selection: u32,
+    pub alt_row_bg: u32,
+    pub placeholder_bg: u32,
 }
 
+/// Fallback dark palette — used only when the server-side pointer is NULL
+/// (i.e. libanyui hasn't been initialised yet).
 const DARK: ThemeColors = ThemeColors {
-    window_bg:       0xFF1E1E1E,
-    text:            0xFFE6E6E6,
-    text_secondary:  0xFF969696,
-    text_disabled:   0xFF5A5A5A,
-    accent:          0xFF007AFF,
-    accent_hover:    0xFF0A84FF,
-    destructive:     0xFFFF3B30,
-    success:         0xFF30D158,
-    warning:         0xFFFFD60A,
-    control_bg:      0xFF3C3C3C,
-    control_hover:   0xFF484848,
-    control_pressed: 0xFF2A2A2A,
-    input_bg:        0xFF1A1A1A,
-    input_border:    0xFF505050,
-    input_focus:     0xFF007AFF,
-    separator:       0xFF3D3D3D,
-    selection:       0xFF0A54C4,
-    sidebar_bg:      0xFF252525,
-    card_bg:         0xFF2A2A2A,
-    card_border:     0xFF3A3A3A,
-    badge_red:       0xFFFF3B30,
-    toggle_on:       0xFF30D158,
-    toggle_off:      0xFF636366,
-    toggle_thumb:    0xFFFFFFFF,
-    scrollbar:       0xFF8E8E93,
-    scrollbar_track: 0xFF3A3A3C,
-    check_mark:      0xFFFFFFFF,
+    window_bg:        0xFF1E1E1E,
+    text:             0xFFE6E6E6,
+    text_secondary:   0xFF969696,
+    text_disabled:    0xFF5A5A5A,
+    accent:           0xFF007AFF,
+    accent_hover:     0xFF0A84FF,
+    destructive:      0xFFFF3B30,
+    success:          0xFF30D158,
+    warning:          0xFFFFD60A,
+    control_bg:       0xFF3C3C3C,
+    control_hover:    0xFF484848,
+    control_pressed:  0xFF2A2A2A,
+    input_bg:         0xFF1A1A1A,
+    input_border:     0xFF505050,
+    input_focus:      0xFF007AFF,
+    separator:        0xFF3D3D3D,
+    selection:        0xFF0A54C4,
+    sidebar_bg:       0xFF252525,
+    card_bg:          0xFF2A2A2A,
+    card_border:      0xFF3A3A3A,
+    badge_red:        0xFFFF3B30,
+    toggle_on:        0xFF30D158,
+    toggle_off:       0xFF636366,
+    toggle_thumb:     0xFFFFFFFF,
+    scrollbar:        0xFF8E8E93,
+    scrollbar_track:  0xFF3A3A3C,
+    check_mark:       0xFFFFFFFF,
+    toolbar_bg:       0xFF2C2C2E,
+    tab_inactive_bg:  0xFF2D2D2D,
+    tab_hover_bg:     0xFF383838,
+    tab_border_active:0xFF007ACC,
+    editor_bg:        0xFF1E1E1E,
+    editor_line_hl:   0xFF2A2D2E,
+    editor_selection: 0xFF264F78,
+    alt_row_bg:       0xFF232323,
+    placeholder_bg:   0xFF2A2A2A,
 };
 
-const LIGHT: ThemeColors = ThemeColors {
-    window_bg:       0xFFF5F5F7,
-    text:            0xFF1D1D1F,
-    text_secondary:  0xFF86868B,
-    text_disabled:   0xFFC7C7CC,
-    accent:          0xFF007AFF,
-    accent_hover:    0xFF0A84FF,
-    destructive:     0xFFFF3B30,
-    success:         0xFF34C759,
-    warning:         0xFFFF9F0A,
-    control_bg:      0xFFE5E5EA,
-    control_hover:   0xFFD1D1D6,
-    control_pressed: 0xFFC7C7CC,
-    input_bg:        0xFFFFFFFF,
-    input_border:    0xFFC7C7CC,
-    input_focus:     0xFF007AFF,
-    separator:       0xFFC6C6C8,
-    selection:       0xFF007AFF,
-    sidebar_bg:      0xFFF2F2F7,
-    card_bg:         0xFFFFFFFF,
-    card_border:     0xFFD1D1D6,
-    badge_red:       0xFFFF3B30,
-    toggle_on:       0xFF34C759,
-    toggle_off:      0xFFE5E5EA,
-    toggle_thumb:    0xFFFFFFFF,
-    scrollbar:       0xFFA0A0A5,
-    scrollbar_track: 0xFFE5E5EA,
-    check_mark:      0xFFFFFFFF,
-};
-
-/// Get the current theme colors (queries libanyui for the active theme).
+/// Get the current theme colors.
+///
+/// Reads from the server-side libanyui palette via a raw pointer.  Falls back
+/// to a built-in dark palette if the pointer is NULL.
 pub fn colors() -> &'static ThemeColors {
-    let theme = (crate::lib().get_theme)();
-    if theme == 0 { &DARK } else { &LIGHT }
+    let ptr = (crate::lib().get_theme_colors_ptr)();
+    if ptr.is_null() {
+        &DARK
+    } else {
+        unsafe { &*(ptr as *const ThemeColors) }
+    }
 }
 
 /// Set the current theme (true = light, false = dark).
@@ -116,6 +119,11 @@ pub fn set_theme(light: bool) {
 /// Check if the current theme is light.
 pub fn is_light() -> bool {
     (crate::lib().get_theme)() != 0
+}
+
+/// Apply accent style overrides to both dark and light palettes.
+pub fn apply_accent_style(dark_accent: u32, dark_hover: u32, light_accent: u32, light_hover: u32) {
+    (crate::lib().apply_accent_style)(dark_accent, dark_hover, light_accent, light_hover);
 }
 
 // ── Color utility functions ──────────────────────────────────────────

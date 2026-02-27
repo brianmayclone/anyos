@@ -63,7 +63,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     let panel = ui::View::new();
     panel.set_dock(ui::DOCK_TOP);
     panel.set_auto_size(true);
-    panel.set_color(layout::BG);
+    panel.set_color(layout::bg());
 
     // ── Page header ─────────────────────────────────────────────────────
     layout::build_page_header(&panel, "Apps", "Manage installed applications and permissions");
@@ -76,7 +76,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
         empty.set_dock(ui::DOCK_TOP);
         empty.set_size(552, 30);
         empty.set_font_size(13);
-        empty.set_text_color(0xFF969696);
+        empty.set_text_color(layout::text_dim());
         empty.set_margin(24, 8, 24, 0);
         panel.add(&empty);
     } else {
@@ -164,7 +164,7 @@ fn build_app_row(panel: &ui::View, app: &AppInfo) {
     name_lbl.set_dock(ui::DOCK_TOP);
     name_lbl.set_size(200, 20);
     name_lbl.set_font_size(14);
-    name_lbl.set_text_color(0xFFFFFFFF);
+    name_lbl.set_text_color(layout::text());
     name_lbl.set_margin(0, 6, 0, 0);
     info.add(&name_lbl);
 
@@ -177,7 +177,7 @@ fn build_app_row(panel: &ui::View, app: &AppInfo) {
     sub_lbl.set_dock(ui::DOCK_TOP);
     sub_lbl.set_size(200, 16);
     sub_lbl.set_font_size(11);
-    sub_lbl.set_text_color(0xFF808080);
+    sub_lbl.set_text_color(layout::text_dim());
     sub_lbl.set_margin(0, 2, 0, 0);
     info.add(&sub_lbl);
 
@@ -201,14 +201,14 @@ fn open_details_window(
 
     let root = ui::View::new();
     root.set_dock(ui::DOCK_FILL);
-    root.set_color(0xFF1E1E1E);
+    root.set_color(layout::bg());
 
     // ── App info section ────────────────────────────────────────────────
     let info_card = ui::Card::new();
     info_card.set_dock(ui::DOCK_TOP);
     info_card.set_size(368, 0);
     info_card.set_margin(16, 12, 16, 8);
-    info_card.set_color(0xFF2D2D30);
+    info_card.set_color(layout::card_bg());
     info_card.set_auto_size(true);
 
     build_detail_row(&info_card, "Name", name, true);
@@ -225,7 +225,7 @@ fn open_details_window(
     perm_header.set_dock(ui::DOCK_TOP);
     perm_header.set_size(368, 28);
     perm_header.set_font_size(14);
-    perm_header.set_text_color(0xFFFFFFFF);
+    perm_header.set_text_color(layout::text());
     perm_header.set_margin(16, 8, 16, 0);
     root.add(&perm_header);
 
@@ -233,7 +233,7 @@ fn open_details_window(
     perm_card.set_dock(ui::DOCK_TOP);
     perm_card.set_size(368, 0);
     perm_card.set_margin(16, 4, 16, 8);
-    perm_card.set_color(0xFF2D2D30);
+    perm_card.set_color(layout::card_bg());
     perm_card.set_auto_size(true);
 
     let uid = process::getuid();
@@ -250,7 +250,7 @@ fn open_details_window(
         let lbl = ui::Label::new(group.name);
         lbl.set_position(0, 10);
         lbl.set_size(200, 20);
-        lbl.set_text_color(0xFFCCCCCC);
+        lbl.set_text_color(layout::text());
         lbl.set_font_size(13);
         row.add(&lbl);
 
@@ -313,14 +313,14 @@ fn build_detail_row(card: &ui::Card, label_text: &str, value_text: &str, first: 
     let lbl = ui::Label::new(label_text);
     lbl.set_position(0, 6);
     lbl.set_size(80, 20);
-    lbl.set_text_color(0xFF808080);
+    lbl.set_text_color(layout::text_dim());
     lbl.set_font_size(12);
     row.add(&lbl);
 
     let val = ui::Label::new(value_text);
     val.set_position(90, 6);
     val.set_size(240, 20);
-    val.set_text_color(0xFFCCCCCC);
+    val.set_text_color(layout::text());
     val.set_font_size(12);
     row.add(&val);
 

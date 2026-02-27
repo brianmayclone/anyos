@@ -2,24 +2,31 @@
 //!
 //! Provides reusable building blocks for constructing settings page UIs with
 //! consistent styling: page headers, section cards, setting rows, info rows,
-//! toggles, and separators. All helpers follow the dark-mode theme
-//! (background 0xFF1E1E1E, card 0xFF2D2D30, accent 0xFF007AFF).
+//! toggles, and separators.  All colors come from the active theme palette.
 
 use libanyui_client as ui;
 #[allow(unused_imports)]
 use ui::Widget;
 
-// ── Theme colour constants ─────────────────────────────────────────────────
+// ── Theme colour accessors ────────────────────────────────────────────────
 
 /// Page/panel background.
-pub const BG: u32 = 0xFF1E1E1E;
+pub fn bg() -> u32 { ui::theme::colors().window_bg }
 /// Card background.
-pub const CARD_BG: u32 = 0xFF2D2D30;
+pub fn card_bg() -> u32 { ui::theme::colors().card_bg }
 /// Primary text colour.
-pub const TEXT: u32 = 0xFFCCCCCC;
+pub fn text() -> u32 { ui::theme::colors().text }
 /// Dimmed / secondary text colour.
-pub const TEXT_DIM: u32 = 0xFF969696;
+pub fn text_dim() -> u32 { ui::theme::colors().text_secondary }
 /// Accent colour (links, selection highlights).
+pub fn accent() -> u32 { ui::theme::colors().accent }
+
+// Keep old constants as aliases so pages that still reference them compile.
+// TODO: remove once all call sites are migrated.
+pub const BG: u32 = 0xFF1E1E1E;
+pub const CARD_BG: u32 = 0xFF2D2D30;
+pub const TEXT: u32 = 0xFFCCCCCC;
+pub const TEXT_DIM: u32 = 0xFF969696;
 pub const ACCENT: u32 = 0xFF007AFF;
 
 // ── Page header ─────────────────────────────────────────────────────────────
@@ -32,7 +39,7 @@ pub fn build_page_header(panel: &ui::View, title: &str, subtitle: &str) {
     title_lbl.set_dock(ui::DOCK_TOP);
     title_lbl.set_size(600, 40);
     title_lbl.set_font_size(24);
-    title_lbl.set_text_color(0xFFFFFFFF);
+    title_lbl.set_text_color(text());
     title_lbl.set_margin(24, 16, 24, 0);
     panel.add(&title_lbl);
 
@@ -41,7 +48,7 @@ pub fn build_page_header(panel: &ui::View, title: &str, subtitle: &str) {
         sub.set_dock(ui::DOCK_TOP);
         sub.set_size(600, 22);
         sub.set_font_size(12);
-        sub.set_text_color(0xFF808080);
+        sub.set_text_color(text_dim());
         sub.set_margin(24, 2, 24, 8);
         panel.add(&sub);
     }
@@ -50,29 +57,23 @@ pub fn build_page_header(panel: &ui::View, title: &str, subtitle: &str) {
 // ── Section cards ───────────────────────────────────────────────────────────
 
 /// Build a fixed-height section card inside `parent`.
-///
-/// The card is docked to the top with standard margins and the dark card
-/// background colour (0xFF2D2D30).
 pub fn build_section_card(parent: &ui::View, height: u32) -> ui::Card {
     let card = ui::Card::new();
     card.set_dock(ui::DOCK_TOP);
     card.set_size(600, height);
     card.set_margin(24, 8, 24, 8);
-    card.set_color(0xFF2D2D30);
+    card.set_color(card_bg());
     parent.add(&card);
     card
 }
 
 /// Build a section card that auto-sizes based on its content.
-///
-/// Same styling as [`build_section_card`] but with height 0 and auto-size
-/// enabled so the card grows to fit its children.
 pub fn build_auto_card(parent: &ui::View) -> ui::Card {
     let card = ui::Card::new();
     card.set_dock(ui::DOCK_TOP);
     card.set_size(600, 0);
     card.set_margin(24, 8, 24, 8);
-    card.set_color(0xFF2D2D30);
+    card.set_color(card_bg());
     card.set_auto_size(true);
     parent.add(&card);
     card
@@ -94,7 +95,7 @@ pub fn build_setting_row(card: &ui::Card, label_text: &str, first: bool) -> ui::
     let lbl = ui::Label::new(label_text);
     lbl.set_position(0, 12);
     lbl.set_size(200, 20);
-    lbl.set_text_color(0xFFCCCCCC);
+    lbl.set_text_color(text());
     lbl.set_font_size(13);
     row.add(&lbl);
 
@@ -105,14 +106,12 @@ pub fn build_setting_row(card: &ui::Card, label_text: &str, first: bool) -> ui::
 // ── Info rows ───────────────────────────────────────────────────────────────
 
 /// Build a read-only information row (label on the left, value on the right).
-///
-/// The value is displayed in a muted colour (0xFF969696).
 pub fn build_info_row(card: &ui::Card, label_text: &str, value_text: &str, first: bool) {
     let row = build_setting_row(card, label_text, first);
     let val = ui::Label::new(value_text);
     val.set_position(200, 12);
     val.set_size(340, 20);
-    val.set_text_color(0xFF969696);
+    val.set_text_color(text_dim());
     val.set_font_size(13);
     row.add(&val);
 }
@@ -137,8 +136,6 @@ pub fn build_info_row_colored(
 // ── Toggle control ──────────────────────────────────────────────────────────
 
 /// Add a toggle switch to an existing setting row, positioned at the right edge.
-///
-/// Returns the [`Toggle`](ui::Toggle) so the caller can attach event handlers.
 pub fn add_toggle_to_row(row: &ui::View, initial: bool) -> ui::Toggle {
     let toggle = ui::Toggle::new(initial);
     toggle.set_position(500, 8);

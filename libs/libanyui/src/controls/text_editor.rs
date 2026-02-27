@@ -434,7 +434,7 @@ impl Control for TextEditor {
         let tc = crate::theme::colors();
 
         // Background
-        crate::draw::fill_rect(surface, x, y, w, h, 0xFF1E1E1E);
+        crate::draw::fill_rect(surface, x, y, w, h, tc.editor_bg);
 
         // Clipped surface for content
         let clipped = surface.with_clip(x + 1, y + 1, w.saturating_sub(2), h.saturating_sub(2));
@@ -467,7 +467,7 @@ impl Control for TextEditor {
                     row_y,
                     w.saturating_sub(2).saturating_sub(self.gutter_width),
                     self.line_height,
-                    0xFF2A2D2E,
+                    tc.editor_line_hl,
                 );
             }
 
@@ -495,7 +495,7 @@ impl Control for TextEditor {
                                     row_y,
                                     sw,
                                     self.line_height,
-                                    0xFF264F78,
+                                    tc.editor_selection,
                                 );
                             }
                         }
@@ -513,7 +513,7 @@ impl Control for TextEditor {
                 let line_num_color = if row == self.cursor_row {
                     tc.text_secondary
                 } else {
-                    0xFF5A5A5A
+                    tc.text_disabled
                 };
                 crate::draw::draw_text_ex(
                     &clipped,
@@ -981,7 +981,7 @@ fn tokenize_line(line: &[u8], in_block_comment: bool, syn: &SyntaxDef) -> (Vec<C
     let mut spans = Vec::new();
     let mut i = 0;
     let mut in_comment = in_block_comment;
-    let default_color = 0xFFE6E6E6u32;
+    let default_color = crate::theme::colors().text;
 
     while i < line.len() {
         // Block comment continuation

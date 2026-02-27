@@ -39,7 +39,7 @@ impl Control for Toolbar {
         let h = self.base.h;
 
         // Background
-        crate::draw::fill_rect(surface, x, y, w, h, 0xFF2C2C2E);
+        crate::draw::fill_rect(surface, x, y, w, h, crate::theme::colors().toolbar_bg);
 
         // 1px bottom border (separator color from theme)
         let sep_color = crate::theme::colors().separator;

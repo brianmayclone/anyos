@@ -11,6 +11,7 @@ pub mod udp;
 pub mod dhcp;
 pub mod dns;
 pub mod tcp;
+pub mod interfaces;
 
 use types::{Ipv4Addr, MacAddr, NetConfig};
 use crate::sync::spinlock::Spinlock;
@@ -56,6 +57,13 @@ pub fn set_config(ip: Ipv4Addr, mask: Ipv4Addr, gateway: Ipv4Addr, dns: Ipv4Addr
     cfg.mask = mask;
     cfg.gateway = gateway;
     cfg.dns = dns;
+}
+
+/// Load network configuration files from disk (hosts + interfaces).
+/// Call after VFS is initialized and the root filesystem is mounted.
+pub fn load_config_files() {
+    dns::load_hosts();
+    interfaces::load_interfaces();
 }
 
 /// Poll for incoming packets and dispatch them through the protocol stack.

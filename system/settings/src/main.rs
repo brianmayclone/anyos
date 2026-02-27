@@ -45,6 +45,8 @@ struct AppState {
     sidebar_ids: Vec<u32>,
     active_idx: usize,
     content_scroll: ui::ScrollView,
+    sidebar_scroll_id: u32,
+    sidebar_panel_id: u32,
 }
 
 static mut APP: Option<AppState> = None;
@@ -73,13 +75,14 @@ fn main() {
     win.add(&split);
 
     // ── Left: Sidebar ───────────────────────────────────────────────
+    let tc = ui::theme::colors();
     let sidebar_scroll = ui::ScrollView::new();
     sidebar_scroll.set_dock(ui::DOCK_FILL);
-    sidebar_scroll.set_color(0xFF202020);
+    sidebar_scroll.set_color(tc.sidebar_bg);
 
     let sidebar_panel = ui::View::new();
     sidebar_panel.set_dock(ui::DOCK_FILL);
-    sidebar_panel.set_color(0xFF202020);
+    sidebar_panel.set_color(tc.sidebar_bg);
 
     // Title area
     let title_area = ui::View::new();
@@ -90,7 +93,7 @@ fn main() {
     title_lbl.set_position(16, 16);
     title_lbl.set_size(180, 28);
     title_lbl.set_font_size(18);
-    title_lbl.set_text_color(0xFFFFFFFF);
+    title_lbl.set_text_color(tc.text);
     title_area.add(&title_lbl);
 
     sidebar_panel.add(&title_area);
@@ -120,7 +123,7 @@ fn main() {
                 cat_label.set_dock(ui::DOCK_TOP);
                 cat_label.set_size(220, 22);
                 cat_label.set_font_size(11);
-                cat_label.set_text_color(0xFF888888);
+                cat_label.set_text_color(tc.text_disabled);
                 cat_label.set_margin(16, 4, 16, 2);
                 sidebar_panel.add(&cat_label);
             }
@@ -133,7 +136,7 @@ fn main() {
         item.set_size(220, 34);
         item.set_margin(4, 1, 4, 1);
         if i == 0 {
-            item.set_color(0xFF094771);
+            item.set_color(tc.selection);
         }
 
         // Icon (24x24, loaded from bundle resources)
@@ -151,7 +154,7 @@ fn main() {
         let lbl = ui::Label::new(&page.name);
         lbl.set_dock(ui::DOCK_FILL);
         lbl.set_font_size(13);
-        lbl.set_text_color(if i == 0 { 0xFFFFFFFF } else { 0xFFCCCCCC });
+        lbl.set_text_color(if i == 0 { tc.text } else { tc.text });
         lbl.set_padding(4, 8, 8, 8);
         item.add(&lbl);
 
@@ -166,7 +169,7 @@ fn main() {
     // ── Right: Content ScrollView ───────────────────────────────────
     let content_scroll = ui::ScrollView::new();
     content_scroll.set_dock(ui::DOCK_FILL);
-    content_scroll.set_color(0xFF1E1E1E);
+    content_scroll.set_color(tc.window_bg);
 
     split.add(&content_scroll);
 
@@ -177,6 +180,8 @@ fn main() {
             sidebar_ids,
             active_idx: 0,
             content_scroll,
+            sidebar_scroll_id: sidebar_scroll.id(),
+            sidebar_panel_id: sidebar_panel.id(),
         });
     }
 
@@ -213,15 +218,16 @@ fn switch_page(idx: usize) {
     s.active_idx = idx;
 
     // Update sidebar highlight
+    let tc = ui::theme::colors();
     if old_idx < s.sidebar_ids.len() {
         let old_lbl = ui::Control::from_id(s.sidebar_ids[old_idx]);
         old_lbl.set_color(0x00000000);
-        old_lbl.set_text_color(0xFFCCCCCC);
+        old_lbl.set_text_color(tc.text);
     }
     if idx < s.sidebar_ids.len() {
         let new_lbl = ui::Control::from_id(s.sidebar_ids[idx]);
-        new_lbl.set_color(0xFF094771);
-        new_lbl.set_text_color(0xFFFFFFFF);
+        new_lbl.set_color(tc.selection);
+        new_lbl.set_text_color(tc.text);
     }
 
     // Hide old panel
@@ -257,4 +263,37 @@ fn build_page(idx: usize) {
         BuiltinId::Update => page_update::build(scroll),
     };
     s.pages[idx].panel_id = panel_id;
+}
+
+/// Destroy all cached pages and rebuild the active one.
+///
+/// Called after a theme change so that every page picks up the new palette.
+pub(crate) fn invalidate_all_pages() {
+    let s = app();
+    let tc = ui::theme::colors();
+
+    // Update sidebar colours
+    ui::Control::from_id(s.sidebar_scroll_id).set_color(tc.sidebar_bg);
+    ui::Control::from_id(s.sidebar_panel_id).set_color(tc.sidebar_bg);
+    s.content_scroll.set_color(tc.window_bg);
+
+    // Update sidebar item highlights
+    for (i, &sid) in s.sidebar_ids.iter().enumerate() {
+        let item = ui::Control::from_id(sid);
+        if i == s.active_idx {
+            item.set_color(tc.selection);
+        } else {
+            item.set_color(0x00000000);
+        }
+    }
+
+    // Destroy all cached pages and rebuild active
+    let active = s.active_idx;
+    for page in &mut s.pages {
+        if page.panel_id != 0 {
+            ui::Control::from_id(page.panel_id).remove();
+            page.panel_id = 0;
+        }
+    }
+    build_page(active);
 }

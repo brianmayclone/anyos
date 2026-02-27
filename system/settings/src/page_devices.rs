@@ -75,7 +75,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     let panel = ui::View::new();
     panel.set_dock(ui::DOCK_TOP);
     panel.set_auto_size(true);
-    panel.set_color(layout::BG);
+    panel.set_color(layout::bg());
 
     layout::build_page_header(&panel, "Devices", "Connected hardware and drivers");
 
@@ -86,7 +86,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
         empty.set_dock(ui::DOCK_TOP);
         empty.set_size(552, 30);
         empty.set_font_size(13);
-        empty.set_text_color(layout::TEXT_DIM);
+        empty.set_text_color(layout::text_dim());
         empty.set_margin(24, 8, 24, 0);
         panel.add(&empty);
     } else {
@@ -130,7 +130,7 @@ fn build_device_group(panel: &ui::View, group_name: &str, devices: &[&DeviceInfo
     let header = ui::Label::new(&header_text);
     header.set_dock(ui::DOCK_FILL);
     header.set_font_size(13);
-    header.set_text_color(0xFFFFFFFF);
+    header.set_text_color(layout::text());
     header.set_padding(0, 4, 0, 4);
     header_row.add(&header);
 
@@ -148,7 +148,7 @@ fn build_device_group(panel: &ui::View, group_name: &str, devices: &[&DeviceInfo
         let path_lbl = ui::Label::new(&dev.path);
         path_lbl.set_position(0, 4);
         path_lbl.set_size(200, 18);
-        path_lbl.set_text_color(0xFFCCCCCC);
+        path_lbl.set_text_color(layout::text());
         path_lbl.set_font_size(13);
         row.add(&path_lbl);
 
@@ -156,7 +156,7 @@ fn build_device_group(panel: &ui::View, group_name: &str, devices: &[&DeviceInfo
         let drv_lbl = ui::Label::new(&dev.driver);
         drv_lbl.set_position(0, 24);
         drv_lbl.set_size(200, 16);
-        drv_lbl.set_text_color(0xFF808080);
+        drv_lbl.set_text_color(layout::text_dim());
         drv_lbl.set_font_size(11);
         row.add(&drv_lbl);
 
@@ -164,7 +164,7 @@ fn build_device_group(panel: &ui::View, group_name: &str, devices: &[&DeviceInfo
         let type_lbl = ui::Label::new(type_name(dev.dev_type));
         type_lbl.set_position(400, 12);
         type_lbl.set_size(120, 20);
-        type_lbl.set_text_color(layout::TEXT_DIM);
+        type_lbl.set_text_color(layout::text_dim());
         type_lbl.set_font_size(11);
         row.add(&type_lbl);
 

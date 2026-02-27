@@ -8,17 +8,6 @@ const TAB_HEIGHT: i32 = 28;
 const TAB_FONT_SIZE: u16 = 12;
 const TAB_GAP: i32 = 1;
 
-// Colors
-const BG_COLOR: u32 = 0xFF1E1E1E;
-const TAB_INACTIVE: u32 = 0xFF2D2D2D;
-const TAB_ACTIVE: u32 = 0xFF1E1E1E;
-const TAB_HOVER: u32 = 0xFF383838;
-const TEXT_INACTIVE: u32 = 0xFF969696;
-const TEXT_ACTIVE: u32 = 0xFFFFFFFF;
-const CLOSE_NORMAL: u32 = 0xFF808080;
-const CLOSE_HOVER_BG: u32 = 0xFF505050;
-const CLOSE_HOVER_FG: u32 = 0xFFFFFFFF;
-const BORDER_ACTIVE: u32 = 0xFF007ACC;
 
 pub struct TabBar {
     pub(crate) text_base: TextControlBase,
@@ -119,9 +108,10 @@ impl Control for TabBar {
         let w = self.text_base.base.w;
         let h = self.text_base.base.h;
         let active = self.text_base.base.state as usize;
+        let tc = crate::theme::colors();
 
         // Background
-        crate::draw::fill_rect(surface, x, y, w, h, BG_COLOR);
+        crate::draw::fill_rect(surface, x, y, w, h, tc.window_bg);
 
         let rects = self.tab_rects();
 
@@ -134,21 +124,21 @@ impl Control for TabBar {
 
             // Tab background
             let bg = if is_active {
-                TAB_ACTIVE
+                tc.window_bg
             } else if is_hovered {
-                TAB_HOVER
+                tc.tab_hover_bg
             } else {
-                TAB_INACTIVE
+                tc.tab_inactive_bg
             };
             crate::draw::fill_rect(surface, tab_x, y, tw as u32, h, bg);
 
             // Active indicator (bottom border)
             if is_active {
-                crate::draw::fill_rect(surface, tab_x, y + h as i32 - 2, tw as u32, 2, BORDER_ACTIVE);
+                crate::draw::fill_rect(surface, tab_x, y + h as i32 - 2, tw as u32, 2, tc.tab_border_active);
             }
 
             // Tab label text
-            let text_color = if is_active { TEXT_ACTIVE } else { TEXT_INACTIVE };
+            let text_color = if is_active { tc.text } else { tc.text_secondary };
             let text_x = tab_x + TAB_PAD_X;
             let text_y = y + (h as i32 - TAB_FONT_SIZE as i32) / 2;
             crate::draw::draw_text_sized(surface, text_x, text_y, text_color, label, TAB_FONT_SIZE);
@@ -162,9 +152,9 @@ impl Control for TabBar {
                 let close_hover = is_hovered && self.close_hovered;
                 if close_hover {
                     crate::draw::fill_rounded_rect(surface, close_x, close_y,
-                        CLOSE_BTN_SIZE as u32, CLOSE_BTN_SIZE as u32, 3, CLOSE_HOVER_BG);
+                        CLOSE_BTN_SIZE as u32, CLOSE_BTN_SIZE as u32, 3, tc.input_border);
                 }
-                let fg = if close_hover { CLOSE_HOVER_FG } else { CLOSE_NORMAL };
+                let fg = if close_hover { tc.text } else { tc.text_secondary };
                 // Draw "x" centered in the close button area
                 let cx = close_x + (CLOSE_BTN_SIZE - 6) / 2;
                 let cy = close_y + (CLOSE_BTN_SIZE - 10) / 2;

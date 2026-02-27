@@ -1,8 +1,9 @@
-//! Settings page: Display — GPU info, resolution picker, and wallpaper.
+//! Settings page: Display — theme, GPU info, resolution picker, and wallpaper.
 //!
-//! Combines display information (GPU driver, acceleration status, current
-//! resolution), an interactive resolution picker (dropdown), and a wallpaper
-//! browser that scans `/media/wallpapers/` and shows thumbnails.
+//! Combines theme selection (dark/light mode, accent color style), display
+//! information (GPU driver, acceleration status, current resolution), an
+//! interactive resolution picker (dropdown), and a wallpaper browser that
+//! scans `/media/wallpapers/` and shows thumbnails.
 
 use alloc::format;
 use alloc::string::String;
@@ -24,6 +25,19 @@ const THUMB_W: u32 = 120;
 const THUMB_H: u32 = 80;
 const MAX_WALLPAPERS: usize = 24;
 
+const STYLE_DIR: &str = "/System/compositor/themes/style";
+const CURRENT_STYLE_PATH: &str = "/System/compositor/themes/current_style";
+
+// ── Accent style entry ──────────────────────────────────────────────────────
+
+struct AccentStyle {
+    name: String,
+    dark_accent: u32,
+    dark_hover: u32,
+    light_accent: u32,
+    light_hover: u32,
+}
+
 // ── Wallpaper entry ─────────────────────────────────────────────────────────
 
 struct WallpaperEntry {
@@ -39,10 +53,10 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     let panel = ui::View::new();
     panel.set_dock(ui::DOCK_TOP);
     panel.set_auto_size(true);
-    panel.set_color(layout::BG);
+    panel.set_color(layout::bg());
 
     // ── Page header ─────────────────────────────────────────────────────
-    layout::build_page_header(&panel, "Display", "Monitor, resolution and wallpaper");
+    layout::build_page_header(&panel, "Display", "Theme, monitor, resolution and wallpaper");
 
     // ── Display Info card ───────────────────────────────────────────────
     let info_card = layout::build_auto_card(&panel);
@@ -59,10 +73,11 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     } else {
         "Not available"
     };
+    let tc = ui::theme::colors();
     let accel_color = if window::gpu_has_accel() {
-        0xFF4EC970
+        tc.success
     } else {
-        0xFFE06C75
+        tc.destructive
     };
     layout::build_info_row_colored(&info_card, "Acceleration", accel, accel_color, false);
 
@@ -72,6 +87,9 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     let (sw, sh) = window::screen_size();
     let res_str = format!("{} x {}", sw, sh);
     layout::build_info_row(&info_card, "Current Resolution", &res_str, false);
+
+    // ── Theme Appearance card ─────────────────────────────────────────────
+    build_theme_card(&panel);
 
     // ── Resolution picker card ──────────────────────────────────────────
     let resolutions = window::list_resolutions();
@@ -122,7 +140,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     let hdr_lbl = ui::Label::new("Wallpaper");
     hdr_lbl.set_position(0, 8);
     hdr_lbl.set_size(200, 20);
-    hdr_lbl.set_text_color(0xFFFFFFFF);
+    hdr_lbl.set_text_color(layout::text());
     hdr_lbl.set_font_size(14);
     hdr_row.add(&hdr_lbl);
     wp_card.add(&hdr_row);
@@ -132,7 +150,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
         empty.set_dock(ui::DOCK_TOP);
         empty.set_size(552, 30);
         empty.set_font_size(12);
-        empty.set_text_color(0xFF969696);
+        empty.set_text_color(layout::text_dim());
         empty.set_margin(24, 4, 24, 8);
         wp_card.add(&empty);
     } else {
@@ -144,6 +162,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
         flow.set_size(552, flow_h);
         flow.set_margin(16, 4, 16, 8);
 
+        let tc = ui::theme::colors();
         for wp in &wallpapers {
             let cell = ui::View::new();
             cell.set_size(THUMB_W + 8, THUMB_H + 28);
@@ -156,7 +175,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
             if !wp.thumbnail.is_empty() {
                 canvas.copy_pixels_from(&wp.thumbnail);
             } else {
-                canvas.clear(0xFF3A3A3E);
+                canvas.clear(tc.placeholder_bg);
             }
 
             let path = wp.path.clone();
@@ -170,7 +189,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
             name_label.set_position(4, THUMB_H as i32 + 6);
             name_label.set_size(THUMB_W, 18);
             name_label.set_font_size(10);
-            name_label.set_text_color(0xFF969696);
+            name_label.set_text_color(layout::text_dim());
             cell.add(&name_label);
 
             flow.add(&cell);
@@ -181,6 +200,233 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
 
     parent.add(&panel);
     panel.id()
+}
+
+// ── Theme Appearance card ────────────────────────────────────────────────────
+
+/// Build the theme card with Dark/Light DropDown and accent color swatches.
+fn build_theme_card(panel: &ui::View) {
+    let card = layout::build_auto_card(panel);
+
+    // ── Theme mode DropDown (Dark / Light) ──────────────────────────
+    let theme_row = layout::build_setting_row(&card, "Theme", true);
+
+    let theme_dd = ui::DropDown::new("Dark|Light");
+    theme_dd.set_position(200, 8);
+    theme_dd.set_size(280, 28);
+    theme_dd.set_selected_index(ui::get_theme()); // 0=dark, 1=light
+
+    theme_dd.on_selection_changed(move |e| {
+        ui::set_theme(e.index == 1);
+        crate::invalidate_all_pages();
+    });
+    theme_row.add(&theme_dd);
+
+    layout::build_separator(&card);
+
+    // ── Accent color style swatches ─────────────────────────────────
+    let styles = scan_accent_styles();
+    if styles.is_empty() {
+        return;
+    }
+
+    let style_row = layout::build_setting_row(&card, "Accent", false);
+
+    // Read current style preference to highlight the active swatch
+    let current_style = read_current_style_name();
+
+    let flow = ui::FlowPanel::new();
+    flow.set_position(200, 4);
+    flow.set_size(340, 36);
+
+    let is_light = ui::theme::is_light();
+
+    for style in &styles {
+        let swatch_color = if is_light {
+            style.light_accent
+        } else {
+            style.dark_accent
+        };
+
+        let swatch = ui::Canvas::new(24, 24);
+        swatch.set_size(24, 24);
+        swatch.set_margin(2, 2, 2, 2);
+
+        // Build pixel buffer with optional selection border
+        let is_selected = style.name == current_style;
+        let border_color = layout::text();
+        let mut pixels = vec![swatch_color; 24 * 24];
+        if is_selected {
+            for y in 0u32..24 {
+                for x in 0u32..24 {
+                    if x < 2 || x >= 22 || y < 2 || y >= 22 {
+                        pixels[(y * 24 + x) as usize] = border_color;
+                    }
+                }
+            }
+        }
+        swatch.copy_pixels_from(&pixels);
+
+        // Capture values for closure
+        let da = style.dark_accent;
+        let dh = style.dark_hover;
+        let la = style.light_accent;
+        let lh = style.light_hover;
+        let name = style.name.clone();
+
+        swatch.on_click(move |_| {
+            ui::theme::apply_accent_style(da, dh, la, lh);
+            save_current_style(&name);
+            crate::invalidate_all_pages();
+        });
+
+        flow.add(&swatch);
+    }
+
+    style_row.add(&flow);
+
+    // Bottom padding
+    let pad = ui::View::new();
+    pad.set_dock(ui::DOCK_TOP);
+    pad.set_size(552, 8);
+    card.add(&pad);
+}
+
+// ── Accent style scanning ────────────────────────────────────────────────────
+
+/// Scan the style directory and parse all `.conf` files.
+fn scan_accent_styles() -> Vec<AccentStyle> {
+    let mut styles = Vec::new();
+
+    let mut dir_buf = [0u8; 64 * 16];
+    let count = fs::readdir(STYLE_DIR, &mut dir_buf);
+    if count == u32::MAX || count == 0 {
+        return styles;
+    }
+
+    let mut names: Vec<String> = Vec::new();
+    for i in 0..count as usize {
+        let raw = &dir_buf[i * 64..(i + 1) * 64];
+        let entry_type = raw[0];
+        let name_len = raw[1] as usize;
+        if entry_type != 0 || name_len == 0 {
+            continue;
+        }
+        let nlen = name_len.min(56);
+        let name = match core::str::from_utf8(&raw[8..8 + nlen]) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        if name.ends_with(".conf") {
+            names.push(String::from(name));
+        }
+    }
+
+    names.sort_unstable();
+
+    for filename in &names {
+        let path = format!("{}/{}", STYLE_DIR, filename);
+        let style_name = filename
+            .strip_suffix(".conf")
+            .unwrap_or(filename);
+
+        let mut buf = [0u8; 512];
+        let fd = fs::open(&path, 0);
+        if fd == u32::MAX {
+            continue;
+        }
+        let n = fs::read(fd, &mut buf) as usize;
+        fs::close(fd);
+        if n == 0 {
+            continue;
+        }
+
+        if let Some((da, dh, la, lh)) = parse_style_conf(&buf[..n]) {
+            styles.push(AccentStyle {
+                name: String::from(style_name),
+                dark_accent: da,
+                dark_hover: dh,
+                light_accent: la,
+                light_hover: lh,
+            });
+        }
+    }
+
+    styles
+}
+
+/// Parse an accent style `.conf` file, extracting the 4 accent color values.
+fn parse_style_conf(data: &[u8]) -> Option<(u32, u32, u32, u32)> {
+    let text = core::str::from_utf8(data).ok()?;
+    let mut da = None;
+    let mut dh = None;
+    let mut la = None;
+    let mut lh = None;
+
+    for line in text.split('\n') {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        let eq = line.find('=')?;
+        let key = line[..eq].trim();
+        let val_str = line[eq + 1..].trim();
+        let val = parse_hex_color(val_str)?;
+
+        match key {
+            "ACCENT_DARK" => da = Some(val),
+            "ACCENT_HOVER_DARK" => dh = Some(val),
+            "ACCENT_LIGHT" => la = Some(val),
+            "ACCENT_HOVER_LIGHT" => lh = Some(val),
+            _ => {}
+        }
+    }
+
+    Some((da?, dh?, la?, lh?))
+}
+
+/// Parse a `0xAARRGGBB` hex string.
+fn parse_hex_color(s: &str) -> Option<u32> {
+    let hex = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"))?;
+    if hex.len() != 8 { return None; }
+    let mut val: u32 = 0;
+    for &b in hex.as_bytes() {
+        let digit = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => return None,
+        };
+        val = (val << 4) | digit as u32;
+    }
+    Some(val)
+}
+
+// ── Style preference persistence ─────────────────────────────────────────────
+
+/// Read the current accent style name from disk.
+fn read_current_style_name() -> String {
+    let fd = fs::open(CURRENT_STYLE_PATH, 0);
+    if fd == u32::MAX {
+        return String::from("blue");
+    }
+    let mut buf = [0u8; 64];
+    let n = fs::read(fd, &mut buf) as usize;
+    fs::close(fd);
+    if n == 0 {
+        return String::from("blue");
+    }
+    match core::str::from_utf8(&buf[..n]) {
+        Ok(s) => String::from(s.trim()),
+        Err(_) => String::from("blue"),
+    }
+}
+
+/// Save the accent style name to disk for persistence across restarts.
+fn save_current_style(name: &str) {
+    let fd = fs::open(CURRENT_STYLE_PATH, fs::O_CREATE | fs::O_TRUNC);
+    if fd != u32::MAX {
+        fs::write(fd, name.as_bytes());
+        fs::close(fd);
+    }
 }
 
 // ── Wallpaper scanning ──────────────────────────────────────────────────────

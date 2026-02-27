@@ -18,7 +18,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     let panel = ui::View::new();
     panel.set_dock(ui::DOCK_TOP);
     panel.set_auto_size(true);
-    panel.set_color(layout::BG);
+    panel.set_color(layout::bg());
 
     layout::build_page_header(&panel, "General", "System preferences and identity");
 
@@ -62,7 +62,7 @@ fn build_hostname_card(panel: &ui::View) {
     let val_lbl = ui::Label::new(hostname);
     val_lbl.set_position(200, 12);
     val_lbl.set_size(200, 20);
-    val_lbl.set_text_color(layout::TEXT_DIM);
+    val_lbl.set_text_color(layout::text_dim());
     val_lbl.set_font_size(13);
     row.add(&val_lbl);
 
@@ -82,14 +82,14 @@ fn open_rename_dialog(hostname_label_id: u32) {
 
     let root = ui::View::new();
     root.set_dock(ui::DOCK_FILL);
-    root.set_color(layout::BG);
+    root.set_color(layout::bg());
 
     // Instruction
     let instr = ui::Label::new("Enter a new name for this computer:");
     instr.set_dock(ui::DOCK_TOP);
     instr.set_size(320, 24);
     instr.set_font_size(13);
-    instr.set_text_color(layout::TEXT);
+    instr.set_text_color(layout::text());
     instr.set_margin(20, 20, 20, 0);
     root.add(&instr);
 
@@ -203,6 +203,7 @@ fn build_preferences_card(panel: &ui::View) {
     let dark_toggle = layout::add_toggle_to_row(&dark_row, dark_on);
     dark_toggle.on_checked_changed(|e| {
         ui::set_theme(!e.checked);
+        crate::invalidate_all_pages();
     });
 
     layout::build_separator(&card);
@@ -266,7 +267,7 @@ fn build_keyboard_card(panel: &ui::View) {
     let lbl = ui::Label::new("Layout");
     lbl.set_position(0, 12);
     lbl.set_size(120, 20);
-    lbl.set_text_color(layout::TEXT);
+    lbl.set_text_color(layout::text());
     lbl.set_font_size(13);
     row.add(&lbl);
 

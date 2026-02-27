@@ -230,10 +230,19 @@ pub fn run_once() -> u32 {
         }
     }
 
-    // ── Phase 1.2: Process window lifecycle broadcasts (0x0060/0x0061) ──
+    // ── Phase 1.2: Process broadcasts (theme change, window lifecycle) ──
     for ev in all_events.iter() {
         if ev[0] == 0 { continue; }
         match ev[0] {
+            // EVT_THEME_CHANGED (0x0050): mark all windows dirty so every
+            // control re-renders with the new theme palette.
+            0x0050 => {
+                for &win_id in &st.windows {
+                    if let Some(idx) = crate::control::find_idx(&st.controls, win_id) {
+                        mark_tree_dirty(&mut st.controls, idx);
+                    }
+                }
+            }
             0x0060 => {
                 // EVT_WINDOW_OPENED: ev[1] = app_tid
                 if let Some((cb, ud)) = st.on_window_opened {
@@ -1380,6 +1389,21 @@ fn render_tree(
     // ScrollView: render scrollbar AFTER children so it isn't painted over.
     if controls[idx].kind() == ControlKind::ScrollView {
         controls[idx].render(surface, parent_abs_x, parent_abs_y);
+    }
+}
+
+// ── Theme-change repaint helper ─────────────────────────────────────
+
+/// Recursively mark a control and all its descendants as dirty.
+fn mark_tree_dirty(controls: &mut [Box<dyn Control>], idx: usize) {
+    controls[idx].base_mut().mark_dirty();
+    let mut child_buf = [0u32; 64];
+    let n = controls[idx].children().len().min(64);
+    child_buf[..n].copy_from_slice(&controls[idx].children()[..n]);
+    for i in 0..n {
+        if let Some(ci) = control::find_idx(controls, child_buf[i]) {
+            mark_tree_dirty(controls, ci);
+        }
     }
 }
 

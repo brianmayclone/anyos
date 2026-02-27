@@ -53,6 +53,45 @@ pub fn is_nic_available() -> bool {
     syscall2(SYS_NET_CONFIG, 5, 0) == 1
 }
 
+/// Reload the hosts file (`/System/etc/network/hosts`) from disk.
+/// Returns 0 on success.
+pub fn reload_hosts() -> u32 {
+    syscall2(SYS_NET_CONFIG, 6, 0)
+}
+
+/// Get interface configurations from the kernel.
+///
+/// Each interface entry is 64 bytes:
+///   - `[0]`:      method (0=dhcp, 1=static)
+///   - `[1]`:      name length
+///   - `[2..18]`:  name (max 16 chars)
+///   - `[18..22]`: address
+///   - `[22..26]`: netmask
+///   - `[26..30]`: gateway
+///   - `[30..34]`: dns
+///   - `[34..64]`: reserved
+///
+/// Returns the number of interface entries written.
+pub fn get_interfaces(buf: &mut [u8; 512]) -> u32 {
+    syscall2(SYS_NET_CONFIG, 7, buf.as_mut_ptr() as u64)
+}
+
+/// Save and apply interface configurations.
+///
+/// `buf` layout: `[count:u32, entries: count*64 bytes]` (same 64-byte format
+/// as returned by `get_interfaces`).
+///
+/// Returns 0 on success.
+pub fn set_interfaces(buf: &[u8]) -> u32 {
+    syscall2(SYS_NET_CONFIG, 8, buf.as_ptr() as u64)
+}
+
+/// Get the registered NIC driver name.
+/// Returns the number of bytes written, or 0 if no NIC is detected.
+pub fn nic_driver_name(buf: &mut [u8; 64]) -> u32 {
+    syscall2(SYS_NET_CONFIG, 9, buf.as_mut_ptr() as u64)
+}
+
 /// Get ARP table. Each entry 12 bytes: [ip:4, mac:6, pad:2]. Returns count.
 pub fn arp(buf: &mut [u8]) -> u32 {
     syscall2(SYS_NET_ARP, buf.as_mut_ptr() as u64, buf.len() as u64)
