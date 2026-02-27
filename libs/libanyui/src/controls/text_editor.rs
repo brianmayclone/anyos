@@ -136,6 +136,16 @@ impl SyntaxDef {
     }
 }
 
+// ── Undo / Redo ─────────────────────────────────────────────────────
+
+const MAX_UNDO: usize = 50;
+
+struct UndoState {
+    lines: Vec<Vec<u8>>,
+    cursor_row: usize,
+    cursor_col: usize,
+}
+
 // ── TextEditor ───────────────────────────────────────────────────────
 
 pub struct TextEditor {
@@ -155,6 +165,8 @@ pub struct TextEditor {
     pub(crate) font_id: u16,
     pub(crate) font_size: u16,
     pub(crate) char_width: u32,
+    undo_stack: Vec<UndoState>,
+    redo_stack: Vec<UndoState>,
 }
 
 impl TextEditor {
@@ -178,6 +190,63 @@ impl TextEditor {
             font_id: 4,
             font_size: 13,
             char_width,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+        }
+    }
+
+    /// Snapshot current state onto the undo stack before a mutation.
+    pub(crate) fn push_undo(&mut self) {
+        if self.undo_stack.len() >= MAX_UNDO {
+            self.undo_stack.remove(0);
+        }
+        self.undo_stack.push(UndoState {
+            lines: self.lines.clone(),
+            cursor_row: self.cursor_row,
+            cursor_col: self.cursor_col,
+        });
+        // Any new edit clears the redo history.
+        self.redo_stack.clear();
+    }
+
+    /// Undo the last edit.
+    fn undo(&mut self) -> bool {
+        if let Some(state) = self.undo_stack.pop() {
+            // Save current state to redo stack.
+            self.redo_stack.push(UndoState {
+                lines: core::mem::replace(&mut self.lines, state.lines),
+                cursor_row: self.cursor_row,
+                cursor_col: self.cursor_col,
+            });
+            self.cursor_row = state.cursor_row;
+            self.cursor_col = state.cursor_col;
+            self.selection = None;
+            self.update_gutter_width();
+            self.ensure_cursor_visible();
+            self.base.mark_dirty();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Redo the last undone edit.
+    fn redo(&mut self) -> bool {
+        if let Some(state) = self.redo_stack.pop() {
+            self.undo_stack.push(UndoState {
+                lines: core::mem::replace(&mut self.lines, state.lines),
+                cursor_row: self.cursor_row,
+                cursor_col: self.cursor_col,
+            });
+            self.cursor_row = state.cursor_row;
+            self.cursor_col = state.cursor_col;
+            self.selection = None;
+            self.update_gutter_width();
+            self.ensure_cursor_visible();
+            self.base.mark_dirty();
+            true
+        } else {
+            false
         }
     }
 
@@ -198,6 +267,8 @@ impl TextEditor {
         self.scroll_y = 0;
         self.scroll_x = 0;
         self.selection = None;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
         self.update_gutter_width();
         self.base.mark_dirty();
     }
@@ -691,6 +762,7 @@ impl Control for TextEditor {
             // Ctrl+X: cut
             if char_code == b'x' as u32 || char_code == b'X' as u32 {
                 if let Some(text) = self.extract_selected_text() {
+                    self.push_undo();
                     crate::compositor::clipboard_set(&text);
                     self.delete_selection();
                 }
@@ -699,11 +771,26 @@ impl Control for TextEditor {
             // Ctrl+V: paste
             if char_code == b'v' as u32 || char_code == b'V' as u32 {
                 if let Some(data) = crate::compositor::clipboard_get() {
+                    self.push_undo();
                     self.delete_selection();
                     self.clamp_cursor();
                     self.insert_text_at_cursor(&data);
                 }
                 return EventResponse::CHANGED;
+            }
+            // Ctrl+Z: undo
+            if char_code == b'z' as u32 || char_code == b'Z' as u32 {
+                if self.undo() {
+                    return EventResponse::CHANGED;
+                }
+                return EventResponse::CONSUMED;
+            }
+            // Ctrl+Y: redo
+            if char_code == b'y' as u32 || char_code == b'Y' as u32 {
+                if self.redo() {
+                    return EventResponse::CHANGED;
+                }
+                return EventResponse::CONSUMED;
             }
             // Ctrl+A: select all
             if char_code == b'a' as u32 || char_code == b'A' as u32 {
@@ -785,6 +872,7 @@ impl Control for TextEditor {
         // ── Backspace / Delete with selection: delete selection ──
         if keycode == KEY_BACKSPACE || keycode == KEY_DELETE {
             if self.selection.as_ref().map_or(false, |s| !s.is_empty()) {
+                self.push_undo();
                 self.delete_selection();
                 return EventResponse::CHANGED;
             }
@@ -794,6 +882,14 @@ impl Control for TextEditor {
         if matches!(keycode, KEY_LEFT | KEY_RIGHT | KEY_UP | KEY_DOWN | KEY_HOME | KEY_END
                     | KEY_PAGE_UP | KEY_PAGE_DOWN) {
             self.selection = None;
+        }
+
+        // ── Push undo before any text mutation ──
+        if (char_code >= 0x20 && char_code < 0x7F)
+            || keycode == KEY_ENTER || keycode == KEY_TAB
+            || keycode == KEY_BACKSPACE || keycode == KEY_DELETE
+        {
+            self.push_undo();
         }
 
         // ── Delete selection before inserting text ──

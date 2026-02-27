@@ -7,20 +7,39 @@
 #![no_main]
 
 use anyos_std::{Vec, vec};
-use anyos_std::ui::window;
-use uisys_client::*;
+use libanyui_client as anyui;
+use anyui::Widget;
 
 anyos_std::entry!(main);
 
-const NAVBAR_H: i32 = 44;
-const PROGRESS_H: i32 = 32;
-
-// Dark theme colors
 const BG: u32 = 0xFF1E1E1E;
-const PROGRESS_BG: u32 = 0xFF2A2A2A;
-const PROGRESS_FG: u32 = 0xFF0A84FF; // macOS blue accent
-const TEXT_COLOR: u32 = 0xFFE6E6E6;
-const TEXT_DIM: u32 = 0xFF888888;
+const CONTROLS_H: u32 = 32;
+const KEY_SPACE: u32 = 0x104;
+
+struct AppState {
+    canvas: anyui::Canvas,
+    data: Vec<u8>,
+    num_frames: u32,
+    fps: u32,
+    vid_w: usize,
+    vid_h: usize,
+    pixels: Vec<u32>,
+    scratch: Vec<u8>,
+    render_buf: Vec<u32>,
+    current_frame: u32,
+    playing: bool,
+    looping: bool,
+    start_tick: u32,
+    pause_elapsed: u32,
+    tick_hz: u32,
+    needs_redraw: bool,
+    lbl_status: anyui::Label,
+    lbl_time: anyui::Label,
+    progress: anyui::ProgressBar,
+}
+
+static mut APP: Option<AppState> = None;
+fn app() -> &'static mut AppState { unsafe { APP.as_mut().unwrap() } }
 
 fn main() {
     let mut args_buf = [0u8; 256];
@@ -32,7 +51,6 @@ fn main() {
         return;
     }
 
-    // Read video file
     let data = match read_file(path) {
         Some(d) => d,
         None => {
@@ -41,7 +59,6 @@ fn main() {
         }
     };
 
-    // Probe video
     let info = match libimage_client::video_probe(&data) {
         Some(i) => i,
         None => {
@@ -52,310 +69,221 @@ fn main() {
 
     let vid_w = info.width as usize;
     let vid_h = info.height as usize;
+    let pixels = vec![0u32; vid_w * vid_h];
+    let scratch = vec![0u8; info.scratch_needed as usize];
+    let num_frames = info.num_frames;
+    let fps = info.fps;
 
-    // Allocate pixel + scratch buffers
-    let mut pixels = vec![0u32; vid_w * vid_h];
-    let mut scratch = vec![0u8; info.scratch_needed as usize];
-
-    // Extract filename
     let filename = path.rsplit('/').next().unwrap_or(path);
 
-    // Window dimensions
-    let (scr_w, scr_h) = window::screen_size();
+    if !anyui::init() { return; }
+
+    let (scr_w, scr_h) = anyui::screen_size();
     let (scr_w, scr_h) = if scr_w == 0 || scr_h == 0 { (1024, 768) } else { (scr_w, scr_h) };
-
     let win_w = (vid_w as u32 + 2).min(scr_w).max(200);
-    let win_h = (vid_h as u32 + NAVBAR_H as u32 + PROGRESS_H as u32 + 2).min(scr_h).max(150);
+    let win_h = (vid_h as u32 + CONTROLS_H + 2).min(scr_h).max(150);
 
-    // Center on screen
-    let wx = scr_w.saturating_sub(win_w) / 2;
-    let wy = scr_h.saturating_sub(win_h) / 2;
-
-    // Build title
     let mut title_buf = [0u8; 128];
-    let title = format_title(&mut title_buf, filename, vid_w, vid_h, info.fps);
+    let title = format_title(&mut title_buf, filename, vid_w, vid_h, fps);
 
-    let win = window::create_ex(title, wx as u16, wy as u16, win_w as u16, win_h as u16, 0);
-    if win == u32::MAX {
-        anyos_std::println!("videoplayer: failed to create window");
-        return;
-    }
+    let win = anyui::Window::new(title, -1, -1, win_w, win_h);
 
-    // Set up menu bar
-    let mut mb = window::MenuBarBuilder::new()
-        .menu("File")
-            .item(1, "Close", 0)
-        .end_menu()
-        .menu("Playback")
-            .item(10, "Play/Pause", 0)
-            .item(11, "Loop", 0)
-        .end_menu();
-    let data_menu = mb.build();
-    window::set_menu(win, data_menu);
+    // Bottom controls bar (DOCK_BOTTOM, add before DOCK_FILL)
+    let controls = anyui::View::new();
+    controls.set_dock(anyui::DOCK_BOTTOM);
+    controls.set_size(win_w, CONTROLS_H);
+    controls.set_color(0xFF2A2A2A);
 
-    let (mut cur_w, mut cur_h) = window::get_size(win).unwrap_or((win_w, win_h));
+    let lbl_status = anyui::Label::new("||");
+    lbl_status.set_position(8, 8);
+    lbl_status.set_size(20, 16);
+    lbl_status.set_text_color(0xFFE6E6E6);
+    controls.add(&lbl_status);
 
-    // Playback state
-    let mut playing = true;
-    let mut current_frame: u32 = 0;
+    let lbl_time = anyui::Label::new("0:00 / 0:00");
+    lbl_time.set_position(28, 8);
+    lbl_time.set_size(80, 16);
+    lbl_time.set_text_color(0xFF888888);
+    controls.add(&lbl_time);
+
+    let progress = anyui::ProgressBar::new(0);
+    progress.set_position(110, 12);
+    progress.set_size(win_w.saturating_sub(120), 6);
+    controls.add(&progress);
+
+    win.add(&controls);
+
+    // Canvas for video frames (DOCK_FILL, add last)
+    let canvas = anyui::Canvas::new(win_w, win_h.saturating_sub(CONTROLS_H));
+    canvas.set_dock(anyui::DOCK_FILL);
+    canvas.set_color(BG);
+    win.add(&canvas);
+
     let tick_hz = anyos_std::sys::tick_hz();
-    let mut start_tick = anyos_std::sys::uptime();
-    let mut pause_elapsed: u32 = 0; // ticks elapsed when paused
-    let mut looping = true;
 
-    // Decode and display first frame
-    decode_and_blit(win, &data, &info, 0, &mut pixels, &mut scratch, cur_w);
-    draw_chrome(win, cur_w, cur_h, filename, &info, 0, playing);
-    window::present(win);
+    unsafe {
+        APP = Some(AppState {
+            canvas,
+            data,
+            num_frames,
+            fps,
+            vid_w,
+            vid_h,
+            pixels,
+            scratch,
+            render_buf: Vec::new(),
+            current_frame: 0,
+            playing: true,
+            looping: true,
+            start_tick: anyos_std::sys::uptime(),
+            pause_elapsed: 0,
+            tick_hz,
+            needs_redraw: true,
+            lbl_status,
+            lbl_time,
+            progress,
+        });
+    }
 
-    loop {
-        let t0 = anyos_std::sys::uptime_ms();
-        let mut event_raw = [0u32; 5];
-        while window::get_event(win, &mut event_raw) != 0 {
-            let ev = UiEvent::from_raw(&event_raw);
-
-            match ev.event_type {
-                EVENT_KEY_DOWN => {
-                    match ev.key_code() {
-                        KEY_ESCAPE => {
-                            window::destroy(win);
-                            return;
-                        }
-                        KEY_SPACE => {
-                            if playing {
-                                // Pause: record elapsed ticks
-                                pause_elapsed = anyos_std::sys::uptime().wrapping_sub(start_tick);
-                                playing = false;
-                            } else {
-                                // Resume: adjust start_tick so elapsed stays continuous
-                                start_tick = anyos_std::sys::uptime().wrapping_sub(pause_elapsed);
-                                playing = true;
-                            }
-                            draw_chrome(win, cur_w, cur_h, filename, &info, current_frame, playing);
-                            window::present(win);
-                        }
-                        KEY_LEFT => {
-                            // Seek back 1 second
-                            let frames_back = info.fps;
-                            current_frame = current_frame.saturating_sub(frames_back);
-                            seek_to(win, &data, &info, current_frame, &mut pixels, &mut scratch,
-                                    cur_w, cur_h, filename, playing,
-                                    &mut start_tick, &mut pause_elapsed, tick_hz);
-                        }
-                        KEY_RIGHT => {
-                            // Seek forward 1 second
-                            let frames_fwd = info.fps;
-                            current_frame = (current_frame + frames_fwd).min(info.num_frames - 1);
-                            seek_to(win, &data, &info, current_frame, &mut pixels, &mut scratch,
-                                    cur_w, cur_h, filename, playing,
-                                    &mut start_tick, &mut pause_elapsed, tick_hz);
-                        }
-                        _ => {}
-                    }
-                }
-                EVENT_RESIZE => {
-                    let new_w = ev.p1;
-                    let new_h = ev.p2;
-                    if new_w != cur_w || new_h != cur_h {
-                        cur_w = new_w;
-                        cur_h = new_h;
-                        // Redraw current frame at new size
-                        window::fill_rect(win, 0, 0, cur_w as u16, cur_h as u16, BG);
-                        decode_and_blit(win, &data, &info, current_frame, &mut pixels, &mut scratch, cur_w);
-                        draw_chrome(win, cur_w, cur_h, filename, &info, current_frame, playing);
-                        window::present(win);
-                    }
-                }
-                window::EVENT_MENU_ITEM => {
-                    let item_id = ev.p2;
-                    match item_id {
-                        1 => { window::destroy(win); return; } // Close
-                        10 => { // Play/Pause toggle
-                            if playing {
-                                pause_elapsed = anyos_std::sys::uptime().wrapping_sub(start_tick);
-                                playing = false;
-                            } else {
-                                start_tick = anyos_std::sys::uptime().wrapping_sub(pause_elapsed);
-                                playing = true;
-                            }
-                            draw_chrome(win, cur_w, cur_h, filename, &info, current_frame, playing);
-                            window::present(win);
-                        }
-                        11 => { looping = !looping; } // Toggle loop
-                        _ => {}
-                    }
-                }
-                EVENT_WINDOW_CLOSE => {
-                    window::destroy(win);
-                    return;
-                }
-                _ => {}
-            }
-        }
-
-        // Advance playback
-        if playing {
-            let elapsed = anyos_std::sys::uptime().wrapping_sub(start_tick);
-            let target_frame = (elapsed as u64 * info.fps as u64 / tick_hz as u64) as u32;
-            let target_frame = target_frame.min(info.num_frames - 1);
-
-            if target_frame != current_frame {
-                current_frame = target_frame;
-                decode_and_blit(win, &data, &info, current_frame, &mut pixels, &mut scratch, cur_w);
-                draw_chrome(win, cur_w, cur_h, filename, &info, current_frame, playing);
-                window::present(win);
-            }
-
-            if current_frame >= info.num_frames - 1 {
-                if looping {
-                    // Loop: restart
-                    current_frame = 0;
-                    start_tick = anyos_std::sys::uptime();
-                    decode_and_blit(win, &data, &info, 0, &mut pixels, &mut scratch, cur_w);
-                    draw_chrome(win, cur_w, cur_h, filename, &info, 0, playing);
-                    window::present(win);
+    // Keyboard events
+    win.on_key_down(|ke| {
+        match ke.keycode {
+            anyui::KEY_ESCAPE => anyui::quit(),
+            KEY_SPACE => {
+                let a = app();
+                if a.playing {
+                    a.pause_elapsed = anyos_std::sys::uptime().wrapping_sub(a.start_tick);
+                    a.playing = false;
+                    a.lbl_status.set_text(">");
                 } else {
-                    playing = false;
-                    draw_chrome(win, cur_w, cur_h, filename, &info, current_frame, playing);
-                    window::present(win);
+                    a.start_tick = anyos_std::sys::uptime().wrapping_sub(a.pause_elapsed);
+                    a.playing = true;
+                    a.lbl_status.set_text("||");
+                }
+            }
+            anyui::KEY_LEFT => {
+                let a = app();
+                let back = a.fps;
+                a.current_frame = a.current_frame.saturating_sub(back);
+                seek_to_current();
+            }
+            anyui::KEY_RIGHT => {
+                let a = app();
+                let fwd = a.fps;
+                a.current_frame = (a.current_frame + fwd).min(a.num_frames - 1);
+                seek_to_current();
+            }
+            _ => {}
+        }
+    });
+
+    win.on_close(|_| anyui::quit());
+
+    // Playback timer (16ms ~ 60fps)
+    anyui::set_timer(16, || {
+        let a = app();
+        if a.playing {
+            let elapsed = anyos_std::sys::uptime().wrapping_sub(a.start_tick);
+            let target_frame = (elapsed as u64 * a.fps as u64 / a.tick_hz as u64) as u32;
+            let target_frame = target_frame.min(a.num_frames - 1);
+
+            if target_frame != a.current_frame {
+                a.current_frame = target_frame;
+                a.needs_redraw = true;
+            }
+
+            if a.current_frame >= a.num_frames - 1 {
+                if a.looping {
+                    a.current_frame = 0;
+                    a.start_tick = anyos_std::sys::uptime();
+                    a.needs_redraw = true;
+                } else {
+                    a.playing = false;
+                    a.lbl_status.set_text(">");
                 }
             }
         }
 
-        let elapsed = anyos_std::sys::uptime_ms().wrapping_sub(t0);
-        if elapsed < 16 { anyos_std::process::sleep(16 - elapsed); }
-    }
+        if a.needs_redraw {
+            a.needs_redraw = false;
+            redraw();
+            update_controls();
+        }
+    });
+
+    anyui::run();
 }
 
-fn seek_to(
-    win: u32,
-    data: &[u8],
-    info: &libimage_client::VideoInfo,
-    frame: u32,
-    pixels: &mut [u32],
-    scratch: &mut [u8],
-    cur_w: u32,
-    cur_h: u32,
-    filename: &str,
-    playing: bool,
-    start_tick: &mut u32,
-    pause_elapsed: &mut u32,
-    tick_hz: u32,
-) {
-    // Recalculate timing for the new frame position
-    let frame_ticks = (frame as u64 * tick_hz as u64 / info.fps as u64) as u32;
-    if playing {
-        *start_tick = anyos_std::sys::uptime().wrapping_sub(frame_ticks);
+fn seek_to_current() {
+    let a = app();
+    let frame_ticks = if a.fps > 0 {
+        (a.current_frame as u64 * a.tick_hz as u64 / a.fps as u64) as u32
+    } else { 0 };
+    if a.playing {
+        a.start_tick = anyos_std::sys::uptime().wrapping_sub(frame_ticks);
     } else {
-        *pause_elapsed = frame_ticks;
+        a.pause_elapsed = frame_ticks;
     }
-
-    decode_and_blit(win, data, info, frame, pixels, scratch, cur_w);
-    draw_chrome(win, cur_w, cur_h, filename, info, frame, playing);
-    window::present(win);
+    a.needs_redraw = true;
 }
 
-fn decode_and_blit(
-    win: u32,
-    data: &[u8],
-    info: &libimage_client::VideoInfo,
-    frame_idx: u32,
-    pixels: &mut [u32],
-    scratch: &mut [u8],
-    win_w: u32,
-) {
+fn redraw() {
+    let a = app();
+
     // Decode frame
     let _ = libimage_client::video_decode_frame(
-        data, info.num_frames, frame_idx, pixels, scratch,
+        &a.data, a.num_frames, a.current_frame, &mut a.pixels, &mut a.scratch,
     );
 
-    let w = info.width as usize;
-    let h = info.height as usize;
+    let w = a.canvas.get_stride() as usize;
+    let h = a.canvas.get_height() as usize;
+    if w == 0 || h == 0 { return; }
 
-    // Center video horizontally
-    let offset_x = if (w as u32) < win_w {
-        ((win_w - w as u32) / 2) as i16
-    } else {
-        0
-    };
-
-    // Blit in 64-row strips (same pattern as imgview)
-    let strip_h = 64usize;
-    let mut y = 0usize;
-    while y < h {
-        let rows = strip_h.min(h - y);
-        window::blit(
-            win,
-            offset_x,
-            (NAVBAR_H as i16) + y as i16,
-            w as u16,
-            rows as u16,
-            &pixels[y * w..(y + rows) * w],
-        );
-        y += rows;
+    let needed = w * h;
+    if a.render_buf.len() != needed {
+        a.render_buf.resize(needed, BG);
     }
+
+    for p in a.render_buf.iter_mut() { *p = BG; }
+
+    // Center video in canvas
+    let offset_x = if a.vid_w < w { (w - a.vid_w) / 2 } else { 0 };
+    let offset_y = if a.vid_h < h { (h - a.vid_h) / 2 } else { 0 };
+    let vis_w = a.vid_w.min(w);
+    let vis_h = a.vid_h.min(h);
+
+    for row in 0..vis_h {
+        let src_start = row * a.vid_w;
+        let dst_start = (offset_y + row) * w + offset_x;
+        a.render_buf[dst_start..dst_start + vis_w]
+            .copy_from_slice(&a.pixels[src_start..src_start + vis_w]);
+    }
+
+    a.canvas.copy_pixels_from(&a.render_buf);
 }
 
-fn draw_chrome(
-    win: u32,
-    win_w: u32,
-    win_h: u32,
-    filename: &str,
-    info: &libimage_client::VideoInfo,
-    current_frame: u32,
-    playing: bool,
-) {
-    // Navbar
-    let nav = UiNavbar::new(0, 0, win_w, false);
-    nav.render(win, filename);
-
-    // Progress bar area
-    let prog_y = win_h as i16 - PROGRESS_H as i16;
-    window::fill_rect(win, 0, prog_y, win_w as u16, PROGRESS_H as u16, PROGRESS_BG);
-
-    // Play/Pause indicator
-    let status = if playing { "||" } else { ">" };
-    window::draw_text(win, 8, prog_y + 9, TEXT_COLOR, status);
-
-    // Time display: current / total
-    let current_sec = if info.fps > 0 { current_frame / info.fps } else { 0 };
-    let total_sec = if info.fps > 0 { info.num_frames / info.fps } else { 0 };
-
+fn update_controls() {
+    let a = app();
+    let current_sec = if a.fps > 0 { a.current_frame / a.fps } else { 0 };
+    let total_sec = if a.fps > 0 { a.num_frames / a.fps } else { 0 };
     let mut time_buf = [0u8; 32];
     let time_str = format_time(&mut time_buf, current_sec, total_sec);
-    window::draw_text(win, 28, prog_y + 9, TEXT_DIM, time_str);
+    a.lbl_time.set_text(time_str);
 
-    // Progress bar
-    let bar_x: i16 = 100;
-    let bar_w = (win_w as i16 - bar_x - 8).max(0) as u32;
-    let bar_y = prog_y + 12;
-    let bar_h: u16 = 6;
-
-    // Background track
-    window::fill_rect(win, bar_x, bar_y, bar_w as u16, bar_h, 0xFF444444);
-
-    // Filled portion
-    if info.num_frames > 0 && bar_w > 0 {
-        let fill_w = ((current_frame as u64 + 1) * bar_w as u64 / info.num_frames as u64) as u16;
-        if fill_w > 0 {
-            window::fill_rect(win, bar_x, bar_y, fill_w, bar_h, PROGRESS_FG);
-        }
+    if a.num_frames > 0 {
+        let pct = ((a.current_frame as u64 + 1) * 100 / a.num_frames as u64) as u32;
+        a.progress.set_state(pct.min(100));
     }
 }
 
 fn read_file(path: &str) -> Option<Vec<u8>> {
     let fd = anyos_std::fs::open(path, 0);
-    if fd == u32::MAX {
-        return None;
-    }
-
+    if fd == u32::MAX { return None; }
     let mut content = Vec::new();
     let mut buf = [0u8; 4096];
     loop {
         let n = anyos_std::fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX {
-            break;
-        }
+        if n == 0 || n == u32::MAX { break; }
         content.extend_from_slice(&buf[..n as usize]);
     }
     anyos_std::fs::close(fd);
@@ -364,86 +292,54 @@ fn read_file(path: &str) -> Option<Vec<u8>> {
 
 fn format_title<'a>(buf: &'a mut [u8; 128], filename: &str, w: usize, h: usize, fps: u32) -> &'a str {
     let mut pos = 0;
-    pos = write_str(buf, pos, filename.as_bytes());
-    pos = write_str(buf, pos, b" (");
+    for &b in filename.as_bytes() { if pos < 127 { buf[pos] = b; pos += 1; } }
+    for &b in b" (" { if pos < 127 { buf[pos] = b; pos += 1; } }
     pos = write_num(buf, pos, w);
-    pos = write_str(buf, pos, b"x");
+    if pos < 127 { buf[pos] = b'x'; pos += 1; }
     pos = write_num(buf, pos, h);
-    pos = write_str(buf, pos, b" @ ");
+    for &b in b" @ " { if pos < 127 { buf[pos] = b; pos += 1; } }
     pos = write_num(buf, pos, fps as usize);
-    pos = write_str(buf, pos, b" fps) - Video Player");
+    for &b in b" fps) - Video Player" { if pos < 127 { buf[pos] = b; pos += 1; } }
     unsafe { core::str::from_utf8_unchecked(&buf[..pos]) }
 }
 
 fn format_time<'a>(buf: &'a mut [u8; 32], current: u32, total: u32) -> &'a str {
     let mut pos = 0usize;
-    // current time
     pos = write_num_small(buf, pos, (current / 60) as usize);
-    buf[pos] = b':';
-    pos += 1;
+    buf[pos] = b':'; pos += 1;
     let sec = (current % 60) as usize;
-    if sec < 10 {
-        buf[pos] = b'0';
-        pos += 1;
-    }
+    if sec < 10 { buf[pos] = b'0'; pos += 1; }
     pos = write_num_small(buf, pos, sec);
-    // separator
-    buf[pos] = b' ';
-    pos += 1;
-    buf[pos] = b'/';
-    pos += 1;
-    buf[pos] = b' ';
-    pos += 1;
-    // total time
+    buf[pos] = b' '; pos += 1;
+    buf[pos] = b'/'; pos += 1;
+    buf[pos] = b' '; pos += 1;
     pos = write_num_small(buf, pos, (total / 60) as usize);
-    buf[pos] = b':';
-    pos += 1;
+    buf[pos] = b':'; pos += 1;
     let sec = (total % 60) as usize;
-    if sec < 10 {
-        buf[pos] = b'0';
-        pos += 1;
-    }
+    if sec < 10 { buf[pos] = b'0'; pos += 1; }
     pos = write_num_small(buf, pos, sec);
     unsafe { core::str::from_utf8_unchecked(&buf[..pos]) }
-}
-
-fn write_str(buf: &mut [u8; 128], mut pos: usize, s: &[u8]) -> usize {
-    for &b in s {
-        if pos >= 127 { break; }
-        buf[pos] = b;
-        pos += 1;
-    }
-    pos
 }
 
 fn write_num(buf: &mut [u8; 128], pos: usize, n: usize) -> usize {
     let mut tmp = [0u8; 10];
     let len = fmt_usize(n, &mut tmp);
-    write_str(buf, pos, &tmp[..len])
+    let mut p = pos;
+    for &b in &tmp[..len] { if p < 127 { buf[p] = b; p += 1; } }
+    p
 }
 
 fn write_num_small(buf: &mut [u8; 32], mut pos: usize, n: usize) -> usize {
     let mut tmp = [0u8; 10];
     let len = fmt_usize(n, &mut tmp);
-    for &b in &tmp[..len] {
-        if pos >= 31 { break; }
-        buf[pos] = b;
-        pos += 1;
-    }
+    for &b in &tmp[..len] { if pos < 31 { buf[pos] = b; pos += 1; } }
     pos
 }
 
 fn fmt_usize(mut n: usize, buf: &mut [u8; 10]) -> usize {
-    if n == 0 {
-        buf[0] = b'0';
-        return 1;
-    }
+    if n == 0 { buf[0] = b'0'; return 1; }
     let mut pos = 10;
-    while n > 0 && pos > 0 {
-        pos -= 1;
-        buf[pos] = b'0' + (n % 10) as u8;
-        n /= 10;
-    }
+    while n > 0 && pos > 0 { pos -= 1; buf[pos] = b'0' + (n % 10) as u8; n /= 10; }
     let len = 10 - pos;
     buf.copy_within(pos..10, 0);
     len

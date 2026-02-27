@@ -5,7 +5,8 @@ edition = "2021"
 
 [dependencies]
 anyos_std = { path = "../../libs/stdlib" }
-uisys_client = { path = "../../libs/uisys_client" }
+dynlink = { path = "../../libs/dynlink" }
+libanyui_client = { path = "../../libs/libanyui_client" }
 
 [profile.dev]
 panic = "abort"

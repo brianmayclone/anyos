@@ -20,17 +20,21 @@ const ACK: u8 = 0x10;
 const TCP_HEADER_LEN: usize = 20;
 const MAX_CONNECTIONS: usize = 64;
 const RECV_BUF_SIZE: usize = 262144; // 256 KB — large enough for burst traffic
-const WINDOW_SIZE: u16 = 65535;
+const WINDOW_SIZE: u16 = 65535;      // Raw window value in TCP header
 const MSS: usize = 1460;
 const RETRANSMIT_TICKS: u32 = 300; // 3 seconds at 100Hz
 const MAX_RETRANSMITS: u32 = 5;
 const TIME_WAIT_TICKS: u32 = 200; // 2 seconds at 100Hz
 const MAX_BACKLOG: usize = 16;    // max pending connections per listener
-const POLL_SLEEP_MS: u32 = 1;     // sleep interval between poll attempts
 
 /// Maximum bytes in flight (sliding window send limit).
-/// 512 KB allows efficient large transfers with fewer ACK round-trips.
-const MAX_IN_FLIGHT: usize = 524288;
+/// 1 MB allows efficient large transfers with fewer ACK round-trips.
+const MAX_IN_FLIGHT: usize = 1048576;
+
+/// Our TCP Window Scale shift count (RFC 7323).
+/// With shift=4, the effective receive window is `raw_window << 4`.
+/// WINDOW_SIZE=65535 << 4 = 1,048,560 (~1 MB effective receive window).
+const OUR_WINDOW_SHIFT: u8 = 4;
 
 /// Maximum segments to batch per lock acquisition in send().
 const SEND_BATCH_SIZE: usize = 64;
@@ -41,15 +45,9 @@ const DELAYED_ACK_SEGMENTS: u32 = 2;
 /// Delayed ACK: flush ACK after this many ticks (50ms at 100Hz).
 const DELAYED_ACK_TICKS: u32 = 5;
 
-/// Sleep the current thread briefly to avoid busy-waiting in poll loops.
-/// This blocks the thread via the scheduler so it consumes zero CPU.
-fn poll_sleep() {
-    let pit_hz = crate::arch::x86::pit::TICK_HZ;
-    let ticks = (POLL_SLEEP_MS as u64 * pit_hz as u64 / 1000) as u32;
-    let ticks = if ticks == 0 { 1 } else { ticks };
-    let now = crate::arch::x86::pit::get_ticks();
-    let wake_at = now.wrapping_add(ticks);
-    crate::task::scheduler::sleep_until(wake_at);
+/// Yield the CPU briefly to avoid busy-waiting in poll loops.
+fn poll_yield() {
+    crate::task::scheduler::schedule();
 }
 
 // ── Global TCP statistics ────────────────────────────────────────────
@@ -123,11 +121,15 @@ struct Tcb {
     snd_iss: u32,   // initial send sequence number
     snd_una: u32,   // oldest unacknowledged
     snd_nxt: u32,   // next to send
-    snd_wnd: u16,   // send window
+    snd_wnd: u32,   // send window (scaled by snd_wnd_shift)
 
     // Receive sequence variables
     rcv_irs: u32,   // initial receive sequence number
     rcv_nxt: u32,   // next expected
+
+    // TCP Window Scaling (RFC 7323)
+    snd_wnd_shift: u8,  // peer's scale factor: snd_wnd = raw_window << shift
+    rcv_wnd_shift: u8,  // our scale factor (sent in SYN-ACK/SYN)
 
     // Receive buffer
     recv_buf: VecDeque<u8>,
@@ -175,6 +177,8 @@ impl Tcb {
             snd_wnd: 0,
             rcv_irs: 0,
             rcv_nxt: 0,
+            snd_wnd_shift: 0,
+            rcv_wnd_shift: 0,
             recv_buf: VecDeque::with_capacity(RECV_BUF_SIZE),
             last_sent_data: Vec::new(),
             last_sent_seq: 0,
@@ -203,6 +207,10 @@ struct TcpSegment {
     window: u16,
     payload: Vec<u8>,
     src_ip: Ipv4Addr,
+    /// TCP Window Scale option (Kind=3), present only in SYN segments.
+    wscale: Option<u8>,
+    /// MSS option (Kind=2), present only in SYN segments.
+    peer_mss: Option<u16>,
 }
 
 static TCP_CONNECTIONS: Spinlock<Option<Vec<Option<Tcb>>>> = Spinlock::new(None);
@@ -246,6 +254,39 @@ fn parse_tcp(pkt: &Ipv4Packet<'_>) -> Option<TcpSegment> {
         return None;
     }
 
+    // Parse TCP options (between fixed header and payload).
+    let mut wscale = None;
+    let mut peer_mss = None;
+    if data_offset > TCP_HEADER_LEN {
+        let opts = &data[TCP_HEADER_LEN..data_offset];
+        let mut i = 0;
+        while i < opts.len() {
+            match opts[i] {
+                0 => break,        // End of Options
+                1 => { i += 1; }   // NOP
+                2 => {             // MSS (Kind=2, Len=4)
+                    if i + 4 <= opts.len() && opts[i + 1] == 4 {
+                        peer_mss = Some(((opts[i + 2] as u16) << 8) | opts[i + 3] as u16);
+                    }
+                    i += if i + 1 < opts.len() { opts[i + 1] as usize } else { 2 };
+                }
+                3 => {             // Window Scale (Kind=3, Len=3)
+                    if i + 3 <= opts.len() && opts[i + 1] == 3 {
+                        wscale = Some(opts[i + 2].min(14)); // RFC 7323: max shift is 14
+                    }
+                    i += if i + 1 < opts.len() { opts[i + 1] as usize } else { 2 };
+                }
+                _ => {             // Unknown option — skip using length field
+                    if i + 1 < opts.len() && opts[i + 1] >= 2 {
+                        i += opts[i + 1] as usize;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     let payload = if data_offset < data.len() {
         Vec::from(&data[data_offset..])
     } else {
@@ -261,10 +302,13 @@ fn parse_tcp(pkt: &Ipv4Packet<'_>) -> Option<TcpSegment> {
         window,
         payload,
         src_ip: pkt.src,
+        wscale,
+        peer_mss,
     })
 }
 
 /// Build and send a TCP segment.
+/// Build and send a TCP segment using a stack-allocated buffer (no heap alloc).
 fn send_segment(
     local_ip: Ipv4Addr,
     local_port: u16,
@@ -276,40 +320,104 @@ fn send_segment(
     payload: &[u8],
 ) -> bool {
     let tcp_len = TCP_HEADER_LEN + payload.len();
-    let mut segment = Vec::with_capacity(tcp_len);
+    let mut segment = [0u8; 1536]; // stack buffer, fits MTU
+    if tcp_len > segment.len() { return false; }
 
     // Source port
-    segment.push((local_port >> 8) as u8);
-    segment.push((local_port & 0xFF) as u8);
+    segment[0] = (local_port >> 8) as u8;
+    segment[1] = (local_port & 0xFF) as u8;
     // Dest port
-    segment.push((remote_port >> 8) as u8);
-    segment.push((remote_port & 0xFF) as u8);
+    segment[2] = (remote_port >> 8) as u8;
+    segment[3] = (remote_port & 0xFF) as u8;
     // Sequence number
-    segment.push((seq >> 24) as u8);
-    segment.push((seq >> 16) as u8);
-    segment.push((seq >> 8) as u8);
-    segment.push(seq as u8);
+    segment[4] = (seq >> 24) as u8;
+    segment[5] = (seq >> 16) as u8;
+    segment[6] = (seq >> 8) as u8;
+    segment[7] = seq as u8;
     // Ack number
-    segment.push((ack_num >> 24) as u8);
-    segment.push((ack_num >> 16) as u8);
-    segment.push((ack_num >> 8) as u8);
-    segment.push(ack_num as u8);
+    segment[8] = (ack_num >> 24) as u8;
+    segment[9] = (ack_num >> 16) as u8;
+    segment[10] = (ack_num >> 8) as u8;
+    segment[11] = ack_num as u8;
     // Data offset (5 = 20 bytes / 4) + reserved
-    segment.push(0x50);
+    segment[12] = 0x50;
     // Flags
-    segment.push(flags);
+    segment[13] = flags;
     // Window
-    segment.push((WINDOW_SIZE >> 8) as u8);
-    segment.push((WINDOW_SIZE & 0xFF) as u8);
-    // Checksum placeholder
-    segment.push(0);
-    segment.push(0);
-    // Urgent pointer
-    segment.push(0);
-    segment.push(0);
+    segment[14] = (WINDOW_SIZE >> 8) as u8;
+    segment[15] = (WINDOW_SIZE & 0xFF) as u8;
+    // Checksum placeholder (already 0)
+    // Urgent pointer (already 0)
 
     // Payload
-    segment.extend_from_slice(payload);
+    if !payload.is_empty() {
+        segment[TCP_HEADER_LEN..tcp_len].copy_from_slice(payload);
+    }
+
+    tcp_checksum_and_send(local_ip, remote_ip, &mut segment[..tcp_len], flags)
+}
+
+/// Build and send a SYN or SYN-ACK segment with TCP options (MSS + Window Scale).
+fn send_syn_segment(
+    local_ip: Ipv4Addr,
+    local_port: u16,
+    remote_ip: Ipv4Addr,
+    remote_port: u16,
+    seq: u32,
+    ack_num: u32,
+    flags: u8,
+) -> bool {
+    // Options: MSS (4 bytes) + NOP (1) + Window Scale (3 bytes) = 8 bytes
+    // Total header: 20 + 8 = 28 bytes, data_offset = 7
+    const OPT_LEN: usize = 8;
+    let tcp_len = TCP_HEADER_LEN + OPT_LEN;
+    let mut segment = [0u8; 28];
+
+    // Source port
+    segment[0] = (local_port >> 8) as u8;
+    segment[1] = (local_port & 0xFF) as u8;
+    // Dest port
+    segment[2] = (remote_port >> 8) as u8;
+    segment[3] = (remote_port & 0xFF) as u8;
+    // Sequence number
+    segment[4] = (seq >> 24) as u8;
+    segment[5] = (seq >> 16) as u8;
+    segment[6] = (seq >> 8) as u8;
+    segment[7] = seq as u8;
+    // Ack number
+    segment[8] = (ack_num >> 24) as u8;
+    segment[9] = (ack_num >> 16) as u8;
+    segment[10] = (ack_num >> 8) as u8;
+    segment[11] = ack_num as u8;
+    // Data offset: 7 (28 bytes / 4) + reserved
+    segment[12] = 0x70;
+    // Flags
+    segment[13] = flags;
+    // Window (SYN window is NOT scaled per RFC 7323)
+    segment[14] = (WINDOW_SIZE >> 8) as u8;
+    segment[15] = (WINDOW_SIZE & 0xFF) as u8;
+    // Checksum placeholder (bytes 16-17, already 0)
+    // Urgent pointer (bytes 18-19, already 0)
+
+    // TCP Options (8 bytes):
+    // MSS option: Kind=2, Len=4, MSS=1460
+    segment[20] = 2;
+    segment[21] = 4;
+    segment[22] = (MSS >> 8) as u8;
+    segment[23] = (MSS & 0xFF) as u8;
+    // NOP padding
+    segment[24] = 1;
+    // Window Scale option: Kind=3, Len=3, Shift=OUR_WINDOW_SHIFT
+    segment[25] = 3;
+    segment[26] = 3;
+    segment[27] = OUR_WINDOW_SHIFT;
+
+    tcp_checksum_and_send(local_ip, remote_ip, &mut segment[..tcp_len], flags)
+}
+
+/// Compute TCP checksum and send via IPv4. Shared by send_segment and send_syn_segment.
+fn tcp_checksum_and_send(local_ip: Ipv4Addr, remote_ip: Ipv4Addr, segment: &mut [u8], flags: u8) -> bool {
+    let tcp_len = segment.len();
 
     // Compute checksum with pseudo-header
     let pseudo_sum = super::checksum::pseudo_header_checksum(
@@ -319,14 +427,17 @@ fn send_segment(
         tcp_len as u16,
     );
 
-    // Add segment data to checksum
+    // Ensure checksum field is zero before computing
+    segment[16] = 0;
+    segment[17] = 0;
+
     let mut sum = pseudo_sum;
     let mut i = 0;
-    while i + 1 < segment.len() {
+    while i + 1 < tcp_len {
         sum += ((segment[i] as u32) << 8) | (segment[i + 1] as u32);
         i += 2;
     }
-    if i < segment.len() {
+    if i < tcp_len {
         sum += (segment[i] as u32) << 8;
     }
     while sum >> 16 != 0 {
@@ -340,7 +451,7 @@ fn send_segment(
     if flags & RST != 0 {
         TCP_RESETS_SENT.fetch_add(1, Ordering::Relaxed);
     }
-    super::ipv4::send_ipv4(remote_ip, super::ipv4::PROTO_TCP, &segment)
+    super::ipv4::send_ipv4(remote_ip, super::ipv4::PROTO_TCP, segment)
 }
 
 /// Send a RST for an unexpected segment (no connection found).
@@ -403,7 +514,7 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
 
     crate::serial_println!("TCP: connecting to {}:{} from port {}", remote_ip, remote_port, local_port);
     TCP_ACTIVE_OPENS.fetch_add(1, Ordering::Relaxed);
-    send_segment(cfg.ip, local_port, remote_ip, remote_port, iss, 0, SYN, &[]);
+    send_syn_segment(cfg.ip, local_port, remote_ip, remote_port, iss, 0, SYN);
 
     // Wait for connection to establish
     let start = crate::arch::x86::pit::get_ticks();
@@ -450,7 +561,7 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
             return u32::MAX;
         }
 
-        poll_sleep();
+        poll_yield();
     }
 }
 
@@ -557,7 +668,7 @@ pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
             return (u32::MAX, Ipv4Addr([0; 4]), 0);
         }
 
-        poll_sleep();
+        poll_yield();
     }
 }
 
@@ -745,7 +856,7 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
 
         // If no segments were sent (window full), sleep briefly to let ACKs arrive.
         if batch_count == 0 {
-            poll_sleep();
+            poll_yield();
         }
     }
 }
@@ -811,7 +922,7 @@ pub fn recv(socket_id: u32, buf: &mut [u8], timeout_ticks: u32) -> u32 {
             return u32::MAX;
         }
 
-        poll_sleep();
+        poll_yield();
     }
 }
 
@@ -935,7 +1046,7 @@ pub fn close(socket_id: u32) -> u32 {
             return 0;
         }
 
-        poll_sleep();
+        poll_yield();
     }
 }
 
@@ -1108,6 +1219,11 @@ pub fn handle_tcp(pkt: &Ipv4Packet<'_>) {
                                 tcb.parent_listener = Some(lid as u8);
                                 tcb.last_sent_flags = SYN | ACK;
                                 tcb.last_send_tick = crate::arch::x86::pit::get_ticks();
+                                // Store peer's window scale if present (RFC 7323)
+                                if let Some(shift) = seg.wscale {
+                                    tcb.snd_wnd_shift = shift;
+                                    tcb.rcv_wnd_shift = OUR_WINDOW_SHIFT;
+                                }
                                 *slot = Some(tcb);
                                 new_slot = Some(i);
                                 break;
@@ -1116,17 +1232,21 @@ pub fn handle_tcp(pkt: &Ipv4Packet<'_>) {
 
                         if let Some(ns) = new_slot {
                             let tcb = table[ns].as_ref().unwrap();
-                            let ds = DeferredSend {
-                                local_ip: tcb.local_ip, local_port: tcb.local_port,
-                                remote_ip: tcb.remote_ip, remote_port: tcb.remote_port,
-                                seq: tcb.snd_iss, ack_num: tcb.rcv_nxt,
-                                flags: SYN | ACK,
-                            };
-                            crate::serial_println!("TCP: SYN on listener {} -> new conn slot {} from {}:{}",
-                                lid, ns, seg.src_ip, seg.src_port);
+                            let (lip, lp, rip, rp) = (tcb.local_ip, tcb.local_port,
+                                tcb.remote_ip, tcb.remote_port);
+                            let iss = tcb.snd_iss;
+                            let rcv_nxt = tcb.rcv_nxt;
+                            let use_wscale = tcb.rcv_wnd_shift > 0;
+                            crate::serial_println!("TCP: SYN on listener {} -> new conn slot {} from {}:{} (wscale={})",
+                                lid, ns, seg.src_ip, seg.src_port,
+                                if use_wscale { tcb.snd_wnd_shift } else { 0 });
                             drop(conns);
-                            send_segment(ds.local_ip, ds.local_port, ds.remote_ip, ds.remote_port,
-                                         ds.seq, ds.ack_num, ds.flags, &[]);
+                            // Send SYN-ACK with options if peer supports window scaling
+                            if use_wscale {
+                                send_syn_segment(lip, lp, rip, rp, iss, rcv_nxt, SYN | ACK);
+                            } else {
+                                send_segment(lip, lp, rip, rp, iss, rcv_nxt, SYN | ACK, &[]);
+                            }
                             return;
                         }
                         // No free slots
@@ -1158,7 +1278,13 @@ pub fn handle_tcp(pkt: &Ipv4Packet<'_>) {
                         tcb.rcv_irs = seg.seq;
                         tcb.rcv_nxt = seg.seq.wrapping_add(1);
                         tcb.snd_una = seg.ack;
-                        tcb.snd_wnd = seg.window;
+                        // SYN-ACK window is NOT scaled (RFC 7323)
+                        tcb.snd_wnd = seg.window as u32;
+                        // If peer included window scale, enable scaling
+                        if let Some(shift) = seg.wscale {
+                            tcb.snd_wnd_shift = shift;
+                            tcb.rcv_wnd_shift = OUR_WINDOW_SHIFT;
+                        }
                         tcb.state = TcpState::Established;
                         tcb.last_sent_data.clear();
                         tcb.retransmit_count = 0;
@@ -1261,7 +1387,8 @@ pub fn handle_tcp(pkt: &Ipv4Packet<'_>) {
                 if seg.flags & ACK != 0 {
                     if seg.ack == tcb.snd_nxt {
                         tcb.snd_una = seg.ack;
-                        tcb.snd_wnd = seg.window;
+                        // ACK completing handshake: window IS scaled (RFC 7323)
+                        tcb.snd_wnd = (seg.window as u32) << tcb.snd_wnd_shift;
                         tcb.state = TcpState::Established;
                         tcb.last_sent_data.clear();
                         tcb.retransmit_count = 0;
@@ -1305,7 +1432,7 @@ fn handle_established(tcb: &mut Tcb, seg: &TcpSegment) -> Option<DeferredSend> {
     if seg.flags & ACK != 0 {
         if is_seq_gt(seg.ack, tcb.snd_una) && is_seq_lte(seg.ack, tcb.snd_nxt) {
             tcb.snd_una = seg.ack;
-            tcb.snd_wnd = seg.window;
+            tcb.snd_wnd = (seg.window as u32) << tcb.snd_wnd_shift;
             if tcb.snd_una == tcb.snd_nxt {
                 tcb.last_sent_data.clear();
                 tcb.retransmit_count = 0;
@@ -1478,9 +1605,14 @@ pub fn check_retransmissions() {
             let (lip, lp, rip, rp) = (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port);
             let iss = tcb.snd_iss;
             let rcv_nxt = tcb.rcv_nxt;
+            let use_wscale = tcb.rcv_wnd_shift > 0;
 
             drop(conns);
-            send_segment(lip, lp, rip, rp, iss, rcv_nxt, SYN | ACK, &[]);
+            if use_wscale {
+                send_syn_segment(lip, lp, rip, rp, iss, rcv_nxt, SYN | ACK);
+            } else {
+                send_segment(lip, lp, rip, rp, iss, rcv_nxt, SYN | ACK, &[]);
+            }
             return;
         }
 

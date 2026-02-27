@@ -192,7 +192,7 @@ fn load_file(path: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let file_size = stat[1] as usize;
-    if file_size == 0 || file_size > 2 * 1024 * 1024 {
+    if file_size == 0 || file_size > 16 * 1024 * 1024 {
         crate::syscall::close(fd);
         return None;
     }

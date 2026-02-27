@@ -249,6 +249,10 @@ struct AnyuiLib {
     datagrid_set_header_height: extern "C" fn(u32, u32),
     datagrid_set_char_colors: extern "C" fn(u32, *const u32, u32, *const u32, u32),
     datagrid_set_cell_icon: extern "C" fn(u32, u32, u32, *const u32, u32, u32),
+    datagrid_set_minimap: extern "C" fn(u32, *const u32, u32),
+    datagrid_get_click_col: extern "C" fn(u32) -> i32,
+    datagrid_set_connectors: extern "C" fn(u32, *const u8, u32),
+    datagrid_set_connector_column: extern "C" fn(u32, u32),
     // TextEditor
     texteditor_set_text: extern "C" fn(u32, *const u8, u32),
     texteditor_get_text: extern "C" fn(u32, *mut u8, u32) -> u32,
@@ -478,6 +482,10 @@ pub fn init() -> bool {
             datagrid_set_header_height: resolve(&handle, "anyui_datagrid_set_header_height"),
             datagrid_set_char_colors: resolve(&handle, "anyui_datagrid_set_char_colors"),
             datagrid_set_cell_icon: resolve(&handle, "anyui_datagrid_set_cell_icon"),
+            datagrid_set_minimap: resolve(&handle, "anyui_datagrid_set_minimap"),
+            datagrid_get_click_col: resolve(&handle, "anyui_datagrid_get_click_col"),
+            datagrid_set_connectors: resolve(&handle, "anyui_datagrid_set_connectors"),
+            datagrid_set_connector_column: resolve(&handle, "anyui_datagrid_set_connector_column"),
             // TextEditor
             texteditor_set_text: resolve(&handle, "anyui_texteditor_set_text"),
             texteditor_get_text: resolve(&handle, "anyui_texteditor_get_text"),

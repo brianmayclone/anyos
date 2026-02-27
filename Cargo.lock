@@ -81,8 +81,10 @@ name = "audiomon"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "dynlink",
  "libcompositor_client",
- "uisys_client",
+ "libfont_client",
+ "librender_client",
 ]
 
 [[package]]
@@ -251,7 +253,8 @@ name = "diagnostics"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
- "uisys_client",
+ "dynlink",
+ "libanyui_client",
 ]
 
 [[package]]
@@ -442,6 +445,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "iconview"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
 name = "ifconfig"
 version = "0.1.0"
 dependencies = [
@@ -453,8 +465,9 @@ name = "imgview"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "dynlink",
+ "libanyui_client",
  "libimage_client",
- "uisys_client",
 ]
 
 [[package]]
@@ -469,8 +482,10 @@ name = "inputmon"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "dynlink",
  "libcompositor_client",
- "uisys_client",
+ "libfont_client",
+ "librender_client",
 ]
 
 [[package]]
@@ -679,8 +694,10 @@ name = "netmon"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "dynlink",
  "libcompositor_client",
- "uisys_client",
+ "libfont_client",
+ "librender_client",
 ]
 
 [[package]]
@@ -971,14 +988,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "uisys_client"
-version = "0.1.0"
-dependencies = [
- "anyos_std",
- "libimage_client",
-]
-
-[[package]]
 name = "umount"
 version = "0.1.0"
 dependencies = [
@@ -1027,8 +1036,9 @@ name = "videoplayer"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "dynlink",
+ "libanyui_client",
  "libimage_client",
- "uisys_client",
 ]
 
 [[package]]

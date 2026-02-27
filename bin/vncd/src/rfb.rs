@@ -49,7 +49,8 @@ const IDLE_THRESHOLD: u32 = 5;
 const MAX_SCREEN_DIM: usize = 2048;
 
 /// Tile size for dirty-rectangle detection (pixels).
-const TILE_SIZE: usize = 64;
+/// Smaller tiles = more granular updates (4 KB/tile vs 16 KB at 64px).
+const TILE_SIZE: usize = 32;
 
 // ── Big-endian wire helpers ───────────────────────────────────────────────────
 

@@ -6,7 +6,9 @@ edition = "2021"
 [dependencies]
 anyos_std = { path = "../../libs/stdlib" }
 libcompositor_client = { path = "../../libs/libcompositor_client" }
-uisys_client = { path = "../../libs/uisys_client" }
+dynlink = { path = "../../libs/dynlink" }
+librender_client = { path = "../../libs/librender_client" }
+libfont_client = { path = "../../libs/libfont_client" }
 
 [profile.dev]
 panic = "abort"
