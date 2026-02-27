@@ -48,6 +48,7 @@ struct OpenFile {
 }
 
 struct AppState {
+    win: anyui::Window,
     tab_bar: anyui::TabBar,
     scroll: anyui::ScrollView,
     status_label: anyui::Label,
@@ -1286,6 +1287,75 @@ fn save_file_as() {
     }
 }
 
+// ── Clipboard operations ─────────────────────────────────────────────────────
+
+/// Copy: in source mode → editor.copy(). In rendered mode → copy full markdown content.
+fn clipboard_copy() {
+    let s = app();
+    if s.files.is_empty() { return; }
+    let file = &s.files[s.active];
+    if file.showing_source {
+        if let Some(ref editor) = file.source_editor {
+            if editor.copy() {
+                s.status_label.set_text("Copied selection");
+            }
+        }
+    } else {
+        // Rendered view: copy entire markdown content
+        anyui::clipboard_set(&file.content);
+        s.status_label.set_text("Copied markdown content");
+    }
+}
+
+/// Cut: only works in source mode.
+fn clipboard_cut() {
+    let s = app();
+    if s.files.is_empty() { return; }
+    let file = &mut s.files[s.active];
+    if file.showing_source {
+        if let Some(ref editor) = file.source_editor {
+            if editor.cut() {
+                file.modified = true;
+                update_tab_labels();
+                s.status_label.set_text("Cut selection");
+            }
+        }
+    }
+}
+
+/// Paste: only works in source mode.
+fn clipboard_paste() {
+    let s = app();
+    if s.files.is_empty() { return; }
+    let file = &mut s.files[s.active];
+    if file.showing_source {
+        if let Some(ref editor) = file.source_editor {
+            let n = editor.paste();
+            if n > 0 {
+                file.modified = true;
+                update_tab_labels();
+                s.status_label.set_text("Pasted from clipboard");
+            }
+        }
+    }
+}
+
+/// Select all: in source mode → editor.select_all(). In rendered mode → copy all.
+fn select_all() {
+    let s = app();
+    if s.files.is_empty() { return; }
+    let file = &s.files[s.active];
+    if file.showing_source {
+        if let Some(ref editor) = file.source_editor {
+            editor.select_all();
+        }
+    } else {
+        // Rendered view: copy all content to clipboard as convenience
+        anyui::clipboard_set(&file.content);
+        s.status_label.set_text("All content copied to clipboard");
+    }
+}
+
 fn update_status() {
     let s = app();
     if s.files.is_empty() {
@@ -1378,6 +1448,7 @@ fn main() {
     // ── Initialize global state ──
     unsafe {
         APP = Some(AppState {
+            win,
             tab_bar,
             scroll,
             status_label,
@@ -1414,7 +1485,39 @@ fn main() {
         close_tab(e.index as usize);
     });
 
-    win.on_close(|_| { anyui::quit(); });
+    app().win.on_close(|_| { anyui::quit(); });
+
+    // ── Keyboard shortcuts ──
+    // Note: Ctrl+C/V/X/A are handled by TextEditor when it has focus in source mode.
+    // The window on_key_down only receives keys NOT consumed by the focused control,
+    // so these fire in rendered view mode or when the editor doesn't consume them.
+    app().win.on_key_down(|ke| {
+        if ke.ctrl() && ke.shift() {
+            match ke.char_code {
+                0x53 | 0x73 => save_file_as(),          // Ctrl+Shift+S
+                _ => {}
+            }
+        } else if ke.ctrl() {
+            match ke.char_code {
+                0x63 => clipboard_copy(),                // Ctrl+C (rendered view)
+                0x78 => clipboard_cut(),                 // Ctrl+X (rendered view)
+                0x76 => clipboard_paste(),               // Ctrl+V (rendered view)
+                0x61 => select_all(),                    // Ctrl+A (rendered view)
+                0x73 => save_file(),                     // Ctrl+S
+                0x6F => {                                // Ctrl+O
+                    if let Some(path) = anyui::FileDialog::open_file() {
+                        open_file(&path);
+                    }
+                }
+                0x65 => toggle_source(),                 // Ctrl+E (toggle editor)
+                0x77 => {                                // Ctrl+W (close tab)
+                    let idx = app().active;
+                    close_tab(idx);
+                }
+                _ => {}
+            }
+        }
+    });
 
     // ── Open file from command line ──
     if !arg_path.is_empty() {
