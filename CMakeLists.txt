@@ -29,6 +29,13 @@ option(ANYOS_DEBUG_SURF "Enable Surf browser debug logging" OFF)
 option(ANYOS_NO_CROSS "Disable cross-compilation (skip libc, TCC, games, curl)" OFF)
 option(ANYOS_RESET "Force fresh disk image rebuild (destroy runtime data)" OFF)
 
+# Version — passed from build.sh/build.ps1 via -DANYOS_VERSION or read from VERSION file
+if(NOT ANYOS_VERSION)
+  file(READ "${CMAKE_SOURCE_DIR}/VERSION" ANYOS_VERSION)
+  string(STRIP "${ANYOS_VERSION}" ANYOS_VERSION)
+endif()
+message(STATUS "anyOS version: ${ANYOS_VERSION}")
+
 # Auto-detect i686-elf cross-compiler (needed for libc, TCC, Doom, Quake)
 if(ANYOS_NO_CROSS)
   set(HAS_CROSS_COMPILER FALSE)

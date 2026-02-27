@@ -202,7 +202,9 @@ fn main() {
     {
         let l = &mut lines[lc];
         l.push(BOLD_CYAN); l.push(b"OS"); l.push(RESET);
-        l.push(b": .anyOS 0.1.0 x86_64");
+        l.push(b": .anyOS ");
+        l.push(env!("ANYOS_VERSION").as_bytes());
+        l.push(b" x86_64");
         lc += 1;
     }
 

@@ -164,3 +164,7 @@ EXPORTS
     anyui_get_font_smoothing
     anyui_datagrid_set_minimap
     anyui_datagrid_get_click_col
+    anyui_datagrid_set_connectors
+    anyui_datagrid_set_connector_column
+    anyui_remove_child
+    anyui_clear_children

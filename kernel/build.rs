@@ -1,4 +1,9 @@
 fn main() {
+    println!("cargo:rerun-if-env-changed=ANYOS_VERSION");
+    if let Ok(ver) = std::env::var("ANYOS_VERSION") {
+        println!("cargo:rustc-env=ANYOS_VERSION={}", ver);
+    }
+
     println!("cargo:rerun-if-env-changed=ANYOS_ASM_OBJECTS");
     if let Ok(objects) = std::env::var("ANYOS_ASM_OBJECTS") {
         for obj in objects.split(',') {

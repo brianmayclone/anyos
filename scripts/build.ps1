@@ -8,6 +8,7 @@
 
 # Build anyOS on Windows
 # Usage: .\scripts\build.ps1 [-Clean] [-Reset] [-Uefi] [-Iso] [-All] [-Debug] [-NoCross]
+#                             [-IMinor] [-IMajor] [-NoVer]
 
 param(
     [switch]$Clean,
@@ -17,7 +18,10 @@ param(
     [switch]$All,
     [switch]$Debug,
     [switch]$DebugSurf,
-    [switch]$NoCross
+    [switch]$NoCross,
+    [switch]$IMinor,
+    [switch]$IMajor,
+    [switch]$NoVer
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,12 +39,39 @@ if (Test-Path $cargoDir) {
     }
 }
 
+# ── Version management ──────────────────────────────────────────────────
+$VersionFile = Join-Path $ProjectDir "VERSION"
+if (-not (Test-Path $VersionFile)) {
+    "0.1.0" | Set-Content $VersionFile -NoNewline
+}
+
+$currentVersion = (Get-Content $VersionFile -Raw).Trim()
+$parts = $currentVersion.Split('.')
+[int]$vMajor = $parts[0]
+[int]$vMinor = $parts[1]
+[int]$vPatch = $parts[2]
+
+if ($IMajor) {
+    $vMajor++
+    $vMinor = 0
+    $vPatch = 0
+} elseif ($IMinor) {
+    $vMinor++
+    $vPatch = 0
+} elseif (-not $NoVer) {
+    $vPatch++
+}
+
+$env:ANYOS_VERSION = "$vMajor.$vMinor.$vPatch"
+"$($env:ANYOS_VERSION)" | Set-Content $VersionFile -NoNewline
+Write-Host "Version: $($env:ANYOS_VERSION)" -ForegroundColor Cyan
+
 # CMake flags
 $debugFlag     = if ($Debug)     { "ON" } else { "OFF" }
 $debugSurfFlag = if ($DebugSurf) { "ON" } else { "OFF" }
 $noCrossFlag   = if ($NoCross)   { "ON" } else { "OFF" }
 $resetFlag     = if ($Reset)     { "ON" } else { "OFF" }
-$cmakeExtra    = "-DANYOS_DEBUG_VERBOSE=$debugFlag", "-DANYOS_DEBUG_SURF=$debugSurfFlag", "-DANYOS_NO_CROSS=$noCrossFlag", "-DANYOS_RESET=$resetFlag"
+$cmakeExtra    = "-DANYOS_DEBUG_VERBOSE=$debugFlag", "-DANYOS_DEBUG_SURF=$debugSurfFlag", "-DANYOS_NO_CROSS=$noCrossFlag", "-DANYOS_RESET=$resetFlag", "-DANYOS_VERSION=$($env:ANYOS_VERSION)"
 
 # Ensure build directory exists and is configured
 if (-not (Test-Path (Join-Path $BuildDir "build.ninja"))) {

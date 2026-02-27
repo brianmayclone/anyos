@@ -72,7 +72,32 @@ add_custom_command(
   COMMENT "Building buildsystem tool: mkappbundle"
 )
 
+# apkg-build — package archive creator
+set(APKG_BUILD_EXECUTABLE "${CMAKE_BINARY_DIR}/buildsystem/apkg-build${CMAKE_EXECUTABLE_SUFFIX}")
+file(GLOB APKG_BUILD_SRCS "${BUILDSYSTEM_DIR}/apkg-build/src/*.c" "${BUILDSYSTEM_DIR}/apkg-build/src/*.h")
+add_custom_command(
+  OUTPUT ${APKG_BUILD_EXECUTABLE}
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/buildsystem"
+  COMMAND cc -w -O2 -std=c99 ${POSIX_FLAG} -o ${APKG_BUILD_EXECUTABLE}
+    ${BUILDSYSTEM_DIR}/apkg-build/src/apkg_build.c
+  DEPENDS ${APKG_BUILD_SRCS}
+  COMMENT "Building buildsystem tool: apkg-build"
+)
+
+# apkg-index — repository index generator
+set(APKG_INDEX_EXECUTABLE "${CMAKE_BINARY_DIR}/buildsystem/apkg-index${CMAKE_EXECUTABLE_SUFFIX}")
+file(GLOB APKG_INDEX_SRCS "${BUILDSYSTEM_DIR}/apkg-index/src/*.c" "${BUILDSYSTEM_DIR}/apkg-index/src/*.h")
+add_custom_command(
+  OUTPUT ${APKG_INDEX_EXECUTABLE}
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/buildsystem"
+  COMMAND cc -w -O2 -std=c99 ${POSIX_FLAG} -o ${APKG_INDEX_EXECUTABLE}
+    ${BUILDSYSTEM_DIR}/apkg-index/src/apkg_index.c
+  DEPENDS ${APKG_INDEX_SRCS}
+  COMMENT "Building buildsystem tool: apkg-index"
+)
+
 # Target to build all buildsystem tools
 add_custom_target(buildsystem-tools
   DEPENDS ${ANYELF_EXECUTABLE} ${MKIMAGE_EXECUTABLE} ${ANYLD_EXECUTABLE} ${MKAPPBUNDLE_EXECUTABLE}
+          ${APKG_BUILD_EXECUTABLE} ${APKG_INDEX_EXECUTABLE}
 )

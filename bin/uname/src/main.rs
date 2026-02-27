@@ -15,7 +15,7 @@ fn main() {
         } else {
             1
         };
-        anyos_std::println!(".anyOS 0.1.0 x86_64 {} CPU(s)", cpus);
+        anyos_std::println!(".anyOS {} x86_64 {} CPU(s)", env!("ANYOS_VERSION"), cpus);
     } else {
         anyos_std::println!(".anyOS");
     }

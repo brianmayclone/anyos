@@ -2292,6 +2292,59 @@ pub extern "C" fn anyui_remove(id: ControlId) {
     st.controls.retain(|c| !to_remove.contains(&c.id()));
 }
 
+/// Remove a specific child from a parent container and destroy it.
+///
+/// Equivalent to `anyui_remove(child)` but expressed as a parent operation.
+#[no_mangle]
+pub extern "C" fn anyui_remove_child(parent: ControlId, child: ControlId) {
+    // Verify the child actually belongs to this parent
+    let st = state();
+    let is_child = st.controls.iter()
+        .find(|c| c.id() == child)
+        .map(|c| c.parent_id() == parent)
+        .unwrap_or(false);
+    if is_child {
+        anyui_remove(child);
+    }
+}
+
+/// Remove and destroy ALL children of a container.
+///
+/// Collects all direct children, then removes each (including their
+/// descendants). The container itself is preserved.
+#[no_mangle]
+pub extern "C" fn anyui_clear_children(parent: ControlId) {
+    let st = state();
+
+    // Collect direct children IDs
+    let children: Vec<ControlId> = match st.controls.iter().find(|c| c.id() == parent) {
+        Some(p) => p.children().to_vec(),
+        None => return,
+    };
+
+    // Collect all descendants of each child
+    let mut to_remove = Vec::new();
+    for &child in &children {
+        to_remove.push(child);
+        collect_descendants(st, child, &mut to_remove);
+    }
+
+    // Clear tracking for removed controls
+    for &rid in &to_remove {
+        if st.focused == Some(rid) { st.focused = None; }
+        if st.pressed == Some(rid) { st.pressed = None; }
+        if st.hovered == Some(rid) { st.hovered = None; }
+    }
+
+    // Clear parent's children list
+    if let Some(p) = st.controls.iter_mut().find(|c| c.id() == parent) {
+        p.base_mut().children.clear();
+    }
+
+    // Remove all collected controls
+    st.controls.retain(|c| !to_remove.contains(&c.id()));
+}
+
 /// Programmatically resize a window (SHM buffer, back buffer, control size).
 /// Used by the dock (and similar borderless windows) to react to resolution changes.
 #[no_mangle]

@@ -91,6 +91,7 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E env
     "ANYOS_ASM_OBJECTS=${KERNEL_ASM_OBJECTS_STR}"
     "ANYOS_AP_TRAMPOLINE=${AP_TRAMPOLINE_BIN}"
+    "ANYOS_VERSION=${ANYOS_VERSION}"
     "RUSTFLAGS=-C force-frame-pointers=yes -Awarnings"
     ${CARGO_EXECUTABLE} build --release --quiet
     --manifest-path ${CMAKE_SOURCE_DIR}/kernel/Cargo.toml

@@ -10,6 +10,7 @@ The **libjs** crate is a complete `#![no_std]` ECMAScript-compatible JavaScript 
 
 ## Table of Contents
 
+- [Command-Line Tool (jscript)](#command-line-tool-jscript)
 - [Getting Started](#getting-started)
 - [JsEngine -- High-Level API](#jsengine----high-level-api)
 - [JsValue -- Value Types](#jsvalue----value-types)
@@ -48,6 +49,93 @@ The **libjs** crate is a complete `#![no_std]` ECMAScript-compatible JavaScript 
 - [Bytecode Instruction Reference](#bytecode-instruction-reference)
 - [Native Function Signature](#native-function-signature)
 - [Examples](#examples)
+
+---
+
+## Command-Line Tool (jscript)
+
+The `jscript` binary is a file-based JavaScript interpreter for the anyOS shell. It links libjs statically and provides a `node`/`deno`-style command-line interface.
+
+**Location:** `bin/jscript/`
+**Binary:** `/System/bin/jscript`
+
+### Usage
+
+```text
+jscript <file.js>           Execute a JavaScript file
+jscript -e "code"           Evaluate a JavaScript expression
+jscript -p "code"           Evaluate and print the result
+jscript a.js b.js           Execute multiple files in sequence
+```
+
+### Options
+
+| Flag | Argument | Description |
+|------|----------|-------------|
+| `-e` | `<code>` | Evaluate the given JavaScript code string |
+| `-p` | `<code>` | Evaluate the code and print the result (unless `undefined`) |
+
+When no flags are provided, positional arguments are treated as file paths. Each file is read with `anyos_std::fs::read_to_string()` and executed in the same engine instance, so globals set in one file are visible to subsequent files.
+
+### Examples
+
+**Run a script file:**
+```sh
+$ jscript /Users/demo/hello.js
+Hello, world!
+```
+
+Where `hello.js` contains:
+```javascript
+console.log("Hello, world!");
+```
+
+**Evaluate an inline expression:**
+```sh
+$ jscript -e "console.log(2 + 2)"
+4
+```
+
+**Evaluate and print the result value:**
+```sh
+$ jscript -p "Math.sqrt(144)"
+12
+```
+
+**Run a multi-line script:**
+```sh
+$ jscript -e "var a = [1,2,3]; console.log(a.map(x => x * x).join(', '))"
+1, 4, 9
+```
+
+### Built-in Extensions
+
+In addition to the standard libjs built-ins (`console.log`, `Math`, `JSON`, etc.), jscript registers:
+
+| Function | Description |
+|----------|-------------|
+| `print(...)` | Alias for `console.log()` — prints all arguments space-separated |
+
+### Error Handling
+
+- If a file cannot be opened, jscript prints an error message to stdout and exits with code 1.
+- If the JavaScript source contains a syntax or runtime error, the engine returns `undefined` and any error output appears via `console.error()`.
+
+### Architecture
+
+```
+jscript (bin/jscript)
+  |
+  +--> anyos_std::fs::read_to_string(path)   Read .js file from disk
+  |
+  +--> libjs::JsEngine::new()                Initialize JS engine with all built-ins
+  |
+  +--> engine.eval(source)                   Tokenize -> Parse -> Compile -> Execute
+  |
+  +--> engine.console_output()               Flush captured console.log output to stdout
+```
+
+The engine instance is created once and reused across all `-e`/`-p` invocations and file executions within a single run.
 
 ---
 

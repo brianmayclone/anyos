@@ -9,6 +9,7 @@
 
 # Build anyOS
 # Usage: ./build.sh [--clean] [--reset] [--uefi] [--iso] [--all] [--debug] [--no-cross]
+#                   [--iminor] [--imajor] [--nover]
 
 BUILD_START=$(date +%s)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -23,6 +24,7 @@ BUILD_ALL=0
 DEBUG_VERBOSE=0
 DEBUG_SURF=0
 NO_CROSS=0
+VER_MODE="patch"
 
 for arg in "$@"; do
     case "$arg" in
@@ -50,8 +52,18 @@ for arg in "$@"; do
         --no-cross)
             NO_CROSS=1
             ;;
+        --iminor)
+            VER_MODE="minor"
+            ;;
+        --imajor)
+            VER_MODE="major"
+            ;;
+        --nover)
+            VER_MODE="none"
+            ;;
         *)
             echo "Usage: $0 [--clean] [--reset] [--uefi] [--iso] [--all] [--debug] [--debug-surf] [--no-cross]"
+            echo "       [--iminor] [--imajor] [--nover]"
             echo ""
             echo "  --clean       Force full rebuild of all components"
             echo "  --reset       Force fresh disk image (destroy runtime data)"
@@ -61,13 +73,44 @@ for arg in "$@"; do
             echo "  --debug       Enable verbose kernel debug prints"
             echo "  --debug-surf  Enable Surf browser debug logging (HTML/CSS/JS pipeline)"
             echo "  --no-cross    Disable cross-compilation (skip libc, TCC, games, curl)"
+            echo "  --iminor      Increment minor version (reset patch to 0)"
+            echo "  --imajor      Increment major version (reset minor and patch to 0)"
+            echo "  --nover       Skip version increment"
             exit 1
             ;;
     esac
 done
 
+# ── Version management ──────────────────────────────────────────────────
+VERSION_FILE="${PROJECT_DIR}/VERSION"
+if [ ! -f "$VERSION_FILE" ]; then
+    echo "0.1.0" > "$VERSION_FILE"
+fi
+
+CURRENT_VERSION=$(tr -d '[:space:]' < "$VERSION_FILE")
+IFS='.' read -r V_MAJOR V_MINOR V_PATCH <<< "$CURRENT_VERSION"
+
+case "$VER_MODE" in
+    patch)
+        V_PATCH=$((V_PATCH + 1))
+        ;;
+    minor)
+        V_MINOR=$((V_MINOR + 1))
+        V_PATCH=0
+        ;;
+    major)
+        V_MAJOR=$((V_MAJOR + 1))
+        V_MINOR=0
+        V_PATCH=0
+        ;;
+esac
+
+export ANYOS_VERSION="${V_MAJOR}.${V_MINOR}.${V_PATCH}"
+echo "${ANYOS_VERSION}" > "$VERSION_FILE"
+echo "Version: ${ANYOS_VERSION}"
+
 # CMake flags
-CMAKE_EXTRA_FLAGS="-DANYOS_DEBUG_VERBOSE=$([ "$DEBUG_VERBOSE" -eq 1 ] && echo ON || echo OFF) -DANYOS_DEBUG_SURF=$([ "$DEBUG_SURF" -eq 1 ] && echo ON || echo OFF) -DANYOS_NO_CROSS=$([ "$NO_CROSS" -eq 1 ] && echo ON || echo OFF) -DANYOS_RESET=$([ "$RESET" -eq 1 ] && echo ON || echo OFF)"
+CMAKE_EXTRA_FLAGS="-DANYOS_DEBUG_VERBOSE=$([ "$DEBUG_VERBOSE" -eq 1 ] && echo ON || echo OFF) -DANYOS_DEBUG_SURF=$([ "$DEBUG_SURF" -eq 1 ] && echo ON || echo OFF) -DANYOS_NO_CROSS=$([ "$NO_CROSS" -eq 1 ] && echo ON || echo OFF) -DANYOS_RESET=$([ "$RESET" -eq 1 ] && echo ON || echo OFF) -DANYOS_VERSION=${ANYOS_VERSION}"
 
 # Ensure build directory exists
 if [ ! -f "${BUILD_DIR}/build.ninja" ]; then

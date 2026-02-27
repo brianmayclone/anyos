@@ -49,7 +49,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     // Phase 1: Early output (serial only — silent boot for end users)
     drivers::serial::init();
     serial_println!("");
-    serial_println!("  .anyOS Kernel v0.1");
+    serial_println!("  .anyOS Kernel v{}", env!("ANYOS_VERSION"));
 
     drivers::vga_text::init();
 

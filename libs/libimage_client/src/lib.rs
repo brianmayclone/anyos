@@ -280,3 +280,38 @@ pub fn scale_image(
     );
     ret == 0
 }
+
+/// Trim transparent borders from an ARGB8888 image and scale the content
+/// to fill `dst_w x dst_h`.
+///
+/// Finds the bounding box of non-transparent pixels, removes the
+/// transparent border, and scales the remaining content to exactly fill
+/// the destination buffer. Uses the same bilinear/area-average quality
+/// as [`scale_image`].
+///
+/// Returns `true` on success, `false` on error. If the source image is
+/// fully transparent, the destination is cleared and `true` is returned.
+pub fn trim_and_scale(
+    src: &[u32],
+    src_w: u32,
+    src_h: u32,
+    dst: &mut [u32],
+    dst_w: u32,
+    dst_h: u32,
+) -> bool {
+    if (src_w as usize) * (src_h as usize) > src.len() {
+        return false;
+    }
+    if (dst_w as usize) * (dst_h as usize) > dst.len() {
+        return false;
+    }
+    let ret = (raw::exports().trim_and_scale)(
+        src.as_ptr(),
+        src_w,
+        src_h,
+        dst.as_mut_ptr(),
+        dst_w,
+        dst_h,
+    );
+    ret >= 0
+}

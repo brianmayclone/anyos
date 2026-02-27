@@ -7,7 +7,7 @@ pub const DOCK_TOOLTIP_H: u32 = 28;
 pub const DOCK_MARGIN: u32 = 8 + DOCK_TOOLTIP_H;
 pub const DOCK_TOTAL_H: u32 = DOCK_HEIGHT + DOCK_MARGIN;
 pub const DOCK_ICON_SIZE: u32 = 48;
-pub const DOCK_ICON_SPACING: u32 = 6;
+pub const DOCK_ICON_SPACING: u32 = 10;
 pub const DOCK_BORDER_RADIUS: i32 = 16;
 pub const DOCK_H_PADDING: u32 = 12;
 
