@@ -60,7 +60,7 @@ impl FrameAllocator {
 }
 
 static ALLOCATOR: Spinlock<FrameAllocator> = Spinlock::new(FrameAllocator {
-    bitmap: [0; BITMAP_SIZE], // Zero-init → lives in BSS (no binary bloat for 2 MiB)
+    bitmap:    [0; BITMAP_SIZE], // Zero-init → lives in BSS
     total_frames: 0,
     free_frames: 0,
     next_search: 0,
@@ -204,7 +204,9 @@ pub fn alloc_frame() -> Option<PhysAddr> {
     None
 }
 
-/// Free a previously allocated physical frame, returning it to the pool.
+/// Free a physical frame, returning it to the allocator pool.
+///
+/// Has no effect if the frame is already free.
 pub fn free_frame(addr: PhysAddr) {
     let mut alloc = ALLOCATOR.lock();
     let frame = addr.frame_index();

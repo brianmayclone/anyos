@@ -1003,6 +1003,19 @@ pub fn is_mapped_in_pd(pd_phys: PhysAddr, virt: VirtAddr) -> bool {
 /// Destroy a user PML4: free all user-space pages, page tables, and the PML4.
 /// Must NOT be the currently active page directory.
 pub fn destroy_user_page_directory(pml4_phys: PhysAddr) {
+    // Pre-collect all SHM frames BEFORE disabling interrupts so the per-page
+    // membership check during the walk is a lock-free binary search.
+    //
+    // Why needed: forked children inherit the parent's SHM physical frames in
+    // their page tables without a ShmMapping entry, so cleanup_process() cannot
+    // clear those PTEs. Without this guard, destroy_user_page_directory would
+    // free frames still mapped by the compositor or other processes.
+    //
+    // Why pre-collected (not per-page is_shm_frame): acquiring SHARED_REGIONS
+    // on every page (potentially thousands) while interrupts are disabled causes
+    // SPIN TIMEOUT on other CPUs waiting for the same lock.
+    let shm_frames = crate::ipc::shared_memory::collect_sorted_shm_frames();
+
     unsafe {
         let old_cr3 = current_cr3();
 
@@ -1082,11 +1095,20 @@ pub fn destroy_user_page_directory(pml4_phys: PhysAddr) {
                             if pte & PTE_VRAM != 0 {
                                 continue;
                             }
+                            let frame = PhysAddr::new(pte & ADDR_MASK);
+                            // Skip frames that still belong to an active SHM region.
+                            // Freeing them would corrupt other processes that have them
+                            // mapped (e.g. the compositor's window buffers).
+                            // shm_frames was pre-collected before cli; binary_search is
+                            // lock-free and safe here.
+                            if crate::ipc::shared_memory::is_shm_frame_sorted(&shm_frames, frame) {
+                                continue;
+                            }
                             // In DLL range: free ONLY per-process writable pages (.data/.bss).
                             // Shared RO pages (no PAGE_WRITABLE) are owned by the global
                             // LOADED_DLLS registry and must NOT be freed.
                             if !is_dll || (pte & PAGE_WRITABLE != 0) {
-                                physical::free_frame(PhysAddr::new(pte & ADDR_MASK));
+                                physical::free_frame(frame);
                             }
                         }
                     }

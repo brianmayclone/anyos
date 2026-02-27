@@ -41,25 +41,54 @@ fn clamp_priority(priority: u8, context: &str) -> u8 {
 static SCHEDULER: Spinlock<Option<Scheduler>> = Spinlock::new(None);
 
 /// Deferred page directory destruction queue.
-/// When kill_thread() kills a thread running on another CPU, the PD can't be
-/// destroyed immediately (the other CPU might still be mid-syscall accessing
-/// user pages). Instead, the PD is queued here and destroyed on CPU 0's next
-/// timer tick.
+/// Deferred page-directory destruction queue.
+///
+/// `kill_thread` **must not** call `destroy_user_page_directory` while holding
+/// the scheduler lock — page-table walks and hundreds of `free_frame` calls can
+/// take milliseconds, causing SPIN TIMEOUT on other CPUs waiting for the lock.
+///
+/// Instead, every dying PD is pushed here and drained on CPU 0's next timer
+/// tick, **before** the scheduler lock is acquired (see `schedule_inner`).
+///
+/// ## tid semantics
+/// * `tid != 0`: thread was still running on another CPU at kill time;
+///   `cleanup_process(tid)` must run with the dying CR3 before destroy.
+/// * `tid == 0`: `cleanup_process` already ran in `kill_thread`; just destroy.
 struct DeferredPdQueue {
-    entries: [Option<PhysAddr>; 16],
+    entries: [Option<(PhysAddr, u32)>; 64],
 }
 impl DeferredPdQueue {
-    const fn new() -> Self { Self { entries: [None; 16] } }
-    fn push(&mut self, pd: PhysAddr) {
+    const fn new() -> Self { Self { entries: [None; 64] } }
+    fn push(&mut self, pd: PhysAddr, tid: u32) {
         for slot in self.entries.iter_mut() {
-            if slot.is_none() { *slot = Some(pd); return; }
+            if slot.is_none() { *slot = Some((pd, tid)); return; }
         }
-        crate::serial_println!("WARNING: deferred PD queue full, destroying synchronously");
-        crate::memory::virtual_mem::destroy_user_page_directory(pd);
+        // Queue full (64 pending PDs) — drain one slot synchronously.
+        // This is a last-resort fallback for pathological fork storms.
+        crate::serial_println!("WARNING: deferred PD queue full, destroying one synchronously");
+        if let Some(Some((old_pd, old_tid))) = self.entries.iter_mut().find(|s| s.is_some()).map(|s| s.take()) {
+            if old_tid != 0 {
+                unsafe {
+                    let rflags: u64;
+                    core::arch::asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
+                    core::arch::asm!("cli");
+                    let saved_cr3 = crate::memory::virtual_mem::current_cr3();
+                    core::arch::asm!("mov cr3, {}", in(reg) old_pd.as_u64());
+                    crate::ipc::shared_memory::cleanup_process(old_tid);
+                    core::arch::asm!("mov cr3, {}", in(reg) saved_cr3);
+                    core::arch::asm!("push {}; popfq", in(reg) rflags, options(nomem));
+                }
+            }
+            crate::memory::virtual_mem::destroy_user_page_directory(old_pd);
+        }
+        // Now there is a free slot — insert the new entry.
+        for slot in self.entries.iter_mut() {
+            if slot.is_none() { *slot = Some((pd, tid)); return; }
+        }
     }
-    fn drain(&mut self) -> [Option<PhysAddr>; 16] {
+    fn drain(&mut self) -> [Option<(PhysAddr, u32)>; 64] {
         let result = self.entries;
-        self.entries = [None; 16];
+        self.entries = [None; 64];
         result
     }
 }
@@ -848,11 +877,34 @@ fn schedule_inner(from_timer: bool) {
         unsafe { core::arch::asm!("push {0}; popfq", in(reg) saved_flags, options(nomem, nostack)); }
     }
 
-    // CPU 0 processes deferred PD destruction (before acquiring scheduler lock)
+    // Drain deferred PD destruction queue BEFORE acquiring the scheduler lock.
+    // destroy_user_page_directory is slow (page-table walk + hundreds of
+    // free_frame calls); running it under the scheduler lock causes SPIN TIMEOUT
+    // on other CPUs waiting for the lock.
+    //
+    // Only CPU 0 drains, once per timer tick, to ensure that threads which were
+    // running on another CPU at kill time have had at least one tick to
+    // context-switch away before we touch their page tables.
     if from_timer && cpu_id_early == 0 {
         let pds = DEFERRED_PD_DESTROY.lock().drain();
-        for pd in pds.iter().flatten() {
-            crate::memory::virtual_mem::destroy_user_page_directory(*pd);
+        for entry in pds.iter().flatten() {
+            let (pd, tid) = *entry;
+            if tid != 0 {
+                // Thread was still running on another CPU at kill time.
+                // cleanup_process hasn't run yet; do it now with the correct CR3.
+                unsafe {
+                    let rflags: u64;
+                    core::arch::asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
+                    core::arch::asm!("cli");
+                    let old_cr3 = crate::memory::virtual_mem::current_cr3();
+                    core::arch::asm!("mov cr3, {}", in(reg) pd.as_u64());
+                    crate::ipc::shared_memory::cleanup_process(tid);
+                    core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
+                    core::arch::asm!("push {}; popfq", in(reg) rflags, options(nomem));
+                }
+            }
+            // tid == 0: cleanup_process already ran in kill_thread — just destroy.
+            crate::memory::virtual_mem::destroy_user_page_directory(pd);
         }
     }
 
@@ -2105,8 +2157,33 @@ pub fn kill_thread(tid: u32) -> u32 {
             }
         }
     }
-    if pd_to_destroy.is_some() {
-        crate::ipc::shared_memory::cleanup_process(tid);
+    // cleanup_process requires the dying process's page directory to be the
+    // active CR3, so that unmap_page() removes SHM PTEs from the correct
+    // address space. Failing to do this leaves SHM frames mapped in the dying
+    // process's page tables; destroy_user_page_directory then frees those
+    // physical frames even though the compositor still has them mapped — causing
+    // the compositor to crash when those frames are reused (e.g. as page tables).
+    if let Some(pd) = pd_to_destroy {
+        if is_current {
+            // Current thread: our CR3 is already the dying process's CR3.
+            crate::ipc::shared_memory::cleanup_process(tid);
+        } else if !running_on_other_cpu {
+            // Killing a thread that is not running right now. Temporarily switch
+            // to the dying process's CR3 (same pattern as destroy_user_page_directory).
+            unsafe {
+                let rflags: u64;
+                core::arch::asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
+                core::arch::asm!("cli");
+                let old_cr3 = crate::memory::virtual_mem::current_cr3();
+                core::arch::asm!("mov cr3, {}", in(reg) pd.as_u64());
+                crate::ipc::shared_memory::cleanup_process(tid);
+                core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
+                core::arch::asm!("push {}; popfq", in(reg) rflags, options(nomem));
+            }
+        }
+        // running_on_other_cpu: skip cleanup_process here — the thread is still
+        // running on another CPU. The deferred drain will call cleanup_process
+        // with the correct CR3 after that CPU has context-switched away.
     }
     crate::net::tcp::cleanup_for_thread(tid);
     if let Some(pd) = pd_to_destroy {
@@ -2115,13 +2192,24 @@ pub fn kill_thread(tid: u32) -> u32 {
 
     if let Some(pd) = pd_to_destroy {
         if running_on_other_cpu {
-            DEFERRED_PD_DESTROY.lock().push(pd);
+            // Thread is still executing on another CPU. cleanup_process cannot
+            // run yet (we'd unmap pages from the wrong address space). Defer
+            // everything — the deferred drain will do cleanup + destroy after
+            // that CPU has context-switched away. tid != 0 signals this.
+            DEFERRED_PD_DESTROY.lock().push(pd, tid);
         } else {
+            // cleanup_process already ran above (correct CR3 was used).
+            // Switch off the dying PD immediately for the is_current case so
+            // the kernel is no longer running on a soon-to-be-freed CR3.
             if is_current {
                 let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
                 unsafe { core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3); }
             }
-            crate::memory::virtual_mem::destroy_user_page_directory(pd);
+            // Defer destroy_user_page_directory so it runs OUTSIDE the
+            // scheduler lock (which we still hold here). The deferred drain
+            // runs before the next scheduler lock acquisition. tid=0 tells the
+            // drain that cleanup_process already ran — no need to repeat it.
+            DEFERRED_PD_DESTROY.lock().push(pd, 0);
         }
     }
 

@@ -220,35 +220,69 @@ pub fn region_size(region_id: u32) -> usize {
 /// Unmaps all SHM pages from the exiting process's address space, removes
 /// its mappings, releases ownership of any regions it created, and frees
 /// regions that have no remaining mappings or owner.
+///
+/// ## Lock discipline
+///
+/// `SHARED_REGIONS` is held **only** during the brief metadata phase (Phase 1).
+/// The expensive `unmap_page` calls (Phase 2) and frame frees (Phase 3) happen
+/// outside the lock. This prevents SPIN TIMEOUT when this function is called
+/// with interrupts disabled (e.g. during a CR3 switch in `kill_thread`): other
+/// CPUs spinning on `SHARED_REGIONS` never wait for page-table operations.
 pub fn cleanup_process(tid: u32) {
-    let mut regions = SHARED_REGIONS.lock();
-
-    let mut i = 0;
-    while i < regions.len() {
-        // Unmap if this process has the region mapped
-        if let Some(pos) = regions[i].mappings.iter().position(|m| m.tid == tid) {
-            let vaddr = regions[i].mappings[pos].vaddr;
-            let pages = regions[i].physical_frames.len();
-            for p in 0..pages {
-                virtual_mem::unmap_page(VirtAddr::new(vaddr + (p * FRAME_SIZE) as u64));
+    // ── Phase 1 (brief lock): snapshot unmap targets, strip mappings/ownership,
+    // evict dead regions from the global list. No page-table operations here.
+    const MAX_UNMAP: usize = 32;
+    let mut unmap_buf: [(u64, usize); MAX_UNMAP] = [(0, 0); MAX_UNMAP];
+    let mut n_unmap: usize = 0;
+    // Dead regions are moved out of SHARED_REGIONS so their frames can be freed
+    // after the lock drops. Vec::new() allocates nothing; push() may allocate
+    // once (a single small allocation under the lock at most).
+    let mut dead_regions: Vec<SharedRegion> = Vec::new();
+    {
+        let mut regions = SHARED_REGIONS.lock();
+        let mut i = 0;
+        while i < regions.len() {
+            // Strip this TID's mapping entry and record (vaddr, page_count).
+            if let Some(pos) = regions[i].mappings.iter().position(|m| m.tid == tid) {
+                if n_unmap < MAX_UNMAP {
+                    unmap_buf[n_unmap] = (
+                        regions[i].mappings[pos].vaddr,
+                        regions[i].physical_frames.len(),
+                    );
+                    n_unmap += 1;
+                }
+                regions[i].mappings.remove(pos);
             }
-            regions[i].mappings.remove(pos);
-        }
 
-        // Release ownership if this TID owns the region
-        if regions[i].owner_tid == tid {
-            regions[i].owner_tid = 0;
-        }
-
-        // Free region if no mappings and no owner
-        if regions[i].mappings.is_empty() && regions[i].owner_tid == 0 {
-            let region = regions.remove(i);
-            for frame in &region.physical_frames {
-                physical::free_frame(*frame);
+            // Release ownership.
+            if regions[i].owner_tid == tid {
+                regions[i].owner_tid = 0;
             }
-            // Don't increment — next element shifted into this position
-        } else {
-            i += 1;
+
+            // Evict dead regions (no mappings, no owner) from the global list.
+            if regions[i].mappings.is_empty() && regions[i].owner_tid == 0 {
+                dead_regions.push(regions.remove(i));
+                // Index stays — next element has shifted into position i.
+            } else {
+                i += 1;
+            }
+        }
+    } // ── SHARED_REGIONS released — expensive work follows outside the lock ──
+
+    // ── Phase 2 (no lock): unmap pages from the dying process's address space ──
+    //
+    // Caller guarantees the dying process's CR3 is active, so unmap_page clears
+    // the correct PTEs via recursive mapping.
+    for &(vaddr, pages) in &unmap_buf[..n_unmap] {
+        for p in 0..pages {
+            virtual_mem::unmap_page(VirtAddr::new(vaddr + (p * FRAME_SIZE) as u64));
+        }
+    }
+
+    // ── Phase 3 (no lock): free physical frames of evicted regions ──
+    for region in dead_regions {
+        for frame in &region.physical_frames {
+            physical::free_frame(*frame);
         }
     }
 }
@@ -261,6 +295,36 @@ fn maybe_free_region(regions: &mut Vec<SharedRegion>, idx: usize) {
             physical::free_frame(*frame);
         }
     }
+}
+
+/// Collect and sort all physical frames currently owned by active SHM regions.
+///
+/// Called once by [`destroy_user_page_directory`] **before** it disables
+/// interrupts, so that the subsequent page walk can check SHM membership with
+/// `binary_search` (no lock, no interrupt issues) instead of acquiring
+/// `SHARED_REGIONS` on every page.
+///
+/// This handles the fork-inherited case: a forked child process has the
+/// parent's SHM frames mapped in its page tables without a [`ShmMapping`]
+/// entry, so [`cleanup_process`] cannot unmap them. Pre-collecting all SHM
+/// frames lets [`destroy_user_page_directory`] skip those frames safely.
+pub fn collect_sorted_shm_frames() -> Vec<PhysAddr> {
+    let regions = SHARED_REGIONS.lock();
+    let mut frames: Vec<PhysAddr> = regions
+        .iter()
+        .flat_map(|r| r.physical_frames.iter().copied())
+        .collect();
+    // Sort by raw address for O(log n) binary search during page walk.
+    frames.sort_unstable_by_key(|f| f.as_u64());
+    frames
+}
+
+/// Lock-free membership test used during the page walk in
+/// [`destroy_user_page_directory`].  The slice must be sorted (see
+/// [`collect_sorted_shm_frames`]).
+#[inline]
+pub fn is_shm_frame_sorted(sorted_frames: &[PhysAddr], frame: PhysAddr) -> bool {
+    sorted_frames.binary_search_by_key(&frame.as_u64(), |f| f.as_u64()).is_ok()
 }
 
 /// Lock-free check if the shared memory lock is currently held.
