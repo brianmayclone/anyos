@@ -144,7 +144,7 @@ impl CmdBuf {
         Self { words: Vec::with_capacity(512) }
     }
 
-    pub fn clear(&mut self) {
+    pub fn reset(&mut self) {
         self.words.clear();
     }
 
