@@ -204,12 +204,54 @@ char *strndup(const char *s, size_t n) {
 }
 
 static const char *_strerror_msgs[] = {
-    "Success", "Operation not permitted", "No such file or directory",
-    "No such process", "Interrupted", "I/O error"
+    [0]  = "Success",
+    [1]  = "Operation not permitted",
+    [2]  = "No such file or directory",
+    [3]  = "No such process",
+    [4]  = "Interrupted system call",
+    [5]  = "I/O error",
+    [6]  = "No such device or address",
+    [7]  = "Argument list too long",
+    [8]  = "Exec format error",
+    [9]  = "Bad file descriptor",
+    [10] = "No child processes",
+    [11] = "Resource temporarily unavailable",
+    [12] = "Out of memory",
+    [13] = "Permission denied",
+    [14] = "Bad address",
+    [16] = "Device or resource busy",
+    [17] = "File exists",
+    [18] = "Cross-device link",
+    [19] = "No such device",
+    [20] = "Not a directory",
+    [21] = "Is a directory",
+    [22] = "Invalid argument",
+    [23] = "Too many open files in system",
+    [24] = "Too many open files",
+    [25] = "Not a typewriter",
+    [27] = "File too large",
+    [28] = "No space left on device",
+    [29] = "Illegal seek",
+    [30] = "Read-only file system",
+    [33] = "Numerical argument out of domain",
+    [34] = "Result too large",
+    [36] = "Resource deadlock avoided",
+    [38] = "Function not implemented",
+    [40] = "Too many levels of symbolic links",
+    [90] = "Message too long",
+    [92] = "Protocol not available",
+    [95] = "Operation not supported",
+    [98] = "Address already in use",
+    [99] = "Cannot assign requested address",
+    [104] = "Connection reset by peer",
+    [110] = "Connection timed out",
+    [111] = "Connection refused",
 };
+#define _STRERROR_MAX 112
 
 char *strerror(int errnum) {
-    if (errnum >= 0 && errnum <= 5) return (char *)_strerror_msgs[errnum];
+    if (errnum >= 0 && errnum < _STRERROR_MAX && _strerror_msgs[errnum])
+        return (char *)_strerror_msgs[errnum];
     return "Unknown error";
 }
 

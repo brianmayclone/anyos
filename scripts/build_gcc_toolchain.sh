@@ -345,11 +345,11 @@ if [[ -n "$SYSROOT" ]] && [[ -f "$LIBGCC_A" ]]; then
   done
 fi
 
-# ── Verify ───────────────────────────────────────────────────────────────────
+# ── Verify Stage 1 ──────────────────────────────────────────────────────────
 
 echo ""
 echo "========================================="
-echo " Installation complete!"
+echo " Stage 1 complete (cross-compiler)!"
 echo "========================================="
 echo ""
 
@@ -370,14 +370,248 @@ if [[ -f "$LIBGCC_A" ]]; then
   echo "libgcc.a: $(wc -c < "$LIBGCC_A") bytes"
 fi
 
+# =============================================================================
+# STAGE 2: Canadian Cross — Build GCC to run ON anyOS
+# =============================================================================
+# This cross-compiles GCC itself so it produces ELF64 binaries that execute
+# natively on anyOS.  Requires libc64 libraries to be already built.
+#
+# Build triplet:  x86_64-apple-darwin (macOS) or x86_64-pc-linux-gnu
+# Host triplet:   x86_64-anyos        (the OS that will RUN the compiler)
+# Target triplet: x86_64-anyos        (the OS the compiler produces code FOR)
+
+NATIVE_PREFIX="/System/Toolchain"
+NATIVE_INSTALL="$BUILD_DIR/native-toolchain"
+
+# Check if libc64 libraries exist for Stage 2
+LIBC64_LIB_DIR="$PROJECT_DIR/libs/libc64"
+LIBCXX_LIB_DIR="$PROJECT_DIR/libs/libcxx"
+LIBUNWIND_LIB_DIR="$PROJECT_DIR/libs/libunwind"
+LIBCXXABI_LIB_DIR="$PROJECT_DIR/libs/libcxxabi"
+
+if [[ ! -f "$LIBC64_LIB_DIR/libc64.a" ]]; then
+  echo ""
+  echo "========================================="
+  echo " Stage 2 skipped — libc64.a not built"
+  echo "========================================="
+  echo ""
+  echo "Build libc64 first (cmake --build build), then re-run this script."
+  echo ""
+  echo "Add to your shell profile:"
+  echo "  export PATH=\"$PREFIX/bin:\$PATH\""
+  exit 0
+fi
+
+echo ""
+echo "========================================="
+echo " Stage 2: Building GCC for native anyOS"
+echo "========================================="
+echo ""
+
+# Create a sysroot that the cross-compiler will use to find headers and libs
+# when building the native GCC.
+CROSS_SYSROOT="$BUILD_DIR/cross-sysroot"
+mkdir -p "$CROSS_SYSROOT/Libraries/libc64/include"
+mkdir -p "$CROSS_SYSROOT/Libraries/libc64/lib"
+mkdir -p "$CROSS_SYSROOT/Libraries/libcxx/include"
+mkdir -p "$CROSS_SYSROOT/Libraries/libcxx/lib"
+mkdir -p "$CROSS_SYSROOT/usr/include"
+mkdir -p "$CROSS_SYSROOT/usr/lib"
+
+# Copy libc64 headers and library
+cp -r "$LIBC64_LIB_DIR/include/"* "$CROSS_SYSROOT/Libraries/libc64/include/"
+cp "$LIBC64_LIB_DIR/libc64.a" "$CROSS_SYSROOT/Libraries/libc64/lib/"
+cp "$LIBC64_LIB_DIR/obj/crt0.o" "$CROSS_SYSROOT/Libraries/libc64/lib/"
+cp "$LIBC64_LIB_DIR/obj/crti.o" "$CROSS_SYSROOT/Libraries/libc64/lib/"
+cp "$LIBC64_LIB_DIR/obj/crtn.o" "$CROSS_SYSROOT/Libraries/libc64/lib/"
+[[ -f "$LIBGCC_A" ]] && cp "$LIBGCC_A" "$CROSS_SYSROOT/Libraries/libc64/lib/"
+cp "$LIBC64_LIB_DIR/link.ld" "$CROSS_SYSROOT/Libraries/libc64/lib/"
+
+# Copy libcxx/libunwind/libc++abi headers and libraries
+if [[ -f "$LIBCXX_LIB_DIR/libcxx.a" ]]; then
+  cp -r "$LIBCXX_LIB_DIR/include/"* "$CROSS_SYSROOT/Libraries/libcxx/include/"
+  cp "$LIBCXX_LIB_DIR/libcxx.a" "$CROSS_SYSROOT/Libraries/libcxx/lib/"
+fi
+if [[ -f "$LIBUNWIND_LIB_DIR/libunwind.a" ]]; then
+  cp "$LIBUNWIND_LIB_DIR/libunwind.a" "$CROSS_SYSROOT/Libraries/libcxx/lib/"
+  cp "$LIBUNWIND_LIB_DIR/include/unwind.h" "$CROSS_SYSROOT/Libraries/libcxx/include/"
+fi
+if [[ -f "$LIBCXXABI_LIB_DIR/libc++abi.a" ]]; then
+  cp "$LIBCXXABI_LIB_DIR/libc++abi.a" "$CROSS_SYSROOT/Libraries/libcxx/lib/"
+  cp "$LIBCXXABI_LIB_DIR/include/cxxabi.h" "$CROSS_SYSROOT/Libraries/libcxx/include/"
+fi
+
+# Symlink headers into /usr/include (some GCC configure checks look here)
+ln -sf "$CROSS_SYSROOT/Libraries/libc64/include/"* "$CROSS_SYSROOT/usr/include/" 2>/dev/null || true
+ln -sf "$CROSS_SYSROOT/Libraries/libc64/lib/"* "$CROSS_SYSROOT/usr/lib/" 2>/dev/null || true
+
+echo "  Cross-compilation sysroot prepared at $CROSS_SYSROOT"
+
+# --- Build native binutils (runs ON anyOS) ---
+
+echo ""
+echo "--- Building native binutils (host=x86_64-anyos) ---"
+rm -rf "$BUILD_DIR/native-binutils"
+mkdir -p "$BUILD_DIR/native-binutils"
+cd "$BUILD_DIR/native-binutils"
+
+CC_FOR_HOST="$PREFIX/bin/${TARGET}-gcc"
+CXX_FOR_HOST="$PREFIX/bin/${TARGET}-g++"
+AR_FOR_HOST="$PREFIX/bin/${TARGET}-ar"
+RANLIB_FOR_HOST="$PREFIX/bin/${TARGET}-ranlib"
+
+# Configure cross-compiling flags for the host
+HOST_CFLAGS="-O2 -ffreestanding -nostdinc -I$CROSS_SYSROOT/Libraries/libc64/include"
+HOST_LDFLAGS="-nostdlib -static -L$CROSS_SYSROOT/Libraries/libc64/lib -T $CROSS_SYSROOT/Libraries/libc64/lib/link.ld $CROSS_SYSROOT/Libraries/libc64/lib/crt0.o $CROSS_SYSROOT/Libraries/libc64/lib/crti.o"
+HOST_LIBS="-lc64 -lgcc $CROSS_SYSROOT/Libraries/libc64/lib/crtn.o"
+
+"$BINUTILS_SRC/configure" \
+  --host="$TARGET" \
+  --target="$TARGET" \
+  --prefix="$NATIVE_PREFIX" \
+  --with-sysroot="$CROSS_SYSROOT" \
+  --disable-nls \
+  --disable-werror \
+  CC="$CC_FOR_HOST" \
+  CXX="$CXX_FOR_HOST" \
+  AR="$AR_FOR_HOST" \
+  RANLIB="$RANLIB_FOR_HOST" \
+  CFLAGS="$HOST_CFLAGS" \
+  LDFLAGS="$HOST_LDFLAGS" \
+  LIBS="$HOST_LIBS"
+
+make -j"$JOBS" || {
+  echo ""
+  echo "WARNING: Native binutils build failed (this may require additional libc64 stubs)."
+  echo "Stage 1 cross-compiler is still functional."
+  echo ""
+}
+
+if [[ -f "$BUILD_DIR/native-binutils/binutils/ar" ]]; then
+  mkdir -p "$NATIVE_INSTALL/bin"
+  for tool in as ld ar nm objdump objcopy ranlib strip; do
+    src="$BUILD_DIR/native-binutils/binutils/$tool"
+    [[ -f "$src" ]] || src="$BUILD_DIR/native-binutils/gas/as-new"
+    [[ "$tool" == "as" ]] && src="$BUILD_DIR/native-binutils/gas/as-new"
+    [[ "$tool" == "ld" ]] && src="$BUILD_DIR/native-binutils/ld/ld-new"
+    if [[ -f "$src" ]]; then
+      cp "$src" "$NATIVE_INSTALL/bin/$tool"
+      echo "  installed native $tool"
+    fi
+  done
+fi
+
+# --- Build native GCC (runs ON anyOS) ---
+
+echo ""
+echo "--- Building native GCC (host=x86_64-anyos) ---"
+rm -rf "$BUILD_DIR/native-gcc"
+mkdir -p "$BUILD_DIR/native-gcc"
+cd "$BUILD_DIR/native-gcc"
+
+"$GCC_SRC/configure" \
+  --host="$TARGET" \
+  --target="$TARGET" \
+  --prefix="$NATIVE_PREFIX" \
+  --with-sysroot="$CROSS_SYSROOT" \
+  --enable-languages=c,c++ \
+  --disable-nls \
+  --disable-shared \
+  --disable-threads \
+  --disable-libssp \
+  --disable-libquadmath \
+  --disable-libgomp \
+  --disable-libatomic \
+  --disable-libstdcxx \
+  --disable-hosted-libstdcxx \
+  --disable-libstdcxx-pch \
+  --disable-multilib \
+  --disable-bootstrap \
+  --with-newlib \
+  CC="$CC_FOR_HOST" \
+  CXX="$CXX_FOR_HOST" \
+  AR="$AR_FOR_HOST" \
+  RANLIB="$RANLIB_FOR_HOST" \
+  CC_FOR_TARGET="$CC_FOR_HOST" \
+  CXX_FOR_TARGET="$CXX_FOR_HOST" \
+  AR_FOR_TARGET="$AR_FOR_HOST" \
+  RANLIB_FOR_TARGET="$RANLIB_FOR_HOST" \
+  CFLAGS="$HOST_CFLAGS" \
+  CXXFLAGS="$HOST_CFLAGS -I$CROSS_SYSROOT/Libraries/libcxx/include" \
+  LDFLAGS="$HOST_LDFLAGS" \
+  LIBS="$HOST_LIBS" \
+  $EXTRA_GCC_CONFIGURE
+
+make -j"$JOBS" all-gcc || {
+  echo ""
+  echo "WARNING: Native GCC build failed (this is expected for initial ports)."
+  echo "Stage 1 cross-compiler is still functional."
+  echo ""
+}
+
+# Install native GCC if build succeeded
+if [[ -f "$BUILD_DIR/native-gcc/gcc/cc1" ]]; then
+  mkdir -p "$NATIVE_INSTALL/bin"
+  mkdir -p "$NATIVE_INSTALL/libexec/gcc/$TARGET/${GCC_VERSION}"
+  for tool in gcc g++ cpp; do
+    src="$BUILD_DIR/native-gcc/gcc/$tool"
+    [[ "$tool" == "gcc" ]] && src="$BUILD_DIR/native-gcc/gcc/xgcc"
+    [[ "$tool" == "g++" ]] && src="$BUILD_DIR/native-gcc/gcc/xg++"
+    [[ "$tool" == "cpp" ]] && src="$BUILD_DIR/native-gcc/gcc/cpp"
+    if [[ -f "$src" ]]; then
+      cp "$src" "$NATIVE_INSTALL/bin/$tool"
+      echo "  installed native $tool"
+    fi
+  done
+  # cc1, cc1plus go into libexec
+  for comp in cc1 cc1plus; do
+    if [[ -f "$BUILD_DIR/native-gcc/gcc/$comp" ]]; then
+      cp "$BUILD_DIR/native-gcc/gcc/$comp" "$NATIVE_INSTALL/libexec/gcc/$TARGET/${GCC_VERSION}/$comp"
+      echo "  installed native $comp"
+    fi
+  done
+fi
+
+# ── Verify ───────────────────────────────────────────────────────────────────
+
+echo ""
+echo "========================================="
+echo " Build complete!"
+echo "========================================="
+echo ""
+echo "Stage 1 — Cross-compiler (runs on this machine):"
+"$PREFIX/bin/${TARGET}-gcc" --version | head -1
+echo ""
+
+if [[ -d "$NATIVE_INSTALL/bin" ]] && [[ -n "$(ls "$NATIVE_INSTALL/bin" 2>/dev/null)" ]]; then
+  echo "Stage 2 — Native compiler (runs ON anyOS):"
+  ls -1 "$NATIVE_INSTALL/bin/" | while read f; do
+    echo "  $f ($(wc -c < "$NATIVE_INSTALL/bin/$f") bytes)"
+  done
+  if [[ -d "$NATIVE_INSTALL/libexec/gcc" ]]; then
+    echo ""
+    echo "Native compiler components:"
+    find "$NATIVE_INSTALL/libexec" -type f | while read f; do
+      echo "  $(basename "$f") ($(wc -c < "$f") bytes)"
+    done
+  fi
+  echo ""
+  echo "To install to anyOS sysroot:"
+  echo "  cp -r $NATIVE_INSTALL/* \$SYSROOT/System/Toolchain/"
+else
+  echo "Stage 2 — Native compiler: build failed or skipped."
+  echo "  This is expected for initial ports. The cross-compiler is fully functional."
+fi
+
 echo ""
 echo "Add to your shell profile:"
 echo "  export PATH=\"$PREFIX/bin:\$PATH\""
 echo ""
-echo "Usage example:"
+echo "Usage example (cross-compile from host):"
 echo "  ${TARGET}-g++ -ffreestanding -nostdlib -O2 \\"
-echo "    -I /path/to/anyos/libs/libcxx/include \\"
-echo "    -I /path/to/anyos/libs/libc64/include \\"
+echo "    -I $PROJECT_DIR/libs/libcxx/include \\"
+echo "    -I $PROJECT_DIR/libs/libc64/include \\"
 echo "    main.cpp -o main.elf \\"
-echo "    -L /path/to/anyos/libs -lcxx -lc++abi -lunwind -lc64 -lgcc"
+echo "    -L $PROJECT_DIR/libs/libc64 -L $PROJECT_DIR/libs/libcxx \\"
+echo "    -lcxx -lc++abi -lunwind -lc64 -lgcc"
 echo ""

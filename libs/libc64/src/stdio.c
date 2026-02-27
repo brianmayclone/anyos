@@ -571,7 +571,14 @@ int rename(const char *oldpath, const char *newpath) {
     return 0;
 }
 
-FILE *tmpfile(void) { return NULL; }
+FILE *tmpfile(void) {
+    char tmpl[] = "/tmp/tmpXXXXXX";
+    int fd = mkstemp(tmpl);
+    if (fd < 0) return NULL;
+    /* Unlink immediately so file is deleted when closed */
+    unlink(tmpl);
+    return fdopen(fd, "w+");
+}
 
 FILE *fdopen(int fd, const char *mode) {
     if (fd < 0) return NULL;

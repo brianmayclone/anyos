@@ -887,6 +887,40 @@ if(ANYOS_GCC)
   )
   list(APPEND TOOLCHAIN_SYSROOT_DEPS ${SYSROOT_DIR}/System/Toolchain/lib/link.ld)
 
+  # Check for Stage 2 native compiler (built to run ON anyOS)
+  set(NATIVE_TOOLCHAIN_DIR "$ENV{HOME}/build/anyos-toolchain/native-toolchain")
+  if(IS_DIRECTORY "${NATIVE_TOOLCHAIN_DIR}/bin")
+    message(STATUS "Found native GCC toolchain at ${NATIVE_TOOLCHAIN_DIR}")
+    # Install native binaries (ELF64) to /System/Toolchain/ on disk
+    file(GLOB NATIVE_BINS "${NATIVE_TOOLCHAIN_DIR}/bin/*")
+    foreach(NATIVE_BIN ${NATIVE_BINS})
+      get_filename_component(TOOL_NAME "${NATIVE_BIN}" NAME)
+      set(DEST "${SYSROOT_DIR}/System/Toolchain/bin/${TOOL_NAME}")
+      add_custom_command(
+        OUTPUT ${DEST}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/System/Toolchain/bin
+        COMMAND ${CMAKE_COMMAND} -E copy ${NATIVE_BIN} ${DEST}
+        DEPENDS ${NATIVE_BIN}
+        COMMENT "Installing native ${TOOL_NAME} to /System/Toolchain/bin/"
+      )
+      list(APPEND TOOLCHAIN_SYSROOT_DEPS ${DEST})
+    endforeach()
+    # Install cc1/cc1plus to libexec on disk
+    file(GLOB_RECURSE NATIVE_LIBEXEC "${NATIVE_TOOLCHAIN_DIR}/libexec/*")
+    foreach(NATIVE_LE ${NATIVE_LIBEXEC})
+      get_filename_component(LE_NAME "${NATIVE_LE}" NAME)
+      set(DEST "${SYSROOT_DIR}/System/Toolchain/libexec/${LE_NAME}")
+      add_custom_command(
+        OUTPUT ${DEST}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/System/Toolchain/libexec
+        COMMAND ${CMAKE_COMMAND} -E copy ${NATIVE_LE} ${DEST}
+        DEPENDS ${NATIVE_LE}
+        COMMENT "Installing native ${LE_NAME} to /System/Toolchain/libexec/"
+      )
+      list(APPEND TOOLCHAIN_SYSROOT_DEPS ${DEST})
+    endforeach()
+  endif()
+
 else()
   message(STATUS "x86_64-anyos-gcc not found — GCC toolchain will not be installed to sysroot")
   message(STATUS "  Run scripts/build_gcc_toolchain.sh to build it")

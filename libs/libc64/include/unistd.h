@@ -72,10 +72,23 @@ unsigned int alarm(unsigned int seconds);
 pid_t vfork(void);
 int faccessat(int dirfd, const char *pathname, int mode, int flags);
 
-#define _SC_CLK_TCK 2
-#define _SC_PAGESIZE 30
-#define _SC_PAGE_SIZE _SC_PAGESIZE
+long pathconf(const char *path, int name);
+long fpathconf(int fd, int name);
+size_t confstr(int name, char *buf, size_t len);
+
+#define _SC_CLK_TCK       2
+#define _SC_OPEN_MAX      4
+#define _SC_PAGESIZE      30
+#define _SC_PAGE_SIZE     _SC_PAGESIZE
 #define _SC_GETPW_R_SIZE_MAX 70
+#define _SC_NPROCESSORS_CONF 28
+#define _SC_NPROCESSORS_ONLN 29
+#define _SC_LINE_MAX      84
+
+#define _PC_NAME_MAX 1
+#define _PC_PATH_MAX 2
+#define _PC_LINK_MAX 5
+#define _PC_PIPE_BUF 6
 
 #define F_OK 0
 #define R_OK 4

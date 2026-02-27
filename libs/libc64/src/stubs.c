@@ -562,8 +562,16 @@ int chown(const char *path, unsigned int owner, unsigned int group) {
 }
 
 long sysconf(int name) {
-    if (name == 30) return 4096; /* _SC_PAGESIZE */
-    return -1;
+    switch (name) {
+        case 2:  return 256;    /* _SC_OPEN_MAX */
+        case 3:  return 100;    /* _SC_CLK_TCK */
+        case 11: return 4096;   /* _SC_PAGE_SIZE (alias) */
+        case 28: return 4;      /* _SC_NPROCESSORS_CONF */
+        case 29: return 4;      /* _SC_NPROCESSORS_ONLN */
+        case 30: return 4096;   /* _SC_PAGESIZE */
+        case 84: return 256;    /* _SC_LINE_MAX */
+        default: return -1;
+    }
 }
 
 int getpid(void) { return (int)_syscall(6, 0, 0, 0, 0, 0); }
@@ -811,4 +819,106 @@ ssize_t writev(int fd, const struct iovec *iov, int iovcnt) {
         if ((size_t)r < iov[i].iov_len) break;
     }
     return total;
+}
+
+/* ── mkdtemp — create a uniquely-named temporary directory ── */
+#include <sys/stat.h>
+#include <stdlib.h>
+
+char *mkdtemp(char *tmpl) {
+    if (!tmpl) { errno = EINVAL; return NULL; }
+    size_t len = strlen(tmpl);
+    if (len < 6) { errno = EINVAL; return NULL; }
+    char *suffix = tmpl + len - 6;
+    for (int i = 0; i < 6; i++) {
+        if (suffix[i] != 'X') { errno = EINVAL; return NULL; }
+    }
+    static unsigned int _mkdtemp_counter = 0;
+    for (int tries = 0; tries < 100; tries++) {
+        unsigned int v = (unsigned int)rand() ^ (++_mkdtemp_counter * 6271);
+        for (int i = 0; i < 6; i++) {
+            int r = (v >> (i * 5)) % 36;
+            suffix[i] = (char)(r < 10 ? '0' + r : 'a' + r - 10);
+        }
+        if (mkdir(tmpl, 0700) == 0) return tmpl;
+        if (errno != EEXIST) return NULL;
+    }
+    errno = EEXIST;
+    return NULL;
+}
+
+/* ── tmpnam — generate a unique temporary filename ── */
+char *tmpnam(char *s) {
+    static char _tmpnam_buf[L_tmpnam + 1];
+    static unsigned int _tmpnam_counter = 0;
+    char *buf = s ? s : _tmpnam_buf;
+    unsigned int v = (unsigned int)rand() ^ (++_tmpnam_counter * 5381);
+    snprintf(buf, L_tmpnam, "/tmp/t%06x", v & 0xFFFFFF);
+    return buf;
+}
+
+/* ── fnmatch — shell-style filename pattern matching ── */
+int fnmatch(const char *pattern, const char *string, int flags) {
+    (void)flags;
+    const char *p = pattern, *s = string;
+    const char *star_p = NULL, *star_s = NULL;
+    while (*s) {
+        if (*p == '*') {
+            star_p = ++p;
+            star_s = s;
+            continue;
+        }
+        if (*p == '?' || *p == *s) {
+            p++;
+            s++;
+            continue;
+        }
+        if (star_p) {
+            p = star_p;
+            s = ++star_s;
+            continue;
+        }
+        return 1; /* FNM_NOMATCH */
+    }
+    while (*p == '*') p++;
+    return *p ? 1 : 0;
+}
+
+/* ── pathconf — get configurable pathname limits ── */
+long pathconf(const char *path, int name) {
+    (void)path;
+    switch (name) {
+        case 1: return 255;     /* _PC_NAME_MAX */
+        case 2: return 4096;    /* _PC_PATH_MAX */
+        case 5: return 1;       /* _PC_LINK_MAX */
+        case 6: return 512;     /* _PC_PIPE_BUF */
+        default: return -1;
+    }
+}
+
+long fpathconf(int fd, int name) {
+    (void)fd;
+    return pathconf(NULL, name);
+}
+
+/* ── putenv ── */
+int putenv(char *string) {
+    if (!string) { errno = EINVAL; return -1; }
+    char *eq = strchr(string, '=');
+    if (!eq) { errno = EINVAL; return -1; }
+    /* Temporarily NUL-terminate to get the name */
+    *eq = '\0';
+    int r = setenv(string, eq + 1, 1);
+    *eq = '=';
+    return r;
+}
+
+/* ── clearenv ── */
+int clearenv(void) { return 0; }
+
+/* ── confstr ── */
+size_t confstr(int name, char *buf, size_t len) {
+    (void)name;
+    if (buf && len > 0) buf[0] = '\0';
+    return 0;
 }

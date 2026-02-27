@@ -79,5 +79,6 @@ void perror(const char *s);
 #define _IOLBF 1
 #define _IONBF 2
 #define L_tmpnam 20
+char *tmpnam(char *s);
 
 #endif
