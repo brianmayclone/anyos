@@ -63,6 +63,7 @@ pub struct LibimageExports {
     pub image_encode: extern "C" fn(*const u32, u32, u32, *mut u8, u32) -> i32,
     pub iconpack_render: extern "C" fn(*const u8, u32, *const u8, u32, u32, u32, u32, *mut u32) -> i32,
     pub iconpack_render_cached: extern "C" fn(*const u8, u32, u32, u32, u32, *mut u32) -> i32,
+    pub trim_and_scale: extern "C" fn(*const u32, u32, u32, *mut u32, u32, u32) -> i32,
 }
 
 /// Get a reference to the DLL export table at the fixed load address.

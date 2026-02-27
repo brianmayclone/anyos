@@ -324,3 +324,226 @@ fn cover_crop(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> (u32, u32, u32,
         (0, cy, src_w, ch)
     }
 }
+
+/// Find the tight bounding box of non-transparent pixels in an ARGB8888 image.
+///
+/// Scans the image to find the smallest rectangle that contains all pixels
+/// with alpha > `alpha_threshold`. Returns `(x, y, w, h)` of the content
+/// bounding box. If the image is fully transparent, returns (0, 0, 0, 0).
+pub fn find_content_bounds(
+    src: *const u32,
+    src_w: u32,
+    src_h: u32,
+    alpha_threshold: u32,
+) -> (u32, u32, u32, u32) {
+    if src.is_null() || src_w == 0 || src_h == 0 {
+        return (0, 0, 0, 0);
+    }
+
+    let pixels =
+        unsafe { core::slice::from_raw_parts(src, (src_w as usize) * (src_h as usize)) };
+
+    let stride = src_w as usize;
+    let mut min_x = src_w as usize;
+    let mut min_y = src_h as usize;
+    let mut max_x: usize = 0;
+    let mut max_y: usize = 0;
+
+    for y in 0..src_h as usize {
+        let row = y * stride;
+        for x in 0..src_w as usize {
+            let alpha = (pixels[row + x] >> 24) & 0xFF;
+            if alpha > alpha_threshold {
+                if x < min_x { min_x = x; }
+                if x > max_x { max_x = x; }
+                if y < min_y { min_y = y; }
+                if y > max_y { max_y = y; }
+            }
+        }
+    }
+
+    if max_x < min_x || max_y < min_y {
+        // Fully transparent
+        return (0, 0, 0, 0);
+    }
+
+    (min_x as u32, min_y as u32, (max_x - min_x + 1) as u32, (max_y - min_y + 1) as u32)
+}
+
+/// Trim transparent borders from an ARGB8888 image and scale the result to
+/// fill the destination buffer at `dst_w x dst_h`.
+///
+/// This finds the bounding box of non-transparent content (alpha > 0),
+/// extracts that sub-rectangle, and scales it to exactly `dst_w x dst_h`
+/// using bilinear/area-average scaling (same quality as `scale_image`).
+///
+/// Returns 0 on success, -1 on error, 1 if image is fully transparent.
+pub fn trim_and_scale(
+    src: *const u32,
+    src_w: u32,
+    src_h: u32,
+    dst: *mut u32,
+    dst_w: u32,
+    dst_h: u32,
+) -> i32 {
+    if src.is_null() || dst.is_null() {
+        return -1;
+    }
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return -1;
+    }
+
+    let (cx, cy, cw, ch) = find_content_bounds(src, src_w, src_h, 0);
+    if cw == 0 || ch == 0 {
+        // Fully transparent — clear destination
+        let dst_slice =
+            unsafe { core::slice::from_raw_parts_mut(dst, (dst_w as usize) * (dst_h as usize)) };
+        for p in dst_slice.iter_mut() {
+            *p = 0x00000000;
+        }
+        return 1;
+    }
+
+    // If content already fills the image, just scale normally
+    if cx == 0 && cy == 0 && cw == src_w && ch == src_h {
+        return scale_image(src, src_w, src_h, dst, dst_w, dst_h, MODE_SCALE);
+    }
+
+    // Scale from the content sub-rectangle directly using COVER-like logic:
+    // We set up a virtual source that is just the trimmed region.
+    // Reuse scale_image internals by pointing into the source at the crop offset.
+
+    let src_slice =
+        unsafe { core::slice::from_raw_parts(src, (src_w as usize) * (src_h as usize)) };
+    let dst_slice =
+        unsafe { core::slice::from_raw_parts_mut(dst, (dst_w as usize) * (dst_h as usize)) };
+
+    let src_stride = src_w as usize;
+    let dst_stride = dst_w as usize;
+
+    // Choose algorithm based on whether we're downscaling or upscaling
+    let downscaling = cw > dst_w || ch > dst_h;
+
+    if downscaling {
+        // Area averaging (box filter)
+        const AA_SHIFT: u64 = 24;
+        const AA_ONE: u64 = 1 << AA_SHIFT;
+
+        let step_x_aa = ((cw as u64) << AA_SHIFT) / (dst_w as u64);
+        let step_y_aa = ((ch as u64) << AA_SHIFT) / (dst_h as u64);
+
+        for dy in 0..dst_h {
+            let dst_row = (dy as usize) * dst_stride;
+
+            let sy_start = (dy as u64) * step_y_aa + ((cy as u64) << AA_SHIFT);
+            let sy_end = sy_start + step_y_aa;
+
+            let sy0 = (sy_start >> AA_SHIFT) as usize;
+            let sy1_raw = ((sy_end + AA_ONE - 1) >> AA_SHIFT) as usize;
+            let sy1 = if sy1_raw > src_h as usize { src_h as usize } else { sy1_raw };
+
+            for dx in 0..dst_w {
+                let sx_start = (dx as u64) * step_x_aa + ((cx as u64) << AA_SHIFT);
+                let sx_end = sx_start + step_x_aa;
+
+                let sx0 = (sx_start >> AA_SHIFT) as usize;
+                let sx1_raw = ((sx_end + AA_ONE - 1) >> AA_SHIFT) as usize;
+                let sx1 = if sx1_raw > src_w as usize { src_w as usize } else { sx1_raw };
+
+                let mut sum_a: u64 = 0;
+                let mut sum_r: u64 = 0;
+                let mut sum_g: u64 = 0;
+                let mut sum_b: u64 = 0;
+                let mut weight_total: u64 = 0;
+
+                for sy in sy0..sy1 {
+                    let wy = if sy1 - sy0 == 1 {
+                        AA_ONE
+                    } else if sy == sy0 {
+                        AA_ONE - (sy_start & (AA_ONE - 1))
+                    } else if sy == sy1 - 1 {
+                        let frac = sy_end & (AA_ONE - 1);
+                        if frac == 0 { AA_ONE } else { frac }
+                    } else {
+                        AA_ONE
+                    };
+
+                    let row_off = sy * src_stride;
+                    for sx in sx0..sx1 {
+                        let wx = if sx1 - sx0 == 1 {
+                            AA_ONE
+                        } else if sx == sx0 {
+                            AA_ONE - (sx_start & (AA_ONE - 1))
+                        } else if sx == sx1 - 1 {
+                            let frac = sx_end & (AA_ONE - 1);
+                            if frac == 0 { AA_ONE } else { frac }
+                        } else {
+                            AA_ONE
+                        };
+
+                        let w = (wy >> 12) * (wx >> 12);
+                        let px = src_slice[row_off + sx];
+                        sum_a += ((px >> 24) & 0xFF) as u64 * w;
+                        sum_r += ((px >> 16) & 0xFF) as u64 * w;
+                        sum_g += ((px >> 8) & 0xFF) as u64 * w;
+                        sum_b += (px & 0xFF) as u64 * w;
+                        weight_total += w;
+                    }
+                }
+
+                let pixel = if weight_total == 0 {
+                    0
+                } else {
+                    let half = weight_total >> 1;
+                    let a = ((sum_a + half) / weight_total).min(255) as u32;
+                    let r = ((sum_r + half) / weight_total).min(255) as u32;
+                    let g = ((sum_g + half) / weight_total).min(255) as u32;
+                    let b = ((sum_b + half) / weight_total).min(255) as u32;
+                    (a << 24) | (r << 16) | (g << 8) | b
+                };
+
+                dst_slice[dst_row + dx as usize] = pixel;
+            }
+        }
+    } else {
+        // Bilinear interpolation for upscaling
+        let step_x = fp_div(cw << FP_SHIFT, dst_w << FP_SHIFT);
+        let step_y = fp_div(ch << FP_SHIFT, dst_h << FP_SHIFT);
+
+        let max_sx = ((src_w - 1) as u32) << FP_SHIFT;
+        let max_sy = ((src_h - 1) as u32) << FP_SHIFT;
+
+        let origin_x = (cx << FP_SHIFT) + (step_x >> 1);
+        let origin_y = (cy << FP_SHIFT) + (step_y >> 1);
+
+        let mut sy_fp = origin_y;
+        for dy in 0..dst_h {
+            let csy = clamp(sy_fp, max_sy);
+            let sy0 = (csy >> FP_SHIFT) as usize;
+            let sy1 = if sy0 + 1 < src_h as usize { sy0 + 1 } else { sy0 };
+            let fy = csy & (FP_ONE - 1);
+
+            let dst_row = (dy as usize) * dst_stride;
+
+            let mut sx_fp = origin_x;
+            for dx in 0..dst_w {
+                let csx = clamp(sx_fp, max_sx);
+                let sx0 = (csx >> FP_SHIFT) as usize;
+                let sx1 = if sx0 + 1 < src_w as usize { sx0 + 1 } else { sx0 };
+                let fx = csx & (FP_ONE - 1);
+
+                let c00 = src_slice[sy0 * src_stride + sx0];
+                let c10 = src_slice[sy0 * src_stride + sx1];
+                let c01 = src_slice[sy1 * src_stride + sx0];
+                let c11 = src_slice[sy1 * src_stride + sx1];
+
+                dst_slice[dst_row + dx as usize] = bilinear(c00, c10, c01, c11, fx, fy);
+
+                sx_fp = sx_fp.wrapping_add(step_x);
+            }
+            sy_fp = sy_fp.wrapping_add(step_y);
+        }
+    }
+
+    0
+}

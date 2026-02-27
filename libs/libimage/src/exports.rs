@@ -5,7 +5,7 @@
 
 use crate::types::{ImageInfo, VideoInfo};
 
-const NUM_EXPORTS: u32 = 10;
+const NUM_EXPORTS: u32 = 11;
 
 /// Export function table — must be first in the binary (`.exports` section).
 #[repr(C)]
@@ -31,6 +31,8 @@ pub struct LibimageExports {
     pub iconpack_render: extern "C" fn(*const u8, u32, *const u8, u32, u32, u32, u32, *mut u32) -> i32,
     // Iconpack cached render (no pak data needed — uses internal cache)
     pub iconpack_render_cached: extern "C" fn(*const u8, u32, u32, u32, u32, *mut u32) -> i32,
+    // Trim transparent borders and scale
+    pub trim_and_scale: extern "C" fn(*const u32, u32, u32, *mut u32, u32, u32) -> i32,
 }
 
 #[link_section = ".exports"]
@@ -51,6 +53,7 @@ pub static LIBIMAGE_EXPORTS: LibimageExports = LibimageExports {
     image_encode: image_encode_export,
     iconpack_render: iconpack_render_export,
     iconpack_render_cached: iconpack_render_cached_export,
+    trim_and_scale: trim_and_scale_export,
 };
 
 // ── Video exports ──────────────────────────────────────
@@ -303,6 +306,16 @@ extern "C" fn iconpack_render_cached_export(
     };
 
     render_from_pak(pak_data, name_data, filled != 0, size, color, out)
+}
+
+// ── Trim-and-scale export ───────────────────────────
+
+/// Trim transparent borders from an ARGB8888 image and scale to fill destination.
+extern "C" fn trim_and_scale_export(
+    src: *const u32, src_w: u32, src_h: u32,
+    dst: *mut u32, dst_w: u32, dst_h: u32,
+) -> i32 {
+    crate::scale::trim_and_scale(src, src_w, src_h, dst, dst_w, dst_h)
 }
 
 /// Shared render logic for both export variants.

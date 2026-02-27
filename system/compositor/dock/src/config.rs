@@ -206,16 +206,13 @@ pub fn load_ico_icon(path: &str) -> Option<Icon> {
         return None;
     }
 
-    if src_w == DOCK_ICON_SIZE && src_h == DOCK_ICON_SIZE {
-        return Some(Icon { width: DOCK_ICON_SIZE, height: DOCK_ICON_SIZE, pixels });
-    }
-
     let dst_count = (DOCK_ICON_SIZE * DOCK_ICON_SIZE) as usize;
     let mut dst_pixels = vec![0u32; dst_count];
-    libimage_client::scale_image(
+
+    // Trim transparent borders and scale content to fill DOCK_ICON_SIZE.
+    libimage_client::trim_and_scale(
         &pixels, src_w, src_h,
         &mut dst_pixels, DOCK_ICON_SIZE, DOCK_ICON_SIZE,
-        libimage_client::MODE_SCALE,
     );
 
     Some(Icon { width: DOCK_ICON_SIZE, height: DOCK_ICON_SIZE, pixels: dst_pixels })
