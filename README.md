@@ -105,8 +105,18 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 - **GPU drivers**: Bochs VGA (page flipping), VMware SVGA II (2D acceleration, hardware cursor), VirtualBox VGA, VirtIO GPU
 - **macOS-inspired dark theme** with rounded windows, shadows, and alpha blending
 - **42 UI controls** via the anyui framework + uisys shared library (buttons, text fields, code editor, tree view, data grid, toolbars, canvas, expander, flow/stack panels, etc.)
-- **6 shared libraries** — uisys, libimage, librender, libcompositor (DLIB format) + libanyui, libfont (.so format with ELF dynamic linking)
+- **7 shared libraries** — uisys, libimage, librender, libcompositor (DLIB format) + libanyui, libfont, libgl (.so format with ELF dynamic linking)
 - **TrueType font rendering** with gamma-corrected subpixel LCD anti-aliasing and size-adaptive smoothing (SF Pro family)
+
+### 3D Graphics
+
+- **OpenGL ES 2.0** compatible 3D engine (`libgl.so`) with 68 API exports
+- **Built-in GLSL ES 1.00 shader compiler** — lexer, recursive-descent parser, AST, SSA-style IR (~35 opcodes), register-based interpreter
+- **Software rasterizer** — edge-function triangle fill, Sutherland-Hodgman frustum clipping, perspective-correct varying interpolation, per-fragment depth test and blending
+- **No libm dependency** — all transcendental math (sin, cos, sqrt, pow, log2, exp2) via polynomial approximations
+- **Vertex + Fragment shaders** with swizzle, type constructors (vec2/3/4, mat3/4), 18 built-in functions (texture2D, normalize, dot, cross, clamp, mix, reflect, ...)
+- **Texture sampling** with nearest/bilinear filtering and repeat/clamp/mirror wrap modes
+- **Phase 2 planned**: VMware SVGA3D hardware acceleration with DX9 SM 2.0 bytecode backend
 
 ### Networking
 
@@ -163,7 +173,7 @@ All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, en
 
 127+ command-line and GUI applications:
 
-**GUI Applications (14):** anyOS Code (IDE), Calculator, Clock, Diagnostics, Font Viewer, Image Viewer, Minesweeper, Notepad, Paint, Screenshot, Surf (web browser prototype), Video Player, Web Manager, anyui Demo
+**GUI Applications (15):** anyOS Code (IDE), Calculator, Clock, Diagnostics, Font Viewer, GL Demo (3D), Image Viewer, Minesweeper, Notepad, Paint, Screenshot, Surf (web browser prototype), Video Player, Web Manager, anyui Demo
 
 **System Applications (15):** Init, Login, Compositor, Terminal, Finder, Settings, Activity Monitor, Permission Dialog, Shell (dash), Audio Monitor, Network Monitor, Input Monitor, Event Viewer, Disk Utility, amid (statistics daemon)
 
@@ -370,13 +380,15 @@ anyos/
     libanyui_client/       Client crate for libanyui (dynlink-based)
     libfont/               libfont.so — TrueType font rendering (embedded system fonts in .rodata)
     libfont_client/        Client crate for libfont (dynlink-based)
+    libgl/                 libgl.so — OpenGL ES 2.0 3D engine (GLSL compiler + SW rasterizer)
+    libgl_client/          Client crate for libgl (dynlink-based)
     dynlink/               Minimal user-space dynamic linker (dl_open/dl_sym for .so files)
     librender/             librender.dlib — 2D graphics primitives DLL
     librender_client/      Client stub crate for librender
     libcompositor/         libcompositor.dlib — Compositor client API DLL
     libcompositor_client/  Client stub crate for libcompositor
   bin/                   CLI program sources (88 Rust programs)
-  apps/                  GUI application sources (14 .app bundles)
+  apps/                  GUI application sources (15 .app bundles)
   system/                System programs (15)
     init/                  Init system (PID 1)
     login/                 Login manager
@@ -433,6 +445,7 @@ anyOS uses two shared library formats with **dynamic kernel-managed addressing**
 | libcompositor | DLIB | 16 | Window creation, event handling, IPC with compositor |
 | libanyui | .so | 112 | anyui UI framework (41 controls, Windows Forms-style) |
 | libfont | .so | 7 | TrueType font rendering with LCD subpixel AA (system fonts embedded in .rodata) |
+| libgl | .so | 68 | OpenGL ES 2.0 3D engine with GLSL compiler and software rasterizer |
 
 DLIB programs link against lightweight client stub crates (e.g. `uisys_client`) that read the export table at the kernel-assigned base address. `.so` programs use `dynlink` crate (`dl_open`/`dl_sym`) for ELF symbol resolution.
 
@@ -450,6 +463,8 @@ DLIB programs link against lightweight client stub crates (e.g. `uisys_client`) 
 - **[libfont API](docs/libfont-api.md)** — TrueType font rendering with subpixel LCD anti-aliasing
 - **[librender API](docs/librender-api.md)** — 2D graphics primitives (fill, stroke, gradient, AA)
 - **[libcompositor API](docs/libcompositor-api.md)** — Window management and compositor IPC
+- **[libgl API](docs/libgl-api.md)** — OpenGL ES 2.0 3D engine with GLSL compiler and software rasterizer
+- **[libm API](docs/libm-api.md)** — Hardware-accelerated math (SSE2 + x87 FPU, 56 exports)
 
 ---
 

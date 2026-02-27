@@ -336,6 +336,7 @@ add_shared_lib(libdb ${CMAKE_SOURCE_DIR}/libs/libdb)
 add_shared_lib(libzip ${CMAKE_SOURCE_DIR}/libs/libzip)
 add_shared_lib(libsvg ${CMAKE_SOURCE_DIR}/libs/libsvg)
 add_shared_lib(libgl ${CMAKE_SOURCE_DIR}/libs/libgl)
+add_shared_lib(libm ${CMAKE_SOURCE_DIR}/libs/libm)
 
 # ============================================================
 # User programs (/System/bin/)
@@ -507,6 +508,7 @@ add_app(mdview      ${CMAKE_SOURCE_DIR}/apps/mdview         "Markdown Viewer")
 add_app(clipman     ${CMAKE_SOURCE_DIR}/apps/clipman        "Clipboard Manager")
 add_app(vnc-settings ${CMAKE_SOURCE_DIR}/apps/vnc-settings "VNC Settings")
 add_app(anybench    ${CMAKE_SOURCE_DIR}/apps/anybench      "anyBench")
+add_app(gldemo      ${CMAKE_SOURCE_DIR}/apps/gldemo        "GL Demo")
 
 # ============================================================
 # Compositor and Dock
