@@ -145,6 +145,18 @@ pub trait GpuDriver: Send {
 
     /// Get the physical address of the current back buffer.
     fn back_buffer_phys(&self) -> Option<u32> { None }
+
+    // ── 3D Acceleration ──────────────────────────────────
+
+    /// Returns true if SVGA3D hardware acceleration is available.
+    fn has_3d(&self) -> bool { false }
+
+    /// Get the 3D hardware version (0 if no 3D support).
+    fn hw_version_3d(&self) -> u32 { 0 }
+
+    /// Submit raw SVGA3D command words to the GPU FIFO.
+    /// The buffer must contain correctly formatted 3D command sequences.
+    fn submit_3d_commands(&mut self, _words: &[u32]) -> bool { false }
 }
 
 // ──────────────────────────────────────────────

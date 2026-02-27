@@ -4608,6 +4608,85 @@ pub fn sys_partition_rescan(disk_id: u32) -> u32 {
     devices.iter().filter(|d| d.disk_id == disk_id as u8 && d.partition.is_some()).count() as u32
 }
 
+// ── GPU 3D Acceleration (SVGA3D) ──────────────────────
+
+/// SYS_GPU_3D_QUERY (513): Query 3D GPU capabilities.
+/// query_type: 0 = has_3d, 1 = hw_version
+pub fn sys_gpu_3d_query(query_type: u32) -> u32 {
+    crate::drivers::gpu::with_gpu(|g| {
+        match query_type {
+            0 => g.has_3d() as u32,
+            1 => g.hw_version_3d(),
+            _ => 0,
+        }
+    }).unwrap_or(0)
+}
+
+/// SYS_GPU_3D_SUBMIT (512): Submit raw SVGA3D command words to the GPU FIFO.
+/// buf_ptr: pointer to u32 word array in user memory
+/// word_count: number of u32 words
+///
+/// Validates that all command IDs are in the SVGA3D range (1040..1099)
+/// and that command sizes don't exceed the buffer.
+pub fn sys_gpu_3d_submit(buf_ptr: u32, word_count: u32) -> u32 {
+    use crate::drivers::gpu::vmware_svga::{SVGA_3D_CMD_MIN, SVGA_3D_CMD_MAX};
+
+    if buf_ptr == 0 || word_count == 0 {
+        return u32::MAX;
+    }
+
+    // Cap at 4096 words (16 KiB) per submission
+    let count = word_count.min(4096) as usize;
+    let byte_size = (count * 4) as u64;
+
+    // Validate pointer is in user space
+    if (buf_ptr as u64) + byte_size > 0x0000_8000_0000_0000 {
+        return u32::MAX;
+    }
+
+    let words = unsafe {
+        core::slice::from_raw_parts(buf_ptr as *const u32, count)
+    };
+
+    // Validate command buffer structure:
+    // Each SVGA3D command is [cmd_id, size_bytes, payload...]
+    // where size_bytes is the byte count of the payload only.
+    let mut offset = 0;
+    while offset < words.len() {
+        if offset + 2 > words.len() {
+            return u32::MAX; // Truncated header
+        }
+        let cmd_id = words[offset];
+        let size_bytes = words[offset + 1];
+
+        // Validate command ID is in SVGA3D range
+        if cmd_id < SVGA_3D_CMD_MIN || cmd_id > SVGA_3D_CMD_MAX {
+            return u32::MAX;
+        }
+
+        // Validate payload size doesn't exceed remaining buffer
+        let payload_words = ((size_bytes + 3) / 4) as usize;
+        if offset + 2 + payload_words > words.len() {
+            return u32::MAX;
+        }
+
+        offset += 2 + payload_words;
+    }
+
+    // Submit validated buffer to GPU
+    crate::drivers::gpu::with_gpu(|g| {
+        if g.submit_3d_commands(words) { 0u32 } else { u32::MAX }
+    }).unwrap_or(u32::MAX)
+}
+
+/// SYS_GPU_3D_SYNC (514): Wait for all pending 3D commands to complete.
+pub fn sys_gpu_3d_sync() -> u32 {
+    crate::drivers::gpu::with_gpu(|g| {
+        g.sync();
+        0u32
+    }).unwrap_or(u32::MAX)
+}
+
 /// Map PartitionType to a numeric ID for the syscall ABI.
 fn partition_type_to_id(pt: &crate::fs::partition::PartitionType) -> u8 {
     use crate::fs::partition::PartitionType;

@@ -245,6 +245,11 @@ pub const SYS_PERM_PENDING_INFO: u32 = 254;
 // Crash info
 pub const SYS_GET_CRASH_INFO: u32 = 260;
 
+// GPU 3D acceleration (SVGA3D)
+pub const SYS_GPU_3D_SUBMIT: u32 = 512;
+pub const SYS_GPU_3D_QUERY: u32  = 513;
+pub const SYS_GPU_3D_SYNC: u32   = 514;
+
 // Disk / partition management
 pub const SYS_DISK_LIST: u32 = 270;
 pub const SYS_DISK_PARTITIONS: u32 = 271;
@@ -533,6 +538,11 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_PARTITION_CREATE => handlers::sys_partition_create(arg1, arg2, arg3),
         SYS_PARTITION_DELETE => handlers::sys_partition_delete(arg1, arg2),
         SYS_PARTITION_RESCAN => handlers::sys_partition_rescan(arg1),
+
+        // GPU 3D acceleration (SVGA3D)
+        SYS_GPU_3D_SUBMIT => handlers::sys_gpu_3d_submit(arg1, arg2),
+        SYS_GPU_3D_QUERY => handlers::sys_gpu_3d_query(arg1),
+        SYS_GPU_3D_SYNC => handlers::sys_gpu_3d_sync(),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

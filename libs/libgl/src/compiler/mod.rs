@@ -1,8 +1,8 @@
 //! GLSL ES 1.00 compiler.
 //!
 //! Pipeline: Source → [`lexer`] → Tokens → [`parser`] → AST → [`lower`] → IR.
-//! The IR is executed by [`backend_sw`] (software interpreter) or could be
-//! translated to HW bytecode in Phase 2.
+//! The IR is executed by [`backend_sw`] (software interpreter) or translated
+//! to DX9 SM 2.0 bytecode by [`backend_dx9`] for SVGA3D GPU acceleration.
 
 pub mod lexer;
 pub mod ast;
@@ -10,6 +10,7 @@ pub mod parser;
 pub mod ir;
 pub mod lower;
 pub mod backend_sw;
+pub mod backend_dx9;
 
 use alloc::string::String;
 use crate::types::*;

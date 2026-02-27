@@ -29,6 +29,7 @@ pub mod compiler;
 pub mod rasterizer;
 pub mod simd;
 pub mod fxaa;
+pub mod svga3d;
 
 mod syscall;
 
@@ -82,6 +83,11 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 pub(crate) static mut CTX: Option<GlContext> = None;
 
+/// Whether the SVGA3D hardware backend is active.
+pub(crate) static mut USE_HW_BACKEND: bool = false;
+/// SVGA3D GPU state (only valid when USE_HW_BACKEND is true).
+pub(crate) static mut SVGA3D: Option<svga3d::Svga3dState> = None;
+
 /// Raw pointers to texture state — avoids `&CTX` / `&mut CTX` aliasing UB
 /// during rasterization when `real_tex_sample` needs read access while
 /// `rasterize_triangle` holds `&mut GlContext`.
@@ -125,18 +131,55 @@ fn check_cpu_features() {
 }
 
 /// Initialize the GL context with the given framebuffer dimensions.
+///
+/// Attempts to initialize SVGA3D hardware acceleration if available.
+/// Falls back to the software rasterizer if no 3D hardware is detected.
 #[no_mangle]
 pub extern "C" fn gl_init(width: u32, height: u32) {
     check_cpu_features();
+
+    // Try to initialize SVGA3D hardware backend
+    if syscall::gpu_3d_has_hw() {
+        let hw_ver = syscall::gpu_3d_hw_version();
+        serial_println!("[libgl] SVGA3D hardware detected (version {:#x})", hw_ver);
+
+        let mut state = svga3d::Svga3dState::new();
+        if state.init(width, height) {
+            serial_println!("[libgl] SVGA3D hardware backend initialized ({}x{})", width, height);
+            unsafe {
+                SVGA3D = Some(state);
+                USE_HW_BACKEND = true;
+            }
+        } else {
+            serial_println!("[libgl] SVGA3D init failed, falling back to software");
+        }
+    } else {
+        serial_println!("[libgl] No 3D hardware, using software rasterizer");
+    }
+
+    // Always initialize the software context (needed for state tracking and fallback)
     unsafe {
         CTX = Some(GlContext::new(width, height));
     }
 }
 
 /// Swap buffers — returns a pointer to the ARGB color buffer.
-/// Runs FXAA post-process if enabled before returning.
+///
+/// When using the SVGA3D hardware backend, issues a PRESENT command
+/// to display the rendered surface on screen.
+/// When using the software rasterizer, runs FXAA and returns the buffer pointer.
 #[no_mangle]
 pub extern "C" fn gl_swap_buffers() -> *const u32 {
+    if unsafe { USE_HW_BACKEND } {
+        if let Some(svga) = unsafe { SVGA3D.as_mut() } {
+            let w = svga.width;
+            let h = svga.height;
+            svga.cmd.present(svga.color_sid, &[(0, 0, w, h)]);
+            svga.cmd.submit();
+            syscall::gpu_3d_sync();
+        }
+    }
+
     let c = ctx();
     if c.fxaa_enabled {
         let w = c.default_fb.width;
@@ -171,8 +214,14 @@ pub extern "C" fn glGetError() -> GLenum {
 pub extern "C" fn glGetString(name: GLenum) -> *const u8 {
     match name {
         GL_VENDOR => b"anyOS\0".as_ptr(),
-        GL_RENDERER => b"anyOS Software Rasterizer\0".as_ptr(),
-        GL_VERSION => b"OpenGL ES 2.0 (anyOS libgl 1.0)\0".as_ptr(),
+        GL_RENDERER => {
+            if unsafe { USE_HW_BACKEND } {
+                b"anyOS SVGA3D GPU Accelerated\0".as_ptr()
+            } else {
+                b"anyOS Software Rasterizer\0".as_ptr()
+            }
+        }
+        GL_VERSION => b"OpenGL ES 2.0 (anyOS libgl 2.0)\0".as_ptr(),
         GL_SHADING_LANGUAGE_VERSION => b"GLSL ES 1.00\0".as_ptr(),
         _ => core::ptr::null(),
     }
@@ -275,6 +324,42 @@ pub extern "C" fn glClearColor(red: GLclampf, green: GLclampf, blue: GLclampf, a
 #[no_mangle]
 pub extern "C" fn glClear(mask: GLbitfield) {
     let c = ctx();
+
+    // SVGA3D hardware clear
+    if unsafe { USE_HW_BACKEND } {
+        if let Some(svga) = unsafe { SVGA3D.as_mut() } {
+            let mut clear_flags = 0u32;
+            let mut color = 0u32;
+
+            if mask & GL_COLOR_BUFFER_BIT != 0 {
+                clear_flags |= svga3d::SVGA3D_CLEAR_COLOR;
+                let r = (c.clear_r.clamp(0.0, 1.0) * 255.0) as u32;
+                let g = (c.clear_g.clamp(0.0, 1.0) * 255.0) as u32;
+                let b = (c.clear_b.clamp(0.0, 1.0) * 255.0) as u32;
+                let a = (c.clear_a.clamp(0.0, 1.0) * 255.0) as u32;
+                color = (a << 24) | (r << 16) | (g << 8) | b;
+            }
+            if mask & GL_DEPTH_BUFFER_BIT != 0 {
+                clear_flags |= svga3d::SVGA3D_CLEAR_DEPTH;
+            }
+
+            if clear_flags != 0 {
+                let w = svga.width;
+                let h = svga.height;
+                svga.cmd.clear(
+                    svga.context_id,
+                    clear_flags,
+                    color,
+                    c.clear_depth,
+                    0, // stencil
+                    &[(0, 0, w, h)],
+                );
+                svga.cmd.submit();
+            }
+        }
+    }
+
+    // Always clear the software framebuffer too (for state consistency)
     if mask & GL_COLOR_BUFFER_BIT != 0 {
         let r = (c.clear_r.clamp(0.0, 1.0) * 255.0) as u32;
         let g = (c.clear_g.clamp(0.0, 1.0) * 255.0) as u32;

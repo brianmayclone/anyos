@@ -153,6 +153,35 @@ const SVGA_CMD_BLIT_SCREEN_TO_GMRFB: u32 = 38;
 const SVGA_CMD_DEFINE_GMR2: u32 = 41;
 const SVGA_CMD_REMAP_GMR2: u32 = 42;
 
+// ── SVGA3D Command opcodes ──────────────────────────────
+const SVGA_3D_CMD_SURFACE_DEFINE: u32     = 1040;
+const SVGA_3D_CMD_SURFACE_DESTROY: u32    = 1041;
+const SVGA_3D_CMD_SURFACE_COPY: u32       = 1042;
+const SVGA_3D_CMD_SURFACE_STRETCHBLT: u32 = 1043;
+const SVGA_3D_CMD_SURFACE_DMA: u32        = 1044;
+const SVGA_3D_CMD_CONTEXT_DEFINE: u32     = 1045;
+const SVGA_3D_CMD_CONTEXT_DESTROY: u32    = 1046;
+const SVGA_3D_CMD_SETTRANSFORM: u32       = 1047;
+const SVGA_3D_CMD_SETZRANGE: u32          = 1048;
+const SVGA_3D_CMD_SETRENDERSTATE: u32     = 1049;
+const SVGA_3D_CMD_SETRENDERTARGET: u32    = 1050;
+const SVGA_3D_CMD_SETTEXTURESTATE: u32    = 1051;
+const SVGA_3D_CMD_SETVIEWPORT: u32        = 1055;
+const SVGA_3D_CMD_CLEAR: u32              = 1057;
+const SVGA_3D_CMD_PRESENT: u32            = 1058;
+const SVGA_3D_CMD_SHADER_DEFINE: u32      = 1059;
+const SVGA_3D_CMD_SHADER_DESTROY: u32     = 1060;
+const SVGA_3D_CMD_SET_SHADER: u32         = 1061;
+const SVGA_3D_CMD_SET_SHADER_CONST: u32   = 1062;
+const SVGA_3D_CMD_DRAW_PRIMITIVES: u32    = 1063;
+const SVGA_3D_CMD_SETSCISSORRECT: u32     = 1064;
+#[allow(dead_code)]
+const SVGA_3D_CMD_PRESENT_READBACK: u32   = 1070;
+
+// Valid range for SVGA3D commands (used for validation in syscall handler)
+pub const SVGA_3D_CMD_MIN: u32 = 1040;
+pub const SVGA_3D_CMD_MAX: u32 = 1099;
+
 // Virtual address for FIFO mapping (kernel higher-half MMIO region)
 const FIFO_VIRT_BASE: u64 = 0xFFFF_FFFF_D002_0000;
 const FIFO_MAP_PAGES: usize = 64; // 256 KiB
@@ -632,6 +661,7 @@ impl VmwareSvgaGpu {
             0, // destScreenId
         ]);
     }
+
 }
 
 impl GpuDriver for VmwareSvgaGpu {
@@ -863,6 +893,28 @@ impl GpuDriver for VmwareSvgaGpu {
     fn has_dma_back_buffer(&self) -> bool {
         self.back_buffer_gmr.is_some()
     }
+
+    // ── 3D Acceleration ──────────────────────────────────
+
+    fn has_3d(&self) -> bool {
+        self.capabilities & SVGA_CAP_3D != 0
+    }
+
+    fn hw_version_3d(&self) -> u32 {
+        if self.has_3d() && self.is_fifo_reg_valid(SVGA_FIFO_3D_HWVERSION) {
+            self.fifo_read(SVGA_FIFO_3D_HWVERSION)
+        } else {
+            0
+        }
+    }
+
+    fn submit_3d_commands(&mut self, words: &[u32]) -> bool {
+        if !self.has_3d() || words.is_empty() {
+            return false;
+        }
+        self.fifo_write_cmd(words);
+        true
+    }
 }
 
 // ──────────────────────────────────────────────
@@ -966,6 +1018,12 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         if gpu.capabilities & flag != 0 {
             crate::serial_println!("    - {}", name);
         }
+    }
+
+    // Log SVGA3D hardware version if 3D is supported
+    if gpu.has_3d() {
+        let hw_ver = gpu.hw_version_3d();
+        crate::serial_println!("  SVGA II: 3D hardware version = {:#x}", hw_ver);
     }
 
     // 3. Enable SVGA FIRST — must be enabled before setting mode or reading FB info

@@ -272,7 +272,7 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
 }
 
 /// Collect uniform values from program into a flat array.
-fn collect_uniforms(program: &crate::shader::GlProgram) -> Vec<[f32; 4]> {
+pub fn collect_uniforms(program: &crate::shader::GlProgram) -> Vec<[f32; 4]> {
     let mut unis = Vec::new();
     for u in &program.uniforms {
         if u.size == 16 {

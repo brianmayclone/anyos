@@ -8,6 +8,9 @@ use core::fmt::{self, Write};
 const SYS_EXIT: u64 = 1;
 const SYS_WRITE: u64 = 2;
 const SYS_SBRK: u64 = 9;
+const SYS_GPU_3D_SUBMIT: u64 = 512;
+const SYS_GPU_3D_QUERY: u64 = 513;
+const SYS_GPU_3D_SYNC: u64 = 514;
 
 #[inline(always)]
 fn syscall1(num: u64, a1: u64) -> u64 {
@@ -82,4 +85,46 @@ pub fn exit(code: u32) -> ! {
 /// Grow the heap. Returns new break address or u64::MAX on failure.
 pub fn sbrk(increment: u32) -> u64 {
     syscall1(SYS_SBRK, increment as u64)
+}
+
+// ── GPU 3D Acceleration ──────────────────────────────
+
+#[inline(always)]
+fn syscall2(num: u64, a1: u64, a2: u64) -> u64 {
+    let ret: u64;
+    unsafe {
+        asm!(
+            "push rbx",
+            "mov rbx, {a1}",
+            "syscall",
+            "pop rbx",
+            a1 = in(reg) a1,
+            in("r10") a2,
+            inlateout("rax") num => ret,
+            out("rcx") _,
+            out("r11") _,
+        );
+    }
+    ret
+}
+
+/// Query whether 3D hardware acceleration is available.
+pub fn gpu_3d_has_hw() -> bool {
+    syscall1(SYS_GPU_3D_QUERY, 0) != 0
+}
+
+/// Query the 3D hardware version.
+pub fn gpu_3d_hw_version() -> u32 {
+    syscall1(SYS_GPU_3D_QUERY, 1) as u32
+}
+
+/// Submit raw SVGA3D command words to the GPU. Returns 0 on success.
+pub fn gpu_3d_submit(words: &[u32]) -> u32 {
+    if words.is_empty() { return 0; }
+    syscall2(SYS_GPU_3D_SUBMIT, words.as_ptr() as u64, words.len() as u64) as u32
+}
+
+/// Wait for all pending 3D commands to complete.
+pub fn gpu_3d_sync() {
+    syscall1(SYS_GPU_3D_SYNC, 0);
 }
