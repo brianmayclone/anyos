@@ -79,9 +79,11 @@ const RDESC_STA_EOP: u8   = 1 << 1;  // End of Packet
 // ──────────────────────────────────────────────
 
 /// Number of receive descriptors in the RX ring.
-const NUM_RX_DESC: usize = 32;
+/// 256 descriptors prevents ring starvation during burst traffic.
+const NUM_RX_DESC: usize = 256;
 /// Number of transmit descriptors in the TX ring.
-const NUM_TX_DESC: usize = 32;
+/// 256 descriptors allows batching many segments with a single tail update.
+const NUM_TX_DESC: usize = 256;
 /// Size of each receive buffer in bytes.
 const RX_BUFFER_SIZE: usize = 2048;
 
@@ -453,6 +455,70 @@ pub fn transmit(data: &[u8]) -> bool {
     }
 
     true
+}
+
+/// Transmit multiple Ethernet frames in a single batch (one MMIO tail write).
+///
+/// Takes a slice of frame slices. Returns the number of frames successfully queued.
+/// This is significantly faster than calling `transmit()` in a loop because it
+/// avoids per-frame lock acquisition and MMIO tail register writes.
+pub fn transmit_batch(frames: &[&[u8]]) -> usize {
+    if frames.is_empty() {
+        return 0;
+    }
+
+    let mut state = E1000_STATE.lock();
+    let e1000 = match state.as_mut() {
+        Some(e) => e,
+        None => return 0,
+    };
+
+    let mut queued = 0usize;
+
+    for frame in frames {
+        if frame.len() > RX_BUFFER_SIZE || frame.is_empty() {
+            continue;
+        }
+
+        let idx = e1000.tx_tail as usize;
+        let desc_ptr = (e1000.tx_descs_virt as *mut TxDescriptor).wrapping_add(idx);
+
+        // Check if descriptor is available
+        let status = unsafe { core::ptr::read_volatile(&(*desc_ptr).status) };
+        if status & TDESC_STA_DD == 0 {
+            break; // No more available descriptors
+        }
+
+        // Copy data to TX buffer
+        let buf_virt = e1000.tx_bufs_virt[idx] as *mut u8;
+        unsafe {
+            core::ptr::copy_nonoverlapping(frame.as_ptr(), buf_virt, frame.len());
+        }
+
+        // Update descriptor
+        unsafe {
+            (*desc_ptr).length = frame.len() as u16;
+            (*desc_ptr).cmd = TDESC_CMD_EOP | TDESC_CMD_IFCS | TDESC_CMD_RS;
+            (*desc_ptr).status = 0;
+        }
+
+        // Statistics
+        e1000.tx_packets += 1;
+        e1000.tx_bytes += frame.len() as u64;
+
+        // Advance tail (but don't write MMIO yet)
+        e1000.tx_tail = ((idx + 1) % NUM_TX_DESC) as u16;
+        queued += 1;
+    }
+
+    // Single MMIO write to kick off all queued frames at once.
+    if queued > 0 {
+        unsafe {
+            mmio_write(e1000.mmio_base, REG_TDT, e1000.tx_tail as u32);
+        }
+    }
+
+    queued
 }
 
 /// Dequeue a received packet. Returns None if no packets available.

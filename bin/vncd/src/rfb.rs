@@ -160,6 +160,39 @@ fn send_full_update(sock: u32, w: u16, h: u16, pixels: &[u32], send_buf: &mut an
     send_all(sock, send_buf)
 }
 
+/// Check if every pixel in a tile is the same solid color.
+/// Returns Some(color) if solid, None if mixed.
+fn tile_solid_color(fb: &[u32], stride: usize, x: usize, y: usize, w: usize, h: usize) -> Option<u32> {
+    let first = fb[y * stride + x];
+    for row in y..y + h {
+        let off = row * stride + x;
+        for col in 0..w {
+            if fb[off + col] != first {
+                return None;
+            }
+        }
+    }
+    Some(first)
+}
+
+/// Append an RRE-encoded rectangle for a solid-color tile.
+///
+/// RRE (Rise-and-Run-length Encoding, encoding type 2) with zero subrects
+/// sends just the background color — 20 bytes total vs 16 KB for a 64x64 Raw tile.
+/// All VNC clients support RRE.
+fn append_rre_solid_rect(out: &mut anyos_std::Vec<u8>, x: usize, y: usize, w: usize, h: usize, color: u32) {
+    // Rectangle header: x, y, w, h (BE16 each), encoding=2 (RRE, BE32)
+    out.extend_from_slice(&be16(x as u16));
+    out.extend_from_slice(&be16(y as u16));
+    out.extend_from_slice(&be16(w as u16));
+    out.extend_from_slice(&be16(h as u16));
+    out.extend_from_slice(&be32(2)); // encoding = RRE
+
+    // RRE payload: num-subrects (BE32) = 0, background-pixel (4 bytes LE)
+    out.extend_from_slice(&be32(0)); // zero subrectangles
+    out.extend_from_slice(&color.to_le_bytes()); // background pixel (same byte order as Raw)
+}
+
 /// Append a raw rectangle (header + pixel data) to a byte buffer.
 fn append_raw_rect(out: &mut anyos_std::Vec<u8>, fb: &[u32], stride: usize, x: usize, y: usize, w: usize, h: usize) {
     // Rectangle header: x, y, w, h (BE16 each), encoding=0 (Raw, BE32)
@@ -176,6 +209,16 @@ fn append_raw_rect(out: &mut anyos_std::Vec<u8>, fb: &[u32], stride: usize, x: u
             core::slice::from_raw_parts(fb[off..].as_ptr() as *const u8, w * 4)
         };
         out.extend_from_slice(row_bytes);
+    }
+}
+
+/// Append the best encoding for a dirty tile: RRE for solid-color, Raw otherwise.
+fn append_tile_rect(out: &mut anyos_std::Vec<u8>, fb: &[u32], stride: usize, x: usize, y: usize, w: usize, h: usize) {
+    if let Some(color) = tile_solid_color(fb, stride, x, y, w, h) {
+        // Solid color: 20 bytes (RRE) instead of ~16 KB (Raw). ~800x smaller.
+        append_rre_solid_rect(out, x, y, w, h, color);
+    } else {
+        append_raw_rect(out, fb, stride, x, y, w, h);
     }
 }
 
@@ -233,8 +276,8 @@ fn send_dirty_update(
             let th = TILE_SIZE.min(sh - ty);
 
             if tile_dirty(cur, prev, sw, tx, ty, tw, th) {
-                // Append this tile's rect to the send buffer.
-                append_raw_rect(send_buf, cur, sw, tx, ty, tw, th);
+                // Append this tile's rect — uses RRE for solid tiles, Raw otherwise.
+                append_tile_rect(send_buf, cur, sw, tx, ty, tw, th);
                 n_dirty += 1;
 
                 // Update prev buffer for this tile.
