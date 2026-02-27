@@ -300,6 +300,9 @@ struct AnyuiLib {
     pub(crate) get_theme: extern "C" fn() -> u32,
     pub(crate) get_theme_colors_ptr: extern "C" fn() -> *const u8,
     pub(crate) apply_accent_style: extern "C" fn(u32, u32, u32, u32),
+    // Font smoothing
+    pub(crate) set_font_smoothing: extern "C" fn(u32),
+    pub(crate) get_font_smoothing: extern "C" fn() -> u32,
     // Window title
     set_title: extern "C" fn(u32, *const u8, u32),
     // Key event info
@@ -524,6 +527,9 @@ pub fn init() -> bool {
             get_theme: resolve(&handle, "anyui_get_theme"),
             get_theme_colors_ptr: resolve(&handle, "anyui_get_theme_colors_ptr"),
             apply_accent_style: resolve(&handle, "anyui_apply_accent_style"),
+            // Font smoothing
+            set_font_smoothing: resolve(&handle, "anyui_set_font_smoothing"),
+            get_font_smoothing: resolve(&handle, "anyui_get_font_smoothing"),
             // Window title
             set_title: resolve(&handle, "anyui_set_title"),
             // Key event info

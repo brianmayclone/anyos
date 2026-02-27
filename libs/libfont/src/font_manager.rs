@@ -25,6 +25,16 @@ static mut FONT_MGR_PTR: *mut FontManager = core::ptr::null_mut();
 static mut GAMMA_LUT_S: [u8; 256] = [0u8; 256];
 static mut GAMMA_LUT_M: [u8; 256] = [0u8; 256];
 
+/// Address of the `font_smoothing` field in the uisys DLL export struct.
+/// 0 = no smoothing, 1 = greyscale AA, 2 = subpixel LCD.
+const FONT_SMOOTHING_ADDR: *const u32 = 0x0400_0010 as *const u32;
+
+/// Read the font smoothing mode from the shared uisys DLL page.
+#[inline(always)]
+fn read_font_smoothing() -> u32 {
+    unsafe { core::ptr::read_volatile(FONT_SMOOTHING_ADDR) }
+}
+
 /// Maximum number of cached glyphs before LRU eviction.
 const MAX_CACHE_SIZE: usize = 2048;
 
@@ -612,7 +622,9 @@ pub fn draw_string_buf_clipped(
     let clip_b = clip_b.min(buf_h as i32);
     if clip_x >= clip_r || clip_y >= clip_b { return; }
 
-    let subpixel = mgr.subpixel_enabled;
+    // Read font smoothing mode from shared uisys page
+    let smoothing = read_font_smoothing();
+    let subpixel = smoothing == 2;
     let actual_font_id = if mgr.get_font(font_id).is_some() { font_id } else { SYSTEM_FONT_ID };
     let (upm, ascent_px, lh, tab_advance) = {
         let ttf = match mgr.get_font(actual_font_id) {
@@ -710,7 +722,7 @@ pub fn draw_string_buf_clipped(
                         clip_x, clip_y, clip_r, clip_b);
                 } else {
                     draw_glyph_greyscale_buf(buf, buf_w, buf_h, gx, gy, glyph, col_a, col_r, col_g, col_b,
-                        clip_x, clip_y, clip_r, clip_b);
+                        clip_x, clip_y, clip_r, clip_b, smoothing);
                 }
             }
         }
@@ -726,10 +738,11 @@ fn draw_glyph_greyscale_buf(
     x: i32, y: i32, glyph: &CachedGlyph,
     col_a: u32, col_r: u8, col_g: u8, col_b: u8,
     clip_x: i32, clip_y: i32, clip_r: i32, clip_b: i32,
+    smoothing: u32,
 ) {
     let bw = glyph.width as i32;
     let bh = glyph.height as i32;
-    let lut = gamma_lut_for_size(glyph.size);
+    let lut = if smoothing == 0 { None } else { gamma_lut_for_size(glyph.size) };
 
     for row in 0..bh {
         let py = y + row;
@@ -739,6 +752,17 @@ fn draw_glyph_greyscale_buf(
             if px < clip_x || px >= clip_r { continue; }
             let raw_cov = glyph.coverage[(row * bw + col) as usize];
             if raw_cov == 0 { continue; }
+
+            // Mode 0 (no smoothing): binary threshold — full or nothing
+            if smoothing == 0 {
+                if raw_cov < 128 { continue; }
+                let idx = (py as u32 * sw + px as u32) as usize;
+                unsafe {
+                    *buf.add(idx) = (col_a << 24) | ((col_r as u32) << 16) | ((col_g as u32) << 8) | col_b as u32;
+                }
+                continue;
+            }
+
             let coverage = if let Some(tbl) = lut { tbl[raw_cov as usize] } else { raw_cov };
             let alpha = div255(coverage as u32 * col_a);
             if alpha == 0 { continue; }

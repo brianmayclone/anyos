@@ -243,6 +243,15 @@ pub fn run_once() -> u32 {
                     }
                 }
             }
+            // EVT_FONT_SMOOTHING_CHANGED (0x0051): mark all windows dirty
+            // so text re-renders with the new smoothing mode.
+            0x0051 => {
+                for &win_id in &st.windows {
+                    if let Some(idx) = crate::control::find_idx(&st.controls, win_id) {
+                        mark_tree_dirty(&mut st.controls, idx);
+                    }
+                }
+            }
             0x0060 => {
                 // EVT_WINDOW_OPENED: ev[1] = app_tid
                 if let Some((cb, ud)) = st.on_window_opened {

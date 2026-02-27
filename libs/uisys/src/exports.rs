@@ -16,7 +16,10 @@ pub struct UisysExports {
     /// Written by compositor (DLL pages are shared physical frames).
     /// Read by theme.rs via volatile pointer (no syscall needed).
     pub theme: u32,
-    pub _reserved: [u32; 4],
+    /// Font smoothing mode: 0 = none, 1 = greyscale AA (default), 2 = subpixel LCD.
+    /// Written by compositor, read by libfont via volatile pointer.
+    pub font_smoothing: u32,
+    pub _reserved: [u32; 3],
 
     // --- Label (4) ---
     pub label_render: extern "C" fn(u32, i32, i32, *const u8, u32, u32, u16, u8),
@@ -181,7 +184,8 @@ pub static UISYS_EXPORTS: UisysExports = UisysExports {
     version: 1,
     num_exports: NUM_EXPORTS,
     theme: 0,
-    _reserved: [0; 4],
+    font_smoothing: 1, // greyscale AA by default
+    _reserved: [0; 3],
 
     // Label
     label_render: label::label_render,

@@ -186,6 +186,12 @@ pub const CMD_HIDE_BY_TID: u32 = 0x1014;
 /// The window is moved to (-10000, -10000). CMD_FOCUS_BY_TID restores it.
 pub const CMD_MINIMIZE_WINDOW: u32 = 0x1015;
 
+/// Set font smoothing mode.
+/// [CMD, mode, 0, 0, 0]   mode: 0 = none, 1 = greyscale AA, 2 = subpixel LCD
+/// Compositor writes to shared DLL page, persists to compositor.conf,
+/// and broadcasts EVT_FONT_SMOOTHING_CHANGED.
+pub const CMD_SET_FONT_SMOOTHING: u32 = 0x1016;
+
 /// Inject a synthetic key event into the focused window.
 /// [CMD, scancode, char_val, is_down (1=down/0=up), modifiers]
 /// vncd maps RFB KeySyms → (scancode, char_val) before emitting this command.
@@ -210,6 +216,11 @@ pub const EVT_NOTIFICATION_DISMISSED: u32 = 0x3011;
 /// Theme changed notification (compositor → apps via channel).
 /// [EVT, new_theme, old_theme, 0, 0]
 pub const EVT_THEME_CHANGED: u32 = 0x0050;
+
+/// Font smoothing changed notification (compositor → apps via channel).
+/// [EVT, new_mode, 0, 0, 0]
+/// mode: 0 = none, 1 = greyscale AA, 2 = subpixel LCD
+pub const EVT_FONT_SMOOTHING_CHANGED: u32 = 0x0051;
 
 // ── Compositor → App: Menu & Status Icon Events ─────────────────────────────
 

@@ -26,6 +26,26 @@ pub fn set_theme(value: u32) {
     anyos_std::dll::set_dll_u32(UISYS_BASE, UISYS_THEME_OFFSET, value);
 }
 
+// ── Font Smoothing ────────────────────────────────────────────────────────
+
+const UISYS_FONT_SMOOTHING_OFFSET: u32 = 0x10;
+
+/// Set the font smoothing mode via kernel-mediated write to the shared RO DLIB page.
+///
+/// mode: 0 = no smoothing, 1 = greyscale AA (default), 2 = subpixel LCD.
+pub fn set_font_smoothing(mode: u32) {
+    anyos_std::dll::set_dll_u32(UISYS_BASE, UISYS_FONT_SMOOTHING_OFFSET, mode.min(2));
+}
+
+/// Read the current font smoothing mode from the shared DLIB page.
+pub fn read_font_smoothing() -> u32 {
+    unsafe {
+        core::ptr::read_volatile(
+            (UISYS_BASE as usize + UISYS_FONT_SMOOTHING_OFFSET as usize) as *const u32,
+        )
+    }
+}
+
 // ── Desktop Background ─────────────────────────────────────────────────────
 
 pub(crate) const COLOR_DESKTOP_BG: u32 = 0xFF1E1E1E;

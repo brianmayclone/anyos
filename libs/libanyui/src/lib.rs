@@ -2431,6 +2431,29 @@ pub extern "C" fn anyui_apply_accent_style(
     theme::apply_accent_style(dark_accent, dark_hover, light_accent, light_hover);
 }
 
+/// Set the font smoothing mode system-wide.
+///
+/// Sends CMD_SET_FONT_SMOOTHING (0x1016) to the compositor, which writes
+/// to the shared uisys DLIB page and persists the choice to `compositor.conf`.
+/// mode: 0 = no smoothing, 1 = greyscale AA, 2 = subpixel LCD.
+#[no_mangle]
+pub extern "C" fn anyui_set_font_smoothing(mode: u32) {
+    let val = mode.min(2);
+    let channel_id = state().channel_id;
+    if channel_id != 0 {
+        let cmd: [u32; 5] = [0x1016, val, 0, 0, 0]; // CMD_SET_FONT_SMOOTHING
+        syscall::evt_chan_emit(channel_id, &cmd);
+    }
+}
+
+/// Get the current font smoothing mode from the shared uisys page.
+///
+/// Returns: 0 = no smoothing, 1 = greyscale AA, 2 = subpixel LCD.
+#[no_mangle]
+pub extern "C" fn anyui_get_font_smoothing() -> u32 {
+    unsafe { core::ptr::read_volatile(0x0400_0010 as *const u32) }
+}
+
 // ── Window title (post-creation) ─────────────────────────────────
 
 /// Set the title of a window after creation.

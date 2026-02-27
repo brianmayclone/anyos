@@ -104,6 +104,17 @@ fn main() {
         }
     }
 
+    // Step 4d: Restore saved font smoothing from compositor.conf
+    if let Some(mode) = config::read_font_smoothing() {
+        desktop::set_font_smoothing(mode);
+        let mode_name = match mode {
+            0 => "none",
+            1 => "greyscale",
+            _ => "subpixel",
+        };
+        println!("compositor: restored font smoothing: {}", mode_name);
+    }
+
     // Step 3b: Take over cursor from kernel splash mode
     let (splash_x, splash_y) = ipc::cursor_takeover();
     desktop.set_cursor_pos(splash_x, splash_y);
@@ -548,6 +559,26 @@ fn handle_ipc_commands(
                 release_lock();
                 i += 1;
             }
+            // CMD_SET_FONT_SMOOTHING: write to shared DLL page + repaint
+            ipc_protocol::CMD_SET_FONT_SMOOTHING => {
+                let new_mode = cmd[1].min(2);
+                let old_mode = desktop::theme::read_font_smoothing();
+                if new_mode != old_mode {
+                    desktop::set_font_smoothing(new_mode);
+                    config::save_font_smoothing(new_mode);
+                    ipc::evt_chan_emit(compositor_channel, &[
+                        ipc_protocol::EVT_FONT_SMOOTHING_CHANGED,
+                        new_mode, 0, 0, 0,
+                    ]);
+                    // Force all windows to repaint with new font rendering
+                    acquire_lock();
+                    let desktop = unsafe { desktop_ref() };
+                    desktop.compositor.damage_all();
+                    release_lock();
+                    signal_render();
+                }
+                i += 1;
+            }
             // CMD_SET_THEME: write to shared DLL page + repaint
             ipc_protocol::CMD_SET_THEME => {
                 let new_theme = cmd[1].min(1);
@@ -588,7 +619,8 @@ fn handle_ipc_commands(
                     match c[0] {
                         ipc_protocol::CMD_CREATE_WINDOW
                         | ipc_protocol::CMD_RESIZE_SHM
-                        | ipc_protocol::CMD_SET_THEME => break,
+                        | ipc_protocol::CMD_SET_THEME
+                        | ipc_protocol::CMD_SET_FONT_SMOOTHING => break,
                         _ => {}
                     }
                     if let Some(resp) = desktop.handle_ipc_command(&c) {

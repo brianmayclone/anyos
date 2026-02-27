@@ -160,3 +160,5 @@ EXPORTS
     anyui_move_window
     anyui_minimize_window
     anyui_apply_accent_style
+    anyui_set_font_smoothing
+    anyui_get_font_smoothing

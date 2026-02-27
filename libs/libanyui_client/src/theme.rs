@@ -126,6 +126,23 @@ pub fn apply_accent_style(dark_accent: u32, dark_hover: u32, light_accent: u32, 
     (crate::lib().apply_accent_style)(dark_accent, dark_hover, light_accent, light_hover);
 }
 
+/// Set the font smoothing mode system-wide.
+///
+/// Sends an IPC command to the compositor, which writes to the shared page
+/// and persists the setting. All apps pick up the change immediately.
+///
+/// mode: 0 = no smoothing, 1 = greyscale AA, 2 = subpixel LCD.
+pub fn set_font_smoothing(mode: u32) {
+    (crate::lib().set_font_smoothing)(mode);
+}
+
+/// Get the current font smoothing mode from the shared uisys page.
+///
+/// Returns: 0 = no smoothing, 1 = greyscale AA, 2 = subpixel LCD.
+pub fn get_font_smoothing() -> u32 {
+    (crate::lib().get_font_smoothing)()
+}
+
 // ── Color utility functions ──────────────────────────────────────────
 
 /// Darken a color by subtracting `amount` from each RGB channel.

@@ -13,7 +13,7 @@ pub mod window;
 
 // Re-export public API used by main.rs and other crates
 pub use cursors::CursorShape;
-pub use theme::set_theme;
+pub use theme::{set_theme, set_font_smoothing};
 pub use window::{
     copy_shm_to_pixels, pre_render_chrome_ex,
     MENUBAR_HEIGHT, TITLE_BAR_HEIGHT, WIN_FLAG_BORDERLESS,

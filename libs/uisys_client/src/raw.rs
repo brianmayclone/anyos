@@ -9,7 +9,9 @@ pub struct UisysExports {
     pub version: u32,
     pub num_exports: u32,
     pub theme: u32,
-    pub _reserved: [u32; 4],
+    /// Font smoothing mode: 0 = none, 1 = greyscale AA, 2 = subpixel LCD.
+    pub font_smoothing: u32,
+    pub _reserved: [u32; 3],
 
     // Label (4)
     pub label_render: extern "C" fn(u32, i32, i32, *const u8, u32, u32, u16, u8),

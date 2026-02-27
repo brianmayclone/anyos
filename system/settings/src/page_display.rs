@@ -86,6 +86,9 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     // ── Theme Appearance card ─────────────────────────────────────────────
     build_theme_card(&panel);
 
+    // ── Font Smoothing card ──────────────────────────────────────────────
+    build_font_smoothing_card(&panel);
+
     // ── Resolution picker card ──────────────────────────────────────────
     let resolutions = window::list_resolutions();
     if !resolutions.is_empty() {
@@ -373,6 +376,26 @@ fn build_theme_card(panel: &ui::View) {
     pad.set_dock(ui::DOCK_TOP);
     pad.set_size(552, 8);
     card.add(&pad);
+}
+
+// ── Font Smoothing card ──────────────────────────────────────────────────────
+
+/// Build the font smoothing card with a DropDown (None / Greyscale / Subpixel).
+fn build_font_smoothing_card(panel: &ui::View) {
+    let card = layout::build_auto_card(panel);
+
+    let row = layout::build_setting_row(&card, "Font Smoothing", false);
+
+    let dd = ui::DropDown::new("None|Greyscale|Subpixel (LCD)");
+    dd.set_position(200, 8);
+    dd.set_size(280, 28);
+    dd.set_selected_index(ui::theme::get_font_smoothing());
+
+    dd.on_selection_changed(move |e| {
+        ui::theme::set_font_smoothing(e.index);
+        crate::invalidate_all_pages();
+    });
+    row.add(&dd);
 }
 
 // ── Accent style scanning ────────────────────────────────────────────────────
