@@ -163,6 +163,12 @@ pub trait GpuDriver: Send {
     /// `width`, `height`: surface dimensions (for DMA copy box).
     /// Returns true on success.
     fn dma_surface_upload(&mut self, _sid: u32, _data: &[u8], _width: u32, _height: u32) -> bool { false }
+
+    /// Download data from a GPU surface to a kernel buffer via DMA (GMR).
+    /// `sid`: source surface ID. `buf`: destination buffer for pixel data.
+    /// `width`, `height`: surface dimensions (for DMA copy box).
+    /// Returns true on success.
+    fn dma_surface_download(&mut self, _sid: u32, _buf: &mut [u8], _width: u32, _height: u32) -> bool { false }
 }
 
 // ──────────────────────────────────────────────

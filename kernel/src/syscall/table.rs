@@ -109,6 +109,7 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_GPU_3D_QUERY, "gpu_3d_query"),
     (SYS_GPU_3D_SYNC, "gpu_3d_sync"),
     (SYS_GPU_3D_SURFACE_DMA, "gpu_3d_surface_dma"),
+    (SYS_GPU_3D_SURFACE_DMA_READ, "gpu_3d_surface_dma_read"),
 ];
 
 /// Look up the human-readable name for a syscall number.

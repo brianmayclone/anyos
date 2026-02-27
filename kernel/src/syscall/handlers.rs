@@ -4697,14 +4697,28 @@ pub fn sys_gpu_3d_surface_dma(sid: u32, buf_ptr: u32, buf_len: u32, width: u32, 
     if buf_ptr == 0 || buf_len == 0 || width == 0 || height == 0 {
         return u32::MAX;
     }
-    // Cap at 64 KiB per upload
-    let len = buf_len.min(65536) as usize;
+    // Cap at 1 MiB per upload (matches DMA staging buffer size)
+    let len = buf_len.min(1024 * 1024) as usize;
     if !is_valid_user_ptr(buf_ptr as u64, len as u64) {
         return u32::MAX;
     }
     let data = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len) };
     crate::drivers::gpu::with_gpu(|g| {
         if g.dma_surface_upload(sid, data, width, height) { 0u32 } else { u32::MAX }
+    }).unwrap_or(u32::MAX)
+}
+
+pub fn sys_gpu_3d_surface_dma_read(sid: u32, buf_ptr: u32, buf_len: u32, width: u32, height: u32) -> u32 {
+    if buf_ptr == 0 || buf_len == 0 || width == 0 || height == 0 {
+        return u32::MAX;
+    }
+    let len = buf_len.min(65536 * 16) as usize; // Up to 1 MiB for readback
+    if !is_valid_user_ptr(buf_ptr as u64, len as u64) {
+        return u32::MAX;
+    }
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
+    crate::drivers::gpu::with_gpu(|g| {
+        if g.dma_surface_download(sid, buf, width, height) { 0u32 } else { u32::MAX }
     }).unwrap_or(u32::MAX)
 }
 

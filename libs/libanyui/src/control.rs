@@ -615,6 +615,11 @@ pub trait Control {
         EventResponse::IGNORED
     }
 
+    /// If the control has a built-in scrollbar, returns the local-X threshold
+    /// at which a click should target the scrollbar (bypassing child hit-test).
+    /// Returns `None` (default) when no scrollbar is present.
+    fn scrollbar_hit_x(&self) -> Option<i32> { None }
+
     /// Called when mouse is clicked (down + up on same control).
     /// This is a higher-level event synthesized by the event loop.
     fn handle_click(&mut self, _local_x: i32, _local_y: i32, _button: u32) -> EventResponse {
@@ -800,6 +805,14 @@ pub fn hit_test(
 
     if px < abs_x || py < abs_y || px >= abs_x + b.w as i32 || py >= abs_y + b.h as i32 {
         return None;
+    }
+
+    // If the click lands on a built-in scrollbar, return this control
+    // immediately — children must not intercept scrollbar clicks.
+    if let Some(threshold) = controls[idx].scrollbar_hit_x() {
+        if px - abs_x >= threshold {
+            return Some(root);
+        }
     }
 
     // ScrollView/Expander: offset children's Y for hit-testing

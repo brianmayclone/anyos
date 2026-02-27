@@ -61,8 +61,12 @@ pub fn rasterize_triangle(
             if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 { continue; }
 
             // Perspective-correct interpolation
+            // Guard against near-zero w values that cause NaN/Inf propagation
+            if w0_clip.abs() < 1e-6 || w1_clip.abs() < 1e-6 || w2_clip.abs() < 1e-6 {
+                continue;
+            }
             let inv_w = w0 / w0_clip + w1 / w1_clip + w2 / w2_clip;
-            if inv_w.abs() < 1e-10 { continue; }
+            if inv_w.abs() < 1e-10 || inv_w.is_nan() { continue; }
             let corr = 1.0 / inv_w;
 
             // Interpolate depth

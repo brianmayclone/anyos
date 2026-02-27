@@ -250,6 +250,7 @@ pub const SYS_GPU_3D_SUBMIT: u32 = 512;
 pub const SYS_GPU_3D_QUERY: u32  = 513;
 pub const SYS_GPU_3D_SYNC: u32   = 514;
 pub const SYS_GPU_3D_SURFACE_DMA: u32 = 515;
+pub const SYS_GPU_3D_SURFACE_DMA_READ: u32 = 516;
 
 // Disk / partition management
 pub const SYS_DISK_LIST: u32 = 270;
@@ -545,6 +546,7 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_GPU_3D_QUERY => handlers::sys_gpu_3d_query(arg1),
         SYS_GPU_3D_SYNC => handlers::sys_gpu_3d_sync(),
         SYS_GPU_3D_SURFACE_DMA => handlers::sys_gpu_3d_surface_dma(arg1, arg2, arg3, arg4, arg5),
+        SYS_GPU_3D_SURFACE_DMA_READ => handlers::sys_gpu_3d_surface_dma_read(arg1, arg2, arg3, arg4, arg5),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

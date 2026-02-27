@@ -232,6 +232,11 @@ pub struct VmwareSvgaGpu {
     back_buffer_offset: u32,
     gmr_pages: Vec<u64>,
     next_gmr_id: u32,
+
+    // Pre-allocated DMA staging buffer (identity-mapped, allocated at init)
+    dma_staging_phys: u64,
+    dma_staging_pages: usize,
+    dma_staging_gmr: Option<u32>,
 }
 
 // ── IRQ handler (free function for register_irq_chain) ────────────
@@ -921,48 +926,24 @@ impl GpuDriver for VmwareSvgaGpu {
             return false;
         }
 
-        // Allocate contiguous physical pages for the data
-        let num_pages = (data.len() + 4095) / 4096;
-        let phys = match crate::memory::physical::alloc_contiguous(num_pages) {
-            Some(p) => p,
-            None => return false,
+        let staging_size = self.dma_staging_pages * 4096;
+        let gmr_id = match self.dma_staging_gmr {
+            Some(id) if data.len() <= staging_size => id,
+            _ => return false, // no staging buffer or data too large
         };
 
-        // Copy data to the identity-mapped physical pages
-        let virt = phys.as_u64() as *mut u8;
+        // Copy data to the pre-allocated identity-mapped staging buffer
+        let virt = self.dma_staging_phys as *mut u8;
         unsafe {
             core::ptr::copy_nonoverlapping(data.as_ptr(), virt, data.len());
-            // Zero remaining bytes in the last page
-            let remainder = num_pages * 4096 - data.len();
-            if remainder > 0 {
-                core::ptr::write_bytes(virt.add(data.len()), 0, remainder);
-            }
         }
-
-        // Build physical page list for GMR
-        let phys_pages: alloc::vec::Vec<u64> = (0..num_pages)
-            .map(|i| phys.as_u64() + (i * 4096) as u64)
-            .collect();
-
-        // Define a temporary GMR
-        let gmr_id = match self.gmr2_define(&phys_pages) {
-            Some(id) => id,
-            None => {
-                for i in 0..num_pages {
-                    crate::memory::physical::free_frame(
-                        crate::memory::address::PhysAddr::new(phys.as_u64() + (i * 4096) as u64)
-                    );
-                }
-                return false;
-            }
-        };
 
         // Issue SURFACE_DMA: GMR → surface (WRITE_HOST_VRAM)
         let pitch = width * 4;
         let max_offset = height * pitch;
         let cmd_words = [
             SVGA_3D_CMD_SURFACE_DMA,
-            (20 * 4) as u32, // size_bytes: 20 payload u32s
+            (19 * 4) as u32, // size_bytes: 19 payload u32s
             // guest image: { gmr_id, offset, pitch }
             gmr_id, 0, pitch,
             // host image: { sid, face, mipmap }
@@ -976,15 +957,47 @@ impl GpuDriver for VmwareSvgaGpu {
         ];
         self.fifo_write_cmd(&cmd_words);
 
-        // Sync to ensure GPU has read the data before we free the pages
+        // Sync to ensure GPU has read the data before the buffer is reused
         self.sync_fifo();
 
-        // Clean up: undefine GMR and free physical pages
-        self.gmr2_undefine(gmr_id);
-        for i in 0..num_pages {
-            crate::memory::physical::free_frame(
-                crate::memory::address::PhysAddr::new(phys.as_u64() + (i * 4096) as u64)
-            );
+        true
+    }
+
+    fn dma_surface_download(&mut self, sid: u32, buf: &mut [u8], width: u32, height: u32) -> bool {
+        if !self.has_3d() || !self.has_gmr2 || buf.is_empty() {
+            return false;
+        }
+
+        let staging_size = self.dma_staging_pages * 4096;
+        let gmr_id = match self.dma_staging_gmr {
+            Some(id) if buf.len() <= staging_size => id,
+            _ => return false, // no staging buffer or buffer too large
+        };
+
+        // Issue SURFACE_DMA: surface → GMR (READ_HOST_VRAM = 2)
+        let pitch = width * 4;
+        let max_offset = height * pitch;
+        let cmd_words = [
+            SVGA_3D_CMD_SURFACE_DMA,
+            (19 * 4) as u32, // size_bytes: 19 payload u32s
+            // guest image: { gmr_id, offset, pitch }
+            gmr_id, 0, pitch,
+            // host image: { sid, face, mipmap }
+            sid, 0, 0,
+            // transfer type: READ_HOST_VRAM = 2
+            2,
+            // copy box: { x, y, z, w, h, d, srcx, srcy, srcz }
+            0, 0, 0, width, height, 1, 0, 0, 0,
+            // suffix: { suffixSize, maximumOffset, flags }
+            12, max_offset, 0,
+        ];
+        self.fifo_write_cmd(&cmd_words);
+        self.sync_fifo();
+
+        // Copy data back from identity-mapped staging buffer to user buffer
+        let virt = self.dma_staging_phys as *const u8;
+        unsafe {
+            core::ptr::copy_nonoverlapping(virt, buf.as_mut_ptr(), buf.len());
         }
 
         true
@@ -1056,6 +1069,9 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         back_buffer_offset: 0,
         gmr_pages: Vec::new(),
         next_gmr_id: 0,
+        dma_staging_phys: 0,
+        dma_staging_pages: 0,
+        dma_staging_gmr: None,
     };
 
     // 1. Version negotiation
@@ -1094,11 +1110,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         }
     }
 
-    // Log SVGA3D hardware version if 3D is supported
-    if gpu.has_3d() {
-        let hw_ver = gpu.hw_version_3d();
-        crate::serial_println!("  SVGA II: 3D hardware version = {:#x}", hw_ver);
-    }
+    // (3D version logged later, after FIFO is initialized)
 
     // 3. Enable SVGA FIRST — must be enabled before setting mode or reading FB info
     gpu.reg_write(SVGA_REG_ENABLE, 1);
@@ -1187,6 +1199,50 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         gpu.gmr_max_ids = gpu.reg_read(SVGA_REG_GMR_MAX_IDS);
         gpu.gmr_max_pages = gpu.reg_read(SVGA_REG_GMRS_MAX_PAGES);
         crate::serial_println!("    - GMR2 (max {} IDs, {} pages)", gpu.gmr_max_ids, gpu.gmr_max_pages);
+    }
+
+    // Log SVGA3D hardware version (FIFO is now initialized)
+    if gpu.has_3d() {
+        let hw_ver = gpu.hw_version_3d();
+        crate::serial_println!("  SVGA II: 3D hardware version = {:#x} (has_gmr2={})", hw_ver, gpu.has_gmr2);
+    }
+
+    // 8c2. Pre-allocate DMA staging buffer (for 3D surface uploads)
+    // Must happen early while low memory (< 128 MiB identity-mapped) is still available.
+    if gpu.has_3d() && gpu.has_gmr2 {
+        const DMA_STAGING_PAGES: usize = 256; // 1 MiB staging buffer
+        match crate::memory::physical::alloc_contiguous(DMA_STAGING_PAGES) {
+            Some(p) => {
+                let phys = p.as_u64();
+                unsafe { core::ptr::write_bytes(phys as *mut u8, 0, DMA_STAGING_PAGES * 4096); }
+                // Define a persistent GMR for the staging buffer
+                let phys_pages: alloc::vec::Vec<u64> = (0..DMA_STAGING_PAGES)
+                    .map(|i| phys + (i * 4096) as u64)
+                    .collect();
+                match gpu.gmr2_define(&phys_pages) {
+                    Some(gmr_id) => {
+                        gpu.sync_fifo();
+                        gpu.dma_staging_phys = phys;
+                        gpu.dma_staging_pages = DMA_STAGING_PAGES;
+                        gpu.dma_staging_gmr = Some(gmr_id);
+                        crate::serial_println!("    - DMA staging: {} KiB (GMR {})",
+                            DMA_STAGING_PAGES * 4, gmr_id);
+                    }
+                    None => {
+                        crate::serial_println!("    SVGA: DMA staging GMR define failed");
+                        // Free the pages
+                        for i in 0..DMA_STAGING_PAGES {
+                            crate::memory::physical::free_frame(
+                                crate::memory::address::PhysAddr::new(phys + (i * 4096) as u64)
+                            );
+                        }
+                    }
+                }
+            }
+            None => {
+                crate::serial_println!("    SVGA: DMA staging alloc failed ({} pages)", DMA_STAGING_PAGES);
+            }
+        }
     }
 
     // 8d. Screen Object support (required for GMRFB blits)

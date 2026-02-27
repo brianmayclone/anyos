@@ -130,6 +130,7 @@ pub fn gpu_3d_sync() {
 }
 
 const SYS_GPU_3D_SURFACE_DMA: u64 = 515;
+const SYS_GPU_3D_SURFACE_DMA_READ: u64 = 516;
 
 #[inline(always)]
 fn syscall5(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> u64 {
@@ -162,6 +163,20 @@ pub fn gpu_3d_surface_dma(sid: u32, data: &[u8], width: u32, height: u32) -> u32
         sid as u64,
         data.as_ptr() as u64,
         data.len() as u64,
+        width as u64,
+        height as u64,
+    ) as u32
+}
+
+/// Read back data from a GPU surface via kernel-mediated DMA.
+/// Returns 0 on success.
+pub fn gpu_3d_surface_dma_read(sid: u32, buf: &mut [u8], width: u32, height: u32) -> u32 {
+    if buf.is_empty() { return 0; }
+    syscall5(
+        SYS_GPU_3D_SURFACE_DMA_READ,
+        sid as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
         width as u64,
         height as u64,
     ) as u32

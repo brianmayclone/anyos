@@ -47,8 +47,11 @@ fn clip_polygon_against_plane(verts: &[ClipVertex], plane: usize) -> Vec<ClipVer
         }
         if (d_curr >= 0.0) != (d_next >= 0.0) {
             // Edge crosses plane — compute intersection
-            let t = d_curr / (d_curr - d_next);
-            out.push(interpolate_vertex(curr, next, t));
+            let denom = d_curr - d_next;
+            if denom.abs() > 1e-10 {
+                let t = d_curr / denom;
+                out.push(interpolate_vertex(curr, next, t));
+            }
         }
     }
 

@@ -12,11 +12,9 @@ use crate::rasterizer;
 pub fn draw_arrays(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsizei) {
     if unsafe { crate::USE_HW_BACKEND } {
         draw_arrays_hw(ctx, mode, first, count);
+    } else {
+        rasterizer::draw(ctx, mode, first, count);
     }
-    // Always run SW rasterizer for display output.
-    // GPU readback (SURFACE_DMA from render target) is not yet implemented,
-    // so the compositor still needs the SW framebuffer for compositing.
-    rasterizer::draw(ctx, mode, first, count);
 }
 
 /// Execute glDrawElements.
@@ -101,12 +99,7 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
     use crate::svga3d::*;
     use crate::compiler::backend_dx9;
 
-    static mut DRAW_DBG: u32 = 0;
     if count <= 0 { return; }
-    let dbg = unsafe { DRAW_DBG < 3 };
-    if dbg {
-        crate::serial_println!("[libgl] draw_arrays_hw: mode={} first={} count={}", mode, first, count);
-    }
 
     let prim_type = match gl_mode_to_svga3d(mode) {
         Some(pt) => pt,
@@ -219,11 +212,15 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
         )
     };
     let dma_result = crate::syscall::gpu_3d_surface_dma(vb_sid, vb_bytes, vb_width_pixels, 1);
-    if dbg {
-        crate::serial_println!("[libgl] VB DMA: sid={} bytes={} w={} result={}", vb_sid, vb_bytes.len(), vb_width_pixels, dma_result);
+    if unsafe { crate::DIAG_FRAME } < 3 {
+        crate::serial_println!("[libgl] DRAW: vb_sid={} vb_bytes={} dma_ret={} attribs={} verts={}",
+            vb_sid, vb_bytes.len(), dma_result, attrib_count, count);
     }
     if dma_result != 0 {
         // DMA failed — clean up and bail
+        if unsafe { crate::DIAG_FRAME } < 3 {
+            crate::serial_println!("[libgl] DRAW: DMA FAILED (ret={})", dma_result);
+        }
         svga.cmd.surface_destroy(vb_sid);
         svga.cmd.submit();
         return;
@@ -282,10 +279,9 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
     );
 
     // Submit all commands
-    let draw_result = svga.cmd.submit();
-    if dbg {
-        crate::serial_println!("[libgl] DRAW_PRIMITIVES: attribs={} prims={} submit={}", attrib_count, prim_count, draw_result);
-        unsafe { DRAW_DBG += 1; }
+    let draw_ret = svga.cmd.submit();
+    if unsafe { crate::DIAG_FRAME } < 3 {
+        crate::serial_println!("[libgl] DRAW: draw_submit ret={} prim_type={} prim_count={}", draw_ret, prim_type, prim_count);
     }
 
     // Clean up: destroy vertex buffer and shaders

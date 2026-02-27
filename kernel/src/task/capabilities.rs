@@ -147,7 +147,8 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_GPU_3D_SUBMIT
         | syscall::SYS_GPU_3D_QUERY
         | syscall::SYS_GPU_3D_SYNC
-        | syscall::SYS_GPU_3D_SURFACE_DMA => 0,
+        | syscall::SYS_GPU_3D_SURFACE_DMA
+        | syscall::SYS_GPU_3D_SURFACE_DMA_READ => 0,
 
         // Networking
         syscall::SYS_NET_CONFIG
