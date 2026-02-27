@@ -12,24 +12,36 @@ use crate::types::{DockItem, Icon};
 
 const SYSTEM_CONFIG_PATH: &str = "/System/dock/programs.conf";
 
-/// Get user-specific config path based on current UID: /Users/<username>/.dock.conf
-fn user_config_path() -> Option<String> {
+/// Get the dock config path. Tries `/Users/<username>/.dock.conf` first,
+/// falls back to `/System/dock/programs.conf` (e.g. for root).
+fn config_path() -> String {
     let uid = anyos_std::process::getuid();
     let mut name_buf = [0u8; 64];
     let len = anyos_std::process::getusername(uid, &mut name_buf);
     if len != u32::MAX && len > 0 {
         if let Ok(username) = core::str::from_utf8(&name_buf[..len as usize]) {
-            return Some(format!("/Users/{}/.dock.conf", username));
+            let path = format!("/Users/{}/.dock.conf", username);
+            // Verify the user directory exists
+            let dir = format!("/Users/{}", username);
+            let mut stat_buf = [0u32; 7];
+            if fs::stat(&dir, &mut stat_buf) == 0 {
+                return path;
+            }
         }
     }
     // Fallback to $HOME env var
     let mut home_buf = [0u8; 256];
     let hlen = anyos_std::env::get("HOME", &mut home_buf);
-    if hlen == u32::MAX || hlen == 0 {
-        return None;
+    if hlen != u32::MAX && hlen > 0 {
+        if let Ok(home) = core::str::from_utf8(&home_buf[..hlen as usize]) {
+            let mut stat_buf = [0u32; 7];
+            if fs::stat(home, &mut stat_buf) == 0 {
+                return format!("{}/.dock.conf", home);
+            }
+        }
     }
-    let home = core::str::from_utf8(&home_buf[..hlen as usize]).ok()?;
-    Some(format!("{}/.dock.conf", home))
+    // Fallback to system config path
+    String::from(SYSTEM_CONFIG_PATH)
 }
 
 /// Parse dock config from text (shared by both system and user config).
@@ -91,35 +103,32 @@ fn read_config_file(path: &str) -> Option<String> {
     core::str::from_utf8(&data[..bytes_read]).ok().map(String::from)
 }
 
-/// Load dock items: try user config first, fall back to system config.
+/// Load dock items from config file.
 ///
 /// Format: one item per line: `name|path`
 /// Lines starting with '#' are comments, empty lines are skipped.
 pub fn load_dock_config() -> Vec<DockItem> {
-    // Try user-specific config first
-    if let Some(user_path) = user_config_path() {
-        if let Some(text) = read_config_file(&user_path) {
-            let items = parse_config(&text);
-            if !items.is_empty() {
-                return items;
-            }
+    let path = config_path();
+    if let Some(text) = read_config_file(&path) {
+        let items = parse_config(&text);
+        if !items.is_empty() {
+            return items;
         }
     }
 
-    // Fall back to system config
-    if let Some(text) = read_config_file(SYSTEM_CONFIG_PATH) {
-        return parse_config(&text);
+    // If user config was empty/missing and it's not the system path, try system fallback
+    if path != SYSTEM_CONFIG_PATH {
+        if let Some(text) = read_config_file(SYSTEM_CONFIG_PATH) {
+            return parse_config(&text);
+        }
     }
 
     Vec::new()
 }
 
-/// Save pinned dock items to user config ($HOME/.dock.conf).
+/// Save pinned dock items to the dock config file.
 pub fn save_dock_config(items: &[DockItem]) {
-    let user_path = match user_config_path() {
-        Some(p) => p,
-        None => return,
-    };
+    let path = config_path();
 
     let mut content = String::new();
     content.push_str("# Dock configuration\n");
@@ -132,7 +141,7 @@ pub fn save_dock_config(items: &[DockItem]) {
         }
     }
 
-    let _ = fs::write_bytes(&user_path, content.as_bytes());
+    let _ = fs::write_bytes(&path, content.as_bytes());
 }
 
 const FINDER_NAME: &str = "Finder";

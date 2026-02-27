@@ -154,6 +154,10 @@ pub struct Desktop {
     /// The management loop checks this flag and initiates the logout sequence.
     pub(crate) logout_requested: bool,
 
+    /// Shutdown/restart mode: 0 = none, 1 = power off, 2 = reboot.
+    /// Set by the system menu, consumed by the management loop.
+    pub(crate) shutdown_mode: u8,
+
     /// Menu logo (white variant for dark mode, ARGB pixels).
     pub(crate) logo_white: Vec<u32>,
     /// Menu logo (black variant for light mode, ARGB pixels).
@@ -233,6 +237,7 @@ impl Desktop {
             cascade_y: MENUBAR_HEIGHT as i32 + 50,
             frame_ack_queue: Vec::new(),
             logout_requested: false,
+            shutdown_mode: 0,
             logo_white: Vec::new(),
             logo_black: Vec::new(),
             logo_w: 0,

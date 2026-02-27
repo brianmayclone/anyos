@@ -1,6 +1,7 @@
 //! Dock settings: size, magnification, position.
 //!
-//! Persisted in `~/.dock_settings.conf` as key=value pairs.
+//! Persisted as key=value pairs. Path: `~/.dock_settings.conf` for normal
+//! users, `/System/dock/dock_settings.conf` as fallback (e.g. root).
 
 use alloc::format;
 use alloc::string::String;
@@ -39,38 +40,54 @@ impl DockSettings {
     /// Clamp and validate all fields.
     pub fn validate(&mut self) {
         self.icon_size = self.icon_size.clamp(20, 128);
-        self.mag_size = self.mag_size.clamp(self.icon_size + 1, 128);
+        let min_mag = self.icon_size + 1;
+        if min_mag > 128 {
+            // icon_size is already 128; magnification has no effect
+            self.mag_size = 128;
+        } else {
+            self.mag_size = self.mag_size.clamp(min_mag, 128);
+        }
         if self.position > POS_RIGHT {
             self.position = POS_BOTTOM;
         }
     }
 }
 
-/// Resolve the user dock settings file path: `~/.dock_settings.conf`.
-pub fn settings_path() -> Option<String> {
+/// System fallback path for dock settings.
+const SYSTEM_SETTINGS_PATH: &str = "/System/dock/dock_settings.conf";
+
+/// Resolve the dock settings file path.
+/// Tries `/Users/<username>/.dock_settings.conf` first,
+/// falls back to `/System/dock/dock_settings.conf` (e.g. for root).
+pub fn settings_path() -> String {
     let uid = anyos_std::process::getuid();
     let mut name_buf = [0u8; 64];
     let len = anyos_std::process::getusername(uid, &mut name_buf);
     if len != u32::MAX && len > 0 {
         if let Ok(username) = core::str::from_utf8(&name_buf[..len as usize]) {
-            return Some(format!("/Users/{}/.dock_settings.conf", username));
+            let dir = format!("/Users/{}", username);
+            let mut stat_buf = [0u32; 7];
+            if fs::stat(&dir, &mut stat_buf) == 0 {
+                return format!("/Users/{}/.dock_settings.conf", username);
+            }
         }
     }
     let mut home_buf = [0u8; 256];
     let hlen = anyos_std::env::get("HOME", &mut home_buf);
-    if hlen == u32::MAX || hlen == 0 {
-        return None;
+    if hlen != u32::MAX && hlen > 0 {
+        if let Ok(home) = core::str::from_utf8(&home_buf[..hlen as usize]) {
+            let mut stat_buf = [0u32; 7];
+            if fs::stat(home, &mut stat_buf) == 0 {
+                return format!("{}/.dock_settings.conf", home);
+            }
+        }
     }
-    let home = core::str::from_utf8(&home_buf[..hlen as usize]).ok()?;
-    Some(format!("{}/.dock_settings.conf", home))
+    String::from(SYSTEM_SETTINGS_PATH)
 }
 
-/// Load dock settings from `~/.dock_settings.conf`. Returns defaults on failure.
+/// Load dock settings from the settings file. Returns defaults on failure.
 pub fn load_dock_settings() -> DockSettings {
-    let path = match settings_path() {
-        Some(p) => p,
-        None => return DockSettings::default(),
-    };
+    let path = settings_path();
 
     let mut stat_buf = [0u32; 7];
     if fs::stat(&path, &mut stat_buf) != 0 {
@@ -130,12 +147,9 @@ pub fn load_dock_settings() -> DockSettings {
     s
 }
 
-/// Save dock settings to `~/.dock_settings.conf`.
+/// Save dock settings to the settings file.
 pub fn save_dock_settings(s: &DockSettings) {
-    let path = match settings_path() {
-        Some(p) => p,
-        None => return,
-    };
+    let path = settings_path();
 
     let content = format!(
         "icon_size={}\nmagnification={}\nmag_size={}\nposition={}\n",

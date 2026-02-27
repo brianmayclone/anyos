@@ -97,9 +97,12 @@ fn compute_magnified_sizes(
     sizes
 }
 
-/// Draw a soft shadow around a rounded rectangle.
+/// Draw a soft shadow around a rounded rectangle (4 steps for performance).
 fn draw_shadow(fb: &mut Framebuffer, x: i32, y: i32, w: u32, h: u32, r: i32, offset_y: i32, spread: i32, max_alpha: u32) {
-    for i in 1..=spread {
+    // 4 evenly spaced rings instead of `spread` (typically 12) — 3× faster
+    let steps: i32 = 4;
+    for s in 1..=steps {
+        let i = s * spread / steps;
         let alpha = max_alpha * (spread - i) as u32 / spread as u32;
         if alpha == 0 { continue; }
         let color = alpha << 24;
@@ -173,6 +176,9 @@ fn render_horizontal(fb: &mut Framebuffer, items: &[DockItem], screen_width: u32
     let icon_size = geom.icon_size;
     let spacing = geom.icon_spacing;
 
+    // Pill height is CONSTANT — never changes with magnification
+    let pill_h = geom.dock_height; // icon_size + 16
+
     // Compute magnified sizes for layout
     let base_total_w = item_count as u32 * icon_size
         + (item_count as u32 - 1) * spacing
@@ -180,37 +186,40 @@ fn render_horizontal(fb: &mut Framebuffer, items: &[DockItem], screen_width: u32
     let base_dock_x = (screen_width as i32 - base_total_w as i32) / 2;
 
     let sizes = if rs.drag.is_some() {
-        // No magnification during drag
         vec![icon_size; item_count]
     } else {
         compute_magnified_sizes(item_count, geom, rs.settings, rs.mouse_along, rs.mag_progress, base_dock_x)
     };
 
-    // Compute total width from magnified sizes
+    // Total width uses magnified sizes + spacing between each pair
     let total_icon_w: u32 = sizes.iter().sum();
-    let total_w = total_icon_w + (item_count as u32 - 1) * spacing + geom.h_padding * 2;
-
-    // Find max icon size for pill height
-    let max_size = *sizes.iter().max().unwrap_or(&icon_size);
-    let pill_h = max_size + 16;
+    let total_w = total_icon_w
+        + if item_count > 1 { (item_count as u32 - 1) * spacing } else { 0 }
+        + geom.h_padding * 2;
 
     let dock_x = (screen_width as i32 - total_w as i32) / 2;
     let dock_y = geom.margin as i32;
 
-    // Shadow + pill background
+    // Shadow + pill background (constant height)
     draw_shadow(fb, dock_x, dock_y, total_w, pill_h, geom.border_radius, 4, 12, 40);
     fb.fill_rounded_rect(dock_x, dock_y, total_w, pill_h, geom.border_radius, dock_bg());
 
     // Top highlight line
-    fb.fill_rect(
-        dock_x + geom.border_radius,
-        dock_y,
-        total_w - geom.border_radius as u32 * 2,
-        1,
-        COLOR_HIGHLIGHT,
-    );
+    let hl_inset = geom.border_radius as u32;
+    if total_w > hl_inset * 2 {
+        fb.fill_rect(
+            dock_x + geom.border_radius,
+            dock_y,
+            total_w - hl_inset * 2,
+            1,
+            COLOR_HIGHLIGHT,
+        );
+    }
 
     let hz = anyos_std::sys::tick_hz().max(1);
+
+    // Baseline: bottom of icons aligned to pill bottom - 8px
+    let icon_baseline_y = dock_y + pill_h as i32 - 8;
 
     // Compute drag layout if active
     let drag_layout = rs.drag.as_ref().map(|d| {
@@ -220,10 +229,10 @@ fn render_horizontal(fb: &mut Framebuffer, items: &[DockItem], screen_width: u32
     });
 
     let mut dragged_icon_info: Option<(i32, &crate::types::Icon)> = None;
-    let stride = (icon_size + spacing) as i32;
+    let base_stride = (icon_size + spacing) as i32;
 
     if let Some((source_idx, gap_slot)) = drag_layout {
-        // Drag mode: draw N-1 items with a gap
+        // Drag mode: draw N-1 items with a gap (no magnification)
         let mut ix = dock_x + geom.h_padding as i32;
         let mut slot = 0usize;
         let mut gap_done = false;
@@ -231,19 +240,19 @@ fn render_horizontal(fb: &mut Framebuffer, items: &[DockItem], screen_width: u32
         for (i, item) in items.iter().enumerate() {
             if i == source_idx {
                 if let Some(ref icon) = item.icon {
-                    let base_icon_y = dock_y + ((pill_h as i32 - icon_size as i32) / 2) - 2;
+                    let base_icon_y = icon_baseline_y - icon_size as i32;
                     dragged_icon_info = Some((base_icon_y, icon));
                 }
                 continue;
             }
 
             if !gap_done && slot == gap_slot {
-                ix += stride;
+                ix += base_stride;
                 slot += 1;
                 gap_done = true;
             }
 
-            let base_icon_y = dock_y + ((pill_h as i32 - icon_size as i32) / 2) - 2;
+            let base_icon_y = icon_baseline_y - icon_size as i32;
             let bounce_y = get_bounce_offset(i, rs.bounce_items, rs.now, hz);
             let icon_y = base_icon_y - bounce_y;
 
@@ -255,11 +264,11 @@ fn render_horizontal(fb: &mut Framebuffer, items: &[DockItem], screen_width: u32
 
             if item.running {
                 let dot_x = ix + icon_size as i32 / 2;
-                let dot_y = base_icon_y + icon_size as i32 + 5;
+                let dot_y = icon_baseline_y + 5;
                 fb.fill_circle(dot_x, dot_y, 2, COLOR_WHITE);
             }
 
-            ix += stride;
+            ix += base_stride;
             slot += 1;
         }
 
@@ -272,16 +281,19 @@ fn render_horizontal(fb: &mut Framebuffer, items: &[DockItem], screen_width: u32
         }
     } else {
         // Normal mode with magnification
+        // Each icon gets its own width slot; advance by draw_size + spacing
         let mut ix = dock_x + geom.h_padding as i32;
 
         for (i, item) in items.iter().enumerate() {
             let draw_size = sizes[i];
-            let offset_x = -((draw_size as i32 - icon_size as i32) / 2);
-            let base_icon_y = dock_y + ((pill_h as i32 - draw_size as i32) / 2) - 2;
 
+            // Icon grows UPWARD: bottom edge pinned to baseline
+            let icon_y_base = icon_baseline_y - draw_size as i32;
             let bounce_y = get_bounce_offset(i, rs.bounce_items, rs.now, hz);
-            let icon_x = ix + offset_x;
-            let icon_y = base_icon_y - bounce_y;
+            let icon_y = icon_y_base - bounce_y;
+
+            // Icon is centered within its draw_size slot
+            let icon_x = ix;
 
             if let Some(icon) = pick_icon(item, draw_size, icon_size) {
                 if draw_size != icon.width {
@@ -293,15 +305,15 @@ fn render_horizontal(fb: &mut Framebuffer, items: &[DockItem], screen_width: u32
                 fb.fill_rounded_rect(icon_x, icon_y, draw_size, draw_size, 10, 0xFF3C3C41);
             }
 
-            // Running indicator dot (at base position)
+            // Running indicator dot (at fixed baseline)
             if item.running {
-                let dot_x = ix + icon_size as i32 / 2;
-                let unmag_base_y = dock_y + ((pill_h as i32 - icon_size as i32) / 2) - 2;
-                let dot_y = unmag_base_y + icon_size as i32 + 5;
+                let dot_x = ix + draw_size as i32 / 2;
+                let dot_y = icon_baseline_y + 5;
                 fb.fill_circle(dot_x, dot_y, 2, COLOR_WHITE);
             }
 
-            ix += icon_size as i32 + spacing as i32;
+            // Advance by THIS icon's magnified width + spacing
+            ix += draw_size as i32 + spacing as i32;
         }
     }
 
@@ -314,11 +326,17 @@ fn render_horizontal(fb: &mut Framebuffer, items: &[DockItem], screen_width: u32
                 let pill_w = tw + TOOLTIP_PAD * 2;
                 let pill_tooltip_h = th + 8;
 
-                let icon_center_x = dock_x + geom.h_padding as i32
-                    + idx as i32 * (icon_size + spacing) as i32
-                    + icon_size as i32 / 2;
-                let pill_x = icon_center_x - pill_w as i32 / 2;
-                let pill_y = dock_y - pill_tooltip_h as i32 - 4;
+                // Compute center X of this icon by summing widths of preceding icons
+                let mut cx = dock_x + geom.h_padding as i32;
+                for j in 0..idx {
+                    cx += sizes[j] as i32 + spacing as i32;
+                }
+                cx += sizes[idx] as i32 / 2;
+
+                // Position tooltip above the magnified icon's top edge (constant gap)
+                let icon_top_y = icon_baseline_y - sizes[idx] as i32;
+                let pill_x = cx - pill_w as i32 / 2;
+                let pill_y = icon_top_y - pill_tooltip_h as i32 - 4;
 
                 fb.fill_rounded_rect(pill_x, pill_y, pill_w, pill_tooltip_h, 6, tooltip_bg());
 
@@ -336,7 +354,10 @@ fn render_vertical(fb: &mut Framebuffer, items: &[DockItem], _screen_w: u32, scr
     let icon_size = geom.icon_size;
     let spacing = geom.icon_spacing;
 
-    // For vertical layout, the dock axis is Y
+    // Pill width is CONSTANT — never changes with magnification
+    let pill_w = geom.dock_height; // icon_size + 16
+
+    // Compute magnified sizes
     let base_total_h = item_count as u32 * icon_size
         + (item_count as u32 - 1) * spacing
         + geom.h_padding * 2;
@@ -348,66 +369,81 @@ fn render_vertical(fb: &mut Framebuffer, items: &[DockItem], _screen_w: u32, scr
         compute_magnified_sizes(item_count, geom, rs.settings, rs.mouse_along, rs.mag_progress, base_dock_y)
     };
 
+    // Total height uses magnified sizes + spacing
     let total_icon_h: u32 = sizes.iter().sum();
-    let total_h = total_icon_h + (item_count as u32 - 1) * spacing + geom.h_padding * 2;
-
-    let max_size = *sizes.iter().max().unwrap_or(&icon_size);
-    let pill_w = max_size + 16;
+    let total_h = total_icon_h
+        + if item_count > 1 { (item_count as u32 - 1) * spacing } else { 0 }
+        + geom.h_padding * 2;
 
     let dock_y = (screen_h as i32 - total_h as i32) / 2;
+    // Pill flush with screen edge; tooltip space is on the inner side
     let dock_x = if is_left {
-        geom.margin as i32
+        0
     } else {
-        fb.width as i32 - geom.margin as i32 - pill_w as i32
+        fb.width as i32 - pill_w as i32
     };
 
-    // Shadow + pill background
+    // Shadow + pill background (constant width)
     draw_shadow(fb, dock_x, dock_y, pill_w, total_h, geom.border_radius, 0, 12, 40);
     fb.fill_rounded_rect(dock_x, dock_y, pill_w, total_h, geom.border_radius, dock_bg());
 
     // Side highlight line
-    if is_left {
-        fb.fill_rect(dock_x + pill_w as i32 - 1, dock_y + geom.border_radius, 1, total_h - geom.border_radius as u32 * 2, COLOR_HIGHLIGHT);
-    } else {
-        fb.fill_rect(dock_x, dock_y + geom.border_radius, 1, total_h - geom.border_radius as u32 * 2, COLOR_HIGHLIGHT);
+    let hl_inset = geom.border_radius as u32;
+    if total_h > hl_inset * 2 {
+        if is_left {
+            fb.fill_rect(dock_x + pill_w as i32 - 1, dock_y + geom.border_radius, 1, total_h - hl_inset * 2, COLOR_HIGHLIGHT);
+        } else {
+            fb.fill_rect(dock_x, dock_y + geom.border_radius, 1, total_h - hl_inset * 2, COLOR_HIGHLIGHT);
+        }
     }
 
     let hz = anyos_std::sys::tick_hz().max(1);
+
+    // Baseline for icons: for left dock icons grow rightward, for right they grow leftward
+    // Icon center X is fixed at pill center
+    let icon_baseline_x_left = dock_x + 8; // 8px from left edge of pill
+    let icon_baseline_x_right = dock_x + pill_w as i32 - 8; // 8px from right edge
+
     let mut iy = dock_y + geom.h_padding as i32;
 
     for (i, item) in items.iter().enumerate() {
         let draw_size = sizes[i];
-        let base_icon_x = dock_x + ((pill_w as i32 - draw_size as i32) / 2);
 
-        let bounce_y = get_bounce_offset(i, rs.bounce_items, rs.now, hz);
-        let icon_x = base_icon_x;
-        let icon_y = iy - ((draw_size as i32 - icon_size as i32) / 2) - bounce_y;
+        // Icon centered horizontally in the pill
+        let icon_x = if is_left {
+            icon_baseline_x_left
+        } else {
+            icon_baseline_x_right - draw_size as i32
+        };
+        let icon_y = iy;
+
+        let bounce_x = get_bounce_offset(i, rs.bounce_items, rs.now, hz);
+        let icon_x_final = if is_left { icon_x + bounce_x } else { icon_x - bounce_x };
 
         if let Some(icon) = pick_icon(item, draw_size, icon_size) {
             if draw_size != icon.width {
-                fb.blit_icon_scaled(icon, icon_x, icon_y, draw_size, draw_size);
+                fb.blit_icon_scaled(icon, icon_x_final, icon_y, draw_size, draw_size);
             } else {
-                fb.blit_icon(icon, icon_x, icon_y);
+                fb.blit_icon(icon, icon_x_final, icon_y);
             }
         } else {
-            fb.fill_rounded_rect(icon_x, icon_y, draw_size, draw_size, 10, 0xFF3C3C41);
+            fb.fill_rounded_rect(icon_x_final, icon_y, draw_size, draw_size, 10, 0xFF3C3C41);
         }
 
         // Running indicator dot
         if item.running {
-            let unmag_base_x = dock_x + ((pill_w as i32 - icon_size as i32) / 2);
+            let dot_y = iy + draw_size as i32 / 2;
             if is_left {
-                let dot_x = unmag_base_x + icon_size as i32 + 5;
-                let dot_y = iy + icon_size as i32 / 2;
+                let dot_x = dock_x + pill_w as i32 - 3;
                 fb.fill_circle(dot_x, dot_y, 2, COLOR_WHITE);
             } else {
-                let dot_x = unmag_base_x - 5;
-                let dot_y = iy + icon_size as i32 / 2;
+                let dot_x = dock_x + 3;
                 fb.fill_circle(dot_x, dot_y, 2, COLOR_WHITE);
             }
         }
 
-        iy += icon_size as i32 + spacing as i32;
+        // Advance by THIS icon's magnified height + spacing
+        iy += draw_size as i32 + spacing as i32;
     }
 
     // Tooltip for hovered item
@@ -419,15 +455,22 @@ fn render_vertical(fb: &mut Framebuffer, items: &[DockItem], _screen_w: u32, scr
                 let pill_tw = tw + TOOLTIP_PAD * 2;
                 let pill_th = th + 8;
 
-                let icon_center_y = dock_y + geom.h_padding as i32
-                    + idx as i32 * (icon_size + spacing) as i32
-                    + icon_size as i32 / 2;
-                let pill_ty = icon_center_y - pill_th as i32 / 2;
+                // Compute center Y of this icon by summing heights of preceding icons
+                let mut cy = dock_y + geom.h_padding as i32;
+                for j in 0..idx {
+                    cy += sizes[j] as i32 + spacing as i32;
+                }
+                cy += sizes[idx] as i32 / 2;
 
+                let pill_ty = cy - pill_th as i32 / 2;
+
+                // Position tooltip at constant gap from the magnified icon's outer edge
                 let pill_tx = if is_left {
-                    dock_x + pill_w as i32 + 4
+                    let icon_right = icon_baseline_x_left + sizes[idx] as i32;
+                    icon_right + 4
                 } else {
-                    dock_x - pill_tw as i32 - 4
+                    let icon_left = icon_baseline_x_right - sizes[idx] as i32;
+                    icon_left - pill_tw as i32 - 4
                 };
 
                 fb.fill_rounded_rect(pill_tx, pill_ty, pill_tw, pill_th, 6, tooltip_bg());
@@ -494,12 +537,13 @@ fn hit_test_vertical(x: i32, y: i32, screen_height: u32, items: &[DockItem], geo
     let pill_w = geom.icon_size + 16;
 
     let dock_y = (screen_height as i32 - total_h as i32) / 2;
+    // Pill flush with screen edge
     let dock_x = if is_left {
-        geom.margin as i32
+        0
     } else {
-        // For right dock, we need the full fb width, but we use screen_width minus margin
-        // The dock window is placed at the right edge, so locally dock_x starts at margin
-        geom.margin as i32
+        // Right dock: pill at right edge of framebuffer
+        let fb_w = geom.total_h as i32 + crate::TOOLTIP_EXTRA_W as i32;
+        fb_w - pill_w as i32
     };
 
     if x < dock_x || x >= dock_x + pill_w as i32 {

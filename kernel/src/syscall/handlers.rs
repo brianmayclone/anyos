@@ -4829,3 +4829,62 @@ fn partition_type_to_id(pt: &crate::fs::partition::PartitionType) -> u8 {
         PartitionType::Unknown(v) => *v,
     }
 }
+
+// ── Power management ────────────────────────────────────────────────────────
+
+/// Shut down or reboot the system.
+///
+/// `mode`: 0 = power off, 1 = reboot.
+///
+/// The compositor is expected to have already drawn a shutdown screen and
+/// killed user processes before invoking this syscall. The kernel's job is:
+/// 1. Kill any remaining user threads (safety net).
+/// 2. Halt all other CPUs via IPI.
+/// 3. Power off (ACPI) or reboot (keyboard controller reset).
+///
+/// This function does not return.
+pub fn sys_shutdown(mode: u32) -> u32 {
+    let action = if mode == 1 { "reboot" } else { "shutdown" };
+    crate::serial_println!("kernel: {} requested — beginning shutdown sequence...", action);
+
+    // ── Phase 1: Kill any remaining user threads (safety net) ──
+    let my_tid = crate::task::scheduler::current_tid();
+    let tids = crate::task::scheduler::all_live_tids();
+    let mut killed = 0u32;
+    for &tid in &tids {
+        if tid == my_tid { continue; }
+        if crate::task::scheduler::kill_thread(tid) == 0 {
+            killed += 1;
+        }
+    }
+    if killed > 0 {
+        crate::serial_println!("kernel: terminated {} remaining threads", killed);
+    }
+
+    // ── Phase 2: Halt all other CPUs ──
+    crate::serial_println!("kernel: halting other CPUs...");
+    crate::arch::x86::smp::halt_other_cpus();
+    unsafe { core::arch::asm!("cli"); }
+
+    // ── Phase 3: Power off or reboot ──
+    if mode == 1 {
+        crate::serial_println!("kernel: rebooting via keyboard controller...");
+        unsafe {
+            let mut timeout = 100_000u32;
+            while crate::arch::x86::port::inb(0x64) & 0x02 != 0 && timeout > 0 {
+                timeout -= 1;
+            }
+            crate::arch::x86::port::outb(0x64, 0xFE);
+        }
+    } else {
+        crate::serial_println!("kernel: powering off via ACPI...");
+        unsafe { crate::arch::x86::port::outw(0x604, 0x2000); }
+        unsafe { crate::arch::x86::port::outw(0xB004, 0x2000); }
+    }
+
+    // Fallback: halt indefinitely if above methods didn't work
+    crate::serial_println!("kernel: halt (shutdown method did not take effect)");
+    loop {
+        unsafe { core::arch::asm!("hlt"); }
+    }
+}

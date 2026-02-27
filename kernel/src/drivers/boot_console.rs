@@ -122,7 +122,9 @@ fn fill_gradient_screen(top: u32, bot: u32) {
 }
 
 /// Show the boot splash: gradient screen with centered color logo + spinner.
-fn show_splash() {
+///
+/// Also used during shutdown to display the boot logo before power-off.
+pub fn show_splash() {
     fill_gradient_screen(BG_GRADIENT_TOP, BG_GRADIENT_BOT);
 
     let (logo_w, logo_h, data_offset) = match parse_logo() {

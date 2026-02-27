@@ -902,10 +902,14 @@ impl Desktop {
                 anyos_std::process::spawn("/Applications/About anyOS.app", "");
             }
             crate::menu::SYS_MENU_SETTINGS
-            | crate::menu::SYS_MENU_SLEEP
-            | crate::menu::SYS_MENU_RESTART
-            | crate::menu::SYS_MENU_SHUTDOWN => {
+            | crate::menu::SYS_MENU_SLEEP => {
                 // Not yet implemented
+            }
+            crate::menu::SYS_MENU_SHUTDOWN => {
+                self.shutdown_mode = 1;
+            }
+            crate::menu::SYS_MENU_RESTART => {
+                self.shutdown_mode = 2;
             }
             _ => {}
         }

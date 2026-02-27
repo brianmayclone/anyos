@@ -4,7 +4,6 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use anyos_std::anim::{AnimSet, Easing};
 use anyos_std::println;
 use anyos_std::process;
 
@@ -16,14 +15,19 @@ mod config;
 mod events;
 mod framebuffer;
 mod render;
+mod settings;
 mod theme;
 mod types;
 
-use config::{ensure_finder, is_finder, load_dock_config, load_ico_icon, load_icons, save_dock_config};
+use config::{
+    ensure_finder, is_finder, load_dock_config, load_ico_icon, load_icons, load_icons_hires,
+    save_dock_config,
+};
 use events::{unpack_event_name, SYSTEM_NAMES};
 use framebuffer::Framebuffer;
 use render::{dock_hit_test, render_dock, DragInfo, RenderState};
-use theme::DOCK_TOTAL_H;
+use settings::{DockSettings, POS_BOTTOM, POS_LEFT};
+use theme::{geometry, set_geometry, DockGeometry};
 use types::{DockItem, STILL_RUNNING};
 
 /// Context menu item layouts per dock item state.
@@ -43,12 +47,17 @@ const DOCK_CHANNEL_NAME: &str = "dock";
 const TIMER_FAST_MS: u32 = 16;  // ~60 Hz for animations / drag
 const TIMER_IDLE_MS: u32 = 200; // 5 Hz for idle polling
 
+/// Duration of magnification enter/exit animation (milliseconds).
+const MAG_ANIM_MS: u32 = 150;
+
+/// Extra width for vertical dock windows (tooltip display area).
+const TOOLTIP_EXTRA_W: u32 = 200;
+
 struct DockApp {
     win: anyui::Window,
     canvas: anyui::Canvas,
     items: Vec<DockItem>,
     hovered_idx: Option<usize>,
-    anims: AnimSet,
     bounce_items: Vec<(usize, u32)>,
     screen_width: u32,
     screen_height: u32,
@@ -74,16 +83,51 @@ struct DockApp {
     // Adaptive timer: 16ms when active, 200ms when idle
     timer_id: u32,
     fast_timer: bool,
+    // Dock settings
+    settings: DockSettings,
+    // Magnification animation state
+    mouse_in_dock: bool,
+    mag_progress: i32,
+    mag_start_val: i32,
+    mag_target: i32,
+    mag_start_time: u32,
 }
 
 static mut APP: Option<DockApp> = None;
 fn app() -> &'static mut DockApp { unsafe { APP.as_mut().unwrap() } }
 
-/// Returns true when the dock needs the fast 16ms timer (animations, drag, bounces).
+/// Compute the dock window rectangle based on position and screen size.
+fn dock_window_rect(geom: &DockGeometry, screen_w: u32, screen_h: u32) -> (i32, i32, u32, u32) {
+    match geom.position {
+        POS_LEFT => (0, 0, geom.total_h + TOOLTIP_EXTRA_W, screen_h),
+        POS_BOTTOM => (0, (screen_h - geom.total_h) as i32, screen_w, geom.total_h),
+        _ => {
+            // POS_RIGHT
+            let w = geom.total_h + TOOLTIP_EXTRA_W;
+            ((screen_w - w) as i32, 0, w, screen_h)
+        }
+    }
+}
+
+/// Check if the mouse cursor (in local/canvas coordinates) is within the dock zone.
+fn mouse_in_dock_zone(lx: i32, ly: i32, fb_w: u32) -> bool {
+    let geom = geometry();
+    match geom.position {
+        POS_BOTTOM => ly >= (geom.margin as i32 - 8),
+        // Left: pill flush at x=0, zone extends pill_w + 8px into the window
+        POS_LEFT => lx <= (geom.dock_height as i32 + 8),
+        // Right: pill flush at right edge of framebuffer
+        _ => lx >= (fb_w as i32 - geom.dock_height as i32 - 8),
+    }
+}
+
+/// Returns true when the dock needs the fast 16ms timer.
 fn needs_fast_timer() -> bool {
     let a = app();
-    let now = anyos_std::sys::uptime();
-    a.drag_active || a.drag_mouse_down || !a.bounce_items.is_empty() || a.anims.has_active(now)
+    a.drag_active
+        || a.drag_mouse_down
+        || !a.bounce_items.is_empty()
+        || a.mag_progress != a.mag_target
 }
 
 /// Switch to fast (16ms) timer. No-op if already fast.
@@ -119,18 +163,19 @@ fn main() {
         return;
     }
 
+    // Load settings and initialize geometry
+    let dock_settings = settings::load_dock_settings();
+    set_geometry(DockGeometry::from_settings(&dock_settings));
+
+    let (wx, wy, ww, wh) = dock_window_rect(geometry(), screen_width, screen_height);
+
     let flags = anyui::WIN_FLAG_BORDERLESS
         | anyui::WIN_FLAG_NOT_RESIZABLE
         | anyui::WIN_FLAG_ALWAYS_ON_TOP;
 
-    let win = anyui::Window::new_with_flags(
-        "Dock",
-        0, (screen_height - DOCK_TOTAL_H) as i32,
-        screen_width, DOCK_TOTAL_H,
-        flags,
-    );
+    let win = anyui::Window::new_with_flags("Dock", wx, wy, ww, wh, flags);
 
-    let canvas = anyui::Canvas::new(screen_width, DOCK_TOTAL_H);
+    let canvas = anyui::Canvas::new(ww, wh);
     canvas.set_dock(anyui::DOCK_FILL);
     canvas.set_interactive(true);
     win.add(&canvas);
@@ -155,9 +200,12 @@ fn main() {
     // Load dock items from config + icons (Finder is always present)
     let mut items = load_dock_config();
     ensure_finder(&mut items);
-    load_icons(&mut items);
+    load_icons(&mut items, dock_settings.icon_size);
+    if dock_settings.magnification {
+        load_icons_hires(&mut items, dock_settings.mag_size);
+    }
 
-    let fb = Framebuffer::new(screen_width, DOCK_TOTAL_H);
+    let fb = Framebuffer::new(ww, wh);
     let has_gpu = anyos_std::ui::window::gpu_has_accel();
 
     unsafe {
@@ -166,7 +214,6 @@ fn main() {
             canvas,
             items,
             hovered_idx: None,
-            anims: AnimSet::new(),
             bounce_items: Vec::new(),
             screen_width,
             screen_height,
@@ -188,6 +235,12 @@ fn main() {
             dock_sub,
             timer_id: 0,
             fast_timer: false,
+            settings: dock_settings,
+            mouse_in_dock: false,
+            mag_progress: 0,
+            mag_start_val: 0,
+            mag_target: 0,
+            mag_start_time: 0,
         });
     }
 
@@ -196,22 +249,69 @@ fn main() {
         let a = app();
         let rs = RenderState {
             hover_idx: a.hovered_idx,
-            anims: &a.anims,
             bounce_items: &a.bounce_items,
             now: anyos_std::sys::uptime(),
             drag: None,
+            mouse_along: 0,
+            mag_progress: 0,
+            settings: &a.settings,
         };
-        render_dock(&mut a.fb, &a.items, a.screen_width, &rs);
+        render_dock(&mut a.fb, &a.items, a.screen_width, a.screen_height, &rs);
         a.canvas.copy_pixels_from(&a.fb.pixels);
         a.needs_redraw = false;
     }
+
+    // Mouse move — immediate magnification render for smooth swiping
+    app().canvas.on_mouse_move(|mx, my| {
+        let a = app();
+        // Only do immediate render when magnification is active
+        if !a.settings.magnification || a.mag_progress <= 0 || a.drag_active {
+            return;
+        }
+        let mouse_along = match geometry().position {
+            POS_BOTTOM => mx,
+            _ => my,
+        };
+
+        // Update hover
+        let new_hover = dock_hit_test(
+            mx, my, a.screen_width, a.screen_height,
+            &a.items, &a.settings, mouse_along, a.mag_progress,
+        );
+        if new_hover != a.hovered_idx {
+            a.hovered_idx = new_hover;
+            update_context_menu();
+        }
+
+        // Immediate render — no waiting for next timer tick
+        let now = anyos_std::sys::uptime();
+        let rs = RenderState {
+            hover_idx: a.hovered_idx,
+            bounce_items: &a.bounce_items,
+            now,
+            drag: None,
+            mouse_along,
+            mag_progress: a.mag_progress,
+            settings: &a.settings,
+        };
+        render_dock(&mut a.fb, &a.items, a.screen_width, a.screen_height, &rs);
+        a.canvas.copy_pixels_from(&a.fb.pixels);
+        a.needs_redraw = false;
+    });
 
     // Mouse down — start potential drag (left button) or context menu prep (right button)
     app().canvas.on_mouse_down(|x, y, button| {
         let a = app();
         if button == 1 {
             // Left click — start potential drag
-            if let Some(idx) = dock_hit_test(x, y, a.screen_width, &a.items) {
+            let mouse_along = match geometry().position {
+                POS_BOTTOM => x,
+                _ => y,
+            };
+            if let Some(idx) = dock_hit_test(
+                x, y, a.screen_width, a.screen_height,
+                &a.items, &a.settings, mouse_along, a.mag_progress,
+            ) {
                 a.drag_mouse_down = true;
                 a.drag_start_x = x;
                 a.drag_start_y = y;
@@ -223,10 +323,10 @@ fn main() {
     });
 
     // Mouse up — finalize drag or handle click
-    app().canvas.on_mouse_up(|x, _y, _button| {
+    app().canvas.on_mouse_up(|x, y, _button| {
         let a = app();
         if a.drag_active {
-            finalize_drag(x);
+            finalize_drag(x, y);
         } else if a.drag_mouse_down {
             // Was a click (no drag movement)
             handle_dock_click(a.drag_start_x, a.drag_start_y);
@@ -261,36 +361,75 @@ fn main() {
 
 fn tick() {
     let a = app();
+    let now = anyos_std::sys::uptime();
+    let hz = anyos_std::sys::tick_hz().max(1);
 
     // Check hover via mouse position
     let (mx, my, _) = a.canvas.get_mouse();
+    let mouse_along = match geometry().position {
+        POS_BOTTOM => mx,
+        _ => my,
+    };
+
     let new_hover = if a.drag_active {
         None // Suppress hover tooltip during drag
     } else {
-        dock_hit_test(mx, my, a.screen_width, &a.items)
+        dock_hit_test(
+            mx, my, a.screen_width, a.screen_height,
+            &a.items, &a.settings, mouse_along, a.mag_progress,
+        )
     };
 
     if new_hover != a.hovered_idx {
-        if a.has_gpu {
-            let now = anyos_std::sys::uptime();
-            if let Some(old) = a.hovered_idx {
-                a.anims.start_at(100 + old as u32, 4000, 0, 200, Easing::EaseOut, now);
-            }
-            if let Some(new) = new_hover {
-                a.anims.start_at(100 + new as u32, 0, 4000, 200, Easing::EaseOut, now);
-            }
-        }
         a.hovered_idx = new_hover;
         a.needs_redraw = true;
-
         // Update context menu text for the hovered item
         update_context_menu();
     }
 
-    // Check drag activation (left button held, moved > 5px)
+    // Magnification: check if mouse is in dock zone
+    let in_zone = !a.items.is_empty()
+        && a.settings.magnification
+        && !a.drag_active
+        && mouse_in_dock_zone(mx, my, a.fb.width);
+
+    if in_zone != a.mouse_in_dock {
+        a.mouse_in_dock = in_zone;
+        a.mag_start_val = a.mag_progress;
+        a.mag_target = if in_zone { 1000 } else { 0 };
+        a.mag_start_time = now;
+        if in_zone {
+            ensure_fast_timer();
+        }
+    }
+
+    // Animate magnification progress
+    if a.mag_progress != a.mag_target {
+        let elapsed_ms = now.wrapping_sub(a.mag_start_time) * 1000 / hz;
+        if elapsed_ms >= MAG_ANIM_MS {
+            a.mag_progress = a.mag_target;
+        } else {
+            let t = (elapsed_ms * 1000 / MAG_ANIM_MS) as i32;
+            // EaseOut: t * (2 - t)
+            let eased = t * (2000 - t) / 1000;
+            let diff = a.mag_target - a.mag_start_val;
+            a.mag_progress = a.mag_start_val + diff * eased / 1000;
+        }
+        a.needs_redraw = true;
+    }
+
+    // Magnification needs redraw each frame when active (mouse moves change icon sizes)
+    if a.mouse_in_dock && a.settings.magnification && a.mag_progress > 0 {
+        a.needs_redraw = true;
+    }
+
+    // Check drag activation (button held, moved > 5px along dock axis)
     if a.drag_mouse_down && !a.drag_active {
-        let dx = mx - a.drag_start_x;
-        if dx.abs() > 5 {
+        let drag_dist = match geometry().position {
+            POS_BOTTOM => (mx - a.drag_start_x).abs(),
+            _ => (my - a.drag_start_y).abs(),
+        };
+        if drag_dist > 5 {
             a.drag_active = true;
             a.needs_redraw = true;
         }
@@ -312,16 +451,8 @@ fn tick() {
     process_system_events();
     poll_dock_channel();
 
-    // Tick animations
-    let a = app();
-    let now = anyos_std::sys::uptime();
-    let hz = anyos_std::sys::tick_hz().max(1);
-    a.anims.remove_done(now);
-    if a.anims.has_active(now) {
-        a.needs_redraw = true;
-    }
-
     // Clean up finished bounces (>2 seconds)
+    let a = app();
     a.bounce_items.retain(|(_, start)| {
         let elapsed_ms = now.wrapping_sub(*start) * 1000 / hz;
         elapsed_ms < 2000
@@ -333,10 +464,11 @@ fn tick() {
     // Redraw if needed
     if a.needs_redraw {
         let drag = if a.drag_active {
-            let (mx, _, _) = a.canvas.get_mouse();
+            let (dmx, dmy, _) = a.canvas.get_mouse();
             Some(DragInfo {
                 source_idx: a.drag_idx,
-                mouse_x: mx,
+                mouse_x: dmx,
+                mouse_y: dmy,
             })
         } else {
             None
@@ -344,12 +476,14 @@ fn tick() {
 
         let rs = RenderState {
             hover_idx: a.hovered_idx,
-            anims: &a.anims,
             bounce_items: &a.bounce_items,
             now,
             drag,
+            mouse_along,
+            mag_progress: a.mag_progress,
+            settings: &a.settings,
         };
-        render_dock(&mut a.fb, &a.items, a.screen_width, &rs);
+        render_dock(&mut a.fb, &a.items, a.screen_width, a.screen_height, &rs);
         a.canvas.copy_pixels_from(&a.fb.pixels);
         a.needs_redraw = false;
     }
@@ -396,7 +530,14 @@ fn update_context_menu() {
 /// Handle a click on a dock item — launch or focus the app.
 fn handle_dock_click(lx: i32, ly: i32) {
     let a = app();
-    let idx = match dock_hit_test(lx, ly, a.screen_width, &a.items) {
+    let mouse_along = match geometry().position {
+        POS_BOTTOM => lx,
+        _ => ly,
+    };
+    let idx = match dock_hit_test(
+        lx, ly, a.screen_width, a.screen_height,
+        &a.items, &a.settings, mouse_along, a.mag_progress,
+    ) {
         Some(i) => i,
         None => return,
     };
@@ -555,12 +696,14 @@ fn action_unpin(idx: usize) {
 }
 
 /// Finalize a drag operation — reorder items.
-fn finalize_drag(mouse_x: i32) {
+fn finalize_drag(mouse_x: i32, mouse_y: i32) {
     let a = app();
     let src = a.drag_idx;
     if src >= a.items.len() { return; }
 
-    let drop_idx = render::drag_drop_index(mouse_x, a.screen_width, &a.items, src);
+    let drop_idx = render::drag_drop_index(
+        mouse_x, mouse_y, a.screen_width, a.screen_height, &a.items, src,
+    );
 
     if drop_idx != src {
         let item = a.items.remove(src);
@@ -592,6 +735,10 @@ fn handle_window_opened(app_tid: u32) {
         return;
     }
 
+    let icon_size = a.settings.icon_size;
+    let mag_size = a.settings.mag_size;
+    let magnification = a.settings.magnification;
+
     let bin_path = {
         let app_path = alloc::format!("/Applications/{}.app", name);
         let mut stat_buf = [0u32; 7];
@@ -602,13 +749,19 @@ fn handle_window_opened(app_tid: u32) {
         }
     };
     let icon_path = anyos_std::icons::app_icon_path(&bin_path);
-    let icon = load_ico_icon(&icon_path);
+    let icon = load_ico_icon(&icon_path, icon_size);
+    let icon_hires = if magnification {
+        load_ico_icon(&icon_path, mag_size)
+    } else {
+        None
+    };
 
     let a = app();
     a.items.push(DockItem {
         name,
         bin_path,
         icon,
+        icon_hires,
         running: true,
         tid: app_tid,
         pinned: false,
@@ -645,7 +798,7 @@ fn handle_window_closed(app_tid: u32) {
     }
 }
 
-/// Poll the dock IPC channel for reload notifications (e.g. from Finder).
+/// Poll the dock IPC channel for reload notifications.
 fn poll_dock_channel() {
     let a = app();
     let chan = a.dock_chan;
@@ -653,9 +806,10 @@ fn poll_dock_channel() {
 
     let mut buf = [0u32; 5];
     while anyos_std::ipc::evt_chan_poll(chan, sub, &mut buf) {
-        if buf[0] == 1 {
-            // Reload signal: re-read config and merge new items
-            reload_dock_items();
+        match buf[0] {
+            1 => reload_dock_items(),
+            2 => reload_settings(),
+            _ => {}
         }
     }
 }
@@ -665,6 +819,10 @@ fn reload_dock_items() {
     let new_items = load_dock_config();
 
     let a = app();
+    let icon_size = a.settings.icon_size;
+    let mag_size = a.settings.mag_size;
+    let magnification = a.settings.magnification;
+
     for new_item in new_items {
         // Skip if we already have this app (by bin_path)
         let already = a.items.iter().any(|it| it.bin_path == new_item.bin_path);
@@ -674,13 +832,19 @@ fn reload_dock_items() {
 
         // New pinned item — load its icon and add
         let icon_path = anyos_std::icons::app_icon_path(&new_item.bin_path);
-        let icon = load_ico_icon(&icon_path);
+        let icon = load_ico_icon(&icon_path, icon_size);
+        let icon_hires = if magnification {
+            load_ico_icon(&icon_path, mag_size)
+        } else {
+            None
+        };
 
         let a = app();
         a.items.push(DockItem {
             name: new_item.name,
             bin_path: new_item.bin_path,
             icon,
+            icon_hires,
             running: false,
             tid: 0,
             pinned: true,
@@ -689,6 +853,50 @@ fn reload_dock_items() {
     }
 
     ensure_finder(&mut app().items);
+}
+
+/// Reload dock settings from config file and apply changes.
+fn reload_settings() {
+    let new_settings = settings::load_dock_settings();
+    let a = app();
+
+    let size_changed = new_settings.icon_size != a.settings.icon_size;
+    let mag_size_changed = new_settings.mag_size != a.settings.mag_size;
+    let position_changed = new_settings.position != a.settings.position;
+    let mag_changed = new_settings.magnification != a.settings.magnification;
+
+    a.settings = new_settings;
+
+    // Update geometry
+    set_geometry(DockGeometry::from_settings(&a.settings));
+
+    // Extract settings values before borrowing items
+    let icon_size = a.settings.icon_size;
+    let mag_size = a.settings.mag_size;
+    let magnification = a.settings.magnification;
+
+    // Reload icons if size changed
+    if size_changed {
+        load_icons(&mut a.items, icon_size);
+    }
+    if (size_changed || mag_size_changed || mag_changed) && magnification {
+        load_icons_hires(&mut a.items, mag_size);
+    }
+
+    // Reposition/resize window if geometry changed
+    if size_changed || position_changed {
+        // Move off-screen first so the compositor marks the OLD area as dirty
+        a.win.move_to(-10000, -10000);
+
+        let (wx, wy, ww, wh) = dock_window_rect(geometry(), a.screen_width, a.screen_height);
+        a.fb = Framebuffer::new(ww, wh);
+        a.win.resize(ww, wh);
+        a.canvas.set_size(ww, wh);
+        a.win.move_to(wx, wy);
+        a.bounce_items.clear();
+    }
+
+    a.needs_redraw = true;
 }
 
 /// Handle system events (process spawn/exit, resolution change).
@@ -769,13 +977,13 @@ fn process_system_events() {
                 if new_w != a.screen_width || new_h != a.screen_height {
                     a.screen_width = new_w;
                     a.screen_height = new_h;
-                    a.fb = Framebuffer::new(new_w, DOCK_TOTAL_H);
+                    let (wx, wy, ww, wh) = dock_window_rect(geometry(), new_w, new_h);
+                    a.fb = Framebuffer::new(ww, wh);
                     a.bounce_items.clear();
                     a.needs_redraw = true;
-                    // Resize window SHM surface + back buffer, then reposition
-                    a.win.resize(new_w, DOCK_TOTAL_H);
-                    a.win.move_to(0, (new_h - DOCK_TOTAL_H) as i32);
-                    a.canvas.set_size(new_w, DOCK_TOTAL_H);
+                    a.win.resize(ww, wh);
+                    a.win.move_to(wx, wy);
+                    a.canvas.set_size(ww, wh);
                 }
             }
             _ => {}

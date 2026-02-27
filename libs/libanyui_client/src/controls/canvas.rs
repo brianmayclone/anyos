@@ -132,6 +132,19 @@ impl Canvas {
         (lib().on_event_fn)(self.ctrl.id, crate::EVENT_MOUSE_UP, thunk, ud);
     }
 
+    /// Register callback for mouse move events (fires on every cursor movement over the canvas).
+    pub fn on_mouse_move(&self, mut f: impl FnMut(i32, i32) + 'static) {
+        let canvas_id = self.ctrl.id;
+        let (thunk, ud) = events::register(move |_id, _| {
+            let mut x = 0i32;
+            let mut y = 0i32;
+            let mut button = 0u32;
+            (lib().canvas_get_mouse)(canvas_id, &mut x, &mut y, &mut button);
+            f(x, y);
+        });
+        (lib().on_event_fn)(self.ctrl.id, crate::EVENT_MOUSE_MOVE, thunk, ud);
+    }
+
     /// Register callback for mouse drag (requires `set_interactive(true)`).
     pub fn on_draw(&self, mut f: impl FnMut(i32, i32, u32) + 'static) {
         let canvas_id = self.ctrl.id;

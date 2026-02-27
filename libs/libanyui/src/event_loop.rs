@@ -397,6 +397,8 @@ pub fn run_once() -> u32 {
                                     st.controls[idx].base_mut().mark_dirty();
                                 }
                             }
+                            // Fire EVENT_MOUSE_MOVE callback so apps can react to hover movement
+                            fire_event_callback(&st.controls, hover_id, control::EVENT_MOUSE_MOVE, &mut pending_cbs);
                         }
                     }
 

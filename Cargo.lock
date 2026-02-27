@@ -41,6 +41,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "anybout"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
 name = "anycode"
 version = "0.1.0"
 dependencies = [

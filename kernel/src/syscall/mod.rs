@@ -265,6 +265,9 @@ pub const SYS_PARTITION_RESCAN: u32 = 276;
 pub const SYS_GET_HOSTNAME: u32 = 280;
 pub const SYS_SET_HOSTNAME: u32 = 281;
 
+// Power management
+pub const SYS_SHUTDOWN: u32 = 282;
+
 /// Register frame pushed by `syscall_entry.asm` / `syscall_fast.asm`.
 ///
 /// The layout matches the individual GPR pushes (no pushad in 64-bit mode) plus the
@@ -555,6 +558,9 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         // Hostname
         SYS_GET_HOSTNAME => handlers::sys_get_hostname(arg1, arg2),
         SYS_SET_HOSTNAME => handlers::sys_set_hostname(arg1, arg2),
+
+        // Power management
+        SYS_SHUTDOWN => handlers::sys_shutdown(arg1),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

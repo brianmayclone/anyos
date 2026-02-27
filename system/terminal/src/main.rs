@@ -1223,7 +1223,12 @@ impl Shell {
             "reboot" => {
                 buf.current_color = COLOR_FG;
                 buf.write_str("Rebooting...\n");
-                process::exit(0);
+                process::reboot();
+            }
+            "shutdown" | "poweroff" => {
+                buf.current_color = COLOR_FG;
+                buf.write_str("Shutting down...\n");
+                process::shutdown();
             }
             _ => {
                 // Disable capture for external commands — they use pipe redirect instead
@@ -1846,6 +1851,7 @@ impl Shell {
 const BUILTINS: &[&str] = &[
     "help", "echo", "clear", "uname", "cd", "pwd",
     "set", "export", "unset", "source", "su", "exit", "reboot",
+    "shutdown", "poweroff",
 ];
 
 /// Erase the input portion of the current display line and rewrite it.

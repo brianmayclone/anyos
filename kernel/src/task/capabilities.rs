@@ -241,7 +241,8 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_ADDUSER
         | syscall::SYS_DELUSER
         | syscall::SYS_ADDGROUP
-        | syscall::SYS_DELGROUP => CAP_SYSTEM,
+        | syscall::SYS_DELGROUP
+        | syscall::SYS_SHUTDOWN => CAP_SYSTEM,
 
         // DLL loading
         syscall::SYS_DLL_LOAD => CAP_DLL,

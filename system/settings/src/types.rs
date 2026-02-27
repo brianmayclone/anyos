@@ -9,6 +9,7 @@ pub enum BuiltinId {
     Dashboard,
     General,
     Display,
+    Dock,
     Apps,
     Devices,
     Network,

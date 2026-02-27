@@ -23,7 +23,13 @@ impl DockGeometry {
         let icon_size = s.icon_size;
         let dock_height = icon_size + 16;
         let tooltip_h = 28u32;
-        let margin = 8 + tooltip_h;
+        // Magnified icons grow above the pill; reserve space for overflow + tooltip
+        let mag_overflow = if s.magnification && s.mag_size > icon_size {
+            s.mag_size - icon_size
+        } else {
+            0
+        };
+        let margin = 8 + tooltip_h + mag_overflow;
         let total_h = dock_height + margin;
         let icon_spacing = (icon_size / 5).clamp(6, 14);
         let h_padding = 12u32;

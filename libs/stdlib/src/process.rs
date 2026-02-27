@@ -72,6 +72,22 @@ pub fn kill(tid: u32) -> u32 {
     syscall2(SYS_KILL, tid as u64, 9) // 9 = SIGKILL
 }
 
+/// Power off the system. Requires `CAP_SYSTEM`.
+///
+/// This function does not return.
+pub fn shutdown() -> ! {
+    syscall1(SYS_SHUTDOWN, 0);
+    loop {}
+}
+
+/// Reboot the system. Requires `CAP_SYSTEM`.
+///
+/// This function does not return.
+pub fn reboot() -> ! {
+    syscall1(SYS_SHUTDOWN, 1);
+    loop {}
+}
+
 /// Fork the current process. Returns:
 /// - In the parent: the child's TID (> 0)
 /// - In the child: 0

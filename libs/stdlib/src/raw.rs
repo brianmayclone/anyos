@@ -221,6 +221,9 @@ pub(crate) const SYS_PARTITION_RESCAN: u32 = 276;
 pub(crate) const SYS_GET_HOSTNAME: u32 = 280;
 pub(crate) const SYS_SET_HOSTNAME: u32 = 281;
 
+// Power management
+pub(crate) const SYS_SHUTDOWN: u32 = 282;
+
 // Anonymous-pipe / fcntl
 pub(crate) const SYS_PIPE_BYTES_AVAILABLE: u32 = 157;
 pub(crate) const SYS_FCNTL_SC: u32 = 243;

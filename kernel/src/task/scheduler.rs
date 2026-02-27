@@ -3426,3 +3426,18 @@ pub fn get_thread_parent_tid(tid: u32) -> u32 {
     }
     0
 }
+
+/// Collect TIDs of all live non-idle threads (for system shutdown).
+///
+/// Returns a Vec of TIDs for threads that are not idle and not yet terminated.
+pub fn all_live_tids() -> alloc::vec::Vec<u32> {
+    let guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_ref() {
+        sched.threads.iter()
+            .filter(|t| !t.is_idle && t.state != ThreadState::Terminated)
+            .map(|t| t.tid)
+            .collect()
+    } else {
+        alloc::vec::Vec::new()
+    }
+}

@@ -3,9 +3,6 @@
 
 use alloc::format;
 use libanyui_client as ui;
-use ui::Widget;
-use ui::controls::label::TEXT_ALIGN_CENTER;
-use ui::controls::window::{WIN_FLAG_NOT_RESIZABLE, WIN_FLAG_NO_MINIMIZE, WIN_FLAG_NO_MAXIMIZE};
 
 anyos_std::entry!(main);
 
@@ -48,7 +45,7 @@ fn main() {
     }
 
     let tc = ui::theme::colors();
-    let flags = WIN_FLAG_NOT_RESIZABLE | WIN_FLAG_NO_MINIMIZE | WIN_FLAG_NO_MAXIMIZE;
+    let flags = ui::WIN_FLAG_NOT_RESIZABLE | ui::WIN_FLAG_NO_MINIMIZE | ui::WIN_FLAG_NO_MAXIMIZE;
     let win = ui::Window::new_with_flags("About anyOS", -1, -1, WIN_W, WIN_H, flags);
 
     // ── Root view ────────────────────────────────────────────────────
@@ -65,7 +62,7 @@ fn main() {
     name_label.set_font(1); // SF Pro Bold
     name_label.set_font_size(28);
     name_label.set_text_color(tc.accent);
-    name_label.set_text_align(TEXT_ALIGN_CENTER);
+    name_label.set_text_align(ui::TEXT_ALIGN_CENTER);
     root.add(&name_label);
 
     // ── Version ──────────────────────────────────────────────────────
@@ -76,7 +73,7 @@ fn main() {
     version_label.set_margin(0, 4, 0, 0);
     version_label.set_font_size(13);
     version_label.set_text_color(tc.text_secondary);
-    version_label.set_text_align(TEXT_ALIGN_CENTER);
+    version_label.set_text_align(ui::TEXT_ALIGN_CENTER);
     root.add(&version_label);
 
     // ── Divider ──────────────────────────────────────────────────────
@@ -113,7 +110,7 @@ fn main() {
     copyright1.set_margin(0, 20, 0, 0);
     copyright1.set_font_size(11);
     copyright1.set_text_color(tc.text_disabled);
-    copyright1.set_text_align(TEXT_ALIGN_CENTER);
+    copyright1.set_text_align(ui::TEXT_ALIGN_CENTER);
     root.add(&copyright1);
 
     let copyright2 = ui::Label::new("Christian Moeller & Maik Stratmann");
@@ -122,18 +119,23 @@ fn main() {
     copyright2.set_margin(0, 2, 0, 0);
     copyright2.set_font_size(11);
     copyright2.set_text_color(tc.text_disabled);
-    copyright2.set_text_align(TEXT_ALIGN_CENTER);
+    copyright2.set_text_align(ui::TEXT_ALIGN_CENTER);
     root.add(&copyright2);
 
     // ── OK button ────────────────────────────────────────────────────
+    let btn_row = ui::View::new();
+    btn_row.set_dock(ui::DOCK_TOP);
+    btn_row.set_size(WIN_W, 50);
+    btn_row.set_margin(0, 10, 0, 0);
+
     let btn = ui::Button::new("OK");
-    btn.set_dock(ui::DOCK_TOP);
+    btn.set_position((WIN_W / 2 - 40) as i32, 10);
     btn.set_size(80, 30);
-    btn.set_margin((WIN_W / 2 - 40) as i32, 20, 0, 0);
     btn.on_click(|_| {
         ui::quit();
     });
-    root.add(&btn);
+    btn_row.add(&btn);
+    root.add(&btn_row);
 
     // ── Keyboard: ESC to close ───────────────────────────────────────
     win.on_key_down(|e| {
@@ -170,7 +172,7 @@ fn add_info_row(
     value.set_size(180, 20);
     value.set_font_size(13);
     value.set_text_color(value_color);
-    value.set_text_align(ui::controls::label::TEXT_ALIGN_RIGHT);
+    value.set_text_align(ui::TEXT_ALIGN_RIGHT);
     card.add(&value);
 }
 

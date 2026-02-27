@@ -5,7 +5,7 @@
 
 mod blend;
 mod compositing;
-mod gpu;
+pub(crate) mod gpu;
 mod layer;
 mod rect;
 pub mod vram_alloc;

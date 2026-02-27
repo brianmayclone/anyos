@@ -13,6 +13,7 @@ mod layout;
 mod page_dashboard;
 mod page_general;
 mod page_display;
+mod page_dock;
 mod page_apps;
 mod page_devices;
 mod page_network;
@@ -257,6 +258,7 @@ fn build_page(idx: usize) {
         BuiltinId::Dashboard => page_dashboard::build(scroll),
         BuiltinId::General => page_general::build(scroll),
         BuiltinId::Display => page_display::build(scroll),
+        BuiltinId::Dock => page_dock::build(scroll),
         BuiltinId::Apps => page_apps::build(scroll),
         BuiltinId::Devices => page_devices::build(scroll),
         BuiltinId::Network => page_network::build(scroll),
