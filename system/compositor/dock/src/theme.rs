@@ -1,15 +1,59 @@
 //! Dock theme constants — colors, fonts, dimensions.
 
-// ── Dock geometry ──
+use crate::settings::DockSettings;
 
-pub const DOCK_HEIGHT: u32 = 64;
-pub const DOCK_TOOLTIP_H: u32 = 28;
-pub const DOCK_MARGIN: u32 = 8 + DOCK_TOOLTIP_H;
-pub const DOCK_TOTAL_H: u32 = DOCK_HEIGHT + DOCK_MARGIN;
-pub const DOCK_ICON_SIZE: u32 = 48;
-pub const DOCK_ICON_SPACING: u32 = 10;
-pub const DOCK_BORDER_RADIUS: i32 = 16;
-pub const DOCK_H_PADDING: u32 = 12;
+// ── Dynamic geometry ──
+
+/// Computed dock geometry derived from [`DockSettings`].
+pub struct DockGeometry {
+    pub icon_size: u32,
+    pub dock_height: u32,
+    pub tooltip_h: u32,
+    pub margin: u32,
+    pub total_h: u32,
+    pub icon_spacing: u32,
+    pub h_padding: u32,
+    pub border_radius: i32,
+    pub position: u32,
+}
+
+impl DockGeometry {
+    /// Compute geometry from settings.
+    pub fn from_settings(s: &DockSettings) -> Self {
+        let icon_size = s.icon_size;
+        let dock_height = icon_size + 16;
+        let tooltip_h = 28u32;
+        let margin = 8 + tooltip_h;
+        let total_h = dock_height + margin;
+        let icon_spacing = (icon_size / 5).clamp(6, 14);
+        let h_padding = 12u32;
+        let br = (icon_size / 3) as i32;
+        let border_radius = br.clamp(8, 24);
+        Self {
+            icon_size,
+            dock_height,
+            tooltip_h,
+            margin,
+            total_h,
+            icon_spacing,
+            h_padding,
+            border_radius,
+            position: s.position,
+        }
+    }
+}
+
+static mut GEOMETRY: Option<DockGeometry> = None;
+
+/// Get the current dock geometry (must call `set_geometry` first).
+pub fn geometry() -> &'static DockGeometry {
+    unsafe { GEOMETRY.as_ref().unwrap() }
+}
+
+/// Set the dock geometry (call on startup and when settings change).
+pub fn set_geometry(g: DockGeometry) {
+    unsafe { GEOMETRY = Some(g); }
+}
 
 // ── Colors (ARGB) ──
 

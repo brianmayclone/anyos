@@ -8,7 +8,6 @@ use alloc::vec::Vec;
 use anyos_std::fs;
 use anyos_std::icons;
 
-use crate::theme::DOCK_ICON_SIZE;
 use crate::types::{DockItem, Icon};
 
 const SYSTEM_CONFIG_PATH: &str = "/System/dock/programs.conf";
@@ -56,6 +55,7 @@ fn parse_config(text: &str) -> Vec<DockItem> {
             name: String::from(name),
             bin_path: String::from(path),
             icon: None,
+            icon_hires: None,
             running: false,
             tid: 0,
             pinned: true,
@@ -146,6 +146,7 @@ pub fn ensure_finder(items: &mut Vec<DockItem>) {
             name: String::from(FINDER_NAME),
             bin_path: String::from(FINDER_PATH),
             icon: None,
+            icon_hires: None,
             running: false,
             tid: 0,
             pinned: true,
@@ -158,8 +159,8 @@ pub fn is_finder(item: &DockItem) -> bool {
     item.bin_path == FINDER_PATH
 }
 
-/// Load and decode an ICO icon, scaling to DOCK_ICON_SIZE.
-pub fn load_ico_icon(path: &str) -> Option<Icon> {
+/// Read raw icon file data from disk.
+fn read_icon_file(path: &str) -> Option<Vec<u8>> {
     let fd = fs::open(path, 0);
     if fd == u32::MAX {
         return None;
@@ -176,13 +177,14 @@ pub fn load_ico_icon(path: &str) -> Option<Icon> {
     }
     fs::close(fd);
 
-    if data.is_empty() {
-        return None;
-    }
+    if data.is_empty() { None } else { Some(data) }
+}
 
-    let info = match libimage_client::probe_ico_size(&data, DOCK_ICON_SIZE) {
+/// Decode an icon from raw file data at the given target pixel size.
+fn decode_icon_at_size(data: &[u8], target_size: u32) -> Option<Icon> {
+    let info = match libimage_client::probe_ico_size(data, target_size) {
         Some(i) => i,
-        None => match libimage_client::probe(&data) {
+        None => match libimage_client::probe(data) {
             Some(i) => i,
             None => return None,
         },
@@ -198,30 +200,44 @@ pub fn load_ico_icon(path: &str) -> Option<Icon> {
     scratch.resize(info.scratch_needed as usize, 0);
 
     let decode_ok = if info.format == libimage_client::FMT_ICO {
-        libimage_client::decode_ico_size(&data, DOCK_ICON_SIZE, &mut pixels, &mut scratch).is_ok()
+        libimage_client::decode_ico_size(data, target_size, &mut pixels, &mut scratch).is_ok()
     } else {
-        libimage_client::decode(&data, &mut pixels, &mut scratch).is_ok()
+        libimage_client::decode(data, &mut pixels, &mut scratch).is_ok()
     };
     if !decode_ok {
         return None;
     }
 
-    let dst_count = (DOCK_ICON_SIZE * DOCK_ICON_SIZE) as usize;
+    let dst_count = (target_size * target_size) as usize;
     let mut dst_pixels = vec![0u32; dst_count];
 
-    // Trim transparent borders and scale content to fill DOCK_ICON_SIZE.
+    // Trim transparent borders and scale content to fill target_size.
     libimage_client::trim_and_scale(
         &pixels, src_w, src_h,
-        &mut dst_pixels, DOCK_ICON_SIZE, DOCK_ICON_SIZE,
+        &mut dst_pixels, target_size, target_size,
     );
 
-    Some(Icon { width: DOCK_ICON_SIZE, height: DOCK_ICON_SIZE, pixels: dst_pixels })
+    Some(Icon { width: target_size, height: target_size, pixels: dst_pixels })
 }
 
-/// Load icons for all dock items (derives icon path from binary name).
-pub fn load_icons(items: &mut [DockItem]) {
+/// Load and decode an ICO icon at the given target size.
+pub fn load_ico_icon(path: &str, target_size: u32) -> Option<Icon> {
+    let data = read_icon_file(path)?;
+    decode_icon_at_size(&data, target_size)
+}
+
+/// Load icons for all dock items at base icon_size.
+pub fn load_icons(items: &mut [DockItem], icon_size: u32) {
     for item in items.iter_mut() {
         let icon_path = icons::app_icon_path(&item.bin_path);
-        item.icon = load_ico_icon(&icon_path);
+        item.icon = load_ico_icon(&icon_path, icon_size);
+    }
+}
+
+/// Load high-resolution icons for magnification at mag_size.
+pub fn load_icons_hires(items: &mut [DockItem], mag_size: u32) {
+    for item in items.iter_mut() {
+        let icon_path = icons::app_icon_path(&item.bin_path);
+        item.icon_hires = load_ico_icon(&icon_path, mag_size);
     }
 }

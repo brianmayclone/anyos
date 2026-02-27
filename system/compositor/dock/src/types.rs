@@ -16,7 +16,10 @@ pub struct Icon {
 pub struct DockItem {
     pub name: String,
     pub bin_path: String,
+    /// Icon decoded at base `icon_size` resolution.
     pub icon: Option<Icon>,
+    /// Icon decoded at `mag_size` resolution (for crisp magnified rendering).
+    pub icon_hires: Option<Icon>,
     pub running: bool,
     /// TID of spawned process (0 = not running).
     pub tid: u32,

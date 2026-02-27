@@ -898,8 +898,10 @@ impl Desktop {
             crate::menu::SYS_MENU_LOGOUT => {
                 self.logout_requested = true;
             }
-            crate::menu::SYS_MENU_ABOUT
-            | crate::menu::SYS_MENU_SETTINGS
+            crate::menu::SYS_MENU_ABOUT => {
+                anyos_std::process::spawn("/Applications/About anyOS.app", "");
+            }
+            crate::menu::SYS_MENU_SETTINGS
             | crate::menu::SYS_MENU_SLEEP
             | crate::menu::SYS_MENU_RESTART
             | crate::menu::SYS_MENU_SHUTDOWN => {
