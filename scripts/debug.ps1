@@ -67,6 +67,7 @@ Write-Host ""
 
 $args = @(
     "-drive", "format=raw,file=$Image",
+    "-cpu", "qemu64,+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt",
     "-m", "1024M",
     "-smp", "cpus=4",
     "-serial", "stdio",

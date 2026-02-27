@@ -554,6 +554,12 @@ $args += "-m", "1024M"
 $args += "-smp", "cpus=4"
 $args += "-serial", "stdio"
 
+# Expose SSE3/SSSE3/SSE4.1/SSE4.2/POPCNT by default (matches run.sh).
+# Skipped when -Kvm is used because -cpu max already exposes all features.
+if (-not $Kvm) {
+    $args += "-cpu", "qemu64,+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt"
+}
+
 # VGA device: VirtIO always uses explicit -device with edid=on for reliable resolution
 if ($Virtio) {
     $args += "-vga", "none"
