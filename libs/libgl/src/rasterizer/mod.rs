@@ -87,6 +87,12 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
     let num_varyings = program.varying_count.min(MAX_VARYINGS);
     let uniforms = collect_uniforms(program);
 
+    // Extract matColor early (before program borrow ends)
+    let mat_color = program.uniforms.iter().rev()
+        .find(|u| u.size <= 4 && u.name.contains("MatColor"))
+        .map(|u| [u.value[0], u.value[1], u.value[2]])
+        .unwrap_or([1.0, 1.0, 1.0]);
+
     // Get JIT function pointers (compiled at link time)
     let vs_jit: Option<JitFn> = program.vs_jit.as_ref().map(|j| j.as_fn());
     let fs_jit: Option<JitFn> = program.fs_jit.as_ref().map(|j| j.as_fn());
@@ -145,6 +151,18 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
     let fb_w = ctx.default_fb.width as i32;
     let fb_h = ctx.default_fb.height as i32;
 
+    // Try fast path: trivial FS (≤20 instructions) + bound texture + 2 varyings
+    let fast = if fs_ir.instructions.len() <= 20 && num_varyings >= 2 && !ctx.blend {
+        raster::ResolvedTexture::resolve_unit0().map(|tex| FastPathInfo {
+            tex,
+            mat_r: mat_color[0],
+            mat_g: mat_color[1],
+            mat_b: mat_color[2],
+        })
+    } else {
+        None
+    };
+
     // Pre-allocate fragment shader exec (reused for all pixels in this draw call)
     let mut fs_exec = ShaderExec::new(fs_ir.num_regs, num_varyings);
 
@@ -153,7 +171,7 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
             let mut i = 0;
             while i + 2 < clip_verts.len() {
                 process_triangle(
-                    ctx, &fs_ir, &uniforms, &mut fs_exec, fs_jit,
+                    ctx, &fs_ir, &uniforms, &mut fs_exec, fs_jit, fast.as_ref(),
                     &clip_verts[i], &clip_verts[i+1], &clip_verts[i+2],
                     num_varyings, fb_w, fb_h,
                 );
@@ -167,13 +185,13 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
                 } else {
                     (&clip_verts[i+1], &clip_verts[i], &clip_verts[i+2])
                 };
-                process_triangle(ctx, &fs_ir, &uniforms, &mut fs_exec, fs_jit, a, b, c, num_varyings, fb_w, fb_h);
+                process_triangle(ctx, &fs_ir, &uniforms, &mut fs_exec, fs_jit, fast.as_ref(), a, b, c, num_varyings, fb_w, fb_h);
             }
         }
         GL_TRIANGLE_FAN => {
             for i in 1..clip_verts.len().saturating_sub(1) {
                 process_triangle(
-                    ctx, &fs_ir, &uniforms, &mut fs_exec, fs_jit,
+                    ctx, &fs_ir, &uniforms, &mut fs_exec, fs_jit, fast.as_ref(),
                     &clip_verts[0], &clip_verts[i], &clip_verts[i+1],
                     num_varyings, fb_w, fb_h,
                 );
@@ -208,6 +226,12 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
     };
     let num_varyings = program.varying_count.min(MAX_VARYINGS);
     let uniforms = collect_uniforms(program);
+
+    // Extract matColor early (before program borrow ends)
+    let mat_color = program.uniforms.iter().rev()
+        .find(|u| u.size <= 4 && u.name.contains("MatColor"))
+        .map(|u| [u.value[0], u.value[1], u.value[2]])
+        .unwrap_or([1.0, 1.0, 1.0]);
 
     // Get JIT function pointers (compiled at link time)
     let vs_jit: Option<JitFn> = program.vs_jit.as_ref().map(|j| j.as_fn());
@@ -309,13 +333,26 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
     // Rasterize
     let fb_w = ctx.default_fb.width as i32;
     let fb_h = ctx.default_fb.height as i32;
+
+    // Try fast path (same logic as draw_arrays)
+    let fast = if fs_ir.instructions.len() <= 20 && num_varyings >= 2 && !ctx.blend {
+        raster::ResolvedTexture::resolve_unit0().map(|tex| FastPathInfo {
+            tex,
+            mat_r: mat_color[0],
+            mat_g: mat_color[1],
+            mat_b: mat_color[2],
+        })
+    } else {
+        None
+    };
+
     let mut fs_exec = ShaderExec::new(fs_ir.num_regs, num_varyings);
 
     if mode == GL_TRIANGLES {
         let mut i = 0;
         while i + 2 < clip_verts.len() {
             process_triangle(
-                ctx, &fs_ir, &uniforms, &mut fs_exec, fs_jit,
+                ctx, &fs_ir, &uniforms, &mut fs_exec, fs_jit, fast.as_ref(),
                 &clip_verts[i], &clip_verts[i+1], &clip_verts[i+2],
                 num_varyings, fb_w, fb_h,
             );
@@ -328,12 +365,12 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
             } else {
                 (&clip_verts[i+1], &clip_verts[i], &clip_verts[i+2])
             };
-            process_triangle(ctx, &fs_ir, &uniforms, &mut fs_exec, fs_jit, a, b, c, num_varyings, fb_w, fb_h);
+            process_triangle(ctx, &fs_ir, &uniforms, &mut fs_exec, fs_jit, fast.as_ref(), a, b, c, num_varyings, fb_w, fb_h);
         }
     } else if mode == GL_TRIANGLE_FAN {
         for i in 1..clip_verts.len().saturating_sub(1) {
             process_triangle(
-                ctx, &fs_ir, &uniforms, &mut fs_exec, fs_jit,
+                ctx, &fs_ir, &uniforms, &mut fs_exec, fs_jit, fast.as_ref(),
                 &clip_verts[0], &clip_verts[i], &clip_verts[i+1],
                 num_varyings, fb_w, fb_h,
             );
@@ -341,15 +378,25 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
     }
 }
 
+/// Fast-path triangle parameters (resolved once per draw call).
+pub struct FastPathInfo {
+    pub tex: raster::ResolvedTexture,
+    pub mat_r: f32,
+    pub mat_g: f32,
+    pub mat_b: f32,
+}
+
 /// Process a single triangle: clip → cull → rasterize.
 ///
 /// Uses trivial-accept test to skip clipping for fully visible triangles.
+/// When `fast` is `Some`, uses the fast-path rasterizer (zero per-pixel calls).
 fn process_triangle(
     ctx: &mut GlContext,
     fs_ir: &crate::compiler::ir::Program,
     uniforms: &[[f32; 4]],
     fs_exec: &mut ShaderExec,
     fs_jit: Option<JitFn>,
+    fast: Option<&FastPathInfo>,
     v0: &ClipVertex,
     v1: &ClipVertex,
     v2: &ClipVertex,
@@ -375,7 +422,11 @@ fn process_triangle(
             if cull { return; }
         }
 
-        raster::rasterize_triangle(ctx, fs_ir, uniforms, fs_exec, fs_jit, v0, v1, v2, &s0, &s1, &s2, num_varyings, fb_w, fb_h);
+        if let Some(fp) = fast {
+            raster::rasterize_triangle_fast(ctx, &fp.tex, fp.mat_r, fp.mat_g, fp.mat_b, v0, v1, v2, &s0, &s1, &s2, fb_w, fb_h);
+        } else {
+            raster::rasterize_triangle(ctx, fs_ir, uniforms, fs_exec, fs_jit, v0, v1, v2, &s0, &s1, &s2, num_varyings, fb_w, fb_h);
+        }
         return;
     }
 
@@ -399,7 +450,11 @@ fn process_triangle(
             if cull { continue; }
         }
 
-        raster::rasterize_triangle(ctx, fs_ir, uniforms, fs_exec, fs_jit, &t[0], &t[1], &t[2], &s0, &s1, &s2, t[0].num_varyings, fb_w, fb_h);
+        if let Some(fp) = fast {
+            raster::rasterize_triangle_fast(ctx, &fp.tex, fp.mat_r, fp.mat_g, fp.mat_b, &t[0], &t[1], &t[2], &s0, &s1, &s2, fb_w, fb_h);
+        } else {
+            raster::rasterize_triangle(ctx, fs_ir, uniforms, fs_exec, fs_jit, &t[0], &t[1], &t[2], &s0, &s1, &s2, t[0].num_varyings, fb_w, fb_h);
+        }
     }
 }
 

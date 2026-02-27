@@ -1,8 +1,5 @@
 //! Cursor shapes — software and hardware cursor definitions and management.
 
-use alloc::vec;
-use alloc::vec::Vec;
-
 use crate::compositor::Rect;
 
 use super::Desktop;
@@ -58,15 +55,27 @@ const HW_ARROW_H: u32 = 18;
 const HW_ARROW_HOT_X: u32 = 0;
 const HW_ARROW_HOT_Y: u32 = 0;
 
-pub(crate) fn bitmap_to_argb(bitmap: &[u8], out: &mut [u32]) {
-    for (i, &val) in bitmap.iter().enumerate() {
-        out[i] = match val {
-            1 => W,
-            2 => B,
-            _ => T,
-        };
+/// Compile-time ARGB arrow cursor pixels (converted from CURSOR_BITMAP).
+/// Using a static array instead of a heap-allocated Vec ensures the pointer
+/// is always valid — same pattern as all other cursor shapes.
+#[rustfmt::skip]
+static HW_ARROW: [u32; (HW_ARROW_W * HW_ARROW_H) as usize] = {
+    const fn convert() -> [u32; (12 * 18) as usize] {
+        let bitmap = CURSOR_BITMAP;
+        let mut pixels = [T; (12 * 18) as usize];
+        let mut i = 0;
+        while i < pixels.len() {
+            pixels[i] = match bitmap[i] {
+                1 => W,
+                2 => B,
+                _ => T,
+            };
+            i += 1;
+        }
+        pixels
     }
-}
+    convert()
+};
 
 // ── N-S Resize Cursor ──────────────────────────────────────────────────────
 
@@ -196,13 +205,6 @@ static HW_MOVE: [u32; (15 * 15) as usize] = [
 // ── Desktop Cursor Methods ─────────────────────────────────────────────────
 
 impl Desktop {
-    /// Create arrow cursor ARGB pixels from the bitmap (called during init).
-    pub(crate) fn create_arrow_pixels() -> Vec<u32> {
-        let mut pixels = vec![0u32; (HW_ARROW_W * HW_ARROW_H) as usize];
-        bitmap_to_argb(&CURSOR_BITMAP, &mut pixels);
-        pixels
-    }
-
     /// Draw the software cursor onto the back buffer AFTER compositing.
     /// This should be called only if HW cursor is not available.
     pub fn draw_sw_cursor(&mut self) {
@@ -288,7 +290,7 @@ impl Desktop {
             HW_ARROW_H,
             HW_ARROW_HOT_X,
             HW_ARROW_HOT_Y,
-            &self.hw_arrow_pixels,
+            &HW_ARROW,
         );
         self.compositor.enable_hw_cursor();
         self.compositor
@@ -313,7 +315,7 @@ impl Desktop {
                     HW_ARROW_H,
                     HW_ARROW_HOT_X,
                     HW_ARROW_HOT_Y,
-                    &self.hw_arrow_pixels,
+                    &HW_ARROW,
                 );
             }
             CursorShape::ResizeNS => {

@@ -111,7 +111,6 @@ pub struct Desktop {
 
     // HW cursor
     pub(crate) current_cursor: CursorShape,
-    pub(crate) hw_arrow_pixels: Vec<u32>,
 
     // Menu bar system
     pub(crate) menu_bar: MenuBar,
@@ -193,9 +192,6 @@ impl Desktop {
             layer.has_shadow = true;
         }
 
-        // Convert arrow cursor bitmap to ARGB
-        let arrow_pixels = Self::create_arrow_pixels();
-
         let mut desktop = Desktop {
             compositor,
             bg_layer_id: bg_id,
@@ -217,7 +213,6 @@ impl Desktop {
             screen_height: height,
             last_clock_min: u32::MAX,
             current_cursor: CursorShape::Arrow,
-            hw_arrow_pixels: arrow_pixels,
             menu_bar: MenuBar::new(),
             btn_hover: None,
             btn_pressed: None,

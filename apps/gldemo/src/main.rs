@@ -2,7 +2,7 @@
 //!
 //! Demonstrates the optimized libgl software rasterizer with:
 //! - Per-vertex Gouraud shading (ambient + diffuse + specular at vertices)
-//! - Four animated point lights with different colors
+//! - One animated point light
 //! - Procedural checkerboard texture
 //! - UV sphere + textured cube rotating in 3D space
 //! - 60fps animation loop via anyui timer
@@ -20,7 +20,7 @@ use libgl_client as gl;
 
 // ── Shaders ──────────────────────────────────────────────────────────────────
 
-/// Vertex shader: Gouraud shading — computes all lighting per-vertex.
+/// Vertex shader: Gouraud shading — computes lighting per-vertex.
 ///
 /// Lighting runs on ~187 vertices (sphere 10×16) instead of ~90K pixels,
 /// giving a ~500× reduction in lighting math.
@@ -32,12 +32,6 @@ uniform mat4 uMVP;
 uniform mat4 uModel;
 uniform vec3 uLightPos0;
 uniform vec3 uLightColor0;
-uniform vec3 uLightPos1;
-uniform vec3 uLightColor1;
-uniform vec3 uLightPos2;
-uniform vec3 uLightColor2;
-uniform vec3 uLightPos3;
-uniform vec3 uLightColor3;
 uniform vec3 uEyePos;
 varying vec3 vLighting;
 varying vec2 vTexCoord;
@@ -47,28 +41,13 @@ void main() {
     vec4 tn = uModel * vec4(aNormal, 0.0);
     vec3 N = normalize(tn.xyz);
     vec3 V = normalize(uEyePos - wp);
-    vec3 ambient = vec3(0.06, 0.06, 0.08);
+    vec3 ambient = vec3(0.08, 0.08, 0.10);
     vec3 L0 = normalize(uLightPos0 - wp);
     float diff0 = max(dot(N, L0), 0.0);
     vec3 H0 = normalize(L0 + V);
-    float spec0 = pow(max(dot(N, H0), 0.0), 64.0);
+    float spec0 = pow(max(dot(N, H0), 0.0), 32.0);
     vec3 c0 = uLightColor0 * diff0 + uLightColor0 * spec0;
-    vec3 L1 = normalize(uLightPos1 - wp);
-    float diff1 = max(dot(N, L1), 0.0);
-    vec3 H1 = normalize(L1 + V);
-    float spec1 = pow(max(dot(N, H1), 0.0), 64.0);
-    vec3 c1 = uLightColor1 * diff1 + uLightColor1 * spec1;
-    vec3 L2 = normalize(uLightPos2 - wp);
-    float diff2 = max(dot(N, L2), 0.0);
-    vec3 H2 = normalize(L2 + V);
-    float spec2 = pow(max(dot(N, H2), 0.0), 48.0);
-    vec3 c2 = uLightColor2 * diff2 + uLightColor2 * spec2;
-    vec3 L3 = normalize(uLightPos3 - wp);
-    float diff3 = max(dot(N, L3), 0.0);
-    vec3 H3 = normalize(L3 + V);
-    float spec3 = pow(max(dot(N, H3), 0.0), 32.0);
-    vec3 c3 = uLightColor3 * diff3 + uLightColor3 * spec3;
-    vLighting = ambient + c0 + c1 + c2 + c3;
+    vLighting = ambient + c0;
     vTexCoord = aTexCoord;
     gl_Position = uMVP * vec4(aPosition, 1.0);
 }
@@ -342,6 +321,8 @@ struct RenderState {
     cube_vbo: u32,
     cube_ebo: u32,
     cube_num_indices: i32,
+    // Floor
+    floor_vbo: u32,
     // Textures
     checker_tex: u32,
     gradient_tex: u32,
@@ -350,12 +331,6 @@ struct RenderState {
     loc_model: i32,
     loc_light_pos0: i32,
     loc_light_color0: i32,
-    loc_light_pos1: i32,
-    loc_light_color1: i32,
-    loc_light_pos2: i32,
-    loc_light_color2: i32,
-    loc_light_pos3: i32,
-    loc_light_color3: i32,
     loc_eye_pos: i32,
     loc_texture: i32,
     loc_mat_color: i32,
@@ -419,30 +394,12 @@ fn render_frame() {
     let proj = mat4_perspective(0.9, aspect, 0.1, 50.0);
     let view = mat4_mul(&mat4_rotate_x(0.38), &mat4_translate(-eye[0], -eye[1], -eye[2]));
 
-    // ── 4 animated lights ───────────────────────────────────────────────
-    // Light 0: warm orange, orbits horizontally at height 2.0
+    // ── Animated light ────────────────────────────────────────────────
+    // Warm white light orbiting horizontally at height 2.0
     let l0_x = gl::sin(t * 0.7) * 3.0;
     let l0_z = gl::cos(t * 0.7) * 3.0;
     gl::uniform3f(s.loc_light_pos0, l0_x, 2.0, l0_z);
-    gl::uniform3f(s.loc_light_color0, 0.9, 0.7, 0.4);
-
-    // Light 1: cool blue, orbits with vertical bob
-    let l1_x = gl::sin(t * 0.5 + 2.0) * 2.5;
-    let l1_y = 1.5 + gl::sin(t * 0.8) * 1.0;
-    gl::uniform3f(s.loc_light_pos1, l1_x, l1_y, 2.0);
-    gl::uniform3f(s.loc_light_color1, 0.3, 0.5, 0.9);
-
-    // Light 2: green, figure-8 path behind the scene
-    let l2_x = gl::sin(t * 0.9) * 2.0;
-    let l2_z = gl::sin(t * 0.45) * 3.5;
-    gl::uniform3f(s.loc_light_pos2, l2_x, 0.8, l2_z);
-    gl::uniform3f(s.loc_light_color2, 0.2, 0.8, 0.3);
-
-    // Light 3: soft pink/magenta, hovers high and pulses
-    let l3_y = 3.0 + gl::sin(t * 1.2) * 0.5;
-    let l3_x = gl::cos(t * 0.3) * 1.5;
-    gl::uniform3f(s.loc_light_pos3, l3_x, l3_y, -1.0);
-    gl::uniform3f(s.loc_light_color3, 0.6, 0.2, 0.5);
+    gl::uniform3f(s.loc_light_color0, 1.0, 0.95, 0.8);
 
     gl::uniform3f(s.loc_eye_pos, eye[0], eye[1], eye[2]);
 
@@ -511,26 +468,10 @@ fn render_frame() {
         gl::active_texture(gl::GL_TEXTURE0);
         gl::bind_texture(gl::GL_TEXTURE_2D, s.checker_tex);
 
-        // Floor: two triangles as GL_TRIANGLES (non-indexed)
-        #[rustfmt::skip]
-        let floor: [f32; 48] = [
-            // pos          normal       uv
-            -0.5, 0.0, -0.5,  0.0, 1.0, 0.0,  0.0, 0.0,
-             0.5, 0.0, -0.5,  0.0, 1.0, 0.0,  3.0, 0.0,
-             0.5, 0.0,  0.5,  0.0, 1.0, 0.0,  3.0, 3.0,
-            -0.5, 0.0, -0.5,  0.0, 1.0, 0.0,  0.0, 0.0,
-             0.5, 0.0,  0.5,  0.0, 1.0, 0.0,  3.0, 3.0,
-            -0.5, 0.0,  0.5,  0.0, 1.0, 0.0,  0.0, 3.0,
-        ];
-
-        let mut floor_vbo = [0u32; 1];
-        gl::gen_buffers(1, &mut floor_vbo);
-        gl::bind_buffer(gl::GL_ARRAY_BUFFER, floor_vbo[0]);
-        gl::buffer_data_f32(gl::GL_ARRAY_BUFFER, &floor, gl::GL_STATIC_DRAW);
+        gl::bind_buffer(gl::GL_ARRAY_BUFFER, s.floor_vbo);
         setup_vertex_attribs(s.program);
 
         gl::draw_arrays(gl::GL_TRIANGLES, 0, 6);
-        gl::delete_buffers(&floor_vbo);
     }
 
     // ── Swap to canvas ───────────────────────────────────────────────────
@@ -645,19 +586,12 @@ fn main() {
     let loc_model = gl::get_uniform_location(program, "uModel");
     let loc_light_pos0 = gl::get_uniform_location(program, "uLightPos0");
     let loc_light_color0 = gl::get_uniform_location(program, "uLightColor0");
-    let loc_light_pos1 = gl::get_uniform_location(program, "uLightPos1");
-    let loc_light_color1 = gl::get_uniform_location(program, "uLightColor1");
-    let loc_light_pos2 = gl::get_uniform_location(program, "uLightPos2");
-    let loc_light_color2 = gl::get_uniform_location(program, "uLightColor2");
-    let loc_light_pos3 = gl::get_uniform_location(program, "uLightPos3");
-    let loc_light_color3 = gl::get_uniform_location(program, "uLightColor3");
     let loc_eye_pos = gl::get_uniform_location(program, "uEyePos");
     let loc_texture = gl::get_uniform_location(program, "uTexture");
     let loc_mat_color = gl::get_uniform_location(program, "uMatColor");
 
-    anyos_std::println!("gldemo: uniforms: mvp={} model={} lp0..3={},{},{},{} eye={} tex={} mat={}",
-        loc_mvp, loc_model, loc_light_pos0, loc_light_pos1, loc_light_pos2, loc_light_pos3,
-        loc_eye_pos, loc_texture, loc_mat_color);
+    anyos_std::println!("gldemo: uniforms: mvp={} model={} lp0={} eye={} tex={} mat={}",
+        loc_mvp, loc_model, loc_light_pos0, loc_eye_pos, loc_texture, loc_mat_color);
 
     // ── Generate sphere geometry ─────────────────────────────────────────
     let (sphere_verts, sphere_indices) = generate_sphere(10, 16);
@@ -692,6 +626,22 @@ fn main() {
 
     anyos_std::println!("gldemo: cube: {} verts, {} indices",
         cube_verts.len() / VERTEX_STRIDE, cube_num_indices);
+
+    // ── Generate floor geometry (static VBO, created once) ──────────────
+    #[rustfmt::skip]
+    let floor_data: [f32; 48] = [
+        // pos          normal       uv
+        -0.5, 0.0, -0.5,  0.0, 1.0, 0.0,  0.0, 0.0,
+         0.5, 0.0, -0.5,  0.0, 1.0, 0.0,  3.0, 0.0,
+         0.5, 0.0,  0.5,  0.0, 1.0, 0.0,  3.0, 3.0,
+        -0.5, 0.0, -0.5,  0.0, 1.0, 0.0,  0.0, 0.0,
+         0.5, 0.0,  0.5,  0.0, 1.0, 0.0,  3.0, 3.0,
+        -0.5, 0.0,  0.5,  0.0, 1.0, 0.0,  0.0, 3.0,
+    ];
+    let mut floor_vbo = [0u32; 1];
+    gl::gen_buffers(1, &mut floor_vbo);
+    gl::bind_buffer(gl::GL_ARRAY_BUFFER, floor_vbo[0]);
+    gl::buffer_data_f32(gl::GL_ARRAY_BUFFER, &floor_data, gl::GL_STATIC_DRAW);
 
     // ── Generate textures ────────────────────────────────────────────────
     let checker_data = generate_checkerboard(64, 8);
@@ -734,18 +684,13 @@ fn main() {
             cube_vbo: cube_vbo[0],
             cube_ebo: cube_ebo[0],
             cube_num_indices,
+            floor_vbo: floor_vbo[0],
             checker_tex: checker_tex[0],
             gradient_tex: gradient_tex[0],
             loc_mvp,
             loc_model,
             loc_light_pos0,
             loc_light_color0,
-            loc_light_pos1,
-            loc_light_color1,
-            loc_light_pos2,
-            loc_light_color2,
-            loc_light_pos3,
-            loc_light_color3,
             loc_eye_pos,
             loc_texture,
             loc_mat_color,

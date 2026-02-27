@@ -221,7 +221,7 @@ impl ShaderStore {
             }
         };
 
-        let fs_ir = match self.get_shader(fs_id).and_then(|s| s.ir.clone()) {
+        let mut fs_ir = match self.get_shader(fs_id).and_then(|s| s.ir.clone()) {
             Some(ir) => ir,
             None => {
                 if let Some(prog) = self.get_program_mut(program_id) {
@@ -271,6 +271,20 @@ impl ShaderStore {
                 index: varying_offset,
             });
             varying_offset += v.components as usize;
+        }
+
+        // Patch FS uniform indices: collect_uniforms builds a flat array with
+        // VS uniforms first, so FS LoadUniform indices must be offset by the
+        // number of VS uniform slots (mat4 = 4 slots, others = 1 slot).
+        let vs_uni_slots: u32 = vs_ir.uniforms.iter().map(|u| {
+            if u.components == 16 { 4 } else { 1 }
+        }).sum();
+        if vs_uni_slots > 0 {
+            for inst in fs_ir.instructions.iter_mut() {
+                if let compiler::ir::Inst::LoadUniform(_, ref mut idx) = inst {
+                    *idx += vs_uni_slots;
+                }
+            }
         }
 
         let prog = match self.get_program_mut(program_id) {

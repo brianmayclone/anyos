@@ -100,14 +100,17 @@ pub fn lower(ast: &TranslationUnit, shader_type: GLenum) -> Result<Program, Stri
     for (i, attr) in ctx.attributes.iter().enumerate() {
         ctx.insts.push(Inst::LoadAttribute(attr.reg, i as u32));
     }
-    for (i, uni) in ctx.uniforms.iter().enumerate() {
+    // Use running offset to match collect_uniforms layout (mat4 = 4 slots, others = 1).
+    let mut uni_offset = 0u32;
+    for uni in ctx.uniforms.iter() {
         if uni.components == 16 {
-            // mat4: load into 4 consecutive registers
-            for col in 0..4 {
-                ctx.insts.push(Inst::LoadUniform(uni.reg + col, i as u32 * 4 + col));
+            for col in 0..4u32 {
+                ctx.insts.push(Inst::LoadUniform(uni.reg + col, uni_offset + col));
             }
+            uni_offset += 4;
         } else {
-            ctx.insts.push(Inst::LoadUniform(uni.reg, i as u32));
+            ctx.insts.push(Inst::LoadUniform(uni.reg, uni_offset));
+            uni_offset += 1;
         }
     }
     if shader_type == GL_FRAGMENT_SHADER {

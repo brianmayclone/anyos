@@ -2708,6 +2708,9 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
                         false
                     } else if count != (w * h) as usize {
                         false
+                    } else if !is_valid_user_ptr(ptr, (count * 4) as u64) {
+                        crate::serial_println!("GPU DEFINE_CURSOR: invalid pixel ptr {:#x} count={}", ptr, count);
+                        false
                     } else {
                         let pixels = unsafe {
                             core::slice::from_raw_parts(ptr as *const u32, count)
