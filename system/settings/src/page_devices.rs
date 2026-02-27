@@ -52,12 +52,12 @@ fn type_name(t: u8) -> &'static str {
 
 fn type_icon(t: u8) -> &'static str {
     match t {
-        DEV_BLOCK => "device-desktop",
-        DEV_NETWORK => "network",
-        DEV_DISPLAY => "device-desktop",
-        DEV_INPUT => "settings",
-        DEV_AUDIO => "settings",
-        _ => "settings",
+        DEV_BLOCK => "dev_disk.ico",
+        DEV_NETWORK => "dev_network.ico",
+        DEV_DISPLAY => "dev_monitor.ico",
+        DEV_INPUT => "dev_keyboard.ico",
+        DEV_AUDIO => "dev_audio.ico",
+        _ => "devices.ico",
     }
 }
 
@@ -73,7 +73,8 @@ const GROUP_ORDER: &[u8] = &[
 /// Build the Devices settings panel. Returns the panel View ID.
 pub fn build(parent: &ui::ScrollView) -> u32 {
     let panel = ui::View::new();
-    panel.set_dock(ui::DOCK_FILL);
+    panel.set_dock(ui::DOCK_TOP);
+    panel.set_auto_size(true);
     panel.set_color(layout::BG);
 
     layout::build_page_header(&panel, "Devices", "Connected hardware and drivers");
@@ -100,7 +101,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
             if group.is_empty() {
                 continue;
             }
-            build_device_group(&panel, type_name(gt), &group);
+            build_device_group(&panel, type_name(gt), &group, type_icon(gt));
         }
     }
 
@@ -110,16 +111,30 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
 
 // ── Device group card ───────────────────────────────────────────────────────
 
-fn build_device_group(panel: &ui::View, group_name: &str, devices: &[&DeviceInfo]) {
-    // Group header
+fn build_device_group(panel: &ui::View, group_name: &str, devices: &[&DeviceInfo], icon_file: &str) {
+    // Group header row with icon
+    let header_row = ui::View::new();
+    header_row.set_dock(ui::DOCK_TOP);
+    header_row.set_size(600, 28);
+    header_row.set_margin(24, 12, 24, 0);
+
+    let path = crate::icon_path(icon_file);
+    if let Some(icon) = ui::Icon::load(&path, 20) {
+        let iv = icon.into_image_view(20, 20);
+        iv.set_dock(ui::DOCK_LEFT);
+        iv.set_margin(0, 4, 6, 4);
+        header_row.add(&iv);
+    }
+
     let header_text = format!("{} ({})", group_name, devices.len());
     let header = ui::Label::new(&header_text);
-    header.set_dock(ui::DOCK_TOP);
-    header.set_size(600, 28);
+    header.set_dock(ui::DOCK_FILL);
     header.set_font_size(13);
     header.set_text_color(0xFFFFFFFF);
-    header.set_margin(24, 12, 24, 0);
-    panel.add(&header);
+    header.set_padding(0, 4, 0, 4);
+    header_row.add(&header);
+
+    panel.add(&header_row);
 
     let card = layout::build_auto_card(panel);
 

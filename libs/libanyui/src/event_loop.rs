@@ -173,15 +173,30 @@ pub fn run_once() -> u32 {
                             let my = ev[3] as i32;
                             if let Some(menu_id) = st.pressed.take() {
                                 let margin = st.popup.as_ref().map(|p| p.margin).unwrap_or(0);
+                                let owner_dd = st.popup.as_ref().and_then(|p| p.owner_dropdown);
                                 if let Some(idx) = control::find_idx(&st.controls, menu_id) {
                                     let (ax, ay) = (st.controls[idx].base().x, st.controls[idx].base().y);
                                     let local_x = mx - margin - ax;
                                     let local_y = my - margin - ay;
                                     let click_resp = st.controls[idx].handle_click(local_x, local_y, 0x01);
-                                    // Dismiss popup BEFORE firing callback
-                                    dismiss_popup(st);
+
                                     if click_resp.fire_click {
-                                        fire_event_callback(&st.controls, menu_id, control::EVENT_CLICK, &mut pending_cbs);
+                                        if let Some(dd_id) = owner_dd {
+                                            // DropDown popup: transfer selected index to the DropDown
+                                            let selected_idx = st.controls[idx].base().state;
+                                            dismiss_popup(st);
+                                            if let Some(dd_idx) = control::find_idx(&st.controls, dd_id) {
+                                                st.controls[dd_idx].base_mut().state = selected_idx;
+                                                st.controls[dd_idx].base_mut().mark_dirty();
+                                            }
+                                            fire_event_callback(&st.controls, dd_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                        } else {
+                                            // Normal context menu
+                                            dismiss_popup(st);
+                                            fire_event_callback(&st.controls, menu_id, control::EVENT_CLICK, &mut pending_cbs);
+                                        }
+                                    } else {
+                                        // Clicked on divider or empty area — keep popup open
                                     }
                                 }
                             }
@@ -543,6 +558,7 @@ pub fn run_once() -> u32 {
                                                         owner_win_idx: wi,
                                                         margin,
                                                         dirty: true,
+                                                        owner_dropdown: None,
                                                     });
                                                 }
                                             }
@@ -552,6 +568,92 @@ pub fn run_once() -> u32 {
                                     // Left-click → normal click + double-click handling
                                     if let Some(idx2) = control::find_idx(&st.controls, target_id) {
                                         let click_resp = st.controls[idx2].handle_click(local_x, local_y, button);
+
+                                        // ── DropDown popup ────────────────────────────────
+                                        // If the clicked control is a DropDown with open==true,
+                                        // create a popup compositor window with a ContextMenu.
+                                        if st.controls[idx2].kind() == ControlKind::DropDown {
+                                            let raw: *mut dyn Control = &mut *st.controls[idx2];
+                                            let dd = unsafe { &mut *(raw as *mut crate::controls::dropdown::DropDown) };
+                                            if dd.open {
+                                                dd.open = false; // clear immediately; popup takes over
+
+                                                // Gather items text and DropDown dimensions
+                                                let items_text: alloc::vec::Vec<u8> = dd.text_base.text.clone();
+                                                let dd_w = dd.text_base.base.w;
+                                                let dd_h = dd.text_base.base.h;
+                                                let dd_abs = control::abs_position(&st.controls, target_id);
+
+                                                // Dismiss any existing popup
+                                                dismiss_popup(st);
+
+                                                // Create a temporary ContextMenu control
+                                                let menu_id = st.next_id;
+                                                st.next_id += 1;
+                                                let menu_ctrl = crate::controls::create_control(
+                                                    ControlKind::ContextMenu, menu_id, 0, 0, 0, 0, 0, &items_text,
+                                                );
+                                                st.controls.push(menu_ctrl);
+
+                                                // Force menu width to match DropDown width (min)
+                                                if let Some(mi) = control::find_idx(&st.controls, menu_id) {
+                                                    let menu_w = st.controls[mi].base().w.max(dd_w);
+                                                    st.controls[mi].base_mut().w = menu_w;
+                                                    let menu_h = st.controls[mi].base().h;
+
+                                                    // Shadow margin
+                                                    let margin: i32 = 16;
+                                                    let popup_w = menu_w + (margin as u32) * 2;
+                                                    let popup_h = menu_h + (margin as u32) * 2;
+
+                                                    // Position popup below the DropDown
+                                                    let (content_x, content_y) = compositor::get_window_position(
+                                                        st.channel_id, st.sub_id, comp_window_id,
+                                                    );
+                                                    let mut popup_x = content_x + dd_abs.0 - margin;
+                                                    let mut popup_y = content_y + dd_abs.1 + dd_h as i32 - margin;
+
+                                                    // Clamp to screen bounds
+                                                    let (scr_w, scr_h) = compositor::screen_size();
+                                                    if popup_x + popup_w as i32 > scr_w as i32 {
+                                                        popup_x = scr_w as i32 - popup_w as i32;
+                                                    }
+                                                    if popup_y + popup_h as i32 > scr_h as i32 {
+                                                        // Open upward if no room below
+                                                        popup_y = content_y + dd_abs.1 - menu_h as i32 - margin;
+                                                    }
+                                                    if popup_x < 0 { popup_x = 0; }
+                                                    if popup_y < 0 { popup_y = 0; }
+
+                                                    // Create popup compositor window
+                                                    let popup_flags: u32 = 0x01 | 0x02 | 0x04 | 0x100;
+                                                    if let Some((popup_win_id, shm_id, surface)) = compositor::create_window(
+                                                        st.channel_id, st.sub_id,
+                                                        popup_x, popup_y,
+                                                        popup_w, popup_h,
+                                                        popup_flags,
+                                                    ) {
+                                                        st.controls[mi].set_position(0, 0);
+                                                        st.controls[mi].base_mut().visible = false;
+
+                                                        let back_buffer = alloc::vec![0u32; (popup_w * popup_h) as usize];
+                                                        st.popup = Some(crate::PopupInfo {
+                                                            window_id: popup_win_id,
+                                                            shm_id,
+                                                            surface,
+                                                            width: popup_w,
+                                                            height: popup_h,
+                                                            back_buffer,
+                                                            menu_id,
+                                                            owner_win_idx: wi,
+                                                            margin,
+                                                            dirty: true,
+                                                            owner_dropdown: Some(target_id),
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                        }
 
                                         // RadioGroup: drain deferred deselection requests
                                         let radio_groups = crate::controls::radio_group::drain_deselects(&mut st.controls);
@@ -1068,6 +1170,17 @@ fn clear_tracking_for(st: &mut crate::AnyuiState, id: ControlId) {
 /// Destroys the compositor window and clears the popup state.
 fn dismiss_popup(st: &mut crate::AnyuiState) {
     if let Some(popup) = st.popup.take() {
+        // If this popup was owned by a DropDown, clear its open flag
+        if let Some(dd_id) = popup.owner_dropdown {
+            if let Some(dd_idx) = control::find_idx(&st.controls, dd_id) {
+                let raw: *mut dyn Control = &mut *st.controls[dd_idx];
+                let dd = unsafe { &mut *(raw as *mut crate::controls::dropdown::DropDown) };
+                dd.open = false;
+                dd.text_base.base.mark_dirty();
+            }
+            // Remove the temporary ContextMenu control we created
+            st.controls.retain(|c| c.id() != popup.menu_id);
+        }
         compositor::destroy_window(st.channel_id, popup.window_id, popup.shm_id);
     }
 }
@@ -1224,7 +1337,11 @@ fn render_tree(
         }
     }
 
-    controls[idx].render(surface, parent_abs_x, parent_abs_y);
+    // ScrollView: skip initial render — scrollbar is drawn after children
+    // so it isn't painted over by content.
+    if controls[idx].kind() != ControlKind::ScrollView {
+        controls[idx].render(surface, parent_abs_x, parent_abs_y);
+    }
 
     let child_abs_x = abs_x;
     let child_abs_y = abs_y;
@@ -1258,6 +1375,11 @@ fn render_tree(
     };
     for i in 0..child_n {
         render_tree(controls, child_buf[i], &child_surface, child_abs_x, child_abs_y, dirty_rect);
+    }
+
+    // ScrollView: render scrollbar AFTER children so it isn't painted over.
+    if controls[idx].kind() == ControlKind::ScrollView {
+        controls[idx].render(surface, parent_abs_x, parent_abs_y);
     }
 }
 

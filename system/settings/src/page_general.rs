@@ -16,7 +16,8 @@ use crate::layout;
 /// Build the General settings panel inside `parent`. Returns the panel View ID.
 pub fn build(parent: &ui::ScrollView) -> u32 {
     let panel = ui::View::new();
-    panel.set_dock(ui::DOCK_FILL);
+    panel.set_dock(ui::DOCK_TOP);
+    panel.set_auto_size(true);
     panel.set_color(layout::BG);
 
     layout::build_page_header(&panel, "General", "System preferences and identity");
@@ -45,7 +46,7 @@ fn build_computer_info(panel: &ui::View) {
 // ── Hostname card ───────────────────────────────────────────────────────────
 
 fn build_hostname_card(panel: &ui::View) {
-    let card = layout::build_section_card(panel, 140);
+    let card = layout::build_auto_card(panel);
 
     // Current hostname display
     let mut host_buf = [0u8; 64];
@@ -56,45 +57,106 @@ fn build_hostname_card(panel: &ui::View) {
         "anyOS Computer"
     };
 
-    layout::build_info_row(&card, "Hostname", hostname, true);
-    layout::build_separator(&card);
+    let row = layout::build_setting_row(&card, "Hostname", true);
 
-    // Editable hostname row
-    let row = ui::View::new();
-    row.set_dock(ui::DOCK_TOP);
-    row.set_size(552, 44);
-    row.set_margin(24, 4, 24, 8);
+    let val_lbl = ui::Label::new(hostname);
+    val_lbl.set_position(200, 12);
+    val_lbl.set_size(200, 20);
+    val_lbl.set_text_color(layout::TEXT_DIM);
+    val_lbl.set_font_size(13);
+    row.add(&val_lbl);
 
-    let lbl = ui::Label::new("New name");
-    lbl.set_position(0, 12);
-    lbl.set_size(120, 20);
-    lbl.set_text_color(layout::TEXT);
-    lbl.set_font_size(13);
-    row.add(&lbl);
+    let val_id = val_lbl.id();
+    let btn = ui::Button::new("Rename...");
+    btn.set_position(420, 8);
+    btn.set_size(90, 28);
+    btn.on_click(move |_| {
+        open_rename_dialog(val_id);
+    });
+    row.add(&btn);
+}
 
+fn open_rename_dialog(hostname_label_id: u32) {
+    let win = ui::Window::new("Rename Computer", -1, -1, 360, 180);
+    let win_id = win.id();
+
+    let root = ui::View::new();
+    root.set_dock(ui::DOCK_FILL);
+    root.set_color(layout::BG);
+
+    // Instruction
+    let instr = ui::Label::new("Enter a new name for this computer:");
+    instr.set_dock(ui::DOCK_TOP);
+    instr.set_size(320, 24);
+    instr.set_font_size(13);
+    instr.set_text_color(layout::TEXT);
+    instr.set_margin(20, 20, 20, 0);
+    root.add(&instr);
+
+    // Text field with current hostname pre-filled
     let tf = ui::TextField::new();
-    tf.set_position(130, 8);
-    tf.set_size(280, 28);
-    tf.set_placeholder("Enter hostname");
-    row.add(&tf);
+    tf.set_dock(ui::DOCK_TOP);
+    tf.set_size(320, 28);
+    tf.set_margin(20, 8, 20, 0);
+    tf.set_placeholder("Hostname");
+    // Pre-fill with current hostname
+    let mut cur = [0u8; 64];
+    let clen = sys::get_hostname(&mut cur);
+    if clen != u32::MAX && clen > 0 {
+        if let Ok(text) = core::str::from_utf8(&cur[..clen as usize]) {
+            tf.set_text(text);
+        }
+    }
+    root.add(&tf);
+
+    // Button row
+    let btn_row = ui::View::new();
+    btn_row.set_dock(ui::DOCK_TOP);
+    btn_row.set_size(320, 36);
+    btn_row.set_margin(20, 16, 20, 20);
 
     let tf_id = tf.id();
-    let btn = ui::Button::new("Rename");
-    btn.set_position(420, 8);
-    btn.set_size(80, 28);
-    btn.on_click(move |_| {
+    let lbl_id = hostname_label_id;
+    let wid = win_id;
+
+    let ok_btn = ui::Button::new("Rename");
+    ok_btn.set_position(0, 0);
+    ok_btn.set_size(100, 32);
+    ok_btn.on_click(move |_| {
         let ctrl = ui::Control::from_id(tf_id);
         let mut buf = [0u8; 64];
         let len = ctrl.get_text(&mut buf) as usize;
         if len > 0 {
             if let Ok(text) = core::str::from_utf8(&buf[..len]) {
                 sys::set_hostname(text);
+                // Update the label in the main window
+                let lbl = ui::Control::from_id(lbl_id);
+                lbl.set_text(text);
             }
         }
+        let w: ui::Window = unsafe { core::mem::transmute(wid) };
+        w.destroy();
     });
-    row.add(&btn);
+    btn_row.add(&ok_btn);
 
-    card.add(&row);
+    let wid2 = win_id;
+    let cancel_btn = ui::Button::new("Cancel");
+    cancel_btn.set_position(110, 0);
+    cancel_btn.set_size(100, 32);
+    cancel_btn.on_click(move |_| {
+        let w: ui::Window = unsafe { core::mem::transmute(wid2) };
+        w.destroy();
+    });
+    btn_row.add(&cancel_btn);
+
+    root.add(&btn_row);
+    win.add(&root);
+
+    let wid3 = win_id;
+    win.on_close(move |_| {
+        let w: ui::Window = unsafe { core::mem::transmute(wid3) };
+        w.destroy();
+    });
 }
 
 // ── User card ───────────────────────────────────────────────────────────────
@@ -159,7 +221,7 @@ fn build_preferences_card(panel: &ui::View) {
 // ── Keyboard layout card ────────────────────────────────────────────────────
 
 fn build_keyboard_card(panel: &ui::View) {
-    let card = layout::build_section_card(panel, 100);
+    let card = layout::build_auto_card(panel);
 
     // Gather available layouts
     let mut layout_buf = [kbd::LayoutInfo {

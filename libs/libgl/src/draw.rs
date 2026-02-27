@@ -134,6 +134,19 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
     let (vs_bytecode, vs_consts) = backend_dx9::compile(vs_ir, true);
     let (fs_bytecode, fs_consts) = backend_dx9::compile(fs_ir, false);
 
+    if unsafe { crate::DIAG_FRAME } < 1 {
+        crate::serial_println!("[libgl] VS bytecode ({} dwords):", vs_bytecode.len());
+        for (i, w) in vs_bytecode.iter().enumerate() {
+            crate::serial_println!("  [{:3}] 0x{:08X}", i, w);
+        }
+        crate::serial_println!("[libgl] FS bytecode ({} dwords):", fs_bytecode.len());
+        for (i, w) in fs_bytecode.iter().enumerate() {
+            crate::serial_println!("  [{:3}] 0x{:08X}", i, w);
+        }
+        crate::serial_println!("[libgl] VS consts: {} entries, FS consts: {} entries",
+            vs_consts.len(), fs_consts.len());
+    }
+
     // 2. Allocate and upload shaders
     let vs_id = svga.alloc_shader();
     let fs_id = svga.alloc_shader();

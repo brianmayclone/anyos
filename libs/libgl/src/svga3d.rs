@@ -286,10 +286,14 @@ impl CmdBuf {
 
     // ── Viewport ─────────────────────────────────────────
 
-    pub fn set_viewport(&mut self, cid: u32, x: u32, y: u32, w: u32, h: u32) {
+    pub fn set_viewport(&mut self, cid: u32, x: f32, y: f32, w: f32, h: f32, min_depth: f32, max_depth: f32) {
         // SVGA3dCmdSetViewport:
-        //   cid, SVGA3dRect { x, y, w, h } — all integers
-        self.push_cmd(CMD_SETVIEWPORT, &[cid, x, y, w, h]);
+        //   cid, SVGA3dViewport { float x, y, width, height, minDepth, maxDepth }
+        self.push_cmd(CMD_SETVIEWPORT, &[
+            cid,
+            x.to_bits(), y.to_bits(), w.to_bits(), h.to_bits(),
+            min_depth.to_bits(), max_depth.to_bits(),
+        ]);
     }
 
     // ── Scissor ──────────────────────────────────────────
@@ -512,8 +516,8 @@ impl Svga3dState {
         self.cmd.set_render_target(self.context_id, SVGA3D_RT_COLOR0, self.color_sid);
         self.cmd.set_render_target(self.context_id, SVGA3D_RT_DEPTH, self.depth_sid);
 
-        // Set viewport
-        self.cmd.set_viewport(self.context_id, 0, 0, width, height);
+        // Set viewport (SVGA3D uses floats for viewport dimensions)
+        self.cmd.set_viewport(self.context_id, 0.0, 0.0, width as f32, height as f32, 0.0, 1.0);
 
         // Set default render states
         self.cmd.set_render_states(self.context_id, &[

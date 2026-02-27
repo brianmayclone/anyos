@@ -4,17 +4,88 @@
 //! suitable for SVGA3D `SHADER_DEFINE` commands.
 //!
 //! # DX9 SM 2.0 bytecode format
-//! - Version token: `0xFFFE0200` (VS 2.0) or `0xFFFF0200` (PS 2.0)
-//! - Each instruction: opcode token + destination register + source registers
-//! - End token: `0x0000FFFF`
 //!
-//! # Register token encoding (32-bit)
-//! - `[10:0]`  = register number
-//! - `[12:11]` = register type low 2 bits
-//! - `[19:16]` = write mask (dest) or swizzle (src)
-//! - `[27:24]` = source modifier (negate=1, abs=...)
-//! - `[30:28]` = register type high 3 bits
-//! - `[31]`    = 1 (token marker bit)
+//! Reference: <https://learn.microsoft.com/en-us/windows-hardware/drivers/display/shader-code-format>
+//!
+//! A shader is a sequence of 32-bit DWORDs:
+//! ```text
+//! [VERSION_TOKEN] [DCL instructions...] [DEF instructions...] [shader body...] [END_TOKEN]
+//! ```
+//!
+//! ## Version tokens
+//! - VS 2.0: `0xFFFE0200`
+//! - PS 2.0: `0xFFFF0200`
+//! - End:    `0x0000FFFF`
+//!
+//! ## Instruction token (DWORD 0 of each instruction)
+//! - `[15:0]`  = opcode (`D3DSIO_*`)
+//! - `[27:24]` = instruction length in DWORDs (SM 2.0+, excluding this token)
+//! - `[31]`    = 0
+//!
+//! ## Register parameter token (destination or source)
+//! - `[10:0]`  = register number (0–2047)
+//! - `[12:11]` = register type bits [4:3] (high 2 bits of `D3DSPR_*`)
+//! - `[15:14]` = reserved (0)
+//! - `[19:16]` = write mask (dest) or swizzle X/Y (src)
+//! - `[23:20]` = result modifier (dest) or swizzle Z/W (src)
+//! - `[27:24]` = source modifier (`D3DSPSM_*`, src only)
+//! - `[30:28]` = register type bits [2:0] (low 3 bits of `D3DSPR_*`)
+//! - `[31]`    = 1 (sentinel bit, always set)
+//!
+//! ## Register types (`D3DSPR_*`)
+//! | Value | Name       | Usage                                          |
+//! |-------|------------|-------------------------------------------------|
+//! |   0   | TEMP       | `r#` temporaries                               |
+//! |   1   | INPUT      | `v#` (VS input / PS interpolated)              |
+//! |   2   | CONST      | `c#` float constants                           |
+//! |   3   | ADDR/TEX   | `a0` (VS) / `t#` (PS)                         |
+//! |   4   | RASTOUT    | `oPos`(0) `oFog`(1) `oPts`(2) — VS only       |
+//! |   5   | ATTROUT    | `oD0` `oD1` — VS color output                 |
+//! |   6   | TEXCRDOUT  | `oT0`–`oT7` — VS texcoord output (SM < 3.0)   |
+//! |   8   | COLOROUT   | `oC0`–`oC3` — PS color output                 |
+//! |   9   | DEPTHOUT   | `oDepth` — PS depth output                    |
+//! |  10   | SAMPLER    | `s#` sampler registers                         |
+//!
+//! ## Instruction opcodes (`D3DSIO_*`)
+//! | Value | Name   | Args | Description                     |
+//! |-------|--------|------|---------------------------------|
+//! |   1   | MOV    | 2    | dst = src                       |
+//! |   2   | ADD    | 3    | dst = src0 + src1               |
+//! |   3   | SUB    | 3    | dst = src0 - src1               |
+//! |   4   | MAD    | 4    | dst = src0 * src1 + src2        |
+//! |   5   | MUL    | 3    | dst = src0 * src1               |
+//! |   6   | RCP    | 2    | dst = 1 / src                   |
+//! |   7   | RSQ    | 2    | dst = 1 / sqrt(src)             |
+//! |   8   | DP3    | 3    | dst = dot3(src0, src1)          |
+//! |   9   | DP4    | 3    | dst = dot4(src0, src1)          |
+//! |  10   | MIN    | 3    | dst = min(src0, src1)           |
+//! |  11   | MAX    | 3    | dst = max(src0, src1)           |
+//! |  12   | SLT    | 3    | dst = (src0 < src1) ? 1 : 0    |
+//! |  13   | SGE    | 3    | dst = (src0 >= src1) ? 1 : 0   |
+//! |  18   | LRP    | 4    | dst = src0*src1 + (1-src0)*src2 |
+//! |  19   | FRC    | 2    | dst = frac(src)                 |
+//! |  31   | DCL    | special | input/sampler declaration    |
+//! |  32   | POW    | 3    | dst = pow(src0, src1)           |
+//! |  33   | CRS    | 3    | dst = cross(src0, src1)         |
+//! |  35   | ABS    | 2    | dst = abs(src)                  |
+//! |  36   | NRM    | 2    | dst = normalize(src)            |
+//! |  37   | SINCOS | 4*   | dst.xy = (cos, sin) of src0     |
+//! |  66   | TEX    | 3    | dst = texture(sampler, coord)   |
+//! |  81   | DEF    | 5    | define inline float constant    |
+//!
+//! \* SINCOS takes 4 args in SM 2.0 (dst, src, const1, const2), 2 in SM 3.0.
+//!
+//! ## DCL format
+//! - **VS input:** `[DCL] [(1<<31)|usage|(idx<<16)] [dst_token(INPUT, reg)]`
+//! - **PS input:** `[DCL] [(1<<31)]                  [dst_token(INPUT, reg)]`
+//! - **PS sampler:** `[DCL] [(1<<31)|(textype<<27)]  [dst_token(SAMPLER, reg)]`
+//!
+//! ## Write mask bits (destination)
+//! Bit 16=X, 17=Y, 18=Z, 19=W. All=`0x000F0000`.
+//!
+//! ## Swizzle (source, bits [23:16])
+//! Each 2-bit field selects a component: X=0, Y=1, Z=2, W=3.
+//! Identity `.xyzw` = `0xE4 << 16`.
 
 use alloc::vec::Vec;
 use super::ir::{self, Inst, Reg};
@@ -53,18 +124,20 @@ const D3DSIO_POW: u32    = 32;
 const D3DSIO_CRS: u32    = 33;
 const D3DSIO_NRM: u32    = 36;
 const D3DSIO_SINCOS: u32 = 37;
-const D3DSIO_DEF: u32    = 40;
-const D3DSIO_ABS: u32    = 43;
+const D3DSIO_ABS: u32    = 35;
+const D3DSIO_DEF: u32    = 81;
 const D3DSIO_TEXLD: u32  = 66;
 
 // ── Register types ──────────────────────────────────────
 
 const D3DSPR_TEMP: u32     = 0;   // r registers (temporaries)
-const D3DSPR_INPUT: u32    = 5;   // v registers (vertex input / PS interpolated)
+const D3DSPR_INPUT: u32    = 1;   // v registers (VS input / PS interpolated)
 const D3DSPR_CONST: u32    = 2;   // c registers (shader constants)
-const D3DSPR_OUTPUT: u32   = 6;   // o registers (VS output)
-const D3DSPR_SAMPLER: u32  = 13;  // s registers (PS texture sampler)
-const D3DSPR_COLOROUT: u32 = 12;  // oC registers (PS color output)
+const D3DSPR_RASTOUT: u32  = 4;   // VS rasterizer output: oPos(0), oFog(1), oPts(2)
+const D3DSPR_ATTROUT: u32  = 5;   // VS color output: oD0, oD1
+const D3DSPR_TEXCRDOUT: u32 = 6;  // VS texcoord output: oT0-oT7
+const D3DSPR_COLOROUT: u32 = 8;   // PS color output: oC0-oC3
+const D3DSPR_SAMPLER: u32  = 10;  // s registers (PS texture sampler)
 
 // ── Write mask bits ─────────────────────────────────────
 
@@ -222,11 +295,11 @@ pub fn compile(program: &ir::Program, is_vertex: bool) -> (Vec<u32>, Vec<(u32, [
             ctx.bc.push(dst_token(D3DSPR_INPUT, i as u32, D3DSP_WRITEMASK_ALL));
         }
     } else {
-        // Declare pixel shader texture coordinate inputs
+        // Declare pixel shader input registers (interpolated varyings)
+        // PS 2.0 DCL: usage token = just the sentinel bit (no usage/semantic data)
         for (i, _var) in program.varyings.iter().enumerate() {
             ctx.bc.push(D3DSIO_DCL);
-            // Usage: TEXCOORD, index = i
-            ctx.bc.push((1u32 << 31) | 5u32 | ((i as u32) << 16));
+            ctx.bc.push(1u32 << 31); // PS 2.0: no usage/semantic, just sentinel
             ctx.bc.push(dst_token(D3DSPR_INPUT, i as u32, D3DSP_WRITEMASK_ALL));
         }
     }
@@ -269,14 +342,14 @@ fn lookup_const(reg: Reg, const_map: &[(Reg, u32)]) -> Option<u32> {
     None
 }
 
-/// Get the source register type and number for an IR register,
-/// taking into account constant register mappings.
-fn ir_src(reg: Reg, const_map: &[(Reg, u32)]) -> (u32, u32) {
-    if let Some(creg) = lookup_const(reg, const_map) {
-        (D3DSPR_CONST, creg)
-    } else {
-        (D3DSPR_TEMP, reg)
-    }
+/// Get the source register type and number for an IR register.
+///
+/// Always returns the temp register — LoadConst already emits `MOV r, c`,
+/// so the temp register always holds the correct (potentially modified) value.
+/// Using const_map here would be wrong when the register is later modified
+/// by WriteMask or other instructions.
+fn ir_src(reg: Reg, _const_map: &[(Reg, u32)]) -> (u32, u32) {
+    (D3DSPR_TEMP, reg)
 }
 
 fn emit_inst(ctx: &mut CompileCtx, inst: &Inst, program: &ir::Program, is_vertex: bool, const_map: &[(Reg, u32)]) {
@@ -575,9 +648,9 @@ fn emit_inst(ctx: &mut CompileCtx, inst: &Inst, program: &ir::Program, is_vertex
 
         Inst::StorePosition(src) => {
             // Vertex shader: MOV oPos, r_src
-            // oPos is output register 0 with special usage
+            // SM 2.0: oPos = D3DSPR_RASTOUT, register 0
             let (st, sn) = ir_src(*src, const_map);
-            ctx.emit_mov(D3DSPR_OUTPUT, 0, st, sn);
+            ctx.emit_mov(D3DSPR_RASTOUT, 0, st, sn);
         }
 
         Inst::StoreFragColor(src) => {
@@ -592,9 +665,9 @@ fn emit_inst(ctx: &mut CompileCtx, inst: &Inst, program: &ir::Program, is_vertex
 
         Inst::StoreVarying(idx, src) => {
             // Vertex shader: output to texture coordinate register oTn
-            // oT0 = output register 1, oT1 = output register 2, etc.
+            // SM 2.0: oT0 = D3DSPR_TEXCRDOUT register 0, oT1 = register 1, etc.
             let (st, sn) = ir_src(*src, const_map);
-            ctx.emit_mov(D3DSPR_OUTPUT, *idx + 1, st, sn);
+            ctx.emit_mov(D3DSPR_TEXCRDOUT, *idx, st, sn);
         }
     }
 }

@@ -37,8 +37,9 @@ struct WallpaperEntry {
 /// Build the Display settings panel. Returns the panel View ID.
 pub fn build(parent: &ui::ScrollView) -> u32 {
     let panel = ui::View::new();
-    panel.set_dock(ui::DOCK_FILL);
-    panel.set_color(0xFF1E1E1E);
+    panel.set_dock(ui::DOCK_TOP);
+    panel.set_auto_size(true);
+    panel.set_color(layout::BG);
 
     // ── Page header ─────────────────────────────────────────────────────
     layout::build_page_header(&panel, "Display", "Monitor, resolution and wallpaper");

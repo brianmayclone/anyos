@@ -14,7 +14,8 @@ use crate::layout;
 /// Build the Network settings panel. Returns the panel View ID.
 pub fn build(parent: &ui::ScrollView) -> u32 {
     let panel = ui::View::new();
-    panel.set_dock(ui::DOCK_FILL);
+    panel.set_dock(ui::DOCK_TOP);
+    panel.set_auto_size(true);
     panel.set_color(layout::BG);
 
     layout::build_page_header(&panel, "Network", "Connection status and configuration");

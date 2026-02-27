@@ -179,6 +179,10 @@ pub extern "C" fn gl_swap_buffers() -> *const u32 {
             let h = svga.height;
             let sid = svga.color_sid;
 
+            // PRESENT to screen 0 so we can visually verify GPU rendering
+            svga.cmd.present(sid, &[(0, 0, w, h)]);
+            svga.cmd.submit();
+
             // Readback: kernel does BLIT_SURFACE_TO_SCREEN → staging GMR
             let c = ctx();
             let fb_bytes = unsafe {
@@ -333,6 +337,18 @@ pub extern "C" fn glViewport(x: GLint, y: GLint, width: GLsizei, height: GLsizei
     c.viewport_y = y;
     c.viewport_w = width;
     c.viewport_h = height;
+
+    // Update SVGA3D viewport if HW backend is active
+    if unsafe { USE_HW_BACKEND } {
+        if let Some(svga) = unsafe { SVGA3D.as_mut() } {
+            svga.cmd.set_viewport(
+                svga.context_id,
+                x as f32, y as f32, width as f32, height as f32,
+                0.0, 1.0,
+            );
+            svga.cmd.submit();
+        }
+    }
 }
 
 /// Set the clear color.

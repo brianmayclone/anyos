@@ -123,6 +123,9 @@ pub(crate) struct PopupInfo {
     /// Whether the popup needs to be re-rendered (independent of control dirty flag,
     /// because Phase 4's clear_dirty clears the menu control's flag before popup render).
     pub dirty: bool,
+    /// If this popup was opened by a DropDown, its control ID.
+    /// When the popup item is selected, the DropDown's state is updated.
+    pub owner_dropdown: Option<ControlId>,
 }
 
 // ── Global state (per-process, lives in .data/.bss of the .so) ───────

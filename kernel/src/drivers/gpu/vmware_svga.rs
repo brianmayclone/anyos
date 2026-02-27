@@ -1027,19 +1027,6 @@ impl GpuDriver for VmwareSvgaGpu {
         ]);
         self.sync_fifo();
 
-        // Diagnostic: check first pixels in staging buffer
-        unsafe {
-            let staging_u32 = virt as *const u32;
-            let px0 = core::ptr::read_volatile(staging_u32);
-            let px1 = core::ptr::read_volatile(staging_u32.add(1));
-            let mid = (width * height / 2) as usize;
-            let px_mid = core::ptr::read_volatile(staging_u32.add(mid));
-            crate::serial_println!(
-                "  SVGA readback: sid={} {}x{} gmr={} px[0]={:#010X} px[1]={:#010X} px[mid]={:#010X}",
-                sid, width, height, gmr_id, px0, px1, px_mid
-            );
-        }
-
         // Step 3: Destroy the readback screen
         self.fifo_write_cmd(&[
             SVGA_CMD_DESTROY_SCREEN,

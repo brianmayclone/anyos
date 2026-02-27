@@ -17,7 +17,8 @@ use crate::layout;
 /// Build the Dashboard panel inside `parent`. Returns the panel View ID.
 pub fn build(parent: &ui::ScrollView) -> u32 {
     let panel = ui::View::new();
-    panel.set_dock(ui::DOCK_FILL);
+    panel.set_dock(ui::DOCK_TOP);
+    panel.set_auto_size(true);
     panel.set_color(layout::BG);
 
     layout::build_page_header(&panel, "Dashboard", "");
@@ -33,7 +34,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
 // ── Hero section ────────────────────────────────────────────────────────────
 
 fn build_hero_section(panel: &ui::View) {
-    let card = layout::build_section_card(panel, 100);
+    let card = layout::build_auto_card(panel);
 
     // Hostname
     let mut host_buf = [0u8; 64];
@@ -45,21 +46,23 @@ fn build_hero_section(panel: &ui::View) {
     };
 
     let name_lbl = ui::Label::new(hostname);
-    name_lbl.set_position(24, 16);
+    name_lbl.set_dock(ui::DOCK_TOP);
     name_lbl.set_size(350, 28);
     name_lbl.set_font_size(18);
     name_lbl.set_text_color(0xFFFFFFFF);
+    name_lbl.set_margin(24, 16, 24, 0);
     card.add(&name_lbl);
 
     // OS version subtitle
     let os_lbl = ui::Label::new("anyOS 1.0");
-    os_lbl.set_position(24, 46);
+    os_lbl.set_dock(ui::DOCK_TOP);
     os_lbl.set_size(200, 18);
     os_lbl.set_font_size(12);
     os_lbl.set_text_color(0xFF808080);
+    os_lbl.set_margin(24, 2, 24, 0);
     card.add(&os_lbl);
 
-    // Username (right-aligned area)
+    // Username
     let uid = process::getuid();
     let mut name_buf = [0u8; 64];
     let nlen = process::getusername(uid, &mut name_buf);
@@ -70,10 +73,11 @@ fn build_hero_section(panel: &ui::View) {
     };
     let user_text = format!("Signed in as {}", username);
     let user_lbl = ui::Label::new(&user_text);
-    user_lbl.set_position(24, 70);
+    user_lbl.set_dock(ui::DOCK_TOP);
     user_lbl.set_size(350, 18);
     user_lbl.set_font_size(12);
     user_lbl.set_text_color(layout::TEXT_DIM);
+    user_lbl.set_margin(24, 4, 24, 12);
     card.add(&user_lbl);
 }
 

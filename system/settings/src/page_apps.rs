@@ -61,8 +61,9 @@ struct AppInfo {
 /// Build the Apps settings panel. Returns the panel View ID.
 pub fn build(parent: &ui::ScrollView) -> u32 {
     let panel = ui::View::new();
-    panel.set_dock(ui::DOCK_FILL);
-    panel.set_color(0xFF1E1E1E);
+    panel.set_dock(ui::DOCK_TOP);
+    panel.set_auto_size(true);
+    panel.set_color(layout::BG);
 
     // ── Page header ─────────────────────────────────────────────────────
     layout::build_page_header(&panel, "Apps", "Manage installed applications and permissions");
@@ -92,48 +93,41 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
 // ── Single app row ──────────────────────────────────────────────────────────
 
 fn build_app_row(panel: &ui::View, app: &AppInfo) {
-    let card = layout::build_section_card(panel, 64);
+    let card = layout::build_auto_card(panel);
 
     // Main row container
     let row = ui::View::new();
-    row.set_dock(ui::DOCK_FILL);
+    row.set_dock(ui::DOCK_TOP);
     row.set_size(552, 48);
     row.set_margin(16, 8, 16, 8);
 
-    // Icon (32x32 ImageView loaded from bundle)
-    let icon_view = ui::ImageView::new(32, 32);
-    icon_view.set_position(0, 8);
-    icon_view.set_size(32, 32);
-    if !app.icon_path.is_empty() {
-        icon_view.load_ico(&app.icon_path, 32);
-    }
-    row.add(&icon_view);
+    // ── Right-aligned buttons (added first so DOCK_RIGHT reserves space) ──
 
-    // App name (14px bold)
-    let name_lbl = ui::Label::new(&app.name);
-    name_lbl.set_position(44, 6);
-    name_lbl.set_size(200, 20);
-    name_lbl.set_font_size(14);
-    name_lbl.set_text_color(0xFFFFFFFF);
-    row.add(&name_lbl);
+    // Uninstall button (rightmost)
+    let btn_uninstall = ui::IconButton::new("Uninstall");
+    btn_uninstall.set_dock(ui::DOCK_RIGHT);
+    btn_uninstall.set_size(90, 28);
+    btn_uninstall.set_margin(4, 10, 0, 10);
+    let uninstall_name = app.name.clone();
+    let uninstall_bundle = app.bundle_path.clone();
+    let uninstall_id = app.id.clone();
+    btn_uninstall.on_click(move |_| {
+        let msg = format!("Uninstall {}?", uninstall_name);
+        ui::MessageBox::show(
+            ui::MessageBoxType::Warning,
+            &msg,
+            Some("Uninstall"),
+        );
+        uninstall_app(&uninstall_bundle);
+        permissions::perm_delete(&uninstall_id);
+    });
+    row.add(&btn_uninstall);
 
-    // Version + category (11px, gray)
-    let sub_text = if app.category.is_empty() {
-        format!("v{}", app.version)
-    } else {
-        format!("v{} — {}", app.version, app.category)
-    };
-    let sub_lbl = ui::Label::new(&sub_text);
-    sub_lbl.set_position(44, 26);
-    sub_lbl.set_size(200, 16);
-    sub_lbl.set_font_size(11);
-    sub_lbl.set_text_color(0xFF808080);
-    row.add(&sub_lbl);
-
-    // Details button
+    // Details button (next from right)
     let btn_details = ui::IconButton::new("Details");
-    btn_details.set_position(370, 10);
+    btn_details.set_dock(ui::DOCK_RIGHT);
     btn_details.set_size(70, 28);
+    btn_details.set_margin(4, 10, 4, 10);
     let detail_name = app.name.clone();
     let detail_id = app.id.clone();
     let detail_version = app.version.clone();
@@ -150,26 +144,44 @@ fn build_app_row(panel: &ui::View, app: &AppInfo) {
     });
     row.add(&btn_details);
 
-    // Uninstall button
-    let btn_uninstall = ui::IconButton::new("Uninstall");
-    btn_uninstall.set_position(448, 10);
-    btn_uninstall.set_size(90, 28);
-    let uninstall_name = app.name.clone();
-    let uninstall_bundle = app.bundle_path.clone();
-    let uninstall_id = app.id.clone();
-    btn_uninstall.on_click(move |_| {
-        let msg = format!("Uninstall {}?", uninstall_name);
-        ui::MessageBox::show(
-            ui::MessageBoxType::Warning,
-            &msg,
-            Some("Uninstall"),
-        );
-        // Delete the bundle directory (simple recursive unlink)
-        uninstall_app(&uninstall_bundle);
-        // Also clean up permission records
-        permissions::perm_delete(&uninstall_id);
-    });
-    row.add(&btn_uninstall);
+    // ── Left-side content ────────────────────────────────────────────────
+
+    // Icon (32x32 ImageView loaded from bundle)
+    let icon_view = ui::ImageView::new(32, 32);
+    icon_view.set_dock(ui::DOCK_LEFT);
+    icon_view.set_size(32, 32);
+    icon_view.set_margin(0, 8, 8, 8);
+    if !app.icon_path.is_empty() {
+        icon_view.load_ico(&app.icon_path, 32);
+    }
+    row.add(&icon_view);
+
+    // Info area (name + version stacked vertically)
+    let info = ui::View::new();
+    info.set_dock(ui::DOCK_FILL);
+
+    let name_lbl = ui::Label::new(&app.name);
+    name_lbl.set_dock(ui::DOCK_TOP);
+    name_lbl.set_size(200, 20);
+    name_lbl.set_font_size(14);
+    name_lbl.set_text_color(0xFFFFFFFF);
+    name_lbl.set_margin(0, 6, 0, 0);
+    info.add(&name_lbl);
+
+    let sub_text = if app.category.is_empty() {
+        format!("v{}", app.version)
+    } else {
+        format!("v{} — {}", app.version, app.category)
+    };
+    let sub_lbl = ui::Label::new(&sub_text);
+    sub_lbl.set_dock(ui::DOCK_TOP);
+    sub_lbl.set_size(200, 16);
+    sub_lbl.set_font_size(11);
+    sub_lbl.set_text_color(0xFF808080);
+    sub_lbl.set_margin(0, 2, 0, 0);
+    info.add(&sub_lbl);
+
+    row.add(&info);
 
     card.add(&row);
 }
