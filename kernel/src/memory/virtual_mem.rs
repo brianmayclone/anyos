@@ -624,6 +624,12 @@ pub fn current_cr3() -> u64 {
     cr3
 }
 
+/// Lock protecting the fixed temp virtual addresses (0xBFF0_0000–0xBFF0_2000)
+/// used by `create_user_page_directory`.  Two CPUs calling fork/exec concurrently
+/// would otherwise map the same virtual addresses to different physical frames,
+/// then one CPU unmaps while the other is still writing → SIGSEGV (CR2 ≈ 0xBFF0_xxxx).
+static CREATE_USER_PD_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 /// Create a new PML4 for a user process.
 /// Clones all kernel-space PML4 entries (256-511) from the current PML4.
 /// User-space entries (0-255) are left empty for per-process mappings.
@@ -640,6 +646,16 @@ pub fn create_user_page_directory() -> Option<PhysAddr> {
     let temp_pml4 = VirtAddr::new(0xFFFF_FFFF_BFF0_0000);
     let temp_pdpt = VirtAddr::new(0xFFFF_FFFF_BFF0_1000);
     let temp_pd   = VirtAddr::new(0xFFFF_FFFF_BFF0_2000);
+
+    // Serialize access to the three fixed temp virtual addresses above.
+    // Two CPUs entering here concurrently (e.g. concurrent fork + exec) would
+    // both map the SAME virtual addresses to DIFFERENT physical frames, then
+    // one would unmap while the other is still writing → page fault.
+    while CREATE_USER_PD_LOCK.compare_exchange_weak(
+        false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed,
+    ).is_err() {
+        core::hint::spin_loop();
+    }
 
     map_page(temp_pml4, new_pml4_phys, PAGE_WRITABLE);
     map_page(temp_pdpt, new_pdpt_phys, PAGE_WRITABLE);
@@ -698,6 +714,8 @@ pub fn create_user_page_directory() -> Option<PhysAddr> {
     unmap_page(temp_pml4);
     unmap_page(temp_pdpt);
     unmap_page(temp_pd);
+
+    CREATE_USER_PD_LOCK.store(false, core::sync::atomic::Ordering::Release);
 
     Some(new_pml4_phys)
 }

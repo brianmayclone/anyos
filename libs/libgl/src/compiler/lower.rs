@@ -264,6 +264,32 @@ fn lower_assign(ctx: &mut LowerCtx, lhs: &Expr, src: u32) -> Result<(), String> 
     Ok(())
 }
 
+/// Estimate the component count of an expression without lowering it.
+/// Used to detect mat4*vec4 → MatMul4 in binary multiply.
+fn expr_component_hint(ctx: &LowerCtx, expr: &Expr) -> u32 {
+    match expr {
+        Expr::Ident(name) => {
+            if let Some((_, comp)) = ctx.find_var(name) {
+                comp
+            } else {
+                4
+            }
+        }
+        Expr::Call(name, _) => match name.as_str() {
+            "float" => 1,
+            "vec2" => 2,
+            "vec3" => 3,
+            "vec4" => 4,
+            "mat3" => 9,
+            "mat4" => 16,
+            _ => 4,
+        },
+        Expr::FloatLit(_) | Expr::IntLit(_) | Expr::BoolLit(_) => 1,
+        Expr::Binary(lhs, _, _) => expr_component_hint(ctx, lhs),
+        _ => 4,
+    }
+}
+
 fn lower_expr(ctx: &mut LowerCtx, expr: &Expr) -> Result<u32, String> {
     match expr {
         Expr::FloatLit(v) => {
@@ -294,13 +320,27 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &Expr) -> Result<u32, String> {
             }
         }
         Expr::Binary(lhs, op, rhs) => {
+            // Detect mat*vec for matrix multiply before lowering operands
+            let left_comp = expr_component_hint(ctx, lhs);
+            let right_comp = expr_component_hint(ctx, rhs);
+
             let a = lower_expr(ctx, lhs)?;
             let b = lower_expr(ctx, rhs)?;
             let r = ctx.alloc_reg();
             let inst = match op {
                 BinOp::Add => Inst::Add(r, a, b),
                 BinOp::Sub => Inst::Sub(r, a, b),
-                BinOp::Mul => Inst::Mul(r, a, b),
+                BinOp::Mul => {
+                    if left_comp == 16 && right_comp <= 4 {
+                        // mat4 * vec4 → matrix-vector multiply
+                        Inst::MatMul4(r, a, b)
+                    } else if left_comp == 9 && right_comp <= 3 {
+                        // mat3 * vec3 → matrix-vector multiply
+                        Inst::MatMul3(r, a, b)
+                    } else {
+                        Inst::Mul(r, a, b)
+                    }
+                }
                 BinOp::Div => Inst::Div(r, a, b),
                 BinOp::Less => Inst::CmpLt(r, a, b),
                 BinOp::Greater => Inst::CmpLt(r, b, a),

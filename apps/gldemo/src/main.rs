@@ -81,24 +81,32 @@ void main() {
 ";
 
 fn main() {
+    anyos_std::println!("gldemo: starting");
+
     // Initialize anyui
     libanyui_client::init();
     let window = libanyui_client::Window::new("GL Demo", 100, 100, 420, 420);
 
     let canvas = libanyui_client::Canvas::new(400, 400);
     canvas.set_position(0, 0);
+    canvas.clear(0xFF191926); // Fill with opaque dark background immediately
     window.add(&canvas);
     window.set_visible(true);
 
     let fb_w = canvas.get_stride();
     let fb_h = canvas.get_height();
-    if fb_w == 0 || fb_h == 0 { return; }
+    anyos_std::println!("gldemo: canvas stride={} height={}", fb_w, fb_h);
+    if fb_w == 0 || fb_h == 0 {
+        anyos_std::println!("gldemo: canvas dimensions are zero, aborting");
+        return;
+    }
 
     // Initialize libgl
     if !gl::init() {
         anyos_std::println!("gldemo: failed to load libgl.so");
         return;
     }
+    anyos_std::println!("gldemo: libgl loaded OK");
 
     gl::gl_init(fb_w, fb_h);
     gl::viewport(0, 0, fb_w as i32, fb_h as i32);
@@ -109,43 +117,49 @@ fn main() {
 
     // Compile shaders
     let vs = gl::create_shader(gl::GL_VERTEX_SHADER);
+    anyos_std::println!("gldemo: VS id={}", vs);
     gl::shader_source(vs, VS_SOURCE);
     gl::compile_shader(vs);
     if !gl::get_shader_compile_status(vs) {
         let log = gl::get_shader_info_log(vs);
-        anyos_std::println!("VS error: {}", log);
+        anyos_std::println!("gldemo: VS compile FAILED: {}", log);
         return;
     }
+    anyos_std::println!("gldemo: VS compiled OK");
 
     let fs = gl::create_shader(gl::GL_FRAGMENT_SHADER);
     gl::shader_source(fs, FS_SOURCE);
     gl::compile_shader(fs);
     if !gl::get_shader_compile_status(fs) {
         let log = gl::get_shader_info_log(fs);
-        anyos_std::println!("FS error: {}", log);
+        anyos_std::println!("gldemo: FS compile FAILED: {}", log);
         return;
     }
+    anyos_std::println!("gldemo: FS compiled OK");
 
     let program = gl::create_program();
     gl::attach_shader(program, vs);
     gl::attach_shader(program, fs);
     gl::link_program(program);
     if !gl::get_program_link_status(program) {
-        anyos_std::println!("Program link failed");
+        anyos_std::println!("gldemo: program link FAILED");
         return;
     }
     gl::use_program(program);
+    anyos_std::println!("gldemo: program linked OK");
 
     // Get locations
     let loc_pos = gl::get_attrib_location(program, "aPosition");
     let loc_col = gl::get_attrib_location(program, "aColor");
     let loc_mvp = gl::get_uniform_location(program, "uMVP");
+    anyos_std::println!("gldemo: loc_pos={} loc_col={} loc_mvp={}", loc_pos, loc_col, loc_mvp);
 
     // Upload vertex data
     let mut vbo = [0u32; 1];
     gl::gen_buffers(1, &mut vbo);
     gl::bind_buffer(gl::GL_ARRAY_BUFFER, vbo[0]);
     gl::buffer_data_f32(gl::GL_ARRAY_BUFFER, &CUBE_VERTICES, gl::GL_STATIC_DRAW);
+    anyos_std::println!("gldemo: VBO={} uploaded {} floats", vbo[0], CUBE_VERTICES.len());
 
     // Configure vertex attributes (stride = 6 floats * 4 bytes = 24)
     if loc_pos >= 0 {
@@ -159,6 +173,7 @@ fn main() {
 
     // Render loop
     let mut angle: f32 = 0.0;
+    let mut frame: u32 = 0;
     loop {
         // Build MVP matrix
         let mvp = build_mvp(angle);
@@ -173,16 +188,28 @@ fn main() {
 
         // Copy to canvas
         let fb_ptr = gl::swap_buffers();
+        if frame == 0 {
+            anyos_std::println!("gldemo: swap_buffers ptr={:#x}", fb_ptr as usize);
+        }
         if !fb_ptr.is_null() {
             let pixels = unsafe {
                 core::slice::from_raw_parts(fb_ptr, (fb_w * fb_h) as usize)
             };
+            if frame == 0 {
+                // Print first few pixel values for debugging
+                anyos_std::println!("gldemo: pixel[0]={:#010x} pixel[100]={:#010x} pixel[80000]={:#010x}",
+                    pixels[0], pixels[100],
+                    if pixels.len() > 80000 { pixels[80000] } else { 0 });
+            }
             canvas.copy_pixels_from(pixels);
+        } else if frame == 0 {
+            anyos_std::println!("gldemo: swap_buffers returned NULL!");
         }
 
         angle += 0.02;
         if angle > 6.28318 { angle -= 6.28318; }
 
+        frame += 1;
         anyos_std::process::sleep(16); // ~60 FPS
     }
 }
