@@ -118,6 +118,10 @@ pub struct GlContext {
     pub default_fb: SwFramebuffer,
     pub fbo_color_tex: Vec<(u32, u32)>,
 
+    // ── Anti-Aliasing ──────────────────────────────────────────────────
+    /// FXAA post-process enabled.
+    pub fxaa_enabled: bool,
+
     // ── Error State ─────────────────────────────────────────────────────
     pub error: GLenum,
 }
@@ -179,6 +183,8 @@ impl GlContext {
 
             default_fb: SwFramebuffer::new(width, height),
             fbo_color_tex: Vec::new(),
+
+            fxaa_enabled: false,
 
             error: GL_NO_ERROR,
         }

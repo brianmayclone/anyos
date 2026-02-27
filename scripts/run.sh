@@ -37,6 +37,8 @@ USB_FLAGS=""
 USB_LABEL=""
 KVM_FLAGS=""
 KVM_LABEL=""
+# Expose SSE3/SSSE3/SSE4.1/SSE4.2/POPCNT by default; cleared when --kvm uses -cpu host.
+CPU_FLAGS="-cpu qemu64,+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt"
 FWD_RULES=""
 EXPECT_FWD=false
 RESOLUTION=""
@@ -154,6 +156,7 @@ for arg in "$@"; do
                 # macOS: use Hypervisor.framework (HVF)
                 if sysctl kern.hv_support 2>/dev/null | grep -q '1'; then
                     KVM_FLAGS="-accel hvf -cpu host"
+                    CPU_FLAGS=""
                     KVM_LABEL=", HVF enabled"
                 else
                     echo "Warning: HVF not available on this Mac (missing Hypervisor.framework support)"
@@ -163,6 +166,7 @@ for arg in "$@"; do
                 # Linux: use KVM
                 if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
                     KVM_FLAGS="-enable-kvm -cpu host"
+                    CPU_FLAGS=""
                     KVM_LABEL=", KVM enabled"
                 elif [ -e /dev/kvm ]; then
                     echo "Error: /dev/kvm exists but is not accessible."
@@ -476,6 +480,7 @@ fi
 echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL"
 
 eval qemu-system-x86_64 \
+    $CPU_FLAGS \
     $KVM_FLAGS \
     $BIOS_FLAGS \
     $DRIVE_FLAGS \

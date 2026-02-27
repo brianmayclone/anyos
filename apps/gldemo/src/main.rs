@@ -1,7 +1,7 @@
-//! gldemo — OpenGL ES 2.0 rotating cube demo for anyOS.
+//! gldemo — OpenGL ES 2.0 lit & textured cube demo for anyOS.
 //!
-//! Renders a colored cube using the libgl software rasterizer,
-//! displaying the result in an anyui Canvas window.
+//! Renders a Phong-lit cube with a procedural checkerboard texture using
+//! the libgl software rasterizer, displayed in an anyui Canvas window.
 
 #![no_std]
 #![no_main]
@@ -11,83 +11,112 @@ anyos_std::entry!(main);
 
 use libgl_client as gl;
 
-/// Vertex data for a colored cube: position (x,y,z) + color (r,g,b).
-/// 36 vertices (6 faces * 2 triangles * 3 vertices).
+// ── Vertex data: position (3) + normal (3) + texcoord (2) = 8 floats ────────
+// 36 vertices (6 faces * 2 triangles * 3 vertices), stride = 32 bytes.
+
 #[rustfmt::skip]
-static CUBE_VERTICES: [f32; 216] = [
-    // Front face (red)
-    -0.5, -0.5,  0.5,  1.0, 0.0, 0.0,
-     0.5, -0.5,  0.5,  1.0, 0.0, 0.0,
-     0.5,  0.5,  0.5,  1.0, 0.0, 0.0,
-    -0.5, -0.5,  0.5,  1.0, 0.0, 0.0,
-     0.5,  0.5,  0.5,  1.0, 0.0, 0.0,
-    -0.5,  0.5,  0.5,  1.0, 0.0, 0.0,
-    // Back face (green)
-    -0.5, -0.5, -0.5,  0.0, 1.0, 0.0,
-    -0.5,  0.5, -0.5,  0.0, 1.0, 0.0,
-     0.5,  0.5, -0.5,  0.0, 1.0, 0.0,
-    -0.5, -0.5, -0.5,  0.0, 1.0, 0.0,
-     0.5,  0.5, -0.5,  0.0, 1.0, 0.0,
-     0.5, -0.5, -0.5,  0.0, 1.0, 0.0,
-    // Top face (blue)
-    -0.5,  0.5, -0.5,  0.0, 0.0, 1.0,
-    -0.5,  0.5,  0.5,  0.0, 0.0, 1.0,
-     0.5,  0.5,  0.5,  0.0, 0.0, 1.0,
-    -0.5,  0.5, -0.5,  0.0, 0.0, 1.0,
-     0.5,  0.5,  0.5,  0.0, 0.0, 1.0,
-     0.5,  0.5, -0.5,  0.0, 0.0, 1.0,
-    // Bottom face (yellow)
-    -0.5, -0.5, -0.5,  1.0, 1.0, 0.0,
-     0.5, -0.5, -0.5,  1.0, 1.0, 0.0,
-     0.5, -0.5,  0.5,  1.0, 1.0, 0.0,
-    -0.5, -0.5, -0.5,  1.0, 1.0, 0.0,
-     0.5, -0.5,  0.5,  1.0, 1.0, 0.0,
-    -0.5, -0.5,  0.5,  1.0, 1.0, 0.0,
-    // Right face (magenta)
-     0.5, -0.5, -0.5,  1.0, 0.0, 1.0,
-     0.5,  0.5, -0.5,  1.0, 0.0, 1.0,
-     0.5,  0.5,  0.5,  1.0, 0.0, 1.0,
-     0.5, -0.5, -0.5,  1.0, 0.0, 1.0,
-     0.5,  0.5,  0.5,  1.0, 0.0, 1.0,
-     0.5, -0.5,  0.5,  1.0, 0.0, 1.0,
-    // Left face (cyan)
-    -0.5, -0.5, -0.5,  0.0, 1.0, 1.0,
-    -0.5, -0.5,  0.5,  0.0, 1.0, 1.0,
-    -0.5,  0.5,  0.5,  0.0, 1.0, 1.0,
-    -0.5, -0.5, -0.5,  0.0, 1.0, 1.0,
-    -0.5,  0.5,  0.5,  0.0, 1.0, 1.0,
-    -0.5,  0.5, -0.5,  0.0, 1.0, 1.0,
+static CUBE_VERTICES: [f32; 288] = [
+    // Front face (normal: 0, 0, 1)
+    -0.5, -0.5,  0.5,   0.0,  0.0,  1.0,  0.0, 0.0,
+     0.5, -0.5,  0.5,   0.0,  0.0,  1.0,  1.0, 0.0,
+     0.5,  0.5,  0.5,   0.0,  0.0,  1.0,  1.0, 1.0,
+    -0.5, -0.5,  0.5,   0.0,  0.0,  1.0,  0.0, 0.0,
+     0.5,  0.5,  0.5,   0.0,  0.0,  1.0,  1.0, 1.0,
+    -0.5,  0.5,  0.5,   0.0,  0.0,  1.0,  0.0, 1.0,
+    // Back face (normal: 0, 0, -1)
+    -0.5, -0.5, -0.5,   0.0,  0.0, -1.0,  1.0, 0.0,
+    -0.5,  0.5, -0.5,   0.0,  0.0, -1.0,  1.0, 1.0,
+     0.5,  0.5, -0.5,   0.0,  0.0, -1.0,  0.0, 1.0,
+    -0.5, -0.5, -0.5,   0.0,  0.0, -1.0,  1.0, 0.0,
+     0.5,  0.5, -0.5,   0.0,  0.0, -1.0,  0.0, 1.0,
+     0.5, -0.5, -0.5,   0.0,  0.0, -1.0,  0.0, 0.0,
+    // Top face (normal: 0, 1, 0)
+    -0.5,  0.5, -0.5,   0.0,  1.0,  0.0,  0.0, 0.0,
+    -0.5,  0.5,  0.5,   0.0,  1.0,  0.0,  0.0, 1.0,
+     0.5,  0.5,  0.5,   0.0,  1.0,  0.0,  1.0, 1.0,
+    -0.5,  0.5, -0.5,   0.0,  1.0,  0.0,  0.0, 0.0,
+     0.5,  0.5,  0.5,   0.0,  1.0,  0.0,  1.0, 1.0,
+     0.5,  0.5, -0.5,   0.0,  1.0,  0.0,  1.0, 0.0,
+    // Bottom face (normal: 0, -1, 0)
+    -0.5, -0.5, -0.5,   0.0, -1.0,  0.0,  0.0, 1.0,
+     0.5, -0.5, -0.5,   0.0, -1.0,  0.0,  1.0, 1.0,
+     0.5, -0.5,  0.5,   0.0, -1.0,  0.0,  1.0, 0.0,
+    -0.5, -0.5, -0.5,   0.0, -1.0,  0.0,  0.0, 1.0,
+     0.5, -0.5,  0.5,   0.0, -1.0,  0.0,  1.0, 0.0,
+    -0.5, -0.5,  0.5,   0.0, -1.0,  0.0,  0.0, 0.0,
+    // Right face (normal: 1, 0, 0)
+     0.5, -0.5, -0.5,   1.0,  0.0,  0.0,  0.0, 0.0,
+     0.5,  0.5, -0.5,   1.0,  0.0,  0.0,  0.0, 1.0,
+     0.5,  0.5,  0.5,   1.0,  0.0,  0.0,  1.0, 1.0,
+     0.5, -0.5, -0.5,   1.0,  0.0,  0.0,  0.0, 0.0,
+     0.5,  0.5,  0.5,   1.0,  0.0,  0.0,  1.0, 1.0,
+     0.5, -0.5,  0.5,   1.0,  0.0,  0.0,  1.0, 0.0,
+    // Left face (normal: -1, 0, 0)
+    -0.5, -0.5, -0.5,  -1.0,  0.0,  0.0,  1.0, 0.0,
+    -0.5, -0.5,  0.5,  -1.0,  0.0,  0.0,  0.0, 0.0,
+    -0.5,  0.5,  0.5,  -1.0,  0.0,  0.0,  0.0, 1.0,
+    -0.5, -0.5, -0.5,  -1.0,  0.0,  0.0,  1.0, 0.0,
+    -0.5,  0.5,  0.5,  -1.0,  0.0,  0.0,  0.0, 1.0,
+    -0.5,  0.5, -0.5,  -1.0,  0.0,  0.0,  1.0, 1.0,
 ];
 
-/// Vertex shader: MVP transform + pass-through color.
+// ── Shaders ──────────────────────────────────────────────────────────────────
+
+/// Vertex shader: MVP transform, pass normal/texcoord/world position as varyings.
 static VS_SOURCE: &str =
 "attribute vec3 aPosition;
-attribute vec3 aColor;
+attribute vec3 aNormal;
+attribute vec2 aTexCoord;
 uniform mat4 uMVP;
-varying vec3 vColor;
+uniform mat4 uModel;
+varying vec3 vNormal;
+varying vec2 vTexCoord;
+varying vec3 vWorldPos;
 void main() {
     gl_Position = uMVP * vec4(aPosition, 1.0);
-    vColor = aColor;
+    vec4 worldNorm = uModel * vec4(aNormal, 0.0);
+    vNormal = worldNorm.xyz;
+    vTexCoord = aTexCoord;
+    vec4 worldPos = uModel * vec4(aPosition, 1.0);
+    vWorldPos = worldPos.xyz;
 }
 ";
 
-/// Fragment shader: output interpolated color.
+/// Fragment shader: Phong lighting with texture.
 static FS_SOURCE: &str =
 "precision mediump float;
-varying vec3 vColor;
+uniform vec3 uLightDir;
+uniform vec3 uViewPos;
+uniform sampler2D uTexture;
+varying vec3 vNormal;
+varying vec2 vTexCoord;
+varying vec3 vWorldPos;
 void main() {
-    gl_FragColor = vec4(vColor, 1.0);
+    vec3 N = normalize(vNormal);
+    vec3 L = normalize(uLightDir);
+    float ambient = 0.15;
+    float diff = max(dot(N, L), 0.0);
+    vec3 V = normalize(uViewPos - vWorldPos);
+    vec3 R = reflect(-L, N);
+    float spec = pow(max(dot(R, V), 0.0), 32.0);
+    vec4 texColor = texture2D(uTexture, vTexCoord);
+    vec3 lit = texColor.rgb * (ambient + diff) + vec3(1.0, 1.0, 1.0) * spec * 0.5;
+    gl_FragColor = vec4(clamp(lit, 0.0, 1.0), 1.0);
 }
 ";
 
-/// Mutable render state accessed from the timer callback.
+// ── Render state ─────────────────────────────────────────────────────────────
+
 struct RenderState {
     canvas: libanyui_client::Canvas,
     fb_w: u32,
     fb_h: u32,
     loc_mvp: i32,
+    loc_model: i32,
+    loc_light_dir: i32,
+    loc_view_pos: i32,
+    loc_texture: i32,
     angle: f32,
-    frame: u32,
 }
 
 static mut STATE: Option<RenderState> = None;
@@ -95,14 +124,34 @@ static mut STATE: Option<RenderState> = None;
 fn render_frame() {
     let s = unsafe { STATE.as_mut().unwrap() };
 
-    // Build MVP matrix
-    let mvp = build_mvp(s.angle);
+    // Build model matrix (rotation)
+    let model = mat4_rotate_y(s.angle);
+    let model = mat4_mul(&mat4_rotate_x(s.angle * 0.7), &model);
+
+    // Build MVP
+    let view = mat4_translate(0.0, 0.0, -3.0);
+    let proj = mat4_perspective(45.0, 1.0, 0.1, 100.0);
+    let mv = mat4_mul(&view, &model);
+    let mvp = mat4_mul(&proj, &mv);
+
+    // Upload uniforms
     if s.loc_mvp >= 0 {
         gl::uniform_matrix4fv(s.loc_mvp, false, &mvp);
     }
+    if s.loc_model >= 0 {
+        gl::uniform_matrix4fv(s.loc_model, false, &model);
+    }
+    if s.loc_light_dir >= 0 {
+        // Directional light from upper-right-front
+        gl::uniform3f(s.loc_light_dir, 0.5, 0.7, 1.0);
+    }
+    if s.loc_view_pos >= 0 {
+        // Camera at (0, 0, 3) looking at origin
+        gl::uniform3f(s.loc_view_pos, 0.0, 0.0, 3.0);
+    }
 
     // Render
-    gl::clear_color(0.1, 0.1, 0.15, 1.0);
+    gl::clear_color(0.08, 0.08, 0.12, 1.0);
     gl::clear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
     gl::draw_arrays(gl::GL_TRIANGLES, 0, 36);
 
@@ -112,16 +161,11 @@ fn render_frame() {
         let pixels = unsafe {
             core::slice::from_raw_parts(fb_ptr, (s.fb_w * s.fb_h) as usize)
         };
-        if s.frame == 0 {
-            let center = 200 * s.fb_w as usize + 200;
-            anyos_std::println!("gldemo: frame0 center={:#010x}", pixels[center]);
-        }
         s.canvas.copy_pixels_from(pixels);
     }
 
     s.angle += 0.02;
-    if s.angle > 6.28318 { s.angle -= 6.28318; }
-    s.frame += 1;
+    if s.angle > 2.0 * gl::PI { s.angle -= 2.0 * gl::PI; }
 }
 
 fn main() {
@@ -129,11 +173,26 @@ fn main() {
 
     // Initialize anyui
     libanyui_client::init();
-    let window = libanyui_client::Window::new("GL Demo", 100, 100, 420, 420);
+    let window = libanyui_client::Window::new("GL Demo", 100, 100, 420, 460);
 
     let canvas = libanyui_client::Canvas::new(400, 400);
     canvas.set_position(0, 0);
     window.add(&canvas);
+
+    // FXAA toggle row
+    let fxaa_label = libanyui_client::Label::new("FXAA");
+    fxaa_label.set_position(10, 406);
+    fxaa_label.set_text_color(0xFFCCCCCC);
+    fxaa_label.set_font_size(13);
+    window.add(&fxaa_label);
+
+    let fxaa_toggle = libanyui_client::Toggle::new(true);
+    fxaa_toggle.set_position(60, 404);
+    fxaa_toggle.on_checked_changed(|e| {
+        gl::set_fxaa(e.checked);
+    });
+    window.add(&fxaa_toggle);
+
     window.set_visible(true);
 
     let fb_w = canvas.get_stride();
@@ -149,7 +208,6 @@ fn main() {
         anyos_std::println!("gldemo: failed to load libgl.so");
         return;
     }
-    anyos_std::println!("gldemo: libgl loaded OK");
 
     gl::gl_init(fb_w, fb_h);
     gl::viewport(0, 0, fb_w as i32, fb_h as i32);
@@ -157,6 +215,7 @@ fn main() {
     gl::depth_func(gl::GL_LESS);
     gl::enable(gl::GL_CULL_FACE);
     gl::cull_face(gl::GL_BACK);
+    gl::set_fxaa(true);
 
     // Compile shaders
     let vs = gl::create_shader(gl::GL_VERTEX_SHADER);
@@ -186,10 +245,17 @@ fn main() {
     gl::use_program(program);
     anyos_std::println!("gldemo: shaders OK");
 
-    // Get locations
+    // Get attribute locations
     let loc_pos = gl::get_attrib_location(program, "aPosition");
-    let loc_col = gl::get_attrib_location(program, "aColor");
+    let loc_norm = gl::get_attrib_location(program, "aNormal");
+    let loc_tex = gl::get_attrib_location(program, "aTexCoord");
+
+    // Get uniform locations
     let loc_mvp = gl::get_uniform_location(program, "uMVP");
+    let loc_model = gl::get_uniform_location(program, "uModel");
+    let loc_light_dir = gl::get_uniform_location(program, "uLightDir");
+    let loc_view_pos = gl::get_uniform_location(program, "uViewPos");
+    let loc_texture = gl::get_uniform_location(program, "uTexture");
 
     // Upload vertex data
     let mut vbo = [0u32; 1];
@@ -197,15 +263,62 @@ fn main() {
     gl::bind_buffer(gl::GL_ARRAY_BUFFER, vbo[0]);
     gl::buffer_data_f32(gl::GL_ARRAY_BUFFER, &CUBE_VERTICES, gl::GL_STATIC_DRAW);
 
-    // Configure vertex attributes (stride = 6 floats * 4 bytes = 24)
+    // Configure vertex attributes (stride = 8 floats * 4 bytes = 32)
     if loc_pos >= 0 {
         gl::enable_vertex_attrib_array(loc_pos as u32);
-        gl::vertex_attrib_pointer(loc_pos as u32, 3, gl::GL_FLOAT, false, 24, 0);
+        gl::vertex_attrib_pointer(loc_pos as u32, 3, gl::GL_FLOAT, false, 32, 0);
     }
-    if loc_col >= 0 {
-        gl::enable_vertex_attrib_array(loc_col as u32);
-        gl::vertex_attrib_pointer(loc_col as u32, 3, gl::GL_FLOAT, false, 24, 12);
+    if loc_norm >= 0 {
+        gl::enable_vertex_attrib_array(loc_norm as u32);
+        gl::vertex_attrib_pointer(loc_norm as u32, 3, gl::GL_FLOAT, false, 32, 12);
     }
+    if loc_tex >= 0 {
+        gl::enable_vertex_attrib_array(loc_tex as u32);
+        gl::vertex_attrib_pointer(loc_tex as u32, 2, gl::GL_FLOAT, false, 32, 24);
+    }
+
+    // Create procedural checkerboard texture (64x64 RGBA)
+    let tex_size: u32 = 64;
+    let mut tex_data = [0u8; 64 * 64 * 4];
+    for y in 0..tex_size {
+        for x in 0..tex_size {
+            let checker = ((x / 8) + (y / 8)) % 2 == 0;
+            let offset = ((y * tex_size + x) * 4) as usize;
+            if checker {
+                // Light warm color
+                tex_data[offset] = 230;     // R
+                tex_data[offset + 1] = 200; // G
+                tex_data[offset + 2] = 160; // B
+                tex_data[offset + 3] = 255; // A
+            } else {
+                // Dark cool color
+                tex_data[offset] = 60;      // R
+                tex_data[offset + 1] = 80;  // G
+                tex_data[offset + 2] = 120; // B
+                tex_data[offset + 3] = 255; // A
+            }
+        }
+    }
+
+    let mut tex = [0u32; 1];
+    gl::gen_textures(1, &mut tex);
+    gl::bind_texture(gl::GL_TEXTURE_2D, tex[0]);
+    gl::tex_image_2d(
+        gl::GL_TEXTURE_2D, 0, gl::GL_RGBA as i32,
+        tex_size as i32, tex_size as i32, 0,
+        gl::GL_RGBA, gl::GL_UNSIGNED_BYTE, &tex_data,
+    );
+    gl::tex_parameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MIN_FILTER, gl::GL_LINEAR as i32);
+    gl::tex_parameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER, gl::GL_LINEAR as i32);
+
+    // Bind texture to unit 0 and set sampler uniform
+    gl::active_texture(gl::GL_TEXTURE0);
+    gl::bind_texture(gl::GL_TEXTURE_2D, tex[0]);
+    if loc_texture >= 0 {
+        gl::uniform1i(loc_texture, 0);
+    }
+
+    anyos_std::println!("gldemo: texture uploaded ({}x{} checkerboard)", tex_size, tex_size);
 
     // Store render state for timer callback
     unsafe {
@@ -214,34 +327,29 @@ fn main() {
             fb_w,
             fb_h,
             loc_mvp,
+            loc_model,
+            loc_light_dir,
+            loc_view_pos,
+            loc_texture,
             angle: 0.0,
-            frame: 0,
         });
     }
 
-    // Register 60fps animation timer — anyui event loop handles presentation
+    // Register 60fps animation timer
     libanyui_client::set_timer(16, || {
         render_frame();
     });
 
-    // Run the anyui event loop (blocks, handles events + timer + compositor)
+    // Run the anyui event loop
     libanyui_client::run();
 }
 
-/// Build a model-view-projection matrix for the rotating cube.
-fn build_mvp(angle: f32) -> [f32; 16] {
-    let model = mat4_rotate_y(angle);
-    let model = mat4_mul(&mat4_rotate_x(angle * 0.7), &model);
-    let view = mat4_translate(0.0, 0.0, -3.0);
-    let proj = mat4_perspective(45.0, 1.0, 0.1, 100.0);
-    let mv = mat4_mul(&view, &model);
-    mat4_mul(&proj, &mv)
-}
+// ── Matrix math ──────────────────────────────────────────────────────────────
 
 /// Rotation around Y axis (column-major).
 fn mat4_rotate_y(angle: f32) -> [f32; 16] {
-    let c = cos_approx(angle);
-    let s = sin_approx(angle);
+    let c = gl::cos(angle);
+    let s = gl::sin(angle);
     [
          c,  0.0,   s, 0.0,
         0.0, 1.0, 0.0, 0.0,
@@ -252,8 +360,8 @@ fn mat4_rotate_y(angle: f32) -> [f32; 16] {
 
 /// Rotation around X axis (column-major).
 fn mat4_rotate_x(angle: f32) -> [f32; 16] {
-    let c = cos_approx(angle);
-    let s = sin_approx(angle);
+    let c = gl::cos(angle);
+    let s = gl::sin(angle);
     [
         1.0, 0.0, 0.0, 0.0,
         0.0,   c,   s, 0.0,
@@ -274,8 +382,8 @@ fn mat4_translate(x: f32, y: f32, z: f32) -> [f32; 16] {
 
 /// Perspective projection matrix (column-major).
 fn mat4_perspective(fov_deg: f32, aspect: f32, near: f32, far: f32) -> [f32; 16] {
-    let fov_rad = fov_deg * 3.14159265 / 180.0;
-    let f = 1.0 / tan_approx(fov_rad * 0.5);
+    let fov_rad = fov_deg * gl::PI / 180.0;
+    let f = 1.0 / gl::tan(fov_rad * 0.5);
     let range_inv = 1.0 / (near - far);
     [
         f / aspect, 0.0, 0.0, 0.0,
@@ -300,39 +408,3 @@ fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     r
 }
 
-// ── Trig approximations (no libm) ──────────────────────────────────────────
-
-fn sin_approx(x: f32) -> f32 {
-    let pi = 3.14159265;
-    let mut t = x;
-    t = t - ((t / (2.0 * pi)).floor_approx()) * 2.0 * pi;
-    if t > pi { t -= 2.0 * pi; }
-    if t < -pi { t += 2.0 * pi; }
-    let abs_t = if t < 0.0 { -t } else { t };
-    let y = t * (4.0 / pi - 4.0 / (pi * pi) * abs_t);
-    let abs_y = if y < 0.0 { -y } else { y };
-    0.225 * (y * abs_y - y) + y
-}
-
-fn cos_approx(x: f32) -> f32 {
-    sin_approx(x + 3.14159265 * 0.5)
-}
-
-fn tan_approx(x: f32) -> f32 {
-    let c = cos_approx(x);
-    if c.abs() < 1e-10 { return 1e10; }
-    sin_approx(x) / c
-}
-
-trait FloorApprox { fn floor_approx(self) -> Self; }
-impl FloorApprox for f32 {
-    fn floor_approx(self) -> f32 {
-        let i = self as i32;
-        if self < 0.0 && self != i as f32 { (i - 1) as f32 } else { i as f32 }
-    }
-}
-
-trait AbsApprox { fn abs(self) -> Self; }
-impl AbsApprox for f32 {
-    fn abs(self) -> f32 { if self < 0.0 { -self } else { self } }
-}

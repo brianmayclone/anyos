@@ -445,7 +445,9 @@ fn lower_call(ctx: &mut LowerCtx, name: &str, args: &[Expr]) -> Result<u32, Stri
             match args.len() {
                 1 => {
                     let a = lower_expr(ctx, &args[0])?;
-                    ctx.insts.push(Inst::Swizzle(r, a, [0, 0, 0, 0], 2));
+                    let hint = expr_component_hint(ctx, &args[0]);
+                    let indices = if hint > 1 { [0, 1, 0, 0] } else { [0, 0, 0, 0] };
+                    ctx.insts.push(Inst::Swizzle(r, a, indices, 2));
                 }
                 2 => {
                     let a = lower_expr(ctx, &args[0])?;
@@ -466,7 +468,9 @@ fn lower_call(ctx: &mut LowerCtx, name: &str, args: &[Expr]) -> Result<u32, Stri
             match args.len() {
                 1 => {
                     let a = lower_expr(ctx, &args[0])?;
-                    ctx.insts.push(Inst::Swizzle(r, a, [0, 0, 0, 0], 3));
+                    let hint = expr_component_hint(ctx, &args[0]);
+                    let indices = if hint > 1 { [0, 1, 2, 0] } else { [0, 0, 0, 0] };
+                    ctx.insts.push(Inst::Swizzle(r, a, indices, 3));
                 }
                 3 => {
                     let x = lower_expr(ctx, &args[0])?;
@@ -500,7 +504,9 @@ fn lower_call(ctx: &mut LowerCtx, name: &str, args: &[Expr]) -> Result<u32, Stri
             match args.len() {
                 1 => {
                     let a = lower_expr(ctx, &args[0])?;
-                    ctx.insts.push(Inst::Swizzle(r, a, [0, 0, 0, 0], 4));
+                    let hint = expr_component_hint(ctx, &args[0]);
+                    let indices = if hint > 1 { [0, 1, 2, 3] } else { [0, 0, 0, 0] };
+                    ctx.insts.push(Inst::Swizzle(r, a, indices, 4));
                 }
                 4 => {
                     let x = lower_expr(ctx, &args[0])?;

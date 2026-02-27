@@ -68,3 +68,16 @@ EXPORTS
     glLineWidth
     glPixelStorei
     glColorMask
+    gl_set_fxaa
+    gl_math_sin
+    gl_math_cos
+    gl_math_tan
+    gl_math_sqrt
+    gl_math_abs
+    gl_math_pow
+    gl_math_log2
+    gl_math_exp2
+    gl_math_floor
+    gl_math_ceil
+    gl_math_clamp
+    gl_math_lerp

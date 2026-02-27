@@ -1,11 +1,14 @@
 //! Software interpreter backend for compiled shader IR.
 //!
 //! Executes IR instructions on a register file of `[f32; 4]` vectors.
-//! Used by the software rasterizer to run both vertex and fragment shaders.
+//! Uses packed SSE instructions via [`crate::simd::Vec4`] for 4-wide SIMD
+//! execution — each arithmetic op processes all 4 components in a single
+//! instruction instead of 4 scalar operations.
 
 use alloc::vec;
 use super::ir::*;
 use crate::rasterizer::math;
+use crate::simd::Vec4;
 
 /// Register file: each register holds 4 floats (xyzw).
 pub type RegFile = [[f32; 4]];
@@ -68,47 +71,71 @@ impl ShaderExec {
             Inst::Mov(dst, src) => {
                 self.regs[*dst as usize] = self.regs[*src as usize];
             }
+            // ── Packed SSE arithmetic ────────────────────────────────────
             Inst::Add(dst, a, b) => {
-                let ra = self.regs[*a as usize];
-                let rb = self.regs[*b as usize];
-                self.regs[*dst as usize] = [ra[0]+rb[0], ra[1]+rb[1], ra[2]+rb[2], ra[3]+rb[3]];
+                let va = Vec4::load(&self.regs[*a as usize]);
+                let vb = Vec4::load(&self.regs[*b as usize]);
+                va.add(vb).store(&mut self.regs[*dst as usize]);
             }
             Inst::Sub(dst, a, b) => {
-                let ra = self.regs[*a as usize];
-                let rb = self.regs[*b as usize];
-                self.regs[*dst as usize] = [ra[0]-rb[0], ra[1]-rb[1], ra[2]-rb[2], ra[3]-rb[3]];
+                let va = Vec4::load(&self.regs[*a as usize]);
+                let vb = Vec4::load(&self.regs[*b as usize]);
+                va.sub(vb).store(&mut self.regs[*dst as usize]);
             }
             Inst::Mul(dst, a, b) => {
-                let ra = self.regs[*a as usize];
-                let rb = self.regs[*b as usize];
-                self.regs[*dst as usize] = [ra[0]*rb[0], ra[1]*rb[1], ra[2]*rb[2], ra[3]*rb[3]];
+                let va = Vec4::load(&self.regs[*a as usize]);
+                let vb = Vec4::load(&self.regs[*b as usize]);
+                va.mul(vb).store(&mut self.regs[*dst as usize]);
             }
             Inst::Div(dst, a, b) => {
-                let ra = self.regs[*a as usize];
-                let rb = self.regs[*b as usize];
-                self.regs[*dst as usize] = [
-                    if rb[0] != 0.0 { ra[0]/rb[0] } else { 0.0 },
-                    if rb[1] != 0.0 { ra[1]/rb[1] } else { 0.0 },
-                    if rb[2] != 0.0 { ra[2]/rb[2] } else { 0.0 },
-                    if rb[3] != 0.0 { ra[3]/rb[3] } else { 0.0 },
-                ];
+                let va = Vec4::load(&self.regs[*a as usize]);
+                let vb = Vec4::load(&self.regs[*b as usize]);
+                va.div_safe(vb).store(&mut self.regs[*dst as usize]);
             }
             Inst::Neg(dst, src) => {
-                let r = self.regs[*src as usize];
-                self.regs[*dst as usize] = [-r[0], -r[1], -r[2], -r[3]];
+                Vec4::load(&self.regs[*src as usize])
+                    .neg()
+                    .store(&mut self.regs[*dst as usize]);
             }
+            Inst::Abs(dst, src) => {
+                Vec4::load(&self.regs[*src as usize])
+                    .abs()
+                    .store(&mut self.regs[*dst as usize]);
+            }
+            Inst::Min(dst, a, b) => {
+                let va = Vec4::load(&self.regs[*a as usize]);
+                let vb = Vec4::load(&self.regs[*b as usize]);
+                va.min(vb).store(&mut self.regs[*dst as usize]);
+            }
+            Inst::Max(dst, a, b) => {
+                let va = Vec4::load(&self.regs[*a as usize]);
+                let vb = Vec4::load(&self.regs[*b as usize]);
+                va.max(vb).store(&mut self.regs[*dst as usize]);
+            }
+            Inst::Clamp(dst, x, lo, hi) => {
+                let vx = Vec4::load(&self.regs[*x as usize]);
+                let vlo = Vec4::load(&self.regs[*lo as usize]);
+                let vhi = Vec4::load(&self.regs[*hi as usize]);
+                vx.clamp(vlo, vhi).store(&mut self.regs[*dst as usize]);
+            }
+            Inst::Mix(dst, a, b, t) => {
+                let va = Vec4::load(&self.regs[*a as usize]);
+                let vb = Vec4::load(&self.regs[*b as usize]);
+                let vt = Vec4::load(&self.regs[*t as usize]);
+                va.lerp(vb, vt).store(&mut self.regs[*dst as usize]);
+            }
+            // ── Dot products ─────────────────────────────────────────────
             Inst::Dp3(dst, a, b) => {
-                let ra = self.regs[*a as usize];
-                let rb = self.regs[*b as usize];
-                let d = ra[0]*rb[0] + ra[1]*rb[1] + ra[2]*rb[2];
-                self.regs[*dst as usize] = [d, d, d, d];
+                let va = Vec4::load(&self.regs[*a as usize]);
+                let vb = Vec4::load(&self.regs[*b as usize]);
+                va.dp3(vb).store(&mut self.regs[*dst as usize]);
             }
             Inst::Dp4(dst, a, b) => {
-                let ra = self.regs[*a as usize];
-                let rb = self.regs[*b as usize];
-                let d = ra[0]*rb[0] + ra[1]*rb[1] + ra[2]*rb[2] + ra[3]*rb[3];
-                self.regs[*dst as usize] = [d, d, d, d];
+                let va = Vec4::load(&self.regs[*a as usize]);
+                let vb = Vec4::load(&self.regs[*b as usize]);
+                va.dp4(vb).store(&mut self.regs[*dst as usize]);
             }
+            // ── Cross product ────────────────────────────────────────────
             Inst::Cross(dst, a, b) => {
                 let ra = self.regs[*a as usize];
                 let rb = self.regs[*b as usize];
@@ -119,67 +146,51 @@ impl ShaderExec {
                     0.0,
                 ];
             }
+            // ── Normalize (dp3 + rsqrt + mul) ────────────────────────────
             Inst::Normalize(dst, src) => {
-                let r = self.regs[*src as usize];
-                let len = math::sqrt(r[0]*r[0] + r[1]*r[1] + r[2]*r[2]);
-                if len > 1e-10 {
-                    let inv = 1.0 / len;
-                    self.regs[*dst as usize] = [r[0]*inv, r[1]*inv, r[2]*inv, r[3]*inv];
+                let v = Vec4::load(&self.regs[*src as usize]);
+                let dp = v.dp3(v);
+                let len_sq = dp.lane(0);
+                if len_sq > 1e-20 {
+                    let inv_len = Vec4::splat(1.0 / math::sqrt(len_sq));
+                    v.mul(inv_len).store(&mut self.regs[*dst as usize]);
                 } else {
                     self.regs[*dst as usize] = [0.0; 4];
                 }
             }
             Inst::Length(dst, src) => {
-                let r = self.regs[*src as usize];
-                let len = math::sqrt(r[0]*r[0] + r[1]*r[1] + r[2]*r[2]);
+                let v = Vec4::load(&self.regs[*src as usize]);
+                let dp = v.dp3(v);
+                let len = math::sqrt(dp.lane(0));
                 self.regs[*dst as usize] = [len, len, len, len];
             }
-            Inst::Min(dst, a, b) => {
-                let ra = self.regs[*a as usize];
-                let rb = self.regs[*b as usize];
-                self.regs[*dst as usize] = [
-                    if ra[0] < rb[0] { ra[0] } else { rb[0] },
-                    if ra[1] < rb[1] { ra[1] } else { rb[1] },
-                    if ra[2] < rb[2] { ra[2] } else { rb[2] },
-                    if ra[3] < rb[3] { ra[3] } else { rb[3] },
-                ];
+            Inst::Reflect(dst, i, n) => {
+                let vi = Vec4::load(&self.regs[*i as usize]);
+                let vn = Vec4::load(&self.regs[*n as usize]);
+                let dp = vi.dp3(vn);
+                let two_dp = dp.add(dp);
+                let result = vi.sub(vn.mul(two_dp));
+                let mut out = [0.0f32; 4];
+                result.store(&mut out);
+                out[3] = 0.0;
+                self.regs[*dst as usize] = out;
             }
-            Inst::Max(dst, a, b) => {
-                let ra = self.regs[*a as usize];
-                let rb = self.regs[*b as usize];
-                self.regs[*dst as usize] = [
-                    if ra[0] > rb[0] { ra[0] } else { rb[0] },
-                    if ra[1] > rb[1] { ra[1] } else { rb[1] },
-                    if ra[2] > rb[2] { ra[2] } else { rb[2] },
-                    if ra[3] > rb[3] { ra[3] } else { rb[3] },
-                ];
+            // ── Packed sqrt ──────────────────────────────────────────────
+            Inst::Sqrt(dst, src) => {
+                Vec4::load(&self.regs[*src as usize])
+                    .sqrt()
+                    .store(&mut self.regs[*dst as usize]);
             }
-            Inst::Clamp(dst, x, lo, hi) => {
-                let rx = self.regs[*x as usize];
-                let rlo = self.regs[*lo as usize];
-                let rhi = self.regs[*hi as usize];
-                self.regs[*dst as usize] = [
-                    clamp_f32(rx[0], rlo[0], rhi[0]),
-                    clamp_f32(rx[1], rlo[1], rhi[1]),
-                    clamp_f32(rx[2], rlo[2], rhi[2]),
-                    clamp_f32(rx[3], rlo[3], rhi[3]),
-                ];
-            }
-            Inst::Mix(dst, a, b, t) => {
-                let ra = self.regs[*a as usize];
-                let rb = self.regs[*b as usize];
-                let rt = self.regs[*t as usize];
-                self.regs[*dst as usize] = [
-                    ra[0] + (rb[0] - ra[0]) * rt[0],
-                    ra[1] + (rb[1] - ra[1]) * rt[1],
-                    ra[2] + (rb[2] - ra[2]) * rt[2],
-                    ra[3] + (rb[3] - ra[3]) * rt[3],
-                ];
-            }
-            Inst::Abs(dst, src) => {
+            Inst::Rsqrt(dst, src) => {
                 let r = self.regs[*src as usize];
-                self.regs[*dst as usize] = [abs_f32(r[0]), abs_f32(r[1]), abs_f32(r[2]), abs_f32(r[3])];
+                self.regs[*dst as usize] = [
+                    if r[0] > 1e-10 { 1.0 / math::sqrt(r[0]) } else { 0.0 },
+                    if r[1] > 1e-10 { 1.0 / math::sqrt(r[1]) } else { 0.0 },
+                    if r[2] > 1e-10 { 1.0 / math::sqrt(r[2]) } else { 0.0 },
+                    if r[3] > 1e-10 { 1.0 / math::sqrt(r[3]) } else { 0.0 },
+                ];
             }
+            // ── Transcendentals (x87 FPU, per-component) ─────────────────
             Inst::Floor(dst, src) => {
                 let r = self.regs[*src as usize];
                 self.regs[*dst as usize] = [
@@ -206,19 +217,6 @@ impl ShaderExec {
                     math::pow(rb[3], re[3]),
                 ];
             }
-            Inst::Sqrt(dst, src) => {
-                let r = self.regs[*src as usize];
-                self.regs[*dst as usize] = [
-                    math::sqrt(r[0]), math::sqrt(r[1]),
-                    math::sqrt(r[2]), math::sqrt(r[3]),
-                ];
-            }
-            Inst::Rsqrt(dst, src) => {
-                let r = self.regs[*src as usize];
-                self.regs[*dst as usize] = [
-                    rsqrt(r[0]), rsqrt(r[1]), rsqrt(r[2]), rsqrt(r[3]),
-                ];
-            }
             Inst::Sin(dst, src) => {
                 let r = self.regs[*src as usize];
                 self.regs[*dst as usize] = [
@@ -233,54 +231,57 @@ impl ShaderExec {
                     math::cos(r[2]), math::cos(r[3]),
                 ];
             }
-            Inst::Reflect(dst, i, n) => {
-                let ri = self.regs[*i as usize];
-                let rn = self.regs[*n as usize];
-                let d = ri[0]*rn[0] + ri[1]*rn[1] + ri[2]*rn[2];
-                self.regs[*dst as usize] = [
-                    ri[0] - 2.0 * d * rn[0],
-                    ri[1] - 2.0 * d * rn[1],
-                    ri[2] - 2.0 * d * rn[2],
-                    0.0,
-                ];
-            }
+            // ── Texture sampling ─────────────────────────────────────────
             Inst::TexSample(dst, sampler, coord) => {
                 let unit = self.regs[*sampler as usize][0] as u32;
                 let uv = self.regs[*coord as usize];
                 self.regs[*dst as usize] = tex_sample(unit, uv[0], uv[1]);
             }
+            // ── Matrix multiply (SIMD: splat + mul + add chain) ──────────
             Inst::MatMul4(dst, mat, vec) => {
-                let v = self.regs[*vec as usize];
-                let c0 = self.regs[*mat as usize];
-                let c1 = self.regs[(*mat + 1) as usize];
-                let c2 = self.regs[(*mat + 2) as usize];
-                let c3 = self.regs[(*mat + 3) as usize];
-                self.regs[*dst as usize] = [
-                    c0[0]*v[0] + c1[0]*v[1] + c2[0]*v[2] + c3[0]*v[3],
-                    c0[1]*v[0] + c1[1]*v[1] + c2[1]*v[2] + c3[1]*v[3],
-                    c0[2]*v[0] + c1[2]*v[1] + c2[2]*v[2] + c3[2]*v[3],
-                    c0[3]*v[0] + c1[3]*v[1] + c2[3]*v[2] + c3[3]*v[3],
-                ];
+                let v = Vec4::load(&self.regs[*vec as usize]);
+                let c0 = Vec4::load(&self.regs[*mat as usize]);
+                let c1 = Vec4::load(&self.regs[(*mat + 1) as usize]);
+                let c2 = Vec4::load(&self.regs[(*mat + 2) as usize]);
+                let c3 = Vec4::load(&self.regs[(*mat + 3) as usize]);
+                unsafe {
+                    use core::arch::x86_64::*;
+                    let vx = _mm_shuffle_ps(v.0, v.0, 0x00);
+                    let vy = _mm_shuffle_ps(v.0, v.0, 0x55);
+                    let vz = _mm_shuffle_ps(v.0, v.0, 0xAA);
+                    let vw = _mm_shuffle_ps(v.0, v.0, 0xFF);
+                    let r = _mm_add_ps(
+                        _mm_add_ps(_mm_mul_ps(c0.0, vx), _mm_mul_ps(c1.0, vy)),
+                        _mm_add_ps(_mm_mul_ps(c2.0, vz), _mm_mul_ps(c3.0, vw)),
+                    );
+                    Vec4(r).store(&mut self.regs[*dst as usize]);
+                }
             }
             Inst::MatMul3(dst, mat, vec) => {
-                let v = self.regs[*vec as usize];
-                let c0 = self.regs[*mat as usize];
-                let c1 = self.regs[(*mat + 1) as usize];
-                let c2 = self.regs[(*mat + 2) as usize];
-                self.regs[*dst as usize] = [
-                    c0[0]*v[0] + c1[0]*v[1] + c2[0]*v[2],
-                    c0[1]*v[0] + c1[1]*v[1] + c2[1]*v[2],
-                    c0[2]*v[0] + c1[2]*v[1] + c2[2]*v[2],
-                    0.0,
-                ];
+                let v = Vec4::load(&self.regs[*vec as usize]);
+                let c0 = Vec4::load(&self.regs[*mat as usize]);
+                let c1 = Vec4::load(&self.regs[(*mat + 1) as usize]);
+                let c2 = Vec4::load(&self.regs[(*mat + 2) as usize]);
+                unsafe {
+                    use core::arch::x86_64::*;
+                    let vx = _mm_shuffle_ps(v.0, v.0, 0x00);
+                    let vy = _mm_shuffle_ps(v.0, v.0, 0x55);
+                    let vz = _mm_shuffle_ps(v.0, v.0, 0xAA);
+                    let r = _mm_add_ps(
+                        _mm_add_ps(_mm_mul_ps(c0.0, vx), _mm_mul_ps(c1.0, vy)),
+                        _mm_mul_ps(c2.0, vz),
+                    );
+                    let mask = _mm_castsi128_ps(_mm_set_epi32(0, -1, -1, -1));
+                    Vec4(_mm_and_ps(r, mask)).store(&mut self.regs[*dst as usize]);
+                }
             }
+            // ── Swizzle / WriteMask ──────────────────────────────────────
             Inst::Swizzle(dst, src, indices, count) => {
                 let r = self.regs[*src as usize];
                 let mut out = [0.0f32; 4];
                 for i in 0..(*count as usize) {
                     out[i] = r[indices[i] as usize];
                 }
-                // For scalar swizzle (.x), broadcast to all
                 if *count == 1 {
                     out = [out[0]; 4];
                 }
@@ -294,40 +295,26 @@ impl ShaderExec {
                 if mask & 0x4 != 0 { d[2] = s[2]; }
                 if mask & 0x8 != 0 { d[3] = s[3]; }
             }
+            // ── Comparisons (packed SSE) ─────────────────────────────────
             Inst::CmpLt(dst, a, b) => {
-                let ra = self.regs[*a as usize];
-                let rb = self.regs[*b as usize];
-                self.regs[*dst as usize] = [
-                    if ra[0] < rb[0] { 1.0 } else { 0.0 },
-                    if ra[1] < rb[1] { 1.0 } else { 0.0 },
-                    if ra[2] < rb[2] { 1.0 } else { 0.0 },
-                    if ra[3] < rb[3] { 1.0 } else { 0.0 },
-                ];
+                let va = Vec4::load(&self.regs[*a as usize]);
+                let vb = Vec4::load(&self.regs[*b as usize]);
+                va.cmp_lt(vb).store(&mut self.regs[*dst as usize]);
             }
             Inst::CmpEq(dst, a, b) => {
-                let ra = self.regs[*a as usize];
-                let rb = self.regs[*b as usize];
-                self.regs[*dst as usize] = [
-                    if (ra[0] - rb[0]).abs() < 1e-6 { 1.0 } else { 0.0 },
-                    if (ra[1] - rb[1]).abs() < 1e-6 { 1.0 } else { 0.0 },
-                    if (ra[2] - rb[2]).abs() < 1e-6 { 1.0 } else { 0.0 },
-                    if (ra[3] - rb[3]).abs() < 1e-6 { 1.0 } else { 0.0 },
-                ];
+                let va = Vec4::load(&self.regs[*a as usize]);
+                let vb = Vec4::load(&self.regs[*b as usize]);
+                va.cmp_eq_eps(vb).store(&mut self.regs[*dst as usize]);
             }
             Inst::Select(dst, cond, a, b) => {
-                let rc = self.regs[*cond as usize];
-                let ra = self.regs[*a as usize];
-                let rb = self.regs[*b as usize];
-                self.regs[*dst as usize] = [
-                    if rc[0] != 0.0 { ra[0] } else { rb[0] },
-                    if rc[1] != 0.0 { ra[1] } else { rb[1] },
-                    if rc[2] != 0.0 { ra[2] } else { rb[2] },
-                    if rc[3] != 0.0 { ra[3] } else { rb[3] },
-                ];
+                let vc = Vec4::load(&self.regs[*cond as usize]);
+                let va = Vec4::load(&self.regs[*a as usize]);
+                let vb = Vec4::load(&self.regs[*b as usize]);
+                Vec4::select(vc, va, vb).store(&mut self.regs[*dst as usize]);
             }
+            // ── Type conversions ─────────────────────────────────────────
             Inst::IntToFloat(dst, src) => {
-                let r = self.regs[*src as usize];
-                self.regs[*dst as usize] = r; // Already floats in our representation
+                self.regs[*dst as usize] = self.regs[*src as usize];
             }
             Inst::FloatToInt(dst, src) => {
                 let r = self.regs[*src as usize];
@@ -338,6 +325,7 @@ impl ShaderExec {
                     (r[3] as i32) as f32,
                 ];
             }
+            // ── I/O ──────────────────────────────────────────────────────
             Inst::StorePosition(src) => {
                 self.position = self.regs[*src as usize];
             }
@@ -379,16 +367,4 @@ impl ShaderExec {
             }
         }
     }
-}
-
-fn clamp_f32(x: f32, lo: f32, hi: f32) -> f32 {
-    if x < lo { lo } else if x > hi { hi } else { x }
-}
-
-fn abs_f32(x: f32) -> f32 {
-    if x < 0.0 { -x } else { x }
-}
-
-fn rsqrt(x: f32) -> f32 {
-    if x > 1e-10 { 1.0 / math::sqrt(x) } else { 0.0 }
 }

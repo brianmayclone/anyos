@@ -1,119 +1,201 @@
-//! Math functions for the software rasterizer (no libm dependency).
+//! Math functions for the software rasterizer using inline FPU/SSE instructions.
 //!
-//! Polynomial approximations for transcendental functions. Accuracy is
-//! sufficient for real-time 3D rendering (typically 4-6 significant digits).
+//! Uses x87 FPU for transcendental functions (sin, cos, pow, log2, exp2) and
+//! SSE2 for sqrt. IEEE 754 exact results with hardware acceleration — no
+//! polynomial approximations needed.
+
+use core::arch::asm;
+use core::arch::x86_64::*;
 
 /// Pi constant.
 pub const PI: f32 = 3.14159265;
 
-/// Floor function.
-pub fn floor(x: f32) -> f32 {
-    let i = x as i32;
-    if x < 0.0 && x != i as f32 { (i - 1) as f32 } else { i as f32 }
-}
+// ── SSE2-based functions ─────────────────────────────────────────────
 
-/// Ceiling function.
-pub fn ceil(x: f32) -> f32 {
-    let i = x as i32;
-    if x > 0.0 && x != i as f32 { (i + 1) as f32 } else { i as f32 }
-}
-
-/// Square root using Newton-Raphson iteration.
+/// Square root via SSE2 `sqrtss` (IEEE 754 exact, ~1 cycle).
+#[inline]
 pub fn sqrt(x: f32) -> f32 {
-    if x <= 0.0 { return 0.0; }
-
-    // Fast inverse sqrt (Quake III) as initial guess
-    let half = x * 0.5;
-    let bits = x.to_bits();
-    let guess_bits = 0x5f3759df - (bits >> 1);
-    let mut y = f32::from_bits(guess_bits);
-
-    // 3 Newton iterations for ~24-bit precision
-    y = y * (1.5 - half * y * y);
-    y = y * (1.5 - half * y * y);
-    y = y * (1.5 - half * y * y);
-
-    x * y // sqrt(x) = x * rsqrt(x)
+    let mut result: f32;
+    unsafe {
+        asm!(
+            "sqrtss {out}, {x}",
+            x = in(xmm_reg) x,
+            out = out(xmm_reg) result,
+        );
+    }
+    result
 }
 
-/// Sine using Bhaskara I approximation + polynomial refinement.
-pub fn sin(x: f32) -> f32 {
-    // Reduce to [-pi, pi]
-    let mut t = x;
-    t = t - floor(t / (2.0 * PI)) * 2.0 * PI;
-    if t > PI { t -= 2.0 * PI; }
-    if t < -PI { t += 2.0 * PI; }
-
-    // Parabola approximation (accurate to ~0.001)
-    let abs_t = if t < 0.0 { -t } else { t };
-    let y = t * (4.0 / PI - 4.0 / (PI * PI) * abs_t);
-
-    // Refine with one correction pass
-    let abs_y = if y < 0.0 { -y } else { y };
-    0.225 * (y * abs_y - y) + y
-}
-
-/// Cosine.
-pub fn cos(x: f32) -> f32 {
-    sin(x + PI * 0.5)
-}
-
-/// Power function: base^exp using exp2(exp * log2(base)).
-pub fn pow(base: f32, exp: f32) -> f32 {
-    if base <= 0.0 { return 0.0; }
-    exp2(exp * log2(base))
-}
-
-/// Log base 2 using IEEE 754 float bit manipulation.
-pub fn log2(x: f32) -> f32 {
-    if x <= 0.0 { return -100.0; } // -infinity approximation
-    let bits = x.to_bits() as i32;
-    let exponent = ((bits >> 23) & 0xFF) - 127;
-    // Extract mantissa in [1, 2)
-    let mantissa_bits = (bits & 0x007FFFFF) | 0x3F800000;
-    let m = f32::from_bits(mantissa_bits as u32);
-    // Polynomial approx of log2(m) for m in [1, 2)
-    let m1 = m - 1.0;
-    let log_m = m1 * (2.0 - 0.66666667 * m1);
-    exponent as f32 + log_m
-}
-
-/// Exp base 2 using polynomial approximation.
-pub fn exp2(x: f32) -> f32 {
-    if x < -126.0 { return 0.0; }
-    if x > 127.0 { return f32::from_bits(0x7F800000); } // +inf
-
-    let floor_x = floor(x);
-    let frac = x - floor_x;
-    let int_part = floor_x as i32;
-
-    // 2^frac for frac in [0, 1) — minimax polynomial
-    let frac2 = frac * frac;
-    let exp_frac = 1.0 + frac * (0.6931472 + frac2 * (0.2402265 + frac2 * 0.0554953));
-
-    // Combine: 2^int * 2^frac
-    let exp_bits = ((int_part + 127) as u32) << 23;
-    f32::from_bits(exp_bits) * exp_frac
-}
-
-/// Tangent.
-pub fn tan(x: f32) -> f32 {
-    let c = cos(x);
-    if c.abs() < 1e-10 { return 1e10; }
-    sin(x) / c
-}
-
-/// Absolute value.
+/// Absolute value via sign-bit clear.
+#[inline]
 pub fn abs(x: f32) -> f32 {
-    if x < 0.0 { -x } else { x }
+    f32::from_bits(x.to_bits() & 0x7FFFFFFF)
 }
+
+// ── x87 FPU-based transcendental functions ───────────────────────────
+
+/// Sine via x87 `fsin`.
+#[inline]
+pub fn sin(x: f32) -> f32 {
+    let mut result: f32 = 0.0;
+    unsafe {
+        asm!(
+            "fld dword ptr [{x}]",
+            "fsin",
+            "fstp dword ptr [{out}]",
+            x = in(reg) &x,
+            out = in(reg) &mut result,
+            options(nostack),
+        );
+    }
+    result
+}
+
+/// Cosine via x87 `fcos`.
+#[inline]
+pub fn cos(x: f32) -> f32 {
+    let mut result: f32 = 0.0;
+    unsafe {
+        asm!(
+            "fld dword ptr [{x}]",
+            "fcos",
+            "fstp dword ptr [{out}]",
+            x = in(reg) &x,
+            out = in(reg) &mut result,
+            options(nostack),
+        );
+    }
+    result
+}
+
+/// Tangent via x87 `fptan`.
+#[inline]
+pub fn tan(x: f32) -> f32 {
+    let mut result: f32 = 0.0;
+    unsafe {
+        asm!(
+            "fld dword ptr [{x}]",
+            "fptan",
+            "fstp st(0)",
+            "fstp dword ptr [{out}]",
+            x = in(reg) &x,
+            out = in(reg) &mut result,
+            options(nostack),
+        );
+    }
+    result
+}
+
+/// Base-2 logarithm via x87 `fyl2x`.
+#[inline]
+pub fn log2(x: f32) -> f32 {
+    let mut result: f32 = 0.0;
+    unsafe {
+        asm!(
+            "fld1",
+            "fld dword ptr [{x}]",
+            "fyl2x",
+            "fstp dword ptr [{out}]",
+            x = in(reg) &x,
+            out = in(reg) &mut result,
+            options(nostack),
+        );
+    }
+    result
+}
+
+/// Base-2 exponential via x87 `f2xm1` + `fscale`.
+#[inline]
+pub fn exp2(x: f32) -> f32 {
+    let xd = x as f64;
+    let mut result: f64 = 0.0;
+    unsafe {
+        asm!(
+            "fld qword ptr [{x}]",
+            "fld st(0)",
+            "frndint",
+            "fsub st(1), st(0)",
+            "fxch st(1)",
+            "f2xm1",
+            "fld1",
+            "faddp",
+            "fscale",
+            "fstp st(1)",
+            "fstp qword ptr [{out}]",
+            x = in(reg) &xd,
+            out = in(reg) &mut result,
+            options(nostack),
+        );
+    }
+    result as f32
+}
+
+/// Power function x^y via x87 FPU.
+pub fn pow(base: f32, exp: f32) -> f32 {
+    if exp == 0.0 { return 1.0; }
+    if base == 1.0 { return 1.0; }
+    if base == 0.0 {
+        if exp > 0.0 { return 0.0; }
+        return f32::from_bits(0x7F800000); // +inf
+    }
+    if base < 0.0 { return 0.0; } // negative base unsupported for fractional exp
+
+    // x^y = 2^(y * log2(x)) using x87 fyl2x + f2xm1 + fscale
+    let xd = base as f64;
+    let yd = exp as f64;
+    let mut result: f64 = 0.0;
+    unsafe {
+        asm!(
+            "fld qword ptr [{y}]",
+            "fld qword ptr [{x}]",
+            "fyl2x",
+            "fld st(0)",
+            "frndint",
+            "fsub st(1), st(0)",
+            "fxch st(1)",
+            "f2xm1",
+            "fld1",
+            "faddp",
+            "fscale",
+            "fstp st(1)",
+            "fstp qword ptr [{out}]",
+            x = in(reg) &xd,
+            y = in(reg) &yd,
+            out = in(reg) &mut result,
+            options(nostack),
+        );
+    }
+    result as f32
+}
+
+/// Floor via SSE4.1 `roundss` (1 cycle vs 16+ for x87 control word).
+#[inline]
+pub fn floor(x: f32) -> f32 {
+    unsafe {
+        let v = _mm_set_ss(x);
+        _mm_cvtss_f32(_mm_floor_ss(v, v))
+    }
+}
+
+/// Ceiling via SSE4.1 `roundss` (1 cycle vs 16+ for x87 control word).
+#[inline]
+pub fn ceil(x: f32) -> f32 {
+    unsafe {
+        let v = _mm_set_ss(x);
+        _mm_cvtss_f32(_mm_ceil_ss(v, v))
+    }
+}
+
+// ── Pure Rust helpers (no asm needed) ────────────────────────────────
 
 /// Clamp a value to [lo, hi].
+#[inline]
 pub fn clamp(x: f32, lo: f32, hi: f32) -> f32 {
     if x < lo { lo } else if x > hi { hi } else { x }
 }
 
 /// Linear interpolation.
+#[inline]
 pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }

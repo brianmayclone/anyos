@@ -9,6 +9,7 @@ use crate::state::GlContext;
 use crate::types::*;
 use crate::compiler::ir::Program as IrProgram;
 use crate::compiler::backend_sw::ShaderExec;
+use crate::simd::Vec4;
 use super::ClipVertex;
 use super::fragment;
 
@@ -46,8 +47,7 @@ pub fn rasterize_triangle(
     let fb_width = ctx.default_fb.width;
     let num_varyings = verts[0].varyings.len();
 
-    // Create a texture sampler closure
-    let tex_sample = make_tex_sampler(ctx);
+    let tex_sample = real_tex_sample;
 
     for py in min_y..=max_y {
         for px in min_x..=max_x {
@@ -77,18 +77,23 @@ pub fn rasterize_triangle(
                 }
             }
 
-            // Interpolate varyings with perspective correction
+            // Interpolate varyings with perspective correction (SIMD)
+            let w0_inv = Vec4::splat(w0 / w0_clip);
+            let w1_inv = Vec4::splat(w1 / w1_clip);
+            let w2_inv = Vec4::splat(w2 / w2_clip);
+            let corr_v = Vec4::splat(corr);
+
             let mut varying_data: Vec<[f32; 4]> = Vec::with_capacity(num_varyings);
             for vi in 0..num_varyings {
-                let v0_val = &verts[0].varyings.get(vi).copied().unwrap_or([0.0; 4]);
-                let v1_val = &verts[1].varyings.get(vi).copied().unwrap_or([0.0; 4]);
-                let v2_val = &verts[2].varyings.get(vi).copied().unwrap_or([0.0; 4]);
+                let v0_val = verts[0].varyings.get(vi).copied().unwrap_or([0.0; 4]);
+                let v1_val = verts[1].varyings.get(vi).copied().unwrap_or([0.0; 4]);
+                let v2_val = verts[2].varyings.get(vi).copied().unwrap_or([0.0; 4]);
+                let result = Vec4::load(&v0_val).mul(w0_inv)
+                    .add(Vec4::load(&v1_val).mul(w1_inv))
+                    .add(Vec4::load(&v2_val).mul(w2_inv))
+                    .mul(corr_v);
                 let mut interp = [0.0f32; 4];
-                for c in 0..4 {
-                    interp[c] = (w0 * v0_val[c] / w0_clip
-                               + w1 * v1_val[c] / w1_clip
-                               + w2 * v2_val[c] / w2_clip) * corr;
-                }
+                result.store(&mut interp);
                 varying_data.push(interp);
             }
 
@@ -139,14 +144,29 @@ fn max3(a: f32, b: f32, c: f32) -> f32 {
     if m > c { m } else { c }
 }
 
-/// Build a texture sampler function pointer for the current GL state.
-fn make_tex_sampler(_ctx: &GlContext) -> fn(u32, f32, f32) -> [f32; 4] {
-    // For Phase 1, return a simple white-pixel sampler.
-    // Full texture lookup requires unsafe static access to ctx.textures;
-    // will be improved with a proper context threading model.
-    null_tex_sample
-}
-
-fn null_tex_sample(_unit: u32, _u: f32, _v: f32) -> [f32; 4] {
-    [1.0, 1.0, 1.0, 1.0]
+/// Texture sampler using raw pointers to avoid `&CTX` / `&mut CTX` aliasing.
+///
+/// `TEX_STORE_PTR` and `BOUND_TEXTURES_PTR` are set before each draw call in
+/// `rasterizer::draw()` / `draw_elements()`, so they always point at the
+/// current context's texture state without creating a second reference.
+pub fn real_tex_sample(unit: u32, u: f32, v: f32) -> [f32; 4] {
+    unsafe {
+        let bound = crate::BOUND_TEXTURES_PTR;
+        let store = crate::TEX_STORE_PTR;
+        if bound.is_null() || store.is_null() {
+            return [1.0, 1.0, 1.0, 1.0];
+        }
+        let unit_idx = unit as usize;
+        if unit_idx >= crate::state::MAX_TEXTURE_UNITS {
+            return [1.0, 1.0, 1.0, 1.0];
+        }
+        let tex_id = (*bound)[unit_idx];
+        if tex_id == 0 {
+            return [1.0, 1.0, 1.0, 1.0];
+        }
+        match (*store).get(tex_id) {
+            Some(tex) => tex.sample(u, v),
+            None => [1.0, 1.0, 1.0, 1.0],
+        }
+    }
 }

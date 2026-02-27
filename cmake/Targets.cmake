@@ -49,6 +49,11 @@ add_custom_command(
 )
 
 # ============================================================
+# QEMU CPU model — expose SSE3/SSSE3/SSE4.1/SSE4.2/POPCNT
+# ============================================================
+set(QEMU_CPU_FLAGS -cpu qemu64,+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt)
+
+# ============================================================
 # Targets
 # ============================================================
 add_custom_target(bootloader DEPENDS
@@ -62,6 +67,7 @@ add_custom_target(image ALL DEPENDS ${DISK_IMAGE} programs)
 
 add_custom_target(run
   COMMAND ${QEMU_EXECUTABLE}
+    ${QEMU_CPU_FLAGS}
     -drive format=raw,file=${DISK_IMAGE}
     -m 1024M
     -smp cpus=4
@@ -76,6 +82,7 @@ add_custom_target(run
 
 add_custom_target(run-vmware
   COMMAND ${QEMU_EXECUTABLE}
+    ${QEMU_CPU_FLAGS}
     -drive format=raw,file=${DISK_IMAGE}
     -m 1024M
     -smp cpus=4
@@ -90,6 +97,7 @@ add_custom_target(run-vmware
 
 add_custom_target(run-vmware-debug
   COMMAND ${QEMU_EXECUTABLE}
+    ${QEMU_CPU_FLAGS}
     -drive format=raw,file=${DISK_IMAGE}
     -m 1024M
     -smp cpus=4
@@ -105,6 +113,7 @@ add_custom_target(run-vmware-debug
 
 add_custom_target(run-ahci
   COMMAND ${QEMU_EXECUTABLE}
+    ${QEMU_CPU_FLAGS}
     -drive id=hd0,if=none,format=raw,file=${DISK_IMAGE}
     -device ich9-ahci,id=ahci -device ide-hd,drive=hd0,bus=ahci.0
     -m 1024M
@@ -120,6 +129,7 @@ add_custom_target(run-ahci
 
 add_custom_target(run-ahci-vmware
   COMMAND ${QEMU_EXECUTABLE}
+    ${QEMU_CPU_FLAGS}
     -drive id=hd0,if=none,format=raw,file=${DISK_IMAGE}
     -device ich9-ahci,id=ahci -device ide-hd,drive=hd0,bus=ahci.0
     -m 1024M
@@ -135,6 +145,7 @@ add_custom_target(run-ahci-vmware
 
 add_custom_target(run-audio
   COMMAND ${QEMU_EXECUTABLE}
+    ${QEMU_CPU_FLAGS}
     -drive format=raw,file=${DISK_IMAGE}
     -m 1024M
     -smp cpus=4
@@ -150,6 +161,7 @@ add_custom_target(run-audio
 
 add_custom_target(run-usb
   COMMAND ${QEMU_EXECUTABLE}
+    ${QEMU_CPU_FLAGS}
     -drive format=raw,file=${DISK_IMAGE}
     -m 1024M
     -smp cpus=4
@@ -165,6 +177,7 @@ add_custom_target(run-usb
 
 add_custom_target(run-usb-ehci
   COMMAND ${QEMU_EXECUTABLE}
+    ${QEMU_CPU_FLAGS}
     -drive format=raw,file=${DISK_IMAGE}
     -m 1024M
     -smp cpus=4
@@ -183,6 +196,7 @@ add_custom_target(run-usb-ehci
 
 add_custom_target(debug
   COMMAND ${QEMU_EXECUTABLE}
+    ${QEMU_CPU_FLAGS}
     -drive format=raw,file=${DISK_IMAGE}
     -m 1024M
     -smp cpus=4
@@ -249,6 +263,7 @@ add_custom_target(uefi-image DEPENDS ${UEFI_DISK_IMAGE} programs)
 
 add_custom_target(run-uefi
   COMMAND ${QEMU_EXECUTABLE}
+    ${QEMU_CPU_FLAGS}
     -drive if=pflash,format=raw,readonly=on,file=${OVMF_FW}
     -drive format=raw,file=${UEFI_DISK_IMAGE}
     -m 1024M
@@ -264,6 +279,7 @@ add_custom_target(run-uefi
 
 add_custom_target(run-uefi-std
   COMMAND ${QEMU_EXECUTABLE}
+    ${QEMU_CPU_FLAGS}
     -drive if=pflash,format=raw,readonly=on,file=${OVMF_FW}
     -drive format=raw,file=${UEFI_DISK_IMAGE}
     -m 1024M
@@ -307,6 +323,7 @@ add_custom_target(iso DEPENDS ${ISO_IMAGE} programs)
 
 add_custom_target(run-cdrom
   COMMAND ${QEMU_EXECUTABLE}
+    ${QEMU_CPU_FLAGS}
     -cdrom ${ISO_IMAGE}
     -boot d
     -m 1024M
@@ -322,6 +339,7 @@ add_custom_target(run-cdrom
 
 add_custom_target(run-cdrom-std
   COMMAND ${QEMU_EXECUTABLE}
+    ${QEMU_CPU_FLAGS}
     -cdrom ${ISO_IMAGE}
     -boot d
     -m 1024M
@@ -337,6 +355,7 @@ add_custom_target(run-cdrom-std
 
 add_custom_target(run-cdrom-with-disk
   COMMAND ${QEMU_EXECUTABLE}
+    ${QEMU_CPU_FLAGS}
     -drive format=raw,file=${DISK_IMAGE}
     -cdrom ${ISO_IMAGE}
     -m 1024M

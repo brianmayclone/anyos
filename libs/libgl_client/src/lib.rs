@@ -157,6 +157,21 @@ struct LibGl {
     read_pixels: extern "C" fn(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, *mut u8),
     flush: extern "C" fn(),
     finish: extern "C" fn(),
+    // Anti-Aliasing
+    set_fxaa: extern "C" fn(u32),
+    // Math
+    math_sin: extern "C" fn(f32) -> f32,
+    math_cos: extern "C" fn(f32) -> f32,
+    math_tan: extern "C" fn(f32) -> f32,
+    math_sqrt: extern "C" fn(f32) -> f32,
+    math_abs: extern "C" fn(f32) -> f32,
+    math_pow: extern "C" fn(f32, f32) -> f32,
+    math_log2: extern "C" fn(f32) -> f32,
+    math_exp2: extern "C" fn(f32) -> f32,
+    math_floor: extern "C" fn(f32) -> f32,
+    math_ceil: extern "C" fn(f32) -> f32,
+    math_clamp: extern "C" fn(f32, f32, f32) -> f32,
+    math_lerp: extern "C" fn(f32, f32, f32) -> f32,
 }
 
 static mut LIB: Option<LibGl> = None;
@@ -251,6 +266,19 @@ pub fn init() -> bool {
             read_pixels: resolve(&handle, "glReadPixels"),
             flush: resolve(&handle, "glFlush"),
             finish: resolve(&handle, "glFinish"),
+            set_fxaa: resolve(&handle, "gl_set_fxaa"),
+            math_sin: resolve(&handle, "gl_math_sin"),
+            math_cos: resolve(&handle, "gl_math_cos"),
+            math_tan: resolve(&handle, "gl_math_tan"),
+            math_sqrt: resolve(&handle, "gl_math_sqrt"),
+            math_abs: resolve(&handle, "gl_math_abs"),
+            math_pow: resolve(&handle, "gl_math_pow"),
+            math_log2: resolve(&handle, "gl_math_log2"),
+            math_exp2: resolve(&handle, "gl_math_exp2"),
+            math_floor: resolve(&handle, "gl_math_floor"),
+            math_ceil: resolve(&handle, "gl_math_ceil"),
+            math_clamp: resolve(&handle, "gl_math_clamp"),
+            math_lerp: resolve(&handle, "gl_math_lerp"),
             _handle: handle,
         };
         LIB = Some(lib);
@@ -343,6 +371,14 @@ pub fn bind_texture(target: GLenum, texture: u32) { (lib().bind_texture)(target,
 /// Set texture parameter.
 pub fn tex_parameteri(target: GLenum, pname: GLenum, param: i32) {
     (lib().tex_parameteri)(target, pname, param);
+}
+
+/// Upload texture image data.
+pub fn tex_image_2d(target: GLenum, level: i32, internal_format: i32,
+                    width: i32, height: i32, border: i32,
+                    format: GLenum, type_: GLenum, data: &[u8]) {
+    (lib().tex_image_2d)(target, level, internal_format, width, height, border,
+                         format, type_, data.as_ptr());
 }
 
 /// Set active texture unit.
@@ -467,3 +503,53 @@ pub fn flush() { (lib().flush)(); }
 
 /// Finish.
 pub fn finish() { (lib().finish)(); }
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Anti-Aliasing
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Enable or disable FXAA post-process anti-aliasing.
+pub fn set_fxaa(enabled: bool) { (lib().set_fxaa)(if enabled { 1 } else { 0 }); }
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Math Functions (FPU/SSE accelerated via libgl)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Pi constant.
+pub const PI: f32 = 3.14159265;
+
+/// Sine via x87 `fsin` (IEEE 754 exact).
+pub fn sin(x: f32) -> f32 { (lib().math_sin)(x) }
+
+/// Cosine via x87 `fcos` (IEEE 754 exact).
+pub fn cos(x: f32) -> f32 { (lib().math_cos)(x) }
+
+/// Tangent via x87 `fptan`.
+pub fn tan(x: f32) -> f32 { (lib().math_tan)(x) }
+
+/// Square root via SSE2 `sqrtss` (IEEE 754 exact).
+pub fn sqrt(x: f32) -> f32 { (lib().math_sqrt)(x) }
+
+/// Absolute value.
+pub fn abs(x: f32) -> f32 { (lib().math_abs)(x) }
+
+/// Power function x^y via x87 FPU.
+pub fn pow(base: f32, exp: f32) -> f32 { (lib().math_pow)(base, exp) }
+
+/// Base-2 logarithm via x87 `fyl2x`.
+pub fn log2(x: f32) -> f32 { (lib().math_log2)(x) }
+
+/// Base-2 exponential via x87 `f2xm1` + `fscale`.
+pub fn exp2(x: f32) -> f32 { (lib().math_exp2)(x) }
+
+/// Floor via x87 rounding.
+pub fn floor(x: f32) -> f32 { (lib().math_floor)(x) }
+
+/// Ceiling via x87 rounding.
+pub fn ceil(x: f32) -> f32 { (lib().math_ceil)(x) }
+
+/// Clamp to [lo, hi].
+pub fn clamp(x: f32, lo: f32, hi: f32) -> f32 { (lib().math_clamp)(x, lo, hi) }
+
+/// Linear interpolation.
+pub fn lerp(a: f32, b: f32, t: f32) -> f32 { (lib().math_lerp)(a, b, t) }

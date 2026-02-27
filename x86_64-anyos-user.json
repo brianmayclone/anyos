@@ -11,7 +11,7 @@
   "os": "none",
   "env": "",
   "vendor": "unknown",
-  "features": "+sse,+sse2",
+  "features": "+sse,+sse2,+sse3,+ssse3,+sse4.1,+sse4.2",
   "executables": true,
   "linker-flavor": "gnu-lld",
   "linker": "rust-lld",

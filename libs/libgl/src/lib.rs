@@ -27,6 +27,8 @@ pub mod framebuffer;
 pub mod draw;
 pub mod compiler;
 pub mod rasterizer;
+pub mod simd;
+pub mod fxaa;
 
 mod syscall;
 
@@ -78,7 +80,13 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 // ── Global GL context ───────────────────────────────────────────────────────
 
-static mut CTX: Option<GlContext> = None;
+pub(crate) static mut CTX: Option<GlContext> = None;
+
+/// Raw pointers to texture state — avoids `&CTX` / `&mut CTX` aliasing UB
+/// during rasterization when `real_tex_sample` needs read access while
+/// `rasterize_triangle` holds `&mut GlContext`.
+pub(crate) static mut TEX_STORE_PTR: *const crate::texture::TextureStore = core::ptr::null();
+pub(crate) static mut BOUND_TEXTURES_PTR: *const [u32; crate::state::MAX_TEXTURE_UNITS] = core::ptr::null();
 
 fn ctx() -> &'static mut GlContext {
     unsafe {
@@ -90,19 +98,51 @@ fn ctx() -> &'static mut GlContext {
 //  anyOS Extensions
 // ══════════════════════════════════════════════════════════════════════════════
 
+/// Check that the CPU supports the SIMD instruction sets we compiled for.
+///
+/// Verifies SSE3, SSSE3, SSE4.1, SSE4.2 via CPUID leaf 1 ECX bits.
+/// Prints a diagnostic to serial and terminates if any are missing.
+fn check_cpu_features() {
+    use core::arch::x86_64::__cpuid;
+
+    let leaf1 = unsafe { __cpuid(1) };
+    let ecx = leaf1.ecx;
+
+    let sse3   = ecx & (1 << 0) != 0;
+    let ssse3  = ecx & (1 << 9) != 0;
+    let sse41  = ecx & (1 << 19) != 0;
+    let sse42  = ecx & (1 << 20) != 0;
+
+    if !sse3 || !ssse3 || !sse41 || !sse42 {
+        serial_println!("[libgl] FATAL: CPU missing required SIMD features:");
+        if !sse3  { serial_println!("[libgl]   - SSE3 not supported"); }
+        if !ssse3 { serial_println!("[libgl]   - SSSE3 not supported"); }
+        if !sse41 { serial_println!("[libgl]   - SSE4.1 not supported"); }
+        if !sse42 { serial_println!("[libgl]   - SSE4.2 not supported"); }
+        serial_println!("[libgl] Hint: use QEMU flag -cpu qemu64,+sse3,+ssse3,+sse4.1,+sse4.2");
+        syscall::exit(1);
+    }
+}
+
 /// Initialize the GL context with the given framebuffer dimensions.
 #[no_mangle]
 pub extern "C" fn gl_init(width: u32, height: u32) {
+    check_cpu_features();
     unsafe {
         CTX = Some(GlContext::new(width, height));
     }
 }
 
 /// Swap buffers — returns a pointer to the ARGB color buffer.
-/// The caller copies this to the display surface.
+/// Runs FXAA post-process if enabled before returning.
 #[no_mangle]
 pub extern "C" fn gl_swap_buffers() -> *const u32 {
     let c = ctx();
+    if c.fxaa_enabled {
+        let w = c.default_fb.width;
+        let h = c.default_fb.height;
+        fxaa::apply(&mut c.default_fb.color, w, h);
+    }
     c.default_fb.color.as_ptr()
 }
 
@@ -893,6 +933,68 @@ pub extern "C" fn glFlush() {}
 /// Finish all pending operations (no-op for SW rasterizer).
 #[no_mangle]
 pub extern "C" fn glFinish() {}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Anti-Aliasing
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Enable or disable FXAA post-process (0 = off, non-zero = on).
+#[no_mangle]
+pub extern "C" fn gl_set_fxaa(enabled: u32) {
+    ctx().fxaa_enabled = enabled != 0;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Math Functions (FPU/SSE accelerated, usable by any app)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Sine via x87 `fsin` (IEEE 754 exact).
+#[no_mangle]
+pub extern "C" fn gl_math_sin(x: f32) -> f32 { rasterizer::math::sin(x) }
+
+/// Cosine via x87 `fcos` (IEEE 754 exact).
+#[no_mangle]
+pub extern "C" fn gl_math_cos(x: f32) -> f32 { rasterizer::math::cos(x) }
+
+/// Tangent via x87 `fptan`.
+#[no_mangle]
+pub extern "C" fn gl_math_tan(x: f32) -> f32 { rasterizer::math::tan(x) }
+
+/// Square root via SSE2 `sqrtss` (IEEE 754 exact).
+#[no_mangle]
+pub extern "C" fn gl_math_sqrt(x: f32) -> f32 { rasterizer::math::sqrt(x) }
+
+/// Absolute value via sign-bit clear.
+#[no_mangle]
+pub extern "C" fn gl_math_abs(x: f32) -> f32 { rasterizer::math::abs(x) }
+
+/// Power function x^y via x87 FPU.
+#[no_mangle]
+pub extern "C" fn gl_math_pow(base: f32, exp: f32) -> f32 { rasterizer::math::pow(base, exp) }
+
+/// Base-2 logarithm via x87 `fyl2x`.
+#[no_mangle]
+pub extern "C" fn gl_math_log2(x: f32) -> f32 { rasterizer::math::log2(x) }
+
+/// Base-2 exponential via x87 `f2xm1` + `fscale`.
+#[no_mangle]
+pub extern "C" fn gl_math_exp2(x: f32) -> f32 { rasterizer::math::exp2(x) }
+
+/// Floor via x87 rounding.
+#[no_mangle]
+pub extern "C" fn gl_math_floor(x: f32) -> f32 { rasterizer::math::floor(x) }
+
+/// Ceiling via x87 rounding.
+#[no_mangle]
+pub extern "C" fn gl_math_ceil(x: f32) -> f32 { rasterizer::math::ceil(x) }
+
+/// Clamp to [lo, hi].
+#[no_mangle]
+pub extern "C" fn gl_math_clamp(x: f32, lo: f32, hi: f32) -> f32 { rasterizer::math::clamp(x, lo, hi) }
+
+/// Linear interpolation.
+#[no_mangle]
+pub extern "C" fn gl_math_lerp(a: f32, b: f32, t: f32) -> f32 { rasterizer::math::lerp(a, b, t) }
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  Internal Helpers
