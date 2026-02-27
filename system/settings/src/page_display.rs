@@ -62,19 +62,28 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
 
     layout::build_separator(&info_card);
 
-    // Hardware acceleration
-    let accel = if window::gpu_has_accel() {
-        "Available"
-    } else {
-        "Not available"
-    };
+    // 2D Hardware acceleration
     let tc = ui::theme::colors();
-    let accel_color = if window::gpu_has_accel() {
-        tc.success
-    } else {
-        tc.destructive
-    };
-    layout::build_info_row_colored(&info_card, "Acceleration", accel, accel_color, false);
+    let accel_2d = window::gpu_has_accel();
+    layout::build_info_row_colored(
+        &info_card,
+        "2D Acceleration",
+        if accel_2d { "Available" } else { "Not available" },
+        if accel_2d { tc.success } else { tc.destructive },
+        false,
+    );
+
+    layout::build_separator(&info_card);
+
+    // 3D Hardware acceleration
+    let accel_3d = window::gpu_has_3d();
+    layout::build_info_row_colored(
+        &info_card,
+        "3D Acceleration",
+        if accel_3d { "Available" } else { "Not available" },
+        if accel_3d { tc.success } else { tc.destructive },
+        false,
+    );
 
     layout::build_separator(&info_card);
 

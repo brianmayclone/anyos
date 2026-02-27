@@ -846,6 +846,11 @@ pub fn gpu_has_accel() -> bool {
     syscall0(SYS_GPU_HAS_ACCEL) != 0
 }
 
+/// Query if GPU 3D hardware acceleration (SVGA3D) is available.
+pub fn gpu_has_3d() -> bool {
+    syscall1(SYS_GPU_3D_QUERY, 0) != 0
+}
+
 /// Query if GPU hardware cursor is available.
 pub fn gpu_has_hw_cursor() -> bool {
     syscall0(SYS_GPU_HAS_HW_CURSOR) != 0
