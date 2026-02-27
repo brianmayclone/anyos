@@ -1,8 +1,8 @@
-//! gldemo — Phong-lit 3D scene with sphere, cube, textures and animated lights.
+//! gldemo — Gouraud-lit 3D scene with sphere, cube, textures and animated lights.
 //!
 //! Demonstrates the optimized libgl software rasterizer with:
-//! - Per-fragment Phong shading (ambient + diffuse + specular)
-//! - Two animated point lights with different colors
+//! - Per-vertex Gouraud shading (ambient + diffuse + specular at vertices)
+//! - Four animated point lights with different colors
 //! - Procedural checkerboard texture
 //! - UV sphere + textured cube rotating in 3D space
 //! - 60fps animation loop via anyui timer
@@ -20,31 +20,16 @@ use libgl_client as gl;
 
 // ── Shaders ──────────────────────────────────────────────────────────────────
 
-/// Vertex shader: transforms to clip space, passes world position, normal, UV.
+/// Vertex shader: Gouraud shading — computes all lighting per-vertex.
+///
+/// Lighting runs on ~187 vertices (sphere 10×16) instead of ~90K pixels,
+/// giving a ~500× reduction in lighting math.
 static VS_SOURCE: &str =
 "attribute vec3 aPosition;
 attribute vec3 aNormal;
 attribute vec2 aTexCoord;
 uniform mat4 uMVP;
 uniform mat4 uModel;
-varying vec3 vNormal;
-varying vec3 vWorldPos;
-varying vec2 vTexCoord;
-void main() {
-    vec4 worldPos = uModel * vec4(aPosition, 1.0);
-    vWorldPos = worldPos.xyz;
-    vec4 tn = uModel * vec4(aNormal, 0.0);
-    vNormal = tn.xyz;
-    vTexCoord = aTexCoord;
-    gl_Position = uMVP * vec4(aPosition, 1.0);
-}
-";
-
-/// Fragment shader: Blinn-Phong with 4 point lights + texture.
-static FS_SOURCE: &str =
-"varying vec3 vNormal;
-varying vec3 vWorldPos;
-varying vec2 vTexCoord;
 uniform vec3 uLightPos0;
 uniform vec3 uLightColor0;
 uniform vec3 uLightPos1;
@@ -54,36 +39,51 @@ uniform vec3 uLightColor2;
 uniform vec3 uLightPos3;
 uniform vec3 uLightColor3;
 uniform vec3 uEyePos;
-uniform sampler2D uTexture;
-uniform vec4 uMatColor;
+varying vec3 vLighting;
+varying vec2 vTexCoord;
 void main() {
-    vec3 N = normalize(vNormal);
-    vec3 V = normalize(uEyePos - vWorldPos);
+    vec4 worldPos = uModel * vec4(aPosition, 1.0);
+    vec3 wp = worldPos.xyz;
+    vec4 tn = uModel * vec4(aNormal, 0.0);
+    vec3 N = normalize(tn.xyz);
+    vec3 V = normalize(uEyePos - wp);
     vec3 ambient = vec3(0.06, 0.06, 0.08);
-    vec3 L0 = normalize(uLightPos0 - vWorldPos);
+    vec3 L0 = normalize(uLightPos0 - wp);
     float diff0 = max(dot(N, L0), 0.0);
     vec3 H0 = normalize(L0 + V);
     float spec0 = pow(max(dot(N, H0), 0.0), 64.0);
     vec3 c0 = uLightColor0 * diff0 + uLightColor0 * spec0;
-    vec3 L1 = normalize(uLightPos1 - vWorldPos);
+    vec3 L1 = normalize(uLightPos1 - wp);
     float diff1 = max(dot(N, L1), 0.0);
     vec3 H1 = normalize(L1 + V);
     float spec1 = pow(max(dot(N, H1), 0.0), 64.0);
     vec3 c1 = uLightColor1 * diff1 + uLightColor1 * spec1;
-    vec3 L2 = normalize(uLightPos2 - vWorldPos);
+    vec3 L2 = normalize(uLightPos2 - wp);
     float diff2 = max(dot(N, L2), 0.0);
     vec3 H2 = normalize(L2 + V);
     float spec2 = pow(max(dot(N, H2), 0.0), 48.0);
     vec3 c2 = uLightColor2 * diff2 + uLightColor2 * spec2;
-    vec3 L3 = normalize(uLightPos3 - vWorldPos);
+    vec3 L3 = normalize(uLightPos3 - wp);
     float diff3 = max(dot(N, L3), 0.0);
     vec3 H3 = normalize(L3 + V);
     float spec3 = pow(max(dot(N, H3), 0.0), 32.0);
     vec3 c3 = uLightColor3 * diff3 + uLightColor3 * spec3;
-    vec3 lighting = ambient + c0 + c1 + c2 + c3;
+    vLighting = ambient + c0 + c1 + c2 + c3;
+    vTexCoord = aTexCoord;
+    gl_Position = uMVP * vec4(aPosition, 1.0);
+}
+";
+
+/// Fragment shader: trivial — just texture lookup × interpolated vertex lighting.
+static FS_SOURCE: &str =
+"varying vec3 vLighting;
+varying vec2 vTexCoord;
+uniform sampler2D uTexture;
+uniform vec4 uMatColor;
+void main() {
     vec4 texColor = texture2D(uTexture, vTexCoord);
     vec3 baseColor = texColor.rgb * uMatColor.rgb;
-    gl_FragColor = vec4(lighting * baseColor, 1.0);
+    gl_FragColor = vec4(vLighting * baseColor, 1.0);
 }
 ";
 
