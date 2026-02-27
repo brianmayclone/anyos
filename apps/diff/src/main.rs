@@ -436,6 +436,22 @@ fn backtrack(trace: &[Vec<usize>], n: usize, m: usize, offset: isize) -> Vec<Edi
     let mut d = d_count;
     while d > 0 {
         d -= 1;
+
+        if d == 0 {
+            // At d=0 the entire remaining path is a diagonal snake from (0,0)
+            // to (x,y).  There is no insert/delete step.  We must NOT compute
+            // prev_k/prev_x/prev_y the normal way because prev_y can wrap
+            // around to usize::MAX (unsigned overflow of 0 - 1).
+            let mut cx = x;
+            let mut cy = y;
+            while cx > 0 && cy > 0 {
+                cx -= 1;
+                cy -= 1;
+                ops.push(EditOp::Equal(cx, cy));
+            }
+            break;
+        }
+
         let v = &trace[d];
         let k = x as isize - y as isize;
 
@@ -458,12 +474,10 @@ fn backtrack(trace: &[Vec<usize>], n: usize, m: usize, offset: isize) -> Vec<Edi
             ops.push(EditOp::Equal(cx, cy));
         }
 
-        if d > 0 {
-            if prev_k == k - 1 {
-                ops.push(EditOp::Delete(prev_x));
-            } else {
-                ops.push(EditOp::Insert(prev_y));
-            }
+        if prev_k == k - 1 {
+            ops.push(EditOp::Delete(prev_x));
+        } else {
+            ops.push(EditOp::Insert(prev_y));
         }
 
         x = prev_x;
@@ -896,6 +910,19 @@ struct AppState {
     right_label: String,
     output_path: String,
     auto_compare: bool,
+
+    // File info bar
+    left_info_label: anyui::Label,
+    right_info_label: anyui::Label,
+
+    // Tab width
+    tab_width: usize,
+
+    // Font size
+    font_size: u32,
+
+    // Whitespace visualization
+    show_whitespace: bool,
 }
 
 static mut APP: Option<AppState> = None;
@@ -1027,6 +1054,74 @@ fn is_word_sep(b: u8) -> bool {
     b == b'<' || b == b'>' || b == b'"' || b == b'\''
 }
 
+// ── Tab expansion & whitespace visualization ────────────────────────────────
+
+fn expand_tabs(line: &str, tw: usize) -> String {
+    if !line.contains('\t') {
+        return String::from(line);
+    }
+    let mut result = String::new();
+    let mut col = 0usize;
+    for c in line.chars() {
+        if c == '\t' {
+            let spaces = tw - (col % tw);
+            for _ in 0..spaces {
+                result.push(' ');
+            }
+            col += spaces;
+        } else {
+            result.push(c);
+            col += 1;
+        }
+    }
+    result
+}
+
+/// Transform a line for whitespace-visible mode.
+/// Tabs become `>` + padding spaces, trailing spaces become `·` (dot).
+/// Returns (transformed_string, marker_byte_positions) where markers are
+/// byte indices that should be rendered in a dim color.
+fn make_whitespace_visible(line: &str, tw: usize) -> (String, Vec<usize>) {
+    let mut result = String::new();
+    let mut markers: Vec<usize> = Vec::new();
+    let mut col = 0usize;
+
+    for &b in line.as_bytes() {
+        if b == b'\t' {
+            let spaces = tw - (col % tw);
+            markers.push(result.len());
+            result.push('>');
+            col += 1;
+            for _ in 1..spaces {
+                markers.push(result.len());
+                result.push(' ');
+                col += 1;
+            }
+        } else {
+            result.push(b as char);
+            col += 1;
+        }
+    }
+
+    // Replace trailing spaces with dots
+    let rb = result.as_bytes();
+    let mut end = rb.len();
+    while end > 0 && rb[end - 1] == b' ' {
+        end -= 1;
+    }
+    if end < rb.len() {
+        let prefix = String::from(&result[..end]);
+        let count = rb.len() - end;
+        result = prefix;
+        for _ in 0..count {
+            markers.push(result.len());
+            result.push('.');
+        }
+    }
+
+    (result, markers)
+}
+
 // ── Grid population ─────────────────────────────────────────────────────────
 
 fn populate_grid(s: &AppState) {
@@ -1036,10 +1131,14 @@ fn populate_grid(s: &AppState) {
         s.grid.set_cell_colors(&[]);
         s.grid.set_cell_bg_colors(&[]);
         s.grid.set_char_colors(&[], &[]);
+        s.grid.set_minimap_colors(&[]);
+        s.grid.set_connector_lines(&[]);
         return;
     }
 
     let t = &s.theme;
+    let tw = s.tab_width;
+    let show_ws = s.show_whitespace;
     s.grid.set_row_count(n as u32);
 
     let mut data_buf: Vec<u8> = Vec::new();
@@ -1051,6 +1150,12 @@ fn populate_grid(s: &AppState) {
     let mut char_colors: Vec<u32> = Vec::new();
     let mut char_color_offsets: Vec<u32> = Vec::new();
     char_color_offsets.resize(total_cells, u32::MAX);
+
+    // Minimap colors — one per row
+    let mut minimap: Vec<u32> = Vec::new();
+    minimap.resize(n, 0);
+
+    const WS_DIM_COLOR: u32 = 0xFF555555;
 
     // Current hunk range for highlighting
     let (cur_start, cur_end) = if !s.hunks.is_empty() && s.current_hunk < s.hunks.len() {
@@ -1072,19 +1177,28 @@ fn populate_grid(s: &AppState) {
         }
         data_buf.push(0x1F);
 
-        // Col 1: Left text
+        // Col 1: Left text (with tab expansion / whitespace vis)
         let left_text_start = data_buf.len();
+        let mut left_ws_markers: Vec<usize> = Vec::new();
         match dl.kind {
             DiffKind::Added => {}
             _ => {
                 if let Some(li) = dl.left_idx {
                     if li < s.left_lines.len() {
-                        data_buf.extend_from_slice(s.left_lines[li].as_bytes());
+                        if show_ws {
+                            let (vis, markers) = make_whitespace_visible(&s.left_lines[li], tw);
+                            left_ws_markers = markers;
+                            data_buf.extend_from_slice(vis.as_bytes());
+                        } else {
+                            let expanded = expand_tabs(&s.left_lines[li], tw);
+                            data_buf.extend_from_slice(expanded.as_bytes());
+                        }
                     }
                 }
             }
         }
         let left_text_end = data_buf.len();
+        let left_text_len = left_text_end - left_text_start;
         data_buf.push(0x1F);
 
         // Col 2: Connector marker
@@ -1102,55 +1216,101 @@ fn populate_grid(s: &AppState) {
         }
         data_buf.push(0x1F);
 
-        // Col 4: Right text
+        // Col 4: Right text (with tab expansion / whitespace vis)
         let right_text_start = data_buf.len();
+        let mut right_ws_markers: Vec<usize> = Vec::new();
         match dl.kind {
             DiffKind::Deleted => {}
             _ => {
                 if let Some(ri) = dl.right_idx {
                     if ri < s.right_lines.len() {
-                        data_buf.extend_from_slice(s.right_lines[ri].as_bytes());
+                        if show_ws {
+                            let (vis, markers) = make_whitespace_visible(&s.right_lines[ri], tw);
+                            right_ws_markers = markers;
+                            data_buf.extend_from_slice(vis.as_bytes());
+                        } else {
+                            let expanded = expand_tabs(&s.right_lines[ri], tw);
+                            data_buf.extend_from_slice(expanded.as_bytes());
+                        }
                     }
                 }
             }
         }
         let right_text_end = data_buf.len();
+        let right_text_len = right_text_end - right_text_start;
 
-        // Text colors
+        // Text colors + per-character colors
         match dl.kind {
             DiffKind::Equal => {
                 // Syntax highlighting for equal lines
-                if s.left_lang != SyntaxLang::None {
+                if s.left_lang != SyntaxLang::None && left_text_len > 0 {
                     let left_bytes = &data_buf[left_text_start..left_text_end];
-                    let syn = colorize_line(left_bytes, s.left_lang);
+                    let mut syn = colorize_line(left_bytes, s.left_lang);
+                    // Overlay whitespace markers
+                    if show_ws && !left_ws_markers.is_empty() {
+                        if syn.is_empty() {
+                            syn.resize(left_text_len, 0);
+                        }
+                        for &pos in &left_ws_markers {
+                            if pos < syn.len() { syn[pos] = WS_DIM_COLOR; }
+                        }
+                    }
                     if !syn.is_empty() {
                         char_color_offsets[base + 1] = char_colors.len() as u32;
                         char_colors.extend_from_slice(&syn);
                     }
+                } else if show_ws && !left_ws_markers.is_empty() {
+                    let mut syn: Vec<u32> = Vec::new();
+                    syn.resize(left_text_len, 0);
+                    for &pos in &left_ws_markers {
+                        if pos < syn.len() { syn[pos] = WS_DIM_COLOR; }
+                    }
+                    char_color_offsets[base + 1] = char_colors.len() as u32;
+                    char_colors.extend_from_slice(&syn);
                 }
-                if s.right_lang != SyntaxLang::None {
+                if s.right_lang != SyntaxLang::None && right_text_len > 0 {
                     let right_bytes = &data_buf[right_text_start..right_text_end];
-                    let syn = colorize_line(right_bytes, s.right_lang);
+                    let mut syn = colorize_line(right_bytes, s.right_lang);
+                    if show_ws && !right_ws_markers.is_empty() {
+                        if syn.is_empty() {
+                            syn.resize(right_text_len, 0);
+                        }
+                        for &pos in &right_ws_markers {
+                            if pos < syn.len() { syn[pos] = WS_DIM_COLOR; }
+                        }
+                    }
                     if !syn.is_empty() {
                         char_color_offsets[base + 4] = char_colors.len() as u32;
                         char_colors.extend_from_slice(&syn);
                     }
+                } else if show_ws && !right_ws_markers.is_empty() {
+                    let mut syn: Vec<u32> = Vec::new();
+                    syn.resize(right_text_len, 0);
+                    for &pos in &right_ws_markers {
+                        if pos < syn.len() { syn[pos] = WS_DIM_COLOR; }
+                    }
+                    char_color_offsets[base + 4] = char_colors.len() as u32;
+                    char_colors.extend_from_slice(&syn);
                 }
             }
             DiffKind::Added => {
                 text_colors[base + 2] = t.text_added;
                 text_colors[base + 4] = t.text_added;
+                minimap[row] = t.conn_added;
             }
             DiffKind::Deleted => {
                 text_colors[base + 1] = t.text_deleted;
                 text_colors[base + 2] = t.text_deleted;
+                minimap[row] = t.conn_deleted;
             }
             DiffKind::Changed => {
                 text_colors[base + 1] = t.text_changed;
                 text_colors[base + 2] = t.text_changed;
                 text_colors[base + 4] = t.text_changed;
+                minimap[row] = t.conn_changed;
 
                 // Compute per-character highlight for differing chars
+                // Use original (un-transformed) text for diff comparison
                 let left_text = match dl.left_idx {
                     Some(li) if li < s.left_lines.len() => s.left_lines[li].as_bytes(),
                     _ => &[],
@@ -1161,16 +1321,40 @@ fn populate_grid(s: &AppState) {
                 };
                 let (left_diff, right_diff) = char_diff_flags(left_text, right_text);
 
-                // Col 1 (left text) per-char colors
+                // Col 1 (left text) per-char colors — map from original to displayed
                 char_color_offsets[base + 1] = char_colors.len() as u32;
-                for idx in 0..left_diff.len() {
-                    char_colors.push(if left_diff[idx] != 0 { t.text_changed_hl } else { 0 });
+                if show_ws || tw != 4 {
+                    // Displayed text may differ in length from original; build per-displayed-char colors
+                    for i in 0..left_text_len {
+                        let ws_mark = show_ws && left_ws_markers.contains(&i);
+                        if ws_mark {
+                            char_colors.push(WS_DIM_COLOR);
+                        } else {
+                            // Approximate: same position mapping (works when only spaces expand)
+                            char_colors.push(if i < left_diff.len() && left_diff[i] != 0 { t.text_changed_hl } else { 0 });
+                        }
+                    }
+                } else {
+                    for idx in 0..left_diff.len() {
+                        char_colors.push(if left_diff[idx] != 0 { t.text_changed_hl } else { 0 });
+                    }
                 }
 
                 // Col 4 (right text) per-char colors
                 char_color_offsets[base + 4] = char_colors.len() as u32;
-                for idx in 0..right_diff.len() {
-                    char_colors.push(if right_diff[idx] != 0 { t.text_changed_hl } else { 0 });
+                if show_ws || tw != 4 {
+                    for i in 0..right_text_len {
+                        let ws_mark = show_ws && right_ws_markers.contains(&i);
+                        if ws_mark {
+                            char_colors.push(WS_DIM_COLOR);
+                        } else {
+                            char_colors.push(if i < right_diff.len() && right_diff[i] != 0 { t.text_changed_hl } else { 0 });
+                        }
+                    }
+                } else {
+                    for idx in 0..right_diff.len() {
+                        char_colors.push(if right_diff[idx] != 0 { t.text_changed_hl } else { 0 });
+                    }
                 }
             }
         }
@@ -1210,6 +1394,27 @@ fn populate_grid(s: &AppState) {
     s.grid.set_cell_colors(&text_colors);
     s.grid.set_cell_bg_colors(&bg_colors);
     s.grid.set_char_colors(&char_colors, &char_color_offsets);
+    s.grid.set_minimap_colors(&minimap);
+
+    // Build connector lines from hunks
+    let mut connectors: Vec<(u32, u32, u32, u8)> = Vec::new();
+    for (hi, hunk) in s.hunks.iter().enumerate() {
+        let is_cur = hi == s.current_hunk;
+        // Determine hunk color from the first diff line kind
+        let color = if hunk.start < s.diff_lines.len() {
+            match s.diff_lines[hunk.start].kind {
+                DiffKind::Added => if is_cur { t.conn_added_cur } else { t.conn_added },
+                DiffKind::Deleted => if is_cur { t.conn_deleted_cur } else { t.conn_deleted },
+                DiffKind::Changed => if is_cur { t.conn_changed_cur } else { t.conn_changed },
+                DiffKind::Equal => 0,
+            }
+        } else { 0 };
+        if color != 0 {
+            connectors.push((hunk.start as u32, hunk.end as u32, color, 1));
+        }
+    }
+    s.grid.set_connector_lines(&connectors);
+    s.grid.set_connector_column(2);
 }
 
 fn update_labels(s: &AppState) {
@@ -1237,6 +1442,14 @@ fn update_labels(s: &AppState) {
     } else {
         s.hunk_label.set_text("No diffs");
     }
+
+    // File info bar
+    let left_info = anyos_std::format!("{}{} ({} lines) UTF-8",
+        left_name, lmod, s.left_lines.len());
+    s.left_info_label.set_text(&left_info);
+    let right_info = anyos_std::format!("{}{} ({} lines) UTF-8",
+        right_name, rmod, s.right_lines.len());
+    s.right_info_label.set_text(&right_info);
 }
 
 // ── Undo/Redo ───────────────────────────────────────────────────────────
@@ -1479,6 +1692,49 @@ fn cycle_theme() {
         s.theme = THEME_DARK;
         s.status_label.set_text("Theme: Dark");
     }
+    populate_grid(s);
+}
+
+fn cycle_tab_width() {
+    let s = app();
+    s.tab_width = match s.tab_width {
+        2 => 4,
+        4 => 8,
+        _ => 2,
+    };
+    let msg = anyos_std::format!("Tab Width: {}", s.tab_width);
+    s.status_label.set_text(&msg);
+    populate_grid(s);
+}
+
+fn increase_font_size() {
+    let s = app();
+    if s.font_size < 20 {
+        s.font_size += 1;
+        s.grid.set_font_size(s.font_size);
+        s.grid.set_row_height(s.font_size + 7);
+        let msg = anyos_std::format!("Font Size: {}", s.font_size);
+        s.status_label.set_text(&msg);
+    }
+}
+
+fn decrease_font_size() {
+    let s = app();
+    if s.font_size > 9 {
+        s.font_size -= 1;
+        s.grid.set_font_size(s.font_size);
+        s.grid.set_row_height(s.font_size + 7);
+        let msg = anyos_std::format!("Font Size: {}", s.font_size);
+        s.status_label.set_text(&msg);
+    }
+}
+
+fn toggle_whitespace() {
+    let s = app();
+    s.show_whitespace = !s.show_whitespace;
+    let state = if s.show_whitespace { "ON" } else { "OFF" };
+    let msg = anyos_std::format!("Show Whitespace: {}", state);
+    s.status_label.set_text(&msg);
     populate_grid(s);
 }
 
@@ -1819,6 +2075,23 @@ fn insert_hunk_to_left_above() {
 }
 
 // ── Hunk tracking ───────────────────────────────────────────────────────────
+
+fn handle_separator_click(row: usize) {
+    let s = app();
+    // Find which hunk this row belongs to
+    let mut found = None;
+    for (i, h) in s.hunks.iter().enumerate() {
+        if row >= h.start && row < h.end {
+            found = Some(i);
+            break;
+        }
+    }
+    if let Some(i) = found {
+        s.current_hunk = i;
+        // Merge left → right by default on separator click
+        merge_hunk_to_right();
+    }
+}
 
 fn update_current_hunk_for_row(row: usize) {
     let s = app();
@@ -2350,6 +2623,16 @@ fn handle_key(ke: &anyui::KeyEvent) {
         merge_hunk_to_left();
         return;
     }
+    // Ctrl+Plus / Ctrl+=: Increase font size
+    if ke.ctrl() && (ke.char_code == b'+' as u32 || ke.char_code == b'=' as u32) {
+        increase_font_size();
+        return;
+    }
+    // Ctrl+Minus: Decrease font size
+    if ke.ctrl() && ke.char_code == b'-' as u32 {
+        decrease_font_size();
+        return;
+    }
     // F11: Fullscreen
     if ke.keycode == anyui::KEY_F11 {
         toggle_fullscreen();
@@ -2482,6 +2765,16 @@ fn main() {
 
     toolbar.add_separator();
 
+    let btn_font_up = toolbar.add_icon_button("A+");
+    btn_font_up.set_size(34, 28);
+    btn_font_up.set_tooltip("Increase Font Size");
+
+    let btn_font_down = toolbar.add_icon_button("A-");
+    btn_font_down.set_size(34, 28);
+    btn_font_down.set_tooltip("Decrease Font Size");
+
+    toolbar.add_separator();
+
     let stats_label = toolbar.add_label("0A 0D 0C");
 
     win.add(&toolbar);
@@ -2505,6 +2798,28 @@ fn main() {
     status_bar.add(&hunk_label);
 
     win.add(&status_bar);
+
+    // ── File info bar (DOCK_BOTTOM, above status bar) ──
+    let file_info_bar = anyui::View::new();
+    file_info_bar.set_dock(anyui::DOCK_BOTTOM);
+    file_info_bar.set_size(800, 22);
+    file_info_bar.set_color(tc.card_bg);
+
+    let left_info_label = anyui::Label::new("");
+    left_info_label.set_position(8, 3);
+    left_info_label.set_size(380, 16);
+    left_info_label.set_text_color(tc.text_secondary);
+    left_info_label.set_font_size(11);
+    file_info_bar.add(&left_info_label);
+
+    let right_info_label = anyui::Label::new("");
+    right_info_label.set_position(400, 3);
+    right_info_label.set_size(380, 16);
+    right_info_label.set_text_color(tc.text_secondary);
+    right_info_label.set_font_size(11);
+    file_info_bar.add(&right_info_label);
+
+    win.add(&file_info_bar);
 
     // ── Edit panel (DOCK_BOTTOM, added after status bar — appears above it) ──
     let edit_panel = anyui::View::new();
@@ -2619,14 +2934,14 @@ fn main() {
     grid.set_header_height(24);
     grid.set_columns(&[
         anyui::ColumnDef::new("#").width(50).align(anyui::ALIGN_RIGHT),
-        anyui::ColumnDef::new("Left").width(340),
-        anyui::ColumnDef::new(" ").width(30).align(anyui::ALIGN_CENTER),
+        anyui::ColumnDef::new("Left").width(330),
+        anyui::ColumnDef::new(" ").width(50).align(anyui::ALIGN_CENTER),
         anyui::ColumnDef::new("#").width(50).align(anyui::ALIGN_RIGHT),
-        anyui::ColumnDef::new("Right").width(340),
+        anyui::ColumnDef::new("Right").width(330),
     ]);
     // ── Context menu on grid ──
     let ctx_menu = anyui::ContextMenu::new(
-        "Save As Left|Save As Right|-|Ignore Whitespace|Ignore Blank Lines|Ignore Comments|-|Insert > Above|< Insert Above|-|Cycle Theme"
+        "Save As Left|Save As Right|-|Ignore Whitespace|Ignore Blank Lines|Ignore Comments|-|Insert > Above|< Insert Above|-|Cycle Theme|Tab Width 2/4/8|Show Whitespace"
     );
     grid.set_context_menu(&ctx_menu);
 
@@ -2686,6 +3001,11 @@ fn main() {
             right_label: cli.right_label,
             output_path: cli.output_path,
             auto_compare: cli.auto_compare,
+            left_info_label,
+            right_info_label,
+            tab_width: 4,
+            font_size: 13,
+            show_whitespace: false,
         });
     }
 
@@ -2710,6 +3030,8 @@ fn main() {
     btn_save_right.on_click(|_| { save_right(); });
     btn_apply.on_click(|_| { apply_edit(); });
     btn_cancel.on_click(|_| { cancel_edit(); });
+    btn_font_up.on_click(|_| { increase_font_size(); });
+    btn_font_down.on_click(|_| { decrease_font_size(); });
 
     // Context menu
     ctx_menu.on_item_click(|e| {
@@ -2722,14 +3044,23 @@ fn main() {
             7 => insert_hunk_to_right_above(),
             8 => insert_hunk_to_left_above(),
             10 => cycle_theme(),
+            11 => cycle_tab_width(),
+            12 => toggle_whitespace(),
             _ => {}
         }
     });
 
-    // Track current hunk on row selection
+    // Track current hunk on row selection; handle separator column click for merge
     app().grid.on_selection_changed(|e| {
         if e.index != u32::MAX {
-            update_current_hunk_for_row(e.index as usize);
+            let row = e.index as usize;
+            let click_col = app().grid.click_column();
+            if click_col == 2 {
+                // Click on separator column — trigger merge if row is in a hunk
+                handle_separator_click(row);
+            } else {
+                update_current_hunk_for_row(row);
+            }
         }
     });
 

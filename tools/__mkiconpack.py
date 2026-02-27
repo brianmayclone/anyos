@@ -123,7 +123,8 @@ def collect_icons(svg_dir):
     if not os.path.isdir(svg_dir):
         return icons
 
-    filenames = sorted(f for f in os.listdir(svg_dir) if f.endswith('.svg'))
+    filenames = sorted((f for f in os.listdir(svg_dir) if f.endswith('.svg')),
+                       key=lambda f: f[:-4].encode('utf-8'))
     total = len(filenames)
 
     for idx, fname in enumerate(filenames):

@@ -235,6 +235,41 @@ impl DataGrid {
     pub fn set_scroll_offset(&self, offset: u32) {
         (lib().datagrid_set_scroll_offset)(self.ctrl.id, offset);
     }
+
+    /// Set per-row minimap colors (displayed in the scrollbar track).
+    /// One color per row, 0 means no marker.
+    pub fn set_minimap_colors(&self, colors: &[u32]) {
+        (lib().datagrid_set_minimap)(self.ctrl.id, colors.as_ptr(), colors.len() as u32);
+    }
+
+    /// Get the display column index of the last click (-1 if none).
+    pub fn click_column(&self) -> i32 {
+        (lib().datagrid_get_click_col)(self.ctrl.id)
+    }
+
+    /// Set connector lines drawn over a specific column.
+    /// Each entry: (start_row, end_row, color, filled).
+    pub fn set_connector_lines(&self, lines: &[(u32, u32, u32, u8)]) {
+        if lines.is_empty() {
+            (lib().datagrid_set_connectors)(self.ctrl.id, core::ptr::null(), 0);
+            return;
+        }
+        // Pack into byte buffer: [start:u32 LE, end:u32 LE, color:u32 LE, filled:u8, pad:3] = 16 bytes
+        let mut buf = Vec::new();
+        for &(start, end, color, filled) in lines {
+            buf.extend_from_slice(&start.to_le_bytes());
+            buf.extend_from_slice(&end.to_le_bytes());
+            buf.extend_from_slice(&color.to_le_bytes());
+            buf.push(filled);
+            buf.push(0); buf.push(0); buf.push(0); // padding
+        }
+        (lib().datagrid_set_connectors)(self.ctrl.id, buf.as_ptr(), lines.len() as u32);
+    }
+
+    /// Set which display column connector lines are drawn in (default: 2).
+    pub fn set_connector_column(&self, col: u32) {
+        (lib().datagrid_set_connector_column)(self.ctrl.id, col);
+    }
 }
 
 fn write_u32_ascii(buf: &mut Vec<u8>, val: u32) {

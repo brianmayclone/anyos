@@ -1524,6 +1524,71 @@ pub extern "C" fn anyui_datagrid_set_cell_icon(
     }
 }
 
+/// Set per-row minimap colors (drawn in scrollbar track).
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_minimap(id: ControlId, colors: *const u32, count: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            if !colors.is_null() && count > 0 {
+                let slice = unsafe { core::slice::from_raw_parts(colors, count as usize) };
+                dg.set_minimap_colors(slice);
+            } else {
+                dg.set_minimap_colors(&[]);
+            }
+        }
+    }
+}
+
+/// Get the display column index of the last click (-1 if none).
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_get_click_col(id: ControlId) -> i32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid_ref(ctrl) {
+            return dg.last_click_col();
+        }
+    }
+    -1
+}
+
+/// Set connector lines for the DataGrid (drawn over a column).
+/// Data format per entry: start_row:u32, end_row:u32, color:u32, filled:u8 (+ 3 pad bytes) = 16 bytes each.
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_connectors(id: ControlId, data: *const u8, count: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            let mut lines = alloc::vec::Vec::new();
+            if !data.is_null() && count > 0 {
+                let entry_size = 16usize;
+                let bytes = unsafe { core::slice::from_raw_parts(data, count as usize * entry_size) };
+                for i in 0..count as usize {
+                    let off = i * entry_size;
+                    if off + entry_size > bytes.len() { break; }
+                    let start = u32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as usize;
+                    let end = u32::from_le_bytes([bytes[off+4], bytes[off+5], bytes[off+6], bytes[off+7]]) as usize;
+                    let color = u32::from_le_bytes([bytes[off+8], bytes[off+9], bytes[off+10], bytes[off+11]]);
+                    let filled = bytes[off+12] != 0;
+                    lines.push(controls::data_grid::ConnectorLine { start_row: start, end_row: end, color, filled });
+                }
+            }
+            dg.set_connector_lines(lines);
+        }
+    }
+}
+
+/// Set which display column connector lines are drawn in.
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_connector_column(id: ControlId, col: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            dg.set_connector_column(col as usize);
+        }
+    }
+}
+
 // ── TextEditor ────────────────────────────────────────────────────────
 
 fn as_text_editor(ctrl: &mut alloc::boxed::Box<dyn Control>) -> Option<&mut controls::text_editor::TextEditor> {
@@ -1673,6 +1738,7 @@ pub extern "C" fn anyui_texteditor_insert_text(id: ControlId, data: *const u8, l
         if let Some(te) = as_text_editor(ctrl) {
             if !data.is_null() && len > 0 {
                 let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
+                te.push_undo();
                 te.insert_text_at_cursor(slice);
             }
         }

@@ -75,6 +75,14 @@ enum DragMode {
     Reordering { col_index: usize, drag_start_x: i32, current_x: i32 },
 }
 
+/// Connector line between rows (drawn in a specific column).
+pub struct ConnectorLine {
+    pub start_row: usize,
+    pub end_row: usize,
+    pub color: u32,
+    pub filled: bool,
+}
+
 pub struct DataGrid {
     pub(crate) base: ControlBase,
     columns: Vec<Column>,
@@ -102,6 +110,14 @@ pub struct DataGrid {
     pub(crate) header_height: u32,
     pub(crate) row_height: u32,
     pub(crate) font_size: u16,
+    /// Per-row minimap colors (one u32 per row, 0 = no marker). Shown in scrollbar.
+    minimap_colors: Vec<u32>,
+    /// Last clicked column (display index), set by handle_click.
+    pub(crate) last_click_col: i32,
+    /// Connector lines drawn over a column (visual only).
+    connector_lines: Vec<ConnectorLine>,
+    /// Column index (display) in which connector lines are drawn.
+    connector_column: usize,
 }
 
 impl DataGrid {
@@ -130,6 +146,10 @@ impl DataGrid {
             header_height: 32,
             row_height: 28,
             font_size: 0,
+            minimap_colors: Vec::new(),
+            last_click_col: -1,
+            connector_lines: Vec::new(),
+            connector_column: 2,
         }
     }
 
@@ -268,6 +288,28 @@ impl DataGrid {
             width: w,
             height: h,
         });
+        self.base.mark_dirty();
+    }
+
+    /// Set per-row minimap colors (shown in the scrollbar track).
+    /// One color per row; 0 means no marker.
+    pub fn set_minimap_colors(&mut self, colors: &[u32]) {
+        self.minimap_colors = colors.to_vec();
+        self.base.mark_dirty();
+    }
+
+    /// Get the display column index of the last click (-1 if none).
+    pub fn last_click_col(&self) -> i32 { self.last_click_col }
+
+    /// Set connector lines (drawn over a column, typically the separator).
+    pub fn set_connector_lines(&mut self, lines: Vec<ConnectorLine>) {
+        self.connector_lines = lines;
+        self.base.mark_dirty();
+    }
+
+    /// Set which display column connector lines are drawn in.
+    pub fn set_connector_column(&mut self, col: usize) {
+        self.connector_column = col;
         self.base.mark_dirty();
     }
 
@@ -627,15 +669,33 @@ impl Control for DataGrid {
             }
         }
 
-        // ── Vertical scrollbar ──
+        // ── Vertical scrollbar + minimap ──
         let content_h = self.row_count as u32 * self.row_height;
         let view_h = h.saturating_sub(self.header_height);
         if content_h > view_h && view_h > 4 {
-            let bar_w = 6u32;
+            let has_minimap = !self.minimap_colors.is_empty();
+            let bar_w = if has_minimap { 10u32 } else { 6u32 };
             let bar_x = x + w as i32 - bar_w as i32 - 2;
             let track_y = y + self.header_height as i32 + 2;
             let track_h = (view_h - 4) as i32;
             crate::draw::fill_rect(&clipped, bar_x, track_y, bar_w, track_h as u32, tc.scrollbar_track);
+
+            // Minimap: draw colored markers for each row
+            if has_minimap && self.row_count > 0 && track_h > 0 {
+                let total = self.row_count as i32;
+                for (row, &color) in self.minimap_colors.iter().enumerate() {
+                    if color == 0 || row >= self.row_count { continue; }
+                    let py = track_y + (row as i64 * track_h as i64 / total as i64) as i32;
+                    let ph = ((track_h as i64 / total as i64).max(1)).min(3) as u32;
+                    crate::draw::fill_rect(&clipped, bar_x, py, bar_w, ph, color);
+                }
+
+                // Viewport indicator (semi-transparent)
+                let vp_y = track_y + (self.scroll_y as i64 * track_h as i64 / (self.row_count as i64 * self.row_height as i64)).max(0) as i32;
+                let vp_h = (view_h as i64 * track_h as i64 / content_h as i64).max(4) as u32;
+                crate::draw::fill_rect(&clipped, bar_x, vp_y, bar_w, vp_h, 0x30FFFFFF);
+            }
+
             let thumb_h = ((view_h as u64 * track_h as u64) / content_h as u64).max(20) as i32;
             let max_scroll = (content_h - view_h) as i32;
             let scroll_frac = if max_scroll > 0 {
@@ -643,6 +703,45 @@ impl Control for DataGrid {
             } else { 0 };
             let thumb_y = track_y + scroll_frac.max(0).min(track_h - thumb_h);
             crate::draw::fill_rounded_rect(&clipped, bar_x, thumb_y, bar_w, thumb_h as u32, 3, tc.scrollbar);
+        }
+
+        // ── Connector lines (drawn over a column) ──
+        if !self.connector_lines.is_empty() && self.connector_column < col_count {
+            let logical_col = self.display_order[self.connector_column];
+            let col_w = self.columns[logical_col].width;
+            // Compute column x position
+            let mut conn_col_x = x - self.scroll_x;
+            for dc in 0..self.connector_column {
+                let lc = self.display_order[dc];
+                conn_col_x += self.columns[lc].width as i32;
+            }
+            let conn_clip = clipped.with_clip(conn_col_x, y + self.header_height as i32, col_w, view_h as u32);
+            let rh = self.row_height as i32;
+            let base_y = y + self.header_height as i32 - self.scroll_y;
+            let mid_x = conn_col_x + col_w as i32 / 2;
+
+            for cl in &self.connector_lines {
+                let y0 = base_y + cl.start_row as i32 * rh;
+                let y1 = base_y + cl.end_row as i32 * rh + rh;
+                // Filled background
+                if cl.filled {
+                    let fy = y0.max(y + self.header_height as i32);
+                    let fy1 = y1.min(y + h as i32);
+                    if fy1 > fy {
+                        // Semi-transparent fill
+                        let fill_color = (cl.color & 0x00FFFFFF) | 0x20000000;
+                        crate::draw::fill_rect(&conn_clip, conn_col_x, fy, col_w, (fy1 - fy) as u32, fill_color);
+                    }
+                }
+                // Top and bottom horizontal lines
+                let lx0 = conn_col_x + 2;
+                let lx1 = conn_col_x + col_w as i32 - 2;
+                crate::draw::fill_rect(&conn_clip, lx0, y0, (lx1 - lx0) as u32, 1, cl.color);
+                crate::draw::fill_rect(&conn_clip, lx0, y1 - 1, (lx1 - lx0) as u32, 1, cl.color);
+                // Left and right vertical edges
+                crate::draw::fill_rect(&conn_clip, lx0, y0, 1, (y1 - y0) as u32, cl.color);
+                crate::draw::fill_rect(&conn_clip, lx1, y0, 1, (y1 - y0) as u32, cl.color);
+            }
         }
     }
 
@@ -765,6 +864,9 @@ impl Control for DataGrid {
             }
             EventResponse::CHANGED
         } else {
+            // Track clicked column
+            self.last_click_col = self.column_at_x(lx).map(|c| c as i32).unwrap_or(-1);
+
             // Row selection
             if let Some(vis_row) = self.row_at_y(ly) {
                 let data_row = self.data_row(vis_row);

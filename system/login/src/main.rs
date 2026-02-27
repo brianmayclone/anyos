@@ -3,7 +3,7 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{process, fs};
+use anyos_std::{process, fs, users};
 use libanyui_client as ui;
 use ui::Widget;
 
@@ -112,6 +112,41 @@ fn main() -> u32 {
                     if !name.is_empty() {
                         user_field.set_text(name);
                         login_btn.set_state(1); // enable button
+                        has_last_user = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: if exactly one non-root user exists, suggest them.
+    // listusers() returns "uid:username:fullname\n" per user.
+    if !has_last_user {
+        let mut ubuf = [0u8; 512];
+        let n = users::listusers(&mut ubuf);
+        if n > 0 {
+            if let Ok(list) = core::str::from_utf8(&ubuf[..n as usize]) {
+                let mut sole_name = [0u8; 32];
+                let mut sole_len = 0usize;
+                let mut count = 0u32;
+                for line in list.split('\n') {
+                    // Parse "uid:username:fullname"
+                    let mut parts = line.splitn(3, ':');
+                    let uid_str = match parts.next() { Some(s) => s, None => continue };
+                    let name = match parts.next() { Some(s) => s, None => continue };
+                    if uid_str != "0" && !name.is_empty() {
+                        count += 1;
+                        if count == 1 {
+                            let cpy = name.len().min(32);
+                            sole_name[..cpy].copy_from_slice(&name.as_bytes()[..cpy]);
+                            sole_len = cpy;
+                        }
+                    }
+                }
+                if count == 1 && sole_len > 0 {
+                    if let Ok(name) = core::str::from_utf8(&sole_name[..sole_len]) {
+                        user_field.set_text(name);
+                        login_btn.set_state(1);
                         has_last_user = true;
                     }
                 }

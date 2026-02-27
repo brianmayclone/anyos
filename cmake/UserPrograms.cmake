@@ -509,6 +509,7 @@ add_app(clipman     ${CMAKE_SOURCE_DIR}/apps/clipman        "Clipboard Manager")
 add_app(vnc-settings ${CMAKE_SOURCE_DIR}/apps/vnc-settings "VNC Settings")
 add_app(anybench    ${CMAKE_SOURCE_DIR}/apps/anybench      "anyBench")
 add_app(gldemo      ${CMAKE_SOURCE_DIR}/apps/gldemo        "GL Demo")
+add_app(iconview    ${CMAKE_SOURCE_DIR}/apps/iconview      "Icon Browser")
 
 # ============================================================
 # Compositor and Dock
