@@ -5,6 +5,7 @@
 
 use alloc::vec::Vec;
 use super::ClipVertex;
+use super::MAX_VARYINGS;
 
 /// Clip a triangle against the view frustum.
 ///
@@ -22,18 +23,18 @@ pub fn clip_triangle(tri: &[ClipVertex; 3]) -> Vec<ClipVertex> {
     if polygon.len() < 3 { return Vec::new(); }
 
     // Triangulate the clipped polygon (fan from vertex 0)
-    let mut result = Vec::new();
+    let mut result = Vec::with_capacity((polygon.len() - 2) * 3);
     for i in 1..polygon.len() - 1 {
-        result.push(polygon[0].clone());
-        result.push(polygon[i].clone());
-        result.push(polygon[i + 1].clone());
+        result.push(polygon[0]);
+        result.push(polygon[i]);
+        result.push(polygon[i + 1]);
     }
     result
 }
 
 /// Clip a convex polygon against one frustum plane.
 fn clip_polygon_against_plane(verts: &[ClipVertex], plane: usize) -> Vec<ClipVertex> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(verts.len() + 1);
     let n = verts.len();
 
     for i in 0..n {
@@ -43,7 +44,7 @@ fn clip_polygon_against_plane(verts: &[ClipVertex], plane: usize) -> Vec<ClipVer
         let d_next = signed_distance(next, plane);
 
         if d_curr >= 0.0 {
-            out.push(curr.clone());
+            out.push(*curr);
         }
         if (d_curr >= 0.0) != (d_next >= 0.0) {
             // Edge crosses plane — compute intersection
@@ -67,6 +68,7 @@ fn clip_polygon_against_plane(verts: &[ClipVertex], plane: usize) -> Vec<ClipVer
 /// 3: -y + w >= 0 (top)
 /// 4: z + w >= 0  (near)
 /// 5: -z + w >= 0 (far)
+#[inline(always)]
 fn signed_distance(v: &ClipVertex, plane: usize) -> f32 {
     let p = &v.position;
     match plane {
@@ -81,6 +83,9 @@ fn signed_distance(v: &ClipVertex, plane: usize) -> f32 {
 }
 
 /// Linearly interpolate between two vertices.
+///
+/// Uses fixed-size varying arrays — no heap allocation.
+#[inline]
 fn interpolate_vertex(a: &ClipVertex, b: &ClipVertex, t: f32) -> ClipVertex {
     let position = [
         a.position[0] + (b.position[0] - a.position[0]) * t,
@@ -89,16 +94,16 @@ fn interpolate_vertex(a: &ClipVertex, b: &ClipVertex, t: f32) -> ClipVertex {
         a.position[3] + (b.position[3] - a.position[3]) * t,
     ];
 
-    let num_vary = a.varyings.len().min(b.varyings.len());
-    let mut varyings = Vec::with_capacity(num_vary);
-    for i in 0..num_vary {
-        varyings.push([
+    let num_varyings = a.num_varyings.min(b.num_varyings).min(MAX_VARYINGS);
+    let mut varyings = [[0.0f32; 4]; MAX_VARYINGS];
+    for i in 0..num_varyings {
+        varyings[i] = [
             a.varyings[i][0] + (b.varyings[i][0] - a.varyings[i][0]) * t,
             a.varyings[i][1] + (b.varyings[i][1] - a.varyings[i][1]) * t,
             a.varyings[i][2] + (b.varyings[i][2] - a.varyings[i][2]) * t,
             a.varyings[i][3] + (b.varyings[i][3] - a.varyings[i][3]) * t,
-        ]);
+        ];
     }
 
-    ClipVertex { position, varyings }
+    ClipVertex { position, varyings, num_varyings }
 }

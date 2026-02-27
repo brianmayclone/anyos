@@ -4,19 +4,32 @@
 //! Uses packed SSE instructions via [`crate::simd::Vec4`] for 4-wide SIMD
 //! execution — each arithmetic op processes all 4 components in a single
 //! instruction instead of 4 scalar operations.
+//!
+//! **Performance**: Fixed-size arrays eliminate all heap allocation from the
+//! hot path. A single `ShaderExec` is created per draw call and reused for
+//! every vertex/fragment invocation via `reset()`.
 
-use alloc::vec;
 use super::ir::*;
+use crate::rasterizer::MAX_VARYINGS;
 use crate::rasterizer::math;
 use crate::simd::Vec4;
 
-/// Register file: each register holds 4 floats (xyzw).
-pub type RegFile = [[f32; 4]];
+/// Maximum number of registers in the shader register file.
+///
+/// Sufficient for complex Phong shaders with multiple lights (~40 regs).
+pub const MAX_REGS: usize = 64;
+
+/// Callback for texture sampling.
+pub type TexSampleFn = fn(unit: u32, u: f32, v: f32) -> [f32; 4];
 
 /// Execution context for one shader invocation.
+///
+/// Uses fixed-size arrays instead of `Vec` to eliminate per-invocation
+/// heap allocations. One instance is created per draw call and reused
+/// for every vertex or fragment via [`reset()`](ShaderExec::reset).
 pub struct ShaderExec {
-    /// Register file.
-    pub regs: alloc::vec::Vec<[f32; 4]>,
+    /// Register file (fixed-size, stack-allocated).
+    pub regs: [[f32; 4]; MAX_REGS],
     /// gl_Position output (vertex shader).
     pub position: [f32; 4],
     /// gl_FragColor output (fragment shader).
@@ -24,25 +37,45 @@ pub struct ShaderExec {
     /// gl_PointSize output.
     pub point_size: f32,
     /// Varying outputs (vertex shader) / inputs (fragment shader).
-    pub varyings: alloc::vec::Vec<[f32; 4]>,
+    pub varyings: [[f32; 4]; MAX_VARYINGS],
+    /// Number of active varyings.
+    pub num_varyings: usize,
 }
 
-/// Callback for texture sampling.
-pub type TexSampleFn = fn(unit: u32, u: f32, v: f32) -> [f32; 4];
-
 impl ShaderExec {
-    /// Create a new execution context for the given program.
+    /// Create a new execution context with zeroed registers.
     pub fn new(num_regs: u32, num_varyings: usize) -> Self {
+        let _ = num_regs; // register file is always MAX_REGS
         Self {
-            regs: vec![[0.0f32; 4]; num_regs as usize],
+            regs: [[0.0f32; 4]; MAX_REGS],
             position: [0.0; 4],
             frag_color: [0.0, 0.0, 0.0, 1.0],
             point_size: 1.0,
-            varyings: vec![[0.0f32; 4]; num_varyings],
+            varyings: [[0.0f32; 4]; MAX_VARYINGS],
+            num_varyings,
         }
     }
 
+    /// Reset state between vertex shader invocations.
+    ///
+    /// Only resets outputs; register file is overwritten by shader execution.
+    #[inline(always)]
+    pub fn reset_vertex(&mut self) {
+        self.position = [0.0; 4];
+        self.point_size = 1.0;
+        // Varyings will be overwritten by StoreVarying instructions
+    }
+
+    /// Reset state between fragment shader invocations.
+    ///
+    /// Minimal reset — frag_color is always written by StoreFragColor.
+    #[inline(always)]
+    pub fn reset_fragment(&mut self) {
+        self.frag_color = [0.0, 0.0, 0.0, 1.0];
+    }
+
     /// Execute a compiled program.
+    #[inline]
     pub fn execute(
         &mut self,
         program: &Program,
@@ -56,6 +89,7 @@ impl ShaderExec {
         }
     }
 
+    #[inline(always)]
     fn exec_inst(
         &mut self,
         inst: &Inst,
@@ -152,7 +186,8 @@ impl ShaderExec {
                 let dp = v.dp3(v);
                 let len_sq = dp.lane(0);
                 if len_sq > 1e-20 {
-                    let inv_len = Vec4::splat(1.0 / math::sqrt(len_sq));
+                    // Use fast rsqrt approximation + Newton-Raphson refinement
+                    let inv_len = Vec4::splat(fast_inv_sqrt(len_sq));
                     v.mul(inv_len).store(&mut self.regs[*dst as usize]);
                 } else {
                     self.regs[*dst as usize] = [0.0; 4];
@@ -184,10 +219,10 @@ impl ShaderExec {
             Inst::Rsqrt(dst, src) => {
                 let r = self.regs[*src as usize];
                 self.regs[*dst as usize] = [
-                    if r[0] > 1e-10 { 1.0 / math::sqrt(r[0]) } else { 0.0 },
-                    if r[1] > 1e-10 { 1.0 / math::sqrt(r[1]) } else { 0.0 },
-                    if r[2] > 1e-10 { 1.0 / math::sqrt(r[2]) } else { 0.0 },
-                    if r[3] > 1e-10 { 1.0 / math::sqrt(r[3]) } else { 0.0 },
+                    if r[0] > 1e-10 { fast_inv_sqrt(r[0]) } else { 0.0 },
+                    if r[1] > 1e-10 { fast_inv_sqrt(r[1]) } else { 0.0 },
+                    if r[2] > 1e-10 { fast_inv_sqrt(r[2]) } else { 0.0 },
+                    if r[3] > 1e-10 { fast_inv_sqrt(r[3]) } else { 0.0 },
                 ];
             }
             // ── Transcendentals (x87 FPU, per-component) ─────────────────
@@ -336,23 +371,19 @@ impl ShaderExec {
                 self.point_size = self.regs[*src as usize][0];
             }
             Inst::LoadVarying(dst, idx) => {
+                let i = *idx as usize;
                 if let Some(vi) = varying_in {
-                    if (*idx as usize) < vi.len() {
-                        self.regs[*dst as usize] = vi[*idx as usize];
+                    if i < vi.len() {
+                        self.regs[*dst as usize] = vi[i];
                     }
-                } else if (*idx as usize) < self.varyings.len() {
-                    self.regs[*dst as usize] = self.varyings[*idx as usize];
+                } else if i < MAX_VARYINGS {
+                    self.regs[*dst as usize] = self.varyings[i];
                 }
             }
             Inst::StoreVarying(idx, src) => {
-                let val = self.regs[*src as usize];
-                if (*idx as usize) < self.varyings.len() {
-                    self.varyings[*idx as usize] = val;
-                } else {
-                    while self.varyings.len() <= *idx as usize {
-                        self.varyings.push([0.0; 4]);
-                    }
-                    self.varyings[*idx as usize] = val;
+                let i = *idx as usize;
+                if i < MAX_VARYINGS {
+                    self.varyings[i] = self.regs[*src as usize];
                 }
             }
             Inst::LoadUniform(dst, idx) => {
@@ -366,5 +397,27 @@ impl ShaderExec {
                 }
             }
         }
+    }
+}
+
+/// Fast inverse square root using SSE `rsqrtss` with Newton-Raphson refinement.
+///
+/// ~12-bit initial approximation refined to ~23-bit accuracy.
+/// ~4 cycles vs ~20 for `1.0 / sqrt(x)`.
+#[inline(always)]
+fn fast_inv_sqrt(x: f32) -> f32 {
+    unsafe {
+        use core::arch::x86_64::*;
+        let v = _mm_set_ss(x);
+        let approx = _mm_rsqrt_ss(v);
+        // Newton-Raphson: y = y * (1.5 - 0.5*x*y*y)
+        let half_x = _mm_mul_ss(_mm_set_ss(0.5), v);
+        let y_sq = _mm_mul_ss(approx, approx);
+        let three_half = _mm_set_ss(1.5);
+        let refined = _mm_mul_ss(
+            approx,
+            _mm_sub_ss(three_half, _mm_mul_ss(half_x, y_sq)),
+        );
+        _mm_cvtss_f32(refined)
     }
 }
