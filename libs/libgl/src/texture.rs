@@ -56,8 +56,8 @@ impl GlTexture {
         let v = wrap_coord(v, self.wrap_t);
         let fx = u * self.width as f32 - 0.5;
         let fy = v * self.height as f32 - 0.5;
-        let x0 = fx.floor() as i32;
-        let y0 = fy.floor() as i32;
+        let x0 = floor_f32(fx) as i32;
+        let y0 = floor_f32(fy) as i32;
         let frac_x = fx - x0 as f32;
         let frac_y = fy - y0 as f32;
 
@@ -204,18 +204,24 @@ fn unpack_rgba(px: u32) -> [f32; 4] {
     [r, g, b, a]
 }
 
+/// Floor for f32 (no libm).
+fn floor_f32(x: f32) -> f32 {
+    let i = x as i32;
+    if x < 0.0 && x != i as f32 { (i - 1) as f32 } else { i as f32 }
+}
+
 /// Wrap a texture coordinate according to the wrap mode.
 fn wrap_coord(c: f32, mode: GLenum) -> f32 {
     match mode {
         GL_CLAMP_TO_EDGE => c.clamp(0.0, 1.0),
         GL_MIRRORED_REPEAT => {
-            let t = c.floor() as i32;
-            let frac = c - c.floor();
+            let t = floor_f32(c) as i32;
+            let frac = c - floor_f32(c);
             if t & 1 != 0 { 1.0 - frac } else { frac }
         }
         _ => {
             // GL_REPEAT
-            let f = c - c.floor();
+            let f = c - floor_f32(c);
             if f < 0.0 { f + 1.0 } else { f }
         }
     }

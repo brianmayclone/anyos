@@ -335,6 +335,7 @@ add_shared_lib(libfont ${CMAKE_SOURCE_DIR}/libs/libfont)
 add_shared_lib(libdb ${CMAKE_SOURCE_DIR}/libs/libdb)
 add_shared_lib(libzip ${CMAKE_SOURCE_DIR}/libs/libzip)
 add_shared_lib(libsvg ${CMAKE_SOURCE_DIR}/libs/libsvg)
+add_shared_lib(libgl ${CMAKE_SOURCE_DIR}/libs/libgl)
 
 # ============================================================
 # User programs (/System/bin/)

@@ -3,6 +3,7 @@
 //! Represents parsed GLSL source as a tree of declarations, statements, and
 //! expressions. Used as the intermediate representation between parser and IR lowering.
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 

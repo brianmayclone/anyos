@@ -12,6 +12,12 @@ pub fn floor(x: f32) -> f32 {
     if x < 0.0 && x != i as f32 { (i - 1) as f32 } else { i as f32 }
 }
 
+/// Ceiling function.
+pub fn ceil(x: f32) -> f32 {
+    let i = x as i32;
+    if x > 0.0 && x != i as f32 { (i + 1) as f32 } else { i as f32 }
+}
+
 /// Square root using Newton-Raphson iteration.
 pub fn sqrt(x: f32) -> f32 {
     if x <= 0.0 { return 0.0; }

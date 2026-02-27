@@ -251,7 +251,7 @@ fn lower_assign(ctx: &mut LowerCtx, lhs: &Expr, src: u32) -> Result<(), String> 
         }
         Expr::Swizzle(base_expr, swiz) => {
             if let Expr::Ident(name) = base_expr.as_ref() {
-                if let Some((reg, _)) = ctx.find_var(name) {
+                if let Some((reg, _)) = ctx.find_var(&name) {
                     // Write-masked swizzle assignment
                     let mask = swizzle_write_mask(swiz);
                     ctx.insts.push(Inst::WriteMask(reg, src, mask));
