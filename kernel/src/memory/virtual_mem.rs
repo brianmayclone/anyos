@@ -52,11 +52,19 @@ pub fn pcid_enabled() -> bool {
     PCID_ACTIVE.load(Ordering::Relaxed)
 }
 
-/// Enable PCID if the CPU supports it. Called at the end of init().
-fn enable_pcid() {
+/// Enable PCID if the CPU supports it.
+///
+/// Called on the BSP at the end of `init()` and on each AP during `ap_entry()`.
+/// CR4.PCIDE is per-CPU — every core that participates in scheduling must have
+/// it set, otherwise `context_switch` will #GP when loading CR3 with PCID bits.
+///
+/// Safe to call multiple times (idempotent): global state writes are the same
+/// values the BSP already stored, and the CR4 write just ORs the bit in.
+pub fn enable_pcid() {
     if !crate::arch::x86::cpuid::features().pcid { return; }
     // CR4.PCIDE can only be set when CR3[11:0] = 0 (PCID 0).
     // Our kernel PML4 is page-aligned, so bits 0-11 are already 0.
+    // APs use the kernel CR3 (set in trampoline), which also has PCID 0.
     unsafe {
         let cr4: u64;
         asm!("mov {}, cr4", out(reg) cr4, options(nostack, nomem, preserves_flags));

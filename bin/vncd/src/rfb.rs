@@ -36,8 +36,14 @@ use crate::login_ui::{self, LoginState, LOGIN_H, LOGIN_W};
 /// Maximum failed OS login attempts before the connection is dropped.
 const MAX_LOGIN_ATTEMPTS: u32 = 3;
 
-/// Minimum interval between framebuffer updates sent to the client (ms).
-const MIN_FRAME_INTERVAL_MS: u32 = 50;
+/// Minimum interval between framebuffer updates when actively changing (ms).
+const MIN_FRAME_MS: u32 = 16; // ~60 FPS target
+
+/// Frame check interval when nothing has changed for several frames (ms).
+const IDLE_FRAME_MS: u32 = 100; // 10 FPS when idle
+
+/// Number of consecutive clean (no-dirty-tile) frames before switching to idle.
+const IDLE_THRESHOLD: u32 = 5;
 
 /// Maximum screen dimension we support (guards heap allocation).
 const MAX_SCREEN_DIM: usize = 2048;
@@ -127,26 +133,31 @@ fn pixel_format_block() -> [u8; 16] {
 // ── FramebufferUpdate helpers ─────────────────────────────────────────────────
 
 /// Send a FramebufferUpdate with a single Raw-encoded rectangle covering the full screen.
-fn send_full_update(sock: u32, w: u16, h: u16, pixels: &[u32]) -> bool {
+/// Assembles header + rect header + pixel data into `send_buf` for a single TCP write.
+fn send_full_update(sock: u32, w: u16, h: u16, pixels: &[u32], send_buf: &mut anyos_std::Vec<u8>) -> bool {
     let n_pixels = w as usize * h as usize;
     if pixels.len() < n_pixels {
         return false;
     }
 
-    // Header: type=0, padding, number-of-rectangles=1
-    let hdr: [u8; 4] = [0, 0, 0, 1];
-    if !send_all(sock, &hdr) { return false; }
+    send_buf.clear();
+
+    // FramebufferUpdate header: type=0, padding=0, number-of-rectangles=1
+    send_buf.extend_from_slice(&[0, 0, 0, 1]);
 
     // Rectangle header: x=0, y=0, w, h, encoding=0 (Raw)
     let mut rect_hdr = [0u8; 12];
     rect_hdr[4..6].copy_from_slice(&be16(w));
     rect_hdr[6..8].copy_from_slice(&be16(h));
-    if !send_all(sock, &rect_hdr) { return false; }
+    send_buf.extend_from_slice(&rect_hdr);
 
+    // Pixel data.
     let byte_data = unsafe {
         core::slice::from_raw_parts(pixels.as_ptr() as *const u8, n_pixels * 4)
     };
-    send_all(sock, byte_data)
+    send_buf.extend_from_slice(byte_data);
+
+    send_all(sock, send_buf)
 }
 
 /// Append a raw rectangle (header + pixel data) to a byte buffer.
@@ -181,7 +192,13 @@ fn tile_dirty(cur: &[u32], prev: &[u32], stride: usize, tx: usize, ty: usize, tw
 
 /// Send a FramebufferUpdate containing only the dirty tiles.
 /// All tile data is collected into one buffer and sent in a single TCP write.
-/// Returns `false` on connection error. Updates `prev` with `cur` for dirty regions.
+///
+/// Returns:
+///   -1  — connection error (caller should break)
+///    0  — nothing dirty, nothing was sent
+///   >0  — number of dirty tiles sent
+///
+/// Updates `prev` with `cur` for dirty regions.
 fn send_dirty_update(
     sock: u32,
     cur: &[u32],
@@ -190,14 +207,14 @@ fn send_dirty_update(
     sh: usize,
     full: bool,
     send_buf: &mut anyos_std::Vec<u8>,
-) -> bool {
-    send_buf.clear();
-
+) -> i32 {
     if full {
         // Full (non-incremental) update: send everything in one call.
         prev.copy_from_slice(&cur[..sw * sh]);
-        return send_full_update(sock, sw as u16, sh as u16, cur);
+        return if send_full_update(sock, sw as u16, sh as u16, cur, send_buf) { 1 } else { -1 };
     }
+
+    send_buf.clear();
 
     // Scan for dirty tiles and build the complete message in send_buf.
     let tiles_x = (sw + TILE_SIZE - 1) / TILE_SIZE;
@@ -230,10 +247,9 @@ fn send_dirty_update(
     }
 
     if n_dirty == 0 {
-        // Nothing changed — send empty update (0 rectangles).
-        send_buf.clear();
-        send_buf.extend_from_slice(&[0u8; 4]); // type=0, pad=0, nrects=0
-        return send_all(sock, send_buf);
+        // Nothing changed — don't send anything.
+        // The caller keeps update_requested=true and checks again later.
+        return 0;
     }
 
     // Patch the rectangle count into the header.
@@ -242,7 +258,7 @@ fn send_dirty_update(
     send_buf[3] = count_bytes[1];
 
     // Single TCP send for the entire update.
-    send_all(sock, send_buf)
+    if send_all(sock, send_buf) { n_dirty as i32 } else { -1 }
 }
 
 // ── Login screen helpers ──────────────────────────────────────────────────────
@@ -288,43 +304,29 @@ fn render_login_overlay(
 /// Intended to be called from a forked child process.
 pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
     // ── 1. Version handshake ──────────────────────────────────────────────────
-    println!("vncd: session start — sending version");
     if !send_all(sock, b"RFB 003.008\n") {
-        println!("vncd: failed to send version");
         net::tcp_close(sock);
         return;
     }
     let mut client_ver = [0u8; 12];
     if !recv_exact(sock, &mut client_ver) {
-        println!("vncd: failed to recv client version");
         net::tcp_close(sock);
         return;
-    }
-    // Log client version string.
-    if let Ok(ver_str) = core::str::from_utf8(&client_ver) {
-        println!("vncd: client version: {}", ver_str.trim());
     }
     // Accept any 003.xxx client — we always speak 003.008.
 
     // ── 2. Security negotiation — offer VNC Auth (type 2) ────────────────────
-    println!("vncd: sending security types");
     // Server sends: number-of-security-types, then types[].
     if !send_all(sock, &[1u8, 2u8]) {
-        // 1 type, type-id = 2 (VNCAuth)
-        println!("vncd: failed to send security types");
         net::tcp_close(sock);
         return;
     }
     let mut selected = [0u8; 1];
     if !recv_exact(sock, &mut selected) {
-        println!("vncd: failed to recv security selection");
         net::tcp_close(sock);
         return;
     }
-    println!("vncd: client selected security type {}", selected[0]);
     if selected[0] != 2 {
-        // Client must select VNCAuth.
-        println!("vncd: client rejected VNCAuth, closing");
         net::tcp_close(sock);
         return;
     }
@@ -343,45 +345,21 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
         challenge[i + 12] = ((t0.wrapping_add(t1)) >> (i * 8)) as u8 ^ 0x5A;
     }
 
-    println!("vncd: sending DES challenge (16 bytes)");
     if !send_all(sock, &challenge) {
-        println!("vncd: failed to send challenge");
         net::tcp_close(sock);
         return;
     }
-    println!("vncd: challenge sent, waiting for auth response...");
     let mut response = [0u8; 16];
     if !recv_exact(sock, &mut response) {
-        println!("vncd: failed to recv auth response");
         net::tcp_close(sock);
         return;
     }
 
-    // Debug: show password, challenge, response, and expected for DES verification.
-    println!("vncd: password key: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-        cfg.password[0], cfg.password[1], cfg.password[2], cfg.password[3],
-        cfg.password[4], cfg.password[5], cfg.password[6], cfg.password[7]);
-    println!("vncd: challenge:  {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} | {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-        challenge[0], challenge[1], challenge[2], challenge[3],
-        challenge[4], challenge[5], challenge[6], challenge[7],
-        challenge[8], challenge[9], challenge[10], challenge[11],
-        challenge[12], challenge[13], challenge[14], challenge[15]);
-    println!("vncd: response:   {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} | {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-        response[0], response[1], response[2], response[3],
-        response[4], response[5], response[6], response[7],
-        response[8], response[9], response[10], response[11],
-        response[12], response[13], response[14], response[15]);
-    // Compute expected locally for comparison.
+    // Compute expected locally for DES verification.
     let mut expected = challenge;
     des::vnc_encrypt_challenge(&cfg.password, &mut expected);
-    println!("vncd: expected:   {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} | {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-        expected[0], expected[1], expected[2], expected[3],
-        expected[4], expected[5], expected[6], expected[7],
-        expected[8], expected[9], expected[10], expected[11],
-        expected[12], expected[13], expected[14], expected[15]);
 
     let auth_ok = des::vnc_verify_response(&cfg.password, &challenge, &response);
-    println!("vncd: VNC auth result: {}", if auth_ok { "OK" } else { "FAILED" });
     // SecurityResult: 0 = OK, 1 = failed (BE32)
     let security_result = if auth_ok { be32(0) } else { be32(1) };
     let _ = send_all(sock, &security_result);
@@ -395,14 +373,11 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
     }
 
     // ── 4. ClientInit ─────────────────────────────────────────────────────────
-    println!("vncd: waiting for ClientInit");
     let mut client_init = [0u8; 1];
     if !recv_exact(sock, &mut client_init) {
-        println!("vncd: failed to recv ClientInit");
         net::tcp_close(sock);
         return;
     }
-    println!("vncd: ClientInit received (shared={})", client_init[0]);
     // shared flag (ignored — we support only one active client at a time per config)
 
     // ── 5. Capture screen to get dimensions ──────────────────────────────────
@@ -412,10 +387,8 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
     let _ = sys::capture_screen(&mut tmp_buf, &mut screen_info);
     let sw = if screen_info[0] > 0 { (screen_info[0] as usize).min(MAX_SCREEN_DIM) } else { 1024 };
     let sh = if screen_info[1] > 0 { (screen_info[1] as usize).min(MAX_SCREEN_DIM) } else { 768 };
-    println!("vncd: GPU reports {}x{} (raw info: {}x{})", sw, sh, screen_info[0], screen_info[1]);
 
     // ── 6. ServerInit ─────────────────────────────────────────────────────────
-    println!("vncd: sending ServerInit ({}x{})", sw, sh);
     // framebuffer-width (BE16), framebuffer-height (BE16),
     // pixel-format (16 bytes), name-length (BE32), name-string.
     let mut server_init = [0u8; 4 + 16 + 4 + 12]; // 36 bytes (room for name up to 12 chars)
@@ -426,16 +399,13 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
     server_init[20..24].copy_from_slice(&be32(name.len() as u32));
     server_init[24..24 + name.len()].copy_from_slice(name);
     if !send_all(sock, &server_init[..24 + name.len()]) {
-        println!("vncd: failed to send ServerInit");
         net::tcp_close(sock);
         return;
     }
 
     // ── 7. Allocate pixel buffers ─────────────────────────────────────────────
     let n_pixels = sw * sh;
-    println!("vncd: allocating {} pixel buffer ({}KB)", n_pixels, n_pixels * 4 / 1024);
     let mut screen_buf: anyos_std::Vec<u32> = anyos_std::vec![0u32; n_pixels];
-    println!("vncd: entering login screen phase");
 
     // Pre-allocate the 640×480 login panel on the HEAP (not stack!).
     // Stack-allocating 1.2 MB would overflow the process stack.
@@ -456,7 +426,7 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
     let mut login_error: &[u8] = b"";
     let mut cursor_visible = true;
     let mut last_blink = sys::uptime_ms();
-    let mut last_update = sys::uptime_ms().wrapping_sub(MIN_FRAME_INTERVAL_MS + 1);
+    let mut last_update = sys::uptime_ms().wrapping_sub(MIN_FRAME_MS + 1);
 
     let mut in_login = true;
     let mut pending_update = true; // send initial frame immediately
@@ -471,7 +441,7 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
         }
 
         // Send login screen frame if needed (tile-based dirty detection).
-        if pending_update && now.wrapping_sub(last_update) >= MIN_FRAME_INTERVAL_MS {
+        if pending_update && now.wrapping_sub(last_update) >= MIN_FRAME_MS {
             let uname = &username_buf[..username_len];
             let state = LoginState {
                 username: uname,
@@ -481,12 +451,12 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                 error_msg: login_error,
             };
             render_login_overlay(&mut screen_buf, sw, sh, &state, &mut login_panel);
-            let ok = send_dirty_update(
+            let rc = send_dirty_update(
                 sock, &screen_buf, &mut login_prev, sw, sh,
                 login_first_frame, &mut login_send_buf,
             );
             login_first_frame = false;
-            if !ok {
+            if rc < 0 {
                 net::tcp_close(sock);
                 return;
             }
@@ -631,20 +601,13 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                     remaining -= chunk;
                 }
             }
-            // SetPixelFormat (type 0): log and ignore (we always use our format).
+            // SetPixelFormat (type 0): ignore (we always use our format).
             0 => {
-                let mut spf = [0u8; 19]; // 3 padding + 16 pixel-format
-                if !recv_exact(sock, &mut spf) {
+                let mut _spf = [0u8; 19]; // 3 padding + 16 pixel-format
+                if !recv_exact(sock, &mut _spf) {
                     net::tcp_close(sock);
                     return;
                 }
-                // Log client's requested pixel format for debugging.
-                println!("vncd: client SetPixelFormat: bpp={} depth={} be={} tc={} rmax={} gmax={} bmax={} rshift={} gshift={} bshift={}",
-                    spf[3], spf[4], spf[5], spf[6],
-                    u16::from_be_bytes([spf[7], spf[8]]),
-                    u16::from_be_bytes([spf[9], spf[10]]),
-                    u16::from_be_bytes([spf[11], spf[12]]),
-                    spf[13], spf[14], spf[15]);
             }
             // SetEncodings (type 2): read and discard.
             2 => {
@@ -671,150 +634,182 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
     }
 
     // ── 9. Main loop — stream live desktop ───────────────────────────────────
-    println!("vncd: login OK, entering main desktop loop ({}x{}, buf={})", sw, sh, screen_buf.len());
+    println!("vncd: desktop loop ({}x{})", sw, sh);
+
+    // Free login-phase buffers — no longer needed.
+    drop(login_panel);
+    drop(login_prev);
+    drop(login_send_buf);
 
     // Previous-frame buffer for dirty-tile detection.
     let mut prev_buf: anyos_std::Vec<u32> = anyos_std::vec![0u32; n_pixels];
     // Reusable send buffer — pre-allocate with generous capacity to avoid
-    // per-frame allocations. Worst case: full screen of 64x64 tiles.
+    // per-frame allocations.
     let mut send_buf: anyos_std::Vec<u8> = anyos_std::Vec::new();
 
     let mut mods = ModifierState::default();
-    let mut last_frame_ms = sys::uptime_ms().wrapping_sub(MIN_FRAME_INTERVAL_MS + 1);
-    let mut update_requested = true; // send first desktop frame immediately (client is already waiting)
+    let mut last_frame_ms: u32 = 0;
+    let mut update_requested = true; // send first desktop frame immediately
     let mut need_full = true; // first frame is always full
 
-    // Direct framebuffer access: after the first capture_screen call establishes
-    // the GPU framebuffer mapping at 0x30000000, we read directly from that
-    // mapped memory instead of calling the syscall every frame.  This eliminates
-    // the 3 MB kernel→user memcpy per frame entirely.
+    // Adaptive frame interval: fast when active, slow when idle.
+    let mut consecutive_clean: u32 = 0;
+
+    // Direct framebuffer access: after the first capture_screen call maps
+    // the GPU framebuffer at 0x30000000, we read directly from that mapped
+    // memory — no syscall, no 3 MB kernel→user copy per frame.
     let mut fb_mapped = false;
     let fb_pitch: usize = if screen_info[2] > 0 { screen_info[2] as usize } else { sw * 4 };
-    let fb_contiguous = fb_pitch == sw * 4; // true → can use zero-copy slice
-    println!("vncd: fb_pitch={} contiguous={}", fb_pitch, fb_contiguous);
+    let fb_contiguous = fb_pitch == sw * 4;
 
     loop {
-        // Non-blocking message read.
-        let mut msg_type = [0u8; 1];
-        let n = net::tcp_recv(sock, &mut msg_type);
-        if n == 0 {
-            break;
-        }
-        if n == u32::MAX {
-            // No data — yield and check if we should send a frame.
-            process::yield_cpu();
-            if update_requested {
-                let now = sys::uptime_ms();
-                if now.wrapping_sub(last_frame_ms) >= MIN_FRAME_INTERVAL_MS {
-                    if !fb_mapped {
-                        // First frame: call capture_screen to establish the FB mapping
-                        // at 0x30000000 and fill screen_buf.
-                        let mut info = [0u32; 3];
-                        let ok = sys::capture_screen(&mut screen_buf, &mut info);
-                        if !ok || info[0] == 0 || info[1] == 0 {
-                            println!("vncd: capture_screen failed: ok={} dims={}x{} buf_len={}",
-                                ok, info[0], info[1], screen_buf.len());
-                            break;
-                        }
-                        fb_mapped = true;
-                        if !send_dirty_update(sock, &screen_buf, &mut prev_buf, sw, sh, need_full, &mut send_buf) {
-                            break;
-                        }
-                    } else {
-                        // Subsequent frames: read directly from the mapped framebuffer
-                        // at 0x30000000 — no syscall, no 3 MB kernel→user copy.
-                        let cur = if fb_contiguous {
-                            // pitch == width*4: memory is contiguous, zero-copy slice.
-                            unsafe {
-                                core::slice::from_raw_parts(0x3000_0000 as *const u32, sw * sh)
-                            }
-                        } else {
-                            // pitch != width*4: copy row-by-row into screen_buf.
-                            unsafe {
-                                let src = 0x3000_0000 as *const u8;
-                                for y in 0..sh {
-                                    let src_row = src.add(y * fb_pitch);
-                                    let dst_off = y * sw;
-                                    core::ptr::copy_nonoverlapping(
-                                        src_row as *const u32,
-                                        screen_buf[dst_off..].as_mut_ptr(),
-                                        sw,
-                                    );
-                                }
-                            }
-                            &screen_buf
-                        };
-                        if !send_dirty_update(sock, cur, &mut prev_buf, sw, sh, need_full, &mut send_buf) {
-                            break;
-                        }
-                    }
-                    last_frame_ms = now;
-                    update_requested = false;
-                    need_full = false;
-                }
+        // ── Phase A: drain ALL queued client messages ─────────────────────────
+        // Processing all pending messages before sending a frame ensures that
+        // rapid mouse/keyboard input doesn't starve frame updates.
+        loop {
+            let mut msg_type = [0u8; 1];
+            let n = net::tcp_recv(sock, &mut msg_type);
+            if n == 0 {
+                // EOF — client disconnected.
+                net::tcp_close(sock);
+                return;
             }
-            continue;
+            if n == u32::MAX {
+                break; // no more queued data
+            }
+
+            match msg_type[0] {
+                // SetPixelFormat (type 0): ignore.
+                0 => {
+                    let mut _rest = [0u8; 19];
+                    if !recv_exact(sock, &mut _rest) { net::tcp_close(sock); return; }
+                }
+                // SetEncodings (type 2): read and discard.
+                2 => {
+                    let mut enc_hdr = [0u8; 3];
+                    if !recv_exact(sock, &mut enc_hdr) { net::tcp_close(sock); return; }
+                    let count = from_be16(&enc_hdr[1..3]) as usize;
+                    let mut enc_buf = [0u8; 4];
+                    for _ in 0..count {
+                        if !recv_exact(sock, &mut enc_buf) { net::tcp_close(sock); return; }
+                    }
+                }
+                // FramebufferUpdateRequest (type 3).
+                3 => {
+                    let mut fbu_rest = [0u8; 9];
+                    if !recv_exact(sock, &mut fbu_rest) { net::tcp_close(sock); return; }
+                    let incremental = fbu_rest[0] != 0;
+                    if !incremental {
+                        need_full = true;
+                    }
+                    update_requested = true;
+                }
+                // KeyEvent (type 4).
+                4 => {
+                    let mut key_rest = [0u8; 7];
+                    if !recv_exact(sock, &mut key_rest) { net::tcp_close(sock); return; }
+                    let down = key_rest[0] != 0;
+                    let keysym = from_be32(&key_rest[3..7]);
+                    if !mods.update(keysym, down) {
+                        input::inject_key(comp_chan, keysym, down, &mods);
+                    }
+                    // Reset idle counter — expect screen changes after input.
+                    consecutive_clean = 0;
+                }
+                // PointerEvent (type 5).
+                5 => {
+                    let mut ptr_rest = [0u8; 5];
+                    if !recv_exact(sock, &mut ptr_rest) { net::tcp_close(sock); return; }
+                    let buttons = ptr_rest[0];
+                    let x = from_be16(&ptr_rest[1..3]);
+                    let y = from_be16(&ptr_rest[3..5]);
+                    input::inject_pointer(comp_chan, x, y, buttons);
+                    // Reset idle counter — expect screen changes after input.
+                    consecutive_clean = 0;
+                }
+                // ClientCutText (type 6): ignore.
+                6 => {
+                    let mut cut_hdr = [0u8; 7];
+                    if !recv_exact(sock, &mut cut_hdr) { net::tcp_close(sock); return; }
+                    let text_len = from_be32(&cut_hdr[3..7]) as usize;
+                    let mut discard = [0u8; 64];
+                    let mut remaining = text_len;
+                    while remaining > 0 {
+                        let chunk = remaining.min(64);
+                        if !recv_exact(sock, &mut discard[..chunk]) { net::tcp_close(sock); return; }
+                        remaining -= chunk;
+                    }
+                }
+                _ => { net::tcp_close(sock); return; }
+            }
         }
 
-        match msg_type[0] {
-            // SetPixelFormat: ignore.
-            0 => {
-                let mut _rest = [0u8; 19];
-                if !recv_exact(sock, &mut _rest) { break; }
-            }
-            // SetEncodings: read and discard.
-            2 => {
-                let mut enc_hdr = [0u8; 3];
-                if !recv_exact(sock, &mut enc_hdr) { break; }
-                let count = from_be16(&enc_hdr[1..3]) as usize;
-                let mut enc_buf = [0u8; 4];
-                for _ in 0..count {
-                    if !recv_exact(sock, &mut enc_buf) { break; }
+        // ── Phase B: send frame update if requested ──────────────────────────
+        if update_requested {
+            let now = sys::uptime_ms();
+            let interval = if consecutive_clean > IDLE_THRESHOLD { IDLE_FRAME_MS } else { MIN_FRAME_MS };
+            if now.wrapping_sub(last_frame_ms) >= interval {
+                let rc = if !fb_mapped {
+                    // First frame: call capture_screen to establish FB mapping
+                    // at 0x30000000 and get the initial contents.
+                    let mut info = [0u32; 3];
+                    let ok = sys::capture_screen(&mut screen_buf, &mut info);
+                    if !ok || info[0] == 0 || info[1] == 0 {
+                        break;
+                    }
+                    fb_mapped = true;
+                    send_dirty_update(sock, &screen_buf, &mut prev_buf, sw, sh, need_full, &mut send_buf)
+                } else {
+                    // Subsequent frames: read directly from the mapped GPU
+                    // framebuffer — zero-copy when pitch == width*4.
+                    let cur = if fb_contiguous {
+                        unsafe {
+                            core::slice::from_raw_parts(0x3000_0000 as *const u32, sw * sh)
+                        }
+                    } else {
+                        // pitch != width*4: row-by-row copy (still no syscall).
+                        unsafe {
+                            let src = 0x3000_0000 as *const u8;
+                            for y in 0..sh {
+                                let src_row = src.add(y * fb_pitch);
+                                let dst_off = y * sw;
+                                core::ptr::copy_nonoverlapping(
+                                    src_row as *const u32,
+                                    screen_buf[dst_off..].as_mut_ptr(),
+                                    sw,
+                                );
+                            }
+                        }
+                        &screen_buf
+                    };
+                    send_dirty_update(sock, cur, &mut prev_buf, sw, sh, need_full, &mut send_buf)
+                };
+
+                if rc < 0 {
+                    break; // connection error
+                }
+                last_frame_ms = now;
+                if rc > 0 {
+                    // Dirty tiles were sent — cycle complete.
+                    update_requested = false;
+                    need_full = false;
+                    consecutive_clean = 0;
+                } else {
+                    // Nothing dirty — don't respond yet, keep update_requested
+                    // true and re-check on the next iteration.  This avoids the
+                    // tight request→empty-response→request polling loop.
+                    consecutive_clean = consecutive_clean.saturating_add(1);
                 }
             }
-            // FramebufferUpdateRequest.
-            3 => {
-                let mut fbu_rest = [0u8; 9];
-                if !recv_exact(sock, &mut fbu_rest) { break; }
-                let incremental = fbu_rest[0] != 0;
-                if !incremental {
-                    need_full = true;
-                }
-                update_requested = true;
-            }
-            // KeyEvent.
-            4 => {
-                let mut key_rest = [0u8; 7];
-                if !recv_exact(sock, &mut key_rest) { break; }
-                let down = key_rest[0] != 0;
-                let keysym = from_be32(&key_rest[3..7]);
-                if !mods.update(keysym, down) {
-                    input::inject_key(comp_chan, keysym, down, &mods);
-                }
-            }
-            // PointerEvent.
-            5 => {
-                let mut ptr_rest = [0u8; 5];
-                if !recv_exact(sock, &mut ptr_rest) { break; }
-                let buttons = ptr_rest[0];
-                let x = from_be16(&ptr_rest[1..3]);
-                let y = from_be16(&ptr_rest[3..5]);
-                input::inject_pointer(comp_chan, x, y, buttons);
-            }
-            // ClientCutText: ignore.
-            6 => {
-                let mut cut_hdr = [0u8; 7];
-                if !recv_exact(sock, &mut cut_hdr) { break; }
-                let text_len = from_be32(&cut_hdr[3..7]) as usize;
-                let mut discard = [0u8; 64];
-                let mut remaining = text_len;
-                while remaining > 0 {
-                    let chunk = remaining.min(64);
-                    if !recv_exact(sock, &mut discard[..chunk]) { break; }
-                    remaining -= chunk;
-                }
-            }
-            _ => { break; }
+        }
+
+        // ── Phase C: yield or sleep based on activity ────────────────────────
+        if consecutive_clean > IDLE_THRESHOLD {
+            // Idle: sleep to save CPU.  The scheduler will wake us after ~1 ms.
+            process::sleep(1);
+        } else {
+            // Active: yield immediately to minimise latency.
+            process::yield_cpu();
         }
     }
 

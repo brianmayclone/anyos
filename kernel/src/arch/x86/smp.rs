@@ -221,6 +221,10 @@ extern "C" fn ap_entry() -> ! {
     // TODO: enable_xsave() disabled — see main.rs
     // crate::arch::x86::cpuid::enable_xsave();
 
+    // Enable PCID on this AP (CR4.PCIDE is per-CPU, BSP already set the global state).
+    // Without this, context_switch's `mov cr3, rax` with PCID bits would #GP.
+    crate::memory::virtual_mem::enable_pcid();
+
     // Initialize per-AP power management (HWP / P-state)
     crate::arch::x86::power::init_ap();
 
