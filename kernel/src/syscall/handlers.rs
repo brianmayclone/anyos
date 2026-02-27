@@ -4722,6 +4722,50 @@ pub fn sys_gpu_3d_surface_dma_read(sid: u32, buf_ptr: u32, buf_len: u32, width: 
     }).unwrap_or(u32::MAX)
 }
 
+// ── Hostname ──────────────────────────────────────────
+
+static HOSTNAME: crate::sync::mutex::Mutex<[u8; 64]> = {
+    let mut buf = [0u8; 64];
+    buf[0] = b'a'; buf[1] = b'n'; buf[2] = b'y';
+    buf[3] = b'O'; buf[4] = b'S';
+    crate::sync::mutex::Mutex::new(buf)
+};
+static HOSTNAME_LEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(5);
+
+/// SYS_GET_HOSTNAME - Copy current hostname into user buffer.
+///   arg1: buf_ptr, arg2: buf_len
+/// Returns bytes written, or u32::MAX on error.
+pub fn sys_get_hostname(buf_ptr: u32, buf_len: u32) -> u32 {
+    if buf_ptr == 0 || buf_len == 0 {
+        return u32::MAX;
+    }
+    let len = HOSTNAME_LEN.load(core::sync::atomic::Ordering::Relaxed);
+    let copy_len = len.min(buf_len);
+    let host = HOSTNAME.lock();
+    let dst = buf_ptr as *mut u8;
+    unsafe {
+        core::ptr::copy_nonoverlapping(host.as_ptr(), dst, copy_len as usize);
+    }
+    copy_len
+}
+
+/// SYS_SET_HOSTNAME - Set the system hostname.
+///   arg1: name_ptr, arg2: name_len
+/// Returns 0 on success, u32::MAX on error.
+pub fn sys_set_hostname(name_ptr: u32, name_len: u32) -> u32 {
+    if name_ptr == 0 || name_len == 0 || name_len > 63 {
+        return u32::MAX;
+    }
+    let src = name_ptr as *const u8;
+    let mut host = HOSTNAME.lock();
+    unsafe {
+        core::ptr::copy_nonoverlapping(src, host.as_mut_ptr(), name_len as usize);
+    }
+    host[name_len as usize] = 0;
+    HOSTNAME_LEN.store(name_len, core::sync::atomic::Ordering::Relaxed);
+    0
+}
+
 /// Map PartitionType to a numeric ID for the syscall ABI.
 fn partition_type_to_id(pt: &crate::fs::partition::PartitionType) -> u8 {
     use crate::fs::partition::PartitionType;

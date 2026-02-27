@@ -424,13 +424,14 @@ fn main() {
     ctx_btn.set_margin(0, 0, 0, 8);
     content.add(&ctx_btn);
 
-    let menu = ui::ContextMenu::new("Cut|Copy|Paste|Select All");
+    let menu = ui::ContextMenu::new("Cut|Copy|Paste|-|Select All");
     menu.on_item_click(|e| {
         let item_name = match e.index {
             0 => "Cut",
             1 => "Copy",
             2 => "Paste",
-            _ => "Select All",
+            4 => "Select All",
+            _ => return,
         };
         ui::MessageBox::show(ui::MessageBoxType::Info, item_name, Some("OK"));
     });

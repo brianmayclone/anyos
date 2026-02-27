@@ -475,7 +475,7 @@ fn main() {
     sidebar.add(&tree);
 
     // Context menu for tree (right-click actions)
-    let tree_menu = ui::ContextMenu::new("New Site|Delete Site|Enable|Disable");
+    let tree_menu = ui::ContextMenu::new("New Site|Delete Site|-|Enable|Disable");
     win.add(&tree_menu);
     tree.set_context_menu(&tree_menu);
 
@@ -728,7 +728,7 @@ fn main() {
                     }
                 }
             }
-            2 => {
+            3 => {
                 // Enable
                 let s = app();
                 if let Some(idx) = s.selected_site {
@@ -741,7 +741,7 @@ fn main() {
                     }
                 }
             }
-            3 => {
+            4 => {
                 // Disable
                 let s = app();
                 if let Some(idx) = s.selected_site {

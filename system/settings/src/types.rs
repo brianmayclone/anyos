@@ -8,12 +8,13 @@ use anyos_std::json::Value;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum BuiltinId {
+    Dashboard,
     General,
     Display,
-    Wallpaper,
-    Network,
     Apps,
-    About,
+    Devices,
+    Network,
+    Update,
 }
 
 // ── External module descriptor (loaded from JSON) ───────────────────────────

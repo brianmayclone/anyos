@@ -175,6 +175,7 @@ const SVGA_3D_CMD_SET_SHADER: u32         = 1061;
 const SVGA_3D_CMD_SET_SHADER_CONST: u32   = 1062;
 const SVGA_3D_CMD_DRAW_PRIMITIVES: u32    = 1063;
 const SVGA_3D_CMD_SETSCISSORRECT: u32     = 1064;
+const SVGA_3D_CMD_BLIT_SURFACE_TO_SCREEN: u32 = 1069;
 #[allow(dead_code)]
 const SVGA_3D_CMD_PRESENT_READBACK: u32   = 1070;
 
@@ -964,40 +965,91 @@ impl GpuDriver for VmwareSvgaGpu {
     }
 
     fn dma_surface_download(&mut self, sid: u32, buf: &mut [u8], width: u32, height: u32) -> bool {
-        if !self.has_3d() || !self.has_gmr2 || buf.is_empty() {
+        if !self.has_3d() || !self.has_gmr2 || !self.has_screen_object || buf.is_empty() {
             return false;
         }
 
         let staging_size = self.dma_staging_pages * 4096;
         let gmr_id = match self.dma_staging_gmr {
             Some(id) if buf.len() <= staging_size => id,
-            _ => return false, // no staging buffer or buffer too large
+            _ => return false,
         };
 
-        // Issue SURFACE_DMA: surface → GMR (READ_HOST_VRAM = 2)
+        // Need Screen Object v2 for GMR-backed backing store
+        if self.fifo_caps & SVGA_FIFO_CAP_SCREEN_OBJECT_2 == 0 {
+            return false;
+        }
+
         let pitch = width * 4;
-        let max_offset = height * pitch;
-        let cmd_words = [
-            SVGA_3D_CMD_SURFACE_DMA,
-            (19 * 4) as u32, // size_bytes: 19 payload u32s
-            // guest image: { gmr_id, offset, pitch }
-            gmr_id, 0, pitch,
-            // host image: { sid, face, mipmap }
-            sid, 0, 0,
-            // transfer type: READ_HOST_VRAM = 2
-            2,
-            // copy box: { x, y, z, w, h, d, srcx, srcy, srcz }
-            0, 0, 0, width, height, 1, 0, 0, 0,
-            // suffix: { suffixSize, maximumOffset, flags }
-            12, max_offset, 0,
-        ];
-        self.fifo_write_cmd(&cmd_words);
+        let virt = self.dma_staging_phys as *mut u8;
+        unsafe {
+            core::ptr::write_bytes(virt, 0, buf.len());
+        }
+
+        // Strategy: SURFACE_DMA READ doesn't work reliably for render targets.
+        // Instead, use BLIT_SURFACE_TO_SCREEN targeting a temporary screen
+        // whose backing store points directly to our staging GMR.
+        //
+        //   1. DEFINE_SCREEN id=1 with backingStore = staging GMR
+        //   2. BLIT_SURFACE_TO_SCREEN from 3D surface → screen 1
+        //   3. sync (pixels now in staging buffer)
+        //   4. DESTROY_SCREEN id=1
+        //   5. Copy staging → user buffer
+
+        const READBACK_SCREEN: u32 = 1;
+
+        // Step 1: Define a temporary readback screen (Screen Object v2)
+        // Backing store → our pre-allocated staging GMR
+        self.fifo_write_cmd(&[
+            SVGA_CMD_DEFINE_SCREEN,
+            44,                       // structSize (v2 = 11 fields × 4)
+            READBACK_SCREEN,          // id = 1
+            SVGA_SCREEN_MUST_BE_SET,  // flags (not primary)
+            width,                    // width
+            height,                   // height
+            0x7FFF_0000,              // root.x — far off-screen
+            0,                        // root.y
+            gmr_id,                   // backingStore.ptr.gmrId
+            0,                        // backingStore.ptr.offset
+            pitch,                    // backingStore.bytesPerLine
+            0,                        // cloneCount
+        ]);
+
+        // Step 2: BLIT_SURFACE_TO_SCREEN — render target → screen 1's backing store
+        // SVGA3dCmdBlitSurfaceToScreen: srcImage(3), srcRect(4), destScreenId(1), destRect(4) = 12 dwords
+        self.fifo_write_cmd(&[
+            SVGA_3D_CMD_BLIT_SURFACE_TO_SCREEN,
+            (12 * 4) as u32,          // body = 48 bytes
+            sid, 0, 0,                // srcImage: { sid, face=0, mipmap=0 }
+            0, 0, width, height,      // srcRect: { left=0, top=0, right=w, bottom=h }
+            READBACK_SCREEN,          // destScreenId = 1
+            0, 0, width, height,      // destRect: { left=0, top=0, right=w, bottom=h }
+        ]);
         self.sync_fifo();
 
-        // Copy data back from identity-mapped staging buffer to user buffer
-        let virt = self.dma_staging_phys as *const u8;
+        // Diagnostic: check first pixels in staging buffer
         unsafe {
-            core::ptr::copy_nonoverlapping(virt, buf.as_mut_ptr(), buf.len());
+            let staging_u32 = virt as *const u32;
+            let px0 = core::ptr::read_volatile(staging_u32);
+            let px1 = core::ptr::read_volatile(staging_u32.add(1));
+            let mid = (width * height / 2) as usize;
+            let px_mid = core::ptr::read_volatile(staging_u32.add(mid));
+            crate::serial_println!(
+                "  SVGA readback: sid={} {}x{} gmr={} px[0]={:#010X} px[1]={:#010X} px[mid]={:#010X}",
+                sid, width, height, gmr_id, px0, px1, px_mid
+            );
+        }
+
+        // Step 3: Destroy the readback screen
+        self.fifo_write_cmd(&[
+            SVGA_CMD_DESTROY_SCREEN,
+            READBACK_SCREEN,
+        ]);
+        self.sync_fifo();
+
+        // Step 4: Copy from staging buffer to user buffer
+        unsafe {
+            core::ptr::copy_nonoverlapping(virt as *const u8, buf.as_mut_ptr(), buf.len());
         }
 
         true

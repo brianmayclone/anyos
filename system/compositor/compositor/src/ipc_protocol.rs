@@ -181,6 +181,11 @@ pub const CMD_GET_WINDOW_POS: u32 = 0x1013;
 /// in `saved_bounds` so CMD_FOCUS_BY_TID can restore them later.
 pub const CMD_HIDE_BY_TID: u32 = 0x1014;
 
+/// Minimize a single window by window_id (move off-screen with saved bounds).
+/// [CMD, window_id, 0, 0, 0]
+/// The window is moved to (-10000, -10000). CMD_FOCUS_BY_TID restores it.
+pub const CMD_MINIMIZE_WINDOW: u32 = 0x1015;
+
 /// Inject a synthetic key event into the focused window.
 /// [CMD, scancode, char_val, is_down (1=down/0=up), modifiers]
 /// vncd maps RFB KeySyms → (scancode, char_val) before emitting this command.

@@ -69,6 +69,9 @@ EXPORTS
     glPixelStorei
     glColorMask
     gl_set_fxaa
+    gl_set_hw_backend
+    gl_get_hw_backend
+    gl_has_hw_backend
     gl_math_sin
     gl_math_cos
     gl_math_tan

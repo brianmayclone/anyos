@@ -719,7 +719,7 @@ fn main() {
 
     // Context menu
     let ctx_menu = anyui::ContextMenu::new(
-        "Copy to Clipboard|Delete Entry|Delete All|Add Text|Load from File"
+        "Copy to Clipboard|-|Delete Entry|Delete All|-|Add Text|Load from File"
     );
     grid.set_context_menu(&ctx_menu);
 
@@ -779,10 +779,10 @@ fn main() {
     ctx_menu.on_item_click(|e| {
         match e.index {
             0 => copy_to_clipboard(),
-            1 => delete_selected(),
-            2 => clear_all(),
-            3 => toggle_add_panel(),
-            4 => copy_file_to_clipboard(),
+            2 => delete_selected(),
+            3 => clear_all(),
+            5 => toggle_add_panel(),
+            6 => copy_file_to_clipboard(),
             _ => {}
         }
     });

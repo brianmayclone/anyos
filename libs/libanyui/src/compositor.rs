@@ -104,6 +104,8 @@ struct LibcompositorExports {
     dismiss_notification: extern "C" fn(channel_id: u32, notification_id: u32),
 
     get_window_position: extern "C" fn(channel_id: u32, sub_id: u32, window_id: u32, out_x: *mut i32, out_y: *mut i32) -> u32,
+
+    minimize_window: extern "C" fn(channel_id: u32, window_id: u32),
 }
 
 fn exports() -> &'static LibcompositorExports {
@@ -194,6 +196,11 @@ pub fn set_title(channel_id: u32, window_id: u32, title: &[u8]) {
     (exports().set_title)(channel_id, window_id, title.as_ptr(), title.len() as u32);
 }
 
+/// Move a window to a new position on screen.
+pub fn move_window(channel_id: u32, window_id: u32, x: i32, y: i32) {
+    (exports().move_window)(channel_id, window_id, x, y);
+}
+
 /// Resize a window's SHM buffer. Returns new (shm_id, surface_ptr) or None.
 pub fn resize_shm(
     channel_id: u32,
@@ -216,6 +223,11 @@ pub fn resize_shm(
     } else {
         Some((new_shm_id, surface))
     }
+}
+
+/// Minimize a window (move off-screen with saved bounds for restore).
+pub fn minimize_window(channel_id: u32, window_id: u32) {
+    (exports().minimize_window)(channel_id, window_id);
 }
 
 /// Enable or disable blur-behind on a compositor window.

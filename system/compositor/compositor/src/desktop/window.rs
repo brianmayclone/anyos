@@ -828,6 +828,29 @@ impl Desktop {
         }
     }
 
+    /// Minimize a window (move off-screen and save bounds for restore).
+    pub(crate) fn minimize_window(&mut self, win_id: u32) {
+        if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
+            if self.windows[idx].x >= 0 && self.windows[idx].saved_bounds.is_none() {
+                self.windows[idx].saved_bounds = Some((
+                    self.windows[idx].x,
+                    self.windows[idx].y,
+                    self.windows[idx].content_width,
+                    self.windows[idx].full_height(),
+                ));
+            }
+            let layer_id = self.windows[idx].layer_id;
+            self.compositor.move_layer(layer_id, -10000, -10000);
+            // Focus next visible window
+            if let Some(next_id) = self.windows.iter().rev()
+                .find(|w| w.id != win_id && w.x >= 0)
+                .map(|w| w.id)
+            {
+                self.focus_window(next_id);
+            }
+        }
+    }
+
     // ── IPC Window Operations ──────────────────────────────────────────
 
     /// Compute the next auto-placement position (cascading).

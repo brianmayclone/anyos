@@ -209,6 +209,7 @@ pub enum ControlKind {
     TextEditor = 39,
     TreeView = 40,
     RadioGroup = 41,
+    DropDown = 42,
 }
 
 impl ControlKind {
@@ -256,6 +257,7 @@ impl ControlKind {
             39 => Self::TextEditor,
             40 => Self::TreeView,
             41 => Self::RadioGroup,
+            42 => Self::DropDown,
             _ => Self::View,
         }
     }
@@ -280,6 +282,7 @@ impl ControlKind {
             Self::Tooltip => (150, 24),
             Self::Canvas => (200, 200),
             Self::Expander => (200, 32),
+            Self::DropDown => (200, 32),
             Self::Toolbar => (0, 36),
             Self::NavigationBar => (0, 44),
             Self::TabBar => (0, 32),

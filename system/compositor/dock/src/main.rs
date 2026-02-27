@@ -28,11 +28,11 @@ use types::{DockItem, STILL_RUNNING};
 
 /// Context menu item layouts per dock item state.
 /// Items are pipe-separated. Index order must match handle_context_menu_click().
-const MENU_PINNED_RUNNING: &str = "Show Window|Hide|Quit|Remove from Dock";
-const MENU_PINNED_STOPPED: &str = "Open|Remove from Dock";
-const MENU_TRANSIENT_RUNNING: &str = "Show Window|Hide|Quit|Keep in Dock";
+const MENU_PINNED_RUNNING: &str = "Show Window|Hide|-|Quit|-|Remove from Dock";
+const MENU_PINNED_STOPPED: &str = "Open|-|Remove from Dock";
+const MENU_TRANSIENT_RUNNING: &str = "Show Window|Hide|-|Quit|-|Keep in Dock";
 // Finder: always pinned, cannot be removed
-const MENU_FINDER_RUNNING: &str = "Show Window|Hide|Quit";
+const MENU_FINDER_RUNNING: &str = "Show Window|Hide|-|Quit";
 const MENU_FINDER_STOPPED: &str = "Open";
 const MENU_EMPTY: &str = " ";
 
@@ -44,6 +44,7 @@ const TIMER_FAST_MS: u32 = 16;  // ~60 Hz for animations / drag
 const TIMER_IDLE_MS: u32 = 200; // 5 Hz for idle polling
 
 struct DockApp {
+    win: anyui::Window,
     canvas: anyui::Canvas,
     items: Vec<DockItem>,
     hovered_idx: Option<usize>,
@@ -161,6 +162,7 @@ fn main() {
 
     unsafe {
         APP = Some(DockApp {
+            win,
             canvas,
             items,
             hovered_idx: None,
@@ -439,36 +441,36 @@ fn handle_context_menu_click(index: u32) {
     let menu_text = a.last_menu_text;
 
     if core::ptr::eq(menu_text, MENU_PINNED_RUNNING) {
-        // "Show Window|Hide|Quit|Remove from Dock"
+        // "Show Window|Hide|-|Quit|-|Remove from Dock"
         match index {
             0 => action_focus(item_idx),
             1 => action_hide(item_idx),
-            2 => action_quit(item_idx),
-            3 => action_unpin(item_idx),
+            3 => action_quit(item_idx),
+            5 => action_unpin(item_idx),
             _ => {}
         }
     } else if core::ptr::eq(menu_text, MENU_PINNED_STOPPED) {
-        // "Open|Remove from Dock"
+        // "Open|-|Remove from Dock"
         match index {
             0 => action_open(item_idx),
-            1 => action_unpin(item_idx),
+            2 => action_unpin(item_idx),
             _ => {}
         }
     } else if core::ptr::eq(menu_text, MENU_TRANSIENT_RUNNING) {
-        // "Show Window|Hide|Quit|Keep in Dock"
+        // "Show Window|Hide|-|Quit|-|Keep in Dock"
         match index {
             0 => action_focus(item_idx),
             1 => action_hide(item_idx),
-            2 => action_quit(item_idx),
-            3 => action_pin(item_idx),
+            3 => action_quit(item_idx),
+            5 => action_pin(item_idx),
             _ => {}
         }
     } else if core::ptr::eq(menu_text, MENU_FINDER_RUNNING) {
-        // "Show Window|Hide|Quit"
+        // "Show Window|Hide|-|Quit"
         match index {
             0 => action_focus(item_idx),
             1 => action_hide(item_idx),
-            2 => action_quit(item_idx),
+            3 => action_quit(item_idx),
             _ => {}
         }
     } else if core::ptr::eq(menu_text, MENU_FINDER_STOPPED) {
@@ -770,7 +772,9 @@ fn process_system_events() {
                     a.fb = Framebuffer::new(new_w, DOCK_TOTAL_H);
                     a.bounce_items.clear();
                     a.needs_redraw = true;
-                    // Reposition and resize canvas via anyui
+                    // Resize window SHM surface + back buffer, then reposition
+                    a.win.resize(new_w, DOCK_TOTAL_H);
+                    a.win.move_to(0, (new_h - DOCK_TOTAL_H) as i32);
                     a.canvas.set_size(new_w, DOCK_TOTAL_H);
                 }
             }

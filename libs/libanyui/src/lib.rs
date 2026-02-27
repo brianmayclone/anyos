@@ -2219,6 +2219,55 @@ pub extern "C" fn anyui_remove(id: ControlId) {
     st.controls.retain(|c| !to_remove.contains(&c.id()));
 }
 
+/// Programmatically resize a window (SHM buffer, back buffer, control size).
+/// Used by the dock (and similar borderless windows) to react to resolution changes.
+#[no_mangle]
+pub extern "C" fn anyui_resize_window(win_id: ControlId, new_w: u32, new_h: u32) {
+    let st = state();
+    if let Some(wi) = st.windows.iter().position(|&w| w == win_id) {
+        let cw = &mut st.comp_windows[wi];
+        if cw.width == new_w && cw.height == new_h {
+            return;
+        }
+        if let Some((new_shm_id, new_surface)) = compositor::resize_shm(
+            st.channel_id, cw.window_id, cw.shm_id, new_w, new_h,
+        ) {
+            cw.shm_id = new_shm_id;
+            cw.surface = new_surface;
+        }
+        cw.width = new_w;
+        cw.height = new_h;
+        let new_count = (new_w as usize) * (new_h as usize);
+        cw.back_buffer.resize(new_count, 0);
+        cw.dirty = true;
+        cw.dirty_rect = None; // full redraw
+    }
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == win_id) {
+        ctrl.set_size(new_w, new_h);
+    }
+    mark_needs_layout();
+}
+
+/// Minimize a window (move off-screen, compositor saves bounds for later restore).
+#[no_mangle]
+pub extern "C" fn anyui_minimize_window(win_id: ControlId) {
+    let st = state();
+    if let Some(wi) = st.windows.iter().position(|&w| w == win_id) {
+        let comp_win_id = st.comp_windows[wi].window_id;
+        compositor::minimize_window(st.channel_id, comp_win_id);
+    }
+}
+
+/// Move a window to a new screen position.
+#[no_mangle]
+pub extern "C" fn anyui_move_window(win_id: ControlId, x: i32, y: i32) {
+    let st = state();
+    if let Some(wi) = st.windows.iter().position(|&w| w == win_id) {
+        let comp_win_id = st.comp_windows[wi].window_id;
+        compositor::move_window(st.channel_id, comp_win_id, x, y);
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn anyui_destroy_window(win_id: ControlId) {
     let st = state();

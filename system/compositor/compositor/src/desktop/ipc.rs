@@ -333,6 +333,11 @@ impl Desktop {
                 }
                 None
             }
+            proto::CMD_MINIMIZE_WINDOW => {
+                let window_id = cmd[1];
+                self.minimize_window(window_id);
+                None
+            }
             proto::CMD_SET_BLUR_BEHIND => {
                 let window_id = cmd[1];
                 let radius = cmd[2];

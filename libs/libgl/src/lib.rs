@@ -179,11 +179,7 @@ pub extern "C" fn gl_swap_buffers() -> *const u32 {
             let h = svga.height;
             let sid = svga.color_sid;
 
-            // Present to screen (direct GPU blit)
-            svga.cmd.present(sid, &[(0, 0, w, h)]);
-            let present_ret = svga.cmd.submit();
-
-            // Read back GPU surface into SW framebuffer for compositor
+            // Readback: kernel does BLIT_SURFACE_TO_SCREEN → staging GMR
             let c = ctx();
             let fb_bytes = unsafe {
                 core::slice::from_raw_parts_mut(
@@ -193,13 +189,17 @@ pub extern "C" fn gl_swap_buffers() -> *const u32 {
             };
             let rb_ret = syscall::gpu_3d_surface_dma_read(sid, fb_bytes, w, h);
 
+            // Force alpha=0xFF on all pixels (screen readback may have alpha=0)
+            for px in c.default_fb.color.iter_mut() {
+                *px |= 0xFF00_0000;
+            }
+
             let frame = unsafe { DIAG_FRAME };
             if frame < 3 {
-                // Check first pixel of readback
                 let px0 = c.default_fb.color[0];
                 let px_mid = c.default_fb.color[(w * h / 2) as usize];
-                serial_println!("[libgl] SWAP f={}: present_ret={} rb_ret={} px[0]=0x{:08X} px[mid]=0x{:08X}",
-                    frame, present_ret, rb_ret, px0, px_mid);
+                serial_println!("[libgl] SWAP f={}: rb_ret={} px[0]=0x{:08X} px[mid]=0x{:08X}",
+                    frame, rb_ret, px0, px_mid);
             }
             unsafe { DIAG_FRAME += 1; }
         }
@@ -1056,6 +1056,34 @@ pub extern "C" fn glFinish() {}
 #[no_mangle]
 pub extern "C" fn gl_set_fxaa(enabled: u32) {
     ctx().fxaa_enabled = enabled != 0;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Backend Selection
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Switch between hardware (SVGA3D) and software rasterizer at runtime.
+/// 0 = software, non-zero = hardware (only if SVGA3D was initialized).
+#[no_mangle]
+pub extern "C" fn gl_set_hw_backend(enabled: u32) {
+    let want_hw = enabled != 0;
+    let has_hw = unsafe { SVGA3D.as_ref().map_or(false, |s| s.initialized) };
+    unsafe { USE_HW_BACKEND = want_hw && has_hw; }
+}
+
+/// Query whether the hardware backend is currently active.
+/// Returns 1 if HW, 0 if SW.
+#[no_mangle]
+pub extern "C" fn gl_get_hw_backend() -> u32 {
+    if unsafe { USE_HW_BACKEND } { 1 } else { 0 }
+}
+
+/// Query whether SVGA3D hardware is available (regardless of current mode).
+/// Returns 1 if available, 0 if not.
+#[no_mangle]
+pub extern "C" fn gl_has_hw_backend() -> u32 {
+    let has_hw = unsafe { SVGA3D.as_ref().map_or(false, |s| s.initialized) };
+    if has_hw { 1 } else { 0 }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

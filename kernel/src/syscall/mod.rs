@@ -261,6 +261,10 @@ pub const SYS_PARTITION_CREATE: u32 = 274;
 pub const SYS_PARTITION_DELETE: u32 = 275;
 pub const SYS_PARTITION_RESCAN: u32 = 276;
 
+// Hostname
+pub const SYS_GET_HOSTNAME: u32 = 280;
+pub const SYS_SET_HOSTNAME: u32 = 281;
+
 /// Register frame pushed by `syscall_entry.asm` / `syscall_fast.asm`.
 ///
 /// The layout matches the individual GPR pushes (no pushad in 64-bit mode) plus the
@@ -547,6 +551,10 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
         SYS_GPU_3D_SYNC => handlers::sys_gpu_3d_sync(),
         SYS_GPU_3D_SURFACE_DMA => handlers::sys_gpu_3d_surface_dma(arg1, arg2, arg3, arg4, arg5),
         SYS_GPU_3D_SURFACE_DMA_READ => handlers::sys_gpu_3d_surface_dma_read(arg1, arg2, arg3, arg4, arg5),
+
+        // Hostname
+        SYS_GET_HOSTNAME => handlers::sys_get_hostname(arg1, arg2),
+        SYS_SET_HOSTNAME => handlers::sys_set_hostname(arg1, arg2),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

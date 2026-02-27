@@ -1,18 +1,30 @@
-//! Built-in: Wallpaper picker (scans /media/wallpapers/, loads thumbnails).
+//! Settings page: Display — GPU info, resolution picker, and wallpaper.
+//!
+//! Combines display information (GPU driver, acceleration status, current
+//! resolution), an interactive resolution picker (dropdown), and a wallpaper
+//! browser that scans `/media/wallpapers/` and shows thumbnails.
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use anyos_std::fs;
 use anyos_std::ipc;
 use anyos_std::process;
+use anyos_std::ui::window;
 use libanyui_client as ui;
 use ui::Widget;
+
+use crate::layout;
+
+// ── Constants ───────────────────────────────────────────────────────────────
 
 const WALLPAPER_DIR: &str = "/media/wallpapers";
 const THUMB_W: u32 = 120;
 const THUMB_H: u32 = 80;
 const MAX_WALLPAPERS: usize = 24;
+
+// ── Wallpaper entry ─────────────────────────────────────────────────────────
 
 struct WallpaperEntry {
     name: String,
@@ -20,50 +32,116 @@ struct WallpaperEntry {
     thumbnail: Vec<u32>,
 }
 
-/// Build the Wallpaper settings panel. Returns the panel View ID.
+// ── Build ───────────────────────────────────────────────────────────────────
+
+/// Build the Display settings panel. Returns the panel View ID.
 pub fn build(parent: &ui::ScrollView) -> u32 {
     let panel = ui::View::new();
     panel.set_dock(ui::DOCK_FILL);
     panel.set_color(0xFF1E1E1E);
 
-    // Title
-    let title = ui::Label::new("Wallpaper");
-    title.set_dock(ui::DOCK_TOP);
-    title.set_size(560, 36);
-    title.set_font_size(18);
-    title.set_text_color(0xFFFFFFFF);
-    title.set_margin(16, 12, 16, 4);
-    panel.add(&title);
+    // ── Page header ─────────────────────────────────────────────────────
+    layout::build_page_header(&panel, "Display", "Monitor, resolution and wallpaper");
 
-    let desc = ui::Label::new("Choose a wallpaper");
-    desc.set_dock(ui::DOCK_TOP);
-    desc.set_size(560, 24);
-    desc.set_font_size(12);
-    desc.set_text_color(0xFF808080);
-    desc.set_margin(16, 0, 16, 4);
-    panel.add(&desc);
+    // ── Display Info card ───────────────────────────────────────────────
+    let info_card = layout::build_auto_card(&panel);
 
-    // Scan wallpapers
+    // GPU Driver
+    let gpu = window::gpu_name();
+    layout::build_info_row(&info_card, "GPU Driver", &gpu, true);
+
+    layout::build_separator(&info_card);
+
+    // Hardware acceleration
+    let accel = if window::gpu_has_accel() {
+        "Available"
+    } else {
+        "Not available"
+    };
+    let accel_color = if window::gpu_has_accel() {
+        0xFF4EC970
+    } else {
+        0xFFE06C75
+    };
+    layout::build_info_row_colored(&info_card, "Acceleration", accel, accel_color, false);
+
+    layout::build_separator(&info_card);
+
+    // Current Resolution
+    let (sw, sh) = window::screen_size();
+    let res_str = format!("{} x {}", sw, sh);
+    layout::build_info_row(&info_card, "Current Resolution", &res_str, false);
+
+    // ── Resolution picker card ──────────────────────────────────────────
+    let resolutions = window::list_resolutions();
+    if !resolutions.is_empty() {
+        let res_card = layout::build_auto_card(&panel);
+
+        let row = layout::build_setting_row(&res_card, "Resolution", true);
+
+        // Build pipe-separated items string
+        let mut items = String::new();
+        let mut current_idx: u32 = 0;
+        for (i, &(rw, rh)) in resolutions.iter().enumerate() {
+            if i > 0 {
+                items.push('|');
+            }
+            items.push_str(&format!("{} x {}", rw, rh));
+            if rw == sw && rh == sh {
+                current_idx = i as u32;
+            }
+        }
+
+        let dropdown = ui::DropDown::new(&items);
+        dropdown.set_position(200, 8);
+        dropdown.set_size(280, 28);
+        dropdown.set_selected_index(current_idx);
+
+        // On selection change: apply the resolution
+        let res_copy: Vec<(u32, u32)> = resolutions.clone();
+        dropdown.on_selection_changed(move |e| {
+            let idx = e.index as usize;
+            if idx < res_copy.len() {
+                let (rw, rh) = res_copy[idx];
+                window::set_resolution(rw, rh);
+            }
+        });
+        row.add(&dropdown);
+    }
+
+    // ── Wallpaper card ──────────────────────────────────────────────────
     let wallpapers = scan_wallpapers();
+
+    let wp_card = layout::build_auto_card(&panel);
+    // Section title inside card
+    let hdr_row = ui::View::new();
+    hdr_row.set_dock(ui::DOCK_TOP);
+    hdr_row.set_size(552, 36);
+    hdr_row.set_margin(24, 8, 24, 0);
+    let hdr_lbl = ui::Label::new("Wallpaper");
+    hdr_lbl.set_position(0, 8);
+    hdr_lbl.set_size(200, 20);
+    hdr_lbl.set_text_color(0xFFFFFFFF);
+    hdr_lbl.set_font_size(14);
+    hdr_row.add(&hdr_lbl);
+    wp_card.add(&hdr_row);
 
     if wallpapers.is_empty() {
         let empty = ui::Label::new("No wallpapers found in /media/wallpapers/");
         empty.set_dock(ui::DOCK_TOP);
-        empty.set_size(560, 30);
-        empty.set_font_size(13);
+        empty.set_size(552, 30);
+        empty.set_font_size(12);
         empty.set_text_color(0xFF969696);
-        empty.set_margin(16, 8, 16, 0);
-        panel.add(&empty);
+        empty.set_margin(24, 4, 24, 8);
+        wp_card.add(&empty);
     } else {
-        // Use a FlowPanel with Canvas items for thumbnails
         let flow = ui::FlowPanel::new();
         flow.set_dock(ui::DOCK_TOP);
-        // Estimate height: ~4 columns, so rows = ceil(count/4) * (THUMB_H+40)
         let cols = 4usize;
         let rows = (wallpapers.len() + cols - 1) / cols;
-        let flow_h = (rows as u32) * (THUMB_H + 40) + 16;
-        flow.set_size(560, flow_h);
-        flow.set_margin(8, 4, 8, 4);
+        let flow_h = (rows as u32) * (THUMB_H + 36) + 16;
+        flow.set_size(552, flow_h);
+        flow.set_margin(16, 4, 16, 8);
 
         for wp in &wallpapers {
             let cell = ui::View::new();
@@ -74,16 +152,12 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
             canvas.set_position(4, 4);
             canvas.set_size(THUMB_W, THUMB_H);
 
-            // Draw thumbnail
             if !wp.thumbnail.is_empty() {
                 canvas.copy_pixels_from(&wp.thumbnail);
             } else {
-                // Placeholder
                 canvas.clear(0xFF3A3A3E);
             }
 
-            // Click handler to set wallpaper (direct IPC, avoid window::set_wallpaper
-            // which calls ensure_init() and opens a second compositor connection)
             let path = wp.path.clone();
             canvas.on_click(move |_| {
                 set_wallpaper_ipc(&path);
@@ -91,7 +165,6 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
             });
             cell.add(&canvas);
 
-            // Name label under thumbnail
             let name_label = ui::Label::new(&wp.name);
             name_label.set_position(4, THUMB_H as i32 + 6);
             name_label.set_size(THUMB_W, 18);
@@ -102,12 +175,14 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
             flow.add(&cell);
         }
 
-        panel.add(&flow);
+        wp_card.add(&flow);
     }
 
     parent.add(&panel);
     panel.id()
 }
+
+// ── Wallpaper scanning ──────────────────────────────────────────────────────
 
 fn scan_wallpapers() -> Vec<WallpaperEntry> {
     let mut entries = Vec::new();
@@ -140,10 +215,9 @@ fn scan_wallpapers() -> Vec<WallpaperEntry> {
         }
     }
 
-    // Sort alphabetically
     names.sort_unstable();
 
-    // Load thumbnails using mmap for scratch space
+    // Shared decode buffers via mmap
     const MAX_PIX: usize = 1920 * 1200;
     const FILE_BUF_SIZE: usize = 4 * 1024 * 1024;
     const SCRATCH_SIZE: usize = 32768 + (1920 * 4 + 1) * 1200 + FILE_BUF_SIZE;
@@ -155,14 +229,17 @@ fn scan_wallpapers() -> Vec<WallpaperEntry> {
     let can_decode = !file_ptr.is_null() && !pixel_ptr.is_null() && !scratch_ptr.is_null();
 
     for name in &names {
-        let path = alloc::format!("{}/{}", WALLPAPER_DIR, name);
+        let path = format!("{}/{}", WALLPAPER_DIR, name);
         let display = name
             .rfind('.')
             .map(|i| &name[..i])
             .unwrap_or(name);
 
         let thumbnail = if can_decode {
-            load_thumbnail(&path, file_ptr, pixel_ptr, scratch_ptr, FILE_BUF_SIZE, MAX_PIX, SCRATCH_SIZE)
+            load_thumbnail(
+                &path, file_ptr, pixel_ptr, scratch_ptr,
+                FILE_BUF_SIZE, MAX_PIX, SCRATCH_SIZE,
+            )
         } else {
             Vec::new()
         };
@@ -237,7 +314,6 @@ fn load_thumbnail(
     let pixel_buf = unsafe { core::slice::from_raw_parts_mut(pixel_ptr as *mut u32, max_pix) };
     let scratch_buf = unsafe { core::slice::from_raw_parts_mut(scratch_ptr, scratch_size) };
 
-    // Clear pixel buffer
     for p in pixel_buf[..pixel_count].iter_mut() {
         *p = 0;
     }
@@ -252,7 +328,6 @@ fn load_thumbnail(
         return Vec::new();
     }
 
-    // Scale to thumbnail size
     let thumb_count = (THUMB_W * THUMB_H) as usize;
     let mut thumb = vec![0u32; thumb_count];
     if libimage_client::scale_image(
@@ -270,9 +345,8 @@ fn load_thumbnail(
     }
 }
 
-/// Send CMD_SET_WALLPAPER (0x100F) directly via anyui's compositor channel.
-/// This avoids calling window::set_wallpaper() which would open a second
-/// compositor connection via ensure_init() and freeze the desktop.
+// ── Wallpaper IPC ───────────────────────────────────────────────────────────
+
 fn set_wallpaper_ipc(path: &str) {
     let path_len = path.len() as u32;
     if path_len == 0 || path_len > 255 {
@@ -289,32 +363,22 @@ fn set_wallpaper_ipc(path: &str) {
         return;
     }
 
-    // Copy path into SHM with null terminator
     unsafe {
         let dst = shm_addr as *mut u8;
         core::ptr::copy_nonoverlapping(path.as_ptr(), dst, path_len as usize);
         *dst.add(path_len as usize) = 0;
     }
 
-    // Send CMD_SET_WALLPAPER via anyui's compositor channel
     const CMD_SET_WALLPAPER: u32 = 0x100F;
     let cmd: [u32; 5] = [CMD_SET_WALLPAPER, shm_id, 0, 0, 0];
     ipc::evt_chan_emit(ui::get_compositor_channel(), &cmd);
 
-    // Wait for compositor to read the SHM, then clean up
     process::sleep(32);
     ipc::shm_unmap(shm_id);
     ipc::shm_destroy(shm_id);
 }
 
-fn is_image(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    lower.ends_with(".png")
-        || lower.ends_with(".jpg")
-        || lower.ends_with(".jpeg")
-        || lower.ends_with(".bmp")
-        || lower.ends_with(".gif")
-}
+// ── Wallpaper preference persistence ────────────────────────────────────────
 
 fn save_wallpaper_pref(path: &str) {
     let uid = process::getuid() as u32;
@@ -356,7 +420,6 @@ fn save_wallpaper_pref(path: &str) {
         };
 
         if is_our {
-            // Write our updated line
             let uid_s = fmt_u32_bytes(uid);
             if op + uid_s.len() + 1 + path.len() + 1 < out.len() {
                 out[op..op + uid_s.len()].copy_from_slice(uid_s);
@@ -396,6 +459,16 @@ fn save_wallpaper_pref(path: &str) {
         fs::write(fd, &out[..op]);
         fs::close(fd);
     }
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+fn is_image(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".png")
+        || lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".bmp")
 }
 
 fn parse_uid_bytes(bytes: &[u8]) -> Option<u32> {

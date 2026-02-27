@@ -26,6 +26,7 @@ const CMD_SET_SHADER: u32         = 1061;
 const CMD_SET_SHADER_CONST: u32   = 1062;
 const CMD_DRAW_PRIMITIVES: u32    = 1063;
 const CMD_SETSCISSORRECT: u32     = 1064;
+const CMD_PRESENT_READBACK: u32   = 1070;
 
 // ── Surface formats ──────────────────────────────────────
 
@@ -403,6 +404,11 @@ impl CmdBuf {
         self.push_cmd(CMD_PRESENT, &payload);
     }
 
+    /// Force GPU to flush render target contents so they can be read back via DMA.
+    pub fn present_readback(&mut self) {
+        self.push_cmd(CMD_PRESENT_READBACK, &[]);
+    }
+
     // ── Texture state ────────────────────────────────────
 
     pub fn set_texture_state(&mut self, cid: u32, states: &[(u32, u32, u32)]) {
@@ -492,7 +498,7 @@ impl Svga3dState {
         self.cmd.surface_define(
             self.color_sid,
             SVGA3D_SURFACE_HINT_RENDERTARGET,
-            SVGA3D_X8R8G8B8,
+            SVGA3D_A8R8G8B8,
             width, height,
         );
         self.cmd.surface_define(

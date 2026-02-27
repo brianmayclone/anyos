@@ -25,6 +25,7 @@ mod canvas;
 mod datagrid;
 mod texteditor;
 mod treeview;
+mod dropdown;
 
 // ── Container controls (can have children) ──
 mod expander;
@@ -101,6 +102,7 @@ pub use stackpanel::StackPanel;
 pub use flowpanel::FlowPanel;
 pub use tablelayout::TableLayout;
 pub use radiogroup::RadioGroup;
+pub use dropdown::DropDown;
 
 pub use messagebox::{MessageBox, MessageBoxType};
 pub use filedialog::FileDialog;

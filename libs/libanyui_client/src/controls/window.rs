@@ -37,6 +37,21 @@ impl Window {
         (lib().destroy_window)(self.container.ctrl.id);
     }
 
+    /// Resize the window (SHM buffer + back buffer + control).
+    pub fn resize(&self, w: u32, h: u32) {
+        (lib().resize_window)(self.container.ctrl.id, w, h);
+    }
+
+    /// Move the window to a new screen position.
+    pub fn move_to(&self, x: i32, y: i32) {
+        (lib().move_window)(self.container.ctrl.id, x, y);
+    }
+
+    /// Minimize the window (hide off-screen, restore via dock click).
+    pub fn minimize(&self) {
+        (lib().minimize_window)(self.container.ctrl.id);
+    }
+
     /// Register a closure to be called when the window background is clicked.
     pub fn on_click(&self, mut f: impl FnMut(&ClickEvent) + 'static) {
         let (thunk, ud) = events::register(move |id, _| f(&ClickEvent { id }));

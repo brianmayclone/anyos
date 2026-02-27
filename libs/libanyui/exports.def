@@ -155,3 +155,6 @@ EXPORTS
     anyui_on_window_opened
     anyui_on_window_closed
     anyui_focus_by_tid
+    anyui_resize_window
+    anyui_move_window
+    anyui_minimize_window

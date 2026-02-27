@@ -84,6 +84,7 @@ pub const KIND_DATA_GRID: u32 = 38;
 pub const KIND_TEXT_EDITOR: u32 = 39;
 pub const KIND_TREE_VIEW: u32 = 40;
 pub const KIND_RADIO_GROUP: u32 = 41;
+pub const KIND_DROP_DOWN: u32 = 42;
 
 // ── DockStyle constants ─────────────────────────────────────────────
 
@@ -152,6 +153,9 @@ struct AnyuiLib {
     quit_fn: extern "C" fn(),
     remove_fn: extern "C" fn(u32),
     destroy_window: extern "C" fn(u32),
+    resize_window: extern "C" fn(u32, u32, u32),
+    move_window: extern "C" fn(u32, i32, i32),
+    minimize_window: extern "C" fn(u32),
     // Layout
     set_padding: extern "C" fn(u32, i32, i32, i32, i32),
     set_margin: extern "C" fn(u32, i32, i32, i32, i32),
@@ -371,6 +375,9 @@ pub fn init() -> bool {
             quit_fn: resolve(&handle, "anyui_quit"),
             remove_fn: resolve(&handle, "anyui_remove"),
             destroy_window: resolve(&handle, "anyui_destroy_window"),
+            resize_window: resolve(&handle, "anyui_resize_window"),
+            move_window: resolve(&handle, "anyui_move_window"),
+            minimize_window: resolve(&handle, "anyui_minimize_window"),
             // Layout
             set_padding: resolve(&handle, "anyui_set_padding"),
             set_margin: resolve(&handle, "anyui_set_margin"),

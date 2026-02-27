@@ -48,6 +48,7 @@ pub mod data_grid;
 pub mod text_editor;
 pub mod tree_view;
 pub mod radio_group;
+pub mod dropdown;
 
 /// Factory: create a concrete control based on `kind`.
 ///
@@ -92,6 +93,9 @@ pub fn create_control(
         ControlKind::TextEditor => Box::new(text_editor::TextEditor::new(base)),
         ControlKind::TreeView => Box::new(tree_view::TreeView::new(base)),
         ControlKind::RadioGroup => Box::new(radio_group::RadioGroup::new(base)),
+
+        // DropDown (text-based, pipe-separated items)
+        ControlKind::DropDown => Box::new(dropdown::DropDown::new(TextControlBase::new(base).with_text(text))),
 
         // Text controls — wrap ControlBase in TextControlBase with text
         ControlKind::Label => Box::new(label::Label::new(TextControlBase::new(base).with_text(text))),

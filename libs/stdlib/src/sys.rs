@@ -152,6 +152,18 @@ pub fn partition_rescan(disk_id: u32) -> u32 {
     syscall1(SYS_PARTITION_RESCAN, disk_id as u64)
 }
 
+/// Get the system hostname. Copies hostname into `buf`.
+/// Returns the number of bytes written, or `u32::MAX` on error.
+pub fn get_hostname(buf: &mut [u8]) -> u32 {
+    syscall2(SYS_GET_HOSTNAME, buf.as_mut_ptr() as u64, buf.len() as u64)
+}
+
+/// Set the system hostname.
+/// Returns 0 on success, `u32::MAX` on error. Max 63 bytes.
+pub fn set_hostname(name: &str) -> u32 {
+    syscall2(SYS_SET_HOSTNAME, name.as_ptr() as u64, name.len() as u64)
+}
+
 /// List all open pipes. Each 80-byte entry:
 ///   [0..4]   pipe_id (u32 LE)
 ///   [4..8]   buffered_bytes (u32 LE)

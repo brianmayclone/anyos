@@ -2624,7 +2624,7 @@ fn main() {
     ]);
     // ── Context menu on grid ──
     let ctx_menu = anyui::ContextMenu::new(
-        "Save As Left|Save As Right|Ignore Whitespace|Ignore Blank Lines|Ignore Comments|Insert > Above|< Insert Above|Cycle Theme"
+        "Save As Left|Save As Right|-|Ignore Whitespace|Ignore Blank Lines|Ignore Comments|-|Insert > Above|< Insert Above|-|Cycle Theme"
     );
     grid.set_context_menu(&ctx_menu);
 
@@ -2714,12 +2714,12 @@ fn main() {
         match e.index {
             0 => save_as_left(),
             1 => save_as_right(),
-            2 => toggle_ignore_whitespace(),
-            3 => toggle_ignore_blank_lines(),
-            4 => toggle_ignore_comments(),
-            5 => insert_hunk_to_right_above(),
-            6 => insert_hunk_to_left_above(),
-            7 => cycle_theme(),
+            3 => toggle_ignore_whitespace(),
+            4 => toggle_ignore_blank_lines(),
+            5 => toggle_ignore_comments(),
+            7 => insert_hunk_to_right_above(),
+            8 => insert_hunk_to_left_above(),
+            10 => cycle_theme(),
             _ => {}
         }
     });

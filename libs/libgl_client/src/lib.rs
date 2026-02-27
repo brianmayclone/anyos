@@ -159,6 +159,10 @@ struct LibGl {
     finish: extern "C" fn(),
     // Anti-Aliasing
     set_fxaa: extern "C" fn(u32),
+    // Backend selection
+    set_hw_backend: extern "C" fn(u32),
+    get_hw_backend: extern "C" fn() -> u32,
+    has_hw_backend: extern "C" fn() -> u32,
     // Math
     math_sin: extern "C" fn(f32) -> f32,
     math_cos: extern "C" fn(f32) -> f32,
@@ -267,6 +271,9 @@ pub fn init() -> bool {
             flush: resolve(&handle, "glFlush"),
             finish: resolve(&handle, "glFinish"),
             set_fxaa: resolve(&handle, "gl_set_fxaa"),
+            set_hw_backend: resolve(&handle, "gl_set_hw_backend"),
+            get_hw_backend: resolve(&handle, "gl_get_hw_backend"),
+            has_hw_backend: resolve(&handle, "gl_has_hw_backend"),
             math_sin: resolve(&handle, "gl_math_sin"),
             math_cos: resolve(&handle, "gl_math_cos"),
             math_tan: resolve(&handle, "gl_math_tan"),
@@ -510,6 +517,19 @@ pub fn finish() { (lib().finish)(); }
 
 /// Enable or disable FXAA post-process anti-aliasing.
 pub fn set_fxaa(enabled: bool) { (lib().set_fxaa)(if enabled { 1 } else { 0 }); }
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Backend Selection
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Switch between hardware (SVGA3D) and software rasterizer.
+pub fn set_hw_backend(enabled: bool) { (lib().set_hw_backend)(if enabled { 1 } else { 0 }); }
+
+/// Query whether the hardware backend is currently active.
+pub fn get_hw_backend() -> bool { (lib().get_hw_backend)() != 0 }
+
+/// Query whether SVGA3D hardware is available (even if not currently in use).
+pub fn has_hw_backend() -> bool { (lib().has_hw_backend)() != 0 }
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  Math Functions (FPU/SSE accelerated via libgl)

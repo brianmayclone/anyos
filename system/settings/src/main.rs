@@ -11,12 +11,15 @@ mod types;
 mod config_io;
 mod module_loader;
 mod form_builder;
-mod builtin_general;
-mod builtin_display;
-mod builtin_wallpaper;
-mod builtin_network;
-mod builtin_apps;
-mod builtin_about;
+mod layout;
+mod registrar;
+mod page_dashboard;
+mod page_general;
+mod page_display;
+mod page_apps;
+mod page_devices;
+mod page_network;
+mod page_update;
 
 use types::*;
 
@@ -29,7 +32,6 @@ struct AppState {
     sidebar_ids: Vec<u32>,
     active_idx: usize,
     content_scroll: ui::ScrollView,
-    status_label: ui::Label,
     edit_panel: ui::View,
     edit_fields: Vec<ui::TextField>,
     edit_grid_id: u32,
@@ -55,100 +57,77 @@ fn main() {
     let (uid, username, home) = module_loader::resolve_user();
     let modules = module_loader::load_all_modules(uid, &username, &home);
 
-    let win = ui::Window::new("Settings", -1, -1, 780, 500);
+    let win = ui::Window::new("Settings", -1, -1, 900, 600);
 
-    // ── Toolbar ─────────────────────────────────────────────────────────
-    let toolbar = ui::Toolbar::new();
-    toolbar.set_dock(ui::DOCK_TOP);
-    toolbar.set_size(780, 36);
-    toolbar.set_color(0xFF252526);
-    toolbar.set_padding(4, 4, 4, 4);
-
-    let btn_apply = toolbar.add_icon_button("Apply");
-    btn_apply.set_size(60, 28);
-    btn_apply.on_click(|_| {
-        apply_settings();
-    });
-
-    let btn_reset = toolbar.add_icon_button("Reset");
-    btn_reset.set_size(60, 28);
-    btn_reset.on_click(|_| {
-        reset_settings();
-    });
-
-    let btn_reload = toolbar.add_icon_button("Reload");
-    btn_reload.set_size(70, 28);
-    btn_reload.on_click(|_| {
-        reload_module();
-    });
-
-    win.add(&toolbar);
-
-    // ── Status bar (DOCK_BOTTOM, add before DOCK_FILL) ──────────────────
-    let status_bar = ui::View::new();
-    status_bar.set_dock(ui::DOCK_BOTTOM);
-    status_bar.set_size(780, 24);
-    status_bar.set_color(0xFF252525);
-
-    let status_label = ui::Label::new("Ready");
-    status_label.set_position(8, 4);
-    status_label.set_size(500, 16);
-    status_label.set_font_size(11);
-    status_label.set_text_color(0xFF808080);
-    status_bar.add(&status_label);
-
-    win.add(&status_bar);
-
-    // ── Edit panel (DOCK_BOTTOM, for table row editing) ─────────────────
+    // ── Edit panel (DOCK_BOTTOM, for external module table editing) ──
     let edit_panel = ui::View::new();
     edit_panel.set_dock(ui::DOCK_BOTTOM);
-    edit_panel.set_size(780, 44);
+    edit_panel.set_size(900, 44);
     edit_panel.set_color(0xFF2D2D30);
     edit_panel.set_visible(false);
     win.add(&edit_panel);
 
-    // ── SplitView (DOCK_FILL, add last) ─────────────────────────────────
+    // ── SplitView (DOCK_FILL) ───────────────────────────────────────
     let split = ui::SplitView::new();
     split.set_dock(ui::DOCK_FILL);
     split.set_orientation(ui::ORIENTATION_HORIZONTAL);
-    split.set_split_ratio(25);
-    split.set_min_split(15);
-    split.set_max_split(40);
+    split.set_split_ratio(24);
+    split.set_min_split(18);
+    split.set_max_split(35);
     win.add(&split);
 
-    // ── Left: Sidebar ───────────────────────────────────────────────────
+    // ── Left: Sidebar ───────────────────────────────────────────────
+    let sidebar_scroll = ui::ScrollView::new();
+    sidebar_scroll.set_dock(ui::DOCK_FILL);
+    sidebar_scroll.set_color(0xFF202020);
+
     let sidebar_panel = ui::View::new();
     sidebar_panel.set_dock(ui::DOCK_FILL);
-    sidebar_panel.set_color(0xFF1E1E1E);
+    sidebar_panel.set_color(0xFF202020);
 
-    let sidebar_header = ui::Label::new("SETTINGS");
-    sidebar_header.set_dock(ui::DOCK_TOP);
-    sidebar_header.set_size(180, 24);
-    sidebar_header.set_font_size(11);
-    sidebar_header.set_text_color(0xFF777777);
-    sidebar_header.set_margin(12, 8, 0, 4);
-    sidebar_panel.add(&sidebar_header);
+    // Title area
+    let title_area = ui::View::new();
+    title_area.set_dock(ui::DOCK_TOP);
+    title_area.set_size(220, 52);
 
+    let title_lbl = ui::Label::new("Settings");
+    title_lbl.set_position(16, 16);
+    title_lbl.set_size(180, 28);
+    title_lbl.set_font_size(18);
+    title_lbl.set_text_color(0xFFFFFFFF);
+    title_area.add(&title_lbl);
+
+    sidebar_panel.add(&title_area);
+
+    // Search field
+    let search = ui::SearchField::new();
+    search.set_dock(ui::DOCK_TOP);
+    search.set_size(188, 28);
+    search.set_margin(16, 4, 16, 12);
+    search.set_placeholder("Search settings");
+    sidebar_panel.add(&search);
+
+    // Page items
     let mut sidebar_ids: Vec<u32> = Vec::new();
     let mut last_category = String::new();
 
     for (i, module) in modules.iter().enumerate() {
-        // Category header if changed
+        // Category separator
         if module.category != last_category {
             if !last_category.is_empty() {
-                // Spacer
                 let spacer = ui::View::new();
                 spacer.set_dock(ui::DOCK_TOP);
-                spacer.set_size(180, 8);
+                spacer.set_size(220, 8);
                 sidebar_panel.add(&spacer);
             }
+            // Show category headers for non-System categories
             if module.category != "System" {
                 let cat_label = ui::Label::new(&module.category);
                 cat_label.set_dock(ui::DOCK_TOP);
-                cat_label.set_size(180, 20);
-                cat_label.set_font_size(10);
-                cat_label.set_text_color(0xFF666666);
-                cat_label.set_margin(12, 2, 0, 2);
+                cat_label.set_size(220, 22);
+                cat_label.set_font_size(11);
+                cat_label.set_text_color(0xFF888888);
+                cat_label.set_margin(16, 4, 16, 2);
                 sidebar_panel.add(&cat_label);
             }
             last_category = module.category.clone();
@@ -156,10 +135,10 @@ fn main() {
 
         let item = ui::Label::new(&module.name);
         item.set_dock(ui::DOCK_TOP);
-        item.set_size(180, 30);
+        item.set_size(220, 34);
         item.set_font_size(13);
         item.set_text_color(if i == 0 { 0xFFFFFFFF } else { 0xFFCCCCCC });
-        item.set_padding(28, 6, 8, 6);
+        item.set_padding(16, 8, 8, 8);
         item.set_margin(4, 1, 4, 1);
         if i == 0 {
             item.set_color(0xFF094771);
@@ -169,23 +148,23 @@ fn main() {
         sidebar_panel.add(&item);
     }
 
-    split.add(&sidebar_panel);
+    sidebar_scroll.add(&sidebar_panel);
+    split.add(&sidebar_scroll);
 
-    // ── Right: Content ScrollView ───────────────────────────────────────
+    // ── Right: Content ScrollView ───────────────────────────────────
     let content_scroll = ui::ScrollView::new();
     content_scroll.set_dock(ui::DOCK_FILL);
     content_scroll.set_color(0xFF1E1E1E);
 
     split.add(&content_scroll);
 
-    // ── Initialize state ────────────────────────────────────────────────
+    // ── Initialize state ────────────────────────────────────────────
     unsafe {
         APP = Some(AppState {
             modules,
             sidebar_ids,
             active_idx: 0,
             content_scroll,
-            status_label,
             edit_panel,
             edit_fields: Vec::new(),
             edit_grid_id: 0,
@@ -197,17 +176,13 @@ fn main() {
         });
     }
 
-    // Build the first module panel
+    // Build the first module panel (Dashboard)
     build_module_panel(0);
 
-    // ── Keyboard shortcuts ──────────────────────────────────────────────
+    // ── Keyboard shortcuts ──────────────────────────────────────────
     win.on_key_down(|e| {
-        if e.ctrl() && e.char_code == b's' as u32 {
-            apply_settings();
-        } else if e.keycode == ui::KEY_ESCAPE {
+        if e.keycode == ui::KEY_ESCAPE {
             hide_edit_panel();
-        } else if e.keycode == ui::KEY_F5 {
-            reload_module();
         }
     });
 
@@ -255,9 +230,8 @@ fn switch_module(idx: usize) {
     // Show/build new panel
     build_module_panel(idx);
 
-    // Hide edit panel
+    // Hide edit panel when switching
     hide_edit_panel();
-    s.status_label.set_text("Ready");
 }
 
 fn build_module_panel(idx: usize) {
@@ -267,22 +241,21 @@ fn build_module_panel(idx: usize) {
     }
 
     if s.modules[idx].panel_id != 0 {
-        // Already built, just show
         let panel = ui::Control::from_id(s.modules[idx].panel_id);
         panel.set_visible(true);
         return;
     }
 
-    // Build the panel
     let scroll = &s.content_scroll;
     let panel_id = match &s.modules[idx].kind {
         ModuleKind::Builtin(id) => match id {
-            BuiltinId::General => builtin_general::build(scroll),
-            BuiltinId::Display => builtin_display::build(scroll),
-            BuiltinId::Wallpaper => builtin_wallpaper::build(scroll),
-            BuiltinId::Network => builtin_network::build(scroll),
-            BuiltinId::Apps => builtin_apps::build(scroll),
-            BuiltinId::About => builtin_about::build(scroll),
+            BuiltinId::Dashboard => page_dashboard::build(scroll),
+            BuiltinId::General => page_general::build(scroll),
+            BuiltinId::Display => page_display::build(scroll),
+            BuiltinId::Apps => page_apps::build(scroll),
+            BuiltinId::Devices => page_devices::build(scroll),
+            BuiltinId::Network => page_network::build(scroll),
+            BuiltinId::Update => page_update::build(scroll),
         },
         ModuleKind::External(desc) => {
             let values = &s.modules[idx].values;
@@ -294,7 +267,7 @@ fn build_module_panel(idx: usize) {
     s.modules[idx].panel_id = panel_id;
 }
 
-// ── Apply / Reset / Reload ──────────────────────────────────────────────────
+// ── External module: Apply / Reset ──────────────────────────────────────────
 
 fn apply_settings() {
     let s = app();
@@ -303,7 +276,6 @@ fn apply_settings() {
         return;
     }
 
-    // Extract what we need from the descriptor before mutating
     let (is_external, path, format, columns, ipc_name, new_values) = {
         if let ModuleKind::External(desc) = &s.modules[idx].kind {
             let fields = &desc.fields;
@@ -316,7 +288,6 @@ fn apply_settings() {
             let ipc_name = desc.on_apply_ipc.clone();
             (true, path, format, columns, ipc_name, new_values)
         } else {
-            s.status_label.set_text("Built-in modules apply immediately.");
             return;
         }
     };
@@ -325,14 +296,11 @@ fn apply_settings() {
         if config_io::save_config(&path, format, &new_values, &columns) {
             s.modules[idx].values = new_values;
             s.modules[idx].dirty = false;
-            s.status_label.set_text("Settings saved.");
 
             if !ipc_name.is_empty() {
                 let chan = anyos_std::ipc::evt_chan_create(&ipc_name);
                 anyos_std::ipc::evt_chan_emit(chan, &[1, 0, 0, 0, 0]);
             }
-        } else {
-            s.status_label.set_text("Error saving settings.");
         }
     }
 }
@@ -364,41 +332,7 @@ fn reset_settings() {
             s.modules[idx].panel_id = 0;
             build_module_panel(idx);
         }
-        s.status_label.set_text("Settings reset.");
     }
-}
-
-fn reload_module() {
-    let s = app();
-    let idx = s.active_idx;
-    if idx >= s.modules.len() {
-        return;
-    }
-
-    // For built-in modules: tear down and rebuild
-    if s.modules[idx].panel_id != 0 {
-        let old = ui::Control::from_id(s.modules[idx].panel_id);
-        old.set_visible(false);
-        s.modules[idx].panel_id = 0;
-    }
-
-    // For external: also reload values from file
-    let reload_info = if let ModuleKind::External(desc) = &s.modules[idx].kind {
-        let columns = first_table_columns(&desc.fields);
-        let path = desc.resolved_path.clone();
-        let format = desc.config_format;
-        Some((path, format, columns))
-    } else {
-        None
-    };
-    if let Some((path, format, columns)) = reload_info {
-        let values = config_io::load_config(&path, format, &columns);
-        s.modules[idx].values = values;
-        s.modules[idx].dirty = false;
-    }
-
-    build_module_panel(idx);
-    s.status_label.set_text("Module reloaded.");
 }
 
 // ── Table editing (for external modules with table fields) ──────────────────
@@ -410,7 +344,6 @@ pub fn open_table_edit(grid_id: u32, row: u32) {
         return;
     }
 
-    // Find the table field and its columns
     let columns = if let ModuleKind::External(desc) = &s.modules[idx].kind {
         let mut cols = Vec::new();
         for f in &desc.fields {
@@ -435,13 +368,8 @@ pub fn open_table_edit(grid_id: u32, row: u32) {
         return;
     }
 
-    // Clear and rebuild edit panel fields
     s.edit_panel.set_visible(true);
-    // Resize for columns
-    let panel_h = 44i32;
-    s.edit_panel.set_size(780, panel_h as u32);
-
-    // Remove old fields
+    s.edit_panel.set_size(900, 44);
     s.edit_fields.clear();
 
     let mut x = 8i32;
@@ -452,7 +380,6 @@ pub fn open_table_edit(grid_id: u32, row: u32) {
         tf.set_size(w as u32, 28);
         tf.set_placeholder(&col.placeholder);
 
-        // Populate from existing row data
         if row != u32::MAX {
             let val = get_table_cell_value(idx, &col.key, row as usize);
             if !val.is_empty() {
@@ -465,7 +392,6 @@ pub fn open_table_edit(grid_id: u32, row: u32) {
         x += w + 4;
     }
 
-    // OK button
     let btn_ok = ui::IconButton::new("OK");
     btn_ok.set_position(x, 8);
     btn_ok.set_size(40, 28);
@@ -474,7 +400,6 @@ pub fn open_table_edit(grid_id: u32, row: u32) {
     });
     s.edit_panel.add(&btn_ok);
 
-    // Cancel button
     let btn_cancel = ui::IconButton::new("X");
     btn_cancel.set_position(x + 44, 8);
     btn_cancel.set_size(28, 28);
@@ -495,7 +420,6 @@ fn confirm_table_edit() {
         return;
     }
 
-    // Build a new row object from edit fields
     let mut row_obj = Value::new_object();
     for (i, col) in s.edit_columns.iter().enumerate() {
         if i < s.edit_fields.len() {
@@ -506,7 +430,6 @@ fn confirm_table_edit() {
         }
     }
 
-    // Find the table field key
     let table_key = if let ModuleKind::External(desc) = &s.modules[idx].kind {
         let mut key = String::new();
         for f in &desc.fields {
@@ -520,13 +443,10 @@ fn confirm_table_edit() {
         return;
     };
 
-    // Update values
     let values = &mut s.modules[idx].values;
     if values.is_null() {
         *values = Value::new_object();
     }
-
-    // Ensure the table array exists
     if values[table_key.as_str()].is_null() {
         values.set(table_key.as_str(), Value::new_array());
     }
@@ -545,8 +465,6 @@ fn confirm_table_edit() {
     }
 
     s.modules[idx].dirty = true;
-
-    // Refresh grid
     refresh_table_grid(idx, &table_key);
     hide_edit_panel();
 }
@@ -564,7 +482,6 @@ pub fn delete_table_row(grid_id: u32) {
         return;
     }
 
-    // Find table field key
     let table_key = if let ModuleKind::External(desc) = &s.modules[idx].kind {
         let mut key = String::new();
         for f in &desc.fields {
@@ -578,7 +495,6 @@ pub fn delete_table_row(grid_id: u32) {
         return;
     };
 
-    // Remove from values
     if let Some(obj) = s.modules[idx].values.as_object_mut() {
         if let Some(arr_val) = obj.get_mut(table_key.as_str()) {
             if let Some(a) = arr_val.as_array_mut() {
@@ -596,7 +512,6 @@ pub fn delete_table_row(grid_id: u32) {
 fn refresh_table_grid(idx: usize, table_key: &str) {
     let s = app();
 
-    // Get columns
     let columns = if let ModuleKind::External(desc) = &s.modules[idx].kind {
         let mut cols = Vec::new();
         for f in &desc.fields {
@@ -617,7 +532,6 @@ fn refresh_table_grid(idx: usize, table_key: &str) {
         return;
     };
 
-    // Find grid ID from ctrl_ids (the table field)
     if let ModuleKind::External(desc) = &s.modules[idx].kind {
         for (fi, f) in desc.fields.iter().enumerate() {
             if let FieldType::Table { .. } = &f.field_type {

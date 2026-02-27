@@ -554,6 +554,7 @@ impl Desktop {
                                 self.btn_anims.start(aid, 0, 1000, 100, anyos_std::anim::Easing::EaseOut);
                                 self.render_window(win_id);
                             }
+                            self.minimize_window(win_id);
                         }
                     }
                     HitTest::MaxButton => {

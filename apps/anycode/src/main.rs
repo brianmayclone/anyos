@@ -365,7 +365,7 @@ fn main() {
                     s.sidebar.refresh(&proj.root);
                 }
             }
-            2 => {
+            3 => {
                 // Delete selected
                 let sel = s.sidebar.tree.selected();
                 if sel != u32::MAX {

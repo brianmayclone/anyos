@@ -179,20 +179,6 @@ fn main() {
     canvas.set_position(0, 0);
     window.add(&canvas);
 
-    // FXAA toggle row
-    let fxaa_label = libanyui_client::Label::new("FXAA");
-    fxaa_label.set_position(10, 406);
-    fxaa_label.set_text_color(0xFFCCCCCC);
-    fxaa_label.set_font_size(13);
-    window.add(&fxaa_label);
-
-    let fxaa_toggle = libanyui_client::Toggle::new(true);
-    fxaa_toggle.set_position(60, 404);
-    fxaa_toggle.on_checked_changed(|e| {
-        gl::set_fxaa(e.checked);
-    });
-    window.add(&fxaa_toggle);
-
     window.set_visible(true);
 
     let fb_w = canvas.get_stride();
@@ -216,6 +202,35 @@ fn main() {
     gl::enable(gl::GL_CULL_FACE);
     gl::cull_face(gl::GL_BACK);
     gl::set_fxaa(true);
+
+    // HW/SW renderer toggle (after gl_init so we can query HW availability)
+    let hw_available = gl::has_hw_backend();
+    let hw_label = libanyui_client::Label::new("HW");
+    hw_label.set_position(10, 406);
+    hw_label.set_text_color(0xFFCCCCCC);
+    hw_label.set_font_size(13);
+    window.add(&hw_label);
+
+    let hw_toggle = libanyui_client::Toggle::new(hw_available);
+    hw_toggle.set_position(40, 404);
+    hw_toggle.on_checked_changed(|e| {
+        gl::set_hw_backend(e.checked);
+    });
+    window.add(&hw_toggle);
+
+    // FXAA toggle row
+    let fxaa_label = libanyui_client::Label::new("FXAA");
+    fxaa_label.set_position(110, 406);
+    fxaa_label.set_text_color(0xFFCCCCCC);
+    fxaa_label.set_font_size(13);
+    window.add(&fxaa_label);
+
+    let fxaa_toggle = libanyui_client::Toggle::new(true);
+    fxaa_toggle.set_position(160, 404);
+    fxaa_toggle.on_checked_changed(|e| {
+        gl::set_fxaa(e.checked);
+    });
+    window.add(&fxaa_toggle);
 
     // Compile shaders
     let vs = gl::create_shader(gl::GL_VERTEX_SHADER);

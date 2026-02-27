@@ -1276,7 +1276,10 @@ fn handle_context_action(index: u32) {
     }
 
     // Resolve paste index for the active variant (paste needs no selection)
-    let paste_idx = match variant { 0 => 5u32, 1 => 3, _ => 4 };
+    // variant 0: Open|Add to Dock|Show Package Contents|-|Cut|Copy|Paste|-|Rename|Delete|-|Copy Path|Properties
+    // variant 1: Open|-|Cut|Copy|Paste|-|Rename|Delete|-|Copy Path|Properties
+    // variant 2: Open|Open With...|-|Cut|Copy|Paste|-|Rename|Delete|-|Copy Path|Properties
+    let paste_idx = match variant { 0 => 6u32, 1 => 4, _ => 5 };
     if index == paste_idx {
         paste_entry();
         return;
@@ -1290,42 +1293,42 @@ fn handle_context_action(index: u32) {
     if idx >= s.entries.len() { return; }
 
     if variant == 0 {
-        // Menu: Open | Add to Dock | Show Package Contents | Cut | Copy | Paste | Rename | Delete | Copy Path | Properties
+        // Open|Add to Dock|Show Package Contents|-|Cut|Copy|Paste|-|Rename|Delete|-|Copy Path|Properties
         match index {
             0 => open_entry(idx),
             1 => add_to_dock(idx),
             2 => show_package_contents(idx),
-            3 => cut_selected(),
-            4 => copy_selected(),
-            6 => start_rename(idx),
-            7 => confirm_delete(),
-            8 => copy_path(idx),
-            9 => show_properties(idx),
+            4 => cut_selected(),
+            5 => copy_selected(),
+            8 => start_rename(idx),
+            9 => confirm_delete(),
+            11 => copy_path(idx),
+            12 => show_properties(idx),
             _ => {}
         }
     } else if variant == 1 {
-        // Menu: Open | Cut | Copy | Paste | Rename | Delete | Copy Path | Properties
+        // Open|-|Cut|Copy|Paste|-|Rename|Delete|-|Copy Path|Properties
         match index {
             0 => open_entry(idx),
-            1 => cut_selected(),
-            2 => copy_selected(),
-            4 => start_rename(idx),
-            5 => confirm_delete(),
-            6 => copy_path(idx),
-            7 => show_properties(idx),
+            2 => cut_selected(),
+            3 => copy_selected(),
+            6 => start_rename(idx),
+            7 => confirm_delete(),
+            9 => copy_path(idx),
+            10 => show_properties(idx),
             _ => {}
         }
     } else {
-        // Menu: Open | Open With... | Cut | Copy | Paste | Rename | Delete | Copy Path | Properties
+        // Open|Open With...|-|Cut|Copy|Paste|-|Rename|Delete|-|Copy Path|Properties
         match index {
             0 => open_entry(idx),
             1 => show_open_with(idx),
-            2 => cut_selected(),
-            3 => copy_selected(),
-            5 => start_rename(idx),
-            6 => confirm_delete(),
-            7 => copy_path(idx),
-            8 => show_properties(idx),
+            3 => cut_selected(),
+            4 => copy_selected(),
+            7 => start_rename(idx),
+            8 => confirm_delete(),
+            10 => copy_path(idx),
+            11 => show_properties(idx),
             _ => {}
         }
     }
@@ -1347,11 +1350,11 @@ fn update_context_menu() {
     let is_dir = s.entries[idx].entry_type == TYPE_DIR;
 
     let (menu_text, variant) = if is_app {
-        ("Open|Add to Dock|Show Package Contents|Cut|Copy|Paste|Rename|Delete|Copy Path|Properties", 0u32)
+        ("Open|Add to Dock|Show Package Contents|-|Cut|Copy|Paste|-|Rename|Delete|-|Copy Path|Properties", 0u32)
     } else if is_dir {
-        ("Open|Cut|Copy|Paste|Rename|Delete|Copy Path|Properties", 1u32)
+        ("Open|-|Cut|Copy|Paste|-|Rename|Delete|-|Copy Path|Properties", 1u32)
     } else {
-        ("Open|Open With...|Cut|Copy|Paste|Rename|Delete|Copy Path|Properties", 2u32)
+        ("Open|Open With...|-|Cut|Copy|Paste|-|Rename|Delete|-|Copy Path|Properties", 2u32)
     };
 
     s.ctx_menu_variant = variant;

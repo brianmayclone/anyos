@@ -26,12 +26,13 @@ fn builtin_modules() -> Vec<ModuleEntry> {
         values: Value::Null,
         dirty: false,
     };
-    m.push(b(BuiltinId::General, "General", "settings", "System", 0));
-    m.push(b(BuiltinId::Display, "Display", "device-desktop", "System", 1));
-    m.push(b(BuiltinId::Wallpaper, "Wallpaper", "photo", "System", 2));
-    m.push(b(BuiltinId::Network, "Network", "network", "System", 3));
-    m.push(b(BuiltinId::Apps, "Apps", "apps", "System", 4));
-    m.push(b(BuiltinId::About, "About", "info-circle", "System", 5));
+    m.push(b(BuiltinId::Dashboard, "Dashboard", "home", "System", 0));
+    m.push(b(BuiltinId::General, "General", "settings", "System", 1));
+    m.push(b(BuiltinId::Display, "Display", "device-desktop", "System", 2));
+    m.push(b(BuiltinId::Apps, "Apps", "apps", "System", 3));
+    m.push(b(BuiltinId::Devices, "Devices", "settings", "System", 4));
+    m.push(b(BuiltinId::Network, "Network", "network", "System", 5));
+    m.push(b(BuiltinId::Update, "Update", "info-circle", "System", 6));
     m
 }
 
