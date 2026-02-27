@@ -40,13 +40,10 @@ const TEXT_ALIGN_RIGHT: u32 = 2;
 
 const MAX_CORES: usize = 64;
 
-// Colors
-const BG_DARK: u32       = 0xFF1C1C1E;
-const ACCENT: u32        = 0xFF0A84FF;
-const ACCENT_GREEN: u32  = 0xFF30D158;
-const TEXT_PRIMARY: u32  = 0xFFFFFFFF;
-const TEXT_SECONDARY: u32 = 0xFF8E8E93;
-const SCORE_GOLD: u32    = 0xFFFFD60A;
+/// Returns the current theme color palette.
+fn tc() -> &'static anyui::theme::ThemeColors {
+    anyui::theme::colors()
+}
 
 // ════════════════════════════════════════════════════════════════════════
 //  Shared state for benchmark workers (fork-based)
@@ -234,17 +231,19 @@ fn int_exp2_fp(x: u64) -> u32 {
 // ════════════════════════════════════════════════════════════════════════
 
 fn make_label_pair(parent: &anyui::View, name: &str, y: i32) -> (anyui::Label, anyui::Label) {
+    let colors = tc();
+
     let lbl_name = anyui::Label::new(name);
     lbl_name.set_position(16, y);
     lbl_name.set_size(200, 20);
-    lbl_name.set_text_color(TEXT_PRIMARY);
+    lbl_name.set_text_color(colors.text);
     lbl_name.set_font_size(13);
     parent.add(&lbl_name);
 
     let lbl_score = anyui::Label::new("-");
     lbl_score.set_position(230, y);
     lbl_score.set_size(100, 20);
-    lbl_score.set_text_color(TEXT_SECONDARY);
+    lbl_score.set_text_color(colors.text_secondary);
     lbl_score.set_font_size(13);
     lbl_score.set_state(TEXT_ALIGN_CENTER);
     parent.add(&lbl_score);
@@ -253,8 +252,10 @@ fn make_label_pair(parent: &anyui::View, name: &str, y: i32) -> (anyui::Label, a
 }
 
 fn build_ui() {
+    let colors = tc();
+
     let win = anyui::Window::new("anyBench", -1, -1, 640, 520);
-    win.set_color(BG_DARK);
+    win.set_color(colors.window_bg);
 
     let num_cpus = anyos_std::sys::sysinfo(2, &mut [0u8; 4]);
     let num_cpus = if num_cpus == 0 { 1 } else { num_cpus };
@@ -272,7 +273,7 @@ fn build_ui() {
 
     let panel_overview = anyui::View::new();
     panel_overview.set_dock(anyui::DOCK_FILL);
-    panel_overview.set_color(BG_DARK);
+    panel_overview.set_color(colors.window_bg);
     win.add(&panel_overview);
 
     let lbl_title = anyui::Label::new("anyBench");
@@ -280,7 +281,7 @@ fn build_ui() {
     lbl_title.set_size(640, 36);
     lbl_title.set_font_size(28);
     lbl_title.set_font(1);
-    lbl_title.set_text_color(TEXT_PRIMARY);
+    lbl_title.set_text_color(colors.text);
     lbl_title.set_state(TEXT_ALIGN_CENTER);
     panel_overview.add(&lbl_title);
 
@@ -289,15 +290,15 @@ fn build_ui() {
     lbl_subtitle.set_position(0, 60);
     lbl_subtitle.set_size(640, 20);
     lbl_subtitle.set_font_size(13);
-    lbl_subtitle.set_text_color(TEXT_SECONDARY);
+    lbl_subtitle.set_text_color(colors.text_secondary);
     lbl_subtitle.set_state(TEXT_ALIGN_CENTER);
     panel_overview.add(&lbl_subtitle);
 
     let btn_run_all = anyui::Button::new("Run All Tests");
     btn_run_all.set_position(200, 110);
     btn_run_all.set_size(240, 40);
-    btn_run_all.set_color(ACCENT);
-    btn_run_all.set_text_color(TEXT_PRIMARY);
+    btn_run_all.set_color(colors.accent);
+    btn_run_all.set_text_color(colors.text);
     btn_run_all.set_font_size(15);
     panel_overview.add(&btn_run_all);
 
@@ -322,7 +323,7 @@ fn build_ui() {
     lbl_status.set_position(0, 245);
     lbl_status.set_size(640, 20);
     lbl_status.set_font_size(12);
-    lbl_status.set_text_color(TEXT_SECONDARY);
+    lbl_status.set_text_color(colors.text_secondary);
     lbl_status.set_state(TEXT_ALIGN_CENTER);
     panel_overview.add(&lbl_status);
 
@@ -334,7 +335,7 @@ fn build_ui() {
         l.set_position(card_x[i], 285);
         l.set_size(130, 16);
         l.set_font_size(11);
-        l.set_text_color(TEXT_SECONDARY);
+        l.set_text_color(colors.text_secondary);
         l.set_state(TEXT_ALIGN_CENTER);
         panel_overview.add(&l);
         l
@@ -346,7 +347,7 @@ fn build_ui() {
         l.set_size(130, 28);
         l.set_font_size(22);
         l.set_font(1);
-        l.set_text_color(SCORE_GOLD);
+        l.set_text_color(colors.warning);
         l.set_state(TEXT_ALIGN_CENTER);
         panel_overview.add(&l);
         l
@@ -361,7 +362,7 @@ fn build_ui() {
     lbl_info.set_position(0, 370);
     lbl_info.set_size(640, 16);
     lbl_info.set_font_size(11);
-    lbl_info.set_text_color(TEXT_SECONDARY);
+    lbl_info.set_text_color(colors.text_secondary);
     lbl_info.set_state(TEXT_ALIGN_CENTER);
     panel_overview.add(&lbl_info);
 
@@ -369,7 +370,7 @@ fn build_ui() {
     lbl_info2.set_position(0, 390);
     lbl_info2.set_size(640, 16);
     lbl_info2.set_font_size(11);
-    lbl_info2.set_text_color(TEXT_SECONDARY);
+    lbl_info2.set_text_color(colors.text_secondary);
     lbl_info2.set_state(TEXT_ALIGN_CENTER);
     panel_overview.add(&lbl_info2);
 
@@ -379,7 +380,7 @@ fn build_ui() {
 
     let panel_cpu = anyui::View::new();
     panel_cpu.set_dock(anyui::DOCK_FILL);
-    panel_cpu.set_color(BG_DARK);
+    panel_cpu.set_color(colors.window_bg);
     panel_cpu.set_visible(false);
     win.add(&panel_cpu);
 
@@ -388,7 +389,7 @@ fn build_ui() {
     lbl_sc_header.set_size(300, 24);
     lbl_sc_header.set_font_size(16);
     lbl_sc_header.set_font(1);
-    lbl_sc_header.set_text_color(TEXT_PRIMARY);
+    lbl_sc_header.set_text_color(colors.text);
     panel_cpu.add(&lbl_sc_header);
 
     let lbl_cpu_single_score = anyui::Label::new("Score: -");
@@ -396,7 +397,7 @@ fn build_ui() {
     lbl_cpu_single_score.set_size(220, 24);
     lbl_cpu_single_score.set_font_size(16);
     lbl_cpu_single_score.set_font(1);
-    lbl_cpu_single_score.set_text_color(SCORE_GOLD);
+    lbl_cpu_single_score.set_text_color(colors.warning);
     lbl_cpu_single_score.set_state(TEXT_ALIGN_RIGHT);
     panel_cpu.add(&lbl_cpu_single_score);
 
@@ -414,14 +415,14 @@ fn build_ui() {
     lbl_mc_header.set_size(300, 24);
     lbl_mc_header.set_font_size(16);
     lbl_mc_header.set_font(1);
-    lbl_mc_header.set_text_color(TEXT_PRIMARY);
+    lbl_mc_header.set_text_color(colors.text);
     panel_cpu.add(&lbl_mc_header);
 
     let lbl_mc_cores = anyui::Label::new(&format!("({} Cores)", num_cpus));
     lbl_mc_cores.set_position(220, 226);
     lbl_mc_cores.set_size(100, 24);
     lbl_mc_cores.set_font_size(13);
-    lbl_mc_cores.set_text_color(TEXT_SECONDARY);
+    lbl_mc_cores.set_text_color(colors.text_secondary);
     panel_cpu.add(&lbl_mc_cores);
 
     let lbl_cpu_multi_score = anyui::Label::new("Score: -");
@@ -429,7 +430,7 @@ fn build_ui() {
     lbl_cpu_multi_score.set_size(220, 24);
     lbl_cpu_multi_score.set_font_size(16);
     lbl_cpu_multi_score.set_font(1);
-    lbl_cpu_multi_score.set_text_color(SCORE_GOLD);
+    lbl_cpu_multi_score.set_text_color(colors.warning);
     lbl_cpu_multi_score.set_state(TEXT_ALIGN_RIGHT);
     panel_cpu.add(&lbl_cpu_multi_score);
 
@@ -448,21 +449,21 @@ fn build_ui() {
 
     let panel_gpu = anyui::View::new();
     panel_gpu.set_dock(anyui::DOCK_FILL);
-    panel_gpu.set_color(BG_DARK);
+    panel_gpu.set_color(colors.window_bg);
     panel_gpu.set_visible(false);
     win.add(&panel_gpu);
 
     let canvas = anyui::Canvas::new(300, 180);
     canvas.set_position(320, 16);
     canvas.set_size(300, 180);
-    canvas.clear(0xFF000000);
+    canvas.clear(colors.editor_bg);
     panel_gpu.add(&canvas);
 
     let lbl_canvas_title = anyui::Label::new("Render Preview");
     lbl_canvas_title.set_position(320, 200);
     lbl_canvas_title.set_size(300, 16);
     lbl_canvas_title.set_font_size(10);
-    lbl_canvas_title.set_text_color(TEXT_SECONDARY);
+    lbl_canvas_title.set_text_color(colors.text_secondary);
     lbl_canvas_title.set_state(TEXT_ALIGN_CENTER);
     panel_gpu.add(&lbl_canvas_title);
 
@@ -471,7 +472,7 @@ fn build_ui() {
     lbl_on_header.set_size(200, 24);
     lbl_on_header.set_font_size(16);
     lbl_on_header.set_font(1);
-    lbl_on_header.set_text_color(TEXT_PRIMARY);
+    lbl_on_header.set_text_color(colors.text);
     panel_gpu.add(&lbl_on_header);
 
     let lbl_gpu_onscreen_score = anyui::Label::new("Score: -");
@@ -479,7 +480,7 @@ fn build_ui() {
     lbl_gpu_onscreen_score.set_size(160, 24);
     lbl_gpu_onscreen_score.set_font_size(16);
     lbl_gpu_onscreen_score.set_font(1);
-    lbl_gpu_onscreen_score.set_text_color(SCORE_GOLD);
+    lbl_gpu_onscreen_score.set_text_color(colors.warning);
     lbl_gpu_onscreen_score.set_state(TEXT_ALIGN_RIGHT);
     panel_gpu.add(&lbl_gpu_onscreen_score);
 
@@ -497,7 +498,7 @@ fn build_ui() {
     lbl_off_header.set_size(200, 24);
     lbl_off_header.set_font_size(16);
     lbl_off_header.set_font(1);
-    lbl_off_header.set_text_color(TEXT_PRIMARY);
+    lbl_off_header.set_text_color(colors.text);
     panel_gpu.add(&lbl_off_header);
 
     let lbl_gpu_offscreen_score = anyui::Label::new("Score: -");
@@ -505,7 +506,7 @@ fn build_ui() {
     lbl_gpu_offscreen_score.set_size(160, 24);
     lbl_gpu_offscreen_score.set_font_size(16);
     lbl_gpu_offscreen_score.set_font(1);
-    lbl_gpu_offscreen_score.set_text_color(SCORE_GOLD);
+    lbl_gpu_offscreen_score.set_text_color(colors.warning);
     lbl_gpu_offscreen_score.set_state(TEXT_ALIGN_RIGHT);
     panel_gpu.add(&lbl_gpu_offscreen_score);
 
@@ -693,7 +694,7 @@ fn tick_benchmark() {
                 let name = CPU_TEST_NAMES[a.current_test];
                 a.lbl_status.set_text(&format!("CPU Single-Core: {}...", name));
                 a.cpu_single_scores[a.current_test].set_text("...");
-                a.cpu_single_scores[a.current_test].set_text_color(ACCENT);
+                a.cpu_single_scores[a.current_test].set_text_color(tc().accent);
 
                 let bench_id = (a.current_test + 1) as u32;
                 BENCH_ID.store(bench_id, Ordering::SeqCst);
@@ -726,7 +727,7 @@ fn tick_benchmark() {
                 let name = CPU_TEST_NAMES[a.current_test];
                 a.lbl_status.set_text(&format!("CPU Multi-Core ({}T): {}...", a.num_cpus, name));
                 a.cpu_multi_scores[a.current_test].set_text("...");
-                a.cpu_multi_scores[a.current_test].set_text_color(ACCENT);
+                a.cpu_multi_scores[a.current_test].set_text_color(tc().accent);
 
                 let bench_id = (a.current_test + 1) as u32;
                 BENCH_ID.store(bench_id, Ordering::SeqCst);
@@ -755,10 +756,10 @@ fn tick_benchmark() {
                 let name = GPU_TEST_NAMES[a.current_test];
                 a.lbl_status.set_text(&format!("GPU OnScreen: {}...", name));
                 a.gpu_on_scores[a.current_test].set_text("...");
-                a.gpu_on_scores[a.current_test].set_text_color(ACCENT);
+                a.gpu_on_scores[a.current_test].set_text_color(tc().accent);
                 BENCH_STATE.store(1, Ordering::SeqCst);
 
-                a.canvas.clear(0xFF000000);
+                a.canvas.clear(tc().editor_bg);
                 let result = run_gpu_test(a.current_test, &a.canvas, false);
                 a.gpu_on_raw[a.current_test] = result;
                 let score = compute_score(result, GPU_BASELINES[a.current_test]);
@@ -776,7 +777,7 @@ fn tick_benchmark() {
                 let name = GPU_TEST_NAMES[a.current_test];
                 a.lbl_status.set_text(&format!("GPU OffScreen: {}...", name));
                 a.gpu_off_scores[a.current_test].set_text("...");
-                a.gpu_off_scores[a.current_test].set_text_color(ACCENT);
+                a.gpu_off_scores[a.current_test].set_text_color(tc().accent);
                 BENCH_STATE.store(1, Ordering::SeqCst);
 
                 let result = run_gpu_test(a.current_test, &a.canvas, true);
@@ -849,11 +850,16 @@ fn tick_benchmark() {
     }
 }
 
+/// Returns a semantic color for the given benchmark score.
+///
+/// Green (success) for excellent, gold (warning) for good, orange-tinted
+/// warning for moderate, and red (destructive) for poor results.
 fn score_color(score: u32) -> u32 {
-    if score >= 1200 { ACCENT_GREEN }
-    else if score >= 800 { SCORE_GOLD }
-    else if score >= 400 { 0xFFFF9F0A }
-    else { 0xFFFF453A }
+    let colors = tc();
+    if score >= 1200 { colors.success }
+    else if score >= 800 { colors.warning }
+    else if score >= 400 { anyui::theme::lighten(colors.warning, 20) }
+    else { colors.destructive }
 }
 
 fn update_cpu_single_summary() {
@@ -914,7 +920,7 @@ fn finish_benchmark() {
     a.phase = BenchPhase::Idle;
     a.progress.set_state(100);
     a.lbl_status.set_text("Benchmark complete!");
-    a.lbl_status.set_text_color(ACCENT_GREEN);
+    a.lbl_status.set_text_color(tc().success);
 
     a.btn_run_all.set_enabled(true);
     a.btn_run_cpu.set_enabled(true);

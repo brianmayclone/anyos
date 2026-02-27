@@ -2395,15 +2395,17 @@ fn main() {
     };
     let win = anyui::Window::new(&title, -1, -1, 800, 500);
 
+    let tc = anyui::theme::colors();
+
     // ── Toolbar ──
     let toolbar = anyui::Toolbar::new();
     toolbar.set_dock(anyui::DOCK_TOP);
     toolbar.set_size(800, 36);
-    toolbar.set_color(0xFF252526);
+    toolbar.set_color(tc.toolbar_bg);
     toolbar.set_padding(4, 4, 4, 4);
 
-    let ic = 0xFFCCCCCC; // icon color
-    let isz: u32 = 18;   // icon size
+    let ic = tc.text_secondary; // icon color
+    let isz: u32 = 18;         // icon size
 
     let btn_open_left = toolbar.add_icon_button("");
     btn_open_left.set_size(34, 28);
@@ -2458,12 +2460,12 @@ fn main() {
 
     let btn_del_left = toolbar.add_icon_button("");
     btn_del_left.set_size(34, 28);
-    btn_del_left.set_system_icon("trash", IconType::Outline, 0xFFCC6666, isz);
+    btn_del_left.set_system_icon("trash", IconType::Outline, tc.destructive, isz);
     btn_del_left.set_tooltip("Delete Left");
 
     let btn_del_right = toolbar.add_icon_button("");
     btn_del_right.set_size(34, 28);
-    btn_del_right.set_system_icon("trash", IconType::Outline, 0xFFCC6666, isz);
+    btn_del_right.set_system_icon("trash", IconType::Outline, tc.destructive, isz);
     btn_del_right.set_tooltip("Delete Right");
 
     toolbar.add_separator();
@@ -2488,17 +2490,17 @@ fn main() {
     let status_bar = anyui::View::new();
     status_bar.set_dock(anyui::DOCK_BOTTOM);
     status_bar.set_size(800, 24);
-    status_bar.set_color(0xFF252525);
+    status_bar.set_color(tc.sidebar_bg);
 
     let status_label = anyui::Label::new("");
     status_label.set_position(8, 4);
-    status_label.set_text_color(0xFF969696);
+    status_label.set_text_color(tc.text_secondary);
     status_label.set_font_size(12);
     status_bar.add(&status_label);
 
     let hunk_label = anyui::Label::new("");
     hunk_label.set_position(600, 4);
-    hunk_label.set_text_color(0xFF969696);
+    hunk_label.set_text_color(tc.text_secondary);
     hunk_label.set_font_size(12);
     status_bar.add(&hunk_label);
 
@@ -2508,12 +2510,12 @@ fn main() {
     let edit_panel = anyui::View::new();
     edit_panel.set_dock(anyui::DOCK_BOTTOM);
     edit_panel.set_size(800, 80);
-    edit_panel.set_color(0xFF1E1E1E);
+    edit_panel.set_color(tc.window_bg);
     edit_panel.set_visible(false);
 
     let lbl_left = anyui::Label::new("Left:");
     lbl_left.set_position(8, 10);
-    lbl_left.set_text_color(0xFFCCCCCC);
+    lbl_left.set_text_color(tc.text);
     lbl_left.set_font_size(13);
     edit_panel.add(&lbl_left);
 
@@ -2524,7 +2526,7 @@ fn main() {
 
     let lbl_right = anyui::Label::new("Right:");
     lbl_right.set_position(8, 42);
-    lbl_right.set_text_color(0xFFCCCCCC);
+    lbl_right.set_text_color(tc.text);
     lbl_right.set_font_size(13);
     edit_panel.add(&lbl_right);
 
@@ -2549,12 +2551,12 @@ fn main() {
     let search_panel = anyui::View::new();
     search_panel.set_dock(anyui::DOCK_BOTTOM);
     search_panel.set_size(800, 32);
-    search_panel.set_color(0xFF2D2D30);
+    search_panel.set_color(tc.card_bg);
     search_panel.set_visible(false);
 
     let search_lbl = anyui::Label::new("Find:");
     search_lbl.set_position(8, 7);
-    search_lbl.set_text_color(0xFFCCCCCC);
+    search_lbl.set_text_color(tc.text);
     search_lbl.set_font_size(13);
     search_panel.add(&search_lbl);
 
@@ -2584,12 +2586,12 @@ fn main() {
     let goto_panel = anyui::View::new();
     goto_panel.set_dock(anyui::DOCK_BOTTOM);
     goto_panel.set_size(800, 32);
-    goto_panel.set_color(0xFF2D2D30);
+    goto_panel.set_color(tc.card_bg);
     goto_panel.set_visible(false);
 
     let goto_lbl = anyui::Label::new("Line:");
     goto_lbl.set_position(8, 7);
-    goto_lbl.set_text_color(0xFFCCCCCC);
+    goto_lbl.set_text_color(tc.text);
     goto_lbl.set_font_size(13);
     goto_panel.add(&goto_lbl);
 

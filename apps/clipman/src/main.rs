@@ -222,13 +222,14 @@ fn populate_grid(s: &AppState) {
     }
     s.grid.set_data(&rows);
 
-    // Color the line numbers dim
+    // Color the line numbers and timestamps with dim theme colors
+    let tc = anyui::theme::colors();
     let total = n * NUM_COLS;
     let mut colors: Vec<u32> = Vec::new();
     colors.resize(total, 0);
     for i in 0..n {
-        colors[i * NUM_COLS] = 0xFF606060; // line number dim
-        colors[i * NUM_COLS + 2] = 0xFF808080; // timestamp dim
+        colors[i * NUM_COLS] = tc.text_disabled; // line number dim
+        colors[i * NUM_COLS + 2] = tc.text_secondary; // timestamp dim
     }
     s.grid.set_cell_colors(&colors);
 
@@ -588,13 +589,14 @@ fn main() {
     };
 
     // Create window
+    let tc = anyui::theme::colors();
     let win = anyui::Window::new("Clipboard Manager", -1, -1, 600, 400);
 
     // ── Toolbar ──
     let toolbar = anyui::Toolbar::new();
     toolbar.set_dock(anyui::DOCK_TOP);
     toolbar.set_size(600, 36);
-    toolbar.set_color(0xFF252526);
+    toolbar.set_color(tc.toolbar_bg);
     toolbar.set_padding(4, 4, 4, 4);
 
     let btn_copy = toolbar.add_icon_button("Paste");
@@ -630,17 +632,17 @@ fn main() {
     let status_bar = anyui::View::new();
     status_bar.set_dock(anyui::DOCK_BOTTOM);
     status_bar.set_size(600, 24);
-    status_bar.set_color(0xFF252525);
+    status_bar.set_color(tc.sidebar_bg);
 
     let status_label = anyui::Label::new("");
     status_label.set_position(8, 4);
-    status_label.set_text_color(0xFF969696);
+    status_label.set_text_color(tc.text_secondary);
     status_label.set_font_size(12);
     status_bar.add(&status_label);
 
     let retention_label = anyui::Label::new("");
     retention_label.set_position(350, 4);
-    retention_label.set_text_color(0xFF969696);
+    retention_label.set_text_color(tc.text_secondary);
     retention_label.set_font_size(12);
     status_bar.add(&retention_label);
 
@@ -650,12 +652,12 @@ fn main() {
     let settings_panel = anyui::View::new();
     settings_panel.set_dock(anyui::DOCK_BOTTOM);
     settings_panel.set_size(600, 36);
-    settings_panel.set_color(0xFF2D2D30);
+    settings_panel.set_color(tc.card_bg);
     settings_panel.set_visible(false);
 
     let settings_lbl = anyui::Label::new("Retention (days, 0=unlimited):");
     settings_lbl.set_position(8, 9);
-    settings_lbl.set_text_color(0xFFCCCCCC);
+    settings_lbl.set_text_color(tc.text);
     settings_lbl.set_font_size(13);
     settings_panel.add(&settings_lbl);
 
@@ -680,12 +682,12 @@ fn main() {
     let add_panel = anyui::View::new();
     add_panel.set_dock(anyui::DOCK_BOTTOM);
     add_panel.set_size(600, 36);
-    add_panel.set_color(0xFF2D2D30);
+    add_panel.set_color(tc.card_bg);
     add_panel.set_visible(false);
 
     let add_lbl = anyui::Label::new("Text:");
     add_lbl.set_position(8, 9);
-    add_lbl.set_text_color(0xFFCCCCCC);
+    add_lbl.set_text_color(tc.text);
     add_lbl.set_font_size(13);
     add_panel.add(&add_lbl);
 

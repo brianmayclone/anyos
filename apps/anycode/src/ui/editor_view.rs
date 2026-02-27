@@ -19,12 +19,13 @@ pub struct EditorView {
 impl EditorView {
     /// Create the editor view with a tab bar and editor panel.
     pub fn new() -> Self {
+        let tc = ui::theme::colors();
         let panel = ui::View::new();
 
         let tab_bar = ui::TabBar::new("");
         tab_bar.set_dock(ui::DOCK_TOP);
         tab_bar.set_size(600, 28);
-        tab_bar.set_color(0xFF2D2D2D);
+        tab_bar.set_color(tc.tab_inactive_bg);
         panel.add(&tab_bar);
 
         Self {

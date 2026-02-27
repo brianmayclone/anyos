@@ -875,6 +875,7 @@ fn paste_entry() {
 }
 
 fn start_copy_operation(sources: Vec<String>, dest_dir: String, is_cut: bool) {
+    let tc = ui::theme::colors();
     let total = sources.len() as u32;
     let title = if is_cut { "Moving Files" } else { "Copying Files" };
 
@@ -882,27 +883,27 @@ fn start_copy_operation(sources: Vec<String>, dest_dir: String, is_cut: bool) {
         title, -1, -1, 420, 160,
         ui::WIN_FLAG_NOT_RESIZABLE | ui::WIN_FLAG_NO_MINIMIZE | ui::WIN_FLAG_NO_MAXIMIZE | ui::WIN_FLAG_ALWAYS_ON_TOP,
     );
-    win.set_color(0xFF1E1E1E);
+    win.set_color(tc.window_bg);
 
     let file_label = ui::Label::new("");
     file_label.set_position(16, 16);
     file_label.set_size(388, 18);
     file_label.set_font_size(12);
-    file_label.set_text_color(0xFFCCCCCC);
+    file_label.set_text_color(tc.text);
     win.add(&file_label);
 
     let dest_label = ui::Label::new(&anyos_std::format!("To: {}", dest_dir));
     dest_label.set_position(16, 38);
     dest_label.set_size(388, 18);
     dest_label.set_font_size(11);
-    dest_label.set_text_color(0xFF888888);
+    dest_label.set_text_color(tc.text_secondary);
     win.add(&dest_label);
 
     let count_label = ui::Label::new(&anyos_std::format!("0 of {} files", total));
     count_label.set_position(16, 60);
     count_label.set_size(388, 18);
     count_label.set_font_size(12);
-    count_label.set_text_color(0xFFCCCCCC);
+    count_label.set_text_color(tc.text);
     win.add(&count_label);
 
     let progress = ui::ProgressBar::new(0);
@@ -1044,30 +1045,31 @@ fn confirm_delete() {
         anyos_std::format!("Move {} items to Trash?", names.len())
     };
 
+    let tc = ui::theme::colors();
     let win = ui::Window::new_with_flags(
         "Delete", -1, -1, 380, 140,
         ui::WIN_FLAG_NOT_RESIZABLE | ui::WIN_FLAG_NO_MINIMIZE | ui::WIN_FLAG_NO_MAXIMIZE | ui::WIN_FLAG_ALWAYS_ON_TOP,
     );
-    win.set_color(0xFF1E1E1E);
+    win.set_color(tc.window_bg);
 
     let icon_lbl = ui::Label::new("\u{26A0}");
     icon_lbl.set_position(20, 20);
     icon_lbl.set_size(24, 24);
     icon_lbl.set_font_size(20);
-    icon_lbl.set_text_color(0xFFE8A838);
+    icon_lbl.set_text_color(tc.warning);
     win.add(&icon_lbl);
 
     let msg_label = ui::Label::new(&msg);
     msg_label.set_position(52, 22);
     msg_label.set_size(310, 40);
     msg_label.set_font_size(13);
-    msg_label.set_text_color(0xFFCCCCCC);
+    msg_label.set_text_color(tc.text);
     win.add(&msg_label);
 
     let trash_btn = ui::Button::new("Move to Trash");
     trash_btn.set_position(140, 90);
     trash_btn.set_size(120, 30);
-    trash_btn.set_color(0xFFC04040);
+    trash_btn.set_color(tc.destructive);
     trash_btn.on_click(move |_| {
         for p in &paths {
             move_to_trash_single(p);
@@ -1538,19 +1540,20 @@ fn show_open_with(idx: usize) {
         .unwrap_or_default();
 
     // ── Build the "Open With" dialog ──
+    let tc = ui::theme::colors();
     let title = anyos_std::format!("Open \"{}\" With...", name);
     let win = ui::Window::new_with_flags(
         &title, -1, -1, 380, 420,
         ui::WIN_FLAG_NOT_RESIZABLE | ui::WIN_FLAG_NO_MINIMIZE | ui::WIN_FLAG_NO_MAXIMIZE,
     );
-    win.set_color(0xFF1E1E1E);
+    win.set_color(tc.window_bg);
 
     // Header label
     let header = ui::Label::new("Choose an application:");
     header.set_dock(ui::DOCK_TOP);
     header.set_size(380, 30);
     header.set_font_size(13);
-    header.set_text_color(0xFFCCCCCC);
+    header.set_text_color(tc.text);
     header.set_margin(12, 8, 12, 4);
     win.add(&header);
 
@@ -1558,7 +1561,7 @@ fn show_open_with(idx: usize) {
     let bottom = ui::View::new();
     bottom.set_dock(ui::DOCK_BOTTOM);
     bottom.set_size(0, 70);
-    bottom.set_color(0xFF1E1E1E);
+    bottom.set_color(tc.window_bg);
 
     let div = ui::Divider::new();
     div.set_dock(ui::DOCK_TOP);
@@ -1573,7 +1576,7 @@ fn show_open_with(idx: usize) {
     let ok_btn = ui::Button::new("Open");
     ok_btn.set_size(80, 28);
     ok_btn.set_position(200, 34);
-    ok_btn.set_color(0xFF0E639C);
+    ok_btn.set_color(tc.accent);
     bottom.add(&ok_btn);
 
     let cancel_btn = ui::Button::new("Cancel");
@@ -1717,18 +1720,19 @@ fn show_properties(idx: usize) {
     };
 
     // ── Build the properties window ──
+    let tc = ui::theme::colors();
     let win_title = anyos_std::format!("{} \u{2014} Properties", display_name);
     let win = ui::Window::new_with_flags(
         &win_title, -1, -1, 340, 360,
         ui::WIN_FLAG_NOT_RESIZABLE | ui::WIN_FLAG_NO_MINIMIZE | ui::WIN_FLAG_NO_MAXIMIZE,
     );
-    win.set_color(0xFF1E1E1E);
+    win.set_color(tc.window_bg);
 
     // ── Header: icon + name ──
     let header = ui::View::new();
     header.set_dock(ui::DOCK_TOP);
     header.set_size(0, 70);
-    header.set_color(0xFF1E1E1E);
+    header.set_color(tc.window_bg);
 
     let icon_iv = ui::ImageView::new(48, 48);
     icon_iv.set_position(16, 11);
@@ -1741,7 +1745,7 @@ fn show_properties(idx: usize) {
     name_lbl.set_position(76, 14);
     name_lbl.set_size(240, 20);
     name_lbl.set_font_size(15);
-    name_lbl.set_text_color(0xFFFFFFFF);
+    name_lbl.set_text_color(tc.text);
     header.add(&name_lbl);
 
     // Subtitle (full filename)
@@ -1750,7 +1754,7 @@ fn show_properties(idx: usize) {
         sub_lbl.set_position(76, 38);
         sub_lbl.set_size(240, 16);
         sub_lbl.set_font_size(11);
-        sub_lbl.set_text_color(0xFF888888);
+        sub_lbl.set_text_color(tc.text_secondary);
         header.add(&sub_lbl);
     }
 
@@ -1765,14 +1769,14 @@ fn show_properties(idx: usize) {
     // ── Properties grid ──
     let props = ui::View::new();
     props.set_dock(ui::DOCK_FILL);
-    props.set_color(0xFF1E1E1E);
+    props.set_color(tc.window_bg);
 
     let label_x: i32 = 16;
     let value_x: i32 = 110;
     let mut y: i32 = 12;
     let row_h: i32 = 24;
-    let label_color: u32 = 0xFF888888;
-    let value_color: u32 = 0xFFDDDDDD;
+    let label_color: u32 = tc.text_secondary;
+    let value_color: u32 = tc.text;
 
     // Helper: add a row with label + value
     macro_rules! prop_row {
@@ -1831,7 +1835,7 @@ fn show_properties(idx: usize) {
     let bottom = ui::View::new();
     bottom.set_dock(ui::DOCK_BOTTOM);
     bottom.set_size(0, 50);
-    bottom.set_color(0xFF1E1E1E);
+    bottom.set_color(tc.window_bg);
 
     let div2 = ui::Divider::new();
     div2.set_dock(ui::DOCK_TOP);
@@ -1904,15 +1908,16 @@ fn refresh_ui() {
     s.btn_fwd.set_enabled(s.history_pos + 1 < s.history.len());
 
     // Sidebar highlight
+    let tc = ui::theme::colors();
     let n_loc = s.locations.len();
     for i in 0..s.sidebar_item_ids.len() {
         let ctrl = ui::Control::from_id(s.sidebar_item_ids[i]);
         if i < n_loc && i == s.sidebar_sel {
-            ctrl.set_color(0xFF0A54C4);
-            ctrl.set_text_color(0xFFFFFFFF);
+            ctrl.set_color(tc.selection);
+            ctrl.set_text_color(tc.check_mark);
         } else {
             ctrl.set_color(0x00000000);
-            ctrl.set_text_color(0xFFCCCCCC);
+            ctrl.set_text_color(tc.text);
         }
     }
 
@@ -2029,11 +2034,12 @@ fn populate_icon_view() {
         cell.add(&iv);
 
         // Label below icon
+        let tc = ui::theme::colors();
         let lbl = ui::Label::new(&label_text);
         lbl.set_dock(ui::DOCK_TOP);
         lbl.set_size(GRID_CELL_W, 18);
         lbl.set_font_size(11);
-        lbl.set_text_color(0xFFCCCCCC);
+        lbl.set_text_color(tc.text);
         lbl.set_text_align(ui::TEXT_ALIGN_CENTER);
         cell.add(&lbl);
 
@@ -2105,7 +2111,7 @@ fn icon_set_selected(idx: usize, selected: bool) {
     if idx >= s.icon_selected.len() { return; }
     s.icon_selected[idx] = selected;
     if idx < s.icon_item_ids.len() {
-        let color = if selected { 0xFF0A54C4 } else { 0x00000000 };
+        let color = if selected { ui::theme::colors().selection } else { 0x00000000 };
         ui::Control::from_id(s.icon_item_ids[idx]).set_color(color);
     }
 }
@@ -2197,6 +2203,8 @@ extern "C" fn icon_item_context_handler(_control_id: u32, _event_type: u32, user
 fn main() {
     if !ui::init() { return; }
 
+    let tc = ui::theme::colors();
+
     // Load sidebar locations from config
     let locations = load_locations();
 
@@ -2207,7 +2215,7 @@ fn main() {
     let toolbar = ui::Toolbar::new();
     toolbar.set_dock(ui::DOCK_TOP);
     toolbar.set_size(750, 38);
-    toolbar.set_color(0xFF2C2C2E);
+    toolbar.set_color(tc.toolbar_bg);
     toolbar.set_padding(4, 4, 4, 4);
     win.add(&toolbar);
 
@@ -2215,7 +2223,7 @@ fn main() {
     let btn_back = ui::IconButton::new("");
     btn_back.set_size(30, 28);
     if let Some(mut icon) = ui::Icon::control("left", 18) {
-        icon.recolor(0xFFCCCCCC);
+        icon.recolor(tc.text);
         btn_back.set_pixels(&icon.pixels, icon.width, icon.height);
     }
     btn_back.set_enabled(false);
@@ -2225,7 +2233,7 @@ fn main() {
     let btn_fwd = ui::IconButton::new("");
     btn_fwd.set_size(30, 28);
     if let Some(mut icon) = ui::Icon::control("right", 18) {
-        icon.recolor(0xFFCCCCCC);
+        icon.recolor(tc.text);
         btn_fwd.set_pixels(&icon.pixels, icon.width, icon.height);
     }
     btn_fwd.set_enabled(false);
@@ -2235,7 +2243,7 @@ fn main() {
     let btn_up = ui::IconButton::new("");
     btn_up.set_size(30, 28);
     if let Some(mut icon) = ui::Icon::control("folder", 18) {
-        icon.recolor(0xFFCCCCCC);
+        icon.recolor(tc.text);
         btn_up.set_pixels(&icon.pixels, icon.width, icon.height);
     }
     btn_up.set_tooltip("Parent folder (Backspace)");
@@ -2246,7 +2254,7 @@ fn main() {
     let btn_refresh = ui::IconButton::new("");
     btn_refresh.set_size(30, 28);
     if let Some(mut icon) = ui::Icon::control("refresh", 18) {
-        icon.recolor(0xFFCCCCCC);
+        icon.recolor(tc.text);
         btn_refresh.set_pixels(&icon.pixels, icon.width, icon.height);
     }
     btn_refresh.set_tooltip("Refresh (F5)");
@@ -2266,43 +2274,43 @@ fn main() {
     // View mode buttons
     let btn_list = toolbar.add_icon_button("List");
     btn_list.set_size(30, 28);
-    btn_list.set_system_icon("list", ui::IconType::Outline, 0xFFCCCCCC, 16);
+    btn_list.set_system_icon("list", ui::IconType::Outline, tc.text, 16);
     btn_list.set_tooltip("List view");
 
     let btn_grid = toolbar.add_icon_button("Grid");
     btn_grid.set_size(30, 28);
-    btn_grid.set_system_icon("grid-dots", ui::IconType::Outline, 0xFFCCCCCC, 16);
+    btn_grid.set_system_icon("grid-dots", ui::IconType::Outline, tc.text, 16);
     btn_grid.set_tooltip("Icon view");
 
     // ── Status bar (bottom) ────────────────────────────────────────────
     let status_bar = ui::View::new();
     status_bar.set_size(0, 22);
     status_bar.set_dock(ui::DOCK_BOTTOM);
-    status_bar.set_color(0xFF007ACC);
+    status_bar.set_color(tc.accent);
     win.add(&status_bar);
 
     let sb_items_label = ui::Label::new("0 items");
     sb_items_label.set_position(8, 3);
     sb_items_label.set_font_size(11);
-    sb_items_label.set_text_color(0xFFFFFFFF);
+    sb_items_label.set_text_color(tc.check_mark);
     status_bar.add(&sb_items_label);
 
     let sb_sel_label = ui::Label::new("");
     sb_sel_label.set_position(140, 3);
     sb_sel_label.set_font_size(11);
-    sb_sel_label.set_text_color(0xFFFFFFFF);
+    sb_sel_label.set_text_color(tc.check_mark);
     status_bar.add(&sb_sel_label);
 
     // ── Rename panel (DOCK_BOTTOM, hidden by default) ────────────────────
     let rename_panel = ui::View::new();
     rename_panel.set_dock(ui::DOCK_BOTTOM);
     rename_panel.set_size(800, 34);
-    rename_panel.set_color(0xFF2D2D30);
+    rename_panel.set_color(tc.card_bg);
     rename_panel.set_visible(false);
 
     let rename_lbl = ui::Label::new("Rename:");
     rename_lbl.set_position(8, 8);
-    rename_lbl.set_text_color(0xFFCCCCCC);
+    rename_lbl.set_text_color(tc.text);
     rename_lbl.set_font_size(13);
     rename_panel.add(&rename_lbl);
 
@@ -2335,13 +2343,13 @@ fn main() {
     // ── Left: Sidebar ────────────────────────────────────────────────────
     let sidebar_panel = ui::View::new();
     sidebar_panel.set_dock(ui::DOCK_FILL);
-    sidebar_panel.set_color(0xFF1E1E1E);
+    sidebar_panel.set_color(tc.window_bg);
 
     let sidebar_header = ui::Label::new("LOCATIONS");
     sidebar_header.set_dock(ui::DOCK_TOP);
     sidebar_header.set_size(160, 24);
     sidebar_header.set_font_size(11);
-    sidebar_header.set_text_color(0xFF777777);
+    sidebar_header.set_text_color(tc.text_disabled);
     sidebar_header.set_margin(12, 8, 0, 4);
     sidebar_panel.add(&sidebar_header);
 
@@ -2351,7 +2359,7 @@ fn main() {
         item.set_dock(ui::DOCK_TOP);
         item.set_size(160, 30);
         item.set_font_size(13);
-        item.set_text_color(0xFFCCCCCC);
+        item.set_text_color(tc.text);
         item.set_padding(28, 6, 8, 6);
         item.set_margin(4, 1, 4, 1);
         item.on_click_raw(sidebar_click_handler, i as u64);
@@ -2364,7 +2372,7 @@ fn main() {
     // ── Right: content area (holds both DataGrid and Canvas) ─────────────
     let content_panel = ui::View::new();
     content_panel.set_dock(ui::DOCK_FILL);
-    content_panel.set_color(0xFF1E1E1E);
+    content_panel.set_color(tc.window_bg);
 
     // DataGrid (list view — visible by default)
     let grid = ui::DataGrid::new(0, 0);
@@ -2389,11 +2397,11 @@ fn main() {
     let icon_scroll = ui::ScrollView::new();
     icon_scroll.set_dock(ui::DOCK_FILL);
     icon_scroll.set_visible(false);
-    icon_scroll.set_color(0xFF1E1E1E);
+    icon_scroll.set_color(tc.window_bg);
 
     let icon_flow = ui::FlowPanel::new();
     icon_flow.set_dock(ui::DOCK_FILL);
-    icon_flow.set_color(0xFF1E1E1E);
+    icon_flow.set_color(tc.window_bg);
     icon_scroll.add(&icon_flow);
 
     content_panel.add(&icon_scroll);

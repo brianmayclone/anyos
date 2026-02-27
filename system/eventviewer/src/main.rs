@@ -22,13 +22,15 @@ const WIN_H: u32 = 520;
 const TOOLBAR_H: u32 = 36;
 const DETAIL_H: u32 = 100;
 
-/// Color constants for log levels (ARGB).
+/// Color constants for log severity levels (ARGB).
+///
+/// These are semantic severity colors (red=error, orange=warn, etc.) and
+/// intentionally remain hardcoded.  `COLOR_DEBUG` and `COLOR_DEFAULT` are
+/// resolved at runtime via the theme palette — see [`level_color()`].
 const COLOR_ERROR: u32 = 0xFFFF4444;
 const COLOR_WARN: u32 = 0xFFFFAA00;
 const COLOR_INFO: u32 = 0xFF58D68D;
 const COLOR_KERN: u32 = 0xFF5DADE2;
-const COLOR_DEBUG: u32 = 0xFF969696;
-const COLOR_DEFAULT: u32 = 0xFFD0D0D0;
 
 // ── Parsed log entry ─────────────────────────────────────────────────────────
 
@@ -195,14 +197,19 @@ fn to_lower(s: &str) -> String {
 // ── DataGrid population ─────────────────────────────────────────────────────
 
 /// Color for a log level string.
+///
+/// Severity-specific colors (error, warn, info, kern) are fixed; debug and
+/// default levels derive from the current theme palette so they adapt to
+/// light/dark mode.
 fn level_color(level: &str) -> u32 {
+    let tc = ui::theme::colors();
     match level {
         "ERROR" => COLOR_ERROR,
         "WARN" => COLOR_WARN,
         "INFO" => COLOR_INFO,
         "KERN" => COLOR_KERN,
-        "DEBUG" => COLOR_DEBUG,
-        _ => COLOR_DEFAULT,
+        "DEBUG" => tc.text_secondary,
+        _ => tc.text,
     }
 }
 
@@ -304,17 +311,20 @@ fn main() {
     search.set_size(140, 28);
     toolbar.add(&search);
 
+    // ── Theme colors ──
+    let tc = ui::theme::colors();
+
     // ── Status bar (bottom) ──
     let status_bar = ui::View::new();
     status_bar.set_dock(ui::DOCK_BOTTOM);
     status_bar.set_size(WIN_W, 28);
-    status_bar.set_color(0xFF252526);
+    status_bar.set_color(tc.toolbar_bg);
     status_bar.set_padding(12, 6, 12, 6);
     win.add(&status_bar);
 
     let status_label = ui::Label::new("Loading...");
     status_label.set_position(12, 6);
-    status_label.set_text_color(0xFF969696);
+    status_label.set_text_color(tc.text_secondary);
     status_label.set_font_size(12);
     status_label.set_size(500, 16);
     status_bar.add(&status_label);
@@ -323,21 +333,21 @@ fn main() {
     let detail_view = ui::View::new();
     detail_view.set_dock(ui::DOCK_BOTTOM);
     detail_view.set_size(WIN_W, DETAIL_H);
-    detail_view.set_color(0xFF1E1E1E);
+    detail_view.set_color(tc.editor_bg);
     detail_view.set_padding(12, 8, 12, 8);
     win.add(&detail_view);
 
     let detail_title = ui::Label::new("Details");
     detail_title.set_position(12, 8);
     detail_title.set_size(100, 16);
-    detail_title.set_text_color(0xFF969696);
+    detail_title.set_text_color(tc.text_secondary);
     detail_title.set_font_size(11);
     detail_view.add(&detail_title);
 
     let detail_label = ui::Label::new("");
     detail_label.set_position(12, 30);
     detail_label.set_size(WIN_W - 24, DETAIL_H - 40);
-    detail_label.set_text_color(0xFFD0D0D0);
+    detail_label.set_text_color(tc.text);
     detail_label.set_font_size(12);
     detail_label.set_font(4); // Monospace
     detail_view.add(&detail_label);

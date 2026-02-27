@@ -596,9 +596,19 @@ pub fn compile_jit(program: &Program) -> Option<JitCode> {
     e.mov_r64_mem(R14, RBP, CTX_VARYINGS_IN);     // R14 = varyings_in
     e.mov_r64_mem(R15, RBP, CTX_VARYINGS_OUT);    // R15 = varyings_out
 
+    // ── Build constant register table (SSA IR: each reg written once) ──
+    let mut const_regs: [Option<[f32; 4]>; 128] = [None; 128];
+    for inst in &program.instructions {
+        if let Inst::LoadConst(dst, val) = inst {
+            if (*dst as usize) < 128 {
+                const_regs[*dst as usize] = Some(*val);
+            }
+        }
+    }
+
     // ── Emit instructions ────────────────────────────────────────────
     for inst in &program.instructions {
-        emit_instruction(&mut e, inst);
+        emit_instruction(&mut e, inst, &const_regs);
     }
 
     // ── Epilogue: restore and return ─────────────────────────────────
@@ -615,7 +625,12 @@ pub fn compile_jit(program: &Program) -> Option<JitCode> {
 }
 
 /// Emit native x86_64 code for a single IR instruction.
-fn emit_instruction(e: &mut Emitter, inst: &Inst) {
+///
+/// `const_regs` provides constant propagation data: if a register was loaded
+/// by `LoadConst` and never overwritten (SSA), its value is available here.
+/// Used to optimize `pow(x, 64.0)` into a multiply chain instead of calling
+/// the slow x87 FPU transcendental (~200 cycles → ~6 cycles).
+fn emit_instruction(e: &mut Emitter, inst: &Inst, const_regs: &[Option<[f32; 4]>; 128]) {
     match inst {
         // ── Data movement ────────────────────────────────────────────
         Inst::LoadConst(dst, val) => {
@@ -792,7 +807,27 @@ fn emit_instruction(e: &mut Emitter, inst: &Inst) {
 
         // ── Transcendentals (call C helpers) ─────────────────────────
         Inst::Pow(dst, base, exp) => {
-            emit_per_component_binop(e, *dst, *base, *exp, jit_pow as usize);
+            // Check if exponent is a known integer constant — use fast multiply chain
+            // instead of calling x87 pow(). pow(x, 64.0) = 6 mulps (~6 cycles) vs
+            // 4 × x87 fyl2x+f2xm1 (~800 cycles).
+            let int_exp = const_regs.get(*exp as usize)
+                .and_then(|v| *v)
+                .and_then(|val| {
+                    let ex = val[0];
+                    let n = ex as u32;
+                    if n as f32 == ex && n > 0 && n <= 256
+                        && val[1] == ex && val[2] == ex && val[3] == ex
+                    {
+                        Some(n)
+                    } else {
+                        None
+                    }
+                });
+            if let Some(n) = int_exp {
+                emit_pow_int(e, *dst, *base, n);
+            } else {
+                emit_per_component_binop(e, *dst, *base, *exp, jit_pow as usize);
+            }
         }
         Inst::Sin(dst, src) => {
             emit_per_component_unop(e, *dst, *src, jit_sin as usize);
@@ -1085,6 +1120,39 @@ fn emit_normalize(e: &mut Emitter, dst: u32, src: u32) {
     e.movups_load(XMM0, RBX, reg_off(src));
     e.mulps(XMM0, XMM2);
     e.movups_store(RBX, reg_off(dst), XMM0);
+}
+
+/// Emit integer power via binary exponentiation (multiply chain).
+///
+/// Computes `dst = base ^ n` using only SIMD multiplies, fully unrolled at
+/// JIT compile time. For `n=64` this emits 6 `mulps` instructions (~6 cycles)
+/// instead of 4 calls to x87 `pow()` (~800 cycles) — a 130× speedup per pixel.
+fn emit_pow_int(e: &mut Emitter, dst: u32, base: u32, n: u32) {
+    if n == 0 {
+        emit_load_const(e, dst, [1.0, 1.0, 1.0, 1.0]);
+        return;
+    }
+    if n == 1 {
+        e.movups_load(XMM0, RBX, reg_off(base));
+        e.movups_store(RBX, reg_off(dst), XMM0);
+        return;
+    }
+
+    // Binary exponentiation, fully unrolled at JIT compile time.
+    // XMM0 = original base (never modified), XMM1 = accumulator.
+    e.movups_load(XMM0, RBX, reg_off(base));
+    e.movaps_rr(XMM1, XMM0); // result = x (from highest set bit)
+
+    let bits = 32 - n.leading_zeros();
+    // Process from second-highest bit down to bit 0
+    for i in (0..bits - 1).rev() {
+        e.mulps(XMM1, XMM1); // result = result²
+        if (n >> i) & 1 == 1 {
+            e.mulps(XMM1, XMM0); // result *= base
+        }
+    }
+
+    e.movups_store(RBX, reg_off(dst), XMM1);
 }
 
 /// Emit per-component unary function call (sin, cos, etc.).

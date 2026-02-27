@@ -102,8 +102,9 @@ fn main() {
     win.add(&main_split);
 
     // ── Sidebar container (left pane — holds explorer + git panels) ──
+    let tc = anyui::theme::colors();
     let sidebar_container = anyui::View::new();
-    sidebar_container.set_color(0xFF252526);
+    sidebar_container.set_color(tc.sidebar_bg);
 
     // ── Sidebar (explorer view) ──
     let mut sidebar = sidebar::Sidebar::new();

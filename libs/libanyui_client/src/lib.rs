@@ -679,6 +679,13 @@ impl Control {
         (lib().get_text)(self.id, buf.as_mut_ptr(), buf.len() as u32)
     }
 
+    // ── Children ──
+
+    /// Add a child control by ID (for dynamic container manipulation).
+    pub fn add_child(&self, child_id: u32) {
+        (lib().add_child)(self.id, child_id);
+    }
+
     // ── State (numeric value: slider position, toggle on/off, etc.) ──
 
     pub fn set_state(&self, value: u32) {

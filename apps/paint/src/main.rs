@@ -200,21 +200,21 @@ fn main() {
     let status_pos = ui::Label::new("0, 0");
     status_pos.set_position(8, 3);
     status_pos.set_size(120, 16);
-    status_pos.set_text_color(0xFFAAAAAA);
+    status_pos.set_text_color(tc.text_secondary);
     status_pos.set_font_size(11);
     status.add(&status_pos);
 
     let status_tool = ui::Label::new("Pencil");
     status_tool.set_position(200, 3);
     status_tool.set_size(100, 16);
-    status_tool.set_text_color(0xFFAAAAAA);
+    status_tool.set_text_color(tc.text_secondary);
     status_tool.set_font_size(11);
     status.add(&status_tool);
 
     let status_dim = ui::Label::new("640 x 480");
     status_dim.set_position(340, 3);
     status_dim.set_size(100, 16);
-    status_dim.set_text_color(0xFF888888);
+    status_dim.set_text_color(tc.text_secondary);
     status_dim.set_font_size(11);
     status.add(&status_dim);
 
@@ -332,11 +332,12 @@ extern "C" fn size_up_handler(_id: u32, _ev: u32, _userdata: u64) {
 
 fn highlight_active_tool(active_idx: usize) {
     let a = app();
+    let tc = ui::theme::colors();
     for (i, btn) in a.tool_buttons.iter().enumerate() {
         if i == active_idx {
-            btn.set_color(0xFF0078D4);
+            btn.set_color(tc.accent);
         } else {
-            btn.set_color(0xFF3A3A3A);
+            btn.set_color(tc.control_bg);
         }
     }
 }

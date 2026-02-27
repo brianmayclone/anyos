@@ -566,6 +566,8 @@ fn handle_ipc_commands(
                         ipc_protocol::EVT_THEME_CHANGED,
                         new_theme, old_theme, 0, 0,
                     ]);
+                    // Wake render thread immediately so all apps repaint
+                    signal_render();
                 }
                 i += 1;
             }

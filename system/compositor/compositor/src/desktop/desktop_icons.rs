@@ -42,12 +42,37 @@ const CTX_ITEM_INFO: u32 = 3;
 const CTX_ITEM_HEIGHT: u32 = 24;
 const CTX_SEPARATOR_HEIGHT: u32 = 9;
 const CTX_PADDING: i32 = 4;
-const CTX_COLOR_BG: u32 = 0xF0303035;
-const CTX_COLOR_BORDER: u32 = 0xFF505055;
 const CTX_COLOR_HOVER: u32 = 0xFF0058D0;
-const CTX_COLOR_TEXT: u32 = 0xFFE0E0E0;
-const CTX_COLOR_DISABLED: u32 = 0xFF707075;
-const CTX_COLOR_SEPARATOR: u32 = 0xFF505055;
+
+/// Context menu background — theme-aware.
+#[inline(always)]
+fn ctx_color_bg() -> u32 {
+    if super::theme::is_light() { 0xF0F0F0F5 } else { 0xF0303035 }
+}
+
+/// Context menu border — theme-aware.
+#[inline(always)]
+fn ctx_color_border() -> u32 {
+    if super::theme::is_light() { 0xFFD1D1D6 } else { 0xFF505055 }
+}
+
+/// Context menu normal text — theme-aware.
+#[inline(always)]
+fn ctx_color_text() -> u32 {
+    if super::theme::is_light() { 0xFF1D1D1F } else { 0xFFE0E0E0 }
+}
+
+/// Context menu disabled text — theme-aware.
+#[inline(always)]
+fn ctx_color_disabled() -> u32 {
+    if super::theme::is_light() { 0xFFA0A0A5 } else { 0xFF707075 }
+}
+
+/// Context menu separator — theme-aware.
+#[inline(always)]
+fn ctx_color_separator() -> u32 {
+    if super::theme::is_light() { 0xFFD1D1D6 } else { 0xFF505055 }
+}
 
 /// Selection highlight color (macOS-like blue, semi-transparent)
 const SELECTION_BG: u32 = 0x50307AD8;
@@ -506,8 +531,8 @@ impl DesktopIconManager {
             for p in pixels.iter_mut() { *p = 0x00000000; }
 
             // Background
-            fill_rounded_rect(pixels, w, h, 0, 0, w, h, 6, CTX_COLOR_BG);
-            draw_rect_outline(pixels, w, 0, 0, w, h, CTX_COLOR_BORDER);
+            fill_rounded_rect(pixels, w, h, 0, 0, w, h, 6, ctx_color_bg());
+            draw_rect_outline(pixels, w, 0, 0, w, h, ctx_color_border());
 
             for (i, item) in cm.items.iter().enumerate() {
                 let iy = cm.items_y[i];
@@ -518,7 +543,7 @@ impl DesktopIconManager {
                         for x in 8i32..(w as i32 - 8) {
                             if x >= 0 && (x as u32) < w {
                                 let idx = (line_y as u32 * w + x as u32) as usize;
-                                if idx < pixels.len() { pixels[idx] = CTX_COLOR_SEPARATOR; }
+                                if idx < pixels.len() { pixels[idx] = ctx_color_separator(); }
                             }
                         }
                     }
@@ -537,11 +562,11 @@ impl DesktopIconManager {
                 );
                 let text_y = iy + ((CTX_ITEM_HEIGHT as i32 - th as i32) / 2).max(0);
                 let text_color = if !item.enabled {
-                    CTX_COLOR_DISABLED
+                    ctx_color_disabled()
                 } else if cm.hover_idx == Some(i) {
                     0xFFFFFFFF
                 } else {
-                    CTX_COLOR_TEXT
+                    ctx_color_text()
                 };
                 anyos_std::ui::window::font_render_buf(
                     LABEL_FONT_ID, 13, pixels, w, h, text_x, text_y, text_color, item.label,

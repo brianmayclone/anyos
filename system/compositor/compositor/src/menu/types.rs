@@ -11,13 +11,44 @@ pub(crate) const FONT_SIZE: u16 = 13;
 
 pub const MENUBAR_HEIGHT: u32 = 24;
 
-pub(crate) const COLOR_MENUBAR_TEXT: u32 = 0xFFE0E0E0;
-pub(crate) const COLOR_MENUBAR_HIGHLIGHT: u32 = 0x40FFFFFF;
-pub(crate) const COLOR_DROPDOWN_BG: u32 = 0xF0303035;
-pub(crate) const COLOR_DROPDOWN_BORDER: u32 = 0xFF505055;
+/// Menu bar text color — theme-aware (dark text on light, light text on dark).
+#[inline(always)]
+pub(crate) fn color_menubar_text() -> u32 {
+    if crate::desktop::theme::is_light() { 0xFF1D1D1F } else { 0xFFE0E0E0 }
+}
+
+/// Highlight overlay for the currently-open menu title.
+#[inline(always)]
+pub(crate) fn color_menubar_highlight() -> u32 {
+    if crate::desktop::theme::is_light() { 0x30000000 } else { 0x40FFFFFF }
+}
+
+/// Dropdown background — translucent surface behind menu items.
+#[inline(always)]
+pub(crate) fn color_dropdown_bg() -> u32 {
+    if crate::desktop::theme::is_light() { 0xF0F0F0F5 } else { 0xF0303035 }
+}
+
+/// Dropdown 1px border.
+#[inline(always)]
+pub(crate) fn color_dropdown_border() -> u32 {
+    if crate::desktop::theme::is_light() { 0xFFD1D1D6 } else { 0xFF505055 }
+}
+
 pub(crate) const COLOR_HOVER_BG: u32 = 0xFF0058D0;
-pub(crate) const COLOR_SEPARATOR: u32 = 0xFF505055;
-pub(crate) const COLOR_DISABLED_TEXT: u32 = 0xFF707075;
+
+/// Separator line inside dropdown menus.
+#[inline(always)]
+pub(crate) fn color_separator() -> u32 {
+    if crate::desktop::theme::is_light() { 0xFFD1D1D6 } else { 0xFF505055 }
+}
+
+/// Disabled (grayed-out) menu item text — theme-aware.
+#[inline(always)]
+pub(crate) fn color_disabled_text() -> u32 {
+    if crate::desktop::theme::is_light() { 0xFFA0A0A5 } else { 0xFF707075 }
+}
+
 pub(crate) const COLOR_CHECK: u32 = 0xFF0A84FF;
 
 pub(crate) const ITEM_HEIGHT: u32 = 24;

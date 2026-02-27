@@ -287,6 +287,14 @@ pub(crate) fn invalidate_all_pages() {
         }
     }
 
+    // Kill any running wallpaper loading timer before destroying pages
+    unsafe {
+        if page_display::WP_TIMER != 0 {
+            ui::kill_timer(page_display::WP_TIMER);
+            page_display::WP_TIMER = 0;
+        }
+    }
+
     // Destroy all cached pages and rebuild active
     let active = s.active_idx;
     for page in &mut s.pages {

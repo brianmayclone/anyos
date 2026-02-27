@@ -48,11 +48,13 @@ fn main() {
 
     let win = ui::Window::new("Activity Monitor", 100, 60, 580, 420);
 
+    let tc = ui::theme::colors();
+
     // ── Header (DOCK_TOP) ──
     let header = ui::View::new();
     header.set_size(0, 80);
     header.set_dock(ui::DOCK_TOP);
-    header.set_color(0xFF2A2A2A);
+    header.set_color(tc.card_bg);
     header.set_padding(0, 0, 0, 8);
     win.add(&header);
 
@@ -60,7 +62,7 @@ fn main() {
     let header_top = ui::View::new();
     header_top.set_size(0, 32);
     header_top.set_dock(ui::DOCK_TOP);
-    header_top.set_color(0xFF2A2A2A);
+    header_top.set_color(tc.card_bg);
     header.add(&header_top);
 
     // Centered segmented control (manually positioned)
@@ -86,7 +88,7 @@ fn main() {
     uptime_label.set_size(200, 18);
     uptime_label.set_dock(ui::DOCK_RIGHT);
     uptime_label.set_margin(0, 0, 8, 0);
-    uptime_label.set_text_color(0xFF8E8E93);
+    uptime_label.set_text_color(tc.text_secondary);
     uptime_label.set_font_size(11);
     uptime_label.set_text_align(ui::TEXT_ALIGN_RIGHT);
     mem_row.add(&uptime_label);
@@ -102,7 +104,7 @@ fn main() {
     let status_bar = ui::View::new();
     status_bar.set_size(0, 22);
     status_bar.set_dock(ui::DOCK_BOTTOM);
-    status_bar.set_color(0xFF007ACC);
+    status_bar.set_color(tc.accent);
     win.add(&status_bar);
 
     let sb_tasks_label = ui::Label::new("");
@@ -252,7 +254,7 @@ fn main() {
     let cpu_title = ui::Label::new("Processor");
     cpu_title.set_size(536, 20);
     cpu_title.set_font_size(13);
-    cpu_title.set_text_color(0xFF0A84FF);
+    cpu_title.set_text_color(tc.accent_hover);
     cpu_card_stack.add(&cpu_title);
 
     let cpu_brand_label = ui::Label::new("");
@@ -286,7 +288,7 @@ fn main() {
     let mem_title = ui::Label::new("Memory");
     mem_title.set_size(536, 20);
     mem_title.set_font_size(13);
-    mem_title.set_text_color(0xFF0A84FF);
+    mem_title.set_text_color(tc.accent_hover);
     mem_card_stack.add(&mem_title);
 
     let mem_total_label = ui::Label::new("");
@@ -312,7 +314,7 @@ fn main() {
     let sys_title = ui::Label::new("System");
     sys_title.set_size(536, 20);
     sys_title.set_font_size(13);
-    sys_title.set_text_color(0xFF0A84FF);
+    sys_title.set_text_color(tc.accent_hover);
     sys_card_stack.add(&sys_title);
 
     let boot_label = ui::Label::new("");
@@ -338,7 +340,7 @@ fn main() {
     let disp_title = ui::Label::new("Display");
     disp_title.set_size(536, 20);
     disp_title.set_font_size(13);
-    disp_title.set_text_color(0xFF0A84FF);
+    disp_title.set_text_color(tc.accent_hover);
     disp_card_stack.add(&disp_title);
 
     let disp_res_label = ui::Label::new("");
@@ -452,6 +454,7 @@ fn main() {
     // ── Timer: refresh every 1s ──
     // All controls are Copy — captured directly by value.
     ui::set_timer(1000, move || {
+        let tc = ui::theme::colors();
         let cpu_st = unsafe { &mut *CPU_STATE.unwrap() };
         let hist = unsafe { &mut *CPU_HISTORY.unwrap() };
         let prev = unsafe { &mut *PREV_TICKS.unwrap() };
@@ -672,15 +675,15 @@ fn main() {
 
                 // Build colors row
                 let state_color = match task.state {
-                    0 => 0xFFFFD60A,
-                    1 => 0xFF30D158,
-                    2 => 0xFFFF3B30,
-                    3 => 0xFF8E8E93,
-                    _ => 0xFF8E8E93,
+                    0 => tc.warning,
+                    1 => tc.success,
+                    2 => tc.destructive,
+                    3 => tc.text_disabled,
+                    _ => tc.text_disabled,
                 };
                 colors[ri * col_count + 3] = state_color;
                 if task.arch == 1 {
-                    colors[ri * col_count + 4] = 0xFFFF9500;
+                    colors[ri * col_count + 4] = tc.warning;
                 }
             }
 
@@ -717,7 +720,7 @@ fn main() {
 
             let cw = cpu_canvas.get_stride();
             let ch = cpu_canvas.get_height();
-            cpu_canvas.clear(0xFF1A1A1A);
+            cpu_canvas.clear(tc.input_bg);
             if cw >= 20 && ch >= 20 {
                 let cols = isqrt_ceil(ncpu);
                 let rows = (ncpu + cols - 1) / cols;

@@ -5,8 +5,6 @@ use libanyui_client as ui;
 use crate::util::{path, syntax_map};
 
 const STYLE_BOLD: u32 = 1;
-const DIR_COLOR: u32 = 0xFFCCCCCC;
-const FILE_COLOR: u32 = 0xFFBBBBBB;
 
 /// Simple icon cache: stores decoded 16x16 ARGB icons keyed by file path.
 struct IconCache {
@@ -53,21 +51,22 @@ pub struct Sidebar {
 impl Sidebar {
     /// Create the sidebar panel with explorer view.
     pub fn new() -> Self {
+        let tc = ui::theme::colors();
         let panel = ui::View::new();
         panel.set_dock(ui::DOCK_FILL);
-        panel.set_color(0xFF252526);
+        panel.set_color(tc.sidebar_bg);
 
         // Explorer panel (header + search + tree)
         let explorer_panel = ui::View::new();
         explorer_panel.set_dock(ui::DOCK_FILL);
-        explorer_panel.set_color(0xFF252526);
+        explorer_panel.set_color(tc.sidebar_bg);
         panel.add(&explorer_panel);
 
         let header = ui::Label::new("EXPLORER");
         header.set_dock(ui::DOCK_TOP);
         header.set_size(200, 20);
         header.set_font_size(11);
-        header.set_text_color(0xFF969696);
+        header.set_text_color(tc.text_secondary);
         header.set_margin(8, 4, 0, 2);
         explorer_panel.add(&header);
 
@@ -93,8 +92,8 @@ impl Sidebar {
         let rename_field = ui::TextField::new();
         rename_field.set_size(200, 22);
         rename_field.set_font_size(12);
-        rename_field.set_color(0xFF3C3C3C);
-        rename_field.set_text_color(0xFFCCCCCC);
+        rename_field.set_color(tc.control_bg);
+        rename_field.set_text_color(tc.text);
         rename_field.set_visible(false);
         explorer_panel.add(&rename_field);
 
@@ -118,10 +117,11 @@ impl Sidebar {
         self.paths.clear();
 
         let dir_name = path::basename(root);
+        let tc = ui::theme::colors();
         let root_node = self.tree.add_root(dir_name);
         self.paths.push(String::from(root));
         self.tree.set_node_style(root_node, STYLE_BOLD);
-        self.tree.set_node_text_color(root_node, DIR_COLOR);
+        self.tree.set_node_text_color(root_node, tc.text);
         // Folder icon for root
         self.set_folder_icon(root_node);
 
@@ -273,11 +273,12 @@ impl Sidebar {
         dirs.sort_by(|a, b| a.0.cmp(&b.0));
         files.sort_by(|a, b| a.0.cmp(&b.0));
 
+        let tc = ui::theme::colors();
         for (name, full_path) in &dirs {
             let node = self.tree.add_child(parent_node, name);
             self.paths.push(full_path.clone());
             self.tree.set_node_style(node, STYLE_BOLD);
-            self.tree.set_node_text_color(node, DIR_COLOR);
+            self.tree.set_node_text_color(node, tc.text);
             self.set_folder_icon(node);
             self.add_dir_entries(node, full_path, depth + 1);
         }
@@ -290,7 +291,7 @@ impl Sidebar {
             if icon_color != 0 {
                 self.tree.set_node_text_color(node, icon_color);
             } else {
-                self.tree.set_node_text_color(node, FILE_COLOR);
+                self.tree.set_node_text_color(node, tc.text_secondary);
             }
             self.set_file_icon(node, name);
         }

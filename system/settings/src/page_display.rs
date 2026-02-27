@@ -38,13 +38,8 @@ struct AccentStyle {
     light_hover: u32,
 }
 
-// ── Wallpaper entry ─────────────────────────────────────────────────────────
-
-struct WallpaperEntry {
-    name: String,
-    path: String,
-    thumbnail: Vec<u32>,
-}
+/// Active wallpaper loading timer — kill this before destroying the page.
+pub(crate) static mut WP_TIMER: u32 = 0;
 
 // ── Build ───────────────────────────────────────────────────────────────────
 
@@ -128,10 +123,9 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
         row.add(&dropdown);
     }
 
-    // ── Wallpaper card ──────────────────────────────────────────────────
-    let wallpapers = scan_wallpapers();
-
+    // ── Wallpaper card (async loading) ──────────────────────────────────
     let wp_card = layout::build_auto_card(&panel);
+
     // Section title inside card
     let hdr_row = ui::View::new();
     hdr_row.set_dock(ui::DOCK_TOP);
@@ -145,7 +139,10 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     hdr_row.add(&hdr_lbl);
     wp_card.add(&hdr_row);
 
-    if wallpapers.is_empty() {
+    // Scan directory for wallpaper file names (fast — no image decode)
+    let names = scan_wallpaper_names();
+
+    if names.is_empty() {
         let empty = ui::Label::new("No wallpapers found in /media/wallpapers/");
         empty.set_dock(ui::DOCK_TOP);
         empty.set_size(552, 30);
@@ -154,16 +151,96 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
         empty.set_margin(24, 4, 24, 8);
         wp_card.add(&empty);
     } else {
+        // Progress bar — shown while thumbnails load
+        let progress_row = ui::View::new();
+        progress_row.set_dock(ui::DOCK_TOP);
+        progress_row.set_size(552, 28);
+        progress_row.set_margin(24, 4, 24, 4);
+
+        let progress_label = ui::Label::new("Loading wallpapers...");
+        progress_label.set_position(0, 4);
+        progress_label.set_size(160, 18);
+        progress_label.set_font_size(11);
+        progress_label.set_text_color(layout::text_dim());
+        progress_row.add(&progress_label);
+
+        let progress = ui::ProgressBar::new(0);
+        progress.set_position(168, 6);
+        progress.set_size(340, 12);
+        progress_row.add(&progress);
+
+        wp_card.add(&progress_row);
+
+        // Flow panel for thumbnails — grows as wallpapers load
         let flow = ui::FlowPanel::new();
         flow.set_dock(ui::DOCK_TOP);
         let cols = 4usize;
-        let rows = (wallpapers.len() + cols - 1) / cols;
+        let rows = (names.len() + cols - 1) / cols;
         let flow_h = (rows as u32) * (THUMB_H + 36) + 16;
         flow.set_size(552, flow_h);
         flow.set_margin(16, 4, 16, 8);
+        wp_card.add(&flow);
 
-        let tc = ui::theme::colors();
-        for wp in &wallpapers {
+        // Capture for the timer closure
+        let progress_row_id = progress_row.id();
+        let progress_id = progress.id();
+        let total = names.len();
+
+        // Mmap shared decode buffers once (reused across all ticks)
+        const MAX_PIX: usize = 1920 * 1200;
+        const FILE_BUF_SIZE: usize = 4 * 1024 * 1024;
+        const SCRATCH_SIZE: usize = 32768 + (1920 * 4 + 1) * 1200 + FILE_BUF_SIZE;
+
+        let file_ptr = process::mmap(FILE_BUF_SIZE);
+        let pixel_ptr = process::mmap(MAX_PIX * 4);
+        let scratch_ptr = process::mmap(SCRATCH_SIZE);
+        let can_decode = !file_ptr.is_null() && !pixel_ptr.is_null() && !scratch_ptr.is_null();
+
+        let mut index = 0usize;
+
+        let timer_id = ui::set_timer(16, move || {
+            if index >= total {
+                // All done — hide progress, free buffers, kill timer
+                ui::Control::from_id(progress_row_id).set_visible(false);
+
+                if !scratch_ptr.is_null() {
+                    process::munmap(scratch_ptr, SCRATCH_SIZE);
+                }
+                if !pixel_ptr.is_null() {
+                    process::munmap(pixel_ptr, MAX_PIX * 4);
+                }
+                if !file_ptr.is_null() {
+                    process::munmap(file_ptr, FILE_BUF_SIZE);
+                }
+
+                let tid = unsafe { WP_TIMER };
+                if tid != 0 {
+                    ui::kill_timer(tid);
+                    unsafe { WP_TIMER = 0; }
+                }
+                return;
+            }
+
+            let name = &names[index];
+            let path = format!("{}/{}", WALLPAPER_DIR, name);
+            let display = name
+                .rfind('.')
+                .map(|i| &name[..i])
+                .unwrap_or(name);
+
+            // Load and decode one thumbnail
+            let thumbnail = if can_decode {
+                load_thumbnail(
+                    &path, file_ptr, pixel_ptr, scratch_ptr,
+                    FILE_BUF_SIZE, MAX_PIX, SCRATCH_SIZE,
+                )
+            } else {
+                Vec::new()
+            };
+
+            // Create cell and add to flow
+            let tc = ui::theme::colors();
+
             let cell = ui::View::new();
             cell.set_size(THUMB_W + 8, THUMB_H + 28);
             cell.set_margin(4, 4, 4, 4);
@@ -172,30 +249,36 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
             canvas.set_position(4, 4);
             canvas.set_size(THUMB_W, THUMB_H);
 
-            if !wp.thumbnail.is_empty() {
-                canvas.copy_pixels_from(&wp.thumbnail);
+            if !thumbnail.is_empty() {
+                canvas.copy_pixels_from(&thumbnail);
             } else {
                 canvas.clear(tc.placeholder_bg);
             }
 
-            let path = wp.path.clone();
+            let click_path = path.clone();
             canvas.on_click(move |_| {
-                set_wallpaper_ipc(&path);
-                save_wallpaper_pref(&path);
+                set_wallpaper_ipc(&click_path);
+                save_wallpaper_pref(&click_path);
             });
             cell.add(&canvas);
 
-            let name_label = ui::Label::new(&wp.name);
+            let name_label = ui::Label::new(display);
             name_label.set_position(4, THUMB_H as i32 + 6);
             name_label.set_size(THUMB_W, 18);
             name_label.set_font_size(10);
-            name_label.set_text_color(layout::text_dim());
+            name_label.set_text_color(ui::theme::colors().text_secondary);
             cell.add(&name_label);
 
             flow.add(&cell);
-        }
 
-        wp_card.add(&flow);
+            index += 1;
+
+            // Update progress bar
+            let pct = (index * 100) / total;
+            ui::Control::from_id(progress_id).set_state(pct as u32);
+        });
+
+        unsafe { WP_TIMER = timer_id; }
     }
 
     parent.add(&panel);
@@ -431,17 +514,16 @@ fn save_current_style(name: &str) {
 
 // ── Wallpaper scanning ──────────────────────────────────────────────────────
 
-fn scan_wallpapers() -> Vec<WallpaperEntry> {
-    let mut entries = Vec::new();
+/// Fast directory scan — returns sorted file names only, no image decode.
+fn scan_wallpaper_names() -> Vec<String> {
+    let mut names = Vec::new();
 
     let mut dir_buf = [0u8; 64 * 32];
     let count = fs::readdir(WALLPAPER_DIR, &mut dir_buf);
     if count == u32::MAX || count == 0 {
-        return entries;
+        return names;
     }
 
-    // Collect filenames
-    let mut names: Vec<String> = Vec::new();
     for i in 0..count as usize {
         if names.len() >= MAX_WALLPAPERS {
             break;
@@ -463,52 +545,7 @@ fn scan_wallpapers() -> Vec<WallpaperEntry> {
     }
 
     names.sort_unstable();
-
-    // Shared decode buffers via mmap
-    const MAX_PIX: usize = 1920 * 1200;
-    const FILE_BUF_SIZE: usize = 4 * 1024 * 1024;
-    const SCRATCH_SIZE: usize = 32768 + (1920 * 4 + 1) * 1200 + FILE_BUF_SIZE;
-
-    let file_ptr = process::mmap(FILE_BUF_SIZE);
-    let pixel_ptr = process::mmap(MAX_PIX * 4);
-    let scratch_ptr = process::mmap(SCRATCH_SIZE);
-
-    let can_decode = !file_ptr.is_null() && !pixel_ptr.is_null() && !scratch_ptr.is_null();
-
-    for name in &names {
-        let path = format!("{}/{}", WALLPAPER_DIR, name);
-        let display = name
-            .rfind('.')
-            .map(|i| &name[..i])
-            .unwrap_or(name);
-
-        let thumbnail = if can_decode {
-            load_thumbnail(
-                &path, file_ptr, pixel_ptr, scratch_ptr,
-                FILE_BUF_SIZE, MAX_PIX, SCRATCH_SIZE,
-            )
-        } else {
-            Vec::new()
-        };
-
-        entries.push(WallpaperEntry {
-            name: String::from(display),
-            path,
-            thumbnail,
-        });
-    }
-
-    if !scratch_ptr.is_null() {
-        process::munmap(scratch_ptr, SCRATCH_SIZE);
-    }
-    if !pixel_ptr.is_null() {
-        process::munmap(pixel_ptr, MAX_PIX * 4);
-    }
-    if !file_ptr.is_null() {
-        process::munmap(file_ptr, FILE_BUF_SIZE);
-    }
-
-    entries
+    names
 }
 
 fn load_thumbnail(

@@ -20,34 +20,35 @@ pub struct OutputPanel {
 impl OutputPanel {
     /// Create the bottom panel with Output + Terminal tabs.
     pub fn new() -> Self {
+        let tc = ui::theme::colors();
         let panel = ui::View::new();
-        panel.set_color(0xFF1E1E1E);
+        panel.set_color(tc.editor_bg);
 
         // Tab bar for switching Output / Terminal
         let tab_bar = ui::TabBar::new("Output|Terminal");
         tab_bar.set_dock(ui::DOCK_TOP);
         tab_bar.set_size(400, 24);
-        tab_bar.set_color(0xFF252526);
+        tab_bar.set_color(tc.sidebar_bg);
         panel.add(&tab_bar);
 
         // ── Output sub-panel ──
         let output_panel = ui::View::new();
         output_panel.set_dock(ui::DOCK_FILL);
-        output_panel.set_color(0xFF1E1E1E);
+        output_panel.set_color(tc.editor_bg);
         panel.add(&output_panel);
 
         let output_area = ui::TextArea::new();
         output_area.set_dock(ui::DOCK_FILL);
         output_area.set_font(4); // monospace
         output_area.set_font_size(12);
-        output_area.set_color(0xFF1E1E1E);
-        output_area.set_text_color(0xFFCCCCCC);
+        output_area.set_color(tc.editor_bg);
+        output_area.set_text_color(tc.text);
         output_panel.add(&output_area);
 
         // ── Terminal sub-panel ──
         let terminal_panel = ui::View::new();
         terminal_panel.set_dock(ui::DOCK_FILL);
-        terminal_panel.set_color(0xFF1E1E1E);
+        terminal_panel.set_color(tc.editor_bg);
         terminal_panel.set_visible(false);
         panel.add(&terminal_panel);
 
@@ -55,8 +56,8 @@ impl OutputPanel {
         terminal_area.set_dock(ui::DOCK_FILL);
         terminal_area.set_font(4);
         terminal_area.set_font_size(12);
-        terminal_area.set_color(0xFF1E1E1E);
-        terminal_area.set_text_color(0xFF33FF33);
+        terminal_area.set_color(tc.editor_bg);
+        terminal_area.set_text_color(tc.success);
         terminal_panel.add(&terminal_area);
 
         let terminal_input = ui::TextField::new();
@@ -64,8 +65,8 @@ impl OutputPanel {
         terminal_input.set_size(400, 24);
         terminal_input.set_font(4);
         terminal_input.set_font_size(12);
-        terminal_input.set_color(0xFF2D2D2D);
-        terminal_input.set_text_color(0xFFCCCCCC);
+        terminal_input.set_color(tc.tab_inactive_bg);
+        terminal_input.set_text_color(tc.text);
         terminal_input.set_placeholder("$ ");
         terminal_panel.add(&terminal_input);
 

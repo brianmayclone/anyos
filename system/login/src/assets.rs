@@ -37,8 +37,14 @@ pub fn load_png(path: &str) -> Option<(Vec<u32>, u32, u32)> {
 }
 
 /// Pre-scaled logo: (pixels, display_w, display_h).
+/// Uses the white logo for dark mode and the black logo for light mode.
 pub fn load_and_scale_logo(target_h: u32) -> Option<(Vec<u32>, u32, u32)> {
-    let (pixels, img_w, img_h) = load_png("/System/media/anyos_w.png")?;
+    let path = if libanyui_client::theme::is_light() {
+        "/System/media/anyos_b.png"
+    } else {
+        "/System/media/anyos_w.png"
+    };
+    let (pixels, img_w, img_h) = load_png(path)?;
     if img_h == 0 {
         return None;
     }

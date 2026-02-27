@@ -40,7 +40,7 @@ void main() {
 }
 ";
 
-/// Fragment shader: Blinn-Phong with 2 point lights + texture.
+/// Fragment shader: Blinn-Phong with 4 point lights + texture.
 static FS_SOURCE: &str =
 "varying vec3 vNormal;
 varying vec3 vWorldPos;
@@ -49,13 +49,17 @@ uniform vec3 uLightPos0;
 uniform vec3 uLightColor0;
 uniform vec3 uLightPos1;
 uniform vec3 uLightColor1;
+uniform vec3 uLightPos2;
+uniform vec3 uLightColor2;
+uniform vec3 uLightPos3;
+uniform vec3 uLightColor3;
 uniform vec3 uEyePos;
 uniform sampler2D uTexture;
 uniform vec4 uMatColor;
 void main() {
     vec3 N = normalize(vNormal);
     vec3 V = normalize(uEyePos - vWorldPos);
-    vec3 ambient = vec3(0.08, 0.08, 0.1);
+    vec3 ambient = vec3(0.06, 0.06, 0.08);
     vec3 L0 = normalize(uLightPos0 - vWorldPos);
     float diff0 = max(dot(N, L0), 0.0);
     vec3 H0 = normalize(L0 + V);
@@ -66,7 +70,17 @@ void main() {
     vec3 H1 = normalize(L1 + V);
     float spec1 = pow(max(dot(N, H1), 0.0), 64.0);
     vec3 c1 = uLightColor1 * diff1 + uLightColor1 * spec1;
-    vec3 lighting = ambient + c0 + c1;
+    vec3 L2 = normalize(uLightPos2 - vWorldPos);
+    float diff2 = max(dot(N, L2), 0.0);
+    vec3 H2 = normalize(L2 + V);
+    float spec2 = pow(max(dot(N, H2), 0.0), 48.0);
+    vec3 c2 = uLightColor2 * diff2 + uLightColor2 * spec2;
+    vec3 L3 = normalize(uLightPos3 - vWorldPos);
+    float diff3 = max(dot(N, L3), 0.0);
+    vec3 H3 = normalize(L3 + V);
+    float spec3 = pow(max(dot(N, H3), 0.0), 32.0);
+    vec3 c3 = uLightColor3 * diff3 + uLightColor3 * spec3;
+    vec3 lighting = ambient + c0 + c1 + c2 + c3;
     vec4 texColor = texture2D(uTexture, vTexCoord);
     vec3 baseColor = texColor.rgb * uMatColor.rgb;
     gl_FragColor = vec4(lighting * baseColor, 1.0);
@@ -294,6 +308,25 @@ fn generate_gradient(size: u32) -> Vec<u8> {
     data
 }
 
+/// Format a u32 into a decimal string. Returns number of bytes written.
+fn fmt_u32(mut val: u32, buf: &mut [u8; 16]) -> usize {
+    if val == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+    let mut tmp = [0u8; 10];
+    let mut i = 0;
+    while val > 0 {
+        tmp[i] = b'0' + (val % 10) as u8;
+        val /= 10;
+        i += 1;
+    }
+    for j in 0..i {
+        buf[j] = tmp[i - 1 - j];
+    }
+    i
+}
+
 // ── Render state ─────────────────────────────────────────────────────────────
 
 struct RenderState {
@@ -319,11 +352,20 @@ struct RenderState {
     loc_light_color0: i32,
     loc_light_pos1: i32,
     loc_light_color1: i32,
+    loc_light_pos2: i32,
+    loc_light_color2: i32,
+    loc_light_pos3: i32,
+    loc_light_color3: i32,
     loc_eye_pos: i32,
     loc_texture: i32,
     loc_mat_color: i32,
     // Animation
     frame: u32,
+    // FPS counter
+    fps_label: libanyui_client::Label,
+    fps_frame_count: u32,
+    fps_last_ms: u32,
+    fps_display: u32,
 }
 
 static mut STATE: Option<RenderState> = None;
@@ -331,6 +373,28 @@ static mut STATE: Option<RenderState> = None;
 fn render_frame() {
     let s = unsafe { STATE.as_mut().unwrap() };
     s.frame += 1;
+
+    // ── FPS counter ─────────────────────────────────────────────────────
+    s.fps_frame_count += 1;
+    let now_ms = anyos_std::sys::uptime_ms();
+    let elapsed = now_ms.wrapping_sub(s.fps_last_ms);
+    if elapsed >= 1000 {
+        s.fps_display = s.fps_frame_count * 1000 / elapsed;
+        s.fps_frame_count = 0;
+        s.fps_last_ms = now_ms;
+        let mut buf = [0u8; 16];
+        let n = fmt_u32(s.fps_display, &mut buf);
+        // Build "XX FPS" string
+        let mut fps_str = [0u8; 20];
+        fps_str[..n].copy_from_slice(&buf[..n]);
+        fps_str[n] = b' ';
+        fps_str[n + 1] = b'F';
+        fps_str[n + 2] = b'P';
+        fps_str[n + 3] = b'S';
+        if let Ok(text) = core::str::from_utf8(&fps_str[..n + 4]) {
+            s.fps_label.set_text(text);
+        }
+    }
 
     // Dynamic resize: query actual canvas dimensions each frame
     let cur_w = s.canvas.get_stride();
@@ -355,16 +419,31 @@ fn render_frame() {
     let proj = mat4_perspective(0.9, aspect, 0.1, 50.0);
     let view = mat4_mul(&mat4_rotate_x(0.38), &mat4_translate(-eye[0], -eye[1], -eye[2]));
 
-    // Animated lights
+    // ── 4 animated lights ───────────────────────────────────────────────
+    // Light 0: warm orange, orbits horizontally at height 2.0
     let l0_x = gl::sin(t * 0.7) * 3.0;
     let l0_z = gl::cos(t * 0.7) * 3.0;
-    let l1_x = gl::sin(t * 0.5 + 2.0) * 2.5;
-    let l1_y = 1.5 + gl::sin(t * 0.8) * 1.0;
-
     gl::uniform3f(s.loc_light_pos0, l0_x, 2.0, l0_z);
     gl::uniform3f(s.loc_light_color0, 0.9, 0.7, 0.4);
+
+    // Light 1: cool blue, orbits with vertical bob
+    let l1_x = gl::sin(t * 0.5 + 2.0) * 2.5;
+    let l1_y = 1.5 + gl::sin(t * 0.8) * 1.0;
     gl::uniform3f(s.loc_light_pos1, l1_x, l1_y, 2.0);
     gl::uniform3f(s.loc_light_color1, 0.3, 0.5, 0.9);
+
+    // Light 2: green, figure-8 path behind the scene
+    let l2_x = gl::sin(t * 0.9) * 2.0;
+    let l2_z = gl::sin(t * 0.45) * 3.5;
+    gl::uniform3f(s.loc_light_pos2, l2_x, 0.8, l2_z);
+    gl::uniform3f(s.loc_light_color2, 0.2, 0.8, 0.3);
+
+    // Light 3: soft pink/magenta, hovers high and pulses
+    let l3_y = 3.0 + gl::sin(t * 1.2) * 0.5;
+    let l3_x = gl::cos(t * 0.3) * 1.5;
+    gl::uniform3f(s.loc_light_pos3, l3_x, l3_y, -1.0);
+    gl::uniform3f(s.loc_light_color3, 0.6, 0.2, 0.5);
+
     gl::uniform3f(s.loc_eye_pos, eye[0], eye[1], eye[2]);
 
     // ── Draw sphere ──────────────────────────────────────────────────────
@@ -568,13 +647,17 @@ fn main() {
     let loc_light_color0 = gl::get_uniform_location(program, "uLightColor0");
     let loc_light_pos1 = gl::get_uniform_location(program, "uLightPos1");
     let loc_light_color1 = gl::get_uniform_location(program, "uLightColor1");
+    let loc_light_pos2 = gl::get_uniform_location(program, "uLightPos2");
+    let loc_light_color2 = gl::get_uniform_location(program, "uLightColor2");
+    let loc_light_pos3 = gl::get_uniform_location(program, "uLightPos3");
+    let loc_light_color3 = gl::get_uniform_location(program, "uLightColor3");
     let loc_eye_pos = gl::get_uniform_location(program, "uEyePos");
     let loc_texture = gl::get_uniform_location(program, "uTexture");
     let loc_mat_color = gl::get_uniform_location(program, "uMatColor");
 
-    anyos_std::println!("gldemo: uniforms: mvp={} model={} lp0={} lc0={} lp1={} lc1={} eye={} tex={} mat={}",
-        loc_mvp, loc_model, loc_light_pos0, loc_light_color0,
-        loc_light_pos1, loc_light_color1, loc_eye_pos, loc_texture, loc_mat_color);
+    anyos_std::println!("gldemo: uniforms: mvp={} model={} lp0..3={},{},{},{} eye={} tex={} mat={}",
+        loc_mvp, loc_model, loc_light_pos0, loc_light_pos1, loc_light_pos2, loc_light_pos3,
+        loc_eye_pos, loc_texture, loc_mat_color);
 
     // ── Generate sphere geometry ─────────────────────────────────────────
     let (sphere_verts, sphere_indices) = generate_sphere(10, 16);
@@ -631,6 +714,13 @@ fn main() {
 
     anyos_std::println!("gldemo: textures created");
 
+    // ── FPS counter label (top-right area) ──────────────────────────────
+    let fps_label = libanyui_client::Label::new("-- FPS");
+    fps_label.set_position(80, 6);
+    fps_label.set_text_color(0xFF00FF88);
+    fps_label.set_font_size(13);
+    window.add(&fps_label);
+
     // ── Store render state ───────────────────────────────────────────────
     unsafe {
         STATE = Some(RenderState {
@@ -652,10 +742,18 @@ fn main() {
             loc_light_color0,
             loc_light_pos1,
             loc_light_color1,
+            loc_light_pos2,
+            loc_light_color2,
+            loc_light_pos3,
+            loc_light_color3,
             loc_eye_pos,
             loc_texture,
             loc_mat_color,
             frame: 0,
+            fps_label,
+            fps_frame_count: 0,
+            fps_last_ms: anyos_std::sys::uptime_ms(),
+            fps_display: 0,
         });
     }
 

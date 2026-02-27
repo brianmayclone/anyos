@@ -14,38 +14,39 @@ pub struct StatusBar {
 impl StatusBar {
     /// Create the status bar view with all labels.
     pub fn new() -> Self {
+        let tc = ui::theme::colors();
         let panel = ui::View::new();
-        panel.set_color(0xFF007ACC);
+        panel.set_color(tc.tab_border_active);
         panel.set_size(900, 22);
 
         let file_lbl = ui::Label::new("No file open");
         file_lbl.set_position(8, 3);
         file_lbl.set_font_size(11);
-        file_lbl.set_text_color(0xFFFFFFFF);
+        file_lbl.set_text_color(tc.check_mark);
         panel.add(&file_lbl);
 
         let cursor_lbl = ui::Label::new("Ln 1, Col 1");
         cursor_lbl.set_position(300, 3);
         cursor_lbl.set_font_size(11);
-        cursor_lbl.set_text_color(0xFFFFFFFF);
+        cursor_lbl.set_text_color(tc.check_mark);
         panel.add(&cursor_lbl);
 
         let lang_lbl = ui::Label::new("Plain Text");
         lang_lbl.set_position(450, 3);
         lang_lbl.set_font_size(11);
-        lang_lbl.set_text_color(0xFFFFFFFF);
+        lang_lbl.set_text_color(tc.check_mark);
         panel.add(&lang_lbl);
 
         let branch_lbl = ui::Label::new("");
         branch_lbl.set_position(580, 3);
         branch_lbl.set_font_size(11);
-        branch_lbl.set_text_color(0xFFFFFFFF);
+        branch_lbl.set_text_color(tc.check_mark);
         panel.add(&branch_lbl);
 
         let enc_lbl = ui::Label::new("UTF-8");
         enc_lbl.set_position(720, 3);
         enc_lbl.set_font_size(11);
-        enc_lbl.set_text_color(0xFFFFFFFF);
+        enc_lbl.set_text_color(tc.check_mark);
         panel.add(&enc_lbl);
 
         Self {

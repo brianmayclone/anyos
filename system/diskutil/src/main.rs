@@ -134,7 +134,8 @@ fn load_partitions(disk_id: u32) -> Vec<PartInfo> {
 // ── Draw the partition bar on a Canvas ──────────────────────────────────────
 
 fn draw_partition_bar(canvas: &ui::Canvas, bar_w: u32, bar_h: u32, disks: &[DiskInfo], disk_idx: usize, parts: &[PartInfo]) {
-    canvas.clear(0xFF333333);
+    let tc = ui::theme::colors();
+    canvas.clear(tc.toolbar_bg);
 
     if disks.is_empty() || parts.is_empty() {
         return;
@@ -165,7 +166,8 @@ fn add_legend_item(row: &ui::FlowPanel, name: &str, color: u32) {
     let lbl = ui::Label::new(name);
     lbl.set_size(60, 14);
     lbl.set_font_size(11);
-    lbl.set_color(0xFF808080);
+    let tc = ui::theme::colors();
+    lbl.set_color(tc.text_secondary);
     lbl.set_margin(0, 1, 10, 0);
     row.add(&lbl);
 }
@@ -189,16 +191,18 @@ fn main() {
     win.add(&header);
 
     let title = ui::Label::new("Disk Utility");
+    let tc = ui::theme::colors();
+
     title.set_position(12, 8);
     title.set_font_size(16);
-    title.set_color(0xFFE0E0E0);
+    title.set_color(tc.text);
     header.add(&title);
 
     let disk_label = ui::Label::new("Loading...");
     disk_label.set_position(150, 10);
     disk_label.set_size(240, 18);
     disk_label.set_font_size(13);
-    disk_label.set_color(0xFF969696);
+    disk_label.set_color(tc.text_secondary);
     header.add(&disk_label);
 
     let btn_prev = ui::Button::new("<");
@@ -263,7 +267,7 @@ fn main() {
     info_label.set_position(12, 10);
     info_label.set_size(300, 16);
     info_label.set_font_size(11);
-    info_label.set_color(0xFF808080);
+    info_label.set_color(tc.text_secondary);
     btn_bar.add(&info_label);
 
     let btn_rescan = ui::Button::new("Rescan");
@@ -274,7 +278,7 @@ fn main() {
     let btn_delete = ui::Button::new("Delete");
     btn_delete.set_position(444, 4);
     btn_delete.set_size(80, 28);
-    btn_delete.set_color(0xFFFF3B30);
+    btn_delete.set_color(tc.destructive);
     btn_bar.add(&btn_delete);
 
     // ── DataGrid (DOCK_FILL — takes remaining space) ──

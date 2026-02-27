@@ -758,7 +758,7 @@ impl Desktop {
                         let idx = (y * w + x) as usize;
                         if idx < pixels.len() {
                             pixels[idx] = crate::compositor::alpha_blend(
-                                crate::menu::types::COLOR_MENUBAR_HIGHLIGHT, pixels[idx],
+                                crate::menu::types::color_menubar_highlight(), pixels[idx],
                             );
                         }
                     }

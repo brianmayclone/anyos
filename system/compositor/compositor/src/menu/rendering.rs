@@ -25,7 +25,7 @@ impl MenuBar {
                     for x in layout.x.max(0)..(layout.x + layout.width as i32).min(stride as i32) {
                         let idx = (y * stride + x as u32) as usize;
                         if idx < pixels.len() {
-                            pixels[idx] = alpha_blend(COLOR_MENUBAR_HIGHLIGHT, pixels[idx]);
+                            pixels[idx] = alpha_blend(color_menubar_highlight(), pixels[idx]);
                         }
                     }
                 }
@@ -47,7 +47,7 @@ impl MenuBar {
                 height,
                 tx,
                 ty,
-                COLOR_MENUBAR_TEXT,
+                color_menubar_text(),
                 &menu.title,
             );
         }
@@ -114,10 +114,10 @@ impl MenuBar {
             }
 
             // Fill background with rounded corners
-            fill_rounded_rect(pixels, w, h, 0, 0, w, h, 6, COLOR_DROPDOWN_BG);
+            fill_rounded_rect(pixels, w, h, 0, 0, w, h, 6, color_dropdown_bg());
 
             // 1px border
-            draw_rect_outline(pixels, w, 0, 0, w, h, COLOR_DROPDOWN_BORDER);
+            draw_rect_outline(pixels, w, 0, 0, w, h, color_dropdown_border());
 
             // Render each item
             for (i, item) in menu.items.iter().enumerate() {
@@ -130,7 +130,7 @@ impl MenuBar {
                             if x >= 0 && (x as u32) < w {
                                 let idx = (line_y as u32 * w + x as u32) as usize;
                                 if idx < pixels.len() {
-                                    pixels[idx] = COLOR_SEPARATOR;
+                                    pixels[idx] = color_separator();
                                 }
                             }
                         }
@@ -157,7 +157,7 @@ impl MenuBar {
                         check_x,
                         check_y,
                         if item.is_disabled() {
-                            COLOR_DISABLED_TEXT
+                            color_disabled_text()
                         } else {
                             COLOR_CHECK
                         },
@@ -171,11 +171,11 @@ impl MenuBar {
                     anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, &item.label);
                 let text_y = iy + ((ITEM_HEIGHT as i32 - th as i32) / 2).max(0);
                 let text_color = if item.is_disabled() {
-                    COLOR_DISABLED_TEXT
+                    color_disabled_text()
                 } else if dd.hover_idx == Some(i) {
                     0xFFFFFFFF
                 } else {
-                    COLOR_MENUBAR_TEXT
+                    color_menubar_text()
                 };
                 anyos_std::ui::window::font_render_buf(
                     FONT_ID,

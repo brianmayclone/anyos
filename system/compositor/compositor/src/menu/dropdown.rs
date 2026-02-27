@@ -281,8 +281,8 @@ impl MenuBar {
             let h = dd.height;
 
             for p in pixels.iter_mut() { *p = 0x00000000; }
-            fill_rounded_rect(pixels, w, h, 0, 0, w, h, 6, COLOR_DROPDOWN_BG);
-            draw_rect_outline(pixels, w, 0, 0, w, h, COLOR_DROPDOWN_BORDER);
+            fill_rounded_rect(pixels, w, h, 0, 0, w, h, 6, color_dropdown_bg());
+            draw_rect_outline(pixels, w, 0, 0, w, h, color_dropdown_border());
 
             for (i, item) in items.iter().enumerate() {
                 let iy = dd.items_y[i];
@@ -293,7 +293,7 @@ impl MenuBar {
                         for x in 8i32..(w as i32 - 8) {
                             if x >= 0 && (x as u32) < w {
                                 let idx = (line_y as u32 * w + x as u32) as usize;
-                                if idx < pixels.len() { pixels[idx] = COLOR_SEPARATOR; }
+                                if idx < pixels.len() { pixels[idx] = color_separator(); }
                             }
                         }
                     }
@@ -308,11 +308,11 @@ impl MenuBar {
                 let (_, th) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, &item.label);
                 let text_y = iy + ((ITEM_HEIGHT as i32 - th as i32) / 2).max(0);
                 let text_color = if item.is_disabled() {
-                    COLOR_DISABLED_TEXT
+                    color_disabled_text()
                 } else if dd.hover_idx == Some(i) {
                     0xFFFFFFFF
                 } else {
-                    COLOR_MENUBAR_TEXT
+                    color_menubar_text()
                 };
                 anyos_std::ui::window::font_render_buf(
                     FONT_ID, FONT_SIZE, pixels, w, h, text_x, text_y, text_color, &item.label,
