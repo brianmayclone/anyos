@@ -406,67 +406,78 @@ echo "  GCC patching complete"
 # ── Build binutils ───────────────────────────────────────────────────────────
 
 echo ""
-echo "--- Building binutils for ${TARGET} ---"
-rm -rf "$BUILD_DIR/binutils"
-mkdir -p "$BUILD_DIR/binutils"
-cd "$BUILD_DIR/binutils"
+if [[ -x "$PREFIX/bin/${TARGET}-as" ]] && [[ -x "$PREFIX/bin/${TARGET}-ld" ]]; then
+  echo "--- binutils already installed, skipping (use --clean to rebuild) ---"
+else
+  echo "--- Building binutils for ${TARGET} ---"
+  rm -rf "$BUILD_DIR/binutils"
+  mkdir -p "$BUILD_DIR/binutils"
+  cd "$BUILD_DIR/binutils"
 
-"$BINUTILS_SRC/configure" \
-  --target="$TARGET" \
-  --prefix="$PREFIX" \
-  --with-sysroot \
-  --with-system-zlib \
-  --disable-nls \
-  --disable-werror \
-  MAKEINFO=true
+  "$BINUTILS_SRC/configure" \
+    --target="$TARGET" \
+    --prefix="$PREFIX" \
+    --with-sysroot \
+    --with-system-zlib \
+    --disable-nls \
+    --disable-werror \
+    MAKEINFO=true
 
-make -j"$JOBS" MAKEINFO=true
-make install MAKEINFO=true
-echo "--- binutils installed ---"
+  make -j"$JOBS" MAKEINFO=true
+  make install MAKEINFO=true
+  echo "--- binutils installed ---"
+fi
 
 # ── Build GCC (C and C++ compilers) ─────────────────────────────────────────
 
 echo ""
-echo "--- Building GCC for ${TARGET} ---"
-rm -rf "$BUILD_DIR/gcc"
-mkdir -p "$BUILD_DIR/gcc"
-cd "$BUILD_DIR/gcc"
+LIBGCC_A="$PREFIX/lib/gcc/$TARGET/${GCC_VERSION}/libgcc.a"
+if [[ -x "$PREFIX/bin/${TARGET}-gcc" ]] && [[ -f "$LIBGCC_A" ]]; then
+  echo "--- GCC already installed, skipping (use --clean to rebuild) ---"
+else
+  echo "--- Building GCC for ${TARGET} ---"
+  rm -rf "$BUILD_DIR/gcc"
+  mkdir -p "$BUILD_DIR/gcc"
+  cd "$BUILD_DIR/gcc"
 
-SYSROOT_FLAGS=""
-if [[ -n "$SYSROOT" ]]; then
-  SYSROOT_FLAGS="--with-sysroot=$SYSROOT"
+  SYSROOT_FLAGS=""
+  if [[ -n "$SYSROOT" ]]; then
+    SYSROOT_FLAGS="--with-sysroot=$SYSROOT"
+  fi
+
+  "$GCC_SRC/configure" \
+    --target="$TARGET" \
+    --prefix="$PREFIX" \
+    --enable-languages=c,c++ \
+    --disable-nls \
+    --disable-shared \
+    --disable-threads \
+    --disable-libssp \
+    --disable-libquadmath \
+    --disable-libgomp \
+    --disable-libatomic \
+    --disable-libstdcxx \
+    --disable-hosted-libstdcxx \
+    --disable-libstdcxx-pch \
+    --disable-multilib \
+    --without-headers \
+    --with-newlib \
+    --with-system-zlib \
+    $SYSROOT_FLAGS \
+    $EXTRA_GCC_CONFIGURE \
+    MAKEINFO=true
+
+  # Build compiler first
+  make -j"$JOBS" all-gcc MAKEINFO=true
+
+  # Build libgcc with inhibit_libc to skip gcov (needs libc features we don't have)
+  make -j"$JOBS" all-target-libgcc MAKEINFO=true CFLAGS_FOR_TARGET="-g -O2 -Dinhibit_libc"
+
+  make install-gcc install-target-libgcc MAKEINFO=true
+  echo "--- GCC installed ---"
 fi
 
-"$GCC_SRC/configure" \
-  --target="$TARGET" \
-  --prefix="$PREFIX" \
-  --enable-languages=c,c++ \
-  --disable-nls \
-  --disable-shared \
-  --disable-threads \
-  --disable-libssp \
-  --disable-libquadmath \
-  --disable-libgomp \
-  --disable-libatomic \
-  --disable-libstdcxx \
-  --disable-hosted-libstdcxx \
-  --disable-libstdcxx-pch \
-  --disable-multilib \
-  --without-headers \
-  --with-newlib \
-  --with-system-zlib \
-  $SYSROOT_FLAGS \
-  $EXTRA_GCC_CONFIGURE \
-  MAKEINFO=true
-
-# Build compiler + libgcc
-make -j"$JOBS" all-gcc all-target-libgcc MAKEINFO=true
-make install-gcc install-target-libgcc MAKEINFO=true
-echo "--- GCC installed ---"
-
 # ── Copy libgcc.a to project sysroot (if specified) ─────────────────────────
-
-LIBGCC_A="$PREFIX/lib/gcc/$TARGET/${GCC_VERSION}/libgcc.a"
 
 if [[ -n "$SYSROOT" ]] && [[ -f "$LIBGCC_A" ]]; then
   echo ""
