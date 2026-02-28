@@ -314,9 +314,9 @@ patch_config_sub() {
   # We need to find the line number of the *) that precedes "OS.*not recognized"
   # and insert our anyos case BEFORE it.
   local err_line
-  err_line=$(grep -n "Invalid configuration.*OS.*not recognized" "$file" | head -1 | cut -d: -f1 || true)
+  # Different config.sub versions use "OS" or "system" in their error message
+  err_line=$(grep -n "Invalid configuration.*\(OS\|system\).*not recognized" "$file" | head -1 | cut -d: -f1 || true)
   if [[ -z "$err_line" ]]; then
-    # Not all config.sub variants use this pattern (e.g., GMP/MPFR/MPC).
     return 0
   fi
   # The *) case pattern is 1 line before the echo
@@ -384,8 +384,8 @@ echo "  installed gcc/config/anyos.h"
 # 2. config.sub: Teach GCC about anyos.
 patch_config_sub "$GCC_SRC/config.sub"
 
-# Also patch sub-project config.sub files
-for f in "$GCC_SRC"/*/config.sub; do
+# Also patch sub-project config.sub files (and GMP's configfsf.sub wrapper)
+for f in "$GCC_SRC"/*/config.sub "$GCC_SRC"/*/configfsf.sub; do
   patch_config_sub "$f"
 done
 
@@ -669,18 +669,166 @@ CXX_FOR_HOST="$PREFIX/bin/${TARGET}-g++"
 AR_FOR_HOST="$PREFIX/bin/${TARGET}-ar"
 RANLIB_FOR_HOST="$PREFIX/bin/${TARGET}-ranlib"
 
-# Let the GCC specs (anyos.h) handle linking — it defines STARTFILE_SPEC,
-# ENDFILE_SPEC, LIB_SPEC, and LINK_SPEC (-static).  We just need -ffreestanding
-# and the sysroot so GCC finds crt0.o/libc64.a via STANDARD_STARTFILE_PREFIX.
-HOST_CFLAGS="-O2 -ffreestanding -isystem $CROSS_INC"
+# Configure's test programs fail to link on our freestanding target, so it
+# incorrectly reports almost all headers/functions as missing.  We use a
+# CONFIG_SITE file to pre-seed autoconf's cache with correct values, so
+# configure writes the right #defines into config.h.
+ANYOS_CONFIG_SITE="$BUILD_DIR/anyos-config.site"
+cat > "$ANYOS_CONFIG_SITE" << 'SITE_EOF'
+# Autoconf cache seed for anyOS (libc64) cross-compilation.
+# Configure tests fail to link because we're cross-compiling to a freestanding
+# target.  These values reflect what libc64 actually provides.
+
+# Header availability
+ac_cv_header_limits_h=yes
+ac_cv_header_string_h=yes
+ac_cv_header_strings_h=yes
+ac_cv_header_stdint_h=yes
+ac_cv_header_stdlib_h=yes
+ac_cv_header_stdio_h=yes
+ac_cv_header_errno_h=yes
+ac_cv_header_memory_h=yes
+ac_cv_header_unistd_h=yes
+ac_cv_header_fcntl_h=yes
+ac_cv_header_inttypes_h=yes
+ac_cv_header_alloca_h=yes
+ac_cv_header_sys_types_h=yes
+ac_cv_header_sys_stat_h=yes
+ac_cv_header_sys_param_h=yes
+ac_cv_header_sys_time_h=yes
+ac_cv_header_time_h=yes
+ac_cv_header_signal_h=yes
+ac_cv_header_math_h=yes
+ac_cv_header_ctype_h=yes
+ac_cv_header_locale_h=yes
+ac_cv_header_dirent_h=yes
+ac_cv_header_setjmp_h=yes
+ac_cv_header_stdc=yes
+
+# Function availability
+ac_cv_func_memcpy=yes
+ac_cv_func_memset=yes
+ac_cv_func_memmove=yes
+ac_cv_func_memcmp=yes
+ac_cv_func_memchr=yes
+ac_cv_func_strchr=yes
+ac_cv_func_strrchr=yes
+ac_cv_func_strdup=yes
+ac_cv_func_strtol=yes
+ac_cv_func_strtoul=yes
+ac_cv_func_strtoll=yes
+ac_cv_func_strtoull=yes
+ac_cv_func_strtod=yes
+ac_cv_func_malloc=yes
+ac_cv_func_realloc=yes
+ac_cv_func_calloc=yes
+ac_cv_func_free=yes
+ac_cv_func_atexit=yes
+ac_cv_func_getenv=yes
+ac_cv_func_putenv=yes
+ac_cv_func_setenv=yes
+ac_cv_func_qsort=yes
+ac_cv_func_bsearch=yes
+ac_cv_func_strerror=yes
+ac_cv_func_strsignal=yes
+ac_cv_func_snprintf=yes
+ac_cv_func_vsnprintf=yes
+ac_cv_func_vfprintf=yes
+ac_cv_func_vsprintf=yes
+ac_cv_func_printf=yes
+ac_cv_func_fprintf=yes
+ac_cv_func_sprintf=yes
+ac_cv_func_abort=yes
+ac_cv_func_exit=yes
+ac_cv_func_open=yes
+ac_cv_func_close=yes
+ac_cv_func_read=yes
+ac_cv_func_write=yes
+ac_cv_func_lseek=yes
+ac_cv_func_stat=yes
+ac_cv_func_fstat=yes
+ac_cv_func_access=yes
+ac_cv_func_getcwd=yes
+ac_cv_func_getpid=yes
+ac_cv_func_kill=yes
+ac_cv_func_raise=yes
+ac_cv_func_signal=yes
+ac_cv_func_clock=yes
+ac_cv_func_time=yes
+ac_cv_func_mkstemp=yes
+ac_cv_func_mmap=yes
+ac_cv_func_munmap=yes
+ac_cv_func_sbrk=yes
+ac_cv_func_realpath=yes
+ac_cv_func_rename=yes
+ac_cv_func_unlink=yes
+ac_cv_func_mkdir=yes
+ac_cv_func_rmdir=yes
+ac_cv_func_fork=yes
+ac_cv_func_execve=yes
+ac_cv_func_execvp=yes
+ac_cv_func_wait=yes
+ac_cv_func_waitpid=yes
+ac_cv_func_pipe=yes
+ac_cv_func_dup=yes
+ac_cv_func_dup2=yes
+ac_cv_func_fcntl=yes
+ac_cv_func_select=yes
+ac_cv_func_poll=yes
+ac_cv_func_nanosleep=yes
+ac_cv_func_sysconf=yes
+ac_cv_func_strtok_r=yes
+ac_cv_func_times=yes
+ac_cv_func_gettimeofday=yes
+ac_cv_func_strftime=yes
+
+# Declaration tests (ac_cv_have_decl_*)
+ac_cv_have_decl_calloc=yes
+ac_cv_have_decl_malloc=yes
+ac_cv_have_decl_realloc=yes
+ac_cv_have_decl_free=yes
+ac_cv_have_decl_getenv=yes
+ac_cv_have_decl_abort=yes
+ac_cv_have_decl_strtol=yes
+ac_cv_have_decl_strtoul=yes
+ac_cv_have_decl_strtoll=yes
+ac_cv_have_decl_strtoull=yes
+ac_cv_have_decl_basename=no
+ac_cv_have_decl_basename_char_p_=no
+ac_cv_have_decl_ffs=no
+ac_cv_have_decl_getopt=yes
+ac_cv_have_decl_sbrk=yes
+ac_cv_have_decl_strnlen=yes
+ac_cv_have_decl_asprintf=no
+ac_cv_have_decl_vasprintf=no
+ac_cv_have_decl_strverscmp=no
+ac_cv_have_decl_snprintf=yes
+ac_cv_have_decl_vsnprintf=yes
+
+# Type sizes (x86_64)
+ac_cv_sizeof_int=4
+ac_cv_sizeof_long=8
+ac_cv_sizeof_long_long=8
+ac_cv_sizeof_void_p=8
+ac_cv_sizeof_short=2
+ac_cv_sizeof_char=1
+ac_cv_sizeof_size_t=8
+ac_cv_sizeof_off_t=8
+ac_cv_type_signal=void
+SITE_EOF
+echo "  created CONFIG_SITE at $ANYOS_CONFIG_SITE"
+
+# -include: Force-include basic C headers that many source files assume are
+# transitively pulled in (which they are on hosted systems but not on anyOS).
+HOST_CFLAGS="-O2 -ffreestanding -isystem $CROSS_INC -include limits.h -include string.h -include stdint.h -include stdlib.h"
 HOST_LDFLAGS="-L$CROSS_LIB"
+export CONFIG_SITE="$ANYOS_CONFIG_SITE"
 
 "$BINUTILS_SRC/configure" \
   --host="$TARGET" \
   --target="$TARGET" \
   --prefix="$NATIVE_PREFIX" \
   --with-sysroot="$CROSS_SYSROOT" \
-  --with-system-zlib \
   --disable-nls \
   --disable-werror \
   CC="$CC_FOR_HOST" \
@@ -741,7 +889,6 @@ cd "$BUILD_DIR/native-gcc"
   --disable-bootstrap \
   --disable-gcov \
   --with-newlib \
-  --with-system-zlib \
   CC="$CC_FOR_HOST" \
   CXX="$CXX_FOR_HOST" \
   AR="$AR_FOR_HOST" \
