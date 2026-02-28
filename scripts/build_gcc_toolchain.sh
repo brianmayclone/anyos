@@ -9,6 +9,11 @@
 #
 # Usage:
 #   ./scripts/build_gcc_toolchain.sh [--prefix DIR] [--sysroot DIR] [--jobs N]
+#   ./scripts/build_gcc_toolchain.sh --clean [--all]
+#
+# Options:
+#   --clean       Remove build directories (keeps downloaded tarballs)
+#   --clean --all Remove build directories AND downloaded sources + installed toolchain
 #
 # After install, add to PATH:
 #   export PATH="$HOME/opt/anyos-toolchain/bin:$PATH"
@@ -25,6 +30,8 @@ GCC_VERSION="12.4.0"
 PREFIX="${ANYOS_TOOLCHAIN:-$HOME/opt/anyos-toolchain}"
 SYSROOT=""
 JOBS=""
+DO_CLEAN=false
+CLEAN_ALL=false
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -40,13 +47,79 @@ while [[ $# -gt 0 ]]; do
     --prefix)  PREFIX="$2"; shift 2 ;;
     --sysroot) SYSROOT="$2"; shift 2 ;;
     --jobs)    JOBS="$2"; shift 2 ;;
+    --clean)   DO_CLEAN=true; shift ;;
+    --all)     CLEAN_ALL=true; shift ;;
     --help|-h)
       echo "Usage: $0 [--prefix DIR] [--sysroot DIR] [--jobs N]"
+      echo "       $0 --clean [--all]"
+      echo ""
+      echo "Options:"
+      echo "  --prefix DIR    Install cross-compiler to DIR (default: ~/opt/anyos-toolchain)"
+      echo "  --sysroot DIR   Copy libgcc.a and CRT files to sysroot"
+      echo "  --jobs N        Parallel build jobs (default: auto-detect)"
+      echo "  --clean         Remove build directories (keeps downloaded tarballs)"
+      echo "  --clean --all   Remove everything: builds, sources, and installed toolchain"
       exit 0
       ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
+
+# ── Handle --clean ──────────────────────────────────────────────────────────
+
+if $DO_CLEAN; then
+  echo "========================================="
+  echo " anyOS Toolchain — Clean"
+  echo "========================================="
+  echo ""
+
+  # Always remove build directories
+  if [[ -d "$BUILD_DIR" ]]; then
+    echo "Removing build directory: $BUILD_DIR"
+    rm -rf "$BUILD_DIR"
+  else
+    echo "Build directory not found: $BUILD_DIR (already clean)"
+  fi
+
+  if $CLEAN_ALL; then
+    # Remove extracted source trees (keep tarballs unless --all)
+    if [[ -d "$SRC_DIR/binutils-${BINUTILS_VERSION}" ]]; then
+      echo "Removing extracted sources: $SRC_DIR/binutils-${BINUTILS_VERSION}"
+      rm -rf "$SRC_DIR/binutils-${BINUTILS_VERSION}"
+    fi
+    if [[ -d "$SRC_DIR/gcc-${GCC_VERSION}" ]]; then
+      echo "Removing extracted sources: $SRC_DIR/gcc-${GCC_VERSION}"
+      rm -rf "$SRC_DIR/gcc-${GCC_VERSION}"
+    fi
+    # Remove downloaded tarballs
+    if [[ -f "$SRC_DIR/binutils-${BINUTILS_VERSION}.tar.xz" ]]; then
+      echo "Removing tarball: binutils-${BINUTILS_VERSION}.tar.xz"
+      rm -f "$SRC_DIR/binutils-${BINUTILS_VERSION}.tar.xz"
+    fi
+    if [[ -f "$SRC_DIR/gcc-${GCC_VERSION}.tar.xz" ]]; then
+      echo "Removing tarball: gcc-${GCC_VERSION}.tar.xz"
+      rm -f "$SRC_DIR/gcc-${GCC_VERSION}.tar.xz"
+    fi
+    # Remove installed toolchain
+    if [[ -d "$PREFIX" ]]; then
+      echo "Removing installed toolchain: $PREFIX"
+      rm -rf "$PREFIX"
+    fi
+    # Clean up empty source directory
+    if [[ -d "$SRC_DIR" ]] && [[ -z "$(ls -A "$SRC_DIR" 2>/dev/null)" ]]; then
+      rmdir "$SRC_DIR"
+    fi
+  else
+    echo ""
+    echo "Kept downloaded sources in: $SRC_DIR"
+    echo "Kept installed toolchain in: $PREFIX"
+    echo "Use --clean --all to remove everything."
+  fi
+
+  echo ""
+  echo "Clean complete."
+  exit 0
+fi
 
 # Auto-detect job count
 if [[ -z "$JOBS" ]]; then
@@ -118,47 +191,121 @@ export PATH="$PREFIX/bin:$PATH"
 
 # ── Download ─────────────────────────────────────────────────────────────────
 
+# Mirror list — tries faster mirrors first, falls back to main FTP
+BINUTILS_URLS=(
+  "https://ftpmirror.gnu.org/binutils/binutils-${BINUTILS_VERSION}.tar.xz"
+  "https://mirror.dogado.de/gnu/binutils/binutils-${BINUTILS_VERSION}.tar.xz"
+  "https://mirror.netcologne.de/gnu/binutils/binutils-${BINUTILS_VERSION}.tar.xz"
+  "https://ftp.fau.de/gnu/binutils/binutils-${BINUTILS_VERSION}.tar.xz"
+  "https://ftp.gnu.org/gnu/binutils/binutils-${BINUTILS_VERSION}.tar.xz"
+)
+
+GCC_URLS=(
+  "https://ftpmirror.gnu.org/gcc/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.xz"
+  "https://mirror.dogado.de/gnu/gcc/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.xz"
+  "https://mirror.netcologne.de/gnu/gcc/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.xz"
+  "https://ftp.fau.de/gnu/gcc/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.xz"
+  "https://ftp.gnu.org/gnu/gcc/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.xz"
+)
+
+download_with_mirrors() {
+  local dest="$1"
+  shift
+  local urls=("$@")
+  for url in "${urls[@]}"; do
+    echo "  Trying: $url"
+    if wget -q --show-progress --timeout=10 --tries=1 -O "$dest.part" "$url"; then
+      mv "$dest.part" "$dest"
+      echo "  OK"
+      return 0
+    fi
+    rm -f "$dest.part"
+  done
+  echo "ERROR: All mirrors failed for $dest"
+  exit 1
+}
+
 cd "$SRC_DIR"
 
 if [ ! -f "binutils-${BINUTILS_VERSION}.tar.xz" ]; then
   echo "--- Downloading binutils-${BINUTILS_VERSION} ---"
-  wget -q --show-progress "https://ftp.gnu.org/gnu/binutils/binutils-${BINUTILS_VERSION}.tar.xz"
+  download_with_mirrors "binutils-${BINUTILS_VERSION}.tar.xz" "${BINUTILS_URLS[@]}"
 fi
 
 if [ ! -f "gcc-${GCC_VERSION}.tar.xz" ]; then
   echo "--- Downloading gcc-${GCC_VERSION} ---"
-  wget -q --show-progress "https://ftp.gnu.org/gnu/gcc/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.xz"
+  download_with_mirrors "gcc-${GCC_VERSION}.tar.xz" "${GCC_URLS[@]}"
 fi
 
 # ── Extract ──────────────────────────────────────────────────────────────────
 
 echo "--- Extracting sources ---"
-[ ! -d "binutils-${BINUTILS_VERSION}" ] && tar xf "binutils-${BINUTILS_VERSION}.tar.xz"
-[ ! -d "gcc-${GCC_VERSION}" ]           && tar xf "gcc-${GCC_VERSION}.tar.xz"
+if [ ! -d "binutils-${BINUTILS_VERSION}" ]; then
+  tar xf "binutils-${BINUTILS_VERSION}.tar.xz" || { echo "ERROR: Failed to extract binutils tarball."; exit 1; }
+fi
+if [ ! -d "gcc-${GCC_VERSION}" ]; then
+  tar xf "gcc-${GCC_VERSION}.tar.xz" || { echo "ERROR: Failed to extract GCC tarball."; exit 1; }
+fi
+
+# Verify extraction succeeded
+BINUTILS_SRC="$SRC_DIR/binutils-${BINUTILS_VERSION}"
+GCC_SRC="$SRC_DIR/gcc-${GCC_VERSION}"
+
+if [[ ! -f "$BINUTILS_SRC/config.sub" ]]; then
+  echo "ERROR: binutils source not found at $BINUTILS_SRC/config.sub"
+  echo "  Tarball may be corrupted. Try: $0 --clean && $0"
+  exit 1
+fi
+if [[ ! -f "$GCC_SRC/config.sub" ]]; then
+  echo "ERROR: GCC source not found at $GCC_SRC/config.sub"
+  echo "  Tarball may be corrupted. Try: $0 --clean && $0"
+  exit 1
+fi
+
+echo "  binutils source: $BINUTILS_SRC"
+echo "  GCC source:      $GCC_SRC"
 
 # ── Patch binutils for anyOS ────────────────────────────────────────────────
 
-BINUTILS_SRC="$SRC_DIR/binutils-${BINUTILS_VERSION}"
+# Robust config.sub patcher: inserts "anyos*)" before the "*)" catch-all
+# that prints "OS not recognized". Works regardless of indentation.
+patch_config_sub() {
+  local file="$1"
+  if [[ ! -f "$file" ]] || grep -q 'anyos' "$file" 2>/dev/null; then
+    return 0
+  fi
+  # Structure in config.sub:
+  #   none)
+  #       ;;
+  #   *)
+  #       echo "Invalid configuration ... OS ... not recognized"
+  #
+  # We need to find the line number of the *) that precedes "OS.*not recognized"
+  # and insert our anyos case BEFORE it.
+  local err_line
+  err_line=$(grep -n "Invalid configuration.*OS.*not recognized" "$file" | head -1 | cut -d: -f1)
+  if [[ -z "$err_line" ]]; then
+    echo "  WARNING: could not find OS validation in $file"
+    return 1
+  fi
+  # The *) case pattern is 1 line before the echo
+  local insert_line=$((err_line - 1))
+  "${SED_INPLACE[@]}" "${insert_line}i\\
+	anyos*)\\
+		;;
+" "$file"
+  echo "  patched $(basename "$(dirname "$file")")/$(basename "$file")"
+}
 
 echo ""
 echo "--- Patching binutils for x86_64-anyos ---"
 
-# 1. config.sub: Teach the system about anyos as a valid OS.
-if ! grep -q 'anyos' "$BINUTILS_SRC/config.sub" 2>/dev/null; then
-  # Add anyos* to the OS list (near "none)" in the first os case block)
-  "${SED_INPLACE[@]}" '/^	      -none)$/i\
-	      -anyos*)
-' "$BINUTILS_SRC/config.sub"
-  echo "  patched config.sub"
-fi
+# 1. config.sub: Teach the system about anyos as a valid OS
+patch_config_sub "$BINUTILS_SRC/config.sub"
 
-# Also patch the top-level config.sub used by configure
+# Also patch sub-project config.sub files
 for f in "$BINUTILS_SRC"/*/config.sub; do
-  if [ -f "$f" ] && ! grep -q 'anyos' "$f" 2>/dev/null; then
-    "${SED_INPLACE[@]}" '/^	      -none)$/i\
-	      -anyos*)
-' "$f"
-  fi
+  patch_config_sub "$f"
 done
 
 # 2. bfd/config.bfd: Map x86_64-*-anyos* to ELF64 x86-64.
@@ -174,9 +321,11 @@ if ! grep -q 'anyos' "$BINUTILS_SRC/bfd/config.bfd" 2>/dev/null; then
 fi
 
 # 3. gas/configure.tgt: Assembler target mapping.
+#    GAS uses i386 cpu_type for x86_64 (see line ~117: x86_64* -> cpu_type=i386).
+#    So the target pattern must be i386-*-anyos*, inserted before i386-*-elf*.
 if ! grep -q 'anyos' "$BINUTILS_SRC/gas/configure.tgt" 2>/dev/null; then
-  "${SED_INPLACE[@]}" '/x86_64-\*-linux-\*/i\
-  x86_64-*-anyos*)			fmt=elf ;;\
+  "${SED_INPLACE[@]}" '/i386-\*-elf\*)/i\
+  i386-*-anyos*)				fmt=elf ;;
 ' "$BINUTILS_SRC/gas/configure.tgt"
   echo "  patched gas/configure.tgt"
 fi
@@ -194,8 +343,6 @@ echo "  binutils patching complete"
 
 # ── Patch GCC for anyOS ─────────────────────────────────────────────────────
 
-GCC_SRC="$SRC_DIR/gcc-${GCC_VERSION}"
-
 echo ""
 echo "--- Patching GCC for x86_64-anyos ---"
 
@@ -204,28 +351,18 @@ cp "$PATCHES_DIR/gcc-config-anyos.h" "$GCC_SRC/gcc/config/anyos.h"
 echo "  installed gcc/config/anyos.h"
 
 # 2. config.sub: Teach GCC about anyos.
-if ! grep -q 'anyos' "$GCC_SRC/config.sub" 2>/dev/null; then
-  "${SED_INPLACE[@]}" '/^	      -none)$/i\
-	      -anyos*)
-' "$GCC_SRC/config.sub"
-  echo "  patched config.sub"
-fi
+patch_config_sub "$GCC_SRC/config.sub"
 
 # Also patch sub-project config.sub files
 for f in "$GCC_SRC"/*/config.sub; do
-  if [ -f "$f" ] && ! grep -q 'anyos' "$f" 2>/dev/null; then
-    "${SED_INPLACE[@]}" '/^	      -none)$/i\
-	      -anyos*)
-' "$f"
-  fi
+  patch_config_sub "$f"
 done
 
 # 3. gcc/config.gcc: Add the x86_64-anyos target.
 if ! grep -q 'anyos' "$GCC_SRC/gcc/config.gcc" 2>/dev/null; then
-  # Add common OS stanza (near the "Common parts" section)
-  "${SED_INPLACE[@]}" '/^# Common parts for widely ported systems\./a\
-\
-# anyOS -- bare-metal x86_64 OS with custom libc64/libcxx\
+  # Add common OS stanza INSIDE the "case ${target} in" block after "Common parts"
+  # Insert anyos before the first real case (*-*-darwin*)
+  "${SED_INPLACE[@]}" '/^\*-\*-darwin\*)/i\
 *-*-anyos*)\
   gas=yes\
   gnu_ld=yes\
@@ -234,12 +371,11 @@ if ! grep -q 'anyos' "$GCC_SRC/gcc/config.gcc" 2>/dev/null; then
   ;;\
 ' "$GCC_SRC/gcc/config.gcc"
 
-  # Add machine-specific stanza (before "# Architecture descriptions" or similar)
+  # Add machine-specific stanza for x86_64-anyos
   "${SED_INPLACE[@]}" '/^x86_64-\*-linux\*/i\
 x86_64-*-anyos*)\
 	tm_file="${tm_file} i386/unix.h i386/att.h dbxelf.h elfos.h i386/i386elf.h i386/x86-64.h anyos.h"\
 	tmake_file="${tmake_file} i386/t-i386elf"\
-	extra_options="${extra_options} i386/elf.opt"\
 	;;\
 ' "$GCC_SRC/gcc/config.gcc"
   echo "  patched gcc/config.gcc"
@@ -279,11 +415,13 @@ cd "$BUILD_DIR/binutils"
   --target="$TARGET" \
   --prefix="$PREFIX" \
   --with-sysroot \
+  --with-system-zlib \
   --disable-nls \
-  --disable-werror
+  --disable-werror \
+  MAKEINFO=true
 
-make -j"$JOBS"
-make install
+make -j"$JOBS" MAKEINFO=true
+make install MAKEINFO=true
 echo "--- binutils installed ---"
 
 # ── Build GCC (C and C++ compilers) ─────────────────────────────────────────
@@ -316,12 +454,14 @@ fi
   --disable-multilib \
   --without-headers \
   --with-newlib \
+  --with-system-zlib \
   $SYSROOT_FLAGS \
-  $EXTRA_GCC_CONFIGURE
+  $EXTRA_GCC_CONFIGURE \
+  MAKEINFO=true
 
 # Build compiler + libgcc
-make -j"$JOBS" all-gcc all-target-libgcc
-make install-gcc install-target-libgcc
+make -j"$JOBS" all-gcc all-target-libgcc MAKEINFO=true
+make install-gcc install-target-libgcc MAKEINFO=true
 echo "--- GCC installed ---"
 
 # ── Copy libgcc.a to project sysroot (if specified) ─────────────────────────
