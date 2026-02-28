@@ -43,7 +43,7 @@ impl TabState {
     /// Create a new, blank tab.
     pub(crate) fn new() -> Self {
         Self {
-            webview: libwebview::WebView::new(800, 600),
+            webview: libwebview::WebView::new(900, 606),
             url_text: String::new(),
             current_url: None,
             page_title: String::new(),

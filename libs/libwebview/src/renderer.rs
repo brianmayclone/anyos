@@ -138,34 +138,55 @@ impl Renderer {
         // Background/border box — create View(s) for visible bg and/or border.
         let has_bg = bx.bg_color != 0 && bx.bg_color != 0x00000000;
         let has_border = bx.border_width > 0 && bx.border_color != 0 && bx.border_color != 0x00000000;
-        if has_border {
-            // Outer view = border color, full box size.
-            let outer = ui::View::new();
-            outer.set_position(abs_x, abs_y);
-            outer.set_size(bx.width as u32, bx.height as u32);
-            outer.set_color(bx.border_color);
-            parent.add(&outer);
-            self.controls.push(outer.id());
-            // Inner view = background color, inset by border width.
-            let bw = bx.border_width;
-            let inner_w = (bx.width - bw * 2).max(0) as u32;
-            let inner_h = (bx.height - bw * 2).max(0) as u32;
-            if inner_w > 0 && inner_h > 0 {
-                let inner = ui::View::new();
-                inner.set_position(abs_x + bw, abs_y + bw);
-                inner.set_size(inner_w, inner_h);
-                let bg = if has_bg { bx.bg_color } else { 0xFFFFFFFF };
-                inner.set_color(bg);
-                parent.add(&inner);
-                self.controls.push(inner.id());
-            }
-        } else if has_bg {
+        if has_bg {
             let view = ui::View::new();
             view.set_position(abs_x, abs_y);
             view.set_size(bx.width as u32, bx.height as u32);
             view.set_color(bx.bg_color);
             parent.add(&view);
             self.controls.push(view.id());
+        }
+        if has_border {
+            let bw = bx.border_width;
+            let w = bx.width;
+            let h = bx.height;
+            // Top edge
+            if bw > 0 && w > 0 {
+                let v = ui::View::new();
+                v.set_position(abs_x, abs_y);
+                v.set_size(w as u32, bw as u32);
+                v.set_color(bx.border_color);
+                parent.add(&v);
+                self.controls.push(v.id());
+            }
+            // Bottom edge
+            if bw > 0 && w > 0 {
+                let v = ui::View::new();
+                v.set_position(abs_x, abs_y + h - bw);
+                v.set_size(w as u32, bw as u32);
+                v.set_color(bx.border_color);
+                parent.add(&v);
+                self.controls.push(v.id());
+            }
+            // Left edge
+            let inner_h = (h - bw * 2).max(0);
+            if bw > 0 && inner_h > 0 {
+                let v = ui::View::new();
+                v.set_position(abs_x, abs_y + bw);
+                v.set_size(bw as u32, inner_h as u32);
+                v.set_color(bx.border_color);
+                parent.add(&v);
+                self.controls.push(v.id());
+            }
+            // Right edge
+            if bw > 0 && inner_h > 0 {
+                let v = ui::View::new();
+                v.set_position(abs_x + w - bw, abs_y + bw);
+                v.set_size(bw as u32, inner_h as u32);
+                v.set_color(bx.border_color);
+                parent.add(&v);
+                self.controls.push(v.id());
+            }
         }
 
         // Horizontal rule — thin gray line.

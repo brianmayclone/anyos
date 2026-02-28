@@ -1307,11 +1307,9 @@ fn clear_dirty(controls: &mut [Box<dyn Control>], id: ControlId) {
     b.prev_y = b.y;
     b.prev_w = b.w;
     b.prev_h = b.h;
-    let mut buf = [0u32; 64];
-    let n = controls[idx].children().len().min(64);
-    buf[..n].copy_from_slice(&controls[idx].children()[..n]);
-    for i in 0..n {
-        clear_dirty(controls, buf[i]);
+    let children: Vec<u32> = controls[idx].children().to_vec();
+    for &cid in &children {
+        clear_dirty(controls, cid);
     }
 }
 
@@ -1390,10 +1388,7 @@ fn collect_dirty_rects(
         }
     }
 
-    // Copy children to stack buffer (same pattern as render_tree)
-    let mut child_buf = [0u32; 64];
-    let child_n = controls[idx].children().len().min(64);
-    child_buf[..child_n].copy_from_slice(&controls[idx].children()[..child_n]);
+    let children: Vec<u32> = controls[idx].children().to_vec();
 
     // Handle ScrollView offset for child absolute positions
     let child_abs_y = match controls[idx].kind() {
@@ -1402,8 +1397,8 @@ fn collect_dirty_rects(
         _ => abs_y,
     };
 
-    for i in 0..child_n {
-        collect_dirty_rects(controls, child_buf[i], abs_x, child_abs_y, cw);
+    for &cid in &children {
+        collect_dirty_rects(controls, cid, abs_x, child_abs_y, cw);
     }
 }
 
@@ -1453,17 +1448,15 @@ fn render_tree(
     let child_abs_x = abs_x;
     let child_abs_y = abs_y;
 
-    // Copy children to stack buffer to avoid Vec allocation
-    let mut child_buf = [0u32; 64];
-    let child_n = controls[idx].children().len().min(64);
-    child_buf[..child_n].copy_from_slice(&controls[idx].children()[..child_n]);
+    let children: Vec<u32> = controls[idx].children().to_vec();
     // Skip children if this is a collapsed Expander
     if controls[idx].kind() == ControlKind::Expander && controls[idx].base().state == 0 {
         return;
     }
     // ScrollView: offset children by -scroll_y and clip to viewport
     // Expander: offset children by +HEADER_HEIGHT (below header)
-    let (child_abs_y, child_surface) = match controls[idx].kind() {
+    let is_scroll_view = controls[idx].kind() == ControlKind::ScrollView;
+    let (child_abs_y, child_surface, sv_cull) = match controls[idx].kind() {
         ControlKind::ScrollView => {
             // Logical coords for the ScrollView viewport
             let sv_x = parent_abs_x + controls[idx].base().x;
@@ -1475,16 +1468,31 @@ fn render_tree(
             (
                 child_abs_y - controls[idx].base().state as i32,
                 surface.with_clip(p.x, p.y, p.w, p.h),
+                Some((sv_y, sv_h as i32)),
             )
         }
         ControlKind::Expander => (
             child_abs_y + crate::controls::expander::HEADER_HEIGHT as i32,
             *surface,
+            None,
         ),
-        _ => (child_abs_y, *surface),
+        _ => (child_abs_y, *surface, None),
     };
-    for i in 0..child_n {
-        render_tree(controls, child_buf[i], &child_surface, child_abs_x, child_abs_y, dirty_rect);
+    for &cid in &children {
+        // Viewport culling: skip children completely outside the ScrollView viewport.
+        if let Some((vis_top, vis_h)) = sv_cull {
+            if let Some(ci) = control::find_idx(controls, cid) {
+                let (_, cy) = controls[ci].position();
+                let (_, c_h) = controls[ci].size();
+                let child_top = child_abs_y + cy;
+                let child_bottom = child_top + c_h as i32;
+                let vis_bottom = vis_top + vis_h;
+                if child_bottom < vis_top || child_top > vis_bottom {
+                    continue;
+                }
+            }
+        }
+        render_tree(controls, cid, &child_surface, child_abs_x, child_abs_y, dirty_rect);
     }
 
     // ScrollView: render scrollbar AFTER children so it isn't painted over.
@@ -1498,11 +1506,9 @@ fn render_tree(
 /// Recursively mark a control and all its descendants as dirty.
 fn mark_tree_dirty(controls: &mut [Box<dyn Control>], idx: usize) {
     controls[idx].base_mut().mark_dirty();
-    let mut child_buf = [0u32; 64];
-    let n = controls[idx].children().len().min(64);
-    child_buf[..n].copy_from_slice(&controls[idx].children()[..n]);
-    for i in 0..n {
-        if let Some(ci) = control::find_idx(controls, child_buf[i]) {
+    let children: Vec<u32> = controls[idx].children().to_vec();
+    for &cid in &children {
+        if let Some(ci) = control::find_idx(controls, cid) {
             mark_tree_dirty(controls, ci);
         }
     }

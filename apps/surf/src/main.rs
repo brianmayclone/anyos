@@ -753,6 +753,17 @@ fn main() {
         tab::navigate(&url);
     }
 
+    // One-shot timer: after the first layout pass, resize the WebView to the
+    // actual content_view dimensions (dock sizes aren't computed until run()).
+    ui_lib::set_timer(50, || {
+        let st = state();
+        let (w, h) = st.content_view.get_size();
+        if w > 0 && h > 0 {
+            let t = &mut st.tabs[st.active_tab];
+            t.webview.resize(w, h);
+        }
+    });
+
     anyos_std::println!("[surf] entering event loop");
     ui_lib::run();
 }
