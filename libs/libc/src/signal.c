@@ -11,11 +11,7 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <unistd.h>
-
-/* Syscall numbers — must match kernel */
-#define SYS_KILL        13
-#define SYS_SIGACTION   244
-#define SYS_SIGPROCMASK 245
+#include <sys/syscall.h>
 
 /* Implemented in syscall.S */
 extern int _syscall(int num, int a1, int a2, int a3, int a4);

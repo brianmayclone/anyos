@@ -24,14 +24,44 @@ extern "C" fn anyos_tcp_send(fd: i32, data: *const u8, len: i32) -> i32 {
 }
 
 /// TCP receive callback for BearSSL.
+///
+/// Retries on timeout (tcp_recv returns u32::MAX) by checking whether
+/// the connection is still alive via `tcp_recv_available`. This prevents
+/// a transient TCP timeout from killing the entire TLS session, which
+/// would make large HTTPS downloads fail mid-stream.
 #[no_mangle]
 extern "C" fn anyos_tcp_recv(fd: i32, data: *mut u8, len: i32) -> i32 {
     if data.is_null() || len <= 0 {
         return -1;
     }
     let buf = unsafe { core::slice::from_raw_parts_mut(data, len as usize) };
-    let n = syscall::tcp_recv(fd as u32, buf);
-    if n == u32::MAX { -1 } else { n as i32 }
+    let sock = fd as u32;
+
+    for _attempt in 0..3 {
+        let n = syscall::tcp_recv(sock, buf);
+        if n == 0 {
+            return 0; // EOF (FIN received)
+        }
+        if n != u32::MAX {
+            return n as i32; // Got data
+        }
+
+        // tcp_recv returned u32::MAX — could be timeout or real error.
+        // Check connection state to decide whether to retry.
+        let avail = syscall::tcp_recv_available(sock);
+        match avail {
+            u32::MAX => return -1,       // True error (reset, invalid socket)
+            0xFFFFFFFE => return 0,      // EOF (u32::MAX - 1)
+            _ => {
+                // Connection still alive (avail == 0 or >0). Retry.
+                // Brief sleep to let more data arrive.
+                syscall::sleep(100);
+            }
+        }
+    }
+
+    // All retries exhausted
+    -1
 }
 
 /// Sleep callback for BearSSL.

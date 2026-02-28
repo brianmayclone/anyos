@@ -16,7 +16,9 @@ pub mod handlers;
 pub mod table;
 
 // =========================================================================
-// Syscall numbers (must match stdlib/src/syscall.rs)
+// Syscall numbers — Rust source of truth.
+// C source of truth: include/sys/syscall.h
+// Keep both in sync!
 // =========================================================================
 
 // Process management

@@ -311,14 +311,35 @@ fn send_data(sock: u32, data: &[u8], is_https: bool) -> bool {
     }
 }
 
-/// Receive data from plain TCP or TLS. Returns 0 on EOF/error.
+/// Receive data from plain TCP or TLS.
+/// Returns bytes received, or 0 on true EOF/error.
+///
+/// For plain TCP, retries up to 3 times on timeout (u32::MAX) if the
+/// connection is still alive, to handle transient delays during large transfers.
 fn recv_some(sock: u32, buf: &mut [u8], is_https: bool) -> usize {
     if is_https {
+        // TLS path — retry logic is in anyos_tcp_recv callback
         let n = tls::recv(buf);
         if n <= 0 { 0 } else { n as usize }
     } else {
-        let n = syscall::tcp_recv(sock, buf);
-        if n == u32::MAX { 0 } else { n as usize }
+        // Plain TCP path — retry on transient timeouts
+        for _ in 0..3 {
+            let n = syscall::tcp_recv(sock, buf);
+            if n == 0 {
+                return 0; // EOF
+            }
+            if n != u32::MAX {
+                return n as usize; // Got data
+            }
+            // Timeout — check if connection is still alive
+            let avail = syscall::tcp_recv_available(sock);
+            if avail == u32::MAX || avail == u32::MAX - 1 {
+                return 0; // Error or EOF
+            }
+            // Connection alive, retry after brief delay
+            syscall::sleep(100);
+        }
+        0
     }
 }
 
@@ -441,6 +462,10 @@ fn build_post_request(url: &Url, body: &[u8], content_type: &str) -> String {
 // ── Body reading ────────────────────────────────────────────────────────────
 
 /// Read body with Content-Length or until connection close.
+///
+/// When Content-Length is known, retries up to 5 times on recv_some()==0
+/// if the expected size hasn't been reached yet. This handles cases where
+/// TCP timeouts cause transient recv failures during large downloads.
 fn read_body(sock: u32, initial: &[u8], content_length: Option<u32>, is_https: bool) -> Vec<u8> {
     let capacity = content_length
         .map(|cl| (cl as usize).min(32 * 1024 * 1024))
@@ -458,12 +483,27 @@ fn read_body(sock: u32, initial: &[u8], content_length: Option<u32>, is_https: b
     }
 
     let mut recv_buf = [0u8; RECV_BUF_SIZE];
+    let mut consecutive_failures = 0u32;
+    const MAX_RETRIES: u32 = 5;
+
     loop {
         if let Some(cl) = content_length {
             if body.len() >= cl as usize { break; }
         }
         let n = recv_some(sock, &mut recv_buf, is_https);
-        if n == 0 { break; }
+        if n == 0 {
+            // recv_some returned 0 — could be EOF or transient failure.
+            // If we know Content-Length and haven't received enough, retry.
+            if let Some(cl) = content_length {
+                if body.len() < cl as usize && consecutive_failures < MAX_RETRIES {
+                    consecutive_failures += 1;
+                    syscall::sleep(200);
+                    continue;
+                }
+            }
+            break;
+        }
+        consecutive_failures = 0;
         body.extend_from_slice(&recv_buf[..n]);
 
         unsafe {
@@ -476,6 +516,9 @@ fn read_body(sock: u32, initial: &[u8], content_length: Option<u32>, is_https: b
 }
 
 /// Read a chunked transfer-encoded body.
+///
+/// Retries on transient recv failures (up to 5 consecutive) to handle
+/// TCP timeouts during large chunked transfers.
 fn read_chunked_body(sock: u32, initial: &[u8], is_https: bool) -> Vec<u8> {
     let mut buf: Vec<u8> = Vec::with_capacity(RECV_BUF_SIZE * 4);
     buf.extend_from_slice(initial);
@@ -483,9 +526,12 @@ fn read_chunked_body(sock: u32, initial: &[u8], is_https: bool) -> Vec<u8> {
     let mut body: Vec<u8> = Vec::with_capacity(65536);
     let mut recv_buf = [0u8; RECV_BUF_SIZE];
 
+    const MAX_RETRIES: u32 = 5;
+
     loop {
         // Find chunk size line
         let chunk_size;
+        let mut failures = 0u32;
         loop {
             if let Some(crlf) = find_crlf(&buf[cursor..]) {
                 let size_str = core::str::from_utf8(&buf[cursor..cursor + crlf]).unwrap_or("0");
@@ -498,16 +544,29 @@ fn read_chunked_body(sock: u32, initial: &[u8], is_https: bool) -> Vec<u8> {
                 break;
             }
             let n = recv_some(sock, &mut recv_buf, is_https);
-            if n == 0 { return body; }
+            if n == 0 {
+                failures += 1;
+                if failures >= MAX_RETRIES { return body; }
+                syscall::sleep(200);
+                continue;
+            }
+            failures = 0;
             buf.extend_from_slice(&recv_buf[..n]);
         }
 
         if chunk_size == 0 { break; }
 
         // Read chunk data
+        failures = 0;
         while buf.len() - cursor < chunk_size {
             let n = recv_some(sock, &mut recv_buf, is_https);
-            if n == 0 { break; }
+            if n == 0 {
+                failures += 1;
+                if failures >= MAX_RETRIES { break; }
+                syscall::sleep(200);
+                continue;
+            }
+            failures = 0;
             buf.extend_from_slice(&recv_buf[..n]);
         }
 
@@ -523,9 +582,16 @@ fn read_chunked_body(sock: u32, initial: &[u8], is_https: bool) -> Vec<u8> {
         }
 
         // Skip trailing CRLF
+        failures = 0;
         while buf.len() - cursor < 2 {
             let n = recv_some(sock, &mut recv_buf, is_https);
-            if n == 0 { return body; }
+            if n == 0 {
+                failures += 1;
+                if failures >= MAX_RETRIES { return body; }
+                syscall::sleep(200);
+                continue;
+            }
+            failures = 0;
             buf.extend_from_slice(&recv_buf[..n]);
         }
         if buf[cursor] == b'\r' && buf[cursor + 1] == b'\n' {

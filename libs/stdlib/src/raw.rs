@@ -16,7 +16,7 @@
 use core::arch::asm;
 
 // =========================================================================
-// Syscall numbers (must match kernel/src/syscall/mod.rs)
+// Syscall numbers (must match kernel/src/syscall/mod.rs and include/sys/syscall.h)
 // =========================================================================
 
 // Process management

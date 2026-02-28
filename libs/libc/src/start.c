@@ -15,12 +15,13 @@ extern int main(int argc, char **argv);
 extern void exit(int status);
 extern void __init_environ(void);
 
+#include <sys/syscall.h>
+
 /* .init_array constructors — linker script provides these symbols */
 typedef void (*init_func)(void);
 extern init_func __init_array_start[];
 extern init_func __init_array_end[];
 
-#define SYS_GETARGS 28
 #define MAX_ARGS    64
 #define ARG_BUF_SIZE 1024
 

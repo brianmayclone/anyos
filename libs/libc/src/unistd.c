@@ -6,29 +6,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <sys/syscall.h>
 
 extern int _syscall(int num, int a1, int a2, int a3, int a4);
-
-#define SYS_EXIT    1
-#define SYS_WRITE   2
-#define SYS_READ    3
-#define SYS_OPEN    4
-#define SYS_CLOSE   5
-#define SYS_SBRK    9
-#define SYS_FORK    10
-#define SYS_EXEC    11
-#define SYS_WAITPID 12
-#define SYS_KILL    13
-#define SYS_GETCWD  25
-#define SYS_CHDIR   26
-#define SYS_UNLINK  91
-#define SYS_LSEEK   105
-#define SYS_FSTAT   106
-#define SYS_ISATTY  108
-#define SYS_PIPE2   240
-#define SYS_DUP_SC  241
-#define SYS_DUP2_SC 242
-#define SYS_FCNTL_SC 243
 
 /* Socket fd base — socket fds start at 256 (file fds now use 0-255) */
 #define SOCKET_FD_BASE 256
@@ -36,8 +16,6 @@ extern int _syscall(int num, int a1, int a2, int a3, int a4);
 /* Defined in socket.c — handles socket fd I/O */
 extern ssize_t recv(int sockfd, void *buf, size_t len, int flags);
 extern ssize_t send(int sockfd, const void *buf, size_t len, int flags);
-
-#define SYS_SLEEP   8
 
 ssize_t read(int fd, void *buf, size_t count) {
     if (fd >= SOCKET_FD_BASE) {
@@ -208,10 +186,8 @@ int execvp(const char *file, char *const argv[]) {
     return -1;
 }
 
-#define SYS_FTRUNCATE_UNISTD 107
-
 int ftruncate(int fd, unsigned int length) {
-    int r = _syscall(SYS_FTRUNCATE_UNISTD, fd, (int)length, 0, 0);
+    int r = _syscall(SYS_FTRUNCATE, fd, (int)length, 0, 0);
     if (r < 0) { errno = -r; return -1; }
     return 0;
 }
@@ -235,13 +211,13 @@ ssize_t pwrite(int fd, const void *buf, size_t count, long offset) {
 }
 
 int dup(int oldfd) {
-    int r = _syscall(SYS_DUP_SC, oldfd, 0, 0, 0);
+    int r = _syscall(SYS_DUP, oldfd, 0, 0, 0);
     if (r == (int)0xFFFFFFFF) { errno = EBADF; return -1; }
     return r;
 }
 
 int dup2(int oldfd, int newfd) {
-    int r = _syscall(SYS_DUP2_SC, oldfd, newfd, 0, 0);
+    int r = _syscall(SYS_DUP2, oldfd, newfd, 0, 0);
     if (r == (int)0xFFFFFFFF) { errno = EBADF; return -1; }
     return r;
 }
@@ -269,7 +245,7 @@ int fcntl(int fd, int cmd, ...) {
         arg = __builtin_va_arg(ap, int);
         __builtin_va_end(ap);
     }
-    int r = _syscall(SYS_FCNTL_SC, fd, cmd, arg, 0);
+    int r = _syscall(SYS_FCNTL, fd, cmd, arg, 0);
     if (r == (int)0xFFFFFFFF) { errno = EBADF; return -1; }
     return r;
 }

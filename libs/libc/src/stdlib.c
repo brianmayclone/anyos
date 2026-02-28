@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/syscall.h>
 
 /* Arena-based malloc: requests memory from sbrk in large chunks, suballocates
  * locally. This avoids a syscall for every malloc — critical for complex C
@@ -178,7 +179,6 @@ int abs(int j) { return j < 0 ? -j : j; }
 long labs(long j) { return j < 0 ? -j : j; }
 
 extern int _syscall(int num, int a1, int a2, int a3, int a4);
-#define SYS_GETENV 183
 
 char *getenv(const char *name) {
     if (!name || !*name) return NULL;
@@ -243,15 +243,12 @@ double atof(const char *nptr) {
     return strtod(nptr, NULL);
 }
 
-#define SYS_SPAWN_STDLIB   27
-#define SYS_WAITPID_STDLIB 12
-
 /* Try to spawn `path`; if it's a bare name (no '/'), search PATH env. */
 static int _resolve_and_spawn(const char *path, const char *args) {
     /* If path contains '/', try it directly */
     for (const char *s = path; *s; s++) {
         if (*s == '/') {
-            return _syscall(SYS_SPAWN_STDLIB, (int)path, 0, (int)args, 0);
+            return _syscall(SYS_SPAWN, (int)path, 0, (int)args, 0);
         }
     }
     /* Bare name — search PATH environment variable */
@@ -270,7 +267,7 @@ static int _resolve_and_spawn(const char *path, const char *args) {
         const char *n = path;
         while (*n && pos < 255) full[pos++] = *n++;
         full[pos] = '\0';
-        int tid = _syscall(SYS_SPAWN_STDLIB, (int)full, 0, (int)args, 0);
+        int tid = _syscall(SYS_SPAWN, (int)full, 0, (int)args, 0);
         if (tid > 0) return tid;
     }
     return -1;
@@ -301,6 +298,6 @@ int system(const char *command) {
     args[alen] = '\0';
     int tid = _resolve_and_spawn(path, args);
     if (tid < 0) return -1;
-    int status = _syscall(SYS_WAITPID_STDLIB, tid, 0, 0, 0);
+    int status = _syscall(SYS_WAITPID, tid, 0, 0, 0);
     return status;
 }

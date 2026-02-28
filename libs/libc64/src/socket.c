@@ -18,25 +18,9 @@
 #include <errno.h>
 #include <stdio.h>
 
-extern long _syscall(long num, long a1, long a2, long a3, long a4, long a5);
+#include <sys/syscall.h>
 
-/* Syscall numbers */
-#define SYS_SLEEP           8
-#define SYS_NET_DNS         43
-#define SYS_NET_POLL        50
-#define SYS_TCP_CONNECT     100
-#define SYS_TCP_SEND        101
-#define SYS_TCP_RECV        102
-#define SYS_TCP_CLOSE       103
-#define SYS_TCP_STATUS      104
-#define SYS_TCP_RECV_AVAILABLE 130
-#define SYS_TCP_SHUTDOWN_WR 131
-#define SYS_TCP_LISTEN      132
-#define SYS_TCP_ACCEPT      133
-#define SYS_UDP_BIND        150
-#define SYS_UDP_UNBIND      151
-#define SYS_UDP_SENDTO      152
-#define SYS_UDP_RECVFROM    153
+extern long _syscall(long num, long a1, long a2, long a3, long a4, long a5);
 
 /* TCP status codes from kernel */
 #define TCP_STATE_CLOSED        0

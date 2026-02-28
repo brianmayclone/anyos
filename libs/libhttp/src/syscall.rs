@@ -17,7 +17,9 @@ const SYS_TCP_CONNECT: u64 = 100;
 const SYS_TCP_SEND: u64 = 101;
 const SYS_TCP_RECV: u64 = 102;
 const SYS_TCP_CLOSE: u64 = 103;
+const SYS_TCP_STATUS: u64 = 104;
 const SYS_FSTAT: u64 = 106;
+const SYS_TCP_RECV_AVAILABLE: u64 = 130;
 const SYS_RANDOM: u64 = 210;
 
 pub const O_WRITE: u32 = 1;
@@ -184,6 +186,17 @@ pub fn tcp_recv(sock: u32, buf: &mut [u8]) -> u32 {
 /// Close a TCP socket.
 pub fn tcp_close(sock: u32) {
     syscall1(SYS_TCP_CLOSE, sock as u64);
+}
+
+/// Check bytes available to read on a TCP socket.
+/// Returns: >0 = bytes available, 0 = no data yet, u32::MAX-1 = EOF/FIN, u32::MAX = error.
+pub fn tcp_recv_available(sock: u32) -> u32 {
+    syscall1(SYS_TCP_RECV_AVAILABLE, sock as u64) as u32
+}
+
+/// Get TCP connection state. Returns state enum as u32, or u32::MAX if not found.
+pub fn tcp_status(sock: u32) -> u32 {
+    syscall1(SYS_TCP_STATUS, sock as u64) as u32
 }
 
 // ── Random ───────────────────────────────────────────────────────────────────

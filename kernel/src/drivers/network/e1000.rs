@@ -528,6 +528,20 @@ pub fn recv_packet() -> Option<Vec<u8>> {
     e1000.rx_queue.pop_front()
 }
 
+/// Drain all received packets from the queue in a single lock acquisition.
+/// Much more efficient than calling recv_packet() in a loop when processing
+/// a burst of packets.
+pub fn recv_all_packets(out: &mut Vec<Vec<u8>>) {
+    let mut state = E1000_STATE.lock();
+    let e1000 = match state.as_mut() {
+        Some(e) => e,
+        None => return,
+    };
+    while let Some(pkt) = e1000.rx_queue.pop_front() {
+        out.push(pkt);
+    }
+}
+
 /// Get the MAC address of the NIC.
 pub fn get_mac() -> Option<[u8; 6]> {
     let state = E1000_STATE.lock();
@@ -610,21 +624,20 @@ pub fn poll_rx() {
 // ──────────────────────────────────────────────
 
 fn process_rx_ring(e1000: &mut E1000) {
+    let mut new_tail = e1000.rx_tail;
     loop {
-        let idx = ((e1000.rx_tail + 1) % NUM_RX_DESC as u16) as usize;
+        let idx = ((new_tail + 1) % NUM_RX_DESC as u16) as usize;
         let desc_ptr = (e1000.rx_descs_virt as *mut RxDescriptor).wrapping_add(idx);
 
         let status = unsafe { core::ptr::read_volatile(&(*desc_ptr).status) };
         if status & RDESC_STA_DD == 0 {
-            // No more completed descriptors
             break;
         }
 
-        // Read the packet
         let length = unsafe { core::ptr::read_volatile(&(*desc_ptr).length) } as usize;
         if length > 0 && length <= RX_BUFFER_SIZE && (status & RDESC_STA_EOP != 0) {
             let buf_phys = e1000.rx_bufs_phys[idx] as u64;
-            let buf_ptr = buf_phys as *const u8; // Identity-mapped
+            let buf_ptr = buf_phys as *const u8;
 
             let mut packet = Vec::with_capacity(length);
             unsafe {
@@ -632,28 +645,26 @@ fn process_rx_ring(e1000: &mut E1000) {
                 core::ptr::copy_nonoverlapping(buf_ptr, packet.as_mut_ptr(), length);
             }
 
-            // Statistics
             e1000.rx_packets += 1;
             e1000.rx_bytes += length as u64;
 
-            // Don't grow the queue unboundedly
-            if e1000.rx_queue.len() < 256 {
+            if e1000.rx_queue.len() < 1024 {
                 e1000.rx_queue.push_back(packet);
+            } else {
+                e1000.rx_errors += 1;
             }
         } else if length > 0 {
             e1000.rx_errors += 1;
         }
 
-        // Reset descriptor for reuse
-        unsafe {
-            (*desc_ptr).status = 0;
-        }
+        unsafe { (*desc_ptr).status = 0; }
+        new_tail = idx as u16;
+    }
 
-        // Advance tail
-        e1000.rx_tail = idx as u16;
-        unsafe {
-            mmio_write(e1000.mmio_base, REG_RDT, e1000.rx_tail as u32);
-        }
+    // Batch: single MMIO write after processing all descriptors
+    if new_tail != e1000.rx_tail {
+        e1000.rx_tail = new_tail;
+        unsafe { mmio_write(e1000.mmio_base, REG_RDT, new_tail as u32); }
     }
 }
 
@@ -685,9 +696,12 @@ fn e1000_irq_handler(_irq: u8) {
     // E1000_STATE lock dropped here
 
     // Process received packets through the network stack (Ethernet → IP → TCP).
-    // This wakes any threads blocked on tcp::recv/accept/connect.
+    // Use per-packet recv_packet() to avoid Vec<Vec<u8>> heap allocation in
+    // IRQ context (allocator lock could deadlock if interrupted thread holds it).
     if has_rx {
-        crate::net::poll();
+        while let Some(packet) = recv_packet() {
+            crate::net::ethernet::handle_frame(&packet);
+        }
     }
 }
 

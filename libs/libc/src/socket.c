@@ -23,6 +23,7 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <sys/select.h>
+#include <sys/syscall.h>
 #include <poll.h>
 #include <string.h>
 #include <stdlib.h>
@@ -31,26 +32,6 @@
 
 /* anyOS syscall interface */
 extern int _syscall(int num, int a1, int a2, int a3, int a4);
-
-/* Syscall numbers */
-#define SYS_SLEEP           8
-#define SYS_NET_DNS         43
-#define SYS_NET_POLL        50
-#define SYS_TCP_CONNECT     100
-#define SYS_TCP_SEND        101
-#define SYS_TCP_RECV        102
-#define SYS_TCP_CLOSE       103
-#define SYS_TCP_STATUS      104
-#define SYS_TCP_RECV_AVAILABLE 130
-#define SYS_TCP_SHUTDOWN_WR 131
-#define SYS_TCP_LISTEN      132
-#define SYS_TCP_ACCEPT      133
-#define SYS_UDP_BIND        150
-#define SYS_UDP_UNBIND      151
-#define SYS_UDP_SENDTO      152
-#define SYS_UDP_RECVFROM    153
-/* Pipe FD availability check (returns bytes, 0xFFFFFFFE=EOF, 0xFFFFFFFF=not-a-pipe) */
-#define SYS_PIPE_BYTES_AVAILABLE 157
 
 /* TCP status codes from kernel */
 #define TCP_STATE_CLOSED        0

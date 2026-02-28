@@ -529,6 +529,7 @@ add_rust_system_program(netmon)
 add_rust_system_program(inputmon)
 add_rust_system_program(login)
 add_rust_system_program(permdialog)
+add_rust_system_program(notifyd)
 add_rust_user_program(amid)
 
 # ============================================================

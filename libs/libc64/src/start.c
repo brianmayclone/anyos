@@ -6,6 +6,8 @@
  * Called from crt0.S _start. Parses args from kernel and calls main(argc, argv).
  */
 
+#include <sys/syscall.h>
+
 extern long _syscall(long num, long a1, long a2, long a3, long a4, long a5);
 extern int main(int argc, char **argv);
 extern void exit(int status);
@@ -15,8 +17,6 @@ extern void __init_environ(void);
 typedef void (*init_func)(void);
 extern init_func __init_array_start[];
 extern init_func __init_array_end[];
-
-#define SYS_GETARGS 28
 #define MAX_ARGS    64
 #define ARG_BUF_SIZE 1024
 

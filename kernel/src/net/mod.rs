@@ -13,8 +13,10 @@ pub mod dns;
 pub mod tcp;
 pub mod interfaces;
 
+use alloc::vec::Vec;
 use types::{Ipv4Addr, MacAddr, NetConfig};
 use crate::sync::spinlock::Spinlock;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Global network configuration protected by a spinlock.
 static NET_CONFIG: Spinlock<NetConfig> = Spinlock::new(NetConfig::new());
@@ -66,25 +68,44 @@ pub fn load_config_files() {
     interfaces::load_interfaces();
 }
 
+/// Tick counter for rate-limiting retransmission checks.
+static LAST_RETRANSMIT_CHECK: AtomicU32 = AtomicU32::new(0);
+
 /// Poll for incoming packets and dispatch them through the protocol stack.
 /// Call this from any context that needs to process network traffic.
 pub fn poll() {
-    // Process all pending RX packets
-    while let Some(packet) = crate::drivers::network::e1000::recv_packet() {
-        ethernet::handle_frame(&packet);
+    poll_rx();
+
+    // Rate-limit retransmission checks (every 10 ticks = 100ms).
+    // This avoids expensive TCP_CONNECTIONS lock acquisition on every poll.
+    let now = crate::arch::x86::pit::get_ticks();
+    let last = LAST_RETRANSMIT_CHECK.load(Ordering::Relaxed);
+    if now.wrapping_sub(last) >= 10 {
+        LAST_RETRANSMIT_CHECK.store(now, Ordering::Relaxed);
+        tcp::check_retransmissions();
+    }
+}
+
+/// Fast path: process incoming packets only, no retransmission checks.
+/// Used by recv/send hot paths and IRQ handler for maximum throughput.
+pub fn poll_rx() {
+    // Batch-drain E1000 rx_queue (single lock acquisition)
+    let mut packets: Vec<Vec<u8>> = Vec::new();
+    crate::drivers::network::e1000::recv_all_packets(&mut packets);
+    for packet in packets.iter() {
+        ethernet::handle_frame(packet);
     }
 
-    // Also do a hardware RX ring poll in case IRQs were missed
+    // Poll hardware RX ring in case IRQs were missed, then drain again
     crate::drivers::network::e1000::poll_rx();
-    while let Some(packet) = crate::drivers::network::e1000::recv_packet() {
-        ethernet::handle_frame(&packet);
+    packets.clear();
+    crate::drivers::network::e1000::recv_all_packets(&mut packets);
+    for packet in packets.iter() {
+        ethernet::handle_frame(packet);
     }
 
     // Process CDC-ECM (USB Ethernet) RX packets
     while let Some(packet) = crate::drivers::usb::cdc_ecm::recv_packet() {
         ethernet::handle_frame(&packet);
     }
-
-    // TCP retransmission and TIME_WAIT cleanup
-    tcp::check_retransmissions();
 }

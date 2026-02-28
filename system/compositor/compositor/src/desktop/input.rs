@@ -352,14 +352,10 @@ impl Desktop {
         }
         self.btn_anims.remove_done(now);
 
-        // Tick notification animations and auto-dismiss
-        let sw = self.screen_width;
-        let notif_active = self.notifications.tick(&mut self.compositor, sw);
-
         // Tick volume HUD animation and auto-dismiss
         let hud_active = self.volume_hud.tick(&mut self.compositor);
 
-        wid_count > 0 || notif_active || hud_active
+        wid_count > 0 || hud_active
     }
 
     pub(crate) fn handle_mouse_button(&mut self, buttons: u32, down: bool) {
@@ -457,24 +453,6 @@ impl Desktop {
             if self.mouse_y < menubar_height() as i32 {
                 self.handle_menubar_click();
                 return;
-            }
-
-            // Check notification clicks (before window hit testing)
-            {
-                let sw = self.screen_width;
-                if let Some((notif_id, sender_tid)) =
-                    self.notifications.handle_click(self.mouse_x, self.mouse_y, sw)
-                {
-                    // Emit EVT_NOTIFICATION_CLICK to the sender app
-                    let target = self.get_sub_id_for_tid(sender_tid);
-                    if self.tray_ipc_events.len() < 256 {
-                        self.tray_ipc_events.push((
-                            target,
-                            [crate::ipc_protocol::EVT_NOTIFICATION_CLICK, notif_id, sender_tid, 0, 0],
-                        ));
-                    }
-                    return;
-                }
             }
 
             // Check window hits

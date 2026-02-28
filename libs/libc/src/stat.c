@@ -6,12 +6,9 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <string.h>
+#include <sys/syscall.h>
 
 extern int _syscall(int num, int a1, int a2, int a3, int a4);
-
-#define SYS_STAT   24
-#define SYS_FSTAT  106
-#define SYS_MKDIR  90
 
 int stat(const char *path, struct stat *buf) {
     unsigned int info[7]; /* type, size, flags, uid, gid, mode, mtime */

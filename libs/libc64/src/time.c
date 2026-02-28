@@ -8,11 +8,9 @@
 #include <time.h>
 #include <sys/time.h>
 
-extern long _syscall(long num, long a1, long a2, long a3, long a4, long a5);
+#include <sys/syscall.h>
 
-#define SYS_TIME    30
-#define SYS_UPTIME  31
-#define SYS_TICK_HZ 34
+extern long _syscall(long num, long a1, long a2, long a3, long a4, long a5);
 
 static struct tm _tm;
 

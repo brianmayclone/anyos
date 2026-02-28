@@ -9,31 +9,9 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
+#include <sys/syscall.h>
 
 extern long _syscall(long num, long a1, long a2, long a3, long a4, long a5);
-
-#define SYS_EXIT    1
-#define SYS_WRITE   2
-#define SYS_READ    3
-#define SYS_OPEN    4
-#define SYS_CLOSE   5
-#define SYS_SLEEP   8
-#define SYS_SBRK    9
-#define SYS_FORK    10
-#define SYS_EXEC    11
-#define SYS_WAITPID 12
-#define SYS_KILL    13
-#define SYS_GETCWD  25
-#define SYS_CHDIR   26
-#define SYS_UNLINK  91
-#define SYS_LSEEK   105
-#define SYS_FSTAT   106
-#define SYS_FTRUNCATE 107
-#define SYS_ISATTY  108
-#define SYS_PIPE2   240
-#define SYS_DUP     241
-#define SYS_DUP2    242
-#define SYS_FCNTL   243
 
 /* Socket fd base — socket fds start at 128 */
 #define SOCKET_FD_BASE 128

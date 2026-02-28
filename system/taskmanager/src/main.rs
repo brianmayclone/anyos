@@ -433,14 +433,16 @@ fn main() {
                     process::kill(tid);
                     kill_btn.set_enabled(false);
 
-                    // Show notification
+                    // Notify via notifyd daemon
                     if name_len > 0 {
                         if let Ok(name) = core::str::from_utf8(&name_buf[..name_len as usize]) {
                             let mut msg = [0u8; 48];
                             let mut p = 0;
                             let nl = name.len().min(32);
-                            msg[p..p + nl].copy_from_slice(&name.as_bytes()[..nl]); p += nl;
-                            msg[p..p + 7].copy_from_slice(b" killed"); p += 7;
+                            msg[p..p + nl].copy_from_slice(&name.as_bytes()[..nl]);
+                            p += nl;
+                            msg[p..p + 7].copy_from_slice(b" killed");
+                            p += 7;
                             if let Ok(m) = core::str::from_utf8(&msg[..p]) {
                                 ui::show_notification("Process Terminated", m, None, 3000);
                             }

@@ -160,8 +160,9 @@ int getopt_long(int argc, char * const argv[], const char *optstring,
 #include <dirent.h>
 #include <stdlib.h>
 
+#include <sys/syscall.h>
+
 extern long _syscall(long num, long a1, long a2, long a3, long a4, long a5);
-#define SYS_READDIR 23
 
 #define KDIR_ENTRY_SIZE 64
 #define KDIR_MAX_ENTRIES 128
@@ -355,8 +356,6 @@ int atexit(void (*function)(void)) {
     return 0;
 }
 
-#define SYS_SETENV 182
-
 int setenv(const char *name, const char *value, int overwrite) {
     if (!name || !*name || strchr(name, '=')) { errno = EINVAL; return -1; }
     if (!overwrite) {
@@ -478,8 +477,6 @@ int rmdir(const char *pathname) {
 /* ── posix_spawn ── */
 #include <spawn.h>
 
-#define SYS_SPAWN_STUBS 27
-
 int posix_spawn(pid_t *pid, const char *path,
     const posix_spawn_file_actions_t *file_actions,
     const posix_spawnattr_t *attrp,
@@ -496,7 +493,7 @@ int posix_spawn(pid_t *pid, const char *path,
         }
     }
     args[pos] = '\0';
-    long tid = _syscall(SYS_SPAWN_STUBS, (long)path, 0, (long)args, 0, 0);
+    long tid = _syscall(SYS_SPAWN, (long)path, 0, (long)args, 0, 0);
     if (tid < 0) { errno = ENOENT; return ENOENT; }
     if (pid) *pid = (pid_t)tid;
     return 0;
@@ -726,7 +723,6 @@ unsigned long long strtoumax(const char *nptr, char **endptr, int base) {
 }
 
 /* environ — populated from kernel env store at startup */
-#define SYS_LISTENV 184
 #define MAX_ENV_ENTRIES 64
 #define ENV_BUF_SIZE   4096
 
