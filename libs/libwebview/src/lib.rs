@@ -1,7 +1,8 @@
 //! libwebview — HTML rendering library for anyOS.
 //!
-//! Renders HTML content using real libanyui controls (Labels, Views,
-//! ImageViews, TextFields, etc.) positioned by a CSS layout engine.
+//! Renders HTML content into a single Canvas pixel buffer for static content
+//! (text, backgrounds, borders, images) and uses persistent libanyui controls
+//! only for interactive form elements (TextField, Checkbox, etc.).
 //!
 //! # Usage
 //! ```rust
@@ -66,7 +67,7 @@ use alloc::vec::Vec;
 
 use libanyui_client::{self as ui};
 
-pub use renderer::{ImageCache, ImageEntry, FormControl};
+pub use renderer::{ImageCache, ImageEntry, FormControl, HitKind};
 pub use layout::{LayoutBox, FormFieldKind};
 
 /// A WebView renders HTML content inside a ScrollView using libanyui controls.
@@ -99,6 +100,9 @@ pub struct WebView {
 impl WebView {
     /// Create a new WebView with the given initial dimensions.
     pub fn new(w: u32, h: u32) -> Self {
+        // Initialize the font renderer (idempotent — safe to call multiple times).
+        libfont_client::init();
+
         let scroll_view = ui::ScrollView::new();
         scroll_view.set_size(w, h);
 
@@ -292,8 +296,9 @@ impl WebView {
     }
 
     /// Clear all content (remove all controls, reset DOM).
+    /// Used on full page navigation to destroy everything.
     pub fn clear(&mut self) {
-        self.renderer.clear();
+        self.renderer.clear_all();
         self.dom_val = None;
         self.total_height_val = 0;
         self.content_view.set_size(self.viewport_width as u32, 1);
@@ -305,10 +310,127 @@ impl WebView {
     }
 
     /// Look up the link URL for a control ID (used in click callbacks).
+    ///
+    /// If the control_id matches the canvas, performs a hit-test using the
+    /// last mouse position to find the clicked link.
     pub fn link_url_for(&self, control_id: u32) -> Option<&str> {
+        // Canvas click: hit-test at last mouse position.
+        if let Some(canvas_id) = self.renderer.canvas_id() {
+            if control_id == canvas_id {
+                if let Some(ref canvas) = self.renderer.canvas_ref() {
+                    let (mx, my, _) = canvas.get_mouse();
+                    return self.renderer.hit_test_link(mx, my);
+                }
+            }
+        }
+        // Legacy: real control link_map lookup.
         self.renderer.link_map.iter()
             .find(|(id, _)| *id == control_id)
             .map(|(_, url)| url.as_str())
+    }
+
+    /// Check if a canvas click hit a submit button.  Returns the DOM node_id
+    /// of the submit element, or None.
+    pub fn canvas_submit_hit(&self, control_id: u32) -> Option<usize> {
+        if let Some(canvas_id) = self.renderer.canvas_id() {
+            if control_id == canvas_id {
+                if let Some(ref canvas) = self.renderer.canvas_ref() {
+                    let (mx, my, _) = canvas.get_mouse();
+                    return self.renderer.hit_test_submit(mx, my);
+                }
+            }
+        }
+        None
+    }
+
+    /// Find the form action URL for a submit button identified by DOM node_id.
+    /// Used for canvas-based submit hit regions.
+    pub fn form_action_for_node(&self, node_id: usize) -> Option<(String, String)> {
+        let dom = self.dom_val.as_ref()?;
+        let mut cur = Some(node_id);
+        while let Some(id) = cur {
+            if dom.tag(id) == Some(dom::Tag::Form) {
+                let action = dom.attr(id, "action").unwrap_or("");
+                let method = dom.attr(id, "method").unwrap_or("GET");
+                return Some((String::from(action), method.to_ascii_uppercase()));
+            }
+            cur = dom.get(id).parent;
+        }
+        None
+    }
+
+    /// Collect form data for a form containing the given DOM node_id.
+    /// Used for canvas-based submit hit regions.
+    pub fn collect_form_data_for_node(&self, node_id: usize) -> Vec<(String, String)> {
+        let dom = match self.dom_val.as_ref() { Some(d) => d, None => return Vec::new() };
+
+        // Find the parent <form> node.
+        let mut form_node = None;
+        let mut cur = Some(node_id);
+        while let Some(id) = cur {
+            if dom.tag(id) == Some(dom::Tag::Form) {
+                form_node = Some(id);
+                break;
+            }
+            cur = dom.get(id).parent;
+        }
+        let form_id = match form_node { Some(id) => id, None => return Vec::new() };
+
+        // Collect all form controls that are descendants of this form.
+        let mut data = Vec::new();
+        for fc in &self.renderer.form_controls {
+            let mut is_child = false;
+            let mut up = Some(fc.node_id);
+            while let Some(id) = up {
+                if id == form_id { is_child = true; break; }
+                up = dom.get(id).parent;
+            }
+            if !is_child { continue; }
+
+            let name = dom.attr(fc.node_id, "name").unwrap_or("");
+            if name.is_empty() { continue; }
+
+            match fc.kind {
+                FormFieldKind::TextInput | FormFieldKind::Password => {
+                    if fc.control_id == 0 { continue; }
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    let mut buf = [0u8; 2048];
+                    let len = ctrl.get_text(&mut buf);
+                    let val = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
+                    data.push((String::from(name), String::from(val)));
+                }
+                FormFieldKind::Checkbox => {
+                    if fc.control_id == 0 { continue; }
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    if ctrl.get_state() != 0 {
+                        let val = dom.attr(fc.node_id, "value").unwrap_or("on");
+                        data.push((String::from(name), String::from(val)));
+                    }
+                }
+                FormFieldKind::Radio => {
+                    if fc.control_id == 0 { continue; }
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    if ctrl.get_state() != 0 {
+                        let val = dom.attr(fc.node_id, "value").unwrap_or("");
+                        data.push((String::from(name), String::from(val)));
+                    }
+                }
+                FormFieldKind::Hidden => {
+                    let val = dom.attr(fc.node_id, "value").unwrap_or("");
+                    data.push((String::from(name), String::from(val)));
+                }
+                FormFieldKind::Textarea => {
+                    if fc.control_id == 0 { continue; }
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    let mut buf = [0u8; 8192];
+                    let len = ctrl.get_text(&mut buf);
+                    let val = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
+                    data.push((String::from(name), String::from(val)));
+                }
+                _ => {}
+            }
+        }
+        data
     }
 
     /// Internal: collect stylesheets, resolve styles, layout, and render controls.
@@ -408,35 +530,36 @@ impl WebView {
             debug_surf!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
         }
 
-        // Clear old controls.
+        // Soft-clear: reset hit regions and mark form controls for GC.
+        // Canvas and form controls persist across relayouts.
         self.renderer.clear();
 
         // Sync content view background to the body element's CSS background-color.
-        // This prevents the default white from showing through on dark-themed pages.
         let body_id = d.find_body().unwrap_or(0);
         let body_bg = styles.get(body_id).map(|s| s.background_color).unwrap_or(0);
-        if body_bg != 0 {
-            self.content_view.set_color(body_bg);
-        } else {
-            self.content_view.set_color(0xFFFFFFFF);
-        }
+        let bg_color = if body_bg != 0 { body_bg } else { 0xFFFFFFFF };
+        self.content_view.set_color(bg_color);
 
         // Set content view height to document height.
-        let content_h = (self.total_height_val as u32).max(1);
-        self.content_view.set_size(self.viewport_width as u32, content_h);
+        let doc_w = self.viewport_width as u32;
+        let doc_h = (self.total_height_val as u32).max(1);
+        self.content_view.set_size(doc_w, doc_h);
 
-        // Render new controls.
+        // Render into canvas + update form controls.
         debug_surf!("[webview] renderer start");
         self.renderer.render(
             &root,
             &self.content_view,
             &self.images,
+            doc_w,
+            doc_h,
+            bg_color,
             self.link_cb,
             self.link_cb_ud,
             self.submit_cb,
             self.submit_cb_ud,
         );
-        debug_surf!("[webview] renderer done: {} controls", self.renderer.control_count());
+        debug_surf!("[webview] renderer done: {} form_controls", self.renderer.control_count());
         #[cfg(feature = "debug_surf")]
         debug_surf!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
     }
@@ -456,8 +579,13 @@ impl WebView {
         &self.renderer.form_controls
     }
 
-    /// Check if a control ID belongs to a submit button.
+    /// Check if a control ID belongs to a submit button (real control or canvas hit).
     pub fn is_submit_button(&self, control_id: u32) -> bool {
+        // Canvas hit-test for submit regions.
+        if self.canvas_submit_hit(control_id).is_some() {
+            return true;
+        }
+        // Legacy: real control lookup.
         self.renderer.form_controls.iter().any(|fc| {
             fc.control_id == control_id
                 && matches!(fc.kind, FormFieldKind::Submit | FormFieldKind::ButtonEl)
@@ -465,11 +593,15 @@ impl WebView {
     }
 
     /// Find the form action URL for a submit button click.
-    /// Walks up the DOM from the button to find the parent `<form>` and its action attribute.
+    /// Handles both real controls and canvas-based submit hit regions.
     pub fn form_action_for(&self, control_id: u32) -> Option<(String, String)> {
+        // Canvas hit-test for submit regions.
+        if let Some(node_id) = self.canvas_submit_hit(control_id) {
+            return self.form_action_for_node(node_id);
+        }
+        // Legacy: real control lookup.
         let dom = self.dom_val.as_ref()?;
         let fc = self.renderer.form_controls.iter().find(|fc| fc.control_id == control_id)?;
-        // Walk up to find parent <form>.
         let mut cur = Some(fc.node_id);
         while let Some(id) = cur {
             if dom.tag(id) == Some(dom::Tag::Form) {
@@ -483,78 +615,19 @@ impl WebView {
     }
 
     /// Collect form data (name=value pairs) for the form containing `control_id`.
-    /// Reads current values from the libanyui TextFields/Checkboxes.
+    /// Handles both real controls and canvas-based submit hit regions.
     pub fn collect_form_data(&self, control_id: u32) -> Vec<(String, String)> {
+        // Canvas hit-test for submit regions.
+        if let Some(node_id) = self.canvas_submit_hit(control_id) {
+            return self.collect_form_data_for_node(node_id);
+        }
+        // Legacy: real control lookup.
         let dom = match self.dom_val.as_ref() { Some(d) => d, None => return Vec::new() };
-
-        // Find the parent <form> node.
         let fc = match self.renderer.form_controls.iter().find(|fc| fc.control_id == control_id) {
             Some(f) => f,
             None => return Vec::new(),
         };
-        let mut form_node = None;
-        let mut cur = Some(fc.node_id);
-        while let Some(id) = cur {
-            if dom.tag(id) == Some(dom::Tag::Form) {
-                form_node = Some(id);
-                break;
-            }
-            cur = dom.get(id).parent;
-        }
-        let form_id = match form_node { Some(id) => id, None => return Vec::new() };
-
-        // Collect all form controls that are descendants of this form.
-        let mut data = Vec::new();
-        for fc in &self.renderer.form_controls {
-            // Check if this control is a descendant of form_id.
-            let mut is_child = false;
-            let mut up = Some(fc.node_id);
-            while let Some(id) = up {
-                if id == form_id { is_child = true; break; }
-                up = dom.get(id).parent;
-            }
-            if !is_child { continue; }
-
-            let name = dom.attr(fc.node_id, "name").unwrap_or("");
-            if name.is_empty() { continue; }
-
-            match fc.kind {
-                FormFieldKind::TextInput | FormFieldKind::Password => {
-                    let ctrl = ui::Control::from_id(fc.control_id);
-                    let mut buf = [0u8; 2048];
-                    let len = ctrl.get_text(&mut buf);
-                    let val = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
-                    data.push((String::from(name), String::from(val)));
-                }
-                FormFieldKind::Checkbox => {
-                    let ctrl = ui::Control::from_id(fc.control_id);
-                    if ctrl.get_state() != 0 {
-                        let val = dom.attr(fc.node_id, "value").unwrap_or("on");
-                        data.push((String::from(name), String::from(val)));
-                    }
-                }
-                FormFieldKind::Radio => {
-                    let ctrl = ui::Control::from_id(fc.control_id);
-                    if ctrl.get_state() != 0 {
-                        let val = dom.attr(fc.node_id, "value").unwrap_or("");
-                        data.push((String::from(name), String::from(val)));
-                    }
-                }
-                FormFieldKind::Hidden => {
-                    let val = dom.attr(fc.node_id, "value").unwrap_or("");
-                    data.push((String::from(name), String::from(val)));
-                }
-                FormFieldKind::Textarea => {
-                    let ctrl = ui::Control::from_id(fc.control_id);
-                    let mut buf = [0u8; 8192];
-                    let len = ctrl.get_text(&mut buf);
-                    let val = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
-                    data.push((String::from(name), String::from(val)));
-                }
-                _ => {}
-            }
-        }
-        data
+        self.collect_form_data_for_node(fc.node_id)
     }
 }
 

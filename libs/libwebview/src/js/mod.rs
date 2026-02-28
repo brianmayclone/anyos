@@ -376,15 +376,19 @@ impl JsRuntime {
             }
         }
 
-        crate::debug_surf!("[js] execute_scripts: {} script(s) found", scripts.len());
         if scripts.is_empty() { return; }
 
-        #[cfg(feature = "debug_surf")]
-        {
-            let total_bytes: usize = scripts.iter().map(|s| s.len()).sum();
-            crate::debug_surf!("[js] total script bytes: {}", total_bytes);
-            crate::debug_surf!("[js]   RSP=0x{:X} heap=0x{:X}", crate::debug_rsp(), crate::debug_heap_pos());
-        }
+        let total_bytes: usize = scripts.iter().map(|s| s.len()).sum();
+        anyos_std::println!("[js] {} script(s) found, {} bytes total",
+            scripts.len(), total_bytes);
+
+        // Cap large pages: skip very large scripts (>64 KiB) and limit total
+        // number of scripts to avoid blocking the UI thread for too long.
+        const MAX_SCRIPTS: usize = 16;
+        const MAX_SCRIPT_BYTES: usize = 64 * 1024;
+
+        // Lower the per-script step limit to keep pages responsive.
+        self.engine.set_step_limit(2_000_000);
 
         // Set up DOM bridge via userdata.
         let mut bridge = DomBridge {
@@ -410,11 +414,19 @@ impl JsRuntime {
         // Enable property-write interception.
         unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; }
 
-        // Execute each script.
-        for (idx, script) in scripts.iter().enumerate() {
-            crate::debug_surf!("[js] eval script #{}: {} bytes", idx, script.len());
+        // Execute each script (with limits to keep UI responsive).
+        let script_count = scripts.len().min(MAX_SCRIPTS);
+        for (idx, script) in scripts.iter().take(script_count).enumerate() {
+            if script.len() > MAX_SCRIPT_BYTES {
+                anyos_std::println!("[js] skipping script #{} ({} bytes — too large)", idx, script.len());
+                continue;
+            }
+            anyos_std::println!("[js] eval #{}: {} bytes", idx, script.len());
             self.engine.eval(script);
-            crate::debug_surf!("[js] eval script #{} done", idx);
+        }
+        if scripts.len() > script_count {
+            anyos_std::println!("[js] skipped {} script(s) (limit={})",
+                scripts.len() - script_count, MAX_SCRIPTS);
         }
 
         // Disable interception.
@@ -860,6 +872,8 @@ impl JsRuntime {
                 self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
                 unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; }
 
+                // Timer callbacks get a smaller step budget to keep ticks fast.
+                self.engine.set_step_limit(500_000);
                 self.engine.vm().call_value(&t.callback, &[], JsValue::Undefined);
 
                 unsafe { MUTATION_TARGET = core::ptr::null_mut(); }

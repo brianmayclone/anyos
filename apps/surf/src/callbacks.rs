@@ -13,14 +13,16 @@ use alloc::string::String;
 // Link click callback
 // ═══════════════════════════════════════════════════════════
 
-/// Called by libanyui when the user clicks a rendered hyperlink.
+/// Called by libanyui when the user clicks on the page canvas or a rendered control.
 ///
 /// Resolves the link URL relative to the page's base URL and navigates to it.
+/// Also handles canvas-based submit button hits (since the canvas only has one callback).
 pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata: u64) {
     let st = crate::state();
     let tab = &st.tabs[st.active_tab];
+
+    // Try link hit first.
     if let Some(link_url) = tab.webview.link_url_for(ctrl_id) {
-        // file:// URLs are already absolute — pass through directly.
         let resolved = if link_url.starts_with("file://") {
             String::from(link_url)
         } else if let Some(ref base) = tab.current_url {
@@ -30,6 +32,12 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
             String::from(link_url)
         };
         crate::tab::navigate(&resolved);
+        return;
+    }
+
+    // Try submit button hit (canvas-based submit regions).
+    if tab.webview.is_submit_button(ctrl_id) {
+        on_form_submit(ctrl_id, _event_type, _userdata);
     }
 }
 

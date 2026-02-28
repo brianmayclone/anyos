@@ -605,6 +605,7 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "libanyui_client",
+ "libfont_client",
  "libjs",
 ]
 
