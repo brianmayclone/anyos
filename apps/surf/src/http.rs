@@ -368,13 +368,24 @@ fn response_says_close(headers: &str) -> bool {
 }
 
 /// Decompress body based on Content-Encoding header.
+///
+/// When decompression fails, checks whether the raw bytes look like valid
+/// text before returning them.  Returning compressed binary as HTML causes
+/// the HTML parser to produce garbage DOM structures that overflow the
+/// layout engine's stack.
 fn decompress_body(raw: Vec<u8>, content_encoding: &Option<String>) -> Vec<u8> {
     if let Some(ref enc) = content_encoding {
         let enc_lower = enc.to_ascii_lowercase();
         if enc_lower.contains("gzip") {
             match deflate::decompress_gzip(&raw) {
                 Some(decoded) => return decoded,
-                None => anyos_std::println!("[http] gzip decompression FAILED, using raw"),
+                None => {
+                    anyos_std::println!("[http] gzip decompression FAILED ({}B)", raw.len());
+                    if !looks_like_text(&raw) {
+                        anyos_std::println!("[http] raw data is binary, returning empty body");
+                        return Vec::new();
+                    }
+                }
             }
         } else if enc_lower.contains("deflate") {
             if let Some(decoded) = deflate::decompress_zlib(&raw)
@@ -382,10 +393,30 @@ fn decompress_body(raw: Vec<u8>, content_encoding: &Option<String>) -> Vec<u8> {
             {
                 return decoded;
             }
-            anyos_std::println!("[http] deflate decompression FAILED, using raw");
+            anyos_std::println!("[http] deflate decompression FAILED ({}B)", raw.len());
+            if !looks_like_text(&raw) {
+                anyos_std::println!("[http] raw data is binary, returning empty body");
+                return Vec::new();
+            }
         }
     }
     raw
+}
+
+/// Heuristic: check if the first bytes look like valid text (ASCII/UTF-8)
+/// rather than compressed binary data.
+fn looks_like_text(data: &[u8]) -> bool {
+    if data.is_empty() { return true; }
+    let check_len = data.len().min(256);
+    let mut non_text_count = 0u32;
+    for &b in &data[..check_len] {
+        // Allow printable ASCII, whitespace (tab, newline, carriage return)
+        if b < 0x20 && b != b'\t' && b != b'\n' && b != b'\r' {
+            non_text_count += 1;
+        }
+    }
+    // If more than 10% of bytes are non-text control characters, it's binary.
+    non_text_count * 10 < check_len as u32
 }
 
 // ---------------------------------------------------------------------------

@@ -261,7 +261,9 @@ fn format_decimal(out: &mut String, mut n: u32) {
 pub(super) fn image_dimensions(dom: &Dom, node_id: NodeId, max_width: i32, images: &ImageCache) -> (i32, i32) {
     // Get natural dimensions from image cache (actual decoded image size).
     let src = dom.attr(node_id, "src");
-    let natural = src.and_then(|s| images.get(s)).map(|e| (e.width as i32, e.height as i32));
+    let natural = src.and_then(|s| images.get(s)).map(|e| {
+        (e.width.min(65535) as i32, e.height.min(65535) as i32)
+    });
 
     // HTML attributes override natural size; fall back to natural; then 300x150.
     let w = dom.attr(node_id, "width").and_then(parse_attr_int)
@@ -280,6 +282,11 @@ pub(super) fn image_dimensions(dom: &Dom, node_id: NodeId, max_width: i32, image
     }
 }
 
+/// Parse a positive integer from an HTML attribute value.
+///
+/// Uses saturating arithmetic to prevent overflow; caps the result at
+/// 65535 to keep layout dimensions safely within i32 range even after
+/// subsequent multiplications (e.g. `cols * 8`).
 pub(super) fn parse_attr_int(s: &str) -> Option<i32> {
     let s = s.trim();
     let bytes = s.as_bytes();
@@ -289,7 +296,11 @@ pub(super) fn parse_attr_int(s: &str) -> Option<i32> {
     let mut val: i32 = 0;
     for &b in bytes {
         if b.is_ascii_digit() {
-            val = val * 10 + (b - b'0') as i32;
+            val = val.saturating_mul(10).saturating_add((b - b'0') as i32);
+            if val > 65535 {
+                val = 65535;
+                break;
+            }
         } else {
             break;
         }
