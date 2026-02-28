@@ -336,24 +336,39 @@ impl Renderer {
                 self.register_form_control(id, bx, kind);
             }
             FormFieldKind::Submit | FormFieldKind::ButtonEl => {
-                let label = if let Some(ref t) = bx.text { t.as_str() } else { "Submit" };
-                let btn = ui::Button::new(label);
-                btn.set_position(x, y);
-                btn.set_size(bx.width as u32, bx.height as u32);
-                // Apply CSS-declared background and text colors when present.
-                if bx.bg_color != 0 {
-                    btn.set_color(bx.bg_color);
-                }
-                if bx.color != 0 {
-                    btn.set_text_color(bx.color);
-                }
-                parent.add(&btn);
-                let id = btn.id();
-                self.controls.push(id);
-                self.register_form_control(id, bx, kind);
-                // Wire submit callback.
-                if let Some(cb) = submit_cb {
-                    btn.on_click_raw(cb, submit_cb_ud);
+                let label_text = if let Some(ref t) = bx.text { t.as_str() } else { "Submit" };
+                let has_css_style = bx.bg_color != 0 || bx.border_width > 0;
+                if has_css_style {
+                    // CSS-styled button: use a centered Label so the native
+                    // button chrome (rounded rect, shadows) doesn't overlap
+                    // the CSS background/border already drawn by the walker.
+                    let lbl = ui::Label::new(label_text);
+                    lbl.set_position(x, y);
+                    lbl.set_size(bx.width as u32, bx.height as u32);
+                    lbl.set_font_size(bx.font_size as u32);
+                    lbl.set_text_align(1); // center
+                    if bx.color != 0 {
+                        lbl.set_text_color(bx.color);
+                    }
+                    parent.add(&lbl);
+                    let id = lbl.id();
+                    self.controls.push(id);
+                    self.register_form_control(id, bx, kind);
+                    if let Some(cb) = submit_cb {
+                        lbl.on_click_raw(cb, submit_cb_ud);
+                    }
+                } else {
+                    // No CSS styling: use a native Button with full chrome.
+                    let btn = ui::Button::new(label_text);
+                    btn.set_position(x, y);
+                    btn.set_size(bx.width as u32, bx.height as u32);
+                    parent.add(&btn);
+                    let id = btn.id();
+                    self.controls.push(id);
+                    self.register_form_control(id, bx, kind);
+                    if let Some(cb) = submit_cb {
+                        btn.on_click_raw(cb, submit_cb_ud);
+                    }
                 }
             }
             FormFieldKind::Checkbox => {

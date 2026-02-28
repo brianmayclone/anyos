@@ -522,6 +522,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "killall"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
 name = "libanyui_client"
 version = "0.1.0"
 dependencies = [
