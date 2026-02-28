@@ -323,11 +323,15 @@ impl Desktop {
         None
     }
 
-    /// Tick active button animations. Returns true if any animation was active.
+    /// Tick active animations. Returns true if any animation was active.
     pub fn tick_animations(&mut self) -> bool {
         let now = anyos_std::sys::uptime();
+
+        // Always tick overlays (independent of button animations)
+        let hud_active = self.volume_hud.tick(&mut self.compositor);
+
         if !self.btn_anims.has_active(now) {
-            return false;
+            return hud_active;
         }
         let mut wids = [0u32; 16];
         let mut wid_count = 0usize;
@@ -351,9 +355,6 @@ impl Desktop {
             self.render_window(wids[i]);
         }
         self.btn_anims.remove_done(now);
-
-        // Tick volume HUD animation and auto-dismiss
-        let hud_active = self.volume_hud.tick(&mut self.compositor);
 
         wid_count > 0 || hud_active
     }

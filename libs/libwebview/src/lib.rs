@@ -71,6 +71,10 @@ pub use renderer::{ImageCache, ImageEntry, FormControl, HitKind};
 pub use layout::{LayoutBox, FormFieldKind};
 
 /// A WebView renders HTML content inside a ScrollView using libanyui controls.
+///
+/// Uses viewport-based tile rendering: only the visible area (plus a buffer zone)
+/// is drawn into the canvas.  On scroll, the tile is re-rendered from the cached
+/// layout tree without a full CSS resolve or relayout.
 pub struct WebView {
     scroll_view: ui::ScrollView,
     content_view: ui::View,
@@ -83,6 +87,8 @@ pub struct WebView {
     external_sheets: Vec<css::Stylesheet>,
     pub images: ImageCache,
     viewport_width: i32,
+    /// Viewport height in pixels (visible ScrollView area).
+    viewport_height: u32,
     total_height_val: i32,
     link_cb: Option<ui::Callback>,
     link_cb_ud: u64,
@@ -95,6 +101,12 @@ pub struct WebView {
     current_url: String,
     /// All @keyframes blocks from the last parsed stylesheets (for animation tick).
     keyframes: Vec<css::KeyframeSet>,
+    /// Cached layout tree for scroll re-renders (avoids full relayout on scroll).
+    layout_root: Option<LayoutBox>,
+    /// Scroll Y of the last rendered tile (for hysteresis / re-render threshold).
+    last_render_scroll_y: i32,
+    /// Cached body background color for scroll re-renders.
+    bg_color_cached: u32,
 }
 
 impl WebView {
@@ -120,6 +132,7 @@ impl WebView {
             external_sheets: Vec::new(),
             images: ImageCache::new(),
             viewport_width: w as i32,
+            viewport_height: h,
             total_height_val: 0,
             link_cb: None,
             link_cb_ud: 0,
@@ -128,6 +141,9 @@ impl WebView {
             js_runtime: js::JsRuntime::new(),
             current_url: String::new(),
             keyframes: Vec::new(),
+            layout_root: None,
+            last_render_scroll_y: 0,
+            bg_color_cached: 0xFFFFFFFF,
         }
     }
 
@@ -235,9 +251,10 @@ impl WebView {
     /// Resize the viewport and re-layout.
     pub fn resize(&mut self, w: u32, h: u32) {
         self.viewport_width = w as i32;
+        self.viewport_height = h;
         self.scroll_view.set_size(w, h);
 
-        // If we have a DOM, re-layout.
+        // If we have a DOM, re-layout (invalidates cached layout tree).
         if self.dom_val.is_some() {
             self.relayout();
         }
@@ -256,15 +273,15 @@ impl WebView {
         }
     }
 
-    /// Advance CSS animations/transitions and JS timers by `delta_ms` milliseconds.
+    /// Advance CSS animations/transitions, JS timers, and scroll-based tile
+    /// re-rendering by `delta_ms` milliseconds.
     ///
-    /// Returns `true` if any animation changed the document (relayout was performed).
-    /// Call at ~60 fps when any page may have running animations.
+    /// Returns `true` if any visual change occurred (animation relayout or
+    /// viewport tile re-render).  Call at ~60 fps.
     pub fn tick(&mut self, delta_ms: u64) -> bool {
+        let mut changed = false;
+
         // ── 1. Advance JS timers (setTimeout / setInterval / requestAnimationFrame). ──
-        if let Some(ref d) = self.dom_val.as_ref().map(|_| ()) {
-            let _ = d; // borrow trick — we need to pass the dom
-        }
         // We can't borrow dom_val and js_runtime simultaneously, so take dom temporarily.
         let dom_opt = self.dom_val.take();
         if let Some(ref d) = dom_opt {
@@ -273,26 +290,70 @@ impl WebView {
         self.dom_val = dom_opt;
 
         // ── 2. Advance CSS animations. ──────────────────────────────────────────────
-        // We pass keyframes by reference (they are stored in WebView).
-        // advance_animations returns (any_active, overrides).
-        // If there are no active animations, skip the expensive relayout.
-        if self.js_runtime.active_animations.is_empty()
-            && self.js_runtime.active_transitions.is_empty()
+        if !self.js_runtime.active_animations.is_empty()
+            || !self.js_runtime.active_transitions.is_empty()
         {
-            return false;
+            let (any_active, _overrides) =
+                self.js_runtime.advance_animations(delta_ms, &self.keyframes);
+
+            if any_active {
+                self.relayout();
+                changed = true;
+            }
         }
 
-        let (any_active, _overrides) =
-            self.js_runtime.advance_animations(delta_ms, &self.keyframes);
-
-        if any_active {
-            // Re-layout with current overrides applied.
-            // For simplicity we do a full relayout; a future optimisation could
-            // apply only the overridden node styles.
-            self.relayout();
-            return true;
+        // ── 3. Scroll-based tile re-rendering. ─────────────────────────────────────
+        // Read the current scroll_y from the ScrollView's state (synced by the
+        // compositor on every scroll event).  If the scroll has moved far enough
+        // from the last rendered tile center, re-render the tile from the cached
+        // layout tree — no relayout, no CSS resolve, just pixel operations.
+        if self.layout_root.is_some() {
+            let scroll_y = self.scroll_view.get_state() as i32;
+            const BUFFER_ZONE: i32 = 500;
+            let threshold = BUFFER_ZONE / 2; // 250px hysteresis
+            let delta = (scroll_y - self.last_render_scroll_y).abs();
+            if delta > threshold {
+                self.render_viewport(scroll_y);
+                changed = true;
+            }
         }
-        false
+
+        changed
+    }
+
+    /// Re-render the visible tile from the cached layout tree at the given scroll position.
+    /// Does NOT relayout or re-resolve CSS — only redraws pixels and repositions the canvas.
+    fn render_viewport(&mut self, scroll_y: i32) {
+        // Split borrows: layout_root (immut), renderer (mut), content_view (immut), images (immut).
+        let root = match self.layout_root {
+            Some(ref root) => root as *const LayoutBox,
+            None => return,
+        };
+        let doc_w = self.viewport_width as u32;
+        let doc_h = (self.total_height_val as u32).max(1);
+
+        // Soft-clear hit regions for the new tile (form controls persist).
+        self.renderer.clear();
+
+        // SAFETY: root points into self.layout_root which is not modified during render().
+        // We use a raw pointer to break the borrow conflict between layout_root and renderer.
+        unsafe {
+            self.renderer.render(
+                &*root,
+                &self.content_view,
+                &self.images,
+                doc_w,
+                doc_h,
+                self.viewport_height,
+                scroll_y,
+                self.bg_color_cached,
+                self.link_cb,
+                self.link_cb_ud,
+                self.submit_cb,
+                self.submit_cb_ud,
+            );
+        }
+        self.last_render_scroll_y = scroll_y;
     }
 
     /// Clear all content (remove all controls, reset DOM).
@@ -300,7 +361,9 @@ impl WebView {
     pub fn clear(&mut self) {
         self.renderer.clear_all();
         self.dom_val = None;
+        self.layout_root = None;
         self.total_height_val = 0;
+        self.last_render_scroll_y = 0;
         self.content_view.set_size(self.viewport_width as u32, 1);
     }
 
@@ -545,7 +608,11 @@ impl WebView {
         let doc_h = (self.total_height_val as u32).max(1);
         self.content_view.set_size(doc_w, doc_h);
 
+        // Cache body background for scroll re-renders.
+        self.bg_color_cached = bg_color;
+
         // Render into canvas + update form controls.
+        // Initial render starts at scroll_y=0.
         debug_surf!("[webview] renderer start");
         self.renderer.render(
             &root,
@@ -553,15 +620,21 @@ impl WebView {
             &self.images,
             doc_w,
             doc_h,
+            self.viewport_height,
+            0, // scroll_y = 0 for initial render
             bg_color,
             self.link_cb,
             self.link_cb_ud,
             self.submit_cb,
             self.submit_cb_ud,
         );
+        self.last_render_scroll_y = 0;
         debug_surf!("[webview] renderer done: {} form_controls", self.renderer.control_count());
         #[cfg(feature = "debug_surf")]
         debug_surf!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
+
+        // Cache layout tree for scroll re-renders (no relayout needed on scroll).
+        self.layout_root = Some(root);
     }
 
     /// Access the JS runtime (e.g. for evaluating additional scripts or reading console).

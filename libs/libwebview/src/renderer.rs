@@ -93,6 +93,10 @@ pub struct FormControl {
 
 /// Canvas-based renderer that draws static content into a pixel buffer and
 /// manages persistent form controls.
+///
+/// Uses viewport-based tile rendering: only the visible viewport plus a buffer
+/// zone is rendered into the pixel buffer.  On scroll, the tile is re-rendered
+/// from the cached layout tree without a full relayout.
 pub(crate) struct Renderer {
     /// The single Canvas for all static content.
     canvas: Option<ui::Canvas>,
@@ -105,6 +109,8 @@ pub(crate) struct Renderer {
     pub form_controls: Vec<FormControl>,
     /// Compatibility: control_id → link URL (for submit button Labels).
     pub link_map: Vec<(u32, String)>,
+    /// Current tile origin Y in document coordinates.
+    render_y: i32,
 }
 
 impl Renderer {
@@ -116,7 +122,13 @@ impl Renderer {
             hit_regions: Vec::new(),
             form_controls: Vec::new(),
             link_map: Vec::new(),
+            render_y: 0,
         }
+    }
+
+    /// Return the current tile origin Y (document coordinates).
+    pub fn render_y(&self) -> i32 {
+        self.render_y
     }
 
     /// Return the canvas control ID (for identifying canvas clicks).
@@ -192,12 +204,18 @@ impl Renderer {
         None
     }
 
-    /// Render the layout tree into the canvas + update form controls.
+    /// Render the layout tree into the canvas using viewport-based tiling.
+    ///
+    /// Only the visible viewport region (plus a buffer zone above/below) is
+    /// allocated and drawn.  This keeps memory usage proportional to the
+    /// viewport size (~6 MiB) instead of the full document height.
     ///
     /// - `root`: root LayoutBox from the layout engine.
     /// - `parent`: the content_view to add canvas and form controls into.
     /// - `images`: decoded image cache.
-    /// - `doc_w`, `doc_h`: document dimensions for the canvas.
+    /// - `doc_w`, `doc_h`: document dimensions.
+    /// - `viewport_h`: visible viewport height in pixels.
+    /// - `scroll_y`: current vertical scroll offset.
     /// - `bg_color`: body background color for the canvas clear.
     /// - `link_cb`, `link_cb_ud`: C ABI callback for canvas clicks.
     /// - `submit_cb`, `submit_cb_ud`: C ABI callback for form submit controls.
@@ -208,47 +226,48 @@ impl Renderer {
         images: &ImageCache,
         doc_w: u32,
         doc_h: u32,
+        viewport_h: u32,
+        scroll_y: i32,
         bg_color: u32,
         link_cb: Option<ui::Callback>,
         link_cb_ud: u64,
         submit_cb: Option<ui::Callback>,
         submit_cb_ud: u64,
     ) {
-        crate::debug_surf!("[render] canvas render start ({}x{})", doc_w, doc_h);
+        crate::debug_surf!("[render] tile render start ({}x{}, vp_h={}, scroll_y={})",
+            doc_w, doc_h, viewport_h, scroll_y);
 
         let w = doc_w.max(1);
-        let h = doc_h.max(1);
 
-        // Cap canvas pixel count to fit within the available heap budget.
-        // The user heap has ~40 MiB between code/BSS and the stack; reserve
-        // headroom for other allocations by limiting the canvas to ~28 MiB
-        // (7 M pixels × 4 bytes).  The cap scales with width so narrow pages
-        // can be taller and wide pages are capped shorter.
-        const MAX_CANVAS_PIXELS: u32 = 7_000_000;
-        let h = h.min(MAX_CANVAS_PIXELS / w.max(1));
+        // ── Compute visible tile bounds ──
+        const BUFFER_ZONE: i32 = 500;
+        let render_y_start = (scroll_y - BUFFER_ZONE).max(0);
+        let render_y_end = (scroll_y + viewport_h as i32 + BUFFER_ZONE).min(doc_h as i32);
+        let tile_h = ((render_y_end - render_y_start) as u32).max(1);
 
-        // Ensure canvas exists and has correct size.
-        self.ensure_canvas(parent, w, h, link_cb, link_cb_ud);
+        // Ensure canvas exists and has correct size, positioned at tile origin.
+        self.ensure_canvas(parent, w, tile_h, link_cb, link_cb_ud);
+        if let Some(ref canvas) = self.canvas {
+            canvas.set_position(0, render_y_start);
+        }
+        self.render_y = render_y_start;
 
-        // Allocate a LOCAL pixel buffer for drawing.  We cannot use get_buffer()
-        // because that pointer lives in the compositor's address space.  Instead
-        // we draw into this local Vec and transfer via copy_pixels_from().
-        let pixel_count = (w as usize) * (h as usize);
+        // Allocate a LOCAL pixel buffer for the visible tile only.
+        let pixel_count = (w as usize) * (tile_h as usize);
         let clear_color = if bg_color != 0 { bg_color } else { 0xFFFFFFFF };
         let mut local_buf: Vec<u32> = Vec::with_capacity(pixel_count);
         local_buf.resize(pixel_count, clear_color);
         let buf = local_buf.as_mut_ptr();
-        let stride = w;
-        let buf_h = h;
 
-        // Walk layout tree and draw everything into the local buffer.
+        // Walk layout tree — draws only visible boxes, culls the rest.
         self.walk_canvas(
-            root, buf, stride, buf_h, images,
+            root, buf, w, tile_h, images,
             0, 0,
+            render_y_start, render_y_end, scroll_y,
             parent, submit_cb, submit_cb_ud,
         );
 
-        // Transfer the rendered buffer to the canvas (single IPC call).
+        // Transfer the rendered tile to the canvas (single IPC call).
         if let Some(ref canvas) = self.canvas {
             canvas.copy_pixels_from(&local_buf);
         }
@@ -263,8 +282,8 @@ impl Renderer {
             }
         });
 
-        crate::debug_surf!("[render] canvas render done: {} hit_regions, {} form_controls",
-            self.hit_regions.len(), self.form_controls.len());
+        crate::debug_surf!("[render] tile render done: {}x{} at y={}, {} hit_regions, {} form_controls",
+            w, tile_h, render_y_start, self.hit_regions.len(), self.form_controls.len());
     }
 
     /// Ensure the canvas exists and has the correct size.
@@ -302,7 +321,11 @@ impl Renderer {
         self.canvas.as_ref().unwrap()
     }
 
-    /// Walk the layout tree and draw into the canvas pixel buffer.
+    /// Walk the layout tree and draw visible boxes into the tile pixel buffer.
+    ///
+    /// Boxes outside `[render_y_start, render_y_end)` are culled (no pixel
+    /// drawing) but form controls are always processed so that ScrollView can
+    /// clip them independently.
     fn walk_canvas(
         &mut self,
         bx: &LayoutBox,
@@ -312,6 +335,9 @@ impl Renderer {
         images: &ImageCache,
         offset_x: i32,
         offset_y: i32,
+        render_y_start: i32,
+        render_y_end: i32,
+        scroll_y: i32,
         parent: &ui::View,
         submit_cb: Option<ui::Callback>,
         submit_cb_ud: u64,
@@ -327,128 +353,153 @@ impl Renderer {
             return;
         }
 
-        // Background.
-        let has_bg = bx.bg_color != 0 && bx.bg_color != 0x00000000;
-        if has_bg {
-            fill_rect_buf(buf, stride, buf_h, abs_x, abs_y, bx.width, bx.height, bx.bg_color);
-        }
+        // Determine if this box is within the visible tile.
+        // Fixed-position boxes are always drawn (they're viewport-anchored).
+        let in_tile = bx.is_fixed
+            || (abs_y + bx.height > render_y_start && abs_y < render_y_end);
 
-        // Border (4 edges).
-        let has_border = bx.border_width > 0 && bx.border_color != 0 && bx.border_color != 0x00000000;
-        if has_border {
-            let bw = bx.border_width;
-            let w = bx.width;
-            let h = bx.height;
-            // Top
-            fill_rect_buf(buf, stride, buf_h, abs_x, abs_y, w, bw, bx.border_color);
-            // Bottom
-            fill_rect_buf(buf, stride, buf_h, abs_x, abs_y + h - bw, w, bw, bx.border_color);
-            // Left
-            let inner_h = (h - bw * 2).max(0);
-            fill_rect_buf(buf, stride, buf_h, abs_x, abs_y + bw, bw, inner_h, bx.border_color);
-            // Right
-            fill_rect_buf(buf, stride, buf_h, abs_x + w - bw, abs_y + bw, bw, inner_h, bx.border_color);
-        }
+        // Translate Y to tile-local coordinates for pixel drawing.
+        let draw_y = if bx.is_fixed {
+            // Fixed elements are viewport-relative — map to tile position.
+            bx.y + (scroll_y - render_y_start)
+        } else {
+            abs_y - render_y_start
+        };
 
-        // Horizontal rule.
-        if bx.is_hr {
-            fill_rect_buf(buf, stride, buf_h, abs_x, abs_y, bx.width, 1, 0xFF999999);
-            return;
-        }
+        // ── Pixel drawing (only for visible boxes) ──
+        if in_tile {
+            // Background.
+            let has_bg = bx.bg_color != 0 && bx.bg_color != 0x00000000;
+            if has_bg {
+                fill_rect_buf(buf, stride, buf_h, abs_x, draw_y, bx.width, bx.height, bx.bg_color);
+            }
 
-        // List marker.
-        if let Some(ref marker) = bx.list_marker {
-            let font_id = 0u32; // system font
-            let font_size = bx.font_size.max(1) as u16;
-            let color = if bx.color != 0 { bx.color } else { 0xFF000000 };
-            libfont_client::draw_string_buf(
-                buf, stride, buf_h,
-                abs_x - 20, abs_y,
-                color, font_id, font_size,
-                marker,
-            );
-        }
+            // Border (4 edges).
+            let has_border = bx.border_width > 0 && bx.border_color != 0 && bx.border_color != 0x00000000;
+            if has_border {
+                let bw = bx.border_width;
+                let w = bx.width;
+                let h = bx.height;
+                fill_rect_buf(buf, stride, buf_h, abs_x, draw_y, w, bw, bx.border_color);
+                fill_rect_buf(buf, stride, buf_h, abs_x, draw_y + h - bw, w, bw, bx.border_color);
+                let inner_h = (h - bw * 2).max(0);
+                fill_rect_buf(buf, stride, buf_h, abs_x, draw_y + bw, bw, inner_h, bx.border_color);
+                fill_rect_buf(buf, stride, buf_h, abs_x + w - bw, draw_y + bw, bw, inner_h, bx.border_color);
+            }
 
-        // Text fragment.
-        if let Some(ref text) = bx.text {
-            if !text.is_empty() && bx.form_field.is_none() {
-                let font_id = if bx.bold && bx.italic {
-                    1u32 // bold (no bold-italic font available, use bold)
-                } else if bx.bold {
-                    1u32 // bold
-                } else if bx.italic {
-                    3u32 // italic
-                } else {
-                    0u32 // regular
-                };
+            // Horizontal rule.
+            if bx.is_hr {
+                fill_rect_buf(buf, stride, buf_h, abs_x, draw_y, bx.width, 1, 0xFF999999);
+                // Still need to process children / form fields below, so no return.
+            }
+
+            // List marker.
+            if let Some(ref marker) = bx.list_marker {
+                let font_id = 0u32;
                 let font_size = bx.font_size.max(1) as u16;
                 let color = if bx.color != 0 { bx.color } else { 0xFF000000 };
-
                 libfont_client::draw_string_buf(
                     buf, stride, buf_h,
-                    abs_x, abs_y,
+                    abs_x - 20, draw_y,
                     color, font_id, font_size,
-                    text,
+                    marker,
                 );
+            }
 
-                // Underline for links or text-decoration.
-                let needs_underline = bx.text_decoration == TextDeco::Underline
-                    || bx.link_url.is_some();
-                if needs_underline {
-                    fill_rect_buf(buf, stride, buf_h,
-                        abs_x, abs_y + bx.height - 1,
-                        bx.width, 1, color);
+            // Text fragment.
+            if let Some(ref text) = bx.text {
+                if !text.is_empty() && bx.form_field.is_none() {
+                    let font_id = if bx.bold && bx.italic {
+                        1u32
+                    } else if bx.bold {
+                        1u32
+                    } else if bx.italic {
+                        3u32
+                    } else {
+                        0u32
+                    };
+                    let font_size = bx.font_size.max(1) as u16;
+                    let color = if bx.color != 0 { bx.color } else { 0xFF000000 };
+
+                    libfont_client::draw_string_buf(
+                        buf, stride, buf_h,
+                        abs_x, draw_y,
+                        color, font_id, font_size,
+                        text,
+                    );
+
+                    // Underline for links or text-decoration.
+                    let needs_underline = bx.text_decoration == TextDeco::Underline
+                        || bx.link_url.is_some();
+                    if needs_underline {
+                        fill_rect_buf(buf, stride, buf_h,
+                            abs_x, draw_y + bx.height - 1,
+                            bx.width, 1, color);
+                    }
+
+                    // Line-through.
+                    if bx.text_decoration == TextDeco::LineThrough {
+                        fill_rect_buf(buf, stride, buf_h,
+                            abs_x, draw_y + bx.height / 2,
+                            bx.width, 1, color);
+                    }
+
+                    // Register link hit region (tile-local coordinates for click matching).
+                    if let Some(ref url) = bx.link_url {
+                        self.hit_regions.push(HitRegion {
+                            x: abs_x, y: draw_y,
+                            w: bx.width, h: bx.height,
+                            kind: HitKind::Link(url.clone()),
+                        });
+                    }
                 }
+            }
 
-                // Line-through.
-                if bx.text_decoration == TextDeco::LineThrough {
-                    fill_rect_buf(buf, stride, buf_h,
-                        abs_x, abs_y + bx.height / 2,
-                        bx.width, 1, color);
-                }
-
-                // Register link hit region.
-                if let Some(ref url) = bx.link_url {
-                    self.hit_regions.push(HitRegion {
-                        x: abs_x, y: abs_y,
-                        w: bx.width, h: bx.height,
-                        kind: HitKind::Link(url.clone()),
-                    });
+            // Image — blit directly into canvas buffer.
+            if let Some(ref src) = bx.image_src {
+                if let Some(entry) = images.get(src) {
+                    let dw = bx.image_width.unwrap_or(bx.width);
+                    let dh = bx.image_height.unwrap_or(bx.height);
+                    blit_image_buf(
+                        buf, stride, buf_h,
+                        abs_x, draw_y, dw, dh,
+                        &entry.pixels, entry.width, entry.height,
+                    );
                 }
             }
         }
 
-        // Image — blit directly into canvas buffer.
-        if let Some(ref src) = bx.image_src {
-            if let Some(entry) = images.get(src) {
-                let dw = bx.image_width.unwrap_or(bx.width);
-                let dh = bx.image_height.unwrap_or(bx.height);
-                blit_image_buf(
-                    buf, stride, buf_h,
-                    abs_x, abs_y, dw, dh,
-                    &entry.pixels, entry.width, entry.height,
-                );
-            }
-        }
-
-        // Form fields — real libanyui controls (persistent).
+        // ── Form controls (always processed — ScrollView clips them) ──
+        // Real libanyui controls use absolute document coordinates (abs_x, abs_y).
+        // Submit/button pixel drawing uses tile-local draw_y and is gated by in_tile.
         if let Some(kind) = bx.form_field {
-            self.emit_form_control(kind, bx, abs_x, abs_y, buf, stride, buf_h, parent, submit_cb, submit_cb_ud);
+            self.emit_form_control(kind, bx, abs_x, abs_y, draw_y, in_tile, buf, stride, buf_h, parent, submit_cb, submit_cb_ud);
         }
 
         // Recurse into children.
         for child in &bx.children {
-            self.walk_canvas(child, buf, stride, buf_h, images, abs_x, abs_y, parent, submit_cb, submit_cb_ud);
+            self.walk_canvas(
+                child, buf, stride, buf_h, images,
+                abs_x, abs_y,
+                render_y_start, render_y_end, scroll_y,
+                parent, submit_cb, submit_cb_ud,
+            );
         }
     }
 
     /// Create or update a persistent form control.
+    ///
+    /// - `x`, `y`: absolute document coordinates (for real libanyui controls).
+    /// - `draw_y`: tile-local Y coordinate (for pixel buffer drawing).
+    /// - `in_tile`: whether this box is within the visible tile.
     fn emit_form_control(
         &mut self,
         kind: FormFieldKind,
         bx: &LayoutBox,
         x: i32,
         y: i32,
+        draw_y: i32,
+        in_tile: bool,
         buf: *mut u32,
         stride: u32,
         buf_h: u32,
@@ -499,36 +550,38 @@ impl Renderer {
             }
 
             FormFieldKind::Submit | FormFieldKind::ButtonEl => {
-                // Draw button appearance into canvas.
-                let label_text = if let Some(ref t) = bx.text { t.as_str() } else { "Submit" };
+                // Draw button appearance into canvas (only if visible in tile).
+                if in_tile {
+                    let label_text = if let Some(ref t) = bx.text { t.as_str() } else { "Submit" };
 
-                // Default web button bg + border if no CSS styling.
-                if bx.bg_color == 0 && bx.border_width == 0 {
-                    fill_rect_buf(buf, stride, buf_h, x, y, bx.width, bx.height, 0xFFE0E0E0);
-                    // 1px border.
-                    fill_rect_buf(buf, stride, buf_h, x, y, bx.width, 1, 0xFF808080);
-                    fill_rect_buf(buf, stride, buf_h, x, y + bx.height - 1, bx.width, 1, 0xFF808080);
-                    fill_rect_buf(buf, stride, buf_h, x, y + 1, 1, (bx.height - 2).max(0), 0xFF808080);
-                    fill_rect_buf(buf, stride, buf_h, x + bx.width - 1, y + 1, 1, (bx.height - 2).max(0), 0xFF808080);
+                    // Default web button bg + border if no CSS styling.
+                    if bx.bg_color == 0 && bx.border_width == 0 {
+                        fill_rect_buf(buf, stride, buf_h, x, draw_y, bx.width, bx.height, 0xFFE0E0E0);
+                        // 1px border.
+                        fill_rect_buf(buf, stride, buf_h, x, draw_y, bx.width, 1, 0xFF808080);
+                        fill_rect_buf(buf, stride, buf_h, x, draw_y + bx.height - 1, bx.width, 1, 0xFF808080);
+                        fill_rect_buf(buf, stride, buf_h, x, draw_y + 1, 1, (bx.height - 2).max(0), 0xFF808080);
+                        fill_rect_buf(buf, stride, buf_h, x + bx.width - 1, draw_y + 1, 1, (bx.height - 2).max(0), 0xFF808080);
+                    }
+
+                    // Center text in button.
+                    let font_size = bx.font_size.max(1) as u16;
+                    let text_color = if bx.color != 0 { bx.color } else { 0xFF000000 };
+                    let (tw, _th) = libfont_client::measure(0, font_size, label_text);
+                    let tx = x + (bx.width - tw as i32) / 2;
+                    let ty = draw_y + (bx.height - font_size as i32) / 2;
+                    libfont_client::draw_string_buf(
+                        buf, stride, buf_h,
+                        tx, ty, text_color, 0, font_size,
+                        label_text,
+                    );
+
+                    // Register submit hit region (tile-local coords for canvas click matching).
+                    self.hit_regions.push(HitRegion {
+                        x, y: draw_y, w: bx.width, h: bx.height,
+                        kind: HitKind::Submit(node_id),
+                    });
                 }
-
-                // Center text in button.
-                let font_size = bx.font_size.max(1) as u16;
-                let text_color = if bx.color != 0 { bx.color } else { 0xFF000000 };
-                let (tw, _th) = libfont_client::measure(0, font_size, label_text);
-                let tx = x + (bx.width - tw as i32) / 2;
-                let ty = y + (bx.height - font_size as i32) / 2;
-                libfont_client::draw_string_buf(
-                    buf, stride, buf_h,
-                    tx, ty, text_color, 0, font_size,
-                    label_text,
-                );
-
-                // Register submit hit region.
-                self.hit_regions.push(HitRegion {
-                    x, y, w: bx.width, h: bx.height,
-                    kind: HitKind::Submit(node_id),
-                });
             }
 
             FormFieldKind::Checkbox => {
