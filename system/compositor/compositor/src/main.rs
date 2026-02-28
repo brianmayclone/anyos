@@ -347,8 +347,12 @@ fn management_loop(
         if !*login_pending && !*dock_spawned && !login_failed {
             acquire_lock();
             let desktop = unsafe { desktop_ref() };
+            // Destroy login window immediately so it won't appear in the next
+            // compose.  EVT_PROCESS_EXITED may arrive later and call
+            // on_process_exit again — that's harmless (no windows left for tid).
+            desktop.on_process_exit(*login_tid);
             desktop.set_menubar_visible(true);
-            desktop.init_desktop_icons();
+            desktop.init_desktop_icons(); // calls damage_all()
             release_lock();
             signal_render();
 
