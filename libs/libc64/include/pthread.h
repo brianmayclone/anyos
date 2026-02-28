@@ -100,6 +100,10 @@ typedef unsigned int pthread_key_t;
  * @param arg           Argument passed to start_routine.
  * @return 0 on success, or an errno value on failure.
  */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
                    void *(*start_routine)(void *), void *arg);
 
@@ -339,5 +343,30 @@ void *pthread_getspecific(pthread_key_t key);
  * @return 0 on success.
  */
 int pthread_once(pthread_once_t *once_control, void (*init_routine)(void));
+
+/* ── Thread naming (non-portable extensions) ── */
+
+/**
+ * Get the name of a thread.
+ *
+ * @param thread  Thread to query.
+ * @param name    Buffer to receive the name.
+ * @param len     Size of the buffer.
+ * @return 0 on success.
+ */
+int pthread_getname_np(pthread_t thread, char *name, size_t len);
+
+/**
+ * Set the name of a thread.
+ *
+ * @param thread  Thread to name.
+ * @param name    Name string (truncated to 15 characters + NUL).
+ * @return 0 on success.
+ */
+int pthread_setname_np(pthread_t thread, const char *name);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _PTHREAD_H */

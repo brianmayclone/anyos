@@ -1,0 +1,30 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * <complex> — minimal stub for std::abs and std::complex.
+ */
+
+#ifndef _LIBCXX_COMPLEX
+#define _LIBCXX_COMPLEX
+
+#include <cmath>
+
+namespace std {
+
+inline double abs(double x) { return fabs(x); }
+inline float abs(float x) { return fabsf(x); }
+inline long double abs(long double x) { return fabs((double)x); }
+
+template <class T>
+class complex {
+    T _real, _imag;
+public:
+    constexpr complex(T re = T(), T im = T()) : _real(re), _imag(im) {}
+    constexpr T real() const { return _real; }
+    constexpr T imag() const { return _imag; }
+};
+
+} // namespace std
+
+#endif

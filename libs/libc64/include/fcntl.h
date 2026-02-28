@@ -31,7 +31,15 @@
 #define AT_REMOVEDIR 0x200
 #define AT_EACCESS 0x200
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int open(const char *path, int flags, ...);
 int fcntl(int fd, int cmd, ...);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

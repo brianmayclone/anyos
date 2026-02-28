@@ -11,6 +11,10 @@
 typedef int posix_spawn_file_actions_t;
 typedef int posix_spawnattr_t;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int posix_spawn(pid_t *pid, const char *path,
     const posix_spawn_file_actions_t *file_actions,
     const posix_spawnattr_t *attrp,
@@ -23,5 +27,9 @@ int posix_spawn_file_actions_init(posix_spawn_file_actions_t *fa);
 int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t *fa);
 int posix_spawnattr_init(posix_spawnattr_t *attr);
 int posix_spawnattr_destroy(posix_spawnattr_t *attr);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

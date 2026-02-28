@@ -61,6 +61,10 @@ struct addrinfo {
 #define NO_RECOVERY    3
 #define NO_DATA        4
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 extern int h_errno;
 
 struct hostent *gethostbyname(const char *name);
@@ -71,5 +75,9 @@ const char *gai_strerror(int errcode);
 int getnameinfo(const struct sockaddr *sa, socklen_t salen,
                 char *host, socklen_t hostlen,
                 char *serv, socklen_t servlen, int flags);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

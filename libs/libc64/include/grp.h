@@ -17,10 +17,18 @@ struct group {
     char  **gr_mem;     /* Group members */
 };
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct group *getgrgid(gid_t gid);
 struct group *getgrnam(const char *name);
 void setgrent(void);
 void endgrent(void);
 struct group *getgrent(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

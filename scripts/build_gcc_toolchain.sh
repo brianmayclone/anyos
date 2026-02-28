@@ -645,9 +645,53 @@ cp "$LIBC64_LIB_DIR/obj/crtn.o" "$CROSS_LIB/"
 [[ -f "$LIBGCC_A" ]] && cp "$LIBGCC_A" "$CROSS_LIB/"
 cp "$LIBC64_LIB_DIR/link.ld" "$CROSS_LIB/"
 
+# Install headers into cross-compiler search path first (needed for libstdc++ build below).
 CROSS_INC="$PREFIX/$TARGET/include"
 mkdir -p "$CROSS_INC"
 cp -r "$LIBC64_LIB_DIR/include/"* "$CROSS_INC/"
+
+# Create stub libraries that configure tests expect.
+# libm.a: math functions live in libc64, empty archive satisfies -lm.
+# libc.a: alias for libc64.a (some tools link -lc instead of -lc64).
+# libstdc++.a: minimal C++ runtime (operator new/delete) — GCC itself is C++.
+"$PREFIX/bin/${TARGET}-ar" rcs "$CROSS_LIB/libm.a"
+ln -sf libc64.a "$CROSS_LIB/libc.a"
+
+# Build a minimal libstdc++.a with operator new/delete implementations.
+CXXSTUB_SRC="/tmp/anyos_cxxstub_$$.cc"
+cat > "$CXXSTUB_SRC" << 'CXXEOF'
+#include <stdlib.h>
+#include <new>
+namespace std { const nothrow_t nothrow{}; }
+void* operator new(size_t sz)  { void* p = malloc(sz ? sz : 1); if (!p) abort(); return p; }
+void* operator new[](size_t sz)  { return operator new(sz); }
+void  operator delete(void* p) noexcept { free(p); }
+void  operator delete[](void* p) noexcept { free(p); }
+void  operator delete(void* p, size_t) noexcept { free(p); }
+void  operator delete[](void* p, size_t) noexcept { free(p); }
+void* operator new(size_t sz, const std::nothrow_t&) noexcept { return malloc(sz ? sz : 1); }
+void* operator new[](size_t sz, const std::nothrow_t&) noexcept { return malloc(sz ? sz : 1); }
+void  operator delete(void* p, const std::nothrow_t&) noexcept { free(p); }
+void  operator delete[](void* p, const std::nothrow_t&) noexcept { free(p); }
+/* Pure virtual handler */
+extern "C" void __cxa_pure_virtual() { abort(); }
+/* Guard acquire/release for thread-safe statics (single-threaded stub) */
+extern "C" int  __cxa_guard_acquire(long long *g) { return !*(char*)g; }
+extern "C" void __cxa_guard_release(long long *g) { *(char*)g = 1; }
+extern "C" void __cxa_guard_abort(long long *) {}
+/* atexit registration */
+extern "C" int  __cxa_atexit(void (*)(void*), void*, void*) { return 0; }
+CXXEOF
+CXXSTUB_OBJ="/tmp/anyos_cxxstub_$$.o"
+"$PREFIX/bin/${TARGET}-g++" -c -O2 -ffreestanding -isystem "$CROSS_INC" \
+    "$CXXSTUB_SRC" -o "$CXXSTUB_OBJ"
+"$PREFIX/bin/${TARGET}-ar" rcs "$CROSS_LIB/libstdc++.a" "$CXXSTUB_OBJ"
+cp "$CROSS_LIB/libstdc++.a" "$CROSS_SYSROOT/Libraries/libc64/lib/"
+rm -f "$CXXSTUB_SRC" "$CXXSTUB_OBJ"
+echo "  built minimal libstdc++.a (operator new/delete + cxa stubs)"
+
+"$PREFIX/bin/${TARGET}-ar" rcs "$CROSS_SYSROOT/Libraries/libc64/lib/libm.a"
+ln -sf libc64.a "$CROSS_SYSROOT/Libraries/libc64/lib/libc.a"
 
 # Symlink headers into /usr/include (some GCC configure checks look here)
 ln -sf "$CROSS_SYSROOT/Libraries/libc64/include/"* "$CROSS_SYSROOT/usr/include/" 2>/dev/null || true
@@ -790,6 +834,22 @@ ac_cv_func_strtok_r=yes
 ac_cv_func_times=yes
 ac_cv_func_gettimeofday=yes
 ac_cv_func_strftime=yes
+ac_cv_func_strcoll=yes
+ac_cv_func_strxfrm=yes
+ac_cv_func_fnmatch=yes
+ac_cv_func_getopt=yes
+ac_cv_func_getopt_long=yes
+ac_cv_header_fnmatch_h=yes
+ac_cv_header_getopt_h=yes
+
+# Unlocked I/O — available as inline wrappers in stdio.h
+ac_cv_func_putc_unlocked=yes
+ac_cv_func_getc_unlocked=yes
+# Functions NOT available in libc64 (prevent false positives from cross-compile tests)
+ac_cv_func_fputc_unlocked=no
+ac_cv_func_fwrite_unlocked=no
+ac_cv_func_fprintf_unlocked=no
+ac_cv_func_fputs_unlocked=no
 
 # Declaration tests (ac_cv_have_decl_*)
 ac_cv_have_decl_calloc=yes
@@ -814,6 +874,9 @@ ac_cv_have_decl_strverscmp=no
 ac_cv_have_decl_snprintf=yes
 ac_cv_have_decl_vsnprintf=yes
 
+# Endianness (x86_64 is little-endian)
+ac_cv_c_bigendian=no
+
 # Type sizes (x86_64)
 ac_cv_sizeof_int=4
 ac_cv_sizeof_long=8
@@ -832,6 +895,7 @@ echo "  created CONFIG_SITE at $ANYOS_CONFIG_SITE"
 # We do NOT use -include flags here because they conflict with libiberty's own
 # replacement function signatures.
 HOST_CFLAGS="-O2 -ffreestanding -isystem $CROSS_INC"
+HOST_CXXFLAGS="$HOST_CFLAGS -fpermissive"
 HOST_LDFLAGS="-L$CROSS_LIB"
 export CONFIG_SITE="$ANYOS_CONFIG_SITE"
 
@@ -847,12 +911,17 @@ export CONFIG_SITE="$ANYOS_CONFIG_SITE"
   AR="$AR_FOR_HOST" \
   RANLIB="$RANLIB_FOR_HOST" \
   CFLAGS="$HOST_CFLAGS" \
+  CXXFLAGS="$HOST_CXXFLAGS" \
   LDFLAGS="$HOST_LDFLAGS" \
+  CFLAGS_FOR_BUILD="-O2" \
+  CXXFLAGS_FOR_BUILD="-O2" \
+  LDFLAGS_FOR_BUILD="" \
   MAKEINFO=true
 
-make -j"$JOBS" MAKEINFO=true || {
+# Build only the binary tools (skip doc generation which requires makeinfo).
+make -j"$JOBS" MAKEINFO=true all-binutils all-gas all-ld 2>&1 || {
   echo ""
-  echo "WARNING: Native binutils build failed (this may require additional libc64 stubs)."
+  echo "WARNING: Native binutils build had errors (some tools may still be usable)."
   echo "Stage 1 cross-compiler is still functional."
   echo ""
 }
@@ -885,7 +954,7 @@ cd "$BUILD_DIR/native-gcc"
   --target="$TARGET" \
   --prefix="$NATIVE_PREFIX" \
   --with-sysroot="$CROSS_SYSROOT" \
-  --enable-languages=c,c++ \
+  --enable-languages=c \
   --disable-nls \
   --disable-shared \
   --disable-threads \
@@ -899,22 +968,49 @@ cd "$BUILD_DIR/native-gcc"
   --disable-multilib \
   --disable-bootstrap \
   --disable-gcov \
+  --disable-isl \
+  --disable-libcc1 \
   --with-newlib \
   CC="$CC_FOR_HOST" \
   CXX="$CXX_FOR_HOST" \
   AR="$AR_FOR_HOST" \
   RANLIB="$RANLIB_FOR_HOST" \
   CC_FOR_TARGET="$CC_FOR_HOST" \
-  CXX_FOR_TARGET="$CXX_FOR_HOST" \
   AR_FOR_TARGET="$AR_FOR_HOST" \
   RANLIB_FOR_TARGET="$RANLIB_FOR_HOST" \
   CFLAGS="$HOST_CFLAGS" \
-  CXXFLAGS="$HOST_CFLAGS" \
+  CXXFLAGS="$HOST_CXXFLAGS" \
   LDFLAGS="$HOST_LDFLAGS" \
+  CFLAGS_FOR_BUILD="-O2" \
+  CXXFLAGS_FOR_BUILD="-O2" \
+  LDFLAGS_FOR_BUILD="" \
   CFLAGS_FOR_TARGET="$HOST_CFLAGS" \
   MAKEINFO=true
 
-make -j"$JOBS" all-gcc MAKEINFO=true || {
+# libcody is a C++20 module mapper library — it requires C++ standard library
+# headers (<memory>, <string>, etc.) which don't exist on anyOS yet.
+# Stub it out with a no-op Makefile so all-gcc can proceed without it.
+mkdir -p "$BUILD_DIR/native-gcc/libcody"
+cat > "$BUILD_DIR/native-gcc/libcody/Makefile" << 'LIBCODY_EOF'
+all:
+	@true
+install:
+	@true
+clean:
+	@true
+LIBCODY_EOF
+# Create empty libcody.a so the linker doesn't complain
+"$AR_FOR_HOST" rcs "$BUILD_DIR/native-gcc/libcody/libcody.a"
+
+# Force BUILD_CPPLIB to use the build-side library (not host-side).
+# In Canadian Cross builds, GCC's Makefile defaults BUILD_CPPLIB to the HOST
+# libcpp which is cross-compiled for anyOS — causing linker errors when linking
+# build tools (e.g., genmatch) that must run on macOS.
+BUILD_LIBCPP_PATH="$BUILD_DIR/native-gcc/build-$(gcc -dumpmachine)/libcpp/libcpp.a"
+BUILD_LIBIBERTY_PATH="$BUILD_DIR/native-gcc/build-$(gcc -dumpmachine)/libiberty/libiberty.a"
+
+make -j"$JOBS" all-gcc MAKEINFO=true \
+  BUILD_CPPLIB="$BUILD_LIBCPP_PATH $BUILD_LIBIBERTY_PATH" || {
   echo ""
   echo "WARNING: Native GCC build failed (this is expected for initial ports)."
   echo "Stage 1 cross-compiler is still functional."

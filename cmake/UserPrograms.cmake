@@ -339,6 +339,55 @@ add_shared_lib(libsvg ${CMAKE_SOURCE_DIR}/libs/libsvg)
 add_shared_lib(libgl ${CMAKE_SOURCE_DIR}/libs/libgl)
 add_shared_lib(libm ${CMAKE_SOURCE_DIR}/libs/libm)
 
+# --- libhttp (custom: links BearSSL for HTTPS support) ---
+# libbearssl_x64.a already contains anyos_tls.o (the BearSSL TLS wrapper).
+# libhttp's Rust code (tls.rs) provides the callbacks (anyos_tcp_send, etc.)
+# that anyos_tls.o calls, using raw syscalls instead of anyos_std.
+set(_LIBHTTP_SRC "${CMAKE_SOURCE_DIR}/libs/libhttp")
+set(_LIBHTTP_A "${SHLIB_TARGET_DIR}/x86_64-anyos-user/release/liblibhttp.a")
+set(_LIBHTTP_SO "${CMAKE_BINARY_DIR}/shlib/libhttp.so")
+set(_BEARSSL_X64_A "${CMAKE_SOURCE_DIR}/third_party/bearssl/build_x64/libbearssl_x64.a")
+file(GLOB_RECURSE _LIBHTTP_RS CONFIGURE_DEPENDS "${_LIBHTTP_SRC}/src/*.rs")
+
+# Step 1: Cargo → static archive (.a)
+add_custom_command(
+  OUTPUT ${_LIBHTTP_A}
+  COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings"
+    ${CARGO_EXECUTABLE} build --release --quiet
+    --manifest-path ${_LIBHTTP_SRC}/Cargo.toml
+    --target ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
+    --target-dir ${SHLIB_TARGET_DIR}
+    -Z build-std=core,alloc
+  DEPENDS
+    ${_LIBHTTP_SRC}/Cargo.toml
+    ${_LIBHTTP_RS}
+    ${CMAKE_SOURCE_DIR}/x86_64-anyos-user.json
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Building shared library: libhttp (Cargo)"
+)
+
+# Step 2: anyld → .so (Rust .a + BearSSL .a including anyos_tls.o)
+add_custom_command(
+  OUTPUT ${_LIBHTTP_SO}
+  COMMAND ${ANYLD_EXECUTABLE} -q
+    -o ${_LIBHTTP_SO}
+    -e ${_LIBHTTP_SRC}/exports.def
+    ${_LIBHTTP_A}
+    ${_BEARSSL_X64_A}
+  DEPENDS ${_LIBHTTP_A} ${_BEARSSL_X64_A}
+    ${_LIBHTTP_SRC}/exports.def ${ANYLD_EXECUTABLE}
+  COMMENT "Linking libhttp.so (anyld + BearSSL)"
+)
+
+# Step 4: Install to sysroot
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/Libraries/libhttp.so
+  COMMAND ${CMAKE_COMMAND} -E copy ${_LIBHTTP_SO} ${SYSROOT_DIR}/Libraries/libhttp.so
+  DEPENDS ${_LIBHTTP_SO}
+  COMMENT "Installing libhttp.so to sysroot"
+)
+set(DLL_BINS ${DLL_BINS} ${SYSROOT_DIR}/Libraries/libhttp.so)
+
 # ============================================================
 # User programs (/System/bin/)
 # ============================================================

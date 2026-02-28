@@ -23,6 +23,10 @@ typedef struct {
     void *__data;
 } DIR;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 DIR *opendir(const char *name);
 struct dirent *readdir(DIR *dirp);
 int closedir(DIR *dirp);
@@ -32,5 +36,9 @@ int scandir(const char *dirp, struct dirent ***namelist,
             int (*filter)(const struct dirent *),
             int (*compar)(const struct dirent **, const struct dirent **));
 int dirfd(DIR *dirp);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

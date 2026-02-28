@@ -212,7 +212,163 @@ double fmod(double x, double y) {
     return result;
 }
 
-/* Float variants */
+/* ── Hyperbolic functions ─────────────────────────────────────────── */
+
+double sinh(double x) {
+    double ep = exp(x), em = exp(-x);
+    return (ep - em) * 0.5;
+}
+
+double cosh(double x) {
+    double ep = exp(x), em = exp(-x);
+    return (ep + em) * 0.5;
+}
+
+double tanh(double x) {
+    if (x > 20.0) return 1.0;
+    if (x < -20.0) return -1.0;
+    double e2x = exp(2.0 * x);
+    return (e2x - 1.0) / (e2x + 1.0);
+}
+
+double asinh(double x) {
+    return log(x + sqrt(x * x + 1.0));
+}
+
+double acosh(double x) {
+    if (x < 1.0) return NAN;
+    return log(x + sqrt(x * x - 1.0));
+}
+
+double atanh(double x) {
+    if (x <= -1.0 || x >= 1.0) return NAN;
+    return 0.5 * log((1.0 + x) / (1.0 - x));
+}
+
+/* ── Additional math functions ─────────────────────────────────────── */
+
+double hypot(double x, double y) {
+    x = fabs(x); y = fabs(y);
+    if (x < y) { double t = x; x = y; y = t; }
+    if (x == 0.0) return 0.0;
+    double r = y / x;
+    return x * sqrt(1.0 + r * r);
+}
+
+double cbrt(double x) {
+    if (x == 0.0) return 0.0;
+    int neg = x < 0.0;
+    if (neg) x = -x;
+    double r = exp(log(x) / 3.0);
+    /* Newton refinement */
+    r = (2.0 * r + x / (r * r)) / 3.0;
+    r = (2.0 * r + x / (r * r)) / 3.0;
+    return neg ? -r : r;
+}
+
+double copysign(double x, double y) {
+    double ax = fabs(x);
+    return __builtin_signbit(y) ? -ax : ax;
+}
+
+double fdim(double x, double y) {
+    return (x > y) ? (x - y) : 0.0;
+}
+
+double fmax(double x, double y) {
+    if (__builtin_isnan(x)) return y;
+    if (__builtin_isnan(y)) return x;
+    return (x > y) ? x : y;
+}
+
+double fmin(double x, double y) {
+    if (__builtin_isnan(x)) return y;
+    if (__builtin_isnan(y)) return x;
+    return (x < y) ? x : y;
+}
+
+long lround(double x) {
+    return (long)round(x);
+}
+
+long lrint(double x) {
+    return (long)rint(x);
+}
+
+double nearbyint(double x) {
+    return rint(x);
+}
+
+double rint(double x) {
+    /* Round to nearest even */
+    double r = round(x);
+    double d = r - x;
+    if (d == 0.5 || d == -0.5) {
+        long lr = (long)r;
+        if (lr & 1) r = r - (d > 0 ? 1.0 : -1.0);
+    }
+    return r;
+}
+
+double remainder(double x, double y) {
+    if (y == 0.0) return NAN;
+    double n = round(x / y);
+    return x - n * y;
+}
+
+double nan(const char *tag) {
+    (void)tag;
+    return __builtin_nan("");
+}
+
+double nextafter(double x, double y) {
+    if (__builtin_isnan(x) || __builtin_isnan(y)) return NAN;
+    if (x == y) return y;
+    union { double d; unsigned long u; } ux = {x};
+    if (x == 0.0) {
+        ux.u = 1;
+        return (y > 0.0) ? ux.d : -ux.d;
+    }
+    if ((x > 0.0) == (y > x)) ux.u++;
+    else ux.u--;
+    return ux.d;
+}
+
+double scalbn(double x, int n) {
+    return ldexp(x, n);
+}
+
+int ilogb(double x) {
+    if (x == 0.0) return (-2147483647 - 1); /* FP_ILOGB0 */
+    if (__builtin_isinf(x)) return 2147483647; /* INT_MAX */
+    if (__builtin_isnan(x)) return (-2147483647 - 1);
+    int e;
+    frexp(x, &e);
+    return e - 1;
+}
+
+double logb(double x) {
+    if (x == 0.0) return -HUGE_VAL;
+    if (__builtin_isinf(x)) return HUGE_VAL;
+    if (__builtin_isnan(x)) return NAN;
+    return (double)ilogb(x);
+}
+
+double exp2(double x) {
+    return pow(2.0, x);
+}
+
+double expm1(double x) {
+    if (fabs(x) < 1e-10) return x + 0.5 * x * x;
+    return exp(x) - 1.0;
+}
+
+double log1p(double x) {
+    if (fabs(x) < 1e-10) return x - 0.5 * x * x;
+    return log(1.0 + x);
+}
+
+/* ── Float variants ──────────────────────────────────────────────── */
 
 float fabsf(float x) { return x < 0.0f ? -x : x; }
 float sqrtf(float x) { return (float)sqrt((double)x); }
@@ -230,6 +386,34 @@ float logf(float x) { return (float)log((double)x); }
 float log2f(float x) { return (float)log2((double)x); }
 float log10f(float x) { return (float)log10((double)x); }
 float expf(float x) { return (float)exp((double)x); }
+float asinf(float x) { return (float)asin((double)x); }
+float acosf(float x) { return (float)acos((double)x); }
+float atanf(float x) { return (float)atan((double)x); }
+float sinhf(float x) { return (float)sinh((double)x); }
+float coshf(float x) { return (float)cosh((double)x); }
+float tanhf(float x) { return (float)tanh((double)x); }
+float asinhf(float x) { return (float)asinh((double)x); }
+float acoshf(float x) { return (float)acosh((double)x); }
+float atanhf(float x) { return (float)atanh((double)x); }
+float hypotf(float x, float y) { return (float)hypot((double)x, (double)y); }
+float cbrtf(float x) { return (float)cbrt((double)x); }
+float copysignf(float x, float y) { return (float)copysign((double)x, (double)y); }
+float fdimf(float x, float y) { return (float)fdim((double)x, (double)y); }
+float fmaxf(float x, float y) { return (float)fmax((double)x, (double)y); }
+float fminf(float x, float y) { return (float)fmin((double)x, (double)y); }
+long lroundf(float x) { return lround((double)x); }
+long lrintf(float x) { return lrint((double)x); }
+float nearbyintf(float x) { return (float)nearbyint((double)x); }
+float remainderf(float x, float y) { return (float)remainder((double)x, (double)y); }
+float nanf(const char *tag) { (void)tag; return __builtin_nanf(""); }
+float nextafterf(float x, float y) { return (float)nextafter((double)x, (double)y); }
+float scalbnf(float x, int n) { return (float)scalbn((double)x, n); }
+int ilogbf(float x) { return ilogb((double)x); }
+float logbf(float x) { return (float)logb((double)x); }
+float rintf(float x) { return (float)rint((double)x); }
+float exp2f(float x) { return (float)exp2((double)x); }
+float expm1f(float x) { return (float)expm1((double)x); }
+float log1pf(float x) { return (float)log1p((double)x); }
 
 /* Floating-point parsing */
 

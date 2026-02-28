@@ -65,9 +65,17 @@ struct stat {
 #define S_IWOTH  0002
 #define S_IXOTH  0001
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int stat(const char *path, struct stat *buf);
 int fstat(int fd, struct stat *buf);
 int fstatat(int dirfd, const char *pathname, struct stat *statbuf, int flags);
 int mkdir(const char *path, unsigned int mode);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

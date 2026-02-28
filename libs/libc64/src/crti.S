@@ -17,3 +17,6 @@ _init:
 _fini:
     pushq %rbp
     movq %rsp, %rbp
+
+/* Mark as not needing executable stack. */
+.section .note.GNU-stack,"",@progbits

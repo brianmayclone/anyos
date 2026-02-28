@@ -72,6 +72,10 @@ struct msghdr {
     int           msg_flags;
 };
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int socket(int domain, int type, int protocol);
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 int listen(int sockfd, int backlog);
@@ -90,5 +94,9 @@ int getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
 int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
 ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags);
 ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

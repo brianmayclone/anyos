@@ -290,6 +290,38 @@ public:
         return _data + idx;
     }
 
+    template <class InputIt>
+    iterator insert(const_iterator pos, InputIt first, InputIt last) {
+        size_type idx = pos - _data;
+        // Count elements
+        size_type count = 0;
+        for (auto it = first; it != last; ++it) ++count;
+        if (count == 0) return _data + idx;
+        // Grow if needed
+        if (_size + count > _cap) _grow(_next_cap(_size + count));
+        // Shift existing elements right
+        if (_size > idx) {
+            for (size_type i = _size + count - 1; i >= idx + count; --i) {
+                if (i >= _size) {
+                    ::new (static_cast<void*>(_data + i)) T(std::move(_data[i - count]));
+                } else {
+                    _data[i] = std::move(_data[i - count]);
+                }
+            }
+        }
+        // Insert new elements
+        size_type i = idx;
+        for (auto it = first; it != last; ++it, ++i) {
+            if (i >= _size) {
+                ::new (static_cast<void*>(_data + i)) T(*it);
+            } else {
+                _data[i] = *it;
+            }
+        }
+        _size += count;
+        return _data + idx;
+    }
+
     iterator erase(const_iterator pos) {
         size_type idx = pos - _data;
         _data[idx].~T();

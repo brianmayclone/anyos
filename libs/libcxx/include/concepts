@@ -1,0 +1,120 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * C++20 <concepts> header — core language concepts.
+ * Implemented using compiler builtins.
+ */
+
+#ifndef _LIBCXX_CONCEPTS
+#define _LIBCXX_CONCEPTS
+
+#include <type_traits>
+
+namespace std {
+
+// same_as
+namespace detail {
+    template<class T, class U>
+    concept same_as_impl = __is_same(T, U);
+}
+template<class T, class U>
+concept same_as = detail::same_as_impl<T, U> && detail::same_as_impl<U, T>;
+
+// derived_from
+template<class Derived, class Base>
+concept derived_from = __is_base_of(Base, Derived) &&
+    __is_convertible(const volatile Derived*, const volatile Base*);
+
+// convertible_to
+template<class From, class To>
+concept convertible_to = __is_convertible(From, To) &&
+    requires { static_cast<To>(declval<From>()); };
+
+// integral
+template<class T>
+concept integral = is_integral_v<T>;
+
+// signed_integral
+template<class T>
+concept signed_integral = integral<T> && is_signed_v<T>;
+
+// unsigned_integral
+template<class T>
+concept unsigned_integral = integral<T> && !signed_integral<T>;
+
+// floating_point
+template<class T>
+concept floating_point = is_floating_point_v<T>;
+
+// destructible
+template<class T>
+concept destructible = __is_nothrow_destructible(T);
+
+// constructible_from
+template<class T, class... Args>
+concept constructible_from = destructible<T> && __is_constructible(T, Args...);
+
+// default_initializable
+template<class T>
+concept default_initializable = constructible_from<T> &&
+    requires { T{}; } && requires { ::new T; };
+
+// move_constructible
+template<class T>
+concept move_constructible = constructible_from<T, T> && convertible_to<T, T>;
+
+// copy_constructible
+template<class T>
+concept copy_constructible = move_constructible<T> &&
+    constructible_from<T, T&> && convertible_to<T&, T> &&
+    constructible_from<T, const T&> && convertible_to<const T&, T> &&
+    constructible_from<T, const T> && convertible_to<const T, T>;
+
+// common_reference_with (simplified)
+template<class T, class U>
+concept common_reference_with = same_as<T, U>; // simplified
+
+// assignable_from
+template<class LHS, class RHS>
+concept assignable_from = requires(LHS lhs, RHS&& rhs) {
+    { lhs = static_cast<RHS&&>(rhs) } -> same_as<LHS>;
+};
+
+// swappable
+template<class T>
+concept swappable = requires(T& a, T& b) {
+    swap(a, b);
+};
+
+// equality_comparable
+template<class T>
+concept equality_comparable = requires(const remove_reference_t<T>& a,
+                                       const remove_reference_t<T>& b) {
+    { a == b } -> convertible_to<bool>;
+    { a != b } -> convertible_to<bool>;
+};
+
+// totally_ordered
+template<class T>
+concept totally_ordered = equality_comparable<T> &&
+    requires(const remove_reference_t<T>& a, const remove_reference_t<T>& b) {
+        { a <  b } -> convertible_to<bool>;
+        { a >  b } -> convertible_to<bool>;
+        { a <= b } -> convertible_to<bool>;
+        { a >= b } -> convertible_to<bool>;
+    };
+
+// invocable
+template<class F, class... Args>
+concept invocable = requires(F&& f, Args&&... args) {
+    invoke(static_cast<F&&>(f), static_cast<Args&&>(args)...);
+};
+
+// predicate
+template<class F, class... Args>
+concept predicate = invocable<F, Args...>;
+
+} // namespace std
+
+#endif

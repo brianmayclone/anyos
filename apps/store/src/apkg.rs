@@ -190,7 +190,7 @@ pub fn update_index() -> u32 {
 
 /// Spawn apkg with the given arguments, wait for completion, return exit code.
 fn run_apkg(args: &str) -> u32 {
-    let pid = anyos_std::process::spawn("/bin/apkg", args);
+    let pid = anyos_std::process::spawn("/System/bin/apkg", args);
     if pid == u32::MAX {
         return 1;
     }

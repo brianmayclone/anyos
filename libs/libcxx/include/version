@@ -1,0 +1,29 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * C++20 <version> header — feature test macros.
+ * We define a minimal set for our freestanding C++23 environment.
+ */
+
+#ifndef _LIBCXX_VERSION
+#define _LIBCXX_VERSION
+
+/* C++17 features */
+#define __cpp_lib_optional          201606L
+#define __cpp_lib_variant           201606L
+#define __cpp_lib_any               201606L
+#define __cpp_lib_string_view       201606L
+#define __cpp_lib_byte              201603L
+
+/* C++20 features */
+#define __cpp_lib_span              202002L
+#define __cpp_lib_concepts          202002L
+#define __cpp_lib_ranges            202110L
+#define __cpp_lib_three_way_comparison 201907L
+#define __cpp_lib_format            202110L
+
+/* C++23 features */
+#define __cpp_lib_expected          202211L
+
+#endif

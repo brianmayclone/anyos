@@ -212,6 +212,8 @@ inline istringstream& getline(istringstream& iss, string& str, char delim = '\n'
     return iss;
 }
 
+using stringstream = ostringstream;
+
 } // namespace std
 
 #endif

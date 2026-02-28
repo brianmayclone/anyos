@@ -859,10 +859,27 @@ if(ANYOS_GCC)
     set(LIBGCC_SYSROOT_DEP "")
   endif()
 
+  # Check for Stage 2 native compiler (built to run ON anyOS)
+  set(NATIVE_TOOLCHAIN_DIR "$ENV{HOME}/build/anyos-toolchain/native-toolchain")
+  set(NATIVE_TOOL_NAMES "")
+  if(IS_DIRECTORY "${NATIVE_TOOLCHAIN_DIR}/bin")
+    message(STATUS "Found native GCC toolchain at ${NATIVE_TOOLCHAIN_DIR}")
+    file(GLOB NATIVE_BINS "${NATIVE_TOOLCHAIN_DIR}/bin/*")
+    foreach(NATIVE_BIN ${NATIVE_BINS})
+      get_filename_component(TOOL_NAME "${NATIVE_BIN}" NAME)
+      list(APPEND NATIVE_TOOL_NAMES ${TOOL_NAME})
+    endforeach()
+  endif()
+
   # Install GCC toolchain binaries to /System/Toolchain/bin/ on disk
+  # Skip cross-compiler binaries when native (ELF64) versions exist
   set(ANYOS_TOOLCHAIN_BINS gcc g++ as ld ar nm objdump objcopy ranlib strip)
   set(TOOLCHAIN_SYSROOT_DEPS "")
   foreach(TOOL ${ANYOS_TOOLCHAIN_BINS})
+    if("${TOOL}" IN_LIST NATIVE_TOOL_NAMES)
+      # Native version will be installed below — skip cross-compiler version
+      continue()
+    endif()
     set(TOOL_PATH "${ANYOS_GCC_BIN_DIR}/x86_64-anyos-${TOOL}${CMAKE_EXECUTABLE_SUFFIX}")
     if(EXISTS "${TOOL_PATH}")
       set(DEST "${SYSROOT_DIR}/System/Toolchain/bin/${TOOL}")
@@ -887,11 +904,8 @@ if(ANYOS_GCC)
   )
   list(APPEND TOOLCHAIN_SYSROOT_DEPS ${SYSROOT_DIR}/System/Toolchain/lib/link.ld)
 
-  # Check for Stage 2 native compiler (built to run ON anyOS)
-  set(NATIVE_TOOLCHAIN_DIR "$ENV{HOME}/build/anyos-toolchain/native-toolchain")
+  # Install native (ELF64) binaries — these run ON anyOS
   if(IS_DIRECTORY "${NATIVE_TOOLCHAIN_DIR}/bin")
-    message(STATUS "Found native GCC toolchain at ${NATIVE_TOOLCHAIN_DIR}")
-    # Install native binaries (ELF64) to /System/Toolchain/ on disk
     file(GLOB NATIVE_BINS "${NATIVE_TOOLCHAIN_DIR}/bin/*")
     foreach(NATIVE_BIN ${NATIVE_BINS})
       get_filename_component(TOOL_NAME "${NATIVE_BIN}" NAME)

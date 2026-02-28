@@ -139,6 +139,60 @@ double difftime(time_t time1, time_t time0) {
     return (double)(time1 - time0);
 }
 
+time_t timegm(struct tm *tm) {
+    return mktime(tm);
+}
+
+/* asctime — format struct tm as "Day Mon DD HH:MM:SS YYYY\n" */
+static char _asctime_buf[26];
+
+char *asctime_r(const struct tm *tm, char *buf) {
+    if (!tm || !buf) return (void*)0;
+    const char *wday = (tm->tm_wday >= 0 && tm->tm_wday < 7) ? _wday_abbr[tm->tm_wday] : "???";
+    const char *mon = (tm->tm_mon >= 0 && tm->tm_mon < 12) ? _mon_abbr[tm->tm_mon] : "???";
+    int year = tm->tm_year + 1900;
+    int pos = 0;
+    for (int i = 0; i < 3 && wday[i]; i++) buf[pos++] = wday[i];
+    buf[pos++] = ' ';
+    for (int i = 0; i < 3 && mon[i]; i++) buf[pos++] = mon[i];
+    buf[pos++] = ' ';
+    buf[pos++] = (tm->tm_mday / 10) ? ('0' + tm->tm_mday / 10) : ' ';
+    buf[pos++] = '0' + tm->tm_mday % 10;
+    buf[pos++] = ' ';
+    buf[pos++] = '0' + tm->tm_hour / 10;
+    buf[pos++] = '0' + tm->tm_hour % 10;
+    buf[pos++] = ':';
+    buf[pos++] = '0' + tm->tm_min / 10;
+    buf[pos++] = '0' + tm->tm_min % 10;
+    buf[pos++] = ':';
+    buf[pos++] = '0' + tm->tm_sec / 10;
+    buf[pos++] = '0' + tm->tm_sec % 10;
+    buf[pos++] = ' ';
+    buf[pos++] = '0' + (year / 1000) % 10;
+    buf[pos++] = '0' + (year / 100) % 10;
+    buf[pos++] = '0' + (year / 10) % 10;
+    buf[pos++] = '0' + year % 10;
+    buf[pos++] = '\n';
+    buf[pos] = '\0';
+    return buf;
+}
+
+char *asctime(const struct tm *tm) {
+    return asctime_r(tm, _asctime_buf);
+}
+
+char *ctime_r(const time_t *timer, char *buf) {
+    if (!timer) return (void*)0;
+    struct tm result;
+    struct tm *tm = localtime_r(timer, &result);
+    if (!tm) return (void*)0;
+    return asctime_r(tm, buf);
+}
+
+char *ctime(const time_t *timer) {
+    return ctime_r(timer, _asctime_buf);
+}
+
 int gettimeofday(struct timeval *tv, struct timezone *tz) {
     if (tv) {
         unsigned long ticks = (unsigned long)_syscall(SYS_UPTIME, 0, 0, 0, 0, 0);

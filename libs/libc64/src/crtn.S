@@ -13,3 +13,6 @@
 .section .fini
     popq %rbp
     ret
+
+/* Mark as not needing executable stack. */
+.section .note.GNU-stack,"",@progbits

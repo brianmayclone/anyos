@@ -16,8 +16,16 @@ struct passwd {
     gid_t pw_gid;
 };
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct passwd *getpwuid(uid_t uid);
 struct passwd *getpwnam(const char *name);
 int getpwuid_r(uid_t uid, struct passwd *pwd, char *buf, size_t buflen, struct passwd **result);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

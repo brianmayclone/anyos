@@ -1,0 +1,14 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * <ostream> — Forwards to <iostream> which defines ostream.
+ */
+
+#ifndef _LIBCXX_OSTREAM
+#define _LIBCXX_OSTREAM
+
+#include <iostream>
+#include <exception>
+
+#endif

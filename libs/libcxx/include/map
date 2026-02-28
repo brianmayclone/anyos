@@ -22,7 +22,10 @@ namespace detail {
 
 /* ── Red-Black tree node ───────────────────────────────────────────── */
 
+#ifndef _LIBCXX_RB_COLOR_DEFINED
+#define _LIBCXX_RB_COLOR_DEFINED
 enum rb_color : unsigned char { RED, BLACK };
+#endif
 
 template <class K, class V>
 struct rb_node {
@@ -527,10 +530,7 @@ public:
     }
 
     V& operator[](K&& key) {
-        auto [node, inserted] = _tree.emplace_unique(
-            piecewise_construct_t{},
-            std::move(key), V());
-        /* Simplified: just use insert_unique with moved key */
+        auto [node, inserted] = _tree.insert_unique(value_type(std::move(key), V()));
         return node->kv.second;
     }
 
@@ -608,11 +608,6 @@ public:
 
     void swap(map& other) noexcept { _tree.swap(other._tree); }
 };
-
-/* ── piecewise_construct support ───────────────────────────────────── */
-
-struct piecewise_construct_t { explicit piecewise_construct_t() = default; };
-inline constexpr piecewise_construct_t piecewise_construct{};
 
 /* ── map comparison ────────────────────────────────────────────────── */
 

@@ -14,6 +14,7 @@
 #include <new>
 #include <type_traits>
 #include <utility>
+#include <iterator>
 
 namespace std {
 
@@ -410,15 +411,22 @@ FwdIt uninitialized_move(InIt first, InIt last, FwdIt dest) {
     return dest;
 }
 
-template <class FwdIt>
-void destroy(FwdIt first, FwdIt last) {
-    for (; first != last; ++first)
-        first->~typename iterator_traits<FwdIt>::value_type();
-}
-
 template <class T>
 void destroy_at(T* p) {
     p->~T();
+}
+
+template <class FwdIt>
+void destroy(FwdIt first, FwdIt last) {
+    for (; first != last; ++first)
+        destroy_at(addressof(*first));
+}
+
+/* ── construct_at (C++20) ──────────────────────────────────────────── */
+
+template <class T, class... Args>
+constexpr T* construct_at(T* p, Args&&... args) {
+    return ::new (static_cast<void*>(p)) T(static_cast<Args&&>(args)...);
 }
 
 } // namespace std

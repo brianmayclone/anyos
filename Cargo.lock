@@ -75,6 +75,7 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "dynlink",
+ "libhttp_client",
  "libzip_client",
 ]
 
@@ -560,6 +561,14 @@ dependencies = [
 [[package]]
 name = "libheap"
 version = "0.1.0"
+
+[[package]]
+name = "libhttp_client"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+]
 
 [[package]]
 name = "libimage_client"

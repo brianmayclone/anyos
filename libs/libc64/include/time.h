@@ -33,6 +33,10 @@ struct tm {
     int tm_isdst;
 };
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 time_t time(time_t *tloc);
 clock_t clock(void);
 time_t mktime(struct tm *tm);
@@ -43,5 +47,28 @@ size_t strftime(char *s, size_t max, const char *format, const struct tm *tm);
 int nanosleep(const struct timespec *req, struct timespec *rem);
 struct tm *gmtime_r(const time_t *timer, struct tm *result);
 struct tm *localtime_r(const time_t *timer, struct tm *result);
+time_t timegm(struct tm *tm);
+char *ctime(const time_t *timer);
+char *ctime_r(const time_t *timer, char *buf);
+char *asctime(const struct tm *tm);
+char *asctime_r(const struct tm *tm, char *buf);
+
+/* Clock IDs for clock_gettime */
+#define CLOCK_REALTIME  0
+#define CLOCK_MONOTONIC 1
+#define CLOCK_MONOTONIC_COARSE CLOCK_MONOTONIC
+#define CLOCK_REALTIME_COARSE  CLOCK_REALTIME
+
+typedef int clockid_t;
+
+int clock_gettime(clockid_t clk_id, struct timespec *tp);
+
+/* Timezone names */
+extern char *tzname[2];
+void tzset(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

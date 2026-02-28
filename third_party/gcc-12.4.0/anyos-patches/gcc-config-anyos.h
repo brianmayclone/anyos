@@ -24,14 +24,14 @@
 #undef  LINK_SPEC
 #define LINK_SPEC "-static"
 
-/* Libraries to link: libcxx (C++ stdlib), libc++abi (C++ ABI/exceptions),
-   libunwind (DWARF stack unwinder), libc64 (C library), libgcc (compiler rt). */
+/* Libraries: libc64 (C library) + libgcc (compiler runtime).
+   C++ support can be added later with -lstdc++ override. */
 #undef  LIB_SPEC
-#define LIB_SPEC "-lcxx -lc++abi -lunwind -lc64 -lgcc"
+#define LIB_SPEC "-lc64 -lgcc"
 
-/* C-only programs don't need C++ libs. */
-#undef  LIB_SPEC
-#define LIB_SPEC "%{!lstdc++:-lc64 -lgcc} %{lstdc++:-lcxx -lc++abi -lunwind -lc64 -lgcc}"
+/* Suppress automatic -lm — math functions live in libc64. */
+#undef  MATH_LIBRARY
+#define MATH_LIBRARY ""
 
 /* Startup files provided by libc64. */
 #undef  STARTFILE_SPEC

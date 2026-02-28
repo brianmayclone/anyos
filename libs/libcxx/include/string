@@ -18,6 +18,7 @@
 #include <new>
 #include <string_view>
 #include <functional>
+#include <type_traits>
 
 namespace std {
 
@@ -154,7 +155,7 @@ public:
         other._set_short(0);
     }
 
-    string(string_view sv) {
+    explicit string(string_view sv) {
         size_type len = sv.size();
         const char* src = sv.data();
         if (len <= SSO_CAP) {
@@ -163,6 +164,23 @@ public:
         } else {
             char* p = _alloc(len);
             std::memcpy(p, src, len);
+            p[len] = '\0';
+            _set_long(p, len, len);
+        }
+    }
+
+    template <class InputIt>
+    string(InputIt first, InputIt last) {
+        size_type len = 0;
+        for (auto it = first; it != last; ++it) ++len;
+        if (len <= SSO_CAP) {
+            size_type i = 0;
+            for (auto it = first; it != last; ++it) _short.buf[i++] = *it;
+            _set_short(len);
+        } else {
+            char* p = _alloc(len);
+            size_type i = 0;
+            for (auto it = first; it != last; ++it) p[i++] = *it;
             p[len] = '\0';
             _set_long(p, len, len);
         }
@@ -210,6 +228,23 @@ public:
     string& operator=(char ch) {
         clear();
         push_back(ch);
+        return *this;
+    }
+
+    /* ── Assign ─────────────────────────────────────────────────────── */
+
+    string& assign(const char* s, size_type count) {
+        *this = string(s, count);
+        return *this;
+    }
+
+    string& assign(size_type count, char ch) {
+        *this = string(count, ch);
+        return *this;
+    }
+
+    string& assign(const string& other) {
+        *this = other;
         return *this;
     }
 
@@ -513,6 +548,7 @@ inline bool operator==(const char* a, const string& b) { return b.compare(a) == 
 inline bool operator!=(const string& a, const char* b) { return a.compare(b) != 0; }
 inline bool operator!=(const char* a, const string& b) { return b.compare(a) != 0; }
 
+
 /* ── Concatenation ─────────────────────────────────────────────────── */
 
 inline string operator+(const string& a, const string& b) {
@@ -603,6 +639,138 @@ template <> struct hash<string> {
         return hash<string_view>{}(string_view(s));
     }
 };
+
+/* ── basic_string template (minimal, for library compatibility) ────── */
+
+template <class T>
+struct allocator {
+    using value_type = T;
+    using size_type = size_t;
+    using difference_type = long;
+    using pointer = T*;
+    using const_pointer = const T*;
+    using reference = T&;
+    using const_reference = const T&;
+
+    constexpr allocator() noexcept = default;
+    template <class U> constexpr allocator(const allocator<U>&) noexcept {}
+
+    T* allocate(size_t n) { return static_cast<T*>(malloc(n * sizeof(T))); }
+    void deallocate(T* p, size_t) { free(p); }
+};
+
+namespace _alloc_detail {
+    template <class A, class = void> struct _get_pointer       { using type = typename A::value_type*; };
+    template <class A> struct _get_pointer<A, void_t<typename A::pointer>> { using type = typename A::pointer; };
+    template <class A, class = void> struct _get_const_pointer { using type = const typename A::value_type*; };
+    template <class A> struct _get_const_pointer<A, void_t<typename A::const_pointer>> { using type = typename A::const_pointer; };
+    template <class A, class = void> struct _get_size_type     { using type = size_t; };
+    template <class A> struct _get_size_type<A, void_t<typename A::size_type>> { using type = typename A::size_type; };
+    template <class A, class = void> struct _get_diff_type     { using type = long; };
+    template <class A> struct _get_diff_type<A, void_t<typename A::difference_type>> { using type = typename A::difference_type; };
+    template <class A, class = void> struct _get_pocma         { using type = false_type; };
+    template <class A> struct _get_pocma<A, void_t<typename A::propagate_on_container_move_assignment>> { using type = typename A::propagate_on_container_move_assignment; };
+    template <class A, class = void> struct _get_pocca         { using type = false_type; };
+    template <class A> struct _get_pocca<A, void_t<typename A::propagate_on_container_copy_assignment>> { using type = typename A::propagate_on_container_copy_assignment; };
+    template <class A, class = void> struct _get_pocs          { using type = false_type; };
+    template <class A> struct _get_pocs<A, void_t<typename A::propagate_on_container_swap>> { using type = typename A::propagate_on_container_swap; };
+    template <class A, class = void> struct _get_is_always_equal { using type = typename is_empty<A>::type; };
+    template <class A> struct _get_is_always_equal<A, void_t<typename A::is_always_equal>> { using type = typename A::is_always_equal; };
+}
+
+template <class Alloc>
+struct allocator_traits {
+    using allocator_type  = Alloc;
+    using value_type      = typename Alloc::value_type;
+    using pointer         = typename _alloc_detail::_get_pointer<Alloc>::type;
+    using const_pointer   = typename _alloc_detail::_get_const_pointer<Alloc>::type;
+    using size_type       = typename _alloc_detail::_get_size_type<Alloc>::type;
+    using difference_type = typename _alloc_detail::_get_diff_type<Alloc>::type;
+    using propagate_on_container_move_assignment = typename _alloc_detail::_get_pocma<Alloc>::type;
+    using propagate_on_container_copy_assignment = typename _alloc_detail::_get_pocca<Alloc>::type;
+    using propagate_on_container_swap            = typename _alloc_detail::_get_pocs<Alloc>::type;
+    using is_always_equal                        = typename _alloc_detail::_get_is_always_equal<Alloc>::type;
+
+    static pointer allocate(Alloc& a, size_type n) { return a.allocate(n); }
+    static void deallocate(Alloc& a, pointer p, size_type n) { a.deallocate(p, n); }
+
+    template <class T, class... Args>
+    static void construct(Alloc&, T* p, Args&&... args) {
+        ::new (static_cast<void*>(p)) T(static_cast<Args&&>(args)...);
+    }
+
+    template <class T>
+    static void destroy(Alloc&, T* p) { p->~T(); }
+
+    static size_type max_size(const Alloc&) noexcept {
+        return size_type(-1) / sizeof(value_type);
+    }
+};
+
+struct char_traits_char {
+    using char_type   = char;
+    using int_type    = int;
+    using pos_type    = long;
+    using off_type    = long;
+
+    static constexpr size_t length(const char* s) { return __builtin_strlen(s); }
+    static constexpr int compare(const char* a, const char* b, size_t n) { return __builtin_memcmp(a, b, n); }
+    static char* copy(char* dst, const char* src, size_t n) { return static_cast<char*>(__builtin_memcpy(dst, src, n)); }
+    static char* move(char* dst, const char* src, size_t n) { return static_cast<char*>(__builtin_memmove(dst, src, n)); }
+    static char* assign(char* s, size_t n, char c) { return static_cast<char*>(__builtin_memset(s, c, n)); }
+    static constexpr void assign(char& a, const char& b) noexcept { a = b; }
+    static constexpr bool eq(char a, char b) noexcept { return a == b; }
+    static constexpr bool lt(char a, char b) noexcept { return a < b; }
+    static constexpr int_type to_int_type(char c) noexcept { return static_cast<unsigned char>(c); }
+    static constexpr char to_char_type(int_type c) noexcept { return static_cast<char>(c); }
+    static constexpr int_type eof() noexcept { return -1; }
+    static constexpr bool eq_int_type(int_type a, int_type b) noexcept { return a == b; }
+    static constexpr int_type not_eof(int_type c) noexcept { return c != eof() ? c : 0; }
+};
+
+template <class CharT> struct char_traits;
+template <> struct char_traits<char> : char_traits_char {};
+
+template <class CharT, class Traits = char_traits<CharT>, class Allocator = allocator<CharT>>
+class basic_string {
+    /* Minimal template for library compatibility — only char actually works */
+    CharT* _ptr = nullptr;
+    size_t _len = 0;
+public:
+    using traits_type = Traits;
+    using allocator_type = Allocator;
+    using value_type = CharT;
+    using size_type = size_t;
+    static constexpr size_type npos = size_type(-1);
+
+    basic_string() = default;
+    basic_string(const CharT* s, size_t n) : _ptr(nullptr), _len(n) {
+        if (n) {
+            _ptr = static_cast<CharT*>(std::malloc(n * sizeof(CharT)));
+            __builtin_memcpy(_ptr, s, n * sizeof(CharT));
+        }
+    }
+    ~basic_string() { std::free(_ptr); }
+
+    const CharT* data() const noexcept { return _ptr; }
+    const CharT* c_str() const noexcept { return _ptr; }
+    size_t size() const noexcept { return _len; }
+    size_t length() const noexcept { return _len; }
+    bool empty() const noexcept { return _len == 0; }
+    CharT operator[](size_t i) const { return _ptr[i]; }
+};
+
+/* Specialize for char to wrap our real string */
+template <>
+class basic_string<char, char_traits<char>, allocator<char>> : public string {
+public:
+    using string::string;
+    using string::operator=;
+    using traits_type = char_traits<char>;
+    using allocator_type = allocator<char>;
+};
+
+using wstring = basic_string<wchar_t>;
 
 } // namespace std
 

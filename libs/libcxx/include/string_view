@@ -260,6 +260,14 @@ inline namespace string_view_literals {
 }
 }
 
+/* ── basic_string_view template (for library compatibility) ────────── */
+
+template <class CharT, class Traits = void>
+class basic_string_view : public string_view {
+public:
+    using string_view::string_view;
+};
+
 } // namespace std
 
 #endif

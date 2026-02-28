@@ -16,10 +16,16 @@
 #include <getopt.h>
 #include <stdio.h>
 
-char *optarg = NULL;
-int optind = 1, opterr = 1, optopt = '?';
+/* Weak symbols: libiberty (GCC) provides its own getopt/fnmatch.
+   Marking ours weak lets libiberty's versions win at link time while
+   keeping these available for programs that don't link libiberty. */
+__attribute__((weak)) char *optarg = NULL;
+__attribute__((weak)) int optind = 1;
+__attribute__((weak)) int opterr = 1;
+__attribute__((weak)) int optopt = '?';
 static int _optpos = 0;
 
+__attribute__((weak))
 int getopt(int argc, char * const argv[], const char *optstring) {
     if (optind >= argc || !argv[optind]) return -1;
     const char *arg = argv[optind];
@@ -82,6 +88,7 @@ int getopt(int argc, char * const argv[], const char *optstring) {
     return c;
 }
 
+__attribute__((weak))
 int getopt_long(int argc, char * const argv[], const char *optstring,
                 const struct option *longopts, int *longindex) {
     if (optind >= argc || !argv[optind]) return -1;
@@ -592,7 +599,7 @@ int execve(const char *path, char *const argv[], char *const envp[]) {
 }
 
 /* Resource limits — stubs */
-struct rlimit { unsigned long rlim_cur; unsigned long rlim_max; };
+#include <sys/resource.h>
 int getrlimit(int resource, struct rlimit *rlim) {
     (void)resource;
     if (rlim) { rlim->rlim_cur = ~0UL; rlim->rlim_max = ~0UL; }
@@ -858,6 +865,7 @@ char *tmpnam(char *s) {
 }
 
 /* ── fnmatch — shell-style filename pattern matching ── */
+__attribute__((weak))
 int fnmatch(const char *pattern, const char *string, int flags) {
     (void)flags;
     const char *p = pattern, *s = string;
