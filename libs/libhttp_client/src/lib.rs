@@ -20,11 +20,17 @@ use dynlink::{dl_open, dl_sym, DlHandle};
 
 // ── Function pointer cache ──────────────────────────────────────────────────
 
+/// Progress callback type: `(received_bytes, total_bytes, userdata)`.
+/// `total_bytes` is 0 if the server did not provide Content-Length.
+pub type ProgressCallback = extern "C" fn(u32, u32, u64);
+
 struct LibHttp {
     _handle: DlHandle,
     init_fn: extern "C" fn() -> u32,
     get: extern "C" fn(*const u8, u32, *mut u8, u32) -> u32,
     download: extern "C" fn(*const u8, u32, *const u8, u32) -> u32,
+    download_progress: extern "C" fn(*const u8, u32, *const u8, u32,
+        Option<ProgressCallback>, u64) -> u32,
     post: extern "C" fn(*const u8, u32, *const u8, u32, *const u8, u32, *mut u8, u32) -> u32,
     last_status: extern "C" fn() -> u32,
     last_error: extern "C" fn() -> u32,
@@ -56,6 +62,7 @@ pub fn init() -> bool {
             init_fn: resolve(&handle, "libhttp_init"),
             get: resolve(&handle, "libhttp_get"),
             download: resolve(&handle, "libhttp_download"),
+            download_progress: resolve(&handle, "libhttp_download_progress"),
             post: resolve(&handle, "libhttp_post"),
             last_status: resolve(&handle, "libhttp_last_status"),
             last_error: resolve(&handle, "libhttp_last_error"),
@@ -114,6 +121,25 @@ pub fn download(url: &str, path: &str) -> bool {
     let result = (lib().download)(
         url.as_ptr(), url.len() as u32,
         path.as_ptr(), path.len() as u32,
+    );
+    result == 0
+}
+
+/// Download a URL to a file with progress reporting.
+///
+/// The `callback` is called after each received chunk with
+/// `(received_bytes, total_bytes, userdata)`.
+/// Returns true on success, false on error.
+pub fn download_progress(
+    url: &str,
+    path: &str,
+    callback: ProgressCallback,
+    userdata: u64,
+) -> bool {
+    let result = (lib().download_progress)(
+        url.as_ptr(), url.len() as u32,
+        path.as_ptr(), path.len() as u32,
+        Some(callback), userdata,
     );
     result == 0
 }

@@ -164,6 +164,30 @@ pub extern "C" fn libhttp_post(
     }
 }
 
+/// Download a URL directly to a file path with progress reporting.
+///
+/// The `callback` is called after each received chunk with
+/// `(received_bytes, total_bytes, userdata)`. `total_bytes` is 0 if
+/// the server did not provide a Content-Length header.
+///
+/// Returns: 0 on success, `u32::MAX` on error.
+#[no_mangle]
+pub extern "C" fn libhttp_download_progress(
+    url_ptr: *const u8, url_len: u32,
+    path_ptr: *const u8, path_len: u32,
+    callback: Option<extern "C" fn(u32, u32, u64)>,
+    userdata: u64,
+) -> u32 {
+    let url_str = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(url_ptr, url_len as usize))
+    };
+    let path = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(path_ptr, path_len as usize))
+    };
+
+    if http::download_to_file(url_str, path, callback, userdata) { 0 } else { u32::MAX }
+}
+
 /// Returns the HTTP status code of the last request (e.g. 200, 404).
 #[no_mangle]
 pub extern "C" fn libhttp_last_status() -> u32 {

@@ -3,6 +3,7 @@ EXPORTS
     libhttp_init
     libhttp_get
     libhttp_download
+    libhttp_download_progress
     libhttp_post
     libhttp_last_status
     libhttp_last_error

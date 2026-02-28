@@ -10,6 +10,8 @@ use anyos_std::fs;
 
 const INDEX_PATH: &str = "/System/etc/apkg/index.json";
 const INSTALLED_PATH: &str = "/System/etc/apkg/installed.json";
+const MIRRORS_PATH: &str = "/System/etc/apkg/mirrors.conf";
+const CACHE_DIR: &str = "/System/etc/apkg/cache";
 
 // ─── Data Structures ───────────────────────────────────────────────
 
@@ -24,6 +26,7 @@ pub struct PackageInfo {
     pub size: u64,
     pub size_installed: u64,
     pub depends: Vec<String>,
+    pub filename: String,
 }
 
 /// An installed package record.
@@ -75,10 +78,11 @@ pub fn load_index() -> Vec<PackageInfo> {
         let size = pkg["size"].as_u64().unwrap_or(0);
         let size_installed = pkg["size_installed"].as_u64().unwrap_or(0);
         let depends = parse_string_array(&pkg["depends"]);
+        let filename: String = pkg["filename"].as_str().unwrap_or("").into();
 
         out.push(PackageInfo {
             name, version, description, category, pkg_type,
-            size, size_installed, depends,
+            size, size_installed, depends, filename,
         });
     }
     out
@@ -195,6 +199,65 @@ fn run_apkg(args: &str) -> u32 {
         return 1;
     }
     anyos_std::process::waitpid(pid)
+}
+
+// ─── Download with Progress ────────────────────────────────────────
+
+/// Download a package to apkg's cache directory with progress reporting.
+/// The `callback` is called with `(received, total, userdata)` per chunk.
+/// Returns true if the file was downloaded (or already cached).
+pub fn download_package(
+    pkg: &PackageInfo,
+    callback: libhttp_client::ProgressCallback,
+    userdata: u64,
+) -> bool {
+    if pkg.filename.is_empty() {
+        return false;
+    }
+
+    let cache_path = alloc::format!("{}/{}", CACHE_DIR, pkg.filename);
+
+    // Skip if already cached
+    let mut stat_buf = [0u32; 7];
+    if fs::stat(&cache_path, &mut stat_buf) == 0 {
+        return true;
+    }
+
+    // Ensure cache directory exists
+    fs::mkdir(CACHE_DIR);
+
+    // Read mirrors
+    let mirrors = read_mirrors();
+    if mirrors.is_empty() {
+        return false;
+    }
+
+    let arch = "x86_64";
+    for mirror in &mirrors {
+        let base = mirror.trim_end_matches('/');
+        let url = alloc::format!("{}/packages/{}/{}", base, arch, pkg.filename);
+        if libhttp_client::download_progress(&url, &cache_path, callback, userdata) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Read mirrors from mirrors.conf.
+fn read_mirrors() -> Vec<String> {
+    let mut mirrors = Vec::new();
+    let content = match fs::read_to_string(MIRRORS_PATH) {
+        Ok(s) => s,
+        Err(_) => return mirrors,
+    };
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        mirrors.push(String::from(line));
+    }
+    mirrors
 }
 
 // ─── Utilities ─────────────────────────────────────────────────────

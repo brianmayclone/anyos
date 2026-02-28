@@ -46,6 +46,9 @@ struct AppState {
 
     // Detail view state
     detail_pkg_index: Option<usize>,
+
+    // Download progress bar (in status bar area)
+    progress_bar: anyui::ProgressBar,
 }
 
 static mut APP: Option<AppState> = None;
@@ -128,6 +131,13 @@ fn rebuild_cards() {
 
 // ─── Action Handlers ───────────────────────────────────────────────
 
+/// Progress callback for Store downloads — updates the global ProgressBar.
+extern "C" fn download_progress_cb(received: u32, total: u32, _userdata: u64) {
+    if total == 0 { return; }
+    let pct = ((received as u64 * 100) / total as u64).min(100) as u32;
+    app().progress_bar.set_state(pct);
+}
+
 /// Handle install/update action from a card button.
 fn handle_action(pkg_idx: usize) {
     let state = app();
@@ -137,6 +147,26 @@ fn handle_action(pkg_idx: usize) {
 
     match status {
         PkgStatus::Available => {
+            // Phase 1: Download with progress bar
+            state.status_label.set_text(&alloc::format!("  Downloading {}...", name));
+            state.progress_bar.set_state(0);
+            state.progress_bar.set_visible(true);
+
+            let pkg_clone = pkg.clone();
+            let ok = apkg::download_package(
+                &pkg_clone,
+                download_progress_cb,
+                0,
+            );
+
+            state.progress_bar.set_visible(false);
+
+            if !ok {
+                state.status_label.set_text(&alloc::format!("  Download failed for {}", name));
+                return;
+            }
+
+            // Phase 2: Install (apkg finds cached file, extracts only)
             state.status_label.set_text(&alloc::format!("  Installing {}...", name));
             let code = apkg::install_package(&name);
             if code == 0 {
@@ -146,6 +176,26 @@ fn handle_action(pkg_idx: usize) {
             }
         }
         PkgStatus::Updatable => {
+            // Phase 1: Download with progress bar
+            state.status_label.set_text(&alloc::format!("  Downloading {}...", name));
+            state.progress_bar.set_state(0);
+            state.progress_bar.set_visible(true);
+
+            let pkg_clone = pkg.clone();
+            let ok = apkg::download_package(
+                &pkg_clone,
+                download_progress_cb,
+                0,
+            );
+
+            state.progress_bar.set_visible(false);
+
+            if !ok {
+                state.status_label.set_text(&alloc::format!("  Download failed for {}", name));
+                return;
+            }
+
+            // Phase 2: Upgrade (apkg finds cached file, extracts only)
             state.status_label.set_text(&alloc::format!("  Updating {}...", name));
             let code = apkg::upgrade_package(&name);
             if code == 0 {
@@ -265,6 +315,10 @@ fn main() {
         anyos_std::println!("[App Store] Failed to init libanyui");
         return;
     }
+    if !libhttp_client::init() {
+        anyos_std::println!("[App Store] Failed to init libhttp");
+        return;
+    }
 
     let tc = anyui::theme::colors();
 
@@ -330,6 +384,13 @@ fn main() {
     status_label.set_font_size(11);
     win.add(&status_label);
 
+    // Download progress bar (bottom, above status bar)
+    let progress_bar = anyui::ProgressBar::new(0);
+    progress_bar.set_dock(anyui::DOCK_BOTTOM);
+    progress_bar.set_size(WIN_W, 4);
+    progress_bar.set_visible(false);
+    win.add(&progress_bar);
+
     // ═══════════════════════════════════════════════════════════════
     //  Content area (DOCK_FILL)
     // ═══════════════════════════════════════════════════════════════
@@ -370,6 +431,7 @@ fn main() {
             status_label,
             search_field,
             detail_pkg_index: None,
+            progress_bar,
         });
     }
 

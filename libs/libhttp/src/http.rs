@@ -41,6 +41,11 @@ const RECV_BUF_SIZE: usize = 16384;
 static mut LAST_STATUS: u32 = 0;
 static mut LAST_ERROR: u32 = 0;
 
+/// Progress callback set by `download_to_file()` for use by body readers.
+static mut PROGRESS_CB: Option<extern "C" fn(u32, u32, u64)> = None;
+/// Userdata passed to the progress callback.
+static mut PROGRESS_UD: u64 = 0;
+
 /// Set the last HTTP status code.
 pub(crate) fn set_status(status: u32) {
     unsafe { LAST_STATUS = status; }
@@ -93,6 +98,21 @@ pub fn get(url_str: &str) -> Option<Vec<u8>> {
 /// Uses raw mode (no Accept-Encoding, no decompression) so the file is
 /// stored with exactly the bytes the server sends.
 pub fn download(url_str: &str, path: &str) -> bool {
+    download_to_file(url_str, path, None, 0)
+}
+
+/// Download a URL to a file with an optional progress callback.
+/// The callback receives `(received_bytes, total_bytes, userdata)` after each chunk.
+/// `total_bytes` is 0 if the server did not send a Content-Length header.
+///
+/// Uses the same proven receive path as `get()` (accumulate in Vec),
+/// with progress callbacks fired during body reception.
+pub fn download_to_file(
+    url_str: &str,
+    path: &str,
+    callback: Option<extern "C" fn(u32, u32, u64)>,
+    userdata: u64,
+) -> bool {
     set_status(0);
     set_error(ERR_NONE);
 
@@ -104,7 +124,20 @@ pub fn download(url_str: &str, path: &str) -> bool {
         }
     };
 
-    match fetch_get(&url, true) {
+    // Store callback in global state for use by read_body/read_chunked_body
+    unsafe {
+        PROGRESS_CB = callback;
+        PROGRESS_UD = userdata;
+    }
+
+    let result = fetch_get(&url, true);
+
+    // Clear callback
+    unsafe {
+        PROGRESS_CB = None;
+    }
+
+    match result {
         Ok((status, body)) => {
             set_status(status as u32);
             if status >= 400 {
@@ -415,6 +448,15 @@ fn read_body(sock: u32, initial: &[u8], content_length: Option<u32>, is_https: b
     let mut body: Vec<u8> = Vec::with_capacity(capacity);
     body.extend_from_slice(initial);
 
+    let total = content_length.unwrap_or(0);
+
+    // Fire progress callback for initial data
+    unsafe {
+        if let Some(cb) = PROGRESS_CB {
+            cb(body.len() as u32, total, PROGRESS_UD);
+        }
+    }
+
     let mut recv_buf = [0u8; RECV_BUF_SIZE];
     loop {
         if let Some(cl) = content_length {
@@ -423,6 +465,12 @@ fn read_body(sock: u32, initial: &[u8], content_length: Option<u32>, is_https: b
         let n = recv_some(sock, &mut recv_buf, is_https);
         if n == 0 { break; }
         body.extend_from_slice(&recv_buf[..n]);
+
+        unsafe {
+            if let Some(cb) = PROGRESS_CB {
+                cb(body.len() as u32, total, PROGRESS_UD);
+            }
+        }
     }
     body
 }
@@ -466,6 +514,13 @@ fn read_chunked_body(sock: u32, initial: &[u8], is_https: bool) -> Vec<u8> {
         let available = (buf.len() - cursor).min(chunk_size);
         body.extend_from_slice(&buf[cursor..cursor + available]);
         cursor += available;
+
+        // Fire progress callback after each chunk
+        unsafe {
+            if let Some(cb) = PROGRESS_CB {
+                cb(body.len() as u32, 0, PROGRESS_UD);
+            }
+        }
 
         // Skip trailing CRLF
         while buf.len() - cursor < 2 {
@@ -577,6 +632,17 @@ fn contains_ignore_case(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 // ── File I/O helpers ────────────────────────────────────────────────────────
+
+/// Write all bytes to an open file descriptor. Returns false on error.
+fn write_all(fd: u32, data: &[u8]) -> bool {
+    let mut written = 0usize;
+    while written < data.len() {
+        let n = syscall::write(fd, &data[written..]);
+        if n == u32::MAX { return false; }
+        written += n as usize;
+    }
+    true
+}
 
 /// Write data to a file path.
 fn write_to_file(path: &str, data: &[u8]) -> bool {
