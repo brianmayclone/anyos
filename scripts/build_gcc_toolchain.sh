@@ -731,6 +731,15 @@ ac_cv_func_qsort=yes
 ac_cv_func_bsearch=yes
 ac_cv_func_strerror=yes
 ac_cv_func_strsignal=yes
+ac_cv_func_strstr=yes
+ac_cv_func_stpcpy=yes
+ac_cv_func_stpncpy=yes
+ac_cv_func_strcasecmp=yes
+ac_cv_func_strncasecmp=yes
+ac_cv_func_strndup=yes
+ac_cv_func_strnlen=yes
+ac_cv_func_memchr=yes
+ac_cv_func_mempcpy=yes
 ac_cv_func_snprintf=yes
 ac_cv_func_vsnprintf=yes
 ac_cv_func_vfprintf=yes
@@ -818,9 +827,11 @@ ac_cv_type_signal=void
 SITE_EOF
 echo "  created CONFIG_SITE at $ANYOS_CONFIG_SITE"
 
-# -include: Force-include basic C headers that many source files assume are
-# transitively pulled in (which they are on hosted systems but not on anyOS).
-HOST_CFLAGS="-O2 -ffreestanding -isystem $CROSS_INC -include limits.h -include string.h -include stdint.h -include stdlib.h"
+# With CONFIG_SITE properly setting HAVE_* macros, the conditional includes in
+# source files (#ifdef HAVE_LIMITS_H / #include <limits.h>) work correctly.
+# We do NOT use -include flags here because they conflict with libiberty's own
+# replacement function signatures.
+HOST_CFLAGS="-O2 -ffreestanding -isystem $CROSS_INC"
 HOST_LDFLAGS="-L$CROSS_LIB"
 export CONFIG_SITE="$ANYOS_CONFIG_SITE"
 
