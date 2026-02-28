@@ -32,6 +32,7 @@ SYSROOT=""
 JOBS=""
 DO_CLEAN=false
 CLEAN_ALL=false
+DO_STAGE2=false
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -49,6 +50,7 @@ while [[ $# -gt 0 ]]; do
     --jobs)    JOBS="$2"; shift 2 ;;
     --clean)   DO_CLEAN=true; shift ;;
     --all)     CLEAN_ALL=true; shift ;;
+    --stage2)  DO_STAGE2=true; shift ;;
     --help|-h)
       echo "Usage: $0 [--prefix DIR] [--sysroot DIR] [--jobs N]"
       echo "       $0 --clean [--all]"
@@ -57,6 +59,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --prefix DIR    Install cross-compiler to DIR (default: ~/opt/anyos-toolchain)"
       echo "  --sysroot DIR   Copy libgcc.a and CRT files to sysroot"
       echo "  --jobs N        Parallel build jobs (default: auto-detect)"
+      echo "  --stage2        Also build native compiler (runs ON anyOS, requires libc64)"
       echo "  --clean         Remove build directories (keeps downloaded tarballs)"
       echo "  --clean --all   Remove everything: builds, sources, and installed toolchain"
       exit 0
@@ -262,6 +265,34 @@ if [[ ! -f "$GCC_SRC/config.sub" ]]; then
   exit 1
 fi
 
+# Download GCC prerequisites (GMP, MPFR, MPC) into the GCC source tree.
+# This enables in-tree builds so Stage 2 can cross-compile them for anyOS.
+if [[ ! -d "$GCC_SRC/gmp" ]]; then
+  echo "--- Downloading GCC prerequisites (GMP, MPFR, MPC) ---"
+  cd "$GCC_SRC"
+  # Use GCC's built-in script if available, otherwise download manually
+  if [[ -x contrib/download_prerequisites ]]; then
+    contrib/download_prerequisites
+  else
+    GMP_VER="6.2.1"
+    MPFR_VER="4.1.0"
+    MPC_VER="1.2.1"
+    for pkg in "gmp-${GMP_VER}" "mpfr-${MPFR_VER}" "mpc-${MPC_VER}"; do
+      if [[ ! -d "${pkg}" ]]; then
+        download_with_mirrors "${pkg}.tar.xz" \
+          "https://ftpmirror.gnu.org/${pkg%%-*}/${pkg}.tar.xz" \
+          "https://ftp.gnu.org/gnu/${pkg%%-*}/${pkg}.tar.xz"
+        tar xf "${pkg}.tar.xz"
+        rm -f "${pkg}.tar.xz"
+      fi
+    done
+    ln -sf "gmp-${GMP_VER}" gmp
+    ln -sf "mpfr-${MPFR_VER}" mpfr
+    ln -sf "mpc-${MPC_VER}" mpc
+  fi
+  cd "$SRC_DIR"
+fi
+
 echo "  binutils source: $BINUTILS_SRC"
 echo "  GCC source:      $GCC_SRC"
 
@@ -283,10 +314,10 @@ patch_config_sub() {
   # We need to find the line number of the *) that precedes "OS.*not recognized"
   # and insert our anyos case BEFORE it.
   local err_line
-  err_line=$(grep -n "Invalid configuration.*OS.*not recognized" "$file" | head -1 | cut -d: -f1)
+  err_line=$(grep -n "Invalid configuration.*OS.*not recognized" "$file" | head -1 | cut -d: -f1 || true)
   if [[ -z "$err_line" ]]; then
-    echo "  WARNING: could not find OS validation in $file"
-    return 1
+    # Not all config.sub variants use this pattern (e.g., GMP/MPFR/MPC).
+    return 0
   fi
   # The *) case pattern is 1 line before the echo
   local insert_line=$((err_line - 1))
@@ -460,18 +491,20 @@ else
     --disable-hosted-libstdcxx \
     --disable-libstdcxx-pch \
     --disable-multilib \
+    --disable-gcov \
     --without-headers \
     --with-newlib \
     --with-system-zlib \
     $SYSROOT_FLAGS \
     $EXTRA_GCC_CONFIGURE \
+    CFLAGS_FOR_TARGET="-g -O2 -Dinhibit_libc" \
     MAKEINFO=true
 
   # Build compiler first
   make -j"$JOBS" all-gcc MAKEINFO=true
 
-  # Build libgcc with inhibit_libc to skip gcov (needs libc features we don't have)
-  make -j"$JOBS" all-target-libgcc MAKEINFO=true CFLAGS_FOR_TARGET="-g -O2 -Dinhibit_libc"
+  # Build libgcc (inhibit_libc set in configure to skip gcov/libc-dependent code)
+  make -j"$JOBS" all-target-libgcc MAKEINFO=true
 
   make install-gcc install-target-libgcc MAKEINFO=true
   echo "--- GCC installed ---"
@@ -521,6 +554,10 @@ if [[ -f "$LIBGCC_A" ]]; then
   echo "libgcc.a: $(wc -c < "$LIBGCC_A") bytes"
 fi
 
+echo ""
+echo "Add to your shell profile:"
+echo "  export PATH=\"$PREFIX/bin:\$PATH\""
+
 # =============================================================================
 # STAGE 2: Canadian Cross — Build GCC to run ON anyOS
 # =============================================================================
@@ -530,6 +567,13 @@ fi
 # Build triplet:  x86_64-apple-darwin (macOS) or x86_64-pc-linux-gnu
 # Host triplet:   x86_64-anyos        (the OS that will RUN the compiler)
 # Target triplet: x86_64-anyos        (the OS the compiler produces code FOR)
+
+if ! $DO_STAGE2; then
+  echo ""
+  echo "Stage 2 (native compiler for anyOS) skipped."
+  echo "Use --stage2 to build a GCC that runs ON anyOS (requires libc64)."
+  exit 0
+fi
 
 NATIVE_PREFIX="/System/Toolchain"
 NATIVE_INSTALL="$BUILD_DIR/native-toolchain"
@@ -543,14 +587,11 @@ LIBCXXABI_LIB_DIR="$PROJECT_DIR/libs/libcxxabi"
 if [[ ! -f "$LIBC64_LIB_DIR/libc64.a" ]]; then
   echo ""
   echo "========================================="
-  echo " Stage 2 skipped — libc64.a not built"
+  echo " Stage 2 requires libc64.a"
   echo "========================================="
   echo ""
-  echo "Build libc64 first (cmake --build build), then re-run this script."
-  echo ""
-  echo "Add to your shell profile:"
-  echo "  export PATH=\"$PREFIX/bin:\$PATH\""
-  exit 0
+  echo "Build libc64 first (cmake --build build), then re-run with --stage2."
+  exit 1
 fi
 
 echo ""
@@ -592,11 +633,28 @@ if [[ -f "$LIBCXXABI_LIB_DIR/libc++abi.a" ]]; then
   cp "$LIBCXXABI_LIB_DIR/include/cxxabi.h" "$CROSS_SYSROOT/Libraries/libcxx/include/"
 fi
 
+# Also install into the cross-compiler's standard search path so the linker
+# finds libraries automatically (configure tests use the cross-compiler).
+CROSS_LIB="$PREFIX/$TARGET/lib"
+mkdir -p "$CROSS_LIB"
+cp "$LIBC64_LIB_DIR/libc64.a" "$CROSS_LIB/"
+"$PREFIX/bin/${TARGET}-ranlib" "$CROSS_LIB/libc64.a"
+cp "$LIBC64_LIB_DIR/obj/crt0.o" "$CROSS_LIB/"
+cp "$LIBC64_LIB_DIR/obj/crti.o" "$CROSS_LIB/"
+cp "$LIBC64_LIB_DIR/obj/crtn.o" "$CROSS_LIB/"
+[[ -f "$LIBGCC_A" ]] && cp "$LIBGCC_A" "$CROSS_LIB/"
+cp "$LIBC64_LIB_DIR/link.ld" "$CROSS_LIB/"
+
+CROSS_INC="$PREFIX/$TARGET/include"
+mkdir -p "$CROSS_INC"
+cp -r "$LIBC64_LIB_DIR/include/"* "$CROSS_INC/"
+
 # Symlink headers into /usr/include (some GCC configure checks look here)
 ln -sf "$CROSS_SYSROOT/Libraries/libc64/include/"* "$CROSS_SYSROOT/usr/include/" 2>/dev/null || true
 ln -sf "$CROSS_SYSROOT/Libraries/libc64/lib/"* "$CROSS_SYSROOT/usr/lib/" 2>/dev/null || true
 
 echo "  Cross-compilation sysroot prepared at $CROSS_SYSROOT"
+echo "  Libraries installed to $CROSS_LIB"
 
 # --- Build native binutils (runs ON anyOS) ---
 
@@ -611,16 +669,18 @@ CXX_FOR_HOST="$PREFIX/bin/${TARGET}-g++"
 AR_FOR_HOST="$PREFIX/bin/${TARGET}-ar"
 RANLIB_FOR_HOST="$PREFIX/bin/${TARGET}-ranlib"
 
-# Configure cross-compiling flags for the host
-HOST_CFLAGS="-O2 -ffreestanding -nostdinc -I$CROSS_SYSROOT/Libraries/libc64/include"
-HOST_LDFLAGS="-nostdlib -static -L$CROSS_SYSROOT/Libraries/libc64/lib -T $CROSS_SYSROOT/Libraries/libc64/lib/link.ld $CROSS_SYSROOT/Libraries/libc64/lib/crt0.o $CROSS_SYSROOT/Libraries/libc64/lib/crti.o"
-HOST_LIBS="-lc64 -lgcc $CROSS_SYSROOT/Libraries/libc64/lib/crtn.o"
+# Let the GCC specs (anyos.h) handle linking — it defines STARTFILE_SPEC,
+# ENDFILE_SPEC, LIB_SPEC, and LINK_SPEC (-static).  We just need -ffreestanding
+# and the sysroot so GCC finds crt0.o/libc64.a via STANDARD_STARTFILE_PREFIX.
+HOST_CFLAGS="-O2 -ffreestanding -isystem $CROSS_INC"
+HOST_LDFLAGS="-L$CROSS_LIB"
 
 "$BINUTILS_SRC/configure" \
   --host="$TARGET" \
   --target="$TARGET" \
   --prefix="$NATIVE_PREFIX" \
   --with-sysroot="$CROSS_SYSROOT" \
+  --with-system-zlib \
   --disable-nls \
   --disable-werror \
   CC="$CC_FOR_HOST" \
@@ -629,9 +689,9 @@ HOST_LIBS="-lc64 -lgcc $CROSS_SYSROOT/Libraries/libc64/lib/crtn.o"
   RANLIB="$RANLIB_FOR_HOST" \
   CFLAGS="$HOST_CFLAGS" \
   LDFLAGS="$HOST_LDFLAGS" \
-  LIBS="$HOST_LIBS"
+  MAKEINFO=true
 
-make -j"$JOBS" || {
+make -j"$JOBS" MAKEINFO=true || {
   echo ""
   echo "WARNING: Native binutils build failed (this may require additional libc64 stubs)."
   echo "Stage 1 cross-compiler is still functional."
@@ -660,6 +720,7 @@ rm -rf "$BUILD_DIR/native-gcc"
 mkdir -p "$BUILD_DIR/native-gcc"
 cd "$BUILD_DIR/native-gcc"
 
+# Use in-tree GMP/MPFR/MPC (don't use Homebrew paths — those are host-only)
 "$GCC_SRC/configure" \
   --host="$TARGET" \
   --target="$TARGET" \
@@ -678,7 +739,9 @@ cd "$BUILD_DIR/native-gcc"
   --disable-libstdcxx-pch \
   --disable-multilib \
   --disable-bootstrap \
+  --disable-gcov \
   --with-newlib \
+  --with-system-zlib \
   CC="$CC_FOR_HOST" \
   CXX="$CXX_FOR_HOST" \
   AR="$AR_FOR_HOST" \
@@ -688,12 +751,12 @@ cd "$BUILD_DIR/native-gcc"
   AR_FOR_TARGET="$AR_FOR_HOST" \
   RANLIB_FOR_TARGET="$RANLIB_FOR_HOST" \
   CFLAGS="$HOST_CFLAGS" \
-  CXXFLAGS="$HOST_CFLAGS -I$CROSS_SYSROOT/Libraries/libcxx/include" \
+  CXXFLAGS="$HOST_CFLAGS" \
   LDFLAGS="$HOST_LDFLAGS" \
-  LIBS="$HOST_LIBS" \
-  $EXTRA_GCC_CONFIGURE
+  CFLAGS_FOR_TARGET="$HOST_CFLAGS" \
+  MAKEINFO=true
 
-make -j"$JOBS" all-gcc || {
+make -j"$JOBS" all-gcc MAKEINFO=true || {
   echo ""
   echo "WARNING: Native GCC build failed (this is expected for initial ports)."
   echo "Stage 1 cross-compiler is still functional."
