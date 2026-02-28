@@ -205,18 +205,6 @@ fn build_preferences_card(panel: &ui::View) {
         ui::set_theme(!e.checked);
         crate::invalidate_all_pages();
     });
-
-    layout::build_separator(&card);
-
-    // Sound toggle (UI only)
-    let sound_row = layout::build_setting_row(&card, "Sound", false);
-    layout::add_toggle_to_row(&sound_row, true);
-
-    layout::build_separator(&card);
-
-    // Notifications toggle (UI only)
-    let notif_row = layout::build_setting_row(&card, "Notifications", false);
-    layout::add_toggle_to_row(&notif_row, true);
 }
 
 // ── Keyboard layout card ────────────────────────────────────────────────────

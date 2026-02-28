@@ -349,6 +349,7 @@ fn build_theme_card(panel: &ui::View) {
         let swatch = ui::Canvas::new(24, 24);
         swatch.set_size(24, 24);
         swatch.set_margin(2, 2, 2, 2);
+        swatch.set_interactive(true);
 
         // Build pixel buffer with optional selection border
         let is_selected = style.name == current_style;
