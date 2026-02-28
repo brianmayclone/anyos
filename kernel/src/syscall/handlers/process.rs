@@ -152,6 +152,16 @@ pub fn sys_sbrk(increment: i32) -> u32 {
         if old_brk < DLIB_REGION_START && new_brk >= DLIB_REGION_START {
             return u32::MAX;
         }
+
+        // Prevent heap from growing into the stack region.
+        // Stack: USER_STACK_TOP (0x0C000000) - ASLR (up to 1 MiB) - 8 MiB.
+        // Minimum stack bottom ≈ 0x0B700000.  Leave a 1 MiB guard gap so that
+        // a large sbrk cannot silently overwrite saved registers / return
+        // addresses on the stack (causes GPF with corrupted RIP).
+        const HEAP_LIMIT: u32 = 0x0B60_0000;
+        if new_brk >= HEAP_LIMIT {
+            return u32::MAX;
+        }
         let old_page_end = (old_brk + page_size - 1) & !(page_size - 1);
         let new_page_end = (new_brk + page_size - 1) & !(page_size - 1);
 

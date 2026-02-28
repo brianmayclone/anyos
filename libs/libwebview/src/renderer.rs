@@ -219,10 +219,13 @@ impl Renderer {
         let w = doc_w.max(1);
         let h = doc_h.max(1);
 
-        // Cap canvas height to avoid excessive memory use (e.g. 900×50000 = 180 MB).
-        // Pages taller than this will have their bottom content clipped in the canvas.
-        const MAX_CANVAS_H: u32 = 16384;
-        let h = h.min(MAX_CANVAS_H);
+        // Cap canvas pixel count to fit within the available heap budget.
+        // The user heap has ~40 MiB between code/BSS and the stack; reserve
+        // headroom for other allocations by limiting the canvas to ~28 MiB
+        // (7 M pixels × 4 bytes).  The cap scales with width so narrow pages
+        // can be taller and wide pages are capped shorter.
+        const MAX_CANVAS_PIXELS: u32 = 7_000_000;
+        let h = h.min(MAX_CANVAS_PIXELS / w.max(1));
 
         // Ensure canvas exists and has correct size.
         self.ensure_canvas(parent, w, h, link_cb, link_cb_ud);

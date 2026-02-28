@@ -736,7 +736,7 @@ pub fn draw_string_buf_clipped(
 // ─── Internal rendering ──────────────────────────────────────────────────
 
 fn draw_glyph_greyscale_buf(
-    buf: *mut u32, sw: u32, _sh: u32,
+    buf: *mut u32, sw: u32, sh: u32,
     x: i32, y: i32, glyph: &CachedGlyph,
     col_a: u32, col_r: u8, col_g: u8, col_b: u8,
     clip_x: i32, clip_y: i32, clip_r: i32, clip_b: i32,
@@ -744,6 +744,7 @@ fn draw_glyph_greyscale_buf(
 ) {
     let bw = glyph.width as i32;
     let bh = glyph.height as i32;
+    let buf_len = sh as usize * sw as usize;
     let lut = if smoothing == 0 { None } else { gamma_lut_for_size(glyph.size) };
 
     for row in 0..bh {
@@ -759,6 +760,7 @@ fn draw_glyph_greyscale_buf(
             if smoothing == 0 {
                 if raw_cov < 128 { continue; }
                 let idx = (py as u32 * sw + px as u32) as usize;
+                if idx >= buf_len { continue; }
                 unsafe {
                     *buf.add(idx) = (col_a << 24) | ((col_r as u32) << 16) | ((col_g as u32) << 8) | col_b as u32;
                 }
@@ -770,6 +772,7 @@ fn draw_glyph_greyscale_buf(
             if alpha == 0 { continue; }
 
             let idx = (py as u32 * sw + px as u32) as usize;
+            if idx >= buf_len { continue; }
             let dst = unsafe { *buf.add(idx) };
             let blended = alpha_blend_pixel(dst, alpha, col_r, col_g, col_b);
             unsafe { *buf.add(idx) = blended; }
@@ -778,7 +781,7 @@ fn draw_glyph_greyscale_buf(
 }
 
 fn draw_glyph_subpixel_buf(
-    buf: *mut u32, sw: u32, _sh: u32,
+    buf: *mut u32, sw: u32, sh: u32,
     x: i32, y: i32, glyph: &CachedGlyph,
     _col_a: u32, col_r: u8, col_g: u8, col_b: u8,
     clip_x: i32, clip_y: i32, clip_r: i32, clip_b: i32,
@@ -786,6 +789,7 @@ fn draw_glyph_subpixel_buf(
     let pixel_w = (glyph.width / 3) as i32;
     let stride = glyph.width as usize;
     let bh = glyph.height as i32;
+    let buf_len = sh as usize * sw as usize;
     let lut = gamma_lut_for_size(glyph.size);
 
     // Fixed-point reciprocal for / 10: (1 << 16) / 10 = 6553.6 → 6554
@@ -828,6 +832,7 @@ fn draw_glyph_subpixel_buf(
             };
 
             let idx = (py as u32 * sw + px as u32) as usize;
+            if idx >= buf_len { continue; }
             let dst = unsafe { *buf.add(idx) };
             let blended = subpixel_blend(dst, r_filt, g_filt, b_filt, col_r, col_g, col_b);
             unsafe { *buf.add(idx) = blended; }
@@ -837,12 +842,13 @@ fn draw_glyph_subpixel_buf(
 
 /// Draw a color (RGBA) bitmap glyph — used for emoji.
 fn draw_glyph_color_buf(
-    buf: *mut u32, sw: u32, _sh: u32,
+    buf: *mut u32, sw: u32, sh: u32,
     x: i32, y: i32, glyph: &CachedGlyph,
     clip_x: i32, clip_y: i32, clip_r: i32, clip_b: i32,
 ) {
     let bw = glyph.width as i32;
     let bh = glyph.height as i32;
+    let buf_len = sh as usize * sw as usize;
 
     for row in 0..bh {
         let py = y + row;
@@ -861,6 +867,7 @@ fn draw_glyph_color_buf(
             if sa == 0 { continue; }
 
             let idx = (py as u32 * sw + px as u32) as usize;
+            if idx >= buf_len { continue; }
             if sa == 255 {
                 unsafe { *buf.add(idx) = 0xFF000000 | (sr << 16) | (sg << 8) | sb; }
             } else {
