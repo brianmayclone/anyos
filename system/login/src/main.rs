@@ -39,9 +39,7 @@ fn main() -> u32 {
         | ui::WIN_FLAG_NO_MAXIMIZE;
     let win = ui::Window::new_with_flags("Login", wx, wy, DIALOG_W, DIALOG_H, flags);
 
-    // Semi-transparent background for blur-behind effect
-    win.set_color(0xD8F0F0F0);
-    ui::set_blur_behind(&win, 8);
+    win.set_color(0xFFF0F0F0);
 
     // ── Logo ──
     let mut y_cursor: i32 = 30;
