@@ -662,6 +662,8 @@ fn process_rx_ring(e1000: &mut E1000) {
 // ──────────────────────────────────────────────
 
 fn e1000_irq_handler(_irq: u8) {
+    let mut has_rx = false;
+
     // Use try_lock to avoid deadlock if we're already holding the lock
     if let Some(mut state) = E1000_STATE.try_lock() {
         if let Some(e1000) = state.as_mut() {
@@ -676,8 +678,16 @@ fn e1000_irq_handler(_irq: u8) {
 
             if icr & ICR_RXT0 != 0 {
                 process_rx_ring(e1000);
+                has_rx = !e1000.rx_queue.is_empty();
             }
         }
+    }
+    // E1000_STATE lock dropped here
+
+    // Process received packets through the network stack (Ethernet → IP → TCP).
+    // This wakes any threads blocked on tcp::recv/accept/connect.
+    if has_rx {
+        crate::net::poll();
     }
 }
 

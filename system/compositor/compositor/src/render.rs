@@ -131,6 +131,7 @@ pub fn render_thread_entry() {
 
             if try_lock() {
                 crate::desktop::theme::refresh_theme_cache();
+                crate::desktop::theme::refresh_scale_cache();
                 let desktop = unsafe { desktop_ref() };
                 // Tick animations + clock before compositing so updated state is
                 // reflected in the same frame — no extra lock round-trip needed.

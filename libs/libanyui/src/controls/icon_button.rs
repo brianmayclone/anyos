@@ -61,18 +61,20 @@ impl Control for IconButton {
     fn kind(&self) -> ControlKind { ControlKind::IconButton }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.text_base.base.x;
-        let y = ay + self.text_base.base.y;
-        let w = self.text_base.base.w;
-        let h = self.text_base.base.h;
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
-        let icon_id = self.text_base.base.state;
-        let custom = self.text_base.base.color;
-        let disabled = self.text_base.base.disabled;
-        let hovered = self.text_base.base.hovered;
-        let focused = self.text_base.base.focused;
-        let corner = crate::theme::BUTTON_CORNER;
+        let icon_id = b.state;
+        let custom = b.color;
+        let disabled = b.disabled;
+        let hovered = b.hovered;
+        let focused = b.focused;
+        let corner = crate::theme::button_corner();
         let has_icon = !self.icon_pixels.is_empty() || icon_id > 0;
+        let h_pad = crate::theme::scale_i32(Self::H_PAD);
+        let icon_text_gap = crate::theme::scale_i32(Self::ICON_TEXT_GAP);
+        let default_icon_sz = crate::theme::scale_i32(16);
 
         // Background: hover highlight, pressed darken, custom color
         if self.pressed && !disabled {
@@ -103,9 +105,9 @@ impl Control for IconButton {
 
         if has_icon && has_text {
             // ── Horizontal layout: [pad | icon | gap | text | pad] ──
-            let iw = if !self.icon_pixels.is_empty() { self.icon_w as i32 } else { 16 };
-            let ih = if !self.icon_pixels.is_empty() { self.icon_h as i32 } else { 16 };
-            let ix = x + Self::H_PAD;
+            let iw = if !self.icon_pixels.is_empty() { self.icon_w as i32 } else { default_icon_sz };
+            let ih = if !self.icon_pixels.is_empty() { self.icon_h as i32 } else { default_icon_sz };
+            let ix = x + h_pad;
             let iy = y + (h as i32 - ih) / 2;
 
             if !self.icon_pixels.is_empty() {
@@ -114,8 +116,8 @@ impl Control for IconButton {
                 crate::icons::draw_icon(surface, ix, iy, icon_id, icon_color);
             }
 
-            let font_size = self.text_base.text_style.font_size;
-            let tx = ix + iw + Self::ICON_TEXT_GAP;
+            let font_size = crate::draw::scale_font(self.text_base.text_style.font_size);
+            let tx = ix + iw + icon_text_gap;
             let ty = y + (h as i32 - font_size as i32) / 2;
             crate::draw::draw_text_sized(surface, tx, ty, text_color, &self.text_base.text, font_size);
         } else if has_icon {
@@ -125,13 +127,13 @@ impl Control for IconButton {
                 let iy = y + (h as i32 - self.icon_h as i32) / 2;
                 blit_alpha(surface, ix, iy, self.icon_w, self.icon_h, &self.icon_pixels);
             } else {
-                let ix = x + (w as i32 - 16) / 2;
-                let iy = y + (h as i32 - 16) / 2;
+                let ix = x + (w as i32 - default_icon_sz) / 2;
+                let iy = y + (h as i32 - default_icon_sz) / 2;
                 crate::icons::draw_icon(surface, ix, iy, icon_id, icon_color);
             }
         } else if has_text {
             // ── Text only: centered ──
-            let font_size = self.text_base.text_style.font_size;
+            let font_size = crate::draw::scale_font(self.text_base.text_style.font_size);
             let (tw, _) = crate::draw::text_size_at(&self.text_base.text, font_size);
             let tx = x + (w as i32 - tw as i32) / 2;
             let ty = y + (h as i32 - font_size as i32) / 2;

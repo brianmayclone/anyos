@@ -21,28 +21,42 @@ pub const WIN_FLAG_NO_MAXIMIZE: u32 = 0x20;
 pub const WIN_FLAG_SHADOW: u32 = 0x40;
 pub const WIN_FLAG_SCALE_CONTENT: u32 = 0x80;
 pub const WIN_FLAG_NO_MOVE: u32 = 0x100;
+/// DPI-aware: the app renders at physical resolution (libanyui windows).
+/// The compositor will not upscale the window's content.
+pub const WIN_FLAG_DPI_AWARE: u32 = 0x200;
 
 // ── Dimensions ─────────────────────────────────────────────────────────────
 
-pub const MENUBAR_HEIGHT: u32 = 24;
-pub const TITLE_BAR_HEIGHT: u32 = 28;
+/// Menubar height in physical pixels (DPI-scaled).
+#[inline(always)]
+pub fn menubar_height() -> u32 { crate::desktop::theme::scale(24) }
 
-/// Minimum padding (px) between traffic-light buttons / window edge and the title text.
-const TITLE_PADDING: i32 = 8;
-/// Right-edge of the last traffic-light button (8 + 2*20 + 12 = 60).
-const TITLE_BUTTONS_RIGHT: i32 = 8 + 2 * TITLE_BTN_SPACING as i32 + TITLE_BTN_SIZE as i32;
+/// Title bar height in physical pixels (DPI-scaled).
+#[inline(always)]
+pub fn title_bar_height() -> u32 { crate::desktop::theme::scale(28) }
+
+/// Minimum padding (px) between traffic-light buttons / window edge and the title text (DPI-scaled).
+#[inline(always)]
+fn title_padding() -> i32 { crate::desktop::theme::scale_i32(8) }
+
+/// Right-edge of the last traffic-light button (DPI-scaled).
+#[inline(always)]
+fn title_buttons_right() -> i32 {
+    crate::desktop::theme::scale_i32(8) + 2 * title_btn_spacing() as i32 + title_btn_size() as i32
+}
 
 /// Truncate a title string so that it fits within `max_width` pixels.
 /// If the full title fits, returns it unchanged.
 /// Otherwise appends "..." and shortens until it fits.
 /// Returns the displayable slice length (byte offset, always on a char boundary).
 fn title_display_len(title: &str, max_width: u32) -> usize {
-    let (tw, _) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, title);
+    let fs = scaled_font_size();
+    let (tw, _) = anyos_std::ui::window::font_measure(FONT_ID, fs, title);
     if tw <= max_width {
         return title.len();
     }
     // Measure ellipsis width once
-    let (ew, _) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, "...");
+    let (ew, _) = anyos_std::ui::window::font_measure(FONT_ID, fs, "...");
     if max_width <= ew {
         return 0;
     }
@@ -50,7 +64,7 @@ fn title_display_len(title: &str, max_width: u32) -> usize {
     // Walk backwards through chars to find the longest prefix that fits
     let mut best = 0usize;
     for (i, _) in title.char_indices() {
-        let (w, _) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, &title[..i]);
+        let (w, _) = anyos_std::ui::window::font_measure(FONT_ID, fs, &title[..i]);
         if w > target {
             break;
         }
@@ -182,7 +196,7 @@ impl WindowInfo {
         if self.is_borderless() {
             self.content_height
         } else {
-            self.content_height + TITLE_BAR_HEIGHT
+            self.content_height + title_bar_height()
         }
     }
 
@@ -193,12 +207,12 @@ impl WindowInfo {
         let fw = self.full_width() as i32;
         let fh = self.full_height() as i32;
 
-        // Resize zones extend 2px outside the window bounds for easier targeting.
+        // Resize zones extend outside the window bounds for easier targeting (DPI-scaled).
         // Check the outer margin first, before the normal bounds check.
-        let outer = 2i32;
+        let outer = crate::desktop::theme::scale_i32(2);
         if self.is_resizable() && !self.maximized && !self.is_borderless() {
             if wx >= -outer && wy >= -outer && wx < fw + outer && wy < fh + outer {
-                let inner = 6i32; // inner border from edge
+                let inner = crate::desktop::theme::scale_i32(6); // inner border from edge
                 let top = wy < inner;
                 let bottom = wy >= fh - inner;
                 let left = wx < inner;
@@ -236,23 +250,26 @@ impl WindowInfo {
         }
 
         // Title bar
-        if wy < TITLE_BAR_HEIGHT as i32 {
-            let btn_y = TITLE_BTN_Y as i32;
-            let btn_r = (TITLE_BTN_SIZE / 2) as i32;
-            if wy >= btn_y && wy < btn_y + TITLE_BTN_SIZE as i32 {
-                // Close button at x=8
-                let cx = 8 + btn_r;
-                if (wx - cx).abs() <= btn_r && (wy - btn_y - btn_r).abs() <= btn_r {
+        let tb_h = title_bar_height() as i32;
+        if wy < tb_h {
+            let btn_y_pos = title_btn_y() as i32;
+            let btn_sz = title_btn_size() as i32;
+            let btn_r = btn_sz / 2;
+            let btn_sp = title_btn_spacing() as i32;
+            if wy >= btn_y_pos && wy < btn_y_pos + btn_sz {
+                // Close button
+                let cx = crate::desktop::theme::scale_i32(8) + btn_r;
+                if (wx - cx).abs() <= btn_r && (wy - btn_y_pos - btn_r).abs() <= btn_r {
                     return HitTest::CloseButton;
                 }
-                // Minimize at x=28
-                let cx = 28 + btn_r;
-                if (wx - cx).abs() <= btn_r && (wy - btn_y - btn_r).abs() <= btn_r {
+                // Minimize button
+                let cx = crate::desktop::theme::scale_i32(8) + btn_sp + btn_r;
+                if (wx - cx).abs() <= btn_r && (wy - btn_y_pos - btn_r).abs() <= btn_r {
                     return HitTest::MinButton;
                 }
-                // Maximize at x=48
-                let cx = 48 + btn_r;
-                if (wx - cx).abs() <= btn_r && (wy - btn_y - btn_r).abs() <= btn_r {
+                // Maximize button
+                let cx = crate::desktop::theme::scale_i32(8) + 2 * btn_sp + btn_r;
+                if (wx - cx).abs() <= btn_r && (wy - btn_y_pos - btn_r).abs() <= btn_r {
                     return HitTest::MaxButton;
                 }
             }
@@ -349,7 +366,7 @@ impl Desktop {
         let full_h = if borderless {
             content_h
         } else {
-            content_h + TITLE_BAR_HEIGHT
+            content_h + title_bar_height()
         };
 
         let force_shadow = flags & WIN_FLAG_SHADOW != 0;
@@ -410,7 +427,7 @@ impl Desktop {
                     if self.menu_bar.on_focus_change(None) {
                         self.draw_menubar();
                         self.compositor.add_damage(Rect::new(
-                            0, 0, self.screen_width, MENUBAR_HEIGHT + 1,
+                            0, 0, self.screen_width, menubar_height() + 1,
                         ));
                     }
                 }
@@ -474,7 +491,7 @@ impl Desktop {
             if self.menu_bar.on_focus_change(Some(id)) {
                 self.draw_menubar();
                 self.compositor.add_damage(Rect::new(
-                    0, 0, self.screen_width, MENUBAR_HEIGHT + 1,
+                    0, 0, self.screen_width, menubar_height() + 1,
                 ));
             }
         }
@@ -509,7 +526,7 @@ impl Desktop {
             if self.menu_bar.on_focus_change(Some(id)) {
                 self.draw_menubar();
                 self.compositor.add_damage(Rect::new(
-                    0, 0, self.screen_width, MENUBAR_HEIGHT + 1,
+                    0, 0, self.screen_width, menubar_height() + 1,
                 ));
             }
         }
@@ -596,9 +613,10 @@ impl Desktop {
                 } else {
                     (color_titlebar_unfocused_top(), color_titlebar_unfocused_bottom())
                 };
-                fill_rounded_rect_top_gradient(pixels, stride, 0, 0, cw, TITLE_BAR_HEIGHT, 8, tb_top, tb_bot);
+                let tb_h = title_bar_height();
+                fill_rounded_rect_top_gradient(pixels, stride, 0, 0, cw, tb_h, 8, tb_top, tb_bot);
 
-                let border_y = TITLE_BAR_HEIGHT - 1;
+                let border_y = tb_h - 1;
                 for x in 0..cw {
                     let idx = (border_y * stride + x) as usize;
                     if idx < pixels.len() {
@@ -619,6 +637,10 @@ impl Desktop {
                 } else {
                     [color_btn_unfocused(), color_btn_unfocused(), color_btn_unfocused()]
                 };
+                let btn_sz = title_btn_size();
+                let btn_sp = title_btn_spacing();
+                let btn_y_pos = title_btn_y();
+                let btn_left = crate::desktop::theme::scale_i32(8);
                 for (i, &base) in base_colors.iter().enumerate() {
                     if btn_hidden[i] { continue; }
                     let aid = button_anim_id(window_id, i as u8);
@@ -632,15 +654,15 @@ impl Desktop {
                     } else {
                         base
                     };
-                    let cx = 8 + i as i32 * TITLE_BTN_SPACING as i32 + TITLE_BTN_SIZE as i32 / 2;
-                    let cy = TITLE_BTN_Y as i32 + TITLE_BTN_SIZE as i32 / 2;
-                    fill_circle(pixels, stride, full_h, cx, cy, (TITLE_BTN_SIZE / 2) as i32, color);
+                    let cx = btn_left + i as i32 * btn_sp as i32 + btn_sz as i32 / 2;
+                    let cy = btn_y_pos as i32 + btn_sz as i32 / 2;
+                    fill_circle(pixels, stride, full_h, cx, cy, (btn_sz / 2) as i32, color);
                 }
 
                 // Available width for title: between buttons (left) and window edge (right), with padding
-                let left_bound = TITLE_BUTTONS_RIGHT + TITLE_PADDING;
-                let max_title_w = if (cw as i32) > left_bound + TITLE_PADDING {
-                    (cw as i32 - left_bound - TITLE_PADDING) as u32
+                let left_bound = title_buttons_right() + title_padding();
+                let max_title_w = if (cw as i32) > left_bound + title_padding() {
+                    (cw as i32 - left_bound - title_padding()) as u32
                 } else {
                     0
                 };
@@ -659,7 +681,8 @@ impl Desktop {
                 };
 
                 if !display_str.is_empty() {
-                    let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, display_str);
+                    let fs = scaled_font_size();
+                    let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, fs, display_str);
                     // Center within available area (right of buttons)
                     let center_area = cw as i32;
                     let mut tx = (center_area - tw as i32) / 2;
@@ -667,9 +690,9 @@ impl Desktop {
                     if tx < left_bound {
                         tx = left_bound;
                     }
-                    let ty = ((TITLE_BAR_HEIGHT as i32 - th as i32) / 2).max(0);
+                    let ty = ((tb_h as i32 - th as i32) / 2).max(0);
                     anyos_std::ui::window::font_render_buf(
-                        FONT_ID, FONT_SIZE, pixels, stride, full_h, tx, ty,
+                        FONT_ID, fs, pixels, stride, full_h, tx, ty,
                         color_titlebar_text(), display_str,
                     );
                 }
@@ -706,15 +729,16 @@ impl Desktop {
 
         if let Some(pixels) = self.compositor.layer_pixels(layer_id) {
             let stride = cw;
+            let tb_h = title_bar_height();
 
             let (tb_top, tb_bot) = if focused {
                 (color_titlebar_focused_top(), color_titlebar_focused_bottom())
             } else {
                 (color_titlebar_unfocused_top(), color_titlebar_unfocused_bottom())
             };
-            fill_rounded_rect_top_gradient(pixels, stride, 0, 0, cw, TITLE_BAR_HEIGHT, 8, tb_top, tb_bot);
+            fill_rounded_rect_top_gradient(pixels, stride, 0, 0, cw, tb_h, 8, tb_top, tb_bot);
 
-            let border_y = TITLE_BAR_HEIGHT - 1;
+            let border_y = tb_h - 1;
             for x in 0..cw {
                 let idx = (border_y * stride + x) as usize;
                 if idx < pixels.len() {
@@ -729,6 +753,10 @@ impl Desktop {
             } else {
                 [color_btn_unfocused(), color_btn_unfocused(), color_btn_unfocused()]
             };
+            let btn_sz = title_btn_size();
+            let btn_sp = title_btn_spacing();
+            let btn_y_pos = title_btn_y();
+            let btn_left = crate::desktop::theme::scale_i32(8);
             for (i, &base) in base_colors.iter().enumerate() {
                 let aid = button_anim_id(window_id, i as u8);
                 let color = if let Some(t) = self.btn_anims.value(aid, now) {
@@ -741,14 +769,14 @@ impl Desktop {
                 } else {
                     base
                 };
-                let cx = 8 + i as i32 * TITLE_BTN_SPACING as i32 + TITLE_BTN_SIZE as i32 / 2;
-                let cy = TITLE_BTN_Y as i32 + TITLE_BTN_SIZE as i32 / 2;
-                fill_circle(pixels, stride, full_h, cx, cy, (TITLE_BTN_SIZE / 2) as i32, color);
+                let cx = btn_left + i as i32 * btn_sp as i32 + btn_sz as i32 / 2;
+                let cy = btn_y_pos as i32 + btn_sz as i32 / 2;
+                fill_circle(pixels, stride, full_h, cx, cy, (btn_sz / 2) as i32, color);
             }
 
-            let left_bound = TITLE_BUTTONS_RIGHT + TITLE_PADDING;
-            let max_title_w = if (cw as i32) > left_bound + TITLE_PADDING {
-                (cw as i32 - left_bound - TITLE_PADDING) as u32
+            let left_bound = title_buttons_right() + title_padding();
+            let max_title_w = if (cw as i32) > left_bound + title_padding() {
+                (cw as i32 - left_bound - title_padding()) as u32
             } else {
                 0
             };
@@ -767,15 +795,16 @@ impl Desktop {
             };
 
             if !display_str.is_empty() {
-                let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, display_str);
+                let fs = scaled_font_size();
+                let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, fs, display_str);
                 let center_area = cw as i32;
                 let mut tx = (center_area - tw as i32) / 2;
                 if tx < left_bound {
                     tx = left_bound;
                 }
-                let ty = ((TITLE_BAR_HEIGHT as i32 - th as i32) / 2).max(0);
+                let ty = ((tb_h as i32 - th as i32) / 2).max(0);
                 anyos_std::ui::window::font_render_buf(
-                    FONT_ID, FONT_SIZE, pixels, stride, full_h, tx, ty,
+                    FONT_ID, fs, pixels, stride, full_h, tx, ty,
                     color_titlebar_text(), display_str,
                 );
             }
@@ -810,9 +839,9 @@ impl Desktop {
                 self.windows[idx].maximized = true;
 
                 let new_x = 0i32;
-                let new_y = MENUBAR_HEIGHT as i32 + 1;
+                let new_y = menubar_height() as i32 + 1;
                 let new_w = self.screen_width;
-                let new_ch = self.screen_height - MENUBAR_HEIGHT - 1 - TITLE_BAR_HEIGHT;
+                let new_ch = self.screen_height - menubar_height() - 1 - title_bar_height();
 
                 let layer_id = self.windows[idx].layer_id;
                 self.windows[idx].x = new_x;
@@ -870,7 +899,7 @@ impl Desktop {
         // Wrap vertically
         if self.cascade_y + win_h as i32 > self.screen_height as i32 - 80 {
             self.cascade_x = 120;
-            self.cascade_y = MENUBAR_HEIGHT as i32 + 50;
+            self.cascade_y = menubar_height() as i32 + 50;
         }
 
         (x, y)
@@ -896,16 +925,18 @@ impl Desktop {
         let full_h = if borderless {
             content_h
         } else {
-            content_h + TITLE_BAR_HEIGHT
+            content_h + title_bar_height()
         };
 
-        // Determine position: explicit or auto-placed
+        // Determine position: explicit or auto-placed.
+        // Clamp Y so windows never overlap the menubar.
+        let min_y = menubar_height() as i32 + 1;
         let (x, y) = if raw_x == crate::ipc_protocol::CW_USEDEFAULT
             || raw_y == crate::ipc_protocol::CW_USEDEFAULT
         {
             self.next_auto_position(content_w, full_h)
         } else {
-            (raw_x as i32, raw_y as i32)
+            (raw_x as i32, (raw_y as i32).max(min_y))
         };
 
         let layer_id = self.compositor.add_layer(
@@ -920,6 +951,13 @@ impl Desktop {
         if !borderless || force_shadow {
             if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
                 layer.has_shadow = true;
+            }
+        }
+
+        // DPI-aware windows render at physical resolution — no compositor upscaling.
+        if flags & WIN_FLAG_DPI_AWARE != 0 {
+            if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
+                layer.dpi_aware = true;
             }
         }
 
@@ -1057,16 +1095,18 @@ impl Desktop {
         let full_h = if borderless {
             content_h
         } else {
-            content_h + TITLE_BAR_HEIGHT
+            content_h + title_bar_height()
         };
 
-        // Determine position: explicit or auto-placed
+        // Determine position: explicit or auto-placed.
+        // Clamp Y so windows never overlap the menubar.
+        let min_y = menubar_height() as i32 + 1;
         let (x, y) = if raw_x == crate::ipc_protocol::CW_USEDEFAULT
             || raw_y == crate::ipc_protocol::CW_USEDEFAULT
         {
             self.next_auto_position(content_w, full_h)
         } else {
-            (raw_x as i32, raw_y as i32)
+            (raw_x as i32, (raw_y as i32).max(min_y))
         };
 
         let layer_id = self.compositor.add_layer_with_pixels(
@@ -1082,6 +1122,13 @@ impl Desktop {
         if !borderless || force_shadow {
             if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
                 layer.has_shadow = true;
+            }
+        }
+
+        // DPI-aware windows render at physical resolution — no compositor upscaling.
+        if flags & WIN_FLAG_DPI_AWARE != 0 {
+            if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
+                layer.dpi_aware = true;
             }
         }
 
@@ -1144,7 +1191,7 @@ impl Desktop {
         let cw = self.windows[win_idx].content_width;
         let ch = self.windows[win_idx].content_height;
         let borderless = self.windows[win_idx].is_borderless();
-        let content_y = if borderless { 0 } else { TITLE_BAR_HEIGHT };
+        let content_y = if borderless { 0 } else { title_bar_height() };
         let scale_content = self.windows[win_idx].flags & WIN_FLAG_SCALE_CONTENT != 0;
 
         let shm_w = self.windows[win_idx].shm_width;
@@ -1266,14 +1313,15 @@ pub fn pre_render_chrome_ex(
     fill_rounded_rect(pixels, stride, full_h, 0, 0, stride, full_h, 8, color_window_bg());
     draw_rounded_rect_outline(pixels, stride, full_h, 0, 0, stride, full_h, 8, color_window_border());
 
+    let tb_h = title_bar_height();
     let (tb_top, tb_bot) = if focused {
         (color_titlebar_focused_top(), color_titlebar_focused_bottom())
     } else {
         (color_titlebar_unfocused_top(), color_titlebar_unfocused_bottom())
     };
-    fill_rounded_rect_top_gradient(pixels, stride, 0, 0, stride, TITLE_BAR_HEIGHT, 8, tb_top, tb_bot);
+    fill_rounded_rect_top_gradient(pixels, stride, 0, 0, stride, tb_h, 8, tb_top, tb_bot);
 
-    let border_y = TITLE_BAR_HEIGHT - 1;
+    let border_y = tb_h - 1;
     for x in 0..stride {
         let idx = (border_y * stride + x) as usize;
         if idx < pixels.len() {
@@ -1291,17 +1339,21 @@ pub fn pre_render_chrome_ex(
     } else {
         [color_btn_unfocused(), color_btn_unfocused(), color_btn_unfocused()]
     };
+    let btn_sz = title_btn_size();
+    let btn_sp = title_btn_spacing();
+    let btn_y_pos = title_btn_y();
+    let btn_left = crate::desktop::theme::scale_i32(8);
     for (i, &color) in base_colors.iter().enumerate() {
         if btn_hidden[i] { continue; }
-        let cx = 8 + i as i32 * TITLE_BTN_SPACING as i32 + TITLE_BTN_SIZE as i32 / 2;
-        let cy = TITLE_BTN_Y as i32 + TITLE_BTN_SIZE as i32 / 2;
-        fill_circle(pixels, stride, full_h, cx, cy, (TITLE_BTN_SIZE / 2) as i32, color);
+        let cx = btn_left + i as i32 * btn_sp as i32 + btn_sz as i32 / 2;
+        let cy = btn_y_pos as i32 + btn_sz as i32 / 2;
+        fill_circle(pixels, stride, full_h, cx, cy, (btn_sz / 2) as i32, color);
     }
 
     let cw = stride;
-    let left_bound = TITLE_BUTTONS_RIGHT + TITLE_PADDING;
-    let max_title_w = if (cw as i32) > left_bound + TITLE_PADDING {
-        (cw as i32 - left_bound - TITLE_PADDING) as u32
+    let left_bound = title_buttons_right() + title_padding();
+    let max_title_w = if (cw as i32) > left_bound + title_padding() {
+        (cw as i32 - left_bound - title_padding()) as u32
     } else {
         0
     };
@@ -1320,14 +1372,15 @@ pub fn pre_render_chrome_ex(
     };
 
     if !display_str.is_empty() {
-        let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, display_str);
+        let fs = scaled_font_size();
+        let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, fs, display_str);
         let mut tx = (cw as i32 - tw as i32) / 2;
         if tx < left_bound {
             tx = left_bound;
         }
-        let ty = ((TITLE_BAR_HEIGHT as i32 - th as i32) / 2).max(0);
+        let ty = ((tb_h as i32 - th as i32) / 2).max(0);
         anyos_std::ui::window::font_render_buf(
-            FONT_ID, FONT_SIZE, pixels, stride, full_h, tx, ty,
+            FONT_ID, fs, pixels, stride, full_h, tx, ty,
             color_titlebar_text(), display_str,
         );
     }

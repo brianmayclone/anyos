@@ -28,14 +28,13 @@ impl Control for Stepper {
     fn kind(&self) -> ControlKind { ControlKind::Stepper }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.text_base.base.x;
-        let y = ay + self.text_base.base.y;
-        let w = self.text_base.base.w;
-        let h = self.text_base.base.h;
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
-        let disabled = self.text_base.base.disabled;
-        let focused = self.text_base.base.focused;
-        let corner = crate::theme::BUTTON_CORNER;
+        let disabled = b.disabled;
+        let focused = b.focused;
+        let corner = crate::theme::button_corner();
 
         // Overall background with depth
         let bg = if disabled { crate::theme::darken(tc.control_bg, 10) } else { tc.control_bg };
@@ -45,22 +44,28 @@ impl Control for Stepper {
 
         let text_color = if disabled { tc.text_disabled } else { tc.text };
         let btn_color = if disabled { tc.text_disabled } else { tc.text_secondary };
+        let fs = crate::draw::scale_font(14);
+        let y_pad = crate::theme::scale_i32(6);
 
         // Minus button
-        crate::draw::draw_text(surface, x + 10, y + 6, btn_color, b"\xe2\x88\x92");
+        crate::draw::draw_text_sized(surface, x + crate::theme::scale_i32(10), y + y_pad, btn_color, b"\xe2\x88\x92", fs);
 
         // Value display
-        let val_text = format_u32(self.text_base.base.state);
-        let (vw, _) = crate::draw::text_size(&val_text);
+        let val_text = format_u32(b.state);
+        let (vw, _) = crate::draw::text_size_at(&val_text, fs);
         let cx = x + (w as i32 - vw as i32) / 2;
-        crate::draw::draw_text(surface, cx, y + 6, text_color, &val_text);
+        crate::draw::draw_text_sized(surface, cx, y + y_pad, text_color, &val_text, fs);
 
         // Plus button
-        crate::draw::draw_text(surface, x + w as i32 - 18, y + 6, btn_color, b"+");
+        crate::draw::draw_text_sized(surface, x + w as i32 - crate::theme::scale_i32(18), y + y_pad, btn_color, b"+", fs);
 
         // Separators
-        crate::draw::fill_rect(surface, x + 28, y + 4, 1, h - 8, tc.separator);
-        crate::draw::fill_rect(surface, x + w as i32 - 29, y + 4, 1, h - 8, tc.separator);
+        let sep_x_left = crate::theme::scale_i32(28);
+        let sep_x_right = crate::theme::scale_i32(29);
+        let sep_pad = crate::theme::scale_i32(4);
+        let sep_h = if h > (sep_pad as u32 * 2) { h - sep_pad as u32 * 2 } else { 1 };
+        crate::draw::fill_rect(surface, x + sep_x_left, y + sep_pad, 1, sep_h, tc.separator);
+        crate::draw::fill_rect(surface, x + w as i32 - sep_x_right, y + sep_pad, 1, sep_h, tc.separator);
 
         // Focus ring
         if focused && !disabled {

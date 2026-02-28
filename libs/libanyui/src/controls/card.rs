@@ -14,12 +14,11 @@ impl Control for Card {
     fn kind(&self) -> ControlKind { ControlKind::Card }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.base.x;
-        let y = ay + self.base.y;
-        let w = self.base.w;
-        let h = self.base.h;
+        let b = self.base();
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
-        let corner = crate::theme::CARD_CORNER;
+        let corner = crate::theme::card_corner();
 
         // Bottom shadow line (cheap elevation)
         crate::draw::draw_bottom_shadow(surface, x, y, w, h, corner, crate::theme::darken(tc.card_border, 15));

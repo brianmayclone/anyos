@@ -961,7 +961,11 @@ pub fn resolve_styles(dom: &Dom, stylesheets: &[&Stylesheet], viewport_width: i3
         // Phase 1: Start from UA defaults (elements) or initial values (text).
         let (mut style, mut set_flags) = match &node.node_type {
             NodeType::Element { tag, .. } => ua_style_and_flags(*tag),
-            NodeType::Text(_) => (default_style(), 0u16),
+            NodeType::Text(_) => {
+                let mut s = default_style();
+                s.display = Display::Inline;
+                (s, 0u16)
+            }
         };
 
         // Phase 2 + 3: Apply author rules and inline styles.

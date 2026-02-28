@@ -16,6 +16,10 @@
 #define O_EXCL 0x10
 #define O_CLOEXEC 0x80000
 #define O_DIRECTORY 0x10000
+#define O_NOFOLLOW  0x20000
+#define O_SYNC      0x101000
+#define O_DSYNC     0x1000
+#define O_NOCTTY    0x100
 
 #define F_DUPFD 0
 #define F_GETFD 1
@@ -36,6 +40,7 @@ extern "C" {
 #endif
 
 int open(const char *path, int flags, ...);
+int openat(int dirfd, const char *pathname, int flags, ...);
 int fcntl(int fd, int cmd, ...);
 
 #ifdef __cplusplus

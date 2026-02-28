@@ -18,9 +18,9 @@ impl Control for TableView {
     fn kind(&self) -> ControlKind { ControlKind::TableView }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.base.x;
-        let y = ay + self.base.y;
-        crate::draw::fill_rect(surface, x, y, self.base.w, self.base.h, crate::theme::colors().window_bg);
+        let b = self.base();
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        crate::draw::fill_rect(surface, p.x, p.y, p.w, p.h, crate::theme::colors().window_bg);
     }
 
     fn is_interactive(&self) -> bool { true }

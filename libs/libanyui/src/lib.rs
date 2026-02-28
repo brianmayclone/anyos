@@ -80,12 +80,22 @@ use control::{Control, ControlId, ControlKind, Callback, DockStyle, Orientation}
 // ── Compositor window handle ─────────────────────────────────────────
 
 /// Per-window compositor state (SHM surface + IDs).
+///
+/// `width`/`height` are **physical** pixel dimensions (used for SHM surface
+/// allocation and back-buffer sizing). `logical_width`/`logical_height` are
+/// what the application (control tree) sees — they equal `physical / scale`.
 pub(crate) struct CompWindow {
     pub window_id: u32,
     pub shm_id: u32,
     pub surface: *mut u32,
+    /// Physical width (= logical * scale_factor / 100). Used for SHM and back-buffer.
     pub width: u32,
+    /// Physical height (= logical * scale_factor / 100). Used for SHM and back-buffer.
     pub height: u32,
+    /// Logical width — what the control tree and application see.
+    pub logical_width: u32,
+    /// Logical height — what the control tree and application see.
+    pub logical_height: u32,
     /// Back-pressure: true after present(), cleared on EVT_FRAME_ACK from compositor.
     pub frame_presented: bool,
     /// Timestamp of last present() call (for safety timeout).
@@ -289,6 +299,11 @@ pub extern "C" fn anyui_init() -> u32 {
     // Falls back to built-in defaults for missing files / keys.
     theme::load_from_disk();
 
+    // Read the current DPI scale factor from the shared page so that
+    // scale()/scale_i32() return correct values from the very first call
+    // (before the event loop starts refreshing the cache every frame).
+    theme::refresh_scale_cache();
+
     unsafe {
         STATE = Some(AnyuiState {
             controls: Vec::new(),
@@ -363,9 +378,25 @@ pub extern "C" fn anyui_create_window(
         }
     }
 
-    // Create compositor window via DLL
+    // Ensure we have the latest scale factor from the shared page before
+    // computing physical dimensions (the event loop hasn't started yet on
+    // the first window creation).
+    crate::theme::refresh_scale_cache();
+
+    // All coordinates from the app are LOGICAL pixels. Scale to physical.
+    // x/y == -1 is the auto-placement sentinel (CW_USEDEFAULT = 0xFFFF) —
+    // pass it through unscaled so the compositor detects it correctly.
+    let phys_x = if x == -1 { -1 } else { crate::theme::scale_i32(x) };
+    let phys_y = if y == -1 { -1 } else { crate::theme::scale_i32(y) };
+    let phys_w = crate::theme::scale(w);
+    let phys_h = crate::theme::scale(h);
+
+    // Create compositor window via DLL — physical pixel dimensions.
+    // Set WIN_FLAG_DPI_AWARE (0x200) so the compositor knows this window
+    // renders at physical resolution and does not need content upscaling.
+    let dpi_flags = flags | 0x200;
     let (window_id, shm_id, surface) =
-        match compositor::create_window(st.channel_id, st.sub_id, x, y, w, h, flags) {
+        match compositor::create_window(st.channel_id, st.sub_id, phys_x, phys_y, phys_w, phys_h, dpi_flags) {
             Some(result) => result,
             None => return 0,
         };
@@ -373,16 +404,20 @@ pub extern "C" fn anyui_create_window(
     // Set title
     compositor::set_title(st.channel_id, window_id, &title_buf[..len]);
 
+    // The Window control keeps logical dimensions (w, h) — the control tree
+    // always works in logical coordinates.
     let ctrl = controls::create_control(ControlKind::Window, id, 0, 0, 0, w, h, &title_buf[..len]);
     st.controls.push(ctrl);
     st.windows.push(id);
-    let pixel_count = (w as usize) * (h as usize);
+    let pixel_count = (phys_w as usize) * (phys_h as usize);
     st.comp_windows.push(CompWindow {
         window_id,
         shm_id,
         surface,
-        width: w,
-        height: h,
+        width: phys_w,
+        height: phys_h,
+        logical_width: w,
+        logical_height: h,
         frame_presented: false,
         last_present_ms: 0,
         dirty: true,
@@ -2347,27 +2382,36 @@ pub extern "C" fn anyui_clear_children(parent: ControlId) {
 
 /// Programmatically resize a window (SHM buffer, back buffer, control size).
 /// Used by the dock (and similar borderless windows) to react to resolution changes.
+///
+/// `new_w`/`new_h` are **logical** pixels (what the app sees). The SHM surface
+/// and back-buffer are allocated at the corresponding physical dimensions.
 #[no_mangle]
 pub extern "C" fn anyui_resize_window(win_id: ControlId, new_w: u32, new_h: u32) {
     let st = state();
+    // Convert logical → physical for the compositor surface.
+    let phys_w = crate::theme::scale(new_w);
+    let phys_h = crate::theme::scale(new_h);
     if let Some(wi) = st.windows.iter().position(|&w| w == win_id) {
         let cw = &mut st.comp_windows[wi];
-        if cw.width == new_w && cw.height == new_h {
+        if cw.logical_width == new_w && cw.logical_height == new_h {
             return;
         }
         if let Some((new_shm_id, new_surface)) = compositor::resize_shm(
-            st.channel_id, cw.window_id, cw.shm_id, new_w, new_h,
+            st.channel_id, cw.window_id, cw.shm_id, phys_w, phys_h,
         ) {
             cw.shm_id = new_shm_id;
             cw.surface = new_surface;
         }
-        cw.width = new_w;
-        cw.height = new_h;
-        let new_count = (new_w as usize) * (new_h as usize);
+        cw.width = phys_w;
+        cw.height = phys_h;
+        cw.logical_width = new_w;
+        cw.logical_height = new_h;
+        let new_count = (phys_w as usize) * (phys_h as usize);
         cw.back_buffer.resize(new_count, 0);
         cw.dirty = true;
         cw.dirty_rect = None; // full redraw
     }
+    // Control tree uses logical dimensions.
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == win_id) {
         ctrl.set_size(new_w, new_h);
     }
@@ -2390,7 +2434,10 @@ pub extern "C" fn anyui_move_window(win_id: ControlId, x: i32, y: i32) {
     let st = state();
     if let Some(wi) = st.windows.iter().position(|&w| w == win_id) {
         let comp_win_id = st.comp_windows[wi].window_id;
-        compositor::move_window(st.channel_id, comp_win_id, x, y);
+        // Convert logical position to physical screen coordinates.
+        let phys_x = crate::theme::scale_i32(x);
+        let phys_y = crate::theme::scale_i32(y);
+        compositor::move_window(st.channel_id, comp_win_id, phys_x, phys_y);
     }
 }
 
@@ -2473,8 +2520,11 @@ pub extern "C" fn anyui_set_tab_index(id: ControlId, index: u32) {
 #[no_mangle]
 pub extern "C" fn anyui_screen_size(out_w: *mut u32, out_h: *mut u32) {
     let (w, h) = compositor::screen_size();
-    if !out_w.is_null() { unsafe { *out_w = w; } }
-    if !out_h.is_null() { unsafe { *out_h = h; } }
+    // Return logical screen dimensions so apps work entirely in logical space.
+    let lw = crate::theme::unscale_u32(w);
+    let lh = crate::theme::unscale_u32(h);
+    if !out_w.is_null() { unsafe { *out_w = lw; } }
+    if !out_h.is_null() { unsafe { *out_h = lh; } }
 }
 
 // ── Notifications ───────────────────────────────────────────────────
@@ -2571,6 +2621,32 @@ pub extern "C" fn anyui_set_font_smoothing(mode: u32) {
 #[no_mangle]
 pub extern "C" fn anyui_get_font_smoothing() -> u32 {
     unsafe { core::ptr::read_volatile(0x0400_0010 as *const u32) }
+}
+
+// ── DPI Scale Factor ────────────────────────────────────────────
+
+/// Set the DPI scale factor system-wide (100–300 in 25% steps).
+///
+/// Sends CMD_SET_SCALE to the compositor, which writes to the shared page
+/// and persists the setting.
+#[no_mangle]
+pub extern "C" fn anyui_set_scale_factor(percent: u32) {
+    let clamped = percent.max(100).min(300);
+    let rounded = ((clamped + 12) / 25) * 25;
+    let channel_id = state().channel_id;
+    if channel_id != 0 {
+        let cmd: [u32; 5] = [0x1017, rounded, 0, 0, 0]; // CMD_SET_SCALE
+        syscall::evt_chan_emit(channel_id, &cmd);
+    }
+}
+
+/// Get the current DPI scale factor from the shared uisys page.
+///
+/// Returns: scale percentage (100 = 1x, 200 = 2x, etc.).
+#[no_mangle]
+pub extern "C" fn anyui_get_scale_factor() -> u32 {
+    let v = unsafe { core::ptr::read_volatile(0x0400_0014 as *const u32) };
+    if v >= 100 && v <= 300 { v } else { 100 }
 }
 
 // ── Window title (post-creation) ─────────────────────────────────

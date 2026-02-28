@@ -108,13 +108,12 @@ impl Control for SearchField {
     fn kind(&self) -> ControlKind { ControlKind::SearchField }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.text_base.base.x;
-        let y = ay + self.text_base.base.y;
-        let w = self.text_base.base.w;
-        let h = self.text_base.base.h;
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
-        let disabled = self.text_base.base.disabled;
-        let hovered = self.text_base.base.hovered;
+        let disabled = b.disabled;
+        let hovered = b.hovered;
         let corner = h / 2; // Full round ends (pill shape)
 
         // Background
@@ -136,22 +135,30 @@ impl Control for SearchField {
         }
 
         // Search icon placeholder (small circle + line = magnifying glass)
-        let icon_x = x + 10;
-        let icon_y = y + (h as i32 - 12) / 2;
-        crate::draw::fill_rounded_rect(surface, icon_x, icon_y, 10, 10, 5, tc.text_secondary);
-        crate::draw::fill_rounded_rect(surface, icon_x + 3, icon_y + 3, 4, 4, 2, tc.input_bg);
+        let icon_sz = crate::theme::scale(10);
+        let icon_r = crate::theme::scale(5);
+        let inner_sz = crate::theme::scale(4);
+        let inner_r = crate::theme::scale(2);
+        let inner_off = crate::theme::scale_i32(3);
+        let icon_x = x + crate::theme::scale_i32(10);
+        let icon_y = y + (h as i32 - icon_sz as i32) / 2;
+        crate::draw::fill_rounded_rect(surface, icon_x, icon_y, icon_sz, icon_sz, icon_r, tc.text_secondary);
+        crate::draw::fill_rounded_rect(surface, icon_x + inner_off, icon_y + inner_off, inner_sz, inner_sz, inner_r, tc.input_bg);
 
-        // Text area — clipped.
-        let area_w = self.text_area_width().max(0) as u32;
-        let clipped = surface.with_clip(x + Self::TEXT_LEFT, y, area_w, h);
+        // Text area — clipped (physical coordinates).
+        let text_left = crate::theme::scale_i32(Self::TEXT_LEFT);
+        let text_pad_right = crate::theme::scale_i32(Self::TEXT_PAD_RIGHT);
+        let area_w = (w as i32 - text_left - text_pad_right).max(0) as u32;
+        let clipped = surface.with_clip(x + text_left, y, area_w, h);
 
         let text_color = if disabled { tc.text_disabled } else if self.text_base.text_style.text_color != 0 { self.text_base.text_style.text_color } else { tc.text };
-        let font_size = self.text_base.text_style.font_size;
-        let text_x = x + Self::TEXT_LEFT - self.scroll_x;
-        let text_y = y + 6;
+        let font_size = crate::draw::scale_font(self.text_base.text_style.font_size);
+        let scaled_scroll_x = crate::theme::scale_i32(self.scroll_x);
+        let text_x = x + text_left - scaled_scroll_x;
+        let text_y = y + crate::theme::scale_i32(6);
 
         if self.text_base.text.is_empty() {
-            crate::draw::draw_text_sized(&clipped, x + Self::TEXT_LEFT, text_y, tc.text_secondary, b"Search", font_size);
+            crate::draw::draw_text_sized(&clipped, x + text_left, text_y, tc.text_secondary, b"Search", font_size);
         } else {
             // Selection highlight.
             if self.has_selection() && self.focused {
@@ -159,7 +166,9 @@ impl Control for SearchField {
                 let text = &self.text_base.text;
                 let start_px = crate::draw::text_width_n_at(text, sel_start.min(text.len()), font_size) as i32;
                 let end_px = crate::draw::text_width_n_at(text, sel_end.min(text.len()), font_size) as i32;
-                crate::draw::fill_rect(&clipped, text_x + start_px, y + 3, (end_px - start_px).max(0) as u32, h - 6, tc.accent & 0x60FFFFFF);
+                let sel_pad = crate::theme::scale_i32(3);
+                let sel_h = if h > (sel_pad as u32 * 2) { h - sel_pad as u32 * 2 } else { 1 };
+                crate::draw::fill_rect(&clipped, text_x + start_px, y + sel_pad, (end_px - start_px).max(0) as u32, sel_h, tc.accent & 0x60FFFFFF);
             }
 
             crate::draw::draw_text_sized(&clipped, text_x, text_y, text_color, &self.text_base.text, font_size);
@@ -167,7 +176,10 @@ impl Control for SearchField {
             if self.focused {
                 let cursor = self.cursor_pos.min(self.text_base.text.len());
                 let cursor_px = crate::draw::text_width_n_at(&self.text_base.text, cursor, font_size) as i32;
-                crate::draw::fill_rect(&clipped, text_x + cursor_px, y + 4, 2, h - 8, tc.accent);
+                let cursor_pad = crate::theme::scale_i32(4);
+                let cursor_w = crate::theme::scale(2);
+                let cursor_h = if h > (cursor_pad as u32 * 2) { h - cursor_pad as u32 * 2 } else { 1 };
+                crate::draw::fill_rect(&clipped, text_x + cursor_px, y + cursor_pad, cursor_w, cursor_h, tc.accent);
             }
         }
     }

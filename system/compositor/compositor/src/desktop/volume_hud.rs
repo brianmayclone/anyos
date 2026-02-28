@@ -8,8 +8,6 @@ use crate::compositor::{Compositor, Rect};
 
 use super::drawing::{fill_rect, fill_rounded_rect, draw_rounded_rect_outline};
 use super::theme;
-use super::window::MENUBAR_HEIGHT;
-
 // ── Layout Constants ──────────────────────────────────────────────────────
 
 const HUD_W: u32 = 200;

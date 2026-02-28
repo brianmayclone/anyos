@@ -26,10 +26,10 @@ impl Control for TableLayout {
     fn kind(&self) -> ControlKind { ControlKind::TableLayout }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.base.x;
-        let y = ay + self.base.y;
         if self.base.color != 0 {
-            crate::draw::fill_rect(surface, x, y, self.base.w, self.base.h, self.base.color);
+            let b = self.base();
+            let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+            crate::draw::fill_rect(surface, p.x, p.y, p.w, p.h, b.color);
         }
     }
 

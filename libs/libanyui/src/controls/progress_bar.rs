@@ -14,10 +14,9 @@ impl Control for ProgressBar {
     fn kind(&self) -> ControlKind { ControlKind::ProgressBar }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.base.x;
-        let y = ay + self.base.y;
-        let w = self.base.w;
-        let h = self.base.h;
+        let b = self.base();
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
         let r = h / 2;
 
@@ -26,7 +25,7 @@ impl Control for ProgressBar {
         crate::draw::draw_top_highlight(surface, x, y, w, r, crate::theme::darken(tc.control_bg, 8));
 
         // Filled portion with accent
-        let val = self.base.state.min(100);
+        let val = b.state.min(100);
         let fill_w = (w as u64 * val as u64 / 100) as u32;
         if fill_w > 0 {
             crate::draw::fill_rounded_rect(surface, x, y, fill_w, h, r, tc.accent);

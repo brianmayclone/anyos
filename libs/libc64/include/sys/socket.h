@@ -36,6 +36,8 @@
 #define SO_ERROR       4
 #define SO_TYPE        3
 #define SO_LINGER      13
+#define SO_PEERCRED    17
+#define SCM_RIGHTS     0x01
 
 #define MSG_PEEK       0x02
 #define MSG_DONTWAIT   0x40
@@ -72,6 +74,31 @@ struct msghdr {
     int           msg_flags;
 };
 
+struct cmsghdr {
+    socklen_t     cmsg_len;
+    int           cmsg_level;
+    int           cmsg_type;
+};
+
+struct ucred {
+    pid_t pid;
+    uid_t uid;
+    gid_t gid;
+};
+
+#define CMSG_ALIGN(len) (((len) + sizeof(size_t) - 1) & ~(sizeof(size_t) - 1))
+#define CMSG_SPACE(len) (CMSG_ALIGN(sizeof(struct cmsghdr)) + CMSG_ALIGN(len))
+#define CMSG_LEN(len)   (CMSG_ALIGN(sizeof(struct cmsghdr)) + (len))
+#define CMSG_DATA(cmsg)  ((unsigned char *)(cmsg) + CMSG_ALIGN(sizeof(struct cmsghdr)))
+#define CMSG_FIRSTHDR(mhdr) \
+    ((mhdr)->msg_controllen >= sizeof(struct cmsghdr) ? \
+     (struct cmsghdr *)(mhdr)->msg_control : (struct cmsghdr *)0)
+#define CMSG_NXTHDR(mhdr, cmsg) \
+    (((unsigned char *)(cmsg) + CMSG_ALIGN((cmsg)->cmsg_len) + sizeof(struct cmsghdr) > \
+      (unsigned char *)(mhdr)->msg_control + (mhdr)->msg_controllen) ? \
+     (struct cmsghdr *)0 : \
+     (struct cmsghdr *)((unsigned char *)(cmsg) + CMSG_ALIGN((cmsg)->cmsg_len)))
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -94,6 +121,8 @@ int getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
 int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
 ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags);
 ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags);
+int accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags);
+int socketpair(int domain, int type, int protocol, int sv[2]);
 
 #ifdef __cplusplus
 }

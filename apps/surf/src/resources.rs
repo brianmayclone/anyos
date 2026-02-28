@@ -5,13 +5,13 @@
 //!
 //! Covers:
 //! - HTTP response body decoding (charset detection, Latin-1 → UTF-8)
-//! - External CSS stylesheet fetching
-//! - Asynchronous image fetching via a recurring timer
+//! - External CSS stylesheet discovery and submission to the network worker
+//! - External image discovery and submission to the network worker
+//! - SVG rasterisation and raster image decoding (called from result handlers)
 
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::vec;
-use libanyui_client as ui;
 
 // ═══════════════════════════════════════════════════════════
 // HTTP body decoding
@@ -101,11 +101,11 @@ fn latin1_to_utf8(bytes: &[u8]) -> String {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Asynchronous CSS stylesheet loading
+// CSS stylesheet discovery — submits to network worker
 // ═══════════════════════════════════════════════════════════
 
-/// Scan the DOM for `<link rel="stylesheet">` tags and enqueue them for async
-/// fetching.
+/// Scan the DOM for `<link rel="stylesheet">` tags and submit them to the
+/// background network worker for async fetching.
 ///
 /// The page is rendered immediately with only the built-in user-agent CSS;
 /// each external stylesheet is applied and the layout refreshed as it arrives,
@@ -115,7 +115,9 @@ pub(crate) fn queue_stylesheets(
     base_url: &crate::http::Url,
     tab_index: usize,
 ) {
-    let st = crate::state();
+    let generation = crate::net_worker::current_generation();
+    let mut count = 0u32;
+
     for (i, node) in dom.nodes.iter().enumerate() {
         if let libwebview::dom::NodeType::Element {
             tag: libwebview::dom::Tag::Link,
@@ -129,94 +131,37 @@ pub(crate) fn queue_stylesheets(
             if let Some(href) = dom.attr(i, "href") {
                 if !href.is_empty() {
                     let css_url = crate::http::resolve_url(base_url, href);
-                    st.css_queue.push((tab_index, String::from(href), css_url));
+                    crate::net_worker::submit(crate::net_worker::FetchRequest::Css {
+                        tab_index,
+                        href: String::from(href),
+                        url: css_url,
+                        generation,
+                    });
+                    count += 1;
                 }
             }
         }
     }
 
-    if !st.css_queue.is_empty() {
-        anyos_std::println!(
-            "[surf] queued {} stylesheet(s) for async loading",
-            st.css_queue.len()
-        );
-        start_css_timer();
-    }
-}
-
-/// Start the CSS fetch timer if it is not already running.
-///
-/// The timer fires every 10 ms so that one stylesheet is fetched per tick
-/// without starving the UI event loop.
-pub(crate) fn start_css_timer() {
-    let st = crate::state();
-    if st.css_timer != 0 {
-        return;
-    }
-    st.css_timer = ui::set_timer(10, || {
-        fetch_next_css();
-    });
-}
-
-/// Fetch the next stylesheet from the queue.  Called by the recurring timer.
-///
-/// Applies the loaded CSS to the owning tab's webview and triggers a relayout
-/// so the page progressively improves its appearance as stylesheets arrive.
-/// Stops the timer when the queue is empty.
-pub(crate) fn fetch_next_css() {
-    let st = crate::state();
-
-    if st.css_queue.is_empty() {
-        if st.css_timer != 0 {
-            ui::kill_timer(st.css_timer);
-            st.css_timer = 0;
-        }
-        // Show "Done" only when the image queue is also fully drained.
-        if st.image_queue.is_empty() {
-            st.tabs[st.active_tab].status_text = String::from("Done");
-            crate::ui::update_status();
-        }
-        return;
-    }
-
-    let (tab_idx, href, css_url) = st.css_queue.remove(0);
-
-    // Show progress in the status bar.
-    let remaining = st.css_queue.len();
-    let mut status = String::from("Loading CSS (");
-    crate::ui::push_u32(&mut status, remaining as u32 + 1);
-    status.push_str(" left)");
-    st.status_label.set_text(&status);
-
-    anyos_std::println!("[surf]   fetching CSS: {}", href);
-    match crate::http::fetch(&css_url, &mut st.cookies, &mut st.conn_pool) {
-        Ok(resp) if resp.status >= 200 && resp.status < 400 && !resp.body.is_empty() => {
-            let css_text = decode_http_body(&resp.body, &resp.headers);
-            anyos_std::println!("[surf]   loaded CSS: {} ({} bytes)", href, css_text.len());
-            if tab_idx < st.tabs.len() {
-                st.tabs[tab_idx].webview.add_stylesheet(&css_text);
-                st.tabs[tab_idx].webview.relayout();
-            }
-        }
-        _ => {
-            anyos_std::println!("[surf]   CSS fetch failed: {}", href);
-        }
+    if count > 0 {
+        anyos_std::println!("[surf] submitted {} stylesheet(s) to worker", count);
     }
 }
 
 // ═══════════════════════════════════════════════════════════
-// Asynchronous image loading
+// Image discovery — submits to network worker
 // ═══════════════════════════════════════════════════════════
 
-/// Scan the DOM for `<img src="…">` tags and enqueue them for async fetching.
-///
-/// Starts the image fetch timer if any images were found.
+/// Scan the DOM for `<img src="…">` tags and submit them to the background
+/// network worker for async fetching.
 pub(crate) fn queue_images(
     dom: &libwebview::dom::Dom,
     base_url: &crate::http::Url,
     tab_index: usize,
 ) {
-    let st = crate::state();
+    let generation = crate::net_worker::current_generation();
+    let mut count = 0u32;
+
     for (i, node) in dom.nodes.iter().enumerate() {
         if let libwebview::dom::NodeType::Element {
             tag: libwebview::dom::Tag::Img,
@@ -228,85 +173,29 @@ pub(crate) fn queue_images(
                     continue;
                 }
                 let img_url = crate::http::resolve_url(base_url, src);
-                st.image_queue.push((tab_index, String::from(src), img_url));
+                crate::net_worker::submit(crate::net_worker::FetchRequest::Image {
+                    tab_index,
+                    src: String::from(src),
+                    url: img_url,
+                    generation,
+                });
+                count += 1;
             }
         }
     }
 
-    if !st.image_queue.is_empty() {
-        anyos_std::println!("[surf] queued {} images for async loading", st.image_queue.len());
-        start_image_timer();
+    if count > 0 {
+        anyos_std::println!("[surf] submitted {} image(s) to worker", count);
     }
 }
 
-/// Start the image fetch timer if it is not already running.
-pub(crate) fn start_image_timer() {
-    let st = crate::state();
-    if st.image_timer != 0 {
-        return;
-    }
-    st.image_timer = ui::set_timer(10, || {
-        fetch_next_image();
-    });
-}
-
-/// Fetch the next image from the queue.  Called by the recurring timer.
-///
-/// Stops the timer when the queue is empty.
-pub(crate) fn fetch_next_image() {
-    let st = crate::state();
-
-    if st.image_queue.is_empty() {
-        if st.image_timer != 0 {
-            ui::kill_timer(st.image_timer);
-            st.image_timer = 0;
-        }
-        // Show "Done" only when the CSS queue is also fully drained.
-        if st.css_queue.is_empty() {
-            st.tabs[st.active_tab].status_text = String::from("Done");
-            crate::ui::update_status();
-        }
-        return;
-    }
-
-    let (tab_idx, src, img_url) = st.image_queue.remove(0);
-
-    // Show progress in the status bar.
-    let remaining = st.image_queue.len();
-    let mut status = String::from("Loading image (");
-    crate::ui::push_u32(&mut status, remaining as u32 + 1);
-    status.push_str(" left): ");
-    status.push_str(&crate::ui::format_url(&img_url));
-    st.status_label.set_text(&status);
-
-    match crate::http::fetch(&img_url, &mut st.cookies, &mut st.conn_pool) {
-        Ok(resp) => {
-            if is_svg(&src, &resp.headers) {
-                // SVG — rasterise with libsvg.
-                decode_svg(&resp.body, &src, tab_idx);
-            } else if let Some(info) = libimage_client::probe(&resp.body) {
-                // Raster image (PNG, JPEG, BMP, …).
-                let w = info.width as usize;
-                let h = info.height as usize;
-                let mut pixels = vec![0u32; w * h];
-                let mut scratch = vec![0u8; info.scratch_needed as usize];
-                if libimage_client::decode(&resp.body, &mut pixels, &mut scratch).is_ok() {
-                    if tab_idx < st.tabs.len() {
-                        st.tabs[tab_idx]
-                            .webview
-                            .add_image(&src, pixels, info.width, info.height);
-                        st.tabs[tab_idx].webview.relayout();
-                    }
-                }
-            }
-        }
-        Err(_) => {}
-    }
-}
+// ═══════════════════════════════════════════════════════════
+// Image decode helpers (called from main.rs result handlers)
+// ═══════════════════════════════════════════════════════════
 
 /// Returns `true` when the fetched resource is an SVG document, detected
 /// either by the URL extension or the `Content-Type` response header.
-fn is_svg(src: &str, headers: &str) -> bool {
+pub(crate) fn is_svg(src: &str, headers: &str) -> bool {
     // URL extension check (fast path, strips query string first).
     let path = src.split('?').next().unwrap_or(src);
     let path_lower = path.to_ascii_lowercase();
@@ -323,11 +212,53 @@ fn is_svg(src: &str, headers: &str) -> bool {
     false
 }
 
+/// Decode a raster image (PNG, JPEG, BMP, GIF) and add the result to the
+/// image cache of `tab_idx`, then relayout.
+pub(crate) fn decode_raster(data: &[u8], src: &str, tab_idx: usize) {
+    decode_raster_no_relayout(data, src, tab_idx);
+    let st = crate::state();
+    if tab_idx < st.tabs.len() {
+        st.tabs[tab_idx].webview.relayout();
+    }
+}
+
+/// Decode a raster image without triggering a relayout.
+///
+/// Used by the batch result processor which does a single relayout at the end.
+pub(crate) fn decode_raster_no_relayout(data: &[u8], src: &str, tab_idx: usize) {
+    let info = match libimage_client::probe(data) {
+        Some(i) => i,
+        None => return,
+    };
+    let w = info.width;
+    let h = info.height;
+    if w == 0 || h == 0 || w > 4096 || h > 4096 {
+        return;
+    }
+    let mut pixels = vec![0u32; (w * h) as usize];
+    let mut scratch = vec![0u8; info.scratch_needed as usize];
+    if libimage_client::decode(data, &mut pixels, &mut scratch).is_ok() {
+        let st = crate::state();
+        if tab_idx < st.tabs.len() {
+            st.tabs[tab_idx].webview.add_image(src, pixels, w, h);
+        }
+    }
+}
+
 /// Rasterise an SVG document and add the result to the image cache of
-/// `tab_idx`.  The render dimensions are taken from the SVG's own
-/// `width`/`height` declarations (clamped to 4096), or fall back to 256×256.
-fn decode_svg(data: &[u8], src: &str, tab_idx: usize) {
-    // Probe declared dimensions; fall back to a sensible default.
+/// `tab_idx`, then relayout.
+pub(crate) fn decode_svg(data: &[u8], src: &str, tab_idx: usize) {
+    decode_svg_no_relayout(data, src, tab_idx);
+    let st = crate::state();
+    if tab_idx < st.tabs.len() {
+        st.tabs[tab_idx].webview.relayout();
+    }
+}
+
+/// Rasterise an SVG document without triggering a relayout.
+///
+/// Used by the batch result processor which does a single relayout at the end.
+pub(crate) fn decode_svg_no_relayout(data: &[u8], src: &str, tab_idx: usize) {
     let (rw, rh) = match libsvg_client::probe(data) {
         Some((w, h)) => {
             let w = (w as u32).max(1).min(4096);
@@ -342,7 +273,6 @@ fn decode_svg(data: &[u8], src: &str, tab_idx: usize) {
         let st = crate::state();
         if tab_idx < st.tabs.len() {
             st.tabs[tab_idx].webview.add_image(src, pixels, rw, rh);
-            st.tabs[tab_idx].webview.relayout();
         }
     }
 }

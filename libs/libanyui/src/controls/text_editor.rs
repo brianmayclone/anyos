@@ -498,11 +498,19 @@ impl Control for TextEditor {
     }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.base.x;
-        let y = ay + self.base.y;
-        let w = self.base.w;
-        let h = self.base.h;
+        let b = self.base();
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
+
+        // Scaled metrics for the monospace editor
+        let s_font_size = crate::draw::scale_font(self.font_size);
+        let s_line_h = crate::theme::scale(self.line_height);
+        let s_char_w = crate::theme::scale(self.char_width);
+        let s_gutter_w = crate::theme::scale(self.gutter_width);
+        let s_scroll_y = crate::theme::scale_i32(self.scroll_y);
+        let s_scroll_x = crate::theme::scale_i32(self.scroll_x);
+        let s_text_pad = crate::theme::scale_i32(2);
 
         // Background
         crate::draw::fill_rect(surface, x, y, w, h, tc.editor_bg);
@@ -510,11 +518,11 @@ impl Control for TextEditor {
         // Clipped surface for content
         let clipped = surface.with_clip(x + 1, y + 1, w.saturating_sub(2), h.saturating_sub(2));
 
-        let visible_start = (self.scroll_y / self.line_height as i32).max(0) as usize;
-        let visible_end = ((self.scroll_y + h as i32) / self.line_height as i32 + 1)
+        let visible_start = (s_scroll_y / s_line_h as i32).max(0) as usize;
+        let visible_end = ((s_scroll_y + h as i32) / s_line_h as i32 + 1)
             .min(self.lines.len() as i32) as usize;
 
-        let text_x_base = x + 1 + self.gutter_width as i32;
+        let text_x_base = x + 1 + s_gutter_w as i32;
 
         // Track block comment state: pre-scan lines before visible_start
         let mut in_block_comment = false;
@@ -528,16 +536,16 @@ impl Control for TextEditor {
         }
 
         for row in visible_start..visible_end {
-            let row_y = y + 1 + (row as i32) * self.line_height as i32 - self.scroll_y;
+            let row_y = y + 1 + (row as i32) * s_line_h as i32 - s_scroll_y;
 
             // Current line highlight
             if row == self.cursor_row && self.focused {
                 crate::draw::fill_rect(
                     &clipped,
-                    x + 1 + self.gutter_width as i32,
+                    x + 1 + s_gutter_w as i32,
                     row_y,
-                    w.saturating_sub(2).saturating_sub(self.gutter_width),
-                    self.line_height,
+                    w.saturating_sub(2).saturating_sub(s_gutter_w),
+                    s_line_h,
                     tc.editor_line_hl,
                 );
             }
@@ -551,13 +559,13 @@ impl Control for TextEditor {
                         let sel_start = if row == sr { sc.min(line_len) } else { 0 };
                         let sel_end = if row == er { ec.min(line_len) } else { line_len };
                         if sel_start < sel_end || (row > sr && row < er) {
-                            let sx = text_x_base + (sel_start as i32) * self.char_width as i32 - self.scroll_x;
+                            let sx = text_x_base + (sel_start as i32) * s_char_w as i32 - s_scroll_x;
                             let sel_chars = if sel_end > sel_start { sel_end - sel_start } else { 0 };
                             // For middle lines of multiline selection, extend to edge
                             let sw = if row > sr && row < er && sel_chars == 0 {
-                                w.saturating_sub(self.gutter_width).saturating_sub(2)
+                                w.saturating_sub(s_gutter_w).saturating_sub(2)
                             } else {
-                                (sel_chars as u32) * self.char_width
+                                (sel_chars as u32) * s_char_w
                             };
                             if sw > 0 {
                                 crate::draw::fill_rect(
@@ -565,7 +573,7 @@ impl Control for TextEditor {
                                     sx,
                                     row_y,
                                     sw,
-                                    self.line_height,
+                                    s_line_h,
                                     tc.editor_selection,
                                 );
                             }
@@ -579,8 +587,9 @@ impl Control for TextEditor {
                 let mut num_buf = [0u8; 8];
                 let num_len = format_line_number(row + 1, &mut num_buf);
                 let num_text = &num_buf[..num_len];
-                let (nw, _) = crate::draw::measure_text_ex(num_text, self.font_id, self.font_size);
-                let gutter_text_x = x + 1 + self.gutter_width as i32 - nw as i32 - 8;
+                let (nw, _) = crate::draw::measure_text_ex(num_text, self.font_id, s_font_size);
+                let gutter_pad = crate::theme::scale_i32(8);
+                let gutter_text_x = x + 1 + s_gutter_w as i32 - nw as i32 - gutter_pad;
                 let line_num_color = if row == self.cursor_row {
                     tc.text_secondary
                 } else {
@@ -589,11 +598,11 @@ impl Control for TextEditor {
                 crate::draw::draw_text_ex(
                     &clipped,
                     gutter_text_x,
-                    row_y + 2,
+                    row_y + s_text_pad,
                     line_num_color,
                     num_text,
                     self.font_id,
-                    self.font_size,
+                    s_font_size,
                 );
             }
 
@@ -605,28 +614,28 @@ impl Control for TextEditor {
                     in_block_comment = still_in;
                     for span in &spans {
                         let text_slice = &line[span.start..span.end];
-                        let span_x = text_x_base + (span.start as i32) * self.char_width as i32
-                            - self.scroll_x;
+                        let span_x = text_x_base + (span.start as i32) * s_char_w as i32
+                            - s_scroll_x;
                         crate::draw::draw_text_ex(
                             &clipped,
                             span_x,
-                            row_y + 2,
+                            row_y + s_text_pad,
                             span.color,
                             text_slice,
                             self.font_id,
-                            self.font_size,
+                            s_font_size,
                         );
                     }
                 } else {
-                    let text_x = text_x_base - self.scroll_x;
+                    let text_x = text_x_base - s_scroll_x;
                     crate::draw::draw_text_ex(
                         &clipped,
                         text_x,
-                        row_y + 2,
+                        row_y + s_text_pad,
                         tc.text,
                         line,
                         self.font_id,
-                        self.font_size,
+                        s_font_size,
                     );
                 }
             } else if let Some(ref syn) = self.syntax {
@@ -636,14 +645,15 @@ impl Control for TextEditor {
 
             // Cursor
             if row == self.cursor_row && self.focused {
-                let cursor_x = text_x_base + (self.cursor_col as i32) * self.char_width as i32
-                    - self.scroll_x;
+                let cursor_x = text_x_base + (self.cursor_col as i32) * s_char_w as i32
+                    - s_scroll_x;
+                let cursor_w = crate::theme::scale(2);
                 crate::draw::fill_rect(
                     &clipped,
                     cursor_x,
                     row_y + 1,
-                    2,
-                    self.line_height.saturating_sub(2),
+                    cursor_w,
+                    s_line_h.saturating_sub(crate::theme::scale(2)),
                     tc.accent,
                 );
             }
@@ -653,7 +663,7 @@ impl Control for TextEditor {
         if self.show_line_numbers && self.gutter_width > 0 {
             crate::draw::fill_rect(
                 &clipped,
-                x + self.gutter_width as i32,
+                x + s_gutter_w as i32,
                 y + 1,
                 1,
                 h.saturating_sub(2),
@@ -666,17 +676,20 @@ impl Control for TextEditor {
         crate::draw::draw_border(surface, x, y, w, h, border_color);
 
         // Vertical scrollbar
-        let content_h = self.content_height();
+        let s_content_h = crate::theme::scale_i32(self.content_height());
         let visible_h = h as i32 - 2;
-        if content_h > visible_h && visible_h > 0 {
-            let track_x = x + w as i32 - 9;
+        if s_content_h > visible_h && visible_h > 0 {
+            let bar_w = crate::theme::scale(8);
+            let track_x = x + w as i32 - bar_w as i32 - 1;
             let track_h = h.saturating_sub(2);
-            crate::draw::fill_rect(surface, track_x, y + 1, 8, track_h, tc.scrollbar_track);
-            let max_scroll = (content_h - visible_h).max(1) as u32;
-            let thumb_h = ((visible_h as u32 * track_h) / content_h as u32).max(20);
+            crate::draw::fill_rect(surface, track_x, y + 1, bar_w, track_h, tc.scrollbar_track);
+            let max_scroll = (s_content_h - visible_h).max(1) as u32;
+            let min_thumb = crate::theme::scale(20);
+            let thumb_h = ((visible_h as u32 * track_h) / s_content_h as u32).max(min_thumb);
             let thumb_y = y + 1
-                + (self.scroll_y as u32 * (track_h.saturating_sub(thumb_h)) / max_scroll) as i32;
-            crate::draw::fill_rect(surface, track_x + 1, thumb_y, 6, thumb_h, tc.scrollbar);
+                + (s_scroll_y as u32 * (track_h.saturating_sub(thumb_h)) / max_scroll) as i32;
+            let inner_bar = if bar_w > 2 { bar_w - 2 } else { bar_w };
+            crate::draw::fill_rect(surface, track_x + 1, thumb_y, inner_bar, thumb_h, tc.scrollbar);
         }
     }
 

@@ -35,14 +35,13 @@ impl Control for SegmentedControl {
     fn kind(&self) -> ControlKind { ControlKind::SegmentedControl }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.text_base.base.x;
-        let y = ay + self.text_base.base.y;
-        let w = self.text_base.base.w;
-        let h = self.text_base.base.h;
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
-        let disabled = self.text_base.base.disabled;
-        let focused = self.text_base.base.focused;
-        let active = self.text_base.base.state as usize;
+        let disabled = b.disabled;
+        let focused = b.focused;
+        let active = b.state as usize;
         let n = self.segment_count();
         if n == 0 { return; }
 
@@ -59,7 +58,7 @@ impl Control for SegmentedControl {
 
             // Active segment: raised pill with shadow
             if i == active {
-                let pad = 2i32;
+                let pad = crate::theme::scale_i32(2);
                 let aw = sw.saturating_sub(pad as u32 * 2);
                 let ah = h.saturating_sub(pad as u32 * 2);
                 let ar = ah / 2;
@@ -73,7 +72,8 @@ impl Control for SegmentedControl {
             // Segment label text
             let label = self.segment_label(i);
             if !label.is_empty() {
-                let font_size = if self.text_base.text_style.font_size > 0 { self.text_base.text_style.font_size } else { 12 };
+                let logical_fs = if self.text_base.text_style.font_size > 0 { self.text_base.text_style.font_size } else { 12 };
+                let font_size = crate::draw::scale_font(logical_fs);
                 let (tw, _th) = crate::draw::text_size_at(label, font_size);
                 let tx = sx + (sw as i32 - tw as i32) / 2;
                 let ty = y + (h as i32 - font_size as i32) / 2;
@@ -90,7 +90,9 @@ impl Control for SegmentedControl {
             // Separator (not after last, not adjacent to active)
             if i < n - 1 && i != active && i + 1 != active {
                 let sep_x = sx + sw as i32 - 1;
-                crate::draw::fill_rect(surface, sep_x, y + 6, 1, h.saturating_sub(12), tc.separator);
+                let sep_pad = crate::theme::scale_i32(6);
+                let sep_h = h.saturating_sub(crate::theme::scale(12));
+                crate::draw::fill_rect(surface, sep_x, y + sep_pad, 1, sep_h, tc.separator);
             }
         }
 

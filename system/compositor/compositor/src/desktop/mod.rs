@@ -16,7 +16,7 @@ pub use cursors::CursorShape;
 pub use theme::{set_theme, set_font_smoothing};
 pub use window::{
     copy_shm_to_pixels, pre_render_chrome_ex,
-    MENUBAR_HEIGHT, TITLE_BAR_HEIGHT, WIN_FLAG_BORDERLESS,
+    menubar_height, title_bar_height, WIN_FLAG_BORDERLESS,
 };
 
 use alloc::vec;
@@ -191,7 +191,7 @@ impl Desktop {
         let bg_id = compositor.add_layer(0, 0, width, height, true);
 
         // Menubar layer (always on top, above all windows)
-        let mb_id = compositor.add_layer(0, 0, width, MENUBAR_HEIGHT + 1, false);
+        let mb_id = compositor.add_layer(0, 0, width, menubar_height() + 1, false);
         if let Some(layer) = compositor.get_layer_mut(mb_id) {
             layer.has_shadow = true;
         }
@@ -234,7 +234,7 @@ impl Desktop {
             notifications: notifications::NotificationManager::new(),
             volume_hud: volume_hud::VolumeHud::new(),
             cascade_x: 120,
-            cascade_y: MENUBAR_HEIGHT as i32 + 50,
+            cascade_y: menubar_height() as i32 + 50,
             frame_ack_queue: Vec::new(),
             logout_requested: false,
             shutdown_mode: 0,
@@ -706,25 +706,26 @@ impl Desktop {
     /// Draw the menubar layer.
     pub fn draw_menubar(&mut self) {
         let w = self.screen_width;
-        let h = MENUBAR_HEIGHT + 1;
+        let mb_h = menubar_height();
+        let h = mb_h + 1;
         if let Some(pixels) = self.compositor.layer_pixels(self.menubar_layer_id) {
-            for y in 0..MENUBAR_HEIGHT {
+            for y in 0..mb_h {
                 for x in 0..w {
                     pixels[(y * w + x) as usize] = color_menubar_bg();
                 }
             }
             for x in 0..w {
-                pixels[(MENUBAR_HEIGHT * w + x) as usize] = color_menubar_border();
+                pixels[(mb_h * w + x) as usize] = color_menubar_border();
             }
 
             // Render logo (white for dark mode, black for light mode)
             let logo = if is_light() { &self.logo_black } else { &self.logo_white };
             if !logo.is_empty() && self.logo_w > 0 && self.logo_h > 0 {
                 let lx = 10i32;
-                let ly = ((MENUBAR_HEIGHT as i32 - self.logo_h as i32) / 2).max(0);
+                let ly = ((mb_h as i32 - self.logo_h as i32) / 2).max(0);
                 for row in 0..self.logo_h {
                     let py = ly + row as i32;
-                    if py < 0 || py >= MENUBAR_HEIGHT as i32 { continue; }
+                    if py < 0 || py >= mb_h as i32 { continue; }
                     for col in 0..self.logo_w {
                         let px = lx + col as i32;
                         if px < 0 || px >= w as i32 { continue; }
@@ -743,17 +744,18 @@ impl Desktop {
                 }
             } else {
                 // Fallback: render "anyOS" text if logos not loaded
-                let (_, fh) = anyos_std::ui::window::font_measure(FONT_ID_BOLD, FONT_SIZE, "anyOS");
-                let fy = ((MENUBAR_HEIGHT as i32 - fh as i32) / 2).max(0);
+                let fs = scaled_font_size();
+                let (_, fh) = anyos_std::ui::window::font_measure(FONT_ID_BOLD, fs, "anyOS");
+                let fy = ((mb_h as i32 - fh as i32) / 2).max(0);
                 anyos_std::ui::window::font_render_buf(
-                    FONT_ID_BOLD, FONT_SIZE, pixels, w, h, 10, fy, color_menubar_text(), "anyOS",
+                    FONT_ID_BOLD, fs, pixels, w, h, 10, fy, color_menubar_text(), "anyOS",
                 );
             }
 
             // Render system menu highlight if the system dropdown is open
             if self.menu_bar.system_menu_open {
                 let highlight_w = crate::menu::types::SYSTEM_MENU_WIDTH as u32;
-                for y in 0..MENUBAR_HEIGHT {
+                for y in 0..mb_h {
                     for x in 0..highlight_w.min(w) {
                         let idx = (y * w + x) as usize;
                         if idx < pixels.len() {
@@ -794,7 +796,7 @@ impl Desktop {
                 (w as i32 - 60).max(0),
                 0,
                 60,
-                MENUBAR_HEIGHT + 1,
+                menubar_height() + 1,
             ));
             true
         } else {
@@ -828,10 +830,38 @@ impl Desktop {
         self.compositor.resize_fb(new_w, new_h, pitch);
         self.compositor.resize_layer(self.bg_layer_id, new_w, new_h);
         self.compositor
-            .resize_layer(self.menubar_layer_id, new_w, MENUBAR_HEIGHT + 1);
+            .resize_layer(self.menubar_layer_id, new_w, menubar_height() + 1);
 
         self.draw_gradient_background();
         self.wallpaper_pending = true;
+
+        self.draw_menubar();
+        self.compositor.damage_all();
+    }
+
+    /// Handle a runtime DPI scale factor change.
+    ///
+    /// Resizes the menubar layer (its pixel buffer must match the new scaled
+    /// height) and all window layers (title bar height changes), then forces
+    /// a full redraw.
+    pub fn handle_scale_change(&mut self) {
+        // Resize menubar layer to new scaled height.
+        let sw = self.screen_width;
+        self.compositor
+            .resize_layer(self.menubar_layer_id, sw, menubar_height() + 1);
+
+        // Resize every window layer — title bar height changed, so the
+        // compositor-owned pixel buffer for each window needs to grow/shrink.
+        for win in &self.windows {
+            let new_full_h = win.full_height();
+            self.compositor
+                .resize_layer(win.layer_id, win.content_width, new_full_h);
+        }
+
+        // Invalidate all shadow caches (spread/offset changed).
+        for layer in self.compositor.layers.iter_mut() {
+            layer.shadow_cache = None;
+        }
 
         self.draw_menubar();
         self.compositor.damage_all();
@@ -907,7 +937,7 @@ impl Desktop {
 
         // Center on screen
         let x = (self.screen_width as i32 - 420) / 2;
-        let y = (self.screen_height as i32 - (content_h + TITLE_BAR_HEIGHT) as i32) / 2;
+        let y = (self.screen_height as i32 - (content_h + title_bar_height()) as i32) / 2;
 
         let win_id = self.create_window("Application Crashed", x, y, 420, content_h, flags, 0);
 
@@ -915,7 +945,7 @@ impl Desktop {
 
         // Render the dialog content
         let layer_id = self.windows.iter().find(|w| w.id == win_id).map(|w| w.layer_id).unwrap_or(0);
-        let full_h = content_h + TITLE_BAR_HEIGHT;
+        let full_h = content_h + title_bar_height();
         if let Some(pixels) = self.compositor.layer_pixels(layer_id) {
             dialog.render(pixels, 420, full_h);
         }
@@ -943,7 +973,7 @@ impl Desktop {
                 // Resize the window
                 if let Some(win) = self.windows.iter_mut().find(|w| w.id == window_id) {
                     win.content_height = new_h;
-                    let full_h = new_h + TITLE_BAR_HEIGHT;
+                    let full_h = new_h + title_bar_height();
                     let layer_id = win.layer_id;
                     let cw = win.content_width;
                     self.compositor.resize_layer(layer_id, cw, full_h);
@@ -981,19 +1011,21 @@ fn draw_clock_to_menubar(pixels: &mut [u32], stride: u32) {
     clock_str[4] = b'0' + minute % 10;
 
     if let Ok(s) = core::str::from_utf8(&clock_str) {
-        let h = MENUBAR_HEIGHT + 1;
-        let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, s);
+        let mb_h = menubar_height();
+        let h = mb_h + 1;
+        let fs = scaled_font_size();
+        let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, fs, s);
         let tx = stride as i32 - tw as i32 - 10;
-        let fy = ((MENUBAR_HEIGHT as i32 - th as i32) / 2).max(0);
+        let fy = ((mb_h as i32 - th as i32) / 2).max(0);
 
-        for y in 0..MENUBAR_HEIGHT {
+        for y in 0..mb_h {
             for x in (tx - 4).max(0) as u32..stride {
                 pixels[(y * stride + x) as usize] = color_menubar_bg();
             }
         }
 
         anyos_std::ui::window::font_render_buf(
-            FONT_ID, FONT_SIZE, pixels, stride, h, tx, fy, color_menubar_text(), s,
+            FONT_ID, fs, pixels, stride, h, tx, fy, color_menubar_text(), s,
         );
     }
 }

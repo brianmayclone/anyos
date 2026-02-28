@@ -8,6 +8,7 @@
 
 #include <stddef.h>
 #include <sys/types.h>
+#include <time.h>
 
 struct stat {
     dev_t    st_dev;
@@ -20,10 +21,14 @@ struct stat {
     off_t    st_size;
     blksize_t st_blksize;
     blkcnt_t  st_blkcnt;
-    time_t   st_atime;
-    time_t   st_mtime;
-    time_t   st_ctime;
+    struct timespec st_atim;
+    struct timespec st_mtim;
+    struct timespec st_ctim;
 };
+
+#define st_atime st_atim.tv_sec
+#define st_mtime st_mtim.tv_sec
+#define st_ctime st_ctim.tv_sec
 
 #define S_IFMT   0170000
 #define S_IFREG  0100000
@@ -73,6 +78,8 @@ int stat(const char *path, struct stat *buf);
 int fstat(int fd, struct stat *buf);
 int fstatat(int dirfd, const char *pathname, struct stat *statbuf, int flags);
 int mkdir(const char *path, unsigned int mode);
+int utimensat(int dirfd, const char *pathname, const struct timespec times[2], int flags);
+int mkdirat(int dirfd, const char *pathname, unsigned int mode);
 
 #ifdef __cplusplus
 }

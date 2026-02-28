@@ -10,7 +10,7 @@
 
 use super::Compositor;
 use super::rect::Rect;
-use super::layer::{AccelMoveHint, SHADOW_OFFSET_X, SHADOW_OFFSET_Y, SHADOW_SPREAD};
+use super::layer::{AccelMoveHint, SHADOW_OFFSET_X, shadow_offset_y, shadow_spread};
 use super::blend::{alpha_blend, shadow_blend, compute_shadow_cache, blur_back_buffer_region};
 use super::gpu::{GPU_UPDATE, GPU_FLIP, GPU_RECT_COPY, GPU_SYNC};
 
@@ -439,8 +439,8 @@ impl Compositor {
         let layer_w = self.layers[layer_idx].width;
         let layer_h = self.layers[layer_idx].height;
         let lx = self.layers[layer_idx].x + SHADOW_OFFSET_X;
-        let ly = self.layers[layer_idx].y + SHADOW_OFFSET_Y;
-        let spread = SHADOW_SPREAD;
+        let ly = self.layers[layer_idx].y + shadow_offset_y();
+        let spread = shadow_spread();
 
         // Ensure shadow cache exists and matches current layer dimensions
         let needs_recompute = match &self.layers[layer_idx].shadow_cache {
@@ -475,7 +475,7 @@ impl Compositor {
             let cache_len = alphas.len();
 
             // Interior skip: use the ACTUAL window rect (not the shadow's offset position).
-            // With SHADOW_OFFSET_Y=6, using the shadow offset would incorrectly skip
+            // With shadow_offset_y()>0, using the shadow offset would incorrectly skip
             // the 6px strip below the window where shadow should be visible.
             let win_abs_x0 = self.layers[layer_idx].x;
             let win_abs_x1 = self.layers[layer_idx].x + layer_w as i32;

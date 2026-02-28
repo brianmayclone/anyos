@@ -143,6 +143,21 @@ pub fn get_font_smoothing() -> u32 {
     (crate::lib().get_font_smoothing)()
 }
 
+/// Set the DPI scale factor system-wide (100–300 in 25% steps).
+///
+/// Sends an IPC command to the compositor, which writes to the shared page
+/// and persists the setting. All apps pick up the change on next frame.
+pub fn set_scale_factor(percent: u32) {
+    (crate::lib().set_scale_factor)(percent);
+}
+
+/// Get the current DPI scale factor from the shared uisys page.
+///
+/// Returns: scale percentage (100 = 1x, 200 = 2x, etc.).
+pub fn get_scale_factor() -> u32 {
+    (crate::lib().get_scale_factor)()
+}
+
 // ── Color utility functions ──────────────────────────────────────────
 
 /// Darken a color by subtracting `amount` from each RGB channel.

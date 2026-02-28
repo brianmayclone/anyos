@@ -59,6 +59,8 @@ int link(const char *oldpath, const char *newpath);
 int symlink(const char *target, const char *linkpath);
 ssize_t readlink(const char *path, char *buf, size_t bufsiz);
 int chown(const char *path, unsigned int owner, unsigned int group);
+int fchown(int fd, unsigned int owner, unsigned int group);
+int lchown(const char *path, unsigned int owner, unsigned int group);
 unsigned int sleep(unsigned int seconds);
 long sysconf(int name);
 pid_t getpid(void);
@@ -88,6 +90,7 @@ size_t confstr(int name, char *buf, size_t len);
 #define _SC_NPROCESSORS_CONF 28
 #define _SC_NPROCESSORS_ONLN 29
 #define _SC_LINE_MAX      84
+#define _SC_PHYS_PAGES    85
 
 #define _PC_NAME_MAX 1
 #define _PC_PATH_MAX 2

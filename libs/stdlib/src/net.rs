@@ -142,6 +142,17 @@ pub fn tcp_status(socket_id: u32) -> u32 {
     syscall1(SYS_TCP_STATUS, socket_id as u64)
 }
 
+/// Check bytes available to read on a TCP socket without blocking.
+///
+/// Returns:
+/// - `> 0`: number of bytes ready to read
+/// - `0`: no data available yet (connection still open)
+/// - `u32::MAX - 1` (0xFFFFFFFE): EOF (remote closed / FIN received)
+/// - `u32::MAX` (0xFFFFFFFF): error (connection reset or invalid socket)
+pub fn tcp_recv_available(socket_id: u32) -> u32 {
+    syscall1(SYS_TCP_RECV_AVAILABLE, socket_id as u64)
+}
+
 /// Listen on a TCP port. Returns listener socket_id or u32::MAX.
 pub fn tcp_listen(port: u16, backlog: u16) -> u32 {
     syscall2(SYS_TCP_LISTEN, port as u64, backlog as u64)

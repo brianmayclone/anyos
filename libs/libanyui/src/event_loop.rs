@@ -75,6 +75,10 @@ pub fn run_once() -> u32 {
     let mut pending_cbs: Vec<PendingCallback> = Vec::new();
     let mut windows_to_close: Vec<ControlId> = Vec::new();
 
+    // Refresh the cached DPI scale factor once per frame so all
+    // scale()/unscale() calls within this iteration use a consistent value.
+    crate::theme::refresh_scale_cache();
+
     let st = crate::state();
     if st.quit_requested || st.windows.is_empty() {
         return 0;
@@ -123,8 +127,10 @@ pub fn run_once() -> u32 {
                 if ev[0] >= 0x3000 && ev[1] == popup_window_id {
                     match ev[0] {
                         compositor::EVT_MOUSE_MOVE => {
-                            let mx = ev[2] as i32;
-                            let my = ev[3] as i32;
+                            // Physical pixels from compositor — convert to logical
+                            // so bounds checks align with the menu control's logical dimensions.
+                            let mx = crate::theme::unscale(ev[2] as i32);
+                            let my = crate::theme::unscale(ev[3] as i32);
                             // Extract popup data to release borrow before accessing controls
                             let popup_data = st.popup.as_ref().map(|p| (p.margin, p.menu_id));
                             if let Some((margin, menu_id)) = popup_data {
@@ -149,8 +155,9 @@ pub fn run_once() -> u32 {
                             }
                         }
                         compositor::EVT_MOUSE_DOWN => {
-                            let mx = ev[2] as i32;
-                            let my = ev[3] as i32;
+                            // Physical pixels from compositor — convert to logical.
+                            let mx = crate::theme::unscale(ev[2] as i32);
+                            let my = crate::theme::unscale(ev[3] as i32);
                             let popup_data = st.popup.as_ref().map(|p| (p.margin, p.menu_id));
                             if let Some((margin, menu_id)) = popup_data {
                                 if let Some(idx) = control::find_idx(&st.controls, menu_id) {
@@ -169,8 +176,9 @@ pub fn run_once() -> u32 {
                             }
                         }
                         compositor::EVT_MOUSE_UP => {
-                            let mx = ev[2] as i32;
-                            let my = ev[3] as i32;
+                            // Physical pixels from compositor — convert to logical.
+                            let mx = crate::theme::unscale(ev[2] as i32);
+                            let my = crate::theme::unscale(ev[3] as i32);
                             if let Some(menu_id) = st.pressed.take() {
                                 let margin = st.popup.as_ref().map(|p| p.margin).unwrap_or(0);
                                 let owner_dd = st.popup.as_ref().and_then(|p| p.owner_dropdown);
@@ -252,6 +260,38 @@ pub fn run_once() -> u32 {
                     }
                 }
             }
+            // EVT_SCALE_CHANGED (0x0052): DPI scale factor changed at runtime.
+            // Refresh cached scale, resize SHM buffers to new physical dimensions,
+            // and force a full redraw of all windows.
+            0x0052 => {
+                crate::theme::refresh_scale_cache();
+                for cw in st.comp_windows.iter_mut() {
+                    let phys_w = crate::theme::scale(cw.logical_width);
+                    let phys_h = crate::theme::scale(cw.logical_height);
+                    if phys_w != cw.width || phys_h != cw.height {
+                        if let Some((new_shm_id, new_surface)) = crate::compositor::resize_shm(
+                            st.channel_id,
+                            cw.window_id,
+                            cw.shm_id,
+                            phys_w,
+                            phys_h,
+                        ) {
+                            cw.shm_id = new_shm_id;
+                            cw.surface = new_surface;
+                        }
+                        cw.width = phys_w;
+                        cw.height = phys_h;
+                        let new_count = (phys_w as usize) * (phys_h as usize);
+                        cw.back_buffer.resize(new_count, 0);
+                    }
+                }
+                for &win_id in &st.windows {
+                    if let Some(idx) = crate::control::find_idx(&st.controls, win_id) {
+                        mark_tree_dirty(&mut st.controls, idx);
+                    }
+                }
+                st.needs_layout = true;
+            }
             0x0060 => {
                 // EVT_WINDOW_OPENED: ev[1] = app_tid
                 if let Some((cb, ud)) = st.on_window_opened {
@@ -303,9 +343,10 @@ pub fn run_once() -> u32 {
                 }
 
                 compositor::EVT_MOUSE_MOVE => {
-                    // arg1=local_x, arg2=local_y
-                    let mx = ev[2] as i32;
-                    let my = ev[3] as i32;
+                    // arg1=local_x, arg2=local_y (physical pixels from compositor).
+                    // Convert to logical pixels for the control tree.
+                    let mx = crate::theme::unscale(ev[2] as i32);
+                    let my = crate::theme::unscale(ev[3] as i32);
 
                     // Update hover tracking (MouseEnter / MouseLeave)
                     let new_hover = control::hit_test_any(&st.controls, win_id, mx, my, 0, 0);
@@ -424,9 +465,10 @@ pub fn run_once() -> u32 {
                 }
 
                 compositor::EVT_MOUSE_DOWN => {
-                    // arg1=local_x, arg2=local_y, arg3=buttons|modifiers<<8
-                    let mx = ev[2] as i32;
-                    let my = ev[3] as i32;
+                    // arg1=local_x, arg2=local_y (physical), arg3=buttons|modifiers<<8.
+                    // Convert to logical pixels for the control tree.
+                    let mx = crate::theme::unscale(ev[2] as i32);
+                    let my = crate::theme::unscale(ev[3] as i32);
                     let button = ev[4] & 0xFF;
                     st.last_modifiers = (ev[4] >> 8) & 0xFF;
 
@@ -486,9 +528,10 @@ pub fn run_once() -> u32 {
                 }
 
                 compositor::EVT_MOUSE_UP => {
-                    // arg1=local_x, arg2=local_y, arg3=modifiers<<8
-                    let mx = ev[2] as i32;
-                    let my = ev[3] as i32;
+                    // arg1=local_x, arg2=local_y (physical), arg3=modifiers<<8.
+                    // Convert to logical pixels for the control tree.
+                    let mx = crate::theme::unscale(ev[2] as i32);
+                    let my = crate::theme::unscale(ev[3] as i32);
                     let button = ev[4] & 0xFF;
                     st.last_modifiers = (ev[4] >> 8) & 0xFF;
 
@@ -523,31 +566,39 @@ pub fn run_once() -> u32 {
                                                 // Dismiss any existing popup first
                                                 dismiss_popup(st);
 
-                                                // Get menu dimensions
+                                                // Get menu dimensions (logical)
                                                 let menu_w = st.controls[mi].base().w;
                                                 let menu_h = st.controls[mi].base().h;
 
-                                                // Shadow margin: context menu shadow spread=12, y_offset=3
+                                                // Shadow margin (logical pixels)
                                                 let margin: i32 = 16;
                                                 let popup_w = menu_w + (margin as u32) * 2;
                                                 let popup_h = menu_h + (margin as u32) * 2;
 
-                                                // Get parent window's content-area screen position
+                                                // Physical popup dimensions for SHM surface
+                                                let phys_popup_w = crate::theme::scale(popup_w);
+                                                let phys_popup_h = crate::theme::scale(popup_h);
+
+                                                // Get parent window's content-area screen position (physical)
                                                 let (content_x, content_y) = compositor::get_window_position(
                                                     st.channel_id, st.sub_id, comp_window_id,
                                                 );
 
-                                                // Calculate popup screen position (menu at cursor)
-                                                let mut popup_x = content_x + mx - margin;
-                                                let mut popup_y = content_y + my - margin;
+                                                // Calculate popup screen position (physical coords).
+                                                // mx/my are logical — scale to physical for screen placement.
+                                                let phys_mx = crate::theme::scale_i32(mx);
+                                                let phys_my = crate::theme::scale_i32(my);
+                                                let phys_margin = crate::theme::scale_i32(margin);
+                                                let mut popup_x = content_x + phys_mx - phys_margin;
+                                                let mut popup_y = content_y + phys_my - phys_margin;
 
-                                                // Clamp to screen bounds
+                                                // Clamp to screen bounds (physical)
                                                 let (scr_w, scr_h) = compositor::screen_size();
-                                                if popup_x + popup_w as i32 > scr_w as i32 {
-                                                    popup_x = scr_w as i32 - popup_w as i32;
+                                                if popup_x + phys_popup_w as i32 > scr_w as i32 {
+                                                    popup_x = scr_w as i32 - phys_popup_w as i32;
                                                 }
-                                                if popup_y + popup_h as i32 > scr_h as i32 {
-                                                    popup_y = scr_h as i32 - popup_h as i32;
+                                                if popup_y + phys_popup_h as i32 > scr_h as i32 {
+                                                    popup_y = scr_h as i32 - phys_popup_h as i32;
                                                 }
                                                 if popup_x < 0 { popup_x = 0; }
                                                 if popup_y < 0 { popup_y = 0; }
@@ -558,7 +609,7 @@ pub fn run_once() -> u32 {
                                                 if let Some((popup_win_id, shm_id, surface)) = compositor::create_window(
                                                     st.channel_id, st.sub_id,
                                                     popup_x, popup_y,
-                                                    popup_w, popup_h,
+                                                    phys_popup_w, phys_popup_h,
                                                     popup_flags,
                                                 ) {
                                                     // Position menu at origin for clean popup rendering
@@ -566,17 +617,18 @@ pub fn run_once() -> u32 {
                                                     // Menu stays invisible in parent (rendered directly in popup)
                                                     st.controls[mi].base_mut().visible = false;
 
-                                                    let back_buffer = alloc::vec![0u32; (popup_w * popup_h) as usize];
+                                                    // Back buffer at physical dimensions.
+                                                    let back_buffer = alloc::vec![0u32; (phys_popup_w * phys_popup_h) as usize];
                                                     st.popup = Some(crate::PopupInfo {
                                                         window_id: popup_win_id,
                                                         shm_id,
                                                         surface,
-                                                        width: popup_w,
-                                                        height: popup_h,
+                                                        width: phys_popup_w,
+                                                        height: phys_popup_h,
                                                         back_buffer,
                                                         menu_id,
                                                         owner_win_idx: wi,
-                                                        margin,
+                                                        margin,  // logical — used for hit-testing and render offset
                                                         dirty: true,
                                                         owner_dropdown: None,
                                                     });
@@ -621,52 +673,63 @@ pub fn run_once() -> u32 {
                                                     st.controls[mi].base_mut().w = menu_w;
                                                     let menu_h = st.controls[mi].base().h;
 
-                                                    // Shadow margin
+                                                    // Shadow margin (logical pixels)
                                                     let margin: i32 = 16;
                                                     let popup_w = menu_w + (margin as u32) * 2;
                                                     let popup_h = menu_h + (margin as u32) * 2;
 
-                                                    // Position popup below the DropDown
+                                                    // Physical popup dimensions for SHM surface
+                                                    let phys_popup_w = crate::theme::scale(popup_w);
+                                                    let phys_popup_h = crate::theme::scale(popup_h);
+
+                                                    // Position popup below the DropDown (physical coords).
+                                                    // dd_abs is logical — scale for compositor screen placement.
                                                     let (content_x, content_y) = compositor::get_window_position(
                                                         st.channel_id, st.sub_id, comp_window_id,
                                                     );
-                                                    let mut popup_x = content_x + dd_abs.0 - margin;
-                                                    let mut popup_y = content_y + dd_abs.1 + dd_h as i32 - margin;
+                                                    let phys_dd_x = crate::theme::scale_i32(dd_abs.0);
+                                                    let phys_dd_y = crate::theme::scale_i32(dd_abs.1);
+                                                    let phys_dd_h = crate::theme::scale(dd_h);
+                                                    let phys_margin = crate::theme::scale_i32(margin);
+                                                    let phys_menu_h = crate::theme::scale(menu_h);
+                                                    let mut popup_x = content_x + phys_dd_x - phys_margin;
+                                                    let mut popup_y = content_y + phys_dd_y + phys_dd_h as i32 - phys_margin;
 
-                                                    // Clamp to screen bounds
+                                                    // Clamp to screen bounds (physical)
                                                     let (scr_w, scr_h) = compositor::screen_size();
-                                                    if popup_x + popup_w as i32 > scr_w as i32 {
-                                                        popup_x = scr_w as i32 - popup_w as i32;
+                                                    if popup_x + phys_popup_w as i32 > scr_w as i32 {
+                                                        popup_x = scr_w as i32 - phys_popup_w as i32;
                                                     }
-                                                    if popup_y + popup_h as i32 > scr_h as i32 {
+                                                    if popup_y + phys_popup_h as i32 > scr_h as i32 {
                                                         // Open upward if no room below
-                                                        popup_y = content_y + dd_abs.1 - menu_h as i32 - margin;
+                                                        popup_y = content_y + phys_dd_y - phys_menu_h as i32 - phys_margin;
                                                     }
                                                     if popup_x < 0 { popup_x = 0; }
                                                     if popup_y < 0 { popup_y = 0; }
 
-                                                    // Create popup compositor window
+                                                    // Create popup compositor window (physical dimensions)
                                                     let popup_flags: u32 = 0x01 | 0x02 | 0x04 | 0x100;
                                                     if let Some((popup_win_id, shm_id, surface)) = compositor::create_window(
                                                         st.channel_id, st.sub_id,
                                                         popup_x, popup_y,
-                                                        popup_w, popup_h,
+                                                        phys_popup_w, phys_popup_h,
                                                         popup_flags,
                                                     ) {
                                                         st.controls[mi].set_position(0, 0);
                                                         st.controls[mi].base_mut().visible = false;
 
-                                                        let back_buffer = alloc::vec![0u32; (popup_w * popup_h) as usize];
+                                                        // Back buffer at physical dimensions.
+                                                        let back_buffer = alloc::vec![0u32; (phys_popup_w * phys_popup_h) as usize];
                                                         st.popup = Some(crate::PopupInfo {
                                                             window_id: popup_win_id,
                                                             shm_id,
                                                             surface,
-                                                            width: popup_w,
-                                                            height: popup_h,
+                                                            width: phys_popup_w,
+                                                            height: phys_popup_h,
                                                             back_buffer,
                                                             menu_id,
                                                             owner_win_idx: wi,
-                                                            margin,
+                                                            margin,  // logical — used for hit-testing and render offset
                                                             dirty: true,
                                                             owner_dropdown: Some(target_id),
                                                         });
@@ -810,31 +873,37 @@ pub fn run_once() -> u32 {
                 }
 
                 compositor::EVT_RESIZE => {
-                    // arg1=new_w, arg2=new_h
-                    let new_w = ev[2];
-                    let new_h = ev[3];
-                    // Resize the SHM buffer to fit the new dimensions
+                    // arg1=new_w, arg2=new_h — physical pixels from compositor.
+                    let phys_w = ev[2];
+                    let phys_h = ev[3];
+                    // Convert to logical for the control tree.
+                    let logical_w = crate::theme::unscale_u32(phys_w);
+                    let logical_h = crate::theme::unscale_u32(phys_h);
+                    // Resize the SHM buffer at physical dimensions.
                     if wi < st.comp_windows.len() {
                         let cw = &mut st.comp_windows[wi];
                         if let Some((new_shm_id, new_surface)) = compositor::resize_shm(
                             st.channel_id,
                             cw.window_id,
                             cw.shm_id,
-                            new_w,
-                            new_h,
+                            phys_w,
+                            phys_h,
                         ) {
                             cw.shm_id = new_shm_id;
                             cw.surface = new_surface;
                         }
-                        cw.width = new_w;
-                        cw.height = new_h;
-                        // Resize back buffer to match new dimensions
-                        let new_count = (new_w as usize) * (new_h as usize);
+                        cw.width = phys_w;
+                        cw.height = phys_h;
+                        cw.logical_width = logical_w;
+                        cw.logical_height = logical_h;
+                        // Resize back buffer at physical dimensions.
+                        let new_count = (phys_w as usize) * (phys_h as usize);
                         cw.back_buffer.resize(new_count, 0);
 
                     }
                     if let Some(idx) = control::find_idx(&st.controls, win_id) {
-                        st.controls[idx].set_size(new_w, new_h);
+                        // Control tree uses logical dimensions.
+                        st.controls[idx].set_size(logical_w, logical_h);
                         fire_event_callback(&st.controls, win_id, control::EVENT_RESIZE, &mut pending_cbs);
                     }
                     st.needs_layout = true;
@@ -939,14 +1008,30 @@ pub fn run_once() -> u32 {
         let comp_window_id = st.comp_windows[wi].window_id;
         let shm_id = st.comp_windows[wi].shm_id;
         let dirty_rect = st.comp_windows[wi].dirty_rect;
+        let logical_w = st.comp_windows[wi].logical_width;
+        let logical_h = st.comp_windows[wi].logical_height;
 
-        // Clamp dirty rect to window bounds (controls may report negative coords or overflow)
-        let clamped_dr = dirty_rect.map(|(dx, dy, dw, dh)| {
+        // Clamp dirty rect in logical space (for render_tree intersection tests)
+        let logical_dr = dirty_rect.map(|(dx, dy, dw, dh)| {
             let x0 = dx.max(0) as u32;
             let y0 = dy.max(0) as u32;
-            let x1 = ((dx + dw as i32).max(0) as u32).min(sw);
-            let y1 = ((dy + dh as i32).max(0) as u32).min(sh);
+            let x1 = ((dx + dw as i32).max(0) as u32).min(logical_w);
+            let y1 = ((dy + dh as i32).max(0) as u32).min(logical_h);
             (x0 as i32, y0 as i32, x1.saturating_sub(x0), y1.saturating_sub(y0))
+        }).filter(|&(_, _, w, h)| w > 0 && h > 0);
+
+        // Scale dirty rect to physical space (for Surface clip, SHM copy, present_rect)
+        let physical_dr = logical_dr.map(|(dx, dy, dw, dh)| {
+            let px = crate::theme::scale_i32(dx);
+            let py = crate::theme::scale_i32(dy);
+            let pw = crate::theme::scale(dw as u32);
+            let ph = crate::theme::scale(dh as u32);
+            // Clamp to physical surface bounds
+            let px = px.max(0);
+            let py = py.max(0);
+            let pw = pw.min(sw.saturating_sub(px as u32));
+            let ph = ph.min(sh.saturating_sub(py as u32));
+            (px, py, pw, ph)
         }).filter(|&(_, _, w, h)| w > 0 && h > 0);
 
         // Double-buffered rendering: draw to a local back buffer first, then
@@ -954,22 +1039,24 @@ pub fn run_once() -> u32 {
         let back_buf = st.comp_windows[wi].back_buffer.as_mut_ptr();
         let full_surf = crate::draw::Surface::new(back_buf, sw, sh);
 
-        // CRITICAL: Clip the surface to the dirty rect so that Window::render()
+        // CRITICAL: Clip the surface to the PHYSICAL dirty rect so that Window::render()
         // (which fills the entire background) only touches pixels inside the dirty
         // region. Pixels outside are retained from the previous frame.
-        let surf = if let Some((dx, dy, dw, dh)) = clamped_dr {
+        let surf = if let Some((dx, dy, dw, dh)) = physical_dr {
             full_surf.with_clip(dx, dy, dw, dh)
         } else {
             full_surf
         };
 
-        // Render control tree — only controls intersecting the dirty rect are drawn.
-        // The surface clip rect ensures drawing ops outside the dirty region are discarded.
-        render_tree(&st.controls, win_id, &surf, 0, 0, clamped_dr);
+        // Render control tree — only controls intersecting the LOGICAL dirty rect
+        // are drawn. The surface's physical clip rect ensures drawing ops outside
+        // the dirty region are discarded at the pixel level.
+        render_tree(&st.controls, win_id, &surf, 0, 0, logical_dr);
 
         // Copy back buffer → SHM: either the dirty region or the full buffer.
+        // Uses PHYSICAL dirty rect for pixel-level copy offsets.
         unsafe {
-            if let Some((dx, dy, dw, dh)) = clamped_dr {
+            if let Some((dx, dy, dw, dh)) = physical_dr {
                 // Partial copy: only the dirty region (row by row)
                 let dx = dx as usize;
                 let dy = dy as usize;
@@ -1000,9 +1087,9 @@ pub fn run_once() -> u32 {
         st.comp_windows[wi].dirty = false;
         st.comp_windows[wi].dirty_rect = None;
 
-        // Present via compositor DLL — pass dirty rect if available so the
-        // compositor only copies and recomposites the changed region.
-        if let Some((dx, dy, dw, dh)) = clamped_dr {
+        // Present via compositor DLL — pass physical dirty rect if available so
+        // the compositor only copies and recomposites the changed region.
+        if let Some((dx, dy, dw, dh)) = physical_dr {
             compositor::present_rect(
                 channel_id, comp_window_id, shm_id,
                 dx as u32, dy as u32, dw, dh,
@@ -1378,13 +1465,16 @@ fn render_tree(
     // Expander: offset children by +HEADER_HEIGHT (below header)
     let (child_abs_y, child_surface) = match controls[idx].kind() {
         ControlKind::ScrollView => {
+            // Logical coords for the ScrollView viewport
             let sv_x = parent_abs_x + controls[idx].base().x;
             let sv_y = parent_abs_y + controls[idx].base().y;
             let sv_w = controls[idx].base().w;
             let sv_h = controls[idx].base().h;
+            // Scale to physical for the Surface clip rect
+            let p = crate::draw::scale_bounds(0, 0, sv_x, sv_y, sv_w, sv_h);
             (
                 child_abs_y - controls[idx].base().state as i32,
-                surface.with_clip(sv_x, sv_y, sv_w, sv_h),
+                surface.with_clip(p.x, p.y, p.w, p.h),
             )
         }
         ControlKind::Expander => (

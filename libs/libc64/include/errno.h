@@ -81,5 +81,19 @@ extern int errno;
 #define EHOSTUNREACH 113
 #define EALREADY 114
 #define EINPROGRESS 115
+#define EDEADLK 35
+#define ENOTSUP 95
+#define ECANCELED 125
+#define ESTALE 116
+#define EMLINK 31
+#define ENOTRECOVERABLE 131
+#define EOWNERDEAD 130
+#define EDQUOT 122
+#define ENOLCK 37
+#define EPROTO 71
+#define ETXTBSY 26
+#define EIDRM 43
+#define EMULTIHOP 72
+#define ENOLINK 67
 
 #endif

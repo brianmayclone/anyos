@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Surf Browser Test Suite</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            background: #1e1e2e;
+            color: #cdd6f4;
+            margin: 40px;
+        }
+        h1 { color: #89b4fa; }
+        ul { list-style: none; padding: 0; }
+        li {
+            background: #313244;
+            border: 1px solid #45475a;
+            border-radius: 8px;
+            padding: 12px 20px;
+            margin: 8px 0;
+        }
+        a { color: #89dceb; text-decoration: none; font-size: 1.1em; }
+        a:hover { text-decoration: underline; }
+        .desc { color: #a6adc8; font-size: 0.9em; margin-top: 4px; }
+    </style>
+</head>
+<body>
+    <h1>Surf Browser Test Suite</h1>
+    <p>Open these pages to test rendering incrementally.</p>
+    <ul>
+        <li>
+            <a href="file:///Users/Shared/test/1_basic.html">Test 1: Basic HTML</a>
+            <div class="desc">Headings, paragraphs, bold/italic, lists, links</div>
+        </li>
+        <li>
+            <a href="file:///Users/Shared/test/2_css.html">Test 2: Inline CSS</a>
+            <div class="desc">Colors, box model, borders, border-radius, tables</div>
+        </li>
+        <li>
+            <a href="file:///Users/Shared/test/3_layout.html">Test 3: Layout</a>
+            <div class="desc">Width percentages, nested boxes, scrolling</div>
+        </li>
+        <li>
+            <a href="file:///Users/Shared/test/4_forms.html">Test 4: Forms</a>
+            <div class="desc">Text inputs, password, select, checkboxes, radio buttons</div>
+        </li>
+        <li>
+            <a href="file:///Users/Shared/test/5_stress.html">Test 5: Stress Test</a>
+            <div class="desc">50 divs + 20-row table — tests rendering speed and scrolling</div>
+        </li>
+    </ul>
+</body>
+</html>

@@ -57,19 +57,19 @@ impl Control for SplitView {
     fn kind(&self) -> ControlKind { ControlKind::SplitView }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.base.x;
-        let y = ay + self.base.y;
+        let b = self.base();
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
-        let total = self.total_extent();
-        let div = (total as u64 * self.split_ratio as u64 / 100) as i32;
+        // Compute scaled divider position from the split ratio applied to physical extent.
         match self.orientation {
             Orientation::Horizontal => {
-                // Vertical divider line (left-right split)
-                crate::draw::fill_rect(surface, x + div, y, 1, self.base.h, tc.separator);
+                let div = (w as u64 * self.split_ratio as u64 / 100) as i32;
+                crate::draw::fill_rect(surface, x + div, y, 1, h, tc.separator);
             }
             Orientation::Vertical => {
-                // Horizontal divider line (top-bottom split)
-                crate::draw::fill_rect(surface, x, y + div, self.base.w, 1, tc.separator);
+                let div = (h as u64 * self.split_ratio as u64 / 100) as i32;
+                crate::draw::fill_rect(surface, x, y + div, w, 1, tc.separator);
             }
         }
     }

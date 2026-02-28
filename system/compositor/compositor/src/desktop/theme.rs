@@ -30,6 +30,77 @@ pub fn set_theme(value: u32) {
 
 const UISYS_FONT_SMOOTHING_OFFSET: u32 = 0x10;
 
+// ── DPI Scale Factor ─────────────────────────────────────────────────────
+
+const UISYS_SCALE_OFFSET: u32 = 0x14;
+
+/// Cached scale factor — refreshed once per frame via `refresh_scale_cache()`.
+static mut CACHED_SCALE: u32 = 100;
+
+/// Refresh the cached scale factor from the shared DLIB page.
+/// Called once per frame in the render loop alongside `refresh_theme_cache()`.
+pub(crate) fn refresh_scale_cache() {
+    unsafe {
+        let v = core::ptr::read_volatile(
+            (UISYS_BASE as usize + UISYS_SCALE_OFFSET as usize) as *const u32,
+        );
+        CACHED_SCALE = if v >= 100 && v <= 300 { v } else { 100 };
+    }
+}
+
+/// Current DPI scale factor as percentage (100 = 1x, 200 = 2x, etc.).
+#[inline(always)]
+pub(crate) fn scale_factor() -> u32 {
+    unsafe { CACHED_SCALE }
+}
+
+/// Scale a u32 pixel value by the current DPI factor (with rounding).
+#[inline(always)]
+pub(crate) fn scale(val: u32) -> u32 {
+    (val * scale_factor() + 50) / 100
+}
+
+/// Scale an i32 pixel value by the current DPI factor (with rounding).
+#[inline(always)]
+pub(crate) fn scale_i32(val: i32) -> i32 {
+    (val * scale_factor() as i32 + 50) / 100
+}
+
+/// Reverse-scale a physical pixel value to logical pixels.
+#[inline(always)]
+#[allow(dead_code)]
+pub(crate) fn unscale(val: i32) -> i32 {
+    let s = scale_factor() as i32;
+    (val * 100 + s / 2) / s
+}
+
+/// Scale a font size from logical to physical pixels.
+#[inline(always)]
+pub(crate) fn scale_font(logical_size: u16) -> u16 {
+    ((logical_size as u32 * scale_factor() + 50) / 100) as u16
+}
+
+/// Set the DPI scale factor via kernel-mediated write to the shared RO DLIB page.
+///
+/// percent: 100–300 in steps of 25. Values outside range are clamped.
+pub fn set_scale_factor(percent: u32) {
+    let clamped = percent.max(100).min(300);
+    // Round to nearest multiple of 25.
+    let rounded = ((clamped + 12) / 25) * 25;
+    anyos_std::dll::set_dll_u32(UISYS_BASE, UISYS_SCALE_OFFSET, rounded);
+    unsafe { CACHED_SCALE = rounded; }
+}
+
+/// Read the current scale factor from the shared DLIB page (uncached).
+pub fn read_scale_factor() -> u32 {
+    let v = unsafe {
+        core::ptr::read_volatile(
+            (UISYS_BASE as usize + UISYS_SCALE_OFFSET as usize) as *const u32,
+        )
+    };
+    if v >= 100 && v <= 300 { v } else { 100 }
+}
+
 /// Set the font smoothing mode via kernel-mediated write to the shared RO DLIB page.
 ///
 /// mode: 0 = no smoothing, 1 = greyscale AA (default), 2 = subpixel LCD.
@@ -186,11 +257,23 @@ pub(crate) const FONT_ID: u16 = 0;
 pub(crate) const FONT_ID_BOLD: u16 = 1;
 pub(crate) const FONT_SIZE: u16 = 13;
 
+/// Scaled system font size in physical pixels (DPI-scaled).
+#[inline(always)]
+pub(crate) fn scaled_font_size() -> u16 { scale_font(FONT_SIZE) }
+
 // ── Title Bar Layout ───────────────────────────────────────────────────────
 
-pub(crate) const TITLE_BTN_SIZE: u32 = 12;
-pub(crate) const TITLE_BTN_Y: u32 = 8;
-pub(crate) const TITLE_BTN_SPACING: u32 = 20;
+/// Traffic-light button diameter in physical pixels (DPI-scaled).
+#[inline(always)]
+pub(crate) fn title_btn_size() -> u32 { scale(12) }
+
+/// Traffic-light button Y offset in physical pixels (DPI-scaled).
+#[inline(always)]
+pub(crate) fn title_btn_y() -> u32 { scale(8) }
+
+/// Spacing between traffic-light button centers in physical pixels (DPI-scaled).
+#[inline(always)]
+pub(crate) fn title_btn_spacing() -> u32 { scale(20) }
 
 // ── Button Animation Helpers ───────────────────────────────────────────────
 

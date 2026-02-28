@@ -14,11 +14,12 @@ impl Control for ColorWell {
     fn kind(&self) -> ControlKind { ControlKind::ColorWell }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.base.x;
-        let y = ay + self.base.y;
-        let color = if self.base.color != 0 { self.base.color } else { 0xFFFF0000 };
-        crate::draw::fill_rounded_rect(surface, x, y, self.base.w, self.base.h, 4, color);
-        crate::draw::draw_rounded_border(surface, x, y, self.base.w, self.base.h, 4, crate::theme::colors().card_border);
+        let b = self.base();
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let corner = crate::theme::scale(4);
+        let color = if b.color != 0 { b.color } else { 0xFFFF0000 };
+        crate::draw::fill_rounded_rect(surface, p.x, p.y, p.w, p.h, corner, color);
+        crate::draw::draw_rounded_border(surface, p.x, p.y, p.w, p.h, corner, crate::theme::colors().card_border);
     }
 
     fn is_interactive(&self) -> bool { true }

@@ -6,7 +6,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use super::layer::{ShadowCache, SHADOW_SPREAD, SHADOW_ALPHA_FOCUSED, SHADOW_ALPHA_UNFOCUSED};
+use super::layer::{ShadowCache, shadow_spread, SHADOW_ALPHA_FOCUSED, SHADOW_ALPHA_UNFOCUSED};
 
 /// Fast exact division by 255 using bit manipulation.
 /// Exact for all x in 0..=65025 (255*255), which covers every possible
@@ -114,7 +114,7 @@ pub(crate) fn rounded_rect_sdf(px: i32, py: i32, rx: i32, ry: i32, rw: i32, rh: 
 /// Produces two pre-baked alpha arrays (focused + unfocused) so the per-pixel
 /// `div255(cache_a * base_alpha)` is eliminated at render time.
 pub(crate) fn compute_shadow_cache(layer_w: u32, layer_h: u32) -> ShadowCache {
-    let spread = SHADOW_SPREAD;
+    let spread = shadow_spread();
     let lw = layer_w as i32;
     let lh = layer_h as i32;
     let corner_r = 8i32; // must match the window corner radius

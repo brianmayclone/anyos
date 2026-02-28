@@ -405,31 +405,85 @@ pub fn with_alpha(color: u32, alpha: u32) -> u32 {
     (color & 0x00FFFFFF) | ((alpha & 0xFF) << 24)
 }
 
-// ── Sizing constants (theme-independent) ────────────────────────────
+// ── DPI Scale Factor ──────────────────────────────────────────────────
 
-pub const BUTTON_HEIGHT: u32     = 28;
-pub const BUTTON_PADDING_H: u32  = 16;
-pub const BUTTON_CORNER: u32     = 6;
-pub const INPUT_HEIGHT: u32      = 28;
-pub const INPUT_CORNER: u32      = 6;
-pub const TOGGLE_WIDTH: u32      = 36;
-pub const TOGGLE_HEIGHT: u32     = 20;
-pub const TOGGLE_THUMB_SIZE: u32 = 16;
-pub const CHECKBOX_SIZE: u32     = 18;
-pub const RADIO_SIZE: u32        = 18;
+/// Address of the `scale` field in the uisys.dlib shared page (offset 0x14).
+const UISYS_SCALE_ADDR: *const u32 = 0x0400_0014 as *const u32;
+
+/// Cached scale factor — refreshed once per frame via `refresh_scale_cache()`.
+static mut CACHED_SCALE: u32 = 100;
+
+/// Refresh the cached scale factor from the shared DLIB page.
+/// Called once per event-loop iteration to avoid repeated volatile reads.
+pub fn refresh_scale_cache() {
+    unsafe {
+        let v = core::ptr::read_volatile(UISYS_SCALE_ADDR);
+        CACHED_SCALE = if v >= 100 && v <= 300 { v } else { 100 };
+    }
+}
+
+/// Current DPI scale factor as percentage (100 = 1x, 200 = 2x, etc.).
+#[inline(always)]
+pub fn scale_factor() -> u32 {
+    unsafe { CACHED_SCALE }
+}
+
+/// Scale a u32 pixel value by the current DPI factor (with rounding).
+#[inline(always)]
+pub fn scale(val: u32) -> u32 {
+    (val * scale_factor() + 50) / 100
+}
+
+/// Scale an i32 pixel value by the current DPI factor (with rounding).
+#[inline(always)]
+pub fn scale_i32(val: i32) -> i32 {
+    (val * scale_factor() as i32 + 50) / 100
+}
+
+/// Reverse-scale a physical pixel value to logical pixels.
+#[inline(always)]
+pub fn unscale(val: i32) -> i32 {
+    let s = scale_factor() as i32;
+    (val * 100 + s / 2) / s
+}
+
+/// Reverse-scale a physical u32 value to logical pixels.
+#[inline(always)]
+pub fn unscale_u32(val: u32) -> u32 {
+    (val * 100 + scale_factor() / 2) / scale_factor()
+}
+
+// ── Sizing constants (theme-independent, DPI-scaled) ──────────────
+
+/// Logical base values for sizing constants. These are the values at 100%.
+/// All public accessors return DPI-scaled values.
+
+#[inline(always)] pub fn button_height() -> u32 { scale(28) }
+#[inline(always)] pub fn button_padding_h() -> u32 { scale(16) }
+#[inline(always)] pub fn button_corner() -> u32 { scale(6) }
+#[inline(always)] pub fn input_height() -> u32 { scale(28) }
+#[inline(always)] pub fn input_corner() -> u32 { scale(6) }
+#[inline(always)] pub fn toggle_width() -> u32 { scale(36) }
+#[inline(always)] pub fn toggle_height() -> u32 { scale(20) }
+#[inline(always)] pub fn toggle_thumb_size() -> u32 { scale(16) }
+#[inline(always)] pub fn checkbox_size() -> u32 { scale(18) }
+#[inline(always)] pub fn radio_size() -> u32 { scale(18) }
+#[inline(always)] pub fn card_corner() -> u32 { scale(8) }
+#[inline(always)] pub fn tooltip_corner() -> u32 { scale(6) }
+#[inline(always)] pub fn alert_corner() -> u32 { scale(10) }
+
+/// Logical font size constants (NOT scaled — scaling happens at render time
+/// via `draw::scale_font()` when passing to libfont).
 pub const FONT_SIZE_SMALL: u16   = 13;
 pub const FONT_SIZE_DEFAULT: u16 = 13;
 pub const FONT_SIZE_NORMAL: u16  = 16;
 pub const FONT_SIZE_LARGE: u16   = 20;
 pub const FONT_SIZE_TITLE: u16   = 24;
-pub const CARD_CORNER: u32       = 8;
-pub const TOOLTIP_CORNER: u32    = 6;
-pub const ALERT_CORNER: u32      = 10;
 
 /// Shadow spread for floating elements (Alert, Tooltip, ContextMenu).
-/// Small value to keep SDF cost low on software rendering.
-pub const POPUP_SHADOW_SPREAD: i32 = 8;
-/// Shadow alpha for floating elements.
+/// DPI-scaled to maintain proportional appearance.
+#[inline(always)] pub fn popup_shadow_spread() -> i32 { scale_i32(8) }
+/// Shadow alpha for floating elements (constant — alpha does not scale).
 pub const POPUP_SHADOW_ALPHA: u32 = 50;
 /// Shadow Y-offset for floating elements (light comes from above).
-pub const POPUP_SHADOW_OFFSET_Y: i32 = 2;
+#[inline(always)] pub fn popup_shadow_offset_y() -> i32 { scale_i32(2) }

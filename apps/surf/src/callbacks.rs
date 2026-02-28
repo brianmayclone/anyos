@@ -20,7 +20,10 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
     let st = crate::state();
     let tab = &st.tabs[st.active_tab];
     if let Some(link_url) = tab.webview.link_url_for(ctrl_id) {
-        let resolved = if let Some(ref base) = tab.current_url {
+        // file:// URLs are already absolute — pass through directly.
+        let resolved = if link_url.starts_with("file://") {
+            String::from(link_url)
+        } else if let Some(ref base) = tab.current_url {
             let resolved_url = crate::http::resolve_url(base, link_url);
             crate::ui::format_url(&resolved_url)
         } else {

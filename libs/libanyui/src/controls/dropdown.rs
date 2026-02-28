@@ -52,14 +52,13 @@ impl Control for DropDown {
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = &self.text_base.base;
-        let x = ax + b.x;
-        let y = ay + b.y;
-        let w = b.w;
-        let h = b.h;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
         let disabled = b.disabled;
         let focused = b.focused;
         let hovered = b.hovered;
+        let corner = crate::theme::scale(CORNER);
 
         // ── Background ──────────────────────────────────────────────
         let bg = if disabled {
@@ -69,37 +68,40 @@ impl Control for DropDown {
         } else {
             tc.input_bg
         };
-        crate::draw::fill_rounded_rect(surface, x, y, w, h, CORNER, bg);
-        crate::draw::draw_rounded_border(surface, x, y, w, h, CORNER, tc.input_border);
+        crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, bg);
+        crate::draw::draw_rounded_border(surface, x, y, w, h, corner, tc.input_border);
 
         // ── Selected item text ──────────────────────────────────────
         let selected = b.state as usize;
         let label = self.item_label(selected);
-        let font_size = if self.text_base.text_style.font_size > 0 {
+        let logical_fs = if self.text_base.text_style.font_size > 0 {
             self.text_base.text_style.font_size
         } else {
             13
         };
+        let font_size = crate::draw::scale_font(logical_fs);
         let text_color = if disabled { tc.text_disabled } else { tc.text };
         if !label.is_empty() {
             let ty = y + (h as i32 - font_size as i32) / 2;
-            crate::draw::draw_text_sized(surface, x + 10, ty, text_color, label, font_size);
+            crate::draw::draw_text_sized(surface, x + crate::theme::scale_i32(10), ty, text_color, label, font_size);
         }
 
-        // ── Chevron ▼ (wide at top, narrow at bottom) ───────────────
-        let chevron_x = x + w as i32 - 20;
-        let chevron_y = y + (h as i32 / 2) - 2;
+        // ── Chevron (wide at top, narrow at bottom) ─────────────────
+        let chevron_rows = crate::theme::scale_i32(5);
+        let chevron_x = x + w as i32 - crate::theme::scale_i32(20);
+        let chevron_y = y + (h as i32 / 2) - crate::theme::scale_i32(2);
         let chevron_color = if disabled { tc.text_disabled } else { tc.text_secondary };
-        for row in 0..5i32 {
-            let half = 4 - row; // row 0 → half=4 (widest), row 4 → half=0 (narrowest)
-            let cx = chevron_x + (4 - half);
+        let half_max = chevron_rows - 1;
+        for row in 0..chevron_rows {
+            let half = half_max - row;
+            let cx = chevron_x + (half_max - half);
             let cw = 1 + half * 2;
             crate::draw::fill_rect(surface, cx, chevron_y + row, cw as u32, 1, chevron_color);
         }
 
         // ── Focus ring ──────────────────────────────────────────────
         if focused && !disabled {
-            crate::draw::draw_focus_ring(surface, x, y, w, h, CORNER, tc.accent);
+            crate::draw::draw_focus_ring(surface, x, y, w, h, corner, tc.accent);
         }
     }
 

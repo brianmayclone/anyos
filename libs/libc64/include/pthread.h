@@ -13,6 +13,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <sched.h>
 
 /* ── Thread handle ── */
 
@@ -48,8 +49,30 @@ typedef struct {
     int             type;   /**< Mutex type (currently unused). */
 } pthread_mutexattr_t;
 
+/** Mutex type constants. */
+#define PTHREAD_MUTEX_NORMAL     0
+#define PTHREAD_MUTEX_RECURSIVE  1
+#define PTHREAD_MUTEX_ERRORCHECK 2
+#define PTHREAD_MUTEX_DEFAULT    PTHREAD_MUTEX_NORMAL
+
 /** Static initializer for pthread_mutex_t. */
 #define PTHREAD_MUTEX_INITIALIZER { 0, 0 }
+
+/* ── Read-write lock ── */
+
+/** Spinlock-based read-write lock. */
+typedef struct {
+    volatile int    readers;  /**< Number of active readers. */
+    volatile int    writer;   /**< 1 if writer holds lock, 0 otherwise. */
+} pthread_rwlock_t;
+
+/** Read-write lock attributes (reserved). */
+typedef struct {
+    int             _unused;
+} pthread_rwlockattr_t;
+
+/** Static initializer for pthread_rwlock_t. */
+#define PTHREAD_RWLOCK_INITIALIZER { 0, 0 }
 
 /* ── Condition variable ── */
 
@@ -246,6 +269,22 @@ int pthread_mutexattr_init(pthread_mutexattr_t *attr);
  */
 int pthread_mutexattr_destroy(pthread_mutexattr_t *attr);
 
+/**
+ * Set the type attribute of a mutex attributes object.
+ *
+ * @param type  PTHREAD_MUTEX_NORMAL, PTHREAD_MUTEX_RECURSIVE, or PTHREAD_MUTEX_ERRORCHECK.
+ * @return 0 on success, EINVAL if type is invalid.
+ */
+int pthread_mutexattr_settype(pthread_mutexattr_t *attr, int type);
+
+/**
+ * Get the type attribute of a mutex attributes object.
+ *
+ * @param type  Receives the configured mutex type.
+ * @return 0 on success.
+ */
+int pthread_mutexattr_gettype(const pthread_mutexattr_t *attr, int *type);
+
 /* ── Condition variables ── */
 
 /**
@@ -344,6 +383,19 @@ void *pthread_getspecific(pthread_key_t key);
  */
 int pthread_once(pthread_once_t *once_control, void (*init_routine)(void));
 
+/* ── Read-write locks ── */
+
+int pthread_rwlock_init(pthread_rwlock_t *rwlock, const pthread_rwlockattr_t *attr);
+int pthread_rwlock_destroy(pthread_rwlock_t *rwlock);
+int pthread_rwlock_rdlock(pthread_rwlock_t *rwlock);
+int pthread_rwlock_tryrdlock(pthread_rwlock_t *rwlock);
+int pthread_rwlock_wrlock(pthread_rwlock_t *rwlock);
+int pthread_rwlock_trywrlock(pthread_rwlock_t *rwlock);
+int pthread_rwlock_unlock(pthread_rwlock_t *rwlock);
+
+int pthread_rwlockattr_init(pthread_rwlockattr_t *attr);
+int pthread_rwlockattr_destroy(pthread_rwlockattr_t *attr);
+
 /* ── Thread naming (non-portable extensions) ── */
 
 /**
@@ -364,6 +416,11 @@ int pthread_getname_np(pthread_t thread, char *name, size_t len);
  * @return 0 on success.
  */
 int pthread_setname_np(pthread_t thread, const char *name);
+
+/* ── Scheduling ── */
+
+int pthread_setschedparam(pthread_t thread, int policy, const struct sched_param *param);
+int pthread_getschedparam(pthread_t thread, int *policy, struct sched_param *param);
 
 #ifdef __cplusplus
 }

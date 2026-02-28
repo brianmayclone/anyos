@@ -168,3 +168,5 @@ EXPORTS
     anyui_datagrid_set_connector_column
     anyui_remove_child
     anyui_clear_children
+    anyui_set_scale_factor
+    anyui_get_scale_factor

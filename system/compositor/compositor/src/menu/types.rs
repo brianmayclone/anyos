@@ -9,7 +9,10 @@ pub(crate) const FONT_ID: u16 = 0;
 pub(crate) const FONT_ID_BOLD: u16 = 1;
 pub(crate) const FONT_SIZE: u16 = 13;
 
-pub const MENUBAR_HEIGHT: u32 = 24;
+/// Menubar height in physical pixels (DPI-scaled).
+/// Delegates to the canonical definition in `window::menubar_height()`.
+#[inline(always)]
+pub(crate) fn menubar_height() -> u32 { crate::desktop::window::menubar_height() }
 
 /// Menu bar text color — theme-aware (dark text on light, light text on dark).
 #[inline(always)]

@@ -16,14 +16,13 @@ impl Control for Label {
     fn kind(&self) -> ControlKind { ControlKind::Label }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let bx = ax + self.text_base.base.x;
-        let by = ay + self.text_base.base.y;
-        let w = self.text_base.base.w;
-        let h = self.text_base.base.h;
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
 
         // Background (only if set_color() was called with a non-zero color)
-        if self.text_base.base.color != 0 {
-            crate::draw::fill_rect(surface, bx, by, w, h, self.text_base.base.color);
+        if b.color != 0 {
+            crate::draw::fill_rect(surface, x, y, w, h, b.color);
         }
 
         // Text color: set_text_color() > theme default
@@ -32,17 +31,19 @@ impl Control for Label {
         } else {
             crate::theme::colors().text
         };
-        let fs = self.text_base.text_style.font_size;
+        let fs = crate::draw::scale_font(self.text_base.text_style.font_size);
         let fid = self.text_base.text_style.font_id;
-        let align = self.text_base.base.state; // 0=left, 1=center, 2=right
-        let pad = &self.text_base.base.padding;
+        let align = b.state; // 0=left, 1=center, 2=right
+        let pad_left = crate::theme::scale_i32(b.padding.left);
+        let pad_right = crate::theme::scale_i32(b.padding.right);
+        let pad_top = crate::theme::scale_i32(b.padding.top);
 
         // Handle multiline text (split on '\n')
         let text = &self.text_base.text;
-        let text_x = bx + pad.left;
-        let text_w = w as i32 - pad.left - pad.right;
-        let mut line_y = by + pad.top;
-        let line_h = fs as i32 + 2;
+        let text_x = x + pad_left;
+        let text_w = w as i32 - pad_left - pad_right;
+        let mut line_y = y + pad_top;
+        let line_h = fs as i32 + crate::theme::scale_i32(2);
         let mut start = 0;
         loop {
             let end = text[start..].iter().position(|&b| b == b'\n').map(|p| start + p).unwrap_or(text.len());

@@ -157,7 +157,7 @@ impl CrashDialog {
         use super::drawing::{fill_rect, fill_rounded_rect};
 
         // Clear content area (below title bar, which the window system draws)
-        let content_y = super::window::TITLE_BAR_HEIGHT;
+        let content_y = super::window::title_bar_height();
         for row in content_y..full_h {
             for col in 0..stride {
                 let idx = (row * stride + col) as usize;
@@ -251,13 +251,13 @@ impl CrashDialog {
     /// Handle a click within the dialog's content area.
     /// Returns `CrashDialogAction` indicating what to do.
     pub fn handle_click(&mut self, wx: i32, wy: i32) -> CrashDialogAction {
-        let content_y = super::window::TITLE_BAR_HEIGHT as i32;
+        let content_y = super::window::title_bar_height() as i32;
         let x_pad = 20i32;
 
         // Check OK button
         let btn_x = (DIALOG_W as i32 - x_pad - OK_BTN_W as i32);
         let content_h = self.content_height();
-        let full_h = content_h + super::window::TITLE_BAR_HEIGHT;
+        let full_h = content_h + super::window::title_bar_height();
         let btn_y = (full_h as i32 - 20 - OK_BTN_H as i32);
         if wx >= btn_x && wx < btn_x + OK_BTN_W as i32
             && wy >= btn_y && wy < btn_y + OK_BTN_H as i32

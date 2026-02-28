@@ -74,41 +74,52 @@ impl Control for ContextMenu {
     }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.text_base.base.x;
-        let y = ay + self.text_base.base.y;
-        let w = self.text_base.base.w;
-        let h = self.text_base.base.h;
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
 
         let items: alloc::vec::Vec<&[u8]> = self.text_base.text.split(|&b| b == b'|').collect();
+        let corner = crate::theme::scale(6);
+        let menu_pad = crate::theme::scale_i32(MENU_PAD);
+        let item_h = crate::theme::scale_i32(ITEM_H);
+        let divider_h = crate::theme::scale_i32(DIVIDER_H);
+        let fs = crate::draw::scale_font(14);
 
         // Shadow for popup depth
-        crate::draw::draw_shadow_rounded_rect(surface, x, y, w, h, 6, 0, 3, 12, 80);
+        crate::draw::draw_shadow_rounded_rect(surface, x, y, w, h, corner as i32, 0, crate::theme::scale_i32(3), crate::theme::scale_i32(12), 80);
 
         // Opaque background + border
-        crate::draw::fill_rounded_rect(surface, x, y, w, h, 6, tc.sidebar_bg);
-        crate::draw::draw_rounded_border(surface, x, y, w, h, 6, tc.card_border);
+        crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, tc.sidebar_bg);
+        crate::draw::draw_rounded_border(surface, x, y, w, h, corner, tc.card_border);
 
         // Render each item
-        let mut iy = y + MENU_PAD;
+        let item_pad_x = crate::theme::scale_i32(4);
+        let text_pad_x = crate::theme::scale_i32(12);
+        let text_pad_y = crate::theme::scale_i32(6);
+        let divider_pad_x = crate::theme::scale_i32(8);
+        let highlight_corner = crate::theme::scale(4);
+        let mut iy = y + menu_pad;
         for (i, item_text) in items.iter().enumerate() {
             if is_divider(item_text) {
                 // Draw a thin horizontal line as divider
-                let line_y = iy + DIVIDER_H / 2;
-                crate::draw::fill_rect(surface, x + 8, line_y, w - 16, 1, tc.card_border);
-                iy += DIVIDER_H;
+                let line_y = iy + divider_h / 2;
+                let line_w = if w > (divider_pad_x as u32 * 2) { w - divider_pad_x as u32 * 2 } else { 1 };
+                crate::draw::fill_rect(surface, x + divider_pad_x, line_y, line_w, 1, tc.card_border);
+                iy += divider_h;
             } else {
                 // Highlight hovered item
                 if i as u32 == self.hovered_item {
-                    crate::draw::fill_rounded_rect(surface, x + 4, iy, w - 8, ITEM_H as u32, 4, tc.accent);
+                    let hl_w = if w > (item_pad_x as u32 * 2) { w - item_pad_x as u32 * 2 } else { 1 };
+                    crate::draw::fill_rounded_rect(surface, x + item_pad_x, iy, hl_w, item_h as u32, highlight_corner, tc.accent);
                 }
 
                 // Item text
                 if !item_text.is_empty() {
                     let text_color = if i as u32 == self.hovered_item { 0xFFFFFFFF } else { tc.text };
-                    crate::draw::draw_text(surface, x + 12, iy + 6, text_color, item_text);
+                    crate::draw::draw_text_sized(surface, x + text_pad_x, iy + text_pad_y, text_color, item_text, fs);
                 }
-                iy += ITEM_H;
+                iy += item_h;
             }
         }
     }

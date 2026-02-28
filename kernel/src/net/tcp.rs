@@ -42,8 +42,8 @@ const SEND_BATCH_SIZE: usize = 64;
 /// Delayed ACK: flush ACK after this many accepted data segments.
 const DELAYED_ACK_SEGMENTS: u32 = 2;
 
-/// Delayed ACK: flush ACK after this many ticks (50ms at 100Hz).
-const DELAYED_ACK_TICKS: u32 = 5;
+/// Delayed ACK: flush ACK after this many ticks (20ms at 100Hz).
+const DELAYED_ACK_TICKS: u32 = 2;
 
 /// Yield the CPU briefly to avoid busy-waiting in poll loops.
 fn poll_yield() {
@@ -159,6 +159,11 @@ struct Tcb {
 
     // Ownership tracking for cleanup on process exit
     owner_tid: u32,               // thread ID that owns this connection (0 = unowned)
+
+    // Blocking I/O: thread waiting for data/state change on this socket.
+    // Set by recv()/accept()/connect() before blocking, cleared on wake.
+    // 0 means no thread is waiting.
+    waiting_tid: u32,
 }
 
 impl Tcb {
@@ -194,6 +199,7 @@ impl Tcb {
             parent_listener: None,
             accepted: false,
             owner_tid: 0,
+            waiting_tid: 0,
         }
     }
 }
@@ -516,52 +522,59 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
     TCP_ACTIVE_OPENS.fetch_add(1, Ordering::Relaxed);
     send_syn_segment(cfg.ip, local_port, remote_ip, remote_port, iss, 0, SYN);
 
-    // Wait for connection to establish
+    // Wait for connection to establish (blocking — zero CPU while waiting)
     let start = crate::arch::x86::pit::get_ticks();
-    loop {
-        // Poll network (outside lock!)
-        super::poll();
 
+    // Poll once eagerly to process any pending packets.
+    super::poll();
+
+    loop {
         // Check state
         {
-            let conns = TCP_CONNECTIONS.lock();
-            let table = conns.as_ref().unwrap();
-            if let Some(tcb) = &table[slot_id] {
+            let mut conns = TCP_CONNECTIONS.lock();
+            let table = conns.as_mut().unwrap();
+            if let Some(tcb) = table[slot_id].as_mut() {
                 match tcb.state {
                     TcpState::Established => {
+                        tcb.waiting_tid = 0;
                         crate::serial_println!("TCP: connected socket {}", slot_id);
                         return slot_id as u32;
                     }
                     TcpState::Closed => {
+                        tcb.waiting_tid = 0;
                         crate::serial_println!("TCP: connection refused");
                         return u32::MAX;
                     }
                     _ => {}
                 }
                 if tcb.reset_received {
-                    // Clean up
-                    drop(conns);
-                    let mut conns = TCP_CONNECTIONS.lock();
-                    let table = conns.as_mut().unwrap();
                     table[slot_id] = None;
                     return u32::MAX;
                 }
+
+                // Check timeout before blocking
+                let now = crate::arch::x86::pit::get_ticks();
+                if now.wrapping_sub(start) >= timeout_ticks {
+                    crate::serial_println!("TCP: connect timeout");
+                    table[slot_id] = None;
+                    return u32::MAX;
+                }
+
+                // Register ourselves as waiting and block
+                tcb.waiting_tid = tid;
             } else {
                 return u32::MAX;
             }
         }
+        // Lock is dropped here — safe to block.
 
-        let now = crate::arch::x86::pit::get_ticks();
-        if now.wrapping_sub(start) >= timeout_ticks {
-            // Timeout - clean up
-            crate::serial_println!("TCP: connect timeout");
-            let mut conns = TCP_CONNECTIONS.lock();
-            let table = conns.as_mut().unwrap();
-            table[slot_id] = None;
-            return u32::MAX;
-        }
+        // Sleep briefly (2 ticks = 20ms). Woken early by try_wake_thread()
+        // when SYN-ACK arrives, or by timer for timeout check.
+        let wake_at = crate::arch::x86::pit::get_ticks() + 2;
+        crate::task::scheduler::sleep_until(wake_at);
 
-        poll_yield();
+        // After waking, poll to process pending packets.
+        super::poll();
     }
 }
 
@@ -616,16 +629,22 @@ pub fn listen(port: u16, _backlog: u16) -> u32 {
 /// into the result buffer, or u32::MAX on error.
 ///
 /// result_ptr: user buffer of 12 bytes: [socket_id:u32, remote_ip:[u8;4], remote_port:u16, pad:u16]
+/// Accept a connection on a listening socket.
+/// Blocks the calling thread until a connection is established or timeout.
+/// Zero CPU usage while waiting.
 pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
     let lid = listener_id as usize;
     if lid >= MAX_CONNECTIONS {
         return (u32::MAX, Ipv4Addr([0; 4]), 0);
     }
 
+    let tid = crate::task::scheduler::current_tid();
     let start = crate::arch::x86::pit::get_ticks();
-    loop {
-        super::poll();
 
+    // Poll once eagerly to process any pending packets before blocking.
+    super::poll();
+
+    loop {
         {
             let mut conns = TCP_CONNECTIONS.lock();
             let table = match conns.as_mut() {
@@ -638,6 +657,9 @@ pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
                 .map(|t| t.state == TcpState::Listen)
                 .unwrap_or(false);
             if !listen_valid {
+                if let Some(tcb) = table[lid].as_mut() {
+                    tcb.waiting_tid = 0;
+                }
                 return (u32::MAX, Ipv4Addr([0; 4]), 0);
             }
 
@@ -656,19 +678,39 @@ pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
                     tcb.owner_tid = crate::task::scheduler::current_tid();
                     let rip = tcb.remote_ip;
                     let rport = tcb.remote_port;
+                    // Clear waiting_tid on the listener
+                    if let Some(listener) = table[lid].as_mut() {
+                        listener.waiting_tid = 0;
+                    }
                     crate::serial_println!("TCP: accepted socket {} from {}:{}", i, rip, rport);
                     TCP_PASSIVE_OPENS.fetch_add(1, Ordering::Relaxed);
                     return (i as u32, rip, rport);
                 }
             }
-        }
 
-        let now = crate::arch::x86::pit::get_ticks();
-        if now.wrapping_sub(start) >= timeout_ticks {
-            return (u32::MAX, Ipv4Addr([0; 4]), 0);
-        }
+            // Check timeout before blocking
+            let now = crate::arch::x86::pit::get_ticks();
+            if now.wrapping_sub(start) >= timeout_ticks {
+                if let Some(tcb) = table[lid].as_mut() {
+                    tcb.waiting_tid = 0;
+                }
+                return (u32::MAX, Ipv4Addr([0; 4]), 0);
+            }
 
-        poll_yield();
+            // Register ourselves as the waiting thread on the listener socket
+            if let Some(tcb) = table[lid].as_mut() {
+                tcb.waiting_tid = tid;
+            }
+        }
+        // Lock is dropped here — safe to block.
+
+        // Sleep briefly (2 ticks = 20ms). Woken early by try_wake_thread()
+        // when a connection completes the handshake, or by timer for timeout.
+        let wake_at = crate::arch::x86::pit::get_ticks() + 2;
+        crate::task::scheduler::sleep_until(wake_at);
+
+        // After waking, poll network to process any pending packets.
+        super::poll();
     }
 }
 
@@ -856,23 +898,31 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
 
         // If no segments were sent (window full), sleep briefly to let ACKs arrive.
         if batch_count == 0 {
-            poll_yield();
+            let wake_at = crate::arch::x86::pit::get_ticks() + 1;
+            crate::task::scheduler::sleep_until(wake_at);
+            super::poll();
         }
     }
 }
 
 /// Receive data from an established connection.
 /// Returns bytes received, 0 if connection closed (FIN), u32::MAX on error.
+///
+/// Blocks the calling thread until data arrives, the connection closes,
+/// or the timeout expires. Zero CPU usage while waiting.
 pub fn recv(socket_id: u32, buf: &mut [u8], timeout_ticks: u32) -> u32 {
     let id = socket_id as usize;
     if id >= MAX_CONNECTIONS || buf.is_empty() {
         return u32::MAX;
     }
 
+    let tid = crate::task::scheduler::current_tid();
     let start = crate::arch::x86::pit::get_ticks();
-    loop {
-        super::poll();
 
+    // Poll once eagerly to process any pending packets before blocking.
+    super::poll();
+
+    loop {
         {
             let mut conns = TCP_CONNECTIONS.lock();
             let table = match conns.as_mut() {
@@ -885,6 +935,7 @@ pub fn recv(socket_id: u32, buf: &mut [u8], timeout_ticks: u32) -> u32 {
             };
 
             if tcb.reset_received {
+                tcb.waiting_tid = 0;
                 return u32::MAX;
             }
 
@@ -898,11 +949,13 @@ pub fn recv(socket_id: u32, buf: &mut [u8], timeout_ticks: u32) -> u32 {
                     buf[front_n..n].copy_from_slice(&back[..n - front_n]);
                 }
                 tcb.recv_buf.drain(..n);
+                tcb.waiting_tid = 0;
                 return n as u32;
             }
 
             // If FIN received and no more data, signal EOF
             if tcb.fin_received {
+                tcb.waiting_tid = 0;
                 return 0;
             }
 
@@ -910,19 +963,35 @@ pub fn recv(socket_id: u32, buf: &mut [u8], timeout_ticks: u32) -> u32 {
             match tcb.state {
                 TcpState::Established | TcpState::FinWait1 | TcpState::FinWait2 => {}
                 TcpState::CloseWait => {
-                    // Remote already closed, no more data coming
+                    tcb.waiting_tid = 0;
                     return 0;
                 }
-                _ => return u32::MAX,
+                _ => {
+                    tcb.waiting_tid = 0;
+                    return u32::MAX;
+                }
             }
-        }
 
-        let now = crate::arch::x86::pit::get_ticks();
-        if now.wrapping_sub(start) >= timeout_ticks {
-            return u32::MAX;
-        }
+            // Check timeout before blocking
+            let now = crate::arch::x86::pit::get_ticks();
+            if now.wrapping_sub(start) >= timeout_ticks {
+                tcb.waiting_tid = 0;
+                return u32::MAX;
+            }
 
-        poll_yield();
+            // Register ourselves as the waiting thread and block
+            tcb.waiting_tid = tid;
+        }
+        // Lock is dropped here — safe to block.
+
+        // Sleep briefly (2 ticks = 20ms). The thread will be woken early by
+        // try_wake_thread() when data arrives (from E1000 IRQ → net::poll →
+        // handle_tcp), or by the timer when the sleep expires (for timeout checks).
+        let wake_at = crate::arch::x86::pit::get_ticks() + 2;
+        crate::task::scheduler::sleep_until(wake_at);
+
+        // After waking, poll network to process any pending packets.
+        super::poll();
     }
 }
 
@@ -1046,7 +1115,8 @@ pub fn close(socket_id: u32) -> u32 {
             return 0;
         }
 
-        poll_yield();
+        let wake_at = crate::arch::x86::pit::get_ticks() + 5;
+        crate::task::scheduler::sleep_until(wake_at);
     }
 }
 
@@ -1158,7 +1228,11 @@ pub fn handle_tcp(pkt: &Ipv4Packet<'_>) {
     };
     TCP_SEGMENTS_RECV.fetch_add(1, Ordering::Relaxed);
 
-    // Process segment under lock, collect deferred sends
+    // Process segment under lock, collect deferred sends and wake TIDs.
+    // wake_tid: thread blocked on this connection (recv/connect).
+    // wake_listener_tid: thread blocked on the parent listener (accept).
+    let mut wake_tid: u32 = 0;
+    let mut wake_listener_tid: u32 = 0;
     let deferred: Option<DeferredSend> = {
         let mut conns = TCP_CONNECTIONS.lock();
         let table = match conns.as_mut() {
@@ -1263,15 +1337,22 @@ pub fn handle_tcp(pkt: &Ipv4Packet<'_>) {
         // RST handling — always process
         if seg.flags & RST != 0 {
             crate::serial_println!("TCP: RST received on socket {}", idx);
-            table[idx].as_mut().unwrap().reset_received = true;
-            table[idx].as_mut().unwrap().state = TcpState::Closed;
+            let tcb = table[idx].as_mut().unwrap();
+            tcb.reset_received = true;
+            tcb.state = TcpState::Closed;
+            wake_tid = tcb.waiting_tid;
+            tcb.waiting_tid = 0;
+            drop(conns);
+            if wake_tid != 0 {
+                crate::task::scheduler::try_wake_thread(wake_tid);
+            }
             return;
         }
 
         let tcb = table[idx].as_mut().unwrap();
         let now = crate::arch::x86::pit::get_ticks();
 
-        match tcb.state {
+        let match_result = match tcb.state {
             TcpState::SynSent => {
                 if seg.flags & SYN != 0 && seg.flags & ACK != 0 {
                     if seg.ack == tcb.snd_nxt {
@@ -1393,8 +1474,13 @@ pub fn handle_tcp(pkt: &Ipv4Packet<'_>) {
                         tcb.last_sent_data.clear();
                         tcb.retransmit_count = 0;
                         crate::serial_println!("TCP: SynReceived -> Established on socket {}", idx);
-                        // No deferred send needed — connection is now established
-                        // The accept() call will find it
+                        // Wake the accept() thread on the parent listener
+                        if let Some(lid) = tcb.parent_listener {
+                            if let Some(listener) = table[lid as usize].as_mut() {
+                                wake_listener_tid = listener.waiting_tid;
+                                listener.waiting_tid = 0;
+                            }
+                        }
                         None
                     } else {
                         crate::serial_println!("TCP: SynReceived bad ACK {} expected {}", seg.ack, tcb.snd_nxt);
@@ -1416,8 +1502,29 @@ pub fn handle_tcp(pkt: &Ipv4Packet<'_>) {
             TcpState::Listen => None, // Handled earlier in listener lookup
 
             TcpState::Closed => None,
+        };
+
+        // Collect waiting_tid from the connection — wake after lock drop.
+        // Any event (data, state change, FIN) should wake the blocked thread
+        // so it can re-evaluate its condition.
+        let tcb = table[idx].as_mut().unwrap();
+        if tcb.waiting_tid != 0 {
+            wake_tid = tcb.waiting_tid;
+            tcb.waiting_tid = 0;
         }
+
+        match_result
     }; // lock dropped here
+
+    // Wake blocked threads outside lock.
+    // Use try_wake_thread (non-blocking, IRQ-safe) since handle_tcp may be
+    // called from the E1000 IRQ handler via net::poll().
+    if wake_tid != 0 {
+        crate::task::scheduler::try_wake_thread(wake_tid);
+    }
+    if wake_listener_tid != 0 {
+        crate::task::scheduler::try_wake_thread(wake_listener_tid);
+    }
 
     // Send deferred segment outside lock
     if let Some(ds) = deferred {

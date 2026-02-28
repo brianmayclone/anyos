@@ -40,6 +40,7 @@ void  *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
 int    abs(int j);
 long   labs(long j);
 char  *getenv(const char *name);
+char  *secure_getenv(const char *name);
 int    setenv(const char *name, const char *value, int overwrite);
 int    unsetenv(const char *name);
 int    atexit(void (*function)(void));

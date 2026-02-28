@@ -27,28 +27,31 @@ impl Control for Expander {
     fn kind(&self) -> ControlKind { ControlKind::Expander }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.text_base.base.x;
-        let y = ay + self.text_base.base.y;
-        let w = self.text_base.base.w;
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w) = (p.x, p.y, p.w);
         let tc = crate::theme::colors();
-        let expanded = self.text_base.base.state != 0;
+        let expanded = b.state != 0;
+        let hdr_h = crate::theme::scale(HEADER_HEIGHT);
 
         // Header background
-        crate::draw::fill_rect(surface, x, y, w, HEADER_HEIGHT, tc.control_bg);
+        crate::draw::fill_rect(surface, x, y, w, hdr_h, tc.control_bg);
 
-        // Disclosure triangle
-        let tri_x = x + 12;
-        let tri_y = y + 10;
+        // Disclosure triangle (scaled)
+        let tri_x = x + crate::theme::scale_i32(12);
+        let tri_y = y + crate::theme::scale_i32(10);
+        let tri_rows = crate::theme::scale_i32(6);
         if expanded {
-            // ▼ pointing down
-            for row in 0..6i32 {
-                let half = 5 - row;
+            // Pointing down
+            for row in 0..tri_rows {
+                let half = tri_rows - 1 - row;
                 crate::draw::fill_rect(surface, tri_x - half, tri_y + row, (half * 2 + 1) as u32, 1, tc.text);
             }
         } else {
-            // ▶ pointing right
-            for row in 0..6i32 {
-                let half = if row < 3 { row } else { 5 - row };
+            // Pointing right
+            let half_max = tri_rows / 2;
+            for row in 0..tri_rows {
+                let half = if row < half_max { row } else { tri_rows - 1 - row };
                 crate::draw::fill_rect(surface, tri_x, tri_y + row, (half + 1) as u32 * 2, 1, tc.text);
             }
         }
@@ -56,14 +59,15 @@ impl Control for Expander {
         // Header text
         let text = &self.text_base.text;
         if !text.is_empty() {
-            crate::draw::draw_text(surface, x + 28, y + 8, tc.text, text);
+            let fs = crate::draw::scale_font(self.text_base.text_style.font_size);
+            crate::draw::draw_text_sized(surface, x + crate::theme::scale_i32(28), y + crate::theme::scale_i32(8), tc.text, text, fs);
         }
 
         // Border
         if expanded {
-            crate::draw::fill_rect(surface, x, y + HEADER_HEIGHT as i32 - 1, w, 1, tc.card_border);
+            crate::draw::fill_rect(surface, x, y + hdr_h as i32 - 1, w, 1, tc.card_border);
         } else {
-            crate::draw::draw_border(surface, x, y, w, HEADER_HEIGHT, tc.card_border);
+            crate::draw::draw_border(surface, x, y, w, hdr_h, tc.card_border);
         }
     }
 

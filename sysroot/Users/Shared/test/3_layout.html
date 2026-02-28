@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test 3: Layout</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            background: #1e1e2e;
+            color: #cdd6f4;
+            margin: 0;
+            padding: 20px;
+        }
+        h1 { color: #89b4fa; }
+        h2 { color: #a6e3a1; margin-top: 24px; }
+
+        .row {
+            display: flex;
+            gap: 12px;
+            margin: 12px 0;
+        }
+        .col {
+            flex: 1;
+            background: #313244;
+            border: 1px solid #45475a;
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .col h3 { color: #cba6f7; margin-top: 0; }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 8px;
+            margin: 12px 0;
+        }
+        .cell {
+            background: #45475a;
+            padding: 12px;
+            text-align: center;
+            border-radius: 4px;
+        }
+
+        .wide { width: 80%; background: #313244; padding: 12px; margin: 8px 0; border-radius: 4px; }
+        .narrow { width: 40%; background: #45475a; padding: 12px; margin: 8px 0; border-radius: 4px; }
+
+        .nested {
+            background: #181825;
+            border: 2px solid #f38ba8;
+            padding: 16px;
+            margin: 16px 0;
+            border-radius: 8px;
+        }
+        .nested .inner {
+            background: #313244;
+            border: 1px solid #a6e3a1;
+            padding: 12px;
+            margin: 8px 0;
+            border-radius: 4px;
+        }
+
+        a { color: #89dceb; }
+    </style>
+</head>
+<body>
+    <h1>Test 3: Layout</h1>
+
+    <h2>Width Percentages</h2>
+    <div class="wide">80% width</div>
+    <div class="narrow">40% width</div>
+
+    <h2>Nested Boxes</h2>
+    <div class="nested">
+        <p>Outer box (border: red)</p>
+        <div class="inner">
+            <p>Inner box 1 (border: green)</p>
+        </div>
+        <div class="inner">
+            <p>Inner box 2 (border: green)</p>
+        </div>
+    </div>
+
+    <h2>Multiple Paragraphs (Scroll Test)</h2>
+    <p>Paragraph 1: Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>
+    <p>Paragraph 2: Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.</p>
+    <p>Paragraph 3: Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.</p>
+    <p>Paragraph 4: Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.</p>
+    <p>Paragraph 5: Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium.</p>
+    <p>Paragraph 6: Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit.</p>
+
+    <h2>Navigation</h2>
+    <p><a href="file:///Users/Shared/test/2_css.html">Back: Test 2 (CSS)</a> |
+       <a href="file:///Users/Shared/test/4_forms.html">Next: Test 4 (Forms)</a></p>
+</body>
+</html>

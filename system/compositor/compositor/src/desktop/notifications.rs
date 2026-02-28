@@ -12,7 +12,7 @@ use crate::compositor::{Compositor, Rect};
 
 use super::drawing::{fill_rect, fill_rounded_rect, draw_rounded_rect_outline};
 use super::theme;
-use super::window::MENUBAR_HEIGHT;
+use super::window::menubar_height;
 
 // ── Layout Constants ──────────────────────────────────────────────────────
 
@@ -24,8 +24,9 @@ const NOTIF_H: u32 = 72;
 const NOTIF_RADIUS: u32 = 12;
 /// Right margin from screen edge.
 const MARGIN_RIGHT: i32 = 12;
-/// Top margin below menubar.
-const MARGIN_TOP: i32 = MENUBAR_HEIGHT as i32 + 12;
+/// Top margin below menubar (DPI-scaled).
+#[inline(always)]
+fn margin_top() -> i32 { menubar_height() as i32 + 12 }
 /// Vertical gap between stacked banners.
 const STACK_GAP: i32 = 8;
 /// Maximum visible notifications (excess auto-dismiss oldest).
@@ -121,7 +122,7 @@ impl NotificationManager {
 
         // Compute target position in stack
         let slot = self.notifications.iter().filter(|n| !n.dismissing).count() as i32;
-        let target_y = MARGIN_TOP + slot * (NOTIF_H as i32 + STACK_GAP);
+        let target_y = margin_top() + slot * (NOTIF_H as i32 + STACK_GAP);
         let target_x = screen_width as i32 - NOTIF_W as i32 - MARGIN_RIGHT;
 
         // Create layer off-screen (right edge) for slide-in
@@ -321,7 +322,7 @@ impl NotificationManager {
 
         for n in &mut self.notifications {
             if n.dismissing { continue; }
-            let new_y = MARGIN_TOP + slot * (NOTIF_H as i32 + STACK_GAP);
+            let new_y = margin_top() + slot * (NOTIF_H as i32 + STACK_GAP);
             if new_y != n.target_y {
                 // Animate Y transition
                 self.anims.start(

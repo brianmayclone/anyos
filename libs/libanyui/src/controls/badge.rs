@@ -16,10 +16,10 @@ impl Control for Badge {
     fn kind(&self) -> ControlKind { ControlKind::Badge }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.text_base.base.x;
-        let y = ay + self.text_base.base.y;
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
         let tc = crate::theme::colors();
-        let bg = if self.text_base.base.color != 0 { self.text_base.base.color } else { tc.badge_red };
-        crate::draw::fill_rounded_rect(surface, x, y, self.text_base.base.w, self.text_base.base.h, self.text_base.base.h / 2, bg);
+        let bg = if b.color != 0 { b.color } else { tc.badge_red };
+        crate::draw::fill_rounded_rect(surface, p.x, p.y, p.w, p.h, p.h / 2, bg);
     }
 }

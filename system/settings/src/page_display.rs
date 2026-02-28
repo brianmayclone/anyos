@@ -98,6 +98,9 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     // ── Font Smoothing card ──────────────────────────────────────────────
     build_font_smoothing_card(&panel);
 
+    // ── DPI Scale card ───────────────────────────────────────────────────
+    build_dpi_scale_card(&panel);
+
     // ── Resolution picker card ──────────────────────────────────────────
     let resolutions = window::list_resolutions();
     if !resolutions.is_empty() {
@@ -403,6 +406,30 @@ fn build_font_smoothing_card(panel: &ui::View) {
     dd.on_selection_changed(move |e| {
         ui::theme::set_font_smoothing(e.index);
         crate::invalidate_all_pages();
+    });
+    row.add(&dd);
+}
+
+// ── DPI Scale card ──────────────────────────────────────────────────────────
+
+/// Build the DPI scaling card with a DropDown (100% – 300% in 25% steps).
+fn build_dpi_scale_card(panel: &ui::View) {
+    let card = layout::build_auto_card(panel);
+
+    let row = layout::build_setting_row(&card, "Display Scale", false);
+
+    let dd = ui::DropDown::new("100%|125%|150%|175%|200%|225%|250%|275%|300%");
+    dd.set_position(200, 8);
+    dd.set_size(280, 28);
+
+    // Map current scale factor to dropdown index: (percent - 100) / 25
+    let current = ui::theme::get_scale_factor();
+    let idx = (current.saturating_sub(100) / 25).min(8);
+    dd.set_selected_index(idx);
+
+    dd.on_selection_changed(move |e| {
+        let percent = 100 + e.index * 25;
+        ui::theme::set_scale_factor(percent);
     });
     row.add(&dd);
 }

@@ -21,7 +21,7 @@ impl MenuBar {
 
             // Highlight background if this menu is open
             if open_idx == Some(layout.menu_idx) {
-                for y in 0..MENUBAR_HEIGHT {
+                for y in 0..menubar_height() {
                     for x in layout.x.max(0)..(layout.x + layout.width as i32).min(stride as i32) {
                         let idx = (y * stride + x as u32) as usize;
                         if idx < pixels.len() {
@@ -38,7 +38,7 @@ impl MenuBar {
             let (tw, th) =
                 anyos_std::ui::window::font_measure(font, FONT_SIZE, &menu.title);
             let tx = layout.x + (layout.width as i32 - tw as i32) / 2;
-            let ty = ((MENUBAR_HEIGHT as i32 - th as i32) / 2).max(0);
+            let ty = ((menubar_height() as i32 - th as i32) / 2).max(0);
             anyos_std::ui::window::font_render_buf(
                 font,
                 FONT_SIZE,
@@ -60,10 +60,10 @@ impl MenuBar {
                 Some(&x) => x,
                 None => continue,
             };
-            let iy = ((MENUBAR_HEIGHT as i32 - 16) / 2).max(0);
+            let iy = ((menubar_height() as i32 - 16) / 2).max(0);
             for row in 0..16i32 {
                 let py = iy + row;
-                if py < 0 || py >= MENUBAR_HEIGHT as i32 {
+                if py < 0 || py >= menubar_height() as i32 {
                     continue;
                 }
                 for col in 0..16i32 {

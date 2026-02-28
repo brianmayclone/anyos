@@ -125,11 +125,12 @@ impl Desktop {
             }
         }
 
-        // Handle window drag
+        // Handle window drag — clamp Y so windows can never go under the menubar.
         if let Some(ref drag) = self.dragging {
             let win_id = drag.window_id;
             let new_x = self.mouse_x - drag.offset_x;
-            let new_y = self.mouse_y - drag.offset_y;
+            let min_y = menubar_height() as i32 + 1;
+            let new_y = (self.mouse_y - drag.offset_y).max(min_y);
             if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
                 let layer_id = self.windows[idx].layer_id;
                 self.windows[idx].x = new_x;
@@ -168,7 +169,7 @@ impl Desktop {
                     self.menu_bar.rerender_system_dropdown(&mut self.compositor);
                 }
                 // Slide from system menu to app menus
-                if self.mouse_y < MENUBAR_HEIGHT as i32 {
+                if self.mouse_y < menubar_height() as i32 {
                     if let MenuBarHit::MenuTitle { menu_idx } =
                         self.menu_bar.hit_test_menubar(self.mouse_x, self.mouse_y)
                     {
@@ -179,7 +180,7 @@ impl Desktop {
                             .open_menu(menu_idx, owner_wid, &mut self.compositor);
                         self.draw_menubar();
                         self.compositor.add_damage(Rect::new(
-                            0, 0, self.screen_width, MENUBAR_HEIGHT + 1,
+                            0, 0, self.screen_width, menubar_height() + 1,
                         ));
                     }
                 }
@@ -189,7 +190,7 @@ impl Desktop {
                     self.menu_bar.render_dropdown(&mut self.compositor);
                 }
                 // Slide between app menus or to system menu
-                if self.mouse_y < MENUBAR_HEIGHT as i32 {
+                if self.mouse_y < menubar_height() as i32 {
                     match self.menu_bar.hit_test_menubar(self.mouse_x, self.mouse_y) {
                         MenuBarHit::SystemMenu => {
                             self.menu_bar
@@ -198,7 +199,7 @@ impl Desktop {
                                 .open_system_menu(&mut self.compositor);
                             self.draw_menubar();
                             self.compositor.add_damage(Rect::new(
-                                0, 0, self.screen_width, MENUBAR_HEIGHT + 1,
+                                0, 0, self.screen_width, menubar_height() + 1,
                             ));
                         }
                         MenuBarHit::MenuTitle { menu_idx } => {
@@ -212,7 +213,7 @@ impl Desktop {
                                     .open_menu(menu_idx, owner_wid, &mut self.compositor);
                                 self.draw_menubar();
                                 self.compositor.add_damage(Rect::new(
-                                    0, 0, self.screen_width, MENUBAR_HEIGHT + 1,
+                                    0, 0, self.screen_width, menubar_height() + 1,
                                 ));
                             }
                         }
@@ -280,7 +281,7 @@ impl Desktop {
                         let lx = self.mouse_x - win.x;
                         let mut ly = self.mouse_y - win.y;
                         if !win.is_borderless() {
-                            ly -= TITLE_BAR_HEIGHT as i32;
+                            ly -= title_bar_height() as i32;
                         }
                         self.push_event(
                             win.id,
@@ -436,24 +437,24 @@ impl Desktop {
                     self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
                     self.draw_menubar();
                     self.compositor.add_damage(Rect::new(
-                        0, 0, self.screen_width, MENUBAR_HEIGHT + 1,
+                        0, 0, self.screen_width, menubar_height() + 1,
                     ));
                     return;
                 }
 
-                if self.mouse_y < MENUBAR_HEIGHT as i32 {
+                if self.mouse_y < menubar_height() as i32 {
                     self.handle_menubar_click();
                     return;
                 }
                 self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
                 self.draw_menubar();
                 self.compositor.add_damage(Rect::new(
-                    0, 0, self.screen_width, MENUBAR_HEIGHT + 1,
+                    0, 0, self.screen_width, menubar_height() + 1,
                 ));
             }
 
             // Check menubar click
-            if self.mouse_y < MENUBAR_HEIGHT as i32 {
+            if self.mouse_y < menubar_height() as i32 {
                 self.handle_menubar_click();
                 return;
             }
@@ -580,7 +581,7 @@ impl Desktop {
                             }
                             let mut content_ly = ly;
                             if !self.windows[idx].is_borderless() {
-                                content_ly -= TITLE_BAR_HEIGHT as i32;
+                                content_ly -= title_bar_height() as i32;
                             }
                             self.push_event(
                                 win_id,
@@ -730,7 +731,7 @@ impl Desktop {
                     let content_h = if borderless {
                         nh
                     } else {
-                        nh.saturating_sub(TITLE_BAR_HEIGHT)
+                        nh.saturating_sub(title_bar_height())
                     };
                     let win_id = resize.window_id;
 
@@ -761,7 +762,7 @@ impl Desktop {
                     let lx = self.mouse_x - self.windows[idx].x;
                     let mut ly = self.mouse_y - self.windows[idx].y;
                     if !self.windows[idx].is_borderless() {
-                        ly -= TITLE_BAR_HEIGHT as i32;
+                        ly -= title_bar_height() as i32;
                     }
                     self.push_event(win_id, [EVENT_MOUSE_UP, lx as u32, ly as u32, self.current_modifiers << 8, 0]);
                 }
@@ -843,7 +844,7 @@ impl Desktop {
                 }
                 self.draw_menubar();
                 self.compositor.add_damage(Rect::new(
-                    0, 0, self.screen_width, MENUBAR_HEIGHT + 1,
+                    0, 0, self.screen_width, menubar_height() + 1,
                 ));
             }
             MenuBarHit::MenuTitle { menu_idx } => {
@@ -867,7 +868,7 @@ impl Desktop {
                     0,
                     0,
                     self.screen_width,
-                    MENUBAR_HEIGHT + 1,
+                    menubar_height() + 1,
                 ));
             }
             MenuBarHit::StatusIcon {
@@ -885,7 +886,7 @@ impl Desktop {
                         0,
                         0,
                         self.screen_width,
-                        MENUBAR_HEIGHT + 1,
+                        menubar_height() + 1,
                     ));
                 }
             }

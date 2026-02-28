@@ -18,6 +18,7 @@ mod resources;
 mod ui;
 mod callbacks;
 mod ws;
+mod net_worker;
 
 anyos_std::entry!(main);
 
@@ -92,6 +93,10 @@ struct AppState {
     ws_poll_timer: u32,
     /// Timer ID for the CSS animation tick (0 = not running).
     anim_timer: u32,
+    /// Per-tab dirty flags: set when CSS/images arrive, cleared after relayout.
+    relayout_dirty: [bool; 16],
+    /// Timer ID for the relayout debounce timer (0 = not running).
+    relayout_timer: u32,
 }
 
 static mut STATE: Option<AppState> = None;
@@ -201,6 +206,275 @@ pub(crate) fn start_anim_timer() {
         // Forward timer tick to JS setTimeout/setInterval/requestAnimationFrame.
         // (tick() handles this internally via JsRuntime::tick)
     });
+}
+
+// ═══════════════════════════════════════════════════════════
+// Network worker result processing
+// ═══════════════════════════════════════════════════════════
+
+/// Start the 10 ms poll timer that drains completed fetch results from the
+/// background network worker and dispatches them to the appropriate handlers.
+fn start_net_poll_timer() {
+    ui_lib::set_timer(10, || {
+        process_worker_results();
+    });
+}
+
+/// Drain all completed fetch results from the network worker and dispatch
+/// each one to its handler.
+///
+/// CSS and image results set per-tab dirty flags instead of triggering
+/// immediate relayouts.  A separate debounce timer (`flush_relayout`)
+/// coalesces all pending relayouts into one pass every 300 ms.
+fn process_worker_results() {
+    let results = net_worker::drain_results();
+    if results.is_empty() {
+        return;
+    }
+
+    for result in results {
+        match result {
+            net_worker::FetchResult::NavDone { response, url, cookies, generation } => {
+                handle_nav_done(response, url, cookies, generation);
+            }
+            net_worker::FetchResult::NavError { error_msg, generation } => {
+                handle_nav_error(error_msg, generation);
+            }
+            net_worker::FetchResult::CssDone { tab_index, href, body, headers, generation } => {
+                if handle_css_done(tab_index, href, body, headers, generation) {
+                    mark_relayout_dirty(tab_index);
+                }
+            }
+            net_worker::FetchResult::ImageDone { tab_index, src, body, headers, generation } => {
+                if handle_image_done(tab_index, src, body, headers, generation) {
+                    mark_relayout_dirty(tab_index);
+                }
+            }
+        }
+    }
+}
+
+/// Mark a tab as needing a relayout and start the debounce timer if not
+/// already running.  The actual relayout happens in `flush_relayout()`.
+fn mark_relayout_dirty(tab_index: usize) {
+    let st = state();
+    if tab_index < st.relayout_dirty.len() {
+        st.relayout_dirty[tab_index] = true;
+    }
+    // Start the debounce timer if not already running.
+    if st.relayout_timer == 0 {
+        st.relayout_timer = ui_lib::set_timer(300, flush_relayout);
+    }
+}
+
+/// Debounce callback: perform one relayout per dirty tab, then clear flags
+/// and stop the timer.
+fn flush_relayout() {
+    let st = state();
+    let mut any_dirty = false;
+
+    for tab_idx in 0..st.relayout_dirty.len() {
+        if st.relayout_dirty[tab_idx] {
+            st.relayout_dirty[tab_idx] = false;
+            if tab_idx < st.tabs.len() {
+                st.tabs[tab_idx].webview.relayout();
+            }
+        }
+    }
+
+    // Check if new dirty flags were set during the relayouts above
+    // (unlikely but possible if relayout triggers further resource loads).
+    for &d in &st.relayout_dirty {
+        if d { any_dirty = true; break; }
+    }
+
+    if !any_dirty {
+        // All clean — kill the debounce timer.
+        if st.relayout_timer != 0 {
+            ui_lib::kill_timer(st.relayout_timer);
+            st.relayout_timer = 0;
+        }
+    }
+}
+
+/// Handle a completed navigation fetch: decode body, render HTML, update
+/// history, queue external resources.
+fn handle_nav_done(
+    response: http::Response,
+    original_url: http::Url,
+    worker_cookies: http::CookieJar,
+    generation: u32,
+) {
+    let st = state();
+    let tab_idx = st.active_tab;
+
+    // Discard stale result from a previous navigation.
+    if st.tabs[tab_idx].nav_generation != generation {
+        return;
+    }
+
+    // Merge cookies that the worker collected during the fetch.
+    merge_cookies(worker_cookies);
+
+    // HTTP error check.
+    if response.status < 200 || response.status >= 400 {
+        let mut msg = String::from("HTTP error ");
+        ui::push_u32(&mut msg, response.status as u32);
+        st.tabs[tab_idx].status_text = msg;
+        ui::update_status();
+        return;
+    }
+
+    st.tabs[tab_idx].status_text = String::from("Rendering...");
+    ui::update_status();
+
+    // Decode response body (charset detection + Latin-1 transcoding).
+    let body_text = resources::decode_http_body(&response.body, &response.headers);
+
+    // Determine base URL (post-redirect URL takes precedence).
+    let base_url = response.final_url.unwrap_or(original_url);
+    let url_str = ui::format_url(&base_url);
+
+    // Clear stylesheets from the previous page.
+    st.tabs[tab_idx].webview.clear_stylesheets();
+
+    // Set URL and cookies on the JS runtime before rendering.
+    st.tabs[tab_idx].webview.set_url(&url_str);
+    let is_secure = base_url.scheme == "https";
+    if let Some(cookie_hdr) = st.cookies.cookie_header(&base_url.host, &base_url.path, is_secure) {
+        st.tabs[tab_idx].webview.js_runtime().set_cookies(&cookie_hdr);
+    } else {
+        st.tabs[tab_idx].webview.js_runtime().set_cookies("");
+    }
+
+    // Parse and render the HTML document.
+    st.tabs[tab_idx].webview.set_html(&body_text);
+
+    // Flush JS console output to serial log.
+    for line in st.tabs[tab_idx].webview.js_console() {
+        anyos_std::println!("[surf-js] {}", line);
+    }
+
+    // Extract page title.
+    let title = st.tabs[tab_idx].webview.get_title()
+        .unwrap_or_else(String::new);
+
+    // Update navigation history — only push if URL differs from current position.
+    let at_same = if !st.tabs[tab_idx].history.is_empty()
+        && st.tabs[tab_idx].history_pos < st.tabs[tab_idx].history.len()
+    {
+        st.tabs[tab_idx].history[st.tabs[tab_idx].history_pos] == url_str
+    } else {
+        false
+    };
+
+    if !at_same {
+        // Truncate any forward history.
+        if !st.tabs[tab_idx].history.is_empty() {
+            let pos = st.tabs[tab_idx].history_pos;
+            st.tabs[tab_idx].history.truncate(pos + 1);
+        }
+        st.tabs[tab_idx].history.push(url_str.clone());
+        st.tabs[tab_idx].history_pos = st.tabs[tab_idx].history.len() - 1;
+    }
+
+    st.tabs[tab_idx].page_title = title;
+    st.tabs[tab_idx].url_text = url_str;
+    st.tabs[tab_idx].current_url = Some(base_url.clone());
+    st.tabs[tab_idx].status_text = String::from("Done");
+
+    // Update chrome UI.
+    let url_for_field = st.tabs[tab_idx].url_text.clone();
+    st.url_field.set_text(&url_for_field);
+    ui::update_title();
+    ui::update_status();
+    ui::update_tab_labels();
+    ui::update_devtools();
+
+    // Connect any WebSockets that JS requested during set_html().
+    connect_pending_ws(tab_idx);
+
+    // Queue external CSS and images for async fetch via the worker thread.
+    if let Some(dom) = st.tabs[tab_idx].webview.dom() {
+        resources::queue_stylesheets(dom, &base_url, tab_idx);
+        resources::queue_images(dom, &base_url, tab_idx);
+    }
+}
+
+/// Handle a navigation error: show the error message in the status bar.
+fn handle_nav_error(error_msg: &'static str, generation: u32) {
+    let st = state();
+    let tab_idx = st.active_tab;
+    if st.tabs[tab_idx].nav_generation != generation {
+        return;
+    }
+    st.tabs[tab_idx].status_text = String::from(error_msg);
+    ui::update_status();
+}
+
+/// Handle a completed CSS stylesheet fetch: apply the stylesheet.
+///
+/// Returns `true` if the stylesheet was applied and a relayout is needed.
+/// The caller batches relayouts to avoid redundant work.
+fn handle_css_done(
+    tab_index: usize,
+    href: String,
+    body: Vec<u8>,
+    headers: String,
+    generation: u32,
+) -> bool {
+    let st = state();
+    if tab_index >= st.tabs.len() { return false; }
+    if st.tabs[tab_index].nav_generation != generation { return false; }
+
+    let css_text = resources::decode_http_body(&body, &headers);
+    st.tabs[tab_index].webview.add_stylesheet(&css_text);
+    anyos_std::println!("[surf] applied CSS: {}", href);
+    true
+}
+
+/// Handle a completed image fetch: decode SVG or raster and add to cache.
+///
+/// Returns `true` if the image was decoded and a relayout is needed.
+/// The caller batches relayouts to avoid redundant work.
+fn handle_image_done(
+    tab_index: usize,
+    src: String,
+    body: Vec<u8>,
+    headers: String,
+    generation: u32,
+) -> bool {
+    let st = state();
+    if tab_index >= st.tabs.len() { return false; }
+    if st.tabs[tab_index].nav_generation != generation { return false; }
+
+    if resources::is_svg(&src, &headers) {
+        resources::decode_svg_no_relayout(&body, &src, tab_index);
+    } else {
+        resources::decode_raster_no_relayout(&body, &src, tab_index);
+    }
+    true
+}
+
+/// Merge cookies returned by the worker thread into the main cookie jar.
+///
+/// Worker-side cookies take precedence (they represent the most recent
+/// Set-Cookie headers from the server).
+fn merge_cookies(worker_jar: http::CookieJar) {
+    let st = state();
+    for cookie in worker_jar.cookies {
+        // Replace existing cookie with same name+domain+path, or add new.
+        let existing = st.cookies.cookies.iter_mut().find(|c| {
+            c.name == cookie.name && c.domain == cookie.domain && c.path == cookie.path
+        });
+        if let Some(existing) = existing {
+            existing.value = cookie.value;
+            existing.secure = cookie.secure;
+            existing.http_only = cookie.http_only;
+        } else {
+            st.cookies.cookies.push(cookie);
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -360,8 +634,13 @@ fn main() {
             ws_connections: Vec::new(),
             ws_poll_timer: 0,
             anim_timer: 0,
+            relayout_dirty: [false; 16],
+            relayout_timer: 0,
         });
     }
+
+    // Initialize background network worker queues.
+    net_worker::init();
 
     // ── Button callbacks ─────────────────────────────────────────────────────
     let st = state();
@@ -462,6 +741,9 @@ fn main() {
 
     // Start the CSS animation tick timer.
     start_anim_timer();
+
+    // Start the network worker poll timer (10 ms).
+    start_net_poll_timer();
 
     // Navigate to the initial URL if one was provided on the command line.
     if let Some(url) = start_url {

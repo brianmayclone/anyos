@@ -177,17 +177,16 @@ impl Control for TextField {
     fn kind(&self) -> ControlKind { ControlKind::TextField }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.text_base.base.x;
-        let y = ay + self.text_base.base.y;
-        let w = self.text_base.base.w;
-        let h = self.text_base.base.h;
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
-        let disabled = self.text_base.base.disabled;
-        let hovered = self.text_base.base.hovered;
-        let corner = crate::theme::INPUT_CORNER;
+        let disabled = b.disabled;
+        let hovered = b.hovered;
+        let corner = crate::theme::input_corner();
 
         // Background: use custom color if set, otherwise theme color.
-        let custom = self.text_base.base.color;
+        let custom = b.color;
         let bg = if custom != 0 {
             if disabled { crate::theme::darken(custom, 10) } else { custom }
         } else {
@@ -210,20 +209,24 @@ impl Control for TextField {
             crate::draw::draw_focus_ring(surface, x, y, w, h, corner, tc.accent);
         }
 
-        // Prefix icon placeholder
+        // Prefix icon placeholder (scaled)
+        let icon_sz = crate::theme::scale(12);
+        let icon_r = crate::theme::scale(6);
+        let icon_pad = crate::theme::scale_i32(8);
         if let Some(_icon) = self.prefix_icon {
-            crate::draw::fill_rounded_rect(surface, x + 8, y + (h as i32 - 12) / 2, 12, 12, 6, tc.text_secondary);
+            crate::draw::fill_rounded_rect(surface, x + icon_pad, y + (h as i32 - icon_sz as i32) / 2, icon_sz, icon_sz, icon_r, tc.text_secondary);
         }
 
-        // Postfix icon placeholder
+        // Postfix icon placeholder (scaled)
         if let Some(_icon) = self.postfix_icon {
-            let px = x + w as i32 - self.postfix_width as i32 + 8;
-            crate::draw::fill_rounded_rect(surface, px, y + (h as i32 - 12) / 2, 12, 12, 6, tc.text_secondary);
+            let pw = crate::theme::scale_i32(self.postfix_width as i32);
+            let px = x + w as i32 - pw + icon_pad;
+            crate::draw::fill_rounded_rect(surface, px, y + (h as i32 - icon_sz as i32) / 2, icon_sz, icon_sz, icon_r, tc.text_secondary);
         }
 
         // Text area — clip to the text region to prevent overflow.
-        let text_left = self.text_area_left();
-        let text_right = self.text_area_right();
+        let text_left = crate::theme::scale_i32(self.text_area_left());
+        let text_right = crate::theme::scale_i32(self.text_area_right());
         let area_w = (text_right - text_left).max(0) as u32;
         let clipped = surface.with_clip(x + text_left, y, area_w, h);
 
@@ -232,9 +235,10 @@ impl Control for TextField {
         } else {
             self.text_base.effective_text_color()
         };
-        let font_size = self.text_base.text_style.font_size;
-        let text_y = y + 6;
-        let text_x = x + text_left - self.scroll_x;
+        let font_size = crate::draw::scale_font(self.text_base.text_style.font_size);
+        let text_y = y + crate::theme::scale_i32(6);
+        let scaled_scroll_x = crate::theme::scale_i32(self.scroll_x);
+        let text_x = x + text_left - scaled_scroll_x;
 
         if self.text_base.text.is_empty() && !self.placeholder.is_empty() {
             crate::draw::draw_text_sized(&clipped, x + text_left, text_y, tc.text_secondary, &self.placeholder, font_size);
@@ -248,7 +252,9 @@ impl Control for TextField {
                 let end_px = crate::draw::text_width_n_at(&display, sel_end.min(display.len()), font_size) as i32;
                 let sel_x = text_x + start_px;
                 let sel_w = (end_px - start_px).max(0) as u32;
-                crate::draw::fill_rect(&clipped, sel_x, y + 3, sel_w, h - 6, tc.accent & 0x60FFFFFF);
+                let sel_pad = crate::theme::scale_i32(3);
+                let sel_h = if h > (sel_pad as u32 * 2) { h - sel_pad as u32 * 2 } else { 1 };
+                crate::draw::fill_rect(&clipped, sel_x, y + sel_pad, sel_w, sel_h, tc.accent & 0x60FFFFFF);
             }
 
             // Draw text.
@@ -259,7 +265,10 @@ impl Control for TextField {
                 let cursor = self.cursor_pos.min(display.len());
                 let cursor_px = crate::draw::text_width_n_at(&display, cursor, font_size) as i32;
                 let cx = text_x + cursor_px;
-                crate::draw::fill_rect(&clipped, cx, y + 4, 2, h - 8, tc.accent);
+                let cursor_pad = crate::theme::scale_i32(4);
+                let cursor_w = crate::theme::scale(2);
+                let cursor_h = if h > (cursor_pad as u32 * 2) { h - cursor_pad as u32 * 2 } else { 1 };
+                crate::draw::fill_rect(&clipped, cx, y + cursor_pad, cursor_w, cursor_h, tc.accent);
             }
         }
     }

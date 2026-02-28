@@ -490,13 +490,22 @@ impl Control for DataGrid {
     fn get_font_size(&self) -> u16 { if self.font_size > 0 { self.font_size } else { 13 } }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.base.x;
-        let y = ay + self.base.y;
-        let w = self.base.w;
-        let h = self.base.h;
+        let b = self.base();
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
 
-        // Clip to control bounds
+        // Scaled dimensions
+        let hdr_h = crate::theme::scale(self.header_height);
+        let rh_s = crate::theme::scale(self.row_height) as i32;
+        let scroll_x_s = crate::theme::scale_i32(self.scroll_x);
+        let scroll_y_s = crate::theme::scale_i32(self.scroll_y);
+        let cell_pad = crate::theme::scale_i32(8);
+        let icon_pad = crate::theme::scale_i32(4);
+        let logical_fs = if self.font_size > 0 { self.font_size } else { 13 };
+        let fs = crate::draw::scale_font(logical_fs);
+
+        // Clip to control bounds (physical)
         let clipped = surface.with_clip(x, y, w, h);
 
         // Background
@@ -507,38 +516,39 @@ impl Control for DataGrid {
         let col_count = self.columns.len();
 
         // ── Data rows (scrolled) ──
-        let viewport_h = h.saturating_sub(self.header_height) as i32;
+        let viewport_h = h.saturating_sub(hdr_h) as i32;
         if viewport_h > 0 && self.row_count > 0 {
-            let rh = self.row_height as i32;
-            let vis_start = (self.scroll_y / rh).max(0) as usize;
-            let vis_end = ((self.scroll_y + viewport_h) / rh + 2).min(self.row_count as i32) as usize;
+            let vis_start = (scroll_y_s / rh_s).max(0) as usize;
+            let vis_end = ((scroll_y_s + viewport_h) / rh_s + 2).min(self.row_count as i32) as usize;
 
             for vis_row in vis_start..vis_end {
                 let data_row = self.data_row(vis_row);
-                let row_y = y + self.header_height as i32 + (vis_row as i32) * rh - self.scroll_y;
+                let row_y = y + hdr_h as i32 + (vis_row as i32) * rh_s - scroll_y_s;
+                let rh_u = rh_s as u32;
 
                 // Row background
                 let selected = self.is_row_selected(data_row);
                 if selected {
-                    crate::draw::fill_rect(&clipped, x, row_y, w, self.row_height, tc.selection);
+                    crate::draw::fill_rect(&clipped, x, row_y, w, rh_u, tc.selection);
                 } else if Some(vis_row) == self.hovered_row {
-                    crate::draw::fill_rect(&clipped, x, row_y, w, self.row_height, tc.control_hover);
+                    crate::draw::fill_rect(&clipped, x, row_y, w, rh_u, tc.control_hover);
                 } else if vis_row % 2 == 1 {
-                    crate::draw::fill_rect(&clipped, x, row_y, w, self.row_height, tc.alt_row_bg);
+                    crate::draw::fill_rect(&clipped, x, row_y, w, rh_u, tc.alt_row_bg);
                 }
 
                 // Cell text + icons
-                let mut col_x = x - self.scroll_x;
+                let mut col_x = x - scroll_x_s;
                 for disp_col in 0..col_count {
                     let logical_col = self.display_order[disp_col];
                     let col = &self.columns[logical_col];
+                    let col_w_s = crate::theme::scale(col.width);
                     let cell_idx = data_row * col_count + logical_col;
 
-                    let cell_clip = clipped.with_clip(col_x, row_y, col.width, self.row_height);
+                    let cell_clip = clipped.with_clip(col_x, row_y, col_w_s, rh_u);
 
                     // Draw per-cell background color (if set)
                     if cell_idx < self.cell_bg_colors.len() && self.cell_bg_colors[cell_idx] != 0 {
-                        crate::draw::fill_rect(&cell_clip, col_x, row_y, col.width, self.row_height, self.cell_bg_colors[cell_idx]);
+                        crate::draw::fill_rect(&cell_clip, col_x, row_y, col_w_s, rh_u, self.cell_bg_colors[cell_idx]);
                     }
 
                     // Draw cell icon (if any)
@@ -547,10 +557,10 @@ impl Control for DataGrid {
                         if let Some(ref icon) = self.cell_icons[cell_idx] {
                             let iw = icon.width as i32;
                             let ih = icon.height as i32;
-                            let ix = col_x + 4;
-                            let iy = row_y + (self.row_height as i32 - ih) / 2;
+                            let ix = col_x + icon_pad;
+                            let iy = row_y + (rh_s - ih) / 2;
                             crate::draw::blit_argb(&cell_clip, ix, iy, icon.width as u32, icon.height as u32, &icon.pixels);
-                            icon_offset = iw + 4;
+                            icon_offset = iw + icon_pad;
                         }
                     }
 
@@ -564,19 +574,18 @@ impl Control for DataGrid {
                             tc.text
                         };
 
-                        let fs = if self.font_size > 0 { self.font_size } else { 13 };
                         let text_x = match col.align {
-                            CellAlign::Left => col_x + 8 + icon_offset,
+                            CellAlign::Left => col_x + cell_pad + icon_offset,
                             CellAlign::Center => {
                                 let (tw, _) = crate::draw::text_size_at(text, fs);
-                                col_x + icon_offset + (col.width as i32 - icon_offset - tw as i32) / 2
+                                col_x + icon_offset + (col_w_s as i32 - icon_offset - tw as i32) / 2
                             }
                             CellAlign::Right => {
                                 let (tw, _) = crate::draw::text_size_at(text, fs);
-                                col_x + col.width as i32 - 8 - tw as i32
+                                col_x + col_w_s as i32 - cell_pad - tw as i32
                             }
                         };
-                        let text_y = row_y + (self.row_height as i32 - fs as i32) / 2;
+                        let text_y = row_y + (rh_s - fs as i32) / 2;
 
                         // Check for per-character colors
                         let has_char_colors = cell_idx < self.char_color_offsets.len()
@@ -585,7 +594,6 @@ impl Control for DataGrid {
                         if has_char_colors {
                             let base_off = self.char_color_offsets[cell_idx] as usize;
                             let text_len = text.len();
-                            // Draw spans of consecutive characters with the same color
                             let mut cx = text_x;
                             let mut span_start = 0usize;
                             while span_start < text_len {
@@ -595,7 +603,6 @@ impl Control for DataGrid {
                                 } else {
                                     default_color
                                 };
-                                // Extend span while same color
                                 let mut span_end = span_start + 1;
                                 while span_end < text_len {
                                     let next_idx = base_off + span_end;
@@ -618,31 +625,33 @@ impl Control for DataGrid {
                         }
                     }
 
-                    col_x += col.width as i32;
+                    col_x += col_w_s as i32;
                 }
 
                 // Row separator
-                crate::draw::fill_rect(&clipped, x, row_y + rh - 1, w, 1, tc.separator);
+                crate::draw::fill_rect(&clipped, x, row_y + rh_s - 1, w, 1, tc.separator);
             }
         }
 
         // ── Header (drawn over data, doesn't scroll vertically) ──
-        crate::draw::fill_rect(&clipped, x, y, w, self.header_height, tc.control_bg);
+        crate::draw::fill_rect(&clipped, x, y, w, hdr_h, tc.control_bg);
 
-        let mut col_x = x - self.scroll_x;
+        let hdr_fs = crate::draw::scale_font(13);
+        let mut col_x = x - scroll_x_s;
         for disp_col in 0..col_count {
             let logical_col = self.display_order[disp_col];
             let col = &self.columns[logical_col];
+            let col_w_s = crate::theme::scale(col.width);
 
             // Header text (clipped to column bounds)
-            let text_y = y + (self.header_height as i32 - 13) / 2;
-            let hdr_clip = clipped.with_clip(col_x, y, col.width, self.header_height);
-            crate::draw::draw_text(&hdr_clip, col_x + 8, text_y, tc.text, &col.header);
+            let text_y = y + (hdr_h as i32 - hdr_fs as i32) / 2;
+            let hdr_clip = clipped.with_clip(col_x, y, col_w_s, hdr_h);
+            crate::draw::draw_text_sized(&hdr_clip, col_x + cell_pad, text_y, tc.text, &col.header, hdr_fs);
 
             // Sort indicator
             if self.sort_column == Some(disp_col) && self.sort_direction != SortDirection::None {
-                let ix = col_x + col.width as i32 - 16;
-                let iy = y + (self.header_height as i32) / 2;
+                let ix = col_x + col_w_s as i32 - crate::theme::scale_i32(16);
+                let iy = y + (hdr_h as i32) / 2;
                 if self.sort_direction == SortDirection::Ascending {
                     draw_sort_arrow_up(&clipped, ix, iy, tc.accent);
                 } else {
@@ -650,37 +659,37 @@ impl Control for DataGrid {
                 }
             }
 
-            col_x += col.width as i32;
-            // Column separator line — only draw down to content, not full control height
-            let sep_h = (self.header_height + self.row_count as u32 * self.row_height).min(h);
+            col_x += col_w_s as i32;
+            // Column separator line
+            let sep_h = (hdr_h + self.row_count as u32 * crate::theme::scale(self.row_height)).min(h);
             crate::draw::fill_rect(&clipped, col_x - 1, y, 1, sep_h, tc.separator);
         }
 
         // Header bottom border
-        crate::draw::fill_rect(&clipped, x, y + self.header_height as i32 - 1, w, 1, tc.separator);
+        crate::draw::fill_rect(&clipped, x, y + hdr_h as i32 - 1, w, 1, tc.separator);
 
         // ── Reorder visual feedback ──
         if let DragMode::Reordering { col_index, current_x, drag_start_x } = self.drag_mode {
             if (current_x - drag_start_x).abs() > 5 && col_index < self.display_order.len() {
                 let logical = self.display_order[col_index];
-                let cw = self.columns[logical].width;
-                crate::draw::fill_rect(&clipped, x + current_x, y, cw, h, 0x40007AFF);
-                crate::draw::fill_rect(&clipped, x + current_x, y, 2, h, tc.accent);
+                let cw = crate::theme::scale(self.columns[logical].width);
+                let cx_s = crate::theme::scale_i32(current_x);
+                crate::draw::fill_rect(&clipped, x + cx_s, y, cw, h, 0x40007AFF);
+                crate::draw::fill_rect(&clipped, x + cx_s, y, 2, h, tc.accent);
             }
         }
 
         // ── Vertical scrollbar + minimap ──
-        let content_h = self.row_count as u32 * self.row_height;
-        let view_h = h.saturating_sub(self.header_height);
-        if content_h > view_h && view_h > 4 {
+        let content_h_s = self.row_count as u32 * crate::theme::scale(self.row_height);
+        let view_h_s = h.saturating_sub(hdr_h);
+        if content_h_s > view_h_s && view_h_s > 4 {
             let has_minimap = !self.minimap_colors.is_empty();
-            let bar_w = if has_minimap { 10u32 } else { 6u32 };
-            let bar_x = x + w as i32 - bar_w as i32 - 2;
-            let track_y = y + self.header_height as i32 + 2;
-            let track_h = (view_h - 4) as i32;
+            let bar_w = crate::theme::scale(if has_minimap { 10 } else { 6 });
+            let bar_x = x + w as i32 - bar_w as i32 - crate::theme::scale_i32(2);
+            let track_y = y + hdr_h as i32 + crate::theme::scale_i32(2);
+            let track_h = (view_h_s as i32 - crate::theme::scale_i32(4)).max(1);
             crate::draw::fill_rect(&clipped, bar_x, track_y, bar_w, track_h as u32, tc.scrollbar_track);
 
-            // Minimap: draw colored markers for each row
             if has_minimap && self.row_count > 0 && track_h > 0 {
                 let total = self.row_count as i32;
                 for (row, &color) in self.minimap_colors.iter().enumerate() {
@@ -689,56 +698,50 @@ impl Control for DataGrid {
                     let ph = ((track_h as i64 / total as i64).max(1)).min(3) as u32;
                     crate::draw::fill_rect(&clipped, bar_x, py, bar_w, ph, color);
                 }
-
-                // Viewport indicator (semi-transparent)
-                let vp_y = track_y + (self.scroll_y as i64 * track_h as i64 / (self.row_count as i64 * self.row_height as i64)).max(0) as i32;
-                let vp_h = (view_h as i64 * track_h as i64 / content_h as i64).max(4) as u32;
+                let vp_y = track_y + (scroll_y_s as i64 * track_h as i64 / (self.row_count as i64 * rh_s as i64)).max(0) as i32;
+                let vp_h = (view_h_s as i64 * track_h as i64 / content_h_s as i64).max(4) as u32;
                 crate::draw::fill_rect(&clipped, bar_x, vp_y, bar_w, vp_h, 0x30FFFFFF);
             }
 
-            let thumb_h = ((view_h as u64 * track_h as u64) / content_h as u64).max(20) as i32;
-            let max_scroll = (content_h - view_h) as i32;
-            let scroll_frac = if max_scroll > 0 {
-                (self.scroll_y as i64 * (track_h - thumb_h) as i64 / max_scroll as i64) as i32
+            let thumb_h = ((view_h_s as u64 * track_h as u64) / content_h_s as u64).max(20) as i32;
+            let max_scroll_s = (content_h_s as i32 - view_h_s as i32).max(0);
+            let scroll_frac = if max_scroll_s > 0 {
+                (scroll_y_s as i64 * (track_h - thumb_h) as i64 / max_scroll_s as i64) as i32
             } else { 0 };
             let thumb_y = track_y + scroll_frac.max(0).min(track_h - thumb_h);
-            crate::draw::fill_rounded_rect(&clipped, bar_x, thumb_y, bar_w, thumb_h as u32, 3, tc.scrollbar);
+            let thumb_r = crate::theme::scale(3);
+            crate::draw::fill_rounded_rect(&clipped, bar_x, thumb_y, bar_w, thumb_h as u32, thumb_r, tc.scrollbar);
         }
 
         // ── Connector lines (drawn over a column) ──
         if !self.connector_lines.is_empty() && self.connector_column < col_count {
             let logical_col = self.display_order[self.connector_column];
-            let col_w = self.columns[logical_col].width;
-            // Compute column x position
-            let mut conn_col_x = x - self.scroll_x;
+            let col_w = crate::theme::scale(self.columns[logical_col].width);
+            let mut conn_col_x = x - scroll_x_s;
             for dc in 0..self.connector_column {
                 let lc = self.display_order[dc];
-                conn_col_x += self.columns[lc].width as i32;
+                conn_col_x += crate::theme::scale(self.columns[lc].width) as i32;
             }
-            let conn_clip = clipped.with_clip(conn_col_x, y + self.header_height as i32, col_w, view_h as u32);
-            let rh = self.row_height as i32;
-            let base_y = y + self.header_height as i32 - self.scroll_y;
-            let mid_x = conn_col_x + col_w as i32 / 2;
+            let conn_clip = clipped.with_clip(conn_col_x, y + hdr_h as i32, col_w, view_h_s);
+            let base_y = y + hdr_h as i32 - scroll_y_s;
+            let conn_pad = crate::theme::scale_i32(2);
 
             for cl in &self.connector_lines {
-                let y0 = base_y + cl.start_row as i32 * rh;
-                let y1 = base_y + cl.end_row as i32 * rh + rh;
-                // Filled background
+                let y0 = base_y + cl.start_row as i32 * rh_s;
+                let y1 = base_y + cl.end_row as i32 * rh_s + rh_s;
                 if cl.filled {
-                    let fy = y0.max(y + self.header_height as i32);
+                    let fy = y0.max(y + hdr_h as i32);
                     let fy1 = y1.min(y + h as i32);
                     if fy1 > fy {
-                        // Semi-transparent fill
                         let fill_color = (cl.color & 0x00FFFFFF) | 0x20000000;
                         crate::draw::fill_rect(&conn_clip, conn_col_x, fy, col_w, (fy1 - fy) as u32, fill_color);
                     }
                 }
-                // Top and bottom horizontal lines
-                let lx0 = conn_col_x + 2;
-                let lx1 = conn_col_x + col_w as i32 - 2;
-                crate::draw::fill_rect(&conn_clip, lx0, y0, (lx1 - lx0) as u32, 1, cl.color);
-                crate::draw::fill_rect(&conn_clip, lx0, y1 - 1, (lx1 - lx0) as u32, 1, cl.color);
-                // Left and right vertical edges
+                let lx0 = conn_col_x + conn_pad;
+                let lx1 = conn_col_x + col_w as i32 - conn_pad;
+                let line_w = (lx1 - lx0).max(0) as u32;
+                crate::draw::fill_rect(&conn_clip, lx0, y0, line_w, 1, cl.color);
+                crate::draw::fill_rect(&conn_clip, lx0, y1 - 1, line_w, 1, cl.color);
                 crate::draw::fill_rect(&conn_clip, lx0, y0, 1, (y1 - y0) as u32, cl.color);
                 crate::draw::fill_rect(&conn_clip, lx1, y0, 1, (y1 - y0) as u32, cl.color);
             }

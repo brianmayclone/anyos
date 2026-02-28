@@ -5,8 +5,9 @@
 //!
 //! `TabState` holds everything associated with a single browser tab:
 //! the `WebView`, URL/history, and page title.  The navigation functions
-//! (`navigate`, `navigate_post`, `go_back`, `go_forward`, `reload`) are
-//! also defined here because they operate primarily on per-tab data.
+//! (`navigate`, `navigate_post`, `go_back`, `go_forward`, `reload`) submit
+//! fetch requests to the background network worker and return immediately,
+//! keeping the UI thread responsive.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -33,6 +34,9 @@ pub(crate) struct TabState {
     pub(crate) history_pos: usize,
     /// Short status string shown in the status bar.
     pub(crate) status_text: String,
+    /// Generation counter for the current navigation.
+    /// Used to discard stale fetch results from the worker thread.
+    pub(crate) nav_generation: u32,
 }
 
 impl TabState {
@@ -46,6 +50,7 @@ impl TabState {
             history: Vec::new(),
             history_pos: 0,
             status_text: String::from("Ready"),
+            nav_generation: 0,
         }
     }
 
@@ -77,11 +82,19 @@ impl TabState {
 
 /// Navigate the active tab to `url_str` using a GET request.
 ///
-/// Fetches the page over HTTP/HTTPS, renders it, discovers external resources,
-/// and updates the history/UI.  Errors are surfaced in the status bar.
+/// For `file://` URLs the file is read from the local filesystem and
+/// rendered directly without going through the network worker.
+/// For `http://` and `https://` URLs the fetch is submitted to the
+/// background network worker and returns immediately.
 pub(crate) fn navigate(url_str: &str) {
     let st = crate::state();
     anyos_std::println!("[surf] navigating to: {}", url_str);
+
+    // Handle file:// URLs locally — no network needed.
+    if url_str.starts_with("file://") {
+        navigate_file(&url_str[7..]);
+        return;
+    }
 
     let url = match crate::http::parse_url(url_str) {
         Ok(u) => u,
@@ -92,127 +105,34 @@ pub(crate) fn navigate(url_str: &str) {
         }
     };
 
+    // Cancel any in-flight CSS/image work from the previous page.
+    cancel_pending_resources();
+
+    // Bump generation so stale resource results are discarded.
+    let generation = crate::net_worker::new_generation();
+    st.tabs[st.active_tab].nav_generation = generation;
+
+    // Update UI to show loading state.
     let mut loading_msg = String::from("Loading: ");
     loading_msg.push_str(url_str);
     st.tabs[st.active_tab].status_text = loading_msg;
     crate::ui::update_status();
 
-    let response = match crate::http::fetch(&url, &mut st.cookies, &mut st.conn_pool) {
-        Ok(r) => r,
-        Err(e) => {
-            let msg = match e {
-                crate::http::FetchError::InvalidUrl => "Invalid URL",
-                crate::http::FetchError::DnsFailure => "DNS lookup failed",
-                crate::http::FetchError::ConnectFailure => "Connection failed",
-                crate::http::FetchError::SendFailure => "Send failed",
-                crate::http::FetchError::NoResponse => "No response",
-                crate::http::FetchError::TooManyRedirects => "Too many redirects",
-                crate::http::FetchError::TlsHandshakeFailed => "TLS handshake failed",
-            };
-            st.tabs[st.active_tab].status_text = String::from(msg);
-            crate::ui::update_status();
-            return;
-        }
-    };
+    // Clone cookies for the worker thread.
+    let cookies = st.cookies.clone();
 
-    if response.status < 200 || response.status >= 400 {
-        st.tabs[st.active_tab].status_text = String::from("HTTP error");
-        crate::ui::update_status();
-        return;
-    }
-
-    // Use the final (post-redirect) URL as the base for relative references.
-    let base_url = response.final_url.unwrap_or_else(|| crate::http::clone_url(&url));
-
-    let body_text = crate::resources::decode_http_body(&response.body, &response.headers);
-    anyos_std::println!("[surf] received {} bytes, parsing HTML...", body_text.len());
-
-    st.tabs[st.active_tab].status_text = String::from("Rendering page...");
-    crate::ui::update_status();
-
-    // Pass URL + cookies to the JS runtime before rendering so that
-    // window.location and document.cookie are correct during script execution.
-    st.tabs[st.active_tab].webview.clear_stylesheets();
-    let url_string_for_js = crate::ui::format_url(&base_url);
-    st.tabs[st.active_tab].webview.set_url(&url_string_for_js);
-    let is_secure = base_url.scheme == "https";
-    let cookie_hdr = st.cookies
-        .cookie_header(&base_url.host, &base_url.path, is_secure)
-        .unwrap_or_default();
-    st.tabs[st.active_tab].webview.js_runtime().set_cookies(&cookie_hdr);
-
-    st.tabs[st.active_tab].webview.set_html(&body_text);
-    anyos_std::println!("[surf] render complete");
-
-    for line in st.tabs[st.active_tab].webview.js_console() {
-        anyos_std::println!("[js] {}", line);
-    }
-
-    // Update history and tab metadata.
-    let title = st.tabs[st.active_tab]
-        .webview
-        .get_title()
-        .unwrap_or_else(|| String::from("Untitled"));
-    let url_string = crate::ui::format_url(&base_url);
-    {
-        let tab = &mut st.tabs[st.active_tab];
-        if tab.history.is_empty()
-            || tab.history_pos >= tab.history.len()
-            || tab.history[tab.history_pos] != url_string
-        {
-            if tab.history_pos + 1 < tab.history.len() {
-                tab.history.truncate(tab.history_pos + 1);
-            }
-            tab.history.push(url_string.clone());
-            tab.history_pos = tab.history.len() - 1;
-        }
-        tab.page_title = title;
-        tab.url_text = url_string;
-        tab.status_text = String::from("Done");
-    }
-
-    // Refresh DevTools console with any output from this page's scripts.
-    crate::ui::update_devtools();
-
-    // Connect any WebSockets that JS requested during set_html.
-    let tab_idx = st.active_tab;
-    crate::connect_pending_ws(tab_idx);
-
-    // Update the URL bar and chrome immediately so the user sees the page as
-    // loaded before we block on external CSS / image downloads.
-    let st = crate::state();
-    st.url_field.set_text(&st.tabs[st.active_tab].url_text.clone());
-    crate::ui::update_title();
-    crate::ui::update_status();
-    crate::ui::update_tab_labels();
-
-    // Parse the body again for resource discovery (stylesheets, images).
-    // A second parse is cheaper than complicating set_html to return DOM info.
-    let dom_for_resources = libwebview::html::parse(&body_text);
-    anyos_std::println!("[surf] DOM: {} nodes", dom_for_resources.nodes.len());
-
-    // Cancel any stale CSS / image fetches left over from the previous page.
-    if st.css_timer != 0 {
-        ui::kill_timer(st.css_timer);
-        st.css_timer = 0;
-    }
-    st.css_queue.clear();
-    if st.image_timer != 0 {
-        ui::kill_timer(st.image_timer);
-        st.image_timer = 0;
-    }
-    st.image_queue.clear();
-
-    crate::resources::queue_stylesheets(&dom_for_resources, &base_url, tab_idx);
-    crate::resources::queue_images(&dom_for_resources, &base_url, tab_idx);
-
-    st.tabs[st.active_tab].current_url = Some(base_url);
+    // Submit to worker — returns immediately.
+    crate::net_worker::submit(crate::net_worker::FetchRequest::Navigate {
+        url,
+        cookies,
+        generation,
+    });
 }
 
 /// Navigate the active tab using a form POST request.
 ///
-/// Behaves like `navigate` but sends `body` (URL-encoded form data) as the
-/// HTTP POST body instead of using GET parameters.
+/// Submits the fetch to the background network worker and returns
+/// immediately, just like `navigate()`.
 pub(crate) fn navigate_post(url_str: &str, body: &str) {
     let st = crate::state();
 
@@ -225,76 +145,111 @@ pub(crate) fn navigate_post(url_str: &str, body: &str) {
         }
     };
 
+    cancel_pending_resources();
+
+    let generation = crate::net_worker::new_generation();
+    st.tabs[st.active_tab].nav_generation = generation;
+
     st.tabs[st.active_tab].status_text = String::from("Submitting...");
     crate::ui::update_status();
 
-    let response = match crate::http::fetch_post(&url, body, &mut st.cookies, &mut st.conn_pool) {
-        Ok(r) => r,
+    let cookies = st.cookies.clone();
+
+    crate::net_worker::submit(crate::net_worker::FetchRequest::NavigatePost {
+        url,
+        body: String::from(body),
+        cookies,
+        generation,
+    });
+}
+
+/// Navigate to a local file on the filesystem.
+///
+/// Reads the file at `path` (the part after `file://`) and renders it
+/// directly in the active tab.  No network worker is involved.
+fn navigate_file(path: &str) {
+    let st = crate::state();
+    let tab_idx = st.active_tab;
+
+    cancel_pending_resources();
+
+    st.tabs[tab_idx].status_text = String::from("Loading file...");
+    crate::ui::update_status();
+
+    // Read the file from disk.
+    let body = match anyos_std::fs::read_to_vec(path) {
+        Ok(data) => data,
         Err(_) => {
-            st.tabs[st.active_tab].status_text = String::from("Submit failed");
+            let mut msg = String::from("File not found: ");
+            msg.push_str(path);
+            st.tabs[tab_idx].status_text = msg;
             crate::ui::update_status();
             return;
         }
     };
 
-    if response.status < 200 || response.status >= 400 {
-        st.tabs[st.active_tab].status_text = String::from("HTTP error");
-        crate::ui::update_status();
-        return;
-    }
+    // Convert body to string (UTF-8 or Latin-1 fallback).
+    let html = crate::resources::decode_http_body(&body, "");
 
-    let base_url = response.final_url.unwrap_or_else(|| crate::http::clone_url(&url));
-    let body_text = crate::resources::decode_http_body(&response.body, &response.headers);
+    // Build a file:// URL for display and history.
+    let mut url_str = String::from("file://");
+    url_str.push_str(path);
 
-    let tab = &mut st.tabs[st.active_tab];
-    tab.webview.clear_stylesheets();
-    let post_url_str = crate::ui::format_url(&base_url);
-    tab.webview.set_url(&post_url_str);
-    let post_is_secure = base_url.scheme == "https";
-    let post_cookie_hdr = st.cookies
-        .cookie_header(&base_url.host, &base_url.path, post_is_secure)
-        .unwrap_or_default();
-    tab.webview.js_runtime().set_cookies(&post_cookie_hdr);
-    tab.webview.set_html(&body_text);
+    // Build a pseudo-Url for base URL resolution (relative links).
+    let base_url = crate::http::Url {
+        scheme: String::from("file"),
+        host: String::new(),
+        port: 0,
+        path: String::from(path),
+    };
 
-    for line in tab.webview.js_console() {
-        anyos_std::println!("[js] {}", line);
-    }
+    // Clear previous page state.
+    st.tabs[tab_idx].webview.clear_stylesheets();
+    st.tabs[tab_idx].webview.set_url(&url_str);
 
-    let title = tab.webview.get_title().unwrap_or_else(|| String::from("Untitled"));
-    let url_string = crate::ui::format_url(&base_url);
+    // Render the HTML.
+    st.tabs[tab_idx].webview.set_html(&html);
 
-    if tab.history.is_empty()
-        || tab.history_pos >= tab.history.len()
-        || tab.history[tab.history_pos] != url_string
+    // Extract page title.
+    let title = st.tabs[tab_idx].webview.get_title()
+        .unwrap_or_else(String::new);
+
+    // Update history.
+    let at_same = if !st.tabs[tab_idx].history.is_empty()
+        && st.tabs[tab_idx].history_pos < st.tabs[tab_idx].history.len()
     {
-        if tab.history_pos + 1 < tab.history.len() {
-            tab.history.truncate(tab.history_pos + 1);
+        st.tabs[tab_idx].history[st.tabs[tab_idx].history_pos] == url_str
+    } else {
+        false
+    };
+    if !at_same {
+        if !st.tabs[tab_idx].history.is_empty() {
+            let pos = st.tabs[tab_idx].history_pos;
+            st.tabs[tab_idx].history.truncate(pos + 1);
         }
-        tab.history.push(url_string.clone());
-        tab.history_pos = tab.history.len() - 1;
+        st.tabs[tab_idx].history.push(url_str.clone());
+        st.tabs[tab_idx].history_pos = st.tabs[tab_idx].history.len() - 1;
     }
-    tab.page_title = title;
-    tab.url_text = url_string;
-    tab.status_text = String::from("Done");
 
-    // Refresh DevTools console with any output from this page's scripts.
-    crate::ui::update_devtools();
+    st.tabs[tab_idx].page_title = title;
+    st.tabs[tab_idx].url_text = url_str;
+    st.tabs[tab_idx].current_url = Some(base_url);
+    st.tabs[tab_idx].status_text = String::from("Done");
 
-    // Connect any WebSockets that JS requested during set_html.
-    let tab_idx = st.active_tab;
-    crate::connect_pending_ws(tab_idx);
-
-    // Update chrome immediately before blocking on CSS/image downloads.
-    let st = crate::state();
-    st.url_field.set_text(&st.tabs[st.active_tab].url_text.clone());
+    // Update chrome UI.
+    let url_for_field = st.tabs[tab_idx].url_text.clone();
+    st.url_field.set_text(&url_for_field);
     crate::ui::update_title();
     crate::ui::update_status();
     crate::ui::update_tab_labels();
 
-    let dom_for_resources = libwebview::html::parse(&body_text);
+    anyos_std::println!("[surf] loaded local file: {}", path);
+}
 
-    // Cancel any stale CSS / image fetches left over from the previous page.
+/// Cancel any stale CSS/image fetches from the old timer-based system
+/// and clear AppState queues.
+fn cancel_pending_resources() {
+    let st = crate::state();
     if st.css_timer != 0 {
         ui::kill_timer(st.css_timer);
         st.css_timer = 0;
@@ -305,11 +260,6 @@ pub(crate) fn navigate_post(url_str: &str, body: &str) {
         st.image_timer = 0;
     }
     st.image_queue.clear();
-
-    crate::resources::queue_stylesheets(&dom_for_resources, &base_url, tab_idx);
-    crate::resources::queue_images(&dom_for_resources, &base_url, tab_idx);
-
-    st.tabs[st.active_tab].current_url = Some(base_url);
 }
 
 /// Navigate the active tab one step back in its history.

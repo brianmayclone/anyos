@@ -103,22 +103,30 @@ impl Control for TabBar {
     }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.text_base.base.x;
-        let y = ay + self.text_base.base.y;
-        let w = self.text_base.base.w;
-        let h = self.text_base.base.h;
-        let active = self.text_base.base.state as usize;
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
+        let active = b.state as usize;
         let tc = crate::theme::colors();
 
         // Background
         crate::draw::fill_rect(surface, x, y, w, h, tc.window_bg);
 
-        let rects = self.tab_rects();
+        // Scaled constants for rendering
+        let tab_pad_x = crate::theme::scale_i32(TAB_PAD_X);
+        let close_btn_size = crate::theme::scale_i32(CLOSE_BTN_SIZE);
+        let close_btn_pad = crate::theme::scale_i32(CLOSE_BTN_PAD);
+        let tab_gap = crate::theme::scale_i32(TAB_GAP);
+        let tab_font = crate::draw::scale_font(TAB_FONT_SIZE);
+        let close_font = crate::draw::scale_font(10);
+        let close_corner = crate::theme::scale(3);
 
+        // Compute scaled tab rects inline (physical pixels)
+        let mut cx = 0i32;
         for (i, label) in self.labels.iter().enumerate() {
-            if i >= rects.len() { break; }
-            let (tx, tw) = rects[i];
-            let tab_x = x + tx;
+            let (tw_text, _) = crate::draw::text_size_at(label, tab_font);
+            let tab_w = tab_pad_x + tw_text as i32 + close_btn_pad + close_btn_size + tab_pad_x;
+            let tab_x = x + cx;
             let is_active = i == active;
             let is_hovered = self.hover_tab == i as i32;
 
@@ -130,36 +138,38 @@ impl Control for TabBar {
             } else {
                 tc.tab_inactive_bg
             };
-            crate::draw::fill_rect(surface, tab_x, y, tw as u32, h, bg);
+            crate::draw::fill_rect(surface, tab_x, y, tab_w as u32, h, bg);
 
             // Active indicator (bottom border)
             if is_active {
-                crate::draw::fill_rect(surface, tab_x, y + h as i32 - 2, tw as u32, 2, tc.tab_border_active);
+                let indicator_h = crate::theme::scale(2);
+                crate::draw::fill_rect(surface, tab_x, y + h as i32 - indicator_h as i32, tab_w as u32, indicator_h, tc.tab_border_active);
             }
 
             // Tab label text
             let text_color = if is_active { tc.text } else { tc.text_secondary };
-            let text_x = tab_x + TAB_PAD_X;
-            let text_y = y + (h as i32 - TAB_FONT_SIZE as i32) / 2;
-            crate::draw::draw_text_sized(surface, text_x, text_y, text_color, label, TAB_FONT_SIZE);
+            let text_x = tab_x + tab_pad_x;
+            let text_y = y + (h as i32 - tab_font as i32) / 2;
+            crate::draw::draw_text_sized(surface, text_x, text_y, text_color, label, tab_font);
 
-            // Close button "×"
-            let close_x = tab_x + tw - TAB_PAD_X - CLOSE_BTN_SIZE;
-            let close_y = y + (h as i32 - CLOSE_BTN_SIZE) / 2;
+            // Close button
+            let close_x = tab_x + tab_w - tab_pad_x - close_btn_size;
+            let close_y = y + (h as i32 - close_btn_size) / 2;
 
             let show_close = is_active || is_hovered;
             if show_close {
                 let close_hover = is_hovered && self.close_hovered;
                 if close_hover {
                     crate::draw::fill_rounded_rect(surface, close_x, close_y,
-                        CLOSE_BTN_SIZE as u32, CLOSE_BTN_SIZE as u32, 3, tc.input_border);
+                        close_btn_size as u32, close_btn_size as u32, close_corner, tc.input_border);
                 }
                 let fg = if close_hover { tc.text } else { tc.text_secondary };
-                // Draw "x" centered in the close button area
-                let cx = close_x + (CLOSE_BTN_SIZE - 6) / 2;
-                let cy = close_y + (CLOSE_BTN_SIZE - 10) / 2;
-                crate::draw::draw_text_sized(surface, cx, cy, fg, b"x", 10);
+                let cx_text = close_x + (close_btn_size - crate::theme::scale_i32(6)) / 2;
+                let cy_text = close_y + (close_btn_size - close_font as i32) / 2;
+                crate::draw::draw_text_sized(surface, cx_text, cy_text, fg, b"x", close_font);
             }
+
+            cx += tab_w + tab_gap;
         }
     }
 

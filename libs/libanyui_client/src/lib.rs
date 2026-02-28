@@ -309,6 +309,9 @@ struct AnyuiLib {
     // Font smoothing
     pub(crate) set_font_smoothing: extern "C" fn(u32),
     pub(crate) get_font_smoothing: extern "C" fn() -> u32,
+    // DPI scale factor
+    pub(crate) set_scale_factor: extern "C" fn(u32),
+    pub(crate) get_scale_factor: extern "C" fn() -> u32,
     // Window title
     set_title: extern "C" fn(u32, *const u8, u32),
     // Key event info
@@ -542,6 +545,9 @@ pub fn init() -> bool {
             // Font smoothing
             set_font_smoothing: resolve(&handle, "anyui_set_font_smoothing"),
             get_font_smoothing: resolve(&handle, "anyui_get_font_smoothing"),
+            // DPI scale factor
+            set_scale_factor: resolve(&handle, "anyui_set_scale_factor"),
+            get_scale_factor: resolve(&handle, "anyui_get_scale_factor"),
             // Window title
             set_title: resolve(&handle, "anyui_set_title"),
             // Key event info
