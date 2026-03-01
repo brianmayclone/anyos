@@ -8,6 +8,8 @@ use core::fmt::{self, Write};
 const SYS_EXIT: u64 = 1;
 const SYS_WRITE: u64 = 2;
 const SYS_SBRK: u64 = 9;
+const SYS_MMAP: u64 = 14;
+const SYS_MUNMAP: u64 = 15;
 const SYS_GPU_3D_SUBMIT: u64 = 512;
 const SYS_GPU_3D_QUERY: u64 = 513;
 const SYS_GPU_3D_SYNC: u64 = 514;
@@ -85,6 +87,17 @@ pub fn exit(code: u32) -> ! {
 /// Grow the heap. Returns new break address or u64::MAX on failure.
 pub fn sbrk(increment: u32) -> u64 {
     syscall1(SYS_SBRK, increment as u64)
+}
+
+/// Map anonymous pages. Returns address or `u64::MAX` on failure.
+pub fn mmap(size: u32) -> u64 {
+    let ret = syscall1(SYS_MMAP, size as u64);
+    if ret == u32::MAX as u64 { u64::MAX } else { ret }
+}
+
+/// Unmap pages previously mapped with `mmap`. Returns 0 on success.
+pub fn munmap(addr: u64, size: u32) -> u64 {
+    syscall2(SYS_MUNMAP, addr, size as u64)
 }
 
 // ── GPU 3D Acceleration ──────────────────────────────

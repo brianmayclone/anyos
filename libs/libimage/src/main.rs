@@ -21,7 +21,7 @@ pub mod scale;
 pub mod iconpack;
 pub mod svg_raster;
 mod syscall;
-libheap::dll_allocator!(crate::syscall::sbrk);
+libheap::dll_allocator!(crate::syscall::sbrk, crate::syscall::mmap, crate::syscall::munmap);
 
 /// Dummy entry point (never called — DLL has no entry).
 #[no_mangle]

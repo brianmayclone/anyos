@@ -230,7 +230,7 @@ pub(crate) fn state() -> &'static mut AnyuiState {
 
 // ── Allocator ────────────────────────────────────────────────────────
 
-libheap::dll_allocator!(crate::syscall::sbrk);
+libheap::dll_allocator!(crate::syscall::sbrk, crate::syscall::mmap, crate::syscall::munmap);
 
 // ── Panic handler ────────────────────────────────────────────────────
 

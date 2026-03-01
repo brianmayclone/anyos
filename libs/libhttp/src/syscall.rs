@@ -12,6 +12,8 @@ const SYS_OPEN: u64 = 4;
 const SYS_CLOSE: u64 = 5;
 const SYS_SLEEP: u64 = 8;
 const SYS_SBRK: u64 = 9;
+const SYS_MMAP: u64 = 14;
+const SYS_MUNMAP: u64 = 15;
 const SYS_NET_DNS: u64 = 43;
 const SYS_TCP_CONNECT: u64 = 100;
 const SYS_TCP_SEND: u64 = 101;
@@ -101,6 +103,17 @@ pub fn sleep(ms: u32) {
 /// Returns the new break address, or `u64::MAX` on failure.
 pub fn sbrk(increment: u32) -> u64 {
     syscall1(SYS_SBRK, increment as u64)
+}
+
+/// Map anonymous pages. Returns address or `u64::MAX` on failure.
+pub fn mmap(size: u32) -> u64 {
+    let ret = syscall1(SYS_MMAP, size as u64);
+    if ret == u32::MAX as u64 { u64::MAX } else { ret }
+}
+
+/// Unmap pages previously mapped with `mmap`. Returns 0 on success.
+pub fn munmap(addr: u64, size: u32) -> u64 {
+    syscall2(SYS_MUNMAP, addr, size as u64)
 }
 
 // ── File I/O ─────────────────────────────────────────────────────────────────

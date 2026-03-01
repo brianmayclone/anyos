@@ -38,7 +38,7 @@ use state::GlContext;
 
 // ── Allocator ───────────────────────────────────────────────────────────────
 
-libheap::dll_allocator!(crate::syscall::sbrk);
+libheap::dll_allocator!(crate::syscall::sbrk, crate::syscall::mmap, crate::syscall::munmap);
 
 // ── Panic handler ───────────────────────────────────────────────────────────
 

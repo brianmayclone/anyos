@@ -9,6 +9,8 @@ const SYS_OPEN: u64 = 4;
 const SYS_CLOSE: u64 = 5;
 const SYS_SBRK: u64 = 9;
 const SYS_MKDIR: u64 = 11;
+const SYS_MMAP: u64 = 14;
+const SYS_MUNMAP: u64 = 15;
 const SYS_LSEEK: u64 = 105;
 const SYS_FSTAT: u64 = 106;
 const SYS_READDIR: u64 = 7;
@@ -82,6 +84,17 @@ pub fn exit(code: u32) -> ! {
 
 pub fn sbrk(increment: u32) -> u64 {
     syscall1(SYS_SBRK, increment as u64)
+}
+
+/// Map anonymous pages. Returns address or `u64::MAX` on failure.
+pub fn mmap(size: u32) -> u64 {
+    let ret = syscall1(SYS_MMAP, size as u64);
+    if ret == u32::MAX as u64 { u64::MAX } else { ret }
+}
+
+/// Unmap pages previously mapped with `mmap`. Returns 0 on success.
+pub fn munmap(addr: u64, size: u32) -> u64 {
+    syscall2(SYS_MUNMAP, addr, size as u64)
 }
 
 pub fn open(path: &str, flags: u32) -> u32 {

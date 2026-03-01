@@ -2,9 +2,11 @@
 
 use core::arch::asm;
 
-const SYS_SBRK: u32 = 9;
 const SYS_EXIT: u32 = 1;
 const SYS_WRITE: u32 = 6;
+const SYS_SBRK: u32 = 9;
+const SYS_MMAP: u32 = 14;
+const SYS_MUNMAP: u32 = 15;
 
 #[inline(always)]
 fn syscall1(num: u32, a1: u64) -> u64 {
@@ -17,6 +19,25 @@ fn syscall1(num: u32, a1: u64) -> u64 {
             "pop rbx",
             a1 = in(reg) a1,
             inlateout("rax") num as u64 => ret,
+            out("rcx") _,
+            out("r11") _,
+        );
+    }
+    ret
+}
+
+#[inline(always)]
+fn syscall2(num: u32, a1: u64, a2: u64) -> u64 {
+    let ret: u64;
+    unsafe {
+        asm!(
+            "push rbx",
+            "mov rbx, {a1}",
+            "syscall",
+            "pop rbx",
+            a1 = in(reg) a1,
+            inlateout("rax") num as u64 => ret,
+            in("r10") a2,
             out("rcx") _,
             out("r11") _,
         );
@@ -48,6 +69,17 @@ fn syscall3(num: u32, a1: u64, a2: u64, a3: u64) -> u64 {
 /// Returns `u64::MAX` on failure.
 pub fn sbrk(increment: u32) -> u64 {
     syscall1(SYS_SBRK, increment as u64)
+}
+
+/// Map anonymous pages. Returns address or `u64::MAX` on failure.
+pub fn mmap(size: u32) -> u64 {
+    let ret = syscall1(SYS_MMAP, size as u64);
+    if ret == u32::MAX as u64 { u64::MAX } else { ret }
+}
+
+/// Unmap pages previously mapped with `mmap`. Returns 0 on success.
+pub fn munmap(addr: u64, size: u32) -> u64 {
+    syscall2(SYS_MUNMAP, addr, size as u64)
 }
 
 /// Write bytes to a file descriptor.

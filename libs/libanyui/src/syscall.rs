@@ -15,6 +15,8 @@ const SYS_EXIT: u64 = 1;
 const SYS_YIELD: u64 = 7;
 const SYS_SLEEP: u64 = 8;
 const SYS_SBRK: u64 = 9;
+const SYS_MMAP: u64 = 14;
+const SYS_MUNMAP: u64 = 15;
 const SYS_UPTIME_MS: u64 = 35;
 const SYS_EVT_CHAN_EMIT: u64 = 65;
 const SYS_EVT_CHAN_POLL: u64 = 66;
@@ -117,6 +119,17 @@ pub fn sleep(ms: u32) {
 
 pub fn sbrk(increment: u32) -> u64 {
     syscall1(SYS_SBRK, increment as u64)
+}
+
+/// Map anonymous pages. Returns address or `u64::MAX` on failure.
+pub fn mmap(size: u32) -> u64 {
+    let ret = syscall1(SYS_MMAP, size as u64);
+    if ret == u32::MAX as u64 { u64::MAX } else { ret }
+}
+
+/// Unmap pages previously mapped with `mmap`. Returns 0 on success.
+pub fn munmap(addr: u64, size: u32) -> u64 {
+    syscall2(SYS_MUNMAP, addr, size as u64)
 }
 
 pub fn uptime_ms() -> u32 {

@@ -8,11 +8,14 @@
 //! # DLL Allocator Macro
 //!
 //! DLLs should use the [`dll_allocator!`] macro to define their
-//! `#[global_allocator]`. It generates a complete sbrk-based free-list
-//! allocator. The syscall module must export `sbrk(u32) -> u64`.
+//! `#[global_allocator]`. It generates a free-list allocator with mmap
+//! fallback. The syscall module must export:
+//! - `sbrk(u32) -> u64` (returns `u64::MAX` on failure)
+//! - `mmap(u32) -> u64` (returns `u64::MAX` on failure)
+//! - `munmap(u64, u32) -> u64` (returns 0 on success)
 //!
 //! ```ignore
-//! libheap::dll_allocator!(crate::syscall::sbrk);
+//! libheap::dll_allocator!(crate::syscall::sbrk, crate::syscall::mmap, crate::syscall::munmap);
 //! ```
 
 #![no_std]
@@ -114,25 +117,27 @@ pub unsafe fn free_list_dealloc(free_list: *mut *mut FreeBlock, ptr: *mut u8, si
     }
 }
 
-/// Define a `#[global_allocator]` for a DLL using sbrk-based free-list allocation.
+/// Define a `#[global_allocator]` for a DLL with sbrk + mmap fallback.
 ///
 /// Generates a private module with a `DllFreeListAlloc` struct implementing
-/// `GlobalAlloc`. Freed blocks are reused via a sorted free list with coalescing.
-/// Fresh memory is obtained via `sbrk(0)` + `sbrk(n)`.
+/// `GlobalAlloc`. Small allocations use sbrk with a free list; large
+/// allocations (>= 64 KiB) go directly through mmap. When sbrk fails,
+/// any allocation transparently falls back to mmap.
 ///
 /// # Arguments
 ///
-/// `$sbrk` — path to a function with signature `fn(u32) -> u64`.
-/// Must return `u64::MAX` on failure. Typically `crate::syscall::sbrk`.
+/// - `$sbrk` — `fn(u32) -> u64`, returns `u64::MAX` on failure
+/// - `$mmap` — `fn(u32) -> u64`, returns `u64::MAX` on failure
+/// - `$munmap` — `fn(u64, u32) -> u64`, returns 0 on success
 ///
 /// # Example
 ///
 /// ```ignore
-/// libheap::dll_allocator!(crate::syscall::sbrk);
+/// libheap::dll_allocator!(crate::syscall::sbrk, crate::syscall::mmap, crate::syscall::munmap);
 /// ```
 #[macro_export]
 macro_rules! dll_allocator {
-    ($sbrk:path) => {
+    ($sbrk:path, $mmap:path, $munmap:path) => {
         mod _dll_heap {
             use core::alloc::{GlobalAlloc, Layout};
             use core::ptr;
@@ -141,29 +146,90 @@ macro_rules! dll_allocator {
 
             static mut FREE_LIST: *mut $crate::FreeBlock = ptr::null_mut();
 
+            /// Allocations >= this size bypass sbrk and go directly through mmap.
+            const MMAP_THRESHOLD: usize = 64 * 1024;
+
+            /// Start of the mmap virtual address region.
+            const MMAP_REGION_START: u64 = 0x7000_0000;
+            /// End of the mmap virtual address region.
+            const MMAP_REGION_END: u64 = 0xBF00_0000;
+
+            /// Round `size` up to the next page boundary (4 KiB).
+            #[inline]
+            fn page_align(size: usize) -> usize {
+                (size + 4095) & !4095
+            }
+
+            /// Check whether a pointer falls into the mmap region.
+            #[inline]
+            fn is_mmap_ptr(ptr: *mut u8) -> bool {
+                let addr = ptr as u64;
+                addr >= MMAP_REGION_START && addr < MMAP_REGION_END
+            }
+
+            /// Allocate via mmap. Returns null on failure.
+            #[inline]
+            fn mmap_alloc(size: usize) -> *mut u8 {
+                let mapped_size = page_align(size) as u32;
+                let mmap_fn: fn(u32) -> u64 = $mmap;
+                let addr = mmap_fn(mapped_size);
+                if addr == u64::MAX { return ptr::null_mut(); }
+                if addr < MMAP_REGION_START || addr >= MMAP_REGION_END {
+                    let munmap_fn: fn(u64, u32) -> u64 = $munmap;
+                    munmap_fn(addr, mapped_size);
+                    return ptr::null_mut();
+                }
+                addr as *mut u8
+            }
+
             unsafe impl GlobalAlloc for DllFreeListAlloc {
                 unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
                     let size = $crate::block_size(layout);
 
+                    // Large allocations go directly through mmap.
+                    if size >= MMAP_THRESHOLD {
+                        return mmap_alloc(size);
+                    }
+
+                    // 1) Search free list for first fit.
                     let ptr = $crate::free_list_alloc(&mut FREE_LIST, size);
                     if !ptr.is_null() { return ptr; }
 
+                    // 2) Try sbrk.
                     let sbrk_fn: fn(u32) -> u64 = $sbrk;
                     let brk = sbrk_fn(0);
-                    if brk == u64::MAX { return ptr::null_mut(); }
-                    let align = layout.align().max(16) as u64;
-                    let aligned = (brk + align - 1) & !(align - 1);
-                    let needed = (aligned - brk + size as u64) as u32;
-                    let result = sbrk_fn(needed);
-                    if result == u64::MAX { return ptr::null_mut(); }
-                    aligned as *mut u8
+                    if brk != u64::MAX {
+                        let align = layout.align().max(16) as u64;
+                        let aligned = (brk + align - 1) & !(align - 1);
+                        let needed = (aligned - brk + size as u64) as u32;
+                        let result = sbrk_fn(needed);
+                        if result != u64::MAX {
+                            return aligned as *mut u8;
+                        }
+                    }
+
+                    // 3) sbrk failed — fall back to mmap.
+                    mmap_alloc(size)
                 }
 
                 unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+                    if ptr.is_null() { return; }
+
+                    let size = $crate::block_size(layout);
+
+                    // mmap allocations are returned directly to the OS.
+                    if is_mmap_ptr(ptr) {
+                        let mapped_size = page_align(size) as u32;
+                        let munmap_fn: fn(u64, u32) -> u64 = $munmap;
+                        munmap_fn(ptr as u64, mapped_size);
+                        return;
+                    }
+
+                    // sbrk allocations go back to the free list.
                     $crate::free_list_dealloc(
                         &mut FREE_LIST,
                         ptr,
-                        $crate::block_size(layout),
+                        size,
                     );
                 }
             }
