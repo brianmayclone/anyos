@@ -80,6 +80,7 @@ fn main() {
     drop(data);
 
     if !anyui::init() { return; }
+    anyos_std::i18n::init();
 
     let filename = path.rsplit('/').next().unwrap_or(path);
 
@@ -279,7 +280,8 @@ fn format_title<'a>(buf: &'a mut [u8; 128], filename: &str, fmt: &str, w: usize,
     pos = write_num(buf, pos, w);
     if pos < 127 { buf[pos] = b'x'; pos += 1; }
     pos = write_num(buf, pos, h);
-    for &b in b") - Image Viewer" { if pos < 127 { buf[pos] = b; pos += 1; } }
+    for &b in b") - " { if pos < 127 { buf[pos] = b; pos += 1; } }
+    for &b in anyos_std::i18n::t("Image Viewer").as_bytes() { if pos < 127 { buf[pos] = b; pos += 1; } }
     unsafe { core::str::from_utf8_unchecked(&buf[..pos]) }
 }
 

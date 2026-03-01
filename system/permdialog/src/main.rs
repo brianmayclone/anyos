@@ -79,6 +79,7 @@ fn main() {
         anyos_std::println!("[permdialog] libanyui init failed");
         cleanup(lock_pipe, 1);
     }
+    anyos_std::i18n::init();
 
     // ── Compute dialog dimensions (same formula as before) ──
     let header_h: i32 = 80;
@@ -95,7 +96,7 @@ fn main() {
         | ui::WIN_FLAG_NO_CLOSE
         | ui::WIN_FLAG_NO_MINIMIZE
         | ui::WIN_FLAG_NO_MAXIMIZE;
-    let win = ui::Window::new_with_flags("Permissions", dx, dy, DIALOG_W, dialog_h, flags);
+    let win = ui::Window::new_with_flags(anyos_std::i18n::t("Permissions"), dx, dy, DIALOG_W, dialog_h, flags);
 
     anyos_std::println!("[permdialog] dialog win={}", win.id());
     if win.id() == u32::MAX {
@@ -118,7 +119,7 @@ fn main() {
     win.add(&title_lbl);
 
     // ── Subtitle ──
-    let sub_lbl = ui::Label::new("This app requests the following permissions:");
+    let sub_lbl = ui::Label::new(anyos_std::i18n::t("This app requests the following permissions:"));
     sub_lbl.set_position(PAD, 46);
     sub_lbl.set_size(content_w, 16);
     sub_lbl.set_font_size(11);
@@ -139,7 +140,7 @@ fn main() {
         let row_y = header_h + (i as i32 * ROW_H);
 
         // Checkbox with group name — checked by default
-        let cb = ui::Checkbox::new(group.name);
+        let cb = ui::Checkbox::new(anyos_std::i18n::t(group.name));
         cb.set_position(PAD, row_y + 8);
         cb.set_size(content_w, 20);
         cb.set_state(1);
@@ -147,7 +148,7 @@ fn main() {
         win.add(&cb);
 
         // Description label
-        let desc = ui::Label::new(group.desc);
+        let desc = ui::Label::new(anyos_std::i18n::t(group.desc));
         desc.set_position(PAD + 30, row_y + 28);
         desc.set_size(content_w - 30, 14);
         desc.set_font_size(11);
@@ -175,12 +176,12 @@ fn main() {
     let btn_base_x = (DIALOG_W as i32 - total_btn_w as i32) / 2;
     let btn_y = dialog_h as i32 - BTN_H as i32 - BTN_PAD;
 
-    let deny = ui::Button::new("Don't Allow");
+    let deny = ui::Button::new(anyos_std::i18n::t("Don't Allow"));
     deny.set_position(btn_base_x, btn_y);
     deny.set_size(BTN_W, BTN_H);
     win.add(&deny);
 
-    let allow = ui::Button::new("Allow");
+    let allow = ui::Button::new(anyos_std::i18n::t("Allow"));
     allow.set_position(btn_base_x + BTN_W as i32 + BTN_PAD, btn_y);
     allow.set_size(BTN_W, BTN_H);
     allow.set_color(tc.accent);

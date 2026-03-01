@@ -25,7 +25,9 @@ impl OutputPanel {
         panel.set_color(tc.editor_bg);
 
         // Tab bar for switching Output / Terminal
-        let tab_bar = ui::TabBar::new("Output|Terminal");
+        let t = anyos_std::i18n::t;
+        let tabs = alloc::format!("{}|{}", t("Output"), t("Terminal"));
+        let tab_bar = ui::TabBar::new(&tabs);
         tab_bar.set_dock(ui::DOCK_TOP);
         tab_bar.set_size(400, 24);
         tab_bar.set_color(tc.sidebar_bg);

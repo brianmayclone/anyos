@@ -4,6 +4,7 @@
 use anyos_std::String;
 use anyos_std::Vec;
 use anyos_std::fs;
+use anyos_std::i18n;
 use anyos_std::icons;
 use anyos_std::process;
 
@@ -2202,6 +2203,7 @@ extern "C" fn icon_item_context_handler(_control_id: u32, _event_type: u32, user
 
 fn main() {
     if !ui::init() { return; }
+    i18n::init();
 
     let tc = ui::theme::colors();
 
@@ -2209,7 +2211,7 @@ fn main() {
     let locations = load_locations();
 
     // ── Window ───────────────────────────────────────────────────────────
-    let win = ui::Window::new("Finder", -1, -1, 750, 480);
+    let win = ui::Window::new(i18n::t("Finder"), -1, -1, 750, 480);
 
     // ── Toolbar ──────────────────────────────────────────────────────────
     let toolbar = ui::Toolbar::new();
@@ -2227,7 +2229,7 @@ fn main() {
         btn_back.set_pixels(&icon.pixels, icon.width, icon.height);
     }
     btn_back.set_enabled(false);
-    btn_back.set_tooltip("Back (Alt+Left)");
+    btn_back.set_tooltip(i18n::t("Back (Alt+Left)"));
     toolbar.add(&btn_back);
 
     let btn_fwd = ui::IconButton::new("");
@@ -2237,7 +2239,7 @@ fn main() {
         btn_fwd.set_pixels(&icon.pixels, icon.width, icon.height);
     }
     btn_fwd.set_enabled(false);
-    btn_fwd.set_tooltip("Forward (Alt+Right)");
+    btn_fwd.set_tooltip(i18n::t("Forward (Alt+Right)"));
     toolbar.add(&btn_fwd);
 
     let btn_up = ui::IconButton::new("");
@@ -2246,7 +2248,7 @@ fn main() {
         icon.recolor(tc.text);
         btn_up.set_pixels(&icon.pixels, icon.width, icon.height);
     }
-    btn_up.set_tooltip("Parent folder (Backspace)");
+    btn_up.set_tooltip(i18n::t("Parent folder (Backspace)"));
     toolbar.add(&btn_up);
 
     toolbar.add_separator();
@@ -2257,7 +2259,7 @@ fn main() {
         icon.recolor(tc.text);
         btn_refresh.set_pixels(&icon.pixels, icon.width, icon.height);
     }
-    btn_refresh.set_tooltip("Refresh (F5)");
+    btn_refresh.set_tooltip(i18n::t("Refresh (F5)"));
     toolbar.add(&btn_refresh);
 
     toolbar.add_separator();
@@ -2265,7 +2267,7 @@ fn main() {
     // Path field
     let path_field = ui::TextField::new();
     path_field.set_size(300, 26);
-    path_field.set_placeholder("Enter path...");
+    path_field.set_placeholder(i18n::t("Enter path..."));
     path_field.set_text("/");
     toolbar.add(&path_field);
 
@@ -2275,12 +2277,12 @@ fn main() {
     let btn_list = toolbar.add_icon_button("List");
     btn_list.set_size(30, 28);
     btn_list.set_system_icon("list", ui::IconType::Outline, tc.text, 16);
-    btn_list.set_tooltip("List view");
+    btn_list.set_tooltip(i18n::t("List view"));
 
     let btn_grid = toolbar.add_icon_button("Grid");
     btn_grid.set_size(30, 28);
     btn_grid.set_system_icon("grid-dots", ui::IconType::Outline, tc.text, 16);
-    btn_grid.set_tooltip("Icon view");
+    btn_grid.set_tooltip(i18n::t("Icon view"));
 
     // ── Status bar (bottom) ────────────────────────────────────────────
     let status_bar = ui::View::new();
@@ -2308,7 +2310,7 @@ fn main() {
     rename_panel.set_color(tc.card_bg);
     rename_panel.set_visible(false);
 
-    let rename_lbl = ui::Label::new("Rename:");
+    let rename_lbl = ui::Label::new(i18n::t("Rename:"));
     rename_lbl.set_position(8, 8);
     rename_lbl.set_text_color(tc.text);
     rename_lbl.set_font_size(13);
@@ -2345,7 +2347,7 @@ fn main() {
     sidebar_panel.set_dock(ui::DOCK_FILL);
     sidebar_panel.set_color(tc.window_bg);
 
-    let sidebar_header = ui::Label::new("LOCATIONS");
+    let sidebar_header = ui::Label::new(i18n::t("LOCATIONS"));
     sidebar_header.set_dock(ui::DOCK_TOP);
     sidebar_header.set_size(160, 24);
     sidebar_header.set_font_size(11);
@@ -2378,8 +2380,8 @@ fn main() {
     let grid = ui::DataGrid::new(0, 0);
     grid.set_dock(ui::DOCK_FILL);
     grid.set_columns(&[
-        ui::ColumnDef::new("Name").width(400),
-        ui::ColumnDef::new("Size").width(100).align(ui::ALIGN_RIGHT).numeric(),
+        ui::ColumnDef::new(i18n::t("Name")).width(400),
+        ui::ColumnDef::new(i18n::t("Size")).width(100).align(ui::ALIGN_RIGHT).numeric(),
     ]);
     grid.set_row_height(26);
     grid.set_header_height(28);

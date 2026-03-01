@@ -60,10 +60,12 @@ fn main() {
     if !ui::init() {
         return;
     }
+    anyos_std::i18n::init();
+    let t = anyos_std::i18n::t;
 
     let pages = module_loader::builtin_pages();
 
-    let win = ui::Window::new("Settings", -1, -1, 900, 600);
+    let win = ui::Window::new(t("Settings"), -1, -1, 900, 600);
 
     // ── SplitView (DOCK_FILL) ───────────────────────────────────────
     let split = ui::SplitView::new();
@@ -89,7 +91,7 @@ fn main() {
     title_area.set_dock(ui::DOCK_TOP);
     title_area.set_size(220, 52);
 
-    let title_lbl = ui::Label::new("Settings");
+    let title_lbl = ui::Label::new(t("Settings"));
     title_lbl.set_position(16, 16);
     title_lbl.set_size(180, 28);
     title_lbl.set_font_size(18);
@@ -103,7 +105,7 @@ fn main() {
     search.set_dock(ui::DOCK_TOP);
     search.set_size(188, 28);
     search.set_margin(16, 4, 16, 12);
-    search.set_placeholder("Search settings");
+    search.set_placeholder(t("Search settings"));
     sidebar_panel.add(&search);
 
     // Page items

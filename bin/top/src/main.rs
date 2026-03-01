@@ -226,6 +226,8 @@ fn sort_by_cpu_desc(tasks: &mut [TaskEntry], n: usize) {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
+    anyos_std::i18n::init();
+    let tr = anyos_std::i18n::t;
     let mut raw_buf = [0u8; THREAD_ENTRY_SIZE * MAX_TASKS];
     let mut prev = PrevTicks {
         entries: [(0, 0); MAX_TASKS],
@@ -367,10 +369,10 @@ fn main() {
             let name = core::str::from_utf8(&name_bytes[..name_len]).unwrap_or("???");
 
             let state_str = match task.state {
-                0 => "Ready",
-                1 => "Running",
-                2 => "Blocked",
-                3 => "Dead",
+                0 => tr("Ready"),
+                1 => tr("Running"),
+                2 => tr("Blocked"),
+                3 => tr("Dead"),
                 _ => "?",
             };
 

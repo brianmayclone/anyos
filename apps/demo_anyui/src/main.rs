@@ -6,6 +6,7 @@
 #![no_std]
 #![no_main]
 
+use anyos_std::i18n;
 use libanyui_client as ui;
 use ui::Widget;
 
@@ -16,8 +17,9 @@ fn main() {
         anyos_std::println!("Failed to load libanyui.so");
         return;
     }
+    i18n::init();
 
-    let win = ui::Window::new("anyui Component Showcase", -1, -1, 460, 520);
+    let win = ui::Window::new(i18n::t("anyui Component Showcase"), -1, -1, 460, 520);
 
     // ── ScrollView wraps all content ──
     let scroll = ui::ScrollView::new();
@@ -37,13 +39,13 @@ fn main() {
     //  Header
     // ════════════════════════════════════════════════════════════════
 
-    let title = ui::Label::new("anyui Component Showcase");
+    let title = ui::Label::new(i18n::t("anyui Component Showcase"));
     title.set_color(0xFF007AFF);
     title.set_size(420, 20);
     title.set_margin(0, 0, 0, 4);
     content.add(&title);
 
-    let subtitle = ui::Label::new("Scroll down to see all components");
+    let subtitle = ui::Label::new(i18n::t("Scroll down to see all components"));
     subtitle.set_color(0xFF969696);
     subtitle.set_size(420, 16);
     subtitle.set_margin(0, 0, 0, 8);
@@ -58,7 +60,7 @@ fn main() {
     //  Section 1: Buttons & Actions
     // ════════════════════════════════════════════════════════════════
 
-    let exp_buttons = ui::Expander::new("Buttons & Actions");
+    let exp_buttons = ui::Expander::new(i18n::t("Buttons & Actions"));
     exp_buttons.set_size(420, 82); // 32 header + 50 content
     exp_buttons.set_margin(0, 0, 0, 8);
     content.add(&exp_buttons);
@@ -70,15 +72,15 @@ fn main() {
     row_btns.set_padding(4, 4, 4, 4);
     exp_buttons.add(&row_btns);
 
-    let tooltip_btn = ui::Tooltip::new("Click to show a MessageBox");
+    let tooltip_btn = ui::Tooltip::new(i18n::t("Click to show a MessageBox"));
     tooltip_btn.set_size(100, 32);
     tooltip_btn.set_margin(0, 0, 6, 0);
     row_btns.add(&tooltip_btn);
 
-    let btn = ui::Button::new("Primary");
+    let btn = ui::Button::new(i18n::t("Primary"));
     btn.set_size(100, 32);
     btn.on_click(|_e| {
-        ui::MessageBox::show(ui::MessageBoxType::Info, "Button clicked!", None);
+        ui::MessageBox::show(ui::MessageBoxType::Info, i18n::t("Button clicked!"), None);
     });
     tooltip_btn.add(&btn);
 
@@ -102,7 +104,7 @@ fn main() {
     badge.set_margin(0, 4, 8, 0);
     row_btns.add(&badge);
 
-    let status = ui::StatusIndicator::new("Online");
+    let status = ui::StatusIndicator::new(i18n::t("Online"));
     status.set_margin(0, 6, 0, 0);
     row_btns.add(&status);
 
@@ -110,7 +112,7 @@ fn main() {
     //  Section 2: Input Controls
     // ════════════════════════════════════════════════════════════════
 
-    let exp_inputs = ui::Expander::new("Input Controls");
+    let exp_inputs = ui::Expander::new(i18n::t("Input Controls"));
     exp_inputs.set_size(420, 280); // 32 + 248
     exp_inputs.set_margin(0, 0, 0, 8);
     content.add(&exp_inputs);
@@ -127,7 +129,7 @@ fn main() {
     toggle_row.set_margin(0, 0, 0, 6);
     inp_stack.add(&toggle_row);
 
-    let toggle_lbl = ui::Label::new("Dark Mode");
+    let toggle_lbl = ui::Label::new(i18n::t("Dark Mode"));
     toggle_lbl.set_position(0, 4);
     toggle_row.add(&toggle_lbl);
 
@@ -136,7 +138,7 @@ fn main() {
     toggle_row.add(&toggle);
 
     // Checkbox
-    let cb = ui::Checkbox::new("Enable notifications");
+    let cb = ui::Checkbox::new(i18n::t("Enable notifications"));
     cb.set_size(200, 20);
     cb.set_margin(0, 0, 0, 6);
     inp_stack.add(&cb);
@@ -161,7 +163,7 @@ fn main() {
     text_row.set_margin(0, 0, 0, 6);
     inp_stack.add(&text_row);
 
-    let tooltip_tf = ui::Tooltip::new("Type your name here");
+    let tooltip_tf = ui::Tooltip::new(i18n::t("Type your name here"));
     tooltip_tf.set_position(0, 0);
     tooltip_tf.set_size(200, 28);
     text_row.add(&tooltip_tf);
@@ -187,7 +189,7 @@ fn main() {
     //  Section 3: Sliders & Progress
     // ════════════════════════════════════════════════════════════════
 
-    let exp_sliders = ui::Expander::new("Sliders & Progress");
+    let exp_sliders = ui::Expander::new(i18n::t("Sliders & Progress"));
     exp_sliders.set_size(420, 152); // 32 + 120
     exp_sliders.set_margin(0, 0, 0, 8);
     content.add(&exp_sliders);
@@ -204,7 +206,7 @@ fn main() {
     vol_row.set_margin(0, 0, 0, 8);
     sl_stack.add(&vol_row);
 
-    let sl_label = ui::Label::new("Volume");
+    let sl_label = ui::Label::new(i18n::t("Volume"));
     sl_label.set_position(0, 2);
     vol_row.add(&sl_label);
 
@@ -219,7 +221,7 @@ fn main() {
     prog_row.set_margin(0, 0, 0, 8);
     sl_stack.add(&prog_row);
 
-    let pb_label = ui::Label::new("Progress");
+    let pb_label = ui::Label::new(i18n::t("Progress"));
     pb_label.set_position(0, 0);
     prog_row.add(&pb_label);
 
@@ -250,7 +252,7 @@ fn main() {
     //  Section 4: Segmented Control
     // ════════════════════════════════════════════════════════════════
 
-    let exp_tabs = ui::Expander::new("Segmented Control");
+    let exp_tabs = ui::Expander::new(i18n::t("Segmented Control"));
     exp_tabs.set_size(420, 128); // 32 + 96
     exp_tabs.set_margin(0, 0, 0, 8);
     content.add(&exp_tabs);
@@ -261,7 +263,8 @@ fn main() {
     tab_stack.set_padding(4, 4, 4, 4);
     exp_tabs.add(&tab_stack);
 
-    let seg = ui::SegmentedControl::new("General|Appearance|Privacy");
+    let seg_str = alloc::format!("{}|{}|{}", i18n::t("General"), i18n::t("Appearance"), i18n::t("Privacy"));
+    let seg = ui::SegmentedControl::new(&seg_str);
     seg.set_size(412, 28);
     seg.set_margin(0, 0, 0, 6);
     tab_stack.add(&seg);
@@ -269,21 +272,21 @@ fn main() {
     let panel_a = ui::View::new();
     panel_a.set_size(412, 40);
     tab_stack.add(&panel_a);
-    let pa_lbl = ui::Label::new("General settings panel");
+    let pa_lbl = ui::Label::new(i18n::t("General settings panel"));
     pa_lbl.set_position(10, 10);
     panel_a.add(&pa_lbl);
 
     let panel_b = ui::View::new();
     panel_b.set_size(412, 40);
     tab_stack.add(&panel_b);
-    let pb_lbl = ui::Label::new("Appearance settings panel");
+    let pb_lbl = ui::Label::new(i18n::t("Appearance settings panel"));
     pb_lbl.set_position(10, 10);
     panel_b.add(&pb_lbl);
 
     let panel_c = ui::View::new();
     panel_c.set_size(412, 40);
     tab_stack.add(&panel_c);
-    let pc_lbl = ui::Label::new("Privacy settings panel");
+    let pc_lbl = ui::Label::new(i18n::t("Privacy settings panel"));
     pc_lbl.set_position(10, 10);
     panel_c.add(&pc_lbl);
 
@@ -293,7 +296,7 @@ fn main() {
     //  Section 5: Cards & Containers
     // ════════════════════════════════════════════════════════════════
 
-    let exp_cards = ui::Expander::new("Cards & Containers");
+    let exp_cards = ui::Expander::new(i18n::t("Cards & Containers"));
     exp_cards.set_size(420, 110); // 32 + 78
     exp_cards.set_margin(0, 0, 0, 8);
     content.add(&exp_cards);
@@ -310,22 +313,22 @@ fn main() {
     card.set_size(200, 60);
     cards_row.add(&card);
 
-    let card_title = ui::Label::new("Card Widget");
+    let card_title = ui::Label::new(i18n::t("Card Widget"));
     card_title.set_position(12, 8);
     card_title.set_color(0xFF007AFF);
     card.add(&card_title);
 
-    let card_text = ui::Label::new("With nested content.");
+    let card_text = ui::Label::new(i18n::t("With nested content."));
     card_text.set_position(12, 30);
     card.add(&card_text);
 
     // GroupBox
-    let gb = ui::GroupBox::new("Settings Group");
+    let gb = ui::GroupBox::new(i18n::t("Settings Group"));
     gb.set_position(210, 0);
     gb.set_size(200, 60);
     cards_row.add(&gb);
 
-    let gb_lbl = ui::Label::new("Grouped content");
+    let gb_lbl = ui::Label::new(i18n::t("Grouped content"));
     gb_lbl.set_position(10, 24);
     gb.add(&gb_lbl);
 
@@ -333,7 +336,7 @@ fn main() {
     //  Section 6: Color & Status
     // ════════════════════════════════════════════════════════════════
 
-    let exp_misc = ui::Expander::new("Color & Status");
+    let exp_misc = ui::Expander::new(i18n::t("Color & Status"));
     exp_misc.set_size(420, 110); // 32 + 78
     exp_misc.set_margin(0, 0, 0, 8);
     content.add(&exp_misc);
@@ -350,7 +353,7 @@ fn main() {
     color_row.set_margin(0, 0, 0, 8);
     misc_stack.add(&color_row);
 
-    let cw_label = ui::Label::new("Pick a color:");
+    let cw_label = ui::Label::new(i18n::t("Pick a color:"));
     cw_label.set_position(0, 6);
     color_row.add(&cw_label);
 
@@ -374,17 +377,17 @@ fn main() {
     status_row.set_size(412, 20);
     misc_stack.add(&status_row);
 
-    let si1 = ui::StatusIndicator::new("Connected");
+    let si1 = ui::StatusIndicator::new(i18n::t("Connected"));
     si1.set_position(0, 0);
     si1.set_state(1); // green
     status_row.add(&si1);
 
-    let si2 = ui::StatusIndicator::new("Idle");
+    let si2 = ui::StatusIndicator::new(i18n::t("Idle"));
     si2.set_position(120, 0);
     si2.set_state(2); // yellow
     status_row.add(&si2);
 
-    let si3 = ui::StatusIndicator::new("Offline");
+    let si3 = ui::StatusIndicator::new(i18n::t("Offline"));
     si3.set_position(200, 0);
     si3.set_state(0); // red
     status_row.add(&si3);
@@ -393,7 +396,7 @@ fn main() {
     //  Section 7: Canvas Drawing
     // ════════════════════════════════════════════════════════════════
 
-    let exp_canvas = ui::Expander::new("Canvas Drawing");
+    let exp_canvas = ui::Expander::new(i18n::t("Canvas Drawing"));
     exp_canvas.set_size(420, 142); // 32 + 110
     exp_canvas.set_margin(0, 0, 0, 8);
     content.add(&exp_canvas);
@@ -414,17 +417,18 @@ fn main() {
     //  Section 8: Context Menu Demo
     // ════════════════════════════════════════════════════════════════
 
-    let ctx_label = ui::Label::new("Right-click the button for a context menu:");
+    let ctx_label = ui::Label::new(i18n::t("Right-click the button for a context menu:"));
     ctx_label.set_size(420, 16);
     ctx_label.set_margin(0, 4, 0, 4);
     content.add(&ctx_label);
 
-    let ctx_btn = ui::Button::new("Right-Click Me");
+    let ctx_btn = ui::Button::new(i18n::t("Right-Click Me"));
     ctx_btn.set_size(160, 32);
     ctx_btn.set_margin(0, 0, 0, 8);
     content.add(&ctx_btn);
 
-    let menu = ui::ContextMenu::new("Cut|Copy|Paste|-|Select All");
+    let menu_str = alloc::format!("{}|{}|{}|-|{}", i18n::t("Cut"), i18n::t("Copy"), i18n::t("Paste"), i18n::t("Select All"));
+    let menu = ui::ContextMenu::new(&menu_str);
     menu.on_item_click(|e| {
         let item_name = match e.index {
             0 => "Cut",
@@ -447,7 +451,7 @@ fn main() {
     div2.set_margin(0, 0, 0, 8);
     content.add(&div2);
 
-    let footer = ui::Label::new("End of showcase - built with anyui");
+    let footer = ui::Label::new(i18n::t("End of showcase - built with anyui"));
     footer.set_color(0xFF5A5A5A);
     footer.set_size(420, 16);
     content.add(&footer);

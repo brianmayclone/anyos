@@ -4,6 +4,7 @@
 //! `net::get_interfaces()`.  Shows only kernel-detected NICs.  The "Configure..."
 //! button opens a dedicated dialog for DHCP/static selection and IP entry.
 
+use anyos_std::i18n;
 use anyos_std::net;
 use libanyui_client as ui;
 use ui::Widget;
@@ -19,7 +20,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     panel.set_auto_size(true);
     panel.set_color(layout::bg());
 
-    layout::build_page_header(&panel, "Network", "Connection status and interface configuration");
+    layout::build_page_header(&panel, i18n::t("Network"), i18n::t("Connection status and interface configuration"));
 
     // ── Live connection status ───────────────────────────────────
     let mut net_buf = [0u8; 24];
@@ -34,31 +35,31 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
 
     let status_card = layout::build_auto_card(&panel);
     let (status_text, status_color) = if link_up {
-        ("Connected", ui::theme::colors().success)
+        (i18n::t("Connected"), ui::theme::colors().success)
     } else {
-        ("Disconnected", ui::theme::colors().destructive)
+        (i18n::t("Disconnected"), ui::theme::colors().destructive)
     };
-    layout::build_info_row_colored(&status_card, "Status", status_text, status_color, true);
+    layout::build_info_row_colored(&status_card, i18n::t("Status"), status_text, status_color, true);
     layout::build_separator(&status_card);
 
     let mut b = [0u8; 20];
-    layout::build_info_row(&status_card, "IP Address", fmt_ip(&mut b, &ip), false);
+    layout::build_info_row(&status_card, i18n::t("IP Address"), fmt_ip(&mut b, &ip), false);
     layout::build_separator(&status_card);
 
     let mut b = [0u8; 20];
-    layout::build_info_row(&status_card, "Subnet Mask", fmt_ip(&mut b, &mask), false);
+    layout::build_info_row(&status_card, i18n::t("Subnet Mask"), fmt_ip(&mut b, &mask), false);
     layout::build_separator(&status_card);
 
     let mut b = [0u8; 20];
-    layout::build_info_row(&status_card, "Gateway", fmt_ip(&mut b, &gw), false);
+    layout::build_info_row(&status_card, i18n::t("Gateway"), fmt_ip(&mut b, &gw), false);
     layout::build_separator(&status_card);
 
     let mut b = [0u8; 20];
-    layout::build_info_row(&status_card, "DNS Server", fmt_ip(&mut b, &dns_addr), false);
+    layout::build_info_row(&status_card, i18n::t("DNS Server"), fmt_ip(&mut b, &dns_addr), false);
     layout::build_separator(&status_card);
 
     let mut b = [0u8; 20];
-    layout::build_info_row(&status_card, "MAC Address", fmt_mac(&mut b, &mac), false);
+    layout::build_info_row(&status_card, i18n::t("MAC Address"), fmt_mac(&mut b, &mac), false);
 
     // ── Detected interfaces card ─────────────────────────────────
     let nic_available = net::is_nic_available();
@@ -67,9 +68,9 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
         let mut drv_buf = [0u8; 64];
         let drv_len = net::nic_driver_name(&mut drv_buf) as usize;
         let drv_name = if drv_len > 0 {
-            core::str::from_utf8(&drv_buf[..drv_len]).unwrap_or("Unknown NIC")
+            core::str::from_utf8(&drv_buf[..drv_len]).unwrap_or(i18n::t("Unknown NIC"))
         } else {
-            "Network Adapter"
+            i18n::t("Network Adapter")
         };
 
         // Read current interface config for eth0
@@ -79,7 +80,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
         // Determine current method for eth0
         let (method_str, cur_method) = if iface_count > 0 && iface_count != u32::MAX {
             let m = iface_buf[0]; // method of first interface
-            if m == 1 { ("Static", 1u8) } else { ("DHCP", 0u8) }
+            if m == 1 { (i18n::t("Static"), 1u8) } else { ("DHCP", 0u8) }
         } else {
             ("DHCP", 0u8)
         };
@@ -87,7 +88,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
         let iface_card = layout::build_auto_card(&panel);
 
         // Driver name row
-        layout::build_info_row(&iface_card, "Adapter", drv_name, true);
+        layout::build_info_row(&iface_card, i18n::t("Adapter"), drv_name, true);
         layout::build_separator(&iface_card);
 
         // Interface row: "eth0" label + method + "Configure..." button
@@ -103,7 +104,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
         let method_lbl_id = method_lbl.id();
         let iface_buf_copy = iface_buf;
 
-        let btn = ui::Button::new("Configure...");
+        let btn = ui::Button::new(i18n::t("Configure..."));
         btn.set_position(400, 8);
         btn.set_size(110, 28);
         btn.on_click(move |_| {
@@ -112,7 +113,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
         row.add(&btn);
     } else {
         let no_nic_card = layout::build_auto_card(&panel);
-        layout::build_info_row(&no_nic_card, "Interfaces", "No network adapter detected", true);
+        layout::build_info_row(&no_nic_card, i18n::t("Interfaces"), i18n::t("No network adapter detected"), true);
     }
 
     parent.add(&panel);
@@ -128,7 +129,7 @@ fn open_configure_dialog(
     iface_buf: &[u8; 512],
     method_label_id: u32,
 ) {
-    let title = "Configure Network Interface";
+    let title = i18n::t("Configure Network Interface");
     let win = ui::Window::new(title, -1, -1, 420, 340);
     let win_id = win.id();
 
@@ -151,14 +152,15 @@ fn open_configure_dialog(
     method_row.set_size(380, 36);
     method_row.set_margin(20, 12, 20, 0);
 
-    let method_lbl = ui::Label::new("Method");
+    let method_lbl = ui::Label::new(i18n::t("Method"));
     method_lbl.set_position(0, 8);
     method_lbl.set_size(100, 20);
     method_lbl.set_text_color(layout::text());
     method_lbl.set_font_size(13);
     method_row.add(&method_lbl);
 
-    let dd = ui::DropDown::new("DHCP|Static");
+    let dd_items = anyos_std::format!("DHCP|{}", i18n::t("Static"));
+    let dd = ui::DropDown::new(&dd_items);
     dd.set_position(110, 4);
     dd.set_size(260, 28);
     dd.set_selected_index(current_method as u32);
@@ -173,10 +175,10 @@ fn open_configure_dialog(
 
     let is_static = current_method == 1;
 
-    let tf_ip = build_dialog_ip_row(&root, "Address", addr_ip, is_static);
-    let tf_mask = build_dialog_ip_row(&root, "Netmask", addr_mask, is_static);
-    let tf_gw = build_dialog_ip_row(&root, "Gateway", addr_gw, is_static);
-    let tf_dns = build_dialog_ip_row(&root, "DNS", addr_dns, is_static);
+    let tf_ip = build_dialog_ip_row(&root, i18n::t("Address"), addr_ip, is_static);
+    let tf_mask = build_dialog_ip_row(&root, i18n::t("Netmask"), addr_mask, is_static);
+    let tf_gw = build_dialog_ip_row(&root, i18n::t("Gateway"), addr_gw, is_static);
+    let tf_dns = build_dialog_ip_row(&root, i18n::t("DNS"), addr_dns, is_static);
 
     // Wire method dropdown to enable/disable fields
     let ip_id = tf_ip.id();
@@ -212,7 +214,7 @@ fn open_configure_dialog(
     };
     let name_len = iface_name.len().min(16) as u8;
 
-    let apply_btn = ui::Button::new("Apply");
+    let apply_btn = ui::Button::new(i18n::t("Apply"));
     apply_btn.set_position(0, 4);
     apply_btn.set_size(100, 32);
     apply_btn.on_click(move |_| {
@@ -239,7 +241,7 @@ fn open_configure_dialog(
         net::set_interfaces(&syscall_buf);
 
         // Update the method label in the main settings page
-        let new_text = if method_idx == 1 { "Static" } else { "DHCP" };
+        let new_text = if method_idx == 1 { i18n::t("Static") } else { "DHCP" };
         ui::Control::from_id(mlbl_id).set_text(new_text);
 
         // Close the dialog
@@ -249,7 +251,7 @@ fn open_configure_dialog(
     btn_row.add(&apply_btn);
 
     let wid2 = win_id;
-    let cancel_btn = ui::Button::new("Cancel");
+    let cancel_btn = ui::Button::new(i18n::t("Cancel"));
     cancel_btn.set_position(110, 4);
     cancel_btn.set_size(100, 32);
     cancel_btn.on_click(move |_| {

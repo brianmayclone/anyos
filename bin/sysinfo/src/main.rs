@@ -4,7 +4,9 @@
 anyos_std::entry!(main);
 
 fn main() {
-    anyos_std::println!(".anyOS System Information");
+    anyos_std::i18n::init();
+    let t = anyos_std::i18n::t;
+    anyos_std::println!("{}", t(".anyOS System Information"));
     anyos_std::println!("========================\n");
 
     // Time
@@ -17,8 +19,8 @@ fn main() {
         let min = time_buf[5];
         let sec = time_buf[6];
         anyos_std::println!(
-            "Date/Time  : {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-            year, month, day, hour, min, sec
+            "{:<11}: {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            t("Date/Time"), year, month, day, hour, min, sec
         );
     }
 
@@ -27,7 +29,7 @@ fn main() {
     let hz = anyos_std::sys::tick_hz();
     let secs = if hz > 0 { ticks / hz } else { 0 };
     let mins = secs / 60;
-    anyos_std::println!("Uptime     : {}m {}s ({} ticks)", mins, secs % 60, ticks);
+    anyos_std::println!("{:<11}: {}m {}s ({} ticks)", t("Uptime"), mins, secs % 60, ticks);
 
     // Memory info (cmd=0): [total_frames:u32, free_frames:u32, heap_used:u32, heap_total:u32]
     let mut mem_buf = [0u8; 16];
@@ -40,16 +42,16 @@ fn main() {
         let total_kb = total * 4; // 4K per frame
         let free_kb = free * 4;
         let used_kb = total_kb - free_kb;
-        anyos_std::println!("\nMemory:");
-        anyos_std::println!("  Physical : {} KiB total, {} KiB used, {} KiB free", total_kb, used_kb, free_kb);
-        anyos_std::println!("  Heap     : {} KiB used / {} KiB total", heap_used / 1024, heap_total / 1024);
+        anyos_std::println!("\n{}:", t("Memory"));
+        anyos_std::println!("  {:<9}: {} KiB {}, {} KiB {}, {} KiB {}", t("Physical"), total_kb, t("total"), used_kb, t("used"), free_kb, t("free"));
+        anyos_std::println!("  {:<9}: {} KiB {} / {} KiB {}", t("Heap"), heap_used / 1024, t("used"), heap_total / 1024, t("total"));
     }
 
     // CPU info (cmd=2): [cpu_count:u32]
     let mut cpu_buf = [0u8; 4];
     if anyos_std::sys::sysinfo(2, &mut cpu_buf) == 0 {
         let cpus = u32::from_le_bytes([cpu_buf[0], cpu_buf[1], cpu_buf[2], cpu_buf[3]]);
-        anyos_std::println!("\nCPUs       : {}", cpus);
+        anyos_std::println!("\n{:<11}: {}", t("CPUs"), cpus);
     }
 
     // Thread info (cmd=1): 36-byte entries [tid:u32, prio:u8, state:u8, arch:u8, pad:u8, name:24bytes, cpu_ticks:u32]
@@ -57,8 +59,8 @@ fn main() {
     let ret = anyos_std::sys::sysinfo(1, &mut thread_buf);
     if ret != u32::MAX {
         let count = ret;
-        anyos_std::println!("\nThreads ({}):", count);
-        anyos_std::println!("  {:<6} {:<6} {:<10} {}", "TID", "Prio", "State", "Name");
+        anyos_std::println!("\n{} ({}):", t("Threads"), count);
+        anyos_std::println!("  {:<6} {:<6} {:<10} {}", "TID", t("Prio"), t("State"), t("Name"));
         anyos_std::println!("  {}", "--------------------------------------");
 
         for i in 0..count as usize {
@@ -71,11 +73,11 @@ fn main() {
             let name = core::str::from_utf8(&name_bytes[..name_len]).unwrap_or("???");
 
             let state_str = match state {
-                0 => "Ready",
-                1 => "Running",
-                2 => "Blocked",
-                3 => "Dead",
-                _ => "Unknown",
+                0 => t("Ready"),
+                1 => t("Running"),
+                2 => t("Blocked"),
+                3 => t("Dead"),
+                _ => t("Unknown"),
             };
 
             anyos_std::println!("  {:<6} {:<6} {:<10} {}", tid, prio, state_str, name);

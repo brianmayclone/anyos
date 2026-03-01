@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 
 use anyos_std::sys;
 use anyos_std::process;
+use anyos_std::i18n;
 
 anyos_std::entry!(main);
 
@@ -45,8 +46,9 @@ static mut COLORS_BUF: Option<*mut Vec<u32>> = None;
 
 fn main() {
     ui::init();
+    i18n::init();
 
-    let win = ui::Window::new("Activity Monitor", 100, 60, 580, 420);
+    let win = ui::Window::new(i18n::t("Activity Monitor"), 100, 60, 580, 420);
 
     let tc = ui::theme::colors();
 
@@ -66,7 +68,8 @@ fn main() {
     header.add(&header_top);
 
     // Centered segmented control (manually positioned)
-    let seg = ui::SegmentedControl::new("Processes|Graphs|Disk|System");
+    let seg_items = anyos_std::format!("{}|{}|{}|{}", i18n::t("Processes"), i18n::t("Graphs"), i18n::t("Disk"), i18n::t("System"));
+    let seg = ui::SegmentedControl::new(&seg_items);
     seg.set_size(380, 24);
     seg.set_position((580 - 380) / 2, 4);
     header_top.add(&seg);
@@ -142,7 +145,7 @@ fn main() {
     proc_toolbar.set_dock(ui::DOCK_TOP);
     panel_procs.add(&proc_toolbar);
 
-    let kill_btn = ui::Button::new("Kill Process");
+    let kill_btn = ui::Button::new(i18n::t("Kill Process"));
     kill_btn.set_position(8, 4);
     kill_btn.set_size(100, 24);
     kill_btn.set_enabled(false); // enabled only when a process is selected
@@ -159,13 +162,13 @@ fn main() {
     proc_grid.set_font_size(11);
     proc_grid.set_columns(&[
         ColumnDef::new("TID").width(45).align(ALIGN_RIGHT).numeric(),
-        ColumnDef::new("Process").width(130),
-        ColumnDef::new("User").width(65),
-        ColumnDef::new("State").width(70),
-        ColumnDef::new("Arch").width(50),
+        ColumnDef::new(i18n::t("Process")).width(130),
+        ColumnDef::new(i18n::t("User")).width(65),
+        ColumnDef::new(i18n::t("State")).width(70),
+        ColumnDef::new(i18n::t("Arch")).width(50),
         ColumnDef::new("CPU%").width(55).align(ALIGN_RIGHT).numeric(),
-        ColumnDef::new("Memory").width(65).align(ALIGN_RIGHT).numeric(),
-        ColumnDef::new("Priority").width(50).align(ALIGN_RIGHT).numeric(),
+        ColumnDef::new(i18n::t("Memory")).width(65).align(ALIGN_RIGHT).numeric(),
+        ColumnDef::new(i18n::t("Priority")).width(50).align(ALIGN_RIGHT).numeric(),
     ]);
     proc_grid.set_row_height(20);
     panel_procs.add(&proc_grid);
@@ -217,9 +220,9 @@ fn main() {
     disk_grid.set_font_size(11);
     disk_grid.set_columns(&[
         ColumnDef::new("TID").width(50).align(ALIGN_RIGHT).numeric(),
-        ColumnDef::new("Process").width(160),
-        ColumnDef::new("Read").width(130).align(ALIGN_RIGHT).numeric(),
-        ColumnDef::new("Written").width(130).align(ALIGN_RIGHT).numeric(),
+        ColumnDef::new(i18n::t("Process")).width(160),
+        ColumnDef::new(i18n::t("Read")).width(130).align(ALIGN_RIGHT).numeric(),
+        ColumnDef::new(i18n::t("Written")).width(130).align(ALIGN_RIGHT).numeric(),
     ]);
     disk_grid.set_row_height(20);
     panel_disk.add(&disk_grid);
@@ -251,7 +254,7 @@ fn main() {
     cpu_card_stack.set_dock(ui::DOCK_FILL);
     cpu_card.add(&cpu_card_stack);
 
-    let cpu_title = ui::Label::new("Processor");
+    let cpu_title = ui::Label::new(i18n::t("Processor"));
     cpu_title.set_size(536, 20);
     cpu_title.set_font_size(13);
     cpu_title.set_text_color(tc.accent_hover);
@@ -285,7 +288,7 @@ fn main() {
     mem_card_stack.set_dock(ui::DOCK_FILL);
     mem_card.add(&mem_card_stack);
 
-    let mem_title = ui::Label::new("Memory");
+    let mem_title = ui::Label::new(i18n::t("Memory"));
     mem_title.set_size(536, 20);
     mem_title.set_font_size(13);
     mem_title.set_text_color(tc.accent_hover);
@@ -311,7 +314,7 @@ fn main() {
     sys_card_stack.set_dock(ui::DOCK_FILL);
     sys_card.add(&sys_card_stack);
 
-    let sys_title = ui::Label::new("System");
+    let sys_title = ui::Label::new(i18n::t("System"));
     sys_title.set_size(536, 20);
     sys_title.set_font_size(13);
     sys_title.set_text_color(tc.accent_hover);
@@ -337,7 +340,7 @@ fn main() {
     disp_card_stack.set_dock(ui::DOCK_FILL);
     disp_card.add(&disp_card_stack);
 
-    let disp_title = ui::Label::new("Display");
+    let disp_title = ui::Label::new(i18n::t("Display"));
     disp_title.set_size(536, 20);
     disp_title.set_font_size(13);
     disp_title.set_text_color(tc.accent_hover);
@@ -442,7 +445,7 @@ fn main() {
                             msg[p..p + nl].copy_from_slice(&name.as_bytes()[..nl]); p += nl;
                             msg[p..p + 7].copy_from_slice(b" killed"); p += 7;
                             if let Ok(m) = core::str::from_utf8(&msg[..p]) {
-                                ui::show_notification("Process Terminated", m, None, 3000);
+                                ui::show_notification(i18n::t("Process Terminated"), m, None, 3000);
                             }
                         }
                     }
@@ -647,11 +650,11 @@ fn main() {
                 // State: only when changed
                 if is_new || old_state != task.state {
                     let state_str = match task.state {
-                        0 => "Ready",
-                        1 => "Running",
-                        2 => "Blocked",
-                        3 => "Terminated",
-                        _ => "Unknown",
+                        0 => i18n::t("Ready"),
+                        1 => i18n::t("Running"),
+                        2 => i18n::t("Blocked"),
+                        3 => i18n::t("Terminated"),
+                        _ => i18n::t("Unknown"),
                     };
                     proc_grid.set_cell(ri as u32, 3, state_str);
                     colors_dirty = true;

@@ -7,6 +7,7 @@
 #![no_main]
 
 use anyos_std::{Vec, vec};
+use anyos_std::i18n;
 use libanyui_client as ui;
 
 anyos_std::entry!(main);
@@ -48,9 +49,12 @@ enum Tool {
     Picker,
 }
 
-const TOOL_NAMES: [&str; 8] = [
-    "Pencil", "Brush", "Eraser", "Line", "Rect", "Ellipse", "Fill", "Picker",
-];
+fn tool_name(idx: usize) -> &'static str {
+    const KEYS: [&str; 8] = [
+        "Pencil", "Brush", "Eraser", "Line", "Rect", "Ellipse", "Fill", "Picker",
+    ];
+    if idx < KEYS.len() { i18n::t(KEYS[idx]) } else { "" }
+}
 
 // ── Canvas dimensions ────────────────────────────────────────────────
 
@@ -92,8 +96,9 @@ fn main() {
         anyos_std::println!("[Paint] Failed to init libanyui");
         return;
     }
+    i18n::init();
 
-    let win = ui::Window::new("Paint", -1, -1, SIDEBAR_W + CANVAS_W + 4, CANVAS_H + 42 + 24 + 4);
+    let win = ui::Window::new(i18n::t("Paint"), -1, -1, SIDEBAR_W + CANVAS_W + 4, CANVAS_H + 42 + 24 + 4);
     let tc = ui::theme::colors();
 
     // ── Toolbar (top) ────────────────────────────────────────────────
@@ -114,7 +119,7 @@ fn main() {
     btn_save.set_system_icon("device-floppy", ui::IconType::Outline, tc.text, 24);
     toolbar.add_separator();
 
-    let size_label = ui::Label::new("Size: 3");
+    let size_label = ui::Label::new(&anyos_std::format!("{}: 3", i18n::t("Size")));
     size_label.set_size(52, 24);
     size_label.set_text_color(tc.text);
     toolbar.add(&size_label);
@@ -130,10 +135,9 @@ fn main() {
     win.add(&sidebar);
 
     // Tool buttons
-    let tool_labels = ["Pencil", "Brush", "Eraser", "Line", "Rect", "Ellipse", "Fill", "Picker"];
     let mut tool_buttons: [ui::Button; 8] = unsafe { core::mem::zeroed() };
-    for (i, &label) in tool_labels.iter().enumerate() {
-        let btn = ui::Button::new(label);
+    for i in 0..8 {
+        let btn = ui::Button::new(tool_name(i));
         btn.set_position(4, 4 + (i as i32) * 28);
         btn.set_size(SIDEBAR_W - 8, 24);
         sidebar.add(&btn);
@@ -157,7 +161,7 @@ fn main() {
     }
 
     // FG/BG display
-    let fg_label = ui::Label::new("FG");
+    let fg_label = ui::Label::new(i18n::t("FG"));
     fg_label.set_position(4, palette_y + 44);
     fg_label.set_size(20, 16);
     fg_label.set_text_color(tc.text_secondary);
@@ -170,7 +174,7 @@ fn main() {
     fg_swatch.set_color(0xFF000000);
     sidebar.add(&fg_swatch);
 
-    let bg_label = ui::Label::new("BG");
+    let bg_label = ui::Label::new(i18n::t("BG"));
     bg_label.set_position(4, palette_y + 68);
     bg_label.set_size(20, 16);
     bg_label.set_text_color(tc.text_secondary);
@@ -204,7 +208,7 @@ fn main() {
     status_pos.set_font_size(11);
     status.add(&status_pos);
 
-    let status_tool = ui::Label::new("Pencil");
+    let status_tool = ui::Label::new(i18n::t("Pencil"));
     status_tool.set_position(200, 3);
     status_tool.set_size(100, 16);
     status_tool.set_text_color(tc.text_secondary);
@@ -290,7 +294,7 @@ extern "C" fn tool_click_handler(_id: u32, _ev: u32, userdata: u64) {
         _ => return,
     };
     app().tool = tool;
-    app().status_tool.set_text(TOOL_NAMES[idx]);
+    app().status_tool.set_text(tool_name(idx));
     highlight_active_tool(idx);
 }
 
@@ -344,33 +348,8 @@ fn highlight_active_tool(active_idx: usize) {
 
 fn update_size_label() {
     let a = app();
-    let mut buf = [0u8; 16];
-    let len = fmt_size(a.brush_size, &mut buf);
-    if let Ok(s) = core::str::from_utf8(&buf[..len]) {
-        a.size_label.set_text(s);
-    }
-}
-
-fn fmt_size(size: u32, buf: &mut [u8]) -> usize {
-    let prefix = b"Size: ";
-    let plen = prefix.len();
-    buf[..plen].copy_from_slice(prefix);
-    let mut n = size;
-    if n == 0 {
-        buf[plen] = b'0';
-        return plen + 1;
-    }
-    let mut digits = [0u8; 5];
-    let mut i = 0;
-    while n > 0 {
-        digits[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-        i += 1;
-    }
-    for j in 0..i {
-        buf[plen + j] = digits[i - 1 - j];
-    }
-    plen + i
+    let text = anyos_std::format!("{}: {}", i18n::t("Size"), a.brush_size);
+    a.size_label.set_text(&text);
 }
 
 fn update_status_pos(x: i32, y: i32) {

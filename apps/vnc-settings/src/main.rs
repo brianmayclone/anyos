@@ -39,7 +39,7 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{ipc, println, String, Vec, format};
+use anyos_std::{ipc, println, String, Vec, format, i18n};
 use anyos_std::users;
 use libanyui_client as ui;
 use ui::ColumnDef;
@@ -221,9 +221,9 @@ fn apply() {
 
     let s = app();
     let status = if s.cfg.enabled {
-        format!("    Saved. VNC enabled on port {}.", s.cfg.port)
+        format!("    {} {}", i18n::t("Saved. VNC enabled on port"), s.cfg.port)
     } else {
-        String::from("    Saved. VNC access disabled.")
+        format!("    {}", i18n::t("Saved. VNC access disabled."))
     };
     s.status_label.set_text(&status);
 }
@@ -237,11 +237,11 @@ fn apply() {
 /// exactly like Finder property windows.
 fn show_add_user_dialog() {
     let dlg = ui::Window::new_with_flags(
-        "Add Allowed User", -1, -1, 340, 120,
+        i18n::t("Add Allowed User"), -1, -1, 340, 120,
         ui::WIN_FLAG_NOT_RESIZABLE | ui::WIN_FLAG_NO_MINIMIZE | ui::WIN_FLAG_NO_MAXIMIZE,
     );
 
-    let lbl = ui::Label::new("Username:");
+    let lbl = ui::Label::new(i18n::t("Username:"));
     lbl.set_position(12, 18);
     lbl.set_size(80, 22);
     dlg.add(&lbl);
@@ -251,7 +251,7 @@ fn show_add_user_dialog() {
     input.set_size(228, 26);
     dlg.add(&input);
 
-    let btn_cancel = ui::Button::new("Cancel");
+    let btn_cancel = ui::Button::new(i18n::t("Cancel"));
     btn_cancel.set_position(156, 58);
     btn_cancel.set_size(80, 28);
     dlg.add(&btn_cancel);
@@ -282,16 +282,16 @@ fn show_add_user_dialog() {
             dlg_ok.destroy();
 
             if !user_exists(name) {
-                app().status_label.set_text("    Error: user does not exist locally.");
+                app().status_label.set_text(&format!("    {}", i18n::t("Error: user does not exist locally.")));
                 return;
             }
             let s = app();
             if s.cfg.allowed_users.iter().any(|u| u.as_str() == name) {
-                s.status_label.set_text("    User already in list.");
+                s.status_label.set_text(&format!("    {}", i18n::t("User already in list.")));
                 return;
             }
             s.cfg.allowed_users.push(String::from(name));
-            s.status_label.set_text("    User added.");
+            s.status_label.set_text(&format!("    {}", i18n::t("User added.")));
             refresh_user_grid();
         });
     }
@@ -314,11 +314,12 @@ fn main() {
         println!("[VNC Settings] Failed to init libanyui");
         return;
     }
+    i18n::init();
 
     let cfg = load_conf();
 
     // ── Window ───────────────────────────────────────────────────────────────
-    let win = ui::Window::new("VNC Settings", -1, -1, WIN_W, WIN_H);
+    let win = ui::Window::new(i18n::t("VNC Settings"), -1, -1, WIN_W, WIN_H);
     let tc = ui::theme::colors();
 
     // ── Content scroll area ───────────────────────────────────────────────────
@@ -335,7 +336,7 @@ fn main() {
     status_bar.set_color(tc.accent);
     win.add(&status_bar);
 
-    let status_label = ui::Label::new("    VNC Settings");
+    let status_label = ui::Label::new(&format!("    {}", i18n::t("VNC Settings")));
     status_label.set_position(0, 4);
     status_label.set_size(WIN_W, 18);
     status_label.set_color(tc.accent);
@@ -349,7 +350,7 @@ fn main() {
     //  Total inner width = WIN_W-40 = 400 px → columns [130, 10, 260]
     //  We nest a fixed-size View in col 1 to enforce the 10 px width.
     // ════════════════════════════════════════════════════════════════
-    let grp_server = ui::GroupBox::new("VNC Server");
+    let grp_server = ui::GroupBox::new(i18n::t("VNC Server"));
     grp_server.set_position(12, 8);
     grp_server.set_size(WIN_W - 24, 185);
     scroll.add(&grp_server);
@@ -373,7 +374,7 @@ fn main() {
     }
 
     // Row 0: VNC Access
-    let lbl_enabled = ui::Label::new("VNC Access");
+    let lbl_enabled = ui::Label::new(i18n::t("VNC Access"));
     lbl_enabled.set_text_align(ui::TEXT_ALIGN_RIGHT);
     tl.add(&lbl_enabled);
     spacer!();
@@ -381,7 +382,7 @@ fn main() {
     tl.add(&toggle_enabled);
 
     // Row 1: Port
-    let lbl_port = ui::Label::new("Port");
+    let lbl_port = ui::Label::new(i18n::t("Port"));
     lbl_port.set_text_align(ui::TEXT_ALIGN_RIGHT);
     tl.add(&lbl_port);
     spacer!();
@@ -390,7 +391,7 @@ fn main() {
     tl.add(&port_field);
 
     // Row 2: VNC Password
-    let lbl_pw = ui::Label::new("VNC Password");
+    let lbl_pw = ui::Label::new(i18n::t("VNC Password"));
     lbl_pw.set_text_align(ui::TEXT_ALIGN_RIGHT);
     tl.add(&lbl_pw);
     spacer!();
@@ -399,7 +400,7 @@ fn main() {
     tl.add(&pw_field);
 
     // Row 3: Allow Root
-    let lbl_root = ui::Label::new("Allow Root");
+    let lbl_root = ui::Label::new(i18n::t("Allow Root"));
     lbl_root.set_text_align(ui::TEXT_ALIGN_RIGHT);
     tl.add(&lbl_root);
     spacer!();
@@ -409,17 +410,17 @@ fn main() {
     // ════════════════════════════════════════════════════════════════
     //  "Allowed Users" section
     // ════════════════════════════════════════════════════════════════
-    let grp_users = ui::GroupBox::new("Allowed Users (must exist locally)");
+    let grp_users = ui::GroupBox::new(i18n::t("Allowed Users (must exist locally)"));
     grp_users.set_position(12, 200);
     grp_users.set_size(WIN_W - 24, 234);
     scroll.add(&grp_users);
 
-    let btn_add = ui::Button::new("+ Add User…");
+    let btn_add = ui::Button::new(i18n::t("+ Add User..."));
     btn_add.set_position(8, 24);
     btn_add.set_size(110, 26);
     grp_users.add(&btn_add);
 
-    let btn_remove = ui::Button::new("− Remove Selected");
+    let btn_remove = ui::Button::new(i18n::t("Remove Selected"));
     btn_remove.set_position(126, 24);
     btn_remove.set_size(150, 26);
     btn_remove.set_enabled(!cfg.allowed_users.is_empty());
@@ -427,7 +428,7 @@ fn main() {
 
     let user_grid = ui::DataGrid::new(WIN_W - 40, 168);
     user_grid.set_position(8, 58);
-    user_grid.set_columns(&[ColumnDef::new("Username").width(WIN_W - 40)]);
+    user_grid.set_columns(&[ColumnDef::new(i18n::t("Username")).width(WIN_W - 40)]);
     user_grid.set_row_height(22);
     user_grid.set_selection_mode(ui::SELECTION_SINGLE);
     grp_users.add(&user_grid);
@@ -436,12 +437,12 @@ fn main() {
     //  Bottom action buttons — positioned manually (8 px gap like
     //  the Add/Remove buttons above)
     // ════════════════════════════════════════════════════════════════
-    let btn_cancel = ui::Button::new("Cancel");
+    let btn_cancel = ui::Button::new(i18n::t("Cancel"));
     btn_cancel.set_position(12, 442);
     btn_cancel.set_size(90, 28);
     scroll.add(&btn_cancel);
 
-    let btn_apply = ui::Button::new("Apply");
+    let btn_apply = ui::Button::new(i18n::t("Apply"));
     btn_apply.set_position(12 + 90 + 8, 442);   // 8 px gap after Cancel
     btn_apply.set_size(90, 28);
     scroll.add(&btn_apply);
@@ -479,7 +480,7 @@ fn main() {
         let sel = s.user_grid.selected_row();
         if sel != u32::MAX && (sel as usize) < s.cfg.allowed_users.len() {
             s.cfg.allowed_users.remove(sel as usize);
-            s.status_label.set_text("    User removed.");
+            s.status_label.set_text(&format!("    {}", i18n::t("User removed.")));
             refresh_user_grid();
         }
     });

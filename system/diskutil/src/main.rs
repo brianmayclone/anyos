@@ -7,7 +7,7 @@
 
 use libanyui_client as ui;
 use ui::{Widget, ColumnDef, ALIGN_LEFT, ALIGN_RIGHT};
-use anyos_std::{format, vec, String, Vec};
+use anyos_std::{format, i18n, vec, String, Vec};
 use anyos_std::sys;
 
 anyos_std::entry!(main);
@@ -179,8 +179,9 @@ fn main() {
         anyos_std::println!("Failed to load libanyui.so");
         return;
     }
+    i18n::init();
 
-    let win = ui::Window::new("Disk Utility", -1, -1, WIN_W, WIN_H);
+    let win = ui::Window::new(i18n::t("Disk Utility"), -1, -1, WIN_W, WIN_H);
 
     // ── Header (DOCK_TOP) ──
 
@@ -190,7 +191,7 @@ fn main() {
     header.set_padding(12, 4, 12, 4);
     win.add(&header);
 
-    let title = ui::Label::new("Disk Utility");
+    let title = ui::Label::new(i18n::t("Disk Utility"));
     let tc = ui::theme::colors();
 
     title.set_position(12, 8);
@@ -198,7 +199,7 @@ fn main() {
     title.set_color(tc.text);
     header.add(&title);
 
-    let disk_label = ui::Label::new("Loading...");
+    let disk_label = ui::Label::new(i18n::t("Loading..."));
     disk_label.set_position(150, 10);
     disk_label.set_size(240, 18);
     disk_label.set_font_size(13);
@@ -246,7 +247,7 @@ fn main() {
     add_legend_item(&legend, "FAT16", COL_FAT16);
     add_legend_item(&legend, "Linux", COL_LINUX);
     add_legend_item(&legend, "EFI", COL_ESP);
-    add_legend_item(&legend, "Free", COL_FREE);
+    add_legend_item(&legend, i18n::t("Free"), COL_FREE);
 
     // ── Divider (DOCK_TOP) ──
 
@@ -270,12 +271,12 @@ fn main() {
     info_label.set_color(tc.text_secondary);
     btn_bar.add(&info_label);
 
-    let btn_rescan = ui::Button::new("Rescan");
+    let btn_rescan = ui::Button::new(i18n::t("Rescan"));
     btn_rescan.set_position(356, 4);
     btn_rescan.set_size(80, 28);
     btn_bar.add(&btn_rescan);
 
-    let btn_delete = ui::Button::new("Delete");
+    let btn_delete = ui::Button::new(i18n::t("Delete"));
     btn_delete.set_position(444, 4);
     btn_delete.set_size(80, 28);
     btn_delete.set_color(tc.destructive);
@@ -288,11 +289,11 @@ fn main() {
     grid.set_row_height(24);
     grid.set_header_height(28);
     grid.set_columns(&[
-        ColumnDef::new("Partition").width(80).align(ALIGN_LEFT),
-        ColumnDef::new("Type").width(90).align(ALIGN_LEFT),
-        ColumnDef::new("Boot").width(40).align(ALIGN_LEFT),
+        ColumnDef::new(i18n::t("Partition")).width(80).align(ALIGN_LEFT),
+        ColumnDef::new(i18n::t("Type")).width(90).align(ALIGN_LEFT),
+        ColumnDef::new(i18n::t("Boot")).width(40).align(ALIGN_LEFT),
         ColumnDef::new("Start LBA").width(100).align(ALIGN_RIGHT),
-        ColumnDef::new("Size").width(90).align(ALIGN_RIGHT),
+        ColumnDef::new(i18n::t("Size")).width(90).align(ALIGN_RIGHT),
         ColumnDef::new("End LBA").width(100).align(ALIGN_RIGHT),
     ]);
     win.add(&grid);

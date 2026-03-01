@@ -3,6 +3,7 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use anyos_std::i18n;
 
 use crate::types::*;
 
@@ -18,13 +19,13 @@ pub fn builtin_pages() -> Vec<PageEntry> {
         order,
         panel_id: 0,
     };
-    m.push(b(BuiltinId::Dashboard, "Dashboard", "home.ico", "System", 0));
-    m.push(b(BuiltinId::General, "General", "dev_cpu.ico", "System", 1));
-    m.push(b(BuiltinId::Display, "Display", "display.ico", "System", 2));
-    m.push(b(BuiltinId::Apps, "Apps", "dev_disk.ico", "System", 3));
-    m.push(b(BuiltinId::Devices, "Devices", "devices.ico", "System", 4));
-    m.push(b(BuiltinId::Network, "Network", "dev_network.ico", "System", 5));
-    m.push(b(BuiltinId::Update, "Update", "update.ico", "System", 6));
+    m.push(b(BuiltinId::Dashboard, i18n::t("Dashboard"), "home.ico", i18n::t("System"), 0));
+    m.push(b(BuiltinId::General, i18n::t("General"), "dev_cpu.ico", i18n::t("System"), 1));
+    m.push(b(BuiltinId::Display, i18n::t("Display"), "display.ico", i18n::t("System"), 2));
+    m.push(b(BuiltinId::Apps, i18n::t("Apps"), "dev_disk.ico", i18n::t("System"), 3));
+    m.push(b(BuiltinId::Devices, i18n::t("Devices"), "devices.ico", i18n::t("System"), 4));
+    m.push(b(BuiltinId::Network, i18n::t("Network"), "dev_network.ico", i18n::t("System"), 5));
+    m.push(b(BuiltinId::Update, i18n::t("Update"), "update.ico", i18n::t("System"), 6));
     m
 }
 

@@ -19,7 +19,8 @@ impl StatusBar {
         panel.set_color(tc.tab_border_active);
         panel.set_size(900, 22);
 
-        let file_lbl = ui::Label::new("No file open");
+        let t = anyos_std::i18n::t;
+        let file_lbl = ui::Label::new(t("No file open"));
         file_lbl.set_position(8, 3);
         file_lbl.set_font_size(11);
         file_lbl.set_text_color(tc.check_mark);
@@ -31,7 +32,7 @@ impl StatusBar {
         cursor_lbl.set_text_color(tc.check_mark);
         panel.add(&cursor_lbl);
 
-        let lang_lbl = ui::Label::new("Plain Text");
+        let lang_lbl = ui::Label::new(t("Plain Text"));
         lang_lbl.set_position(450, 3);
         lang_lbl.set_font_size(11);
         lang_lbl.set_text_color(tc.check_mark);
@@ -66,7 +67,8 @@ impl StatusBar {
 
     /// Update cursor position display.
     pub fn set_cursor(&self, line: u32, col: u32) {
-        let text = format!("Ln {}, Col {}", line + 1, col + 1);
+        let t = anyos_std::i18n::t;
+        let text = format!("{} {}, {} {}", t("Ln"), line + 1, t("Col"), col + 1);
         self.cursor_label.set_text(&text);
     }
 

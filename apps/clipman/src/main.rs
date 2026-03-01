@@ -3,6 +3,7 @@
 
 use anyos_std::String;
 use anyos_std::Vec;
+use anyos_std::i18n;
 use libanyui_client as anyui;
 
 anyos_std::entry!(main);
@@ -252,18 +253,18 @@ fn make_preview(text: &str) -> String {
 fn update_status(s: &AppState) {
     let count = s.entries.len();
     let status = if count == 1 {
-        String::from("1 entry")
+        anyos_std::format!("1 {}", i18n::t("entry"))
     } else {
-        anyos_std::format!("{} entries", count)
+        anyos_std::format!("{} {}", count, i18n::t("entries"))
     };
     s.status_label.set_text(&status);
 
     let retention = if s.retention_days == 0 {
-        String::from("Retention: unlimited")
+        anyos_std::format!("{}: {}", i18n::t("Retention"), i18n::t("unlimited"))
     } else if s.retention_days == 1 {
-        String::from("Retention: 1 day")
+        anyos_std::format!("{}: 1 {}", i18n::t("Retention"), i18n::t("day"))
     } else {
-        anyos_std::format!("Retention: {} days", s.retention_days)
+        anyos_std::format!("{}: {} {}", i18n::t("Retention"), s.retention_days, i18n::t("days"))
     };
     s.retention_label.set_text(&retention);
 }
@@ -306,7 +307,7 @@ fn poll_clipboard() {
 
     // Visual feedback: select the new row and show status
     s.grid.set_selected_row(0);
-    let msg = anyos_std::format!("New: {}", preview);
+    let msg = anyos_std::format!("{}: {}", i18n::t("New"), preview);
     s.status_label.set_text(&msg);
 }
 
@@ -325,7 +326,7 @@ fn copy_to_clipboard() {
     s.last_clipboard = text.clone();
     anyui::clipboard_set(&text);
 
-    let msg = anyos_std::format!("Copied: {}", make_preview(&text));
+    let msg = anyos_std::format!("{}: {}", i18n::t("Copied"), make_preview(&text));
     s.status_label.set_text(&msg);
 
     // Resume after a short delay
@@ -352,7 +353,7 @@ fn clear_all() {
     s.entries.clear();
     save_history(s);
     populate_grid(s);
-    s.status_label.set_text("All entries cleared");
+    s.status_label.set_text(i18n::t("All entries cleared"));
 }
 
 fn toggle_settings() {
@@ -412,19 +413,19 @@ fn copy_file_to_clipboard() {
     let data = match read_file(&path) {
         Some(d) => d,
         None => {
-            app().status_label.set_text("Error: Could not read file");
+            app().status_label.set_text(i18n::t("Error: Could not read file"));
             return;
         }
     };
     let text = match core::str::from_utf8(&data) {
         Ok(s) => s,
         Err(_) => {
-            app().status_label.set_text("Error: File is not a text file");
+            app().status_label.set_text(i18n::t("Error: File is not a text file"));
             return;
         }
     };
     if text.trim().is_empty() {
-        app().status_label.set_text("File is empty");
+        app().status_label.set_text(i18n::t("File is empty"));
         return;
     }
 
@@ -446,7 +447,7 @@ fn copy_file_to_clipboard() {
 
     // Extract filename for status
     let filename = path.rsplit('/').next().unwrap_or(&path);
-    let msg = anyos_std::format!("File copied: {}", filename);
+    let msg = anyos_std::format!("{}: {}", i18n::t("File copied"), filename);
     s.status_label.set_text(&msg);
 
     anyui::set_timer(1000, || { app().paused = false; });
@@ -508,7 +509,7 @@ fn submit_add_text() {
     populate_grid(s);
     s.grid.set_selected_row(0);
 
-    let msg = anyos_std::format!("Copied: {}", preview);
+    let msg = anyos_std::format!("{}: {}", i18n::t("Copied"), preview);
     s.status_label.set_text(&msg);
 
     close_add_panel();
@@ -574,6 +575,7 @@ fn main() {
         anyos_std::println!("clipman: failed to load libanyui.so");
         return;
     }
+    i18n::init();
 
     // Load history
     let history_path = get_history_path();
@@ -590,7 +592,7 @@ fn main() {
 
     // Create window
     let tc = anyui::theme::colors();
-    let win = anyui::Window::new("Clipboard Manager", -1, -1, 600, 400);
+    let win = anyui::Window::new(i18n::t("Clipboard Manager"), -1, -1, 600, 400);
 
     // ── Toolbar ──
     let toolbar = anyui::Toolbar::new();
@@ -599,31 +601,31 @@ fn main() {
     toolbar.set_color(tc.toolbar_bg);
     toolbar.set_padding(4, 4, 4, 4);
 
-    let btn_copy = toolbar.add_icon_button("Paste");
+    let btn_copy = toolbar.add_icon_button(i18n::t("Paste"));
     btn_copy.set_size(52, 28);
 
-    let btn_delete = toolbar.add_icon_button("Delete");
+    let btn_delete = toolbar.add_icon_button(i18n::t("Delete"));
     btn_delete.set_size(56, 28);
 
     toolbar.add_separator();
 
-    let btn_clear = toolbar.add_icon_button("Clear All");
+    let btn_clear = toolbar.add_icon_button(i18n::t("Clear All"));
     btn_clear.set_size(64, 28);
 
     toolbar.add_separator();
 
-    let btn_add_text = toolbar.add_icon_button("Add Text");
+    let btn_add_text = toolbar.add_icon_button(i18n::t("Add Text"));
     btn_add_text.set_size(68, 28);
 
-    let btn_from_file = toolbar.add_icon_button("From File");
+    let btn_from_file = toolbar.add_icon_button(i18n::t("From File"));
     btn_from_file.set_size(72, 28);
 
     toolbar.add_separator();
 
-    let btn_settings = toolbar.add_icon_button("Settings");
+    let btn_settings = toolbar.add_icon_button(i18n::t("Settings"));
     btn_settings.set_size(68, 28);
 
-    let btn_refresh = toolbar.add_icon_button("Refresh");
+    let btn_refresh = toolbar.add_icon_button(i18n::t("Refresh"));
     btn_refresh.set_size(60, 28);
 
     win.add(&toolbar);
@@ -655,7 +657,7 @@ fn main() {
     settings_panel.set_color(tc.card_bg);
     settings_panel.set_visible(false);
 
-    let settings_lbl = anyui::Label::new("Retention (days, 0=unlimited):");
+    let settings_lbl = anyui::Label::new(i18n::t("Retention (days, 0=unlimited):"));
     settings_lbl.set_position(8, 9);
     settings_lbl.set_text_color(tc.text);
     settings_lbl.set_font_size(13);
@@ -685,7 +687,7 @@ fn main() {
     add_panel.set_color(tc.card_bg);
     add_panel.set_visible(false);
 
-    let add_lbl = anyui::Label::new("Text:");
+    let add_lbl = anyui::Label::new(i18n::t("Text:"));
     add_lbl.set_position(8, 9);
     add_lbl.set_text_color(tc.text);
     add_lbl.set_font_size(13);
@@ -696,7 +698,7 @@ fn main() {
     add_field.set_size(440, 26);
     add_panel.add(&add_field);
 
-    let btn_add_ok = anyui::Button::new("Copy");
+    let btn_add_ok = anyui::Button::new(i18n::t("Copy"));
     btn_add_ok.set_position(500, 4);
     btn_add_ok.set_size(50, 26);
     add_panel.add(&btn_add_ok);
@@ -715,14 +717,16 @@ fn main() {
     grid.set_header_height(24);
     grid.set_columns(&[
         anyui::ColumnDef::new("#").width(40).align(anyui::ALIGN_RIGHT),
-        anyui::ColumnDef::new("Content").width(400),
-        anyui::ColumnDef::new("Time").width(140),
+        anyui::ColumnDef::new(i18n::t("Content")).width(400),
+        anyui::ColumnDef::new(i18n::t("Time")).width(140),
     ]);
 
     // Context menu
-    let ctx_menu = anyui::ContextMenu::new(
-        "Copy to Clipboard|-|Delete Entry|Delete All|-|Add Text|Load from File"
-    );
+    let ctx_items = anyos_std::format!("{}|-|{}|{}|-|{}|{}",
+        i18n::t("Copy to Clipboard"),
+        i18n::t("Delete Entry"), i18n::t("Delete All"),
+        i18n::t("Add Text"), i18n::t("Load from File"));
+    let ctx_menu = anyui::ContextMenu::new(&ctx_items);
     grid.set_context_menu(&ctx_menu);
 
     win.add(&grid);

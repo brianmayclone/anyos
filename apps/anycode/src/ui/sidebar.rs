@@ -62,7 +62,8 @@ impl Sidebar {
         explorer_panel.set_color(tc.sidebar_bg);
         panel.add(&explorer_panel);
 
-        let header = ui::Label::new("EXPLORER");
+        let t = anyos_std::i18n::t;
+        let header = ui::Label::new(t("EXPLORER"));
         header.set_dock(ui::DOCK_TOP);
         header.set_size(200, 20);
         header.set_font_size(11);
@@ -74,7 +75,7 @@ impl Sidebar {
         search.set_dock(ui::DOCK_TOP);
         search.set_size(200, 28);
         search.set_margin(4, 0, 4, 4);
-        search.set_placeholder("Filter files...");
+        search.set_placeholder(t("Filter files..."));
         explorer_panel.add(&search);
 
         let tree = ui::TreeView::new(200, 400);
@@ -84,7 +85,8 @@ impl Sidebar {
         explorer_panel.add(&tree);
 
         // Context menu for folders
-        let context_menu = ui::ContextMenu::new("New File|New Folder|-|Delete");
+        let ctx_items = alloc::format!("{}|{}|-|{}", t("New File"), t("New Folder"), t("Delete"));
+        let context_menu = ui::ContextMenu::new(&ctx_items);
         tree.set_context_menu(&context_menu);
         explorer_panel.add(&context_menu);
 

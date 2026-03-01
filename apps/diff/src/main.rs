@@ -3,6 +3,7 @@
 
 use anyos_std::String;
 use anyos_std::Vec;
+use anyos_std::i18n;
 use libanyui_client as anyui;
 use anyui::IconType;
 
@@ -948,13 +949,13 @@ fn write_num(buf: &mut Vec<u8>, n: usize) {
 }
 
 fn make_title(left_path: &str, right_path: &str) -> String {
-    let left = if left_path.is_empty() { "(none)" } else {
+    let left = if left_path.is_empty() { i18n::t("(none)") } else {
         left_path.rsplit('/').next().unwrap_or(left_path)
     };
-    let right = if right_path.is_empty() { "(none)" } else {
+    let right = if right_path.is_empty() { i18n::t("(none)") } else {
         right_path.rsplit('/').next().unwrap_or(right_path)
     };
-    anyos_std::format!("{} vs {} - Diff", left, right)
+    anyos_std::format!("{} vs {} - {}", left, right, i18n::t("Diff"))
 }
 
 fn get_text_field_text(field: &anyui::TextField) -> String {
@@ -1421,34 +1422,34 @@ fn update_labels(s: &AppState) {
     let stats = anyos_std::format!("{}A {}D {}C", s.num_added, s.num_deleted, s.num_changed);
     s.stats_label.set_text(&stats);
 
-    let left_name = if s.left_path.is_empty() { "(none)" } else {
+    let left_name = if s.left_path.is_empty() { i18n::t("(none)") } else {
         s.left_path.rsplit('/').next().unwrap_or(&s.left_path)
     };
-    let right_name = if s.right_path.is_empty() { "(none)" } else {
+    let right_name = if s.right_path.is_empty() { i18n::t("(none)") } else {
         s.right_path.rsplit('/').next().unwrap_or(&s.right_path)
     };
     let lmod = if s.left_modified { "*" } else { "" };
     let rmod = if s.right_modified { "*" } else { "" };
 
-    let status = anyos_std::format!("{}A {}D {}C  |  {}{} vs {}{}  |  {} lines",
+    let status = anyos_std::format!("{}A {}D {}C  |  {}{} vs {}{}  |  {} {}",
         s.num_added, s.num_deleted, s.num_changed,
         left_name, lmod, right_name, rmod,
-        s.diff_lines.len());
+        s.diff_lines.len(), i18n::t("lines"));
     s.status_label.set_text(&status);
 
     if !s.hunks.is_empty() {
-        let hunk_info = anyos_std::format!("Diff {}/{}", s.current_hunk + 1, s.hunks.len());
+        let hunk_info = anyos_std::format!("{} {}/{}", i18n::t("Diff"), s.current_hunk + 1, s.hunks.len());
         s.hunk_label.set_text(&hunk_info);
     } else {
-        s.hunk_label.set_text("No diffs");
+        s.hunk_label.set_text(i18n::t("No diffs"));
     }
 
     // File info bar
-    let left_info = anyos_std::format!("{}{} ({} lines) UTF-8",
-        left_name, lmod, s.left_lines.len());
+    let left_info = anyos_std::format!("{}{} ({} {}) UTF-8",
+        left_name, lmod, s.left_lines.len(), i18n::t("lines"));
     s.left_info_label.set_text(&left_info);
-    let right_info = anyos_std::format!("{}{} ({} lines) UTF-8",
-        right_name, rmod, s.right_lines.len());
+    let right_info = anyos_std::format!("{}{} ({} {}) UTF-8",
+        right_name, rmod, s.right_lines.len(), i18n::t("lines"));
     s.right_info_label.set_text(&right_info);
 }
 
@@ -1661,8 +1662,8 @@ fn toggle_ignore_blank_lines() {
 fn toggle_ignore_comments() {
     let s = app();
     s.ignore_comments = !s.ignore_comments;
-    let state = if s.ignore_comments { "ON" } else { "OFF" };
-    let msg = anyos_std::format!("Ignore comments: {}", state);
+    let state = if s.ignore_comments { i18n::t("ON") } else { i18n::t("OFF") };
+    let msg = anyos_std::format!("{}: {}", i18n::t("Ignore comments"), state);
     s.status_label.set_text(&msg);
     recompute();
 }
@@ -2652,6 +2653,7 @@ fn main() {
         anyos_std::println!("diff: failed to load libanyui.so");
         return;
     }
+    i18n::init();
 
     // Parse command line arguments
     let mut args_buf = [0u8; 256];
@@ -2670,9 +2672,9 @@ fn main() {
 
     // Create window with labels if provided
     let title = if !cli.left_label.is_empty() || !cli.right_label.is_empty() {
-        let ll = if cli.left_label.is_empty() { left_path.rsplit('/').next().unwrap_or("(none)") } else { &cli.left_label };
-        let rl = if cli.right_label.is_empty() { right_path.rsplit('/').next().unwrap_or("(none)") } else { &cli.right_label };
-        anyos_std::format!("{} vs {} - Diff", ll, rl)
+        let ll = if cli.left_label.is_empty() { left_path.rsplit('/').next().unwrap_or(i18n::t("(none)")) } else { &cli.left_label };
+        let rl = if cli.right_label.is_empty() { right_path.rsplit('/').next().unwrap_or(i18n::t("(none)")) } else { &cli.right_label };
+        anyos_std::format!("{} vs {} - {}", ll, rl, i18n::t("Diff"))
     } else {
         make_title(&left_path, &right_path)
     };
@@ -2693,7 +2695,7 @@ fn main() {
     let btn_open_left = toolbar.add_icon_button("");
     btn_open_left.set_size(34, 28);
     btn_open_left.set_system_icon("folder-open", IconType::Outline, ic, isz);
-    btn_open_left.set_tooltip("Open Left");
+    btn_open_left.set_tooltip(i18n::t("Open Left"));
 
     let btn_open_right = toolbar.add_icon_button("");
     btn_open_right.set_size(34, 28);
