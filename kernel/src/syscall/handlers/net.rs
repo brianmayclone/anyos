@@ -3,7 +3,9 @@
 //! Covers general network config, TCP, UDP, DNS, DHCP, ARP, and
 //! network polling/statistics.
 
-use super::helpers::{is_valid_user_ptr, read_user_str};
+use super::helpers::read_user_str;
+#[allow(unused_imports)]
+use super::helpers::is_valid_user_ptr;
 
 // =========================================================================
 // Networking (SYS_NET_*)
@@ -16,7 +18,10 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u32) -> u32 {
         0 => {
             if buf_ptr == 0 { return u32::MAX; }
             let cfg = crate::net::config();
+            #[cfg(target_arch = "x86_64")]
             let link_up = crate::drivers::network::e1000::is_link_up();
+            #[cfg(target_arch = "aarch64")]
+            let link_up = false;
             unsafe {
                 let buf = buf_ptr as *mut u8;
                 core::ptr::copy_nonoverlapping(cfg.ip.0.as_ptr(), buf, 4);
@@ -48,21 +53,29 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u32) -> u32 {
         }
         2 => {
             // Disable NIC
+            #[cfg(target_arch = "x86_64")]
             crate::drivers::network::e1000::set_enabled(false);
             0
         }
         3 => {
             // Enable NIC
+            #[cfg(target_arch = "x86_64")]
             crate::drivers::network::e1000::set_enabled(true);
             0
         }
         4 => {
             // Query enabled state
-            if crate::drivers::network::e1000::is_enabled() { 1 } else { 0 }
+            #[cfg(target_arch = "x86_64")]
+            { if crate::drivers::network::e1000::is_enabled() { 1 } else { 0 } }
+            #[cfg(target_arch = "aarch64")]
+            { 0 }
         }
         5 => {
             // Query hardware availability
-            if crate::drivers::network::e1000::is_available() { 1 } else { 0 }
+            #[cfg(target_arch = "x86_64")]
+            { if crate::drivers::network::e1000::is_available() { 1 } else { 0 } }
+            #[cfg(target_arch = "aarch64")]
+            { 0 }
         }
         6 => {
             // Reload hosts file from disk
@@ -91,19 +104,24 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u32) -> u32 {
             // Get NIC driver name. buf_ptr = output buffer (up to 64 bytes).
             // Returns name length, or 0 if no NIC.
             if buf_ptr == 0 { return 0; }
-            if let Some(name) = crate::drivers::network::with_net(|d| {
-                let n = d.name();
-                let bytes = n.as_bytes();
-                let len = bytes.len().min(64);
-                unsafe {
-                    core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf_ptr as *mut u8, len);
+            #[cfg(target_arch = "x86_64")]
+            {
+                if let Some(name) = crate::drivers::network::with_net(|d| {
+                    let n = d.name();
+                    let bytes = n.as_bytes();
+                    let len = bytes.len().min(64);
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf_ptr as *mut u8, len);
+                    }
+                    len as u32
+                }) {
+                    name
+                } else {
+                    0
                 }
-                len as u32
-            }) {
-                name
-            } else {
-                0
             }
+            #[cfg(target_arch = "aarch64")]
+            { 0 }
         }
         _ => u32::MAX,
     }
@@ -170,7 +188,7 @@ pub fn sys_tcp_connect(params_ptr: u32) -> u32 {
     let ip = crate::net::types::Ipv4Addr([params[0], params[1], params[2], params[3]]);
     let port = u16::from_le_bytes([params[4], params[5]]);
     let timeout = u32::from_le_bytes([params[8], params[9], params[10], params[11]]);
-    let pit_hz = crate::arch::x86::pit::TICK_HZ;
+    let pit_hz = crate::arch::hal::timer_frequency_hz() as u32;
     let timeout_ticks = if timeout == 0 { pit_hz } else { timeout * pit_hz / 1000 };
     crate::net::tcp::connect(ip, port, timeout_ticks)
 }
@@ -228,7 +246,7 @@ pub fn sys_tcp_listen(port: u32, backlog: u32) -> u32 {
 /// Returns 0 on success, u32::MAX on timeout/error.
 pub fn sys_tcp_accept(listener_id: u32, result_ptr: u32) -> u32 {
     if result_ptr == 0 { return u32::MAX; }
-    let pit_hz = crate::arch::x86::pit::TICK_HZ;
+    let pit_hz = crate::arch::hal::timer_frequency_hz() as u32;
     let timeout_ticks = 30 * pit_hz; // 30 second timeout
     let (sock_id, remote_ip, remote_port) = crate::net::tcp::accept(listener_id, timeout_ticks);
     if sock_id == u32::MAX {
@@ -349,7 +367,7 @@ pub fn sys_udp_recvfrom(port: u32, buf_ptr: u32, buf_len: u32) -> u32 {
         crate::net::poll();
         crate::net::udp::recv(port16)
     } else {
-        let timeout_ticks = timeout_ms * crate::arch::x86::pit::TICK_HZ / 1000;
+        let timeout_ticks = timeout_ms * crate::arch::hal::timer_frequency_hz() as u32 / 1000;
         crate::net::udp::recv_timeout(port16, if timeout_ticks == 0 { 1 } else { timeout_ticks })
     };
 
@@ -433,7 +451,10 @@ pub fn sys_net_stats(buf_ptr: u32, buf_size: u32) -> u32 {
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, 104) };
 
     // NIC stats
+    #[cfg(target_arch = "x86_64")]
     let (rxp, txp, rxb, txb, rxe, txe) = crate::drivers::network::e1000::get_stats();
+    #[cfg(target_arch = "aarch64")]
+    let (rxp, txp, rxb, txb, rxe, txe): (u64, u64, u64, u64, u64, u64) = (0, 0, 0, 0, 0, 0);
     buf[0..8].copy_from_slice(&rxp.to_le_bytes());
     buf[8..16].copy_from_slice(&txp.to_le_bytes());
     buf[16..24].copy_from_slice(&rxb.to_le_bytes());

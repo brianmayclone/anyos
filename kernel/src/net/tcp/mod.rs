@@ -31,6 +31,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 // ── Re-exports (public API — must match old tcp.rs signatures) ──────
 
 pub use tcb::TcpState;
+#[allow(unused_imports)]
 pub use util::{cleanup_for_thread, list_connections, TcpConnInfo};
 
 // ── Global TCP connection table ─────────────────────────────────────

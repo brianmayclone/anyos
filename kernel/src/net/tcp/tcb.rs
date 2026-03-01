@@ -181,7 +181,7 @@ pub(crate) struct Tcb {
 impl Tcb {
     /// Create a new TCB with initial sequence number derived from PIT ticks.
     pub fn new(local_ip: Ipv4Addr, local_port: u16, remote_ip: Ipv4Addr, remote_port: u16) -> Self {
-        let iss = crate::arch::x86::pit::get_ticks().wrapping_mul(2654435761);
+        let iss = crate::arch::hal::timer_current_ticks().wrapping_mul(2654435761);
         Tcb {
             state: TcpState::Closed,
             local_ip,

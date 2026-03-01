@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 libheap = { path = "../libheap" }
+libsyscall = { path = "../libsyscall" }
 
 [profile.dev]
 panic = "abort"

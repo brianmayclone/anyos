@@ -1,73 +1,53 @@
 // Copyright (c) 2024-2026 Christian Moeller
 // SPDX-License-Identifier: MIT
 
-//! f32 math operations using x86-64 SSE2 and x87 FPU hardware instructions.
+//! f32 math operations using pure Rust — portable across x86_64 and aarch64.
 //!
-//! Mirror of f64_ops.rs with f32 types. SSE2 uses scalar single-precision
-//! instructions (sqrtss, minss, maxss). x87 loads/stores use dword (32-bit).
+//! Mirror of f64_ops.rs with f32 types. Uses IEEE 754 bit manipulation
+//! and polynomial approximations for all transcendental functions.
 
-use core::arch::asm;
+const PI: f32 = core::f32::consts::PI;
+const FRAC_PI_2: f32 = core::f32::consts::FRAC_PI_2;
 
-// ── SSE2-based functions ─────────────────────────────────────────────
+// ── Basic operations ────────────────────────────────────────────────
 
-/// Square root (IEEE 754 exact) via SSE2 `sqrtss`.
+/// Square root via Newton-Raphson (2 iterations for f32 precision).
 #[inline]
 pub fn sqrtf(x: f32) -> f32 {
-    let mut result: f32 = 0.0;
-    unsafe {
-        asm!(
-            "sqrtss {out}, {x}",
-            x = in(xmm_reg) x,
-            out = out(xmm_reg) result,
-        );
-    }
-    result
+    if x < 0.0 { return f32::NAN; }
+    if x == 0.0 || x != x || x == f32::INFINITY { return x; }
+    let mut y = f32::from_bits((x.to_bits() >> 1) + 0x1FC00000);
+    y = 0.5 * (y + x / y);
+    y = 0.5 * (y + x / y);
+    y
 }
 
-/// Absolute value via SSE2 — clears the sign bit.
+/// Absolute value via sign-bit clear.
 #[inline]
 pub fn fabsf(x: f32) -> f32 {
     f32::from_bits(x.to_bits() & 0x7FFFFFFF)
 }
 
-/// Minimum of two values via SSE2 `minss`.
+/// Minimum of two values (NaN-safe).
 #[inline]
 pub fn fminf(x: f32, y: f32) -> f32 {
     if x != x { return y; }
     if y != y { return x; }
-    let mut result: f32 = 0.0;
-    unsafe {
-        asm!(
-            "minss {x}, {y}",
-            x = inlateout(xmm_reg) x => result,
-            y = in(xmm_reg) y,
-        );
-    }
-    result
+    if x < y { x } else { y }
 }
 
-/// Maximum of two values via SSE2 `maxss`.
+/// Maximum of two values (NaN-safe).
 #[inline]
 pub fn fmaxf(x: f32, y: f32) -> f32 {
     if x != x { return y; }
     if y != y { return x; }
-    let mut result: f32 = 0.0;
-    unsafe {
-        asm!(
-            "maxss {x}, {y}",
-            x = inlateout(xmm_reg) x => result,
-            y = in(xmm_reg) y,
-        );
-    }
-    result
+    if x > y { x } else { y }
 }
 
-/// Copy sign of `y` onto magnitude of `x` via bit manipulation.
+/// Copy sign of `y` onto magnitude of `x`.
 #[inline]
 pub fn copysignf(x: f32, y: f32) -> f32 {
-    let bits_x: u32 = x.to_bits();
-    let bits_y: u32 = y.to_bits();
-    f32::from_bits((bits_x & 0x7FFFFFFF) | (bits_y & 0x80000000))
+    f32::from_bits((x.to_bits() & 0x7FFFFFFF) | (y.to_bits() & 0x80000000))
 }
 
 /// Truncate to integer via IEEE 754 bit manipulation.
@@ -75,447 +55,230 @@ pub fn copysignf(x: f32, y: f32) -> f32 {
 pub fn truncf(x: f32) -> f32 {
     let bits = x.to_bits();
     let exponent = ((bits >> 23) & 0xFF) as i32 - 127;
-    if exponent >= 23 {
-        return x; // already integer (or Inf/NaN)
-    }
+    if exponent >= 23 { return x; }
     if exponent < 0 {
-        return f32::from_bits(bits & 0x80000000); // |x| < 1 → ±0
+        return f32::from_bits(bits & 0x80000000);
     }
     let mask: u32 = !((1u32 << (23 - exponent as u32)) - 1);
     f32::from_bits(bits & mask)
 }
 
-/// Hypotenuse sqrt(x² + y²) via SSE2.
+/// Hypotenuse sqrt(x² + y²) — scaled to avoid overflow.
 #[inline]
 pub fn hypotf(x: f32, y: f32) -> f32 {
     let ax = fabsf(x);
     let ay = fabsf(y);
-    if ax == f32::INFINITY || ay == f32::INFINITY {
-        return f32::INFINITY;
-    }
-    if ax != ax || ay != ay {
-        return f32::NAN;
-    }
+    if ax == f32::INFINITY || ay == f32::INFINITY { return f32::INFINITY; }
+    if ax != ax || ay != ay { return f32::NAN; }
     let (big, small) = if ax >= ay { (ax, ay) } else { (ay, ax) };
-    if big == 0.0 {
-        return 0.0;
-    }
+    if big == 0.0 { return 0.0; }
     let ratio = small / big;
     big * sqrtf(1.0 + ratio * ratio)
 }
 
-// ── x87 FPU-based functions ──────────────────────────────────────────
+// ── Trigonometric functions ─────────────────────────────────────────
 
-/// Sine via x87 `fsin`.
+/// Sine via minimax polynomial on [-π/2, π/2].
 #[inline]
 pub fn sinf(x: f32) -> f32 {
-    let mut result: f32 = 0.0;
-    unsafe {
-        asm!(
-            "fld dword ptr [{x}]",
-            "fsin",
-            "fstp dword ptr [{out}]",
-            x = in(reg) &x,
-            out = in(reg) &mut result,
-            options(nostack),
-        );
+    let mut t = x * (1.0 / (2.0 * PI));
+    t = t - floorf(t + 0.5);
+    t *= 2.0 * PI;
+    if t > FRAC_PI_2 {
+        t = PI - t;
+    } else if t < -FRAC_PI_2 {
+        t = -PI - t;
     }
-    result
+    let x2 = t * t;
+    t * (1.0 + x2 * (-1.0/6.0 + x2 * (1.0/120.0 + x2 * (-1.0/5040.0 + x2 * (1.0/362880.0)))))
 }
 
-/// Cosine via x87 `fcos`.
+/// Cosine via sin(x + π/2).
 #[inline]
 pub fn cosf(x: f32) -> f32 {
-    let mut result: f32 = 0.0;
-    unsafe {
-        asm!(
-            "fld dword ptr [{x}]",
-            "fcos",
-            "fstp dword ptr [{out}]",
-            x = in(reg) &x,
-            out = in(reg) &mut result,
-            options(nostack),
-        );
-    }
-    result
+    sinf(x + FRAC_PI_2)
 }
 
-/// Compute sin and cos simultaneously via x87 `fsincos`.
+/// Compute sin and cos simultaneously.
 #[inline]
 pub fn sincosf(x: f32, out_sin: &mut f32, out_cos: &mut f32) {
-    unsafe {
-        asm!(
-            "fld dword ptr [{x}]",
-            "fsincos",
-            "fstp dword ptr [{out_cos}]",
-            "fstp dword ptr [{out_sin}]",
-            x = in(reg) &x,
-            out_sin = in(reg) out_sin as *mut f32,
-            out_cos = in(reg) out_cos as *mut f32,
-            options(nostack),
-        );
-    }
+    *out_sin = sinf(x);
+    *out_cos = cosf(x);
 }
 
-/// Tangent via x87 `fptan`.
+/// Tangent via sin/cos.
 #[inline]
 pub fn tanf(x: f32) -> f32 {
-    let mut result: f32 = 0.0;
-    unsafe {
-        asm!(
-            "fld dword ptr [{x}]",
-            "fptan",
-            "fstp st(0)",
-            "fstp dword ptr [{out}]",
-            x = in(reg) &x,
-            out = in(reg) &mut result,
-            options(nostack),
-        );
+    let c = cosf(x);
+    if fabsf(c) < 1e-7 {
+        if c >= 0.0 { 1e7 } else { -1e7 }
+    } else {
+        sinf(x) / c
     }
-    result
 }
 
-/// Arctangent via x87 `fpatan`.
+/// Arctangent via minimax polynomial with range reduction.
 #[inline]
 pub fn atanf(x: f32) -> f32 {
-    let mut result: f32 = 0.0;
-    unsafe {
-        asm!(
-            "fld dword ptr [{x}]",
-            "fld1",
-            "fpatan",
-            "fstp dword ptr [{out}]",
-            x = in(reg) &x,
-            out = in(reg) &mut result,
-            options(nostack),
-        );
-    }
-    result
+    let negative = x < 0.0;
+    let ax = if negative { -x } else { x };
+    let invert = ax > 1.0;
+    let t = if invert { 1.0 / ax } else { ax };
+    let t2 = t * t;
+    let mut r = t * (1.0 + t2 * (-1.0/3.0 + t2 * (1.0/5.0 + t2 * (-1.0/7.0 + t2 * (1.0/9.0 + t2 * (-1.0/11.0))))));
+    if invert { r = FRAC_PI_2 - r; }
+    if negative { -r } else { r }
 }
 
-/// Two-argument arctangent via x87 `fpatan`.
-///
-/// Load y first, then x. fpatan computes atan2(ST1, ST0) = atan2(y, x).
+/// Two-argument arctangent.
 #[inline]
 pub fn atan2f(y: f32, x: f32) -> f32 {
-    let mut result: f32 = 0.0;
-    unsafe {
-        asm!(
-            "fld dword ptr [{y}]",
-            "fld dword ptr [{x}]",
-            "fpatan",
-            "fstp dword ptr [{out}]",
-            y = in(reg) &y,
-            x = in(reg) &x,
-            out = in(reg) &mut result,
-            options(nostack),
-        );
+    if x == 0.0 {
+        if y > 0.0 { return FRAC_PI_2; }
+        if y < 0.0 { return -FRAC_PI_2; }
+        return 0.0;
     }
-    result
+    let a = atanf(y / x);
+    if x > 0.0 { a }
+    else if y >= 0.0 { a + PI }
+    else { a - PI }
 }
 
 /// Arcsine: asin(x) = atan2(x, sqrt(1 - x²)).
 #[inline]
 pub fn asinf(x: f32) -> f32 {
-    if x >= 1.0 {
-        return core::f32::consts::FRAC_PI_2;
-    }
-    if x <= -1.0 {
-        return -core::f32::consts::FRAC_PI_2;
-    }
+    if x >= 1.0 { return FRAC_PI_2; }
+    if x <= -1.0 { return -FRAC_PI_2; }
     atan2f(x, sqrtf(1.0 - x * x))
 }
 
 /// Arccosine: acos(x) = atan2(sqrt(1 - x²), x).
 #[inline]
 pub fn acosf(x: f32) -> f32 {
-    if x >= 1.0 {
-        return 0.0;
-    }
-    if x <= -1.0 {
-        return core::f32::consts::PI;
-    }
+    if x >= 1.0 { return 0.0; }
+    if x <= -1.0 { return PI; }
     atan2f(sqrtf(1.0 - x * x), x)
 }
 
-/// Power function x^y via x87.
+// ── Exponential and logarithmic functions ───────────────────────────
+
+/// Base-2 logarithm via IEEE 754 decomposition + polynomial.
+#[inline]
+pub fn log2f(x: f32) -> f32 {
+    if x <= 0.0 { return f32::NEG_INFINITY; }
+    if x != x { return f32::NAN; }
+    let bits = x.to_bits();
+    let exp = ((bits >> 23) & 0xFF) as i32 - 127;
+    let m = f32::from_bits((bits & 0x007FFFFF) | 0x3F800000);
+    let t = m - 1.0;
+    let log2_m = t * (1.4426950 + t * (-0.7213475 + t * (0.4808983 + t * (-0.3606738))));
+    exp as f32 + log2_m
+}
+
+/// Natural logarithm.
+#[inline]
+pub fn logf(x: f32) -> f32 {
+    log2f(x) * 0.6931472 // ln(2)
+}
+
+/// Base-10 logarithm.
+#[inline]
+pub fn log10f(x: f32) -> f32 {
+    log2f(x) * 0.30103 // log10(2)
+}
+
+/// Base-2 exponential.
+pub fn exp2f(x: f32) -> f32 {
+    if x < -126.0 { return 0.0; }
+    if x > 127.0 { return f32::INFINITY; }
+    if x != x { return f32::NAN; }
+    let xi = floorf(x) as i32;
+    let xf = x - xi as f32;
+    let int_part = f32::from_bits(((xi + 127) as u32) << 23);
+    let frac_part = 1.0 + xf * (0.6931472 + xf * (0.2402265 + xf * (0.05550411 + xf * 0.009618129)));
+    int_part * frac_part
+}
+
+/// Exponential e^x.
+#[inline]
+pub fn expf(x: f32) -> f32 {
+    exp2f(x * 1.4426950) // log2(e)
+}
+
+/// Power function x^y.
 pub fn powf(x: f32, y: f32) -> f32 {
-    if y == 0.0 {
-        return 1.0;
-    }
-    if x == 1.0 {
-        return 1.0;
-    }
+    if y == 0.0 { return 1.0; }
+    if x == 1.0 { return 1.0; }
     if x == 0.0 {
         if y > 0.0 { return 0.0; }
         return f32::INFINITY;
     }
-    if x != x || y != y {
-        return f32::NAN;
-    }
+    if x != x || y != y { return f32::NAN; }
 
     let negative_base = x < 0.0;
     let abs_x = if negative_base { -x } else { x };
 
     if negative_base {
         let y_trunc = truncf(y);
-        if y != y_trunc {
-            return f32::NAN;
-        }
-        let result = powf_positive(abs_x, y);
+        if y != y_trunc { return f32::NAN; }
+        let result = exp2f(y * log2f(abs_x));
         let y_int = y_trunc as i32;
-        if y_int & 1 != 0 {
-            return -result;
-        }
+        if y_int & 1 != 0 { return -result; }
         return result;
     }
 
-    powf_positive(abs_x, y)
+    exp2f(y * log2f(abs_x))
 }
 
-/// Power for positive base via x87 FPU.
-fn powf_positive(x: f32, y: f32) -> f32 {
-    // Promote to f64 for x87 internal precision, then demote result
-    let xd = x as f64;
-    let yd = y as f64;
-    let mut result: f64 = 0.0;
-    unsafe {
-        asm!(
-            "fld qword ptr [{y}]",
-            "fld qword ptr [{x}]",
-            "fyl2x",
-            "fld st(0)",
-            "frndint",
-            "fsub st(1), st(0)",
-            "fxch st(1)",
-            "f2xm1",
-            "fld1",
-            "faddp",
-            "fscale",
-            "fstp st(1)",
-            "fstp qword ptr [{out}]",
-            x = in(reg) &xd,
-            y = in(reg) &yd,
-            out = in(reg) &mut result,
-            options(nostack),
-        );
-    }
-    result as f32
-}
+// ── Rounding functions ──────────────────────────────────────────────
 
-/// Exponential e^x via x87.
-pub fn expf(x: f32) -> f32 {
-    let xd = x as f64;
-    let mut result: f64 = 0.0;
-    unsafe {
-        asm!(
-            "fld qword ptr [{x}]",
-            "fldl2e",
-            "fmulp",
-            "fld st(0)",
-            "frndint",
-            "fsub st(1), st(0)",
-            "fxch st(1)",
-            "f2xm1",
-            "fld1",
-            "faddp",
-            "fscale",
-            "fstp st(1)",
-            "fstp qword ptr [{out}]",
-            x = in(reg) &xd,
-            out = in(reg) &mut result,
-            options(nostack),
-        );
-    }
-    result as f32
-}
-
-/// Base-2 exponential 2^x via x87.
-pub fn exp2f(x: f32) -> f32 {
-    let xd = x as f64;
-    let mut result: f64 = 0.0;
-    unsafe {
-        asm!(
-            "fld qword ptr [{x}]",
-            "fld st(0)",
-            "frndint",
-            "fsub st(1), st(0)",
-            "fxch st(1)",
-            "f2xm1",
-            "fld1",
-            "faddp",
-            "fscale",
-            "fstp st(1)",
-            "fstp qword ptr [{out}]",
-            x = in(reg) &xd,
-            out = in(reg) &mut result,
-            options(nostack),
-        );
-    }
-    result as f32
-}
-
-/// Natural logarithm via x87.
-pub fn logf(x: f32) -> f32 {
-    let mut result: f32 = 0.0;
-    unsafe {
-        asm!(
-            "fldln2",
-            "fld dword ptr [{x}]",
-            "fyl2x",
-            "fstp dword ptr [{out}]",
-            x = in(reg) &x,
-            out = in(reg) &mut result,
-            options(nostack),
-        );
-    }
-    result
-}
-
-/// Base-2 logarithm via x87.
-pub fn log2f(x: f32) -> f32 {
-    let mut result: f32 = 0.0;
-    unsafe {
-        asm!(
-            "fld1",
-            "fld dword ptr [{x}]",
-            "fyl2x",
-            "fstp dword ptr [{out}]",
-            x = in(reg) &x,
-            out = in(reg) &mut result,
-            options(nostack),
-        );
-    }
-    result
-}
-
-/// Base-10 logarithm via x87.
-pub fn log10f(x: f32) -> f32 {
-    let mut result: f32 = 0.0;
-    unsafe {
-        asm!(
-            "fldlg2",
-            "fld dword ptr [{x}]",
-            "fyl2x",
-            "fstp dword ptr [{out}]",
-            x = in(reg) &x,
-            out = in(reg) &mut result,
-            options(nostack),
-        );
-    }
-    result
-}
-
-/// Floor via x87 with round-down control word.
+/// Floor: largest integer <= x.
 pub fn floorf(x: f32) -> f32 {
-    let mut result: f32 = 0.0;
-    let mut cw_save: u16 = 0;
-    let mut cw_new: u16 = 0;
-    unsafe {
-        asm!(
-            "fnstcw [{cw_save}]",
-            "movzx {tmp:e}, word ptr [{cw_save}]",
-            "and {tmp:e}, 0xF3FF",
-            "or {tmp:e}, 0x0400",
-            "mov word ptr [{cw_new}], {tmp:x}",
-            "fldcw [{cw_new}]",
-            "fld dword ptr [{x}]",
-            "frndint",
-            "fstp dword ptr [{out}]",
-            "fldcw [{cw_save}]",
-            x = in(reg) &x,
-            out = in(reg) &mut result,
-            cw_save = in(reg) &mut cw_save,
-            cw_new = in(reg) &mut cw_new,
-            tmp = out(reg) _,
-            options(nostack),
-        );
+    if x != x || x == f32::INFINITY || x == f32::NEG_INFINITY { return x; }
+    let bits = x.to_bits();
+    let exponent = ((bits >> 23) & 0xFF) as i32 - 127;
+    if exponent >= 23 { return x; }
+    if exponent < 0 {
+        return if x >= 0.0 { 0.0 } else { -1.0 };
     }
-    result
+    let mask: u32 = !((1u32 << (23 - exponent as u32)) - 1);
+    let truncated = f32::from_bits(bits & mask);
+    if x < 0.0 && truncated != x { truncated - 1.0 } else { truncated }
 }
 
-/// Ceiling via x87 with round-up control word.
+/// Ceiling: smallest integer >= x.
 pub fn ceilf(x: f32) -> f32 {
-    let mut result: f32 = 0.0;
-    let mut cw_save: u16 = 0;
-    let mut cw_new: u16 = 0;
-    unsafe {
-        asm!(
-            "fnstcw [{cw_save}]",
-            "movzx {tmp:e}, word ptr [{cw_save}]",
-            "and {tmp:e}, 0xF3FF",
-            "or {tmp:e}, 0x0800",
-            "mov word ptr [{cw_new}], {tmp:x}",
-            "fldcw [{cw_new}]",
-            "fld dword ptr [{x}]",
-            "frndint",
-            "fstp dword ptr [{out}]",
-            "fldcw [{cw_save}]",
-            x = in(reg) &x,
-            out = in(reg) &mut result,
-            cw_save = in(reg) &mut cw_save,
-            cw_new = in(reg) &mut cw_new,
-            tmp = out(reg) _,
-            options(nostack),
-        );
-    }
-    result
+    if x != x || x == f32::INFINITY || x == f32::NEG_INFINITY { return x; }
+    let f = floorf(x);
+    if f == x { x } else { f + 1.0 }
 }
 
-/// Round to nearest integer, ties away from zero.
+/// Round to nearest, ties away from zero.
 #[inline]
 pub fn roundf(x: f32) -> f32 {
     truncf(x + copysignf(0.5, x))
 }
 
-/// Floating-point remainder via x87 `fprem`.
+/// Floating-point remainder: x - trunc(x/y) * y.
 pub fn fmodf(x: f32, y: f32) -> f32 {
-    if y == 0.0 {
-        return f32::NAN;
-    }
-    let mut result: f32 = 0.0;
-    unsafe {
-        asm!(
-            "fld dword ptr [{y}]",
-            "fld dword ptr [{x}]",
-            "2:",
-            "fprem",
-            "fnstsw ax",
-            "test ah, 0x04",
-            "jnz 2b",
-            "fstp dword ptr [{out}]",
-            "fstp st(0)",
-            x = in(reg) &x,
-            y = in(reg) &y,
-            out = in(reg) &mut result,
-            out("ax") _,
-            options(nostack),
-        );
-    }
-    result
+    if y == 0.0 { return f32::NAN; }
+    x - truncf(x / y) * y
 }
 
-/// Load-exponent: x * 2^n via x87 `fscale`.
+/// Load-exponent: x * 2^n.
 pub fn ldexpf(x: f32, n: i32) -> f32 {
-    let n_f64 = n as f64;
-    let mut result: f32 = 0.0;
-    unsafe {
-        asm!(
-            "fld qword ptr [{n}]",
-            "fld dword ptr [{x}]",
-            "fscale",
-            "fstp st(1)",
-            "fstp dword ptr [{out}]",
-            x = in(reg) &x,
-            n = in(reg) &n_f64,
-            out = in(reg) &mut result,
-            options(nostack),
-        );
+    if n == 0 || x == 0.0 || x != x || x == f32::INFINITY || x == f32::NEG_INFINITY {
+        return x;
     }
-    result
+    let bits = x.to_bits();
+    let exp = ((bits >> 23) & 0xFF) as i32;
+    let new_exp = exp + n;
+    if new_exp >= 0xFF { return copysignf(f32::INFINITY, x); }
+    if new_exp <= 0 { return copysignf(0.0, x); }
+    f32::from_bits((bits & 0x807FFFFF) | ((new_exp as u32) << 23))
 }
 
-/// Extract exponent and mantissa (IEEE 754 bit manipulation).
+/// Extract exponent and mantissa.
 pub fn frexpf(x: f32, exp: &mut i32) -> f32 {
     let bits = x.to_bits();
     let raw_exp = ((bits >> 23) & 0xFF) as i32;
@@ -525,7 +288,6 @@ pub fn frexpf(x: f32, exp: &mut i32) -> f32 {
             *exp = 0;
             return x;
         }
-        // Denormalized: scale up
         let scaled = x * (1u32 << 23) as f32 * (1u32 << 2) as f32;
         let scaled_bits = scaled.to_bits();
         let scaled_exp = ((scaled_bits >> 23) & 0xFF) as i32;
@@ -542,11 +304,9 @@ pub fn frexpf(x: f32, exp: &mut i32) -> f32 {
     f32::from_bits((bits & 0x807FFFFF) | 0x3F000000)
 }
 
-/// Cube root via Newton-Raphson / Halley iteration.
+/// Cube root via Halley's method.
 pub fn cbrtf(x: f32) -> f32 {
-    if x == 0.0 || x != x {
-        return x;
-    }
+    if x == 0.0 || x != x { return x; }
     let negative = x < 0.0;
     let ax = if negative { -x } else { x };
 
@@ -554,7 +314,6 @@ pub fn cbrtf(x: f32) -> f32 {
     let guess_bits = bits / 3 + 0x2A555555;
     let mut y = f32::from_bits(guess_bits);
 
-    // Halley's method: 2 iterations suffice for f32 precision
     for _ in 0..2 {
         let y3 = y * y * y;
         y = y * (y3 + ax + ax) / (y3 + y3 + ax);

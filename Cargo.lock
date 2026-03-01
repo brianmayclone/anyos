@@ -552,6 +552,14 @@ name = "libcompositor_client"
 version = "0.1.0"
 
 [[package]]
+name = "libcorevm_client"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+]
+
+[[package]]
 name = "libdb_client"
 version = "0.1.0"
 dependencies = [
@@ -1085,6 +1093,16 @@ dependencies = [
  "dynlink",
  "libanyui_client",
  "libimage_client",
+]
+
+[[package]]
+name = "vmmanager"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+ "libcorevm_client",
 ]
 
 [[package]]

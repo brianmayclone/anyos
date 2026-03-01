@@ -79,25 +79,29 @@ fn ctx() -> &'static mut GlContext {
 ///
 /// Verifies SSE3, SSSE3, SSE4.1, SSE4.2 via CPUID leaf 1 ECX bits.
 /// Prints a diagnostic to serial and terminates if any are missing.
+/// Only relevant on x86_64 — ARM64 has mandatory NEON.
 fn check_cpu_features() {
-    use core::arch::x86_64::__cpuid;
+    #[cfg(target_arch = "x86_64")]
+    {
+        use core::arch::x86_64::__cpuid;
 
-    let leaf1 = unsafe { __cpuid(1) };
-    let ecx = leaf1.ecx;
+        let leaf1 = unsafe { __cpuid(1) };
+        let ecx = leaf1.ecx;
 
-    let sse3   = ecx & (1 << 0) != 0;
-    let ssse3  = ecx & (1 << 9) != 0;
-    let sse41  = ecx & (1 << 19) != 0;
-    let sse42  = ecx & (1 << 20) != 0;
+        let sse3   = ecx & (1 << 0) != 0;
+        let ssse3  = ecx & (1 << 9) != 0;
+        let sse41  = ecx & (1 << 19) != 0;
+        let sse42  = ecx & (1 << 20) != 0;
 
-    if !sse3 || !ssse3 || !sse41 || !sse42 {
-        serial_println!("[libgl] FATAL: CPU missing required SIMD features:");
-        if !sse3  { serial_println!("[libgl]   - SSE3 not supported"); }
-        if !ssse3 { serial_println!("[libgl]   - SSSE3 not supported"); }
-        if !sse41 { serial_println!("[libgl]   - SSE4.1 not supported"); }
-        if !sse42 { serial_println!("[libgl]   - SSE4.2 not supported"); }
-        serial_println!("[libgl] Hint: use QEMU flag -cpu qemu64,+sse3,+ssse3,+sse4.1,+sse4.2");
-        syscall::exit(1);
+        if !sse3 || !ssse3 || !sse41 || !sse42 {
+            serial_println!("[libgl] FATAL: CPU missing required SIMD features:");
+            if !sse3  { serial_println!("[libgl]   - SSE3 not supported"); }
+            if !ssse3 { serial_println!("[libgl]   - SSSE3 not supported"); }
+            if !sse41 { serial_println!("[libgl]   - SSE4.1 not supported"); }
+            if !sse42 { serial_println!("[libgl]   - SSE4.2 not supported"); }
+            serial_println!("[libgl] Hint: use QEMU flag -cpu qemu64,+sse3,+ssse3,+sse4.1,+sse4.2");
+            syscall::exit(1);
+        }
     }
 }
 

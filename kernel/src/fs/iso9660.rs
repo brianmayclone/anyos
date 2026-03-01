@@ -312,6 +312,7 @@ fn iso_name_to_string(bytes: &[u8]) -> String {
 }
 
 /// Read a single 2048-byte CD block from USB CDROM or ATAPI drive.
+#[cfg(target_arch = "x86_64")]
 fn read_cd_block(lba: u32, buf: &mut [u8]) -> bool {
     // Try USB CDROM first (via storage I/O override)
     if let Some(disk_id) = crate::drivers::usb::storage::first_cdrom_disk_id() {
@@ -319,4 +320,10 @@ fn read_cd_block(lba: u32, buf: &mut [u8]) -> bool {
     }
     // Fall back to IDE ATAPI CD-ROM
     crate::drivers::storage::atapi::read_sectors(lba, 1, buf)
+}
+
+/// ARM64 stub: no CD-ROM support yet.
+#[cfg(target_arch = "aarch64")]
+fn read_cd_block(_lba: u32, _buf: &mut [u8]) -> bool {
+    false
 }

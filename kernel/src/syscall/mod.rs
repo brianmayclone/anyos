@@ -327,7 +327,7 @@ pub fn init() {
 // =========================================================================
 
 #[inline(always)]
-fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, arg5: u32) -> u32 {
+pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, arg5: u32) -> u32 {
     // Syscall entry logging removed — only errors are logged (after dispatch).
     // Enable debug_verbose for error-only syscall diagnostics.
 
@@ -633,7 +633,9 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
 pub extern "C" fn syscall_dispatch_32(regs: &mut SyscallRegs) -> u32 {
     let syscall_num = regs.rax as u32;
 
-    // fork() needs the full register frame — intercept before dispatch_inner
+    // fork() needs the full register frame — intercept before dispatch_inner.
+    // Currently x86_64-only; ARM64 fork uses a separate ERET-based path.
+    #[cfg(target_arch = "x86_64")]
     if syscall_num == SYS_FORK {
         let result = handlers::sys_fork(regs);
         handlers::deliver_pending_signal_32(regs, result);
@@ -673,7 +675,9 @@ pub extern "C" fn syscall_dispatch_32(regs: &mut SyscallRegs) -> u32 {
 pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
     let syscall_num = regs.rax as u32;
 
-    // fork() needs the full register frame — intercept before dispatch_inner
+    // fork() needs the full register frame — intercept before dispatch_inner.
+    // Currently x86_64-only; ARM64 fork uses a separate ERET-based path.
+    #[cfg(target_arch = "x86_64")]
     if syscall_num == SYS_FORK {
         let result = handlers::sys_fork(regs);
         handlers::deliver_pending_signal_default();

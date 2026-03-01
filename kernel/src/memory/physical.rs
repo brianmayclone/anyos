@@ -296,3 +296,78 @@ pub fn total_frames() -> usize {
     ALLOCATOR.lock().total_frames
 }
 
+/// Reserve (mark as used) a specific physical frame.
+///
+/// Used on ARM64 where the kernel heap is pre-mapped by a 1 GiB block
+/// and the backing frames must be excluded from allocation.
+/// Has no effect if the frame is already marked as used.
+pub fn reserve_frame(addr: PhysAddr) {
+    let mut alloc = ALLOCATOR.lock();
+    let frame = addr.frame_index();
+    if frame < MAX_FRAMES && !alloc.is_used(frame) {
+        alloc.set_used(frame);
+        alloc.free_frames -= 1;
+    }
+}
+
+/// Initialize the physical frame allocator for ARM64 (QEMU virt machine).
+///
+/// ARM64 does not have an E820 memory map — RAM layout comes from DTB or
+/// is hardcoded for the QEMU virt platform (RAM at 0x4000_0000).
+#[cfg(target_arch = "aarch64")]
+pub fn init_arm64(ram_base: u64, ram_size: u64) {
+    // Kernel virtual-to-physical offset (matching boot.S 1 GiB block mapping)
+    const ARM64_PHYS_TO_VIRT: u64 = 0xFFFF_0000_4000_0000;
+
+    let ram_end = ram_base + ram_size;
+    let start_frame = (ram_base as usize) / FRAME_SIZE;
+    let end_frame = (ram_end as usize) / FRAME_SIZE;
+
+    let mut alloc = ALLOCATOR.lock();
+
+    alloc.total_frames = end_frame;
+    alloc.free_frames = 0;
+
+    // Mark everything up to end_frame as used (0xFF = all bits set).
+    let bitmap_bytes = (end_frame + 7) / 8;
+    for byte in alloc.bitmap[..bitmap_bytes].iter_mut() {
+        *byte = 0xFF;
+    }
+
+    // Free the RAM region.
+    for frame in start_frame..end_frame {
+        if frame < MAX_FRAMES {
+            alloc.set_free(frame);
+            alloc.free_frames += 1;
+        }
+    }
+
+    // Reserve kernel region: from RAM base to _kernel_end (physical).
+    let kernel_end_virt = unsafe { &_kernel_end as *const u8 as u64 };
+    let kernel_end_phys = kernel_end_virt - ARM64_PHYS_TO_VIRT;
+    let kernel_end_frame = ((kernel_end_phys as usize) + FRAME_SIZE - 1) / FRAME_SIZE;
+
+    for frame in start_frame..kernel_end_frame {
+        if frame < MAX_FRAMES && !alloc.is_used(frame) {
+            alloc.set_used(frame);
+            alloc.free_frames -= 1;
+        }
+    }
+
+    alloc.next_search = kernel_end_frame;
+
+    crate::serial_println!(
+        "Physical memory: {} MiB RAM ({:#010x}-{:#010x}), {} frames free ({} MiB)",
+        ram_size / (1024 * 1024),
+        ram_base,
+        ram_end,
+        alloc.free_frames,
+        alloc.free_frames * FRAME_SIZE / (1024 * 1024)
+    );
+    crate::serial_println!(
+        "  Kernel region reserved: {:#010x}-{:#010x}",
+        ram_base,
+        kernel_end_phys
+    );
+}
+

@@ -4,7 +4,9 @@
 //! VRAM mapping, audio output, compositor registration, framebuffer
 //! mapping, input polling, screen capture, and boot readiness.
 
+#[allow(unused_imports)]
 use super::helpers::is_valid_user_ptr;
+#[allow(unused_imports)]
 use super::{COMPOSITOR_TID, COMPOSITOR_PD, is_compositor};
 
 use core::sync::atomic::Ordering;
@@ -13,6 +15,7 @@ use core::sync::atomic::Ordering;
 // Screen info / Resolution
 // =========================================================================
 
+#[cfg(target_arch = "x86_64")]
 pub fn sys_screen_size(buf_ptr: u32) -> u32 {
     if buf_ptr == 0 { return u32::MAX; }
     match crate::drivers::gpu::with_gpu(|g| g.get_mode()) {
@@ -41,6 +44,11 @@ pub fn sys_screen_size(buf_ptr: u32) -> u32 {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+pub fn sys_screen_size(_buf_ptr: u32) -> u32 {
+    u32::MAX
+}
+
 /// sys_set_resolution - Change display resolution via GPU driver.
 ///
 /// IMPORTANT: set_mode() allocates new framebuffer pages via alloc_contiguous()
@@ -49,6 +57,7 @@ pub fn sys_screen_size(buf_ptr: u32) -> u32 {
 /// (PD[0..31]). If the physical allocator returns pages above 64 MiB, the zero
 /// write would page-fault. We switch to the kernel CR3 (128 MiB identity-mapped)
 /// for the duration of set_mode() to prevent this.
+#[cfg(target_arch = "x86_64")]
 pub fn sys_set_resolution(width: u32, height: u32) -> u32 {
     if width == 0 || height == 0 || width > 4096 || height > 4096 {
         return u32::MAX;
@@ -92,8 +101,14 @@ pub fn sys_set_resolution(width: u32, height: u32) -> u32 {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+pub fn sys_set_resolution(_width: u32, _height: u32) -> u32 {
+    u32::MAX
+}
+
 /// sys_list_resolutions - List supported display resolutions.
 /// Writes (width, height) pairs as u32 pairs to buf. Returns number of modes.
+#[cfg(target_arch = "x86_64")]
 pub fn sys_list_resolutions(buf_ptr: u32, buf_len: u32) -> u32 {
     let modes = crate::drivers::gpu::with_gpu(|g| {
         let m = g.supported_modes();
@@ -124,7 +139,13 @@ pub fn sys_list_resolutions(buf_ptr: u32, buf_len: u32) -> u32 {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+pub fn sys_list_resolutions(_buf_ptr: u32, _buf_len: u32) -> u32 {
+    0
+}
+
 /// sys_gpu_info - Get GPU driver info. Writes driver name to buf. Returns name length.
+#[cfg(target_arch = "x86_64")]
 pub fn sys_gpu_info(buf_ptr: u32, buf_len: u32) -> u32 {
     let name = crate::drivers::gpu::with_gpu(|g| {
         let mut s = alloc::string::String::new();
@@ -147,6 +168,11 @@ pub fn sys_gpu_info(buf_ptr: u32, buf_len: u32) -> u32 {
         }
         None => 0,
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_gpu_info(_buf_ptr: u32, _buf_len: u32) -> u32 {
+    0
 }
 
 // =========================================================================
@@ -172,6 +198,7 @@ pub fn sys_gpu_has_hw_cursor() -> u32 {
 /// SYS_AUDIO_WRITE: Write PCM data to audio output.
 /// arg1 = pointer to PCM data buffer, arg2 = length in bytes.
 /// Returns number of bytes written.
+#[cfg(target_arch = "x86_64")]
 pub fn sys_audio_write(buf_ptr: u32, buf_len: u32) -> u32 {
     if buf_ptr == 0 || buf_len == 0 {
         return 0;
@@ -182,6 +209,11 @@ pub fn sys_audio_write(buf_ptr: u32, buf_len: u32) -> u32 {
     crate::drivers::audio::write_pcm(data) as u32
 }
 
+#[cfg(target_arch = "aarch64")]
+pub fn sys_audio_write(_buf_ptr: u32, _buf_len: u32) -> u32 {
+    0
+}
+
 /// SYS_AUDIO_CTL: Audio control operations.
 /// arg1 = command, arg2 = argument.
 ///   0 = stop playback
@@ -189,6 +221,7 @@ pub fn sys_audio_write(buf_ptr: u32, buf_len: u32) -> u32 {
 ///   2 = get volume (returns 0-100)
 ///   3 = get status (returns 1 if playing, 0 if not)
 ///   4 = is available (returns 1 if audio hw present)
+#[cfg(target_arch = "x86_64")]
 pub fn sys_audio_ctl(cmd: u32, arg: u32) -> u32 {
     match cmd {
         0 => { crate::drivers::audio::stop(); 0 }
@@ -196,6 +229,14 @@ pub fn sys_audio_ctl(cmd: u32, arg: u32) -> u32 {
         2 => crate::drivers::audio::get_volume() as u32,
         3 => if crate::drivers::audio::is_playing() { 1 } else { 0 },
         4 => if crate::drivers::audio::is_available() { 1 } else { 0 },
+        _ => u32::MAX,
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_audio_ctl(cmd: u32, _arg: u32) -> u32 {
+    match cmd {
+        4 => 0, // audio not available on ARM64 yet
         _ => u32::MAX,
     }
 }
@@ -228,6 +269,7 @@ pub fn sys_register_compositor() -> u32 {
 /// Disables the kernel's IRQ-driven cursor tracking, drains stale mouse events,
 /// and returns the splash cursor position packed as (x << 16) | (y & 0xFFFF).
 /// The compositor uses this to initialize its logical cursor to match the HW cursor.
+#[cfg(target_arch = "x86_64")]
 pub fn sys_cursor_takeover() -> u32 {
     if !is_compositor() {
         return 0;
@@ -239,11 +281,17 @@ pub fn sys_cursor_takeover() -> u32 {
     ((x as u16 as u32) << 16) | (y as u16 as u32)
 }
 
+#[cfg(target_arch = "aarch64")]
+pub fn sys_cursor_takeover() -> u32 {
+    0
+}
+
 /// Map the GPU framebuffer into the compositor's address space.
 /// ebx=out_info_ptr (pointer to FbMapInfo struct, 16 bytes).
 /// Returns 0 on success, u32::MAX on failure.
 ///
 /// FbMapInfo layout: { fb_vaddr: u32, width: u32, height: u32, pitch: u32 }
+#[cfg(target_arch = "x86_64")]
 pub fn sys_map_framebuffer(out_info_ptr: u32) -> u32 {
     if !is_compositor() {
         return u32::MAX;
@@ -288,6 +336,11 @@ pub fn sys_map_framebuffer(out_info_ptr: u32) -> u32 {
     0
 }
 
+#[cfg(target_arch = "aarch64")]
+pub fn sys_map_framebuffer(_out_info_ptr: u32) -> u32 {
+    u32::MAX
+}
+
 /// Submit GPU acceleration commands from the compositor.
 /// ebx=cmd_buf_ptr, ecx=cmd_count.
 /// Returns number of commands executed, or u32::MAX on error.
@@ -295,6 +348,7 @@ pub fn sys_map_framebuffer(out_info_ptr: u32) -> u32 {
 /// Each command is 36 bytes: { cmd_type: u32, args: [u32; 8] }
 /// Command types: 1=UPDATE, 2=FILL_RECT, 3=COPY_RECT, 4=CURSOR_MOVE,
 ///                5=CURSOR_SHOW, 6=DEFINE_CURSOR, 7=FLIP
+#[cfg(target_arch = "x86_64")]
 pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
     if !is_compositor() {
         return u32::MAX;
@@ -407,6 +461,11 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
     result.unwrap_or(0)
 }
 
+#[cfg(target_arch = "aarch64")]
+pub fn sys_gpu_command(_cmd_buf_ptr: u32, _cmd_count: u32) -> u32 {
+    u32::MAX
+}
+
 /// Poll raw input events for the compositor.
 /// ebx=buf_ptr (array of RawInputEvent), ecx=max_events.
 /// Returns number of events written.
@@ -418,6 +477,7 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
 ///   3 = MOUSE_MOVE:   arg0=dx(i32), arg1=dy(i32)
 ///   4 = MOUSE_BUTTON: arg0=buttons, arg1=1(down)/0(up)
 ///   5 = MOUSE_SCROLL: arg0=dz(i32)
+#[cfg(target_arch = "x86_64")]
 pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
     if !is_compositor() {
         return u32::MAX;
@@ -525,6 +585,11 @@ pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
     count as u32
 }
 
+#[cfg(target_arch = "aarch64")]
+pub fn sys_input_poll(_buf_ptr: u32, _max_events: u32) -> u32 {
+    0
+}
+
 // =========================================================================
 // Boot readiness / Screen capture
 // =========================================================================
@@ -540,6 +605,7 @@ pub fn sys_boot_ready() -> u32 {
 /// arg2 = buf_size (buffer size in bytes)
 /// arg3 = info_ptr (pointer to write [width: u32, height: u32])
 /// Returns: 0 on success, 1 = no GPU, 2 = buffer too small.
+#[cfg(target_arch = "x86_64")]
 pub fn sys_capture_screen(buf_ptr: u32, buf_size: u32, info_ptr: u32) -> u32 {
     let (width, height, pitch, fb_phys) = match crate::drivers::gpu::with_gpu(|g| g.get_mode()) {
         Some(m) => m,
@@ -598,17 +664,28 @@ pub fn sys_capture_screen(buf_ptr: u32, buf_size: u32, info_ptr: u32) -> u32 {
     0
 }
 
+#[cfg(target_arch = "aarch64")]
+pub fn sys_capture_screen(_buf_ptr: u32, _buf_size: u32, _info_ptr: u32) -> u32 {
+    1 // no GPU
+}
+
 // =========================================================================
 // VRAM direct surface syscalls
 // =========================================================================
 
 /// SYS_GPU_VRAM_SIZE (256): Return total GPU VRAM size in bytes.
 /// Compositor-only. Returns 0 if no GPU driver.
+#[cfg(target_arch = "x86_64")]
 pub fn sys_gpu_vram_size() -> u32 {
     if !is_compositor() {
         return 0;
     }
     crate::drivers::gpu::with_gpu(|g| g.vram_size()).unwrap_or(0)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_gpu_vram_size() -> u32 {
+    0
 }
 
 /// SYS_VRAM_MAP (257): Map VRAM pages into a target app's address space.
@@ -620,6 +697,7 @@ pub fn sys_gpu_vram_size() -> u32 {
 ///
 /// Maps VRAM at user VA 0x18000000 in the target process with Write-Through + PTE_VRAM.
 /// Returns 0x18000000 on success, 0 on failure.
+#[cfg(target_arch = "x86_64")]
 pub fn sys_vram_map(target_tid: u32, vram_offset: u32, num_bytes: u32) -> u32 {
     if !is_compositor() {
         return 0;
@@ -668,6 +746,11 @@ pub fn sys_vram_map(target_tid: u32, vram_offset: u32, num_bytes: u32) -> u32 {
     user_va_base as u32
 }
 
+#[cfg(target_arch = "aarch64")]
+pub fn sys_vram_map(_target_tid: u32, _vram_offset: u32, _num_bytes: u32) -> u32 {
+    0
+}
+
 /// SYS_GPU_REGISTER_BACKBUFFER (258): Register a userspace back buffer for GPU DMA.
 ///
 /// The compositor calls this with a pointer to its `back_buffer` and size.
@@ -679,6 +762,7 @@ pub fn sys_vram_map(target_tid: u32, vram_offset: u32, num_bytes: u32) -> u32 {
 /// arg2 = buffer size in bytes
 ///
 /// Returns 0 on success, u32::MAX on failure.
+#[cfg(target_arch = "x86_64")]
 pub fn sys_gpu_register_backbuffer(buf_ptr: u32, buf_size: u32) -> u32 {
     if !is_compositor() {
         return u32::MAX;
@@ -733,12 +817,18 @@ pub fn sys_gpu_register_backbuffer(buf_ptr: u32, buf_size: u32) -> u32 {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+pub fn sys_gpu_register_backbuffer(_buf_ptr: u32, _buf_size: u32) -> u32 {
+    u32::MAX
+}
+
 // =========================================================================
 // GPU 3D Acceleration (SVGA3D)
 // =========================================================================
 
 /// SYS_GPU_3D_QUERY (513): Query 3D GPU capabilities.
 /// query_type: 0 = has_3d, 1 = hw_version
+#[cfg(target_arch = "x86_64")]
 pub fn sys_gpu_3d_query(query_type: u32) -> u32 {
     crate::drivers::gpu::with_gpu(|g| {
         match query_type {
@@ -749,12 +839,18 @@ pub fn sys_gpu_3d_query(query_type: u32) -> u32 {
     }).unwrap_or(0)
 }
 
+#[cfg(target_arch = "aarch64")]
+pub fn sys_gpu_3d_query(_query_type: u32) -> u32 {
+    0
+}
+
 /// SYS_GPU_3D_SUBMIT (512): Submit raw SVGA3D command words to the GPU FIFO.
 /// buf_ptr: pointer to u32 word array in user memory
 /// word_count: number of u32 words
 ///
 /// Validates that all command IDs are in the SVGA3D range (1040..1099)
 /// and that command sizes don't exceed the buffer.
+#[cfg(target_arch = "x86_64")]
 pub fn sys_gpu_3d_submit(buf_ptr: u32, word_count: u32) -> u32 {
     use crate::drivers::gpu::vmware_svga::{SVGA_3D_CMD_MIN, SVGA_3D_CMD_MAX};
 
@@ -806,12 +902,23 @@ pub fn sys_gpu_3d_submit(buf_ptr: u32, word_count: u32) -> u32 {
     }).unwrap_or(u32::MAX)
 }
 
+#[cfg(target_arch = "aarch64")]
+pub fn sys_gpu_3d_submit(_buf_ptr: u32, _word_count: u32) -> u32 {
+    u32::MAX
+}
+
 /// SYS_GPU_3D_SYNC (514): Wait for all pending 3D commands to complete.
+#[cfg(target_arch = "x86_64")]
 pub fn sys_gpu_3d_sync() -> u32 {
     crate::drivers::gpu::with_gpu(|g| {
         g.sync();
         0u32
     }).unwrap_or(u32::MAX)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_gpu_3d_sync() -> u32 {
+    u32::MAX
 }
 
 /// SYS_GPU_3D_SURFACE_DMA (515): Upload data to a GPU surface via DMA.
@@ -820,6 +927,7 @@ pub fn sys_gpu_3d_sync() -> u32 {
 /// arg3: data length in bytes
 /// arg4: surface width (pixels)
 /// arg5: surface height (pixels)
+#[cfg(target_arch = "x86_64")]
 pub fn sys_gpu_3d_surface_dma(sid: u32, buf_ptr: u32, buf_len: u32, width: u32, height: u32) -> u32 {
     if buf_ptr == 0 || buf_len == 0 || width == 0 || height == 0 {
         return u32::MAX;
@@ -835,6 +943,12 @@ pub fn sys_gpu_3d_surface_dma(sid: u32, buf_ptr: u32, buf_len: u32, width: u32, 
     }).unwrap_or(u32::MAX)
 }
 
+#[cfg(target_arch = "aarch64")]
+pub fn sys_gpu_3d_surface_dma(_sid: u32, _buf_ptr: u32, _buf_len: u32, _width: u32, _height: u32) -> u32 {
+    u32::MAX
+}
+
+#[cfg(target_arch = "x86_64")]
 pub fn sys_gpu_3d_surface_dma_read(sid: u32, buf_ptr: u32, buf_len: u32, width: u32, height: u32) -> u32 {
     if buf_ptr == 0 || buf_len == 0 || width == 0 || height == 0 {
         return u32::MAX;
@@ -847,4 +961,9 @@ pub fn sys_gpu_3d_surface_dma_read(sid: u32, buf_ptr: u32, buf_len: u32, width: 
     crate::drivers::gpu::with_gpu(|g| {
         if g.dma_surface_download(sid, buf, width, height) { 0u32 } else { u32::MAX }
     }).unwrap_or(u32::MAX)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_gpu_3d_surface_dma_read(_sid: u32, _buf_ptr: u32, _buf_len: u32, _width: u32, _height: u32) -> u32 {
+    u32::MAX
 }

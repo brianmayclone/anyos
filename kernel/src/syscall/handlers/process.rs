@@ -4,7 +4,9 @@
 //! scheduling (yield, sleep), memory (sbrk, mmap, munmap),
 //! waiting (waitpid), and threading.
 
+#[allow(unused_imports)]
 use alloc::string::String;
+#[allow(unused_imports)]
 use super::helpers::{is_valid_user_ptr, read_user_str, read_user_str_safe, resolve_path};
 
 /// sys_exit - Terminate the current process
@@ -56,9 +58,21 @@ pub fn sys_exit(status: u32) -> u32 {
     // calls destroy_user_page_directory again, by which time the frame may
     // have been reallocated to a new process.
     if pd.is_some() {
+        #[cfg(target_arch = "x86_64")]
         unsafe {
             let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
             core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3);
+        }
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            // ARM64: switch TTBR0_EL1 to kernel page table before destroying user PD
+            let kernel_ttbr = crate::memory::virtual_mem::kernel_cr3();
+            core::arch::asm!(
+                "msr ttbr0_el1, {}",
+                "isb",
+                in(reg) kernel_ttbr,
+                options(nostack),
+            );
         }
     }
 
@@ -118,10 +132,10 @@ pub fn sys_sleep(ms: u32) -> u32 {
     if ms == 0 {
         return 0;
     }
-    let pit_hz = crate::arch::x86::pit::TICK_HZ;
+    let pit_hz = crate::arch::hal::timer_frequency_hz() as u32;
     let ticks = (ms as u64 * pit_hz as u64 / 1000) as u32;
     let ticks = if ticks == 0 { 1 } else { ticks };
-    let now = crate::arch::x86::pit::get_ticks();
+    let now = crate::arch::hal::timer_current_ticks();
     let wake_at = now.wrapping_add(ticks);
     crate::task::scheduler::sleep_until(wake_at);
     0
@@ -465,6 +479,10 @@ pub fn sys_getargs(buf_ptr: u32, buf_size: u32) -> u32 {
 /// registers in the child. The child returns 0, the parent returns child TID.
 ///
 /// `regs` is the register frame pushed by the INT 0x80 or SYSCALL stub.
+///
+/// Currently x86_64-only: relies on IRETQ to restore the child's register
+/// state. ARM64 fork will use ERET with a separate register save/restore path.
+#[cfg(target_arch = "x86_64")]
 pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
     use crate::task::scheduler;
     use crate::task::loader::{ForkChildRegs, store_pending_fork, fork_child_trampoline};
@@ -481,7 +499,7 @@ pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
         }
     };
 
-    let t_fork0 = crate::arch::x86::pit::get_ticks();
+    let t_fork0 = crate::arch::hal::timer_current_ticks();
     let parent_tid = scheduler::current_tid();
 
     // 2. Clone user address space
@@ -492,7 +510,7 @@ pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
             return u32::MAX;
         }
     };
-    let t_fork_cloned = crate::arch::x86::pit::get_ticks();
+    let t_fork_cloned = crate::arch::hal::timer_current_ticks();
 
     // Clone VMA table from parent to child process.
     crate::memory::vma::clone_for_fork(snap.pd, child_pd);
@@ -604,7 +622,7 @@ pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
 
     // 9. Wake child — it will run fork_child_trampoline and IRETQ with RAX=0
     scheduler::wake_thread(child_tid);
-    let t_fork_total = crate::arch::x86::pit::get_ticks();
+    let t_fork_total = crate::arch::hal::timer_current_ticks();
     crate::serial_println!("sys_fork: T{} → T{} clone={}ms total={}ms",
         parent_tid, child_tid,
         t_fork_cloned.wrapping_sub(t_fork0),

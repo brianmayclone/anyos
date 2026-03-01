@@ -270,16 +270,33 @@ impl Thread {
 
         // Set up initial context so that when we "switch" to this thread,
         // it starts executing at `entry`.
-        // RSP is set to stack_top - 8 for proper 16-byte ABI alignment:
-        // the push+ret in context_switch results in RSP = (stack_top - 8)
-        // at function entry, which satisfies RSP % 16 == 8.
         let mut context = CpuContext::default();
-        context.rip = entry as *const () as u64;
-        context.rsp = stack_top - 8;
-        context.rbp = stack_top;
-        context.rflags = 0x202; // IF (interrupts enabled) + reserved bit 1
-        // Use the current page directory (all kernel threads share same address space)
-        unsafe { core::arch::asm!("mov {}, cr3", out(reg) context.cr3); }
+        #[cfg(target_arch = "x86_64")]
+        {
+            // RSP is set to stack_top - 8 for proper 16-byte ABI alignment:
+            // the push+ret in context_switch results in RSP = (stack_top - 8)
+            // at function entry, which satisfies RSP % 16 == 8.
+            context.rip = entry as *const () as u64;
+            context.rsp = stack_top - 8;
+            context.rbp = stack_top;
+            context.rflags = 0x202; // IF (interrupts enabled) + reserved bit 1
+            // Use the current page directory (all kernel threads share same address space)
+            unsafe { core::arch::asm!("mov {}, cr3", out(reg) context.cr3); }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            context.set_pc(entry as *const () as u64);
+            // SP aligned to 16 bytes for AArch64 ABI, with -8 for return address slot.
+            context.set_sp(stack_top - 8);
+            // x29 (FP) = stack_top (frame pointer base, equivalent to RBP on x86)
+            context.x[29] = stack_top;
+            // PSTATE: 0x0 for EL0 (no DAIF mask bits set — interrupts enabled)
+            context.set_flags(0x0);
+            // Use the current page table base (kernel TTBR0_EL1)
+            let ttbr0: u64;
+            unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack)); }
+            context.set_page_table(ttbr0);
+        }
         // Recompute checksum after modifying fields above
         context.checksum = context.compute_checksum();
 

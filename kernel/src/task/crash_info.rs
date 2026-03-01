@@ -93,10 +93,11 @@ static CRASH_REPORTS: Spinlock<[CrashReport; MAX_REPORTS]> = Spinlock::new(
 /// Next write index in the ring buffer.
 static NEXT_IDX: Spinlock<usize> = Spinlock::new(0);
 
-/// Store a crash report from a faulting thread.
+/// Store a crash report from a faulting thread (x86_64).
 ///
 /// Called from `try_kill_faulting_thread()` in idt.rs. Uses lock-free thread name
 /// query to avoid deadlock (scheduler lock may be held during a page fault).
+#[cfg(target_arch = "x86_64")]
 pub fn store_crash(
     tid: u32,
     signal: u32,

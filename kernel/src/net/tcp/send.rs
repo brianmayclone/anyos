@@ -189,7 +189,7 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
         }
     };
 
-    let start = crate::arch::x86::pit::get_ticks();
+    let start = crate::arch::hal::timer_current_ticks();
     let mut send_offset = 0usize;
 
     // Stack-allocated batch buffer — avoids heap alloc per segment.
@@ -233,7 +233,7 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
 
             let snd_wnd = (tcb.snd_wnd as usize).max(MSS);
             let window = snd_wnd.min(MAX_IN_FLIGHT);
-            let now = crate::arch::x86::pit::get_ticks();
+            let now = crate::arch::hal::timer_current_ticks();
             let win_val = tcb.advertised_window();
 
             // Prepare up to SEND_BATCH_SIZE segments under this single lock.
@@ -295,7 +295,7 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
         crate::net::poll_rx();
 
         // Check timeout.
-        let now = crate::arch::x86::pit::get_ticks();
+        let now = crate::arch::hal::timer_current_ticks();
         if now.wrapping_sub(start) >= timeout_ticks {
             crate::serial_println!("TCP: send timeout on socket {}", socket_id);
             return if ack_offset > 0 { ack_offset as u32 } else { u32::MAX };
@@ -303,7 +303,7 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
 
         // If no segments were sent (window full), sleep briefly.
         if batch_count == 0 {
-            let wake_at = crate::arch::x86::pit::get_ticks() + 1;
+            let wake_at = crate::arch::hal::timer_current_ticks() + 1;
             crate::task::scheduler::sleep_until(wake_at);
             crate::net::poll_rx();
         }

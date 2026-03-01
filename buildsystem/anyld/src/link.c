@@ -275,7 +275,8 @@ static int collect_relocs(Ctx *ctx) {
                 uint32_t sym_idx = (uint32_t)ELF64_R_SYM(rela->r_info);
                 uint32_t rtype   = (uint32_t)ELF64_R_TYPE(rela->r_info);
 
-                if (rtype == R_X86_64_NONE) continue;
+                if (rtype == R_X86_64_NONE || rtype == R_AARCH64_NONE)
+                    continue;
 
                 /* Map local sym index → global sym index */
                 uint32_t gsym = 0;
@@ -532,6 +533,195 @@ static int apply_relocs(Ctx *ctx) {
                 }
                 break;
 
+            /* ── AArch64 relocations ──────────────────────────────────── */
+
+            case R_AARCH64_ABS64:
+                /* S + A (absolute 64-bit) */
+                *(uint64_t *)patch = (uint64_t)((int64_t)S + A);
+                /* Record runtime relocation for dynamic loading */
+                {
+                    Elf64_Rela rr;
+                    rr.r_offset = P;
+                    rr.r_info   = ELF64_R_INFO(0, R_AARCH64_RELATIVE);
+                    rr.r_addend = *(int64_t *)patch;
+                    buf_append(&ctx->rela_dyn, &rr, sizeof(rr));
+                    ctx->nrela_dyn++;
+                }
+                break;
+
+            case R_AARCH64_ABS32:
+                /* S + A (absolute 32-bit) */
+                {
+                    int64_t val = (int64_t)S + A;
+                    if (val < 0 || val > 0xFFFFFFFF) {
+                        const char *sname = r->sym_idx < (uint32_t)ctx->nsyms
+                            ? ctx->syms[r->sym_idx].name : "?";
+                        fprintf(stderr,
+                                "anyld: R_AARCH64_ABS32 overflow for '%s' "
+                                "(value=0x%llx)\n",
+                                sname, (unsigned long long)val);
+                        errors++;
+                    }
+                    *(uint32_t *)patch = (uint32_t)val;
+                    {
+                        Elf64_Rela rr;
+                        rr.r_offset = P;
+                        rr.r_info   = ELF64_R_INFO(0, R_AARCH64_ABS32);
+                        rr.r_addend = (int64_t)val;
+                        buf_append(&ctx->rela_dyn, &rr, sizeof(rr));
+                        ctx->nrela_dyn++;
+                    }
+                }
+                break;
+
+            case R_AARCH64_PREL32:
+                /* S + A - P (PC-relative 32-bit) */
+                {
+                    int64_t val = (int64_t)S + A - (int64_t)P;
+                    if (val < -2147483648LL || val > 2147483647LL) {
+                        const char *sname = r->sym_idx < (uint32_t)ctx->nsyms
+                            ? ctx->syms[r->sym_idx].name : "?";
+                        fprintf(stderr,
+                                "anyld: R_AARCH64_PREL32 overflow for '%s' "
+                                "(value=0x%llx)\n",
+                                sname, (unsigned long long)val);
+                        errors++;
+                    }
+                    *(int32_t *)patch = (int32_t)val;
+                }
+                break;
+
+            case R_AARCH64_PREL64:
+                /* S + A - P (PC-relative 64-bit) */
+                *(int64_t *)patch = (int64_t)S + A - (int64_t)P;
+                break;
+
+            case R_AARCH64_CALL26:
+            case R_AARCH64_JUMP26:
+                /* S + A - P, encoded as imm26 in B/BL instruction */
+                {
+                    int64_t val = (int64_t)S + A - (int64_t)P;
+                    if (val < -134217728LL || val > 134217727LL) {
+                        const char *sname = r->sym_idx < (uint32_t)ctx->nsyms
+                            ? ctx->syms[r->sym_idx].name : "?";
+                        fprintf(stderr,
+                                "anyld: CALL26/JUMP26 overflow for '%s' "
+                                "(value=0x%llx)\n",
+                                sname, (unsigned long long)val);
+                        errors++;
+                    }
+                    uint32_t insn = *(uint32_t *)patch;
+                    insn = (insn & 0xFC000000) |
+                           (((uint32_t)(val >> 2)) & 0x03FFFFFF);
+                    *(uint32_t *)patch = insn;
+                }
+                break;
+
+            case R_AARCH64_ADR_PREL_PG_HI21:
+            case R_AARCH64_ADR_GOT_PAGE:
+                /*
+                 * Page(S+A) - Page(P), encoded in ADRP instruction.
+                 * For GOT_PAGE: no GOT exists, relax to direct page ref.
+                 * ADRP encoding: immlo [30:29], immhi [23:5]
+                 */
+                {
+                    int64_t val = (int64_t)(((uint64_t)((int64_t)S + A)) & ~0xFFFULL)
+                                - (int64_t)(P & ~0xFFFULL);
+                    int64_t imm = val >> 12;
+                    if (imm < -1048576LL || imm > 1048575LL) {
+                        const char *sname = r->sym_idx < (uint32_t)ctx->nsyms
+                            ? ctx->syms[r->sym_idx].name : "?";
+                        fprintf(stderr,
+                                "anyld: ADR_PREL_PG_HI21 overflow for '%s' "
+                                "(value=0x%llx)\n",
+                                sname, (unsigned long long)val);
+                        errors++;
+                    }
+                    uint32_t insn = *(uint32_t *)patch;
+                    uint32_t immlo = ((uint32_t)imm & 0x3) << 29;
+                    uint32_t immhi = (((uint32_t)(imm >> 2)) & 0x7FFFF) << 5;
+                    insn = (insn & 0x9F00001F) | immlo | immhi;
+                    *(uint32_t *)patch = insn;
+                }
+                break;
+
+            case R_AARCH64_ADD_ABS_LO12_NC:
+                /* (S + A) & 0xFFF, encoded in ADD imm12 [21:10] */
+                {
+                    uint32_t lo12 = (uint32_t)((uint64_t)((int64_t)S + A) & 0xFFF);
+                    uint32_t insn = *(uint32_t *)patch;
+                    insn = (insn & 0xFFC003FF) | (lo12 << 10);
+                    *(uint32_t *)patch = insn;
+                }
+                break;
+
+            case R_AARCH64_LDST8_ABS_LO12_NC:
+                /* (S + A) & 0xFFF, no shift, in imm12 [21:10] */
+                {
+                    uint32_t lo12 = (uint32_t)((uint64_t)((int64_t)S + A) & 0xFFF);
+                    uint32_t insn = *(uint32_t *)patch;
+                    insn = (insn & 0xFFC003FF) | (lo12 << 10);
+                    *(uint32_t *)patch = insn;
+                }
+                break;
+
+            case R_AARCH64_LDST16_ABS_LO12_NC:
+                /* ((S + A) & 0xFFF) >> 1, in imm12 [21:10] */
+                {
+                    uint32_t lo12 = (uint32_t)(((uint64_t)((int64_t)S + A) & 0xFFF) >> 1);
+                    uint32_t insn = *(uint32_t *)patch;
+                    insn = (insn & 0xFFC003FF) | (lo12 << 10);
+                    *(uint32_t *)patch = insn;
+                }
+                break;
+
+            case R_AARCH64_LDST32_ABS_LO12_NC:
+                /* ((S + A) & 0xFFF) >> 2, in imm12 [21:10] */
+                {
+                    uint32_t lo12 = (uint32_t)(((uint64_t)((int64_t)S + A) & 0xFFF) >> 2);
+                    uint32_t insn = *(uint32_t *)patch;
+                    insn = (insn & 0xFFC003FF) | (lo12 << 10);
+                    *(uint32_t *)patch = insn;
+                }
+                break;
+
+            case R_AARCH64_LDST64_ABS_LO12_NC:
+                /* ((S + A) & 0xFFF) >> 3, in imm12 [21:10] */
+                {
+                    uint32_t lo12 = (uint32_t)(((uint64_t)((int64_t)S + A) & 0xFFF) >> 3);
+                    uint32_t insn = *(uint32_t *)patch;
+                    insn = (insn & 0xFFC003FF) | (lo12 << 10);
+                    *(uint32_t *)patch = insn;
+                }
+                break;
+
+            case R_AARCH64_LDST128_ABS_LO12_NC:
+                /* ((S + A) & 0xFFF) >> 4, in imm12 [21:10] */
+                {
+                    uint32_t lo12 = (uint32_t)(((uint64_t)((int64_t)S + A) & 0xFFF) >> 4);
+                    uint32_t insn = *(uint32_t *)patch;
+                    insn = (insn & 0xFFC003FF) | (lo12 << 10);
+                    *(uint32_t *)patch = insn;
+                }
+                break;
+
+            case R_AARCH64_LD64_GOT_LO12_NC:
+                /*
+                 * GOT load relaxation: LDR Xd,[Xn,#off] → ADD Xd,Xn,#off
+                 *
+                 * LDR (64-bit unsigned offset): opcode bits [31:22] = 0xF94 prefix
+                 * ADD (64-bit immediate):       opcode bits [31:22] = 0x910 prefix
+                 */
+                {
+                    uint32_t insn = *(uint32_t *)patch;
+                    /* Rewrite LDR → ADD: replace opcode, keep Rn and Rd */
+                    insn = (insn & 0x003FFFFF) | 0x91000000;
+                    uint32_t lo12 = (uint32_t)((uint64_t)((int64_t)S + A) & 0xFFF);
+                    insn = (insn & 0xFFC003FF) | (lo12 << 10);
+                    *(uint32_t *)patch = insn;
+                }
+                break;
+
             default:
                 fprintf(stderr,
                         "anyld: unsupported relocation type %u at "
@@ -560,14 +750,15 @@ int apply_relocations(Ctx *ctx) {
     if (collect_relocs(ctx) != 0) return -1;
 
     /* Pre-size .rela.dyn so compute_layout() accounts for it.
-     * Absolute relocations (R_X86_64_64, _32, _32S) each produce a runtime
-     * relocation entry. Without pre-sizing, layout is computed with
-     * rela_dyn.size=0, causing section offset mismatch. */
+     * Absolute relocations each produce a runtime relocation entry.
+     * Without pre-sizing, layout is computed with rela_dyn.size=0,
+     * causing section offset mismatch. */
     {
         int nabs = 0;
         for (int i = 0; i < ctx->nrelocs; i++) {
             int t = ctx->relocs[i].type;
-            if (t == R_X86_64_64 || t == R_X86_64_32 || t == R_X86_64_32S)
+            if (t == R_X86_64_64 || t == R_X86_64_32 || t == R_X86_64_32S ||
+                t == R_AARCH64_ABS64 || t == R_AARCH64_ABS32)
                 nabs++;
         }
         if (nabs > 0) {

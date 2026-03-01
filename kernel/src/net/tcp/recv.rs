@@ -42,7 +42,7 @@ pub(crate) fn accept_data_deferred(tcb: &mut Tcb, seg: &TcpSegment) -> Option<De
         if batch_full || buf_pressure || had_ooo {
             tcb.pending_ack = false;
             tcb.ack_seg_count = 0;
-            tcb.last_ack_tick = crate::arch::x86::pit::get_ticks();
+            tcb.last_ack_tick = crate::arch::hal::timer_current_ticks();
             Some(DeferredSend {
                 local_ip: tcb.local_ip, local_port: tcb.local_port,
                 remote_ip: tcb.remote_ip, remote_port: tcb.remote_port,
@@ -157,7 +157,7 @@ pub fn recv(socket_id: u32, buf: &mut [u8], timeout_ticks: u32) -> u32 {
     }
 
     let tid = crate::task::scheduler::current_tid();
-    let start = crate::arch::x86::pit::get_ticks();
+    let start = crate::arch::hal::timer_current_ticks();
 
     // Poll once eagerly to process any pending packets before blocking.
     crate::net::poll();
@@ -246,7 +246,7 @@ pub fn recv(socket_id: u32, buf: &mut [u8], timeout_ticks: u32) -> u32 {
             }
 
             // Check timeout before blocking
-            let now = crate::arch::x86::pit::get_ticks();
+            let now = crate::arch::hal::timer_current_ticks();
             if now.wrapping_sub(start) >= timeout_ticks {
                 tcb.waiting_tid = 0;
                 return u32::MAX;
@@ -258,7 +258,7 @@ pub fn recv(socket_id: u32, buf: &mut [u8], timeout_ticks: u32) -> u32 {
         // Lock is dropped here — safe to block.
 
         // Sleep briefly (1 tick = 10ms). Woken early by try_wake_thread().
-        let wake_at = crate::arch::x86::pit::get_ticks() + 1;
+        let wake_at = crate::arch::hal::timer_current_ticks() + 1;
         crate::task::scheduler::sleep_until(wake_at);
 
         // After waking, process incoming packets (fast path).

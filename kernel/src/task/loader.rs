@@ -38,21 +38,28 @@ const ASLR_STACK_MAX_PAGES: u32 = 256;
 /// 4096 pages = 16 MiB of entropy within the 1.25 GiB mmap region.
 pub const ASLR_MMAP_MAX_PAGES: u32 = 4096;
 
-/// Generate a random page offset in `[0, max_pages)` using RDRAND with a
-/// TSC-based xorshift64 fallback on CPUs that don't support RDRAND.
+/// Generate a random page offset in `[0, max_pages)` using hardware RNG
+/// with a counter-based fallback.
 ///
 /// Returns a page count (multiply by PAGE_SIZE to get a byte offset).
 pub fn random_page_offset(max_pages: u32) -> u32 {
     if max_pages == 0 {
         return 0;
     }
-    // Only attempt RDRAND if the CPU advertises support via CPUID.
-    // Executing RDRAND on a CPU without it raises #UD (Invalid Opcode).
-    let entropy: u64 = if crate::arch::x86::cpuid::features().rdrand {
+    let entropy: u64 = hw_entropy().unwrap_or_else(counter_entropy);
+    (entropy % max_pages as u64) as u32
+}
+
+/// Try to get hardware entropy (RDRAND on x86, RNDR on ARM64).
+fn hw_entropy() -> Option<u64> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if !crate::arch::x86::cpuid::features().rdrand {
+            return None;
+        }
         let raw: u64;
         let ok: u8;
         unsafe {
-            // CF=1 on success, CF=0 if the hardware entropy pool is empty.
             core::arch::asm!(
                 "rdrand {val}",
                 "setc {ok}",
@@ -61,25 +68,39 @@ pub fn random_page_offset(max_pages: u32) -> u32 {
                 options(nostack, nomem),
             );
         }
-        if ok != 0 { raw } else { tsc_entropy() }
-    } else {
-        tsc_entropy()
-    };
-    (entropy % max_pages as u64) as u32
+        if ok != 0 { Some(raw) } else { None }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let val: u64;
+        unsafe {
+            // RNDR: random number; returns 0 on failure (FEAT_RNG required)
+            core::arch::asm!("mrs {}, s3_3_c2_c4_0", out(reg) val, options(nomem, nostack));
+        }
+        if val != 0 { Some(val) } else { None }
+    }
 }
 
-/// TSC-based entropy fallback for CPUs without RDRAND.
-/// Deterministic within a single boot, but varies between boots and
-/// between programs launched at different wall-clock times.
-fn tsc_entropy() -> u64 {
-    let lo: u32;
-    let hi: u32;
-    unsafe {
-        core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nostack, nomem));
+/// Counter-based entropy fallback (TSC on x86, CNTPCT on ARM64).
+fn counter_entropy() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let lo: u32;
+        let hi: u32;
+        unsafe {
+            core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nostack, nomem));
+        }
+        let tsc = ((hi as u64) << 32) | (lo as u64);
+        tsc ^ (tsc >> 17) ^ (tsc << 31)
     }
-    // Mix upper and lower halves to spread entropy across all bits.
-    let tsc = ((hi as u64) << 32) | (lo as u64);
-    tsc ^ (tsc >> 17) ^ (tsc << 31)
+    #[cfg(target_arch = "aarch64")]
+    {
+        let cnt: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntpct_el0", out(reg) cnt, options(nomem, nostack));
+        }
+        cnt ^ (cnt >> 17) ^ (cnt << 31)
+    }
 }
 
 /// Max concurrent pending programs (no heap allocation needed).
@@ -114,9 +135,15 @@ static PENDING_PROGRAMS: Spinlock<[PendingSlot; MAX_PENDING]> =
 // =========================================================================
 // fork() child state — saved parent registers for child to resume from
 // =========================================================================
+//
+// The fork mechanism uses architecture-specific register state and return
+// paths (IRETQ on x86_64, ERET on AArch64). Currently only implemented
+// for x86_64.
 
 /// User-mode register state saved by fork() for the child process.
-/// The child's trampoline restores these via IRETQ, with RAX=0.
+/// The child's trampoline restores these via IRETQ (x86_64) or ERET (AArch64),
+/// with the return register set to 0.
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 pub struct ForkChildRegs {
     pub rbx: u64,
@@ -141,12 +168,14 @@ pub struct ForkChildRegs {
     pub ss: u64,
 }
 
+#[cfg(target_arch = "x86_64")]
 struct ForkPendingSlot {
     tid: u32,
     used: bool,
     regs: ForkChildRegs,
 }
 
+#[cfg(target_arch = "x86_64")]
 impl ForkPendingSlot {
     const fn empty() -> Self {
         ForkPendingSlot {
@@ -161,6 +190,7 @@ impl ForkPendingSlot {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 static PENDING_FORKS: Spinlock<[ForkPendingSlot; MAX_PENDING]> =
     Spinlock::new([
         ForkPendingSlot::empty(), ForkPendingSlot::empty(),
@@ -174,6 +204,7 @@ static PENDING_FORKS: Spinlock<[ForkPendingSlot; MAX_PENDING]> =
     ]);
 
 /// Store the parent's register state for a fork() child to pick up.
+#[cfg(target_arch = "x86_64")]
 pub fn store_pending_fork(tid: u32, regs: ForkChildRegs) {
     let mut slots = PENDING_FORKS.lock();
     let slot = slots.iter_mut().find(|s| !s.used)
@@ -186,6 +217,7 @@ pub fn store_pending_fork(tid: u32, regs: ForkChildRegs) {
 /// Trampoline for fork() child threads.
 /// Wakes up in kernel mode, retrieves saved parent registers, then IRETQ to user
 /// mode with RAX=0 (fork child return value).
+#[cfg(target_arch = "x86_64")]
 pub extern "C" fn fork_child_trampoline() {
     let tid = crate::task::scheduler::current_tid();
 
@@ -217,6 +249,7 @@ pub extern "C" fn fork_child_trampoline() {
 /// CRITICAL: Never hardcode register names (ax, rax, etc.) in asm! blocks when
 /// `in(reg)` operands exist — LLVM may allocate the same register, causing
 /// silent corruption of the pointer operand.
+#[cfg(target_arch = "x86_64")]
 unsafe fn fork_return_to_user(regs: *const ForkChildRegs) -> ! {
     core::arch::asm!(
         "cli",
@@ -375,7 +408,7 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
 
         let vaddr = phdr.p_vaddr;
         let memsz = phdr.p_memsz;
-        let filesz = phdr.p_filesz;
+        let _filesz = phdr.p_filesz;
 
         if memsz == 0 {
             continue;
@@ -419,15 +452,32 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
     }
 
     // Switch to user PD and copy data (interrupts disabled to prevent
-    // timer-driven context switch while CR3 points at the target PD).
-    // Save/restore RFLAGS instead of unconditional cli/sti to avoid
+    // timer-driven context switch while the page table points at the target PD).
+    // Save/restore interrupt state instead of unconditional cli/sti to avoid
     // re-enabling interrupts when caller already had them disabled.
     unsafe {
-        let rflags: u64;
-        core::arch::asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
-        core::arch::asm!("cli", options(nomem, nostack));
-        let old_cr3 = virtual_mem::current_cr3();
+        #[cfg(target_arch = "x86_64")]
+        let saved_flags: u64;
+        #[cfg(target_arch = "x86_64")]
+        {
+            core::arch::asm!("pushfq; pop {}", out(reg) saved_flags, options(nomem));
+            core::arch::asm!("cli", options(nomem, nostack));
+        }
+        #[cfg(target_arch = "aarch64")]
+        let saved_daif: u64;
+        #[cfg(target_arch = "aarch64")]
+        {
+            core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
+            core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+        }
+        let old_pt = virtual_mem::current_cr3();
+        #[cfg(target_arch = "x86_64")]
         core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
+        #[cfg(target_arch = "aarch64")]
+        {
+            core::arch::asm!("msr ttbr0_el1, {}", in(reg) pd_phys.as_u64(), options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack));
+        }
 
         for i in 0..ph_num {
             let ph_offset = ph_off + i * ph_size;
@@ -457,8 +507,17 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
             }
         }
 
-        core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
-        core::arch::asm!("push {}; popfq", in(reg) rflags, options(nomem));
+        #[cfg(target_arch = "x86_64")]
+        {
+            core::arch::asm!("mov cr3, {}", in(reg) old_pt);
+            core::arch::asm!("push {}; popfq", in(reg) saved_flags, options(nomem));
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            core::arch::asm!("msr ttbr0_el1, {}", in(reg) old_pt, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack));
+            core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+        }
     }
 
     let brk = (max_vaddr_end + PAGE_SIZE - 1) & !0xFFF;
@@ -496,7 +555,7 @@ fn load_elf32(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
 
         let vaddr = phdr.p_vaddr as u64;
         let memsz = phdr.p_memsz as u64;
-        let filesz = phdr.p_filesz as u64;
+        let _filesz = phdr.p_filesz as u64;
 
         if memsz == 0 {
             continue;
@@ -535,11 +594,28 @@ fn load_elf32(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
     }
 
     unsafe {
-        let rflags: u64;
-        core::arch::asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
-        core::arch::asm!("cli", options(nomem, nostack));
-        let old_cr3 = virtual_mem::current_cr3();
+        #[cfg(target_arch = "x86_64")]
+        let saved_flags: u64;
+        #[cfg(target_arch = "x86_64")]
+        {
+            core::arch::asm!("pushfq; pop {}", out(reg) saved_flags, options(nomem));
+            core::arch::asm!("cli", options(nomem, nostack));
+        }
+        #[cfg(target_arch = "aarch64")]
+        let saved_daif: u64;
+        #[cfg(target_arch = "aarch64")]
+        {
+            core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
+            core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+        }
+        let old_pt = virtual_mem::current_cr3();
+        #[cfg(target_arch = "x86_64")]
         core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
+        #[cfg(target_arch = "aarch64")]
+        {
+            core::arch::asm!("msr ttbr0_el1, {}", in(reg) pd_phys.as_u64(), options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack));
+        }
 
         for i in 0..ph_num {
             let ph_offset = ph_off + i * ph_size;
@@ -567,8 +643,17 @@ fn load_elf32(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
             }
         }
 
-        core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
-        core::arch::asm!("push {}; popfq", in(reg) rflags, options(nomem));
+        #[cfg(target_arch = "x86_64")]
+        {
+            core::arch::asm!("mov cr3, {}", in(reg) old_pt);
+            core::arch::asm!("push {}; popfq", in(reg) saved_flags, options(nomem));
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            core::arch::asm!("msr ttbr0_el1, {}", in(reg) old_pt, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack));
+            core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+        }
     }
 
     let brk = (max_vaddr_end + PAGE_SIZE - 1) & !0xFFF;
@@ -683,17 +768,43 @@ pub fn load_binary_into_pd(
 
         // Copy binary data into the new address space
         unsafe {
-            let rflags: u64;
-            core::arch::asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
-            core::arch::asm!("cli", options(nomem, nostack));
-            let old_cr3 = virtual_mem::current_cr3();
+            #[cfg(target_arch = "x86_64")]
+            let saved_flags: u64;
+            #[cfg(target_arch = "x86_64")]
+            {
+                core::arch::asm!("pushfq; pop {}", out(reg) saved_flags, options(nomem));
+                core::arch::asm!("cli", options(nomem, nostack));
+            }
+            #[cfg(target_arch = "aarch64")]
+            let saved_daif: u64;
+            #[cfg(target_arch = "aarch64")]
+            {
+                core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
+                core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+            }
+            let old_pt = virtual_mem::current_cr3();
+            #[cfg(target_arch = "x86_64")]
             core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
+            #[cfg(target_arch = "aarch64")]
+            {
+                core::arch::asm!("msr ttbr0_el1, {}", in(reg) pd_phys.as_u64(), options(nomem, nostack));
+                core::arch::asm!("isb", options(nomem, nostack));
+            }
 
             let dest = PROGRAM_LOAD_ADDR as *mut u8;
             core::ptr::copy_nonoverlapping(data.as_ptr(), dest, data.len());
 
-            core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
-            core::arch::asm!("push {}; popfq", in(reg) rflags, options(nomem));
+            #[cfg(target_arch = "x86_64")]
+            {
+                core::arch::asm!("mov cr3, {}", in(reg) old_pt);
+                core::arch::asm!("push {}; popfq", in(reg) saved_flags, options(nomem));
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                core::arch::asm!("msr ttbr0_el1, {}", in(reg) old_pt, options(nomem, nostack));
+                core::arch::asm!("isb", options(nomem, nostack));
+                core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+            }
         }
 
         total_user_pages += code_mapped + stack_mapped;
@@ -759,10 +870,19 @@ pub fn exec_current_process(data: &[u8], args: &str) -> &'static str {
     // Rekey environment from old PD to new PD (move entries in-place)
     crate::task::env::rekey_env(old_pd.0, new_pd.0);
 
-    // Switch CR3 to new address space and destroy old one
+    // Switch page table to new address space and destroy old one
     unsafe {
-        core::arch::asm!("cli", options(nomem, nostack));
-        core::arch::asm!("mov cr3, {}", in(reg) new_pd.as_u64());
+        #[cfg(target_arch = "x86_64")]
+        {
+            core::arch::asm!("cli", options(nomem, nostack));
+            core::arch::asm!("mov cr3, {}", in(reg) new_pd.as_u64());
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+            core::arch::asm!("msr ttbr0_el1, {}", in(reg) new_pd.as_u64(), options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack));
+        }
     }
 
     // Destroy old PD (safe: we're now running on new PD, kernel pages are shared)
@@ -979,17 +1099,43 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
 
         // Copy binary data (pages already zeroed by map_pages_range_in_pd)
         unsafe {
-            let rflags: u64;
-            core::arch::asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
-            core::arch::asm!("cli", options(nomem, nostack));
-            let old_cr3 = virtual_mem::current_cr3();
+            #[cfg(target_arch = "x86_64")]
+            let saved_flags: u64;
+            #[cfg(target_arch = "x86_64")]
+            {
+                core::arch::asm!("pushfq; pop {}", out(reg) saved_flags, options(nomem));
+                core::arch::asm!("cli", options(nomem, nostack));
+            }
+            #[cfg(target_arch = "aarch64")]
+            let saved_daif: u64;
+            #[cfg(target_arch = "aarch64")]
+            {
+                core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
+                core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+            }
+            let old_pt = virtual_mem::current_cr3();
+            #[cfg(target_arch = "x86_64")]
             core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
+            #[cfg(target_arch = "aarch64")]
+            {
+                core::arch::asm!("msr ttbr0_el1, {}", in(reg) pd_phys.as_u64(), options(nomem, nostack));
+                core::arch::asm!("isb", options(nomem, nostack));
+            }
 
             let dest = PROGRAM_LOAD_ADDR as *mut u8;
             core::ptr::copy_nonoverlapping(data.as_ptr(), dest, data.len());
 
-            core::arch::asm!("mov cr3, {}", in(reg) old_cr3);
-            core::arch::asm!("push {}; popfq", in(reg) rflags, options(nomem));
+            #[cfg(target_arch = "x86_64")]
+            {
+                core::arch::asm!("mov cr3, {}", in(reg) old_pt);
+                core::arch::asm!("push {}; popfq", in(reg) saved_flags, options(nomem));
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                core::arch::asm!("msr ttbr0_el1, {}", in(reg) old_pt, options(nomem, nostack));
+                core::arch::asm!("isb", options(nomem, nostack));
+                core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+            }
         }
 
         entry_point = PROGRAM_LOAD_ADDR;
@@ -1156,9 +1302,11 @@ pub extern "C" fn thread_create_trampoline() {
     }
 }
 
-/// Transition to Ring 3 by setting up an iretq frame.
-/// User code segment 64-bit = 0x2B (GDT entry 5 | RPL=3)
-/// User data segment = 0x23 (GDT entry 4 | RPL=3)
+/// Transition to Ring 3 (user mode) for 64-bit programs.
+///
+/// On x86_64: builds an `iretq` frame with user CS=0x2B / SS=0x23 and jumps.
+/// On AArch64: sets ELR_EL1/SP_EL0/SPSR_EL1 and issues `eret` to EL0.
+#[cfg(target_arch = "x86_64")]
 unsafe fn jump_to_user_mode(entry: u64, user_stack: u64) -> ! {
     // Use explicit R14/R15 to avoid `mov ax, 0x23` clobbering an in(reg) operand
     // (MEMORY.md: hardcoded AX in asm! corrupts any in(reg) that the compiler
@@ -1204,11 +1352,69 @@ unsafe fn jump_to_user_mode(entry: u64, user_stack: u64) -> ! {
     );
 }
 
-/// Transition to Ring 3 in 32-bit compatibility mode via iretq.
+/// Transition to EL0 (user mode) for 64-bit AArch64 programs.
+///
+/// Sets ELR_EL1 to the entry point, SP_EL0 to the user stack, and
+/// SPSR_EL1 to 0x0 (EL0t with all exceptions unmasked). Then clears
+/// all general-purpose registers to prevent kernel address leaks and
+/// issues `eret`.
+#[cfg(target_arch = "aarch64")]
+unsafe fn jump_to_user_mode(entry: u64, user_stack: u64) -> ! {
+    core::arch::asm!(
+        // Set the return address (ELR_EL1) and user stack (SP_EL0)
+        "msr elr_el1, {entry}",
+        "msr sp_el0, {sp}",
+        // SPSR_EL1 = 0x0: EL0t (AArch64, EL0, SP_EL0), all DAIF unmasked
+        "msr spsr_el1, xzr",
+        // Clear all general-purpose registers to prevent kernel leaks
+        "mov x0, #0",
+        "mov x1, #0",
+        "mov x2, #0",
+        "mov x3, #0",
+        "mov x4, #0",
+        "mov x5, #0",
+        "mov x6, #0",
+        "mov x7, #0",
+        "mov x8, #0",
+        "mov x9, #0",
+        "mov x10, #0",
+        "mov x11, #0",
+        "mov x12, #0",
+        "mov x13, #0",
+        "mov x14, #0",
+        "mov x15, #0",
+        "mov x16, #0",
+        "mov x17, #0",
+        "mov x18, #0",
+        "mov x19, #0",
+        "mov x20, #0",
+        "mov x21, #0",
+        "mov x22, #0",
+        "mov x23, #0",
+        "mov x24, #0",
+        "mov x25, #0",
+        "mov x26, #0",
+        "mov x27, #0",
+        "mov x28, #0",
+        "mov x29, #0",
+        "mov x30, #0",
+        "eret",
+        entry = in(reg) entry,
+        sp = in(reg) user_stack,
+        options(noreturn)
+    );
+}
+
+/// Transition to Ring 3 in 32-bit compatibility mode via iretq (x86_64 only).
+///
 /// User code segment 32-bit = 0x1B (GDT entry 3 | RPL=3, L=0, D=1)
 /// User data segment = 0x23 (GDT entry 4 | RPL=3)
 /// When IRETQ loads CS=0x1B (a 32-bit code segment), the CPU enters
 /// compatibility mode: the thread runs 32-bit code under the 64-bit kernel.
+///
+/// On AArch64 this is unreachable — ARM64 does not support 32-bit compat mode
+/// in this kernel. Callers must not invoke this on ARM64.
+#[cfg(target_arch = "x86_64")]
 unsafe fn jump_to_user_mode_compat32(entry: u64, user_stack: u64) -> ! {
     core::arch::asm!(
         // Set data segment registers to user data segment
@@ -1248,4 +1454,14 @@ unsafe fn jump_to_user_mode_compat32(entry: u64, user_stack: u64) -> ! {
         in("r15") entry,
         options(noreturn)
     );
+}
+
+/// Stub for 32-bit compat mode on AArch64 (unsupported).
+///
+/// ARM64 does not support x86 32-bit compatibility mode. This function
+/// panics if called, which should never happen because `is_compat32` is
+/// always false for ARM64 ELF binaries.
+#[cfg(target_arch = "aarch64")]
+unsafe fn jump_to_user_mode_compat32(_entry: u64, _user_stack: u64) -> ! {
+    panic!("32-bit compatibility mode is not supported on AArch64");
 }

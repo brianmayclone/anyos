@@ -14,7 +14,7 @@ use crate::net::types::Ipv4Addr;
 /// Check retransmissions, flush delayed ACKs, and perform TIME_WAIT cleanup.
 /// Called from net::poll().
 pub fn check_retransmissions() {
-    let now = crate::arch::x86::pit::get_ticks();
+    let now = crate::arch::hal::timer_current_ticks();
 
     // ── Pass 1: flush any delayed ACKs that have been pending too long ──
     let mut delayed_acks: [(Ipv4Addr, u16, Ipv4Addr, u16, u32, u32, u16); 8] =
@@ -166,7 +166,7 @@ pub fn check_retransmissions() {
 /// Retransmit FIN for FinWait1 / LastAck states.
 /// This is handled separately since FIN doesn't use the send_buf.
 pub fn check_fin_retransmissions() {
-    let now = crate::arch::x86::pit::get_ticks();
+    let now = crate::arch::hal::timer_current_ticks();
 
     let mut conns = TCP_CONNECTIONS.lock();
     let table = match conns.as_mut() {

@@ -1,10 +1,15 @@
-//! Thread CPU context for cooperative/preemptive context switching (x86-64).
+//! Thread CPU context for cooperative/preemptive context switching.
 //!
-//! Defines the register state saved and restored by `context_switch.asm` and provides
-//! the FFI declaration for the assembly-level context switch routine.
+//! Re-exports the architecture-specific CpuContext, CANARY_MAGIC,
+//! and context_switch FFI.
 
-/// CPU context saved/restored during a context switch.
+// =============================================================================
+// x86-64 CpuContext
+// =============================================================================
+
+/// CPU context saved/restored during a context switch (x86-64).
 /// Must match the layout expected by context_switch.asm (184 bytes total).
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CpuContext {
@@ -43,10 +48,7 @@ pub struct CpuContext {
     pub checksum: u64,      // offset 168
 }
 
-/// Magic value for the CpuContext integrity canary.
-/// Chosen to be unlikely as a heap allocator value, PTE, or small integer.
-pub const CANARY_MAGIC: u64 = 0xCAFE_BABE_DEAD_BEEF;
-
+#[cfg(target_arch = "x86_64")]
 impl Default for CpuContext {
     fn default() -> Self {
         let mut ctx = CpuContext {
@@ -64,6 +66,7 @@ impl Default for CpuContext {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 impl CpuContext {
     /// Compute XOR checksum of register fields (offsets 0..144, 19 u64s).
     /// Excludes save_complete (offset 152) which changes outside context_switch.
@@ -87,6 +90,53 @@ impl CpuContext {
         Ok(())
     }
 }
+
+// =============================================================================
+// Platform-agnostic CpuContext accessors (x86_64)
+// =============================================================================
+
+#[cfg(target_arch = "x86_64")]
+impl CpuContext {
+    /// Get the program counter (RIP on x86, PC on ARM64).
+    #[inline] pub fn get_pc(&self) -> u64 { self.rip }
+    /// Set the program counter.
+    #[inline] pub fn set_pc(&mut self, val: u64) { self.rip = val; }
+    /// Get the stack pointer (RSP on x86, SP on ARM64).
+    #[inline] pub fn get_sp(&self) -> u64 { self.rsp }
+    /// Set the stack pointer.
+    #[inline] pub fn set_sp(&mut self, val: u64) { self.rsp = val; }
+    /// Get the page table base (CR3 on x86, TTBR0 on ARM64).
+    #[inline] pub fn get_page_table(&self) -> u64 { self.cr3 }
+    /// Set the page table base.
+    #[inline] pub fn set_page_table(&mut self, val: u64) { self.cr3 = val; }
+    /// Get the processor flags (RFLAGS on x86, PSTATE on ARM64).
+    #[inline] pub fn get_flags(&self) -> u64 { self.rflags }
+    /// Set the processor flags.
+    #[inline] pub fn set_flags(&mut self, val: u64) { self.rflags = val; }
+}
+
+// =============================================================================
+// AArch64 CpuContext — re-export from arch::arm64::context
+// =============================================================================
+
+#[cfg(target_arch = "aarch64")]
+pub use crate::arch::arm64::context::CpuContext;
+
+#[cfg(target_arch = "aarch64")]
+pub use crate::arch::arm64::context::CANARY_MAGIC;
+
+// =============================================================================
+// Shared constant (same on both architectures)
+// =============================================================================
+
+/// Magic value for the CpuContext integrity canary.
+/// Chosen to be unlikely as a heap allocator value, PTE, or small integer.
+#[cfg(target_arch = "x86_64")]
+pub const CANARY_MAGIC: u64 = 0xCAFE_BABE_DEAD_BEEF;
+
+// =============================================================================
+// FFI — assembly context switch
+// =============================================================================
 
 extern "C" {
     /// Low-level context switch implemented in assembly.

@@ -8,6 +8,7 @@
 
 use super::helpers::is_valid_user_ptr;
 use crate::task::scheduler;
+#[allow(unused_imports)]
 use crate::memory::virtual_mem;
 
 // ---- Debug event types (must match userspace constants) ----

@@ -3,6 +3,7 @@
 //! Covers signal registration (sigaction), mask manipulation (sigprocmask),
 //! signal return (sigreturn), and pending signal delivery after syscalls.
 
+#[allow(unused_imports)]
 use super::helpers::is_valid_user_ptr;
 
 // =========================================================================

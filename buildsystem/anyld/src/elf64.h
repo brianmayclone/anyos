@@ -59,7 +59,8 @@ typedef struct {
 #define ET_CORE   4
 
 /* e_machine values */
-#define EM_X86_64 62
+#define EM_X86_64  62
+#define EM_AARCH64 183
 
 /* ── Section header ─────────────────────────────────────────────────── */
 
@@ -167,6 +168,27 @@ typedef struct {
 #define R_X86_64_PC64       24  /* S + A - P    (PC-relative 64-bit) */
 #define R_X86_64_GOTPCRELX  41  /* Relaxable GOTPCREL */
 #define R_X86_64_REX_GOTPCRELX 42
+
+/* AArch64 relocation types */
+#define R_AARCH64_NONE              0
+#define R_AARCH64_ABS64             257  /* S + A        (absolute 64-bit) */
+#define R_AARCH64_ABS32             258  /* S + A        (absolute 32-bit) */
+#define R_AARCH64_ABS16             259  /* S + A        (absolute 16-bit) */
+#define R_AARCH64_PREL64            260  /* S + A - P    (PC-relative 64-bit) */
+#define R_AARCH64_PREL32            261  /* S + A - P    (PC-relative 32-bit) */
+#define R_AARCH64_PREL16            262  /* S + A - P    (PC-relative 16-bit) */
+#define R_AARCH64_ADR_PREL_PG_HI21 275  /* Page(S+A)-Page(P) (ADRP imm) */
+#define R_AARCH64_ADD_ABS_LO12_NC  277  /* (S+A) & 0xFFF   (ADD imm12) */
+#define R_AARCH64_LDST8_ABS_LO12_NC  278  /* (S+A) & 0xFFF (LDR/STR 8-bit) */
+#define R_AARCH64_JUMP26            282  /* S+A-P >> 2   (B imm26) */
+#define R_AARCH64_CALL26            283  /* S+A-P >> 2   (BL imm26) */
+#define R_AARCH64_LDST16_ABS_LO12_NC 284  /* ((S+A)&0xFFF)>>1 (16-bit) */
+#define R_AARCH64_LDST32_ABS_LO12_NC 285  /* ((S+A)&0xFFF)>>2 (32-bit) */
+#define R_AARCH64_LDST64_ABS_LO12_NC 286  /* ((S+A)&0xFFF)>>3 (64-bit) */
+#define R_AARCH64_LDST128_ABS_LO12_NC 299 /* ((S+A)&0xFFF)>>4 (128-bit) */
+#define R_AARCH64_ADR_GOT_PAGE      311  /* Page(G(S))-Page(P) (ADRP GOT) */
+#define R_AARCH64_LD64_GOT_LO12_NC  312  /* G(S) & 0xFFF (LDR GOT) */
+#define R_AARCH64_RELATIVE          1024 /* B + A        (base-relative) */
 
 /* ── Program header ─────────────────────────────────────────────────── */
 

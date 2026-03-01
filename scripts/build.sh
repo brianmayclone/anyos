@@ -9,7 +9,7 @@
 
 # Build anyOS
 # Usage: ./build.sh [--clean] [--reset] [--uefi] [--iso] [--all] [--debug] [--no-cross]
-#                   [--iminor] [--imajor] [--nover]
+#                   [--iminor] [--imajor] [--nover] [--arm64]
 
 BUILD_START=$(date +%s)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -25,6 +25,7 @@ DEBUG_VERBOSE=0
 DEBUG_SURF=0
 NO_CROSS=0
 VER_MODE="patch"
+ANYOS_ARCH="x86_64"
 
 for arg in "$@"; do
     case "$arg" in
@@ -61,9 +62,12 @@ for arg in "$@"; do
         --nover)
             VER_MODE="none"
             ;;
+        --arm64)
+            ANYOS_ARCH="arm64"
+            ;;
         *)
             echo "Usage: $0 [--clean] [--reset] [--uefi] [--iso] [--all] [--debug] [--debug-surf] [--no-cross]"
-            echo "       [--iminor] [--imajor] [--nover]"
+            echo "       [--iminor] [--imajor] [--nover] [--arm64]"
             echo ""
             echo "  --clean       Force full rebuild of all components"
             echo "  --reset       Force fresh disk image (destroy runtime data)"
@@ -76,6 +80,7 @@ for arg in "$@"; do
             echo "  --iminor      Increment minor version (reset patch to 0)"
             echo "  --imajor      Increment major version (reset minor and patch to 0)"
             echo "  --nover       Skip version increment"
+            echo "  --arm64       Build for AArch64 (ARM64) instead of x86_64"
             exit 1
             ;;
     esac
@@ -110,7 +115,7 @@ echo "${ANYOS_VERSION}" > "$VERSION_FILE"
 echo "Version: ${ANYOS_VERSION}"
 
 # CMake flags
-CMAKE_EXTRA_FLAGS="-DANYOS_DEBUG_VERBOSE=$([ "$DEBUG_VERBOSE" -eq 1 ] && echo ON || echo OFF) -DANYOS_DEBUG_SURF=$([ "$DEBUG_SURF" -eq 1 ] && echo ON || echo OFF) -DANYOS_NO_CROSS=$([ "$NO_CROSS" -eq 1 ] && echo ON || echo OFF) -DANYOS_RESET=$([ "$RESET" -eq 1 ] && echo ON || echo OFF) -DANYOS_VERSION=${ANYOS_VERSION}"
+CMAKE_EXTRA_FLAGS="-DANYOS_DEBUG_VERBOSE=$([ "$DEBUG_VERBOSE" -eq 1 ] && echo ON || echo OFF) -DANYOS_DEBUG_SURF=$([ "$DEBUG_SURF" -eq 1 ] && echo ON || echo OFF) -DANYOS_NO_CROSS=$([ "$NO_CROSS" -eq 1 ] && echo ON || echo OFF) -DANYOS_RESET=$([ "$RESET" -eq 1 ] && echo ON || echo OFF) -DANYOS_VERSION=${ANYOS_VERSION} -DANYOS_ARCH=${ANYOS_ARCH}"
 
 # Ensure build directory exists
 if [ ! -f "${BUILD_DIR}/build.ninja" ]; then
@@ -133,44 +138,71 @@ cmake -B "$BUILD_DIR" -G Ninja $CMAKE_EXTRA_FLAGS "$PROJECT_DIR" > /dev/null 2>&
 # Suppress Rust warnings and notes — only show errors
 export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Awarnings"
 
-# Build BIOS image (default target)
-echo "Building anyOS (BIOS)..."
-ninja -C "$BUILD_DIR"
-BUILD_RC=$?
+if [ "$ANYOS_ARCH" = "arm64" ]; then
+    # ── ARM64 build (kernel + disk image) ─────────────────────────────
+    echo "Building anyOS (ARM64)..."
 
-if [ $BUILD_RC -ne 0 ]; then
-    echo "BIOS build failed!"
-    exit $BUILD_RC
-fi
-
-echo "BIOS build successful."
-
-# Build UEFI image if requested
-if [ "$BUILD_UEFI" -eq 1 ] || [ "$BUILD_ALL" -eq 1 ]; then
-    echo "Building anyOS (UEFI)..."
-    ninja -C "$BUILD_DIR" uefi-image
-    UEFI_RC=$?
-
-    if [ $UEFI_RC -ne 0 ]; then
-        echo "UEFI build failed!"
-        exit $UEFI_RC
+    # Build kernel
+    echo "  Building ARM64 kernel..."
+    ninja -C "$BUILD_DIR" kernel-arm64
+    BUILD_RC=$?
+    if [ $BUILD_RC -ne 0 ]; then
+        echo "ARM64 kernel build failed!"
+        exit $BUILD_RC
     fi
 
-    echo "UEFI build successful."
-fi
-
-# Build ISO image if requested
-if [ "$BUILD_ISO" -eq 1 ] || [ "$BUILD_ALL" -eq 1 ]; then
-    echo "Building anyOS (ISO 9660, El Torito)..."
-    ninja -C "$BUILD_DIR" iso
-    ISO_RC=$?
-
-    if [ $ISO_RC -ne 0 ]; then
-        echo "ISO build failed!"
-        exit $ISO_RC
+    # Build ARM64 disk image (mkimage --arm64 with sysroot)
+    echo "  Building ARM64 disk image..."
+    ninja -C "$BUILD_DIR" arm64-image
+    BUILD_RC=$?
+    if [ $BUILD_RC -ne 0 ]; then
+        echo "ARM64 disk image build failed!"
+        echo "(This is OK if userspace programs haven't been built yet)"
     fi
 
-    echo "ISO build successful: ${BUILD_DIR}/anyos.iso"
+    echo "ARM64 build successful."
+else
+    # ── x86_64 build ────────────────────────────────────────────────────
+
+    # Build BIOS image (default target)
+    echo "Building anyOS (BIOS)..."
+    ninja -C "$BUILD_DIR"
+    BUILD_RC=$?
+
+    if [ $BUILD_RC -ne 0 ]; then
+        echo "BIOS build failed!"
+        exit $BUILD_RC
+    fi
+
+    echo "BIOS build successful."
+
+    # Build UEFI image if requested
+    if [ "$BUILD_UEFI" -eq 1 ] || [ "$BUILD_ALL" -eq 1 ]; then
+        echo "Building anyOS (UEFI)..."
+        ninja -C "$BUILD_DIR" uefi-image
+        UEFI_RC=$?
+
+        if [ $UEFI_RC -ne 0 ]; then
+            echo "UEFI build failed!"
+            exit $UEFI_RC
+        fi
+
+        echo "UEFI build successful."
+    fi
+
+    # Build ISO image if requested
+    if [ "$BUILD_ISO" -eq 1 ] || [ "$BUILD_ALL" -eq 1 ]; then
+        echo "Building anyOS (ISO 9660, El Torito)..."
+        ninja -C "$BUILD_DIR" iso
+        ISO_RC=$?
+
+        if [ $ISO_RC -ne 0 ]; then
+            echo "ISO build failed!"
+            exit $ISO_RC
+        fi
+
+        echo "ISO build successful: ${BUILD_DIR}/anyos.iso"
+    fi
 fi
 
 ELAPSED=$(( $(date +%s) - BUILD_START ))

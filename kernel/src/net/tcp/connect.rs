@@ -29,7 +29,7 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
                 let mut tcb = Tcb::new(cfg.ip, local_port, remote_ip, remote_port);
                 tcb.state = TcpState::SynSent;
                 tcb.snd_nxt = tcb.snd_iss.wrapping_add(1);
-                tcb.last_send_tick = crate::arch::x86::pit::get_ticks();
+                tcb.last_send_tick = crate::arch::hal::timer_current_ticks();
                 tcb.owner_tid = tid;
                 *slot = Some(tcb);
                 found = Some(i);
@@ -54,7 +54,7 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
     send_syn_segment(cfg.ip, local_port, remote_ip, remote_port, iss, 0, SYN);
 
     // Wait for connection to establish (blocking)
-    let start = crate::arch::x86::pit::get_ticks();
+    let start = crate::arch::hal::timer_current_ticks();
 
     // Poll once eagerly to process any pending packets.
     crate::net::poll();
@@ -82,7 +82,7 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
                     return u32::MAX;
                 }
 
-                let now = crate::arch::x86::pit::get_ticks();
+                let now = crate::arch::hal::timer_current_ticks();
                 if now.wrapping_sub(start) >= timeout_ticks {
                     crate::serial_println!("TCP: connect timeout");
                     table[slot_id] = None;
@@ -95,7 +95,7 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
             }
         }
 
-        let wake_at = crate::arch::x86::pit::get_ticks() + 1;
+        let wake_at = crate::arch::hal::timer_current_ticks() + 1;
         crate::task::scheduler::sleep_until(wake_at);
         crate::net::poll_rx();
     }
@@ -156,7 +156,7 @@ pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
     }
 
     let tid = crate::task::scheduler::current_tid();
-    let start = crate::arch::x86::pit::get_ticks();
+    let start = crate::arch::hal::timer_current_ticks();
 
     // Poll once eagerly
     crate::net::poll();
@@ -205,7 +205,7 @@ pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
             }
 
             // Check timeout
-            let now = crate::arch::x86::pit::get_ticks();
+            let now = crate::arch::hal::timer_current_ticks();
             if now.wrapping_sub(start) >= timeout_ticks {
                 if let Some(tcb) = table[lid].as_mut() {
                     tcb.waiting_tid = 0;
@@ -218,7 +218,7 @@ pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
             }
         }
 
-        let wake_at = crate::arch::x86::pit::get_ticks() + 1;
+        let wake_at = crate::arch::hal::timer_current_ticks() + 1;
         crate::task::scheduler::sleep_until(wake_at);
         crate::net::poll_rx();
     }
@@ -297,7 +297,7 @@ pub fn close(socket_id: u32) -> u32 {
                 tcb.state = TcpState::FinWait1;
                 let info = (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
                            tcb.snd_nxt, tcb.rcv_nxt, tcb.advertised_window());
-                tcb.last_send_tick = crate::arch::x86::pit::get_ticks();
+                tcb.last_send_tick = crate::arch::hal::timer_current_ticks();
                 tcb.retransmit_count = 0;
                 tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
                 Some(info)
@@ -306,7 +306,7 @@ pub fn close(socket_id: u32) -> u32 {
                 tcb.state = TcpState::LastAck;
                 let info = (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
                            tcb.snd_nxt, tcb.rcv_nxt, tcb.advertised_window());
-                tcb.last_send_tick = crate::arch::x86::pit::get_ticks();
+                tcb.last_send_tick = crate::arch::hal::timer_current_ticks();
                 tcb.retransmit_count = 0;
                 tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
                 Some(info)
@@ -327,7 +327,7 @@ pub fn close(socket_id: u32) -> u32 {
     }
 
     // Wait for close to complete (with timeout)
-    let start = crate::arch::x86::pit::get_ticks();
+    let start = crate::arch::hal::timer_current_ticks();
     let timeout = 500; // 5 seconds
     loop {
         crate::net::poll();
@@ -357,7 +357,7 @@ pub fn close(socket_id: u32) -> u32 {
             }
         }
 
-        let now = crate::arch::x86::pit::get_ticks();
+        let now = crate::arch::hal::timer_current_ticks();
         if now.wrapping_sub(start) >= timeout {
             // Force close with RST
             let rst_info = {
@@ -376,7 +376,7 @@ pub fn close(socket_id: u32) -> u32 {
             return 0;
         }
 
-        let wake_at = crate::arch::x86::pit::get_ticks() + 5;
+        let wake_at = crate::arch::hal::timer_current_ticks() + 5;
         crate::task::scheduler::sleep_until(wake_at);
     }
 }
@@ -421,7 +421,7 @@ pub fn shutdown_write(socket_id: u32) -> u32 {
                 tcb.state = TcpState::FinWait1;
                 let info = (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
                            tcb.snd_nxt, tcb.rcv_nxt, tcb.advertised_window());
-                tcb.last_send_tick = crate::arch::x86::pit::get_ticks();
+                tcb.last_send_tick = crate::arch::hal::timer_current_ticks();
                 tcb.retransmit_count = 0;
                 tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
                 Some(info)

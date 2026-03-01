@@ -8,8 +8,15 @@ fn main() {
     println!("cargo:rustc-link-arg=-T{}", link_ld.display());
     println!("cargo:rerun-if-changed={}", link_ld.display());
 
-    // Link BearSSL x64 static library (includes anyos_tls.c wrapper)
-    let bearssl_dir = project_root.join("third_party").join("bearssl").join("build_x64");
-    println!("cargo:rustc-link-search=native={}", bearssl_dir.display());
-    println!("cargo:rustc-link-lib=static=bearssl_x64");
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+
+    // Link BearSSL static library (architecture-specific)
+    if target_arch == "x86_64" {
+        let bearssl_dir = project_root.join("third_party").join("bearssl").join("build_x64");
+        println!("cargo:rustc-link-search=native={}", bearssl_dir.display());
+        println!("cargo:rustc-link-lib=static=bearssl_x64");
+    } else if target_arch == "aarch64" {
+        // ARM64 BearSSL not yet built — TLS support disabled at link time.
+        // Build third_party/bearssl for aarch64 to enable.
+    }
 }

@@ -74,10 +74,20 @@ pub fn unix_to_dos_datetime(ts: u32) -> (u16, u16) {
 }
 
 /// Get current RTC time as DOS (date, time) pair.
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn current_dos_datetime() -> (u16, u16) {
     let rtc = crate::drivers::rtc::read_time();
     let year = if rtc.year >= 1980 { rtc.year as u32 - 1980 } else { 0 };
     let date = ((year as u16) << 9) | ((rtc.month as u16) << 5) | (rtc.day as u16);
     let time = ((rtc.hours as u16) << 11) | ((rtc.minutes as u16) << 5) | ((rtc.seconds as u16 / 2));
+    (date, time)
+}
+
+/// ARM64 stub: returns a fixed date (2024-01-01 00:00:00) until an RTC driver is available.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn current_dos_datetime() -> (u16, u16) {
+    // 2024-01-01 00:00:00 in DOS format
+    let date = ((44u16) << 9) | (1u16 << 5) | 1u16; // year=2024-1980=44
+    let time = 0u16;
     (date, time)
 }

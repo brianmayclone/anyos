@@ -276,41 +276,29 @@ impl ShaderExec {
             }
             // ── Matrix multiply (SIMD: splat + mul + add chain) ──────────
             Inst::MatMul4(dst, mat, vec) => {
-                let v = Vec4::load(&self.regs[*vec as usize]);
-                let c0 = Vec4::load(&self.regs[*mat as usize]);
-                let c1 = Vec4::load(&self.regs[(*mat + 1) as usize]);
-                let c2 = Vec4::load(&self.regs[(*mat + 2) as usize]);
-                let c3 = Vec4::load(&self.regs[(*mat + 3) as usize]);
-                unsafe {
-                    use core::arch::x86_64::*;
-                    let vx = _mm_shuffle_ps(v.0, v.0, 0x00);
-                    let vy = _mm_shuffle_ps(v.0, v.0, 0x55);
-                    let vz = _mm_shuffle_ps(v.0, v.0, 0xAA);
-                    let vw = _mm_shuffle_ps(v.0, v.0, 0xFF);
-                    let r = _mm_add_ps(
-                        _mm_add_ps(_mm_mul_ps(c0.0, vx), _mm_mul_ps(c1.0, vy)),
-                        _mm_add_ps(_mm_mul_ps(c2.0, vz), _mm_mul_ps(c3.0, vw)),
-                    );
-                    Vec4(r).store(&mut self.regs[*dst as usize]);
-                }
+                let v = self.regs[*vec as usize];
+                let c0 = self.regs[*mat as usize];
+                let c1 = self.regs[(*mat + 1) as usize];
+                let c2 = self.regs[(*mat + 2) as usize];
+                let c3 = self.regs[(*mat + 3) as usize];
+                self.regs[*dst as usize] = [
+                    c0[0]*v[0] + c1[0]*v[1] + c2[0]*v[2] + c3[0]*v[3],
+                    c0[1]*v[0] + c1[1]*v[1] + c2[1]*v[2] + c3[1]*v[3],
+                    c0[2]*v[0] + c1[2]*v[1] + c2[2]*v[2] + c3[2]*v[3],
+                    c0[3]*v[0] + c1[3]*v[1] + c2[3]*v[2] + c3[3]*v[3],
+                ];
             }
             Inst::MatMul3(dst, mat, vec) => {
-                let v = Vec4::load(&self.regs[*vec as usize]);
-                let c0 = Vec4::load(&self.regs[*mat as usize]);
-                let c1 = Vec4::load(&self.regs[(*mat + 1) as usize]);
-                let c2 = Vec4::load(&self.regs[(*mat + 2) as usize]);
-                unsafe {
-                    use core::arch::x86_64::*;
-                    let vx = _mm_shuffle_ps(v.0, v.0, 0x00);
-                    let vy = _mm_shuffle_ps(v.0, v.0, 0x55);
-                    let vz = _mm_shuffle_ps(v.0, v.0, 0xAA);
-                    let r = _mm_add_ps(
-                        _mm_add_ps(_mm_mul_ps(c0.0, vx), _mm_mul_ps(c1.0, vy)),
-                        _mm_mul_ps(c2.0, vz),
-                    );
-                    let mask = _mm_castsi128_ps(_mm_set_epi32(0, -1, -1, -1));
-                    Vec4(_mm_and_ps(r, mask)).store(&mut self.regs[*dst as usize]);
-                }
+                let v = self.regs[*vec as usize];
+                let c0 = self.regs[*mat as usize];
+                let c1 = self.regs[(*mat + 1) as usize];
+                let c2 = self.regs[(*mat + 2) as usize];
+                self.regs[*dst as usize] = [
+                    c0[0]*v[0] + c1[0]*v[1] + c2[0]*v[2],
+                    c0[1]*v[0] + c1[1]*v[1] + c2[1]*v[2],
+                    c0[2]*v[0] + c1[2]*v[1] + c2[2]*v[2],
+                    0.0,
+                ];
             }
             // ── Swizzle / WriteMask ──────────────────────────────────────
             Inst::Swizzle(dst, src, indices, count) => {
@@ -402,24 +390,15 @@ impl ShaderExec {
     }
 }
 
-/// Fast inverse square root using SSE `rsqrtss` with Newton-Raphson refinement.
+/// Fast inverse square root (Quake III style + Newton-Raphson refinement).
 ///
-/// ~12-bit initial approximation refined to ~23-bit accuracy.
-/// ~4 cycles vs ~20 for `1.0 / sqrt(x)`.
+/// ~23-bit accuracy, portable across x86_64 and aarch64.
 #[inline(always)]
 fn fast_inv_sqrt(x: f32) -> f32 {
-    unsafe {
-        use core::arch::x86_64::*;
-        let v = _mm_set_ss(x);
-        let approx = _mm_rsqrt_ss(v);
-        // Newton-Raphson: y = y * (1.5 - 0.5*x*y*y)
-        let half_x = _mm_mul_ss(_mm_set_ss(0.5), v);
-        let y_sq = _mm_mul_ss(approx, approx);
-        let three_half = _mm_set_ss(1.5);
-        let refined = _mm_mul_ss(
-            approx,
-            _mm_sub_ss(three_half, _mm_mul_ss(half_x, y_sq)),
-        );
-        _mm_cvtss_f32(refined)
-    }
+    if x <= 0.0 { return 0.0; }
+    let half = 0.5 * x;
+    let i = 0x5F3759DF_u32.wrapping_sub(x.to_bits() >> 1);
+    let mut y = f32::from_bits(i);
+    y = y * (1.5 - half * y * y);
+    y
 }

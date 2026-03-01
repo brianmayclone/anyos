@@ -364,15 +364,5 @@ pub extern "C" fn math_cbrtf(x: f32) -> f32 {
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    // Minimal exit syscall — no heap, no formatting, just terminate.
-    unsafe {
-        core::arch::asm!(
-            "push rbx",
-            "mov rax, 1",       // SYS_EXIT
-            "mov rbx, 1",       // exit code 1
-            "syscall",
-            "pop rbx",
-            options(noreturn),
-        );
-    }
+    libsyscall::exit(1);
 }

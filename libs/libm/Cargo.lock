@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "libm"
 version = "0.1.0"
+dependencies = [
+ "libsyscall",
+]
+
+[[package]]
+name = "libsyscall"
+version = "0.1.0"

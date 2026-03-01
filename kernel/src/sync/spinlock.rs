@@ -19,14 +19,19 @@ const SPIN_TIMEOUT: u32 = 10_000_000;
 
 // ── Lock-free UART helpers (bypass ALL software locks) ──────────────────
 
-/// Write one byte directly to COM1, polling the Transmit Holding Register.
+/// Write one byte directly to the UART, polling for ready.
 #[inline(never)]
 fn diag_putc(c: u8) {
+    #[cfg(target_arch = "x86_64")]
     unsafe {
         while crate::arch::x86::port::inb(0x3FD) & 0x20 == 0 {
             core::hint::spin_loop();
         }
         crate::arch::x86::port::outb(0x3F8, c);
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::arch::arm64::serial::write_byte(c);
     }
 }
 
@@ -96,40 +101,28 @@ pub struct SpinlockGuard<'a, T> {
     irq_was_enabled: bool,
 }
 
-/// Check if interrupts are currently enabled (EFLAGS.IF bit 9).
+/// Check if interrupts are currently enabled.
 #[inline(always)]
 fn interrupts_enabled() -> bool {
-    let flags: u64;
-    unsafe {
-        core::arch::asm!("pushfq; pop {}", out(reg) flags, options(nomem, preserves_flags));
-    }
-    flags & (1 << 9) != 0
+    crate::arch::hal::interrupts_enabled()
 }
 
 /// Disable interrupts.
 #[inline(always)]
 fn cli() {
-    unsafe {
-        core::arch::asm!("cli", options(nomem, nostack));
-    }
+    crate::arch::hal::disable_interrupts();
 }
 
 /// Enable interrupts.
 #[inline(always)]
 fn sti() {
-    unsafe {
-        core::arch::asm!("sti", options(nomem, nostack));
-    }
+    crate::arch::hal::enable_interrupts();
 }
 
 /// Get the logical CPU index for spinlock ownership tracking.
-/// Uses `current_cpu_id()` which maps the hardware LAPIC ID to a logical
-/// index (0..N). This must match the representation used by callers of
-/// `is_held_by_cpu()` (e.g., `fault_kill_and_idle`, `try_kill_faulting_thread`).
-/// Before LAPIC/SMP is initialized (early boot), returns 0 (BSP only).
 #[inline(always)]
 fn cpu_id() -> u32 {
-    crate::arch::x86::smp::current_cpu_id() as u32
+    crate::arch::hal::cpu_id() as u32
 }
 
 impl<T> Spinlock<T> {
@@ -263,7 +256,10 @@ impl<'a, T> Deref for SpinlockGuard<'a, T> {
                 "BUG: Spinlock Deref misaligned ptr={:#x} align={} lock={:#x}",
                 addr, align, self.lock as *const _ as usize,
             );
-            loop { unsafe { core::arch::asm!("cli; hlt"); } }
+            loop {
+                crate::arch::hal::disable_interrupts();
+                crate::arch::hal::halt();
+            }
         }
         unsafe { &*ptr }
     }
@@ -279,7 +275,10 @@ impl<'a, T> DerefMut for SpinlockGuard<'a, T> {
                 "BUG: Spinlock DerefMut misaligned ptr={:#x} align={} lock={:#x}",
                 addr, align, self.lock as *const _ as usize,
             );
-            loop { unsafe { core::arch::asm!("cli; hlt"); } }
+            loop {
+                crate::arch::hal::disable_interrupts();
+                crate::arch::hal::halt();
+            }
         }
         unsafe { &mut *ptr }
     }

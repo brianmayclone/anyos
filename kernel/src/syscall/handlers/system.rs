@@ -13,7 +13,10 @@ use super::helpers::{is_valid_user_ptr, read_user_str};
 /// sys_time - Get current date/time.
 /// arg1=buf_ptr: output [year_lo:u8, year_hi:u8, month:u8, day:u8, hour:u8, min:u8, sec:u8, pad:u8]
 pub fn sys_time(buf_ptr: u32) -> u32 {
+    #[cfg(target_arch = "x86_64")]
     let (year, month, day, hour, min, sec) = crate::drivers::rtc::read_datetime();
+    #[cfg(target_arch = "aarch64")]
+    let (year, month, day, hour, min, sec): (u16, u8, u8, u8, u8, u8) = (1970, 1, 1, 0, 0, 0);
     if buf_ptr != 0 {
         unsafe {
             let buf = buf_ptr as *mut u8;
@@ -31,19 +34,22 @@ pub fn sys_time(buf_ptr: u32) -> u32 {
     0
 }
 
-/// sys_uptime - Get system uptime in PIT ticks (see `pit::TICK_HZ`).
+/// sys_uptime - Get system uptime in timer ticks (see `hal::timer_frequency_hz`).
 pub fn sys_uptime() -> u32 {
-    crate::arch::x86::pit::get_ticks()
+    crate::arch::hal::timer_current_ticks()
 }
 
-/// sys_tick_hz - Get the PIT tick rate in Hz.
+/// sys_tick_hz - Get the timer tick rate in Hz.
 pub fn sys_tick_hz() -> u32 {
-    crate::arch::x86::pit::TICK_HZ
+    crate::arch::hal::timer_frequency_hz() as u32
 }
 
-/// sys_uptime_ms - Get uptime in milliseconds (TSC-based, sub-ms precision).
+/// sys_uptime_ms - Get uptime in milliseconds.
 pub fn sys_uptime_ms() -> u32 {
-    crate::arch::x86::pit::real_ms_since_boot() as u32
+    #[cfg(target_arch = "x86_64")]
+    { crate::arch::x86::pit::real_ms_since_boot() as u32 }
+    #[cfg(target_arch = "aarch64")]
+    { crate::arch::hal::timer_current_ticks() } // Already in ms
 }
 
 /// sys_dmesg - Read kernel log ring buffer.
@@ -117,7 +123,7 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
             }
             threads.len() as u32
         }
-        2 => crate::arch::x86::smp::cpu_count() as u32,
+        2 => crate::arch::hal::cpu_count() as u32,
         3 => {
             // CPU load (extended):
             //   [0] total_sched_ticks (u32)
@@ -126,7 +132,7 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
             //   [3] reserved          (u32)
             //   [4..4+num_cpus*2] per_cpu_total[i], per_cpu_idle[i] pairs
             // Minimum 16 bytes for header, +8 per CPU
-            let num_cpus = crate::arch::x86::smp::cpu_count() as usize;
+            let num_cpus = crate::arch::hal::cpu_count();
             if buf_ptr != 0 && buf_size >= 16 {
                 unsafe {
                     let buf = buf_ptr as *mut u32;
@@ -168,17 +174,26 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
             buf.fill(0);
 
             // CPU brand (48 bytes) and vendor (16 bytes)
-            let brand = crate::arch::x86::cpuid::brand();
-            let vendor = crate::arch::x86::cpuid::vendor();
-            buf[0..48].copy_from_slice(brand);
-            buf[48..64].copy_from_slice(vendor);
-
-            // TSC MHz
-            let tsc_mhz = (crate::arch::x86::pit::tsc_hz() / 1_000_000) as u32;
-            buf[64..68].copy_from_slice(&tsc_mhz.to_le_bytes());
+            #[cfg(target_arch = "x86_64")]
+            {
+                let brand = crate::arch::x86::cpuid::brand();
+                let vendor = crate::arch::x86::cpuid::vendor();
+                buf[0..48].copy_from_slice(brand);
+                buf[48..64].copy_from_slice(vendor);
+                // TSC MHz
+                let tsc_mhz = (crate::arch::x86::pit::tsc_hz() / 1_000_000) as u32;
+                buf[64..68].copy_from_slice(&tsc_mhz.to_le_bytes());
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                let brand = b"AArch64 Processor\0";
+                buf[0..brand.len().min(48)].copy_from_slice(&brand[..brand.len().min(48)]);
+                let vendor = b"ARM\0";
+                buf[48..48 + vendor.len().min(16)].copy_from_slice(&vendor[..vendor.len().min(16)]);
+            }
 
             // CPU count
-            let ncpu = crate::arch::x86::smp::cpu_count() as u32;
+            let ncpu = crate::arch::hal::cpu_count() as u32;
             buf[68..72].copy_from_slice(&ncpu.to_le_bytes());
 
             // Boot mode
@@ -200,12 +215,16 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
 
             // Extended fields (108-byte callers only)
             if actual_size >= 108 {
-                let cur_freq = crate::arch::x86::power::current_frequency_mhz();
-                let max_freq = crate::arch::x86::power::max_frequency_mhz();
-                let features = crate::arch::x86::power::features_bitfield();
-                buf[96..100].copy_from_slice(&cur_freq.to_le_bytes());
-                buf[100..104].copy_from_slice(&max_freq.to_le_bytes());
-                buf[104..108].copy_from_slice(&features.to_le_bytes());
+                #[cfg(target_arch = "x86_64")]
+                {
+                    let cur_freq = crate::arch::x86::power::current_frequency_mhz();
+                    let max_freq = crate::arch::x86::power::max_frequency_mhz();
+                    let features = crate::arch::x86::power::features_bitfield();
+                    buf[96..100].copy_from_slice(&cur_freq.to_le_bytes());
+                    buf[100..104].copy_from_slice(&max_freq.to_le_bytes());
+                    buf[104..108].copy_from_slice(&features.to_le_bytes());
+                }
+                // ARM64: fields left as 0 (filled above)
             }
 
             actual_size as u32
@@ -300,20 +319,28 @@ pub fn sys_listenv(buf_ptr: u32, buf_size: u32) -> u32 {
 
 /// SYS_KBD_GET_LAYOUT (200): Returns the currently active keyboard layout ID.
 pub fn sys_kbd_get_layout() -> u32 {
-    crate::drivers::input::layout::get_layout() as u32
+    #[cfg(target_arch = "x86_64")]
+    { crate::drivers::input::layout::get_layout() as u32 }
+    #[cfg(target_arch = "aarch64")]
+    { 0 } // ARM64: TODO — keyboard layout
 }
 
 /// SYS_KBD_SET_LAYOUT (201): Set the active keyboard layout by ID.
 /// Returns 0 on success, u32::MAX if the layout ID is invalid.
 pub fn sys_kbd_set_layout(layout_id: u32) -> u32 {
-    match crate::drivers::input::layout::layout_id_from_u32(layout_id) {
-        Some(id) => {
-            crate::drivers::input::layout::set_layout(id);
-            crate::serial_println!("Keyboard layout changed to {:?}", id);
-            0
+    #[cfg(target_arch = "x86_64")]
+    {
+        match crate::drivers::input::layout::layout_id_from_u32(layout_id) {
+            Some(id) => {
+                crate::drivers::input::layout::set_layout(id);
+                crate::serial_println!("Keyboard layout changed to {:?}", id);
+                0
+            }
+            None => u32::MAX,
         }
-        None => u32::MAX,
     }
+    #[cfg(target_arch = "aarch64")]
+    { let _ = layout_id; u32::MAX }
 }
 
 /// SYS_RANDOM (210): Fill a user buffer with random bytes.
@@ -327,7 +354,10 @@ pub fn sys_random(buf_ptr: u32, len: u32) -> u32 {
     }
 
     let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
+    #[cfg(target_arch = "x86_64")]
     let has_rdrand = crate::arch::x86::cpuid::features().rdrand;
+    #[cfg(target_arch = "aarch64")]
+    let has_rdrand = true; // ARM64: try RNDR (falls back to counter if fails)
 
     let mut filled = 0usize;
     if has_rdrand {
@@ -369,31 +399,53 @@ pub fn sys_random(buf_ptr: u32, len: u32) -> u32 {
     filled as u32
 }
 
-/// Try to read 64 bits from RDRAND. Returns None if the instruction fails.
+/// Try to read 64 bits from hardware RNG.
 #[inline]
 fn rdrand64() -> Option<u64> {
-    let val: u64;
-    let ok: u8;
-    unsafe {
-        core::arch::asm!(
-            "rdrand {val}",
-            "setc {ok}",
-            val = out(reg) val,
-            ok = out(reg_byte) ok,
-        );
+    #[cfg(target_arch = "x86_64")]
+    {
+        let val: u64;
+        let ok: u8;
+        unsafe {
+            core::arch::asm!(
+                "rdrand {val}",
+                "setc {ok}",
+                val = out(reg) val,
+                ok = out(reg_byte) ok,
+            );
+        }
+        if ok != 0 { Some(val) } else { None }
     }
-    if ok != 0 { Some(val) } else { None }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let val: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, s3_3_c2_c4_0", out(reg) val, options(nomem, nostack));
+        }
+        if val != 0 { Some(val) } else { None }
+    }
 }
 
-/// Read the Time Stamp Counter.
+/// Read a hardware monotonic counter.
 #[inline]
 fn rdtsc() -> u64 {
-    let lo: u32;
-    let hi: u32;
-    unsafe {
-        core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi);
+    #[cfg(target_arch = "x86_64")]
+    {
+        let lo: u32;
+        let hi: u32;
+        unsafe {
+            core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi);
+        }
+        ((hi as u64) << 32) | lo as u64
     }
-    ((hi as u64) << 32) | lo as u64
+    #[cfg(target_arch = "aarch64")]
+    {
+        let cnt: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntpct_el0", out(reg) cnt, options(nomem, nostack));
+        }
+        cnt
+    }
 }
 
 /// xorshift64 PRNG step.
@@ -410,22 +462,27 @@ fn xorshift64(mut x: u64) -> u64 {
 /// arg1 = buf_ptr (array of LayoutInfo), arg2 = max_entries.
 /// Returns number of entries written.
 pub fn sys_kbd_list_layouts(buf_ptr: u32, max_entries: u32) -> u32 {
-    use crate::drivers::input::layout::{LAYOUT_INFOS, LAYOUT_COUNT, LayoutInfo};
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::drivers::input::layout::{LAYOUT_INFOS, LAYOUT_COUNT, LayoutInfo};
 
-    let count = (max_entries as usize).min(LAYOUT_COUNT);
-    let byte_size = count * core::mem::size_of::<LayoutInfo>();
+        let count = (max_entries as usize).min(LAYOUT_COUNT);
+        let byte_size = count * core::mem::size_of::<LayoutInfo>();
 
-    if buf_ptr == 0 || byte_size == 0 || !is_valid_user_ptr(buf_ptr as u64, byte_size as u64) {
-        return 0;
+        if buf_ptr == 0 || byte_size == 0 || !is_valid_user_ptr(buf_ptr as u64, byte_size as u64) {
+            return 0;
+        }
+
+        let dst = unsafe {
+            core::slice::from_raw_parts_mut(buf_ptr as *mut LayoutInfo, count)
+        };
+        for i in 0..count {
+            dst[i] = LAYOUT_INFOS[i];
+        }
+        count as u32
     }
-
-    let dst = unsafe {
-        core::slice::from_raw_parts_mut(buf_ptr as *mut LayoutInfo, count)
-    };
-    for i in 0..count {
-        dst[i] = LAYOUT_INFOS[i];
-    }
-    count as u32
+    #[cfg(target_arch = "aarch64")]
+    { let _ = (buf_ptr, max_entries); 0 }
 }
 
 // =========================================================================
@@ -542,28 +599,41 @@ pub fn sys_shutdown(mode: u32) -> u32 {
 
     // ── Phase 2: Halt all other CPUs ──
     crate::serial_println!("kernel: halting other CPUs...");
-    crate::arch::x86::smp::halt_other_cpus();
-    unsafe { core::arch::asm!("cli"); }
+    crate::arch::hal::halt_other_cpus();
+    crate::arch::hal::disable_interrupts();
 
     // ── Phase 3: Power off or reboot ──
-    if mode == 1 {
-        crate::serial_println!("kernel: rebooting via keyboard controller...");
-        unsafe {
-            let mut timeout = 100_000u32;
-            while crate::arch::x86::port::inb(0x64) & 0x02 != 0 && timeout > 0 {
-                timeout -= 1;
+    #[cfg(target_arch = "x86_64")]
+    {
+        if mode == 1 {
+            crate::serial_println!("kernel: rebooting via keyboard controller...");
+            unsafe {
+                let mut timeout = 100_000u32;
+                while crate::arch::x86::port::inb(0x64) & 0x02 != 0 && timeout > 0 {
+                    timeout -= 1;
+                }
+                crate::arch::x86::port::outb(0x64, 0xFE);
             }
-            crate::arch::x86::port::outb(0x64, 0xFE);
+        } else {
+            crate::serial_println!("kernel: powering off via ACPI...");
+            unsafe { crate::arch::x86::port::outw(0x604, 0x2000); }
+            unsafe { crate::arch::x86::port::outw(0xB004, 0x2000); }
         }
-    } else {
-        crate::serial_println!("kernel: powering off via ACPI...");
-        unsafe { crate::arch::x86::port::outw(0x604, 0x2000); }
-        unsafe { crate::arch::x86::port::outw(0xB004, 0x2000); }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if mode == 1 {
+            crate::serial_println!("kernel: rebooting via PSCI...");
+            crate::arch::arm64::power::reset();
+        } else {
+            crate::serial_println!("kernel: powering off via PSCI...");
+            crate::arch::arm64::power::shutdown();
+        }
     }
 
     // Fallback: halt indefinitely if above methods didn't work
     crate::serial_println!("kernel: halt (shutdown method did not take effect)");
     loop {
-        unsafe { core::arch::asm!("hlt"); }
+        crate::arch::hal::halt();
     }
 }

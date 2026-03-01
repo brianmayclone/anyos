@@ -27,8 +27,8 @@ pub extern "C" fn start() {
 
     loop {
         // Sleep ~100ms using blocking sleep (no CPU waste)
-        let sleep_ticks = crate::arch::x86::pit::TICK_HZ / 10;
-        let wake_at = crate::arch::x86::pit::get_ticks().wrapping_add(sleep_ticks);
+        let sleep_ticks = crate::arch::hal::timer_frequency_hz() as u32 / 10;
+        let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(sleep_ticks);
         scheduler::sleep_until(wake_at);
 
         let total = scheduler::total_sched_ticks();
@@ -52,7 +52,10 @@ pub extern "C" fn start() {
         pipe::write(pipe_id, &bytes);
 
         // Write current CPU frequency (MHz) as 4 bytes LE
+        #[cfg(target_arch = "x86_64")]
         let freq = crate::arch::x86::power::current_frequency_mhz();
+        #[cfg(target_arch = "aarch64")]
+        let freq: u32 = 0; // ARM64: TODO — read CPU frequency
         pipe::clear(freq_pipe);
         let freq_bytes = freq.to_le_bytes();
         pipe::write(freq_pipe, &freq_bytes);

@@ -1,0 +1,34 @@
+{
+  "llvm-target": "aarch64-unknown-none-softfloat",
+  "metadata": {
+    "description": "anyOS 64-bit AArch64 kernel target"
+  },
+  "data-layout": "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32",
+  "arch": "aarch64",
+  "target-endian": "little",
+  "target-pointer-width": 64,
+  "target-c-int-width": 32,
+  "os": "none",
+  "env": "",
+  "vendor": "unknown",
+  "features": "+strict-align",
+  "executables": true,
+  "linker-flavor": "gnu-lld",
+  "linker": "rust-lld",
+  "panic-strategy": "abort",
+  "disable-redzone": true,
+  "pre-link-args": {
+    "gnu-lld": [
+      "--gc-sections"
+    ]
+  },
+  "relocation-model": "static",
+  "code-model": "large",
+  "emit-debug-gdb-scripts": false,
+  "exe-suffix": ".elf",
+  "has-thread-local": false,
+  "position-independent-executables": false,
+  "static-position-independent-executables": false,
+  "plt-by-default": false,
+  "max-atomic-width": 128
+}

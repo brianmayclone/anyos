@@ -109,8 +109,8 @@ static DNS_CACHE: Spinlock<Vec<DnsCacheEntry>> = Spinlock::new(Vec::new());
 /// Look up a cached DNS entry. Returns None if not cached or expired (5 min TTL).
 fn cache_lookup(hostname: &str) -> Option<Ipv4Addr> {
     let cache = DNS_CACHE.lock();
-    let now = crate::arch::x86::pit::get_ticks();
-    let ttl_ticks = 300 * crate::arch::x86::pit::TICK_HZ; // 5 minutes
+    let now = crate::arch::hal::timer_current_ticks();
+    let ttl_ticks = 300 * crate::arch::hal::timer_frequency_hz() as u32; // 5 minutes
     for entry in cache.iter() {
         if entry.hostname == hostname {
             if now.wrapping_sub(entry.cached_at) < ttl_ticks {
@@ -124,7 +124,7 @@ fn cache_lookup(hostname: &str) -> Option<Ipv4Addr> {
 /// Insert or update a DNS cache entry.
 fn cache_insert(hostname: &str, addr: Ipv4Addr) {
     let mut cache = DNS_CACHE.lock();
-    let now = crate::arch::x86::pit::get_ticks();
+    let now = crate::arch::hal::timer_current_ticks();
     // Update existing entry if present.
     for entry in cache.iter_mut() {
         if entry.hostname == hostname {

@@ -951,7 +951,10 @@ fn perform_shutdown(
         draw_shutdown_logo(fb_ptr, w, h, fb_stride, top_r, top_g, top_b, bot_r, bot_g, bot_b);
 
         // Memory barrier to flush WC buffers before GPU reads VRAM
+        #[cfg(target_arch = "x86_64")]
         unsafe { core::arch::asm!("sfence", options(nostack, preserves_flags)); }
+        #[cfg(target_arch = "aarch64")]
+        unsafe { core::arch::asm!("dsb st", options(nostack, preserves_flags)); }
 
         // Hide HW cursor and issue full-screen GPU update
         c.gpu_cmds.push([compositor::gpu::GPU_CURSOR_SHOW, 0, 0, 0, 0, 0, 0, 0, 0]);

@@ -1,8 +1,7 @@
 //! Software framebuffer for the rasterizer.
 //!
 //! `SwFramebuffer` owns a color buffer (`Vec<u32>` in ARGB) and a depth buffer
-//! (`Vec<f32>` with 1.0 = far). Uses SIMD for bulk clears (~4× faster than
-//! scalar loop for large framebuffers).
+//! (`Vec<f32>` with 1.0 = far). Uses simple scalar loops for bulk clears.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -32,51 +31,16 @@ impl SwFramebuffer {
     }
 
     /// Clear the color buffer to the given ARGB value.
-    ///
-    /// Uses SSE2 128-bit stores to write 4 pixels per instruction.
     pub fn clear_color(&mut self, argb: u32) {
-        let len = self.color.len();
-        let ptr = self.color.as_mut_ptr();
-
-        unsafe {
-            use core::arch::x86_64::*;
-            let val = _mm_set1_epi32(argb as i32);
-            let aligned_len = len & !3; // round down to multiple of 4
-
-            let mut i = 0;
-            while i < aligned_len {
-                _mm_storeu_si128(ptr.add(i) as *mut __m128i, val);
-                i += 4;
-            }
-            // Handle remaining pixels
-            while i < len {
-                *ptr.add(i) = argb;
-                i += 1;
-            }
+        for p in self.color.iter_mut() {
+            *p = argb;
         }
     }
 
     /// Clear the depth buffer to the given value.
-    ///
-    /// Uses SSE 128-bit stores to write 4 depth values per instruction.
     pub fn clear_depth(&mut self, val: f32) {
-        let len = self.depth.len();
-        let ptr = self.depth.as_mut_ptr();
-
-        unsafe {
-            use core::arch::x86_64::*;
-            let v = _mm_set1_ps(val);
-            let aligned_len = len & !3;
-
-            let mut i = 0;
-            while i < aligned_len {
-                _mm_storeu_ps(ptr.add(i), v);
-                i += 4;
-            }
-            while i < len {
-                *ptr.add(i) = val;
-                i += 1;
-            }
+        for p in self.depth.iter_mut() {
+            *p = val;
         }
     }
 

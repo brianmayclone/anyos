@@ -5,12 +5,20 @@ use crate::raw::*;
 
 pub fn exit(code: u32) -> ! {
     unsafe {
+        #[cfg(target_arch = "x86_64")]
         asm!(
             "mov rbx, {code}",
             "int 0x80",
             code = in(reg) code as u64,
             in("rax") SYS_EXIT as u64,
             options(noreturn)
+        );
+        #[cfg(target_arch = "aarch64")]
+        asm!(
+            "svc #0",
+            in("x0") code as u64,
+            in("x8") SYS_EXIT as u64,
+            options(noreturn, nostack)
         );
     }
 }

@@ -182,10 +182,10 @@ pub fn sys_evt_chan_wait(chan_id: u32, sub_id: u32, timeout_ms: u32) -> u32 {
 
     // Compute wake tick. Cap indefinite waits at 60 seconds as safety net.
     let effective_ms = if timeout_ms == u32::MAX { 60_000 } else { timeout_ms };
-    let pit_hz = crate::arch::x86::pit::TICK_HZ;
+    let pit_hz = crate::arch::hal::timer_frequency_hz() as u32;
     let ticks = (effective_ms as u64 * pit_hz as u64 / 1000) as u32;
     let ticks = if ticks == 0 { 1 } else { ticks };
-    let now = crate::arch::x86::pit::get_ticks();
+    let now = crate::arch::hal::timer_current_ticks();
     let wake_at = now.wrapping_add(ticks);
 
     // Block — thread sleeps until: emit wakes us, input IRQ wakes us, or timeout.

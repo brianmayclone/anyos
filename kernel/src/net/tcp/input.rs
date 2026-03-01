@@ -76,7 +76,7 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
                                 tcb.rcv_nxt = seg.seq.wrapping_add(1);
                                 tcb.snd_nxt = tcb.snd_iss.wrapping_add(1);
                                 tcb.parent_listener = Some(lid as u8);
-                                tcb.last_send_tick = crate::arch::x86::pit::get_ticks();
+                                tcb.last_send_tick = crate::arch::hal::timer_current_ticks();
                                 // Store peer's window scale if present (RFC 7323)
                                 if let Some(shift) = seg.wscale {
                                     tcb.snd_wnd_shift = shift;
@@ -134,7 +134,7 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
         // Read state before borrowing tcb mutably (needed for SynReceived
         // which also needs to access the listener in the table).
         let state = table[idx].as_ref().unwrap().state;
-        let now = crate::arch::x86::pit::get_ticks();
+        let now = crate::arch::hal::timer_current_ticks();
 
         // SynReceived needs access to both tcb AND the parent listener in table,
         // so handle it separately to avoid double-mutable-borrow.
@@ -366,7 +366,7 @@ fn fast_retransmit(tcb: &mut Tcb) {
 
     TCP_RETRANSMITS.fetch_add(1, Ordering::Relaxed);
     tcb.retransmit_count = 0; // Reset — fast retransmit is not a timeout
-    tcb.last_send_tick = crate::arch::x86::pit::get_ticks();
+    tcb.last_send_tick = crate::arch::hal::timer_current_ticks();
 
     // Extract first MSS of send_buf for retransmission
     let len = tcb.send_buf.len().min(MSS);

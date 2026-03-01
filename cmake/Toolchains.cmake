@@ -1,6 +1,13 @@
 # ============================================================
 # C Library, TCC, and Games (require i686-elf cross-compiler)
 # ============================================================
+# ARM64 port: C toolchain is x86-only for now — skip entirely
+if(ANYOS_ARCH STREQUAL "arm64")
+  set(C_TOOLCHAIN_DEPS "")
+  set(CXX_TOOLCHAIN_DEPS "")
+  return()
+endif()
+
 if(HAS_CROSS_COMPILER)
 # ── C Library (libc.a + crt0.o for C programs) ──
 set(LIBC_DIR "${CMAKE_SOURCE_DIR}/libs/libc")
