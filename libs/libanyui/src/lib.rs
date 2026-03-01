@@ -1811,6 +1811,50 @@ pub extern "C" fn anyui_texteditor_select_all(id: ControlId) {
     }
 }
 
+/// Highlight a line with a background color. Multiple calls add more highlights.
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_highlight_line(id: ControlId, line: u32, color: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor(ctrl) {
+            te.highlight_line(line, color);
+        }
+    }
+}
+
+/// Remove all line highlights.
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_clear_highlights(id: ControlId) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor(ctrl) {
+            te.clear_highlights();
+        }
+    }
+}
+
+/// Set read-only mode (1 = read-only, 0 = editable).
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_set_read_only(id: ControlId, read_only: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor(ctrl) {
+            te.read_only = read_only != 0;
+        }
+    }
+}
+
+/// Scroll to make a specific line visible (centered).
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_ensure_line_visible(id: ControlId, line: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor(ctrl) {
+            te.ensure_line_visible(line);
+        }
+    }
+}
+
 // ── TreeView ──────────────────────────────────────────────────────────
 
 fn as_tree_view(ctrl: &mut alloc::boxed::Box<dyn Control>) -> Option<&mut controls::tree_view::TreeView> {

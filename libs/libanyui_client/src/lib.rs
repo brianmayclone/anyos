@@ -269,6 +269,10 @@ struct AnyuiLib {
     texteditor_cut: extern "C" fn(u32) -> u32,
     texteditor_paste: extern "C" fn(u32) -> u32,
     texteditor_select_all: extern "C" fn(u32),
+    texteditor_highlight_line: extern "C" fn(u32, u32, u32),
+    texteditor_clear_highlights: extern "C" fn(u32),
+    texteditor_set_read_only: extern "C" fn(u32, u32),
+    texteditor_ensure_line_visible: extern "C" fn(u32, u32),
     // TreeView
     treeview_add_node: extern "C" fn(u32, u32, *const u8, u32) -> u32,
     treeview_remove_node: extern "C" fn(u32, u32),
@@ -505,6 +509,10 @@ pub fn init() -> bool {
             texteditor_cut: resolve(&handle, "anyui_texteditor_cut"),
             texteditor_paste: resolve(&handle, "anyui_texteditor_paste"),
             texteditor_select_all: resolve(&handle, "anyui_texteditor_select_all"),
+            texteditor_highlight_line: resolve(&handle, "anyui_texteditor_highlight_line"),
+            texteditor_clear_highlights: resolve(&handle, "anyui_texteditor_clear_highlights"),
+            texteditor_set_read_only: resolve(&handle, "anyui_texteditor_set_read_only"),
+            texteditor_ensure_line_visible: resolve(&handle, "anyui_texteditor_ensure_line_visible"),
             // TreeView
             treeview_add_node: resolve(&handle, "anyui_treeview_add_node"),
             treeview_remove_node: resolve(&handle, "anyui_treeview_remove_node"),

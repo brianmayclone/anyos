@@ -7,6 +7,7 @@ pub mod address;
 pub mod heap;
 pub mod physical;
 pub mod virtual_mem;
+pub mod vma;
 
 /// Size of a single memory page/frame in bytes (4 KiB).
 pub const FRAME_SIZE: usize = 4096;

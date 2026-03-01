@@ -269,6 +269,11 @@ fn main() {
         // Selection changed — no action needed until attach button clicked
     });
 
+    // ── Snapshot grid: click to view snapshot registers ──
+    app().snapshot_view.grid.on_selection_changed(|_| {
+        on_snapshot_selected();
+    });
+
     // ── Timers ──
 
     // Poll timer (100ms): debug events only
@@ -300,8 +305,16 @@ fn on_attach() {
         return;
     }
     if s.debugger.attach(tid) {
-        s.output_panel.log(&format!("Attached to TID {}.", tid));
-        s.status_bar.set_state(&format!("Attached to TID {}", tid));
+        s.output_panel.log(&format!("Attached to TID {} (suspended).", tid));
+        s.output_panel.log(&format!(
+            "  RIP={} RSP={} RBP={}",
+            crate::util::format::hex64(s.debugger.regs.rip),
+            crate::util::format::hex64(s.debugger.regs.rsp),
+            crate::util::format::hex64(s.debugger.regs.rbp),
+        ));
+        s.status_bar.set_state(&format!("TID {} — Suspended", tid));
+        // Start profiler sampling on attach
+        s.sampler.start();
         update_all_views();
     } else {
         s.output_panel.log(&format!("Failed to attach to TID {}.", tid));
@@ -314,6 +327,7 @@ fn on_detach() {
     let s = app();
     let tid = s.debugger.target_tid;
     s.breakpoints.clear_all(tid);
+    s.sampler.stop();
     s.debugger.detach();
     s.output_panel.log("Detached.");
     s.status_bar.set_state("Detached");
@@ -361,6 +375,31 @@ fn on_snapshot() {
     s.snapshot_view.update(&s.snapshots.snapshots);
 }
 
+/// View a snapshot's registers when selected in the snapshot grid.
+fn on_snapshot_selected() {
+    let s = app();
+    let row = s.snapshot_view.grid.selected_row();
+    if row == u32::MAX {
+        return;
+    }
+    if let Some(snap) = s.snapshots.snapshots.get(row as usize) {
+        let regs = snap.regs;
+        s.registers_view.update(&regs);
+        s.output_panel.log(&format!(
+            "Viewing snapshot #{}: RIP={}",
+            snap.index,
+            crate::util::format::hex64(regs.rip),
+        ));
+
+        // Also update disassembly if we can read the snapshot's RIP
+        let mut code = [0u8; 256];
+        let read = s.debugger.read_mem(regs.rip, &mut code);
+        if read > 0 {
+            s.disasm_view.update(&code[..read], regs.rip, regs.rip);
+        }
+    }
+}
+
 // ════════════════════════════════════════════════════════════════
 //  View update helpers
 // ════════════════════════════════════════════════════════════════
@@ -385,6 +424,13 @@ fn update_all_views() {
     let read = s.debugger.read_mem(rip, &mut code);
     if read > 0 {
         s.disasm_view.update(&code[..read], rip, rip);
+        s.output_panel.log(&format!("Disasm: {} bytes at RIP={}", read, crate::util::format::hex64(rip)));
+    } else {
+        s.disasm_view.show_message(&format!(
+            "Cannot read memory at RIP={}\n(page may be unmapped)",
+            crate::util::format::hex64(rip),
+        ));
+        s.output_panel.log(&format!("read_mem returned 0 at RIP={}", crate::util::format::hex64(rip)));
     }
 
     // Memory: show stack area (RSP - 64)
@@ -394,11 +440,20 @@ fn update_all_views() {
     let mem_read = s.debugger.read_mem(mem_addr, &mut mem_buf);
     if mem_read > 0 {
         s.memory_view.update(mem_addr, &mem_buf[..mem_read]);
+    } else {
+        s.memory_view.show_message(&format!(
+            "Cannot read memory around RSP={}",
+            crate::util::format::hex64(rsp),
+        ));
     }
 
     // Call stack
     let frames = unwinder::unwind(tid, rip, regs.rbp, 32);
     s.stack_view.update(&frames);
+
+    // Always record profiler sample when suspended
+    s.sampler.record(tid, rip);
+    s.timeline_view.update_timeline(&s.sampler.samples);
 
     // Record trace if active
     if s.traces.active {
@@ -410,12 +465,6 @@ fn update_all_views() {
                 s.trace_view.update(&s.traces.entries);
             }
         }
-    }
-
-    // Record profiler sample if active
-    if s.sampler.active {
-        s.sampler.record(tid, rip);
-        s.timeline_view.update(&s.sampler.samples, 0, 200);
     }
 }
 

@@ -198,7 +198,8 @@ pub fn sys_sbrk(increment: i32) -> u32 {
 /// arg1=size (bytes, rounded up to page boundary). Returns virtual address or u32::MAX on error.
 ///
 /// Allocates physical frames, maps them with PAGE_USER|PAGE_WRITABLE, zeroes them.
-/// Virtual addresses are assigned from a per-process bump pointer starting at 0x20000000.
+/// Virtual addresses are found via the per-process VMA gap-finder, which reuses
+/// freed regions (unlike the old bump-pointer allocator).
 pub fn sys_mmap(size: u32) -> u32 {
     use crate::memory::address::VirtAddr;
     use crate::memory::physical;
@@ -208,22 +209,28 @@ pub fn sys_mmap(size: u32) -> u32 {
         return u32::MAX;
     }
 
-    const MMAP_BASE: u32 = 0x7000_0000;
-    const MMAP_LIMIT: u32 = 0xBF00_0000; // 1.25 GiB mmap region
     const PAGE_SIZE: u32 = 4096;
 
     let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
     let num_pages = aligned_size / PAGE_SIZE;
 
-    let mmap_next = crate::task::scheduler::current_thread_mmap_next();
-    let base = if mmap_next < MMAP_BASE { MMAP_BASE } else { mmap_next };
+    // Find a free gap in the mmap virtual address space via the VMA registry.
+    let pd = match crate::task::scheduler::current_thread_page_directory() {
+        Some(pd) => pd,
+        None => {
+            crate::serial_println!("sys_mmap: no page directory for current thread");
+            return u32::MAX;
+        }
+    };
+    let base = match crate::memory::vma::alloc_region(pd, aligned_size) {
+        Some(addr) => addr,
+        None => {
+            crate::serial_println!("sys_mmap: out of mmap virtual address space");
+            return u32::MAX;
+        }
+    };
 
-    if base.checked_add(aligned_size).map_or(true, |end| end > MMAP_LIMIT) {
-        crate::serial_println!("sys_mmap: out of mmap virtual address space");
-        return u32::MAX;
-    }
-
-    // Allocate and map pages
+    // Allocate and map physical pages.
     let mut addr = base;
     for _ in 0..num_pages {
         if let Some(phys) = physical::alloc_frame() {
@@ -234,7 +241,7 @@ pub fn sys_mmap(size: u32) -> u32 {
             );
             unsafe { core::ptr::write_bytes(addr as *mut u8, 0, PAGE_SIZE as usize); }
         } else {
-            // Out of physical memory — unmap what we already mapped
+            // Out of physical memory — unmap what we already mapped and free VMA.
             let mut cleanup = base;
             while cleanup < addr {
                 let pte = virtual_mem::read_pte(VirtAddr::new(cleanup as u64));
@@ -245,6 +252,7 @@ pub fn sys_mmap(size: u32) -> u32 {
                 }
                 cleanup += PAGE_SIZE;
             }
+            crate::memory::vma::free_region(pd, base, aligned_size);
             crate::serial_println!("sys_mmap: out of physical memory");
             return u32::MAX;
         }
@@ -252,6 +260,7 @@ pub fn sys_mmap(size: u32) -> u32 {
     }
 
     crate::task::scheduler::adjust_current_user_pages(num_pages as i32);
+    // Keep mmap_next in sync (threads sharing this PD read it).
     crate::task::scheduler::set_current_thread_mmap_next(base + aligned_size);
 
     base
@@ -299,6 +308,11 @@ pub fn sys_munmap(addr: u32, size: u32) -> u32 {
 
     if freed > 0 {
         crate::task::scheduler::adjust_current_user_pages(-(freed as i32));
+    }
+
+    // Update VMA bookkeeping so the freed virtual addresses can be reused.
+    if let Some(pd) = crate::task::scheduler::current_thread_page_directory() {
+        crate::memory::vma::free_region(pd, addr, aligned_size);
     }
 
     0
@@ -479,6 +493,9 @@ pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
         }
     };
     let t_fork_cloned = crate::arch::x86::pit::get_ticks();
+
+    // Clone VMA table from parent to child process.
+    crate::memory::vma::clone_for_fork(snap.pd, child_pd);
 
     // 3. Build child name: "parent_name(fork)"
     let name_len = snap.name.iter().position(|&b| b == 0).unwrap_or(snap.name.len());

@@ -103,6 +103,9 @@ impl Control for IconButton {
             tc.text_secondary
         };
 
+        // Opacity for disabled state: 38% (visually greyed out)
+        let icon_opacity = if disabled { 96u8 } else { 255u8 };
+
         if has_icon && has_text {
             // ── Horizontal layout: [pad | icon | gap | text | pad] ──
             let iw = if !self.icon_pixels.is_empty() { self.icon_w as i32 } else { default_icon_sz };
@@ -111,7 +114,7 @@ impl Control for IconButton {
             let iy = y + (h as i32 - ih) / 2;
 
             if !self.icon_pixels.is_empty() {
-                blit_alpha(surface, ix, iy, self.icon_w, self.icon_h, &self.icon_pixels);
+                blit_alpha_opacity(surface, ix, iy, self.icon_w, self.icon_h, &self.icon_pixels, icon_opacity);
             } else {
                 crate::icons::draw_icon(surface, ix, iy, icon_id, icon_color);
             }
@@ -125,7 +128,7 @@ impl Control for IconButton {
             if !self.icon_pixels.is_empty() {
                 let ix = x + (w as i32 - self.icon_w as i32) / 2;
                 let iy = y + (h as i32 - self.icon_h as i32) / 2;
-                blit_alpha(surface, ix, iy, self.icon_w, self.icon_h, &self.icon_pixels);
+                blit_alpha_opacity(surface, ix, iy, self.icon_w, self.icon_h, &self.icon_pixels, icon_opacity);
             } else {
                 let ix = x + (w as i32 - default_icon_sz) / 2;
                 let iy = y + (h as i32 - default_icon_sz) / 2;
@@ -163,9 +166,12 @@ impl Control for IconButton {
     }
 }
 
-/// Blit ARGB pixels with alpha blending (for SVG icon rendering).
-fn blit_alpha(s: &crate::draw::Surface, x: i32, y: i32, w: u32, h: u32, src: &[u32]) {
-    if w == 0 || h == 0 || src.is_empty() { return; }
+/// Blit ARGB pixels with alpha blending and an extra opacity multiplier.
+///
+/// `opacity` is 0–255: 255 = fully opaque, lower values dim the icon
+/// (used for disabled state rendering).
+fn blit_alpha_opacity(s: &crate::draw::Surface, x: i32, y: i32, w: u32, h: u32, src: &[u32], opacity: u8) {
+    if w == 0 || h == 0 || src.is_empty() || opacity == 0 { return; }
     let sw = s.width as i32;
     let clip_x0 = s.clip_x.max(0);
     let clip_y0 = s.clip_y.max(0);
@@ -185,7 +191,7 @@ fn blit_alpha(s: &crate::draw::Surface, x: i32, y: i32, w: u32, h: u32, src: &[u
             let si = src_off + (px - x) as usize;
             if si >= src.len() { break; }
             let pixel = src[si];
-            let a = pixel >> 24;
+            let a = (pixel >> 24) * opacity as u32 / 255;
             if a == 0 { continue; }
             let di = dst_row + px as usize;
             if a >= 255 {

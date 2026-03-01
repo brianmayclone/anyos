@@ -148,6 +148,12 @@ struct UndoState {
 
 // ── TextEditor ───────────────────────────────────────────────────────
 
+/// A line highlight entry: line index + background color.
+struct LineHighlight {
+    line: usize,
+    color: u32,
+}
+
 pub struct TextEditor {
     pub(crate) base: ControlBase,
     lines: Vec<Vec<u8>>,
@@ -167,6 +173,10 @@ pub struct TextEditor {
     pub(crate) char_width: u32,
     undo_stack: Vec<UndoState>,
     redo_stack: Vec<UndoState>,
+    /// Per-line background highlights (e.g., current RIP in a debugger).
+    highlighted_lines: Vec<LineHighlight>,
+    /// When true, text cannot be edited (navigation and copy still work).
+    pub(crate) read_only: bool,
 }
 
 impl TextEditor {
@@ -192,6 +202,8 @@ impl TextEditor {
             char_width,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            highlighted_lines: Vec::new(),
+            read_only: false,
         }
     }
 
@@ -271,6 +283,37 @@ impl TextEditor {
         self.redo_stack.clear();
         self.update_gutter_width();
         self.base.mark_dirty();
+    }
+
+    /// Highlight a specific line with the given background color (ARGB).
+    /// Multiple lines can be highlighted. Call `clear_highlights()` first
+    /// to reset, then add highlights.
+    pub fn highlight_line(&mut self, line: u32, color: u32) {
+        self.highlighted_lines.push(LineHighlight { line: line as usize, color });
+        self.base.mark_dirty();
+    }
+
+    /// Remove all line highlights.
+    pub fn clear_highlights(&mut self) {
+        if !self.highlighted_lines.is_empty() {
+            self.highlighted_lines.clear();
+            self.base.mark_dirty();
+        }
+    }
+
+    /// Scroll the view so that the given line is visible (centered if possible).
+    pub fn ensure_line_visible(&mut self, line: u32) {
+        let row = line as usize;
+        if row >= self.lines.len() { return; }
+        let line_h = self.line_height as i32;
+        let visible_h = self.base.h as i32 - 2;
+        let row_top = row as i32 * line_h;
+        let row_bottom = row_top + line_h;
+        if row_top < self.scroll_y || row_bottom > self.scroll_y + visible_h {
+            // Center the line
+            self.scroll_y = (row_top - visible_h / 2).max(0);
+            self.base.mark_dirty();
+        }
     }
 
     pub fn get_text(&self) -> Vec<u8> {
@@ -538,7 +581,21 @@ impl Control for TextEditor {
         for row in visible_start..visible_end {
             let row_y = y + 1 + (row as i32) * s_line_h as i32 - s_scroll_y;
 
-            // Current line highlight
+            // Per-line highlights (debugger breakpoints, current RIP, etc.)
+            for hl in &self.highlighted_lines {
+                if hl.line == row {
+                    crate::draw::fill_rect(
+                        &clipped,
+                        x + 1,
+                        row_y,
+                        w.saturating_sub(2),
+                        s_line_h,
+                        hl.color,
+                    );
+                }
+            }
+
+            // Current line highlight (cursor line, only when focused)
             if row == self.cursor_row && self.focused {
                 crate::draw::fill_rect(
                     &clipped,
@@ -708,7 +765,7 @@ impl Control for TextEditor {
             self.base.mark_dirty();
             return EventResponse::CONSUMED;
         }
-        if button & 4 != 0 {
+        if button & 4 != 0 && !self.read_only {
             // Middle button: paste clipboard
             if let Some(data) = crate::compositor::clipboard_get() {
                 self.delete_selection();
@@ -772,8 +829,9 @@ impl Control for TextEditor {
                 }
                 return EventResponse::CONSUMED;
             }
-            // Ctrl+X: cut
+            // Ctrl+X: cut (blocked in read-only)
             if char_code == b'x' as u32 || char_code == b'X' as u32 {
+                if self.read_only { return EventResponse::CONSUMED; }
                 if let Some(text) = self.extract_selected_text() {
                     self.push_undo();
                     crate::compositor::clipboard_set(&text);
@@ -781,8 +839,9 @@ impl Control for TextEditor {
                 }
                 return EventResponse::CHANGED;
             }
-            // Ctrl+V: paste
+            // Ctrl+V: paste (blocked in read-only)
             if char_code == b'v' as u32 || char_code == b'V' as u32 {
+                if self.read_only { return EventResponse::CONSUMED; }
                 if let Some(data) = crate::compositor::clipboard_get() {
                     self.push_undo();
                     self.delete_selection();
@@ -791,15 +850,17 @@ impl Control for TextEditor {
                 }
                 return EventResponse::CHANGED;
             }
-            // Ctrl+Z: undo
+            // Ctrl+Z: undo (blocked in read-only)
             if char_code == b'z' as u32 || char_code == b'Z' as u32 {
+                if self.read_only { return EventResponse::CONSUMED; }
                 if self.undo() {
                     return EventResponse::CHANGED;
                 }
                 return EventResponse::CONSUMED;
             }
-            // Ctrl+Y: redo
+            // Ctrl+Y: redo (blocked in read-only)
             if char_code == b'y' as u32 || char_code == b'Y' as u32 {
+                if self.read_only { return EventResponse::CONSUMED; }
                 if self.redo() {
                     return EventResponse::CHANGED;
                 }
@@ -880,6 +941,15 @@ impl Control for TextEditor {
             self.ensure_cursor_visible();
             self.base.mark_dirty();
             return EventResponse::CONSUMED;
+        }
+
+        // ── Read-only: block all text mutations ──
+        if self.read_only {
+            if (char_code >= 0x20 && char_code < 0x7F)
+                || matches!(keycode, KEY_ENTER | KEY_TAB | KEY_BACKSPACE | KEY_DELETE)
+            {
+                return EventResponse::CONSUMED;
+            }
         }
 
         // ── Backspace / Delete with selection: delete selection ──

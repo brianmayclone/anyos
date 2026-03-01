@@ -16,6 +16,7 @@ impl MemoryView {
     pub fn new(_parent: &impl Widget) -> Self {
         let editor = ui::TextEditor::new(800, 600);
         editor.set_dock(ui::DOCK_FILL);
+        editor.set_read_only(true);
         // Use monospace font (font_id 4 = Andale Mono)
         editor.set_font(4);
 
@@ -30,5 +31,10 @@ impl MemoryView {
         self.base_addr = addr;
         let text = memory::format_hex_dump(addr, data);
         self.editor.set_text(&text);
+    }
+
+    /// Show a message when memory is not readable.
+    pub fn show_message(&self, msg: &str) {
+        self.editor.set_text(msg);
     }
 }

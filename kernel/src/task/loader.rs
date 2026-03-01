@@ -1005,9 +1005,10 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     // ASLR: randomize mmap base for each new process so mmap allocations
     // land at a different address than the previous run.
     let mmap_rand = random_page_offset(ASLR_MMAP_MAX_PAGES);
-    crate::task::scheduler::set_thread_mmap_next(
-        tid, 0x7000_0000u32.wrapping_add(mmap_rand * 4096),
-    );
+    let mmap_start = 0x7000_0000u32.wrapping_add(mmap_rand * 4096);
+    crate::task::scheduler::set_thread_mmap_next(tid, mmap_start);
+    // Initialize VMA table for this process (gap-finding allocator).
+    crate::memory::vma::init_process(pd_phys, mmap_start);
     crate::task::scheduler::set_thread_user_info(tid, pd_phys, brk as u32);
     if total_user_pages > 0 {
         crate::task::scheduler::adjust_thread_user_pages(tid, total_user_pages as i32);

@@ -295,3 +295,4 @@ pub fn alloc_contiguous(count: usize) -> Option<PhysAddr> {
 pub fn total_frames() -> usize {
     ALLOCATOR.lock().total_frames
 }
+

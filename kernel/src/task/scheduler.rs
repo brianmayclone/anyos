@@ -81,6 +81,7 @@ impl DeferredPdQueue {
                 }
             }
             crate::memory::virtual_mem::destroy_user_page_directory(old_pd);
+            crate::memory::vma::destroy_process(old_pd);
         }
         // Now there is a free slot — insert the new entry.
         for slot in self.entries.iter_mut() {
@@ -940,6 +941,7 @@ fn schedule_inner(from_timer: bool) {
             }
             // tid == 0: cleanup_process already ran in kill_thread — just destroy.
             crate::memory::virtual_mem::destroy_user_page_directory(pd);
+            crate::memory::vma::destroy_process(pd);
         }
     }
 
@@ -3639,7 +3641,32 @@ pub fn debug_resume(debugger_tid: u32, target_tid: u32) -> u32 {
     0
 }
 
-/// Read the target thread's CpuContext into a user buffer.
+/// Read the target thread's user-space register state into a user buffer.
+///
+/// The thread's `context` field stores the kernel-internal context (from
+/// context_switch), whose RIP/RSP point into kernel code. The actual user
+/// registers live on the thread's kernel stack in the SyscallRegs / ISR frame
+/// pushed at kernel entry. This function extracts them.
+///
+/// Kernel stack layout from top (both SYSCALL and ISR paths):
+///   kernel_stack_top - 8:  SS
+///   kernel_stack_top - 16: user RSP
+///   kernel_stack_top - 24: RFLAGS
+///   kernel_stack_top - 32: CS
+///   kernel_stack_top - 40: user RIP   (IRET frame — same position for both paths)
+///   ... then GPRs + optional int_num/error_code
+///
+/// For SYSCALL path (SyscallRegs, 160 bytes total):
+///   GPRs at kernel_stack_top - 160 .. kernel_stack_top - 48
+///   Order (low→high): r15,r14,r13,r12,r11,r10,r9,r8,rbp,rdi,rsi,rdx,rcx,rbx,rax
+///
+/// For ISR path (InterruptFrame, 176 bytes total):
+///   GPRs at kernel_stack_top - 176 .. kernel_stack_top - 64
+///   + int_num at kernel_stack_top - 56, error_code at kernel_stack_top - 48
+///   Same GPR order as SYSCALL.
+///
+/// Detection: Read kernel_stack_top - 56. If 0..255 and kernel_stack_top - 48
+///   is 0 or a valid error code, assume ISR path. Otherwise SYSCALL path.
 ///
 /// Returns number of bytes copied, or u32::MAX on error.
 pub fn debug_get_regs(debugger_tid: u32, target_tid: u32, buf_ptr: u64, size: u32) -> u32 {
@@ -3661,14 +3688,71 @@ pub fn debug_get_regs(debugger_tid: u32, target_tid: u32, buf_ptr: u64, size: u3
         return u32::MAX; // Must be suspended to read registers
     }
 
-    // Copy first 160 bytes of CpuContext (20 u64 fields: 16 GPRs + RSP + RIP + RFLAGS + CR3)
-    let ctx = &sched.threads[idx].context;
-    let ctx_ptr = ctx as *const CpuContext as *const u8;
-    let copy_len = (size as usize).min(160); // 20 * 8 = 160 bytes
+    let thread = &sched.threads[idx];
+    let ktop = thread.kernel_stack_top();
+    let cr3 = thread.context.cr3;
 
+    // Read IRET frame (always at fixed position from kernel_stack_top)
+    let user_rip    = unsafe { *((ktop - 40) as *const u64) };
+    let user_cs     = unsafe { *((ktop - 32) as *const u64) };
+    let user_rflags = unsafe { *((ktop - 24) as *const u64) };
+    let user_rsp    = unsafe { *((ktop - 16) as *const u64) };
+
+    // Verify this looks like a user-mode IRET frame (CS has RPL=3)
+    let is_user_frame = (user_cs & 3) == 3 && user_rip < 0x0000_8000_0000_0000;
+
+    if !is_user_frame {
+        // Fallback: copy kernel context as-is (thread may not have entered from user mode)
+        let ctx = &thread.context;
+        let ctx_ptr = ctx as *const CpuContext as *const u8;
+        let copy_len = (size as usize).min(160);
+        unsafe {
+            let dst = buf_ptr as *mut u8;
+            core::ptr::copy_nonoverlapping(ctx_ptr, dst, copy_len);
+        }
+        return copy_len as u32;
+    }
+
+    // Detect SYSCALL vs ISR path by checking the int_num/error_code slots
+    // ISR path has int_num at ktop-56 (0..255) and error_code at ktop-48
+    // SYSCALL path has rbx at ktop-56 and rax at ktop-48
+    let val_at_56 = unsafe { *((ktop - 56) as *const u64) };
+    let val_at_48 = unsafe { *((ktop - 48) as *const u64) };
+    // Heuristic: if val_at_56 is a valid interrupt number (0..255) and
+    // val_at_48 is 0 or a small error code, assume ISR path
+    let is_isr_path = val_at_56 <= 255 && val_at_48 <= 0x1F;
+    let gpr_base = if is_isr_path { ktop - 176 } else { ktop - 160 };
+
+    // Read GPRs from the frame (order: r15,r14,...,r8,rbp,rdi,rsi,rdx,rcx,rbx,rax)
+    let r15 = unsafe { *((gpr_base +   0) as *const u64) };
+    let r14 = unsafe { *((gpr_base +   8) as *const u64) };
+    let r13 = unsafe { *((gpr_base +  16) as *const u64) };
+    let r12 = unsafe { *((gpr_base +  24) as *const u64) };
+    let r11 = unsafe { *((gpr_base +  32) as *const u64) };
+    let r10 = unsafe { *((gpr_base +  40) as *const u64) };
+    let r9  = unsafe { *((gpr_base +  48) as *const u64) };
+    let r8  = unsafe { *((gpr_base +  56) as *const u64) };
+    let rbp = unsafe { *((gpr_base +  64) as *const u64) };
+    let rdi = unsafe { *((gpr_base +  72) as *const u64) };
+    let rsi = unsafe { *((gpr_base +  80) as *const u64) };
+    let rdx = unsafe { *((gpr_base +  88) as *const u64) };
+    let rcx = unsafe { *((gpr_base +  96) as *const u64) };
+    let rbx = unsafe { *((gpr_base + 104) as *const u64) };
+    let rax = unsafe { *((gpr_base + 112) as *const u64) };
+
+    // Build CpuContext-compatible buffer for the debugger
+    // Layout: rax,rbx,rcx,rdx,rsi,rdi,rbp,r8,r9,r10,r11,r12,r13,r14,r15,rsp,rip,rflags,cr3,reserved
+    let user_ctx: [u64; 20] = [
+        rax, rbx, rcx, rdx, rsi, rdi, rbp,
+        r8, r9, r10, r11, r12, r13, r14, r15,
+        user_rsp, user_rip, user_rflags, cr3, 0,
+    ];
+
+    let copy_len = (size as usize).min(160);
     unsafe {
+        let src = user_ctx.as_ptr() as *const u8;
         let dst = buf_ptr as *mut u8;
-        core::ptr::copy_nonoverlapping(ctx_ptr, dst, copy_len);
+        core::ptr::copy_nonoverlapping(src, dst, copy_len);
     }
 
     copy_len as u32
@@ -4129,8 +4213,20 @@ pub fn thread_info_ex(target_tid: u32, buf_ptr: u64, size: u32) -> u32 {
     put_u32(&mut buf, 20, thread.user_pages);
     put_u32(&mut buf, 24, thread.brk);
     put_u32(&mut buf, 28, thread.mmap_next);
-    put_u64(&mut buf, 32, thread.context.rip);
-    put_u64(&mut buf, 40, thread.context.rsp);
+    // Extract user-space RIP/RSP from kernel stack IRET frame (kernel_stack_top - 40/16)
+    // context.rip/rsp contain kernel-internal addresses from context_switch.
+    let ktop = thread.kernel_stack_top();
+    let user_rip = unsafe { *((ktop - 40) as *const u64) };
+    let user_cs  = unsafe { *((ktop - 32) as *const u64) };
+    let user_rsp = unsafe { *((ktop - 16) as *const u64) };
+    // Use user-space values if the IRET frame looks valid (CS has RPL=3)
+    let (rip_val, rsp_val) = if (user_cs & 3) == 3 && user_rip < 0x0000_8000_0000_0000 {
+        (user_rip, user_rsp)
+    } else {
+        (thread.context.rip, thread.context.rsp)
+    };
+    put_u64(&mut buf, 32, rip_val);
+    put_u64(&mut buf, 40, rsp_val);
     put_u64(&mut buf, 48, thread.context.cr3);
     put_u64(&mut buf, 56, thread.io_read_bytes);
     put_u64(&mut buf, 64, thread.io_write_bytes);

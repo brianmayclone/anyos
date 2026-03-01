@@ -114,6 +114,10 @@ EXPORTS
     anyui_texteditor_cut
     anyui_texteditor_paste
     anyui_texteditor_select_all
+    anyui_texteditor_highlight_line
+    anyui_texteditor_clear_highlights
+    anyui_texteditor_set_read_only
+    anyui_texteditor_ensure_line_visible
     anyui_treeview_add_node
     anyui_treeview_remove_node
     anyui_treeview_set_node_text
