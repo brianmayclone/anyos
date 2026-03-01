@@ -18,7 +18,18 @@ impl Control for Button {
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = &self.text_base.base;
-        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+
+        // Calculate actual button width: if auto_size is set, measure text and add padding
+        let button_w = if b.auto_size {
+            let font_size = crate::draw::scale_font(self.text_base.text_style.font_size);
+            let (tw, _th) = crate::draw::text_size_at(&self.text_base.text, font_size);
+            // Button padding: 12px left + 12px right (24px total)
+            (tw + 24).min(0xFFFF) as u32
+        } else {
+            b.w
+        };
+
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, button_w, b.h);
         let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
         let disabled = b.disabled;

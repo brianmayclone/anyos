@@ -405,8 +405,19 @@ Clickable button.
 
 ```rust
 Button::new(text: &str) -> Self
+fn auto_size(&self)    // Automatically size button to fit text
 fn on_click(&self, f: impl FnMut(&ClickEvent) + 'static)
 ```
+
+**Auto-sizing:** Call `auto_size()` to automatically resize the button's width to fit its text content with 12px padding on each side.
+
+```rust
+let btn = Button::new("Click Me");
+btn.auto_size();  // Button width = text_width + 24px
+win.add(&btn);
+```
+
+Without `auto_size()`, you must manually set the button size with `set_size(w, h)`.
 
 ### TextField
 
@@ -564,6 +575,7 @@ Button with built-in icon. Supports legacy pixel-art icons (ICON_* constants) an
 
 ```rust
 IconButton::new(icon_text: &str) -> Self
+fn auto_size(&self)                         // Automatically size button to fit icon + text
 fn set_icon(&self, icon_id: u32)            // Legacy ICON_* constants
 fn set_system_icon(&self, name: &str, icon_type: IconType, color: u32, size: u32)
                                             // Render SVG from ico.pak (6000+ Tabler Icons)
