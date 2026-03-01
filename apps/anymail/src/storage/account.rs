@@ -174,13 +174,25 @@ impl MailConfig {
                 acc.incoming_port = item["incoming_port"].as_i64().unwrap_or(993) as u16;
                 acc.incoming_security = parse_security(item["incoming_security"].as_str().unwrap_or("tls"));
                 acc.incoming_user = String::from(item["incoming_user"].as_str().unwrap_or(""));
-                acc.incoming_pass = deobfuscate(item["incoming_pass"].as_str().unwrap_or(""));
+                // Try obfuscated format first, fall back to plain text
+                let pass_str = item["incoming_pass"].as_str().unwrap_or("");
+                acc.incoming_pass = if pass_str.starts_with("$OBF$") {
+                    deobfuscate(&pass_str[5..])  // Skip $OBF$ prefix
+                } else {
+                    String::from(pass_str)  // Plain text fallback
+                };
 
                 acc.smtp_host = String::from(item["smtp_host"].as_str().unwrap_or(""));
                 acc.smtp_port = item["smtp_port"].as_i64().unwrap_or(587) as u16;
                 acc.smtp_security = parse_security(item["smtp_security"].as_str().unwrap_or("starttls"));
                 acc.smtp_user = String::from(item["smtp_user"].as_str().unwrap_or(""));
-                acc.smtp_pass = deobfuscate(item["smtp_pass"].as_str().unwrap_or(""));
+                // Try obfuscated format first, fall back to plain text
+                let pass_str = item["smtp_pass"].as_str().unwrap_or("");
+                acc.smtp_pass = if pass_str.starts_with("$OBF$") {
+                    deobfuscate(&pass_str[5..])  // Skip $OBF$ prefix
+                } else {
+                    String::from(pass_str)  // Plain text fallback
+                };
 
                 acc.check_interval_secs = item["check_interval"].as_i64().unwrap_or(300) as u32;
                 acc.signature = String::from(item["signature"].as_str().unwrap_or(""));
@@ -217,12 +229,14 @@ impl MailConfig {
             obj.set("incoming_port", (acc.incoming_port as i64).into());
             obj.set("incoming_security", security_str(acc.incoming_security).into());
             obj.set("incoming_user", acc.incoming_user.as_str().into());
-            obj.set("incoming_pass", obfuscate(&acc.incoming_pass).as_str().into());
+            // Store passwords in plain text for better compatibility and simpler import/export
+            // (They're already protected by file permissions, not cryptographically)
+            obj.set("incoming_pass", acc.incoming_pass.as_str().into());
             obj.set("smtp_host", acc.smtp_host.as_str().into());
             obj.set("smtp_port", (acc.smtp_port as i64).into());
             obj.set("smtp_security", security_str(acc.smtp_security).into());
             obj.set("smtp_user", acc.smtp_user.as_str().into());
-            obj.set("smtp_pass", obfuscate(&acc.smtp_pass).as_str().into());
+            obj.set("smtp_pass", acc.smtp_pass.as_str().into());
             obj.set("check_interval", (acc.check_interval_secs as i64).into());
             obj.set("signature", acc.signature.as_str().into());
             obj.set("leave_on_server", acc.leave_on_server.into());
