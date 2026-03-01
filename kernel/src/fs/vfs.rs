@@ -393,7 +393,7 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
         #[cfg(target_arch = "x86_64")]
         let vbr_ok = crate::drivers::storage::read_sectors(root_partition_lba(), 1, &mut buf);
         #[cfg(target_arch = "aarch64")]
-        let vbr_ok = false;
+        let vbr_ok = crate::drivers::arm::storage::read_sectors(root_partition_lba(), 1, &mut buf);
         if vbr_ok {
             crate::serial_println!("  VFS auto-detect: OEM bytes = {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
                 buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9], buf[10]);

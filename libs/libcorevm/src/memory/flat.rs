@@ -2,14 +2,15 @@
 //!
 //! `FlatMemory` is the simplest guest RAM implementation: a single zeroed
 //! allocation that maps guest physical addresses 1:1 to host offsets.
-//! Out-of-bounds accesses return `VmError::PageFault` with `error_code = 0`,
-//! which the CPU exception router can deliver as a #PF to the guest.
+//! Out-of-bounds reads return `0xFF` (floating bus), matching real x86
+//! hardware behavior for accesses to unmapped physical address space.
+//! Out-of-bounds writes are silently ignored.
 
 use alloc::vec;
 use alloc::vec::Vec;
 
 use super::MemoryBus;
-use crate::error::{Result, VmError};
+use crate::error::Result;
 
 /// Flat, contiguous guest physical memory.
 ///
@@ -65,20 +66,11 @@ impl FlatMemory {
     }
 }
 
-/// Helper: return a `PageFault` error for an out-of-bounds access.
-#[inline]
-fn oob_fault(addr: u64) -> VmError {
-    VmError::PageFault {
-        address: addr,
-        error_code: 0,
-    }
-}
-
 impl MemoryBus for FlatMemory {
     fn read_u8(&self, addr: u64) -> Result<u8> {
         let a = addr as usize;
         if a >= self.size {
-            return Err(oob_fault(addr));
+            return Ok(0xFF); // floating bus
         }
         Ok(self.data[a])
     }
@@ -87,7 +79,7 @@ impl MemoryBus for FlatMemory {
         let a = addr as usize;
         let end = a.wrapping_add(2);
         if end > self.size || end < a {
-            return Err(oob_fault(addr));
+            return Ok(0xFFFF); // floating bus
         }
         let bytes: [u8; 2] = [self.data[a], self.data[a + 1]];
         Ok(u16::from_le_bytes(bytes))
@@ -97,7 +89,7 @@ impl MemoryBus for FlatMemory {
         let a = addr as usize;
         let end = a.wrapping_add(4);
         if end > self.size || end < a {
-            return Err(oob_fault(addr));
+            return Ok(0xFFFF_FFFF); // floating bus
         }
         let bytes: [u8; 4] = [
             self.data[a],
@@ -112,7 +104,7 @@ impl MemoryBus for FlatMemory {
         let a = addr as usize;
         let end = a.wrapping_add(8);
         if end > self.size || end < a {
-            return Err(oob_fault(addr));
+            return Ok(0xFFFF_FFFF_FFFF_FFFF); // floating bus
         }
         let bytes: [u8; 8] = [
             self.data[a],
@@ -130,7 +122,7 @@ impl MemoryBus for FlatMemory {
     fn write_u8(&mut self, addr: u64, val: u8) -> Result<()> {
         let a = addr as usize;
         if a >= self.size {
-            return Err(oob_fault(addr));
+            return Ok(()); // ignore write to unmapped physical memory
         }
         self.data[a] = val;
         Ok(())
@@ -140,7 +132,7 @@ impl MemoryBus for FlatMemory {
         let a = addr as usize;
         let end = a.wrapping_add(2);
         if end > self.size || end < a {
-            return Err(oob_fault(addr));
+            return Ok(()); // ignore write to unmapped physical memory
         }
         let bytes = val.to_le_bytes();
         self.data[a] = bytes[0];
@@ -152,7 +144,7 @@ impl MemoryBus for FlatMemory {
         let a = addr as usize;
         let end = a.wrapping_add(4);
         if end > self.size || end < a {
-            return Err(oob_fault(addr));
+            return Ok(()); // ignore write to unmapped physical memory
         }
         let bytes = val.to_le_bytes();
         self.data[a] = bytes[0];
@@ -166,7 +158,7 @@ impl MemoryBus for FlatMemory {
         let a = addr as usize;
         let end = a.wrapping_add(8);
         if end > self.size || end < a {
-            return Err(oob_fault(addr));
+            return Ok(()); // ignore write to unmapped physical memory
         }
         let bytes = val.to_le_bytes();
         self.data[a] = bytes[0];
@@ -184,7 +176,9 @@ impl MemoryBus for FlatMemory {
         let a = addr as usize;
         let end = a.wrapping_add(buf.len());
         if end > self.size || end < a {
-            return Err(oob_fault(addr));
+            // Fill with 0xFF for unmapped physical memory
+            buf.fill(0xFF);
+            return Ok(());
         }
         buf.copy_from_slice(&self.data[a..end]);
         Ok(())
@@ -194,7 +188,7 @@ impl MemoryBus for FlatMemory {
         let a = addr as usize;
         let end = a.wrapping_add(buf.len());
         if end > self.size || end < a {
-            return Err(oob_fault(addr));
+            return Ok(()); // ignore write to unmapped physical memory
         }
         self.data[a..end].copy_from_slice(buf);
         Ok(())

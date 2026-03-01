@@ -11,6 +11,7 @@ use crate::fpu_state::FpuState;
 use crate::interrupts::InterruptController;
 use crate::io::IoDispatch;
 use crate::memory::{AccessType, GuestMemory, MemoryBus, Mmu};
+use crate::registers::SegmentDescriptor;
 use crate::registers::{
     RegisterFile, SegReg, CR0_PE, CR0_PG, EFER_LMA, EFER_LME, MSR_EFER,
 };
@@ -60,6 +61,14 @@ pub struct Cpu {
     stop_requested: bool,
     /// A20 gate enabled (address line 20 masking for real-mode compat).
     pub a20_enabled: bool,
+    /// RIP at the start of the last successfully decoded instruction.
+    pub last_exec_rip: u64,
+    /// CS selector at the start of the last decoded instruction.
+    pub last_exec_cs: u16,
+    /// Opcode of the last decoded instruction (for diagnostics).
+    pub last_opcode: u16,
+    /// Physical address of the last decoded instruction.
+    pub last_fetch_addr: u64,
 }
 
 impl Cpu {
@@ -74,6 +83,10 @@ impl Cpu {
             instruction_count: 0,
             stop_requested: false,
             a20_enabled: true,
+            last_exec_rip: 0,
+            last_exec_cs: 0,
+            last_opcode: 0,
+            last_fetch_addr: 0,
         }
     }
 
@@ -86,6 +99,10 @@ impl Cpu {
         self.decoder.set_mode(CpuMode::Real16);
         self.instruction_count = 0;
         self.stop_requested = false;
+        self.last_exec_rip = 0;
+        self.last_exec_cs = 0;
+        self.last_opcode = 0;
+        self.last_fetch_addr = 0;
     }
 
     /// Request the CPU to stop at the next instruction boundary.
@@ -100,11 +117,18 @@ impl Cpu {
         let efer = self.regs.read_msr(MSR_EFER);
         let lma = efer & EFER_LMA != 0;
         let cs_long = self.regs.seg[SegReg::Cs as usize].long_mode;
+        let cs_big = self.regs.seg[SegReg::Cs as usize].big;
 
         if pe && pg && lma && cs_long {
             CpuMode::Long64
-        } else if pe {
+        } else if pe && cs_big {
+            // 32-bit protected mode: CS.D=1 → default 32-bit operand/address
             CpuMode::Protected32
+        } else if pe {
+            // 16-bit protected mode: CS.D=0 → default 16-bit operand/address
+            // (e.g., immediately after MOV CR0 enables PE, before far JMP
+            // loads a 32-bit CS descriptor)
+            CpuMode::Real16
         } else {
             CpuMode::Real16
         }
@@ -127,13 +151,84 @@ impl Cpu {
 
         let new_mode = self.compute_mode();
         self.decoder.set_mode(new_mode);
-        self.mode = match new_mode {
-            CpuMode::Long64 => Mode::LongMode,
-            CpuMode::Protected32 => Mode::ProtectedMode,
-            CpuMode::Real16 => Mode::RealMode,
+
+        // The CPU mode (for segment lookups, privilege checks, etc.) is
+        // determined by CR0.PE and EFER.LMA, independent of the CS.D bit.
+        // CS.D only affects the decoder's default operand/address size.
+        let pe = self.regs.cr0 & CR0_PE != 0;
+        let lma = self.regs.read_msr(MSR_EFER) & EFER_LMA != 0;
+        self.mode = if pe && pg && lma {
+            Mode::LongMode
+        } else if pe {
+            Mode::ProtectedMode
+        } else {
+            Mode::RealMode
         };
 
         // Sync MMU state will be done by the caller (VmEngine.run updates Mmu)
+    }
+
+    /// Read a segment descriptor from the GDT given a selector.
+    ///
+    /// Performs bounds checking against the GDTR limit and translates
+    /// the GDT base address through paging if enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VmError::GeneralProtection` if the selector index exceeds
+    /// the GDT limit or if the memory read fails.
+    pub fn read_gdt_descriptor(
+        &self,
+        selector: u16,
+        memory: &GuestMemory,
+        mmu: &Mmu,
+    ) -> Result<SegmentDescriptor> {
+        let index = (selector & 0xFFF8) as u64;
+        if index + 7 > self.regs.gdtr.limit as u64 {
+            return Err(VmError::GeneralProtection(selector as u32 & 0xFFFC));
+        }
+        let addr = self.regs.gdtr.base.wrapping_add(index);
+        let phys = mmu.translate_linear(
+            addr,
+            self.regs.cr3,
+            AccessType::Read,
+            self.regs.cpl,
+            memory,
+        )?;
+        let raw = memory.read_u64(phys)?;
+        Ok(SegmentDescriptor::from_raw(selector, raw))
+    }
+
+    /// Load a segment register by reading its descriptor from the GDT.
+    ///
+    /// For null selectors (index 0), loads a null descriptor. Null selectors
+    /// are allowed for DS, ES, FS, GS but not for CS or SS.
+    pub fn load_segment_from_gdt(
+        &mut self,
+        seg: SegReg,
+        selector: u16,
+        memory: &GuestMemory,
+        mmu: &Mmu,
+    ) -> Result<()> {
+        if (selector & 0xFFFC) == 0 {
+            // Null selector — allowed for data segments, not CS/SS.
+            if matches!(seg, SegReg::Cs | SegReg::Ss) {
+                return Err(VmError::GeneralProtection(0));
+            }
+            let desc = &mut self.regs.seg[seg as usize];
+            desc.selector = selector;
+            desc.base = 0;
+            desc.limit = 0;
+            desc.present = false;
+            desc.is_code = false;
+            desc.readable = false;
+            desc.writable = false;
+            return Ok(());
+        }
+        // LDT selectors (TI=1) not supported — use GDT regardless.
+        let desc = self.read_gdt_descriptor(selector, memory, mmu)?;
+        self.regs.seg[seg as usize] = desc;
+        Ok(())
     }
 
     /// Get the stack operand size for the current mode.
@@ -226,6 +321,11 @@ impl Cpu {
                 }
             };
 
+            // Save trace info for diagnostics before decode/execute.
+            self.last_exec_rip = self.regs.rip;
+            self.last_exec_cs = self.regs.seg[SegReg::Cs as usize].selector;
+            self.last_fetch_addr = phys_addr;
+
             // Fetch & decode — use physical address for flat memory read
             // Note: for simplicity, we decode from physical memory directly.
             // A proper implementation would handle page-crossing instruction fetches.
@@ -243,8 +343,22 @@ impl Cpu {
                     }
                     continue;
                 }
-                Err(_) => {
-                    let ud = VmError::UndefinedOpcode(0);
+                Err(ref _decode_err) => {
+                    // Log the raw bytes at the faulting IP for diagnostics.
+                    use crate::memory::MemoryBus;
+                    let b0 = memory.read_u8(phys_addr).unwrap_or(0xFF);
+                    let b1 = memory.read_u8(phys_addr + 1).unwrap_or(0xFF);
+                    let b2 = memory.read_u8(phys_addr + 2).unwrap_or(0xFF);
+                    let b3 = memory.read_u8(phys_addr + 3).unwrap_or(0xFF);
+                    let b4 = memory.read_u8(phys_addr + 4).unwrap_or(0xFF);
+                    let b5 = memory.read_u8(phys_addr + 5).unwrap_or(0xFF);
+                    libsyscall::serial_print(format_args!(
+                        "[corevm] #UD at CS:IP={:04X}:{:X} phys={:X} bytes=[{:02X} {:02X} {:02X} {:02X} {:02X} {:02X}]\n",
+                        self.regs.seg[SegReg::Cs as usize].selector,
+                        self.regs.rip, phys_addr,
+                        b0, b1, b2, b3, b4, b5,
+                    ));
+                    let ud = VmError::UndefinedOpcode(b0);
                     if let Err(e2) =
                         self.inject_exception_from_error(&ud, memory, mmu, interrupts)
                     {
@@ -253,6 +367,8 @@ impl Cpu {
                     continue;
                 }
             };
+
+            self.last_opcode = inst.opcode;
 
             // Execute the decoded instruction
             match crate::executor::execute(self, &inst, memory, mmu, io, interrupts) {
@@ -268,6 +384,22 @@ impl Cpu {
                     return ExitReason::Breakpoint;
                 }
                 Err(ref e) => {
+                    use crate::memory::MemoryBus;
+                    let b0 = memory.read_u8(phys_addr).unwrap_or(0xFF);
+                    let b1 = memory.read_u8(phys_addr + 1).unwrap_or(0xFF);
+                    let b2 = memory.read_u8(phys_addr + 2).unwrap_or(0xFF);
+                    let b3 = memory.read_u8(phys_addr + 3).unwrap_or(0xFF);
+                    libsyscall::serial_print(format_args!(
+                        "[corevm] exec error at CS:IP={:04X}:{:X} phys={:X} opcode=0x{:04X} bytes=[{:02X} {:02X} {:02X} {:02X}] modrm_reg={} CS.base={:X}: {:?}\n",
+                        self.regs.seg[SegReg::Cs as usize].selector,
+                        self.last_exec_rip,
+                        phys_addr,
+                        inst.opcode,
+                        b0, b1, b2, b3,
+                        inst.modrm_reg(),
+                        self.regs.seg[SegReg::Cs as usize].base,
+                        e
+                    ));
                     if let Err(e2) =
                         self.inject_exception_from_error(e, memory, mmu, interrupts)
                     {
@@ -487,19 +619,9 @@ impl Cpu {
         // Clear TF
         self.regs.rflags &= !TF;
 
-        // Load handler CS:EIP
-        // TODO: Load CS from GDT using entry.selector
-        // For now, just set the selector and a flat code segment
-        let cs_desc = &mut self.regs.seg[SegReg::Cs as usize];
-        cs_desc.selector = entry.selector;
-        cs_desc.base = 0;
-        cs_desc.limit = 0xFFFF_FFFF;
-        cs_desc.is_code = true;
-        cs_desc.readable = true;
-        cs_desc.present = true;
-        cs_desc.big = true;
-        cs_desc.dpl = 0;
-
+        // Load handler CS from GDT.
+        self.load_segment_from_gdt(SegReg::Cs, entry.selector, &*memory, mmu)?;
+        self.update_mode();
         self.regs.rip = entry.offset;
         self.regs.cpl = 0; // Handler runs in ring 0
 
@@ -589,18 +711,9 @@ impl Cpu {
         // Clear TF
         self.regs.rflags &= !TF;
 
-        // Load handler CS:RIP
-        let cs_desc = &mut self.regs.seg[SegReg::Cs as usize];
-        cs_desc.selector = entry.selector;
-        cs_desc.base = 0;
-        cs_desc.limit = 0xFFFF_FFFF;
-        cs_desc.is_code = true;
-        cs_desc.readable = true;
-        cs_desc.present = true;
-        cs_desc.big = false;
-        cs_desc.long_mode = true;
-        cs_desc.dpl = 0;
-
+        // Load handler CS from GDT.
+        self.load_segment_from_gdt(SegReg::Cs, entry.selector, &*memory, mmu)?;
+        self.update_mode();
         self.regs.rip = entry.offset;
         self.regs.cpl = 0;
 

@@ -1,8 +1,8 @@
 //! System instruction handlers.
 //!
-//! Implements LGDT, LIDT, SGDT, SIDT, MOV CR, MOV DR, RDMSR, WRMSR, CPUID,
-//! RDTSC, INVLPG, HLT, LMSW, SMSW, SYSCALL, SYSRET, SWAPGS, WBINVD, and
-//! CLTS.
+//! Implements LGDT, LIDT, SGDT, SIDT, SLDT, LLDT, STR, LTR, MOV CR, MOV DR,
+//! RDMSR, WRMSR, CPUID, RDTSC, INVLPG, HLT, LMSW, SMSW, SYSCALL, SYSRET,
+//! SWAPGS, WBINVD, and CLTS.
 
 use crate::cpu::{Cpu, Mode};
 use crate::error::{Result, VmError};
@@ -141,6 +141,60 @@ pub fn exec_sidt(
         )?;
     }
 
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
+}
+
+// ── Group 6: SLDT / STR / LLDT / LTR ──
+
+/// SLDT: store the Local Descriptor Table Register selector to r/m16.
+pub fn exec_sldt(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    memory: &mut GuestMemory,
+    mmu: &Mmu,
+) -> Result<()> {
+    let val = cpu.regs.ldtr as u64;
+    super::write_operand(cpu, inst, &inst.operands[0], val, memory, mmu)?;
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
+}
+
+/// STR: store the Task Register selector to r/m16.
+pub fn exec_str(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    memory: &mut GuestMemory,
+    mmu: &Mmu,
+) -> Result<()> {
+    let val = cpu.regs.tr as u64;
+    super::write_operand(cpu, inst, &inst.operands[0], val, memory, mmu)?;
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
+}
+
+/// LLDT: load the Local Descriptor Table Register from r/m16.
+pub fn exec_lldt(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    memory: &mut GuestMemory,
+    mmu: &Mmu,
+) -> Result<()> {
+    let val = super::read_operand(cpu, inst, &inst.operands[0], memory, mmu)? as u16;
+    cpu.regs.ldtr = val;
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
+}
+
+/// LTR: load the Task Register from r/m16.
+pub fn exec_ltr(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    memory: &mut GuestMemory,
+    mmu: &Mmu,
+) -> Result<()> {
+    let val = super::read_operand(cpu, inst, &inst.operands[0], memory, mmu)? as u16;
+    cpu.regs.tr = val;
     cpu.regs.rip += inst.length as u64;
     Ok(())
 }

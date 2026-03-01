@@ -516,9 +516,22 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
         }
         ExitReason::Exception(ref err) => {
             let rip = vm.engine.cpu.regs.rip;
-            vm_log!("VM exception at RIP=0x{:X}: {}", rip, err);
+            let orig_rip = vm.engine.cpu.last_exec_rip;
+            let orig_cs = vm.engine.cpu.last_exec_cs;
+            let orig_opcode = vm.engine.cpu.last_opcode;
+            let orig_phys = vm.engine.cpu.last_fetch_addr;
+            vm_log!("VM exception: {}", err);
+            vm_log!("  current RIP=0x{:X}, mode={:?}", rip, vm.engine.cpu.mode);
+            vm_log!(
+                "  last instruction: CS=0x{:04X} IP=0x{:X} phys=0x{:X} opcode=0x{:04X}",
+                orig_cs, orig_rip, orig_phys, orig_opcode
+            );
+            vm_log!(
+                "  instructions executed: {}",
+                vm.engine.instruction_count()
+            );
             vm.last_error = Some(*err);
-            vm.last_error_rip = rip;
+            vm.last_error_rip = orig_rip;
             1
         }
         ExitReason::InstructionLimit => 2,
@@ -860,14 +873,18 @@ pub extern "C" fn corevm_vga_get_framebuffer(
 /// Get a pointer to the VGA text-mode buffer (80x25 cells, `u16` per cell).
 ///
 /// Each cell: low byte = ASCII character, high byte = color attribute.
+/// If `count` is non-null, `*count` is set to the number of `u16` cells (2000).
 /// Returns null if the VGA device has not been set up.
 #[no_mangle]
-pub extern "C" fn corevm_vga_get_text_buffer(handle: u64) -> *const u16 {
+pub extern "C" fn corevm_vga_get_text_buffer(handle: u64, count: *mut u32) -> *const u16 {
     let vm = unsafe { vm_from_handle(handle) };
     if vm.svga_ptr.is_null() {
         return ptr::null();
     }
     let svga = unsafe { &*vm.svga_ptr };
+    if !count.is_null() {
+        unsafe { *count = svga.text_buffer.len() as u32 };
+    }
     svga.text_buffer.as_ptr()
 }
 

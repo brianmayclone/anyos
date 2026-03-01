@@ -8,7 +8,7 @@
 //! - Settings dialog for editing VM configurations
 //! - Keyboard and mouse forwarding to the guest OS
 //!
-//! VM configurations are persisted in `/System/vmmanager/vms.conf`.
+//! VM configurations are persisted in `/System/shared/vmmanager/vms.conf`.
 
 #![no_std]
 #![no_main]
@@ -36,7 +36,10 @@ const CANVAS_W: u32 = 640;
 const CANVAS_H: u32 = 400;
 
 /// Number of guest instructions to execute per timer tick (~30 fps).
-const INSTRUCTIONS_PER_TICK: u64 = 200_000;
+/// SeaBIOS needs hundreds of millions of instructions to boot, so this
+/// must be high enough to make progress. 50M instructions per 33ms frame
+/// approximates ~1.5 GHz effective speed.
+const INSTRUCTIONS_PER_TICK: u64 = 50_000_000;
 
 /// Number of PIT ticks to advance per timer callback. Approximates the
 /// real PIT rate of ~1.193 MHz scaled to a 33 ms timer interval: roughly
@@ -47,7 +50,7 @@ const PIT_TICKS_PER_FRAME: u32 = 40;
 const MAX_VMS: usize = 16;
 
 /// Path to the VM configuration file.
-const CONFIG_PATH: &str = "/System/vmmanager/vms.conf";
+const CONFIG_PATH: &str = "/System/shared/vmmanager/vms.conf";
 
 /// Path to the SeaBIOS ROM image (256 KiB, loaded at physical address 0xC0000).
 const SEABIOS_PATH: &str = "/System/shared/corevm/bios/seabios.bin";
@@ -300,6 +303,9 @@ fn save_config(vms: &[VmEntry]) {
         data.push(b'\n');
         data.push(b'\n');
     }
+
+    // Ensure parent directory exists.
+    fs::mkdir("/System/shared/vmmanager");
 
     let fd = fs::open(CONFIG_PATH, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
     if fd != u32::MAX {
@@ -1457,6 +1463,14 @@ fn vm_tick() {
             }
             ExitReason::Breakpoint => {
                 entry.state = VmState::Paused;
+            }
+        }
+
+        // Drain serial output from the guest and print to host console.
+        let serial_out = handle.serial_take_output_vec();
+        if !serial_out.is_empty() {
+            if let Ok(text) = core::str::from_utf8(&serial_out) {
+                anyos_std::print!("{}", text);
             }
         }
 

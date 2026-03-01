@@ -339,22 +339,21 @@ pub fn exec_mov_seg(
             Mode::RealMode => {
                 cpu.regs.load_segment_real(seg_reg, selector);
             }
-            _ => {
-                // In protected/long mode we would normally do a full descriptor
-                // load from the GDT/LDT. For now, update the selector and
-                // set the base to zero (flat model assumption for long mode).
-                if matches!(cpu.mode, Mode::LongMode) {
-                    let desc = cpu.regs.segment_mut(seg_reg);
-                    desc.selector = selector;
-                    // In long mode, CS/DS/ES/SS bases are forced to 0
-                    match seg_reg {
-                        SegReg::Fs | SegReg::Gs => {} // keep existing base from MSR
-                        _ => desc.base = 0,
-                    }
-                } else {
-                    // Protected mode: load descriptor from GDT
-                    // Simplified: set selector, would need GDT walk for full impl
-                    cpu.regs.segment_mut(seg_reg).selector = selector;
+            Mode::LongMode => {
+                // In long mode, CS/DS/ES/SS bases are forced to 0.
+                // FS/GS retain their base (set via MSR).
+                let desc = cpu.regs.segment_mut(seg_reg);
+                desc.selector = selector;
+                match seg_reg {
+                    SegReg::Fs | SegReg::Gs => {} // keep existing base from MSR
+                    _ => desc.base = 0,
+                }
+            }
+            Mode::ProtectedMode => {
+                // Load full descriptor from the GDT.
+                cpu.load_segment_from_gdt(seg_reg, selector, memory, mmu)?;
+                if matches!(seg_reg, SegReg::Cs) {
+                    cpu.update_mode();
                 }
             }
         }

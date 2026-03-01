@@ -59,8 +59,8 @@ const DESC_SH_ISH: u64 = 3 << 8;
 // MAIR attribute indices (matching boot.S MAIR_EL1 setup)
 /// AttrIndx=0: Device-nGnRnE (strongly-ordered MMIO).
 const DESC_ATTR_DEV: u64 = 0 << 2;
-/// AttrIndx=2: Normal Write-Back Cacheable.
-const DESC_ATTR_WB: u64 = 2 << 2;
+/// AttrIndx=1: Normal Write-Back Cacheable.
+const DESC_ATTR_WB: u64 = 1 << 2;
 
 // Access permissions (AP[7:6])
 /// EL1 R/W, EL0 no access.

@@ -395,12 +395,12 @@ if [ "$ARM64_MODE" = true ]; then
         echo "  Running kernel-only (no filesystem). Build with: ./scripts/build.sh --arm64"
     fi
     qemu-system-aarch64 \
-        -M virt -cpu cortex-a72 \
+        -M virt,gic-version=3 -cpu cortex-a72 \
         -m 512M \
         -kernel "$KERNEL_ELF" \
-        -device virtio-gpu-pci \
-        -device virtio-keyboard-pci \
-        -device virtio-mouse-pci \
+        -device virtio-gpu-device \
+        -device virtio-keyboard-device \
+        -device virtio-mouse-device \
         -serial stdio \
         $DISK_ARGS \
         -no-reboot -no-shutdown

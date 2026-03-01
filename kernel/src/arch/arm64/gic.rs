@@ -4,7 +4,7 @@
 //! - GICD: 0x0800_0000 (Distributor)
 //! - GICR: 0x080A_0000 (Redistributor, per-CPU)
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// GICD (Distributor) base address on QEMU virt.
 const GICD_BASE: usize = 0x0800_0000;
@@ -30,6 +30,9 @@ const GICR_SGI_ICENABLER0: usize = 0x10180;
 const GICR_SGI_IPRIORITYR: usize = 0x10400;
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// Last acknowledged interrupt ID (per-CPU in single-core; for SMP needs per-CPU storage).
+static LAST_IAR: AtomicU32 = AtomicU32::new(1023);
 
 /// Write to a GICD register.
 #[inline]
@@ -201,6 +204,21 @@ pub fn send_sgi(target_cpu: usize, sgi_id: u8) {
             options(nostack),
         );
         core::arch::asm!("isb", options(nostack));
+    }
+}
+
+/// Acknowledge the pending interrupt and save its ID for later EOI.
+pub fn acknowledge_and_save() -> u32 {
+    let intid = acknowledge();
+    LAST_IAR.store(intid, Ordering::Relaxed);
+    intid
+}
+
+/// Send EOI for the last acknowledged interrupt (used by HAL irq_eoi()).
+pub fn eoi_last() {
+    let intid = LAST_IAR.load(Ordering::Relaxed);
+    if intid < 1020 {
+        eoi(intid);
     }
 }
 

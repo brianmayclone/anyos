@@ -397,11 +397,14 @@ add_custom_target(arm64-image DEPENDS ${ARM64_DISK_IMAGE} programs)
 
 add_custom_target(run-arm64
   COMMAND qemu-system-aarch64
-    -M virt -cpu cortex-a72
+    -M virt,gic-version=3 -cpu cortex-a72
     -m 512M -nographic
     -kernel ${KERNEL_ARM64_ELF}
     -drive if=none,format=raw,file=${ARM64_DISK_IMAGE},id=hd0
     -device virtio-blk-device,drive=hd0
+    -device virtio-gpu-device
+    -device virtio-keyboard-device
+    -device virtio-mouse-device
     -serial stdio
     -no-reboot -no-shutdown
   DEPENDS kernel-arm64 ${ARM64_DISK_IMAGE}
@@ -411,11 +414,14 @@ add_custom_target(run-arm64
 
 add_custom_target(run-arm64-debug
   COMMAND qemu-system-aarch64
-    -M virt -cpu cortex-a72
+    -M virt,gic-version=3 -cpu cortex-a72
     -m 512M -nographic
     -kernel ${KERNEL_ARM64_ELF}
     -drive if=none,format=raw,file=${ARM64_DISK_IMAGE},id=hd0
     -device virtio-blk-device,drive=hd0
+    -device virtio-gpu-device
+    -device virtio-keyboard-device
+    -device virtio-mouse-device
     -serial stdio
     -s -S
     -no-reboot -no-shutdown
