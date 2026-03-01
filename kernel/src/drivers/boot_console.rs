@@ -5,9 +5,9 @@
 //! to a bitmap text console for panic/error output on a dark red background.
 
 use crate::graphics::font::{FONT_WIDTH, FONT_HEIGHT};
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-static FB_ADDR: AtomicU32 = AtomicU32::new(0);
+static FB_ADDR: AtomicU64 = AtomicU64::new(0);
 static FB_PITCH: AtomicU32 = AtomicU32::new(0);
 static FB_WIDTH: AtomicU32 = AtomicU32::new(0);
 static FB_HEIGHT: AtomicU32 = AtomicU32::new(0);
@@ -51,7 +51,7 @@ pub fn init() {
 
 /// Framebuffer change hook — called by framebuffer::update() when a GPU driver
 /// changes the active display. Re-renders the splash centered for the new resolution.
-fn on_fb_changed(addr: u32, pitch: u32, width: u32, height: u32) {
+fn on_fb_changed(addr: u64, pitch: u32, width: u32, height: u32) {
     FB_ADDR.store(addr, Ordering::Relaxed);
     FB_PITCH.store(pitch, Ordering::Relaxed);
     FB_WIDTH.store(width, Ordering::Relaxed);
@@ -69,7 +69,7 @@ fn is_ready() -> bool {
 fn put_pixel(x: u32, y: u32, color: u32) {
     let addr = FB_ADDR.load(Ordering::Relaxed);
     let pitch = FB_PITCH.load(Ordering::Relaxed);
-    let ptr = (addr + y * pitch + x * 4) as *mut u32;
+    let ptr = (addr + y as u64 * pitch as u64 + x as u64 * 4) as *mut u32;
     unsafe { ptr.write_volatile(color); }
 }
 
@@ -79,7 +79,7 @@ fn clear_screen(color: u32) {
     let width = FB_WIDTH.load(Ordering::Relaxed);
     let height = FB_HEIGHT.load(Ordering::Relaxed);
     for y in 0..height {
-        let row = (addr + y * pitch) as *mut u32;
+        let row = (addr + y as u64 * pitch as u64) as *mut u32;
         for x in 0..width {
             unsafe { row.add(x as usize).write_volatile(color); }
         }
@@ -114,7 +114,7 @@ fn fill_gradient_screen(top: u32, bot: u32) {
         let g = ((top >> 8) & 0xFF) as i32 + (((bot >> 8) & 0xFF) as i32 - ((top >> 8) & 0xFF) as i32) * t as i32 / denom as i32;
         let b = (top & 0xFF) as i32 + ((bot & 0xFF) as i32 - (top & 0xFF) as i32) * t as i32 / denom as i32;
         let color = 0xFF000000 | ((r as u32 & 0xFF) << 16) | ((g as u32 & 0xFF) << 8) | (b as u32 & 0xFF);
-        let row = (addr + y * pitch) as *mut u32;
+        let row = (addr + y as u64 * pitch as u64) as *mut u32;
         for x in 0..width {
             unsafe { row.add(x as usize).write_volatile(color); }
         }
@@ -217,6 +217,7 @@ const TAIL_BRIGHT: [u32; SPINNER_TAIL_LEN] = [255, 190, 130, 70, 30];
 /// Advance the spinner animation. Called from PIT IRQ handler and manually
 /// during boot phases. Returns immediately if spinner is inactive or phase
 /// hasn't changed since last call.
+#[cfg(target_arch = "x86_64")]
 pub fn tick_spinner() {
     if !SPINNER_ACTIVE.load(Ordering::Relaxed) { return; }
     if ERROR_MODE.load(Ordering::Relaxed) {
@@ -294,7 +295,7 @@ fn clear_rect(x: i32, y: i32, w: i32, h: i32, fb_w: u32, fb_h: u32) {
         let gg = (((BG_GRADIENT_TOP >> 8) & 0xFF) as i32 + (((BG_GRADIENT_BOT >> 8) & 0xFF) as i32 - ((BG_GRADIENT_TOP >> 8) & 0xFF) as i32) * t as i32 / denom as i32) as u32;
         let gb = ((BG_GRADIENT_TOP & 0xFF) as i32 + ((BG_GRADIENT_BOT & 0xFF) as i32 - (BG_GRADIENT_TOP & 0xFF) as i32) * t as i32 / denom as i32) as u32;
         let row_color = 0xFF000000 | ((gr & 0xFF) << 16) | ((gg & 0xFF) << 8) | (gb & 0xFF);
-        let row = (addr + py as u32 * pitch) as *mut u32;
+        let row = (addr + py as u64 * pitch as u64) as *mut u32;
         for dx in 0..w {
             let px = x + dx;
             if px >= 0 && (px as u32) < fb_w {

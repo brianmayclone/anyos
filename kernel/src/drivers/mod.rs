@@ -6,7 +6,6 @@
 // x86-only hardware drivers
 #[cfg(target_arch = "x86_64")]
 pub mod audio;
-#[cfg(target_arch = "x86_64")]
 pub mod boot_console;
 pub mod framebuffer;
 #[cfg(target_arch = "x86_64")]

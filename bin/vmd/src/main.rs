@@ -43,6 +43,9 @@ const SHM_SIZE: u32 = 4 * 1024 * 1024;
 /// Path to the SeaBIOS ROM image.
 const SEABIOS_PATH: &str = "/System/shared/corevm/bios/seabios.bin";
 
+/// Path to the VGA BIOS (SeaVGABIOS/stdvga) ROM image.
+const VGABIOS_PATH: &str = "/System/shared/corevm/bios/vgabios.bin";
+
 /// Instructions to run per execution batch before checking IPC.
 /// Higher = more throughput, lower = more responsive to commands.
 const BATCH_SIZE: u64 = 5_000_000;
@@ -120,6 +123,9 @@ unsafe fn shm_write_u32(ptr: *mut u8, offset: usize, val: u32) {
     dst.write_volatile(val);
 }
 
+/// Whether we have logged the first non-empty VGA text buffer.
+static mut VGA_LOG_DONE: bool = false;
+
 /// Update the SHM framebuffer from the VM's VGA state.
 fn update_shm_framebuffer(inst: &VmInstance) {
     if inst.shm_ptr.is_null() {
@@ -130,6 +136,30 @@ fn update_shm_framebuffer(inst: &VmInstance) {
 
     // Try text mode first.
     if let Some(text_buf) = inst.handle.vga_text_buffer() {
+        // Log first non-empty text buffer content once for debugging.
+        let done = unsafe { VGA_LOG_DONE };
+        if !done {
+            let mut has_content = false;
+            let mut preview = [0u8; 80];
+            let mut plen = 0;
+            for (i, &cell) in text_buf.iter().enumerate() {
+                let ch = (cell & 0xFF) as u8;
+                if ch != 0 && ch != b' ' && ch != 0x20 {
+                    has_content = true;
+                }
+                if i < 80 {
+                    preview[i] = if ch >= 0x20 && ch < 0x7F { ch } else { b'.' };
+                    plen = i + 1;
+                }
+            }
+            if has_content || icount > 10_000_000 {
+                let line = core::str::from_utf8(&preview[..plen]).unwrap_or("");
+                let (mmio_total, mmio_text) = inst.handle.vga_debug_counters();
+                anyos_std::println!("[vmd] VGA text row 0: '{}' (has_content={})", line, has_content);
+                anyos_std::println!("[vmd] VGA MMIO writes: total={}, text_region={}", mmio_total, mmio_text);
+                unsafe { VGA_LOG_DONE = true; }
+            }
+        }
         let cols: u32 = 80;
         let rows: u32 = 25;
         unsafe {
@@ -205,10 +235,99 @@ fn read_file(path: &str) -> Vec<u8> {
     data
 }
 
+// ── VM config reader ──────────────────────────────────────────────────
+
+/// Directory containing per-VM config files (must match vmmanager).
+const VMS_DIR: &str = "/System/shared/vmmanager/vms";
+
+/// Parsed VM configuration from a per-VM config file.
+struct VmConfigInfo {
+    name: String,
+    ram_mb: u32,
+    disk_image: String,
+    iso_image: String,
+}
+
+/// Read the VM config file for the given UUID.
+///
+/// Opens `<VMS_DIR>/<uuid>.conf` and parses key=value fields.
+/// Returns `None` if the file cannot be read or is empty.
+fn read_vm_config(uuid: &str) -> Option<VmConfigInfo> {
+    // Build path: "/System/shared/vmmanager/vms/<uuid>.conf"
+    let mut path_buf = [0u8; 128];
+    let dir = VMS_DIR.as_bytes();
+    let ext = b".conf";
+    let uuid_b = uuid.as_bytes();
+    let mut p = 0;
+    for &b in dir {
+        path_buf[p] = b;
+        p += 1;
+    }
+    path_buf[p] = b'/';
+    p += 1;
+    for &b in uuid_b {
+        if p < 127 {
+            path_buf[p] = b;
+            p += 1;
+        }
+    }
+    for &b in ext {
+        if p < 127 {
+            path_buf[p] = b;
+            p += 1;
+        }
+    }
+    let path = core::str::from_utf8(&path_buf[..p]).unwrap_or("");
+
+    let data = read_file(path);
+    if data.is_empty() {
+        return None;
+    }
+
+    let text = core::str::from_utf8(&data).unwrap_or("");
+    let mut name = String::new();
+    let mut ram_mb: u32 = 64;
+    let mut disk_image = String::new();
+    let mut iso_image = String::new();
+
+    for line in text.split('\n') {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(val) = line.strip_prefix("name=") {
+            name = String::from(val);
+        } else if let Some(val) = line.strip_prefix("ram=") {
+            ram_mb = parse_u32(val);
+            if ram_mb == 0 {
+                ram_mb = 64;
+            }
+        } else if let Some(val) = line.strip_prefix("disk=") {
+            disk_image = String::from(val);
+        } else if let Some(val) = line.strip_prefix("iso=") {
+            iso_image = String::from(val);
+        }
+    }
+
+    if name.is_empty() {
+        return None;
+    }
+
+    Some(VmConfigInfo {
+        name,
+        ram_mb,
+        disk_image,
+        iso_image,
+    })
+}
+
 // ── Command handlers ───────────────────────────────────────────────────
 
-/// Handle `create <name> <ram_mb>` command.
-fn cmd_create(name: &str, ram_mb: u32) {
+/// Handle `create <uuid>` command.
+///
+/// Reads the VM configuration from the shared config file by UUID,
+/// creates the VM with the configured RAM, and attaches disk/ISO.
+fn cmd_create(uuid: &str) {
     let d = daemon();
 
     // Destroy any existing VM.
@@ -220,8 +339,18 @@ fn cmd_create(name: &str, ram_mb: u32) {
     }
     d.vm = None;
 
-    // Create VM.
-    let handle = match VmHandle::new(ram_mb) {
+    // Read VM config from the per-VM file.
+    let config = match read_vm_config(uuid) {
+        Some(c) => c,
+        None => {
+            send_status(&format!("error 0 VM config not found for UUID {}", uuid));
+            anyos_std::println!("[vmd] ERROR: config not found for UUID {}", uuid);
+            return;
+        }
+    };
+
+    // Create VM with configured RAM.
+    let handle = match VmHandle::new(config.ram_mb) {
         Some(h) => h,
         None => {
             send_status("error 0 failed to create VM (out of memory?)");
@@ -250,38 +379,37 @@ fn cmd_create(name: &str, ram_mb: u32) {
         shm_id,
         shm_ptr,
         running: false,
-        name: String::from(name),
+        name: config.name.clone(),
     };
 
     d.vm = Some(inst);
 
-    // Report success with SHM ID.
+    // Report success with SHM ID BEFORE loading disk/ISO.
+    // vmmanager needs the SHM ID promptly; disk/ISO loading can be slow.
     send_status(&format!("created 0 {}", shm_id));
-    anyos_std::println!("[vmd] VM '{}' created ({} MiB RAM, shm={})", name, ram_mb, shm_id);
-}
+    anyos_std::println!("[vmd] VM '{}' created ({} MiB RAM, shm={})", config.name, config.ram_mb, shm_id);
 
-/// Handle `disk <path>` command — attach a disk image.
-fn cmd_disk(path: &str) {
-    let d = daemon();
-    if let Some(ref inst) = d.vm {
-        let data = read_file(path);
+    // Attach disk image if configured.
+    if !config.disk_image.is_empty() {
+        let data = read_file(&config.disk_image);
         if !data.is_empty() {
-            inst.handle.ide_attach_disk(&data);
-            anyos_std::println!("[vmd] attached disk: {} ({} bytes)", path, data.len());
+            if let Some(ref inst) = d.vm {
+                inst.handle.ide_attach_disk(&data);
+            }
+            anyos_std::println!("[vmd] attached disk: {} ({} bytes)", config.disk_image, data.len());
         } else {
-            send_status(&format!("error 0 failed to read disk image: {}", path));
+            send_status(&format!("error 0 failed to read disk image: {}", config.disk_image));
         }
     }
-}
 
-/// Handle `iso <path>` command — load ISO into high memory.
-fn cmd_iso(path: &str) {
-    let d = daemon();
-    if let Some(ref inst) = d.vm {
-        let data = read_file(path);
+    // Load ISO if configured.
+    if !config.iso_image.is_empty() {
+        let data = read_file(&config.iso_image);
         if !data.is_empty() {
-            inst.handle.load_binary(0x10_0000, &data);
-            anyos_std::println!("[vmd] loaded ISO: {} ({} bytes)", path, data.len());
+            if let Some(ref inst) = d.vm {
+                inst.handle.load_binary(0x10_0000, &data);
+            }
+            anyos_std::println!("[vmd] loaded ISO: {} ({} bytes)", config.iso_image, data.len());
         }
     }
 }
@@ -309,6 +437,19 @@ fn cmd_start() {
             send_status("error 0 SeaBIOS not found");
             anyos_std::println!("[vmd] ERROR: SeaBIOS not found at {}", SEABIOS_PATH);
             return;
+        }
+
+        // Load VGA BIOS at 0xC0000 (standard option ROM location).
+        // Must be loaded AFTER SeaBIOS since the 256KB SeaBIOS image
+        // covers 0xC0000-0xFFFFF but uses zeros/padding at the start.
+        // The VGA BIOS overwrites that padding so SeaBIOS finds it
+        // during its option ROM scan.
+        let vgabios_data = read_file(VGABIOS_PATH);
+        if !vgabios_data.is_empty() {
+            inst.handle.load_binary(0xC0000, &vgabios_data);
+            anyos_std::println!("[vmd] loaded VGA BIOS ({} bytes at 0xC0000)", vgabios_data.len());
+        } else {
+            anyos_std::println!("[vmd] WARNING: VGA BIOS not found at {}", VGABIOS_PATH);
         }
 
         inst.running = true;
@@ -365,19 +506,8 @@ fn dispatch_command(line: &str) {
 
     match parts[0] {
         "create" => {
-            if parts.len() >= 3 {
-                let ram_mb = parse_u32(parts[2]);
-                cmd_create(parts[1], ram_mb);
-            }
-        }
-        "disk" => {
             if parts.len() >= 2 {
-                cmd_disk(parts[1]);
-            }
-        }
-        "iso" => {
-            if parts.len() >= 2 {
-                cmd_iso(parts[1]);
+                cmd_create(parts[1]); // parts[1] = UUID (no spaces)
             }
         }
         "start" => cmd_start(),
@@ -589,9 +719,11 @@ fn main() {
         // Run VM execution batch if active.
         let vm_active = run_vm_batch();
 
-        // If no VM is running, sleep briefly to avoid busy-spinning.
+        // Yield CPU briefly to avoid starving other threads.
         if !vm_active {
             anyos_std::process::sleep(10);
+        } else {
+            anyos_std::process::sleep(1);
         }
     }
 }

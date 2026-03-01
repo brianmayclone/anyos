@@ -52,6 +52,22 @@ use deferred::DEFERRED_PD_DESTROY;
 const NUM_PRIORITIES: usize = 128;
 const MAX_PRIORITY: u8 = (NUM_PRIORITIES - 1) as u8; // 127
 
+/// Lowest valid kernel virtual address (architecture-specific higher-half base).
+#[cfg(target_arch = "x86_64")]
+pub(crate) const KERNEL_ADDR_MIN: u64 = 0xFFFF_FFFF_8000_0000;
+#[cfg(target_arch = "aarch64")]
+pub(crate) const KERNEL_ADDR_MIN: u64 = 0xFFFF_0000_8000_0000;
+
+/// Valid kernel code PC range (architecture-specific).
+#[cfg(target_arch = "x86_64")]
+const KERNEL_PC_MIN: u64 = 0xFFFF_FFFF_8010_0000;
+#[cfg(target_arch = "x86_64")]
+const KERNEL_PC_MAX: u64 = 0xFFFF_FFFF_8200_0000;
+#[cfg(target_arch = "aarch64")]
+const KERNEL_PC_MIN: u64 = 0xFFFF_0000_8040_0000;
+#[cfg(target_arch = "aarch64")]
+const KERNEL_PC_MAX: u64 = 0xFFFF_0000_C000_0000;
+
 /// Clamp priority to valid range [0, 127]. Prints a debug warning if clamped.
 #[inline]
 fn clamp_priority(priority: u8, context: &str) -> u8 {
@@ -649,6 +665,14 @@ pub fn per_cpu_idle_ticks(cpu: usize) -> u32 {
 /// Returns false (and does nothing) if this CPU is already inside schedule_inner,
 /// preventing re-entrant scheduling that causes context corruption and deadlocks.
 pub fn schedule_tick() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        static TICK_DBG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        let n = TICK_DBG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if n < 3 {
+            crate::serial_println!("  [SCHED] schedule_tick #{}", n);
+        }
+    }
     let cpu_id = crate::arch::hal::cpu_id();
     if cpu_id < MAX_CPUS && PER_CPU_IN_SCHEDULER[cpu_id].load(Ordering::Relaxed) {
         // Already in scheduler — just count the tick for timekeeping accuracy
@@ -963,13 +987,24 @@ fn schedule_inner(from_timer: bool) {
         }
 
         // --- Pick next thread (O(1) via bitmap) ---
+        #[cfg(target_arch = "aarch64")]
+        {
+            static PICK_DBG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            let n = PICK_DBG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if n < 5 {
+                let ready_count = sched.threads.iter()
+                    .filter(|t| t.state == ThreadState::Ready).count();
+                crate::serial_println!("  [SCHED] pick_next: cpu={} outgoing={:?} ready={} total={}",
+                    cpu_id, outgoing_tid, ready_count, sched.threads.len());
+            }
+        }
         switch_info = if let Some(next_tid) = sched.pick_next(cpu_id) {
             if let Some(next_idx) = sched.find_idx(next_tid) {
                 let kstack_top = sched.threads[next_idx].kernel_stack_top();
                 let kstack_bottom = sched.threads[next_idx].kernel_stack_bottom();
 
                 // Validate candidate before committing
-                let kstack_valid = kstack_top >= 0xFFFF_FFFF_8000_0000;
+                let kstack_valid = kstack_top >= KERNEL_ADDR_MIN;
                 if !kstack_valid {
                     crate::serial_println!(
                         "BUG: thread '{}' (TID={}) invalid kstack_top={:#x} — killing",
@@ -1128,9 +1163,9 @@ fn schedule_inner(from_timer: bool) {
                 let ctx = &*new_ctx;
                 ctx.canary != CANARY_MAGIC
                     || ctx.checksum != ctx.compute_checksum()
-                    || ctx.get_pc() < 0xFFFF_FFFF_8010_0000
-                    || ctx.get_pc() >= 0xFFFF_FFFF_8200_0000
-                    || ctx.get_sp() < 0xFFFF_FFFF_8010_0000
+                    || ctx.get_pc() < KERNEL_PC_MIN
+                    || ctx.get_pc() >= KERNEL_PC_MAX
+                    || ctx.get_sp() < KERNEL_ADDR_MIN
             };
             if is_corrupt {
                 let reason = unsafe {
@@ -1271,6 +1306,14 @@ fn schedule_inner(from_timer: bool) {
         // it will never reach the post-switch cleanup code below.
         PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Relaxed);
 
+        #[cfg(target_arch = "aarch64")]
+        {
+            let next_pc = unsafe { (*new_ctx).get_pc() };
+            let next_sp = unsafe { (*new_ctx).get_sp() };
+            let next_x30 = unsafe { (*new_ctx).x[30] };
+            crate::serial_println!("  [SCHED] ctx_switch: out={} in={} pc={:#x} sp={:#x} x30={:#x}",
+                outgoing_tid, _next_tid, next_pc, next_sp, next_x30);
+        }
         unsafe { crate::task::context::context_switch(old_ctx, new_ctx); }
     }
 
@@ -1317,6 +1360,19 @@ pub fn run() -> ! {
         }
     }
     crate::arch::hal::enable_interrupts();
+    #[cfg(target_arch = "aarch64")]
+    {
+        let daif: u64;
+        unsafe { core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack)); }
+        let ticks = crate::arch::arm64::generic_timer::get_ticks();
+        crate::serial_println!("  [IDLE] entering idle loop, DAIF={:#x} ticks={}", daif, ticks);
+
+        // Check if timer is actually armed
+        let ctl: u64;
+        unsafe { core::arch::asm!("mrs {}, cntp_ctl_el0", out(reg) ctl, options(nomem, nostack)); }
+        crate::serial_println!("  [IDLE] CNTP_CTL={:#x} (ENABLE={}, IMASK={}, ISTATUS={})",
+            ctl, ctl & 1, (ctl >> 1) & 1, (ctl >> 2) & 1);
+    }
     loop { crate::arch::hal::halt(); }
 }
 

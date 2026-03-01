@@ -72,6 +72,9 @@ fn hw_entropy() -> Option<u64> {
     }
     #[cfg(target_arch = "aarch64")]
     {
+        if !crate::arch::arm64::cpu_features::HAS_RNG.load(core::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
         let val: u64;
         unsafe {
             // RNDR: random number; returns 0 on failure (FEAT_RNG required)
@@ -1248,6 +1251,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
 /// Trampoline: runs as a kernel thread, then transitions to user mode.
 /// At this point, context_switch.asm has already loaded our CR3 (user PD).
 extern "C" fn user_thread_trampoline() {
+    crate::serial_println!("  [TRAMPOLINE] entered, tid={}", crate::task::scheduler::current_tid());
     let tid = crate::task::scheduler::current_tid();
     let (entry, user_stack, compat32) = {
         let mut slots = PENDING_PROGRAMS.lock();
@@ -1260,6 +1264,8 @@ extern "C" fn user_thread_trampoline() {
         (e, s, c)
     };
 
+    crate::serial_println!("  [TRAMPOLINE] tid={} entry={:#x} stack={:#x} compat32={}",
+        tid, entry, user_stack, compat32);
     if compat32 {
         unsafe { jump_to_user_mode_compat32(entry, user_stack); }
     } else {

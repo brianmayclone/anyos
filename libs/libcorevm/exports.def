@@ -33,6 +33,7 @@ EXPORTS
     corevm_ps2_mouse_move
     corevm_vga_get_framebuffer
     corevm_vga_get_text_buffer
+    corevm_vga_debug_counters
     corevm_serial_send_input
     corevm_serial_take_output
     corevm_e1000_receive_packet

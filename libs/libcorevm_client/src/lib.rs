@@ -221,6 +221,8 @@ struct CoreVmLib {
     /// Get a pointer to the VGA text buffer (80x25 u16 cells).
     /// Returns null if VGA is not in text mode.
     vga_get_text_buffer: extern "C" fn(u64, *mut u32) -> *const u16,
+    /// Get VGA MMIO debug counters (total writes, text-region writes).
+    vga_debug_counters: extern "C" fn(u64, *mut u64, *mut u64),
 
     // ── Serial port ──────────────────────────────────────────────
     /// Send input bytes to the guest serial port (COM1).
@@ -349,6 +351,7 @@ pub fn init() -> bool {
             // VGA
             vga_get_framebuffer: resolve(&handle, "corevm_vga_get_framebuffer"),
             vga_get_text_buffer: resolve(&handle, "corevm_vga_get_text_buffer"),
+            vga_debug_counters: resolve(&handle, "corevm_vga_debug_counters"),
             // Serial
             serial_send_input: resolve(&handle, "corevm_serial_send_input"),
             serial_take_output: resolve(&handle, "corevm_serial_take_output"),
@@ -690,6 +693,17 @@ impl VmHandle {
         }
         let slice = unsafe { core::slice::from_raw_parts(ptr, count as usize) };
         Some(slice)
+    }
+
+    /// Get VGA MMIO debug counters.
+    ///
+    /// Returns `(total_mmio_writes, text_region_writes)` for diagnosing
+    /// whether guest writes to the VGA framebuffer are reaching the handler.
+    pub fn vga_debug_counters(&self) -> (u64, u64) {
+        let mut total: u64 = 0;
+        let mut text: u64 = 0;
+        (lib().vga_debug_counters)(self.handle, &mut total as *mut u64, &mut text as *mut u64);
+        (total, text)
     }
 
     // ── Serial port (COM1) ───────────────────────────────────────

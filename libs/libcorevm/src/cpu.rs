@@ -262,6 +262,12 @@ impl Cpu {
         io: &mut IoDispatch,
         max_instructions: u64,
     ) -> ExitReason {
+        // Compute absolute target so the limit applies per-call, not cumulatively.
+        let target = if max_instructions > 0 {
+            self.instruction_count.saturating_add(max_instructions)
+        } else {
+            0
+        };
         loop {
             // Check external stop request
             if self.stop_requested {
@@ -270,7 +276,7 @@ impl Cpu {
             }
 
             // Check instruction limit
-            if max_instructions > 0 && self.instruction_count >= max_instructions {
+            if target > 0 && self.instruction_count >= target {
                 return ExitReason::InstructionLimit;
             }
 

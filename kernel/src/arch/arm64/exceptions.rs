@@ -53,7 +53,12 @@ pub fn register_irq(irq: u32, handler: fn()) {
 /// then sends EOI.
 #[no_mangle]
 pub extern "C" fn arm64_irq_handler() {
+    static IRQ_DBG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
     let intid = super::gic::acknowledge();
+    let n = IRQ_DBG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if n < 3 {
+        crate::serial_println!("  [IRQ] #{} intid={}", n, intid);
+    }
     if intid < 1020 { // Not spurious
         let handler = unsafe { IRQ_HANDLERS[intid as usize] };
         if let Some(h) = handler {

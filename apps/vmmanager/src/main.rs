@@ -42,8 +42,11 @@ const SHM_HEADER: usize = 64;
 /// Maximum number of VMs that can be configured.
 const MAX_VMS: usize = 16;
 
-/// Path to the VM configuration file.
-const CONFIG_PATH: &str = "/System/shared/vmmanager/vms.conf";
+/// Directory containing per-VM config files (`<uuid>.conf`).
+const VMS_DIR: &str = "/System/shared/vmmanager/vms";
+
+/// Path to the sidebar layout file (folders + VM ordering).
+const LAYOUT_PATH: &str = "/System/shared/vmmanager/layout.conf";
 
 /// Standard VGA 16-color palette (ARGB format).
 const VGA_COLORS: [u32; 16] = [
@@ -78,6 +81,8 @@ enum BootOrder {
 /// Persistent configuration for a single VM.
 #[derive(Clone)]
 struct VmConfig {
+    /// Unique identifier (32-char hex) for IPC lookups by vmd.
+    uuid: String,
     /// Human-readable name displayed in the sidebar.
     name: String,
     /// Guest RAM size in megabytes.
@@ -91,9 +96,10 @@ struct VmConfig {
 }
 
 impl VmConfig {
-    /// Create a new VM configuration with defaults.
+    /// Create a new VM configuration with defaults and a generated UUID.
     fn new(name: &str) -> Self {
         VmConfig {
+            uuid: generate_uuid(),
             name: String::from(name),
             ram_mb: 64,
             disk_image: String::new(),
@@ -101,6 +107,19 @@ impl VmConfig {
             boot_order: BootOrder::DiskFirst,
         }
     }
+}
+
+/// Generate a 32-character lowercase hex UUID from 16 random bytes.
+fn generate_uuid() -> String {
+    let mut bytes = [0u8; 16];
+    anyos_std::sys::random(&mut bytes);
+    let hex = b"0123456789abcdef";
+    let mut s = String::with_capacity(32);
+    for &b in &bytes {
+        s.push(hex[(b >> 4) as usize] as char);
+        s.push(hex[(b & 0x0F) as usize] as char);
+    }
+    s
 }
 
 /// Runtime state of a single VM.
@@ -150,6 +169,43 @@ struct SettingsDialog {
     boot_seg: anyui::SegmentedControl,
 }
 
+/// A named folder in the sidebar tree containing VM UUIDs.
+struct FolderEntry {
+    /// Display name of the folder.
+    name: String,
+    /// UUIDs of VMs in this folder, in display order.
+    vm_uuids: Vec<String>,
+}
+
+/// Sidebar layout: folders and root-level VMs in display order.
+struct SidebarLayout {
+    /// Named folders with their VM UUIDs.
+    folders: Vec<FolderEntry>,
+    /// VM UUIDs at root level (not in any folder).
+    root_vms: Vec<String>,
+}
+
+impl SidebarLayout {
+    /// Create an empty layout.
+    fn new() -> Self {
+        SidebarLayout {
+            folders: Vec::new(),
+            root_vms: Vec::new(),
+        }
+    }
+}
+
+/// Identifies what a TreeView node represents.
+#[derive(Clone)]
+enum NodeKind {
+    /// The "My Machines" root node.
+    Root,
+    /// A folder (index into `SidebarLayout::folders`).
+    Folder(usize),
+    /// A VM (index into `AppState::vms`).
+    Vm(usize),
+}
+
 // ── Application state ──────────────────────────────────────────────────
 
 /// Global application state holding all UI controls and VM data.
@@ -167,14 +223,18 @@ struct AppState {
     sidebar_tree: anyui::TreeView,
     /// Index of the "My Machines" root node in the tree.
     tree_root: u32,
+    /// Maps TreeView node index → NodeKind for selection handling.
+    node_map: Vec<NodeKind>,
 
     // VM data
     vms: Vec<VmEntry>,
     selected_vm: usize,
 
+    /// Sidebar folder/VM layout.
+    layout: SidebarLayout,
+
     // Settings dialog (created on demand)
     settings: Option<SettingsDialog>,
-
 }
 
 static mut APP: Option<AppState> = None;
@@ -273,120 +333,306 @@ fn fmt_label_u64<'a>(buf: &'a mut [u8], label: &str, val: u64) -> &'a str {
 }
 
 // ── Configuration persistence ──────────────────────────────────────────
+//
+// Each VM is stored in its own file: `<VMS_DIR>/<uuid>.conf`.
+// The sidebar layout (folders + ordering) is stored in `LAYOUT_PATH`.
 
-/// Save all VM configurations to the config file.
-///
-/// Format: one VM per block, fields separated by newlines, blocks separated
-/// by a blank line. Fields: `name=`, `ram=`, `disk=`, `iso=`, `boot=`.
-fn save_config(vms: &[VmEntry]) {
-    let mut data: Vec<u8> = Vec::with_capacity(1024);
-    for entry in vms.iter() {
-        let c = &entry.config;
-        data.extend_from_slice(b"name=");
-        data.extend_from_slice(c.name.as_bytes());
-        data.push(b'\n');
-        data.extend_from_slice(b"ram=");
-        let mut buf = [0u8; 12];
-        let s = fmt_u32(&mut buf, c.ram_mb);
-        data.extend_from_slice(s.as_bytes());
-        data.push(b'\n');
-        data.extend_from_slice(b"disk=");
-        data.extend_from_slice(c.disk_image.as_bytes());
-        data.push(b'\n');
-        data.extend_from_slice(b"iso=");
-        data.extend_from_slice(c.iso_image.as_bytes());
-        data.push(b'\n');
-        data.extend_from_slice(b"boot=");
-        let boot_str = match c.boot_order {
-            BootOrder::DiskFirst => "disk",
-            BootOrder::CdFirst => "cd",
-            BootOrder::FloppyFirst => "floppy",
-        };
-        data.extend_from_slice(boot_str.as_bytes());
-        data.push(b'\n');
-        data.push(b'\n');
-    }
-
-    // Ensure parent directory exists.
+/// Ensure the VM storage directories exist.
+fn ensure_dirs() {
+    fs::mkdir("/System/shared");
     fs::mkdir("/System/shared/vmmanager");
+    fs::mkdir(VMS_DIR);
+}
 
-    let fd = fs::open(CONFIG_PATH, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+/// Save a single VM configuration to `<VMS_DIR>/<uuid>.conf`.
+fn save_vm_config(config: &VmConfig) {
+    ensure_dirs();
+    let mut path_buf = [0u8; 128];
+    let path = build_vm_path(&mut path_buf, &config.uuid);
+
+    let mut data: Vec<u8> = Vec::with_capacity(512);
+    data.extend_from_slice(b"name=");
+    data.extend_from_slice(config.name.as_bytes());
+    data.push(b'\n');
+    data.extend_from_slice(b"ram=");
+    let mut buf = [0u8; 12];
+    let s = fmt_u32(&mut buf, config.ram_mb);
+    data.extend_from_slice(s.as_bytes());
+    data.push(b'\n');
+    data.extend_from_slice(b"disk=");
+    data.extend_from_slice(config.disk_image.as_bytes());
+    data.push(b'\n');
+    data.extend_from_slice(b"iso=");
+    data.extend_from_slice(config.iso_image.as_bytes());
+    data.push(b'\n');
+    data.extend_from_slice(b"boot=");
+    let boot_str = match config.boot_order {
+        BootOrder::DiskFirst => "disk",
+        BootOrder::CdFirst => "cd",
+        BootOrder::FloppyFirst => "floppy",
+    };
+    data.extend_from_slice(boot_str.as_bytes());
+    data.push(b'\n');
+
+    let fd = fs::open(path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
     if fd != u32::MAX {
         fs::write(fd, &data);
         fs::close(fd);
     }
 }
 
-/// Load VM configurations from the config file.
-///
-/// Returns a list of `VmEntry` values with `state = Stopped`.
-fn load_config() -> Vec<VmEntry> {
-    let mut result = Vec::new();
-    let fd = fs::open(CONFIG_PATH, 0);
-    if fd == u32::MAX {
-        return result;
-    }
+/// Delete a VM configuration file.
+fn delete_vm_config(uuid: &str) {
+    let mut path_buf = [0u8; 128];
+    let path = build_vm_path(&mut path_buf, uuid);
+    fs::unlink(path);
+}
 
-    let mut buf = [0u8; 4096];
+/// Build the file path `<VMS_DIR>/<uuid>.conf` into `buf`.
+fn build_vm_path<'a>(buf: &'a mut [u8; 128], uuid: &str) -> &'a str {
+    let dir = VMS_DIR.as_bytes();
+    let ext = b".conf";
+    let uuid_b = uuid.as_bytes();
+    let total = dir.len() + 1 + uuid_b.len() + ext.len();
+    let mut p = 0;
+    for &b in dir {
+        buf[p] = b;
+        p += 1;
+    }
+    buf[p] = b'/';
+    p += 1;
+    for &b in uuid_b {
+        if p < 127 {
+            buf[p] = b;
+            p += 1;
+        }
+    }
+    for &b in ext {
+        if p < 127 {
+            buf[p] = b;
+            p += 1;
+        }
+    }
+    let _ = total; // suppress unused warning
+    unsafe { core::str::from_utf8_unchecked(&buf[..p]) }
+}
+
+/// Load a single VM config by UUID from its `.conf` file.
+fn load_vm_config(uuid: &str) -> Option<VmConfig> {
+    let mut path_buf = [0u8; 128];
+    let path = build_vm_path(&mut path_buf, uuid);
+
+    let fd = fs::open(path, 0);
+    if fd == u32::MAX {
+        return None;
+    }
+    let mut buf = [0u8; 1024];
     let n = fs::read(fd, &mut buf);
     fs::close(fd);
     if n == 0 || n == u32::MAX {
-        return result;
+        return None;
     }
 
     let text = &buf[..n as usize];
-    let mut current = VmConfig::new("");
+    let mut config = VmConfig::new("");
+    config.uuid = String::from(uuid);
 
     for line in ByteLines::new(text) {
-        if line.is_empty() {
-            // End of a VM block.
-            if !current.name.is_empty() {
-                result.push(VmEntry {
-                    config: current.clone(),
-                    state: VmState::Stopped,
-                    vmd_tid: 0,
-                    cmd_pipe: 0,
-                    status_pipe: 0,
-                    shm_id: 0,
-                    shm_ptr: core::ptr::null(),
-                    instruction_count: 0,
-                });
-            }
-            current = VmConfig::new("");
-            continue;
-        }
-
         if let Some(val) = strip_prefix(line, b"name=") {
-            current.name = bytes_to_string(val);
+            config.name = bytes_to_string(val);
         } else if let Some(val) = strip_prefix(line, b"ram=") {
-            current.ram_mb = parse_u32(val).unwrap_or(64);
+            config.ram_mb = parse_u32(val).unwrap_or(64);
         } else if let Some(val) = strip_prefix(line, b"disk=") {
-            current.disk_image = bytes_to_string(val);
+            config.disk_image = bytes_to_string(val);
         } else if let Some(val) = strip_prefix(line, b"iso=") {
-            current.iso_image = bytes_to_string(val);
+            config.iso_image = bytes_to_string(val);
         } else if let Some(val) = strip_prefix(line, b"boot=") {
-            current.boot_order = match val {
+            config.boot_order = match val {
                 b"cd" => BootOrder::CdFirst,
                 b"floppy" => BootOrder::FloppyFirst,
                 _ => BootOrder::DiskFirst,
             };
         }
     }
-    // Handle last block if file doesn't end with a blank line.
-    if !current.name.is_empty() {
-        result.push(VmEntry {
-            config: current,
-            state: VmState::Stopped,
-            vmd_tid: 0,
-            cmd_pipe: 0,
-            status_pipe: 0,
-            shm_id: 0,
-            shm_ptr: core::ptr::null(),
-            instruction_count: 0,
-        });
+
+    if config.name.is_empty() {
+        return None;
+    }
+    Some(config)
+}
+
+/// Save the sidebar layout (folders + VM ordering) to `LAYOUT_PATH`.
+///
+/// Format:
+/// ```text
+/// folder:<name>
+/// vm:<uuid>
+/// end
+/// vm:<uuid>          (root-level VM)
+/// ```
+fn save_layout(layout: &SidebarLayout) {
+    ensure_dirs();
+    let mut data: Vec<u8> = Vec::with_capacity(512);
+
+    for folder in &layout.folders {
+        data.extend_from_slice(b"folder:");
+        data.extend_from_slice(folder.name.as_bytes());
+        data.push(b'\n');
+        for uuid in &folder.vm_uuids {
+            data.extend_from_slice(b"vm:");
+            data.extend_from_slice(uuid.as_bytes());
+            data.push(b'\n');
+        }
+        data.extend_from_slice(b"end\n");
+    }
+    for uuid in &layout.root_vms {
+        data.extend_from_slice(b"vm:");
+        data.extend_from_slice(uuid.as_bytes());
+        data.push(b'\n');
     }
 
-    result
+    let fd = fs::open(LAYOUT_PATH, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+    if fd != u32::MAX {
+        fs::write(fd, &data);
+        fs::close(fd);
+    }
+}
+
+/// Load the sidebar layout from `LAYOUT_PATH`.
+fn load_layout() -> SidebarLayout {
+    let mut layout = SidebarLayout::new();
+    let fd = fs::open(LAYOUT_PATH, 0);
+    if fd == u32::MAX {
+        return layout;
+    }
+
+    let mut buf = [0u8; 4096];
+    let n = fs::read(fd, &mut buf);
+    fs::close(fd);
+    if n == 0 || n == u32::MAX {
+        return layout;
+    }
+
+    let text = &buf[..n as usize];
+    let mut in_folder = false;
+
+    for line in ByteLines::new(text) {
+        if let Some(val) = strip_prefix(line, b"folder:") {
+            layout.folders.push(FolderEntry {
+                name: bytes_to_string(val),
+                vm_uuids: Vec::new(),
+            });
+            in_folder = true;
+        } else if line == b"end" {
+            in_folder = false;
+        } else if let Some(val) = strip_prefix(line, b"vm:") {
+            let uuid = bytes_to_string(val);
+            if in_folder {
+                if let Some(folder) = layout.folders.last_mut() {
+                    folder.vm_uuids.push(uuid);
+                }
+            } else {
+                layout.root_vms.push(uuid);
+            }
+        }
+    }
+
+    layout
+}
+
+/// Load all VMs and the sidebar layout from disk.
+///
+/// VMs referenced in `layout.conf` are loaded in layout order.
+/// Any `.conf` files in the VMs directory not referenced in the layout
+/// are appended as root-level VMs (handles orphans from crashes).
+fn load_all_vms() -> (Vec<VmEntry>, SidebarLayout) {
+    let mut layout = load_layout();
+    let mut vms: Vec<VmEntry> = Vec::new();
+    let mut loaded_uuids: Vec<String> = Vec::new();
+
+    // Helper: load a VM by UUID and append to the list.
+    let mut load_uuid = |uuid: &str, vms: &mut Vec<VmEntry>, loaded: &mut Vec<String>| {
+        if loaded.iter().any(|u| u == uuid) {
+            return; // Already loaded (duplicate in layout).
+        }
+        if let Some(config) = load_vm_config(uuid) {
+            vms.push(VmEntry {
+                config,
+                state: VmState::Stopped,
+                vmd_tid: 0,
+                cmd_pipe: 0,
+                status_pipe: 0,
+                shm_id: 0,
+                shm_ptr: core::ptr::null(),
+                instruction_count: 0,
+            });
+            loaded.push(String::from(uuid));
+        }
+    };
+
+    // Load VMs in layout order: folders first, then root-level.
+    for folder in &layout.folders {
+        for uuid in &folder.vm_uuids {
+            load_uuid(uuid, &mut vms, &mut loaded_uuids);
+        }
+    }
+    for uuid in &layout.root_vms {
+        load_uuid(uuid, &mut vms, &mut loaded_uuids);
+    }
+
+    // Scan the VMs directory for orphaned config files.
+    let mut dir_buf = [0u8; 4096];
+    let count = fs::readdir(VMS_DIR, &mut dir_buf);
+    if count != u32::MAX {
+        for i in 0..count as usize {
+            let entry = &dir_buf[i * 64..(i + 1) * 64];
+            let typ = entry[0];
+            let name_len = entry[1] as usize;
+            if typ != 0 || name_len < 6 {
+                continue; // Not a regular file or too short for "x.conf".
+            }
+            let name = &entry[8..8 + name_len];
+            // Must end with ".conf".
+            if name.len() < 6 || &name[name.len() - 5..] != b".conf" {
+                continue;
+            }
+            let uuid_bytes = &name[..name.len() - 5];
+            if let Ok(uuid_str) = core::str::from_utf8(uuid_bytes) {
+                if !loaded_uuids.iter().any(|u| u == uuid_str) {
+                    // Orphaned config — load and add to root_vms in layout.
+                    if let Some(config) = load_vm_config(uuid_str) {
+                        layout.root_vms.push(String::from(uuid_str));
+                        vms.push(VmEntry {
+                            config,
+                            state: VmState::Stopped,
+                            vmd_tid: 0,
+                            cmd_pipe: 0,
+                            status_pipe: 0,
+                            shm_id: 0,
+                            shm_ptr: core::ptr::null(),
+                            instruction_count: 0,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    (vms, layout)
+}
+
+/// Convenience: save a single VM config and the current layout.
+fn save_vm_and_layout(config: &VmConfig, layout: &SidebarLayout) {
+    save_vm_config(config);
+    save_layout(layout);
+}
+
+/// Remove a VM UUID from the layout (folders and root-level list).
+fn remove_uuid_from_layout(layout: &mut SidebarLayout, uuid: &str) {
+    for folder in &mut layout.folders {
+        folder.vm_uuids.retain(|u| u != uuid);
+    }
+    layout.root_vms.retain(|u| u != uuid);
 }
 
 /// Simple line iterator over a byte slice, splitting on `\n`.
@@ -461,38 +707,78 @@ fn bytes_to_string(b: &[u8]) -> String {
 
 // ── Sidebar rendering ──────────────────────────────────────────────────
 
-/// Rebuild the sidebar labels to reflect the current VM list.
+/// Rebuild the sidebar tree to reflect the current layout and VM list.
 ///
-/// Destroys existing labels and creates new ones for each VM entry,
-/// showing a status indicator and the VM name. Also wires up click
-/// handlers for VM selection.
+/// Builds folder nodes from `layout.folders`, then adds root-level VMs.
+/// Populates `node_map` so the selection handler can map node indices
+/// back to folders or VMs.
 fn rebuild_sidebar() {
     let a = app();
 
-    // Clear the tree and re-add all VMs under "My Machines".
     a.sidebar_tree.clear();
+    a.node_map.clear();
+
     let root = a.sidebar_tree.add_root("My Machines");
     a.tree_root = root;
     a.sidebar_tree.set_node_style(root, anyui::STYLE_BOLD);
     a.sidebar_tree.set_expanded(root, true);
+    a.node_map.push(NodeKind::Root);
 
-    for (i, entry) in a.vms.iter().enumerate() {
-        let name = &entry.config.name;
-        let node = a.sidebar_tree.add_child(root, name);
-
-        // Color-code by state.
-        let color = match entry.state {
-            VmState::Running => 0xFF00DD66u32,
-            VmState::Paused  => 0xFFFFCC00u32,
-            VmState::Stopped => 0xFFAABBCCu32,
-        };
-        a.sidebar_tree.set_node_text_color(node, color);
-
-        // Select the current VM.
-        if i == a.selected_vm {
-            a.sidebar_tree.set_selected(node);
+    // Collect layout info into local vecs to avoid borrow conflicts.
+    // Each folder: (folder_index, name, [(vm_index)]).
+    let mut folder_ops: Vec<(usize, String, Vec<usize>)> = Vec::new();
+    for (fi, folder) in a.layout.folders.iter().enumerate() {
+        let mut vm_indices = Vec::new();
+        for uuid in &folder.vm_uuids {
+            if let Some(vi) = a.vms.iter().position(|e| e.config.uuid == *uuid) {
+                vm_indices.push(vi);
+            }
+        }
+        folder_ops.push((fi, folder.name.clone(), vm_indices));
+    }
+    let mut root_vm_indices: Vec<usize> = Vec::new();
+    for uuid in &a.layout.root_vms {
+        if let Some(vi) = a.vms.iter().position(|e| e.config.uuid == *uuid) {
+            root_vm_indices.push(vi);
         }
     }
+
+    // Add folders and their VMs.
+    for (fi, fname, vm_indices) in &folder_ops {
+        let folder_node = a.sidebar_tree.add_child(root, fname);
+        a.sidebar_tree.set_node_style(folder_node, anyui::STYLE_BOLD);
+        a.sidebar_tree.set_expanded(folder_node, true);
+        a.node_map.push(NodeKind::Folder(*fi));
+
+        for &vi in vm_indices {
+            add_vm_node(a, folder_node, vi);
+        }
+    }
+
+    // Add root-level VMs (not in any folder).
+    for &vi in &root_vm_indices {
+        add_vm_node(a, root, vi);
+    }
+}
+
+/// Add a VM node to the tree under `parent` and record it in `node_map`.
+fn add_vm_node(a: &mut AppState, parent: u32, vm_idx: usize) -> u32 {
+    let entry = &a.vms[vm_idx];
+    let node = a.sidebar_tree.add_child(parent, &entry.config.name);
+
+    let color = match entry.state {
+        VmState::Running => 0xFF00DD66u32,
+        VmState::Paused  => 0xFFFFCC00u32,
+        VmState::Stopped => 0xFFAABBCCu32,
+    };
+    a.sidebar_tree.set_node_text_color(node, color);
+
+    if vm_idx == a.selected_vm {
+        a.sidebar_tree.set_selected(node);
+    }
+
+    a.node_map.push(NodeKind::Vm(vm_idx));
+    node
 }
 
 // ── Status bar ─────────────────────────────────────────────────────────
@@ -584,11 +870,14 @@ fn start_selected_vm() {
     if a.selected_vm >= a.vms.len() {
         return;
     }
-
-    let entry = &mut a.vms[a.selected_vm];
-    if entry.state != VmState::Stopped {
+    if a.vms[a.selected_vm].state != VmState::Stopped {
         return;
     }
+
+    // Persist config before IPC so vmd reads the latest state.
+    save_vm_config(&a.vms[a.selected_vm].config);
+
+    let entry = &mut a.vms[a.selected_vm];
 
     anyos_std::println!("vmmanager: starting VM '{}'", entry.config.name);
 
@@ -621,45 +910,37 @@ fn start_selected_vm() {
     // Wait briefly for vmd to connect to pipes.
     anyos_std::process::sleep(50);
 
-    // Send VM creation command.
-    let create_cmd = format!("create {} {}", entry.config.name, entry.config.ram_mb);
+    // Send VM creation command — vmd reads full config by UUID.
+    let create_cmd = format!("create {}", entry.config.uuid);
     ipc::pipe_write(cmd_pipe, create_cmd.as_bytes());
 
-    // Wait for "created" response with SHM ID.
-    anyos_std::process::sleep(100);
+    // Poll for "created" response with SHM ID (up to 2 seconds).
     let mut resp_buf = [0u8; 256];
-    let n = ipc::pipe_read(status_pipe, &mut resp_buf);
-    if n > 0 && n != u32::MAX {
+    let mut got_created = false;
+    for _ in 0..40 {
+        anyos_std::process::sleep(50);
+        let n = ipc::pipe_read(status_pipe, &mut resp_buf);
+        if n == 0 || n == u32::MAX {
+            continue;
+        }
         let resp = core::str::from_utf8(&resp_buf[..n as usize]).unwrap_or("");
-        // Parse "ready" first, then wait for "created 0 <shm_id>".
-        if resp.starts_with("ready") {
-            // Read next response.
-            anyos_std::process::sleep(50);
-            let n2 = ipc::pipe_read(status_pipe, &mut resp_buf);
-            if n2 > 0 && n2 != u32::MAX {
-                let resp2 = core::str::from_utf8(&resp_buf[..n2 as usize]).unwrap_or("");
-                parse_created_response(entry, resp2);
+        // May receive "ready" first, then "created 0 <shm_id>" in a later read.
+        for line in resp.split('\n') {
+            let line = line.trim();
+            if line.starts_with("created") {
+                parse_created_response(entry, line);
+                got_created = true;
             }
-        } else {
-            parse_created_response(entry, resp);
+        }
+        if got_created {
+            break;
         }
     }
-
-    // Attach disk image if configured.
-    if !entry.config.disk_image.is_empty() {
-        let cmd = format!("disk {}", entry.config.disk_image);
-        ipc::pipe_write(cmd_pipe, cmd.as_bytes());
-        anyos_std::process::sleep(50);
+    if !got_created {
+        anyos_std::println!("vmmanager: WARNING: did not receive 'created' response from vmd");
     }
 
-    // Load ISO if configured.
-    if !entry.config.iso_image.is_empty() {
-        let cmd = format!("iso {}", entry.config.iso_image);
-        ipc::pipe_write(cmd_pipe, cmd.as_bytes());
-        anyos_std::process::sleep(50);
-    }
-
-    // Start execution.
+    // Start execution (disk and ISO are loaded by vmd from config).
     ipc::pipe_write(cmd_pipe, b"start");
     entry.state = VmState::Running;
     entry.instruction_count = 0;
@@ -759,12 +1040,17 @@ fn delete_selected_vm() {
         return;
     }
 
+    // Delete the config file and remove from layout.
+    let uuid = a.vms[a.selected_vm].config.uuid.clone();
+    delete_vm_config(&uuid);
+    remove_uuid_from_layout(&mut a.layout, &uuid);
+    save_layout(&a.layout);
+
     a.vms.remove(a.selected_vm);
     if a.selected_vm > 0 && a.selected_vm >= a.vms.len() {
         a.selected_vm = a.vms.len().saturating_sub(1);
     }
 
-    save_config(&a.vms);
     rebuild_sidebar();
     update_info_labels();
     update_status_bar();
@@ -1304,7 +1590,7 @@ fn save_settings() {
         config.boot_order = boot_order;
 
         // Persist and refresh UI.
-        save_config(&a.vms);
+        save_vm_config(config);
         rebuild_sidebar();
         update_info_labels();
     }
@@ -1350,6 +1636,10 @@ fn create_new_vm() {
     let name = unsafe { core::str::from_utf8_unchecked(&name_buf[..p]) };
 
     let config = VmConfig::new(name);
+    save_vm_config(&config);
+    a.layout.root_vms.push(config.uuid.clone());
+    save_layout(&a.layout);
+
     a.vms.push(VmEntry {
         config,
         state: VmState::Stopped,
@@ -1363,7 +1653,6 @@ fn create_new_vm() {
 
     a.selected_vm = a.vms.len() - 1;
 
-    save_config(&a.vms);
     rebuild_sidebar();
     update_info_labels();
     update_status_bar();
@@ -1633,7 +1922,7 @@ fn main() {
 
     // ── Load saved VMs ─────────────────────────────────────────────
 
-    let vms = load_config();
+    let (vms, layout) = load_all_vms();
 
     // ── Initialize global state ────────────────────────────────────
 
@@ -1653,8 +1942,10 @@ fn main() {
             content_view,
             sidebar_tree,
             tree_root: 0,
+            node_map: Vec::new(),
             vms,
             selected_vm: 0,
+            layout,
             settings: None,
         });
     }
@@ -1666,27 +1957,26 @@ fn main() {
 
     // ── Event handlers ─────────────────────────────────────────────
 
-    // TreeView selection: map node index to VM index.
-    // Node 0 is the root "My Machines", nodes 1..N are VMs.
+    // TreeView selection: use node_map to resolve node → VM or folder.
     app().sidebar_tree.on_selection_changed(|ev| {
         let a = app();
-        let sel = ev.index;
-        // Root node (tree_root) or no selection → ignore.
-        if sel == u32::MAX || sel == a.tree_root {
+        let sel = ev.index as usize;
+        if ev.index == u32::MAX || sel >= a.node_map.len() {
             return;
         }
-        // VM nodes are children of root, so VM index = sel - root - 1.
-        let vm_idx = if sel > a.tree_root {
-            (sel - a.tree_root - 1) as usize
-        } else {
-            return;
-        };
-        if vm_idx < a.vms.len() && a.selected_vm != vm_idx {
-            a.selected_vm = vm_idx;
-            update_info_labels();
+        match a.node_map[sel] {
+            NodeKind::Vm(vm_idx) => {
+                if vm_idx < a.vms.len() && a.selected_vm != vm_idx {
+                    a.selected_vm = vm_idx;
+                    update_info_labels();
 
-            if a.vms[vm_idx].state != VmState::Running {
-                a.canvas.clear(0xFF0A0A14);
+                    if a.vms[vm_idx].state != VmState::Running {
+                        a.canvas.clear(0xFF0A0A14);
+                    }
+                }
+            }
+            NodeKind::Root | NodeKind::Folder(_) => {
+                // Selecting a folder or root — ignore (expand/collapse handled by TreeView).
             }
         }
     });

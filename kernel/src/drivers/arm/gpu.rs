@@ -232,7 +232,7 @@ pub fn init(dev: &VirtioMmioDevice) {
 
     // Register framebuffer with the global framebuffer module
     let pitch = gpu.width * 4;
-    crate::drivers::framebuffer::update(gpu.fb_phys as u32, pitch, gpu.width, gpu.height, 32);
+    crate::drivers::framebuffer::update(gpu.fb_virt as u64, pitch, gpu.width, gpu.height, 32);
 
     *GPU_DEVICE.lock() = Some(gpu);
 }
@@ -240,6 +240,42 @@ pub fn init(dev: &VirtioMmioDevice) {
 // ---------------------------------------------------------------------------
 // GPU Commands
 // ---------------------------------------------------------------------------
+
+/// Send a command using stored device base (no VirtioMmioDevice reference needed).
+/// Used by the public `flush()` API after initialization.
+fn send_cmd_raw(gpu: &mut VirtioGpu, cmd_size: usize, resp_size: usize) -> bool {
+    let cmd_phys = gpu.cmd_phys;
+    let resp_phys = gpu.cmd_phys + 2048;
+
+    unsafe { ptr::write_bytes((gpu.cmd_virt + 2048) as *mut u8, 0, resp_size.max(64)); }
+
+    let chain = [
+        (cmd_phys, cmd_size as u32, 0u16),
+        (resp_phys, resp_size as u32, VRING_DESC_F_WRITE),
+    ];
+
+    if gpu.controlq.push_chain(&chain).is_none() {
+        return false;
+    }
+
+    // Notify via MMIO (DSB + write to QueueNotify register)
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        ptr::write_volatile((gpu.base + 0x050) as *mut u32, 0);
+    }
+
+    let mut timeout = 5_000_000u32;
+    while !gpu.controlq.has_used() {
+        core::hint::spin_loop();
+        timeout -= 1;
+        if timeout == 0 {
+            return false;
+        }
+    }
+
+    gpu.controlq.pop_used();
+    true
+}
 
 /// Send a command and wait for response using the controlq.
 fn send_cmd(gpu: &mut VirtioGpu, dev: &VirtioMmioDevice, cmd_size: usize, resp_size: usize) -> bool {
@@ -412,10 +448,35 @@ fn flush_region(gpu: &mut VirtioGpu, dev: &VirtioMmioDevice, x: u32, y: u32, w: 
 
 /// Flush a rectangular region of the framebuffer to the display.
 pub fn flush(x: u32, y: u32, w: u32, h: u32) {
-    // This needs access to the device to send commands.
-    // For now, store enough state to do a flush later.
-    // TODO: implement runtime flush via stored device reference
-    let _ = (x, y, w, h);
+    let mut guard = GPU_DEVICE.lock();
+    let gpu = match guard.as_mut() {
+        Some(g) => g,
+        None => return,
+    };
+    let rid = gpu.resource_id;
+
+    // TRANSFER_TO_HOST_2D
+    let transfer = TransferToHost2d {
+        hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D),
+        r_x: x, r_y: y, r_width: w, r_height: h,
+        offset: 0,
+        resource_id: rid,
+        padding: 0,
+    };
+    unsafe { ptr::write(gpu.cmd_virt as *mut TransferToHost2d, transfer); }
+    send_cmd_raw(gpu, core::mem::size_of::<TransferToHost2d>(),
+                 core::mem::size_of::<GpuCtrlHdr>());
+
+    // RESOURCE_FLUSH
+    let flush_cmd = ResourceFlush {
+        hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_RESOURCE_FLUSH),
+        r_x: x, r_y: y, r_width: w, r_height: h,
+        resource_id: rid,
+        padding: 0,
+    };
+    unsafe { ptr::write(gpu.cmd_virt as *mut ResourceFlush, flush_cmd); }
+    send_cmd_raw(gpu, core::mem::size_of::<ResourceFlush>(),
+                 core::mem::size_of::<GpuCtrlHdr>());
 }
 
 /// Get the framebuffer virtual address and dimensions.

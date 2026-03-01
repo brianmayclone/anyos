@@ -360,7 +360,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         // Phase 9: Start userspace
         if let Some(fb) = drivers::framebuffer::info() {
             if !drivers::gpu::is_available() {
-                drivers::gpu::bochs_vga::init(fb.addr, fb.width, fb.height, fb.pitch);
+                drivers::gpu::bochs_vga::init(fb.addr as u32, fb.width, fb.height, fb.pitch);
             }
             if let Some(name) = drivers::gpu::with_gpu(|g| {
                 let mut n = alloc::string::String::new();
@@ -431,16 +431,53 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             }
         }
 
+        // Show boot logo on framebuffer (if GPU initialized)
+        drivers::boot_console::init();
+        // VirtIO GPU requires explicit flush to transfer pixels to host display
+        if let Some((_, w, h)) = drivers::arm::gpu::framebuffer_info() {
+            drivers::arm::gpu::flush(0, 0, w, h);
+        }
+
         // Phase 7e: Filesystem
         serial_println!("");
         serial_println!("  [Phase 7e] ARM64 filesystem init...");
         drivers::arm::storage::init_filesystem();
 
-        // Phase 8c/9: DLL loading + userspace
-        // TODO: ARM64 userspace requires ARM64-compiled DLLs and programs,
-        // plus ARM64 virtual memory support in the loader. Skip for now.
-        let fs_ok = if fs::vfs::has_root_fs() { "mounted" } else { "not available" };
+        // Phase 8c: Load shared DLIBs (if filesystem is mounted)
+        if fs::vfs::has_root_fs() {
+            serial_println!("");
+            serial_println!("  [Phase 8c] Loading shared libraries...");
+            const DLLS: [(&str, u64); 4] = [
+                ("/Libraries/uisys.dlib", 0x0400_0000u64),
+                ("/Libraries/libimage.dlib", 0x0410_0000u64),
+                ("/Libraries/librender.dlib", 0x0430_0000u64),
+                ("/Libraries/libcompositor.dlib", 0x0438_0000u64),
+            ];
+            for (path, base) in DLLS {
+                let name = path.rsplit('/').next().unwrap_or(path);
+                match task::dll::load_dll(path, base) {
+                    Ok(pages) => serial_println!("[OK] {}: {} pages", name, pages),
+                    Err(e) => serial_println!("[WARN] {} not loaded: {}", name, e),
+                }
+            }
 
+            // Phase 9: Start userspace
+            serial_println!("");
+            serial_println!("  [Phase 9] Starting userspace...");
+
+            arch::hal::disable_interrupts();
+
+            match task::loader::load_and_run("/System/compositor/compositor", "compositor") {
+                Ok(tid) => serial_println!("[OK] Compositor spawned (TID={})", tid),
+                Err(e) => serial_println!("[WARN] Failed to load compositor: {}", e),
+            }
+            match task::loader::load_and_run("/System/init", "init") {
+                Ok(tid) => serial_println!("[OK] Init spawned (TID={})", tid),
+                Err(e) => serial_println!("[WARN] Failed to load init: {}", e),
+            }
+        }
+
+        let fs_ok = if fs::vfs::has_root_fs() { "mounted" } else { "not available" };
         serial_println!("");
         serial_println!("========================================");
         serial_println!("  anyOS ARM64 boot complete");
@@ -449,7 +486,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             drivers::arm::gpu::framebuffer_info().map_or(0, |f| f.1),
             drivers::arm::gpu::framebuffer_info().map_or(0, |f| f.2));
         serial_println!("  Input: {} device(s)", drivers::arm::input::device_count());
-        serial_println!("  Scheduler running, idle loop active");
+        serial_println!("  Entering scheduler...");
         serial_println!("========================================");
         serial_println!("");
         task::scheduler::run();

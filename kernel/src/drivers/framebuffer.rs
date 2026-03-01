@@ -10,7 +10,7 @@ use crate::boot_info::BootInfo;
 
 /// Framebuffer information from VESA VBE mode
 pub struct FramebufferInfo {
-    pub addr: u32,
+    pub addr: u64,
     pub pitch: u32,
     pub width: u32,
     pub height: u32,
@@ -21,7 +21,7 @@ static mut FB_INFO: Option<FramebufferInfo> = None;
 
 /// Change hook: called synchronously when [`update()`] stores new FB parameters.
 /// Signature: `fn(addr, pitch, width, height)`.
-static mut ON_CHANGE: Option<fn(u32, u32, u32, u32)> = None;
+static mut ON_CHANGE: Option<fn(u64, u32, u32, u32)> = None;
 
 /// Initialize framebuffer from boot info
 pub fn init(boot_info: &BootInfo) {
@@ -38,7 +38,7 @@ pub fn init(boot_info: &BootInfo) {
 
     unsafe {
         FB_INFO = Some(FramebufferInfo {
-            addr,
+            addr: addr as u64,
             pitch,
             width,
             height,
@@ -54,7 +54,7 @@ pub fn init(boot_info: &BootInfo) {
 
 /// Update framebuffer parameters at runtime (e.g. GPU driver changed resolution
 /// or switched to a different backing buffer). Notifies registered hooks.
-pub fn update(addr: u32, pitch: u32, width: u32, height: u32, bpp: u8) {
+pub fn update(addr: u64, pitch: u32, width: u32, height: u32, bpp: u8) {
     unsafe {
         FB_INFO = Some(FramebufferInfo {
             addr,
@@ -73,7 +73,7 @@ pub fn update(addr: u32, pitch: u32, width: u32, height: u32, bpp: u8) {
 /// Register a hook that is called when framebuffer parameters change.
 /// Only one hook is supported (boot_console). Called during early boot,
 /// before interrupts — no synchronization needed.
-pub fn register_change_hook(hook: fn(u32, u32, u32, u32)) {
+pub fn register_change_hook(hook: fn(u64, u32, u32, u32)) {
     unsafe { ON_CHANGE = Some(hook); }
 }
 

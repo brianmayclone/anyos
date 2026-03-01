@@ -888,6 +888,30 @@ pub extern "C" fn corevm_vga_get_text_buffer(handle: u64, count: *mut u32) -> *c
     svga.text_buffer.as_ptr()
 }
 
+/// Get VGA MMIO debug counters.
+///
+/// Returns the total MMIO write count and the text-region write count
+/// through the output pointers. Useful for diagnosing whether writes
+/// to the VGA framebuffer are reaching the device handler.
+#[no_mangle]
+pub extern "C" fn corevm_vga_debug_counters(
+    handle: u64,
+    total_writes: *mut u64,
+    text_writes: *mut u64,
+) {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.svga_ptr.is_null() {
+        return;
+    }
+    let svga = unsafe { &*vm.svga_ptr };
+    if !total_writes.is_null() {
+        unsafe { *total_writes = svga.mmio_write_count };
+    }
+    if !text_writes.is_null() {
+        unsafe { *text_writes = svga.mmio_text_write_count };
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════
 // Device Interaction — Serial
 // ════════════════════════════════════════════════════════════════════════

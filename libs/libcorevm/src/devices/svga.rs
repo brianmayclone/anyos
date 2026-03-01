@@ -91,6 +91,10 @@ pub struct Svga {
     pub attr_flip_flop: bool,
     /// Miscellaneous output register.
     pub misc_output: u8,
+    /// Number of MMIO writes received (debug counter).
+    pub mmio_write_count: u64,
+    /// Number of MMIO writes to the text buffer region (offset >= 0x18000).
+    pub mmio_text_write_count: u64,
     /// Current horizontal resolution in pixels.
     pub width: u32,
     /// Current vertical resolution in pixels.
@@ -150,6 +154,8 @@ impl Svga {
             attr_regs: [0; 21],
             attr_flip_flop: false,
             misc_output: 0,
+            mmio_write_count: 0,
+            mmio_text_write_count: 0,
             width,
             height,
             bpp: 32,
@@ -363,18 +369,25 @@ impl MmioHandler for Svga {
         match self.mode {
             VgaMode::Text80x25 => {
                 // Text buffer at offset 0x18000 (0xB8000 - 0xA0000).
-                let text_offset = offset.wrapping_sub(0x18000) as usize;
-                if text_offset < self.text_buffer.len() * 2 {
+                // Handle multi-byte reads (e.g. 16-bit word = char + attr).
+                let base = offset.wrapping_sub(0x18000) as usize;
+                let buf_bytes = self.text_buffer.len() * 2;
+                let mut result: u64 = 0;
+                for i in 0..(size as usize) {
+                    let text_offset = base + i;
+                    if text_offset >= buf_bytes {
+                        break;
+                    }
                     let cell_idx = text_offset / 2;
                     let cell_val = self.text_buffer[cell_idx];
-                    if text_offset & 1 == 0 {
-                        Ok((cell_val & 0xFF) as u64)
+                    let byte = if text_offset & 1 == 0 {
+                        (cell_val & 0xFF) as u8
                     } else {
-                        Ok((cell_val >> 8) as u64)
-                    }
-                } else {
-                    Ok(0)
+                        (cell_val >> 8) as u8
+                    };
+                    result |= (byte as u64) << (i * 8);
                 }
+                Ok(result)
             }
             _ => {
                 // Graphics mode: read from framebuffer.
@@ -419,20 +432,31 @@ impl MmioHandler for Svga {
     /// In text mode, writes go to the text buffer. In graphics modes,
     /// writes go directly to the framebuffer.
     fn write(&mut self, offset: u64, size: u8, val: u64) -> Result<()> {
+        self.mmio_write_count += 1;
+        if offset >= 0x18000 {
+            self.mmio_text_write_count += 1;
+        }
         match self.mode {
             VgaMode::Text80x25 => {
                 // Text buffer at offset 0x18000 (0xB8000 - 0xA0000).
-                let text_offset = offset.wrapping_sub(0x18000) as usize;
-                if text_offset < self.text_buffer.len() * 2 {
+                // Handle multi-byte writes (e.g. 16-bit word = char + attr).
+                let base = offset.wrapping_sub(0x18000) as usize;
+                let buf_bytes = self.text_buffer.len() * 2;
+                for i in 0..(size as usize) {
+                    let text_offset = base + i;
+                    if text_offset >= buf_bytes {
+                        break;
+                    }
+                    let byte = ((val >> (i * 8)) & 0xFF) as u16;
                     let cell_idx = text_offset / 2;
                     if text_offset & 1 == 0 {
-                        // Write low byte (character).
+                        // Low byte (character).
                         self.text_buffer[cell_idx] =
-                            (self.text_buffer[cell_idx] & 0xFF00) | (val as u16 & 0xFF);
+                            (self.text_buffer[cell_idx] & 0xFF00) | byte;
                     } else {
-                        // Write high byte (attribute).
+                        // High byte (attribute).
                         self.text_buffer[cell_idx] =
-                            (self.text_buffer[cell_idx] & 0x00FF) | ((val as u16 & 0xFF) << 8);
+                            (self.text_buffer[cell_idx] & 0x00FF) | (byte << 8);
                     }
                 }
             }

@@ -286,6 +286,9 @@ impl Thread {
         #[cfg(target_arch = "aarch64")]
         {
             context.set_pc(entry as *const () as u64);
+            // x30 (LR) = entry: context_switch.S restores x30 and uses `ret`,
+            // so for a brand-new thread the entry point must be in x30.
+            context.x[30] = entry as *const () as u64;
             // SP aligned to 16 bytes for AArch64 ABI, with -8 for return address slot.
             context.set_sp(stack_top - 8);
             // x29 (FP) = stack_top (frame pointer base, equivalent to RBP on x86)
