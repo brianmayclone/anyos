@@ -665,7 +665,6 @@ pub fn per_cpu_idle_ticks(cpu: usize) -> u32 {
 /// Returns false (and does nothing) if this CPU is already inside schedule_inner,
 /// preventing re-entrant scheduling that causes context corruption and deadlocks.
 pub fn schedule_tick() -> bool {
-    #[cfg(target_arch = "aarch64")]
     let cpu_id = crate::arch::hal::cpu_id();
     if cpu_id < MAX_CPUS && PER_CPU_IN_SCHEDULER[cpu_id].load(Ordering::Relaxed) {
         // Already in scheduler — just count the tick for timekeeping accuracy

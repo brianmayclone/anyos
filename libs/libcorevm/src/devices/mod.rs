@@ -22,4 +22,6 @@ pub mod serial;
 pub mod svga;
 pub mod e1000;
 pub mod bus;
+pub mod fw_cfg;
 pub mod ide;
+pub mod debug_port;

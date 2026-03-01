@@ -230,8 +230,10 @@ fn exec_primary(
         // ── IMUL r, r/m, imm8 ──
         0x6B => arith::exec_imul_3op(cpu, inst, memory, mmu),
 
-        // ── INS/OUTS string I/O (not implemented) ──
-        0x6C..=0x6F => Err(VmError::UndefinedOpcode(op)),
+        // ── INS: read from port DX into ES:[RDI] ──
+        0x6C | 0x6D => string::exec_ins(cpu, inst, memory, mmu, io),
+        // ── OUTS: write from DS:[RSI] to port DX ──
+        0x6E | 0x6F => string::exec_outs(cpu, inst, memory, mmu, io),
 
         // ── Jcc short (rel8) ──
         0x70..=0x7F => control::exec_jcc(cpu, inst),

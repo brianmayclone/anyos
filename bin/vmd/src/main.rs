@@ -459,15 +459,15 @@ fn cmd_start() {
             return;
         }
 
-        // Load VGA BIOS at 0xC0000 (standard option ROM location).
-        // Must be loaded AFTER SeaBIOS since the 256KB SeaBIOS image
-        // covers 0xC0000-0xFFFFF but uses zeros/padding at the start.
-        // The VGA BIOS overwrites that padding so SeaBIOS finds it
-        // during its option ROM scan.
+        // Load VGA BIOS: provide it both as a fw_cfg file for SeaBIOS's
+        // modern path AND at 0xC0000 in RAM for the legacy ROM scan path.
         let vgabios_data = read_file(VGABIOS_PATH);
         if !vgabios_data.is_empty() {
+            // fw_cfg file entry — SeaBIOS loads VGA ROMs via "vgaroms/" prefix.
+            inst.handle.fw_cfg_add_file("vgaroms/vgabios-stdvga.bin", &vgabios_data);
+            // Also place directly in RAM at 0xC0000 (legacy fallback).
             inst.handle.load_binary(0xC0000, &vgabios_data);
-            anyos_std::println!("[vmd] loaded VGA BIOS ({} bytes at 0xC0000)", vgabios_data.len());
+            anyos_std::println!("[vmd] loaded VGA BIOS ({} bytes, fw_cfg + 0xC0000)", vgabios_data.len());
         } else {
             anyos_std::println!("[vmd] WARNING: VGA BIOS not found at {}", VGABIOS_PATH);
         }
@@ -605,13 +605,30 @@ fn run_vm_batch() -> bool {
 
     match exit {
         ExitReason::Halted => {
-            inst.running = false;
-            update_shm_state(inst, STATE_HALTED);
+            // HLT pauses until the next interrupt — deliver a PIT tick
+            // and resume. This is critical: SeaBIOS uses HLT during POST
+            // to wait for timer events. Sleep briefly to avoid busy-spinning.
+            anyos_std::process::sleep(1);
+            if inst.handle.pit_tick() {
+                inst.handle.pic_raise_irq(0);
+            }
+            // Drain serial and debug port output (SeaBIOS debug messages).
+            let serial_out = inst.handle.serial_take_output_vec();
+            if !serial_out.is_empty() {
+                if let Ok(text) = core::str::from_utf8(&serial_out) {
+                    anyos_std::print!("{}", text);
+                }
+            }
+            let debug_out = inst.handle.debug_take_output_vec();
+            if !debug_out.is_empty() {
+                if let Ok(text) = core::str::from_utf8(&debug_out) {
+                    anyos_std::print!("{}", text);
+                }
+            }
+            // Update framebuffer on HLT (SeaBIOS may have written to VGA).
             update_shm_framebuffer(inst);
-            send_status("state 0 halted");
-            anyos_std::println!("[vmd] VM halted ({} instructions)",
-                inst.handle.instruction_count());
-            return false;
+            // Continue running — HLT is not a terminal state.
+            return true;
         }
         ExitReason::Exception => {
             inst.running = false;
@@ -646,10 +663,16 @@ fn run_vm_batch() -> bool {
     let serial_out = inst.handle.serial_take_output_vec();
     if !serial_out.is_empty() {
         if let Ok(text) = core::str::from_utf8(&serial_out) {
-            // Print locally too.
             anyos_std::print!("{}", text);
-            // Send to vmmanager.
             send_status(&format!("serial 0 {}", text));
+        }
+    }
+
+    // Drain debug port output (SeaBIOS writes to port 0x402).
+    let debug_out = inst.handle.debug_take_output_vec();
+    if !debug_out.is_empty() {
+        if let Ok(text) = core::str::from_utf8(&debug_out) {
+            anyos_std::print!("{}", text);
         }
     }
 
@@ -746,11 +769,11 @@ fn main() {
         // Run VM execution batch if active.
         let vm_active = run_vm_batch();
 
-        // Yield CPU briefly to avoid starving other threads.
+        // Sleep briefly to avoid 100% CPU usage.
         if !vm_active {
             anyos_std::process::sleep(10);
         } else {
-            anyos_std::process::yield_cpu();
+            anyos_std::process::sleep(1);
         }
     }
 }

@@ -78,6 +78,7 @@ pub use registers::{RegisterFile, SegReg};
 pub use flags::OperandSize;
 
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::ptr;
 
 // ── VmEngine (unchanged convenience wrapper) ──
@@ -255,6 +256,8 @@ struct VmInstance {
     e1000_ptr: *mut devices::e1000::E1000,
     bus_ptr: *mut devices::bus::PciBus,
     ide_ptr: *mut devices::ide::Ide,
+    fw_cfg_ptr: *mut devices::fw_cfg::FwCfg,
+    debug_port_ptr: *mut devices::debug_port::DebugPort,
 }
 
 impl Drop for VmInstance {
@@ -270,6 +273,8 @@ impl Drop for VmInstance {
             if !self.e1000_ptr.is_null() { let _ = Box::from_raw(self.e1000_ptr); }
             if !self.bus_ptr.is_null() { let _ = Box::from_raw(self.bus_ptr); }
             if !self.ide_ptr.is_null() { let _ = Box::from_raw(self.ide_ptr); }
+            if !self.fw_cfg_ptr.is_null() { let _ = Box::from_raw(self.fw_cfg_ptr); }
+            if !self.debug_port_ptr.is_null() { let _ = Box::from_raw(self.debug_port_ptr); }
         }
     }
 }
@@ -309,6 +314,8 @@ pub extern "C" fn corevm_create(ram_size_mb: u32) -> u64 {
         e1000_ptr: ptr::null_mut(),
         bus_ptr: ptr::null_mut(),
         ide_ptr: ptr::null_mut(),
+        fw_cfg_ptr: ptr::null_mut(),
+        debug_port_ptr: ptr::null_mut(),
     });
     let h = Box::into_raw(instance) as u64;
     vm_log!("VM created (handle=0x{:X})", h);
@@ -652,6 +659,43 @@ pub extern "C" fn corevm_load_binary(
     0
 }
 
+/// Add a named file to the fw_cfg device.
+///
+/// `name` is a NUL-terminated C string (e.g., "vgaroms/vgabios.bin").
+/// `data` points to `len` bytes of file content.
+/// Returns 0 on success, -1 if fw_cfg is not set up.
+#[no_mangle]
+pub extern "C" fn corevm_fw_cfg_add_file(
+    handle: u64,
+    name: *const u8,
+    data: *const u8,
+    len: u32,
+) -> i32 {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.fw_cfg_ptr.is_null() {
+        vm_log!("fw_cfg_add_file: fw_cfg not set up");
+        return -1;
+    }
+    if name.is_null() || data.is_null() {
+        return -1;
+    }
+    // Read NUL-terminated name string.
+    let mut name_len = 0;
+    unsafe {
+        while *name.add(name_len) != 0 && name_len < 55 {
+            name_len += 1;
+        }
+    }
+    let name_str = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(name, name_len))
+    };
+    let file_data = unsafe { core::slice::from_raw_parts(data, len as usize) };
+    let fw_cfg = unsafe { &mut *vm.fw_cfg_ptr };
+    fw_cfg.add_file(name_str, Vec::from(file_data));
+    vm_log!("fw_cfg: added file '{}' ({} bytes)", name_str, len);
+    0
+}
+
 /// Read a single byte from guest physical memory.
 #[no_mangle]
 pub extern "C" fn corevm_read_phys_u8(handle: u64, addr: u64) -> u8 {
@@ -731,9 +775,9 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     vm.pit_ptr = pit;
     vm.engine.io.register(0x40, 4, Box::new(IoProxy { ptr: pit }));
 
-    // CMOS — RTC and NVRAM. Ram size derived from engine memory.
-    // We pass a representative size; the CMOS constructor populates memory fields.
-    let cmos = Box::new(devices::cmos::Cmos::new(16 * 1024 * 1024));
+    // CMOS — RTC and NVRAM. Pass actual guest RAM size.
+    let ram_bytes = vm.engine.memory.ram().size();
+    let cmos = Box::new(devices::cmos::Cmos::new(ram_bytes));
     vm.engine.io.register(0x70, 2, cmos);
 
     // PS/2 — keyboard and mouse controller.
@@ -784,6 +828,20 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     let bus_ptr = Box::into_raw(Box::new(bus));
     vm.bus_ptr = bus_ptr;
     vm.engine.io.register(0xCF8, 8, Box::new(IoProxy { ptr: bus_ptr }));
+
+    // fw_cfg — QEMU firmware configuration interface.
+    // SeaBIOS uses this to discover platform config and VGA BIOS files.
+    let fw_cfg = Box::into_raw(Box::new(
+        devices::fw_cfg::FwCfg::new(ram_bytes as u64),
+    ));
+    vm.fw_cfg_ptr = fw_cfg;
+    vm.engine.io.register(0x510, 2, Box::new(IoProxy { ptr: fw_cfg }));
+
+    // Debug port — QEMU debug console at port 0x402.
+    // SeaBIOS writes debug output here; reading 0xE9 signals port is active.
+    let debug_port = Box::into_raw(Box::new(devices::debug_port::DebugPort::new()));
+    vm.debug_port_ptr = debug_port;
+    vm.engine.io.register(0x402, 1, Box::new(IoProxy { ptr: debug_port }));
 
     let count = vm.engine.memory.mmio_region_count();
     let (lo, hi) = vm.engine.memory.mmio_bounds();
@@ -1041,6 +1099,38 @@ pub extern "C" fn corevm_serial_take_output(
 }
 
 // ════════════════════════════════════════════════════════════════════════
+// Device Interaction — Debug Port
+// ════════════════════════════════════════════════════════════════════════
+
+/// Drain debug port output written by the guest into the provided buffer.
+///
+/// SeaBIOS writes debug messages to port 0x402. This function returns the
+/// accumulated bytes. Returns 0 if `buf` is null or the debug port has not
+/// been set up.
+#[no_mangle]
+pub extern "C" fn corevm_debug_take_output(
+    handle: u64,
+    buf: *mut u8,
+    buf_len: u32,
+) -> u32 {
+    if buf.is_null() || buf_len == 0 {
+        return 0;
+    }
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.debug_port_ptr.is_null() {
+        return 0;
+    }
+    let output = unsafe { (*vm.debug_port_ptr).take_output() };
+    let copy_len = (output.len() as u32).min(buf_len) as usize;
+    if copy_len > 0 {
+        unsafe {
+            ptr::copy_nonoverlapping(output.as_ptr(), buf, copy_len);
+        }
+    }
+    copy_len as u32
+}
+
+// ════════════════════════════════════════════════════════════════════════
 // Device Interaction — E1000
 // ════════════════════════════════════════════════════════════════════════
 
@@ -1125,17 +1215,27 @@ pub extern "C" fn corevm_pit_tick(handle: u64) -> u32 {
 // Device Interaction — PIC
 // ════════════════════════════════════════════════════════════════════════
 
-/// Assert an IRQ line on the PIC (edge-triggered).
+/// Assert an IRQ line on the PIC (edge-triggered) and inject the resulting
+/// interrupt vector into the CPU's interrupt controller.
 ///
-/// IRQ 0-7 go to the master PIC, 8-15 to the slave. No-op if PIC has not
-/// been set up.
+/// IRQ 0-7 go to the master PIC, 8-15 to the slave. The PIC is polled for
+/// the highest-priority pending vector, which is then queued for delivery
+/// at the top of the next CPU instruction cycle (when IF=1).
+/// No-op if PIC has not been set up.
 #[no_mangle]
 pub extern "C" fn corevm_pic_raise_irq(handle: u64, irq: u8) {
     let vm = unsafe { vm_from_handle(handle) };
     if vm.pic_ptr.is_null() {
         return;
     }
-    unsafe { (*vm.pic_ptr).raise_irq(irq) };
+    let pic = unsafe { &mut *vm.pic_ptr };
+    pic.raise_irq(irq);
+    // Bridge: poll the PIC for the resulting vector and inject into the CPU.
+    // Acknowledge on the PIC (IRR→ISR) so the same IRQ isn't re-injected.
+    if let Some(vector) = pic.get_interrupt_vector() {
+        pic.acknowledge(irq);
+        vm.engine.interrupts.raise_irq(vector);
+    }
 }
 
 /// Get the vector number of the highest-priority pending interrupt.

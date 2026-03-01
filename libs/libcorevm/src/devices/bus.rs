@@ -161,6 +161,10 @@ pub struct PciBus {
     pub config_address: u32,
     /// Registered PCI devices.
     pub devices: Vec<PciDevice>,
+    /// Diagnostic: number of config address writes logged.
+    log_count: u32,
+    /// Diagnostic: number of config data reads logged.
+    read_log_count: u32,
 }
 
 impl PciBus {
@@ -169,6 +173,8 @@ impl PciBus {
         PciBus {
             config_address: 0,
             devices: Vec::new(),
+            log_count: 0,
+            read_log_count: 0,
         }
     }
 
@@ -202,17 +208,26 @@ impl PciBus {
         let function = ((self.config_address >> 8) & 0x07) as u8;
         let register = (self.config_address & 0xFC) as usize;
 
-        if let Some(dev) = self.find_device(bus, device, function) {
+        let result = if let Some(dev) = self.find_device(bus, device, function) {
             if register + 3 < dev.config_space.len() {
                 config_read_u32(&dev.config_space, register)
             } else {
                 0xFFFFFFFF
             }
         } else {
-            // No device at this address — return all-ones (standard PCI
-            // behavior for empty slots).
             0xFFFFFFFF
+        };
+
+        // Log config reads for devices that exist or for device 2 (VGA).
+        if self.read_log_count < 60 && (result != 0xFFFFFFFF || device == 2) {
+            self.read_log_count += 1;
+            libsyscall::serial_print(format_args!(
+                "[pci] CFC read: addr=0x{:08X} bus={} dev={} func={} reg=0x{:02X} => 0x{:08X}\n",
+                self.config_address, bus, device, function, register, result
+            ));
         }
+
+        result
     }
 
     /// Write a dword to PCI configuration space for the currently
@@ -295,6 +310,19 @@ impl IoHandler for PciBus {
     fn write(&mut self, port: u16, size: u8, val: u32) -> Result<()> {
         match port {
             0xCF8 => {
+                // Log the first few config address writes to diagnose PCI scanning.
+                if self.log_count < 100 {
+                    self.log_count += 1;
+                    let enable = val & 0x80000000 != 0;
+                    let bus = (val >> 16) & 0xFF;
+                    let dev = (val >> 11) & 0x1F;
+                    let func = (val >> 8) & 0x07;
+                    let reg = val & 0xFC;
+                    libsyscall::serial_print(format_args!(
+                        "[pci] CF8 write: val=0x{:08X} size={} enable={} bus={} dev={} func={} reg=0x{:02X}\n",
+                        val, size, enable, bus, dev, func, reg
+                    ));
+                }
                 self.config_address = val;
             }
             0xCFC..=0xCFF => {
