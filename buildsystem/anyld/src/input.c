@@ -34,9 +34,18 @@ int parse_object(Ctx *ctx, const char *filename, uint8_t *data,
         if (data_owned) free(data);
         return -1;
     }
-    if (ehdr->e_machine != EM_X86_64) {
-        fprintf(stderr, "anyld: %s: not x86_64 (machine=%d)\n",
+    if (ehdr->e_machine != EM_X86_64 && ehdr->e_machine != EM_AARCH64) {
+        fprintf(stderr, "anyld: %s: unsupported architecture (machine=%d)\n",
                 filename, ehdr->e_machine);
+        if (data_owned) free(data);
+        return -1;
+    }
+    /* Verify all objects share the same architecture */
+    if (ctx->nobjs == 0) {
+        ctx->e_machine = ehdr->e_machine;
+    } else if (ctx->e_machine != ehdr->e_machine) {
+        fprintf(stderr, "anyld: %s: architecture mismatch (machine=%d, expected=%d)\n",
+                filename, ehdr->e_machine, ctx->e_machine);
         if (data_owned) free(data);
         return -1;
     }

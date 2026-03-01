@@ -97,6 +97,7 @@ pub(crate) fn add_tab() {
     tab.webview.set_submit_callback(crate::callbacks::on_form_submit, 0);
     st.content_view.add(tab.webview.scroll_view());
     tab.webview.scroll_view().set_dock(ui::DOCK_FILL);
+    tab.webview.scroll_view().on_scroll(|_| { crate::ensure_anim_timer(); });
 
     // Hide all existing tabs while we add the new one.
     for t in &st.tabs {

@@ -19,7 +19,15 @@ typedef struct {
 #define FD_CLR(fd, s) ((s)->fds_bits[(fd) / (8 * sizeof(unsigned long))] &= ~(1UL << ((fd) % (8 * sizeof(unsigned long)))))
 #define FD_ISSET(fd, s) ((s)->fds_bits[(fd) / (8 * sizeof(unsigned long))] & (1UL << ((fd) % (8 * sizeof(unsigned long)))))
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
            struct timeval *timeout);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

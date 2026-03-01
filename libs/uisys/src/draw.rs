@@ -151,51 +151,10 @@ unsafe fn cstr_eq(strtab: *const u8, offset: usize, name: &[u8]) -> bool {
     *s.add(name.len()) == 0
 }
 
-// ── Direct kernel syscalls ──────────────────────────────────────────
-
-const SYS_DLL_LOAD: u32 = 80;
-const SYS_GPU_HAS_ACCEL: u32 = 135;
-const SYS_GPU_HAS_HW_CURSOR: u32 = 138;
-
-#[inline(always)]
-fn syscall0(num: u32) -> u32 {
-    let ret: u64;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            inlateout("rax") num as u64 => ret,
-            out("rcx") _,
-            out("r11") _,
-        );
-    }
-    ret as u32
-}
-
-#[inline(always)]
-fn syscall2(num: u32, a1: u64, a2: u64) -> u64 {
-    let ret: u64;
-    unsafe {
-        core::arch::asm!(
-            "push rbx",
-            "mov rbx, {a1}",
-            "syscall",
-            "pop rbx",
-            a1 = in(reg) a1,
-            inlateout("rax") num as u64 => ret,
-            in("r10") a2,
-            out("rcx") _,
-            out("r11") _,
-        );
-    }
-    ret
-}
+// ── Direct kernel syscalls (via libsyscall) ─────────────────────────
 
 fn dll_load(path: &[u8]) -> u64 {
-    let mut buf = [0u8; 257];
-    let len = path.len().min(256);
-    buf[..len].copy_from_slice(&path[..len]);
-    buf[len] = 0;
-    syscall2(SYS_DLL_LOAD, buf.as_ptr() as u64, len as u64)
+    libsyscall::dll_load(path)
 }
 
 // ── TTF rendering via libfont DLL ───────────────────────────────────
@@ -368,12 +327,12 @@ pub fn text_width_n(text: &[u8], n: usize) -> u32 {
 
 /// Query whether GPU acceleration is available (direct kernel syscall).
 pub fn gpu_has_accel() -> u32 {
-    syscall0(SYS_GPU_HAS_ACCEL)
+    libsyscall::syscall0(libsyscall::SYS_GPU_HAS_ACCEL) as u32
 }
 
 /// Query whether GPU hardware cursor is available (direct kernel syscall).
 pub fn gpu_has_hw_cursor() -> u32 {
-    syscall0(SYS_GPU_HAS_HW_CURSOR)
+    libsyscall::syscall0(libsyscall::SYS_GPU_HAS_HW_CURSOR) as u32
 }
 
 // --- v2 extern "C" exports ---

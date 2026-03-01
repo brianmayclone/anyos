@@ -203,6 +203,22 @@ pub struct Thread {
     pub signals: SignalState,
     /// TID of the parent process (set by fork/spawn, 0 for init/kernel threads).
     pub parent_tid: u32,
+
+    // ---- Debug / trace state (anyTrace) ----
+
+    /// TID of the debugger thread attached to this thread (0 = not attached).
+    pub debug_attached_by: u32,
+    /// True if this thread has been suspended by its debugger.
+    pub debug_suspended: bool,
+    /// Software breakpoints: (virtual address, original byte replaced by INT3).
+    pub debug_sw_breakpoints: [(u64, u8); 16],
+    /// Number of active software breakpoints.
+    pub debug_sw_bp_count: u8,
+    /// True if a single-step (RFLAGS.TF) is pending for the next resume.
+    pub debug_single_step: bool,
+    /// Pending debug event for the debugger to consume: (event_type, address).
+    /// Set by ISR 1 (#DB) / ISR 3 (#BP) when the thread is debug-attached.
+    pub debug_event: Option<(u32, u64)>,
 }
 
 /// Size of each thread's kernel-mode stack.
@@ -254,16 +270,33 @@ impl Thread {
 
         // Set up initial context so that when we "switch" to this thread,
         // it starts executing at `entry`.
-        // RSP is set to stack_top - 8 for proper 16-byte ABI alignment:
-        // the push+ret in context_switch results in RSP = (stack_top - 8)
-        // at function entry, which satisfies RSP % 16 == 8.
         let mut context = CpuContext::default();
-        context.rip = entry as *const () as u64;
-        context.rsp = stack_top - 8;
-        context.rbp = stack_top;
-        context.rflags = 0x202; // IF (interrupts enabled) + reserved bit 1
-        // Use the current page directory (all kernel threads share same address space)
-        unsafe { core::arch::asm!("mov {}, cr3", out(reg) context.cr3); }
+        #[cfg(target_arch = "x86_64")]
+        {
+            // RSP is set to stack_top - 8 for proper 16-byte ABI alignment:
+            // the push+ret in context_switch results in RSP = (stack_top - 8)
+            // at function entry, which satisfies RSP % 16 == 8.
+            context.rip = entry as *const () as u64;
+            context.rsp = stack_top - 8;
+            context.rbp = stack_top;
+            context.rflags = 0x202; // IF (interrupts enabled) + reserved bit 1
+            // Use the current page directory (all kernel threads share same address space)
+            unsafe { core::arch::asm!("mov {}, cr3", out(reg) context.cr3); }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            context.set_pc(entry as *const () as u64);
+            // SP aligned to 16 bytes for AArch64 ABI, with -8 for return address slot.
+            context.set_sp(stack_top - 8);
+            // x29 (FP) = stack_top (frame pointer base, equivalent to RBP on x86)
+            context.x[29] = stack_top;
+            // PSTATE: 0x0 for EL0 (no DAIF mask bits set — interrupts enabled)
+            context.set_flags(0x0);
+            // Use the current page table base (kernel TTBR0_EL1)
+            let ttbr0: u64;
+            unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack)); }
+            context.set_page_table(ttbr0);
+        }
         // Recompute checksum after modifying fields above
         context.checksum = context.compute_checksum();
 
@@ -302,7 +335,7 @@ impl Thread {
             io_read_bytes: 0,
             io_write_bytes: 0,
             user_pages: 0,
-            mmap_next: 0x2000_0000,
+            mmap_next: 0x7000_0000,
             cwd: {
                 let mut c = [0u8; 512];
                 c[0] = b'/';
@@ -314,6 +347,12 @@ impl Thread {
             fd_table: FdTable::new(),
             signals: SignalState::new(),
             parent_tid: 0,
+            debug_attached_by: 0,
+            debug_suspended: false,
+            debug_sw_breakpoints: [(0, 0); 16],
+            debug_sw_bp_count: 0,
+            debug_single_step: false,
+            debug_event: None,
         }
     }
 

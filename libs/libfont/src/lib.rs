@@ -19,7 +19,7 @@
 
 extern crate alloc;
 
-mod heap;
+libheap::dll_allocator!(crate::syscall::sbrk, crate::syscall::mmap, crate::syscall::munmap);
 pub(crate) mod syscall;
 pub(crate) mod ttf;
 mod ttf_rasterizer;

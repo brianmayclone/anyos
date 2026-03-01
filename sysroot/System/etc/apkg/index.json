@@ -1,0 +1,51 @@
+{
+  "repository": "anyOS Packages",
+  "generated": "2026-02-28T08:03:22",
+  "packages": [
+    {
+      "name": "surf",
+      "version": "0.2.32",
+      "description": "Surf — anyOS web browser with HTML/CSS/JS support",
+      "category": "net",
+      "type": "bin",
+      "arch": "x86_64",
+      "depends": [],
+      "provides": [],
+      "size": 651324,
+      "size_installed": 0,
+      "md5": "d7924f796851fbae1517ad0040420716",
+      "filename": "surf-0.2.32.tar.gz",
+      "min_os_version": "0.2.0"
+    },
+    {
+      "name": "doom",
+      "version": "1.0.0",
+      "description": "DOOM — the classic first-person shooter by id Software",
+      "category": "game",
+      "type": "bin",
+      "arch": "x86_64",
+      "depends": [],
+      "provides": [],
+      "size": 2100854,
+      "size_installed": 0,
+      "md5": "9b7fcc8355151f0bb3a37414861647cf",
+      "filename": "doom-1.0.0.tar.gz",
+      "min_os_version": "0.2.0"
+    },
+    {
+      "name": "quake",
+      "version": "1.0.0",
+      "description": "Quake — the classic 3D shooter by id Software",
+      "category": "game",
+      "type": "bin",
+      "arch": "x86_64",
+      "depends": [],
+      "provides": [],
+      "size": 8752852,
+      "size_installed": 0,
+      "md5": "f2954d1677a2f4889e92aafc01ce7404",
+      "filename": "quake-1.0.0.tar.gz",
+      "min_os_version": "0.2.0"
+    }
+  ]
+}

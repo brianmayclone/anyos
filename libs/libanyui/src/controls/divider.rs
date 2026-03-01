@@ -14,13 +14,15 @@ impl Control for Divider {
     fn kind(&self) -> ControlKind { ControlKind::Divider }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.base.x;
-        let y = ay + self.base.y;
+        let b = self.base();
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
         let tc = crate::theme::colors();
-        if self.base.h <= 1 {
-            crate::draw::fill_rect(surface, x, y, self.base.w, 1, tc.separator);
+        if b.h <= 1 {
+            // Horizontal divider — 1 physical pixel tall
+            crate::draw::fill_rect(surface, p.x, p.y, p.w, 1, tc.separator);
         } else {
-            crate::draw::fill_rect(surface, x, y, 1, self.base.h, tc.separator);
+            // Vertical divider — 1 physical pixel wide
+            crate::draw::fill_rect(surface, p.x, p.y, 1, p.h, tc.separator);
         }
     }
 }

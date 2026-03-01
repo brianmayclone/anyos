@@ -43,6 +43,40 @@ impl Surface {
     }
 }
 
+// ── DPI scaling helpers ──────────────────────────────────────────────
+
+/// Physical (screen) bounds computed from logical parent + control coordinates.
+#[derive(Clone, Copy)]
+pub struct ScaledBounds {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// Convert logical control position to physical drawing coordinates.
+///
+/// `parent_abs_x/y` are the logical absolute position of the parent.
+/// `ctrl_x/y` and `ctrl_w/h` are the control's logical position/size.
+/// Returns physical pixel coordinates for drawing on the surface.
+#[inline(always)]
+pub fn scale_bounds(parent_abs_x: i32, parent_abs_y: i32,
+                    ctrl_x: i32, ctrl_y: i32, ctrl_w: u32, ctrl_h: u32) -> ScaledBounds {
+    let s = crate::theme::scale_factor();
+    ScaledBounds {
+        x: ((parent_abs_x + ctrl_x) * s as i32 + 50) / 100,
+        y: ((parent_abs_y + ctrl_y) * s as i32 + 50) / 100,
+        w: (ctrl_w * s + 50) / 100,
+        h: (ctrl_h * s + 50) / 100,
+    }
+}
+
+/// Scale a font size from logical to physical pixels for libfont calls.
+#[inline(always)]
+pub fn scale_font(logical_size: u16) -> u16 {
+    ((logical_size as u32 * crate::theme::scale_factor() + 50) / 100) as u16
+}
+
 // ── librender DLL access (at fixed address 0x04300000) ──────────────
 
 const LIBRENDER_BASE: usize = 0x0430_0000;
@@ -702,6 +736,54 @@ pub fn blit_buffer(s: &Surface, x: i32, y: i32, w: u32, h: u32, src: &[u32]) {
         unsafe {
             let dst = s.pixels.add(dy as usize * s.width as usize + x0 as usize);
             core::ptr::copy_nonoverlapping(src.as_ptr().add(src_off + skip), dst, count);
+        }
+    }
+}
+
+/// Blit a source pixel buffer with nearest-neighbor upscaling.
+///
+/// `src` has `src_w × src_h` pixels. The output is scaled to fill `dst_w × dst_h`
+/// pixels on the surface starting at `(x, y)`. Uses fixed-point stepping for speed.
+pub fn blit_buffer_scaled(s: &Surface, x: i32, y: i32,
+                          dst_w: u32, dst_h: u32,
+                          src_w: u32, src_h: u32, src: &[u32]) {
+    if dst_w == 0 || dst_h == 0 || src_w == 0 || src_h == 0 || src.is_empty() { return; }
+    let sw = s.width as i32;
+    let sh = s.height as i32;
+    let clip_x0 = s.clip_x.max(0);
+    let clip_y0 = s.clip_y.max(0);
+    let clip_x1 = (s.clip_x + s.clip_w as i32).min(sw);
+    let clip_y1 = (s.clip_y + s.clip_h as i32).min(sh);
+
+    // Fixed-point 16.16 step values: how much to advance in source per dest pixel
+    let step_x = ((src_w as u64) << 16) / dst_w as u64;
+    let step_y = ((src_h as u64) << 16) / dst_h as u64;
+
+    for dy_off in 0..dst_h as i32 {
+        let dest_y = y + dy_off;
+        if dest_y < clip_y0 || dest_y >= clip_y1 { continue; }
+        let src_y = ((dy_off as u64 * step_y) >> 16) as u32;
+        if src_y >= src_h { break; }
+        let src_row = src_y as usize * src_w as usize;
+
+        let x0 = x.max(clip_x0);
+        let x1 = (x + dst_w as i32).min(clip_x1);
+        if x0 >= x1 { continue; }
+
+        let dst_row_base = dest_y as usize * s.width as usize;
+        let skip = (x0 - x) as u64;
+        let mut src_fx = skip * step_x;
+        for dx in x0..x1 {
+            let src_x = (src_fx >> 16) as usize;
+            if src_x < src_w as usize {
+                let idx = src_row + src_x;
+                if idx < src.len() {
+                    unsafe {
+                        *s.pixels.add(dst_row_base + dx as usize) = src[idx];
+                    }
+                }
+            }
+            src_fx += step_x;
         }
     }
 }

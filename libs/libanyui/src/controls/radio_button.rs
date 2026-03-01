@@ -18,14 +18,15 @@ impl Control for RadioButton {
     fn kind(&self) -> ControlKind { ControlKind::RadioButton }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.text_base.base.x;
-        let y = ay + self.text_base.base.y;
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y) = (p.x, p.y);
         let tc = crate::theme::colors();
-        let selected = self.text_base.base.state != 0;
-        let disabled = self.text_base.base.disabled;
-        let hovered = self.text_base.base.hovered;
-        let focused = self.text_base.base.focused;
-        let sz = crate::theme::RADIO_SIZE;
+        let selected = b.state != 0;
+        let disabled = b.disabled;
+        let hovered = b.hovered;
+        let focused = b.focused;
+        let sz = crate::theme::scale(crate::theme::radio_size());
         let r = sz / 2;
 
         // Background with hover feedback
@@ -51,7 +52,10 @@ impl Control for RadioButton {
         // Inner dot when selected
         if selected {
             let dot_color = if disabled { tc.text_disabled } else { tc.accent };
-            crate::draw::fill_rounded_rect(surface, x + 5, y + 5, 8, 8, 4, dot_color);
+            let dot_inset = crate::theme::scale_i32(5);
+            let dot_sz = crate::theme::scale(8);
+            let dot_r = crate::theme::scale(4);
+            crate::draw::fill_rounded_rect(surface, x + dot_inset, y + dot_inset, dot_sz, dot_sz, dot_r, dot_color);
         }
 
         // Focus ring
@@ -62,7 +66,8 @@ impl Control for RadioButton {
         // Label text
         let text_color = if disabled { tc.text_disabled } else { tc.text };
         if !self.text_base.text.is_empty() {
-            crate::draw::draw_text_sized(surface, x + sz as i32 + 6, y + 2, text_color, &self.text_base.text, self.text_base.text_style.font_size);
+            let font_size = crate::draw::scale_font(self.text_base.text_style.font_size);
+            crate::draw::draw_text_sized(surface, x + sz as i32 + crate::theme::scale_i32(6), y + crate::theme::scale_i32(2), text_color, &self.text_base.text, font_size);
         }
     }
 

@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <sys/syscall.h>
 
 /* Static FILE objects for stdin/stdout/stderr */
 static FILE _stdin  = { .fd = 0, .flags = 0, .eof = 0, .error = 0, .ungot = -1 };
@@ -500,11 +501,10 @@ int remove(const char *pathname) {
 }
 
 extern int _syscall(int num, int a1, int a2, int a3, int a4);
-#define SYS_RENAME_STDIO 99
 
 int rename(const char *oldpath, const char *newpath) {
     if (!oldpath || !newpath) { errno = EINVAL; return -1; }
-    int r = _syscall(SYS_RENAME_STDIO, (int)oldpath, (int)newpath, 0, 0);
+    int r = _syscall(SYS_RENAME, (int)oldpath, (int)newpath, 0, 0);
     if (r < 0) { errno = -r; return -1; }
     return 0;
 }

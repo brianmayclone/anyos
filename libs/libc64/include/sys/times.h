@@ -15,6 +15,14 @@ struct tms {
     clock_t tms_cstime;
 };
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 clock_t times(struct tms *buf);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

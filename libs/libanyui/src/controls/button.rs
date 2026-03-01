@@ -17,16 +17,15 @@ impl Control for Button {
     fn kind(&self) -> ControlKind { ControlKind::Button }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.text_base.base.x;
-        let y = ay + self.text_base.base.y;
-        let w = self.text_base.base.w;
-        let h = self.text_base.base.h;
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
-        let disabled = self.text_base.base.disabled;
-        let hovered = self.text_base.base.hovered;
-        let focused = self.text_base.base.focused;
-        let custom = self.text_base.base.color;
-        let corner = crate::theme::BUTTON_CORNER;
+        let disabled = b.disabled;
+        let hovered = b.hovered;
+        let focused = b.focused;
+        let custom = b.color;
+        let corner = crate::theme::button_corner();
 
         // Background color: pressed > hovered > normal, with custom color support
         let bg = if disabled {
@@ -67,7 +66,7 @@ impl Control for Button {
         } else {
             tc.text
         };
-        let font_size = self.text_base.text_style.font_size;
+        let font_size = crate::draw::scale_font(self.text_base.text_style.font_size);
         let (tw, _th) = crate::draw::text_size_at(&self.text_base.text, font_size);
         let tx = x + (w as i32 - tw as i32) / 2;
         let ty = y + (h as i32 - font_size as i32) / 2;

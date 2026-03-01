@@ -176,7 +176,7 @@ impl Desktop {
                     if self.focused_window == Some(window_id) {
                         self.draw_menubar();
                         self.compositor.add_damage(Rect::new(
-                            0, 0, self.screen_width, MENUBAR_HEIGHT + 1,
+                            0, 0, self.screen_width, menubar_height() + 1,
                         ));
                     }
                 }
@@ -205,7 +205,7 @@ impl Desktop {
                 if self.menu_bar.add_status_icon(app_tid, icon_id, pixel_data, self.screen_width) {
                     self.draw_menubar();
                     self.compositor.add_damage(Rect::new(
-                        0, 0, self.screen_width, MENUBAR_HEIGHT + 1,
+                        0, 0, self.screen_width, menubar_height() + 1,
                     ));
                 }
                 anyos_std::ipc::shm_unmap(shm_id);
@@ -217,7 +217,7 @@ impl Desktop {
                 if self.menu_bar.remove_status_icon(app_tid, icon_id, self.screen_width) {
                     self.draw_menubar();
                     self.compositor.add_damage(Rect::new(
-                        0, 0, self.screen_width, MENUBAR_HEIGHT + 1,
+                        0, 0, self.screen_width, menubar_height() + 1,
                     ));
                 }
                 None
@@ -230,7 +230,7 @@ impl Desktop {
                     if self.focused_window == Some(window_id) {
                         self.draw_menubar();
                         self.compositor.add_damage(Rect::new(
-                            0, 0, self.screen_width, MENUBAR_HEIGHT + 1,
+                            0, 0, self.screen_width, menubar_height() + 1,
                         ));
                     }
                     if let Some(ref dd) = self.menu_bar.open_dropdown {
@@ -459,79 +459,11 @@ impl Desktop {
                 None
             }
             proto::CMD_SHOW_NOTIFICATION => {
-                let sender_tid = cmd[1];
-                let shm_id = cmd[2];
-                let timeout_ms = cmd[3];
-                let _flags = cmd[4];
-                if shm_id == 0 {
-                    return None;
-                }
-                let shm_addr = anyos_std::ipc::shm_map(shm_id);
-                if shm_addr == 0 {
-                    return None;
-                }
-                // Parse SHM layout: [title_len:u16, msg_len:u16, has_icon:u8, pad:3, title..., msg..., icon...]
-                let data = unsafe {
-                    core::slice::from_raw_parts(shm_addr as *const u8, 4096)
-                };
-                let title_len = (data[0] as u16 | ((data[1] as u16) << 8)).min(64) as usize;
-                let msg_len = (data[2] as u16 | ((data[3] as u16) << 8)).min(128) as usize;
-                let has_icon = data[4] != 0;
-
-                let title_start = 8;
-                let title_end = title_start + title_len;
-                let msg_start = title_end;
-                let msg_end = msg_start + msg_len;
-
-                let title = core::str::from_utf8(&data[title_start..title_end]).unwrap_or("");
-                let message = core::str::from_utf8(&data[msg_start..msg_end]).unwrap_or("");
-
-                let icon = if has_icon {
-                    // Icon data starts at next 4-byte aligned offset after message
-                    let icon_start = (msg_end + 3) & !3;
-                    if icon_start + 1024 <= 4096 {
-                        let icon_slice = unsafe {
-                            core::slice::from_raw_parts(
-                                (shm_addr as usize + icon_start) as *const u32,
-                                256,
-                            )
-                        };
-                        let mut icon_buf = [0u32; 256];
-                        icon_buf.copy_from_slice(icon_slice);
-                        Some(icon_buf)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                anyos_std::ipc::shm_unmap(shm_id);
-
-                if title.is_empty() {
-                    return None;
-                }
-
-                let menubar_id = self.menubar_layer_id;
-                let sw = self.screen_width;
-                let notif_id = self.notifications.show(
-                    &mut self.compositor,
-                    sw,
-                    menubar_id,
-                    sender_tid,
-                    title,
-                    message,
-                    icon,
-                    timeout_ms,
-                );
-
-                // Broadcast EVT_NOTIFICATION_DISMISSED will be sent later on dismiss
+                // Handled by notifyd daemon (subscribes to compositor channel directly)
                 None
             }
             proto::CMD_DISMISS_NOTIFICATION => {
-                let notif_id = cmd[1];
-                let sw = self.screen_width;
-                self.notifications.dismiss(notif_id, sw);
+                // Handled by notifyd daemon
                 None
             }
             proto::CMD_GET_WINDOW_POS => {
@@ -543,7 +475,7 @@ impl Desktop {
                     let content_y = if win.is_borderless() {
                         win.y
                     } else {
-                        win.y + TITLE_BAR_HEIGHT as i32
+                        win.y + title_bar_height() as i32
                     };
                     let target = self.get_sub_id_for_tid(requester_tid);
                     Some((target, [proto::RESP_WINDOW_POS, window_id, content_x as u32, content_y as u32, requester_tid]))

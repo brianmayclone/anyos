@@ -139,6 +139,52 @@ constexpr reverse_iterator<Iter> make_reverse_iterator(Iter i) {
     return reverse_iterator<Iter>(i);
 }
 
+/* ── move_iterator ────────────────────────────────────────────────── */
+
+template <class Iter>
+class move_iterator {
+public:
+    using iterator_type     = Iter;
+    using value_type        = typename iterator_traits<Iter>::value_type;
+    using difference_type   = typename iterator_traits<Iter>::difference_type;
+    using pointer           = Iter;
+    using reference         = value_type&&;
+    using iterator_category = typename iterator_traits<Iter>::iterator_category;
+
+    constexpr move_iterator() : current() {}
+    constexpr explicit move_iterator(Iter x) : current(x) {}
+
+    template <class U>
+    constexpr move_iterator(const move_iterator<U>& other) : current(other.base()) {}
+
+    constexpr Iter base() const { return current; }
+    constexpr reference operator*() const { return static_cast<reference>(*current); }
+    constexpr move_iterator& operator++() { ++current; return *this; }
+    constexpr move_iterator  operator++(int) { auto t = *this; ++current; return t; }
+    constexpr move_iterator& operator--() { --current; return *this; }
+    constexpr move_iterator  operator--(int) { auto t = *this; --current; return t; }
+    constexpr move_iterator operator+(difference_type n) const { return move_iterator(current + n); }
+    constexpr move_iterator operator-(difference_type n) const { return move_iterator(current - n); }
+    constexpr move_iterator& operator+=(difference_type n) { current += n; return *this; }
+    constexpr move_iterator& operator-=(difference_type n) { current -= n; return *this; }
+    constexpr reference operator[](difference_type n) const { return static_cast<reference>(current[n]); }
+
+private:
+    Iter current;
+};
+
+template <class I1, class I2>
+constexpr bool operator==(const move_iterator<I1>& a, const move_iterator<I2>& b) { return a.base() == b.base(); }
+template <class I1, class I2>
+constexpr bool operator!=(const move_iterator<I1>& a, const move_iterator<I2>& b) { return a.base() != b.base(); }
+template <class I1, class I2>
+constexpr bool operator<(const move_iterator<I1>& a, const move_iterator<I2>& b) { return a.base() < b.base(); }
+
+template <class Iter>
+constexpr move_iterator<Iter> make_move_iterator(Iter i) {
+    return move_iterator<Iter>(i);
+}
+
 /* ── distance / advance / next / prev ──────────────────────────────── */
 
 namespace detail {

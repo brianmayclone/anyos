@@ -320,22 +320,12 @@ fn max3(a: f32, b: f32, c: f32) -> f32 {
     if m > c { m } else { c }
 }
 
-/// Fast reciprocal using SSE `rcpss` (~12 bits, refined with Newton-Raphson).
+/// Fast reciprocal (1/x).
 ///
-/// ~4 cycles total vs ~20 for `divss`. Accuracy is sufficient for
-/// perspective correction in rendering.
+/// Simple division — the compiler optimizes this on both x86_64 and aarch64.
 #[inline(always)]
 fn fast_rcp(x: f32) -> f32 {
-    unsafe {
-        use core::arch::x86_64::*;
-        let v = _mm_set_ss(x);
-        let approx = _mm_rcp_ss(v);
-        // Newton-Raphson refinement: y = y * (2 - x*y)
-        let xy = _mm_mul_ss(v, approx);
-        let two = _mm_set_ss(2.0);
-        let refined = _mm_mul_ss(approx, _mm_sub_ss(two, xy));
-        _mm_cvtss_f32(refined)
-    }
+    1.0 / x
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

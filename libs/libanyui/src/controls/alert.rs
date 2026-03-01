@@ -16,24 +16,25 @@ impl Control for Alert {
     fn kind(&self) -> ControlKind { ControlKind::Alert }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.text_base.base.x;
-        let y = ay + self.text_base.base.y;
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
 
         // Dark overlay behind the alert
-        crate::draw::fill_rect(surface, x, y, self.text_base.base.w, self.text_base.base.h, 0xCC000000);
+        crate::draw::fill_rect(surface, x, y, w, h, 0xCC000000);
 
-        let card_w = self.text_base.base.w.min(320);
-        let card_h = self.text_base.base.h.min(180);
-        let cx = x + (self.text_base.base.w as i32 - card_w as i32) / 2;
-        let cy = y + (self.text_base.base.h as i32 - card_h as i32) / 2;
-        let corner = crate::theme::ALERT_CORNER;
+        let card_w = w.min(crate::theme::scale(320));
+        let card_h = h.min(crate::theme::scale(180));
+        let cx = x + (w as i32 - card_w as i32) / 2;
+        let cy = y + (h as i32 - card_h as i32) / 2;
+        let corner = crate::theme::alert_corner();
 
         // SDF shadow (Alert is rare and small — SDF cost acceptable)
         crate::draw::draw_shadow_rounded_rect(
             surface, cx, cy, card_w, card_h, corner as i32,
-            0, crate::theme::POPUP_SHADOW_OFFSET_Y,
-            crate::theme::POPUP_SHADOW_SPREAD,
+            0, crate::theme::popup_shadow_offset_y(),
+            crate::theme::popup_shadow_spread(),
             crate::theme::POPUP_SHADOW_ALPHA,
         );
 
@@ -45,7 +46,9 @@ impl Control for Alert {
         crate::draw::draw_top_highlight(surface, cx, cy, card_w, corner, crate::theme::lighten(tc.card_bg, 10));
 
         if !self.text_base.text.is_empty() {
-            crate::draw::draw_text_sized(surface, cx + 20, cy + 20, tc.text, &self.text_base.text, crate::theme::FONT_SIZE_LARGE);
+            let fs = crate::draw::scale_font(crate::theme::FONT_SIZE_LARGE);
+            let text_pad = crate::theme::scale_i32(20);
+            crate::draw::draw_text_sized(surface, cx + text_pad, cy + text_pad, tc.text, &self.text_base.text, fs);
         }
     }
 }

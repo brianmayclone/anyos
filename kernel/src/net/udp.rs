@@ -186,7 +186,7 @@ pub fn recv(port: u16) -> Option<UdpDatagram> {
 
 /// Receive a UDP datagram with timeout (blocking with polling)
 pub fn recv_timeout(port: u16, timeout_ticks: u32) -> Option<UdpDatagram> {
-    let start = crate::arch::x86::pit::get_ticks();
+    let start = crate::arch::hal::timer_current_ticks();
     loop {
         super::poll();
 
@@ -194,7 +194,7 @@ pub fn recv_timeout(port: u16, timeout_ticks: u32) -> Option<UdpDatagram> {
             return Some(dgram);
         }
 
-        let now = crate::arch::x86::pit::get_ticks();
+        let now = crate::arch::hal::timer_current_ticks();
         if now.wrapping_sub(start) >= timeout_ticks {
             return None;
         }

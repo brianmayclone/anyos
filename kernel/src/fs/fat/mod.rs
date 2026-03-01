@@ -15,6 +15,7 @@ mod table;
 mod file;
 mod dir;
 
+#[allow(unused_imports)]
 pub use bpb::*;
 pub use datetime::{dos_datetime_to_unix, unix_to_dos_datetime};
 pub use file::FileReadPlan;
@@ -63,7 +64,7 @@ impl FatFs {
     /// Supports FAT12, FAT16, and FAT32 (including extended BPB fields).
     pub fn new(device_id: u32, partition_start_lba: u32) -> Result<Self, FsError> {
         let mut buf = [0u8; 512];
-        if !crate::drivers::storage::read_sectors(partition_start_lba, 1, &mut buf) {
+        if !Self::storage_read_sectors(partition_start_lba, 1, &mut buf) {
             crate::serial_println!("  FAT: Failed to read boot sector at LBA {}", partition_start_lba);
             return Err(FsError::IoError);
         }
@@ -146,7 +147,7 @@ impl FatFs {
         }
         let mut fat_cache = vec![0u8; fat_cache_size];
         let abs_fat_lba = partition_start_lba + first_fat_sector;
-        if !crate::drivers::storage::read_sectors(abs_fat_lba, fat_size, &mut fat_cache) {
+        if !Self::storage_read_sectors(abs_fat_lba, fat_size, &mut fat_cache) {
             crate::serial_println!("  FAT: Failed to cache FAT table");
             return Err(FsError::IoError);
         }
@@ -175,9 +176,31 @@ impl FatFs {
     // Low-level I/O (shared by all submodules)
     // =================================================================
 
+    /// Arch-abstracted storage read. Returns `false` on ARM64 (no storage driver yet).
+    #[cfg(target_arch = "x86_64")]
+    fn storage_read_sectors(abs_lba: u32, count: u32, buf: &mut [u8]) -> bool {
+        crate::drivers::storage::read_sectors(abs_lba, count, buf)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn storage_read_sectors(_abs_lba: u32, _count: u32, _buf: &mut [u8]) -> bool {
+        false
+    }
+
+    /// Arch-abstracted storage write. Returns `false` on ARM64 (no storage driver yet).
+    #[cfg(target_arch = "x86_64")]
+    fn storage_write_sectors(abs_lba: u32, count: u32, buf: &[u8]) -> bool {
+        crate::drivers::storage::write_sectors(abs_lba, count, buf)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn storage_write_sectors(_abs_lba: u32, _count: u32, _buf: &[u8]) -> bool {
+        false
+    }
+
     pub(crate) fn read_sectors(&self, relative_lba: u32, count: u32, buf: &mut [u8]) -> Result<(), FsError> {
         let abs_lba = self.partition_start_lba + relative_lba;
-        if !crate::drivers::storage::read_sectors(abs_lba, count, buf) {
+        if !Self::storage_read_sectors(abs_lba, count, buf) {
             return Err(FsError::IoError);
         }
         Ok(())
@@ -185,7 +208,7 @@ impl FatFs {
 
     pub(crate) fn write_sectors(&self, relative_lba: u32, count: u32, buf: &[u8]) -> Result<(), FsError> {
         let abs_lba = self.partition_start_lba + relative_lba;
-        if !crate::drivers::storage::write_sectors(abs_lba, count, buf) {
+        if !Self::storage_write_sectors(abs_lba, count, buf) {
             return Err(FsError::IoError);
         }
         Ok(())

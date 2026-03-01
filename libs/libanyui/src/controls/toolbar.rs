@@ -33,10 +33,9 @@ impl Control for Toolbar {
     fn kind(&self) -> ControlKind { ControlKind::Toolbar }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.base.x;
-        let y = ay + self.base.y;
-        let w = self.base.w;
-        let h = self.base.h;
+        let b = self.base();
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
 
         // Background
         crate::draw::fill_rect(surface, x, y, w, h, crate::theme::colors().toolbar_bg);

@@ -11,6 +11,14 @@
 #define FNM_NOESCAPE  (1 << 1)
 #define FNM_PERIOD    (1 << 2)
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int fnmatch(const char *pattern, const char *string, int flags);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

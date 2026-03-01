@@ -745,7 +745,7 @@ pub fn parse(html: &str) -> Dom {
                             },
                             Some(parent),
                         );
-                        if !tag.is_void() && !self_closing {
+                        if !tag.is_void() && !self_closing && stack.len() < 256 {
                             stack.push(id);
                         }
                         continue;
@@ -796,8 +796,10 @@ pub fn parse(html: &str) -> Dom {
                     Some(parent),
                 );
 
-                // Push to stack unless void or self-closing
-                if !tag.is_void() && !self_closing {
+                // Push to stack unless void or self-closing.
+                // Cap nesting depth at 256 to prevent stack overflow in
+                // downstream recursive layout/rendering passes.
+                if !tag.is_void() && !self_closing && stack.len() < 256 {
                     stack.push(id);
                 }
             }
@@ -939,7 +941,7 @@ pub fn parse_fragment(html: &str) -> Dom {
                     NodeType::Element { tag, attrs: dom_attrs },
                     Some(parent),
                 );
-                if !tag.is_void() && !self_closing {
+                if !tag.is_void() && !self_closing && stack.len() < 256 {
                     stack.push(id);
                 }
             }

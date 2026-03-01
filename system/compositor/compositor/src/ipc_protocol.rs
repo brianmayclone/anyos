@@ -192,6 +192,13 @@ pub const CMD_MINIMIZE_WINDOW: u32 = 0x1015;
 /// and broadcasts EVT_FONT_SMOOTHING_CHANGED.
 pub const CMD_SET_FONT_SMOOTHING: u32 = 0x1016;
 
+/// Set DPI scale factor.
+/// [CMD, scale_percent, 0, 0, 0]
+/// scale_percent: 100–300 in steps of 25 (100 = 1x, 200 = 2x, 300 = 3x).
+/// Compositor writes to shared DLL page, persists to compositor.conf,
+/// and broadcasts EVT_SCALE_CHANGED.
+pub const CMD_SET_SCALE: u32 = 0x1017;
+
 /// Inject a synthetic key event into the focused window.
 /// [CMD, scancode, char_val, is_down (1=down/0=up), modifiers]
 /// vncd maps RFB KeySyms → (scancode, char_val) before emitting this command.
@@ -221,6 +228,11 @@ pub const EVT_THEME_CHANGED: u32 = 0x0050;
 /// [EVT, new_mode, 0, 0, 0]
 /// mode: 0 = none, 1 = greyscale AA, 2 = subpixel LCD
 pub const EVT_FONT_SMOOTHING_CHANGED: u32 = 0x0051;
+
+/// DPI scale factor changed notification (compositor → apps via channel).
+/// [EVT, new_scale, old_scale, 0, 0]
+/// scale: 100–300 in steps of 25.
+pub const EVT_SCALE_CHANGED: u32 = 0x0052;
 
 // ── Compositor → App: Menu & Status Icon Events ─────────────────────────────
 

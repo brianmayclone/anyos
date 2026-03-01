@@ -1,0 +1,34 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * Minimal <cstdlib> header for building GCC.
+ */
+
+#ifndef _CSTDLIB_HEADER
+#define _CSTDLIB_HEADER
+
+#include <stdlib.h>
+
+namespace std {
+  using ::abort;
+  using ::exit;
+  using ::atexit;
+  using ::malloc;
+  using ::calloc;
+  using ::realloc;
+  using ::free;
+  using ::atoi;
+  using ::atol;
+  using ::strtol;
+  using ::strtoul;
+  using ::strtoll;
+  using ::strtoull;
+  using ::getenv;
+  using ::qsort;
+  using ::bsearch;
+  using ::abs;
+  using ::labs;
+}
+
+#endif /* _CSTDLIB_HEADER */

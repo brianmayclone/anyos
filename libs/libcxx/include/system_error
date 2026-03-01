@@ -1,0 +1,81 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * <system_error> — minimal stub for freestanding environments.
+ * Provides std::errc and std::error_code needed by fast_float.
+ */
+
+#ifndef _LIBCXX_SYSTEM_ERROR
+#define _LIBCXX_SYSTEM_ERROR
+
+#include <cerrno>
+#include <type_traits>
+
+namespace std {
+
+/* Forward declaration needed before specialization */
+template <class T>
+struct is_error_code_enum : false_type {};
+
+enum class errc {
+    invalid_argument        = EINVAL,
+    result_out_of_range     = ERANGE,
+    not_enough_memory       = ENOMEM,
+    value_too_large         = ERANGE,
+};
+
+class error_category {
+public:
+    virtual ~error_category() = default;
+    virtual const char* name() const noexcept = 0;
+    virtual const char* message(int) const { return ""; }
+};
+
+class error_code {
+    int _val;
+    const error_category* _cat;
+public:
+    error_code() noexcept : _val(0), _cat(nullptr) {}
+    error_code(int v, const error_category& c) noexcept : _val(v), _cat(&c) {}
+    error_code(errc e) noexcept : _val(static_cast<int>(e)), _cat(nullptr) {}
+
+    int value() const noexcept { return _val; }
+    const error_category& category() const noexcept { return *_cat; }
+    explicit operator bool() const noexcept { return _val != 0; }
+};
+
+inline error_code make_error_code(errc e) noexcept {
+    return error_code(e);
+}
+
+/* generic_category / system_category singletons */
+namespace _detail {
+    class _generic_category : public error_category {
+    public:
+        const char* name() const noexcept override { return "generic"; }
+        const char* message(int) const override { return ""; }
+    };
+    class _system_category : public error_category {
+    public:
+        const char* name() const noexcept override { return "system"; }
+        const char* message(int) const override { return ""; }
+    };
+}
+
+inline const error_category& generic_category() noexcept {
+    static const _detail::_generic_category instance;
+    return instance;
+}
+
+inline const error_category& system_category() noexcept {
+    static const _detail::_system_category instance;
+    return instance;
+}
+
+template <>
+struct is_error_code_enum<errc> : true_type {};
+
+} // namespace std
+
+#endif

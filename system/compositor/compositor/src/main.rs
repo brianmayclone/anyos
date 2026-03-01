@@ -115,6 +115,19 @@ fn main() {
         println!("compositor: restored font smoothing: {}", mode_name);
     }
 
+    // Step 4e: Restore saved DPI scale factor from compositor.conf.
+    // Done AFTER Desktop::new so handle_scale_change() can resize the
+    // menubar layer and window chrome to match the restored scale.
+    if let Some(scale) = config::read_scale_factor() {
+        desktop::theme::set_scale_factor(scale);
+        if scale != 100 {
+            desktop.handle_scale_change();
+        }
+        println!("compositor: restored DPI scale: {}%", scale);
+    } else {
+        desktop::theme::set_scale_factor(100);
+    }
+
     // Step 3b: Take over cursor from kernel splash mode
     let (splash_x, splash_y) = ipc::cursor_takeover();
     desktop.set_cursor_pos(splash_x, splash_y);
@@ -334,8 +347,12 @@ fn management_loop(
         if !*login_pending && !*dock_spawned && !login_failed {
             acquire_lock();
             let desktop = unsafe { desktop_ref() };
+            // Destroy login window immediately so it won't appear in the next
+            // compose.  EVT_PROCESS_EXITED may arrive later and call
+            // on_process_exit again — that's harmless (no windows left for tid).
+            desktop.on_process_exit(*login_tid);
             desktop.set_menubar_visible(true);
-            desktop.init_desktop_icons();
+            desktop.init_desktop_icons(); // calls damage_all()
             release_lock();
             signal_render();
 
@@ -514,7 +531,7 @@ fn handle_ipc_commands(
                         let full_h = if borderless {
                             height
                         } else {
-                            height + desktop::TITLE_BAR_HEIGHT
+                            height + desktop::title_bar_height()
                         };
 
                         let mut pre_pixels =
@@ -527,7 +544,7 @@ fn handle_ipc_commands(
                             desktop::copy_shm_to_pixels(
                                 &mut pre_pixels,
                                 width,
-                                desktop::TITLE_BAR_HEIGHT,
+                                desktop::title_bar_height(),
                                 shm_addr as *const u32,
                                 width,
                                 height,
@@ -617,6 +634,26 @@ fn handle_ipc_commands(
                 }
                 i += 1;
             }
+            // CMD_SET_SCALE: set DPI scale factor + repaint
+            ipc_protocol::CMD_SET_SCALE => {
+                let new_scale = cmd[1];
+                let old_scale = desktop::theme::read_scale_factor();
+                if new_scale != old_scale && new_scale >= 100 && new_scale <= 300 {
+                    desktop::theme::set_scale_factor(new_scale);
+                    config::save_scale_factor(new_scale);
+                    ipc::evt_chan_emit(compositor_channel, &[
+                        ipc_protocol::EVT_SCALE_CHANGED,
+                        new_scale, old_scale, 0, 0,
+                    ]);
+                    // Resize menubar, window chrome, invalidate shadow caches
+                    acquire_lock();
+                    let desktop = unsafe { desktop_ref() };
+                    desktop.handle_scale_change();
+                    release_lock();
+                    signal_render();
+                }
+                i += 1;
+            }
             // All other fast commands: batch under a single lock hold.
             // This prevents the render thread from firing between consecutive
             // CMD_PRESENTs during rapid scrolling (eliminates partial-update flicker).
@@ -635,7 +672,8 @@ fn handle_ipc_commands(
                         ipc_protocol::CMD_CREATE_WINDOW
                         | ipc_protocol::CMD_RESIZE_SHM
                         | ipc_protocol::CMD_SET_THEME
-                        | ipc_protocol::CMD_SET_FONT_SMOOTHING => break,
+                        | ipc_protocol::CMD_SET_FONT_SMOOTHING
+                        | ipc_protocol::CMD_SET_SCALE => break,
                         _ => {}
                     }
                     if let Some(resp) = desktop.handle_ipc_command(&c) {
@@ -913,7 +951,10 @@ fn perform_shutdown(
         draw_shutdown_logo(fb_ptr, w, h, fb_stride, top_r, top_g, top_b, bot_r, bot_g, bot_b);
 
         // Memory barrier to flush WC buffers before GPU reads VRAM
+        #[cfg(target_arch = "x86_64")]
         unsafe { core::arch::asm!("sfence", options(nostack, preserves_flags)); }
+        #[cfg(target_arch = "aarch64")]
+        unsafe { core::arch::asm!("dsb st", options(nostack, preserves_flags)); }
 
         // Hide HW cursor and issue full-screen GPU update
         c.gpu_cmds.push([compositor::gpu::GPU_CURSOR_SHOW, 0, 0, 0, 0, 0, 0, 0, 0]);

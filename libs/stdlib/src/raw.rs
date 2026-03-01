@@ -16,7 +16,7 @@
 use core::arch::asm;
 
 // =========================================================================
-// Syscall numbers (must match kernel/src/syscall/mod.rs)
+// Syscall numbers (must match kernel/src/syscall/mod.rs and include/sys/syscall.h)
 // =========================================================================
 
 // Process management
@@ -119,6 +119,7 @@ pub(crate) const SYS_TCP_STATUS: u32 = 104;
 pub(crate) const SYS_TCP_LISTEN: u32 = 132;
 pub(crate) const SYS_TCP_ACCEPT: u32 = 133;
 pub(crate) const SYS_TCP_LIST: u32 = 134;
+pub(crate) const SYS_TCP_RECV_AVAILABLE: u32 = 130;
 
 // Display / GPU / wallpaper
 pub(crate) const SYS_GPU_HAS_ACCEL: u32 = 135;
@@ -224,6 +225,22 @@ pub(crate) const SYS_SET_HOSTNAME: u32 = 281;
 // Power management
 pub(crate) const SYS_SHUTDOWN: u32 = 282;
 
+// Debug / trace (anyTrace)
+pub(crate) const SYS_DEBUG_ATTACH: u32         = 300;
+pub(crate) const SYS_DEBUG_DETACH: u32         = 301;
+pub(crate) const SYS_DEBUG_SUSPEND: u32        = 302;
+pub(crate) const SYS_DEBUG_RESUME: u32         = 303;
+pub(crate) const SYS_DEBUG_GET_REGS: u32       = 304;
+pub(crate) const SYS_DEBUG_SET_REGS: u32       = 305;
+pub(crate) const SYS_DEBUG_READ_MEM: u32       = 306;
+pub(crate) const SYS_DEBUG_WRITE_MEM: u32      = 307;
+pub(crate) const SYS_DEBUG_SET_BREAKPOINT: u32 = 308;
+pub(crate) const SYS_DEBUG_CLR_BREAKPOINT: u32 = 309;
+pub(crate) const SYS_DEBUG_SINGLE_STEP: u32    = 310;
+pub(crate) const SYS_DEBUG_GET_MEM_MAP: u32    = 311;
+pub(crate) const SYS_DEBUG_WAIT_EVENT: u32     = 312;
+pub(crate) const SYS_THREAD_INFO_EX: u32       = 313;
+
 // Anonymous-pipe / fcntl
 pub(crate) const SYS_PIPE_BYTES_AVAILABLE: u32 = 157;
 pub(crate) const SYS_FCNTL_SC: u32 = 243;
@@ -253,8 +270,16 @@ pub(crate) const SYS_EVT_CHAN_WAIT: u32 = 70;
 //
 // RBX is reserved by LLVM on x86_64, so we manually push/pop it
 // inside the asm block and use a temp register to load arg1 into RBX.
+//
+// ARM64 (AArch64) convention (SVC #0):
+//   X8 = syscall number
+//   X0 = arg1, X1 = arg2, X2 = arg3, X3 = arg4, X4 = arg5
+//   Return value in X0
 // =========================================================================
 
+// --------------- x86_64 ---------------
+
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub(crate) fn syscall0(num: u32) -> u32 {
     let ret: u64;
@@ -268,6 +293,7 @@ pub(crate) fn syscall0(num: u32) -> u32 {
     ret as u32
 }
 
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub(crate) fn syscall1(num: u32, a1: u64) -> u32 {
     let ret: u64;
@@ -286,6 +312,7 @@ pub(crate) fn syscall1(num: u32, a1: u64) -> u32 {
     ret as u32
 }
 
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub(crate) fn syscall2(num: u32, a1: u64, a2: u64) -> u32 {
     let ret: u64;
@@ -305,6 +332,7 @@ pub(crate) fn syscall2(num: u32, a1: u64, a2: u64) -> u32 {
     ret as u32
 }
 
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub(crate) fn syscall3(num: u32, a1: u64, a2: u64, a3: u64) -> u32 {
     let ret: u64;
@@ -324,6 +352,7 @@ pub(crate) fn syscall3(num: u32, a1: u64, a2: u64, a3: u64) -> u32 {
     ret as u32
 }
 
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub(crate) fn syscall4(num: u32, a1: u64, a2: u64, a3: u64, a4: u64) -> u32 {
     let ret: u64;
@@ -344,6 +373,7 @@ pub(crate) fn syscall4(num: u32, a1: u64, a2: u64, a3: u64, a4: u64) -> u32 {
     ret as u32
 }
 
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub(crate) fn syscall5(num: u32, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> u32 {
     let ret: u64;
@@ -359,6 +389,102 @@ pub(crate) fn syscall5(num: u32, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) ->
             in("rsi") a4, in("rdi") a5,
             out("rcx") _,
             out("r11") _,
+        );
+    }
+    ret as u32
+}
+
+// --------------- AArch64 ---------------
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub(crate) fn syscall0(num: u32) -> u32 {
+    let ret: u64;
+    unsafe {
+        asm!("svc #0",
+            inlateout("x0") 0u64 => ret,
+            in("x8") num as u64,
+            options(nostack),
+        );
+    }
+    ret as u32
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub(crate) fn syscall1(num: u32, a1: u64) -> u32 {
+    let ret: u64;
+    unsafe {
+        asm!("svc #0",
+            inlateout("x0") a1 => ret,
+            in("x8") num as u64,
+            options(nostack),
+        );
+    }
+    ret as u32
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub(crate) fn syscall2(num: u32, a1: u64, a2: u64) -> u32 {
+    let ret: u64;
+    unsafe {
+        asm!("svc #0",
+            inlateout("x0") a1 => ret,
+            in("x1") a2,
+            in("x8") num as u64,
+            options(nostack),
+        );
+    }
+    ret as u32
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub(crate) fn syscall3(num: u32, a1: u64, a2: u64, a3: u64) -> u32 {
+    let ret: u64;
+    unsafe {
+        asm!("svc #0",
+            inlateout("x0") a1 => ret,
+            in("x1") a2,
+            in("x2") a3,
+            in("x8") num as u64,
+            options(nostack),
+        );
+    }
+    ret as u32
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub(crate) fn syscall4(num: u32, a1: u64, a2: u64, a3: u64, a4: u64) -> u32 {
+    let ret: u64;
+    unsafe {
+        asm!("svc #0",
+            inlateout("x0") a1 => ret,
+            in("x1") a2,
+            in("x2") a3,
+            in("x3") a4,
+            in("x8") num as u64,
+            options(nostack),
+        );
+    }
+    ret as u32
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub(crate) fn syscall5(num: u32, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> u32 {
+    let ret: u64;
+    unsafe {
+        asm!("svc #0",
+            inlateout("x0") a1 => ret,
+            in("x1") a2,
+            in("x2") a3,
+            in("x3") a4,
+            in("x4") a5,
+            in("x8") num as u64,
+            options(nostack),
         );
     }
     ret as u32

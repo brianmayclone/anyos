@@ -16,19 +16,19 @@ impl Control for Tag {
     fn kind(&self) -> ControlKind { ControlKind::Tag }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.text_base.base.x;
-        let y = ay + self.text_base.base.y;
-        let bg = if self.text_base.base.color != 0 { self.text_base.base.color } else { crate::theme::colors().accent };
-        crate::draw::fill_rounded_rect(surface, x, y, self.text_base.base.w, self.text_base.base.h, self.text_base.base.h / 2, bg);
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let bg = if b.color != 0 { b.color } else { crate::theme::colors().accent };
+        crate::draw::fill_rounded_rect(surface, p.x, p.y, p.w, p.h, p.h / 2, bg);
         if !self.text_base.text.is_empty() {
             let text_color = if self.text_base.text_style.text_color != 0 {
                 self.text_base.text_style.text_color
             } else {
                 0xFFFFFFFF
             };
-            let fs = self.text_base.text_style.font_size;
+            let fs = crate::draw::scale_font(self.text_base.text_style.font_size);
             let fid = self.text_base.text_style.font_id;
-            crate::draw::draw_text_ex(surface, x + 8, y + 4, text_color, &self.text_base.text, fid, fs);
+            crate::draw::draw_text_ex(surface, p.x + crate::theme::scale_i32(8), p.y + crate::theme::scale_i32(4), text_color, &self.text_base.text, fid, fs);
         }
     }
 

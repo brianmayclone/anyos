@@ -6,9 +6,14 @@ use super::rect::Rect;
 // ── Shadow Constants ────────────────────────────────────────────────────────
 
 pub(crate) const SHADOW_OFFSET_X: i32 = 0;
-pub(crate) const SHADOW_OFFSET_Y: i32 = 6;
-/// Total spread (number of concentric rings) for the soft shadow.
-pub(crate) const SHADOW_SPREAD: i32 = 16;
+
+/// Vertical shadow offset in physical pixels (DPI-scaled).
+#[inline(always)]
+pub(crate) fn shadow_offset_y() -> i32 { crate::desktop::theme::scale_i32(6) }
+
+/// Total spread (number of concentric rings) for the soft shadow (DPI-scaled).
+#[inline(always)]
+pub(crate) fn shadow_spread() -> i32 { crate::desktop::theme::scale_i32(16) }
 /// Shadow alpha for the focused window (innermost ring).
 pub(crate) const SHADOW_ALPHA_FOCUSED: u32 = 50;
 /// Shadow alpha for unfocused windows (innermost ring).
@@ -58,6 +63,9 @@ pub struct Layer {
     pub is_vram: bool,
     /// Y-coordinate of this layer's surface in off-screen VRAM (for RECT_COPY source).
     pub vram_y: u32,
+    /// DPI-aware flag: true if the app renders at physical resolution (libanyui windows).
+    /// false if the app renders at logical resolution and compositor must upscale.
+    pub dpi_aware: bool,
 }
 
 impl Layer {
@@ -78,10 +86,10 @@ impl Layer {
     /// Bounds including shadow (spread on all sides + vertical offset).
     pub fn shadow_bounds(&self) -> Rect {
         if self.has_shadow {
-            let s = SHADOW_SPREAD;
+            let s = shadow_spread();
             Rect::new(
                 self.x + SHADOW_OFFSET_X - s,
-                self.y + SHADOW_OFFSET_Y - s,
+                self.y + shadow_offset_y() - s,
                 (self.width as i32 + s * 2) as u32,
                 (self.height as i32 + s * 2) as u32,
             )

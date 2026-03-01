@@ -118,6 +118,30 @@ impl TextEditor {
         (lib().texteditor_select_all)(self.ctrl.id);
     }
 
+    /// Highlight a specific line with a background color (ARGB).
+    ///
+    /// Call `clear_highlights()` first, then add highlights for
+    /// the lines you want (e.g., current RIP in a debugger).
+    pub fn highlight_line(&self, line: u32, color: u32) {
+        (lib().texteditor_highlight_line)(self.ctrl.id, line, color);
+    }
+
+    /// Remove all line highlights.
+    pub fn clear_highlights(&self) {
+        (lib().texteditor_clear_highlights)(self.ctrl.id);
+    }
+
+    /// Set read-only mode. When enabled, text cannot be edited
+    /// but navigation, selection, and copy still work.
+    pub fn set_read_only(&self, read_only: bool) {
+        (lib().texteditor_set_read_only)(self.ctrl.id, read_only as u32);
+    }
+
+    /// Scroll the view so the given line is visible (centered if possible).
+    pub fn ensure_line_visible(&self, line: u32) {
+        (lib().texteditor_ensure_line_visible)(self.ctrl.id, line);
+    }
+
     /// Register a callback for when the text changes.
     pub fn on_text_changed(&self, mut f: impl FnMut(&crate::events::TextChangedEvent) + 'static) {
         let (thunk, ud) = events::register(move |id, _| {

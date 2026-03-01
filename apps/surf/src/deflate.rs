@@ -455,14 +455,22 @@ pub fn decompress_gzip(data: &[u8]) -> Option<Vec<u8>> {
     };
 
     let deflate_data = &data[pos..data.len().saturating_sub(8)]; // strip CRC32 + ISIZE trailer
-    let mut output = vec![0u8; alloc_size];
-    let mut window = vec![0u8; WINDOW_SIZE];
 
-    let n = decompress_raw(deflate_data, &mut output, &mut window);
-    if n < 0 { return None; }
-
-    output.truncate(n as usize);
-    Some(output)
+    // Try decompression with the initial buffer; if it fails because the
+    // output buffer is too small (ISIZE field may be incorrect / mod 2^32),
+    // retry with progressively larger buffers.
+    let sizes = [alloc_size, alloc_size * 4, alloc_size * 16, 8 * 1024 * 1024];
+    for &sz in &sizes {
+        if sz == 0 { continue; }
+        let mut output = vec![0u8; sz];
+        let mut window = vec![0u8; WINDOW_SIZE];
+        let n = decompress_raw(deflate_data, &mut output, &mut window);
+        if n >= 0 {
+            output.truncate(n as usize);
+            return Some(output);
+        }
+    }
+    None
 }
 
 /// Decompress raw DEFLATE data (no framing).

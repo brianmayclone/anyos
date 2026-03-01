@@ -22,6 +22,10 @@ typedef int mbstate_t;
 #define WEOF ((wint_t)-1)
 #define MB_CUR_MAX 4
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* ── Multibyte ↔ wide conversion (UTF-8) ── */
 size_t mbrtowc(wchar_t *pwc, const char *s, size_t n, mbstate_t *ps);
 size_t wcrtomb(char *s, wchar_t wc, mbstate_t *ps);
@@ -56,5 +60,9 @@ wint_t towupper(wint_t wc);
 /* ── Wide I/O (simplified) ── */
 int swprintf(wchar_t *s, size_t n, const wchar_t *fmt, ...);
 int vswprintf(wchar_t *s, size_t n, const wchar_t *fmt, va_list ap);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

@@ -40,6 +40,12 @@ fn main() {
         return;
     }
 
+    // Initialize libhttp for HTTP/HTTPS downloads
+    if !libhttp_client::init() {
+        println!("apkg: failed to load libhttp.so");
+        return;
+    }
+
     // Ensure directories exist
     config::ensure_dirs();
 

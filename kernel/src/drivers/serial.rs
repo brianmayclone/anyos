@@ -1,27 +1,25 @@
-//! COM1 serial port driver for debug output.
+//! Serial port driver for debug output.
 //!
-//! Provides 115200 baud 8N1 serial I/O via port 0x3F8, plus a 32 KiB kernel
-//! log ring buffer that captures all serial output for later retrieval.
+//! On x86_64: COM1 (0x3F8) at 115200 baud 8N1, with async TX via IRQ 4.
+//! On AArch64: PL011 UART (0x09000000) via MMIO.
 //!
-//! TX is interrupt-driven (IRQ 4 / THRE): `write_byte()` pushes to a ring
-//! buffer and returns immediately.  The UART drains the buffer via the
-//! Transmitter Holding Register Empty interrupt, sending up to 16 bytes
-//! per ISR invocation (FIFO depth).  During early boot (before
-//! `enable_async()` is called) output falls back to blocking polling so
-//! that boot messages still appear in order.
+//! Both share a 32 KiB kernel log ring buffer and SMP-safe output locking.
 
+#[cfg(target_arch = "x86_64")]
 use crate::arch::x86::port::{inb, outb};
 use core::fmt;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
-/// COM1 I/O base port address.
+/// COM1 I/O base port address (x86 only).
+#[cfg(target_arch = "x86_64")]
 const COM1: u16 = 0x3F8;
 
 /// Zero-sized type implementing `fmt::Write` for serial output.
 pub struct SerialPort;
 
 static mut SERIAL_INITIALIZED: bool = false;
-/// When true, `write_byte` uses the async TX buffer + IRQ 4 path.
+/// When true, `write_byte` uses the async TX buffer + IRQ 4 path (x86 only).
+#[cfg(target_arch = "x86_64")]
 static ASYNC_TX: AtomicBool = AtomicBool::new(false);
 
 // ── SMP output lock (ensures entire messages are atomic) ────────────────
@@ -37,7 +35,7 @@ static PANIC_MODE: AtomicBool = AtomicBool::new(false);
 
 /// Acquire the serial output lock (IRQ-safe, reentrant per-CPU).
 ///
-/// Returns `(saved_rflags, was_reentrant)`. The caller MUST pass this to
+/// Returns `(saved_flags, was_reentrant)`. The caller MUST pass this to
 /// [`output_lock_release`] when the message is complete.
 ///
 /// Reentrancy: if the same CPU already holds the lock (e.g. an exception
@@ -45,13 +43,9 @@ static PANIC_MODE: AtomicBool = AtomicBool::new(false);
 /// exception's output may corrupt the in-progress message, but this is
 /// preferable to deadlocking and losing crash diagnostics entirely.
 pub fn output_lock_acquire() -> (u64, bool) {
-    let flags: u64;
-    unsafe {
-        core::arch::asm!("pushfq; pop {}", out(reg) flags, options(nomem, preserves_flags));
-        core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
-    }
+    let flags = crate::arch::hal::save_and_disable_interrupts();
 
-    // Check panic mode BEFORE calling current_cpu_id(), because that reads
+    // Check panic mode BEFORE calling cpu_id(), because that reads
     // LAPIC MMIO which may not be mapped in the current CR3 during a crash.
     if PANIC_MODE.load(Ordering::Relaxed) {
         // Panic mode: force-take (other CPUs should be halted)
@@ -60,7 +54,7 @@ pub fn output_lock_acquire() -> (u64, bool) {
         return (flags, false);
     }
 
-    let cpu = crate::arch::x86::smp::current_cpu_id();
+    let cpu = crate::arch::hal::cpu_id() as u8;
 
     // Reentrant: same CPU already holds the lock (exception during serial output)
     if OUTPUT_LOCK.load(Ordering::Relaxed) && OUTPUT_LOCK_CPU.load(Ordering::Relaxed) == cpu {
@@ -78,18 +72,18 @@ pub fn output_lock_acquire() -> (u64, bool) {
             // Probable deadlock — print via direct UART (bypasses this lock)
             unsafe {
                 let msg = b"\r\n!!! SER_LOCK TIMEOUT cpu=";
-                for &c in msg { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
-                outb(0x3F8, b'0' + cpu);
+                for &c in msg { uart_direct_write_byte(c); }
+                uart_direct_write_byte(b'0' + cpu);
                 let msg2 = b" owner=";
-                for &c in msg2 { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+                for &c in msg2 { uart_direct_write_byte(c); }
                 let owner = OUTPUT_LOCK_CPU.load(Ordering::Relaxed);
                 if owner == 0xFF {
                     let m = b"NONE";
-                    for &c in m { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+                    for &c in m { uart_direct_write_byte(c); }
                 } else {
-                    outb(0x3F8, b'0' + owner);
+                    uart_direct_write_byte(b'0' + owner);
                 }
-                outb(0x3F8, b'\r'); while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, b'\n');
+                uart_direct_write_byte(b'\r'); uart_direct_write_byte(b'\n');
             }
         }
     }
@@ -104,9 +98,7 @@ pub fn output_lock_release(saved: (u64, bool)) {
         OUTPUT_LOCK_CPU.store(0xFF, Ordering::Relaxed);
         OUTPUT_LOCK.store(false, Ordering::Release);
     }
-    if flags & 0x200 != 0 {
-        unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
-    }
+    crate::arch::hal::restore_interrupt_state(flags);
 }
 
 /// Check if the serial output lock is currently held (lock-free diagnostic).
@@ -125,17 +117,35 @@ pub fn enter_panic_mode() {
     }
 
     // Disable interrupts on this CPU
-    unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
+    crate::arch::hal::disable_interrupts();
 
     // Force-release the output lock (previous holder may be dead)
     OUTPUT_LOCK.store(false, Ordering::Release);
     OUTPUT_LOCK_CPU.store(0xFF, Ordering::Release);
 
     // Switch to blocking TX — async buffer may be lost during panic
+    #[cfg(target_arch = "x86_64")]
     ASYNC_TX.store(false, Ordering::Release);
 
     // Halt all other CPUs via IPI so they stop outputting
-    crate::arch::x86::smp::halt_other_cpus();
+    crate::arch::hal::halt_other_cpus();
+}
+
+// ── Direct UART I/O helpers ────────────────────────────────────────────────
+
+/// Write one byte directly to the UART (blocking, bypasses all locks/buffers).
+/// Used for emergency output in deadlock detection and panic.
+#[inline]
+unsafe fn uart_direct_write_byte(byte: u8) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        while inb(COM1 + 5) & 0x20 == 0 {}
+        outb(COM1, byte);
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::arch::arm64::serial::write_byte(byte);
+    }
 }
 
 // ── Kernel log ring buffer (pre-heap, interrupt-safe) ──────────────────────
@@ -171,16 +181,21 @@ pub fn read_log(dst: &mut [u8]) -> usize {
     copy_len
 }
 
-// ── Async TX ring buffer ──────────────────────────────────────────────────
+// ── Async TX ring buffer (x86 only — COM1 IRQ 4 / THRE) ────────────────────
 
+#[cfg(target_arch = "x86_64")]
 const TX_BUF_SIZE: usize = 8 * 1024; // 8 KiB
+#[cfg(target_arch = "x86_64")]
 static mut TX_BUF: [u8; TX_BUF_SIZE] = [0u8; TX_BUF_SIZE];
 /// Producer (write_byte) writes here.
+#[cfg(target_arch = "x86_64")]
 static TX_HEAD: AtomicUsize = AtomicUsize::new(0);
 /// Consumer (ISR) reads from here.
+#[cfg(target_arch = "x86_64")]
 static TX_TAIL: AtomicUsize = AtomicUsize::new(0);
 
 /// Push one byte into the TX ring buffer.  Returns false if full (byte dropped).
+#[cfg(target_arch = "x86_64")]
 #[inline]
 fn tx_push(byte: u8) -> bool {
     let head = TX_HEAD.load(Ordering::Relaxed) & (TX_BUF_SIZE - 1);
@@ -194,6 +209,7 @@ fn tx_push(byte: u8) -> bool {
 }
 
 /// Pop one byte from the TX ring buffer.  Returns None if empty.
+#[cfg(target_arch = "x86_64")]
 #[inline]
 fn tx_pop() -> Option<u8> {
     let tail = TX_TAIL.load(Ordering::Relaxed) & (TX_BUF_SIZE - 1);
@@ -207,11 +223,13 @@ fn tx_pop() -> Option<u8> {
 
 /// Atomic guard: only one CPU at a time may call `tx_pop()` (via `try_drain`).
 /// Prevents the dual-consumer race between `kick_tx` and the ISR on different CPUs.
+#[cfg(target_arch = "x86_64")]
 static DRAINING: AtomicBool = AtomicBool::new(false);
 
 /// Drain up to `max` bytes from the TX ring buffer into the UART FIFO.
 /// Uses `DRAINING` to ensure only one CPU pops from the buffer at a time.
 /// If another CPU is already draining, returns immediately.
+#[cfg(target_arch = "x86_64")]
 fn try_drain(max: usize) {
     if DRAINING
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -249,6 +267,7 @@ fn try_drain(max: usize) {
 /// Kick-start the TX drain.  Sends up to 16 bytes directly (works even when
 /// interrupts are disabled on this CPU), and ensures the THRE interrupt is
 /// enabled so the ISR handles the rest.
+#[cfg(target_arch = "x86_64")]
 #[inline]
 fn kick_tx() {
     try_drain(16);
@@ -261,8 +280,9 @@ fn kick_tx() {
     }
 }
 
-/// Initialize COM1 at 115200 baud, 8N1, with FIFO enabled.
+/// Initialize the serial port.
 pub fn init() {
+    #[cfg(target_arch = "x86_64")]
     unsafe {
         outb(COM1 + 1, 0x00); // Disable all interrupts
         outb(COM1 + 3, 0x80); // Enable DLAB (set baud rate divisor)
@@ -274,10 +294,17 @@ pub fn init() {
 
         SERIAL_INITIALIZED = true;
     }
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        crate::arch::arm64::serial::init();
+        SERIAL_INITIALIZED = true;
+    }
 }
 
 /// Switch from blocking to async TX mode.
 /// Call once after the IRQ subsystem is ready (IRQ handler registered, IRQ 4 unmasked).
+#[cfg(target_arch = "x86_64")]
 pub fn enable_async() {
     // Register COM1 IRQ handler and unmask IRQ 4
     crate::arch::x86::irq::register_irq(4, serial_irq_handler);
@@ -291,6 +318,13 @@ pub fn enable_async() {
     ASYNC_TX.store(true, Ordering::Release);
 }
 
+/// No-op on ARM64 (PL011 uses blocking TX for now).
+#[cfg(target_arch = "aarch64")]
+pub fn enable_async() {
+    // ARM64: PL011 uses blocking TX; async TX not implemented yet
+}
+
+#[cfg(target_arch = "x86_64")]
 fn is_transmit_empty() -> bool {
     unsafe { inb(COM1 + 5) & 0x20 != 0 }
 }
@@ -305,21 +339,30 @@ pub fn write_byte(byte: u8) {
     // Always capture to log ring buffer
     log_push_byte(byte);
 
-    if ASYNC_TX.load(Ordering::Acquire) {
-        // Async path: push to TX buffer, kick UART if idle
-        if tx_push(byte) {
-            kick_tx();
+    #[cfg(target_arch = "x86_64")]
+    {
+        if ASYNC_TX.load(Ordering::Acquire) {
+            // Async path: push to TX buffer, kick UART if idle
+            if tx_push(byte) {
+                kick_tx();
+            }
+        } else {
+            // Early boot: blocking poll
+            while !is_transmit_empty() {
+                core::hint::spin_loop();
+            }
+            unsafe { outb(COM1, byte); }
         }
-    } else {
-        // Early boot: blocking poll
-        while !is_transmit_empty() {
-            core::hint::spin_loop();
-        }
-        unsafe { outb(COM1, byte); }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::arch::arm64::serial::write_byte(byte);
     }
 }
 
 /// COM1 (IRQ 4) interrupt handler — drains the TX buffer into the UART FIFO.
+#[cfg(target_arch = "x86_64")]
 fn serial_irq_handler(_irq: u8) {
     // Read IIR to acknowledge the interrupt source
     let _iir = unsafe { inb(COM1 + 2) };
@@ -377,8 +420,8 @@ macro_rules! serial_println {
     ($($arg:tt)*) => {{
         use core::fmt::Write;
         let _lock_state = $crate::drivers::serial::output_lock_acquire();
-        let _ticks = $crate::arch::x86::pit::get_ticks();
-        let _ms = _ticks as u64 * 1000 / $crate::arch::x86::pit::TICK_HZ as u64;
+        let _ticks = $crate::arch::hal::timer_current_ticks();
+        let _ms = _ticks as u64 * 1000 / $crate::arch::hal::timer_frequency_hz();
         let _ = write!($crate::drivers::serial::SerialPort, "[{}] {}\n", _ms, format_args!($($arg)*));
         $crate::drivers::serial::output_lock_release(_lock_state);
     }};

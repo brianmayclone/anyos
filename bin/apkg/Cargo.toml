@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyos_std = { path = "../../libs/stdlib" }
 libzip_client = { path = "../../libs/libzip_client" }
+libhttp_client = { path = "../../libs/libhttp_client" }
 dynlink = { path = "../../libs/dynlink" }
 
 [profile.dev]

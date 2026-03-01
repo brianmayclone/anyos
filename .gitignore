@@ -18,3 +18,7 @@ CLAUDE.md
 third_party/classicube/
 assets/icons/svg
 cargo*.txt
+# Firebase Hosting (deployed artifacts, credentials, cache)
+firebase-hosting/
+packages/
+third_party/ladybird*

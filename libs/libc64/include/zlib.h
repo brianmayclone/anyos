@@ -52,6 +52,14 @@ typedef unsigned int uInt;
 typedef unsigned char Byte;
 typedef Byte *Bytef;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 const char *zlibVersion(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

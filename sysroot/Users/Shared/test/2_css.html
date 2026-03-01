@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test 2: Inline CSS</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            background: #1e1e2e;
+            color: #cdd6f4;
+            margin: 20px;
+        }
+        h1 {
+            color: #89b4fa;
+            border-bottom: 2px solid #313244;
+            padding-bottom: 8px;
+        }
+        h2 {
+            color: #a6e3a1;
+        }
+        .box {
+            background: #313244;
+            border: 1px solid #45475a;
+            border-radius: 8px;
+            padding: 16px;
+            margin: 12px 0;
+        }
+        .red { color: #f38ba8; }
+        .green { color: #a6e3a1; }
+        .blue { color: #89b4fa; }
+        .yellow { color: #f9e2af; }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 12px 0;
+        }
+        th, td {
+            border: 1px solid #45475a;
+            padding: 8px 12px;
+            text-align: left;
+        }
+        th {
+            background: #313244;
+            color: #cba6f7;
+        }
+        a { color: #89dceb; }
+    </style>
+</head>
+<body>
+    <h1>Test 2: Inline CSS</h1>
+    <p>This page tests inline <code>&lt;style&gt;</code> CSS rendering.</p>
+
+    <h2>Colors</h2>
+    <p class="red">This text should be red.</p>
+    <p class="green">This text should be green.</p>
+    <p class="blue">This text should be blue.</p>
+    <p class="yellow">This text should be yellow.</p>
+
+    <h2>Box Model</h2>
+    <div class="box">
+        <p>This is a styled box with background, border, border-radius, padding, and margin.</p>
+    </div>
+    <div class="box">
+        <p>Another box to test consistent spacing.</p>
+    </div>
+
+    <h2>Table</h2>
+    <table>
+        <tr><th>Feature</th><th>Status</th></tr>
+        <tr><td>HTML parsing</td><td class="green">OK</td></tr>
+        <tr><td>CSS colors</td><td class="green">OK</td></tr>
+        <tr><td>Box model</td><td class="green">OK</td></tr>
+        <tr><td>Tables</td><td class="green">OK</td></tr>
+    </table>
+
+    <h2>Navigation</h2>
+    <p><a href="file:///Users/Shared/test/1_basic.html">Back: Test 1 (Basic)</a> |
+       <a href="file:///Users/Shared/test/3_layout.html">Next: Test 3 (Layout)</a></p>
+</body>
+</html>

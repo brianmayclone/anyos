@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <signal.h>
+#include <sys/syscall.h>
 
 /* ── getopt (full GNU-compatible implementation) ── */
 #include <getopt.h>
@@ -183,7 +184,6 @@ int getopt_long(int argc, char * const argv[], const char *optstring,
 #include <stdlib.h>
 
 extern int _syscall(int num, int a1, int a2, int a3, int a4);
-#define SYS_READDIR 23
 
 /* Kernel readdir entry: 64 bytes each
  * [type:u8, name_len:u8, pad:u16, size:u32, name:56bytes] */
@@ -390,8 +390,6 @@ int atexit(void (*function)(void)) {
     return 0;
 }
 
-#define SYS_SETENV 182
-
 int setenv(const char *name, const char *value, int overwrite) {
     if (!name || !*name || strchr(name, '=')) { errno = EINVAL; return -1; }
     if (!overwrite) {
@@ -537,8 +535,6 @@ int rmdir(const char *pathname) {
 /* ── posix_spawn ── */
 #include <spawn.h>
 
-#define SYS_SPAWN_STUBS 27
-
 int posix_spawn(pid_t *pid, const char *path,
     const posix_spawn_file_actions_t *file_actions,
     const posix_spawnattr_t *attrp,
@@ -556,7 +552,7 @@ int posix_spawn(pid_t *pid, const char *path,
         }
     }
     args[pos] = '\0';
-    int tid = _syscall(SYS_SPAWN_STUBS, (int)path, 0, (int)args, 0);
+    int tid = _syscall(SYS_SPAWN, (int)path, 0, (int)args, 0);
     if (tid < 0) { errno = ENOENT; return ENOENT; }
     if (pid) *pid = (pid_t)tid;
     return 0;
@@ -821,7 +817,6 @@ unsigned long long strtoumax(const char *nptr, char **endptr, int base) {
 }
 
 /* environ — populated from kernel env store at startup */
-#define SYS_LISTENV 184
 #define MAX_ENV_ENTRIES 64
 #define ENV_BUF_SIZE   4096
 

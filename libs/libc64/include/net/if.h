@@ -14,7 +14,15 @@ struct if_nameindex {
     char        *if_name;
 };
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 unsigned int if_nametoindex(const char *ifname);
 char *if_indextoname(unsigned int ifindex, char *ifname);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

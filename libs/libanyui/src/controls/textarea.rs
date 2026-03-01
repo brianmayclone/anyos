@@ -63,12 +63,11 @@ impl Control for TextArea {
     }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.text_base.base.x;
-        let y = ay + self.text_base.base.y;
-        let w = self.text_base.base.w;
-        let h = self.text_base.base.h;
-        let bg = if self.text_base.base.color != 0 {
-            self.text_base.base.color
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
+        let bg = if b.color != 0 {
+            b.color
         } else {
             crate::theme::colors().input_bg
         };
@@ -77,7 +76,7 @@ impl Control for TextArea {
         // Background
         crate::draw::fill_rect(surface, x, y, w, h, bg);
 
-        // Clip text to control bounds
+        // Clip text to control bounds (physical)
         let clipped = surface.with_clip(x, y, w, h);
         let text_color = if self.text_base.text_style.text_color != 0 {
             self.text_base.text_style.text_color
@@ -85,18 +84,19 @@ impl Control for TextArea {
             tc.text
         };
 
-        let lh = self.line_height();
-        let pad_x = 8;
-        let pad_y = 6;
         let font_id = self.text_base.text_style.font_id;
-        let font_size = self.text_base.text_style.font_size;
+        let font_size = crate::draw::scale_font(self.text_base.text_style.font_size);
+        let lh = font_size as i32 + crate::theme::scale_i32(4);
+        let pad_x = crate::theme::scale_i32(8);
+        let pad_y = crate::theme::scale_i32(6);
+        let scaled_scroll_y = crate::theme::scale_i32(self.scroll_y);
         let text = &self.text_base.text;
 
         // Render visible lines only
         if !text.is_empty() {
             let viewport_h = h as i32 - pad_y * 2;
-            let first_vis = (self.scroll_y / lh).max(0) as usize;
-            let last_vis = ((self.scroll_y + viewport_h) / lh + 1) as usize;
+            let first_vis = (scaled_scroll_y / lh).max(0) as usize;
+            let last_vis = ((scaled_scroll_y + viewport_h) / lh + 1) as usize;
 
             let mut line_idx = 0usize;
             let mut line_start = 0usize;
@@ -105,7 +105,7 @@ impl Control for TextArea {
                 let is_end = i == text.len() || text[i] == b'\n';
                 if is_end {
                     if line_idx >= first_vis && line_idx <= last_vis {
-                        let line_y = y + pad_y + (line_idx as i32) * lh - self.scroll_y;
+                        let line_y = y + pad_y + (line_idx as i32) * lh - scaled_scroll_y;
                         let line_data = &text[line_start..i];
                         if !line_data.is_empty() {
                             crate::draw::draw_text_ex(
@@ -133,27 +133,29 @@ impl Control for TextArea {
                 }
             }
             let col_slice = &text[col_start..cpos];
-            let cx_offset = crate::draw::text_width_n(col_slice, col_slice.len()) as i32;
-            let cy = y + pad_y + (cur_line as i32) * lh - self.scroll_y;
-            crate::draw::fill_rect(&clipped, x + pad_x + cx_offset, cy, 2, font_size as u32, tc.accent);
+            let cx_offset = crate::draw::text_width_n_at(col_slice, col_slice.len(), font_size) as i32;
+            let cy = y + pad_y + (cur_line as i32) * lh - scaled_scroll_y;
+            let cursor_w = crate::theme::scale(2);
+            crate::draw::fill_rect(&clipped, x + pad_x + cx_offset, cy, cursor_w, font_size as u32, tc.accent);
         }
 
         // Scrollbar
-        let content_h = self.content_height();
-        let view_h = h as i32 - 4;
+        let content_h = crate::theme::scale_i32(self.content_height());
+        let view_h = h as i32 - crate::theme::scale_i32(4);
         if content_h > view_h && view_h > 4 {
-            let bar_w = 6u32;
-            let bar_x = x + w as i32 - bar_w as i32 - 2;
-            let track_y = y + 2;
+            let bar_w = crate::theme::scale(6);
+            let bar_x = x + w as i32 - bar_w as i32 - crate::theme::scale_i32(2);
+            let track_y = y + crate::theme::scale_i32(2);
             let track_h = view_h;
             crate::draw::fill_rect(&clipped, bar_x, track_y, bar_w, track_h as u32, tc.scrollbar_track);
-            let thumb_h = ((view_h as i64 * track_h as i64) / content_h as i64).max(20) as i32;
-            let max_scroll = self.max_scroll();
+            let thumb_h = ((view_h as i64 * track_h as i64) / content_h as i64).max(crate::theme::scale_i32(20) as i64) as i32;
+            let max_scroll = crate::theme::scale_i32(self.max_scroll());
             let scroll_frac = if max_scroll > 0 {
-                (self.scroll_y as i64 * (track_h - thumb_h) as i64 / max_scroll as i64) as i32
+                (scaled_scroll_y as i64 * (track_h - thumb_h) as i64 / max_scroll as i64) as i32
             } else { 0 };
             let thumb_y = track_y + scroll_frac.max(0).min(track_h - thumb_h);
-            crate::draw::fill_rounded_rect(&clipped, bar_x, thumb_y, bar_w, thumb_h as u32, 3, tc.scrollbar);
+            let thumb_r = crate::theme::scale(3);
+            crate::draw::fill_rounded_rect(&clipped, bar_x, thumb_y, bar_w, thumb_h as u32, thumb_r, tc.scrollbar);
         }
     }
 

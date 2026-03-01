@@ -22,43 +22,48 @@ impl Control for Slider {
     fn kind(&self) -> ControlKind { ControlKind::Slider }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.base.x;
-        let y = ay + self.base.y;
+        let b = self.base();
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
-        let disabled = self.base.disabled;
-        let focused = self.base.focused;
-        let track_y = y + (self.base.h as i32 - 4) / 2;
+        let disabled = b.disabled;
+        let focused = b.focused;
+        let track_h = crate::theme::scale(4);
+        let track_r = crate::theme::scale(2);
+        let track_y = y + (h as i32 - track_h as i32) / 2;
 
         // Track background
-        crate::draw::fill_rounded_rect(surface, x, track_y, self.base.w, 4, 2, tc.control_bg);
+        crate::draw::fill_rounded_rect(surface, x, track_y, w, track_h, track_r, tc.control_bg);
 
         // Filled portion
-        let val = self.base.state.min(100);
-        let fill_w = (self.base.w as u64 * val as u64 / 100) as u32;
+        let val = b.state.min(100);
+        let fill_w = (w as u64 * val as u64 / 100) as u32;
         if fill_w > 0 {
             let accent = if disabled { tc.toggle_off } else { tc.accent };
-            crate::draw::fill_rounded_rect(surface, x, track_y, fill_w, 4, 2, accent);
+            crate::draw::fill_rounded_rect(surface, x, track_y, fill_w, track_h, track_r, accent);
         }
 
         // Thumb
-        let thumb_x = x + fill_w as i32 - 9;
-        let thumb_y = y + (self.base.h as i32 - 18) / 2;
+        let thumb_sz = crate::theme::scale(18);
+        let thumb_r = crate::theme::scale(9);
+        let thumb_x = x + fill_w as i32 - thumb_r as i32;
+        let thumb_y = y + (h as i32 - thumb_sz as i32) / 2;
         let thumb_color = if disabled { crate::theme::darken(tc.toggle_thumb, 30) } else { tc.toggle_thumb };
 
         // 1px shadow under thumb
         if !disabled {
-            crate::draw::fill_rounded_rect(surface, thumb_x, thumb_y + 1, 18, 18, 9, crate::theme::with_alpha(0xFF000000, 20));
+            crate::draw::fill_rounded_rect(surface, thumb_x, thumb_y + 1, thumb_sz, thumb_sz, thumb_r, crate::theme::with_alpha(0xFF000000, 20));
         }
-        crate::draw::fill_rounded_rect(surface, thumb_x, thumb_y, 18, 18, 9, thumb_color);
+        crate::draw::fill_rounded_rect(surface, thumb_x, thumb_y, thumb_sz, thumb_sz, thumb_r, thumb_color);
 
         // Subtle thumb border
         if !disabled {
-            crate::draw::draw_rounded_border(surface, thumb_x, thumb_y, 18, 18, 9, crate::theme::with_alpha(0xFF000000, 15));
+            crate::draw::draw_rounded_border(surface, thumb_x, thumb_y, thumb_sz, thumb_sz, thumb_r, crate::theme::with_alpha(0xFF000000, 15));
         }
 
         // Focus ring on thumb
         if focused && !disabled {
-            crate::draw::draw_focus_ring(surface, thumb_x, thumb_y, 18, 18, 9, tc.accent);
+            crate::draw::draw_focus_ring(surface, thumb_x, thumb_y, thumb_sz, thumb_sz, thumb_r, tc.accent);
         }
     }
 

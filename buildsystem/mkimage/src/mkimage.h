@@ -92,7 +92,7 @@ typedef struct {
 /* ── Command-line arguments ───────────────────────────────────────────── */
 
 typedef struct {
-    int         mode;       /* 0=bios, 1=uefi, 2=iso */
+    int         mode;       /* 0=bios, 1=uefi, 2=iso, 3=arm64 */
     const char *stage1;
     const char *stage2;
     const char *kernel;
@@ -253,6 +253,7 @@ void create_iso_image(const Args *args);
 
 void create_bios_image(const Args *args);
 void create_uefi_image(const Args *args);
+void create_arm64_image(const Args *args);
 
 /* ── LFN helpers (fat16.c, shared with exfat for FAT16 ESP) ───────────── */
 

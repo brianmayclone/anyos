@@ -9,6 +9,32 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 // =============================================================================
+// Storage I/O helpers (cfg-gated for ARM64 compilation)
+// =============================================================================
+
+/// Arch-abstracted storage read. Returns `false` on ARM64 (no storage driver yet).
+#[cfg(target_arch = "x86_64")]
+fn storage_read_sectors(abs_lba: u32, count: u32, buf: &mut [u8]) -> bool {
+    crate::drivers::storage::read_sectors(abs_lba, count, buf)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn storage_read_sectors(_abs_lba: u32, _count: u32, _buf: &mut [u8]) -> bool {
+    false
+}
+
+/// Arch-abstracted storage write. Returns `false` on ARM64 (no storage driver yet).
+#[cfg(target_arch = "x86_64")]
+fn storage_write_sectors(abs_lba: u32, count: u32, buf: &[u8]) -> bool {
+    crate::drivers::storage::write_sectors(abs_lba, count, buf)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn storage_write_sectors(_abs_lba: u32, _count: u32, _buf: &[u8]) -> bool {
+    false
+}
+
+// =============================================================================
 // Cluster read cache
 // =============================================================================
 
@@ -146,11 +172,19 @@ fn unix_to_exfat_timestamp(unix: u32) -> u32 {
 }
 
 /// Get current RTC time as exFAT 32-bit timestamp.
+#[cfg(target_arch = "x86_64")]
 fn current_exfat_timestamp() -> u32 {
     let rtc = crate::drivers::rtc::read_time();
     let year = if rtc.year >= 1980 { rtc.year as u32 - 1980 } else { 0 };
     (year << 25) | ((rtc.month as u32) << 21) | ((rtc.day as u32) << 16)
         | ((rtc.hours as u32) << 11) | ((rtc.minutes as u32) << 5) | ((rtc.seconds as u32 / 2))
+}
+
+/// ARM64 stub: returns a fixed timestamp (2024-01-01 00:00:00) until an RTC driver is available.
+#[cfg(target_arch = "aarch64")]
+fn current_exfat_timestamp() -> u32 {
+    // 2024-01-01 00:00:00 in exFAT format (year=44 since 1980)
+    (44u32 << 25) | (1u32 << 21) | (1u32 << 16)
 }
 
 /// Bit flag stored in the VFS `inode` field to indicate a contiguous file.
@@ -235,7 +269,7 @@ impl ExFatReadPlan {
 
         for &(abs_lba, sector_count) in &self.runs {
             let bytes = sector_count as usize * 512;
-            if !crate::drivers::storage::read_sectors(
+            if !storage_read_sectors(
                 abs_lba, sector_count, &mut buf[offset..offset + bytes],
             ) {
                 return Err(FsError::IoError);
@@ -256,7 +290,7 @@ impl ExFatFs {
     /// Mount an exFAT filesystem by reading the VBR from the storage device.
     pub fn new(device_id: u32, partition_start_lba: u32) -> Result<Self, FsError> {
         let mut buf = [0u8; 512];
-        if !crate::drivers::storage::read_sectors(partition_start_lba, 1, &mut buf) {
+        if !storage_read_sectors(partition_start_lba, 1, &mut buf) {
             crate::serial_println!("  exFAT: Failed to read VBR at LBA {}", partition_start_lba);
             return Err(FsError::IoError);
         }
@@ -307,7 +341,7 @@ impl ExFatFs {
         let abs_fat_lba = partition_start_lba + fat_offset;
         crate::debug_println!("  [exFAT] new: caching FAT table abs_lba={} sectors={} ({} KB)",
             abs_fat_lba, fat_length, fat_cache_bytes / 1024);
-        if !crate::drivers::storage::read_sectors(abs_fat_lba, fat_length, &mut fat_cache) {
+        if !storage_read_sectors(abs_fat_lba, fat_length, &mut fat_cache) {
             crate::serial_println!("  exFAT: Failed to cache FAT table");
             return Err(FsError::IoError);
         }
@@ -370,7 +404,7 @@ impl ExFatFs {
 
     fn read_sectors(&self, abs_lba: u32, count: u32, buf: &mut [u8]) -> Result<(), FsError> {
         crate::debug_println!("  [exFAT] read_sectors: lba={} count={} buf_len={}", abs_lba, count, buf.len());
-        if !crate::drivers::storage::read_sectors(abs_lba, count, buf) {
+        if !storage_read_sectors(abs_lba, count, buf) {
             crate::debug_println!("  [exFAT] read_sectors: FAILED lba={} count={}", abs_lba, count);
             Err(FsError::IoError)
         } else {
@@ -380,7 +414,7 @@ impl ExFatFs {
     }
 
     fn write_sectors(&self, abs_lba: u32, count: u32, buf: &[u8]) -> Result<(), FsError> {
-        if !crate::drivers::storage::write_sectors(abs_lba, count, buf) {
+        if !storage_write_sectors(abs_lba, count, buf) {
             Err(FsError::IoError)
         } else {
             Ok(())

@@ -126,6 +126,22 @@ int strcmp(const char *s1, const char *s2) {
     return *(unsigned char *)s1 - *(unsigned char *)s2;
 }
 
+/* strcoll — locale-aware string comparison (no locale support, delegates to strcmp) */
+int strcoll(const char *s1, const char *s2) {
+    return strcmp(s1, s2);
+}
+
+/* strxfrm — locale-aware string transform (no locale support, copies src) */
+size_t strxfrm(char *dest, const char *src, size_t n) {
+    size_t len = strlen(src);
+    if (dest && n > 0) {
+        size_t copy = len < n ? len : n - 1;
+        memcpy(dest, src, copy);
+        dest[copy] = '\0';
+    }
+    return len;
+}
+
 int strncmp(const char *s1, const char *s2, size_t n) {
     while (n && *s1 && *s1 == *s2) { s1++; s2++; n--; }
     return n ? (*(unsigned char *)s1 - *(unsigned char *)s2) : 0;

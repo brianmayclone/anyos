@@ -10,6 +10,19 @@
 
 mod boot;
 mod attr;
+
+// ── Storage I/O helpers (cfg-gated for ARM64 compilation) ──
+
+/// Arch-abstracted storage read. Returns `false` on ARM64 (no storage driver yet).
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn storage_read_sectors(abs_lba: u32, count: u32, buf: &mut [u8]) -> bool {
+    storage_read_sectors(abs_lba, count, buf)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn storage_read_sectors(_abs_lba: u32, _count: u32, _buf: &mut [u8]) -> bool {
+    false
+}
 mod runlist;
 mod mft;
 mod index;
@@ -45,7 +58,7 @@ impl NtfsFs {
     pub fn new(_device_id: u32, partition_lba: u32) -> Result<Self, FsError> {
         // Read boot sector
         let mut buf = [0u8; 512];
-        if !crate::drivers::storage::read_sectors(partition_lba, 1, &mut buf) {
+        if !storage_read_sectors(partition_lba, 1, &mut buf) {
             return Err(FsError::IoError);
         }
 
@@ -78,7 +91,7 @@ impl NtfsFs {
         let record_sectors = (bpb.mft_record_size + 511) / 512;
         let mut mft_buf = vec![0u8; bpb.mft_record_size as usize];
 
-        if !crate::drivers::storage::read_sectors(
+        if !storage_read_sectors(
             mft_lba as u32,
             record_sectors,
             &mut mft_buf,
@@ -197,7 +210,7 @@ impl NtfsFs {
             let sector_count = (run_bytes + 511) / 512;
 
             let mut buf = vec![0u8; run_bytes];
-            if !crate::drivers::storage::read_sectors(
+            if !storage_read_sectors(
                 abs_lba as u32,
                 sector_count as u32,
                 &mut buf,

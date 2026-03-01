@@ -186,8 +186,9 @@ unsigned long long strtoull(const char *nptr, char **endptr, int base) {
 int abs(int j) { return j < 0 ? -j : j; }
 long labs(long j) { return j < 0 ? -j : j; }
 
+#include <sys/syscall.h>
+
 extern long _syscall(long num, long a1, long a2, long a3, long a4, long a5);
-#define SYS_GETENV 183
 
 char *getenv(const char *name) {
     if (!name || !*name) return NULL;
@@ -244,15 +245,12 @@ double atof(const char *nptr) {
     return strtod(nptr, NULL);
 }
 
-#define SYS_SPAWN_STDLIB   27
-#define SYS_WAITPID_STDLIB 12
-
 /* Try to spawn `path`; if it's a bare name (no '/'), search PATH env. */
 static int _resolve_and_spawn(const char *path, const char *args) {
     /* If path contains '/', try it directly */
     for (const char *s = path; *s; s++) {
         if (*s == '/') {
-            return (int)_syscall(SYS_SPAWN_STDLIB, (long)path, 0, (long)args, 0, 0);
+            return (int)_syscall(SYS_SPAWN, (long)path, 0, (long)args, 0, 0);
         }
     }
     /* Bare name — search PATH environment variable */
@@ -271,7 +269,7 @@ static int _resolve_and_spawn(const char *path, const char *args) {
         const char *n = path;
         while (*n && pos < 255) full[pos++] = *n++;
         full[pos] = '\0';
-        int tid = (int)_syscall(SYS_SPAWN_STDLIB, (long)full, 0, (long)args, 0, 0);
+        int tid = (int)_syscall(SYS_SPAWN, (long)full, 0, (long)args, 0, 0);
         if (tid > 0) return tid;
     }
     return -1;
@@ -302,7 +300,7 @@ int system(const char *command) {
     args[alen] = '\0';
     int tid = _resolve_and_spawn(path, args);
     if (tid < 0) return -1;
-    int status = (int)_syscall(SYS_WAITPID_STDLIB, tid, 0, 0, 0, 0);
+    int status = (int)_syscall(SYS_WAITPID, tid, 0, 0, 0, 0);
     return status;
 }
 

@@ -63,7 +63,7 @@ pub fn discover() -> Result<DhcpResult, &'static str> {
 }
 
 fn wait_dhcp_response(expected_type: u8, timeout_ticks: u32) -> Result<DhcpResult, &'static str> {
-    let start = crate::arch::x86::pit::get_ticks();
+    let start = crate::arch::hal::timer_current_ticks();
 
     loop {
         super::poll();
@@ -74,7 +74,7 @@ fn wait_dhcp_response(expected_type: u8, timeout_ticks: u32) -> Result<DhcpResul
             }
         }
 
-        let now = crate::arch::x86::pit::get_ticks();
+        let now = crate::arch::hal::timer_current_ticks();
         if now.wrapping_sub(start) >= timeout_ticks {
             return Err("DHCP timeout");
         }

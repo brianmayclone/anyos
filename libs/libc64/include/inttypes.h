@@ -48,7 +48,15 @@
 #define SCNx32 "x"
 #define SCNx64 "lx"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 long long strtoimax(const char *nptr, char **endptr, int base);
 unsigned long long strtoumax(const char *nptr, char **endptr, int base);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

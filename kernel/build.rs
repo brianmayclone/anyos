@@ -22,7 +22,15 @@ fn main() {
         println!("cargo:rerun-if-changed={}", path);
     }
 
+    // Select linker script based on target architecture
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    println!("cargo:rustc-link-arg=-T{}/link.ld", manifest_dir);
-    println!("cargo:rerun-if-changed=link.ld");
+    let target = std::env::var("TARGET").unwrap_or_default();
+
+    if target.starts_with("aarch64") {
+        println!("cargo:rustc-link-arg=-T{}/link_arm64.ld", manifest_dir);
+        println!("cargo:rerun-if-changed=link_arm64.ld");
+    } else {
+        println!("cargo:rustc-link-arg=-T{}/link.ld", manifest_dir);
+        println!("cargo:rerun-if-changed=link.ld");
+    }
 }

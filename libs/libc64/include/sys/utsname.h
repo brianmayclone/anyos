@@ -14,6 +14,14 @@ struct utsname {
     char machine[65];
 };
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int uname(struct utsname *buf);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

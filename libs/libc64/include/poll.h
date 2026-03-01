@@ -23,6 +23,14 @@ struct pollfd {
 
 typedef unsigned long nfds_t;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int poll(struct pollfd *fds, nfds_t nfds, int timeout);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

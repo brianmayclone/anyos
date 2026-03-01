@@ -269,6 +269,10 @@ struct AnyuiLib {
     texteditor_cut: extern "C" fn(u32) -> u32,
     texteditor_paste: extern "C" fn(u32) -> u32,
     texteditor_select_all: extern "C" fn(u32),
+    texteditor_highlight_line: extern "C" fn(u32, u32, u32),
+    texteditor_clear_highlights: extern "C" fn(u32),
+    texteditor_set_read_only: extern "C" fn(u32, u32),
+    texteditor_ensure_line_visible: extern "C" fn(u32, u32),
     // TreeView
     treeview_add_node: extern "C" fn(u32, u32, *const u8, u32) -> u32,
     treeview_remove_node: extern "C" fn(u32, u32),
@@ -309,6 +313,9 @@ struct AnyuiLib {
     // Font smoothing
     pub(crate) set_font_smoothing: extern "C" fn(u32),
     pub(crate) get_font_smoothing: extern "C" fn() -> u32,
+    // DPI scale factor
+    pub(crate) set_scale_factor: extern "C" fn(u32),
+    pub(crate) get_scale_factor: extern "C" fn() -> u32,
     // Window title
     set_title: extern "C" fn(u32, *const u8, u32),
     // Key event info
@@ -502,6 +509,10 @@ pub fn init() -> bool {
             texteditor_cut: resolve(&handle, "anyui_texteditor_cut"),
             texteditor_paste: resolve(&handle, "anyui_texteditor_paste"),
             texteditor_select_all: resolve(&handle, "anyui_texteditor_select_all"),
+            texteditor_highlight_line: resolve(&handle, "anyui_texteditor_highlight_line"),
+            texteditor_clear_highlights: resolve(&handle, "anyui_texteditor_clear_highlights"),
+            texteditor_set_read_only: resolve(&handle, "anyui_texteditor_set_read_only"),
+            texteditor_ensure_line_visible: resolve(&handle, "anyui_texteditor_ensure_line_visible"),
             // TreeView
             treeview_add_node: resolve(&handle, "anyui_treeview_add_node"),
             treeview_remove_node: resolve(&handle, "anyui_treeview_remove_node"),
@@ -542,6 +553,9 @@ pub fn init() -> bool {
             // Font smoothing
             set_font_smoothing: resolve(&handle, "anyui_set_font_smoothing"),
             get_font_smoothing: resolve(&handle, "anyui_get_font_smoothing"),
+            // DPI scale factor
+            set_scale_factor: resolve(&handle, "anyui_set_scale_factor"),
+            get_scale_factor: resolve(&handle, "anyui_get_scale_factor"),
             // Window title
             set_title: resolve(&handle, "anyui_set_title"),
             // Key event info

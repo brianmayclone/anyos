@@ -9,6 +9,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use crate::sync::spinlock::Spinlock;
+#[cfg(target_arch = "x86_64")]
 use crate::drivers::pci::PciDevice;
 
 // ──────────────────────────────────────────────
@@ -106,6 +107,7 @@ pub trait Driver: Send {
 struct HalDevice {
     path: String,
     driver: Box<dyn Driver>,
+    #[cfg(target_arch = "x86_64")]
     pci: Option<PciDevice>,
 }
 
@@ -124,7 +126,8 @@ pub fn init() {
     crate::serial_println!("[OK] HAL initialized");
 }
 
-/// Register a device with the HAL
+/// Register a device with the HAL (x86 variant with PCI info).
+#[cfg(target_arch = "x86_64")]
 pub fn register_device(path: &str, driver: Box<dyn Driver>, pci: Option<PciDevice>) {
     let driver_type = driver.driver_type() as u32;
     let mut hal = HAL.lock();
@@ -134,6 +137,25 @@ pub fn register_device(path: &str, driver: Box<dyn Driver>, pci: Option<PciDevic
             path: String::from(path),
             driver,
             pci,
+        });
+    }
+    drop(hal);
+
+    crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
+        crate::ipc::event_bus::EVT_DEVICE_ATTACHED, driver_type, 0, 0, 0,
+    ));
+}
+
+/// Register a device with the HAL (ARM64 variant without PCI info).
+#[cfg(target_arch = "aarch64")]
+pub fn register_device(path: &str, driver: Box<dyn Driver>, _pci: Option<u64>) {
+    let driver_type = driver.driver_type() as u32;
+    let mut hal = HAL.lock();
+    if let Some(registry) = hal.as_mut() {
+        crate::serial_println!("  HAL: registered {} ({})", path, driver.name());
+        registry.devices.push(HalDevice {
+            path: String::from(path),
+            driver,
         });
     }
     drop(hal);
@@ -210,6 +232,7 @@ pub fn count_by_type(dtype: DriverType) -> usize {
 }
 
 /// Return all PCI devices that already have bound drivers.
+#[cfg(target_arch = "x86_64")]
 pub fn bound_pci_devices() -> Vec<PciDevice> {
     let hal = HAL.lock();
     let mut result = Vec::new();
@@ -266,6 +289,7 @@ pub fn make_device_path(dtype: DriverType, index: usize) -> String {
 
 /// Probe all PCI devices and bind matching drivers.
 /// Skips bridges (class 0x06) since they don't need a user-facing driver.
+#[cfg(target_arch = "x86_64")]
 pub fn probe_and_bind_all() {
     use crate::drivers::pci_drivers::{PCI_DRIVER_TABLE, matches_pci};
 
@@ -382,9 +406,11 @@ impl Driver for SerialDriver {
     }
 }
 
-/// ATAPI CD-ROM/DVD-ROM driver wrapper
+/// ATAPI CD-ROM/DVD-ROM driver wrapper (x86-only).
+#[cfg(target_arch = "x86_64")]
 struct AtapiDriver;
 
+#[cfg(target_arch = "x86_64")]
 impl Driver for AtapiDriver {
     fn name(&self) -> &str { "ATAPI CD/DVD-ROM" }
     fn driver_type(&self) -> DriverType { DriverType::Block }
@@ -406,7 +432,8 @@ impl Driver for AtapiDriver {
     }
 }
 
-/// Register legacy (non-PCI) devices that are always present on x86
+/// Register legacy (non-PCI) devices that are always present on x86.
+#[cfg(target_arch = "x86_64")]
 pub fn register_legacy_devices() {
     register_device("/dev/kbd", Box::new(Ps2KeyboardDriver), None);
     register_device("/dev/mouse", Box::new(Ps2MouseDriver), None);
@@ -416,4 +443,10 @@ pub fn register_legacy_devices() {
     if crate::drivers::storage::atapi::is_present() {
         register_device("/dev/cdrom0", Box::new(AtapiDriver), None);
     }
+}
+
+/// Register legacy devices on ARM64.
+#[cfg(target_arch = "aarch64")]
+pub fn register_legacy_devices() {
+    register_device("/dev/ttyS0", Box::new(SerialDriver), None);
 }

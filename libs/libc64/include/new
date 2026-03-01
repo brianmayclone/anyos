@@ -1,0 +1,41 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * Minimal <new> header for building GCC (which is written in C++).
+ * Provides placement new and nothrow support.
+ */
+
+#ifndef _NEW_HEADER
+#define _NEW_HEADER
+
+#include <stddef.h>
+
+namespace std {
+  struct nothrow_t { explicit nothrow_t() = default; };
+  extern const nothrow_t nothrow;
+  typedef void (*new_handler)();
+  new_handler set_new_handler(new_handler) noexcept;
+}
+
+/* Placement new/delete — compiler builtins, just need declarations. */
+void* operator new(size_t size);
+void* operator new[](size_t size);
+void  operator delete(void* ptr) noexcept;
+void  operator delete[](void* ptr) noexcept;
+void  operator delete(void* ptr, size_t) noexcept;
+void  operator delete[](void* ptr, size_t) noexcept;
+
+/* Placement new — returns the provided pointer. */
+inline void* operator new(size_t, void* ptr) noexcept { return ptr; }
+inline void* operator new[](size_t, void* ptr) noexcept { return ptr; }
+inline void  operator delete(void*, void*) noexcept {}
+inline void  operator delete[](void*, void*) noexcept {}
+
+/* Nothrow variants. */
+void* operator new(size_t size, const std::nothrow_t&) noexcept;
+void* operator new[](size_t size, const std::nothrow_t&) noexcept;
+void  operator delete(void* ptr, const std::nothrow_t&) noexcept;
+void  operator delete[](void* ptr, const std::nothrow_t&) noexcept;
+
+#endif /* _NEW_HEADER */

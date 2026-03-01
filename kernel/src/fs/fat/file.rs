@@ -35,7 +35,7 @@ impl FileReadPlan {
 
         for &(abs_lba, sector_count) in &self.runs {
             let bytes = sector_count as usize * 512;
-            if !crate::drivers::storage::read_sectors(abs_lba, sector_count,
+            if !FatFs::storage_read_sectors(abs_lba, sector_count,
                     &mut buf[offset..offset + bytes]) {
                 return Err(FsError::IoError);
             }

@@ -16,12 +16,13 @@ impl Control for NavigationBar {
     fn kind(&self) -> ControlKind { ControlKind::NavigationBar }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.text_base.base.x;
-        let y = ay + self.text_base.base.y;
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
         let tc = crate::theme::colors();
-        crate::draw::fill_rect(surface, x, y, self.text_base.base.w, self.text_base.base.h, tc.toolbar_bg);
+        crate::draw::fill_rect(surface, p.x, p.y, p.w, p.h, tc.toolbar_bg);
         if !self.text_base.text.is_empty() {
-            crate::draw::draw_text_sized(surface, x + 12, y + 8, tc.text, &self.text_base.text, self.text_base.text_style.font_size);
+            let fs = crate::draw::scale_font(self.text_base.text_style.font_size);
+            crate::draw::draw_text_sized(surface, p.x + crate::theme::scale_i32(12), p.y + crate::theme::scale_i32(8), tc.text, &self.text_base.text, fs);
         }
     }
 }

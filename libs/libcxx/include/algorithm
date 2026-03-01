@@ -9,6 +9,7 @@
 #define _LIBCXX_ALGORITHM
 
 #include <cstddef>
+#include <initializer_list>
 #include <iterator>
 #include <utility>
 

@@ -1,0 +1,11 @@
+pub mod toolbar;
+pub mod process_tree;
+pub mod registers_view;
+pub mod stack_view;
+pub mod disasm_view;
+pub mod memory_view;
+pub mod timeline_view;
+pub mod output_panel;
+pub mod snapshot_view;
+pub mod trace_view;
+pub mod status_bar;

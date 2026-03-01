@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 DIRS=(kernel libs scripts system buildsystem bootloader bin apps tools)
-EXTS=(c cpp h rs asm nasm def yaml yml xml json)
+EXTS=(c cpp h rs asm nasm def yaml yml xml json sh ps1 def)
 
 # Build find -name pattern
 name_args=()

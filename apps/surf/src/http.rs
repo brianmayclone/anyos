@@ -15,6 +15,7 @@ use crate::deflate;
 // Public types
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct Url {
     pub scheme: String, // "http"
     pub host: String,
@@ -44,6 +45,7 @@ pub enum FetchError {
 // Cookie jar
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct Cookie {
     pub domain: String,
     pub path: String,
@@ -53,6 +55,7 @@ pub struct Cookie {
     pub http_only: bool,
 }
 
+#[derive(Clone)]
 pub struct CookieJar {
     pub cookies: Vec<Cookie>,
 }
@@ -200,13 +203,13 @@ impl AsciiLowerStr for str {
 const MAX_REDIRECTS: usize = 20;
 const CONNECT_TIMEOUT_MS: u32 = 10_000;
 const MAX_HEADER_SIZE: usize = 16384;
-const RECV_BUF_SIZE: usize = 16384;
+const RECV_BUF_SIZE: usize = 32768;
 
 // ---------------------------------------------------------------------------
 // Connection pool — reuses TCP (and TLS) connections across requests
 // ---------------------------------------------------------------------------
 
-const MAX_POOL_SIZE: usize = 4;
+const MAX_POOL_SIZE: usize = 6;
 
 struct PoolEntry {
     host: String,
@@ -215,13 +218,47 @@ struct PoolEntry {
     is_https: bool,
 }
 
+/// Cached DNS resolution entry (hostname → IPv4 address).
+struct DnsCacheEntry {
+    host: String,
+    ip: [u8; 4],
+}
+
+/// Maximum number of cached DNS entries.
+const MAX_DNS_CACHE: usize = 64;
+
 pub struct ConnPool {
     entries: Vec<PoolEntry>,
+    /// Per-pool DNS cache — avoids repeated syscalls for the same hostname.
+    dns_cache: Vec<DnsCacheEntry>,
 }
 
 impl ConnPool {
     pub fn new() -> Self {
-        ConnPool { entries: Vec::new() }
+        ConnPool {
+            entries: Vec::new(),
+            dns_cache: Vec::new(),
+        }
+    }
+
+    /// Look up a hostname in the DNS cache, falling back to a syscall.
+    /// Caches the result on success.
+    fn resolve_cached(&mut self, host: &str) -> Option<[u8; 4]> {
+        // Check cache first.
+        if let Some(entry) = self.dns_cache.iter().find(|e| e.host == host) {
+            return Some(entry.ip);
+        }
+        // Syscall fallback.
+        let ip = resolve_host(host)?;
+        // Cache the result.
+        if self.dns_cache.len() >= MAX_DNS_CACHE {
+            self.dns_cache.remove(0);
+        }
+        self.dns_cache.push(DnsCacheEntry {
+            host: String::from(host),
+            ip,
+        });
+        Some(ip)
     }
 
     /// Take a reusable connection for the given host/port/scheme.
@@ -270,8 +307,10 @@ impl ConnPool {
 }
 
 /// Open a fresh TCP connection (+ TLS handshake for HTTPS).
+///
+/// Uses the pool's DNS cache to avoid redundant DNS syscalls.
 fn connect_fresh(pool: &mut ConnPool, host: &str, port: u16, is_https: bool) -> Result<u32, FetchError> {
-    let ip = match resolve_host(host) {
+    let ip = match pool.resolve_cached(host) {
         Some(ip) => ip,
         None => {
             anyos_std::println!("[http] DNS failed for {}", host);
@@ -329,13 +368,24 @@ fn response_says_close(headers: &str) -> bool {
 }
 
 /// Decompress body based on Content-Encoding header.
+///
+/// When decompression fails, checks whether the raw bytes look like valid
+/// text before returning them.  Returning compressed binary as HTML causes
+/// the HTML parser to produce garbage DOM structures that overflow the
+/// layout engine's stack.
 fn decompress_body(raw: Vec<u8>, content_encoding: &Option<String>) -> Vec<u8> {
     if let Some(ref enc) = content_encoding {
         let enc_lower = enc.to_ascii_lowercase();
         if enc_lower.contains("gzip") {
             match deflate::decompress_gzip(&raw) {
                 Some(decoded) => return decoded,
-                None => anyos_std::println!("[http] gzip decompression FAILED, using raw"),
+                None => {
+                    anyos_std::println!("[http] gzip decompression FAILED ({}B)", raw.len());
+                    if !looks_like_text(&raw) {
+                        anyos_std::println!("[http] raw data is binary, returning empty body");
+                        return Vec::new();
+                    }
+                }
             }
         } else if enc_lower.contains("deflate") {
             if let Some(decoded) = deflate::decompress_zlib(&raw)
@@ -343,10 +393,30 @@ fn decompress_body(raw: Vec<u8>, content_encoding: &Option<String>) -> Vec<u8> {
             {
                 return decoded;
             }
-            anyos_std::println!("[http] deflate decompression FAILED, using raw");
+            anyos_std::println!("[http] deflate decompression FAILED ({}B)", raw.len());
+            if !looks_like_text(&raw) {
+                anyos_std::println!("[http] raw data is binary, returning empty body");
+                return Vec::new();
+            }
         }
     }
     raw
+}
+
+/// Heuristic: check if the first bytes look like valid text (ASCII/UTF-8)
+/// rather than compressed binary data.
+fn looks_like_text(data: &[u8]) -> bool {
+    if data.is_empty() { return true; }
+    let check_len = data.len().min(256);
+    let mut non_text_count = 0u32;
+    for &b in &data[..check_len] {
+        // Allow printable ASCII, whitespace (tab, newline, carriage return)
+        if b < 0x20 && b != b'\t' && b != b'\n' && b != b'\r' {
+            non_text_count += 1;
+        }
+    }
+    // If more than 10% of bytes are non-text control characters, it's binary.
+    non_text_count * 10 < check_len as u32
 }
 
 // ---------------------------------------------------------------------------

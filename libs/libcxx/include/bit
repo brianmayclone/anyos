@@ -1,0 +1,145 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * <bit> — C++20 bit manipulation utilities.
+ */
+
+#ifndef _LIBCXX_BIT
+#define _LIBCXX_BIT
+
+#include <type_traits>
+#include <cstdint>
+
+namespace std {
+
+/* ── bit_cast (C++20) ───────────────────────────────────────────────── */
+
+template <class To, class From>
+requires (sizeof(To) == sizeof(From))
+constexpr To bit_cast(const From& src) noexcept {
+    return __builtin_bit_cast(To, src);
+}
+
+/* ── Bit counting (C++20) ───────────────────────────────────────────── */
+
+template <class T>
+requires is_unsigned_v<T>
+constexpr int countl_zero(T x) noexcept {
+    if (x == 0) return sizeof(T) * 8;
+    if constexpr (sizeof(T) <= sizeof(unsigned int))
+        return __builtin_clz(static_cast<unsigned int>(x))
+             - (sizeof(unsigned int) - sizeof(T)) * 8;
+    else if constexpr (sizeof(T) <= sizeof(unsigned long))
+        return __builtin_clzl(static_cast<unsigned long>(x))
+             - (sizeof(unsigned long) - sizeof(T)) * 8;
+    else
+        return __builtin_clzll(static_cast<unsigned long long>(x))
+             - (sizeof(unsigned long long) - sizeof(T)) * 8;
+}
+
+template <class T>
+requires is_unsigned_v<T>
+constexpr int countl_one(T x) noexcept {
+    return countl_zero(static_cast<T>(~x));
+}
+
+template <class T>
+requires is_unsigned_v<T>
+constexpr int countr_zero(T x) noexcept {
+    if (x == 0) return sizeof(T) * 8;
+    if constexpr (sizeof(T) <= sizeof(unsigned int))
+        return __builtin_ctz(static_cast<unsigned int>(x));
+    else if constexpr (sizeof(T) <= sizeof(unsigned long))
+        return __builtin_ctzl(static_cast<unsigned long>(x));
+    else
+        return __builtin_ctzll(static_cast<unsigned long long>(x));
+}
+
+template <class T>
+requires is_unsigned_v<T>
+constexpr int countr_one(T x) noexcept {
+    return countr_zero(static_cast<T>(~x));
+}
+
+template <class T>
+requires is_unsigned_v<T>
+constexpr int popcount(T x) noexcept {
+    if constexpr (sizeof(T) <= sizeof(unsigned int))
+        return __builtin_popcount(static_cast<unsigned int>(x));
+    else if constexpr (sizeof(T) <= sizeof(unsigned long))
+        return __builtin_popcountl(static_cast<unsigned long>(x));
+    else
+        return __builtin_popcountll(static_cast<unsigned long long>(x));
+}
+
+/* ── Power-of-two utilities (C++20) ─────────────────────────────────── */
+
+template <class T>
+requires is_unsigned_v<T>
+constexpr bool has_single_bit(T x) noexcept {
+    return x != 0 && (x & (x - 1)) == 0;
+}
+
+template <class T>
+requires is_unsigned_v<T>
+constexpr T bit_ceil(T x) noexcept {
+    if (x <= 1) return 1;
+    return T(1) << (sizeof(T) * 8 - countl_zero(static_cast<T>(x - 1)));
+}
+
+template <class T>
+requires is_unsigned_v<T>
+constexpr T bit_floor(T x) noexcept {
+    if (x == 0) return 0;
+    return T(1) << (sizeof(T) * 8 - 1 - countl_zero(x));
+}
+
+template <class T>
+requires is_unsigned_v<T>
+constexpr int bit_width(T x) noexcept {
+    return sizeof(T) * 8 - countl_zero(x);
+}
+
+/* ── Bit rotation (C++20) ──────────────────────────────────────────── */
+
+template <class T>
+requires is_unsigned_v<T>
+[[nodiscard]] constexpr T rotl(T x, int s) noexcept {
+    constexpr int N = sizeof(T) * 8;
+    int r = s % N;
+    if (r == 0) return x;
+    if (r < 0) r += N;
+    return (x << r) | (x >> (N - r));
+}
+
+template <class T>
+requires is_unsigned_v<T>
+[[nodiscard]] constexpr T rotr(T x, int s) noexcept {
+    constexpr int N = sizeof(T) * 8;
+    int r = s % N;
+    if (r == 0) return x;
+    if (r < 0) r += N;
+    return (x >> r) | (x << (N - r));
+}
+
+/* ── Byte swap / endian (C++20) ─────────────────────────────────────── */
+
+template <class T>
+requires is_unsigned_v<T>
+constexpr T byteswap(T x) noexcept {
+    if constexpr (sizeof(T) == 1) return x;
+    else if constexpr (sizeof(T) == 2) return __builtin_bswap16(x);
+    else if constexpr (sizeof(T) == 4) return __builtin_bswap32(x);
+    else if constexpr (sizeof(T) == 8) return __builtin_bswap64(x);
+}
+
+enum class endian {
+    little = __ORDER_LITTLE_ENDIAN__,
+    big    = __ORDER_BIG_ENDIAN__,
+    native = __BYTE_ORDER__
+};
+
+} // namespace std
+
+#endif

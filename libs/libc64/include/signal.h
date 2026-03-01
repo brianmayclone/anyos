@@ -56,6 +56,10 @@ struct sigaction {
 #define SA_NODEFER  0x40000000
 #define SA_RESETHAND 0x80000000
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 sighandler_t signal(int signum, sighandler_t handler);
 int raise(int sig);
 int kill(int pid, int sig);
@@ -64,6 +68,10 @@ int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact)
 int sigsuspend(const sigset_t *mask);
 int sigpending(sigset_t *set);
 int siginterrupt(int sig, int flag);
+
+#ifdef __cplusplus
+}
+#endif
 
 #define sigemptyset(s)    (*(s) = 0, 0)
 #define sigfillset(s)     (*(s) = ~0UL, 0)

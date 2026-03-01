@@ -80,14 +80,14 @@ template <class T> struct is_reference      : false_type {};
 template <class T> struct is_reference<T&>  : true_type {};
 template <class T> struct is_reference<T&&> : true_type {};
 
-template <class T> struct is_function : integral_constant<bool,
-    !is_reference<T>::value && !is_void<T>::value && !is_array<T>::value &&
-    !is_pointer<T>::value && !is_integral<T>::value && !is_floating_point<T>::value> {};
-
 /* ── CV qualifiers ─────────────────────────────────────────────────── */
 
 template <class T> struct is_const          : false_type {};
 template <class T> struct is_const<const T> : true_type {};
+
+template <class T>
+struct is_function : integral_constant<bool,
+    !is_const<const T>::value && !is_reference<T>::value> {};
 
 template <class T> struct is_volatile             : false_type {};
 template <class T> struct is_volatile<volatile T> : true_type {};
@@ -217,6 +217,17 @@ struct is_union : integral_constant<bool, __is_union(T)> {};
 
 template <class T>
 struct is_class : integral_constant<bool, __is_class(T)> {};
+
+/* ── Member pointer ────────────────────────────────────────────────── */
+
+template <class T>           struct is_member_pointer                 : false_type {};
+template <class T, class U>  struct is_member_pointer<T U::*>         : true_type {};
+template <class T, class U>  struct is_member_pointer<T U::* const>   : true_type {};
+
+template <class T>           struct is_member_function_pointer         : false_type {};
+template <class T, class U>  struct is_member_object_pointer           : false_type {};
+
+template <class T> inline constexpr bool is_member_pointer_v = is_member_pointer<T>::value;
 
 /* ── Composite type categories ─────────────────────────────────────── */
 
@@ -365,6 +376,9 @@ namespace detail {
     template <> struct make_unsigned_helper<unsigned long>      { using type = unsigned long; };
     template <> struct make_unsigned_helper<long long>          { using type = unsigned long long; };
     template <> struct make_unsigned_helper<unsigned long long> { using type = unsigned long long; };
+    template <> struct make_unsigned_helper<char16_t>           { using type = char16_t; };
+    template <> struct make_unsigned_helper<char32_t>           { using type = char32_t; };
+    template <> struct make_unsigned_helper<wchar_t>            { using type = unsigned int; };
 }
 
 template <class T> struct make_signed   { using type = typename detail::make_signed_helper<remove_cv_t<T>>::type; };
@@ -392,6 +406,78 @@ struct disjunction<B, Bn...> : conditional_t<bool(B::value), B, disjunction<Bn..
 template <class B>
 struct negation : integral_constant<bool, !bool(B::value)> {};
 
+/* ── remove_cvref (C++20) ──────────────────────────────────────────── */
+
+template <class T>
+struct remove_cvref {
+    using type = remove_cv_t<remove_reference_t<T>>;
+};
+
+template <class T> using remove_cvref_t = typename remove_cvref<T>::type;
+
+/* ── is_invocable (simplified) ──────────────────────────────────────── */
+
+namespace detail {
+    template <class, class Fn, class... Args>
+    struct is_invocable_impl : false_type {};
+    template <class Fn, class... Args>
+    struct is_invocable_impl<void_t<decltype(declval<Fn>()(declval<Args>()...))>, Fn, Args...>
+        : true_type {};
+}
+
+template <class Fn, class... Args>
+struct is_invocable : detail::is_invocable_impl<void, Fn, Args...> {};
+
+template <class Fn, class... Args>
+inline constexpr bool is_invocable_v = is_invocable<Fn, Args...>::value;
+
+/* ── is_nothrow_* ──────────────────────────────────────────────────── */
+
+template <class T, class... Args>
+struct is_nothrow_constructible : integral_constant<bool, __is_nothrow_constructible(T, Args...)> {};
+
+template <class T>
+struct is_nothrow_default_constructible : is_nothrow_constructible<T> {};
+
+template <class T>
+struct is_nothrow_move_constructible : is_nothrow_constructible<T, add_rvalue_reference_t<T>> {};
+
+template <class T>
+struct is_nothrow_copy_constructible
+    : is_nothrow_constructible<T, add_lvalue_reference_t<add_const_t<T>>> {};
+
+template <class T, class U>
+struct is_nothrow_assignable : integral_constant<bool, __is_nothrow_assignable(T, U)> {};
+
+template <class T>
+struct is_nothrow_move_assignable
+    : is_nothrow_assignable<add_lvalue_reference_t<T>, add_rvalue_reference_t<T>> {};
+
+template <class T>
+struct is_nothrow_destructible : integral_constant<bool, __is_nothrow_destructible(T)> {};
+
+template <class T>
+inline constexpr bool is_nothrow_move_constructible_v = is_nothrow_move_constructible<T>::value;
+
+template <class T>
+inline constexpr bool is_nothrow_copy_constructible_v = is_nothrow_copy_constructible<T>::value;
+
+template <class T>
+inline constexpr bool is_nothrow_move_assignable_v = is_nothrow_move_assignable<T>::value;
+
+template <class T>
+inline constexpr bool is_nothrow_destructible_v = is_nothrow_destructible<T>::value;
+
+/* ── underlying_type (for enums) ───────────────────────────────────── */
+
+template <class T>
+struct underlying_type {
+    using type = __underlying_type(T);
+};
+
+template <class T>
+using underlying_type_t = typename underlying_type<T>::type;
+
 /* ── alignment_of / aligned_storage ────────────────────────────────── */
 
 template <class T>
@@ -406,6 +492,97 @@ struct aligned_storage {
 
 template <size_t Len, size_t Align>
 using aligned_storage_t = typename aligned_storage<Len, Align>::type;
+
+/* ── Additional _v variable templates (C++17) ──────────────────────── */
+
+template <class T> inline constexpr bool is_lvalue_reference_v = is_lvalue_reference<T>::value;
+template <class T> inline constexpr bool is_rvalue_reference_v = is_rvalue_reference<T>::value;
+template <class T> inline constexpr bool is_function_v = is_function<T>::value;
+template <class T> inline constexpr bool is_fundamental_v = is_fundamental<T>::value;
+template <class T> inline constexpr bool is_scalar_v = is_scalar<T>::value;
+template <class T> inline constexpr bool is_trivial_v = is_trivial<T>::value;
+template <class T> inline constexpr bool is_standard_layout_v = is_standard_layout<T>::value;
+template <class T> inline constexpr bool is_empty_v = is_empty<T>::value;
+template <class T> inline constexpr bool is_abstract_v = is_abstract<T>::value;
+template <class T> inline constexpr bool is_polymorphic_v = is_polymorphic<T>::value;
+template <class T> inline constexpr bool is_final_v = is_final<T>::value;
+template <class T> inline constexpr bool is_destructible_v = is_destructible<T>::value;
+template <class T, class... Args>
+inline constexpr bool is_constructible_v = is_constructible<T, Args...>::value;
+template <class T>
+inline constexpr bool is_default_constructible_v = is_default_constructible<T>::value;
+template <class T>
+inline constexpr bool is_copy_constructible_v = is_copy_constructible<T>::value;
+template <class T>
+inline constexpr bool is_move_constructible_v = is_move_constructible<T>::value;
+template <class T, class U>
+inline constexpr bool is_assignable_v = is_assignable<T, U>::value;
+template <class T, class... Args>
+inline constexpr bool is_nothrow_constructible_v = is_nothrow_constructible<T, Args...>::value;
+template <class T>
+inline constexpr bool is_nothrow_default_constructible_v = is_nothrow_default_constructible<T>::value;
+template <class T, class U>
+inline constexpr bool is_nothrow_assignable_v = is_nothrow_assignable<T, U>::value;
+template <class T>
+inline constexpr size_t alignment_of_v = alignment_of<T>::value;
+template <class... B>
+inline constexpr bool conjunction_v = conjunction<B...>::value;
+template <class... B>
+inline constexpr bool disjunction_v = disjunction<B...>::value;
+template <class B>
+inline constexpr bool negation_v = negation<B>::value;
+
+/* ── is_trivially_constructible / assignable / destructible ────────── */
+
+template <class T, class... Args>
+struct is_trivially_constructible : integral_constant<bool, __is_trivially_constructible(T, Args...)> {};
+
+template <class T, class... Args>
+inline constexpr bool is_trivially_constructible_v = is_trivially_constructible<T, Args...>::value;
+
+template <class T>
+struct is_trivially_default_constructible : is_trivially_constructible<T> {};
+
+template <class T>
+inline constexpr bool is_trivially_default_constructible_v = is_trivially_default_constructible<T>::value;
+
+template <class T, class U>
+struct is_trivially_assignable : integral_constant<bool, __is_trivially_assignable(T, U)> {};
+
+template <class T, class U>
+inline constexpr bool is_trivially_assignable_v = is_trivially_assignable<T, U>::value;
+
+/* ── is_copy_assignable / is_move_assignable ──────────────────────── */
+
+template <class T>
+struct is_copy_assignable
+    : is_assignable<add_lvalue_reference_t<T>, add_lvalue_reference_t<add_const_t<T>>> {};
+
+template <class T>
+struct is_move_assignable
+    : is_assignable<add_lvalue_reference_t<T>, add_rvalue_reference_t<T>> {};
+
+template <class T>
+inline constexpr bool is_copy_assignable_v = is_copy_assignable<T>::value;
+
+template <class T>
+inline constexpr bool is_move_assignable_v = is_move_assignable<T>::value;
+
+template <class T>
+struct is_nothrow_copy_assignable
+    : is_nothrow_assignable<add_lvalue_reference_t<T>, add_lvalue_reference_t<add_const_t<T>>> {};
+
+template <class T>
+inline constexpr bool is_nothrow_copy_assignable_v = is_nothrow_copy_assignable<T>::value;
+
+/* ── is_swappable ─────────────────────────────────────────────────── */
+
+template <class T>
+inline constexpr bool is_swappable_v = is_move_constructible<T>::value && is_move_assignable<T>::value;
+
+template <class T>
+inline constexpr bool is_nothrow_swappable_v =
+    is_nothrow_move_constructible<T>::value && is_nothrow_move_assignable<T>::value;
 
 } // namespace std
 

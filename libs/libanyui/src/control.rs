@@ -838,10 +838,11 @@ pub fn hit_test(
         }
     }
 
-    // This node is the target if interactive or has any relevant callback
-    if controls[idx].is_interactive()
+    // This node is the target if interactive or has any relevant callback.
+    // Disabled controls are never hit targets, even if they have callbacks.
+    if !b.disabled && (controls[idx].is_interactive()
         || b.get_callback(EVENT_CLICK).is_some()
-        || b.get_callback(EVENT_MOUSE_DOWN).is_some()
+        || b.get_callback(EVENT_MOUSE_DOWN).is_some())
     {
         Some(root)
     } else {

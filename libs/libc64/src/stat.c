@@ -9,11 +9,9 @@
 #include <errno.h>
 #include <string.h>
 
-extern long _syscall(long num, long a1, long a2, long a3, long a4, long a5);
+#include <sys/syscall.h>
 
-#define SYS_STAT   24
-#define SYS_FSTAT  106
-#define SYS_MKDIR  90
+extern long _syscall(long num, long a1, long a2, long a3, long a4, long a5);
 
 int stat(const char *path, struct stat *buf) {
     /* Kernel writes 7 × u32 (4 bytes each); use unsigned int to match. */

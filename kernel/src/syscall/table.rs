@@ -113,6 +113,21 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_GET_HOSTNAME, "get_hostname"),
     (SYS_SET_HOSTNAME, "set_hostname"),
     (SYS_SHUTDOWN, "shutdown"),
+    // Debug / trace (anyTrace)
+    (SYS_DEBUG_ATTACH, "debug_attach"),
+    (SYS_DEBUG_DETACH, "debug_detach"),
+    (SYS_DEBUG_SUSPEND, "debug_suspend"),
+    (SYS_DEBUG_RESUME, "debug_resume"),
+    (SYS_DEBUG_GET_REGS, "debug_get_regs"),
+    (SYS_DEBUG_SET_REGS, "debug_set_regs"),
+    (SYS_DEBUG_READ_MEM, "debug_read_mem"),
+    (SYS_DEBUG_WRITE_MEM, "debug_write_mem"),
+    (SYS_DEBUG_SET_BREAKPOINT, "debug_set_breakpoint"),
+    (SYS_DEBUG_CLR_BREAKPOINT, "debug_clr_breakpoint"),
+    (SYS_DEBUG_SINGLE_STEP, "debug_single_step"),
+    (SYS_DEBUG_GET_MEM_MAP, "debug_get_mem_map"),
+    (SYS_DEBUG_WAIT_EVENT, "debug_wait_event"),
+    (SYS_THREAD_INFO_EX, "thread_info_ex"),
 ];
 
 /// Look up the human-readable name for a syscall number.

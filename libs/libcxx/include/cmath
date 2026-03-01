@@ -9,6 +9,20 @@
 #include <math.h>
 
 namespace std {
+    /* isfinite/isnan/isinf must be functions, not macros, in std namespace */
+    inline bool isfinite(float x) { return __builtin_isfinite(x); }
+    inline bool isfinite(double x) { return __builtin_isfinite(x); }
+    inline bool isfinite(long double x) { return __builtin_isfinite(x); }
+    inline bool isnan(float x) { return __builtin_isnan(x); }
+    inline bool isnan(double x) { return __builtin_isnan(x); }
+    inline bool isnan(long double x) { return __builtin_isnan(x); }
+    inline bool isinf(float x) { return __builtin_isinf(x); }
+    inline bool isinf(double x) { return __builtin_isinf(x); }
+    inline bool isinf(long double x) { return __builtin_isinf(x); }
+    inline bool signbit(float x) { return __builtin_signbit(x); }
+    inline bool signbit(double x) { return __builtin_signbit(x); }
+    inline bool signbit(long double x) { return __builtin_signbit(x); }
+
     using ::fabs;
     using ::fabsf;
     using ::floor;
@@ -46,6 +60,60 @@ namespace std {
     using ::ldexp;
     using ::frexp;
     using ::modf;
+    using ::tanf;
+    using ::atanf;
+    using ::asinf;
+    using ::acosf;
+    using ::sinh;
+    using ::cosh;
+    using ::tanh;
+    using ::asinh;
+    using ::acosh;
+    using ::atanh;
+    using ::sinhf;
+    using ::coshf;
+    using ::tanhf;
+    using ::asinhf;
+    using ::acoshf;
+    using ::atanhf;
+    using ::hypot;
+    using ::hypotf;
+    using ::cbrt;
+    using ::cbrtf;
+    using ::copysign;
+    using ::copysignf;
+    using ::fdim;
+    using ::fdimf;
+    using ::fmax;
+    using ::fmaxf;
+    using ::fmin;
+    using ::fminf;
+    using ::lround;
+    using ::lroundf;
+    using ::lrint;
+    using ::lrintf;
+    using ::nearbyint;
+    using ::nearbyintf;
+    using ::remainder;
+    using ::remainderf;
+    using ::nan;
+    using ::nanf;
+    using ::nextafter;
+    using ::nextafterf;
+    using ::scalbn;
+    using ::scalbnf;
+    using ::ilogb;
+    using ::ilogbf;
+    using ::logb;
+    using ::logbf;
+    using ::rint;
+    using ::rintf;
+    using ::exp2;
+    using ::exp2f;
+    using ::expm1;
+    using ::expm1f;
+    using ::log1p;
+    using ::log1pf;
 }
 
 #endif

@@ -18,8 +18,16 @@
 #define WIFSTOPPED(s)  (((s) & 0xff) == 0x7f)
 #define WSTOPSIG(s)    (((s) >> 8) & 0xff)
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 pid_t wait(int *status);
 pid_t waitpid(pid_t pid, int *status, int options);
 pid_t wait3(int *status, int options, void *rusage);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

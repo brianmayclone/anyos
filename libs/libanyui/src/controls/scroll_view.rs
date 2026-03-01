@@ -67,22 +67,27 @@ impl Control for ScrollView {
     fn kind(&self) -> ControlKind { ControlKind::ScrollView }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.base.x;
-        let y = ay + self.base.y;
-        let w = self.base.w;
-        let h = self.base.h;
+        let b = self.base();
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
 
         if let Some((track_h, thumb_h, max_scroll)) = self.scrollbar_metrics() {
             let tc = crate::theme::colors();
-            let bar_x = x + w as i32 - BAR_W as i32 - BAR_PAD;
+            let bar_w = crate::theme::scale(BAR_W);
+            let bar_pad = crate::theme::scale_i32(BAR_PAD);
+            let thumb_r = crate::theme::scale(THUMB_RADIUS);
+            let bar_x = x + w as i32 - bar_w as i32 - bar_pad;
 
             // Track
-            crate::draw::fill_rect(surface, bar_x, y + BAR_PAD, BAR_W, h - 4, tc.scrollbar_track);
+            let track_pad_h = if h > (bar_pad as u32 * 2) { h - bar_pad as u32 * 2 } else { 1 };
+            crate::draw::fill_rect(surface, bar_x, y + bar_pad, bar_w, track_pad_h, tc.scrollbar_track);
 
-            // Thumb
+            // Thumb — metrics are still in logical space so scale the thumb height for rendering
             let ty = self.thumb_y(track_h, thumb_h, max_scroll);
+            let phys_ty = crate::theme::scale_i32(ty);
+            let phys_thumb_h = crate::theme::scale(thumb_h as u32);
             crate::draw::fill_rounded_rect(
-                surface, bar_x, y + ty, BAR_W, thumb_h as u32, THUMB_RADIUS, tc.scrollbar,
+                surface, bar_x, y + phys_ty, bar_w, phys_thumb_h, thumb_r, tc.scrollbar,
             );
         }
     }

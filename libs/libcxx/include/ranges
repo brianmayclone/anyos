@@ -1,0 +1,53 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * <ranges> — Minimal C++20 ranges stub for anyOS.
+ */
+
+#ifndef _LIBCXX_RANGES
+#define _LIBCXX_RANGES
+
+#include <type_traits>
+#include <iterator>
+
+namespace std::ranges {
+
+/* ── range concept ────────────────────────────────────────────────── */
+
+template <class T>
+concept range = requires(T& t) {
+    t.begin();
+    t.end();
+};
+
+template <class T>
+concept input_range = range<T>;
+
+template <class T>
+concept sized_range = range<T> && requires(T& t) {
+    t.size();
+};
+
+template <class T>
+concept view = range<T>;
+
+template <class R>
+auto begin(R& r) { return r.begin(); }
+
+template <class R>
+auto end(R& r) { return r.end(); }
+
+/* ── enable_view opt-in ───────────────────────────────────────────── */
+
+template <class T>
+inline constexpr bool enable_view = false;
+
+/* ── enable_borrowed_range ────────────────────────────────────────── */
+
+template <class T>
+inline constexpr bool enable_borrowed_range = false;
+
+} // namespace std::ranges
+
+#endif

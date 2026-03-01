@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test 4: Forms</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            background: #1e1e2e;
+            color: #cdd6f4;
+            margin: 20px;
+        }
+        h1 { color: #89b4fa; }
+        h2 { color: #a6e3a1; margin-top: 24px; }
+        form {
+            background: #313244;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 12px 0;
+        }
+        label {
+            display: block;
+            margin: 8px 0 4px;
+            color: #cba6f7;
+        }
+        input[type="text"], input[type="password"], textarea, select {
+            width: 300px;
+            padding: 8px;
+            background: #45475a;
+            color: #cdd6f4;
+            border: 1px solid #585b70;
+            border-radius: 4px;
+        }
+        input[type="submit"], button {
+            background: #89b4fa;
+            color: #1e1e2e;
+            border: none;
+            padding: 8px 20px;
+            border-radius: 4px;
+            margin-top: 12px;
+            cursor: pointer;
+        }
+        a { color: #89dceb; }
+    </style>
+</head>
+<body>
+    <h1>Test 4: Forms</h1>
+
+    <h2>Text Inputs</h2>
+    <form action="#" method="GET">
+        <label>Username:</label>
+        <input type="text" name="user" value="testuser">
+
+        <label>Password:</label>
+        <input type="password" name="pass">
+
+        <label>Select:</label>
+        <select name="choice">
+            <option value="a">Option A</option>
+            <option value="b" selected>Option B</option>
+            <option value="c">Option C</option>
+        </select>
+
+        <label>Checkboxes:</label>
+        <input type="checkbox" name="opt1" checked> Option 1
+        <input type="checkbox" name="opt2"> Option 2
+
+        <label>Radio:</label>
+        <input type="radio" name="radio" value="x" checked> X
+        <input type="radio" name="radio" value="y"> Y
+
+        <br>
+        <input type="submit" value="Submit">
+    </form>
+
+    <h2>Navigation</h2>
+    <p><a href="file:///Users/Shared/test/3_layout.html">Back: Test 3 (Layout)</a> |
+       <a href="file:///Users/Shared/test/5_stress.html">Next: Test 5 (Stress)</a></p>
+</body>
+</html>

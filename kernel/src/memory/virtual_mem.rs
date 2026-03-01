@@ -61,6 +61,9 @@ pub fn pcid_enabled() -> bool {
 /// Safe to call multiple times (idempotent): global state writes are the same
 /// values the BSP already stored, and the CR4 write just ORs the bit in.
 pub fn enable_pcid() {
+    #[cfg(not(target_arch = "x86_64"))]
+    return;
+    #[cfg(target_arch = "x86_64")]
     if !crate::arch::x86::cpuid::features().pcid { return; }
     // CR4.PCIDE can only be set when CR3[11:0] = 0 (PCID 0).
     // Our kernel PML4 is page-aligned, so bits 0-11 are already 0.
@@ -108,7 +111,10 @@ pub const PAGE_NX: u64 = 1u64 << 63;
 /// Safe to OR into any PTE flags value.
 #[inline]
 pub fn page_nx_flag() -> u64 {
-    if crate::arch::x86::cpuid::features().nx { PAGE_NX } else { 0 }
+    #[cfg(target_arch = "x86_64")]
+    { if crate::arch::x86::cpuid::features().nx { PAGE_NX } else { 0 } }
+    #[cfg(not(target_arch = "x86_64"))]
+    { PAGE_NX } // ARM64: NX always supported
 }
 
 /// Number of entries in a page table (512 for x86-64).
@@ -584,7 +590,9 @@ pub fn set_guard_page(virt: VirtAddr) {
         asm!("invlpg [{}]", in(reg) virt.as_u64(), options(nostack, preserves_flags));
     }
     // Notify other CPUs to invalidate their TLB for this address
+    #[cfg(target_arch = "x86_64")]
     crate::arch::x86::smp::tlb_shootdown(virt.as_u64());
+    // ARM64: TLB shootdown handled by TLBI broadcast (IS variants)
 }
 
 /// Restore a guard page to accessible (present + writable).
@@ -617,7 +625,9 @@ pub fn restore_guard_page(virt: VirtAddr) {
         asm!("invlpg [{}]", in(reg) virt.as_u64(), options(nostack, preserves_flags));
     }
     // Notify other CPUs so they don't use a stale not-present TLB entry
+    #[cfg(target_arch = "x86_64")]
     crate::arch::x86::smp::tlb_shootdown(virt.as_u64());
+    // ARM64: TLB shootdown handled by TLBI broadcast (IS variants)
 }
 
 /// Get the kernel PML4's physical address.

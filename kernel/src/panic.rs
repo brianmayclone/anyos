@@ -14,11 +14,15 @@ fn panic(info: &PanicInfo) -> ! {
     crate::serial_println!("=== KERNEL PANIC ===");
     crate::serial_println!("{}", info);
 
-    // Show Red Screen of Death on the framebuffer
+    // Show Red Screen of Death on the framebuffer (x86-only)
+    #[cfg(target_arch = "x86_64")]
     crate::drivers::rsod::show_panic(&format_args!("{}", info));
 
     loop {
+        #[cfg(target_arch = "x86_64")]
         unsafe { core::arch::asm!("cli; hlt"); }
+        #[cfg(target_arch = "aarch64")]
+        unsafe { core::arch::asm!("wfi"); }
     }
 }
 

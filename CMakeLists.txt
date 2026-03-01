@@ -28,6 +28,7 @@ option(ANYOS_DEBUG_VERBOSE "Enable verbose debug output" OFF)
 option(ANYOS_DEBUG_SURF "Enable Surf browser debug logging" OFF)
 option(ANYOS_NO_CROSS "Disable cross-compilation (skip libc, TCC, games, curl)" OFF)
 option(ANYOS_RESET "Force fresh disk image rebuild (destroy runtime data)" OFF)
+set(ANYOS_ARCH "x86_64" CACHE STRING "Target architecture (x86_64 or arm64)")
 
 # Version — passed from build.sh/build.ps1 via -DANYOS_VERSION or read from VERSION file
 if(NOT ANYOS_VERSION)
@@ -52,7 +53,13 @@ else()
 endif()
 
 set(DISK_IMAGE "${CMAKE_BINARY_DIR}/anyos.img")
-set(KERNEL_ELF "${CMAKE_BINARY_DIR}/kernel/x86_64-anyos/release/anyos_kernel.elf")
+if(ANYOS_ARCH STREQUAL "arm64")
+  set(KERNEL_ELF "${CMAKE_BINARY_DIR}/kernel/aarch64-anyos/release/anyos_kernel.elf")
+  message(STATUS "Target architecture: ARM64 (AArch64)")
+else()
+  set(KERNEL_ELF "${CMAKE_BINARY_DIR}/kernel/x86_64-anyos/release/anyos_kernel.elf")
+  message(STATUS "Target architecture: x86_64")
+endif()
 
 # Detect CPU count for parallel sub-builds (make -j)
 include(ProcessorCount)

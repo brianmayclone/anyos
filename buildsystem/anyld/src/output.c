@@ -406,7 +406,7 @@ int write_output(Ctx *ctx) {
     ehdr.e_ident[6] = EV_CURRENT;
     ehdr.e_ident[7] = ELFOSABI_NONE;
     ehdr.e_type      = ET_DYN;
-    ehdr.e_machine   = EM_X86_64;
+    ehdr.e_machine   = ctx->e_machine;
     ehdr.e_version   = EV_CURRENT;
     ehdr.e_entry     = 0;  /* No entry point for a shared library */
     ehdr.e_phoff     = sizeof(Elf64_Ehdr);
@@ -650,7 +650,7 @@ int write_output(Ctx *ctx) {
                (unsigned long long)ctx->bss_vaddr);
         printf("  exports:  %d symbols\n", dynsym_count - 1);
         if (ctx->nrela_dyn > 0)
-            printf("  relocs:   %d R_X86_64_RELATIVE entries\n", ctx->nrela_dyn);
+            printf("  relocs:   %d RELATIVE entries\n", ctx->nrela_dyn);
     }
 
     #undef PAD_TO

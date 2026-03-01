@@ -34,7 +34,7 @@ pub fn lookup(ip: Ipv4Addr) -> Option<MacAddr> {
 pub fn insert(ip: Ipv4Addr, mac: MacAddr) {
     let mut t = table().lock();
     if let Some(map) = t.as_mut() {
-        let ticks = crate::arch::x86::pit::get_ticks();
+        let ticks = crate::arch::hal::timer_current_ticks();
         map.insert(ip.to_u32(), (mac, ticks));
     }
 }
@@ -93,7 +93,7 @@ pub fn resolve(ip: Ipv4Addr, timeout_ticks: u32) -> Option<MacAddr> {
     // Send ARP request
     request(ip);
 
-    let start = crate::arch::x86::pit::get_ticks();
+    let start = crate::arch::hal::timer_current_ticks();
     loop {
         // Poll for incoming packets
         super::poll();
@@ -102,7 +102,7 @@ pub fn resolve(ip: Ipv4Addr, timeout_ticks: u32) -> Option<MacAddr> {
             return Some(mac);
         }
 
-        let now = crate::arch::x86::pit::get_ticks();
+        let now = crate::arch::hal::timer_current_ticks();
         if now.wrapping_sub(start) >= timeout_ticks {
             return None;
         }

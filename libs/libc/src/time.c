@@ -10,12 +10,9 @@
 
 #include <time.h>
 #include <sys/time.h>
+#include <sys/syscall.h>
 
 extern int _syscall(int num, int a1, int a2, int a3, int a4);
-
-#define SYS_TIME    30
-#define SYS_UPTIME  31
-#define SYS_TICK_HZ 34
 
 static struct tm _tm;
 

@@ -16,10 +16,16 @@
 #include <getopt.h>
 #include <stdio.h>
 
-char *optarg = NULL;
-int optind = 1, opterr = 1, optopt = '?';
+/* Weak symbols: libiberty (GCC) provides its own getopt/fnmatch.
+   Marking ours weak lets libiberty's versions win at link time while
+   keeping these available for programs that don't link libiberty. */
+__attribute__((weak)) char *optarg = NULL;
+__attribute__((weak)) int optind = 1;
+__attribute__((weak)) int opterr = 1;
+__attribute__((weak)) int optopt = '?';
 static int _optpos = 0;
 
+__attribute__((weak))
 int getopt(int argc, char * const argv[], const char *optstring) {
     if (optind >= argc || !argv[optind]) return -1;
     const char *arg = argv[optind];
@@ -82,6 +88,7 @@ int getopt(int argc, char * const argv[], const char *optstring) {
     return c;
 }
 
+__attribute__((weak))
 int getopt_long(int argc, char * const argv[], const char *optstring,
                 const struct option *longopts, int *longindex) {
     if (optind >= argc || !argv[optind]) return -1;
@@ -153,8 +160,9 @@ int getopt_long(int argc, char * const argv[], const char *optstring,
 #include <dirent.h>
 #include <stdlib.h>
 
+#include <sys/syscall.h>
+
 extern long _syscall(long num, long a1, long a2, long a3, long a4, long a5);
-#define SYS_READDIR 23
 
 #define KDIR_ENTRY_SIZE 64
 #define KDIR_MAX_ENTRIES 128
@@ -348,8 +356,6 @@ int atexit(void (*function)(void)) {
     return 0;
 }
 
-#define SYS_SETENV 182
-
 int setenv(const char *name, const char *value, int overwrite) {
     if (!name || !*name || strchr(name, '=')) { errno = EINVAL; return -1; }
     if (!overwrite) {
@@ -471,8 +477,6 @@ int rmdir(const char *pathname) {
 /* ── posix_spawn ── */
 #include <spawn.h>
 
-#define SYS_SPAWN_STUBS 27
-
 int posix_spawn(pid_t *pid, const char *path,
     const posix_spawn_file_actions_t *file_actions,
     const posix_spawnattr_t *attrp,
@@ -489,7 +493,7 @@ int posix_spawn(pid_t *pid, const char *path,
         }
     }
     args[pos] = '\0';
-    long tid = _syscall(SYS_SPAWN_STUBS, (long)path, 0, (long)args, 0, 0);
+    long tid = _syscall(SYS_SPAWN, (long)path, 0, (long)args, 0, 0);
     if (tid < 0) { errno = ENOENT; return ENOENT; }
     if (pid) *pid = (pid_t)tid;
     return 0;
@@ -592,7 +596,7 @@ int execve(const char *path, char *const argv[], char *const envp[]) {
 }
 
 /* Resource limits — stubs */
-struct rlimit { unsigned long rlim_cur; unsigned long rlim_max; };
+#include <sys/resource.h>
 int getrlimit(int resource, struct rlimit *rlim) {
     (void)resource;
     if (rlim) { rlim->rlim_cur = ~0UL; rlim->rlim_max = ~0UL; }
@@ -719,7 +723,6 @@ unsigned long long strtoumax(const char *nptr, char **endptr, int base) {
 }
 
 /* environ — populated from kernel env store at startup */
-#define SYS_LISTENV 184
 #define MAX_ENV_ENTRIES 64
 #define ENV_BUF_SIZE   4096
 
@@ -858,6 +861,7 @@ char *tmpnam(char *s) {
 }
 
 /* ── fnmatch — shell-style filename pattern matching ── */
+__attribute__((weak))
 int fnmatch(const char *pattern, const char *string, int flags) {
     (void)flags;
     const char *p = pattern, *s = string;

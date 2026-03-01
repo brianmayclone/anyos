@@ -16,3 +16,6 @@ _start:
     call __libc_start_main
     /* Should not reach here (__libc_start_main calls exit) */
     hlt
+
+/* Mark as not needing executable stack. */
+.section .note.GNU-stack,"",@progbits

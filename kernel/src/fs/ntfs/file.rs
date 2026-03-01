@@ -40,7 +40,7 @@ impl NtfsReadPlan {
 
         for &(abs_lba, sector_count) in &self.runs {
             let bytes = sector_count as usize * 512;
-            if !crate::drivers::storage::read_sectors(
+            if !super::storage_read_sectors(
                 abs_lba as u32,
                 sector_count,
                 &mut buf[offset..offset + bytes],
@@ -114,7 +114,7 @@ pub(super) fn read_from_runs(
                 let read_bytes = sector_count * 512;
                 let mut tmp = vec![0u8; read_bytes];
 
-                if !crate::drivers::storage::read_sectors(
+                if !super::storage_read_sectors(
                     read_lba as u32,
                     sector_count as u32,
                     &mut tmp,

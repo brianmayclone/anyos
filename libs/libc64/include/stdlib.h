@@ -8,9 +8,15 @@
 
 #include <stddef.h>
 
+#define alloca(size) __builtin_alloca(size)
+
 #define EXIT_SUCCESS 0
 #define EXIT_FAILURE 1
 #define RAND_MAX     0x7FFFFFFF
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 void  *malloc(size_t size);
 void  *calloc(size_t nmemb, size_t size);
@@ -34,6 +40,7 @@ void  *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
 int    abs(int j);
 long   labs(long j);
 char  *getenv(const char *name);
+char  *secure_getenv(const char *name);
 int    setenv(const char *name, const char *value, int overwrite);
 int    unsetenv(const char *name);
 int    atexit(void (*function)(void));
@@ -50,5 +57,13 @@ long double strtold(const char *nptr, char **endptr);
 int    system(const char *command);
 
 extern char **environ;
+
+/* Aligned allocation */
+void *aligned_alloc(size_t alignment, size_t size);
+int   posix_memalign(void **memptr, size_t alignment, size_t size);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

@@ -86,8 +86,9 @@ file(GLOB_RECURSE KERNEL_RS_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/kernel/src/*.rs"
 )
 
+# ── x86_64 kernel build ──────────────────────────────────────────────
 add_custom_command(
-  OUTPUT ${KERNEL_ELF}
+  OUTPUT ${CMAKE_BINARY_DIR}/kernel/x86_64-anyos/release/anyos_kernel.elf
   COMMAND ${CMAKE_COMMAND} -E env
     "ANYOS_ASM_OBJECTS=${KERNEL_ASM_OBJECTS_STR}"
     "ANYOS_AP_TRAMPOLINE=${AP_TRAMPOLINE_BIN}"
@@ -107,5 +108,59 @@ add_custom_command(
     ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
     ${KERNEL_RS_SOURCES}
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-  COMMENT "Building kernel with Cargo"
+  COMMENT "Building kernel with Cargo (x86_64)"
+)
+
+# ============================================================
+# 5. ARM64 Kernel Build
+# ============================================================
+
+# ARM64 ASM stubs (assembled with clang, not NASM)
+set(KERNEL_ARM64_ASM_SOURCES
+  ${CMAKE_SOURCE_DIR}/kernel/asm_arm64/boot.S
+  ${CMAKE_SOURCE_DIR}/kernel/asm_arm64/exceptions.S
+  ${CMAKE_SOURCE_DIR}/kernel/asm_arm64/context_switch.S
+  ${CMAKE_SOURCE_DIR}/kernel/asm_arm64/ap_startup.S
+)
+
+set(KERNEL_ARM64_ASM_OBJECTS "")
+foreach(ASM_SRC ${KERNEL_ARM64_ASM_SOURCES})
+  get_filename_component(ASM_NAME ${ASM_SRC} NAME_WE)
+  set(ASM_OBJ ${CMAKE_BINARY_DIR}/kernel_arm64_${ASM_NAME}.o)
+  add_custom_command(
+    OUTPUT ${ASM_OBJ}
+    COMMAND clang --target=aarch64-none-elf -c -o ${ASM_OBJ} ${ASM_SRC}
+    DEPENDS ${ASM_SRC}
+    COMMENT "Assembling kernel/asm_arm64/${ASM_NAME}.S (AArch64)"
+  )
+  list(APPEND KERNEL_ARM64_ASM_OBJECTS ${ASM_OBJ})
+endforeach()
+
+string(REPLACE ";" "," KERNEL_ARM64_ASM_OBJECTS_STR "${KERNEL_ARM64_ASM_OBJECTS}")
+
+# ARM64 kernel Cargo build
+add_custom_command(
+  OUTPUT ${CMAKE_BINARY_DIR}/kernel/aarch64-anyos/release/anyos_kernel.elf
+  COMMAND ${CMAKE_COMMAND} -E env
+    "ANYOS_ASM_OBJECTS=${KERNEL_ARM64_ASM_OBJECTS_STR}"
+    "ANYOS_VERSION=${ANYOS_VERSION}"
+    "RUSTFLAGS=-Awarnings"
+    ${CARGO_EXECUTABLE} build --release --quiet
+    --manifest-path ${CMAKE_SOURCE_DIR}/kernel/Cargo.toml
+    --target ${CMAKE_SOURCE_DIR}/aarch64-anyos.json
+    --target-dir ${CMAKE_BINARY_DIR}/kernel
+    ${CARGO_FEATURES_ARG}
+  DEPENDS
+    ${KERNEL_ARM64_ASM_OBJECTS}
+    ${CMAKE_SOURCE_DIR}/kernel/Cargo.toml
+    ${CMAKE_SOURCE_DIR}/kernel/build.rs
+    ${CMAKE_SOURCE_DIR}/kernel/link_arm64.ld
+    ${CMAKE_SOURCE_DIR}/aarch64-anyos.json
+    ${KERNEL_RS_SOURCES}
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Building kernel with Cargo (AArch64)"
+)
+
+add_custom_target(kernel-arm64 DEPENDS
+  ${CMAKE_BINARY_DIR}/kernel/aarch64-anyos/release/anyos_kernel.elf
 )

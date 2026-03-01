@@ -368,3 +368,58 @@ add_custom_target(run-cdrom-with-disk
   USES_TERMINAL
   COMMENT "Launching anyOS with HDD + CD-ROM (VMware SVGA)"
 )
+
+# ============================================================
+# ARM64 Disk Image + QEMU Targets
+# ============================================================
+set(KERNEL_ARM64_ELF "${CMAKE_BINARY_DIR}/kernel/aarch64-anyos/release/anyos_kernel.elf")
+set(ARM64_DISK_IMAGE "${CMAKE_BINARY_DIR}/anyos-arm64.img")
+
+# Create ARM64 disk image (GPT + exFAT data partition, no bootloader)
+add_custom_command(
+  OUTPUT ${ARM64_DISK_IMAGE}
+  COMMAND ${MKIMAGE_EXECUTABLE} --arm64
+    --output ${ARM64_DISK_IMAGE}
+    --image-size 256
+    --sysroot ${SYSROOT_DIR}
+    ${MKIMAGE_RESET_FLAG}
+  DEPENDS
+    ${RUST_USER_BINS}
+    ${SYSTEM_BINS}
+    ${APP_BINS}
+    ${DLL_BINS}
+    ${SYSROOT_DIR}/.stamp
+    ${MKIMAGE_EXECUTABLE}
+  COMMENT "Creating ARM64 disk image (256 MiB, GPT + exFAT)"
+)
+
+add_custom_target(arm64-image DEPENDS ${ARM64_DISK_IMAGE} programs)
+
+add_custom_target(run-arm64
+  COMMAND qemu-system-aarch64
+    -M virt -cpu cortex-a72
+    -m 512M -nographic
+    -kernel ${KERNEL_ARM64_ELF}
+    -drive if=none,format=raw,file=${ARM64_DISK_IMAGE},id=hd0
+    -device virtio-blk-device,drive=hd0
+    -serial stdio
+    -no-reboot -no-shutdown
+  DEPENDS kernel-arm64 ${ARM64_DISK_IMAGE}
+  USES_TERMINAL
+  COMMENT "Launching anyOS in QEMU (AArch64, virt machine + disk)"
+)
+
+add_custom_target(run-arm64-debug
+  COMMAND qemu-system-aarch64
+    -M virt -cpu cortex-a72
+    -m 512M -nographic
+    -kernel ${KERNEL_ARM64_ELF}
+    -drive if=none,format=raw,file=${ARM64_DISK_IMAGE},id=hd0
+    -device virtio-blk-device,drive=hd0
+    -serial stdio
+    -s -S
+    -no-reboot -no-shutdown
+  DEPENDS kernel-arm64 ${ARM64_DISK_IMAGE}
+  USES_TERMINAL
+  COMMENT "Launching anyOS in QEMU (AArch64, debug mode, GDB on :1234)"
+)

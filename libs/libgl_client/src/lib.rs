@@ -382,6 +382,9 @@ pub fn buffer_data_u16(target: GLenum, data: &[u16], usage: GLenum) {
 /// Generate textures.
 pub fn gen_textures(n: i32, ids: &mut [u32]) { (lib().gen_textures)(n, ids.as_mut_ptr()); }
 
+/// Delete textures.
+pub fn delete_textures(ids: &[u32]) { (lib().delete_textures)(ids.len() as i32, ids.as_ptr()); }
+
 /// Bind a texture.
 pub fn bind_texture(target: GLenum, texture: u32) { (lib().bind_texture)(target, texture); }
 

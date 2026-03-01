@@ -1,0 +1,11 @@
+[package]
+name = "libhttp_client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dynlink = { path = "../dynlink" }
+anyos_std = { path = "../stdlib" }
+
+[lib]
+name = "libhttp_client"

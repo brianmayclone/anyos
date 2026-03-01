@@ -239,6 +239,14 @@ public:
     ~__pointer_type_info() override;
 };
 
+/**
+ * Demangle a mangled C++ symbol name.
+ */
+extern "C" char *__cxa_demangle(const char *mangled_name, char *output_buffer,
+                                size_t *length, int *status);
+
 } /* namespace __cxxabiv1 */
+
+namespace abi = __cxxabiv1;
 
 #endif /* __CXXABI_H */

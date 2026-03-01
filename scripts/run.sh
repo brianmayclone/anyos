@@ -8,7 +8,7 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU (or VMware Workstation)
-# Usage: ./run.sh [--vmware | --std | --virtio] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--vmware-ws]
+# Usage: ./run.sh [--vmware | --std | --virtio] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--vmware-ws] [--arm64]
 #   --vmware-ws Start VMware Workstation VM named 'anyos' and stream its COM1 serial output
 #   --vmware   VMware SVGA II (2D acceleration, HW cursor)
 #   --std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
@@ -23,6 +23,7 @@
 #   --kbd LAY  Set keyboard layout: us, de, ch, fr, pl (default: keep current)
 #   --fwd H:G  Forward host port H to guest port G (TCP). Repeatable.
 #              Example: --fwd 2222:22 --fwd 8080:8080
+#   --arm64    Run ARM64 kernel on QEMU virt machine (serial-only, no graphics)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -46,6 +47,7 @@ EXPECT_RES=false
 KBD_LAYOUT=""
 EXPECT_KBD=false
 VMWARE_WS=false
+ARM64_MODE=false
 MIN_RES_W=1024
 MIN_RES_H=768
 
@@ -189,8 +191,11 @@ for arg in "$@"; do
         --fwd)
             EXPECT_FWD=true
             ;;
+        --arm64)
+            ARM64_MODE=true
+            ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...]"
+            echo "Usage: $0 [--vmware | --std | --virtio] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--arm64]"
             exit 1
             ;;
     esac
@@ -366,6 +371,39 @@ SERIAL
     echo "============================================================"
     echo "  Serial session ended."
     echo "============================================================"
+    exit 0
+fi
+
+# ============================================================
+# ARM64 mode: launch QEMU aarch64 and exit
+# ============================================================
+if [ "$ARM64_MODE" = true ]; then
+    KERNEL_ELF="${SCRIPT_DIR}/../build/kernel/aarch64-anyos/release/anyos_kernel.elf"
+    ARM64_DISK="${SCRIPT_DIR}/../build/anyos-arm64.img"
+    if [ ! -f "$KERNEL_ELF" ]; then
+        echo "Error: ARM64 kernel not found at $KERNEL_ELF"
+        echo "Run: ./scripts/build.sh --arm64"
+        exit 1
+    fi
+    echo "Starting anyOS (ARM64) on QEMU virt machine..."
+    DISK_ARGS=""
+    if [ -f "$ARM64_DISK" ]; then
+        echo "  Disk image: $ARM64_DISK"
+        DISK_ARGS="-drive if=none,format=raw,file=$ARM64_DISK,id=hd0 -device virtio-blk-device,drive=hd0"
+    else
+        echo "  Warning: No ARM64 disk image found at $ARM64_DISK"
+        echo "  Running kernel-only (no filesystem). Build with: ./scripts/build.sh --arm64"
+    fi
+    qemu-system-aarch64 \
+        -M virt -cpu cortex-a72 \
+        -m 512M \
+        -kernel "$KERNEL_ELF" \
+        -device virtio-gpu-pci \
+        -device virtio-keyboard-pci \
+        -device virtio-mouse-pci \
+        -serial stdio \
+        $DISK_ARGS \
+        -no-reboot -no-shutdown
     exit 0
 fi
 

@@ -21,6 +21,11 @@ namespace std {
 
 namespace detail {
 
+#ifndef _LIBCXX_RB_COLOR_DEFINED
+#define _LIBCXX_RB_COLOR_DEFINED
+enum rb_color : unsigned char { RED, BLACK };
+#endif
+
 /* Lightweight RB tree for sets (key only, no value) */
 
 template <class K>

@@ -141,6 +141,7 @@ impl Compositor {
             shadow_cache: None,
             is_vram: false,
             vram_y: 0,
+            dpi_aware: false,
         });
         id
     }
@@ -175,6 +176,7 @@ impl Compositor {
             shadow_cache: None,
             is_vram: false,
             vram_y: 0,
+            dpi_aware: false,
         });
         id
     }
@@ -211,6 +213,7 @@ impl Compositor {
             shadow_cache: None,
             is_vram: false,
             vram_y: 0,
+            dpi_aware: false,
         });
         id
     }
@@ -262,6 +265,7 @@ impl Compositor {
             shadow_cache: None,
             is_vram: true,
             vram_y: alloc.vram_y,
+            dpi_aware: false,
         });
         Some(id)
     }

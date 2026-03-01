@@ -20,7 +20,7 @@ exclude = [
   "bin/ssh",
   "bin/sshd",
   # Parent directory (compositor/compositor is the actual crate)
-  "system/compositor",
+  "system/compositor"
 ]
 resolver = "2"
 

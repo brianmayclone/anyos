@@ -16,13 +16,14 @@ impl Control for Toggle {
     fn kind(&self) -> ControlKind { ControlKind::Toggle }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.text_base.base.x;
-        let y = ay + self.text_base.base.y;
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y) = (p.x, p.y);
         let tc = crate::theme::colors();
-        let on = self.text_base.base.state != 0;
-        let disabled = self.text_base.base.disabled;
-        let hovered = self.text_base.base.hovered;
-        let focused = self.text_base.base.focused;
+        let on = b.state != 0;
+        let disabled = b.disabled;
+        let hovered = b.hovered;
+        let focused = b.focused;
 
         let track_color = if disabled {
             tc.toggle_off
@@ -32,15 +33,16 @@ impl Control for Toggle {
             if hovered { crate::theme::lighten(tc.toggle_off, 10) } else { tc.toggle_off }
         };
 
-        // Track
-        let tw = crate::theme::TOGGLE_WIDTH;
-        let th = crate::theme::TOGGLE_HEIGHT;
+        // Track (theme values are already logical — scale them)
+        let tw = crate::theme::scale(crate::theme::toggle_width());
+        let th = crate::theme::scale(crate::theme::toggle_height());
         crate::draw::fill_rounded_rect(surface, x, y, tw, th, th / 2, track_color);
 
         // Thumb with subtle bottom shadow
-        let thumb_sz = crate::theme::TOGGLE_THUMB_SIZE;
-        let thumb_x = if on { x + (tw - thumb_sz - 2) as i32 } else { x + 2 };
-        let thumb_y = y + 2;
+        let thumb_sz = crate::theme::scale(crate::theme::toggle_thumb_size());
+        let inset = crate::theme::scale_i32(2);
+        let thumb_x = if on { x + (tw - thumb_sz) as i32 - inset } else { x + inset };
+        let thumb_y = y + inset;
         let thumb_color = if disabled { crate::theme::darken(tc.toggle_thumb, 30) } else { tc.toggle_thumb };
 
         // 1px shadow under thumb

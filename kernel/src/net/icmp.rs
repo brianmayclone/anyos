@@ -58,7 +58,7 @@ pub fn ping(target: Ipv4Addr, seq: u16, timeout_ticks: u32) -> Option<(u32, u8)>
     }
 
     let payload = b"anyOS ping";
-    let start = crate::arch::x86::pit::get_ticks();
+    let start = crate::arch::hal::timer_current_ticks();
 
     if !send_echo_request(target, seq, payload) {
         return None;
@@ -78,7 +78,7 @@ pub fn ping(target: Ipv4Addr, seq: u16, timeout_ticks: u32) -> Option<(u32, u8)>
             }
         }
 
-        let now = crate::arch::x86::pit::get_ticks();
+        let now = crate::arch::hal::timer_current_ticks();
         if now.wrapping_sub(start) >= timeout_ticks {
             return None;
         }
@@ -109,7 +109,7 @@ pub fn handle_icmp(pkt: &Ipv4Packet<'_>) {
         }
         ICMP_ECHO_REPLY => {
             let seq = ((data[6] as u16) << 8) | data[7] as u16;
-            let tick = crate::arch::x86::pit::get_ticks();
+            let tick = crate::arch::hal::timer_current_ticks();
 
             let mut replies = PING_REPLIES.lock();
             if let Some(list) = replies.as_mut() {

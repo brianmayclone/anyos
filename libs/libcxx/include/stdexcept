@@ -5,6 +5,7 @@
 
 #include <exception>
 #include <string>
+#include <system_error>
 
 namespace std {
 
@@ -71,11 +72,16 @@ public:
 };
 
 class system_error : public runtime_error {
-    int _code;
+    error_code _ec;
 public:
-    system_error(int code, const string& what_arg) : runtime_error(what_arg), _code(code) {}
-    system_error(int code, const char* what_arg) : runtime_error(what_arg), _code(code) {}
-    int code() const noexcept { return _code; }
+    system_error(error_code ec, const string& what_arg) : runtime_error(what_arg), _ec(ec) {}
+    system_error(error_code ec, const char* what_arg) : runtime_error(what_arg), _ec(ec) {}
+    system_error(error_code ec) : runtime_error("system_error"), _ec(ec) {}
+    system_error(int code, const error_category& cat, const string& what_arg)
+        : runtime_error(what_arg), _ec(code, cat) {}
+    system_error(int code, const error_category& cat, const char* what_arg)
+        : runtime_error(what_arg), _ec(code, cat) {}
+    const error_code& code() const noexcept { return _ec; }
 };
 
 } // namespace std

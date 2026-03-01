@@ -36,41 +36,9 @@ mod syscall;
 use types::*;
 use state::GlContext;
 
-// ── Allocator (free-list + sbrk, same pattern as libdb) ─────────────────────
+// ── Allocator ───────────────────────────────────────────────────────────────
 
-mod allocator {
-    use core::alloc::{GlobalAlloc, Layout};
-    use core::ptr;
-    use libheap::{FreeBlock, block_size, free_list_alloc, free_list_dealloc};
-
-    struct DllFreeListAlloc;
-
-    static mut FREE_LIST: *mut FreeBlock = ptr::null_mut();
-
-    unsafe impl GlobalAlloc for DllFreeListAlloc {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            let size = block_size(layout);
-            let ptr = unsafe { free_list_alloc(&mut FREE_LIST, size) };
-            if !ptr.is_null() { return ptr; }
-
-            let brk = crate::syscall::sbrk(0);
-            if brk == u64::MAX { return ptr::null_mut(); }
-            let align = layout.align().max(16) as u64;
-            let aligned = (brk + align - 1) & !(align - 1);
-            let needed = (aligned - brk + size as u64) as u32;
-            let result = crate::syscall::sbrk(needed);
-            if result == u64::MAX { return ptr::null_mut(); }
-            aligned as *mut u8
-        }
-
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            unsafe { free_list_dealloc(&mut FREE_LIST, ptr, block_size(layout)); }
-        }
-    }
-
-    #[global_allocator]
-    static ALLOCATOR: DllFreeListAlloc = DllFreeListAlloc;
-}
+libheap::dll_allocator!(crate::syscall::sbrk, crate::syscall::mmap, crate::syscall::munmap);
 
 // ── Panic handler ───────────────────────────────────────────────────────────
 
@@ -111,25 +79,29 @@ fn ctx() -> &'static mut GlContext {
 ///
 /// Verifies SSE3, SSSE3, SSE4.1, SSE4.2 via CPUID leaf 1 ECX bits.
 /// Prints a diagnostic to serial and terminates if any are missing.
+/// Only relevant on x86_64 — ARM64 has mandatory NEON.
 fn check_cpu_features() {
-    use core::arch::x86_64::__cpuid;
+    #[cfg(target_arch = "x86_64")]
+    {
+        use core::arch::x86_64::__cpuid;
 
-    let leaf1 = unsafe { __cpuid(1) };
-    let ecx = leaf1.ecx;
+        let leaf1 = unsafe { __cpuid(1) };
+        let ecx = leaf1.ecx;
 
-    let sse3   = ecx & (1 << 0) != 0;
-    let ssse3  = ecx & (1 << 9) != 0;
-    let sse41  = ecx & (1 << 19) != 0;
-    let sse42  = ecx & (1 << 20) != 0;
+        let sse3   = ecx & (1 << 0) != 0;
+        let ssse3  = ecx & (1 << 9) != 0;
+        let sse41  = ecx & (1 << 19) != 0;
+        let sse42  = ecx & (1 << 20) != 0;
 
-    if !sse3 || !ssse3 || !sse41 || !sse42 {
-        serial_println!("[libgl] FATAL: CPU missing required SIMD features:");
-        if !sse3  { serial_println!("[libgl]   - SSE3 not supported"); }
-        if !ssse3 { serial_println!("[libgl]   - SSSE3 not supported"); }
-        if !sse41 { serial_println!("[libgl]   - SSE4.1 not supported"); }
-        if !sse42 { serial_println!("[libgl]   - SSE4.2 not supported"); }
-        serial_println!("[libgl] Hint: use QEMU flag -cpu qemu64,+sse3,+ssse3,+sse4.1,+sse4.2");
-        syscall::exit(1);
+        if !sse3 || !ssse3 || !sse41 || !sse42 {
+            serial_println!("[libgl] FATAL: CPU missing required SIMD features:");
+            if !sse3  { serial_println!("[libgl]   - SSE3 not supported"); }
+            if !ssse3 { serial_println!("[libgl]   - SSSE3 not supported"); }
+            if !sse41 { serial_println!("[libgl]   - SSE4.1 not supported"); }
+            if !sse42 { serial_println!("[libgl]   - SSE4.2 not supported"); }
+            serial_println!("[libgl] Hint: use QEMU flag -cpu qemu64,+sse3,+ssse3,+sse4.1,+sse4.2");
+            syscall::exit(1);
+        }
     }
 }
 

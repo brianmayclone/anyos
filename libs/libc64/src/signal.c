@@ -9,10 +9,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-/* Syscall numbers — must match kernel */
-#define SYS_KILL        13
-#define SYS_SIGACTION   244
-#define SYS_SIGPROCMASK 245
+#include <sys/syscall.h>
 
 extern long _syscall(long num, long a1, long a2, long a3, long a4, long a5);
 

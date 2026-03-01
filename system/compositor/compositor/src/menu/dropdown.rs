@@ -12,14 +12,14 @@ impl MenuBar {
 
     /// Hit test a click in the menubar region.
     pub fn hit_test_menubar(&self, mx: i32, my: i32) -> MenuBarHit {
-        if my < 0 || my >= MENUBAR_HEIGHT as i32 {
+        if my < 0 || my >= menubar_height() as i32 {
             return MenuBarHit::None;
         }
 
         // Check status icons first
         for (i, icon) in self.status_icons.iter().enumerate() {
             if let Some(&ix) = self.status_icon_x.get(i) {
-                let iy = ((MENUBAR_HEIGHT as i32 - 16) / 2).max(0);
+                let iy = ((menubar_height() as i32 - 16) / 2).max(0);
                 if mx >= ix && mx < ix + 16 && my >= iy && my < iy + 16 {
                     return MenuBarHit::StatusIcon {
                         owner_tid: icon.owner_tid,
@@ -127,7 +127,7 @@ impl MenuBar {
         let dd_height = total_h as u32;
 
         let dd_x = layout.x;
-        let dd_y = MENUBAR_HEIGHT as i32 + 1;
+        let dd_y = menubar_height() as i32 + 1;
 
         // Create compositor layer (always on top = false, will be raised)
         let layer_id = compositor.add_layer(dd_x, dd_y, dd_width, dd_height, false);
@@ -242,7 +242,7 @@ impl MenuBar {
         let dd_width = max_w.max(180) + DROPDOWN_PADDING as u32 * 2;
         let dd_height = total_h as u32;
         let dd_x = 0i32;
-        let dd_y = MENUBAR_HEIGHT as i32 + 1;
+        let dd_y = menubar_height() as i32 + 1;
 
         let layer_id = compositor.add_layer(dd_x, dd_y, dd_width, dd_height, false);
         compositor.raise_layer(layer_id);

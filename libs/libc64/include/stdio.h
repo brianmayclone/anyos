@@ -28,6 +28,10 @@ typedef struct _FILE {
     int ungot;  /* ungetc character, -1 if none */
 } FILE;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 extern FILE *stdin;
 extern FILE *stdout;
 extern FILE *stderr;
@@ -75,10 +79,20 @@ void setlinebuf(FILE *stream);
 
 void perror(const char *s);
 
+/* Unlocked (non-thread-safe) I/O — identical to locked versions on anyOS */
+static __inline__ int getc_unlocked(FILE *stream) { return getc(stream); }
+static __inline__ int putc_unlocked(int c, FILE *stream) { return putc(c, stream); }
+static __inline__ int getchar_unlocked(void) { return getchar(); }
+static __inline__ int putchar_unlocked(int c) { return putchar(c); }
+
 #define _IOFBF 0
 #define _IOLBF 1
 #define _IONBF 2
 #define L_tmpnam 20
 char *tmpnam(char *s);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

@@ -1,0 +1,45 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * <source_location> — C++20 source_location.
+ */
+
+#ifndef _LIBCXX_SOURCE_LOCATION
+#define _LIBCXX_SOURCE_LOCATION
+
+#include <cstdint>
+
+namespace std {
+
+class source_location {
+    const char* _file;
+    const char* _func;
+    uint_least32_t _line;
+    uint_least32_t _col;
+
+    constexpr source_location(const char* file, const char* func,
+                               uint_least32_t line, uint_least32_t col) noexcept
+        : _file(file), _func(func), _line(line), _col(col) {}
+
+public:
+    constexpr source_location() noexcept
+        : _file(""), _func(""), _line(0), _col(0) {}
+
+    static consteval source_location current(
+        const char* file = __builtin_FILE(),
+        const char* func = __builtin_FUNCTION(),
+        uint_least32_t line = __builtin_LINE(),
+        uint_least32_t col = 0) noexcept {
+        return source_location(file, func, line, col);
+    }
+
+    constexpr uint_least32_t line() const noexcept { return _line; }
+    constexpr uint_least32_t column() const noexcept { return _col; }
+    constexpr const char* file_name() const noexcept { return _file; }
+    constexpr const char* function_name() const noexcept { return _func; }
+};
+
+} // namespace std
+
+#endif

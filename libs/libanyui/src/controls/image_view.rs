@@ -62,10 +62,9 @@ impl Control for ImageView {
     fn kind(&self) -> ControlKind { ControlKind::ImageView }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.base.x;
-        let y = ay + self.base.y;
-        let cw = self.base.w;
-        let ch = self.base.h;
+        let b = self.base();
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, cw, ch) = (p.x, p.y, p.w, p.h);
 
         if self.pixels.is_empty() || self.img_w == 0 || self.img_h == 0 {
             // No image loaded — draw placeholder
@@ -79,7 +78,7 @@ impl Control for ImageView {
                 crate::draw::blit_buffer(surface, x, y, self.img_w, self.img_h, &self.pixels);
             }
             SCALE_FIT => {
-                // Scale to fit within control bounds, preserving aspect ratio
+                // Scale to fit within physical control bounds, preserving aspect ratio
                 let (dx, dy, dw, dh) = fit_rect(self.img_w, self.img_h, cw, ch);
                 // Fill letterbox areas
                 if dw < cw || dh < ch {
@@ -93,7 +92,7 @@ impl Control for ImageView {
                 blit_scaled_crop(surface, x, y, cw, ch, &self.pixels, self.img_w, sx, sy, sw, sh);
             }
             SCALE_STRETCH | _ => {
-                // Stretch to fill control bounds
+                // Stretch to fill physical control bounds
                 blit_scaled(surface, x, y, cw, ch, &self.pixels, self.img_w, self.img_h);
             }
         }

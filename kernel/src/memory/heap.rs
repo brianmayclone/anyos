@@ -8,7 +8,7 @@
 //! This prevents deadlock when `reap_terminated()` frees a kernel stack from
 //! within the timer ISR while the preempted thread was holding the heap lock.
 
-use crate::memory::address::VirtAddr;
+use crate::memory::address::{PhysAddr, VirtAddr};
 use crate::memory::physical;
 use crate::memory::virtual_mem;
 use crate::memory::FRAME_SIZE;
@@ -17,10 +17,15 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// Virtual address where the kernel heap begins.
 ///
-/// Must be ABOVE the kernel's higher-half mapping (which covers physical 0-16 MiB
-/// at virtual KERNEL_VIRT_BASE..KERNEL_VIRT_BASE+16MiB). Placed at 32 MiB offset
-/// from KERNEL_VIRT_BASE to leave room for kernel code, data, BSS, and stack growth.
+/// Placed 32 MiB above the architecture's kernel virtual base to leave room for
+/// kernel code, data, BSS, and stack.
+///
+/// x86_64: PML4[511]/PDPT[510] window at 0xFFFF_FFFF_8000_0000.
+/// ARM64:  1 GiB block mapping at 0xFFFF_0000_8000_0000 (boot.S TTBR1).
+#[cfg(target_arch = "x86_64")]
 const HEAP_START: u64 = 0xFFFF_FFFF_8200_0000;
+#[cfg(target_arch = "aarch64")]
+const HEAP_START: u64 = 0xFFFF_0000_8200_0000;
 /// Size of the region pre-mapped at boot (4 MiB — enough for early init).
 const HEAP_INITIAL_MAPPED: usize = 4 * 1024 * 1024;
 /// Initial committed size (32 MiB — rest is demand-paged on first access).
@@ -71,13 +76,9 @@ impl LockedHeap {
     }
 
     /// Acquire the heap lock with interrupts disabled.
-    /// Returns the saved RFLAGS so `release` can restore the interrupt state.
+    /// Returns the saved interrupt state so `release` can restore it.
     fn acquire(&self) -> u64 {
-        let flags: u64;
-        unsafe {
-            core::arch::asm!("pushfq; pop {}", out(reg) flags, options(nomem, preserves_flags));
-            core::arch::asm!("cli", options(nomem, nostack));
-        }
+        let flags = crate::arch::hal::save_and_disable_interrupts();
 
         let mut spin_count: u32 = 0;
         while self
@@ -94,10 +95,16 @@ impl LockedHeap {
             spin_count += 1;
             if spin_count == 10_000_000 {
                 // Probable deadlock — print via direct UART (bypasses all locks)
+                #[cfg(target_arch = "x86_64")]
                 unsafe {
                     use crate::arch::x86::port::{inb, outb};
                     let msg = b"\r\n!!! HEAP_LOCK TIMEOUT\r\n";
                     for &c in msg { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+                }
+                #[cfg(target_arch = "aarch64")]
+                {
+                    let msg = b"\r\n!!! HEAP_LOCK TIMEOUT\r\n";
+                    for &c in msg { crate::arch::arm64::serial::write_byte(c); }
                 }
             }
         }
@@ -111,9 +118,7 @@ impl LockedHeap {
             .store(false, core::sync::atomic::Ordering::Release);
 
         // Restore caller's interrupt state
-        if flags & 0x200 != 0 {
-            unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
-        }
+        crate::arch::hal::restore_interrupt_state(flags);
     }
 }
 
@@ -263,6 +268,18 @@ unsafe fn grow_heap_exact(growth: usize) -> bool {
 
     // Advance the committed watermark (makes these addresses valid for demand paging)
     HEAP_COMMITTED.store(new_committed, Ordering::Release);
+
+    // ARM64: the 1 GiB block already maps the new region, but we must reserve
+    // the backing physical frames so the frame allocator doesn't hand them out.
+    #[cfg(target_arch = "aarch64")]
+    {
+        let phys_to_virt = virtual_mem::PHYS_TO_VIRT_OFFSET;
+        for offset in (0..growth).step_by(FRAME_SIZE) {
+            let va = HEAP_START + (old_committed + offset) as u64;
+            let pa = va - phys_to_virt;
+            physical::reserve_frame(PhysAddr::new(pa));
+        }
+    }
 
     let base = HEAP_START as usize + old_committed;
 
@@ -471,26 +488,45 @@ pub fn validate_heap() {
     }
 }
 
-/// Initialize the kernel heap with demand paging.
+/// Initialize the kernel heap.
 ///
-/// Maps a small initial region (4 MiB) and commits a larger virtual range (32 MiB).
-/// Pages beyond the initial mapped region are demand-faulted by the page fault handler.
+/// **x86_64**: Maps a small initial region (4 MiB) and commits a larger virtual range
+/// (32 MiB).  Pages beyond the initial mapped region are demand-faulted by the page
+/// fault handler.
+///
+/// **ARM64**: The heap VA range is already mapped by the 1 GiB block in TTBR1.
+/// We just reserve the backing physical frames so the allocator won't reuse them.
+///
 /// Must be called after physical and virtual memory are initialized.
 pub fn init() {
-    // Map only the initial region (4 MiB = 1024 pages)
-    let mapped_pages = HEAP_INITIAL_MAPPED / FRAME_SIZE;
-    for i in 0..mapped_pages {
-        let virt = VirtAddr::new(HEAP_START + (i * FRAME_SIZE) as u64);
-        let phys = physical::alloc_frame().expect("Failed to allocate heap frame");
-        virtual_mem::map_page(virt, phys, 0x03); // Present + Writable
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Map only the initial region (4 MiB = 1024 pages)
+        let mapped_pages = HEAP_INITIAL_MAPPED / FRAME_SIZE;
+        for i in 0..mapped_pages {
+            let virt = VirtAddr::new(HEAP_START + (i * FRAME_SIZE) as u64);
+            let phys = physical::alloc_frame().expect("Failed to allocate heap frame");
+            virtual_mem::map_page(virt, phys, 0x03); // Present + Writable
+        }
     }
 
-    // Commit the full initial size (rest will be demand-paged on access)
+    #[cfg(target_arch = "aarch64")]
+    {
+        // 1 GiB block already maps the entire heap VA range.
+        // Reserve the backing physical frames for the initial committed region.
+        let phys_to_virt = virtual_mem::PHYS_TO_VIRT_OFFSET;
+        let committed_pages = HEAP_INITIAL_SIZE / FRAME_SIZE;
+        for i in 0..committed_pages {
+            let va = HEAP_START + (i * FRAME_SIZE) as u64;
+            let pa = va - phys_to_virt;
+            physical::reserve_frame(PhysAddr::new(pa));
+        }
+    }
+
+    // Commit the full initial size (x86: rest demand-paged; ARM64: already mapped)
     HEAP_COMMITTED.store(HEAP_INITIAL_SIZE, Ordering::Release);
 
     // Initialize free list with one big block spanning HEAP_INITIAL_SIZE.
-    // Only the first 4 MiB of this block is pre-mapped; the rest will be
-    // demand-faulted when the allocator splits or traverses the block.
     unsafe {
         let block = HEAP_START as *mut FreeBlock;
         (*block).size = HEAP_INITIAL_SIZE;
@@ -500,10 +536,9 @@ pub fn init() {
     }
 
     crate::serial_println!(
-        "Kernel heap initialized: {:#018x} - {:#018x} ({} KiB mapped, {} KiB committed, max {} MiB)",
+        "Kernel heap initialized: {:#018x} - {:#018x} ({} KiB committed, max {} MiB)",
         HEAP_START,
         HEAP_START + HEAP_INITIAL_SIZE as u64,
-        HEAP_INITIAL_MAPPED / 1024,
         HEAP_INITIAL_SIZE / 1024,
         HEAP_MAX_SIZE / (1024 * 1024)
     );

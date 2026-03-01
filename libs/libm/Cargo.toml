@@ -6,7 +6,8 @@ edition = "2021"
 [lib]
 crate-type = ["staticlib"]
 
-# No dependencies — pure computation, no heap needed
+[dependencies]
+libsyscall = { path = "../libsyscall" }
 
 [profile.dev]
 panic = "abort"

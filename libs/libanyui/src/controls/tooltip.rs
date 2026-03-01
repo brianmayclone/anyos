@@ -16,17 +16,16 @@ impl Control for Tooltip {
     fn kind(&self) -> ControlKind { ControlKind::Tooltip }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.text_base.base.x;
-        let y = ay + self.text_base.base.y;
-        let w = self.text_base.base.w;
-        let h = self.text_base.base.h;
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
-        let corner = crate::theme::TOOLTIP_CORNER;
+        let corner = crate::theme::tooltip_corner();
 
         // SDF shadow (Tooltip is rare — only one visible at a time)
         crate::draw::draw_shadow_rounded_rect(
             surface, x, y, w, h, corner as i32,
-            0, 2, 6, 40,
+            0, crate::theme::scale_i32(2), crate::theme::scale_i32(6), 40,
         );
 
         // Body + border
@@ -34,7 +33,8 @@ impl Control for Tooltip {
         crate::draw::draw_rounded_border(surface, x, y, w, h, corner, tc.card_border);
 
         if !self.text_base.text.is_empty() {
-            crate::draw::draw_text(surface, x + 8, y + 4, tc.text, &self.text_base.text);
+            let fs = crate::draw::scale_font(self.text_base.text_style.font_size);
+            crate::draw::draw_text_sized(surface, x + crate::theme::scale_i32(8), y + crate::theme::scale_i32(4), tc.text, &self.text_base.text, fs);
         }
     }
 }

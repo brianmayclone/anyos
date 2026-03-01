@@ -299,11 +299,17 @@ impl Control for TreeView {
     fn kind(&self) -> ControlKind { ControlKind::TreeView }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.base.x;
-        let y = ay + self.base.y;
-        let w = self.base.w;
-        let h = self.base.h;
+        let b = self.base();
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
+
+        // Scaled metrics
+        let s_row_h = crate::theme::scale(self.row_height);
+        let s_indent = crate::theme::scale(self.indent_width);
+        let s_icon_size = crate::theme::scale(self.icon_size);
+        let s_scroll_y = crate::theme::scale_i32(self.scroll_y);
+        let fs = crate::draw::scale_font(13);
 
         // Clip to control bounds
         let clipped = surface.with_clip(x, y, w, h);
@@ -317,13 +323,13 @@ impl Control for TreeView {
         if self.nodes.is_empty() { return; }
 
         let vis = self.visible_nodes();
-        let rh = self.row_height as i32;
+        let rh = s_row_h as i32;
         let inner_y = y + 1; // inside border
         let inner_h = h.saturating_sub(2) as i32;
-        let scrollbar_w = if self.content_height() > h.saturating_sub(2) { 8i32 } else { 0 };
+        let s_scrollbar_w = if self.content_height() > self.base.h.saturating_sub(2) { crate::theme::scale_i32(8) } else { 0 };
 
         for (vis_idx, &node_idx) in vis.iter().enumerate() {
-            let row_y = inner_y + (vis_idx as i32) * rh - self.scroll_y;
+            let row_y = inner_y + (vis_idx as i32) * rh - s_scroll_y;
 
             // Skip rows outside the visible viewport
             if row_y + rh <= inner_y || row_y >= inner_y + inner_h {
@@ -336,38 +342,40 @@ impl Control for TreeView {
 
             // Row highlight
             if is_selected {
-                crate::draw::fill_rect(&clipped, x + 1, row_y, (w - 2).saturating_sub(scrollbar_w as u32), self.row_height, tc.selection);
+                crate::draw::fill_rect(&clipped, x + 1, row_y, (w - 2).saturating_sub(s_scrollbar_w as u32), s_row_h, tc.selection);
             } else if is_hovered {
-                crate::draw::fill_rect(&clipped, x + 1, row_y, (w - 2).saturating_sub(scrollbar_w as u32), self.row_height, tc.control_hover);
+                crate::draw::fill_rect(&clipped, x + 1, row_y, (w - 2).saturating_sub(s_scrollbar_w as u32), s_row_h, tc.control_hover);
             }
 
-            let mut x_offset = x + 4 + (node.depth as i32) * self.indent_width as i32;
+            let mut x_offset = x + crate::theme::scale_i32(4) + (node.depth as i32) * s_indent as i32;
 
             // Disclosure triangle (if node has children)
             if node.has_children {
-                let tri_x = x_offset + 2;
+                let tri_x = x_offset + crate::theme::scale_i32(2);
                 let tri_cy = row_y + rh / 2;
+                let tri_rows = crate::theme::scale_i32(6);
                 if node.expanded {
-                    // ▼ pointing down (6 rows)
-                    for row in 0..6i32 {
-                        let half = 5 - row;
+                    // Down-pointing triangle
+                    for row in 0..tri_rows {
+                        let half = tri_rows - 1 - row;
                         crate::draw::fill_rect(
                             &clipped,
                             tri_x - half,
-                            tri_cy - 3 + row,
+                            tri_cy - tri_rows / 2 + row,
                             (half * 2 + 1) as u32,
                             1,
                             tc.text_secondary,
                         );
                     }
                 } else {
-                    // ▶ pointing right (6 rows)
-                    for row in 0..6i32 {
-                        let half = if row < 3 { row } else { 5 - row };
+                    // Right-pointing triangle
+                    let half_max = tri_rows / 2;
+                    for row in 0..tri_rows {
+                        let half = if row < half_max { row } else { tri_rows - 1 - row };
                         crate::draw::fill_rect(
                             &clipped,
                             tri_x,
-                            tri_cy - 3 + row,
+                            tri_cy - tri_rows / 2 + row,
                             (half + 1) as u32 * 2,
                             1,
                             tc.text_secondary,
@@ -376,7 +384,7 @@ impl Control for TreeView {
                 }
             }
 
-            x_offset += 16; // past disclosure triangle area
+            x_offset += crate::theme::scale_i32(16); // past disclosure triangle area
 
             // Icon
             if !node.icon_pixels.is_empty() && node.icon_w > 0 && node.icon_h > 0 {
@@ -389,7 +397,7 @@ impl Control for TreeView {
                     node.icon_h as u32,
                     &node.icon_pixels,
                 );
-                x_offset += self.icon_size as i32 + 4;
+                x_offset += s_icon_size as i32 + crate::theme::scale_i32(4);
             }
 
             // Text
@@ -402,34 +410,37 @@ impl Control for TreeView {
                     tc.text
                 };
 
-                let text_y = row_y + (rh - 13) / 2;
+                let text_y = row_y + (rh - fs as i32) / 2;
                 let font_id: u16 = if node.style & 1 != 0 { 1 } else { 0 };
-                crate::draw::draw_text_ex(&clipped, x_offset, text_y, text_color, &node.text, font_id, 13);
+                crate::draw::draw_text_ex(&clipped, x_offset, text_y, text_color, &node.text, font_id, fs);
             }
         }
 
         // ── Scrollbar ──
-        let content_h = vis.len() as u32 * self.row_height;
+        let content_h = vis.len() as u32 * s_row_h;
         let view_h = h.saturating_sub(2);
         if content_h > view_h && view_h > 4 {
-            let bar_w = 6u32;
-            let bar_x = x + w as i32 - bar_w as i32 - 2;
-            let track_y = y + 2;
-            let track_h = (view_h - 4) as i32;
+            let bar_w = crate::theme::scale(6);
+            let bar_pad = crate::theme::scale_i32(2);
+            let bar_x = x + w as i32 - bar_w as i32 - bar_pad;
+            let track_y = y + bar_pad;
+            let track_h = (view_h as i32 - bar_pad * 2).max(1);
 
             // Track
             crate::draw::fill_rect(&clipped, bar_x, track_y, bar_w, track_h as u32, tc.scrollbar_track);
 
             // Thumb
-            let thumb_h = ((view_h as u64 * track_h as u64) / content_h as u64).max(20) as i32;
+            let min_thumb = crate::theme::scale(20);
+            let thumb_h = ((view_h as u64 * track_h as u64) / content_h as u64).max(min_thumb as u64) as i32;
             let max_scroll = (content_h - view_h) as i32;
             let scroll_frac = if max_scroll > 0 {
-                (self.scroll_y as i64 * (track_h - thumb_h) as i64 / max_scroll as i64) as i32
+                (s_scroll_y as i64 * (track_h - thumb_h) as i64 / max_scroll as i64) as i32
             } else {
                 0
             };
             let thumb_y = track_y + scroll_frac.max(0).min(track_h - thumb_h);
-            crate::draw::fill_rounded_rect(&clipped, bar_x, thumb_y, bar_w, thumb_h as u32, 3, tc.scrollbar);
+            let thumb_r = crate::theme::scale(3);
+            crate::draw::fill_rounded_rect(&clipped, bar_x, thumb_y, bar_w, thumb_h as u32, thumb_r, tc.scrollbar);
         }
 
         // Focus ring

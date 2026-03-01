@@ -16,14 +16,16 @@ impl Control for Checkbox {
     fn kind(&self) -> ControlKind { ControlKind::Checkbox }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        let x = ax + self.text_base.base.x;
-        let y = ay + self.text_base.base.y;
+        let b = &self.text_base.base;
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        let (x, y) = (p.x, p.y);
         let tc = crate::theme::colors();
-        let checked = self.text_base.base.state != 0;
-        let disabled = self.text_base.base.disabled;
-        let hovered = self.text_base.base.hovered;
-        let focused = self.text_base.base.focused;
-        let sz = crate::theme::CHECKBOX_SIZE;
+        let checked = b.state != 0;
+        let disabled = b.disabled;
+        let hovered = b.hovered;
+        let focused = b.focused;
+        let sz = crate::theme::scale(crate::theme::checkbox_size());
+        let corner = crate::theme::scale(4);
 
         let bg = if disabled {
             crate::theme::darken(tc.control_bg, 10)
@@ -36,37 +38,39 @@ impl Control for Checkbox {
         };
 
         // Checkbox box
-        crate::draw::fill_rounded_rect(surface, x, y, sz, sz, 4, bg);
+        crate::draw::fill_rounded_rect(surface, x, y, sz, sz, corner, bg);
         if !checked {
-            crate::draw::draw_rounded_border(surface, x, y, sz, sz, 4, if hovered && !disabled { tc.accent } else { tc.input_border });
+            crate::draw::draw_rounded_border(surface, x, y, sz, sz, corner, if hovered && !disabled { tc.accent } else { tc.input_border });
         }
 
-        // Checkmark — 2px thick diagonal lines forming a ✓ shape
-        // Short leg: (4,9) → (6,11), Long leg: (6,11) → (13,4)
+        // Checkmark — scaled diagonal lines forming a check shape
         if checked {
             let cm = tc.check_mark;
-            // Short leg (bottom-left to center-bottom), 2px wide
-            crate::draw::fill_rect(surface, x + 4, y + 8,  2, 2, cm);
-            crate::draw::fill_rect(surface, x + 5, y + 9,  2, 2, cm);
-            crate::draw::fill_rect(surface, x + 6, y + 10, 2, 2, cm);
-            // Long leg (center-bottom to top-right), 2px wide
-            crate::draw::fill_rect(surface, x + 7,  y + 9,  2, 2, cm);
-            crate::draw::fill_rect(surface, x + 8,  y + 8,  2, 2, cm);
-            crate::draw::fill_rect(surface, x + 9,  y + 7,  2, 2, cm);
-            crate::draw::fill_rect(surface, x + 10, y + 6,  2, 2, cm);
-            crate::draw::fill_rect(surface, x + 11, y + 5,  2, 2, cm);
-            crate::draw::fill_rect(surface, x + 12, y + 4,  2, 2, cm);
+            let s = |v: i32| crate::theme::scale_i32(v);
+            let ps = crate::theme::scale(2);
+            // Short leg (bottom-left to center-bottom)
+            crate::draw::fill_rect(surface, x + s(4),  y + s(8),  ps, ps, cm);
+            crate::draw::fill_rect(surface, x + s(5),  y + s(9),  ps, ps, cm);
+            crate::draw::fill_rect(surface, x + s(6),  y + s(10), ps, ps, cm);
+            // Long leg (center-bottom to top-right)
+            crate::draw::fill_rect(surface, x + s(7),  y + s(9),  ps, ps, cm);
+            crate::draw::fill_rect(surface, x + s(8),  y + s(8),  ps, ps, cm);
+            crate::draw::fill_rect(surface, x + s(9),  y + s(7),  ps, ps, cm);
+            crate::draw::fill_rect(surface, x + s(10), y + s(6),  ps, ps, cm);
+            crate::draw::fill_rect(surface, x + s(11), y + s(5),  ps, ps, cm);
+            crate::draw::fill_rect(surface, x + s(12), y + s(4),  ps, ps, cm);
         }
 
         // Focus ring
         if focused && !disabled {
-            crate::draw::draw_focus_ring(surface, x, y, sz, sz, 4, tc.accent);
+            crate::draw::draw_focus_ring(surface, x, y, sz, sz, corner, tc.accent);
         }
 
         // Label text
         let text_color = if disabled { tc.text_disabled } else { tc.text };
         if !self.text_base.text.is_empty() {
-            crate::draw::draw_text_sized(surface, x + sz as i32 + 6, y + 2, text_color, &self.text_base.text, self.text_base.text_style.font_size);
+            let font_size = crate::draw::scale_font(self.text_base.text_style.font_size);
+            crate::draw::draw_text_sized(surface, x + sz as i32 + crate::theme::scale_i32(6), y + crate::theme::scale_i32(2), text_color, &self.text_base.text, font_size);
         }
     }
 

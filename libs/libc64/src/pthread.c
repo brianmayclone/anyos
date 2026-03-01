@@ -17,17 +17,9 @@
 #include <stdint.h>
 #include <string.h>
 
-extern long _syscall(long num, long a1, long a2, long a3, long a4, long a5);
+#include <sys/syscall.h>
 
-/* ── Syscall numbers ── */
-#define SYS_EXIT            1
-#define SYS_GETPID          6
-#define SYS_YIELD           7
-#define SYS_SLEEP           8
-#define SYS_WAITPID         12
-#define SYS_MMAP            14
-#define SYS_MUNMAP          15
-#define SYS_THREAD_CREATE   170
+extern long _syscall(long num, long a1, long a2, long a3, long a4, long a5);
 
 /* ── Defaults ── */
 #define DEFAULT_STACK_SIZE  (64 * 1024)     /* 64 KiB default thread stack */

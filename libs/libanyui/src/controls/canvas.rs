@@ -383,10 +383,16 @@ impl Control for Canvas {
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         if self.pixels.is_empty() { return; }
-        let x = ax + self.base.x;
-        let y = ay + self.base.y;
-        // Blit our pixel buffer directly to the surface
-        crate::draw::blit_buffer(surface, x, y, self.base.w, self.base.h, &self.pixels);
+        let b = self.base();
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+        // Canvas pixel buffer is in logical resolution. At 1x the sizes
+        // match and we do a fast 1:1 copy. At higher DPI we nearest-neighbor
+        // upscale from logical (b.w × b.h) to physical (p.w × p.h).
+        if b.w == p.w && b.h == p.h {
+            crate::draw::blit_buffer(surface, p.x, p.y, b.w, b.h, &self.pixels);
+        } else {
+            crate::draw::blit_buffer_scaled(surface, p.x, p.y, p.w, p.h, b.w, b.h, &self.pixels);
+        }
     }
 
     fn is_interactive(&self) -> bool { true }

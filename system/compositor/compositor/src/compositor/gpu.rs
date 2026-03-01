@@ -84,7 +84,10 @@ impl Compositor {
             // flushed, causing the GPU to read stale framebuffer data.
             // In GMR mode, back_buffer is in normal cacheable RAM — no sfence needed.
             if self.vram_dirty && !self.gmr_active {
+                #[cfg(target_arch = "x86_64")]
                 unsafe { core::arch::asm!("sfence", options(nostack, preserves_flags)); }
+                #[cfg(target_arch = "aarch64")]
+                unsafe { core::arch::asm!("dsb st", options(nostack, preserves_flags)); }
                 self.vram_dirty = false;
             }
             ipc::gpu_command(&self.gpu_cmds);

@@ -86,7 +86,7 @@ typedef struct {
 typedef struct {
     int         out_sec;    /* Target output section to patch */
     uint64_t    offset;     /* Byte offset within that section */
-    uint32_t    type;       /* R_X86_64_* relocation type */
+    uint32_t    type;       /* R_X86_64_* or R_AARCH64_* relocation type */
     int64_t     addend;
     uint32_t    sym_idx;    /* Index in global symbol table */
 } Reloc;
@@ -137,6 +137,9 @@ typedef struct {
     /* Paths */
     const char *output_path;
     int         quiet;
+
+    /* Architecture (detected from first input object) */
+    uint16_t    e_machine;
 } Ctx;
 
 /* ── input.c ────────────────────────────────────────────────────────── */

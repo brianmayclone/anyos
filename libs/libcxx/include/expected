@@ -1,0 +1,214 @@
+/*
+ * Copyright (c) 2024-2026 Christian Moeller
+ * SPDX-License-Identifier: MIT
+ *
+ * <expected> — C++23 std::expected<T, E>.
+ */
+
+#ifndef _LIBCXX_EXPECTED
+#define _LIBCXX_EXPECTED
+
+#include <type_traits>
+#include <new>
+
+namespace std {
+
+/* ── unexpected ──────────────────────────────────────────────────────── */
+
+template <class E>
+class unexpected {
+    E _err;
+public:
+    constexpr explicit unexpected(const E& e) : _err(e) {}
+    constexpr explicit unexpected(E&& e) : _err(static_cast<E&&>(e)) {}
+
+    constexpr const E& error() const& noexcept { return _err; }
+    constexpr E& error() & noexcept { return _err; }
+    constexpr const E&& error() const&& noexcept { return static_cast<const E&&>(_err); }
+    constexpr E&& error() && noexcept { return static_cast<E&&>(_err); }
+};
+
+template <class E> unexpected(E) -> unexpected<E>;
+
+/* ── unexpect_t ──────────────────────────────────────────────────────── */
+
+struct unexpect_t { explicit unexpect_t() = default; };
+inline constexpr unexpect_t unexpect{};
+
+/* ── bad_expected_access ─────────────────────────────────────────────── */
+
+template <class E>
+class bad_expected_access;
+
+template <>
+class bad_expected_access<void> {
+protected:
+    bad_expected_access() noexcept = default;
+    bad_expected_access(const bad_expected_access&) = default;
+    virtual ~bad_expected_access() = default;
+public:
+    virtual const char* what() const noexcept { return "bad expected access"; }
+};
+
+template <class E>
+class bad_expected_access : public bad_expected_access<void> {
+    E _err;
+public:
+    explicit bad_expected_access(E e) : _err(static_cast<E&&>(e)) {}
+    const E& error() const& noexcept { return _err; }
+    E& error() & noexcept { return _err; }
+    const char* what() const noexcept override { return "bad expected access"; }
+};
+
+/* ── expected<T, E> ──────────────────────────────────────────────────── */
+
+template <class T, class E>
+class expected {
+    union {
+        T _val;
+        E _err;
+    };
+    bool _has_val;
+
+    void _destroy() {
+        if (_has_val) _val.~T();
+        else _err.~E();
+    }
+
+public:
+    using value_type = T;
+    using error_type = E;
+    using unexpected_type = unexpected<E>;
+
+    /* Constructors */
+    constexpr expected() requires is_default_constructible_v<T>
+        : _val(), _has_val(true) {}
+
+    constexpr expected(const expected& o) : _has_val(o._has_val) {
+        if (_has_val) ::new (&_val) T(o._val);
+        else ::new (&_err) E(o._err);
+    }
+
+    constexpr expected(expected&& o) noexcept : _has_val(o._has_val) {
+        if (_has_val) ::new (&_val) T(static_cast<T&&>(o._val));
+        else ::new (&_err) E(static_cast<E&&>(o._err));
+    }
+
+    template <class U = T>
+    requires (!is_same_v<remove_cvref_t<U>, expected> && !is_same_v<remove_cvref_t<U>, unexpected<E>>)
+    constexpr explicit(!is_convertible_v<U, T>) expected(U&& v)
+        : _val(static_cast<U&&>(v)), _has_val(true) {}
+
+    template <class G>
+    constexpr explicit(!is_convertible_v<const G&, E>) expected(const unexpected<G>& u)
+        : _err(u.error()), _has_val(false) {}
+
+    template <class G>
+    constexpr explicit(!is_convertible_v<G, E>) expected(unexpected<G>&& u)
+        : _err(static_cast<G&&>(u.error())), _has_val(false) {}
+
+    template <class... Args>
+    constexpr explicit expected(unexpect_t, Args&&... args)
+        : _err(static_cast<Args&&>(args)...), _has_val(false) {}
+
+    ~expected() { _destroy(); }
+
+    /* Assignment */
+    expected& operator=(const expected& o) {
+        if (this != &o) {
+            _destroy();
+            _has_val = o._has_val;
+            if (_has_val) ::new (&_val) T(o._val);
+            else ::new (&_err) E(o._err);
+        }
+        return *this;
+    }
+
+    expected& operator=(expected&& o) noexcept {
+        if (this != &o) {
+            _destroy();
+            _has_val = o._has_val;
+            if (_has_val) ::new (&_val) T(static_cast<T&&>(o._val));
+            else ::new (&_err) E(static_cast<E&&>(o._err));
+        }
+        return *this;
+    }
+
+    /* Observers */
+    constexpr bool has_value() const noexcept { return _has_val; }
+    constexpr explicit operator bool() const noexcept { return _has_val; }
+
+    constexpr T& value() & { return _val; }
+    constexpr const T& value() const& { return _val; }
+    constexpr T&& value() && { return static_cast<T&&>(_val); }
+    constexpr const T&& value() const&& { return static_cast<const T&&>(_val); }
+
+    constexpr T* operator->() noexcept { return &_val; }
+    constexpr const T* operator->() const noexcept { return &_val; }
+    constexpr T& operator*() & noexcept { return _val; }
+    constexpr const T& operator*() const& noexcept { return _val; }
+    constexpr T&& operator*() && noexcept { return static_cast<T&&>(_val); }
+    constexpr const T&& operator*() const&& noexcept { return static_cast<const T&&>(_val); }
+
+    constexpr E& error() & noexcept { return _err; }
+    constexpr const E& error() const& noexcept { return _err; }
+    constexpr E&& error() && noexcept { return static_cast<E&&>(_err); }
+    constexpr const E&& error() const&& noexcept { return static_cast<const E&&>(_err); }
+
+    template <class U>
+    constexpr T value_or(U&& default_val) const& {
+        return _has_val ? _val : static_cast<T>(static_cast<U&&>(default_val));
+    }
+
+    template <class U>
+    constexpr T value_or(U&& default_val) && {
+        return _has_val ? static_cast<T&&>(_val) : static_cast<T>(static_cast<U&&>(default_val));
+    }
+};
+
+/* ── expected<void, E> specialization ────────────────────────────────── */
+
+template <class E>
+class expected<void, E> {
+    union { E _err; };
+    bool _has_val;
+
+public:
+    using value_type = void;
+    using error_type = E;
+    using unexpected_type = unexpected<E>;
+
+    constexpr expected() noexcept : _has_val(true) {}
+
+    constexpr expected(const expected& o) : _has_val(o._has_val) {
+        if (!_has_val) ::new (&_err) E(o._err);
+    }
+
+    constexpr expected(expected&& o) noexcept : _has_val(o._has_val) {
+        if (!_has_val) ::new (&_err) E(static_cast<E&&>(o._err));
+    }
+
+    template <class G>
+    constexpr explicit(!is_convertible_v<const G&, E>) expected(const unexpected<G>& u)
+        : _err(u.error()), _has_val(false) {}
+
+    template <class G>
+    constexpr explicit(!is_convertible_v<G, E>) expected(unexpected<G>&& u)
+        : _err(static_cast<G&&>(u.error())), _has_val(false) {}
+
+    ~expected() { if (!_has_val) _err.~E(); }
+
+    constexpr bool has_value() const noexcept { return _has_val; }
+    constexpr explicit operator bool() const noexcept { return _has_val; }
+    constexpr void operator*() const noexcept {}
+    constexpr void value() const {}
+
+    constexpr E& error() & noexcept { return _err; }
+    constexpr const E& error() const& noexcept { return _err; }
+    constexpr E&& error() && noexcept { return static_cast<E&&>(_err); }
+    constexpr const E&& error() const&& noexcept { return static_cast<const E&&>(_err); }
+};
+
+} // namespace std
+
+#endif

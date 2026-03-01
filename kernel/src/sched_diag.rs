@@ -9,7 +9,7 @@
 //! context such as the SPIN TIMEOUT path.
 
 use core::sync::atomic::{AtomicU32, Ordering};
-use crate::arch::x86::smp::MAX_CPUS;
+use crate::arch::hal::MAX_CPUS;
 
 // ── Phase ID constants ────────────────────────────────────────────────────
 

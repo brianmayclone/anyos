@@ -38,6 +38,7 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libanyui_client",
+ "libgl_client",
 ]
 
 [[package]]
@@ -80,11 +81,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "anytrace"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
 name = "apkg"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
  "dynlink",
+ "libhttp_client",
  "libzip_client",
 ]
 
@@ -531,6 +542,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "killall"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
 name = "libanyui_client"
 version = "0.1.0"
 dependencies = [
@@ -542,6 +560,14 @@ dependencies = [
 [[package]]
 name = "libcompositor_client"
 version = "0.1.0"
+
+[[package]]
+name = "libcorevm_client"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+]
 
 [[package]]
 name = "libdb_client"
@@ -572,6 +598,14 @@ name = "libheap"
 version = "0.1.0"
 
 [[package]]
+name = "libhttp_client"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+]
+
+[[package]]
 name = "libimage_client"
 version = "0.1.0"
 
@@ -599,6 +633,7 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "libanyui_client",
+ "libfont_client",
  "libjs",
 ]
 
@@ -735,6 +770,15 @@ dependencies = [
 
 [[package]]
 name = "notepad"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
+name = "notifyd"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
@@ -911,6 +955,7 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libanyui_client",
+ "libhttp_client",
 ]
 
 [[package]]
@@ -1058,6 +1103,16 @@ dependencies = [
  "dynlink",
  "libanyui_client",
  "libimage_client",
+]
+
+[[package]]
+name = "vmmanager"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+ "libcorevm_client",
 ]
 
 [[package]]

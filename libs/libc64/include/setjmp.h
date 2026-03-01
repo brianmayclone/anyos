@@ -9,7 +9,15 @@
 /* x86_64: save rbx, rbp, r12, r13, r14, r15, rsp, rip = 8 regs = 64 bytes */
 typedef unsigned long jmp_buf[8];
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int setjmp(jmp_buf env);
 void longjmp(jmp_buf env, int val) __attribute__((noreturn));
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
