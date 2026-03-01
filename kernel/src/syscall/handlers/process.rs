@@ -153,12 +153,9 @@ pub fn sys_sbrk(increment: i32) -> u32 {
             return u32::MAX;
         }
 
-        // Prevent heap from growing into the stack region.
-        // Stack: USER_STACK_TOP (0x0C000000) - ASLR (up to 1 MiB) - 8 MiB.
-        // Minimum stack bottom ≈ 0x0B700000.  Leave a 1 MiB guard gap so that
-        // a large sbrk cannot silently overwrite saved registers / return
-        // addresses on the stack (causes GPF with corrupted RIP).
-        const HEAP_LIMIT: u32 = 0x0B60_0000;
+        // Prevent heap from growing into the mmap region.
+        // mmap starts at 0x7000_0000.  Leave a 16 MiB guard gap.
+        const HEAP_LIMIT: u32 = 0x6F00_0000;
         if new_brk >= HEAP_LIMIT {
             return u32::MAX;
         }
@@ -211,8 +208,8 @@ pub fn sys_mmap(size: u32) -> u32 {
         return u32::MAX;
     }
 
-    const MMAP_BASE: u32 = 0x2000_0000;
-    const MMAP_LIMIT: u32 = 0x4000_0000; // 512 MiB mmap region
+    const MMAP_BASE: u32 = 0x7000_0000;
+    const MMAP_LIMIT: u32 = 0xBF00_0000; // 1.25 GiB mmap region
     const PAGE_SIZE: u32 = 4096;
 
     let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
@@ -268,8 +265,8 @@ pub fn sys_munmap(addr: u32, size: u32) -> u32 {
     use crate::memory::physical;
     use crate::memory::virtual_mem;
 
-    const MMAP_BASE: u32 = 0x2000_0000;
-    const MMAP_LIMIT: u32 = 0x4000_0000;
+    const MMAP_BASE: u32 = 0x7000_0000;
+    const MMAP_LIMIT: u32 = 0xBF00_0000;
     const PAGE_SIZE: u32 = 4096;
 
     if size == 0 || addr & (PAGE_SIZE - 1) != 0 {

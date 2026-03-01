@@ -1,11 +1,19 @@
 //! Shared free-list heap primitives for anyOS user-space allocators.
 //!
 //! Provides the core free-list search (first-fit with splitting) and
-//! dealloc (sorted insert with coalescing) logic used by all three
-//! user-space allocators: stdlib, libanyui, and libfont.
+//! dealloc (sorted insert with coalescing) logic used by all user-space
+//! allocators: stdlib (custom impl with mmap fallback) and all DLLs
+//! (via the [`dll_allocator!`] macro).
 //!
-//! Each consumer owns its own `FREE_LIST` static and `GlobalAlloc` impl.
-//! This crate only provides the shared algorithm — no statics, no sbrk calls.
+//! # DLL Allocator Macro
+//!
+//! DLLs should use the [`dll_allocator!`] macro to define their
+//! `#[global_allocator]`. It generates a complete sbrk-based free-list
+//! allocator. The syscall module must export `sbrk(u32) -> u64`.
+//!
+//! ```ignore
+//! libheap::dll_allocator!(crate::syscall::sbrk);
+//! ```
 
 #![no_std]
 
@@ -104,4 +112,64 @@ pub unsafe fn free_list_dealloc(free_list: *mut *mut FreeBlock, ptr: *mut u8, si
         (*prev).size += (*block).size;
         (*prev).next = (*block).next;
     }
+}
+
+/// Define a `#[global_allocator]` for a DLL using sbrk-based free-list allocation.
+///
+/// Generates a private module with a `DllFreeListAlloc` struct implementing
+/// `GlobalAlloc`. Freed blocks are reused via a sorted free list with coalescing.
+/// Fresh memory is obtained via `sbrk(0)` + `sbrk(n)`.
+///
+/// # Arguments
+///
+/// `$sbrk` — path to a function with signature `fn(u32) -> u64`.
+/// Must return `u64::MAX` on failure. Typically `crate::syscall::sbrk`.
+///
+/// # Example
+///
+/// ```ignore
+/// libheap::dll_allocator!(crate::syscall::sbrk);
+/// ```
+#[macro_export]
+macro_rules! dll_allocator {
+    ($sbrk:path) => {
+        mod _dll_heap {
+            use core::alloc::{GlobalAlloc, Layout};
+            use core::ptr;
+
+            struct DllFreeListAlloc;
+
+            static mut FREE_LIST: *mut $crate::FreeBlock = ptr::null_mut();
+
+            unsafe impl GlobalAlloc for DllFreeListAlloc {
+                unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                    let size = $crate::block_size(layout);
+
+                    let ptr = $crate::free_list_alloc(&mut FREE_LIST, size);
+                    if !ptr.is_null() { return ptr; }
+
+                    let sbrk_fn: fn(u32) -> u64 = $sbrk;
+                    let brk = sbrk_fn(0);
+                    if brk == u64::MAX { return ptr::null_mut(); }
+                    let align = layout.align().max(16) as u64;
+                    let aligned = (brk + align - 1) & !(align - 1);
+                    let needed = (aligned - brk + size as u64) as u32;
+                    let result = sbrk_fn(needed);
+                    if result == u64::MAX { return ptr::null_mut(); }
+                    aligned as *mut u8
+                }
+
+                unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+                    $crate::free_list_dealloc(
+                        &mut FREE_LIST,
+                        ptr,
+                        $crate::block_size(layout),
+                    );
+                }
+            }
+
+            #[global_allocator]
+            static ALLOCATOR: DllFreeListAlloc = DllFreeListAlloc;
+        }
+    };
 }

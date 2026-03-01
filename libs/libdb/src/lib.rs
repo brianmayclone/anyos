@@ -28,44 +28,9 @@ use alloc::vec::Vec;
 use crate::types::*;
 use crate::engine::Database;
 
-// ── Allocator (free-list + sbrk, same pattern as libanyui) ───────────────────
+// ── Allocator ────────────────────────────────────────────────────────────────
 
-mod allocator {
-    use core::alloc::{GlobalAlloc, Layout};
-    use core::ptr;
-    use libheap::{FreeBlock, block_size, free_list_alloc, free_list_dealloc};
-
-    struct DllFreeListAlloc;
-
-    static mut FREE_LIST: *mut FreeBlock = ptr::null_mut();
-
-    unsafe impl GlobalAlloc for DllFreeListAlloc {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            let size = block_size(layout);
-
-            // 1) Search free list for first fit (reuse freed memory)
-            let ptr = unsafe { free_list_alloc(&mut FREE_LIST, size) };
-            if !ptr.is_null() { return ptr; }
-
-            // 2) No free block — get fresh memory from sbrk
-            let brk = crate::syscall::sbrk(0);
-            if brk == u64::MAX { return ptr::null_mut(); }
-            let align = layout.align().max(16) as u64;
-            let aligned = (brk + align - 1) & !(align - 1);
-            let needed = (aligned - brk + size as u64) as u32;
-            let result = crate::syscall::sbrk(needed);
-            if result == u64::MAX { return ptr::null_mut(); }
-            aligned as *mut u8
-        }
-
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            unsafe { free_list_dealloc(&mut FREE_LIST, ptr, block_size(layout)); }
-        }
-    }
-
-    #[global_allocator]
-    static ALLOCATOR: DllFreeListAlloc = DllFreeListAlloc;
-}
+libheap::dll_allocator!(crate::syscall::sbrk);
 
 // ── Panic handler ────────────────────────────────────────────────────────────
 

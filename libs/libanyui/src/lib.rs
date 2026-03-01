@@ -228,51 +228,9 @@ pub(crate) fn state() -> &'static mut AnyuiState {
     unsafe { STATE.as_mut().expect("anyui not initialized") }
 }
 
-// ── Allocator (free-list + sbrk per-allocation for DLL coexistence) ──
-//
-// DLL allocators share the sbrk address space with stdlib. We MUST call
-// sbrk(0) + sbrk(n) for each new allocation to get fresh addresses that
-// don't overlap with stdlib. Freed blocks go into a free list for reuse
-// (via libheap).
+// ── Allocator ────────────────────────────────────────────────────────
 
-mod allocator {
-    use core::alloc::{GlobalAlloc, Layout};
-    use core::ptr;
-    use libheap::{FreeBlock, block_size, free_list_alloc, free_list_dealloc};
-
-    struct DllFreeListAlloc;
-
-    static mut FREE_LIST: *mut FreeBlock = ptr::null_mut();
-
-    unsafe impl GlobalAlloc for DllFreeListAlloc {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            let size = block_size(layout);
-
-            // 1) Search free list for first fit (reuse freed memory)
-            let ptr = free_list_alloc(&mut FREE_LIST, size);
-            if !ptr.is_null() { return ptr; }
-
-            // 2) No free block — get fresh memory from sbrk.
-            //    Must call sbrk(0) each time to get the CURRENT break,
-            //    since stdlib's allocator may have moved it.
-            let brk = crate::syscall::sbrk(0);
-            if brk == u64::MAX { return ptr::null_mut(); }
-            let align = layout.align().max(16) as u64;
-            let aligned = (brk + align - 1) & !(align - 1);
-            let needed = (aligned - brk + size as u64) as u32;
-            let result = crate::syscall::sbrk(needed);
-            if result == u64::MAX { return ptr::null_mut(); }
-            aligned as *mut u8
-        }
-
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            free_list_dealloc(&mut FREE_LIST, ptr, block_size(layout));
-        }
-    }
-
-    #[global_allocator]
-    static ALLOCATOR: DllFreeListAlloc = DllFreeListAlloc;
-}
+libheap::dll_allocator!(crate::syscall::sbrk);
 
 // ── Panic handler ────────────────────────────────────────────────────
 

@@ -25,7 +25,7 @@
 
 extern crate alloc;
 
-mod heap;
+libheap::dll_allocator!(crate::syscall::sbrk);
 pub(crate) mod syscall;
 pub mod types;
 pub mod xml;

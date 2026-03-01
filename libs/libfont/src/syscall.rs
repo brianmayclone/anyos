@@ -87,9 +87,9 @@ fn syscall3(num: u32, a1: u64, a2: u64, a3: u64) -> u64 {
 }
 
 /// Extend the process heap by `increment` bytes. Returns previous break address.
-/// Returns `usize::MAX` on failure.
-pub fn sbrk(increment: i32) -> usize {
-    syscall1(SYS_SBRK, increment as u64) as usize
+/// Returns `u64::MAX` on failure.
+pub fn sbrk(increment: u32) -> u64 {
+    syscall1(SYS_SBRK, increment as u64)
 }
 
 /// Open a file. Returns file descriptor or u32::MAX on error.

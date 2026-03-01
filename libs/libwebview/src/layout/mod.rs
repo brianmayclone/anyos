@@ -261,7 +261,7 @@ fn format_decimal(out: &mut String, mut n: u32) {
 pub(super) fn image_dimensions(dom: &Dom, node_id: NodeId, max_width: i32, images: &ImageCache) -> (i32, i32) {
     // Get natural dimensions from image cache (actual decoded image size).
     let src = dom.attr(node_id, "src");
-    let natural = src.and_then(|s| images.get(s)).map(|e| {
+    let natural = src.and_then(|s| images.get_ref(s)).map(|e| {
         (e.width.min(65535) as i32, e.height.min(65535) as i32)
     });
 

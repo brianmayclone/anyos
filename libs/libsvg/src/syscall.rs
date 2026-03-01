@@ -44,9 +44,10 @@ fn syscall3(num: u32, a1: u64, a2: u64, a3: u64) -> u64 {
     ret
 }
 
-/// Extend the heap by `increment` bytes. Returns previous break.
-pub fn sbrk(increment: i32) -> usize {
-    syscall1(SYS_SBRK, increment as u64) as usize
+/// Extend the heap by `increment` bytes. Returns previous break address.
+/// Returns `u64::MAX` on failure.
+pub fn sbrk(increment: u32) -> u64 {
+    syscall1(SYS_SBRK, increment as u64)
 }
 
 /// Write bytes to a file descriptor.

@@ -321,8 +321,10 @@ impl WebView {
         changed
     }
 
-    /// Re-render the visible tile from the cached layout tree at the given scroll position.
-    /// Does NOT relayout or re-resolve CSS — only redraws pixels and repositions the canvas.
+    /// Re-render visible tiles from the cached layout tree at the given scroll position.
+    /// Uses the fast scroll path: only rasterizes cache-miss tiles, composes cached
+    /// tiles via memcpy, and draws fixed overlays.  No relayout, no form-control
+    /// processing, no hit-region rebuild — those persist in document coordinates.
     fn render_viewport(&mut self, scroll_y: i32) {
         // Split borrows: layout_root (immut), renderer (mut), content_view (immut), images (immut).
         let root = match self.layout_root {
@@ -332,13 +334,10 @@ impl WebView {
         let doc_w = self.viewport_width as u32;
         let doc_h = (self.total_height_val as u32).max(1);
 
-        // Soft-clear hit regions for the new tile (form controls persist).
-        self.renderer.clear();
-
-        // SAFETY: root points into self.layout_root which is not modified during render().
+        // SAFETY: root points into self.layout_root which is not modified during render_scroll().
         // We use a raw pointer to break the borrow conflict between layout_root and renderer.
         unsafe {
-            self.renderer.render(
+            self.renderer.render_scroll(
                 &*root,
                 &self.content_view,
                 &self.images,
@@ -349,8 +348,6 @@ impl WebView {
                 self.bg_color_cached,
                 self.link_cb,
                 self.link_cb_ud,
-                self.submit_cb,
-                self.submit_cb_ud,
             );
         }
         self.last_render_scroll_y = scroll_y;
@@ -360,6 +357,7 @@ impl WebView {
     /// Used on full page navigation to destroy everything.
     pub fn clear(&mut self) {
         self.renderer.clear_all();
+        self.images.clear();
         self.dom_val = None;
         self.layout_root = None;
         self.total_height_val = 0;
@@ -581,6 +579,10 @@ impl WebView {
         self.js_runtime.start_animations(&styles);
         #[cfg(feature = "debug_surf")]
         debug_surf!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
+
+        // Drop old layout tree before allocating the new one — avoids holding
+        // two full trees in memory simultaneously (can save several MB on complex pages).
+        self.layout_root = None;
 
         // Layout.
         debug_surf!("[webview] layout start (viewport_width={})", self.viewport_width);

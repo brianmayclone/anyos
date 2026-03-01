@@ -302,7 +302,7 @@ impl Thread {
             io_read_bytes: 0,
             io_write_bytes: 0,
             user_pages: 0,
-            mmap_next: 0x2000_0000,
+            mmap_next: 0x7000_0000,
             cwd: {
                 let mut c = [0u8; 512];
                 c[0] = b'/';

@@ -2918,7 +2918,7 @@ pub fn exec_update_thread(
         let mmap_rand = crate::task::loader::random_page_offset(
             crate::task::loader::ASLR_MMAP_MAX_PAGES,
         );
-        thread.mmap_next = 0x2000_0000u32.wrapping_add(mmap_rand * 4096);
+        thread.mmap_next = 0x7000_0000u32.wrapping_add(mmap_rand * 4096);
         thread.fpu_state = crate::task::thread::FxState::new_default();
         thread.user_pages = user_pages;
         thread.arch_mode = arch_mode;
