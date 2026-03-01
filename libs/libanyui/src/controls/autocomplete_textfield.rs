@@ -52,7 +52,7 @@ impl AutoCompleteTextField {
         }
     }
 
-    /// Filter suggestions matching the current last token (case-insensitive prefix match)
+    /// Filter suggestions matching the current last token (case-insensitive substring match on name or email)
     pub(crate) fn filtered_items(&self) -> Vec<u8> {
         let query = Self::last_token(&self.text_base.text);
 
@@ -76,8 +76,19 @@ impl AutoCompleteTextField {
                 let item = &self.suggestions[start..i];
                 let item_lower = to_lower_u8(item);
 
-                // Case-insensitive prefix match
-                if item_lower.starts_with(query_lower.as_slice()) {
+                // Match anywhere in name or email (case-insensitive substring search)
+                // This allows matching "John" or "john@example.com" by typing "jo", "ohn", "exa", etc.
+                let mut found = false;
+                for j in 0..item_lower.len() {
+                    if j + query_lower.len() <= item_lower.len() {
+                        if &item_lower[j..j + query_lower.len()] == query_lower.as_slice() {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+
+                if found {
                     if !matches.is_empty() {
                         matches.push(b'|');
                     }
