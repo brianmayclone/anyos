@@ -17,6 +17,7 @@ use anyos_std::Vec;
 use anyos_std::vec;
 
 use libanyui_client as anyui;
+use libanyui_client::IconType;
 
 use crate::mail::message::*;
 use crate::mail::rfc2822::EmailAddress;
@@ -90,14 +91,14 @@ struct AppState {
     status_label: anyui::Label,
 
     // UI handles — buttons
-    btn_new: anyui::Button,
-    btn_reply: anyui::Button,
-    btn_reply_all: anyui::Button,
-    btn_forward: anyui::Button,
-    btn_delete: anyui::Button,
-    btn_junk: anyui::Button,
-    btn_archive: anyui::Button,
-    btn_getmail: anyui::Button,
+    btn_new: anyui::IconButton,
+    btn_reply: anyui::IconButton,
+    btn_reply_all: anyui::IconButton,
+    btn_forward: anyui::IconButton,
+    btn_delete: anyui::IconButton,
+    btn_junk: anyui::IconButton,
+    btn_archive: anyui::IconButton,
+    btn_getmail: anyui::IconButton,
 
     // Folder tree data
     folders: Vec<FolderInfo>,
@@ -194,28 +195,43 @@ fn main() {
     toolbar.set_color(COL_TOOLBAR);
     toolbar.set_padding(4, 4, 4, 4);
 
-    let btn_new = toolbar.add_button(t("New"));
-    btn_new.set_size(60, 28);
-    let btn_reply = toolbar.add_button(t("Reply"));
-    btn_reply.set_size(60, 28);
-    let btn_reply_all = toolbar.add_button(t("Reply All"));
-    btn_reply_all.set_size(75, 28);
-    let btn_forward = toolbar.add_button(t("Forward"));
-    btn_forward.set_size(70, 28);
+    // Compose/Reply buttons with icons
+    let btn_new = toolbar.add_icon_button(t("New"));
+    btn_new.set_icon(anyui::ICON_NEW_FILE);
+    btn_new.auto_size();
+    let btn_reply = toolbar.add_icon_button(t("Reply"));
+    btn_reply.set_system_icon("mail-reply", anyui::IconType::Outline, 0xFFCCCCCC, 18);
+    btn_reply.auto_size();
+    let btn_reply_all = toolbar.add_icon_button(t("Reply All"));
+    btn_reply_all.set_system_icon("mail-reply-multiple", anyui::IconType::Outline, 0xFFCCCCCC, 18);
+    btn_reply_all.auto_size();
+    let btn_forward = toolbar.add_icon_button(t("Forward"));
+    btn_forward.set_system_icon("mail-forward", anyui::IconType::Outline, 0xFFCCCCCC, 18);
+    btn_forward.auto_size();
     toolbar.add_separator();
-    let btn_archive = toolbar.add_button(t("Archive"));
-    btn_archive.set_size(70, 28);
-    let btn_junk = toolbar.add_button(t("Junk"));
-    btn_junk.set_size(50, 28);
-    let btn_delete = toolbar.add_button(t("Delete"));
-    btn_delete.set_size(60, 28);
+
+    // Message management buttons
+    let btn_archive = toolbar.add_icon_button(t("Archive"));
+    btn_archive.set_system_icon("archive", anyui::IconType::Outline, 0xFFCCCCCC, 18);
+    btn_archive.auto_size();
+    let btn_junk = toolbar.add_icon_button(t("Junk"));
+    btn_junk.set_system_icon("mail-x", anyui::IconType::Outline, 0xFFCCCCCC, 18);
+    btn_junk.auto_size();
+    let btn_delete = toolbar.add_icon_button(t("Delete"));
+    btn_delete.set_system_icon("trash", anyui::IconType::Outline, 0xFFCCCCCC, 18);
+    btn_delete.auto_size();
     toolbar.add_separator();
-    let btn_getmail = toolbar.add_button(t("Get Mail"));
-    btn_getmail.set_size(75, 28);
-    let btn_accounts = toolbar.add_button(t("Accounts"));
-    btn_accounts.set_size(80, 28);
-    let btn_contacts = toolbar.add_button(t("Contacts"));
-    btn_contacts.set_size(80, 28);
+
+    // Account/Sync buttons
+    let btn_getmail = toolbar.add_icon_button(t("Get Mail"));
+    btn_getmail.set_system_icon("refresh", anyui::IconType::Outline, 0xFFCCCCCC, 18);
+    btn_getmail.auto_size();
+    let btn_accounts = toolbar.add_icon_button(t("Accounts"));
+    btn_accounts.set_system_icon("settings", anyui::IconType::Outline, 0xFFCCCCCC, 18);
+    btn_accounts.auto_size();
+    let btn_contacts = toolbar.add_icon_button(t("Contacts"));
+    btn_contacts.set_system_icon("address-book", anyui::IconType::Outline, 0xFFCCCCCC, 18);
+    btn_contacts.auto_size();
 
     win.add(&toolbar);
 
