@@ -1096,13 +1096,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "vmd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libcorevm_client",
+]
+
+[[package]]
 name = "vmmanager"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
  "dynlink",
  "libanyui_client",
- "libcorevm_client",
 ]
 
 [[package]]

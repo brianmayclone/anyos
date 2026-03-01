@@ -255,7 +255,13 @@ pub fn free_frames() -> usize {
 /// accessed via identity mapping (physical address == virtual address). The kernel
 /// identity-maps the first 128 MiB of physical memory, so contiguous allocations
 /// must not exceed this boundary.
+///
+/// On ARM64, the kernel TTBR1 maps the entire RAM range (1 GiB block) so there
+/// is no 128 MiB identity-map constraint — allow the full allocator range.
+#[cfg(target_arch = "x86_64")]
 const CONTIGUOUS_MAX_FRAME: usize = (128 * 1024 * 1024) / FRAME_SIZE; // frame 32768
+#[cfg(target_arch = "aarch64")]
+const CONTIGUOUS_MAX_FRAME: usize = MAX_FRAMES;
 
 /// Allocate `count` physically contiguous 4 KiB frames.
 ///

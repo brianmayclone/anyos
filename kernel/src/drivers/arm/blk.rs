@@ -87,13 +87,18 @@ pub fn init(dev: &VirtioMmioDevice) {
     };
 
     let (desc_phys, avail_phys, used_phys) = queue.phys_addrs();
+    crate::serial_println!("  virtio-blk: queue phys: desc={:#x} avail={:#x} used={:#x}",
+        desc_phys, avail_phys, used_phys);
     if !dev.setup_queue_raw(0, DEFAULT_QUEUE_SIZE, desc_phys, avail_phys, used_phys) {
         crate::serial_println!("  virtio-blk: failed to setup queue");
         return;
     }
 
+    crate::serial_println!("  virtio-blk: status after setup={:#x}", dev.get_status());
+
     // Mark device ready
     dev.driver_ok();
+    crate::serial_println!("  virtio-blk: status after driver_ok={:#x}", dev.get_status());
 
     let blk = VirtioBlk {
         base: dev.base(),
@@ -190,9 +195,10 @@ fn do_io(req_type: u32, sector: u64, count: u32, buf: &mut [u8]) -> bool {
         }
     };
 
-    // Notify device
+    // Notify device (DSB + MMIO write)
     let dev_base = blk.base;
     unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
         ptr::write_volatile((dev_base + 0x050) as *mut u32, 0);
     }
 

@@ -48,6 +48,9 @@ const VIRTIO_MMIO_DRIVER_FEATURES_SEL: usize = 0x024;
 const VIRTIO_MMIO_QUEUE_SEL: usize = 0x030;
 const VIRTIO_MMIO_QUEUE_NUM_MAX: usize = 0x034;
 const VIRTIO_MMIO_QUEUE_NUM: usize = 0x038;
+// Version 1 (legacy) specific registers
+const VIRTIO_MMIO_GUEST_PAGE_SIZE: usize = 0x028;
+const VIRTIO_MMIO_QUEUE_PFN: usize = 0x040;
 const VIRTIO_MMIO_QUEUE_READY: usize = 0x044;
 const VIRTIO_MMIO_QUEUE_NOTIFY: usize = 0x050;
 const VIRTIO_MMIO_INTERRUPT_STATUS: usize = 0x060;
@@ -171,10 +174,19 @@ impl VirtioMmioDevice {
         // 3. Driver
         self.set_status(self.get_status() | STATUS_DRIVER);
 
-        // 4. Feature negotiation
+        // 4. Feature negotiation (low 32 bits)
         let device_features = self.read_device_features(0);
         let negotiated = device_features & driver_features;
         self.write_driver_features(0, negotiated);
+
+        // 4b. For Version 2 (modern): negotiate VIRTIO_F_VERSION_1 (bit 32).
+        // Version 1 (legacy) devices don't support high feature bits.
+        if self.version() >= 2 {
+            let device_features_hi = self.read_device_features(1);
+            let version_1_bit = 1u32; // bit 0 of high word = bit 32 overall
+            let negotiated_hi = device_features_hi & version_1_bit;
+            self.write_driver_features(1, negotiated_hi);
+        }
 
         // 5. Features OK
         self.set_status(self.get_status() | STATUS_FEATURES_OK);
@@ -191,11 +203,17 @@ impl VirtioMmioDevice {
         self.set_status(self.get_status() | STATUS_DRIVER_OK);
     }
 
+    /// Get the MMIO version (1 = legacy, 2 = modern).
+    #[inline]
+    pub fn version(&self) -> u32 {
+        self.read_reg(VIRTIO_MMIO_VERSION)
+    }
+
     /// Set up a virtqueue at the given index.
     ///
-    /// Returns the maximum queue size supported by the device, or 0 if unsupported.
+    /// Supports both VirtIO MMIO Version 1 (legacy) and Version 2 (modern).
     pub fn setup_queue_raw(&self, queue_idx: u16, num: u16,
-                           desc_phys: u64, driver_phys: u64, device_phys: u64) -> bool {
+                           desc_phys: u64, _driver_phys: u64, _device_phys: u64) -> bool {
         self.write_reg(VIRTIO_MMIO_QUEUE_SEL, queue_idx as u32);
 
         let max = self.read_reg(VIRTIO_MMIO_QUEUE_NUM_MAX);
@@ -205,20 +223,34 @@ impl VirtioMmioDevice {
 
         self.write_reg(VIRTIO_MMIO_QUEUE_NUM, num as u32);
 
-        self.write_reg(VIRTIO_MMIO_QUEUE_DESC_LOW, desc_phys as u32);
-        self.write_reg(VIRTIO_MMIO_QUEUE_DESC_HIGH, (desc_phys >> 32) as u32);
-        self.write_reg(VIRTIO_MMIO_QUEUE_DRIVER_LOW, driver_phys as u32);
-        self.write_reg(VIRTIO_MMIO_QUEUE_DRIVER_HIGH, (driver_phys >> 32) as u32);
-        self.write_reg(VIRTIO_MMIO_QUEUE_DEVICE_LOW, device_phys as u32);
-        self.write_reg(VIRTIO_MMIO_QUEUE_DEVICE_HIGH, (device_phys >> 32) as u32);
-
-        self.write_reg(VIRTIO_MMIO_QUEUE_READY, 1);
+        if self.version() >= 2 {
+            // Version 2 (modern): separate addresses for desc/driver/device rings
+            self.write_reg(VIRTIO_MMIO_QUEUE_DESC_LOW, desc_phys as u32);
+            self.write_reg(VIRTIO_MMIO_QUEUE_DESC_HIGH, (desc_phys >> 32) as u32);
+            self.write_reg(VIRTIO_MMIO_QUEUE_DRIVER_LOW, _driver_phys as u32);
+            self.write_reg(VIRTIO_MMIO_QUEUE_DRIVER_HIGH, (_driver_phys >> 32) as u32);
+            self.write_reg(VIRTIO_MMIO_QUEUE_DEVICE_LOW, _device_phys as u32);
+            self.write_reg(VIRTIO_MMIO_QUEUE_DEVICE_HIGH, (_device_phys >> 32) as u32);
+            self.write_reg(VIRTIO_MMIO_QUEUE_READY, 1);
+        } else {
+            // Version 1 (legacy): GuestPageSize + QueuePFN (single contiguous allocation)
+            // The device expects all three ring components in a single contiguous area
+            // starting at desc_phys, divided by GuestPageSize.
+            self.write_reg(VIRTIO_MMIO_GUEST_PAGE_SIZE, 4096);
+            self.write_reg(VIRTIO_MMIO_QUEUE_PFN, (desc_phys / 4096) as u32);
+        }
         true
     }
 
     /// Notify the device that a queue has new buffers.
+    ///
+    /// Includes a DSB barrier to ensure all virtqueue memory writes (Normal
+    /// cacheable) are complete before the MMIO notification write (Device memory).
     #[inline]
     pub fn notify_queue(&self, queue_idx: u16) {
+        // DSB ensures all prior stores to Normal memory (virtqueue descriptors,
+        // available ring) complete before the Device-nGnRnE MMIO write.
+        unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
         self.write_reg(VIRTIO_MMIO_QUEUE_NOTIFY, queue_idx as u32);
     }
 
@@ -244,6 +276,16 @@ impl VirtioMmioDevice {
     /// Write a device-config register at the given byte offset.
     pub fn write_config_u32(&self, offset: usize, val: u32) {
         self.write_reg(VIRTIO_MMIO_CONFIG + offset, val);
+    }
+
+    /// Read a single byte from device config at the given byte offset.
+    pub fn read_config_u8(&self, offset: usize) -> u8 {
+        unsafe { ptr::read_volatile((self.base + VIRTIO_MMIO_CONFIG + offset) as *const u8) }
+    }
+
+    /// Write a single byte to device config at the given byte offset.
+    pub fn write_config_u8(&self, offset: usize, val: u8) {
+        unsafe { ptr::write_volatile((self.base + VIRTIO_MMIO_CONFIG + offset) as *mut u8, val); }
     }
 }
 
@@ -276,6 +318,7 @@ pub fn probe_all() -> alloc::vec::Vec<VirtioMmioDevice> {
 
         let irq = VIRTIO_MMIO_IRQ_BASE + slot as u32;
 
+        crate::serial_println!("    slot {}: id={} version={} base={:#x}", slot, dev_id, version, base);
         devices.push(VirtioMmioDevice { base, dev_id, irq });
     }
 

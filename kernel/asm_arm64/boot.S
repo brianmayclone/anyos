@@ -234,6 +234,13 @@ _in_virtual:
     b       .zero_bss
 .bss_done:
 
+    /* Enable FP/NEON — CPACR_EL1.FPEN = 0b11 (bits [21:20])
+     * Without this, any FP register use (even callee-save spills) traps. */
+    mrs     x0, cpacr_el1
+    orr     x0, x0, #(3 << 20)
+    msr     cpacr_el1, x0
+    isb
+
     /* Jump to kernel_main with DTB physical address in x0 */
     mov     x0, x19
     bl      kernel_main

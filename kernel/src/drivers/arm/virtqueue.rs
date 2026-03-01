@@ -102,28 +102,35 @@ fn phys_to_virt(phys: u64) -> usize {
 impl VirtQueue {
     /// Allocate and initialize a new split virtqueue.
     ///
-    /// Returns None if memory allocation fails.
+    /// Uses the VirtIO legacy (Version 1) contiguous memory layout:
+    ///   - Descriptor table at offset 0 (num × 16 bytes)
+    ///   - Available ring immediately after (6 + 2×num bytes)
+    ///   - Used ring at the next page boundary (6 + 8×num bytes)
+    ///
+    /// This layout is also valid for Version 2 (modern) when separate addresses
+    /// are programmed via setup_queue_raw().
     pub fn new(queue_idx: u16, num: u16) -> Option<Self> {
         let n = num as usize;
 
-        // Calculate sizes (VirtIO spec 2.7.13)
-        let desc_size = n * 16; // 16 bytes per descriptor
-        let avail_size = 6 + 2 * n; // flags(2) + idx(2) + ring(2*n) + used_event(2)
-        let used_size = 6 + 8 * n; // flags(2) + idx(2) + ring(8*n) + avail_event(2)
-
-        // Total size, each component page-aligned
-        let desc_pages = (desc_size + FRAME_SIZE - 1) / FRAME_SIZE;
-        let avail_pages = (avail_size + FRAME_SIZE - 1) / FRAME_SIZE;
-        let used_pages = (used_size + FRAME_SIZE - 1) / FRAME_SIZE;
-        let total_pages = desc_pages + avail_pages + used_pages;
+        // VirtIO legacy layout (Spec 2.6.2):
+        //   desc:  offset 0, size = num * 16
+        //   avail: offset = num * 16, size = 6 + 2 * num
+        //   used:  offset = align_up(num * 16 + 6 + 2 * num, PAGE_SIZE)
+        let desc_size = n * 16;
+        let avail_offset = desc_size;
+        let avail_end = avail_offset + 6 + 2 * n;
+        let used_offset = (avail_end + FRAME_SIZE - 1) & !(FRAME_SIZE - 1); // page-aligned
+        let used_size = 6 + 8 * n;
+        let total_size = used_offset + used_size;
+        let total_pages = (total_size + FRAME_SIZE - 1) / FRAME_SIZE;
 
         // Allocate contiguous physical frames
         let first_frame = physical::alloc_contiguous(total_pages)?;
         let base_phys = first_frame.0;
 
         let desc_phys = base_phys;
-        let avail_phys = base_phys + (desc_pages * FRAME_SIZE) as u64;
-        let used_phys = avail_phys + (avail_pages * FRAME_SIZE) as u64;
+        let avail_phys = base_phys + avail_offset as u64;
+        let used_phys = base_phys + used_offset as u64;
 
         let desc_virt = phys_to_virt(desc_phys);
         let avail_virt = phys_to_virt(avail_phys);

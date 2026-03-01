@@ -175,15 +175,16 @@ pub fn init(dev: &VirtioMmioDevice) {
         return;
     }
 
-    // Read device name from config
-    dev.write_config_u32(0, VIRTIO_INPUT_CFG_ID_NAME as u32); // select
-    dev.write_config_u32(1, 0); // subsel (byte offset in config, but MMIO is 32-bit aligned)
-    // Read size
-    let size = dev.read_config_u32(2) & 0xFF;
+    // Read device name from config.
+    // VirtIO Input config has byte-sized fields: select(0), subsel(1), size(2).
+    // Use byte-level MMIO access to avoid unaligned 32-bit writes on ARM64.
+    dev.write_config_u8(0, VIRTIO_INPUT_CFG_ID_NAME); // select
+    dev.write_config_u8(1, 0); // subsel
+    // Read size (byte 2)
+    let size = dev.read_config_u8(2) as u32;
     let is_keyboard = if size > 0 {
-        // Read first 4 bytes of name
-        let name_word = dev.read_config_u32(8); // data starts at offset 8 in config
-        let first_char = (name_word & 0xFF) as u8;
+        // Read first byte of name (data starts at byte offset 8 in config)
+        let first_char = dev.read_config_u8(8);
         // Keyboards typically start with 'Q' (QEMU Virtio Keyboard) or 'k'
         first_char == b'Q' || first_char == b'k' || first_char == b'K'
     } else {
