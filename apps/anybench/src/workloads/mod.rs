@@ -18,6 +18,14 @@ mod gpu_lines;
 mod gpu_circles;
 mod gpu_blending;
 
+// 3D workloads (libgl)
+pub(crate) mod gl3d_common;
+mod gl3d_triangles;
+mod gl3d_textured;
+mod gl3d_lighting;
+mod gl3d_depth;
+mod gl3d_drawcalls;
+
 pub use prime_sieve::bench_prime_sieve;
 pub use mandelbrot::bench_mandelbrot;
 pub use memory_copy::bench_memory_copy;
@@ -31,6 +39,12 @@ pub use gpu_lines::bench_gpu_lines;
 pub use gpu_circles::bench_gpu_circles;
 pub use gpu_blending::bench_gpu_blending;
 
+pub use gl3d_triangles::bench_gl3d_triangles;
+pub use gl3d_textured::bench_gl3d_textured;
+pub use gl3d_lighting::bench_gl3d_lighting;
+pub use gl3d_depth::bench_gl3d_depth;
+pub use gl3d_drawcalls::bench_gl3d_drawcalls;
+
 use libanyui_client as anyui;
 
 /// Duration for each CPU benchmark in milliseconds.
@@ -41,8 +55,13 @@ pub const CPU_TEST_MS: u32 = 3000;
 /// 5 s is long enough to smooth out compositor and interrupt jitter.
 pub const GPU_TEST_MS: u32 = 5000;
 
+/// Duration for each 3D benchmark in milliseconds.
+/// Same as GPU — long enough for stable results through the full GL pipeline.
+pub const GL3D_TEST_MS: u32 = 5000;
+
 pub const NUM_CPU_TESTS: usize = 6;
 pub const NUM_GPU_TESTS: usize = 5;
+pub const NUM_GL3D_TESTS: usize = 5;
 
 /// Baseline raw scores (calibrated for ~1000 pts on a single-core 2 GHz QEMU VM, 3 s runs).
 pub const CPU_BASELINES: [u64; NUM_CPU_TESTS] = [
@@ -63,6 +82,15 @@ pub const GPU_BASELINES: [u64; NUM_GPU_TESTS] = [
     50_000,      // blended rects
 ];
 
+/// Baseline raw scores for 3D tests (calibrated for ~1000 pts, 5 s runs).
+pub const GL3D_BASELINES: [u64; NUM_GL3D_TESTS] = [
+    50_000,      // flat-colored triangles
+    30_000,      // textured triangles
+    40_000,      // lit triangles (Gouraud)
+    50_000,      // depth-tested triangles
+    10_000,      // draw calls
+];
+
 pub const CPU_TEST_NAMES: [&str; NUM_CPU_TESTS] = [
     "Integer Math",
     "Floating-Point",
@@ -78,6 +106,14 @@ pub const GPU_TEST_NAMES: [&str; NUM_GPU_TESTS] = [
     "Line Drawing",
     "Circle Rendering",
     "Alpha Blending",
+];
+
+pub const GL3D_TEST_NAMES: [&str; NUM_GL3D_TESTS] = [
+    "Triangle Throughput",
+    "Textured Rendering",
+    "Phong Lighting",
+    "Depth Testing",
+    "Draw Calls",
 ];
 
 /// Dispatches a CPU benchmark by 1-based ID. Returns the raw score.
@@ -101,6 +137,18 @@ pub fn run_gpu_test(index: usize, canvas: &anyui::Canvas, offscreen: bool) -> u6
         2 => bench_gpu_lines(canvas, offscreen),
         3 => bench_gpu_circles(canvas, offscreen),
         4 => bench_gpu_blending(canvas, offscreen),
+        _ => 0,
+    }
+}
+
+/// Dispatches a 3D (libgl) benchmark by 0-based index. Returns the raw score.
+pub fn run_gl3d_test(index: usize, canvas: &anyui::Canvas) -> u64 {
+    match index {
+        0 => bench_gl3d_triangles(canvas),
+        1 => bench_gl3d_textured(canvas),
+        2 => bench_gl3d_lighting(canvas),
+        3 => bench_gl3d_depth(canvas),
+        4 => bench_gl3d_drawcalls(canvas),
         _ => 0,
     }
 }

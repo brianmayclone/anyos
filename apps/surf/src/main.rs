@@ -191,21 +191,41 @@ fn ws_start_poll_timer() {
 // CSS animation tick
 // ═══════════════════════════════════════════════════════════
 
-/// Start the 16 ms CSS animation tick timer (60 fps).
+/// Start the 16 ms animation / scroll tick timer.
 ///
-/// Each tick calls `WebView::tick(16)` on the active tab.  When the JS
-/// runtime has active animations the webview relayouts automatically.
+/// Each tick calls `WebView::tick(16)` on the active tab.  The timer
+/// automatically kills itself after a period of inactivity (no animations,
+/// no JS timers, no pending tile creation) and is restarted by
+/// `ensure_anim_timer()` when new work arrives (page load, scroll, etc.).
 pub(crate) fn start_anim_timer() {
     let st = state();
     if st.anim_timer != 0 { return; }
+    static mut IDLE_TICKS: u32 = 0;
     st.anim_timer = ui_lib::set_timer(16, || {
         let st = state();
-        if st.tabs[st.active_tab].webview.tick(16) {
-            // Animation is active — relayout was already done inside tick().
+        let changed = st.tabs[st.active_tab].webview.tick(16);
+        if changed {
+            unsafe { IDLE_TICKS = 0; }
+        } else {
+            unsafe { IDLE_TICKS += 1; }
+            // After ~2 seconds of no work (120 ticks × 16ms), stop the timer.
+            if unsafe { IDLE_TICKS } > 120 {
+                unsafe { IDLE_TICKS = 0; }
+                if st.anim_timer != 0 {
+                    ui_lib::kill_timer(st.anim_timer);
+                    st.anim_timer = 0;
+                }
+            }
         }
-        // Forward timer tick to JS setTimeout/setInterval/requestAnimationFrame.
-        // (tick() handles this internally via JsRuntime::tick)
     });
+}
+
+/// Ensure the animation timer is running (restart if stopped).
+///
+/// Call this when new work arrives: page navigation, scroll events,
+/// new CSS/image resources, etc.
+pub(crate) fn ensure_anim_timer() {
+    start_anim_timer();
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -265,6 +285,8 @@ fn mark_relayout_dirty(tab_index: usize) {
     if st.relayout_timer == 0 {
         st.relayout_timer = ui_lib::set_timer(300, flush_relayout);
     }
+    // Ensure the anim timer is running so new tiles are created after relayout.
+    ensure_anim_timer();
 }
 
 /// Debounce callback: perform one relayout per dirty tab, then clear flags
@@ -399,6 +421,9 @@ fn handle_nav_done(
         resources::queue_stylesheets(dom, &base_url, tab_idx);
         resources::queue_images(dom, &base_url, tab_idx);
     }
+
+    // Restart animation/scroll tick timer (may have been stopped while idle).
+    ensure_anim_timer();
 }
 
 /// Handle a navigation error: show the error message in the status bar.
@@ -605,6 +630,7 @@ fn main() {
     initial_tab.webview.set_submit_callback(callbacks::on_form_submit, 0);
     content_view.add(initial_tab.webview.scroll_view());
     initial_tab.webview.scroll_view().set_dock(ui_lib::DOCK_FILL);
+    initial_tab.webview.scroll_view().on_scroll(|_| { ensure_anim_timer(); });
 
     unsafe {
         STATE = Some(AppState {

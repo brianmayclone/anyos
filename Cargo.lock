@@ -38,6 +38,7 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libanyui_client",
+ "libgl_client",
 ]
 
 [[package]]

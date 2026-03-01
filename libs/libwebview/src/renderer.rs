@@ -1,10 +1,11 @@
-//! Canvas-based renderer with tile-grid caching.
+//! Per-tile canvas renderer with compositor-driven smooth scrolling.
 //!
 //! Static content (text, backgrounds, borders, images) is drawn into cached
-//! tile strips (doc_width × 256px).  On scroll, cached tiles are composed via
-//! fast memcpy; only new tiles entering the viewport are rasterized.  Interactive
-//! form controls (TextField, Checkbox, etc.) are persistent libanyui controls
-//! positioned at absolute document coordinates.
+//! tile strips (doc_width × 256px).  Each tile is a separate Canvas control
+//! positioned at its document Y coordinate inside the content_view.  The
+//! compositor's ScrollView handles smooth pixel-level scrolling natively —
+//! zero per-frame work from the application.  Only new tiles entering the
+//! pre-render zone are rasterized and created (~900 KB each).
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -123,8 +124,6 @@ impl ImageCache {
 /// A clickable region on the canvas.
 ///
 /// Coordinates are in **absolute document space** (not canvas-local).
-/// The hit-test methods translate canvas-local mouse coordinates to document
-/// coordinates before testing.
 pub struct HitRegion {
     pub x: i32,
     pub y: i32,
@@ -160,17 +159,23 @@ pub struct FormControl {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Tile cache
+// Tile cache (pixel data)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Tile height in pixels.  Each tile covers `[row * 256, (row+1) * 256)`.
 const TILE_HEIGHT: u32 = 256;
 
-/// Maximum number of cached tiles.  20 tiles × ~900 KB ≈ 18 MB at 900px width.
-const MAX_CACHED_TILES: usize = 20;
+/// Maximum number of cached tile pixel buffers.
+const MAX_CACHED_TILES: usize = 40;
 
 /// Buffer zone above/below the viewport for pre-rendering (pixels).
-const BUFFER_ZONE: i32 = 500;
+const BUFFER_ZONE: i32 = 512;
+
+/// Maximum number of tile canvases to keep alive.
+const MAX_TILE_CANVASES: usize = 30;
+
+/// Maximum number of tiles to rasterize per tick (avoids blocking the event loop).
+const MAX_TILES_PER_TICK: usize = 2;
 
 /// A cached rasterized tile strip: doc_width × TILE_HEIGHT pixels.
 struct CachedTile {
@@ -232,64 +237,78 @@ impl TileCache {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Per-tile canvas (for smooth compositor-driven scrolling)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A Canvas control linked to a tile row.  Positioned at (0, row * TILE_HEIGHT)
+/// in the content_view.  The compositor's ScrollView scrolls the content_view
+/// natively, so tile canvases require zero per-frame work during scroll.
+struct TileCanvas {
+    /// Tile row index.
+    row: u32,
+    /// The Canvas control.
+    canvas: ui::Canvas,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Renderer
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Canvas-based renderer with tile-grid caching.
+/// Per-tile canvas renderer with compositor-driven smooth scrolling.
 ///
-/// The document is divided into horizontal tile strips (doc_width × 256px).
-/// Each tile is rasterized once and cached.  On scroll, cached tiles are
-/// composed via fast memcpy; only new tiles entering the viewport are
-/// rasterized.  This eliminates redundant font rasterization and pixel
-/// drawing for already-rendered content.
+/// Each tile strip (doc_width × 256px) gets its own Canvas control positioned
+/// inside the content_view.  The compositor's ScrollView clips and scrolls
+/// natively — zero work from the application during scroll.  Only tiles
+/// entering the pre-render zone are rasterized (~900 KB per tile).
 pub(crate) struct Renderer {
-    /// The single Canvas for all static content.
-    canvas: Option<ui::Canvas>,
-    /// Current canvas dimensions.
-    canvas_w: u32,
-    canvas_h: u32,
+    /// Per-tile canvases — each tile is a separate Canvas in the content_view.
+    tile_canvases: Vec<TileCanvas>,
+    /// Tile pixel data cache (survives canvas eviction for fast recreation).
+    tile_cache: TileCache,
+    /// Current document width (for tile sizing).
+    doc_w: u32,
+    /// Current document height.
+    doc_h: u32,
     /// Clickable regions (links, submit buttons) — absolute document coordinates.
     pub hit_regions: Vec<HitRegion>,
     /// Persistent form controls — only destroyed on full page navigation.
     pub form_controls: Vec<FormControl>,
     /// Compatibility: control_id → link URL (for submit button Labels).
     pub link_map: Vec<(u32, String)>,
-    /// Current canvas origin Y in document coordinates.
-    render_y: i32,
-    /// Tile-grid cache for scroll performance.
-    tile_cache: TileCache,
-    /// Composition buffer (reused across frames to avoid repeated allocation).
-    compose_buf: Vec<u32>,
+    /// Link callback (set on each tile canvas for click handling).
+    link_cb: Option<ui::Callback>,
+    link_cb_ud: u64,
+    /// Last scroll Y that triggered tile management.
+    last_scroll_y: i32,
 }
 
 impl Renderer {
     pub fn new() -> Self {
         Self {
-            canvas: None,
-            canvas_w: 0,
-            canvas_h: 0,
+            tile_canvases: Vec::new(),
+            tile_cache: TileCache::new(),
+            doc_w: 0,
+            doc_h: 0,
             hit_regions: Vec::new(),
             form_controls: Vec::new(),
             link_map: Vec::new(),
-            render_y: 0,
-            tile_cache: TileCache::new(),
-            compose_buf: Vec::new(),
+            link_cb: None,
+            link_cb_ud: 0,
+            last_scroll_y: 0,
         }
     }
 
-    /// Return the current canvas origin Y (document coordinates).
-    pub fn render_y(&self) -> i32 {
-        self.render_y
-    }
-
-    /// Return the canvas control ID (for identifying canvas clicks).
-    pub fn canvas_id(&self) -> Option<u32> {
-        self.canvas.as_ref().map(|c| c.id())
-    }
-
-    /// Return a reference to the canvas (for mouse position queries).
-    pub fn canvas_ref(&self) -> Option<&ui::Canvas> {
-        self.canvas.as_ref()
+    /// Check if a control ID belongs to any tile canvas, and if so return
+    /// the mouse position translated to absolute document coordinates.
+    pub fn tile_hit_coords(&self, ctrl_id: u32) -> Option<(i32, i32)> {
+        for tc in &self.tile_canvases {
+            if tc.canvas.id() == ctrl_id {
+                let (mx, my, _) = tc.canvas.get_mouse();
+                let doc_y = my + (tc.row * TILE_HEIGHT) as i32;
+                return Some((mx, doc_y));
+            }
+        }
+        None
     }
 
     /// Return the number of form controls currently tracked.
@@ -298,18 +317,23 @@ impl Renderer {
     }
 
     /// Soft clear: reset hit regions and link map, invalidate tile cache,
-    /// and mark form controls for GC.  Called on each relayout.
+    /// destroy tile canvases, and mark form controls for GC.
+    /// Called on each relayout.
     pub fn clear(&mut self) {
         self.hit_regions.clear();
         self.link_map.clear();
         self.tile_cache.invalidate_all();
+        // Destroy all tile canvases (content is stale after relayout).
+        for tc in self.tile_canvases.drain(..) {
+            ui::Control::from_id(tc.canvas.id()).remove();
+        }
         for fc in &mut self.form_controls {
             fc.seen = false;
         }
     }
 
-    /// Hard clear: destroy everything including canvas, form controls, and
-    /// tile cache.  Called on full page navigation (new URL).
+    /// Hard clear: destroy everything including tile canvases, form controls,
+    /// and tile cache.  Called on full page navigation (new URL).
     pub fn clear_all(&mut self) {
         for fc in &self.form_controls {
             if fc.control_id != 0 {
@@ -317,24 +341,21 @@ impl Renderer {
             }
         }
         self.form_controls.clear();
-        if let Some(ref c) = self.canvas {
-            ui::Control::from_id(c.id()).remove();
+        for tc in self.tile_canvases.drain(..) {
+            ui::Control::from_id(tc.canvas.id()).remove();
         }
-        self.canvas = None;
-        self.canvas_w = 0;
-        self.canvas_h = 0;
+        self.doc_w = 0;
+        self.doc_h = 0;
         self.hit_regions.clear();
         self.link_map.clear();
         self.tile_cache.invalidate_all();
-        self.compose_buf.clear();
+        self.link_cb = None;
+        self.link_cb_ud = 0;
+        self.last_scroll_y = 0;
     }
 
-    /// Hit-test the canvas at the given mouse coordinates for a link URL.
-    ///
-    /// `x`, `y` are canvas-local (from `canvas.get_mouse()`).  Translates to
-    /// document coordinates using the current `render_y` (canvas origin).
-    pub fn hit_test_link(&self, x: i32, y: i32) -> Option<&str> {
-        let doc_y = y + self.render_y;
+    /// Hit-test at absolute document coordinates for a link URL.
+    pub fn hit_test_link_at(&self, x: i32, doc_y: i32) -> Option<&str> {
         for region in &self.hit_regions {
             if x >= region.x && x < region.x + region.w
                 && doc_y >= region.y && doc_y < region.y + region.h
@@ -347,9 +368,8 @@ impl Renderer {
         None
     }
 
-    /// Hit-test the canvas at the given mouse coordinates for a submit button.
-    pub fn hit_test_submit(&self, x: i32, y: i32) -> Option<usize> {
-        let doc_y = y + self.render_y;
+    /// Hit-test at absolute document coordinates for a submit button.
+    pub fn hit_test_submit_at(&self, x: i32, doc_y: i32) -> Option<usize> {
         for region in &self.hit_regions {
             if x >= region.x && x < region.x + region.w
                 && doc_y >= region.y && doc_y < region.y + region.h
@@ -366,11 +386,11 @@ impl Renderer {
     // Full render (relayout path)
     // ─────────────────────────────────────────────────────────────────────
 
-    /// Render the layout tree using tile-grid caching.
+    /// Render the layout tree using per-tile canvases.
     ///
     /// Called after relayout.  Invalidates the tile cache, walks the full
-    /// tree for form controls and hit regions, rasterizes visible tile rows,
-    /// composes them into the canvas, and GCs unseen form controls.
+    /// tree for form controls and hit regions, creates tile canvases for
+    /// visible rows, and GCs unseen form controls.
     pub fn render(
         &mut self,
         root: &LayoutBox,
@@ -392,6 +412,12 @@ impl Renderer {
         let w = doc_w.max(1);
         let clear_color = if bg_color != 0 { bg_color } else { 0xFFFFFFFF };
 
+        self.doc_w = w;
+        self.doc_h = doc_h;
+        self.link_cb = link_cb;
+        self.link_cb_ud = link_cb_ud;
+        self.last_scroll_y = scroll_y;
+
         // 1. Invalidate tile cache (layout has changed).
         self.tile_cache.invalidate_all();
 
@@ -408,34 +434,14 @@ impl Renderer {
             0
         };
 
-        // 4. Rasterize visible tile rows and cache them.
+        // 4. Rasterize visible tile rows, cache them, and create canvases.
         for row in first_row..=last_row {
             let tile_buf = rasterize_tile(root, images, w, row, doc_h, clear_color);
             self.tile_cache.insert(row, tile_buf);
+            self.create_tile_canvas(row, w, doc_h, parent);
         }
 
-        // 5. Compose cached tiles into compose_buf.
-        let canvas_y = (first_row * TILE_HEIGHT) as i32;
-        let canvas_h = (((last_row + 1) * TILE_HEIGHT).min(doc_h) - first_row * TILE_HEIGHT).max(1);
-        self.compose_visible_tiles(w, canvas_y, canvas_h, clear_color);
-
-        // 6. Draw fixed-element overlay on top of compose_buf.
-        draw_fixed_overlay(
-            root, self.compose_buf.as_mut_ptr(), w, canvas_h,
-            images, 0, 0, scroll_y, canvas_y, false,
-        );
-
-        // 7. Ensure canvas exists and transfer pixels.
-        self.ensure_canvas(parent, w, canvas_h, link_cb, link_cb_ud);
-        if let Some(ref canvas) = self.canvas {
-            canvas.set_position(0, canvas_y);
-        }
-        self.render_y = canvas_y;
-        if let Some(ref canvas) = self.canvas {
-            canvas.copy_pixels_from(&self.compose_buf);
-        }
-
-        // 8. GC unseen form controls.
+        // 5. GC unseen form controls.
         self.form_controls.retain(|fc| {
             if !fc.seen && fc.control_id != 0 {
                 ui::Control::from_id(fc.control_id).remove();
@@ -445,18 +451,24 @@ impl Renderer {
             }
         });
 
-        crate::debug_surf!("[render] full render done: {} tiles cached, {} hit_regions, {} form_controls",
-            last_row - first_row + 1, self.hit_regions.len(), self.form_controls.len());
+        crate::debug_surf!("[render] full render done: {} tile canvases, {} hit_regions, {} form_controls",
+            self.tile_canvases.len(), self.hit_regions.len(), self.form_controls.len());
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // Scroll render (fast path)
+    // Scroll render (fast path — compositor-driven)
     // ─────────────────────────────────────────────────────────────────────
 
-    /// Re-render for scroll only — no relayout, no form controls, no hit regions.
+    /// Ensure tile canvases exist for the visible viewport range.
     ///
-    /// Composes from tile cache (fast memcpy for cached tiles).  Only tiles
-    /// not yet in the cache are rasterized via a pixel-only tree walk.
+    /// The compositor's ScrollView handles smooth pixel-level scrolling.
+    /// This method only needs to create canvases for newly visible tile rows
+    /// and remove distant ones.  Tiles already in the cache are free to
+    /// create (just a ~900 KB `copy_pixels_from`).  Cache-miss tiles are
+    /// rasterized incrementally (max 2 per call to avoid blocking the
+    /// event loop).
+    ///
+    /// Returns `true` if there are still pending tiles that need creation.
     pub fn render_scroll(
         &mut self,
         root: &LayoutBox,
@@ -467,13 +479,17 @@ impl Renderer {
         viewport_h: u32,
         scroll_y: i32,
         bg_color: u32,
-        link_cb: Option<ui::Callback>,
-        link_cb_ud: u64,
-    ) {
+        _link_cb: Option<ui::Callback>,
+        _link_cb_ud: u64,
+    ) -> bool {
         let w = doc_w.max(1);
         let clear_color = if bg_color != 0 { bg_color } else { 0xFFFFFFFF };
 
-        // 1. Compute visible tile rows.
+        self.doc_w = w;
+        self.doc_h = doc_h;
+        self.last_scroll_y = scroll_y;
+
+        // 1. Compute tile rows that should have canvases (viewport + buffer).
         let render_y_start = (scroll_y - BUFFER_ZONE).max(0);
         let render_y_end = (scroll_y + viewport_h as i32 + BUFFER_ZONE).min(doc_h as i32);
         let first_row = render_y_start as u32 / TILE_HEIGHT;
@@ -483,107 +499,86 @@ impl Renderer {
             0
         };
 
-        // 2. Rasterize cache-miss tiles only.
+        // 2. Create canvases for new tile rows (limit rasterization to avoid blocking).
+        let mut rasterized = 0usize;
+        let mut pending = false;
         for row in first_row..=last_row {
-            if self.tile_cache.get(row).is_some() {
-                continue; // cache hit — no work
+            // Skip if canvas already exists.
+            if self.tile_canvases.iter().any(|tc| tc.row == row) {
+                continue;
             }
-            let tile_buf = rasterize_tile(root, images, w, row, doc_h, clear_color);
-            self.tile_cache.insert(row, tile_buf);
+
+            // Rasterize if not in pixel cache.
+            if self.tile_cache.get(row).is_none() {
+                if rasterized >= MAX_TILES_PER_TICK {
+                    pending = true;
+                    continue;
+                }
+                let tile_buf = rasterize_tile(root, images, w, row, doc_h, clear_color);
+                self.tile_cache.insert(row, tile_buf);
+                rasterized += 1;
+            }
+
+            // Create canvas from cached pixel data.
+            self.create_tile_canvas(row, w, doc_h, parent);
         }
 
-        // 3. Compose cached tiles into compose_buf.
-        let canvas_y = (first_row * TILE_HEIGHT) as i32;
-        let canvas_h = (((last_row + 1) * TILE_HEIGHT).min(doc_h) - first_row * TILE_HEIGHT).max(1);
-        self.compose_visible_tiles(w, canvas_y, canvas_h, clear_color);
+        // 3. Evict tile canvases that are far from the viewport.
+        let keep_first = first_row.saturating_sub(4);
+        let keep_last = (last_row + 4).min(if doc_h > 0 { (doc_h - 1) / TILE_HEIGHT } else { 0 });
+        self.tile_canvases.retain(|tc| {
+            if tc.row < keep_first || tc.row > keep_last {
+                ui::Control::from_id(tc.canvas.id()).remove();
+                false
+            } else {
+                true
+            }
+        });
 
-        // 4. Draw fixed-element overlay.
-        draw_fixed_overlay(
-            root, self.compose_buf.as_mut_ptr(), w, canvas_h,
-            images, 0, 0, scroll_y, canvas_y, false,
-        );
+        // Also enforce max tile canvases (LRU by distance from viewport center).
+        while self.tile_canvases.len() > MAX_TILE_CANVASES {
+            let vp_center_row = ((scroll_y + viewport_h as i32 / 2).max(0) as u32) / TILE_HEIGHT;
+            let farthest_idx = self.tile_canvases.iter().enumerate()
+                .max_by_key(|(_, tc)| {
+                    if tc.row > vp_center_row {
+                        tc.row - vp_center_row
+                    } else {
+                        vp_center_row - tc.row
+                    }
+                })
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            let tc = self.tile_canvases.swap_remove(farthest_idx);
+            ui::Control::from_id(tc.canvas.id()).remove();
+        }
 
-        // 5. Ensure canvas and transfer pixels.
-        self.ensure_canvas(parent, w, canvas_h, link_cb, link_cb_ud);
-        if let Some(ref canvas) = self.canvas {
-            canvas.set_position(0, canvas_y);
-        }
-        self.render_y = canvas_y;
-        if let Some(ref canvas) = self.canvas {
-            canvas.copy_pixels_from(&self.compose_buf);
-        }
+        pending
     }
 
     // ─────────────────────────────────────────────────────────────────────
     // Internal helpers
     // ─────────────────────────────────────────────────────────────────────
 
-    /// Compose cached tiles into `self.compose_buf`.
-    fn compose_visible_tiles(&mut self, doc_w: u32, canvas_y: i32, canvas_h: u32, clear_color: u32) {
-        let size = (doc_w as usize) * (canvas_h as usize);
-        self.compose_buf.resize(size, clear_color);
-        // Clear the buffer (resize only fills new elements).
-        for px in self.compose_buf.iter_mut() {
-            *px = clear_color;
+    /// Create a Canvas control for a tile row from cached pixel data.
+    fn create_tile_canvas(&mut self, row: u32, doc_w: u32, doc_h: u32, parent: &ui::View) {
+        let pixels = match self.tile_cache.get(row) {
+            Some(px) => px,
+            None => return,
+        };
+
+        let tile_y = (row * TILE_HEIGHT) as i32;
+        let tile_h = TILE_HEIGHT.min(doc_h.saturating_sub(row * TILE_HEIGHT)).max(1);
+
+        let c = ui::Canvas::new(doc_w, tile_h);
+        c.set_position(0, tile_y);
+        c.set_size(doc_w, tile_h);
+        if let Some(cb) = self.link_cb {
+            c.on_click_raw(cb, self.link_cb_ud);
         }
+        parent.add(&c);
+        c.copy_pixels_from(pixels);
 
-        let w = doc_w as usize;
-        let first_row = canvas_y / TILE_HEIGHT as i32;
-        let last_row = (canvas_y + canvas_h as i32 - 1) / TILE_HEIGHT as i32;
-
-        for row_idx in first_row..=last_row {
-            let tile_pixels = match self.tile_cache.get(row_idx as u32) {
-                Some(px) => px,
-                None => continue,
-            };
-            let tile_y = row_idx * TILE_HEIGHT as i32;
-            let src_y0 = (canvas_y - tile_y).max(0) as usize;
-            let dst_y0 = (tile_y - canvas_y).max(0) as usize;
-            let copy_h = (TILE_HEIGHT as usize).saturating_sub(src_y0)
-                .min((canvas_h as usize).saturating_sub(dst_y0));
-
-            for y in 0..copy_h {
-                let src_off = (src_y0 + y) * w;
-                let dst_off = (dst_y0 + y) * w;
-                if src_off + w <= tile_pixels.len() && dst_off + w <= self.compose_buf.len() {
-                    self.compose_buf[dst_off..dst_off + w]
-                        .copy_from_slice(&tile_pixels[src_off..src_off + w]);
-                }
-            }
-        }
-    }
-
-    /// Ensure the canvas exists and has the correct size.
-    fn ensure_canvas(
-        &mut self,
-        parent: &ui::View,
-        w: u32,
-        h: u32,
-        link_cb: Option<ui::Callback>,
-        link_cb_ud: u64,
-    ) -> &ui::Canvas {
-        let h = h.max(1);
-        let w = w.max(1);
-
-        if self.canvas.is_none() {
-            let c = ui::Canvas::new(w, h);
-            c.set_position(0, 0);
-            c.set_size(w, h);
-            parent.add(&c);
-            if let Some(cb) = link_cb {
-                c.on_click_raw(cb, link_cb_ud);
-            }
-            self.canvas = Some(c);
-            self.canvas_w = w;
-            self.canvas_h = h;
-        } else if w != self.canvas_w || h != self.canvas_h {
-            let c = self.canvas.as_ref().unwrap();
-            c.set_size(w, h);
-            self.canvas_w = w;
-            self.canvas_h = h;
-        }
-
-        self.canvas.as_ref().unwrap()
+        self.tile_canvases.push(TileCanvas { row, canvas: c });
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -692,7 +687,6 @@ impl Renderer {
 
             FormFieldKind::Submit | FormFieldKind::ButtonEl => {
                 // Register submit hit region (absolute document coords).
-                // Pixel drawing happens in rasterize_tile() / draw_fixed_overlay().
                 self.hit_regions.push(HitRegion {
                     x, y, w: bx.width, h: bx.height,
                     kind: HitKind::Submit(node_id),
@@ -775,7 +769,7 @@ impl Renderer {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Free functions: tile rasterization, fixed overlay, pixel helpers
+// Free functions: tile rasterization, pixel helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Rasterize a single tile row (pixel-only, no form controls or hit regions).
@@ -809,7 +803,6 @@ fn rasterize_tile(
 /// Pixel-only tree walk — draws backgrounds, borders, text, images, and
 /// submit button appearances into the tile buffer.
 ///
-/// Skips fixed-position boxes (they are drawn in the overlay pass).
 /// Skips form controls and hit regions (handled by `walk_controls()`).
 fn walk_pixels(
     bx: &LayoutBox,
@@ -822,13 +815,12 @@ fn walk_pixels(
     tile_y_start: i32,
     tile_y_end: i32,
 ) {
-    // Skip invisible and fixed-position boxes (fixed drawn in overlay).
-    if bx.visibility_hidden || bx.is_fixed {
+    if bx.visibility_hidden {
         return;
     }
 
-    let abs_x = offset_x + bx.x;
-    let abs_y = offset_y + bx.y;
+    let abs_x = if bx.is_fixed { bx.x } else { offset_x + bx.x };
+    let abs_y = if bx.is_fixed { bx.y } else { offset_y + bx.y };
 
     // Cull boxes entirely outside the tile.
     let in_tile = abs_y + bx.height > tile_y_start && abs_y < tile_y_end;
@@ -931,11 +923,10 @@ fn walk_pixels(
         }
     }
 
-    // Recurse into children (skip fixed children — they're drawn in overlay).
+    // Recurse into children.
     for child in &bx.children {
-        if !child.is_fixed {
-            walk_pixels(child, buf, stride, buf_h, images, abs_x, abs_y, tile_y_start, tile_y_end);
-        }
+        let (cx, cy) = if bx.is_fixed { (bx.x, bx.y) } else { (abs_x, abs_y) };
+        walk_pixels(child, buf, stride, buf_h, images, cx, cy, tile_y_start, tile_y_end);
     }
 }
 
@@ -959,94 +950,6 @@ fn draw_submit_pixels(buf: *mut u32, stride: u32, buf_h: u32, x: i32, y: i32, bx
     let tx = x + (bx.width - tw as i32) / 2;
     let ty = y + (bx.height - font_size as i32) / 2;
     libfont_client::draw_string_buf(buf, stride, buf_h, tx, ty, text_color, 0, font_size, label_text);
-}
-
-/// Draw fixed-position elements as an overlay on top of composed tiles.
-///
-/// Walks the tree looking for `is_fixed` boxes.  When found, draws the
-/// entire fixed subtree at viewport-relative positions into the buffer.
-fn draw_fixed_overlay(
-    bx: &LayoutBox,
-    buf: *mut u32,
-    stride: u32,
-    buf_h: u32,
-    images: &ImageCache,
-    offset_x: i32,
-    offset_y: i32,
-    scroll_y: i32,
-    canvas_y: i32,
-    inside_fixed: bool,
-) {
-    if bx.visibility_hidden {
-        return;
-    }
-
-    let is_me_fixed = bx.is_fixed;
-    let draw_this = inside_fixed || is_me_fixed;
-
-    let (abs_x, abs_y) = if is_me_fixed {
-        (bx.x, bx.y)
-    } else {
-        (offset_x + bx.x, offset_y + bx.y)
-    };
-
-    if draw_this {
-        // Fixed subtree coordinates are viewport-relative.
-        // Map to canvas-local: draw_y = viewport_y + (scroll_y - canvas_y).
-        let draw_y = abs_y + (scroll_y - canvas_y);
-
-        // Background.
-        if bx.bg_color != 0 && bx.bg_color != 0x00000000 {
-            fill_rect_buf(buf, stride, buf_h, abs_x, draw_y, bx.width, bx.height, bx.bg_color);
-        }
-
-        // Border.
-        if bx.border_width > 0 && bx.border_color != 0 && bx.border_color != 0x00000000 {
-            let bw = bx.border_width;
-            let w = bx.width;
-            let h = bx.height;
-            fill_rect_buf(buf, stride, buf_h, abs_x, draw_y, w, bw, bx.border_color);
-            fill_rect_buf(buf, stride, buf_h, abs_x, draw_y + h - bw, w, bw, bx.border_color);
-            let inner_h = (h - bw * 2).max(0);
-            fill_rect_buf(buf, stride, buf_h, abs_x, draw_y + bw, bw, inner_h, bx.border_color);
-            fill_rect_buf(buf, stride, buf_h, abs_x + w - bw, draw_y + bw, bw, inner_h, bx.border_color);
-        }
-
-        // Text.
-        if let Some(ref text) = bx.text {
-            if !text.is_empty() && bx.form_field.is_none() {
-                let font_id = if bx.bold { 1u32 } else if bx.italic { 3u32 } else { 0u32 };
-                let font_size = bx.font_size.max(1) as u16;
-                let color = if bx.color != 0 { bx.color } else { 0xFF000000 };
-                libfont_client::draw_string_buf(
-                    buf, stride, buf_h,
-                    abs_x, draw_y, color, font_id, font_size, text,
-                );
-            }
-        }
-
-        // Image.
-        if let Some(ref src) = bx.image_src {
-            if let Some(entry) = images.get_ref(src) {
-                let dw = bx.image_width.unwrap_or(bx.width);
-                let dh = bx.image_height.unwrap_or(bx.height);
-                blit_image_buf(
-                    buf, stride, buf_h,
-                    abs_x, draw_y, dw, dh,
-                    &entry.pixels, entry.width, entry.height,
-                );
-            }
-        }
-    }
-
-    // Recurse.  If we're inside a fixed subtree, all children are drawn.
-    // If not, keep searching for fixed descendants.
-    for child in &bx.children {
-        draw_fixed_overlay(
-            child, buf, stride, buf_h, images,
-            abs_x, abs_y, scroll_y, canvas_y, draw_this,
-        );
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

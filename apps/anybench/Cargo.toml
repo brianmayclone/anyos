@@ -7,6 +7,7 @@ edition = "2021"
 anyos_std = { path = "../../libs/stdlib" }
 dynlink = { path = "../../libs/dynlink" }
 libanyui_client = { path = "../../libs/libanyui_client" }
+libgl_client = { path = "../../libs/libgl_client" }
 
 [profile.dev]
 panic = "abort"

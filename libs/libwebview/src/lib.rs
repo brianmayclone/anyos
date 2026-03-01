@@ -274,20 +274,21 @@ impl WebView {
     }
 
     /// Advance CSS animations/transitions, JS timers, and scroll-based tile
-    /// re-rendering by `delta_ms` milliseconds.
+    /// creation by `delta_ms` milliseconds.
     ///
-    /// Returns `true` if any visual change occurred (animation relayout or
-    /// viewport tile re-render).  Call at ~60 fps.
+    /// Returns `true` if any visual change occurred or pending tiles remain.
     pub fn tick(&mut self, delta_ms: u64) -> bool {
         let mut changed = false;
 
         // ── 1. Advance JS timers (setTimeout / setInterval / requestAnimationFrame). ──
-        // We can't borrow dom_val and js_runtime simultaneously, so take dom temporarily.
-        let dom_opt = self.dom_val.take();
-        if let Some(ref d) = dom_opt {
-            self.js_runtime.tick(d, delta_ms);
+        // Short-circuits internally when no timers exist (zero allocation).
+        if !self.js_runtime.timers.is_empty() {
+            let dom_opt = self.dom_val.take();
+            if let Some(ref d) = dom_opt {
+                self.js_runtime.tick(d, delta_ms);
+            }
+            self.dom_val = dom_opt;
         }
-        self.dom_val = dom_opt;
 
         // ── 2. Advance CSS animations. ──────────────────────────────────────────────
         if !self.js_runtime.active_animations.is_empty()
@@ -302,34 +303,37 @@ impl WebView {
             }
         }
 
-        // ── 3. Scroll-based tile re-rendering. ─────────────────────────────────────
-        // Read the current scroll_y from the ScrollView's state (synced by the
-        // compositor on every scroll event).  If the scroll has moved far enough
-        // from the last rendered tile center, re-render the tile from the cached
-        // layout tree — no relayout, no CSS resolve, just pixel operations.
+        // ── 3. Scroll-based tile management (compositor-driven). ─────────────────
+        // Per-tile canvases are positioned in the content_view.  The compositor
+        // handles smooth scrolling natively.  We only need to create tile
+        // canvases for rows entering the pre-render zone (incrementally, max
+        // 2 per tick to avoid blocking the event loop).
         if self.layout_root.is_some() {
             let scroll_y = self.scroll_view.get_state() as i32;
-            const BUFFER_ZONE: i32 = 500;
-            let threshold = BUFFER_ZONE / 2; // 250px hysteresis
             let delta = (scroll_y - self.last_render_scroll_y).abs();
-            if delta > threshold {
-                self.render_viewport(scroll_y);
-                changed = true;
+            // Check every 64px of scroll movement for new tiles needed.
+            if delta > 64 {
+                let pending = self.render_viewport(scroll_y);
+                self.last_render_scroll_y = scroll_y;
+                if pending {
+                    changed = true;
+                }
             }
         }
 
         changed
     }
 
-    /// Re-render visible tiles from the cached layout tree at the given scroll position.
-    /// Uses the fast scroll path: only rasterizes cache-miss tiles, composes cached
-    /// tiles via memcpy, and draws fixed overlays.  No relayout, no form-control
-    /// processing, no hit-region rebuild — those persist in document coordinates.
-    fn render_viewport(&mut self, scroll_y: i32) {
+    /// Ensure tile canvases exist for the visible viewport range.
+    ///
+    /// Uses the fast scroll path: only creates canvases for rows not yet
+    /// present.  Cache-miss tiles are rasterized incrementally (max 2 per
+    /// call).  Returns `true` if there are still pending tiles.
+    fn render_viewport(&mut self, scroll_y: i32) -> bool {
         // Split borrows: layout_root (immut), renderer (mut), content_view (immut), images (immut).
         let root = match self.layout_root {
             Some(ref root) => root as *const LayoutBox,
-            None => return,
+            None => return false,
         };
         let doc_w = self.viewport_width as u32;
         let doc_h = (self.total_height_val as u32).max(1);
@@ -348,9 +352,8 @@ impl WebView {
                 self.bg_color_cached,
                 self.link_cb,
                 self.link_cb_ud,
-            );
+            )
         }
-        self.last_render_scroll_y = scroll_y;
     }
 
     /// Clear all content (remove all controls, reset DOM).
@@ -372,17 +375,12 @@ impl WebView {
 
     /// Look up the link URL for a control ID (used in click callbacks).
     ///
-    /// If the control_id matches the canvas, performs a hit-test using the
-    /// last mouse position to find the clicked link.
+    /// If the control_id matches any tile canvas, performs a hit-test using
+    /// the mouse position translated to document coordinates.
     pub fn link_url_for(&self, control_id: u32) -> Option<&str> {
-        // Canvas click: hit-test at last mouse position.
-        if let Some(canvas_id) = self.renderer.canvas_id() {
-            if control_id == canvas_id {
-                if let Some(ref canvas) = self.renderer.canvas_ref() {
-                    let (mx, my, _) = canvas.get_mouse();
-                    return self.renderer.hit_test_link(mx, my);
-                }
-            }
+        // Tile canvas click: translate mouse to document coords and hit-test.
+        if let Some((mx, doc_y)) = self.renderer.tile_hit_coords(control_id) {
+            return self.renderer.hit_test_link_at(mx, doc_y);
         }
         // Legacy: real control link_map lookup.
         self.renderer.link_map.iter()
@@ -393,13 +391,8 @@ impl WebView {
     /// Check if a canvas click hit a submit button.  Returns the DOM node_id
     /// of the submit element, or None.
     pub fn canvas_submit_hit(&self, control_id: u32) -> Option<usize> {
-        if let Some(canvas_id) = self.renderer.canvas_id() {
-            if control_id == canvas_id {
-                if let Some(ref canvas) = self.renderer.canvas_ref() {
-                    let (mx, my, _) = canvas.get_mouse();
-                    return self.renderer.hit_test_submit(mx, my);
-                }
-            }
+        if let Some((mx, doc_y)) = self.renderer.tile_hit_coords(control_id) {
+            return self.renderer.hit_test_submit_at(mx, doc_y);
         }
         None
     }

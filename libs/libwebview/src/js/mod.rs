@@ -846,6 +846,9 @@ impl JsRuntime {
     /// Advance timers by `delta_ms` and execute any that are due.
     /// Returns the number of timers fired.
     pub fn tick(&mut self, dom: &Dom, delta_ms: u64) -> usize {
+        // Short-circuit: no allocation or work when there are no timers.
+        if self.timers.is_empty() { return 0; }
+
         let mut fired = 0usize;
         let mut keep = Vec::new();
         let timers = core::mem::take(&mut self.timers);
