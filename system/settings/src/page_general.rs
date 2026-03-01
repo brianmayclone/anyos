@@ -334,8 +334,8 @@ fn build_language_card(panel: &ui::View) {
     dd.set_size(240, 28);
     dd.set_selected_index(selected_idx);
 
-    // Hint label (hidden initially)
-    let hint = ui::Label::new(i18n::t("Restart apps to apply language change"));
+    // Hint label (hidden initially, shown after language switch)
+    let hint = ui::Label::new(i18n::t("Restart other apps to apply language change"));
     hint.set_dock(ui::DOCK_TOP);
     hint.set_size(552, 24);
     hint.set_margin(24, 4, 24, 8);
@@ -343,7 +343,6 @@ fn build_language_card(panel: &ui::View) {
     hint.set_text_color(layout::accent());
     hint.set_visible(false);
 
-    let hint_id = hint.id();
     dd.on_selection_changed(move |e| {
         let idx = e.index as usize;
         if idx < LANG_CODES.len() {
@@ -352,8 +351,8 @@ fn build_language_card(panel: &ui::View) {
             let _ = fs::write_bytes(LANG_CONF_PATH, code.as_bytes());
             // Set environment variable for current session
             env::set("LANG", code);
-            // Show restart hint
-            ui::Control::from_id(hint_id).set_visible(true);
+            // Immediately refresh the Settings app UI with the new language
+            crate::refresh_after_language_change();
         }
     });
 
