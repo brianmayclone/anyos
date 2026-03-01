@@ -295,6 +295,7 @@ unsafe fn vm_from_handle(handle: u64) -> &'static mut VmInstance {
 /// The handle must be destroyed with [`corevm_destroy`] when no longer needed.
 #[no_mangle]
 pub extern "C" fn corevm_create(ram_size_mb: u32) -> u64 {
+    vm_log!("creating VM with {} MiB RAM", ram_size_mb);
     let ram_bytes = (ram_size_mb as usize) * 1024 * 1024;
     let instance = Box::new(VmInstance {
         engine: VmEngine::new(ram_bytes),
@@ -309,7 +310,9 @@ pub extern "C" fn corevm_create(ram_size_mb: u32) -> u64 {
         bus_ptr: ptr::null_mut(),
         ide_ptr: ptr::null_mut(),
     });
-    Box::into_raw(instance) as u64
+    let h = Box::into_raw(instance) as u64;
+    vm_log!("VM created (handle=0x{:X})", h);
+    h
 }
 
 /// Destroy a VM instance and free all associated resources.
@@ -320,6 +323,7 @@ pub extern "C" fn corevm_destroy(handle: u64) {
     if handle == 0 {
         return;
     }
+    vm_log!("destroying VM (handle=0x{:X})", handle);
     unsafe {
         let _ = Box::from_raw(handle as *mut VmInstance);
     }
@@ -331,8 +335,11 @@ pub extern "C" fn corevm_destroy(handle: u64) {
 /// Guest RAM contents, I/O handlers, and MMIO handlers are preserved.
 #[no_mangle]
 pub extern "C" fn corevm_reset(handle: u64) {
+    vm_log!("resetting VM");
     let vm = unsafe { vm_from_handle(handle) };
     vm.engine.reset();
+    vm.last_error = None;
+    vm.last_error_rip = 0;
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -501,12 +508,28 @@ pub extern "C" fn corevm_get_cpl(handle: u64) -> u8 {
 #[no_mangle]
 pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
     let vm = unsafe { vm_from_handle(handle) };
-    match vm.engine.run(max_instructions) {
-        ExitReason::Halted => 0,
-        ExitReason::Exception(_) => 1,
+    let exit = vm.engine.run(max_instructions);
+    match exit {
+        ExitReason::Halted => {
+            vm_log!("VM halted after {} instructions", vm.engine.instruction_count());
+            0
+        }
+        ExitReason::Exception(ref err) => {
+            let rip = vm.engine.cpu.regs.rip;
+            vm_log!("VM exception at RIP=0x{:X}: {}", rip, err);
+            vm.last_error = Some(*err);
+            vm.last_error_rip = rip;
+            1
+        }
         ExitReason::InstructionLimit => 2,
-        ExitReason::Breakpoint => 3,
-        ExitReason::StopRequested => 4,
+        ExitReason::Breakpoint => {
+            vm_log!("VM breakpoint at RIP=0x{:X}", vm.engine.cpu.regs.rip);
+            3
+        }
+        ExitReason::StopRequested => {
+            vm_log!("VM stop requested");
+            4
+        }
     }
 }
 
@@ -527,6 +550,70 @@ pub extern "C" fn corevm_get_instruction_count(handle: u64) -> u64 {
     vm.engine.instruction_count()
 }
 
+/// Get the RIP at the time of the last error.
+///
+/// Returns 0 if no error has occurred since the last reset.
+#[no_mangle]
+pub extern "C" fn corevm_get_last_error_rip(handle: u64) -> u64 {
+    let vm = unsafe { vm_from_handle(handle) };
+    vm.last_error_rip
+}
+
+/// Write a human-readable description of the last error into the provided buffer.
+///
+/// Returns the number of bytes written (not including any NUL terminator).
+/// Returns 0 if no error has occurred since the last reset, or if `buf` is null.
+/// The output is NUL-terminated if the buffer is large enough.
+#[no_mangle]
+pub extern "C" fn corevm_get_last_error(handle: u64, buf: *mut u8, buf_len: u32) -> u32 {
+    if buf.is_null() || buf_len == 0 {
+        return 0;
+    }
+    let vm = unsafe { vm_from_handle(handle) };
+    let err = match &vm.last_error {
+        Some(e) => e,
+        None => return 0,
+    };
+    // Format the error using its Display impl into a stack buffer.
+    use core::fmt::Write;
+    let mut tmp = StackWriter::new();
+    let _ = write!(tmp, "{}", err);
+    let msg = tmp.as_bytes();
+    let copy_len = msg.len().min((buf_len - 1) as usize); // leave room for NUL
+    unsafe {
+        ptr::copy_nonoverlapping(msg.as_ptr(), buf, copy_len);
+        *buf.add(copy_len) = 0; // NUL terminator
+    }
+    copy_len as u32
+}
+
+/// Small stack-allocated writer for formatting error messages.
+struct StackWriter {
+    buf: [u8; 256],
+    pos: usize,
+}
+
+impl StackWriter {
+    fn new() -> Self {
+        StackWriter { buf: [0u8; 256], pos: 0 }
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.buf[..self.pos]
+    }
+}
+
+impl core::fmt::Write for StackWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let bytes = s.as_bytes();
+        let remaining = self.buf.len() - self.pos;
+        let copy = bytes.len().min(remaining);
+        self.buf[self.pos..self.pos + copy].copy_from_slice(&bytes[..copy]);
+        self.pos += copy;
+        Ok(())
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════
 // Memory
 // ════════════════════════════════════════════════════════════════════════
@@ -542,8 +629,10 @@ pub extern "C" fn corevm_load_binary(
     len: u32,
 ) -> i32 {
     if data.is_null() || len == 0 {
+        vm_log!("load_binary: null or empty data");
         return -1;
     }
+    vm_log!("loading {} bytes at physical 0x{:X}", len, addr);
     let vm = unsafe { vm_from_handle(handle) };
     let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
     vm.engine.load_binary(addr as usize, slice);
@@ -615,6 +704,7 @@ pub extern "C" fn corevm_write_phys_u32(handle: u64, addr: u64, val: u32) {
 /// Must only be called once per VM instance.
 #[no_mangle]
 pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
+    vm_log!("setting up standard devices (PIC, PIT, CMOS, PS/2, serial, VGA)");
     let vm = unsafe { vm_from_handle(handle) };
 
     // PIC — dual 8259A at standard ports.
@@ -656,6 +746,7 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
 /// Must only be called once per VM instance.
 #[no_mangle]
 pub extern "C" fn corevm_setup_pci_bus(handle: u64) {
+    vm_log!("setting up PCI bus (ports 0xCF8-0xCFF)");
     let vm = unsafe { vm_from_handle(handle) };
 
     let bus = Box::into_raw(Box::new(devices::bus::PciBus::new()));
@@ -671,6 +762,7 @@ pub extern "C" fn corevm_setup_pci_bus(handle: u64) {
 /// The E1000 uses MMIO (128 KB region), not port I/O.
 #[no_mangle]
 pub extern "C" fn corevm_setup_e1000(handle: u64, mmio_base: u64, mac: *const u8) {
+    vm_log!("setting up E1000 NIC at MMIO 0x{:X}", mmio_base);
     let vm = unsafe { vm_from_handle(handle) };
 
     let mac_bytes = if mac.is_null() {
@@ -952,6 +1044,7 @@ pub extern "C" fn corevm_pic_get_interrupt(handle: u64) -> i32 {
 /// 0x3F6-0x3F7 (control block). Must only be called once per VM instance.
 #[no_mangle]
 pub extern "C" fn corevm_setup_ide(handle: u64) {
+    vm_log!("setting up IDE controller (ports 0x1F0-0x1F7, 0x3F6-0x3F7)");
     let vm = unsafe { vm_from_handle(handle) };
 
     let ide = Box::into_raw(Box::new(devices::ide::Ide::new()));
@@ -975,6 +1068,7 @@ pub extern "C" fn corevm_ide_attach_disk(handle: u64, data: *const u8, len: u32)
         return;
     }
     let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
+    vm_log!("attaching IDE disk image ({} bytes)", len);
     let mut image = alloc::vec::Vec::with_capacity(len as usize);
     image.extend_from_slice(slice);
     unsafe { (*vm.ide_ptr).attach_disk(image) };

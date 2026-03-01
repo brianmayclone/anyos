@@ -261,6 +261,12 @@ struct CoreVmLib {
     ide_irq_raised: extern "C" fn(u64) -> u32,
     /// Clear the pending IDE IRQ.
     ide_clear_irq: extern "C" fn(u64),
+
+    // ── Error reporting ────────────────────────────────────────
+    /// Write the last error message into a buffer. Returns bytes written.
+    get_last_error: extern "C" fn(u64, *mut u8, u32) -> u32,
+    /// Get the RIP at the time of the last error.
+    get_last_error_rip: extern "C" fn(u64) -> u64,
 }
 
 /// Singleton holding the loaded library.
@@ -360,6 +366,9 @@ pub fn init() -> bool {
             ide_detach_disk: resolve(&handle, "corevm_ide_detach_disk"),
             ide_irq_raised: resolve(&handle, "corevm_ide_irq_raised"),
             ide_clear_irq: resolve(&handle, "corevm_ide_clear_irq"),
+            // Error reporting
+            get_last_error: resolve(&handle, "corevm_get_last_error"),
+            get_last_error_rip: resolve(&handle, "corevm_get_last_error_rip"),
             // Handle
             _handle: handle,
         };
@@ -811,6 +820,30 @@ impl VmHandle {
     /// Clear the pending IDE IRQ.
     pub fn ide_clear_irq(&self) {
         (lib().ide_clear_irq)(self.handle);
+    }
+
+    // ── Error reporting ─────────────────────────────────────────
+
+    /// Get a human-readable description of the last error.
+    ///
+    /// Returns `None` if no error has occurred since the last reset,
+    /// or `Some(message)` with the formatted error string.
+    pub fn last_error(&self) -> Option<alloc::string::String> {
+        let mut buf = [0u8; 256];
+        let n = (lib().get_last_error)(self.handle, buf.as_mut_ptr(), buf.len() as u32);
+        if n == 0 {
+            None
+        } else {
+            let s = core::str::from_utf8(&buf[..n as usize]).unwrap_or("(invalid UTF-8)");
+            Some(alloc::string::String::from(s))
+        }
+    }
+
+    /// Get the instruction pointer (RIP) at the time of the last error.
+    ///
+    /// Returns 0 if no error has occurred since the last reset.
+    pub fn last_error_rip(&self) -> u64 {
+        (lib().get_last_error_rip)(self.handle)
     }
 }
 

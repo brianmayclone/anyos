@@ -643,10 +643,13 @@ fn start_selected_vm() {
         return;
     }
 
+    anyos_std::println!("vmmanager: starting VM '{}'", entry.config.name);
+
     // Create the VM handle.
     let handle = match VmHandle::new(entry.config.ram_mb) {
         Some(h) => h,
         None => {
+            anyos_std::println!("vmmanager: failed to create VM (out of memory?)");
             a.status_label.set_text("Error: failed to create VM (out of memory?)");
             a.status_label.set_text_color(0xFFFF4040);
             return;
@@ -1421,6 +1424,8 @@ fn vm_tick() {
 
         match exit {
             ExitReason::Halted => {
+                anyos_std::println!("vmmanager: VM halted ({} instructions)",
+                    handle.instruction_count());
                 entry.state = VmState::Stopped;
                 a.canvas.clear(0xFF1E1E1E);
                 a.status_label.set_text("VM halted");
@@ -1429,7 +1434,18 @@ fn vm_tick() {
             ExitReason::Exception => {
                 entry.state = VmState::Stopped;
                 a.canvas.clear(0xFF1E1E1E);
-                a.status_label.set_text("VM stopped: unrecoverable exception");
+                // Show detailed error info from libcorevm.
+                let rip = handle.last_error_rip();
+                if let Some(ref err_msg) = handle.last_error() {
+                    let detail = alloc::format!(
+                        "Exception at RIP=0x{:X}: {}", rip, err_msg
+                    );
+                    anyos_std::println!("vmmanager: {}", detail);
+                    a.status_label.set_text(&detail);
+                } else {
+                    anyos_std::println!("vmmanager: VM stopped: unrecoverable exception");
+                    a.status_label.set_text("VM stopped: unrecoverable exception");
+                }
                 a.status_label.set_text_color(0xFFFF4040);
             }
             ExitReason::InstructionLimit => {

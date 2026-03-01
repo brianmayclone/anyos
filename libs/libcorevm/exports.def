@@ -45,3 +45,5 @@ EXPORTS
     corevm_ide_detach_disk
     corevm_ide_irq_raised
     corevm_ide_clear_irq
+    corevm_get_last_error
+    corevm_get_last_error_rip
