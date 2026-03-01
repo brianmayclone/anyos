@@ -190,7 +190,10 @@ impl MailConfig {
                     acc.id = Account::generate_id(&acc.email);
                 }
 
-                config.accounts.push(acc);
+                // Sanity check: only add account if it has email
+                if !acc.email.is_empty() {
+                    config.accounts.push(acc);
+                }
             }
         }
 
