@@ -1230,12 +1230,15 @@ fn open_compose(mode: ComposeMode) {
     comp_toolbar.set_color(COL_TOOLBAR);
     comp_toolbar.set_padding(4, 4, 4, 4);
 
-    let btn_send = comp_toolbar.add_button(t("Send"));
-    btn_send.set_size(60, 28);
-    let btn_attach = comp_toolbar.add_button(t("Attach"));
-    btn_attach.set_size(65, 28);
-    let btn_save_draft = comp_toolbar.add_button(t("Save Draft"));
-    btn_save_draft.set_size(85, 28);
+    let btn_send = comp_toolbar.add_icon_button(t("Send"));
+    btn_send.set_system_icon("mail-fast", IconType::Outline, 0xFFCCCCCC, 18);
+    btn_send.auto_size();
+    let btn_attach = comp_toolbar.add_icon_button(t("Attach"));
+    btn_attach.set_system_icon("paperclip", IconType::Outline, 0xFFCCCCCC, 18);
+    btn_attach.auto_size();
+    let btn_save_draft = comp_toolbar.add_icon_button(t("Save Draft"));
+    btn_save_draft.set_system_icon("device-floppy", IconType::Outline, 0xFFCCCCCC, 18);
+    btn_save_draft.auto_size();
     compose_win.add(&comp_toolbar);
 
     // Header fields
@@ -1861,10 +1864,12 @@ fn open_contacts() {
     toolbar.set_color(COL_TOOLBAR);
     toolbar.set_padding(4, 4, 4, 4);
 
-    let btn_add = toolbar.add_button(t("Add Contact"));
-    btn_add.set_size(95, 28);
-    let btn_del = toolbar.add_button(t("Delete"));
-    btn_del.set_size(60, 28);
+    let btn_add = toolbar.add_icon_button(t("Add Contact"));
+    btn_add.set_system_icon("user-plus", IconType::Outline, 0xFFCCCCCC, 18);
+    btn_add.auto_size();
+    let btn_del = toolbar.add_icon_button(t("Delete"));
+    btn_del.set_system_icon("user-minus", IconType::Outline, 0xFFCCCCCC, 18);
+    btn_del.auto_size();
 
     contacts_win.add(&toolbar);
 
