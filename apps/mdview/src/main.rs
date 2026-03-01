@@ -1232,30 +1232,6 @@ fn toggle_source() {
             editor.set_text(&s.files[idx].content);
             editor.set_show_line_numbers(true);
             editor.set_editor_font(FONT_MONO, 13);
-            editor.on_key_down(|ke| {
-                if ke.ctrl() {
-                    match ke.char_code {
-                        0x63 | 0x43 => { app().status_label.set_text(i18n::t("Copied selection")); }
-                        0x78 | 0x58 => {
-                            app().status_label.set_text(i18n::t("Cut selection"));
-                            let s = app();
-                            if !s.files.is_empty() {
-                                s.files[s.active].modified = true;
-                            }
-                            update_tab_labels();
-                        }
-                        0x76 | 0x56 => {
-                            app().status_label.set_text(i18n::t("Pasted"));
-                            let s = app();
-                            if !s.files.is_empty() {
-                                s.files[s.active].modified = true;
-                            }
-                            update_tab_labels();
-                        }
-                        _ => {}
-                    }
-                }
-            });
             s.scroll.add(&editor);
             s.files[idx].source_editor = Some(editor);
         } else {
