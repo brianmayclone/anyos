@@ -191,47 +191,66 @@ fn main() {
     // ── Toolbar (DOCK_TOP) ─────────────────────────────────────────────
     let toolbar = anyui::Toolbar::new();
     toolbar.set_dock(anyui::DOCK_TOP);
-    toolbar.set_size(1100, 36);
+    toolbar.set_size(1100, 46);
     toolbar.set_color(COL_TOOLBAR);
     toolbar.set_padding(4, 4, 4, 4);
 
-    // Compose/Reply buttons with icons
-    let btn_new = toolbar.add_icon_button(t("New"));
+    // Compose/Reply buttons with icons (34x34 with tooltips, no inline text)
+    let btn_new = toolbar.add_icon_button("");
+    btn_new.set_size(34, 34);
     btn_new.set_icon(anyui::ICON_NEW_FILE);
-    btn_new.auto_size();
-    let btn_reply = toolbar.add_icon_button(t("Reply"));
-    btn_reply.set_system_icon("mail-reply", anyui::IconType::Outline, 0xFFCCCCCC, 18);
-    btn_reply.auto_size();
-    let btn_reply_all = toolbar.add_icon_button(t("Reply All"));
-    btn_reply_all.set_system_icon("mail-reply-multiple", anyui::IconType::Outline, 0xFFCCCCCC, 18);
-    btn_reply_all.auto_size();
-    let btn_forward = toolbar.add_icon_button(t("Forward"));
-    btn_forward.set_system_icon("mail-forward", anyui::IconType::Outline, 0xFFCCCCCC, 18);
-    btn_forward.auto_size();
+    btn_new.set_tooltip(t("New"));
+
+    let btn_reply = toolbar.add_icon_button("");
+    btn_reply.set_size(34, 34);
+    btn_reply.set_system_icon("mail-reply", anyui::IconType::Outline, 0xFFCCCCCC, 24);
+    btn_reply.set_tooltip(t("Reply"));
+
+    let btn_reply_all = toolbar.add_icon_button("");
+    btn_reply_all.set_size(34, 34);
+    btn_reply_all.set_system_icon("mail-reply-multiple", anyui::IconType::Outline, 0xFFCCCCCC, 24);
+    btn_reply_all.set_tooltip(t("Reply All"));
+
+    let btn_forward = toolbar.add_icon_button("");
+    btn_forward.set_size(34, 34);
+    btn_forward.set_system_icon("mail-forward", anyui::IconType::Outline, 0xFFCCCCCC, 24);
+    btn_forward.set_tooltip(t("Forward"));
+
     toolbar.add_separator();
 
     // Message management buttons
-    let btn_archive = toolbar.add_icon_button(t("Archive"));
-    btn_archive.set_system_icon("archive", anyui::IconType::Outline, 0xFFCCCCCC, 18);
-    btn_archive.auto_size();
-    let btn_junk = toolbar.add_icon_button(t("Junk"));
-    btn_junk.set_system_icon("mail-x", anyui::IconType::Outline, 0xFFCCCCCC, 18);
-    btn_junk.auto_size();
-    let btn_delete = toolbar.add_icon_button(t("Delete"));
-    btn_delete.set_system_icon("trash", anyui::IconType::Outline, 0xFFCCCCCC, 18);
-    btn_delete.auto_size();
+    let btn_archive = toolbar.add_icon_button("");
+    btn_archive.set_size(34, 34);
+    btn_archive.set_system_icon("archive", anyui::IconType::Outline, 0xFFCCCCCC, 24);
+    btn_archive.set_tooltip(t("Archive"));
+
+    let btn_junk = toolbar.add_icon_button("");
+    btn_junk.set_size(34, 34);
+    btn_junk.set_system_icon("mail-x", anyui::IconType::Outline, 0xFFCCCCCC, 24);
+    btn_junk.set_tooltip(t("Junk"));
+
+    let btn_delete = toolbar.add_icon_button("");
+    btn_delete.set_size(34, 34);
+    btn_delete.set_system_icon("trash", anyui::IconType::Outline, 0xFFCCCCCC, 24);
+    btn_delete.set_tooltip(t("Delete"));
+
     toolbar.add_separator();
 
     // Account/Sync buttons
-    let btn_getmail = toolbar.add_icon_button(t("Get Mail"));
-    btn_getmail.set_system_icon("refresh", anyui::IconType::Outline, 0xFFCCCCCC, 18);
-    btn_getmail.auto_size();
-    let btn_accounts = toolbar.add_icon_button(t("Accounts"));
-    btn_accounts.set_system_icon("settings", anyui::IconType::Outline, 0xFFCCCCCC, 18);
-    btn_accounts.auto_size();
-    let btn_contacts = toolbar.add_icon_button(t("Contacts"));
-    btn_contacts.set_system_icon("address-book", anyui::IconType::Outline, 0xFFCCCCCC, 18);
-    btn_contacts.auto_size();
+    let btn_getmail = toolbar.add_icon_button("");
+    btn_getmail.set_size(34, 34);
+    btn_getmail.set_system_icon("refresh", anyui::IconType::Outline, 0xFFCCCCCC, 24);
+    btn_getmail.set_tooltip(t("Get Mail"));
+
+    let btn_accounts = toolbar.add_icon_button("");
+    btn_accounts.set_size(34, 34);
+    btn_accounts.set_system_icon("settings", anyui::IconType::Outline, 0xFFCCCCCC, 24);
+    btn_accounts.set_tooltip(t("Accounts"));
+
+    let btn_contacts = toolbar.add_icon_button("");
+    btn_contacts.set_size(34, 34);
+    btn_contacts.set_system_icon("address-book", anyui::IconType::Outline, 0xFFCCCCCC, 24);
+    btn_contacts.set_tooltip(t("Contacts"));
 
     win.add(&toolbar);
 
@@ -1226,19 +1245,25 @@ fn open_compose(mode: ComposeMode) {
     // Toolbar
     let comp_toolbar = anyui::Toolbar::new();
     comp_toolbar.set_dock(anyui::DOCK_TOP);
-    comp_toolbar.set_size(700, 36);
+    comp_toolbar.set_size(700, 46);
     comp_toolbar.set_color(COL_TOOLBAR);
     comp_toolbar.set_padding(4, 4, 4, 4);
 
-    let btn_send = comp_toolbar.add_icon_button(t("Send"));
-    btn_send.set_system_icon("mail-fast", IconType::Outline, 0xFFCCCCCC, 18);
-    btn_send.auto_size();
-    let btn_attach = comp_toolbar.add_icon_button(t("Attach"));
-    btn_attach.set_system_icon("paperclip", IconType::Outline, 0xFFCCCCCC, 18);
-    btn_attach.auto_size();
-    let btn_save_draft = comp_toolbar.add_icon_button(t("Save Draft"));
-    btn_save_draft.set_system_icon("device-floppy", IconType::Outline, 0xFFCCCCCC, 18);
-    btn_save_draft.auto_size();
+    let btn_send = comp_toolbar.add_icon_button("");
+    btn_send.set_size(34, 34);
+    btn_send.set_system_icon("mail-fast", IconType::Outline, 0xFFCCCCCC, 24);
+    btn_send.set_tooltip(t("Send"));
+
+    let btn_attach = comp_toolbar.add_icon_button("");
+    btn_attach.set_size(34, 34);
+    btn_attach.set_system_icon("paperclip", IconType::Outline, 0xFFCCCCCC, 24);
+    btn_attach.set_tooltip(t("Attach"));
+
+    let btn_save_draft = comp_toolbar.add_icon_button("");
+    btn_save_draft.set_size(34, 34);
+    btn_save_draft.set_system_icon("device-floppy", IconType::Outline, 0xFFCCCCCC, 24);
+    btn_save_draft.set_tooltip(t("Save Draft"));
+
     compose_win.add(&comp_toolbar);
 
     // Header fields
@@ -1866,16 +1891,19 @@ fn open_contacts() {
 
     let toolbar = anyui::Toolbar::new();
     toolbar.set_dock(anyui::DOCK_TOP);
-    toolbar.set_size(600, 36);
+    toolbar.set_size(600, 46);
     toolbar.set_color(COL_TOOLBAR);
     toolbar.set_padding(4, 4, 4, 4);
 
-    let btn_add = toolbar.add_icon_button(t("Add Contact"));
-    btn_add.set_system_icon("user-plus", IconType::Outline, 0xFFCCCCCC, 18);
-    btn_add.auto_size();
-    let btn_del = toolbar.add_icon_button(t("Delete"));
-    btn_del.set_system_icon("user-minus", IconType::Outline, 0xFFCCCCCC, 18);
-    btn_del.auto_size();
+    let btn_add = toolbar.add_icon_button("");
+    btn_add.set_size(34, 34);
+    btn_add.set_system_icon("user-plus", IconType::Outline, 0xFFCCCCCC, 24);
+    btn_add.set_tooltip(t("Add Contact"));
+
+    let btn_del = toolbar.add_icon_button("");
+    btn_del.set_size(34, 34);
+    btn_del.set_system_icon("user-minus", IconType::Outline, 0xFFCCCCCC, 24);
+    btn_del.set_tooltip(t("Delete"));
 
     contacts_win.add(&toolbar);
 
