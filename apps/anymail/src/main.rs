@@ -1773,7 +1773,9 @@ fn import_accounts() {
         let imported = MailConfig::load(&path);
         if imported.accounts.is_empty() {
             anyui::MessageBox::show(anyui::MessageBoxType::Warning,
-                anyos_std::i18n::t("No accounts found in the selected file."), Some("OK"));
+                &format!("{}\n{}: {}",
+                    anyos_std::i18n::t("No accounts found in the selected file."),
+                    anyos_std::i18n::t("Path"), path), Some("OK"));
             return;
         }
 
