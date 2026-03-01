@@ -85,6 +85,14 @@ pub struct WebView {
     /// Pre-parsed external stylesheets — parsed once in `add_stylesheet()` and cached.
     /// Eliminates the need to re-parse up to several hundred KB of CSS on every image load.
     external_sheets: Vec<css::Stylesheet>,
+    /// Cached inline `<style>` blocks — parsed once in `set_html()`, reused on relayout.
+    /// Invalidated only by `set_html()` (new page) or JS mutations that alter `<style>` tags.
+    inline_sheets: Vec<css::Stylesheet>,
+    /// Whether inline sheets need re-parsing (set by JS mutations, cleared after parse).
+    inline_sheets_dirty: bool,
+    /// Cached parsed inline `style="..."` declarations per node_id.
+    /// Avoids re-parsing the same style attribute on every relayout.
+    inline_style_cache: Vec<(usize, Vec<css::Declaration>)>,
     pub images: ImageCache,
     viewport_width: i32,
     /// Viewport height in pixels (visible ScrollView area).
@@ -130,6 +138,9 @@ impl WebView {
             dom_val: None,
             default_sheet: css::parse_stylesheet(DEFAULT_CSS),
             external_sheets: Vec::new(),
+            inline_sheets: Vec::new(),
+            inline_sheets_dirty: true,
+            inline_style_cache: Vec::new(),
             images: ImageCache::new(),
             viewport_width: w as i32,
             viewport_height: h,
@@ -187,9 +198,11 @@ impl WebView {
         self.external_sheets.push(css::parse_stylesheet(css_text));
     }
 
-    /// Clear all cached external stylesheets.
+    /// Clear all cached external and inline stylesheets.
     pub fn clear_stylesheets(&mut self) {
         self.external_sheets.clear();
+        self.inline_sheets.clear();
+        self.inline_sheets_dirty = true;
     }
 
     /// Add a decoded image to the cache. Will be displayed on next render.
@@ -214,6 +227,11 @@ impl WebView {
         #[cfg(feature = "debug_surf")]
         anyos_std::println!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
 
+        // New page — inline <style> blocks and style attribute cache need re-parsing.
+        self.inline_sheets.clear();
+        self.inline_sheets_dirty = true;
+        self.inline_style_cache.clear();
+
         // Collect stylesheets and resolve + layout + render.
         self.do_layout_and_render(&parsed_dom);
 
@@ -230,6 +248,8 @@ impl WebView {
         if !self.js_runtime.mutations.is_empty() {
             debug_surf!("[webview] applying {} JS mutations + relayout", self.js_runtime.mutations.len());
             self.js_runtime.apply_mutations(&mut parsed_dom);
+            self.inline_sheets_dirty = true; // JS may have altered <style> tags
+            self.inline_style_cache.clear(); // JS may have altered style="..." attrs
             self.do_layout_and_render(&parsed_dom);
         }
 
@@ -267,6 +287,9 @@ impl WebView {
             // Apply any pending JS mutations before re-rendering.
             if !self.js_runtime.mutations.is_empty() {
                 self.js_runtime.apply_mutations(&mut d);
+                // JS may have modified <style> tags or style="..." attributes.
+                self.inline_sheets_dirty = true;
+                self.inline_style_cache.clear();
             }
             self.do_layout_and_render(&d);
             self.dom_val = Some(d);
@@ -290,18 +313,18 @@ impl WebView {
             self.dom_val = dom_opt;
         }
 
-        // ── 2. Advance CSS animations. ──────────────────────────────────────────────
-        if !self.js_runtime.active_animations.is_empty()
-            || !self.js_runtime.active_transitions.is_empty()
-        {
-            let (any_active, _overrides) =
-                self.js_runtime.advance_animations(delta_ms, &self.keyframes);
-
-            if any_active {
-                self.relayout();
-                changed = true;
-            }
-        }
+        // ── 2. CSS animations — DISABLED for performance investigation. ──────────
+        // TODO: re-enable once the idle-loop root cause is confirmed fixed.
+        // if !self.js_runtime.active_animations.is_empty()
+        //     || !self.js_runtime.active_transitions.is_empty()
+        // {
+        //     let (any_active, _overrides) =
+        //         self.js_runtime.advance_animations(delta_ms, &self.keyframes);
+        //     if any_active {
+        //         self.relayout();
+        //         changed = true;
+        //     }
+        // }
 
         // ── 3. Scroll-based tile management (compositor-driven). ─────────────────
         // Per-tile canvases are positioned in the content_view.  The compositor
@@ -501,75 +524,47 @@ impl WebView {
         // This eliminates the catastrophic O(images × CSS-bytes) re-parse cost
         // visible in logs as repeated 150 KB parses per image load.
 
-        // Phase A: Parse inline <style> blocks (small, DOM-dependent).
-        let mut inline_sheets: Vec<css::Stylesheet> = Vec::new();
-        let mut inline_count = 0u32;
-        for (i, node) in d.nodes.iter().enumerate() {
-            if let dom::NodeType::Element { tag: dom::Tag::Style, .. } = &node.node_type {
-                let css_text = d.text_content(i);
-                if !css_text.is_empty() {
-                    debug_surf!("[webview] parse inline <style> #{}: {} bytes", inline_count, css_text.len());
-                    inline_sheets.push(css::parse_stylesheet(&css_text));
-                    inline_count += 1;
+        // Phase A: Parse inline <style> blocks — cached across relayouts.
+        // Only re-parsed when dirty (new page via set_html, or JS mutations).
+        if self.inline_sheets_dirty {
+            self.inline_sheets.clear();
+            let mut inline_count = 0u32;
+            for (i, node) in d.nodes.iter().enumerate() {
+                if let dom::NodeType::Element { tag: dom::Tag::Style, .. } = &node.node_type {
+                    let css_text = d.text_content(i);
+                    if !css_text.is_empty() {
+                        debug_surf!("[webview] parse inline <style> #{}: {} bytes", inline_count, css_text.len());
+                        self.inline_sheets.push(css::parse_stylesheet(&css_text));
+                        inline_count += 1;
+                    }
                 }
             }
+            self.inline_sheets_dirty = false;
+            debug_surf!("[webview] parsed {} inline <style> blocks", inline_count);
         }
 
         debug_surf!("[webview] total stylesheets: {} (1 default + {} external + {} inline)",
-            1 + self.external_sheets.len() + inline_count as usize,
-            self.external_sheets.len(), inline_count);
-        #[cfg(feature = "debug_surf")]
-        {
-            let ext_rules: usize = self.external_sheets.iter().map(|s| s.rules.len()).sum();
-            let inline_rules: usize = inline_sheets.iter().map(|s| s.rules.len()).sum();
-            let total_rules = self.default_sheet.rules.len() + ext_rules + inline_rules;
-            debug_surf!("[webview] total CSS rules: {}", total_rules);
-            debug_surf!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
-        }
+            1 + self.external_sheets.len() + self.inline_sheets.len(),
+            self.external_sheets.len(), self.inline_sheets.len());
 
-        // Phase B: Collect @keyframes BEFORE building the borrowed `all_sheets` slice.
-        // This avoids a borrow conflict: we need `&mut self.keyframes` here, but once
-        // `all_sheets` holds `&self.default_sheet` / `&self.external_sheets` the borrow
-        // checker considers those fields frozen for the lifetime of `all_sheets`.
-        self.keyframes.clear();
-        for kf in &self.default_sheet.keyframes {
-            self.keyframes.retain(|k: &css::KeyframeSet| k.name != kf.name);
-            self.keyframes.push(kf.clone());
-        }
-        for sheet in &self.external_sheets {
-            for kf in &sheet.keyframes {
-                self.keyframes.retain(|k: &css::KeyframeSet| k.name != kf.name);
-                self.keyframes.push(kf.clone());
-            }
-        }
-        for sheet in &inline_sheets {
-            for kf in &sheet.keyframes {
-                self.keyframes.retain(|k: &css::KeyframeSet| k.name != kf.name);
-                self.keyframes.push(kf.clone());
-            }
-        }
-
-        // Phase C: Resolve styles using zero-copy references to pre-parsed sheets.
-        // `all_sheets` is scoped tightly: the borrows on `self.default_sheet` and
-        // `self.external_sheets` are released as soon as `resolve_styles` returns,
-        // allowing the subsequent mutable `self.xxx` calls to proceed freely.
+        // Phase B: Resolve styles using zero-copy references to pre-parsed sheets.
         let vw = self.viewport_width;
         let vh = self.total_height_val.max(self.viewport_width);
         debug_surf!("[webview] resolve_styles start ({} nodes)", d.nodes.len());
         let styles = {
             let mut all_sheets: Vec<&css::Stylesheet> = Vec::with_capacity(
-                1 + self.external_sheets.len() + inline_sheets.len()
+                1 + self.external_sheets.len() + self.inline_sheets.len()
             );
             all_sheets.push(&self.default_sheet);
             for sheet in &self.external_sheets { all_sheets.push(sheet); }
-            for sheet in &inline_sheets { all_sheets.push(sheet); }
-            style::resolve_styles(d, &all_sheets, vw, vh)
-            // `all_sheets` (and its borrows) are dropped here.
+            for sheet in &self.inline_sheets { all_sheets.push(sheet); }
+            style::resolve_styles(d, &all_sheets, vw, vh, &mut self.inline_style_cache)
         };
         debug_surf!("[webview] resolve_styles done: {} styles", styles.len());
 
         // Register new @keyframe animations for nodes that request them.
-        self.js_runtime.start_animations(&styles);
+        // DISABLED: CSS animations are disabled for performance investigation.
+        // self.js_runtime.start_animations(&styles);
         #[cfg(feature = "debug_surf")]
         debug_surf!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
 

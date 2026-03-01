@@ -569,6 +569,188 @@ pub fn user_agent_styles(tag: Tag) -> ComputedStyle {
 }
 
 // ---------------------------------------------------------------------------
+// Rule index — O(1) lookup by tag / ID / class
+// ---------------------------------------------------------------------------
+
+/// Number of Tag enum variants (used to size the tag bucket array).
+const TAG_COUNT: usize = 128; // Tag enum has ~100 variants, 128 is safe
+
+/// Pre-built index for fast rule lookup by the leaf selector's tag, ID, or class.
+///
+/// Instead of checking all N rules against every DOM node (O(nodes × rules)),
+/// we partition rules into buckets so that for a given `<div id="foo" class="bar baz">`
+/// we only check rules whose leaf selector requires `div`, `#foo`, `.bar`, or `.baz`
+/// — plus the "wildcard" rules that have no tag/id/class restriction.
+struct RuleIndex {
+    /// `by_tag[tag_discriminant]` = rule indices whose leaf selector requires that tag.
+    by_tag: [Vec<usize>; TAG_COUNT],
+    /// Rules whose leaf selector requires a specific ID.  Key = id string.
+    by_id: Vec<(String, Vec<usize>)>,
+    /// Rules whose leaf selector requires a specific class.  Key = class string.
+    by_class: Vec<(String, Vec<usize>)>,
+    /// Rules with no tag/id/class restriction (universal, attribute-only, pseudo-only).
+    wildcard: Vec<usize>,
+    /// Total number of rules (for bitset sizing).
+    rule_count: usize,
+}
+
+impl RuleIndex {
+    /// Build the rule index from the collected rules.
+    fn build(all_rules: &[(&Rule, usize)]) -> Self {
+        const EMPTY_VEC: Vec<usize> = Vec::new();
+        let mut idx = RuleIndex {
+            by_tag: [EMPTY_VEC; TAG_COUNT],
+            by_id: Vec::new(),
+            by_class: Vec::new(),
+            wildcard: Vec::new(),
+            rule_count: all_rules.len(),
+        };
+
+        for (rule_idx, (rule, _order)) in all_rules.iter().enumerate() {
+            // A rule can have multiple selectors (comma-separated).
+            // We must put the rule in every bucket that any of its selectors' leaves require.
+            let mut added_to_any = false;
+
+            for sel in &rule.selectors {
+                match leaf_simple(sel) {
+                    Some(leaf) => {
+                        // Index by the most specific leaf attribute (tag > id > class).
+                        let mut indexed = false;
+
+                        if let Some(tag) = leaf.tag {
+                            let t = tag as usize;
+                            if t < TAG_COUNT {
+                                idx.by_tag[t].push(rule_idx);
+                                indexed = true;
+                            }
+                        }
+                        if let Some(ref id) = leaf.id {
+                            push_keyed(&mut idx.by_id, id, rule_idx);
+                            indexed = true;
+                        }
+                        for cls in &leaf.classes {
+                            push_keyed(&mut idx.by_class, cls, rule_idx);
+                            indexed = true;
+                        }
+
+                        if !indexed {
+                            // Attribute-only or pseudo-only selector — goes to wildcard.
+                            if !idx.wildcard.contains(&rule_idx) {
+                                idx.wildcard.push(rule_idx);
+                            }
+                        }
+                        added_to_any = true;
+                    }
+                    None => {
+                        // Universal selector — matches any element.
+                        if !idx.wildcard.contains(&rule_idx) {
+                            idx.wildcard.push(rule_idx);
+                        }
+                        added_to_any = true;
+                    }
+                }
+            }
+
+            if !added_to_any {
+                idx.wildcard.push(rule_idx);
+            }
+        }
+
+        idx
+    }
+
+    /// Get candidate rule indices for a node with the given tag, id, and classes.
+    /// Returns a deduplicated list of rule indices to check.
+    /// Uses a bitset for O(1) deduplication instead of Vec::contains() O(n).
+    fn candidates(&self, tag: Tag, id_attr: Option<&str>, class_attr: Option<&str>,
+                  buf: &mut Vec<usize>, seen: &mut Vec<u64>) {
+        buf.clear();
+
+        // Reset the bitset (one bit per rule index, packed into u64 words).
+        let words_needed = (self.rule_count + 63) / 64;
+        seen.clear();
+        seen.resize(words_needed, 0u64);
+
+        // Tag bucket.
+        let t = tag as usize;
+        if t < TAG_COUNT {
+            for &ri in &self.by_tag[t] {
+                let word = ri / 64;
+                let bit = 1u64 << (ri % 64);
+                if word < seen.len() && seen[word] & bit == 0 {
+                    seen[word] |= bit;
+                    buf.push(ri);
+                }
+            }
+        }
+
+        // ID bucket.
+        if let Some(id) = id_attr {
+            if let Some((_, indices)) = self.by_id.iter().find(|(k, _)| eq_ignore_ascii_case(k, id)) {
+                for &ri in indices {
+                    let word = ri / 64;
+                    let bit = 1u64 << (ri % 64);
+                    if word < seen.len() && seen[word] & bit == 0 {
+                        seen[word] |= bit;
+                        buf.push(ri);
+                    }
+                }
+            }
+        }
+
+        // Class buckets.
+        if let Some(classes) = class_attr {
+            for (cls_key, indices) in &self.by_class {
+                if has_class(classes, cls_key) {
+                    for &ri in indices {
+                        let word = ri / 64;
+                        let bit = 1u64 << (ri % 64);
+                        if word < seen.len() && seen[word] & bit == 0 {
+                            seen[word] |= bit;
+                            buf.push(ri);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Wildcard rules (always checked).
+        for &ri in &self.wildcard {
+            let word = ri / 64;
+            let bit = 1u64 << (ri % 64);
+            if word < seen.len() && seen[word] & bit == 0 {
+                seen[word] |= bit;
+                buf.push(ri);
+            }
+        }
+    }
+}
+
+/// Extract the leaf (rightmost) SimpleSelector from a combinator chain.
+/// Returns None for Universal selectors.
+fn leaf_simple(sel: &Selector) -> Option<&SimpleSelector> {
+    match sel {
+        Selector::Simple(s) => Some(s),
+        Selector::Descendant(_, leaf)
+        | Selector::Child(_, leaf)
+        | Selector::AdjacentSibling(_, leaf)
+        | Selector::GeneralSibling(_, leaf) => Some(leaf),
+        Selector::Universal => None,
+    }
+}
+
+/// Push `value` into the keyed bucket list.
+fn push_keyed(buckets: &mut Vec<(String, Vec<usize>)>, key: &str, value: usize) {
+    if let Some((_, vec)) = buckets.iter_mut().find(|(k, _)| eq_ignore_ascii_case(k, key)) {
+        vec.push(value);
+    } else {
+        let mut v = Vec::new();
+        v.push(value);
+        buckets.push((String::from(key), v));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Selector matching
 // ---------------------------------------------------------------------------
 
@@ -906,7 +1088,13 @@ fn has_class(class_str: &str, needle: &str) -> bool {
 
 /// Compute the final resolved style for every node in the DOM.
 /// Returns a `Vec<ComputedStyle>` indexed by `NodeId`.
-pub fn resolve_styles(dom: &Dom, stylesheets: &[&Stylesheet], viewport_width: i32, viewport_height: i32) -> Vec<ComputedStyle> {
+pub fn resolve_styles(
+    dom: &Dom,
+    stylesheets: &[&Stylesheet],
+    viewport_width: i32,
+    viewport_height: i32,
+    inline_style_cache: &mut Vec<(usize, Vec<Declaration>)>,
+) -> Vec<ComputedStyle> {
     let count = dom.nodes.len();
     crate::debug_surf!("[style] resolve_styles: {} nodes, {} stylesheets", count, stylesheets.len());
     #[cfg(feature = "debug_surf")]
@@ -934,8 +1122,15 @@ pub fn resolve_styles(dom: &Dom, stylesheets: &[&Stylesheet], viewport_width: i3
     }
     crate::debug_surf!("[style] collected {} applicable rules (once)", all_rules.len());
 
-    // Reusable scratch buffer for per-node matching (avoids repeated alloc/free).
+    // Build rule index for O(1) tag/id/class lookup (avoids O(nodes × rules) brute force).
+    let rule_index = RuleIndex::build(&all_rules);
+    crate::debug_surf!("[style] rule index: {} wildcard, {} id-buckets, {} class-buckets",
+        rule_index.wildcard.len(), rule_index.by_id.len(), rule_index.by_class.len());
+
+    // Reusable scratch buffers for per-node matching (avoids repeated alloc/free).
     let mut matches: Vec<((u32, u32, u32), usize)> = Vec::with_capacity(64);
+    let mut candidates: Vec<usize> = Vec::with_capacity(128);
+    let mut seen_bitset: Vec<u64> = Vec::with_capacity((all_rules.len() + 63) / 64);
 
     // Separate storage for custom properties (--name: value).
     // Only nodes that DEFINE custom properties have non-empty entries.
@@ -976,16 +1171,27 @@ pub fn resolve_styles(dom: &Dom, stylesheets: &[&Stylesheet], viewport_width: i3
             let node_cp = &mut current_and_rest[0];
 
             set_flags |= apply_author_rules(
-                &mut style, dom, id, &all_rules, &mut matches,
+                &mut style, dom, id, &all_rules, &rule_index,
+                &mut candidates, &mut seen_bitset, &mut matches,
                 parent_fs, root_font_size, node_cp, ancestors_cp,
             );
 
             // Phase 3: Apply inline styles (highest specificity).
+            // Uses a cache to avoid re-parsing style="..." on every relayout.
             if let NodeType::Element { attrs, .. } = &node.node_type {
                 for a in attrs {
                     if eq_ignore_ascii_case(&a.name, "style") {
-                        let inline_decls = crate::css::parse_inline_style(&a.value);
-                        for decl in &inline_decls {
+                        // Look up cached declarations for this node, or parse and cache.
+                        let cached_idx = inline_style_cache.iter().position(|(nid, _)| *nid == id);
+                        let inline_decls: &[Declaration] = if let Some(ci) = cached_idx {
+                            &inline_style_cache[ci].1
+                        } else {
+                            let parsed = crate::css::parse_inline_style(&a.value);
+                            inline_style_cache.push((id, parsed));
+                            &inline_style_cache.last().unwrap().1
+                        };
+
+                        for decl in inline_decls {
                             if let Property::CustomProperty(ref name) = decl.property {
                                 if let CssValue::Keyword(ref val) = decl.value {
                                     store_custom_prop(node_cp, name, val);
@@ -1052,6 +1258,9 @@ fn apply_author_rules(
     dom: &Dom,
     node_id: NodeId,
     all_rules: &[(&Rule, usize)],
+    rule_index: &RuleIndex,
+    candidates: &mut Vec<usize>,
+    seen_bitset: &mut Vec<u64>,
     matches: &mut Vec<((u32, u32, u32), usize)>,
     parent_fs: i32,
     root_fs: i32,
@@ -1061,7 +1270,23 @@ fn apply_author_rules(
     // Reuse the caller's matches buffer (avoids alloc/free per node).
     matches.clear();
 
-    for (idx, (rule, _order)) in all_rules.iter().enumerate() {
+    // Use the rule index to get only candidate rules for this node's tag/id/classes.
+    let node = &dom.nodes[node_id];
+    let (tag, attrs) = match &node.node_type {
+        NodeType::Element { tag, attrs } => (*tag, attrs),
+        _ => return 0,
+    };
+    let id_attr = attrs.iter()
+        .find(|a| eq_ignore_ascii_case(&a.name, "id"))
+        .map(|a| a.value.as_str());
+    let class_attr = attrs.iter()
+        .find(|a| eq_ignore_ascii_case(&a.name, "class"))
+        .map(|a| a.value.as_str());
+
+    rule_index.candidates(tag, id_attr, class_attr, candidates, seen_bitset);
+
+    for &idx in candidates.iter() {
+        let (rule, _order) = all_rules[idx];
         for sel in &rule.selectors {
             if selector_matches(sel, dom, node_id) {
                 matches.push((sel.specificity(), idx));

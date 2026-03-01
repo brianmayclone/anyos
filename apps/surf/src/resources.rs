@@ -145,6 +145,7 @@ pub(crate) fn queue_stylesheets(
 
     if count > 0 {
         anyos_std::println!("[surf] submitted {} stylesheet(s) to worker", count);
+        crate::ensure_net_poll_timer();
     }
 }
 
@@ -186,6 +187,7 @@ pub(crate) fn queue_images(
 
     if count > 0 {
         anyos_std::println!("[surf] submitted {} image(s) to worker", count);
+        crate::ensure_net_poll_timer();
     }
 }
 

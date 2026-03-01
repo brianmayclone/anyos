@@ -626,13 +626,56 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 return;
             }
 
-            // Not a watchpoint — handle as normal debug exception
+            // Not a watchpoint — check for debug-attached thread (anyTrace)
             if is_user_mode {
+                if crate::task::scheduler::is_debug_attached_current() {
+                    // Single-step completed on a debug-attached thread.
+                    // Suspend the thread and notify the debugger.
+                    let tid = crate::task::scheduler::debug_current_tid();
+                    unsafe { core::arch::asm!("xor {tmp}, {tmp}; mov dr6, {tmp}", tmp = out(reg) _, options(nostack)); }
+                    crate::task::scheduler::debug_auto_suspend(
+                        tid,
+                        crate::task::scheduler::DEBUG_EVENT_SINGLE_STEP,
+                        frame.rip,
+                    );
+                    crate::task::scheduler::schedule();
+                    return;
+                }
                 crate::task::scheduler::exit_current(129);
                 return;
             }
             // Clear DR6 and continue (single-step or breakpoint)
             unsafe { core::arch::asm!("xor {tmp}, {tmp}; mov dr6, {tmp}", tmp = out(reg) _, options(nostack)); }
+            return;
+        }
+        3 => {
+            // #BP Breakpoint (INT3) — check for debug-attached thread (anyTrace)
+            if is_user_mode {
+                if crate::task::scheduler::is_debug_attached_current() {
+                    // INT3 hit on a debug-attached thread.
+                    // RIP points to the byte AFTER INT3 (INT3 = 1 byte opcode 0xCC).
+                    // Adjust RIP back by 1 so the debugger sees the breakpoint address.
+                    let bp_addr = frame.rip - 1;
+                    let tid = crate::task::scheduler::debug_current_tid();
+                    // Adjust the saved RIP in the interrupt frame so the thread resumes
+                    // at the breakpoint address (after the debugger restores the original byte).
+                    let frame_mut = frame as *const InterruptFrame as *mut InterruptFrame;
+                    unsafe { (*frame_mut).rip = bp_addr; }
+                    crate::task::scheduler::debug_auto_suspend(
+                        tid,
+                        crate::task::scheduler::DEBUG_EVENT_BREAKPOINT,
+                        bp_addr,
+                    );
+                    crate::task::scheduler::schedule();
+                    return;
+                }
+                // Not debug-attached — kill the thread (unexpected INT3)
+                let dbg_tid = crate::task::scheduler::debug_current_tid();
+                crate::serial_println!("EXCEPTION: Breakpoint (INT3) at RIP={:#018x} (TID={})", frame.rip, dbg_tid);
+                crate::task::scheduler::exit_current(133);
+                return;
+            }
+            // Kernel breakpoint — ignore (shouldn't normally happen)
             return;
         }
         6 => {

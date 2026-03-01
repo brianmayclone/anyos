@@ -225,6 +225,22 @@ pub(crate) const SYS_SET_HOSTNAME: u32 = 281;
 // Power management
 pub(crate) const SYS_SHUTDOWN: u32 = 282;
 
+// Debug / trace (anyTrace)
+pub(crate) const SYS_DEBUG_ATTACH: u32         = 300;
+pub(crate) const SYS_DEBUG_DETACH: u32         = 301;
+pub(crate) const SYS_DEBUG_SUSPEND: u32        = 302;
+pub(crate) const SYS_DEBUG_RESUME: u32         = 303;
+pub(crate) const SYS_DEBUG_GET_REGS: u32       = 304;
+pub(crate) const SYS_DEBUG_SET_REGS: u32       = 305;
+pub(crate) const SYS_DEBUG_READ_MEM: u32       = 306;
+pub(crate) const SYS_DEBUG_WRITE_MEM: u32      = 307;
+pub(crate) const SYS_DEBUG_SET_BREAKPOINT: u32 = 308;
+pub(crate) const SYS_DEBUG_CLR_BREAKPOINT: u32 = 309;
+pub(crate) const SYS_DEBUG_SINGLE_STEP: u32    = 310;
+pub(crate) const SYS_DEBUG_GET_MEM_MAP: u32    = 311;
+pub(crate) const SYS_DEBUG_WAIT_EVENT: u32     = 312;
+pub(crate) const SYS_THREAD_INFO_EX: u32       = 313;
+
 // Anonymous-pipe / fcntl
 pub(crate) const SYS_PIPE_BYTES_AVAILABLE: u32 = 157;
 pub(crate) const SYS_FCNTL_SC: u32 = 243;

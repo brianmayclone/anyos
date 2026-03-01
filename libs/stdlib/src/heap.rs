@@ -2,8 +2,8 @@
 //!
 //! Small allocations use `sbrk()` with a sorted linked-list free list (via
 //! libheap).  When the sbrk region is exhausted, the allocator transparently
-//! falls back to `mmap()` which draws from a separate 512 MiB virtual region
-//! (0x20000000–0x40000000).
+//! falls back to `mmap()` which draws from a separate 1.25 GiB virtual region
+//! (0x70000000–0xBF000000).
 //!
 //! Large allocations (≥ MMAP_THRESHOLD) go directly through `mmap()` so they
 //! can be returned to the OS on dealloc via `munmap()` without fragmenting

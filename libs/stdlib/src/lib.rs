@@ -7,6 +7,7 @@ mod raw;
 
 pub mod args;
 pub mod anim;
+pub mod debug;
 pub mod hashmap;
 pub mod audio;
 pub mod bundle;

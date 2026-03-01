@@ -93,6 +93,8 @@ struct AppState {
     ws_poll_timer: u32,
     /// Timer ID for the CSS animation tick (0 = not running).
     anim_timer: u32,
+    /// Timer ID for the network poll loop (0 = not running).
+    net_poll_timer: u32,
     /// Per-tab dirty flags: set when CSS/images arrive, cleared after relayout.
     relayout_dirty: [bool; 16],
     /// Timer ID for the relayout debounce timer (0 = not running).
@@ -208,8 +210,8 @@ pub(crate) fn start_anim_timer() {
             unsafe { IDLE_TICKS = 0; }
         } else {
             unsafe { IDLE_TICKS += 1; }
-            // After ~2 seconds of no work (120 ticks × 16ms), stop the timer.
-            if unsafe { IDLE_TICKS } > 120 {
+            // After ~300 ms of no work (20 ticks × 16ms), stop the timer.
+            if unsafe { IDLE_TICKS } > 20 {
                 unsafe { IDLE_TICKS = 0; }
                 if st.anim_timer != 0 {
                     ui_lib::kill_timer(st.anim_timer);
@@ -232,26 +234,45 @@ pub(crate) fn ensure_anim_timer() {
 // Network worker result processing
 // ═══════════════════════════════════════════════════════════
 
-/// Start the 10 ms poll timer that drains completed fetch results from the
-/// background network worker and dispatches them to the appropriate handlers.
+/// Start the network poll timer if not already running.
+///
+/// Fires every 50 ms, drains completed fetch results from the worker thread.
+/// Auto-stops after 60 consecutive empty polls (~3 seconds idle).
+/// Restarted by `ensure_net_poll_timer()` when new fetches are submitted.
 fn start_net_poll_timer() {
-    ui_lib::set_timer(10, || {
-        process_worker_results();
+    let st = state();
+    if st.net_poll_timer != 0 { return; }
+    static mut EMPTY_POLLS: u32 = 0;
+    st.net_poll_timer = ui_lib::set_timer(50, || {
+        let results = net_worker::drain_results();
+        if results.is_empty() {
+            unsafe { EMPTY_POLLS += 1; }
+            if unsafe { EMPTY_POLLS } > 60 {
+                unsafe { EMPTY_POLLS = 0; }
+                let st = state();
+                if st.net_poll_timer != 0 {
+                    ui_lib::kill_timer(st.net_poll_timer);
+                    st.net_poll_timer = 0;
+                }
+            }
+            return;
+        }
+        unsafe { EMPTY_POLLS = 0; }
+        process_fetched_results(results);
     });
 }
 
-/// Drain all completed fetch results from the network worker and dispatch
-/// each one to its handler.
+/// Ensure the network poll timer is running. Called when new fetches are submitted.
+pub(crate) fn ensure_net_poll_timer() {
+    start_net_poll_timer();
+}
+
+/// Dispatch completed fetch results to their handlers.
 ///
 /// CSS and image results set per-tab dirty flags instead of triggering
 /// immediate relayouts.  A separate debounce timer (`flush_relayout`)
 /// coalesces all pending relayouts into one pass every 300 ms.
-fn process_worker_results() {
-    let results = net_worker::drain_results();
-    if results.is_empty() {
-        return;
-    }
-
+fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
     for result in results {
         match result {
             net_worker::FetchResult::NavDone { response, url, cookies, generation } => {
@@ -660,6 +681,7 @@ fn main() {
             ws_connections: Vec::new(),
             ws_poll_timer: 0,
             anim_timer: 0,
+            net_poll_timer: 0,
             relayout_dirty: [false; 16],
             relayout_timer: 0,
         });

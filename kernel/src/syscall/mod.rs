@@ -270,6 +270,22 @@ pub const SYS_SET_HOSTNAME: u32 = 281;
 // Power management
 pub const SYS_SHUTDOWN: u32 = 282;
 
+// Debug / trace (anyTrace)
+pub const SYS_DEBUG_ATTACH: u32         = 300;
+pub const SYS_DEBUG_DETACH: u32         = 301;
+pub const SYS_DEBUG_SUSPEND: u32        = 302;
+pub const SYS_DEBUG_RESUME: u32         = 303;
+pub const SYS_DEBUG_GET_REGS: u32       = 304;
+pub const SYS_DEBUG_SET_REGS: u32       = 305;
+pub const SYS_DEBUG_READ_MEM: u32       = 306;
+pub const SYS_DEBUG_WRITE_MEM: u32      = 307;
+pub const SYS_DEBUG_SET_BREAKPOINT: u32 = 308;
+pub const SYS_DEBUG_CLR_BREAKPOINT: u32 = 309;
+pub const SYS_DEBUG_SINGLE_STEP: u32    = 310;
+pub const SYS_DEBUG_GET_MEM_MAP: u32    = 311;
+pub const SYS_DEBUG_WAIT_EVENT: u32     = 312;
+pub const SYS_THREAD_INFO_EX: u32       = 313;
+
 /// Register frame pushed by `syscall_entry.asm` / `syscall_fast.asm`.
 ///
 /// The layout matches the individual GPR pushes (no pushad in 64-bit mode) plus the
@@ -563,6 +579,22 @@ fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, 
 
         // Power management
         SYS_SHUTDOWN => handlers::sys_shutdown(arg1),
+
+        // Debug / trace (anyTrace)
+        SYS_DEBUG_ATTACH => handlers::sys_debug_attach(arg1),
+        SYS_DEBUG_DETACH => handlers::sys_debug_detach(arg1),
+        SYS_DEBUG_SUSPEND => handlers::sys_debug_suspend(arg1),
+        SYS_DEBUG_RESUME => handlers::sys_debug_resume(arg1),
+        SYS_DEBUG_GET_REGS => handlers::sys_debug_get_regs(arg1, arg2, arg3),
+        SYS_DEBUG_SET_REGS => handlers::sys_debug_set_regs(arg1, arg2, arg3),
+        SYS_DEBUG_READ_MEM => handlers::sys_debug_read_mem(arg1, arg2, arg3, arg4),
+        SYS_DEBUG_WRITE_MEM => handlers::sys_debug_write_mem(arg1, arg2, arg3, arg4),
+        SYS_DEBUG_SET_BREAKPOINT => handlers::sys_debug_set_breakpoint(arg1, arg2),
+        SYS_DEBUG_CLR_BREAKPOINT => handlers::sys_debug_clr_breakpoint(arg1, arg2),
+        SYS_DEBUG_SINGLE_STEP => handlers::sys_debug_single_step(arg1),
+        SYS_DEBUG_GET_MEM_MAP => handlers::sys_debug_get_mem_map(arg1, arg2, arg3),
+        SYS_DEBUG_WAIT_EVENT => handlers::sys_debug_wait_event(arg1, arg2, arg3),
+        SYS_THREAD_INFO_EX => handlers::sys_thread_info_ex(arg1, arg2, arg3),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);

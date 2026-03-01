@@ -127,6 +127,7 @@ pub(crate) fn navigate(url_str: &str) {
         cookies,
         generation,
     });
+    crate::ensure_net_poll_timer();
 }
 
 /// Navigate the active tab using a form POST request.
@@ -161,6 +162,7 @@ pub(crate) fn navigate_post(url_str: &str, body: &str) {
         cookies,
         generation,
     });
+    crate::ensure_net_poll_timer();
 }
 
 /// Navigate to a local file on the filesystem.

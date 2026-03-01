@@ -166,11 +166,24 @@ pub(crate) fn submit(req: FetchRequest) {
 
 /// Drain all completed results from the result queue.
 /// Returns an empty Vec if nothing is ready yet.
+/// Optimized: skips lock acquisition and allocation when queue is empty.
 pub(crate) fn drain_results() -> Vec<FetchResult> {
+    // Fast path: peek without locking — if the queue looks empty, skip entirely.
+    let maybe_empty = unsafe {
+        RESULT_QUEUE.as_ref().map_or(true, |q| q.is_empty())
+    };
+    if maybe_empty {
+        return Vec::new();
+    }
+
     acquire(&RESULT_LOCK);
     let results = unsafe {
         if let Some(q) = RESULT_QUEUE.as_mut() {
-            core::mem::replace(q, Vec::new())
+            if q.is_empty() {
+                Vec::new()
+            } else {
+                core::mem::replace(q, Vec::new())
+            }
         } else {
             Vec::new()
         }
@@ -271,20 +284,33 @@ impl SubResourceCache {
 // ═══════════════════════════════════════════════════════════
 
 /// Entry point for the background network worker thread.
+///
+/// Exits after ~5 seconds of no work (1000 × 5ms sleep).  The next
+/// `submit()` call will respawn the thread via `ensure_worker()`.
 fn worker_entry() {
-    // Worker has its own connection pool and sub-resource cache.
     let mut pool = ConnPool::new();
     let mut cache = SubResourceCache::new();
+    let mut idle_count: u32 = 0;
 
     loop {
         let req = dequeue_request();
 
         match req {
             Some(request) => {
+                idle_count = 0;
                 process_request(request, &mut pool, &mut cache);
             }
             None => {
-                // No work — sleep briefly to avoid busy-spinning.
+                idle_count += 1;
+                if idle_count > 1000 {
+                    // ~5 seconds idle — exit the thread.
+                    // Must store false BEFORE exiting so ensure_worker() can
+                    // respawn.  Cannot `return` — the stack has no valid
+                    // return address (mmap zeroes it), so RIP would become 0.
+                    WORKER_STARTED.store(false, Ordering::SeqCst);
+                    anyos_std::println!("[surf-net] worker idle, exiting");
+                    anyos_std::process::exit(0);
+                }
                 anyos_std::process::sleep(5);
             }
         }

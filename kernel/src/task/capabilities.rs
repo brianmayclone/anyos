@@ -26,11 +26,12 @@ pub const CAP_SYSTEM: CapSet     = 1 << 10;
 pub const CAP_DLL: CapSet        = 1 << 11;
 pub const CAP_THREAD: CapSet     = 1 << 12;
 pub const CAP_MANAGE_PERMS: CapSet = 1 << 13;
+pub const CAP_DEBUG: CapSet        = 1 << 14;
 
 // ---- Predefined sets ----
 
 /// All capabilities — for system apps (compositor, terminal, finder).
-pub const CAP_ALL: CapSet = (1 << 14) - 1; // bits 0..13
+pub const CAP_ALL: CapSet = (1 << 15) - 1; // bits 0..14
 
 /// Default for CLI programs spawned from terminal.
 pub const CAP_DEFAULT: CapSet = CAP_FILESYSTEM | CAP_PROCESS | CAP_PIPE
@@ -68,6 +69,7 @@ pub fn parse_capabilities(s: &str) -> CapSet {
             "dll" => CAP_DLL,
             "thread" => CAP_THREAD,
             "manage_perms" => CAP_MANAGE_PERMS,
+            "debug" => CAP_DEBUG,
             _ => 0,
         };
     }
@@ -258,6 +260,22 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         syscall::SYS_PERM_STORE
         | syscall::SYS_PERM_LIST
         | syscall::SYS_PERM_DELETE => CAP_MANAGE_PERMS,
+
+        // Debug / trace (anyTrace)
+        syscall::SYS_DEBUG_ATTACH
+        | syscall::SYS_DEBUG_DETACH
+        | syscall::SYS_DEBUG_SUSPEND
+        | syscall::SYS_DEBUG_RESUME
+        | syscall::SYS_DEBUG_GET_REGS
+        | syscall::SYS_DEBUG_SET_REGS
+        | syscall::SYS_DEBUG_READ_MEM
+        | syscall::SYS_DEBUG_WRITE_MEM
+        | syscall::SYS_DEBUG_SET_BREAKPOINT
+        | syscall::SYS_DEBUG_CLR_BREAKPOINT
+        | syscall::SYS_DEBUG_SINGLE_STEP
+        | syscall::SYS_DEBUG_GET_MEM_MAP
+        | syscall::SYS_DEBUG_WAIT_EVENT
+        | syscall::SYS_THREAD_INFO_EX => CAP_DEBUG,
 
         // Unknown syscalls — let the dispatch handle it (returns u32::MAX)
         _ => 0,

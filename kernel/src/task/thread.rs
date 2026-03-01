@@ -203,6 +203,22 @@ pub struct Thread {
     pub signals: SignalState,
     /// TID of the parent process (set by fork/spawn, 0 for init/kernel threads).
     pub parent_tid: u32,
+
+    // ---- Debug / trace state (anyTrace) ----
+
+    /// TID of the debugger thread attached to this thread (0 = not attached).
+    pub debug_attached_by: u32,
+    /// True if this thread has been suspended by its debugger.
+    pub debug_suspended: bool,
+    /// Software breakpoints: (virtual address, original byte replaced by INT3).
+    pub debug_sw_breakpoints: [(u64, u8); 16],
+    /// Number of active software breakpoints.
+    pub debug_sw_bp_count: u8,
+    /// True if a single-step (RFLAGS.TF) is pending for the next resume.
+    pub debug_single_step: bool,
+    /// Pending debug event for the debugger to consume: (event_type, address).
+    /// Set by ISR 1 (#DB) / ISR 3 (#BP) when the thread is debug-attached.
+    pub debug_event: Option<(u32, u64)>,
 }
 
 /// Size of each thread's kernel-mode stack.
@@ -314,6 +330,12 @@ impl Thread {
             fd_table: FdTable::new(),
             signals: SignalState::new(),
             parent_tid: 0,
+            debug_attached_by: 0,
+            debug_suspended: false,
+            debug_sw_breakpoints: [(0, 0); 16],
+            debug_sw_bp_count: 0,
+            debug_single_step: false,
+            debug_event: None,
         }
     }
 
