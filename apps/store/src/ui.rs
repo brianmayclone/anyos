@@ -128,10 +128,11 @@ pub fn create_card(
     card.add(&size_label);
 
     // Action button (bottom-right)
+    let t = anyos_std::i18n::t;
     let (btn_text, btn_color) = match status {
-        PkgStatus::Available => ("Get", tc.accent),
-        PkgStatus::Installed => ("Installed", tc.success),
-        PkgStatus::Updatable => ("Update", tc.warning),
+        PkgStatus::Available => (t("Get"), tc.accent),
+        PkgStatus::Installed => (t("Installed"), tc.success),
+        PkgStatus::Updatable => (t("Update"), tc.warning),
     };
     let action_btn = ui::Button::new(btn_text);
     action_btn.set_position(CARD_W as i32 - 88, CARD_H as i32 - 38);
@@ -196,10 +197,11 @@ pub fn populate_detail(
 
     // Info grid (left column)
     let mut y = 100;
+    let t = anyos_std::i18n::t;
     let pairs: Vec<(&str, String)> = alloc::vec![
-        ("Type:", String::from(&pkg.pkg_type)),
-        ("Size:", format_size(pkg.size)),
-        ("Installed Size:", format_size(pkg.size_installed)),
+        (t("Type:"), String::from(&pkg.pkg_type)),
+        (t("Size:"), format_size(pkg.size)),
+        (t("Installed Size:"), format_size(pkg.size_installed)),
     ];
     for (label, value) in &pairs {
         let lbl = ui::Label::new(label);
@@ -220,7 +222,7 @@ pub fn populate_detail(
 
     // Dependencies
     if !pkg.depends.is_empty() {
-        let dep_label = ui::Label::new("Dependencies:");
+        let dep_label = ui::Label::new(t("Dependencies:"));
         dep_label.set_position(24, y);
         dep_label.set_size(120, 20);
         dep_label.set_text_color(tc.text_secondary);
@@ -239,7 +241,7 @@ pub fn populate_detail(
 
     // Description section
     y += 8;
-    let desc_header = ui::Label::new("Description");
+    let desc_header = ui::Label::new(t("Description"));
     desc_header.set_position(24, y);
     desc_header.set_size(200, 22);
     desc_header.set_font(1);

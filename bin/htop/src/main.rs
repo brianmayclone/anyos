@@ -299,6 +299,8 @@ fn print_bar(label: &str, pct: u32, color: &str, bar_width: usize) {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
+    anyos_std::i18n::init();
+    let tr = anyos_std::i18n::t;
     let mut raw_buf = [0u8; THREAD_ENTRY_SIZE * MAX_TASKS];
     let mut prev = PrevTicks { entries: [(0, 0); MAX_TASKS], count: 0, prev_total: 0 };
     let mut cpu_state = CpuState::new();
@@ -463,10 +465,10 @@ fn main() {
             let name = core::str::from_utf8(&name_bytes[..name_len]).unwrap_or("???");
 
             let (state_str, state_color) = match task.state {
-                0 => ("Ready", YELLOW),
-                1 => ("Running", GREEN),
-                2 => ("Blocked", RED),
-                3 => ("Dead", DIM),
+                0 => (tr("Ready"), YELLOW),
+                1 => (tr("Running"), GREEN),
+                2 => (tr("Blocked"), RED),
+                3 => (tr("Dead"), DIM),
                 _ => ("?", RESET),
             };
 

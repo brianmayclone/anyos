@@ -3,6 +3,7 @@
 
 use anyos_std::String;
 use anyos_std::Vec;
+use anyos_std::i18n;
 use libanyui_client as anyui;
 use anyui::Widget;
 
@@ -27,7 +28,7 @@ struct UniqueIcon {
 }
 
 struct IconCell {
-    container: anyui::View,
+    container: anyui::StackPanel,
     image: anyui::ImageView,
     label: anyui::Label,
 }
@@ -125,9 +126,10 @@ fn parse_icon_names(pak: &[u8]) -> Vec<UniqueIcon> {
                 });
             }
         }
+
     }
 
-    // Sort alphabetically (insertion sort)
+    // Sort alphabetically (insertion sort with yields)
     let len = icons.len();
     for i in 1..len {
         let mut j = i;
@@ -276,17 +278,16 @@ fn init_tick() {
     let target = (current + CELLS_PER_TICK).min(MAX_DISPLAY);
 
     for i in current..target {
-        let container = anyui::View::new();
+        let container = anyui::StackPanel::vertical();
         container.set_size(CELL_W, CELL_H);
         container.set_margin(2, 2, 2, 2);
 
         let image = anyui::ImageView::new(ICON_SIZE, ICON_SIZE);
-        image.set_position(((CELL_W - ICON_SIZE) / 2) as i32, 4);
+        image.set_size(CELL_W, ICON_SIZE + 8); // full width, icon height + padding
         container.add(&image);
 
         let label = anyui::Label::new("");
         label.set_size(CELL_W, 28);
-        label.set_position(0, 40);
         label.set_text_color(0xFFA0A0A0);
         label.set_font_size(10);
         label.set_text_align(anyui::TEXT_ALIGN_CENTER);
@@ -420,6 +421,7 @@ fn main() {
     if !anyui::init() {
         return;
     }
+    i18n::init();
 
     // Parse ico.pak to enumerate all icon names (pure CPU work, no IPC)
     let all_icons = match anyos_std::fs::read_to_vec(ICO_PAK_PATH) {
@@ -431,7 +433,7 @@ fn main() {
     };
 
     // Build minimal UI shell (only ~10 widget creations)
-    let win = anyui::Window::new("Icon Browser", -1, -1, 900, 600);
+    let win = anyui::Window::new(i18n::t("Icon Browser"), -1, -1, 900, 600);
 
     let toolbar = anyui::Toolbar::new();
     toolbar.set_dock(anyui::DOCK_TOP);
@@ -441,19 +443,20 @@ fn main() {
 
     let search = anyui::SearchField::new();
     search.set_size(300, 28);
-    search.set_placeholder("Search icons...");
+    search.set_placeholder(i18n::t("Search icons..."));
     toolbar.add(&search);
 
     toolbar.add_separator();
 
-    let seg = anyui::SegmentedControl::new("Filled|Outline|Both");
+    let seg_str = anyos_std::format!("{}|{}|{}", i18n::t("Filled"), i18n::t("Outline"), i18n::t("Both"));
+    let seg = anyui::SegmentedControl::new(&seg_str);
     seg.set_size(200, 28);
     seg.set_state(2);
     toolbar.add(&seg);
 
     toolbar.add_separator();
 
-    let color_label = toolbar.add_label("Color:");
+    let color_label = toolbar.add_label(i18n::t("Color:"));
     color_label.set_size(42, 28);
 
     let color_well = anyui::ColorWell::new();
@@ -515,6 +518,7 @@ fn main() {
     }
 
     // Start deferred cell creation AFTER event loop is running
+    // Use longer interval to give compositor time to process
     app().init_timer = anyui::set_timer(50, init_tick);
 
     // Register callbacks

@@ -4,6 +4,8 @@
 anyos_std::entry!(main);
 
 fn main() {
+    anyos_std::i18n::init();
+    let t = anyos_std::i18n::t;
     // Thread info (cmd=1): 60-byte entries
     // [tid:u32, prio:u8, state:u8, arch:u8, pad:u8, name:24bytes,
     //  user_pages:u32, cpu_ticks:u32, io_read:u64, io_write:u64, uid:u16, pad:u16]
@@ -11,7 +13,7 @@ fn main() {
     let count = anyos_std::sys::sysinfo(1, &mut thread_buf);
 
     if count == u32::MAX || count == 0 {
-        anyos_std::println!("No threads running.");
+        anyos_std::println!("{}", t("No threads running."));
         return;
     }
 
@@ -49,11 +51,11 @@ fn main() {
         let uid = u16::from_le_bytes([thread_buf[off + 56], thread_buf[off + 57]]);
 
         let state_str = match state {
-            0 => "Ready",
-            1 => "Running",
-            2 => "Blocked",
-            3 => "Dead",
-            _ => "Unknown",
+            0 => t("Ready"),
+            1 => t("Running"),
+            2 => t("Blocked"),
+            3 => t("Dead"),
+            _ => t("Unknown"),
         };
 
         // Look up username from cache
@@ -72,5 +74,5 @@ fn main() {
         anyos_std::println!("{:<6} {:<10} {:<6} {:<12} {}", tid, username, prio, state_str, name);
     }
 
-    anyos_std::println!("\nTotal: {} thread(s)", count);
+    anyos_std::println!("\n{}: {} {}", t("Total"), count, t("thread(s)"));
 }

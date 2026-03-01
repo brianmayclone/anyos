@@ -77,6 +77,7 @@ fn main() {
     let filename = path.rsplit('/').next().unwrap_or(path);
 
     if !anyui::init() { return; }
+    anyos_std::i18n::init();
 
     let (scr_w, scr_h) = anyui::screen_size();
     let (scr_w, scr_h) = if scr_w == 0 || scr_h == 0 { (1024, 768) } else { (scr_w, scr_h) };
@@ -299,7 +300,8 @@ fn format_title<'a>(buf: &'a mut [u8; 128], filename: &str, w: usize, h: usize, 
     pos = write_num(buf, pos, h);
     for &b in b" @ " { if pos < 127 { buf[pos] = b; pos += 1; } }
     pos = write_num(buf, pos, fps as usize);
-    for &b in b" fps) - Video Player" { if pos < 127 { buf[pos] = b; pos += 1; } }
+    for &b in b" fps) - " { if pos < 127 { buf[pos] = b; pos += 1; } }
+    for &b in anyos_std::i18n::t("Video Player").as_bytes() { if pos < 127 { buf[pos] = b; pos += 1; } }
     unsafe { core::str::from_utf8_unchecked(&buf[..pos]) }
 }
 

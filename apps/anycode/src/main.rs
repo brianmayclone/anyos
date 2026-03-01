@@ -72,13 +72,14 @@ fn main() {
         anyos_std::println!("Failed to load libanyui.so");
         return;
     }
+    anyos_std::i18n::init();
 
     // ── Load configuration and plugins ──
     let config = config::Config::load();
     let _plugins = plugin::load_plugins(&config.plugin_dir);
 
     // ── Create window ──
-    let win = anyui::Window::new("anyOS Code", -1, -1, 900, 650);
+    let win = anyui::Window::new(anyos_std::i18n::t("anyOS Code"), -1, -1, 900, 650);
 
     // ── Toolbar (DOCK_TOP) ──
     let tb = toolbar::AppToolbar::new(&win);

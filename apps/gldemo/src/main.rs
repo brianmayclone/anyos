@@ -510,7 +510,8 @@ fn main() {
 
     // Initialize anyui
     libanyui_client::init();
-    let window = libanyui_client::Window::new("GL Demo - Phong", 80, 60, 420, 460);
+    anyos_std::i18n::init();
+    let window = libanyui_client::Window::new(anyos_std::i18n::t("GL Demo - Phong"), 80, 60, 420, 460);
 
     // Canvas fills the entire window client area
     let canvas = libanyui_client::Canvas::new(400, 400);

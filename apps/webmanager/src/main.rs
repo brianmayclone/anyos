@@ -6,7 +6,7 @@ anyos_std::entry!(main);
 use anyos_std::fs;
 use anyos_std::process;
 use anyos_std::println;
-use anyos_std::{String, Vec, format, vec};
+use anyos_std::{String, Vec, format, vec, i18n};
 use libanyui_client as ui;
 use ui::ColumnDef;
 
@@ -350,7 +350,7 @@ fn save_form_to_site() {
 fn update_status() {
     let s = app();
     let running = is_httpd_running();
-    let status_str = if running { "Running" } else { "Stopped" };
+    let status_str = if running { i18n::t("Running") } else { i18n::t("Stopped") };
     let site_count = s.sites.len();
     let enabled_count = s.sites.iter().filter(|s| s.enabled).count();
 
@@ -406,12 +406,13 @@ fn main() {
         println!("[Web Manager] Failed to init libanyui");
         return;
     }
+    i18n::init();
 
     // Ensure config directory exists
     fs::mkdir(SITES_DIR);
 
     // ── Main window ──
-    let win = ui::Window::new("Web Manager", -1, -1, WIN_W, WIN_H);
+    let win = ui::Window::new(i18n::t("Web Manager"), -1, -1, WIN_W, WIN_H);
     let tc = ui::theme::colors();
 
     // ═══════════════════════════════════════════════════════════════
@@ -422,22 +423,22 @@ fn main() {
     toolbar.set_dock(ui::DOCK_TOP);
     win.add(&toolbar);
 
-    let btn_new = toolbar.add_icon_button("New Site");
+    let btn_new = toolbar.add_icon_button(i18n::t("New Site"));
     btn_new.set_system_icon("circle-plus", ui::IconType::Outline, tc.text, 24);
     toolbar.add_separator();
-    let btn_delete = toolbar.add_icon_button("Delete");
+    let btn_delete = toolbar.add_icon_button(i18n::t("Delete"));
     btn_delete.set_system_icon("trash", ui::IconType::Outline, tc.text, 24);
     btn_delete.set_enabled(false);
     toolbar.add_separator();
-    let btn_start = toolbar.add_icon_button("Start");
+    let btn_start = toolbar.add_icon_button(i18n::t("Start"));
     btn_start.set_system_icon("player-play", ui::IconType::Outline, tc.success, 24);
-    let btn_stop = toolbar.add_icon_button("Stop");
+    let btn_stop = toolbar.add_icon_button(i18n::t("Stop"));
     btn_stop.set_system_icon("player-stop", ui::IconType::Outline, tc.destructive, 24);
     toolbar.add_separator();
-    let btn_apply = toolbar.add_icon_button("Apply");
+    let btn_apply = toolbar.add_icon_button(i18n::t("Apply"));
     btn_apply.set_system_icon("device-floppy", ui::IconType::Outline, tc.text, 24);
     btn_apply.set_enabled(false);
-    let btn_reload = toolbar.add_icon_button("Reload");
+    let btn_reload = toolbar.add_icon_button(i18n::t("Reload"));
     btn_reload.set_system_icon("refresh", ui::IconType::Outline, tc.text, 24);
 
     // ═══════════════════════════════════════════════════════════════
@@ -475,7 +476,8 @@ fn main() {
     sidebar.add(&tree);
 
     // Context menu for tree (right-click actions)
-    let tree_menu = ui::ContextMenu::new("New Site|Delete Site|-|Enable|Disable");
+    let tree_menu_str = format!("{}|{}|-|{}|{}", i18n::t("New Site"), i18n::t("Delete Site"), i18n::t("Enable"), i18n::t("Disable"));
+    let tree_menu = ui::ContextMenu::new(&tree_menu_str);
     win.add(&tree_menu);
     tree.set_context_menu(&tree_menu);
 
@@ -492,7 +494,7 @@ fn main() {
     right_panel.add(&props_card);
 
     // Title
-    let title_label = ui::Label::new("Site Configuration");
+    let title_label = ui::Label::new(i18n::t("Site Configuration"));
     title_label.set_position(16, 8);
     title_label.set_size(300, 22);
     title_label.set_font_size(14);
@@ -508,7 +510,7 @@ fn main() {
     let mut y: i32 = 38;
 
     // Name
-    let lbl = ui::Label::new("Name:");
+    let lbl = ui::Label::new(i18n::t("Name:"));
     lbl.set_position(form_x, y + 4);
     lbl.set_size(label_w, 20);
     lbl.set_text_color(tc.text);
@@ -516,12 +518,12 @@ fn main() {
     let name_field = ui::TextField::new();
     name_field.set_position(field_x, y);
     name_field.set_size(field_w, 26);
-    name_field.set_placeholder("Site name");
+    name_field.set_placeholder(i18n::t("Site name"));
     props_card.add(&name_field);
     y += row_h;
 
     // Port
-    let lbl = ui::Label::new("Port:");
+    let lbl = ui::Label::new(i18n::t("Port:"));
     lbl.set_position(form_x, y + 4);
     lbl.set_size(label_w, 20);
     lbl.set_text_color(tc.text);
@@ -534,12 +536,12 @@ fn main() {
     y += row_h;
 
     // SSL + SSL Port
-    let lbl = ui::Label::new("SSL:");
+    let lbl = ui::Label::new(i18n::t("SSL:"));
     lbl.set_position(form_x, y + 4);
     lbl.set_size(label_w, 20);
     lbl.set_text_color(tc.text);
     props_card.add(&lbl);
-    let ssl_check = ui::Checkbox::new("Enable SSL");
+    let ssl_check = ui::Checkbox::new(i18n::t("Enable SSL"));
     ssl_check.set_position(field_x, y + 2);
     ssl_check.set_size(100, 22);
     props_card.add(&ssl_check);
@@ -558,7 +560,7 @@ fn main() {
     y += row_h;
 
     // Document Root
-    let lbl = ui::Label::new("Document Root:");
+    let lbl = ui::Label::new(i18n::t("Document Root:"));
     lbl.set_position(form_x, y + 4);
     lbl.set_size(label_w, 20);
     lbl.set_text_color(tc.text);
@@ -569,14 +571,14 @@ fn main() {
     root_field.set_placeholder("/Users/Shared/www");
     props_card.add(&root_field);
 
-    let btn_browse = ui::Button::new("Browse");
+    let btn_browse = ui::Button::new(i18n::t("Browse"));
     btn_browse.set_position(field_x + (field_w as i32 - 70), y);
     btn_browse.set_size(70, 26);
     props_card.add(&btn_browse);
     y += row_h;
 
     // Index Files
-    let lbl = ui::Label::new("Index Files:");
+    let lbl = ui::Label::new(i18n::t("Index Files:"));
     lbl.set_position(form_x, y + 4);
     lbl.set_size(label_w, 20);
     lbl.set_text_color(tc.text);
@@ -589,12 +591,12 @@ fn main() {
     y += row_h;
 
     // Enabled
-    let lbl = ui::Label::new("Status:");
+    let lbl = ui::Label::new(i18n::t("Status:"));
     lbl.set_position(form_x, y + 4);
     lbl.set_size(label_w, 20);
     lbl.set_text_color(tc.text);
     props_card.add(&lbl);
-    let enabled_check = ui::Checkbox::new("Enabled");
+    let enabled_check = ui::Checkbox::new(i18n::t("Enabled"));
     enabled_check.set_position(field_x, y + 2);
     enabled_check.set_size(100, 22);
     props_card.add(&enabled_check);
@@ -606,7 +608,7 @@ fn main() {
     rewrite_header.set_color(tc.sidebar_bg);
     right_panel.add(&rewrite_header);
 
-    let rewrite_title = ui::Label::new("URL Rewrite Rules");
+    let rewrite_title = ui::Label::new(i18n::t("URL Rewrite Rules"));
     rewrite_title.set_position(16, 8);
     rewrite_title.set_size(200, 20);
     rewrite_title.set_font_size(13);
@@ -627,8 +629,8 @@ fn main() {
     let rewrite_grid = ui::DataGrid::new(700, 200);
     rewrite_grid.set_dock(ui::DOCK_FILL);
     rewrite_grid.set_columns(&[
-        ColumnDef::new("Pattern").width(300),
-        ColumnDef::new("Target").width(300),
+        ColumnDef::new(i18n::t("Pattern")).width(300),
+        ColumnDef::new(i18n::t("Target")).width(300),
     ]);
     rewrite_grid.set_row_height(22);
     rewrite_grid.set_selection_mode(ui::SELECTION_SINGLE);

@@ -44,10 +44,13 @@ pub(crate) fn icon_path(filename: &str) -> String {
 struct AppState {
     pages: Vec<PageEntry>,
     sidebar_ids: Vec<u32>,
+    sidebar_label_ids: Vec<u32>,
     active_idx: usize,
     content_scroll: ui::ScrollView,
     sidebar_scroll_id: u32,
     sidebar_panel_id: u32,
+    win_id: u32,
+    title_label_id: u32,
 }
 
 static mut APP: Option<AppState> = None;
@@ -61,10 +64,12 @@ fn main() {
     if !ui::init() {
         return;
     }
+    anyos_std::i18n::init();
+    let t = anyos_std::i18n::t;
 
     let pages = module_loader::builtin_pages();
 
-    let win = ui::Window::new("Settings", -1, -1, 900, 600);
+    let win = ui::Window::new(t("Settings"), -1, -1, 900, 600);
 
     // ── SplitView (DOCK_FILL) ───────────────────────────────────────
     let split = ui::SplitView::new();
@@ -90,7 +95,7 @@ fn main() {
     title_area.set_dock(ui::DOCK_TOP);
     title_area.set_size(220, 52);
 
-    let title_lbl = ui::Label::new("Settings");
+    let title_lbl = ui::Label::new(t("Settings"));
     title_lbl.set_position(16, 16);
     title_lbl.set_size(180, 28);
     title_lbl.set_font_size(18);
@@ -104,11 +109,12 @@ fn main() {
     search.set_dock(ui::DOCK_TOP);
     search.set_size(188, 28);
     search.set_margin(16, 4, 16, 12);
-    search.set_placeholder("Search settings");
+    search.set_placeholder(t("Search settings"));
     sidebar_panel.add(&search);
 
     // Page items
     let mut sidebar_ids: Vec<u32> = Vec::new();
+    let mut sidebar_label_ids: Vec<u32> = Vec::new();
     let mut last_category = String::new();
 
     for (i, page) in pages.iter().enumerate() {
@@ -161,6 +167,7 @@ fn main() {
 
         item.on_click_raw(sidebar_click_handler, i as u64);
         sidebar_ids.push(item.id());
+        sidebar_label_ids.push(lbl.id());
         sidebar_panel.add(&item);
     }
 
@@ -179,10 +186,13 @@ fn main() {
         APP = Some(AppState {
             pages,
             sidebar_ids,
+            sidebar_label_ids,
             active_idx: 0,
             content_scroll,
             sidebar_scroll_id: sidebar_scroll.id(),
             sidebar_panel_id: sidebar_panel.id(),
+            win_id: win.id(),
+            title_label_id: title_lbl.id(),
         });
     }
 
@@ -265,6 +275,39 @@ fn build_page(idx: usize) {
         BuiltinId::Update => page_update::build(scroll),
     };
     s.pages[idx].panel_id = panel_id;
+}
+
+/// Reload translations and refresh the entire UI (sidebar labels, window title,
+/// and all page content). Called from the language dropdown handler so the
+/// Settings app updates immediately without a restart.
+pub(crate) fn refresh_after_language_change() {
+    anyos_std::i18n::init();
+    let t = anyos_std::i18n::t;
+
+    let s = app();
+
+    // Update page names from freshly translated page definitions
+    let new_pages = module_loader::builtin_pages();
+    for (i, new_page) in new_pages.iter().enumerate() {
+        if i < s.pages.len() {
+            s.pages[i].name = new_page.name.clone();
+        }
+    }
+
+    // Update sidebar text labels
+    for (i, &lid) in s.sidebar_label_ids.iter().enumerate() {
+        if i < s.pages.len() {
+            ui::Control::from_id(lid).set_text(&s.pages[i].name);
+        }
+    }
+
+    // Update sidebar title and window title
+    ui::Control::from_id(s.title_label_id).set_text(t("Settings"));
+    let win: ui::Window = unsafe { core::mem::transmute(s.win_id) };
+    win.set_title(t("Settings"));
+
+    // Rebuild all content pages with new translations
+    invalidate_all_pages();
 }
 
 /// Destroy all cached pages and rebuild the active one.

@@ -9,6 +9,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::fs;
+use anyos_std::i18n;
 use anyos_std::permissions;
 use anyos_std::process;
 use libanyui_client as ui;
@@ -41,6 +42,8 @@ const PERM_GROUPS: &[PermGroup] = &[
     PermGroup { mask: CAP_PROCESS | CAP_SYSTEM, name: "System" },
 ];
 
+// Note: PERM_GROUPS names are translated at the point of use via i18n::t()
+
 // ── App bundle metadata ─────────────────────────────────────────────────────
 
 const APPS_DIR: &str = "/Applications";
@@ -66,13 +69,13 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     panel.set_color(layout::bg());
 
     // ── Page header ─────────────────────────────────────────────────────
-    layout::build_page_header(&panel, "Apps", "Manage installed applications and permissions");
+    layout::build_page_header(&panel, i18n::t("Apps"), i18n::t("Manage installed applications and permissions"));
 
     // ── Scan apps ───────────────────────────────────────────────────────
     let apps = scan_apps();
 
     if apps.is_empty() {
-        let empty = ui::Label::new("No applications found in /Applications/");
+        let empty = ui::Label::new(i18n::t("No applications found in /Applications/"));
         empty.set_dock(ui::DOCK_TOP);
         empty.set_size(552, 30);
         empty.set_font_size(13);
@@ -104,7 +107,7 @@ fn build_app_row(panel: &ui::View, app: &AppInfo) {
     // ── Right-aligned buttons (added first so DOCK_RIGHT reserves space) ──
 
     // Uninstall button (rightmost)
-    let btn_uninstall = ui::IconButton::new("Uninstall");
+    let btn_uninstall = ui::IconButton::new(i18n::t("Uninstall"));
     btn_uninstall.set_dock(ui::DOCK_RIGHT);
     btn_uninstall.set_size(90, 28);
     btn_uninstall.set_margin(4, 10, 0, 10);
@@ -112,11 +115,11 @@ fn build_app_row(panel: &ui::View, app: &AppInfo) {
     let uninstall_bundle = app.bundle_path.clone();
     let uninstall_id = app.id.clone();
     btn_uninstall.on_click(move |_| {
-        let msg = format!("Uninstall {}?", uninstall_name);
+        let msg = format!("{} {}?", i18n::t("Uninstall"), uninstall_name);
         ui::MessageBox::show(
             ui::MessageBoxType::Warning,
             &msg,
-            Some("Uninstall"),
+            Some(i18n::t("Uninstall")),
         );
         uninstall_app(&uninstall_bundle);
         permissions::perm_delete(&uninstall_id);
@@ -124,7 +127,7 @@ fn build_app_row(panel: &ui::View, app: &AppInfo) {
     row.add(&btn_uninstall);
 
     // Details button (next from right)
-    let btn_details = ui::IconButton::new("Details");
+    let btn_details = ui::IconButton::new(i18n::t("Details"));
     btn_details.set_dock(ui::DOCK_RIGHT);
     btn_details.set_size(70, 28);
     btn_details.set_margin(4, 10, 4, 10);
@@ -195,7 +198,7 @@ fn open_details_window(
     category: &str,
     _capabilities: &str,
 ) {
-    let title = format!("App Details — {}", name);
+    let title = format!("{} — {}", i18n::t("App Details"), name);
     let win = ui::Window::new(&title, -1, -1, 400, 450);
     let win_id = win.id();
 
@@ -211,17 +214,17 @@ fn open_details_window(
     info_card.set_color(layout::card_bg());
     info_card.set_auto_size(true);
 
-    build_detail_row(&info_card, "Name", name, true);
-    build_detail_row(&info_card, "ID", app_id, false);
-    build_detail_row(&info_card, "Version", version, false);
+    build_detail_row(&info_card, i18n::t("Name"), name, true);
+    build_detail_row(&info_card, i18n::t("ID"), app_id, false);
+    build_detail_row(&info_card, i18n::t("Version"), version, false);
     if !category.is_empty() {
-        build_detail_row(&info_card, "Category", category, false);
+        build_detail_row(&info_card, i18n::t("Category"), category, false);
     }
 
     root.add(&info_card);
 
     // ── Permissions section ─────────────────────────────────────────────
-    let perm_header = ui::Label::new("Permissions");
+    let perm_header = ui::Label::new(i18n::t("Permissions"));
     perm_header.set_dock(ui::DOCK_TOP);
     perm_header.set_size(368, 28);
     perm_header.set_font_size(14);
@@ -247,7 +250,7 @@ fn open_details_window(
         row.set_size(336, 40);
         row.set_margin(16, if gi == 0 { 8 } else { 0 }, 16, 0);
 
-        let lbl = ui::Label::new(group.name);
+        let lbl = ui::Label::new(i18n::t(group.name));
         lbl.set_position(0, 10);
         lbl.set_size(200, 20);
         lbl.set_text_color(layout::text());
@@ -284,7 +287,7 @@ fn open_details_window(
     root.add(&perm_card);
 
     // ── Reset Permissions button ────────────────────────────────────────
-    let reset_btn = ui::IconButton::new("Reset Permissions");
+    let reset_btn = ui::IconButton::new(i18n::t("Reset Permissions"));
     reset_btn.set_dock(ui::DOCK_TOP);
     reset_btn.set_size(160, 32);
     reset_btn.set_margin(16, 4, 16, 8);

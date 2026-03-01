@@ -6,6 +6,7 @@
 #![no_std]
 #![no_main]
 
+use anyos_std::i18n;
 use libanyui_client as ui;
 
 anyos_std::entry!(main);
@@ -202,6 +203,7 @@ fn main() {
         anyos_std::println!("[Minesweeper] Failed to init libanyui");
         return;
     }
+    i18n::init();
 
     // Seed RNG from uptime
     rng_seed(anyos_std::sys::uptime_ms());
@@ -209,7 +211,7 @@ fn main() {
     let win_w = GRID_W;
     let win_h = GRID_H + 44;
     let win = ui::Window::new_with_flags(
-        "Minesweeper", -1, -1, win_w, win_h,
+        i18n::t("Minesweeper"), -1, -1, win_w, win_h,
         ui::WIN_FLAG_NOT_RESIZABLE,
     );
 
@@ -227,7 +229,7 @@ fn main() {
     mine_label.set_font_size(18);
     header.add(&mine_label);
 
-    let new_btn = ui::Button::new("New");
+    let new_btn = ui::Button::new(i18n::t("New"));
     new_btn.set_position((win_w as i32 / 2) - 30, 8);
     new_btn.set_size(60, 28);
     header.add(&new_btn);
@@ -571,10 +573,10 @@ impl Game {
         if self.state == GameState::Won {
             // Green tint on header label
             self.mine_label.set_text_color(0xFF30D158);
-            self.mine_label.set_text("WIN!");
+            self.mine_label.set_text(i18n::t("WIN!"));
         } else if self.state == GameState::Lost {
             self.mine_label.set_text_color(0xFFFF453A);
-            self.mine_label.set_text("BOOM");
+            self.mine_label.set_text(i18n::t("BOOM"));
         }
     }
 }

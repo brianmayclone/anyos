@@ -117,11 +117,12 @@ fn rebuild_cards() {
     }
 
     // Update status bar
+    let t = anyos_std::i18n::t;
     let status_text = match state.current_tab {
-        TAB_ALL => alloc::format!("  {} packages available", count),
-        TAB_INSTALLED => alloc::format!("  {} packages installed", count),
-        TAB_UPDATES => alloc::format!("  {} updates available", count),
-        _ => alloc::format!("  {} packages", count),
+        TAB_ALL => alloc::format!("  {} {}", count, t("packages available")),
+        TAB_INSTALLED => alloc::format!("  {} {}", count, t("packages installed")),
+        TAB_UPDATES => alloc::format!("  {} {}", count, t("updates available")),
+        _ => alloc::format!("  {} {}", count, t("packages")),
     };
     state.status_label.set_text(&status_text);
 }
@@ -135,23 +136,24 @@ fn handle_action(pkg_idx: usize) {
     let status = apkg::get_status(pkg, &state.installed);
     let name = pkg.name.clone();
 
+    let t = anyos_std::i18n::t;
     match status {
         PkgStatus::Available => {
-            state.status_label.set_text(&alloc::format!("  Installing {}...", name));
+            state.status_label.set_text(&alloc::format!("  {} {}...", t("Installing"), name));
             let code = apkg::install_package(&name);
             if code == 0 {
-                state.status_label.set_text(&alloc::format!("  {} installed successfully", name));
+                state.status_label.set_text(&alloc::format!("  {} {}", name, t("installed successfully")));
             } else {
-                state.status_label.set_text(&alloc::format!("  Failed to install {} (exit {})", name, code));
+                state.status_label.set_text(&alloc::format!("  {} {} (exit {})", t("Failed to install"), name, code));
             }
         }
         PkgStatus::Updatable => {
-            state.status_label.set_text(&alloc::format!("  Updating {}...", name));
+            state.status_label.set_text(&alloc::format!("  {} {}...", t("Updating"), name));
             let code = apkg::upgrade_package(&name);
             if code == 0 {
-                state.status_label.set_text(&alloc::format!("  {} updated successfully", name));
+                state.status_label.set_text(&alloc::format!("  {} {}", name, t("updated successfully")));
             } else {
-                state.status_label.set_text(&alloc::format!("  Failed to update {} (exit {})", name, code));
+                state.status_label.set_text(&alloc::format!("  {} {} (exit {})", t("Failed to update"), name, code));
             }
         }
         PkgStatus::Installed => {
@@ -169,12 +171,13 @@ fn handle_remove(pkg_idx: usize) {
     let state = app();
     let name = state.packages[pkg_idx].name.clone();
 
-    state.status_label.set_text(&alloc::format!("  Removing {}...", name));
+    let t = anyos_std::i18n::t;
+    state.status_label.set_text(&alloc::format!("  {} {}...", t("Removing"), name));
     let code = apkg::remove_package(&name);
     if code == 0 {
-        state.status_label.set_text(&alloc::format!("  {} removed successfully", name));
+        state.status_label.set_text(&alloc::format!("  {} {}", name, t("removed successfully")));
     } else {
-        state.status_label.set_text(&alloc::format!("  Failed to remove {} (exit {})", name, code));
+        state.status_label.set_text(&alloc::format!("  {} {} (exit {})", t("Failed to remove"), name, code));
     }
 
     // Reload and refresh
@@ -199,7 +202,7 @@ fn show_detail(pkg_idx: usize) {
     let status = apkg::get_status(pkg, &state.installed);
 
     // Back button
-    let back_btn = anyui::IconButton::new("Back");
+    let back_btn = anyui::IconButton::new(anyos_std::i18n::t("Back"));
     back_btn.set_position(8, 8);
     back_btn.set_size(60, 32);
     back_btn.set_system_icon("arrow-left", anyui::IconType::Outline, tc.text, 20);
@@ -210,10 +213,11 @@ fn show_detail(pkg_idx: usize) {
     });
 
     // Action button (top-right area)
+    let t = anyos_std::i18n::t;
     let (btn_text, btn_color) = match status {
-        PkgStatus::Available => ("Install", tc.accent),
-        PkgStatus::Installed => ("Installed", tc.success),
-        PkgStatus::Updatable => ("Update", tc.warning),
+        PkgStatus::Available => (t("Install"), tc.accent),
+        PkgStatus::Installed => (t("Installed"), tc.success),
+        PkgStatus::Updatable => (t("Update"), tc.warning),
     };
     let action_btn = anyui::Button::new(btn_text);
     action_btn.set_position(WIN_W as i32 - 200, 16);
@@ -233,7 +237,7 @@ fn show_detail(pkg_idx: usize) {
 
     // Remove button (only if installed)
     if status == PkgStatus::Installed || status == PkgStatus::Updatable {
-        let remove_btn = anyui::Button::new("Remove");
+        let remove_btn = anyui::Button::new(t("Remove"));
         remove_btn.set_position(WIN_W as i32 - 108, 16);
         remove_btn.set_size(84, 32);
         remove_btn.set_color(tc.destructive);
@@ -265,11 +269,13 @@ fn main() {
         anyos_std::println!("[App Store] Failed to init libanyui");
         return;
     }
+    anyos_std::i18n::init();
+    let t = anyos_std::i18n::t;
 
     let tc = anyui::theme::colors();
 
     // ── Window ──
-    let win = anyui::Window::new("App Store", -1, -1, WIN_W, WIN_H);
+    let win = anyui::Window::new(t("App Store"), -1, -1, WIN_W, WIN_H);
 
     // ═══════════════════════════════════════════════════════════════
     //  Toolbar (DOCK_TOP)
@@ -284,7 +290,7 @@ fn main() {
     store_icon.set_system_icon("building-store", anyui::IconType::Outline, tc.accent, 22);
     store_icon.set_enabled(false);
 
-    let title_label = toolbar.add_label("App Store");
+    let title_label = toolbar.add_label(t("App Store"));
     title_label.set_font(1);
     title_label.set_font_size(14);
     title_label.set_text_color(tc.text);
@@ -292,7 +298,7 @@ fn main() {
     toolbar.add_separator();
 
     // Refresh button
-    let btn_refresh = toolbar.add_icon_button("Refresh");
+    let btn_refresh = toolbar.add_icon_button(t("Refresh"));
     btn_refresh.set_system_icon("refresh", anyui::IconType::Outline, tc.text, 20);
 
     toolbar.add_separator();
@@ -300,7 +306,7 @@ fn main() {
     // Search field
     let search_field = anyui::SearchField::new();
     search_field.set_size(220, 28);
-    search_field.set_placeholder("Search packages...");
+    search_field.set_placeholder(t("Search packages..."));
     toolbar.add(&search_field);
 
     // ═══════════════════════════════════════════════════════════════
@@ -313,7 +319,8 @@ fn main() {
     tab_bar.set_color(anyui::theme::darken(tc.window_bg, 3));
     win.add(&tab_bar);
 
-    let segments = anyui::SegmentedControl::new("All Apps|Installed|Updates");
+    let seg_items = alloc::format!("{}|{}|{}", t("All Apps"), t("Installed"), t("Updates"));
+    let segments = anyui::SegmentedControl::new(&seg_items);
     segments.set_position((WIN_W as i32 - 340) / 2, 8);
     segments.set_size(340, 28);
     tab_bar.add(&segments);
@@ -322,7 +329,7 @@ fn main() {
     //  Status bar (DOCK_BOTTOM)
     // ═══════════════════════════════════════════════════════════════
 
-    let status_label = anyui::Label::new("  Loading packages...");
+    let status_label = anyui::Label::new(t("Loading packages..."));
     status_label.set_dock(anyui::DOCK_BOTTOM);
     status_label.set_size(WIN_W, 26);
     status_label.set_color(anyui::theme::darken(tc.window_bg, 5));
@@ -402,15 +409,16 @@ fn main() {
     // Refresh button — update index then reload
     btn_refresh.on_click(|_| {
         let state = app();
-        state.status_label.set_text("  Updating package index...");
+        let t = anyos_std::i18n::t;
+        state.status_label.set_text(t("Updating package index..."));
         let code = apkg::update_index();
         if code == 0 {
             state.packages = apkg::load_index();
             state.installed = apkg::load_installed();
-            state.status_label.set_text("  Package index updated");
+            state.status_label.set_text(t("Package index updated"));
             rebuild_cards();
         } else {
-            state.status_label.set_text("  Failed to update index");
+            state.status_label.set_text(t("Failed to update index"));
         }
     });
 

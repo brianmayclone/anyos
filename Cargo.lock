@@ -59,6 +59,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "anymail"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libanyui_client",
+ "libimage_client",
+ "libwebview",
+]
+
+[[package]]
 name = "anyos_kernel"
 version = "0.1.0"
 

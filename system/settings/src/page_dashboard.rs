@@ -5,7 +5,7 @@
 
 use alloc::format;
 use alloc::string::String;
-use anyos_std::{net, process, sys};
+use anyos_std::{i18n, net, process, sys};
 use anyos_std::ui::window;
 use libanyui_client as ui;
 use ui::Widget;
@@ -21,7 +21,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     panel.set_auto_size(true);
     panel.set_color(layout::bg());
 
-    layout::build_page_header(&panel, "Dashboard", "");
+    layout::build_page_header(&panel, i18n::t("Dashboard"), "");
 
     build_hero_section(&panel);
     build_quick_access(&panel);
@@ -40,9 +40,9 @@ fn build_hero_section(panel: &ui::View) {
     let mut host_buf = [0u8; 64];
     let hlen = sys::get_hostname(&mut host_buf);
     let hostname = if hlen != u32::MAX && hlen > 0 {
-        core::str::from_utf8(&host_buf[..hlen as usize]).unwrap_or("anyOS Computer")
+        core::str::from_utf8(&host_buf[..hlen as usize]).unwrap_or(i18n::t("anyOS Computer"))
     } else {
-        "anyOS Computer"
+        i18n::t("anyOS Computer")
     };
 
     let name_lbl = ui::Label::new(hostname);
@@ -71,7 +71,7 @@ fn build_hero_section(panel: &ui::View) {
     } else {
         "user"
     };
-    let user_text = format!("Signed in as {}", username);
+    let user_text = format!("{} {}", i18n::t("Signed in as"), username);
     let user_lbl = ui::Label::new(&user_text);
     user_lbl.set_dock(ui::DOCK_TOP);
     user_lbl.set_size(350, 18);
@@ -85,7 +85,7 @@ fn build_hero_section(panel: &ui::View) {
 
 fn build_quick_access(panel: &ui::View) {
     // Section label
-    let section_lbl = ui::Label::new("Quick access");
+    let section_lbl = ui::Label::new(i18n::t("Quick access"));
     section_lbl.set_dock(ui::DOCK_TOP);
     section_lbl.set_size(600, 24);
     section_lbl.set_font_size(13);
@@ -105,7 +105,7 @@ fn build_quick_access(panel: &ui::View) {
         tile.set_margin(4, 4, 4, 4);
         tile.set_color(layout::card_bg());
 
-        let lbl = ui::Label::new(label);
+        let lbl = ui::Label::new(i18n::t(label));
         lbl.set_position(12, 30);
         lbl.set_size(106, 20);
         lbl.set_font_size(13);
@@ -122,7 +122,7 @@ fn build_quick_access(panel: &ui::View) {
 
 fn build_system_info(panel: &ui::View) {
     // Section label
-    let section_lbl = ui::Label::new("System information");
+    let section_lbl = ui::Label::new(i18n::t("System information"));
     section_lbl.set_dock(ui::DOCK_TOP);
     section_lbl.set_size(600, 24);
     section_lbl.set_font_size(13);
@@ -138,8 +138,8 @@ fn build_system_info(panel: &ui::View) {
 
     // CPU card
     let cpu_count = sys::sysinfo(2, &mut [0u8; 4]);
-    let cpu_str = format!("{} cores", cpu_count);
-    build_info_tile(&flow, "CPU", &cpu_str);
+    let cpu_str = format!("{} {}", cpu_count, i18n::t("cores"));
+    build_info_tile(&flow, i18n::t("CPU"), &cpu_str);
 
     // Memory card
     let mut mem = [0u8; 8];
@@ -150,7 +150,7 @@ fn build_system_info(panel: &ui::View) {
     let free_mb = (free * 4) / 1024;
     let used_mb = total_mb.saturating_sub(free_mb);
     let mem_str = format!("{} / {} MB", used_mb, total_mb);
-    build_info_tile(&flow, "Memory", &mem_str);
+    build_info_tile(&flow, i18n::t("Memory"), &mem_str);
 
     // GPU card
     let gpu_name = window::gpu_name();
@@ -160,7 +160,7 @@ fn build_system_info(panel: &ui::View) {
     } else {
         gpu_name
     };
-    build_info_tile(&flow, "GPU", &gpu_str);
+    build_info_tile(&flow, i18n::t("GPU"), &gpu_str);
 
     // Network card
     let mut net_buf = [0u8; 24];
@@ -170,11 +170,11 @@ fn build_system_info(panel: &ui::View) {
         let ip = [net_buf[0], net_buf[1], net_buf[2], net_buf[3]];
         format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
     } else {
-        String::from("Disconnected")
+        String::from(i18n::t("Disconnected"))
     };
     build_info_tile_colored(
         &flow,
-        "Network",
+        i18n::t("Network"),
         &net_str,
         if link_up { ui::theme::colors().success } else { ui::theme::colors().destructive },
     );
@@ -186,7 +186,7 @@ fn build_system_info(panel: &ui::View) {
     let m = (secs % 3600) / 60;
     let s = secs % 60;
     let uptime_str = format!("{}h {}m {}s", h, m, s);
-    build_info_tile(&flow, "Uptime", &uptime_str);
+    build_info_tile(&flow, i18n::t("Uptime"), &uptime_str);
 
     panel.add(&flow);
 }

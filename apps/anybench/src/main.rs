@@ -23,6 +23,7 @@ mod workloads;
 use alloc::format;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
+use anyos_std::i18n;
 use libanyui_client as anyui;
 use anyui::Widget;
 
@@ -261,7 +262,8 @@ fn build_ui() {
     let num_cpus = if num_cpus == 0 { 1 } else { num_cpus };
 
     // ── Tab bar ──
-    let tabs = anyui::SegmentedControl::new("Overview|CPU|GPU");
+    let tabs_str = format!("{}|{}|{}", i18n::t("Overview"), i18n::t("CPU"), i18n::t("GPU"));
+    let tabs = anyui::SegmentedControl::new(&tabs_str);
     tabs.set_dock(anyui::DOCK_TOP);
     tabs.set_size(640, 36);
     tabs.set_margin(8, 8, 8, 0);
@@ -285,8 +287,9 @@ fn build_ui() {
     lbl_title.set_state(TEXT_ALIGN_CENTER);
     panel_overview.add(&lbl_title);
 
-    let lbl_subtitle = anyui::Label::new(&format!("Comprehensive System Benchmark  |  {} CPU Core{} detected",
-        num_cpus, if num_cpus != 1 { "s" } else { "" }));
+    let lbl_subtitle = anyui::Label::new(&format!("{}  |  {} {} {}",
+        i18n::t("Comprehensive System Benchmark"),
+        num_cpus, i18n::t("CPU Core(s)"), i18n::t("detected")));
     lbl_subtitle.set_position(0, 60);
     lbl_subtitle.set_size(640, 20);
     lbl_subtitle.set_font_size(13);
@@ -294,7 +297,7 @@ fn build_ui() {
     lbl_subtitle.set_state(TEXT_ALIGN_CENTER);
     panel_overview.add(&lbl_subtitle);
 
-    let btn_run_all = anyui::Button::new("Run All Tests");
+    let btn_run_all = anyui::Button::new(i18n::t("Run All Tests"));
     btn_run_all.set_position(200, 110);
     btn_run_all.set_size(240, 40);
     btn_run_all.set_color(colors.accent);
@@ -302,13 +305,13 @@ fn build_ui() {
     btn_run_all.set_font_size(15);
     panel_overview.add(&btn_run_all);
 
-    let btn_run_cpu = anyui::Button::new("CPU Only");
+    let btn_run_cpu = anyui::Button::new(i18n::t("CPU Only"));
     btn_run_cpu.set_position(170, 165);
     btn_run_cpu.set_size(140, 34);
     btn_run_cpu.set_font_size(13);
     panel_overview.add(&btn_run_cpu);
 
-    let btn_run_gpu = anyui::Button::new("GPU Only");
+    let btn_run_gpu = anyui::Button::new(i18n::t("GPU Only"));
     btn_run_gpu.set_position(330, 165);
     btn_run_gpu.set_size(140, 34);
     btn_run_gpu.set_font_size(13);
@@ -319,7 +322,7 @@ fn build_ui() {
     progress.set_size(560, 10);
     panel_overview.add(&progress);
 
-    let lbl_status = anyui::Label::new("Ready. Press 'Run All Tests' to begin.");
+    let lbl_status = anyui::Label::new(i18n::t("Ready. Press 'Run All Tests' to begin."));
     lbl_status.set_position(0, 245);
     lbl_status.set_size(640, 20);
     lbl_status.set_font_size(12);
@@ -328,7 +331,7 @@ fn build_ui() {
     panel_overview.add(&lbl_status);
 
     // Score summary cards
-    let card_labels = ["CPU Single-Core", "CPU Multi-Core", "GPU OnScreen", "GPU OffScreen"];
+    let card_labels = [i18n::t("CPU Single-Core"), i18n::t("CPU Multi-Core"), i18n::t("GPU OnScreen"), i18n::t("GPU OffScreen")];
     let card_x = [32, 172, 340, 480];
     let _lbl_summary_titles: Vec<anyui::Label> = (0..4).map(|i| {
         let l = anyui::Label::new(card_labels[i]);
@@ -358,7 +361,7 @@ fn build_ui() {
     div.set_size(576, 1);
     panel_overview.add(&div);
 
-    let lbl_info = anyui::Label::new("anyBench measures CPU and GPU performance with standardized workloads.");
+    let lbl_info = anyui::Label::new(i18n::t("anyBench measures CPU and GPU performance with standardized workloads."));
     lbl_info.set_position(0, 370);
     lbl_info.set_size(640, 16);
     lbl_info.set_font_size(11);
@@ -366,7 +369,7 @@ fn build_ui() {
     lbl_info.set_state(TEXT_ALIGN_CENTER);
     panel_overview.add(&lbl_info);
 
-    let lbl_info2 = anyui::Label::new("Higher scores indicate better performance. Baseline: 1000 pts.");
+    let lbl_info2 = anyui::Label::new(i18n::t("Higher scores indicate better performance. Baseline: 1000 pts."));
     lbl_info2.set_position(0, 390);
     lbl_info2.set_size(640, 16);
     lbl_info2.set_font_size(11);
@@ -384,7 +387,7 @@ fn build_ui() {
     panel_cpu.set_visible(false);
     win.add(&panel_cpu);
 
-    let lbl_sc_header = anyui::Label::new("Single-Core Performance");
+    let lbl_sc_header = anyui::Label::new(i18n::t("Single-Core Performance"));
     lbl_sc_header.set_position(16, 12);
     lbl_sc_header.set_size(300, 24);
     lbl_sc_header.set_font_size(16);
@@ -410,7 +413,7 @@ fn build_ui() {
         cpu_single_scores[i] = ls;
     }
 
-    let lbl_mc_header = anyui::Label::new("Multi-Core Performance");
+    let lbl_mc_header = anyui::Label::new(i18n::t("Multi-Core Performance"));
     lbl_mc_header.set_position(16, 226);
     lbl_mc_header.set_size(300, 24);
     lbl_mc_header.set_font_size(16);
@@ -459,7 +462,7 @@ fn build_ui() {
     canvas.clear(colors.editor_bg);
     panel_gpu.add(&canvas);
 
-    let lbl_canvas_title = anyui::Label::new("Render Preview");
+    let lbl_canvas_title = anyui::Label::new(i18n::t("Render Preview"));
     lbl_canvas_title.set_position(320, 200);
     lbl_canvas_title.set_size(300, 16);
     lbl_canvas_title.set_font_size(10);
@@ -627,13 +630,13 @@ fn start_benchmark(mode: BenchMode) {
             a.phase = BenchPhase::CpuSingle;
             a.current_test = 0;
             a.progress.set_state(0);
-            a.lbl_status.set_text("Starting CPU Single-Core tests...");
+            a.lbl_status.set_text(i18n::t("Starting CPU Single-Core tests..."));
         }
         BenchMode::GpuOnly => {
             a.phase = BenchPhase::GpuOnScreen;
             a.current_test = 0;
             a.progress.set_state(0);
-            a.lbl_status.set_text("Starting GPU OnScreen tests...");
+            a.lbl_status.set_text(i18n::t("Starting GPU OnScreen tests..."));
         }
     }
 
@@ -688,7 +691,7 @@ fn tick_benchmark() {
                     a.phase = BenchPhase::CpuMulti;
                     a.current_test = 0;
                     update_cpu_single_summary();
-                    a.lbl_status.set_text("Starting CPU Multi-Core tests...");
+                    a.lbl_status.set_text(i18n::t("Starting CPU Multi-Core tests..."));
                     return;
                 }
                 let name = CPU_TEST_NAMES[a.current_test];
@@ -721,11 +724,11 @@ fn tick_benchmark() {
                     }
                     a.phase = BenchPhase::GpuOnScreen;
                     a.current_test = 0;
-                    a.lbl_status.set_text("Starting GPU OnScreen tests...");
+                    a.lbl_status.set_text(i18n::t("Starting GPU OnScreen tests..."));
                     return;
                 }
                 let name = CPU_TEST_NAMES[a.current_test];
-                a.lbl_status.set_text(&format!("CPU Multi-Core ({}T): {}...", a.num_cpus, name));
+                a.lbl_status.set_text(&format!("{} ({}T): {}...", i18n::t("CPU Multi-Core"), a.num_cpus, name));
                 a.cpu_multi_scores[a.current_test].set_text("...");
                 a.cpu_multi_scores[a.current_test].set_text_color(tc().accent);
 
@@ -750,7 +753,7 @@ fn tick_benchmark() {
                     update_gpu_on_summary();
                     a.phase = BenchPhase::GpuOffScreen;
                     a.current_test = 0;
-                    a.lbl_status.set_text("Starting GPU OffScreen tests...");
+                    a.lbl_status.set_text(i18n::t("Starting GPU OffScreen tests..."));
                     return;
                 }
                 let name = GPU_TEST_NAMES[a.current_test];
@@ -919,7 +922,7 @@ fn finish_benchmark() {
     a.running = false;
     a.phase = BenchPhase::Idle;
     a.progress.set_state(100);
-    a.lbl_status.set_text("Benchmark complete!");
+    a.lbl_status.set_text(i18n::t("Benchmark complete!"));
     a.lbl_status.set_text_color(tc().success);
 
     a.btn_run_all.set_enabled(true);
@@ -941,6 +944,7 @@ fn main() {
         anyos_std::println!("anybench: failed to load libanyui.so");
         return;
     }
+    i18n::init();
 
     build_ui();
     anyui::run();

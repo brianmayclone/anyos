@@ -3,6 +3,7 @@
 
 use anyos_std::ui::window;
 use anyos_std::ui::filedialog;
+use anyos_std::i18n;
 use anyos_std::String;
 use anyos_std::format;
 
@@ -55,7 +56,7 @@ fn render(win: u32, st: &State) {
     let mut y = 12 - st.scroll_y as i16;
 
     // Font name header
-    let name = if st.font_name.is_empty() { "System Font (SF Pro)" } else { &st.font_name };
+    let name = if st.font_name.is_empty() { i18n::t("System Font (SF Pro)") } else { &st.font_name };
     window::draw_text_ex(win, 16, y, TEXT, window::FONT_BOLD, 18, name);
     y += 28;
 
@@ -87,28 +88,28 @@ fn render(win: u32, st: &State) {
     y += 16;
 
     // Character sets
-    window::draw_text_ex(win, 16, y, TEXT_DIM, 0, 13, "Uppercase");
+    window::draw_text_ex(win, 16, y, TEXT_DIM, 0, 13, i18n::t("Uppercase"));
     y += 18;
     if y > -40 && y < wh + 40 {
         window::draw_text_ex(win, 16, y, TEXT, st.font_id, 24, SAMPLE_UPPER);
     }
     y += 34;
 
-    window::draw_text_ex(win, 16, y, TEXT_DIM, 0, 13, "Lowercase");
+    window::draw_text_ex(win, 16, y, TEXT_DIM, 0, 13, i18n::t("Lowercase"));
     y += 18;
     if y > -40 && y < wh + 40 {
         window::draw_text_ex(win, 16, y, TEXT, st.font_id, 24, SAMPLE_LOWER);
     }
     y += 34;
 
-    window::draw_text_ex(win, 16, y, TEXT_DIM, 0, 13, "Digits");
+    window::draw_text_ex(win, 16, y, TEXT_DIM, 0, 13, i18n::t("Digits"));
     y += 18;
     if y > -40 && y < wh + 40 {
         window::draw_text_ex(win, 16, y, TEXT, st.font_id, 24, SAMPLE_DIGITS);
     }
     y += 34;
 
-    window::draw_text_ex(win, 16, y, TEXT_DIM, 0, 13, "Symbols");
+    window::draw_text_ex(win, 16, y, TEXT_DIM, 0, 13, i18n::t("Symbols"));
     y += 18;
     if y > -40 && y < wh + 40 {
         window::draw_text_ex(win, 16, y, TEXT, st.font_id, 24, SAMPLE_SYMBOLS);
@@ -120,7 +121,7 @@ fn render(win: u32, st: &State) {
     y += 16;
 
     // Character grid (ASCII 33-126)
-    window::draw_text_ex(win, 16, y, TEXT_DIM, 0, 13, "Character Grid");
+    window::draw_text_ex(win, 16, y, TEXT_DIM, 0, 13, i18n::t("Character Grid"));
     y += 20;
 
     let cell_sz: i16 = 40;
@@ -155,18 +156,20 @@ fn render(win: u32, st: &State) {
 }
 
 fn main() {
-    let win = window::create("Font Viewer", 100, 60, 640, 500);
+    i18n::init();
+
+    let win = window::create(i18n::t("Font Viewer"), 100, 60, 640, 500);
     if win == u32::MAX { return; }
 
     // Menu
     let mut mb = window::MenuBarBuilder::new()
-        .menu("Font Viewer")
-            .item(100, "About Font Viewer", 0)
+        .menu(i18n::t("Font Viewer"))
+            .item(100, i18n::t("About Font Viewer"), 0)
             .separator()
-            .item(199, "Quit", 0)
+            .item(199, i18n::t("Quit"), 0)
         .end_menu()
-        .menu("File")
-            .item(200, "Open Font...", 0)
+        .menu(i18n::t("File"))
+            .item(200, i18n::t("Open Font..."), 0)
         .end_menu();
     window::set_menu(win, mb.build());
 
@@ -187,7 +190,7 @@ fn main() {
                 st.font_id = fid as u16;
                 st.font_path = String::from(path);
                 st.font_name = String::from(basename(path));
-                window::set_title(win, &format!("Font Viewer - {}", basename(path)));
+                window::set_title(win, &format!("{} - {}", i18n::t("Font Viewer"), basename(path)));
             }
         }
     }
@@ -232,7 +235,7 @@ fn main() {
                                     st.font_name = String::from(basename(&path));
                                     st.font_path = path;
                                     st.scroll_y = 0;
-                                    window::set_title(win, &format!("Font Viewer - {}", &st.font_name));
+                                    window::set_title(win, &format!("{} - {}", i18n::t("Font Viewer"), &st.font_name));
                                     dirty = true;
                                 }
                             }

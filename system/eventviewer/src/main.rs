@@ -9,6 +9,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::format;
+use anyos_std::i18n;
 use libanyui_client as ui;
 use ui::Widget;
 
@@ -244,9 +245,9 @@ fn populate_grid(a: &App) {
     let total = a.entries.len();
     let shown = a.filtered.len();
     if a.filter_level == 0 && a.search_text.is_empty() {
-        a.status.set_text(&format!("{} events", total));
+        a.status.set_text(&format!("{} {}", total, i18n::t("events")));
     } else {
-        a.status.set_text(&format!("{} of {} events", shown, total));
+        a.status.set_text(&format!("{} {} {} {}", shown, i18n::t("of"), total, i18n::t("events")));
     }
 }
 
@@ -283,9 +284,10 @@ fn main() {
         anyos_std::println!("eventviewer: failed to load libanyui.so");
         return;
     }
+    i18n::init();
 
     // ── Window ──
-    let win = ui::Window::new("Event Viewer", -1, -1, WIN_W, WIN_H);
+    let win = ui::Window::new(i18n::t("Event Viewer"), -1, -1, WIN_W, WIN_H);
 
     // ── Toolbar ──
     let toolbar = ui::Toolbar::new();
@@ -300,14 +302,15 @@ fn main() {
 
     toolbar.add_separator();
 
-    let seg_level = ui::SegmentedControl::new("All|Error|Warn|Info|Kern|Debug");
+    let seg_items = format!("{}|Error|Warn|Info|Kern|Debug", i18n::t("All"));
+    let seg_level = ui::SegmentedControl::new(&seg_items);
     seg_level.set_size(360, 28);
     toolbar.add(&seg_level);
 
     toolbar.add_separator();
 
     let search = ui::SearchField::new();
-    search.set_placeholder("Search...");
+    search.set_placeholder(i18n::t("Search..."));
     search.set_size(140, 28);
     toolbar.add(&search);
 
@@ -322,7 +325,7 @@ fn main() {
     status_bar.set_padding(12, 6, 12, 6);
     win.add(&status_bar);
 
-    let status_label = ui::Label::new("Loading...");
+    let status_label = ui::Label::new(i18n::t("Loading..."));
     status_label.set_position(12, 6);
     status_label.set_text_color(tc.text_secondary);
     status_label.set_font_size(12);
@@ -337,7 +340,7 @@ fn main() {
     detail_view.set_padding(12, 8, 12, 8);
     win.add(&detail_view);
 
-    let detail_title = ui::Label::new("Details");
+    let detail_title = ui::Label::new(i18n::t("Details"));
     detail_title.set_position(12, 8);
     detail_title.set_size(100, 16);
     detail_title.set_text_color(tc.text_secondary);
@@ -367,10 +370,10 @@ fn main() {
     grid.set_font(4); // Monospace for log data
 
     let cols = alloc::vec![
-        ui::ColumnDef::new("Time").width(170),
-        ui::ColumnDef::new("Level").width(60),
-        ui::ColumnDef::new("Source").width(100),
-        ui::ColumnDef::new("Message").width(450),
+        ui::ColumnDef::new(i18n::t("Time")).width(170),
+        ui::ColumnDef::new(i18n::t("Level")).width(60),
+        ui::ColumnDef::new(i18n::t("Source")).width(100),
+        ui::ColumnDef::new(i18n::t("Message")).width(450),
     ];
     grid.set_columns(&cols);
     win.add(&grid);

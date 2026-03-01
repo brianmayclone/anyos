@@ -24,6 +24,7 @@ anyos_std::entry!(main);
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::vec;
+use anyos_std::i18n;
 
 use libanyui_client as ui_lib;
 use ui_lib::Widget;
@@ -214,6 +215,7 @@ fn main() {
         anyos_std::println!("[surf] ERROR: failed to init libanyui");
         return;
     }
+    i18n::init();
 
     if !libsvg_client::init() {
         anyos_std::println!("[surf] WARN: libsvg.so not available — SVG images disabled");
@@ -226,7 +228,7 @@ fn main() {
     let start_url = if arg_url.is_empty() { None } else { Some(String::from(arg_url)) };
 
     // ── Window ──────────────────────────────────────────────────────────────
-    let win = ui_lib::Window::new("Surf", -1, -1, 900, 700);
+    let win = ui_lib::Window::new(i18n::t("Surf"), -1, -1, 900, 700);
 
     // ── Toolbar (DOCK_TOP, 40 px) ────────────────────────────────────────────
     let toolbar = ui_lib::View::new();
@@ -254,7 +256,7 @@ fn main() {
     let url_field = ui_lib::TextField::new();
     url_field.set_position(116, 6);
     url_field.set_size(666, 28);
-    url_field.set_placeholder("Enter URL...");
+    url_field.set_placeholder(i18n::t("Enter URL..."));
     toolbar.add(&url_field);
 
     // DevTools button — right of URL field.
@@ -272,7 +274,8 @@ fn main() {
     devtools_menu.set_visible(false);
     win.add(&devtools_menu);
 
-    let menu_item_console = ui_lib::Label::new("  Show Console");
+    let show_console_text = anyos_std::format!("  {}", i18n::t("Show Console"));
+    let menu_item_console = ui_lib::Label::new(&show_console_text);
     menu_item_console.set_position(0, 0);
     menu_item_console.set_size(180, 38);
     menu_item_console.set_color(0xFF3A3A3C);
@@ -280,7 +283,8 @@ fn main() {
     menu_item_console.set_font_size(14);
     devtools_menu.add(&menu_item_console);
 
-    let menu_item_clear = ui_lib::Label::new("  Clear Console");
+    let clear_console_text = anyos_std::format!("  {}", i18n::t("Clear Console"));
+    let menu_item_clear = ui_lib::Label::new(&clear_console_text);
     menu_item_clear.set_position(0, 40);
     menu_item_clear.set_size(180, 38);
     menu_item_clear.set_color(0xFF3A3A3C);
@@ -289,7 +293,7 @@ fn main() {
     devtools_menu.add(&menu_item_clear);
 
     // ── Tab bar (DOCK_TOP, 30 px) ────────────────────────────────────────────
-    let tab_bar_view = ui_lib::TabBar::new("New Tab");
+    let tab_bar_view = ui_lib::TabBar::new(i18n::t("New Tab"));
     tab_bar_view.set_dock(ui_lib::DOCK_TOP);
     tab_bar_view.set_size(0, 30);
     win.add(&tab_bar_view);
@@ -310,7 +314,7 @@ fn main() {
     devtools_panel.add(&devtools_label);
 
     // ── Status bar (DOCK_BOTTOM, 24 px) ─────────────────────────────────────
-    let status_label = ui_lib::Label::new("Ready");
+    let status_label = ui_lib::Label::new(i18n::t("Ready"));
     status_label.set_dock(ui_lib::DOCK_BOTTOM);
     status_label.set_size(0, 24);
     status_label.set_color(0xFF252525);

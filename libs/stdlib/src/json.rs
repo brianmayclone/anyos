@@ -495,9 +495,40 @@ impl<'a> Parser<'a> {
                         _ => return Err(ParseError::InvalidEscape(self.pos)),
                     }
                 }
-                Some(b) => {
-                    // UTF-8 byte — pass through
+                Some(b) if b < 0x80 => {
+                    // ASCII byte — pass through directly
                     s.push(b as char);
+                }
+                Some(b) => {
+                    // Multi-byte UTF-8 sequence — decode codepoint from lead + continuation bytes
+                    let (extra, mut cp) = if b & 0xE0 == 0xC0 {
+                        (1, (b & 0x1F) as u32)
+                    } else if b & 0xF0 == 0xE0 {
+                        (2, (b & 0x0F) as u32)
+                    } else if b & 0xF8 == 0xF0 {
+                        (3, (b & 0x07) as u32)
+                    } else {
+                        s.push('\u{FFFD}');
+                        continue;
+                    };
+                    let mut valid = true;
+                    for _ in 0..extra {
+                        match self.advance() {
+                            Some(cont) if cont & 0xC0 == 0x80 => {
+                                cp = (cp << 6) | (cont & 0x3F) as u32;
+                            }
+                            _ => { valid = false; break; }
+                        }
+                    }
+                    if valid {
+                        if let Some(c) = char::from_u32(cp) {
+                            s.push(c);
+                        } else {
+                            s.push('\u{FFFD}');
+                        }
+                    } else {
+                        s.push('\u{FFFD}');
+                    }
                 }
                 None => return Err(ParseError::UnexpectedEnd),
             }
