@@ -203,12 +203,12 @@ fn main() {
 
     let btn_reply = toolbar.add_icon_button("");
     btn_reply.set_size(34, 34);
-    btn_reply.set_system_icon("mail-reply", anyui::IconType::Outline, 0xFFCCCCCC, 24);
+    btn_reply.set_system_icon("arrow-back-up", anyui::IconType::Outline, 0xFFCCCCCC, 24);
     btn_reply.set_tooltip(t("Reply"));
 
     let btn_reply_all = toolbar.add_icon_button("");
     btn_reply_all.set_size(34, 34);
-    btn_reply_all.set_system_icon("mail-reply-multiple", anyui::IconType::Outline, 0xFFCCCCCC, 24);
+    btn_reply_all.set_system_icon("corner-up-left", anyui::IconType::Outline, 0xFFCCCCCC, 24);
     btn_reply_all.set_tooltip(t("Reply All"));
 
     let btn_forward = toolbar.add_icon_button("");
