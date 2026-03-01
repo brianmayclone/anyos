@@ -45,6 +45,19 @@ _boot_start:
     mov     x0, #(1 << 31)     /* HCR_EL2.RW = 1 (AArch64 at EL1) */
     msr     hcr_el2, x0
 
+    /* GICv3: Enable system register interface at EL2 and allow EL1 access.
+     * Without this, ICC_* system register writes at EL1 may be ignored. */
+    mrs     x0, icc_sre_el2
+    orr     x0, x0, #0x1       /* SRE (bit 0) */
+    orr     x0, x0, #0x8       /* Enable (bit 3) */
+    msr     icc_sre_el2, x0
+    isb
+
+    /* Timer: Allow EL1 access to physical counter and timer.
+     * EL1PCTEN (bit 0) + EL1PCEN (bit 1) */
+    mov     x0, #0x3
+    msr     cnthctl_el2, x0
+
     mov     x0, #0x3C5         /* SPSR: EL1h, DAIF masked */
     msr     spsr_el2, x0
 

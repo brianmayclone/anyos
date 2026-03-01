@@ -747,11 +747,48 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     vm.serial_ptr = serial;
     vm.engine.io.register(0x3F8, 8, Box::new(IoProxy { ptr: serial }));
 
-    // VGA/SVGA — standard VGA ports + legacy framebuffer MMIO.
+    // VGA/SVGA — standard VGA ports + legacy framebuffer MMIO + Bochs VBE.
     let svga = Box::into_raw(Box::new(devices::svga::Svga::new(800, 600)));
     vm.svga_ptr = svga;
     vm.engine.io.register(0x3C0, 0x1B, Box::new(IoProxy { ptr: svga }));
+    // Bochs VBE ports (0x1CE index, 0x1CF data) — used by VGA BIOS to detect hardware.
+    vm.engine.io.register(0x1CE, 2, Box::new(IoProxy { ptr: svga }));
     vm.engine.memory.add_mmio(0xA0000, 0x20000, Box::new(MmioProxy { ptr: svga }));
+
+    // PCI bus with a VGA device — SeaBIOS scans PCI to detect display hardware.
+    let mut bus = devices::bus::PciBus::new();
+    let mut vga_pci = devices::bus::PciDevice::new(
+        0x1234,  // Vendor ID: QEMU standard VGA
+        0x1111,  // Device ID: stdvga
+        0x03,    // Class: Display controller
+        0x00,    // Subclass: VGA compatible
+        0x00,    // Prog IF: VGA
+    );
+    vga_pci.bus = 0;
+    vga_pci.device = 2;
+    vga_pci.function = 0;
+    // BAR0: framebuffer at 0xFD000000 (256 MiB, matches typical VGA).
+    vga_pci.set_bar(0, 0xFD000000, 0x01000000, true); // 16 MiB MMIO
+    // BAR2: Bochs VBE MMIO (optional, not strictly needed).
+    vga_pci.set_bar(2, 0xFEBE0000, 0x1000, true); // 4 KiB
+    // Option ROM at 0xC0000 (size indicated by the ROM itself).
+    // Config space offset 0x30 = Expansion ROM base address.
+    vga_pci.config_space[0x30] = 0x01; // ROM enabled, at 0xC0000
+    vga_pci.config_space[0x31] = 0x00;
+    vga_pci.config_space[0x32] = 0x0C; // 0x000C0000 >> 8 = 0x0C00 → byte[32]=0x00, byte[33]=0x0C
+    vga_pci.config_space[0x33] = 0x00;
+    // Fix: expansion ROM address is 0xC0000 | 1 (enabled) in LE u32:
+    // 0x000C0001 → [0x01, 0x00, 0x0C, 0x00]
+    bus.add_device(vga_pci);
+
+    let bus_ptr = Box::into_raw(Box::new(bus));
+    vm.bus_ptr = bus_ptr;
+    vm.engine.io.register(0xCF8, 8, Box::new(IoProxy { ptr: bus_ptr }));
+
+    let count = vm.engine.memory.mmio_region_count();
+    let (lo, hi) = vm.engine.memory.mmio_bounds();
+    vm_log!("MMIO setup: {} regions, bounds=[0x{:X}, 0x{:X})", count, lo, hi);
+    vm_log!("PCI bus: 1 device (VGA at 0:2.0, vendor=0x1234, device=0x1111)");
 }
 
 /// Register a PCI bus at the standard configuration ports (0xCF8-0xCFF).
@@ -759,8 +796,12 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
 /// Must only be called once per VM instance.
 #[no_mangle]
 pub extern "C" fn corevm_setup_pci_bus(handle: u64) {
-    vm_log!("setting up PCI bus (ports 0xCF8-0xCFF)");
     let vm = unsafe { vm_from_handle(handle) };
+    if !vm.bus_ptr.is_null() {
+        vm_log!("PCI bus already set up, skipping");
+        return;
+    }
+    vm_log!("setting up PCI bus (ports 0xCF8-0xCFF)");
 
     let bus = Box::into_raw(Box::new(devices::bus::PciBus::new()));
     vm.bus_ptr = bus;
@@ -909,6 +950,44 @@ pub extern "C" fn corevm_vga_debug_counters(
     }
     if !text_writes.is_null() {
         unsafe { *text_writes = svga.mmio_text_write_count };
+    }
+}
+
+/// Diagnostic: get MMIO region count and bounds, plus raw RAM at 0xB8000.
+///
+/// Helps diagnose whether MMIO regions are properly registered and
+/// whether writes to the VGA text area are hitting RAM instead of MMIO.
+///
+/// Output:
+/// - `region_count`: number of registered MMIO regions
+/// - `min_base`: MMIO fast-reject lower bound
+/// - `max_end`: MMIO fast-reject upper bound
+/// - `ram_b8000`: first 4 bytes of raw RAM at physical 0xB8000
+#[no_mangle]
+pub extern "C" fn corevm_mmio_diag(
+    handle: u64,
+    region_count: *mut u32,
+    min_base: *mut u64,
+    max_end: *mut u64,
+    ram_b8000: *mut u32,
+) {
+    let vm = unsafe { vm_from_handle(handle) };
+    let count = vm.engine.memory.mmio_region_count();
+    let (lo, hi) = vm.engine.memory.mmio_bounds();
+    if !region_count.is_null() {
+        unsafe { *region_count = count as u32 };
+    }
+    if !min_base.is_null() {
+        unsafe { *min_base = lo };
+    }
+    if !max_end.is_null() {
+        unsafe { *max_end = hi };
+    }
+    if !ram_b8000.is_null() {
+        // Read directly from flat RAM (bypasses MMIO).
+        use memory::MemoryBus;
+        let val = vm.engine.memory.ram().read_u32(0xB8000).unwrap_or(0);
+        unsafe { *ram_b8000 = val };
     }
 }
 

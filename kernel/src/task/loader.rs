@@ -1251,6 +1251,10 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
 /// Trampoline: runs as a kernel thread, then transitions to user mode.
 /// At this point, context_switch.asm has already loaded our CR3 (user PD).
 extern "C" fn user_thread_trampoline() {
+    // New threads are first context-switched in from a timer IRQ handler,
+    // which runs with PSTATE.I=1 (interrupts masked). Re-enable interrupts
+    // so timer ticks continue firing while this thread runs.
+    crate::arch::hal::enable_interrupts();
     crate::serial_println!("  [TRAMPOLINE] entered, tid={}", crate::task::scheduler::current_tid());
     let tid = crate::task::scheduler::current_tid();
     let (entry, user_stack, compat32) = {
@@ -1289,6 +1293,7 @@ pub fn store_pending_thread(tid: u32, entry: u64, user_stack: u64) {
 /// Trampoline for intra-process threads created via SYS_THREAD_CREATE.
 /// Identical to `user_thread_trampoline` — looks up the pending slot and jumps to user mode.
 pub extern "C" fn thread_create_trampoline() {
+    crate::arch::hal::enable_interrupts();
     let tid = crate::task::scheduler::current_tid();
     let (entry, user_stack, compat32) = {
         let mut slots = PENDING_PROGRAMS.lock();

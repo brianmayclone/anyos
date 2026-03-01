@@ -264,6 +264,10 @@ struct CoreVmLib {
     /// Clear the pending IDE IRQ.
     ide_clear_irq: extern "C" fn(u64),
 
+    // ── Diagnostics ─────────────────────────────────────────────
+    /// MMIO diagnostic: region count, bounds, RAM content at 0xB8000.
+    mmio_diag: extern "C" fn(u64, *mut u32, *mut u64, *mut u64, *mut u32),
+
     // ── Error reporting ────────────────────────────────────────
     /// Write the last error message into a buffer. Returns bytes written.
     get_last_error: extern "C" fn(u64, *mut u8, u32) -> u32,
@@ -369,6 +373,8 @@ pub fn init() -> bool {
             ide_detach_disk: resolve(&handle, "corevm_ide_detach_disk"),
             ide_irq_raised: resolve(&handle, "corevm_ide_irq_raised"),
             ide_clear_irq: resolve(&handle, "corevm_ide_clear_irq"),
+            // Diagnostics
+            mmio_diag: resolve(&handle, "corevm_mmio_diag"),
             // Error reporting
             get_last_error: resolve(&handle, "corevm_get_last_error"),
             get_last_error_rip: resolve(&handle, "corevm_get_last_error_rip"),
@@ -704,6 +710,26 @@ impl VmHandle {
         let mut text: u64 = 0;
         (lib().vga_debug_counters)(self.handle, &mut total as *mut u64, &mut text as *mut u64);
         (total, text)
+    }
+
+    /// Get MMIO diagnostic info.
+    ///
+    /// Returns `(region_count, min_base, max_end, ram_at_b8000)`.
+    /// `ram_at_b8000` is 4 bytes read directly from flat RAM at 0xB8000,
+    /// bypassing MMIO — useful to check if writes went to RAM instead.
+    pub fn mmio_diag(&self) -> (u32, u64, u64, u32) {
+        let mut count: u32 = 0;
+        let mut lo: u64 = 0;
+        let mut hi: u64 = 0;
+        let mut ram: u32 = 0;
+        (lib().mmio_diag)(
+            self.handle,
+            &mut count as *mut u32,
+            &mut lo as *mut u64,
+            &mut hi as *mut u64,
+            &mut ram as *mut u32,
+        );
+        (count, lo, hi, ram)
     }
 
     // ── Serial port (COM1) ───────────────────────────────────────

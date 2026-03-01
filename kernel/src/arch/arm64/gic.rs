@@ -6,11 +6,14 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-/// GICD (Distributor) base address on QEMU virt.
-const GICD_BASE: usize = 0x0800_0000;
+/// Device MMIO virtual base: TTBR1 PUD[3] maps VA 0xFFFF_0000_C000_0000 → PA 0x0.
+const MMIO_VIRT_BASE: usize = 0xFFFF_0000_C000_0000;
 
-/// GICR (Redistributor) base address on QEMU virt.
-const GICR_BASE: usize = 0x080A_0000;
+/// GICD (Distributor) virtual address (PA 0x0800_0000 via TTBR1 device mapping).
+const GICD_BASE: usize = MMIO_VIRT_BASE + 0x0800_0000;
+
+/// GICR (Redistributor) virtual address (PA 0x080A_0000 via TTBR1 device mapping).
+const GICR_BASE: usize = MMIO_VIRT_BASE + 0x080A_0000;
 
 /// GICR stride per CPU (128 KiB: 64 KiB RD_base + 64 KiB SGI_base).
 const GICR_STRIDE: usize = 0x20000;
@@ -25,6 +28,7 @@ const GICD_ITARGETSR: usize = 0x800;
 const GICD_ICFGR: usize = 0xC00;
 
 // GICR register offsets (SGI_base, offset 0x10000 from RD_base)
+const GICR_SGI_IGROUPR0: usize = 0x10080;
 const GICR_SGI_ISENABLER0: usize = 0x10100;
 const GICR_SGI_ICENABLER0: usize = 0x10180;
 const GICR_SGI_IPRIORITYR: usize = 0x10400;
@@ -77,6 +81,13 @@ pub fn init_distributor() {
             i += 1;
         }
 
+        // Set all SPIs to Group 1 NS (required for IRQ delivery at EL1)
+        i = 1; // Skip bank 0 (SGIs/PPIs, handled by redistributor)
+        while i < max_irqs / 32 {
+            gicd_write(0x080 + (i as usize) * 4, 0xFFFF_FFFF); // GICD_IGROUPR
+            i += 1;
+        }
+
         // Set all SPIs to lowest priority
         i = 8; // Skip SGIs+PPIs (first 8 registers = 32 interrupts)
         while i < max_irqs as u32 {
@@ -84,8 +95,9 @@ pub fn init_distributor() {
             i += 4;
         }
 
-        // Enable distributor with affinity routing (ARE_NS)
-        gicd_write(GICD_CTLR, (1 << 0) | (1 << 4)); // EnableGrp1NS | ARE_NS
+        // Enable distributor with affinity routing.
+        // With DS=1 (QEMU, no TrustZone): bit0=EnableGrp0, bit1=EnableGrp1NS, bit4=ARE
+        gicd_write(GICD_CTLR, (1 << 0) | (1 << 1) | (1 << 4));
     }
     INITIALIZED.store(true, Ordering::Relaxed);
 }
@@ -109,8 +121,11 @@ pub fn init_cpu(cpu: usize) {
             core::hint::spin_loop();
         }
 
-        // Enable all SGIs (0-15), disable all PPIs (16-31)
-        gicr_write(cpu, GICR_SGI_ISENABLER0, 0x0000_FFFF);
+        // Set all SGIs/PPIs to Group 1 NS (required for IRQ delivery at EL1)
+        gicr_write(cpu, GICR_SGI_IGROUPR0, 0xFFFF_FFFF);
+
+        // Enable all SGIs (0-15) and timer PPI 30 (physical timer)
+        gicr_write(cpu, GICR_SGI_ISENABLER0, 0x0000_FFFF | (1 << 30));
 
         // Set SGI/PPI priorities
         for i in 0..8 {
@@ -168,6 +183,13 @@ pub fn acknowledge() -> u32 {
         core::arch::asm!("mrs {}, icc_iar1_el1", out(reg) intid, options(nostack));
     }
     intid as u32
+}
+
+/// Enable a specific PPI/SGI at the redistributor (interrupts 0-31).
+pub fn enable_ppi(cpu: usize, ppi_id: u32) {
+    if ppi_id < 32 {
+        unsafe { gicr_write(cpu, GICR_SGI_ISENABLER0, 1 << ppi_id); }
+    }
 }
 
 /// Enable a specific SPI interrupt at the distributor.

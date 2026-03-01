@@ -219,6 +219,9 @@ pub struct RegisterFile {
     /// Model-Specific Registers (sparse storage).
     pub msr: BTreeMap<u32, u64>,
 
+    /// Cached EFER value (shadows `msr[MSR_EFER]` for hot-path access).
+    pub efer: u64,
+
     /// Current privilege level (0-3).
     pub cpl: u8,
 }
@@ -334,6 +337,7 @@ impl RegisterFile {
             ldtr: 0,
             tr: 0,
             msr: BTreeMap::new(),
+            efer: 0,
             cpl: 0,
         };
         // EDX contains processor identification on reset (we report a generic P6)
@@ -450,6 +454,9 @@ impl RegisterFile {
     #[inline]
     pub fn write_msr(&mut self, index: u32, val: u64) {
         self.msr.insert(index, val);
+        if index == MSR_EFER {
+            self.efer = val;
+        }
     }
 
     // ── Segment register helpers ──

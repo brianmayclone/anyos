@@ -269,19 +269,20 @@ impl Cpu {
             0
         };
         loop {
-            // Check external stop request
-            if self.stop_requested {
-                self.stop_requested = false;
-                return ExitReason::StopRequested;
+            // Check stop request and instruction limit periodically (every 256 instructions)
+            // to reduce branch overhead in the hot loop.
+            if self.instruction_count & 0xFF == 0 {
+                if self.stop_requested {
+                    self.stop_requested = false;
+                    return ExitReason::StopRequested;
+                }
+                if target > 0 && self.instruction_count >= target {
+                    return ExitReason::InstructionLimit;
+                }
             }
 
-            // Check instruction limit
-            if target > 0 && self.instruction_count >= target {
-                return ExitReason::InstructionLimit;
-            }
-
-            // Sync MMU state from control registers
-            mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.read_msr(MSR_EFER));
+            // Sync MMU state from control registers (fast-path: skips if unchanged).
+            mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
 
             // Check pending interrupts (only if IF=1 and no interrupt shadow)
             if let Some(vector) = interrupts.pending_interrupt(self.regs.rflags) {

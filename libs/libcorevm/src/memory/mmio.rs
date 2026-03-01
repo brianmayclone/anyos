@@ -40,9 +40,16 @@ pub struct MmioRegion {
 /// Regions must not overlap. The dispatcher performs a linear scan, which
 /// is efficient for the small number of MMIO regions typical in an emulated
 /// PC (usually fewer than 16).
+///
+/// A cached `min_base` / `max_end` pair provides fast rejection for
+/// addresses that fall entirely outside any MMIO region.
 pub struct MmioDispatch {
     /// Registered MMIO regions, searched in insertion order.
     regions: Vec<MmioRegion>,
+    /// Lowest base address across all regions (for fast rejection).
+    min_base: u64,
+    /// Highest end address (base + size) across all regions.
+    max_end: u64,
 }
 
 impl MmioDispatch {
@@ -50,6 +57,8 @@ impl MmioDispatch {
     pub fn new() -> Self {
         MmioDispatch {
             regions: Vec::new(),
+            min_base: u64::MAX,
+            max_end: 0,
         }
     }
 
@@ -58,6 +67,13 @@ impl MmioDispatch {
     /// `base` is the starting physical address and `size` is the length in
     /// bytes. The caller must ensure regions do not overlap.
     pub fn register(&mut self, base: u64, size: u64, handler: Box<dyn MmioHandler>) {
+        if base < self.min_base {
+            self.min_base = base;
+        }
+        let end = base + size;
+        if end > self.max_end {
+            self.max_end = end;
+        }
         self.regions.push(MmioRegion {
             base,
             size,
@@ -68,8 +84,24 @@ impl MmioDispatch {
     /// Find the MMIO region containing `addr`, if any.
     ///
     /// Returns a mutable reference so the caller can invoke the handler's
-    /// `read` or `write` method.
+    /// `read` or `write` method. Fast-rejects addresses outside the
+    /// aggregate MMIO range.
+    /// Return the number of registered MMIO regions.
+    pub fn region_count(&self) -> usize {
+        self.regions.len()
+    }
+
+    /// Return the fast-reject bounds for diagnostics.
+    pub fn bounds(&self) -> (u64, u64) {
+        (self.min_base, self.max_end)
+    }
+
+    #[inline]
     pub fn find(&mut self, addr: u64) -> Option<&mut MmioRegion> {
+        // Fast rejection: skip linear scan if address is outside all MMIO regions.
+        if addr < self.min_base || addr >= self.max_end {
+            return None;
+        }
         self.regions
             .iter_mut()
             .find(|r| addr >= r.base && addr < r.base + r.size)

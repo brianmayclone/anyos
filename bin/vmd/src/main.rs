@@ -155,8 +155,28 @@ fn update_shm_framebuffer(inst: &VmInstance) {
             if has_content || icount > 10_000_000 {
                 let line = core::str::from_utf8(&preview[..plen]).unwrap_or("");
                 let (mmio_total, mmio_text) = inst.handle.vga_debug_counters();
+                let (reg_count, mmio_lo, mmio_hi, ram_val) = inst.handle.mmio_diag();
                 anyos_std::println!("[vmd] VGA text row 0: '{}' (has_content={})", line, has_content);
                 anyos_std::println!("[vmd] VGA MMIO writes: total={}, text_region={}", mmio_total, mmio_text);
+                anyos_std::println!(
+                    "[vmd] MMIO diag: {} regions, bounds=[0x{:X}, 0x{:X}), RAM@0xB8000=0x{:08X}",
+                    reg_count, mmio_lo, mmio_hi, ram_val
+                );
+                // Check IVT and BDA to understand VGA init state.
+                let ivt_10h = inst.handle.read_phys_u32(0x40);
+                let bda_equip = inst.handle.read_phys_u16(0x410);
+                let bda_vmode = inst.handle.read_phys_u8(0x449);
+                let bda_cols = inst.handle.read_phys_u16(0x44A);
+                let bda_crtc = inst.handle.read_phys_u16(0x463);
+                let bda_rows = inst.handle.read_phys_u8(0x484);
+                anyos_std::println!("[vmd] IVT INT 10h vector: 0x{:08X}", ivt_10h);
+                anyos_std::println!(
+                    "[vmd] BDA: equip=0x{:04X} vmode=0x{:02X} cols={} rows={} crtc=0x{:04X}",
+                    bda_equip, bda_vmode, bda_cols, bda_rows + 1, bda_crtc
+                );
+                // Check first bytes of VGA BIOS at 0xC0000 (should be 0x55, 0xAA).
+                let rom_sig = inst.handle.read_phys_u16(0xC0000);
+                anyos_std::println!("[vmd] ROM@0xC0000 signature: 0x{:04X}", rom_sig);
                 unsafe { VGA_LOG_DONE = true; }
             }
         }
@@ -452,6 +472,13 @@ fn cmd_start() {
             anyos_std::println!("[vmd] WARNING: VGA BIOS not found at {}", VGABIOS_PATH);
         }
 
+        // Log MMIO diagnostic info before starting execution.
+        let (reg_count, mmio_lo, mmio_hi, _) = inst.handle.mmio_diag();
+        anyos_std::println!(
+            "[vmd] MMIO diag: {} regions, bounds=[0x{:X}, 0x{:X})",
+            reg_count, mmio_lo, mmio_hi
+        );
+
         inst.running = true;
         update_shm_state(inst, STATE_RUNNING);
         send_status("state 0 running");
@@ -723,7 +750,7 @@ fn main() {
         if !vm_active {
             anyos_std::process::sleep(10);
         } else {
-            anyos_std::process::sleep(1);
+            anyos_std::process::yield_cpu();
         }
     }
 }
