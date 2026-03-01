@@ -814,7 +814,7 @@ fn emit_spawn_event(tid: u32, name: &str) {
 
 /// Create a new thread within the same address space as the currently running thread.
 pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &str, priority: u8) -> u32 {
-    let (pd, arch_mode, brk, parent_pri, parent_cwd, parent_caps, parent_uid, parent_gid, parent_pcid) = {
+    let (pd, arch_mode, brk, parent_pri, parent_cwd, parent_caps, parent_uid, parent_gid, parent_pcid, parent_mmap_next) = {
         crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_CREATE_THREAD);
         let guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
@@ -823,7 +823,7 @@ pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &st
         let idx = match sched.find_idx(current_tid) { Some(i) => i, None => return 0 };
         let thread = &sched.threads[idx];
         let pd = match thread.page_directory { Some(pd) => pd, None => return 0 };
-        (pd, thread.arch_mode, thread.brk, thread.priority, thread.cwd, thread.capabilities, thread.uid, thread.gid, thread.pcid)
+        (pd, thread.arch_mode, thread.brk, thread.priority, thread.cwd, thread.capabilities, thread.uid, thread.gid, thread.pcid, thread.mmap_next)
     };
 
     let effective_pri = if priority == 0 { parent_pri } else { priority };
@@ -847,6 +847,7 @@ pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &st
             thread.capabilities = parent_caps;
             thread.uid = parent_uid;
             thread.gid = parent_gid;
+            thread.mmap_next = parent_mmap_next;
         }
     }
 
