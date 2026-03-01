@@ -26,6 +26,7 @@ mod datagrid;
 mod texteditor;
 mod treeview;
 mod dropdown;
+mod autocompletatextbox;
 
 // ── Container controls (can have children) ──
 mod expander;
@@ -103,6 +104,7 @@ pub use flowpanel::FlowPanel;
 pub use tablelayout::TableLayout;
 pub use radiogroup::RadioGroup;
 pub use dropdown::DropDown;
+pub use autocompletatextbox::AutoCompleteTextField;
 
 pub use messagebox::{MessageBox, MessageBoxType};
 pub use filedialog::FileDialog;
