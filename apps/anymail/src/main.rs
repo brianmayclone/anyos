@@ -1831,7 +1831,9 @@ fn import_accounts() {
             populate_folder_tree();
             set_status(anyos_std::i18n::t("Accounts imported (merged)"));
             anyui::MessageBox::show(anyui::MessageBoxType::Info,
-                anyos_std::i18n::t("Accounts merged successfully."), Some("OK"));
+                &format!("{}\n{}",
+                    anyos_std::i18n::t("Accounts merged successfully."),
+                    anyos_std::i18n::t("Edit account settings to add missing passwords.")), Some("OK"));
         });
 
         btn_replace.on_click(move |_| {
@@ -1845,7 +1847,9 @@ fn import_accounts() {
             populate_folder_tree();
             set_status(anyos_std::i18n::t("Accounts imported (replaced)"));
             anyui::MessageBox::show(anyui::MessageBoxType::Info,
-                anyos_std::i18n::t("All accounts replaced successfully."), Some("OK"));
+                &format!("{}\n{}",
+                    anyos_std::i18n::t("All accounts replaced successfully."),
+                    anyos_std::i18n::t("Edit account settings to add missing passwords.")), Some("OK"));
         });
 
         import_win.on_close(|_| {});
