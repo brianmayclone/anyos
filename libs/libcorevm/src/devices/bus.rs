@@ -281,12 +281,20 @@ impl PciBus {
 impl IoHandler for PciBus {
     /// Read from PCI bus I/O ports.
     ///
-    /// - 0xCF8: returns the last config address written
+    /// - 0xCF8-0xCFB: returns bytes/words/dword of the config address latch
     /// - 0xCFC-0xCFF: reads from PCI configuration data, supports
     ///   byte and word sub-accesses
     fn read(&mut self, port: u16, size: u8) -> Result<u32> {
         let val = match port {
-            0xCF8 => self.config_address,
+            0xCF8..=0xCFB => {
+                let byte_offset = (port - 0xCF8) as u32;
+                let shifted = self.config_address >> (byte_offset * 8);
+                match size {
+                    1 => shifted & 0xFF,
+                    2 => shifted & 0xFFFF,
+                    _ => shifted,
+                }
+            }
             0xCFC..=0xCFF => {
                 let dword = self.config_read();
                 let byte_offset = (port - 0xCFC) as u32;
@@ -304,12 +312,12 @@ impl IoHandler for PciBus {
 
     /// Write to PCI bus I/O ports.
     ///
-    /// - 0xCF8: stores the configuration address
+    /// - 0xCF8-0xCFB: stores the configuration address latch
     /// - 0xCFC-0xCFF: writes to PCI configuration data, supports
     ///   byte and word sub-accesses
     fn write(&mut self, port: u16, size: u8, val: u32) -> Result<()> {
         match port {
-            0xCF8 => {
+            0xCF8..=0xCFB => {
                 // Log the first few config address writes to diagnose PCI scanning.
                 if self.log_count < 100 {
                     self.log_count += 1;
@@ -323,7 +331,25 @@ impl IoHandler for PciBus {
                         val, size, enable, bus, dev, func, reg
                     ));
                 }
-                self.config_address = val;
+
+                // Mechanism #1 config-address latch supports byte/word accesses
+                // across 0xCF8..0xCFB. Merge sub-accesses into the 32-bit latch.
+                let new_addr = if size >= 4 && port == 0xCF8 {
+                    val
+                } else {
+                    let byte_offset = (port - 0xCF8) as u32;
+                    let mask = match size {
+                        1 => 0xFFu32,
+                        2 => 0xFFFFu32,
+                        _ => 0xFFFF_FFFFu32,
+                    };
+                    let shifted_mask = mask << (byte_offset * 8);
+                    let shifted_val = (val & mask) << (byte_offset * 8);
+                    (self.config_address & !shifted_mask) | shifted_val
+                };
+
+                // Bits 1:0 are reserved and read as zero in config-address.
+                self.config_address = new_addr & !0x3;
             }
             0xCFC..=0xCFF => {
                 // Read-modify-write for sub-dword accesses.

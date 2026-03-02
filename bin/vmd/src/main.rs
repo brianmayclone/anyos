@@ -444,6 +444,8 @@ fn cmd_start() {
 
         // Load SeaBIOS.
         let bios_data = read_file(SEABIOS_PATH);
+        let mut seabios_load_addr: u64 = 0;
+        let mut seabios_size: usize = 0;
         if !bios_data.is_empty() {
             let load_addr = if bios_data.len() <= 0x10000 {
                 0xF0000u64
@@ -452,6 +454,8 @@ fn cmd_start() {
             };
             inst.handle.load_binary(load_addr, &bios_data);
             inst.handle.set_rip(0xFFF0);
+            seabios_load_addr = load_addr;
+            seabios_size = bios_data.len();
             anyos_std::println!("[vmd] loaded SeaBIOS ({} bytes at 0x{:X})", bios_data.len(), load_addr);
         } else {
             send_status("error 0 SeaBIOS not found");
@@ -465,9 +469,26 @@ fn cmd_start() {
         if !vgabios_data.is_empty() {
             // fw_cfg file entry — SeaBIOS loads VGA ROMs via "vgaroms/" prefix.
             inst.handle.fw_cfg_add_file("vgaroms/vgabios-stdvga.bin", &vgabios_data);
-            // Also place directly in RAM at 0xC0000 (legacy fallback).
-            inst.handle.load_binary(0xC0000, &vgabios_data);
-            anyos_std::println!("[vmd] loaded VGA BIOS ({} bytes, fw_cfg + 0xC0000)", vgabios_data.len());
+
+            // Legacy fallback at 0xC0000 is only safe if it does not overlap
+            // the SeaBIOS image range.
+            let vga_rom_start = 0xC0000u64;
+            let vga_rom_end = vga_rom_start.wrapping_add(vgabios_data.len() as u64);
+            let bios_start = seabios_load_addr;
+            let bios_end = bios_start.wrapping_add(seabios_size as u64);
+            let overlaps_seabios = vga_rom_start < bios_end && bios_start < vga_rom_end;
+
+            if overlaps_seabios {
+                anyos_std::println!(
+                    "[vmd] loaded VGA BIOS ({} bytes, fw_cfg only; skipped 0xC0000 fallback due SeaBIOS overlap 0x{:X}-0x{:X})",
+                    vgabios_data.len(),
+                    bios_start,
+                    bios_end,
+                );
+            } else {
+                inst.handle.load_binary(vga_rom_start, &vgabios_data);
+                anyos_std::println!("[vmd] loaded VGA BIOS ({} bytes, fw_cfg + 0xC0000)", vgabios_data.len());
+            }
         } else {
             anyos_std::println!("[vmd] WARNING: VGA BIOS not found at {}", VGABIOS_PATH);
         }
