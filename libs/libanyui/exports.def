@@ -174,3 +174,4 @@ EXPORTS
     anyui_clear_children
     anyui_set_scale_factor
     anyui_get_scale_factor
+    anyui_splitview_set_resizable

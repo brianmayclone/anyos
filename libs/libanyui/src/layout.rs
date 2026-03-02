@@ -184,6 +184,7 @@ pub fn perform_layout(controls: &mut Vec<Box<dyn Control>>, id: ControlId) {
         None => return,
     };
     let should_auto_size = controls[idx].kind() == ControlKind::StackPanel
+        || controls[idx].kind() == ControlKind::FlowPanel
         || controls[idx].base().auto_size;
     if should_auto_size {
         auto_size_height(controls, idx, &children);

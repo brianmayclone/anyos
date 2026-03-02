@@ -350,6 +350,18 @@ impl Desktop {
                 }
                 None
             }
+            proto::CMD_SET_CURSOR => {
+                let shape = match cmd[2] {
+                    1 => super::cursors::CursorShape::ResizeEW,
+                    2 => super::cursors::CursorShape::ResizeNS,
+                    3 => super::cursors::CursorShape::ResizeNWSE,
+                    4 => super::cursors::CursorShape::ResizeNESW,
+                    5 => super::cursors::CursorShape::Move,
+                    _ => super::cursors::CursorShape::Arrow,
+                };
+                self.set_cursor_shape(shape);
+                None
+            }
             proto::CMD_CREATE_VRAM_WINDOW => {
                 let app_tid = cmd[1];
                 let wh = cmd[2];

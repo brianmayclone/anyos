@@ -4,6 +4,15 @@ use alloc::vec;
 use alloc::vec::Vec;
 use crate::control::{Control, ControlBase, ControlKind, EventResponse};
 
+/// Scrollbar track width in logical pixels.
+const SCROLLBAR_W: u32 = 10;
+/// Padding around scrollbar edges.
+const SCROLLBAR_PAD: i32 = 2;
+/// Minimum thumb height in pixels.
+const MIN_THUMB: i32 = 20;
+/// Corner radius for the rounded scrollbar thumb.
+const THUMB_RADIUS: u32 = 4;
+
 /// Text alignment within a cell.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -118,6 +127,10 @@ pub struct DataGrid {
     connector_lines: Vec<ConnectorLine>,
     /// Column index (display) in which connector lines are drawn.
     connector_column: usize,
+    /// True while the user is dragging the scrollbar thumb.
+    dragging_scrollbar: bool,
+    /// Mouse-Y offset from thumb top when scrollbar drag started.
+    scrollbar_drag_anchor: i32,
 }
 
 impl DataGrid {
@@ -150,6 +163,8 @@ impl DataGrid {
             last_click_col: -1,
             connector_lines: Vec::new(),
             connector_column: 2,
+            dragging_scrollbar: false,
+            scrollbar_drag_anchor: 0,
         }
     }
 
@@ -331,6 +346,44 @@ impl DataGrid {
         }
     }
 
+    // ── Scrollbar helpers ─────────────────────────────────────────
+
+    /// Returns (track_h, thumb_h, max_scroll) if the scrollbar is visible.
+    /// All values are in logical pixels.
+    fn scrollbar_metrics(&self) -> Option<(i32, i32, i32)> {
+        let content_h = self.row_count as u32 * self.row_height;
+        let view_h = self.base.h.saturating_sub(self.header_height);
+        if content_h <= view_h || view_h <= 4 {
+            return None;
+        }
+        let track_h = (view_h - 4) as i32;
+        let thumb_h = ((view_h as u64 * track_h as u64) / content_h as u64)
+            .max(MIN_THUMB as u64) as i32;
+        let max_scroll = (content_h - view_h) as i32;
+        Some((track_h, thumb_h, max_scroll))
+    }
+
+    /// Y position of thumb top, relative to the header bottom.
+    fn scrollbar_thumb_y(&self, track_h: i32, thumb_h: i32, max_scroll: i32) -> i32 {
+        let frac = if max_scroll > 0 {
+            (self.scroll_y as i64 * (track_h - thumb_h) as i64 / max_scroll as i64) as i32
+        } else {
+            0
+        };
+        SCROLLBAR_PAD + frac.max(0).min(track_h - thumb_h)
+    }
+
+    /// Set scroll_y from a thumb-top position.
+    fn set_scroll_from_thumb(&mut self, thumb_top: i32, track_h: i32, thumb_h: i32, max_scroll: i32) {
+        let clamped = thumb_top.max(0).min(track_h - thumb_h);
+        let new_scroll = if track_h > thumb_h {
+            (clamped as i64 * max_scroll as i64 / (track_h - thumb_h) as i64) as i32
+        } else {
+            0
+        };
+        self.scroll_y = new_scroll.max(0).min(max_scroll);
+    }
+
     // ── Selection ──────────────────────────────────────────────────
 
     pub fn set_selection_mode(&mut self, mode: SelectionMode) {
@@ -488,6 +541,14 @@ impl Control for DataGrid {
 
     fn set_font_size(&mut self, size: u16) { self.font_size = size; }
     fn get_font_size(&self) -> u16 { if self.font_size > 0 { self.font_size } else { 13 } }
+
+    fn scrollbar_hit_x(&self) -> Option<i32> {
+        if self.scrollbar_metrics().is_some() {
+            Some(self.base.w as i32 - SCROLLBAR_W as i32 - SCROLLBAR_PAD - 2)
+        } else {
+            None
+        }
+    }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = self.base();
@@ -683,13 +744,13 @@ impl Control for DataGrid {
         let content_h_s = self.row_count as u32 * crate::theme::scale(self.row_height);
         let view_h_s = h.saturating_sub(hdr_h);
         if content_h_s > view_h_s && view_h_s > 4 {
-            let has_minimap = !self.minimap_colors.is_empty();
-            let bar_w = crate::theme::scale(if has_minimap { 10 } else { 6 });
-            let bar_x = x + w as i32 - bar_w as i32 - crate::theme::scale_i32(2);
-            let track_y = y + hdr_h as i32 + crate::theme::scale_i32(2);
-            let track_h = (view_h_s as i32 - crate::theme::scale_i32(4)).max(1);
+            let bar_w = crate::theme::scale(SCROLLBAR_W);
+            let bar_x = x + w as i32 - bar_w as i32 - crate::theme::scale_i32(SCROLLBAR_PAD);
+            let track_y = y + hdr_h as i32 + crate::theme::scale_i32(SCROLLBAR_PAD);
+            let track_h = (view_h_s as i32 - crate::theme::scale_i32(SCROLLBAR_PAD * 2)).max(1);
             crate::draw::fill_rect(&clipped, bar_x, track_y, bar_w, track_h as u32, tc.scrollbar_track);
 
+            let has_minimap = !self.minimap_colors.is_empty();
             if has_minimap && self.row_count > 0 && track_h > 0 {
                 let total = self.row_count as i32;
                 for (row, &color) in self.minimap_colors.iter().enumerate() {
@@ -703,13 +764,13 @@ impl Control for DataGrid {
                 crate::draw::fill_rect(&clipped, bar_x, vp_y, bar_w, vp_h, 0x30FFFFFF);
             }
 
-            let thumb_h = ((view_h_s as u64 * track_h as u64) / content_h_s as u64).max(20) as i32;
+            let thumb_h = ((view_h_s as u64 * track_h as u64) / content_h_s as u64).max(MIN_THUMB as u64) as i32;
             let max_scroll_s = (content_h_s as i32 - view_h_s as i32).max(0);
             let scroll_frac = if max_scroll_s > 0 {
                 (scroll_y_s as i64 * (track_h - thumb_h) as i64 / max_scroll_s as i64) as i32
             } else { 0 };
             let thumb_y = track_y + scroll_frac.max(0).min(track_h - thumb_h);
-            let thumb_r = crate::theme::scale(3);
+            let thumb_r = crate::theme::scale(THUMB_RADIUS);
             crate::draw::fill_rounded_rect(&clipped, bar_x, thumb_y, bar_w, thumb_h as u32, thumb_r, tc.scrollbar);
         }
 
@@ -751,6 +812,30 @@ impl Control for DataGrid {
     fn is_interactive(&self) -> bool { true }
 
     fn handle_mouse_down(&mut self, lx: i32, ly: i32, button: u32) -> EventResponse {
+        // Check scrollbar area (hit_test already routed scrollbar clicks to us)
+        if let Some(hit_x) = self.scrollbar_hit_x() {
+            if lx >= hit_x {
+                if let Some((track_h, thumb_h, max_scroll)) = self.scrollbar_metrics() {
+                    // ly is relative to the DataGrid top; scrollbar starts below header
+                    let sb_local_y = ly - self.header_height as i32;
+                    let ty = self.scrollbar_thumb_y(track_h, thumb_h, max_scroll);
+                    if sb_local_y >= ty && sb_local_y < ty + thumb_h {
+                        // Click on thumb — start drag
+                        self.dragging_scrollbar = true;
+                        self.scrollbar_drag_anchor = sb_local_y - ty;
+                    } else {
+                        // Click on track — jump so thumb centres on click, then drag
+                        self.dragging_scrollbar = true;
+                        self.scrollbar_drag_anchor = thumb_h / 2;
+                        let new_top = sb_local_y - thumb_h / 2 - SCROLLBAR_PAD;
+                        self.set_scroll_from_thumb(new_top, track_h, thumb_h, max_scroll);
+                    }
+                    self.base.mark_dirty();
+                    return EventResponse::CONSUMED;
+                }
+            }
+        }
+
         if ly < self.header_height as i32 {
             // Check resize handle first (4px near column edge)
             if let Some((col_idx, _edge_x)) = self.column_edge_at_x(lx) {
@@ -792,6 +877,15 @@ impl Control for DataGrid {
     }
 
     fn handle_mouse_move(&mut self, lx: i32, ly: i32) -> EventResponse {
+        if self.dragging_scrollbar {
+            if let Some((track_h, thumb_h, max_scroll)) = self.scrollbar_metrics() {
+                let sb_local_y = ly - self.header_height as i32;
+                let new_top = sb_local_y - self.scrollbar_drag_anchor - SCROLLBAR_PAD;
+                self.set_scroll_from_thumb(new_top, track_h, thumb_h, max_scroll);
+                self.base.mark_dirty();
+                return EventResponse::CHANGED;
+            }
+        }
         match self.drag_mode {
             DragMode::Resizing { col_index, drag_start_x, original_width } => {
                 let delta = lx - drag_start_x;
@@ -826,6 +920,10 @@ impl Control for DataGrid {
     }
 
     fn handle_mouse_up(&mut self, lx: i32, _ly: i32, _button: u32) -> EventResponse {
+        if self.dragging_scrollbar {
+            self.dragging_scrollbar = false;
+            return EventResponse::CONSUMED;
+        }
         let mode = core::mem::replace(&mut self.drag_mode, DragMode::None);
         match mode {
             DragMode::Reordering { col_index, drag_start_x, current_x } => {

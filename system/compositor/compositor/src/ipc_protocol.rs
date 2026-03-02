@@ -199,6 +199,11 @@ pub const CMD_SET_FONT_SMOOTHING: u32 = 0x1016;
 /// and broadcasts EVT_SCALE_CHANGED.
 pub const CMD_SET_SCALE: u32 = 0x1017;
 
+/// Set the mouse cursor shape for a window.
+/// [CMD, window_id, cursor_shape, 0, 0]
+/// cursor_shape: 0=Arrow, 1=ResizeEW, 2=ResizeNS, 3=ResizeNWSE, 4=ResizeNESW, 5=Move
+pub const CMD_SET_CURSOR: u32 = 0x1018;
+
 /// Inject a synthetic key event into the focused window.
 /// [CMD, scancode, char_val, is_down (1=down/0=up), modifiers]
 /// vncd maps RFB KeySyms → (scancode, char_val) before emitting this command.
