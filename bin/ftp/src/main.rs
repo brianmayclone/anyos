@@ -247,6 +247,21 @@ impl FtpClient {
     }
 
     fn put(&mut self, local_path: &str, remote_path: &str) {
+        // Check if local path is a directory
+        let mut stat_buf = [0u32; 7];
+        if fs::stat(local_path, &mut stat_buf) != u32::MAX {
+            // stat_buf[0] = type: 0=file, 1=directory, 2=device
+            let is_dir = stat_buf[0] == 1;
+            if is_dir {
+                self.put_dir(local_path, remote_path);
+                return;
+            }
+        }
+
+        self.put_file(local_path, remote_path);
+    }
+
+    fn put_file(&mut self, local_path: &str, remote_path: &str) {
         self.set_binary_mode();
 
         let fd = fs::open(local_path, 0);
@@ -296,6 +311,66 @@ impl FtpClient {
             println!("Uploaded {} bytes from {}", file_data.len(), local_path);
         } else {
             println!("Transfer issue: {}", resp.trim_end());
+        }
+    }
+
+    /// Recursively upload a local directory to the remote server.
+    fn put_dir(&mut self, local_path: &str, remote_path: &str) {
+        // Create the remote directory (ignore error if it already exists)
+        self.send_command("MKD ", remote_path);
+        let resp = self.read_response();
+        if resp.starts_with("550") {
+            // Already exists or permission denied — check which
+            if resp.contains("denied") || resp.contains("Permission") {
+                println!("Cannot create remote directory: {}", resp.trim_end());
+                return;
+            }
+            // Already exists: continue uploading into it
+        } else if !resp.starts_with("257") && !resp.starts_with("250") {
+            println!("MKD failed: {}", resp.trim_end());
+            return;
+        }
+        println!("Directory: {}", remote_path);
+
+        // Read local directory entries
+        let mut dir_buf = [0u8; 64 * 256];
+        let count = fs::readdir(local_path, &mut dir_buf);
+        if count == u32::MAX {
+            println!("Failed to read directory: {}", local_path);
+            return;
+        }
+
+        for i in 0..count as usize {
+            let entry_offset = i * 64;
+            if entry_offset + 8 > dir_buf.len() { break; }
+            let entry_type = dir_buf[entry_offset];
+            let name_len = dir_buf[entry_offset + 1] as usize;
+            if name_len == 0 || name_len > 56 { break; }
+            if entry_offset + 8 + name_len > dir_buf.len() { break; }
+            let name = match core::str::from_utf8(&dir_buf[entry_offset + 8..entry_offset + 8 + name_len]) {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            if name.is_empty() { break; }
+            // Skip . and ..
+            if name == "." || name == ".." { continue; }
+
+            // Build local and remote paths for this entry
+            let mut local_child = String::from(local_path);
+            if !local_child.ends_with('/') { local_child.push('/'); }
+            local_child.push_str(name);
+
+            let mut remote_child = String::from(remote_path);
+            if !remote_child.ends_with('/') { remote_child.push('/'); }
+            remote_child.push_str(name);
+
+            if entry_type == 1 {
+                // Subdirectory — recurse
+                self.put_dir(&local_child, &remote_child);
+            } else {
+                // File (type 0) or device (type 2) — upload as file
+                self.put_file(&local_child, &remote_child);
+            }
         }
     }
 
@@ -375,6 +450,10 @@ impl FtpClient {
             // Read line from stdin (fd 0)
             let n = fs::read(0, &mut line_buf);
             if n == 0 || n == u32::MAX {
+                break;
+            }
+            // Ctrl+C (0x03) or Ctrl+D (0x04) → quit
+            if n > 0 && (line_buf[0] == 0x03 || line_buf[0] == 0x04) {
                 break;
             }
             let line = core::str::from_utf8(&line_buf[..n as usize])
@@ -496,7 +575,7 @@ impl FtpClient {
                     println!("  pwd                     Print working directory");
                     println!("  cd <path>               Change directory");
                     println!("  get <remote> [local]    Download file");
-                    println!("  put <local> [remote]    Upload file");
+                    println!("  put <local> [remote]    Upload file or directory (recursive)");
                     println!("  mkdir <path>            Create directory");
                     println!("  rmdir <path>            Remove directory");
                     println!("  delete <file>           Delete file");

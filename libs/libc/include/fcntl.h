@@ -39,4 +39,7 @@
 int open(const char *path, int flags, ...);
 int fcntl(int fd, int cmd, ...);
 
+/* LFS alias — anyOS has no 64-bit file offset distinction */
+#define open64 open
+
 #endif

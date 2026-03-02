@@ -1541,8 +1541,14 @@ fn render_tree(
     }
 
     // ScrollView: render scrollbar AFTER children so it isn't painted over.
+    // Clip to the ScrollView's own physical bounds so the scrollbar never
+    // bleeds outside the container (e.g. over DOCK_BOTTOM siblings).
     if controls[idx].kind() == ControlKind::ScrollView {
-        controls[idx].render(surface, parent_abs_x, parent_abs_y);
+        let (cx, cy) = controls[idx].position();
+        let (cw, ch) = controls[idx].size();
+        let p = crate::draw::scale_bounds(parent_abs_x, parent_abs_y, cx, cy, cw, ch);
+        let sv_surface = surface.with_clip(p.x, p.y, p.w, p.h);
+        controls[idx].render(&sv_surface, parent_abs_x, parent_abs_y);
     }
 }
 

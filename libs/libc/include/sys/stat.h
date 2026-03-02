@@ -75,4 +75,10 @@ int fstat(int fd, struct stat *buf);
 int fstatat(int dirfd, const char *pathname, struct stat *statbuf, int flags);
 int mkdir(const char *path, unsigned int mode);
 
+/* LFS (Large File Support) — anyOS has no 64-bit offset distinction.
+ * struct stat64 is identical to struct stat. */
+#define stat64  stat
+#define fstat64 fstat
+#define lstat64 lstat
+
 #endif

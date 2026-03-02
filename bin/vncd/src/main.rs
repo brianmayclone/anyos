@@ -21,6 +21,7 @@ anyos_std::entry!(main);
 
 use anyos_std::{ipc, net, process, println};
 
+mod compress;
 mod config;
 mod des;
 mod font;

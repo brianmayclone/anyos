@@ -3,12 +3,14 @@
 
 anyos_std::entry!(main);
 
+use anyos_std::fs;
+
 fn read_all(fd: u32) -> (anyos_std::Vec<u8>, usize) {
     let mut file_buf = anyos_std::vec![0u8; 64 * 1024];
     let mut total: usize = 0;
     let mut read_buf = [0u8; 512];
     loop {
-        let n = anyos_std::fs::read(fd, &mut read_buf);
+        let n = fs::read(fd, &mut read_buf);
         if n == 0 || n == u32::MAX { break; }
         let n = n as usize;
         if total + n > file_buf.len() { break; }
@@ -35,12 +37,19 @@ fn main() {
 
     let max_lines = args.opt_u32(b'n', 10);
     let byte_mode = args.opt(b'c');
+    let follow = args.has(b'f');
 
-    let fd = if args.pos_count > 0 {
-        let path = args.positional[0];
-        let f = anyos_std::fs::open(path, 0);
+    // -f only works with a file, not stdin
+    let path_str = if args.pos_count > 0 {
+        args.positional[0]
+    } else {
+        ""
+    };
+
+    let fd = if !path_str.is_empty() {
+        let f = fs::open(path_str, 0);
         if f == u32::MAX {
-            anyos_std::println!("tail: cannot open '{}'", path);
+            anyos_std::println!("tail: cannot open '{}'", path_str);
             return;
         }
         f
@@ -49,7 +58,6 @@ fn main() {
     };
 
     let (file_buf, total) = read_all(fd);
-    if fd != 0 { anyos_std::fs::close(fd); }
 
     let data = &file_buf[..total];
 
@@ -60,23 +68,80 @@ fn main() {
         if let Ok(s) = core::str::from_utf8(&data[start..]) {
             anyos_std::print!("{}", s);
         }
-        return;
-    }
-
-    // Count newlines from end to find start position
-    let mut line_count: u32 = 0;
-    let mut start = 0;
-    for i in (0..total).rev() {
-        if data[i] == b'\n' {
-            line_count += 1;
-            if line_count >= max_lines + 1 {
-                start = i + 1;
-                break;
+        if !follow || fd == 0 {
+            if fd != 0 { fs::close(fd); }
+            return;
+        }
+    } else {
+        // Line mode: print last N lines
+        let mut line_count: u32 = 0;
+        let mut start = 0;
+        for i in (0..total).rev() {
+            if data[i] == b'\n' {
+                line_count += 1;
+                if line_count >= max_lines + 1 {
+                    start = i + 1;
+                    break;
+                }
             }
+        }
+
+        if let Ok(s) = core::str::from_utf8(&data[start..]) {
+            anyos_std::print!("{}", s);
+        }
+
+        if !follow || fd == 0 {
+            if fd != 0 { fs::close(fd); }
+            return;
         }
     }
 
-    if let Ok(s) = core::str::from_utf8(&data[start..]) {
-        anyos_std::print!("{}", s);
+    // -f mode: close and reopen the file each poll cycle so we always
+    // get the current inode content (handles log rotation too).
+    // We remember the byte offset where we left off.
+    let mut offset: u32 = total as u32;
+
+    // Close the fd we used for initial read; we'll reopen each iteration.
+    if fd != 0 { fs::close(fd); }
+
+    let mut read_buf = [0u8; 4096];
+    loop {
+        anyos_std::process::sleep(250);
+
+        let follow_fd = fs::open(path_str, 0);
+        if follow_fd == u32::MAX {
+            // File temporarily unavailable (rotation?), wait
+            continue;
+        }
+
+        // Check current file size via seek to end
+        let file_size = fs::lseek(follow_fd, 0, fs::SEEK_END);
+        if file_size == u32::MAX {
+            fs::close(follow_fd);
+            continue;
+        }
+
+        if file_size < offset {
+            // File was truncated or rotated — restart from beginning
+            offset = 0;
+        }
+
+        if file_size > offset {
+            // Seek to where we left off
+            fs::lseek(follow_fd, offset as i32, fs::SEEK_SET);
+
+            // Read and print all new data
+            loop {
+                let n = fs::read(follow_fd, &mut read_buf);
+                if n == 0 || n == u32::MAX { break; }
+                let n = n as usize;
+                if let Ok(s) = core::str::from_utf8(&read_buf[..n]) {
+                    anyos_std::print!("{}", s);
+                }
+                offset += n as u32;
+            }
+        }
+
+        fs::close(follow_fd);
     }
 }

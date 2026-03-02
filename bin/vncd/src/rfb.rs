@@ -72,40 +72,56 @@ fn from_be32(b: &[u8]) -> u32 {
 
 // ── TCP helpers ───────────────────────────────────────────────────────────────
 
-/// Send all bytes in `data`, yielding when the send buffer is full.
+/// Send all bytes in `data`, sleeping briefly when the send buffer is full.
 /// Returns `false` if the socket was closed (EOF).
 fn send_all(sock: u32, data: &[u8]) -> bool {
     let mut sent = 0usize;
+    let mut retries = 0u32;
     while sent < data.len() {
         let n = net::tcp_send(sock, &data[sent..]);
         if n == 0 {
             return false;
         }
         if n == u32::MAX {
-            // Send buffer full — yield CPU (don't sleep!) to let TCP
-            // stack process ACKs and free buffer space.
-            process::yield_cpu();
+            // Send buffer full — sleep 1 ms to let TCP stack process ACKs.
+            retries += 1;
+            if retries > 10000 {
+                return false;
+            }
+            process::sleep(1);
             continue;
         }
+        retries = 0;
         sent += n as usize;
     }
     true
 }
 
-/// Receive exactly `buf.len()` bytes, yielding when no data is available.
-/// Returns `false` on EOF (connection closed).
+/// Receive exactly `buf.len()` bytes, sleeping briefly when no data is available.
+/// Returns `false` on EOF (connection closed) or timeout (30 seconds).
 fn recv_exact(sock: u32, buf: &mut [u8]) -> bool {
     let mut received = 0usize;
+    let mut timeout_count = 0u32;
+    const RECV_TIMEOUT_MS: u32 = 30000; // 30 second timeout (matches VNC client TCP timeout)
+    const RECV_SLEEP_MS: u32 = 1;
+    const MAX_RETRIES: u32 = RECV_TIMEOUT_MS / RECV_SLEEP_MS;
+
     while received < buf.len() {
         let n = net::tcp_recv(sock, &mut buf[received..]);
         if n == 0 {
+            // Connection closed by remote
             return false;
         }
         if n == u32::MAX {
-            // No data yet — yield CPU to let TCP stack receive segments.
-            process::yield_cpu();
+            // No data yet — sleep 1 ms to let TCP stack receive segments.
+            timeout_count += 1;
+            if timeout_count > MAX_RETRIES {
+                return false;
+            }
+            process::sleep(RECV_SLEEP_MS);
             continue;
         }
+        timeout_count = 0; // reset on successful receive
         received += n as usize;
     }
     true
@@ -133,34 +149,6 @@ fn pixel_format_block() -> [u8; 16] {
 
 // ── FramebufferUpdate helpers ─────────────────────────────────────────────────
 
-/// Send a FramebufferUpdate with a single Raw-encoded rectangle covering the full screen.
-/// Assembles header + rect header + pixel data into `send_buf` for a single TCP write.
-fn send_full_update(sock: u32, w: u16, h: u16, pixels: &[u32], send_buf: &mut anyos_std::Vec<u8>) -> bool {
-    let n_pixels = w as usize * h as usize;
-    if pixels.len() < n_pixels {
-        return false;
-    }
-
-    send_buf.clear();
-
-    // FramebufferUpdate header: type=0, padding=0, number-of-rectangles=1
-    send_buf.extend_from_slice(&[0, 0, 0, 1]);
-
-    // Rectangle header: x=0, y=0, w, h, encoding=0 (Raw)
-    let mut rect_hdr = [0u8; 12];
-    rect_hdr[4..6].copy_from_slice(&be16(w));
-    rect_hdr[6..8].copy_from_slice(&be16(h));
-    send_buf.extend_from_slice(&rect_hdr);
-
-    // Pixel data.
-    let byte_data = unsafe {
-        core::slice::from_raw_parts(pixels.as_ptr() as *const u8, n_pixels * 4)
-    };
-    send_buf.extend_from_slice(byte_data);
-
-    send_all(sock, send_buf)
-}
-
 /// Check if every pixel in a tile is the same solid color.
 /// Returns Some(color) if solid, None if mixed.
 fn tile_solid_color(fb: &[u32], stride: usize, x: usize, y: usize, w: usize, h: usize) -> Option<u32> {
@@ -178,32 +166,25 @@ fn tile_solid_color(fb: &[u32], stride: usize, x: usize, y: usize, w: usize, h: 
 
 /// Append an RRE-encoded rectangle for a solid-color tile.
 ///
-/// RRE (Rise-and-Run-length Encoding, encoding type 2) with zero subrects
-/// sends just the background color — 20 bytes total vs 16 KB for a 64x64 Raw tile.
-/// All VNC clients support RRE.
+/// RRE (encoding type 2) with zero subrects sends just the background color —
+/// 20 bytes total vs 4 KB for a 32×32 Raw tile.
 fn append_rre_solid_rect(out: &mut anyos_std::Vec<u8>, x: usize, y: usize, w: usize, h: usize, color: u32) {
-    // Rectangle header: x, y, w, h (BE16 each), encoding=2 (RRE, BE32)
     out.extend_from_slice(&be16(x as u16));
     out.extend_from_slice(&be16(y as u16));
     out.extend_from_slice(&be16(w as u16));
     out.extend_from_slice(&be16(h as u16));
     out.extend_from_slice(&be32(2)); // encoding = RRE
-
-    // RRE payload: num-subrects (BE32) = 0, background-pixel (4 bytes LE)
     out.extend_from_slice(&be32(0)); // zero subrectangles
-    out.extend_from_slice(&color.to_le_bytes()); // background pixel (same byte order as Raw)
+    out.extend_from_slice(&color.to_le_bytes());
 }
 
-/// Append a raw rectangle (header + pixel data) to a byte buffer.
+/// Append a raw rectangle (header + pixel data).
 fn append_raw_rect(out: &mut anyos_std::Vec<u8>, fb: &[u32], stride: usize, x: usize, y: usize, w: usize, h: usize) {
-    // Rectangle header: x, y, w, h (BE16 each), encoding=0 (Raw, BE32)
     out.extend_from_slice(&be16(x as u16));
     out.extend_from_slice(&be16(y as u16));
     out.extend_from_slice(&be16(w as u16));
     out.extend_from_slice(&be16(h as u16));
     out.extend_from_slice(&[0, 0, 0, 0]); // encoding = Raw
-
-    // Pixel data row by row.
     for row in y..y + h {
         let off = row * stride + x;
         let row_bytes = unsafe {
@@ -213,14 +194,51 @@ fn append_raw_rect(out: &mut anyos_std::Vec<u8>, fb: &[u32], stride: usize, x: u
     }
 }
 
-/// Append the best encoding for a dirty tile: RRE for solid-color, Raw otherwise.
-fn append_tile_rect(out: &mut anyos_std::Vec<u8>, fb: &[u32], stride: usize, x: usize, y: usize, w: usize, h: usize) {
-    if let Some(color) = tile_solid_color(fb, stride, x, y, w, h) {
-        // Solid color: 20 bytes (RRE) instead of ~16 KB (Raw). ~800x smaller.
-        append_rre_solid_rect(out, x, y, w, h, color);
-    } else {
-        append_raw_rect(out, fb, stride, x, y, w, h);
+/// Append a Zlib-encoded rectangle (header + compressed pixel data).
+///
+/// Uses the persistent `ZlibEncoder` for cross-rectangle dictionary context.
+/// Each rectangle's compressed data ends with SYNC_FLUSH so the client can
+/// decompress immediately.
+fn append_zlib_rect(
+    out: &mut anyos_std::Vec<u8>,
+    raw_buf: &mut anyos_std::Vec<u8>,
+    encoder: &mut crate::compress::ZlibEncoder,
+    fb: &[u32],
+    stride: usize,
+    x: usize, y: usize, w: usize, h: usize,
+) {
+    // Rectangle header: x, y, w, h, encoding=6 (Zlib)
+    out.extend_from_slice(&be16(x as u16));
+    out.extend_from_slice(&be16(y as u16));
+    out.extend_from_slice(&be16(w as u16));
+    out.extend_from_slice(&be16(h as u16));
+    out.extend_from_slice(&be32(6)); // encoding = Zlib
+
+    // Collect raw pixel data into contiguous buffer for deflate
+    raw_buf.clear();
+    for row in y..y + h {
+        let off = row * stride + x;
+        let row_bytes = unsafe {
+            core::slice::from_raw_parts(fb[off..].as_ptr() as *const u8, w * 4)
+        };
+        raw_buf.extend_from_slice(row_bytes);
     }
+
+    // Placeholder for compressed data length (4 bytes BE32)
+    let length_pos = out.len();
+    out.extend_from_slice(&[0u8; 4]);
+
+    // Compress pixel data with persistent zlib stream
+    let data_start = out.len();
+    encoder.compress(raw_buf, out);
+
+    // Patch the compressed data length
+    let compressed_len = (out.len() - data_start) as u32;
+    let len_bytes = be32(compressed_len);
+    out[length_pos] = len_bytes[0];
+    out[length_pos + 1] = len_bytes[1];
+    out[length_pos + 2] = len_bytes[2];
+    out[length_pos + 3] = len_bytes[3];
 }
 
 /// Check if a tile differs between `cur` and `prev` framebuffers.
@@ -234,16 +252,352 @@ fn tile_dirty(cur: &[u32], prev: &[u32], stride: usize, tx: usize, ty: usize, tw
     false
 }
 
-/// Send a FramebufferUpdate containing only the dirty tiles.
-/// All tile data is collected into one buffer and sent in a single TCP write.
+/// Append a CopyRect rectangle.
+///
+/// CopyRect (encoding type 1) tells the client to copy pixels from
+/// `(src_x, src_y)` in its own framebuffer to `(dst_x, dst_y)`.
+/// Only 4 bytes of payload (source position) — vs thousands for pixel data.
+fn append_copyrect(out: &mut anyos_std::Vec<u8>, dx: usize, dy: usize, w: usize, h: usize, sx: usize, sy: usize) {
+    out.extend_from_slice(&be16(dx as u16));
+    out.extend_from_slice(&be16(dy as u16));
+    out.extend_from_slice(&be16(w as u16));
+    out.extend_from_slice(&be16(h as u16));
+    out.extend_from_slice(&be32(1)); // encoding = CopyRect
+    out.extend_from_slice(&be16(sx as u16));
+    out.extend_from_slice(&be16(sy as u16));
+}
+
+// ── CopyRect motion detection ────────────────────────────────────────────────
+
+/// Check if a rectangular region in `cur` at `(dx, dy)` matches `prev` at
+/// `(sx, sy)` exactly (pixel-perfect match).
+fn region_matches(
+    cur: &[u32], prev: &[u32], stride: usize,
+    dx: usize, dy: usize, sx: usize, sy: usize, w: usize, h: usize,
+) -> bool {
+    for row in 0..h {
+        let cur_off = (dy + row) * stride + dx;
+        let prev_off = (sy + row) * stride + sx;
+        if cur[cur_off..cur_off + w] != prev[prev_off..prev_off + w] {
+            return false;
+        }
+    }
+    true
+}
+
+/// Detect if the dirty region is a uniform translation of content from `prev`.
+///
+/// Picks a sample tile from the dirty bounding box in `cur` and searches for
+/// it in `prev` at nearby offsets.  If found, verifies the entire bounding box
+/// matches at that offset.
+///
+/// Returns `Some((dx, dy))` = the motion vector (signed pixel offset), or
+/// `None` if no uniform motion is detected.
+///
+/// Only searches offsets up to `MAX_SEARCH` pixels in each direction to
+/// keep the cost bounded.
+fn detect_motion(
+    cur: &[u32], prev: &[u32], stride: usize,
+    bbox_x: usize, bbox_y: usize, bbox_w: usize, bbox_h: usize,
+    sw: usize, sh: usize,
+) -> Option<(i32, i32)> {
+    const MAX_SEARCH: i32 = 128; // max pixels to search in each direction
+    const SAMPLE_SIZE: usize = 16; // sample block size for initial search
+
+    // Sample a small block from the center of the dirty bounding box
+    let sample_w = SAMPLE_SIZE.min(bbox_w);
+    let sample_h = SAMPLE_SIZE.min(bbox_h);
+    let sample_x = bbox_x + (bbox_w - sample_w) / 2;
+    let sample_y = bbox_y + (bbox_h - sample_h) / 2;
+
+    // Extract the sample's first row signature for fast rejection
+    let sig_off = sample_y * stride + sample_x;
+    if sig_off + sample_w > cur.len() { return None; }
+
+    let mut best_dx: i32 = 0;
+    let mut best_dy: i32 = 0;
+    let mut found = false;
+
+    // Search nearby offsets in prev for the sample block
+    // Use a spiral-like pattern: check small offsets first (more likely for
+    // window dragging which is typically a few pixels per frame)
+    for dist in 1..=MAX_SEARCH {
+        if found { break; }
+        // Check all offsets at Manhattan distance `dist`
+        for dy in -dist..=dist {
+            if found { break; }
+            for &dx in &[-dist, dist] {
+                // Candidate source position in prev
+                let sx = sample_x as i32 + dx;
+                let sy = sample_y as i32 + dy;
+                if sx < 0 || sy < 0 { continue; }
+                let sx = sx as usize;
+                let sy = sy as usize;
+                if sx + sample_w > sw || sy + sample_h > sh { continue; }
+
+                // Quick check: does the sample match at this offset?
+                if region_matches(cur, prev, stride, sample_x, sample_y, sx, sy, sample_w, sample_h) {
+                    best_dx = dx;
+                    best_dy = dy;
+                    found = true;
+                    break;
+                }
+            }
+            if found { break; }
+            // Also check horizontal offsets within this distance
+            if dy == -dist || dy == dist { continue; } // already checked corners
+            for &dx in &[-dist, dist] {
+                let sx = sample_x as i32 + dx;
+                let sy = sample_y as i32 + dy;
+                if sx < 0 || sy < 0 { continue; }
+                let sx = sx as usize;
+                let sy = sy as usize;
+                if sx + sample_w > sw || sy + sample_h > sh { continue; }
+                if region_matches(cur, prev, stride, sample_x, sample_y, sx, sy, sample_w, sample_h) {
+                    best_dx = dx;
+                    best_dy = dy;
+                    found = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if !found { return None; }
+
+    // Verify: does the ENTIRE bounding box match at this offset?
+    // (The sample might match but the full region might not — e.g., two windows
+    //  overlapping, or only part of the screen moved.)
+    let src_x = bbox_x as i32 + best_dx;
+    let src_y = bbox_y as i32 + best_dy;
+    if src_x < 0 || src_y < 0 { return None; }
+    let src_x = src_x as usize;
+    let src_y = src_y as usize;
+    if src_x + bbox_w > sw || src_y + bbox_h > sh { return None; }
+
+    if region_matches(cur, prev, stride, bbox_x, bbox_y, src_x, src_y, bbox_w, bbox_h) {
+        Some((best_dx, best_dy))
+    } else {
+        None
+    }
+}
+
+/// Send a FramebufferUpdate using CopyRect + Zlib encoding.
+///
+/// First attempts CopyRect motion detection on the dirty bounding box.
+/// If motion is detected, sends a CopyRect for the moved region, then
+/// sends remaining dirty areas (edges/newly exposed) via Zlib.
+/// Falls back to per-row-strip Zlib if no motion detected.
 ///
 /// Returns:
-///   -1  — connection error (caller should break)
-///    0  — nothing dirty, nothing was sent
-///   >0  — number of dirty tiles sent
-///
-/// Updates `prev` with `cur` for dirty regions.
-fn send_dirty_update(
+///   -1  — connection error
+///    0  — nothing dirty
+///   >0  — number of rectangles sent
+fn send_dirty_update_zlib(
+    sock: u32,
+    cur: &[u32],
+    prev: &mut [u32],
+    sw: usize,
+    sh: usize,
+    full: bool,
+    send_buf: &mut anyos_std::Vec<u8>,
+    raw_buf: &mut anyos_std::Vec<u8>,
+    encoder: &mut crate::compress::ZlibEncoder,
+    use_copyrect: bool,
+) -> i32 {
+    let tiles_x = (sw + TILE_SIZE - 1) / TILE_SIZE;
+    let tiles_y = (sh + TILE_SIZE - 1) / TILE_SIZE;
+
+    if full {
+        send_buf.clear();
+        send_buf.extend_from_slice(&[0, 0, 0, 1]); // 1 rectangle
+        append_zlib_rect(send_buf, raw_buf, encoder, cur, sw, 0, 0, sw, sh);
+        prev.copy_from_slice(&cur[..sw * sh]);
+        return if send_all(sock, send_buf) { 1 } else { -1 };
+    }
+
+    // ── Phase 1: Build dirty tile map and compute bounding box ───────────
+
+    // Flat array: dirty[ty_idx * tiles_x + tx_idx]
+    let map_size = tiles_x * tiles_y;
+    // Use a stack-allocated bitmap for up to 2048 tiles (covers 2048×2048 at 32px)
+    // For larger screens, skip CopyRect and go straight to per-tile encoding.
+    let mut dirty_map = [0u8; 4096]; // 1 byte per tile, plenty for most screens
+    let mut n_dirty_tiles = 0u16;
+    let mut bb_x0 = tiles_x;
+    let mut bb_y0 = tiles_y;
+    let mut bb_x1 = 0usize;
+    let mut bb_y1 = 0usize;
+
+    for ty_idx in 0..tiles_y {
+        let ty = ty_idx * TILE_SIZE;
+        let th = TILE_SIZE.min(sh - ty);
+        for tx_idx in 0..tiles_x {
+            let tx = tx_idx * TILE_SIZE;
+            let tw = TILE_SIZE.min(sw - tx);
+            if tile_dirty(cur, prev, sw, tx, ty, tw, th) {
+                let map_idx = ty_idx * tiles_x + tx_idx;
+                if map_idx < dirty_map.len() {
+                    dirty_map[map_idx] = 1;
+                }
+                n_dirty_tiles += 1;
+                if tx_idx < bb_x0 { bb_x0 = tx_idx; }
+                if tx_idx + 1 > bb_x1 { bb_x1 = tx_idx + 1; }
+                if ty_idx < bb_y0 { bb_y0 = ty_idx; }
+                if ty_idx + 1 > bb_y1 { bb_y1 = ty_idx + 1; }
+            }
+        }
+    }
+
+    if n_dirty_tiles == 0 {
+        return 0;
+    }
+
+    send_buf.clear();
+    send_buf.extend_from_slice(&[0u8; 4]); // header placeholder
+    let mut n_rects: u16 = 0;
+
+    // ── Phase 2: Try CopyRect motion detection ───────────────────────────
+
+    let bbox_x = bb_x0 * TILE_SIZE;
+    let bbox_y = bb_y0 * TILE_SIZE;
+    let bbox_w = (bb_x1 * TILE_SIZE).min(sw) - bbox_x;
+    let bbox_h = (bb_y1 * TILE_SIZE).min(sh) - bbox_y;
+
+    // Only attempt CopyRect if: client supports it, enough dirty tiles
+    // to justify the search cost, and the dirty map fits in our buffer.
+    let copyrect_applied = if use_copyrect && n_dirty_tiles >= 4 && map_size <= dirty_map.len() {
+        if let Some((dx, dy)) = detect_motion(cur, prev, sw, bbox_x, bbox_y, bbox_w, bbox_h, sw, sh) {
+            // CopyRect source position (where the content was in prev)
+            let src_x = (bbox_x as i32 + dx) as usize;
+            let src_y = (bbox_y as i32 + dy) as usize;
+
+            // Emit CopyRect — MUST come first so client applies it before
+            // subsequent rects overwrite the source area.
+            append_copyrect(send_buf, bbox_x, bbox_y, bbox_w, bbox_h, src_x, src_y);
+            n_rects += 1;
+
+            // Update prev to reflect what the client now has after CopyRect.
+            // The client copied from (src_x,src_y) to (bbox_x,bbox_y), so
+            // prev at the destination now matches prev at the source.
+            // We need to copy within prev to keep it in sync.
+            //
+            // Handle overlapping copies correctly with row-by-row direction:
+            if dy > 0 || (dy == 0 && dx > 0) {
+                // Copy bottom-to-top / right-to-left to avoid overlap corruption
+                for row in (0..bbox_h).rev() {
+                    let dst_off = (bbox_y + row) * sw + bbox_x;
+                    let src_off = (src_y + row) * sw + src_x;
+                    // Use a temporary row buffer for overlapping copy
+                    for col in (0..bbox_w).rev() {
+                        prev[dst_off + col] = prev[src_off + col];
+                    }
+                }
+            } else {
+                for row in 0..bbox_h {
+                    let dst_off = (bbox_y + row) * sw + bbox_x;
+                    let src_off = (src_y + row) * sw + src_x;
+                    for col in 0..bbox_w {
+                        prev[dst_off + col] = prev[src_off + col];
+                    }
+                }
+            }
+
+            // Mark tiles within the CopyRect area as clean (if they now match)
+            for ty_idx in bb_y0..bb_y1 {
+                let ty = ty_idx * TILE_SIZE;
+                let th = TILE_SIZE.min(sh - ty);
+                for tx_idx in bb_x0..bb_x1 {
+                    let tx = tx_idx * TILE_SIZE;
+                    let tw = TILE_SIZE.min(sw - tx);
+                    let map_idx = ty_idx * tiles_x + tx_idx;
+                    if map_idx < dirty_map.len() && dirty_map[map_idx] != 0 {
+                        if !tile_dirty(cur, prev, sw, tx, ty, tw, th) {
+                            dirty_map[map_idx] = 0;
+                        }
+                    }
+                }
+            }
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    let _ = copyrect_applied; // suppress unused warning
+
+    // ── Phase 3: Send remaining dirty tiles as Zlib/RRE row strips ───────
+
+    for ty_idx in 0..tiles_y {
+        let ty = ty_idx * TILE_SIZE;
+        let th = TILE_SIZE.min(sh - ty);
+
+        let mut tx_idx = 0;
+        while tx_idx < tiles_x {
+            let map_idx = ty_idx * tiles_x + tx_idx;
+            let is_dirty = if map_idx < dirty_map.len() {
+                dirty_map[map_idx] != 0
+            } else {
+                let tx = tx_idx * TILE_SIZE;
+                let tw = TILE_SIZE.min(sw - tx);
+                tile_dirty(cur, prev, sw, tx, ty, tw, th)
+            };
+
+            if !is_dirty {
+                tx_idx += 1;
+                continue;
+            }
+
+            // Extend run of dirty tiles
+            let run_start = tx_idx;
+            let mut run_end = tx_idx + 1;
+            while run_end < tiles_x {
+                let next_map = ty_idx * tiles_x + run_end;
+                let next_dirty = if next_map < dirty_map.len() {
+                    dirty_map[next_map] != 0
+                } else {
+                    let ntx = run_end * TILE_SIZE;
+                    let ntw = TILE_SIZE.min(sw - ntx);
+                    tile_dirty(cur, prev, sw, ntx, ty, ntw, th)
+                };
+                if !next_dirty { break; }
+                run_end += 1;
+            }
+
+            let rx = run_start * TILE_SIZE;
+            let rw = (run_end * TILE_SIZE).min(sw) - rx;
+
+            if let Some(color) = tile_solid_color(cur, sw, rx, ty, rw, th) {
+                append_rre_solid_rect(send_buf, rx, ty, rw, th, color);
+            } else {
+                append_zlib_rect(send_buf, raw_buf, encoder, cur, sw, rx, ty, rw, th);
+            }
+            n_rects += 1;
+
+            for row in ty..ty + th {
+                let off = row * sw + rx;
+                prev[off..off + rw].copy_from_slice(&cur[off..off + rw]);
+            }
+
+            tx_idx = run_end;
+        }
+    }
+
+    if n_rects == 0 {
+        return 0;
+    }
+
+    let count_bytes = be16(n_rects);
+    send_buf[2] = count_bytes[0];
+    send_buf[3] = count_bytes[1];
+
+    if send_all(sock, send_buf) { n_rects as i32 } else { -1 }
+}
+
+/// Send a FramebufferUpdate using Raw/RRE encoding (fallback, no compression).
+fn send_dirty_update_raw(
     sock: u32,
     cur: &[u32],
     prev: &mut [u32],
@@ -253,20 +607,28 @@ fn send_dirty_update(
     send_buf: &mut anyos_std::Vec<u8>,
 ) -> i32 {
     if full {
-        // Full (non-incremental) update: send everything in one call.
-        prev.copy_from_slice(&cur[..sw * sh]);
-        return if send_full_update(sock, sw as u16, sh as u16, cur, send_buf) { 1 } else { -1 };
+        // Full update as raw
+        let n_pixels = sw * sh;
+        send_buf.clear();
+        send_buf.extend_from_slice(&[0, 0, 0, 1]);
+        let mut rect_hdr = [0u8; 12];
+        rect_hdr[4..6].copy_from_slice(&be16(sw as u16));
+        rect_hdr[6..8].copy_from_slice(&be16(sh as u16));
+        send_buf.extend_from_slice(&rect_hdr);
+        let byte_data = unsafe {
+            core::slice::from_raw_parts(cur.as_ptr() as *const u8, n_pixels * 4)
+        };
+        send_buf.extend_from_slice(byte_data);
+        prev.copy_from_slice(&cur[..n_pixels]);
+        let result = send_all(sock, send_buf);
+        return if result { 1 } else { -1 };
     }
 
-    send_buf.clear();
-
-    // Scan for dirty tiles and build the complete message in send_buf.
     let tiles_x = (sw + TILE_SIZE - 1) / TILE_SIZE;
     let tiles_y = (sh + TILE_SIZE - 1) / TILE_SIZE;
     let mut n_dirty: u16 = 0;
 
-    // Reserve space for the FramebufferUpdate header (4 bytes).
-    // We'll fill in the rectangle count after scanning.
+    send_buf.clear();
     send_buf.extend_from_slice(&[0u8; 4]);
 
     for ty_idx in 0..tiles_y {
@@ -277,11 +639,13 @@ fn send_dirty_update(
             let th = TILE_SIZE.min(sh - ty);
 
             if tile_dirty(cur, prev, sw, tx, ty, tw, th) {
-                // Append this tile's rect — uses RRE for solid tiles, Raw otherwise.
-                append_tile_rect(send_buf, cur, sw, tx, ty, tw, th);
+                if let Some(color) = tile_solid_color(cur, sw, tx, ty, tw, th) {
+                    append_rre_solid_rect(send_buf, tx, ty, tw, th, color);
+                } else {
+                    append_raw_rect(send_buf, cur, sw, tx, ty, tw, th);
+                }
                 n_dirty += 1;
 
-                // Update prev buffer for this tile.
                 for row in ty..ty + th {
                     let off = row * sw + tx;
                     prev[off..off + tw].copy_from_slice(&cur[off..off + tw]);
@@ -290,18 +654,12 @@ fn send_dirty_update(
         }
     }
 
-    if n_dirty == 0 {
-        // Nothing changed — don't send anything.
-        // The caller keeps update_requested=true and checks again later.
-        return 0;
-    }
+    if n_dirty == 0 { return 0; }
 
-    // Patch the rectangle count into the header.
     let count_bytes = be16(n_dirty);
     send_buf[2] = count_bytes[0];
     send_buf[3] = count_bytes[1];
 
-    // Single TCP send for the entire update.
     if send_all(sock, send_buf) { n_dirty as i32 } else { -1 }
 }
 
@@ -474,6 +832,8 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
 
     let mut in_login = true;
     let mut pending_update = true; // send initial frame immediately
+    let mut login_use_zlib = false; // set by SetEncodings during login
+    let mut login_use_copyrect = false;
 
     while in_login {
         // Blink cursor every 500ms.
@@ -495,7 +855,7 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                 error_msg: login_error,
             };
             render_login_overlay(&mut screen_buf, sw, sh, &state, &mut login_panel);
-            let rc = send_dirty_update(
+            let rc = send_dirty_update_raw(
                 sock, &screen_buf, &mut login_prev, sw, sh,
                 login_first_frame, &mut login_send_buf,
             );
@@ -508,18 +868,25 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
             pending_update = false;
         }
 
-        // Read a client message (non-blocking spin with yield).
-        // We peek one byte first; if no data, yield and retry.
+        // Read a client message (non-blocking check first).
+        let avail = net::tcp_recv_available(sock);
+        if avail == u32::MAX - 1 || avail == u32::MAX {
+            net::tcp_close(sock);
+            return;
+        }
+        if avail == 0 {
+            // No data yet — sleep briefly instead of busy-waiting.
+            process::sleep(MIN_FRAME_MS);
+            continue;
+        }
+
         let mut msg_type = [0u8; 1];
         let n = net::tcp_recv(sock, &mut msg_type);
         if n == 0 {
-            // EOF — client disconnected.
             net::tcp_close(sock);
             return;
         }
         if n == u32::MAX {
-            // No data yet — yield and retry.
-            process::yield_cpu();
             continue;
         }
 
@@ -653,7 +1020,7 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                     return;
                 }
             }
-            // SetEncodings (type 2): read and discard.
+            // SetEncodings (type 2): parse for Zlib support.
             2 => {
                 let mut enc_hdr = [0u8; 3]; // pad(1) + count(2)
                 if !recv_exact(sock, &mut enc_hdr) {
@@ -667,6 +1034,9 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                         net::tcp_close(sock);
                         return;
                     }
+                    let enc_type = i32::from_be_bytes(enc_buf);
+                    if enc_type == 1 { login_use_copyrect = true; }
+                    if enc_type == 6 { login_use_zlib = true; }
                 }
             }
             _ => {
@@ -678,7 +1048,7 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
     }
 
     // ── 9. Main loop — stream live desktop ───────────────────────────────────
-    println!("vncd: desktop loop ({}x{})", sw, sh);
+    println!("vncd: authentication successful, entering desktop loop ({}x{})", sw, sh);
 
     // Free login-phase buffers — no longer needed.
     drop(login_panel);
@@ -687,9 +1057,17 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
 
     // Previous-frame buffer for dirty-tile detection.
     let mut prev_buf: anyos_std::Vec<u32> = anyos_std::vec![0u32; n_pixels];
-    // Reusable send buffer — pre-allocate with generous capacity to avoid
-    // per-frame allocations.
+    // Reusable send buffer.
     let mut send_buf: anyos_std::Vec<u8> = anyos_std::Vec::new();
+    // Reusable raw pixel buffer for Zlib compression.
+    let mut raw_buf: anyos_std::Vec<u8> = anyos_std::Vec::new();
+    // Persistent zlib encoder (dictionary resets per call but adler-32 persists).
+    let mut zlib_encoder = crate::compress::ZlibEncoder::new();
+    // Whether client supports Zlib encoding (type 6) and CopyRect (type 1).
+    // Initialized from login-phase SetEncodings; updated if client resends.
+    // For now, use Raw encoding for desktop to debug (Zlib may have issues).
+    let mut use_zlib = false;  // Disable Zlib temporarily for debugging
+    let mut use_copyrect = login_use_copyrect;
 
     let mut mods = ModifierState::default();
     let mut last_frame_ms: u32 = 0;
@@ -707,19 +1085,34 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
     let fb_contiguous = fb_pitch == sw * 4;
 
     loop {
-        // ── Phase A: drain ALL queued client messages ─────────────────────────
-        // Processing all pending messages before sending a frame ensures that
-        // rapid mouse/keyboard input doesn't starve frame updates.
+        // ── Phase A: drain ALL queued client messages (non-blocking) ────────
         loop {
+            // Check if data is available before calling the blocking tcp_recv.
+            // tcp_recv blocks for up to 3 s in the kernel; polling first
+            // avoids burning CPU in the kernel's poll_yield loop.
+            let avail = net::tcp_recv_available(sock);
+            if avail == 0 {
+                break; // no data pending — move on to frame update
+            }
+            if avail == u32::MAX - 1 {
+                // EOF — remote closed
+                net::tcp_close(sock);
+                return;
+            }
+            if avail == u32::MAX {
+                // error / invalid socket
+                net::tcp_close(sock);
+                return;
+            }
+
             let mut msg_type = [0u8; 1];
             let n = net::tcp_recv(sock, &mut msg_type);
             if n == 0 {
-                // EOF — client disconnected.
                 net::tcp_close(sock);
                 return;
             }
             if n == u32::MAX {
-                break; // no more queued data
+                break;
             }
 
             match msg_type[0] {
@@ -728,14 +1121,19 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                     let mut _rest = [0u8; 19];
                     if !recv_exact(sock, &mut _rest) { net::tcp_close(sock); return; }
                 }
-                // SetEncodings (type 2): read and discard.
+                // SetEncodings (type 2): parse to detect compression support.
                 2 => {
                     let mut enc_hdr = [0u8; 3];
                     if !recv_exact(sock, &mut enc_hdr) { net::tcp_close(sock); return; }
                     let count = from_be16(&enc_hdr[1..3]) as usize;
+                    use_zlib = false;
+                    use_copyrect = false;
                     let mut enc_buf = [0u8; 4];
                     for _ in 0..count {
                         if !recv_exact(sock, &mut enc_buf) { net::tcp_close(sock); return; }
+                        let enc_type = i32::from_be_bytes(enc_buf);
+                        if enc_type == 1 { use_copyrect = true; }
+                        if enc_type == 6 { use_zlib = true; }
                     }
                 }
                 // FramebufferUpdateRequest (type 3).
@@ -754,10 +1152,11 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                     if !recv_exact(sock, &mut key_rest) { net::tcp_close(sock); return; }
                     let down = key_rest[0] != 0;
                     let keysym = from_be32(&key_rest[3..7]);
-                    if !mods.update(keysym, down) {
-                        input::inject_key(comp_chan, keysym, down, &mods);
-                    }
-                    // Reset idle counter — expect screen changes after input.
+                    mods.update(keysym, down);
+                    // Always inject — including modifier keys so the
+                    // compositor/apps can track Ctrl/Shift/Alt state
+                    // independently via keycode observations.
+                    input::inject_key(comp_chan, keysym, down, &mods);
                     consecutive_clean = 0;
                 }
                 // PointerEvent (type 5).
@@ -768,7 +1167,6 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                     let x = from_be16(&ptr_rest[1..3]);
                     let y = from_be16(&ptr_rest[3..5]);
                     input::inject_pointer(comp_chan, x, y, buttons);
-                    // Reset idle counter — expect screen changes after input.
                     consecutive_clean = 0;
                 }
                 // ClientCutText (type 6): ignore.
@@ -784,7 +1182,10 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                         remaining -= chunk;
                     }
                 }
-                _ => { net::tcp_close(sock); return; }
+                _ => {
+                    net::tcp_close(sock);
+                    return;
+                }
             }
         }
 
@@ -793,67 +1194,83 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
             let now = sys::uptime_ms();
             let interval = if consecutive_clean > IDLE_THRESHOLD { IDLE_FRAME_MS } else { MIN_FRAME_MS };
             if now.wrapping_sub(last_frame_ms) >= interval {
-                let rc = if !fb_mapped {
-                    // First frame: call capture_screen to establish FB mapping
-                    // at 0x30000000 and get the initial contents.
-                    let mut info = [0u32; 3];
-                    let ok = sys::capture_screen(&mut screen_buf, &mut info);
-                    if !ok || info[0] == 0 || info[1] == 0 {
-                        break;
-                    }
-                    fb_mapped = true;
-                    send_dirty_update(sock, &screen_buf, &mut prev_buf, sw, sh, need_full, &mut send_buf)
-                } else {
-                    // Subsequent frames: read directly from the mapped GPU
-                    // framebuffer — zero-copy when pitch == width*4.
-                    let cur = if fb_contiguous {
-                        unsafe {
-                            core::slice::from_raw_parts(0x3000_0000 as *const u32, sw * sh)
+                // Get current framebuffer
+                // Always use screen_buf for safety; don't directly reference 0x30000000.
+                let cur = {
+                    if !fb_mapped {
+                        let mut info = [0u32; 3];
+                        let ok = sys::capture_screen(&mut screen_buf, &mut info);
+                        if !ok {
+                            break;
                         }
+                        // If kernel returns 0x0 (e.g., due to buffer size mismatch),
+                        // just skip this frame and try again next iteration.
+                        if info[0] == 0 || info[1] == 0 {
+                            update_requested = false;
+                            process::sleep(MIN_FRAME_MS);
+                            continue;
+                        }
+                        fb_mapped = true;
                     } else {
-                        // pitch != width*4: row-by-row copy (still no syscall).
-                        unsafe {
-                            let src = 0x3000_0000 as *const u8;
-                            for y in 0..sh {
-                                let src_row = src.add(y * fb_pitch);
-                                let dst_off = y * sw;
-                                core::ptr::copy_nonoverlapping(
-                                    src_row as *const u32,
-                                    screen_buf[dst_off..].as_mut_ptr(),
-                                    sw,
-                                );
+                        // Refresh framebuffer from GPU memory into screen_buf
+                        if fb_contiguous {
+                            unsafe {
+                                let src = 0x3000_0000 as *const u32;
+                                core::ptr::copy_nonoverlapping(src, screen_buf.as_mut_ptr(), sw * sh);
+                            }
+                        } else {
+                            unsafe {
+                                let src = 0x3000_0000 as *const u8;
+                                for y in 0..sh {
+                                    let src_row = src.add(y * fb_pitch);
+                                    let dst_off = y * sw;
+                                    core::ptr::copy_nonoverlapping(
+                                        src_row as *const u32,
+                                        screen_buf[dst_off..].as_mut_ptr(),
+                                        sw,
+                                    );
+                                }
                             }
                         }
-                        &screen_buf
-                    };
-                    send_dirty_update(sock, cur, &mut prev_buf, sw, sh, need_full, &mut send_buf)
+                    }
+                    &screen_buf as &[u32]
+                };
+
+                // Send update — Zlib-compressed if client supports it, Raw otherwise
+                let rc = if use_zlib {
+                    send_dirty_update_zlib(
+                        sock, cur, &mut prev_buf, sw, sh, need_full,
+                        &mut send_buf, &mut raw_buf, &mut zlib_encoder,
+                        use_copyrect,
+                    )
+                } else {
+                    send_dirty_update_raw(
+                        sock, cur, &mut prev_buf, sw, sh, need_full,
+                        &mut send_buf,
+                    )
                 };
 
                 if rc < 0 {
-                    break; // connection error
+                    break;
                 }
                 last_frame_ms = now;
                 if rc > 0 {
-                    // Dirty tiles were sent — cycle complete.
                     update_requested = false;
                     need_full = false;
                     consecutive_clean = 0;
                 } else {
-                    // Nothing dirty — don't respond yet, keep update_requested
-                    // true and re-check on the next iteration.  This avoids the
-                    // tight request→empty-response→request polling loop.
                     consecutive_clean = consecutive_clean.saturating_add(1);
                 }
             }
         }
 
-        // ── Phase C: yield or sleep based on activity ────────────────────────
+        // ── Phase C: sleep based on activity level ───────────────────────────
+        // Active: short sleep to keep latency low while not busy-spinning.
+        // Idle:   sleep the full idle interval — nothing is changing on screen.
         if consecutive_clean > IDLE_THRESHOLD {
-            // Idle: sleep to save CPU.  The scheduler will wake us after ~1 ms.
-            process::sleep(1);
+            process::sleep(IDLE_FRAME_MS);
         } else {
-            // Active: yield immediately to minimise latency.
-            process::yield_cpu();
+            process::sleep(MIN_FRAME_MS);
         }
     }
 

@@ -82,6 +82,7 @@ pub(crate) struct TcpSegment {
     pub window: u16,
     pub payload: Vec<u8>,
     pub src_ip: Ipv4Addr,
+    pub dst_ip: Ipv4Addr,
     /// TCP Window Scale option (Kind=3), present only in SYN segments.
     pub wscale: Option<u8>,
     /// MSS option (Kind=2), present only in SYN segments.
@@ -294,6 +295,7 @@ pub(crate) fn parse_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) -> Option<TcpSeg
         window,
         payload,
         src_ip: pkt.src,
+        dst_ip: pkt.dst,
         wscale,
         peer_mss,
     })

@@ -51,6 +51,29 @@ pub fn parse(data: &[u8]) -> Option<Ipv4Packet<'_>> {
 
 /// Build and send an IPv4 packet
 pub fn send_ipv4(dst: Ipv4Addr, protocol: u8, payload: &[u8]) -> bool {
+    // Loopback shortcut: 127.x.x.x — feed directly back into the IP stack.
+    if dst.0[0] == 127 {
+        let total_len = IPV4_HEADER_LEN + payload.len();
+        if total_len > 1500 { return false; }
+        let mut header = [0u8; IPV4_HEADER_LEN];
+        header[0] = 0x45;
+        header[2] = (total_len >> 8) as u8;
+        header[3] = (total_len & 0xFF) as u8;
+        header[8] = 64;  // TTL
+        header[9] = protocol;
+        // Source = 127.0.0.1, Dest = dst
+        header[12..16].copy_from_slice(&[127, 0, 0, 1]);
+        header[16..20].copy_from_slice(&dst.0);
+        let cksum = checksum::internet_checksum(&header);
+        header[10] = (cksum >> 8) as u8;
+        header[11] = (cksum & 0xFF) as u8;
+        let mut packet = alloc::vec::Vec::with_capacity(total_len);
+        packet.extend_from_slice(&header);
+        packet.extend_from_slice(payload);
+        handle_ipv4(&packet);
+        return true;
+    }
+
     let cfg = super::config();
     let total_len = IPV4_HEADER_LEN + payload.len();
     if total_len > 1500 { return false; }

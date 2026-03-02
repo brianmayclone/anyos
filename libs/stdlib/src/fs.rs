@@ -430,9 +430,17 @@ pub fn read_to_string(path: &str) -> error::Result<String> {
 }
 
 /// Read an entire file into a `Vec<u8>`.
+/// Pre-allocates based on file size to avoid repeated heap reallocation.
 pub fn read_to_vec(path: &str) -> error::Result<Vec<u8>> {
     let mut file = File::open(path)?;
     let mut v = Vec::new();
+    // Pre-allocate if we can determine the file size
+    if let Ok(meta) = file.metadata() {
+        let size = meta[1] as usize; // fstat: [type, size, position, ...]
+        if size > 0 {
+            v.reserve(size);
+        }
+    }
     file.read_to_end(&mut v)?;
     Ok(v)
 }

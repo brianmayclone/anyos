@@ -499,6 +499,7 @@ add_rust_user_program(nano)
 add_rust_user_program(httpd)
 add_rust_user_program(vncd)
 add_rust_user_program(vmd)
+add_rust_user_program(ftpd)
 add_rust_user_program(zip)
 add_rust_user_program(unzip)
 add_rust_user_program(gzip)
@@ -593,6 +594,7 @@ add_app(diff        ${CMAKE_SOURCE_DIR}/apps/diff           "Diff")
 add_app(mdview      ${CMAKE_SOURCE_DIR}/apps/mdview         "Markdown Viewer")
 add_app(clipman     ${CMAKE_SOURCE_DIR}/apps/clipman        "Clipboard Manager")
 add_app(vnc-settings ${CMAKE_SOURCE_DIR}/apps/vnc-settings "VNC Settings")
+add_app(ftp-settings ${CMAKE_SOURCE_DIR}/apps/ftp-settings "FTP Settings")
 add_app(anybench    ${CMAKE_SOURCE_DIR}/apps/anybench      "anyBench")
 add_app(gldemo      ${CMAKE_SOURCE_DIR}/apps/gldemo        "GL Demo")
 add_app(iconview    ${CMAKE_SOURCE_DIR}/apps/iconview      "Icon Browser")
@@ -600,6 +602,8 @@ add_app(store       ${CMAKE_SOURCE_DIR}/apps/store         "App Store")
 if(NOT ANYOS_ARCH STREQUAL "arm64")
   add_app(vmmanager   ${CMAKE_SOURCE_DIR}/apps/vmmanager    "VM Manager")
 endif()
+add_app(anymail     ${CMAKE_SOURCE_DIR}/apps/anymail       "anyMail")
+add_app(anyzilla    ${CMAKE_SOURCE_DIR}/apps/anyzilla      "anyzilla")
 
 # ============================================================
 # Compositor and Dock
@@ -672,6 +676,30 @@ add_custom_command(
           ${CMAKE_SOURCE_DIR}/sysroot/System/etc/inputmon.conf
   COMMENT "Populating sysroot from tools/sysroot"
 )
+
+# Install service config files only if they don't already exist in the build
+# sysroot. This preserves user-edited settings across rebuilds.
+# The defaults live in defaults/ (not sysroot/) so copy_directory doesn't touch them.
+if(NOT EXISTS "${SYSROOT_DIR}/System/etc/vncd.conf")
+  file(COPY "${CMAKE_SOURCE_DIR}/defaults/System/etc/vncd.conf"
+       DESTINATION "${SYSROOT_DIR}/System/etc")
+endif()
+if(NOT EXISTS "${SYSROOT_DIR}/System/etc/ftpd/ftpd.conf")
+  file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/etc/ftpd")
+  file(COPY "${CMAKE_SOURCE_DIR}/defaults/System/etc/ftpd/ftpd.conf"
+       DESTINATION "${SYSROOT_DIR}/System/etc/ftpd")
+endif()
+if(NOT EXISTS "${SYSROOT_DIR}/System/etc/ftpd/shares.conf")
+  file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/etc/ftpd")
+  file(COPY "${CMAKE_SOURCE_DIR}/defaults/System/etc/ftpd/shares.conf"
+       DESTINATION "${SYSROOT_DIR}/System/etc/ftpd")
+endif()
+# FTP public share directory with a test file for download verification.
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/users/shared/ftp")
+if(NOT EXISTS "${SYSROOT_DIR}/users/shared/ftp/README.txt")
+  file(COPY "${CMAKE_SOURCE_DIR}/defaults/users/shared/ftp/README.txt"
+       DESTINATION "${SYSROOT_DIR}/users/shared/ftp")
+endif()
 
 # User provisioning from config/users.conf
 set(PROVISION_DEPS "")

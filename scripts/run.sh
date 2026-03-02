@@ -8,12 +8,12 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU (or VMware Workstation)
-# Usage: ./run.sh [--vmware | --std | --virtio] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--vmware-ws] [--arm64]
+# Usage: ./run.sh [--vmware | --std | --virtio] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--vmware-ws] [--arm64]
 #   --vmware-ws Start VMware Workstation VM named 'anyos' and stream its COM1 serial output
 #   --vmware   VMware SVGA II (2D acceleration, HW cursor)
 #   --std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
 #   --virtio   VirtIO GPU (modern transport, ARGB cursor)
-#   --res WxH  Set initial GPU resolution (VirtIO only). Example: --res 1280x1024
+#   --res WxH  Set display size. VirtIO: sets GPU resolution. std/vmware: sets QEMU window size via GTK zoom. Example: --res 1280x1024
 #   --ide      Use legacy IDE (PIO) instead of AHCI (DMA) for disk I/O
 #   --cdrom    Boot from ISO image (CD-ROM) instead of hard drive
 #   --audio    Enable AC'97 audio device
@@ -23,6 +23,9 @@
 #   --kbd LAY  Set keyboard layout: us, de, ch, fr, pl (default: keep current)
 #   --fwd H:G  Forward host port H to guest port G (TCP). Repeatable.
 #              Example: --fwd 2222:22 --fwd 8080:8080
+#   --bridge [IFACE]  Use TAP/bridge networking instead of NAT. IFACE = host bridge (default: br0).
+#              Requires: sudo ip link add br0 type bridge && sudo ip link set eth0 master br0
+#              Or use virbr0 (libvirt): --bridge virbr0
 #   --arm64    Run ARM64 kernel on QEMU virt machine (serial-only, no graphics)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -46,12 +49,20 @@ RESOLUTION=""
 EXPECT_RES=false
 KBD_LAYOUT=""
 EXPECT_KBD=false
+BRIDGE_IFACE=""
+EXPECT_BRIDGE=false
 VMWARE_WS=false
 ARM64_MODE=false
 MIN_RES_W=1024
 MIN_RES_H=768
 
 for arg in "$@"; do
+    if [ "$EXPECT_BRIDGE" = true ]; then
+        EXPECT_BRIDGE=false
+        BRIDGE_IFACE="$arg"
+        continue
+    fi
+
     if [ "$EXPECT_KBD" = true ]; then
         EXPECT_KBD=false
         case "$arg" in
@@ -191,11 +202,15 @@ for arg in "$@"; do
         --fwd)
             EXPECT_FWD=true
             ;;
+        --bridge)
+            EXPECT_BRIDGE=true
+            BRIDGE_IFACE="br0"  # default; overridden if next arg is an iface name
+            ;;
         --arm64)
             ARM64_MODE=true
             ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--arm64]"
+            echo "Usage: $0 [--vmware | --std | --virtio] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--arm64]"
             exit 1
             ;;
     esac
@@ -407,13 +422,6 @@ if [ "$ARM64_MODE" = true ]; then
     exit 0
 fi
 
-# Validate --res is only used with --virtio
-if [ -n "$RESOLUTION" ] && [ "$VGA" != "virtio" ]; then
-    echo "Error: --res is only supported with --virtio (VirtIO GPU sets resolution via device properties)"
-    echo "Bochs VGA and VMware SVGA set resolution from the guest OS."
-    exit 1
-fi
-
 # VirtIO GPU: default to 1024x768 if no --res specified
 if [ "$VGA" = "virtio" ] && [ -z "$RESOLUTION" ]; then
     RESOLUTION="${MIN_RES_W}x${MIN_RES_H}"
@@ -504,8 +512,9 @@ if [ -n "$KBD_LAYOUT" ]; then
     KBD_LABEL=", kbd: ${LAYOUT_NAMES[$KBD_LAYOUT]}"
 fi
 
-# VGA device flags: VirtIO always uses explicit -device with edid=on for reliable resolution
+# VGA device flags
 VGA_FLAGS="-vga $VGA"
+DISPLAY_FLAGS=""
 RES_LABEL=""
 if [ "$VGA" = "virtio" ]; then
     RES_W="${RESOLUTION%%x*}"
@@ -513,22 +522,100 @@ if [ "$VGA" = "virtio" ]; then
     VGA_FLAGS="-vga none -device virtio-vga,edid=on,xres=$RES_W,yres=$RES_H"
     VGA_LABEL="Virtio GPU (${RES_W}x${RES_H})"
     RES_LABEL=", res: ${RESOLUTION}"
+elif [ -n "$RESOLUTION" ]; then
+    RES_W="${RESOLUTION%%x*}"
+    RES_H="${RESOLUTION#*x}"
+    RES_LABEL=", res: ${RESOLUTION}"
 fi
 
-echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL"
+# Network: bridge or NAT (user)
+NET_FLAGS=""
+NET_LABEL=""
+if [ -n "$BRIDGE_IFACE" ]; then
+    # TAP/bridge networking: QEMU creates a tap device and attaches it to the bridge.
+    # Requires /etc/qemu/bridge.conf with: allow <BRIDGE_IFACE>
+    # And qemu-bridge-helper must be setuid: sudo chmod u+s /usr/lib/qemu/qemu-bridge-helper
+    HELPER="$(command -v qemu-bridge-helper 2>/dev/null || echo /usr/lib/qemu/qemu-bridge-helper)"
+    if [ ! -x "$HELPER" ]; then
+        echo "Error: qemu-bridge-helper not found at $HELPER"
+        echo "Install with: sudo apt-get install qemu-system-x86"
+        exit 1
+    fi
+    BRIDGE_CONF="/etc/qemu/bridge.conf"
+    if ! grep -qs "allow ${BRIDGE_IFACE}" "$BRIDGE_CONF" 2>/dev/null; then
+        echo "Warning: Bridge '$BRIDGE_IFACE' not listed in $BRIDGE_CONF"
+        echo "  Fix: echo 'allow ${BRIDGE_IFACE}' | sudo tee -a $BRIDGE_CONF"
+        echo "  And: sudo chmod u+s $HELPER"
+    fi
+    NET_FLAGS="-netdev bridge,id=net0,br=${BRIDGE_IFACE},helper=${HELPER} -device e1000,netdev=net0"
+    NET_LABEL=", net: bridge (${BRIDGE_IFACE})"
+else
+    NET_FLAGS="-netdev user,id=net0${FWD_RULES} -device e1000,netdev=net0"
+    NET_LABEL=", net: NAT (user)"
+    [ -n "$FWD_RULES" ] && NET_LABEL="${NET_LABEL}${FWD_RULES//,hostfwd=tcp::/ fwd:}"
+fi
 
-eval qemu-system-x86_64 \
-    $CPU_FLAGS \
-    $KVM_FLAGS \
-    $BIOS_FLAGS \
-    $DRIVE_FLAGS \
-    -m 1024M \
-    -smp cpus=4 \
-    -serial stdio \
-    $VGA_FLAGS \
-    -netdev user,id=net0${FWD_RULES} -device e1000,netdev=net0 \
-    $AUDIO_FLAGS \
-    $USB_FLAGS \
-    -no-reboot \
-    -no-shutdown
+echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL$NET_LABEL"
+
+# On Linux with --res and non-virtio: use xdotool to resize QEMU window after startup
+USE_XDOTOOL=false
+if [ -n "$RESOLUTION" ] && [ "$VGA" != "virtio" ] && [ "$(uname -s)" = "Linux" ]; then
+    if command -v xdotool &>/dev/null; then
+        USE_XDOTOOL=true
+    else
+        echo "Warning: xdotool not found -- window will not be resized to ${RES_W}x${RES_H}"
+        echo "  Install with: sudo apt-get install xdotool"
+    fi
+fi
+
+if [ "$USE_XDOTOOL" = true ]; then
+    # Start QEMU in background, capture PID
+    eval qemu-system-x86_64 \
+        $CPU_FLAGS \
+        $KVM_FLAGS \
+        $BIOS_FLAGS \
+        $DRIVE_FLAGS \
+        -m 1024M \
+        -smp cpus=4 \
+        -serial stdio \
+        $VGA_FLAGS \
+        $NET_FLAGS \
+        $AUDIO_FLAGS \
+        $USB_FLAGS \
+        -no-reboot \
+        -no-shutdown &
+    QEMU_PID=$!
+
+    # Wait for QEMU window to appear (up to 10s), then resize it
+    WIN_ID=""
+    for i in $(seq 1 20); do
+        sleep 0.5
+        WIN_ID=$(xdotool search --pid "$QEMU_PID" --name "" 2>/dev/null | head -1)
+        [ -n "$WIN_ID" ] && break
+    done
+
+    if [ -n "$WIN_ID" ]; then
+        xdotool windowsize "$WIN_ID" "$RES_W" "$RES_H"
+    else
+        echo "Warning: Could not find QEMU window to resize"
+    fi
+
+    # Wait for QEMU to exit
+    wait "$QEMU_PID"
+else
+    eval qemu-system-x86_64 \
+        $CPU_FLAGS \
+        $KVM_FLAGS \
+        $BIOS_FLAGS \
+        $DRIVE_FLAGS \
+        -m 1024M \
+        -smp cpus=4 \
+        -serial stdio \
+        $VGA_FLAGS \
+        $NET_FLAGS \
+        $AUDIO_FLAGS \
+        $USB_FLAGS \
+        -no-reboot \
+        -no-shutdown
+fi
     

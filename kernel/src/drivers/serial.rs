@@ -280,6 +280,43 @@ fn kick_tx() {
     }
 }
 
+/// Flush the async TX buffer by draining all pending bytes directly to the UART.
+/// Switches to blocking TX so subsequent output is serialized without interleaving.
+/// Also force-releases the output lock if held by another CPU that may have crashed.
+///
+/// Call this before printing crash reports or other critical diagnostic output.
+#[cfg(target_arch = "x86_64")]
+pub fn flush_blocking() {
+    // Disable async TX so new writes go directly to UART
+    ASYNC_TX.store(false, Ordering::Release);
+
+    // Force-release the output lock — the previous holder may have crashed
+    OUTPUT_LOCK_CPU.store(0xFF, Ordering::Release);
+    OUTPUT_LOCK.store(false, Ordering::Release);
+
+    // Drain whatever is still in the TX ring buffer
+    while let Some(b) = tx_pop() {
+        unsafe {
+            while inb(COM1 + 5) & 0x20 == 0 {
+                core::hint::spin_loop();
+            }
+            outb(COM1, b);
+        }
+    }
+
+    // Disable THRE interrupt — no more async sends
+    unsafe {
+        let ier = inb(COM1 + 1);
+        outb(COM1 + 1, ier & !0x02);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn flush_blocking() {
+    OUTPUT_LOCK_CPU.store(0xFF, Ordering::Release);
+    OUTPUT_LOCK.store(false, Ordering::Release);
+}
+
 /// Initialize the serial port.
 pub fn init() {
     #[cfg(target_arch = "x86_64")]

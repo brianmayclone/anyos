@@ -16,8 +16,8 @@ const CELL_W: u32 = 80;
 const CELL_H: u32 = 72;
 const ICON_SIZE: u32 = 32;
 const ICO_PAK_PATH: &str = "/System/media/ico.pak";
-const CELLS_PER_TICK: usize = 5;  // cells created per timer tick during init
-const ICONS_PER_TICK: usize = 5;  // icons rendered per timer tick
+const CELLS_PER_TICK: usize = 3;  // cells created per timer tick during init
+const ICONS_PER_TICK: usize = 3;  // icons rendered per timer tick
 
 // ── Data model ───────────────────────────────────────────────────────────────
 
@@ -91,6 +91,9 @@ fn parse_icon_names(pak: &[u8]) -> Vec<UniqueIcon> {
     let index_base = 20usize;
     let entry_size = 16usize;
 
+    // Pre-allocate to avoid repeated Vec growth
+    icons.reserve(total / 2 + 1);
+
     for i in 0..total {
         let off = index_base + i * entry_size;
         if off + entry_size > pak.len() {
@@ -127,6 +130,10 @@ fn parse_icon_names(pak: &[u8]) -> Vec<UniqueIcon> {
             }
         }
 
+        // Yield every 500 entries to avoid starving other tasks
+        if i > 0 && i % 500 == 0 {
+            anyos_std::process::yield_cpu();
+        }
     }
 
     // Sort alphabetically (insertion sort with yields)
@@ -136,6 +143,10 @@ fn parse_icon_names(pak: &[u8]) -> Vec<UniqueIcon> {
         while j > 0 && icons[j - 1].name.as_str() > icons[j].name.as_str() {
             icons.swap(j - 1, j);
             j -= 1;
+        }
+        // Yield every 200 iterations
+        if i % 200 == 0 {
+            anyos_std::process::yield_cpu();
         }
     }
 
@@ -372,7 +383,7 @@ fn refresh_display() {
 
     s.pending_matches = matches;
     s.render_cursor = 0;
-    s.render_timer = anyui::set_timer(30, render_batch);
+    s.render_timer = anyui::set_timer(50, render_batch);
 }
 
 fn render_batch() {
@@ -519,7 +530,7 @@ fn main() {
 
     // Start deferred cell creation AFTER event loop is running
     // Use longer interval to give compositor time to process
-    app().init_timer = anyui::set_timer(50, init_tick);
+    app().init_timer = anyui::set_timer(80, init_tick);
 
     // Register callbacks
     search.on_text_changed(|e| {

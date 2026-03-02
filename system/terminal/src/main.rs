@@ -147,7 +147,8 @@ struct Redirect {
 /// Parse redirect operators from a command line.
 /// Returns (clean_command, Option<Redirect>).
 /// Handles: `>`, `>>`, `2>`, `2>>`, and `/dev/null` as target.
-fn parse_redirects(line: &str) -> (String, Option<Redirect>) {
+/// Relative paths are resolved against `cwd`.
+fn parse_redirects(line: &str, cwd: &str) -> (String, Option<Redirect>) {
     // Scan for redirect operators (check longer patterns first)
     // Order matters: check 2>> before 2>, >> before >
     let patterns: &[(&str, bool)] = &[
@@ -174,10 +175,19 @@ fn parse_redirects(line: &str) -> (String, Option<Redirect>) {
                 continue;
             }
 
+            // Resolve relative paths against cwd
+            let abs_target = if target.starts_with('/') {
+                String::from(target)
+            } else if cwd == "/" {
+                format!("/{}", target)
+            } else {
+                format!("{}/{}", cwd, target)
+            };
+
             return (
                 String::from(cmd_part),
                 Some(Redirect {
-                    target: String::from(target),
+                    target: abs_target,
                     append: is_append,
                 }),
             );
@@ -1144,7 +1154,7 @@ impl Shell {
         };
 
         // Parse redirects BEFORE any command dispatch
-        let (line, mut redirect) = parse_redirects(&expanded_line);
+        let (line, mut redirect) = parse_redirects(&expanded_line, &self.cwd);
 
         // If there's a redirect, enable capture mode for builtins
         if redirect.is_some() {
@@ -2368,16 +2378,14 @@ fn main() {
                 // Ctrl+C: cancel foreground process, password prompt, or clear input
                 if (mods & MOD_CTRL) != 0 && char_val == 'c' as u32 {
                     if let Some(fp) = fg_proc.take() {
-                        process::kill(fp.tid);
-                        let mut drain_buf = [0u8; 512];
-                        loop {
-                            let n = ipc::pipe_read(fp.pipe_id, &mut drain_buf);
-                            if n == 0 || n == u32::MAX { break; }
-                        }
-                        ipc::pipe_close(fp.pipe_id);
+                        // First close stdin pipe so the process unblocks from any read()
                         if fp.stdin_pipe != 0 {
                             ipc::pipe_close(fp.stdin_pipe);
                         }
+                        // Then kill the process
+                        process::kill(fp.tid);
+                        // Close output pipe immediately — no drain to avoid blocking
+                        ipc::pipe_close(fp.pipe_id);
                         for &p in &fp.extra_pipes {
                             ipc::pipe_close(p);
                         }

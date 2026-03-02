@@ -67,10 +67,12 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
                         }
 
                         let cfg = crate::net::config();
+                        // Use the actual destination IP from the packet (handles loopback correctly).
+                        let local_ip = if seg.dst_ip.0[0] == 127 { seg.dst_ip } else { cfg.ip };
                         let mut new_slot = None;
                         for (i, slot) in table.iter_mut().enumerate() {
                             if slot.is_none() {
-                                let mut tcb = Tcb::new(cfg.ip, seg.dst_port, seg.src_ip, seg.src_port);
+                                let mut tcb = Tcb::new(local_ip, seg.dst_port, seg.src_ip, seg.src_port);
                                 tcb.state = TcpState::SynReceived;
                                 tcb.rcv_irs = seg.seq;
                                 tcb.rcv_nxt = seg.seq.wrapping_add(1);

@@ -5,7 +5,7 @@ use crate::rect::Rect;
 use crate::surface::RenderSurface;
 use crate::renderer::Renderer;
 
-const NUM_EXPORTS: u32 = 18;
+const NUM_EXPORTS: u32 = 19;
 
 /// Export function table — must be first in the binary (`.exports` section).
 #[repr(C)]
@@ -34,6 +34,7 @@ pub struct LibrenderExports {
     pub fill_gradient_h: extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, u32, u32),
     pub fill_gradient_v: extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, u32, u32),
     pub blend_color: extern "C" fn(u32, u32) -> u32,
+    pub fill_rounded_rect_aa_clipped: extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, i32, u32, i32, i32, i32, i32),
 }
 
 #[link_section = ".exports"]
@@ -62,6 +63,7 @@ pub static LIBRENDER_EXPORTS: LibrenderExports = LibrenderExports {
     fill_gradient_h: export_fill_gradient_h,
     fill_gradient_v: export_fill_gradient_v,
     blend_color: export_blend_color,
+    fill_rounded_rect_aa_clipped: export_fill_rounded_rect_aa_clipped,
 };
 
 // ── Surface operations ──────────────────────────────────────
@@ -213,4 +215,18 @@ extern "C" fn export_fill_gradient_v(
 
 extern "C" fn export_blend_color(src: u32, dst: u32) -> u32 {
     Color::from_u32(src).blend_over(Color::from_u32(dst)).to_u32()
+}
+
+extern "C" fn export_fill_rounded_rect_aa_clipped(
+    pixels: *mut u32, width: u32, height: u32,
+    x: i32, y: i32, w: u32, h: u32, radius: i32, color: u32,
+    clip_x: i32, clip_y: i32, clip_w: i32, clip_h: i32,
+) {
+    let mut surf = unsafe { RenderSurface::from_raw(pixels, width, height) };
+    Renderer::new(&mut surf).fill_rounded_rect_aa_clipped(
+        Rect::new(x, y, w, h),
+        radius,
+        Color::from_u32(color),
+        Rect::new(clip_x, clip_y, clip_w.max(0) as u32, clip_h.max(0) as u32),
+    );
 }
