@@ -6,8 +6,7 @@
 //! per-instruction decode overhead for hot code.
 
 use alloc::vec::Vec;
-use crate::cpu::Mode;
-use crate::decoder::Decoder;
+use crate::decoder::{CpuMode, Decoder};
 use crate::error::{Result, VmError};
 use crate::instruction::{DecodedInst, OpcodeMap, Operand, RepPrefix};
 use crate::memory::MemoryBus;
@@ -27,8 +26,8 @@ const MAX_BLOCK_INSTRUCTIONS: usize = 64;
 pub struct BlockKey {
     /// Physical address of the first instruction byte.
     pub phys_addr: u64,
-    /// CPU mode at block entry (affects default operand/address sizes).
-    pub mode: Mode,
+    /// CPU decode mode at block entry (distinguishes CS.D=0 vs CS.D=1).
+    pub mode: CpuMode,
     /// CS segment base at block entry (affects linear address computation).
     pub cs_base: u64,
 }

@@ -800,13 +800,14 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     vm.engine.io.register(0x1CE, 2, Box::new(IoProxy { ptr: svga }));
     vm.engine.memory.add_mmio(0xA0000, 0x20000, Box::new(MmioProxy { ptr: svga }));
 
-    // PCI bus with standard QEMU i440FX machine devices.
+    // PCI bus with Q35 (MCH + ICH9) machine devices.
     let mut bus = devices::bus::PciBus::new();
 
-    // i440FX host bridge at 0:0.0 — required by SeaBIOS for PAM/RAM unlock.
+    // Q35 MCH (Memory Controller Hub) at 0:0.0.
+    // SeaBIOS recognizes device ID 0x29C0 as Q35 and calls mch_mem_addr_setup().
     let mut host_bridge = devices::bus::PciDevice::new(
         0x8086,  // Vendor ID: Intel
-        0x1237,  // Device ID: i440FX
+        0x29C0,  // Device ID: Q35 MCH (82G33/G31/P35/P31 Express DRAM Controller)
         0x06,    // Class: Bridge
         0x00,    // Subclass: Host bridge
         0x00,    // Prog IF
@@ -814,34 +815,46 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     host_bridge.bus = 0;
     host_bridge.device = 0;
     host_bridge.function = 0;
-    // Header type 0x00 = single-function device.
-    // PAM registers (0x59-0x5F): default to 0 (ROM read-only).
+    // PAM registers (0x90-0x96 on Q35, same semantics as i440FX 0x59-0x5F).
     // Make all PAM regions writable so SeaBIOS can shadow ROMs.
-    // PAM0 (0x59): covers 0xF0000-0xFFFFF — BIOS area.
-    host_bridge.config_space[0x59] = 0x30; // Read/write enabled
-    // PAM1-PAM6 (0x5A-0x5F): cover 0xC0000-0xEFFFF — option ROM area.
-    for i in 0x5A..=0x5F {
+    // PAM0 (0x90): covers 0xF0000-0xFFFFF — BIOS area.
+    host_bridge.config_space[0x90] = 0x30; // Read/write enabled
+    // PAM1-PAM6 (0x91-0x96): cover 0xC0000-0xEFFFF — option ROM area.
+    for i in 0x91..=0x96 {
         host_bridge.config_space[i] = 0x33; // Read/write for both halves
     }
+    // PCIEXBAR (0x60): MMCONFIG base address — 0xB0000000, 256 MiB, enabled.
+    // SeaBIOS reads this to set up MMIO-based PCI config access (mmconfig).
+    // Format: bits[63:28]=base, bits[2:1]=size (00=256M), bit[0]=enable.
+    // 0xB0000001 in LE: [0x01, 0x00, 0x00, 0xB0, 0x00, 0x00, 0x00, 0x00]
+    host_bridge.config_space[0x60] = 0x01; // enable=1, size=256M
+    host_bridge.config_space[0x61] = 0x00;
+    host_bridge.config_space[0x62] = 0x00;
+    host_bridge.config_space[0x63] = 0xB0; // base bits[31:28] = 0xB
+    host_bridge.config_space[0x64] = 0x00; // upper 32 bits = 0
+    host_bridge.config_space[0x65] = 0x00;
+    host_bridge.config_space[0x66] = 0x00;
+    host_bridge.config_space[0x67] = 0x00;
     // QEMU subsystem IDs — SeaBIOS checks these to identify the chipset.
     host_bridge.set_subsystem(0x1AF4, 0x1100);
     bus.add_device(host_bridge);
 
-    // PIIX3 ISA bridge at 0:1.0 — SeaBIOS uses this for IRQ routing.
-    let mut isa_bridge = devices::bus::PciDevice::new(
+    // ICH9 LPC (Low Pin Count) bridge at 0:1F.0 — SeaBIOS uses this for IRQ routing.
+    // On Q35, the ISA/LPC bridge is at device 31, function 0 (not device 1).
+    let mut lpc_bridge = devices::bus::PciDevice::new(
         0x8086,  // Vendor ID: Intel
-        0x7000,  // Device ID: PIIX3 ISA
+        0x2918,  // Device ID: ICH9 LPC Interface Controller
         0x06,    // Class: Bridge
         0x01,    // Subclass: ISA bridge
-        0x00,    // Prog IF
+        0x02,    // Prog IF: ICH9
     );
-    isa_bridge.bus = 0;
-    isa_bridge.device = 1;
-    isa_bridge.function = 0;
-    // Mark as multi-function (header type bit 7) since real PIIX3 has IDE at fn 1.
-    isa_bridge.config_space[0x0E] = 0x80;
-    isa_bridge.set_subsystem(0x1AF4, 0x1100);
-    bus.add_device(isa_bridge);
+    lpc_bridge.bus = 0;
+    lpc_bridge.device = 31;
+    lpc_bridge.function = 0;
+    // Mark as multi-function (header type bit 7) since ICH9 has multiple functions.
+    lpc_bridge.config_space[0x0E] = 0x80;
+    lpc_bridge.set_subsystem(0x1AF4, 0x1100);
+    bus.add_device(lpc_bridge);
 
     // VGA device at 0:2.0 — SeaBIOS scans PCI to detect display hardware.
     let mut vga_pci = devices::bus::PciDevice::new(
@@ -870,6 +883,17 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     vm.bus_ptr = bus_ptr;
     vm.engine.io.register(0xCF8, 8, Box::new(IoProxy { ptr: bus_ptr }));
 
+    // MMCONFIG — PCI Express Enhanced Configuration via MMIO.
+    // 256 MiB region at 0xB0000000, matching PCIEXBAR in the Q35 MCH.
+    // SeaBIOS reads PCIEXBAR, discovers this region, then uses MMIO reads
+    // for all PCI config space accesses instead of CF8/CFC port I/O.
+    let mmcfg = devices::bus::PciMmcfgHandler::new(bus_ptr);
+    vm.engine.memory.add_mmio(
+        0xB0000000,
+        0x10000000, // 256 MiB
+        Box::new(mmcfg),
+    );
+
     // IO-APIC at standard MMIO address.
     let ioapic = Box::into_raw(Box::new(devices::ioapic::IoApic::new()));
     vm.engine.memory.add_mmio(0xFEC00000, 0x1000, Box::new(MmioProxy { ptr: ioapic }));
@@ -891,7 +915,7 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     let count = vm.engine.memory.mmio_region_count();
     let (lo, hi) = vm.engine.memory.mmio_bounds();
     vm_log!("MMIO setup: {} regions, bounds=[0x{:X}, 0x{:X})", count, lo, hi);
-    vm_log!("PCI bus: 3 devices (host bridge 0:0.0, ISA bridge 0:1.0, VGA 0:2.0)");
+    vm_log!("PCI bus: 3 devices (Q35 MCH 0:0.0, ICH9 LPC 0:1F.0, VGA 0:2.0)");
 }
 
 /// Register a PCI bus at the standard configuration ports (0xCF8-0xCFF).

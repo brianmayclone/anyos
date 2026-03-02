@@ -26,7 +26,7 @@ use crate::registers::SegReg;
 
 /// The current CPU operating mode, which determines default operand/address
 /// sizes and which instructions are available.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CpuMode {
     /// 16-bit real mode (power-on default).
     Real16,
@@ -58,6 +58,11 @@ impl Decoder {
     /// Change the decoder mode (e.g. after the guest switches to protected mode).
     pub fn set_mode(&mut self, mode: CpuMode) {
         self.mode = mode;
+    }
+
+    /// Return the current decoder mode.
+    pub fn mode(&self) -> CpuMode {
+        self.mode
     }
 
     /// Decode one instruction starting at `rip`.

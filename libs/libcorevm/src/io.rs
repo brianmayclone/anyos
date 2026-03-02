@@ -11,7 +11,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use crate::error::Result;
 
 /// Diagnostic counter for total CF8 writes reaching the dispatcher.
-static CF8_DISPATCH_COUNT: AtomicU32 = AtomicU32::new(0);
+pub static CF8_DISPATCH_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Diagnostic counter for total CFC-CFF reads reaching the dispatcher.
 static CFC_READ_COUNT: AtomicU32 = AtomicU32::new(0);
 /// I/O trace phase: 0=off, 1=active (log all I/O), 2=done.

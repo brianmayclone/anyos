@@ -68,8 +68,8 @@ impl DecodeCache {
         let to_remove: Vec<BlockKey> = self
             .blocks
             .range(
-                BlockKey { phys_addr: page_start, mode: crate::cpu::Mode::RealMode, cs_base: 0 }
-                    ..BlockKey { phys_addr: page_end, mode: crate::cpu::Mode::RealMode, cs_base: 0 },
+                BlockKey { phys_addr: page_start, mode: crate::decoder::CpuMode::Real16, cs_base: 0 }
+                    ..BlockKey { phys_addr: page_end, mode: crate::decoder::CpuMode::Real16, cs_base: 0 },
             )
             .map(|(k, _)| *k)
             .collect();

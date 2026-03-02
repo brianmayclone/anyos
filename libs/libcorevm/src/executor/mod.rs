@@ -20,6 +20,7 @@ pub mod stack;
 pub mod string;
 pub mod system;
 
+use core::sync::atomic::{AtomicU32, Ordering};
 use crate::cpu::{Cpu, Mode};
 use crate::error::{Result, VmError};
 use crate::flags::OperandSize;
@@ -28,6 +29,11 @@ use crate::interrupts::InterruptController;
 use crate::io::IoDispatch;
 use crate::memory::{AccessType, GuestMemory, MemoryBus, Mmu};
 use crate::registers::{GprIndex, SegReg};
+
+/// Diagnostic: total OUT DX instructions executed.
+pub static OUT_DX_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Diagnostic: total IN DX instructions executed.
+pub static IN_DX_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // ── Public entry point ──
 
@@ -786,6 +792,13 @@ fn exec_in_dx(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result<
     // Even opcodes (0xEC) = byte; odd opcodes (0xED) = word/dword per mode.
     let size = if inst.opcode & 1 == 0 { 1u8 } else { inst.operand_size.bytes().min(4) as u8 };
     let val = io.port_in(port, size)?;
+    let n = IN_DX_COUNT.fetch_add(1, Ordering::Relaxed);
+    if port >= 0xCF8 && port <= 0xCFF {
+        libsyscall::serial_print(format_args!(
+            "[exec-diag] IN DX #{}: port=0x{:X} size={} val=0x{:X} rip=0x{:X} mode={:?}\n",
+            n, port, size, val, cpu.regs.rip, cpu.mode
+        ));
+    }
     match size {
         1 => cpu.regs.write_gpr8(GprIndex::Rax as u8, false, val as u8),
         2 => cpu.regs.write_gpr16(GprIndex::Rax as u8, val as u16),
@@ -805,6 +818,12 @@ fn exec_out_imm(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Resul
     let size = if inst.opcode & 1 == 0 { 1u8 } else { inst.operand_size.bytes().min(4) as u8 };
     let op_size = if inst.opcode & 1 == 0 { OperandSize::Byte } else { inst.operand_size };
     let val = cpu.regs.read_gpr(GprIndex::Rax as u8, op_size, false) as u32;
+    if port == 0xCF8 {
+        libsyscall::serial_print(format_args!(
+            "[exec-diag] OUT imm: port=0x{:X} size={} val=0x{:X} rip=0x{:X} mode={:?}\n",
+            port, size, val, cpu.regs.rip, cpu.mode
+        ));
+    }
     io.port_out(port, size, val)?;
     cpu.regs.rip += inst.length as u64;
     Ok(())
@@ -820,6 +839,13 @@ fn exec_out_dx(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result
     let size = if inst.opcode & 1 == 0 { 1u8 } else { inst.operand_size.bytes().min(4) as u8 };
     let op_size = if inst.opcode & 1 == 0 { OperandSize::Byte } else { inst.operand_size };
     let val = cpu.regs.read_gpr(GprIndex::Rax as u8, op_size, false) as u32;
+    let n = OUT_DX_COUNT.fetch_add(1, Ordering::Relaxed);
+    if port == 0xCF8 || n < 5 || (n < 500 && n % 100 == 0) {
+        libsyscall::serial_print(format_args!(
+            "[exec-diag] OUT DX #{}: port=0x{:X} size={} val=0x{:X} rip=0x{:X} mode={:?}\n",
+            n, port, size, val, cpu.regs.rip, cpu.mode
+        ));
+    }
     io.port_out(port, size, val)?;
     cpu.regs.rip += inst.length as u64;
     Ok(())
