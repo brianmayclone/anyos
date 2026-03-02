@@ -823,6 +823,8 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     for i in 0x5A..=0x5F {
         host_bridge.config_space[i] = 0x33; // Read/write for both halves
     }
+    // QEMU subsystem IDs — SeaBIOS checks these to identify the chipset.
+    host_bridge.set_subsystem(0x1AF4, 0x1100);
     bus.add_device(host_bridge);
 
     // PIIX3 ISA bridge at 0:1.0 — SeaBIOS uses this for IRQ routing.
@@ -838,6 +840,7 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     isa_bridge.function = 0;
     // Mark as multi-function (header type bit 7) since real PIIX3 has IDE at fn 1.
     isa_bridge.config_space[0x0E] = 0x80;
+    isa_bridge.set_subsystem(0x1AF4, 0x1100);
     bus.add_device(isa_bridge);
 
     // VGA device at 0:2.0 — SeaBIOS scans PCI to detect display hardware.
@@ -860,6 +863,7 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     vga_pci.config_space[0x31] = 0x00;
     vga_pci.config_space[0x32] = 0x0C; // 0x000C0001 LE
     vga_pci.config_space[0x33] = 0x00;
+    vga_pci.set_subsystem(0x1AF4, 0x1100);
     bus.add_device(vga_pci);
 
     let bus_ptr = Box::into_raw(Box::new(bus));
@@ -1409,4 +1413,54 @@ pub extern "C" fn corevm_jit_cache_stats(
 pub extern "C" fn corevm_jit_flush_cache(handle: u64) {
     let vm = unsafe { vm_from_handle(handle) };
     vm.engine.cpu.decode_cache.flush();
+    vm.engine.cpu.jit_engine.flush();
+}
+
+/// Enable or disable the JIT engine.
+///
+/// When enabled, the VM compiles hot basic blocks to native x86-64 code
+/// for dramatically faster execution. When disabled (default), all
+/// instructions are interpreted.
+///
+/// # Arguments
+/// * `handle` — VM instance handle
+/// * `enable` — 1 to enable, 0 to disable
+#[no_mangle]
+pub extern "C" fn corevm_jit_enable(handle: u64, enable: u32) {
+    let vm = unsafe { vm_from_handle(handle) };
+    vm.engine.cpu.jit_engine.set_enabled(enable != 0);
+    if enable != 0 {
+        vm_log!("JIT engine enabled");
+    } else {
+        vm_log!("JIT engine disabled");
+    }
+}
+
+/// Query JIT engine statistics.
+///
+/// Writes the number of compiled blocks, natively translated instruction
+/// count, interpreter fallback count, and code buffer usage to the
+/// provided output pointers. Any pointer may be null (skipped).
+#[no_mangle]
+pub extern "C" fn corevm_jit_stats(
+    handle: u64,
+    blocks_compiled: *mut u64,
+    native_count: *mut u64,
+    fallback_count: *mut u64,
+    code_buffer_used: *mut u32,
+) {
+    let vm = unsafe { vm_from_handle(handle) };
+    let jit = &vm.engine.cpu.jit_engine;
+    if !blocks_compiled.is_null() {
+        unsafe { *blocks_compiled = jit.blocks_compiled() };
+    }
+    if !native_count.is_null() {
+        unsafe { *native_count = jit.native_count() };
+    }
+    if !fallback_count.is_null() {
+        unsafe { *fallback_count = jit.fallback_count() };
+    }
+    if !code_buffer_used.is_null() {
+        unsafe { *code_buffer_used = jit.code_buffer_used() as u32 };
+    }
 }

@@ -12,6 +12,7 @@ use crate::interrupts::InterruptController;
 use crate::io::IoDispatch;
 use crate::jit::block::{self, BlockKey};
 use crate::jit::cache::DecodeCache;
+use crate::jit::JitEngine;
 use crate::memory::{AccessType, GuestMemory, MemoryBus, Mmu};
 use crate::registers::SegmentDescriptor;
 use crate::registers::{
@@ -84,6 +85,8 @@ pub struct Cpu {
     pub last_fetch_addr: u64,
     /// Decode cache for pre-decoded basic blocks (JIT Phase 1).
     pub decode_cache: DecodeCache,
+    /// JIT engine for native code compilation and execution (Phase 2+3).
+    pub jit_engine: JitEngine,
 }
 
 impl Cpu {
@@ -103,6 +106,7 @@ impl Cpu {
             last_opcode: 0,
             last_fetch_addr: 0,
             decode_cache: DecodeCache::new(),
+            jit_engine: JitEngine::new(),
         }
     }
 
@@ -120,6 +124,7 @@ impl Cpu {
         self.last_opcode = 0;
         self.last_fetch_addr = 0;
         self.decode_cache.flush();
+        self.jit_engine.flush();
     }
 
     /// Request the CPU to stop at the next instruction boundary.
@@ -366,6 +371,19 @@ impl Cpu {
                 // during execution. The Vec<DecodedInst> is stack-allocated
                 // metadata — the actual data is small (typically 1-64 entries).
                 let block_insts = cached_block.instructions.clone();
+
+                // ── JIT path: compile and execute natively ──
+                if self.jit_engine.is_enabled() {
+                    let jit_result = self.jit_execute_block(
+                        &block_key, &block_insts,
+                        memory, mmu, io, interrupts,
+                    );
+                    match jit_result {
+                        BlockExitReason::Continue => continue,
+                        BlockExitReason::Exit(reason) => return reason,
+                    }
+                }
+
                 let block_exit = self.execute_cached_block(
                     &block_insts, phys_addr, fetch_addr, memory, mmu, io, interrupts,
                 );
@@ -382,6 +400,20 @@ impl Cpu {
             if let Ok(new_block) = block::detect_basic_block(
                 &self.decoder, &*memory, phys_addr,
             ) {
+                // ── JIT path: compile and execute natively ──
+                if self.jit_engine.is_enabled() {
+                    let block_insts = new_block.instructions.clone();
+                    self.decode_cache.insert(block_key, new_block);
+                    let jit_result = self.jit_execute_block(
+                        &block_key, &block_insts,
+                        memory, mmu, io, interrupts,
+                    );
+                    match jit_result {
+                        BlockExitReason::Continue => continue,
+                        BlockExitReason::Exit(reason) => return reason,
+                    }
+                }
+
                 let block_insts = new_block.instructions.clone();
                 self.decode_cache.insert(block_key, new_block);
                 let block_exit = self.execute_cached_block(
@@ -486,7 +518,7 @@ impl Cpu {
         &mut self,
         instructions: &[crate::instruction::DecodedInst],
         block_phys: u64,
-        block_fetch: u64,
+        _block_fetch: u64,
         memory: &mut GuestMemory,
         mmu: &mut Mmu,
         io: &mut IoDispatch,
@@ -554,6 +586,93 @@ impl Cpu {
             }
         }
         BlockExitReason::Continue
+    }
+
+    /// Compile (if needed) and execute a JIT-compiled basic block.
+    ///
+    /// Looks up the compiled block in the JIT engine's code cache. On miss,
+    /// compiles the decoded block and stores the native code. Then executes
+    /// the compiled code via function pointer call.
+    ///
+    /// The JIT block function follows the C calling convention:
+    /// `fn(cpu, memory, mmu, io, interrupts) -> u32`
+    ///
+    /// Returns `BlockExitReason` for the main run() loop.
+    fn jit_execute_block(
+        &mut self,
+        key: &BlockKey,
+        instructions: &[crate::instruction::DecodedInst],
+        memory: &mut GuestMemory,
+        mmu: &mut Mmu,
+        io: &mut IoDispatch,
+        interrupts: &mut InterruptController,
+    ) -> BlockExitReason {
+        use crate::jit::helpers::{JIT_OK, JIT_EXIT_BLOCK};
+
+        // Look up or compile the block.
+        let (code_offset, inst_count) = match self.jit_engine.lookup_compiled(key) {
+            Some(entry) => entry,
+            None => {
+                // Build a BasicBlock wrapper for the translator.
+                let block = crate::jit::block::BasicBlock {
+                    instructions: instructions.into(),
+                    byte_len: instructions.iter().map(|i| i.length as usize).sum(),
+                    exits_with_branch: false,
+                };
+
+                // Switch to writable, compile, then switch back to executable.
+                self.jit_engine.make_writable();
+                let result = self.jit_engine.compile_block(*key, &block);
+                self.jit_engine.make_executable();
+
+                match result {
+                    Some(entry) => entry,
+                    None => {
+                        // JIT buffer full — fall back to interpreter path.
+                        return self.execute_cached_block(
+                            instructions, key.phys_addr, key.cs_base.wrapping_add(
+                                self.regs.rip,
+                            ),
+                            memory, mmu, io, interrupts,
+                        );
+                    }
+                }
+            }
+        };
+
+        // Call the compiled native code.
+        //
+        // Safety: The code was emitted by our translator and follows the C ABI:
+        //   fn(cpu: &mut Cpu, mem: &mut GuestMemory, mmu: &mut Mmu,
+        //      io: &mut IoDispatch, intr: &mut InterruptController) -> u32
+        type JitBlockFn = unsafe extern "C" fn(
+            &mut Cpu, &mut GuestMemory, &mut Mmu, &mut IoDispatch,
+            &mut InterruptController,
+        ) -> u32;
+
+        let result = unsafe {
+            let ptr = self.jit_engine.code_ptr(code_offset);
+            let func: JitBlockFn = core::mem::transmute(ptr);
+            func(self, memory, mmu, io, interrupts)
+        };
+
+        // Update instruction count with the number of guest instructions.
+        self.instruction_count += inst_count;
+
+        match result {
+            JIT_OK => BlockExitReason::Continue,
+            JIT_EXIT_BLOCK => {
+                // The block signaled an early exit (HLT, page fault, etc.).
+                // The interpreter fallback in the JIT code already handled
+                // exception injection. Return to the main loop to re-check
+                // the new RIP.
+                BlockExitReason::Continue
+            }
+            _ => {
+                // Unexpected return code — treat as exit.
+                BlockExitReason::Continue
+            }
+        }
     }
 
     /// Inject an exception derived from a VmError into the guest.

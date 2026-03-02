@@ -180,6 +180,10 @@ pub struct TableRegister {
 }
 
 /// CPU register file — all architectural register state.
+///
+/// `#[repr(C)]` ensures a deterministic field layout so the JIT compiler
+/// can access fields at known byte offsets from a base pointer.
+#[repr(C)]
 pub struct RegisterFile {
     /// General-purpose registers (64-bit each, indexed by GprIndex).
     pub gpr: [u64; 16],

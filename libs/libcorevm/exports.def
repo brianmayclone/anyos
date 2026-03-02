@@ -53,3 +53,5 @@ EXPORTS
     corevm_debug_take_output
     corevm_jit_cache_stats
     corevm_jit_flush_cache
+    corevm_jit_enable
+    corevm_jit_stats
