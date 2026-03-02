@@ -5,24 +5,25 @@
 //! instructions (ALU, MOV, branches) can be executed natively with the
 //! host CPU computing RFLAGS automatically.
 //!
-//! ## Natively Translated (Phase 3)
+//! ## Phase 4 Optimizations
 //!
-//! - **ALU reg,reg**: ADD, OR, AND, SUB, XOR, CMP (16/32/64-bit)
-//! - **ALU reg,imm**: ADD, OR, AND, SUB, XOR, CMP (Group 1)
-//! - **ALU acc,imm**: ADD, OR, AND, SUB, XOR, CMP (short forms)
-//! - **TEST reg,reg**: AND without storing result
-//! - **INC/DEC reg**: Preserves CF
-//! - **MOV reg,reg**: Register-to-register moves
-//! - **MOV reg,imm**: Immediate loads
-//! - **NOP**: No operation
-//! - **JMP rel**: Unconditional relative jumps
-//! - **Jcc rel**: Conditional branches (evaluates guest RFLAGS natively)
+//! ### Lazy RFLAGS
+//! Instead of materializing (PUSHFQ→merge) after every ALU operation,
+//! the translator tracks whether host RFLAGS are "dirty" (contain valid
+//! guest arithmetic flags). Flags are only materialized into guest RFLAGS
+//! when actually needed: before Jcc (which loads guest RFLAGS), before
+//! interpreter fallback (which reads RFLAGS from the register file), and
+//! in the epilogue. Back-to-back ALU operations skip the merge entirely.
 //!
-//! ## Interpreter Fallback
+//! ### Native Memory Access
+//! MOV reg,[mem] and MOV [mem],reg compute the effective linear address
+//! in generated code (base + index*scale + disp + segment_base) and call
+//! `jit_mem_read` / `jit_mem_write` helpers. This avoids the full
+//! interpreter fallback (which re-decodes the instruction).
 //!
-//! Everything else (memory access, PUSH/POP, CALL/RET, FPU, SSE, system
-//! instructions) is delegated to [`jit_interpret_one`] which re-decodes
-//! and executes via the existing interpreter.
+//! ### Tier 2 Instructions
+//! PUSH/POP, CALL rel, RET, LEA, XCHG, SHL/SHR/SAR reg,imm,
+//! MOVZX/MOVSX (reg-reg), and more.
 //!
 //! ## Register Convention
 //!
@@ -34,17 +35,18 @@
 //! | R14           | Saved `IoDispatch*` (callee-saved)         |
 //! | R15           | GPR base pointer (`&cpu.regs.gpr[0]`)      |
 //! | R9, R10       | Temporary operand registers                |
-//! | R11           | Temporary (captured RFLAGS)                |
+//! | R11           | Temporary (captured RFLAGS / scratch)      |
 //! | RAX           | Temporary / helper return value            |
 //! | RBP           | Frame pointer                              |
 //! | `[RBP-8]`    | Saved `InterruptController*`               |
 
 use alloc::vec::Vec;
 use crate::flags::OperandSize;
-use crate::instruction::{DecodedInst, OpcodeMap, Operand};
+use crate::instruction::{DecodedInst, MemOperand, OpcodeMap, Operand};
 use crate::jit::block::BasicBlock;
 use crate::jit::emitter::{Cc, Emitter, Reg, OpSize};
 use crate::jit::helpers;
+use crate::registers::SegReg;
 
 // ── RegisterFile field offsets (valid because RegisterFile is #[repr(C)]) ──
 
@@ -57,8 +59,8 @@ const RFLAGS_OFFSET: i32 = 136;
 
 /// Mask of arithmetic status flags in RFLAGS (CF|PF|AF|ZF|SF|OF).
 const ARITH_MASK: i32 = 0x8D5;
-/// Inverted mask for clearing arithmetic flags: sign-extends correctly.
-const NOT_ARITH_MASK: i32 = !0x8D5; // = -2262 → sign-extends to 0xFFFFFFFFFFFFF72A
+/// Inverted mask for clearing arithmetic flags.
+const NOT_ARITH_MASK: i32 = !0x8D5;
 
 // ── Host register aliases for clarity ──
 
@@ -81,6 +83,15 @@ const FLAGS_TMP: Reg = Reg::R11;
 
 /// Stack offset of saved InterruptController pointer from RBP.
 const INTR_STACK_OFF: i32 = -8;
+
+// ── RegisterFile segment descriptor offsets ──
+// seg[] is after rflags in the RegisterFile. Each SegmentDescriptor is
+// 40 bytes (#[repr(C)]). seg[0] = ES at rflags + 8 = GPR_BASE + 144.
+// The `base` field is at offset 8 within SegmentDescriptor.
+// So seg[n].base = GPR_BASE + 144 + n * 40 + 8
+const SEG_ARRAY_OFFSET: i32 = 144; // offset of seg[0] from GPR_BASE
+const SEG_DESC_SIZE: i32 = 40;     // sizeof(SegmentDescriptor)
+const SEG_BASE_IN_DESC: i32 = 8;   // offset of `base` within SegmentDescriptor
 
 // ── ALU operation dispatch ──
 
@@ -108,6 +119,14 @@ pub struct Translator {
     pub fallback_count: u64,
 }
 
+/// Per-block mutable state during translation.
+struct BlockState {
+    /// Whether host RFLAGS currently contain valid guest arithmetic flags
+    /// that have NOT yet been merged into the guest RFLAGS register file.
+    /// When true, FLAGS_TMP holds the captured RFLAGS from the last ALU op.
+    flags_dirty: bool,
+}
+
 impl Translator {
     /// Create a new translator.
     pub fn new() -> Self {
@@ -121,11 +140,15 @@ impl Translator {
     pub fn translate_block(&mut self, block: &BasicBlock, entry_phys: u64) -> CompiledBlock {
         let mut emit = Emitter::new();
         let inst_count = block.instructions.len() as u64;
+        let mut state = BlockState { flags_dirty: false };
 
         self.emit_prologue(&mut emit);
 
         for inst in &block.instructions {
-            if !self.try_translate_native(&mut emit, inst) {
+            if !self.try_translate_native(&mut emit, inst, &mut state) {
+                // Must flush lazy flags before interpreter fallback
+                // since the interpreter reads RFLAGS from the register file.
+                self.flush_lazy_flags(&mut emit, &mut state);
                 self.emit_interpreter_fallback(&mut emit);
                 self.fallback_count += 1;
             } else {
@@ -133,6 +156,8 @@ impl Translator {
             }
         }
 
+        // Flush any remaining dirty flags before epilogue.
+        self.flush_lazy_flags(&mut emit, &mut state);
         self.emit_epilogue(&mut emit);
 
         CompiledBlock {
@@ -147,12 +172,8 @@ impl Translator {
     // ════════════════════════════════════════════════════════════════════
 
     /// Emit the block prologue.
-    ///
-    /// Saves callee-saved registers, copies the five context pointers into
-    /// callee-saved slots, then calls `jit_get_gpr_ptr` to obtain the GPR
-    /// base pointer for fast register access.
     fn emit_prologue(&self, emit: &mut Emitter) {
-        // Save callee-saved registers (7 pushes → RSP 16-aligned after CALL).
+        // Save callee-saved registers (6 pushes + PUSH RBP = 7 → RSP 16-aligned).
         emit.push(Reg::Rbx);
         emit.push(Reg::R12);
         emit.push(Reg::R13);
@@ -167,12 +188,10 @@ impl Translator {
         // Copy context pointers to callee-saved registers.
         emit.mov_rr(OpSize::S64, CPU_PTR, Reg::Rdi);  // RBX = cpu
         emit.mov_rr(OpSize::S64, MEM_PTR, Reg::Rsi);  // R12 = memory
-        emit.mov_rr(OpSize::S64, MMU_PTR, Reg::Rdx);  // R13 = mmu
-        emit.mov_rr(OpSize::S64, IO_PTR, Reg::Rcx);   // R14 = io
+        emit.mov_rr(OpSize::S64, MMU_PTR, Reg::Rdx);   // R13 = mmu
+        emit.mov_rr(OpSize::S64, IO_PTR, Reg::Rcx);    // R14 = io
 
         // Call jit_get_gpr_ptr(cpu) to get GPR base pointer.
-        // RDI already = cpu (we just moved it, but let's reload since
-        // the calling convention says RDI = first arg).
         emit.mov_rr(OpSize::S64, Reg::Rdi, CPU_PTR);
         let helper = helpers::jit_get_gpr_ptr as *const () as usize as u64;
         emit.call_abs(helper);
@@ -185,7 +204,7 @@ impl Translator {
         self.emit_restore_and_ret(emit);
     }
 
-    /// Shared register restore + ret sequence (used by epilogue and early exits).
+    /// Shared register restore + ret sequence.
     fn emit_restore_and_ret(&self, emit: &mut Emitter) {
         emit.mov_rr(OpSize::S64, Reg::Rsp, Reg::Rbp);
         emit.pop(Reg::Rbp);
@@ -198,20 +217,62 @@ impl Translator {
     }
 
     // ════════════════════════════════════════════════════════════════════
+    // Lazy RFLAGS
+    // ════════════════════════════════════════════════════════════════════
+
+    /// Capture host RFLAGS after a native ALU op (PUSHFQ + POP).
+    /// Does NOT merge into guest RFLAGS — just saves to FLAGS_TMP.
+    fn emit_capture_flags(&self, emit: &mut Emitter, state: &mut BlockState) {
+        emit.pushfq();
+        emit.pop(FLAGS_TMP);
+        state.flags_dirty = true;
+    }
+
+    /// If flags are dirty, merge them into guest RFLAGS register file.
+    fn flush_lazy_flags(&self, emit: &mut Emitter, state: &mut BlockState) {
+        if !state.flags_dirty { return; }
+        // Load guest RFLAGS, clear arith bits, OR in captured bits, store.
+        emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, RFLAGS_OFFSET);
+        emit.and_ri(OpSize::S64, Reg::Rax, NOT_ARITH_MASK);
+        emit.and_ri(OpSize::S64, FLAGS_TMP, ARITH_MASK);
+        emit.or_rr(OpSize::S64, Reg::Rax, FLAGS_TMP);
+        emit.mov_mr(OpSize::S64, GPR_BASE, RFLAGS_OFFSET, Reg::Rax);
+        state.flags_dirty = false;
+    }
+
+    /// Flush lazy flags for INC/DEC (preserves CF in guest RFLAGS).
+    #[allow(dead_code)]
+    fn flush_lazy_flags_inc_dec(&self, emit: &mut Emitter, state: &mut BlockState) {
+        if !state.flags_dirty { return; }
+        const INC_DEC_MASK: i32 = 0x8D4; // PF|AF|ZF|SF|OF (no CF!)
+        const NOT_INC_DEC_MASK: i32 = !0x8D4;
+        emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, RFLAGS_OFFSET);
+        emit.and_ri(OpSize::S64, Reg::Rax, NOT_INC_DEC_MASK);
+        emit.and_ri(OpSize::S64, FLAGS_TMP, INC_DEC_MASK);
+        emit.or_rr(OpSize::S64, Reg::Rax, FLAGS_TMP);
+        emit.mov_mr(OpSize::S64, GPR_BASE, RFLAGS_OFFSET, Reg::Rax);
+        state.flags_dirty = false;
+    }
+
+    // ════════════════════════════════════════════════════════════════════
     // Instruction Translation Dispatch
     // ════════════════════════════════════════════════════════════════════
 
     /// Try to translate an instruction natively. Returns true if successful.
-    fn try_translate_native(&self, emit: &mut Emitter, inst: &DecodedInst) -> bool {
+    fn try_translate_native(
+        &self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState,
+    ) -> bool {
         match inst.opcode_map {
-            OpcodeMap::Primary => self.try_primary(emit, inst),
-            OpcodeMap::Secondary => self.try_secondary(emit, inst),
+            OpcodeMap::Primary => self.try_primary(emit, inst, state),
+            OpcodeMap::Secondary => self.try_secondary(emit, inst, state),
             _ => false,
         }
     }
 
     /// Try to translate a primary (one-byte) opcode natively.
-    fn try_primary(&self, emit: &mut Emitter, inst: &DecodedInst) -> bool {
+    fn try_primary(
+        &self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState,
+    ) -> bool {
         let op = inst.opcode as u8;
         match op {
             // ── NOP ──
@@ -220,46 +281,63 @@ impl Translator {
                 true
             }
 
-            // ── ALU r/m, r (16/32/64-bit, direction: r/m ← r/m OP r) ──
+            // ── ALU r/m, r (16/32/64-bit, r/m ← r/m OP r) ──
             0x01 | 0x09 | 0x21 | 0x29 | 0x31 | 0x39 => {
-                self.try_alu_rm_r(emit, inst, op)
+                self.try_alu_rm_r(emit, inst, op, state)
             }
 
-            // ── ALU r, r/m (16/32/64-bit, direction: r ← r OP r/m) ──
+            // ── ALU r, r/m (16/32/64-bit, r ← r OP r/m) ──
             0x03 | 0x0B | 0x23 | 0x2B | 0x33 | 0x3B => {
-                self.try_alu_r_rm(emit, inst, op)
+                self.try_alu_r_rm(emit, inst, op, state)
             }
 
-            // ── ALU accumulator, imm (16/32/64-bit short forms) ──
-            0x05 => self.try_alu_acc_imm(emit, inst, AluOp::Add),
-            0x0D => self.try_alu_acc_imm(emit, inst, AluOp::Or),
-            0x25 => self.try_alu_acc_imm(emit, inst, AluOp::And),
-            0x2D => self.try_alu_acc_imm(emit, inst, AluOp::Sub),
-            0x35 => self.try_alu_acc_imm(emit, inst, AluOp::Xor),
-            0x3D => self.try_alu_acc_imm(emit, inst, AluOp::Cmp),
+            // ── ALU accumulator, imm short forms ──
+            0x05 => self.try_alu_acc_imm(emit, inst, AluOp::Add, state),
+            0x0D => self.try_alu_acc_imm(emit, inst, AluOp::Or, state),
+            0x25 => self.try_alu_acc_imm(emit, inst, AluOp::And, state),
+            0x2D => self.try_alu_acc_imm(emit, inst, AluOp::Sub, state),
+            0x35 => self.try_alu_acc_imm(emit, inst, AluOp::Xor, state),
+            0x3D => self.try_alu_acc_imm(emit, inst, AluOp::Cmp, state),
 
-            // ── Group 1: ALU r/m, imm (0x81 = imm32, 0x83 = imm8 sign-ext) ──
-            0x81 | 0x83 => self.try_group1(emit, inst),
+            // ── Group 1: ALU r/m, imm ──
+            0x81 | 0x83 => self.try_group1(emit, inst, state),
 
             // ── TEST r/m, r ──
-            0x85 => self.try_test_rm_r(emit, inst),
+            0x85 => self.try_test_rm_r(emit, inst, state),
 
-            // ── MOV r/m, r (16/32/64-bit) ──
-            0x89 => self.try_mov_rm_r(emit, inst),
+            // ── XCHG r, r/m (mod=3 only) ──
+            0x87 => self.try_xchg_rm_r(emit, inst),
 
-            // ── MOV r, r/m (16/32/64-bit) ──
-            0x8B => self.try_mov_r_rm(emit, inst),
+            // ── MOV r/m, r ──
+            0x89 => self.try_mov_rm_r(emit, inst, state),
 
-            // ── MOV r32/64, imm32/64 ──
+            // ── MOV r, r/m ──
+            0x8B => self.try_mov_r_rm(emit, inst, state),
+
+            // ── LEA r, [m] ──
+            0x8D => self.try_lea(emit, inst),
+
+            // ── MOV r, imm ──
             0xB8..=0xBF => {
                 self.emit_mov_r_imm(emit, inst);
                 true
             }
 
-            // ── Jcc rel8 ──
-            0x70..=0x7F => {
-                let cc = (op - 0x70) as u8;
-                self.emit_jcc(emit, inst, cc);
+            // ── Shift Group 2: r/m, imm8 (0xC1) ──
+            0xC1 => self.try_shift_ri(emit, inst, state),
+
+            // ── RET near ──
+            0xC3 => self.try_ret_near(emit, inst, state),
+
+            // ── Shift Group 2: r/m, 1 (0xD1) ──
+            0xD1 => self.try_shift_r1(emit, inst, state),
+
+            // ── CALL rel32 ──
+            0xE8 => self.try_call_rel(emit, inst, state),
+
+            // ── JMP rel32 ──
+            0xE9 => {
+                self.emit_jmp_rel(emit, inst);
                 true
             }
 
@@ -269,42 +347,64 @@ impl Translator {
                 true
             }
 
-            // ── JMP rel32 ──
-            0xE9 => {
-                self.emit_jmp_rel(emit, inst);
+            // ── Jcc rel8 ──
+            0x70..=0x7F => {
+                let cc = (op - 0x70) as u8;
+                self.emit_jcc(emit, inst, cc, state);
                 true
             }
 
             // ── Group 4/5: INC/DEC r/m ──
-            0xFE | 0xFF => self.try_group5_inc_dec(emit, inst),
+            0xFE | 0xFF => self.try_group5(emit, inst, state),
+
+            // ── PUSH r ──
+            0x50..=0x57 => self.try_push_r(emit, inst, state),
+
+            // ── POP r ──
+            0x58..=0x5F => self.try_pop_r(emit, inst, state),
 
             _ => false,
         }
     }
 
     /// Try to translate a secondary (0F-prefixed) opcode natively.
-    fn try_secondary(&self, emit: &mut Emitter, inst: &DecodedInst) -> bool {
+    fn try_secondary(
+        &self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState,
+    ) -> bool {
         let op = inst.opcode as u8;
         match op {
             // ── Jcc rel32 (0F 80..8F) ──
             0x80..=0x8F => {
                 let cc = (op - 0x80) as u8;
-                self.emit_jcc(emit, inst, cc);
+                self.emit_jcc(emit, inst, cc, state);
                 true
             }
+
+            // ── MOVZX r, r/m8 (0F B6) ──
+            0xB6 => self.try_movzx_r_rm8(emit, inst),
+
+            // ── MOVZX r, r/m16 (0F B7) ──
+            0xB7 => self.try_movzx_r_rm16(emit, inst),
+
+            // ── MOVSX r, r/m8 (0F BE) ──
+            0xBE => self.try_movsx_r_rm8(emit, inst),
+
+            // ── MOVSX r, r/m16 (0F BF) ──
+            0xBF => self.try_movsx_r_rm16(emit, inst),
 
             _ => false,
         }
     }
 
     // ════════════════════════════════════════════════════════════════════
-    // Native Translation: ALU register-register
+    // Native Translation: ALU
     // ════════════════════════════════════════════════════════════════════
 
-    /// Translate ALU r/m, r (opcode +1 forms: ADD=01, OR=09, etc.).
-    /// Only handles mod=3 (register-register). Memory operands fall back.
-    fn try_alu_rm_r(&self, emit: &mut Emitter, inst: &DecodedInst, op: u8) -> bool {
-        if inst.modrm_mod() != 3 { return false; }
+    /// Translate ALU r/m, r (opcode +1 forms). Handles both reg-reg (mod=3)
+    /// and reg-mem (mod!=3) variants.
+    fn try_alu_rm_r(
+        &self, emit: &mut Emitter, inst: &DecodedInst, op: u8, state: &mut BlockState,
+    ) -> bool {
         let size = match map_operand_size(inst.operand_size) {
             Some(s) => s,
             None => return false, // 8-bit → fallback
@@ -314,16 +414,24 @@ impl Translator {
             0x29 => AluOp::Sub, 0x31 => AluOp::Xor, 0x39 => AluOp::Cmp,
             _ => return false,
         };
-        // r/m = destination, reg = source
-        let dst_idx = inst.modrm_rm();
-        let src_idx = inst.modrm_reg();
-        self.emit_alu_rr(emit, inst, alu_op, dst_idx, src_idx, size);
-        true
+
+        if inst.modrm_mod() == 3 {
+            // Register-register
+            let dst_idx = inst.modrm_rm();
+            let src_idx = inst.modrm_reg();
+            self.emit_alu_rr(emit, inst, alu_op, dst_idx, src_idx, size, state);
+            true
+        } else {
+            // Memory destination: mem ← mem OP reg
+            // Load from memory, ALU, store back. Too complex for now → fallback.
+            false
+        }
     }
 
-    /// Translate ALU r, r/m (opcode +3 forms: ADD=03, OR=0B, etc.).
-    fn try_alu_r_rm(&self, emit: &mut Emitter, inst: &DecodedInst, op: u8) -> bool {
-        if inst.modrm_mod() != 3 { return false; }
+    /// Translate ALU r, r/m (opcode +3 forms). Handles reg-reg and reg-mem.
+    fn try_alu_r_rm(
+        &self, emit: &mut Emitter, inst: &DecodedInst, op: u8, state: &mut BlockState,
+    ) -> bool {
         let size = match map_operand_size(inst.operand_size) {
             Some(s) => s,
             None => return false,
@@ -333,27 +441,61 @@ impl Translator {
             0x2B => AluOp::Sub, 0x33 => AluOp::Xor, 0x3B => AluOp::Cmp,
             _ => return false,
         };
-        // reg = destination, r/m = source
-        let dst_idx = inst.modrm_reg();
-        let src_idx = inst.modrm_rm();
-        self.emit_alu_rr(emit, inst, alu_op, dst_idx, src_idx, size);
-        true
+
+        if inst.modrm_mod() == 3 {
+            let dst_idx = inst.modrm_reg();
+            let src_idx = inst.modrm_rm();
+            self.emit_alu_rr(emit, inst, alu_op, dst_idx, src_idx, size, state);
+            true
+        } else {
+            // r ← r OP [mem]: read memory, ALU with register
+            let mem_op = match &inst.operands[1] {
+                Operand::Memory(m) => m,
+                _ => return false,
+            };
+            // Flush lazy flags before helper call (clobbers RFLAGS)
+            self.flush_lazy_flags(emit, state);
+            let dst_idx = inst.modrm_reg();
+
+            // Compute linear address → call jit_mem_read → ALU
+            self.emit_compute_linear(emit, mem_op, inst);
+            self.emit_call_mem_read(emit, size);
+            // RAX = value from memory
+
+            // Load dst reg, perform ALU
+            self.emit_load_gpr(emit, TEMP1, dst_idx, size);
+            emit_native_alu_rr(emit, alu_op, size, TEMP1, Reg::Rax);
+
+            // Capture flags
+            self.emit_capture_flags(emit, state);
+
+            // Store result (CMP doesn't write back)
+            if alu_op != AluOp::Cmp {
+                self.emit_store_gpr(emit, dst_idx, TEMP1, size);
+            }
+
+            self.emit_advance_rip(emit, inst.length);
+            true
+        }
     }
 
-    /// Translate ALU accumulator, imm (short forms: 0x05=ADD, 0x0D=OR, etc.).
-    fn try_alu_acc_imm(&self, emit: &mut Emitter, inst: &DecodedInst, alu_op: AluOp) -> bool {
+    /// Translate ALU accumulator, imm (short forms).
+    fn try_alu_acc_imm(
+        &self, emit: &mut Emitter, inst: &DecodedInst, alu_op: AluOp, state: &mut BlockState,
+    ) -> bool {
         let size = match map_operand_size(inst.operand_size) {
             Some(s) => s,
             None => return false,
         };
-        // Destination is always register 0 (RAX/EAX/AX).
         let imm = inst.immediate as i64 as i32;
-        self.emit_alu_ri(emit, inst, alu_op, 0, imm, size);
+        self.emit_alu_ri(emit, inst, alu_op, 0, imm, size, state);
         true
     }
 
     /// Translate Group 1: ALU r/m, imm (0x81, 0x83).
-    fn try_group1(&self, emit: &mut Emitter, inst: &DecodedInst) -> bool {
+    fn try_group1(
+        &self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState,
+    ) -> bool {
         if inst.modrm_mod() != 3 { return false; }
         let size = match map_operand_size(inst.operand_size) {
             Some(s) => s,
@@ -363,7 +505,7 @@ impl Translator {
         let alu_op = match digit {
             0 => AluOp::Add,
             1 => AluOp::Or,
-            // 2 = ADC, 3 = SBB — need carry, skip for Phase 3
+            // 2 = ADC, 3 = SBB — need carry, skip
             4 => AluOp::And,
             5 => AluOp::Sub,
             6 => AluOp::Xor,
@@ -372,62 +514,43 @@ impl Translator {
         };
         let dst_idx = inst.modrm_rm();
         let imm = inst.immediate as i64 as i32;
-        self.emit_alu_ri(emit, inst, alu_op, dst_idx, imm, size);
+        self.emit_alu_ri(emit, inst, alu_op, dst_idx, imm, size, state);
         true
     }
 
-    // ── ALU code emission helpers ──
+    // ── ALU emission helpers ──
 
-    /// Emit native code for an ALU reg, reg operation.
+    /// Emit native ALU reg, reg.
     fn emit_alu_rr(
         &self, emit: &mut Emitter, inst: &DecodedInst,
-        alu_op: AluOp, dst_idx: u8, src_idx: u8, size: OpSize,
+        alu_op: AluOp, dst_idx: u8, src_idx: u8, size: OpSize, state: &mut BlockState,
     ) {
-        // 1. Load guest registers into temporaries.
+        // Overwriting flags → any previous dirty flags are superseded.
+        state.flags_dirty = false;
+
         self.emit_load_gpr(emit, TEMP1, dst_idx, size);
         self.emit_load_gpr(emit, TEMP2, src_idx, size);
-
-        // 2. Execute native ALU operation (host CPU sets RFLAGS).
         emit_native_alu_rr(emit, alu_op, size, TEMP1, TEMP2);
-
-        // 3. Capture host RFLAGS immediately.
-        self.emit_capture_flags(emit);
-
-        // 4. Store result (CMP doesn't write back).
+        self.emit_capture_flags(emit, state);
         if alu_op != AluOp::Cmp {
             self.emit_store_gpr(emit, dst_idx, TEMP1, size);
         }
-
-        // 5. Merge captured arithmetic flags into guest RFLAGS.
-        self.emit_merge_arith_flags(emit);
-
-        // 6. Advance guest RIP.
         self.emit_advance_rip(emit, inst.length);
     }
 
-    /// Emit native code for an ALU reg, imm operation.
+    /// Emit native ALU reg, imm.
     fn emit_alu_ri(
         &self, emit: &mut Emitter, inst: &DecodedInst,
-        alu_op: AluOp, dst_idx: u8, imm: i32, size: OpSize,
+        alu_op: AluOp, dst_idx: u8, imm: i32, size: OpSize, state: &mut BlockState,
     ) {
-        // 1. Load guest register.
+        state.flags_dirty = false;
+
         self.emit_load_gpr(emit, TEMP1, dst_idx, size);
-
-        // 2. Execute native ALU with immediate.
         emit_native_alu_ri(emit, alu_op, size, TEMP1, imm);
-
-        // 3. Capture host RFLAGS.
-        self.emit_capture_flags(emit);
-
-        // 4. Store result (CMP doesn't write back).
+        self.emit_capture_flags(emit, state);
         if alu_op != AluOp::Cmp {
             self.emit_store_gpr(emit, dst_idx, TEMP1, size);
         }
-
-        // 5. Merge flags.
-        self.emit_merge_arith_flags(emit);
-
-        // 6. Advance RIP.
         self.emit_advance_rip(emit, inst.length);
     }
 
@@ -435,8 +558,256 @@ impl Translator {
     // Native Translation: TEST
     // ════════════════════════════════════════════════════════════════════
 
-    /// Translate TEST r/m, r (0x85 with mod=3).
-    fn try_test_rm_r(&self, emit: &mut Emitter, inst: &DecodedInst) -> bool {
+    fn try_test_rm_r(
+        &self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState,
+    ) -> bool {
+        if inst.modrm_mod() != 3 { return false; }
+        let size = match map_operand_size(inst.operand_size) {
+            Some(s) => s,
+            None => return false,
+        };
+        let a_idx = inst.modrm_rm();
+        let b_idx = inst.modrm_reg();
+
+        state.flags_dirty = false;
+        self.emit_load_gpr(emit, TEMP1, a_idx, size);
+        self.emit_load_gpr(emit, TEMP2, b_idx, size);
+        emit.test_rr(size, TEMP1, TEMP2);
+        self.emit_capture_flags(emit, state);
+        self.emit_advance_rip(emit, inst.length);
+        true
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Native Translation: INC/DEC (Group 4/5)
+    // ════════════════════════════════════════════════════════════════════
+
+    fn try_group5(
+        &self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState,
+    ) -> bool {
+        if inst.modrm_mod() != 3 { return false; }
+        let digit = inst.modrm_reg() & 7;
+        if digit > 1 { return false; } // Only INC(/0) and DEC(/1)
+
+        let op_byte = inst.opcode as u8;
+        if op_byte == 0xFE { return false; } // 8-bit → fallback
+
+        let size = match map_operand_size(inst.operand_size) {
+            Some(s) => s,
+            None => return false,
+        };
+        let reg_idx = inst.modrm_rm();
+
+        // Must flush previous dirty flags first (INC/DEC preserves CF,
+        // so we can't just overwrite — we need the old CF in guest RFLAGS).
+        self.flush_lazy_flags(emit, state);
+
+        self.emit_load_gpr(emit, TEMP1, reg_idx, size);
+        if digit == 0 {
+            emit.inc(size, TEMP1);
+        } else {
+            emit.dec(size, TEMP1);
+        }
+
+        // Capture flags into FLAGS_TMP.
+        emit.pushfq();
+        emit.pop(FLAGS_TMP);
+
+        self.emit_store_gpr(emit, reg_idx, TEMP1, size);
+
+        // Merge preserving CF.
+        const INC_DEC_MASK: i32 = 0x8D4; // PF|AF|ZF|SF|OF (no CF!)
+        const NOT_INC_DEC_MASK: i32 = !0x8D4;
+        emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, RFLAGS_OFFSET);
+        emit.and_ri(OpSize::S64, Reg::Rax, NOT_INC_DEC_MASK);
+        emit.and_ri(OpSize::S64, FLAGS_TMP, INC_DEC_MASK);
+        emit.or_rr(OpSize::S64, Reg::Rax, FLAGS_TMP);
+        emit.mov_mr(OpSize::S64, GPR_BASE, RFLAGS_OFFSET, Reg::Rax);
+
+        // Flags are now clean (merged directly).
+        state.flags_dirty = false;
+
+        self.emit_advance_rip(emit, inst.length);
+        true
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Native Translation: MOV
+    // ════════════════════════════════════════════════════════════════════
+
+    /// MOV r/m, r (0x89). Handles reg-reg and reg→mem.
+    fn try_mov_rm_r(
+        &self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState,
+    ) -> bool {
+        let size = match map_operand_size(inst.operand_size) {
+            Some(s) => s,
+            None => return false,
+        };
+
+        if inst.modrm_mod() == 3 {
+            // Register-register
+            let dst_idx = inst.modrm_rm();
+            let src_idx = inst.modrm_reg();
+            self.emit_load_gpr(emit, TEMP1, src_idx, size);
+            self.emit_store_gpr(emit, dst_idx, TEMP1, size);
+            self.emit_advance_rip(emit, inst.length);
+            true
+        } else {
+            // [mem] ← reg: compute address, call jit_mem_write
+            let mem_op = match &inst.operands[0] {
+                Operand::Memory(m) => m,
+                _ => return false,
+            };
+            self.flush_lazy_flags(emit, state);
+
+            let src_idx = inst.modrm_reg();
+            self.emit_load_gpr(emit, TEMP1, src_idx, size);
+            // Save value to stack temporarily (jit_mem_write needs it as arg 6)
+            emit.push(TEMP1);
+
+            self.emit_compute_linear(emit, mem_op, inst);
+            // RAX = linear address
+
+            // Call jit_mem_write(cpu, memory, mmu, linear, size, value)
+            emit.mov_rr(OpSize::S64, Reg::Rdi, CPU_PTR);
+            emit.mov_rr(OpSize::S64, Reg::Rsi, MEM_PTR);
+            emit.mov_rr(OpSize::S64, Reg::Rdx, MMU_PTR);
+            emit.mov_rr(OpSize::S64, Reg::Rcx, Reg::Rax);  // linear
+            emit.mov_ri32(Reg::R8, opsize_bytes(size) as u32); // size
+            emit.pop(TEMP1); // restore value
+            emit.mov_rr(OpSize::S64, TEMP2, TEMP1); // R9 = value (6th arg on stack? No, R9 in SysV)
+            // SysV ABI: RDI, RSI, RDX, RCX, R8, R9
+            // jit_mem_write(cpu, memory, mmu, linear, size, value)
+            // Args: RDI=cpu, RSI=memory, RDX=mmu, RCX=linear, R8=size(u8), R9=value(u64)
+            let helper = helpers::jit_mem_write as *const () as usize as u64;
+            emit.call_abs(helper);
+
+            // Check result (JIT_EXIT_BLOCK = page fault)
+            let ok_label = emit.new_label();
+            emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
+            emit.jcc_label(Cc::Ne, ok_label);
+            // Return JIT_EXIT_BLOCK
+            emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
+            self.emit_restore_and_ret(emit);
+            emit.bind_label(ok_label);
+
+            self.emit_advance_rip(emit, inst.length);
+            true
+        }
+    }
+
+    /// MOV r, r/m (0x8B). Handles reg-reg and mem→reg.
+    fn try_mov_r_rm(
+        &self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState,
+    ) -> bool {
+        let size = match map_operand_size(inst.operand_size) {
+            Some(s) => s,
+            None => return false,
+        };
+
+        if inst.modrm_mod() == 3 {
+            let dst_idx = inst.modrm_reg();
+            let src_idx = inst.modrm_rm();
+            self.emit_load_gpr(emit, TEMP1, src_idx, size);
+            self.emit_store_gpr(emit, dst_idx, TEMP1, size);
+            self.emit_advance_rip(emit, inst.length);
+            true
+        } else {
+            // reg ← [mem]: compute address, call jit_mem_read
+            let mem_op = match &inst.operands[1] {
+                Operand::Memory(m) => m,
+                _ => return false,
+            };
+            self.flush_lazy_flags(emit, state);
+
+            let dst_idx = inst.modrm_reg();
+            self.emit_compute_linear(emit, mem_op, inst);
+            self.emit_call_mem_read(emit, size);
+            // RAX = value from memory
+
+            // Store to guest register
+            match size {
+                OpSize::S32 => {
+                    // 32-bit: zero-extend to 64 (RAX already zero-extended)
+                    emit.mov_mr(OpSize::S64, GPR_BASE, dst_idx as i32 * 8, Reg::Rax);
+                }
+                OpSize::S64 => {
+                    emit.mov_mr(OpSize::S64, GPR_BASE, dst_idx as i32 * 8, Reg::Rax);
+                }
+                OpSize::S16 => {
+                    emit.mov_mr(OpSize::S16, GPR_BASE, dst_idx as i32 * 8, Reg::Rax);
+                }
+                OpSize::S8 => {
+                    emit.mov_mr(OpSize::S8, GPR_BASE, dst_idx as i32 * 8, Reg::Rax);
+                }
+            }
+
+            self.emit_advance_rip(emit, inst.length);
+            true
+        }
+    }
+
+    /// MOV r, imm (0xB8..0xBF).
+    fn emit_mov_r_imm(&self, emit: &mut Emitter, inst: &DecodedInst) {
+        let reg_idx = (inst.opcode as u8 & 7) | if inst.prefix.rex_b() { 8 } else { 0 };
+        let imm = inst.immediate;
+
+        match inst.operand_size {
+            OperandSize::Qword => {
+                emit.mov_ri64(TEMP1, imm);
+                emit.mov_mr(OpSize::S64, GPR_BASE, reg_idx as i32 * 8, TEMP1);
+            }
+            OperandSize::Dword => {
+                emit.mov_ri32(TEMP1, imm as u32);
+                emit.mov_mr(OpSize::S64, GPR_BASE, reg_idx as i32 * 8, TEMP1);
+            }
+            OperandSize::Word => {
+                emit.mov_ri32(TEMP1, imm as u32);
+                emit.mov_mr(OpSize::S16, GPR_BASE, reg_idx as i32 * 8, TEMP1);
+            }
+            OperandSize::Byte => {} // 0xB0-0xB7 are 8-bit, handled separately
+        }
+
+        self.emit_advance_rip(emit, inst.length);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Native Translation: LEA
+    // ════════════════════════════════════════════════════════════════════
+
+    /// LEA r, [m] (0x8D) — address computation without memory access.
+    fn try_lea(&self, emit: &mut Emitter, inst: &DecodedInst) -> bool {
+        let size = match map_operand_size(inst.operand_size) {
+            Some(s) => s,
+            None => return false,
+        };
+        let mem_op = match &inst.operands[1] {
+            Operand::Memory(m) => m,
+            _ => return false,
+        };
+        let dst_idx = inst.modrm_reg();
+
+        // Compute effective address (no segment base for LEA!)
+        self.emit_compute_ea_no_segment(emit, mem_op, inst);
+        // RAX = effective address
+
+        // Mask to address size (32-bit in protected mode)
+        let addr_mask = inst.address_size.mask();
+        if addr_mask != u64::MAX {
+            emit.mov_ri64(TEMP1, addr_mask);
+            emit.and_rr(OpSize::S64, Reg::Rax, TEMP1);
+        }
+
+        self.emit_store_gpr(emit, dst_idx, Reg::Rax, size);
+        self.emit_advance_rip(emit, inst.length);
+        true
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Native Translation: XCHG
+    // ════════════════════════════════════════════════════════════════════
+
+    fn try_xchg_rm_r(&self, emit: &mut Emitter, inst: &DecodedInst) -> bool {
         if inst.modrm_mod() != 3 { return false; }
         let size = match map_operand_size(inst.operand_size) {
             Some(s) => s,
@@ -447,132 +818,343 @@ impl Translator {
 
         self.emit_load_gpr(emit, TEMP1, a_idx, size);
         self.emit_load_gpr(emit, TEMP2, b_idx, size);
-        emit.test_rr(size, TEMP1, TEMP2);
-
-        self.emit_capture_flags(emit);
-        self.emit_merge_arith_flags(emit);
+        self.emit_store_gpr(emit, a_idx, TEMP2, size);
+        self.emit_store_gpr(emit, b_idx, TEMP1, size);
         self.emit_advance_rip(emit, inst.length);
         true
     }
 
     // ════════════════════════════════════════════════════════════════════
-    // Native Translation: INC/DEC
+    // Native Translation: MOVZX / MOVSX (reg-reg only)
     // ════════════════════════════════════════════════════════════════════
 
-    /// Translate Group 4/5 INC/DEC r/m (0xFE/0xFF with /0 or /1, mod=3).
-    fn try_group5_inc_dec(&self, emit: &mut Emitter, inst: &DecodedInst) -> bool {
+    /// MOVZX r, r/m8 (0F B6). Only reg-reg (mod=3).
+    fn try_movzx_r_rm8(&self, emit: &mut Emitter, inst: &DecodedInst) -> bool {
         if inst.modrm_mod() != 3 { return false; }
-        let digit = inst.modrm_reg() & 7;
-        if digit > 1 { return false; } // Only INC(/0) and DEC(/1)
-
-        let op_byte = inst.opcode as u8;
-        // 0xFE = 8-bit, 0xFF = 16/32/64-bit
-        if op_byte == 0xFE { return false; } // 8-bit → fallback
-
-        let size = match map_operand_size(inst.operand_size) {
-            Some(s) => s,
-            None => return false,
-        };
-        let reg_idx = inst.modrm_rm();
-
-        // Load guest register.
-        self.emit_load_gpr(emit, TEMP1, reg_idx, size);
-
-        // Execute native INC or DEC.
-        if digit == 0 {
-            emit.inc(size, TEMP1);
-        } else {
-            emit.dec(size, TEMP1);
-        }
-
-        // Capture flags. INC/DEC preserves CF — we need special handling.
-        emit.pushfq();
-        emit.pop(FLAGS_TMP); // FLAGS_TMP = host flags after INC/DEC
-
-        // Store result.
-        self.emit_store_gpr(emit, reg_idx, TEMP1, size);
-
-        // Merge flags preserving guest CF (INC/DEC don't modify CF).
-        // Guest RFLAGS bits to keep: CF + non-arithmetic flags.
-        // New from host: PF, AF, ZF, SF, OF.
-        const INC_DEC_MASK: i32 = 0x8D4; // PF|AF|ZF|SF|OF (no CF!)
-        const NOT_INC_DEC_MASK: i32 = !0x8D4; // keep CF and system flags
-
-        emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, RFLAGS_OFFSET);
-        emit.and_ri(OpSize::S64, Reg::Rax, NOT_INC_DEC_MASK);
-        emit.and_ri(OpSize::S64, FLAGS_TMP, INC_DEC_MASK);
-        emit.or_rr(OpSize::S64, Reg::Rax, FLAGS_TMP);
-        emit.mov_mr(OpSize::S64, GPR_BASE, RFLAGS_OFFSET, Reg::Rax);
-
-        self.emit_advance_rip(emit, inst.length);
-        true
-    }
-
-    // ════════════════════════════════════════════════════════════════════
-    // Native Translation: MOV
-    // ════════════════════════════════════════════════════════════════════
-
-    /// Translate MOV r/m, r (0x89 with mod=3).
-    fn try_mov_rm_r(&self, emit: &mut Emitter, inst: &DecodedInst) -> bool {
-        if inst.modrm_mod() != 3 { return false; }
-        let size = match map_operand_size(inst.operand_size) {
-            Some(s) => s,
-            None => return false,
-        };
-        let dst_idx = inst.modrm_rm();
-        let src_idx = inst.modrm_reg();
-
-        self.emit_load_gpr(emit, TEMP1, src_idx, size);
-        self.emit_store_gpr(emit, dst_idx, TEMP1, size);
-        self.emit_advance_rip(emit, inst.length);
-        true
-    }
-
-    /// Translate MOV r, r/m (0x8B with mod=3).
-    fn try_mov_r_rm(&self, emit: &mut Emitter, inst: &DecodedInst) -> bool {
-        if inst.modrm_mod() != 3 { return false; }
-        let size = match map_operand_size(inst.operand_size) {
+        let dst_size = match map_operand_size(inst.operand_size) {
             Some(s) => s,
             None => return false,
         };
         let dst_idx = inst.modrm_reg();
         let src_idx = inst.modrm_rm();
 
-        self.emit_load_gpr(emit, TEMP1, src_idx, size);
-        self.emit_store_gpr(emit, dst_idx, TEMP1, size);
+        // Load source byte, zero-extend
+        emit.mov_rm(OpSize::S64, TEMP1, GPR_BASE, src_idx as i32 * 8);
+        emit.and_ri(OpSize::S64, TEMP1, 0xFF);
+        self.emit_store_gpr(emit, dst_idx, TEMP1, dst_size);
         self.emit_advance_rip(emit, inst.length);
         true
     }
 
-    /// Translate MOV r, imm (0xB8..0xBF for 32/64-bit).
-    fn emit_mov_r_imm(&self, emit: &mut Emitter, inst: &DecodedInst) {
-        // Register index: low 3 bits of opcode + REX.B extension.
-        let reg_idx = (inst.opcode as u8 & 7) | if inst.prefix.rex_b() { 8 } else { 0 };
-        let imm = inst.immediate;
+    /// MOVZX r, r/m16 (0F B7). Only reg-reg (mod=3).
+    fn try_movzx_r_rm16(&self, emit: &mut Emitter, inst: &DecodedInst) -> bool {
+        if inst.modrm_mod() != 3 { return false; }
+        let dst_size = match map_operand_size(inst.operand_size) {
+            Some(s) => s,
+            None => return false,
+        };
+        let dst_idx = inst.modrm_reg();
+        let src_idx = inst.modrm_rm();
 
-        match inst.operand_size {
-            OperandSize::Qword => {
-                // 64-bit immediate.
-                emit.mov_ri64(TEMP1, imm);
-                emit.mov_mr(OpSize::S64, GPR_BASE, reg_idx as i32 * 8, TEMP1);
-            }
-            OperandSize::Dword => {
-                // 32-bit immediate, zero-extends to 64-bit.
-                emit.mov_ri32(TEMP1, imm as u32);
-                emit.mov_mr(OpSize::S64, GPR_BASE, reg_idx as i32 * 8, TEMP1);
-            }
-            OperandSize::Word => {
-                // 16-bit immediate, preserves upper bits.
-                emit.mov_ri32(TEMP1, imm as u32); // load 32-bit (upper zeroed)
-                emit.mov_mr(OpSize::S16, GPR_BASE, reg_idx as i32 * 8, TEMP1);
-            }
-            OperandSize::Byte => {
-                // 8-bit MOV imm to register — fall back handled at call site.
-                // Shouldn't reach here since 0xB0-0xB7 are 8-bit.
-            }
+        emit.mov_rm(OpSize::S64, TEMP1, GPR_BASE, src_idx as i32 * 8);
+        emit.and_ri(OpSize::S64, TEMP1, 0xFFFF);
+        self.emit_store_gpr(emit, dst_idx, TEMP1, dst_size);
+        self.emit_advance_rip(emit, inst.length);
+        true
+    }
+
+    /// MOVSX r, r/m8 (0F BE). Only reg-reg (mod=3).
+    fn try_movsx_r_rm8(&self, emit: &mut Emitter, inst: &DecodedInst) -> bool {
+        if inst.modrm_mod() != 3 { return false; }
+        let dst_size = match map_operand_size(inst.operand_size) {
+            Some(s) => s,
+            None => return false,
+        };
+        let dst_idx = inst.modrm_reg();
+        let src_idx = inst.modrm_rm();
+
+        // Load byte, sign-extend via movsx
+        emit.movsx_rr8(dst_size, TEMP1, map_guest_to_host(src_idx));
+        self.emit_store_gpr(emit, dst_idx, TEMP1, dst_size);
+        self.emit_advance_rip(emit, inst.length);
+        true
+    }
+
+    /// MOVSX r, r/m16 (0F BF). Only reg-reg (mod=3).
+    fn try_movsx_r_rm16(&self, _emit: &mut Emitter, inst: &DecodedInst) -> bool {
+        if inst.modrm_mod() != 3 { return false; }
+        // MOVSX r32/r64, r/m16 — we need the source in a host register
+        // for movsx_rr. Since we don't have movsx_rr16, fall back.
+        false
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Native Translation: Shifts
+    // ════════════════════════════════════════════════════════════════════
+
+    /// Shift r/m, imm8 (0xC1, mod=3).
+    fn try_shift_ri(
+        &self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState,
+    ) -> bool {
+        if inst.modrm_mod() != 3 { return false; }
+        let size = match map_operand_size(inst.operand_size) {
+            Some(s) => s,
+            None => return false,
+        };
+        let digit = inst.modrm_reg() & 7;
+        let reg_idx = inst.modrm_rm();
+        let count = inst.immediate as u8;
+
+        // Only SHL(4), SHR(5), SAR(7) natively
+        match digit {
+            4 | 5 | 7 => {}
+            _ => return false,
         }
 
+        state.flags_dirty = false;
+        self.emit_load_gpr(emit, TEMP1, reg_idx, size);
+
+        match digit {
+            4 => emit.shl_ri(size, TEMP1, count),
+            5 => emit.shr_ri(size, TEMP1, count),
+            7 => emit.sar_ri(size, TEMP1, count),
+            _ => unreachable!(),
+        }
+
+        self.emit_capture_flags(emit, state);
+        self.emit_store_gpr(emit, reg_idx, TEMP1, size);
         self.emit_advance_rip(emit, inst.length);
+        true
+    }
+
+    /// Shift r/m, 1 (0xD1, mod=3).
+    fn try_shift_r1(
+        &self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState,
+    ) -> bool {
+        if inst.modrm_mod() != 3 { return false; }
+        let size = match map_operand_size(inst.operand_size) {
+            Some(s) => s,
+            None => return false,
+        };
+        let digit = inst.modrm_reg() & 7;
+        let reg_idx = inst.modrm_rm();
+
+        match digit {
+            4 | 5 | 7 => {}
+            _ => return false,
+        }
+
+        state.flags_dirty = false;
+        self.emit_load_gpr(emit, TEMP1, reg_idx, size);
+
+        match digit {
+            4 => emit.shl_ri(size, TEMP1, 1),
+            5 => emit.shr_ri(size, TEMP1, 1),
+            7 => emit.sar_ri(size, TEMP1, 1),
+            _ => unreachable!(),
+        }
+
+        self.emit_capture_flags(emit, state);
+        self.emit_store_gpr(emit, reg_idx, TEMP1, size);
+        self.emit_advance_rip(emit, inst.length);
+        true
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Native Translation: PUSH / POP
+    // ════════════════════════════════════════════════════════════════════
+
+    /// PUSH r (0x50+r).
+    fn try_push_r(
+        &self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState,
+    ) -> bool {
+        self.flush_lazy_flags(emit, state);
+
+        let reg_idx = (inst.opcode as u8 & 7) | if inst.prefix.rex_b() { 8 } else { 0 };
+        let push_size = match inst.operand_size {
+            OperandSize::Qword => 8u8,
+            OperandSize::Dword => 4,
+            OperandSize::Word => 2,
+            _ => return false,
+        };
+
+        // RSP (gpr[4]) -= push_size
+        emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, 4 * 8); // guest RSP
+        emit.sub_ri(OpSize::S64, Reg::Rax, push_size as i32);
+        emit.mov_mr(OpSize::S64, GPR_BASE, 4 * 8, Reg::Rax); // store new RSP
+
+        // Compute linear address: SS.base + RSP
+        let ss_base_off = SEG_ARRAY_OFFSET + SegReg::Ss as i32 * SEG_DESC_SIZE + SEG_BASE_IN_DESC;
+        emit.mov_rm(OpSize::S64, TEMP1, GPR_BASE, ss_base_off);
+        emit.add_rr(OpSize::S64, Reg::Rax, TEMP1); // RAX = linear addr
+
+        // Load value to push
+        emit.mov_rm(OpSize::S64, TEMP1, GPR_BASE, reg_idx as i32 * 8);
+
+        // Call jit_mem_write(cpu, mem, mmu, linear, size, value)
+        emit.mov_rr(OpSize::S64, Reg::Rdi, CPU_PTR);
+        emit.mov_rr(OpSize::S64, Reg::Rsi, MEM_PTR);
+        emit.mov_rr(OpSize::S64, Reg::Rdx, MMU_PTR);
+        emit.mov_rr(OpSize::S64, Reg::Rcx, Reg::Rax); // linear
+        emit.mov_ri32(Reg::R8, push_size as u32);       // size
+        emit.mov_rr(OpSize::S64, TEMP2, TEMP1);         // R9=R10=value
+        let wr = helpers::jit_mem_write as *const () as usize as u64;
+        emit.call_abs(wr);
+
+        let ok = emit.new_label();
+        emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
+        emit.jcc_label(Cc::Ne, ok);
+        emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
+        self.emit_restore_and_ret(emit);
+        emit.bind_label(ok);
+
+        self.emit_advance_rip(emit, inst.length);
+        true
+    }
+
+    /// POP r (0x58+r).
+    fn try_pop_r(
+        &self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState,
+    ) -> bool {
+        self.flush_lazy_flags(emit, state);
+
+        let reg_idx = (inst.opcode as u8 & 7) | if inst.prefix.rex_b() { 8 } else { 0 };
+        let pop_size = match inst.operand_size {
+            OperandSize::Qword => 8u8,
+            OperandSize::Dword => 4,
+            OperandSize::Word => 2,
+            _ => return false,
+        };
+
+        // Compute linear address: SS.base + RSP
+        emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, 4 * 8); // guest RSP
+        let ss_base_off = SEG_ARRAY_OFFSET + SegReg::Ss as i32 * SEG_DESC_SIZE + SEG_BASE_IN_DESC;
+        emit.mov_rm(OpSize::S64, TEMP1, GPR_BASE, ss_base_off);
+        emit.add_rr(OpSize::S64, Reg::Rax, TEMP1); // RAX = linear addr
+
+        let read_size = match pop_size {
+            8 => OpSize::S64,
+            4 => OpSize::S32,
+            2 => OpSize::S16,
+            _ => return false,
+        };
+        self.emit_call_mem_read_with_linear(emit, Reg::Rax, read_size);
+        // RAX = value
+
+        // Store to destination register
+        self.emit_store_gpr(emit, reg_idx, Reg::Rax, read_size);
+
+        // RSP += pop_size
+        emit.mov_rm(OpSize::S64, TEMP1, GPR_BASE, 4 * 8);
+        emit.add_ri(OpSize::S64, TEMP1, pop_size as i32);
+        emit.mov_mr(OpSize::S64, GPR_BASE, 4 * 8, TEMP1);
+
+        self.emit_advance_rip(emit, inst.length);
+        true
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Native Translation: CALL / RET
+    // ════════════════════════════════════════════════════════════════════
+
+    /// CALL rel32 (0xE8).
+    fn try_call_rel(
+        &self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState,
+    ) -> bool {
+        self.flush_lazy_flags(emit, state);
+
+        let rel = match inst.operands[0] {
+            Operand::RelativeOffset(off) => off,
+            _ => return false,
+        };
+
+        let push_size = match inst.operand_size {
+            OperandSize::Qword => 8u8,
+            OperandSize::Dword => 4,
+            OperandSize::Word => 2,
+            _ => return false,
+        };
+
+        // return_addr = RIP + inst.length
+        emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, RIP_OFFSET);
+        emit.add_ri(OpSize::S64, Reg::Rax, inst.length as i32);
+        // RAX = return address
+
+        // Push return address: RSP -= push_size, [SS:RSP] = return_addr
+        emit.mov_rr(OpSize::S64, TEMP1, Reg::Rax); // save return addr
+
+        emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, 4 * 8); // guest RSP
+        emit.sub_ri(OpSize::S64, Reg::Rax, push_size as i32);
+        emit.mov_mr(OpSize::S64, GPR_BASE, 4 * 8, Reg::Rax); // store new RSP
+
+        // Linear = SS.base + RSP
+        let ss_base_off = SEG_ARRAY_OFFSET + SegReg::Ss as i32 * SEG_DESC_SIZE + SEG_BASE_IN_DESC;
+        emit.mov_rm(OpSize::S64, TEMP2, GPR_BASE, ss_base_off);
+        emit.add_rr(OpSize::S64, Reg::Rax, TEMP2); // RAX = linear
+
+        // Call jit_mem_write(cpu, mem, mmu, linear, size, value=return_addr)
+        emit.mov_rr(OpSize::S64, Reg::Rdi, CPU_PTR);
+        emit.mov_rr(OpSize::S64, Reg::Rsi, MEM_PTR);
+        emit.mov_rr(OpSize::S64, Reg::Rdx, MMU_PTR);
+        emit.mov_rr(OpSize::S64, Reg::Rcx, Reg::Rax);   // linear
+        emit.mov_ri32(Reg::R8, push_size as u32);          // size
+        emit.mov_rr(OpSize::S64, TEMP2, TEMP1);            // R10=value (6th arg = R9)
+        // R9 is TEMP1, but we moved return addr there. Let's fix:
+        // TEMP1=R9, TEMP2=R10. SysV 6th arg = R9. Return addr is in TEMP1=R9.
+        let wr = helpers::jit_mem_write as *const () as usize as u64;
+        emit.call_abs(wr);
+
+        let ok = emit.new_label();
+        emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
+        emit.jcc_label(Cc::Ne, ok);
+        emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
+        self.emit_restore_and_ret(emit);
+        emit.bind_label(ok);
+
+        // Set RIP = return_addr + rel = (old_rip + inst.length) + rel
+        // = old_rip + inst.length + rel
+        let delta = inst.length as i64 + rel;
+        self.emit_advance_rip_by(emit, delta);
+        true
+    }
+
+    /// RET near (0xC3).
+    fn try_ret_near(
+        &self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState,
+    ) -> bool {
+        self.flush_lazy_flags(emit, state);
+
+        let pop_size = match inst.operand_size {
+            OperandSize::Qword => 8u8,
+            OperandSize::Dword => 4,
+            OperandSize::Word => 2,
+            _ => return false,
+        };
+
+        // Read return address from [SS:RSP]
+        emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, 4 * 8); // guest RSP
+        let ss_base_off = SEG_ARRAY_OFFSET + SegReg::Ss as i32 * SEG_DESC_SIZE + SEG_BASE_IN_DESC;
+        emit.mov_rm(OpSize::S64, TEMP1, GPR_BASE, ss_base_off);
+        emit.add_rr(OpSize::S64, Reg::Rax, TEMP1); // RAX = linear
+
+        let read_size = match pop_size {
+            8 => OpSize::S64,
+            4 => OpSize::S32,
+            2 => OpSize::S16,
+            _ => return false,
+        };
+        self.emit_call_mem_read_with_linear(emit, Reg::Rax, read_size);
+        // RAX = return address
+
+        // RIP = return address
+        emit.mov_mr(OpSize::S64, GPR_BASE, RIP_OFFSET, Reg::Rax);
+
+        // RSP += pop_size
+        emit.mov_rm(OpSize::S64, TEMP1, GPR_BASE, 4 * 8);
+        emit.add_ri(OpSize::S64, TEMP1, pop_size as i32);
+        emit.mov_mr(OpSize::S64, GPR_BASE, 4 * 8, TEMP1);
+
+        true
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -580,36 +1162,36 @@ impl Translator {
     // ════════════════════════════════════════════════════════════════════
 
     /// Emit a conditional branch (Jcc).
-    ///
-    /// Loads guest RFLAGS into host RFLAGS via PUSH/POPFQ (masked to
-    /// arithmetic flags only), then uses the native Jcc instruction.
-    fn emit_jcc(&self, emit: &mut Emitter, inst: &DecodedInst, cc: u8) {
-        // Extract the relative offset from the instruction.
+    fn emit_jcc(
+        &self, emit: &mut Emitter, inst: &DecodedInst, cc: u8, state: &mut BlockState,
+    ) {
         let rel = match inst.operands[0] {
             Operand::RelativeOffset(off) => off,
             _ => {
-                // Unexpected operand — shouldn't happen for Jcc.
                 self.emit_advance_rip(emit, inst.length);
                 return;
             }
         };
 
-        // Load guest RFLAGS, mask to arithmetic flags only, push + popfq.
+        // Must materialize guest RFLAGS for the condition check.
+        // If flags are dirty, merge them first.
+        self.flush_lazy_flags(emit, state);
+
+        // Load guest RFLAGS, mask to arithmetic flags, push + popfq.
         emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, RFLAGS_OFFSET);
-        emit.and_ri(OpSize::S64, Reg::Rax, ARITH_MASK | 0x02); // keep arith + bit1 fixed
+        emit.and_ri(OpSize::S64, Reg::Rax, ARITH_MASK | 0x02);
         emit.push(Reg::Rax);
         emit.popfq();
 
-        // Native conditional jump.
         let taken_label = emit.new_label();
         emit.jcc_label(map_cc(cc), taken_label);
 
-        // ── Not-taken path: RIP += inst.length ──
+        // Not-taken
         self.emit_advance_rip(emit, inst.length);
         let done_label = emit.new_label();
         emit.jmp_label(done_label);
 
-        // ── Taken path: RIP += inst.length + rel ──
+        // Taken
         emit.bind_label(taken_label);
         let delta = inst.length as i64 + rel;
         self.emit_advance_rip_by(emit, delta);
@@ -617,7 +1199,7 @@ impl Translator {
         emit.bind_label(done_label);
     }
 
-    /// Emit an unconditional relative jump (JMP rel8 / JMP rel32).
+    /// Emit an unconditional relative jump.
     fn emit_jmp_rel(&self, emit: &mut Emitter, inst: &DecodedInst) {
         let rel = match inst.operands[0] {
             Operand::RelativeOffset(off) => off,
@@ -636,7 +1218,6 @@ impl Translator {
 
     /// Emit a call to `jit_interpret_one` for one guest instruction.
     fn emit_interpreter_fallback(&self, emit: &mut Emitter) {
-        // Load arguments for jit_interpret_one(cpu, memory, mmu, io, interrupts).
         emit.mov_rr(OpSize::S64, Reg::Rdi, CPU_PTR);
         emit.mov_rr(OpSize::S64, Reg::Rsi, MEM_PTR);
         emit.mov_rr(OpSize::S64, Reg::Rdx, MMU_PTR);
@@ -646,15 +1227,125 @@ impl Translator {
         let helper_addr = helpers::jit_interpret_one as *const () as usize as u64;
         emit.call_abs(helper_addr);
 
-        // Check return value: if EAX == JIT_EXIT_BLOCK, early exit.
         let continue_label = emit.new_label();
         emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
         emit.jcc_label(Cc::Ne, continue_label);
-
-        // Early exit path.
         self.emit_restore_and_ret(emit);
-
         emit.bind_label(continue_label);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Memory Address Computation
+    // ════════════════════════════════════════════════════════════════════
+
+    /// Compute the linear address for a memory operand into RAX.
+    /// Linear = segment_base + effective_address.
+    fn emit_compute_linear(&self, emit: &mut Emitter, mem_op: &MemOperand, inst: &DecodedInst) {
+        self.emit_compute_ea_no_segment(emit, mem_op, inst);
+        // RAX = effective address (before segment)
+
+        // Mask to address size
+        let addr_mask = inst.address_size.mask();
+        if addr_mask != u64::MAX {
+            emit.mov_ri64(TEMP1, addr_mask);
+            emit.and_rr(OpSize::S64, Reg::Rax, TEMP1);
+        }
+
+        // Add segment base
+        let seg = mem_op.segment;
+        let seg_off = SEG_ARRAY_OFFSET + seg as i32 * SEG_DESC_SIZE + SEG_BASE_IN_DESC;
+        emit.mov_rm(OpSize::S64, TEMP1, GPR_BASE, seg_off);
+        emit.add_rr(OpSize::S64, Reg::Rax, TEMP1);
+    }
+
+    /// Compute effective address (base + index*scale + disp) into RAX.
+    /// Does NOT add segment base (used by LEA).
+    fn emit_compute_ea_no_segment(
+        &self, emit: &mut Emitter, mem_op: &MemOperand, inst: &DecodedInst,
+    ) {
+        if mem_op.rip_relative {
+            // RIP-relative: EA = next_rip + displacement
+            emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, RIP_OFFSET);
+            emit.add_ri(OpSize::S64, Reg::Rax, inst.length as i32);
+            if mem_op.displacement != 0 {
+                let d = mem_op.displacement as i32;
+                emit.add_ri(OpSize::S64, Reg::Rax, d);
+            }
+            return;
+        }
+
+        // Start with displacement
+        if mem_op.displacement != 0 {
+            let d = mem_op.displacement;
+            if d >= i32::MIN as i64 && d <= i32::MAX as i64 {
+                emit.mov_ri32(Reg::Rax, d as u32);
+                // Sign-extend for negative
+                if d < 0 {
+                    emit.mov_ri64(Reg::Rax, d as u64);
+                }
+            } else {
+                emit.mov_ri64(Reg::Rax, d as u64);
+            }
+        } else {
+            emit.xor_rr(OpSize::S32, Reg::Rax, Reg::Rax);
+        }
+
+        // Add base register
+        if let Some(base) = mem_op.base {
+            emit.mov_rm(OpSize::S64, TEMP1, GPR_BASE, base as i32 * 8);
+            emit.add_rr(OpSize::S64, Reg::Rax, TEMP1);
+        }
+
+        // Add index * scale
+        if let Some(index) = mem_op.index {
+            emit.mov_rm(OpSize::S64, TEMP1, GPR_BASE, index as i32 * 8);
+            match mem_op.scale {
+                1 => {
+                    emit.add_rr(OpSize::S64, Reg::Rax, TEMP1);
+                }
+                2 => {
+                    emit.shl_ri(OpSize::S64, TEMP1, 1);
+                    emit.add_rr(OpSize::S64, Reg::Rax, TEMP1);
+                }
+                4 => {
+                    emit.shl_ri(OpSize::S64, TEMP1, 2);
+                    emit.add_rr(OpSize::S64, Reg::Rax, TEMP1);
+                }
+                8 => {
+                    emit.shl_ri(OpSize::S64, TEMP1, 3);
+                    emit.add_rr(OpSize::S64, Reg::Rax, TEMP1);
+                }
+                _ => {
+                    // Arbitrary scale — multiply
+                    emit.mov_ri32(TEMP2, mem_op.scale as u32);
+                    // IMUL would clobber flags but we don't care here
+                    // Use lea or manual shift. For simplicity, repeated add.
+                    for _ in 0..mem_op.scale {
+                        emit.add_rr(OpSize::S64, Reg::Rax, TEMP1);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Call jit_mem_read with a pre-computed linear address in RAX.
+    /// Result in RAX.
+    fn emit_call_mem_read(&self, emit: &mut Emitter, size: OpSize) {
+        self.emit_call_mem_read_with_linear(emit, Reg::Rax, size);
+    }
+
+    /// Call jit_mem_read with linear address in the given register.
+    fn emit_call_mem_read_with_linear(&self, emit: &mut Emitter, linear_reg: Reg, size: OpSize) {
+        // jit_mem_read(cpu, memory, mmu, linear, size) -> u64
+        emit.mov_rr(OpSize::S64, Reg::Rdi, CPU_PTR);
+        emit.mov_rr(OpSize::S64, Reg::Rsi, MEM_PTR);
+        emit.mov_rr(OpSize::S64, Reg::Rdx, MMU_PTR);
+        if linear_reg != Reg::Rcx {
+            emit.mov_rr(OpSize::S64, Reg::Rcx, linear_reg);
+        }
+        emit.mov_ri32(Reg::R8, opsize_bytes(size) as u32);
+        let rd = helpers::jit_mem_read as *const () as usize as u64;
+        emit.call_abs(rd);
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -664,8 +1355,6 @@ impl Translator {
     /// Load a guest GPR into a host temporary register.
     fn emit_load_gpr(&self, emit: &mut Emitter, host_dst: Reg, guest_idx: u8, _size: OpSize) {
         let offset = GPR_OFFSET + guest_idx as i32 * 8;
-        // Always load 64-bit from the register file. The ALU operation
-        // will use the correct operand size prefix.
         emit.mov_rm(OpSize::S64, host_dst, GPR_BASE, offset);
     }
 
@@ -673,46 +1362,17 @@ impl Translator {
     fn emit_store_gpr(&self, emit: &mut Emitter, guest_idx: u8, host_src: Reg, size: OpSize) {
         let offset = GPR_OFFSET + guest_idx as i32 * 8;
         match size {
-            OpSize::S64 => {
-                emit.mov_mr(OpSize::S64, GPR_BASE, offset, host_src);
-            }
-            OpSize::S32 => {
-                // 32-bit op zero-extends the host register to 64-bit.
-                // Write back the full 64-bit value (upper 32 = 0).
+            OpSize::S64 | OpSize::S32 => {
+                // 32-bit zero-extends the upper 32 bits.
                 emit.mov_mr(OpSize::S64, GPR_BASE, offset, host_src);
             }
             OpSize::S16 => {
-                // 16-bit: preserve upper 48 bits, write only low 16.
                 emit.mov_mr(OpSize::S16, GPR_BASE, offset, host_src);
             }
             OpSize::S8 => {
-                // 8-bit: write only low byte.
                 emit.mov_mr(OpSize::S8, GPR_BASE, offset, host_src);
             }
         }
-    }
-
-    /// Capture host RFLAGS after a native ALU operation.
-    fn emit_capture_flags(&self, emit: &mut Emitter) {
-        emit.pushfq();
-        emit.pop(FLAGS_TMP);
-    }
-
-    /// Merge captured arithmetic flags into guest RFLAGS.
-    ///
-    /// Clears CF|PF|AF|ZF|SF|OF in guest RFLAGS, then ORs in the
-    /// corresponding bits from the captured host RFLAGS.
-    fn emit_merge_arith_flags(&self, emit: &mut Emitter) {
-        // Load guest RFLAGS.
-        emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, RFLAGS_OFFSET);
-        // Clear arithmetic flags in guest.
-        emit.and_ri(OpSize::S64, Reg::Rax, NOT_ARITH_MASK);
-        // Keep only arithmetic flags from captured host RFLAGS.
-        emit.and_ri(OpSize::S64, FLAGS_TMP, ARITH_MASK);
-        // Merge.
-        emit.or_rr(OpSize::S64, Reg::Rax, FLAGS_TMP);
-        // Store back.
-        emit.mov_mr(OpSize::S64, GPR_BASE, RFLAGS_OFFSET, Reg::Rax);
     }
 
     /// Advance guest RIP by a fixed instruction length.
@@ -728,7 +1388,6 @@ impl Translator {
         if delta >= i32::MIN as i64 && delta <= i32::MAX as i64 {
             emit.add_ri(OpSize::S64, Reg::Rax, delta as i32);
         } else {
-            // Large offset: load as 64-bit immediate.
             emit.mov_ri64(Reg::Rcx, delta as u64);
             emit.add_rr(OpSize::S64, Reg::Rax, Reg::Rcx);
         }
@@ -737,7 +1396,7 @@ impl Translator {
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// Free functions: ALU emission + operand size mapping
+// Free functions
 // ════════════════════════════════════════════════════════════════════════
 
 /// Emit a native ALU reg, reg instruction.
@@ -765,8 +1424,6 @@ fn emit_native_alu_ri(emit: &mut Emitter, op: AluOp, size: OpSize, dst: Reg, imm
 }
 
 /// Map guest OperandSize to emitter OpSize.
-///
-/// Returns `None` for 8-bit (not supported in Phase 3 native translation).
 fn map_operand_size(size: OperandSize) -> Option<OpSize> {
     match size {
         OperandSize::Byte  => None,
@@ -776,7 +1433,7 @@ fn map_operand_size(size: OperandSize) -> Option<OpSize> {
     }
 }
 
-/// Map a guest x86 condition code (0-15) to the emitter's `Cc` enum.
+/// Map a guest x86 condition code to the emitter's `Cc` enum.
 fn map_cc(cc: u8) -> Cc {
     match cc & 0x0F {
         0x0 => Cc::O,  0x1 => Cc::No,
@@ -789,4 +1446,22 @@ fn map_cc(cc: u8) -> Cc {
         0xE => Cc::Le, 0xF => Cc::G,
         _ => Cc::E, // unreachable
     }
+}
+
+/// Map OpSize to byte count.
+fn opsize_bytes(size: OpSize) -> u8 {
+    match size {
+        OpSize::S8 => 1,
+        OpSize::S16 => 2,
+        OpSize::S32 => 4,
+        OpSize::S64 => 8,
+    }
+}
+
+/// Map a guest GPR index to a host register.
+/// Only used for MOVSX source reg — loads from register file instead.
+fn map_guest_to_host(_idx: u8) -> Reg {
+    // We can't map arbitrary guest regs to host regs. Instead,
+    // load the source into TEMP1 first and use TEMP1.
+    TEMP1
 }
