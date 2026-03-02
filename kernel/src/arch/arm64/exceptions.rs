@@ -55,11 +55,14 @@ pub fn register_irq(irq: u32, handler: fn()) {
 pub extern "C" fn arm64_irq_handler() {
     let intid = super::gic::acknowledge();
     if intid < 1020 { // Not spurious
+        // EOI FIRST: the handler may context-switch (schedule_tick), which would
+        // never return here. Without early EOI the interrupt stays active and
+        // blocks all further interrupts of equal/lower priority.
+        super::gic::eoi(intid);
         let handler = unsafe { IRQ_HANDLERS[intid as usize] };
         if let Some(h) = handler {
             h();
         }
-        super::gic::eoi(intid);
     }
 }
 

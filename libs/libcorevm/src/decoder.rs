@@ -1080,6 +1080,20 @@ impl<'m> DecodeCursor<'m> {
         let op_lo = (op & 0xFF) as u8;
 
         match op_lo {
+            // -- Group 6: SLDT/STR/LLDT/LTR/VERR/VERW --
+            0x00 => {
+                let modrm = self.fetch_modrm()?;
+                let (md, _reg, rm) = Self::split_modrm(modrm);
+                if md != 3 {
+                    let rm_op = self.decode_rm(md, rm, OperandSize::Word)?;
+                    self.set_operand(0, rm_op);
+                } else {
+                    self.set_operand(0, Operand::Register(RegOperand::Gpr(rm)));
+                }
+                self.inst.operand_count = 1;
+                Ok(())
+            }
+
             // -- Group 7: LGDT/LIDT/SMSW/LMSW/INVLPG/etc. --
             0x01 => {
                 let modrm = self.fetch_modrm()?;

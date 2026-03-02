@@ -114,10 +114,20 @@ pub fn exec_pop_seg(
 
     match cpu.mode {
         Mode::RealMode => cpu.regs.load_segment_real(seg_reg, selector),
-        _ => {
-            // In protected/long mode a full descriptor load is needed.
-            // Simplified: update the selector.
-            cpu.regs.segment_mut(seg_reg).selector = selector;
+        Mode::ProtectedMode => {
+            cpu.load_segment_from_gdt(seg_reg, selector, memory, mmu)?;
+            if matches!(seg_reg, SegReg::Cs) {
+                cpu.update_mode();
+            }
+        }
+        Mode::LongMode => {
+            // In long mode, FS/GS keep base from MSR, others forced to 0.
+            let desc = cpu.regs.segment_mut(seg_reg);
+            desc.selector = selector;
+            match seg_reg {
+                SegReg::Fs | SegReg::Gs => {}
+                _ => desc.base = 0,
+            }
         }
     }
 

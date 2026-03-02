@@ -12,6 +12,8 @@ pub struct SplitView {
     /// Maximum split ratio in percent. Default 90.
     pub(crate) max_ratio: u32,
     pub(crate) orientation: Orientation,
+    /// Whether the user can drag the divider to resize panes. Default true.
+    pub(crate) resizable: bool,
     dragging: bool,
 }
 
@@ -26,6 +28,7 @@ impl SplitView {
             min_ratio: 10,
             max_ratio: 90,
             orientation: Orientation::Horizontal,
+            resizable: true,
             dragging: false,
         }
     }
@@ -75,6 +78,31 @@ impl Control for SplitView {
     }
 
     fn is_interactive(&self) -> bool { true }
+
+    fn divider_hit(&self, lx: i32, ly: i32) -> bool {
+        if !self.resizable {
+            return false;
+        }
+        // Compute divider position from ratio (divider_pos may be stale after layout)
+        let total = self.total_extent();
+        let div = (total as u64 * self.split_ratio as u64 / 100) as i32;
+        let pos = match self.orientation {
+            Orientation::Horizontal => lx,
+            Orientation::Vertical => ly,
+        };
+        (pos - div).abs() <= 4
+    }
+
+    fn cursor_at(&self, lx: i32, ly: i32) -> u32 {
+        if self.divider_hit(lx, ly) {
+            match self.orientation {
+                Orientation::Horizontal => 1, // ResizeEW
+                Orientation::Vertical => 2,   // ResizeNS
+            }
+        } else {
+            0
+        }
+    }
 
     fn layout_children(&self, _controls: &[Box<dyn Control>]) -> Option<Vec<ChildLayout>> {
         let children = &self.base.children;
@@ -146,12 +174,18 @@ impl Control for SplitView {
     }
 
     fn handle_mouse_down(&mut self, lx: i32, ly: i32, _button: u32) -> EventResponse {
-        // Check if click is near the divider (within 4px)
+        if !self.resizable {
+            return EventResponse::IGNORED;
+        }
+        // Compute divider position from ratio (divider_pos may be stale)
+        let total = self.total_extent();
+        let div = (total as u64 * self.split_ratio as u64 / 100) as i32;
         let pos = match self.orientation {
             Orientation::Horizontal => lx,
             Orientation::Vertical => ly,
         };
-        if (pos - self.divider_pos).abs() <= 4 {
+        if (pos - div).abs() <= 4 {
+            self.divider_pos = div; // sync for drag tracking
             self.dragging = true;
             EventResponse::CONSUMED
         } else {

@@ -1,12 +1,12 @@
 [package]
-name = "vmmanager"
+name = "vmd"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 anyos_std = { path = "../../libs/stdlib" }
 dynlink = { path = "../../libs/dynlink" }
-libanyui_client = { path = "../../libs/libanyui_client" }
+libcorevm_client = { path = "../../libs/libcorevm_client" }
 
 [profile.dev]
 panic = "abort"

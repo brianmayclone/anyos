@@ -23,6 +23,7 @@ pub mod paging;
 pub mod segment;
 
 use alloc::boxed::Box;
+use core::cell::UnsafeCell;
 
 use crate::error::Result;
 use crate::registers::{
@@ -130,11 +131,16 @@ pub trait MemoryBus {
 ///
 /// Reads and writes are first checked against registered MMIO regions;
 /// if no MMIO region matches, the access falls through to flat RAM.
+///
+/// `UnsafeCell` is used for the MMIO dispatch because device handlers
+/// are stateful (`read`/`write` take `&mut self`), but the `MemoryBus`
+/// trait requires `&self` for reads (used by paging, decode, etc.).
+/// Safety: the emulator is single-threaded and non-re-entrant.
 pub struct GuestMemory {
     /// Flat guest RAM.
     ram: FlatMemory,
-    /// MMIO region dispatcher.
-    mmio: MmioDispatch,
+    /// MMIO region dispatcher (interior mutability for `&self` read path).
+    mmio: UnsafeCell<MmioDispatch>,
 }
 
 impl GuestMemory {
@@ -142,8 +148,18 @@ impl GuestMemory {
     pub fn new(ram_size: usize) -> Self {
         GuestMemory {
             ram: FlatMemory::new(ram_size),
-            mmio: MmioDispatch::new(),
+            mmio: UnsafeCell::new(MmioDispatch::new()),
         }
+    }
+
+    /// Get a mutable reference to the MMIO dispatch.
+    ///
+    /// # Safety
+    ///
+    /// Safe because the emulator is single-threaded and MMIO handlers
+    /// are non-re-entrant.
+    fn mmio_mut(&self) -> &mut MmioDispatch {
+        unsafe { &mut *self.mmio.get() }
     }
 
     /// Copy `data` into guest RAM starting at `offset`.
@@ -164,7 +180,7 @@ impl GuestMemory {
     /// Subsequent reads/writes to physical addresses in `[base, base+size)`
     /// will be routed to `handler` instead of flat RAM.
     pub fn add_mmio(&mut self, base: u64, size: u64, handler: Box<dyn MmioHandler>) {
-        self.mmio.register(base, size, handler);
+        self.mmio.get_mut().register(base, size, handler);
     }
 
     /// Borrow the underlying flat RAM.
@@ -175,6 +191,17 @@ impl GuestMemory {
     /// Mutably borrow the underlying flat RAM.
     pub fn ram_mut(&mut self) -> &mut FlatMemory {
         &mut self.ram
+    }
+
+    /// Return the number of registered MMIO regions (diagnostic).
+    pub fn mmio_region_count(&self) -> usize {
+        // Safety: single-threaded, non-re-entrant.
+        unsafe { &*self.mmio.get() }.region_count()
+    }
+
+    /// Return the MMIO fast-reject bounds (diagnostic).
+    pub fn mmio_bounds(&self) -> (u64, u64) {
+        unsafe { &*self.mmio.get() }.bounds()
     }
 }
 
@@ -209,48 +236,56 @@ fn try_mmio_write(
 
 impl MemoryBus for GuestMemory {
     fn read_u8(&self, addr: u64) -> Result<u8> {
-        // SAFETY: MMIO dispatch requires &mut self because handlers are
-        // stateful. For reads through the MemoryBus trait (&self), we must
-        // fall through to RAM. MMIO reads require the mutable path via
-        // a dedicated method or an interior-mutability wrapper.
+        if let Some(res) = try_mmio_read(self.mmio_mut(), addr, 1) {
+            return Ok(res? as u8);
+        }
         self.ram.read_u8(addr)
     }
 
     fn read_u16(&self, addr: u64) -> Result<u16> {
+        if let Some(res) = try_mmio_read(self.mmio_mut(), addr, 2) {
+            return Ok(res? as u16);
+        }
         self.ram.read_u16(addr)
     }
 
     fn read_u32(&self, addr: u64) -> Result<u32> {
+        if let Some(res) = try_mmio_read(self.mmio_mut(), addr, 4) {
+            return Ok(res? as u32);
+        }
         self.ram.read_u32(addr)
     }
 
     fn read_u64(&self, addr: u64) -> Result<u64> {
+        if let Some(res) = try_mmio_read(self.mmio_mut(), addr, 8) {
+            return res;
+        }
         self.ram.read_u64(addr)
     }
 
     fn write_u8(&mut self, addr: u64, val: u8) -> Result<()> {
-        if let Some(res) = try_mmio_write(&mut self.mmio, addr, 1, val as u64) {
+        if let Some(res) = try_mmio_write(self.mmio_mut(), addr, 1, val as u64) {
             return res;
         }
         self.ram.write_u8(addr, val)
     }
 
     fn write_u16(&mut self, addr: u64, val: u16) -> Result<()> {
-        if let Some(res) = try_mmio_write(&mut self.mmio, addr, 2, val as u64) {
+        if let Some(res) = try_mmio_write(self.mmio_mut(), addr, 2, val as u64) {
             return res;
         }
         self.ram.write_u16(addr, val)
     }
 
     fn write_u32(&mut self, addr: u64, val: u32) -> Result<()> {
-        if let Some(res) = try_mmio_write(&mut self.mmio, addr, 4, val as u64) {
+        if let Some(res) = try_mmio_write(self.mmio_mut(), addr, 4, val as u64) {
             return res;
         }
         self.ram.write_u32(addr, val)
     }
 
     fn write_u64(&mut self, addr: u64, val: u64) -> Result<()> {
-        if let Some(res) = try_mmio_write(&mut self.mmio, addr, 8, val) {
+        if let Some(res) = try_mmio_write(self.mmio_mut(), addr, 8, val) {
             return res;
         }
         self.ram.write_u64(addr, val)
@@ -287,6 +322,12 @@ pub struct Mmu {
     pub wp: bool,
     /// EFER.NXE — no-execute enable.
     pub nxe: bool,
+    /// Cached CR0/CR4/EFER for change detection.
+    cached_cr0: u64,
+    /// Cached CR4 value.
+    cached_cr4: u64,
+    /// Cached EFER value.
+    cached_efer: u64,
 }
 
 impl Mmu {
@@ -299,14 +340,24 @@ impl Mmu {
             long_mode: false,
             wp: false,
             nxe: false,
+            cached_cr0: 0,
+            cached_cr4: 0,
+            cached_efer: 0,
         }
     }
 
     /// Synchronize MMU state from the current CR0, CR4, and EFER values.
     ///
-    /// Call this after every guest write to CR0, CR4, or MSR_EFER to keep
-    /// the MMU configuration consistent with the CPU state.
+    /// Uses cached values to skip the update when nothing changed (which
+    /// is the common case — control registers are written very rarely).
+    #[inline]
     pub fn update_from_regs(&mut self, cr0: u64, cr4: u64, efer: u64) {
+        if cr0 == self.cached_cr0 && cr4 == self.cached_cr4 && efer == self.cached_efer {
+            return;
+        }
+        self.cached_cr0 = cr0;
+        self.cached_cr4 = cr4;
+        self.cached_efer = efer;
         self.paging_enabled = (cr0 & CR0_PG) != 0;
         self.wp = (cr0 & CR0_WP) != 0;
         self.pse = (cr4 & CR4_PSE) != 0;
@@ -356,6 +407,7 @@ impl Mmu {
     /// - `access`: Read, Write, or Execute.
     /// - `cpl`: Current privilege level.
     /// - `mem`: Guest physical memory bus.
+    #[inline]
     pub fn translate_linear(
         &self,
         linear: u64,

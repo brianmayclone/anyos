@@ -203,6 +203,9 @@ pub(crate) struct AnyuiState {
     /// observations.  Merged (OR'd) with each event's own `modifiers`
     /// field before dispatching to controls.
     pub tracked_modifiers: u32,
+    /// Current cursor shape sent to compositor (0=Arrow, 1=ResizeEW, 2=ResizeNS).
+    /// Tracked to avoid redundant CMD_SET_CURSOR messages.
+    pub current_cursor: u32,
 
     // ── Window lifecycle callbacks (for dock/system integration) ──────
     /// Callback for EVT_WINDOW_OPENED (0x0060). Called with (app_tid, 0x0060, userdata).
@@ -296,6 +299,7 @@ pub extern "C" fn anyui_init() -> u32 {
             last_char_code: 0,
             last_modifiers: 0,
             tracked_modifiers: 0,
+            current_cursor: 0,
             on_window_opened: None,
             on_window_closed: None,
         });
@@ -798,6 +802,16 @@ pub extern "C" fn anyui_set_max_split(id: ControlId, max_ratio: u32) {
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(sv) = as_split_view(ctrl) {
             sv.max_ratio = max_ratio.min(100);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_splitview_set_resizable(id: ControlId, resizable: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(sv) = as_split_view(ctrl) {
+            sv.resizable = resizable != 0;
         }
     }
 }

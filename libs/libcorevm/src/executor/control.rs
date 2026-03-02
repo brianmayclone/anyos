@@ -53,7 +53,7 @@ pub fn exec_jmp_far(
     mmu: &Mmu,
 ) -> Result<()> {
     let (segment, offset) = read_far_pointer(cpu, inst, memory, mmu)?;
-    load_cs(cpu, segment);
+    load_cs(cpu, segment, memory, mmu)?;
     cpu.regs.rip = offset;
     Ok(())
 }
@@ -141,7 +141,7 @@ pub fn exec_call_far(
     push_val(cpu, old_cs, size, mmu, memory)?;
     push_val(cpu, next_rip, size, mmu, memory)?;
 
-    load_cs(cpu, new_seg);
+    load_cs(cpu, new_seg, memory, mmu)?;
     cpu.regs.rip = new_offset;
     Ok(())
 }
@@ -202,7 +202,7 @@ pub fn exec_ret_far(
         cpu.regs.set_sp(sp);
     }
 
-    load_cs(cpu, cs);
+    load_cs(cpu, cs, memory, mmu)?;
     cpu.regs.rip = mask_rip(cpu, rip);
     Ok(())
 }
@@ -383,8 +383,9 @@ fn dispatch_software_interrupt(
                 _ => {}
             }
 
-            // Load new CS (simplified: just set the selector)
-            cpu.regs.segment_mut(SegReg::Cs).selector = entry.selector;
+            // Load CS from GDT using the gate's selector.
+            cpu.load_segment_from_gdt(SegReg::Cs, entry.selector, memory, mmu)?;
+            cpu.update_mode();
             cpu.regs.rip = entry.offset;
         }
         Mode::LongMode => {
@@ -424,7 +425,8 @@ fn dispatch_software_interrupt(
                 _ => {}
             }
 
-            cpu.regs.segment_mut(SegReg::Cs).selector = entry.selector;
+            cpu.load_segment_from_gdt(SegReg::Cs, entry.selector, memory, mmu)?;
+            cpu.update_mode();
             cpu.regs.rip = entry.offset;
         }
     }
@@ -461,7 +463,8 @@ pub fn exec_iret(
             let cs = pop_val(cpu, size, mmu, memory)? as u16;
             let eflags = pop_val(cpu, size, mmu, memory)? as u32;
 
-            cpu.regs.segment_mut(SegReg::Cs).selector = cs;
+            cpu.load_segment_from_gdt(SegReg::Cs, cs, memory, mmu)?;
+            cpu.update_mode();
             cpu.regs.rip = eip as u64;
 
             // Restore EFLAGS (preserve IOPL and IF based on CPL)
@@ -486,7 +489,8 @@ pub fn exec_iret(
             let rsp = pop_val(cpu, size, mmu, memory)?;
             let ss = pop_val(cpu, size, mmu, memory)? as u16;
 
-            cpu.regs.segment_mut(SegReg::Cs).selector = cs;
+            cpu.load_segment_from_gdt(SegReg::Cs, cs, memory, mmu)?;
+            cpu.update_mode();
             cpu.regs.rip = rip;
 
             let mut new_flags = rflags;
@@ -496,7 +500,7 @@ pub fn exec_iret(
             cpu.regs.rflags = new_flags;
 
             cpu.regs.set_sp(rsp);
-            cpu.regs.segment_mut(SegReg::Ss).selector = ss;
+            cpu.load_segment_from_gdt(SegReg::Ss, ss, memory, mmu)?;
         }
     }
 
@@ -542,15 +546,26 @@ fn read_far_pointer(
     }
 }
 
-/// Load a new CS selector (simplified: real mode base, protected/long mode selector only).
-fn load_cs(cpu: &mut Cpu, selector: u16) {
+/// Load a new CS selector from the GDT and update the CPU mode.
+///
+/// In real mode, sets base = selector << 4 (the real-mode convention).
+/// In protected/long mode, reads the full segment descriptor from the GDT
+/// and caches it in the segment register, then updates the decoder mode
+/// to reflect any changes in the D/B or L flags.
+fn load_cs(
+    cpu: &mut Cpu,
+    selector: u16,
+    memory: &GuestMemory,
+    mmu: &Mmu,
+) -> Result<()> {
     match cpu.mode {
-        Mode::RealMode => cpu.regs.load_segment_real(SegReg::Cs, selector),
+        Mode::RealMode => {
+            cpu.regs.load_segment_real(SegReg::Cs, selector);
+        }
         _ => {
-            // In protected/long mode a full GDT descriptor load would be needed.
-            // Simplified: just update the selector. A full implementation would
-            // read the GDT entry and populate the cached descriptor.
-            cpu.regs.segment_mut(SegReg::Cs).selector = selector;
+            cpu.load_segment_from_gdt(SegReg::Cs, selector, memory, mmu)?;
+            cpu.update_mode();
         }
     }
+    Ok(())
 }

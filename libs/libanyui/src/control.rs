@@ -626,6 +626,16 @@ pub trait Control {
     /// Returns `None` (default) when no scrollbar is present.
     fn scrollbar_hit_x(&self) -> Option<i32> { None }
 
+    /// If the control has a built-in divider (e.g. SplitView), returns true
+    /// when the click at (lx, ly) — in local coordinates — hits the divider zone.
+    /// When true, `hit_test()` returns this control instead of recursing into children.
+    fn divider_hit(&self, _lx: i32, _ly: i32) -> bool { false }
+
+    /// Returns a cursor shape ID when the mouse is at (lx, ly) in local coordinates.
+    /// 0 = Arrow (default), 1 = ResizeEW, 2 = ResizeNS.
+    /// The event loop sends this to the compositor via CMD_SET_CURSOR.
+    fn cursor_at(&self, _lx: i32, _ly: i32) -> u32 { 0 }
+
     /// Called when mouse is clicked (down + up on same control).
     /// This is a higher-level event synthesized by the event loop.
     fn handle_click(&mut self, _local_x: i32, _local_y: i32, _button: u32) -> EventResponse {
@@ -821,6 +831,12 @@ pub fn hit_test(
         }
     }
 
+    // If the click lands on a built-in divider (SplitView), return this
+    // control immediately — children must not intercept divider drags.
+    if controls[idx].divider_hit(px - abs_x, py - abs_y) {
+        return Some(root);
+    }
+
     // ScrollView/Expander: offset children's Y for hit-testing
     let child_abs_y = match controls[idx].kind() {
         ControlKind::ScrollView => abs_y - b.state as i32,
@@ -851,6 +867,50 @@ pub fn hit_test(
     } else {
         None
     }
+}
+
+/// Walk the control tree and return the cursor shape for the point (px, py).
+/// Checks each ancestor for `cursor_at()` before recursing into children,
+/// so SplitView's divider zone is detected even when children fill the space.
+pub fn cursor_at_point(
+    controls: &[Box<dyn Control>],
+    root: ControlId,
+    px: i32,
+    py: i32,
+    parent_x: i32,
+    parent_y: i32,
+) -> u32 {
+    let idx = match find_idx(controls, root) {
+        Some(i) => i,
+        None => return 0,
+    };
+    let b = controls[idx].base();
+    if !b.visible { return 0; }
+
+    let abs_x = parent_x + b.x;
+    let abs_y = parent_y + b.y;
+
+    if px < abs_x || py < abs_y || px >= abs_x + b.w as i32 || py >= abs_y + b.h as i32 {
+        return 0;
+    }
+
+    // Check this control first (SplitView divider takes priority over children)
+    let cursor = controls[idx].cursor_at(px - abs_x, py - abs_y);
+    if cursor != 0 {
+        return cursor;
+    }
+
+    // Recurse into children
+    let child_abs_y = match controls[idx].kind() {
+        ControlKind::ScrollView => abs_y - b.state as i32,
+        _ => abs_y,
+    };
+    let children: Vec<ControlId> = b.children.to_vec();
+    for &child_id in children.iter().rev() {
+        let c = cursor_at_point(controls, child_id, px, py, abs_x, child_abs_y);
+        if c != 0 { return c; }
+    }
+    0
 }
 
 /// Hit-test that returns ANY visible control (not just interactive ones).

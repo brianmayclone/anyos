@@ -183,19 +183,19 @@ impl FatFs {
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn storage_read_sectors(_abs_lba: u32, _count: u32, _buf: &mut [u8]) -> bool {
-        false
+    fn storage_read_sectors(abs_lba: u32, count: u32, buf: &mut [u8]) -> bool {
+        crate::drivers::arm::storage::read_sectors(abs_lba, count, buf)
     }
 
-    /// Arch-abstracted storage write. Returns `false` on ARM64 (no storage driver yet).
+    /// Arch-abstracted storage write.
     #[cfg(target_arch = "x86_64")]
     fn storage_write_sectors(abs_lba: u32, count: u32, buf: &[u8]) -> bool {
         crate::drivers::storage::write_sectors(abs_lba, count, buf)
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn storage_write_sectors(_abs_lba: u32, _count: u32, _buf: &[u8]) -> bool {
-        false
+    fn storage_write_sectors(abs_lba: u32, count: u32, buf: &[u8]) -> bool {
+        crate::drivers::arm::storage::write_sectors(abs_lba, count, buf)
     }
 
     pub(crate) fn read_sectors(&self, relative_lba: u32, count: u32, buf: &mut [u8]) -> Result<(), FsError> {

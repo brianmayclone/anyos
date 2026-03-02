@@ -20,8 +20,8 @@ pub(crate) fn storage_read_sectors(abs_lba: u32, count: u32, buf: &mut [u8]) -> 
 }
 
 #[cfg(target_arch = "aarch64")]
-pub(crate) fn storage_read_sectors(_abs_lba: u32, _count: u32, _buf: &mut [u8]) -> bool {
-    false
+pub(crate) fn storage_read_sectors(abs_lba: u32, count: u32, buf: &mut [u8]) -> bool {
+    crate::drivers::arm::storage::read_sectors(abs_lba, count, buf)
 }
 mod runlist;
 mod mft;

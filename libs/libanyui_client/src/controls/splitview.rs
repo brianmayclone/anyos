@@ -25,6 +25,10 @@ impl SplitView {
         (lib().set_max_split)(self.container.ctrl.id, max_ratio);
     }
 
+    pub fn set_resizable(&self, resizable: bool) {
+        (lib().splitview_set_resizable)(self.container.ctrl.id, resizable as u32);
+    }
+
     pub fn on_split_changed(&self, mut f: impl FnMut(&ValueChangedEvent) + 'static) {
         let (thunk, ud) = events::register(move |id, _| {
             let value = Control::from_id(id).get_state();

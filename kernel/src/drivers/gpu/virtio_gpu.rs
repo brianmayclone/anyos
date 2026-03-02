@@ -1070,7 +1070,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     // This triggers the boot_console change hook which re-renders the splash
     // logo centered for the new resolution — no manual copy needed.
     crate::drivers::framebuffer::update(
-        gpu.fb_phys as u32,
+        gpu.fb_phys as u64,
         gpu.pitch,
         width,
         height,

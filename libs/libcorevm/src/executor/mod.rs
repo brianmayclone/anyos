@@ -230,8 +230,10 @@ fn exec_primary(
         // ── IMUL r, r/m, imm8 ──
         0x6B => arith::exec_imul_3op(cpu, inst, memory, mmu),
 
-        // ── INS/OUTS string I/O (not implemented) ──
-        0x6C..=0x6F => Err(VmError::UndefinedOpcode(op)),
+        // ── INS: read from port DX into ES:[RDI] ──
+        0x6C | 0x6D => string::exec_ins(cpu, inst, memory, mmu, io),
+        // ── OUTS: write from DS:[RSI] to port DX ──
+        0x6E | 0x6F => string::exec_outs(cpu, inst, memory, mmu, io),
 
         // ── Jcc short (rel8) ──
         0x70..=0x7F => control::exec_jcc(cpu, inst),
@@ -572,8 +574,17 @@ fn exec_secondary(
     // The secondary byte is in the low 8 bits of inst.opcode
     let op2 = inst.opcode as u8;
     match op2 {
-        // ── Group 6 (SLDT/STR/LLDT/LTR/VERR/VERW) — mostly unimplemented ──
-        0x00 => Err(VmError::UndefinedOpcode(op2)),
+        // ── Group 6 (SLDT/STR/LLDT/LTR/VERR/VERW) ──
+        0x00 => {
+            let reg = inst.modrm_reg() & 7;
+            match reg {
+                0 => system::exec_sldt(cpu, inst, memory, mmu),
+                1 => system::exec_str(cpu, inst, memory, mmu),
+                2 => system::exec_lldt(cpu, inst, memory, mmu),
+                3 => system::exec_ltr(cpu, inst, memory, mmu),
+                _ => Err(VmError::UndefinedOpcode(op2)),
+            }
+        }
 
         // ── Group 7 (SGDT/SIDT/LGDT/LIDT/SMSW/LMSW/INVLPG/SWAPGS) ──
         0x01 => {
@@ -887,16 +898,12 @@ fn write_reg_operand(
             Ok(())
         }
         RegOperand::Seg(sr) => {
+            // Segment register writes via operand helpers only update the
+            // selector — the caller (exec_mov_seg, exec_pop_seg) is
+            // responsible for doing the full GDT descriptor load in
+            // protected mode.
             let sel = val as u16;
-            match cpu.mode {
-                Mode::RealMode => cpu.regs.load_segment_real(*sr, sel),
-                _ => {
-                    // In protected/long mode, a full descriptor load would be
-                    // needed. For simplicity we update the selector field;
-                    // the caller (exec_mov_seg) handles full descriptor loading.
-                    cpu.regs.segment_mut(*sr).selector = sel;
-                }
-            }
+            cpu.regs.segment_mut(*sr).selector = sel;
             Ok(())
         }
         RegOperand::Cr(cr) => {

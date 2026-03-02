@@ -91,12 +91,20 @@ pub struct Svga {
     pub attr_flip_flop: bool,
     /// Miscellaneous output register.
     pub misc_output: u8,
+    /// Number of MMIO writes received (debug counter).
+    pub mmio_write_count: u64,
+    /// Number of MMIO writes to the text buffer region (offset >= 0x18000).
+    pub mmio_text_write_count: u64,
     /// Current horizontal resolution in pixels.
     pub width: u32,
     /// Current vertical resolution in pixels.
     pub height: u32,
     /// Current bits per pixel.
     pub bpp: u8,
+    /// Bochs VBE index register (port 0x1CE).
+    pub vbe_index: u16,
+    /// Bochs VBE data registers (20 entries, indexed by `vbe_index`).
+    pub vbe_regs: [u16; 20],
 }
 
 impl Svga {
@@ -150,9 +158,32 @@ impl Svga {
             attr_regs: [0; 21],
             attr_flip_flop: false,
             misc_output: 0,
+            mmio_write_count: 0,
+            mmio_text_write_count: 0,
             width,
             height,
             bpp: 32,
+            vbe_index: 0,
+            vbe_regs: {
+                let mut r = [0u16; 20];
+                // VBE_DISPI_INDEX_ID: report Bochs VBE version 0xB0C5.
+                r[0] = 0xB0C5;
+                // VBE_DISPI_INDEX_XRES
+                r[1] = width as u16;
+                // VBE_DISPI_INDEX_YRES
+                r[2] = height as u16;
+                // VBE_DISPI_INDEX_BPP
+                r[3] = 32;
+                // VBE_DISPI_INDEX_ENABLE: disabled initially.
+                r[4] = 0;
+                // VBE_DISPI_INDEX_VIRT_WIDTH
+                r[6] = width as u16;
+                // VBE_DISPI_INDEX_VIRT_HEIGHT
+                r[7] = height as u16;
+                // VBE_DISPI_INDEX_VIDEO_MEMORY_64K: report 8 MiB VRAM (128 * 64KB).
+                r[10] = 128;
+                r
+            },
         }
     }
 
@@ -201,9 +232,20 @@ impl Svga {
 }
 
 impl IoHandler for Svga {
-    /// Read from VGA I/O ports.
+    /// Read from VGA I/O ports (0x3C0-0x3DA) and Bochs VBE ports (0x1CE-0x1CF).
     fn read(&mut self, port: u16, _size: u8) -> Result<u32> {
         let val = match port {
+            // Bochs VBE index register.
+            0x1CE => return Ok(self.vbe_index as u32),
+            // Bochs VBE data register.
+            0x1CF => {
+                let idx = self.vbe_index as usize;
+                return Ok(if idx < self.vbe_regs.len() {
+                    self.vbe_regs[idx] as u32
+                } else {
+                    0
+                });
+            }
             0x3C0 => {
                 // Attribute controller: return current index.
                 self.attr_index
@@ -283,10 +325,40 @@ impl IoHandler for Svga {
         Ok(val as u32)
     }
 
-    /// Write to VGA I/O ports.
+    /// Write to VGA I/O ports (0x3C0-0x3DA) and Bochs VBE ports (0x1CE-0x1CF).
     fn write(&mut self, port: u16, _size: u8, val: u32) -> Result<()> {
         let byte = val as u8;
         match port {
+            // Bochs VBE index register.
+            0x1CE => {
+                self.vbe_index = val as u16;
+                return Ok(());
+            }
+            // Bochs VBE data register.
+            0x1CF => {
+                let idx = self.vbe_index as usize;
+                let v = val as u16;
+                if idx < self.vbe_regs.len() {
+                    self.vbe_regs[idx] = v;
+                }
+                // VBE_DISPI_INDEX_ENABLE (4): mode switch.
+                if idx == 4 && (v & 0x01) != 0 {
+                    let w = self.vbe_regs[1] as u32;
+                    let h = self.vbe_regs[2] as u32;
+                    let bpp = self.vbe_regs[3] as u8;
+                    if w > 0 && h > 0 && bpp > 0 {
+                        self.set_mode(VgaMode::LinearFramebuffer {
+                            width: w,
+                            height: h,
+                            bpp,
+                        });
+                    }
+                } else if idx == 4 && (v & 0x01) == 0 {
+                    // VBE disabled — return to text mode.
+                    self.set_mode(VgaMode::Text80x25);
+                }
+                return Ok(());
+            }
             0x3C0 => {
                 // Attribute controller: alternates between index and data writes.
                 if !self.attr_flip_flop {
@@ -363,18 +435,25 @@ impl MmioHandler for Svga {
         match self.mode {
             VgaMode::Text80x25 => {
                 // Text buffer at offset 0x18000 (0xB8000 - 0xA0000).
-                let text_offset = offset.wrapping_sub(0x18000) as usize;
-                if text_offset < self.text_buffer.len() * 2 {
+                // Handle multi-byte reads (e.g. 16-bit word = char + attr).
+                let base = offset.wrapping_sub(0x18000) as usize;
+                let buf_bytes = self.text_buffer.len() * 2;
+                let mut result: u64 = 0;
+                for i in 0..(size as usize) {
+                    let text_offset = base + i;
+                    if text_offset >= buf_bytes {
+                        break;
+                    }
                     let cell_idx = text_offset / 2;
                     let cell_val = self.text_buffer[cell_idx];
-                    if text_offset & 1 == 0 {
-                        Ok((cell_val & 0xFF) as u64)
+                    let byte = if text_offset & 1 == 0 {
+                        (cell_val & 0xFF) as u8
                     } else {
-                        Ok((cell_val >> 8) as u64)
-                    }
-                } else {
-                    Ok(0)
+                        (cell_val >> 8) as u8
+                    };
+                    result |= (byte as u64) << (i * 8);
                 }
+                Ok(result)
             }
             _ => {
                 // Graphics mode: read from framebuffer.
@@ -419,20 +498,31 @@ impl MmioHandler for Svga {
     /// In text mode, writes go to the text buffer. In graphics modes,
     /// writes go directly to the framebuffer.
     fn write(&mut self, offset: u64, size: u8, val: u64) -> Result<()> {
+        self.mmio_write_count += 1;
+        if offset >= 0x18000 {
+            self.mmio_text_write_count += 1;
+        }
         match self.mode {
             VgaMode::Text80x25 => {
                 // Text buffer at offset 0x18000 (0xB8000 - 0xA0000).
-                let text_offset = offset.wrapping_sub(0x18000) as usize;
-                if text_offset < self.text_buffer.len() * 2 {
+                // Handle multi-byte writes (e.g. 16-bit word = char + attr).
+                let base = offset.wrapping_sub(0x18000) as usize;
+                let buf_bytes = self.text_buffer.len() * 2;
+                for i in 0..(size as usize) {
+                    let text_offset = base + i;
+                    if text_offset >= buf_bytes {
+                        break;
+                    }
+                    let byte = ((val >> (i * 8)) & 0xFF) as u16;
                     let cell_idx = text_offset / 2;
                     if text_offset & 1 == 0 {
-                        // Write low byte (character).
+                        // Low byte (character).
                         self.text_buffer[cell_idx] =
-                            (self.text_buffer[cell_idx] & 0xFF00) | (val as u16 & 0xFF);
+                            (self.text_buffer[cell_idx] & 0xFF00) | byte;
                     } else {
-                        // Write high byte (attribute).
+                        // High byte (attribute).
                         self.text_buffer[cell_idx] =
-                            (self.text_buffer[cell_idx] & 0x00FF) | ((val as u16 & 0xFF) << 8);
+                            (self.text_buffer[cell_idx] & 0x00FF) | (byte << 8);
                     }
                 }
             }

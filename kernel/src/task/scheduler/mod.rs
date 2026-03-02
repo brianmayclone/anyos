@@ -52,6 +52,22 @@ use deferred::DEFERRED_PD_DESTROY;
 const NUM_PRIORITIES: usize = 128;
 const MAX_PRIORITY: u8 = (NUM_PRIORITIES - 1) as u8; // 127
 
+/// Lowest valid kernel virtual address (architecture-specific higher-half base).
+#[cfg(target_arch = "x86_64")]
+pub(crate) const KERNEL_ADDR_MIN: u64 = 0xFFFF_FFFF_8000_0000;
+#[cfg(target_arch = "aarch64")]
+pub(crate) const KERNEL_ADDR_MIN: u64 = 0xFFFF_0000_8000_0000;
+
+/// Valid kernel code PC range (architecture-specific).
+#[cfg(target_arch = "x86_64")]
+const KERNEL_PC_MIN: u64 = 0xFFFF_FFFF_8010_0000;
+#[cfg(target_arch = "x86_64")]
+const KERNEL_PC_MAX: u64 = 0xFFFF_FFFF_8200_0000;
+#[cfg(target_arch = "aarch64")]
+const KERNEL_PC_MIN: u64 = 0xFFFF_0000_8040_0000;
+#[cfg(target_arch = "aarch64")]
+const KERNEL_PC_MAX: u64 = 0xFFFF_0000_C000_0000;
+
 /// Clamp priority to valid range [0, 127]. Prints a debug warning if clamped.
 #[inline]
 fn clamp_priority(priority: u8, context: &str) -> u8 {
@@ -969,7 +985,7 @@ fn schedule_inner(from_timer: bool) {
                 let kstack_bottom = sched.threads[next_idx].kernel_stack_bottom();
 
                 // Validate candidate before committing
-                let kstack_valid = kstack_top >= 0xFFFF_FFFF_8000_0000;
+                let kstack_valid = kstack_top >= KERNEL_ADDR_MIN;
                 if !kstack_valid {
                     crate::serial_println!(
                         "BUG: thread '{}' (TID={}) invalid kstack_top={:#x} — killing",
@@ -1128,9 +1144,9 @@ fn schedule_inner(from_timer: bool) {
                 let ctx = &*new_ctx;
                 ctx.canary != CANARY_MAGIC
                     || ctx.checksum != ctx.compute_checksum()
-                    || ctx.get_pc() < 0xFFFF_FFFF_8010_0000
-                    || ctx.get_pc() >= 0xFFFF_FFFF_8200_0000
-                    || ctx.get_sp() < 0xFFFF_FFFF_8010_0000
+                    || ctx.get_pc() < KERNEL_PC_MIN
+                    || ctx.get_pc() >= KERNEL_PC_MAX
+                    || ctx.get_sp() < KERNEL_ADDR_MIN
             };
             if is_corrupt {
                 let reason = unsafe {
@@ -1271,6 +1287,12 @@ fn schedule_inner(from_timer: bool) {
         // it will never reach the post-switch cleanup code below.
         PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Relaxed);
 
+        #[cfg(target_arch = "aarch64")]
+        {
+            let next_pc = unsafe { (*new_ctx).get_pc() };
+            let next_sp = unsafe { (*new_ctx).get_sp() };
+            let _ = unsafe { (*new_ctx).x[30] };
+        }
         unsafe { crate::task::context::context_switch(old_ctx, new_ctx); }
     }
 

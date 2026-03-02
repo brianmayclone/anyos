@@ -78,6 +78,7 @@ pub use registers::{RegisterFile, SegReg};
 pub use flags::OperandSize;
 
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::ptr;
 
 // ── VmEngine (unchanged convenience wrapper) ──
@@ -255,6 +256,8 @@ struct VmInstance {
     e1000_ptr: *mut devices::e1000::E1000,
     bus_ptr: *mut devices::bus::PciBus,
     ide_ptr: *mut devices::ide::Ide,
+    fw_cfg_ptr: *mut devices::fw_cfg::FwCfg,
+    debug_port_ptr: *mut devices::debug_port::DebugPort,
 }
 
 impl Drop for VmInstance {
@@ -270,6 +273,8 @@ impl Drop for VmInstance {
             if !self.e1000_ptr.is_null() { let _ = Box::from_raw(self.e1000_ptr); }
             if !self.bus_ptr.is_null() { let _ = Box::from_raw(self.bus_ptr); }
             if !self.ide_ptr.is_null() { let _ = Box::from_raw(self.ide_ptr); }
+            if !self.fw_cfg_ptr.is_null() { let _ = Box::from_raw(self.fw_cfg_ptr); }
+            if !self.debug_port_ptr.is_null() { let _ = Box::from_raw(self.debug_port_ptr); }
         }
     }
 }
@@ -309,6 +314,8 @@ pub extern "C" fn corevm_create(ram_size_mb: u32) -> u64 {
         e1000_ptr: ptr::null_mut(),
         bus_ptr: ptr::null_mut(),
         ide_ptr: ptr::null_mut(),
+        fw_cfg_ptr: ptr::null_mut(),
+        debug_port_ptr: ptr::null_mut(),
     });
     let h = Box::into_raw(instance) as u64;
     vm_log!("VM created (handle=0x{:X})", h);
@@ -516,9 +523,22 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
         }
         ExitReason::Exception(ref err) => {
             let rip = vm.engine.cpu.regs.rip;
-            vm_log!("VM exception at RIP=0x{:X}: {}", rip, err);
+            let orig_rip = vm.engine.cpu.last_exec_rip;
+            let orig_cs = vm.engine.cpu.last_exec_cs;
+            let orig_opcode = vm.engine.cpu.last_opcode;
+            let orig_phys = vm.engine.cpu.last_fetch_addr;
+            vm_log!("VM exception: {}", err);
+            vm_log!("  current RIP=0x{:X}, mode={:?}", rip, vm.engine.cpu.mode);
+            vm_log!(
+                "  last instruction: CS=0x{:04X} IP=0x{:X} phys=0x{:X} opcode=0x{:04X}",
+                orig_cs, orig_rip, orig_phys, orig_opcode
+            );
+            vm_log!(
+                "  instructions executed: {}",
+                vm.engine.instruction_count()
+            );
             vm.last_error = Some(*err);
-            vm.last_error_rip = rip;
+            vm.last_error_rip = orig_rip;
             1
         }
         ExitReason::InstructionLimit => 2,
@@ -639,6 +659,43 @@ pub extern "C" fn corevm_load_binary(
     0
 }
 
+/// Add a named file to the fw_cfg device.
+///
+/// `name` is a NUL-terminated C string (e.g., "vgaroms/vgabios.bin").
+/// `data` points to `len` bytes of file content.
+/// Returns 0 on success, -1 if fw_cfg is not set up.
+#[no_mangle]
+pub extern "C" fn corevm_fw_cfg_add_file(
+    handle: u64,
+    name: *const u8,
+    data: *const u8,
+    len: u32,
+) -> i32 {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.fw_cfg_ptr.is_null() {
+        vm_log!("fw_cfg_add_file: fw_cfg not set up");
+        return -1;
+    }
+    if name.is_null() || data.is_null() {
+        return -1;
+    }
+    // Read NUL-terminated name string.
+    let mut name_len = 0;
+    unsafe {
+        while *name.add(name_len) != 0 && name_len < 55 {
+            name_len += 1;
+        }
+    }
+    let name_str = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(name, name_len))
+    };
+    let file_data = unsafe { core::slice::from_raw_parts(data, len as usize) };
+    let fw_cfg = unsafe { &mut *vm.fw_cfg_ptr };
+    fw_cfg.add_file(name_str, Vec::from(file_data));
+    vm_log!("fw_cfg: added file '{}' ({} bytes)", name_str, len);
+    0
+}
+
 /// Read a single byte from guest physical memory.
 #[no_mangle]
 pub extern "C" fn corevm_read_phys_u8(handle: u64, addr: u64) -> u8 {
@@ -718,9 +775,9 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     vm.pit_ptr = pit;
     vm.engine.io.register(0x40, 4, Box::new(IoProxy { ptr: pit }));
 
-    // CMOS — RTC and NVRAM. Ram size derived from engine memory.
-    // We pass a representative size; the CMOS constructor populates memory fields.
-    let cmos = Box::new(devices::cmos::Cmos::new(16 * 1024 * 1024));
+    // CMOS — RTC and NVRAM. Pass actual guest RAM size.
+    let ram_bytes = vm.engine.memory.ram().size();
+    let cmos = Box::new(devices::cmos::Cmos::new(ram_bytes));
     vm.engine.io.register(0x70, 2, cmos);
 
     // PS/2 — keyboard and mouse controller.
@@ -734,11 +791,102 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     vm.serial_ptr = serial;
     vm.engine.io.register(0x3F8, 8, Box::new(IoProxy { ptr: serial }));
 
-    // VGA/SVGA — standard VGA ports + legacy framebuffer MMIO.
+    // VGA/SVGA — standard VGA ports + legacy framebuffer MMIO + Bochs VBE.
     let svga = Box::into_raw(Box::new(devices::svga::Svga::new(800, 600)));
     vm.svga_ptr = svga;
     vm.engine.io.register(0x3C0, 0x1B, Box::new(IoProxy { ptr: svga }));
+    // Bochs VBE ports (0x1CE index, 0x1CF data) — used by VGA BIOS to detect hardware.
+    vm.engine.io.register(0x1CE, 2, Box::new(IoProxy { ptr: svga }));
     vm.engine.memory.add_mmio(0xA0000, 0x20000, Box::new(MmioProxy { ptr: svga }));
+
+    // PCI bus with standard QEMU i440FX machine devices.
+    let mut bus = devices::bus::PciBus::new();
+
+    // i440FX host bridge at 0:0.0 — required by SeaBIOS for PAM/RAM unlock.
+    let mut host_bridge = devices::bus::PciDevice::new(
+        0x8086,  // Vendor ID: Intel
+        0x1237,  // Device ID: i440FX
+        0x06,    // Class: Bridge
+        0x00,    // Subclass: Host bridge
+        0x00,    // Prog IF
+    );
+    host_bridge.bus = 0;
+    host_bridge.device = 0;
+    host_bridge.function = 0;
+    // Header type 0x00 = single-function device.
+    // PAM registers (0x59-0x5F): default to 0 (ROM read-only).
+    // Make all PAM regions writable so SeaBIOS can shadow ROMs.
+    // PAM0 (0x59): covers 0xF0000-0xFFFFF — BIOS area.
+    host_bridge.config_space[0x59] = 0x30; // Read/write enabled
+    // PAM1-PAM6 (0x5A-0x5F): cover 0xC0000-0xEFFFF — option ROM area.
+    for i in 0x5A..=0x5F {
+        host_bridge.config_space[i] = 0x33; // Read/write for both halves
+    }
+    bus.add_device(host_bridge);
+
+    // PIIX3 ISA bridge at 0:1.0 — SeaBIOS uses this for IRQ routing.
+    let mut isa_bridge = devices::bus::PciDevice::new(
+        0x8086,  // Vendor ID: Intel
+        0x7000,  // Device ID: PIIX3 ISA
+        0x06,    // Class: Bridge
+        0x01,    // Subclass: ISA bridge
+        0x00,    // Prog IF
+    );
+    isa_bridge.bus = 0;
+    isa_bridge.device = 1;
+    isa_bridge.function = 0;
+    // Mark as multi-function (header type bit 7) since real PIIX3 has IDE at fn 1.
+    isa_bridge.config_space[0x0E] = 0x80;
+    bus.add_device(isa_bridge);
+
+    // VGA device at 0:2.0 — SeaBIOS scans PCI to detect display hardware.
+    let mut vga_pci = devices::bus::PciDevice::new(
+        0x1234,  // Vendor ID: QEMU standard VGA
+        0x1111,  // Device ID: stdvga
+        0x03,    // Class: Display controller
+        0x00,    // Subclass: VGA compatible
+        0x00,    // Prog IF: VGA
+    );
+    vga_pci.bus = 0;
+    vga_pci.device = 2;
+    vga_pci.function = 0;
+    // BAR0: framebuffer at 0xFD000000 (256 MiB, matches typical VGA).
+    vga_pci.set_bar(0, 0xFD000000, 0x01000000, true); // 16 MiB MMIO
+    // BAR2: Bochs VBE MMIO (optional, not strictly needed).
+    vga_pci.set_bar(2, 0xFEBE0000, 0x1000, true); // 4 KiB
+    // Expansion ROM base address (offset 0x30): 0xC0000 with enable bit.
+    vga_pci.config_space[0x30] = 0x01; // enabled
+    vga_pci.config_space[0x31] = 0x00;
+    vga_pci.config_space[0x32] = 0x0C; // 0x000C0001 LE
+    vga_pci.config_space[0x33] = 0x00;
+    bus.add_device(vga_pci);
+
+    let bus_ptr = Box::into_raw(Box::new(bus));
+    vm.bus_ptr = bus_ptr;
+    vm.engine.io.register(0xCF8, 8, Box::new(IoProxy { ptr: bus_ptr }));
+
+    // IO-APIC at standard MMIO address.
+    let ioapic = Box::into_raw(Box::new(devices::ioapic::IoApic::new()));
+    vm.engine.memory.add_mmio(0xFEC00000, 0x1000, Box::new(MmioProxy { ptr: ioapic }));
+
+    // fw_cfg — QEMU firmware configuration interface.
+    // SeaBIOS uses this to discover platform config and VGA BIOS files.
+    let fw_cfg = Box::into_raw(Box::new(
+        devices::fw_cfg::FwCfg::new(ram_bytes as u64),
+    ));
+    vm.fw_cfg_ptr = fw_cfg;
+    vm.engine.io.register(0x510, 2, Box::new(IoProxy { ptr: fw_cfg }));
+
+    // Debug port — QEMU debug console at port 0x402.
+    // SeaBIOS writes debug output here; reading 0xE9 signals port is active.
+    let debug_port = Box::into_raw(Box::new(devices::debug_port::DebugPort::new()));
+    vm.debug_port_ptr = debug_port;
+    vm.engine.io.register(0x402, 1, Box::new(IoProxy { ptr: debug_port }));
+
+    let count = vm.engine.memory.mmio_region_count();
+    let (lo, hi) = vm.engine.memory.mmio_bounds();
+    vm_log!("MMIO setup: {} regions, bounds=[0x{:X}, 0x{:X})", count, lo, hi);
+    vm_log!("PCI bus: 3 devices (host bridge 0:0.0, ISA bridge 0:1.0, VGA 0:2.0)");
 }
 
 /// Register a PCI bus at the standard configuration ports (0xCF8-0xCFF).
@@ -746,8 +894,12 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
 /// Must only be called once per VM instance.
 #[no_mangle]
 pub extern "C" fn corevm_setup_pci_bus(handle: u64) {
-    vm_log!("setting up PCI bus (ports 0xCF8-0xCFF)");
     let vm = unsafe { vm_from_handle(handle) };
+    if !vm.bus_ptr.is_null() {
+        vm_log!("PCI bus already set up, skipping");
+        return;
+    }
+    vm_log!("setting up PCI bus (ports 0xCF8-0xCFF)");
 
     let bus = Box::into_raw(Box::new(devices::bus::PciBus::new()));
     vm.bus_ptr = bus;
@@ -860,15 +1012,81 @@ pub extern "C" fn corevm_vga_get_framebuffer(
 /// Get a pointer to the VGA text-mode buffer (80x25 cells, `u16` per cell).
 ///
 /// Each cell: low byte = ASCII character, high byte = color attribute.
+/// If `count` is non-null, `*count` is set to the number of `u16` cells (2000).
 /// Returns null if the VGA device has not been set up.
 #[no_mangle]
-pub extern "C" fn corevm_vga_get_text_buffer(handle: u64) -> *const u16 {
+pub extern "C" fn corevm_vga_get_text_buffer(handle: u64, count: *mut u32) -> *const u16 {
     let vm = unsafe { vm_from_handle(handle) };
     if vm.svga_ptr.is_null() {
         return ptr::null();
     }
     let svga = unsafe { &*vm.svga_ptr };
+    if !count.is_null() {
+        unsafe { *count = svga.text_buffer.len() as u32 };
+    }
     svga.text_buffer.as_ptr()
+}
+
+/// Get VGA MMIO debug counters.
+///
+/// Returns the total MMIO write count and the text-region write count
+/// through the output pointers. Useful for diagnosing whether writes
+/// to the VGA framebuffer are reaching the device handler.
+#[no_mangle]
+pub extern "C" fn corevm_vga_debug_counters(
+    handle: u64,
+    total_writes: *mut u64,
+    text_writes: *mut u64,
+) {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.svga_ptr.is_null() {
+        return;
+    }
+    let svga = unsafe { &*vm.svga_ptr };
+    if !total_writes.is_null() {
+        unsafe { *total_writes = svga.mmio_write_count };
+    }
+    if !text_writes.is_null() {
+        unsafe { *text_writes = svga.mmio_text_write_count };
+    }
+}
+
+/// Diagnostic: get MMIO region count and bounds, plus raw RAM at 0xB8000.
+///
+/// Helps diagnose whether MMIO regions are properly registered and
+/// whether writes to the VGA text area are hitting RAM instead of MMIO.
+///
+/// Output:
+/// - `region_count`: number of registered MMIO regions
+/// - `min_base`: MMIO fast-reject lower bound
+/// - `max_end`: MMIO fast-reject upper bound
+/// - `ram_b8000`: first 4 bytes of raw RAM at physical 0xB8000
+#[no_mangle]
+pub extern "C" fn corevm_mmio_diag(
+    handle: u64,
+    region_count: *mut u32,
+    min_base: *mut u64,
+    max_end: *mut u64,
+    ram_b8000: *mut u32,
+) {
+    let vm = unsafe { vm_from_handle(handle) };
+    let count = vm.engine.memory.mmio_region_count();
+    let (lo, hi) = vm.engine.memory.mmio_bounds();
+    if !region_count.is_null() {
+        unsafe { *region_count = count as u32 };
+    }
+    if !min_base.is_null() {
+        unsafe { *min_base = lo };
+    }
+    if !max_end.is_null() {
+        unsafe { *max_end = hi };
+    }
+    if !ram_b8000.is_null() {
+        // Read directly from flat RAM (bypasses MMIO).
+        use memory::MemoryBus;
+        let val = vm.engine.memory.ram().read_u32(0xB8000).unwrap_or(0);
+        unsafe { *ram_b8000 = val };
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -911,6 +1129,38 @@ pub extern "C" fn corevm_serial_take_output(
         return 0;
     }
     let output = unsafe { (*vm.serial_ptr).take_output() };
+    let copy_len = (output.len() as u32).min(buf_len) as usize;
+    if copy_len > 0 {
+        unsafe {
+            ptr::copy_nonoverlapping(output.as_ptr(), buf, copy_len);
+        }
+    }
+    copy_len as u32
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Device Interaction — Debug Port
+// ════════════════════════════════════════════════════════════════════════
+
+/// Drain debug port output written by the guest into the provided buffer.
+///
+/// SeaBIOS writes debug messages to port 0x402. This function returns the
+/// accumulated bytes. Returns 0 if `buf` is null or the debug port has not
+/// been set up.
+#[no_mangle]
+pub extern "C" fn corevm_debug_take_output(
+    handle: u64,
+    buf: *mut u8,
+    buf_len: u32,
+) -> u32 {
+    if buf.is_null() || buf_len == 0 {
+        return 0;
+    }
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.debug_port_ptr.is_null() {
+        return 0;
+    }
+    let output = unsafe { (*vm.debug_port_ptr).take_output() };
     let copy_len = (output.len() as u32).min(buf_len) as usize;
     if copy_len > 0 {
         unsafe {
@@ -1005,17 +1255,27 @@ pub extern "C" fn corevm_pit_tick(handle: u64) -> u32 {
 // Device Interaction — PIC
 // ════════════════════════════════════════════════════════════════════════
 
-/// Assert an IRQ line on the PIC (edge-triggered).
+/// Assert an IRQ line on the PIC (edge-triggered) and inject the resulting
+/// interrupt vector into the CPU's interrupt controller.
 ///
-/// IRQ 0-7 go to the master PIC, 8-15 to the slave. No-op if PIC has not
-/// been set up.
+/// IRQ 0-7 go to the master PIC, 8-15 to the slave. The PIC is polled for
+/// the highest-priority pending vector, which is then queued for delivery
+/// at the top of the next CPU instruction cycle (when IF=1).
+/// No-op if PIC has not been set up.
 #[no_mangle]
 pub extern "C" fn corevm_pic_raise_irq(handle: u64, irq: u8) {
     let vm = unsafe { vm_from_handle(handle) };
     if vm.pic_ptr.is_null() {
         return;
     }
-    unsafe { (*vm.pic_ptr).raise_irq(irq) };
+    let pic = unsafe { &mut *vm.pic_ptr };
+    pic.raise_irq(irq);
+    // Bridge: poll the PIC for the resulting vector and inject into the CPU.
+    // Acknowledge on the PIC (IRR→ISR) so the same IRQ isn't re-injected.
+    if let Some(vector) = pic.get_interrupt_vector() {
+        pic.acknowledge(irq);
+        vm.engine.interrupts.raise_irq(vector);
+    }
 }
 
 /// Get the vector number of the highest-priority pending interrupt.

@@ -192,6 +192,19 @@ pub fn timer_frequency_hz() -> u64 {
     1000 // Ticks are normalized to 1000 Hz (millisecond granularity)
 }
 
+/// Busy-wait delay in milliseconds.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn delay_ms(ms: u64) {
+    crate::arch::x86::pit::delay_ms(ms as u32);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn delay_ms(ms: u64) {
+    crate::arch::arm64::generic_timer::delay_ms(ms);
+}
+
 // =============================================================================
 // Per-CPU Kernel Stack Setup
 // =============================================================================
@@ -269,8 +282,7 @@ pub fn irq_eoi() {
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn irq_eoi() {
-    // ARM64: write ICC_EOIR1_EL1
-    // TODO: implement for ARM64 GICv3
+    crate::arch::arm64::gic::eoi_last();
 }
 
 /// Send an Inter-Processor Interrupt to the specified CPU.

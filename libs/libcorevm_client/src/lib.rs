@@ -221,6 +221,8 @@ struct CoreVmLib {
     /// Get a pointer to the VGA text buffer (80x25 u16 cells).
     /// Returns null if VGA is not in text mode.
     vga_get_text_buffer: extern "C" fn(u64, *mut u32) -> *const u16,
+    /// Get VGA MMIO debug counters (total writes, text-region writes).
+    vga_debug_counters: extern "C" fn(u64, *mut u64, *mut u64),
 
     // ── Serial port ──────────────────────────────────────────────
     /// Send input bytes to the guest serial port (COM1).
@@ -261,6 +263,20 @@ struct CoreVmLib {
     ide_irq_raised: extern "C" fn(u64) -> u32,
     /// Clear the pending IDE IRQ.
     ide_clear_irq: extern "C" fn(u64),
+
+    // ── fw_cfg ────────────────────────────────────────────────
+    /// Add a named file to the fw_cfg device.
+    fw_cfg_add_file: extern "C" fn(u64, *const u8, *const u8, u32) -> i32,
+
+    // ── Debug port ──────────────────────────────────────────────
+    /// Read output bytes from the QEMU debug console port (0x402).
+    /// Copies up to `buf_len` bytes into `buf_ptr`.
+    /// Returns the number of bytes actually written.
+    debug_take_output: extern "C" fn(u64, *mut u8, u32) -> u32,
+
+    // ── Diagnostics ─────────────────────────────────────────────
+    /// MMIO diagnostic: region count, bounds, RAM content at 0xB8000.
+    mmio_diag: extern "C" fn(u64, *mut u32, *mut u64, *mut u64, *mut u32),
 
     // ── Error reporting ────────────────────────────────────────
     /// Write the last error message into a buffer. Returns bytes written.
@@ -349,6 +365,7 @@ pub fn init() -> bool {
             // VGA
             vga_get_framebuffer: resolve(&handle, "corevm_vga_get_framebuffer"),
             vga_get_text_buffer: resolve(&handle, "corevm_vga_get_text_buffer"),
+            vga_debug_counters: resolve(&handle, "corevm_vga_debug_counters"),
             // Serial
             serial_send_input: resolve(&handle, "corevm_serial_send_input"),
             serial_take_output: resolve(&handle, "corevm_serial_take_output"),
@@ -366,6 +383,12 @@ pub fn init() -> bool {
             ide_detach_disk: resolve(&handle, "corevm_ide_detach_disk"),
             ide_irq_raised: resolve(&handle, "corevm_ide_irq_raised"),
             ide_clear_irq: resolve(&handle, "corevm_ide_clear_irq"),
+            // fw_cfg
+            fw_cfg_add_file: resolve(&handle, "corevm_fw_cfg_add_file"),
+            // Debug port
+            debug_take_output: resolve(&handle, "corevm_debug_take_output"),
+            // Diagnostics
+            mmio_diag: resolve(&handle, "corevm_mmio_diag"),
             // Error reporting
             get_last_error: resolve(&handle, "corevm_get_last_error"),
             get_last_error_rip: resolve(&handle, "corevm_get_last_error_rip"),
@@ -692,6 +715,55 @@ impl VmHandle {
         Some(slice)
     }
 
+    /// Get VGA MMIO debug counters.
+    ///
+    /// Returns `(total_mmio_writes, text_region_writes)` for diagnosing
+    /// whether guest writes to the VGA framebuffer are reaching the handler.
+    pub fn vga_debug_counters(&self) -> (u64, u64) {
+        let mut total: u64 = 0;
+        let mut text: u64 = 0;
+        (lib().vga_debug_counters)(self.handle, &mut total as *mut u64, &mut text as *mut u64);
+        (total, text)
+    }
+
+    /// Add a named file to the fw_cfg device (used for VGA BIOS, etc.).
+    ///
+    /// `name` is the file name (e.g., "vgaroms/vgabios.bin").
+    /// `data` is the file content.
+    /// Returns 0 on success, -1 on failure.
+    pub fn fw_cfg_add_file(&self, name: &str, data: &[u8]) -> i32 {
+        // Build NUL-terminated name.
+        let mut name_buf = [0u8; 56];
+        let copy_len = name.len().min(55);
+        name_buf[..copy_len].copy_from_slice(&name.as_bytes()[..copy_len]);
+        (lib().fw_cfg_add_file)(
+            self.handle,
+            name_buf.as_ptr(),
+            data.as_ptr(),
+            data.len() as u32,
+        )
+    }
+
+    /// Get MMIO diagnostic info.
+    ///
+    /// Returns `(region_count, min_base, max_end, ram_at_b8000)`.
+    /// `ram_at_b8000` is 4 bytes read directly from flat RAM at 0xB8000,
+    /// bypassing MMIO — useful to check if writes went to RAM instead.
+    pub fn mmio_diag(&self) -> (u32, u64, u64, u32) {
+        let mut count: u32 = 0;
+        let mut lo: u64 = 0;
+        let mut hi: u64 = 0;
+        let mut ram: u32 = 0;
+        (lib().mmio_diag)(
+            self.handle,
+            &mut count as *mut u32,
+            &mut lo as *mut u64,
+            &mut hi as *mut u64,
+            &mut ram as *mut u32,
+        );
+        (count, lo, hi, ram)
+    }
+
     // ── Serial port (COM1) ───────────────────────────────────────
 
     /// Send input to the guest serial port.
@@ -720,6 +792,26 @@ impl VmHandle {
     pub fn serial_take_output_vec(&self) -> Vec<u8> {
         let mut buf = [0u8; 4096];
         let n = self.serial_take_output(&mut buf);
+        let mut v = Vec::with_capacity(n);
+        v.extend_from_slice(&buf[..n]);
+        v
+    }
+
+    // ── Debug port ────────────────────────────────────────────────
+
+    /// Drain debug port output (port 0x402) into the provided buffer.
+    ///
+    /// Returns the number of bytes written. SeaBIOS writes debug messages
+    /// to this port during POST.
+    pub fn debug_take_output(&self, buf: &mut [u8]) -> usize {
+        let n = (lib().debug_take_output)(self.handle, buf.as_mut_ptr(), buf.len() as u32);
+        n as usize
+    }
+
+    /// Convenience method: drain all debug port output into a new `Vec<u8>`.
+    pub fn debug_take_output_vec(&self) -> Vec<u8> {
+        let mut buf = [0u8; 4096];
+        let n = self.debug_take_output(&mut buf);
         let mut v = Vec::with_capacity(n);
         v.extend_from_slice(&buf[..n]);
         v

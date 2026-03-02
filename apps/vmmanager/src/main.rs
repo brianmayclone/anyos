@@ -8,17 +8,18 @@
 //! - Settings dialog for editing VM configurations
 //! - Keyboard and mouse forwarding to the guest OS
 //!
-//! VM configurations are persisted in `/System/vmmanager/vms.conf`.
+//! VM configurations are persisted in `/System/shared/vmmanager/vms.conf`.
 
 #![no_std]
 #![no_main]
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::fs;
+use anyos_std::ipc;
 use libanyui_client as anyui;
 use libanyui_client::Widget;
-use libcorevm_client::{CpuMode, ExitReason, VmHandle};
 
 anyos_std::entry!(main);
 
@@ -35,22 +36,17 @@ const SIDEBAR_W: u32 = 200;
 const CANVAS_W: u32 = 640;
 const CANVAS_H: u32 = 400;
 
-/// Number of guest instructions to execute per timer tick (~30 fps).
-const INSTRUCTIONS_PER_TICK: u64 = 200_000;
-
-/// Number of PIT ticks to advance per timer callback. Approximates the
-/// real PIT rate of ~1.193 MHz scaled to a 33 ms timer interval: roughly
-/// 40 ticks per frame at 1193 ticks/ms * 33 ms / 1000.
-const PIT_TICKS_PER_FRAME: u32 = 40;
+/// SHM header size in bytes (must match vmd).
+const SHM_HEADER: usize = 64;
 
 /// Maximum number of VMs that can be configured.
 const MAX_VMS: usize = 16;
 
-/// Path to the VM configuration file.
-const CONFIG_PATH: &str = "/System/vmmanager/vms.conf";
+/// Directory containing per-VM config files (`<uuid>.conf`).
+const VMS_DIR: &str = "/System/shared/vmmanager/vms";
 
-/// Path to the SeaBIOS ROM image (256 KiB, loaded at physical address 0xC0000).
-const SEABIOS_PATH: &str = "/System/shared/corevm/bios/seabios.bin";
+/// Path to the sidebar layout file (folders + VM ordering).
+const LAYOUT_PATH: &str = "/System/shared/vmmanager/layout.conf";
 
 /// Standard VGA 16-color palette (ARGB format).
 const VGA_COLORS: [u32; 16] = [
@@ -85,6 +81,8 @@ enum BootOrder {
 /// Persistent configuration for a single VM.
 #[derive(Clone)]
 struct VmConfig {
+    /// Unique identifier (32-char hex) for IPC lookups by vmd.
+    uuid: String,
     /// Human-readable name displayed in the sidebar.
     name: String,
     /// Guest RAM size in megabytes.
@@ -98,9 +96,10 @@ struct VmConfig {
 }
 
 impl VmConfig {
-    /// Create a new VM configuration with defaults.
+    /// Create a new VM configuration with defaults and a generated UUID.
     fn new(name: &str) -> Self {
         VmConfig {
+            uuid: generate_uuid(),
             name: String::from(name),
             ram_mb: 64,
             disk_image: String::new(),
@@ -108,6 +107,19 @@ impl VmConfig {
             boot_order: BootOrder::DiskFirst,
         }
     }
+}
+
+/// Generate a 32-character lowercase hex UUID from 16 random bytes.
+fn generate_uuid() -> String {
+    let mut bytes = [0u8; 16];
+    anyos_std::sys::random(&mut bytes);
+    let hex = b"0123456789abcdef";
+    let mut s = String::with_capacity(32);
+    for &b in &bytes {
+        s.push(hex[(b >> 4) as usize] as char);
+        s.push(hex[(b & 0x0F) as usize] as char);
+    }
+    s
 }
 
 /// Runtime state of a single VM.
@@ -120,9 +132,22 @@ enum VmState {
 
 /// A configured VM entry combining persistent config with runtime state.
 struct VmEntry {
+    /// Persistent configuration.
     config: VmConfig,
-    handle: Option<VmHandle>,
+    /// Current runtime state.
     state: VmState,
+    /// TID of the vmd daemon process (0 if not spawned).
+    vmd_tid: u32,
+    /// Command pipe ID (vmmanager -> vmd).
+    cmd_pipe: u32,
+    /// Status pipe ID (vmd -> vmmanager).
+    status_pipe: u32,
+    /// Shared memory ID for VGA framebuffer.
+    shm_id: u32,
+    /// Mapped SHM base pointer (null if not mapped).
+    shm_ptr: *const u8,
+    /// Cached instruction count (read from SHM header).
+    instruction_count: u64,
 }
 
 /// Labels displaying real-time VM information.
@@ -144,6 +169,43 @@ struct SettingsDialog {
     boot_seg: anyui::SegmentedControl,
 }
 
+/// A named folder in the sidebar tree containing VM UUIDs.
+struct FolderEntry {
+    /// Display name of the folder.
+    name: String,
+    /// UUIDs of VMs in this folder, in display order.
+    vm_uuids: Vec<String>,
+}
+
+/// Sidebar layout: folders and root-level VMs in display order.
+struct SidebarLayout {
+    /// Named folders with their VM UUIDs.
+    folders: Vec<FolderEntry>,
+    /// VM UUIDs at root level (not in any folder).
+    root_vms: Vec<String>,
+}
+
+impl SidebarLayout {
+    /// Create an empty layout.
+    fn new() -> Self {
+        SidebarLayout {
+            folders: Vec::new(),
+            root_vms: Vec::new(),
+        }
+    }
+}
+
+/// Identifies what a TreeView node represents.
+#[derive(Clone)]
+enum NodeKind {
+    /// The "My Machines" root node.
+    Root,
+    /// A folder (index into `SidebarLayout::folders`).
+    Folder(usize),
+    /// A VM (index into `AppState::vms`).
+    Vm(usize),
+}
+
 // ── Application state ──────────────────────────────────────────────────
 
 /// Global application state holding all UI controls and VM data.
@@ -157,18 +219,22 @@ struct AppState {
     info: VmInfoLabels,
     content_view: anyui::View,
 
-    // Sidebar item labels (one per VM, up to MAX_VMS)
-    sidebar_labels: Vec<anyui::Label>,
+    // Sidebar tree view for VM list.
+    sidebar_tree: anyui::TreeView,
+    /// Index of the "My Machines" root node in the tree.
+    tree_root: u32,
+    /// Maps TreeView node index → NodeKind for selection handling.
+    node_map: Vec<NodeKind>,
 
     // VM data
     vms: Vec<VmEntry>,
     selected_vm: usize,
 
+    /// Sidebar folder/VM layout.
+    layout: SidebarLayout,
+
     // Settings dialog (created on demand)
     settings: Option<SettingsDialog>,
-
-    // Tracks whether libcorevm initialized successfully
-    corevm_available: bool,
 }
 
 static mut APP: Option<AppState> = None;
@@ -267,107 +333,306 @@ fn fmt_label_u64<'a>(buf: &'a mut [u8], label: &str, val: u64) -> &'a str {
 }
 
 // ── Configuration persistence ──────────────────────────────────────────
+//
+// Each VM is stored in its own file: `<VMS_DIR>/<uuid>.conf`.
+// The sidebar layout (folders + ordering) is stored in `LAYOUT_PATH`.
 
-/// Save all VM configurations to the config file.
-///
-/// Format: one VM per block, fields separated by newlines, blocks separated
-/// by a blank line. Fields: `name=`, `ram=`, `disk=`, `iso=`, `boot=`.
-fn save_config(vms: &[VmEntry]) {
-    let mut data: Vec<u8> = Vec::with_capacity(1024);
-    for entry in vms.iter() {
-        let c = &entry.config;
-        data.extend_from_slice(b"name=");
-        data.extend_from_slice(c.name.as_bytes());
-        data.push(b'\n');
-        data.extend_from_slice(b"ram=");
-        let mut buf = [0u8; 12];
-        let s = fmt_u32(&mut buf, c.ram_mb);
-        data.extend_from_slice(s.as_bytes());
-        data.push(b'\n');
-        data.extend_from_slice(b"disk=");
-        data.extend_from_slice(c.disk_image.as_bytes());
-        data.push(b'\n');
-        data.extend_from_slice(b"iso=");
-        data.extend_from_slice(c.iso_image.as_bytes());
-        data.push(b'\n');
-        data.extend_from_slice(b"boot=");
-        let boot_str = match c.boot_order {
-            BootOrder::DiskFirst => "disk",
-            BootOrder::CdFirst => "cd",
-            BootOrder::FloppyFirst => "floppy",
-        };
-        data.extend_from_slice(boot_str.as_bytes());
-        data.push(b'\n');
-        data.push(b'\n');
-    }
+/// Ensure the VM storage directories exist.
+fn ensure_dirs() {
+    fs::mkdir("/System/shared");
+    fs::mkdir("/System/shared/vmmanager");
+    fs::mkdir(VMS_DIR);
+}
 
-    let fd = fs::open(CONFIG_PATH, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+/// Save a single VM configuration to `<VMS_DIR>/<uuid>.conf`.
+fn save_vm_config(config: &VmConfig) {
+    ensure_dirs();
+    let mut path_buf = [0u8; 128];
+    let path = build_vm_path(&mut path_buf, &config.uuid);
+
+    let mut data: Vec<u8> = Vec::with_capacity(512);
+    data.extend_from_slice(b"name=");
+    data.extend_from_slice(config.name.as_bytes());
+    data.push(b'\n');
+    data.extend_from_slice(b"ram=");
+    let mut buf = [0u8; 12];
+    let s = fmt_u32(&mut buf, config.ram_mb);
+    data.extend_from_slice(s.as_bytes());
+    data.push(b'\n');
+    data.extend_from_slice(b"disk=");
+    data.extend_from_slice(config.disk_image.as_bytes());
+    data.push(b'\n');
+    data.extend_from_slice(b"iso=");
+    data.extend_from_slice(config.iso_image.as_bytes());
+    data.push(b'\n');
+    data.extend_from_slice(b"boot=");
+    let boot_str = match config.boot_order {
+        BootOrder::DiskFirst => "disk",
+        BootOrder::CdFirst => "cd",
+        BootOrder::FloppyFirst => "floppy",
+    };
+    data.extend_from_slice(boot_str.as_bytes());
+    data.push(b'\n');
+
+    let fd = fs::open(path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
     if fd != u32::MAX {
         fs::write(fd, &data);
         fs::close(fd);
     }
 }
 
-/// Load VM configurations from the config file.
-///
-/// Returns a list of `VmEntry` values with `state = Stopped` and no handle.
-fn load_config() -> Vec<VmEntry> {
-    let mut result = Vec::new();
-    let fd = fs::open(CONFIG_PATH, 0);
-    if fd == u32::MAX {
-        return result;
-    }
+/// Delete a VM configuration file.
+fn delete_vm_config(uuid: &str) {
+    let mut path_buf = [0u8; 128];
+    let path = build_vm_path(&mut path_buf, uuid);
+    fs::unlink(path);
+}
 
-    let mut buf = [0u8; 4096];
+/// Build the file path `<VMS_DIR>/<uuid>.conf` into `buf`.
+fn build_vm_path<'a>(buf: &'a mut [u8; 128], uuid: &str) -> &'a str {
+    let dir = VMS_DIR.as_bytes();
+    let ext = b".conf";
+    let uuid_b = uuid.as_bytes();
+    let total = dir.len() + 1 + uuid_b.len() + ext.len();
+    let mut p = 0;
+    for &b in dir {
+        buf[p] = b;
+        p += 1;
+    }
+    buf[p] = b'/';
+    p += 1;
+    for &b in uuid_b {
+        if p < 127 {
+            buf[p] = b;
+            p += 1;
+        }
+    }
+    for &b in ext {
+        if p < 127 {
+            buf[p] = b;
+            p += 1;
+        }
+    }
+    let _ = total; // suppress unused warning
+    unsafe { core::str::from_utf8_unchecked(&buf[..p]) }
+}
+
+/// Load a single VM config by UUID from its `.conf` file.
+fn load_vm_config(uuid: &str) -> Option<VmConfig> {
+    let mut path_buf = [0u8; 128];
+    let path = build_vm_path(&mut path_buf, uuid);
+
+    let fd = fs::open(path, 0);
+    if fd == u32::MAX {
+        return None;
+    }
+    let mut buf = [0u8; 1024];
     let n = fs::read(fd, &mut buf);
     fs::close(fd);
     if n == 0 || n == u32::MAX {
-        return result;
+        return None;
     }
 
     let text = &buf[..n as usize];
-    let mut current = VmConfig::new("");
+    let mut config = VmConfig::new("");
+    config.uuid = String::from(uuid);
 
     for line in ByteLines::new(text) {
-        if line.is_empty() {
-            // End of a VM block.
-            if !current.name.is_empty() {
-                result.push(VmEntry {
-                    config: current.clone(),
-                    handle: None,
-                    state: VmState::Stopped,
-                });
-            }
-            current = VmConfig::new("");
-            continue;
-        }
-
         if let Some(val) = strip_prefix(line, b"name=") {
-            current.name = bytes_to_string(val);
+            config.name = bytes_to_string(val);
         } else if let Some(val) = strip_prefix(line, b"ram=") {
-            current.ram_mb = parse_u32(val).unwrap_or(64);
+            config.ram_mb = parse_u32(val).unwrap_or(64);
         } else if let Some(val) = strip_prefix(line, b"disk=") {
-            current.disk_image = bytes_to_string(val);
+            config.disk_image = bytes_to_string(val);
         } else if let Some(val) = strip_prefix(line, b"iso=") {
-            current.iso_image = bytes_to_string(val);
+            config.iso_image = bytes_to_string(val);
         } else if let Some(val) = strip_prefix(line, b"boot=") {
-            current.boot_order = match val {
+            config.boot_order = match val {
                 b"cd" => BootOrder::CdFirst,
                 b"floppy" => BootOrder::FloppyFirst,
                 _ => BootOrder::DiskFirst,
             };
         }
     }
-    // Handle last block if file doesn't end with a blank line.
-    if !current.name.is_empty() {
-        result.push(VmEntry {
-            config: current,
-            handle: None,
-            state: VmState::Stopped,
-        });
+
+    if config.name.is_empty() {
+        return None;
+    }
+    Some(config)
+}
+
+/// Save the sidebar layout (folders + VM ordering) to `LAYOUT_PATH`.
+///
+/// Format:
+/// ```text
+/// folder:<name>
+/// vm:<uuid>
+/// end
+/// vm:<uuid>          (root-level VM)
+/// ```
+fn save_layout(layout: &SidebarLayout) {
+    ensure_dirs();
+    let mut data: Vec<u8> = Vec::with_capacity(512);
+
+    for folder in &layout.folders {
+        data.extend_from_slice(b"folder:");
+        data.extend_from_slice(folder.name.as_bytes());
+        data.push(b'\n');
+        for uuid in &folder.vm_uuids {
+            data.extend_from_slice(b"vm:");
+            data.extend_from_slice(uuid.as_bytes());
+            data.push(b'\n');
+        }
+        data.extend_from_slice(b"end\n");
+    }
+    for uuid in &layout.root_vms {
+        data.extend_from_slice(b"vm:");
+        data.extend_from_slice(uuid.as_bytes());
+        data.push(b'\n');
     }
 
-    result
+    let fd = fs::open(LAYOUT_PATH, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+    if fd != u32::MAX {
+        fs::write(fd, &data);
+        fs::close(fd);
+    }
+}
+
+/// Load the sidebar layout from `LAYOUT_PATH`.
+fn load_layout() -> SidebarLayout {
+    let mut layout = SidebarLayout::new();
+    let fd = fs::open(LAYOUT_PATH, 0);
+    if fd == u32::MAX {
+        return layout;
+    }
+
+    let mut buf = [0u8; 4096];
+    let n = fs::read(fd, &mut buf);
+    fs::close(fd);
+    if n == 0 || n == u32::MAX {
+        return layout;
+    }
+
+    let text = &buf[..n as usize];
+    let mut in_folder = false;
+
+    for line in ByteLines::new(text) {
+        if let Some(val) = strip_prefix(line, b"folder:") {
+            layout.folders.push(FolderEntry {
+                name: bytes_to_string(val),
+                vm_uuids: Vec::new(),
+            });
+            in_folder = true;
+        } else if line == b"end" {
+            in_folder = false;
+        } else if let Some(val) = strip_prefix(line, b"vm:") {
+            let uuid = bytes_to_string(val);
+            if in_folder {
+                if let Some(folder) = layout.folders.last_mut() {
+                    folder.vm_uuids.push(uuid);
+                }
+            } else {
+                layout.root_vms.push(uuid);
+            }
+        }
+    }
+
+    layout
+}
+
+/// Load all VMs and the sidebar layout from disk.
+///
+/// VMs referenced in `layout.conf` are loaded in layout order.
+/// Any `.conf` files in the VMs directory not referenced in the layout
+/// are appended as root-level VMs (handles orphans from crashes).
+fn load_all_vms() -> (Vec<VmEntry>, SidebarLayout) {
+    let mut layout = load_layout();
+    let mut vms: Vec<VmEntry> = Vec::new();
+    let mut loaded_uuids: Vec<String> = Vec::new();
+
+    // Helper: load a VM by UUID and append to the list.
+    let mut load_uuid = |uuid: &str, vms: &mut Vec<VmEntry>, loaded: &mut Vec<String>| {
+        if loaded.iter().any(|u| u == uuid) {
+            return; // Already loaded (duplicate in layout).
+        }
+        if let Some(config) = load_vm_config(uuid) {
+            vms.push(VmEntry {
+                config,
+                state: VmState::Stopped,
+                vmd_tid: 0,
+                cmd_pipe: 0,
+                status_pipe: 0,
+                shm_id: 0,
+                shm_ptr: core::ptr::null(),
+                instruction_count: 0,
+            });
+            loaded.push(String::from(uuid));
+        }
+    };
+
+    // Load VMs in layout order: folders first, then root-level.
+    for folder in &layout.folders {
+        for uuid in &folder.vm_uuids {
+            load_uuid(uuid, &mut vms, &mut loaded_uuids);
+        }
+    }
+    for uuid in &layout.root_vms {
+        load_uuid(uuid, &mut vms, &mut loaded_uuids);
+    }
+
+    // Scan the VMs directory for orphaned config files.
+    let mut dir_buf = [0u8; 4096];
+    let count = fs::readdir(VMS_DIR, &mut dir_buf);
+    if count != u32::MAX {
+        for i in 0..count as usize {
+            let entry = &dir_buf[i * 64..(i + 1) * 64];
+            let typ = entry[0];
+            let name_len = entry[1] as usize;
+            if typ != 0 || name_len < 6 {
+                continue; // Not a regular file or too short for "x.conf".
+            }
+            let name = &entry[8..8 + name_len];
+            // Must end with ".conf".
+            if name.len() < 6 || &name[name.len() - 5..] != b".conf" {
+                continue;
+            }
+            let uuid_bytes = &name[..name.len() - 5];
+            if let Ok(uuid_str) = core::str::from_utf8(uuid_bytes) {
+                if !loaded_uuids.iter().any(|u| u == uuid_str) {
+                    // Orphaned config — load and add to root_vms in layout.
+                    if let Some(config) = load_vm_config(uuid_str) {
+                        layout.root_vms.push(String::from(uuid_str));
+                        vms.push(VmEntry {
+                            config,
+                            state: VmState::Stopped,
+                            vmd_tid: 0,
+                            cmd_pipe: 0,
+                            status_pipe: 0,
+                            shm_id: 0,
+                            shm_ptr: core::ptr::null(),
+                            instruction_count: 0,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    (vms, layout)
+}
+
+/// Convenience: save a single VM config and the current layout.
+fn save_vm_and_layout(config: &VmConfig, layout: &SidebarLayout) {
+    save_vm_config(config);
+    save_layout(layout);
+}
+
+/// Remove a VM UUID from the layout (folders and root-level list).
+fn remove_uuid_from_layout(layout: &mut SidebarLayout, uuid: &str) {
+    for folder in &mut layout.folders {
+        folder.vm_uuids.retain(|u| u != uuid);
+    }
+    layout.root_vms.retain(|u| u != uuid);
 }
 
 /// Simple line iterator over a byte slice, splitting on `\n`.
@@ -442,95 +707,78 @@ fn bytes_to_string(b: &[u8]) -> String {
 
 // ── Sidebar rendering ──────────────────────────────────────────────────
 
-/// Rebuild the sidebar labels to reflect the current VM list.
+/// Rebuild the sidebar tree to reflect the current layout and VM list.
 ///
-/// Destroys existing labels and creates new ones for each VM entry,
-/// showing a status indicator and the VM name. Also wires up click
-/// handlers for VM selection.
+/// Builds folder nodes from `layout.folders`, then adds root-level VMs.
+/// Populates `node_map` so the selection handler can map node indices
+/// back to folders or VMs.
 fn rebuild_sidebar() {
     let a = app();
 
-    // Remove old labels.
-    for lbl in a.sidebar_labels.drain(..) {
-        lbl.remove();
-    }
+    a.sidebar_tree.clear();
+    a.node_map.clear();
 
-    for (i, entry) in a.vms.iter().enumerate() {
-        let lbl = anyui::Label::new("");
-        // Offset below the "My VMs" title (24px height + 8px padding).
-        lbl.set_position(8, (i as i32) * 32 + 32);
-        lbl.set_size(SIDEBAR_W - 16, 24);
-        lbl.set_font_size(13);
+    let root = a.sidebar_tree.add_root("My Machines");
+    a.tree_root = root;
+    a.sidebar_tree.set_node_style(root, anyui::STYLE_BOLD);
+    a.sidebar_tree.set_expanded(root, true);
+    a.node_map.push(NodeKind::Root);
 
-        // Build display text: status indicator + name.
-        let dot = match entry.state {
-            VmState::Running => ">> ",
-            VmState::Paused => "|| ",
-            VmState::Stopped => "   ",
-        };
-        let color = match entry.state {
-            VmState::Running => 0xFF00FF80, // green
-            VmState::Paused => 0xFFFFCC00,  // yellow
-            VmState::Stopped => 0xFF999999, // gray
-        };
-
-        let mut text_buf = [0u8; 64];
-        let mut p = 0;
-        for &b in dot.as_bytes() {
-            if p < 63 {
-                text_buf[p] = b;
-                p += 1;
+    // Collect layout info into local vecs to avoid borrow conflicts.
+    // Each folder: (folder_index, name, [(vm_index)]).
+    let mut folder_ops: Vec<(usize, String, Vec<usize>)> = Vec::new();
+    for (fi, folder) in a.layout.folders.iter().enumerate() {
+        let mut vm_indices = Vec::new();
+        for uuid in &folder.vm_uuids {
+            if let Some(vi) = a.vms.iter().position(|e| e.config.uuid == *uuid) {
+                vm_indices.push(vi);
             }
         }
-        for &b in entry.config.name.as_bytes() {
-            if p < 63 {
-                text_buf[p] = b;
-                p += 1;
-            }
+        folder_ops.push((fi, folder.name.clone(), vm_indices));
+    }
+    let mut root_vm_indices: Vec<usize> = Vec::new();
+    for uuid in &a.layout.root_vms {
+        if let Some(vi) = a.vms.iter().position(|e| e.config.uuid == *uuid) {
+            root_vm_indices.push(vi);
         }
-        let text = unsafe { core::str::from_utf8_unchecked(&text_buf[..p]) };
-        lbl.set_text(text);
-        lbl.set_text_color(color);
-
-        // Highlight selected item with a background color.
-        if i == a.selected_vm {
-            lbl.set_color(0xFF3A3A3C);
-        } else {
-            lbl.set_color(0x00000000); // transparent
-        }
-
-        a.sidebar.add(&lbl);
-        a.sidebar_labels.push(lbl);
     }
 
-    // Wire up click handlers on the newly created labels.
-    setup_sidebar_click_handlers();
+    // Add folders and their VMs.
+    for (fi, fname, vm_indices) in &folder_ops {
+        let folder_node = a.sidebar_tree.add_child(root, fname);
+        a.sidebar_tree.set_node_style(folder_node, anyui::STYLE_BOLD);
+        a.sidebar_tree.set_expanded(folder_node, true);
+        a.node_map.push(NodeKind::Folder(*fi));
+
+        for &vi in vm_indices {
+            add_vm_node(a, folder_node, vi);
+        }
+    }
+
+    // Add root-level VMs (not in any folder).
+    for &vi in &root_vm_indices {
+        add_vm_node(a, root, vi);
+    }
 }
 
-/// Wire up click handlers on sidebar labels to detect VM selection.
-///
-/// Each label's on_click closure selects the corresponding VM and
-/// refreshes the UI.
-fn setup_sidebar_click_handlers() {
-    let a = app();
-    for i in 0..a.sidebar_labels.len() {
-        let label = a.sidebar_labels[i];
-        label.on_click(move |_| {
-            let a = app();
-            if i < a.vms.len() && a.selected_vm != i {
-                a.selected_vm = i;
-                rebuild_sidebar();
-                update_info_labels();
+/// Add a VM node to the tree under `parent` and record it in `node_map`.
+fn add_vm_node(a: &mut AppState, parent: u32, vm_idx: usize) -> u32 {
+    let entry = &a.vms[vm_idx];
+    let node = a.sidebar_tree.add_child(parent, &entry.config.name);
 
-                // Clear canvas when switching to a non-running VM.
-                if a.selected_vm < a.vms.len()
-                    && a.vms[a.selected_vm].state != VmState::Running
-                {
-                    a.canvas.clear(0xFF1E1E1E);
-                }
-            }
-        });
+    let color = match entry.state {
+        VmState::Running => 0xFF00DD66u32,
+        VmState::Paused  => 0xFFFFCC00u32,
+        VmState::Stopped => 0xFFAABBCCu32,
+    };
+    a.sidebar_tree.set_node_text_color(node, color);
+
+    if vm_idx == a.selected_vm {
+        a.sidebar_tree.set_selected(node);
     }
+
+    a.node_map.push(NodeKind::Vm(vm_idx));
+    node
 }
 
 // ── Status bar ─────────────────────────────────────────────────────────
@@ -594,29 +842,19 @@ fn update_info_labels() {
     a.info.state_label.set_text(state_text);
     a.info.state_label.set_text_color(state_color);
 
-    // CPU mode, RAM, instruction count from the VM handle.
-    if let Some(ref handle) = entry.handle {
-        let mode_str = match handle.mode() {
-            CpuMode::RealMode => "Mode: Real (16-bit)",
-            CpuMode::ProtectedMode => "Mode: Protected (32-bit)",
-            CpuMode::LongMode => "Mode: Long (64-bit)",
-        };
-        a.info.mode_label.set_text(mode_str);
+    // RAM and instruction count.
+    let mut buf = [0u8; 32];
+    let s = fmt_label_val(&mut buf, "RAM: ", entry.config.ram_mb, " MB");
+    a.info.ram_label.set_text(s);
 
-        let mut buf = [0u8; 32];
-        let s = fmt_label_val(&mut buf, "RAM: ", entry.config.ram_mb, " MB");
-        a.info.ram_label.set_text(s);
+    if entry.state == VmState::Running || entry.instruction_count > 0 {
+        a.info.mode_label.set_text("Mode: x86 (vmd)");
 
         let mut ibuf = [0u8; 40];
-        let s = fmt_label_u64(&mut ibuf, "Instructions: ", handle.instruction_count());
+        let s = fmt_label_u64(&mut ibuf, "Instructions: ", entry.instruction_count);
         a.info.insn_label.set_text(s);
     } else {
         a.info.mode_label.set_text("Mode: -");
-
-        let mut buf = [0u8; 32];
-        let s = fmt_label_val(&mut buf, "RAM: ", entry.config.ram_mb, " MB");
-        a.info.ram_label.set_text(s);
-
         a.info.insn_label.set_text("Instructions: 0");
     }
 }
@@ -625,123 +863,121 @@ fn update_info_labels() {
 
 /// Start the selected VM.
 ///
-/// Creates a `VmHandle`, registers standard devices, loads the disk/ISO
-/// image, and begins execution on the next timer tick.
+/// Spawns a vmd daemon process, creates IPC pipes, sends configuration
+/// commands, and begins execution. The VGA framebuffer is shared via SHM.
 fn start_selected_vm() {
     let a = app();
     if a.selected_vm >= a.vms.len() {
         return;
     }
-    if !a.corevm_available {
-        a.status_label.set_text("Error: libcorevm not available");
+    if a.vms[a.selected_vm].state != VmState::Stopped {
+        return;
+    }
+
+    // Persist config before IPC so vmd reads the latest state.
+    save_vm_config(&a.vms[a.selected_vm].config);
+
+    let entry = &mut a.vms[a.selected_vm];
+
+    anyos_std::println!("vmmanager: starting VM '{}'", entry.config.name);
+
+    // Create IPC pipes before spawning vmd.
+    let cmd_pipe = ipc::pipe_create("vmd_cmd");
+    let status_pipe = ipc::pipe_create("vmd_status");
+
+    if cmd_pipe == 0 || status_pipe == 0 {
+        anyos_std::println!("vmmanager: failed to create IPC pipes");
+        a.status_label.set_text("Error: failed to create IPC pipes");
         a.status_label.set_text_color(0xFFFF4040);
         return;
     }
 
-    let entry = &mut a.vms[a.selected_vm];
-    if entry.state != VmState::Stopped {
+    // Spawn the vmd daemon.
+    let vmd_tid = anyos_std::process::spawn("/System/bin/vmd", "");
+    if vmd_tid == u32::MAX {
+        anyos_std::println!("vmmanager: failed to spawn vmd");
+        a.status_label.set_text("Error: failed to spawn vmd");
+        a.status_label.set_text_color(0xFFFF4040);
+        ipc::pipe_close(cmd_pipe);
+        ipc::pipe_close(status_pipe);
         return;
     }
 
-    anyos_std::println!("vmmanager: starting VM '{}'", entry.config.name);
+    entry.cmd_pipe = cmd_pipe;
+    entry.status_pipe = status_pipe;
+    entry.vmd_tid = vmd_tid;
 
-    // Create the VM handle.
-    let handle = match VmHandle::new(entry.config.ram_mb) {
-        Some(h) => h,
-        None => {
-            anyos_std::println!("vmmanager: failed to create VM (out of memory?)");
-            a.status_label.set_text("Error: failed to create VM (out of memory?)");
-            a.status_label.set_text_color(0xFFFF4040);
-            return;
+    // Wait briefly for vmd to connect to pipes.
+    anyos_std::process::sleep(50);
+
+    // Send VM creation command — vmd reads full config by UUID.
+    let create_cmd = format!("create {}", entry.config.uuid);
+    ipc::pipe_write(cmd_pipe, create_cmd.as_bytes());
+
+    // Poll for "created" response with SHM ID (up to 2 seconds).
+    let mut resp_buf = [0u8; 256];
+    let mut got_created = false;
+    for _ in 0..40 {
+        anyos_std::process::sleep(50);
+        let n = ipc::pipe_read(status_pipe, &mut resp_buf);
+        if n == 0 || n == u32::MAX {
+            continue;
         }
-    };
-
-    // Register standard PC devices (PIC, PIT, PS/2, VGA, serial, CMOS).
-    handle.setup_standard_devices();
-
-    // Register IDE controller and attach disk image if configured.
-    handle.setup_ide();
-    if !entry.config.disk_image.is_empty() {
-        let disk_data = read_file_to_vec(&entry.config.disk_image);
-        if !disk_data.is_empty() {
-            handle.ide_attach_disk(&disk_data);
+        let resp = core::str::from_utf8(&resp_buf[..n as usize]).unwrap_or("");
+        // May receive "ready" first, then "created 0 <shm_id>" in a later read.
+        for line in resp.split('\n') {
+            let line = line.trim();
+            if line.starts_with("created") {
+                parse_created_response(entry, line);
+                got_created = true;
+            }
+        }
+        if got_created {
+            break;
         }
     }
-
-    // Load ISO image into high memory if configured (above 1 MB).
-    if !entry.config.iso_image.is_empty() {
-        load_image_to_vm(&handle, &entry.config.iso_image, 0x10_0000);
+    if !got_created {
+        anyos_std::println!("vmmanager: WARNING: did not receive 'created' response from vmd");
     }
 
-    // Try to load SeaBIOS. If present, load at 0xF0000 (64 KiB ROM) and
-    // start at the x86 reset vector (CS:IP = F000:FFF0 = 0xFFFF0).
-    // If BIOS is not available, fall back to direct boot from disk at 0x7C00.
-    let bios_data = read_file_to_vec(SEABIOS_PATH);
-    if !bios_data.is_empty() {
-        // SeaBIOS ROM is loaded at the top of the first megabyte.
-        // For a 64 KiB ROM: load at 0xF0000. For larger ROMs: load at
-        // 0x100000 - rom_size so the reset vector at 0xFFFF0 is correct.
-        let load_addr = if bios_data.len() <= 0x10000 {
-            0xF0000u64
-        } else {
-            (0x10_0000u64).wrapping_sub(bios_data.len() as u64)
-        };
-        handle.load_binary(load_addr, &bios_data);
-        // CPU starts at x86 reset vector.
-        handle.set_rip(0xFFF0);
-        // Set CS base to 0xF0000 for real-mode segment F000.
-        // The BIOS expects CS:IP = F000:FFF0 = linear 0xFFFF0.
-    } else if !entry.config.disk_image.is_empty() {
-        // No BIOS available — direct boot from disk boot sector.
-        load_image_to_vm(&handle, &entry.config.disk_image, 0x7C00);
-        handle.set_rip(0x7C00);
-    }
-
-    entry.handle = Some(handle);
+    // Start execution (disk and ISO are loaded by vmd from config).
+    ipc::pipe_write(cmd_pipe, b"start");
     entry.state = VmState::Running;
+    entry.instruction_count = 0;
 
     rebuild_sidebar();
     update_info_labels();
     update_status_bar();
 }
 
-/// Read an entire file into a `Vec<u8>`. Returns an empty Vec on failure.
-fn read_file_to_vec(path: &str) -> Vec<u8> {
-    let fd = fs::open(path, 0);
-    if fd == u32::MAX {
-        return Vec::new();
-    }
-    let mut data = Vec::new();
-    let mut buf = [0u8; 8192];
-    loop {
-        let n = fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX {
-            break;
+/// Parse a "created <vm_id> <shm_id>" response and map SHM.
+fn parse_created_response(entry: &mut VmEntry, resp: &str) {
+    // Expected: "created 0 <shm_id>"
+    if resp.starts_with("created") {
+        let parts: Vec<&str> = resp.split(' ').collect();
+        if parts.len() >= 3 {
+            let shm_id = parse_u32_simple(parts[2]);
+            if shm_id != 0 {
+                entry.shm_id = shm_id;
+                let addr = ipc::shm_map(shm_id);
+                if addr != 0 {
+                    entry.shm_ptr = addr as *const u8;
+                    anyos_std::println!("vmmanager: SHM mapped (id={}, addr=0x{:X})", shm_id, addr);
+                }
+            }
         }
-        data.extend_from_slice(&buf[..n as usize]);
     }
-    fs::close(fd);
-    data
 }
 
-/// Load a disk/ISO image file into guest memory at the given address.
-fn load_image_to_vm(handle: &VmHandle, path: &str, addr: u64) {
-    let fd = fs::open(path, 0);
-    if fd == u32::MAX {
-        return;
-    }
-
-    let mut offset = addr;
-    let mut buf = [0u8; 8192];
-    loop {
-        let n = fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX {
-            break;
+/// Simple decimal parser for no_std.
+fn parse_u32_simple(s: &str) -> u32 {
+    let mut val: u32 = 0;
+    for &b in s.as_bytes() {
+        if b >= b'0' && b <= b'9' {
+            val = val.wrapping_mul(10).wrapping_add((b - b'0') as u32);
         }
-        handle.load_binary(offset, &buf[..n as usize]);
-        offset += n as u64;
     }
-    fs::close(fd);
+    val
 }
 
 /// Stop the selected VM.
@@ -756,11 +992,16 @@ fn stop_selected_vm() {
         return;
     }
 
-    // Request stop and drop the handle.
-    if let Some(ref handle) = entry.handle {
-        handle.request_stop();
+    // Send stop and quit commands to vmd.
+    if entry.cmd_pipe != 0 {
+        ipc::pipe_write(entry.cmd_pipe, b"stop");
+        anyos_std::process::sleep(10);
+        ipc::pipe_write(entry.cmd_pipe, b"quit");
     }
-    entry.handle = None;
+
+    // Cleanup IPC resources.
+    cleanup_vm_ipc(entry);
+
     entry.state = VmState::Stopped;
 
     // Clear the canvas to show the VM is off.
@@ -769,6 +1010,24 @@ fn stop_selected_vm() {
     rebuild_sidebar();
     update_info_labels();
     update_status_bar();
+}
+
+/// Clean up IPC resources for a VM entry.
+fn cleanup_vm_ipc(entry: &mut VmEntry) {
+    if entry.shm_id != 0 {
+        ipc::shm_unmap(entry.shm_id);
+        entry.shm_id = 0;
+    }
+    entry.shm_ptr = core::ptr::null();
+    if entry.cmd_pipe != 0 {
+        ipc::pipe_close(entry.cmd_pipe);
+        entry.cmd_pipe = 0;
+    }
+    if entry.status_pipe != 0 {
+        ipc::pipe_close(entry.status_pipe);
+        entry.status_pipe = 0;
+    }
+    entry.vmd_tid = 0;
 }
 
 /// Delete the selected VM (must be stopped first).
@@ -781,12 +1040,17 @@ fn delete_selected_vm() {
         return;
     }
 
+    // Delete the config file and remove from layout.
+    let uuid = a.vms[a.selected_vm].config.uuid.clone();
+    delete_vm_config(&uuid);
+    remove_uuid_from_layout(&mut a.layout, &uuid);
+    save_layout(&a.layout);
+
     a.vms.remove(a.selected_vm);
     if a.selected_vm > 0 && a.selected_vm >= a.vms.len() {
         a.selected_vm = a.vms.len().saturating_sub(1);
     }
 
-    save_config(&a.vms);
     rebuild_sidebar();
     update_info_labels();
     update_status_bar();
@@ -1326,7 +1590,7 @@ fn save_settings() {
         config.boot_order = boot_order;
 
         // Persist and refresh UI.
-        save_config(&a.vms);
+        save_vm_config(config);
         rebuild_sidebar();
         update_info_labels();
     }
@@ -1372,15 +1636,23 @@ fn create_new_vm() {
     let name = unsafe { core::str::from_utf8_unchecked(&name_buf[..p]) };
 
     let config = VmConfig::new(name);
+    save_vm_config(&config);
+    a.layout.root_vms.push(config.uuid.clone());
+    save_layout(&a.layout);
+
     a.vms.push(VmEntry {
         config,
-        handle: None,
         state: VmState::Stopped,
+        vmd_tid: 0,
+        cmd_pipe: 0,
+        status_pipe: 0,
+        shm_id: 0,
+        shm_ptr: core::ptr::null(),
+        instruction_count: 0,
     });
 
     a.selected_vm = a.vms.len() - 1;
 
-    save_config(&a.vms);
     rebuild_sidebar();
     update_info_labels();
     update_status_bar();
@@ -1397,8 +1669,8 @@ fn create_new_vm() {
 /// selected running VM:
 /// 1. Advance the PIT and deliver timer interrupts via the PIC.
 /// 2. Run the CPU for a batch of instructions.
-/// 3. Update the canvas with the current VGA framebuffer content.
-/// 4. Update the info labels with CPU state.
+/// 3. Read the SHM framebuffer and render to the canvas.
+/// 4. Update the info labels with cached instruction count.
 fn vm_tick() {
     let a = app();
 
@@ -1411,75 +1683,98 @@ fn vm_tick() {
         return;
     }
 
-    if let Some(ref handle) = entry.handle {
-        // Advance PIT and deliver timer interrupts.
-        for _ in 0..PIT_TICKS_PER_FRAME {
-            if handle.pit_tick() {
-                handle.pic_raise_irq(0);
+    // Poll status pipe for state changes, errors, serial output.
+    if entry.status_pipe != 0 {
+        let mut buf = [0u8; 512];
+        loop {
+            let n = ipc::pipe_read(entry.status_pipe, &mut buf);
+            if n == 0 || n == u32::MAX {
+                break;
             }
-        }
-
-        // Run the VM for a batch of instructions.
-        let exit = handle.run(INSTRUCTIONS_PER_TICK);
-
-        match exit {
-            ExitReason::Halted => {
-                anyos_std::println!("vmmanager: VM halted ({} instructions)",
-                    handle.instruction_count());
-                entry.state = VmState::Stopped;
-                a.canvas.clear(0xFF1E1E1E);
-                a.status_label.set_text("VM halted");
-                a.status_label.set_text_color(0xFF999999);
-            }
-            ExitReason::Exception => {
-                entry.state = VmState::Stopped;
-                a.canvas.clear(0xFF1E1E1E);
-                // Show detailed error info from libcorevm.
-                let rip = handle.last_error_rip();
-                if let Some(ref err_msg) = handle.last_error() {
-                    let detail = alloc::format!(
-                        "Exception at RIP=0x{:X}: {}", rip, err_msg
-                    );
-                    anyos_std::println!("vmmanager: {}", detail);
-                    a.status_label.set_text(&detail);
-                } else {
-                    anyos_std::println!("vmmanager: VM stopped: unrecoverable exception");
-                    a.status_label.set_text("VM stopped: unrecoverable exception");
+            let msg = core::str::from_utf8(&buf[..n as usize]).unwrap_or("");
+            for line in msg.split('\n') {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
                 }
-                a.status_label.set_text_color(0xFFFF4040);
-            }
-            ExitReason::InstructionLimit => {
-                // Normal: ran out of instruction budget, continue next tick.
-            }
-            ExitReason::StopRequested => {
-                entry.state = VmState::Stopped;
-                a.canvas.clear(0xFF1E1E1E);
-            }
-            ExitReason::Breakpoint => {
-                entry.state = VmState::Paused;
-            }
-        }
-
-        // Update the VGA display if the VM is still running.
-        if entry.state == VmState::Running {
-            if let Some(text_buf) = handle.vga_text_buffer() {
-                render_text_mode(&a.canvas, text_buf);
-            } else if let Some((fb, w, h, bpp)) = handle.vga_framebuffer() {
-                render_graphics_mode(&a.canvas, fb, w, h, bpp);
+                if line.starts_with("state 0 halted") {
+                    entry.state = VmState::Stopped;
+                    a.status_label.set_text("VM halted");
+                    a.status_label.set_text_color(0xFF999999);
+                } else if line.starts_with("state 0 stopped") {
+                    entry.state = VmState::Stopped;
+                } else if line.starts_with("state 0 error") || line.starts_with("error 0") {
+                    entry.state = VmState::Stopped;
+                    let detail = if line.len() > 8 { &line[8..] } else { "error" };
+                    a.status_label.set_text(detail);
+                    a.status_label.set_text_color(0xFFFF4040);
+                    anyos_std::println!("vmmanager: {}", detail);
+                } else if line.starts_with("serial 0 ") {
+                    let text = &line[9..];
+                    anyos_std::print!("{}", text);
+                }
             }
         }
+    }
 
-        // Update info labels.
-        update_info_labels();
+    // Read SHM header for instruction count and dirty flag.
+    if !entry.shm_ptr.is_null() {
+        unsafe {
+            let hdr = entry.shm_ptr;
+            let icount_lo = (hdr.add(20) as *const u32).read_volatile();
+            let icount_hi = (hdr.add(24) as *const u32).read_volatile();
+            entry.instruction_count = (icount_hi as u64) << 32 | icount_lo as u64;
 
-        // Refresh sidebar if VM state changed.
-        if entry.state != VmState::Running {
-            if entry.state == VmState::Stopped {
-                entry.handle = None;
+            // Check dirty flag.
+            let dirty = (hdr.add(12) as *const u32).read_volatile();
+            if dirty != 0 {
+                // Clear dirty flag.
+                (hdr as *mut u8).add(12).cast::<u32>().write_volatile(0);
+
+                // Read display info.
+                let width = (hdr.add(0) as *const u32).read_volatile();
+                let height = (hdr.add(4) as *const u32).read_volatile();
+                let bpp = (hdr.add(8) as *const u32).read_volatile();
+                let payload = hdr.add(SHM_HEADER);
+
+                if bpp == 0 && width == 80 && height == 25 {
+                    // Text mode: payload is u16 cells.
+                    let text_ptr = payload as *const u16;
+                    let text_len = (width * height) as usize;
+                    let text_buf = core::slice::from_raw_parts(text_ptr, text_len);
+                    render_text_mode(&a.canvas, text_buf);
+                } else if bpp > 0 && width > 0 && height > 0 {
+                    // Graphics mode: payload is raw pixel data.
+                    let bytes_per_pixel = ((bpp as usize) + 7) / 8;
+                    let byte_len = (width as usize) * (height as usize) * bytes_per_pixel;
+                    let fb = core::slice::from_raw_parts(payload, byte_len);
+                    render_graphics_mode(&a.canvas, fb, width, height, bpp as u8);
+                }
             }
-            rebuild_sidebar();
-            update_status_bar();
+
+            // Also check VM state from SHM header.
+            let shm_state = (hdr.add(16) as *const u32).read_volatile();
+            if shm_state == 2 || shm_state == 3 {
+                // Halted or error — VM stopped running in vmd.
+                if entry.state == VmState::Running {
+                    entry.state = VmState::Stopped;
+                    if shm_state == 2 {
+                        a.status_label.set_text("VM halted");
+                        a.status_label.set_text_color(0xFF999999);
+                    }
+                }
+            }
         }
+    }
+
+    // Update info labels.
+    update_info_labels();
+
+    // Refresh sidebar if VM state changed.
+    if entry.state != VmState::Running {
+        cleanup_vm_ipc(entry);
+        rebuild_sidebar();
+        update_status_bar();
     }
 }
 
@@ -1491,11 +1786,8 @@ fn main() {
         return;
     }
 
-    // Initialize the VM library.
-    let corevm_available = libcorevm_client::init();
-    if !corevm_available {
-        anyos_std::println!("vmmanager: libcorevm not available, VM execution disabled");
-    }
+    // VM execution is now handled by the vmd daemon process.
+    // No libcorevm initialization needed in vmmanager.
 
     // ── Main window ────────────────────────────────────────────────
 
@@ -1503,33 +1795,49 @@ fn main() {
 
     // ── Toolbar (DOCK_TOP) ─────────────────────────────────────────
 
+    let tc = anyui::theme::colors();
+
     let toolbar = anyui::Toolbar::new();
     toolbar.set_dock(anyui::DOCK_TOP);
-    toolbar.set_size(WIN_W, 40);
-    toolbar.set_color(0xFF252526);
-    toolbar.set_padding(6, 6, 6, 6);
+    toolbar.set_size(WIN_W, 42);
+    toolbar.set_color(tc.sidebar_bg);
+    toolbar.set_padding(4, 4, 4, 4);
 
     let title_lbl = toolbar.add_label("VM Manager");
     title_lbl.set_text_color(0xFF00C8FF);
-    title_lbl.set_size(100, 28);
+    title_lbl.set_size(110, 34);
     title_lbl.set_font_size(14);
+    title_lbl.set_font(1); // bold
 
     toolbar.add_separator();
 
-    let btn_new = toolbar.add_button("New VM");
-    btn_new.set_size(70, 28);
+    let btn_new = toolbar.add_icon_button("");
+    btn_new.set_size(34, 34);
+    btn_new.set_system_icon("circle-plus", anyui::IconType::Outline, tc.text, 24);
+    btn_new.set_tooltip("New VM");
 
-    let btn_start = toolbar.add_button("Start");
-    btn_start.set_size(60, 28);
+    let btn_start = toolbar.add_icon_button("");
+    btn_start.set_size(34, 34);
+    btn_start.set_system_icon("player-play", anyui::IconType::Outline, tc.check_mark, 24);
+    btn_start.set_color(tc.success);
+    btn_start.set_tooltip("Start VM");
 
-    let btn_stop = toolbar.add_button("Stop");
-    btn_stop.set_size(60, 28);
+    let btn_stop = toolbar.add_icon_button("");
+    btn_stop.set_size(34, 34);
+    btn_stop.set_system_icon("player-stop", anyui::IconType::Outline, tc.text, 24);
+    btn_stop.set_tooltip("Stop VM");
 
-    let btn_settings = toolbar.add_button("Settings");
-    btn_settings.set_size(70, 28);
+    toolbar.add_separator();
 
-    let btn_delete = toolbar.add_button("Delete");
-    btn_delete.set_size(60, 28);
+    let btn_settings = toolbar.add_icon_button("");
+    btn_settings.set_size(34, 34);
+    btn_settings.set_system_icon("settings", anyui::IconType::Outline, tc.text, 24);
+    btn_settings.set_tooltip("VM Settings");
+
+    let btn_delete = toolbar.add_icon_button("");
+    btn_delete.set_size(34, 34);
+    btn_delete.set_system_icon("trash", anyui::IconType::Outline, tc.text, 24);
+    btn_delete.set_tooltip("Delete VM");
 
     win.add(&toolbar);
 
@@ -1537,14 +1845,14 @@ fn main() {
 
     let status_bar = anyui::View::new();
     status_bar.set_dock(anyui::DOCK_BOTTOM);
-    status_bar.set_size(WIN_W, 28);
-    status_bar.set_color(0xFF252526);
+    status_bar.set_size(WIN_W, 24);
+    status_bar.set_color(0xFF1A1A2E);
 
     let status_label = anyui::Label::new("Ready | 0 VM running");
-    status_label.set_position(8, 4);
-    status_label.set_size(WIN_W - 16, 20);
-    status_label.set_text_color(0xFF999999);
-    status_label.set_font_size(12);
+    status_label.set_position(10, 3);
+    status_label.set_size(WIN_W - 20, 18);
+    status_label.set_text_color(0xFF8888AA);
+    status_label.set_font_size(11);
     status_bar.add(&status_label);
 
     win.add(&status_bar);
@@ -1554,14 +1862,14 @@ fn main() {
     let sidebar = anyui::View::new();
     sidebar.set_dock(anyui::DOCK_LEFT);
     sidebar.set_size(SIDEBAR_W, WIN_H);
-    sidebar.set_color(0xFF2C2C2E);
+    sidebar.set_color(0xFF1E1E2E);
 
-    let sidebar_title = anyui::Label::new("My VMs");
-    sidebar_title.set_position(8, 4);
-    sidebar_title.set_size(SIDEBAR_W - 16, 24);
-    sidebar_title.set_text_color(0xFF00C8FF);
-    sidebar_title.set_font_size(13);
-    sidebar.add(&sidebar_title);
+    // TreeView for VM list with folder organization.
+    let sidebar_tree = anyui::TreeView::new(SIDEBAR_W, WIN_H - 42);
+    sidebar_tree.set_dock(anyui::DOCK_FILL);
+    sidebar_tree.set_row_height(28);
+    sidebar_tree.set_indent_width(16);
+    sidebar.add(&sidebar_tree);
 
     win.add(&sidebar);
 
@@ -1569,52 +1877,52 @@ fn main() {
 
     let content_view = anyui::View::new();
     content_view.set_dock(anyui::DOCK_FILL);
-    content_view.set_color(0xFF1E1E1E);
+    content_view.set_color(0xFF16161E);
 
-    // Canvas for VGA display.
+    // Canvas for VGA display (centered with border).
     let canvas = anyui::Canvas::new(CANVAS_W, CANVAS_H);
-    canvas.set_position(8, 8);
+    canvas.set_position(12, 12);
     canvas.set_size(CANVAS_W, CANVAS_H);
-    canvas.clear(0xFF1E1E1E);
+    canvas.clear(0xFF0A0A14);
     canvas.set_interactive(true);
     content_view.add(&canvas);
 
     // VM info panel (below the canvas).
-    let info_y = CANVAS_H as i32 + 16;
+    let info_y = CANVAS_H as i32 + 20;
 
     let state_label = anyui::Label::new("State: No VM selected");
-    state_label.set_position(8, info_y);
+    state_label.set_position(12, info_y);
     state_label.set_size(320, 20);
-    state_label.set_text_color(0xFF999999);
-    state_label.set_font_size(13);
+    state_label.set_text_color(0xFF888888);
+    state_label.set_font_size(12);
     content_view.add(&state_label);
 
     let mode_label = anyui::Label::new("Mode: -");
-    mode_label.set_position(8, info_y + 24);
+    mode_label.set_position(12, info_y + 22);
     mode_label.set_size(320, 20);
-    mode_label.set_text_color(0xFFE6E6E6);
-    mode_label.set_font_size(13);
+    mode_label.set_text_color(0xFFCCCCCC);
+    mode_label.set_font_size(12);
     content_view.add(&mode_label);
 
     let ram_label = anyui::Label::new("RAM: -");
-    ram_label.set_position(340, info_y);
+    ram_label.set_position(350, info_y);
     ram_label.set_size(200, 20);
-    ram_label.set_text_color(0xFFE6E6E6);
-    ram_label.set_font_size(13);
+    ram_label.set_text_color(0xFFCCCCCC);
+    ram_label.set_font_size(12);
     content_view.add(&ram_label);
 
     let insn_label = anyui::Label::new("Instructions: -");
-    insn_label.set_position(340, info_y + 24);
+    insn_label.set_position(350, info_y + 22);
     insn_label.set_size(300, 20);
-    insn_label.set_text_color(0xFFE6E6E6);
-    insn_label.set_font_size(13);
+    insn_label.set_text_color(0xFFCCCCCC);
+    insn_label.set_font_size(12);
     content_view.add(&insn_label);
 
     win.add(&content_view);
 
     // ── Load saved VMs ─────────────────────────────────────────────
 
-    let vms = load_config();
+    let (vms, layout) = load_all_vms();
 
     // ── Initialize global state ────────────────────────────────────
 
@@ -1632,11 +1940,13 @@ fn main() {
                 insn_label,
             },
             content_view,
-            sidebar_labels: Vec::new(),
+            sidebar_tree,
+            tree_root: 0,
+            node_map: Vec::new(),
             vms,
             selected_vm: 0,
+            layout,
             settings: None,
-            corevm_available,
         });
     }
 
@@ -1646,6 +1956,30 @@ fn main() {
     update_status_bar();
 
     // ── Event handlers ─────────────────────────────────────────────
+
+    // TreeView selection: use node_map to resolve node → VM or folder.
+    app().sidebar_tree.on_selection_changed(|ev| {
+        let a = app();
+        let sel = ev.index as usize;
+        if ev.index == u32::MAX || sel >= a.node_map.len() {
+            return;
+        }
+        match a.node_map[sel] {
+            NodeKind::Vm(vm_idx) => {
+                if vm_idx < a.vms.len() && a.selected_vm != vm_idx {
+                    a.selected_vm = vm_idx;
+                    update_info_labels();
+
+                    if a.vms[vm_idx].state != VmState::Running {
+                        a.canvas.clear(0xFF0A0A14);
+                    }
+                }
+            }
+            NodeKind::Root | NodeKind::Folder(_) => {
+                // Selecting a folder or root — ignore (expand/collapse handled by TreeView).
+            }
+        }
+    });
 
     // Toolbar button: New VM.
     btn_new.on_click(|_| {
@@ -1676,17 +2010,15 @@ fn main() {
     app().win.on_key_down(|ke| {
         let a = app();
 
-        // Forward to running VM.
+        // Forward to running VM via IPC.
         if a.selected_vm < a.vms.len() {
             let entry = &a.vms[a.selected_vm];
-            if entry.state == VmState::Running {
-                if let Some(ref handle) = entry.handle {
-                    let scancode = keycode_to_scancode(ke.keycode);
-                    if scancode != 0 {
-                        handle.ps2_key_press(scancode);
-                        handle.ps2_key_release(scancode);
-                        return;
-                    }
+            if entry.state == VmState::Running && entry.cmd_pipe != 0 {
+                let scancode = keycode_to_scancode(ke.keycode);
+                if scancode != 0 {
+                    let cmd = format!("key {}", scancode);
+                    ipc::pipe_write(entry.cmd_pipe, cmd.as_bytes());
+                    return;
                 }
             }
         }
@@ -1702,16 +2034,15 @@ fn main() {
         let a = app();
         if a.selected_vm < a.vms.len() {
             let entry = &a.vms[a.selected_vm];
-            if entry.state == VmState::Running {
-                if let Some(ref handle) = entry.handle {
-                    let ps2_buttons = match button {
-                        1 => 0x01, // left
-                        2 => 0x04, // middle
-                        3 => 0x02, // right
-                        _ => 0,
-                    };
-                    handle.ps2_mouse_move(0, 0, ps2_buttons);
-                }
+            if entry.state == VmState::Running && entry.cmd_pipe != 0 {
+                let ps2_buttons = match button {
+                    1 => 0x01u8,
+                    2 => 0x04,
+                    3 => 0x02,
+                    _ => 0,
+                };
+                let cmd = format!("mouse 0 0 {}", ps2_buttons);
+                ipc::pipe_write(entry.cmd_pipe, cmd.as_bytes());
             }
         }
     });
@@ -1720,10 +2051,8 @@ fn main() {
         let a = app();
         if a.selected_vm < a.vms.len() {
             let entry = &a.vms[a.selected_vm];
-            if entry.state == VmState::Running {
-                if let Some(ref handle) = entry.handle {
-                    handle.ps2_mouse_move(0, 0, 0);
-                }
+            if entry.state == VmState::Running && entry.cmd_pipe != 0 {
+                ipc::pipe_write(entry.cmd_pipe, b"mouse 0 0 0");
             }
         }
     });
@@ -1732,21 +2061,19 @@ fn main() {
         let a = app();
         if a.selected_vm < a.vms.len() {
             let entry = &a.vms[a.selected_vm];
-            if entry.state == VmState::Running {
-                if let Some(ref handle) = entry.handle {
-                    // Track relative mouse movement using statics.
-                    static mut LAST_X: i32 = 0;
-                    static mut LAST_Y: i32 = 0;
-                    let (dx, dy) = unsafe {
-                        let dx = x - LAST_X;
-                        let dy = y - LAST_Y;
-                        LAST_X = x;
-                        LAST_Y = y;
-                        (dx, dy)
-                    };
-                    if dx != 0 || dy != 0 {
-                        handle.ps2_mouse_move(dx as i16, dy as i16, 0);
-                    }
+            if entry.state == VmState::Running && entry.cmd_pipe != 0 {
+                static mut LAST_X: i32 = 0;
+                static mut LAST_Y: i32 = 0;
+                let (dx, dy) = unsafe {
+                    let dx = x - LAST_X;
+                    let dy = y - LAST_Y;
+                    LAST_X = x;
+                    LAST_Y = y;
+                    (dx, dy)
+                };
+                if dx != 0 || dy != 0 {
+                    let cmd = format!("mouse {} {} 0", dx, dy);
+                    ipc::pipe_write(entry.cmd_pipe, cmd.as_bytes());
                 }
             }
         }
@@ -1758,10 +2085,11 @@ fn main() {
         let a = app();
         for entry in a.vms.iter_mut() {
             if entry.state != VmState::Stopped {
-                if let Some(ref handle) = entry.handle {
-                    handle.request_stop();
+                if entry.cmd_pipe != 0 {
+                    ipc::pipe_write(entry.cmd_pipe, b"stop");
+                    ipc::pipe_write(entry.cmd_pipe, b"quit");
                 }
-                entry.handle = None;
+                cleanup_vm_ipc(entry);
                 entry.state = VmState::Stopped;
             }
         }

@@ -177,7 +177,7 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
             }
         } else {
             let idle_st = PER_CPU_IDLE_STACK_TOP[cpu_id].load(Ordering::Relaxed);
-            if idle_st >= 0xFFFF_FFFF_8000_0000 {
+            if idle_st >= super::KERNEL_ADDR_MIN {
                 crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_st);
                 idle_stack_top = idle_st;
             }
@@ -192,7 +192,7 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
     let kcr3 = crate::memory::virtual_mem::kernel_cr3();
     crate::arch::hal::switch_page_table(kcr3);
 
-    if idle_stack_top >= 0xFFFF_FFFF_8000_0000 {
+    if idle_stack_top >= super::KERNEL_ADDR_MIN {
         unsafe {
             #[cfg(target_arch = "x86_64")]
             core::arch::asm!(
@@ -258,7 +258,7 @@ pub fn fault_kill_and_idle(signal: u32) -> ! {
             }
         } else {
             let idle_st = PER_CPU_IDLE_STACK_TOP[cpu_id].load(Ordering::Relaxed);
-            if idle_st >= 0xFFFF_FFFF_8000_0000 {
+            if idle_st >= super::KERNEL_ADDR_MIN {
                 crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_st);
                 idle_stack_top = idle_st;
             }
@@ -279,7 +279,7 @@ pub fn fault_kill_and_idle(signal: u32) -> ! {
     let kcr3 = crate::memory::virtual_mem::kernel_cr3();
     crate::arch::hal::switch_page_table(kcr3);
 
-    if idle_stack_top >= 0xFFFF_FFFF_8000_0000 {
+    if idle_stack_top >= super::KERNEL_ADDR_MIN {
         unsafe {
             #[cfg(target_arch = "x86_64")]
             core::arch::asm!(

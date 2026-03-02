@@ -1,11 +1,11 @@
 //! String operation instruction handlers.
 //!
-//! Implements MOVS, CMPS, STOS, LODS, and SCAS. All string operations
-//! respect the DF (direction flag): if DF=0, index registers increment;
-//! if DF=1, they decrement.
+//! Implements MOVS, CMPS, STOS, LODS, SCAS, INS, and OUTS. All string
+//! operations respect the DF (direction flag): if DF=0, index registers
+//! increment; if DF=1, they decrement.
 //!
 //! REP/REPE/REPNE prefix handling is built into each function:
-//! - REP (MOVS/STOS/LODS): repeat while RCX != 0
+//! - REP (MOVS/STOS/LODS/INS/OUTS): repeat while RCX != 0
 //! - REPE (CMPS/SCAS): repeat while RCX != 0 AND ZF=1
 //! - REPNE (CMPS/SCAS): repeat while RCX != 0 AND ZF=0
 //! - Without REP: execute once
@@ -14,6 +14,7 @@ use crate::cpu::Cpu;
 use crate::error::Result;
 use crate::flags::{self, OperandSize};
 use crate::instruction::{DecodedInst, RepPrefix};
+use crate::io::IoDispatch;
 use crate::memory::{GuestMemory, Mmu};
 use crate::registers::{GprIndex, SegReg};
 
@@ -380,6 +381,103 @@ pub fn exec_scas(
 
             write_di(cpu, inst, read_di(cpu, inst).wrapping_add(delta as u64));
         }
+    }
+
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
+}
+
+/// Determine element size for INS/OUTS from the opcode.
+///
+/// 0x6C/0x6E = byte, 0x6D/0x6F = word/dword per operand size.
+fn ins_outs_element_size(inst: &DecodedInst) -> OperandSize {
+    let op = inst.opcode as u8;
+    if (op & 1) == 0 {
+        OperandSize::Byte
+    } else {
+        inst.operand_size
+    }
+}
+
+/// INS: read from I/O port DX, write to ES:[RDI].
+///
+/// REP prefix: repeat while RCX != 0.
+pub fn exec_ins(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    memory: &mut GuestMemory,
+    mmu: &Mmu,
+    io: &mut IoDispatch,
+) -> Result<()> {
+    let elem = ins_outs_element_size(inst);
+    let delta = step(cpu, elem);
+    let port = cpu.regs.read_gpr16(GprIndex::Rdx as u8);
+    let size_io = elem.bytes() as u8;
+    // Cap at 4 bytes for I/O port access.
+    let size_io = if size_io > 4 { 4 } else { size_io };
+
+    if inst.rep == RepPrefix::Rep {
+        loop {
+            let count = read_counter(cpu, inst);
+            if count == 0 {
+                break;
+            }
+
+            let val = io.port_in(port, size_io)? as u64;
+            let d = dst_linear(cpu, inst);
+            translate_and_write(cpu, d, elem, val, mmu, memory)?;
+
+            write_di(cpu, inst, read_di(cpu, inst).wrapping_add(delta as u64));
+            write_counter(cpu, inst, count - 1);
+        }
+    } else {
+        let val = io.port_in(port, size_io)? as u64;
+        let d = dst_linear(cpu, inst);
+        translate_and_write(cpu, d, elem, val, mmu, memory)?;
+
+        write_di(cpu, inst, read_di(cpu, inst).wrapping_add(delta as u64));
+    }
+
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
+}
+
+/// OUTS: read from DS:[RSI], write to I/O port DX.
+///
+/// REP prefix: repeat while RCX != 0.
+pub fn exec_outs(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    memory: &mut GuestMemory,
+    mmu: &Mmu,
+    io: &mut IoDispatch,
+) -> Result<()> {
+    let elem = ins_outs_element_size(inst);
+    let delta = step(cpu, elem);
+    let port = cpu.regs.read_gpr16(GprIndex::Rdx as u8);
+    let size_io = elem.bytes() as u8;
+    let size_io = if size_io > 4 { 4 } else { size_io };
+
+    if inst.rep == RepPrefix::Rep {
+        loop {
+            let count = read_counter(cpu, inst);
+            if count == 0 {
+                break;
+            }
+
+            let s = src_linear(cpu, inst);
+            let val = translate_and_read(cpu, s, elem, mmu, memory)?;
+            io.port_out(port, size_io, val as u32)?;
+
+            write_si(cpu, inst, read_si(cpu, inst).wrapping_add(delta as u64));
+            write_counter(cpu, inst, count - 1);
+        }
+    } else {
+        let s = src_linear(cpu, inst);
+        let val = translate_and_read(cpu, s, elem, mmu, memory)?;
+        io.port_out(port, size_io, val as u32)?;
+
+        write_si(cpu, inst, read_si(cpu, inst).wrapping_add(delta as u64));
     }
 
     cpu.regs.rip += inst.length as u64;

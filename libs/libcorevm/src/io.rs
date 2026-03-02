@@ -7,7 +7,11 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 use crate::error::Result;
+
+/// Diagnostic counter for total CF8 writes reaching the dispatcher.
+static CF8_DISPATCH_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// Trait implemented by devices that respond to x86 port I/O.
 ///
@@ -103,6 +107,17 @@ impl IoDispatch {
     /// [`IoHandler::write`]. If no handler is registered, the write is
     /// silently ignored (standard x86 bus behavior).
     pub fn port_out(&mut self, port: u16, size: u8, val: u32) -> Result<()> {
+        // Diagnostic: track ALL writes to PCI config address port.
+        if port == 0xCF8 {
+            let n = CF8_DISPATCH_COUNT.fetch_add(1, Ordering::Relaxed);
+            // Log writes 15-45 (skip early ones we already see, catch probe phase).
+            if n >= 15 && n < 45 {
+                libsyscall::serial_print(format_args!(
+                    "[io-diag] CF8 dispatch #{}: size={} val=0x{:08X}\n",
+                    n, size, val
+                ));
+            }
+        }
         for region in self.regions.iter_mut() {
             if region.contains(port) {
                 return region.handler.write(port, size, val);
@@ -110,5 +125,10 @@ impl IoDispatch {
         }
         // No handler — silently discard the write.
         Ok(())
+    }
+
+    /// Return the number of registered I/O regions (diagnostic).
+    pub fn region_count(&self) -> usize {
+        self.regions.len()
     }
 }

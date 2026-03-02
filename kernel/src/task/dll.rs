@@ -34,8 +34,14 @@ pub const DLL_PD_END: usize = 63; // 0x07FFFFFF >> 21 & 0x1FF
 
 /// Temp virtual addresses for demand-page copy operations.
 /// Used only while LOADED_DLLS lock is held (serialized).
+#[cfg(target_arch = "x86_64")]
 const TEMP_COPY_SRC: u64 = 0xFFFF_FFFF_81F2_0000;
+#[cfg(target_arch = "x86_64")]
 const TEMP_COPY_DST: u64 = 0xFFFF_FFFF_81F2_1000;
+#[cfg(target_arch = "aarch64")]
+const TEMP_COPY_SRC: u64 = 0xFFFF_0000_81F2_0000;
+#[cfg(target_arch = "aarch64")]
+const TEMP_COPY_DST: u64 = 0xFFFF_0000_81F2_1000;
 
 /// A loaded DLIB: name, base virtual address, section pages, and metadata.
 pub struct LoadedDll {
@@ -106,7 +112,17 @@ const ELFCLASS64: u8 = 2;
 const ELFDATA2LSB: u8 = 1;
 const ET_DYN: u16 = 3;
 const EM_X86_64: u16 = 62;
+const EM_AARCH64: u16 = 183;
 const PT_LOAD: u32 = 1;
+
+/// Architecture-aware temp virtual address for DLL page copy operations.
+#[inline]
+fn dll_temp_virt() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    { 0xFFFF_FFFF_81F1_0000 }
+    #[cfg(target_arch = "aarch64")]
+    { 0xFFFF_0000_81F1_0000 }
+}
 const PT_DYNAMIC: u32 = 2;
 const PF_W: u32 = 2;
 
@@ -472,8 +488,12 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
         crate::serial_println!("  dload: not ET_DYN");
         return None;
     }
-    if read_u16_le(data, E_MACHINE) != EM_X86_64 {
-        crate::serial_println!("  dload: not x86_64");
+    #[cfg(target_arch = "x86_64")]
+    let expected_machine = EM_X86_64;
+    #[cfg(target_arch = "aarch64")]
+    let expected_machine = EM_AARCH64;
+    if read_u16_le(data, E_MACHINE) != expected_machine {
+        crate::serial_println!("  dload: wrong architecture (expected {})", expected_machine);
         return None;
     }
 
@@ -602,7 +622,7 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
     }
 
     // ── Allocate and copy RO pages ──
-    let temp_virt = VirtAddr::new(0xFFFF_FFFF_81F1_0000);
+    let temp_virt = VirtAddr::new(dll_temp_virt());
     let mut ro_pages = Vec::with_capacity(ro_page_count as usize);
 
     for i in 0..ro_page_count as usize {
@@ -750,7 +770,7 @@ pub fn load_dll(path: &str, expected_base: u64) -> Result<u32, &'static str> {
         return Err("DLIB base_vaddr does not match expected address");
     }
 
-    let temp_virt = VirtAddr::new(0xFFFF_FFFF_81F1_0000);
+    let temp_virt = VirtAddr::new(dll_temp_virt());
     let content_base = PAGE_SIZE as usize; // Skip header page
 
     // Allocate shared RO pages (.rodata + .text)
@@ -962,7 +982,7 @@ fn load_dlib_v3_dynamic(data: &[u8], path: &str) -> Option<u64> {
         return None;
     }
 
-    let temp_virt = VirtAddr::new(0xFFFF_FFFF_81F1_0000);
+    let temp_virt = VirtAddr::new(dll_temp_virt());
     let content_base = PAGE_SIZE as usize;
 
     let ro_pages = match alloc_and_copy_pages(data, content_base, ro_count as usize, temp_virt) {

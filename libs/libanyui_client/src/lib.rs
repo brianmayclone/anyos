@@ -181,6 +181,7 @@ struct AnyuiLib {
     set_split_ratio: extern "C" fn(u32, u32),
     set_min_split: extern "C" fn(u32, u32),
     set_max_split: extern "C" fn(u32, u32),
+    pub(crate) splitview_set_resizable: extern "C" fn(u32, u32),
     // Canvas
     canvas_set_pixel: extern "C" fn(u32, i32, i32, u32),
     canvas_clear: extern "C" fn(u32, u32),
@@ -423,6 +424,7 @@ pub fn init() -> bool {
             set_split_ratio: resolve(&handle, "anyui_set_split_ratio"),
             set_min_split: resolve(&handle, "anyui_set_min_split"),
             set_max_split: resolve(&handle, "anyui_set_max_split"),
+            splitview_set_resizable: resolve(&handle, "anyui_splitview_set_resizable"),
             // Canvas
             canvas_set_pixel: resolve(&handle, "anyui_canvas_set_pixel"),
             canvas_clear: resolve(&handle, "anyui_canvas_clear"),

@@ -426,6 +426,15 @@ pub fn run_once() -> u32 {
                         }
                     }
 
+                    // Update cursor shape (check SplitView dividers etc.)
+                    let desired_cursor = control::cursor_at_point(&st.controls, win_id, mx, my, 0, 0);
+                    if desired_cursor != st.current_cursor {
+                        st.current_cursor = desired_cursor;
+                        // CMD_SET_CURSOR = 0x1018
+                        let cmd: [u32; 5] = [0x1018, comp_window_id, desired_cursor, 0, 0];
+                        crate::syscall::evt_chan_emit(st.channel_id, &cmd);
+                    }
+
                     // Dispatch mouse_move to hovered control (for internal hover tracking)
                     if let Some(hover_id) = st.hovered {
                         if Some(hover_id) != st.pressed {
