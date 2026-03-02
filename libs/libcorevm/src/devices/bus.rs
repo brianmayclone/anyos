@@ -41,8 +41,10 @@
 //! | 0x3D | 1 | Interrupt Pin |
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 use crate::error::Result;
 use crate::io::IoHandler;
+use crate::memory::mmio::MmioHandler;
 
 /// A single PCI device with a 256-byte configuration space (header type 0).
 #[derive(Debug, Clone)]
@@ -187,6 +189,91 @@ impl PciBus {
         self.devices.push(pci_device);
     }
 
+    /// Read from PCI config space by explicit BDF and register (MMCONFIG path).
+    ///
+    /// Returns bytes from the device's 256-byte config space. Registers
+    /// beyond offset 255 return all-ones (extended config space not emulated).
+    pub fn mmcfg_read(&mut self, bus: u8, device: u8, function: u8, register: usize, size: u8) -> u64 {
+        if let Some(dev) = self.find_device(bus, device, function) {
+            if register + (size as usize) <= dev.config_space.len() {
+                match size {
+                    1 => dev.config_space[register] as u64,
+                    2 => {
+                        (dev.config_space[register] as u64)
+                            | ((dev.config_space[register + 1] as u64) << 8)
+                    }
+                    4 => config_read_u32(&dev.config_space, register) as u64,
+                    _ => 0xFFFFFFFF,
+                }
+            } else {
+                // Register offset out of range.
+                match size {
+                    1 => 0xFF,
+                    2 => 0xFFFF,
+                    _ => 0xFFFFFFFF,
+                }
+            }
+        } else {
+            // No device at this BDF.
+            match size {
+                1 => 0xFF,
+                2 => 0xFFFF,
+                _ => 0xFFFFFFFF,
+            }
+        }
+    }
+
+    /// Write to PCI config space by explicit BDF and register (MMCONFIG path).
+    ///
+    /// Handles BAR size probing and read-only field protection, same as the
+    /// CF8/CFC I/O path.
+    pub fn mmcfg_write(&mut self, bus: u8, device: u8, function: u8, register: usize, size: u8, val: u64) {
+        if let Some(dev) = self.find_device(bus, device, function) {
+            if register >= dev.config_space.len() {
+                return;
+            }
+
+            // BAR size probing (dword writes to BAR region).
+            if size == 4 && register >= 0x10 && register <= 0x24 {
+                let bar_index = (register - 0x10) / 4;
+                if bar_index < 6 {
+                    let val32 = val as u32;
+                    if val32 == 0xFFFFFFFF {
+                        config_write_u32(&mut dev.config_space, register, dev.bar_sizes[bar_index]);
+                        return;
+                    }
+                    let type_bits = dev.config_space[register] & 0x0F;
+                    let new_val = (val32 & 0xFFFFFFF0) | (type_bits as u32);
+                    config_write_u32(&mut dev.config_space, register, new_val);
+                    return;
+                }
+            }
+
+            // Read-only field protection.
+            match register {
+                0x00..=0x03 | 0x08..=0x0B => { /* Vendor/Device ID, Class: read-only */ }
+                _ => match size {
+                    1 => {
+                        if register < dev.config_space.len() {
+                            dev.config_space[register] = val as u8;
+                        }
+                    }
+                    2 => {
+                        if register + 1 < dev.config_space.len() {
+                            config_write_u16(&mut dev.config_space, register, val as u16);
+                        }
+                    }
+                    4 => {
+                        if register + 3 < dev.config_space.len() {
+                            config_write_u32(&mut dev.config_space, register, val as u32);
+                        }
+                    }
+                    _ => {}
+                },
+            }
+        }
+    }
+
     /// Find the device matching the bus/device/function from the current
     /// config address.
     fn find_device(&mut self, bus: u8, device: u8, function: u8) -> Option<&mut PciDevice> {
@@ -281,12 +368,20 @@ impl PciBus {
 impl IoHandler for PciBus {
     /// Read from PCI bus I/O ports.
     ///
-    /// - 0xCF8: returns the last config address written
+    /// - 0xCF8-0xCFB: returns bytes/words/dword of the config address latch
     /// - 0xCFC-0xCFF: reads from PCI configuration data, supports
     ///   byte and word sub-accesses
     fn read(&mut self, port: u16, size: u8) -> Result<u32> {
         let val = match port {
-            0xCF8 => self.config_address,
+            0xCF8..=0xCFB => {
+                let byte_offset = (port - 0xCF8) as u32;
+                let shifted = self.config_address >> (byte_offset * 8);
+                match size {
+                    1 => shifted & 0xFF,
+                    2 => shifted & 0xFFFF,
+                    _ => shifted,
+                }
+            }
             0xCFC..=0xCFF => {
                 let dword = self.config_read();
                 let byte_offset = (port - 0xCFC) as u32;
@@ -304,12 +399,12 @@ impl IoHandler for PciBus {
 
     /// Write to PCI bus I/O ports.
     ///
-    /// - 0xCF8: stores the configuration address
+    /// - 0xCF8-0xCFB: stores the configuration address latch
     /// - 0xCFC-0xCFF: writes to PCI configuration data, supports
     ///   byte and word sub-accesses
     fn write(&mut self, port: u16, size: u8, val: u32) -> Result<()> {
         match port {
-            0xCF8 => {
+            0xCF8..=0xCFB => {
                 // Log the first few config address writes to diagnose PCI scanning.
                 if self.log_count < 100 {
                     self.log_count += 1;
@@ -323,7 +418,25 @@ impl IoHandler for PciBus {
                         val, size, enable, bus, dev, func, reg
                     ));
                 }
-                self.config_address = val;
+
+                // Mechanism #1 config-address latch supports byte/word accesses
+                // across 0xCF8..0xCFB. Merge sub-accesses into the 32-bit latch.
+                let new_addr = if size >= 4 && port == 0xCF8 {
+                    val
+                } else {
+                    let byte_offset = (port - 0xCF8) as u32;
+                    let mask = match size {
+                        1 => 0xFFu32,
+                        2 => 0xFFFFu32,
+                        _ => 0xFFFF_FFFFu32,
+                    };
+                    let shifted_mask = mask << (byte_offset * 8);
+                    let shifted_val = (val & mask) << (byte_offset * 8);
+                    (self.config_address & !shifted_mask) | shifted_val
+                };
+
+                // Bits 1:0 are reserved and read as zero in config-address.
+                self.config_address = new_addr & !0x3;
             }
             0xCFC..=0xCFF => {
                 // Read-modify-write for sub-dword accesses.
@@ -370,4 +483,80 @@ fn config_write_u32(data: &mut [u8], offset: usize, val: u32) {
 fn config_write_u16(data: &mut [u8], offset: usize, val: u16) {
     data[offset] = val as u8;
     data[offset + 1] = (val >> 8) as u8;
+}
+
+// ── MMCONFIG (PCI Express Enhanced Configuration) MMIO handler ──
+
+/// Diagnostic counter for MMCONFIG read accesses.
+static MMCFG_READ_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// PCI Express Enhanced Configuration Mechanism (MMCONFIG) handler.
+///
+/// Maps a 256 MiB physical address region into PCI configuration space.
+/// Each BDF (bus/device/function) gets 4 KiB of config space. The address
+/// layout within the region is:
+///
+/// ```text
+/// offset = (bus << 20) | (device << 15) | (function << 12) | register
+/// ```
+///
+/// SeaBIOS on Q35 reads the PCIEXBAR register from the MCH to discover
+/// this region, then uses MMIO reads instead of CF8/CFC port I/O for
+/// all PCI config space accesses.
+pub struct PciMmcfgHandler {
+    /// Raw pointer to the PCI bus (valid for the lifetime of the VM).
+    bus_ptr: *mut PciBus,
+}
+
+impl PciMmcfgHandler {
+    /// Create a new MMCONFIG handler pointing to the given PCI bus.
+    pub fn new(bus_ptr: *mut PciBus) -> Self {
+        PciMmcfgHandler { bus_ptr }
+    }
+
+    /// Decode an MMCONFIG offset into (bus, device, function, register).
+    #[inline]
+    fn decode_offset(offset: u64) -> (u8, u8, u8, usize) {
+        let bus = ((offset >> 20) & 0xFF) as u8;
+        let device = ((offset >> 15) & 0x1F) as u8;
+        let function = ((offset >> 12) & 0x07) as u8;
+        let register = (offset & 0xFFF) as usize;
+        (bus, device, function, register)
+    }
+}
+
+impl MmioHandler for PciMmcfgHandler {
+    /// Read from MMCONFIG region.
+    ///
+    /// Decodes the MMIO offset into a PCI BDF + register and reads from
+    /// the device's configuration space. Returns all-ones if no device
+    /// exists at the addressed BDF.
+    fn read(&mut self, offset: u64, size: u8) -> Result<u64> {
+        let (bus, device, function, register) = Self::decode_offset(offset);
+        let pci_bus = unsafe { &mut *self.bus_ptr };
+        let val = pci_bus.mmcfg_read(bus, device, function, register, size);
+
+        // Diagnostic logging for the first accesses.
+        let n = MMCFG_READ_COUNT.fetch_add(1, Ordering::Relaxed);
+        if n < 80 {
+            libsyscall::serial_print(format_args!(
+                "[mmcfg] read #{}: bus={} dev={} func={} reg=0x{:03X} size={} => 0x{:X}\n",
+                n, bus, device, function, register, size, val
+            ));
+        }
+
+        Ok(val)
+    }
+
+    /// Write to MMCONFIG region.
+    ///
+    /// Decodes the MMIO offset into a PCI BDF + register and writes to
+    /// the device's configuration space with BAR probing and read-only
+    /// field protection.
+    fn write(&mut self, offset: u64, size: u8, val: u64) -> Result<()> {
+        let (bus, device, function, register) = Self::decode_offset(offset);
+        let pci_bus = unsafe { &mut *self.bus_ptr };
+        pci_bus.mmcfg_write(bus, device, function, register, size, val);
+        Ok(())
+    }
 }

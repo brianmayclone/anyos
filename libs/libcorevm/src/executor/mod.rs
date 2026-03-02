@@ -20,6 +20,7 @@ pub mod stack;
 pub mod string;
 pub mod system;
 
+use core::sync::atomic::{AtomicU32, Ordering};
 use crate::cpu::{Cpu, Mode};
 use crate::error::{Result, VmError};
 use crate::flags::OperandSize;
@@ -28,6 +29,11 @@ use crate::interrupts::InterruptController;
 use crate::io::IoDispatch;
 use crate::memory::{AccessType, GuestMemory, MemoryBus, Mmu};
 use crate::registers::{GprIndex, SegReg};
+
+/// Diagnostic: total OUT DX instructions executed.
+pub static OUT_DX_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Diagnostic: total IN DX instructions executed.
+pub static IN_DX_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // ── Public entry point ──
 
@@ -760,12 +766,15 @@ fn exec_group2(
 // ── I/O helpers ──
 
 /// IN AL/AX/EAX, imm8 — read from an immediate port number.
+///
+/// Byte opcodes (0xE4) always access AL (1 byte) regardless of operand size
+/// prefix or CPU mode. Word/dword opcodes (0xE5) respect `operand_size`.
 fn exec_in_imm(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result<()> {
     let port = inst.immediate as u16;
-    let size = inst.operand_size.bytes() as u8;
-    let size_io = if size > 4 { 4 } else { size };
-    let val = io.port_in(port, size_io)?;
-    match size_io {
+    // Even opcodes (0xE4) = byte; odd opcodes (0xE5) = word/dword per mode.
+    let size = if inst.opcode & 1 == 0 { 1u8 } else { inst.operand_size.bytes().min(4) as u8 };
+    let val = io.port_in(port, size)?;
+    match size {
         1 => cpu.regs.write_gpr8(GprIndex::Rax as u8, false, val as u8),
         2 => cpu.regs.write_gpr16(GprIndex::Rax as u8, val as u16),
         _ => cpu.regs.write_gpr32(GprIndex::Rax as u8, val),
@@ -775,12 +784,22 @@ fn exec_in_imm(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result
 }
 
 /// IN AL/AX/EAX, DX — read from port number in DX.
+///
+/// Byte opcodes (0xEC) always access AL (1 byte) regardless of operand size
+/// prefix or CPU mode. Word/dword opcodes (0xED) respect `operand_size`.
 fn exec_in_dx(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result<()> {
     let port = cpu.regs.read_gpr16(GprIndex::Rdx as u8);
-    let size = inst.operand_size.bytes() as u8;
-    let size_io = if size > 4 { 4 } else { size };
-    let val = io.port_in(port, size_io)?;
-    match size_io {
+    // Even opcodes (0xEC) = byte; odd opcodes (0xED) = word/dword per mode.
+    let size = if inst.opcode & 1 == 0 { 1u8 } else { inst.operand_size.bytes().min(4) as u8 };
+    let val = io.port_in(port, size)?;
+    let n = IN_DX_COUNT.fetch_add(1, Ordering::Relaxed);
+    if port >= 0xCF8 && port <= 0xCFF {
+        libsyscall::serial_print(format_args!(
+            "[exec-diag] IN DX #{}: port=0x{:X} size={} val=0x{:X} rip=0x{:X} mode={:?}\n",
+            n, port, size, val, cpu.regs.rip, cpu.mode
+        ));
+    }
+    match size {
         1 => cpu.regs.write_gpr8(GprIndex::Rax as u8, false, val as u8),
         2 => cpu.regs.write_gpr16(GprIndex::Rax as u8, val as u16),
         _ => cpu.regs.write_gpr32(GprIndex::Rax as u8, val),
@@ -790,23 +809,44 @@ fn exec_in_dx(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result<
 }
 
 /// OUT imm8, AL/AX/EAX — write to an immediate port number.
+///
+/// Byte opcodes (0xE6) always write AL (1 byte) regardless of operand size
+/// prefix or CPU mode. Word/dword opcodes (0xE7) respect `operand_size`.
 fn exec_out_imm(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result<()> {
     let port = inst.immediate as u16;
-    let size = inst.operand_size.bytes() as u8;
-    let size_io = if size > 4 { 4 } else { size };
-    let val = cpu.regs.read_gpr(GprIndex::Rax as u8, inst.operand_size, false) as u32;
-    io.port_out(port, size_io, val)?;
+    // Even opcodes (0xE6) = byte; odd opcodes (0xE7) = word/dword per mode.
+    let size = if inst.opcode & 1 == 0 { 1u8 } else { inst.operand_size.bytes().min(4) as u8 };
+    let op_size = if inst.opcode & 1 == 0 { OperandSize::Byte } else { inst.operand_size };
+    let val = cpu.regs.read_gpr(GprIndex::Rax as u8, op_size, false) as u32;
+    if port == 0xCF8 {
+        libsyscall::serial_print(format_args!(
+            "[exec-diag] OUT imm: port=0x{:X} size={} val=0x{:X} rip=0x{:X} mode={:?}\n",
+            port, size, val, cpu.regs.rip, cpu.mode
+        ));
+    }
+    io.port_out(port, size, val)?;
     cpu.regs.rip += inst.length as u64;
     Ok(())
 }
 
 /// OUT DX, AL/AX/EAX — write to port number in DX.
+///
+/// Byte opcodes (0xEE) always write AL (1 byte) regardless of operand size
+/// prefix or CPU mode. Word/dword opcodes (0xEF) respect `operand_size`.
 fn exec_out_dx(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result<()> {
     let port = cpu.regs.read_gpr16(GprIndex::Rdx as u8);
-    let size = inst.operand_size.bytes() as u8;
-    let size_io = if size > 4 { 4 } else { size };
-    let val = cpu.regs.read_gpr(GprIndex::Rax as u8, inst.operand_size, false) as u32;
-    io.port_out(port, size_io, val)?;
+    // Even opcodes (0xEE) = byte; odd opcodes (0xEF) = word/dword per mode.
+    let size = if inst.opcode & 1 == 0 { 1u8 } else { inst.operand_size.bytes().min(4) as u8 };
+    let op_size = if inst.opcode & 1 == 0 { OperandSize::Byte } else { inst.operand_size };
+    let val = cpu.regs.read_gpr(GprIndex::Rax as u8, op_size, false) as u32;
+    let n = OUT_DX_COUNT.fetch_add(1, Ordering::Relaxed);
+    if port == 0xCF8 || n < 5 || (n < 500 && n % 100 == 0) {
+        libsyscall::serial_print(format_args!(
+            "[exec-diag] OUT DX #{}: port=0x{:X} size={} val=0x{:X} rip=0x{:X} mode={:?}\n",
+            n, port, size, val, cpu.regs.rip, cpu.mode
+        ));
+    }
+    io.port_out(port, size, val)?;
     cpu.regs.rip += inst.length as u64;
     Ok(())
 }

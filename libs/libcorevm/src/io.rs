@@ -11,7 +11,13 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use crate::error::Result;
 
 /// Diagnostic counter for total CF8 writes reaching the dispatcher.
-static CF8_DISPATCH_COUNT: AtomicU32 = AtomicU32::new(0);
+pub static CF8_DISPATCH_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Diagnostic counter for total CFC-CFF reads reaching the dispatcher.
+static CFC_READ_COUNT: AtomicU32 = AtomicU32::new(0);
+/// I/O trace phase: 0=off, 1=active (log all I/O), 2=done.
+static IO_TRACE_PHASE: AtomicU32 = AtomicU32::new(0);
+/// Number of I/O operations logged during trace phase.
+static IO_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// Trait implemented by devices that respond to x86 port I/O.
 ///
@@ -87,6 +93,32 @@ impl IoDispatch {
     /// default x86 bus float value: all bits set for the requested size
     /// (0xFF for byte, 0xFFFF for word, 0xFFFFFFFF for dword).
     pub fn port_in(&mut self, port: u16, size: u8) -> Result<u32> {
+        // Diagnostic: track reads from PCI config data port.
+        if port >= 0xCFC && port <= 0xCFF {
+            let n = CFC_READ_COUNT.fetch_add(1, Ordering::Relaxed);
+            if n < 200 {
+                libsyscall::serial_print(format_args!(
+                    "[io-diag] CFC read #{}: port=0x{:X} size={}\n",
+                    n, port, size
+                ));
+            }
+        }
+        // Trace ALL I/O reads during PCI probing phase (skip serial/debug noise).
+        if IO_TRACE_PHASE.load(Ordering::Relaxed) == 1
+            && !(port >= 0x3F8 && port <= 0x3FF)
+            && port != 0x402
+        {
+            let n = IO_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
+            if n < 200 {
+                libsyscall::serial_print(format_args!(
+                    "[io-trace] IN  #{}: port=0x{:04X} size={}\n",
+                    n, port, size
+                ));
+            }
+            if n >= 200 {
+                IO_TRACE_PHASE.store(2, Ordering::Relaxed);
+            }
+        }
         for region in self.regions.iter_mut() {
             if region.contains(port) {
                 return region.handler.read(port, size);
@@ -110,12 +142,34 @@ impl IoDispatch {
         // Diagnostic: track ALL writes to PCI config address port.
         if port == 0xCF8 {
             let n = CF8_DISPATCH_COUNT.fetch_add(1, Ordering::Relaxed);
-            // Log writes 15-45 (skip early ones we already see, catch probe phase).
-            if n >= 15 && n < 45 {
+            if n < 200 {
                 libsyscall::serial_print(format_args!(
-                    "[io-diag] CF8 dispatch #{}: size={} val=0x{:08X}\n",
+                    "[io-diag] CF8 #{}: size={} val=0x{:08X}\n",
                     n, size, val
                 ));
+            }
+            // Activate I/O trace after pci_probe_host (CF8 write #11).
+            if n == 11 {
+                IO_TRACE_PHASE.store(1, Ordering::Relaxed);
+                libsyscall::serial_print(format_args!(
+                    "[io-trace] === ACTIVATED after CF8 #{} ===\n", n
+                ));
+            }
+        }
+        // Trace ALL I/O writes during PCI probing phase (skip serial/debug noise).
+        if IO_TRACE_PHASE.load(Ordering::Relaxed) == 1
+            && !(port >= 0x3F8 && port <= 0x3FF)
+            && port != 0x402
+        {
+            let n = IO_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
+            if n < 200 {
+                libsyscall::serial_print(format_args!(
+                    "[io-trace] OUT #{}: port=0x{:04X} size={} val=0x{:X}\n",
+                    n, port, size, val
+                ));
+            }
+            if n >= 200 {
+                IO_TRACE_PHASE.store(2, Ordering::Relaxed);
             }
         }
         for region in self.regions.iter_mut() {

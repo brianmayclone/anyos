@@ -10,6 +10,9 @@ use crate::error::{Result, VmError};
 use crate::fpu_state::FpuState;
 use crate::interrupts::InterruptController;
 use crate::io::IoDispatch;
+use crate::jit::block::{self, BlockKey};
+use crate::jit::cache::DecodeCache;
+use crate::jit::JitEngine;
 use crate::memory::{AccessType, GuestMemory, MemoryBus, Mmu};
 use crate::registers::SegmentDescriptor;
 use crate::registers::{
@@ -17,8 +20,13 @@ use crate::registers::{
 };
 use crate::sse_state::SseState;
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
+/// Diagnostic: count mode changes for logging.
+static MODE_CHANGE_COUNT: AtomicU32 = AtomicU32::new(0);
+
 /// CPU execution mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mode {
     /// 16-bit real mode.
     RealMode,
@@ -41,6 +49,17 @@ pub enum ExitReason {
     Breakpoint,
     /// External stop request via `request_stop()`.
     StopRequested,
+}
+
+/// Internal result from executing a cached basic block.
+///
+/// Used by `execute_cached_block` to signal whether the main `run()` loop
+/// should continue iterating or return an `ExitReason` to the caller.
+enum BlockExitReason {
+    /// Block completed (or exception was injected) — continue the main loop.
+    Continue,
+    /// Block produced a terminal exit — return this reason from `run()`.
+    Exit(ExitReason),
 }
 
 /// Virtual x86 CPU.
@@ -69,6 +88,10 @@ pub struct Cpu {
     pub last_opcode: u16,
     /// Physical address of the last decoded instruction.
     pub last_fetch_addr: u64,
+    /// Decode cache for pre-decoded basic blocks (JIT Phase 1).
+    pub decode_cache: DecodeCache,
+    /// JIT engine for native code compilation and execution (Phase 2+3).
+    pub jit_engine: JitEngine,
 }
 
 impl Cpu {
@@ -87,6 +110,8 @@ impl Cpu {
             last_exec_cs: 0,
             last_opcode: 0,
             last_fetch_addr: 0,
+            decode_cache: DecodeCache::new(),
+            jit_engine: JitEngine::new(),
         }
     }
 
@@ -103,6 +128,8 @@ impl Cpu {
         self.last_exec_cs = 0;
         self.last_opcode = 0;
         self.last_fetch_addr = 0;
+        self.decode_cache.flush();
+        self.jit_engine.flush();
     }
 
     /// Request the CPU to stop at the next instruction boundary.
@@ -166,6 +193,19 @@ impl Cpu {
         };
 
         // Sync MMU state will be done by the caller (VmEngine.run updates Mmu)
+
+        // Diagnostic: log every CPU mode/decoder-mode change.
+        let cs = &self.regs.seg[SegReg::Cs as usize];
+        let decoder_mode = self.decoder.mode();
+        let n = MODE_CHANGE_COUNT.fetch_add(1, Ordering::Relaxed);
+        if n < 80 {
+            libsyscall::serial_print(format_args!(
+                "[mode-diag] #{}: cpu={:?} dec={:?} cs_sel=0x{:04X} cs_base=0x{:X} cs_big={} cs_long={} rip=0x{:X}\n",
+                n, self.mode, decoder_mode,
+                cs.selector, cs.base, cs.big, cs.long_mode,
+                self.regs.rip,
+            ));
+        }
     }
 
     /// Read a segment descriptor from the GDT given a selector.
@@ -227,6 +267,14 @@ impl Cpu {
         }
         // LDT selectors (TI=1) not supported — use GDT regardless.
         let desc = self.read_gdt_descriptor(selector, memory, mmu)?;
+        // Diagnostic: log every CS load from GDT with descriptor details.
+        if matches!(seg, SegReg::Cs) {
+            libsyscall::serial_print(format_args!(
+                "[cs-load] sel=0x{:04X} base=0x{:X} limit=0x{:X} big={} long={} code={} access=0x{:02X} flags=0x{:X} rip=0x{:X}\n",
+                desc.selector, desc.base, desc.limit, desc.big, desc.long_mode,
+                desc.is_code, desc.access, desc.flags, self.regs.rip,
+            ));
+        }
         self.regs.seg[seg as usize] = desc;
         Ok(())
     }
@@ -279,6 +327,21 @@ impl Cpu {
                 if target > 0 && self.instruction_count >= target {
                     return ExitReason::InstructionLimit;
                 }
+            }
+            // ── PCI debug: periodic status dump ──
+            // Log mode, RIP, and I/O counters every 2M instructions to track CPU state
+            // through the SeaBIOS real→protected mode transition and PCI scan phase.
+            if self.instruction_count & 0x1F_FFFF == 0 && self.instruction_count > 0 {
+                let out_n = crate::executor::OUT_DX_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+                let in_n = crate::executor::IN_DX_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+                let cf8_n = crate::io::CF8_DISPATCH_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+                libsyscall::serial_print(format_args!(
+                    "[cpu-diag] insn={} rip=0x{:X} mode={:?} cs=0x{:04X} cs.base=0x{:X} out_dx={} in_dx={} cf8={}\n",
+                    self.instruction_count, self.regs.rip, self.mode,
+                    self.regs.seg[crate::registers::SegReg::Cs as usize].selector,
+                    self.regs.seg[crate::registers::SegReg::Cs as usize].base,
+                    out_n, in_n, cf8_n,
+                ));
             }
 
             // Sync MMU state from control registers (fast-path: skips if unchanged).
@@ -333,9 +396,136 @@ impl Cpu {
             self.last_exec_cs = self.regs.seg[SegReg::Cs as usize].selector;
             self.last_fetch_addr = phys_addr;
 
-            // Fetch & decode — use physical address for flat memory read
-            // Note: for simplicity, we decode from physical memory directly.
-            // A proper implementation would handle page-crossing instruction fetches.
+            // ── PCI debug: filtered instruction trace after CF8 #11 ──
+            // Arms after CF8 write #12, logs up to 2000 non-noisy instructions.
+            // Skips known inner loops (serial output, strlen, memset, printf)
+            // to capture the actual PCI scan control flow.
+            {
+                use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+                static ITRACE_ARMED: AtomicBool = AtomicBool::new(false);
+                static ITRACE_LEFT: AtomicU32 = AtomicU32::new(0);
+                static ITRACE_ELAPSED: AtomicU32 = AtomicU32::new(0);
+
+                let cf8_n = crate::io::CF8_DISPATCH_COUNT.load(Ordering::Relaxed);
+                if cf8_n >= 12 && !ITRACE_ARMED.load(Ordering::Relaxed) {
+                    ITRACE_ARMED.store(true, Ordering::Relaxed);
+                    ITRACE_LEFT.store(2000, Ordering::Relaxed);
+                    libsyscall::serial_print(format_args!(
+                        "[itrace] === ARMED after CF8 #{} at insn={} rip=0x{:X} ===\n",
+                        cf8_n, self.instruction_count, self.regs.rip
+                    ));
+                }
+                let left = ITRACE_LEFT.load(Ordering::Relaxed);
+                if left > 0 {
+                    let elapsed = ITRACE_ELAPSED.fetch_add(1, Ordering::Relaxed);
+                    let rip = self.regs.rip;
+                    // Skip noisy inner loops to save trace budget:
+                    let skip = (rip >= 0xEBD7C && rip <= 0xEBD8B)  // serial byte OUT+RET
+                        || (rip >= 0xEA400 && rip <= 0xEA40A)       // strlen
+                        || (rip >= 0xEB726 && rip <= 0xEB72A)       // memset
+                        || (rip >= 0xEC908 && rip <= 0xEC92B)       // printf char loop
+                        || (rip >= 0xEA416 && rip <= 0xEA42C)       // memcmp
+                        || (rip >= 0xEC6E7 && rip <= 0xEC6FB)       // vprintf dispatch
+                        || (rip >= 0xEC91E && rip <= 0xEC925)       // putc path
+                        || (rip >= 0xEA29B && rip <= 0xEA2A0);      // char output
+                    if !skip {
+                        ITRACE_LEFT.store(left - 1, Ordering::Relaxed);
+                        use crate::memory::MemoryBus;
+                        let b0 = memory.read_u8(phys_addr).unwrap_or(0xFF);
+                        let b1 = memory.read_u8(phys_addr + 1).unwrap_or(0xFF);
+                        let b2 = memory.read_u8(phys_addr + 2).unwrap_or(0xFF);
+                        let b3 = memory.read_u8(phys_addr + 3).unwrap_or(0xFF);
+                        let b4 = memory.read_u8(phys_addr + 4).unwrap_or(0xFF);
+                        let b5 = memory.read_u8(phys_addr + 5).unwrap_or(0xFF);
+                        let _cs_s = self.regs.seg[SegReg::Cs as usize].selector;
+                        let _cs_b = self.regs.seg[SegReg::Cs as usize].base;
+                        libsyscall::serial_print(format_args!(
+                            "[itrace] #{} rip=0x{:X} phys=0x{:X} cs=0x{:04X} cs.b=0x{:X} m={:?} [{:02X} {:02X} {:02X} {:02X} {:02X} {:02X}]\n",
+                            elapsed, rip, phys_addr, _cs_s, _cs_b, self.mode,
+                            b0, b1, b2, b3, b4, b5
+                        ));
+                    }
+                    if left == 1 {
+                        libsyscall::serial_print(format_args!(
+                            "[itrace] === DONE after {} elapsed insns, insn_count={} ===\n",
+                            elapsed, self.instruction_count
+                        ));
+                    }
+                }
+            }
+
+            // ── Decode Cache path ──────────────────────────────────
+            // Try the decode cache first: look up a pre-decoded basic block
+            // by (phys_addr, mode, cs_base). On hit, execute the cached
+            // instruction sequence without re-decoding.
+            let cs_base = self.regs.seg[SegReg::Cs as usize].base;
+            let block_key = BlockKey {
+                phys_addr,
+                mode: self.decoder.mode(),
+                cs_base,
+            };
+
+            if let Some(cached_block) = self.decode_cache.lookup(&block_key) {
+                // Clone the instruction list so we can mutably borrow self
+                // during execution. The Vec<DecodedInst> is stack-allocated
+                // metadata — the actual data is small (typically 1-64 entries).
+                let block_insts = cached_block.instructions.clone();
+
+                // ── JIT path: compile and execute natively ──
+                if self.jit_engine.is_enabled() {
+                    let jit_result = self.jit_execute_block(
+                        &block_key, &block_insts,
+                        memory, mmu, io, interrupts,
+                    );
+                    match jit_result {
+                        BlockExitReason::Continue => continue,
+                        BlockExitReason::Exit(reason) => return reason,
+                    }
+                }
+
+                let block_exit = self.execute_cached_block(
+                    &block_insts, phys_addr, fetch_addr, memory, mmu, io, interrupts,
+                );
+                match block_exit {
+                    BlockExitReason::Continue => continue,
+                    BlockExitReason::Exit(reason) => return reason,
+                }
+            }
+
+            // Cache miss: try to detect and cache a full basic block.
+            // If detection succeeds, cache it and execute the block.
+            // If detection fails (e.g. decode error on first instruction),
+            // fall through to single-instruction decode below.
+            if let Ok(new_block) = block::detect_basic_block(
+                &self.decoder, &*memory, phys_addr,
+            ) {
+                // ── JIT path: compile and execute natively ──
+                if self.jit_engine.is_enabled() {
+                    let block_insts = new_block.instructions.clone();
+                    self.decode_cache.insert(block_key, new_block);
+                    let jit_result = self.jit_execute_block(
+                        &block_key, &block_insts,
+                        memory, mmu, io, interrupts,
+                    );
+                    match jit_result {
+                        BlockExitReason::Continue => continue,
+                        BlockExitReason::Exit(reason) => return reason,
+                    }
+                }
+
+                let block_insts = new_block.instructions.clone();
+                self.decode_cache.insert(block_key, new_block);
+                let block_exit = self.execute_cached_block(
+                    &block_insts, phys_addr, fetch_addr, memory, mmu, io, interrupts,
+                );
+                match block_exit {
+                    BlockExitReason::Continue => continue,
+                    BlockExitReason::Exit(reason) => return reason,
+                }
+            }
+
+            // ── Fallback: single instruction decode + execute ──────
+            // This path handles decode errors (logs diagnostics, injects #UD).
             let inst = match self.decoder.decode(&*memory, phys_addr) {
                 Ok(inst) => inst,
                 Err(VmError::FetchFault(_addr)) => {
@@ -417,6 +607,173 @@ impl Cpu {
         }
     }
 
+    /// Execute a cached basic block (pre-decoded instruction sequence).
+    ///
+    /// Iterates through the block's instructions, executing each one and
+    /// handling errors identically to the single-instruction path. Returns
+    /// a `BlockExitReason` indicating whether the main loop should continue
+    /// or return an `ExitReason` to the caller.
+    fn execute_cached_block(
+        &mut self,
+        instructions: &[crate::instruction::DecodedInst],
+        block_phys: u64,
+        _block_fetch: u64,
+        memory: &mut GuestMemory,
+        mmu: &mut Mmu,
+        io: &mut IoDispatch,
+        interrupts: &mut InterruptController,
+    ) -> BlockExitReason {
+        let mut inst_phys = block_phys;
+        for inst in instructions {
+            self.last_exec_rip = self.regs.rip;
+            self.last_exec_cs = self.regs.seg[SegReg::Cs as usize].selector;
+            self.last_fetch_addr = inst_phys;
+            self.last_opcode = inst.opcode;
+
+            match crate::executor::execute(self, inst, memory, mmu, io, interrupts) {
+                Ok(()) => {
+                    self.instruction_count += 1;
+                }
+                Err(VmError::Halted) => {
+                    self.instruction_count += 1;
+                    return BlockExitReason::Exit(ExitReason::Halted);
+                }
+                Err(VmError::Breakpoint) => {
+                    self.instruction_count += 1;
+                    return BlockExitReason::Exit(ExitReason::Breakpoint);
+                }
+                Err(ref e) => {
+                    use crate::memory::MemoryBus;
+                    let b0 = memory.read_u8(inst_phys).unwrap_or(0xFF);
+                    let b1 = memory.read_u8(inst_phys + 1).unwrap_or(0xFF);
+                    let b2 = memory.read_u8(inst_phys + 2).unwrap_or(0xFF);
+                    let b3 = memory.read_u8(inst_phys + 3).unwrap_or(0xFF);
+                    libsyscall::serial_print(format_args!(
+                        "[corevm] exec error at CS:IP={:04X}:{:X} phys={:X} opcode=0x{:04X} bytes=[{:02X} {:02X} {:02X} {:02X}] modrm_reg={} CS.base={:X}: {:?}\n",
+                        self.regs.seg[SegReg::Cs as usize].selector,
+                        self.last_exec_rip,
+                        inst_phys,
+                        inst.opcode,
+                        b0, b1, b2, b3,
+                        inst.modrm_reg(),
+                        self.regs.seg[SegReg::Cs as usize].base,
+                        e
+                    ));
+                    if let Err(e2) =
+                        self.inject_exception_from_error(e, memory, mmu, interrupts)
+                    {
+                        return BlockExitReason::Exit(ExitReason::Exception(e2));
+                    }
+                    // Exception injected — break out of block, let main loop
+                    // re-enter at the exception handler address.
+                    return BlockExitReason::Continue;
+                }
+            }
+
+            inst_phys += inst.length as u64;
+
+            // Check for stop/limit between instructions within the block.
+            if self.instruction_count & 0xFF == 0 {
+                if self.stop_requested {
+                    self.stop_requested = false;
+                    return BlockExitReason::Exit(ExitReason::StopRequested);
+                }
+                // Note: we don't check the instruction limit here because the
+                // block is short (max 64 instructions) and the outer loop
+                // checks it at the top. This avoids passing `target` into
+                // this method.
+            }
+        }
+        BlockExitReason::Continue
+    }
+
+    /// Compile (if needed) and execute a JIT-compiled basic block.
+    ///
+    /// Looks up the compiled block in the JIT engine's code cache. On miss,
+    /// compiles the decoded block and stores the native code. Then executes
+    /// the compiled code via function pointer call.
+    ///
+    /// The JIT block function follows the C calling convention:
+    /// `fn(cpu, memory, mmu, io, interrupts) -> u32`
+    ///
+    /// Returns `BlockExitReason` for the main run() loop.
+    fn jit_execute_block(
+        &mut self,
+        key: &BlockKey,
+        instructions: &[crate::instruction::DecodedInst],
+        memory: &mut GuestMemory,
+        mmu: &mut Mmu,
+        io: &mut IoDispatch,
+        interrupts: &mut InterruptController,
+    ) -> BlockExitReason {
+        use crate::jit::helpers::{JIT_OK, JIT_EXIT_BLOCK};
+
+        // Look up or compile the block.
+        let (code_offset, inst_count) = match self.jit_engine.lookup_compiled(key) {
+            Some(entry) => entry,
+            None => {
+                // Build a BasicBlock wrapper for the translator.
+                let block = crate::jit::block::BasicBlock {
+                    instructions: instructions.into(),
+                    byte_len: instructions.iter().map(|i| i.length as usize).sum(),
+                    exits_with_branch: false,
+                };
+
+                // Switch to writable, compile, then switch back to executable.
+                self.jit_engine.make_writable();
+                let result = self.jit_engine.compile_block(*key, &block);
+                self.jit_engine.make_executable();
+
+                match result {
+                    Some(entry) => entry,
+                    None => {
+                        // JIT buffer full — fall back to interpreter path.
+                        return self.execute_cached_block(
+                            instructions, key.phys_addr, key.cs_base.wrapping_add(
+                                self.regs.rip,
+                            ),
+                            memory, mmu, io, interrupts,
+                        );
+                    }
+                }
+            }
+        };
+
+        // Call the compiled native code.
+        //
+        // Safety: The code was emitted by our translator and follows the C ABI:
+        //   fn(cpu: &mut Cpu, mem: &mut GuestMemory, mmu: &mut Mmu,
+        //      io: &mut IoDispatch, intr: &mut InterruptController) -> u32
+        type JitBlockFn = unsafe extern "C" fn(
+            &mut Cpu, &mut GuestMemory, &mut Mmu, &mut IoDispatch,
+            &mut InterruptController,
+        ) -> u32;
+
+        let result = unsafe {
+            let ptr = self.jit_engine.code_ptr(code_offset);
+            let func: JitBlockFn = core::mem::transmute(ptr);
+            func(self, memory, mmu, io, interrupts)
+        };
+
+        // Update instruction count with the number of guest instructions.
+        self.instruction_count += inst_count;
+
+        match result {
+            JIT_OK => BlockExitReason::Continue,
+            JIT_EXIT_BLOCK => {
+                // The block signaled an early exit (HLT, page fault, etc.).
+                // The interpreter fallback in the JIT code already handled
+                // exception injection. Return to the main loop to re-check
+                // the new RIP.
+                BlockExitReason::Continue
+            }
+            _ => {
+                // Unexpected return code — treat as exit.
+                BlockExitReason::Continue
+            }
+        }
+    }
+
     /// Inject an exception derived from a VmError into the guest.
     fn inject_exception_from_error(
         &mut self,
@@ -425,6 +782,24 @@ impl Cpu {
         mmu: &mut Mmu,
         interrupts: &mut InterruptController,
     ) -> Result<()> {
+        // Diagnostic: log all exceptions injected after the PCI scan starts.
+        {
+            use core::sync::atomic::{AtomicU32, Ordering};
+            static EXCEPT_COUNT: AtomicU32 = AtomicU32::new(0);
+            let cf8_n = crate::io::CF8_DISPATCH_COUNT.load(Ordering::Relaxed);
+            if cf8_n >= 11 {
+                let n = EXCEPT_COUNT.fetch_add(1, Ordering::Relaxed);
+                if n < 50 {
+                    libsyscall::serial_print(format_args!(
+                        "[except-diag] #{}: vec={:?} rip=0x{:X} cs=0x{:04X} insn={}\n",
+                        n, error, self.regs.rip,
+                        self.regs.seg[SegReg::Cs as usize].selector,
+                        self.instruction_count,
+                    ));
+                }
+            }
+        }
+
         let (vector, error_code, cr2_val) = match error {
             VmError::DivideByZero => (0, None, None),
             VmError::DebugException => (1, None, None),

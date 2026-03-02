@@ -24,8 +24,14 @@ pub mod segment;
 
 use alloc::boxed::Box;
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::error::Result;
+
+/// Diagnostic: count reads to unmapped memory (above RAM, no MMIO handler).
+static UNMAPPED_READ_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Diagnostic: count writes to SeaBIOS mmconfig variable at 0xF4DF8.
+static MMCFG_WRITE_COUNT: AtomicU32 = AtomicU32::new(0);
 use crate::registers::{
     SegmentDescriptor, CR0_PG, CR0_WP, CR4_PAE, CR4_PSE, EFER_LMA, EFER_NXE,
 };
@@ -246,12 +252,30 @@ impl MemoryBus for GuestMemory {
         if let Some(res) = try_mmio_read(self.mmio_mut(), addr, 2) {
             return Ok(res? as u16);
         }
+        // Diagnostic: detect reads to unmapped memory (above RAM, no MMIO handler).
+        if addr as usize >= self.ram.size() {
+            let n = UNMAPPED_READ_COUNT.fetch_add(1, Ordering::Relaxed);
+            if n < 50 {
+                libsyscall::serial_print(format_args!(
+                    "[mem-diag] unmapped read16 #{}: addr=0x{:08X}\n", n, addr
+                ));
+            }
+        }
         self.ram.read_u16(addr)
     }
 
     fn read_u32(&self, addr: u64) -> Result<u32> {
         if let Some(res) = try_mmio_read(self.mmio_mut(), addr, 4) {
             return Ok(res? as u32);
+        }
+        // Diagnostic: detect reads to unmapped memory (above RAM, no MMIO handler).
+        if addr as usize >= self.ram.size() {
+            let n = UNMAPPED_READ_COUNT.fetch_add(1, Ordering::Relaxed);
+            if n < 50 {
+                libsyscall::serial_print(format_args!(
+                    "[mem-diag] unmapped read32 #{}: addr=0x{:08X}\n", n, addr
+                ));
+            }
         }
         self.ram.read_u32(addr)
     }

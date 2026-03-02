@@ -629,6 +629,12 @@ endif()
 
 endif() # HAS_CROSS_COMPILER
 
+# When ANYOS_NO_CROSS is set, skip the entire 64-bit toolchain as well
+if(ANYOS_NO_CROSS)
+  set(CXX_TOOLCHAIN_DEPS "")
+  return()
+endif()
+
 # ============================================================
 # 64-bit C Library (libc64 — uses clang, no cross-compiler needed)
 # ============================================================
