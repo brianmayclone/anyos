@@ -799,8 +799,47 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     vm.engine.io.register(0x1CE, 2, Box::new(IoProxy { ptr: svga }));
     vm.engine.memory.add_mmio(0xA0000, 0x20000, Box::new(MmioProxy { ptr: svga }));
 
-    // PCI bus with a VGA device — SeaBIOS scans PCI to detect display hardware.
+    // PCI bus with standard QEMU i440FX machine devices.
     let mut bus = devices::bus::PciBus::new();
+
+    // i440FX host bridge at 0:0.0 — required by SeaBIOS for PAM/RAM unlock.
+    let mut host_bridge = devices::bus::PciDevice::new(
+        0x8086,  // Vendor ID: Intel
+        0x1237,  // Device ID: i440FX
+        0x06,    // Class: Bridge
+        0x00,    // Subclass: Host bridge
+        0x00,    // Prog IF
+    );
+    host_bridge.bus = 0;
+    host_bridge.device = 0;
+    host_bridge.function = 0;
+    // Header type 0x00 = single-function device.
+    // PAM registers (0x59-0x5F): default to 0 (ROM read-only).
+    // Make all PAM regions writable so SeaBIOS can shadow ROMs.
+    // PAM0 (0x59): covers 0xF0000-0xFFFFF — BIOS area.
+    host_bridge.config_space[0x59] = 0x30; // Read/write enabled
+    // PAM1-PAM6 (0x5A-0x5F): cover 0xC0000-0xEFFFF — option ROM area.
+    for i in 0x5A..=0x5F {
+        host_bridge.config_space[i] = 0x33; // Read/write for both halves
+    }
+    bus.add_device(host_bridge);
+
+    // PIIX3 ISA bridge at 0:1.0 — SeaBIOS uses this for IRQ routing.
+    let mut isa_bridge = devices::bus::PciDevice::new(
+        0x8086,  // Vendor ID: Intel
+        0x7000,  // Device ID: PIIX3 ISA
+        0x06,    // Class: Bridge
+        0x01,    // Subclass: ISA bridge
+        0x00,    // Prog IF
+    );
+    isa_bridge.bus = 0;
+    isa_bridge.device = 1;
+    isa_bridge.function = 0;
+    // Mark as multi-function (header type bit 7) since real PIIX3 has IDE at fn 1.
+    isa_bridge.config_space[0x0E] = 0x80;
+    bus.add_device(isa_bridge);
+
+    // VGA device at 0:2.0 — SeaBIOS scans PCI to detect display hardware.
     let mut vga_pci = devices::bus::PciDevice::new(
         0x1234,  // Vendor ID: QEMU standard VGA
         0x1111,  // Device ID: stdvga
@@ -815,19 +854,20 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     vga_pci.set_bar(0, 0xFD000000, 0x01000000, true); // 16 MiB MMIO
     // BAR2: Bochs VBE MMIO (optional, not strictly needed).
     vga_pci.set_bar(2, 0xFEBE0000, 0x1000, true); // 4 KiB
-    // Option ROM at 0xC0000 (size indicated by the ROM itself).
-    // Config space offset 0x30 = Expansion ROM base address.
-    vga_pci.config_space[0x30] = 0x01; // ROM enabled, at 0xC0000
+    // Expansion ROM base address (offset 0x30): 0xC0000 with enable bit.
+    vga_pci.config_space[0x30] = 0x01; // enabled
     vga_pci.config_space[0x31] = 0x00;
-    vga_pci.config_space[0x32] = 0x0C; // 0x000C0000 >> 8 = 0x0C00 → byte[32]=0x00, byte[33]=0x0C
+    vga_pci.config_space[0x32] = 0x0C; // 0x000C0001 LE
     vga_pci.config_space[0x33] = 0x00;
-    // Fix: expansion ROM address is 0xC0000 | 1 (enabled) in LE u32:
-    // 0x000C0001 → [0x01, 0x00, 0x0C, 0x00]
     bus.add_device(vga_pci);
 
     let bus_ptr = Box::into_raw(Box::new(bus));
     vm.bus_ptr = bus_ptr;
     vm.engine.io.register(0xCF8, 8, Box::new(IoProxy { ptr: bus_ptr }));
+
+    // IO-APIC at standard MMIO address.
+    let ioapic = Box::into_raw(Box::new(devices::ioapic::IoApic::new()));
+    vm.engine.memory.add_mmio(0xFEC00000, 0x1000, Box::new(MmioProxy { ptr: ioapic }));
 
     // fw_cfg — QEMU firmware configuration interface.
     // SeaBIOS uses this to discover platform config and VGA BIOS files.
@@ -846,7 +886,7 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     let count = vm.engine.memory.mmio_region_count();
     let (lo, hi) = vm.engine.memory.mmio_bounds();
     vm_log!("MMIO setup: {} regions, bounds=[0x{:X}, 0x{:X})", count, lo, hi);
-    vm_log!("PCI bus: 1 device (VGA at 0:2.0, vendor=0x1234, device=0x1111)");
+    vm_log!("PCI bus: 3 devices (host bridge 0:0.0, ISA bridge 0:1.0, VGA 0:2.0)");
 }
 
 /// Register a PCI bus at the standard configuration ports (0xCF8-0xCFF).

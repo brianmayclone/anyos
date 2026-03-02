@@ -25,3 +25,4 @@ pub mod bus;
 pub mod fw_cfg;
 pub mod ide;
 pub mod debug_port;
+pub mod ioapic;
