@@ -10,6 +10,8 @@ use crate::error::{Result, VmError};
 use crate::fpu_state::FpuState;
 use crate::interrupts::InterruptController;
 use crate::io::IoDispatch;
+use crate::jit::block::{self, BlockKey};
+use crate::jit::cache::DecodeCache;
 use crate::memory::{AccessType, GuestMemory, MemoryBus, Mmu};
 use crate::registers::SegmentDescriptor;
 use crate::registers::{
@@ -18,7 +20,7 @@ use crate::registers::{
 use crate::sse_state::SseState;
 
 /// CPU execution mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mode {
     /// 16-bit real mode.
     RealMode,
@@ -41,6 +43,17 @@ pub enum ExitReason {
     Breakpoint,
     /// External stop request via `request_stop()`.
     StopRequested,
+}
+
+/// Internal result from executing a cached basic block.
+///
+/// Used by `execute_cached_block` to signal whether the main `run()` loop
+/// should continue iterating or return an `ExitReason` to the caller.
+enum BlockExitReason {
+    /// Block completed (or exception was injected) — continue the main loop.
+    Continue,
+    /// Block produced a terminal exit — return this reason from `run()`.
+    Exit(ExitReason),
 }
 
 /// Virtual x86 CPU.
@@ -69,6 +82,8 @@ pub struct Cpu {
     pub last_opcode: u16,
     /// Physical address of the last decoded instruction.
     pub last_fetch_addr: u64,
+    /// Decode cache for pre-decoded basic blocks (JIT Phase 1).
+    pub decode_cache: DecodeCache,
 }
 
 impl Cpu {
@@ -87,6 +102,7 @@ impl Cpu {
             last_exec_cs: 0,
             last_opcode: 0,
             last_fetch_addr: 0,
+            decode_cache: DecodeCache::new(),
         }
     }
 
@@ -103,6 +119,7 @@ impl Cpu {
         self.last_exec_cs = 0;
         self.last_opcode = 0;
         self.last_fetch_addr = 0;
+        self.decode_cache.flush();
     }
 
     /// Request the CPU to stop at the next instruction boundary.
@@ -333,9 +350,51 @@ impl Cpu {
             self.last_exec_cs = self.regs.seg[SegReg::Cs as usize].selector;
             self.last_fetch_addr = phys_addr;
 
-            // Fetch & decode — use physical address for flat memory read
-            // Note: for simplicity, we decode from physical memory directly.
-            // A proper implementation would handle page-crossing instruction fetches.
+            // ── Decode Cache path ──────────────────────────────────
+            // Try the decode cache first: look up a pre-decoded basic block
+            // by (phys_addr, mode, cs_base). On hit, execute the cached
+            // instruction sequence without re-decoding.
+            let cs_base = self.regs.seg[SegReg::Cs as usize].base;
+            let block_key = BlockKey {
+                phys_addr,
+                mode: self.mode,
+                cs_base,
+            };
+
+            if let Some(cached_block) = self.decode_cache.lookup(&block_key) {
+                // Clone the instruction list so we can mutably borrow self
+                // during execution. The Vec<DecodedInst> is stack-allocated
+                // metadata — the actual data is small (typically 1-64 entries).
+                let block_insts = cached_block.instructions.clone();
+                let block_exit = self.execute_cached_block(
+                    &block_insts, phys_addr, fetch_addr, memory, mmu, io, interrupts,
+                );
+                match block_exit {
+                    BlockExitReason::Continue => continue,
+                    BlockExitReason::Exit(reason) => return reason,
+                }
+            }
+
+            // Cache miss: try to detect and cache a full basic block.
+            // If detection succeeds, cache it and execute the block.
+            // If detection fails (e.g. decode error on first instruction),
+            // fall through to single-instruction decode below.
+            if let Ok(new_block) = block::detect_basic_block(
+                &self.decoder, &*memory, phys_addr,
+            ) {
+                let block_insts = new_block.instructions.clone();
+                self.decode_cache.insert(block_key, new_block);
+                let block_exit = self.execute_cached_block(
+                    &block_insts, phys_addr, fetch_addr, memory, mmu, io, interrupts,
+                );
+                match block_exit {
+                    BlockExitReason::Continue => continue,
+                    BlockExitReason::Exit(reason) => return reason,
+                }
+            }
+
+            // ── Fallback: single instruction decode + execute ──────
+            // This path handles decode errors (logs diagnostics, injects #UD).
             let inst = match self.decoder.decode(&*memory, phys_addr) {
                 Ok(inst) => inst,
                 Err(VmError::FetchFault(_addr)) => {
@@ -415,6 +474,86 @@ impl Cpu {
                 }
             }
         }
+    }
+
+    /// Execute a cached basic block (pre-decoded instruction sequence).
+    ///
+    /// Iterates through the block's instructions, executing each one and
+    /// handling errors identically to the single-instruction path. Returns
+    /// a `BlockExitReason` indicating whether the main loop should continue
+    /// or return an `ExitReason` to the caller.
+    fn execute_cached_block(
+        &mut self,
+        instructions: &[crate::instruction::DecodedInst],
+        block_phys: u64,
+        block_fetch: u64,
+        memory: &mut GuestMemory,
+        mmu: &mut Mmu,
+        io: &mut IoDispatch,
+        interrupts: &mut InterruptController,
+    ) -> BlockExitReason {
+        let mut inst_phys = block_phys;
+        for inst in instructions {
+            self.last_exec_rip = self.regs.rip;
+            self.last_exec_cs = self.regs.seg[SegReg::Cs as usize].selector;
+            self.last_fetch_addr = inst_phys;
+            self.last_opcode = inst.opcode;
+
+            match crate::executor::execute(self, inst, memory, mmu, io, interrupts) {
+                Ok(()) => {
+                    self.instruction_count += 1;
+                }
+                Err(VmError::Halted) => {
+                    self.instruction_count += 1;
+                    return BlockExitReason::Exit(ExitReason::Halted);
+                }
+                Err(VmError::Breakpoint) => {
+                    self.instruction_count += 1;
+                    return BlockExitReason::Exit(ExitReason::Breakpoint);
+                }
+                Err(ref e) => {
+                    use crate::memory::MemoryBus;
+                    let b0 = memory.read_u8(inst_phys).unwrap_or(0xFF);
+                    let b1 = memory.read_u8(inst_phys + 1).unwrap_or(0xFF);
+                    let b2 = memory.read_u8(inst_phys + 2).unwrap_or(0xFF);
+                    let b3 = memory.read_u8(inst_phys + 3).unwrap_or(0xFF);
+                    libsyscall::serial_print(format_args!(
+                        "[corevm] exec error at CS:IP={:04X}:{:X} phys={:X} opcode=0x{:04X} bytes=[{:02X} {:02X} {:02X} {:02X}] modrm_reg={} CS.base={:X}: {:?}\n",
+                        self.regs.seg[SegReg::Cs as usize].selector,
+                        self.last_exec_rip,
+                        inst_phys,
+                        inst.opcode,
+                        b0, b1, b2, b3,
+                        inst.modrm_reg(),
+                        self.regs.seg[SegReg::Cs as usize].base,
+                        e
+                    ));
+                    if let Err(e2) =
+                        self.inject_exception_from_error(e, memory, mmu, interrupts)
+                    {
+                        return BlockExitReason::Exit(ExitReason::Exception(e2));
+                    }
+                    // Exception injected — break out of block, let main loop
+                    // re-enter at the exception handler address.
+                    return BlockExitReason::Continue;
+                }
+            }
+
+            inst_phys += inst.length as u64;
+
+            // Check for stop/limit between instructions within the block.
+            if self.instruction_count & 0xFF == 0 {
+                if self.stop_requested {
+                    self.stop_requested = false;
+                    return BlockExitReason::Exit(ExitReason::StopRequested);
+                }
+                // Note: we don't check the instruction limit here because the
+                // block is short (max 64 instructions) and the outer loop
+                // checks it at the top. This avoids passing `target` into
+                // this method.
+            }
+        }
+        BlockExitReason::Continue
     }
 
     /// Inject an exception derived from a VmError into the guest.

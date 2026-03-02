@@ -30,6 +30,8 @@ use crate::error::Result;
 
 /// Diagnostic: count reads to unmapped memory (above RAM, no MMIO handler).
 static UNMAPPED_READ_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Diagnostic: count writes to SeaBIOS mmconfig variable at 0xF4DF8.
+static MMCFG_WRITE_COUNT: AtomicU32 = AtomicU32::new(0);
 use crate::registers::{
     SegmentDescriptor, CR0_PG, CR0_WP, CR4_PAE, CR4_PSE, EFER_LMA, EFER_NXE,
 };

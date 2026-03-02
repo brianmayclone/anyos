@@ -42,6 +42,7 @@ pub mod io;
 pub mod fpu_state;
 pub mod sse_state;
 pub mod devices;
+pub mod jit;
 
 /// Syscall wrappers for the allocator, panic handler, and debug output.
 mod syscall {
@@ -1370,4 +1371,42 @@ pub extern "C" fn corevm_ide_clear_irq(handle: u64) {
         return;
     }
     unsafe { (*vm.ide_ptr).clear_irq() };
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// JIT / Decode Cache
+// ════════════════════════════════════════════════════════════════════════
+
+/// Query decode cache statistics.
+///
+/// Writes the number of cached blocks, cache hits, and cache misses to the
+/// provided output pointers. Any pointer may be null (skipped).
+#[no_mangle]
+pub extern "C" fn corevm_jit_cache_stats(
+    handle: u64,
+    cached_blocks: *mut u32,
+    hits: *mut u64,
+    misses: *mut u64,
+) {
+    let vm = unsafe { vm_from_handle(handle) };
+    let cache = &vm.engine.cpu.decode_cache;
+    if !cached_blocks.is_null() {
+        unsafe { *cached_blocks = cache.len() as u32 };
+    }
+    if !hits.is_null() {
+        unsafe { *hits = cache.hits() };
+    }
+    if !misses.is_null() {
+        unsafe { *misses = cache.misses() };
+    }
+}
+
+/// Flush the decode cache, forcing all basic blocks to be re-decoded.
+///
+/// Useful after loading new code into guest memory or when self-modifying
+/// code is detected.
+#[no_mangle]
+pub extern "C" fn corevm_jit_flush_cache(handle: u64) {
+    let vm = unsafe { vm_from_handle(handle) };
+    vm.engine.cpu.decode_cache.flush();
 }
