@@ -32,9 +32,8 @@ const WIN_H: u32 = 640;
 /// Sidebar width in pixels.
 const SIDEBAR_W: u32 = 200;
 
-/// VGA display canvas dimensions (standard VGA text mode pixel area).
-const CANVAS_W: u32 = 640;
-const CANVAS_H: u32 = 400;
+/// Height of the compact info bar below the VGA canvas.
+const INFO_BAR_H: u32 = 28;
 
 /// SHM header size in bytes (must match vmd).
 const SHM_HEADER: usize = 64;
@@ -150,12 +149,9 @@ struct VmEntry {
     instruction_count: u64,
 }
 
-/// Labels displaying real-time VM information.
+/// Compact single-line info bar showing VM state, RAM, mode, instructions.
 struct VmInfoLabels {
-    state_label: anyui::Label,
-    mode_label: anyui::Label,
-    ram_label: anyui::Label,
-    insn_label: anyui::Label,
+    label: anyui::Label,
 }
 
 /// Controls used in the settings dialog window.
@@ -819,44 +815,68 @@ fn update_status_bar() {
 // ── VM info panel ──────────────────────────────────────────────────────
 
 /// Update the VM info labels for the currently selected VM.
+fn copy_str(buf: &mut [u8], s: &str) -> usize {
+    let b = s.as_bytes();
+    let n = b.len().min(buf.len());
+    buf[..n].copy_from_slice(&b[..n]);
+    n
+}
+
+fn write_u32(buf: &mut [u8], val: u32) -> usize {
+    let mut tmp = [0u8; 12];
+    let s = fmt_u32(&mut tmp, val);
+    copy_str(buf, s)
+}
+
+fn write_u64(buf: &mut [u8], val: u64) -> usize {
+    let mut tmp = [0u8; 20];
+    let s = fmt_u64(&mut tmp, val);
+    copy_str(buf, s)
+}
+
 fn update_info_labels() {
     let a = app();
 
     if a.selected_vm >= a.vms.len() {
-        a.info.state_label.set_text("State: No VM selected");
-        a.info.state_label.set_text_color(0xFF999999);
-        a.info.mode_label.set_text("Mode: -");
-        a.info.ram_label.set_text("RAM: -");
-        a.info.insn_label.set_text("Instructions: -");
+        a.info.label.set_text(" No VM selected");
+        a.info.label.set_text_color(0xFF666680);
         return;
     }
 
     let entry = &a.vms[a.selected_vm];
 
-    // State label.
-    let (state_text, state_color) = match entry.state {
-        VmState::Running => ("State: Running", 0xFF00FF80u32),
-        VmState::Paused => ("State: Paused", 0xFFFFCC00u32),
-        VmState::Stopped => ("State: Stopped", 0xFF999999u32),
+    let state_str = match entry.state {
+        VmState::Running => "Running",
+        VmState::Paused => "Paused",
+        VmState::Stopped => "Stopped",
     };
-    a.info.state_label.set_text(state_text);
-    a.info.state_label.set_text_color(state_color);
+    let color = match entry.state {
+        VmState::Running => 0xFF88CCAA,
+        VmState::Paused => 0xFFCCBB88,
+        VmState::Stopped => 0xFF666680,
+    };
 
-    // RAM and instruction count.
-    let mut buf = [0u8; 32];
-    let s = fmt_label_val(&mut buf, "RAM: ", entry.config.ram_mb, " MB");
-    a.info.ram_label.set_text(s);
-
+    // Build compact info string: " State · RAM: 64 MB · Mode: x86 · 16,077 insn"
+    let mut buf = [0u8; 160];
+    let mut pos = 0;
+    // State
+    pos += copy_str(&mut buf[pos..], " ");
+    pos += copy_str(&mut buf[pos..], state_str);
+    // RAM
+    pos += copy_str(&mut buf[pos..], "  |RAM: ");
+    pos += write_u32(&mut buf[pos..], entry.config.ram_mb);
+    pos += copy_str(&mut buf[pos..], " MB");
+    // Mode
     if entry.state == VmState::Running || entry.instruction_count > 0 {
-        a.info.mode_label.set_text("Mode: x86 (vmd)");
-
-        let mut ibuf = [0u8; 40];
-        let s = fmt_label_u64(&mut ibuf, "Instructions: ", entry.instruction_count);
-        a.info.insn_label.set_text(s);
-    } else {
-        a.info.mode_label.set_text("Mode: -");
-        a.info.insn_label.set_text("Instructions: 0");
+        pos += copy_str(&mut buf[pos..], "  |x86 (vmd)");
+        pos += copy_str(&mut buf[pos..], "  |");
+        pos += write_u64(&mut buf[pos..], entry.instruction_count);
+        pos += copy_str(&mut buf[pos..], " insn");
     }
+    if let Ok(s) = core::str::from_utf8(&buf[..pos]) {
+        a.info.label.set_text(s);
+    }
+    a.info.label.set_text_color(color);
 }
 
 // ── VM lifecycle operations ────────────────────────────────────────────
@@ -1068,8 +1088,29 @@ fn delete_selected_vm() {
 fn render_text_mode(canvas: &anyui::Canvas, text_buf: &[u16]) {
     let cols: usize = 80;
     let rows: usize = 25;
-    let char_w: i32 = 8;
-    let char_h: i32 = 16;
+    let native_w: u32 = 640; // 80 * 8
+    let native_h: u32 = 400; // 25 * 16
+
+    let cw = canvas.get_stride();
+    let ch = canvas.get_height();
+    if cw == 0 || ch == 0 {
+        return;
+    }
+
+    // Aspect-ratio-preserving scale.
+    let scale_x = cw as f32 / native_w as f32;
+    let scale_y = ch as f32 / native_h as f32;
+    let scale = if scale_x < scale_y { scale_x } else { scale_y };
+    let rw = (native_w as f32 * scale) as u32;
+    let rh = (native_h as f32 * scale) as u32;
+    let ox = ((cw - rw) / 2) as i32;
+    let oy = ((ch - rh) / 2) as i32;
+
+    let char_w = (8.0 * scale) as i32;
+    let char_h = (16.0 * scale) as i32;
+    if char_w < 1 || char_h < 1 {
+        return;
+    }
 
     for row in 0..rows {
         for col in 0..cols {
@@ -1078,22 +1119,20 @@ fn render_text_mode(canvas: &anyui::Canvas, text_buf: &[u16]) {
                 break;
             }
             let entry = text_buf[idx];
-            let ch = (entry & 0xFF) as u8;
+            let c = (entry & 0xFF) as u8;
             let attr = (entry >> 8) as u8;
             let fg_idx = (attr & 0x0F) as usize;
             let bg_idx = ((attr >> 4) & 0x07) as usize;
             let fg = VGA_COLORS[fg_idx];
             let bg = VGA_COLORS[bg_idx];
 
-            let x = (col as i32) * char_w;
-            let y = (row as i32) * char_h;
+            let x = ox + (col as i32) * char_w;
+            let y = oy + (row as i32) * char_h;
 
-            // Draw background.
             canvas.fill_rect(x, y, char_w as u32, char_h as u32, bg);
 
-            // Draw foreground character (skip non-printable for performance).
-            if ch > 0x20 && ch < 0x7F {
-                render_char_pixels(canvas, x, y, ch, fg);
+            if c > 0x20 && c < 0x7F {
+                render_char_scaled(canvas, x, y, c, fg, scale);
             }
         }
     }
@@ -1110,6 +1149,31 @@ fn render_char_pixels(canvas: &anyui::Canvas, x: i32, y: i32, ch: u8, color: u32
         for col in 0..8 {
             if bits & (0x80 >> col) != 0 {
                 canvas.set_pixel(x + col, y + row as i32 + 4, color);
+            }
+        }
+    }
+}
+
+/// Render a character glyph scaled by a factor. Each glyph pixel becomes a
+/// filled rectangle of size (scale × scale).
+fn render_char_scaled(canvas: &anyui::Canvas, x: i32, y: i32, ch: u8, color: u32, scale: f32) {
+    let glyph = get_glyph(ch);
+    let pw = (scale) as i32; // pixel width
+    let ph = (scale) as i32; // pixel height
+    if pw < 1 || ph < 1 {
+        return;
+    }
+    let glyph_y_off = (4.0 * scale) as i32; // center 8x8 in 8x16 cell
+    for row in 0..8u32 {
+        let bits = glyph[row as usize];
+        if bits == 0 {
+            continue;
+        }
+        let ry = y + glyph_y_off + (row as f32 * scale) as i32;
+        for col in 0..8u32 {
+            if bits & (0x80 >> col) != 0 {
+                let rx = x + (col as f32 * scale) as i32;
+                canvas.fill_rect(rx, ry, pw as u32, ph as u32, color);
             }
         }
     }
@@ -1231,72 +1295,73 @@ fn render_graphics_mode(canvas: &anyui::Canvas, fb: &[u8], width: u32, height: u
         return;
     }
     let stride = canvas.get_stride();
-    let canvas_h = canvas.get_height();
+    let cw = canvas.get_stride();
+    let ch = canvas.get_height();
+    if cw == 0 || ch == 0 {
+        return;
+    }
 
-    let render_w = width.min(CANVAS_W);
-    let render_h = height.min(canvas_h);
+    // Aspect-ratio-preserving scale with centering.
+    let scale_x = cw as f32 / width as f32;
+    let scale_y = ch as f32 / height as f32;
+    let scale = if scale_x < scale_y { scale_x } else { scale_y };
+    let rw = (width as f32 * scale) as u32;
+    let rh = (height as f32 * scale) as u32;
+    let ox = (cw - rw) / 2;
+    let oy = (ch - rh) / 2;
 
-    match bpp {
-        32 => {
-            // BGRA format: read 4 bytes per pixel, convert to ARGB.
-            for y in 0..render_h {
-                for x in 0..render_w {
-                    let src_off = ((y * width + x) * 4) as usize;
-                    if src_off + 3 < fb.len() {
-                        let b = fb[src_off] as u32;
-                        let g = fb[src_off + 1] as u32;
-                        let r = fb[src_off + 2] as u32;
-                        let color = 0xFF000000 | (r << 16) | (g << 8) | b;
-                        unsafe {
-                            let dst = buf_ptr.add((y * stride + x) as usize);
-                            *dst = color;
-                        }
-                    }
-                }
+    let render_w = rw;
+    let render_h = rh;
+
+    // Nearest-neighbor scaling: map destination pixel → source pixel.
+    let get_color = |sx: u32, sy: u32| -> u32 {
+        match bpp {
+            32 => {
+                let off = ((sy * width + sx) * 4) as usize;
+                if off + 3 < fb.len() {
+                    let b = fb[off] as u32;
+                    let g = fb[off + 1] as u32;
+                    let r = fb[off + 2] as u32;
+                    0xFF000000 | (r << 16) | (g << 8) | b
+                } else { 0xFF000000 }
             }
-        }
-        24 => {
-            // BGR format: read 3 bytes per pixel.
-            for y in 0..render_h {
-                for x in 0..render_w {
-                    let src_off = ((y * width + x) * 3) as usize;
-                    if src_off + 2 < fb.len() {
-                        let b = fb[src_off] as u32;
-                        let g = fb[src_off + 1] as u32;
-                        let r = fb[src_off + 2] as u32;
-                        let color = 0xFF000000 | (r << 16) | (g << 8) | b;
-                        unsafe {
-                            let dst = buf_ptr.add((y * stride + x) as usize);
-                            *dst = color;
-                        }
-                    }
-                }
+            24 => {
+                let off = ((sy * width + sx) * 3) as usize;
+                if off + 2 < fb.len() {
+                    let b = fb[off] as u32;
+                    let g = fb[off + 1] as u32;
+                    let r = fb[off + 2] as u32;
+                    0xFF000000 | (r << 16) | (g << 8) | b
+                } else { 0xFF000000 }
             }
-        }
-        8 => {
-            // 256-color mode: first 16 use VGA palette, rest grayscale.
-            for y in 0..render_h {
-                for x in 0..render_w {
-                    let src_off = (y * width + x) as usize;
-                    if src_off < fb.len() {
-                        let idx = fb[src_off] as usize;
-                        let color = if idx < 16 {
-                            VGA_COLORS[idx]
-                        } else {
-                            let gray = (idx as u32) & 0xFF;
-                            0xFF000000 | (gray << 16) | (gray << 8) | gray
-                        };
-                        unsafe {
-                            let dst = buf_ptr.add((y * stride + x) as usize);
-                            *dst = color;
-                        }
+            8 => {
+                let off = (sy * width + sx) as usize;
+                if off < fb.len() {
+                    let idx = fb[off] as usize;
+                    if idx < 16 { VGA_COLORS[idx] }
+                    else {
+                        let g = (idx as u32) & 0xFF;
+                        0xFF000000 | (g << 16) | (g << 8) | g
                     }
-                }
+                } else { 0xFF000000 }
             }
+            _ => 0xFF2D2D2D,
         }
-        _ => {
-            // Unsupported bpp: show placeholder.
-            canvas.clear(0xFF2D2D2D);
+    };
+
+    for dy in 0..render_h {
+        let sy = ((dy as f32 / scale) as u32).min(height - 1);
+        let dst_y = oy + dy;
+        if dst_y >= ch { break; }
+        for dx in 0..render_w {
+            let sx = ((dx as f32 / scale) as u32).min(width - 1);
+            let dst_x = ox + dx;
+            if dst_x >= cw { break; }
+            let color = get_color(sx, sy);
+            unsafe {
+                let dst = buf_ptr.add((dst_y * stride + dst_x) as usize);
+                *dst = color;
+            }
         }
     }
 }
@@ -1739,6 +1804,7 @@ fn vm_tick() {
 
                 if bpp == 0 && width == 80 && height == 25 {
                     // Text mode: payload is u16 cells.
+                    a.canvas.clear(0xFF000000);
                     let text_ptr = payload as *const u16;
                     let text_len = (width * height) as usize;
                     let text_buf = core::slice::from_raw_parts(text_ptr, text_len);
@@ -1879,44 +1945,25 @@ fn main() {
     content_view.set_dock(anyui::DOCK_FILL);
     content_view.set_color(0xFF16161E);
 
-    // Canvas for VGA display (centered with border).
-    let canvas = anyui::Canvas::new(CANVAS_W, CANVAS_H);
-    canvas.set_position(12, 12);
-    canvas.set_size(CANVAS_W, CANVAS_H);
-    canvas.clear(0xFF0A0A14);
+    // Compact info bar (DOCK_BOTTOM) — single line showing VM status.
+    let info_bar = anyui::View::new();
+    info_bar.set_dock(anyui::DOCK_BOTTOM);
+    info_bar.set_size(700, INFO_BAR_H);
+    info_bar.set_color(0xFF12121A);
+
+    let info_label = anyui::Label::new(" No VM selected");
+    info_label.set_dock(anyui::DOCK_FILL);
+    info_label.set_text_color(0xFF666680);
+    info_label.set_font_size(11);
+    info_bar.add(&info_label);
+    content_view.add(&info_bar);
+
+    // Canvas for VGA display (fills remaining content area).
+    let canvas = anyui::Canvas::new(640, 400);
+    canvas.set_dock(anyui::DOCK_FILL);
+    canvas.clear(0xFF000000);
     canvas.set_interactive(true);
     content_view.add(&canvas);
-
-    // VM info panel (below the canvas).
-    let info_y = CANVAS_H as i32 + 20;
-
-    let state_label = anyui::Label::new("State: No VM selected");
-    state_label.set_position(12, info_y);
-    state_label.set_size(320, 20);
-    state_label.set_text_color(0xFF888888);
-    state_label.set_font_size(12);
-    content_view.add(&state_label);
-
-    let mode_label = anyui::Label::new("Mode: -");
-    mode_label.set_position(12, info_y + 22);
-    mode_label.set_size(320, 20);
-    mode_label.set_text_color(0xFFCCCCCC);
-    mode_label.set_font_size(12);
-    content_view.add(&mode_label);
-
-    let ram_label = anyui::Label::new("RAM: -");
-    ram_label.set_position(350, info_y);
-    ram_label.set_size(200, 20);
-    ram_label.set_text_color(0xFFCCCCCC);
-    ram_label.set_font_size(12);
-    content_view.add(&ram_label);
-
-    let insn_label = anyui::Label::new("Instructions: -");
-    insn_label.set_position(350, info_y + 22);
-    insn_label.set_size(300, 20);
-    insn_label.set_text_color(0xFFCCCCCC);
-    insn_label.set_font_size(12);
-    content_view.add(&insn_label);
 
     win.add(&content_view);
 
@@ -1934,10 +1981,7 @@ fn main() {
             toolbar,
             status_label,
             info: VmInfoLabels {
-                state_label,
-                mode_label,
-                ram_label,
-                insn_label,
+                label: info_label,
             },
             content_view,
             sidebar_tree,

@@ -10,7 +10,7 @@ use crate::instruction::{DecodedInst, Operand, RegOperand};
 use crate::memory::{GuestMemory, Mmu};
 use crate::registers::{GprIndex, SegReg};
 
-use super::{compute_effective_address, read_operand, write_operand};
+use super::{compute_effective_address, read_operand, translate_and_read, write_operand};
 
 /// MOV: simple data transfer with no flags modification.
 pub fn exec_mov(
@@ -32,9 +32,26 @@ pub fn exec_movzx(
     memory: &mut GuestMemory,
     mmu: &Mmu,
 ) -> Result<()> {
-    // Source is smaller than destination; read at source size, zero-extend implicitly
-    let src = read_operand(cpu, inst, &inst.operands[1], memory, mmu)?;
-    // The value is already zero-extended by read_operand (read_gpr8/read_gpr16 return u64)
+    // Determine source size from opcode: 0xB6 = r/m8, 0xB7 = r/m16
+    let src_size = if (inst.opcode as u8) == 0xB6 {
+        OperandSize::Byte
+    } else {
+        OperandSize::Word
+    };
+
+    // Read source at the *source* size (not inst.operand_size which is the dest size).
+    let src = match &inst.operands[1] {
+        Operand::Memory(mem_op) => {
+            let linear = compute_effective_address(cpu, mem_op, inst)?;
+            translate_and_read(cpu, linear, mem_op.size, mmu, memory)?
+        }
+        Operand::Register(RegOperand::Gpr(idx)) => {
+            cpu.regs.read_gpr(*idx, src_size, inst.prefix.has_rex())
+        }
+        _ => return Err(VmError::UndefinedOpcode(0)),
+    };
+
+    // Write to destination at destination size (inst.operand_size).
     write_operand(cpu, inst, &inst.operands[0], src, memory, mmu)?;
     cpu.regs.rip += inst.length as u64;
     Ok(())
@@ -47,17 +64,23 @@ pub fn exec_movsx(
     memory: &mut GuestMemory,
     mmu: &Mmu,
 ) -> Result<()> {
-    let src = read_operand(cpu, inst, &inst.operands[1], memory, mmu)?;
+    // Determine source size from opcode: 0xBE = r/m8, 0xBF = r/m16
+    let src_size = if (inst.opcode as u8) == 0xBE {
+        OperandSize::Byte
+    } else {
+        OperandSize::Word
+    };
 
-    // Determine source size from the source operand
-    let src_size = match &inst.operands[1] {
-        Operand::Memory(mem_op) => mem_op.size,
-        _ => {
-            // For register source, infer from opcode:
-            // 0FBE = r/m8 -> r, 0FBF = r/m16 -> r
-            let op2 = inst.opcode as u8;
-            if op2 == 0xBE { OperandSize::Byte } else { OperandSize::Word }
+    // Read source at the *source* size (not inst.operand_size which is the dest size).
+    let src = match &inst.operands[1] {
+        Operand::Memory(mem_op) => {
+            let linear = compute_effective_address(cpu, mem_op, inst)?;
+            translate_and_read(cpu, linear, mem_op.size, mmu, memory)?
         }
+        Operand::Register(RegOperand::Gpr(idx)) => {
+            cpu.regs.read_gpr(*idx, src_size, inst.prefix.has_rex())
+        }
+        _ => return Err(VmError::UndefinedOpcode(0)),
     };
 
     let sign_extended = match src_size {
@@ -81,7 +104,17 @@ pub fn exec_movsxd(
     memory: &mut GuestMemory,
     mmu: &Mmu,
 ) -> Result<()> {
-    let src = read_operand(cpu, inst, &inst.operands[1], memory, mmu)?;
+    // Read source at Dword size (not inst.operand_size which is Qword).
+    let src = match &inst.operands[1] {
+        Operand::Memory(mem_op) => {
+            let linear = compute_effective_address(cpu, mem_op, inst)?;
+            translate_and_read(cpu, linear, mem_op.size, mmu, memory)?
+        }
+        Operand::Register(RegOperand::Gpr(idx)) => {
+            cpu.regs.read_gpr(*idx, OperandSize::Dword, inst.prefix.has_rex())
+        }
+        _ => return Err(VmError::UndefinedOpcode(0)),
+    };
     let sign_extended = src as u32 as i32 as i64 as u64;
     write_operand(cpu, inst, &inst.operands[0], sign_extended, memory, mmu)?;
     cpu.regs.rip += inst.length as u64;

@@ -40,11 +40,8 @@ const SHM_HEADER: usize = 64;
 /// 4 MiB covers up to 1024x768x32bpp.
 const SHM_SIZE: u32 = 4 * 1024 * 1024;
 
-/// Path to the SeaBIOS ROM image.
-const SEABIOS_PATH: &str = "/System/shared/corevm/bios/seabios.bin";
-
-/// Path to the VGA BIOS (SeaVGABIOS/stdvga) ROM image.
-const VGABIOS_PATH: &str = "/System/shared/corevm/bios/vgabios.bin";
+/// Path to the CoreVM BIOS ROM image (custom BIOS, 64 KB).
+const BIOS_PATH: &str = "/Libraries/libcorevm/bios/bios.bin";
 
 /// Instructions to run per execution batch before checking IPC.
 /// Higher = more throughput, lower = more responsive to commands.
@@ -123,9 +120,6 @@ unsafe fn shm_write_u32(ptr: *mut u8, offset: usize, val: u32) {
     dst.write_volatile(val);
 }
 
-/// Whether we have logged the first non-empty VGA text buffer.
-static mut VGA_LOG_DONE: bool = false;
-
 /// Update the SHM framebuffer from the VM's VGA state.
 fn update_shm_framebuffer(inst: &VmInstance) {
     if inst.shm_ptr.is_null() {
@@ -136,50 +130,6 @@ fn update_shm_framebuffer(inst: &VmInstance) {
 
     // Try text mode first.
     if let Some(text_buf) = inst.handle.vga_text_buffer() {
-        // Log first non-empty text buffer content once for debugging.
-        let done = unsafe { VGA_LOG_DONE };
-        if !done {
-            let mut has_content = false;
-            let mut preview = [0u8; 80];
-            let mut plen = 0;
-            for (i, &cell) in text_buf.iter().enumerate() {
-                let ch = (cell & 0xFF) as u8;
-                if ch != 0 && ch != b' ' && ch != 0x20 {
-                    has_content = true;
-                }
-                if i < 80 {
-                    preview[i] = if ch >= 0x20 && ch < 0x7F { ch } else { b'.' };
-                    plen = i + 1;
-                }
-            }
-            if has_content || icount > 10_000_000 {
-                let line = core::str::from_utf8(&preview[..plen]).unwrap_or("");
-                let (mmio_total, mmio_text) = inst.handle.vga_debug_counters();
-                let (reg_count, mmio_lo, mmio_hi, ram_val) = inst.handle.mmio_diag();
-                anyos_std::println!("[vmd] VGA text row 0: '{}' (has_content={})", line, has_content);
-                anyos_std::println!("[vmd] VGA MMIO writes: total={}, text_region={}", mmio_total, mmio_text);
-                anyos_std::println!(
-                    "[vmd] MMIO diag: {} regions, bounds=[0x{:X}, 0x{:X}), RAM@0xB8000=0x{:08X}",
-                    reg_count, mmio_lo, mmio_hi, ram_val
-                );
-                // Check IVT and BDA to understand VGA init state.
-                let ivt_10h = inst.handle.read_phys_u32(0x40);
-                let bda_equip = inst.handle.read_phys_u16(0x410);
-                let bda_vmode = inst.handle.read_phys_u8(0x449);
-                let bda_cols = inst.handle.read_phys_u16(0x44A);
-                let bda_crtc = inst.handle.read_phys_u16(0x463);
-                let bda_rows = inst.handle.read_phys_u8(0x484);
-                anyos_std::println!("[vmd] IVT INT 10h vector: 0x{:08X}", ivt_10h);
-                anyos_std::println!(
-                    "[vmd] BDA: equip=0x{:04X} vmode=0x{:02X} cols={} rows={} crtc=0x{:04X}",
-                    bda_equip, bda_vmode, bda_cols, bda_rows + 1, bda_crtc
-                );
-                // Check first bytes of VGA BIOS at 0xC0000 (should be 0x55, 0xAA).
-                let rom_sig = inst.handle.read_phys_u16(0xC0000);
-                anyos_std::println!("[vmd] ROM@0xC0000 signature: 0x{:04X}", rom_sig);
-                unsafe { VGA_LOG_DONE = true; }
-            }
-        }
         let cols: u32 = 80;
         let rows: u32 = 25;
         unsafe {
@@ -422,14 +372,14 @@ fn cmd_create(uuid: &str) {
         }
     }
 
-    // Load ISO if configured.
+    // Attach ISO as IDE disk if configured (allows BIOS to boot from it).
     if !config.iso_image.is_empty() {
         let data = read_file(&config.iso_image);
         if !data.is_empty() {
             if let Some(ref inst) = d.vm {
-                inst.handle.load_binary(0x10_0000, &data);
+                inst.handle.ide_attach_disk(&data);
             }
-            anyos_std::println!("[vmd] loaded ISO: {} ({} bytes)", config.iso_image, data.len());
+            anyos_std::println!("[vmd] attached ISO as IDE disk: {} ({} bytes)", config.iso_image, data.len());
         }
     }
 }
@@ -442,55 +392,16 @@ fn cmd_start() {
             return;
         }
 
-        // Load SeaBIOS.
-        let bios_data = read_file(SEABIOS_PATH);
-        let mut seabios_load_addr: u64 = 0;
-        let mut seabios_size: usize = 0;
+        // Load CoreVM BIOS (custom BIOS, 64 KB at 0xF0000).
+        let bios_data = read_file(BIOS_PATH);
         if !bios_data.is_empty() {
-            let load_addr = if bios_data.len() <= 0x10000 {
-                0xF0000u64
-            } else {
-                (0x10_0000u64).wrapping_sub(bios_data.len() as u64)
-            };
-            inst.handle.load_binary(load_addr, &bios_data);
+            inst.handle.load_binary(0xF0000, &bios_data);
             inst.handle.set_rip(0xFFF0);
-            seabios_load_addr = load_addr;
-            seabios_size = bios_data.len();
-            anyos_std::println!("[vmd] loaded SeaBIOS ({} bytes at 0x{:X})", bios_data.len(), load_addr);
+            anyos_std::println!("[vmd] loaded CoreVM BIOS ({} bytes at 0xF0000)", bios_data.len());
         } else {
-            send_status("error 0 SeaBIOS not found");
-            anyos_std::println!("[vmd] ERROR: SeaBIOS not found at {}", SEABIOS_PATH);
+            send_status("error 0 BIOS not found");
+            anyos_std::println!("[vmd] ERROR: BIOS not found at {}", BIOS_PATH);
             return;
-        }
-
-        // Load VGA BIOS: provide it both as a fw_cfg file for SeaBIOS's
-        // modern path AND at 0xC0000 in RAM for the legacy ROM scan path.
-        let vgabios_data = read_file(VGABIOS_PATH);
-        if !vgabios_data.is_empty() {
-            // fw_cfg file entry — SeaBIOS loads VGA ROMs via "vgaroms/" prefix.
-            inst.handle.fw_cfg_add_file("vgaroms/vgabios-stdvga.bin", &vgabios_data);
-
-            // Legacy fallback at 0xC0000 is only safe if it does not overlap
-            // the SeaBIOS image range.
-            let vga_rom_start = 0xC0000u64;
-            let vga_rom_end = vga_rom_start.wrapping_add(vgabios_data.len() as u64);
-            let bios_start = seabios_load_addr;
-            let bios_end = bios_start.wrapping_add(seabios_size as u64);
-            let overlaps_seabios = vga_rom_start < bios_end && bios_start < vga_rom_end;
-
-            if overlaps_seabios {
-                anyos_std::println!(
-                    "[vmd] loaded VGA BIOS ({} bytes, fw_cfg only; skipped 0xC0000 fallback due SeaBIOS overlap 0x{:X}-0x{:X})",
-                    vgabios_data.len(),
-                    bios_start,
-                    bios_end,
-                );
-            } else {
-                inst.handle.load_binary(vga_rom_start, &vgabios_data);
-                anyos_std::println!("[vmd] loaded VGA BIOS ({} bytes, fw_cfg + 0xC0000)", vgabios_data.len());
-            }
-        } else {
-            anyos_std::println!("[vmd] WARNING: VGA BIOS not found at {}", VGABIOS_PATH);
         }
 
         // Log MMIO diagnostic info before starting execution.

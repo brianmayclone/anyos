@@ -432,9 +432,17 @@ impl<'m> DecodeCursor<'m> {
             // -- ARPL (32-bit) / MOVSXD (64-bit) --
             0x63 => {
                 if self.mode == CpuMode::Long64 {
-                    // MOVSXD r, r/m32 (REX.W -> r64, r/m32)
-                    let sz = self.inst.operand_size;
-                    self.decode_modrm_r_rm(sz)
+                    // MOVSXD r64, r/m32: destination uses operand_size (Qword
+                    // with REX.W), source is always Dword.
+                    let dst_sz = self.inst.operand_size;
+                    let modrm = self.fetch_modrm()?;
+                    let (md, reg, rm) = Self::split_modrm(modrm);
+                    let reg = self.extend_r(reg);
+                    let rm_op = self.decode_rm(md, rm, OperandSize::Dword)?;
+                    self.set_operand(0, self.gpr_operand(reg, dst_sz));
+                    self.set_operand(1, rm_op);
+                    self.inst.operand_count = 2;
+                    Ok(())
                 } else {
                     // ARPL r/m16, r16
                     self.decode_modrm_rm_r(OperandSize::Word)
@@ -666,6 +674,7 @@ impl<'m> DecodeCursor<'m> {
 
             // -- MOV AL/AX/EAX/RAX, moffs | MOV moffs, AL/AX/EAX/RAX --
             0xA0 => {
+                self.inst.operand_size = OperandSize::Byte;
                 let addr = self.fetch_moffs()?;
                 self.set_operand(0, self.gpr_operand(0, OperandSize::Byte)); // AL
                 self.set_operand(1, self.moffs_operand(addr, OperandSize::Byte));
@@ -681,6 +690,7 @@ impl<'m> DecodeCursor<'m> {
                 Ok(())
             }
             0xA2 => {
+                self.inst.operand_size = OperandSize::Byte;
                 let addr = self.fetch_moffs()?;
                 self.set_operand(0, self.moffs_operand(addr, OperandSize::Byte));
                 self.set_operand(1, self.gpr_operand(0, OperandSize::Byte)); // AL
@@ -713,6 +723,7 @@ impl<'m> DecodeCursor<'m> {
                 let reg = self.extend_b(op & 0x07);
                 let imm = self.fetch_u8()? as u64;
                 self.inst.immediate = imm;
+                self.inst.operand_size = OperandSize::Byte;
                 self.set_operand(0, self.gpr_operand(reg, OperandSize::Byte));
                 self.set_operand(1, Operand::Immediate(imm));
                 self.inst.operand_count = 2;
@@ -763,6 +774,7 @@ impl<'m> DecodeCursor<'m> {
 
             // -- MOV r/m8, imm8 --
             0xC6 => {
+                self.inst.operand_size = OperandSize::Byte;
                 let modrm = self.fetch_modrm()?;
                 let (md, _reg, rm) = Self::split_modrm(modrm);
                 let rm_op = self.decode_rm(md, rm, OperandSize::Byte)?;
@@ -1048,6 +1060,7 @@ impl<'m> DecodeCursor<'m> {
 
             // -- Group 4: INC/DEC r/m8 --
             0xFE => {
+                self.inst.operand_size = OperandSize::Byte;
                 let modrm = self.fetch_modrm()?;
                 let (md, _reg, rm) = Self::split_modrm(modrm);
                 let rm_op = self.decode_rm(md, rm, OperandSize::Byte)?;
@@ -1662,6 +1675,7 @@ impl<'m> DecodeCursor<'m> {
 
     /// Decode `operand[0] = r/m, operand[1] = reg` from ModR/M.
     fn decode_modrm_rm_r(&mut self, size: OperandSize) -> Result<()> {
+        self.inst.operand_size = size;
         let modrm = self.fetch_modrm()?;
         let (md, reg, rm) = Self::split_modrm(modrm);
         let reg = self.extend_r(reg);
@@ -1674,6 +1688,7 @@ impl<'m> DecodeCursor<'m> {
 
     /// Decode `operand[0] = reg, operand[1] = r/m` from ModR/M.
     fn decode_modrm_r_rm(&mut self, size: OperandSize) -> Result<()> {
+        self.inst.operand_size = size;
         let modrm = self.fetch_modrm()?;
         let (md, reg, rm) = Self::split_modrm(modrm);
         let reg = self.extend_r(reg);
@@ -1686,6 +1701,7 @@ impl<'m> DecodeCursor<'m> {
 
     /// Decode `operand[0] = AL, operand[1] = imm8`.
     fn decode_al_imm8(&mut self) -> Result<()> {
+        self.inst.operand_size = OperandSize::Byte;
         let imm = self.fetch_u8()? as u64;
         self.inst.immediate = imm;
         self.set_operand(0, self.gpr_operand(0, OperandSize::Byte));
@@ -1712,6 +1728,7 @@ impl<'m> DecodeCursor<'m> {
     /// The reg field of ModR/M selects the sub-opcode (ADD/OR/ADC/SBB/AND/
     /// SUB/XOR/CMP for Group 1).
     fn decode_group_rm_imm(&mut self, rm_size: OperandSize, imm_size: OperandSize) -> Result<()> {
+        self.inst.operand_size = rm_size;
         let modrm = self.fetch_modrm()?;
         let (md, _reg, rm) = Self::split_modrm(modrm);
         let rm_op = self.decode_rm(md, rm, rm_size)?;
@@ -1752,6 +1769,7 @@ impl<'m> DecodeCursor<'m> {
 
     /// Decode Group 2 (shift/rotate): r/m, imm8.
     fn decode_shift_imm8(&mut self, size: OperandSize) -> Result<()> {
+        self.inst.operand_size = size;
         let modrm = self.fetch_modrm()?;
         let (md, _reg, rm) = Self::split_modrm(modrm);
         let rm_op = self.decode_rm(md, rm, size)?;
@@ -1765,6 +1783,7 @@ impl<'m> DecodeCursor<'m> {
 
     /// Decode Group 2 (shift/rotate): r/m, 1.
     fn decode_shift_one(&mut self, size: OperandSize) -> Result<()> {
+        self.inst.operand_size = size;
         let modrm = self.fetch_modrm()?;
         let (md, _reg, rm) = Self::split_modrm(modrm);
         let rm_op = self.decode_rm(md, rm, size)?;
@@ -1777,6 +1796,7 @@ impl<'m> DecodeCursor<'m> {
 
     /// Decode Group 2 (shift/rotate): r/m, CL.
     fn decode_shift_cl(&mut self, size: OperandSize) -> Result<()> {
+        self.inst.operand_size = size;
         let modrm = self.fetch_modrm()?;
         let (md, _reg, rm) = Self::split_modrm(modrm);
         let rm_op = self.decode_rm(md, rm, size)?;
@@ -1791,6 +1811,7 @@ impl<'m> DecodeCursor<'m> {
     /// The reg field of ModR/M selects the sub-opcode. TEST (reg=0,1) has an
     /// immediate; the others do not.
     fn decode_group3(&mut self, size: OperandSize) -> Result<()> {
+        self.inst.operand_size = size;
         let modrm = self.fetch_modrm()?;
         let (md, reg, rm) = Self::split_modrm(modrm);
         let rm_op = self.decode_rm(md, rm, size)?;

@@ -41,7 +41,6 @@
 //! | 0x3D | 1 | Interrupt Pin |
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
 use crate::error::Result;
 use crate::io::IoHandler;
 use crate::memory::mmio::MmioHandler;
@@ -82,6 +81,10 @@ impl PciDevice {
         // Device ID (offset 0x02).
         config_space[0x02] = device_id as u8;
         config_space[0x03] = (device_id >> 8) as u8;
+
+        // Command (offset 0x04): enable I/O + memory space access.
+        config_space[0x04] = 0x03;
+        config_space[0x05] = 0x00;
 
         // Status (offset 0x06): capabilities list not supported.
         config_space[0x06] = 0x00;
@@ -163,10 +166,6 @@ pub struct PciBus {
     pub config_address: u32,
     /// Registered PCI devices.
     pub devices: Vec<PciDevice>,
-    /// Diagnostic: number of config address writes logged.
-    log_count: u32,
-    /// Diagnostic: number of config data reads logged.
-    read_log_count: u32,
 }
 
 impl PciBus {
@@ -175,8 +174,6 @@ impl PciBus {
         PciBus {
             config_address: 0,
             devices: Vec::new(),
-            log_count: 0,
-            read_log_count: 0,
         }
     }
 
@@ -305,15 +302,6 @@ impl PciBus {
             0xFFFFFFFF
         };
 
-        // Log config reads for devices that exist or for device 2 (VGA).
-        if self.read_log_count < 60 && (result != 0xFFFFFFFF || device == 2) {
-            self.read_log_count += 1;
-            libsyscall::serial_print(format_args!(
-                "[pci] CFC read: addr=0x{:08X} bus={} dev={} func={} reg=0x{:02X} => 0x{:08X}\n",
-                self.config_address, bus, device, function, register, result
-            ));
-        }
-
         result
     }
 
@@ -405,20 +393,6 @@ impl IoHandler for PciBus {
     fn write(&mut self, port: u16, size: u8, val: u32) -> Result<()> {
         match port {
             0xCF8..=0xCFB => {
-                // Log the first few config address writes to diagnose PCI scanning.
-                if self.log_count < 100 {
-                    self.log_count += 1;
-                    let enable = val & 0x80000000 != 0;
-                    let bus = (val >> 16) & 0xFF;
-                    let dev = (val >> 11) & 0x1F;
-                    let func = (val >> 8) & 0x07;
-                    let reg = val & 0xFC;
-                    libsyscall::serial_print(format_args!(
-                        "[pci] CF8 write: val=0x{:08X} size={} enable={} bus={} dev={} func={} reg=0x{:02X}\n",
-                        val, size, enable, bus, dev, func, reg
-                    ));
-                }
-
                 // Mechanism #1 config-address latch supports byte/word accesses
                 // across 0xCF8..0xCFB. Merge sub-accesses into the 32-bit latch.
                 let new_addr = if size >= 4 && port == 0xCF8 {
@@ -487,9 +461,6 @@ fn config_write_u16(data: &mut [u8], offset: usize, val: u16) {
 
 // ── MMCONFIG (PCI Express Enhanced Configuration) MMIO handler ──
 
-/// Diagnostic counter for MMCONFIG read accesses.
-static MMCFG_READ_COUNT: AtomicU32 = AtomicU32::new(0);
-
 /// PCI Express Enhanced Configuration Mechanism (MMCONFIG) handler.
 ///
 /// Maps a 256 MiB physical address region into PCI configuration space.
@@ -535,16 +506,6 @@ impl MmioHandler for PciMmcfgHandler {
         let (bus, device, function, register) = Self::decode_offset(offset);
         let pci_bus = unsafe { &mut *self.bus_ptr };
         let val = pci_bus.mmcfg_read(bus, device, function, register, size);
-
-        // Diagnostic logging for the first accesses.
-        let n = MMCFG_READ_COUNT.fetch_add(1, Ordering::Relaxed);
-        if n < 80 {
-            libsyscall::serial_print(format_args!(
-                "[mmcfg] read #{}: bus={} dev={} func={} reg=0x{:03X} size={} => 0x{:X}\n",
-                n, bus, device, function, register, size, val
-            ));
-        }
-
         Ok(val)
     }
 
