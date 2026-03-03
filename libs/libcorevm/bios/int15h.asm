@@ -30,41 +30,49 @@ i15_e820:
     cmp edx, 0x534D4150
     jne .fail
 
+    push esi
+    push ds
+
+    ; The runtime E820 table is in low RAM (segment 0).
+    ; memory_detect wrote it there with DS=0; we must read it with DS=0 too.
+    ; The caller's DS is unknown, so we always set DS=0 explicitly here.
+    xor ax, ax
+    mov ds, ax
+
     movzx eax, word [e820_count]
     cmp ebx, eax
-    jge .fail
+    jge .e820_fail_pop
 
-    push esi
     mov eax, ebx
     mov esi, E820_ENTRY_SIZE
     mul esi
-    add eax, e820_table
+    add eax, e820_table         ; ESI = &e820_table[entry_index]
     mov esi, eax
 
-    push ds
     push cx
-    mov ax, 0xF000
-    mov ds, ax
     mov cx, 20
     push di
-    rep movsb
+    rep movsb                   ; DS:SI (segment 0) → ES:DI
     pop di
     pop cx
-    pop ds
 
     mov eax, 0x534D4150
     inc ebx
     movzx ecx, word [e820_count]
     cmp ebx, ecx
-    jl .not_last
+    jl .e820_not_last
     xor ebx, ebx
-.not_last:
+.e820_not_last:
     mov ecx, 20
 
+    pop ds
     pop esi
     clc
     iret
 
+.e820_fail_pop:
+    pop ds
+    pop esi
 .fail:
     mov ah, 0x86
     stc

@@ -1291,7 +1291,13 @@ fn schedule_inner(from_timer: bool) {
         {
             let next_pc = unsafe { (*new_ctx).get_pc() };
             let next_sp = unsafe { (*new_ctx).get_sp() };
-            let _ = unsafe { (*new_ctx).x[30] };
+            let next_lr = unsafe { (*new_ctx).x[30] };
+            let next_ttbr0 = unsafe { (*new_ctx).get_page_table() };
+            let next_save = unsafe { (*new_ctx).save_complete };
+            crate::serial_println!(
+                "  [SCHED] ctx_switch: from T{} -> T{} pc={:#x} lr={:#x} sp={:#x} ttbr0={:#x} save={}",
+                outgoing_tid, _next_tid, next_pc, next_lr, next_sp, next_ttbr0, next_save,
+            );
         }
         unsafe { crate::task::context::context_switch(old_ctx, new_ctx); }
     }

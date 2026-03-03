@@ -350,6 +350,11 @@ i10_tty_output:
     push dx
     push ax
 
+    ; Mirror the character to the serial port so all INT 10h text output
+    ; (BIOS POST messages and bootloader text) appears in the serial log.
+    ; serial_putchar preserves AX and DX, so this is safe here.
+    call serial_putchar
+
     xor bx, bx
     mov ds, bx
 

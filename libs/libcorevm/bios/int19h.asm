@@ -187,6 +187,24 @@ detect_el_torito:
     ; ── Mark detection as successful ──────────────────────────────────────
     mov byte [el_torito_present], 1
 
+    ; Set el_torito_drive based on emulation type.
+    ; The ROM initial value (db 0xE0) is not the runtime value — at runtime
+    ; all BIOS variables live in low RAM (segment 0), starting at 0.
+    mov al, [el_torito_emul]
+    cmp al, 0x04
+    je .drive_hd
+    cmp al, 0x00
+    je .drive_cd
+    ; Floppy emulation (1–3).
+    mov byte [el_torito_drive], 0x00
+    jmp .drive_done
+.drive_hd:
+    mov byte [el_torito_drive], 0x80
+    jmp .drive_done
+.drive_cd:
+    mov byte [el_torito_drive], 0xE0
+.drive_done:
+
     pop es
     pop edi
     pop ecx
@@ -226,6 +244,26 @@ boot_el_torito:
     mov si, str_booting_cd
     call bios_print
 
+    ; Print El Torito parameters for diagnostics.
+    mov si, str_et_rba
+    call bios_print
+    mov eax, [el_torito_rba]
+    call bios_print_hex32
+    mov si, str_et_cnt
+    call bios_print
+    mov ax, [el_torito_count]
+    call bios_print_dec16
+    mov si, str_et_seg
+    call bios_print
+    mov ax, [el_torito_load_seg]
+    call bios_print_hex16
+    mov si, str_et_emul
+    call bios_print
+    movzx ax, byte [el_torito_emul]
+    call bios_print_hex8
+    mov si, str_et_load
+    call bios_print
+
     ; Convert Load RBA (ISO 2048-byte sector units) to ATA LBA.
     mov eax, [el_torito_rba]
     shl eax, 2              ; × 4 → ATA LBA
@@ -245,6 +283,9 @@ boot_el_torito:
     call ide_read_sectors
     pop es
     jc .fail
+
+    mov si, str_et_loaded
+    call bios_print
 
     ; ── Choose DL based on emulation type ─────────────────────────────────
     mov al, [el_torito_emul]
