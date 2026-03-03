@@ -6,7 +6,6 @@
 //! hardware exceptions.
 
 use crate::decoder::{CpuMode, Decoder};
-use crate::registers::GprIndex;
 use crate::error::{Result, VmError};
 use crate::fpu_state::FpuState;
 use crate::interrupts::InterruptController;
@@ -22,9 +21,6 @@ use crate::registers::{
 use crate::sse_state::SseState;
 
 use core::sync::atomic::{AtomicU32, Ordering};
-
-/// Diagnostic: count mode changes for logging.
-static MODE_CHANGE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// CPU execution mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -194,19 +190,6 @@ impl Cpu {
         };
 
         // Sync MMU state will be done by the caller (VmEngine.run updates Mmu)
-
-        // Diagnostic: log every CPU mode/decoder-mode change.
-        let cs = &self.regs.seg[SegReg::Cs as usize];
-        let decoder_mode = self.decoder.mode();
-        let n = MODE_CHANGE_COUNT.fetch_add(1, Ordering::Relaxed);
-        if n < 80 {
-            libsyscall::serial_print(format_args!(
-                "[mode-diag] #{}: cpu={:?} dec={:?} cs_sel=0x{:04X} cs_base=0x{:X} cs_big={} cs_long={} rip=0x{:X}\n",
-                n, self.mode, decoder_mode,
-                cs.selector, cs.base, cs.big, cs.long_mode,
-                self.regs.rip,
-            ));
-        }
     }
 
     /// Read a segment descriptor from the GDT given a selector.
@@ -268,14 +251,6 @@ impl Cpu {
         }
         // LDT selectors (TI=1) not supported — use GDT regardless.
         let desc = self.read_gdt_descriptor(selector, memory, mmu)?;
-        // Diagnostic: log every CS load from GDT with descriptor details.
-        if matches!(seg, SegReg::Cs) {
-            libsyscall::serial_print(format_args!(
-                "[cs-load] sel=0x{:04X} base=0x{:X} limit=0x{:X} big={} long={} code={} access=0x{:02X} flags=0x{:X} rip=0x{:X}\n",
-                desc.selector, desc.base, desc.limit, desc.big, desc.long_mode,
-                desc.is_code, desc.access, desc.flags, self.regs.rip,
-            ));
-        }
         self.regs.seg[seg as usize] = desc;
         Ok(())
     }
@@ -329,22 +304,6 @@ impl Cpu {
                     return ExitReason::InstructionLimit;
                 }
             }
-            // ── PCI debug: periodic status dump ──
-            // Log mode, RIP, and I/O counters every 2M instructions to track CPU state
-            // through the SeaBIOS real→protected mode transition and PCI scan phase.
-            if self.instruction_count & 0x1F_FFFF == 0 && self.instruction_count > 0 {
-                let out_n = crate::executor::OUT_DX_COUNT.load(core::sync::atomic::Ordering::Relaxed);
-                let in_n = crate::executor::IN_DX_COUNT.load(core::sync::atomic::Ordering::Relaxed);
-                let cf8_n = crate::io::CF8_DISPATCH_COUNT.load(core::sync::atomic::Ordering::Relaxed);
-                libsyscall::serial_print(format_args!(
-                    "[cpu-diag] insn={} rip=0x{:X} mode={:?} cs=0x{:04X} cs.base=0x{:X} out_dx={} in_dx={} cf8={}\n",
-                    self.instruction_count, self.regs.rip, self.mode,
-                    self.regs.seg[crate::registers::SegReg::Cs as usize].selector,
-                    self.regs.seg[crate::registers::SegReg::Cs as usize].base,
-                    out_n, in_n, cf8_n,
-                ));
-            }
-
             // Sync MMU state from control registers (fast-path: skips if unchanged).
             mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
 
@@ -396,55 +355,6 @@ impl Cpu {
             self.last_exec_rip = self.regs.rip;
             self.last_exec_cs = self.regs.seg[SegReg::Cs as usize].selector;
             self.last_fetch_addr = phys_addr;
-
-            // ── Instruction trace: arms when bios_print is first reached ──
-            // Logs 200 instructions with full register state to find the loop.
-            {
-                use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-                static ITRACE_ARMED: AtomicBool = AtomicBool::new(false);
-                static ITRACE_LEFT: AtomicU32 = AtomicU32::new(0);
-
-                let rip = self.regs.rip;
-                let cs_sel = self.regs.seg[SegReg::Cs as usize].selector;
-                // Arm when we first hit bios_print (cs lodsb at offset 0x1872 in BIOS segment)
-                if rip == 0x1872 && cs_sel == 0xF000 && !ITRACE_ARMED.load(Ordering::Relaxed) {
-                    ITRACE_ARMED.store(true, Ordering::Relaxed);
-                    ITRACE_LEFT.store(200, Ordering::Relaxed);
-                    libsyscall::serial_print(format_args!(
-                        "[itrace] === ARMED at bios_print, insn={} ===\n",
-                        self.instruction_count
-                    ));
-                }
-                let left = ITRACE_LEFT.load(Ordering::Relaxed);
-                if left > 0 {
-                    ITRACE_LEFT.store(left - 1, Ordering::Relaxed);
-                    use crate::memory::MemoryBus;
-                    let b0 = memory.read_u8(phys_addr).unwrap_or(0xFF);
-                    let b1 = memory.read_u8(phys_addr + 1).unwrap_or(0xFF);
-                    let b2 = memory.read_u8(phys_addr + 2).unwrap_or(0xFF);
-                    let b3 = memory.read_u8(phys_addr + 3).unwrap_or(0xFF);
-                    let ax = self.regs.read_gpr16(GprIndex::Rax as u8);
-                    let bx = self.regs.read_gpr16(GprIndex::Rbx as u8);
-                    let cx = self.regs.read_gpr16(GprIndex::Rcx as u8);
-                    let dx = self.regs.read_gpr16(GprIndex::Rdx as u8);
-                    let si = self.regs.read_gpr16(GprIndex::Rsi as u8);
-                    let di = self.regs.read_gpr16(GprIndex::Rdi as u8);
-                    let sp = self.regs.read_gpr16(GprIndex::Rsp as u8);
-                    let ds = self.regs.seg[SegReg::Ds as usize].selector;
-                    let es = self.regs.seg[SegReg::Es as usize].selector;
-                    let fl = (self.regs.rflags & 0xFFFF) as u16;
-                    libsyscall::serial_print(format_args!(
-                        "[itrace] rip={:04X} [{:02X}{:02X}{:02X}{:02X}] AX={:04X} BX={:04X} CX={:04X} DX={:04X} SI={:04X} DI={:04X} SP={:04X} DS={:04X} ES={:04X} FL={:04X}\n",
-                        rip, b0, b1, b2, b3, ax, bx, cx, dx, si, di, sp, ds, es, fl
-                    ));
-                    if left == 1 {
-                        libsyscall::serial_print(format_args!(
-                            "[itrace] === DONE, insn_count={} ===\n",
-                            self.instruction_count
-                        ));
-                    }
-                }
-            }
 
             // ── Decode Cache path ──────────────────────────────────
             // Try the decode cache first: look up a pre-decoded basic block
@@ -774,24 +684,6 @@ impl Cpu {
         mmu: &mut Mmu,
         interrupts: &mut InterruptController,
     ) -> Result<()> {
-        // Diagnostic: log all exceptions injected after the PCI scan starts.
-        {
-            use core::sync::atomic::{AtomicU32, Ordering};
-            static EXCEPT_COUNT: AtomicU32 = AtomicU32::new(0);
-            let cf8_n = crate::io::CF8_DISPATCH_COUNT.load(Ordering::Relaxed);
-            if cf8_n >= 11 {
-                let n = EXCEPT_COUNT.fetch_add(1, Ordering::Relaxed);
-                if n < 50 {
-                    libsyscall::serial_print(format_args!(
-                        "[except-diag] #{}: vec={:?} rip=0x{:X} cs=0x{:04X} insn={}\n",
-                        n, error, self.regs.rip,
-                        self.regs.seg[SegReg::Cs as usize].selector,
-                        self.instruction_count,
-                    ));
-                }
-            }
-        }
-
         let (vector, error_code, cr2_val) = match error {
             VmError::DivideByZero => (0, None, None),
             VmError::DebugException => (1, None, None),

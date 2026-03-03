@@ -42,5 +42,6 @@ int19h_handler:
     mov si, str_no_boot
     call bios_print
 .halt:
+    cli
     hlt
     jmp .halt
