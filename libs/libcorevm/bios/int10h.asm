@@ -129,9 +129,11 @@ i10_set_cursor_pos:
     cmp bh, 0
     jne .done
 
+    push dx                         ; Save cursor (MUL clobbers DX)
     movzx ax, dh
     mov bx, 80
     mul bx
+    pop dx                          ; Restore cursor
     movzx bx, dl
     add ax, bx
 
@@ -268,9 +270,11 @@ i10_read_char_attr:
     shl bx, 1
     mov dx, [BDA_CURSOR_POS + bx]
 
+    push dx                         ; Save cursor (MUL clobbers DX)
     movzx ax, dh
     mov bx, 80
     mul bx
+    pop dx                          ; Restore cursor
     movzx bx, dl
     add ax, bx
     shl ax, 1
@@ -305,10 +309,14 @@ i10_write_char_attr:
     shl di, 1
     mov dx, [BDA_CURSOR_POS + di]
 
+    push dx                         ; Save cursor (MUL clobbers DX)
     movzx ax, dh
     push bx
     mov bx, 80
     mul bx
+    pop bx
+    pop dx                          ; Restore cursor
+    push bx
     movzx bx, dl
     add ax, bx
     shl ax, 1
@@ -358,9 +366,11 @@ i10_tty_output:
 
     ; Regular character: write to VGA.
     push ax
+    push dx                         ; Save cursor (MUL clobbers DX)
     movzx ax, dh
     mov bx, 80
     mul bx
+    pop dx                          ; Restore cursor
     movzx bx, dl
     add ax, bx
     shl ax, 1
@@ -403,9 +413,11 @@ i10_tty_output:
     mov [BDA_CURSOR_POS], dx
 
     push ax
+    push dx                         ; Save cursor (MUL clobbers DX)
     movzx ax, dh
     mov bx, 80
     mul bx
+    pop dx                          ; Restore cursor
     movzx bx, dl
     add ax, bx
 
