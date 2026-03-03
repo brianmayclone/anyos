@@ -27,6 +27,15 @@ pub fn getpid() -> u32 {
     syscall0(SYS_GETPID)
 }
 
+/// Stub placed as return address for spawned threads.
+/// When a thread's entry function returns, execution lands here,
+/// which cleanly kills the thread via SIGKILL to itself.
+fn thread_exit_stub() {
+    kill(getpid());
+    // If kill doesn't terminate us immediately, loop forever.
+    loop { yield_cpu(); }
+}
+
 pub fn yield_cpu() {
     syscall0(SYS_YIELD);
 }
@@ -319,9 +328,12 @@ impl Thread {
         if stack_ptr.is_null() {
             return Err(error::Error::OutOfMemory);
         }
-        // x86_64 ABI: RSP must be STACK_TOP - 8 at function entry
-        let stack_top = (stack_ptr as usize) + stack_size - 8;
-        let tid = thread_create(entry, stack_top, name);
+        // x86_64 ABI: RSP must be STACK_TOP - 8 at function entry.
+        // Place a return address that cleanly kills the thread when entry()
+        // returns, instead of jumping to RIP=0 (mmap zeroes the stack).
+        let ret_slot = (stack_ptr as usize) + stack_size - 8;
+        unsafe { *(ret_slot as *mut usize) = thread_exit_stub as usize; }
+        let tid = thread_create(entry, ret_slot, name);
         if tid == 0 {
             munmap(stack_ptr, stack_size);
             return Err(error::Error::Other(0));

@@ -195,6 +195,9 @@ pub fn sync_worker_entry() {
 
     ss.phase.store(SyncPhase::Done as u32, Ordering::Release);
     ss.worker_active.store(false, Ordering::Release);
+    // Thread has no return address on the stack (mmap zeroes it), so returning
+    // would jump to RIP=0x0.  Kill this thread cleanly instead.
+    anyos_std::process::kill(anyos_std::process::getpid());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

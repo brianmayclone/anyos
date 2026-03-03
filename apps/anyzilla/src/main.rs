@@ -515,7 +515,7 @@ fn icon_for_name(name: &str, is_dir: bool) -> FileIcon {
 }
 
 /// Generate a 14×14 ARGB icon for the given file type.
-fn generate_icon(icon: FileIcon) -> Vec<u32> {
+fn generate_icon(icon: FileIcon) -> [u32; 196] {
     const W: usize = 14;
     const H: usize = 14;
     let mut px = [0u32; W * H];
@@ -666,17 +666,52 @@ fn generate_icon(icon: FileIcon) -> Vec<u32> {
         }
     }
 
-    let mut v = Vec::with_capacity(W * H);
-    v.extend_from_slice(&px);
-    v
+    px
+}
+
+/// Cached icon pixel arrays — generated once, reused for every grid refresh.
+static mut ICON_CACHE: Option<[[u32; 196]; 9]> = None;
+
+fn get_icon_cache() -> &'static [[u32; 196]; 9] {
+    unsafe {
+        if ICON_CACHE.is_none() {
+            ICON_CACHE = Some([
+                generate_icon(FileIcon::ParentDir),
+                generate_icon(FileIcon::Folder),
+                generate_icon(FileIcon::Text),
+                generate_icon(FileIcon::Image),
+                generate_icon(FileIcon::Archive),
+                generate_icon(FileIcon::Executable),
+                generate_icon(FileIcon::Audio),
+                generate_icon(FileIcon::Video),
+                generate_icon(FileIcon::Default),
+            ]);
+        }
+        ICON_CACHE.as_ref().unwrap()
+    }
+}
+
+fn icon_index(icon: FileIcon) -> usize {
+    match icon {
+        FileIcon::ParentDir  => 0,
+        FileIcon::Folder     => 1,
+        FileIcon::Text       => 2,
+        FileIcon::Image      => 3,
+        FileIcon::Archive    => 4,
+        FileIcon::Executable => 5,
+        FileIcon::Audio      => 6,
+        FileIcon::Video      => 7,
+        FileIcon::Default    => 8,
+    }
 }
 
 /// Apply file type icons to all rows in a grid after populate_grid.
 fn apply_file_icons(grid: &anyui::DataGrid, files: &[FileEntry]) {
+    let cache = get_icon_cache();
     for (row, entry) in files.iter().enumerate() {
         let icon_type = icon_for_name(&entry.name, entry.is_dir);
-        let pixels = generate_icon(icon_type);
-        grid.set_cell_icon(row as u32, 0, &pixels, 14, 14);
+        let pixels = &cache[icon_index(icon_type)];
+        grid.set_cell_icon(row as u32, 0, pixels, 14, 14);
     }
 }
 
@@ -818,30 +853,39 @@ fn worker_entry() {
             let pass = unsafe { read_cstr(&PARAM3) }.to_string();
             let port = PARAM_PORT.load(Ordering::Relaxed) as u16;
 
+            anyos_std::println!("[ftp-worker] CMD_CONNECT host={} port={} user={}", host, port, user);
+
             let mut ip = [0u8; 4];
             if net::dns(&host, &mut ip) != 0 {
+                anyos_std::println!("[ftp-worker] DNS failed for {}", host);
                 unsafe { write_result_str(&format!("DNS-Fehler: {}", host)); }
                 WORKER_RESULT.store(RES_ERROR, Ordering::Release);
                 WORKER_CMD.store(CMD_IDLE, Ordering::Release);
                 WORKER_BUSY.store(false, Ordering::Release);
                 return;
             }
+            anyos_std::println!("[ftp-worker] DNS resolved: {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
 
             match FtpClient::connect(&ip, port) {
                 None => {
+                    anyos_std::println!("[ftp-worker] TCP connect failed");
                     unsafe { write_result_str(&format!("Verbindungsfehler: {}:{}", host, port)); }
                     WORKER_RESULT.store(RES_ERROR, Ordering::Release);
                 }
                 Some(mut ftp) => {
+                    anyos_std::println!("[ftp-worker] TCP connected, logging in...");
                     if !ftp.login(&user, &pass) {
+                        anyos_std::println!("[ftp-worker] login failed");
                         unsafe { write_result_str("Login fehlgeschlagen"); }
                         ftp.disconnect();
                         WORKER_RESULT.store(RES_ERROR, Ordering::Release);
                     } else {
+                        anyos_std::println!("[ftp-worker] login OK, fetching listing...");
                         // Store the connected FTP client
                         unsafe { FTP_CLIENT = Some(ftp); }
                         // Get initial directory listing
                         do_list_in_worker();
+                        anyos_std::println!("[ftp-worker] listing done, signaling UI");
                         WORKER_RESULT.store(RES_OK, Ordering::Release);
                     }
                 }
@@ -957,6 +1001,9 @@ fn worker_entry() {
 
     WORKER_CMD.store(CMD_IDLE, Ordering::Release);
     WORKER_BUSY.store(false, Ordering::Release);
+    // Thread has no return address on the stack (mmap zeroes it), so returning
+    // would jump to RIP=0x0.  Kill this thread cleanly instead.
+    anyos_std::process::kill(anyos_std::process::getpid());
 }
 
 fn do_list_in_worker() {
