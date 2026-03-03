@@ -265,14 +265,8 @@ impl FtpClient {
 
     fn list_dir_ex(&mut self, show_hidden: bool) -> Vec<FileEntry> {
         let (ip, port) = match self.pasv_addr() {
-            Some(v) => {
-                anyos_std::println!("[ftp] PASV -> {}.{}.{}.{}:{}", v.0[0], v.0[1], v.0[2], v.0[3], v.1);
-                v
-            }
-            None => {
-                anyos_std::println!("[ftp] PASV failed");
-                return Vec::new();
-            }
+            Some(v) => v,
+            None => return Vec::new(),
         };
         // Send command first, then open data connection (RFC 959 / server expects this order).
         if show_hidden {
@@ -280,17 +274,15 @@ impl FtpClient {
         } else {
             self.send_cmd_only("LIST");
         }
-        anyos_std::println!("[ftp] connecting data socket to {}.{}.{}.{}:{}", ip[0], ip[1], ip[2], ip[3], port);
         let data_sock = net::tcp_connect(&ip, port, CONNECT_TIMEOUT);
         if data_sock == u32::MAX {
-            anyos_std::println!("[ftp] data socket connect FAILED");
+            anyos_std::println!("[anyzilla] LIST: data connect FAILED");
             return Vec::new();
         }
-        anyos_std::println!("[ftp] data socket connected, reading response...");
         let resp = self.read_response();
-        anyos_std::println!("[ftp] LIST response: {}", resp.trim());
+        anyos_std::println!("[anyzilla] LIST ctrl resp: '{}'", resp.trim());
         if !resp.starts_with("150") && !resp.starts_with("125") {
-            anyos_std::println!("[ftp] unexpected LIST response, aborting");
+            anyos_std::println!("[anyzilla] LIST: unexpected resp, aborting");
             net::tcp_close(data_sock);
             return Vec::new();
         }
@@ -298,6 +290,7 @@ impl FtpClient {
         let mut buf = [0u8; RECV_BUF];
         loop {
             let n = net::tcp_recv(data_sock, &mut buf);
+            anyos_std::println!("[anyzilla] LIST data recv: n={}", n);
             if n == 0 || n == u32::MAX { break; }
             raw.extend_from_slice(&buf[..n as usize]);
         }
@@ -305,6 +298,7 @@ impl FtpClient {
         let _ = self.read_response();
 
         let text = String::from_utf8_lossy(&raw).into_owned();
+        anyos_std::println!("[anyzilla] LIST raw {} bytes: '{}'", raw.len(), text);
         let mut entries = Vec::new();
         entries.push(FileEntry { name: "..".into(), size: 0, is_dir: true, modified: "".into() });
         for line in text.lines() {
@@ -314,6 +308,7 @@ impl FtpClient {
                 }
             }
         }
+        anyos_std::println!("[anyzilla] LIST parsed {} entries", entries.len());
         entries
     }
 
@@ -397,12 +392,8 @@ impl FtpClient {
 
     fn upload(&mut self, local_path: &str, remote_name: &str) -> u32 {
         self.set_binary_mode();
-        anyos_std::println!("[ftp] upload: opening local file {}", local_path);
         let fd = fs::open(local_path, 0);
-        if fd == u32::MAX {
-            anyos_std::println!("[ftp] upload: failed to open local file");
-            return 0;
-        }
+        if fd == u32::MAX { return 0; }
         let mut file_data = Vec::new();
         let mut buf = [0u8; RECV_BUF];
         loop {
@@ -411,19 +402,14 @@ impl FtpClient {
             file_data.extend_from_slice(&buf[..n as usize]);
         }
         fs::close(fd);
-        anyos_std::println!("[ftp] upload: read {} bytes, starting PASV+STOR", file_data.len());
         let (ip, port) = match self.pasv_addr() {
             Some(v) => v,
-            None => { anyos_std::println!("[ftp] upload: PASV failed"); return 0; }
+            None => { return 0; }
         };
         self.send_command("STOR ", remote_name);
         let data_sock = net::tcp_connect(&ip, port, CONNECT_TIMEOUT);
-        if data_sock == u32::MAX {
-            anyos_std::println!("[ftp] upload: data connect failed");
-            return 0;
-        }
+        if data_sock == u32::MAX { return 0; }
         let resp = self.read_response();
-        anyos_std::println!("[ftp] upload: STOR response: {}", resp.trim());
         if !resp.starts_with("150") && !resp.starts_with("125") {
             net::tcp_close(data_sock);
             return 0;
@@ -745,6 +731,33 @@ fn apply_file_icons(grid: &anyui::DataGrid, files: &[FileEntry]) {
 
 // ─── Local Filesystem ─────────────────────────────────────────────────────────
 
+fn format_mtime(ts: u32) -> String {
+    if ts == 0 { return String::new(); }
+    let months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    let mut secs = ts;
+    let sec = secs % 60; let _ = sec; secs /= 60;
+    let min = secs % 60; secs /= 60;
+    let hour = secs % 24; secs /= 24;
+    let mut days = secs;
+    let mut year = 1970u32;
+    loop {
+        let ydays = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
+        if days < ydays { break; }
+        days -= ydays;
+        year += 1;
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let mdays: [u32; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 0usize;
+    for m in 0..12 {
+        if days < mdays[m] { month = m; break; }
+        days -= mdays[m];
+        if m == 11 { month = 11; }
+    }
+    let day = days + 1;
+    format!("{} {:02} {:02}:{:02} {}", months[month], day, hour, min, year)
+}
+
 fn list_local_dir(path: &str) -> Vec<FileEntry> {
     let show_hidden = SHOW_HIDDEN.load(Ordering::Relaxed);
     let mut buf = [0u8; 64 * 256];
@@ -769,8 +782,18 @@ fn list_local_dir(path: &str) -> Vec<FileEntry> {
         if name == "." { continue; }
         // Filter hidden files (starting with .)
         if !show_hidden && name.starts_with('.') { continue; }
-        let is_dir = entry_type == 2;
-        entries.push(FileEntry { name, size, is_dir, modified: "".into() });
+        let is_dir = entry_type == 1;
+        // Get mtime via stat
+        let mut child_path = String::from(path);
+        if !child_path.ends_with('/') { child_path.push('/'); }
+        child_path.push_str(&name);
+        let mut st = [0u32; 7];
+        let modified = if fs::stat(&child_path, &mut st) != u32::MAX && st[6] != 0 {
+            format_mtime(st[6])
+        } else {
+            String::new()
+        };
+        entries.push(FileEntry { name, size, is_dir, modified });
     }
     entries
 }
@@ -881,39 +904,30 @@ fn worker_entry() {
             let pass = unsafe { read_cstr(&PARAM3) }.to_string();
             let port = PARAM_PORT.load(Ordering::Relaxed) as u16;
 
-            anyos_std::println!("[ftp-worker] CMD_CONNECT host={} port={} user={}", host, port, user);
-
             let mut ip = [0u8; 4];
             if net::dns(&host, &mut ip) != 0 {
-                anyos_std::println!("[ftp-worker] DNS failed for {}", host);
                 unsafe { write_result_str(&format!("DNS-Fehler: {}", host)); }
                 WORKER_RESULT.store(RES_ERROR, Ordering::Release);
                 WORKER_CMD.store(CMD_IDLE, Ordering::Release);
                 WORKER_BUSY.store(false, Ordering::Release);
                 return;
             }
-            anyos_std::println!("[ftp-worker] DNS resolved: {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
 
             match FtpClient::connect(&ip, port) {
                 None => {
-                    anyos_std::println!("[ftp-worker] TCP connect failed");
                     unsafe { write_result_str(&format!("Verbindungsfehler: {}:{}", host, port)); }
                     WORKER_RESULT.store(RES_ERROR, Ordering::Release);
                 }
                 Some(mut ftp) => {
-                    anyos_std::println!("[ftp-worker] TCP connected, logging in...");
                     if !ftp.login(&user, &pass) {
-                        anyos_std::println!("[ftp-worker] login failed");
                         unsafe { write_result_str("Login fehlgeschlagen"); }
                         ftp.disconnect();
                         WORKER_RESULT.store(RES_ERROR, Ordering::Release);
                     } else {
-                        anyos_std::println!("[ftp-worker] login OK, fetching listing...");
                         // Store the connected FTP client
                         unsafe { FTP_CLIENT = Some(ftp); }
                         // Get initial directory listing
                         do_list_in_worker();
-                        anyos_std::println!("[ftp-worker] listing done, signaling UI");
                         WORKER_RESULT.store(RES_OK, Ordering::Release);
                     }
                 }
@@ -928,12 +942,11 @@ fn worker_entry() {
         CMD_CD => {
             let path = unsafe { read_cstr(&PARAM1) }.to_string();
             if let Some(ftp) = unsafe { FTP_CLIENT.as_mut() } {
-                let ok = ftp.cd(&path);
-                if ok {
+                if ftp.cd(&path) {
                     do_list_in_worker();
                     WORKER_RESULT.store(RES_OK, Ordering::Release);
                 } else {
-                    unsafe { write_result_str("Verzeichnis wechsel fehlgeschlagen"); }
+                    unsafe { write_result_str("Verzeichniswechsel fehlgeschlagen"); }
                     WORKER_RESULT.store(RES_ERROR, Ordering::Release);
                 }
             }
@@ -1334,13 +1347,13 @@ fn poll_worker() {
 
     match result {
         RES_OK => {
-            log_line(&msg);
             // Update remote listing if we have new data
             let list_len = unsafe { RESULT_STR_LEN.load(Ordering::Acquire) as usize };
             let pwd_len  = unsafe { RESULT_STR2_LEN.load(Ordering::Acquire) as usize };
             if pwd_len > 0 {
                 let files = unsafe { parse_file_list(&RESULT_STR, list_len) };
                 let pwd = unsafe { core::str::from_utf8(&RESULT_STR2[..pwd_len]).unwrap_or("/").to_string() };
+                log_line(&format!("Verzeichnis empfangen: {} ({} Eintraege)", pwd, files.len()));
                 let a = app();
                 a.remote_dir = pwd.clone();
                 a.remote_files = files;
@@ -1351,8 +1364,10 @@ fn poll_worker() {
                 a.remote_path_label.set_text(&label);
                 let sorted_files = a.remote_files.clone();
                 populate_grid(&a.remote_grid, &sorted_files);
+                log_line("Verzeichnisbaum aktualisiert");
                 if !a.is_connected {
                     set_connected_state(true);
+                    log_line("Verbindung hergestellt");
                     // After first connect, navigate to initial remote dir if set
                     let init_dir = a.initial_remote_dir.clone();
                     if !init_dir.is_empty() && init_dir != "/" {
@@ -1366,6 +1381,11 @@ fn poll_worker() {
                 }
                 // Reset STR2 len so we don't re-apply it
                 unsafe { RESULT_STR2_LEN.store(0, Ordering::Release); }
+            } else {
+                // Log the message if it's a human-readable result (not a file list)
+                if !msg.is_empty() && !msg.contains('\x1E') {
+                    log_line(&msg);
+                }
             }
             // If disconnect was OK, clear remote grid
             if !app().is_connected {
@@ -2467,13 +2487,10 @@ fn main() {
     local_grid.on_submit(|e| {
         let a = app();
         let row = e.index as usize;
-        anyos_std::println!("[anyzilla] local_grid on_submit row={} total={}", row, a.local_files.len());
         if row >= a.local_files.len() { return; }
         let entry = a.local_files[row].clone();
-        anyos_std::println!("[anyzilla] local entry: name={} is_dir={}", entry.name, entry.is_dir);
         if entry.is_dir {
             let new_dir = join_path(&a.local_dir, &entry.name);
-            anyos_std::println!("[anyzilla] navigating local: {} -> {}", a.local_dir, new_dir);
             a.local_dir = new_dir;
             refresh_local();
         }
@@ -2489,6 +2506,7 @@ fn main() {
         if row >= a.remote_files.len() { return; }
         let entry = a.remote_files[row].clone();
         if entry.is_dir {
+            log_line(&format!("Wechsle in Verzeichnis: {}", entry.name));
             unsafe { write_param(&mut PARAM1, &entry.name); }
             WORKER_CMD.store(CMD_CD, Ordering::Release);
             spawn_worker();

@@ -16,7 +16,7 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{ipc, net, process, println};
+use anyos_std::{fs, ipc, net, process, println};
 
 mod config;
 mod session;
@@ -53,11 +53,43 @@ fn print_config(cfg: &config::FtpdConfig) {
     println!("ftpd: ---");
 }
 
+/// Recursively create all directories in `path` that don't exist yet.
+fn ensure_dir_exists(path: &str) {
+    let mut st = [0u32; 7];
+    if fs::stat(path, &mut st) != u32::MAX {
+        return; // already exists
+    }
+    // Build each component and mkdir
+    let mut cur = alloc::string::String::new();
+    for part in path.split('/') {
+        if part.is_empty() {
+            cur.push('/');
+            continue;
+        }
+        if !cur.ends_with('/') { cur.push('/'); }
+        cur.push_str(part);
+        if fs::stat(&cur, &mut st) == u32::MAX {
+            fs::mkdir(&cur);
+            println!("ftpd: created directory {}", cur);
+        }
+    }
+}
+
 fn main() {
     println!("ftpd: starting");
 
     let mut cfg = config::load(); // Box<FtpdConfig> — lives on heap
     print_config(&cfg);
+
+    // Ensure anonymous root directory exists (and parent dirs).
+    if cfg.allow_anonymous {
+        let root = cfg.anonymous_root_str();
+        ensure_dir_exists(root);
+    }
+    // Ensure share directories exist.
+    for i in 0..cfg.shares_count {
+        ensure_dir_exists(cfg.shares[i].path_str());
+    }
 
     let pipe_id = ipc::pipe_create(PIPE_NAME);
     if pipe_id == 0 || pipe_id == u32::MAX {

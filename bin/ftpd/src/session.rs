@@ -130,6 +130,12 @@ impl<'a> Session<'a> {
     /// Check if authenticated user can access path (read or write).
     fn can_access(&self, path: &str, write: bool) -> bool {
         if self.anonymous {
+            // Check wildcard shares first (*:path:rw allows anonymous write)
+            if self.cfg.shares_count > 0 {
+                if self.cfg.check_access("*", path, write) {
+                    return true;
+                }
+            }
             let root = self.cfg.anonymous_root_str();
             // Anonymous: read-only within anonymous_root (with proper boundary)
             if write { return false; }
@@ -1105,6 +1111,7 @@ impl<'a> Session<'a> {
 
         let mut dir_buf = [0u8; 64 * 256];
         let count = fs::readdir(&cwd, &mut dir_buf);
+        anyos_std::println!("ftpd: LIST cwd='{}' readdir count={}", cwd, count);
         let mut output: Vec<u8> = Vec::new();
         for i in 0..count as usize {
             let entry_offset = i * 64;
@@ -1146,6 +1153,7 @@ impl<'a> Session<'a> {
             output.push(b'\n');
         }
         let _ = arg; // NLST variant would use path, LIST ignores it
+        anyos_std::println!("ftpd: LIST sending {} bytes on data socket", output.len());
         net::tcp_send(data_sock, &output);
         net::tcp_close(data_sock);
         self.reply("226", "Transfer complete.");
