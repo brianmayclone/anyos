@@ -48,6 +48,7 @@ pci_config_write32:
 ;   Output: EAX = config address with enable bit
 ; ---------------------------------------------------------------------------
 pci_make_addr:
+    push ecx
     movzx eax, bh              ; Bus
     shl eax, 16
     movzx ecx, bl
@@ -63,6 +64,7 @@ pci_make_addr:
     and cx, 0x00FC             ; Register (aligned)
     or eax, ecx
     or eax, 0x80000000         ; Enable bit
+    pop ecx
     ret
 
 ; ---------------------------------------------------------------------------
@@ -105,8 +107,8 @@ pci_enumerate:
     mov di, 0x0C                ; Register 0x0C (header type at byte 0x0E)
     call pci_make_addr
     call pci_config_read32
-    shr eax, 16                 ; AH = header type, AL = cache line
-    mov dl, ah                  ; DL = header type
+    shr eax, 16                 ; AL = header type, AH = BIST
+    mov dl, al                  ; DL = header type
     pop eax                     ; Restore vendor/device
 
     ; Enumerate functions.

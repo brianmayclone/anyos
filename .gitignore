@@ -22,3 +22,4 @@ cargo*.txt
 firebase-hosting/
 packages/
 third_party/ladybird*
+*.iso
