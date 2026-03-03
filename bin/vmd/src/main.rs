@@ -372,14 +372,14 @@ fn cmd_create(uuid: &str) {
         }
     }
 
-    // Load ISO if configured.
+    // Attach ISO as IDE disk if configured (allows BIOS to boot from it).
     if !config.iso_image.is_empty() {
         let data = read_file(&config.iso_image);
         if !data.is_empty() {
             if let Some(ref inst) = d.vm {
-                inst.handle.load_binary(0x10_0000, &data);
+                inst.handle.ide_attach_disk(&data);
             }
-            anyos_std::println!("[vmd] loaded ISO: {} ({} bytes)", config.iso_image, data.len());
+            anyos_std::println!("[vmd] attached ISO as IDE disk: {} ({} bytes)", config.iso_image, data.len());
         }
     }
 }
