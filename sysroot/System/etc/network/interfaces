@@ -9,4 +9,8 @@
 #     gateway <gw>
 #     dns <dns>
 
+iface lo loopback
+  address 127.0.0.1
+  netmask 255.0.0.0
+
 iface eth0 dhcp

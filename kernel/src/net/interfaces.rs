@@ -16,6 +16,7 @@ const MAX_INTERFACES: usize = 8;
 pub enum IfaceMethod {
     Dhcp,
     Static,
+    Loopback,
 }
 
 /// Parsed configuration for a single network interface.
@@ -71,7 +72,21 @@ pub fn load_interfaces() {
         }
     };
 
-    let configs = parse_interfaces(text);
+    let mut configs = parse_interfaces(text);
+
+    // Ensure a loopback interface `lo` is always present.
+    let has_lo = configs.iter().any(|c| c.name.as_str() == "lo");
+    if !has_lo {
+        configs.insert(0, IfaceConfig {
+            name: String::from("lo"),
+            method: IfaceMethod::Loopback,
+            address: Ipv4Addr([127, 0, 0, 1]),
+            netmask: Ipv4Addr([255, 0, 0, 0]),
+            gateway: Ipv4Addr::ZERO,
+            dns: Ipv4Addr::ZERO,
+        });
+    }
+
     let count = configs.len();
     {
         let mut table = IFACE_CONFIGS.lock();
@@ -112,6 +127,7 @@ fn parse_interfaces(text: &str) -> Vec<IfaceConfig> {
                 let method = match method_str {
                     "dhcp" => IfaceMethod::Dhcp,
                     "static" => IfaceMethod::Static,
+                    "loopback" => IfaceMethod::Loopback,
                     _ => continue,
                 };
                 configs.push(IfaceConfig {
@@ -183,6 +199,7 @@ pub fn serialize_configs(buf: &mut [u8]) -> u32 {
         buf[off] = match cfg.method {
             IfaceMethod::Dhcp => 0,
             IfaceMethod::Static => 1,
+            IfaceMethod::Loopback => 2,
         };
 
         let name_bytes = cfg.name.as_bytes();
@@ -217,6 +234,7 @@ pub fn apply_and_save(buf: &[u8], count: u32) -> u32 {
         let method = match buf[off] {
             0 => IfaceMethod::Dhcp,
             1 => IfaceMethod::Static,
+            2 => IfaceMethod::Loopback,
             _ => continue,
         };
 
@@ -270,6 +288,13 @@ pub fn apply_and_save(buf: &[u8], count: u32) -> u32 {
                 push_ip_line(&mut text, "  gateway ", cfg.gateway);
                 push_ip_line(&mut text, "  dns ", cfg.dns);
             }
+            IfaceMethod::Loopback => {
+                text.push_str("iface ");
+                text.push_str(&cfg.name);
+                text.push_str(" loopback\n");
+                push_ip_line(&mut text, "  address ", cfg.address);
+                push_ip_line(&mut text, "  netmask ", cfg.netmask);
+            }
         }
     }
 
@@ -282,13 +307,17 @@ pub fn apply_and_save(buf: &[u8], count: u32) -> u32 {
         *table = configs.clone();
     }
 
-    // Apply the first interface config to the active network stack
-    if let Some(cfg) = configs.first() {
+    // Apply the first non-loopback interface config to the active network stack
+    for cfg in &configs {
+        if cfg.method == IfaceMethod::Loopback {
+            continue; // Loopback is handled in ipv4::send_ipv4, not via NetConfig
+        }
         if cfg.method == IfaceMethod::Static {
             super::set_config(cfg.address, cfg.netmask, cfg.gateway, cfg.dns);
             crate::serial_println!("[NET] Applied static config for {}: {}", cfg.name, cfg.address);
         }
         // DHCP is handled by the dhcp binary at boot; no immediate action here
+        break;
     }
 
     if write_ok { 0 } else { u32::MAX }

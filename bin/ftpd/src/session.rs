@@ -2,14 +2,34 @@
 //!
 //! Each session runs in a forked child process. It handles one client
 //! connection on the control socket until the client disconnects or sends QUIT.
+//!
+//! ## RFC Compliance TODOs (low priority)
+//! - FEAT response: also list TYPE, STRU, MODE
+//! - EPSV IPv6 support (RFC 2428 net-prt=2)
+//! - Chunked MLSD for large directories
+//! - SITE CHMOD command
+//! - 64-bit file sizes (needs kernel stat64/lseek64 support)
 
-use anyos_std::{net, fs, process, log_info, log_warn};
+use anyos_std::{net, fs, process, sys, log_info, log_warn};
 use alloc::vec::Vec;
 use alloc::string::String;
 use crate::config::FtpdConfig;
 
 const BUF_SIZE: usize = 4096;
 const CMD_BUF: usize = 512;
+/// Connection idle timeout in milliseconds (15 minutes).
+const IDLE_TIMEOUT_MS: u32 = 15 * 60 * 1000;
+/// Maximum failed login attempts before disconnect.
+const MAX_LOGIN_ATTEMPTS: u8 = 5;
+
+/// Transfer type (RFC 959).
+#[derive(Clone, Copy, PartialEq)]
+enum TransferType {
+    /// ASCII (TYPE A) — convert \n → \r\n on send, \r\n → \n on receive.
+    Ascii,
+    /// Image/Binary (TYPE I) — raw byte transfer.
+    Binary,
+}
 
 struct Session<'a> {
     ctrl: u32,
@@ -26,8 +46,18 @@ struct Session<'a> {
     /// Pending RNFR path for RNTO.
     rnfr: [u8; 256],
     rnfr_len: usize,
+    /// REST restart offset for resume transfers (RFC 3659).
+    restart_offset: u32,
     /// Remote IP address for log messages.
     remote_ip: [u8; 4],
+    /// Transfer type (ASCII or Binary, RFC 959).
+    transfer_type: TransferType,
+    /// Failed login attempt counter for rate limiting.
+    login_attempts: u8,
+    /// Last activity timestamp (uptime_ms) for idle timeout.
+    last_activity_ms: u32,
+    /// Last STOU unique filename (for response after transfer).
+    stou_filename: String,
 }
 
 impl<'a> Session<'a> {
@@ -44,7 +74,12 @@ impl<'a> Session<'a> {
             pasv_port_counter: 0,
             rnfr: [0; 256],
             rnfr_len: 0,
+            restart_offset: 0,
             remote_ip,
+            transfer_type: TransferType::Ascii,
+            login_attempts: 0,
+            last_activity_ms: sys::uptime_ms(),
+            stou_filename: String::new(),
         };
         s.cwd[0] = b'/';
         s
@@ -154,8 +189,14 @@ impl<'a> Session<'a> {
         }
         let port = chosen_port;
 
-        // Use masquerade_ip if configured (non-zero), otherwise use actual NIC IP.
-        let ip = if self.cfg.masquerade_ip != [0u8; 4] {
+        // Determine the IP to advertise in the PASV 227 reply.
+        //  - If the client connected via loopback (127.x.x.x), reply with 127.0.0.1
+        //    so the data connection also goes through loopback.
+        //  - If masquerade_ip is configured, use that (e.g. NAT/port-forwarding).
+        //  - Otherwise use the NIC's IP.
+        let ip = if self.remote_ip[0] == 127 {
+            [127u8, 0, 0, 1]
+        } else if self.cfg.masquerade_ip != [0u8; 4] {
             self.cfg.masquerade_ip
         } else {
             let mut net_buf = [0u8; 24];
@@ -185,11 +226,20 @@ impl<'a> Session<'a> {
         let mut acc: Vec<u8> = Vec::new();
 
         loop {
+            // Check idle timeout (15 minutes)
+            let now = sys::uptime_ms();
+            if now.wrapping_sub(self.last_activity_ms) > IDLE_TIMEOUT_MS {
+                self.reply("421", "Timeout (15 minutes idle). Goodbye.");
+                self.log_info("disconnected (idle timeout)");
+                return;
+            }
+
             let n = net::tcp_recv(self.ctrl, &mut recv_buf);
             if n == 0 || n == u32::MAX {
                 self.log_info("connection closed");
                 break;
             }
+            self.last_activity_ms = sys::uptime_ms();
             acc.extend_from_slice(&recv_buf[..n as usize]);
 
             // Process all complete lines
@@ -223,7 +273,7 @@ impl<'a> Session<'a> {
             }
             "SYST" => { self.reply("215", "UNIX Type: L8"); return false; }
             "FEAT" => {
-                self.send_raw(b"211-Features:\r\n SIZE\r\n MDTM\r\n MLSD\r\n PASV\r\n EPSV\r\n EPRT\r\n REST STREAM\r\n UTF8\r\n211 End\r\n");
+                self.send_raw(b"211-Features:\r\n SIZE\r\n MDTM\r\n MLSD\r\n MLST type*;size*;modify*;\r\n PASV\r\n EPSV\r\n EPRT\r\n REST STREAM\r\n UTF8\r\n211 End\r\n");
                 return false;
             }
             "OPTS" => {
@@ -236,7 +286,56 @@ impl<'a> Session<'a> {
                 return false;
             }
             "NOOP" => { self.reply("200", "NOOP ok."); return false; }
-            "TYPE" => { self.reply("200", "Type set."); return false; }
+            "ACCT" => { self.reply("202", "ACCT not needed."); return false; }
+            "HELP" => {
+                self.send_raw(b"214-The following commands are supported:\r\n USER PASS QUIT SYST FEAT OPTS NOOP TYPE ACCT HELP REIN\r\n STRU MODE PWD CWD CDUP LIST NLST MLSD MLST STAT\r\n RETR STOR STOU APPE DELE MKD RMD RNFR RNTO\r\n SIZE MDTM PASV EPSV PORT EPRT REST ABOR\r\n214 Help OK.\r\n");
+                return false;
+            }
+            "STRU" => {
+                let s = arg.trim();
+                if s.is_empty() || s.eq_ignore_ascii_case("F") {
+                    self.reply("200", "Structure set to FILE.");
+                } else {
+                    self.reply("504", "Only FILE structure supported.");
+                }
+                return false;
+            }
+            "MODE" => {
+                let m = arg.trim();
+                if m.is_empty() || m.eq_ignore_ascii_case("S") {
+                    self.reply("200", "Mode set to STREAM.");
+                } else {
+                    self.reply("504", "Only STREAM mode supported.");
+                }
+                return false;
+            }
+            "TYPE" => {
+                let upper = arg.trim();
+                if upper.eq_ignore_ascii_case("I") || upper.eq_ignore_ascii_case("L 8") {
+                    self.transfer_type = TransferType::Binary;
+                    self.reply("200", "Type set to I (binary).");
+                } else if upper.eq_ignore_ascii_case("A") || upper.eq_ignore_ascii_case("A N") {
+                    self.transfer_type = TransferType::Ascii;
+                    self.reply("200", "Type set to A (ASCII).");
+                } else {
+                    self.reply("504", "Type not supported.");
+                }
+                return false;
+            }
+            "REIN" => {
+                self.authenticated = false;
+                self.anonymous = false;
+                self.username_len = 0;
+                self.transfer_type = TransferType::Ascii;
+                self.restart_offset = 0;
+                self.rnfr_len = 0;
+                self.cwd[0] = b'/';
+                self.cwd_len = 1;
+                self.login_attempts = 0;
+                self.log_info("session reinitialized");
+                self.reply("220", "Service ready for new user.");
+                return false;
+            }
             _ => {}
         }
 
@@ -264,9 +363,10 @@ impl<'a> Session<'a> {
                 }
             }
             "PORT" => self.cmd_port_list(arg),
-            "LIST" | "NLST" => self.cmd_list_auto(arg),
+            "LIST" => self.cmd_list_auto(arg),
+            "NLST" => self.cmd_list_auto(arg),
             "RETR" => self.cmd_retr_auto(arg),
-            "STOR" | "STOU" => self.cmd_stor_auto(arg),
+            "STOR" | "STOU" | "APPE" => self.cmd_stor_auto(cmd, arg),
             "DELE" => self.cmd_dele(arg),
             "MKD" | "XMKD" => self.cmd_mkd(arg),
             "RMD" | "XRMD" => self.cmd_rmd(arg),
@@ -277,8 +377,23 @@ impl<'a> Session<'a> {
             "MLSD" => self.cmd_mlsd_auto(arg),
             "MLST" => self.cmd_mlst(arg),
             "EPRT" => self.cmd_eprt_list(arg),
-            "REST" => { self.reply("350", "Restart position accepted."); }
-            "ABOR" => { self.reply("226", "ABOR ok."); }
+            "REST" => {
+                if let Some(pos) = parse_u32_decimal(arg) {
+                    self.restart_offset = pos;
+                    self.reply("350", "Restart position accepted.");
+                } else {
+                    self.reply("501", "Syntax error in REST.");
+                }
+            }
+            "ABOR" => {
+                // RFC 959: ABOR closes any in-progress data connection.
+                // Since our data connections are handled inline within PASV/PORT
+                // command sequences, ABOR outside of a transfer is a no-op.
+                // Reply 226 per RFC 959 §5.4.
+                self.reply("226", "Abort successful.");
+                self.log_info("ABOR received");
+            }
+            "STAT" => self.cmd_stat(arg),
             _ => { self.reply("502", "Command not implemented."); }
         }
         false
@@ -309,11 +424,18 @@ impl<'a> Session<'a> {
             self.reply("503", "Login with USER first.");
             return false;
         }
+        // Rate limiting: disconnect after too many failed attempts.
+        if self.login_attempts >= MAX_LOGIN_ATTEMPTS {
+            self.reply("421", "Too many failed login attempts. Goodbye.");
+            self.log_warn("disconnected (too many failed login attempts)");
+            return true;
+        }
         let uname = core::str::from_utf8(&self.username[..self.username_len]).unwrap_or("");
         if uname == "anonymous" || uname == "ftp" {
             if self.cfg.allow_anonymous {
                 self.authenticated = true;
                 self.anonymous = true;
+                self.login_attempts = 0;
                 let root = self.cfg.anonymous_root_str();
                 let rlen = root.len().min(256);
                 self.cwd[..rlen].copy_from_slice(&root.as_bytes()[..rlen]);
@@ -321,11 +443,13 @@ impl<'a> Session<'a> {
                 self.reply("230", "Guest login ok.");
                 self.log_info("login ok (anonymous)");
             } else {
+                self.login_attempts += 1;
                 self.reply("530", "Anonymous access disabled.");
                 self.log_warn("login denied (anonymous disabled)");
             }
         } else if process::authenticate(uname, arg) {
             self.authenticated = true;
+            self.login_attempts = 0;
             let root = self.cfg.user_root(uname);
             let rlen = root.len().min(256);
             self.cwd[..rlen].copy_from_slice(&root.as_bytes()[..rlen]);
@@ -333,8 +457,9 @@ impl<'a> Session<'a> {
             self.reply("230", "Login successful.");
             self.log_info("login ok");
         } else {
+            self.login_attempts += 1;
             self.reply("530", "Login incorrect.");
-            self.log_warn("login failed (wrong password)");
+            self.log_warn(&alloc::format!("login failed (attempt {}/{})", self.login_attempts, MAX_LOGIN_ATTEMPTS));
             self.username_len = 0;
         }
         false
@@ -392,10 +517,13 @@ impl<'a> Session<'a> {
         }
         let (cmd, arg) = split_cmd_owned(&next);
         match cmd.as_str() {
-            "LIST" | "NLST" => self.do_list_pasv(listener, &arg),
+            "LIST"          => self.do_list_pasv(listener, &arg),
+            "NLST"          => self.do_nlst_pasv(listener, &arg),
             "MLSD"          => self.do_mlsd_pasv(listener, &arg),
             "RETR"          => self.do_retr_pasv(listener, &arg),
-            "STOR" | "STOU" => self.do_stor_pasv(listener, &arg),
+            "STOR"          => self.do_stor_pasv(listener, &arg),
+            "STOU"          => { self.stou_filename = self.resolve_stou("STOU", &arg); let p = self.stou_filename.clone(); self.do_stor_pasv(listener, &p); self.finish_stou(); }
+            "APPE"          => self.do_appe_pasv(listener, &arg),
             _ => {
                 net::tcp_close(listener);
                 self.reply("503", "Bad sequence of commands.");
@@ -462,10 +590,13 @@ impl<'a> Session<'a> {
         }
         let (cmd, arg) = split_cmd_owned(&next);
         match cmd.as_str() {
-            "LIST" | "NLST" => self.do_list_pasv(listener, &arg),
+            "LIST"          => self.do_list_pasv(listener, &arg),
+            "NLST"          => self.do_nlst_pasv(listener, &arg),
             "MLSD"          => self.do_mlsd_pasv(listener, &arg),
             "RETR"          => self.do_retr_pasv(listener, &arg),
-            "STOR" | "STOU" => self.do_stor_pasv(listener, &arg),
+            "STOR"          => self.do_stor_pasv(listener, &arg),
+            "STOU"          => { self.stou_filename = self.resolve_stou("STOU", &arg); let p = self.stou_filename.clone(); self.do_stor_pasv(listener, &p); self.finish_stou(); }
+            "APPE"          => self.do_appe_pasv(listener, &arg),
             _ => {
                 net::tcp_close(listener);
                 self.reply("503", "Bad sequence of commands.");
@@ -511,10 +642,13 @@ impl<'a> Session<'a> {
             return;
         }
         match cmd.as_str() {
-            "LIST" | "NLST" => self.do_list(data_sock, &darg),
+            "LIST"          => self.do_list(data_sock, &darg),
+            "NLST"          => self.do_nlst(data_sock, &darg),
             "MLSD"          => self.do_mlsd(data_sock, &darg),
             "RETR" => self.do_retr(data_sock, &darg),
-            "STOR" | "STOU" => self.do_stor(data_sock, &darg),
+            "STOR" => self.do_stor(data_sock, &darg),
+            "STOU" => { self.stou_filename = self.resolve_stou("STOU", &darg); let p = self.stou_filename.clone(); self.do_stor(data_sock, &p); self.finish_stou(); }
+            "APPE" => self.do_appe(data_sock, &darg),
             _ => {
                 net::tcp_close(data_sock);
                 self.reply("503", "Bad sequence of commands.");
@@ -531,8 +665,30 @@ impl<'a> Session<'a> {
         self.reply("425", "Use PORT or PASV first.");
     }
 
-    fn cmd_stor_auto(&mut self, _arg: &str) {
+    fn cmd_stor_auto(&mut self, _cmd: &str, _arg: &str) {
         self.reply("425", "Use PORT or PASV first.");
+    }
+
+    /// Send STOU completion response with the unique filename.
+    fn finish_stou(&mut self) {
+        if !self.stou_filename.is_empty() {
+            // Extract just the filename part (after last /)
+            let name = self.stou_filename.rsplit('/').next().unwrap_or(&self.stou_filename);
+            let mut msg = String::from("FILE: ");
+            msg.push_str(name);
+            self.reply("250", &msg);
+            self.stou_filename = String::new();
+        }
+    }
+
+    /// Resolve STOU to a unique filename, return the effective path for STOR/STOU.
+    fn resolve_stou(&mut self, cmd: &str, arg: &str) -> String {
+        if cmd == "STOU" {
+            let cwd = String::from(self.cwd_str());
+            generate_unique_name(&cwd, arg)
+        } else {
+            String::from(arg)
+        }
     }
 
     fn cmd_dele(&mut self, arg: &str) {
@@ -617,6 +773,64 @@ impl<'a> Session<'a> {
         }
     }
 
+    /// STAT — server status or file info (RFC 959 §4.1.3).
+    fn cmd_stat(&mut self, arg: &str) {
+        if arg.is_empty() {
+            // No argument: return server status.
+            let mut resp = String::from("211-Status of anyOS FTP server\r\n");
+            resp.push_str(" Connected to ");
+            let ip = self.remote_ip;
+            let mut buf = [0u8; 4];
+            resp.push_str(core::str::from_utf8(fmt_u32(ip[0] as u32, &mut buf)).unwrap_or("0")); resp.push('.');
+            resp.push_str(core::str::from_utf8(fmt_u32(ip[1] as u32, &mut buf)).unwrap_or("0")); resp.push('.');
+            resp.push_str(core::str::from_utf8(fmt_u32(ip[2] as u32, &mut buf)).unwrap_or("0")); resp.push('.');
+            resp.push_str(core::str::from_utf8(fmt_u32(ip[3] as u32, &mut buf)).unwrap_or("0"));
+            resp.push_str("\r\n Logged in as ");
+            resp.push_str(self.username_str());
+            let type_str = if self.transfer_type == TransferType::Binary { "Binary" } else { "ASCII" };
+            resp.push_str("\r\n TYPE: ");
+            resp.push_str(type_str);
+            resp.push_str("; STRUcture: File; MODE: Stream\r\n");
+            resp.push_str("211 End of status.\r\n");
+            self.send_raw(resp.as_bytes());
+        } else {
+            // With argument: list file/directory info over control connection.
+            let path = self.resolve_path(arg);
+            if !self.can_access(&path, false) {
+                self.reply("550", "Permission denied.");
+                return;
+            }
+            let mut stat_buf = [0u32; 7];
+            if fs::stat(&path, &mut stat_buf) == u32::MAX {
+                self.reply("450", "No such file or directory.");
+                return;
+            }
+            let mut resp = String::from("213-Status of ");
+            resp.push_str(arg);
+            resp.push_str("\r\n ");
+            // Single-entry ls-style listing
+            let name = path.rsplit('/').next().unwrap_or(arg);
+            let mtime = stat_buf[6];
+            let size = stat_buf[1];
+            let date_str = format_list_timestamp(mtime);
+            if stat_buf[0] == 1 {
+                resp.push_str("drwxr-xr-x  1 ftp  ftp          0 ");
+            } else {
+                resp.push_str("-rw-r--r--  1 ftp  ftp  ");
+                let mut sbuf = [0u8; 12];
+                let s = fmt_u32(size, &mut sbuf);
+                for _ in s.len()..8 { resp.push(' '); }
+                resp.push_str(core::str::from_utf8(s).unwrap_or("0"));
+                resp.push(' ');
+            }
+            resp.push_str(&date_str);
+            resp.push(' ');
+            resp.push_str(name);
+            resp.push_str("\r\n213 End of status.\r\n");
+            self.send_raw(resp.as_bytes());
+        }
+    }
+
     fn cmd_size(&mut self, arg: &str) {
         let path = self.resolve_path(arg);
         if !self.can_access(&path, false) {
@@ -671,18 +885,26 @@ impl<'a> Session<'a> {
             };
             if name.is_empty() { break; }
 
+            // Get mtime via stat
+            let mut child_path = String::from(cwd.as_str());
+            if !child_path.ends_with('/') { child_path.push('/'); }
+            child_path.push_str(name);
+            let mut st = [0u32; 7];
+            let mtime = if fs::stat(&child_path, &mut st) != u32::MAX { st[6] } else { 0 };
+            let date_str = format_list_timestamp(mtime);
+
             if entry_type == 1 {
-                // Directory
-                output.extend_from_slice(b"drwxr-xr-x  1 ftp  ftp          0 Jan 01 00:00 ");
+                output.extend_from_slice(b"drwxr-xr-x  1 ftp  ftp          0 ");
             } else {
-                // File (type 0) or device (type 2)
                 output.extend_from_slice(b"-rw-r--r--  1 ftp  ftp  ");
                 let mut size_buf = [0u8; 12];
                 let s = fmt_u32(size, &mut size_buf);
                 for _ in s.len()..8 { output.push(b' '); }
                 output.extend_from_slice(s);
-                output.extend_from_slice(b" Jan 01 00:00 ");
+                output.push(b' ');
             }
+            output.extend_from_slice(date_str.as_bytes());
+            output.push(b' ');
             output.extend_from_slice(name.as_bytes());
             output.push(b'\r');
             output.push(b'\n');
@@ -691,6 +913,62 @@ impl<'a> Session<'a> {
         net::tcp_send(data_sock, &output);
         net::tcp_close(data_sock);
         self.reply("226", "Transfer complete.");
+    }
+
+    /// NLST — bare filename listing (RFC 959), PORT mode.
+    fn do_nlst(&mut self, data_sock: u32, _arg: &str) {
+        let cwd = String::from(self.cwd_str());
+        if !self.can_access(&cwd, false) {
+            self.reply("550", "Permission denied.");
+            net::tcp_close(data_sock);
+            return;
+        }
+        self.reply("150", "Opening data connection for name list.");
+        let output = self.build_nlst_output(&cwd);
+        net::tcp_send(data_sock, &output);
+        net::tcp_close(data_sock);
+        self.reply("226", "Transfer complete.");
+    }
+
+    /// NLST — bare filename listing (RFC 959), PASV mode.
+    fn do_nlst_pasv(&mut self, listener: u32, arg: &str) {
+        let cwd = String::from(self.cwd_str());
+        if !self.can_access(&cwd, false) {
+            net::tcp_close(listener);
+            self.reply("550", "Permission denied.");
+            return;
+        }
+        self.reply("150", "Opening data connection for name list.");
+        let data_sock = self.accept_pasv_listener(listener);
+        if data_sock == u32::MAX { return; }
+        let output = self.build_nlst_output(&cwd);
+        let _ = arg;
+        net::tcp_send(data_sock, &output);
+        net::tcp_close(data_sock);
+        self.reply("226", "Transfer complete.");
+    }
+
+    /// Build NLST output: bare filenames only, one per line (RFC 959).
+    fn build_nlst_output(&self, dir: &str) -> Vec<u8> {
+        let mut output: Vec<u8> = Vec::new();
+        let mut dir_buf = [0u8; 64 * 256];
+        let count = fs::readdir(dir, &mut dir_buf);
+        if count == u32::MAX { return output; }
+        for i in 0..count as usize {
+            let entry_offset = i * 64;
+            if entry_offset + 8 > dir_buf.len() { break; }
+            let name_len = dir_buf[entry_offset + 1] as usize;
+            if name_len == 0 || name_len > 56 { break; }
+            if entry_offset + 8 + name_len > dir_buf.len() { break; }
+            let name = match core::str::from_utf8(&dir_buf[entry_offset + 8..entry_offset + 8 + name_len]) {
+                Ok(n) => n, Err(_) => continue,
+            };
+            if name.is_empty() { break; }
+            output.extend_from_slice(name.as_bytes());
+            output.push(b'\r');
+            output.push(b'\n');
+        }
+        output
     }
 
     fn do_retr(&mut self, data_sock: u32, path: &str) {
@@ -707,22 +985,44 @@ impl<'a> Session<'a> {
             net::tcp_close(data_sock);
             return;
         }
+        // Apply REST offset if set
+        let offset = self.restart_offset;
+        self.restart_offset = 0;
+        if offset > 0 {
+            fs::lseek(fd, offset as i32, fs::SEEK_SET);
+        }
         self.reply("150", "Opening data connection.");
+        let ascii = self.transfer_type == TransferType::Ascii;
         let mut total: u64 = 0;
         let mut buf = [0u8; BUF_SIZE];
         loop {
             let n = fs::read(fd, &mut buf);
             if n == 0 || n == u32::MAX { break; }
-            total += n as u64;
-            if net::tcp_send(data_sock, &buf[..n as usize]) == u32::MAX { break; }
+            let chunk = &buf[..n as usize];
+            if ascii {
+                let encoded = ascii_encode(chunk);
+                total += encoded.len() as u64;
+                if net::tcp_send(data_sock, &encoded) == u32::MAX { break; }
+            } else {
+                total += n as u64;
+                if net::tcp_send(data_sock, chunk) == u32::MAX { break; }
+            }
         }
         fs::close(fd);
         net::tcp_close(data_sock);
         self.reply("226", "Transfer complete.");
-        self.log_info(&alloc::format!("download: {} ({} bytes)", abs, total));
+        self.log_info(&alloc::format!("download: {} ({} bytes, offset {})", abs, total, offset));
     }
 
     fn do_stor(&mut self, data_sock: u32, path: &str) {
+        self.do_stor_inner(data_sock, path, false);
+    }
+
+    fn do_appe(&mut self, data_sock: u32, path: &str) {
+        self.do_stor_inner(data_sock, path, true);
+    }
+
+    fn do_stor_inner(&mut self, data_sock: u32, path: &str, append: bool) {
         let abs = self.resolve_path(path);
         if !self.can_access(&abs, true) {
             self.reply("550", "Permission denied.");
@@ -733,7 +1033,6 @@ impl<'a> Session<'a> {
         // Reject STOR if the path already exists as a directory.
         let mut stat_buf = [0u32; 7];
         if fs::stat(&abs, &mut stat_buf) != u32::MAX {
-            // stat_buf[0] = type: 0=file, 1=directory, 2=device
             let is_dir = stat_buf[0] == 1;
             if is_dir {
                 self.reply("553", "Is a directory.");
@@ -742,21 +1041,42 @@ impl<'a> Session<'a> {
                 return;
             }
         }
-        let fd = fs::open(&abs, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+        // REST offset for resume, APPE for append
+        let offset = self.restart_offset;
+        self.restart_offset = 0;
+        let flags = if append {
+            fs::O_WRITE | fs::O_CREATE | fs::O_APPEND
+        } else if offset > 0 {
+            fs::O_WRITE | fs::O_CREATE
+        } else {
+            fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC
+        };
+        let fd = fs::open(&abs, flags);
         if fd == u32::MAX {
             self.reply("550", "Could not create file.");
             net::tcp_close(data_sock);
             self.log_warn(&alloc::format!("upload failed (open): {}", abs));
             return;
         }
+        if offset > 0 && !append {
+            fs::lseek(fd, offset as i32, fs::SEEK_SET);
+        }
         self.reply("150", "Opening data connection.");
+        let ascii = self.transfer_type == TransferType::Ascii;
         let mut total: u64 = 0;
         let mut buf = [0u8; BUF_SIZE];
         loop {
             let n = net::tcp_recv(data_sock, &mut buf);
             if n == 0 || n == u32::MAX { break; }
-            total += n as u64;
-            if fs::write(fd, &buf[..n as usize]) == u32::MAX { break; }
+            let chunk = &buf[..n as usize];
+            if ascii {
+                let decoded = ascii_decode(chunk);
+                total += decoded.len() as u64;
+                if fs::write(fd, &decoded) == u32::MAX { break; }
+            } else {
+                total += n as u64;
+                if fs::write(fd, chunk) == u32::MAX { break; }
+            }
         }
         fs::close(fd);
         net::tcp_close(data_sock);
@@ -801,18 +1121,26 @@ impl<'a> Session<'a> {
                 Ok(n) => n, Err(_) => continue,
             };
             if name.is_empty() { break; }
+            // Get mtime via stat
+            let mut child_path = String::from(cwd.as_str());
+            if !child_path.ends_with('/') { child_path.push('/'); }
+            child_path.push_str(name);
+            let mut st = [0u32; 7];
+            let mtime = if fs::stat(&child_path, &mut st) != u32::MAX { st[6] } else { 0 };
+            let date_str = format_list_timestamp(mtime);
+
             if entry_type == 1 {
-                // Directory (type 1)
-                output.extend_from_slice(b"drwxr-xr-x  1 ftp  ftp          0 Jan 01 00:00 ");
+                output.extend_from_slice(b"drwxr-xr-x  1 ftp  ftp          0 ");
             } else {
-                // File (type 0) or device (type 2)
                 output.extend_from_slice(b"-rw-r--r--  1 ftp  ftp  ");
                 let mut size_buf = [0u8; 12];
                 let s = fmt_u32(size, &mut size_buf);
                 for _ in s.len()..8 { output.push(b' '); }
                 output.extend_from_slice(s);
-                output.extend_from_slice(b" Jan 01 00:00 ");
+                output.push(b' ');
             }
+            output.extend_from_slice(date_str.as_bytes());
+            output.push(b' ');
             output.extend_from_slice(name.as_bytes());
             output.push(b'\r');
             output.push(b'\n');
@@ -837,25 +1165,47 @@ impl<'a> Session<'a> {
             self.reply("550", "No such file or directory.");
             return;
         }
+        // Apply REST offset if set
+        let offset = self.restart_offset;
+        self.restart_offset = 0;
+        if offset > 0 {
+            fs::lseek(fd, offset as i32, fs::SEEK_SET);
+        }
         // Send 150 first, then accept — client connects after 150.
         self.reply("150", "Opening data connection.");
         let data_sock = self.accept_pasv_listener(listener);
         if data_sock == u32::MAX { fs::close(fd); return; }
+        let ascii = self.transfer_type == TransferType::Ascii;
         let mut total: u64 = 0;
         let mut buf = [0u8; BUF_SIZE];
         loop {
             let n = fs::read(fd, &mut buf);
             if n == 0 || n == u32::MAX { break; }
-            total += n as u64;
-            if net::tcp_send(data_sock, &buf[..n as usize]) == u32::MAX { break; }
+            let chunk = &buf[..n as usize];
+            if ascii {
+                let encoded = ascii_encode(chunk);
+                total += encoded.len() as u64;
+                if net::tcp_send(data_sock, &encoded) == u32::MAX { break; }
+            } else {
+                total += n as u64;
+                if net::tcp_send(data_sock, chunk) == u32::MAX { break; }
+            }
         }
         fs::close(fd);
         net::tcp_close(data_sock);
         self.reply("226", "Transfer complete.");
-        self.log_info(&alloc::format!("download: {} ({} bytes)", abs, total));
+        self.log_info(&alloc::format!("download: {} ({} bytes, offset {})", abs, total, offset));
     }
 
     fn do_stor_pasv(&mut self, listener: u32, path: &str) {
+        self.do_stor_pasv_inner(listener, path, false);
+    }
+
+    fn do_appe_pasv(&mut self, listener: u32, path: &str) {
+        self.do_stor_pasv_inner(listener, path, true);
+    }
+
+    fn do_stor_pasv_inner(&mut self, listener: u32, path: &str, append: bool) {
         let abs = self.resolve_path(path);
         if !self.can_access(&abs, true) {
             net::tcp_close(listener);
@@ -863,10 +1213,9 @@ impl<'a> Session<'a> {
             self.log_warn(&alloc::format!("upload denied: {}", abs));
             return;
         }
-        // Reject STOR if the path already exists as a directory.
+        // Reject if the path already exists as a directory.
         let mut stat_buf = [0u32; 7];
         if fs::stat(&abs, &mut stat_buf) != u32::MAX {
-            // stat_buf[0] = type: 0=file, 1=directory, 2=device
             let is_dir = stat_buf[0] == 1;
             if is_dir {
                 net::tcp_close(listener);
@@ -875,24 +1224,44 @@ impl<'a> Session<'a> {
                 return;
             }
         }
-        let fd = fs::open(&abs, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+        let offset = self.restart_offset;
+        self.restart_offset = 0;
+        let flags = if append {
+            fs::O_WRITE | fs::O_CREATE | fs::O_APPEND
+        } else if offset > 0 {
+            fs::O_WRITE | fs::O_CREATE
+        } else {
+            fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC
+        };
+        let fd = fs::open(&abs, flags);
         if fd == u32::MAX {
             net::tcp_close(listener);
             self.reply("550", "Could not create file.");
             self.log_warn(&alloc::format!("upload failed (open): {}", abs));
             return;
         }
+        if offset > 0 && !append {
+            fs::lseek(fd, offset as i32, fs::SEEK_SET);
+        }
         // Send 150 first, then accept — client connects after 150.
         self.reply("150", "Opening data connection.");
         let data_sock = self.accept_pasv_listener(listener);
         if data_sock == u32::MAX { fs::close(fd); return; }
+        let ascii = self.transfer_type == TransferType::Ascii;
         let mut total: u64 = 0;
         let mut buf = [0u8; BUF_SIZE];
         loop {
             let n = net::tcp_recv(data_sock, &mut buf);
             if n == 0 || n == u32::MAX { break; }
-            total += n as u64;
-            if fs::write(fd, &buf[..n as usize]) == u32::MAX { break; }
+            let chunk = &buf[..n as usize];
+            if ascii {
+                let decoded = ascii_decode(chunk);
+                total += decoded.len() as u64;
+                if fs::write(fd, &decoded) == u32::MAX { break; }
+            } else {
+                total += n as u64;
+                if fs::write(fd, chunk) == u32::MAX { break; }
+            }
         }
         fs::close(fd);
         net::tcp_close(data_sock);
@@ -1060,10 +1429,13 @@ impl<'a> Session<'a> {
             return;
         }
         match cmd.as_str() {
-            "LIST" | "NLST" => self.do_list(data_sock, &darg),
+            "LIST"          => self.do_list(data_sock, &darg),
+            "NLST"          => self.do_nlst(data_sock, &darg),
             "MLSD"          => self.do_mlsd(data_sock, &darg),
             "RETR" => self.do_retr(data_sock, &darg),
-            "STOR" | "STOU" => self.do_stor(data_sock, &darg),
+            "STOR" => self.do_stor(data_sock, &darg),
+            "STOU" => { self.stou_filename = self.resolve_stou("STOU", &darg); let p = self.stou_filename.clone(); self.do_stor(data_sock, &p); self.finish_stou(); }
+            "APPE" => self.do_appe(data_sock, &darg),
             _ => {
                 net::tcp_close(data_sock);
                 self.reply("503", "Bad sequence of commands.");
@@ -1097,6 +1469,37 @@ pub fn run(ctrl: u32, cfg: &FtpdConfig, remote_ip: [u8; 4]) {
     let mut session = Session::new(ctrl, cfg, remote_ip);
     session.run();
     net::tcp_close(ctrl);
+}
+
+// ── ASCII transfer helpers ────────────────────────────────────────────────────
+
+/// Convert raw file bytes to ASCII (TYPE A) for sending: \n → \r\n.
+/// Only inserts \r before \n if there is no \r already.
+fn ascii_encode(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len() + data.len() / 10);
+    for i in 0..data.len() {
+        if data[i] == b'\n' && (i == 0 || data[i - 1] != b'\r') {
+            out.push(b'\r');
+        }
+        out.push(data[i]);
+    }
+    out
+}
+
+/// Convert received ASCII data to local format: \r\n → \n.
+fn ascii_decode(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    let mut i = 0;
+    while i < data.len() {
+        if i + 1 < data.len() && data[i] == b'\r' && data[i + 1] == b'\n' {
+            out.push(b'\n');
+            i += 2;
+        } else {
+            out.push(data[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1181,7 +1584,7 @@ fn format_227(ip: &[u8; 4], p1: u8, p2: u8) -> String {
     push_u8_str(&mut s, ip[3]); s.push(',');
     push_u8_str(&mut s, p1); s.push(',');
     push_u8_str(&mut s, p2);
-    s.push_str(").\r\n");
+    s.push_str(")\r\n");
     s
 }
 
@@ -1256,6 +1659,132 @@ fn push_pad4(s: &mut String, v: u32) {
     let mut buf = [0u8; 6];
     let slice = fmt_u32(v, &mut buf);
     s.push_str(core::str::from_utf8(slice).unwrap_or("0"));
+}
+
+/// Generate a unique filename for STOU in the given directory.
+fn generate_unique_name(dir: &str, hint: &str) -> String {
+    // Use a simple counter scheme: basename.1, basename.2, ...
+    let base = if hint.is_empty() { "stou" } else { hint };
+    // Try the original name first
+    let mut path = String::from(dir);
+    if !path.ends_with('/') { path.push('/'); }
+    path.push_str(base);
+    let mut stat_buf = [0u32; 7];
+    if fs::stat(&path, &mut stat_buf) == u32::MAX {
+        return String::from(base); // doesn't exist, use as-is
+    }
+    // Try with numeric suffix
+    for i in 1u32..10000 {
+        let mut name = String::from(base);
+        name.push('.');
+        let mut buf = [0u8; 6];
+        let s = fmt_u32(i, &mut buf);
+        name.push_str(core::str::from_utf8(s).unwrap_or("1"));
+        let mut full = String::from(dir);
+        if !full.ends_with('/') { full.push('/'); }
+        full.push_str(&name);
+        if fs::stat(&full, &mut stat_buf) == u32::MAX {
+            return name;
+        }
+    }
+    // Fallback
+    let mut name = String::from(base);
+    name.push_str(".stou");
+    name
+}
+
+/// Parse a decimal u32 from a string (for REST offset).
+fn parse_u32_decimal(s: &str) -> Option<u32> {
+    let s = s.trim();
+    if s.is_empty() { return None; }
+    let mut val: u64 = 0;
+    for b in s.bytes() {
+        if b < b'0' || b > b'9' { return None; }
+        val = val * 10 + (b - b'0') as u64;
+        if val > u32::MAX as u64 { return None; }
+    }
+    Some(val as u32)
+}
+
+/// Get the current Unix timestamp by querying the RTC.
+fn current_unix_timestamp() -> u32 {
+    let mut time_buf = [0u8; 8];
+    sys::time(&mut time_buf);
+    // time_buf: [year_lo, year_hi, month, day, hour, min, sec, 0]
+    let year = time_buf[0] as u32 | ((time_buf[1] as u32) << 8);
+    let month = time_buf[2] as u32;
+    let day = time_buf[3] as u32;
+    let hour = time_buf[4] as u32;
+    let min = time_buf[5] as u32;
+    let sec = time_buf[6] as u32;
+    // Convert to Unix timestamp (days since epoch)
+    let mut days = 0u32;
+    for y in 1970..year {
+        days += if is_leap(y) { 366 } else { 365 };
+    }
+    let leap = is_leap(year);
+    let month_days: [u32; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    for m in 0..(month.saturating_sub(1) as usize).min(12) {
+        days += month_days[m];
+    }
+    days += day.saturating_sub(1);
+    days * 86400 + hour * 3600 + min * 60 + sec
+}
+
+/// Format a Unix timestamp for LIST output (ls -l style).
+/// Format: "Mon DD HH:MM" for files < 6 months old, "Mon DD  YYYY" for older.
+fn format_list_timestamp(ts: u32) -> String {
+    if ts == 0 {
+        return String::from("Jan 01  1970");
+    }
+    let months_short = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    let mut secs = ts;
+    let _sec = secs % 60; secs /= 60;
+    let min = secs % 60; secs /= 60;
+    let hour = secs % 24; secs /= 24;
+    let mut days = secs;
+    let mut year = 1970u32;
+    loop {
+        let days_in_year = if is_leap(year) { 366 } else { 365 };
+        if days < days_in_year { break; }
+        days -= days_in_year;
+        year += 1;
+    }
+    let leap = is_leap(year);
+    let month_days: [u32; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 0usize;
+    for m in 0..12 {
+        if days < month_days[m] { month = m; break; }
+        days -= month_days[m];
+        if m == 11 { month = 11; }
+    }
+    let day = days + 1;
+
+    // Determine if file is older than ~6 months (180 days = 15552000 seconds).
+    let now = current_unix_timestamp();
+    let age = if now > ts { now - ts } else { 0 };
+    let six_months_secs: u32 = 180 * 86400;
+
+    let mut s = String::from(months_short[month]);
+    s.push(' ');
+    if day < 10 { s.push('0'); }
+    let mut buf = [0u8; 4];
+    let ds = fmt_u32(day, &mut buf);
+    s.push_str(core::str::from_utf8(ds).unwrap_or("01"));
+
+    if age > six_months_secs {
+        // Old file: show year instead of time ("Mon DD  YYYY")
+        s.push(' ');
+        s.push(' ');
+        push_pad4(&mut s, year);
+    } else {
+        // Recent file: show time ("Mon DD HH:MM")
+        s.push(' ');
+        push_pad2(&mut s, hour);
+        s.push(':');
+        push_pad2(&mut s, min);
+    }
+    s
 }
 
 /// Format a single MLSD entry line (without CRLF).

@@ -251,7 +251,7 @@ int1ah_handler:
     mov ax, 0xF000
     mov ds, ax
 
-    movzx di, word [pci_device_count]
+    mov di, [pci_device_count]
     test di, di
     jz .pci_fd_notfound
 
@@ -320,7 +320,7 @@ int1ah_handler:
     mov ax, 0xF000
     mov ds, ax
 
-    movzx di, word [pci_device_count]
+    mov di, [pci_device_count]
     test di, di
     jz .pci_fc_notfound
 

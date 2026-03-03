@@ -264,17 +264,33 @@ impl FtpClient {
     }
 
     fn list_dir_ex(&mut self, show_hidden: bool) -> Vec<FileEntry> {
-        let (ip, port) = match self.pasv_addr() { Some(v) => v, None => return Vec::new() };
+        let (ip, port) = match self.pasv_addr() {
+            Some(v) => {
+                anyos_std::println!("[ftp] PASV -> {}.{}.{}.{}:{}", v.0[0], v.0[1], v.0[2], v.0[3], v.1);
+                v
+            }
+            None => {
+                anyos_std::println!("[ftp] PASV failed");
+                return Vec::new();
+            }
+        };
         // Send command first, then open data connection (RFC 959 / server expects this order).
         if show_hidden {
             self.send_cmd_only("LIST -a");
         } else {
             self.send_cmd_only("LIST");
         }
+        anyos_std::println!("[ftp] connecting data socket to {}.{}.{}.{}:{}", ip[0], ip[1], ip[2], ip[3], port);
         let data_sock = net::tcp_connect(&ip, port, CONNECT_TIMEOUT);
-        if data_sock == u32::MAX { return Vec::new(); }
+        if data_sock == u32::MAX {
+            anyos_std::println!("[ftp] data socket connect FAILED");
+            return Vec::new();
+        }
+        anyos_std::println!("[ftp] data socket connected, reading response...");
         let resp = self.read_response();
+        anyos_std::println!("[ftp] LIST response: {}", resp.trim());
         if !resp.starts_with("150") && !resp.starts_with("125") {
+            anyos_std::println!("[ftp] unexpected LIST response, aborting");
             net::tcp_close(data_sock);
             return Vec::new();
         }
@@ -381,8 +397,12 @@ impl FtpClient {
 
     fn upload(&mut self, local_path: &str, remote_name: &str) -> u32 {
         self.set_binary_mode();
+        anyos_std::println!("[ftp] upload: opening local file {}", local_path);
         let fd = fs::open(local_path, 0);
-        if fd == u32::MAX { return 0; }
+        if fd == u32::MAX {
+            anyos_std::println!("[ftp] upload: failed to open local file");
+            return 0;
+        }
         let mut file_data = Vec::new();
         let mut buf = [0u8; RECV_BUF];
         loop {
@@ -391,11 +411,19 @@ impl FtpClient {
             file_data.extend_from_slice(&buf[..n as usize]);
         }
         fs::close(fd);
-        let (ip, port) = match self.pasv_addr() { Some(v) => v, None => return 0 };
+        anyos_std::println!("[ftp] upload: read {} bytes, starting PASV+STOR", file_data.len());
+        let (ip, port) = match self.pasv_addr() {
+            Some(v) => v,
+            None => { anyos_std::println!("[ftp] upload: PASV failed"); return 0; }
+        };
         self.send_command("STOR ", remote_name);
         let data_sock = net::tcp_connect(&ip, port, CONNECT_TIMEOUT);
-        if data_sock == u32::MAX { return 0; }
+        if data_sock == u32::MAX {
+            anyos_std::println!("[ftp] upload: data connect failed");
+            return 0;
+        }
         let resp = self.read_response();
+        anyos_std::println!("[ftp] upload: STOR response: {}", resp.trim());
         if !resp.starts_with("150") && !resp.starts_with("125") {
             net::tcp_close(data_sock);
             return 0;
@@ -2439,10 +2467,13 @@ fn main() {
     local_grid.on_submit(|e| {
         let a = app();
         let row = e.index as usize;
+        anyos_std::println!("[anyzilla] local_grid on_submit row={} total={}", row, a.local_files.len());
         if row >= a.local_files.len() { return; }
         let entry = a.local_files[row].clone();
+        anyos_std::println!("[anyzilla] local entry: name={} is_dir={}", entry.name, entry.is_dir);
         if entry.is_dir {
             let new_dir = join_path(&a.local_dir, &entry.name);
+            anyos_std::println!("[anyzilla] navigating local: {} -> {}", a.local_dir, new_dir);
             a.local_dir = new_dir;
             refresh_local();
         }

@@ -30,6 +30,10 @@ fn main() {
                 println!("NET: {} — DHCP discovery...", name);
                 run_dhcp();
             }
+            2 => {
+                // Loopback — skip (no config action needed)
+                println!("NET: {} — loopback (127.0.0.1)", name);
+            }
             1 => {
                 // Static
                 let ip = &iface_buf[off + 18..off + 22];

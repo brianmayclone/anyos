@@ -59,7 +59,7 @@ post_entry:
     ; Print PCI device count.
     mov si, str_pci_scan
     call bios_print
-    movzx ax, word [pci_device_count]
+    mov ax, [pci_device_count]
     call bios_print_dec16
     mov si, str_pci_device
     call bios_print

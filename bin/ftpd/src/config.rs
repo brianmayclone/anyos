@@ -77,7 +77,7 @@ impl FtpdConfig {
         let mut cfg = FtpdConfig {
             enabled: true,
             port: 21,
-            passive_mode: false,
+            passive_mode: true,
             passive_port_min: 50000,
             passive_port_max: 50010,
             allow_anonymous: true,
