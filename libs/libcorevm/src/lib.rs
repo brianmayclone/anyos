@@ -519,7 +519,6 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
     let exit = vm.engine.run(max_instructions);
     match exit {
         ExitReason::Halted => {
-            vm_log!("VM halted after {} instructions", vm.engine.instruction_count());
             0
         }
         ExitReason::Exception(ref err) => {

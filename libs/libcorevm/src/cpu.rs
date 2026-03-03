@@ -20,8 +20,6 @@ use crate::registers::{
 };
 use crate::sse_state::SseState;
 
-use core::sync::atomic::{AtomicU32, Ordering};
-
 /// CPU execution mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mode {

@@ -104,7 +104,17 @@ pub fn exec_movsxd(
     memory: &mut GuestMemory,
     mmu: &Mmu,
 ) -> Result<()> {
-    let src = read_operand(cpu, inst, &inst.operands[1], memory, mmu)?;
+    // Read source at Dword size (not inst.operand_size which is Qword).
+    let src = match &inst.operands[1] {
+        Operand::Memory(mem_op) => {
+            let linear = compute_effective_address(cpu, mem_op, inst)?;
+            translate_and_read(cpu, linear, mem_op.size, mmu, memory)?
+        }
+        Operand::Register(RegOperand::Gpr(idx)) => {
+            cpu.regs.read_gpr(*idx, OperandSize::Dword, inst.prefix.has_rex())
+        }
+        _ => return Err(VmError::UndefinedOpcode(0)),
+    };
     let sign_extended = src as u32 as i32 as i64 as u64;
     write_operand(cpu, inst, &inst.operands[0], sign_extended, memory, mmu)?;
     cpu.regs.rip += inst.length as u64;

@@ -120,9 +120,6 @@ unsafe fn shm_write_u32(ptr: *mut u8, offset: usize, val: u32) {
     dst.write_volatile(val);
 }
 
-/// Whether we have logged the first non-empty VGA text buffer.
-static mut VGA_LOG_DONE: bool = false;
-
 /// Update the SHM framebuffer from the VM's VGA state.
 fn update_shm_framebuffer(inst: &VmInstance) {
     if inst.shm_ptr.is_null() {
@@ -133,50 +130,6 @@ fn update_shm_framebuffer(inst: &VmInstance) {
 
     // Try text mode first.
     if let Some(text_buf) = inst.handle.vga_text_buffer() {
-        // Log first non-empty text buffer content once for debugging.
-        let done = unsafe { VGA_LOG_DONE };
-        if !done {
-            let mut has_content = false;
-            let mut preview = [0u8; 80];
-            let mut plen = 0;
-            for (i, &cell) in text_buf.iter().enumerate() {
-                let ch = (cell & 0xFF) as u8;
-                if ch != 0 && ch != b' ' && ch != 0x20 {
-                    has_content = true;
-                }
-                if i < 80 {
-                    preview[i] = if ch >= 0x20 && ch < 0x7F { ch } else { b'.' };
-                    plen = i + 1;
-                }
-            }
-            if has_content || icount > 10_000_000 {
-                let line = core::str::from_utf8(&preview[..plen]).unwrap_or("");
-                let (mmio_total, mmio_text) = inst.handle.vga_debug_counters();
-                let (reg_count, mmio_lo, mmio_hi, ram_val) = inst.handle.mmio_diag();
-                anyos_std::println!("[vmd] VGA text row 0: '{}' (has_content={})", line, has_content);
-                anyos_std::println!("[vmd] VGA MMIO writes: total={}, text_region={}", mmio_total, mmio_text);
-                anyos_std::println!(
-                    "[vmd] MMIO diag: {} regions, bounds=[0x{:X}, 0x{:X}), RAM@0xB8000=0x{:08X}",
-                    reg_count, mmio_lo, mmio_hi, ram_val
-                );
-                // Check IVT and BDA to understand VGA init state.
-                let ivt_10h = inst.handle.read_phys_u32(0x40);
-                let bda_equip = inst.handle.read_phys_u16(0x410);
-                let bda_vmode = inst.handle.read_phys_u8(0x449);
-                let bda_cols = inst.handle.read_phys_u16(0x44A);
-                let bda_crtc = inst.handle.read_phys_u16(0x463);
-                let bda_rows = inst.handle.read_phys_u8(0x484);
-                anyos_std::println!("[vmd] IVT INT 10h vector: 0x{:08X}", ivt_10h);
-                anyos_std::println!(
-                    "[vmd] BDA: equip=0x{:04X} vmode=0x{:02X} cols={} rows={} crtc=0x{:04X}",
-                    bda_equip, bda_vmode, bda_cols, bda_rows + 1, bda_crtc
-                );
-                // Check first bytes of VGA BIOS at 0xC0000 (should be 0x55, 0xAA).
-                let rom_sig = inst.handle.read_phys_u16(0xC0000);
-                anyos_std::println!("[vmd] ROM@0xC0000 signature: 0x{:04X}", rom_sig);
-                unsafe { VGA_LOG_DONE = true; }
-            }
-        }
         let cols: u32 = 80;
         let rows: u32 = 25;
         unsafe {

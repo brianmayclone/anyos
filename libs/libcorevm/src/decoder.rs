@@ -432,9 +432,17 @@ impl<'m> DecodeCursor<'m> {
             // -- ARPL (32-bit) / MOVSXD (64-bit) --
             0x63 => {
                 if self.mode == CpuMode::Long64 {
-                    // MOVSXD r, r/m32 (REX.W -> r64, r/m32)
-                    let sz = self.inst.operand_size;
-                    self.decode_modrm_r_rm(sz)
+                    // MOVSXD r64, r/m32: destination uses operand_size (Qword
+                    // with REX.W), source is always Dword.
+                    let dst_sz = self.inst.operand_size;
+                    let modrm = self.fetch_modrm()?;
+                    let (md, reg, rm) = Self::split_modrm(modrm);
+                    let reg = self.extend_r(reg);
+                    let rm_op = self.decode_rm(md, rm, OperandSize::Dword)?;
+                    self.set_operand(0, self.gpr_operand(reg, dst_sz));
+                    self.set_operand(1, rm_op);
+                    self.inst.operand_count = 2;
+                    Ok(())
                 } else {
                     // ARPL r/m16, r16
                     self.decode_modrm_rm_r(OperandSize::Word)
